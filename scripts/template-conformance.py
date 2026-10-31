@@ -390,7 +390,7 @@ FAMILIES = {
     "ornith": Family(
         "ornith", ("hf", "ornith-ai/Ornith-1.0-9B"),
         note="docs/ornith-reference.md names the model; the -GGUF repo is the "
-             "same checkpoint", tool_family=True,
+             "same checkpoint", tool_family=True, hostile_args=True,
         thinking_var="enable_thinking",
         tokenizer=("Ornith-1.0-9B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
@@ -399,14 +399,14 @@ FAMILIES = {
         note="Qwen 3.8's own template: reasoning-effort preamble, preserved "
              "thinking, function-XML tools; docs/granite-42-qwen38-cert-"
              "2026-09-06.md",
-        tool_family=True, thinking_var="enable_thinking",
+        tool_family=True, hostile_args=True, thinking_var="enable_thinking",
         tokenizer=("Qwen3.8-27B-UD-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     "granite42": Family(
         "granite42", ("hf", "ibm-granite/granite-4.2-3b"),
         note="ornith's declaration text and call syntax under granite 4.2's "
              "own renderer; docs/granite-42-qwen38-cert-2026-09-06.md",
-        tool_family=True, thinking_var="enable_thinking",
+        tool_family=True, hostile_args=True, thinking_var="enable_thinking",
         tokenizer=("granite-4.2-3b-Q4_K_M.gguf", "granite-4.2-8b-Q4_K_M.gguf")),
     "muse": Family(
         "muse", ("hf", "meta-models/Muse-Glimmer-30B"),
@@ -452,13 +452,13 @@ FAMILIES = {
         "qwen35", ("hf", "Qwen/Qwen3.5-4B"),
         note="ornith's template with the thought block kept only on the "
              "assistant turns after the last user query",
-        tool_family=True, thinking_var="enable_thinking",
+        tool_family=True, hostile_args=True, thinking_var="enable_thinking",
         tokenizer=("Qwen3.5-4B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     "qwen35-0.8b": Family(
         "qwen35-nothink", ("hf", "Qwen/Qwen3.5-0.8B"),
         note="the small Qwen 3.5 defaults thinking OFF in its template",
-        tool_family=True, thinking_var="enable_thinking",
+        tool_family=True, hostile_args=True, thinking_var="enable_thinking",
         tokenizer=("Qwen3.5-0.8B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     # Cloudflare Clef-Flash (clef, on Qwen3.5-9B): the template embedded in
@@ -468,8 +468,20 @@ FAMILIES = {
         "qwen35", ("gguf", "models/Clef-Flash-Q4_K_M.gguf"),
         note="Clef-Flash's own template, read from the pinned Q4_K_M; the "
              "chat path of a decision model, served on its qwen35 backbone",
-        tool_family=True, thinking_var="enable_thinking",
+        tool_family=True, hostile_args=True, thinking_var="enable_thinking",
         tokenizer=("Clef-Flash-Q4_K_M.gguf", "Clef-Flash-Q8_0.gguf"),
+        cannot={"system-mid-history": NO_MID_SYSTEM}),
+    # Qwen3.6-35B-A3B (qwen35moe): Qwen 3.5's template with two changes, a
+    # preserve_thinking switch (undefined by default, so the thought stays
+    # only after the last user query) and tool-call arguments that are not
+    # strings written as JSON (3.5 writes a boolean or null through Python's
+    # str()). bartowski's Q4_K_M carries these bytes exactly.
+    "qwen36-35b-a3b": Family(
+        "qwen36", ("hf", "Qwen/Qwen3.6-35B-A3B"),
+        note="Qwen/Qwen3.6-35B-A3B chat_template.jinja at 995ad96e, "
+             "byte-identical in bartowski's GGUF at 5c2410d7",
+        tool_family=True, thinking_var="enable_thinking", hostile_args=True,
+        tokenizer=("Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     "lucie": Family(
         "llama3", ("hf", "OpenLLM-France/Lucie-7B-Instruct-v1.1"),
@@ -518,7 +530,7 @@ FAMILIES = {
         note="granite 4.2's template with Qwen3-Coder's nested-XML tool "
              "declarations; served as granite42 until 2026-10-09 (R4.22.5), "
              "when its four tool cases drifted at the declarations",
-        tool_family=True, thinking_var="enable_thinking",
+        tool_family=True, hostile_args=True, thinking_var="enable_thinking",
         tokenizer=("NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",)),
     "eurollm": Family(
         "chatml", ("gguf", "models/EuroLLM-9B-Instruct-Q4_K_M.gguf"),

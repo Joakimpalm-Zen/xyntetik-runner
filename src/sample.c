@@ -660,6 +660,12 @@ static const sampler_preset PRESETS[] = {
     { "qwen35-nothink", "Qwen3.5-0.8B model card best practices (non-thinking mode, text)",
       1.00f, 1.00f, 0.00f, 1.00f, 20 },
 
+    // Qwen/Qwen3.6-35B-A3B model card, thinking mode for general tasks:
+    // temperature 1.0, top_p 0.95, top_k 20, min_p 0.0 (Qwen 3.5's; its
+    // presence_penalty 1.5 has no knob here either).
+    { "qwen36", "Qwen3.6 model card best practices (thinking mode, general tasks)",
+      1.00f, 0.95f, 0.00f, 1.00f, 20 },
+
     // nvidia/NVIDIA-Nemotron-Nano-9B-v2 model card: temperature 0.6 and
     // top_p 0.95 with reasoning on (the template's default), greedy with
     // reasoning off. No generation_config sampling keys. It used to fall
@@ -786,6 +792,7 @@ const sampler_preset *sampler_preset_for(const char *arch, const char *name,
     if (tmpl == TMPL_NEMOTRON35)  return by_name("nemotron35");
     if (tmpl == TMPL_QWEN35)      return by_name("qwen35");
     if (tmpl == TMPL_QWEN35_NOTHINK) return by_name("qwen35-nothink");
+    if (tmpl == TMPL_QWEN36)      return by_name("qwen36");
     if (tmpl == TMPL_NEMOTRON)    return by_name("nemotron");
     if (tmpl == TMPL_APERTUS)     return by_name("apertus");
     if (!strcmp(arch, "gemma3")) return by_name("gemma3");

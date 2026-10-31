@@ -3105,11 +3105,20 @@ static void test_qwen35_is_not_ornith(tokenizer *t) {
     const char *q35s =
         "<function=example_function_name>{%- if loop.index0 > ns.last_query_index %}"
         "<think>{%- if enable_thinking is defined and enable_thinking is true %}";
+    // Qwen 3.6 (Qwen/Qwen3.6-35B-A3B chat_template.jinja:100)
+    const char *q36 =
+        "<function=example_function_name>{%- if (preserve_thinking is defined and "
+        "preserve_thinking is true) or (loop.index0 > ns.last_query_index) %}"
+        "<think>{%- if enable_thinking is defined and enable_thinking is false %}";
     const char *orn = "<function=example_function_name><think>";
     assert(template_detect(q35, t) == TMPL_QWEN35);
     assert(template_detect(q35s, t) == TMPL_QWEN35_NOTHINK);
+    assert(template_detect(q36, t) == TMPL_QWEN36);
     assert(template_detect(orn, t) == TMPL_ORNITH);
     assert(tmpl_ornith_like(TMPL_QWEN35) && tmpl_ornith_like(TMPL_QWEN35_NOTHINK));
+    assert(tmpl_ornith_like(TMPL_QWEN36) && tmpl_qwen35(TMPL_QWEN36));
+    assert(template_from_name("qwen36") == TMPL_QWEN36);
+    assert(!strcmp(template_name(TMPL_QWEN36), "qwen36"));
 
     char out[1024];
     const chat_msg one[] = { CHAT_MSG("user", "hi") };
@@ -3125,6 +3134,44 @@ static void test_qwen35_is_not_ornith(tokenizer *t) {
                         "<think>\n\n</think>\n\n"));
     render_messages(TMPL_QWEN35_NOTHINK, one, 1, true, THINK_ON, out, sizeof(out));
     assert(!strcmp(out, "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>\n"));
+}
+
+// A tool-call argument that is not a string, as the publishers' templates
+// write it (template-conformance.py's tool-call-args-hostile case): Qwen 3.5
+// and ornith a boolean or null through Python's str(), Qwen 3.6 and 3.8 as
+// JSON, all of them a list or mapping through tojson with its spaced
+// separators. Runner wrote compact JSON for all four until 2026-10-30.
+static void test_qwen_xml_argument_values(void) {
+    const char *src =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"save\","
+        "\"arguments\":\"{\\\"items\\\":[\\\"a\\\",1,true],"
+        "\\\"meta\\\":{\\\"k\\\":null},\\\"ok\\\":false,\\\"none\\\":null,"
+        "\\\"text\\\":\\\"x\\\"}\"}}]";
+    jv *calls = json_parse(src, strlen(src));
+    assert(calls != NULL);
+    static const char py[] =
+        "<tool_call>\n<function=save>\n<parameter=items>\n[\"a\", 1, true]\n</parameter>\n"
+        "<parameter=meta>\n{\"k\": null}\n</parameter>\n<parameter=ok>\nFalse\n</parameter>\n"
+        "<parameter=none>\nNone\n</parameter>\n<parameter=text>\nx\n</parameter>\n"
+        "</function>\n</tool_call>";
+    static const char js[] =
+        "<tool_call>\n<function=save>\n<parameter=items>\n[\"a\", 1, true]\n</parameter>\n"
+        "<parameter=meta>\n{\"k\": null}\n</parameter>\n<parameter=ok>\nfalse\n</parameter>\n"
+        "<parameter=none>\nnull\n</parameter>\n<parameter=text>\nx\n</parameter>\n"
+        "</function>\n</tool_call>";
+    const struct { int tmpl; const char *want; } cases[] = {
+        { TMPL_QWEN35, py }, { TMPL_ORNITH, py }, { TMPL_QWEN36, js }, { TMPL_QWEN38, js },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        sbuf b = {0};
+        assistant_calls_render(cases[i].tmpl, "", calls, &b, NULL);
+        if (!b.s || strcmp(b.s, cases[i].want)) {
+            fprintf(stderr, "%s:\n%s\n", template_name(cases[i].tmpl), b.s ? b.s : "(null)");
+            assert(0);
+        }
+        free(b.s);
+    }
+    jv_free(calls);
 }
 
 static void test_phi4_has_no_newlines(tokenizer *t) {
@@ -3350,6 +3397,7 @@ int main(void) {
     test_granite42_tool_turns();
     test_detect_and_render_qwen38(&t);
     test_qwen35_is_not_ornith(&t);
+    test_qwen_xml_argument_values();
     test_phi4_has_no_newlines(&t);
     test_nemotron_nano_framing(&t);
     test_hermes4_system_turn_and_calls(&t);

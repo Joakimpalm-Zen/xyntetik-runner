@@ -142,6 +142,10 @@
       "fixture": "plain",
       "reasoning": "tags"
     },
+    "qwen36": {
+      "fixture": "plain",
+      "reasoning": "tags"
+    },
     "qwen38": {
       "fixture": "plain",
       "reasoning": "tags"

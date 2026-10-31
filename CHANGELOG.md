@@ -22,6 +22,45 @@ Current release and unreleased changes. Compatibility follows the
   (`docs/compat-reports/spark2_5-gpu-2026-10-30/README.md`). An expert FFN
   with the exact GELU still runs on the CPU (no such model exists).
 
+- **Tool-call arguments that are not strings replay as the publishers'
+  templates write them, on six families.** A list or object argument in an
+  assistant turn's history was written as compact JSON; Qwen3-Coder's
+  template family (Ornith, Qwen 3.5, Qwen 3.6, Qwen 3.8, Granite 4.2,
+  Nemotron 3.5) writes it through `tojson`, whose separators are `, ` and
+  `: `, and Ornith, Qwen 3.5, Granite 4.2 and Nemotron 3.5 write a boolean or
+  null through Python's `str()` (`False`, `None`). The template conformance
+  gate now runs a case with such arguments on each of these families, and all
+  conform in text (Qwen 3.6 in tokens too).
+- **Qwen 3.6's own template (`qwen36`).** Qwen 3.5's rules with tool-call
+  scalars written as JSON and the `preserve_thinking` switch, read at the top
+  level or inside `chat_template_kwargs` as `enable_thinking` is: `true`
+  replays the thought of every assistant turn. Detected from the file's
+  template, so a Qwen3.6 GGUF needs no flag.
+- **Qwen3.6-35B-A3B admitted at Tier 2 on the CPU; bartowski's Q4_K_M passes
+  the fidelity bar by a hair.** Against Qwen's BF16 parent with float32
+  arithmetic cast at use per decoder block (300 positions), the standard
+  Q4_K_M reads 0.0475 mean KLD and 97.2% margin-qualified top-1 (bars 0.05
+  and 97%); the Q8_0 reads 0.0349 and 99.1%, its error concentrated at two
+  positions another engine reproduces on the same file. The file carries
+  Qwen's NextN head, and `--mtp` drafts from it with output unchanged, but
+  slower than plain decoding on the CPU
+  (`docs/compat-reports/qwen3.6-35b-a3b-reference-2026-10-31/README.md`).
+- **The qwen35moe architecture on the CPU: Qwen3.5 and Qwen3.6-35B-A3B
+  and the models built on them.** Qwen 3.5's Gated DeltaNet and gated
+  attention with routed experts (softmax, top-k, renormalized) and a
+  sigmoid-gated shared expert on every block. Runner's qwen35 path already
+  carried that combination for qwen4exp; qwen35moe takes it without
+  qwen4exp's hyper-connections, PLE and indexer. Against transformers' own
+  float32 Qwen3_5MoeForCausalLM on a converted random model, Runner reads
+  2.9e-08 mean KLD with top-1 on all 199 positions, where taking away any
+  one feature (the shared expert or its gate, the renormalization, the
+  DeltaNet's SiLU gate, the partial rope, the convolution's history) moves
+  the reference by 0.16 to 8.7
+  (`docs/compat-reports/qwen35moe-toy-2026-10-30/README.md`). `--mtp` now
+  drafts from the files' NextN head, an attention block with the trunk's
+  MoE FFN, where it refused every MoE backbone without hyper-connections;
+  greedy output is unchanged by it. The GPU backends and the files' rows
+  follow.
 - **LFM2.5-24B-A2B Q4_K_M admitted at Tier 2; it fails the fidelity bar,
   and the publisher's Q8_0 is the fidelity file.** Against LiquidAI's BF16
   parent with float32 arithmetic cast at use per decoder block (300

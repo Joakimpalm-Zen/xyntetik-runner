@@ -602,6 +602,13 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                    "top level or inside chat_template_kwargs");
         return;
     }
+    int preserve_thinking = req_preserve_thinking(req);
+    if (preserve_thinking < 0) {
+        send_error(fd, 400,
+                   "preserve_thinking must be a boolean or null, either at the "
+                   "top level or inside chat_template_kwargs");
+        return;
+    }
     // OpenAI "tools" become a leading system turn (template.c owns the syntax).
     //
     // Strict mode compiles them into a discriminated union that constrains
@@ -847,6 +854,8 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                               i == msgs->n - 1 && i > last_user) ||
                              ((tmpl_qwen35(s->tmpl) || s->tmpl == TMPL_MELLUM) &&
                               i > last_user) ||
+                             // Qwen 3.6 with preserve_thinking: every turn
+                             (s->tmpl == TMPL_QWEN36 && preserve_thinking == 1) ||
                               // MiniCPM5, MiMo, Spark and flint write the block
                               // on every assistant turn; LFM2 on the last one
                               // only, the 8B's and 24B's revisions on those

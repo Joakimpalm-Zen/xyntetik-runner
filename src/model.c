@@ -1238,7 +1238,7 @@ const char *const *model_supported_archs(size_t *count) {
     // --caps in main.c). Keep in sync with any new per-family handling added
     // here; unsupported layouts still fail the subsequent shape/admission checks.
     static const char *const arches[] = {
-        "llama", "qwen2", "qwen3", "qwen35", "qwen4exp", "qwen3moe", "mistral",
+        "llama", "qwen2", "qwen3", "qwen35", "qwen35moe", "qwen4exp", "qwen3moe", "mistral",
         "smollm", "stablelm", "gemma3", "gemma4", "phi3", "gpt-oss",
         "apertus", "afmoe", "muse-glimmer", "granite", "granitehybrid",
         "nemotron_h", "nemotron_h_moe", "clef", "mellum", "lfm2", "lfm2moe",
@@ -4627,8 +4627,12 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     if (!m->l_is_swa && !bind_swa_default(m, g, arch)) return false;
     // clef is a Qwen3.5/Qwen3.8 backbone under its own key prefix, with a
     // decision head on top (bound after the layers, model_clef_bind)
-    if ((strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen4exp") == 0 ||
-         strcmp(arch, "clef") == 0) &&
+    // qwen35moe (Qwen3.5/3.6-35B-A3B and their derivatives): the Qwen 3.5
+    // token mixer with routed experts and a sigmoid-gated shared expert on
+    // every block, the generic MoE reader's softmax/renormalize routing,
+    // and none of qwen4exp's hyper-connections, PLE or indexer
+    if ((strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen35moe") == 0 ||
+         strcmp(arch, "qwen4exp") == 0 || strcmp(arch, "clef") == 0) &&
         !bind_meta_qwen35(m, g, arch))
         return false;
     m->ple4_layer = -1;
@@ -4670,7 +4674,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         const char *why = m->mtp_layers == 0 ? "the export declares no predictor block"
                         : m->mtp_layers != 1 ? "only a single predictor block is consumable"
                         : fused_qkv ? "fused-QKV families are not supported"
-                        : ((m->n_expert > 0 && !m->hyper_conn) || m->nemotron_h ||
+                        : ((m->n_expert > 0 && !m->hyper_conn && !m->qwen35) || m->nemotron_h ||
                            m->granite_hybrid || m->l_head_kv || m->l_head_dim ||
                            m->kv_src || m->n_embd_ple > 0)
                             ? "only dense attention, Gated DeltaNet or hyper-connection "

@@ -506,11 +506,26 @@ def main():
     torch.set_num_threads(args.threads)
     t0 = time.time()
 
+    def resident():
+        # this process's resident memory where /proc has it: a BF16 parent
+        # held in a memory-capped container (Qwen3.6-35B-A3B, 67 GB stored,
+        # under an 80 GiB cap) shows how near the cap each stage runs
+        try:
+            with open("/proc/self/status") as f:
+                kb = {k: int(v.split()[0]) for k, v in
+                      (line.split(":", 1) for line in f)
+                      if k in ("VmRSS", "RssAnon", "VmHWM")}
+            return (f"; RSS {kb['VmRSS'] / 2**20:.1f} GiB, anonymous "
+                    f"{kb['RssAnon'] / 2**20:.1f}, peak {kb['VmHWM'] / 2**20:.1f}")
+        except (OSError, KeyError, ValueError):
+            return ""
+
     def stage(what):
         # one line per stage with the elapsed time, flushed: a run that
         # stalls shows WHERE (the 2026-10-29 MiMo run went silent at the
         # weight load for 40 minutes with nothing to say so)
-        print(f"stage {time.time() - t0:7.0f}s: {what}", file=sys.stderr, flush=True)
+        print(f"stage {time.time() - t0:7.0f}s: {what}{resident()}",
+              file=sys.stderr, flush=True)
     tok = AutoTokenizer.from_pretrained(args.hf, trust_remote_code=args.trust_remote_code)
     # A publisher whose top-level class is multimodal (Qwen3.5, Gemma 4,
     # Muse Glimmer) still answers text through the same language model;
