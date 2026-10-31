@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Every roster row with a file states its licence.** `docs/model-tiers.json`
+  gains `licence` beside `upstream`: the licence as the publisher's model
+  card states it on the Hub (its `license`, or its `license_name` when that
+  is `other`), and the repository it was read from. A re-packer's tag does
+  not change the parent's terms, so the parent is named: one row's GGUF
+  repository is tagged `apache-2.0` while its parent, Qwen3.8-Flash-Next,
+  is under `qwen-community-1.0`, and the row says the latter. The roster
+  check refuses a row with a file and no licence, and
+  `docs/model-support.md` shows it per file. It is an attribute to read and
+  filter on; nothing is filtered by it. Today: 42 rows `apache-2.0`, 6
+  `lfm1.0`, 3 `openmdw-1.1`, 3 `qwen-community-1.0`, 1
+  `nvidia-open-model-license`, 1 `mit`.
+
 - **Receipts carry the tool results a request sent, as data.** A served
   receipt named the calls its turn delivered (`tool_calls`), but the results
   of earlier calls reached it only inside the rendered prompt text, so a

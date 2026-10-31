@@ -57,6 +57,10 @@
         "checkpoint": "Cloudflare/clef",
         "revision": "0b331204bb13fbd2ca93a64df1956f5b55478ce5"
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Cloudflare/clef"
+      },
       "files": [
         {
           "name": "Cloudflare_clef-IQ3_M.gguf",
@@ -149,6 +153,10 @@
       "upstream": {
         "checkpoint": "Qwen/Qwen3.8-27B",
         "revision": null
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Qwen/Qwen3.8-27B"
       },
       "files": [
         {
@@ -244,6 +252,10 @@
       "upstream": {
         "checkpoint": "google/gemma-4-12B-it",
         "revision": null
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "google/gemma-4-12B-it"
       },
       "files": [
         {
@@ -354,6 +366,10 @@
       "upstream": {
         "checkpoint": "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16",
         "revision": "49843eed8db1f1c616c47af75cfd36e07aec0667"
+      },
+      "licence": {
+        "id": "openmdw-1.1",
+        "from": "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16"
       },
       "files": [
         {
@@ -487,6 +503,10 @@
         "checkpoint": "google/gemma-4-26B-A4B-it",
         "revision": null
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "google/gemma-4-26B-A4B-it"
+      },
       "files": [
         {
           "name": "gemma-4-26B_q4_0-it.gguf",
@@ -577,6 +597,10 @@
       "upstream": {
         "checkpoint": "google/gemma-4-31B-it",
         "revision": null
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "google/gemma-4-31B-it"
       },
       "files": [
         {
@@ -669,6 +693,10 @@
         "checkpoint": "meta-models/Muse-Glimmer-30B",
         "revision": null
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "meta-models/Muse-Glimmer-30B"
+      },
       "files": [
         {
           "name": "Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf",
@@ -758,6 +786,10 @@
       "upstream": {
         "checkpoint": "ibm-granite/granite-4.2-8b",
         "revision": null
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "ibm-granite/granite-4.2-8b"
       },
       "files": [
         {
@@ -871,6 +903,10 @@
         "checkpoint": "ibm-granite/granite-4.2-8b",
         "revision": null
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "ibm-granite/granite-4.2-8b"
+      },
       "files": [
         {
           "name": "granite-4.2-8b-Q8_0.gguf",
@@ -979,6 +1015,10 @@
         "checkpoint": "arcee-ai/Trinity-Nano-Preview",
         "revision": null
       },
+      "licence": {
+        "id": "openmdw-1.1",
+        "from": "arcee-ai/Trinity-Nano-Preview"
+      },
       "files": [
         {
           "name": "Trinity-Nano-Preview-Q8_0.gguf",
@@ -1077,6 +1117,10 @@
         "checkpoint": "Qwen/Qwen3.8-27B",
         "revision": null
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Qwen/Qwen3.8-27B"
+      },
       "files": [
         {
           "name": "Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf",
@@ -1166,6 +1210,10 @@
       "upstream": {
         "checkpoint": "Qwen/Qwen3.8-27B",
         "revision": null
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Qwen/Qwen3.8-27B"
       },
       "files": [
         {
@@ -1259,6 +1307,10 @@
         "checkpoint": "Joakimpalm-Zen/Xyntetik-Kvist-14B",
         "revision": null
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Joakimpalm-Zen/Xyntetik-Kvist-14B"
+      },
       "files": [
         {
           "name": "Xyntetik-Kvist-14B-BF16.gguf",
@@ -1341,6 +1393,10 @@
       "upstream": {
         "checkpoint": "Joakimpalm-Zen/Xyntetik-Kvist-14B",
         "revision": null
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Joakimpalm-Zen/Xyntetik-Kvist-14B"
       },
       "files": [
         {
@@ -1425,6 +1481,10 @@
         "checkpoint": "Joakimpalm-Zen/Xyntetik-Kvist-14B",
         "revision": null
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Joakimpalm-Zen/Xyntetik-Kvist-14B"
+      },
       "files": [
         {
           "name": "Xyntetik-Kvist-14B-Q5_0-mix.gguf",
@@ -1507,6 +1567,10 @@
       "upstream": {
         "checkpoint": "Joakimpalm-Zen/Xyntetik-Kvist-14B",
         "revision": null
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Joakimpalm-Zen/Xyntetik-Kvist-14B"
       },
       "files": [
         {
@@ -1609,6 +1673,10 @@
         "checkpoint": "Qwen/Qwen3-30B-A3B",
         "revision": null
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Qwen/Qwen3-30B-A3B"
+      },
       "files": [
         {
           "name": "Qwen3-30B-A3B-expq4_0-attnq8_0.gguf",
@@ -1700,6 +1768,10 @@
         "checkpoint": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
         "revision": null
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+      },
       "files": [
         {
           "name": "Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf",
@@ -1790,6 +1862,10 @@
       "upstream": {
         "checkpoint": "google/gemma-4-E2B-it",
         "revision": null
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "google/gemma-4-E2B-it"
       },
       "files": [
         {
@@ -1918,6 +1994,10 @@
         "checkpoint": "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
         "revision": null
       },
+      "licence": {
+        "id": "nvidia-open-model-license",
+        "from": "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
+      },
       "files": [
         {
           "name": "NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf",
@@ -2031,6 +2111,10 @@
         "checkpoint": "google/gemma-4-31B-it",
         "revision": null
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "google/gemma-4-31B-it"
+      },
       "files": [
         {
           "name": "gemma-4-31B-it-attn48-removed-q4_0.gguf",
@@ -2123,6 +2207,10 @@
         "checkpoint": "meta-models/Muse-Glimmer-30B",
         "revision": null
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "meta-models/Muse-Glimmer-30B"
+      },
       "files": [
         {
           "name": "Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf",
@@ -2213,6 +2301,10 @@
       "upstream": {
         "checkpoint": "meta-models/Muse-Glimmer-30B",
         "revision": null
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "meta-models/Muse-Glimmer-30B"
       },
       "files": [
         {
@@ -2305,6 +2397,10 @@
         "checkpoint": "meta-models/Muse-Glimmer-30B",
         "revision": null
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "meta-models/Muse-Glimmer-30B"
+      },
       "files": [
         {
           "name": "Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf",
@@ -2394,6 +2490,10 @@
       "upstream": {
         "checkpoint": "Qwen/Qwen3-4B",
         "revision": null
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Qwen/Qwen3-4B"
       },
       "files": [
         {
@@ -2503,6 +2603,10 @@
       "upstream": {
         "checkpoint": "Qwen/Qwen3-4B",
         "revision": null
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Qwen/Qwen3-4B"
       },
       "files": [
         {
@@ -2637,6 +2741,10 @@
         "checkpoint": "Qwen/Qwen3.8-Flash-Next",
         "revision": null
       },
+      "licence": {
+        "id": "qwen-community-1.0",
+        "from": "Qwen/Qwen3.8-Flash-Next"
+      },
       "files": [
         {
           "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf",
@@ -2747,6 +2855,10 @@
         "checkpoint": "Qwen/Qwen3.8-Flash-Next",
         "revision": null
       },
+      "licence": {
+        "id": "qwen-community-1.0",
+        "from": "Qwen/Qwen3.8-Flash-Next"
+      },
       "files": [
         {
           "name": "Qwen3.8-Flash-Next-MTP-Q8_0.gguf",
@@ -2849,6 +2961,10 @@
           "bytes": 11472833184
         }
       ],
+      "licence": {
+        "id": "apache-2.0",
+        "from": "openai/gpt-oss-20b"
+      },
       "published": true,
       "published_exception": "Policy decision 2026-10-22: a published file may be Tier 2 when its card already leads with its measured shortfall.",
       "transitions": [
@@ -2870,6 +2986,10 @@
       "upstream": {
         "checkpoint": "Qwen/Qwen3-4B",
         "revision": "1cfa9a7208912126459214e8b04321603b3df60c"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Qwen/Qwen3-4B"
       },
       "files": [
         {
@@ -3003,6 +3123,10 @@
           "bytes": 28800138432
         }
       ],
+      "licence": {
+        "id": "qwen-community-1.0",
+        "from": "Qwen/Qwen3.8-Flash-Next"
+      },
       "published": false,
       "experimental": true,
       "transitions": [
@@ -3179,6 +3303,10 @@
         "checkpoint": "Cloudflare/clef",
         "revision": "0b331204bb13fbd2ca93a64df1956f5b55478ce5"
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Cloudflare/clef"
+      },
       "files": [
         {
           "name": "Clef-backbone-IQ3_S.gguf",
@@ -3210,6 +3338,10 @@
       "upstream": {
         "checkpoint": "Cloudflare/clef",
         "revision": "0b331204bb13fbd2ca93a64df1956f5b55478ce5"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Cloudflare/clef"
       },
       "files": [
         {
@@ -3244,6 +3376,10 @@
       "upstream": {
         "checkpoint": "Cloudflare/clef",
         "revision": "0b331204bb13fbd2ca93a64df1956f5b55478ce5"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Cloudflare/clef"
       },
       "files": [
         {
@@ -3282,6 +3418,10 @@
       "upstream": {
         "checkpoint": "Cloudflare/clef",
         "revision": "0b331204bb13fbd2ca93a64df1956f5b55478ce5"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Cloudflare/clef"
       },
       "files": [
         {
@@ -3403,6 +3543,10 @@
           "bytes": 18898091584
         }
       ],
+      "licence": {
+        "id": "openmdw-1.1",
+        "from": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+      },
       "anchor": "anchor: agreement with another engine, not fidelity. The family's smallest member is 30B; 4/5 greedy against llama.cpp."
     },
     {
@@ -3433,6 +3577,10 @@
       "upstream": {
         "checkpoint": "Cloudflare/clef-flash",
         "revision": "f0b7d3cd65296abfe459e6c228b618f5d8b26d2f"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Cloudflare/clef-flash"
       },
       "files": [
         {
@@ -3548,6 +3696,10 @@
       "upstream": {
         "checkpoint": "Cloudflare/clef-flash",
         "revision": "f0b7d3cd65296abfe459e6c228b618f5d8b26d2f"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Cloudflare/clef-flash"
       },
       "files": [
         {
@@ -3727,6 +3879,10 @@
         "checkpoint": "JetBrains/Mellum2.1-12B-A2.5B-Thinking",
         "revision": "92ddae9fc7665e9f801d141d2e5a6b2caf2460c4"
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "JetBrains/Mellum2.1-12B-A2.5B-Thinking"
+      },
       "files": [
         {
           "name": "Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf",
@@ -3841,6 +3997,10 @@
       "upstream": {
         "checkpoint": "openbmb/MiniCPM5-2B",
         "revision": "f97400052a43d642bbc6e9975e2397e3ae6a6b52"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "openbmb/MiniCPM5-2B"
       },
       "files": [
         {
@@ -3969,6 +4129,10 @@
         "checkpoint": "openbmb/MiniCPM5-2B",
         "revision": "f97400052a43d642bbc6e9975e2397e3ae6a6b52"
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "openbmb/MiniCPM5-2B"
+      },
       "files": [
         {
           "name": "MiniCPM5-2B-Q4_K_M.gguf",
@@ -4096,6 +4260,10 @@
         "checkpoint": "LiquidAI/LFM2.5-1.2B-Instruct",
         "revision": "0f604ada3f766f9f257460c4c9f0b5d6f69d431b"
       },
+      "licence": {
+        "id": "lfm1.0",
+        "from": "LiquidAI/LFM2.5-1.2B-Instruct"
+      },
       "files": [
         {
           "name": "LFM2.5-1.2B-Instruct-Q8_0.gguf",
@@ -4191,6 +4359,10 @@
         "checkpoint": "LiquidAI/LFM2.5-1.2B-Instruct",
         "revision": "0f604ada3f766f9f257460c4c9f0b5d6f69d431b"
       },
+      "licence": {
+        "id": "lfm1.0",
+        "from": "LiquidAI/LFM2.5-1.2B-Instruct"
+      },
       "files": [
         {
           "name": "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
@@ -4285,6 +4457,10 @@
       "upstream": {
         "checkpoint": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B",
         "revision": "1f09ddcc1a0ea45751ae0dfe2af20d533168c46f"
+      },
+      "licence": {
+        "id": "mit",
+        "from": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B"
       },
       "files": [
         {
@@ -4395,6 +4571,10 @@
         "checkpoint": "LiquidAI/LFM2.5-350M",
         "revision": "9e6c6ccf47cd318696e137d381a7ded8fe4df09f"
       },
+      "licence": {
+        "id": "lfm1.0",
+        "from": "LiquidAI/LFM2.5-350M"
+      },
       "files": [
         {
           "name": "LFM2.5-350M-Q8_0.gguf",
@@ -4490,6 +4670,10 @@
         "checkpoint": "LiquidAI/LFM2.5-350M",
         "revision": "9e6c6ccf47cd318696e137d381a7ded8fe4df09f"
       },
+      "licence": {
+        "id": "lfm1.0",
+        "from": "LiquidAI/LFM2.5-350M"
+      },
       "files": [
         {
           "name": "LFM2.5-350M-Q4_K_M.gguf",
@@ -4584,6 +4768,10 @@
       "upstream": {
         "checkpoint": "LiquidAI/LFM2.5-8B-A1B",
         "revision": "5dd22602c2e9f6a097b1de4c4efe0658b605015c"
+      },
+      "licence": {
+        "id": "lfm1.0",
+        "from": "LiquidAI/LFM2.5-8B-A1B"
       },
       "files": [
         {
@@ -4681,6 +4869,10 @@
         "checkpoint": "LiquidAI/LFM2.5-24B-A2B",
         "revision": "3fcfdbfa1a1b6d8166846a6323e69f1e1254440d"
       },
+      "licence": {
+        "id": "lfm1.0",
+        "from": "LiquidAI/LFM2.5-24B-A2B"
+      },
       "files": [
         {
           "name": "LFM2.5-24B-A2B-Q4_K_M.gguf",
@@ -4775,6 +4967,10 @@
       "upstream": {
         "checkpoint": "XHToken/Spark-X2.6-4B",
         "revision": "d1b5f26071101c27fcd07728e7a7770e428281f4"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "XHToken/Spark-X2.6-4B"
       },
       "files": [
         {
@@ -4905,6 +5101,10 @@
         "checkpoint": "XHToken/Spark-X2.5-4B",
         "revision": "0bcb35678590218655dff3765b9e61c83b35e9c4"
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "XHToken/Spark-X2.5-4B"
+      },
       "files": [
         {
           "name": "Spark-X2.5-4B-Q4_K_M.gguf",
@@ -5034,6 +5234,10 @@
         "checkpoint": "IFM/K2-Horizon-0.9B",
         "revision": "d50881f4f8dc6923fb8f301e1c2313fe3a2b6c1d"
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "IFM/K2-Horizon-0.9B"
+      },
       "files": [
         {
           "name": "K2-Horizon-1B-Q8_0.gguf",
@@ -5161,6 +5365,10 @@
       "upstream": {
         "checkpoint": "IFM/K2-Horizon-0.9B",
         "revision": "d50881f4f8dc6923fb8f301e1c2313fe3a2b6c1d"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "IFM/K2-Horizon-0.9B"
       },
       "files": [
         {
@@ -5290,6 +5498,10 @@
         "checkpoint": "IFM/K2-Horizon-7B",
         "revision": "4622f94a6632384784471fd674d5b78f8d527798"
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "IFM/K2-Horizon-7B"
+      },
       "files": [
         {
           "name": "K2-Horizon-7B-Q8_0.gguf",
@@ -5383,6 +5595,10 @@
       "upstream": {
         "checkpoint": "IFM/K2-Horizon-7B",
         "revision": "4622f94a6632384784471fd674d5b78f8d527798"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "IFM/K2-Horizon-7B"
       },
       "files": [
         {
@@ -5478,6 +5694,10 @@
         "checkpoint": "RecursiveSI/flint",
         "revision": "2a247be0c0aec895ccb0ac7ca92229ec6df37288"
       },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "RecursiveSI/flint"
+      },
       "files": [
         {
           "name": "flint-int4-q4_1.gguf",
@@ -5556,6 +5776,10 @@
       "upstream": {
         "checkpoint": "Qwen/Qwen3.6-35B-A3B",
         "revision": "995ad96eacd98c81ed38be0c5b274b04031597b0"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Qwen/Qwen3.6-35B-A3B"
       },
       "files": [
         {

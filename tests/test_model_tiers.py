@@ -47,6 +47,7 @@ def tier1_row(**over):
         "claim": "A toy row for the validator's tests.",
         "architecture": "llama",
         "upstream": {"checkpoint": "toy/toy", "revision": None},
+        "licence": {"id": "apache-2.0", "from": "toy/toy"},
         "files": [{"name": "toy-Q8_0.gguf", "repo": "toy/toy-GGUF",
                    "revision": None, "sha256": SHA_A, "bytes": 1234}],
         "quantization": "Q8_0",
@@ -206,6 +207,24 @@ def test_a_vision_models_row_leads_with_text_path_only():
     assert any("Text path only" in e for e in errors(roster(row)))
     row["claim"] = "Text path only: the toy's vision encoder is not loaded."
     assert errors(roster(row)) == []
+
+
+def test_a_row_with_a_file_states_its_licence():
+    """R4.16: the publisher's licence is surfaced beside the file, read from
+    the parent's model card, so a reader can filter on it."""
+    row = tier1_row()
+    del row["licence"]
+    assert any("licence" in e for e in errors(roster(row)))
+    for bad in ({"id": "apache-2.0"}, {"id": "", "from": "toy/toy"}, "apache-2.0"):
+        assert any("licence" in e for e in errors(roster(tier1_row(licence=bad))))
+    # a row with no file (an architecture or an upcoming model) need not
+    up = {k: v for k, v in tier1_row().items() if k not in ("files", "licence")}
+    assert not any("licence" in e for e in errors(roster(up)))
+
+
+def test_the_rendered_row_names_its_licence_and_where_it_was_read():
+    doc = "\n".join(mt._row_doc(tier1_row(), {}))
+    assert "- **Licence:** `apache-2.0`, as the toy/toy model card states it." in doc
 
 
 def lora(train=(True, None), serve=(True, None)):

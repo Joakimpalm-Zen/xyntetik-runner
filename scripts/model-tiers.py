@@ -284,6 +284,17 @@ def validate(doc, devices):
             errs.append(f"{where}: an experimental row's claim starts with 'Experimental'")
         if row.get("vision_upstream") and not claim.startswith("Text path only"):
             errs.append(f"{where}: a vision model's claim starts with 'Text path only'")
+        # R4.16: the weights' licence beside the file, as the publisher's model
+        # card states it (the Hub's `license`, or its `license_name` when that
+        # is `other`), and the repository it was read from. A re-packer's tag
+        # does not change the parent's terms, so `from` names the parent. The
+        # attribute is surfaced for the reader to filter on, never a filter.
+        lic = row.get("licence")
+        if lic is not None and not (isinstance(lic, dict) and _text(lic.get("id"))
+                                    and _text(lic.get("from"))):
+            errs.append(f"{where}: licence is {{id, from}}, both non-empty")
+        elif lic is None and row.get("files"):
+            errs.append(f"{where}: a row with a file states its licence")
         # the row's history of tiers, newest last: the transition log is
         # rendered from it, so a move appends and the earlier entries stay
         ts = row.get("transitions")
@@ -880,6 +891,9 @@ def _row_doc(row, by_id, level=4, borrowed=frozenset()):
         lines.append(f"- **Upstream checkpoint:** {up['checkpoint']}{rev}.")
     if row.get("quantization"):
         lines.append(f"- **Quantization:** {row['quantization']}.")
+    lic = row.get("licence")
+    if lic:
+        lines.append(f"- **Licence:** `{lic['id']}`, as the {lic['from']} model card states it.")
     rw = row.get("runs_with")
     if rw:
         flag = {"mtp-file": "--draft mtp:FILE", "lora": "--lora"}[rw["as"]]

@@ -712,6 +712,7 @@ Text path only: NVIDIA's post-train of Gemma-4-E4B-it in the publisher's own Q4_
 - **File:** `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf` (sha256 `c8af2b8aea10a690a1d9491db744a9446660173cb38fc489612b556615a69612`, 6,180,446,208 bytes, from [nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB) at revision `1db54d5b1253`).
 - **Upstream checkpoint:** nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16 at revision `49843eed8db1`.
 - **Quantization:** Q4_K_M (publisher).
+- **Licence:** `openmdw-1.1`, as the nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16 model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison is feasible and owed):** Family: gemma-4-E2B bf16 against Google's float32 reference (1.5.0 golden pass). This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ) and a chat answer at temperature 0 on the Metal laptop and on the Windows CUDA host (CUDA, and CPU with the GPU off); the smoke reply is byte-identical across the Metal, CUDA and CPU cells (one output sha256), and the CPU-vs-CUDA check agreed on 9 of 9 prompts. A 20-step LoRA smoke with --train-gpu wrote an adapter that changes the answer. No fidelity or cross-engine number.
 - **Context tested:** 4096.
@@ -739,6 +740,7 @@ ISTA-DASLab's IQ3_S file with every quantised block's fp16 scales retrained agai
 - **File:** `Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf` (sha256 `873df48dd3ecf205f73c29716e80fbe766e4202ef4ed394b2c24607a8628458f`, 11,771,546,784 bytes, from [Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF) at revision `7b10f923a7f7`).
 - **Upstream checkpoint:** Qwen/Qwen3.8-27B.
 - **Quantization:** IQ3_S codebook mix, recovered scales.
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3.8-27B model card states it.
 - **Features claimed:** text, tools (qwen38). A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Against the BF16 parent: mean KLD 0.0450, margin-qualified top-1 97.80% on 500 held-out positions, inside the bar. Family: Qwen3.5-0.8B bf16 against Qwen's float32 reference (1.5.0 golden pass).
 - **Context tested:** not recorded.
@@ -760,6 +762,7 @@ The NextN/MTP predictor head for Qwen3.8-27B, loaded with --draft mtp:FILE besid
 - **File:** `Qwen3.8-27B-MTP-Q8_0.gguf` (sha256 `89e31f13400bac27b888f10bab02ff4d8da1f8610fa078dc32f9f3f0d2b6f6c9`, 3,164,006,784 bytes, from [Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF) at revision `7b10f923a7f7`).
 - **Upstream checkpoint:** Qwen/Qwen3.8-27B.
 - **Quantization:** Q8_0.
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3.8-27B model card states it.
 - **Runs with:** [Qwen3.8-27B](#qwen3.8-27b-gsq-rco-iq3_s-recovered), loaded beside it with `--draft mtp:FILE`; the smoke and its pin are of that composed run.
 - **Features claimed:** mtp. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** The trunk's greedy output is the reference: the head proposes, the trunk's verify walk decides, so greedy text with and without the head is the same.
@@ -784,6 +787,7 @@ Experimental: the qwen4exp architecture is admitted with its publisher float32 c
 - **File:** `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf` (sha256 `522632bbb6f2c353621762be5bd48b270b1ff9fe60a9630bd47d5ef097aa0fa2`, 26,481,462,400 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00002-of-00004.gguf` (sha256 `f82cc8f151e15b73bbb84c75baf78f179df1b9b368437d7c75d8b3a7618cb8c8`, 28,347,013,600 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00003-of-00004.gguf` (sha256 `53ada4d2c3f2e189ce209520ecad0ae9649028b19e6bb9a55a021613b204e93b`, 28,800,138,432 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00004-of-00004.gguf` (sha256 `3a8c77474c82c5e81212ef3c5ef2330e75413cc60241d600fcfd87e4e2143b66`, 2,803,798,784 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`).
 - **Upstream checkpoint:** Qwen/Qwen3.8-Flash-Next.
 - **Quantization:** IQ3_S codebook mix with the MTP head (4 parts).
+- **Licence:** `qwen-community-1.0`, as the Qwen/Qwen3.8-Flash-Next model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison is feasible and owed):** CPU forward anchored on llama.cpp on a toy fixture and on the upstream 2-part trunk (greedy 12 tokens identical to llama.cpp b11433), agreement with another engine; the publisher's float32 comparison is owed.
 - **Context tested:** not recorded.
@@ -805,6 +809,7 @@ Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for 
 - **File:** `Qwen3.8-Flash-Next-MTP-Q8_0.gguf` (sha256 `cd2f837a63f0b6ea1d951976e161fc40648932ffaf59194aed3557175638000b`, 4,165,605,056 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`).
 - **Upstream checkpoint:** Qwen/Qwen3.8-Flash-Next.
 - **Quantization:** Q8_0.
+- **Licence:** `qwen-community-1.0`, as the Qwen/Qwen3.8-Flash-Next model card states it.
 - **Runs with:** [Qwen3.8-Flash-Next](#qwen3.8-flash-next-gsq-rco-iq3_s), loaded beside it with `--draft mtp:FILE`; the smoke and its pin are of that composed run.
 - **Features claimed:** mtp. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison is feasible and owed):** The trunk's greedy output is the reference: the head proposes and the trunk decides. The trunk itself is experimental (see the trunk row).
@@ -831,6 +836,7 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **File:** `Xyntetik-Kvist-14B-BF16.gguf` (sha256 `daf422db9d0853d53ec8abb8fe9cd3f1e33ea53dffe7cca476225fbe1bc5d5c6`, 28,903,141,184 bytes, from [Joakimpalm-Zen/Xyntetik-Kvist-14B-GGUF](https://huggingface.co/Joakimpalm-Zen/Xyntetik-Kvist-14B-GGUF) at revision `e6f66cdda4c5`).
 - **Upstream checkpoint:** Joakimpalm-Zen/Xyntetik-Kvist-14B.
 - **Quantization:** BF16.
+- **Licence:** `apache-2.0`, as the Joakimpalm-Zen/Xyntetik-Kvist-14B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (this project is the publisher and its BF16 file is the reference):** This project is the publisher: the BF16 file is the reference. The release gate was task-level (five arms, 57 of 60 held-out tasks where the parent solves 60), not a fidelity bar.
 - **Context tested:** not recorded.
@@ -852,6 +858,7 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **File:** `Xyntetik-Kvist-14B-Q8_0.gguf` (sha256 `cdb73543a6fc22f7faa5bbab0176ab2d5b1b590b46870d2d22f2a2510caaacb6`, 15,363,224,384 bytes, from [Joakimpalm-Zen/Xyntetik-Kvist-14B-GGUF](https://huggingface.co/Joakimpalm-Zen/Xyntetik-Kvist-14B-GGUF) at revision `e6f66cdda4c5`).
 - **Upstream checkpoint:** Joakimpalm-Zen/Xyntetik-Kvist-14B.
 - **Quantization:** Q8_0.
+- **Licence:** `apache-2.0`, as the Joakimpalm-Zen/Xyntetik-Kvist-14B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (this project is the publisher and its BF16 file is the reference):** This project is the publisher: the BF16 file is the reference. The release gate was task-level (five arms, 57 of 60 held-out tasks where the parent solves 60), not a fidelity bar.
 - **Context tested:** not recorded.
@@ -873,6 +880,7 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **File:** `Xyntetik-Kvist-14B-Q5_0-mix.gguf` (sha256 `37af54b4cef4445bbbf23e8fbf0ceec8dc9b01b38dab0dc7f9e2bd2fd79f3a56`, 10,295,023,424 bytes, from [Joakimpalm-Zen/Xyntetik-Kvist-14B-GGUF](https://huggingface.co/Joakimpalm-Zen/Xyntetik-Kvist-14B-GGUF) at revision `e6f66cdda4c5`).
 - **Upstream checkpoint:** Joakimpalm-Zen/Xyntetik-Kvist-14B.
 - **Quantization:** Q5_0 mix.
+- **Licence:** `apache-2.0`, as the Joakimpalm-Zen/Xyntetik-Kvist-14B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (this project is the publisher and its BF16 file is the reference):** This project is the publisher: the BF16 file is the reference. The release gate was task-level (five arms, 57 of 60 held-out tasks where the parent solves 60), not a fidelity bar.
 - **Context tested:** not recorded.
@@ -894,6 +902,7 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 - **File:** `Xyntetik-Kvist-14B-IQ4_NL-mix.gguf` (sha256 `c74b27a5a39c894c4d1a1a2ae140de0cee125fc5cc9a7c96db9b7355bf8709a3`, 7,612,384,384 bytes, from [Joakimpalm-Zen/Xyntetik-Kvist-14B-GGUF](https://huggingface.co/Joakimpalm-Zen/Xyntetik-Kvist-14B-GGUF) at revision `e6f66cdda4c5`).
 - **Upstream checkpoint:** Joakimpalm-Zen/Xyntetik-Kvist-14B.
 - **Quantization:** IQ4_NL mix.
+- **Licence:** `apache-2.0`, as the Joakimpalm-Zen/Xyntetik-Kvist-14B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (this project is the publisher and its BF16 file is the reference):** This project is the publisher: the BF16 file is the reference. The release gate was task-level (five arms, 57 of 60 held-out tasks where the parent solves 60), not a fidelity bar.
 - **Context tested:** not recorded.
@@ -919,6 +928,7 @@ Text path, JetBrains' own Q4_K_M. Publisher Q4_K_M against the publisher's BF16 
 - **File:** `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf` (sha256 `ecc4d5b8107fc219e23c494b2d107552137637b6c6002ee713e0ba8af7fa2755`, 8,071,295,264 bytes, from [JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF](https://huggingface.co/JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF) at revision `4159d684ffdb`).
 - **Upstream checkpoint:** JetBrains/Mellum2.1-12B-A2.5B-Thinking at revision `92ddae9fc766`.
 - **Quantization:** Q4_K_M (publisher).
+- **Licence:** `apache-2.0`, as the JetBrains/Mellum2.1-12B-A2.5B-Thinking model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** This file against the BF16 parent computed in float32 (transformers' own mellum code, 300 positions to 7,420 tokens, token-id keyed): Runner 0.1282 mean KLD / 85.7% top-1 / 93.7% margin-qualified, llama.cpp b11748 0.1305 / 85.9% / 94.0% (298 scored), about 0.08 in words 0-750 and 0.16 past 2,000; Runner vs llama.cpp on this file 0.0177. Q8_0 against the parent: Runner 0.0187 / 94.3% / 100%, llama.cpp 0.0234 / 93.6% / 100%. Q4_K_M vs Q8_0 bar FAIL (400 positions, 0.131, 80.0%); tokenizer 0/721, template 23/23, a needle retrieved at 3,568 tokens. Record: shade research/evaluation/mellum-parity-2026-10-29 (README.md, reference/README.md, windows-q4/README.md).
 - **Context tested:** not recorded.
@@ -948,6 +958,7 @@ Text path only: a decision model served at /v1/systemone; requests with images o
 - **File:** `Cloudflare_clef-IQ3_M.gguf` (sha256 `4977cdedb8784ed414ae03e17ff0ee33f1be1d6bc89370114ebcbc6c5f818975`, 13,776,408,640 bytes, from [bartowski/Cloudflare_clef-GGUF](https://huggingface.co/bartowski/Cloudflare_clef-GGUF) at revision `9d3b28af7cfe`).
 - **Upstream checkpoint:** Cloudflare/clef at revision `0b331204bb13`.
 - **Quantization:** IQ3_M.
+- **Licence:** `apache-2.0`, as the Cloudflare/clef model card states it.
 - **Features claimed:** decisions. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** The publisher's joint_schema_model.py in float32 on a small Clef (the Qwen3.5-0.8B backbone with a joint head): 15/15 input ids and spans, max |dlogit| 1.5e-4 on CUDA. Not on this checkpoint.
 - **Context tested:** not recorded.
@@ -972,6 +983,7 @@ Text path only; ggml-org's Q4_K_M changes 3 of 29 decisions against Cloudflare's
 - **File:** `Clef-Flash-Q4_K_M.gguf` (sha256 `eef2968c238a80d49d340430f22410ea3db9934ad1c6fdb233a503cbf9a9b54e`, 6,732,781,824 bytes, from [ggml-org/Clef-Flash-GGUF](https://huggingface.co/ggml-org/Clef-Flash-GGUF) at revision `6e2a164d70aa`).
 - **Upstream checkpoint:** Cloudflare/clef-flash at revision `f0b7d3cd6529`.
 - **Quantization:** Q4_K_M (ggml-org).
+- **Licence:** `apache-2.0`, as the Cloudflare/clef-flash model card states it.
 - **Features claimed:** decisions. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both ggml-org files against Cloudflare's own joint_schema_model.py at f0b7d3cd in float32 on the lab CPU lane (15 records, 29 questions; input ids and spans equal on every record; Runner --systemone at 686a31da, the GPU off): Q8_0 29 of 29 decisions, max |dprob| 0.012, mean 0.0027; Q4_K_M 26 of 29, max 0.199, mean 0.025, its three flips where the reference's top two are 0.020 to 0.066 apart. Record: docs/compat-reports/clef-flash-reference-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -994,6 +1006,7 @@ Text path only; the fidelity file of ggml-org's two: against Cloudflare's float3
 - **File:** `Clef-Flash-Q8_0.gguf` (sha256 `25f801e2a27610b0ccc0cb1558d7eda3d7a304e34e2c4a04e3079357ff7d906e`, 9,657,260,288 bytes, from [ggml-org/Clef-Flash-GGUF](https://huggingface.co/ggml-org/Clef-Flash-GGUF) at revision `6e2a164d70aa`).
 - **Upstream checkpoint:** Cloudflare/clef-flash at revision `f0b7d3cd6529`.
 - **Quantization:** Q8_0 (ggml-org).
+- **Licence:** `apache-2.0`, as the Cloudflare/clef-flash model card states it.
 - **Features claimed:** decisions. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both ggml-org files against Cloudflare's own joint_schema_model.py at f0b7d3cd in float32 on the lab CPU lane (15 records, 29 questions; input ids and spans equal on every record; Runner --systemone at 686a31da, the GPU off): Q8_0 29 of 29 decisions, max |dprob| 0.012, mean 0.0027; Q4_K_M 26 of 29, max 0.199, mean 0.025, its three flips where the reference's top two are 0.020 to 0.066 apart. Record: docs/compat-reports/clef-flash-reference-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -1018,6 +1031,7 @@ Text path only: a decision model served at /v1/systemone; requests with images o
 - **File:** `Clef-backbone-IQ3_S.gguf` (sha256 `dafa8752f756f21c941ffee1df6ab93fec499eaeddfea7e5ba5ba601abf747cb`, 12,419,329,216 bytes, from [Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF) at revision `9e9ce879b6cb`).
 - **Upstream checkpoint:** Cloudflare/clef at revision `0b331204bb13`.
 - **Quantization:** IQ3_S.
+- **Licence:** `apache-2.0`, as the Cloudflare/clef model card states it.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.
 - **Tier history:** Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
 
@@ -1029,6 +1043,7 @@ Text path only: the full Clef decision model in one file, the project's IQ3_S ba
 - **File:** `Clef-IQ3_S.clef.gguf` (sha256 `1e142e60b7067673971bbcbcb7af316409f530a24857770d30dae492932f0efe`, 12,675,711,328 bytes, from [Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF) at revision `0a24dd670d52`).
 - **Upstream checkpoint:** Cloudflare/clef at revision `0b331204bb13`.
 - **Quantization:** IQ3_S backbone, BF16 decision head.
+- **Licence:** `apache-2.0`, as the Cloudflare/clef model card states it.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull, and this repository is under the download bar. Published on the owner's direct request (2026-10-28) as the full decision model of the project's Clef IQ3_S files; its card leads with the measured shortfall against the house bar and reports decisions descriptively.
 - **Numerical anchor:** Against the BF16 parent as a native Clef GGUF with the same head, 2,000 decisions of LocalLLaMA/typed-decisions at 7189f46b: 92.25% same answer, accuracy 73.45% (parent 72.30%), mean total variation 0.0501; the published Runner 1.6.1 asset reproduced 50 of 50 recorded answers with max |dlogit| 3.2e-4 (the card's evidence files).
 - **Tier history:** Tier 2, maintained on report from 2026-10-28 ([log](#transition-log)).
@@ -1041,6 +1056,7 @@ Text path only: the QR-001e recovery adapter for the project's Clef IQ3_S backbo
 - **File:** `clef-IQ3_S-recovery-QR-001e.lora.F16.gguf` (sha256 `67e249a6d95c20e1128f4f1ceabde9b1c311988a1154766562c5c44e56380b64`, 233,523,840 bytes, from [Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF) at revision `9e9ce879b6cb`).
 - **Upstream checkpoint:** Cloudflare/clef at revision `0b331204bb13`.
 - **Quantization:** adapter (F16 LoRA tensors).
+- **Licence:** `apache-2.0`, as the Cloudflare/clef model card states it.
 - **Runs with:** [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)](#cloudflare-clef-iq3_s-recovered), loaded beside it with `--lora`; the smoke and its pin are of that composed run.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.
 - **Tier history:** Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
@@ -1053,6 +1069,7 @@ Text path only: the QR-001b recovery adapter for the project's Clef IQ3_S backbo
 - **File:** `clef-IQ3_S-recovery-QR-001b.lora.F16.gguf` (sha256 `2816dff4dbe0db506cf9c1b21d89f164a851f8a0b12fb253da3762a7928e1ae9`, 233,523,936 bytes, from [Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF) at revision `9e9ce879b6cb`).
 - **Upstream checkpoint:** Cloudflare/clef at revision `0b331204bb13`.
 - **Quantization:** adapter (F16 LoRA tensors).
+- **Licence:** `apache-2.0`, as the Cloudflare/clef model card states it.
 - **Runs with:** [Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)](#cloudflare-clef-iq3_s-recovered), loaded beside it with `--lora`; the smoke and its pin are of that composed run.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; a new repository has no downloads yet, and the card leads with the measured shortfall.
 - **Tier history:** Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
@@ -1069,6 +1086,7 @@ Unsloth's dynamic Q4_K_M of Qwen3.8-27B, text path: it passes the quant bar agai
 - **File:** `Qwen3.8-27B-UD-Q4_K_M.gguf` (sha256 `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`, 16,464,440,224 bytes, from [unsloth/Qwen3.8-27B-GGUF](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF) at revision `4ca720788d1e`).
 - **Upstream checkpoint:** Qwen/Qwen3.8-27B.
 - **Quantization:** UD-Q4_K_M (with 4 IQ3_S tensors).
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3.8-27B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Family: Qwen3.5-0.8B bf16 against Qwen's float32 reference, 100% margin-qualified top-1 (1.5.0 golden pass). This file: UD-Q4_K_M vs Q8_0 bar PASS (100 positions, mean KLD 0.0016, top-1 100%); tokenizer 0/721, template 21/21.
 - **Context tested:** not recorded.
@@ -1090,6 +1108,7 @@ Unsloth's dynamic Q4_K_M of Qwen3.8-27B, text path: it passes the quant bar agai
 Experimental: ISTA-DASLab's IQ3_S trunk of Qwen3.8-Flash-Next, the file the published MTP head was built for and the one the qwen4exp admission evidence measured; maintained on report, and run on every release only as that head's trunk in its composed smoke.
 
 - **File:** `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf` (sha256 `4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3`, 54,817,524,224 bytes, from [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) at revision `ed59f92082b1`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf` (sha256 `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113`, 28,800,138,432 bytes, from [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) at revision `ed59f92082b1`).
+- **Licence:** `qwen-community-1.0`, as the Qwen/Qwen3.8-Flash-Next model card states it.
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
 ### Gemma 4
@@ -1104,6 +1123,7 @@ Text path only: Google's quantization-aware Q4_0 release, its mmproj file not lo
 - **File:** `gemma-4-12b-it-qat-q4_0.gguf` (sha256 `93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b`, 6,975,879,296 bytes, from [google/gemma-4-12B-it-qat-q4_0-gguf](https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf) at revision `29d097773436`).
 - **Upstream checkpoint:** google/gemma-4-12B-it.
 - **Quantization:** Q4_0 (Google QAT).
+- **Licence:** `apache-2.0`, as the google/gemma-4-12B-it model card states it.
 - **Features claimed:** text, tools (gemma4). A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Family: gemma-4-E2B bf16 against Google's float32 reference (1.5.0 golden pass). This file: 4/6 greedy against llama.cpp (2026-08-05), agreement with another engine.
 - **Context tested:** not recorded.
@@ -1128,6 +1148,7 @@ Text path only: Google's quantization-aware Q4_0 release of the MoE model, its m
 - **File:** `gemma-4-26B_q4_0-it.gguf` (sha256 `3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d`, 14,439,363,584 bytes, from [google/gemma-4-26B-A4B-it-qat-q4_0-gguf](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) at revision `d1c082be9cf3`).
 - **Upstream checkpoint:** google/gemma-4-26B-A4B-it.
 - **Quantization:** Q4_0 (Google QAT).
+- **Licence:** `apache-2.0`, as the google/gemma-4-26B-A4B-it model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison is feasible and owed):** anchor: agreement with another engine, not fidelity. The smallest MoE member is this model (104 GB in float32, feasible on the lab CPU box and owed); llama.cpp agreement sits inside the documented routing-chaos KL floor.
 - **Context tested:** not recorded.
@@ -1152,6 +1173,7 @@ Text path only: ggml-org's post-training Q4_0 of Gemma 4 31B, not Google's QAT f
 - **File:** `gemma-4-31B-it-Q4_0.gguf` (sha256 `031dc1c5fa9c5a0abbf3c39c5173fb2af65f5ac2dc2a090268561d3c72dcd834`, 17,992,313,088 bytes, from [ggml-org/gemma-4-31B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF) at revision `3d47a7e680fb`).
 - **Upstream checkpoint:** google/gemma-4-31B-it.
 - **Quantization:** Q4_0 (ggml-org, post-training).
+- **Licence:** `apache-2.0`, as the google/gemma-4-31B-it model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Family: gemma-4-E2B bf16 against Google's float32 reference (1.5.0 golden pass). This file: 5/6 greedy against llama.cpp, 64/64 token-identical against llama.cpp on Metal (2026-09-01), agreement with another engine; a float32 run on the 31B (124 GB) is feasible on the lab CPU box and owed.
 - **Context tested:** not recorded.
@@ -1176,6 +1198,7 @@ Text path only: Google's QAT Q4_0 of Gemma 4 31B with one attention sublayer phy
 - **File:** `gemma-4-31B-it-attn48-removed-q4_0.gguf` (sha256 `d7eaef9a8c05d8ad5cc63e4b37767113498b6ec6a31863519f5399f12cdb3134`, 17,576,681,600 bytes, from [Joakimpalm-Zen/gemma-4-31B-it-attn48-removed-Q4_0-GGUF](https://huggingface.co/Joakimpalm-Zen/gemma-4-31B-it-attn48-removed-Q4_0-GGUF) at revision `c704744772b4`).
 - **Upstream checkpoint:** google/gemma-4-31B-it.
 - **Quantization:** Q4_0 (Google QAT), one attention sublayer removed.
+- **Licence:** `apache-2.0`, as the google/gemma-4-31B-it model card states it.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 454 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Against its parent, Google's QAT Q4_0: clean KLD 0.0223 on 44,413 held-out positions (2026-08-30, on the identical zeroed form). Family: gemma-4-E2B bf16 against Google's float32 reference.
@@ -1200,6 +1223,7 @@ Text path only: the smoke-test file from the quickstart; it fails the fidelity b
 - **File:** `gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf` (sha256 `16ffaa2ea568e7a0c9b5c6ddbd39a376879f9ac007861334974de39f4cc52e3f`, 2,631,015,904 bytes, from [Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF](https://huggingface.co/Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF) at revision `37c8fa438245`).
 - **Upstream checkpoint:** google/gemma-4-E2B-it.
 - **Quantization:** Q4_K_M/Q4_0 mix.
+- **Licence:** `apache-2.0`, as the google/gemma-4-E2B-it model card states it.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 552 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Family: gemma-4-E2B bf16 against Google's float32 reference, where Runner is the closer engine (1.5.0 golden pass); that pass's served row is a different file (q4_0 throughout), not this mix.
@@ -1226,6 +1250,7 @@ Text path only: Meta's own Q4_K_M, which passes the fidelity bar against the BF1
 - **File:** `Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf` (sha256 `4cc57c0f51040a226e5a72cc47b7613f7772950e460a665f7083de89f183f60e`, 16,756,683,904 bytes, from [meta-models/Muse-Glimmer-30B-GGUF](https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF) at revision `b44f1072cf75`).
 - **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
 - **Quantization:** Q4_K_M (Meta).
+- **Licence:** `apache-2.0`, as the meta-models/Muse-Glimmer-30B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The only member is 30B (120 GB in float32); the bar is measured against the BF16 parent (quant frontier report, 2026-08-20) and greedy against llama.cpp b10353.
 - **Context tested:** not recorded.
@@ -1250,6 +1275,7 @@ Text path only: Muse-Glimmer-30B with 4.75% of the decoder removed and healed, a
 - **File:** `Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf` (sha256 `103aa117dfce88974bd78e03ee6ca6601c720f01a1ec24ee1cfd0e5fe2f77ce6`, 15,686,266,304 bytes, from [Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q4_K-GGUF](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q4_K-GGUF) at revision `38f6284ec919`).
 - **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
 - **Quantization:** Q4_K.
+- **Licence:** `apache-2.0`, as the meta-models/Muse-Glimmer-30B model card states it.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 298 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The family's only member is 30B (120 GB in float32). Against the unmodified BF16 parent: 97.74% / 0.04810 on a held-out split.
@@ -1272,6 +1298,7 @@ Text path only: Muse-Glimmer-30B with 6.34% of the decoder removed (the FFN subl
 - **File:** `Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf` (sha256 `d7bb5c6f3b7170160322c684f338c0db630ea24ab09b896a6c97c8c415f58d4d`, 29,612,961,216 bytes, from [Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q8_0-GGUF](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-Q8_0-GGUF) at revision `e95fcd1a298c`).
 - **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
 - **Quantization:** Q8_0.
+- **Licence:** `apache-2.0`, as the meta-models/Muse-Glimmer-30B model card states it.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 339 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The family's only member is 30B (120 GB in float32). Against the unmodified BF16 parent: 98.34% / 0.03883 on a held-out split.
@@ -1294,6 +1321,7 @@ Text path only: the 6.34% surgical Muse-Glimmer-30B at Q4_K with retrained scale
 - **File:** `Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf` (sha256 `12a429483b18aefcfd9cdc41afb156f339d610be0fdd66fdaf5391e9df1cbb19`, 15,686,266,304 bytes, from [Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF) at revision `164d823e32a3`).
 - **Upstream checkpoint:** meta-models/Muse-Glimmer-30B.
 - **Quantization:** Q4_K, recovered scales.
+- **Licence:** `apache-2.0`, as the meta-models/Muse-Glimmer-30B model card states it.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 292 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. The family's only member is 30B (120 GB in float32). Against the unmodified BF16 parent: mean KLD 0.04949, margin-qualified top-1 97.90%.
@@ -1320,6 +1348,7 @@ IBM's official Q4_K_M of Granite 4.2 8B, text path: the granite42 tool protocol 
 - **File:** `granite-4.2-8b-Q4_K_M.gguf` (sha256 `16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311`, 5,347,917,952 bytes, from [ibm-granite/granite-4.2-8b-GGUF](https://huggingface.co/ibm-granite/granite-4.2-8b-GGUF) at revision `93f3f6a8938e`).
 - **Upstream checkpoint:** ibm-granite/granite-4.2-8b.
 - **Quantization:** Q4_K_M (IBM).
+- **Licence:** `apache-2.0`, as the ibm-granite/granite-4.2-8b model card states it.
 - **Features claimed:** text, tools (granite42). A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Family: granite-4.2-3B bf16 against IBM's float32 reference, 100% margin-qualified top-1 (1.5.0 golden pass). This file: Q4_K_M vs Q8_0 bar PASS (400 positions, mean KLD 0.0036); tokenizer 0/721, template 22/22.
 - **Context tested:** not recorded.
@@ -1341,6 +1370,7 @@ IBM's official Q8_0 of Granite 4.2 8B, text path: the reference sibling of the Q
 - **File:** `granite-4.2-8b-Q8_0.gguf` (sha256 `fb66ad5750680c77c76b9dc095961375f14fc88ba15fd5fc084ef6e6701bad77`, 9,345,613,952 bytes, from [ibm-granite/granite-4.2-8b-GGUF](https://huggingface.co/ibm-granite/granite-4.2-8b-GGUF) at revision `93f3f6a8938e`).
 - **Upstream checkpoint:** ibm-granite/granite-4.2-8b.
 - **Quantization:** Q8_0 (IBM).
+- **Licence:** `apache-2.0`, as the ibm-granite/granite-4.2-8b model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Family: granite-4.2-3B bf16 against IBM's float32 reference, 100% margin-qualified top-1 (1.5.0 golden pass).
 - **Context tested:** not recorded.
@@ -1366,6 +1396,7 @@ Arcee's Q8_0 of Trinity Nano Preview, text path, CPU only by admission: the one 
 - **File:** `Trinity-Nano-Preview-Q8_0.gguf` (sha256 `5fcc2428c325e8b2035d280ff28c4c659ea240ce317a9536f230acfc352b79d1`, 6,531,428,640 bytes, from [arcee-ai/Trinity-Nano-Preview-GGUF](https://huggingface.co/arcee-ai/Trinity-Nano-Preview-GGUF) at revision `2aa08593b792`).
 - **Upstream checkpoint:** arcee-ai/Trinity-Nano-Preview.
 - **Quantization:** Q8_0.
+- **Licence:** `openmdw-1.1`, as the arcee-ai/Trinity-Nano-Preview model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** This file against Arcee's float32 reference (1.5.0 golden pass, 2,000 positions): margin-qualified top-1 97.43%, mean KL 0.0626 (llama.cpp 97.80%, 0.0610); at bf16 both engines sit about 0.045 of mean KL from the publisher, a shared reproduction gap not yet explained.
 - **Context tested:** not recorded.
@@ -1391,6 +1422,7 @@ Qwen3-30B-A3B with attention Q8_0 and experts Q4_0, text path: it passes the fid
 - **File:** `Qwen3-30B-A3B-expq4_0-attnq8_0.gguf` (sha256 `df02efa815a74e6207f9e01f2d38272c1e2718bb23aec544709a02a2c7d5b206`, 17,988,417,024 bytes, from [Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF) at revision `6cdb710bcd55`).
 - **Upstream checkpoint:** Qwen/Qwen3-30B-A3B.
 - **Quantization:** Q8_0 attention / Q4_0 experts.
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3-30B-A3B model card states it.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 760 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. A float32 reference of the 30B (120 GB) is not run; the bar is against the byte-verified first-party Q8_0 (v2 top-1 99.50%, mean KLD 0.0345).
@@ -1415,6 +1447,7 @@ The base the published tool-use adapter was trained through and runs on, named b
 - **File:** `Qwen_Qwen3-4B-Q4_K_M.gguf` (sha256 `fbe1d5edd4ce802ae3ae7c7e4ab7d09789d697fdac1fc7929f8df4ca3c41bae3`, 2,497,280,960 bytes, from [bartowski/Qwen_Qwen3-4B-GGUF](https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF) at revision `cb76885dc66d`).
 - **Upstream checkpoint:** Qwen/Qwen3-4B at revision `1cfa9a720891`.
 - **Quantization:** Q4_K_M (bartowski).
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3-4B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Family: Qwen3-4B bf16 against Qwen's float32 reference (1.5.0 golden pass). This file: load, publisher tokenizer agreement and a chat answer at temperature 0 on the Metal laptop; no fidelity number of its own.
 - **Context tested:** 4096.
@@ -1439,6 +1472,7 @@ Qwen3-4B with the tool-use LoRA merged and written at Q8_0, text path: a qwen3 c
 - **File:** `merged-Q8_0.gguf` (sha256 `b9d21e525d91b20a1fc3437cf34c7ecfa03afda722d960b95bcfd113f2b7ea02`, 4,280,405,440 bytes, from [Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M) at revision `5902b309ee51`).
 - **Upstream checkpoint:** Qwen/Qwen3-4B.
 - **Quantization:** Q8_0.
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3-4B model card states it.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 639 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Family: Qwen3-4B bf16 against Qwen's float32 reference, 100% margin-qualified top-1 (1.5.0 golden pass; its served row is Qwen3-4B Q4_K_M, not this file).
@@ -1461,6 +1495,7 @@ The tool-use LoRA adapter for Qwen3-4B, served with --lora on the base its card 
 - **File:** `Qwen3-4B-ToolUse-LoRA.gguf` (sha256 `ea38f80c33d381c9aa62c874920d2fa058dd307e7186e9b7c347d782f35b88e4`, 66,094,752 bytes, from [Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M) at revision `5902b309ee51`).
 - **Upstream checkpoint:** Qwen/Qwen3-4B.
 - **Quantization:** adapter (F32/F16 LoRA tensors).
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3-4B model card states it.
 - **Runs with:** [Qwen3-4B](#qwen3-4b-q4_k_m-bartowski), loaded beside it with `--lora`; the smoke and its pin are of that composed run.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 639 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** adapters. A feature not listed is not claimed.
@@ -1486,6 +1521,7 @@ An expert-pruned Qwen3-Coder-30B-A3B (120 of 128 experts kept) at Q4_K_M, text p
 - **File:** `Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf` (sha256 `3ac8568224a15ea49db6affdd195ba48e8b2d7c6325c7849b9829381e89163a1`, 17,531,967,808 bytes, from [Joakimpalm-Zen/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF) at revision `3fd968c75417`).
 - **Upstream checkpoint:** Qwen/Qwen3-Coder-30B-A3B-Instruct.
 - **Quantization:** Q4_K_M, 120 experts.
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3-Coder-30B-A3B-Instruct model card states it.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 813 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. A float32 reference of the 30B is not run; the bars are against the unpruned parent.
@@ -1512,6 +1548,7 @@ A plain Q8_0 of NVIDIA's Nemotron-Nano-9B-v2 (Mamba-2 hybrid), text path: 100% m
 - **File:** `NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf` (sha256 `d3224286484df1ae79c2b74d2a0913e1bbb5a364b0dd7c1061c95fa97ee608d7`, 9,458,093,632 bytes, from [Joakimpalm-Zen/NVIDIA-Nemotron-Nano-9B-v2-Q8_0-GGUF](https://huggingface.co/Joakimpalm-Zen/NVIDIA-Nemotron-Nano-9B-v2-Q8_0-GGUF) at revision `3b6a1cf5035f`).
 - **Upstream checkpoint:** nvidia/NVIDIA-Nemotron-Nano-9B-v2.
 - **Quantization:** Q8_0.
+- **Licence:** `nvidia-open-model-license`, as the nvidia/NVIDIA-Nemotron-Nano-9B-v2 model card states it.
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 496 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** NVIDIA's float32 reference (golden pass 2026-09-07, 100 positions): margin-qualified top-1 100% at bf16 and Q8_0; Runner's mean KL 0.0041 at Q8_0 against llama.cpp's 0.0054. CPU and CUDA greedy byte-identical on this file.
@@ -1536,6 +1573,7 @@ A plain Q8_0 of NVIDIA's Nemotron-Nano-9B-v2 (Mamba-2 hybrid), text path: 100% m
 A 32-to-30-expert derivative of gpt-oss-20b that does not pass the current fidelity bar; its card leads with the measured status and it stays published as a disclosed near-miss.
 
 - **File:** `gpt-oss-20b-keep30-MXFP4.gguf` (sha256 `e6b884b3de28a78858097bbee25c9c503975992a2bbc8943e0ef2c4bbbc14312`, 11,472,833,184 bytes, from [Joakimpalm-Zen/gpt-oss-20b-keep30-MXFP4-GGUF](https://huggingface.co/Joakimpalm-Zen/gpt-oss-20b-keep30-MXFP4-GGUF) at revision `d6bfb80ce279`).
+- **Licence:** `apache-2.0`, as the openai/gpt-oss-20b model card states it.
 - **Published below Tier 1:** Policy decision 2026-10-22: a published file may be Tier 2 when its card already leads with its measured shortfall.
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
@@ -1650,6 +1688,7 @@ Text path, the publisher's Q8_0, the fidelity file of the two: against the publi
 - **File:** `MiniCPM5-2B-Q8_0.gguf` (sha256 `c5415f8989bf88a8288f1b55a3cc371af53c07b0faa220a63bd7a990cfaba078`, 2,679,710,688 bytes, from [openbmb/MiniCPM5-2B-GGUF](https://huggingface.co/openbmb/MiniCPM5-2B-GGUF) at revision `2079a22f3bea`).
 - **Upstream checkpoint:** openbmb/MiniCPM5-2B at revision `f97400052a43`.
 - **Quantization:** Q8_0 (publisher).
+- **Licence:** `apache-2.0`, as the openbmb/MiniCPM5-2B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against openbmb's BF16 parent computed in float32 on the CPU (transformers' own llama code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0033 mean KLD / 98.0% top-1 / 100% margin-qualified, Q4_K_M 0.102 / 86.0% / 94.6%; Q4_K_M against Q8_0 from the same score files 0.098 / 85.3%. Tokenizer 0/721 against the publisher's tokenizer.json at f9740005, template conformance 23/23 in text and tokens. Record: docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md.
 - **Context tested:** 4096.
@@ -1672,6 +1711,7 @@ Text path, the publisher's Q4_K_M, which fails the fidelity bar: against the pub
 - **File:** `MiniCPM5-2B-Q4_K_M.gguf` (sha256 `ec2d5801640099e97d8d7e8003ad4d81f336e757811f03a26173dddf386602fd`, 1,561,318,368 bytes, from [openbmb/MiniCPM5-2B-GGUF](https://huggingface.co/openbmb/MiniCPM5-2B-GGUF) at revision `2079a22f3bea`).
 - **Upstream checkpoint:** openbmb/MiniCPM5-2B at revision `f97400052a43`.
 - **Quantization:** Q4_K_M (publisher).
+- **Licence:** `apache-2.0`, as the openbmb/MiniCPM5-2B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against openbmb's BF16 parent computed in float32 on the CPU (transformers' own llama code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0033 mean KLD / 98.0% top-1 / 100% margin-qualified, Q4_K_M 0.102 / 86.0% / 94.6%; Q4_K_M against Q8_0 from the same score files 0.098 / 85.3%. Tokenizer 0/721 against the publisher's tokenizer.json at f9740005, template conformance 23/23 in text and tokens. Record: docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md.
 - **Context tested:** 4096.
@@ -1698,6 +1738,7 @@ Text path, LiquidAI's own Q8_0 of LFM2.5-1.2B-Instruct, the fidelity file of the
 - **File:** `LFM2.5-1.2B-Instruct-Q8_0.gguf` (sha256 `f6b981dcb86917fa463f78a362320bd5e2dc45445df147287eedb85e5a30d26a`, 1,246,253,888 bytes, from [LiquidAI/LFM2.5-1.2B-Instruct-GGUF](https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF) at revision `8ed288026e23`).
 - **Upstream checkpoint:** LiquidAI/LFM2.5-1.2B-Instruct at revision `0f604ada3f76`.
 - **Quantization:** Q8_0 (publisher).
+- **Licence:** `lfm1.0`, as the LiquidAI/LFM2.5-1.2B-Instruct model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against LiquidAI's BF16 parent computed in float32 on the CPU (transformers 5.22, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files at d66f0f7a, the pre-rebase form of 67e75e8e): Q8_0 0.0042 mean KLD / 99.0% top-1 / 100% margin-qualified, Q4_K_M 0.115 / 85.7% / 94.7%; llama.cpp (3bb63cb) on the same Q4_K_M against the same reference 0.119 / 84.3%. Tokenizer 0/721 against the publisher's tokenizer.json at 0f604ada, template conformance 23/23 in text and tokens against the publisher's chat_template.jinja. Record: docs/compat-reports/lfm2.5-reference-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -1720,6 +1761,7 @@ Text path, LiquidAI's own Q4_K_M of LFM2.5-1.2B-Instruct, which fails the fideli
 - **File:** `LFM2.5-1.2B-Instruct-Q4_K_M.gguf` (sha256 `b1b3de114215d9507409a662a501a631095a479a419584e8a2ded6304b19b4f5`, 730,895,168 bytes, from [LiquidAI/LFM2.5-1.2B-Instruct-GGUF](https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF) at revision `8ed288026e23`).
 - **Upstream checkpoint:** LiquidAI/LFM2.5-1.2B-Instruct at revision `0f604ada3f76`.
 - **Quantization:** Q4_K_M (publisher).
+- **Licence:** `lfm1.0`, as the LiquidAI/LFM2.5-1.2B-Instruct model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against LiquidAI's BF16 parent computed in float32 on the CPU (transformers 5.22, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files at d66f0f7a, the pre-rebase form of 67e75e8e): Q8_0 0.0042 mean KLD / 99.0% top-1 / 100% margin-qualified, Q4_K_M 0.115 / 85.7% / 94.7%; llama.cpp (3bb63cb) on the same Q4_K_M against the same reference 0.119 / 84.3%. Tokenizer 0/721 against the publisher's tokenizer.json at 0f604ada, template conformance 23/23 in text and tokens against the publisher's chat_template.jinja. Record: docs/compat-reports/lfm2.5-reference-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -1744,6 +1786,7 @@ Text path, LiquidAI's own Q4_K_M of LFM2.5-24B-A2B, which fails the fidelity bar
 - **File:** `LFM2.5-24B-A2B-Q4_K_M.gguf` (sha256 `d3334405b96228eb9908cdebb5c6194908f2da64282bda852afc3a3910c64e7d`, 14,526,258,464 bytes, from [LiquidAI/LFM2.5-24B-A2B-GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) at revision `0912d33141f7`).
 - **Upstream checkpoint:** LiquidAI/LFM2.5-24B-A2B at revision `3fcfdbfa1a1b`.
 - **Quantization:** Q4_K_M (publisher).
+- **Licence:** `lfm1.0`, as the LiquidAI/LFM2.5-24B-A2B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** This file: publisher tokenizer agreement (0 of 721 corpus strings, 0 of the gold corpus's 107 passages and 0 vocabulary entries differ from the 24B's tokenizer.json at 3fcfdbfa, byte-identical to the 8B-A1B's), template conformance 32 of 32 in text and tokens against its chat_template.jinja, and a chat answer at temperature 0 on the lab CPU lane with the GPU hidden. Both publisher quantizations against LiquidAI's BF16 parent with float32 arithmetic cast at use per decoder block on the lab CPU lane (transformers 5.16.1, gold-logits.py --upcast-at-use, 40 blocks, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files at 025fd5ce): Q8_0 0.0297 mean KLD / 91.3% top-1 / 99.1% margin-qualified, Q4_K_M 0.144 / 84.0% / 90.5%. The shared lfm2moe path was cleared on the 8B-A1B (Runner on its BF16 GGUF 0.0078), so no file-or-engine check is repeated here. The lfm2moe arithmetic is also checked against transformers' float32 on a converted random model (docs/compat-reports/lfm2.5-reference-2026-10-30/README.md). Record: docs/compat-reports/lfm2.5-24b-a2b-reference-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -1768,6 +1811,7 @@ Text path, LiquidAI's own Q8_0 of LFM2.5-350M, the fidelity file of the publishe
 - **File:** `LFM2.5-350M-Q8_0.gguf` (sha256 `be036a757295e550098b85e13f6af2735d0fa73b41e1156a40c7d8e8e32a5766`, 379,217,632 bytes, from [LiquidAI/LFM2.5-350M-GGUF](https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF) at revision `657e078c9408`).
 - **Upstream checkpoint:** LiquidAI/LFM2.5-350M at revision `9e6c6ccf47cd`.
 - **Quantization:** Q8_0 (publisher).
+- **Licence:** `lfm1.0`, as the LiquidAI/LFM2.5-350M model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against LiquidAI's BF16 parent computed in float32 on the CPU (transformers 5.22, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files at d66f0f7a, the pre-rebase form of 67e75e8e): Q8_0 0.0081 mean KLD / 95.3% top-1 / 100% margin-qualified, Q4_K_M 0.874 / 54.3% / 61.9%; llama.cpp (3bb63cb) on the same Q4_K_M against the same reference 0.924 / 53.0%. Tokenizer 0/721 against the publisher's tokenizer.json, template conformance 23/23 in text and tokens against the publisher's chat_template.jinja (the 350M's is byte-identical to the 1.2B-Instruct's). Record: docs/compat-reports/lfm2.5-reference-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -1790,6 +1834,7 @@ Text path, LiquidAI's own Q4_K_M of LFM2.5-350M, which fails the fidelity bar: a
 - **File:** `LFM2.5-350M-Q4_K_M.gguf` (sha256 `7e6f72643caafc9a68256686638c4d7916f2cec76d1df478d4c3ddcd95a6aed4`, 229,312,224 bytes, from [LiquidAI/LFM2.5-350M-GGUF](https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF) at revision `657e078c9408`).
 - **Upstream checkpoint:** LiquidAI/LFM2.5-350M at revision `9e6c6ccf47cd`.
 - **Quantization:** Q4_K_M (publisher).
+- **Licence:** `lfm1.0`, as the LiquidAI/LFM2.5-350M model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against LiquidAI's BF16 parent computed in float32 on the CPU (transformers 5.22, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files at d66f0f7a, the pre-rebase form of 67e75e8e): Q8_0 0.0081 mean KLD / 95.3% top-1 / 100% margin-qualified, Q4_K_M 0.874 / 54.3% / 61.9%; llama.cpp (3bb63cb) on the same Q4_K_M against the same reference 0.924 / 53.0%. Tokenizer 0/721 against the publisher's tokenizer.json, template conformance 23/23 in text and tokens against the publisher's chat_template.jinja (the 350M's is byte-identical to the 1.2B-Instruct's). Record: docs/compat-reports/lfm2.5-reference-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -1814,6 +1859,7 @@ Text path, LiquidAI's own Q4_K_M of LFM2.5-8B-A1B, which fails the fidelity bar 
 - **File:** `LFM2.5-8B-A1B-Q4_K_M.gguf` (sha256 `4923ec14f06b968b74d663e5949867d2d9c3bf13a20b8be1a9f9af39989b2bb0`, 5,155,564,768 bytes, from [LiquidAI/LFM2.5-8B-A1B-GGUF](https://huggingface.co/LiquidAI/LFM2.5-8B-A1B-GGUF) at revision `49c148317070`).
 - **Upstream checkpoint:** LiquidAI/LFM2.5-8B-A1B at revision `5dd22602c2e9`.
 - **Quantization:** Q4_K_M (publisher).
+- **Licence:** `lfm1.0`, as the LiquidAI/LFM2.5-8B-A1B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** This file: load, publisher tokenizer agreement (0 of 721 corpus strings, 0 of the gold corpus's 107 passages and 0 of its vocabulary entries differ from tokenizer.json at 5dd22602 with runner #479 and #482), template conformance in text and tokens against the template the GGUF carries, and a chat answer at temperature 0 on the Metal laptop's CPU. Both publisher quantizations against LiquidAI's BF16 parent computed in float32 on the lab CPU lane (transformers 5.16.1, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files at bee195dd): Q8_0 0.0443 mean KLD / 93.7% top-1 / 97.6% margin-qualified, Q4_K_M 0.237 / 75.3% / 85.4%. File or engine, against the same gold: Runner on the publisher's BF16 GGUF 0.0078 / 97.3% / 100%, llama.cpp (36a0e2f) on the same Q8_0 0.0572 / 90.0% / 96.7%. The lfm2moe arithmetic is also checked against transformers' float32 on a converted random model (docs/compat-reports/lfm2.5-reference-2026-10-30/README.md). Record: docs/compat-reports/lfm2.5-8b-a1b-reference-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -1840,6 +1886,7 @@ Text path, bartowski's Q4_K_M of XiaomiMiMo's Qwen3.5-9B distill, which fails th
 - **File:** `MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf` (sha256 `4bca6f18c73f72270c7a20c2ea2bea581de8246e318714277120369d34048c81`, 5,841,049,120 bytes, from [bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF](https://huggingface.co/bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF) at revision `4371da10c84f`).
 - **Upstream checkpoint:** XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B at revision `1f09ddcc1a0e`.
 - **Quantization:** Q4_K_M (bartowski).
+- **Licence:** `mit`, as the XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json at 1f09ddcc, read with the qwen2 split the publisher's tokenizer uses), template conformance 23 of 23 in text and tokens against the publisher's chat_template.jinja (the GGUF carries it byte for byte), and a chat answer at temperature 0 on the Metal laptop's CPU. Both bartowski files against XiaomiMiMo's BF16 checkpoint computed in float32 on the lab CPU lane (transformers 5.16.1, gold-logits.py at fcd461ef, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files at f5b25f0a): Q4_K_M 0.0717 mean KLD / 91.7% top-1 / 98.2% margin-qualified, FAIL on the mean; Q8_0 0.0075 / 99.0% / 100%. Quant bar against the Q8_0 from the same score files: 0.064 mean KLD (median 0.022), 92.0% top-1, 97.7% margin-qualified, FAIL on the mean. No cross-engine number. Record: docs/compat-reports/mimo-v2.6-distill-qwen-9b-2026-10-29/README.md.
 - **Context tested:** 4096.
@@ -1866,6 +1913,7 @@ Text path, XHToken's own Q4_K_M of Spark X2.5 4B, which fails the fidelity bar: 
 - **File:** `Spark-X2.5-4B-Q4_K_M.gguf` (sha256 `adfcfa19a4ed6a5985da8bf565fe15f8e1a7e131d79bae2d19d48d1c40109428`, 2,600,224,352 bytes, from [XHToken/Spark-X2.5-4B-GGUF](https://huggingface.co/XHToken/Spark-X2.5-4B-GGUF) at revision `9826e0be84e6`).
 - **Upstream checkpoint:** XHToken/Spark-X2.5-4B at revision `0bcb35678590`.
 - **Quantization:** Q4_K_M (publisher).
+- **Licence:** `apache-2.0`, as the XHToken/Spark-X2.5-4B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json, identical across X2.5 and X2.6), template conformance 23 of 23 in text and tokens against the publisher's chat_template.jinja, and a chat answer at temperature 0 on the Metal laptop's CPU. The architecture is checked against llama.cpp on the X2.6 1.7B Q8_0 (the family's smallest member): 0.0065 mean KLD, 96.0% top-1, 100% margin-qualified over 200 raw-completion positions on the CPU; agreement with another engine, not fidelity. Both XHToken files (the GGUF repository at 9826e0be) against XHToken's BF16 checkpoint at 0bcb3567 computed in float32 on the lab CPU lane (the publisher's modeling code, transformers 4.57.1, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files): Q4_K_M 0.1136 mean KLD / 87.0% top-1 / 95.6% margin-qualified, FAIL; Q8_0 0.0044 / 98.7% / 100%. Record: docs/compat-reports/spark-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -1890,6 +1938,7 @@ Text path, XHToken's own Q4_K_M of Spark X2.6 4B, which fails the fidelity bar: 
 - **File:** `Spark-X2.6-4B-Q4_K_M.gguf` (sha256 `91cb2811aebb47ac916aa619d27d4cdd7f4143106b7917accb8ead4cd7f5cbd9`, 3,543,441,312 bytes, from [XHToken/Spark-X2.6-4B-GGUF](https://huggingface.co/XHToken/Spark-X2.6-4B-GGUF) at revision `0e8aa39a3406`).
 - **Upstream checkpoint:** XHToken/Spark-X2.6-4B at revision `d1b5f2607110`.
 - **Quantization:** Q4_K_M (publisher).
+- **Licence:** `apache-2.0`, as the XHToken/Spark-X2.6-4B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** This file: load, publisher tokenizer agreement (0 of 721 corpus strings differ from tokenizer.json, identical across X2.5 and X2.6), template conformance 23 of 23 in text and tokens against the publisher's chat_template.jinja, and a chat answer at temperature 0 on the Metal laptop's CPU. The architecture is checked against llama.cpp on the X2.6 1.7B Q8_0 (the family's smallest member): 0.0065 mean KLD, 96.0% top-1, 100% margin-qualified over 200 raw-completion positions on the CPU; agreement with another engine, not fidelity. Both XHToken files (the GGUF repository at 0e8aa39a) against XHToken's BF16 checkpoint at d1b5f260 computed in float32 on the lab CPU lane (the publisher's modeling code, transformers 4.57.1, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files): Q4_K_M 0.113 mean KLD / 87.0% top-1 / 93.6% margin-qualified, FAIL; Q8_0 0.0132 / 98.7% / 100%. Record: docs/compat-reports/spark-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -1916,6 +1965,7 @@ Text path, IFM's own Q8_0 of K2-Horizon 0.9B, the fidelity file of the publisher
 - **File:** `K2-Horizon-1B-Q8_0.gguf` (sha256 `741fb9ad263956c003883cb7caddeb14b4dfb9b4b67b5414ad12967e965dd547`, 1,148,614,016 bytes, from [IFM/K2-Horizon-0.9B-GGUF](https://huggingface.co/IFM/K2-Horizon-0.9B-GGUF) at revision `118965081cf1`).
 - **Upstream checkpoint:** IFM/K2-Horizon-0.9B at revision `d50881f4f8dc`.
 - **Quantization:** Q8_0 (publisher).
+- **Licence:** `apache-2.0`, as the IFM/K2-Horizon-0.9B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against IFM's BF16 parent computed in float32 on the CPU (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0037 mean KLD / 97.3% top-1 / 100% margin-qualified, Q4_K_M 0.108 / 81.7% / 97.1%; Q4_K_M against Q8_0 from the same score files 0.098 / 83.3%. Tokenizer 0/721 against the publisher's tokenizer.json at d50881f4, template conformance 23/23 in text and tokens against the template the GGUF carries, its 44-case tool-schema torture set byte for byte. Record: docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -1938,6 +1988,7 @@ Text path, IFM's own Q4_K_M of K2-Horizon 0.9B, which fails the fidelity bar: ag
 - **File:** `K2-Horizon-1B-Q4_K_M.gguf` (sha256 `78bff592aeba235c767c93a0bda5870d5a4a8dca21c2a2d502930dd3078c79f2`, 666,184,064 bytes, from [IFM/K2-Horizon-0.9B-GGUF](https://huggingface.co/IFM/K2-Horizon-0.9B-GGUF) at revision `118965081cf1`).
 - **Upstream checkpoint:** IFM/K2-Horizon-0.9B at revision `d50881f4f8dc`.
 - **Quantization:** Q4_K_M (publisher).
+- **Licence:** `apache-2.0`, as the IFM/K2-Horizon-0.9B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against IFM's BF16 parent computed in float32 on the CPU (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0037 mean KLD / 97.3% top-1 / 100% margin-qualified, Q4_K_M 0.108 / 81.7% / 97.1%; Q4_K_M against Q8_0 from the same score files 0.098 / 83.3%. Tokenizer 0/721 against the publisher's tokenizer.json at d50881f4, template conformance 23/23 in text and tokens against the template the GGUF carries, its 44-case tool-schema torture set byte for byte. Record: docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -1962,6 +2013,7 @@ Text path, IFM's own Q8_0 of K2-Horizon 7B, the fidelity file of the publisher's
 - **File:** `K2-Horizon-7B-Q8_0.gguf` (sha256 `5a98a289aba5c8c99ef05c9261287f19e8f586fd679bab45b632eb86b47809bf`, 9,573,964,160 bytes, from [IFM/K2-Horizon-7B-GGUF](https://huggingface.co/IFM/K2-Horizon-7B-GGUF) at revision `7a75dbda05e3`).
 - **Upstream checkpoint:** IFM/K2-Horizon-7B at revision `4622f94a6632`.
 - **Quantization:** Q8_0 (publisher).
+- **Licence:** `apache-2.0`, as the IFM/K2-Horizon-7B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against IFM's BF16 parent computed in float32 on the lab CPU lane (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, BOS native, the Runner sides from CPU score files at 5cc154e2): Q8_0 0.0159 mean KLD / 95.0% top-1 / 100% margin-qualified, Q4_K_M 0.1225 / 84.3% / 95.8%. Tokenizer 0/721 against the publisher's tokenizer.json at 4622f94a, template conformance as the 0.9B's (the same template). Record: docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -1984,6 +2036,7 @@ Text path, IFM's own Q4_K_M of K2-Horizon 7B, which fails the fidelity bar: agai
 - **File:** `K2-Horizon-7B-Q4_K_M.gguf` (sha256 `eb89c15a0ae9712be2ee462bf43802de14200f20f93b73da6eb68c2ebdd28e4e`, 5,592,217,984 bytes, from [IFM/K2-Horizon-7B-GGUF](https://huggingface.co/IFM/K2-Horizon-7B-GGUF) at revision `7a75dbda05e3`).
 - **Upstream checkpoint:** IFM/K2-Horizon-7B at revision `4622f94a6632`.
 - **Quantization:** Q4_K_M (publisher).
+- **Licence:** `apache-2.0`, as the IFM/K2-Horizon-7B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both publisher files against IFM's BF16 parent computed in float32 on the lab CPU lane (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, BOS native, the Runner sides from CPU score files at 5cc154e2): Q8_0 0.0159 mean KLD / 95.0% top-1 / 100% margin-qualified, Q4_K_M 0.1225 / 84.3% / 95.8%. Tokenizer 0/721 against the publisher's tokenizer.json at 4622f94a, template conformance as the 0.9B's (the same template). Record: docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -2010,6 +2063,7 @@ Text path, RecursiveSI's own Q4_1 of flint (39.8B, mixture of experts): it loads
 - **File:** `flint-int4-q4_1.gguf` (sha256 `43c07baccdba42eb7528a9630ee15699b1942c297291dc1b39a061f508ee1a4b`, 25,992,966,976 bytes, from [RecursiveSI/flint-int4-gguf](https://huggingface.co/RecursiveSI/flint-int4-gguf) at revision `9c47151036bc`).
 - **Upstream checkpoint:** RecursiveSI/flint at revision `2a247be0c0ae`.
 - **Quantization:** Q4_1 (publisher).
+- **Licence:** `apache-2.0`, as the RecursiveSI/flint model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine on the publisher's file, not fidelity: Runner against mainline llama.cpp 36a0e2f on this Q4_1, both on the CPU of the lab CPU lane, 0.028 mean KLD, 90.0% top-1, 99.0% margin-qualified, 0.924 top-8 overlap over 200 raw-completion positions. A float32 reference (about 160 GB) is not feasible on any machine this project runs; the architecture's arithmetic is checked against transformers' own flint in float32 on a converted random model. Tokenizer 0/721 against the publisher's tokenizer.json at 2a247be0, template conformance 23 of 23 in text and tokens against its chat_template.jinja. Record: docs/compat-reports/flint-2026-10-30/README.md.
 - **Context tested:** 4096.
@@ -2034,6 +2088,7 @@ Text path, bartowski's standard Q4_K_M of Qwen's Qwen3.6-35B-A3B, which passes t
 - **File:** `Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf` (sha256 `b46fedd33e0bfb0cae308aa3c158d0a4b2c4a1d2185a1ed6f093cdaf39064772`, 22,285,080,192 bytes, from [bartowski/Qwen_Qwen3.6-35B-A3B-GGUF](https://huggingface.co/bartowski/Qwen_Qwen3.6-35B-A3B-GGUF) at revision `5c2410d71524`).
 - **Upstream checkpoint:** Qwen/Qwen3.6-35B-A3B at revision `995ad96eacd9`.
 - **Quantization:** Q4_K_M (bartowski).
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3.6-35B-A3B model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both bartowski files against Qwen's BF16 parent at 995ad96e computed in float32 on the CPU (transformers 5.16.1 Qwen3_5MoeForCausalLM, float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files at a9eaca5f): Q4_K_M 0.0475 mean KLD / 89.0% top-1 / 97.2% margin-qualified, Q8_0 0.0349 / 94.7% / 99.1%. Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against Qwen's tokenizer.json, template conformance 23/23 in text and tokens against the file's own chat_template.jinja (the repository's bytes). Record: docs/compat-reports/qwen3.6-35b-a3b-reference-2026-10-31/README.md.
 - **Context tested:** 4096.
@@ -2108,6 +2163,7 @@ Not validated: the granite architecture is admitted and IBM's official GGUF exis
 Not validated: the file loads and its template conforms, but the tool gate, a pinned output and a device record are missing.
 
 - **File:** `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf` (sha256 `61f87e75974e4b535dcdf9aad056541a9514f1dfa4538b463b081d19b7a00e3c`, 18,898,091,584 bytes, from [ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF](https://huggingface.co/ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF) at revision `8cd082170ed3`).
+- **Licence:** `openmdw-1.1`, as the nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 model card states it.
 - **Numerical anchor:** anchor: agreement with another engine, not fidelity. The family's smallest member is 30B; 4/5 greedy against llama.cpp.
 - **Missing for Tier 1:** Tool gate, pinned output, device record, and the another-engine label.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).

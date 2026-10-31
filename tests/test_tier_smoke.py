@@ -61,6 +61,7 @@ def world(tmp_path):
             "id": "toy-q8_0", "model": "Toy", "family": "Toy", "tier": "tier1",
             "claim": "A toy Tier 1 row.", "architecture": "llama",
             "upstream": {"checkpoint": "toy/toy", "revision": None},
+            "licence": {"id": "apache-2.0", "from": "toy/toy"},
             "files": [{"name": "toy-Q8_0.gguf", "sha256": sha,
                        "bytes": model.stat().st_size}],
             "envelope": {"features": ["text"], "fp32_reference": "measured",
