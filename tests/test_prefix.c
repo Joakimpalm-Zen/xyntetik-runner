@@ -27,6 +27,7 @@
 #include <windows.h>
 #endif
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,15 +40,51 @@ static void ck(int cond, const char *what) {
     else        fprintf(stderr, "ok: %s\n", what);
 }
 
-enum { CTX = 96, BATCH = 4 };
+enum { CTX = 96, BATCH_MAX = 64 };
+static int g_batch = 4;   // the prefill chunk; make test runs 4 and 64
+
+// A reused (forked or rewound) prefix's logits against a cold prefill's.
+// Bit-identity holds only where the two runs put each row in a chunk of the
+// same geometry, on any backend: a row's arithmetic can depend on its chunk's
+// width (the CPU's batched dots on some hosts, MANUAL --record; on Metal the
+// GEMM tiles from 4 rows, the identity matvec under that). So the CPU at
+// chunk 4, this fixture's geometry, is held bitwise, and every other run
+// (chunk 64 on any backend, a device at any chunk) within a bound: mean
+// |dlogit| as a fraction of the logit range, PREFIX_LIMIT (else GPU_ID_LIMIT,
+// else 2e-3). make test sets each backend's measured one. Until 2026-10-31
+// this test ran at chunk 4 only, which hid that bitwise reuse did not hold
+// at real chunk sizes on Metal, x86 or arm64 (R3.25).
+static void ck_logits(const model_t *m, const float *got, const float *want, const char *what) {
+    const bool bitwise = !m->gpu && g_batch == 4;
+    if (!got || !want) { ck(0, what); return; }
+    int n = m->n_vocab, diffs = 0;
+    double dev = 0, lo = want[0], hi = want[0];
+    for (int i = 0; i < n; i++) {
+        if (got[i] != want[i]) diffs++;
+        dev += fabs((double)got[i] - want[i]);
+        if (want[i] < lo) lo = want[i];
+        if (want[i] > hi) hi = want[i];
+    }
+    if (bitwise) { ck(diffs == 0, what); return; }
+    const char *e = getenv("PREFIX_LIMIT");
+    if (!e || !*e) e = getenv("GPU_ID_LIMIT");
+    double limit = e && *e ? strtod(e, NULL) : 2e-3;
+    double frac = hi > lo ? dev / n / (hi - lo) : 1e9;
+    char line[256];
+    snprintf(line, sizeof line, "%s (%s, chunk %d: %d differ, %.3g of range, limit %g)",
+             what, m->gpu ? "device" : "cpu", g_batch, diffs, frac, limit);
+    ck(frac <= limit, line);
+}
 
 static model_params base_params(void) {
     model_params p;
     memset(&p, 0, sizeof(p));
-    p.gpu_mode  = GPU_AUTO;
+    // TEST_PREFIX_CPU=1 holds the CPU path on a GPU build (the residue
+    // measurement for the chunk-64 bound)
+    p.gpu_mode  = getenv("TEST_PREFIX_CPU") ? GPU_OFF : GPU_AUTO;
     p.n_threads = 1;
     p.n_ctx     = CTX;
-    p.n_batch   = BATCH;
+    p.n_batch   = g_batch;
     return p;
 }
 
@@ -93,9 +130,9 @@ static void test_hist_tracks_kv_on_overflow(void) {
     model_params p = base_params();
     if (!slot_open(&s, &p)) { ck(0, "load model"); return; }
 
-    int32_t a[CTX], b[CTX + BATCH * 3];
+    int32_t a[CTX], b[CTX + BATCH_MAX * 3];
     fill_tokens(a, CTX, s.m.n_vocab, 1);
-    fill_tokens(b, CTX + BATCH * 3, s.m.n_vocab, 2);
+    fill_tokens(b, CTX + g_batch * 3, s.m.n_vocab, 2);
 
     engine_reset(&s.e);
     ck(engine_feed(&s.e, a, CTX) != NULL, "a full-context feed succeeds");
@@ -103,7 +140,7 @@ static void test_hist_tracks_kv_on_overflow(void) {
 
     // now a run that cannot fit: some of it is fed, then the feed fails
     engine_reset(&s.e);
-    ck(engine_feed(&s.e, b, CTX + BATCH * 3) == NULL, "an oversized feed fails");
+    ck(engine_feed(&s.e, b, CTX + g_batch * 3) == NULL, "an oversized feed fails");
     ck(s.e.pos > 0, "the batches that fitted were still fed");
 
     bool coherent = true;
@@ -132,7 +169,7 @@ static void test_abandoned_step_drops_its_row(void) {
         return;
     }
 
-    // N is a multiple of BATCH so the continuation's last chunk covers the same
+    // N is a multiple of the default chunk (4) so the continuation's last chunk covers the same
     // positions in both instances: this is a KV claim, not a batch-shape one.
     enum { N = 20 };
     int32_t prompt[N + 2];
@@ -160,10 +197,7 @@ static void test_abandoned_step_drops_its_row(void) {
     float *wl = engine_feed(&warm.e, prompt + keep, N + 2 - keep);
     engine_reset(&cold.e);
     float *cl = engine_feed(&cold.e, prompt, N + 2);
-    int diffs = (!wl || !cl) ? -1 : 0;
-    if (wl && cl)
-        for (int i = 0; i < warm.m.n_vocab; i++) if (wl[i] != cl[i]) diffs++;
-    ck(diffs == 0, "a rewind after an abandoned step matches a cold prefill");
+    ck_logits(&warm.m, wl, cl, "a rewind after an abandoned step matches a cold prefill");
 
     slot_close(&warm);
     slot_close(&cold);
@@ -214,10 +248,7 @@ static void test_fork_is_bit_identical(void) {
     float *fl = engine_feed(&forked.e, prompt + r.keep, SHARED + TAIL - r.keep);
     ck(fl != NULL, "the forked instance feeds the remaining tail");
 
-    int diffs = 0;
-    for (int i = 0; i < forked.m.n_vocab; i++)
-        if (ref[i] != fl[i]) diffs++;
-    ck(diffs == 0, "forked logits are bit-identical to a cold full prefill");
+    ck_logits(&forked.m, fl, ref, "forked logits match a cold full prefill");
 
     // hist must describe the forked rows too, or the next request's rewind is
     // back to trusting a lie
@@ -242,9 +273,7 @@ static void test_fork_is_bit_identical(void) {
         float *pl = engine_feed(&part.e, other + pr.keep,
                                 SHARED + TAIL - pr.keep);
         float *c2 = engine_feed(&cold2.e, other, SHARED + TAIL);
-        int d2 = 0;
-        for (int i = 0; i < part.m.n_vocab; i++) if (pl[i] != c2[i]) d2++;
-        ck(d2 == 0, "a partially forked prefix still matches a cold prefill");
+        ck_logits(&part.m, pl, c2, "a partially forked prefix still matches a cold prefill");
         slot_close(&cold2);
         slot_close(&part);
     }
@@ -566,6 +595,11 @@ static void test_eviction(void) {
 
 int main(int argc, char **argv) {
     if (argc > 1) g_path = argv[1];
+    if (argc > 2) g_batch = atoi(argv[2]);
+    if (g_batch < 1 || g_batch > BATCH_MAX) {
+        fprintf(stderr, "test-prefix: the chunk must be 1..%d\n", BATCH_MAX);
+        return 2;
+    }
     f16_init();
     test_hist_tracks_kv_on_overflow();
     test_abandoned_step_drops_its_row();

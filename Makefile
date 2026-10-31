@@ -2891,6 +2891,11 @@ endif
 ifeq ($(BUILD_OS),Darwin)
 METAL_ID_TIGHT = GPU_ID_LIMIT=1e-5
 METAL_ID_TIGHT_SPARK = GPU_ID_LIMIT=2e-5
+# test-prefix compares a reused prefix's last row with a cold prefill's, and
+# a row the GEMM tiles computed differs from the identity matvec's by about
+# 1.6e-5 of range on test.gguf (the tiles stage activations at half
+# precision): its Metal bound is 1e-4 (R3.24 (b), 2026-10-31)
+METAL_PREFIX_TIGHT = GPU_ID_LIMIT=1e-4
 endif
 
 # `make test` is three targets run one after another: the C gates, the batch
@@ -3050,7 +3055,12 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_SHARED)
 	./$(TEST_MLOCK) test-es-mlock.gguf
 	./$(TEST_FILE_ID)
-	./$(TEST_PREFIX)
+	$(METAL_PREFIX_TIGHT) ./$(TEST_PREFIX)
+	$(METAL_PREFIX_TIGHT) ./$(TEST_PREFIX) test.gguf 64
+	@# the CPU at chunk 64 on every host, against its own bound: its batched
+	@# dots differ from the chunk-4 run's in the last bits (1.95e-8 of range
+	@# measured on arm64, 2026-10-31; x86 reads it in this line's output)
+	TEST_PREFIX_CPU=1 PREFIX_LIMIT=1e-6 ./$(TEST_PREFIX) test.gguf 64
 	./$(TEST_GRAMMAR_FF)
 	./$(TEST_GRAMMAR_FF) test-ornith.gguf
 	./$(TEST_CHOICE_MASS)
