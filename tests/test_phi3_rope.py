@@ -17,6 +17,8 @@ import sys
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+import score_record  # noqa: E402
 PROMPT = "the runner reads a prompt in windows and every weight matrix is multiplied"
 
 
@@ -36,7 +38,8 @@ def _score(runner_bin, model):
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
     assert b"phi3 LongRoPE short factors" in proc.stderr
     assert b'"n_scored"' in proc.stdout
-    return proc.stdout
+    # the scores without score_route, which names the model file
+    return score_record.body_bytes(proc.stdout)
 
 
 def test_phi3_window_past_the_context_changes_nothing(runner_bin, tmp_path):

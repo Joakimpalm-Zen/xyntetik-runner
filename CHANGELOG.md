@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A score file names its route, and a route comparison refuses what cannot
+  have measured it.** `--score` is solo by default, so two score files of an
+  NVFP4 file meant to compare its scalar and tensor-core prefill came out
+  byte for byte equal: neither reached a GEMM. The JSON now ends with
+  `score_route` (the model file, the paths `solo` or `keep` with
+  `rows_max`, `backend` and `backend_detail`), and `scripts/gold-logits.py`
+  refuses two score files with the same scores, and a solo side when both
+  scored the same file, unless `--solo-ok` names a deliberate decode-route
+  comparison. A prefill-route reading needs `RUNNER_SCORE_CHUNKED=1`;
+  `RUNNER_SPEC_BATCH` alone does nothing (MANUAL `--score`,
+  `docs/measure-a-quantized-file.md`).
+
 - **NVFP4 prefill on CUDA through the tensor cores, opt-in.** NVFP4 had no
   batched GEMM on CUDA: qwen3.5-4b NVFP4 prefilled at 22 tok/s on an RTX 3070
   with every layer on the card, against llama.cpp's 3,669. It now has

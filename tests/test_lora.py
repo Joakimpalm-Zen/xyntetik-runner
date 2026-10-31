@@ -30,7 +30,9 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+sys.path.insert(0, str(ROOT / "scripts"))
 from harness import RunnerServer
+import score_record  # noqa: E402
 
 PROMPT = "the quick brown fox jumps over the lazy dog and keeps on running"
 
@@ -63,7 +65,9 @@ def _score(runner_bin, model, lora=None, scale=None, gpu=False):
     p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, timeout=120)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
-    return p.stdout
+    # the scores without score_route, which names the model file and the
+    # adapter's route
+    return score_record.body_bytes(p.stdout)
 
 
 def _gpu_or_skip(runner_bin, fx):

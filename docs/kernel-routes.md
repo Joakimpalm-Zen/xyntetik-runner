@@ -148,8 +148,9 @@ Around the matvec:
   tolerance, no further from the publisher's float32 model than the route
   they replace (2,000 positions, mean KL within 1.01x, paired Wilcoxon and
   McNemar not worse at p < 0.05; the rows are in `tc_promoted`'s notes),
-  scored in 64-row chunks (`RUNNER_SPEC_BATCH=64`) so the grouped path's
-  batched expert GEMMs are what the rows measure.
+  scored chunked (`RUNNER_SCORE_CHUNKED=1`, with `RUNNER_SPEC_BATCH=64` as
+  the chunk width) so the grouped path's batched expert GEMMs are what the
+  rows measure; `RUNNER_SPEC_BATCH` alone scores solo and runs none of them.
   Gates: `test-tc-tol`, `test-moe-tol`.
 - **MoE prefill by expert.** A prompt tile of more than 8 columns that
   averages at least four tokens an expert groups its (token, expert) pairs

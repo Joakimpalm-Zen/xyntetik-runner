@@ -64,6 +64,16 @@ writes each position's 20 most likely tokens:
 Keep `-c` within the model's training context: past it Runner applies YaRN
 scaling (and says so), and the measurement would then be of the scaling.
 
+These passes are solo (one forward per position, the decode arithmetic),
+which is right for comparing two files. To measure a prefill route of one
+file instead (a tensor-core GEMM against the scalar route, a batched MoE
+path), score both sides with `RUNNER_SCORE_CHUNKED=1`: a solo pass never
+reaches a prefill GEMM, so both sides would be the same bytes.
+`RUNNER_SPEC_BATCH=N` alone does nothing; it only widens the chunks of a
+chunked pass. `gold-logits.py` refuses two score files with the same scores,
+and a solo side when both sides scored the same file, unless `--solo-ok`
+marks a deliberate decode-route comparison.
+
 **4. Score against the reference.** Two files per run:
 
 ```sh

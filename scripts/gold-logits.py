@@ -483,6 +483,45 @@ def wilcoxon_signed_rank(diffs):
     return z, p, n
 
 
+def route_comparison_guard(args):
+    """Two runner score files as the two sides. Two equal records
+    (score_route aside) cannot tell their sides apart and are refused. When
+    both sides scored the same model file, the pair compares two routes of it:
+    a score is solo by default (one row a forward, the decode arithmetic), and
+    a solo side never reaches a prefill GEMM, so it is refused unless --solo-ok
+    names a deliberate decode-route comparison. Two different files (a quant
+    against its BF16 parent) compare the files, and solo is their decode
+    arithmetic. A record that predates score_route cannot be checked and is
+    named as such. Returns what the run records about it."""
+    if not (args.score_a and args.score_b):
+        return None
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import score_record
+    a, b = score_record.load(args.score_a), score_record.load(args.score_b)
+    if score_record.same_scores(a, b):
+        sys.exit("refused: the two score files hold the same scores, so the routes they are "
+                 "meant to compare did not differ in any logit (a prefill route scored solo "
+                 "never ran: score it with RUNNER_SCORE_CHUNKED=1)")
+    paths = {"a": score_record.path_of(a), "b": score_record.path_of(b)}
+    ma, mb = score_record.model_of(a), score_record.model_of(b)
+    route = ma is not None and ma == mb
+    solo = [s for s, p in paths.items() if p == "solo"] if route else []
+    if solo and not args.solo_ok:
+        sys.exit(f"refused: side {' and '.join(solo)} was scored solo (one row a forward), "
+                 "which never reaches a prefill GEMM. Score a prefill route with "
+                 "RUNNER_SCORE_CHUNKED=1 (RUNNER_SPEC_BATCH alone does nothing), or pass "
+                 "--solo-ok for a deliberate decode-route comparison")
+    if solo:
+        print(f"note: --solo-ok: side {' and '.join(solo)} scored solo, a decode-route "
+              "comparison by request", file=sys.stderr)
+    for s, p in paths.items():
+        if p is None:
+            print(f"warning: side {s}'s score file predates score_route, so the path its "
+                  "forwards took cannot be checked", file=sys.stderr)
+    return {"paths": paths, "route_comparison": route, "solo_ok": bool(solo)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hf", required=True, help="HF model directory")
@@ -493,6 +532,10 @@ def main():
     ap.add_argument("--model-name-b")
     ap.add_argument("--score-a", help="side a from a runner --score --score-top file")
     ap.add_argument("--score-b", help="side b from a runner --score --score-top file")
+    ap.add_argument("--solo-ok", action="store_true",
+                    help="two score files of one model file, one or both scored solo: a "
+                         "deliberate decode-route comparison (refused otherwise; a prefill "
+                         "route needs RUNNER_SCORE_CHUNKED=1)")
     ap.add_argument("--fresh-prompt", action="store_true",
                     help="send cache_prompt:false, so every position is a full prefill")
     ap.add_argument("--max-positions", type=int, default=100)
@@ -526,6 +569,7 @@ def main():
         ap.error("side b takes --endpoint-b or --score-b, not both")
     if args.endpoint_b and not args.model_name_b:
         ap.error("--endpoint-b needs --model-name-b")
+    route_note = route_comparison_guard(args)
 
     import time
     import torch
@@ -723,6 +767,11 @@ def main():
     # v4: tokens are matched by id where the endpoint gives ids; a v3 report
     # scored a gold stop or control token at a floor (the server spells it
     # ""), and skipped the positions whose greedy pick was a stop.
+    if route_note is not None:
+        # two score files: the path each side's forwards took, whether they
+        # scored one model file (a route comparison), and whether a solo side
+        # was accepted by request (route_comparison_guard)
+        summary["score_paths"] = route_note
     report = {"schema_version": "xyntetik.runner.gold-logits.v4",
               "summary": summary, "rows": rows}
     print(json.dumps(summary, indent=2))

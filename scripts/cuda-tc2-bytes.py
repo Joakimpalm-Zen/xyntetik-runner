@@ -27,6 +27,9 @@ import os
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import score_record  # noqa: E402
+
 PROMPT = ("The runner reads a prompt in windows of up to five hundred and "
           "twelve tokens, and every weight matrix of the model is multiplied "
           "against all of the window's columns in one launch of the GEMM. ") * 2
@@ -57,7 +60,9 @@ def score(runner, model, tc2, reuse=None):
             route = json.loads(ln[len("score: route "):])
     if route is None:
         sys.exit("FAIL %s: no score route line" % model)
-    return p.stdout, route
+    # the scores without their score_route field, which names the route
+    # switch and so differs between the arms whatever the logits do
+    return json.dumps(score_record.body(json.loads(p.stdout))), route
 
 
 def main():
