@@ -3531,8 +3531,11 @@ and how many of those differed from this run's own choice, and how many
 pinned reading is valid only when that count is 0. A trace of a model with
 another expert count is refused, and so is a trace that records a (position,
 layer) twice (a served run with several sequences, or a re-prefill): a replay
-trace comes from one sequence. The GPU routers are not pinned. Off by default,
-and nothing changes without it.
+trace comes from one sequence. On CUDA the device routers record and replay
+the same way since 2026-10-31 (the fused, grouped, by-expert and eager paths;
+a traced or replayed run decodes without CUDA graphs, and its trace records
+carry no `norms`); Metal's routers are not pinned. Off by default, and nothing
+changes without it.
 
 On Metal, `RUNNER_MOE_TRACE=routes.jsonl` snapshots every MoE layer's complete
 pre-softmax router-logit vector on the device before the live scratch is reused,

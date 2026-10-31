@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **MoE routing traces and replays on CUDA.** `RUNNER_MOE_TRACE` wrote
+  nothing from a GPU run and `RUNNER_MOE_REPLAY` pinned only the CPU
+  routers, so a CUDA run could be neither recorded nor held to a recorded
+  routing. The device routers now do both, through every MoE path (fused,
+  grouped, by-expert, eager): a replay forces the recorded experts with this
+  run's own weights, as on the CPU, and the exit line counts the device's
+  overrides and uncovered pairs with the CPU's. A traced or replayed run
+  decodes without CUDA graphs. `make test-cuda-moe-replay` (R3.21.2).
 - **Short prompt chunks on Metal take the GEMM tiles.** A Metal forward of 4
   to 16 rows (a prompt's last chunk, a chunked score) ran the multi-column
   identity matvec, which on a Q4_K file reused nothing: 16 rows cost 1.3 s on

@@ -6831,7 +6831,8 @@ static void moe_trace_emit(int pos, int layer, const int *sel, const float *selw
 // A position or layer the trace does not hold routes as usual. At exit it
 // says how many routings it forced and how many of those differed from what
 // this run would have chosen (the flips the pin removed). The GPU routers
-// are not pinned; a GPU run under it says so once.
+// pin through model_moe_replay_table (k_moe_route_replay, the same choice and
+// counters); Metal's are not pinned.
 #define ROUTE_USED_MAX 64   // experts a token uses; every admitted family is under it
 typedef struct { int pos, layer, n; int ids[ROUTE_USED_MAX]; } route_rec;
 static struct {
@@ -6936,7 +6937,7 @@ static void route_replay_load(void) {
         g_replay.on = true;
         atexit(route_replay_report);
         fprintf(stderr, "moe-replay: routing pinned to %s (%zu position x layer "
-                "records); CPU routers only\n", path, g_replay.n);
+                "records); CPU and CUDA routers\n", path, g_replay.n);
     }
     g_replay.tried = true;
     pthread_mutex_unlock(&g_replay_mu);
@@ -6956,6 +6957,57 @@ static const int *route_replay_ids(int pos, int layer, int used) {
         exit(1);
     }
     return r->ids;
+}
+
+bool model_moe_replay_on(void) {
+    if (!g_replay.tried) route_replay_load();
+    return g_replay.on;
+}
+
+int *model_moe_replay_table(int n_layer, int used, int *npos) {
+    if (!model_moe_replay_on()) return NULL;
+    int np = 0;
+    for (size_t i = 0; i < g_replay.n; i++) {
+        const route_rec *r = &g_replay.r[i];
+        if (r->layer < 0 || r->layer >= n_layer || r->n != used) {
+            fprintf(stderr, "error: RUNNER_MOE_REPLAY holds %d experts at position %d "
+                    "layer %d; this model routes %d over %d layers\n",
+                    r->n, r->pos, r->layer, used, n_layer);
+            exit(1);
+        }
+        if (r->pos >= np) np = r->pos + 1;
+    }
+    size_t cells = (size_t)np * n_layer * used;
+    int *tab = malloc(sizeof(int) * (cells ? cells : 1));
+    if (!tab) return NULL;
+    for (size_t c = 0; c < cells; c++) tab[c] = -1;
+    for (size_t i = 0; i < g_replay.n; i++) {
+        const route_rec *r = &g_replay.r[i];
+        if (r->pos < 0) continue;
+        memcpy(tab + ((size_t)r->pos * n_layer + r->layer) * used, r->ids,
+               sizeof(int) * (size_t)used);
+    }
+    *npos = np;
+    return tab;
+}
+
+const int *model_moe_replay_ids(int pos, int layer, int used) {
+    return route_replay_ids(pos, layer, used);
+}
+
+void model_moe_replay_count(unsigned long forced, unsigned long differed,
+                            unsigned long missing) {
+    g_replay.forced += forced;
+    g_replay.differed += differed;
+    g_replay.missing += missing;
+}
+
+bool model_moe_trace_on(void) {
+    return moe_trace_file() != NULL;
+}
+
+void model_moe_trace_route(int pos, int layer, const int *sel, const float *selw, int used) {
+    moe_trace_emit(pos, layer, sel, selw, NULL, used);
 }
 
 // ------------------------------------------------------ MoE gate-reuse probe

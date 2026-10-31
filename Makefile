@@ -2119,6 +2119,20 @@ test-cuda-moe-legacy: runner $(TEST_MOE_TOL)
 # pair runs once more under RUNNER_MOE_GROUPED=1: the grouped prefill takes a
 # tile ahead of both routes, so the pair holds it off for its own runs (a
 # gate with every opt-in on once found the pair with nothing to compare).
+# RUNNER_MOE_TRACE and RUNNER_MOE_REPLAY on the CUDA routers (R3.21.2): on
+# the routed top-2-of-4 fixture at Q8_0 and gemma-4's dual-branch fixture at
+# Q8_0, through the fused, eager, grouped and by-expert paths, scored solo
+# and in 64-row chunks, the device's trace must be the CPU's, its own trace
+# replayed must leave the scores and override nothing, and a moved trace must
+# be followed and agree with the CPU replaying it (scripts/cuda-moe-replay.py).
+# Until 2026-10-31 the device routers neither wrote a trace nor took one.
+test-cuda-moe-replay: runner
+	@set -e; \
+	$(PYTHON) scripts/make-test-moe.py test-moe-replay > /dev/null; \
+	./$(RUNNER_EXE) -m test-moe-replay.moe4.gguf --quantize test-moe-replay-q8.gguf --quant q8_0 > /dev/null 2>&1; \
+	./$(RUNNER_EXE) -m test-moe-replay.gemma4-moe.gguf --quantize test-moe-replay-g4.gguf --quant q8_0 > /dev/null 2>&1; \
+	$(PYTHON) scripts/cuda-moe-replay.py ./$(RUNNER_EXE) test-moe-replay-q8.gguf test-moe-replay-g4.gguf
+
 # A pruned MoE (--prune-experts, keep-N) gives its layers their own expert
 # counts, below the model's declared one; CUDA refused such files until
 # 2026-10-31 (R4.7.4). The routed top-2-of-4 fixture pruned to 3 experts in
