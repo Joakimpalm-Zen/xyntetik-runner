@@ -2494,7 +2494,7 @@ whether the draft is `active` there.
 | Option | Purpose |
 |---|---|
 | `--rewrite OUT` | The one tensor-rewrite pass: write a rewritten model to `OUT` and exit, with a provenance record beside it. Without a trigger it is a requantization (see `--quant`); `--merge-lora` and `--context-surgery` are its triggers, one per pass. Each kind of pass keeps its own record (`OUT.quant.json`, `OUT.merge.json`, `OUT.context.json`), so a lineage walk reads the same records it always read. |
-| `--quant q8_0\|q4_0\|q3_k\|q4_k\|q6_k\|f16\|bf16\|keep` | Requantization target; default `q4_0`, or keep per-tensor types when pruning, removing or merging alone. Requires `--rewrite`; without it the flag is refused rather than ignored. |
+| `--quant q8_0\|q4_0\|q3_k\|q4_k\|q6_k\|mxfp4\|f16\|bf16\|keep` | Requantization target (`mxfp4`: OCP microscaling FP4, one power-of-two scale per 32 values, the bytes ggml's reference writer emits, so gpt-oss's expert format can be written as well as read); default `q4_0`, or keep per-tensor types when pruning, removing or merging alone. Requires `--rewrite`; without it the flag is refused rather than ignored. |
 | `--type-plan PLAN.json` | Apply a per-tensor rewrite plan; first matching substring rule wins. [Details](#cli-type-plan). |
 | `--type-plan-strict` | With `--type-plan`: fail before writing anything when a rule would be declined (block width, never-grow) or fall back to a 32-block type, instead of reporting it and building the file. Off by default. |
 | `--merge-lora` | Trigger: `--rewrite OUT` folds `--lora` into the base weights and writes a standalone GGUF. Quantized merges round the delta; a merge that keeps under 50% of it is refused. [Details](#cli-merge-lora). |
