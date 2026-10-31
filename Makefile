@@ -2119,6 +2119,34 @@ test-cuda-moe-legacy: runner $(TEST_MOE_TOL)
 # pair runs once more under RUNNER_MOE_GROUPED=1: the grouped prefill takes a
 # tile ahead of both routes, so the pair holds it off for its own runs (a
 # gate with every opt-in on once found the pair with nothing to compare).
+# A pruned MoE (--prune-experts, keep-N) gives its layers their own expert
+# counts, below the model's declared one; CUDA refused such files until
+# 2026-10-31 (R4.7.4). The routed top-2-of-4 fixture pruned to 3 experts in
+# blk.0, and to 3 and 2 in the two blocks, in F32, Q8_0 and Q4_0, the device
+# against the CPU at logit precision on a 32-row prefill and one row at a
+# time; the Q8_0 pair also on the by-expert and grouped prefills.
+test-cuda-keepn: runner $(TEST_GPU_ID)
+	@set -e; \
+	$(PYTHON) scripts/make-test-moe.py test-keepn > /dev/null; \
+	echo '{"layer_0":[0,2,3]}' > test-keepn-1.json; \
+	echo '{"layer_0":[0,2,3],"layer_1":[1,3]}' > test-keepn-2.json; \
+	files=""; \
+	for k in 1 2; do \
+	  ./$(RUNNER_EXE) -m test-keepn.moe4.gguf --rewrite test-keepn-$$k.gguf --prune-experts test-keepn-$$k.json > /dev/null 2>&1; \
+	  for q in q8_0 q4_0; do \
+	    ./$(RUNNER_EXE) -m test-keepn.moe4.gguf --rewrite test-keepn-$$k-$$q.gguf --prune-experts test-keepn-$$k.json --quant $$q > /dev/null 2>&1; \
+	  done; \
+	  files="$$files test-keepn-$$k.gguf test-keepn-$$k-q8_0.gguf test-keepn-$$k-q4_0.gguf"; \
+	done; \
+	for f in $$files; do \
+	  ./$(TEST_GPU_ID) $$f; \
+	  ./$(TEST_GPU_ID) $$f 0 1; \
+	done; \
+	for k in 1 2; do \
+	  GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-keepn-$$k-q8_0.gguf; \
+	  RUNNER_MOE_GROUPED=1 ./$(TEST_GPU_ID) test-keepn-$$k-q8_0.gguf; \
+	done
+
 test-cuda-moe-twin: runner $(TEST_GPU_ID)
 	@set -e; \
 	$(PYTHON) scripts/make-test-moe.py test-moe-twin > /dev/null; \

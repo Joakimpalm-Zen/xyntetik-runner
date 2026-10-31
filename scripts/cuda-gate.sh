@@ -26,6 +26,7 @@
 #                Q5_1 on the fused device routing, against the eager path)
 #   varff        make test-cuda-varff (per-layer FFN widths, the gemma-4 E2B shape)
 #   moe-twin     make test-cuda-moe-twin (by-expert MoE prefill == the fused path)
+#   keepn        make test-cuda-keepn (pruned MoE: per-layer expert counts)
 #   batch-id     make test-cuda-batch-identity (the decode microbatch == sequential
 #                decode, byte for byte, on the F32, Q8_0 and BF16 fixtures)
 #   spec-id      make test-cuda-spec-identity (a speculative verify round's rows
@@ -258,7 +259,7 @@ fi
 add_step caps pass 0
 
 FAIL=0
-DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp q3k:test-cuda-q3k tc-kq:test-cuda-tc-kq moe-legacy:test-cuda-moe-legacy varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin batch-id:test-cuda-batch-identity spec-id:test-cuda-spec-identity"
+DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp q3k:test-cuda-q3k tc-kq:test-cuda-tc-kq moe-legacy:test-cuda-moe-legacy varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin keepn:test-cuda-keepn batch-id:test-cuda-batch-identity spec-id:test-cuda-spec-identity"
 for pair in $DEVICE_STEPS; do
   name=${pair%%:*}; target=${pair#*:}
   # shellcheck disable=SC2086
