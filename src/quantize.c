@@ -583,8 +583,9 @@ static void quantize_row_mxfp4(const float *x, uint8_t *dst, int n) {
 // importance matrix the weight of column i is qw[i] * sqrt(sigma2 + x[i]^2),
 // so a column the calibration text drives hard keeps its precision at the
 // expense of one it barely uses. Ported from ggml's quantize_row_q3_K_impl
-// and quantize_row_q4_0_impl; without an imatrix nothing here runs and the
-// reference writers above emit their usual bytes.
+// and quantize_row_q4_0_impl (MIT, The ggml authors; see NOTICE); without an
+// imatrix nothing here runs and the reference writers above emit their usual
+// bytes.
 static float make_qx_quants_w(int n, int nmax, const float *x, int8_t *L,
                               const float *w) {
     float vmax = 0.0f, amax = 0.0f;
