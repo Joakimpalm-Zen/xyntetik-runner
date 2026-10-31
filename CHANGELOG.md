@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Sampled decoding under a schema is faster where the grammar is
+  narrow.** With top-k on, when fewer than k tokens of the vocabulary are
+  valid (an enum member, an object key), the constrained sampler ranked the
+  whole vocabulary by sorting it on every such token, after sorting
+  prefixes of 2,048 and 16,384 first. It now asks the filter about the rest
+  of the vocabulary once and sorts only what it admits. The picks are the
+  same, byte for byte at a seed. Qwen2.5-1.5B-Instruct Q8_0 on Metal under
+  the LX-001 IR schema, 20 prompts, top-k 20: 10.5 to 16.9 tokens per
+  second, against 23.2 unconstrained at the same prompts (2.21x to 1.37x).
+  Greedy decoding under a schema was already at the unconstrained rate.
+
 - **The quantizer's q4_0, q4_k and q6_k output is now byte-identical to
   ggml's reference.** NOTICE said it already was; on a real BF16 tensor it
   was not: clang fused multiply-adds in the quantizer (ggml's reference
