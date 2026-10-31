@@ -30,6 +30,8 @@
 // have run (gpu_exact_verify_tiles), or the rows came from some other path,
 // and a Mamba-2 hybrid there must have restored some partial rounds from its
 // per-row checkpoints (rounds of up to 8 rows file them; wider ones re-fold).
+// On the host, a qwen35 or Mamba-2 model files them on every verify forward,
+// so it must have restored some partial rounds too.
 //
 //   test-spec-identity MODEL.gguf [cpu]
 #include "runner.h"
@@ -161,15 +163,22 @@ int main(int argc, char **argv) {
         pos += acc;
     }
     unsigned long tiles = gpu_exact_verify_tiles() - tiles0;
-#ifndef __APPLE__
     const bool mamba2 = V.granite_hybrid || V.nemotron_h;
-#endif
+    // the host files a per-row checkpoint for these families on every
+    // verify forward (model_recurrent_restore_row's CPU branch)
+    const bool host_rows = V.qwen35 || mamba2;
     free(rows);
     free(blob);
     model_free(&V);
     model_free(&R);
     if (fails) {
         printf("spec-identity: FAILED (%s, %s)\n", where, path);
+        return 1;
+    }
+    if (strcmp(where, "cpu") == 0 && host_rows && restored == 0) {
+        printf("FAIL: no partial round restored a per-row checkpoint on the "
+               "host: every rollback re-folded (the verify forward did not "
+               "file them)\nspec-identity: FAILED\n");
         return 1;
     }
 #ifndef __APPLE__

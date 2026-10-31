@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Speculative decoding on Granite-4 h-series and Nemotron-H hybrids
+  restores the state after the last kept draft instead of re-folding.** On
+  the host, only qwen35 filed a per-row recurrent state during a verify
+  round. On these Mamba-2 hybrids, a partly accepted round rolled back to
+  the round's start and ran the kept rows through the model again. A verify
+  forward now files each row's conv ring and scan state, and the next round
+  starts from the state after the last kept row. The verify round runs the
+  scan one row at a time to hold those states, with results bit-identical
+  to the chunked scan. `test-spec-identity MODEL cpu` now fails if a qwen35
+  or Mamba-2 model restores no partial round, and `make test` runs it on
+  qwen35, the Granite MoE and dense hybrids and Nemotron-H (R3.3.1).
+
 - **Pruned MoE models run on CUDA.** `--prune-experts` can leave a layer
   fewer experts than the model declares (keep-N), and CUDA refused every
   such file because its MoE paths sized uploads, the router and the routing

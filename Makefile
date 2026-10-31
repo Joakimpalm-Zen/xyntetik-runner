@@ -3131,6 +3131,15 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	$(MAKE) --no-print-directory test-metal PYTHON="$(PYTHON)"
 	@for f in test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf; do \
 	  ./$(TEST_SPEC_ID) $$f || exit 1; ./$(TEST_SPEC_ID) $$f cpu || exit 1; done
+	@# the host files a per-row recurrent checkpoint on every verify forward
+	@# for qwen35 and the Mamba-2 hybrids (Granite MoE and dense, Nemotron-H's
+	@# grouped scan): a partial round restores the state after its last kept
+	@# row, and the next round's rows must still be the plain path's bits
+	$(PYTHON) scripts/make-test-hybrid.py test-spec-cpu-granite > /dev/null
+	$(PYTHON) scripts/make-test-hybrid.py test-spec-cpu-granite-dense --dense --rope > /dev/null
+	$(PYTHON) scripts/make-test-nemotron.py test-spec-cpu-nemotron > /dev/null
+	@for f in test-ornith.gguf test-spec-cpu-granite.gguf test-spec-cpu-granite-dense.gguf \
+	  test-spec-cpu-nemotron.gguf; do ./$(TEST_SPEC_ID) $$f cpu || exit 1; done
 	$(PYTHON) scripts/check-generated.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"

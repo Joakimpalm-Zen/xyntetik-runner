@@ -7127,8 +7127,33 @@ static int ssm_force_serial(void) {
 
 // ---- serial reference core: the exact per-token sweep (also the decode path).
 // This is the ground truth the chunked path is pinned bit-identical against.
+static size_t recurrent_conv_bytes(const model_t *m);
+static size_t recurrent_state_bytes(const model_t *m);
+
+// A keep-forward (the CPU speculative verify: spec_want_all covers every row)
+// files each row's recurrent state, so the walk can restore the state after
+// its last kept row (model_recurrent_restore_row) instead of re-folding the
+// kept rows from the round-start snapshot. Slot (row b, layer l) of the keep
+// buffers holds layer l's slice after row b. Returns whether this forward
+// files; the row count is recorded either way, so a forward that does not
+// file leaves no rows to restore.
+static bool recurrent_keep_begin(model_t *m, int n) {
+    bool keep = !m->gpu && m->spec_want_all >= n && n <= m->spec_batch;
+    if (keep && !m->ssm_conv_keep) {
+        m->ssm_conv_keep = calloc((size_t)m->spec_batch, recurrent_conv_bytes(m));
+        m->ssm_state_keep = calloc((size_t)m->spec_batch, recurrent_state_bytes(m));
+        if (!m->ssm_conv_keep || !m->ssm_state_keep) {
+            free(m->ssm_conv_keep); free(m->ssm_state_keep);
+            m->ssm_conv_keep = m->ssm_state_keep = NULL;
+        }
+    }
+    if (!m->ssm_conv_keep) keep = false;
+    m->ssm_keep_n = keep ? n : 0;
+    return keep;
+}
+
 SSM_PRECISE_ATTR
-static void mamba2_ssd_core_serial(model_t *m, layer_t *ly, int layer, int n) {
+static void mamba2_ssd_core_serial(model_t *m, layer_t *ly, int layer, int n, bool keep) {
     SSM_PRECISE_SCOPE
     int nh = m->ssm.v_heads;                 // n_ssm_head
     int inner = m->ssm.inner, hd = inner / nh; // head_dim = inner / n_head
@@ -7208,6 +7233,13 @@ static void mamba2_ssd_core_serial(model_t *m, layer_t *ly, int layer, int n) {
             float mean = (float)(ss / per_g);
             float scale = 1.0f / sqrtf(mean + m->rms_eps);
             for (int i = 0; i < per_g; i++) yg[i] = yg[i] * scale * wg[i];
+        }
+        if (keep) {
+            size_t cb = (size_t)histn * conv_dim, sb = (size_t)nh * hd * ds;
+            memcpy(m->ssm_conv_keep + ((size_t)b * m->n_layer + layer) * cb, convstate,
+                   sizeof(float) * cb);
+            memcpy(m->ssm_state_keep + ((size_t)b * m->n_layer + layer) * sb, states,
+                   sizeof(float) * sb);
         }
     }
 }
@@ -7397,11 +7429,14 @@ static void mamba2_ssd_step(model_t *m, layer_t *ly, int layer, int n, int xdim)
     matvec_b(m->tp, m->ssm_qkv, d_in_proj, ly->ssm_in,
              m->xb, xdim, m->n_embd, d_in_proj, NULL, n);
 
-    if (n > 1 && !ssm_force_serial() &&
+    // a keep-forward files every row's state, which only the serial core
+    // holds between rows (the chunked core is bit-identical to it)
+    bool keep = recurrent_keep_begin(m, n);
+    if (n > 1 && !keep && !ssm_force_serial() &&
         m->ssm.conv_kernel <= SSM_MAX_CONV_KERNEL)
         mamba2_ssd_core_chunked(m, ly, layer, n);
     else
-        mamba2_ssd_core_serial(m, ly, layer, n);
+        mamba2_ssd_core_serial(m, ly, layer, n, keep);
 
     // out_proj: y (m->ssm_z, stride inner) -> m->xb (stride xdim)
     matvec_b(m->tp, m->xb, xdim, ly->ssm_out, m->ssm_z, inner,
@@ -7564,8 +7599,6 @@ static bool q35_dev_heads(model_t *m, const layer_t *ly, int n, int xdim,
     return ok;
 }
 
-static size_t recurrent_conv_bytes(const model_t *m);
-static size_t recurrent_state_bytes(const model_t *m);
 // LORA_HOOK for a site defined before the adapter table is (the hook and
 // struct lora_w come later in this file)
 static void lora_hook(model_t *m, int l, int slot, float *y, int ys,
@@ -7598,17 +7631,7 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
     float *states = m->ssm_state_mem + (size_t)layer * nh * hv * hv;
     // a keep-forward (speculative verify) files per-row checkpoints so the
     // state after any row can be restored (model_recurrent_restore_row)
-    bool keep = !m->gpu && m->spec_want_all >= n && n <= m->spec_batch;
-    if (keep && !m->ssm_conv_keep) {
-        m->ssm_conv_keep = malloc((size_t)m->spec_batch * recurrent_conv_bytes(m));
-        m->ssm_state_keep = malloc((size_t)m->spec_batch * recurrent_state_bytes(m));
-        if (!m->ssm_conv_keep || !m->ssm_state_keep) {
-            free(m->ssm_conv_keep); free(m->ssm_state_keep);
-            m->ssm_conv_keep = m->ssm_state_keep = NULL;
-        }
-    }
-    if (!m->ssm_conv_keep) keep = false;
-    m->ssm_keep_n = keep ? n : 0;
+    bool keep = recurrent_keep_begin(m, n);
     // R8.21: a --train-gpu step's forward takes the heads of all n rows on
     // the device after the loop (the conv and the norms stay here; the
     // heads need only their own row's values, in row order)
@@ -8481,7 +8504,9 @@ bool model_recurrent_restore_row(model_t *m, int r) {
     if (m->gpu) {
         if (!gpu_recurrent_restore_row(m, r)) return false;
     } else {
-        if (!m->qwen35 || !m->ssm_conv_keep || r >= m->ssm_keep_n) return false;
+        if (!(m->qwen35 || m->granite_hybrid || m->nemotron_h) || !m->ssm_conv_keep ||
+            r >= m->ssm_keep_n)
+            return false;
         size_t cb = recurrent_conv_bytes(m), sb = recurrent_state_bytes(m);
         memcpy(m->ssm_conv_state, (const char *)m->ssm_conv_keep + (size_t)r * cb, cb);
         memcpy(m->ssm_state_mem, (const char *)m->ssm_state_keep + (size_t)r * sb, sb);
