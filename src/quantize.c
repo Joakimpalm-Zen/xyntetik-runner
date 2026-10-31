@@ -532,7 +532,8 @@ static void quantize_row_q4_K(const float *x, uint8_t *dst, int n) {
     }
 }
 
-// OCP microscaling FP4 (R4.7.1), ggml's quantize_row_mxfp4_ref: one E8M0
+// OCP microscaling FP4 (R4.7.1), ggml's quantize_row_mxfp4_ref (MIT, The
+// ggml authors; see NOTICE): one E8M0
 // power-of-two scale per 32 values, 2^(floor(log2(amax)) - 2), and each value
 // the nearest E2M1 level {0, .5, 1, 1.5, 2, 3, 4, 6} with its sign (the first
 // of two equally near wins, as in ggml's best_index_mxfp4). floor(log2) comes
