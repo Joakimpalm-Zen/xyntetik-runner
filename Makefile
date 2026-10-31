@@ -2835,6 +2835,7 @@ test-metal:
 # (the host rollback and re-fold). The anchor beyond the CPU is the CPU's own
 # gold against the publisher's float32 reference (docs/model-support.md).
 test-metal-qwen35: runner $(TEST_GPU_ID) $(TEST_SPEC_ID) test-ornith.gguf
+ifeq ($(BUILD_OS),Darwin)
 	@set -e; for w in 40 72 128; do \
 	  ORNITH_TEST_STATE=$$w $(PYTHON) scripts/make-test-ornith.py test-ornith-s$$w.gguf > /dev/null; done; \
 	for f in test-ornith.gguf test-ornith-s40.gguf test-ornith-s72.gguf test-ornith-s128.gguf; do \
@@ -2844,6 +2845,9 @@ test-metal-qwen35: runner $(TEST_GPU_ID) $(TEST_SPEC_ID) test-ornith.gguf
 	  echo "$$f: $$(tail -1 test-metal-qwen35.out)"; \
 	  ./$(TEST_SPEC_ID) $$f | tail -1 | grep -q 'ok (gpu' || { ./$(TEST_SPEC_ID) $$f; exit 1; }; \
 	done; echo "test-metal-qwen35: ok"
+else
+	@echo "test-metal-qwen35 skipped: macOS-only backend"
+endif
 
 # `make test` is three targets run one after another: the C gates, the batch
 # gates (the microbatch byte-identity family, long and independent), and the
