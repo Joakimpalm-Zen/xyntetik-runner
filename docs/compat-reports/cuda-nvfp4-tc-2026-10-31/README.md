@@ -1,7 +1,10 @@
 # NVFP4 tensor-core prefill on CUDA (R4.9.5), 2026-10-31
 
-Measured on the Windows CUDA host (RTX 3070, 8 GB). Model: qwen3.5-4b NVFP4 (single-level, llama.cpp's
-`block_nvfp4`; NVFP4 79% of the weights, Q6_K 21%), every layer on the card, a 1,834-token prompt.
+Measured on the Windows CUDA host (RTX 3070, 8 GB, driver 596.36). Model: `qwen3.5-4b-nvfp4.gguf` from
+FreedomAISVR/Qwen3.5-4B-NVFP4-GGUF at revision fb9f8b9ec432e38872ec9d9707183642cf885ad6, sha256
+317ef79785a9380ac72d23ab33af9376afd926b4c0781fae246f033daf91a05f (single-level, llama.cpp's `block_nvfp4`; NVFP4 79% of
+the weights, Q6_K 21%), every layer on the card, a 1,834-token prompt. All numbers are from this PR's commit 44d7155e
+with its pinned-toolchain PTX.
 
 ## The defect
 
@@ -28,7 +31,7 @@ generic batched kernel a column tile at a time. `RUNNER_CUDA_PROFILE=1`: 99.7% o
 | route | prefill tok/s (1,834 tokens) | decode tok/s | output |
 |---|---|---|---|
 | default (scalar batched) | 22.4 | 58.9 | |
-| `RUNNER_CUDA_TC_NVFP4=1` | 1,170 | 58.8 | identical (32 greedy tokens) |
+| `RUNNER_CUDA_TC_NVFP4=1` | 1,168 | 58.8 | identical (32 greedy tokens) |
 | llama.cpp b11748 | 3,669 | 107.1 | |
 
 ## Checks
@@ -39,3 +42,12 @@ generic batched kernel a column tile at a time. `RUNNER_CUDA_PROFILE=1`: 99.7% o
   kernels and the TC route, free-running token-identical.
 - The PTX was regenerated with the pinned toolchain; against main the four NVFP4 kernels are new and nothing else
   differs beyond label and local-depot numbering.
+
+## Score files for the D1 row
+
+`score-default.json` (the current route) and `score-tc-nvfp4.json` (`RUNNER_CUDA_TC_NVFP4=1`): `runner --score 20 -f
+tests/fixtures/gold-corpus-2k.txt -c 8192` at 44d7155e with `RUNNER_SCORE_CHUNKED=1 RUNNER_SPEC_BATCH=64`, so the
+batched GEMMs ran (solo scoring runs one row a forward and never reaches them; the two solo files were byte-identical).
+8,106 scored positions each, 127 64-row forwards; the TC side counted 31,496 NVFP4 tensor-core GEMMs, the default
+side none. For the float32-reference comparison (gold-logits.py against Qwen/Qwen3.5-4B, side a the current route,
+side b the TC route).
