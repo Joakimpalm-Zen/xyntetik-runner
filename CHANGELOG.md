@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **An example snapshot test for a model's output.**
+  `examples/deterministic-ci/` replays a committed `--record` of a greedy
+  completion with a pinned Runner release and a pinned model file (both
+  checked by sha256), so a model's answer can be asserted in CI like any
+  other snapshot. A workflow runs it on Linux x86_64 (another build: tier
+  T2, token ids) and macOS arm64 (the recording binary: T1, bytes) when the
+  example changes and weekly.
+
 - **Every roster row with a file states its licence.** `docs/model-tiers.json`
   gains `licence` beside `upstream`: the licence as the publisher's model
   card states it on the Hub (its `license`, or its `license_name` when that
