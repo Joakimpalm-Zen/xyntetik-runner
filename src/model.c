@@ -6909,6 +6909,16 @@ static void route_replay_load(void) {
             exit(1);
         }
         qsort(g_replay.r, g_replay.n, sizeof *g_replay.r, route_rec_cmp);
+        // a served run with several sequences, or a re-prefill, records a
+        // (pos, layer) more than once; the lookup would pick one at random
+        size_t dup = 0;
+        for (size_t i = 1; i < g_replay.n; i++)
+            dup += route_rec_cmp(&g_replay.r[i - 1], &g_replay.r[i]) == 0;
+        if (dup) {
+            fprintf(stderr, "error: RUNNER_MOE_REPLAY=%s: %zu duplicate (pos, layer) "
+                    "pairs; a replay trace comes from one sequence\n", path, dup);
+            exit(1);
+        }
         g_replay.on = true;
         atexit(route_replay_report);
         fprintf(stderr, "moe-replay: routing pinned to %s (%zu position x layer "

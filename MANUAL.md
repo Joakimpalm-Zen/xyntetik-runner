@@ -3483,9 +3483,13 @@ layer, the experts that run chose. Only the choice is pinned: the routing
 weights are this run's own router probabilities for those experts, so two
 builds or kernels compared under one replay differ by their arithmetic and
 never by a discrete routing flip. At exit it prints how many routings it forced
-and how many of those differed from this run's own choice. A trace of a model
-with another expert count is refused; the GPU routers are not pinned. Off by
-default, and nothing changes without it.
+and how many of those differed from this run's own choice, and how many
+(position, layer) pairs the trace did not cover. Those routed as usual, so a
+pinned reading is valid only when that count is 0. A trace of a model with
+another expert count is refused, and so is a trace that records a (position,
+layer) twice (a served run with several sequences, or a re-prefill): a replay
+trace comes from one sequence. The GPU routers are not pinned. Off by default,
+and nothing changes without it.
 
 On Metal, `RUNNER_MOE_TRACE=routes.jsonl` snapshots every MoE layer's complete
 pre-softmax router-logit vector on the device before the live scratch is reused,

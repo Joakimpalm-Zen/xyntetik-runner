@@ -85,3 +85,14 @@ def test_replay_refuses_a_trace_of_another_model_or_no_trace(runner_bin, moe1, t
     assert rc != 0 and "not RUNNER_MOE_TRACE records" in err
     rc, _, err = gen(runner_bin, moe1, RUNNER_MOE_REPLAY=tmp_path / "absent.jsonl")
     assert rc != 0 and "cannot be opened" in err
+
+
+def test_replay_refuses_a_trace_of_more_than_one_sequence(runner_bin, moe1, tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    rc, _, err = gen(runner_bin, moe1, RUNNER_MOE_TRACE=trace)
+    assert rc == 0, err[-400:]
+    lines = trace.read_text().splitlines()
+    twice = tmp_path / "twice.jsonl"
+    twice.write_text("\n".join(lines + lines[:3]) + "\n")   # three pairs recorded twice
+    rc, _, err = gen(runner_bin, moe1, RUNNER_MOE_REPLAY=twice)
+    assert rc != 0 and "3 duplicate (pos, layer) pairs" in err
