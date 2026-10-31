@@ -70,11 +70,16 @@ scaling (and says so), and the measurement would then be of the scaling.
 python3 scripts/gold-logits.py --hf ref/ \
     --corpus tests/fixtures/gold-corpus-2k.txt \
     --score-a bf16.score.json --score-b q4_k_m.score.json \
-    --max-positions 300 --stride 15 --out gold-bf16-q4_k_m.json
+    --max-positions 2000 --stride 2 --out gold-bf16-q4_k_m.json
 ```
 
 The reference runs one forward pass over the whole text and the script reads
-300 positions, every 15th token. Add `--upcast-at-use` when the checkpoint is
+2,000 positions, every second token. Use 2,000: at a few hundred positions
+nearly every gap between two good files is noise (this project learned it
+when a rerun at 2,000 positions overturned a 100-position table:
+[golden pass of 2026-09-07](golden-pass-2026-09-07.md)). 300
+positions (`--max-positions 300 --stride 15`) is a cheaper screen for a large
+model, but at 300 the paired test cannot tell small gaps apart. Add `--upcast-at-use` when the checkpoint is
 stored in BF16 and float32 would not fit: the weights stay at BF16 and each
 decoder block's are cast to float32 for its arithmetic.
 
