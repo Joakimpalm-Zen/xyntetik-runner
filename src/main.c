@@ -1144,6 +1144,11 @@ static void usage_to(FILE *f, const char *prog) {
         "  --type-plan-strict  with --type-plan: fail before writing when\n"
         "                 any rule would be declined or fall back, instead of\n"
         "                 reporting it and writing the file\n"
+        "  --imatrix FILE  importance matrix (llama.cpp's GGUF or legacy .dat\n"
+        "                 imatrix) weighting the rounding of q3_k and q4_0\n"
+        "                 rows toward the input columns a calibration text\n"
+        "                 drives hardest; other types are written as without\n"
+        "                 it. Named by sha256 in the provenance record\n"
         "  --prune-experts LIST.json  drop MoE experts per layer while\n"
         "                 rewriting: {\"layer_N\":[kept expert ids...]};\n"
         "                 a layer absent from the file keeps every expert.\n"
@@ -2072,6 +2077,7 @@ typedef struct {
     // file transformations
     const char *quant_out, *quant_type, *prune_experts, *remove_sublayer;
     const char *type_plan, *merge_out, *context_out;
+    const char *imatrix;    // R4.7.2: importance matrix for q3_k/q4_0 rows
     bool type_plan_strict, merge_allow_erased;
     // adapters and training
     const char *lora_path;
@@ -2378,6 +2384,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--remove-sublayer")) o->remove_sublayer = NEXT;
         else if (!strcmp(a, "--type-plan")) o->type_plan = NEXT;
         else if (!strcmp(a, "--type-plan-strict")) o->type_plan_strict = true;
+        else if (!strcmp(a, "--imatrix")) o->imatrix = NEXT;
         else if (!strcmp(a, "--temp")) { o->ov.temp = (float)float_arg(a, NEXT, 0, FLT_MAX); o->ov.has_temp = true; }
         else if (!strcmp(a, "--top-k")) { o->ov.top_k = (int)int_arg(a, NEXT, 0, INT_MAX); o->ov.has_top_k = true; }
         else if (!strcmp(a, "--top-p")) { o->ov.top_p = (float)float_arg(a, NEXT, 0, 1); o->ov.has_top_p = true; }
@@ -3774,9 +3781,9 @@ static void cli_tray_follow(const cli_opts *o) {
 // context under YaRN, and write its provenance record.
 static int run_context_surgery(const cli_opts *o, const char *load_path) {
     if (o->quant_out || o->merge_out || o->prune_experts || o->type_plan || o->quant_type ||
-        o->remove_sublayer) {
+        o->remove_sublayer || o->imatrix) {
         fprintf(stderr, "error: --context-surgery does not combine with "
-                "quantize, merge, prune, or type-plan operations\n");
+                "quantize, merge, prune, type-plan or imatrix operations\n");
         return 1;
     }
     if (o->mp.n_ctx <= 0 || o->mp.yarn_factor <= 1.0f) {
@@ -3826,9 +3833,10 @@ static int run_merge_lora(const cli_opts *o) {
         fprintf(stderr, "error: --merge-lora requires --lora ADAPTER\n");
         return 1;
     }
-    if (o->quant_out || o->prune_experts || o->type_plan || o->remove_sublayer) {
+    if (o->quant_out || o->prune_experts || o->type_plan || o->remove_sublayer ||
+        o->imatrix) {
         fprintf(stderr, "error: --merge-lora does not combine with "
-                "--quantize, --prune-experts or --type-plan\n");
+                "--quantize, --prune-experts, --type-plan or --imatrix\n");
         return 1;
     }
     // default keep: the merged artifact mirrors the base's own
@@ -3924,8 +3932,10 @@ static int run_quantize(const cli_opts *o) {
         // this is plain --quantize, whose long-standing default is q4_0.
         tt = (o->prune_experts || o->remove_sublayer) ? T_KEEP : T_Q4_0;
     }
+    if (!quantize_set_imatrix(o->imatrix)) return 1;
     int qrc = quantize_gguf_plan(o->model_path, o->quant_out, tt, o->prune_experts,
                                  o->type_plan, o->remove_sublayer);
+    quantize_set_imatrix(NULL);
     if (qrc != 0) return qrc;
     // R17.1: the rewrite leaves its record like merge and training do --
     // the input and output by sha256, every option that shaped the
@@ -3963,6 +3973,10 @@ static int run_quantize(const cli_opts *o) {
     if (o->type_plan) {
         sb_lit(&rec, ",\"type_plan\":");
         lineage_put_input(&rec, o->type_plan, NULL);
+    }
+    if (o->imatrix) {   // R4.7.2: the calibration that shaped the rounding
+        sb_lit(&rec, ",\"imatrix\":");
+        lineage_put_input(&rec, o->imatrix, NULL);
     }
     if (o->remove_sublayer) {
         sb_lit(&rec, ",\"remove_sublayer\":\"");
@@ -4034,6 +4048,7 @@ static bool cli_rewrite_flags_ok(const cli_opts *o) {
     const char *orphan = o->prune_experts ? "--prune-experts"
                        : o->remove_sublayer ? "--remove-sublayer"
                        : o->type_plan     ? "--type-plan"
+                       : o->imatrix       ? "--imatrix"
                        : o->quant_type    ? "--quant"
                        : NULL;
     if (orphan) {

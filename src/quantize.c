@@ -576,6 +576,130 @@ static void quantize_row_mxfp4(const float *x, uint8_t *dst, int n) {
     }
 }
 
+// ---------------------------------------------- importance-weighted rows (R4.7.2)
+// ggml's make_qx_quants with explicit weights (rmse_type 1 and a quant_weights
+// array): the scale that minimises the WEIGHTED squared error over the
+// nearest-integer levels, searched at nineteen candidate scales. With an
+// importance matrix the weight of column i is qw[i] * sqrt(sigma2 + x[i]^2),
+// so a column the calibration text drives hard keeps its precision at the
+// expense of one it barely uses. Ported from ggml's quantize_row_q3_K_impl
+// and quantize_row_q4_0_impl; without an imatrix nothing here runs and the
+// reference writers above emit their usual bytes.
+static float make_qx_quants_w(int n, int nmax, const float *x, int8_t *L,
+                              const float *w) {
+    float vmax = 0.0f, amax = 0.0f;
+    for (int i = 0; i < n; i++) {
+        float ax = fabsf(x[i]);
+        if (ax > amax) { amax = ax; vmax = x[i]; }
+    }
+    if (amax < 1e-15f) {
+        memset(L, 0, (size_t)n);
+        return 0.0f;
+    }
+    float iscale = -nmax / vmax;
+    float sumlx = 0.0f, suml2 = 0.0f;
+    for (int i = 0; i < n; i++) {
+        int l = nearest_int(iscale * x[i]);
+        if (l < -nmax) l = -nmax;
+        if (l > nmax - 1) l = nmax - 1;
+        L[i] = (int8_t)(l + nmax);
+        sumlx += w[i] * x[i] * l;
+        suml2 += w[i] * l * l;
+    }
+    float scale = suml2 > 0.0f ? sumlx / suml2 : 0.0f;
+    float best = scale * sumlx;
+    for (int is = -9; is <= 9; is++) {
+        if (is == 0) continue;
+        iscale = -(nmax + 0.1f * is) / vmax;
+        sumlx = suml2 = 0.0f;
+        for (int i = 0; i < n; i++) {
+            int l = nearest_int(iscale * x[i]);
+            if (l < -nmax) l = -nmax;
+            if (l > nmax - 1) l = nmax - 1;
+            sumlx += w[i] * x[i] * l;
+            suml2 += w[i] * l * l;
+        }
+        if (suml2 > 0.0f && sumlx * sumlx > best * suml2) {
+            for (int i = 0; i < n; i++) {
+                int l = nearest_int(iscale * x[i]);
+                if (l < -nmax) l = -nmax;
+                if (l > nmax - 1) l = nmax - 1;
+                L[i] = (int8_t)(l + nmax);
+            }
+            scale = sumlx / suml2;
+            best = scale * sumlx;
+        }
+    }
+    return scale;
+}
+
+static void quantize_row_q3_K_w(const float *x, uint8_t *dst, int n, const float *qw) {
+    wblock_q3_K *out = (wblock_q3_K *)dst;
+    for (int ib = 0; ib < n / 256; ib++, out++, x += 256, qw += 256) {
+        int8_t L[256], Ls[16];
+        float scales[16], weight[16], sw[16];
+        float sumx2 = 0.0f;
+        for (int j = 0; j < 256; j++) sumx2 += x[j] * x[j];
+        float sigma2 = 2.0f * sumx2 / 256.0f;
+        for (int j = 0; j < 16; j++) {
+            float sumw = 0.0f;
+            for (int l = 0; l < 16; l++) {
+                float v = x[16 * j + l];
+                weight[l] = qw[16 * j + l] * sqrtf(sigma2 + v * v);
+                sumw += weight[l];
+            }
+            sw[j] = sumw;
+            scales[j] = make_qx_quants_w(16, 4, x + 16 * j, L + 16 * j, weight);
+        }
+        memset(out, 0, sizeof(*out));
+        float d_block = make_qx_quants_w(16, 32, scales, Ls, sw);
+        for (int j = 0; j < 16; j++) {
+            int l = Ls[j];
+            if (j < 8) out->scales[j] = (uint8_t)(l & 15);
+            else out->scales[j - 8] |= (uint8_t)((l & 15) << 4);
+            out->scales[j % 4 + 8] |= (uint8_t)((l >> 4) << (2 * (j / 4)));
+        }
+        out->d = f32_to_f16(d_block);
+        for (int j = 0; j < 16; j++) {
+            int sc = j < 8 ? out->scales[j] & 15 : out->scales[j - 8] >> 4;
+            sc = (sc | (((out->scales[8 + j % 4] >> (2 * (j / 4))) & 3) << 4)) - 32;
+            float d = f16_to_f32(out->d) * sc;
+            if (d == 0.0f) continue;
+            for (int k = 0; k < 16; k++) {
+                int l = nearest_int(x[16 * j + k] / d);
+                if (l < -4) l = -4;
+                if (l > 3) l = 3;
+                L[16 * j + k] = (int8_t)(l + 4);
+            }
+        }
+        int m = 0;
+        uint8_t hm = 1;
+        for (int j = 0; j < 256; j++) {
+            if (L[j] > 3) { out->hmask[m] |= hm; L[j] -= 4; }
+            if (++m == 32) { m = 0; hm <<= 1; }
+        }
+        for (int j = 0; j < 256; j += 128)
+            for (int k = 0; k < 32; k++)
+                out->qs[j / 4 + k] = (uint8_t)(L[j + k] | (L[j + k + 32] << 2) |
+                    (L[j + k + 64] << 4) | (L[j + k + 96] << 6));
+    }
+}
+
+static void quantize_row_q4_0_w(const float *x, uint8_t *dst, int n, const float *qw) {
+    wblock_q4_0 *b = (wblock_q4_0 *)dst;
+    float sumx2 = 0.0f;
+    for (int j = 0; j < n; j++) sumx2 += x[j] * x[j];
+    float sigma2 = sumx2 / (float)n;
+    for (int ib = 0; ib < n / 32; ib++, b++) {
+        const float *xb = x + 32 * ib, *wb = qw + 32 * ib;
+        float weight[32];
+        int8_t L[32];
+        for (int j = 0; j < 32; j++) weight[j] = wb[j] * sqrtf(sigma2 + xb[j] * xb[j]);
+        b->d = f32_to_f16(make_qx_quants_w(32, 8, xb, L, weight));
+        for (int j = 0; j < 16; j++) b->qs[j] = (uint8_t)(L[j] | (L[j + 16] << 4));
+    }
+}
+
 static void quantize_row_f16(const float *x, uint8_t *dst, int n) {
     f16_t *h = (f16_t *)dst;
     for (int i = 0; i < n; i++) h[i] = f32_to_f16(x[i]);
@@ -617,6 +741,183 @@ static bool quantize_row_writable(int type) {
     return type == T_F32 || type == T_F16 || type == T_BF16 ||
            type == T_Q8_0 || type == T_Q4_0 || type == T_Q3_K ||
            type == T_Q4_K || type == T_Q6_K || type == T_MXFP4;
+}
+
+// The types an importance matrix shapes; every other type is written as
+// without one.
+static bool imatrix_weighted_type(int type) {
+    return type == T_Q3_K || type == T_Q4_0;
+}
+
+// One row with its importance weights (NULL: the reference writer).
+static void quantize_row_any_w(int type, const float *rowf, uint8_t *rowq, int n,
+                               const float *qw) {
+    if (qw && type == T_Q3_K) quantize_row_q3_K_w(rowf, rowq, n, qw);
+    else if (qw && type == T_Q4_0) quantize_row_q4_0_w(rowf, rowq, n, qw);
+    else quantize_row_any(type, rowf, rowq, n);
+}
+
+// ---------------------------------------------------------------- imatrix
+// An importance matrix: per weight tensor, the mean square of each input
+// column over a calibration text (one row of n_per_row values per matrix;
+// a stacked expert tensor has one per expert). Read from llama.cpp's two
+// file formats, so a published imatrix serves as it is:
+//   - GGUF: tensors "<name>.in_sum2" (F32, [n_per_row, n_mat]) and
+//     "<name>.counts" (F32, [1, n_mat]); the values are in_sum2 / counts;
+//   - legacy .dat: int32 n_entries, then per entry int32 name length, the
+//     name, int32 ncall, int32 nval, nval float32 values.
+// Only the ratios inside one matrix shape the quantization, so the two
+// formats' different normalisations give the same bytes. A matrix whose
+// values are all zero (an expert the calibration never routed to) carries
+// no information and its rows are written as without an imatrix.
+typedef struct {
+    char   name[128];
+    int64_t n_per_row, n_mat;
+    float *v;                       // n_per_row * n_mat
+} imatrix_entry;
+
+typedef struct {
+    imatrix_entry *e;
+    int n;
+    // what it did, for the summary
+    uint64_t tensors_weighted, rows_weighted, rows_without_data;
+    uint64_t tensors_other_type;
+} imatrix_t;
+
+static imatrix_t g_imx;
+
+static void imatrix_free(void) {
+    for (int i = 0; i < g_imx.n; i++) free(g_imx.e[i].v);
+    free(g_imx.e);
+    memset(&g_imx, 0, sizeof(g_imx));
+}
+
+static imatrix_entry *imatrix_add(const char *name, int64_t n_per_row, int64_t n_mat) {
+    if (strlen(name) >= sizeof(g_imx.e[0].name) || n_per_row <= 0 || n_mat <= 0 ||
+        (uint64_t)n_per_row > SIZE_MAX / sizeof(float) / (uint64_t)n_mat)
+        return NULL;
+    imatrix_entry *ne = realloc(g_imx.e, sizeof(*ne) * (size_t)(g_imx.n + 1));
+    if (!ne) return NULL;
+    g_imx.e = ne;
+    imatrix_entry *e = &g_imx.e[g_imx.n];
+    memset(e, 0, sizeof(*e));
+    snprintf(e->name, sizeof(e->name), "%s", name);
+    e->n_per_row = n_per_row;
+    e->n_mat = n_mat;
+    e->v = malloc(sizeof(float) * (size_t)(n_per_row * n_mat));
+    if (!e->v) return NULL;
+    g_imx.n++;
+    return e;
+}
+
+static bool imatrix_load_gguf(const char *path) {
+    gguf_file g;
+    if (!gguf_open(&g, path)) return false;
+    bool ok = true;
+    for (uint64_t i = 0; ok && i < g.n_tensors; i++) {
+        const gguf_tensor *t = &g.tensors[i];
+        size_t ln = strlen(t->name);
+        if (ln <= 8 || strcmp(t->name + ln - 8, ".in_sum2")) continue;
+        char base[128], cname[140];
+        snprintf(base, sizeof(base), "%.*s", (int)(ln - 8), t->name);
+        snprintf(cname, sizeof(cname), "%s.counts", base);
+        const gguf_tensor *c = NULL;
+        for (uint64_t k = 0; k < g.n_tensors; k++)
+            if (!strcmp(g.tensors[k].name, cname)) { c = &g.tensors[k]; break; }
+        int64_t npr = (int64_t)t->ne[0], nmat = (int64_t)(t->n_dims > 1 ? t->ne[1] : 1);
+        if (t->type != T_F32 || !c || c->type != T_F32 ||
+            (int64_t)(c->ne[0] * (c->n_dims > 1 ? c->ne[1] : 1)) != nmat) {
+            fprintf(stderr, "error: imatrix %s: %s is not an F32 in_sum2/counts pair\n",
+                    path, base);
+            ok = false;
+            break;
+        }
+        imatrix_entry *e = imatrix_add(base, npr, nmat);
+        if (!e) { ok = false; break; }
+        const float *s2 = t->data, *cnt = c->data;
+        for (int64_t m = 0; m < nmat; m++)
+            for (int64_t j = 0; j < npr; j++)
+                e->v[m * npr + j] = cnt[m] > 0.0f ? s2[m * npr + j] / cnt[m] : 0.0f;
+    }
+    gguf_close(&g);
+    return ok;
+}
+
+static bool imatrix_load_dat(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    int32_t n = 0;
+    bool ok = fread(&n, 4, 1, f) == 1 && n > 0 && n < 1000000;
+    for (int32_t i = 0; ok && i < n; i++) {
+        int32_t len = 0, ncall = 0, nval = 0;
+        char name[128];
+        ok = fread(&len, 4, 1, f) == 1 && len > 0 && len < (int32_t)sizeof(name) &&
+             fread(name, 1, (size_t)len, f) == (size_t)len;
+        if (!ok) break;
+        name[len] = 0;
+        ok = fread(&ncall, 4, 1, f) == 1 && fread(&nval, 4, 1, f) == 1 && nval > 0;
+        if (!ok) break;
+        // the row length is the tensor's; the matrix count is resolved
+        // against the model when the tensor is written (imatrix_row)
+        imatrix_entry *e = imatrix_add(name, nval, 1);
+        ok = e && fread(e->v, sizeof(float), (size_t)nval, f) == (size_t)nval;
+    }
+    fclose(f);
+    return ok;
+}
+
+bool quantize_set_imatrix(const char *path) {
+    imatrix_free();
+    if (!path) return true;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "error: cannot open imatrix %s\n", path);
+        return false;
+    }
+    char magic[4] = {0};
+    size_t got = fread(magic, 1, 4, f);
+    fclose(f);
+    bool ok = got == 4 && !memcmp(magic, "GGUF", 4) ? imatrix_load_gguf(path)
+                                                    : imatrix_load_dat(path);
+    for (int i = 0; ok && i < g_imx.n; i++)
+        for (int64_t j = 0; j < g_imx.e[i].n_per_row * g_imx.e[i].n_mat; j++)
+            if (!isfinite(g_imx.e[i].v[j]) || g_imx.e[i].v[j] < 0.0f) {
+                fprintf(stderr, "error: imatrix %s: %s holds a negative or "
+                        "non-finite value\n", path, g_imx.e[i].name);
+                ok = false;
+                break;
+            }
+    if (!ok || g_imx.n == 0) {
+        if (ok) fprintf(stderr, "error: imatrix %s holds no matrices\n", path);
+        else fprintf(stderr, "error: %s is not a readable imatrix (GGUF or "
+                     "legacy .dat)\n", path);
+        imatrix_free();
+        return false;
+    }
+    return true;
+}
+
+static const imatrix_entry *imatrix_find(const char *tname) {
+    for (int i = 0; i < g_imx.n; i++)
+        if (!strcmp(g_imx.e[i].name, tname)) return &g_imx.e[i];
+    return NULL;
+}
+
+// The weights for row `row` of a tensor with `mats` matrices of
+// `rows_per_mat` rows each, or NULL (no imatrix, no entry, an all-zero
+// matrix). *bad is set when the entry exists and does not fit the tensor.
+static const float *imatrix_row(const imatrix_entry *e, int64_t row_len,
+                                uint64_t row, uint64_t rows_per_mat, uint64_t mats,
+                                bool *bad) {
+    if (!e) return NULL;
+    int64_t npr = e->n_per_row, nmat = e->n_mat;
+    if (nmat == 1 && npr == row_len * (int64_t)mats) { npr = row_len; nmat = (int64_t)mats; }
+    if (npr != row_len || (nmat != 1 && nmat != (int64_t)mats)) { *bad = true; return NULL; }
+    uint64_t m = nmat == 1 ? 0 : row / rows_per_mat;
+    const float *w = e->v + m * (uint64_t)npr;
+    for (int64_t j = 0; j < npr; j++)
+        if (w[j] > 0.0f) return w;
+    return NULL;
 }
 
 // ---------------------------------------------------------------- writer
@@ -2380,6 +2681,41 @@ static void quantize_job_write_layout(quantize_job *J) {
 }
 
 // One pruned tensor: its kept experts' blocks, in the plan's order.
+// The tensor's imatrix entry when its output type takes one, counted for the
+// summary; NULL otherwise.
+static const imatrix_entry *imatrix_for_tensor(const gguf_tensor *t, int out_type) {
+    if (!g_imx.n) return NULL;
+    if (!imatrix_weighted_type(out_type)) {
+        g_imx.tensors_other_type++;
+        return NULL;
+    }
+    const imatrix_entry *e = imatrix_find(t->name);
+    if (e) g_imx.tensors_weighted++;
+    return e;
+}
+
+// One row's weights, or NULL; a misfit entry fails the write.
+static const float *imatrix_row_checked(quantize_job *J, const gguf_tensor *t,
+                                        const imatrix_entry *e, uint64_t row) {
+    if (!e) return NULL;
+    uint64_t mats = t->n_dims > 2 && t->ne[2] > 1 ? t->ne[2] : 1;
+    uint64_t per = mats > 1 ? t->ne[1] : t->ne[1] * t->ne[2] * t->ne[3];
+    bool bad = false;
+    const float *w = imatrix_row(e, (int64_t)t->ne[0], row, per, mats, &bad);
+    if (bad) {
+        fprintf(stderr, "error: the imatrix entry for %s (%lld values x %lld) does "
+                "not fit the tensor ([%llu, %llu, %llu])\n", t->name,
+                (long long)e->n_per_row, (long long)e->n_mat,
+                (unsigned long long)t->ne[0], (unsigned long long)t->ne[1],
+                (unsigned long long)t->ne[2]);
+        J->w.ok = false;
+        return NULL;
+    }
+    if (w) g_imx.rows_weighted++;
+    else g_imx.rows_without_data++;
+    return w;
+}
+
 static void quantize_job_write_pruned(quantize_job *J, uint64_t i,
                                       const prune_layer_t *pl) {
     gguf_tensor *t = &J->g.tensors[i];
@@ -2403,12 +2739,16 @@ static void quantize_job_write_pruned(quantize_job *J, uint64_t i,
         return;
     }
     size_t out_rs = ggml_row_size(J->out_type[i], row_len);
+    const imatrix_entry *ie = imatrix_for_tensor(t, J->out_type[i]);
     for (int j = 0; J->w.ok && j < pl->n_ids; j++) {
-        for (int64_t r = 0; r < exp_rows; r++) {
+        for (int64_t r = 0; J->w.ok && r < exp_rows; r++) {
             int64_t src_row = (int64_t)pl->ids[j] * exp_rows + r;
             dequant_row(t->type, (const uint8_t *)t->data +
                         (size_t)src_row * in_row, J->rowf, (int)row_len);
-            quantize_row_any(J->out_type[i], J->rowf, J->rowq, (int)row_len);
+            // the source expert's weights: the imatrix was made on the
+            // unpruned model
+            const float *qw = imatrix_row_checked(J, t, ie, (uint64_t)src_row);
+            quantize_row_any_w(J->out_type[i], J->rowf, J->rowq, (int)row_len, qw);
             wr(&J->w, J->rowq, out_rs);
         }
     }
@@ -2449,20 +2789,22 @@ static void quantize_job_write_rows(quantize_job *J, uint64_t i, merge_set_t *ms
         return;
     }
     int n0 = (int)t->ne[0];
-    for (uint64_t r = 0; r < rows; r++) {
+    const imatrix_entry *ie = imatrix_for_tensor(t, J->out_type[i]);
+    for (uint64_t r = 0; J->w.ok && r < rows; r++) {
         dequant_row(t->type, (uint8_t *)t->data + r * in_rs, J->rowf, n0);
         if (mp) {
             memcpy(J->basef, J->rowf, sizeof(float) * (size_t)n0);
             merge_row(mp, r, J->rowf, n0);
         }
-        quantize_row_any(J->out_type[i], J->rowf, J->rowq, n0);
+        const float *qw = imatrix_row_checked(J, t, ie, r);
+        quantize_row_any_w(J->out_type[i], J->rowf, J->rowq, n0, qw);
         wr(&J->w, J->rowq, out_rs);
         if (mp) {
             // Did the grid keep the delta? The base alone, written at
             // the same type, is what the merge would be had the adapter
             // done nothing; the projection of (merged - that) onto the
             // intended delta is the part of the delta that survived.
-            quantize_row_any(J->out_type[i], J->basef, J->rowqb, n0);
+            quantize_row_any_w(J->out_type[i], J->basef, J->rowqb, n0, qw);
             merge_survival *sv = &ms->surv;
             sv->bytes += out_rs;
             for (size_t k = 0; k < out_rs; k++)
@@ -2573,6 +2915,20 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
                            : target == T_KEEP ? "per-tensor unchanged"
                                               : ggml_type_name(target),
             (unsigned long long)J->quantized, (unsigned long long)J->kept);
+    if (g_imx.n) {
+        // R4.7.2: what the importance matrix shaped, and what it could not
+        fprintf(stderr, "imatrix: %llu tensors weighted (%llu rows; %llu rows "
+                "without calibration data written unweighted); %llu converted "
+                "tensors are of a type the imatrix does not shape (only q3_k "
+                "and q4_0 are weighted)\n",
+                (unsigned long long)g_imx.tensors_weighted,
+                (unsigned long long)g_imx.rows_weighted,
+                (unsigned long long)g_imx.rows_without_data,
+                (unsigned long long)g_imx.tensors_other_type);
+        if (!g_imx.tensors_weighted)
+            fprintf(stderr, "warning: the imatrix named none of the tensors "
+                    "written as q3_k or q4_0\n");
+    }
     if (ms)
         fprintf(stderr, "merge: %d adapted projection%s folded into the "
                 "weights%s\n", ms->n_pairs - ms->n_zero,
