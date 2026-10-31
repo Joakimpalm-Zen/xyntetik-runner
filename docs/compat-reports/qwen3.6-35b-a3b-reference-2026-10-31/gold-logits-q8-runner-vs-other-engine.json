@@ -2,8 +2,8 @@
   "schema_version": "xyntetik.runner.gold-logits.v4",
   "summary": {
     "positions": 300,
-    "hf": "/home/lab/q35-local/hf",
-    "corpus": "/home/lab/workspace/runner-q35/tests/fixtures/gold-corpus-2k.txt",
+    "hf": "Qwen/Qwen3.6-35B-A3B at 995ad96eacd9 (local copy)",
+    "corpus": "tests/fixtures/gold-corpus-2k.txt",
     "reference_class": "Qwen3_5MoeForCausalLM",
     "reference_logits": "scored rows only",
     "special_prefix_tokens": 0,
@@ -16,7 +16,7 @@
     "reference_device": "cpu",
     "sides": {
       "a": {
-        "endpoint": "/home/lab/workspace/exec-share/q35/q36-Q8_0.score.json",
+        "endpoint": "q36-Q8_0.score.json",
         "model": "Qwen_Qwen3.6-35B-A3B-Q8_0.gguf",
         "mean_kld_vs_gold": 0.03486750915068044,
         "max_kld_vs_gold": 5.4229209720877805,
@@ -28,7 +28,7 @@
         "id_spelling_mismatches": 0
       },
       "b": {
-        "endpoint": "http://127.0.0.1:28977",
+        "endpoint": "llama-server (llama.cpp 36a0e2f, -ngl 0, -np 1, -fa off) on Qwen_Qwen3.6-35B-A3B-Q8_0.gguf",
         "model": "Qwen_Qwen3.6-35B-A3B-Q8_0.gguf",
         "mean_kld_vs_gold": 0.0617918378268986,
         "max_kld_vs_gold": 7.497982965502791,
