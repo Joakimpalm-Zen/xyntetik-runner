@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Receipts carry the tool results a request sent, as data.** A served
+  receipt named the calls its turn delivered (`tool_calls`), but the results
+  of earlier calls reached it only inside the rendered prompt text, so a
+  policy over the record could not see that a call retries a reported
+  failure or repeats a write already done. A record now carries
+  `tool_results`: per result the tool's text, verbatim, its parse as `json`
+  when it is one JSON value, the Messages `is_error` flag, and the id, name
+  and arguments of the call it answers, on the Chat, Responses and Messages
+  surfaces, under the same chain hash and signature. It is written when the
+  request carries a result or declares tools; an older record verifies as
+  before.
+
 - **Spark X2.5 and X2.6 run on Metal and CUDA.** The GPU backends refused
   `spark2_5` by name for two pieces, and both are now device kernels: the
   per-head attention output gate (one sigmoid per head over its outputs)

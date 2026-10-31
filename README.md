@@ -447,7 +447,8 @@ replays it.
 ./runner -m model.gguf --verify run.json     # VERIFIED, DIVERGED or UNVERIFIABLE
 ```
 
-Around that core: signed and chained receipts (`runner attest keygen`, `--sign-key`),
+Around that core: signed and chained receipts (`runner attest keygen`, `--sign-key`)
+that carry an agent turn's tool calls and the tool results it was sent as data a policy can read,
 evidence packs a reviewer checks offline (`runner attest pack`, `runner attest check-pack`),
 signature checks on the model file itself (`--model-sig`), and a text
 watermark with its detector (`--watermark`, `runner attest detect`).

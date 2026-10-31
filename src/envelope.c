@@ -570,6 +570,11 @@ bool transcript_write(const transcript_info *ti) {
         tsb_put(&w, ti->tool_calls_json, strlen(ti->tool_calls_json));
         tsb_put(&w, ",", 1);
     }
+    if (ti->tool_results_json) {
+        tsb_put(&w, "\"tool_results\":", 15);
+        tsb_put(&w, ti->tool_results_json, strlen(ti->tool_results_json));
+        tsb_put(&w, ",", 1);
+    }
     tsb_fmt(&w, "\"generated_utc\":\"%s\",", utc);
     tsb_put(&w, "\"prompt\":{\"text\":", 17);
     tsb_json_str(&w, ti->prompt_text, strlen(ti->prompt_text));

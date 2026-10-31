@@ -142,6 +142,10 @@ typedef struct {
     // so an unconstrained record is what it always was.
     const char *constraints_json;
     const char *tool_calls_json;
+    // R17.7: a JSON array of the tool results the request carried, each the
+    // tool's text with its JSON parse and the call it answers, written as
+    // "tool_results" (completion.c prior_results_json). NULL writes nothing.
+    const char *tool_results_json;
     // R1.8.2: the watermark the sampler applied ({"scheme","key_id",
     // "layers","context","marked_tokens"}), written as "watermark"; a replay
     // needs the same key. NULL for an unmarked run.

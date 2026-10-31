@@ -309,3 +309,94 @@ def test_a_record_that_only_lists_shaped_by_is_refused(runner_bin, model, srv, t
     v = _verify(runner_bin, model, old)
     err = v.stderr.decode(errors="replace")
     assert v.returncode == 3 and "stop" in err and "chain" not in err, err[-600:]
+
+
+# R17.7: the results the request sent ride in the record as data, beside the
+# rendered prompt, so a policy over the receipt can read them as facts.
+FAILED = '{"ok": false, "error": "timeout", "attempt": 1}'
+DONE = "rolled back to v41"
+
+
+def _result_history(surface):
+    """One earlier call and a JSON result, a second call and a plain-text
+    result, in the surface's own vocabulary."""
+    args = {"city": "Paris"}
+    if surface == "chat":
+        return {"tools": CHAT_TOOLS, "messages": [
+            {"role": "user", "content": "Weather?"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {
+                    "name": "get_weather", "arguments": json.dumps(args)}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": FAILED},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c2", "type": "function", "function": {
+                    "name": "get_weather", "arguments": '{"city":"Oslo"}'}}]},
+            {"role": "tool", "tool_call_id": "c2",
+             "content": [{"type": "text", "text": DONE}]},
+            {"role": "user", "content": "Again?"}]}
+    if surface == "responses":
+        return {"tools": RESP_TOOLS, "input": [
+            {"role": "user", "content": "Weather?"},
+            {"type": "function_call", "call_id": "c1", "name": "get_weather",
+             "arguments": json.dumps(args)},
+            {"type": "function_call_output", "call_id": "c1", "output": FAILED},
+            {"type": "function_call", "call_id": "c2", "name": "get_weather",
+             "arguments": '{"city":"Oslo"}'},
+            {"type": "function_call_output", "call_id": "c2", "output": DONE},
+            {"role": "user", "content": "Again?"}]}
+    return {"tools": ANTH_TOOLS, "messages": [
+        {"role": "user", "content": "Weather?"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "c1", "name": "get_weather", "input": args}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "c1", "content": FAILED,
+             "is_error": True}]},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "c2", "name": "get_weather",
+             "input": {"city": "Oslo"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "c2",
+             "content": [{"type": "text", "text": DONE}]},
+            {"type": "text", "text": "Again?"}]}]}
+
+
+@pytest.mark.parametrize("surface", sorted(SURFACES))
+def test_tool_results_are_recorded_as_data(runner_bin, model, srv, surface):
+    path = {"chat": "/v1/chat/completions", "responses": "/v1/responses",
+            "messages": "/v1/messages"}[surface]
+    payload = {**_result_history(surface), "chat_template_kwargs": NO_THINK,
+               "runner_test_reply": "Still Paris."}
+    payload["max_output_tokens" if surface == "responses" else "max_tokens"] = 40
+    d = _post(srv, path, payload)
+    _, rec = _receipt(srv, d)
+    first, second = rec["tool_results"]
+    # the index is the message (or input item) that carried the result
+    assert first == {"index": 2, "call_id": "c1", "name": "get_weather",
+                     "arguments": first["arguments"],
+                     "is_error": surface == "messages", "text": FAILED,
+                     "json": {"ok": False, "error": "timeout", "attempt": 1}}
+    # the call it answers, as data: the same arguments the call carried
+    assert json.loads(first["arguments"]) == {"city": "Paris"}
+    assert second["index"] == 4 and second["call_id"] == "c2"
+    assert second["text"] == DONE
+    assert json.loads(second["arguments"]) == {"city": "Oslo"}
+    # a plain-text result is recorded verbatim and gets no parse
+    assert "json" not in second and second["is_error"] is False
+    # the result sits under the record's chain hash: the boundary reads the
+    # same bytes the signature covers
+    assert rec["chain"]["hash"]
+
+
+def test_a_turn_without_tools_records_no_results(srv):
+    d = _post(srv, "/v1/chat/completions", {
+        "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}],
+        "chat_template_kwargs": NO_THINK, "runner_test_reply": "hello"})
+    _, rec = _receipt(srv, d)
+    assert "tool_results" not in rec
+    # declared tools and no result yet: the record says so, as an empty list
+    d = _post(srv, "/v1/chat/completions", {
+        "max_tokens": 8, "tools": CHAT_TOOLS,
+        "messages": [{"role": "user", "content": "hi"}],
+        "chat_template_kwargs": NO_THINK, "runner_test_reply": "hello"})
+    _, rec = _receipt(srv, d)
+    assert rec["tool_results"] == []

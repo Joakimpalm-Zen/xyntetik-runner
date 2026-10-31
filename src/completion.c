@@ -1617,6 +1617,154 @@ static void call_refs_free(call_ref *v, int n) {
     free(v);
 }
 
+// R17.7: the call an earlier result answers, found by its id among the calls
+// in front of it: its name and its arguments as the request spelled them (a
+// JSON string on Chat and Responses, a value on Messages). False when no
+// earlier call carries the id.
+static bool result_call(jv *list, int api, int upto, const char *id,
+                        const char **name, const jv **args) {
+    if (!id || !id[0]) return false;
+    for (int i = upto - 1; i >= 0; i--) {
+        jv *m = list->items[i];
+        if (m->type != J_OBJ) continue;
+        if (api == API_RESPONSES) {
+            if (strcmp(jv_str(jv_get(m, "type"), ""), "function_call") ||
+                strcmp(jv_str(jv_get(m, "call_id"), ""), id)) continue;
+            *name = jv_str(jv_get(m, "name"), NULL);
+            *args = jv_get(m, "arguments");
+            return true;
+        }
+        if (strcmp(jv_str(jv_get(m, "role"), ""), "assistant")) continue;
+        jv *calls = jv_get(m, api == API_MESSAGES ? "content" : "tool_calls");
+        if (!calls || calls->type != J_ARR) continue;
+        for (int k = 0; k < calls->n; k++) {
+            jv *c = calls->items[k];
+            if (api == API_MESSAGES &&
+                strcmp(jv_str(jv_get(c, "type"), ""), "tool_use")) continue;
+            if (strcmp(jv_str(jv_get(c, "id"), ""), id)) continue;
+            jv *f = api == API_MESSAGES ? c : jv_get(c, "function");
+            *name = jv_str(jv_get(f, "name"), NULL);
+            *args = jv_get(f, api == API_MESSAGES ? "input" : "arguments");
+            return true;
+        }
+    }
+    return false;
+}
+
+// Text parts joined as the prompt joins them ('\n' between two); a shape
+// that carries no text adds nothing.
+static void result_text(const jv *c, sbuf *t) {
+    if (c && c->type == J_STR) {
+        sb_put(t, c->str, strlen(c->str));
+    } else if (c && c->type == J_ARR) {
+        int parts = 0;
+        for (int i = 0; i < c->n; i++) {
+            const char *type = jv_str(jv_get(c->items[i], "type"), "");
+            const char *txt = jv_str(jv_get(c->items[i], "text"), NULL);
+            if (strcmp(type, "text") || !txt) continue;
+            if (parts++) sb_lit(t, "\n");
+            sb_put(t, txt, strlen(txt));
+        }
+    }
+}
+
+// R17.7: the tool results a request carries, as data beside the rendered
+// prompt. A policy over the receipt (the action boundary) could read the
+// turn's calls as typed facts but the results only as prompt text, so it
+// could not see that a call retries a reported failure or repeats a write
+// already done. One entry per result, in request order:
+//   {"index": the message or input item, "call_id", "name" and "arguments"
+//    of the call it answers (null when no earlier call carries its id; the
+//    arguments as JSON text, as "tool_calls" spells them), "is_error" (the
+//    Messages flag), "text": what the tool returned, verbatim, and "json":
+//    that text parsed, present only when it is one JSON value}
+// Returns the array, malloc'd; NULL when the request carries no result and
+// declares no tools (the record is then what it always was) or on OOM
+// (*oom set).
+static char *prior_results_json(jv *req, int api, bool *oom) {
+    *oom = false;
+    if (api == API_TEXT) return NULL;
+    jv *list = jv_get(req, api == API_RESPONSES ? "input" : "messages");
+    bool tools = jv_get(req, "tools") != NULL;
+    sbuf r = {0};
+    sb_lit(&r, "[");
+    int n = 0;
+    for (int i = 0; list && list->type == J_ARR && i < list->n; i++) {
+        jv *m = list->items[i];
+        if (m->type != J_OBJ) continue;
+        // each surface's results inside one message
+        jv *blocks = NULL;
+        int k_n = 1;
+        if (api == API_RESPONSES) {
+            if (strcmp(jv_str(jv_get(m, "type"), ""), "function_call_output")) continue;
+        } else if (api == API_MESSAGES) {
+            if (strcmp(jv_str(jv_get(m, "role"), ""), "user")) continue;
+            blocks = jv_get(m, "content");
+            if (!blocks || blocks->type != J_ARR) continue;
+            k_n = blocks->n;
+        } else {
+            if (strcmp(jv_str(jv_get(m, "role"), ""), "tool")) continue;
+        }
+        for (int k = 0; k < k_n; k++) {
+            jv *b = blocks ? blocks->items[k] : m;
+            const char *id;
+            const jv *content;
+            bool is_error = false;
+            if (api == API_RESPONSES) {
+                id = jv_str(jv_get(m, "call_id"), NULL);
+                content = jv_get(m, "output");
+            } else if (api == API_MESSAGES) {
+                if (strcmp(jv_str(jv_get(b, "type"), ""), "tool_result")) continue;
+                id = jv_str(jv_get(b, "tool_use_id"), NULL);
+                content = jv_get(b, "content");
+                is_error = jv_bool(jv_get(b, "is_error"), false);
+            } else {
+                id = jv_str(jv_get(m, "tool_call_id"), NULL);
+                content = jv_get(m, "content");
+            }
+            const char *name = NULL;
+            const jv *args = NULL;
+            bool linked = result_call(list, api, i, id, &name, &args);
+            if (!name && api == API_CHAT) name = jv_str(jv_get(m, "name"), NULL);
+            sb_fmt(&r, "%s{\"index\":%d,\"call_id\":", n++ ? "," : "", i);
+            sb_str(&r, id);
+            sb_lit(&r, ",\"name\":");
+            sb_str(&r, name);
+            sb_lit(&r, ",\"arguments\":");
+            if (!linked || !args || args->type == J_NULL) {
+                sb_lit(&r, "null");
+            } else if (args->type == J_STR) {
+                sb_str(&r, args->str);
+            } else {
+                sbuf a = {0};
+                jv_dump(args, &a);
+                if (a.failed) r.failed = true;
+                else { sb_lit(&r, "\""); sb_esc(&r, a.s, a.n); sb_lit(&r, "\""); }
+                free(a.s);
+            }
+            sbuf t = {0};
+            result_text(content, &t);
+            sb_fmt(&r, ",\"is_error\":%s,\"text\":\"", is_error ? "true" : "false");
+            if (t.s) sb_esc(&r, t.s, t.n);
+            sb_lit(&r, "\"");
+            jv *parsed = t.s && !t.failed ? json_parse(t.s, t.n) : NULL;
+            if (parsed) {
+                sb_lit(&r, ",\"json\":");
+                jv_dump(parsed, &r);
+                jv_free(parsed);
+            }
+            if (t.failed) r.failed = true;
+            free(t.s);
+            sb_lit(&r, "}");
+        }
+    }
+    sb_lit(&r, "]");
+    sb_put(&r, "", 1);
+    if (r.failed) { free(r.s); *oom = true; return NULL; }
+    if (!n && !tools) { free(r.s); return NULL; }
+    return r.s;
+}
+
 // `emitted` is this turn's calls: the chat dialect's tool_calls array, or the
 // Responses output items (function_call entries; other items are skipped and
 // do not count toward `index`). Returns the telemetry array, malloc'd, or
@@ -2746,14 +2894,15 @@ static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
 // adapter's and binary's digests. "serve" says which surface and request it
 // was and how the prompt's KV was obtained; "constraints" (R1.1.2) what
 // shaped the output beyond the sampler -- --verify refuses such a record
-// rather than replay it without them -- and "tool_calls" the calls the turn
-// delivered. Returns NULL, or why nothing was written.
+// rather than replay it without them -- "tool_calls" the calls the turn
+// delivered and "tool_results" (R17.7) the results the request carried.
+// Returns NULL, or why nothing was written.
 static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
                                  const char *prompt, int api, bool chat,
                                  uint64_t gen_rng, int max_tokens, int n_prompt,
                                  int n_gen, int cached, const char *reuse,
                                  bool spec_used, const turn_shape *shape,
-                                 const char *ctx_id, char file[64],
+                                 const char *ctx_id, jv *req, char file[64],
                                  char chain[65]) {
     model_t *m = s->m;
     char msha[65], bsha[65];
@@ -2790,8 +2939,11 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
         sb_lit(&tj, "]");
         sb_put(&tj, "", 1);
     }
-    if (sj.failed || cj.failed || tj.failed || shape->json.failed || g->calls.failed) {
-        free(sj.s); free(cj.s); free(tj.s);
+    bool rj_oom;
+    char *rj = prior_results_json(req, api, &rj_oom);
+    if (sj.failed || cj.failed || tj.failed || shape->json.failed || g->calls.failed ||
+        rj_oom) {
+        free(sj.s); free(cj.s); free(tj.s); free(rj);
         return "out of memory building the receipt";
     }
     char gname[128] = "cpu";
@@ -2846,6 +2998,7 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
         .serve_json = sj.s,
         .constraints_json = cj.s,
         .tool_calls_json = tj.s,
+        .tool_results_json = rj,
         .envelope_known = env_known, .envelope_state = env_state,
     };
     char wj[192] = "";
@@ -2858,6 +3011,7 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
     free(sj.s);
     free(cj.s);
     free(tj.s);
+    free(rj);
     return ok ? NULL : "the receipt could not be written (see server log)";
 }
 
@@ -5095,7 +5249,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             prep.diag.receipt_error = serve_receipt(                               \
                 s, e, &g, prompt, api, chat, gen_rng, q.max_tokens, prep.n_prompt,   \
                 n_gen, keep, prep.diag.prompt_reuse, spec_used, &shape,            \
-                prep.diag.context_id, receipt_file, receipt_chain);                \
+                prep.diag.context_id, req, receipt_file, receipt_chain);           \
             if (!prep.diag.receipt_error) {                                        \
                 prep.diag.receipt_file = receipt_file;                             \
                 prep.diag.receipt_chain = receipt_chain;                           \
