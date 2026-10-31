@@ -240,4 +240,8 @@ and the paired verdicts have no consistent direction across the files
 measured. At 2,000 positions the Wilcoxon test resolves such a reordering's
 file-specific drift, which is not a fidelity change; for that change it read
 closer on one file, further on one and level on two
-([golden pass on 1.5.0](golden-pass-2026-10-22.md)).
+([golden pass on 1.5.0](golden-pass-2026-10-22.md)). Those readings were solo
+scores, which run only the single-column dots; on the batched route, where
+AVX2's multi-column form runs, it reads level on Qwen3-4B Q4_K_M (mean KL
+equal to six digits, Wilcoxon p 0.65;
+[the chunked row](compat-reports/cpu-kquant-one-accumulator-chunked-2026-10-31/README.md)).
