@@ -2595,15 +2595,20 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                      id<MTLBuffer> y, NSUInteger y_off,
                      int n_in, int n_out, id<MTLBuffer> bias,
                      int n_col, int x_stride, int y_stride) {
-    // Small batches take the multi-column IDENTITY matvec, not the GEMM
-    // tiles: a 32-wide mm tile carrying 2 real columns is a full weight
-    // sweep through mostly-padding (measured on the 70B speculative verify:
-    // K=1 11.7 tok/s, K=2 through the mm path 2.2 tok/s). The identity
-    // matvec serves the weight row from cache across the columns instead —
-    // the same reasoning as CUDA's gemvb twins — and is bit-identical to
-    // n_col solo dispatches into the bargain. 16 covers the speculative
-    // window (spec_batch); real prefill batches go to the tiles as before.
-    if (n_col > 1 && n_col <= 16) {
+    // The narrowest batches take the multi-column IDENTITY matvec, not the
+    // GEMM tiles: a 32-wide mm tile carrying 2 real columns is a full weight
+    // sweep through mostly padding. Up to 2026-10-31 this held for 2 to 16
+    // columns, sized for the speculative window when verify rounds came
+    // through here. They no longer do (metal_forward_rows runs a round as its
+    // solo steps, and the decode microbatch calls enc_mv_cols itself), so
+    // only prompt chunks and scoring keep-forwards reach this, and none of
+    // them is held to a solo step's bits. Measured on the Metal test host
+    // (R3.24), GPU ms a forward at n columns, matvec against tiles:
+    // Qwen3.5-0.8B Q8_0 n=4 43 / 57, n=6 61 / 58, n=16 148 / 63;
+    // granite-4.0-h-micro Q4_K_M n=3 251 / 265, n=4 335 / 267, n=16 1332 /
+    // 282 (the matvec reuses nothing on Q4_K there). So the matvec keeps 2
+    // and 3 columns, and the tiles take 4 and up.
+    if (n_col > 1 && n_col <= 3) {
         enc_mv_cols(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
                     n_col, x_stride, y_stride, false);
         return;

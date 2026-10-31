@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Short prompt chunks on Metal take the GEMM tiles.** A Metal forward of 4
+  to 16 rows (a prompt's last chunk, a chunked score) ran the multi-column
+  identity matvec, which on a Q4_K file reused nothing: 16 rows cost 1.3 s on
+  granite-4.0-h-micro against 0.28 s on the tiles. Such forwards now take the
+  tiles, as wider ones always did; 2 and 3 rows keep the matvec, which is
+  faster there. Speculative verify rounds and the decode microbatch never
+  came through this branch and keep their exact routes. A chunked score of
+  granite-h-micro's 2,000-position corpus takes 225 s instead of 741 (R3.24).
+
 - **NVFP4 prefill on CUDA takes the tensor cores by default.** The
   dequantizing tensor-core route for NVFP4 (opt-in since R4.9.5) passed its
   float32-reference row (#508): 0.9997x the scalar route's mean KL over
