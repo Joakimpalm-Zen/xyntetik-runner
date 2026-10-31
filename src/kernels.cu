@@ -4303,12 +4303,19 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
 // Q5_K: k_gemv_q5_K v2, i.e. Q4_K's factored form with the fifth bit — bit g
 // of each qh byte, added as 16 before the conversion to float.
 //
-// R rows a warp (KQ_TWR, kernel_args.h; 2026-10-21). A block's staged x and
-// each column's Sum(x) are the same for every row, so a warp reads a lane's
-// eight x values and forms their sum ONCE per column and applies them to its
-// R rows. With one row a warp they were re-read and re-summed per row, and a
-// speculative verify pass over five columns cost about six batch-1 passes
-// (RTX 3070, Qwen2.5-7B Q4_K_M: 318 us a launch against 53 for k_gemv_q4_K).
+// KQ_DBR rows a warp and KQ_DBW warps a block (kernel_args.h; 2026-10-31,
+// R3.3.4). The 2026-10-21 form staged each 256-element block of x in shared
+// memory between two barriers and loaded every block's weights just before
+// using them. At 109 to 121 registers only two blocks fitted an SM, and the
+// warps waited on those loads (Nsight Compute on the RTX 3070: long-scoreboard
+// stalls, 18% of DRAM bandwidth): a five-column verify pass cost about 3.5 to
+// 4.7 batch-1 passes. Now x is staged double-buffered, with the next block
+// prefetched into registers while this one computes, one barrier a block, in
+// a conflict-free float4 layout (column t, half k of a lane's eight, lane l at
+// float4 (t*2 + k)*32 + l); and each row's next 16-byte header and quant bytes
+// are loaded while this block computes, the header's scale and min unpacked
+// from registers (kq_scale_min, get_scale_min_k4's bytes). Five columns cost
+// about 1.8 to 2.1 batch-1 passes, four about 1.5, sixteen about 4.5 (from 10).
 // Columns past a.batch are skipped rather than computed on stale x. Every
 // (row, column) keeps k_gemv_q4_K's (k_gemv_q5_K's) expressions in their
 // order, so its bits.
@@ -4317,13 +4324,36 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
     n[2] = (float)((v0 >> 16) & 0xFF); n[3] = (float)((v0 >> 24));              \
     n[4] = (float)(v1 & 0xFF);         n[5] = (float)((v1 >>  8) & 0xFF);       \
     n[6] = (float)((v1 >> 16) & 0xFF); n[7] = (float)((v1 >> 24));
+// a byte of a K-quant block header held as a uint4 (d, dmin, scales[12])
+static __device__ __forceinline__ unsigned kq_hb(uint4 h, int i) {
+    unsigned w = i < 4 ? h.y : i < 8 ? h.z : h.w;
+    return (w >> (8 * (i & 3))) & 0xFFu;
+}
+// get_scale_min_k4 and the two f16 factors from a register header: the same
+// bytes, so the same dg and mmg as k_gemv_q4_K computes from memory
+static __device__ __forceinline__ void kq_scale_min(uint4 h, int j, float *dg,
+                                                    float *mmg) {
+    unsigned sg, mg;
+    if (j < 4) {
+        sg = kq_hb(h, j) & 63;
+        mg = kq_hb(h, j + 4) & 63;
+    } else {
+        sg = (kq_hb(h, j + 4) & 0xF) | ((kq_hb(h, j - 4) >> 6) << 4);
+        mg = (kq_hb(h, j + 4) >> 4)  | ((kq_hb(h, j) >> 6) << 4);
+    }
+    float dd   = __half2float(__ushort_as_half((unsigned short)(h.x & 0xFFFF)));
+    float dmin = __half2float(__ushort_as_half((unsigned short)(h.x >> 16)));
+    *dg = dd * (float)(uchar)sg; *mmg = dmin * (float)(uchar)mg;
+}
 #define GEMVB_KQ(NAME, NC, BB, QOFF, HBIT)                                     \
-extern "C" __global__ void NAME(MV_PARAMS) {                                   \
-    __shared__ float xsm[NC][KG8ROW];                                          \
-    enum { R = KQ_TWR(NC) };                                                   \
+extern "C" __global__ void __launch_bounds__(KQ_DBW(NC) * 32)                  \
+NAME(MV_PARAMS) {                                                              \
+    __shared__ float4 xs4[2][(NC) * 64];                                       \
+    enum { R = KQ_DBR(NC), NT = KQ_DBW(NC) * 32,                               \
+           PF = ((NC) * 64 + KQ_DBW(NC) * 32 - 1) / (KQ_DBW(NC) * 32) };       \
     unsigned warp = threadIdx.x >> 5;                                          \
     unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
+    unsigned row0 = (blockIdx.x * KQ_DBW(NC) + warp) * R;                      \
     int nb = a.n_in / 256;                                                     \
     int nc = a.batch < (NC) ? a.batch : (NC);                                  \
     float s[R][NC];                                                            \
@@ -4333,45 +4363,71 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
     int ji    = (int)(lane >> 3);                                              \
     int sh    = ((((int)lane >> 2) & 1) == 0) ? 0 : 4;                         \
     int bbase = ((int)lane & 3) * 8;                                           \
-    int el    = (int)lane * KG8PAD;                                            \
-    for (int b = 0; b < nb; b++) {                                             \
-        int base_e = b * 256;                                                  \
-        _Pragma("unroll")                                                      \
-        for (int t = 0; t < NC; t++) {                                         \
-            if (t >= nc) continue;                                             \
-            const float *xg = x + (ulong64)t * a.xs + base_e;                  \
-            for (int e = threadIdx.x; e < 256; e += blockDim.x)                \
-                xsm[t][(e >> 3) * KG8PAD + (e & 7)] = xg[e];                   \
+    const uchar *rw[R];                                                        \
+    uint4 hd[R]; uint2 qd[R], hq[R];                                           \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        rw[r] = wb + a.w_off +                                                 \
+            (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * (BB);          \
+        hd[r] = *(const uint4 *)rw[r];                                         \
+        qd[r] = *(const uint2 *)(rw[r] + (QOFF) + ji * 32 + bbase);            \
+        hq[r] = HBIT ? *(const uint2 *)(rw[r] + 16 + bbase)                    \
+                     : make_uint2(0, 0);                                       \
+    }                                                                          \
+    float pf[PF][4];                                                           \
+    _Pragma("unroll")                                                          \
+    for (int j = 0; j < PF; j++) {                                             \
+        int q = (int)threadIdx.x + NT * j, t = q >> 6, gq = q & 63;            \
+        if (q < (NC) * 64 && t < nc) {                                         \
+            const float *xg = x + (ulong64)t * a.xs + gq * 4;                  \
+            pf[j][0] = xg[0]; pf[j][1] = xg[1];                                \
+            pf[j][2] = xg[2]; pf[j][3] = xg[3];                                \
+            xs4[0][(t * 2 + (gq & 1)) * 32 + (gq >> 1)] =                      \
+                make_float4(pf[j][0], pf[j][1], pf[j][2], pf[j][3]);           \
         }                                                                      \
-        __syncthreads();                                                       \
+    }                                                                          \
+    __syncthreads();                                                           \
+    for (int b = 0; b < nb; b++) {                                             \
         float dg[R], mmg[R], n[R][8];                                          \
         _Pragma("unroll")                                                      \
         for (int r = 0; r < R; r++) {                                          \
-            unsigned row = row0 + r;                                           \
-            const uchar *blk = wb + a.w_off +                                  \
-                (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * (BB) +     \
-                (ulong64)b * (BB);                                             \
-            float dd   = f16f(blk);                                            \
-            float dmin = f16f(blk + 2);                                        \
-            uchar sg, mg;                                                      \
-            get_scale_min_k4(g, blk + 4, &sg, &mg);                            \
-            dg[r] = dd * (float)sg; mmg[r] = dmin * (float)mg;                 \
-            uint2 qv = *(const uint2 *)(blk + (QOFF) + ji * 32 + bbase);       \
-            uint v0 = (qv.x >> sh) & 0x0F0F0F0Fu;                              \
-            uint v1 = (qv.y >> sh) & 0x0F0F0F0Fu;                              \
+            kq_scale_min(hd[r], g, &dg[r], &mmg[r]);                           \
+            uint v0 = (qd[r].x >> sh) & 0x0F0F0F0Fu;                           \
+            uint v1 = (qd[r].y >> sh) & 0x0F0F0F0Fu;                           \
             if (HBIT) {                                                        \
-                uint2 hv = *(const uint2 *)(blk + 16 + bbase);                 \
-                v0 += ((hv.x >> g) & 0x01010101u) << 4;                        \
-                v1 += ((hv.y >> g) & 0x01010101u) << 4;                        \
+                v0 += ((hq[r].x >> g) & 0x01010101u) << 4;                     \
+                v1 += ((hq[r].y >> g) & 0x01010101u) << 4;                     \
             }                                                                  \
             KG_NIBS(n[r], v0, v1)                                              \
         }                                                                      \
+        if (b + 1 < nb) {                                                      \
+            _Pragma("unroll")                                                  \
+            for (int r = 0; r < R; r++) {                                      \
+                const uchar *blk = rw[r] + (ulong64)(b + 1) * (BB);            \
+                hd[r] = *(const uint4 *)blk;                                   \
+                qd[r] = *(const uint2 *)(blk + (QOFF) + ji * 32 + bbase);      \
+                if (HBIT) hq[r] = *(const uint2 *)(blk + 16 + bbase);          \
+            }                                                                  \
+            _Pragma("unroll")                                                  \
+            for (int j = 0; j < PF; j++) {                                     \
+                int q = (int)threadIdx.x + NT * j, t = q >> 6, gq = q & 63;    \
+                if (q < (NC) * 64 && t < nc) {                                 \
+                    const float *xg = x + (ulong64)t * a.xs +                  \
+                                      (ulong64)(b + 1) * 256 + gq * 4;         \
+                    pf[j][0] = xg[0]; pf[j][1] = xg[1];                        \
+                    pf[j][2] = xg[2]; pf[j][3] = xg[3];                        \
+                }                                                              \
+            }                                                                  \
+        }                                                                      \
+        const float4 *xb4 = xs4[b & 1];                                        \
         _Pragma("unroll")                                                      \
         for (int t = 0; t < NC; t++) {                                         \
             if (t >= nc) continue;                                             \
-            const float *xp = xsm[t] + el;                                     \
-            float x0 = xp[0], x1 = xp[1], x2 = xp[2], x3 = xp[3];              \
-            float x4 = xp[4], x5 = xp[5], x6 = xp[6], x7 = xp[7];              \
+            float4 xa = xb4[(t * 2) * 32 + lane];                              \
+            float4 xc = xb4[(t * 2 + 1) * 32 + lane];                          \
+            float x0 = xa.x, x1 = xa.y, x2 = xa.z, x3 = xa.w;                  \
+            float x4 = xc.x, x5 = xc.y, x6 = xc.z, x7 = xc.w;                  \
             float sx = x0 + x1 + x2 + x3 + x4 + x5 + x6 + x7;                  \
             _Pragma("unroll")                                                  \
             for (int r = 0; r < R; r++) {                                      \
@@ -4379,6 +4435,15 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
                          + n[r][3] * x3 + n[r][4] * x4 + n[r][5] * x5          \
                          + n[r][6] * x6 + n[r][7] * x7;                        \
                 s[r][t] += dg[r] * tt - mmg[r] * sx;                           \
+            }                                                                  \
+        }                                                                      \
+        if (b + 1 < nb) {                                                      \
+            _Pragma("unroll")                                                  \
+            for (int j = 0; j < PF; j++) {                                     \
+                int q = (int)threadIdx.x + NT * j, t = q >> 6, gq = q & 63;    \
+                if (q < (NC) * 64 && t < nc)                                   \
+                    xs4[(b + 1) & 1][(t * 2 + (gq & 1)) * 32 + (gq >> 1)] =    \
+                        make_float4(pf[j][0], pf[j][1], pf[j][2], pf[j][3]);   \
             }                                                                  \
         }                                                                      \
         __syncthreads();                                                       \
@@ -4588,57 +4653,99 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
 // sum, as this macro used to, is a different reduction tree.
 // (k_gemm_q6_K premultiplies d into each weight instead, which agrees in exact
 // arithmetic but not necessarily in floating point, so it is not a twin.)
-// R rows a warp (Q6_TWR, as the K-quant twins above): a lane's four x values
-// of each half are read once per column for all R rows.
-#define GEMVB_Q6_K(NAME, NC)                                                   \
-extern "C" __global__ void NAME(MV_PARAMS) {                                   \
-    __shared__ float xsm[NC][256];                                             \
-    enum { R = Q6_TWR(NC) };                                                   \
+// KQ_DBR rows a warp and KQ_DBW warps a block, as the Q4_K twins above
+// (2026-10-31, R3.3.4): x double-buffered in shared memory (a plain layout:
+// a lane's reads of each half stride 32 floats, so a warp's are conflict-free),
+// the next block's x and each row's next 15 weight bytes loaded into registers
+// while this block computes, one barrier a block. Five columns cost about 1.5
+// to 1.7 batch-1 passes on the RTX 3070, from 2.5 to 2.7.
+#define Q6_LOADW(BI)                                                           \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        const uchar *blk = rw[r] + (ulong64)(BI) * 210;                        \
+        wd[r] = (unsigned)blk[208] | ((unsigned)blk[209] << 8);                \
+        _Pragma("unroll")                                                      \
+        for (int half = 0; half < 2; half++) {                                 \
+            const uchar *ql = blk + half * 64;                                 \
+            const uchar *qh = blk + 128 + half * 32;                           \
+            const uchar *sc = blk + 192 + half * 8;                            \
+            wq[r][half][0] = ql[lane]; wq[r][half][1] = ql[lane + 32];         \
+            wq[r][half][2] = qh[lane];                                         \
+            wsc[r][half] = (unsigned)sc[0 + is] |                              \
+                           ((unsigned)sc[2 + is] << 8) |                       \
+                           ((unsigned)sc[4 + is] << 16) |                      \
+                           ((unsigned)sc[6 + is] << 24);                       \
+        }                                                                      \
+    }
+#define GEMVB_Q6_DB(NAME, NC, RR, WPB)                                         \
+extern "C" __global__ void __launch_bounds__((WPB) * 32) NAME(MV_PARAMS) {     \
+    __shared__ float xs[2][NC][256];                                           \
+    enum { R = (RR), NT = (WPB) * 32,                                          \
+           PF = ((NC) * 64 + (WPB) * 32 - 1) / ((WPB) * 32) };                 \
     unsigned warp = threadIdx.x >> 5;                                          \
     unsigned lane = threadIdx.x & 31;                                          \
-    unsigned row0 = (blockIdx.x * GEMM_WARPS + warp) * R;                      \
+    unsigned row0 = (blockIdx.x * (WPB) + warp) * R;                           \
     int nb = a.n_in / 256;                                                     \
     int nc = a.batch < (NC) ? a.batch : (NC);                                  \
     float s0[R][NC], s1[R][NC];                                                \
     _Pragma("unroll") for (int r = 0; r < R; r++)                              \
         _Pragma("unroll") for (int t = 0; t < NC; t++) s0[r][t] = s1[r][t] = 0.0f; \
     int is = (int)(lane >> 4);                                                 \
-    for (int b = 0; b < nb; b++) {                                             \
-        int base_e = b * 256;                                                  \
-        _Pragma("unroll")                                                      \
-        for (int t = 0; t < NC; t++) {                                         \
-            if (t >= nc) continue;                                             \
-            const float *xg = x + (ulong64)t * a.xs + base_e;                  \
-            for (int e = threadIdx.x; e < 256; e += blockDim.x)                \
-                xsm[t][e] = xg[e];                                             \
+    const uchar *rw[R];                                                        \
+    unsigned wq[R][2][3], wsc[R][2], wd[R];                                    \
+    _Pragma("unroll")                                                          \
+    for (int r = 0; r < R; r++) {                                              \
+        unsigned row = row0 + r;                                               \
+        rw[r] = wb + a.w_off +                                                 \
+            (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 210;           \
+    }                                                                          \
+    Q6_LOADW(0)                                                                \
+    float pf[PF][4];                                                           \
+    _Pragma("unroll")                                                          \
+    for (int j = 0; j < PF; j++) {                                             \
+        int q = (int)threadIdx.x + NT * j, t = q >> 6, gq = q & 63;            \
+        if (q < (NC) * 64 && t < nc) {                                         \
+            const float *xg = x + (ulong64)t * a.xs + gq * 4;                  \
+            pf[j][0] = xg[0]; pf[j][1] = xg[1];                                \
+            pf[j][2] = xg[2]; pf[j][3] = xg[3];                                \
+            xs[0][t][gq * 4 + 0] = pf[j][0]; xs[0][t][gq * 4 + 1] = pf[j][1];  \
+            xs[0][t][gq * 4 + 2] = pf[j][2]; xs[0][t][gq * 4 + 3] = pf[j][3];  \
         }                                                                      \
-        __syncthreads();                                                       \
+    }                                                                          \
+    __syncthreads();                                                           \
+    for (int b = 0; b < nb; b++) {                                             \
         float d[R], c[R][2][4];                                                \
         _Pragma("unroll")                                                      \
         for (int r = 0; r < R; r++) {                                          \
-            unsigned row = row0 + r;                                           \
-            const uchar *blk = wb + a.w_off +                                  \
-                (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 210 +      \
-                (ulong64)b * 210;                                              \
-            d[r] = f16f(blk + 208);                                            \
+            d[r] = __half2float(__ushort_as_half((unsigned short)wd[r]));      \
             _Pragma("unroll")                                                  \
             for (int half = 0; half < 2; half++) {                             \
-                const uchar *ql = blk + half * 64;                             \
-                const uchar *qh = blk + 128 + half * 32;                       \
-                const signed char *sc =                                        \
-                    (const signed char *)(blk + 192) + half * 8;               \
-                int q1 = (int)((ql[lane]      & 0xF) |                         \
-                               (((qh[lane] >> 0) & 3) << 4)) - 32;             \
-                int q2 = (int)((ql[lane + 32] & 0xF) |                         \
-                               (((qh[lane] >> 2) & 3) << 4)) - 32;             \
-                int q3 = (int)((ql[lane]      >> 4)  |                         \
-                               (((qh[lane] >> 4) & 3) << 4)) - 32;             \
-                int q4 = (int)((ql[lane + 32] >> 4)  |                         \
-                               (((qh[lane] >> 6) & 3) << 4)) - 32;             \
-                c[r][half][0] = (float)(sc[0 + is] * q1);                      \
-                c[r][half][1] = (float)(sc[2 + is] * q2);                      \
-                c[r][half][2] = (float)(sc[4 + is] * q3);                      \
-                c[r][half][3] = (float)(sc[6 + is] * q4);                      \
+                unsigned l0 = wq[r][half][0], l1 = wq[r][half][1];             \
+                unsigned h = wq[r][half][2];                                   \
+                int q1 = (int)((l0 & 0xF) | (((h >> 0) & 3) << 4)) - 32;       \
+                int q2 = (int)((l1 & 0xF) | (((h >> 2) & 3) << 4)) - 32;       \
+                int q3 = (int)((l0 >> 4)  | (((h >> 4) & 3) << 4)) - 32;       \
+                int q4 = (int)((l1 >> 4)  | (((h >> 6) & 3) << 4)) - 32;       \
+                unsigned sw = wsc[r][half];                                    \
+                c[r][half][0] = (float)((int)(signed char)(sw & 0xFF) * q1);   \
+                c[r][half][1] =                                                \
+                    (float)((int)(signed char)((sw >> 8) & 0xFF) * q2);        \
+                c[r][half][2] =                                                \
+                    (float)((int)(signed char)((sw >> 16) & 0xFF) * q3);       \
+                c[r][half][3] = (float)((int)(signed char)(sw >> 24) * q4);    \
+            }                                                                  \
+        }                                                                      \
+        if (b + 1 < nb) {                                                      \
+            Q6_LOADW(b + 1)                                                    \
+            _Pragma("unroll")                                                  \
+            for (int j = 0; j < PF; j++) {                                     \
+                int q = (int)threadIdx.x + NT * j, t = q >> 6, gq = q & 63;    \
+                if (q < (NC) * 64 && t < nc) {                                 \
+                    const float *xg = x + (ulong64)t * a.xs +                  \
+                                      (ulong64)(b + 1) * 256 + gq * 4;         \
+                    pf[j][0] = xg[0]; pf[j][1] = xg[1];                        \
+                    pf[j][2] = xg[2]; pf[j][3] = xg[3];                        \
+                }                                                              \
             }                                                                  \
         }                                                                      \
         _Pragma("unroll")                                                      \
@@ -4648,7 +4755,7 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
             _Pragma("unroll") for (int r = 0; r < R; r++) acc[r] = 0.0f;       \
             _Pragma("unroll")                                                  \
             for (int half = 0; half < 2; half++) {                             \
-                const float *xp = xsm[t] + half * 128;                         \
+                const float *xp = xs[b & 1][t] + half * 128;                   \
                 float xa = xp[lane], xb = xp[lane + 32];                       \
                 float xc = xp[lane + 64], xd = xp[lane + 96];                  \
                 _Pragma("unroll")                                              \
@@ -4659,6 +4766,17 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
             _Pragma("unroll")                                                  \
             for (int r = 0; r < R; r++) {                                      \
                 if (b & 1) s1[r][t] += acc[r]; else s0[r][t] += acc[r];        \
+            }                                                                  \
+        }                                                                      \
+        if (b + 1 < nb) {                                                      \
+            _Pragma("unroll")                                                  \
+            for (int j = 0; j < PF; j++) {                                     \
+                int q = (int)threadIdx.x + NT * j, t = q >> 6, gq = q & 63;    \
+                if (q < (NC) * 64 && t < nc) {                                 \
+                    float *xd = xs[(b + 1) & 1][t] + gq * 4;                   \
+                    xd[0] = pf[j][0]; xd[1] = pf[j][1];                        \
+                    xd[2] = pf[j][2]; xd[3] = pf[j][3];                        \
+                }                                                              \
             }                                                                  \
         }                                                                      \
         __syncthreads();                                                       \
@@ -4676,6 +4794,7 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
         }                                                                      \
     }                                                                          \
 }
+#define GEMVB_Q6_K(NAME, NC) GEMVB_Q6_DB(NAME, NC, KQ_DBR(NC), KQ_DBW(NC))
 
 // ---- BF16: k_mv_bf16's twin (2026-08-20). bf16 decodes at batch 1 through
 // k_mv_bf16 (there is no k_gemv_bf16), whose lane l accumulates elements
@@ -4760,6 +4879,15 @@ GEMVB_Q4_K(k_gemvb_q4_K_x4, 4)
 GEMVB_Q4_K(k_gemvb_q4_K_x8, 8)
 GEMVB_Q5_K(k_gemvb_q5_K_x4, 4)
 GEMVB_Q5_K(k_gemvb_q5_K_x8, 8)
+GEMVB_Q6_K(k_gemvx_q6_K_x5, 5)
+GEMVB_Q6_K(k_gemvx_q6_K_x6, 6)
+GEMVB_Q6_K(k_gemvx_q6_K_x7, 7)
+GEMVB_Q4_K(k_gemvx_q4_K_x5, 5)
+GEMVB_Q5_K(k_gemvx_q5_K_x5, 5)
+GEMVB_Q4_K(k_gemvx_q4_K_x6, 6)
+GEMVB_Q5_K(k_gemvx_q5_K_x6, 6)
+GEMVB_Q4_K(k_gemvx_q4_K_x7, 7)
+GEMVB_Q5_K(k_gemvx_q5_K_x7, 7)
 GEMVB_Q6_K(k_gemvb_q6_K_x4, 4)
 GEMVB_Q6_K(k_gemvb_q6_K_x8, 8)
 GEMVB_Q3K(k_gemvb_q3_K_x4, 4)
