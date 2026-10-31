@@ -70,6 +70,9 @@ Paired, on the same positions:
 
 Runner's `q4_k` writer is not the cause of the gap to unsloth's Q4_K_M: on a real BF16 tensor it writes the same
 bytes as ggml's `quantize_q4_K` in 3,422 of 3,456 super-blocks, and the other 34 differ by one step in a scale.
-The gap is the recipe: a uniform Q4_K against unsloth's mix of types and calibration.
+Those 34 were floating-point contraction in this build (an FMA rounding once where ggml rounds twice); the
+quantizer is now built without it and is byte-identical to ggml (runner #501). The files here were written before
+that change, so about 1% of their Q4_K super-blocks sit one rounding step from what the fixed build writes. The
+gap to unsloth is the recipe: a uniform Q4_K against unsloth's mix of types and calibration.
 
 The records are the four `gold-logits-*.json` files beside this one.

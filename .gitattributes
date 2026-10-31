@@ -34,3 +34,8 @@ python/tests/fixtures/** -text
 # added a byte a line and failed the Windows suite (215 bytes against 206
 # for a nine-line pin, 2026-10-24).
 tests/compatibility/tier-smoke/*.txt -text
+
+# The quantizer's ggml golden: tests/test_quantize.c writes the BF16 slice and
+# compares every byte with ggml's output files.
+tests/fixtures/quant-golden/*.bf16 -text
+tests/fixtures/quant-golden/*.bin -text
