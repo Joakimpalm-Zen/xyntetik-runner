@@ -419,7 +419,8 @@ recorded failure.
   identical to the published 1.5.0 binary at every scored position; a local
   Clang build of the same source reads 19 of 23, the compiler's doing. Level or
   ahead on the reference's chosen token on 22 of 23. [Build conditions](docs/golden-pass-2026-10-25.md). [Evidence](MANUAL.md#evidence-and-tradeoffs) ·
-  [Speed tables](docs/benchmarks.md)
+  [Speed tables](docs/benchmarks.md) ·
+  [Measure your own quantized file](docs/measure-a-quantized-file.md)
 
 <a id="all-commands"></a>
 ## All commands
