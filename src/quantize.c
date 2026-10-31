@@ -61,6 +61,7 @@ static inline void fp_denormals_restore(fp_denormal_state s) { (void)s; }
 
 
 typedef struct { f16_t d; uint8_t qs[16]; } wblock_q4_0;
+typedef struct { uint8_t e; uint8_t qs[16]; } wblock_mxfp4;   // 17 bytes
 typedef struct { f16_t d; int8_t qs[32]; }  wblock_q8_0;
 typedef struct {
     uint8_t hmask[32], qs[64], scales[12];
@@ -531,6 +532,49 @@ static void quantize_row_q4_K(const float *x, uint8_t *dst, int n) {
     }
 }
 
+// OCP microscaling FP4 (R4.7.1), ggml's quantize_row_mxfp4_ref: one E8M0
+// power-of-two scale per 32 values, 2^(floor(log2(amax)) - 2), and each value
+// the nearest E2M1 level {0, .5, 1, 1.5, 2, 3, 4, 6} with its sign (the first
+// of two equally near wins, as in ggml's best_index_mxfp4). floor(log2) comes
+// from frexpf, exact on every libm. Byte layout as dq_mxfp4 in quants.c
+// reads it: element j in the low nibble of qs[j], element j+16 in the high.
+static const float mxfp4_levels[16] = {
+     0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
+     0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
+};
+
+static uint8_t mxfp4_nearest(float x, float d) {
+    int best = 0;
+    float err = fabsf(mxfp4_levels[0] * d - x);
+    for (int i = 1; i < 16; i++) {
+        float e = fabsf(mxfp4_levels[i] * d - x);
+        if (e < err) { err = e; best = i; }
+    }
+    return (uint8_t)best;
+}
+
+static void quantize_row_mxfp4(const float *x, uint8_t *dst, int n) {
+    wblock_mxfp4 *b = (wblock_mxfp4 *)dst;
+    for (int i = 0; i < n / 32; i++, b++, x += 32) {
+        float amax = 0.0f;
+        for (int j = 0; j < 32; j++)
+            if (fabsf(x[j]) > amax) amax = fabsf(x[j]);
+        int e = 0;
+        if (amax > 0.0f) {
+            int ex;
+            frexpf(amax, &ex);              // amax = m * 2^ex, m in [0.5, 1)
+            e = (ex - 1) - 2 + 127;
+            if (e < 0) e = 0;
+            if (e > 254) e = 254;           // 255 is E8M0's NaN
+        }
+        b->e = (uint8_t)e;
+        float d = ldexpf(1.0f, e - 127);
+        for (int j = 0; j < 16; j++)
+            b->qs[j] = (uint8_t)(mxfp4_nearest(x[j], d) |
+                                 (mxfp4_nearest(x[j + 16], d) << 4));
+    }
+}
+
 static void quantize_row_f16(const float *x, uint8_t *dst, int n) {
     f16_t *h = (f16_t *)dst;
     for (int i = 0; i < n; i++) h[i] = f32_to_f16(x[i]);
@@ -561,6 +605,7 @@ static void quantize_row_any(int type, const float *rowf, uint8_t *rowq, int n) 
         case T_Q3_K: quantize_row_q3_K(rowf, rowq, n); break;
         case T_Q4_K: quantize_row_q4_K(rowf, rowq, n); break;
         case T_Q6_K: quantize_row_q6_K(rowf, rowq, n); break;
+        case T_MXFP4: quantize_row_mxfp4(rowf, rowq, n); break;
         case T_F16:  quantize_row_f16(rowf, rowq, n); break;
         case T_BF16: quantize_row_bf16(rowf, rowq, n); break;
         default:     memcpy(rowq, rowf, sizeof(float) * (size_t)n); break;
@@ -570,7 +615,7 @@ static void quantize_row_any(int type, const float *rowf, uint8_t *rowq, int n) 
 static bool quantize_row_writable(int type) {
     return type == T_F32 || type == T_F16 || type == T_BF16 ||
            type == T_Q8_0 || type == T_Q4_0 || type == T_Q3_K ||
-           type == T_Q4_K || type == T_Q6_K;
+           type == T_Q4_K || type == T_Q6_K || type == T_MXFP4;
 }
 
 // ---------------------------------------------------------------- writer
@@ -848,6 +893,7 @@ static int type_from_name(const char *s) {
     if (!strcmp(s, "q3_k")) return T_Q3_K;
     if (!strcmp(s, "q4_k")) return T_Q4_K;
     if (!strcmp(s, "q6_k")) return T_Q6_K;
+    if (!strcmp(s, "mxfp4")) return T_MXFP4;
     if (!strcmp(s, "f16"))  return T_F16;
     if (!strcmp(s, "bf16")) return T_BF16;
     return -2;
@@ -911,7 +957,7 @@ static bool type_plan_load(const char *path, type_plan_t *plan) {
             has_default = true;
             if (plan->dflt == -2) {
                 fprintf(stderr, "error: type-plan default \"%s\" is not one of "
-                        "keep|q8_0|q4_0|q3_k|f16\n", jv_str(d, "?"));
+                        "keep|q8_0|q4_0|q3_k|q4_k|q6_k|mxfp4|f16|bf16\n", jv_str(d, "?"));
                 ok = false;
             }
         }
@@ -937,7 +983,7 @@ static bool type_plan_load(const char *path, type_plan_t *plan) {
             int ty = type_from_name(jv_str(t, NULL));
             if (ty == -2) {
                 fprintf(stderr, "error: type-plan rule %d type \"%s\" is not "
-                        "one of keep|q8_0|q4_0|q3_k|f16\n", i, jv_str(t, "?"));
+                        "one of keep|q8_0|q4_0|q3_k|q4_k|q6_k|mxfp4|f16|bf16\n", i, jv_str(t, "?"));
                 ok = false;
                 break;
             }
@@ -2551,7 +2597,7 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                        float surgery_factor, context_surgery_result *surgery_result) {
     if (target != T_KEEP && !quantize_row_writable(target)) {
         fprintf(stderr, "error: quantize target must be q8_0, q4_0, q3_k, "
-                "q4_k, q6_k, f16, or bf16\n");
+                "q4_k, q6_k, mxfp4, f16, or bf16\n");
         return 1;
     }
     quantize_job job;

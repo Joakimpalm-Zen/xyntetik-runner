@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--quant mxfp4` and `"type":"mxfp4"` write OCP microscaling FP4.** The
+  rewriter read MXFP4 (gpt-oss ships its experts in it) but could not write
+  it, so a gpt-oss artifact that went through a merge or a requantization
+  left its native format. The writer is ggml's reference one: one E8M0
+  power-of-two scale per 32 values, 2^(floor(log2(amax)) - 2), each value
+  the nearest signed E2M1 level. A source already at MXFP4 is copied, not
+  rewritten.
+
 - **The KV gather covers short forwards and the decode microbatch.** With
   full offload the host KV cache stays authoritative, so every forward's new
   K and V rows go back to it. A decoded token's came back in one copy since

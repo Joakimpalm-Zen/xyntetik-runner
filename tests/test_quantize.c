@@ -465,6 +465,65 @@ int main(void) {
         printf("ok: Q3_K plan round-trips exactly and preserves unselected bytes\n");
     }
 
+    // R4.7.1: the MXFP4 writer. Values on the grid its scale choice implies
+    // (each block's largest magnitude 6 * 2^s, every value a signed E2M1
+    // level times 2^s) come back bit-exactly through the reader; off-grid
+    // values come back as the nearest level at that scale; an all-zero block
+    // is scale byte 0 and zeros.
+    {
+        enum { NB = 8, N = 32 * NB };
+        static const float lv[8] = { 0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f };
+        static float grid[N], ramp_x[N];
+        for (int b = 0; b < NB; b++) {
+            float sc = ldexpf(1.0f, b - 4);
+            for (int j = 0; j < 32; j++) {
+                float v = lv[(j * 5 + b) % 8] * sc;
+                grid[32 * b + j] = (j + b) % 3 == 0 ? -v : v;
+            }
+            grid[32 * b + 7] = 6.0f * sc;               // fixes the block's scale
+            if (b == NB - 1)
+                for (int j = 0; j < 32; j++) grid[32 * b + j] = 0.0f;
+        }
+        for (int i = 0; i < N; i++) ramp_x[i] = ramp((uint64_t)i * 7) * 1.37f;
+        const char *in = "q_mx_in.gguf", *out = "q_mx_out.gguf";
+        for (int pass = 0; pass < 2; pass++) {
+            const float *x = pass ? ramp_x : grid;
+            tdesc ts[1] = { { "blk.0.ffn_down_exps.weight", {32, NB}, 2, (float *)x, N, T_F32 } };
+            write_gguf(in, ts, 1, 0);
+            assert(quantize_gguf(in, out, T_MXFP4, NULL) == 0);
+            gguf_file g;
+            assert(gguf_open(&g, out));
+            gguf_tensor *t = gguf_find_tensor(&g, "blk.0.ffn_down_exps.weight");
+            assert(t && t->type == T_MXFP4 && t->nbytes == 17u * NB);
+            float back[32];
+            for (int b = 0; b < NB; b++) {
+                const uint8_t *blk = (const uint8_t *)t->data + 17u * (unsigned)b;
+                dequant_row(T_MXFP4, blk, back, 32);
+                float amax = 0.0f;
+                for (int j = 0; j < 32; j++) if (fabsf(x[32 * b + j]) > amax) amax = fabsf(x[32 * b + j]);
+                int ex = 0;
+                if (amax > 0.0f) frexpf(amax, &ex);
+                float d = amax > 0.0f ? ldexpf(1.0f, ex - 3) : ldexpf(1.0f, -127);
+                assert(amax > 0.0f ? blk[0] == ex - 3 + 127 : blk[0] == 0);
+                for (int j = 0; j < 32; j++) {
+                    float v = x[32 * b + j];
+                    if (!pass) { assert(back[j] == v); continue; }
+                    // the nearest level at scale d (ties to the first)
+                    float best = 0.0f, err = fabsf(v);
+                    for (int k = 0; k < 8; k++)
+                        for (int sg = 1; sg >= -1; sg -= 2) {
+                            float c = sg * lv[k] * d, e = fabsf(c - v);
+                            if (e < err) { err = e; best = c; }
+                        }
+                    assert(fabsf(back[j] - v) == err || back[j] == best);
+                }
+            }
+            gguf_close(&g);
+        }
+        remove(in); remove(out);
+        printf("ok: mxfp4 writer: grid values round-trip exactly, others take the nearest level\n");
+    }
+
     // A type plan naming a K-quant for a row the K-quant cannot describe.
     // should_quantize only demands ne[0] % 32 == 0, but Q3_K's super-block is
     // 256 wide: a 288-wide row has no whole number of Q3_K blocks, so the
