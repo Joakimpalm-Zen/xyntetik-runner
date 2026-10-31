@@ -6843,20 +6843,36 @@ static void route_replay_report(void) {
             (unsigned long)g_replay.missing);
 }
 
-// One trace line, as moe_trace_emit writes it.
+// The value after "key": in one JSON line, past any whitespace, or NULL.
+static const char *route_rec_value(const char *line, const char *key) {
+    char q[24];
+    snprintf(q, sizeof q, "\"%s\"", key);
+    const char *v = strstr(line, q);
+    if (!v) return NULL;
+    v += strlen(q);
+    while (*v == ' ' || *v == '\t') v++;
+    if (*v++ != ':') return NULL;
+    while (*v == ' ' || *v == '\t') v++;
+    return v;
+}
+
+// One trace line: moe_trace_emit's own, or the same record rewritten by any
+// JSON writer (whitespace between tokens is allowed).
 static bool route_rec_parse(const char *line, route_rec *r) {
-    const char *p = strstr(line, "\"pos\":"), *l = strstr(line, "\"layer\":"),
-               *e = strstr(line, "\"experts\":[");
-    if (!p || !l || !e || sscanf(p + 6, "%d", &r->pos) != 1 ||
-        sscanf(l + 8, "%d", &r->layer) != 1)
+    const char *p = route_rec_value(line, "pos"), *l = route_rec_value(line, "layer"),
+               *e = route_rec_value(line, "experts");
+    if (!p || !l || !e || *e != '[' || sscanf(p, "%d", &r->pos) != 1 ||
+        sscanf(l, "%d", &r->layer) != 1)
         return false;
-    e += 11;
+    e++;
     r->n = 0;
+    while (*e == ' ' || *e == '\t') e++;
     while (*e && *e != ']') {
         char *end;
         long v = strtol(e, &end, 10);
         if (end == e || r->n >= ROUTE_USED_MAX || v < 0) return false;
         r->ids[r->n++] = (int)v;
+        while (*end == ' ' || *end == '\t') end++;
         e = *end == ',' ? end + 1 : end;
     }
     return *e == ']' && r->n > 0;
