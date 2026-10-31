@@ -5,6 +5,22 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Dense Mamba-2 hybrids run on Metal.** A dense `granitehybrid` model
+  (Granite-4 h-micro) or a `nemotron_h` model (Nemotron-Nano-9B-v2) that fits
+  whole now runs on the device on a Metal build, where it used to run on the
+  CPU. The Metal kernels cover the selective scan with its D skip, the conv
+  with its bias over the layer's window, the silu-gated grouped RMS norm and
+  nemotron_h's gate-less squared-ReLU MLP. granite-4.0-h-micro Q4_K_M decodes
+  at 14.5 against 8.25 tokens a second on the Metal test host, with the CPU's
+  greedy text, plain and with `--draft lookup`. Against IBM's float32
+  reference at 2,000 positions it scores the CPU route's mean KL (0.9997x).
+  A model with an adapter, or one that does not fit whole, still runs on the
+  CPU on Metal, as do the MoE hybrids (granite h-tiny and h-small,
+  `nemotron_h_moe`). `make test-metal-mamba2` gates it. `test-gpu-identity`
+  now takes `GPU_ID_LIMIT`, which can only tighten its bound: on the toy
+  fixtures a dropped D skip moved the logits by less than the cross-backend
+  bound (R4.10).
+
 - **Dense Qwen3.5 models run on Metal.** The Gated DeltaNet layers of a
   `qwen35` model (Qwen3.5, Qwen3.8, Ornith) have Metal kernels: the conv
   step over the layer's window, the q/k norms, the recurrence and the gated

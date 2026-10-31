@@ -80,6 +80,24 @@ static int g_n_batch = N_BATCH;
 // mistake: dropping the attention temperature measures 2.05e-2.
 #define GPU_DEV_FRAC 2e-3
 
+// GPU_ID_LIMIT=F: a tighter bound for one fixture, never a looser one (a
+// value above GPU_DEV_FRAC is refused). The cross-backend constant is sized
+// for real files' residue; on a toy whose honest residue is a millionth of
+// that, a whole wrong term can hide under it: the Mamba-2 scan with its D
+// skip dropped moved a toy hybrid's logits by 4.9e-4 of range, inside 2e-3,
+// where the healthy kernels sit at 1.4e-8 (R4.10, 2026-10-31).
+static double gpu_dev_limit(void) {
+    const char *e = getenv("GPU_ID_LIMIT");
+    if (!e || !*e) return GPU_DEV_FRAC;
+    double v = strtod(e, NULL);
+    if (!(v > 0) || v > GPU_DEV_FRAC) {
+        fprintf(stderr, "GPU_ID_LIMIT=%s: a fixture's bound must be in (0, %g]\n",
+                e, GPU_DEV_FRAC);
+        exit(2);
+    }
+    return v;
+}
+
 static int g_gpu_layers = 0;
 
 // Deliberately not the tolerance-gate corpus: this runs on toy fixtures whose
@@ -227,9 +245,9 @@ static int compare_logits(const float *cpu, const float *gpu, int nv, int steps)
 
     printf("  %zu logits over %d positions | %zu differ, mean|dlogit| %.3g "
            "= %.3g of mean range %.3g (limit %g), worst %.3g\n",
-           n, steps, n_diff, mean_dev, frac, range, GPU_DEV_FRAC, worst);
+           n, steps, n_diff, mean_dev, frac, range, gpu_dev_limit(), worst);
 
-    if (frac > GPU_DEV_FRAC) {
+    if (frac > gpu_dev_limit()) {
         printf("FAIL: CPU and GPU disagree by more than reduction-order "
                "rounding — this is a missing or wrong operation on one side, "
                "not a rounding difference\ngpu-identity: FAILED\n");
@@ -298,6 +316,7 @@ static int self_test(void) {
 }
 
 int main(int argc, char **argv) {
+    (void)gpu_dev_limit();   // a bad GPU_ID_LIMIT stops before any run
     if (argc > 1 && strcmp(argv[1], "--self-test") == 0) return self_test();
     const char *path = argc > 1 ? argv[1] : "test.gguf";
     if (argc > 2) g_gpu_layers = atoi(argv[2]);

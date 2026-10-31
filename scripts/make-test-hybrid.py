@@ -43,6 +43,7 @@ Usage:  make-test-hybrid.py <out-prefix> [--arch granitehybrid] [--dense] [--rop
                                       [--prune-fixture]
 Writes <out>.gguf (valid) and <out>.missing-ssm_d.gguf (drops one SSM tensor).
 """
+import os
 import sys
 
 from gguf_fixture import ku, kf, ks, kb, kas, kaf, kai, kau, pack, ones, write_gguf
@@ -69,6 +70,12 @@ N_SSM_HEADS = 4           # ssm.time_step_rank
 SSM_INNER = 2 * E         # ssm.inner_size == 2*E (Mamba-2 expansion), = 64
 SSM_STATE = 8             # ssm.state_size
 SSM_GROUPS = 1            # ssm.group_count
+# HYBRID_TEST_STATE=N / HYBRID_TEST_GROUPS=G: a scan state N wide and G
+# groups of heads. A device scan keeps the state across 32-lane simdgroups,
+# so its lane tails need N past 32 and 64 (R4.10's Metal gate takes 40 and
+# 72), and the head-to-group map needs G > 1 (granite ships 1).
+SSM_STATE = int(os.environ.get("HYBRID_TEST_STATE", SSM_STATE))
+SSM_GROUPS = int(os.environ.get("HYBRID_TEST_GROUPS", SSM_GROUPS))
 SSM_CONV = 4              # ssm.conv_kernel
 SSM_HDIM = SSM_INNER // N_SSM_HEADS                  # 16 (mamba head dim)
 CONV_DIM = SSM_INNER + 2 * SSM_GROUPS * SSM_STATE    # x, B, C convolved together
@@ -96,10 +103,15 @@ TTYPE = [2, 3, 3] + [6] * 256
 
 
 _seed = 0x5510
+# HYBRID_TEST_AMP=A: weights drawn from +-A/2 instead of +-0.04. At the
+# default a recurrent branch barely moves the logits (their range is about
+# 0.07), so a gate comparing two backends there cannot see a broken scan;
+# R4.10's Metal gate takes a wider draw.
+AMP = float(os.environ.get("HYBRID_TEST_AMP", ".08"))
 def rnd():
     global _seed
     _seed = (_seed * 1103515245 + 12345) & 0x7fffffff
-    return (_seed / 0x7fffffff - .5) * .08
+    return (_seed / 0x7fffffff - .5) * AMP
 
 
 def flist(n): return [rnd() for _ in range(n)]

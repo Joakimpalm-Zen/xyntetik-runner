@@ -2067,7 +2067,7 @@
         },
         "metal": {
           "kind": "limit",
-          "reason": "Metal has no SSM path; a Metal build runs this file on the CPU.",
+          "reason": "Dense nemotron_h runs on Metal (R4.10; gated on toy fixtures), but this file has no Metal row: it does not fit the 8 GB Metal test host's memory.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },

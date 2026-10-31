@@ -98,9 +98,12 @@ typedef struct {
     // and dn_state, as m->kcache points into kc.
     id<MTLComputePipelineState> p_dn_conv, p_dn_ring, p_dn_l2norm, p_dn_recur,
                                 p_dn_gnorm, p_q35_split;
+    id<MTLComputePipelineState> p_m2_conv, p_m2_scan, p_m2_gnorm;   // Mamba-2
+    id<MTLComputePipelineState> p_relu2;   // nemotron_h's gate-less MLP
     id<MTLBuffer> dn_qkv, dn_z, dn_braw, dn_araw, dn_aux, dn_y;
     id<MTLBuffer> dn_conv, dn_state;
     id<MTLBuffer> *dn_cw, *dn_dt, *dn_A, *dn_nw;   // per layer, nil off recurrent layers
+    id<MTLBuffer> *dn_cb, *dn_D;                   // Mamba-2: the conv bias, the D skip
     id<MTLBuffer> att_acc, att_ms;   // chunked-decode partials
     id<MTLBuffer> moe_logits, moe_sel, moe_selw, moe_hb, moe_hb2, moe_eout;
     id<MTLBuffer> moe_colmap, moe_eoff;   // grouped-MMA slot map + offsets
@@ -133,6 +136,15 @@ typedef struct { int n, x_stride, y_stride; float eps; } norm_args;
 // mirrors struct dn_args in kernels.metal — keep the field order in step
 typedef struct { int n, convdim, histn, K, in_stride, sk, ng, nh, hv, keydim, inner;
                  float l2_eps, rms_eps; } dn_args;
+// mirrors struct m2_args in kernels.metal — keep the field order in step
+typedef struct { int n, conv_dim, histn, K, d_in_proj, inner, ng, nh, hd, ds;
+                 float rms_eps; } m2_args;
+
+// A recurrent model whose mixer layers Metal runs (R4.10): the qwen35 Gated
+// DeltaNet and the Mamba-2 hybrids. LFM2's short conv keeps the CPU.
+static bool metal_recurrent(const model_t *m) {
+    return m->qwen35 || m->granite_hybrid || m->nemotron_h;
+}
 typedef struct { int kv_dim, q8, stride, pos, kv_rows; uint64_t off, row_b;
                  int vq8; uint64_t voff, vrow_b; } store_args;
 typedef struct { int n_head, n_kv, head_dim, half_dim, pos, neox;
@@ -229,6 +241,8 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
         if (g->dn_dt) [g->dn_dt[l] release];
         if (g->dn_A)  [g->dn_A[l] release];
         if (g->dn_nw) [g->dn_nw[l] release];
+        if (g->dn_cb) [g->dn_cb[l] release];
+        if (g->dn_D)  [g->dn_D[l] release];
         if (g->attn_norm) [g->attn_norm[l] release];
         if (g->ffn_norm)  [g->ffn_norm[l] release];
         if (g->bq) [g->bq[l] release];
@@ -252,6 +266,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
         if (g->gdsc) [g->gdsc[l] release];
     }
     free(g->dn_cw); free(g->dn_dt); free(g->dn_A); free(g->dn_nw);
+    free(g->dn_cb); free(g->dn_D);
     free(g->attn_norm); free(g->ffn_norm);
     free(g->bq); free(g->bk); free(g->bv); free(g->bo);
     free(g->qn); free(g->kn);
@@ -262,6 +277,8 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     [g->p_attn_tile release];
     [g->p_dn_conv release]; [g->p_dn_ring release]; [g->p_dn_l2norm release];
     [g->p_dn_recur release]; [g->p_dn_gnorm release]; [g->p_q35_split release];
+    [g->p_m2_conv release]; [g->p_m2_scan release]; [g->p_m2_gnorm release];
+    [g->p_relu2 release];
     [g->p_lora_a release]; [g->p_lora_b release];
     lora_dev_release(g);
     for (int i = 0; i < g->n_wbuf; i++) [g->wbuf[i] release];
@@ -440,6 +457,8 @@ static bool metal_dn_scratch(gpu_t *g, model_t *m, size_t nb) {
     int keydim = m->ssm.state * m->ssm.groups;
     int convdim = 2 * keydim + m->ssm.inner;
     int qkv = convdim > 2 * q_dim ? convdim : 2 * q_dim;
+    int d_in_proj = convdim + m->ssm.inner + m->ssm.v_heads;   // Mamba-2's [z | xBC | dt]
+    if (d_in_proj > qkv) qkv = d_in_proj;
     id<MTLBuffer> b[6] = {
         new_f32_scratch(g->dev, nb * (size_t)qkv),
         new_f32_scratch(g->dev, nb * (size_t)m->ssm.inner),
@@ -581,7 +600,7 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
         g->moe_colmap = moe_colmap; g->moe_eoff = moe_eoff;
         g->moe_trace_logits = moe_trace_logits;
     }
-    if (m->qwen35 && !metal_dn_scratch(g, m, nb)) return false;
+    if (metal_recurrent(m) && !metal_dn_scratch(g, m, nb)) return false;
     g->batch_cap = n;
     return true;
 }
@@ -1683,6 +1702,16 @@ static int metal_fit_layers(model_t *m, uint64_t budget, int cap,
 static bool metal_admit(model_t *m) {
     // qwen35 runs on Metal dense, as a whole model (R4.10): the Gated
     // DeltaNet mixer has device kernels, and the other shapes keep the CPU
+    if (m->granite_hybrid || m->nemotron_h) {
+        const char *why = m->ssm.state > 256 ? "with a state wider than 256"
+                        : m->ssm.conv_kernel - 1 > 8 ? "with a conv window over 8"
+                        : NULL;
+        if (why) {
+            fprintf(stderr, "gpu: '%s' %s is not on the metal backend yet — using CPU\n",
+                    m->arch, why);
+            return false;
+        }
+    }
     if (m->qwen35) {
         const char *why = m->n_expert > 0 ? "with routed experts"
                         : m->hyper_conn ? "with hyper-connections (qwen4exp)"
@@ -1723,7 +1752,7 @@ static bool metal_admit(model_t *m) {
     if (!metal_tensor_type_ok(m->output, false)) return false;
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
-        if (!ly->wv && !m->v_rmsnorm && !ly->skip_mixer && !(m->qwen35 && ly->recurrent)) {
+        if (!ly->wv && !m->v_rmsnorm && !ly->skip_mixer && !(metal_recurrent(m) && ly->recurrent)) {
             fprintf(stderr, "gpu: '%s' layer layout is not on the metal backend yet — using CPU\n",
                     m->arch);
             return false;
@@ -1744,7 +1773,8 @@ static bool metal_admit(model_t *m) {
         gguf_tensor *ws[] = { ly->wq, ly->wk, ly->wv, ly->wo,
                               ly->w_gate, ly->w_up, ly->w_down, ly->wq_gate,
                               ly->ple_gate, ly->ple_proj,
-                              ly->wqkv, ly->ssm_beta, ly->ssm_alpha, ly->ssm_out };
+                              ly->wqkv, ly->ssm_beta, ly->ssm_alpha, ly->ssm_out,
+                              ly->ssm_in };
         for (size_t i = 0; i < sizeof(ws) / sizeof(*ws); i++)
             if (!metal_tensor_type_ok(ws[i], false)) return false;
     }
@@ -1814,6 +1844,10 @@ static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib
     g->p_dn_recur     = mk_pipeline(dev, lib, @"k_dn_recur");
     g->p_dn_gnorm     = mk_pipeline(dev, lib, @"k_dn_gnorm");
     g->p_q35_split    = mk_pipeline(dev, lib, @"k_q35_split");
+    g->p_m2_conv      = mk_pipeline(dev, lib, @"k_m2_conv");
+    g->p_m2_scan      = mk_pipeline(dev, lib, @"k_m2_scan");
+    g->p_m2_gnorm     = mk_pipeline(dev, lib, @"k_m2_gnorm");
+    g->p_relu2        = mk_pipeline(dev, lib, @"k_relu2");
     g->p_gelu_erf     = mk_pipeline(dev, lib, @"k_gelu_erf_mul");
     g->p_scale        = mk_pipeline(dev, lib, @"k_scale");
     g->p_moe_route    = mk_pipeline(dev, lib, @"k_moe_route");
@@ -1972,6 +2006,10 @@ static bool metal_check_pipelines(model_t *m, gpu_t *g) {
     if (m->qwen35 && (!g->p_dn_conv || !g->p_dn_ring || !g->p_dn_l2norm ||
                       !g->p_dn_recur || !g->p_dn_gnorm || !g->p_q35_split))
         return gpu_init_fail(m, g, nil, "Gated DeltaNet pipeline allocation");
+    if ((m->granite_hybrid || m->nemotron_h) &&
+        (!g->p_dn_ring || !g->p_m2_conv || !g->p_m2_scan || !g->p_m2_gnorm ||
+         (m->ffn_relu2 && !g->p_relu2)))
+        return gpu_init_fail(m, g, nil, "Mamba-2 pipeline allocation");
     // Admission and the pipeline tables must agree BY CONSTRUCTION rather than
     // by two hand-kept lists. enc_mv and enc_moe_mv index p_mv[]/p_moe_mv[] by
     // tensor type with no nil check at the use site, and
@@ -2145,14 +2183,15 @@ static bool metal_place_weights(model_t *m, gpu_t *g, id<MTLDevice> dev,
 }
 
 // The KV cache, the per-column scratch and the decode attention partials.
-// The qwen35 recurrent state's two arrays, as model.c allocates them: the
-// conv window [layer][conv_kernel - 1][conv_dim] and the heads' state
-// [layer][v_heads][hv][hv].
+// A recurrent model's two state arrays, as model.c allocates them: the conv
+// window [layer][conv_kernel - 1][conv_dim] and the heads' state
+// [layer][heads][head width][qwen35: head width, Mamba-2: d_state].
 static void metal_dn_state_bytes(const model_t *m, size_t *conv, size_t *state) {
     int hv = m->ssm.inner / m->ssm.v_heads;
     *conv = sizeof(float) * (size_t)m->n_layer * (size_t)(m->ssm.conv_kernel - 1) *
             (size_t)(2 * m->ssm.state * m->ssm.groups + m->ssm.inner);
-    *state = sizeof(float) * (size_t)m->n_layer * (size_t)m->ssm.v_heads * hv * hv;
+    *state = sizeof(float) * (size_t)m->n_layer * (size_t)m->ssm.v_heads * hv *
+             (size_t)(m->qwen35 ? hv : m->ssm.state);
 }
 
 static bool metal_alloc_state(model_t *m, gpu_t *g, id<MTLDevice> dev) {
@@ -2174,7 +2213,7 @@ static bool metal_alloc_state(model_t *m, gpu_t *g, id<MTLDevice> dev) {
     // buffers. g->batch_cap is still 0 from the calloc, so this allocates.
     if (!metal_ensure_batch(g, m, 1))
         return gpu_init_fail(m, g, nil, "batch scratch allocation");
-    if (m->qwen35) {
+    if (metal_recurrent(m)) {
         // the recurrent state, taken over from the host in metal_publish
         size_t cb, sb;
         metal_dn_state_bytes(m, &cb, &sb);
@@ -2250,12 +2289,14 @@ static bool metal_upload_constants(model_t *m, gpu_t *g, id<MTLDevice> dev) {
     g->dn_dt = calloc(m->n_layer, sizeof(id));
     g->dn_A  = calloc(m->n_layer, sizeof(id));
     g->dn_nw = calloc(m->n_layer, sizeof(id));
+    g->dn_cb = calloc(m->n_layer, sizeof(id));
+    g->dn_D  = calloc(m->n_layer, sizeof(id));
     if (!g->attn_norm || !g->ffn_norm || !g->bq || !g->bk || !g->bv ||
         !g->ppn ||
         !g->bo || !g->qn || !g->kn || !g->sinks || !g->gib || !g->geb ||
         !g->ueb || !g->deb || !g->pan || !g->pfn || !g->gpn1 ||
         !g->gprn2 || !g->gpn2 || !g->ggis || !g->gdsc ||
-        !g->dn_cw || !g->dn_dt || !g->dn_A || !g->dn_nw)
+        !g->dn_cw || !g->dn_dt || !g->dn_A || !g->dn_nw || !g->dn_cb || !g->dn_D)
         return gpu_init_fail(m, g, nil, "per-layer table allocation");
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
@@ -2269,6 +2310,30 @@ static bool metal_upload_constants(model_t *m, gpu_t *g, id<MTLDevice> dev) {
             if (!metal_buffer_ok(g->dn_cw[l]) || !metal_buffer_ok(g->dn_dt[l]) ||
                 !metal_buffer_ok(g->dn_A[l]) || !metal_buffer_ok(g->dn_nw[l]))
                 return gpu_init_fail(m, g, nil, "Gated DeltaNet constant allocation");
+        }
+        if ((m->granite_hybrid || m->nemotron_h) && ly->recurrent) {
+            // the conv kernel dequantized once, row by row as the CPU's
+            // serial core does, so both read the same values
+            int nh = m->ssm.v_heads, K = m->ssm.conv_kernel;
+            int conv_dim = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
+            float *cw = malloc(sizeof(float) * (size_t)conv_dim * K);
+            if (!cw) return gpu_init_fail(m, g, nil, "Mamba-2 conv staging");
+            size_t wrs = ggml_row_size(ly->ssm_conv->type, K);
+            for (int c = 0; c < conv_dim; c++)
+                dequant_row(ly->ssm_conv->type,
+                            (const uint8_t *)ly->ssm_conv->data + (size_t)c * wrs,
+                            cw + (size_t)c * K, K);
+            g->dn_cw[l] = f32_buf(dev, cw, (size_t)conv_dim * K);
+            free(cw);
+            g->dn_cb[l] = f32_buf(dev, ly->ssm_conv1d_b, conv_dim);
+            g->dn_dt[l] = f32_buf(dev, ly->ssm_dt, nh);
+            g->dn_A[l]  = f32_buf(dev, ly->ssm_a, nh);
+            g->dn_D[l]  = f32_buf(dev, ly->ssm_d, nh);
+            g->dn_nw[l] = f32_buf(dev, ly->ssm_norm_w, m->ssm.inner);
+            if (!metal_buffer_ok(g->dn_cw[l]) || !metal_buffer_ok(g->dn_cb[l]) ||
+                !metal_buffer_ok(g->dn_dt[l]) || !metal_buffer_ok(g->dn_A[l]) ||
+                !metal_buffer_ok(g->dn_D[l]) || !metal_buffer_ok(g->dn_nw[l]))
+                return gpu_init_fail(m, g, nil, "Mamba-2 constant allocation");
         }
         g->attn_norm[l] = f32_buf(dev, ly->attn_norm_w, m->n_embd);
         g->ffn_norm[l]  = f32_buf(dev, ly->ffn_norm_w, m->n_embd);
@@ -2304,8 +2369,10 @@ static bool metal_upload_constants(model_t *m, gpu_t *g, id<MTLDevice> dev) {
             free(gs);
             g->gdsc[l] = f32_buf_ones(dev, ly->down_exps_scale, m->n_expert);
         }
-        if (!metal_buffer_ok(g->attn_norm[l]) ||
-            !metal_buffer_ok(g->ffn_norm[l]) ||
+        // a nemotron_h block is one sublayer: its SSM and attention blocks
+        // carry no FFN norm, its MLP blocks no mixer
+        if ((!ly->skip_mixer && !metal_buffer_ok(g->attn_norm[l])) ||
+            (!ly->skip_ffn && !metal_buffer_ok(g->ffn_norm[l])) ||
             (ly->bq && !metal_buffer_ok(g->bq[l])) ||
             (ly->bk && !metal_buffer_ok(g->bk[l])) ||
             (ly->bv && !metal_buffer_ok(g->bv[l])) ||
@@ -2337,7 +2404,7 @@ static void metal_publish(model_t *m, gpu_t *g, id<MTLDevice> dev, int gpu_K,
     free(m->kcache); free(m->vcache);
     m->kcache = (f16_t *)g->kc.contents;
     m->vcache = (f16_t *)g->vc.contents;
-    if (m->qwen35 && g->dn_conv && g->dn_state && !m->ssm_state_backend) {
+    if (metal_recurrent(m) && g->dn_conv && g->dn_state && !m->ssm_state_backend) {
         // the same hand-over for the recurrent state: the host's fold (zero at
         // load, or a restored one) moves into the buffers the kernels update,
         // and every host path (snapshot, blob, keep, restore) keeps reading
@@ -2399,11 +2466,11 @@ bool gpu_init(model_t *m) {
     size_t wlen;
     uint64_t ws_limit;
     if (!metal_choose_split(m, g, dev, page, &gpu_K, &wlen, &ws_limit)) return false;
-    if (m->qwen35 && gpu_K < m->n_layer) {
+    if (metal_recurrent(m) && gpu_K < m->n_layer) {
         // a split's host suffix would fold the state the device prefix also
         // folds, through a seam no gate has measured
-        fprintf(stderr, "gpu: qwen35 fits only %d of %d layers on the metal backend; "
-                "a partial split is not served — using CPU\n", gpu_K, m->n_layer);
+        fprintf(stderr, "gpu: '%s' fits only %d of %d layers on the metal backend; "
+                "a partial split is not served — using CPU\n", m->arch, gpu_K, m->n_layer);
         gpu_release_state(g, m->n_layer);
         return false;
     }
@@ -3064,11 +3131,12 @@ bool gpu_mvcanon(model_t *mm, const gguf_tensor *w, const float *x, float *y,
 bool gpu_lora_bind(model_t *mm) {
     gpu_t *g = mm->gpu;
     if (!g) return false;
-    if (mm->qwen35) {
-        // the Gated DeltaNet sites' deltas have no device path: the adapter
-        // runs on the host hooks, the whole model with it (the state stays
-        // where it is, gpu_disable keeps the host pointers valid)
-        fprintf(stderr, "gpu: a qwen35 adapter is not on the metal backend yet — using CPU\n");
+    if (metal_recurrent(mm)) {
+        // the recurrent mixers' deltas have no device path: the adapter runs
+        // on the host hooks, the whole model with it (the state stays where
+        // it is, gpu_disable keeps the host pointers valid)
+        fprintf(stderr, "gpu: a '%s' adapter is not on the metal backend yet — using CPU\n",
+                mm->arch);
         gpu_disable(mm);
         return true;
     }
@@ -4216,6 +4284,18 @@ static bool metal_enc_ffn(metal_fwd *F, int l, const metal_layer_plan *P) {
         } else
         enc_rmsnorm_n(g, F->e, g->x, 0, g->xb, 0, g->ffn_norm[l],
                       n_embd, m->rms_eps, n, n_embd, xdim);
+        if (!ly->w_gate && m->ffn_relu2) {
+            // nemotron_h's gate-less MLP: down(relu(up(x))^2)
+            enc_mv_n(g, F->e, m, ly->w_up, g->xb, 0, g->hb, 0,
+                     n_embd, nff_l, nil, n, xdim, nff_l);
+            int cnt = n * nff_l;
+            [F->e setComputePipelineState:g->p_relu2];
+            [F->e setBuffer:g->hb offset:0 atIndex:0];
+            [F->e setBytes:&cnt length:4 atIndex:1];
+            g_disp.elem++;
+            [F->e dispatchThreads:MTLSizeMake(cnt, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        } else {
         enc_mv_n(g, F->e, m, ly->w_gate, g->xb, 0, g->hb,  0,
                  n_embd, nff_l, nil, n, xdim, nff_l);
         enc_lora(g, F->e, l, LW_GATE, g->xb, g->hb, n_embd, nff_l, n, xdim, nff_l);
@@ -4225,6 +4305,7 @@ static bool metal_enc_ffn(metal_fwd *F, int l, const metal_layer_plan *P) {
         // hb/hb2 are contiguous across the batch, so the activation is one
         // dispatch over the whole batch rather than n
         enc_elem(g, F->e, metal_act_pipeline(g, m), g->hb, 0, g->hb2, 0, n * nff_l);
+        }
         enc_mv_n(g, F->e, m, ly->w_down, g->hb, 0, g->xb, 0,
                  nff_l, n_embd, nil, n, nff_l, xdim);
         enc_lora(g, F->e, l, LW_DOWN, g->hb, g->xb, nff_l, n_embd, n, nff_l, xdim);
@@ -4372,9 +4453,89 @@ static bool metal_enc_dn(metal_fwd *F, int l, const metal_layer_plan *P) {
     enc_mv_n(g, e, m, ly->ssm_out, g->dn_y, 0, g->xb, 0,
              inner, n_embd, nil, n, inner, xdim);
     if (!metal_nan_probe(F, g->xb, (size_t)n * xdim, "dn-out", l)) return false;
+    if (m->resid_scale != 1.0f)  // granite muP branch scale (F2a stands down for it)
+        enc_scale_n(g, F->e, g->xb, 0, n_embd, m->resid_scale, n, xdim);
     if (!P->f2a)
         enc_elem_n(g, F->e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
     return metal_nan_probe(F, g->x, (size_t)n * n_embd, "post-dn-resid", l);
+}
+
+// A Mamba-2 hybrid layer's mixer (R4.10): model.c's mamba2_ssd_step on the
+// device. The attention norm (or the deferred add), in_proj into
+// [z | xBC | dt], the conv with its bias and silu over the layer's window and
+// the window's slide, the selective scan, the silu(z) gate with the grouped
+// RMS norm, ssm_out, the muP branch scale, then the residual add.
+static bool metal_enc_m2(metal_fwd *F, int l, const metal_layer_plan *P) {
+    gpu_t *g = F->g;
+    model_t *m = F->m;
+    layer_t *ly = &m->layers[l];
+    int n = F->n, n_embd = F->n_embd, xdim = F->xdim;
+    if (g->lora_a) return false;
+    int nh = m->ssm.v_heads, inner = m->ssm.inner, ds = m->ssm.state, ng = m->ssm.groups;
+    int conv_dim = inner + 2 * ng * ds, d_in_proj = 2 * inner + 2 * ng * ds + nh;
+    int histn = m->ssm.conv_kernel - 1;
+    if (F->fuse_pending_add) {
+        enc_add_rmsnorm(g, F->e, g->x, g->xb, g->xb, g->attn_norm[l],
+                        n_embd, m->rms_eps);
+        F->fuse_pending_add = false;
+    } else
+        enc_rmsnorm_n(g, F->e, g->x, 0, g->xb, 0, g->attn_norm[l],
+                      n_embd, m->rms_eps, n, n_embd, xdim);
+    enc_mv_n(g, F->e, m, ly->ssm_in, g->xb, 0, g->dn_qkv, 0,
+             n_embd, d_in_proj, nil, n, xdim, d_in_proj);
+    m2_args a = { n, conv_dim, histn, m->ssm.conv_kernel, d_in_proj,
+                  inner, ng, nh, inner / nh, ds, m->rms_eps };
+    // k_dn_ring slides the window from the projection's xBC
+    dn_args r = { n, conv_dim, histn, m->ssm.conv_kernel, d_in_proj,
+                  0, 0, 0, 0, 0, 0, 0.0f, 0.0f };
+    NSUInteger co = sizeof(float) * (NSUInteger)l * histn * conv_dim;
+    NSUInteger so = sizeof(float) * (NSUInteger)l * nh * (inner / nh) * ds;
+    id<MTLComputeCommandEncoder> e = F->e;
+    [e setComputePipelineState:g->p_m2_conv];
+    [e setBuffer:g->dn_qkv offset:0 atIndex:0];
+    [e setBuffer:g->dn_conv offset:co atIndex:1];
+    [e setBuffer:g->dn_cw[l] offset:0 atIndex:2];
+    [e setBuffer:g->dn_cb[l] offset:0 atIndex:3];
+    [e setBuffer:g->dn_aux offset:0 atIndex:4];
+    [e setBytes:&a length:sizeof(a) atIndex:5];
+    [e dispatchThreads:MTLSizeMake(conv_dim, n, 1)
+      threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+    if (histn) {
+        [e setComputePipelineState:g->p_dn_ring];
+        [e setBuffer:g->dn_qkv offset:sizeof(float) * (NSUInteger)inner atIndex:0];
+        [e setBuffer:g->dn_conv offset:co atIndex:1];
+        [e setBytes:&r length:sizeof(r) atIndex:2];
+        [e dispatchThreads:MTLSizeMake(conv_dim, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+    }
+    [e setComputePipelineState:g->p_m2_scan];
+    [e setBuffer:g->dn_aux offset:0 atIndex:0];
+    [e setBuffer:g->dn_qkv offset:0 atIndex:1];
+    [e setBuffer:g->dn_dt[l] offset:0 atIndex:2];
+    [e setBuffer:g->dn_A[l] offset:0 atIndex:3];
+    [e setBuffer:g->dn_D[l] offset:0 atIndex:4];
+    [e setBuffer:g->dn_state offset:so atIndex:5];
+    [e setBuffer:g->dn_y offset:0 atIndex:6];
+    [e setBytes:&a length:sizeof(a) atIndex:7];
+    [e dispatchThreadgroups:MTLSizeMake(inner / nh, nh, 1)
+      threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+    [e setComputePipelineState:g->p_m2_gnorm];
+    [e setBuffer:g->dn_y offset:0 atIndex:0];
+    [e setBuffer:g->dn_qkv offset:0 atIndex:1];
+    [e setBuffer:g->dn_nw[l] offset:0 atIndex:2];
+    [e setBytes:&a length:sizeof(a) atIndex:3];
+    [e dispatchThreadgroups:MTLSizeMake(ng, n, 1)
+      threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    g_disp.elem += 2 + (histn ? 1 : 0);
+    g_disp.rmsnorm += 2;
+    enc_mv_n(g, e, m, ly->ssm_out, g->dn_y, 0, g->xb, 0,
+             inner, n_embd, nil, n, inner, xdim);
+    if (!metal_nan_probe(F, g->xb, (size_t)n * xdim, "m2-out", l)) return false;
+    if (m->resid_scale != 1.0f)  // granite muP branch scale (F2a stands down for it)
+        enc_scale_n(g, F->e, g->xb, 0, n_embd, m->resid_scale, n, xdim);
+    if (!P->f2a)
+        enc_elem_n(g, F->e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
+    return metal_nan_probe(F, g->x, (size_t)n * n_embd, "post-m2-resid", l);
 }
 
 // One layer: its fusion decisions, then its stages in order.
@@ -4442,6 +4603,8 @@ static bool metal_fwd_layer(metal_fwd *F, int l) {
     metal_layer_plan P = { hd, n_kv, q_dim_l, kv_dim_l, window, owns_kv, fpipe, front, qw, kw, vw, qb, f2a, f2b, sum_add };
     if (m->qwen35 && ly->recurrent) {
         if (!metal_enc_dn(F, l, &P)) return false;
+    } else if ((m->granite_hybrid || m->nemotron_h) && ly->recurrent) {
+        if (!metal_enc_m2(F, l, &P)) return false;
     } else if (!ly->skip_mixer) {
         metal_enc_attn_in(F, l, &P);
         metal_enc_rope_store(F, l, &P);

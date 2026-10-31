@@ -5410,3 +5410,132 @@ kernel void k_q35_split(device const float *src  [[buffer(0)]],
     q[(ulong)b * q_stride + i] = s[0];
     gate[(ulong)b * q_stride + i] = s[hd];
 }
+
+// ---- Mamba-2 hybrids (granitehybrid, nemotron_h) (R4.10) ---------------------
+// model.c's mamba2_ssd_core_serial between in_proj and out_proj: the causal
+// conv with its bias and silu (k_m2_conv; the window's slide is k_dn_ring's),
+// the selective scan with the D skip (k_m2_scan) and the silu(z) gate with
+// the grouped RMS norm (k_m2_gnorm). The projection column is
+// [z (inner) | xBC (conv_dim) | dt (nh)], d_in_proj floats; the state is the
+// CPU's [layer][head][head_dim row p][d_state j]. Heads map to groups
+// contiguously (h / (nh / ng)), as repeat_interleave does. Reductions sum in
+// another order than the CPU's loops: the gate is test-gpu-identity's.
+struct m2_args {
+    int n;            // columns in this forward
+    int conv_dim, histn, K;
+    int d_in_proj;    // floats between projection columns
+    int inner, ng, nh, hd, ds;
+    float rms_eps;
+};
+
+// thread (c, b): conv channel c of column b; the bias and the current input's
+// tap first, then the window's taps oldest to newest, as the CPU sums them
+kernel void k_m2_conv(device const float *proj [[buffer(0)]],
+                      device const float *ring [[buffer(1)]],
+                      device const float *w    [[buffer(2)]],
+                      device const float *bias [[buffer(3)]],
+                      device float       *out  [[buffer(4)]],
+                      constant m2_args   &a    [[buffer(5)]],
+                      uint2 gid [[thread_position_in_grid]]) {
+    int c = (int)gid.x, b = (int)gid.y;
+    if (c >= a.conv_dim || b >= a.n) return;
+    device const float *in = proj + a.inner;           // xBC within a column
+    device const float *wc = w + (ulong)c * a.K;
+    float sum = bias[c] + wc[a.histn] * in[(ulong)b * a.d_in_proj + c];
+    for (int k = 0; k < a.histn; k++) {
+        int e = b + k;
+        float v = e < a.histn ? ring[(ulong)e * a.conv_dim + c]
+                              : in[(ulong)(e - a.histn) * a.d_in_proj + c];
+        sum += wc[k] * v;
+    }
+    out[(ulong)b * a.conv_dim + c] = sum / (1.0f + exp(-sum));
+}
+
+// one simdgroup per (head row p, head h): the row's d_state entries across
+// the lanes (up to 8 a lane, so ds <= 256). Per column in order:
+// dt = softplus(dt_raw + dt_bias), the state decays by exp(dt * A) and takes
+// B * x * dt, and y = C . state + D * x
+kernel void k_m2_scan(device const float *xbc   [[buffer(0)]],
+                      device const float *proj  [[buffer(1)]],
+                      device const float *dtb   [[buffer(2)]],
+                      device const float *A     [[buffer(3)]],
+                      device const float *D     [[buffer(4)]],
+                      device float       *state [[buffer(5)]],
+                      device float       *y     [[buffer(6)]],
+                      constant m2_args   &a     [[buffer(7)]],
+                      uint2 tg [[threadgroup_position_in_grid]],
+                      uint lane [[thread_index_in_simdgroup]]) {
+    int p = (int)tg.x, h = (int)tg.y, ds = a.ds;
+    if (p >= a.hd || h >= a.nh) return;
+    device float *sp = state + ((ulong)h * a.hd + p) * ds;
+    float s[8];
+    for (int t = 0; t < 8; t++) {
+        int j = lane + 32 * t;
+        s[t] = j < ds ? sp[j] : 0.0f;
+    }
+    int g = h / (a.nh / a.ng);
+    for (int b = 0; b < a.n; b++) {
+        device const float *xc = xbc + (ulong)b * a.conv_dim;
+        device const float *Bg = xc + a.inner + g * ds;
+        device const float *Cg = xc + a.inner + a.ng * ds + g * ds;
+        float dr = proj[(ulong)b * a.d_in_proj + a.inner + a.conv_dim + h] + dtb[h];
+        float dt = dr > 20.0f ? dr : log(1.0f + exp(dr));
+        float dA = exp(dt * A[h]);
+        float x = xc[h * a.hd + p];
+        float x_dt = x * dt;
+        float sum = 0.0f;
+        for (int t = 0; t < 8; t++) {
+            int j = lane + 32 * t;
+            if (j < ds) { s[t] = s[t] * dA + Bg[j] * x_dt; sum += s[t] * Cg[j]; }
+        }
+        sum = simd_sum(sum);
+        if (lane == 0) y[(ulong)b * a.inner + h * a.hd + p] = sum + D[h] * x;
+    }
+    for (int t = 0; t < 8; t++) {
+        int j = lane + 32 * t;
+        if (j < ds) sp[j] = s[t];
+    }
+}
+
+// one threadgroup of 256 per (group g, column b): y's group slice gated by
+// silu(z), then RMS-normed over the group by its slice of the norm weight
+kernel void k_m2_gnorm(device float       *y    [[buffer(0)]],
+                       device const float *proj [[buffer(1)]],
+                       device const float *w    [[buffer(2)]],
+                       constant m2_args   &a    [[buffer(3)]],
+                       uint2 tg  [[threadgroup_position_in_grid]],
+                       uint  tid [[thread_index_in_threadgroup]],
+                       uint  lane [[thread_index_in_simdgroup]],
+                       uint  sg  [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float part[8];
+    int per_g = a.inner / a.ng;
+    ulong off = (ulong)tg.x * per_g;
+    device float *yg = y + (ulong)tg.y * a.inner + off;
+    device const float *zg = proj + (ulong)tg.y * a.d_in_proj + off;   // z leads the column
+    device const float *wg = w + off;
+    float s = 0.0f;
+    for (int i = tid; i < per_g; i += 256) {
+        float zz = zg[i];
+        float v = yg[i] * (zz < -80.0f ? 0.0f : zz / (1.0f + exp(-zz)));
+        yg[i] = v;
+        s += v * v;
+    }
+    s = simd_sum(s);
+    if (lane == 0) part[sg] = s;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float tot = 0.0f;
+    for (int k = 0; k < 8; k++) tot += part[k];
+    float r = 1.0f / sqrt(tot / per_g + a.rms_eps);
+    for (int i = tid; i < per_g; i += 256) yg[i] = yg[i] * r * wg[i];
+}
+
+// nemotron_h's gate-less MLP activation, in place: relu(x)^2, as the CPU's
+// layer_dense_ffn squares the clamped value
+kernel void k_relu2(device float *x [[buffer(0)]],
+                    constant int &n [[buffer(1)]],
+                    uint gid [[thread_position_in_grid]]) {
+    if ((int)gid < n) {
+        float r = x[gid] > 0.0f ? x[gid] : 0.0f;
+        x[gid] = r * r;
+    }
+}
