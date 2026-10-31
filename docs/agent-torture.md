@@ -23,6 +23,7 @@ how the bytes were chunked."
 | `stream_normalization` | SSE that normalizes to the same result regardless of TCP segmentation, ends with `[DONE]`, and carries a real finish reason. |
 | `large_enum_selection` | A single-choice label from a ~50-member enum — the structured-labeling task small models fail by emitting a plausible near-miss outside the enum; schema-constrained decode must force an exact member. |
 | `reasoning_then_tool` | Earlier assistant prose must not bleed into the subsequent forced tool-call turn. |
+| `reasoning_then_native_tool` | The same turn with a tool whose arguments carry no length, pattern or range constraint, so a template's native call syntax (Qwen3-Coder's function-XML, for one) can carry the call after the model's own thinking; `reasoning_then_tool`'s `minLength` sends Runner to its generic JSON envelope instead. Added in v5. |
 | `structured_final` | A schema-constrained final answer exercises `response_format`, independently of the tool path. |
 
 ## Run it
