@@ -6806,6 +6806,118 @@ static void moe_trace_emit(int pos, int layer, const int *sel, const float *selw
                    // process's whole lifetime, not to a matching fclose
 }
 
+// ------------------------------------------------------ MoE routing replay
+// RUNNER_MOE_REPLAY=path (R3.21.2): a measurement switch, off by default.
+// It reads a RUNNER_MOE_TRACE file written by an earlier run and makes the
+// CPU routers (moe_route, gemma_route) choose, at each recorded (position,
+// layer), the experts that run chose. Only the CHOICE is pinned: the routing
+// weights are this run's own router probabilities for those experts,
+// normalised as always, so two builds or two kernels compared under one
+// replay differ by their arithmetic and never by a discrete routing flip.
+// A position or layer the trace does not hold routes as usual. At exit it
+// says how many routings it forced and how many of those differed from what
+// this run would have chosen (the flips the pin removed). The GPU routers
+// are not pinned; a GPU run under it says so once.
+#define ROUTE_USED_MAX 64   // experts a token uses; every admitted family is under it
+typedef struct { int pos, layer, n; int ids[ROUTE_USED_MAX]; } route_rec;
+static struct {
+    _Atomic bool tried;
+    bool on;
+    route_rec *r;
+    size_t n;
+    _Atomic unsigned long forced, differed, missing;
+} g_replay;
+static pthread_mutex_t g_replay_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static int route_rec_cmp(const void *a, const void *b) {
+    const route_rec *x = a, *y = b;
+    return x->pos != y->pos ? (x->pos < y->pos ? -1 : 1)
+         : x->layer != y->layer ? (x->layer < y->layer ? -1 : 1) : 0;
+}
+
+static void route_replay_report(void) {
+    fprintf(stderr, "moe-replay: %lu routings forced from the trace, %lu of them "
+            "differed from this run's own choice; %lu (position, layer) pairs "
+            "were not in the trace and routed as usual\n",
+            (unsigned long)g_replay.forced, (unsigned long)g_replay.differed,
+            (unsigned long)g_replay.missing);
+}
+
+// One trace line, as moe_trace_emit writes it.
+static bool route_rec_parse(const char *line, route_rec *r) {
+    const char *p = strstr(line, "\"pos\":"), *l = strstr(line, "\"layer\":"),
+               *e = strstr(line, "\"experts\":[");
+    if (!p || !l || !e || sscanf(p + 6, "%d", &r->pos) != 1 ||
+        sscanf(l + 8, "%d", &r->layer) != 1)
+        return false;
+    e += 11;
+    r->n = 0;
+    while (*e && *e != ']') {
+        char *end;
+        long v = strtol(e, &end, 10);
+        if (end == e || r->n >= ROUTE_USED_MAX || v < 0) return false;
+        r->ids[r->n++] = (int)v;
+        e = *end == ',' ? end + 1 : end;
+    }
+    return *e == ']' && r->n > 0;
+}
+
+static void route_replay_load(void) {
+    pthread_mutex_lock(&g_replay_mu);
+    if (g_replay.tried) { pthread_mutex_unlock(&g_replay_mu); return; }
+    const char *path = getenv("RUNNER_MOE_REPLAY");
+    if (path && *path) {
+        FILE *f = fopen(path, "r");
+        if (!f) {
+            fprintf(stderr, "error: RUNNER_MOE_REPLAY=%s cannot be opened\n", path);
+            exit(1);
+        }
+        char line[8192];
+        size_t cap = 0, bad = 0;
+        while (fgets(line, sizeof line, f)) {
+            route_rec r;
+            if (!route_rec_parse(line, &r)) { bad++; continue; }
+            if (g_replay.n == cap) {
+                cap = cap ? 2 * cap : 4096;
+                route_rec *nr = realloc(g_replay.r, cap * sizeof *nr);
+                if (!nr) { fprintf(stderr, "error: out of memory reading %s\n", path); exit(1); }
+                g_replay.r = nr;
+            }
+            g_replay.r[g_replay.n++] = r;
+        }
+        fclose(f);
+        if (bad || !g_replay.n) {
+            fprintf(stderr, "error: RUNNER_MOE_REPLAY=%s: %zu lines are not "
+                    "RUNNER_MOE_TRACE records%s\n", path, bad,
+                    g_replay.n ? "" : " and none is");
+            exit(1);
+        }
+        qsort(g_replay.r, g_replay.n, sizeof *g_replay.r, route_rec_cmp);
+        g_replay.on = true;
+        atexit(route_replay_report);
+        fprintf(stderr, "moe-replay: routing pinned to %s (%zu position x layer "
+                "records); CPU routers only\n", path, g_replay.n);
+    }
+    g_replay.tried = true;
+    pthread_mutex_unlock(&g_replay_mu);
+}
+
+// The recorded experts for (pos, layer), or NULL. A record with another
+// expert count than the model's is a trace of another model: refused.
+static const int *route_replay_ids(int pos, int layer, int used) {
+    if (!g_replay.tried) route_replay_load();
+    if (!g_replay.on || pos < 0) return NULL;
+    route_rec key = { .pos = pos, .layer = layer };
+    const route_rec *r = bsearch(&key, g_replay.r, g_replay.n, sizeof key, route_rec_cmp);
+    if (!r) { g_replay.missing++; return NULL; }
+    if (r->n != used) {
+        fprintf(stderr, "error: RUNNER_MOE_REPLAY holds %d experts at position %d "
+                "layer %d; this model routes %d\n", r->n, pos, layer, used);
+        exit(1);
+    }
+    return r->ids;
+}
+
 // ------------------------------------------------------ MoE gate-reuse probe
 // RUNNER_MOE_PROBE=path appends one JSONL record per (token, layer, lookahead
 // in 1..3): {"pos":N,"layer":L,"lookahead":K,"predicted":[8],"actual":[8]}.
@@ -7573,7 +7685,7 @@ gguf_tensor moe_expert_weight(const layer_t *ly, int which, int e,
 // to sum to 1 (Mixtral / Qwen3 convention). Writes sel[used]/selw[used].
 static void moe_route(model_t *m, const layer_t *ly, const float *xin,
                       int n_embd, int ne, int used, int *sel, float *selw,
-                      bool dbg_dump) {
+                      bool dbg_dump, const int *forced) {
     float *probs = m->moe_logits;
     matvec_b(m->tp, probs, ne, ly->ffn_gate_inp, xin, n_embd, n_embd, ne, NULL, 1);
     if (dbg_dump && dbg_act_now())
@@ -7648,6 +7760,11 @@ static void moe_route(model_t *m, const layer_t *ly, const float *xin,
         float bs = -FLT_MAX;
         for (int e = 0; e < ne; e++)
             if (scores[e] > bs) { bs = scores[e]; best = e; }
+        if (forced) {           // RUNNER_MOE_REPLAY: the recorded choice
+            g_replay.forced++;
+            if (forced[t] != best) g_replay.differed++;
+            best = forced[t] < ne ? forced[t] : best;
+        }
         sel[t]  = best;
         selw[t] = probs[best];
         denom  += selw[t];
@@ -7803,7 +7920,7 @@ static void moe_probe_replay(model_t *m, const layer_t *ly, int b, const int *se
         const float *h_old = m->moe_probe_hist +
                              (size_t)(d - 1) * slotsz + (size_t)b * n_embd;
         int psel[256]; float pselw[256];
-        moe_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false);
+        moe_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false, NULL);
         moe_probe_emit(m->fwd_pos + b, layer_idx, d, psel, sel, used);
     }
 }
@@ -7900,7 +8017,8 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     float selw[256];
     float norms[MOE_EXPERTS_MAX];
     DT_BEGIN;
-    moe_route(m, ly, xin, n_embd, ne, used, sel, selw, true);
+    moe_route(m, ly, xin, n_embd, ne, used, sel, selw, true,
+              route_replay_ids(m->fwd_pos, layer_idx, used));
     model_moe_prefetch(m, ly, sel, used);
     DT_MARK(DT_ROUTE);
     // RUNNER_MOE_PROBE: same lookback replay as gemma_route's caller — see
@@ -7939,7 +8057,8 @@ NUM_STAGE void moe_grouped_route(model_t *m, const layer_t *ly, int n, int xdim,
     for (int b = 0; b < n; b++) {
         float *xin = m->xb + (size_t)b * xdim;
         moe_route(m, ly, xin, n_embd, ne, used,
-                  m->moe_sel + (size_t)b * used, m->moe_selw + (size_t)b * used, true);
+                  m->moe_sel + (size_t)b * used, m->moe_selw + (size_t)b * used, true,
+                  route_replay_ids(m->fwd_pos + b, (int)(ly - m->layers), used));
         // RUNNER_MOE_PROBE: replay against 1/2/3 layers back, before m->xb
         // is overwritten with this layer's FFN output further below.
         if (probe) moe_probe_replay(m, ly, b, m->moe_sel + (size_t)b * used);
@@ -8105,7 +8224,7 @@ static gguf_tensor gemma_gate_up_weight(const layer_t *ly, int e, int n_embd,
 // replays never dump). Uses m->moe_logits as scratch, like the original.
 static void gemma_route(model_t *m, const layer_t *ly, const float *h,
                          int n_embd, int ne, int used, int *sel, float *selw,
-                         bool dbg_dump) {
+                         bool dbg_dump, const int *forced) {
     float *rin = m->gemma_scr + 3 * (size_t)n_embd;
     float inv = 1.0f / sqrtf((float)n_embd);
     float rss = 0.0f;
@@ -8127,6 +8246,11 @@ static void gemma_route(model_t *m, const layer_t *ly, const float *h,
     for (int t = 0; t < used; t++) {
         int best = 0; float bp = -1.0f;
         for (int e = 0; e < ne; e++) if (m->moe_logits[e] > bp) { bp = m->moe_logits[e]; best = e; }
+        if (forced) {           // RUNNER_MOE_REPLAY: the recorded choice
+            g_replay.forced++;
+            if (forced[t] != best) g_replay.differed++;
+            if (forced[t] < ne) { best = forced[t]; bp = m->moe_logits[best]; }
+        }
         sel[t] = best; selw[t] = bp; denom += bp; m->moe_logits[best] = -1.0f;
     }
     for (int t = 0; t < used; t++) selw[t] /= denom;
@@ -8158,7 +8282,8 @@ static void gemma_moe_ffn(model_t *m, const layer_t *ly, int n, int xdim) {
         //     weightless norm of attn_out, computed inside gemma_route)
         rmsnorm(xn2, attn, ly->ffn_pre_norm2_w, n_embd, m->rms_eps);
         int sel[256]; float selw[256], norms[MOE_EXPERTS_MAX];
-        gemma_route(m, ly, attn, n_embd, ne, used, sel, selw, b == n - 1);
+        gemma_route(m, ly, attn, n_embd, ne, used, sel, selw, b == n - 1,
+                    route_replay_ids(m->fwd_pos + b, layer_idx, used));
         model_moe_prefetch(m, ly, sel, used);
         // RUNNER_MOE_PROBE: replay THIS layer's router against the 1/2/3
         // layers-back hidden state instead of attn, and record whether that
@@ -8172,7 +8297,7 @@ static void gemma_moe_ffn(model_t *m, const layer_t *ly, int n, int xdim) {
                 const float *h_old = m->moe_probe_hist +
                                      (size_t)(d - 1) * slotsz + (size_t)b * n_embd;
                 int psel[256]; float pselw[256];
-                gemma_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false);
+                gemma_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false, NULL);
                 moe_probe_emit(m->fwd_pos + b, layer_idx, d, psel, sel, used);
             }
         }
@@ -10194,7 +10319,7 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         float *x2 = xn2 + (size_t)t * E;
         int *sl = msel + (size_t)t * used;
         float *sw = mselw + (size_t)t * used;
-        moe_route(m, ly, x2, E, ne_x, used, sl, sw, false);
+        moe_route(m, ly, x2, E, ne_x, used, sl, sw, false, NULL);
         float *pr = mprob + (size_t)t * ne_x;
         matvec_b(m->tp, pr, ne_x, ly->ffn_gate_inp, x2, E, E, ne_x, NULL, 1);
         if (m->expert_gating == EXPERT_GATE_SOFTMAX) {
