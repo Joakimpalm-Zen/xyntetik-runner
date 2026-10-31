@@ -2825,6 +2825,25 @@ test-metal:
 	$(MAKE) --no-print-directory test-metal-gelu-overflow
 	$(MAKE) --no-print-directory test-metal-kv-fp4
 	$(MAKE) --no-print-directory test-metal-kv-q8
+	$(MAKE) --no-print-directory test-metal-qwen35 PYTHON="$(PYTHON)"
+
+# qwen35 on Metal (R4.10): the Gated DeltaNet mixer and the gated attention on
+# the device, to the CPU's logits within reduction-order rounding at prefill
+# and decode, at head widths 8 (narrower than one 32-lane simdgroup), 40 and
+# 72 (the kernels' lane tails) and 128 (Qwen3.5's own); then the verify walk
+# on the device, its rows byte-identical to solo steps across partial rounds
+# (the host rollback and re-fold). The anchor beyond the CPU is the CPU's own
+# gold against the publisher's float32 reference (docs/model-support.md).
+test-metal-qwen35: runner $(TEST_GPU_ID) $(TEST_SPEC_ID) test-ornith.gguf
+	@set -e; for w in 40 72 128; do \
+	  ORNITH_TEST_STATE=$$w $(PYTHON) scripts/make-test-ornith.py test-ornith-s$$w.gguf > /dev/null; done; \
+	for f in test-ornith.gguf test-ornith-s40.gguf test-ornith-s72.gguf test-ornith-s128.gguf; do \
+	  ./$(TEST_GPU_ID) $$f > test-metal-qwen35.out 2>&1 || { cat test-metal-qwen35.out; exit 1; }; \
+	  if grep -q 'skipped' test-metal-qwen35.out; then cat test-metal-qwen35.out; \
+	    echo "test-metal-qwen35: $$f did not run on the device"; exit 1; fi; \
+	  echo "$$f: $$(tail -1 test-metal-qwen35.out)"; \
+	  ./$(TEST_SPEC_ID) $$f | tail -1 | grep -q 'ok (gpu' || { ./$(TEST_SPEC_ID) $$f; exit 1; }; \
+	done; echo "test-metal-qwen35: ok"
 
 # `make test` is three targets run one after another: the C gates, the batch
 # gates (the microbatch byte-identity family, long and independent), and the

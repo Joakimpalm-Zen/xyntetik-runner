@@ -69,8 +69,10 @@ def test_qwen35_hybrid_gpu_auto_matches_cpu(tmp_path):
         assert b"CUDA backend" in gpu.stderr
         assert b"no kernels for the recurrent" not in gpu.stderr
     elif backend == "metal":
-        assert b"not on the metal backend" in gpu.stderr
-        assert b"Metal backend" not in gpu.stderr
+        # the dense qwen35 hybrid runs on the device (R4.10), its greedy
+        # output the CPU's (asserted above)
+        assert b"Metal backend" in gpu.stderr
+        assert b"not on the metal backend" not in gpu.stderr
 
     if backend == "cuda":
         fallback = subprocess.run(

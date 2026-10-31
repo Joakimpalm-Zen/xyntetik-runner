@@ -25,6 +25,12 @@ b10353 (f8def7fe168bab245fbf15d3f18b26dbb1ef73c8). The ported parts:
   its build fuses multiply-adds, so a llama.cpp build that does differs from
   both in about 1% of those super-blocks, by one rounding step.
 - src/model.h: the xIELU activation, transcribed from ggml's op_xielu.
+- src/kernels.metal: the Gated DeltaNet recurrence's lane layout in
+  k_dn_recur (one simdgroup per value row of the state, the row's key
+  columns across the lanes, simd_sum for both dot products), ported from
+  ggml/src/ggml-metal/kernels/gated_delta_net.metal (kernel_gated_delta_net)
+  at llama.cpp commit 0ec4027 (2026-10-30), newer than b10353 and under the
+  same MIT License.
 
 Several architectures are implemented to match llama.cpp's graph for them
 (gpt-oss, afmoe, muse-glimmer, gemma4's per-layer embeddings, swiglu_oai);

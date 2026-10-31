@@ -112,7 +112,7 @@
         },
         "metal": {
           "kind": "limit",
-          "reason": "Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.",
+          "reason": "Clef's decision head has no Metal path; Metal refuses the model and the file runs on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
@@ -210,7 +210,7 @@
         },
         "metal": {
           "kind": "limit",
-          "reason": "The qwen35 Gated DeltaNet hybrid has no Metal path; a Metal build runs this file on the CPU.",
+          "reason": "Dense qwen35 runs on Metal (R4.10; gated on toy fixtures and Qwen3.5-0.8B), but this file has no Metal row: it does not fit the 8 GB Metal test host's memory.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
@@ -1175,7 +1175,7 @@
         },
         "metal": {
           "kind": "limit",
-          "reason": "The qwen35 Gated DeltaNet hybrid has no Metal path; a Metal build runs this file on the CPU.",
+          "reason": "Dense qwen35 runs on Metal (R4.10; gated on toy fixtures and Qwen3.5-0.8B), but this file has no Metal row: it does not fit the 8 GB Metal test host's memory.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
@@ -2818,7 +2818,7 @@
         },
         "metal": {
           "kind": "limit",
-          "reason": "qwen4exp's Gated DeltaNet blocks have no Metal kernel (the support matrix names Gated DeltaNet among the operations Metal lacks); coverage.json records the architecture's Metal path as unsupported.",
+          "reason": "qwen4exp's hyper-connections and n-gram PLE block have no Metal path; Metal refuses it and the file runs on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
@@ -3654,7 +3654,7 @@
         },
         "metal": {
           "kind": "limit",
-          "reason": "Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.",
+          "reason": "Clef's decision head has no Metal path; Metal refuses the model and the file runs on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
@@ -3773,7 +3773,7 @@
         },
         "metal": {
           "kind": "limit",
-          "reason": "Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.",
+          "reason": "Clef's decision head has no Metal path; Metal refuses the model and the file runs on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },
@@ -5838,7 +5838,7 @@
         },
         "metal": {
           "kind": "limit",
-          "reason": "The Qwen 3.5 hybrid (Gated DeltaNet) has no Metal path; Metal refuses it and the file runs on the CPU.",
+          "reason": "Routed experts on a Gated DeltaNet model (qwen35moe) have no Metal path; Metal refuses it and the file runs on the CPU.",
           "matrix": "MANUAL.md#support-matrix"
         }
       },

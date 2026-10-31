@@ -749,7 +749,7 @@ ISTA-DASLab's IQ3_S file with every quantised block's fp16 scales retrained agai
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.7.1 on 2026-10-29.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `6bc726d37ed11e94`, [pin](../tests/compatibility/tier-smoke/qwen3.8-27b-gsq-rco-iq3_s-recovered.windows-x86_64-cuda.cuda.txt)
-- **Metal:** [n/a](../MANUAL.md#support-matrix): The qwen35 Gated DeltaNet hybrid has no Metal path; a Metal build runs this file on the CPU.
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Dense qwen35 runs on Metal (R4.10; gated on toy fixtures and Qwen3.5-0.8B), but this file has no Metal row: it does not fit the 8 GB Metal test host's memory.
 - **LoRA training:** supported (runner 1.7.1, 2026-10-29).
 - **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
@@ -796,7 +796,7 @@ Experimental: the qwen4exp architecture is admitted with its publisher float32 c
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `d10ba25da7047454`, [pin](../tests/compatibility/tier-smoke/qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head.linux-x86_64-cuda.cuda.txt)
-- **Metal:** [n/a](../MANUAL.md#support-matrix): qwen4exp's Gated DeltaNet blocks have no Metal kernel (the support matrix names Gated DeltaNet among the operations Metal lacks); coverage.json records the architecture's Metal path as unsupported.
+- **Metal:** [n/a](../MANUAL.md#support-matrix): qwen4exp's hyper-connections and n-gram PLE block have no Metal path; Metal refuses it and the file runs on the CPU.
 - **LoRA training:** no: hyper-connections (qwen4exp) (runner 1.5.1, 2026-10-24).
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
@@ -968,7 +968,7 @@ Text path only: a decision model served at /v1/systemone; requests with images o
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `a38540f4ff7fd6c7`, [pin](../tests/compatibility/tier-smoke/cloudflare-clef-iq3_m.linux-x86_64-cuda.cuda.txt)
-- **Metal:** [n/a](../MANUAL.md#support-matrix): Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Clef's decision head has no Metal path; Metal refuses the model and the file runs on the CPU.
 - **LoRA training:** supported (runner 1.5.1, 2026-10-24).
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
@@ -993,7 +993,7 @@ Text path only; ggml-org's Q4_K_M changes 3 of 29 decisions against Cloudflare's
 - **Validation run:** on windows-x86_64-cuda, cuda backend; last run 1.7.1 on 2026-10-30.
 - **CPU:** ✅ v1.7.1 2026-10-30 on windows-x86_64-cuda at commit `b9ad4e9dc9a6`, output sha256 `0b9c736613433a3c`, [pin](../tests/compatibility/tier-smoke/cloudflare-clef-flash.windows-x86_64-cuda.cpu.txt)
 - **CUDA:** ✅ v1.7.1 2026-10-30 on windows-x86_64-cuda at commit `b9ad4e9dc9a6`, output sha256 `0b9c736613433a3c`, [pin](../tests/compatibility/tier-smoke/cloudflare-clef-flash.windows-x86_64-cuda.cuda.txt)
-- **Metal:** [n/a](../MANUAL.md#support-matrix): Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Clef's decision head has no Metal path; Metal refuses the model and the file runs on the CPU.
 - **LoRA training:** supported (runner 1.7.1, 2026-10-30).
 - **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
@@ -1016,7 +1016,7 @@ Text path only; the fidelity file of ggml-org's two: against Cloudflare's float3
 - **Validation run:** on windows-x86_64-cuda, cuda backend; last run 1.7.1 on 2026-10-30.
 - **CPU:** ✅ v1.7.1 2026-10-30 on linux-x86_64-cuda (borrowed hardware) at commit `686a31da93e8`, output sha256 `1b3a370279fc586b`, [pin](../tests/compatibility/tier-smoke/cloudflare-clef-flash-q8_0.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ✅ v1.7.1 2026-10-30 on windows-x86_64-cuda at commit `b9ad4e9dc9a6`, output sha256 `1b3a370279fc586b`, [pin](../tests/compatibility/tier-smoke/cloudflare-clef-flash-q8_0.windows-x86_64-cuda.cuda.txt)
-- **Metal:** [n/a](../MANUAL.md#support-matrix): Clef's qwen35 backbone has no Metal path; a Metal build runs it on the CPU.
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Clef's decision head has no Metal path; Metal refuses the model and the file runs on the CPU.
 - **LoRA training:** supported (runner 1.7.1, 2026-10-30).
 - **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-30).
 - **Tier history:** Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
@@ -1095,7 +1095,7 @@ Unsloth's dynamic Q4_K_M of Qwen3.8-27B, text path: it passes the quant bar agai
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `44ffbc5ccee57adc`, [pin](../tests/compatibility/tier-smoke/qwen3.8-27b-ud-q4_k_m.linux-x86_64-cuda.cuda.txt)
-- **Metal:** [n/a](../MANUAL.md#support-matrix): The qwen35 Gated DeltaNet hybrid has no Metal path; a Metal build runs this file on the CPU.
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Dense qwen35 runs on Metal (R4.10; gated on toy fixtures and Qwen3.5-0.8B), but this file has no Metal row: it does not fit the 8 GB Metal test host's memory.
 - **LoRA training:** supported (runner 1.5.1, 2026-10-24).
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
@@ -2098,7 +2098,7 @@ Text path, bartowski's standard Q4_K_M of Qwen's Qwen3.6-35B-A3B, which passes t
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.9.0 on 2026-10-30.
 - **CPU:** ✅ v1.9.0 2026-10-30 on linux-x86_64-cuda (borrowed hardware) at commit `0dcbc6d8037c`, output sha256 `f3a25e63edc8ebf7`, [pin](../tests/compatibility/tier-smoke/qwen3.6-35b-a3b-q4_k_m.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** [n/a](../MANUAL.md#support-matrix): qwen35moe (Gated DeltaNet with routed experts) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.
-- **Metal:** [n/a](../MANUAL.md#support-matrix): The Qwen 3.5 hybrid (Gated DeltaNet) has no Metal path; Metal refuses it and the file runs on the CPU.
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Routed experts on a Gated DeltaNet model (qwen35moe) have no Metal path; Metal refuses it and the file runs on the CPU.
 - **LoRA training:** no: MoE on a Gated DeltaNet model (runner 1.9.0, 2026-10-30).
 - **LoRA adapter serving:** supported (runner 1.9.0, 2026-10-30).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).

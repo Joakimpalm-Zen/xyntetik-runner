@@ -34,6 +34,7 @@ test-cuda-tc-kq.out
 test-cuda-moe-legacy.out
 tc-overflow.out
 test-cuda-batch-identity.out
+test-metal-qwen35.out
 test-cuda-spec-identity.out
 test-json-schema
 test-json-schema.exe

@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Dense Qwen3.5 models run on Metal.** The Gated DeltaNet layers of a
+  `qwen35` model (Qwen3.5, Qwen3.8, Ornith) have Metal kernels: the conv
+  step over the layer's window, the q/k norms, the recurrence and the gated
+  output norm, beside the gated attention. A Metal build that fits the whole
+  model now runs it on the device, where it used to run on the CPU. Its
+  logits stay within reduction-order rounding of the CPU's, and Qwen3.5-0.8B
+  Q8_0's greedy text is identical, decoding at 50.5 against 38.7 tokens a
+  second on the Metal test host. `--draft lookup` runs there too. A model that does not
+  fit whole, carries an adapter, drafts with `--mtp` or is a `clef` file
+  still runs on the CPU on Metal, as do `qwen35moe` and `qwen4exp`.
+  `make test-metal-qwen35` gates head widths 8, 40, 72 and 128 (R4.10).
+
 - **A startup lease record dated ahead of the clock ages out like one
   written now.** With `RUNNER_UNVERIFIED_LEASE_TTL` at 0, a record whose
   ownership cannot be checked could still be honoured when its file time

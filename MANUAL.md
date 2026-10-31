@@ -1461,8 +1461,10 @@ codebook i-quants (`iq1_s`, `iq1_m`, `iq2_xxs`, `iq2_xs`, `iq2_s`, `iq3_xxs`,
 their `k_mm_*` on 2026-10-21; until then they prefilled through the matvec,
 three to five times slower on an M1. Quantization changes only the weight
 encoding: it cannot give an architecture a Metal path it lacks, because those
-gaps are missing kernels for operations (SSM scan, Gated DeltaNet,
-weight-normed routers, gate-less shared experts), not missing quant support.
+gaps are missing kernels for operations (the Mamba-2 SSM scan, weight-normed
+routers, gate-less shared experts), not missing quant support. The dense
+`qwen35` Gated DeltaNet hybrid has its Metal kernels (a full offload; see its
+row in the support matrix).
 
 A **sharded** GGUF takes a full Metal offload directly: each part's mapping
 gets its own tensor-boundary wraps, gated byte-identical to both the CPU path
@@ -1490,7 +1492,7 @@ merely dense matvec/matmul support.
 |---|---|
 | `llama`, `mistral`, `smollm`, `stablelm` | Llama-style dense families with family tokenizers/templates. |
 | `qwen2`, `qwen3` | QKV-bias and per-head-QK-norm variants. |
-| `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU and CUDA. Qwen3.8-27B (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--draft mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike); a CUDA-resident recurrent layer runs speculative decode (per-row recurrent checkpoints restore a partially accepted round) and declines grammar fast-forward. |
+| `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU, CUDA and Metal. On Metal the whole model runs on the device (its logits within reduction-order rounding of the CPU's, `make test-metal-qwen35`, and Qwen3.5-0.8B Q8_0's greedy text identical); a model that does not fit whole, carries an adapter, drafts with `--mtp` or is a `clef` file runs on the CPU there. Qwen3.8-27B (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--draft mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. Any GPU-backed recurrent instance declines shared-prefix restore (its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike); a CUDA-resident recurrent layer runs speculative decode (per-row recurrent checkpoints restore a partially accepted round) and declines grammar fast-forward; a Metal-resident one runs speculative decode by rolling back to the round's start and re-folding the kept rows (`--draft lookup`; its rows byte-identical to plain decoding, `make test-metal-qwen35`). |
 | `qwen35moe` | Qwen3.5 and Qwen3.6-35B-A3B and the models built on them (Ornith-1.5-35B-A3B, Sage-A1.5, occamy-1.0, MiniCPM-V-4.7-35B-A3B's language model): `qwen35`'s Gated DeltaNet and gated attention with 256 routed experts (softmax, top-8, renormalized) and a sigmoid-gated shared expert on every block. CPU only for now: the GPU backends refuse it by name until its own gates run there. Its NextN block (an attention block with the trunk's MoE FFN) feeds `--mtp`. Checked against transformers' float32 `Qwen3_5MoeForCausalLM` on a converted random model ([the record](docs/compat-reports/qwen35moe-toy-2026-10-30/README.md)); file rows follow. |
 | `clef` | Cloudflare's Clef decision models (Cloudflare/clef on Qwen3.8-27B, Cloudflare/clef-flash on Qwen3.5-9B): the `qwen35` backbone plus the joint schema head, served at `POST /v1/systemone` and `--systemone FILE` ([Clef decisions](#clef-decisions-v1systemone)). Text input only; a request with images or videos is refused. Gold against the publisher's `joint_schema_model.py` in `docs/clef-admission-2026-10-16.md`. |
 | `qwen3moe` | Fused and legacy split sparse-MoE layouts on CPU/CUDA; supported fused layouts on Metal. |
@@ -2633,8 +2635,8 @@ and output projections (`attn_qkv`, `attn_gate`, `ssm_beta`, `ssm_alpha`, `ssm_o
 PEFT's `in_proj_qkv`, `in_proj_z`, `in_proj_b`, `in_proj_a` and `out_proj` as llama.cpp's
 converter names them; a full-attention layer's `attn_q` spans the query and its output
 gate, which share one projection). A `qwen35` adapter, which is what the converter writes
-from Clef's backbone, serves on a `clef` file. Metal runs qwen35 on the CPU, so there the
-CPU applies it - the base weights and kernels are untouched, so every base identity gate
+from Clef's backbone, serves on a `clef` file. On Metal a qwen35 model with an adapter runs
+on the CPU, so there the CPU applies it - the base weights and kernels are untouched, so every base identity gate
 still describes the adapted run's substrate. Runs on the CPU and, on CUDA and Metal, on
 the device: an offloaded block applies the delta from adapter weights held in device
 memory (36.9 MB at rank 8 on a 1.5B), a partial split lets each half apply its own

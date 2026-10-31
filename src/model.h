@@ -419,6 +419,7 @@ typedef struct {
     float *ssm_qkv, *ssm_z, *ssm_aux;     // qwen35 recurrent scratch
     float *ssm_cw;                         // qwen35 dequantized conv-kernel row
     float *ssm_conv_state, *ssm_state_mem; // qwen35 per-sequence recurrent state
+    bool   ssm_state_backend;  // the two above point into backend buffers (Metal)
     // Recurrent-state cache seam (SSM tracer 4): a fixed-size snapshot of the
     // conv ring + SSD/DeltaNet state, keyed by the position it was taken at.
     // Recurrent state is a fold, not a prefix — the state at pos n cannot

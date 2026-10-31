@@ -25,6 +25,13 @@ MOE = os.environ.get("ORNITH_TEST_MOE") == "1"
 ARCH = "qwen35moe" if MOE else "qwen35"
 NEXP, NUSED, FFE, FFS = 8, 3, 16, 24
 STATE, GROUPS, VHEADS, CONV = 8, 2, 4, 4
+# ORNITH_TEST_STATE=N: heads N wide (the DeltaNet's state and value width,
+# and the attention head size), the model N * VHEADS wide. The default 8 is
+# narrower than one 32-lane simdgroup; a device kernel's lane tails need
+# widths past 32 and 64 too (R4.10's Metal gate takes 40 and 72).
+if os.environ.get("ORNITH_TEST_STATE"):
+    STATE = int(os.environ["ORNITH_TEST_STATE"])
+    E = STATE * VHEADS
 VOCAB = ["<unk>", "<s>", "</s>"] + [f"<0x{i:02X}>" for i in range(256)]
 TTYPE = [2, 3, 3] + [6] * 256
 
