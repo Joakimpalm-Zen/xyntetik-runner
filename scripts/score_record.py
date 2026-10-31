@@ -9,6 +9,7 @@ scoring when everything but `score_route` is equal: the route record differs
 whenever a route switch is on, whether or not it changed a logit.
 """
 import json
+import sys
 
 
 def load(path):
@@ -57,3 +58,16 @@ def model_of(rec):
 def rows_max(rec):
     r = rec.get("score_route") or {}
     return max((p.get("rows_max", 0) for p in (r.get("paths") or {}).values()), default=0)
+
+
+def main(argv):
+    """score_record.py A B: exit 0 when two --score files are the same bytes
+    once their route field is left out (a byte gate across a route switch)."""
+    if len(argv) != 2:
+        sys.exit("usage: score_record.py A.json B.json")
+    with open(argv[0], "rb") as fa, open(argv[1], "rb") as fb:
+        return 0 if body_bytes(fa.read()) == body_bytes(fb.read()) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

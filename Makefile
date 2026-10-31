@@ -2572,7 +2572,7 @@ ifeq ($(BUILD_OS),Darwin)
 	  --score -p "$$prompt $$prompt $$prompt" --no-tray > fuse-sc-off.json 2>/dev/null; \
 	./$(RUNNER_EXE) -m test-moe-fixture.moe4-q8.gguf \
 	  --score -p "$$prompt $$prompt $$prompt" --no-tray > fuse-sc-on.json 2>/dev/null; \
-	cmp -s fuse-sc-off.json fuse-sc-on.json || { \
+	$(PYTHON) scripts/score_record.py fuse-sc-off.json fuse-sc-on.json || { \
 	  echo "FAIL: fused teacher-forced logprobs differ from unfused"; exit 1; }; \
 	echo "  metal decode fusion ok (score logprobs byte-identical)"; \
 	./$(RUNNER_EXE) -m test-qk.gguf \
@@ -2606,7 +2606,7 @@ ifeq ($(BUILD_OS),Darwin)
 	  --score -p "$$prompt $$prompt $$prompt" --no-tray > fuse-sc-off.json 2>/dev/null; \
 	RUNNER_METAL_MV=0 RUNNER_METAL_FRONT=all ./$(RUNNER_EXE) -m test-qkw-q4k.gguf \
 	  --score -p "$$prompt $$prompt $$prompt" --no-tray > fuse-sc-on.json 2>/dev/null; \
-	cmp -s fuse-sc-off.json fuse-sc-on.json || { \
+	$(PYTHON) scripts/score_record.py fuse-sc-off.json fuse-sc-on.json || { \
 	  echo "FAIL: front (q4_k+qk-norm) teacher-forced logprobs differ"; exit 1; }; \
 	echo "  attention front ok (qk-norm score logprobs byte-identical)"; \
 	for spec in "test-moe-fixture.moe4-q4.gguf:" "test-qkw-q6k.gguf:all" \
@@ -2618,7 +2618,7 @@ ifeq ($(BUILD_OS),Darwin)
 	  RUNNER_METAL_FRONT=$$fr ./$(RUNNER_EXE) -m $$f \
 	    --score -p "$$prompt $$prompt $$prompt" --no-tray \
 	    > fuse-sc-on.json 2>/dev/null; \
-	  cmp -s fuse-sc-off.json fuse-sc-on.json || { \
+	  $(PYTHON) scripts/score_record.py fuse-sc-off.json fuse-sc-on.json || { \
 	    echo "FAIL: $$f fused teacher-forced logprobs differ (per-type"\
 	         "contraction — see the F6/front fma notes in kernels.metal)"; \
 	    exit 1; }; \
