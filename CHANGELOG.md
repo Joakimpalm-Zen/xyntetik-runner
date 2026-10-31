@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.10.0 - 2026-11-01
 
 - **Short prompt chunks on Metal take the GEMM tiles.** A Metal forward of 4
   to 16 rows (a prompt's last chunk, a chunked score) ran the multi-column
@@ -13,6 +13,14 @@ Current release and unreleased changes. Compatibility follows the
   faster there. Speculative verify rounds and the decode microbatch never
   came through this branch and keep their exact routes. A chunked score of
   granite-h-micro's 2,000-position corpus takes 225 s instead of 741 (R3.24).
+  A correction comes with it. A reused prompt prefix (the prefix cache, a
+  rewind) is bit-identical to a cold prefill only when the two runs put each
+  row in a chunk of the same geometry, on any backend: the CPU's batched dots
+  on x86 and arm64, and Metal's routes by chunk width, differ in the last
+  bits. `test-prefix` had shown bit-identity only at a chunk of 4. It now
+  holds reuse within a stated bound at chunks of 4 and 64 on the CPU and the
+  device (residue 1.2e-8 to 2e-8 of the logit range on the CPU), and a
+  `--record` receipt of such a turn can read `DIVERGED` at a near-tie.
 
 - **NVFP4 prefill on CUDA takes the tensor cores by default.** The
   dequantizing tensor-core route for NVFP4 (opt-in since R4.9.5) passed its
@@ -325,6 +333,33 @@ Current release and unreleased changes. Compatibility follows the
   byte-identical to the 8B-A1B's, and the Q4_K_M reads as the publisher's
   does on all 721 corpus strings, all 107 gold passages and every
   vocabulary entry.
+
+- **Release assets ship ggml's MIT notice.** Code ported from ggml and
+  llama.cpp (the i-quant tables, the GGUF block layouts, the reference
+  quantizers) is now credited in `NOTICE`, with `LICENSES/ggml-MIT.txt`
+  copied into the release archives and the container image (#491).
+
+- **Measured records, no behaviour change.**
+  - Gemma 4 E2B's per-layer embedding table under quantization, against the
+    publisher's float32 (#500).
+  - The agent-torture suite on Qwen3.8-27B's own template and its thinking
+    channel (#504).
+  - The one-accumulator K-quant change on the batched CPU route: level
+    against float32 (#509).
+  - The sensitivity-ordered type plan against "demote the deepest blocks"
+    at the same size on Qwen3-30B-A3B: 18 to 19% lower mean KL (#518).
+
+- **Gates.**
+  - The Metal identity gates catch structural mistakes. Ten planted kernel
+    mutants were run against every tolerance-bounded gate, and four passed
+    under the cross-backend bound: rope skipped, rope one position off, the
+    attention scale x1.05 and a dropped norm eps. On Metal the toy fixtures
+    are now held to bounds sized to their residue, and a fixture with
+    non-unit norm weights catches an ignored norm weight (#515).
+  - A pull request whose added lines carry a host path or a machine or
+    session name is refused in CI and by a pre-commit hook (#519).
+  - A Metal test that compared whole score files after they began naming
+    their route now compares the scores (#511).
 
 ## v1.9.0 - 2026-10-30
 
