@@ -54,6 +54,7 @@ typedef struct {
     id<MTLComputePipelineState> p_mm[METAL_TYPE_SLOTS];       // tiled prefill GEMM
     id<MTLComputePipelineState> p_tensor[METAL_TYPE_SLOTS];   // Metal 4 MPP prefill
     id<MTLComputePipelineState> p_mvf[METAL_TYPE_SLOTS];      // fast decode matvec
+    id<MTLComputePipelineState> p_mvfc_q4k;   // its Q4_K twin, columns inside the block walk
     id<MTLComputePipelineState> p_mv2[METAL_TYPE_SLOTS];      // two-row identity decode matvec
     id<MTLComputePipelineState> p_moe_mv[METAL_TYPE_SLOTS];   // indexed by ggml type
     id<MTLComputePipelineState> p_moe_mv_em[METAL_TYPE_SLOTS]; // expert-major twin
@@ -301,6 +302,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
         [g->p_tensor[i] release];
     }
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvf[i] release];
+    [g->p_mvfc_q4k release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mv2[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv_em[i] release];
@@ -1889,6 +1891,7 @@ static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib
     g->p_mvf[T_Q4_0]  = mk_pipeline(dev, lib, @"k_mvf_q4_0");
     g->p_mvf[T_Q8_0]  = mk_pipeline(dev, lib, @"k_mvf_q8_0");
     g->p_mvf[T_Q4_K]  = mk_pipeline(dev, lib, @"k_mvf_q4_K");
+    g->p_mvfc_q4k     = mk_pipeline(dev, lib, @"k_mvfc_q4_K");
     g->p_mv2[T_Q6_K]  = mk_pipeline(dev, lib, @"k_mv2_q6_K");
     if (g->p_mv2[T_Q6_K] && !metal_mv2_self_test(dev, g->p_mv[T_Q6_K], g->p_mv2[T_Q6_K])) {
         [g->p_mv2[T_Q6_K] release];
@@ -2561,6 +2564,17 @@ static void enc_rmsnorm(gpu_t *g, id<MTLComputeCommandEncoder> e,
 // is bit-identical to n_col separate enc_mv calls.
 // Columns per threadgroup in the batched matmul. Tunable so the tradeoff can
 // be re-measured on other Apple GPUs without a rebuild.
+// RUNNER_METAL_MVFC=0 keeps multi-column Q4_K decode on k_mvf_q4_K's column
+// walk (the A/B arm for R3.24 (a)); default on
+static bool metal_mvfc_on(void) {
+    static _Atomic int v = -1;
+    if (v < 0) {
+        const char *s = getenv("RUNNER_METAL_MVFC");
+        v = !(s && *s && !strcmp(s, "0"));
+    }
+    return v;
+}
+
 static int metal_col_tile(void) {
     static _Atomic int v = -1;
     if (v < 0) {
@@ -2704,6 +2718,13 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
     if (decode && metal_mv_fast_for(g, w->type) && g->p_mvf[w->type]) {
         mv = g->p_mvf[w->type];
         rows_sg = w->type == T_Q4_K ? 2 : 1;   // k_mvf_q4_K takes two rows
+        // several decode columns of Q4_K: the twin that reads each block
+        // once for the whole tile, each column still the one-column bits
+        // (R3.24 (a); kernels.metal caps a tile at MVFC_COLS = 8)
+        if (w->type == T_Q4_K && n_col > 1 && g->p_mvfc_q4k && metal_mvfc_on()) {
+            mv = g->p_mvfc_q4k;
+            if (a.col_tile > 8) a.col_tile = col_tile = 8;
+        }
         g_mv_dispatches++;
         g_disp.mvf++;
     } else if (n_col == 1 && g->p_mv2[w->type] && metal_mv2_on()) {
