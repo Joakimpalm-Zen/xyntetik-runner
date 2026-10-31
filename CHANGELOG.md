@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--draft mtp` on CUDA is documented as such.** The NextN head has run on
+  the device with the whole trunk offloaded since 2026-10-07, and the verify
+  walk is target-exact there, but `--help` still called it the CPU path. On
+  the RTX 3070 a Qwen3.5-4B Q4_K_M with its NextN block decodes at 112.8
+  tok/s at `--draft-k 2` against 94.8 plain once the exact-row twins are
+  faster (R3.3.4), output byte-identical
+  (`docs/compat-reports/cuda-mtp-2026-10-31/README.md`).
+
 - **Speculative decoding pays on CUDA at full offload.** A drafted run on a
   fully offloaded target was slower than plain decoding: on the RTX 3070,
   Qwen2.5-Coder-7B Q4_K_M with its 1.5B draft decoded at 61.0 tok/s at

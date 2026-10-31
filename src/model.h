@@ -485,7 +485,8 @@ typedef struct {
                              // from the backbone; dense decoding never runs
                              // them. With model_params.mtp and exactly one
                              // block, the head below is bound and consumed
-                             // by the speculative walk (CPU path).
+                             // by the speculative walk (on the CPU, or on
+                             // CUDA with the whole trunk on the device).
     // NextN/MTP predictor head: block n_layer bound as an ordinary attention
     // layer (layers[n_layer], KV region kv_off[n_layer..n_layer+1]) plus the
     // head-specific tensors. The head consumes pairs (h_{p-1}, x_p) at
@@ -500,7 +501,7 @@ typedef struct {
     // x on the host (model_hidden_states): a fully offloaded backend
     // copies its rows back as a partial split hands over its boundary
     bool   want_hidden;
-    bool   mtp_ready;        // head bound; drafts available on the CPU path
+    bool   mtp_ready;        // head bound; drafts available (CPU, full CUDA)
     bool   mtp_external;     // the block came from --mtp-file, not the trunk
     gguf_tensor *mtp_eh_proj;   // [2*n_embd, n_embd]  concat(enorm e, hnorm h)
     float *mtp_enorm_w, *mtp_hnorm_w, *mtp_head_norm_w;
