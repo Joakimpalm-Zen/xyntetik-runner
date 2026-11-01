@@ -105,45 +105,42 @@ def process(theme):
 
 
 def result(rec, theme):
+    """One horizontal bar per file, its length the mean KLD on a stated scale,
+    the bar's 0.05 drawn across; size and margin-qualified top-1 beside the
+    name. The files are drawn in the record's order."""
     files = rec["files"]
     bar = rec.get("bar_mean_kld", 0.05)
+    kmax = 0.10 if max(f["mean_kld"] for f in files) <= 0.10 else max(f["mean_kld"] for f in files) * 1.1
     w, h = 640, 300
-    x0, x1, y0, y1 = 70, 600, 250, 60   # plot area: x is size, y is mean KLD (lower is better, at the bottom)
-    sizes = [f["bytes"] / 1e9 for f in files]
-    klds = [f["mean_kld"] for f in files]
-    smin, smax = min(sizes) - 0.5, max(sizes) + 0.5
-    kmax = max(max(klds), bar) * 1.25
-
-    def X(gb): return x0 + (gb - smin) / (smax - smin) * (x1 - x0)
-    def Y(k): return y0 - k / kmax * (y0 - y1)
-    best = min(files, key=lambda f: f["mean_kld"])
-    title = rec["title"]
-    s = Svg(w, h, title, theme)
+    x0, x1 = 262, 560
+    def X(k): return x0 + k / kmax * (x1 - x0)
+    s = Svg(w, h, rec["title"], theme)
     s.text(18, 28, rec["heading"], size=12.5, color="muted", weight="600")
     s.text(18, 44, rec["window"], size=10.5, color="muted")
-    s.raw(f'<line x1="{x0}" y1="{y0}" x2="{x1}" y2="{y0}" stroke="{{line}}"/>')
-    s.raw(f'<line x1="{x0}" y1="{y0}" x2="{x0}" y2="{y1}" stroke="{{line}}"/>')
-    yb = Y(bar)
-    s.raw(f'<line x1="{x0}" y1="{yb:.1f}" x2="{x1}" y2="{yb:.1f}" stroke="{{warn}}" stroke-dasharray="4 4"/>')
-    s.text(x1, yb - 6, f"bar: mean KLD {bar:g} (and 97% margin-qualified top-1)", size=10.5, color="warn",
-           anchor="end")
-    for k in (0, bar / 2, bar, bar * 1.5):
-        if k <= kmax:
-            s.text(x0 - 6, Y(k) + 4, f"{k:.3f}", size=10, color="muted", anchor="end")
-    s.text(x0 - 46, (y0 + y1) / 2, "mean KLD", size=10.5, color="muted", anchor="middle")
-    for gb in sorted({round(g, 1) for g in sizes}):
-        s.text(X(gb), y0 + 16, f"{gb:.1f} GB", size=10, color="muted", anchor="middle")
-    for f in files:
-        x, y = X(f["bytes"] / 1e9), Y(f["mean_kld"])
-        color = "accent" if f.get("ours") else "muted"
-        s.raw(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{6 if f is best else 5}" fill="{{{color}}}"/>')
-        anchor = "end" if x > (x0 + x1) / 2 else "start"
-        dx = -10 if anchor == "end" else 10
-        s.text(x + dx, y - 4, f["label"], size=11.5, color="ink", anchor=anchor,
-               weight="600" if f.get("ours") else None)
-        s.text(x + dx, y + 10, f"{f['mean_kld']:.4f} mean KLD, {f['mq_top1_pct']:.2f}% MQ top-1", size=10.5,
-               color=color, anchor=anchor)
-    s.text(320, 284, rec["footer"], size=10.5, color="muted", anchor="middle")
+    top, step = 72, 56
+    xb = X(bar)
+    s.raw(f'<line x1="{xb:.1f}" y1="{top - 10}" x2="{xb:.1f}" y2="{top + step * len(files) - 14}" '
+          'stroke="{warn}" stroke-dasharray="4 4"/>')
+    s.text(xb, top - 14, f"bar: mean KLD {bar:g}", size=10.5, color="warn", anchor="middle")
+    for i, f in enumerate(files):
+        y = top + step * i
+        ours = f.get("ours")
+        s.text(18, y + 14, f["label"], size=11.5, color="ink", weight="600" if ours else None)
+        s.text(18, y + 29, f"{f['bytes'] / 1e9:.2f} GB, {f['mq_top1_pct']:.2f}% MQ top-1", size=10.5,
+               color="muted")
+        color = "accent" if ours else "muted"
+        s.raw(f'<rect x="{x0}" y="{y + 6}" width="{X(f["mean_kld"]) - x0:.1f}" height="22" rx="3" '
+              f'fill="{{{color}}}"/>')
+        fails = f["mean_kld"] > bar or f["mq_top1_pct"] < 97.0
+        s.text(X(f["mean_kld"]) + 6, y + 21, f"{f['mean_kld']:.4f}" + ("  fails" if fails else ""),
+               size=11.5, color="warn" if fails else "ink", weight="600" if ours else None)
+    ys = top + step * len(files) - 2
+    s.raw(f'<line x1="{x0}" y1="{ys}" x2="{x1}" y2="{ys}" stroke="{{line}}"/>')
+    for k in (0, kmax / 2, kmax):
+        s.text(X(k), ys + 14, f"{k:.2f}", size=10, color="muted", anchor="middle")
+    s.text((x0 + x1) / 2, ys + 28, "mean KLD against the float32 model (shorter is closer)", size=10.5,
+           color="muted", anchor="middle")
+    s.text(320, 288, rec["footer"], size=10.5, color="muted", anchor="middle")
     return s
 
 
