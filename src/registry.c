@@ -96,7 +96,22 @@ void handle_unload(sock_t fd) {
         return;
     }
     bool deferred = false;
+    // A request whose reply has already reached its client is still counted
+    // active until its slot finishes the bookkeeping after the send. A client
+    // that unloads the moment its completion returns used to land in that
+    // window and get "deferred", with the model still mapped for a moment:
+    // on Windows a mapped file cannot be truncated, so replacing the model
+    // right after a 200 failed with EINVAL (test_oms, main CI 2026-11-01).
+    // Wait out that tail, bounded, before deferring: a real generation still
+    // gets its prompt "deferred" answer, a finished one no longer does.
+    double tail_end = now_s() + 0.25;
     pthread_mutex_lock(&SV.swap_mu);
+    while (!SV.loading && atomic_load(&SV.active_requests) > 0 &&
+           now_s() < tail_end) {
+        pthread_mutex_unlock(&SV.swap_mu);
+        plat_sleep_ms(1);
+        pthread_mutex_lock(&SV.swap_mu);
+    }
     if (SV.loading) {
         SV.pending_unload = true;
         atomic_store(&SV.load_cancel, 1);   // a queued --wait-for-vram load gives up now

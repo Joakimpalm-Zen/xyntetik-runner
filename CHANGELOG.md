@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`POST /unload` right after a reply frees the model before it answers.**
+  A request still counts as active for a moment after its reply reaches the
+  client, so an `/unload` sent the moment a completion returned was answered
+  `"deferred":true` and the model stayed mapped a little longer. On Windows a
+  mapped file cannot be replaced, so overwriting the model right after the
+  `200` failed (`OSError` EINVAL; seen once in main CI's `test_oms`).
+  `/unload` now waits out that tail, bounded at 250 ms, before it defers; a
+  generation really in flight is still answered `"deferred":true`, within those 250 ms.
+
 - **Metal decode microbatch: the weight products read each block once for all
   slots.** When several `--parallel` slots decode together on Metal, the Q8_0,
   Q6_K and Q4_K matvecs and the head now load each weight block once for the

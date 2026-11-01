@@ -17,6 +17,9 @@ honesty in both directions:
     README's "give the memory back" section makes in public.
   * GET /unload is 405: a GET was reachable from any web page via
     <img src>, so the method gate is part of the contract too.
+  * /unload sent the moment a reply returns frees the model before it
+    answers: the replying request's tail used to defer it, the file still
+    mapped (Windows then refused to replace it).
 """
 import contextlib
 import json
@@ -48,12 +51,15 @@ def _free_port():
 
 
 @contextlib.contextmanager
-def _serve(runner_bin, model_spec, *extra):
+def _serve(runner_bin, model_spec, *extra, stderr=subprocess.PIPE):
+    # stderr is a pipe nobody drains while the server runs: a test that sends
+    # many requests passes a file instead, or the log fills the pipe and the
+    # server blocks on its next line
     port = _free_port()
     proc = subprocess.Popen(
         [str(runner_bin), "-m", str(model_spec), "--serve", "--port", str(port),
          "-c", "512", "--gpu", "off", "--no-tray", *extra],
-        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        cwd=ROOT, stdout=subprocess.DEVNULL, stderr=stderr)
     try:
         base = f"http://127.0.0.1:{port}"
         deadline = time.time() + 60
@@ -61,7 +67,8 @@ def _serve(runner_bin, model_spec, *extra):
             if proc.poll() is not None:
                 raise AssertionError(
                     "server exited during startup: "
-                    + proc.stderr.read().decode(errors="replace"))
+                    + (proc.stderr.read().decode(errors="replace")
+                       if proc.stderr else "see the test's server log"))
             try:
                 with urllib.request.urlopen(base + "/health", timeout=1):
                     break
@@ -125,3 +132,24 @@ def test_get_unload_is_method_gated(runner_bin, model):
         except urllib.error.HTTPError as e:
             status = e.code
         assert status == 405
+
+
+def test_unload_after_a_reply_releases_the_file_now(runner_bin, model,
+                                                    tmp_path, monkeypatch):
+    # A request is still counted active for a moment after its reply has
+    # reached the client. An /unload sent the moment a completion returned
+    # used to land there and be "deferred", the model still mapped, so a
+    # caller replacing the file right after the 200 failed on Windows (a
+    # mapped file cannot be truncated: OSError EINVAL, main CI 2026-11-01).
+    # The hook holds that tail open for 20 ms, so every iteration lands in
+    # it; /unload must wait it out and free the model before answering.
+    monkeypatch.setenv("RUNNER_TEST_REQUEST_TAIL_MS", "20")
+    m = tmp_path / "served.gguf"
+    raw = model.read_bytes()
+    m.write_bytes(raw)
+    with open(tmp_path / "server.log", "wb") as log,             _serve(runner_bin, m, stderr=log) as base:
+        for i in range(200):
+            assert _chat_ok(base)
+            status, body = _post(base, "/unload")
+            assert (status, body) == (200, {"status": "ok"}), (i, body)
+            m.write_bytes(raw)   # truncates: refused while still mapped
