@@ -615,6 +615,12 @@ static const sampler_preset PRESETS[] = {
     { "mistral", "Mistral AI API defaults (no params in v0.3 generation_config); repeat_penalty 1.10 is runner's calibration",
       0.70f, 1.00f, 0.00f, 1.10f, 0 },
 
+    // mistralai/Ministral-3-*-Instruct-2512 model card: "We recommend starting
+    // with a Temperature of 0.1" (its generation_config.json sets none);
+    // nothing else is stated, so the rest are transformers' defaults
+    { "ministral3", "Ministral 3 model card (temperature 0.1; no other params stated)",
+      0.10f, 1.00f, 0.00f, 1.00f, 0 },
+
     // google/gemma-3-4b-it generation_config.json: top_k 64, top_p 0.95,
     // do_sample, and NO temperature or repetition_penalty key (transformers'
     // defaults, 1.0 and 1.0); the Gemma team's stated optimum adds min_p 0.0
@@ -839,6 +845,11 @@ const sampler_preset *sampler_preset_for(const char *arch, const char *name,
     if (tmpl == TMPL_MISTRAL_NEMO) return by_name("mistral-nemo");
     if (tmpl == TMPL_MISTRAL || tmpl == TMPL_MISTRAL_V1)
         return by_name("mistral");
+    // the [SYSTEM_PROMPT] form is shared by Ministral 3, Devstral and
+    // Magistral, whose cards recommend different settings: the name decides,
+    // and only Ministral's is listed
+    if (tmpl == TMPL_MISTRAL_SYS)
+        return has(lname, "ministral") ? by_name("ministral3") : by_name("mistral");
 
     // Llama, Mistral and SmolLM2 GGUFs all declare `llama`, so only the model
     // name separates them. Checked before the llama-3 test because "smollm2"

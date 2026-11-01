@@ -4598,6 +4598,182 @@
       ]
     },
     {
+      "id": "ministral-3-3b-instruct-2512-q4_k_m",
+      "model": "Ministral 3 3B Instruct 2512 (Mistral AI)",
+      "family": "Ministral 3",
+      "tier": "tier2",
+      "claim": "Text path, the publisher's own Q4_K_M, which fails the fidelity bar: against Mistral AI's BF16 weights computed in float32 it reads 0.0623 mean KLD (bar 0.05) with 99.52% margin-qualified top-1 (bar 97%) over 300 positions. A 3B model at four bits missing the mean-KLD bar is the expected shape; the Q8_0 is the fidelity file.",
+      "architecture": "mistral3",
+      "upstream": {
+        "checkpoint": "mistralai/Ministral-3-3B-Instruct-2512",
+        "revision": "b35d4dfe56c142746f54dbd64f579faab2744308"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "mistralai/Ministral-3-3B-Instruct-2512"
+      },
+      "files": [
+        {
+          "name": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+          "repo": "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
+          "revision": "eb599d408350ea2bb60452cb86be7c7b2fc28227",
+          "sha256": "9ed150d4367e68df0ac8e1540f6ddc65b42d0ee26378329d1ecbca60f93fc5f8",
+          "bytes": 2147023008
+        }
+      ],
+      "quantization": "Q4_K_M (Mistral AI)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text",
+          "tools"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both files against Mistral AI's BF16 weights computed in float32 on the CPU (transformers' Mistral3ForConditionalGeneration driven with text only, gold-logits.py --upcast-at-use --force-bos, 300 positions at stride 15 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked CPU score files): Q4_K_M 0.0623 mean KLD / 92.0% top-1 / 99.52% margin-qualified, Q8_0 0.0174 / 94.33% / 100%; the Q8_0 is the closer by the per-position KLD (Wilcoxon p 3e-50). Record: docs/compat-reports/ministral-3-3b-reference-2026-11-01/README.md.",
+        "context": 4510,
+        "limitations": "No fidelity claim: the file fails the mean-KLD bar. The vision tower is not loaded.",
+        "evidence": [
+          "docs/compat-reports/ministral-3-3b-reference-2026-11-01/README.md"
+        ],
+        "missing": "A llama.cpp column; the Metal and CUDA cells; vision (the text path only); task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.10.0",
+          "date": "2026-11-01",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "ec6d3cf7ea807df2028de0b3077b0606e26412ea",
+          "caps": {
+            "version": "1.10.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "41226f9a1a421d542b4b6313e30710ebf82c4dbae7df4b0b76047b1b0a412e1c",
+          "ran": "runner -m Ministral-3-3B-Instruct-2512-Q4_K_M.gguf --serve -c 2048 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/ministral-3-3b-instruct-2512-q4_k_m.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": null,
+        "metal": null
+      },
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.10.0",
+        "date": "2026-11-01"
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-01",
+          "reason": "R4.4 admission of the mistral3 architecture: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "ministral-3-3b-instruct-2512-q8_0",
+      "model": "Ministral 3 3B Instruct 2512 (Mistral AI)",
+      "family": "Ministral 3",
+      "tier": "tier2",
+      "claim": "Text path and native tool calls ([TOOL_CALLS]name[ARGS]{json}), the publisher's own Q8_0: against Mistral AI's BF16 weights computed in float32 it reads 0.0174 mean KLD and 100% margin-qualified top-1 over 300 positions, inside the 0.05 / 97% bar.",
+      "architecture": "mistral3",
+      "upstream": {
+        "checkpoint": "mistralai/Ministral-3-3B-Instruct-2512",
+        "revision": "b35d4dfe56c142746f54dbd64f579faab2744308"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "mistralai/Ministral-3-3B-Instruct-2512"
+      },
+      "files": [
+        {
+          "name": "Ministral-3-3B-Instruct-2512-Q8_0.gguf",
+          "repo": "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
+          "revision": "eb599d408350ea2bb60452cb86be7c7b2fc28227",
+          "sha256": "8c2b72eb5861304fcfd5e82f1eddd6efa4115737f4239fd216a028a8852413ef",
+          "bytes": 3652204704
+        }
+      ],
+      "quantization": "Q8_0 (Mistral AI)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text",
+          "tools"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both files against Mistral AI's BF16 weights computed in float32 on the CPU (transformers' Mistral3ForConditionalGeneration driven with text only, gold-logits.py --upcast-at-use --force-bos, 300 positions at stride 15 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked CPU score files): Q4_K_M 0.0623 mean KLD / 92.0% top-1 / 99.52% margin-qualified, Q8_0 0.0174 / 94.33% / 100%; the Q8_0 is the closer by the per-position KLD (Wilcoxon p 3e-50). Record: docs/compat-reports/ministral-3-3b-reference-2026-11-01/README.md. Long window on the Q8_0 (the corpus three times, 246 positions from 15,000 to 19,980 at stride 20, across 16,384 where the attention temperature first departs from 1): 0.0061 mean KLD, 100% top-1 (0.0157 below 16,384, 0.0026 above).",
+        "context": 20002,
+        "limitations": "The vision tower is not loaded.",
+        "evidence": [
+          "docs/compat-reports/ministral-3-3b-reference-2026-11-01/README.md"
+        ],
+        "missing": "A llama.cpp column; the Metal and CUDA cells; vision (the text path only); task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.10.0",
+          "date": "2026-11-01",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "ec6d3cf7ea807df2028de0b3077b0606e26412ea",
+          "caps": {
+            "version": "1.10.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "475e3b127117e24f15de8973a4f177d6c9d9066cb3eaa31e15c52c975b4b6268",
+          "ran": "runner -m Ministral-3-3B-Instruct-2512-Q8_0.gguf --serve -c 2048 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/ministral-3-3b-instruct-2512-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": null,
+        "metal": null
+      },
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.10.0",
+        "date": "2026-11-01"
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-01",
+          "reason": "R4.4 admission of the mistral3 architecture: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
       "id": "lfm2.5-1.2b-instruct-q8_0",
       "model": "LFM2.5-1.2B-Instruct (LiquidAI)",
       "family": "LFM2.5",

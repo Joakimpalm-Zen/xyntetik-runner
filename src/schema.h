@@ -116,6 +116,10 @@ snode *schema_compile_nemotron_turn(struct jv *tools, const char *only_tool,
 snode *schema_compile_mistral_turn(jv *tools, bool allow_text,
                                    const char *only_tool, jv *final_schema,
                                    bool parallel, char *err, int errcap);
+// The [SYSTEM_PROMPT] family's turn: `[TOOL_CALLS]name[ARGS]{arguments}` a
+// call, closed by the model's `</s>` (TP_MISTRAL_SYS).
+snode *schema_compile_msys_turn(jv *tools, bool allow_text, const char *only_tool,
+                                jv *final_schema, bool parallel, char *err, int errcap);
 // Wrap a JSON/schema payload in Muse's user-recipient header. The second
 // branch starts after a reasoning close has already consumed ` to=`.
 snode *schema_compile_muse_user_payload(struct jv *schema,

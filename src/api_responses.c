@@ -209,7 +209,7 @@ static char *responses_item_text(jv *item, int tmpl, const char **role,
         // template, gemma4/muse name it on the turn header) -- the SAME
         // framing the chat surface produces via tool_result_wrap.
         if (tmpl_ornith_like(tmpl) || tmpl == TMPL_MISTRAL ||
-            tmpl == TMPL_MISTRAL_NEMO) {
+            tmpl == TMPL_MISTRAL_NEMO || tmpl == TMPL_MISTRAL_SYS) {
             // (Mistral's block names the call it answers)
             sbuf w = {0};
             *role = tool_result_wrap_id(tmpl, b.s ? b.s : "",

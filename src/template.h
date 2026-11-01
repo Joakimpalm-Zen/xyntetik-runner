@@ -282,7 +282,17 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // Python's str() of it (`False`, `None`). Detected by the
        // `preserve_thinking` test beside 3.5's last-query test. Appended
        // last.
-       TMPL_QWEN36 };
+       TMPL_QWEN36,
+       // Mistral's [SYSTEM_PROMPT] form, as the mistral3 GGUFs embed it
+       // (Ministral 3 2512; Mistral Small 3.x, Devstral and Magistral write
+       // the same frame): BOS, the system text (or the template's own long
+       // default) in [SYSTEM_PROMPT]...[/SYSTEM_PROMPT], the tools as one
+       // [AVAILABLE_TOOLS]<tojson>[/AVAILABLE_TOOLS] block right after it,
+       // then [INST]user[/INST], an assistant turn as its text, its calls as
+       // [TOOL_CALLS]name[ARGS]arguments each, and </s>, a result as
+       // [TOOL_RESULTS]text[/TOOL_RESULTS]. Detected by the [SYSTEM_PROMPT]
+       // literal, which the older three never carry. Appended last.
+       TMPL_MISTRAL_SYS };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
@@ -677,6 +687,7 @@ enum tool_proto {
     TP_MUSE_PLAIN,    // Muse: stream a schema payload after a to=user header
     TP_NEMOTRON,      // Nemotron Nano native <TOOLCALL>[{JSON}, ...]</TOOLCALL>
     TP_MISTRAL,       // Mistral v0.3 / Nemo native [TOOL_CALLS][{JSON}, ...]
+    TP_MISTRAL_SYS,   // Mistral [SYSTEM_PROMPT] form: [TOOL_CALLS]name[ARGS]{JSON} a call
     TP_MINICPM_XML,   // MiniCPM5 <function name="N"><param name="K">V</param></function>
     TP_LFM2,          // LFM2 <|tool_call_start|>[name(key=value, ...)]<|tool_call_end|>
     TP_ARGKV,         // Spark <tool_call>N<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>

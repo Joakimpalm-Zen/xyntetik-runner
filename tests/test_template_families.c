@@ -114,6 +114,7 @@ static const struct {
     { "lfm2-24b",         0,  33, 1, 0, 0, "lfm2_python",   1 },
     // Qwen 3.6: Qwen 3.5's framing and calls
     { "qwen36",           0,  34, 0, 0, 1, "qwen3_xml",     1 },
+    { "mistral-sys",      0,   0, 1, 0, 0, "mistral_args",  1 },
 };
 #define N_FAMILY ((int)(sizeof FAMILY / sizeof *FAMILY))
 
@@ -329,12 +330,12 @@ static void state_matches_the_prompt(int t, const jv *tools) {
 }
 
 int main(void) {
-    CHECK(N_FAMILY == TMPL_QWEN36 + 1,
-          "the table has %d rows for %d template ids", N_FAMILY, TMPL_QWEN36 + 1);
+    CHECK(N_FAMILY == TMPL_MISTRAL_SYS + 1,
+          "the table has %d rows for %d template ids", N_FAMILY, TMPL_MISTRAL_SYS + 1);
     jv *tools = json_parse(TOOL_SRC, strlen(TOOL_SRC));
     CHECK(tools != NULL, "tool fixture parses");
     chat_msg user[1] = { { .role = "user", .content = "Hello" } };
-    for (int t = 0; t < N_FAMILY && t <= TMPL_QWEN36; t++) {
+    for (int t = 0; t < N_FAMILY && t <= TMPL_MISTRAL_SYS; t++) {
         const char *name = FAMILY[t].name;
 
         size_t e0 = render(t, NULL, 0, false, THINK_DEFAULT, NULL, A, sizeof A);

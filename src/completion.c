@@ -3910,6 +3910,12 @@ static bool creq_schema(const creq_ctx *c, completion_req *q, creq_err *err) {
                 env->kind == TCH_NAMED ? env->named : NULL,
                 env->kind == TCH_AUTO ? request_schema(req) : NULL,
                 env->parallel, serr, sizeof(serr));
+        } else if (env->proto == TP_MISTRAL_SYS) {
+            schema = schema_compile_msys_turn(
+                env->tools, env->kind == TCH_AUTO,
+                env->kind == TCH_NAMED ? env->named : NULL,
+                env->kind == TCH_AUTO ? request_schema(req) : NULL,
+                env->parallel, serr, sizeof(serr));
         } else if (env->proto == TP_ATEM) {
             const char *only = env->kind == TCH_NAMED ? env->named : NULL;
             jv *final = env->kind == TCH_AUTO ? request_schema(req) : NULL;

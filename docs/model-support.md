@@ -611,6 +611,18 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>Ministral 3</b>, 1 model: CPU ✅ · CUDA - · Metal - · Train ✅</summary>
+<p><b>Ministral 3 3B Instruct 2512 (Mistral AI)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#ministral-3-3b-instruct-2512-q4_k_m"><code>Ministral-3-3B-Instruct-2512-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.10.0<sup>b</sup><br>2026-11-01</td><td></td><td></td><td nowrap>✅ 1.10.0<br>2026-11-01</td></tr>
+<tr><td><a href="#ministral-3-3b-instruct-2512-q8_0"><code>Ministral-3-3B-Instruct-2512-Q8_0.gguf</code></a></td><td nowrap>✅ 1.10.0<sup>b</sup><br>2026-11-01</td><td></td><td></td><td nowrap>✅ 1.10.0<br>2026-11-01</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>LFM2.5</b>, 4 models: CPU ✅ · CUDA n/a · Metal - · Train n/a</summary>
 <p><b>LFM2.5-1.2B-Instruct (LiquidAI)</b></p>
 <table>
@@ -1844,6 +1856,56 @@ Text path, a third party's Q8_0: against the publisher's BF16 weights computed i
 - **LoRA adapter serving:** supported (runner 1.10.0, 2026-11-01).
 - **Tier history:** Tier 2, maintained on report from 2026-11-01 ([log](#transition-log)).
 
+### Ministral 3
+
+#### Ministral 3 3B Instruct 2512 (Mistral AI)
+
+<a id="ministral-3-3b-instruct-2512-q4_k_m"></a>
+##### `Ministral-3-3B-Instruct-2512-Q4_K_M.gguf`
+
+Text path, the publisher's own Q4_K_M, which fails the fidelity bar: against Mistral AI's BF16 weights computed in float32 it reads 0.0623 mean KLD (bar 0.05) with 99.52% margin-qualified top-1 (bar 97%) over 300 positions. A 3B model at four bits missing the mean-KLD bar is the expected shape; the Q8_0 is the fidelity file.
+
+- **File:** `Ministral-3-3B-Instruct-2512-Q4_K_M.gguf` (sha256 `9ed150d4367e68df0ac8e1540f6ddc65b42d0ee26378329d1ecbca60f93fc5f8`, 2,147,023,008 bytes, from [mistralai/Ministral-3-3B-Instruct-2512-GGUF](https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF) at revision `eb599d408350`).
+- **Upstream checkpoint:** mistralai/Ministral-3-3B-Instruct-2512 at revision `b35d4dfe56c1`.
+- **Quantization:** Q4_K_M (Mistral AI).
+- **Licence:** `apache-2.0`, as the mistralai/Ministral-3-3B-Instruct-2512 model card states it.
+- **Features claimed:** text, tools. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both files against Mistral AI's BF16 weights computed in float32 on the CPU (transformers' Mistral3ForConditionalGeneration driven with text only, gold-logits.py --upcast-at-use --force-bos, 300 positions at stride 15 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked CPU score files): Q4_K_M 0.0623 mean KLD / 92.0% top-1 / 99.52% margin-qualified, Q8_0 0.0174 / 94.33% / 100%; the Q8_0 is the closer by the per-position KLD (Wilcoxon p 3e-50). Record: docs/compat-reports/ministral-3-3b-reference-2026-11-01/README.md.
+- **Context tested:** 4510.
+- **Known limitations:** No fidelity claim: the file fails the mean-KLD bar. The vision tower is not loaded.
+- **Still missing:** A llama.cpp column; the Metal and CUDA cells; vision (the text path only); task quality.
+- **Evidence:** [docs/compat-reports/ministral-3-3b-reference-2026-11-01/README.md](compat-reports/ministral-3-3b-reference-2026-11-01/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.10.0 on 2026-11-01.
+- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `ec6d3cf7ea80`, output sha256 `41226f9a1a421d54`, [pin](../tests/compatibility/tier-smoke/ministral-3-3b-instruct-2512-q4_k_m.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.10.0, 2026-11-01).
+- **LoRA adapter serving:** supported (runner 1.10.0, 2026-11-01).
+- **Tier history:** Tier 2, maintained on report from 2026-11-01 ([log](#transition-log)).
+
+<a id="ministral-3-3b-instruct-2512-q8_0"></a>
+##### `Ministral-3-3B-Instruct-2512-Q8_0.gguf`
+
+Text path and native tool calls ([TOOL_CALLS]name[ARGS]{json}), the publisher's own Q8_0: against Mistral AI's BF16 weights computed in float32 it reads 0.0174 mean KLD and 100% margin-qualified top-1 over 300 positions, inside the 0.05 / 97% bar.
+
+- **File:** `Ministral-3-3B-Instruct-2512-Q8_0.gguf` (sha256 `8c2b72eb5861304fcfd5e82f1eddd6efa4115737f4239fd216a028a8852413ef`, 3,652,204,704 bytes, from [mistralai/Ministral-3-3B-Instruct-2512-GGUF](https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF) at revision `eb599d408350`).
+- **Upstream checkpoint:** mistralai/Ministral-3-3B-Instruct-2512 at revision `b35d4dfe56c1`.
+- **Quantization:** Q8_0 (Mistral AI).
+- **Licence:** `apache-2.0`, as the mistralai/Ministral-3-3B-Instruct-2512 model card states it.
+- **Features claimed:** text, tools. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both files against Mistral AI's BF16 weights computed in float32 on the CPU (transformers' Mistral3ForConditionalGeneration driven with text only, gold-logits.py --upcast-at-use --force-bos, 300 positions at stride 15 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked CPU score files): Q4_K_M 0.0623 mean KLD / 92.0% top-1 / 99.52% margin-qualified, Q8_0 0.0174 / 94.33% / 100%; the Q8_0 is the closer by the per-position KLD (Wilcoxon p 3e-50). Record: docs/compat-reports/ministral-3-3b-reference-2026-11-01/README.md. Long window on the Q8_0 (the corpus three times, 246 positions from 15,000 to 19,980 at stride 20, across 16,384 where the attention temperature first departs from 1): 0.0061 mean KLD, 100% top-1 (0.0157 below 16,384, 0.0026 above).
+- **Context tested:** 20002.
+- **Known limitations:** The vision tower is not loaded.
+- **Still missing:** A llama.cpp column; the Metal and CUDA cells; vision (the text path only); task quality.
+- **Evidence:** [docs/compat-reports/ministral-3-3b-reference-2026-11-01/README.md](compat-reports/ministral-3-3b-reference-2026-11-01/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.10.0 on 2026-11-01.
+- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `ec6d3cf7ea80`, output sha256 `475e3b127117e24f`, [pin](../tests/compatibility/tier-smoke/ministral-3-3b-instruct-2512-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.10.0, 2026-11-01).
+- **LoRA adapter serving:** supported (runner 1.10.0, 2026-11-01).
+- **Tier history:** Tier 2, maintained on report from 2026-11-01 ([log](#transition-log)).
+
 ### LFM2.5
 
 #### LFM2.5-1.2B-Instruct (LiquidAI)
@@ -2475,5 +2537,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-11-01 | [Hemmingway-1 (HemmingwayAI), `Hemmingway-1.Q8_0.gguf`](#hemmingway-1-q8_0) | Tier 2, maintained on report | Owner's Hub-search validation queue of 2026-10-29 (R4.27), validation only under CC-BY-NC-4.0: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report. | none recorded |
 | 2026-11-01 | [Hemmingway-1.5 (HemmingwayAI), `HemmingwayAI_Hemmingway-1.5-Q4_K_M.gguf`](#hemmingway-1.5-q4_k_m) | Tier 2, maintained on report | Owner's Hub-search validation queue of 2026-10-29 (R4.27), validation only under CC-BY-NC-4.0: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report. | none recorded |
 | 2026-11-01 | [Hemmingway-1.5 (HemmingwayAI), `HemmingwayAI_Hemmingway-1.5-Q8_0.gguf`](#hemmingway-1.5-q8_0) | Tier 2, maintained on report | Owner's Hub-search validation queue of 2026-10-29 (R4.27), validation only under CC-BY-NC-4.0: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report. | none recorded |
+| 2026-11-01 | [Ministral 3 3B Instruct 2512 (Mistral AI), `Ministral-3-3B-Instruct-2512-Q4_K_M.gguf`](#ministral-3-3b-instruct-2512-q4_k_m) | Tier 2, maintained on report | R4.4 admission of the mistral3 architecture: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report. | none recorded |
+| 2026-11-01 | [Ministral 3 3B Instruct 2512 (Mistral AI), `Ministral-3-3B-Instruct-2512-Q8_0.gguf`](#ministral-3-3b-instruct-2512-q8_0) | Tier 2, maintained on report | R4.4 admission of the mistral3 architecture: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->

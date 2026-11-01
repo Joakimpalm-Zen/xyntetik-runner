@@ -1409,6 +1409,34 @@
       }
     },
     {
+      "id": "ministral-3-3b-instruct-2512-q4_k_m",
+      "architecture": "mistral3",
+      "family": "Ministral 3",
+      "file": "models/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+      "sha256": "9ed150d4367e68df0ac8e1540f6ddc65b42d0ee26378329d1ecbca60f93fc5f8",
+      "upstream": "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
+      "checks": [
+        "load",
+        "chat"
+      ],
+      "notes": "mistralai's own Q4_K_M (2,147,023,008 bytes, revision eb599d40 of mistralai/Ministral-3-3B-Instruct-2512-GGUF), architecture mistral3: 26 layers, GQA 32/8, head_dim 128, YaRN x16 over 16,384 positions with yarn_log_multiplier 1 (magnitude factor 1), the llama 4 attention temperature 0.1 on every layer, tied embeddings, tekken vocabulary of 131,072. Template family mistral-sys (the [SYSTEM_PROMPT] form the file embeds), conformance clean in text and tokens; tools as [TOOL_CALLS]name[ARGS]{...} (mistral_args). The float32 reference is owed (lab lane G).",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[INST]",
+            "[/INST]",
+            "[SYSTEM_PROMPT]",
+            "[TOOL_CALLS]"
+          ]
+        }
+      }
+    },
+    {
       "id": "mimo-v2.6-distill-qwen-9b-q4_k_m",
       "architecture": "qwen35",
       "family": "MiMo",
