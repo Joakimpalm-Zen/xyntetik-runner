@@ -261,7 +261,9 @@ def test_nemotron_h_chunked_prefill_matches_serial(runner_bin, nemo_model):
 # layers on the device and its experts on the host. Two defects kept it off
 # the device: the device tensor lists had no ssm_in, so the first recurrent
 # layer failed and the run continued on the CPU, and the --cpu-moe auto fit
-# placed banks whose ungated shared expert the device cannot run.
+# placed banks whose ungated shared expert the device could not run. Since
+# R4.10 the device adds an ungated shared expert, so --cpu-moe keeps every
+# bank home and --cpu-moe auto puts this small fixture's banks on the card.
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize("cfg", [["--cpu-moe"], ["--cpu-moe", "auto"]])
 def test_granitehybrid_cpu_moe_runs_on_the_device(runner_bin, models, cfg):
@@ -281,6 +283,11 @@ def test_granitehybrid_cpu_moe_runs_on_the_device(runner_bin, models, cfg):
     assert "CUDA backend" in err, err
     for fallback in ("not resident", "falling back", "continuing on CPU"):
         assert fallback not in err, err
-    # the shared expert has no gate: every bank stays on the host
-    assert re.search(r"experts 0/\d+ layers on GPU", err), err
+    m = re.search(r"experts (\d+)/(\d+) layers on GPU", err)
+    assert m, err
+    on, of = int(m.group(1)), int(m.group(2))
+    if cfg == ["--cpu-moe"]:
+        assert on == 0, err          # every bank on the host, as asked
+    else:
+        assert on == of > 0, err     # the auto fit takes the device banks
     assert proc.stdout == cpu.stdout

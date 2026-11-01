@@ -2108,6 +2108,27 @@ test-cuda-moe-legacy: runner $(TEST_MOE_TOL)
 	  echo "$$f: $$(grep 'moe-tol: ok' test-cuda-moe-legacy.out)"; \
 	done
 
+# A Granite 4 hybrid MoE (granite-4.0-h-tiny/-small shape: Mamba-2 and NoPE
+# attention layers, each with routed experts and an always-on shared expert
+# that has NO sigmoid gate) on CUDA, the device against the CPU at logit
+# precision on a 32-row prefill and one row at a time, in F32 and Q8_0, the
+# Q8_0 file also on the by-expert and grouped prefills. Until R4.10 the
+# device had no ungated shared expert and every such bank stayed on the host;
+# a load that keeps a bank home fails here.
+test-cuda-hybrid-moe: runner $(TEST_GPU_ID)
+	@set -e; \
+	$(PYTHON) scripts/make-test-hybrid.py test-hmoe > /dev/null; \
+	./$(RUNNER_EXE) -m test-hmoe.gguf --quantize test-hmoe-q8_0.gguf --quant q8_0 > /dev/null 2>&1; \
+	for f in test-hmoe.gguf test-hmoe-q8_0.gguf; do \
+	  ./$(RUNNER_EXE) -m $$f -p "hello" -n 1 --temp 0 --no-tray > /dev/null 2> test-hmoe.err; \
+	  if grep -q -i -e "shared-expert shape has no device path" -e "running on CPU" -e "using CPU" test-hmoe.err; then \
+	    echo "FAIL: $$f kept its MoE banks off the device"; cat test-hmoe.err; exit 1; fi; \
+	  ./$(TEST_GPU_ID) $$f; \
+	  ./$(TEST_GPU_ID) $$f 0 1; \
+	done; \
+	GPU_ID_MOE_TWIN=1 ./$(TEST_GPU_ID) test-hmoe-q8_0.gguf; \
+	RUNNER_MOE_GROUPED=1 ./$(TEST_GPU_ID) test-hmoe-q8_0.gguf
+
 # The by-expert MoE prefill (moe_twin) against the fused per-token path it
 # must reproduce byte for byte, on a 32-row prefill: the routed top-2-of-4
 # fixture with its experts requantized to Q8_0, the gpt-oss fixture (MXFP4

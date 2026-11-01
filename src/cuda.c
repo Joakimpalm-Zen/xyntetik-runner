@@ -1076,10 +1076,10 @@ static bool moe_any_on_device(const model_t *m) {
 }
 
 // Whether the device can run layer l's expert bank. The routed kernels and
-// the device twin of shexp_add cover a gated-SiLU shared expert with its
-// scalar sigmoid gate (Qwen3.5/3.8); an ungated shared expert (Granite 4
-// hybrid, DeepSeek-style) or a relu2 one has no device path and stays on the
-// host. Admission refuses a pinned device bank that fails this, and the
+// the device twin of shexp_add cover a gated-activation shared expert, with
+// its scalar sigmoid gate (Qwen3.5/3.8) or without one (Granite 4 hybrid,
+// DeepSeek-style, since R4.10: always on, unscaled); a gate-less relu2 one
+// (nemotron_h_moe) has no device path and stays on the host. Admission refuses a pinned device bank that fails this, and the
 // --cpu-moe auto fit places only banks that pass it: the fit runs after
 // admission, so a check there alone let auto put Granite's banks on the
 // device, where the shared expert dereferenced its absent gate.
@@ -1087,7 +1087,7 @@ static bool moe_bank_device_ok(const model_t *m, int l) {
     const layer_t *ly = &m->layers[l];
     if (!ly->is_moe || m->n_ff_shexp <= 0) return true;
     if (m->ffn_relu2) return false;
-    return !ly->w_up_shexp || (ly->w_gate_shexp && ly->ffn_gate_inp_shexp);
+    return !ly->w_up_shexp || ly->w_gate_shexp;
 }
 
 // The fused device-routing MoE path needs the fused-3D expert layout (a
@@ -3113,10 +3113,9 @@ typedef struct {
 // wired through skip_mixer/skip_ffn below. nemotron_h (dense) and DENSE
 // granitehybrid (h-micro) fully offload — CPU/CUDA token-identity
 // measured 2026-08-21 (compat-reports/cpu-cuda-hybrid). MoE granitehybrid
-// (h-tiny, h-small) runs with every expert bank on the host: its shared
-// expert has no gate, which moe_bank_device_ok() keeps off the device, so
-// --cpu-moe and --cpu-moe auto keep the banks home and anything that would
-// put one on the device trips the shared-expert guard below.
+// (h-tiny, h-small) ran with every expert bank on the host until R4.10,
+// because its shared expert has no gate; tile_shexp adds an ungated one
+// unscaled now, so its banks take the device like any routed bank.
 static bool cuda_admit(model_t *m) {
     // qwen35moe: the Gated DeltaNet trunk with routed experts and no
     // hyper-connections has run on the device only as qwen4exp's (with
@@ -7155,15 +7154,16 @@ static bool tile_branch_out(gpu_t *g, model_t *m, CUdeviceptr post_norm, int tn,
 static bool tile_shexp(gpu_t *g, model_t *m, layer_t *ly, int tn, int xdim) {
     int n_embd = m->n_embd;
     bool ok = true;
-    // the gated shared expert, the device twin of shexp_add:
-    // out += sigmoid(gate_inp_shexp . in) * down(act(gate(in)) * up(in))
+    // the shared expert, the device twin of shexp_add:
+    // out += sigmoid(gate_inp_shexp . in) * down(act(gate(in)) * up(in)),
+    // the sigmoid gate 1 where the layer has none (Granite 4 hybrid)
     int nf = m->n_ff_shexp;
     ok = ok && enc_mv(g, m, ly->w_up_shexp, g->shexp_in, g->shexp_u, n_embd, nf, 0, tn, xdim, nf)
             && enc_mv(g, m, ly->w_gate_shexp, g->shexp_in, g->shexp_g, n_embd, nf, 0, tn, xdim, nf)
             && enc_actmul(g, m, g->shexp_g, g->shexp_u, tn * nf)
             && enc_mv(g, m, ly->w_down_shexp, g->shexp_g, g->shexp_o, nf, n_embd, 0, tn, nf, n_embd);
-    // the scalar gate is required here: moe_bank_device_ok() keeps an
-    // ungated shared expert off the device
+    if (!ly->ffn_gate_inp_shexp)
+        return ok && enc_add(g, g->xb, g->shexp_o, n_embd, tn, xdim, n_embd);
     ok = ok && enc_mv(g, m, ly->ffn_gate_inp_shexp, g->shexp_in, g->shexp_gate, n_embd, 1, 0, tn, xdim, 1);
     if (ok) {
         int vs = n_embd;
