@@ -6042,14 +6042,14 @@
           "text"
         ],
         "fp32_reference": "measured",
-        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the lab CPU lane (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, BOS native, the Runner sides from CPU score files at 5cc154e2): Q8_0 0.0159 mean KLD / 95.0% top-1 / 100% margin-qualified, Q4_K_M 0.1225 / 84.3% / 95.8%. Tokenizer 0/721 against the publisher's tokenizer.json at 4622f94a, template conformance as the 0.9B's (the same template). Record: docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md.",
+        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the lab CPU lane (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, BOS native, the Runner sides from CPU score files at 5cc154e2): Q8_0 0.0159 mean KLD / 95.0% top-1 / 100% margin-qualified, Q4_K_M 0.1225 / 84.3% / 95.8%. Tokenizer 0/721 against the publisher's tokenizer.json at 4622f94a, template conformance as the 0.9B's (the same template). Record: docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md. llama.cpp dde879bc on the CPU against the same reference (token ids): 0.0176 / 93.7% / 100.0%, Runner the closer (Wilcoxon p 1.6e-05).",
         "context": 4096,
         "limitations": "CPU only: the grouped RMSNorm (four groups) has no GPU kernel yet, so the GPU backends serve it on the CPU. reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.",
         "evidence": [
           "docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "A GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
+        "missing": "A GPU path for the grouped norm; task quality and the native tool protocol on the real checkpoint."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
@@ -6140,14 +6140,14 @@
           "text"
         ],
         "fp32_reference": "measured",
-        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the lab CPU lane (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, BOS native, the Runner sides from CPU score files at 5cc154e2): Q8_0 0.0159 mean KLD / 95.0% top-1 / 100% margin-qualified, Q4_K_M 0.1225 / 84.3% / 95.8%. Tokenizer 0/721 against the publisher's tokenizer.json at 4622f94a, template conformance as the 0.9B's (the same template). Record: docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md.",
+        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the lab CPU lane (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, BOS native, the Runner sides from CPU score files at 5cc154e2): Q8_0 0.0159 mean KLD / 95.0% top-1 / 100% margin-qualified, Q4_K_M 0.1225 / 84.3% / 95.8%. Tokenizer 0/721 against the publisher's tokenizer.json at 4622f94a, template conformance as the 0.9B's (the same template). Record: docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md. llama.cpp dde879bc on the CPU against the same reference (token ids): 0.1284 / 82.7% / 95.3%, Runner the closer (Wilcoxon p 2e-08).",
         "context": 4096,
         "limitations": "CPU only: the grouped RMSNorm (four groups) has no GPU kernel yet, so the GPU backends serve it on the CPU. reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.",
         "evidence": [
           "docs/compat-reports/k2-horizon-7b-reference-2026-10-30/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "A GPU path for the grouped norm; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint."
+        "missing": "A GPU path for the grouped norm; task quality and the native tool protocol on the real checkpoint."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
