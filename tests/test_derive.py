@@ -311,3 +311,55 @@ def test_license_flag_fills_a_missing_license_and_never_overrides(runner_bin, tm
     assert rc != 0 and "license" in se and not (tmp_path / "x.gguf").exists()
     rc, _, se = derive(runner_bin, licensed, tmp_path / "y.gguf", "--quant", "q4_0", "--license", "mit")
     assert rc == 0, se[-800:]
+
+
+def test_card_from_record_rewrites_the_card_without_measuring(made, runner_bin, tmp_path):
+    """derive writes its card from the record it just wrote, so the record is
+    the card's one source; `runner derive --card-from REC` rewrites the card
+    from the record alone (a newer runner's wording, no new measurement) and
+    gives the same bytes derive wrote."""
+    _, _, out, _, _ = made
+    rec = pathlib.Path(str(out) + ".derive.json")
+    card = pathlib.Path(str(out) + ".README.md")
+    want = card.read_bytes()
+    redo = tmp_path / "again.README.md"
+    p = subprocess.run([str(runner_bin), "derive", "--card-from", str(rec), "-o", str(redo)],
+                       capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    assert redo.read_bytes() == want
+    # without -o: the card beside the record, under the file's own name
+    card.unlink()
+    p = subprocess.run([str(runner_bin), "derive", "--card-from", str(rec)], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    assert card.read_bytes() == want
+    bad = tmp_path / "not-a-record.json"
+    bad.write_text('{"schema_version": "something.else"}')
+    p = subprocess.run([str(runner_bin), "derive", "--card-from", str(bad), "-o", str(tmp_path / "x.md")],
+                       capture_output=True, text=True)
+    assert p.returncode != 0 and "derive record" in p.stderr
+
+
+def test_card_from_an_older_record_reads_the_arithmetic_from_its_gold_run(runner_bin, tmp_path):
+    """A record from before reference.dtype existed: the card takes the
+    reference's arithmetic from the gold run's own summary instead."""
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    script = tmp_path / "fake_gold_dtype.py"
+    script.write_text('''import json, sys
+a = sys.argv
+json.dump({"summary": {"positions": 40, "sides": {"a": {"mean_kld_vs_gold": 0.01,
+    "max_kld_vs_gold": 0.1, "top1_agreement_pct": 99.0, "margin_qualified_top1_pct": 100.0}},
+    "reference_class": "FakeForCausalLM", "reference_dtype": "float32 arithmetic on weights stored at torch.bfloat16, cast at use per decoder block (2 blocks)"}, "rows": []}, open(a[a.index("--out") + 1], "w"))
+''')
+    out = tmp_path / "old.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                       env={"RUNNER_GOLD_LOGITS": str(script)})
+    assert rc == 0, se[-1200:]
+    rec = pathlib.Path(str(out) + ".derive.json")
+    d = json.loads(rec.read_text())
+    del d["reference"]["dtype"]
+    rec.write_text(json.dumps(d))
+    p = subprocess.run([str(runner_bin), "derive", "--card-from", str(rec)], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    assert "float32 arithmetic, BF16 weights upcast at use" in pathlib.Path(str(out) + ".README.md").read_text()
