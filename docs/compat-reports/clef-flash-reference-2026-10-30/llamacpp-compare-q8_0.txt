@@ -1,0 +1,19 @@
+reference: joint_schema_model.py sha256 0e304cf7c650, float32 cpu
+decisions agree 12/12, max |dprob| 0.048791, mean |dprob| 0.012095 (no id, span or logit check)
+  unreadable answer: card-systemone/department
+  unreadable answer: card-systemone/urgency
+  unreadable answer: card-systemone/outage
+  unreadable answer: python-spellings/level
+  unreadable answer: instructions-types/obj
+  unreadable answer: instructions-types/zero
+  unreadable answer: instructions-types/false
+  unreadable answer: instructions-types/empty
+  unreadable answer: many-questions/paid
+  unreadable answer: many-questions/country
+  unreadable answer: many-questions/size
+  unreadable answer: many-questions/fraud
+  unreadable answer: many-questions/channel
+  unreadable answer: many-questions/value
+  unreadable answer: odd-ids/Wie geht's? 😀
+  unreadable answer: odd-ids/only one
+  unreadable answer: null-state/null

@@ -393,3 +393,43 @@ def test_a_model_without_a_head_is_refused(runner_bin, tmp_path):
         assert b"this model has no decision head" in body
         with urllib.request.urlopen(base + "/v1/capabilities", timeout=10) as resp:
             assert json.loads(resp.read())["decision_head"] is None
+
+
+def test_clef_gold_scores_any_servers_decisions(tmp_path):
+    """clef-gold.py compare --decisions reads a /v1/systemone reply (llama.cpp's
+    shape as much as Runner's) back into the reference's option order: a
+    choice by criteria key, a noul as true/false, a score by index. It counts
+    the decisions that agree, the largest |dprob|, each flip with the
+    reference's margin, and refuses an answer it cannot read."""
+    import math
+    def logits(ps):
+        return [math.log(p) for p in ps]
+    ref = [{"reference": "joint_schema_model.py", "code_sha256": "x", "dtype": "float32", "device": "cpu"},
+           {"id": "r1", "questions": [
+               {"id": "c", "option_ids": ["a", "b", "c"], "logits": logits([0.6, 0.3, 0.1])},
+               {"id": "n", "option_ids": ["true", "false"], "logits": logits([0.8, 0.2])}]},
+           {"id": "r2", "questions": [
+               {"id": "s", "option_ids": ["0", "1", "2"], "logits": logits([0.2, 0.45, 0.35])}]}]
+    rep = [{"answers": {"c": {"type": "choice", "choice": "a", "probabilities": {"a": 0.55, "b": 0.35, "c": 0.10}},
+                        "n": {"type": "noul", "noul": 0.75}}},
+           {"answers": {"s": {"type": "score", "score": 1.2, "probabilities": {"0": 0.2, "1": 0.35, "2": 0.45}}}}]
+    rp, np_, out = tmp_path / "ref.jsonl", tmp_path / "rep.jsonl", tmp_path / "out.json"
+    rp.write_text("".join(json.dumps(r) + "\n" for r in ref))
+    np_.write_text("".join(json.dumps(r) + "\n" for r in rep))
+    p = subprocess.run([sys.executable, str(ROOT / "scripts/clef-gold.py"), "compare", "--decisions",
+                        "--ref", str(rp), "--runner", str(np_), "--json", str(out)],
+                       capture_output=True, text=True, timeout=60)
+    assert p.returncode == 0, p.stderr
+    got = json.loads(out.read_text())
+    assert got["questions"] == 3 and got["decisions_agree"] == 2
+    assert abs(got["max_abs_dprob"] - 0.10) < 1e-6
+    flips = [d for d in got["questions_detail"] if not d["agree"]]
+    assert [(d["record"], d["question"]) for d in flips] == [("r2", "s")]
+    assert abs(flips[0]["reference_margin"] - 0.10) < 1e-6
+    assert "flip r2/s" in p.stdout and "no id, span or logit check" in p.stdout
+    # an answer without its probabilities is reported, not guessed
+    rep[1]["answers"]["s"].pop("probabilities")
+    np_.write_text("".join(json.dumps(r) + "\n" for r in rep))
+    p = subprocess.run([sys.executable, str(ROOT / "scripts/clef-gold.py"), "compare", "--decisions",
+                        "--ref", str(rp), "--runner", str(np_)], capture_output=True, text=True, timeout=60)
+    assert p.returncode == 1 and "unreadable answer: r2/s" in p.stdout
