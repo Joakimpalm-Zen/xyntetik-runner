@@ -88,6 +88,7 @@ CODEBOOK = {"iq2_xxs": (16, 66), "iq2_xs": (17, 74), "iq2_s": (22, 82),
 N_FF_SET = None    # --n-ff N: FFN width (an odd N gives odd ffn_gate/ffn_up row counts)
 GPU_UNSUPPORTED = None  # one named tensor stored as CPU-only IQ2_XXS
 ZERO_BRANCHES = False  # --zero-branches: attn_output/ffn_down all zero
+LICENSE = None         # --license ID: general.license (runner derive copies it)
 SCALE_TENSOR = None    # --scale-tensor NAME:FACTOR (act-trace mismatch fixture)
 MISTRAL3_ROPE = None   # --mistral3-rope BETA,ORIG,FACTOR,LOGMUL
 POOLING = None     # --pooling N: {arch}.pooling_type (llama.cpp's enum)
@@ -374,6 +375,9 @@ while i < len(args):
         i += 1
         _b, _o, _f, _lm = args[i].split(",")
         MISTRAL3_ROPE = (float(_b), int(_o), float(_f), float(_lm))
+    elif a == "--license":
+        i += 1
+        LICENSE = args[i]
     elif a == "--zero-branches":
         # Every block's attention and FFN write zero into the residual
         # stream, so each position's final hidden state IS its token's
@@ -736,6 +740,8 @@ if HEAD_DIM:
     ]
 elif ROPE_DIM:
     meta_kvs.append(ku(f"{ARCH}.rope.dimension_count", ROPE_DIM))
+if LICENSE:
+    meta_kvs.append(ks("general.license", LICENSE))
 if POOLING is not None:
     meta_kvs.append(ku(f"{ARCH}.pooling_type", POOLING))
 if PRISM_HADAMARD:

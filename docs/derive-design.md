@@ -1,6 +1,6 @@
 # `runner derive`: make your own measured file (R17.6.1), design note
 
-Status: accepted (coordinator, 2026-11-01); building, tests first.
+Status: accepted (coordinator, 2026-11-01); built (the record, the card and the --target-size port); the `--fit` pre-check is left to the score run's own load check.
 
 Decisions:
 

@@ -407,6 +407,12 @@ recorded failure.
   [Details](MANUAL.md#runtime-and-hardware)
 - **Pause and resume a generation.** Session images with `--sessions DIR`.
   [Details](docs/session-images.md)
+- **Make your own measured file.** `runner derive -m parent.gguf -o out.gguf
+  --quant q4_k` (or `--target-size BYTES` for selective precision) makes the
+  file, measures it, and writes its record and a Hugging Face card. Measured
+  against the parent by default, so the card states no pass or fail; with
+  `--reference hf:DIR` it is measured against the publisher's float32 model
+  and the card leads with the verdict. [Details](MANUAL.md#cli-derive)
 - **Container image and clients.** `ghcr.io/joakimpalm-zen/xyntetik-runner`,
   a [Python client](python/README.md) and a
   [TypeScript client](clients/typescript/README.md).

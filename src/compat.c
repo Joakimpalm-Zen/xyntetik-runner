@@ -1066,6 +1066,13 @@ FILE *plat_fopen(const char *path, const char *mode) {
     return f;
 }
 
+FILE *plat_freopen(const char *path, const char *mode, FILE *stream) {
+    wchar_t *wp = utf8_to_wide(path), *wm = wp ? utf8_to_wide(mode) : NULL;
+    FILE *f = wm ? _wfreopen(wp, wm, stream) : NULL;
+    free_keep_errno(wp, wm);
+    return f;
+}
+
 int plat_open(const char *path, int flags, int mode) {
     wchar_t *wp = utf8_to_wide(path);
     int fd = wp ? _wopen(wp, flags, mode) : -1;

@@ -238,6 +238,8 @@ void *plat_create_file(const char *path, unsigned long access, unsigned long sha
 // with EOVERFLOW on every file over 2 GiB, which is every real model.
 typedef struct _stat64 plat_stat_t;
 FILE *plat_fopen(const char *path, const char *mode);
+// reopen `stream` (stdout) on path, as freopen
+FILE *plat_freopen(const char *path, const char *mode, FILE *stream);
 int   plat_open(const char *path, int flags, int mode);
 int   plat_remove(const char *path);
 int   plat_rename(const char *from, const char *to);
@@ -258,6 +260,7 @@ char *plat_console_read_line(bool *oom);
 #else
 typedef struct stat plat_stat_t;
 #define plat_fopen(path, mode)        fopen(path, mode)
+#define plat_freopen(path, mode, f)   freopen(path, mode, f)
 #define plat_open(path, flags, mode)  open(path, flags, mode)
 #define plat_remove(path)             remove(path)
 #define plat_rename(from, to)         rename(from, to)
