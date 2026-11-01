@@ -1,6 +1,16 @@
 # `runner derive`: make your own measured file (R17.6.1), design note
 
-Status: design, for review before code (2026-11-01).
+Status: accepted (coordinator, 2026-11-01); building, tests first.
+
+Decisions:
+
+- **The verb is `runner derive`.** It sits beside `attest` and `train` (#429's one-mode subcommands). The owner may
+  rename it before the next release.
+- **The default reference is allowed, but labelled and restricted.** Without `--reference hf:DIR` the card reports
+  the numbers but never says "passes the bar" or "faithful". Its first lines say "measured against the parent file
+  in Runner's arithmetic, not the publisher's float32 model", and the record carries `reference_kind:
+  parent-file`. The house bar wording belongs to publisher-reference cards (`reference_kind: publisher-float32`).
+- **v1 recovery is LoRA-heal only.** Scale-only recovery is a later item.
 
 ## The gap
 
