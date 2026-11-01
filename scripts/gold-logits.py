@@ -54,6 +54,7 @@ dropped mass reported per row, instead of a floor.
 import argparse
 import json
 import math
+import os
 import sys
 import urllib.request
 
@@ -228,6 +229,31 @@ def upcast_at_use(model):
         mod.register_forward_hook(post)
         n += 1
     return len(blocks), declared, n
+
+
+def offload_kwargs(offload_dir, max_memory_gib):
+    """from_pretrained's arguments for a reference larger than memory.
+
+    accelerate places whole decoder blocks in memory up to the budget and
+    the rest on "disk"; a disk block's weights are read and cast to the
+    requested dtype just before its forward and dropped after, so the
+    arithmetic is a float32 load's (BF16 to float32 is exact) at a resident
+    cost of the budget plus one block. Where a checkpoint's tensors load as
+    stored, the disk side reads the safetensors themselves and nothing is
+    written; a tensor transformers converts on load (separate expert weights
+    fused into one bank) is written to `offload_dir` in the requested dtype
+    first, which offload_written() reports. Gated bit for bit against an
+    in-memory float32 load (tests/test_gold_logits.py)."""
+    return dict(device_map="auto", max_memory={"cpu": int(max_memory_gib * 2**30)},
+                offload_folder=offload_dir)
+
+
+def offload_written(offload_dir):
+    """Bytes accelerate wrote to the offload directory (0: read in place)."""
+    total = 0
+    for root, _, names in os.walk(offload_dir):
+        total += sum(os.path.getsize(os.path.join(root, n)) for n in names)
+    return total
 
 
 def decoder_blocks(model):
@@ -551,6 +577,17 @@ def main():
                          "module's to float32 for its own forward: float32 arithmetic "
                          "at the stored footprint, for a parent too large to load in "
                          "float32 (upcast_at_use)")
+    ap.add_argument("--offload-dir",
+                    help="stream the weights that do not fit --max-memory from disk, "
+                         "block by block at use (accelerate's disk offload): float32 "
+                         "arithmetic for a parent larger than the machine's memory. "
+                         "A checkpoint whose tensors load as stored is read in place "
+                         "from its safetensors; one that transformers converts on load "
+                         "(per-expert banks fused) is written here first, and the "
+                         "bytes written are reported (offload_kwargs)")
+    ap.add_argument("--max-memory", type=float, metavar="GIB",
+                    help="with --offload-dir: the weights held in memory, in GiB; "
+                         "the rest streams from disk")
     ap.add_argument("--force-bos", action="store_true",
                     help="prepend the tokenizer's BOS to the reference even "
                          "when the HF tokenizer does not add one. Needed "
@@ -569,6 +606,11 @@ def main():
         ap.error("side b takes --endpoint-b or --score-b, not both")
     if args.endpoint_b and not args.model_name_b:
         ap.error("--endpoint-b needs --model-name-b")
+    if bool(args.offload_dir) != bool(args.max_memory):
+        ap.error("--offload-dir and --max-memory go together")
+    if args.offload_dir and args.upcast_at_use:
+        ap.error("--offload-dir loads each block in float32 at use already; "
+                 "drop --upcast-at-use")
     route_note = route_comparison_guard(args)
 
     import time
@@ -605,8 +647,12 @@ def main():
     # printed so the report says which class produced the gold.
     kw = dict(dtype="auto" if args.upcast_at_use else torch.float32,
               trust_remote_code=args.trust_remote_code)
+    if args.offload_dir:
+        kw.update(offload_kwargs(args.offload_dir, args.max_memory))
     stage(f"loading {args.hf} " + ("at its stored dtype, float32 at use"
-                                   if args.upcast_at_use else "in float32"))
+                                   if args.upcast_at_use else
+                                   f"in float32, {args.max_memory:g} GiB held and the rest "
+                                   f"streamed from disk" if args.offload_dir else "in float32"))
     try:
         model = AutoModelForCausalLM.from_pretrained(args.hf, **kw)
     except (ValueError, KeyError, OSError):
@@ -620,6 +666,10 @@ def main():
                   f"cast at use per decoder block ({n_blocks} blocks, config num_hidden_layers "
                   f"{declared}; {n_units} units hooked)")
         stage(f"weights loaded; {upcast}")
+    elif args.offload_dir:
+        on = sorted(set(getattr(model, "hf_device_map", {}).values()))
+        stage(f"weights mapped ({', '.join(map(str, on))}); {offload_written(args.offload_dir)} "
+              "bytes written to the offload directory")
     else:
         stage("weights loaded")
     model.eval()
