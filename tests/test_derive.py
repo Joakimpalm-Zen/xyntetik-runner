@@ -173,6 +173,12 @@ def test_a_publisher_reference_card_says_pass_or_fail_first(runner_bin, tmp_path
     rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
     assert rec["reference_kind"] == "publisher-float32"
     assert rec["measurement"]["bar"]["passes"] is passes
+    # the score file covers the span gold-logits.py reads: its special prefix,
+    # then ids[:min_prefix + max_positions * stride + 1] (gold-logits.py's
+    # `body`); one token short and the real script refuses the file after its
+    # whole float32 forward (found on Qwen3-30B-A3B, 2026-11-01)
+    sc = json.loads(pathlib.Path(rec["measurement"]["file_score"]).read_text())
+    assert len(sc["tokens"]) >= sc.get("n_special", 0) + 8 + 40 * 4 + 1
     body = pathlib.Path(str(out) + ".README.md").read_text(encoding="utf-8").split("\n---\n", 1)[1]
     first = body.strip().splitlines()[0]
     assert ("passes the bar" in first) if passes else ("fails the bar" in first)

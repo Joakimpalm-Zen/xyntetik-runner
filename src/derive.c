@@ -286,7 +286,7 @@ static bool window_fits(const derive_opts *o, jv *sc) {
     jv *toks = jv_get(sc, "tokens");
     int have = toks && toks->type == J_ARR ? toks->n : 0;
     int k = (int)jv_num(jv_get(sc, "n_special"), 0);
-    int need = k + o->start + (o->count - 1) * o->stride + 1;
+    int need = k + o->start + o->count * o->stride + 1;   // gold-logits.py's span
     if (have < need) {
         fprintf(stderr, "error: the window %d:%d:%d needs %d tokens of the corpus and it "
                 "gives %d; give a longer --corpus or a smaller --window\n",
@@ -987,7 +987,11 @@ int derive_main(int argc, char **argv) {
     char *rec_path = suffixed(o.out, ".derive.json");
     char *card_path = suffixed(o.out, ".README.md");
     // the window's tokens and a BOS: everything the measurement reads
-    int n_tokens = 1 + o.start + (o.count - 1) * o.stride + 1;
+    // gold-logits.py reads its special prefix then ids[:min_prefix +
+    // max_positions * stride + 1] and refuses a score file shorter than that
+    // span (after its whole float32 forward), so the score runs cover it: a
+    // BOS, then start + count * stride + 1 tokens of text
+    int n_tokens = 1 + o.start + o.count * o.stride + 1;
     if (o.ctx && atoi(o.ctx) < n_tokens) {
         fprintf(stderr, "error: the window %d:%d:%d reads %d tokens and -c is %s; raise -c or "
                 "give a smaller --window\n", o.start, o.stride, o.count, n_tokens, o.ctx);
