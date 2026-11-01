@@ -2861,6 +2861,64 @@
         }
       }
     },
+    "ministral-3-3b-instruct-2512-q4_k_m": {
+      "ctx": 2048,
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/ministral-3-3b-instruct-2512-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "sha256": "41226f9a1a421d542b4b6313e30710ebf82c4dbae7df4b0b76047b1b0a412e1c",
+          "bytes": 235,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 2048,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-01",
+            "runner_version": "1.10.0",
+            "commit": null
+          }
+        }
+      }
+    },
+    "ministral-3-3b-instruct-2512-q8_0": {
+      "ctx": 2048,
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/ministral-3-3b-instruct-2512-q8_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "475e3b127117e24f15de8973a4f177d6c9d9066cb3eaa31e15c52c975b4b6268",
+          "bytes": 215,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 2048,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-01",
+            "runner_version": "1.10.0",
+            "commit": null
+          }
+        }
+      }
+    },
     "hemmingway-1-q8_0": {
       "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
       "n_predict": 80,
