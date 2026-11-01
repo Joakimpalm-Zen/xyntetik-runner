@@ -128,3 +128,26 @@ expert on the device. Logs in `cuda-window-a-2026-10-06/`.
 - The TC tolerance tool (`test-tc-tol`) needs full device offload and
   skipped this file (22 of 48 layers fit); the identity runs above are the
   evidence class the qwen35 promotion used.
+
+## The publisher's float32 reference: not run (R4.26.4, 2026-11-01)
+
+Qwen3.8-Flash-Next stays measured against llama.cpp only, and this is why.
+The float32 reference (`scripts/gold-logits.py` on the publisher's BF16
+checkpoint, 336 GB) was attempted three times on a reference host whose
+container caps memory at 80 GiB. All three runs were stopped during the
+weight load:
+
+- held in memory and cast at use (`--upcast-at-use`): out of memory;
+- streamed from disk (`--offload-dir`, #528) with 30 GiB and then 8 GiB held:
+  out of memory, then stopped by a guard at 50 GB of anonymous memory.
+
+The cause is one tensor: the Engram n-gram PLE table,
+`model.layers.1.ple.ple_embedding.ngram_embedding.weight`, is a single
+95 GB BF16 tensor (190 GiB in float32). transformers materializes it whole,
+and disk offload loads a whole module at use, so it cannot be split. Runner
+reads the same table one row per token.
+
+The route, if this column is wanted: a memory-mapped BF16 lookup that casts
+only the gathered rows to float32 (exact), with `--offload-dir` streaming for
+the other layers, gated against an in-memory load on a toy with the same PLE
+shape.
