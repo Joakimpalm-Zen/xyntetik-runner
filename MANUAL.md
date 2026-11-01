@@ -3520,6 +3520,28 @@ or dump internals for the tools under `scripts/` (`moe-prune-plan.py` consumes
 not interface: names, formats and defaults change without notice, and nothing
 outside this repository should depend on them.
 
+`RUNNER_ACT_TRACE=trace.jsonl` with `RUNNER_ACT_TRACE_POS=0,7,31` (a
+comma-separated list of 1 to 64 token positions, required) records, at those
+positions, where a forward's residual stream stands: after the embedding
+(`embd`, layer -1), after each layer's mixer branch was added (`mixer`; none
+on a block without a mixer or on hyper-connections), after each layer
+(`resid`), the head's output when the position is the last row of a forward
+(`logits`, layer n_layer), and each MoE layer's selection (`route`, with
+`experts` and `gates`). One JSON object per line, `"v":1`, with `pass` (the
+forward call, from 1), `pos`, `layer`, `point`, `n`, `hash` (FNV-1a 64 over
+the row's float32 bytes, so equal hashes are equal rows) and `l2`;
+`RUNNER_ACT_TRACE_VALUES=1` adds `values`, the row itself. Unlike the switches
+above, this format is versioned for use outside the repository. It sees the
+host forward only, so trace with `--gpu off`; at exit it says how many records
+it wrote. `scripts/act-trace-diff.py A B` walks two traces in forward order
+and prints the first point where they part and the branch it belongs to (a
+`mixer` point is that layer's attention or recurrent branch, a `resid` point
+whose `mixer` matched is its FFN), exit 1; bit-exact on hashes between two
+traces of one build, within `--rtol` on values, which a comparison across
+runtimes needs. `scripts/act-trace-hf.py` writes the same records from a
+transformers model in float32, for a comparison against the publisher's
+reference.
+
 `RUNNER_MOE_REPLAY=routes.jsonl` reads a `RUNNER_MOE_TRACE` file from an
 earlier run and makes the CPU routers choose, at each recorded position and
 layer, the experts that run chose. Only the choice is pinned: the routing

@@ -6829,6 +6829,138 @@ static void moe_trace_emit(int pos, int layer, const int *sel, const float *selw
                    // process's whole lifetime, not to a matching fclose
 }
 
+// ------------------------------------------------------ activation trace (R4.11)
+// RUNNER_ACT_TRACE=path with RUNNER_ACT_TRACE_POS=p[,p...] (required, at most
+// ACT_TRACE_POS_MAX positions) appends one JSONL record per traced point of
+// each listed position, in forward order:
+//   {"v":1,"pass":K,"pos":P,"layer":L,"point":"embd","n":D,"hash":"...","l2":X}
+// pass is the forward call (1-based) that wrote the record. embd (layer -1)
+// is the residual after the embedding, mixer the residual after layer L's
+// mixer branch was added (none on a block without a mixer or on
+// hyper-connections), resid the residual after layer L, logits (layer
+// n_layer) the head's output for the last row of a forward, and route a MoE
+// layer's selection ("experts", "gates"; no hash). hash is FNV-1a 64 over the
+// row's float32 bytes (little-endian, bit-exact: equal hashes mean equal
+// rows), l2 its norm. RUNNER_ACT_TRACE_VALUES=1 adds "values", the row
+// itself, which a comparison across runtimes needs (hashes only say equal or
+// not). The trace sees the host forward: layers a GPU runs write nothing, so
+// trace with --gpu off. One sequence: a served run with several, or a
+// re-prefill, records a position again under a later pass. Off by default,
+// one cached getenv when unset; scripts/act-trace-diff.py reads two traces
+// and names the first point where they part (R4.11, RO-7).
+#define ACT_TRACE_POS_MAX 64
+static struct {
+    _Atomic bool tried;
+    bool on, values;
+    int pos[ACT_TRACE_POS_MAX], n_pos;
+    _Atomic int pass;
+    _Atomic unsigned long written;
+} g_act;
+static pthread_mutex_t g_act_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static FILE *act_trace_file(void) {
+    static plat_env_file f;
+    return plat_env_file_get(&f, "RUNNER_ACT_TRACE");
+}
+
+static void act_trace_report(void) {
+    fprintf(stderr, "act-trace: %lu records%s\n", (unsigned long)g_act.written,
+            g_act.written ? "" : " (no listed position reached the host forward; "
+            "a GPU forward writes none, trace with --gpu off)");
+}
+
+static void act_trace_load(void) {
+    pthread_mutex_lock(&g_act_mu);
+    if (g_act.tried) { pthread_mutex_unlock(&g_act_mu); return; }
+    if (act_trace_file()) {
+        const char *s = getenv("RUNNER_ACT_TRACE_POS");
+        int n = 0;
+        bool ok = s && *s;
+        while (ok && *s) {
+            char *end;
+            long p = strtol(s, &end, 10);
+            if (end == s || p < 0 || p > INT_MAX || n == ACT_TRACE_POS_MAX ||
+                (*end && *end != ',')) { ok = false; break; }
+            g_act.pos[n++] = (int)p;
+            s = *end ? end + 1 : end;
+        }
+        if (!ok || !n) {
+            fprintf(stderr, "error: RUNNER_ACT_TRACE needs RUNNER_ACT_TRACE_POS, a "
+                    "comma-separated list of 1 to %d token positions\n", ACT_TRACE_POS_MAX);
+            exit(1);
+        }
+        g_act.n_pos = n;
+        const char *v = getenv("RUNNER_ACT_TRACE_VALUES");
+        g_act.values = v && *v && strcmp(v, "0") != 0;
+        g_act.on = true;
+        atexit(act_trace_report);
+    }
+    g_act.tried = true;
+    pthread_mutex_unlock(&g_act_mu);
+}
+
+static bool act_trace_pos(int pos) {
+    if (!g_act.tried) act_trace_load();
+    if (!g_act.on) return false;
+    for (int i = 0; i < g_act.n_pos; i++)
+        if (g_act.pos[i] == pos) return true;
+    return false;
+}
+
+static void act_trace_head(FILE *fp, int pos, int layer, const char *point) {
+    fprintf(fp, "{\"v\":1,\"pass\":%d,\"pos\":%d,\"layer\":%d,\"point\":\"%s\"",
+            (int)g_act.pass, pos, layer, point);
+}
+
+// rows [0, n) of a forward starting at pos, row stride `stride` floats, `dim`
+// traced: one record per listed position among them
+static void act_trace_rows(int pos, int n, int layer, const char *point,
+                           const float *rows, size_t stride, int dim) {
+    if (!g_act.tried) act_trace_load();
+    if (!g_act.on) return;
+    for (int b = 0; b < n; b++) {
+        if (!act_trace_pos(pos + b)) continue;
+        const float *v = rows + (size_t)b * stride;
+        uint64_t h = 0xcbf29ce484222325ull;
+        double ss = 0;
+        for (int i = 0; i < dim; i++) {
+            uint32_t bits;
+            memcpy(&bits, v + i, 4);
+            for (int k = 0; k < 4; k++) { h ^= (bits >> (8 * k)) & 0xffu; h *= 0x100000001b3ull; }
+            ss += (double)v[i] * v[i];
+        }
+        pthread_mutex_lock(&g_act_mu);
+        FILE *fp = act_trace_file();
+        act_trace_head(fp, pos + b, layer, point);
+        fprintf(fp, ",\"n\":%d,\"hash\":\"%016llx\",\"l2\":%.9g", dim,
+                (unsigned long long)h, sqrt(ss));
+        if (g_act.values) {
+            fputs(",\"values\":[", fp);
+            for (int i = 0; i < dim; i++) fprintf(fp, "%s%.9g", i ? "," : "", v[i]);
+            fputc(']', fp);
+        }
+        fputs("}\n", fp);
+        fflush(fp);
+        g_act.written++;
+        pthread_mutex_unlock(&g_act_mu);
+    }
+}
+
+static void act_trace_route(int pos, int layer, const int *sel, const float *selw, int used) {
+    if (!act_trace_pos(pos)) return;
+    pthread_mutex_lock(&g_act_mu);
+    FILE *fp = act_trace_file();
+    act_trace_head(fp, pos, layer, "route");
+    fputs(",\"experts\":[", fp);
+    for (int t = 0; t < used; t++) fprintf(fp, "%s%d", t ? "," : "", sel[t]);
+    fputs("],\"gates\":[", fp);
+    for (int t = 0; t < used; t++) fprintf(fp, "%s%.9g", t ? "," : "", selw[t]);
+    fputs("]}\n", fp);
+    fflush(fp);
+    g_act.written++;
+    pthread_mutex_unlock(&g_act_mu);
+}
+
 // ------------------------------------------------------ MoE routing replay
 // RUNNER_MOE_REPLAY=path (R3.21.2): a measurement switch, off by default.
 // It reads a RUNNER_MOE_TRACE file written by an earlier run and makes the
@@ -8170,6 +8302,7 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
         for (int i = 0; i < n_embd; i++) m->moe_out[i] += w * d[i];
     }
     moe_trace_emit(m->fwd_pos, layer_idx, sel, selw, trace ? norms : NULL, used);
+    act_trace_route(m->fwd_pos, layer_idx, sel, selw, used);
     for (int i = 0; i < n_embd; i++) xin[i] = m->moe_out[i];
 }
 
@@ -8300,6 +8433,9 @@ NUM_STAGE void moe_grouped_sum(model_t *m, const layer_t *ly, int n, int xdim,
             moe_trace_emit(m->fwd_pos + b, layer_idx, m->moe_sel + (size_t)b * used,
                            m->moe_selw + (size_t)b * used,
                            m->moe_trace_norms + (size_t)b * used, used);
+    for (int b = 0; b < n; b++)
+        act_trace_route(m->fwd_pos + b, layer_idx, m->moe_sel + (size_t)b * used,
+                        m->moe_selw + (size_t)b * used, used);
     for (int b = 0; b < n; b++)
         memcpy(m->xb + (size_t)b * xdim, m->moe_out_b + (size_t)b * n_embd,
                (size_t)n_embd * sizeof(float));
@@ -8449,6 +8585,7 @@ static void gemma_moe_ffn(model_t *m, const layer_t *ly, int n, int xdim) {
             for (int i = 0; i < n_embd; i++) m->moe_out[i] += sc * m->moe_dexp[i];
         }
         moe_trace_emit(m->fwd_pos + b, layer_idx, sel, selw, trace ? norms : NULL, used);
+        act_trace_route(m->fwd_pos + b, layer_idx, sel, selw, used);
         rmsnorm(m->moe_out, m->moe_out, ly->ffn_post_norm2_w, n_embd, m->rms_eps);
         // --- combine
         float *out = m->xb + (size_t)b * xdim;
@@ -13097,6 +13234,7 @@ NUM_STAGE void layer_output(model_t *m, const fwd_layer *c) {
         }
     }
     if (dbg) dbg_stat("layer-out", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
+    act_trace_rows(c->pos, n, l, "resid", m->x, (size_t)n_embd, n_embd);
 }
 
 static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
@@ -13123,6 +13261,8 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
         if (dbg) dbg_stat("wo-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
         layer_branch_out(m, &c, ly->post_attn_norm_w, DT_ATTN);
         if (dbg) dbg_stat("post-attn-res", l, m->x + (size_t)(n - 1) * n_embd, n_embd);
+        if (!m->hyper_conn)   // the residual lives in x_hc until layer_output
+            act_trace_rows(pos, n, l, "mixer", m->x, (size_t)n_embd, n_embd);
     }
     if (!ly->skip_ffn) layer_ffn(m, &c);   // skipped: a nemotron_h SSM/attention block
     if (ly->ple_gate) layer_ple_branch(m, &c);
@@ -13208,6 +13348,8 @@ static int forward_begin(model_t *m, int n, int pos) {
     // recurrent arches — including nemotron_h, which the per-arch blocks missed
     // — reset identically.
     if (pos == 0) model_recurrent_reset(m);
+    if (!g_act.tried) act_trace_load();
+    if (g_act.on) g_act.pass++;   // records name the forward (1-based) they came from
     // RUNNER_DEBUG_ACT=N dumps the N-th forward pass (1-based): =1 keeps the
     // historical dump-the-first-pass behavior; =3 reaches the second DECODE
     // step — the first pass that reads KV a previous decode step wrote, which
@@ -13310,6 +13452,7 @@ static void forward_inputs(model_t *m, const int32_t *tokens, int n, int dbg) {
     int n_embd = m->n_embd;
     embed_rows(m, tokens, n);
     if (dbg) dbg_stat("post-embd", -1, m->x + (size_t)(n - 1) * n_embd, n_embd);
+    act_trace_rows(m->fwd_pos, n, -1, "embd", m->x, (size_t)n_embd, n_embd);
     if (m->n_embd_ple > 0)
         model_ple_prepass(m, tokens, n, m->x, m->ple, m->ple_tmp);
     if (m->hyper_conn) {
@@ -13333,6 +13476,8 @@ static float *forward_head(model_t *m, int n, int dbg) {
     if (dbg) dbg_stat("logits-raw", m->n_layer, m->logits, m->n_vocab);
     apply_head_transforms(m, m->logits);
     DT_MARK(DT_HEAD);
+    act_trace_rows(m->fwd_pos + n - 1, 1, m->n_layer, "logits", m->logits,
+                   (size_t)m->n_vocab, m->n_vocab);
     if (dbg) {
         dbg_stat("logits-final", m->n_layer, m->logits, m->n_vocab);
         int am = 0;

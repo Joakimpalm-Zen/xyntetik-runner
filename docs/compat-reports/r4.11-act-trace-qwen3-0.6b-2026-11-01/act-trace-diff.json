@@ -1,0 +1,1838 @@
+{
+ "rtol": 0.001,
+ "points": [
+  {
+   "pos": 0,
+   "layer": -1,
+   "point": "embd",
+   "match": true,
+   "distance": 1.1024242252789823e-09,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 0,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00015753260519778858,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 0,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0001142204676334775,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 1,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0001339841594731156,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 1,
+   "point": "resid",
+   "match": true,
+   "distance": 9.429024135088885e-05,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 2,
+   "point": "mixer",
+   "match": true,
+   "distance": 8.379359053451606e-05,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 2,
+   "point": "resid",
+   "match": true,
+   "distance": 4.059640895190034e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 3,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.0604691049176095e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 3,
+   "point": "resid",
+   "match": true,
+   "distance": 4.060152580140501e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 4,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.061144183216181e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 4,
+   "point": "resid",
+   "match": true,
+   "distance": 4.0617509383333705e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 5,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.062203078116726e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 5,
+   "point": "resid",
+   "match": true,
+   "distance": 4.063193839122337e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 6,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.063509723971513e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 6,
+   "point": "resid",
+   "match": true,
+   "distance": 4.0646614950077995e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 7,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.065856631994826e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 7,
+   "point": "resid",
+   "match": true,
+   "distance": 4.066494782491291e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 8,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.068392861156556e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 8,
+   "point": "resid",
+   "match": true,
+   "distance": 4.068930047481577e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 9,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.145789661896592e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 9,
+   "point": "resid",
+   "match": true,
+   "distance": 4.145468640383971e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 10,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.148671749524887e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 10,
+   "point": "resid",
+   "match": true,
+   "distance": 4.148177568194274e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 11,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.150871741655624e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 11,
+   "point": "resid",
+   "match": true,
+   "distance": 4.151972718091876e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 12,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.0823983514153635e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 12,
+   "point": "resid",
+   "match": true,
+   "distance": 4.083419749843288e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 13,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.087338120813174e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 13,
+   "point": "resid",
+   "match": true,
+   "distance": 4.087020534066819e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 14,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.091390494341874e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 14,
+   "point": "resid",
+   "match": true,
+   "distance": 4.0915616263097424e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 15,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.096789240075485e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 15,
+   "point": "resid",
+   "match": true,
+   "distance": 4.095904304545047e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 16,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.176878077994783e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 16,
+   "point": "resid",
+   "match": true,
+   "distance": 4.176950590102258e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 17,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.184906188953721e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 17,
+   "point": "resid",
+   "match": true,
+   "distance": 4.184621671601272e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 18,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.187827934904161e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 18,
+   "point": "resid",
+   "match": true,
+   "distance": 4.186888012840828e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 19,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.266964562443364e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 19,
+   "point": "resid",
+   "match": true,
+   "distance": 4.261784270958978e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 20,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.192766925562447e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 20,
+   "point": "resid",
+   "match": true,
+   "distance": 4.191347874192079e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 21,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.283807541112862e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 21,
+   "point": "resid",
+   "match": true,
+   "distance": 4.282308730120855e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 22,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.376423339076731e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 22,
+   "point": "resid",
+   "match": true,
+   "distance": 4.375773484708115e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 23,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.455597209460305e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 23,
+   "point": "resid",
+   "match": true,
+   "distance": 4.455195538414318e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 24,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.376873510601161e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 24,
+   "point": "resid",
+   "match": true,
+   "distance": 4.376328345734962e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 25,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.432439566147224e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 25,
+   "point": "resid",
+   "match": true,
+   "distance": 4.433283522418674e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 26,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.38482540594332e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 26,
+   "point": "resid",
+   "match": true,
+   "distance": 4.6046781597839334e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 27,
+   "point": "mixer",
+   "match": true,
+   "distance": 4.564598506995729e-06,
+   "by": "values"
+  },
+  {
+   "pos": 0,
+   "layer": 27,
+   "point": "resid",
+   "match": true,
+   "distance": 3.122823426375439e-05,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": -1,
+   "point": "embd",
+   "match": true,
+   "distance": 9.847753442997035e-10,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 0,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00018686001982105342,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 0,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00017709410957472867,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 1,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00024624504180139836,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 1,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00019544105236938409,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 2,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00022738646483786882,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 2,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00022139466360004796,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 3,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003041786629047625,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 3,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00026864161318801357,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 4,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00028333761612187155,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 4,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00023202250627921326,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 5,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00024854694092694334,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 5,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00024270867396338421,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 6,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0002569646674867344,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 6,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002680550176545815,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 7,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00027450874866702185,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 7,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002462432774991124,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 8,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.000279400800941767,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 8,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002922741807515322,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 9,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003156593961508954,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 9,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00029708330198265965,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 10,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003217836042517832,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 10,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00031891615234294656,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 11,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003510002537287267,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 11,
+   "point": "resid",
+   "match": true,
+   "distance": 0.000323296948533581,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 12,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003478800634294007,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 12,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0003421208432493814,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 13,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003733534275077579,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 13,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0003387433040475392,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 14,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00036186201582080583,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 14,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00034007469860367225,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 15,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003580951198907363,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 15,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0003303329498399667,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 16,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00037306757611924073,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 16,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0003049414030036106,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 17,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0004034455859957104,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 17,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00035956909857894206,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 18,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.000360537386432622,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 18,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00033377355084087545,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 19,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003417356091592288,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 19,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00031401598947168385,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 20,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003191683216929601,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 20,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00028728739954879265,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 21,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00028477595843555317,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 21,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00024510866487570957,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 22,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00026379801070022324,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 22,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00024354342812246186,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 23,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0002830310830354619,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 23,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002664208866188712,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 24,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00026549812980731466,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 24,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002529268209519926,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 25,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0002618918734191137,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 25,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002411919459201352,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 26,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00026550978003340715,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 26,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002537910563025521,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 27,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00027266852371374164,
+   "by": "values"
+  },
+  {
+   "pos": 5,
+   "layer": 27,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0003864921526126689,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": -1,
+   "point": "embd",
+   "match": true,
+   "distance": 9.236832420127614e-10,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 0,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00016210155319281079,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 0,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00016178837175566158,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 1,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0001722790626867241,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 1,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00015097430339874068,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 2,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00017841009871837123,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 2,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00015978389438074902,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 3,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0002495173794752392,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 3,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002254986945359214,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 4,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00032811204911669946,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 4,
+   "point": "resid",
+   "match": true,
+   "distance": 0.000303709793512179,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 5,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003382519501049352,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 5,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00033196935469956577,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 6,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00038040818696036076,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 6,
+   "point": "resid",
+   "match": true,
+   "distance": 0.000393244967750047,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 7,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0004110007673071697,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 7,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0004008650108157012,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 8,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0004424278885568787,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 8,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00045916720263798724,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 9,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00045699116397229604,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 9,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00046073357179472475,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 10,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0004816087134614072,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 10,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0005106954678010356,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 11,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0004740994817405039,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 11,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00045358762219144537,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 12,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0004651000715294081,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 12,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0004428587861260333,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 13,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00044938140450564415,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 13,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00046922738240951005,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 14,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0005004954361840642,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 14,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0004892056500470931,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 15,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0005056253825569784,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 15,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00046475909686531994,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 16,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0005083546024736345,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 16,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00042998836168130564,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 17,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00047483056297290547,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 17,
+   "point": "resid",
+   "match": true,
+   "distance": 0.000445524295064676,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 18,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0004535595615485405,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 18,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00042148922015437,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 19,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0004418276225008759,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 19,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00041839908242271803,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 20,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00044034994500841785,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 20,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0003877351511263597,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 21,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00037781091594130334,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 21,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00034467959792162446,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 22,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00036459467511205294,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 22,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00032857741313837565,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 23,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00034703879533087845,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 23,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00033322188574945097,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 24,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00032543371379622924,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 24,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0003105602898677844,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 25,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00033188397790954365,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 25,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002950239633564052,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 26,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003039765989373856,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 26,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00029099045244238226,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 27,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003051455454299722,
+   "by": "values"
+  },
+  {
+   "pos": 12,
+   "layer": 27,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0004139403128806843,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": -1,
+   "point": "embd",
+   "match": true,
+   "distance": 1.0797863753548925e-09,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 0,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00014653327418754307,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 0,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00012382234387712057,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 1,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.000200100222922069,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 1,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00017662717855086176,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 2,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00023364195628404436,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 2,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00024893704136608077,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 3,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003108613727351071,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 3,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002624667595283898,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 4,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003436103876509931,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 4,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002839604980121097,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 5,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0003690253598351216,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 5,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0003518429622014544,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 6,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0004150086452453342,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 6,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00045233323399668484,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 7,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0004628817160853961,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 7,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0004894407185768466,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 8,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0005163777763844689,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 8,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0006029614310275663,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 9,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0006108462006302985,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 9,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0005892051785558023,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 10,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0005713523171315713,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 10,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0005310025092875269,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 11,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0005722862315706972,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 11,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0005530818532356833,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 12,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0006044730331605816,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 12,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0006286884677007938,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 13,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0006201234980430948,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 13,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0005852838821617569,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 14,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0005549849808370503,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 14,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0005566907221344042,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 15,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0005496246109713245,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 15,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0005574534784684995,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 16,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0005960225759075334,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 16,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0005844552418609086,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 17,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0005673589462541933,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 17,
+   "point": "resid",
+   "match": true,
+   "distance": 0.000547646356962169,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 18,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0005270815543382393,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 18,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0005093632289951091,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 19,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0005119315828541875,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 19,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0004871178679112599,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 20,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0004968686341579479,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 20,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0004746711114666345,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 21,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00048694766731759994,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 21,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00044946677780743324,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 22,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00047341206361708294,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 22,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0004137522047473777,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 23,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00044582988575989226,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 23,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00044300857217761366,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 24,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00045509195504037114,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 24,
+   "point": "resid",
+   "match": true,
+   "distance": 0.000404064569174562,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 25,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.0004077375656726602,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 25,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0003760663004501747,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 26,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00040056613823783306,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 26,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0003948018165152093,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 27,
+   "point": "mixer",
+   "match": true,
+   "distance": 0.00041712541374586387,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 27,
+   "point": "resid",
+   "match": true,
+   "distance": 0.000678503704248176,
+   "by": "values"
+  },
+  {
+   "pos": 18,
+   "layer": 28,
+   "point": "logits",
+   "match": true,
+   "distance": 0.00036884207510356386,
+   "by": "values"
+  }
+ ],
+ "first": null
+}
