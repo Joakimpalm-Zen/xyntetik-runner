@@ -2056,6 +2056,30 @@ LLAMA_QUANTIZE = d="$$RUNNER_LLAMA_CPP_BIN"; \
 llama-quantize-path:
 	@$(LLAMA_QUANTIZE)
 
+# The int8 tensor-core prefill (R3.14, RUNNER_CUDA_I8=1, kernels_i8.cuh),
+# through test-tc-tol's teacher-forced tolerance gate on a 256-wide fixture at
+# Q8_0, Q4_K and Q6_K (runner --quantize): the measured arm must run the int8
+# kernels (test-tc-tol fails an arm that set RUNNER_CUDA_I8 and never did).
+# A device below compute capability 8.0 has no int8 kernels: the step says so
+# and passes, as the compute_80 TC2 leg does there.
+test-cuda-i8: runner $(TEST_TC_TOL)
+	@set -e; \
+	cc=$$(./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; g=json.load(sys.stdin).get('gpu') or {}; print(g.get('compute_capability') or '0')"); \
+	if [ "$${cc%%.*}" -lt 8 ]; then echo "test-cuda-i8: compute capability $$cc has no int8 kernels; not applicable"; exit 0; fi; \
+	$(PYTHON) scripts/make-test-model.py --wide test-i8-wide.gguf > /dev/null; \
+	files=""; \
+	for q in q8_0 q4_k q6_k; do \
+	  ./$(RUNNER_EXE) -m test-i8-wide.gguf --quantize test-i8-$$q.gguf --quant $$q > /dev/null 2>&1; \
+	  files="$$files test-i8-$$q.gguf"; \
+	done; \
+	for f in $$files; do \
+	  RUNNER_CUDA_I8=1 ./$(TEST_TC_TOL) $$f > test-cuda-i8.out 2>&1 || \
+	    { cat test-cuda-i8.out; echo "test-cuda-i8: $$f FAILED"; exit 1; }; \
+	  if ! grep -q 'tc-tol: ok' test-cuda-i8.out || grep -q 'skipped' test-cuda-i8.out; then \
+	    cat test-cuda-i8.out; echo "test-cuda-i8: $$f did not run"; exit 1; fi; \
+	  echo "$$f: $$(grep 'int8' test-cuda-i8.out | head -1 | sed 's/^ *//') $$(grep 'tc-tol: ok' test-cuda-i8.out)"; \
+	done
+
 # The tensor-core prefill of the K-quants and legacy quants that had none
 # until 2026-10-21 (kernels_kq_stage.cuh, decoders held to dequant_row by
 # test-kq-stage), through test-tc-tol's teacher-forced tolerance gate: a
@@ -3606,7 +3630,7 @@ NVCC_CCBIN ?=
 ptx: src/kernels.cu src/kernels_sm80.cu src/kernels_tc2.cuh src/kernels_tc2_iq.cuh \
      src/kernels_iq4_table.cuh src/kernels_iq_grids.cuh src/kernels_iq_stage.cuh src/iq_decode.h \
      src/kernels_kq_stage.cuh src/kernels_tc2_kq.cuh src/kq_stage.h src/kernels_train.cuh src/kernel_args.h \
-     src/tdn_args.h
+     src/tdn_args.h src/kernels_i8.cuh
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_75 -O3 -o src/kernels.ptx src/kernels.cu
 	$(NVCC) $(if $(NVCC_CCBIN),-ccbin $(NVCC_CCBIN)) -ptx -arch=compute_80 -O3 -o src/kernels_sm80.ptx src/kernels_sm80.cu
 	python3 scripts/embed-ptx.py || python scripts/embed-ptx.py

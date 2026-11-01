@@ -100,6 +100,7 @@ typedef struct {
     unsigned long disp2;          // of those, the pipelined TC2 kernels' (RUNNER_CUDA_TC2)
     unsigned long disp80;         // of those, the compute_80 kernels' (a CC >= 8.0 device)
     unsigned long dispw;          // of those, the 128-column tile's (a GEMM over 64 columns)
+    unsigned long dispi8;         // of those, the int8 route's (RUNNER_CUDA_I8, R3.14)
 } config;
 
 // Which weight types the model carries in its blocks (blk.*), and which
@@ -144,7 +145,7 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
     unsigned long before[TYPE_N];
     for (int t = 0; t < TYPE_N; t++) before[t] = gpu_tc_dispatches_type(t);
     unsigned long before2 = gpu_tc2_dispatches(), before80 = gpu_tc2_80_dispatches(),
-                  beforew = gpu_tc2_wide_dispatches();
+                  beforew = gpu_tc2_wide_dispatches(), beforei8 = gpu_i8_dispatches();
 
     model_t m;
     memset(&m, 0, sizeof(m));
@@ -210,6 +211,7 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
     c->disp2 = gpu_tc2_dispatches() - before2;
     c->disp80 = gpu_tc2_80_dispatches() - before80;
     c->dispw = gpu_tc2_wide_dispatches() - beforew;
+    c->dispi8 = gpu_i8_dispatches() - beforei8;
 
     // anti-vacuity: a run that produced no logits proves nothing, and a
     // NaN or Inf is a defect that no tolerance may absorb (the detection
@@ -257,6 +259,7 @@ static void engagement_check(const config *cfgs, int n_cfg) {
         for (int t = 0; t < TYPE_N; t++)
             if (c->disp[t]) printf(" %s=%lu", ggml_type_name(t), c->disp[t]);
         if (c->disp2) printf(" (TC2 %lu, compute_80 %lu, 128-column %lu)", c->disp2, c->disp80, c->dispw);
+        if (c->dispi8) printf(" (int8 %lu)", c->dispi8);
         printf("\n");
         if (!c->tc) {
             ck(total == 0, "a forced-off arm dispatched the batched GEMM");
@@ -270,6 +273,11 @@ static void engagement_check(const config *cfgs, int n_cfg) {
                     "arm\n", c->name, g_block_tensors[t], ggml_type_name(t));
             g_fail = 1;
         }
+        // RUNNER_CUDA_I8=1 measures the int8 route: an arm that never ran it
+        // measured the fp16 one instead
+        const char *i8 = getenv("RUNNER_CUDA_I8");
+        if (i8 && *i8 && strcmp(i8, "0") != 0)
+            ck(c->dispi8 > 0, "RUNNER_CUDA_I8 is set and the int8 route never ran");
     }
 }
 
@@ -482,9 +490,9 @@ int main(int argc, char **argv) {
 
     enum { N_CFG = 3 };
     config cfgs[N_CFG] = {
-        { "scalar-b64", 0, N_BATCH,      false, NULL, NULL, {0}, 0, 0, 0 },
-        { "scalar-b16", 0, N_BATCH_CTRL, false, NULL, NULL, {0}, 0, 0, 0 },
-        { "tc-b64",     1, N_BATCH,      false, NULL, NULL, {0}, 0, 0, 0 },
+        { "scalar-b64", 0, N_BATCH,      false, NULL, NULL, {0}, 0, 0, 0, 0 },
+        { "scalar-b16", 0, N_BATCH_CTRL, false, NULL, NULL, {0}, 0, 0, 0, 0 },
+        { "tc-b64",     1, N_BATCH,      false, NULL, NULL, {0}, 0, 0, 0, 0 },
     };
 
     int n_vocab = 0;
