@@ -369,3 +369,39 @@ json.dump({"summary": {"positions": 40, "sides": {"a": {"mean_kld_vs_gold": 0.01
     p = subprocess.run([str(runner_bin), "derive", "--card-from", str(rec)], capture_output=True, text=True)
     assert p.returncode == 0, p.stderr
     assert "float32 arithmetic, BF16 weights upcast at use" in pathlib.Path(str(out) + ".README.md").read_text()
+
+
+def test_base_model_and_credits_name_what_the_files_cannot(runner_bin, tmp_path):
+    """A parent GGUF without a repo URL and a reference held in a local folder
+    leave the card unable to name the publisher's repository; --base-model
+    REPO[@REV] names it (front matter base_model, and the reference by name and
+    revision), and --credit TEXT (repeatable) credits inputs such as someone
+    else's importance matrix. Both go into the record, and --card-from can
+    give them for a record that lacks them, without measuring again."""
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    out = tmp_path / "named.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                       "--base-model", "Org/Model-7B@abc1234", "--credit", "imatrix by someone (Apache-2.0)",
+                       env={"RUNNER_GOLD_LOGITS": str(_fake_gold(tmp_path, 0.01, 99.0))})
+    assert rc == 0, se[-1200:]
+    card = pathlib.Path(str(out) + ".README.md").read_text()
+    front, body = card.split("\n---\n", 1)
+    assert "base_model: Org/Model-7B" in front and "abc1234" not in front
+    assert "`Org/Model-7B` at `abc1234`" in body
+    assert "## Credits" in body and "- imatrix by someone (Apache-2.0)" in body
+    rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
+    assert rec["parent"]["base_model_repo"] == "Org/Model-7B@abc1234"
+    assert rec["credits"] == ["imatrix by someone (Apache-2.0)"]
+    # an older record without them: --card-from fills them in
+    del rec["credits"]
+    rec["parent"]["base_model_repo"] = None
+    old = tmp_path / "old.derive.json"
+    old.write_text(json.dumps(rec))
+    card2 = tmp_path / "old.md"
+    p = subprocess.run([str(runner_bin), "derive", "--card-from", str(old), "-o", str(card2),
+                        "--base-model", "Org/Model-7B@abc1234", "--credit", "imatrix by someone (Apache-2.0)"],
+                       capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    assert card2.read_text() == card

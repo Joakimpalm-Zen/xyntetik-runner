@@ -45,6 +45,9 @@ typedef struct {
     const char *parent, *out, *corpus, *reference_hf;
     const char *ref_args[8];   // --reference-arg: passed to gold-logits.py as given
     const char *license;       // --license: for a parent that declares none
+    const char *base_model;    // --base-model REPO[@REV]: the publisher's repository
+    const char *credits[8];    // --credit TEXT: inputs the card credits
+    int n_credits;
     int n_ref_args;
     const char *ctx, *threads, *gpu;
     const char *recipe[N_RECIPE];   // by RECIPE index; NULL = not given
@@ -97,6 +100,9 @@ static void derive_usage(FILE *f) {
         "                 given, repeatable (--upcast-at-use, or --offload-dir DIR\n"
         "                 --max-memory GIB, for a reference too large for float32\n"
         "                 in memory)\n"
+        "  --base-model REPO[@REV]  the publisher's repository (and revision): the\n"
+        "                 card's base_model, and the reference's name on the card\n"
+        "  --credit TEXT  credit an input on the card (repeatable), e.g. an imatrix\n"
         "  --license ID   the licence of a parent that declares no general.license\n"
         "                 (its source's terms; refused if the parent declares another)\n"
         "  --corpus FILE  the text (default tests/fixtures/gold-corpus-2k.txt)\n"
@@ -156,6 +162,11 @@ static int parse_args(int argc, char **argv, derive_opts *o) {
         else if (!strcmp(a, "-o") || !strcmp(a, "--out")) o->out = v;
         else if (!strcmp(a, "--corpus")) o->corpus = v;
         else if (!strcmp(a, "--license")) o->license = v;
+        else if (!strcmp(a, "--base-model")) o->base_model = v;
+        else if (!strcmp(a, "--credit")) {
+            if (o->n_credits == 8) { fprintf(stderr, "error: at most 8 --credit\n"); return 1; }
+            o->credits[o->n_credits++] = v;
+        }
         else if (!strcmp(a, "--reference-arg")) {
             if (o->n_ref_args == (int)(sizeof o->ref_args / sizeof o->ref_args[0])) {
                 fprintf(stderr, "error: at most 8 --reference-arg\n");
@@ -779,7 +790,8 @@ static double rec_num(jv *obj, const char *key, double dflt) {
 // unflattering metric first, the reference named exactly, base names only.
 // derive writes every card through here, and `runner derive --card-from REC`
 // rewrites one with a newer runner's wording without measuring again.
-static bool card_from_record(const char *rec_path, const char *card_path) {
+static bool card_from_record(const char *rec_path, const char *card_path,
+                             const char *base_fill, const char *const *credit_fill, int n_credit_fill) {
     jv *r = read_json(rec_path);
     if (!r) return false;
     if (strcmp(jv_str(jv_get(r, "schema_version"), ""), "xyntetik.runner.derive.v1")) {
@@ -792,7 +804,16 @@ static bool card_from_record(const char *rec_path, const char *card_path) {
     bool publisher = !strcmp(jv_str(jv_get(r, "reference_kind"), ""), "publisher-float32");
     const char *ob = rec_base(fil, "path"), *pb = rec_base(par, "path");
     const char *license = jv_str(jv_get(par, "license"), "");
+    // the publisher's repository, REPO or REPO@REV: the record's, or one
+    // --card-from gives a record that lacks it
     const char *repo = jv_str(jv_get(par, "base_model_repo"), NULL);
+    if (!repo) repo = base_fill;
+    char repo_id[256] = "", repo_rev[128] = "";
+    if (repo) {
+        const char *at = strchr(repo, '@');
+        snprintf(repo_id, sizeof repo_id, "%.*s", at ? (int)(at - repo) : (int)strlen(repo), repo);
+        if (at) snprintf(repo_rev, sizeof repo_rev, "%s", at + 1);
+    }
     bool given = !strcmp(jv_str(jv_get(par, "license_source"), ""), "--license");
     int file_type = (int)rec_num(par, "file_type", -1);
     long long pbytes = (long long)rec_num(par, "bytes", -1), fbytes = (long long)rec_num(fil, "bytes", -1);
@@ -805,9 +826,9 @@ static bool card_from_record(const char *rec_path, const char *card_path) {
     sb_lit(&c, "---\nlicense: ");
     yaml_scalar(&c, license);
     sb_lit(&c, "\n");
-    if (repo && *repo) {
+    if (*repo_id) {
         sb_lit(&c, "base_model: ");
-        yaml_scalar(&c, repo);
+        yaml_scalar(&c, repo_id);
         sb_lit(&c, "\n");
     }
     sb_lit(&c, "tags:\n- gguf\n- runner-derive\n---\n\n");
@@ -875,10 +896,14 @@ static bool card_from_record(const char *rec_path, const char *card_path) {
         else if (dt && strstr(dt, "cast at use"))
             how = "in float32 arithmetic, stored weights upcast at use,";
         const char *cls = jv_str(jv_get(ref, "class"), NULL);
-        sb_fmt(&c, "The publisher's model `%s`%s%s%s, run %s by scripts/gold-logits.py. "
+        char name[512];
+        if (*repo_id && *repo_rev) snprintf(name, sizeof name, "`%s` at `%s`", repo_id, repo_rev);
+        else if (*repo_id) snprintf(name, sizeof name, "`%s`", repo_id);
+        else snprintf(name, sizeof name, "`%s`", rec_base(ref, "hf"));
+        sb_fmt(&c, "The publisher's model %s%s%s%s, run %s by scripts/gold-logits.py. "
                "The bar (mean KLD at most %.2f, margin-qualified top-1 at least %.0f%%) is "
                "stated against this reference only.\n\n",
-               rec_base(ref, "hf"), cls ? " (" : "", cls ? cls : "", cls ? ")" : "", how,
+               name, cls ? " (" : "", cls ? cls : "", cls ? ")" : "", how,
                BAR_MEAN_KLD, BAR_MQ_TOP1);
         jv_free(gold);
     } else {
@@ -897,6 +922,15 @@ static bool card_from_record(const char *rec_path, const char *card_path) {
                "`general.license`.\n\n", license);
     else
         sb_fmt(&c, "## License\n\n`%s`, copied from the parent's `general.license`.\n\n", license);
+    jv *cr = jv_get(r, "credits");
+    int ncr = cr && cr->type == J_ARR ? cr->n : 0;
+    if (ncr || n_credit_fill) {
+        sb_lit(&c, "## Credits\n\n");
+        for (int i = 0; i < ncr; i++) sb_fmt(&c, "- %s\n", jv_str(cr->items[i], ""));
+        if (!ncr)
+            for (int i = 0; i < n_credit_fill; i++) sb_fmt(&c, "- %s\n", credit_fill[i]);
+        sb_lit(&c, "\n");
+    }
     sb_fmt(&c, "## Records\n\n`%s.derive.json` holds both files' sha256, the recipe, the window "
            "and the measurement; `%s.quant.json` is the rewrite's own record.\n", ob, ob);
     jv_free(r);
@@ -916,6 +950,7 @@ static void put_command(sbuf *b, const derive_opts *o) {
         if (o->group_tensor) sb_lit(b, " --group tensor");
     }
     if (o->license) sb_fmt(b, " --license %s", o->license);
+    if (o->base_model) sb_fmt(b, " --base-model %s", o->base_model);
     if (o->corpus_given) sb_fmt(b, " --corpus %s", plat_path_base(o->corpus));
     sb_fmt(b, " --window %d:%d:%d", o->start, o->stride, o->count);
     if (o->reference_hf) sb_fmt(b, " --reference hf:%s", plat_path_base(o->reference_hf));
@@ -926,12 +961,17 @@ static void put_command(sbuf *b, const derive_opts *o) {
 // `runner derive --card-from REC [-o CARD]`: the card from a record alone,
 // beside it under the file's name unless -o says where
 static int card_only(int argc, char **argv) {
-    const char *rec = NULL, *out = NULL;
+    const char *rec = NULL, *out = NULL, *base = NULL;
+    const char *credits[8];
+    int nc = 0;
     for (int i = 1; i + 1 < argc; i += 2) {
         if (!strcmp(argv[i], "--card-from")) rec = argv[i + 1];
         else if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--out")) out = argv[i + 1];
+        else if (!strcmp(argv[i], "--base-model")) base = argv[i + 1];
+        else if (!strcmp(argv[i], "--credit") && nc < 8) credits[nc++] = argv[i + 1];
         else {
-            fprintf(stderr, "error: --card-from takes only -o CARD beside it (got %s)\n", argv[i]);
+            fprintf(stderr, "error: --card-from takes -o CARD, --base-model and --credit beside it "
+                    "(got %s)\n", argv[i]);
             return 1;
         }
     }
@@ -952,7 +992,7 @@ static int card_only(int argc, char **argv) {
         memcpy(card, rec, n - k);
         strcpy(card + n - k, ".README.md");
     }
-    bool ok = card_from_record(rec, out ? out : card);
+    bool ok = card_from_record(rec, out ? out : card, base, credits, nc);
     if (ok) printf("derive: card %s from %s\n", out ? out : card, rec);
     free(card);
     return ok ? 0 : 1;
@@ -1072,7 +1112,12 @@ int derive_main(int argc, char **argv) {
         sb_lit(&r, "\"file\":"); sb_str(&r, o.parent);
         sb_fmt(&r, ",\"sha256\":\"%s\",\"arithmetic\":\"runner, cpu\"", psha);
     }
-    sb_lit(&r, "},\"command\":");
+    sb_lit(&r, "},\"credits\":[");
+    for (int i = 0; i < o.n_credits; i++) {
+        if (i) sb_lit(&r, ",");
+        sb_str(&r, o.credits[i]);
+    }
+    sb_lit(&r, "],\"command\":");
     sbuf cmd = {0};
     put_command(&cmd, &o);
     sb_put(&cmd, "", 1);
@@ -1106,7 +1151,7 @@ int derive_main(int argc, char **argv) {
     sb_lit(&r, ",\"license_source\":");
     sb_str(&r, pm.license_given ? "--license" : "general.license");
     sb_lit(&r, ",\"base_model_repo\":");
-    sb_str(&r, *pm.repo ? pm.repo : NULL);
+    sb_str(&r, o.base_model ? o.base_model : *pm.repo ? pm.repo : NULL);
     sb_fmt(&r, ",\"file_type\":%d,\"name\":", pm.file_type);
     sb_str(&r, *pm.name ? pm.name : NULL);
     sb_lit(&r, "},\"file\":{\"path\":"); sb_str(&r, o.out);
@@ -1137,7 +1182,7 @@ int derive_main(int argc, char **argv) {
     // 5. the card, written from the record just written: the record is the
     //    one source, and --card-from rewrites a card from it alone
     free(cmd.s);
-    if (!card_from_record(rec_path, card_path)) return 1;
+    if (!card_from_record(rec_path, card_path, NULL, NULL, 0)) return 1;
 
     printf("derive: %s (%lld bytes, %.1f%% of the parent); mean KLD %.4f, top-1 %.2f%% "
            "against the %s%s; record %s, card %s\n",
