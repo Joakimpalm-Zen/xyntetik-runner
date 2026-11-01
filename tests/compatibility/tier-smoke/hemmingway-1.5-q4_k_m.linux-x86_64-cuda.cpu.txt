@@ -1,0 +1,10 @@
+Mercury
+Venus
+Earth
+Mars
+Jupiter
+Saturn
+Uranus
+Neptune
+Mercury is the smallest planet in the Solar System and the closest to the Sun.
+Venus is the second planet

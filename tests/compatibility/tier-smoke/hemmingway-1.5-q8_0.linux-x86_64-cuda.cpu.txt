@@ -1,0 +1,11 @@
+Mercury
+Venus
+Earth
+Mars
+Jupiter
+Saturn
+Uranus
+Neptune
+Mercury is the closest planet to the Sun.
+Venus is the second planet from the Sun.
+Earth is
