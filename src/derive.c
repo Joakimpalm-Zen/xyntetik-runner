@@ -102,7 +102,9 @@ static void derive_usage(FILE *f) {
         "  --corpus FILE  the text (default tests/fixtures/gold-corpus-2k.txt)\n"
         "  --window S:T:N positions S + n*T for n < N (default 8:15:300)\n"
         "  -c N, -t N, --gpu X  passed to the score runs (--gpu default off)\n\n"
-        "The parent must declare general.license: the card copies it.\n"
+        "The parent must declare general.license: the card copies it.\n\n"
+        "  runner derive --card-from OUT.derive.json [-o CARD.md]\n"
+        "                 rewrite a card from its record alone (no measurement)\n\n"
         "Environment: RUNNER_GOLD_PYTHON (default python3), RUNNER_GOLD_LOGITS\n"
         "(default scripts/gold-logits.py beside this binary).\n");
 }
@@ -284,7 +286,7 @@ static bool window_fits(const derive_opts *o, jv *sc) {
     jv *toks = jv_get(sc, "tokens");
     int have = toks && toks->type == J_ARR ? toks->n : 0;
     int k = (int)jv_num(jv_get(sc, "n_special"), 0);
-    int need = k + o->start + (o->count - 1) * o->stride + 1;
+    int need = k + o->start + o->count * o->stride + 1;   // gold-logits.py's span
     if (have < need) {
         fprintf(stderr, "error: the window %d:%d:%d needs %d tokens of the corpus and it "
                 "gives %d; give a longer --corpus or a smaller --window\n",
@@ -761,6 +763,148 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     return wrote;
 }
 
+// A string member as a base name ("" when absent): the card names files, never
+// host paths.
+static const char *rec_base(jv *obj, const char *key) {
+    const char *v = jv_str(jv_get(obj, key), NULL);
+    return v ? plat_path_base(v) : "";
+}
+
+static double rec_num(jv *obj, const char *key, double dflt) {
+    double v;
+    return num_of(obj, key, &v) ? v : dflt;
+}
+
+// The card from a derive record alone: what the file is and is not first, the
+// unflattering metric first, the reference named exactly, base names only.
+// derive writes every card through here, and `runner derive --card-from REC`
+// rewrites one with a newer runner's wording without measuring again.
+static bool card_from_record(const char *rec_path, const char *card_path) {
+    jv *r = read_json(rec_path);
+    if (!r) return false;
+    if (strcmp(jv_str(jv_get(r, "schema_version"), ""), "xyntetik.runner.derive.v1")) {
+        fprintf(stderr, "error: %s is not a runner derive record\n", rec_path);
+        jv_free(r);
+        return false;
+    }
+    jv *par = jv_get(r, "parent"), *fil = jv_get(r, "file"), *ref = jv_get(r, "reference");
+    jv *meas = jv_get(r, "measurement"), *rec = jv_get(r, "recipe"), *win = jv_get(meas, "window");
+    bool publisher = !strcmp(jv_str(jv_get(r, "reference_kind"), ""), "publisher-float32");
+    const char *ob = rec_base(fil, "path"), *pb = rec_base(par, "path");
+    const char *license = jv_str(jv_get(par, "license"), "");
+    const char *repo = jv_str(jv_get(par, "base_model_repo"), NULL);
+    bool given = !strcmp(jv_str(jv_get(par, "license_source"), ""), "--license");
+    int file_type = (int)rec_num(par, "file_type", -1);
+    long long pbytes = (long long)rec_num(par, "bytes", -1), fbytes = (long long)rec_num(fil, "bytes", -1);
+    int positions = (int)rec_num(meas, "positions", 0);
+    double mean = rec_num(meas, "mean_kld", 0), mx = rec_num(meas, "max_kld", 0);
+    double top1 = rec_num(meas, "top1_agreement_pct", 0), mqp = rec_num(meas, "margin_qualified_top1_pct", 0);
+    jv *bar = jv_get(meas, "bar");
+    bool passes = bar && jv_bool(jv_get(bar, "passes"), false);
+    sbuf c = {0};
+    sb_lit(&c, "---\nlicense: ");
+    yaml_scalar(&c, license);
+    sb_lit(&c, "\n");
+    if (repo && *repo) {
+        sb_lit(&c, "base_model: ");
+        yaml_scalar(&c, repo);
+        sb_lit(&c, "\n");
+    }
+    sb_lit(&c, "tags:\n- gguf\n- runner-derive\n---\n\n");
+    if (publisher) {
+        sb_fmt(&c, "This file %s the bar: mean KLD %.4f against the publisher's float32 model "
+               "(bar %.2f) and margin-qualified top-1 %.2f%% (bar %.0f%%), over %d positions.\n\n",
+               passes ? "passes" : "fails", mean, BAR_MEAN_KLD, mqp, BAR_MQ_TOP1, positions);
+        sb_fmt(&c, "`%s` was made from `%s` by `runner derive` for local inference in GGUF "
+               "engines. It is not the publisher's model, only measured against it.\n\n", ob, pb);
+    } else {
+        sb_fmt(&c, "`%s` was made from `%s` by `runner derive` for local inference in GGUF "
+               "engines. It was measured against the parent file in Runner's arithmetic, not "
+               "the publisher's float32 model, so this card states no bar verdict.\n\n", ob, pb);
+        sb_fmt(&c, "Against the parent: mean KLD %.4f, max KLD %.4f, top-1 agreement %.2f%% over "
+               "%d positions.\n\n", mean, mx, top1, positions);
+    }
+    sb_lit(&c, "## Size\n\n| | bytes |\n|---|---:|\n");
+    sb_fmt(&c, "| parent `%s` | %lld |\n| this file | %lld (%.1f%% of the parent) |\n\n",
+           pb, pbytes, fbytes, pbytes > 0 ? 100.0 * (double)fbytes / (double)pbytes : 0.0);
+    double target;
+    if (num_of(rec, "target_size", &target)) {
+        jv *dem = jv_get(rec, "demoted");
+        int nd = dem && dem->type == J_ARR ? dem->n : 0;
+        sb_fmt(&c, "The recipe's target was %lld bytes: %d group%s demoted from %s to %s, the "
+               "ones that add the least round-trip error per byte saved.\n\n", (long long)target,
+               nd, nd == 1 ? "" : "s", jv_str(jv_get(rec, "high"), "?"), jv_str(jv_get(rec, "low"), "?"));
+    }
+    sb_lit(&c, "## Recipe\n\n```sh\n");
+    sb_lit(&c, jv_str(jv_get(r, "command"), ""));
+    sb_lit(&c, "\n```\n\n## Fidelity\n\n"
+           "| reference | positions | mean KLD | median KLD | max KLD | top-1 | margin-qualified top-1 |\n"
+           "|---|---:|---:|---:|---:|---:|---:|\n");
+    char med[32] = "not measured", mq[48];
+    double medv;
+    if (num_of(meas, "median_kld", &medv)) snprintf(med, sizeof med, "%.4f", medv);
+    double qn;
+    if (num_of(meas, "margin_qualified_positions", &qn))
+        snprintf(mq, sizeof mq, "%.2f%% of %d", mqp, (int)qn);
+    else
+        snprintf(mq, sizeof mq, "%.2f%%", mqp);
+    sb_fmt(&c, "| %s | %d | %.4f | %s | %.4f | %.2f%% | %s |\n\n",
+           publisher ? "publisher, float32" : "parent file, Runner", positions, mean, med, mx, top1, mq);
+    sb_lit(&c, "KL is over the reference's 20 most likely tokens, both sides renormalised; a "
+           "position is margin-qualified when the reference's top two are more than 0.5 nats "
+           "apart. ");
+    sb_fmt(&c, "Positions %d + n x %d for n < %d of `%s`.\n\n## Reference\n\n",
+           (int)rec_num(win, "start", 0), (int)rec_num(win, "stride", 0), (int)rec_num(win, "count", 0),
+           rec_base(meas, "corpus"));
+    if (publisher) {
+        // the reference's arithmetic as the instrument reported it: the
+        // record's, or (a record from before it carried one) the gold run's
+        const char *dt = jv_str(jv_get(ref, "dtype"), NULL);
+        jv *gold = NULL;
+        if (!dt) {
+            const char *gp = jv_str(jv_get(meas, "reference_score"), NULL);
+            size_t n = 0;
+            char *gs = gp ? plat_read_file(gp, (size_t)1 << 30, &n) : NULL;
+            gold = gs ? json_parse(gs, n) : NULL;
+            free(gs);
+            dt = jv_str(jv_get(jv_get(gold, "summary"), "reference_dtype"), NULL);
+        }
+        const char *how = "in float32";
+        if (dt && strstr(dt, "cast at use") && strstr(dt, "bfloat16"))
+            how = "in float32 arithmetic, BF16 weights upcast at use,";
+        else if (dt && strstr(dt, "cast at use"))
+            how = "in float32 arithmetic, stored weights upcast at use,";
+        const char *cls = jv_str(jv_get(ref, "class"), NULL);
+        sb_fmt(&c, "The publisher's model `%s`%s%s%s, run %s by scripts/gold-logits.py. "
+               "The bar (mean KLD at most %.2f, margin-qualified top-1 at least %.0f%%) is "
+               "stated against this reference only.\n\n",
+               rec_base(ref, "hf"), cls ? " (" : "", cls ? cls : "", cls ? ")" : "", how,
+               BAR_MEAN_KLD, BAR_MQ_TOP1);
+        jv_free(gold);
+    } else {
+        bool full = file_type == 0 || file_type == 1 || file_type == 32;
+        sb_fmt(&c, "The parent file `%s` (sha256 `%s`), scored by Runner on the CPU. ", pb,
+               jv_str(jv_get(par, "sha256"), ""));
+        sb_lit(&c, file_type < 0 ? "The parent declares no file type, so whether this "
+                                   "reference is itself quantized is not stated here. "
+                 : full ? "Its weights are stored at full or half precision. "
+                        : "The parent is itself quantized, so this reference is too. ");
+        sb_lit(&c, "This measures what the recipe changed against the parent, not how close "
+               "either is to the publisher's model; `--reference hf:DIR` measures that.\n\n");
+    }
+    if (given)
+        sb_fmt(&c, "## License\n\n`%s`, given with `--license`: the parent file declares no "
+               "`general.license`.\n\n", license);
+    else
+        sb_fmt(&c, "## License\n\n`%s`, copied from the parent's `general.license`.\n\n", license);
+    sb_fmt(&c, "## Records\n\n`%s.derive.json` holds both files' sha256, the recipe, the window "
+           "and the measurement; `%s.quant.json` is the rewrite's own record.\n", ob, ob);
+    jv_free(r);
+    bool ok = write_text(card_path, &c);
+    free(c.s);
+    return ok;
+}
+
 // the recipe as `runner derive` arguments, file arguments by base name
 static void put_command(sbuf *b, const derive_opts *o) {
     sb_fmt(b, "runner derive -m %s -o %s", plat_path_base(o->parent), plat_path_base(o->out));
@@ -779,7 +923,44 @@ static void put_command(sbuf *b, const derive_opts *o) {
         sb_fmt(b, " --reference-arg %s", plat_path_base(o->ref_args[i]));
 }
 
+// `runner derive --card-from REC [-o CARD]`: the card from a record alone,
+// beside it under the file's name unless -o says where
+static int card_only(int argc, char **argv) {
+    const char *rec = NULL, *out = NULL;
+    for (int i = 1; i + 1 < argc; i += 2) {
+        if (!strcmp(argv[i], "--card-from")) rec = argv[i + 1];
+        else if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--out")) out = argv[i + 1];
+        else {
+            fprintf(stderr, "error: --card-from takes only -o CARD beside it (got %s)\n", argv[i]);
+            return 1;
+        }
+    }
+    if (!rec || ((argc - 1) % 2)) {
+        fprintf(stderr, "error: runner derive --card-from REC.derive.json [-o CARD.md]\n");
+        return 1;
+    }
+    char *card = NULL;
+    if (!out) {
+        const char *suf = ".derive.json";
+        size_t n = strlen(rec), k = strlen(suf);
+        if (n <= k || strcmp(rec + n - k, suf)) {
+            fprintf(stderr, "error: %s does not end in %s; give the card's path with -o\n", rec, suf);
+            return 1;
+        }
+        card = malloc(n - k + sizeof ".README.md");
+        if (!card) return 1;
+        memcpy(card, rec, n - k);
+        strcpy(card + n - k, ".README.md");
+    }
+    bool ok = card_from_record(rec, out ? out : card);
+    if (ok) printf("derive: card %s from %s\n", out ? out : card, rec);
+    free(card);
+    return ok ? 0 : 1;
+}
+
 int derive_main(int argc, char **argv) {
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "--card-from")) return card_only(argc, argv);
     derive_opts o;
     int rc = parse_args(argc, argv, &o);
     if (rc >= 0) return rc;
@@ -806,7 +987,11 @@ int derive_main(int argc, char **argv) {
     char *rec_path = suffixed(o.out, ".derive.json");
     char *card_path = suffixed(o.out, ".README.md");
     // the window's tokens and a BOS: everything the measurement reads
-    int n_tokens = 1 + o.start + (o.count - 1) * o.stride + 1;
+    // gold-logits.py reads its special prefix then ids[:min_prefix +
+    // max_positions * stride + 1] and refuses a score file shorter than that
+    // span (after its whole float32 forward), so the score runs cover it: a
+    // BOS, then start + count * stride + 1 tokens of text
+    int n_tokens = 1 + o.start + o.count * o.stride + 1;
     if (o.ctx && atoi(o.ctx) < n_tokens) {
         fprintf(stderr, "error: the window %d:%d:%d reads %d tokens and -c is %s; raise -c or "
                 "give a smaller --window\n", o.start, o.stride, o.count, n_tokens, o.ctx);
@@ -920,6 +1105,8 @@ int derive_main(int argc, char **argv) {
     sb_str(&r, pm.license);
     sb_lit(&r, ",\"license_source\":");
     sb_str(&r, pm.license_given ? "--license" : "general.license");
+    sb_lit(&r, ",\"base_model_repo\":");
+    sb_str(&r, *pm.repo ? pm.repo : NULL);
     sb_fmt(&r, ",\"file_type\":%d,\"name\":", pm.file_type);
     sb_str(&r, *pm.name ? pm.name : NULL);
     sb_lit(&r, "},\"file\":{\"path\":"); sb_str(&r, o.out);
@@ -947,92 +1134,10 @@ int derive_main(int argc, char **argv) {
     sb_lit(&r, "}}\n");
     if (!write_text(rec_path, &r)) return 1;
 
-    // 5. the card: what it is and is not first, the unflattering metric
-    //    first, the reference named exactly; base names only, no host paths
-    const char *ob = plat_path_base(o.out), *pb = plat_path_base(o.parent);
-    sbuf c = {0};
-    sb_lit(&c, "---\nlicense: ");
-    yaml_scalar(&c, pm.license);
-    sb_lit(&c, "\n");
-    if (*pm.repo) {
-        sb_lit(&c, "base_model: ");
-        yaml_scalar(&c, pm.repo);
-        sb_lit(&c, "\n");
-    }
-    sb_lit(&c, "tags:\n- gguf\n- runner-derive\n---\n\n");
-    if (publisher) {
-        sb_fmt(&c, "This file %s the bar: mean KLD %.4f against the publisher's float32 model "
-               "(bar %.2f) and margin-qualified top-1 %.2f%% (bar %.0f%%), over %d positions.\n\n",
-               passes ? "passes" : "fails", m.mean_kld, BAR_MEAN_KLD, m.mq_top1_pct,
-               BAR_MQ_TOP1, m.positions);
-        sb_fmt(&c, "`%s` was made from `%s` by `runner derive` for local inference in GGUF "
-               "engines. It is not the publisher's model, only measured against it.\n\n", ob, pb);
-    } else {
-        sb_fmt(&c, "`%s` was made from `%s` by `runner derive` for local inference in GGUF "
-               "engines. It was measured against the parent file in Runner's arithmetic, not "
-               "the publisher's float32 model, so this card states no bar verdict.\n\n", ob, pb);
-        sb_fmt(&c, "Against the parent: mean KLD %.4f, max KLD %.4f, top-1 agreement %.2f%% over "
-               "%d positions.\n\n", m.mean_kld, m.max_kld, m.top1_pct, m.positions);
-    }
-    sb_lit(&c, "## Size\n\n| | bytes |\n|---|---:|\n");
-    sb_fmt(&c, "| parent `%s` | %lld |\n| this file | %lld (%.1f%% of the parent) |\n\n",
-           pb, pbytes, fbytes, pbytes > 0 ? 100.0 * (double)fbytes / (double)pbytes : 0.0);
-    if (o.target_size)
-        sb_fmt(&c, "The recipe's target was %lld bytes: %d group%s demoted from %s to %s, the "
-               "ones that add the least round-trip error per byte saved.\n\n", o.target_size,
-               sz.n_demoted, sz.n_demoted == 1 ? "" : "s", o.high, o.low);
-    sb_lit(&c, "## Recipe\n\n```sh\n");
-    sb_put(&c, cmd.s, cmd.failed ? 0 : strlen(cmd.s));
-    sb_lit(&c, "\n```\n\n## Fidelity\n\n"
-           "| reference | positions | mean KLD | median KLD | max KLD | top-1 | margin-qualified top-1 |\n"
-           "|---|---:|---:|---:|---:|---:|---:|\n");
-    char med[32] = "not measured";
-    if (m.have_median) snprintf(med, sizeof med, "%.4f", m.median_kld);
-    char mq[48];
-    if (m.have_qualified) snprintf(mq, sizeof mq, "%.2f%% of %d", m.mq_top1_pct, m.qualified);
-    else snprintf(mq, sizeof mq, "%.2f%%", m.mq_top1_pct);
-    sb_fmt(&c, "| %s | %d | %.4f | %s | %.4f | %.2f%% | %s |\n\n",
-           publisher ? "publisher, float32" : "parent file, Runner", m.positions, m.mean_kld,
-           med, m.max_kld, m.top1_pct, mq);
-    sb_lit(&c, "KL is over the reference's 20 most likely tokens, both sides renormalised; a "
-           "position is margin-qualified when the reference's top two are more than 0.5 nats "
-           "apart. ");
-    sb_fmt(&c, "Positions %d + n x %d for n < %d of `%s`.\n\n## Reference\n\n",
-           o.start, o.stride, o.count, plat_path_base(o.corpus));
-    if (publisher) {
-        // the reference's arithmetic as the instrument reported it: plain
-        // float32, or float32 on stored BF16 weights cast at use
-        const char *how = "in float32";
-        if (m.reference_dtype && strstr(m.reference_dtype, "cast at use") &&
-            strstr(m.reference_dtype, "bfloat16"))
-            how = "in float32 arithmetic, BF16 weights upcast at use,";
-        else if (m.reference_dtype && strstr(m.reference_dtype, "cast at use"))
-            how = "in float32 arithmetic, stored weights upcast at use,";
-        sb_fmt(&c, "The publisher's model `%s`%s%s%s, run %s by scripts/gold-logits.py. "
-               "The bar (mean KLD at most %.2f, margin-qualified top-1 at least %.0f%%) is "
-               "stated against this reference only.\n\n",
-               plat_path_base(o.reference_hf), m.reference_class ? " (" : "",
-               m.reference_class ? m.reference_class : "", m.reference_class ? ")" : "", how,
-               BAR_MEAN_KLD, BAR_MQ_TOP1);
-    } else {
-        bool full = pm.file_type == 0 || pm.file_type == 1 || pm.file_type == 32;
-        sb_fmt(&c, "The parent file `%s` (sha256 `%s`), scored by Runner on the CPU. ", pb, psha);
-        sb_lit(&c, pm.file_type < 0 ? "The parent declares no file type, so whether this "
-                                      "reference is itself quantized is not stated here. "
-                   : full ? "Its weights are stored at full or half precision. "
-                          : "The parent is itself quantized, so this reference is too. ");
-        sb_lit(&c, "This measures what the recipe changed against the parent, not how close "
-               "either is to the publisher's model; `--reference hf:DIR` measures that.\n\n");
-    }
-    if (pm.license_given)
-        sb_fmt(&c, "## License\n\n`%s`, given with `--license`: the parent file declares no "
-               "`general.license`.\n\n", pm.license);
-    else
-        sb_fmt(&c, "## License\n\n`%s`, copied from the parent's `general.license`.\n\n", pm.license);
-    sb_fmt(&c, "## Records\n\n`%s.derive.json` holds both files' sha256, the recipe, the window "
-           "and the measurement; `%s.quant.json` is the rewrite's own record.\n", ob, ob);
+    // 5. the card, written from the record just written: the record is the
+    //    one source, and --card-from rewrites a card from it alone
     free(cmd.s);
-    if (!write_text(card_path, &c)) return 1;
+    if (!card_from_record(rec_path, card_path)) return 1;
 
     printf("derive: %s (%lld bytes, %.1f%% of the parent); mean KLD %.4f, top-1 %.2f%% "
            "against the %s%s; record %s, card %s\n",
@@ -1040,7 +1145,7 @@ int derive_main(int argc, char **argv) {
            m.mean_kld, m.top1_pct, publisher ? "publisher's float32 model" : "parent file",
            publisher ? (passes ? " (passes the bar)" : " (fails the bar)") : "",
            rec_path, card_path);
-    free(r.s); free(c.s);
+    free(r.s);
     free(dir); free(self); free(default_corpus); free(gold_script);
     free(quant_rec); free(ref_score); free(file_score); free(gold_out);
     free(rec_path); free(card_path);
