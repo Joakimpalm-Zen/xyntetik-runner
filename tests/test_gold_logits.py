@@ -327,6 +327,20 @@ def test_upcast_at_use_takes_the_decoder_stack_not_the_longest_list():
         gold.upcast_at_use(Model(layers=3).to(torch.bfloat16))
 
 
+def test_endpoint_ids_send_the_references_own_context():
+    """--endpoint-ids sends the reference's ids, its special prefix included,
+    so a server cannot drop or add a BOS (K2-Horizon-0.9B, 2026-11-01:
+    llama-server adds no BOS to text for that GGUF, and the text path read
+    0.091 mean KLD on the Q8_0 where the same file read 0.0064 with ids). The
+    text path keeps its re-tokenize check and skips a prefix that fails it."""
+    body = [1, 3, 4]
+    assert gold.endpoint_prompt(BPE, [0], body, 2, True) == [0, 1, 3]
+    assert gold.endpoint_prompt(BPE, [], body, 3, True) == [1, 3, 4]
+    # text: the fake re-tokenizes everything to [0], so only that body passes
+    assert gold.endpoint_prompt(BPE, [0], [0, 1], 1, False) == "a"
+    assert gold.endpoint_prompt(BPE, [0], [1, 2], 1, False) is None
+
+
 def test_disk_offload_is_float32_bit_for_bit(tmp_path):
     """--offload-dir (R4.26.4: a 336 GB BF16 reference under an 80 GiB
     memory cap): blocks past the --max-memory budget stream from disk at use,

@@ -311,6 +311,25 @@ def reference_logp(model, span, rows):
     return logp, index, path
 
 
+def endpoint_prompt(tok, special, body, pos, ids):
+    """What an endpoint is sent for position `pos`: the reference's own
+    context as token ids (the special prefix included), or the prefix as
+    text, which the server tokenizes itself and may prepend its own BOS to.
+
+    Text is the default and is checked: the decoded prefix must re-tokenize
+    to the same ids, or the sides would be scored on different contexts, and
+    the position is skipped (None). Text still leaves the BOS to the server:
+    measured 2026-11-01 on K2-Horizon-0.9B, whose GGUF declares no
+    add_bos_token, so llama-server added none while the reference carried
+    the BOS Runner prepends (--force-bos). Ids remove both questions."""
+    if ids:
+        return [int(t) for t in special] + [int(t) for t in body[:pos]]
+    prefix = tok.decode(body[:pos])
+    if tok(prefix, add_special_tokens=False)["input_ids"] != body[:pos]:
+        return None
+    return prefix
+
+
 def query(endpoint, model_name, prompt, top_n=20, fresh=False):
     payload = {"model": model_name, "prompt": prompt, "max_tokens": 1,
                "temperature": 0, "logprobs": top_n}
@@ -562,6 +581,11 @@ def main():
                     help="two score files of one model file, one or both scored solo: a "
                          "deliberate decode-route comparison (refused otherwise; a prefill "
                          "route needs RUNNER_SCORE_CHUNKED=1)")
+    ap.add_argument("--endpoint-ids", action="store_true",
+                    help="send each endpoint the reference's own token ids (the special "
+                         "prefix included) instead of the decoded prefix text, so the "
+                         "server cannot tokenize or prepend BOS differently "
+                         "(endpoint_prompt)")
     ap.add_argument("--fresh-prompt", action="store_true",
                     help="send cache_prompt:false, so every position is a full prefill")
     ap.add_argument("--max-positions", type=int, default=100)
@@ -723,10 +747,8 @@ def main():
         sides.append(("b", args.endpoint_b or args.score_b, args.model_name_b or "score file"))
     for n in range(args.max_positions):
         pos = args.min_prefix + n * args.stride
-        prefix = tok.decode(body[:pos])
-        # the decoded prefix must re-tokenize to the same ids, or the sides
-        # would be scored on different contexts
-        if tok(prefix, add_special_tokens=False)["input_ids"] != body[:pos]:
+        prefix = endpoint_prompt(tok, special, body, pos, args.endpoint_ids)
+        if prefix is None:
             continue
         top = torch.topk(logp[logp_row[len(special) + pos - 1]], args.top_n)
         gold_rows = [(int(i), spell(int(i)), float(v))
@@ -759,6 +781,7 @@ def main():
                "reference_class": type(model).__name__,
                "reference_logits": logits_path,
                "special_prefix_tokens": len(special),
+               "endpoint_input": "token ids" if args.endpoint_ids else "prefix text",
                "special_prefix_forced": bool(args.force_bos and special),
                "token_spelling": "in-sentence (anchored decode)",
                "token_match": "by id where the endpoint gives ids, else by "
