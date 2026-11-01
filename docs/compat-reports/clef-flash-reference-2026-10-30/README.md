@@ -39,3 +39,43 @@ a verdict. `decisions-q8_0-q4_k_m.json` holds the decision, margin and differenc
   `25f801e2...ff7d906e`) and `Clef-Flash-Q4_K_M.gguf` (6,732,781,824 bytes, sha256 `eef2968c...f9a9b54e`).
 - **The Q8_0's CPU cell** on the lab class (`linux-x86_64-cuda`, the GPU hidden) is recorded in the row by tier-smoke at
   the same commit.
+
+## llama.cpp column (2026-11-01)
+
+**Unflattering first: on the Q4_K_M, llama.cpp's decision server is slightly the closer of the two on the questions it
+answers.** On the 12 questions both engines answer, both pick the reference's option on 10. Mean |dprob| is 0.031 for
+llama.cpp against Runner's 0.035, with Runner nearer the reference on 5 of the 12. On the Q8_0, both engines agree on all
+12, and Runner is the closer: mean |dprob| 0.0023 against 0.0121, max 0.011 against 0.049, nearer on 9 of 12.
+
+| File | Engine | Questions answered | Decisions agree (all answered) | Shared 12: agree | Shared 12: max \|dprob\| | Shared 12: mean \|dprob\| |
+|---|---|---|---|---|---|---|
+| Q8_0 | Runner | 29 of 29 | 29 | 12 | 0.011 | 0.0023 |
+| Q8_0 | llama.cpp | 12 of 29 | 12 | 12 | 0.049 | 0.0121 |
+| Q4_K_M | Runner | 29 of 29 | 26 | 10 | 0.199 | 0.035 |
+| Q4_K_M | llama.cpp | 12 of 29 | 10 | 10 | 0.175 | 0.031 |
+
+- **llama.cpp:** mainline `dde879bc` (`llama-server`, CPU build, flash attention off, `-c 17408 -b 8192 -ub 8192`),
+  serving `/v1/systemone` from `tools/server/server-decision.cpp`, asked each record by
+  `scripts/clef-gold.py compare --decisions`. The decision pass needs the whole input in one physical batch, so the
+  default 512 refuses the 3,789-token `long-state` record. A larger `-b`/`-ub` is required.
+- **Runner:** `runner --systemone` at `e0c6e2c9`, same lane, `--gpu off`. It reproduces the numbers above from the
+  10-30 build exactly.
+- **What the column does not check:** llama.cpp's server returns no input ids, spans or logits. Its column is
+  decisions and probabilities only; the id, span and logit checks above are Runner's alone.
+- **Shared flips:** both engines flip `choice-keys`/`route` and `long-state`/`worst` on the Q4_K_M, where the
+  reference's top two are 0.050 and 0.020 apart. Runner's third flip, `instructions-types`/`empty` (margin 0.066), is
+  on a record llama.cpp refuses.
+
+Why the columns differ, one numbered sentence each:
+
+1. llama.cpp's server refuses 17 of the 29 questions (6 of the 15 records) that the publisher's `joint_schema_model.py`
+   answers. It requires `instructions` on every question and a non-empty state, instructions and option list, while
+   the reference applies its defaults (a question without instructions, a null state); the refusals are request
+   validation, not arithmetic.
+2. llama.cpp's CPU dot products quantize the activations to 8 bits and Runner keeps them in float32. That is the Q8_0
+   gap (0.0121 against 0.0023). At Q4_K_M the file's own rounding dominates, and the two engines are within each other's
+   spread on 12 questions.
+
+Files: `llamacpp-decisions-q8_0.json`, `llamacpp-decisions-q4_k_m.json` (per question, as `decisions-q8_0-q4_k_m.json`
+is for Runner), and `llamacpp-compare-q8_0.txt`, `llamacpp-compare-q4_k_m.txt` (the comparison's own output, listing
+the refused questions as unreadable).

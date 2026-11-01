@@ -1,0 +1,147 @@
+{
+ "reference": {
+  "reference": "joint_schema_model.py",
+  "code_sha256": "0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3",
+  "torch": "2.14.0+cpu",
+  "mode": "logits",
+  "transformers": "5.16.1",
+  "dtype": "float32",
+  "device": "cpu",
+  "head_bf16": false,
+  "attn_implementation": "sdpa",
+  "loader": "load_release_model's steps with AutoTokenizer (no torchvision here)"
+ },
+ "questions": 12,
+ "decisions_agree": 10,
+ "max_abs_dprob": 0.175159,
+ "mean_abs_dprob": 0.030785,
+ "unreadable": [
+  "card-systemone/department",
+  "card-systemone/urgency",
+  "card-systemone/outage",
+  "python-spellings/level",
+  "instructions-types/obj",
+  "instructions-types/zero",
+  "instructions-types/false",
+  "instructions-types/empty",
+  "many-questions/paid",
+  "many-questions/country",
+  "many-questions/size",
+  "many-questions/fraud",
+  "many-questions/channel",
+  "many-questions/value",
+  "odd-ids/Wie geht's? \ud83d\ude00",
+  "odd-ids/only one",
+  "null-state/null"
+ ],
+ "questions_detail": [
+  {
+   "record": "card-invoice",
+   "question": "status",
+   "reference_choice": 1,
+   "server_choice": 1,
+   "agree": true,
+   "reference_margin": 0.955481,
+   "max_abs_dprob": 0.001132
+  },
+  {
+   "record": "card-invoice",
+   "question": "large",
+   "reference_choice": 0,
+   "server_choice": 0,
+   "agree": true,
+   "reference_margin": 0.94582,
+   "max_abs_dprob": 0.001152
+  },
+  {
+   "record": "noul-criteria",
+   "question": "urgent",
+   "reference_choice": 1,
+   "server_choice": 1,
+   "agree": true,
+   "reference_margin": 0.807947,
+   "max_abs_dprob": 0.00042
+  },
+  {
+   "record": "noul-criteria",
+   "question": "plain",
+   "reference_choice": 1,
+   "server_choice": 1,
+   "agree": true,
+   "reference_margin": 0.711454,
+   "max_abs_dprob": 0.009164
+  },
+  {
+   "record": "choice-keys",
+   "question": "route",
+   "reference_choice": 4,
+   "server_choice": 5,
+   "agree": false,
+   "reference_margin": 0.050061,
+   "max_abs_dprob": 0.056681
+  },
+  {
+   "record": "special-text",
+   "question": "injected",
+   "reference_choice": 1,
+   "server_choice": 1,
+   "agree": true,
+   "reference_margin": 0.960871,
+   "max_abs_dprob": 0.001724
+  },
+  {
+   "record": "long-state",
+   "question": "degraded",
+   "reference_choice": 0,
+   "server_choice": 0,
+   "agree": true,
+   "reference_margin": 0.955803,
+   "max_abs_dprob": 0.001797
+  },
+  {
+   "record": "long-state",
+   "question": "worst",
+   "reference_choice": 1,
+   "server_choice": 0,
+   "agree": false,
+   "reference_margin": 0.019832,
+   "max_abs_dprob": 0.066775
+  },
+  {
+   "record": "whitespace-state",
+   "question": "empty",
+   "reference_choice": 0,
+   "server_choice": 0,
+   "agree": true,
+   "reference_margin": 0.859844,
+   "max_abs_dprob": 0.007202
+  },
+  {
+   "record": "empty-state",
+   "question": "empty",
+   "reference_choice": 0,
+   "server_choice": 0,
+   "agree": true,
+   "reference_margin": 0.687799,
+   "max_abs_dprob": 0.175159
+  },
+  {
+   "record": "number-state",
+   "question": "pi",
+   "reference_choice": 0,
+   "server_choice": 0,
+   "agree": true,
+   "reference_margin": 0.847536,
+   "max_abs_dprob": 0.00783
+  },
+  {
+   "record": "combining-marks",
+   "question": "script",
+   "reference_choice": 0,
+   "server_choice": 0,
+   "agree": true,
+   "reference_margin": 0.751411,
+   "max_abs_dprob": 0.040381
+  }
+ ]
+}
