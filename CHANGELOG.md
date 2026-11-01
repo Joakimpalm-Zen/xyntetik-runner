@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **An activation trace that says where two forwards part.** Final logits
+  say that two runs differ, not where: an export that drops one edit can
+  leave the greedy text and the top-1 unchanged. `RUNNER_ACT_TRACE=path`
+  with `RUNNER_ACT_TRACE_POS` (at most 64 positions) writes the residual
+  after the embedding, after each layer's mixer and after each layer, the
+  logits and each MoE selection at those positions, hashed and optionally
+  with values (`RUNNER_ACT_TRACE_VALUES=1`). `scripts/act-trace-diff.py`
+  names the first point where two traces part and its branch, and
+  `scripts/act-trace-hf.py` writes the same format from the transformers
+  reference. A versioned format, for the research side's export and
+  surgery checks (R4.11).
+
 - **No stray newlines at the end of reasoning or the start of the answer.**
   A thinking turn from a Qwen 3, 3.5, 3.6 or 3.8 model (and Ornith, Mellum,
   Clef-Flash) returned `reasoning_content` ending in a newline and `content`
