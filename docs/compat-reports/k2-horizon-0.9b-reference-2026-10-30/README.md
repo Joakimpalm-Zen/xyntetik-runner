@@ -5,8 +5,8 @@
 margin-qualified top-1 (it reaches 97.1% there, so the mean fails, not the qualified top-1). The Q8_0 of the same parent
 on the same build reads **0.0037** and 97.3%, with 100% margin-qualified, so the gap is the Q4_K_M file's quantization,
 not the arithmetic. The Q8_0 is the fidelity file. The Q4_K_M is admitted as a Tier 2 row of its own with this
-failure first in its claim, as MiniCPM5's Q4_K_M is: Runner runs the file people download, correctly. No llama.cpp
-column was run.
+failure first in its claim, as MiniCPM5's Q4_K_M is: Runner runs the file people download, correctly. The llama.cpp column (2026-11-01) is below,
+with Runner the closer on both files.
 
 ## Setup
 
@@ -46,6 +46,25 @@ By depth (mean KLD and top-1, 100 positions each):
 The rope is part of what this checks. The 0.9B is YaRN x16 over 8,192 with `beta_fast` 128 and `beta_slow` 4, and Runner
 reads those ends from the file in this change (they were 32 and 1 before). At 0.0037 the Q8_0 is as close to its parent
 as MiniCPM5's Q8_0 is to its own (0.0033).
+
+## llama.cpp column (2026-11-01)
+
+llama.cpp mainline `dde879bc` (`llama-server`, CPU build, x86-64 with AVX-512, flash attention off, `-c 9216`), measured against the same float32 reference at the same 300 positions with `scripts/gold-logits.py --endpoint-ids`: each position is sent as the reference's own token ids, the special prefix included, so both engines see the context the reference saw.
+
+| File | Engine | Positions | Mean KLD | Median | Max KLD | Top-1 | Margin-qualified top-1 |
+|---|---|---|---|---|---|---|---|
+| Q8_0 | llama.cpp, CPU | 300 | **0.0064** | 0.0021 | 0.083 | 97.00% | 100.00% |
+| Q4_K_M | llama.cpp, CPU | 300 | **0.1174** | 0.0821 | 0.788 | 82.67% | 96.10% |
+
+- **Q8_0:** Runner 0.0037 against llama.cpp 0.0064; paired per-position KLD (llama.cpp minus Runner) Wilcoxon z 11.4, p 7.3e-30; margin-qualified top-1 discordant positions 0 for Runner, 0 for llama.cpp.
+- **Q4_K_M:** Runner 0.1078 against llama.cpp 0.1174; paired per-position KLD (llama.cpp minus Runner) Wilcoxon z 3.1, p 0.0017; margin-qualified top-1 discordant positions 2 for Runner, 0 for llama.cpp.
+
+Why the two engines differ, one numbered sentence each:
+
+1. llama.cpp's CPU dot products quantize the activations to 8 bits before the integer dot, and Runner keeps the activations in float32 against the dequantized weights, which is the closer of the two to the float32 reference here.
+2. The GGUFs declare no `add_bos_token`, so llama.cpp prepends no BOS to a text prompt, while the publisher's tokenizer.json prepends one to every encode and Runner follows it: a llama.cpp user who sends text to this file gets a context without BOS, which reads 0.091 mean KLD on the Q8_0 and 0.195 on the Q4_K_M against the reference (`*-text.json`), against the column's 0.0064 and 0.117 with it.
+
+Files: `gold-logits-llamacpp-q8_0.json`, `gold-logits-llamacpp-q4_k_m.json` (the column); `gold-logits-llamacpp-q8_0-text.json`, `gold-logits-llamacpp-q4_k_m-text.json` (the text-path observation in 2).
 
 ## Quant bar: Q4_K_M against Q8_0
 

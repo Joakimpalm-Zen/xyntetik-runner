@@ -4018,15 +4018,15 @@
           "text"
         ],
         "fp32_reference": "measured",
-        "anchor": "Both publisher files against openbmb's BF16 parent computed in float32 on the CPU (transformers' own llama code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0033 mean KLD / 98.0% top-1 / 100% margin-qualified, Q4_K_M 0.102 / 86.0% / 94.6%; Q4_K_M against Q8_0 from the same score files 0.098 / 85.3%. Tokenizer 0/721 against the publisher's tokenizer.json at f9740005, template conformance 23/23 in text and tokens. Record: docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md.",
+        "anchor": "Both publisher files against openbmb's BF16 parent computed in float32 on the CPU (transformers' own llama code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0033 mean KLD / 98.0% top-1 / 100% margin-qualified, Q4_K_M 0.102 / 86.0% / 94.6%; Q4_K_M against Q8_0 from the same score files 0.098 / 85.3%. Tokenizer 0/721 against the publisher's tokenizer.json at f9740005, template conformance 23/23 in text and tokens. Record: docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md. llama.cpp dde879bc on the CPU against the same reference (token ids): 0.0050 / 98.0% / 100.0%, Runner the closer (Wilcoxon p 1e-26).",
         "context": 4096,
-        "limitations": "2.68 GB of weights page from disk on an 8 GB machine with other applications open. No llama.cpp column. A required or named tool choice takes the generic JSON envelope on this family.",
+        "limitations": "2.68 GB of weights page from disk on an 8 GB machine with other applications open. A required or named tool choice takes the generic JSON envelope on this family.",
         "evidence": [
           "docs/compat-reports/1.7.1-2026-10-29-macos-arm64-minicpm5-2b-q8_0.json",
           "docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The Windows CUDA host's CPU and CUDA cells and the CPU-vs-CUDA check; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
+        "missing": "The Windows CUDA host's CPU and CUDA cells and the CPU-vs-CUDA check; task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -4149,15 +4149,15 @@
           "text"
         ],
         "fp32_reference": "measured",
-        "anchor": "Both publisher files against openbmb's BF16 parent computed in float32 on the CPU (transformers' own llama code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0033 mean KLD / 98.0% top-1 / 100% margin-qualified, Q4_K_M 0.102 / 86.0% / 94.6%; Q4_K_M against Q8_0 from the same score files 0.098 / 85.3%. Tokenizer 0/721 against the publisher's tokenizer.json at f9740005, template conformance 23/23 in text and tokens. Record: docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md.",
+        "anchor": "Both publisher files against openbmb's BF16 parent computed in float32 on the CPU (transformers' own llama code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0033 mean KLD / 98.0% top-1 / 100% margin-qualified, Q4_K_M 0.102 / 86.0% / 94.6%; Q4_K_M against Q8_0 from the same score files 0.098 / 85.3%. Tokenizer 0/721 against the publisher's tokenizer.json at f9740005, template conformance 23/23 in text and tokens. Record: docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md. llama.cpp dde879bc on the CPU against the same reference (token ids): 0.1079 / 84.7% / 93.7%, Runner the closer (Wilcoxon p 2.3e-06).",
         "context": 4096,
-        "limitations": "No fidelity claim: the file fails the 0.05 bar against its parent on Runner, and the gap is the file's quantization, not the arithmetic (the Q8_0 of the same parent reads 0.0033 on the same build). No llama.cpp column. A required or named tool choice takes the generic JSON envelope on this family.",
+        "limitations": "No fidelity claim: the file fails the 0.05 bar against its parent on Runner, and the gap is the file's quantization, not the arithmetic (the Q8_0 of the same parent reads 0.0033 on the same build). A required or named tool choice takes the generic JSON envelope on this family.",
         "evidence": [
           "docs/compat-reports/1.7.1-2026-10-29-macos-arm64-minicpm5-2b-q4_k_m.json",
           "docs/compat-reports/minicpm5-2b-reference-2026-10-29/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "The Windows CUDA host's CPU and CUDA cells and the CPU-vs-CUDA check; a llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
+        "missing": "The Windows CUDA host's CPU and CUDA cells and the CPU-vs-CUDA check; task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -5778,7 +5778,7 @@
           "text"
         ],
         "fp32_reference": "measured",
-        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the CPU (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0037 mean KLD / 97.3% top-1 / 100% margin-qualified, Q4_K_M 0.108 / 81.7% / 97.1%; Q4_K_M against Q8_0 from the same score files 0.098 / 83.3%. Tokenizer 0/721 against the publisher's tokenizer.json at d50881f4, template conformance 23/23 in text and tokens against the template the GGUF carries, its 44-case tool-schema torture set byte for byte. Record: docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md.",
+        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the CPU (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0037 mean KLD / 97.3% top-1 / 100% margin-qualified, Q4_K_M 0.108 / 81.7% / 97.1%; Q4_K_M against Q8_0 from the same score files 0.098 / 83.3%. Tokenizer 0/721 against the publisher's tokenizer.json at d50881f4, template conformance 23/23 in text and tokens against the template the GGUF carries, its 44-case tool-schema torture set byte for byte. Record: docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md. llama.cpp dde879bc on the CPU against the same reference (token ids): 0.0064 / 97.0% / 100.0%, Runner the closer (Wilcoxon p 7.3e-30).",
         "context": 4096,
         "limitations": "reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.",
         "evidence": [
@@ -5787,7 +5787,7 @@
           "tests/compatibility/coverage.json",
           "tests/fixtures/k2-horizon-tool-schemas.json"
         ],
-        "missing": "A llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's Q4_K_M fails the fidelity bar (0.108); it is its own row, with that failure first."
+        "missing": "task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only). The publisher's Q4_K_M fails the fidelity bar (0.108); it is its own row, with that failure first."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",
@@ -5910,7 +5910,7 @@
           "text"
         ],
         "fp32_reference": "measured",
-        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the CPU (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0037 mean KLD / 97.3% top-1 / 100% margin-qualified, Q4_K_M 0.108 / 81.7% / 97.1%; Q4_K_M against Q8_0 from the same score files 0.098 / 83.3%. Tokenizer 0/721 against the publisher's tokenizer.json at d50881f4, template conformance 23/23 in text and tokens against the template the GGUF carries, its 44-case tool-schema torture set byte for byte. Record: docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md.",
+        "anchor": "Both publisher files against IFM's BF16 parent computed in float32 on the CPU (the publisher's own modeling code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from Metal score files): Q8_0 0.0037 mean KLD / 97.3% top-1 / 100% margin-qualified, Q4_K_M 0.108 / 81.7% / 97.1%; Q4_K_M against Q8_0 from the same score files 0.098 / 83.3%. Tokenizer 0/721 against the publisher's tokenizer.json at d50881f4, template conformance 23/23 in text and tokens against the template the GGUF carries, its 44-case tool-schema torture set byte for byte. Record: docs/compat-reports/k2-horizon-0.9b-reference-2026-10-30/README.md. llama.cpp dde879bc on the CPU against the same reference (token ids): 0.1174 / 82.7% / 96.1%, Runner the closer (Wilcoxon p 0.0017).",
         "context": 4096,
         "limitations": "reasoning_effort medium and low are refused (their think blocks are not split from the answer yet); high, the default, and thinking off are served. A tool without a parameters object is refused, as the template refuses it. A required or named tool choice takes the generic JSON envelope on this family.",
         "evidence": [
@@ -5919,7 +5919,7 @@
           "tests/compatibility/coverage.json",
           "tests/fixtures/k2-horizon-tool-schemas.json"
         ],
-        "missing": "A llama.cpp column against the same reference (not run); task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
+        "missing": "task quality and the native tool protocol on the real checkpoint (the parser is pinned on fixtures only)."
       },
       "smoke": {
         "device_class": "macos-arm64-metal",

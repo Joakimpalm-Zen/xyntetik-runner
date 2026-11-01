@@ -1,0 +1,3934 @@
+{
+ "schema_version": "xyntetik.runner.gold-logits.v4",
+ "summary": {
+  "positions": 300,
+  "hf": "openbmb/MiniCPM5-2B@f97400052a43",
+  "corpus": "tests/fixtures/gold-corpus-2k.txt",
+  "reference_class": "LlamaForCausalLM",
+  "reference_logits": "scored rows only",
+  "special_prefix_tokens": 1,
+  "special_prefix_forced": false,
+  "token_spelling": "in-sentence (anchored decode)",
+  "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+  "positions_skipped_no_logprobs": 0,
+  "fresh_prompt": false,
+  "reference_dtype": "float32",
+  "reference_device": "cpu",
+  "sides": {
+   "a": {
+    "endpoint": "llama-server dde879bc (CPU, -fa off)",
+    "model": "MiniCPM5-2B-Q8_0.gguf",
+    "mean_kld_vs_gold": 0.040131407814572154,
+    "max_kld_vs_gold": 1.1152675145301154,
+    "top1_agreement_pct": 92.66666666666667,
+    "margin_qualified_top1_pct": 98.04878048780488,
+    "matched_by_id_positions": 300,
+    "positions_with_dropped_mass": 0,
+    "max_dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 3
+   }
+  }
+ },
+ "rows": [
+  {
+   "pos": 8,
+   "gold_top1": " beginner",
+   "gold_margin": 0.4143943786621094,
+   "a": {
+    "kld": 0.29579340556294975,
+    "top1": " beginner",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 23,
+   "gold_top1": " into",
+   "gold_margin": 3.204133987426758,
+   "a": {
+    "kld": 0.0067152075154585725,
+    "top1": " into",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 38,
+   "gold_top1": " attention",
+   "gold_margin": 1.2879085540771484,
+   "a": {
+    "kld": 0.03338925487296552,
+    "top1": " attention",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 53,
+   "gold_top1": " conversational",
+   "gold_margin": 0.3151988983154297,
+   "a": {
+    "kld": 0.24934917350309965,
+    "top1": " conversational",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 68,
+   "gold_top1": ".\n",
+   "gold_margin": 0.10724067687988281,
+   "a": {
+    "kld": 0.09514295134889354,
+    "top1": ".\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 83,
+   "gold_top1": "agens",
+   "gold_margin": 0.9910507798194885,
+   "a": {
+    "kld": 0.027821619861581937,
+    "top1": "agens",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 98,
+   "gold_top1": "k",
+   "gold_margin": 1.3205852508544922,
+   "a": {
+    "kld": 0.006967511711427904,
+    "top1": "k",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 113,
+   "gold_top1": ".\n",
+   "gold_margin": 0.5676612854003906,
+   "a": {
+    "kld": 0.06624434170450974,
+    "top1": ".\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 128,
+   "gold_top1": " \u00e4",
+   "gold_margin": 0.5218391418457031,
+   "a": {
+    "kld": 1.1152675145301154,
+    "top1": " beh",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 143,
+   "gold_top1": "var",
+   "gold_margin": 2.0866870880126953,
+   "a": {
+    "kld": 0.03575011927665296,
+    "top1": "var",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 158,
+   "gold_top1": " ell",
+   "gold_margin": 0.29094409942626953,
+   "a": {
+    "kld": 0.043380280899190396,
+    "top1": " ell",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 173,
+   "gold_top1": " healthy",
+   "gold_margin": 0.19023895263671875,
+   "a": {
+    "kld": 0.43056207368680904,
+    "top1": " simple",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 188,
+   "gold_top1": " might",
+   "gold_margin": 2.269929885864258,
+   "a": {
+    "kld": 0.0371665583907706,
+    "top1": " might",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 203,
+   "gold_top1": ",",
+   "gold_margin": 2.1577444076538086,
+   "a": {
+    "kld": 0.06065735059467237,
+    "top1": ",",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 218,
+   "gold_top1": "pre",
+   "gold_margin": 0.07019901275634766,
+   "a": {
+    "kld": 0.092171349592161,
+    "top1": "external",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 233,
+   "gold_top1": " Designed",
+   "gold_margin": 1.1239107847213745,
+   "a": {
+    "kld": 0.13294119611176533,
+    "top1": " Designed",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 248,
+   "gold_top1": " APIs",
+   "gold_margin": 1.389082908630371,
+   "a": {
+    "kld": 0.08072771032707472,
+    "top1": " APIs",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 263,
+   "gold_top1": "CPU",
+   "gold_margin": 1.3490697145462036,
+   "a": {
+    "kld": 0.04459911133679222,
+    "top1": "CPU",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 278,
+   "gold_top1": "-compatible",
+   "gold_margin": 4.328539848327637,
+   "a": {
+    "kld": 0.003625263994603198,
+    "top1": "-compatible",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 293,
+   "gold_top1": ".",
+   "gold_margin": 2.7425975799560547,
+   "a": {
+    "kld": 0.039566500933435916,
+    "top1": ".",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 308,
+   "gold_top1": ".**\n",
+   "gold_margin": 0.6271724700927734,
+   "a": {
+    "kld": 0.03814796653394756,
+    "top1": ".**\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 323,
+   "gold_top1": " builds",
+   "gold_margin": 0.23463726043701172,
+   "a": {
+    "kld": 0.01628098917742238,
+    "top1": " builds",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 338,
+   "gold_top1": " ",
+   "gold_margin": 0.545445442199707,
+   "a": {
+    "kld": 0.07372870147654759,
+    "top1": " ",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 353,
+   "gold_top1": " weights",
+   "gold_margin": 0.6013622283935547,
+   "a": {
+    "kld": 0.16867135208867073,
+    "top1": " weights",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 368,
+   "gold_top1": "\n",
+   "gold_margin": 0.9463396072387695,
+   "a": {
+    "kld": 0.056038820236640294,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 383,
+   "gold_top1": "\n",
+   "gold_margin": 0.2072772979736328,
+   "a": {
+    "kld": 0.019152703451227805,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 398,
+   "gold_top1": " `",
+   "gold_margin": 0.9370546340942383,
+   "a": {
+    "kld": 0.08743170891160204,
+    "top1": " `",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 413,
+   "gold_top1": " to",
+   "gold_margin": 1.3914375305175781,
+   "a": {
+    "kld": 0.008005057002867737,
+    "top1": " to",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 428,
+   "gold_top1": " Windows",
+   "gold_margin": 0.887344479560852,
+   "a": {
+    "kld": 0.11569639807919396,
+    "top1": " GitHub",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 443,
+   "gold_top1": "),",
+   "gold_margin": 0.8004550933837891,
+   "a": {
+    "kld": 0.12173155186026206,
+    "top1": "),",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 458,
+   "gold_top1": " and",
+   "gold_margin": 2.8114099502563477,
+   "a": {
+    "kld": 0.03059814375395825,
+    "top1": " and",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 473,
+   "gold_top1": " caching",
+   "gold_margin": 0.16016674041748047,
+   "a": {
+    "kld": 0.030893530172938728,
+    "top1": " caching",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 488,
+   "gold_top1": " sampler",
+   "gold_margin": 0.4102325439453125,
+   "a": {
+    "kld": 0.04150696435333595,
+    "top1": " sampler",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 503,
+   "gold_top1": " a",
+   "gold_margin": 0.7275514602661133,
+   "a": {
+    "kld": 0.04576387659599103,
+    "top1": " a",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 518,
+   "gold_top1": " ",
+   "gold_margin": 1.3799781799316406,
+   "a": {
+    "kld": 0.04060362258495766,
+    "top1": " ",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 533,
+   "gold_top1": "model",
+   "gold_margin": 1.3301525115966797,
+   "a": {
+    "kld": 0.28836529016439566,
+    "top1": "model",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 548,
+   "gold_top1": " by",
+   "gold_margin": 0.24436378479003906,
+   "a": {
+    "kld": 0.03409137820864918,
+    "top1": " by",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 563,
+   "gold_top1": "the",
+   "gold_margin": 0.4980487823486328,
+   "a": {
+    "kld": 0.08381500513765286,
+    "top1": "the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 578,
+   "gold_top1": "/",
+   "gold_margin": 0.9563237428665161,
+   "a": {
+    "kld": 0.018229791569784926,
+    "top1": "/",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 593,
+   "gold_top1": "\n",
+   "gold_margin": 0.9965438842773438,
+   "a": {
+    "kld": 0.0008966480550985177,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 608,
+   "gold_top1": " **",
+   "gold_margin": 1.1236915588378906,
+   "a": {
+    "kld": 0.022578684723760577,
+    "top1": " **",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 623,
+   "gold_top1": ",",
+   "gold_margin": 0.5037679672241211,
+   "a": {
+    "kld": 0.12169463484467274,
+    "top1": ",",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 638,
+   "gold_top1": "fill",
+   "gold_margin": 7.018167495727539,
+   "a": {
+    "kld": 0.0001326244476860128,
+    "top1": "fill",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 653,
+   "gold_top1": "-",
+   "gold_margin": 1.1145095825195312,
+   "a": {
+    "kld": 0.013127984491894446,
+    "top1": "-",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 668,
+   "gold_top1": " and",
+   "gold_margin": 1.7017269134521484,
+   "a": {
+    "kld": 0.017768272082938127,
+    "top1": " and",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 683,
+   "gold_top1": ".md",
+   "gold_margin": 6.905233383178711,
+   "a": {
+    "kld": 0.00031546485719871945,
+    "top1": ".md",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 698,
+   "gold_top1": " new",
+   "gold_margin": 0.6928349733352661,
+   "a": {
+    "kld": 0.06039149753582728,
+    "top1": " new",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 713,
+   "gold_top1": " [",
+   "gold_margin": 1.266805648803711,
+   "a": {
+    "kld": 0.06484547410497278,
+    "top1": " [",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 728,
+   "gold_top1": " What",
+   "gold_margin": 0.12477684020996094,
+   "a": {
+    "kld": 0.1063305191514365,
+    "top1": " What",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 1
+   }
+  },
+  {
+   "pos": 743,
+   "gold_top1": "re",
+   "gold_margin": 1.802433967590332,
+   "a": {
+    "kld": 0.08624139903617703,
+    "top1": "re",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 758,
+   "gold_top1": " build",
+   "gold_margin": 0.6783198714256287,
+   "a": {
+    "kld": 0.05212684044640791,
+    "top1": " build",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 773,
+   "gold_top1": " CUDA",
+   "gold_margin": 0.11592292785644531,
+   "a": {
+    "kld": 0.01062794760550964,
+    "top1": " CUDA",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 788,
+   "gold_top1": " higher",
+   "gold_margin": 1.5881538391113281,
+   "a": {
+    "kld": 0.015509792238584133,
+    "top1": " higher",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 803,
+   "gold_top1": "/",
+   "gold_margin": 0.5866748094558716,
+   "a": {
+    "kld": 0.2920813793048423,
+    "top1": "/",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 818,
+   "gold_top1": "\n",
+   "gold_margin": 0.34446144104003906,
+   "a": {
+    "kld": 0.09423734587563591,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 833,
+   "gold_top1": "runner",
+   "gold_margin": 6.967555999755859,
+   "a": {
+    "kld": 0.0005814280676080852,
+    "top1": "runner",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 848,
+   "gold_top1": "```\n",
+   "gold_margin": 1.5599479675292969,
+   "a": {
+    "kld": 0.07937159501562564,
+    "top1": "```\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 863,
+   "gold_top1": " --",
+   "gold_margin": 2.354219436645508,
+   "a": {
+    "kld": 0.01700232164356238,
+    "top1": " --",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 878,
+   "gold_top1": " -",
+   "gold_margin": 3.3362178802490234,
+   "a": {
+    "kld": 0.0005158162964279093,
+    "top1": " -",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 893,
+   "gold_top1": ".",
+   "gold_margin": 2.658029556274414,
+   "a": {
+    "kld": 0.009707375653129659,
+    "top1": ".",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 908,
+   "gold_top1": "E",
+   "gold_margin": 8.919829368591309,
+   "a": {
+    "kld": 1.9917728384180017e-05,
+    "top1": "E",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 923,
+   "gold_top1": "ampling",
+   "gold_margin": 0.7901897430419922,
+   "a": {
+    "kld": 0.06211510754906151,
+    "top1": "ampling",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 938,
+   "gold_top1": "m",
+   "gold_margin": 7.980947494506836,
+   "a": {
+    "kld": 7.166296238970943e-05,
+    "top1": "m",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 953,
+   "gold_top1": "schema",
+   "gold_margin": 0.565582275390625,
+   "a": {
+    "kld": 0.020438833808357544,
+    "top1": "schema",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 968,
+   "gold_top1": " --",
+   "gold_margin": 1.2272329330444336,
+   "a": {
+    "kld": 0.037052033015149755,
+    "top1": " --",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 983,
+   "gold_top1": "200",
+   "gold_margin": 1.859207034111023,
+   "a": {
+    "kld": 0.02673511086171061,
+    "top1": "200",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 998,
+   "gold_top1": "s",
+   "gold_margin": 1.0560712814331055,
+   "a": {
+    "kld": 0.2095275235501219,
+    "top1": "parallel",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1013,
+   "gold_top1": "```\n",
+   "gold_margin": 0.18898391723632812,
+   "a": {
+    "kld": 0.010107898083944477,
+    "top1": "```\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1028,
+   "gold_top1": "**",
+   "gold_margin": 3.270827293395996,
+   "a": {
+    "kld": 0.010933950843403335,
+    "top1": "**",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1043,
+   "gold_top1": " on",
+   "gold_margin": 2.2391366958618164,
+   "a": {
+    "kld": 0.04283605544423706,
+    "top1": " on",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1058,
+   "gold_top1": "\n",
+   "gold_margin": 0.5092601180076599,
+   "a": {
+    "kld": 0.009959747344554687,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1073,
+   "gold_top1": " it",
+   "gold_margin": 1.905024528503418,
+   "a": {
+    "kld": 0.05372682118158088,
+    "top1": " it",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1088,
+   "gold_top1": " if",
+   "gold_margin": 1.1704254150390625,
+   "a": {
+    "kld": 0.007760245683421021,
+    "top1": " if",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1103,
+   "gold_top1": "forms",
+   "gold_margin": 8.016210556030273,
+   "a": {
+    "kld": 4.612013244125495e-05,
+    "top1": "forms",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1118,
+   "gold_top1": ").\n",
+   "gold_margin": 0.7709637880325317,
+   "a": {
+    "kld": 0.1739321195229429,
+    "top1": ").\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1133,
+   "gold_top1": ").\n",
+   "gold_margin": 1.368417739868164,
+   "a": {
+    "kld": 0.0029023430612926102,
+    "top1": ").\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1148,
+   "gold_top1": "ING",
+   "gold_margin": 5.31932258605957,
+   "a": {
+    "kld": 0.0003543316442889901,
+    "top1": "ING",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1163,
+   "gold_top1": "Run",
+   "gold_margin": 0.02468585968017578,
+   "a": {
+    "kld": 0.13899675606963666,
+    "top1": "`",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1178,
+   "gold_top1": "with",
+   "gold_margin": 0.23432159423828125,
+   "a": {
+    "kld": 0.1265741088484567,
+    "top1": "with",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1193,
+   "gold_top1": " the",
+   "gold_margin": 0.9229249954223633,
+   "a": {
+    "kld": 0.011249638748266882,
+    "top1": " the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1208,
+   "gold_top1": " Grid",
+   "gold_margin": 0.15891170501708984,
+   "a": {
+    "kld": 0.1537085354196273,
+    "top1": " Grid",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1223,
+   "gold_top1": " the",
+   "gold_margin": 1.5254899263381958,
+   "a": {
+    "kld": 0.017488317389874122,
+    "top1": " the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1238,
+   "gold_top1": " order",
+   "gold_margin": 1.2470570802688599,
+   "a": {
+    "kld": 0.040681570187251014,
+    "top1": " order",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1253,
+   "gold_top1": "bed",
+   "gold_margin": 0.7014026641845703,
+   "a": {
+    "kld": 0.006499565735357812,
+    "top1": "bed",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1268,
+   "gold_top1": "/",
+   "gold_margin": 2.0130767822265625,
+   "a": {
+    "kld": 0.005269237464370945,
+    "top1": "/",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1283,
+   "gold_top1": " agent",
+   "gold_margin": 1.0815229415893555,
+   "a": {
+    "kld": 0.047563169584185966,
+    "top1": " agent",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1298,
+   "gold_top1": "\n",
+   "gold_margin": 0.2730846405029297,
+   "a": {
+    "kld": 0.03312135583749682,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1313,
+   "gold_top1": "**,",
+   "gold_margin": 0.11114501953125,
+   "a": {
+    "kld": 0.02837110148973812,
+    "top1": "**,",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1328,
+   "gold_top1": " long",
+   "gold_margin": 1.0209436416625977,
+   "a": {
+    "kld": 0.09212335728382307,
+    "top1": " long",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1343,
+   "gold_top1": " in",
+   "gold_margin": 0.36771589517593384,
+   "a": {
+    "kld": 0.010164598094656389,
+    "top1": " in",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1358,
+   "gold_top1": " a",
+   "gold_margin": 0.8733386993408203,
+   "a": {
+    "kld": 0.04073960469070344,
+    "top1": " a",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1373,
+   "gold_top1": " prove",
+   "gold_margin": 0.5080280303955078,
+   "a": {
+    "kld": 0.059173772844294384,
+    "top1": " prove",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1388,
+   "gold_top1": ",",
+   "gold_margin": 2.9030094146728516,
+   "a": {
+    "kld": 0.007221853814619587,
+    "top1": ",",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1403,
+   "gold_top1": " no",
+   "gold_margin": 4.328319549560547,
+   "a": {
+    "kld": 0.0028073654018927734,
+    "top1": " no",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1418,
+   "gold_top1": "\n",
+   "gold_margin": 2.0151777267456055,
+   "a": {
+    "kld": 0.09425999182357826,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1433,
+   "gold_top1": " for",
+   "gold_margin": 0.7899628281593323,
+   "a": {
+    "kld": 0.02778344748982424,
+    "top1": " for",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1448,
+   "gold_top1": " a",
+   "gold_margin": 1.7085742950439453,
+   "a": {
+    "kld": 0.027754170549577743,
+    "top1": " a",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1463,
+   "gold_top1": "-line",
+   "gold_margin": 2.019084930419922,
+   "a": {
+    "kld": 0.032233046048257975,
+    "top1": "-line",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1478,
+   "gold_top1": " you",
+   "gold_margin": 1.7842141389846802,
+   "a": {
+    "kld": 0.013278046189954146,
+    "top1": " you",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1493,
+   "gold_top1": ".\n",
+   "gold_margin": 2.4699249267578125,
+   "a": {
+    "kld": 0.0033116592834095088,
+    "top1": ".\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1508,
+   "gold_top1": " The",
+   "gold_margin": 1.3937740325927734,
+   "a": {
+    "kld": 0.05818832846762153,
+    "top1": " The",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1523,
+   "gold_top1": ",",
+   "gold_margin": 0.24629497528076172,
+   "a": {
+    "kld": 0.02607598207819441,
+    "top1": ",",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1538,
+   "gold_top1": "**",
+   "gold_margin": 0.3593864440917969,
+   "a": {
+    "kld": 0.010275735731592569,
+    "top1": "**",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1553,
+   "gold_top1": ",",
+   "gold_margin": 0.5116557478904724,
+   "a": {
+    "kld": 0.023578800674766438,
+    "top1": ",",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1568,
+   "gold_top1": "-new",
+   "gold_margin": 2.4365367889404297,
+   "a": {
+    "kld": 0.012253513319564674,
+    "top1": "-new",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1583,
+   "gold_top1": " is",
+   "gold_margin": 0.3203258514404297,
+   "a": {
+    "kld": 0.013074152566090097,
+    "top1": " is",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1598,
+   "gold_top1": " and",
+   "gold_margin": 0.6920022964477539,
+   "a": {
+    "kld": 0.04640086320499168,
+    "top1": " and",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1613,
+   "gold_top1": "\n",
+   "gold_margin": 4.14042854309082,
+   "a": {
+    "kld": 0.0007131793572308112,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1628,
+   "gold_top1": ".",
+   "gold_margin": 0.23916244506835938,
+   "a": {
+    "kld": 0.030654934955858963,
+    "top1": ".",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1643,
+   "gold_top1": "RAM",
+   "gold_margin": 7.82935905456543,
+   "a": {
+    "kld": 2.5085080421337146e-05,
+    "top1": "RAM",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1658,
+   "gold_top1": "parent",
+   "gold_margin": 0.5117721557617188,
+   "a": {
+    "kld": 0.07480512068068455,
+    "top1": "parallel",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1673,
+   "gold_top1": "`",
+   "gold_margin": 0.29155731201171875,
+   "a": {
+    "kld": 0.03405401757461794,
+    "top1": "`",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1688,
+   "gold_top1": " is",
+   "gold_margin": 1.8093816041946411,
+   "a": {
+    "kld": 0.05930308201470167,
+    "top1": " is",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1703,
+   "gold_top1": ",",
+   "gold_margin": 0.4170360565185547,
+   "a": {
+    "kld": 0.02250763858628374,
+    "top1": ",",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1718,
+   "gold_top1": " by",
+   "gold_margin": 1.2715245485305786,
+   "a": {
+    "kld": 0.02094015714873949,
+    "top1": " by",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1733,
+   "gold_top1": " The",
+   "gold_margin": 0.22550296783447266,
+   "a": {
+    "kld": 0.014446526718556684,
+    "top1": " The",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1748,
+   "gold_top1": " the",
+   "gold_margin": 0.40628528594970703,
+   "a": {
+    "kld": 0.0314130337857548,
+    "top1": " the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1763,
+   "gold_top1": "](",
+   "gold_margin": 0.26027679443359375,
+   "a": {
+    "kld": 0.01951771351715287,
+    "top1": "](",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1778,
+   "gold_top1": "/)",
+   "gold_margin": 0.027414321899414062,
+   "a": {
+    "kld": 0.012607566057323723,
+    "top1": "/)",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1793,
+   "gold_top1": "atform",
+   "gold_margin": 2.0205421447753906,
+   "a": {
+    "kld": 0.004816370971333931,
+    "top1": "atform",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1808,
+   "gold_top1": "ama",
+   "gold_margin": 8.095664978027344,
+   "a": {
+    "kld": 6.820469566063295e-05,
+    "top1": "ama",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1823,
+   "gold_top1": " ",
+   "gold_margin": 0.042034149169921875,
+   "a": {
+    "kld": 0.027992422107544997,
+    "top1": " in",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1838,
+   "gold_top1": ".",
+   "gold_margin": 1.7657164335250854,
+   "a": {
+    "kld": 0.027508888227063363,
+    "top1": ".",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1853,
+   "gold_top1": "fix",
+   "gold_margin": 0.33033180236816406,
+   "a": {
+    "kld": 0.11773574835103078,
+    "top1": "fix",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1868,
+   "gold_top1": " is",
+   "gold_margin": 1.3228836059570312,
+   "a": {
+    "kld": 0.012544767756274602,
+    "top1": " is",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1883,
+   "gold_top1": "`",
+   "gold_margin": 2.742673873901367,
+   "a": {
+    "kld": 0.012836210986009962,
+    "top1": "`",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1898,
+   "gold_top1": "\n",
+   "gold_margin": 2.5197067260742188,
+   "a": {
+    "kld": 0.009441084935883387,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1913,
+   "gold_top1": " proxy",
+   "gold_margin": 2.607259750366211,
+   "a": {
+    "kld": 0.0003864882074532917,
+    "top1": " proxy",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1928,
+   "gold_top1": " audit",
+   "gold_margin": 0.08384037017822266,
+   "a": {
+    "kld": 0.008600840913598447,
+    "top1": " audit",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1943,
+   "gold_top1": " llama",
+   "gold_margin": 0.5160514116287231,
+   "a": {
+    "kld": 0.04710341557092833,
+    "top1": " llama",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1958,
+   "gold_top1": "Q",
+   "gold_margin": 3.4098758697509766,
+   "a": {
+    "kld": 0.01006789418421432,
+    "top1": "Q",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1973,
+   "gold_top1": "Qw",
+   "gold_margin": 3.0236244201660156,
+   "a": {
+    "kld": 0.00420444506314931,
+    "top1": "Qw",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 1988,
+   "gold_top1": "ranch",
+   "gold_margin": 2.167652130126953,
+   "a": {
+    "kld": 0.014351330835582208,
+    "top1": "ranch",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2003,
+   "gold_top1": ",",
+   "gold_margin": 1.245761752128601,
+   "a": {
+    "kld": 0.031129564739320877,
+    "top1": ",",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2018,
+   "gold_top1": ".",
+   "gold_margin": 0.7703590393066406,
+   "a": {
+    "kld": 0.048744702392894954,
+    "top1": ".",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2033,
+   "gold_top1": " is",
+   "gold_margin": 0.4588642120361328,
+   "a": {
+    "kld": 0.08242950771682046,
+    "top1": " is",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2048,
+   "gold_top1": " `",
+   "gold_margin": 0.009261131286621094,
+   "a": {
+    "kld": 0.16252989462786208,
+    "top1": " `",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2063,
+   "gold_top1": "-p",
+   "gold_margin": 0.07295989990234375,
+   "a": {
+    "kld": 0.08773394115509388,
+    "top1": "-g",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2078,
+   "gold_top1": " cannot",
+   "gold_margin": 0.021602630615234375,
+   "a": {
+    "kld": 0.024701205295914734,
+    "top1": " cannot",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2093,
+   "gold_top1": "**",
+   "gold_margin": 0.7060537338256836,
+   "a": {
+    "kld": 0.056106146590144755,
+    "top1": "**",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2108,
+   "gold_top1": " small",
+   "gold_margin": 0.8732844591140747,
+   "a": {
+    "kld": 0.04537246208525669,
+    "top1": " small",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2123,
+   "gold_top1": " \u2014",
+   "gold_margin": 1.4410820007324219,
+   "a": {
+    "kld": 0.030018458115094317,
+    "top1": " \u2014",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2138,
+   "gold_top1": "ensitivity",
+   "gold_margin": 10.346601486206055,
+   "a": {
+    "kld": 4.538312640525626e-06,
+    "top1": "ensitivity",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2153,
+   "gold_top1": "\n",
+   "gold_margin": 0.5687942504882812,
+   "a": {
+    "kld": 0.0502101047163594,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2168,
+   "gold_top1": "/",
+   "gold_margin": 0.41874027252197266,
+   "a": {
+    "kld": 0.006619562332509232,
+    "top1": "/",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2183,
+   "gold_top1": "/pl",
+   "gold_margin": 0.7166367173194885,
+   "a": {
+    "kld": 0.01108619799654312,
+    "top1": "/pl",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2198,
+   "gold_top1": " platform",
+   "gold_margin": 0.8149069547653198,
+   "a": {
+    "kld": 0.07056293056850425,
+    "top1": " platform",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2213,
+   "gold_top1": " loading",
+   "gold_margin": 0.6588553786277771,
+   "a": {
+    "kld": 0.009532626877163691,
+    "top1": " loading",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2228,
+   "gold_top1": "\n",
+   "gold_margin": 2.4469165802001953,
+   "a": {
+    "kld": 0.0031776864599359312,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2243,
+   "gold_top1": "_",
+   "gold_margin": 2.9818801879882812,
+   "a": {
+    "kld": 0.0027048063525463707,
+    "top1": "_",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2258,
+   "gold_top1": " capability",
+   "gold_margin": 1.8488885164260864,
+   "a": {
+    "kld": 0.007486769719092836,
+    "top1": " capability",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2273,
+   "gold_top1": " |\n",
+   "gold_margin": 3.2263317108154297,
+   "a": {
+    "kld": 0.0011580655083124202,
+    "top1": " |\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 1
+   }
+  },
+  {
+   "pos": 2288,
+   "gold_top1": " Windows",
+   "gold_margin": 2.5287551879882812,
+   "a": {
+    "kld": 0.003270538123515779,
+    "top1": " Windows",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2303,
+   "gold_top1": "2",
+   "gold_margin": 3.014892578125,
+   "a": {
+    "kld": 0.000742085973721552,
+    "top1": "2",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2318,
+   "gold_top1": "86",
+   "gold_margin": 2.184783935546875,
+   "a": {
+    "kld": 0.0014970971664069192,
+    "top1": "86",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2333,
+   "gold_top1": "IA",
+   "gold_margin": 11.853466033935547,
+   "a": {
+    "kld": 1.2627410701938555e-06,
+    "top1": "IA",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2348,
+   "gold_top1": " no",
+   "gold_margin": 7.712041854858398,
+   "a": {
+    "kld": 0.0004797237275205021,
+    "top1": " no",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2363,
+   "gold_top1": "o",
+   "gold_margin": 4.80781364440918,
+   "a": {
+    "kld": 0.0002360213446325041,
+    "top1": "o",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2378,
+   "gold_top1": ".",
+   "gold_margin": 0.6298179030418396,
+   "a": {
+    "kld": 0.011077689551491092,
+    "top1": ".",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2393,
+   "gold_top1": " the",
+   "gold_margin": 1.292806625366211,
+   "a": {
+    "kld": 0.06369477418619074,
+    "top1": " the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2408,
+   "gold_top1": " started",
+   "gold_margin": 0.17766475677490234,
+   "a": {
+    "kld": 0.0802244732276175,
+    "top1": " help",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2423,
+   "gold_top1": "`",
+   "gold_margin": 0.7428550720214844,
+   "a": {
+    "kld": 0.06192883090597168,
+    "top1": "`",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2438,
+   "gold_top1": " GG",
+   "gold_margin": 1.5431880950927734,
+   "a": {
+    "kld": 0.03090672036225411,
+    "top1": " GG",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2453,
+   "gold_top1": "L",
+   "gold_margin": 1.4519062042236328,
+   "a": {
+    "kld": 0.007608991164159003,
+    "top1": "L",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2468,
+   "gold_top1": "LM",
+   "gold_margin": 1.3637334108352661,
+   "a": {
+    "kld": 0.04491455991328283,
+    "top1": "LM",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2483,
+   "gold_top1": "LM",
+   "gold_margin": 9.494767189025879,
+   "a": {
+    "kld": 0.0006497855447096249,
+    "top1": "LM",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2498,
+   "gold_top1": "  ",
+   "gold_margin": 5.812145233154297,
+   "a": {
+    "kld": 0.00011627901403983599,
+    "top1": "  ",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2513,
+   "gold_top1": " is",
+   "gold_margin": 0.569610595703125,
+   "a": {
+    "kld": 0.06596117567256828,
+    "top1": " is",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2528,
+   "gold_top1": " ",
+   "gold_margin": 1.583593487739563,
+   "a": {
+    "kld": 0.022917743133194723,
+    "top1": " ",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2543,
+   "gold_top1": " upstream",
+   "gold_margin": 0.2983541488647461,
+   "a": {
+    "kld": 0.004677835428999516,
+    "top1": " upstream",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2558,
+   "gold_top1": " with",
+   "gold_margin": 0.09643936157226562,
+   "a": {
+    "kld": 0.005211580505117769,
+    "top1": " ",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2573,
+   "gold_top1": " so",
+   "gold_margin": 0.5948123931884766,
+   "a": {
+    "kld": 0.026139472997596242,
+    "top1": " so",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2588,
+   "gold_top1": " compound",
+   "gold_margin": 2.4316110610961914,
+   "a": {
+    "kld": 0.013282534589524957,
+    "top1": " compound",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2603,
+   "gold_top1": " be",
+   "gold_margin": 3.3967247009277344,
+   "a": {
+    "kld": 0.008795784718646917,
+    "top1": " be",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2618,
+   "gold_top1": "\n",
+   "gold_margin": 7.95692253112793,
+   "a": {
+    "kld": 0.0001274538374486806,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2633,
+   "gold_top1": " model",
+   "gold_margin": 0.18497943878173828,
+   "a": {
+    "kld": 0.029045524808654195,
+    "top1": " Q",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2648,
+   "gold_top1": "\n",
+   "gold_margin": 0.4689635634422302,
+   "a": {
+    "kld": 0.01739881952519818,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2663,
+   "gold_top1": " the",
+   "gold_margin": 0.17267799377441406,
+   "a": {
+    "kld": 0.056156573023033236,
+    "top1": " the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2678,
+   "gold_top1": "0",
+   "gold_margin": 4.451454162597656,
+   "a": {
+    "kld": 0.0012888913749579756,
+    "top1": "0",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2693,
+   "gold_top1": "-quant",
+   "gold_margin": 2.3348827362060547,
+   "a": {
+    "kld": 0.0037039424172355473,
+    "top1": "-quant",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2708,
+   "gold_top1": ",",
+   "gold_margin": 0.5560894012451172,
+   "a": {
+    "kld": 0.01409969811949661,
+    "top1": ",",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 1
+   }
+  },
+  {
+   "pos": 2723,
+   "gold_top1": "0",
+   "gold_margin": 6.148101806640625,
+   "a": {
+    "kld": 0.00169161395767199,
+    "top1": "0",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2738,
+   "gold_top1": " embeddings",
+   "gold_margin": 0.0731201171875,
+   "a": {
+    "kld": 0.04471615955861665,
+    "top1": " embeddings",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2753,
+   "gold_top1": " is",
+   "gold_margin": 0.9221630096435547,
+   "a": {
+    "kld": 0.00937754577148433,
+    "top1": " is",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2768,
+   "gold_top1": " on",
+   "gold_margin": 0.06059837341308594,
+   "a": {
+    "kld": 0.012454666496182893,
+    "top1": " on",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2783,
+   "gold_top1": " reference",
+   "gold_margin": 0.8933467864990234,
+   "a": {
+    "kld": 0.049997973011631815,
+    "top1": " reference",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2798,
+   "gold_top1": " you",
+   "gold_margin": 0.09849262237548828,
+   "a": {
+    "kld": 0.014174536363537629,
+    "top1": " it",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2813,
+   "gold_top1": "-line",
+   "gold_margin": 0.12701988220214844,
+   "a": {
+    "kld": 0.028648533333699534,
+    "top1": "-line",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2828,
+   "gold_top1": " `",
+   "gold_margin": 1.0059412717819214,
+   "a": {
+    "kld": 0.033034741835334,
+    "top1": " `",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2843,
+   "gold_top1": "`",
+   "gold_margin": 6.429046630859375,
+   "a": {
+    "kld": 0.0009673178751594698,
+    "top1": "`",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2858,
+   "gold_top1": " model",
+   "gold_margin": 1.2326526641845703,
+   "a": {
+    "kld": 0.011110159158953567,
+    "top1": " model",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2873,
+   "gold_top1": " `",
+   "gold_margin": 0.32410621643066406,
+   "a": {
+    "kld": 0.028099297172167425,
+    "top1": " `",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2888,
+   "gold_top1": " the",
+   "gold_margin": 1.8134021759033203,
+   "a": {
+    "kld": 0.08165260498355867,
+    "top1": " the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2903,
+   "gold_top1": " over",
+   "gold_margin": 0.2691364288330078,
+   "a": {
+    "kld": 0.07900563834847478,
+    "top1": " over",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2918,
+   "gold_top1": "`",
+   "gold_margin": 2.6273365020751953,
+   "a": {
+    "kld": 0.009029043365957699,
+    "top1": "`",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2933,
+   "gold_top1": " to",
+   "gold_margin": 0.14604562520980835,
+   "a": {
+    "kld": 0.0019010929477300846,
+    "top1": " to",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2948,
+   "gold_top1": "pu",
+   "gold_margin": 10.054794311523438,
+   "a": {
+    "kld": 3.691349345475253e-06,
+    "top1": "pu",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2963,
+   "gold_top1": "--",
+   "gold_margin": 3.972368001937866,
+   "a": {
+    "kld": 0.0015258602058238748,
+    "top1": "--",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2978,
+   "gold_top1": "oken",
+   "gold_margin": 2.185647964477539,
+   "a": {
+    "kld": 0.03547464817678827,
+    "top1": "oken",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 2993,
+   "gold_top1": "-f",
+   "gold_margin": 0.05322265625,
+   "a": {
+    "kld": 0.03522664689450408,
+    "top1": "-read",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3008,
+   "gold_top1": ",\n",
+   "gold_margin": 0.22951126098632812,
+   "a": {
+    "kld": 0.004901942083665646,
+    "top1": ",\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3023,
+   "gold_top1": "-",
+   "gold_margin": 0.12305068969726562,
+   "a": {
+    "kld": 0.011819089330909124,
+    "top1": ",",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3038,
+   "gold_top1": ".",
+   "gold_margin": 0.178680419921875,
+   "a": {
+    "kld": 0.028172265144707363,
+    "top1": ";",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3053,
+   "gold_top1": " `",
+   "gold_margin": 0.6567516326904297,
+   "a": {
+    "kld": 0.008674301353587257,
+    "top1": " `",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3068,
+   "gold_top1": "|",
+   "gold_margin": 4.573708534240723,
+   "a": {
+    "kld": 0.0011916671836572283,
+    "top1": "|",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3083,
+   "gold_top1": " model",
+   "gold_margin": 1.5596256256103516,
+   "a": {
+    "kld": 0.05594066205411161,
+    "top1": " model",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3098,
+   "gold_top1": "YS",
+   "gold_margin": 1.0211315155029297,
+   "a": {
+    "kld": 0.006969837054839333,
+    "top1": "YS",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3113,
+   "gold_top1": "\n",
+   "gold_margin": 2.468362808227539,
+   "a": {
+    "kld": 0.00901238585358577,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3128,
+   "gold_top1": " supports",
+   "gold_margin": 0.9074393510818481,
+   "a": {
+    "kld": 0.04135658080362547,
+    "top1": " supports",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3143,
+   "gold_top1": " so",
+   "gold_margin": 0.7636851072311401,
+   "a": {
+    "kld": 0.058658131635582464,
+    "top1": " so",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3158,
+   "gold_top1": "The",
+   "gold_margin": 0.20204639434814453,
+   "a": {
+    "kld": 0.05909664393403526,
+    "top1": "The",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3173,
+   "gold_top1": "`",
+   "gold_margin": 0.39975738525390625,
+   "a": {
+    "kld": 0.0008694349000624358,
+    "top1": "`",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3188,
+   "gold_top1": " picks",
+   "gold_margin": 0.16792678833007812,
+   "a": {
+    "kld": 0.015385130742194365,
+    "top1": " picks",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3203,
+   "gold_top1": " F",
+   "gold_margin": 0.2102222442626953,
+   "a": {
+    "kld": 0.009779771527632083,
+    "top1": " F",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3218,
+   "gold_top1": " Q",
+   "gold_margin": 0.2679920196533203,
+   "a": {
+    "kld": 0.011790422214280028,
+    "top1": " Q",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3233,
+   "gold_top1": " Q",
+   "gold_margin": 0.487388551235199,
+   "a": {
+    "kld": 0.013081653332031273,
+    "top1": " Q",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3248,
+   "gold_top1": "_",
+   "gold_margin": 3.317140579223633,
+   "a": {
+    "kld": 0.002457646496633785,
+    "top1": "_",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3263,
+   "gold_top1": " documented",
+   "gold_margin": 0.4893331527709961,
+   "a": {
+    "kld": 0.011895696263623913,
+    "top1": " documented",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3278,
+   "gold_top1": " off",
+   "gold_margin": 0.034462928771972656,
+   "a": {
+    "kld": 0.0461814747249269,
+    "top1": " off",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3293,
+   "gold_top1": " format",
+   "gold_margin": 1.1301708221435547,
+   "a": {
+    "kld": 0.017766850715858477,
+    "top1": " format",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3308,
+   "gold_top1": "01",
+   "gold_margin": 0.3682518005371094,
+   "a": {
+    "kld": 0.008724083241367671,
+    "top1": "01",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3323,
+   "gold_top1": "*",
+   "gold_margin": 4.1168060302734375,
+   "a": {
+    "kld": 0.0022410506157428643,
+    "top1": "*",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3338,
+   "gold_top1": "\u2013",
+   "gold_margin": 3.398977279663086,
+   "a": {
+    "kld": 0.0034517382028622884,
+    "top1": "\u2013",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3353,
+   "gold_top1": "not",
+   "gold_margin": 0.04484367370605469,
+   "a": {
+    "kld": 0.05417275178630227,
+    "top1": "not",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3368,
+   "gold_top1": ",",
+   "gold_margin": 0.09821605682373047,
+   "a": {
+    "kld": 0.03203492117740879,
+    "top1": ",",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3383,
+   "gold_top1": "`",
+   "gold_margin": 5.644386291503906,
+   "a": {
+    "kld": 0.0005472330591517708,
+    "top1": "`",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3398,
+   "gold_top1": "--",
+   "gold_margin": 4.246921539306641,
+   "a": {
+    "kld": 0.0014111916311041425,
+    "top1": "--",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3413,
+   "gold_top1": " path",
+   "gold_margin": 1.2839735746383667,
+   "a": {
+    "kld": 0.017537372111867944,
+    "top1": " path",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3428,
+   "gold_top1": " loaded",
+   "gold_margin": 2.8101959228515625,
+   "a": {
+    "kld": 0.019169395538701433,
+    "top1": " loaded",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3443,
+   "gold_top1": " and",
+   "gold_margin": 0.9721354246139526,
+   "a": {
+    "kld": 0.03576010213719014,
+    "top1": " and",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3458,
+   "gold_top1": " GPU",
+   "gold_margin": 1.0982589721679688,
+   "a": {
+    "kld": 0.03929073821285217,
+    "top1": " GPU",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3473,
+   "gold_top1": "s",
+   "gold_margin": 5.252973556518555,
+   "a": {
+    "kld": 0.0013092153428356879,
+    "top1": "s",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3488,
+   "gold_top1": " is",
+   "gold_margin": 0.6490335464477539,
+   "a": {
+    "kld": 0.05708206784753448,
+    "top1": " is",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3503,
+   "gold_top1": " GHz",
+   "gold_margin": 0.30795955657958984,
+   "a": {
+    "kld": 0.03074297766858839,
+    "top1": " GHz",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3518,
+   "gold_top1": " the",
+   "gold_margin": 1.6707477569580078,
+   "a": {
+    "kld": 0.004054468326982689,
+    "top1": " the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3533,
+   "gold_top1": " caches",
+   "gold_margin": 0.19394493103027344,
+   "a": {
+    "kld": 0.04379207941154145,
+    "top1": " caches",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3548,
+   "gold_top1": " documented",
+   "gold_margin": 0.8193968534469604,
+   "a": {
+    "kld": 0.03835411309576241,
+    "top1": " documented",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3563,
+   "gold_top1": "allback",
+   "gold_margin": 7.174383163452148,
+   "a": {
+    "kld": 3.760134880219401e-05,
+    "top1": "allback",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3578,
+   "gold_top1": "):",
+   "gold_margin": 2.3075695037841797,
+   "a": {
+    "kld": 0.011732088822660169,
+    "top1": "):",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3593,
+   "gold_top1": " on",
+   "gold_margin": 0.7280502319335938,
+   "a": {
+    "kld": 0.0674948739591119,
+    "top1": " on",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3608,
+   "gold_top1": ",",
+   "gold_margin": 0.03823089599609375,
+   "a": {
+    "kld": 0.028373351976348334,
+    "top1": ",",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3623,
+   "gold_top1": " it",
+   "gold_margin": 0.1838512420654297,
+   "a": {
+    "kld": 0.020171180631165832,
+    "top1": " it",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3638,
+   "gold_top1": " the",
+   "gold_margin": 0.3757648468017578,
+   "a": {
+    "kld": 0.009266075863159608,
+    "top1": " the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3653,
+   "gold_top1": " and",
+   "gold_margin": 0.4360809326171875,
+   "a": {
+    "kld": 0.008229381929963737,
+    "top1": " and",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3668,
+   "gold_top1": " GPUs",
+   "gold_margin": 0.15719032287597656,
+   "a": {
+    "kld": 0.0010247884550853186,
+    "top1": " GPUs",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3683,
+   "gold_top1": " then",
+   "gold_margin": 0.2926483154296875,
+   "a": {
+    "kld": 0.021220794426231322,
+    "top1": " then",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3698,
+   "gold_top1": "--",
+   "gold_margin": 2.0366744995117188,
+   "a": {
+    "kld": 0.007457899116577581,
+    "top1": "--",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3713,
+   "gold_top1": " and",
+   "gold_margin": 3.2671642303466797,
+   "a": {
+    "kld": 0.006637849600263678,
+    "top1": " and",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3728,
+   "gold_top1": " token",
+   "gold_margin": 0.2017383575439453,
+   "a": {
+    "kld": 0.00906864959912741,
+    "top1": " token",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3743,
+   "gold_top1": "re",
+   "gold_margin": 1.0131072998046875,
+   "a": {
+    "kld": 0.0522639848222378,
+    "top1": "re",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3758,
+   "gold_top1": " the",
+   "gold_margin": 0.504121720790863,
+   "a": {
+    "kld": 0.003505213360609827,
+    "top1": " the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3773,
+   "gold_top1": " useful",
+   "gold_margin": 0.07277297973632812,
+   "a": {
+    "kld": 0.037845431598530044,
+    "top1": " useful",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3788,
+   "gold_top1": "--",
+   "gold_margin": 2.151998519897461,
+   "a": {
+    "kld": 0.002039023139056477,
+    "top1": "--",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3803,
+   "gold_top1": " Mo",
+   "gold_margin": 3.7203588485717773,
+   "a": {
+    "kld": 0.005835450281247471,
+    "top1": " Mo",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3818,
+   "gold_top1": " layers",
+   "gold_margin": 0.5595484972000122,
+   "a": {
+    "kld": 0.06640707016301395,
+    "top1": " layers",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3833,
+   "gold_top1": " CPU",
+   "gold_margin": 0.025867462158203125,
+   "a": {
+    "kld": 0.015291102928878331,
+    "top1": " the",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3848,
+   "gold_top1": "default",
+   "gold_margin": 0.06535911560058594,
+   "a": {
+    "kld": 0.018992401128634068,
+    "top1": "only",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3863,
+   "gold_top1": ".\n",
+   "gold_margin": 0.6678676605224609,
+   "a": {
+    "kld": 0.03827601572896605,
+    "top1": ".\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3878,
+   "gold_top1": "-m",
+   "gold_margin": 5.049989700317383,
+   "a": {
+    "kld": 0.0043753578917492715,
+    "top1": "-m",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3893,
+   "gold_top1": " experts",
+   "gold_margin": 0.756220817565918,
+   "a": {
+    "kld": 0.061834941553888745,
+    "top1": " experts",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3908,
+   "gold_top1": "`",
+   "gold_margin": 0.8425970077514648,
+   "a": {
+    "kld": 0.041572906936916586,
+    "top1": "`",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3923,
+   "gold_top1": "ex",
+   "gold_margin": 0.14003753662109375,
+   "a": {
+    "kld": 0.027978338762877003,
+    "top1": "ex",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3938,
+   "gold_top1": "--",
+   "gold_margin": 4.228006362915039,
+   "a": {
+    "kld": 0.0009926763305510913,
+    "top1": "--",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3953,
+   "gold_top1": ".\n",
+   "gold_margin": 0.7696037292480469,
+   "a": {
+    "kld": 0.007996858445569691,
+    "top1": ".\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3968,
+   "gold_top1": " off",
+   "gold_margin": 0.3327542543411255,
+   "a": {
+    "kld": 0.02791173782994567,
+    "top1": " off",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3983,
+   "gold_top1": "\n",
+   "gold_margin": 1.805044174194336,
+   "a": {
+    "kld": 0.003678615140472403,
+    "top1": "\n",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 3998,
+   "gold_top1": "12",
+   "gold_margin": 0.017625808715820312,
+   "a": {
+    "kld": 0.009954537079076297,
+    "top1": "12",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4013,
+   "gold_top1": " the",
+   "gold_margin": 0.04183769226074219,
+   "a": {
+    "kld": 0.02932380753640414,
+    "top1": " a",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4028,
+   "gold_top1": " ",
+   "gold_margin": 2.828969955444336,
+   "a": {
+    "kld": 0.0038164071701362627,
+    "top1": " ",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4043,
+   "gold_top1": "4",
+   "gold_margin": 0.23067283630371094,
+   "a": {
+    "kld": 0.0405983684177299,
+    "top1": "4",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4058,
+   "gold_top1": " CPU",
+   "gold_margin": 0.7736616134643555,
+   "a": {
+    "kld": 0.061662387786050335,
+    "top1": " CPU",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4073,
+   "gold_top1": " on",
+   "gold_margin": 0.01519775390625,
+   "a": {
+    "kld": 0.02551332341590742,
+    "top1": " on",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4088,
+   "gold_top1": " test",
+   "gold_margin": 0.6493358612060547,
+   "a": {
+    "kld": 0.025038896713344184,
+    "top1": " test",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4103,
+   "gold_top1": "LL",
+   "gold_margin": 1.387471079826355,
+   "a": {
+    "kld": 0.017870993008562163,
+    "top1": "LL",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4118,
+   "gold_top1": " the",
+   "gold_margin": 1.2845516204833984,
+   "a": {
+    "kld": 0.023408969735480154,
+    "top1": " the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4133,
+   "gold_top1": " of",
+   "gold_margin": 0.1814708709716797,
+   "a": {
+    "kld": 0.02456656308296631,
+    "top1": ":",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4148,
+   "gold_top1": "AM",
+   "gold_margin": 7.142049789428711,
+   "a": {
+    "kld": 1.6026220350002563e-05,
+    "top1": "AM",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4163,
+   "gold_top1": "machine",
+   "gold_margin": 0.12893104553222656,
+   "a": {
+    "kld": 0.22076094658893927,
+    "top1": "machine",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4178,
+   "gold_top1": "erve",
+   "gold_margin": 9.471563339233398,
+   "a": {
+    "kld": 0.00013009495325290424,
+    "top1": "erve",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4193,
+   "gold_top1": "%",
+   "gold_margin": 1.8864669799804688,
+   "a": {
+    "kld": 0.04169514384933157,
+    "top1": "%",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4208,
+   "gold_top1": "total",
+   "gold_margin": 3.5899620056152344,
+   "a": {
+    "kld": 0.004232945430333742,
+    "top1": "total",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4223,
+   "gold_top1": "ram",
+   "gold_margin": 6.518896102905273,
+   "a": {
+    "kld": 0.00011736240651394534,
+    "top1": "ram",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4238,
+   "gold_top1": "`",
+   "gold_margin": 2.5246143341064453,
+   "a": {
+    "kld": 0.0016857957830934886,
+    "top1": "`",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4253,
+   "gold_top1": "--",
+   "gold_margin": 2.0162715911865234,
+   "a": {
+    "kld": 0.0036088985058665935,
+    "top1": "--",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4268,
+   "gold_top1": "budget",
+   "gold_margin": 0.4770851135253906,
+   "a": {
+    "kld": 0.05295240372913856,
+    "top1": "budget",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4283,
+   "gold_top1": "the",
+   "gold_margin": 1.6998347043991089,
+   "a": {
+    "kld": 0.03444194304185784,
+    "top1": "the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4298,
+   "gold_top1": " a",
+   "gold_margin": 1.5933723449707031,
+   "a": {
+    "kld": 0.016380093200917715,
+    "top1": " a",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4313,
+   "gold_top1": " `",
+   "gold_margin": 0.016450881958007812,
+   "a": {
+    "kld": 0.0068878613196494505,
+    "top1": " model",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4328,
+   "gold_top1": " and",
+   "gold_margin": 0.46997642517089844,
+   "a": {
+    "kld": 0.022855785807391105,
+    "top1": " and",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4343,
+   "gold_top1": " server",
+   "gold_margin": 1.3608113527297974,
+   "a": {
+    "kld": 0.018735570665046088,
+    "top1": " server",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4358,
+   "gold_top1": " is",
+   "gold_margin": 0.21612548828125,
+   "a": {
+    "kld": 0.012441539796834346,
+    "top1": " is",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4373,
+   "gold_top1": "**",
+   "gold_margin": 0.7907562255859375,
+   "a": {
+    "kld": 0.018065460819580006,
+    "top1": "**",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4388,
+   "gold_top1": " a",
+   "gold_margin": 0.3663187026977539,
+   "a": {
+    "kld": 0.06307973338749324,
+    "top1": " a",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4403,
+   "gold_top1": "/un",
+   "gold_margin": 0.367950439453125,
+   "a": {
+    "kld": 0.07119074810098319,
+    "top1": "/un",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4418,
+   "gold_top1": " but",
+   "gold_margin": 0.3057441711425781,
+   "a": {
+    "kld": 0.05773356237933144,
+    "top1": " and",
+    "agree": false,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4433,
+   "gold_top1": " the",
+   "gold_margin": 0.810066282749176,
+   "a": {
+    "kld": 0.035469103910251376,
+    "top1": " the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4448,
+   "gold_top1": " the",
+   "gold_margin": 2.5129661560058594,
+   "a": {
+    "kld": 0.022997634014278196,
+    "top1": " the",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4463,
+   "gold_top1": " numbers",
+   "gold_margin": 1.749490737915039,
+   "a": {
+    "kld": 0.04597147237849552,
+    "top1": " numbers",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4478,
+   "gold_top1": " is",
+   "gold_margin": 2.4343090057373047,
+   "a": {
+    "kld": 0.026328274806673636,
+    "top1": " is",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  },
+  {
+   "pos": 4493,
+   "gold_top1": " a",
+   "gold_margin": 1.5903605222702026,
+   "a": {
+    "kld": 0.022080105708523794,
+    "top1": " a",
+    "agree": true,
+    "match": "id",
+    "dropped_gold_mass": 0.0,
+    "id_spelling_mismatches": 0
+   }
+  }
+ ]
+}
