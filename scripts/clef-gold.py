@@ -27,6 +27,15 @@ runner.jsonl is `runner --systemone` output for the same records with
 "runner_logits": true added to each (`clef-gold.py requests` writes that
 file). Reports token-id and span agreement, the largest logit and
 probability differences, and how many answers agree.
+
+Decisions only, for any /v1/systemone server (llama.cpp's included):
+    clef-gold.py compare --decisions --ref ref.jsonl --runner replies.jsonl [--json out.json]
+replies.jsonl holds one /v1/systemone reply per record, in the requests'
+order. Each question's per-option probabilities are read back from the reply
+(a choice's by criteria key, a noul's as true/false, a score's by index) and
+scored against the reference's softmax: decisions that agree, the largest and
+mean |dprob|, and each flip with the reference's margin. A server that
+returns no input ids, spans or logits gets no check of them here.
 """
 
 import argparse
@@ -187,7 +196,72 @@ def softmax(xs):
     return [v / z for v in e]
 
 
+def reply_probs(q, ans):
+    """A /v1/systemone answer's probabilities in the reference's option
+    order, or None when the answer does not carry them."""
+    if not isinstance(ans, dict):
+        return None
+    if ans.get("type") == "noul" and isinstance(ans.get("noul"), (int, float)):
+        return [float(ans["noul"]), 1.0 - float(ans["noul"])]   # option 0 is true
+    probs = ans.get("probabilities")
+    if not isinstance(probs, dict):
+        return None
+    keys = [str(k) for k in q["option_ids"]] if ans.get("type") == "choice" \
+        else [str(k) for k in range(len(q["logits"]))]
+    if any(k not in probs for k in keys):
+        return None
+    return [float(probs[k]) for k in keys]
+
+
+def cmd_compare_decisions(a):
+    ref = read_jsonl(a.ref)
+    head, ref = ref[0], [r for r in ref[1:] if a.keep_bounded or "max_length" not in r]
+    run = read_jsonl(a.runner)
+    if len(run) != len(ref):
+        sys.exit(f"{len(ref)} reference records but {len(run)} reply lines")
+    detail, missing = [], []
+    for rf, rn in zip(ref, run):
+        answers = rn.get("answers") or {}
+        for q in rf["questions"]:
+            p_ref = softmax(q["logits"])
+            p_run = reply_probs(q, answers.get(q["id"]))
+            if p_run is None or len(p_run) != len(p_ref):
+                missing.append(f"{rf['id']}/{q['id']}")
+                continue
+            top = sorted(p_ref, reverse=True)
+            cr = max(range(len(p_ref)), key=p_ref.__getitem__)
+            cn = max(range(len(p_run)), key=p_run.__getitem__)
+            detail.append({"record": rf["id"], "question": q["id"], "reference_choice": cr,
+                           "server_choice": cn, "agree": cr == cn,
+                           "reference_margin": round(top[0] - (top[1] if len(top) > 1 else 0.0), 6),
+                           "max_abs_dprob": round(max(abs(x - y) for x, y in zip(p_ref, p_run)), 6)})
+    n = len(detail)
+    agree = sum(d["agree"] for d in detail)
+    dps = [d["max_abs_dprob"] for d in detail]
+    summary = {"questions": n, "decisions_agree": agree,
+               "max_abs_dprob": max(dps) if dps else None,
+               "mean_abs_dprob": round(sum(dps) / n, 6) if n else None,
+               "unreadable": missing}
+    print(f"reference: {head.get('reference')} sha256 {head.get('code_sha256', '')[:12]}, "
+          f"{head.get('dtype', '?')} {head.get('device', '?')}")
+    print(f"decisions agree {agree}/{n}, max |dprob| {summary['max_abs_dprob']}, "
+          f"mean |dprob| {summary['mean_abs_dprob']} (no id, span or logit check)")
+    for d in detail:
+        if not d["agree"]:
+            print(f"  flip {d['record']}/{d['question']}: reference margin {d['reference_margin']}, "
+                  f"|dprob| {d['max_abs_dprob']}")
+    for m in missing:
+        print(f"  unreadable answer: {m}")
+    if a.json:
+        with open(a.json, "w", encoding="utf-8", newline="\n") as f:
+            json.dump({"reference": head, **summary, "questions_detail": detail}, f, indent=1)
+            f.write("\n")
+    sys.exit(1 if missing else 0)
+
+
 def cmd_compare(a):
+    if a.decisions:
+        return cmd_compare_decisions(a)
     ref = read_jsonl(a.ref)
     head, ref = ref[0], [r for r in ref[1:] if a.keep_bounded or "max_length" not in r]
     run = read_jsonl(a.runner)
@@ -265,6 +339,9 @@ def main():
     c.add_argument("--tol", type=float, default=1e-3)
     c.add_argument("--encode", action="store_true", help="compare ids and spans only")
     c.add_argument("--keep-bounded", action="store_true")
+    c.add_argument("--decisions", action="store_true",
+                   help="any /v1/systemone server's replies: decisions and probabilities only")
+    c.add_argument("--json", help="with --decisions: write the per-question comparison here")
     a = ap.parse_args()
     {"reference": cmd_reference, "requests": cmd_requests, "compare": cmd_compare}[a.cmd](a)
 
