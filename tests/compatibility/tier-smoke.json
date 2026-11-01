@@ -2776,6 +2776,120 @@
           }
         }
       }
+    },
+    "hemmingway-1-q4_k_m": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/hemmingway-1-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "sha256": "4a058fe55ddc52285448943f5a48824b12ef84016587d02eb95b13ef94a7a774",
+          "bytes": 209,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-01",
+            "runner_version": "1.10.0",
+            "commit": "84cba62f71208a29671a4abd64fb89f9bcd4771a"
+          }
+        }
+      }
+    },
+    "hemmingway-1.5-q4_k_m": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/hemmingway-1.5-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "sha256": "25aec91724064e0a420aa7c15447f56947e0fc887e30d9ec5a3b38679839a983",
+          "bytes": 160,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-01",
+            "runner_version": "1.10.0",
+            "commit": "84cba62f71208a29671a4abd64fb89f9bcd4771a"
+          }
+        }
+      }
+    },
+    "hemmingway-1.5-q8_0": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/hemmingway-1.5-q8_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "2dc9516322c964f1172c2979e9646bbf57822c945be6c21610e3b97820b835c4",
+          "bytes": 146,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-01",
+            "runner_version": "1.10.0",
+            "commit": "84cba62f71208a29671a4abd64fb89f9bcd4771a"
+          }
+        }
+      }
+    },
+    "hemmingway-1-q8_0": {
+      "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+      "n_predict": 80,
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/hemmingway-1-q8_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "0308e3d8c0ec344dae1de5c35c623014430f9baa890cbf193c37cdbb8c87fa5a",
+          "bytes": 132,
+          "finish_reason": "stop",
+          "completion_tokens": 33,
+          "spec": {
+            "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+            "n_predict": 80,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-01",
+            "runner_version": "1.10.0",
+            "commit": "84cba62f71208a29671a4abd64fb89f9bcd4771a"
+          }
+        }
+      }
     }
   }
 }

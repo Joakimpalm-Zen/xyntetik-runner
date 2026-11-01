@@ -591,6 +591,26 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>Hemmingway</b>, 2 models: CPU ✅ · CUDA - · Metal - · Train ✅</summary>
+<p><b>Hemmingway-1 (HemmingwayAI)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#hemmingway-1-q4_k_m"><code>Hemmingway-1.Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.10.0<sup>b</sup><br>2026-11-01</td><td></td><td></td><td nowrap>✅ 1.10.0<br>2026-11-01</td></tr>
+<tr><td><a href="#hemmingway-1-q8_0"><code>Hemmingway-1.Q8_0.gguf</code></a></td><td nowrap>✅ 1.10.0<sup>b</sup><br>2026-11-01</td><td></td><td></td><td nowrap>✅ 1.10.0<br>2026-11-01</td></tr>
+</tbody>
+</table>
+<p><b>Hemmingway-1.5 (HemmingwayAI)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#hemmingway-1.5-q4_k_m"><code>HemmingwayAI_Hemmingway-1.5-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.10.0<sup>b</sup><br>2026-11-01</td><td></td><td></td><td nowrap>✅ 1.10.0<br>2026-11-01</td></tr>
+<tr><td><a href="#hemmingway-1.5-q8_0"><code>HemmingwayAI_Hemmingway-1.5-Q8_0.gguf</code></a></td><td nowrap>✅ 1.10.0<sup>b</sup><br>2026-11-01</td><td></td><td></td><td nowrap>✅ 1.10.0<br>2026-11-01</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>LFM2.5</b>, 4 models: CPU ✅ · CUDA n/a · Metal - · Train n/a</summary>
 <p><b>LFM2.5-1.2B-Instruct (LiquidAI)</b></p>
 <table>
@@ -1726,6 +1746,104 @@ Text path, the publisher's Q4_K_M, which fails the fidelity bar: against the pub
 - **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
 - **Tier history:** Upcoming, planned admission from 2026-10-29; Tier 2, maintained on report from 2026-10-29 ([log](#transition-log)).
 
+### Hemmingway
+
+#### Hemmingway-1 (HemmingwayAI)
+
+<a id="hemmingway-1-q4_k_m"></a>
+##### `Hemmingway-1.Q4_K_M.gguf`
+
+Text path, a third party's Q4_K_M, which fails the fidelity bar: against the publisher's BF16 weights computed in float32 it reads 0.248 mean KLD and 91.6% margin-qualified top-1 (2,000 positions), against a 0.05 / 97% bar, the same on CPU and CUDA; the Q8_0 is the fidelity file. Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the file as published and nothing is redistributed or derived from it.
+
+- **File:** `Hemmingway-1.Q4_K_M.gguf` (sha256 `d8a77565035547f39388969e1ef0e83f646f366e7bdef1e1ce63ad0b0d785dbc`, 16,810,715,360 bytes, from [mradermacher/Hemmingway-1-GGUF](https://huggingface.co/mradermacher/Hemmingway-1-GGUF) at revision `99b95619d459`).
+- **Upstream checkpoint:** HemmingwayAI/Hemmingway-1 at revision `faba57469705`.
+- **Quantization:** Q4_K_M (mradermacher).
+- **Licence:** `cc-by-nc-4.0`, as the HemmingwayAI/Hemmingway-1 model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** All four files against HemmingwayAI's BF16 weights computed in float32 on the CPU (transformers' Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 2,000 positions at stride 1 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked score files): Hemmingway-1 Q4_K_M 0.248 mean KLD / 84.5% top-1 / 91.6% margin-qualified (CUDA and CPU not distinguishable), Hemmingway-1 Q8_0 0.0106 / 98.15% / 99.54%, Hemmingway-1.5 Q4_K_M 0.0203 / 95.55% / 99.72% (CUDA and CPU not distinguishable), Hemmingway-1.5 Q8_0 0.0021 / 99.1% / 99.93%. Every template (two HF, four GGUF) is byte-identical to Qwen/Qwen3.8-27B's, the qwen38 conformance oracle. Record: docs/compat-reports/hemmingway-reference-2026-11-01/README.md.
+- **Context tested:** 2048.
+- **Known limitations:** No fidelity claim: the file fails the bar and the distance is in the file, not the arithmetic (CPU and CUDA score it alike). This conversion quantizes the Gated DeltaNet gates (ssm_alpha, ssm_beta) that Hemmingway-1.5's files keep in F32; consistent with the gap, not proven. No llama.cpp column.
+- **Still missing:** A llama.cpp column (not measured: validation only, non-commercial); the Metal cell; task quality.
+- **Evidence:** [docs/compat-reports/hemmingway-reference-2026-11-01/README.md](compat-reports/hemmingway-reference-2026-11-01/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.10.0 on 2026-11-01.
+- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `b09cd0bee1b2`, output sha256 `4a058fe55ddc5228`, [pin](../tests/compatibility/tier-smoke/hemmingway-1-q4_k_m.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.10.0, 2026-11-01).
+- **LoRA adapter serving:** supported (runner 1.10.0, 2026-11-01).
+- **Tier history:** Tier 2, maintained on report from 2026-11-01 ([log](#transition-log)).
+
+<a id="hemmingway-1-q8_0"></a>
+##### `Hemmingway-1.Q8_0.gguf`
+
+Text path, a third party's Q8_0, the fidelity file of the two: against the publisher's BF16 weights computed in float32 it reads 0.0106 mean KLD and 99.54% margin-qualified top-1 (2,000 positions, CPU). Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the file as published and nothing is redistributed or derived from it.
+
+- **File:** `Hemmingway-1.Q8_0.gguf` (sha256 `10b566343db6905215c2d635285ffb43ada05a2f9b1e8e85562c8e366fac1809`, 29,047,085,280 bytes, from [mradermacher/Hemmingway-1-GGUF](https://huggingface.co/mradermacher/Hemmingway-1-GGUF) at revision `99b95619d459`).
+- **Upstream checkpoint:** HemmingwayAI/Hemmingway-1 at revision `faba57469705`.
+- **Quantization:** Q8_0 (mradermacher).
+- **Licence:** `cc-by-nc-4.0`, as the HemmingwayAI/Hemmingway-1 model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** All four files against HemmingwayAI's BF16 weights computed in float32 on the CPU (transformers' Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 2,000 positions at stride 1 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked score files): Hemmingway-1 Q4_K_M 0.248 mean KLD / 84.5% top-1 / 91.6% margin-qualified (CUDA and CPU not distinguishable), Hemmingway-1 Q8_0 0.0106 / 98.15% / 99.54%, Hemmingway-1.5 Q4_K_M 0.0203 / 95.55% / 99.72% (CUDA and CPU not distinguishable), Hemmingway-1.5 Q8_0 0.0021 / 99.1% / 99.93%. Every template (two HF, four GGUF) is byte-identical to Qwen/Qwen3.8-27B's, the qwen38 conformance oracle. Record: docs/compat-reports/hemmingway-reference-2026-11-01/README.md.
+- **Context tested:** 2048.
+- **Known limitations:** 29 GB of weights. This conversion quantizes the Gated DeltaNet gates (ssm_alpha, ssm_beta) that Hemmingway-1.5's files keep in F32; consistent with the gap, not proven. No llama.cpp column.
+- **Still missing:** A llama.cpp column (not measured: validation only, non-commercial); the Metal cell; task quality.
+- **Evidence:** [docs/compat-reports/hemmingway-reference-2026-11-01/README.md](compat-reports/hemmingway-reference-2026-11-01/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.10.0 on 2026-11-01.
+- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `b09cd0bee1b2`, output sha256 `0308e3d8c0ec344d`, [pin](../tests/compatibility/tier-smoke/hemmingway-1-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.10.0, 2026-11-01).
+- **LoRA adapter serving:** supported (runner 1.10.0, 2026-11-01).
+- **Tier history:** Tier 2, maintained on report from 2026-11-01 ([log](#transition-log)).
+
+#### Hemmingway-1.5 (HemmingwayAI)
+
+<a id="hemmingway-1.5-q4_k_m"></a>
+##### `HemmingwayAI_Hemmingway-1.5-Q4_K_M.gguf`
+
+Text path, a third party's imatrix Q4_K_M: against the publisher's BF16 weights computed in float32 it reads 0.0203 mean KLD and 99.72% margin-qualified top-1 (2,000 positions), the same on CPU and CUDA. Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the file as published and nothing is redistributed or derived from it.
+
+- **File:** `HemmingwayAI_Hemmingway-1.5-Q4_K_M.gguf` (sha256 `69b4d499e3df0b43033b9ea9f0fbd0e558975729643c670a69aef10a316c4a16`, 17,442,400,608 bytes, from [bartowski/HemmingwayAI_Hemmingway-1.5-GGUF](https://huggingface.co/bartowski/HemmingwayAI_Hemmingway-1.5-GGUF) at revision `4d91b1bc0502`).
+- **Upstream checkpoint:** HemmingwayAI/Hemmingway-1.5 at revision `2f66c2569b99`.
+- **Quantization:** Q4_K_M (bartowski, imatrix).
+- **Licence:** `cc-by-nc-4.0`, as the HemmingwayAI/Hemmingway-1.5 model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** All four files against HemmingwayAI's BF16 weights computed in float32 on the CPU (transformers' Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 2,000 positions at stride 1 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked score files): Hemmingway-1 Q4_K_M 0.248 mean KLD / 84.5% top-1 / 91.6% margin-qualified (CUDA and CPU not distinguishable), Hemmingway-1 Q8_0 0.0106 / 98.15% / 99.54%, Hemmingway-1.5 Q4_K_M 0.0203 / 95.55% / 99.72% (CUDA and CPU not distinguishable), Hemmingway-1.5 Q8_0 0.0021 / 99.1% / 99.93%. Every template (two HF, four GGUF) is byte-identical to Qwen/Qwen3.8-27B's, the qwen38 conformance oracle. Record: docs/compat-reports/hemmingway-reference-2026-11-01/README.md.
+- **Context tested:** 2048.
+- **Known limitations:** No llama.cpp column.
+- **Still missing:** A llama.cpp column (not measured: validation only, non-commercial); the Metal cell; task quality.
+- **Evidence:** [docs/compat-reports/hemmingway-reference-2026-11-01/README.md](compat-reports/hemmingway-reference-2026-11-01/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.10.0 on 2026-11-01.
+- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `b09cd0bee1b2`, output sha256 `25aec91724064e0a`, [pin](../tests/compatibility/tier-smoke/hemmingway-1.5-q4_k_m.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.10.0, 2026-11-01).
+- **LoRA adapter serving:** supported (runner 1.10.0, 2026-11-01).
+- **Tier history:** Tier 2, maintained on report from 2026-11-01 ([log](#transition-log)).
+
+<a id="hemmingway-1.5-q8_0"></a>
+##### `HemmingwayAI_Hemmingway-1.5-Q8_0.gguf`
+
+Text path, a third party's Q8_0: against the publisher's BF16 weights computed in float32 it reads 0.0021 mean KLD and 99.93% margin-qualified top-1 (2,000 positions, CPU). Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the file as published and nothing is redistributed or derived from it.
+
+- **File:** `HemmingwayAI_Hemmingway-1.5-Q8_0.gguf` (sha256 `8b3c689c88395942c3e3caf3dac1f1d70fe16f86f490bd783bf44afa32834b4e`, 29,116,389,728 bytes, from [bartowski/HemmingwayAI_Hemmingway-1.5-GGUF](https://huggingface.co/bartowski/HemmingwayAI_Hemmingway-1.5-GGUF) at revision `4d91b1bc0502`).
+- **Upstream checkpoint:** HemmingwayAI/Hemmingway-1.5 at revision `2f66c2569b99`.
+- **Quantization:** Q8_0 (bartowski).
+- **Licence:** `cc-by-nc-4.0`, as the HemmingwayAI/Hemmingway-1.5 model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** All four files against HemmingwayAI's BF16 weights computed in float32 on the CPU (transformers' Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 2,000 positions at stride 1 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked score files): Hemmingway-1 Q4_K_M 0.248 mean KLD / 84.5% top-1 / 91.6% margin-qualified (CUDA and CPU not distinguishable), Hemmingway-1 Q8_0 0.0106 / 98.15% / 99.54%, Hemmingway-1.5 Q4_K_M 0.0203 / 95.55% / 99.72% (CUDA and CPU not distinguishable), Hemmingway-1.5 Q8_0 0.0021 / 99.1% / 99.93%. Every template (two HF, four GGUF) is byte-identical to Qwen/Qwen3.8-27B's, the qwen38 conformance oracle. Record: docs/compat-reports/hemmingway-reference-2026-11-01/README.md.
+- **Context tested:** 2048.
+- **Known limitations:** 29 GB of weights. No llama.cpp column.
+- **Still missing:** A llama.cpp column (not measured: validation only, non-commercial); the Metal cell; task quality.
+- **Evidence:** [docs/compat-reports/hemmingway-reference-2026-11-01/README.md](compat-reports/hemmingway-reference-2026-11-01/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.10.0 on 2026-11-01.
+- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `b09cd0bee1b2`, output sha256 `2dc9516322c964f1`, [pin](../tests/compatibility/tier-smoke/hemmingway-1.5-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.10.0, 2026-11-01).
+- **LoRA adapter serving:** supported (runner 1.10.0, 2026-11-01).
+- **Tier history:** Tier 2, maintained on report from 2026-11-01 ([log](#transition-log)).
+
 ### LFM2.5
 
 #### LFM2.5-1.2B-Instruct (LiquidAI)
@@ -2353,5 +2471,9 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-30 | [flint (RecursiveSI), `flint-int4-q4_1.gguf`](#flint-int4-q4_1) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane (policy 2026-10-27); no float32 reference is feasible, so the anchor is agreement with another engine. Maintained on report. | none recorded |
 | 2026-10-30 | [Qwen3.6-35B-A3B (Qwen), `Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf`](#qwen3.6-35b-a3b-q4_k_m) | Upcoming, planned admission | Owner's Hub-search validation queue of 2026-10-29, the qwen35moe items (Qwen3.6-35B-A3B first, by downloads): the files did not load until the qwen35moe architecture and Qwen 3.6's template landed. | none recorded |
 | 2026-10-30 | [Qwen3.6-35B-A3B (Qwen), `Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf`](#qwen3.6-35b-a3b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-10-30 at Tier 2 with the admitting CPU cell from the lab CPU lane (policy 2026-10-27). Maintained on report. | none recorded |
+| 2026-11-01 | [Hemmingway-1 (HemmingwayAI), `Hemmingway-1.Q4_K_M.gguf`](#hemmingway-1-q4_k_m) | Tier 2, maintained on report | Owner's Hub-search validation queue of 2026-10-29 (R4.27), validation only under CC-BY-NC-4.0: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report. | none recorded |
+| 2026-11-01 | [Hemmingway-1 (HemmingwayAI), `Hemmingway-1.Q8_0.gguf`](#hemmingway-1-q8_0) | Tier 2, maintained on report | Owner's Hub-search validation queue of 2026-10-29 (R4.27), validation only under CC-BY-NC-4.0: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report. | none recorded |
+| 2026-11-01 | [Hemmingway-1.5 (HemmingwayAI), `HemmingwayAI_Hemmingway-1.5-Q4_K_M.gguf`](#hemmingway-1.5-q4_k_m) | Tier 2, maintained on report | Owner's Hub-search validation queue of 2026-10-29 (R4.27), validation only under CC-BY-NC-4.0: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report. | none recorded |
+| 2026-11-01 | [Hemmingway-1.5 (HemmingwayAI), `HemmingwayAI_Hemmingway-1.5-Q8_0.gguf`](#hemmingway-1.5-q8_0) | Tier 2, maintained on report | Owner's Hub-search validation queue of 2026-10-29 (R4.27), validation only under CC-BY-NC-4.0: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->
