@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal decode microbatch: the weight products read each block once for all
+  slots.** When several `--parallel` slots decode together on Metal, the Q8_0,
+  Q6_K and Q4_K matvecs and the head now load each weight block once for the
+  whole column tile, while every slot keeps the bits of its solo decode step
+  (each twin kernel is admitted at load only after a self-test against its
+  one-column kernel; `RUNNER_METAL_MVFC=0` switches them off). Measured on
+  K2-Horizon-1B on an M1, eight slots: 199 to 155 ms a step on the Q4_K_M,
+  140 to 116 on the Q8_0 (R3.24).
+
 - **`RUNNER_METAL_TIMING=2`: the Metal decode microbatch by stage.** The
   `--parallel` slots that decode together are split into QKV, attention, O,
   FFN gate and up, FFN down, and the head, each its own command buffer, so
@@ -36,7 +45,10 @@ Current release and unreleased changes. Compatibility follows the
   hand-written plan. The default reference is the parent file, and its card
   says so in its first lines and states no bar verdict. `--reference hf:DIR`
   measures against the publisher's float32 model, and that card leads with
-  pass or fail. The license is copied from the parent, and a parent without
+  pass or fail. `--reference-arg ARG` passes arguments to that reference run
+  (`--upcast-at-use`, or `--offload-dir` and `--max-memory`) for a model too
+  large for float32 in memory. `--license ID` gives the licence of a parent whose
+  file declares none, and never overrides one it declares. The license is copied from the parent, and a parent without
   one is refused. `--score` gains `--score-out F` and `--score-tokens N`, and
   its JSON gains `n_special` (R17.6.1).
 

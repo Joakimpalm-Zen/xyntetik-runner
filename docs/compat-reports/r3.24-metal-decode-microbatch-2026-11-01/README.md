@@ -35,3 +35,23 @@ of the steady steps. Apple M1, 8 GB, at this branch's head. `micro.py` is the sc
   so nothing is shared even through the cache.
 - **Throughput without the profile**, the same requests: 12.4 tok/s at one slot, 29.4 at four, 36.4 at eight on the
   Q8_0.
+
+## The column-inner twins (R3.24 (a), same day)
+
+Each block's quants and scales are now loaded once per lane step for the whole column tile (`k_mvc_q8_0`,
+`k_mvc_q6_K`, `k_mvfc_q4_K`), and the head goes through the same multi-column path. Every column keeps its one-column
+kernel's arithmetic: each twin is admitted at load only if it gives the one-column kernel's bits on random blocks at
+two shapes. The first Q6_K twin, written as `k_mv_q6_K`'s text, failed that test and was rewritten with explicit
+`fma`, as `k_mv2_q6_K` is. `test-batch-identity` on both real files: byte-identical, 11 sequences x 12 steps, with the
+microbatch engaged.
+
+| K2-Horizon-1B, GPU ms a step (profile) | N | twins off | twins on |
+|---|---|---|---|
+| Q4_K_M | 4 | 99.5 | 86.8 |
+| Q4_K_M | 8 | 198.5 | 154.8 |
+| Q8_0 | 4 | 99.1 | 90.4 |
+| Q8_0 | 8 | 139.8 | 115.9 |
+
+The Q4_K_M's down (54.4 to 32.2 ms) and head (35.0 to 29.1) were the stages the earlier Q4_K-only twin could not
+reach. What remains per column is the multiply-add itself, on scalar lanes: the opt-in tiled route (owner decision,
+2026-11-01) is the next step.
