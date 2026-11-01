@@ -43,6 +43,9 @@ static const struct { const char *flag, *key; } RECIPE[] = {
 
 typedef struct {
     const char *parent, *out, *corpus, *reference_hf;
+    const char *ref_args[8];   // --reference-arg: passed to gold-logits.py as given
+    const char *license;       // --license: for a parent that declares none
+    int n_ref_args;
     const char *ctx, *threads, *gpu;
     const char *recipe[N_RECIPE];   // by RECIPE index; NULL = not given
     int start, stride, count;
@@ -89,6 +92,12 @@ static void derive_usage(FILE *f) {
         "                 transformers); the only reference a card may state the\n"
         "                 bar against. Default: the parent file in Runner's\n"
         "                 arithmetic, named so on the card, with no bar verdict\n"
+        "  --reference-arg ARG  with --reference: pass ARG to gold-logits.py as\n"
+        "                 given, repeatable (--upcast-at-use, or --offload-dir DIR\n"
+        "                 --max-memory GIB, for a reference too large for float32\n"
+        "                 in memory)\n"
+        "  --license ID   the licence of a parent that declares no general.license\n"
+        "                 (its source's terms; refused if the parent declares another)\n"
         "  --corpus FILE  the text (default tests/fixtures/gold-corpus-2k.txt)\n"
         "  --window S:T:N positions S + n*T for n < N (default 8:15:300)\n"
         "  -c N, -t N, --gpu X  passed to the score runs (--gpu default off)\n\n"
@@ -143,6 +152,14 @@ static int parse_args(int argc, char **argv, derive_opts *o) {
         else if (!strcmp(a, "-m")) o->parent = v;
         else if (!strcmp(a, "-o") || !strcmp(a, "--out")) o->out = v;
         else if (!strcmp(a, "--corpus")) o->corpus = v;
+        else if (!strcmp(a, "--license")) o->license = v;
+        else if (!strcmp(a, "--reference-arg")) {
+            if (o->n_ref_args == (int)(sizeof o->ref_args / sizeof o->ref_args[0])) {
+                fprintf(stderr, "error: at most 8 --reference-arg\n");
+                return 1;
+            }
+            o->ref_args[o->n_ref_args++] = v;
+        }
         else if (!strcmp(a, "-c")) o->ctx = v;
         else if (!strcmp(a, "-t")) o->threads = v;
         else if (!strcmp(a, "--gpu")) o->gpu = v;
@@ -180,6 +197,11 @@ static int parse_args(int argc, char **argv, derive_opts *o) {
             fprintf(stderr, "error: runner derive: unknown option %s (runner derive --help)\n", a);
             return 1;
         }
+    }
+    if (o->n_ref_args && !o->reference_hf) {
+        fprintf(stderr, "error: --reference-arg passes arguments to the publisher reference and "
+                "needs --reference hf:DIR\n");
+        return 1;
     }
     if (!o->parent || !o->out) {
         fprintf(stderr, "error: runner derive needs -m PARENT and -o OUT (runner derive --help)\n");
@@ -429,6 +451,7 @@ static bool gold_measure(const derive_opts *o, const char *script, const char *f
     // Runner prepended BOS to the text it scored; the reference must see the
     // same prefix even where the publisher's tokenizer adds none
     if (n_special > 0) a[n++] = "--force-bos";
+    for (int i = 0; i < o->n_ref_args; i++) a[n++] = o->ref_args[i];
     a[n] = NULL;
     int rc = plat_spawn_wait(a);
     if (rc != 0) {
@@ -510,11 +533,12 @@ static bool write_text(const char *path, const sbuf *b) {
 typedef struct {
     char license[256], name[256], repo[512];
     int file_type;
+    bool license_given;   // from --license: the parent declares none
 } parent_meta;
 
 // general.license (required), general.name, the first base model's repo id
 // when it is a Hugging Face URL, general.file_type
-static bool read_parent(const char *path, parent_meta *p) {
+static bool read_parent(const char *path, const char *given, parent_meta *p) {
     memset(p, 0, sizeof *p);
     gguf_file g;
     if (!gguf_open_header(&g, path)) {
@@ -531,9 +555,21 @@ static bool read_parent(const char *path, parent_meta *p) {
     if (url && !strncmp(url, hf, strlen(hf)))
         snprintf(p->repo, sizeof p->repo, "%s", url + strlen(hf));
     gguf_close(&g);
+    // a declared licence is the file's; --license only fills an absent one,
+    // so derive never relicenses
+    if (*p->license && given && strcmp(given, p->license)) {
+        fprintf(stderr, "error: the parent declares general.license %s and --license says %s; "
+                "a derived file keeps its parent's license\n", p->license, given);
+        return false;
+    }
+    if (!*p->license && given && *given) {
+        snprintf(p->license, sizeof p->license, "%s", given);
+        p->license_given = true;
+    }
     if (!*p->license) {
         fprintf(stderr, "error: the parent declares no general.license; the card copies the "
-                "parent's license, so derive will not make a file it cannot license\n");
+                "parent's license, so derive will not make a file it cannot license (give the "
+                "source's terms with --license ID)\n");
         return false;
     }
     return true;
@@ -732,9 +768,12 @@ static void put_command(sbuf *b, const derive_opts *o) {
         if (o->match) sb_fmt(b, " --match %s", o->match);
         if (o->group_tensor) sb_lit(b, " --group tensor");
     }
+    if (o->license) sb_fmt(b, " --license %s", o->license);
     if (o->corpus_given) sb_fmt(b, " --corpus %s", plat_path_base(o->corpus));
     sb_fmt(b, " --window %d:%d:%d", o->start, o->stride, o->count);
     if (o->reference_hf) sb_fmt(b, " --reference hf:%s", plat_path_base(o->reference_hf));
+    for (int i = 0; i < o->n_ref_args; i++)
+        sb_fmt(b, " --reference-arg %s", plat_path_base(o->ref_args[i]));
 }
 
 int derive_main(int argc, char **argv) {
@@ -752,7 +791,7 @@ int derive_main(int argc, char **argv) {
         return 1;
     }
     parent_meta pm;
-    if (!read_parent(o.parent, &pm)) return 1;
+    if (!read_parent(o.parent, o.license, &pm)) return 1;
     const char *gold_env = getenv("RUNNER_GOLD_LOGITS");
     char *gold_script = gold_env && *gold_env ? strdup(gold_env) : join(dir, BESIDE_GOLD);
     if (o.reference_hf && !gold_ready(gold_script, !(gold_env && *gold_env))) return 1;
@@ -834,7 +873,12 @@ int derive_main(int argc, char **argv) {
     if (publisher) {
         sb_lit(&r, "\"hf\":"); sb_str(&r, o.reference_hf);
         sb_lit(&r, ",\"class\":"); sb_str(&r, m.reference_class);
-        sb_lit(&r, ",\"script\":\"scripts/gold-logits.py\"");
+        sb_lit(&r, ",\"script\":\"scripts/gold-logits.py\",\"args\":[");
+        for (int i = 0; i < o.n_ref_args; i++) {
+            if (i) sb_lit(&r, ",");
+            sb_str(&r, o.ref_args[i]);
+        }
+        sb_lit(&r, "]");
     } else {
         sb_lit(&r, "\"file\":"); sb_str(&r, o.parent);
         sb_fmt(&r, ",\"sha256\":\"%s\",\"arithmetic\":\"runner, cpu\"", psha);
@@ -870,6 +914,8 @@ int derive_main(int argc, char **argv) {
     sb_lit(&r, "},\"parent\":{\"path\":"); sb_str(&r, o.parent);
     sb_fmt(&r, ",\"sha256\":\"%s\",\"bytes\":%lld,\"license\":", psha, pbytes);
     sb_str(&r, pm.license);
+    sb_lit(&r, ",\"license_source\":");
+    sb_str(&r, pm.license_given ? "--license" : "general.license");
     sb_fmt(&r, ",\"file_type\":%d,\"name\":", pm.file_type);
     sb_str(&r, *pm.name ? pm.name : NULL);
     sb_lit(&r, "},\"file\":{\"path\":"); sb_str(&r, o.out);
@@ -966,7 +1012,11 @@ int derive_main(int argc, char **argv) {
         sb_lit(&c, "This measures what the recipe changed against the parent, not how close "
                "either is to the publisher's model; `--reference hf:DIR` measures that.\n\n");
     }
-    sb_fmt(&c, "## License\n\n`%s`, copied from the parent's `general.license`.\n\n", pm.license);
+    if (pm.license_given)
+        sb_fmt(&c, "## License\n\n`%s`, given with `--license`: the parent file declares no "
+               "`general.license`.\n\n", pm.license);
+    else
+        sb_fmt(&c, "## License\n\n`%s`, copied from the parent's `general.license`.\n\n", pm.license);
     sb_fmt(&c, "## Records\n\n`%s.derive.json` holds both files' sha256, the recipe, the window "
            "and the measurement; `%s.quant.json` is the rewrite's own record.\n", ob, ob);
     free(cmd.s);
