@@ -318,7 +318,8 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
                     return false;
                 }
                 turn_add_native(t, "tool", result, name, NULL);
-            } else if (tmpl == TMPL_MISTRAL || tmpl == TMPL_MISTRAL_NEMO) {
+            } else if (tmpl == TMPL_MISTRAL || tmpl == TMPL_MISTRAL_NEMO ||
+                       tmpl == TMPL_MISTRAL_SYS) {
                 // Mistral's result block names the call it answers
                 sbuf w = {0};
                 tool_result_wrap_id(tmpl, result, id, &w);

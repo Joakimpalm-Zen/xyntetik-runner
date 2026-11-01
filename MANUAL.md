@@ -236,7 +236,7 @@ A map of what the binary does, with the section that documents each part.
 - **Training and adapters.** LoRA training through quantized GGUF weights on
   CPU and CUDA, `--lora` serving on CPU, CUDA and Metal, `--merge-lora`,
   `--info adapter`. [Adaptation](#adaptation)
-- **Models and formats.** 28 admitted architectures, refused by name when
+- **Models and formats.** 29 admitted architectures, refused by name when
   unknown; 24 weight formats including the K-quants, all seven codebook
   i-quants, MXFP4 and NVFP4; KV caches in f16, q8, fp4 and split k8v4, with a
   ring for sliding-window layers; speculative decoding from a draft model, the
@@ -2350,14 +2350,16 @@ flag and ignore it rather than approximate one.
 #### `--chat-template NAME`
 
 Force `chatml`, `chatml-think`, `llama2`, `llama3`, `mistral`, `mistral-v1`,
-`mistral-nemo`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
+`mistral-nemo`, `mistral-sys`, `zephyr`, `phi3`, `phi4`, `gemma`, `gemma4`, `gemma4-mainline`, `apertus`,
 `ornith`, `qwen35`, `qwen35-nothink`, `qwen36`, `nemotron`, `nemotron35`, `hermes4`, `granite`, `granite4`, `granite42`,
 `qwen38`, `qwen3-coder`, `mellum`, `minicpm5`, `trinity`, `lfm2`, `lfm2-8b`, `lfm2-24b`, `mimo`, `spark`, `spark25`,
 `k2-horizon`, `flint`, `muse`, `harmony`, or `raw`; default is auto-detection. The three Mistral framings are not interchangeable: `mistral`
 is the v0.3 / Mistral-Small-2409 form and the fallback for an unrecognised Mistral
 template, `mistral-v1` is v0.1/v0.2, `mistral-nemo` is Nemo-Instruct-2407. They differ
 by a space beside each `[INST]`/`[/INST]` marker and by which user turn carries the
-system prompt - one SentencePiece token per divergent space. gemma-4 likewise ships two
+system prompt - one SentencePiece token per divergent space. `mistral-sys` is the newer
+`[SYSTEM_PROMPT]` form that the `mistral3` files (Ministral 3) embed, detected by that
+marker. gemma-4 likewise ships two
 chat-template revisions that auto-detect and are byte-exact to their own reference:
 `gemma4` is the E-series (E2B/E4B) form, `gemma4-mainline` is the 12B/26B-A4B/31B form,
 which pre-seeds an empty thought block on the thinking-off generation prompt where the
@@ -4101,6 +4103,36 @@ v0.3 files converted before the publisher replaced its template embed the
 v0.1 form; detection reads the vocabulary for that case (v0.1 and v0.2 have
 no `[AVAILABLE_TOOLS]` token, v0.3 does) and serves such a file the v0.3
 framing and its tools without a flag. `--info tools` reports `mistral_json`.
+
+The `mistral3` files (Ministral 3 2512) embed Mistral's newer `[SYSTEM_PROMPT]`
+template, rendered as `mistral-sys`. In the bytes of the template the GGUF carries
+(template conformance: clean in text and tokens):
+
+- the system text sits in `[SYSTEM_PROMPT]...[/SYSTEM_PROMPT]`;
+- a conversation without one gets the template's own long default, read from the
+  file's template (it names the model, and its `{today}` and `{yesterday}` stay
+  literal, as the template leaves them);
+- the tools are one `[AVAILABLE_TOOLS]` JSON list right after it;
+- a call is `[TOOL_CALLS]name[ARGS]{arguments}`, each call with its own marker, and
+  the turn ends at `</s>`;
+- a result is `[TOOL_RESULTS]...[/TOOL_RESULTS]`, naming no call.
+
+The markers are control tokens, so every tool choice is constrained, auto included,
+and a turn holds one call or up to eight with `parallel_tool_calls`. `--info tools`
+reports `mistral_args`.
+
+The publisher's repository carries a later revision of the template than its GGUF
+files embed, and Runner serves the GGUF's. On the same valid conversation, tool
+rounds included, the two render the same bytes. They differ in three places:
+
+- the default system message repeats one sentence in the GGUF's revision ("You
+  also cannot transcribe audio files or videos." then "You cannot read nor
+  transcribe audio files or videos."), where the later revision has the second
+  alone;
+- consecutive turns of one role are refused here, as the GGUF's template refuses
+  them; the later revision joins them with a blank line;
+- a user turn straight after tool results renders here as the later revision
+  renders it, where the GGUF's template raises (it wants an assistant answer first).
 
 Qwen3-Coder, Qwen 3.8, Granite 4.2 and Ornith speak the same
 function/parameter XML and share one contract. A `tool_choice: auto` turn

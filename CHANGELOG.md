@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Ministral 3 (`mistral3`).** Mistral's edge models load, chat and call
+  tools. The architecture is llama with two additions:
+  - the llama 4 attention temperature on every layer's Q after its rope (llama
+    4 applies it only on its NoPE layers);
+  - a YaRN magnitude factor taken from the file's `yarn_log_multiplier`, which
+    is 1 for Ministral 3 rather than the default 1 + 0.1 ln 16.
+
+  Chat uses a new `mistral-sys` template family, the `[SYSTEM_PROMPT]` form
+  the files embed, including the template's own default system prompt, and a
+  native tool protocol (`[TOOL_CALLS]name[ARGS]{...}`, `mistral_args`).
+  Template conformance is clean in text and tokens. Measured on
+  mistralai/Ministral-3-3B-Instruct-2512-GGUF (R4.4).
+
 - **An activation trace that says where two forwards part.** Final logits
   say that two runs differ, not where: an export that drops one edit can
   leave the greedy text and the top-1 unchanged. `RUNNER_ACT_TRACE=path`

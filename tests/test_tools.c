@@ -1382,6 +1382,98 @@ static void test_mistral_native_protocol(void) {
     jv_free(required); jv_free(autoc); jv_free(tools);
 }
 
+// Mistral's [SYSTEM_PROMPT] form (mistral3: Ministral 3 2512): a call is
+// `[TOOL_CALLS]name[ARGS]{arguments}`, the next opening with its own marker,
+// the turn closed by `</s>`. The markers are control tokens, so every choice
+// is constrained, auto included.
+static void test_mistral_sys_protocol(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    jv *required = parse("\"required\""), *autoc = parse("\"auto\"");
+    tool_envelope e0; bool skip0 = false;
+    assert(tool_envelope_build_ex(tools, autoc, NULL, true, &e0, err, sizeof err) == 1);
+    assert(tool_decl_native(TMPL_MISTRAL_SYS, true, true, tools, &e0, &skip0) == tools);
+    assert(skip0 && e0.proto == TP_MISTRAL_SYS && !e0.parse_only);
+    tool_envelope_free(&e0);
+
+    const char *one = "[TOOL_CALLS]add[ARGS]{\"a\": 1, \"b\": 2}";
+    snode *par = schema_compile_msys_turn(tools, false, NULL, NULL, true, err, sizeof err);
+    snode *single = schema_compile_msys_turn(tools, false, NULL, NULL, false, err, sizeof err);
+    assert(par && single);
+    for (int n = 0; n <= 9; n++) {
+        sbuf doc = {0};
+        for (int k = 0; k < n; k++) sb_put(&doc, one, strlen(one));
+        sb_lit(&doc, "</s>");
+        assert(accepts(par, doc.s) == (n >= 1 && n <= NATIVE_PARALLEL_MAX_CALLS));
+        assert(accepts(single, doc.s) == (n == 1));
+        free(doc.s);
+    }
+    // the turn can end on the model's own stop token after any call: a stop
+    // decodes to no bytes, so the end must be a raw tail, not a literal
+    // `</s>` (built that way, every turn ran to the eighth call)
+    assert(accepts(single, one) && accepts(par, one));
+    {
+        sbuf two = {0};
+        sb_put(&two, one, strlen(one)); sb_put(&two, one, strlen(one));
+        assert(accepts(par, two.s) && !accepts(single, two.s));
+        free(two.s);
+    }
+    assert(!feeds(single, "ok [TOOL_CALLS]"));
+    assert(!feeds(single, "[TOOL_CALLS]invented"));
+    assert(!feeds(single, "[TOOL_CALLS]add {"));
+    schema_free(par); schema_free(single);
+    // named: only that tool
+    snode *named = schema_compile_msys_turn(tools, false, "add", NULL, false, err, sizeof err);
+    assert(named && accepts(named, "[TOOL_CALLS]add[ARGS]{\"a\": 1, \"b\": 2}</s>"));
+    schema_free(named);
+    assert(!schema_compile_msys_turn(tools, false, "invented", NULL, false, err, sizeof err));
+
+    // auto: prose to the stop, or prose handing off to the calls
+    snode *au = schema_compile_msys_turn(tools, true, NULL, NULL, true, err, sizeof err);
+    assert(au);
+    assert(accepts(au, "Just text.</s>"));
+    sbuf mixed = {0};
+    sb_lit(&mixed, "Adding."); sb_put(&mixed, one, strlen(one)); sb_lit(&mixed, "</s>");
+    assert(accepts(au, mixed.s));
+    assert(!feeds(au, "Adding.[TOOL_CALLS]invented"));
+    free(mixed.s);
+    schema_free(au);
+
+    // the mapper and the stream read the same turn the same way, a `}` inside
+    // a string argument included
+    tool_envelope e; bool skip = false;
+    assert(tool_envelope_build_ex(tools, required, NULL, true, &e, err, sizeof err) == 1);
+    tool_decl_native(TMPL_MISTRAL_SYS, true, true, tools, &e, &skip);
+    const char *turn = "[TOOL_CALLS]add[ARGS]{\"a\": 1, \"b\": [2]}"
+                       "[TOOL_CALLS]add[ARGS]{\"a\": 3, \"b\": \"}\"}</s>";
+    sbuf content = {0}, tc = {0};
+    assert(tool_envelope_map(&e, turn, strlen(turn), &content, &tc) == 2);
+    assert(!content.n);
+    assert(strstr(tc.s, "\"id\":\"call_0\"") && strstr(tc.s, "\"id\":\"call_1\""));
+    assert(strstr(tc.s, "\"name\":\"add\""));
+    assert(strstr(tc.s, "{\\\"a\\\": 3, \\\"b\\\": \\\"}\\\"}"));
+    free(content.s); free(tc.s);
+    static const size_t steps[] = { 1, 3, 64 };
+    for (size_t i = 0; i < sizeof steps / sizeof *steps; i++) {
+        demux_log l;
+        demux_step(&e, turn, steps[i], &l);
+        assert(!l.content.n);
+        assert(l.begins == 2 && l.ends == 2 && !strcmp(l.names.s, "add add"));
+        assert(strstr(l.args.s, "{\"a\": 1, \"b\": [2]}") && strstr(l.args.s, "{\"a\": 3, \"b\": \"}\"}"));
+        log_free(&l);
+    }
+    // prose before the marker is content; a turn without one is all content
+    demux_log l;
+    demux_step(&e, "Adding.[TOOL_CALLS]add[ARGS]{}</s>", 2, &l);
+    assert(l.content.s && !strcmp(l.content.s, "Adding.") && l.begins == 1);
+    log_free(&l);
+    demux_step(&e, "Just text.</s>", 1, &l);
+    assert(l.content.s && !strcmp(l.content.s, "Just text.") && l.begins == 0);
+    log_free(&l);
+    tool_envelope_free(&e);
+    jv_free(required); jv_free(autoc); jv_free(tools);
+}
+
 // Qwen3 (chatml-think) reasons BEFORE it calls a tool, and its reference
 // template defaults thinking ON: runner emits the closed <think></think> block
 // only when a caller explicitly turns thinking off, so in the default
@@ -3899,6 +3991,7 @@ int main(void) {
     test_native_parallel_turn_carries_one_to_eight_calls();
     test_nemotron_native_protocol();
     test_mistral_native_protocol();
+    test_mistral_sys_protocol();
     test_native_first_call_admits_the_post_think_newlines();
     test_parallel_default_per_family();
     test_auto_envelope_constrains_names_and_arguments();

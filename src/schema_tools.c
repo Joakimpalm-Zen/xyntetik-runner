@@ -975,6 +975,163 @@ snode *schema_compile_mistral_turn(jv *tools, bool allow_text,
     return root;
 }
 
+// ----------------------------------------------- Mistral [SYSTEM_PROMPT] tools
+
+// One call after its `[TOOL_CALLS]` marker: a declared name, `[ARGS]`, and that
+// tool's arguments as JSON (the template writes them with tojson, or the
+// caller's string as is).
+static snode *msys_call(jv *tools, const char *only, char *err, int errcap) {
+    int selected = 0;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
+        const char *name = jv_str(jv_get(fn, "name"), NULL);
+        if (!only || (name && !strcmp(name, only))) selected++;
+    }
+    if (!selected) { snprintf(err, errcap, "named Mistral tool is not declared"); return NULL; }
+    snode *root = atem_seq(2);
+    snode *names = sn_new(SN_ENUM), *choice = sn_new(SN_COND);
+    if (!root || !names || !choice) goto fail;
+    names->lits = calloc((size_t)selected, sizeof(*names->lits));
+    choice->alts = calloc((size_t)selected, sizeof(*choice->alts));
+    if (!names->lits || !choice->alts) goto fail;
+    names->min_items = 1;
+    names->whitespace_significant = choice->whitespace_significant = true;
+    root->whitespace_significant = true;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
+        const char *name = jv_str(jv_get(fn, "name"), NULL);
+        if (!name || !name[0]) { snprintf(err, errcap, "Mistral tool %d has no function name", i); goto fail; }
+        if (only && strcmp(name, only)) continue;
+        jv *params = jv_get(fn, "parameters");
+        if (params && params->type != J_OBJ) {
+            snprintf(err, errcap, "Mistral tool %s parameters must be an object", name);
+            goto fail;
+        }
+        if (!(names->lits[names->n_lits] = strdup(name))) goto fail;
+        names->n_lits++;
+        snode *tail = atem_seq(2);
+        snode *args = params ? compile_node(params, err, errcap, 0) : atem_lit("{}");
+        if (!tail || !args || !atem_seq_add(tail, atem_lit("[ARGS]")) || !atem_seq_add(tail, args)) {
+            if (!tail || tail->n_props < 2) schema_free(args);
+            schema_free(tail);
+            goto fail;
+        }
+        tail->whitespace_significant = true;
+        choice->alts[choice->n_alts++] = tail;
+    }
+    if (!enum_index(names) || !atem_seq_add(root, names)) goto fail;
+    names = NULL;
+    if (!atem_seq_add(root, choice)) goto fail;
+    return root;
+fail:
+    schema_free(names); schema_free(choice); schema_free(root);
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling Mistral call");
+    return NULL;
+}
+
+// After a call: the turn's end, or (while `remaining`) the next marker and
+// call. The end is a raw tail bounded to a separator's worth of bytes, never
+// the literal `</s>`: the model's stop token decodes to no bytes and could not
+// complete a literal, so a grammar built that way ran every turn to the
+// eighth call (measured on Ministral-3-3B, 2026-11-01), as Qwen's first one
+// did (native_more_calls). Past the last admitted call the tail is too short
+// to spell a marker, so no unvalidated call reaches the mapper.
+static snode *msys_rest(jv *tools, const char *only, int remaining, char *err, int errcap) {
+    snode *raw = atem_raw_bounded("</s>", remaining ? NATIVE_GAP_BYTES : NATIVE_END_BYTES);
+    if (!raw) goto oom;
+    raw->whitespace_significant = true;
+    if (!remaining) return raw;
+    snode *seq = atem_seq(2);
+    snode *call = seq ? msys_call(tools, only, err, errcap) : NULL;
+    snode *tail = call ? msys_rest(tools, only, remaining - 1, err, errcap) : NULL;
+    raw->lits = calloc(1, sizeof(*raw->lits));
+    raw->alts = calloc(1, sizeof(*raw->alts));
+    if (!seq || !call || !tail || !raw->lits || !raw->alts ||
+        !(raw->lits[0] = strdup("[TOOL_CALLS]"))) {
+        schema_free(seq); schema_free(call); schema_free(tail); schema_free(raw);
+        goto oom;
+    }
+    raw->n_lits = 1;
+    atem_seq_add(seq, call);
+    atem_seq_add(seq, tail);
+    seq->whitespace_significant = true;
+    raw->alts[raw->n_alts++] = seq;
+    return raw;
+oom:
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling Mistral calls");
+    return NULL;
+}
+
+// The calls after the first marker: one call, then the rest.
+static snode *msys_calls(jv *tools, const char *only, bool parallel, char *err, int errcap) {
+    snode *root = atem_seq(2);
+    snode *call = root ? msys_call(tools, only, err, errcap) : NULL;
+    snode *rest = call ? msys_rest(tools, only, parallel ? NATIVE_PARALLEL_MAX_CALLS - 1 : 0,
+                                   err, errcap) : NULL;
+    if (!root || !call || !rest) {
+        schema_free(root); schema_free(call); schema_free(rest);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling Mistral turn");
+        return NULL;
+    }
+    atem_seq_add(root, call);
+    atem_seq_add(root, rest);
+    root->whitespace_significant = true;
+    return root;
+}
+
+// A [SYSTEM_PROMPT]-family turn. `[TOOL_CALLS]` and `[ARGS]` are control
+// tokens, which decode to nothing unless a grammar admits them by their
+// spelling, so every choice is constrained, auto included, as v0.3's. Required
+// or named: `[TOOL_CALLS]` and the calls. Auto: prose ending at the model's
+// stop, or handing off to the calls at the full `[TOOL_CALLS]`; with a
+// response_format, that schema instead of the prose.
+snode *schema_compile_msys_turn(jv *tools, bool allow_text, const char *only_tool,
+                                jv *final_schema, bool parallel, char *err, int errcap) {
+    err[0] = 0;
+    if (!tools || tools->type != J_ARR || tools->n <= 0 || tools->n > 60) {
+        snprintf(err, errcap, "Mistral tools must be a non-empty array of at most 60 tools");
+        return NULL;
+    }
+    snode *calls = msys_calls(tools, only_tool, parallel, err, errcap);
+    if (!calls) return NULL;
+    if (allow_text && !final_schema) {
+        snode *raw = atem_raw("</s>");
+        if (!raw || !(raw->lits = calloc(1, sizeof(*raw->lits))) ||
+            !(raw->alts = calloc(1, sizeof(*raw->alts))) ||
+            !(raw->lits[0] = strdup("[TOOL_CALLS]"))) {
+            schema_free(raw); schema_free(calls);
+            snprintf(err, errcap, "out of memory compiling Mistral turn");
+            return NULL;
+        }
+        raw->n_lits = 1;
+        raw->alts[raw->n_alts++] = calls;
+        raw->whitespace_significant = true;
+        return raw;
+    }
+    snode *call = atem_seq(2);
+    if (!call || !atem_seq_add(call, atem_lit("[TOOL_CALLS]"))) {
+        schema_free(call); schema_free(calls);
+        snprintf(err, errcap, "out of memory compiling Mistral turn");
+        return NULL;
+    }
+    atem_seq_add(call, calls);
+    call->whitespace_significant = true;
+    if (!allow_text) return call;
+    snode *final = compile_node(final_schema, err, errcap, 0);
+    snode *root = final ? sn_new(SN_UNION) : NULL;
+    if (!root || !(root->alts = calloc(2, sizeof(*root->alts)))) {
+        schema_free(call); schema_free(final); schema_free(root);
+        if (!err[0]) snprintf(err, errcap, "out of memory compiling Mistral turn");
+        return NULL;
+    }
+    root->whitespace_significant = true;
+    root->alts[root->n_alts++] = call;
+    root->alts[root->n_alts++] = final;
+    return root;
+}
+
 // XML parameter lists use the existing ordered native-member automaton.
 // Strings are raw text; all other values retain JSON's own schema machine.
 static snode *coder_call_tail(jv *tool, char *err, int errcap) {

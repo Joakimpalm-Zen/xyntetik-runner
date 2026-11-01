@@ -197,6 +197,10 @@
     "lfm2-24b": {
       "fixture": "plain",
       "reasoning": "tags"
+    },
+    "mistral-sys": {
+      "fixture": "plain",
+      "reasoning": "none"
     }
   }
 }

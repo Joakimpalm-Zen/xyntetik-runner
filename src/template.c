@@ -48,6 +48,9 @@
 // literal over a vocabulary holding that token is therefore a stale v0.3
 // template, and gets the publisher's current v0.3 framing.
 static int mistral_variant(const char *meta_tmpl, tokenizer *tok) {
+    // the [SYSTEM_PROMPT] form (mistral3's files) before the [INST] spacing
+    // rules: its user turns are Nemo's `[INST]`, its frame is its own
+    if (strstr(meta_tmpl, "[SYSTEM_PROMPT]")) return TMPL_MISTRAL_SYS;
     if (strstr(meta_tmpl, " [/INST]"))
         return tok && tok_find(tok, "[AVAILABLE_TOOLS]") >= 0 ? TMPL_MISTRAL
                                                               : TMPL_MISTRAL_V1;
@@ -272,6 +275,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "mistral")) return TMPL_MISTRAL;
     if (!strcmp(name, "mistral-v1")) return TMPL_MISTRAL_V1;
     if (!strcmp(name, "mistral-nemo")) return TMPL_MISTRAL_NEMO;
+    if (!strcmp(name, "mistral-sys")) return TMPL_MISTRAL_SYS;
     if (!strcmp(name, "phi3"))    return TMPL_PHI3;
     if (!strcmp(name, "phi4"))    return TMPL_PHI4;
     if (!strcmp(name, "nemotron")) return TMPL_NEMOTRON;
@@ -314,6 +318,37 @@ const char *template_default_system(int tmpl, const char *meta_tmpl,
           "professional, accurate, and safe." },
     };
     if (!meta_tmpl) return NULL;
+    // The [SYSTEM_PROMPT] form names its own model in a long default (written
+    // on every system-less conversation, tools or not), so it is read off the
+    // file's template rather than listed: the single-quoted literal of its
+    // `set default_system_message = '...'`, with jinja's \n and \' escapes.
+    // Its {today} and {yesterday} stay as written: the template does not
+    // format them either.
+    if (tmpl == TMPL_MISTRAL_SYS) {
+        // one per thread: the text is read once per template a thread sees
+        static _Thread_local char *cached;
+        static _Thread_local const char *cached_for;
+        if (cached_for != meta_tmpl) {
+            free(cached); cached = NULL; cached_for = meta_tmpl;
+            const char *p = strstr(meta_tmpl, "set default_system_message = '");
+            if (p) {
+                p += strlen("set default_system_message = '");
+                sbuf b = {0};
+                for (; *p && *p != '\''; p++) {
+                    if (*p == '\\' && p[1]) {
+                        p++;
+                        char c = *p == 'n' ? '\n' : *p == 't' ? '\t' : *p;
+                        sb_put(&b, &c, 1);
+                    } else {
+                        sb_put(&b, p, 1);
+                    }
+                }
+                if (*p == '\'' && !b.failed && b.s) cached = b.s;
+                else free(b.s);
+            }
+        }
+        return cached;
+    }
     for (size_t i = 0; i < sizeof known / sizeof *known; i++)
         if (known[i].tmpl == tmpl && (!tools || known[i].with_tools) &&
             strstr(meta_tmpl, known[i].text))
@@ -344,6 +379,7 @@ const char *template_name(int t) {
         case TMPL_MISTRAL: return "mistral";
         case TMPL_MISTRAL_V1: return "mistral-v1";
         case TMPL_MISTRAL_NEMO: return "mistral-nemo";
+        case TMPL_MISTRAL_SYS: return "mistral-sys";
         case TMPL_PHI3:    return "phi3";
         case TMPL_PHI4:    return "phi4";
         case TMPL_NEMOTRON: return "nemotron";
@@ -377,6 +413,7 @@ bool template_roles_valid(int tmpl, const char *const *roles, int n,
                                tmpl == TMPL_MISTRAL ||
                                tmpl == TMPL_MISTRAL_V1 ||
                                tmpl == TMPL_MISTRAL_NEMO ||
+                               tmpl == TMPL_MISTRAL_SYS ||
                                tmpl == TMPL_APERTUS ||
                                tmpl_ornith_like(tmpl) ||
                                tmpl == TMPL_QWEN38;
@@ -395,7 +432,8 @@ bool template_roles_valid(int tmpl, const char *const *roles, int n,
                        tmpl == TMPL_GEMMA ||
                        tmpl == TMPL_MISTRAL ||
                        tmpl == TMPL_MISTRAL_V1 ||
-                       tmpl == TMPL_MISTRAL_NEMO;
+                       tmpl == TMPL_MISTRAL_NEMO ||
+                       tmpl == TMPL_MISTRAL_SYS;
     if (!alternating) return true;
     int first = n > 0 && !strcmp(roles[0], "system") ? 1 : 0;
     int ordinary = 0;
@@ -3372,6 +3410,62 @@ static size_t render_mistral(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
+// TMPL_MISTRAL_SYS, the template mistral3's GGUFs embed (Ministral 3 2512,
+// its 7,753 bytes in mistralai/Ministral-3-3B-Instruct-2512-GGUF):
+//
+//   [SYSTEM_PROMPT]system[/SYSTEM_PROMPT]           the leading system text,
+//                                                   or the template's default
+//   [AVAILABLE_TOOLS]tools|tojson[/AVAILABLE_TOOLS] when tools are declared
+//   [INST]user[/INST]
+//   assistant text, [TOOL_CALLS]name[ARGS]args per call, then </s>
+//   [TOOL_RESULTS]result[/TOOL_RESULTS]
+//
+// No space anywhere, no trim, no generation prompt: the assistant writes
+// right after `[/INST]` or `[/TOOL_RESULTS]`. BOS is the tokenizer's. The
+// default system text arrives as a system message (template_default_system),
+// so the renderer only frames what it is given. Calls and results come
+// pre-rendered (tool_history_render_for, tool_result_wrap_id).
+static size_t render_mistral_sys(int tmpl, const chat_msg *msgs, int n_msgs,
+                                 bool add_assistant, int thinking, const jv *tools,
+                                 char *out, size_t cap, render_state *st) {
+    (void)add_assistant; (void)thinking; (void)st;
+    size_t off = 0;
+    int lead; bool oom;
+    char *joined = leading_system_join(msgs, n_msgs, &lead, &oom);
+    if (oom) return SIZE_MAX;
+    int i = 0;
+    if (lead > 0) {
+        off = emit_raw(out, cap, off, "[SYSTEM_PROMPT]", NULL, NULL);
+        off = emit(out, cap, off, "%s", joined ? joined : msgs[0].content, NULL);
+        off = emit_raw(out, cap, off, "[/SYSTEM_PROMPT]", NULL, NULL);
+        i = lead;
+    }
+    free(joined);
+    if (tools && tools->type == J_ARR && tools->n > 0) {
+        sbuf decl = {0};
+        tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); return SIZE_MAX; }
+        if (decl.s) off = emit(out, cap, off, "%s", decl.s, NULL);
+        free(decl.s);
+    }
+    for (; i < n_msgs; i++) {
+        const chat_msg *m = &msgs[i];
+        if (!strcmp(m->role, "system")) continue;   // template_roles_valid refuses one here
+        if (!strcmp(m->role, "user")) {
+            off = emit_raw(out, cap, off, "[INST]", NULL, NULL);
+            off = emit(out, cap, off, "%s", m->content, NULL);
+            off = emit_raw(out, cap, off, "[/INST]", NULL, NULL);
+        } else if (!strcmp(m->role, "assistant")) {
+            off = emit(out, cap, off, "%s", m->content, NULL);
+            off = emit_raw(out, cap, off, "</s>", NULL, NULL);
+        } else {
+            // a tool result, already [TOOL_RESULTS]...[/TOOL_RESULTS]
+            off = emit(out, cap, off, "%s", m->content, NULL);
+        }
+    }
+    return off;
+}
+
 // ------------------------------------------------------------- K2-Horizon
 //
 // IFM's K2-Horizon template, the one embedded in its K2-Horizon-0.9B-GGUF and
@@ -4531,6 +4625,8 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_MISTRAL_V1:
     case TMPL_MISTRAL_NEMO:
         return render_mistral(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_MISTRAL_SYS:
+        return render_mistral_sys(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     default: // TMPL_RAW: concatenate contents
         for (int i = 0; i < n_msgs; i++)
             off = emit(out, cap, off, "%s", msgs[i].content, NULL);
@@ -4753,6 +4849,16 @@ static void coder_declaration(jv *tool, bool nemotron, sbuf *out) {
 }
 
 void tools_render_for(int tmpl, const jv *tools, sbuf *out) {
+    if (tmpl == TMPL_MISTRAL_SYS) {
+        // the [SYSTEM_PROMPT] form: the caller's tools list as one tojson,
+        // `[AVAILABLE_TOOLS]` + (tools|tojson) + `[/AVAILABLE_TOOLS]`; the
+        // renderer puts the block right after the system prompt
+        if (!tools || tools->type != J_ARR || tools->n == 0) return;
+        pl_lit(out, "[AVAILABLE_TOOLS]");
+        jv_dump_tojson(tools, out);
+        pl_lit(out, "[/AVAILABLE_TOOLS]");
+        return;
+    }
     if (tmpl == TMPL_MISTRAL || tmpl == TMPL_MISTRAL_NEMO) {
         // mistralai/Mistral-7B-Instruct-v0.3 and Mistral-Nemo-Instruct-2407
         // chat_template, verbatim: `[AVAILABLE_TOOLS] [` (Nemo: no space),
@@ -5162,6 +5268,29 @@ static void lfm2_arg_value(const jv *v, sbuf *out) {
 void tool_history_render_for(int tmpl, const jv *calls,
                              bool turn_has_text, sbuf *out) {
     if (!calls || calls->type != J_ARR) return;
+    // The [SYSTEM_PROMPT] form, after the turn's text: `[TOOL_CALLS]` + name
+    // + `[ARGS]` + arguments per call, a string as is ('' as `{}`), anything
+    // else through tojson. The renderer adds the turn's `</s>`.
+    if (tmpl == TMPL_MISTRAL_SYS) {
+        for (int i = 0; i < calls->n; i++) {
+            jv *fn = jv_get(calls->items[i], "function");
+            const char *name = jv_str(jv_get(fn, "name"), "");
+            jv *args = jv_get(fn, "arguments");
+            pl_lit(out, "[TOOL_CALLS]");
+            sb_put(out, name, strlen(name));
+            pl_lit(out, "[ARGS]");
+            if (args && args->type == J_STR) {
+                if (args->str[0]) sb_put(out, args->str, strlen(args->str));
+                else sb_lit(out, "{}");
+            } else if (args) {
+                jv_dump_tojson(args, out);
+            } else {
+                sb_lit(out, "{}");
+            }
+        }
+        (void)turn_has_text;
+        return;
+    }
     // K2-Horizon (render_tool_calls_block, xml): one <ifm|tool_calls> block,
     // each call `\n<ifm|tool_call>NAME\n` then `<ifm|arg_key>K</ifm|arg_key>
     // \n<ifm|arg_value>V</ifm|arg_value>\n` per member (a string raw,
@@ -5610,6 +5739,14 @@ const char *tool_result_wrap(int tmpl, const char *result, sbuf *out) {
 // no space), the result text inserted as is (the reference's `|string`).
 const char *tool_result_wrap_id(int tmpl, const char *result, const char *call_id,
                                  sbuf *out) {
+    if (tmpl == TMPL_MISTRAL_SYS) {
+        // the [SYSTEM_PROMPT] form names no call: `[TOOL_RESULTS]` + the
+        // result as is (the reference's |string) + `[/TOOL_RESULTS]`
+        pl_lit(out, "[TOOL_RESULTS]");
+        if (result) sb_put(out, result, strlen(result));
+        pl_lit(out, "[/TOOL_RESULTS]");
+        return "tool";
+    }
     if (tmpl_mistral_tools(tmpl)) {
         char id9[10];
         mistral_call_id(call_id ? call_id : "", id9);
@@ -6118,6 +6255,12 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
         // off to the list at the marker). Plain JSON arguments: no fallback.
         env->proto = TP_MISTRAL;
         env->tools = tools;
+    } else if (strict && tmpl == TMPL_MISTRAL_SYS) {
+        // the [SYSTEM_PROMPT] form's `[TOOL_CALLS]name[ARGS]{...}`: control
+        // tokens again, so every choice is constrained, auto included; plain
+        // JSON arguments, no fallback
+        env->proto = TP_MISTRAL_SYS;
+        env->tools = tools;
     } else if (strict && is_gemma4(tmpl)) {
         // Decided 2026-08-27 (owner, option c of the recorded three): a
         // tools[] the native compiler cannot constrain -- an untyped
@@ -6166,7 +6309,7 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
     // native list rather than a second, untrained protocol.
     // Mistral v0.3 and Nemo likewise: their templates have no tool_choice.
     bool nemo_native = tmpl == TMPL_NEMOTRON || tmpl == TMPL_MISTRAL ||
-                       tmpl == TMPL_MISTRAL_NEMO;
+                       tmpl == TMPL_MISTRAL_NEMO || tmpl == TMPL_MISTRAL_SYS;
     // MiniCPM5 declares in its template like the qwen families: whenever
     // its own protocol is in force, and on a non-strict request (tool_choice
     // none) too, since its template has no notion of tool_choice. A strict
@@ -6208,6 +6351,7 @@ const char *tool_envelope_protocol_name(const tool_envelope *e) {
         case TP_IFM_ARGKV:  return "ifm_argkv_xml";
         case TP_NEMOTRON:   return "nemotron_json";
         case TP_MISTRAL:    return "mistral_json";
+        case TP_MISTRAL_SYS: return "mistral_args";
         default: break;
     }
     return "generic";
@@ -6232,6 +6376,7 @@ const char *tool_protocol_name(int tmpl, bool *native) {
         case TP_IFM_ARGKV: return "ifm_argkv_xml";
         case TP_NEMOTRON: return "nemotron_json";
         case TP_MISTRAL:  return "mistral_json";
+        case TP_MISTRAL_SYS: return "mistral_args";
         default: break;
     }
     *native = false;
@@ -7335,11 +7480,48 @@ static int bare_xml_map(const tool_envelope *e, const char *doc, size_t n,
 #define MISTRAL_CALL_OPEN "[TOOL_CALLS]"
 #define MISTRAL_TURN_END  "</s>"
 
+// The [SYSTEM_PROMPT] form writes one call a marker, `[TOOL_CALLS]name[ARGS]`
+// and the arguments as JSON, the next call opening with its own marker.
 typedef struct { const char *open, *close, *turn_end; } list_proto;
 static const list_proto NEMO_LP = { NEMO_CALL_OPEN, NEMO_CALL_END, NEMO_TURN_END };
 static const list_proto MISTRAL_LP = { MISTRAL_CALL_OPEN, NULL, MISTRAL_TURN_END };
+static const list_proto MSYS_LP = { MISTRAL_CALL_OPEN, NULL, MISTRAL_TURN_END };
 static const list_proto *list_proto_of(const tool_envelope *e) {
-    return e && e->proto == TP_MISTRAL ? &MISTRAL_LP : &NEMO_LP;
+    return e && e->proto == TP_MISTRAL ? &MISTRAL_LP
+         : e && e->proto == TP_MISTRAL_SYS ? &MSYS_LP : &NEMO_LP;
+}
+
+// One [SYSTEM_PROMPT]-form call at *pp (which starts at the marker): the name
+// up to `[ARGS]`, then the shortest prefix that parses as a JSON object (a
+// string argument may spell a `}`). Appended to `tc` in OpenAI form, id from
+// `index`. Returns 1, or -1 for a block that is not one such call (yet).
+static int msys_block_call(const char **pp, const char *end, int index, int max, sbuf *tc) {
+    const char *p = *pp;
+    size_t ol = strlen(MISTRAL_CALL_OPEN);
+    if (max < 1 || (size_t)(end - p) < ol || memcmp(p, MISTRAL_CALL_OPEN, ol)) return -1;
+    const char *name = p + ol;
+    const char *args = atem_find(name, end, "[ARGS]");
+    if (!args || args == name) return -1;
+    for (const char *c = name; c < args; c++)
+        if (*c == ' ' || *c == '\n' || *c == '\t' || *c == '\r' || *c == '[') return -1;
+    const char *body = args + strlen("[ARGS]");
+    jv *obj = NULL;
+    const char *close = memchr(body, '}', (size_t)(end - body));
+    while (close) {
+        obj = json_parse(body, (size_t)(close + 1 - body));
+        if (obj) break;
+        close = memchr(close + 1, '}', (size_t)(end - close - 1));
+    }
+    if (!close || !obj || obj->type != J_OBJ) { jv_free(obj); return -1; }
+    jv_free(obj);
+    if (index) sb_lit(tc, ",");
+    sb_fmt(tc, "{\"id\":\"call_%d\",\"type\":\"function\",\"function\":{\"name\":\"", index);
+    sb_esc(tc, name, (size_t)(args - name));
+    sb_lit(tc, "\",\"arguments\":\"");
+    sb_esc(tc, body, (size_t)(close + 1 - body));
+    sb_lit(tc, "\"}}");
+    *pp = close + 1;
+    return tc->failed ? -1 : 1;
 }
 
 // One block at *pp (which starts at the opener): its calls appended to `tc`
@@ -7349,6 +7531,7 @@ static const list_proto *list_proto_of(const tool_envelope *e) {
 // {name, arguments} entries or that carries more than `max` of them.
 static int nemotron_block_calls(const list_proto *lp, const char **pp,
                                 const char *end, int index, int max, sbuf *tc) {
+    if (lp == &MSYS_LP) return msys_block_call(pp, end, index, max, tc);
     const char *p = *pp;
     size_t ol = strlen(lp->open), cl = lp->close ? strlen(lp->close) : 1;
     if ((size_t)(end - p) < ol || memcmp(p, lp->open, ol)) return -1;
@@ -7824,7 +8007,7 @@ int tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
     if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
     if (proto_bare_xml(e->proto))
         return bare_xml_map(e, doc, n, content, tc);
-    if (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL)
+    if (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL || e->proto == TP_MISTRAL_SYS)
         return nemotron_map(e, doc, n, content, tc);
     if (e->proto == TP_ATEM) return atem_map(e, doc, n, content, tc);
     if (e->proto == TP_MUSE_USER) {
@@ -8199,7 +8382,8 @@ void tool_stream_init(tool_stream *s, const tool_envelope *e,
              : e && e->proto == TP_GEMMA4 ? TS_G4_START
              : e && (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) ? TS_QWEN_START
              : e && proto_bare_xml(e->proto) ? TS_MCP_START
-             : e && (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL) ? TS_NEMO_START
+             : e && (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL ||
+                     e->proto == TP_MISTRAL_SYS) ? TS_NEMO_START
              : e && proto_lfm2(e->proto) ? TS_LFM_TEXT
              : e && e->proto == TP_ATEM ? TS_ATEM
              : e && e->proto == TP_MUSE_PLAIN ? TS_MUSE_HEADER : TS_TOOL;

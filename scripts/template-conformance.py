@@ -105,6 +105,15 @@ NO_MID_SYSTEM = (
 
 # the Mistral templates' id shape: 9 alphanumeric characters
 MISTRAL_CALL_IDS = {"call_1": "callid001", "call_2": "callid002"}
+MSYS_ALTERNATE = (
+    "reference",
+    "the template raises: 'After the optional system message, conversation "
+    "roles must alternate user and assistant roles except for tool calls and "
+    "results.'")
+MSYS_ROLES = (
+    "reference",
+    "the template reads only messages[0] as a system message and raises on any "
+    "later one: 'Only user, assistant and tool roles are supported, got system'")
 
 
 class Family:
@@ -497,6 +506,19 @@ FAMILIES = {
         cannot={"consecutive-user": ALTERNATE_AFTER_SYS,
                 "consecutive-assistant": ALTERNATE_AFTER_SYS,
                 "system-mid-history": ALTERNATE_AFTER_SYS}),
+    # mistral3 (Ministral 3 2512): the [SYSTEM_PROMPT] form. The oracle is the
+    # template its GGUF embeds (7,753 bytes), which is what Runner serves; the
+    # repository's chat_template.jinja is a later revision (it merges
+    # consecutive turns and admits system turns anywhere).
+    "mistral-sys": Family(
+        "mistral-sys", ("gguf", "models/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"),
+        note="the template embedded in mistralai/Ministral-3-3B-Instruct-2512-GGUF "
+             "at eb599d40",
+        tool_family=True,
+        tokenizer=("Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",),
+        cannot={"consecutive-user": MSYS_ALTERNATE,
+                "consecutive-assistant": MSYS_ALTERNATE,
+                "system-mid-history": MSYS_ROLES}),
     "mistral-file": Family(
         "mistral-v1", ("gguf", "models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"),
         note="the template EMBEDDED in the pinned v0.3 file, written in the "

@@ -822,6 +822,26 @@
     "metal": "UNSUPPORTED"
    },
    "note": "the LFM2.5-24B-A2B template revision: the 1.2B's rules, with the thought kept on every assistant turn after the last user turn and opened by the generation prompt"
+  },
+  "mistral-sys": {
+   "artifact": "ministral-3-3b-instruct-2512-q4_k_m",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "the template renders the file's own [AVAILABLE_TOOLS] block, [TOOL_CALLS]name[ARGS] calls and [TOOL_RESULTS] blocks (template-conformance mistral-sys, clean in text and tokens, 2026-11-01) and the mistral_args grammar, mapper and stream are pinned on fixtures (test_mistral_sys_protocol); one live two-turn round trip on the Q4_K_M (CPU) is in the admission PR, the tool gate has not been run"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the model card recommends temperature 0.1 (generation_config.json sets none): the ministral3 preset, chosen by name on this template since Devstral and Magistral share it"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   },
+   "note": "Mistral's [SYSTEM_PROMPT] form: the system text or the template's own default (read from the file), one [AVAILABLE_TOOLS] list after it, [INST]...[/INST] turns, an assistant turn as its text and its calls then </s>, results as [TOOL_RESULTS]...[/TOOL_RESULTS]"
   }
  },
  "architectures": {
@@ -1433,6 +1453,25 @@
     "cpu": "NOT RUN",
     "cuda": "UNSUPPORTED",
     "metal": "UNSUPPORTED"
+   }
+  },
+  "mistral3": {
+   "templates": [
+    "mistral-sys"
+   ],
+   "artifacts": [
+    "ministral-3-3b-instruct-2512-q4_k_m"
+   ],
+   "tool_protocol": {
+    "status": "NOT RUN"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
    }
   }
  }
