@@ -284,3 +284,26 @@ json.dump({{"summary": {{"positions": 40, "sides": {{"a": {{"mean_kld_vs_gold": 
     rc, _, se = derive(runner_bin, parent, tmp_path / "s.gguf", "--quant", "q4_0",
                        "--reference-arg", "--upcast-at-use")
     assert rc != 0 and "--reference-arg" in se
+
+
+def test_license_flag_fills_a_missing_license_and_never_overrides(runner_bin, tmp_path):
+    """A parent that declares no general.license (Qwen's own Qwen3-30B-A3B
+    GGUFs, whose repository states Apache-2.0) can be derived with
+    --license ID; the card says the licence was given, not copied, and the
+    record names its source. A parent that declares one keeps it: a
+    different --license is refused, so derive never relicenses a file."""
+    bare = make_parent(tmp_path, "bare", license_id=None)
+    out = tmp_path / "given.gguf"
+    rc, _, se = derive(runner_bin, bare, out, "--quant", "q4_0", "--license", "apache-2.0")
+    assert rc == 0, se[-1500:]
+    card = pathlib.Path(str(out) + ".README.md").read_text()
+    assert "license: apache-2.0" in card.split("\n---\n", 1)[0]
+    assert "given with `--license`" in card
+    rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
+    assert rec["parent"]["license"] == "apache-2.0" and rec["parent"]["license_source"] == "--license"
+    licensed = make_parent(tmp_path, "mit", license_id="mit")
+    rc, _, se = derive(runner_bin, licensed, tmp_path / "x.gguf", "--quant", "q4_0",
+                       "--license", "apache-2.0")
+    assert rc != 0 and "license" in se and not (tmp_path / "x.gguf").exists()
+    rc, _, se = derive(runner_bin, licensed, tmp_path / "y.gguf", "--quant", "q4_0", "--license", "mit")
+    assert rc == 0, se[-800:]

@@ -2288,7 +2288,10 @@ the measurement read. [Design](docs/derive-design.md).
 | `runner derive`: `-c N`, `-t N`, `--gpu X` | Passed to the sub-runs (`--gpu` defaults to `off` for the score runs; `-c` defaults to the window's span). |
 
 The parent must declare `general.license`: the card copies it, and a parent
-without one is refused before anything is written. Not in this version:
+without one is refused before anything is written, unless `--license ID` gives
+the source's terms (some publishers' own GGUFs carry no licence key). The card
+then says the licence was given, not copied, and `--license` is refused when it
+contradicts a licence the parent declares. Not in this version:
 producing an importance matrix, scale-only recovery training (recovery is
 `runner train` then `--merge-lora`), computing an expert-prune plan, and
 uploading. A parent too large for the machine fails in its score run's own
