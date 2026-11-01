@@ -646,6 +646,62 @@ static void test_ornith_split_starts_inside_prompted_think(void) {
     think_free(&split);
 }
 
+// The newlines at </think> are framing. The publishers' templates read a turn
+// back with them stripped: Qwen/Qwen3.5-35B-A3B chat_template.jinja lines
+// 95-96, `content.split('</think>')[0].rstrip('\n')` for the reasoning and
+// `content.split('</think>')[-1].lstrip('\n')` for the answer (Qwen3-8B lines
+// 39-40, the same); Qwen/Qwen3.8-27B line 103 and its reasoning line apply
+// `|trim`. With trim_nl the split returns what those templates read: no
+// trailing newline on the reasoning, no leading blank line on the content.
+// Measured on Hemmingway-1.5 (qwen35, the 3.8 template) on 2026-11-01:
+// reasoning_content ended "\n" and content began "\n\n".
+static void test_think_close_newlines_are_framing(void) {
+    const char *generated = "Paris is the capital.\n\nOne sentence.\n</think>\n\n"
+                            "The capital of France is Paris.\nDone.";
+    for (int bytewise = 0; bytewise < 2; bytewise++) {
+        think_split split;
+        split_capture got = {0};
+        think_init_reasoning(&split, "<think>", "</think>");
+        think_trim_newlines(&split, true);
+        if (bytewise)
+            for (size_t i = 0; i < strlen(generated); i++)
+                think_feed(&split, generated + i, 1, capture_split, &got);
+        else
+            think_feed(&split, generated, strlen(generated), capture_split, &got);
+        think_finish(&split, capture_split, &got);
+        // newlines inside either part are text and stay
+        assert(!strcmp(got.reason, "Paris is the capital.\n\nOne sentence."));
+        assert(!strcmp(got.content, "The capital of France is Paris.\nDone."));
+        think_free(&split);
+    }
+    // only newlines after the close: no content, not a stray blank line
+    think_split split;
+    split_capture got = {0};
+    think_init_reasoning(&split, "<think>", "</think>");
+    think_trim_newlines(&split, true);
+    const char *empty = "r\n</think>\n\n";
+    think_feed(&split, empty, strlen(empty), capture_split, &got);
+    think_finish(&split, capture_split, &got);
+    assert(!strcmp(got.reason, "r") && got.nc == 0);
+    think_free(&split);
+    // without trim_nl (every other family) the bytes pass as they came
+    split_capture raw = {0};
+    think_init_reasoning(&split, "<think>", "</think>");
+    think_feed(&split, generated, strlen(generated), capture_split, &raw);
+    think_finish(&split, capture_split, &raw);
+    assert(!strcmp(raw.reason, "Paris is the capital.\n\nOne sentence.\n"));
+    assert(!strcmp(raw.content, "\n\nThe capital of France is Paris.\nDone."));
+    think_free(&split);
+    // an unclosed reasoning keeps its trailing newline: no close, no framing
+    split_capture open = {0};
+    think_init_reasoning(&split, "<think>", "</think>");
+    think_trim_newlines(&split, true);
+    think_feed(&split, "cut off\n", 8, capture_split, &open);
+    think_finish(&split, capture_split, &open);
+    assert(!strcmp(open.reason, "cut off\n") && open.nc == 0);
+    think_free(&split);
+}
+
 // Constrained flow: reasoning bytes arrive freely, the <|eom|> control that
 // really ends the turn decodes to no bytes, so engine.c's
 // constraint_finish_think feeds the literal close to the splitter itself.
@@ -3393,6 +3449,7 @@ int main(void) {
     test_ornith_groups_consecutive_tool_responses();
     test_ornith_thinking_off_closes_the_thought_block();
     test_ornith_split_starts_inside_prompted_think();
+    test_think_close_newlines_are_framing();
     test_detect_and_render_granite42(&t);
     test_granite42_tool_turns();
     test_detect_and_render_qwen38(&t);

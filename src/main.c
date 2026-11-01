@@ -6591,6 +6591,7 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
             think_init_reasoning(&co.ts, rt->m.think_open, rt->m.think_close);
         else
             think_init(&co.ts, rt->m.think_open, rt->m.think_close);
+        think_trim_newlines(&co.ts, rt->m.think_trim_nl);
         n_gen = engine_generate(&rt->e, logits, o->n_predict, chat_cb, &co, &gtime);
         think_finish(&co.ts, chat_emit, &co);
         if (co.in_think) fputs("\n[/thinking]", stdout);

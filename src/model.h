@@ -374,6 +374,9 @@ typedef struct {
     int       n_suppress;    // (tokenizer.ggml.suppress_tokens)
     const char *think_open, *think_close; // thinking-tag pair (architecture's,
                                           // else the template's), or NULL
+    bool        think_trim_nl;  // the publisher's template strips newlines at
+                                // the close: trailing off the reasoning,
+                                // leading off the content (think_trim_newlines)
     gguf_tensor *tok_embd;
     gguf_tensor *output;     // may equal tok_embd (tied)
     float       *out_norm_w;

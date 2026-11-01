@@ -3,6 +3,17 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **No stray newlines at the end of reasoning or the start of the answer.**
+  A thinking turn from a Qwen 3, 3.5, 3.6 or 3.8 model (and Ornith, Mellum,
+  Clef-Flash) returned `reasoning_content` ending in a newline and `content`
+  starting with a blank line, the newlines the model writes around
+  `</think>`. The publishers' templates treat them as framing and strip them
+  when they read a turn back (`rstrip('\n')` and `lstrip('\n')`, Qwen
+  3.8's `|trim`). The server and the chat CLI now drop those newlines, and
+  only newlines, streamed or not. Other families are unchanged.
+
 ## v1.10.0 - 2026-11-01
 
 - **MoE routing traces and replays on CUDA.** `RUNNER_MOE_TRACE` wrote
