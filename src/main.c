@@ -5246,9 +5246,14 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
         }
         if (o->stop_file && plat_file_readable(o->stop_file)) {
             if (!train_checkpoint(o, rt, st, ev, true)) { rc = 1; break; }
-            printf("{\"yield\":\"");
-            fputs(o->stop_file, stdout);
-            printf("\",\"step\":%d}\n", step);
+            // the path is escaped: a Windows path's backslashes, or a quote,
+            // copied raw made the line invalid JSON (#542)
+            size_t n = strlen(o->stop_file), cap = n * 6 + 8;
+            char *esc = malloc(cap);
+            if (!esc) { rc = 1; break; }
+            json_escape(o->stop_file, n, esc, cap);
+            printf("{\"yield\":\"%s\",\"step\":%d}\n", esc, step);
+            free(esc);
             fflush(stdout);
             rc = 75;
             break;

@@ -39,7 +39,8 @@ def work(runner_bin, tmp_path):
     assert _run([runner_bin, "-m", "base.gguf", "--quantize", "q.gguf", "--quant", "q8_0"],
                 tmp_path).returncode == 0
     (tmp_path / "corpus.txt").write_text(
-        (ROOT / "tests" / "fixtures" / "gold-corpus-2k.txt").read_text()[:600])
+        (ROOT / "tests" / "fixtures" / "gold-corpus-2k.txt").read_text(encoding="utf-8")[:600],
+        encoding="utf-8")
     assert _run([runner_bin, "--keygen", "key.json"], tmp_path).returncode == 0
     return tmp_path
 
@@ -53,7 +54,7 @@ def _fidelity(runner_bin, d, *extra):
 def test_a_fidelity_eval_is_recorded_signed_and_shown(runner_bin, work):
     p = _fidelity(runner_bin, work, "--max-mean-kld", "1", "--sign-key", "key.json")
     assert p.returncode == 0, p.stderr
-    rec = json.loads((work / "q.gguf.eval.fidelity.json").read_text())
+    rec = json.loads((work / "q.gguf.eval.fidelity.json").read_text(encoding="utf-8"))
     assert rec["schema_version"] == "xyntetik.runner.eval.v1" and rec["pass"] is True
     assert rec["metrics"]["positions_scored"] == 16
     assert rec["subject"]["record"]["path"].endswith("q.gguf.quant.json")
@@ -67,7 +68,7 @@ def test_a_fidelity_eval_is_recorded_signed_and_shown(runner_bin, work):
 def test_a_failed_threshold_is_recorded_and_exits_1(runner_bin, work):
     p = _fidelity(runner_bin, work, "--min-top1", "101")
     assert p.returncode == 1, p.stderr
-    rec = json.loads((work / "q.gguf.eval.fidelity.json").read_text())
+    rec = json.loads((work / "q.gguf.eval.fidelity.json").read_text(encoding="utf-8"))
     assert rec["pass"] is False and rec["checks"] == {"min_top1_pct": False}
 
 
@@ -80,7 +81,7 @@ def test_require_eval_gates_the_load(runner_bin, work):
     assert _fidelity(runner_bin, work, "--max-mean-kld", "1").returncode == 0
     p = _run([runner_bin, "-m", "q.gguf", "--require-eval", "fidelity", *gen], work)
     assert p.returncode == 0, p.stderr
-    pub = json.loads((work / "key.json").read_text())["public_key"]
+    pub = json.loads((work / "key.json").read_text(encoding="utf-8"))["public_key"]
     p = _run([runner_bin, "-m", "q.gguf", "--require-eval", "fidelity",
               "--trust-key", pub, *gen], work)
     assert p.returncode != 0 and "unsigned" in p.stderr
@@ -114,17 +115,17 @@ def test_an_agent_eval_summarizes_a_bank_run(runner_bin, work):
              "resources": {"turns": 4, "tool_calls": 6}, "identity": {"harness_version": "shadow-0.1"}},
             {"disposition": "rejected", "wall_s": 50.0,
              "reasons": ["attempt: model error: HTTP 500"], "resources": {"turns": 2, "tool_calls": 2}}]
-    ev.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    ev.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     att = work / "attempts" / "task1"
     att.mkdir(parents=True)
     (att / "x.transcript.jsonl").write_text("".join(json.dumps(r) + "\n" for r in [
         {"role": "assistant", "tool_calls": [{"function": {"name": "a"}}, {"function": {"name": "b"}}]},
         {"role": "assistant", "tool_calls": [{"function": {"name": "c"}}]},
-    ]))
+    ]), encoding="utf-8")
     p = _run([sys.executable, SCRIPT, "agent", "--model", "q.gguf", "--evidence", ev,
               "--attempts", work / "attempts", "--min-verified", "1", "--runner", runner_bin], work)
     assert p.returncode == 0, p.stderr
-    m = json.loads((work / "q.gguf.eval.agent.json").read_text())["metrics"]
+    m = json.loads((work / "q.gguf.eval.agent.json").read_text(encoding="utf-8"))["metrics"]
     assert (m["tasks_attempted"], m["tasks_verified"], m["engine_error_aborts"]) == (2, 1, 1)
     assert (m["turns"], m["tool_calls"], m["multi_call_turns"]) == (6, 8, 1)
     w = _run([runner_bin, "--lineage", "q.gguf"], work)

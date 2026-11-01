@@ -21,7 +21,7 @@ def load_module():
 
 
 def test_model_manifest_covers_every_claimed_architecture():
-    data = json.loads(MANIFEST.read_text())
+    data = json.loads(MANIFEST.read_text(encoding="utf-8"))
     assert data["schema_version"] == "xyntetik.runner.model-compat.v2"
     # No manifest-wide reference revision. Rows carry their own (asserted
     # below, and every harness reads it there); a single header claim went
@@ -70,7 +70,7 @@ def test_model_manifest_covers_every_claimed_architecture():
         assert model["checks"]
         capture_path = model.get("tokenizer_reference_ids")
         if capture_path:
-            capture = json.loads((ROOT / capture_path).read_text())
+            capture = json.loads((ROOT / capture_path).read_text(encoding="utf-8"))
             assert capture["ref"] == model["tokenizer_reference"]
             assert capture["ref_revision"] == model["tokenizer_reference_revision"]
             assert len(capture["ids"]) == 721
@@ -88,7 +88,7 @@ def test_manifest_validation_rejects_duplicate_ids(tmp_path):
         ],
     }
     path = tmp_path / "models.json"
-    path.write_text(json.dumps(manifest))
+    path.write_text(json.dumps(manifest), encoding="utf-8")
     try:
         module.load_manifest(path)
     except ValueError as exc:
@@ -99,7 +99,7 @@ def test_manifest_validation_rejects_duplicate_ids(tmp_path):
 
 def test_consumer_gate_covers_requested_integration_layers():
     data = json.loads(
-        (ROOT / "tests" / "compatibility" / "consumers.json").read_text())
+        (ROOT / "tests" / "compatibility" / "consumers.json").read_text(encoding="utf-8"))
     assert data["schema_version"] == "xyntetik.runner.consumer-compat.v1"
     assert {consumer["id"] for consumer in data["consumers"]} >= {
         "openai-python", "openai-node", "anthropic-python",
@@ -147,7 +147,7 @@ def _write_manifest(tmp_path, checks):
         }],
     }
     path = tmp_path / "models.json"
-    path.write_text(json.dumps(manifest))
+    path.write_text(json.dumps(manifest), encoding="utf-8")
     return path
 
 
@@ -158,7 +158,7 @@ def test_declared_but_unexecuted_checks_are_recorded_not_omitted(tmp_path):
     # a files-only run executes none of the declared checks
     rc = module.main(["--manifest", str(manifest), "--verify-files",
                       "--out", str(out)])
-    report = json.loads(out.read_text())
+    report = json.loads(out.read_text(encoding="utf-8"))
     model = report["models"][0]
     # every declared check is present and explicitly not_executed — never omitted
     for name in ("load", "tokenizer", "greedy_reference"):
@@ -202,7 +202,7 @@ def _executable(path, body):
         body = "@exit /b 0\r\n"
     else:
         body = "#!/bin/sh\n" + body
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
     return path
 
@@ -221,13 +221,13 @@ def test_resolves_pinned_basename_recursively_and_executes_supported_checks(tmp_
             "tokenizer_reference": "local/tokenizer",
             "checks": ["load", "tokenizer", "greedy_reference"],
         }],
-    }))
+    }), encoding="utf-8")
     runner = _executable(tmp_path / "runner", "exit 0\n")
     reference = _executable(tmp_path / "llama-server", "exit 0\n")
     tokenizer = tmp_path / "difftok.py"
-    tokenizer.write_text("print('0/721 strings differ')\n")
+    tokenizer.write_text("print('0/721 strings differ')\n", encoding="utf-8")
     greedy = tmp_path / "reference-compare.py"
-    greedy.write_text("print('{\"totals\":{\"passed\":5,\"failed\":0}}')\n")
+    greedy.write_text("print('{\"totals\":{\"passed\":5,\"failed\":0}}')\n", encoding="utf-8")
     module.TOKENIZER_SCRIPT = tokenizer
     module.GREEDY_SCRIPT = greedy
     out = tmp_path / "report.json"
@@ -236,12 +236,12 @@ def test_resolves_pinned_basename_recursively_and_executes_supported_checks(tmp_
         "--runner", str(runner), "--reference", str(reference),
         "--verify-files", "--execute-checks", "--out", str(out),
     ]) == 0
-    report = json.loads(out.read_text())
+    report = json.loads(out.read_text(encoding="utf-8"))
     item = report["models"][0]
     assert report["runner"]["path"] == runner.name
     assert report["reference"]["path"] == reference.name
     assert item["resolved_file"] == "models/model.gguf"
-    assert str(tmp_path) not in out.read_text()
+    assert str(tmp_path) not in out.read_text(encoding="utf-8")
     assert {name: check["status"] for name, check in item["checks"].items()} == {
         "load": "pass", "tokenizer": "pass", "greedy_reference": "pass",
     }
@@ -265,7 +265,7 @@ def test_unavailable_executable_check_records_specific_reason(tmp_path):
         "--manifest", str(manifest), "--models-root", str(tmp_path),
         "--verify-files", "--execute-checks", "--out", str(out),
     ]) == 0
-    check = json.loads(out.read_text())["models"][0]["checks"]["greedy_reference"]
+    check = json.loads(out.read_text(encoding="utf-8"))["models"][0]["checks"]["greedy_reference"]
     assert check == {"status": "not_executed", "reason": "reference_binary_not_provided"}
 
 
@@ -273,7 +273,7 @@ def test_unavailable_tokenizer_reference_is_skip_not_failure(tmp_path):
     module = load_module()
     script = tmp_path / "difftok.py"
     script.write_text(
-        "import sys\nprint('Access to model is restricted', file=sys.stderr)\nsys.exit(1)\n")
+        "import sys\nprint('Access to model is restricted', file=sys.stderr)\nsys.exit(1)\n", encoding="utf-8")
     module.TOKENIZER_SCRIPT = script
     result = module.run_tokenizer(
         tmp_path / "model.gguf", "gated/model",
@@ -291,7 +291,7 @@ def test_tokenizer_tool_that_cannot_build_is_skip_not_failure(tmp_path):
     script = tmp_path / "difftok.py"
     script.write_text(
         "import sys\nprint('make: cc: Det går inte att hitta filen', file=sys.stderr)\n"
-        f"raise SystemExit({module.DIFFTOK_EXIT_TOOL_UNAVAILABLE})\n")
+        f"raise SystemExit({module.DIFFTOK_EXIT_TOOL_UNAVAILABLE})\n", encoding="utf-8")
     module.TOKENIZER_SCRIPT = script
     result = module.run_tokenizer(
         tmp_path / "model.gguf", "org/model",
@@ -344,10 +344,10 @@ def test_tokenizer_capture_is_replayed_without_network_reference(tmp_path):
     module = load_module()
     script = tmp_path / "difftok.py"
     script.write_text(
-        "import sys\nprint('ARGS ' + ' '.join(sys.argv[1:]))\n")
+        "import sys\nprint('ARGS ' + ' '.join(sys.argv[1:]))\n", encoding="utf-8")
     module.TOKENIZER_SCRIPT = script
     capture = tmp_path / "reference-ids.json"
-    capture.write_text("{}")
+    capture.write_text("{}", encoding="utf-8")
     result = module.run_tokenizer(
         tmp_path / "model.gguf", "gated/model",
         ROOT / "tests/fixtures/tokenizer-corpus.txt", 10,
@@ -377,12 +377,12 @@ def _write_manifest_v2(tmp_path, checks, params=None, schema="xyntetik.runner.mo
         entry["check_params"] = params
     manifest = {"schema_version": schema, "models": [entry]}
     path = tmp_path / "models.json"
-    path.write_text(json.dumps(manifest))
+    path.write_text(json.dumps(manifest), encoding="utf-8")
     return path
 
 
 def test_manifest_accepts_structured_check_parameters():
-    data = json.loads(MANIFEST.read_text())
+    data = json.loads(MANIFEST.read_text(encoding="utf-8"))
     assert data["schema_version"] == "xyntetik.runner.model-compat.v2"
     # every model declaring one of the parameterised classes carries params for
     # it: a declared contract with no definition is the thing v2 removes
@@ -393,7 +393,7 @@ def test_manifest_accepts_structured_check_parameters():
 
 
 def test_cpu_cuda_params_declare_pins_and_a_minimum_prompt_length():
-    data = json.loads(MANIFEST.read_text())
+    data = json.loads(MANIFEST.read_text(encoding="utf-8"))
     seen = 0
     for m in data["models"]:
         p = m.get("check_params", {}).get("cpu_cuda")
@@ -413,7 +413,7 @@ def test_missing_check_params_are_not_executed_with_a_specific_reason(tmp_path):
     out = tmp_path / "report.json"
     module.main(["--manifest", str(manifest), "--verify-files",
                  "--execute-checks", "--out", str(out)])
-    report = json.loads(out.read_text())
+    report = json.loads(out.read_text(encoding="utf-8"))
     checks = report["models"][0]["checks"]
     for cls in ("cpu_cuda", "chat"):
         assert checks[cls]["status"] == "not_executed"
@@ -429,7 +429,7 @@ def test_v1_manifests_still_load(tmp_path):
     rc = module.main(["--manifest", str(manifest), "--verify-files",
                       "--out", str(out)])
     assert rc == 0
-    assert json.loads(out.read_text())["models"][0]["file_status"] == "pass"
+    assert json.loads(out.read_text(encoding="utf-8"))["models"][0]["file_status"] == "pass"
 
 
 # The ledger is a claim about ONE binary. run_cpu_cuda and run_tool shell out
@@ -488,7 +488,7 @@ def test_cpu_cuda_writes_and_references_a_per_row_report(monkeypatch, tmp_path):
         # report there, and print the verdict line run_cpu_cuda parses.
         out = Path(cmd[cmd.index("--out") + 1])
         out.write_text(json.dumps({"model": "m", "tokens": 128,
-                                   "routing": "eager", "rows": [{"kind": "ok"}]}))
+                                   "routing": "eager", "rows": [{"kind": "ok"}]}), encoding="utf-8")
 
         class Completed:
             returncode = 0
@@ -506,7 +506,7 @@ def test_cpu_cuda_writes_and_references_a_per_row_report(monkeypatch, tmp_path):
     expected = report_dir / "cpu_cuda" / "my-model.json"
     assert check["report"] == str(expected)
     assert expected.is_file(), "the full per-row report must be written to disk"
-    written = json.loads(expected.read_text())
+    written = json.loads(expected.read_text(encoding="utf-8"))
     assert written["rows"] == [{"kind": "ok"}]
 
 
@@ -533,7 +533,7 @@ def test_tool_writes_and_references_a_totals_sidecar(monkeypatch, tmp_path):
     sidecar = report_dir / "tool" / "my-model.json"
     assert check["report"] == str(sidecar)
     assert sidecar.is_file(), "the tool totals must be written to a sidecar json"
-    assert json.loads(sidecar.read_text())["totals"] == {
+    assert json.loads(sidecar.read_text(encoding="utf-8"))["totals"] == {
         "requests": 120, "passed": 118, "failed": 2}
 
 
@@ -547,7 +547,7 @@ def test_per_row_reports_are_referenced_from_the_ledger(monkeypatch, tmp_path):
         assert report_dir is not None and model_id == "m"
         path = Path(report_dir) / "cpu_cuda" / f"{model_id}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("{}")
+        path.write_text("{}", encoding="utf-8")
         return {"status": "pass", "report": str(path)}
 
     monkeypatch.setattr(module, "run_cpu_cuda", run_cpu_cuda)
@@ -564,13 +564,13 @@ def test_per_row_reports_are_referenced_from_the_ledger(monkeypatch, tmp_path):
             "check_params": {"cpu_cuda": {"tokens": 128, "pins": {"X": "1"},
                                           "min_prompt_tokens": 24}},
         }],
-    }))
+    }), encoding="utf-8")
     out = tmp_path / "report.json"
     module.main(["--manifest", str(manifest), "--models-root", str(tmp_path),
                  "--runner", str(tmp_path / "runner"),
                  "--verify-files", "--execute-checks", "--out", str(out)])
 
-    check = json.loads(out.read_text())["models"][0]["checks"]["cpu_cuda"]
+    check = json.loads(out.read_text(encoding="utf-8"))["models"][0]["checks"]["cpu_cuda"]
     # relative to the ledger's own directory: the ledger is committed as
     # public evidence and names its files, not the machine (R6.2.x)
     assert check["report"] == "cpu_cuda/m.json"
@@ -597,7 +597,7 @@ def _process_state(pid):
     stat = Path("/proc/%d/stat" % pid)
     if stat.exists():                # Linux
         try:
-            data = stat.read_text()
+            data = stat.read_text(encoding="utf-8")
         except OSError:
             return "gone"
         # The state letter follows the parenthesised comm, which may itself
@@ -683,14 +683,14 @@ def test_a_timeout_kills_the_grandchildren_too(tmp_path):
     script.write_text("#!/bin/sh\n"
                       "sleep 120 &\n"
                       f"echo $! > {marker}\n"
-                      "sleep 120\n")
+                      "sleep 120\n", encoding="utf-8")
     script.chmod(0o755)
 
     with pytest.raises(subprocess.TimeoutExpired):
         module.run_group([str(script)], 1.0, grace=0.2, capture_output=True,
                          text=True)
 
-    grandchild = int(marker.read_text())
+    grandchild = int(marker.read_text(encoding="utf-8"))
     # Not kill(pid, 0): the killed grandchild is reparented to PID 1, and where
     # PID 1 does not reap (the CI container) it stays a signal-answering zombie
     # forever, which read as "outlived the timeout" on Linux only.

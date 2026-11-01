@@ -111,7 +111,7 @@ def _gen(runner_bin, fx, rec, *extra, seed=5, n=300):
              "--temp", "1.0", "-s", seed, "--gpu", "off", "-t", "2", "-c", "512",
              "--ignore-eos", "--transcript", rec, *extra)
     assert p.returncode == 0, p.stderr.decode(errors="replace")[-400:]
-    return json.loads(rec.read_text())
+    return json.loads(rec.read_text(encoding="utf-8"))
 
 
 def _detect(runner_bin, target, key, *extra):
@@ -121,18 +121,18 @@ def _detect(runner_bin, target, key, *extra):
 
 
 def _key_bytes(path):
-    return bytes.fromhex(json.loads(path.read_text())["key"])
+    return bytes.fromhex(json.loads(path.read_text(encoding="utf-8"))["key"])
 
 
 def test_keygen(runner_bin, fx):
-    k = json.loads(fx["key"].read_text())
+    k = json.loads(fx["key"].read_text(encoding="utf-8"))
     assert k["schema_version"] == "xyntetik.runner.watermark_key.v1"
     key = bytes.fromhex(k["key"])
     assert len(key) == 32 and _key_bytes(fx["other"]) != key
     assert k["key_id"] == hashlib.sha256(
         b"xyntetik.runner.watermark.key_id.v1" + key).digest()[:8].hex()
     p = _run(runner_bin, "--watermark-keygen", fx["key"])
-    assert p.returncode != 0 and json.loads(fx["key"].read_text()) == k
+    assert p.returncode != 0 and json.loads(fx["key"].read_text(encoding="utf-8")) == k
 
 
 def test_python_siphash_is_openssls():
@@ -155,7 +155,7 @@ def test_python_siphash_is_openssls():
 def test_a_marked_generation_is_detected_and_named(runner_bin, fx):
     d = fx["d"]
     rec = _gen(runner_bin, fx, d / "marked.json", "--watermark", fx["key"])
-    kid = json.loads(fx["key"].read_text())["key_id"]
+    kid = json.loads(fx["key"].read_text(encoding="utf-8"))["key_id"]
     wm = rec["watermark"]
     assert {k: wm[k] for k in ("scheme", "key_id", "layers", "context")} == \
         {"scheme": "tournament-v1", "key_id": kid, "layers": 30, "context": 4}
@@ -191,7 +191,7 @@ def test_seed_deterministic_and_greedy_untouched(runner_bin, fx):
     g0 = _run(runner_bin, "-m", fx["model"], "-p", "hello", "-n", 20, "--temp", "0",
               "--gpu", "off", "-t", "2", "-c", "256", "--transcript", d / "g0.json")
     assert g1.returncode == 0 and g0.returncode == 0
-    r1, r0 = (json.loads((d / f).read_text()) for f in ("g1.json", "g0.json"))
+    r1, r0 = (json.loads((d / f).read_text(encoding="utf-8")) for f in ("g1.json", "g0.json"))
     assert r1["output"]["tokens"] == r0["output"]["tokens"]
     assert r1["watermark"]["marked_tokens"] == 0
 
@@ -244,11 +244,11 @@ def test_served_generation_is_marked(runner_bin, fx, tmp_path):
             headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=120) as r:
             body = json.load(r)
-    kid = json.loads(fx["key"].read_text())["key_id"]
+    kid = json.loads(fx["key"].read_text(encoding="utf-8"))["key_id"]
     tel = body["runner_telemetry"]["watermark"]
     assert tel["key_id"] == kid and tel["marked_tokens"] > 0
     rec_path = rdir / body["runner_telemetry"]["receipt"]["file"]
-    rec = json.loads(rec_path.read_text())
+    rec = json.loads(rec_path.read_text(encoding="utf-8"))
     assert rec["watermark"]["key_id"] == kid
     rc, out, err = _detect(runner_bin, rec_path, fx["key"])
     assert rc == 0 and out["verdict"] == "WATERMARKED", (out, err)
