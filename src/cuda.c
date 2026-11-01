@@ -498,6 +498,7 @@ typedef struct gpu_weights {
     CUfunction  f_q8x[9][KT_N], f_quant_q8x;
     // sparse-MoE device routing + indirect expert matvecs (fused-3D layout)
     CUfunction  f_moe_route, f_moe_actmul, f_moe_sum;
+    CUfunction  f_moe_route_replay;     // RUNNER_MOE_REPLAY's router (R3.21.2)
     CUfunction  f_moe_sum_tile, f_moe_place;   // the by-expert prefill (moe_twin)
     CUfunction  f_moe_mv[KT_N];         // indexed by expert tensor type
     // expert-grouped prefill (P2): gather/scatter around the k_gemm family
@@ -609,6 +610,14 @@ typedef struct {
     int        *h_moe_sel, *h_moe_gidx;
     float      *h_moe_selw, *h_moe_gw;
     bool        moe_fused_ok;           // every MoE layer runs the indirect path
+    // RUNNER_MOE_REPLAY / RUNNER_MOE_TRACE on the device routers (R3.21.2):
+    // the trace as [replay_npos][n_layer][used] ids, the three counters
+    // model.c reports, whether each routing is written to the trace, and the
+    // position of the current tile's first column (set_pos, set_rows)
+    CUdeviceptr replay_tab, replay_cnt;
+    int         replay_npos, replay_nlayer;
+    bool        route_trace;
+    int         route_pos;
     bool        moe_grouped_ok;         // expert types have width-classed kernels
     bool        moe_twin_ok;            // ... and the by-expert path can be fused-identical
     CUdeviceptr g_scr;                  // gemma-4-MoE dual-branch scratch: 5*n_embd
@@ -1219,6 +1228,7 @@ static bool moe_twin_eligible(const model_t *m, const gpu_weights *w) {
 }
 
 static void gpu_ctx_free(model_t *m, gpu_t *g);
+static void route_replay_flush(gpu_t *g);
 static bool gpu_q8x_on(void);
 
 #define CK(call) do { CUresult _r = (call); if (_r != 0) { \
@@ -2460,6 +2470,7 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_gemvx[8][T_IQ3_S], "k_gemvb_iq3_s_x8" },
         // sparse-MoE device routing + indirect expert matvecs
         { &w->f_moe_route,        "k_moe_route" },
+        { &w->f_moe_route_replay, "k_moe_route_replay" },
         { &w->f_moe_actmul,       "k_moe_actmul" },
         { &w->f_moe_sum,          "k_moe_sum" },
         { &w->f_moe_sum_tile,     "k_moe_sum_tile" },
@@ -3574,6 +3585,23 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
                     "— using CPU\n");
             goto fail;
         }
+        if (model_moe_replay_on()) {
+            int np = 0;
+            int *tab = model_moe_replay_table(m->n_layer, m->n_expert_used, &np);
+            size_t cells = (size_t)np * m->n_layer * m->n_expert_used;
+            if (!tab) goto fail;
+            g->replay_npos = np;
+            g->replay_nlayer = m->n_layer;
+            if (cu.MemAlloc(&g->replay_tab, sizeof(int) * (cells ? cells : 1)) != 0 ||
+                cu.MemAlloc(&g->replay_cnt, sizeof(unsigned) * 3) != 0 ||
+                (cells && cu.MemcpyHtoD(g->replay_tab, tab, sizeof(int) * cells) != 0) ||
+                cu.MemsetD8(g->replay_cnt, 0, sizeof(unsigned) * 3) != 0) {
+                free(tab);
+                goto fail;
+            }
+            free(tab);
+        }
+        g->route_trace = model_moe_trace_on();
         g->moe_fused_ok = moe_fused_eligible(m);
         // RUNNER_MOE_EAGER: debug escape to the v0.1.4 host-routing
         // path — the reference side of the RUNNER_DEBUG_MOE bit
@@ -3661,6 +3689,9 @@ static void cuda_plan_graphs(model_t *m, gpu_t *g) {
             (m->layers[l].recurrent && !recur_graph)) g->graph_bad = true;
     if (m->qwen35 && !recur_graph) g->graph_bad = true;
     if (moe_any_on_host(m)) g->graph_bad = true;
+    // RUNNER_MOE_REPLAY / RUNNER_MOE_TRACE: each routing takes its position
+    // from the host, and a trace reads it back, so neither is captured
+    if (g->replay_tab || g->route_trace) g->graph_bad = true;
 }
 
 // Host staging for the per-layer embeddings, the residual and the logits.
@@ -4876,6 +4907,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
     (void)m;
     if (!g) return;
     if (g->sw && g->sw->ctx) cu.CtxSetCurrent(g->sw->ctx);
+    route_replay_flush(g);
     lora_dev_release(g);
     for (int i = 0; i < 2; i++) {
         if (g->gexec[i] && cu.GraphExecDestroy) cu.GraphExecDestroy(g->gexec[i]);
@@ -4905,7 +4937,8 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            g->x_hc, g->hc_xn, g->hc_gate, g->hc_lo, g->hc_inject,
                            g->splitk, g->shexp_in, g->shexp_g, g->shexp_u,
                            g->shexp_o, g->shexp_gate, g->kvg_tab, g->kvg_dev, g->kvg_pos,
-                           g->vcol_pos, g->vcol_kcp, g->vcol_vcp };
+                           g->vcol_pos, g->vcol_kcp, g->vcol_vcp,
+                           g->replay_tab, g->replay_cnt };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
         if (bufs[i]) cu.MemFree(bufs[i]);
     free(g->h_x); free(g->h_logits); free(g->h_moe_logits);
@@ -5486,11 +5519,58 @@ static bool stage_x(gpu_t *g, model_t *m, const int32_t *tokens, int tn) {
 // Device softmax -> top-k -> renormalize for `tokens` routed columns. The
 // kernel is serial per token and mirrors moe_route() bit for bit (see the
 // contract comment in kernels.cu).
+// Under RUNNER_MOE_REPLAY the replay twin routes instead (the recorded choice
+// where the trace holds one, k_moe_route's arithmetic elsewhere); under
+// RUNNER_MOE_TRACE the tile's routing is read back and written to the trace.
+// layer and col0 (the first routed column within the tile) place each column
+// at its position.
 static bool enc_moe_route(gpu_t *g, CUdeviceptr logits, CUdeviceptr sel,
                           CUdeviceptr selw, int ne, int used, int tokens,
-                          int ls) {
-    void *p[] = { &logits, &sel, &selw, &ne, &used, &tokens, &ls };
-    return launch(g, g->sw->f_moe_route, (unsigned)(tokens + 31) / 32, 1, 1, 32, p);
+                          int ls, int layer, int col0) {
+    bool ok;
+    if (g->replay_tab) {
+        int pos0 = g->route_pos + col0;
+        void *p[] = { &logits, &sel, &selw, &ne, &used, &tokens, &ls, &g->replay_tab,
+                      &g->replay_npos, &g->replay_nlayer, &pos0, &layer, &g->replay_cnt };
+        ok = launch(g, g->sw->f_moe_route_replay, (unsigned)(tokens + 31) / 32, 1, 1, 32, p);
+    } else {
+        void *p[] = { &logits, &sel, &selw, &ne, &used, &tokens, &ls };
+        ok = launch(g, g->sw->f_moe_route, (unsigned)(tokens + 31) / 32, 1, 1, 32, p);
+    }
+    if (!ok || !g->route_trace) return ok;
+    if (cu.StreamSynchronize(g->stream) != 0 ||
+        cu.MemcpyDtoH(g->h_moe_sel, sel, sizeof(int) * (size_t)tokens * used) != 0 ||
+        cu.MemcpyDtoH(g->h_moe_selw, selw, sizeof(float) * (size_t)tokens * used) != 0)
+        return false;
+    for (int t = 0; t < tokens; t++)
+        model_moe_trace_route(g->route_pos + col0 + t, layer, g->h_moe_sel + (size_t)t * used,
+                              g->h_moe_selw + (size_t)t * used, used);
+    return true;
+}
+
+// The device's replay counts into model.c's exit report, and reset.
+static void route_replay_flush(gpu_t *g) {
+    unsigned c[3];
+    if (!g->replay_cnt || cu.MemcpyDtoH(c, g->replay_cnt, sizeof c) != 0) return;
+    if (c[0] || c[1] || c[2]) {
+        model_moe_replay_count(c[0], c[1], c[2]);
+        cu.MemsetD8(g->replay_cnt, 0, sizeof c);
+    }
+}
+
+// The eager paths route on the host: RUNNER_MOE_REPLAY's recorded experts for
+// column t (NULL where the trace has none), and the routing written to
+// RUNNER_MOE_TRACE with the weights renormalised as applied.
+static const int *route_forced_host(const gpu_t *g, int t, int layer, int used) {
+    return g->replay_tab ? model_moe_replay_ids(g->route_pos + t, layer, used) : NULL;
+}
+
+static void route_trace_host(const gpu_t *g, int t, int layer, const int *sel,
+                             const float *selw, float denom, int used) {
+    if (!g->route_trace) return;
+    float w[256];
+    for (int s = 0; s < used; s++) w[s] = selw[s] / denom;
+    model_moe_trace_route(g->route_pos + t, layer, sel, w, used);
 }
 
 // One launch computes every selected expert's matvec: grid.y = expert slot,
@@ -5619,7 +5699,7 @@ static bool gpu_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
                     g->sw->gib[l], tn))
         return false;
     if (!enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used,
-                       tn, ne))
+                       tn, ne, l, 0))
         return false;
     // RUNNER_DEBUG_MOE: fused-path twin of the eager dump above
     if (getenv("RUNNER_DEBUG_MOE")) {
@@ -5782,7 +5862,7 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
                     g->sw->gib[l], tn))
         return false;
     if (!enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used,
-                       tn, ne))
+                       tn, ne, l, 0))
         return false;
     int e_start[MOE_ROUTE_MAX], e_cnt[MOE_ROUTE_MAX];   // by expert: ne, up to MOE_ROUTE_MAX
     if (!moe_build_groups(g, ly, tn, used, ne, false, e_start, e_cnt))
@@ -5855,7 +5935,7 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
     ok = ok && enc_router(g, m, ly->ffn_gate_inp, rin_b, n_embd, g->moe_logits,
                           n_embd, ne, 0, tn);
     ok = ok && enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne,
-                             used, tn, ne);
+                             used, tn, ne, l, 0);
     if (!ok) return false;
     int e_start[MOE_ROUTE_MAX], e_cnt[MOE_ROUTE_MAX];   // by expert: ne, up to MOE_ROUTE_MAX
     if (!moe_build_groups(g, ly, tn, used, ne, true, e_start, e_cnt))
@@ -5953,16 +6033,24 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
         for (int e = 0; e < ne; e++) lg[e] /= ssum;
         int sel[MOE_MAX_USED];
         float selw[MOE_MAX_USED], denom = 0.0f;
+        const int *forced = route_forced_host(g, t, l, used);
+        unsigned long differed = 0;
         for (int s = 0; s < used; s++) {
             int best = 0;
             float bp = -1.0f;
             for (int e = 0; e < ne; e++)
                 if (lg[e] > bp) { bp = lg[e]; best = e; }
+            if (forced) {       // RUNNER_MOE_REPLAY: the recorded choice
+                differed += forced[s] != best;
+                if (forced[s] < ne) { best = forced[s]; bp = lg[best]; }
+            }
             sel[s] = best;
             selw[s] = bp;
             denom += bp;
             lg[best] = -1.0f;
         }
+        if (forced) model_moe_replay_count((unsigned long)used, differed, 0);
+        route_trace_host(g, t, l, sel, selw, denom, used);
         // RUNNER_DEBUG_MOE: dump the first two routings' selection + weights
         // as hex — the discriminator that isolated the 2026-07-29 identity
         // regression (device-vs-host expf + reciprocal-math, both 1-ulp).
@@ -6125,7 +6213,7 @@ static bool gpu_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly, int tn,
                     g->sw->gib[l], tn))
         return false;
     if (!enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used,
-                       tn, ne))
+                       tn, ne, l, 0))
         return false;
     // the tile's routing, once (prefill is never captured into a graph), as
     // each expert's (token, slot) pairs in ascending token order
@@ -6247,7 +6335,7 @@ static bool gpu_gemma_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
         ok = enc_rmsnorm(g, attn, xn2, g->sw->g_prn2[l], n_embd, eps, 1, xdim, n_embd)
           && enc_rmsnorm(g, attn, rin, g->sw->g_gis[l],  n_embd, eps, 1, xdim, n_embd)
           && enc_mv(g, m, ly->ffn_gate_inp, rin, lg, n_embd, ne, 0, 1, n_embd, ne)
-          && enc_moe_route(g, lg, sel, selw, ne, used, 1, ne)
+          && enc_moe_route(g, lg, sel, selw, ne, used, 1, ne, l, t)
           && enc_moe_mv(g, m, ly->ffn_gate_up_exps, gustride, xn2, g->moe_hb,
                         sel, n_embd, 2 * nff, used, 0, 2 * nff)
           && enc_moe_actmul(g, m, g->moe_hb, up, nff, 2 * nff, 2 * nff,
@@ -6308,11 +6396,19 @@ static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int
         for (int e = 0; e < ne; e++) lg[e] /= ssum;
         int sel[MOE_MAX_USED];
         float selw[MOE_MAX_USED], denom = 0.0f;
+        const int *forced = route_forced_host(g, t, l, used);
+        unsigned long differed = 0;
         for (int s = 0; s < used; s++) {
             int best = 0; float bp = -1.0f;
             for (int e = 0; e < ne; e++) if (lg[e] > bp) { bp = lg[e]; best = e; }
+            if (forced) {       // RUNNER_MOE_REPLAY: the recorded choice
+                differed += forced[s] != best;
+                if (forced[s] < ne) { best = forced[s]; bp = lg[best]; }
+            }
             sel[s] = best; selw[s] = bp; denom += bp; lg[best] = -1.0f;
         }
+        if (forced) model_moe_replay_count((unsigned long)used, differed, 0);
+        route_trace_host(g, t, l, sel, selw, denom, used);
         for (int s = 0; s < used; s++) {
             int e = sel[s];
             float sc = (selw[s] / denom) *
@@ -6378,7 +6474,8 @@ static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
             && enc_rmsnorm(g, g->x, rin_b, g->sw->g_gis[l], n_embd, eps, tn, n_embd, n_embd);
     ok = ok && enc_router(g, m, ly->ffn_gate_inp, rin_b, n_embd, g->moe_logits,
                           n_embd, ne, 0, tn);
-    ok = ok && enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used, tn, ne);
+    ok = ok && enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used, tn, ne,
+                             l, 0);
     if (!ok) return false;
     if (cu.StreamSynchronize(g->stream) != 0 ||
         cu.MemcpyDtoH(g->h_moe_sel, g->moe_sel, sizeof(int) * (size_t)tn * used) != 0 ||
@@ -9046,6 +9143,7 @@ static int inject_fail_ordinal(void) {
 // every later ATT_COLS-column attention sub-tile. Every writer of pos_dev
 // goes through here so a sub-tile can never read a stale start.
 static bool set_pos(gpu_t *g, int pos, int tn) {
+    g->route_pos = pos;
     int hp[GPU_WINDOW_MAX / ATT_COLS];
     int n = (tn + ATT_COLS - 1) / ATT_COLS;
     if (n < 1) n = 1;
@@ -9243,6 +9341,7 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
 // A verify round's rows (tile_attn_rows): position pos + c and the
 // instance's own cache for row c; the unused entries repeat row 0's.
 static bool set_rows(gpu_t *g, int pos, int tn) {
+    g->route_pos = pos;
     int hp[MVB];
     uint64_t hk[MVB], hv[MVB];
     for (int c = 0; c < MVB; c++) {
@@ -9346,6 +9445,7 @@ static bool cuda_fwd_finish(gpu_t *g, model_t *m, int n, int pos, bool want_logi
         return false;
     }
     if (prof.on) { prof.t_sync[m_] += prof_now() - tsy0; prof_flush(); }
+    route_replay_flush(g);
 
     if (g->snap_on) { g->snap_valid = n; g->snap_on = 0; }
     // keep the host KV cache authoritative: copy the offloaded layers' rows

@@ -1508,5 +1508,20 @@ void model_route_json(const model_t *m, char *out, int cap);
 // one row a forward; keep: the batched rows of a chunked score), each with its
 // widest rows, and the backend and its detail line.
 void model_score_route_json(const model_t *m, const char *model_json, char *out, int cap);
+// RUNNER_MOE_REPLAY and RUNNER_MOE_TRACE for a device router (R3.21.2).
+// model_moe_replay_table: the trace as [npos][n_layer][used] expert ids, -1
+// in slot 0 where it holds no record (malloc'd, the caller frees), or NULL
+// when replay is off; a record of another expert count or layer is refused.
+// model_moe_replay_ids: one (position, layer)'s recorded experts or NULL,
+// counted as uncovered, for a router on the host (the CUDA eager paths).
+// model_moe_replay_count adds the device's counts to the exit report.
+// model_moe_trace_route writes one routing as a trace record (no norms).
+bool model_moe_replay_on(void);
+int *model_moe_replay_table(int n_layer, int used, int *npos);
+const int *model_moe_replay_ids(int pos, int layer, int used);
+void model_moe_replay_count(unsigned long forced, unsigned long differed,
+                            unsigned long missing);
+bool model_moe_trace_on(void);
+void model_moe_trace_route(int pos, int layer, const int *sel, const float *selw, int used);
 
 #endif // RUNNER_MODEL_H

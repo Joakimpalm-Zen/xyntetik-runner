@@ -5434,6 +5434,60 @@ extern "C" __global__ void k_moe_route(const float *logits, int *sel,
     for (int s = 0; s < used; s++) tw[s] /= denom;
 }
 
+// RUNNER_MOE_REPLAY on the device (R3.21.2): k_moe_route's arithmetic, but at
+// a (position, layer) the trace holds, slot s takes the recorded expert, as
+// model.c's moe_route and gemma_route do: the weight is this run's own
+// probability for it, the remaining experts compete for the later slots, and
+// the renormalisation is the same. tab is [npos][nlayer][used], -1 in slot 0
+// where the trace has no record; column t is position pos0 + t. cnt[0..2]
+// count the forced slots, the slots whose own choice differed, and the
+// (position, layer) pairs the trace did not hold (model.c's counters).
+extern "C" __global__ void k_moe_route_replay(const float *logits, int *sel,
+                                              float *selw, int ne, int used,
+                                              int tokens, int ls, const int *tab,
+                                              int npos, int nlayer, int pos0,
+                                              int layer, unsigned *cnt) {
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= tokens) return;
+    float lg[512];
+    const float *src = logits + (ulong64)t * ls;
+    for (int e = 0; e < ne; e++) lg[e] = src[e];
+    float mx = lg[0];
+    for (int e = 1; e < ne; e++)
+        if (lg[e] > mx) mx = lg[e];
+    float ssum = 0.0f;
+    for (int e = 0; e < ne; e++) {
+        float p = expf(lg[e] - mx);
+        lg[e] = p;
+        ssum += p;
+    }
+    for (int e = 0; e < ne; e++) lg[e] /= ssum;
+    int pos = pos0 + t;
+    const int *forced = pos >= 0 && pos < npos
+        ? tab + ((ulong64)pos * nlayer + layer) * used : 0;
+    if (forced && forced[0] < 0) forced = 0;
+    if (!forced) atomicAdd(&cnt[2], 1u);
+    int   *ts = sel  + (ulong64)t * used;
+    float *tw = selw + (ulong64)t * used;
+    float denom = 0.0f;
+    for (int s = 0; s < used; s++) {
+        int best = 0;
+        float bp = -1.0f;
+        for (int e = 0; e < ne; e++)
+            if (lg[e] > bp) { bp = lg[e]; best = e; }
+        if (forced) {
+            atomicAdd(&cnt[0], 1u);
+            if (forced[s] != best) atomicAdd(&cnt[1], 1u);
+            if (forced[s] < ne) { best = forced[s]; bp = lg[best]; }
+        }
+        ts[s] = best;
+        tw[s] = bp;
+        denom += bp;
+        lg[best] = -1.0f;
+    }
+    for (int s = 0; s < used; s++) tw[s] /= denom;
+}
+
 // -------------------------------------------- indirect expert matvec (MoE)
 // One launch computes ALL selected experts' matvecs for one token: grid.y is
 // the expert slot, the weight base is resolved in-kernel from sel[slot] and
