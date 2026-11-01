@@ -68,14 +68,21 @@ transformers 4.57.1 as above.
 |---|---|---|---|---|---|---|---|
 | X2.6-4B Q8_0 | llama.cpp, CPU | 300 | **0.0086** | 0.0010 | 0.734 | 98.00% | 100.00% |
 | X2.6-4B Q4_K_M | llama.cpp, CPU | 300 | **0.1232** | 0.0357 | 4.570 | 85.00% | 91.53% |
+| X2.5-4B Q8_0 | llama.cpp, CPU | 300 | **0.0065** | 0.0010 | 1.056 | 98.00% | 100.00% |
+| X2.5-4B Q4_K_M | llama.cpp, CPU | 300 | **0.1177** | 0.0596 | 2.768 | 87.00% | 95.20% |
 
 - **X2.6 Q8_0:** paired per position, Runner is the closer (Wilcoxon z 9.0, p 2e-19, llama.cpp minus Runner); no
   margin-qualified top-1 discordance. Runner's mean is one position: at 1,538 Runner reads KLD 2.37 and llama.cpp 0.10.
   Without it, Runner reads 0.0053 and llama.cpp 0.0083.
 - **X2.6 Q4_K_M:** Runner 0.113 against llama.cpp 0.123, not distinguishable per position (Wilcoxon p 0.074; McNemar
   6 to 1 for Runner, p 0.125).
-- **The text path:** sending each prefix as text gives the same numbers as the ids here (0.0086 and 0.123): the
-  publisher's tokenizer adds no BOS, so the files' missing `add_bos_token` changes nothing for this family.
+- **X2.5 Q8_0:** Runner 0.0044 against llama.cpp 0.0065, Runner the closer (Wilcoxon z 9.4, p 6.3e-21); no
+  margin-qualified top-1 discordance.
+- **X2.5 Q4_K_M:** Runner 0.1136 against llama.cpp 0.1177, Runner the closer (Wilcoxon z 3.3, p 0.00083; McNemar 1 to
+  0).
+- **The text path:** sending each prefix as text gives the same numbers as the ids on all four files: the publisher's
+  tokenizer adds no BOS, so neither the X2.6 files' missing `add_bos_token` nor the X2.5 files' `false` changes
+  anything for this family.
 
 Why the two engines differ, one numbered sentence each:
 
@@ -89,7 +96,8 @@ Why the two engines differ, one numbered sentence each:
    R4.28; the material (the activation trace, transformers against itself, the Q8_0-rounded reference) is in shade
    `research/runner-engine/r4.28-spark-row1538-2026-11-01/`.
 
-Files: `gold-logits-llamacpp-x2.6-q8_0.json`, `gold-logits-llamacpp-x2.6-q4_k_m.json` (the column);
+Files: `gold-logits-llamacpp-x2.6-q8_0.json`, `gold-logits-llamacpp-x2.6-q4_k_m.json`,
+`gold-logits-llamacpp-x2.5-q8_0.json`, `gold-logits-llamacpp-x2.5-q4_k_m.json` (the column);
 `*-text.json` beside them (the text path).
 
 ## Agreement: Runner against llama.cpp on the same file
