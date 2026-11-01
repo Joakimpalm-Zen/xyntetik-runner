@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img" aria-labelledby="t">
+<title id="t">The usual way makes a smaller model file with several tools by hand and rarely measures it; runner derive is one command that makes the file, measures it against the publisher's float32 model and writes its card</title>
+<rect x="0.5" y="0.5" width="639" height="299" rx="9" fill="#F6F8FA" stroke="#D0D7DE"/>
+<text x="18" y="28" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#5F6C72">The usual way</text>
+<text x="122" y="28" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5F6C72">several tools, by hand</text>
+<rect x="18" y="70" width="108" height="44" rx="6" fill="#FFFFFF" stroke="#D0D7DE" stroke-width="1"/>
+<text x="72.0" y="96.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">parent file</text>
+<line x1="126" y1="92" x2="170" y2="92" stroke="#5F6C72" stroke-width="1.2"/>
+<path d="M170 88 L176 92 L170 96 Z" fill="#5F6C72"/>
+<text x="151.0" y="52" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5F6C72">the same mix for</text>
+<text x="151.0" y="64" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5F6C72">every model</text>
+<rect x="176" y="70" width="108" height="44" rx="6" fill="#FFFFFF" stroke="#D0D7DE" stroke-width="1"/>
+<text x="230.0" y="96.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">smaller file</text>
+<line x1="284" y1="92" x2="328" y2="92" stroke="#5F6C72" stroke-width="1.2"/>
+<path d="M328 88 L334 92 L328 96 Z" fill="#5F6C72"/>
+<text x="309.0" y="52" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5F6C72">score it elsewhere,</text>
+<text x="309.0" y="64" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5F6C72">if at all</text>
+<rect x="334" y="70" width="118" height="44" rx="6" fill="#FFFFFF" stroke="#D0D7DE" stroke-width="1"/>
+<text x="393.0" y="89.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">a number,</text>
+<text x="393.0" y="103.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">against what?</text>
+<line x1="452" y1="92" x2="496" y2="92" stroke="#5F6C72" stroke-width="1.2"/>
+<path d="M496 88 L502 92 L496 96 Z" fill="#5F6C72"/>
+<text x="477.0" y="52" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5F6C72">write it</text>
+<text x="477.0" y="64" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5F6C72">by hand</text>
+<rect x="502" y="70" width="120" height="44" rx="6" fill="#FFFFFF" stroke="#D0D7DE" stroke-width="1"/>
+<text x="562.0" y="96.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">a model card</text>
+<text x="622" y="128" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" fill="#B35C00">nothing ties the card's claims to the file</text>
+<line x1="18" y1="142" x2="622" y2="142" stroke="#D0D7DE" stroke-dasharray="3 4"/>
+<text x="18" y="166" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#0E7C6E">runner derive</text>
+<text x="118" y="166" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5F6C72">one command</text>
+<rect x="18" y="196" width="124" height="62" rx="6" fill="#FFFFFF" stroke="#0E7C6E" stroke-width="1.5"/>
+<text x="80.0" y="217.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">parent file</text>
+<text x="80.0" y="231.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">+ a recipe or</text>
+<text x="80.0" y="245.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">a target size</text>
+<line x1="142" y1="227" x2="172" y2="227" stroke="#0E7C6E" stroke-width="1.2"/>
+<path d="M172 223 L178 227 L172 231 Z" fill="#0E7C6E"/>
+<rect x="178" y="196" width="144" height="62" rx="6" fill="#FFFFFF" stroke="#0E7C6E" stroke-width="1.5"/>
+<text x="250.0" y="217.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">the file,</text>
+<text x="250.0" y="231.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">precision placed by</text>
+<text x="250.0" y="245.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">measured sensitivity</text>
+<rect x="328" y="196" width="144" height="62" rx="6" fill="#FFFFFF" stroke="#0E7C6E" stroke-width="1.5"/>
+<text x="400.0" y="217.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">its measurement</text>
+<text x="400.0" y="231.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">against the publisher's</text>
+<text x="400.0" y="245.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#0E7C6E">float32 model</text>
+<rect x="478" y="196" width="144" height="62" rx="6" fill="#FFFFFF" stroke="#0E7C6E" stroke-width="1.5"/>
+<text x="550.0" y="217.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">its card and record:</text>
+<text x="550.0" y="231.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#16232A">sha256, recipe, window</text>
+<text x="550.0" y="245.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" fill="#0E7C6E">and the numbers</text>
+<text x="320" y="284" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5F6C72">a file that fails the bar says so in the first line of its own card</text>
+</svg>
