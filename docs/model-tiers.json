@@ -4648,7 +4648,7 @@
           "date": "2026-11-01",
           "device_class": "linux-x86_64-cuda",
           "result": "pass",
-          "commit": null,
+          "commit": "ec6d3cf7ea807df2028de0b3077b0606e26412ea",
           "caps": {
             "version": "1.10.0",
             "os": "linux",
@@ -4736,7 +4736,7 @@
           "date": "2026-11-01",
           "device_class": "linux-x86_64-cuda",
           "result": "pass",
-          "commit": null,
+          "commit": "ec6d3cf7ea807df2028de0b3077b0606e26412ea",
           "caps": {
             "version": "1.10.0",
             "os": "linux",

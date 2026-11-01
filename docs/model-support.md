@@ -1876,7 +1876,7 @@ Text path, the publisher's own Q4_K_M, which fails the fidelity bar: against Mis
 - **Still missing:** A llama.cpp column; the Metal and CUDA cells; vision (the text path only); task quality.
 - **Evidence:** [docs/compat-reports/ministral-3-3b-reference-2026-11-01/README.md](compat-reports/ministral-3-3b-reference-2026-11-01/README.md).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.10.0 on 2026-11-01.
-- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `unknown`, output sha256 `41226f9a1a421d54`, [pin](../tests/compatibility/tier-smoke/ministral-3-3b-instruct-2512-q4_k_m.linux-x86_64-cuda.cpu.txt)
+- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `ec6d3cf7ea80`, output sha256 `41226f9a1a421d54`, [pin](../tests/compatibility/tier-smoke/ministral-3-3b-instruct-2512-q4_k_m.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
 - **LoRA training:** supported (runner 1.10.0, 2026-11-01).
@@ -1899,7 +1899,7 @@ Text path and native tool calls ([TOOL_CALLS]name[ARGS]{json}), the publisher's 
 - **Still missing:** A llama.cpp column; the Metal and CUDA cells; vision (the text path only); task quality.
 - **Evidence:** [docs/compat-reports/ministral-3-3b-reference-2026-11-01/README.md](compat-reports/ministral-3-3b-reference-2026-11-01/README.md).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.10.0 on 2026-11-01.
-- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `unknown`, output sha256 `475e3b127117e24f`, [pin](../tests/compatibility/tier-smoke/ministral-3-3b-instruct-2512-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `ec6d3cf7ea80`, output sha256 `475e3b127117e24f`, [pin](../tests/compatibility/tier-smoke/ministral-3-3b-instruct-2512-q8_0.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
 - **LoRA training:** supported (runner 1.10.0, 2026-11-01).
