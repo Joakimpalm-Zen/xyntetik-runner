@@ -591,21 +591,21 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Hemmingway</b>, 2 models: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>Hemmingway</b>, 2 models: CPU ✅ · CUDA - · Metal - · Train ✅</summary>
 <p><b>Hemmingway-1 (HemmingwayAI)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#hemmingway-1-q4_k_m"><code>Hemmingway-1.Q4_K_M.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
-<tr><td><a href="#hemmingway-1-q8_0"><code>Hemmingway-1.Q8_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="#hemmingway-1-q4_k_m"><code>Hemmingway-1.Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.10.0<sup>b</sup><br>2026-11-01</td><td></td><td></td><td nowrap>✅ 1.10.0<br>2026-11-01</td></tr>
+<tr><td><a href="#hemmingway-1-q8_0"><code>Hemmingway-1.Q8_0.gguf</code></a></td><td nowrap>✅ 1.10.0<sup>b</sup><br>2026-11-01</td><td></td><td></td><td nowrap>✅ 1.10.0<br>2026-11-01</td></tr>
 </tbody>
 </table>
 <p><b>Hemmingway-1.5 (HemmingwayAI)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#hemmingway-1.5-q4_k_m"><code>HemmingwayAI_Hemmingway-1.5-Q4_K_M.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
-<tr><td><a href="#hemmingway-1.5-q8_0"><code>HemmingwayAI_Hemmingway-1.5-Q8_0.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="#hemmingway-1.5-q4_k_m"><code>HemmingwayAI_Hemmingway-1.5-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.10.0<sup>b</sup><br>2026-11-01</td><td></td><td></td><td nowrap>✅ 1.10.0<br>2026-11-01</td></tr>
+<tr><td><a href="#hemmingway-1.5-q8_0"><code>HemmingwayAI_Hemmingway-1.5-Q8_0.gguf</code></a></td><td nowrap>✅ 1.10.0<sup>b</sup><br>2026-11-01</td><td></td><td></td><td nowrap>✅ 1.10.0<br>2026-11-01</td></tr>
 </tbody>
 </table>
 </details>
@@ -1765,10 +1765,12 @@ Text path, a third party's Q4_K_M, which fails the fidelity bar: against the pub
 - **Known limitations:** No fidelity claim: the file fails the bar and the distance is in the file, not the arithmetic (CPU and CUDA score it alike). This conversion quantizes the Gated DeltaNet gates (ssm_alpha, ssm_beta) that Hemmingway-1.5's files keep in F32; consistent with the gap, not proven. No llama.cpp column.
 - **Still missing:** A llama.cpp column (not measured: validation only, non-commercial); the Metal cell; task quality.
 - **Evidence:** [docs/compat-reports/hemmingway-reference-2026-11-01/README.md](compat-reports/hemmingway-reference-2026-11-01/README.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
-- **CPU:** ☐ not run
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.10.0 on 2026-11-01.
+- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `b09cd0bee1b2`, output sha256 `4a058fe55ddc5228`, [pin](../tests/compatibility/tier-smoke/hemmingway-1-q4_k_m.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.10.0, 2026-11-01).
+- **LoRA adapter serving:** supported (runner 1.10.0, 2026-11-01).
 - **Tier history:** Tier 2, maintained on report from 2026-11-01 ([log](#transition-log)).
 
 <a id="hemmingway-1-q8_0"></a>
@@ -1786,10 +1788,12 @@ Text path, a third party's Q8_0, the fidelity file of the two: against the publi
 - **Known limitations:** 29 GB of weights. This conversion quantizes the Gated DeltaNet gates (ssm_alpha, ssm_beta) that Hemmingway-1.5's files keep in F32; consistent with the gap, not proven. No llama.cpp column.
 - **Still missing:** A llama.cpp column (not measured: validation only, non-commercial); the Metal cell; task quality.
 - **Evidence:** [docs/compat-reports/hemmingway-reference-2026-11-01/README.md](compat-reports/hemmingway-reference-2026-11-01/README.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
-- **CPU:** ☐ not run
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.10.0 on 2026-11-01.
+- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `b09cd0bee1b2`, output sha256 `0308e3d8c0ec344d`, [pin](../tests/compatibility/tier-smoke/hemmingway-1-q8_0.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.10.0, 2026-11-01).
+- **LoRA adapter serving:** supported (runner 1.10.0, 2026-11-01).
 - **Tier history:** Tier 2, maintained on report from 2026-11-01 ([log](#transition-log)).
 
 #### Hemmingway-1.5 (HemmingwayAI)
@@ -1809,10 +1813,12 @@ Text path, a third party's imatrix Q4_K_M: against the publisher's BF16 weights 
 - **Known limitations:** No llama.cpp column.
 - **Still missing:** A llama.cpp column (not measured: validation only, non-commercial); the Metal cell; task quality.
 - **Evidence:** [docs/compat-reports/hemmingway-reference-2026-11-01/README.md](compat-reports/hemmingway-reference-2026-11-01/README.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
-- **CPU:** ☐ not run
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.10.0 on 2026-11-01.
+- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `b09cd0bee1b2`, output sha256 `25aec91724064e0a`, [pin](../tests/compatibility/tier-smoke/hemmingway-1.5-q4_k_m.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.10.0, 2026-11-01).
+- **LoRA adapter serving:** supported (runner 1.10.0, 2026-11-01).
 - **Tier history:** Tier 2, maintained on report from 2026-11-01 ([log](#transition-log)).
 
 <a id="hemmingway-1.5-q8_0"></a>
@@ -1830,10 +1836,12 @@ Text path, a third party's Q8_0: against the publisher's BF16 weights computed i
 - **Known limitations:** 29 GB of weights. No llama.cpp column.
 - **Still missing:** A llama.cpp column (not measured: validation only, non-commercial); the Metal cell; task quality.
 - **Evidence:** [docs/compat-reports/hemmingway-reference-2026-11-01/README.md](compat-reports/hemmingway-reference-2026-11-01/README.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; no run recorded yet.
-- **CPU:** ☐ not run
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.10.0 on 2026-11-01.
+- **CPU:** ✅ v1.10.0 2026-11-01 on linux-x86_64-cuda (borrowed hardware) at commit `b09cd0bee1b2`, output sha256 `2dc9516322c964f1`, [pin](../tests/compatibility/tier-smoke/hemmingway-1.5-q8_0.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ☐ not run
 - **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.10.0, 2026-11-01).
+- **LoRA adapter serving:** supported (runner 1.10.0, 2026-11-01).
 - **Tier history:** Tier 2, maintained on report from 2026-11-01 ([log](#transition-log)).
 
 ### LFM2.5

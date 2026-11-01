@@ -4293,11 +4293,40 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.10.0",
+          "date": "2026-11-01",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "b09cd0bee1b21bc1abb2d226749cdae586df94fc",
+          "caps": {
+            "version": "1.10.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 24,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "4a058fe55ddc52285448943f5a48824b12ef84016587d02eb95b13ef94a7a774",
+          "ran": "runner -m Hemmingway-1.Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/hemmingway-1-q4_k_m.linux-x86_64-cuda.cpu.txt"
+        },
         "cuda": null,
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.10.0",
+        "date": "2026-11-01"
+      },
       "transitions": [
         {
           "tier": "tier2",
@@ -4351,11 +4380,40 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.10.0",
+          "date": "2026-11-01",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "b09cd0bee1b21bc1abb2d226749cdae586df94fc",
+          "caps": {
+            "version": "1.10.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 24,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "0308e3d8c0ec344dae1de5c35c623014430f9baa890cbf193c37cdbb8c87fa5a",
+          "ran": "runner -m Hemmingway-1.Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/hemmingway-1-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
         "cuda": null,
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.10.0",
+        "date": "2026-11-01"
+      },
       "transitions": [
         {
           "tier": "tier2",
@@ -4409,11 +4467,40 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.10.0",
+          "date": "2026-11-01",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "b09cd0bee1b21bc1abb2d226749cdae586df94fc",
+          "caps": {
+            "version": "1.10.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 24,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "25aec91724064e0a420aa7c15447f56947e0fc887e30d9ec5a3b38679839a983",
+          "ran": "runner -m HemmingwayAI_Hemmingway-1.5-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/hemmingway-1.5-q4_k_m.linux-x86_64-cuda.cpu.txt"
+        },
         "cuda": null,
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.10.0",
+        "date": "2026-11-01"
+      },
       "transitions": [
         {
           "tier": "tier2",
@@ -4467,11 +4554,40 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.10.0",
+          "date": "2026-11-01",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "b09cd0bee1b21bc1abb2d226749cdae586df94fc",
+          "caps": {
+            "version": "1.10.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 24,
+            "gpu_backend": null,
+            "gpu_name": null
+          },
+          "output_sha256": "2dc9516322c964f1172c2979e9646bbf57822c945be6c21610e3b97820b835c4",
+          "ran": "runner -m HemmingwayAI_Hemmingway-1.5-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/hemmingway-1.5-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
         "cuda": null,
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.10.0",
+        "date": "2026-11-01"
+      },
       "transitions": [
         {
           "tier": "tier2",
