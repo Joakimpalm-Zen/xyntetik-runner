@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Hemmingway-1 and Hemmingway-1.5 in the validated roster.** Four
+  third-party files (Q4_K_M and Q8_0 of each) measured against
+  HemmingwayAI's BF16 weights in float32 over 2,000 positions: the
+  Hemmingway-1 Q4_K_M fails the bar (0.248 mean KLD, 91.6% margin-qualified
+  top-1, the same on CPU and CUDA), and the other three pass. Validation only:
+  the weights are CC-BY-NC-4.0, and nothing is redistributed or derived from
+  them (Tier 2, #523).
+
 - **Metal decode microbatch: the weight products read each block once for all
   slots.** When several `--parallel` slots decode together on Metal, the Q8_0,
   Q6_K and Q4_K matvecs and the head now load each weight block once for the
