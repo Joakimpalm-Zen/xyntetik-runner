@@ -97,6 +97,17 @@ static void derive_usage(FILE *f) {
         "(default scripts/gold-logits.py beside this binary).\n");
 }
 
+// files shipped beside the binary, spelled in the platform's separator so
+// the path joined to plat_executable_dir() (which ends in '\\' on Windows)
+// is one style throughout
+#ifdef _WIN32
+#define BESIDE_CORPUS "tests\\fixtures\\gold-corpus-2k.txt"
+#define BESIDE_GOLD   "scripts\\gold-logits.py"
+#else
+#define BESIDE_CORPUS "tests/fixtures/gold-corpus-2k.txt"
+#define BESIDE_GOLD   "scripts/gold-logits.py"
+#endif
+
 static char *join(const char *a, const char *b) {
     size_t n = strlen(a) + strlen(b) + 1;
     char *s = malloc(n);
@@ -733,7 +744,7 @@ int derive_main(int argc, char **argv) {
     char *dir = plat_executable_dir();
     char *self = plat_executable_path();
     if (!dir || !self) { fprintf(stderr, "error: cannot find this binary's path\n"); return 1; }
-    char *default_corpus = join(dir, "tests/fixtures/gold-corpus-2k.txt");
+    char *default_corpus = join(dir, BESIDE_CORPUS);
     if (!o.corpus) o.corpus = default_corpus;
     else o.corpus_given = true;
     if (!plat_file_readable(o.corpus)) {
@@ -743,7 +754,7 @@ int derive_main(int argc, char **argv) {
     parent_meta pm;
     if (!read_parent(o.parent, &pm)) return 1;
     const char *gold_env = getenv("RUNNER_GOLD_LOGITS");
-    char *gold_script = gold_env && *gold_env ? strdup(gold_env) : join(dir, "scripts/gold-logits.py");
+    char *gold_script = gold_env && *gold_env ? strdup(gold_env) : join(dir, BESIDE_GOLD);
     if (o.reference_hf && !gold_ready(gold_script, !(gold_env && *gold_env))) return 1;
 
     char *quant_rec = suffixed(o.out, ".quant.json");

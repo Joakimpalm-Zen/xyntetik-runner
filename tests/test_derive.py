@@ -18,6 +18,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -243,6 +244,12 @@ def test_files_beside_the_binary_are_found_from_its_real_directory(runner_bin, t
     hf.mkdir()
     rc, _, se = derive(copy, parent, tmp_path / "c.gguf", "--quant", "q4_0", "--reference", f"hf:{hf}")
     assert rc != 0
+    # the path derive printed, in one separator style (Windows prints
+    # backslashes), against where the copy's own scripts/ would be
+    m = re.search(r"\((.*gold-logits\.py) is not readable\)", se)
+    assert m, se[-600:]
+    printed = m.group(1)
+    assert ("/" in printed) != ("\\" in printed), printed   # not mixed
     want = os.path.realpath(other / "scripts" / "gold-logits.py")
-    assert want in se, se[-600:]
+    assert os.path.normcase(os.path.normpath(printed)) == os.path.normcase(os.path.normpath(want))
     assert "/proc/self" not in se
