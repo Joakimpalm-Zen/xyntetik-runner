@@ -253,3 +253,34 @@ def test_files_beside_the_binary_are_found_from_its_real_directory(runner_bin, t
     want = os.path.realpath(other / "scripts" / "gold-logits.py")
     assert os.path.normcase(os.path.normpath(printed)) == os.path.normcase(os.path.normpath(want))
     assert "/proc/self" not in se
+
+
+def test_reference_args_reach_the_reference_script(runner_bin, tmp_path):
+    """--reference-arg ARG (repeatable) passes ARG to gold-logits.py as given:
+    how a reference too large for float32 in memory is run (--upcast-at-use,
+    or --offload-dir DIR --max-memory GIB, #528). It belongs to --reference
+    and is refused without it, rather than ignored."""
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    seen = tmp_path / "argv.json"
+    script = tmp_path / "fake_gold_argv.py"
+    script.write_text(f'''import json, sys
+a = sys.argv
+json.dump(a, open({str(seen)!r}, "w"))
+json.dump({{"summary": {{"positions": 40, "sides": {{"a": {{"mean_kld_vs_gold": 0.01,
+    "max_kld_vs_gold": 0.1, "top1_agreement_pct": 99.0, "margin_qualified_top1_pct": 100.0}}}},
+    "reference_class": "FakeForCausalLM"}}, "rows": []}}, open(a[a.index("--out") + 1], "w"))
+''')
+    rc, _, se = derive(runner_bin, parent, tmp_path / "r.gguf", "--quant", "q4_0",
+                       "--reference", f"hf:{hf}", "--reference-arg", "--upcast-at-use",
+                       "--reference-arg", "--trust-remote-code",
+                       env={"RUNNER_GOLD_LOGITS": str(script)})
+    assert rc == 0, se[-1500:]
+    argv = json.loads(seen.read_text())
+    assert "--upcast-at-use" in argv and "--trust-remote-code" in argv
+    rec = json.loads(pathlib.Path(str(tmp_path / "r.gguf") + ".derive.json").read_text())
+    assert rec["reference"]["args"] == ["--upcast-at-use", "--trust-remote-code"]
+    rc, _, se = derive(runner_bin, parent, tmp_path / "s.gguf", "--quant", "q4_0",
+                       "--reference-arg", "--upcast-at-use")
+    assert rc != 0 and "--reference-arg" in se

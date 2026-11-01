@@ -36,7 +36,9 @@ Current release and unreleased changes. Compatibility follows the
   hand-written plan. The default reference is the parent file, and its card
   says so in its first lines and states no bar verdict. `--reference hf:DIR`
   measures against the publisher's float32 model, and that card leads with
-  pass or fail. The license is copied from the parent, and a parent without
+  pass or fail. `--reference-arg ARG` passes arguments to that reference run
+  (`--upcast-at-use`, or `--offload-dir` and `--max-memory`) for a model too
+  large for float32 in memory. The license is copied from the parent, and a parent without
   one is refused. `--score` gains `--score-out F` and `--score-tokens N`, and
   its JSON gains `n_special` (R17.6.1).
 

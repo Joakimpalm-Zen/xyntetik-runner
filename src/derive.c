@@ -43,6 +43,8 @@ static const struct { const char *flag, *key; } RECIPE[] = {
 
 typedef struct {
     const char *parent, *out, *corpus, *reference_hf;
+    const char *ref_args[8];   // --reference-arg: passed to gold-logits.py as given
+    int n_ref_args;
     const char *ctx, *threads, *gpu;
     const char *recipe[N_RECIPE];   // by RECIPE index; NULL = not given
     int start, stride, count;
@@ -89,6 +91,10 @@ static void derive_usage(FILE *f) {
         "                 transformers); the only reference a card may state the\n"
         "                 bar against. Default: the parent file in Runner's\n"
         "                 arithmetic, named so on the card, with no bar verdict\n"
+        "  --reference-arg ARG  with --reference: pass ARG to gold-logits.py as\n"
+        "                 given, repeatable (--upcast-at-use, or --offload-dir DIR\n"
+        "                 --max-memory GIB, for a reference too large for float32\n"
+        "                 in memory)\n"
         "  --corpus FILE  the text (default tests/fixtures/gold-corpus-2k.txt)\n"
         "  --window S:T:N positions S + n*T for n < N (default 8:15:300)\n"
         "  -c N, -t N, --gpu X  passed to the score runs (--gpu default off)\n\n"
@@ -143,6 +149,13 @@ static int parse_args(int argc, char **argv, derive_opts *o) {
         else if (!strcmp(a, "-m")) o->parent = v;
         else if (!strcmp(a, "-o") || !strcmp(a, "--out")) o->out = v;
         else if (!strcmp(a, "--corpus")) o->corpus = v;
+        else if (!strcmp(a, "--reference-arg")) {
+            if (o->n_ref_args == (int)(sizeof o->ref_args / sizeof o->ref_args[0])) {
+                fprintf(stderr, "error: at most 8 --reference-arg\n");
+                return 1;
+            }
+            o->ref_args[o->n_ref_args++] = v;
+        }
         else if (!strcmp(a, "-c")) o->ctx = v;
         else if (!strcmp(a, "-t")) o->threads = v;
         else if (!strcmp(a, "--gpu")) o->gpu = v;
@@ -180,6 +193,11 @@ static int parse_args(int argc, char **argv, derive_opts *o) {
             fprintf(stderr, "error: runner derive: unknown option %s (runner derive --help)\n", a);
             return 1;
         }
+    }
+    if (o->n_ref_args && !o->reference_hf) {
+        fprintf(stderr, "error: --reference-arg passes arguments to the publisher reference and "
+                "needs --reference hf:DIR\n");
+        return 1;
     }
     if (!o->parent || !o->out) {
         fprintf(stderr, "error: runner derive needs -m PARENT and -o OUT (runner derive --help)\n");
@@ -429,6 +447,7 @@ static bool gold_measure(const derive_opts *o, const char *script, const char *f
     // Runner prepended BOS to the text it scored; the reference must see the
     // same prefix even where the publisher's tokenizer adds none
     if (n_special > 0) a[n++] = "--force-bos";
+    for (int i = 0; i < o->n_ref_args; i++) a[n++] = o->ref_args[i];
     a[n] = NULL;
     int rc = plat_spawn_wait(a);
     if (rc != 0) {
@@ -735,6 +754,8 @@ static void put_command(sbuf *b, const derive_opts *o) {
     if (o->corpus_given) sb_fmt(b, " --corpus %s", plat_path_base(o->corpus));
     sb_fmt(b, " --window %d:%d:%d", o->start, o->stride, o->count);
     if (o->reference_hf) sb_fmt(b, " --reference hf:%s", plat_path_base(o->reference_hf));
+    for (int i = 0; i < o->n_ref_args; i++)
+        sb_fmt(b, " --reference-arg %s", plat_path_base(o->ref_args[i]));
 }
 
 int derive_main(int argc, char **argv) {
@@ -834,7 +855,12 @@ int derive_main(int argc, char **argv) {
     if (publisher) {
         sb_lit(&r, "\"hf\":"); sb_str(&r, o.reference_hf);
         sb_lit(&r, ",\"class\":"); sb_str(&r, m.reference_class);
-        sb_lit(&r, ",\"script\":\"scripts/gold-logits.py\"");
+        sb_lit(&r, ",\"script\":\"scripts/gold-logits.py\",\"args\":[");
+        for (int i = 0; i < o.n_ref_args; i++) {
+            if (i) sb_lit(&r, ",");
+            sb_str(&r, o.ref_args[i]);
+        }
+        sb_lit(&r, "]");
     } else {
         sb_lit(&r, "\"file\":"); sb_str(&r, o.parent);
         sb_fmt(&r, ",\"sha256\":\"%s\",\"arithmetic\":\"runner, cpu\"", psha);
