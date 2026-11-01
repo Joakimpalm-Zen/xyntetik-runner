@@ -4566,7 +4566,7 @@ size_t render_messages(int tmpl, const chat_msg *msgs, int n_msgs,
 // last strlen(tag)-1 bytes are held back while scanning so a tag split across
 // chunk boundaries still resolves.
 
-enum { TS_CONTENT, TS_WS, TS_THINK };
+enum { TS_CONTENT, TS_WS, TS_THINK, TS_NL };   // TS_NL: newlines after a close (trim_nl)
 
 void think_init(think_split *t, const char *open, const char *close) {
     memset(t, 0, sizeof(*t));
@@ -4577,6 +4577,10 @@ void think_init(think_split *t, const char *open, const char *close) {
 void think_init_reasoning(think_split *t, const char *open, const char *close) {
     think_init(t, open, close);
     if (open) t->state = TS_THINK;
+}
+
+void think_trim_newlines(think_split *t, bool on) {
+    t->trim_nl = on;
 }
 
 void think_free(think_split *t) {
@@ -4625,21 +4629,33 @@ int think_feed(think_split *t, const char *bytes, int n, think_cb cb, void *ud) 
             if (len == 0) { t->n = 0; return 0; }
             t->state = TS_THINK;
         }
+        if (t->state == TS_NL) { // drop newlines after a close tag
+            while (len > 0 && *p == '\n') { p++; len--; }
+            if (len == 0) { t->n = 0; return 0; }
+            t->state = TS_CONTENT;
+        }
         bool     think = t->state == TS_THINK;
         const char *tag = think ? t->close : t->open;
         int          tl = think ? cl : ol;
         const char   *q = ts_find(p, len, tag, tl);
         if (!q) {
             int hold = tl - 1 < len ? tl - 1 : len;   // possible partial tag
+            // reasoning newlines that may turn out to precede the close wait
+            // with it: the bytes come back on the next feed
+            if (think && t->trim_nl)
+                while (hold < len && p[len - hold - 1] == '\n') hold++;
             int rc = len - hold > 0 ? cb(ud, think, p, len - hold) : 0;
             ts_keep(t, p + (len - hold), hold);
             return rc;
         }
-        int rc = q > p ? cb(ud, think, p, (int)(q - p)) : 0;
+        int seg = (int)(q - p);
+        if (think && t->trim_nl)
+            while (seg > 0 && p[seg - 1] == '\n') seg--;
+        int rc = seg > 0 ? cb(ud, think, p, seg) : 0;
         if (rc) { ts_keep(t, q + tl, len - (int)(q - p) - tl); return rc; }
         len -= (int)(q - p) + tl;
         p = q + tl;
-        t->state = think ? TS_CONTENT : TS_WS;
+        t->state = think ? (t->trim_nl ? TS_NL : TS_CONTENT) : TS_WS;
     }
 }
 
@@ -4647,7 +4663,7 @@ int think_finish(think_split *t, think_cb cb, void *ud) {
     if (!t->open || t->n == 0) { t->n = 0; return 0; }
     // a held partial tag never completed: it is literal text of whichever
     // section we were in (whitespace after an open tag is dropped)
-    int rc = t->state == TS_WS ? 0
+    int rc = t->state == TS_WS || t->state == TS_NL ? 0
            : cb(ud, t->state == TS_THINK, t->buf, t->n);
     t->n = 0;
     return rc;

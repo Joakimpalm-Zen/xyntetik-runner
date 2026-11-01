@@ -5127,6 +5127,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         think_init_reasoning(&g.ts, m->think_open, m->think_close);
     else
         think_init(&g.ts, chat ? m->think_open : NULL, m->think_close);
+    think_trim_newlines(&g.ts, m->think_trim_nl);
     const tool_envelope *stream_env = env ? env
         : q.stream && chat && s->tmpl == TMPL_MUSE && q.schema
         ? &muse_plain_env : NULL;

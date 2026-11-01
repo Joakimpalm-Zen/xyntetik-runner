@@ -880,6 +880,7 @@ typedef int (*think_cb)(void *ud, int reasoning, const char *bytes, int n);
 typedef struct {
     const char *open, *close;
     int   state;
+    bool  trim_nl;      // think_trim_newlines
     char *buf;
     int   n, cap;
 } think_split;
@@ -905,6 +906,10 @@ typedef struct {
 
 void think_init(think_split *t, const char *open, const char *close);
 void think_init_reasoning(think_split *t, const char *open, const char *close);
+// Newlines at the close tag are framing, not text: drop the reasoning's
+// trailing ones before it and the content's leading ones after it, as the
+// publisher's template does when it reads a turn back (model_t.think_trim_nl).
+void think_trim_newlines(think_split *t, bool on);
 int  think_feed(think_split *t, const char *bytes, int n, think_cb cb, void *ud);
 int  think_finish(think_split *t, think_cb cb, void *ud); // flush held bytes
 void think_free(think_split *t);

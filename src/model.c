@@ -2516,6 +2516,11 @@ static bool bind_meta_qwen3(model_t *m, gguf_file *g, const char *arch) {
     // NeoX rope) with a sparse-MoE FFN, handled by the is_moe layer path.
     m->think_open  = "<think>";
     m->think_close = "</think>";
+    // Qwen3's and Mellum2.1's templates read a turn back as
+    // content.split('</think>')[0].rstrip('\n') for the reasoning and
+    // .split('</think>')[-1].lstrip('\n') for the answer: the newlines at
+    // the close are framing (Qwen/Qwen3-8B, Mellum2.1-12B-A2.5B-Thinking)
+    m->think_trim_nl = true;
     return true;
 }
 
@@ -2616,6 +2621,10 @@ static bool bind_meta_qwen35(model_t *m, gguf_file *g, const char *arch) {
     m->qwen35            = true;
     m->think_open        = "<think>";
     m->think_close       = "</think>";
+    // the newlines at the close are framing: Qwen 3.5 and 3.6 (and Ornith,
+    // Clef-Flash) read a turn back with rstrip('\n') / lstrip('\n') around
+    // '</think>', Qwen 3.8 and Flash-Next with |trim on both parts
+    m->think_trim_nl     = true;
     m->full_attn_interval = (int)gguf_get_u32(g, AK("full_attention_interval"), 4);
     m->ssm.conv_kernel   = (int)gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
     m->ssm.inner         = (int)gguf_get_u32(g, AK("ssm.inner_size"), 0);
