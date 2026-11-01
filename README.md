@@ -189,34 +189,53 @@ curl -r 0-16777215 -L -o head.gguf \
 [How the verdict is computed](MANUAL.md#deciding-before-you-download)
 
 <a id="models-and-conversion"></a>
-## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Make your own model file
+<a id="derive"></a>
+## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Make your own model file, measured
 
-A [17.99 GB Qwen3-30B file](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF)
-came from one command and a one-line plan. It is smaller than the official
-4-bit file and closer to the original: 99.50% agreement where that file
-reads 94.75%.
+A [17.1 GB Qwen3-30B-A3B file](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-derive-GGUF) came from one
+command, measured against Qwen's own float32 model and carded by Runner itself. It is 1.45 GB smaller than Qwen's
+official 4-bit file and passes the fidelity bar that file fails: 0.0290 mean KLD and 99.01% margin-qualified top-1,
+where the official file reads 0.0909 and 94.80%.
 
-**Why.** A model file is a huge table of numbers, and the usual way to shrink
-it squeezes every part the same amount, including the parts that matter most.
-Runner lets you choose which parts to squeeze and which to keep sharp, and
-then tells you how far the result drifted from the original.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-derive-process-dark.svg">
+    <img src="site/assets/readme-derive-process-light.svg" alt="The usual way shrinks a model with the same mix for every model, scores it elsewhere if at all and writes the card by hand; runner derive is one command that makes the file, measures it against the publisher's float32 model and writes its card and record" width="640">
+  </picture>
+</p>
 
-**How.** The plan that built that file, and the commands:
+**Why.** The usual way to shrink a model squeezes every part by the same rule, and the file is rarely measured
+against the original afterwards. `runner derive` measures which parts can take the squeeze, makes the file, measures
+how far it drifted from the publisher's model, and writes the numbers into the file's card. A file that fails the
+bar says so in the first line of its own card.
 
-```json
-{"default": "keep", "rules": [{"match": "_exps.weight", "type": "q4_0"}]}
-```
+**How.** One command, from a parent file and a target size:
 
 ```sh
-# keep some tensors sharp and squeeze others, from a plan file
+./runner derive -m Qwen3-30B-A3B-Q8_0.gguf -o out.gguf --target-size 17106040320 \
+    --high q4_0 --low q3_k --match _exps --imatrix Qwen_Qwen3-30B-A3B.imatrix \
+    --reference hf:Qwen3-30B-A3B --reference-arg --upcast-at-use
+```
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-derive-result-dark.svg">
+    <img src="site/assets/readme-derive-result-light.svg" alt="Three Qwen3-30B-A3B files against Qwen's float32 model over the same 2,000 positions: the official Q4_K_M at 18.56 GB reads 0.0909 mean KLD and fails the 0.05 bar, our hand-built 17.99 GB selective file 0.0279, and the 17.11 GB derive file 0.0290" width="640">
+  </picture>
+</p>
+
+The hand-built selective file is still slightly closer on mean KLD (p 0.02), and derive's file is 0.88 GB smaller;
+on top-1 the two tie. [The record](docs/compat-reports/qwen3-30b-a3b-derive-2026-11-02/README.md) ·
+[`runner derive` options](MANUAL.md#cli-derive)
+
+**Lower-level tools.** derive strings these together, and each also runs on its own. A plan file sets each
+tensor's precision by name, `--prune-experts` drops the experts a mixture-of-experts model rarely uses, and
+`--remove-sublayer` takes out one block's attention or feed-forward branch:
+
+```sh
 ./runner -m model-Q8_0.gguf --rewrite out.gguf --type-plan plan.json
-# drop the experts a mixture-of-experts model rarely uses
 ./runner -m model.gguf --rewrite pruned.gguf --prune-experts keep.json
-# remove one block's attention or feed-forward sublayer
 ./runner -m model.gguf --rewrite cut.gguf --remove-sublayer attn:48
-# then score the result against its parent
-python3 scripts/kld-compare-raw.py --model-a out.gguf --model-b model-Q8_0.gguf \
-    --runner ./runner --corpus corpus.txt --max-positions 400 --out fidelity.json
 ```
 
 [Plan formats and limits](MANUAL.md#models-and-conversion)
@@ -407,12 +426,6 @@ recorded failure.
   [Details](MANUAL.md#runtime-and-hardware)
 - **Pause and resume a generation.** Session images with `--sessions DIR`.
   [Details](docs/session-images.md)
-- **Make your own measured file.** `runner derive -m parent.gguf -o out.gguf
-  --quant q4_k` (or `--target-size BYTES` for selective precision) makes the
-  file, measures it, and writes its record and a Hugging Face card. Measured
-  against the parent by default, so the card states no pass or fail; with
-  `--reference hf:DIR` it is measured against the publisher's float32 model
-  and the card leads with the verdict. [Details](MANUAL.md#cli-derive)
 - **Container image and clients.** `ghcr.io/joakimpalm-zen/xyntetik-runner`,
   a [Python client](python/README.md) and a
   [TypeScript client](clients/typescript/README.md).
