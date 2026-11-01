@@ -590,6 +590,9 @@ typedef struct {
     int    attn_temp_floor_scale;
     float  attn_temp_scale;
     float  attn_temp_offset;
+    bool   attn_temp_all;         // mistral3: the temperature scales Q on
+                                  // every layer, after its rope (llama 4
+                                  // applies it on the NoPE layers only)
     bool   swa_rope_global;
     bool   gptoss;           // gpt-oss: attention sinks + swiglu_oai + MoE
     bool   flint;            // flint: sinks + QK norms + NoPE full layers + MoE
@@ -701,13 +704,18 @@ static inline bool model_layer_ropes(const model_t *m, int l) {
     return !(m->no_rope_layer_step > 0 &&
              (l + 1) % m->no_rope_layer_step == 0);
 }
-// The per-token Q scale a NoPE layer applies, from llama.cpp's
+// The per-token Q scale of the attention temperature, from llama.cpp's
 // llm_graph_input_attn_temp::set_input. Returns 1 when the knob is off.
 static inline float model_attn_temp(const model_t *m, int pos) {
     if (m->attn_temp_scale == 0.0f || m->attn_temp_floor_scale == 0) return 1.0f;
     return logf(floorf(((float)pos + m->attn_temp_offset) /
                        (float)m->attn_temp_floor_scale) + 1.0f)
            * m->attn_temp_scale + 1.0f;
+}
+// Whether layer l scales Q by that temperature: llama 4 on the layers that
+// skip rope (instead of the rotation), mistral3 on every layer (after it).
+static inline bool model_temp_applies(const model_t *m, int l) {
+    return m->attn_temp_scale != 0.0f && (m->attn_temp_all || !model_layer_ropes(m, l));
 }
 static inline float model_rope_mscale(const model_t *m, int l) {
     bool local = m->l_is_swa != NULL && m->l_is_swa[l];

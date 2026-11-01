@@ -3996,7 +3996,7 @@ static void metal_enc_rope_store(metal_fwd *F, int l, const metal_layer_plan *P)
     // (budget: -2 dispatches x n_layer per token). q8 caches and
     // prefill keep the split path; byte identity is the gate.
     bool fused_rs = n == 1 && !q8 && !vq8 && owns_kv && metal_fuse_on() &&
-                    g->p_rope_store && model_layer_ropes(m, l);
+                    g->p_rope_store && model_layer_ropes(m, l) && !m->attn_temp_all;
     if (fused_rs) {
         metal_fuse_announce();
         int half = model_rope_dim(m, l) / 2;
@@ -4025,12 +4025,12 @@ static void metal_enc_rope_store(metal_fwd *F, int l, const metal_layer_plan *P)
           threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
         return;
     }
-    if (model_layer_ropes(m, l)) {
+    if (model_layer_ropes(m, l))
         enc_rope_n(g, F->e, m, g->q,  0, m->n_head, pos, l, n, q_dim);
-    } else if (m->attn_temp_scale != 0.0f) {
-        // NoPE layer: no rotation, and THIS is where the llama-4
-        // attention temperature applies -- on the layers that skipped
-        // rope, not on every layer (matching the CPU path and
+    if (model_temp_applies(m, l)) {
+        // The attention temperature: llama 4 applies it on the layers that
+        // skipped rope (and only there), mistral3 on every layer after its
+        // rotation (model_temp_applies, matching the CPU path and
         // llama.cpp). The factor is per POSITION, so unlike everything
         // else here it cannot be one batched dispatch; it is one scale
         // per column, the same shape the CUDA backend uses.
@@ -4568,8 +4568,10 @@ static bool metal_fwd_layer(metal_fwd *F, int l) {
     // here). Models it cannot serve byte-exactly stay on the split path.
     // An adapter adds its delta after each projection, so a block that
     // carries one keeps the split path the delta can be encoded into.
+    // mistral3's attention temperature scales Q after its rope, which
+    // neither fused kernel carries: it keeps the split path too.
     id<MTLComputePipelineState> fpipe =
-        n == 1 && metal_fuse_on() && !g->lora_a && !ly->skip_mixer
+        n == 1 && metal_fuse_on() && !g->lora_a && !ly->skip_mixer && !m->attn_temp_all
             ? metal_front_pipe(g, m, l) : nil;
     bool front = fpipe != nil;
     uint64_t qw = 0, kw = 0, vw = 0;
@@ -4951,7 +4953,8 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                 if (owns_kv)
                     enc_rope_n(g, e, m0, g->kt, foff((size_t)c * kv_dim),
                                n_kv, p, l, 1, kv_dim);
-            } else if (m0->attn_temp_scale != 0.0f) {
+            }
+            if (model_temp_applies(m0, l)) {
                 float ts = model_attn_temp(m0, p);
                 if (ts != 1.0f)
                     enc_scale(g, e, g->q, foff((size_t)c * q_dim), q_dim_l, ts);

@@ -89,6 +89,7 @@ N_FF_SET = None    # --n-ff N: FFN width (an odd N gives odd ffn_gate/ffn_up row
 GPU_UNSUPPORTED = None  # one named tensor stored as CPU-only IQ2_XXS
 ZERO_BRANCHES = False  # --zero-branches: attn_output/ffn_down all zero
 SCALE_TENSOR = None    # --scale-tensor NAME:FACTOR (act-trace mismatch fixture)
+MISTRAL3_ROPE = None   # --mistral3-rope BETA,ORIG,FACTOR,LOGMUL
 POOLING = None     # --pooling N: {arch}.pooling_type (llama.cpp's enum)
 ADD_EOS = False    # --add-eos: tokenizer.ggml.add_eos_token = true
 BPE_PRE = None     # --bpe-pre NAME: a GPT-2 byte-level BPE vocabulary declaring that split
@@ -364,6 +365,15 @@ while i < len(args):
         i += 1
         name, _, factor = args[i].rpartition(":")
         SCALE_TENSOR = (name, float(factor))
+    elif a == "--mistral3-rope":
+        # BETA,ORIG,FACTOR,LOGMUL: Ministral 3's rope as its converter writes
+        # it, YaRN at FACTOR over ORIG positions, transformers' mscale_all_dim
+        # as rope.scaling.yarn_log_multiplier (omitted when LOGMUL is 0) and
+        # llama_4_scaling_beta as attention.temperature_scale (omitted when
+        # BETA is 0); pair with --arch mistral3
+        i += 1
+        _b, _o, _f, _lm = args[i].split(",")
+        MISTRAL3_ROPE = (float(_b), int(_o), float(_f), float(_lm))
     elif a == "--zero-branches":
         # Every block's attention and FFN write zero into the residual
         # stream, so each position's final hidden state IS its token's
@@ -865,6 +875,15 @@ if ATTN_NOPE_STEP:
         ku(f"{ARCH}.attention.attn_temp_floor_scale", ATTN_TEMP_FLOOR),
         kf(f"{ARCH}.attention.attn_temp_scale", ATTN_TEMP_SCALE),
         kf(f"{ARCH}.attention.attn_temp_offset", 1.0),
+    ]
+if MISTRAL3_ROPE:
+    _b, _o, _f, _lm = MISTRAL3_ROPE
+    meta_kvs += [
+        ks(f"{ARCH}.rope.scaling.type", "yarn"),
+        kf(f"{ARCH}.rope.scaling.factor", _f),
+        ku(f"{ARCH}.rope.scaling.original_context_length", _o),
+        *([kf(f"{ARCH}.rope.scaling.yarn_log_multiplier", _lm)] if _lm else []),
+        *([kf(f"{ARCH}.attention.temperature_scale", _b)] if _b else []),
     ]
 if ARCH == "phi3":
     meta_kvs += [

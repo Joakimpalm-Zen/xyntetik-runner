@@ -523,6 +523,18 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
             ? gguf_get_f32(g, RK("rope.scaling.yarn_attn_factor"),
                            1.0f + 0.1f * logf(factor))
             : 1.0f + 0.1f * logf(factor);
+        // A file that carries transformers' mscale_all_dim (written as
+        // rope.scaling.yarn_log_multiplier, mistral3's converter) and no
+        // attention factor of its own: transformers' attention_factor is
+        // get_mscale(factor, mscale) / get_mscale(factor, mscale_all_dim),
+        // which llama.cpp computes with mscale = 1 (llama-context.cpp). For
+        // Ministral 3 (both 1) that is 1, not the default 1 + 0.1 ln(factor).
+        float log_mul = gguf_get_f32(g, RK("rope.scaling.yarn_log_multiplier"), 0.0f);
+        if (yarn_meta && log_mul != 0.0f &&
+            !gguf_get(g, RK("rope.scaling.yarn_attn_factor"))) {
+            float lf = logf(factor);
+            m->rope_mscale = (0.1f * lf + 1.0f) / (0.1f * log_mul * lf + 1.0f);
+        }
     }
     // The local table above was built from the raw base, BEFORE the block that
     // scales the global frequencies. For an arch whose sliding layers share
@@ -1242,7 +1254,7 @@ const char *const *model_supported_archs(size_t *count) {
         "smollm", "stablelm", "gemma3", "gemma4", "phi3", "gpt-oss",
         "apertus", "afmoe", "muse-glimmer", "granite", "granitehybrid",
         "nemotron_h", "nemotron_h_moe", "clef", "mellum", "lfm2", "lfm2moe",
-        "spark2_5", "k2-horizon", "flint",
+        "spark2_5", "k2-horizon", "flint", "mistral3",
     };
     if (count) *count = sizeof(arches) / sizeof(arches[0]);
     return arches;
@@ -2255,7 +2267,8 @@ static bool bind_hparams(model_t *m, gguf_file *g, const char *arch, bool hybrid
     m->rope_base   = gguf_get_f32(g, AK("rope.freq_base"), 10000.0f);
     // llama-arch GGUFs have Q/K permuted at conversion for adjacent-pair rope;
     // qwen2 (and other HF-layout archs) need NeoX-style half-split rotation
-    m->rope_neox   = strcmp(arch, "llama") != 0 && strcmp(arch, "mistral") != 0;
+    m->rope_neox   = strcmp(arch, "llama") != 0 && strcmp(arch, "mistral") != 0 &&
+                     strcmp(arch, "mistral3") != 0;
     m->embd_scale  = 1.0f;
     m->logit_scale = 1.0f;
     m->resid_scale = 1.0f;
@@ -3446,6 +3459,26 @@ static bool bind_resolve_defaults(model_t *m, gguf_file *g, const char *arch) {
     m->attn_temp_floor_scale = (int)gguf_get_u32(g, AK("attention.attn_temp_floor_scale"), 0);
     m->attn_temp_scale       = gguf_get_f32(g, AK("attention.attn_temp_scale"), 0.0f);
     m->attn_temp_offset      = gguf_get_f32(g, AK("attention.attn_temp_offset"), 1.0f);
+    // mistral3 (Ministral 3, Devstral Small 2, Magistral Small 1.2): the
+    // llama 4 temperature (transformers' llama_4_scaling_beta, written as
+    // attention.temperature_scale) on every layer's Q after its rope, at
+    // 1 + beta * ln(1 + floor(pos / original context)), the same floor as
+    // llama.cpp's n_ctx_orig_yarn and offset 0 (llama_model_mistral3)
+    if (strcmp(arch, "mistral3") == 0) {
+        float beta = gguf_get_f32(g, AK("attention.temperature_scale"), 0.0f);
+        if (beta != 0.0f) {
+            int orig = (int)gguf_get_u32(g, AK("rope.scaling.original_context_length"), 0);
+            if (orig <= 0) {
+                fprintf(stderr, "error: mistral3 attention temperature without "
+                        "rope.scaling.original_context_length\n");
+                return false;
+            }
+            m->attn_temp_scale       = beta;
+            m->attn_temp_floor_scale = orig;
+            m->attn_temp_offset      = 0.0f;
+            m->attn_temp_all         = true;
+        }
+    }
     if (m->no_rope_layer_step < 0) {
         fprintf(stderr, "error: negative no_rope_layer_step\n");
         return false;
@@ -10525,13 +10558,13 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
                    sizeof(float) * (size_t)q_dim);
             qk_norm(qt, ly->qnorm_w, n_head, hd_l, m->rms_eps);
         }
-        if (model_layer_ropes(m, l)) {
+        if (model_layer_ropes(m, l))
             rope_apply(m, qt, n_head, t, l);
-        } else {
-            // NoPE layer: the serving forward skips the rotation and scales
-            // Q by the attention temperature instead; recomputing with rope
-            // here handed the adjoint a Q the model never used (NoPE
-            // fixture: FD worst relative error 1.7 before this branch)
+        if (model_temp_applies(m, l)) {
+            // the serving forward's temperature, where it applies: a NoPE
+            // layer's only Q transform (recomputing with rope there handed
+            // the adjoint a Q the model never used: NoPE fixture FD worst
+            // relative error 1.7 before this branch), or mistral3's after rope
             float ts = model_attn_temp(m, t);
             if (ts != 1.0f)
                 for (int i = 0; i < q_dim; i++) qt[i] *= ts;
@@ -10980,9 +11013,11 @@ NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s
         if (model_layer_ropes(m, l)) {
             rope_unapply(m, dq + (size_t)t * q_dim, n_head, t, l);
             if (owns) rope_unapply(m, dk + (size_t)t * kv_dim, n_kv, t, l);
-        } else {
-            // a NoPE layer's only Q transform is the scalar temperature, whose
-            // adjoint is the same scalar; K is stored as projected (no rope)
+        }
+        if (model_temp_applies(m, l)) {
+            // the temperature is a scalar on Q, its own adjoint, and commutes
+            // with the rotation; K carries none (stored as projected on a NoPE
+            // layer, roped on mistral3's)
             float ts = model_attn_temp(m, t);
             if (ts != 1.0f) {
                 float *dqt = dq + (size_t)t * q_dim;
@@ -12978,12 +13013,12 @@ NUM_STAGE void attn_rope_store(model_t *m, const fwd_layer *c) {
         if (ly->qnorm_w)
             qk_norm(m->q + (size_t)b * q_dim, ly->qnorm_w, m->n_head,
                     hd, m->rms_eps);
-        if (model_layer_ropes(m, l)) {
+        if (model_layer_ropes(m, l))
             rope_apply(m, m->q + (size_t)b * q_dim, m->n_head, pos + b, l);
-        } else {
-            // NoPE layer: no rotation, and THIS is where the attention
-            // temperature applies — llama.cpp scales Q only on the layers
-            // that skipped rope, not on every layer.
+        if (model_temp_applies(m, l)) {
+            // the attention temperature: llama 4 scales Q on the layers that
+            // skipped rope (and only there), mistral3 on every layer after
+            // its rotation (model_temp_applies)
             float ts = model_attn_temp(m, pos + b);
             if (ts != 1.0f)
                 for (int i = 0; i < q_dim; i++)

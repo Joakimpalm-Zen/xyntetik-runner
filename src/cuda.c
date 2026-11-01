@@ -4252,7 +4252,7 @@ static bool tc_promoted(const model_t *m, int type) {
     // device-expert row is still owed before it is called covered (R4.26.8).
     static const char *archs[] = { "llama", "phi3", "gemma4", "qwen3",
                                    "qwen35", "qwen4exp",
-                                   "mistral", "gemma3", "smollm", "granite",
+                                   "mistral", "mistral3", "gemma3", "smollm", "granite",
                                    "muse-glimmer", "qwen2",
                                    "apertus", "nemotron_h", "granitehybrid" };
     for (size_t i = 0; i < sizeof(archs) / sizeof(*archs); i++)
@@ -4800,14 +4800,17 @@ static bool enc_scale(gpu_t *g, CUdeviceptr x, float s, int n, int batch, int xs
     return launch(g, g->sw->f_scale, (n + 255) / 256, batch, 1, 256, p);
 }
 
-// NoPE + attention temperature, mirroring the CPU tail. A NoPE layer skips
-// rope and instead scales Q by a per-token factor that grows with position;
-// the factor differs per token, so this is one enc_scale per column rather
-// than one for the tile. Only reached by a model that declares the knob.
+// Rope and the attention temperature, mirroring the CPU tail. llama 4's NoPE
+// layer skips rope and instead scales Q by a per-token factor that grows with
+// position; mistral3 scales every layer's Q by it after the rotation
+// (model_temp_applies). The factor differs per token, so this is one
+// enc_scale per column rather than one for the tile. Only reached by a model
+// that declares the knob.
 static bool enc_rope_or_temp(gpu_t *g, model_t *m, CUdeviceptr q, int n_heads,
                              int tn, int q_dim, int l, int pos,
                              bool (*rope)(gpu_t *, model_t *, CUdeviceptr, int, int, int, int)) {
-    if (model_layer_ropes(m, l)) return rope(g, m, q, n_heads, tn, q_dim, l);
+    if (model_layer_ropes(m, l) && !rope(g, m, q, n_heads, tn, q_dim, l)) return false;
+    if (!model_temp_applies(m, l)) return true;
     for (int b = 0; b < tn; b++) {
         float ts = model_attn_temp(m, pos + b);
         if (ts == 1.0f) continue;
@@ -7626,12 +7629,14 @@ static bool batch_eligible(model_t **seqs, int n, gpu_t **lead_out) {
         // the Mamba-2 hybrids) are declined as a family: fwd_batch has no
         // mixer path and would hand a recurrent layer's NULL attention
         // weights to enc_mv_batch as dense tensors. NoPE-stepped models are
-        // declined here too (enc_rope_batch ropes every layer); the same
-        // check in gpu_batch_decode stays as the runtime backstop.
+        // declined here too (enc_rope_batch ropes every layer), and so is any
+        // attention temperature (mistral3's scales every layer's Q by a
+        // per-position factor fwd_batch does not apply); the same check in
+        // gpu_batch_decode stays as the runtime backstop.
         if (m->n_expert > 0 || m->moe_gemma || m->qwen35 ||
             m->granite_hybrid || m->nemotron_h ||
             m->attn_out_gate || m->nope_on_full ||
-            m->no_rope_layer_step > 0) return false;
+            m->no_rope_layer_step > 0 || m->attn_temp_scale != 0.0f) return false;
         // fwd_batch has its own projection sites and does not carry the
         // adapter hooks (R8.7.2 wired fwd_tile only), so an adapted model
         // declines the multi-sequence batch and decodes sequentially rather
@@ -8985,13 +8990,15 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     // rather than launch against garbage — the caller then decodes sequentially.
     for (int i = 0; i < n; i++)
         if (idx[i] < 0 || idx[i] >= b->n) return false;
-    // NoPE layers need a per-token Q scale derived from each column's
-    // position, and this path keeps positions on the device. Decline rather
-    // than scale with the wrong factor; the caller decodes sequentially,
-    // which is the same retreat it already takes for a bad index.
+    // NoPE layers, and mistral3's every layer, need a per-token Q scale
+    // derived from each column's position, and this path keeps positions on
+    // the device. Decline rather than scale with the wrong factor; the caller
+    // decodes sequentially, which is the same retreat it already takes for a
+    // bad index.
     if (b->n > 0 && b->seqs[idx[0]] &&
         (b->seqs[idx[0]]->no_rope_layer_step > 0 ||
-         b->seqs[idx[0]]->nope_on_full))
+         b->seqs[idx[0]]->nope_on_full ||
+         b->seqs[idx[0]]->attn_temp_scale != 0.0f))
         return false;
     // A microbatch of one is just a decode step with extra staging, and the
     // solo path is better at it: narrower matvec kernels, x straight from
