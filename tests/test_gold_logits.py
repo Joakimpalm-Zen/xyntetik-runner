@@ -327,6 +327,50 @@ def test_upcast_at_use_takes_the_decoder_stack_not_the_longest_list():
         gold.upcast_at_use(Model(layers=3).to(torch.bfloat16))
 
 
+def test_disk_offload_is_float32_bit_for_bit(tmp_path):
+    """--offload-dir (R4.26.4: a 336 GB BF16 reference under an 80 GiB
+    memory cap): blocks past the --max-memory budget stream from disk at use,
+    and the logits equal an in-memory float32 load of the same BF16
+    checkpoint exactly. The dense checkpoint's tensors load as stored, so its
+    disk blocks are read from the safetensors in place and nothing is
+    written; the MoE's per-expert weights are fused on load, so that path
+    writes them first, and is held to the same equality."""
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    pytest.importorskip("accelerate")
+    if not hasattr(transformers, "Qwen3MoeConfig"):
+        pytest.skip("this transformers has no Qwen3 MoE")
+    torch.manual_seed(0)
+    ids = torch.randint(0, 97, (1, 40), generator=torch.Generator().manual_seed(1))
+    common = dict(vocab_size=97, hidden_size=64, intermediate_size=128, num_hidden_layers=4,
+                  num_attention_heads=4, num_key_value_heads=2, head_dim=16)
+    for moe in (False, True):
+        if moe:
+            model = transformers.Qwen3MoeForCausalLM(transformers.Qwen3MoeConfig(
+                **common, moe_intermediate_size=32, num_experts=8, num_experts_per_tok=2,
+                decoder_sparse_step=1))
+        else:
+            model = transformers.Qwen3ForCausalLM(transformers.Qwen3Config(**common))
+        ckpt = tmp_path / ("moe" if moe else "dense")
+        model.to(torch.bfloat16).save_pretrained(ckpt, max_shard_size="100KB")
+        cls = type(model)
+        full = cls.from_pretrained(ckpt, dtype=torch.float32).eval()
+        with torch.no_grad():
+            want = full(ids).logits.float()
+        # a third of the float32 footprint held, the rest on disk
+        budget = sum(p.numel() for p in full.parameters()) * 4 / 3 / 2**30
+        off = tmp_path / ("off-moe" if moe else "off-dense")
+        streamed = cls.from_pretrained(ckpt, dtype=torch.float32,
+                                       **gold.offload_kwargs(str(off), budget)).eval()
+        assert "disk" in set(streamed.hf_device_map.values()), streamed.hf_device_map
+        with torch.no_grad():
+            got = streamed(ids).logits.float()
+        assert torch.equal(got, want), (moe, (got - want).abs().max().item())
+        if not moe:
+            assert gold.offload_written(str(off)) == 0
+
+
 def test_large_disagreements_are_counted_per_side_with_a_one_sided_sign_test():
     """R3.21.2's guard on an unpinned MoE run: positions whose KL differs by
     more than a nat between the sides (the 6.c definition), who is worse at
