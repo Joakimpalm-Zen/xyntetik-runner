@@ -270,7 +270,7 @@ a = sys.argv
 json.dump(a, open({str(seen)!r}, "w"))
 json.dump({{"summary": {{"positions": 40, "sides": {{"a": {{"mean_kld_vs_gold": 0.01,
     "max_kld_vs_gold": 0.1, "top1_agreement_pct": 99.0, "margin_qualified_top1_pct": 100.0}}}},
-    "reference_class": "FakeForCausalLM"}}, "rows": []}}, open(a[a.index("--out") + 1], "w"))
+    "reference_class": "FakeForCausalLM", "reference_dtype": "float32 arithmetic on weights stored at torch.bfloat16, cast at use per decoder block (2 blocks)"}}, "rows": []}}, open(a[a.index("--out") + 1], "w"))
 ''')
     rc, _, se = derive(runner_bin, parent, tmp_path / "r.gguf", "--quant", "q4_0",
                        "--reference", f"hf:{hf}", "--reference-arg", "--upcast-at-use",
@@ -281,6 +281,10 @@ json.dump({{"summary": {{"positions": 40, "sides": {{"a": {{"mean_kld_vs_gold": 
     assert "--upcast-at-use" in argv and "--trust-remote-code" in argv
     rec = json.loads(pathlib.Path(str(tmp_path / "r.gguf") + ".derive.json").read_text())
     assert rec["reference"]["args"] == ["--upcast-at-use", "--trust-remote-code"]
+    # the card names the reference's arithmetic as the instrument reported it
+    assert rec["reference"]["dtype"].startswith("float32 arithmetic on weights stored at torch.bfloat16")
+    card = pathlib.Path(str(tmp_path / "r.gguf") + ".README.md").read_text()
+    assert "float32 arithmetic, BF16 weights upcast at use" in card
     rc, _, se = derive(runner_bin, parent, tmp_path / "s.gguf", "--quant", "q4_0",
                        "--reference-arg", "--upcast-at-use")
     assert rc != 0 and "--reference-arg" in se

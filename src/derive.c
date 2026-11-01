@@ -69,6 +69,7 @@ typedef struct {
     double mean_kld, median_kld, max_kld, top1_pct, mq_top1_pct;
     bool have_median, have_qualified;
     const char *reference_class;    // publisher reference only
+    const char *reference_dtype;    // its arithmetic, as gold-logits reported it
 } derive_measure;
 
 static void derive_usage(FILE *f) {
@@ -473,6 +474,8 @@ static bool gold_measure(const derive_opts *o, const char *script, const char *f
                  num_of(side, "margin_qualified_top1_pct", &m->mq_top1_pct);
     const char *cls = jv_str(jv_get(sum, "reference_class"), NULL);
     m->reference_class = cls ? strdup(cls) : NULL;
+    const char *dt = jv_str(jv_get(sum, "reference_dtype"), NULL);
+    m->reference_dtype = dt ? strdup(dt) : NULL;
     jv *rows = jv_get(g, "rows");
     if (rows && rows->type == J_ARR && rows->n) {
         double *kl = malloc(sizeof(double) * (size_t)rows->n);
@@ -873,6 +876,7 @@ int derive_main(int argc, char **argv) {
     if (publisher) {
         sb_lit(&r, "\"hf\":"); sb_str(&r, o.reference_hf);
         sb_lit(&r, ",\"class\":"); sb_str(&r, m.reference_class);
+        sb_lit(&r, ",\"dtype\":"); sb_str(&r, m.reference_dtype);
         sb_lit(&r, ",\"script\":\"scripts/gold-logits.py\",\"args\":[");
         for (int i = 0; i < o.n_ref_args; i++) {
             if (i) sb_lit(&r, ",");
@@ -996,11 +1000,19 @@ int derive_main(int argc, char **argv) {
     sb_fmt(&c, "Positions %d + n x %d for n < %d of `%s`.\n\n## Reference\n\n",
            o.start, o.stride, o.count, plat_path_base(o.corpus));
     if (publisher) {
-        sb_fmt(&c, "The publisher's model `%s`%s%s%s, run in float32 by scripts/gold-logits.py. "
+        // the reference's arithmetic as the instrument reported it: plain
+        // float32, or float32 on stored BF16 weights cast at use
+        const char *how = "in float32";
+        if (m.reference_dtype && strstr(m.reference_dtype, "cast at use") &&
+            strstr(m.reference_dtype, "bfloat16"))
+            how = "in float32 arithmetic, BF16 weights upcast at use,";
+        else if (m.reference_dtype && strstr(m.reference_dtype, "cast at use"))
+            how = "in float32 arithmetic, stored weights upcast at use,";
+        sb_fmt(&c, "The publisher's model `%s`%s%s%s, run %s by scripts/gold-logits.py. "
                "The bar (mean KLD at most %.2f, margin-qualified top-1 at least %.0f%%) is "
                "stated against this reference only.\n\n",
                plat_path_base(o.reference_hf), m.reference_class ? " (" : "",
-               m.reference_class ? m.reference_class : "", m.reference_class ? ")" : "",
+               m.reference_class ? m.reference_class : "", m.reference_class ? ")" : "", how,
                BAR_MEAN_KLD, BAR_MQ_TOP1);
     } else {
         bool full = pm.file_type == 0 || pm.file_type == 1 || pm.file_type == 32;
