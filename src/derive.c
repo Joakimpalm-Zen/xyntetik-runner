@@ -97,15 +97,6 @@ static void derive_usage(FILE *f) {
         "(default scripts/gold-logits.py beside this binary).\n");
 }
 
-// the directory of this binary, with a trailing separator ("" when unknown)
-static char *exe_dir(void) {
-    char *p = plat_executable_path();
-    if (!p) return strdup("");
-    const char *base = plat_path_base(p);
-    p[base - p] = '\0';
-    return p;
-}
-
 static char *join(const char *a, const char *b) {
     size_t n = strlen(a) + strlen(b) + 1;
     char *s = malloc(n);
@@ -739,7 +730,7 @@ int derive_main(int argc, char **argv) {
     derive_opts o;
     int rc = parse_args(argc, argv, &o);
     if (rc >= 0) return rc;
-    char *dir = exe_dir();
+    char *dir = plat_executable_dir();
     char *self = plat_executable_path();
     if (!dir || !self) { fprintf(stderr, "error: cannot find this binary's path\n"); return 1; }
     char *default_corpus = join(dir, "tests/fixtures/gold-corpus-2k.txt");

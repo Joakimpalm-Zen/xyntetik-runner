@@ -297,6 +297,9 @@ bool        plat_replace_file(const char *tmp_path, const char *path);
 // An openable path for the executable image of this process, independent of
 // argv[0] and the current working directory. Caller frees; NULL on failure.
 char       *plat_executable_path(void);
+// The directory holding this executable's image, symlinks resolved, with its
+// trailing separator: where files shipped beside the binary are. Caller frees.
+char       *plat_executable_dir(void);
 
 // exit(0) this process when pid dies — supervisors pass their own pid so a
 // SIGKILLed xyntetik-thane cannot leave an orphaned runner. pid <= 0 = no-op.

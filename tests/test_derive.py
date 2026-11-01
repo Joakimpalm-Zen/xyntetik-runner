@@ -226,3 +226,23 @@ def test_target_size_plans_as_type_plan_by_sensitivity_does(runner_bin, tmp_path
     assert rc != 0 and "--target-size" in se
     rc, _, se = derive(runner_bin, parent, tmp_path / "z.gguf", "--target-size", str(target))
     assert rc != 0 and "--high" in se
+
+
+def test_files_beside_the_binary_are_found_from_its_real_directory(runner_bin, tmp_path):
+    """derive finds scripts/ and the default corpus beside the binary itself:
+    the directory of the resolved executable (readlink of /proc/self/exe on
+    Linux, not the directory of that literal path). A copy in another
+    directory looks beside the copy, and says where it looked."""
+    import shutil
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    copy = other / runner_bin.name
+    shutil.copy2(runner_bin, copy)
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    rc, _, se = derive(copy, parent, tmp_path / "c.gguf", "--quant", "q4_0", "--reference", f"hf:{hf}")
+    assert rc != 0
+    want = os.path.realpath(other / "scripts" / "gold-logits.py")
+    assert want in se, se[-600:]
+    assert "/proc/self" not in se
