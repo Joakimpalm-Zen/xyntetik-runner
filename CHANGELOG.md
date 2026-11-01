@@ -5,6 +5,11 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The training yield line is valid JSON for any `--stop-file` path.** The
+  path was copied into `{"yield":...}` raw, so a Windows path's backslashes,
+  or a quote anywhere, broke the line for a caller reading the training
+  output as JSON lines. It is escaped now (#542).
+
 - **`POST /unload` right after a reply frees the model before it answers.**
   A request still counts as active for a moment after its reply reaches the
   client, so an `/unload` sent the moment a completion returned was answered
