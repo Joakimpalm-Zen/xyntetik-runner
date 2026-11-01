@@ -31,8 +31,8 @@ At position 0, the distance is 1e-4 to 2e-4 in the first two layers. It then set
 token's attention is a single row. At positions 5 to 18 it stays between 1e-4 and 7e-4 through all 28 layers, with
 no growth with depth. That is the difference between two float32 forwards with different summation orders. An
 `--rtol` of 1e-3 clears it on this model. The gate fixture's dropped attention edit reads 0.04 to 0.06 at its
-mixer point, about two orders of magnitude above this floor (on the toy model, not this one). A larger model or a quantized file has a higher floor: measure it the same
-way before choosing `--rtol`.
+mixer point, about two orders of magnitude above this floor (on the toy model, not this one). A larger model or
+a quantized file has a higher floor: measure it the same way before choosing `--rtol`.
 
 ## Files
 
