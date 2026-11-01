@@ -4254,7 +4254,7 @@
       "model": "Hemmingway-1 (HemmingwayAI)",
       "family": "Hemmingway",
       "tier": "tier2",
-      "claim": "Text path, a third party's Q4_K_M, which FAILS the fidelity bar: against the publisher's BF16 weights computed in float32 it reads 0.248 mean KLD and 91.6% margin-qualified top-1 (2,000 positions), against a 0.05 / 97% bar, the same on CPU and CUDA; the Q8_0 is the fidelity file. Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the publisher's file and nothing is redistributed or derived from it.",
+      "claim": "Text path, a third party's Q4_K_M, which fails the fidelity bar: against the publisher's BF16 weights computed in float32 it reads 0.248 mean KLD and 91.6% margin-qualified top-1 (2,000 positions), against a 0.05 / 97% bar, the same on CPU and CUDA; the Q8_0 is the fidelity file. Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the file as published and nothing is redistributed or derived from it.",
       "architecture": "qwen35",
       "upstream": {
         "checkpoint": "HemmingwayAI/Hemmingway-1",
@@ -4312,7 +4312,7 @@
       "model": "Hemmingway-1 (HemmingwayAI)",
       "family": "Hemmingway",
       "tier": "tier2",
-      "claim": "Text path, a third party's Q8_0, the fidelity file of the two: against the publisher's BF16 weights computed in float32 it reads 0.0106 mean KLD and 99.54% margin-qualified top-1 (2,000 positions, CPU). Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the publisher's file and nothing is redistributed or derived from it.",
+      "claim": "Text path, a third party's Q8_0, the fidelity file of the two: against the publisher's BF16 weights computed in float32 it reads 0.0106 mean KLD and 99.54% margin-qualified top-1 (2,000 positions, CPU). Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the file as published and nothing is redistributed or derived from it.",
       "architecture": "qwen35",
       "upstream": {
         "checkpoint": "HemmingwayAI/Hemmingway-1",
@@ -4370,7 +4370,7 @@
       "model": "Hemmingway-1.5 (HemmingwayAI)",
       "family": "Hemmingway",
       "tier": "tier2",
-      "claim": "Text path, a third party's imatrix Q4_K_M: against the publisher's BF16 weights computed in float32 it reads 0.0203 mean KLD and 99.72% margin-qualified top-1 (2,000 positions), the same on CPU and CUDA. Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the publisher's file and nothing is redistributed or derived from it.",
+      "claim": "Text path, a third party's imatrix Q4_K_M: against the publisher's BF16 weights computed in float32 it reads 0.0203 mean KLD and 99.72% margin-qualified top-1 (2,000 positions), the same on CPU and CUDA. Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the file as published and nothing is redistributed or derived from it.",
       "architecture": "qwen35",
       "upstream": {
         "checkpoint": "HemmingwayAI/Hemmingway-1.5",
@@ -4428,7 +4428,7 @@
       "model": "Hemmingway-1.5 (HemmingwayAI)",
       "family": "Hemmingway",
       "tier": "tier2",
-      "claim": "Text path, a third party's Q8_0: against the publisher's BF16 weights computed in float32 it reads 0.0021 mean KLD and 99.93% margin-qualified top-1 (2,000 positions, CPU). Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the publisher's file and nothing is redistributed or derived from it.",
+      "claim": "Text path, a third party's Q8_0: against the publisher's BF16 weights computed in float32 it reads 0.0021 mean KLD and 99.93% margin-qualified top-1 (2,000 positions, CPU). Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the file as published and nothing is redistributed or derived from it.",
       "architecture": "qwen35",
       "upstream": {
         "checkpoint": "HemmingwayAI/Hemmingway-1.5",
