@@ -88,6 +88,7 @@ CODEBOOK = {"iq2_xxs": (16, 66), "iq2_xs": (17, 74), "iq2_s": (22, 82),
 N_FF_SET = None    # --n-ff N: FFN width (an odd N gives odd ffn_gate/ffn_up row counts)
 GPU_UNSUPPORTED = None  # one named tensor stored as CPU-only IQ2_XXS
 ZERO_BRANCHES = False  # --zero-branches: attn_output/ffn_down all zero
+SCALE_TENSOR = None    # --scale-tensor NAME:FACTOR (act-trace mismatch fixture)
 POOLING = None     # --pooling N: {arch}.pooling_type (llama.cpp's enum)
 ADD_EOS = False    # --add-eos: tokenizer.ggml.add_eos_token = true
 BPE_PRE = None     # --bpe-pre NAME: a GPT-2 byte-level BPE vocabulary declaring that split
@@ -355,6 +356,14 @@ while i < len(args):
         i += 1
         with open(args[i], encoding="utf-8") as f:
             CHAT_TEMPLATE = f.read()
+    elif a == "--scale-tensor":
+        # NAME:FACTOR multiplies one float tensor by FACTOR after every draw,
+        # so the file differs from the plain one in that tensor alone: the
+        # shape of an export that dropped (or added) one edit, which
+        # tests/test_act_trace.py localizes from the activation trace
+        i += 1
+        name, _, factor = args[i].rpartition(":")
+        SCALE_TENSOR = (name, float(factor))
     elif a == "--zero-branches":
         # Every block's attention and FFN write zero into the residual
         # stream, so each position's final hidden state IS its token's
@@ -1045,6 +1054,14 @@ def quantize(name, ne, data):
     rows = [vals[r * ne[0]:(r + 1) * ne[0]] for r in range(ne[1])]
     return GGML_Q8_0, b"".join(q8_0_row(r) for r in rows)
 
+
+if SCALE_TENSOR:
+    hit = [t for t in tensors if t[0] == SCALE_TENSOR[0]]
+    if len(hit) != 1:
+        sys.exit(f"--scale-tensor {SCALE_TENSOR[0]!r} names {len(hit)} tensors")
+    tensors = [(n, ne, struct.pack(f"<{len(d) // 4}f",
+                                   *(v * SCALE_TENSOR[1] for v in struct.unpack(f"<{len(d) // 4}f", d))))
+               if n == SCALE_TENSOR[0] else (n, ne, d) for n, ne, d in tensors]
 
 _typed = []
 for name, ne, data in tensors:
