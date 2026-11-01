@@ -4250,6 +4250,238 @@
       ]
     },
     {
+      "id": "hemmingway-1-q4_k_m",
+      "model": "Hemmingway-1 (HemmingwayAI)",
+      "family": "Hemmingway",
+      "tier": "tier2",
+      "claim": "Text path, a third party's Q4_K_M, which FAILS the fidelity bar: against the publisher's BF16 weights computed in float32 it reads 0.248 mean KLD and 91.6% margin-qualified top-1 (2,000 positions), against a 0.05 / 97% bar, the same on CPU and CUDA; the Q8_0 is the fidelity file. Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the publisher's file and nothing is redistributed or derived from it.",
+      "architecture": "qwen35",
+      "upstream": {
+        "checkpoint": "HemmingwayAI/Hemmingway-1",
+        "revision": "faba57469705088eed04bc83652f7845c21638cb"
+      },
+      "licence": {
+        "id": "cc-by-nc-4.0",
+        "from": "HemmingwayAI/Hemmingway-1"
+      },
+      "files": [
+        {
+          "name": "Hemmingway-1.Q4_K_M.gguf",
+          "repo": "mradermacher/Hemmingway-1-GGUF",
+          "revision": "99b95619d4595dcbe65fd21c0cd8131cf82f38d6",
+          "sha256": "d8a77565035547f39388969e1ef0e83f646f366e7bdef1e1ce63ad0b0d785dbc",
+          "bytes": 16810715360
+        }
+      ],
+      "quantization": "Q4_K_M (mradermacher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "All four files against HemmingwayAI's BF16 weights computed in float32 on the CPU (transformers' Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 2,000 positions at stride 1 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked score files): Hemmingway-1 Q4_K_M 0.248 mean KLD / 84.5% top-1 / 91.6% margin-qualified (CUDA and CPU not distinguishable), Hemmingway-1 Q8_0 0.0106 / 98.15% / 99.54%, Hemmingway-1.5 Q4_K_M 0.0203 / 95.55% / 99.72% (CUDA and CPU not distinguishable), Hemmingway-1.5 Q8_0 0.0021 / 99.1% / 99.93%. Every template (two HF, four GGUF) is byte-identical to Qwen/Qwen3.8-27B's, the qwen38 conformance oracle. Record: docs/compat-reports/hemmingway-reference-2026-11-01/README.md.",
+        "context": 2048,
+        "limitations": "No fidelity claim: the file fails the bar and the distance is in the file, not the arithmetic (CPU and CUDA score it alike). This conversion quantizes the Gated DeltaNet gates (ssm_alpha, ssm_beta) that Hemmingway-1.5's files keep in F32; consistent with the gap, not proven. No llama.cpp column.",
+        "evidence": [
+          "docs/compat-reports/hemmingway-reference-2026-11-01/README.md"
+        ],
+        "missing": "A llama.cpp column (not measured: validation only, non-commercial); the Metal cell; task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": null,
+        "metal": null
+      },
+      "lora": null,
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-01",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29 (R4.27), validation only under CC-BY-NC-4.0: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "hemmingway-1-q8_0",
+      "model": "Hemmingway-1 (HemmingwayAI)",
+      "family": "Hemmingway",
+      "tier": "tier2",
+      "claim": "Text path, a third party's Q8_0, the fidelity file of the two: against the publisher's BF16 weights computed in float32 it reads 0.0106 mean KLD and 99.54% margin-qualified top-1 (2,000 positions, CPU). Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the publisher's file and nothing is redistributed or derived from it.",
+      "architecture": "qwen35",
+      "upstream": {
+        "checkpoint": "HemmingwayAI/Hemmingway-1",
+        "revision": "faba57469705088eed04bc83652f7845c21638cb"
+      },
+      "licence": {
+        "id": "cc-by-nc-4.0",
+        "from": "HemmingwayAI/Hemmingway-1"
+      },
+      "files": [
+        {
+          "name": "Hemmingway-1.Q8_0.gguf",
+          "repo": "mradermacher/Hemmingway-1-GGUF",
+          "revision": "99b95619d4595dcbe65fd21c0cd8131cf82f38d6",
+          "sha256": "10b566343db6905215c2d635285ffb43ada05a2f9b1e8e85562c8e366fac1809",
+          "bytes": 29047085280
+        }
+      ],
+      "quantization": "Q8_0 (mradermacher)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "All four files against HemmingwayAI's BF16 weights computed in float32 on the CPU (transformers' Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 2,000 positions at stride 1 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked score files): Hemmingway-1 Q4_K_M 0.248 mean KLD / 84.5% top-1 / 91.6% margin-qualified (CUDA and CPU not distinguishable), Hemmingway-1 Q8_0 0.0106 / 98.15% / 99.54%, Hemmingway-1.5 Q4_K_M 0.0203 / 95.55% / 99.72% (CUDA and CPU not distinguishable), Hemmingway-1.5 Q8_0 0.0021 / 99.1% / 99.93%. Every template (two HF, four GGUF) is byte-identical to Qwen/Qwen3.8-27B's, the qwen38 conformance oracle. Record: docs/compat-reports/hemmingway-reference-2026-11-01/README.md.",
+        "context": 2048,
+        "limitations": "29 GB of weights. This conversion quantizes the Gated DeltaNet gates (ssm_alpha, ssm_beta) that Hemmingway-1.5's files keep in F32; consistent with the gap, not proven. No llama.cpp column.",
+        "evidence": [
+          "docs/compat-reports/hemmingway-reference-2026-11-01/README.md"
+        ],
+        "missing": "A llama.cpp column (not measured: validation only, non-commercial); the Metal cell; task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": null,
+        "metal": null
+      },
+      "lora": null,
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-01",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29 (R4.27), validation only under CC-BY-NC-4.0: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "hemmingway-1.5-q4_k_m",
+      "model": "Hemmingway-1.5 (HemmingwayAI)",
+      "family": "Hemmingway",
+      "tier": "tier2",
+      "claim": "Text path, a third party's imatrix Q4_K_M: against the publisher's BF16 weights computed in float32 it reads 0.0203 mean KLD and 99.72% margin-qualified top-1 (2,000 positions), the same on CPU and CUDA. Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the publisher's file and nothing is redistributed or derived from it.",
+      "architecture": "qwen35",
+      "upstream": {
+        "checkpoint": "HemmingwayAI/Hemmingway-1.5",
+        "revision": "2f66c2569b99f2be4dfb7b198edc08d3bf089a7b"
+      },
+      "licence": {
+        "id": "cc-by-nc-4.0",
+        "from": "HemmingwayAI/Hemmingway-1.5"
+      },
+      "files": [
+        {
+          "name": "HemmingwayAI_Hemmingway-1.5-Q4_K_M.gguf",
+          "repo": "bartowski/HemmingwayAI_Hemmingway-1.5-GGUF",
+          "revision": "4d91b1bc050200ccfc562c0830a78536d2dbd77b",
+          "sha256": "69b4d499e3df0b43033b9ea9f0fbd0e558975729643c670a69aef10a316c4a16",
+          "bytes": 17442400608
+        }
+      ],
+      "quantization": "Q4_K_M (bartowski, imatrix)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "All four files against HemmingwayAI's BF16 weights computed in float32 on the CPU (transformers' Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 2,000 positions at stride 1 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked score files): Hemmingway-1 Q4_K_M 0.248 mean KLD / 84.5% top-1 / 91.6% margin-qualified (CUDA and CPU not distinguishable), Hemmingway-1 Q8_0 0.0106 / 98.15% / 99.54%, Hemmingway-1.5 Q4_K_M 0.0203 / 95.55% / 99.72% (CUDA and CPU not distinguishable), Hemmingway-1.5 Q8_0 0.0021 / 99.1% / 99.93%. Every template (two HF, four GGUF) is byte-identical to Qwen/Qwen3.8-27B's, the qwen38 conformance oracle. Record: docs/compat-reports/hemmingway-reference-2026-11-01/README.md.",
+        "context": 2048,
+        "limitations": "No llama.cpp column.",
+        "evidence": [
+          "docs/compat-reports/hemmingway-reference-2026-11-01/README.md"
+        ],
+        "missing": "A llama.cpp column (not measured: validation only, non-commercial); the Metal cell; task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": null,
+        "metal": null
+      },
+      "lora": null,
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-01",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29 (R4.27), validation only under CC-BY-NC-4.0: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "hemmingway-1.5-q8_0",
+      "model": "Hemmingway-1.5 (HemmingwayAI)",
+      "family": "Hemmingway",
+      "tier": "tier2",
+      "claim": "Text path, a third party's Q8_0: against the publisher's BF16 weights computed in float32 it reads 0.0021 mean KLD and 99.93% margin-qualified top-1 (2,000 positions, CPU). Validation only, no Xyntetik derivative: the weights are CC-BY-NC-4.0 (non-commercial); Runner loads the publisher's file and nothing is redistributed or derived from it.",
+      "architecture": "qwen35",
+      "upstream": {
+        "checkpoint": "HemmingwayAI/Hemmingway-1.5",
+        "revision": "2f66c2569b99f2be4dfb7b198edc08d3bf089a7b"
+      },
+      "licence": {
+        "id": "cc-by-nc-4.0",
+        "from": "HemmingwayAI/Hemmingway-1.5"
+      },
+      "files": [
+        {
+          "name": "HemmingwayAI_Hemmingway-1.5-Q8_0.gguf",
+          "repo": "bartowski/HemmingwayAI_Hemmingway-1.5-GGUF",
+          "revision": "4d91b1bc050200ccfc562c0830a78536d2dbd77b",
+          "sha256": "8b3c689c88395942c3e3caf3dac1f1d70fe16f86f490bd783bf44afa32834b4e",
+          "bytes": 29116389728
+        }
+      ],
+      "quantization": "Q8_0 (bartowski)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "All four files against HemmingwayAI's BF16 weights computed in float32 on the CPU (transformers' Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 2,000 positions at stride 1 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked score files): Hemmingway-1 Q4_K_M 0.248 mean KLD / 84.5% top-1 / 91.6% margin-qualified (CUDA and CPU not distinguishable), Hemmingway-1 Q8_0 0.0106 / 98.15% / 99.54%, Hemmingway-1.5 Q4_K_M 0.0203 / 95.55% / 99.72% (CUDA and CPU not distinguishable), Hemmingway-1.5 Q8_0 0.0021 / 99.1% / 99.93%. Every template (two HF, four GGUF) is byte-identical to Qwen/Qwen3.8-27B's, the qwen38 conformance oracle. Record: docs/compat-reports/hemmingway-reference-2026-11-01/README.md.",
+        "context": 2048,
+        "limitations": "29 GB of weights. No llama.cpp column.",
+        "evidence": [
+          "docs/compat-reports/hemmingway-reference-2026-11-01/README.md"
+        ],
+        "missing": "A llama.cpp column (not measured: validation only, non-commercial); the Metal cell; task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": null,
+        "metal": null
+      },
+      "lora": null,
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-01",
+          "reason": "Owner's Hub-search validation queue of 2026-10-29 (R4.27), validation only under CC-BY-NC-4.0: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
       "id": "lfm2.5-1.2b-instruct-q8_0",
       "model": "LFM2.5-1.2B-Instruct (LiquidAI)",
       "family": "LFM2.5",
