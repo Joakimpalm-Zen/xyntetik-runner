@@ -2085,6 +2085,182 @@ kernel void k_mvf_q4_K(MV_PARAMS) {
     }
 }
 
+// k_mvf_q4_K over several columns with each block's weights read once
+// (R3.24 (a)): per lane step it loads the two rows' scales, mins and quants a
+// single time, then runs every column of the tile through exactly the
+// one-column kernel's arithmetic for that step: the same activation loads
+// and sums, the same fma chain, the same accumulation into that column's own
+// partial. Each column's partial thus sees the solo kernel's operations in
+// the solo kernel's order, and its simd_sum the same lane values, so every
+// column is k_mvf_q4_K's n_col == 1 bits (test-batch-identity). k_mvf_q4_K
+// walks the columns outside the block loop instead, re-reading and
+// re-decoding each block for every column, which on Q4_K is most of a
+// column's cost. At most MVFC_COLS columns a threadgroup (the host caps
+// col_tile).
+#define MVFC_COLS 8
+kernel void k_mvfc_q4_K(MV_PARAMS) {
+    enum { NR = 2 };
+    uint row0 = (tgpig.x * (ntg.x / 32) + sgitg) * NR;
+    if (row0 >= (uint)a.n_out) return;
+    int col_lo = (int)tgpig.y * a.col_tile;
+    int ncol = min(min(a.col_tile, MVFC_COLS), a.n_col - col_lo);
+    int nb = a.n_in / 256, nq = nb * 4;
+    float s[MVFC_COLS][NR];
+    for (int c = 0; c < MVFC_COLS; c++) for (int r = 0; r < NR; r++) s[c][r] = 0;
+    for (int u = tiisg; u < nq; u += 32) {
+        int b = u >> 2, jj = u & 3;
+        float d[NR], dmin[NR];
+        uchar s1[NR], m1[NR], s2[NR], m2[NR];
+        uchar4 q[NR][8];
+        int nr = 0;
+        for (int r = 0; r < NR; r++) {
+            uint row = row0 + r;
+            if (row >= (uint)a.n_out) break;
+            device const uchar *blk = wb + a.w_off + ((ulong)row * nb + b) * 144;
+            d[r] = (float)*(device const half *)blk;
+            dmin[r] = (float)*(device const half *)(blk + 2);
+            get_scale_min_k4(jj * 2 + 0, blk + 4, &s1[r], &m1[r]);
+            get_scale_min_k4(jj * 2 + 1, blk + 4, &s2[r], &m2[r]);
+            device const packed_uchar4 *q4 = (device const packed_uchar4 *)(blk + 16 + jj * 32);
+            for (int k = 0; k < 8; k++) q[r][k] = q4[k];
+            nr++;
+        }
+        for (int c = 0; c < ncol; c++) {
+            device const float *x = x_all + (ulong)(col_lo + c) * a.x_stride;
+            device const packed_float4 *xp4 = (device const packed_float4 *)(x + b * 256 + jj * 64);
+            float4 xl[8], xh[8], sl = 0, sh = 0;
+            for (int k = 0; k < 8; k++) { xl[k] = xp4[k]; xh[k] = xp4[k + 8]; sl += xl[k]; sh += xh[k]; }
+            float sx1 = sl.x + sl.y + sl.z + sl.w, sx2 = sh.x + sh.y + sh.z + sh.w;
+            for (int r = 0; r < nr; r++) {
+                float4 t1 = 0, t2 = 0;
+                for (int k = 0; k < 8; k++) {
+                    uchar4 qq = q[r][k];
+                    t1 = fma(float4(qq & 0xF), xl[k], t1);
+                    t2 = fma(float4(qq >> 4), xh[k], t2);
+                }
+                s[c][r] += d[r] * s1[r] * (t1.x + t1.y + t1.z + t1.w) - dmin[r] * m1[r] * sx1 +
+                           d[r] * s2[r] * (t2.x + t2.y + t2.z + t2.w) - dmin[r] * m2[r] * sx2;
+            }
+        }
+    }
+    for (int c = 0; c < ncol; c++) {
+        device float *y = y_all + (ulong)(col_lo + c) * a.y_stride;
+        for (int r = 0; r < NR; r++) {
+            uint row = row0 + r;
+            float v = simd_sum(s[c][r]);
+            if (tiisg == 0 && row < (uint)a.n_out) y[row] = a.has_bias ? v + bias[row] : v;
+        }
+    }
+}
+
+// k_mv_q8_0 over several columns with each block's quants read once (R3.24
+// (a)): per lane step the block's scale and its 32 quants are loaded a single
+// time, then every column of the tile runs exactly k_mv_q8_0's arithmetic for
+// that step, into its own partial, so each column's bits are the one-column
+// kernel's. The engine admits it only after metal_mvc_self_test has seen
+// those bits (the compiler may contract a rewritten loop differently).
+kernel void k_mvc_q8_0(MV_PARAMS) {
+    uint row = tgpig.x * (ntg.x / 32) + sgitg;
+    if (row >= (uint)a.n_out) return;
+    int col_lo = (int)tgpig.y * a.col_tile;
+    int ncol = min(min(a.col_tile, MVFC_COLS), a.n_col - col_lo);
+    int nb = a.n_in / 32;
+    device const uchar *rw = wb + a.w_off + (ulong)row * nb * 34;
+    float s[MVFC_COLS];
+    for (int c = 0; c < MVFC_COLS; c++) s[c] = 0;
+    for (int b = tiisg; b < nb; b += 32) {
+        device const uchar *blk = rw + (ulong)b * 34;
+        float d = (float)*(device const half *)blk;
+        device const packed_char4 *q = (device const packed_char4 *)(blk + 2);
+        char4 qv[8];
+        for (int k = 0; k < 8; k++) qv[k] = q[k];
+        for (int c = 0; c < ncol; c++) {
+            device const packed_float4 *xp = (device const packed_float4 *)
+                (x_all + (ulong)(col_lo + c) * a.x_stride + b * 32);
+            float t = 0;
+            for (int k = 0; k < 8; k++) {
+                char4 qq = qv[k];
+                float4 xv = xp[k];
+                t += (float)qq.x * xv.x;
+                t += (float)qq.y * xv.y;
+                t += (float)qq.z * xv.z;
+                t += (float)qq.w * xv.w;
+            }
+            s[c] += d * t;
+        }
+    }
+    for (int c = 0; c < ncol; c++) {
+        float v = simd_sum(s[c]);
+        device float *y = y_all + (ulong)(col_lo + c) * a.y_stride;
+        if (tiisg == 0) y[row] = a.has_bias ? v + bias[row] : v;
+    }
+}
+
+// k_mv_q6_K over several columns, each half-superblock's quants, high bits and
+// scales read once a lane step (R3.24 (a)); every column runs k_mv_q6_K's
+// arithmetic for that step into its own partial. Admitted by
+// metal_mvc_self_test, as k_mvc_q8_0 is.
+kernel void k_mvc_q6_K(MV_PARAMS) {
+    uint row = tgpig.x * (ntg.x / 32) + sgitg;
+    if (row >= (uint)a.n_out) return;
+    int col_lo = (int)tgpig.y * a.col_tile;
+    int ncol = min(min(a.col_tile, MVFC_COLS), a.n_col - col_lo);
+    int nb = a.n_in / 256;
+    device const uchar *rw = wb + a.w_off + (ulong)row * nb * 210;
+    float s[MVFC_COLS];
+    for (int c = 0; c < MVFC_COLS; c++) s[c] = 0;
+    int nh = nb * 2;
+    for (int u = tiisg; u < nh; u += 32) {
+        int b = u >> 1, half_i = u & 1;
+        device const uchar *blk = rw + (ulong)b * 210;
+        device const uchar *ql = blk + half_i * 64;
+        device const uchar *qh = blk + 128 + half_i * 32;
+        device const char  *sc = (device const char *)(blk + 192) + half_i * 8;
+        float d = (float)*(device const half *)(blk + 208);
+        uchar4 lo[2][4], hi[2][4], hb[2][4];
+        for (int is = 0; is < 2; is++) {
+            device const packed_uchar4 *l4  = (device const packed_uchar4 *)(ql + is * 16);
+            device const packed_uchar4 *l4b = (device const packed_uchar4 *)(ql + 32 + is * 16);
+            device const packed_uchar4 *h4  = (device const packed_uchar4 *)(qh + is * 16);
+            for (int k = 0; k < 4; k++) { lo[is][k] = l4[k]; hi[is][k] = l4b[k]; hb[is][k] = h4[k]; }
+        }
+        char scv[8];
+        for (int i = 0; i < 8; i++) scv[i] = sc[i];
+        for (int c = 0; c < ncol; c++) {
+            device const float *xp = x_all + (ulong)(col_lo + c) * a.x_stride + b * 256 + half_i * 128;
+            float t[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            for (int is = 0; is < 2; is++) {
+                device const packed_float4 *x0 = (device const packed_float4 *)(xp + is * 16);
+                device const packed_float4 *x1 = (device const packed_float4 *)(xp + 32 + is * 16);
+                device const packed_float4 *x2 = (device const packed_float4 *)(xp + 64 + is * 16);
+                device const packed_float4 *x3 = (device const packed_float4 *)(xp + 96 + is * 16);
+                float4 a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+                for (int k = 0; k < 4; k++) {
+                    uchar4 l = lo[is][k], h2 = hi[is][k], h = hb[is][k];
+                    // explicit fma, as k_mv2_q6_K writes it: what the compiler
+                    // emits for k_mv_q6_K's `a += w * x`, which this loop's text
+                    // did not reproduce (metal_mvc_self_test caught it)
+                    a0 = fma(float4(l & 0xF) + float4((h >> 0) & 3) * 16.0f - 32.0f, x0[k], a0);
+                    a1 = fma(float4(h2 & 0xF) + float4((h >> 2) & 3) * 16.0f - 32.0f, x1[k], a1);
+                    a2 = fma(float4(l >> 4)  + float4((h >> 4) & 3) * 16.0f - 32.0f, x2[k], a2);
+                    a3 = fma(float4(h2 >> 4) + float4((h >> 6) & 3) * 16.0f - 32.0f, x3[k], a3);
+                }
+                t[is * 4 + 0] = a0.x + a0.y + a0.z + a0.w;
+                t[is * 4 + 1] = a1.x + a1.y + a1.z + a1.w;
+                t[is * 4 + 2] = a2.x + a2.y + a2.z + a2.w;
+                t[is * 4 + 3] = a3.x + a3.y + a3.z + a3.w;
+            }
+            s[c] += d * (scv[0] * t[0] + scv[2] * t[1] + scv[4] * t[2] + scv[6] * t[3] +
+                         scv[1] * t[4] + scv[3] * t[5] + scv[5] * t[6] + scv[7] * t[7]);
+        }
+    }
+    for (int c = 0; c < ncol; c++) {
+        float v = simd_sum(s[c]);
+        device float *y = y_all + (ulong)(col_lo + c) * a.y_stride;
+        if (tiisg == 0) y[row] = a.has_bias ? v + bias[row] : v;
+    }
+}
+
 constant float kv_mxfp4[16] = {
      0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
      0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,

@@ -54,6 +54,8 @@ typedef struct {
     id<MTLComputePipelineState> p_mm[METAL_TYPE_SLOTS];       // tiled prefill GEMM
     id<MTLComputePipelineState> p_tensor[METAL_TYPE_SLOTS];   // Metal 4 MPP prefill
     id<MTLComputePipelineState> p_mvf[METAL_TYPE_SLOTS];      // fast decode matvec
+    id<MTLComputePipelineState> p_mvfc_q4k;   // its Q4_K twin, columns inside the block walk
+    id<MTLComputePipelineState> p_mvc[METAL_TYPE_SLOTS];      // identity matvec twins, columns inside
     id<MTLComputePipelineState> p_mv2[METAL_TYPE_SLOTS];      // two-row identity decode matvec
     id<MTLComputePipelineState> p_moe_mv[METAL_TYPE_SLOTS];   // indexed by ggml type
     id<MTLComputePipelineState> p_moe_mv_em[METAL_TYPE_SLOTS]; // expert-major twin
@@ -301,6 +303,8 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
         [g->p_tensor[i] release];
     }
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvf[i] release];
+    [g->p_mvfc_q4k release];
+    for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvc[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mv2[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv_em[i] release];
@@ -965,6 +969,79 @@ static bool metal_mv2_self_test(id<MTLDevice> dev, id<MTLComputePipelineState> p
     [q release];
     if (!ok) fprintf(stderr, "gpu: two-row Q6_K matvec is not bit-identical on this device, "
                      "decode keeps k_mv_q6_K\n");
+    return ok;
+}
+
+// A column-inner matvec twin (R3.24 (a)) against its one-column kernel: the
+// twin over five columns must give each column the bits the one-column kernel
+// gives it alone, on random blocks with finite fp16 scales, at two shapes, or
+// it is not admitted (the compiler may contract a rewritten loop differently,
+// as k_mv2_q6_K found). `rows` is the output rows a simdgroup computes, the
+// same for both kernels.
+static bool metal_mvc_self_test(id<MTLDevice> dev, id<MTLComputePipelineState> p1,
+                                id<MTLComputePipelineState> pc, int type, int rows) {
+    if (!p1 || !pc) return false;
+    int bsz, bel, dpos[2], nd;
+    if (type == T_Q8_0)      { bsz = 34;  bel = 32;  dpos[0] = 0;   nd = 1; }
+    else if (type == T_Q6_K) { bsz = 210; bel = 256; dpos[0] = 208; nd = 1; }
+    else if (type == T_Q4_K) { bsz = 144; bel = 256; dpos[0] = 0; dpos[1] = 2; nd = 2; }
+    else return false;
+    enum { NC = 5 };
+    static const int shp[][2] = { { 2048, 37 }, { 4096, 21 } };
+    bool ok = true;
+    id<MTLCommandQueue> q = [dev newCommandQueue];
+    for (size_t si = 0; ok && si < sizeof shp / sizeof *shp; si++) {
+        int n_in = shp[si][0], n_out = shp[si][1];
+        size_t rb = (size_t)n_in / bel * bsz, wbytes = rb * n_out;
+        uint8_t *wh = malloc(wbytes);
+        float *xh = malloc(sizeof(float) * n_in * NC);
+        if (!wh || !xh) { free(wh); free(xh); ok = false; break; }
+        uint32_t r = 2463534242u + (uint32_t)type;
+        for (size_t i = 0; i < wbytes; i++) { r ^= r << 13; r ^= r >> 17; r ^= r << 5; wh[i] = (uint8_t)r; }
+        for (size_t blk = 0; blk < wbytes / bsz; blk++)   // finite fp16 scales, as a real block has
+            for (int k = 0; k < nd; k++) {
+                wh[blk * bsz + dpos[k]] = (uint8_t)(blk * 37 + k);
+                wh[blk * bsz + dpos[k] + 1] = 0x1c + (uint8_t)((blk + k) % 8);
+            }
+        for (int i = 0; i < n_in * NC; i++) { r ^= r << 13; r ^= r >> 17; r ^= r << 5; xh[i] = (float)(int)(r % 2001 - 1000) / 997.0f; }
+        id<MTLBuffer> wbuf = [dev newBufferWithBytes:wh length:wbytes options:MTLResourceStorageModeShared];
+        id<MTLBuffer> xb = [dev newBufferWithBytes:xh length:sizeof(float) * n_in * NC options:MTLResourceStorageModeShared];
+        id<MTLBuffer> y1 = [dev newBufferWithLength:sizeof(float) * n_out * NC options:MTLResourceStorageModeShared];
+        id<MTLBuffer> y2 = [dev newBufferWithLength:sizeof(float) * n_out * NC options:MTLResourceStorageModeShared];
+        id<MTLBuffer> bb = [dev newBufferWithLength:sizeof(float) * n_out options:MTLResourceStorageModeShared];
+        free(wh); free(xh);
+        if (!wbuf || !xb || !y1 || !y2 || !bb) ok = false;
+        if (ok) {
+            id<MTLCommandBuffer> cb = [q commandBuffer];
+            id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+            int tg_rows = 4 * rows;
+            for (int c = 0; c < NC; c++) {   // the one-column kernel, a column at a time
+                mv_args a = { n_in, n_out, 0, 0, 1, n_in, n_out, 1 };
+                [e setComputePipelineState:p1];
+                [e setBuffer:wbuf offset:0 atIndex:0];
+                [e setBuffer:xb offset:sizeof(float) * (size_t)n_in * c atIndex:1];
+                [e setBuffer:y1 offset:sizeof(float) * (size_t)n_out * c atIndex:2];
+                [e setBytes:&a length:sizeof a atIndex:3];
+                [e setBuffer:bb offset:0 atIndex:4];
+                [e dispatchThreadgroups:MTLSizeMake((n_out + tg_rows - 1) / tg_rows, 1, 1)
+                  threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+            }
+            mv_args a = { n_in, n_out, 0, 0, NC, n_in, n_out, 8 };
+            [e setComputePipelineState:pc];
+            [e setBuffer:wbuf offset:0 atIndex:0]; [e setBuffer:xb offset:0 atIndex:1];
+            [e setBuffer:y2 offset:0 atIndex:2]; [e setBytes:&a length:sizeof a atIndex:3];
+            [e setBuffer:bb offset:0 atIndex:4];
+            [e dispatchThreadgroups:MTLSizeMake((n_out + tg_rows - 1) / tg_rows, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+            [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
+            ok = cb.status == MTLCommandBufferStatusCompleted &&
+                 memcmp(y1.contents, y2.contents, sizeof(float) * n_out * NC) == 0;
+        }
+        [wbuf release]; [xb release]; [y1 release]; [y2 release]; [bb release];
+    }
+    [q release];
+    if (!ok) fprintf(stderr, "gpu: the column-inner %s matvec is not bit-identical on this device, "
+                     "the decode microbatch keeps the column walk\n", ggml_type_name(type));
     return ok;
 }
 
@@ -1889,6 +1966,20 @@ static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib
     g->p_mvf[T_Q4_0]  = mk_pipeline(dev, lib, @"k_mvf_q4_0");
     g->p_mvf[T_Q8_0]  = mk_pipeline(dev, lib, @"k_mvf_q8_0");
     g->p_mvf[T_Q4_K]  = mk_pipeline(dev, lib, @"k_mvf_q4_K");
+    // the column-inner twins (R3.24 (a)), each admitted only where it gives
+    // its one-column kernel's bits on this device
+    g->p_mvfc_q4k     = mk_pipeline(dev, lib, @"k_mvfc_q4_K");
+    if (g->p_mvfc_q4k && !metal_mvc_self_test(dev, g->p_mvf[T_Q4_K], g->p_mvfc_q4k, T_Q4_K, 2)) {
+        [g->p_mvfc_q4k release];
+        g->p_mvfc_q4k = nil;
+    }
+    g->p_mvc[T_Q8_0]  = mk_pipeline(dev, lib, @"k_mvc_q8_0");
+    g->p_mvc[T_Q6_K]  = mk_pipeline(dev, lib, @"k_mvc_q6_K");
+    for (int t = 0; t < METAL_TYPE_SLOTS; t++)
+        if (g->p_mvc[t] && !metal_mvc_self_test(dev, g->p_mv[t], g->p_mvc[t], t, 1)) {
+            [g->p_mvc[t] release];
+            g->p_mvc[t] = nil;
+        }
     g->p_mv2[T_Q6_K]  = mk_pipeline(dev, lib, @"k_mv2_q6_K");
     if (g->p_mv2[T_Q6_K] && !metal_mv2_self_test(dev, g->p_mv[T_Q6_K], g->p_mv2[T_Q6_K])) {
         [g->p_mv2[T_Q6_K] release];
@@ -2561,6 +2652,17 @@ static void enc_rmsnorm(gpu_t *g, id<MTLComputeCommandEncoder> e,
 // is bit-identical to n_col separate enc_mv calls.
 // Columns per threadgroup in the batched matmul. Tunable so the tradeoff can
 // be re-measured on other Apple GPUs without a rebuild.
+// RUNNER_METAL_MVFC=0 keeps multi-column Q4_K decode on k_mvf_q4_K's column
+// walk (the A/B arm for R3.24 (a)); default on
+static bool metal_mvfc_on(void) {
+    static _Atomic int v = -1;
+    if (v < 0) {
+        const char *s = getenv("RUNNER_METAL_MVFC");
+        v = !(s && *s && !strcmp(s, "0"));
+    }
+    return v;
+}
+
 static int metal_col_tile(void) {
     static _Atomic int v = -1;
     if (v < 0) {
@@ -2709,6 +2811,13 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
     if (decode && metal_mv_fast_for(g, w->type) && g->p_mvf[w->type]) {
         mv = g->p_mvf[w->type];
         rows_sg = w->type == T_Q4_K ? 2 : 1;   // k_mvf_q4_K takes two rows
+        // several decode columns of Q4_K: the twin that reads each block
+        // once for the whole tile, each column still the one-column bits
+        // (R3.24 (a); kernels.metal caps a tile at MVFC_COLS = 8)
+        if (w->type == T_Q4_K && n_col > 1 && g->p_mvfc_q4k && metal_mvfc_on()) {
+            mv = g->p_mvfc_q4k;
+            if (a.col_tile > 8) a.col_tile = col_tile = 8;
+        }
         g_mv_dispatches++;
         g_disp.mvf++;
     } else if (n_col == 1 && g->p_mv2[w->type] && metal_mv2_on()) {
@@ -2718,6 +2827,13 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
         g_mv2_dispatches++;
         g_disp.mv++;
     } else {
+        // several columns of an identity matvec: the twin that reads each
+        // block once for the tile, each column its one-column bits (R3.24
+        // (a), admitted by metal_mvc_self_test; MVFC_COLS = 8 a tile)
+        if (n_col > 1 && g->p_mvc[w->type] && metal_mvfc_on()) {
+            mv = g->p_mvc[w->type];
+            if (a.col_tile > 8) a.col_tile = col_tile = 8;
+        }
         g_disp.mv++;
     }
     [e setComputePipelineState:mv];
@@ -5037,15 +5153,15 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     }
 #undef MB_CUT
 
-    // head, per column: every sequence needs its own logits
-    for (int c = 0; c < n; c++) {
+    // head: every sequence needs its own logits, the head's weights read
+    // once for all of them (a column's bits are its solo head's: the
+    // one-column kernels and their twins agree, by their self-tests)
+    for (int c = 0; c < n; c++)
         enc_rmsnorm(g, e, g->x, foff((size_t)c * n_embd),
                     g->xb, foff((size_t)c * xdim), g->out_norm,
                     n_embd, m0->rms_eps);
-        enc_mv(g, e, m0, m0->output, g->xb, foff((size_t)c * xdim),
-               b->logits_n, foff((size_t)c * b->n_vocab),
-               n_embd, b->n_vocab, nil);
-    }
+    enc_mv_cols(g, e, m0->output, g->xb, 0, b->logits_n, 0,
+                n_embd, b->n_vocab, nil, n, xdim, b->n_vocab, true);
 
     [e endEncoding];
     [cb commit];
