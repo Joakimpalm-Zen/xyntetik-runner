@@ -3807,8 +3807,10 @@ static bool metal_nan_probe(metal_fwd *F, id<MTLBuffer> buf, size_t cnt,
 static int metal_timing_on(void) {
     static _Atomic int timing = -1;
     if (timing < 0) {
+        // 1: each forward's encode and GPU time; 2: also the decode
+        // microbatch's GPU time per stage (metal_mb_prof, R3.24)
         const char *t = getenv("RUNNER_METAL_TIMING");
-        timing = t && *t && strcmp(t, "0") ? 1 : 0;
+        timing = !t || !*t || !strcmp(t, "0") ? 0 : atoi(t) >= 2 ? 2 : 1;
     }
     return timing;
 }
@@ -4875,10 +4877,20 @@ void gpu_batch_free(gpu_batch *b) {
     free(b);
 }
 
+// RUNNER_METAL_TIMING=2 (R3.24): the decode microbatch commits and waits at
+// each stage boundary, so every stage's GPU time is its own command buffer's.
+// Slow by construction (a sync per stage) and off otherwise; the GPU spans are
+// exact. One column takes this encoder too under the profile, so a single
+// slot's stages are measured at the same boundaries as N slots'.
+enum { MB_QKV, MB_ATTN, MB_O, MB_UP, MB_DOWN, MB_HEAD, MB_STAGES };
+static const char *const mb_stage_name[MB_STAGES] =
+    { "qkv", "attn", "o", "gate_up", "down", "head" };
+
 bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                       const int *pos, int n, float **out) {
     if (!b || n < 1 || n > MODEL_BATCH_MAX) return false;
-    if (n < 2) return false;   // one column is just a solo forward
+    bool prof = metal_timing_on() >= 2;
+    if (n < 2 && !prof) return false;   // one column is just a solo forward
     gpu_t *g = b->lead;
     model_t *m0 = b->seqs[0];
     int n_embd = b->n_embd;
@@ -4903,6 +4915,15 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
 
     id<MTLCommandBuffer> cb = [g->queue commandBuffer];
     id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+    double mb_ms[MB_STAGES] = { 0 };
+    // close the stage: its command buffer's GPU span, then a fresh buffer
+#define MB_CUT(stage) do {                                                  \
+        if (prof) {                                                         \
+            [e endEncoding]; [cb commit]; [cb waitUntilCompleted];          \
+            mb_ms[(stage)] += 1e3 * ([cb GPUEndTime] - [cb GPUStartTime]);  \
+            cb = [g->queue commandBuffer]; e = [cb computeCommandEncoder];  \
+        }                                                                   \
+    } while (0)
 
     for (int l = 0; l < m0->n_layer; l++) {
         layer_t *ly = &m0->layers[l];
@@ -4940,6 +4961,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
             if (g->kn[l])
                 enc_qknorm_n(g, e, m0, g->kt, 0, g->kn[l], n_kv, hd, n, kv_dim);
         }
+        MB_CUT(MB_QKV);
 
         // per column: rope at ITS position, store into ITS slot's cache,
         // attend over ITS span — the solo kernels on the solo data
@@ -4980,6 +5002,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                                 g->q, foff((size_t)c * q_dim), gs->kc, gs->vc,
                                 g->xb2, foff((size_t)c * xdim), false);
         }
+        MB_CUT(MB_ATTN);
 
         enc_mv_cols(g, e, ly->wo, g->xb2, 0, g->xb, 0,
                     q_dim_l, n_embd, g->bo[l], n, xdim, xdim, true);
@@ -4989,6 +5012,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         if (m0->resid_scale != 1.0f)
             enc_scale_n(g, e, g->xb, 0, n_embd, m0->resid_scale, n, xdim);
         enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
+        MB_CUT(MB_O);
 
         int nff_l = ly->n_ff;
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->ffn_norm[l],
@@ -4998,6 +5022,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         enc_mv_cols(g, e, ly->w_up, g->xb, 0, g->hb2, 0,
                     n_embd, nff_l, nil, n, xdim, nff_l, true);
         enc_elem(g, e, metal_act_pipeline(g, m0), g->hb, 0, g->hb2, 0, n * nff_l);
+        MB_CUT(MB_UP);
         enc_mv_cols(g, e, ly->w_down, g->hb, 0, g->xb, 0,
                     nff_l, n_embd, nil, n, nff_l, xdim, true);
         if (g->pfn[l])
@@ -5008,7 +5033,9 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
         if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
             enc_scale_n(g, e, g->x, 0, n_embd, ly->out_scale, n, n_embd);
+        MB_CUT(MB_DOWN);
     }
+#undef MB_CUT
 
     // head, per column: every sequence needs its own logits
     for (int c = 0; c < n; c++) {
@@ -5023,6 +5050,15 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     [e endEncoding];
     [cb commit];
     [cb waitUntilCompleted];
+    if (prof) {
+        mb_ms[MB_HEAD] = 1e3 * ([cb GPUEndTime] - [cb GPUStartTime]);
+        double tot = 0;
+        for (int s = 0; s < MB_STAGES; s++) tot += mb_ms[s];
+        fprintf(stderr, "metal-microbatch n=%d gpu=%.3fms", n, tot);
+        for (int s = 0; s < MB_STAGES; s++)
+            fprintf(stderr, " %s=%.3f", mb_stage_name[s], mb_ms[s]);
+        fprintf(stderr, "\n");
+    }
     if (metal_command_failed(cb)) {
         fprintf(stderr, "gpu: Metal microbatch command buffer failed — "
                 "falling back to sequential decode\n");

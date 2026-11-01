@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`RUNNER_METAL_TIMING=2`: the Metal decode microbatch by stage.** The
+  `--parallel` slots that decode together are split into QKV, attention, O,
+  FFN gate and up, FFN down, and the head, each its own command buffer, so
+  every stage's GPU time is exact. It is a measuring tool; the syncs slow a
+  step. Measured with it (R3.24): on Metal the weight products grow almost
+  linearly with the slots though the weights are shared, because each
+  column re-does the dequantize-and-dot; a multi-column kernel is next.
+
 - **Ministral 3 (`mistral3`).** Mistral's edge models load, chat and call
   tools. The architecture is llama with two additions:
   - the llama 4 attention temperature on every layer's Q after its rope (llama

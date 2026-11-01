@@ -1892,6 +1892,15 @@ lanes split `head_dim`, so a load covers 32 consecutive elements instead of 32
 rows. It reassociates the per-row dot into a `simd_sum`, which is why it
 answers to `./test-attn-tol` rather than to an identity claim.
 
+`RUNNER_METAL_TIMING=1` prints each Metal forward's encode time and GPU time on
+stderr. `RUNNER_METAL_TIMING=2` also splits the server's decode microbatch (the
+`--parallel` slots that decode together) by stage: QKV, attention, O
+projection, FFN gate and up, FFN down, and the head. Each stage is committed and
+waited on as its own command buffer, so the stage times are exact GPU spans, but
+a step runs slower than without it. Under it, a single ready slot also takes the
+microbatch encoder, so one slot and N slots are measured at the same boundaries.
+It is a measuring tool; leave it off in service.
+
 `RUNNER_METAL_MOE_EM=1` opts into expert-major MoE *prefill* kernels: one
 threadgroup row per expert instead of per (token, expert) slot, byte-identical
 to the default by construction (one shared dot body, one writer per output).
