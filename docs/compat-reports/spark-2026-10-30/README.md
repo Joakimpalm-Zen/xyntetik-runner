@@ -5,7 +5,8 @@ computed in float32, `Spark-X2.6-4B-Q4_K_M.gguf` reads a mean KLD of **0.113** a
 **0.1136**, against a bar of 0.05, each with 87.0% top-1. On the margin-qualified positions X2.6 reads 93.6% and X2.5
 95.6%, both under the 97% bar. XHToken's Q8_0 files read **0.0132** (X2.6) and **0.0044** (X2.5), each with 98.7% top-1
 and 100% margin-qualified, so the gap is the Q4_K_M files' quantization, not the arithmetic: the Q8_0 files are the
-fidelity files. No llama.cpp column was run against the references.
+fidelity files. The llama.cpp column (2026-11-01) is below: on the X2.6 Q8_0 it reads the lower mean, from one
+position where the file's Q8_0 rounding tips a massive activation.
 
 ## Against the reference
 
@@ -54,6 +55,42 @@ not measured against the reference.
   sha256 `145c2aa6...31d58b81`) and `Spark-X2.6-4B-Q4_K_M.gguf` (3,543,441,312 bytes, sha256 `91cb2811...d7f5cbd9`); from
   `XHToken/Spark-X2.5-4B-GGUF` at revision `9826e0be`: `Spark-X2.5-4B-Q8_0.gguf` (4,375,021,152 bytes, sha256
   `5c2c3c19...25d9dea2`) and `Spark-X2.5-4B-Q4_K_M.gguf` (2,600,224,352 bytes, sha256 `adfcfa19...40109428`).
+
+## llama.cpp column (2026-11-01)
+
+**Unflattering first: on the X2.6 Q8_0, llama.cpp reads the lower mean KLD, 0.0086 against Runner's 0.0132.** One
+position carries the difference (below). llama.cpp mainline `dde879bc` (`llama-server`, CPU build, x86-64 with
+AVX-512, flash attention off, `-c 9216`), against the same float32 references at the same 300 positions with
+`scripts/gold-logits.py --endpoint-ids` (each position sent as the reference's own token ids), the reference under
+transformers 4.57.1 as above.
+
+| File | Engine | Positions | Mean KLD | Median | Max KLD | Top-1 | Margin-qualified top-1 |
+|---|---|---|---|---|---|---|---|
+| X2.6-4B Q8_0 | llama.cpp, CPU | 300 | **0.0086** | 0.0010 | 0.734 | 98.00% | 100.00% |
+| X2.6-4B Q4_K_M | llama.cpp, CPU | 300 | **0.1232** | 0.0357 | 4.570 | 85.00% | 91.53% |
+
+- **X2.6 Q8_0:** paired per position, Runner is the closer (Wilcoxon z 9.0, p 2e-19, llama.cpp minus Runner); no
+  margin-qualified top-1 discordance. Runner's mean is one position: at 1,538 Runner reads KLD 2.37 and llama.cpp 0.10.
+  Without it, Runner reads 0.0053 and llama.cpp 0.0083.
+- **X2.6 Q4_K_M:** Runner 0.113 against llama.cpp 0.123, not distinguishable per position (Wilcoxon p 0.074; McNemar
+  6 to 1 for Runner, p 0.125).
+- **The text path:** sending each prefix as text gives the same numbers as the ids here (0.0086 and 0.123): the
+  publisher's tokenizer adds no BOS, so the files' missing `add_bos_token` changes nothing for this family.
+
+Why the two engines differ, one numbered sentence each:
+
+1. llama.cpp's CPU dot products quantize the activations to 8 bits before the integer dot, and Runner multiplies the
+   dequantized weights by float32 activations.
+2. At position 1,538 the file's Q8_0 rounding tips the model into a massive activation in layer 19's FFN (output norm
+   48 against the float32 model's 9.4): the publisher's model with the same weights rounded to Q8_0 gives Runner's
+   distribution, so the 2.37 is the file's, and llama.cpp's 0.10 there is its 8-bit activation rounding landing on the
+   other side of the same edge. The edge is in the Q8_0 file at that context, and a llama.cpp user meets it too: its
+   own step-by-step path (one token at a time from its cache) lands on Runner's side (KL 0.013 against Runner's row).
+   R4.28; the material (the activation trace, transformers against itself, the Q8_0-rounded reference) is in shade
+   `research/runner-engine/r4.28-spark-row1538-2026-11-01/`.
+
+Files: `gold-logits-llamacpp-x2.6-q8_0.json`, `gold-logits-llamacpp-x2.6-q4_k_m.json` (the column);
+`*-text.json` beside them (the text path).
 
 ## Agreement: Runner against llama.cpp on the same file
 
