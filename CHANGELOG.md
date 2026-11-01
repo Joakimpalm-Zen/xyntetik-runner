@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal decode microbatch: the weight products read each block once for all
+  slots.** When several `--parallel` slots decode together on Metal, the Q8_0,
+  Q6_K and Q4_K matvecs and the head now load each weight block once for the
+  whole column tile, while every slot keeps the bits of its solo decode step
+  (each twin kernel is admitted at load only after a self-test against its
+  one-column kernel; `RUNNER_METAL_MVFC=0` switches them off). Measured on
+  K2-Horizon-1B on an M1, eight slots: 199 to 155 ms a step on the Q4_K_M,
+  140 to 116 on the Q8_0 (R3.24).
+
 - **`RUNNER_METAL_TIMING=2`: the Metal decode microbatch by stage.** The
   `--parallel` slots that decode together are split into QKV, attention, O,
   FFN gate and up, FFN down, and the head, each its own command buffer, so
