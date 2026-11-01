@@ -3,6 +3,16 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **Granite 4 hybrid MoE runs its expert banks on CUDA.** granite-4.0-h-tiny
+  and -small carry an always-on shared expert with no sigmoid gate, which the
+  device could not run, so every expert bank stayed on the host (a full
+  offload ran the model on the CPU). The device now adds an ungated shared
+  expert unscaled, as the CPU does, and the banks take the card like any
+  routed bank; `--cpu-moe` still keeps them home.
+  `make test-cuda-hybrid-moe` (R4.10).
+
 ## v1.10.0 - 2026-11-01
 
 - **Short prompt chunks on Metal take the GEMM tiles.** A Metal forward of 4
