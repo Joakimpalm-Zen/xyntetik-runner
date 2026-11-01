@@ -64,7 +64,8 @@ Current release and unreleased changes. Compatibility follows the
   large for float32 in memory. `--license ID` gives the licence of a parent whose
   file declares none, and never overrides one it declares. `runner derive --card-from REC` rewrites a
   card from its record alone; every card is written from the record, so the
-  two cannot disagree. The license is copied from the parent, and a parent without
+  two cannot disagree. `--base-model REPO[@REV]` and `--credit TEXT` name
+  the publisher's repository and credit inputs on the card. The license is copied from the parent, and a parent without
   one is refused. `--score` gains `--score-out F` and `--score-tokens N`, and
   its JSON gains `n_special` (R17.6.1).
 
