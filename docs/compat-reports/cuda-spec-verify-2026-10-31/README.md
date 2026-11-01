@@ -67,3 +67,45 @@ The same twins serve the decode microbatch and the MoE expert matmuls, which gai
   its 256-wide model to Q5_K_S where llama-quantize is available.
 - The microbenchmark checked every column of every twin against the batch-1 kernel bit for bit, on outputs cleared
   before each launch.
+
+## On a second GPU architecture (2026-11-01)
+
+The twins were tuned on the RTX 3070 (sm_86). To check that they are not slower elsewhere, both trees ran on an
+RTX PRO 6000 Max-Q (compute capability 12.0) in a MIG 1g.24gb partition that no other process used during the run.
+The trees were pre = f61f6961 (main just before this change) and main = f4a1c212, both built with clang 22.1.8,
+`-t 8` on eight host CPUs. The host was shared with other work, so host-bound time carries that load. The models
+were the same as above (sha256-checked against the Hub), with three prompts, 200 tokens at most, temperature 0, and
+one run per cell.
+
+A k 4 round is one draft of four tokens plus one five-row verify forward; this run did not split the two, so the
+round time below is both. The draft is also a Q4_K_M model and uses the same twins.
+
+| Prompt | Rounds, tok/round | pre: ms a round, tok/s | main: ms a round, tok/s | Round time |
+|---|---|---|---|---|
+| 0 | 45, 4.44 | 59.7, 74.45 | 44.5, 99.84 | -25.4% |
+| 1 | 34, 2.97 | 59.5, 49.95 | 44.4, 66.86 | -25.3% |
+| 2 | 26, 3.38 | 59.3, 57.07 | 44.4, 76.19 | -25.1% |
+
+Plain decoding was 75.38, 74.91 and 75.76 tok/s on pre against 75.47, 75.73 and 74.79 on main (13.2 to 13.4 ms a
+token on both). Prompt 2 is 1.3% slower on main, inside the spread of the other two prompts, which moved the other
+way by up to 1.1%. Every k 4 output equals its plain output on both trees, and plain output is byte-identical
+between the trees.
+
+The decode microbatch: a server at `--parallel 4` answered four prompts at once, and each reply matched the same
+prompt answered alone (4 of 4 on both trees). The four replies are 437 tokens in all (counted with the Qwen2.5
+tokenizer).
+
+| | pre | main |
+|---|---|---|
+| batch wall time | 4.34 s | 3.44 s |
+| aggregate decode | 100.7 tok/s | 127.0 tok/s (+26%) |
+| the four alone, summed | 5.98 s | 5.99 s |
+
+What got slower: prompt processing on these 15 to 20 token prompts, in three of the six cells. On k 4 prompt 0 it
+went from 434.3 to 367.3 tok/s (-15%), on plain prompt 2 from 325.8 to 305.9 (-6%), and on k 4 prompt 2 from 326.9
+to 312.2 (-4.5%). The other three cells got faster: plain prompt 0 +4%, plain prompt 1 +10%, and k 4 prompt 1 the
+same. Each of these prompts takes 40 to 55 ms, one run per cell on shared host CPUs, and a prompt over eight tokens runs
+the tiled GEMM, not a twin (outside a verify round the twins serve only 2 to 8 columns). We read this as noise, but
+these runs cannot show it.
+
+`make test-cuda-spec-identity` and `make test-cuda-batch-identity` exit 0 on this GPU at main.
