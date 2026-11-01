@@ -18,6 +18,20 @@ Current release and unreleased changes. Compatibility follows the
   Template conformance is clean in text and tokens. Measured on
   mistralai/Ministral-3-3B-Instruct-2512-GGUF (R4.4).
 
+- **`runner derive`: make, measure and card a file in one command.** The
+  steps behind every made file of ours existed only as separate pieces:
+  `--rewrite`, `--quant-error`, `--score`, `scripts/gold-logits.py`, and
+  cards written by hand. `runner derive -m PARENT -o OUT RECIPE` runs them
+  in order and writes `OUT`, its record (`OUT.derive.json`) and a Hugging
+  Face card. `--target-size BYTES --high T --low T` ranks the demotions as
+  `scripts/type-plan-by-sensitivity.py` does, so selective precision needs no
+  hand-written plan. The default reference is the parent file, and its card
+  says so in its first lines and states no bar verdict. `--reference hf:DIR`
+  measures against the publisher's float32 model, and that card leads with
+  pass or fail. The license is copied from the parent, and a parent without
+  one is refused. `--score` gains `--score-out F` and `--score-tokens N`, and
+  its JSON gains `n_special` (R17.6.1).
+
 - **An activation trace that says where two forwards part.** Final logits
   say that two runs differ, not where: an export that drops one edit can
   leave the greedy text and the top-1 unchanged. `RUNNER_ACT_TRACE=path`

@@ -2179,6 +2179,8 @@ flags into unrelated feature sections.
 | `--doctor-include-text` | With `--info doctor`: keep the probe's prompt and reply text in the report. Read the report before sharing it. |
 | `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics, with a `route` object for the run: every `paths` entry its forwards took (`batch` prefill, `solo` decode, `keep` verify rounds, `mtp`, `micro`) with the forward count and widest rows, the backend facts of `RUNNER_DEBUG_ROUTE`, the process's `kernels` counters (GEMM dispatches by weight type, CUDA split-K, CUDA attention kernels (`cuda_attn_tile` counts every tiled prefill tile, `cuda_attn_tc` the tensor-core ones among them, `cuda_attn_dec_gqa` the grouped decode launches) and KV copy-backs, Metal fast matvec and attention kernels, CPU multi-row dots), the `compiler`, `codegen` flags and `tuning` switches. |
 | `--score [N]` | Return teacher-forced token logprobs, NLL, perplexity and top-1 metrics as JSON over the raw `-p`/`-f` text. With `N` (1 to 256), also report each position's N most likely tokens as `[id, logprob]` pairs, best first, in a `top` array. [Details](#cli-score). |
+| `--score-out F` | With `--score`: write the JSON to F instead of stdout. |
+| `--score-tokens N` | With `--score`: score only the text's first N tokens (BOS included), so a window at the head of a long corpus fits a short context. |
 | `--decide FILE` | Typed decisions: one `/v1/decide` request per line of `FILE` (`state`, `questions[{question, options}]`), one response per line on stdout; the options are scored verbatim in context, no sampling. `-` reads stdin. |
 | `--systemone FILE` | Clef typed decisions: one `/v1/systemone` request (`model`, `state`, `questions`) per line of `FILE`, one response per line on stdout. `-` reads stdin. |
 | `--shadow-mode` | Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
@@ -2253,6 +2255,35 @@ The longer spellings (`--train DATA`, `--train-dpo DATA`, `--train-steps`,
 `--train-ctx`, `--train-out`, `--train-batch`, `--train-resume`,
 `--train-eval`, `--train-teacher`, `--train-logprobs`, `--train-eot`,
 `--train-gpu-budget`) are still accepted on the main command line.
+
+<a id="cli-derive"></a>
+`runner derive -m PARENT -o OUT RECIPE` makes a file from a parent, measures
+it, and writes its record and a Hugging Face card. Each step is an existing
+mode run as a sub-process of the same binary (`--rewrite`, `--quant-error`,
+`--score --score-top 20`), so the file is made and scored exactly as those
+modes make and score one. The comparison is `scripts/gold-logits.py`'s: KL
+over the reference's 20 most likely tokens, top-1 agreement, and
+margin-qualified top-1 (the reference's top two more than 0.5 nats apart).
+Outputs: `OUT`, `OUT.quant.json` (the rewrite's record), `OUT.derive.json`
+(`xyntetik.runner.derive.v1`: both files' sha256 and bytes, the recipe, the
+reference, the window, the measurement), `OUT.README.md`, and the score files
+the measurement read. [Design](docs/derive-design.md).
+
+| Command | Purpose |
+|---|---|
+| `runner derive`: `--quant T`, `--type-plan PLAN`, `--imatrix F`, `--prune-experts PLAN`, `--remove-sublayer LIST`, `--merge-lora ADAPTER` | The recipe: the `--rewrite` flags of the same names, passed through as given. At least one recipe flag is required; a file with no change from its parent is refused. |
+| `runner derive`: `--target-size BYTES --high T --low T [--match S] [--group block\|tensor]` | Selective precision without a hand-written plan: `--quant-error` costs every tensor at both types (importance-weighted with `--imatrix`), the groups (a block's matching tensors, or one tensor) that add the least error per byte saved are demoted from `--high` to `--low` until the file fits, and the rewrite runs with that plan (`OUT.type-plan.json`). The ranking is `scripts/type-plan-by-sensitivity.py`'s, and the test holds the two to the same plan. Excludes `--quant` and `--type-plan`. |
+| `runner derive`: `--reference hf:DIR` | Measure against the publisher's model in float32 through `scripts/gold-logits.py`, which needs Python with torch and transformers (`RUNNER_GOLD_PYTHON`, default `python3`; `RUNNER_GOLD_LOGITS` names another copy of the script). Refused before anything is made when they are missing. Only this reference gets a bar verdict on the card (mean KLD at most 0.05 and margin-qualified top-1 at least 97%), and a file that fails says so in the card's first line. |
+| `runner derive`: default reference | The parent file, scored by Runner on the CPU. The card's first lines say it was measured against the parent file in Runner's arithmetic, not the publisher's float32 model, and it states no bar verdict; the record says `reference_kind: parent-file`. |
+| `runner derive`: `--corpus F`, `--window S:T:N` | The text (default `tests/fixtures/gold-corpus-2k.txt` beside the binary) and the positions S + n x T for n < N (default `8:15:300`, the records' window). A corpus shorter than the window, or a `-c` smaller than it, is refused before anything is made. |
+| `runner derive`: `-c N`, `-t N`, `--gpu X` | Passed to the sub-runs (`--gpu` defaults to `off` for the score runs; `-c` defaults to the window's span). |
+
+The parent must declare `general.license`: the card copies it, and a parent
+without one is refused before anything is written. Not in this version:
+producing an importance matrix, scale-only recovery training (recovery is
+`runner train` then `--merge-lora`), computing an expert-prune plan, and
+uploading. A parent too large for the machine fails in its score run's own
+load check.
 
 <a id="cli-pull"></a>
 #### `--pull REPO[:TAG]`
@@ -2731,7 +2762,9 @@ is not bit-identical to solo, and scoring defaults to exactness over speed). `to
 it: a token with probability above 0.5 must be the argmax and an argmax token must carry
 at least `1/n_vocab`, so the reported count is bracketed by the reported logprobs, and a
 scorer that disagrees with itself fails loudly rather than returning a confident wrong
-perplexity.
+perplexity. `n_special` is 1 when the tokenizer prepended BOS and 0 otherwise, so a
+reader can line positions of the text up across files: position `pos` of the text is
+predicted by row `n_special + pos - 1`.
 
 `--score N` adds each position's distribution head: `top[i]` lists the N most likely
 next tokens after position i as `[id, logprob]`, best first, ties to the lower id, from the

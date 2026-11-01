@@ -26,6 +26,7 @@
 // for render_prompt_alloc: chat mode renders the same prompts the chat route
 // does, so it uses the same measured-size renderer rather than a second one
 #include "api.h"
+#include "derive.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1057,7 +1058,9 @@ static void usage_to(FILE *f, const char *prog) {
         "usage: %s -m model.gguf [options]\n"
         "       runner attest <verb> ...          records, keys, bundles, packs,\n"
         "                                         signatures (runner attest --help)\n"
-        "       runner train DATA -m model.gguf   LoRA training (runner train --help)\n\n"
+        "       runner train DATA -m model.gguf   LoRA training (runner train --help)\n"
+        "       runner derive -m P.gguf -o OUT.gguf RECIPE   make, measure and card a\n"
+        "                                         file (runner derive --help)\n\n"
         "One mode per run: a line that names two (-p beside --serve, --score\n"
         "beside --decide) is refused, never resolved by order.\n\n"
         "model and mode:\n"
@@ -1113,6 +1116,8 @@ static void usage_to(FILE *f, const char *prog) {
         "                 over the raw -p/-f text (no template, no sampling),\n"
         "                 printed as JSON with NLL and perplexity; N (1-256)\n"
         "                 also prints each position's N most likely tokens\n"
+        "  --score-out F  with --score: write the JSON to F, not stdout\n"
+        "  --score-tokens N  with --score: score the text's first N tokens only\n"
         "  --decide FILE  typed decisions: one /v1/decide request per line of\n"
         "                 FILE (state, questions[{question, options}]), one\n"
         "                 response per line on stdout; options scored verbatim\n"
@@ -2043,6 +2048,8 @@ typedef struct {
     // given beside it other than --json, which the mode refuses by name
     const char *pull_spec, *pull_other;
     int  score_top;   // --score-top: each scored position's N most likely tokens
+    const char *score_out;   // --score-out: the score JSON to this file, not stdout
+    int  score_tokens;       // --score-tokens: score the text's first N tokens only
     bool adapt_info;    // --adapt-info: adapter eligibility as JSON
     bool doctor;        // --doctor: one diagnostic report, then exit
     bool doctor_text;   // --doctor-include-text: keep the probe's text
@@ -2483,6 +2490,8 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             if (v) o->score_top = (int)int_arg(a, v, 1, 256);
         }
         else if (!strcmp(a, "--score-top")) o->score_top = (int)int_arg(a, NEXT, 1, 256);
+        else if (!strcmp(a, "--score-out")) o->score_out = NEXT;
+        else if (!strcmp(a, "--score-tokens")) o->score_tokens = (int)int_arg(a, NEXT, 2, INT_MAX);
         else if (!strcmp(a, "--decide")) o->decide_path = NEXT;
         else if (!strcmp(a, "--systemone")) o->systemone_path = NEXT;
         else if (!strcmp(a, "--lora")) o->lora_path = NEXT;
@@ -2760,6 +2769,11 @@ static bool cli_resolve_shape(cli_opts *o) {
     // the serve-only knobs, refused elsewhere rather than ignored
     if (o->port_given && !o->serve) {
         fprintf(stderr, "error: --port is the server's port and needs --serve\n");
+        return false;
+    }
+    if ((o->score_out || o->score_tokens) && !o->score) {
+        fprintf(stderr, "error: %s shapes --score's output and needs --score\n",
+                o->score_out ? "--score-out" : "--score-tokens");
         return false;
     }
     if (o->ttl_given && !o->serve) {
@@ -5823,6 +5837,12 @@ static int run_score(cli_opts *o, cli_run *rt) {
         fprintf(stderr, "error: --score needs a prompt (-p or -f)\n");
         return 1;
     }
+    // --score-out: the document goes to a file (runner derive's sub-runs);
+    // diagnostics stay on stderr
+    if (o->score_out && !plat_freopen(o->score_out, "w", stdout)) {
+        fprintf(stderr, "error: cannot write --score-out %s\n", o->score_out);
+        return 1;
+    }
     char *p = prompt_copy(o->prompt);
     n_prompt = tok_encode(&rt->tok, p, rt->toks, (int)rt->tok_cap, !o->no_bos, true);
     free(p);
@@ -5830,6 +5850,9 @@ static int run_score(cli_opts *o, cli_run *rt) {
         fprintf(stderr, "error: out of memory tokenizing prompt\n");
         return 1;
     }
+    // --score-tokens: the head of the text only, so a window over a long
+    // corpus (runner derive's measurement) fits a short context
+    if (o->score_tokens > 0 && n_prompt > o->score_tokens) n_prompt = o->score_tokens;
     if (n_prompt < 2) {
         fprintf(stderr, "error: --score needs at least 2 tokens to score "
                 "a transition (got %d)\n", n_prompt);
@@ -5956,10 +5979,15 @@ static int run_score(cli_opts *o, cli_run *rt) {
     snprintf(mjson, sizeof mjson, "{\"file\":\"%s\",\"bytes\":%lld}", mesc, mbytes);
     char sroute[1800];
     model_score_route_json(&rt->m, mjson, sroute, sizeof sroute);
+    // n_special (additive): 1 when the tokenizer prepended BOS, so a reader
+    // can line positions of the text up across files (runner derive, and
+    // gold-logits.py's own special-prefix rule)
+    int n_special = !o->no_bos && rt->tok.add_bos && rt->tok.bos_id >= 0 &&
+                    n_prompt > 0 && rt->toks[0] == rt->tok.bos_id;
     printf("],\"n_vocab\":%d,\"top1\":%d,\"top1_rate\":%.9g,"
-           "\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g,\"score_route\":%s}\n",
+           "\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g,\"n_special\":%d,\"score_route\":%s}\n",
            rt->m.n_vocab, top1, (double)top1 / (n_prompt - 1),
-           nll, mean, exp(mean), sroute);
+           nll, mean, exp(mean), n_special, sroute);
     // the paths and kernels the forwards took, on stderr: the kernel counters
     // show a route's kernels ran
     char route[4096];
@@ -6784,6 +6812,8 @@ int main(int argc, char **argv) {
     // before anything reads argv or the environment: on Windows both arrive
     // in the ANSI code page unless the manifest made that UTF-8 (compat.h)
     plat_utf8_startup(&argc, &argv);
+    // runner derive orchestrates the other modes as sub-runs of this binary
+    if (argc >= 2 && !strcmp(argv[1], "derive")) return derive_main(argc - 1, argv + 1);
     int sub = cli_expand_subcommand(&argc, &argv);
     if (sub >= 0) return sub;
     char *owned_prompt = NULL;

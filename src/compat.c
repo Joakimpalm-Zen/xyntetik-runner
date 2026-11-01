@@ -1066,6 +1066,13 @@ FILE *plat_fopen(const char *path, const char *mode) {
     return f;
 }
 
+FILE *plat_freopen(const char *path, const char *mode, FILE *stream) {
+    wchar_t *wp = utf8_to_wide(path), *wm = wp ? utf8_to_wide(mode) : NULL;
+    FILE *f = wm ? _wfreopen(wp, wm, stream) : NULL;
+    free_keep_errno(wp, wm);
+    return f;
+}
+
 int plat_open(const char *path, int flags, int mode) {
     wchar_t *wp = utf8_to_wide(path);
     int fd = wp ? _wopen(wp, flags, mode) : -1;
@@ -1527,6 +1534,27 @@ char *plat_executable_path(void) {
 #endif
     }
 #endif
+}
+
+char *plat_executable_dir(void) {
+#ifdef __linux__
+    // the link's target, not the link: "/proc/self/exe" opens the image but
+    // its own directory is /proc/self
+    char *p = NULL;
+    for (size_t cap = 1024; cap <= (1u << 20) && !p; cap *= 2) {
+        char *b = malloc(cap);
+        if (!b) return NULL;
+        ssize_t n = readlink("/proc/self/exe", b, cap);
+        if (n < 0) { free(b); return NULL; }
+        if ((size_t)n < cap) { b[n] = '\0'; p = b; }
+        else free(b);
+    }
+#else
+    char *p = plat_executable_path();   // absolute on macOS and Windows
+#endif
+    if (!p) return NULL;
+    p[plat_path_base(p) - p] = '\0';
+    return p;
 }
 
 // ------------------------------------------------------------------ capacity
