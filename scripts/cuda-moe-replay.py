@@ -29,6 +29,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gguf_fixture import read_header  # noqa: E402
+
 # about 140 tokens on the fixtures' byte tokenizer (their context is 256):
 # a solo pass of that many forwards, and three 64-row chunks
 PROMPT = ("The quick brown fox jumps over the lazy dog while the five boxing "
@@ -43,10 +46,11 @@ ARMS = {
 MODES = {"solo": {}, "chunked": {"RUNNER_SCORE_CHUNKED": "1", "RUNNER_SPEC_BATCH": "64"}}
 CLEAR = ("RUNNER_MOE_TRACE", "RUNNER_MOE_REPLAY", "RUNNER_MOE_EAGER", "RUNNER_MOE_GROUPED",
          "RUNNER_MOE_TWIN", "RUNNER_SCORE_CHUNKED", "RUNNER_SPEC_BATCH", "RUNNER_CUDA_ROUTE")
-# the CPU against CUDA logprob distance under one pinned routing, scored in the
-# same mode: arithmetic only (about 1e-6 solo, up to 3e-4 for a chunked grouped
-# prefill's staged GEMM); a wrong weight or renormalisation is off by ~0.1
-CPU_TOL = 2e-3
+# the CPU against CUDA logprob distance under the moved trace may exceed the
+# unpinned distance in the same mode (arithmetic only: 1e-6 solo, up to 2e-3
+# for gemma-4's chunked fixture) by this factor plus a floor; a wrong weight
+# or renormalisation is off by ~0.1
+CPU_FACTOR, CPU_FLOOR = 4.0, 1e-4
 
 
 def score(runner, model, gpu, env):
@@ -64,6 +68,17 @@ def score(runner, model, gpu, env):
         if ln.startswith("score: route "):
             route = json.loads(ln[len("score: route "):])
     return json.loads(p.stdout)["logprobs"], route, err
+
+
+def expert_count(model):
+    """The model's declared expert count: a trace shows only the experts
+    chosen, and a top-1 fixture may choose expert 0 at every routing."""
+    with open(model, "rb") as fh:
+        kv = read_header(fh)[0]
+    counts = [v for k, v in kv.items() if k.endswith(".expert_count")]
+    if not counts:
+        sys.exit("FAIL %s: no expert_count in the header" % model)
+    return int(counts[0])
 
 
 def trace_of(path):
@@ -109,7 +124,8 @@ def check(runner, model, arm, mode, tmp):
     lp, _, _ = score(runner, model, True, dict(env, RUNNER_MOE_TRACE=t_gpu))
     if lp != lp0:
         sys.exit("FAIL %s: tracing changed the scores" % tag)
-    score(runner, model, False, dict(MODES[mode], RUNNER_MOE_TRACE=t_cpu))
+    lpc0, _, _ = score(runner, model, False, dict(MODES[mode], RUNNER_MOE_TRACE=t_cpu))
+    d0 = max(abs(a - b) for a, b in zip(lp0, lpc0))
     rg, rc = trace_of(t_gpu), trace_of(t_cpu)
     if not rg or rg != rc:
         diff = [k for k in set(rg) | set(rc) if rg.get(k) != rc.get(k)]
@@ -125,7 +141,7 @@ def check(runner, model, arm, mode, tmp):
                  "differed %d, uncovered %d" % (tag, "same" if lp == lp0 else "CHANGED",
                                                 forced, len(rg) * used, differed, missing))
 
-    ne = 1 + max(e for ex in rg.values() for e in ex)
+    ne = expert_count(model)
     moved = {k: [(e + 1) % ne for e in ex] for k, ex in rg.items()}
     t_moved, t_pin, t_cpin = (os.path.join(tmp, n) for n in
                               ("moved.jsonl", "pin.jsonl", "cpin.jsonl"))
@@ -152,13 +168,15 @@ def check(runner, model, arm, mode, tmp):
     if trace_of(t_cpin) != moved:
         sys.exit("FAIL %s: the CPU did not follow the moved trace" % tag)
     d = max(abs(a - b) for a, b in zip(lp1, lpc))
-    if len(lp1) != len(lpc) or d > CPU_TOL:
+    bar = CPU_FACTOR * d0 + CPU_FLOOR
+    if len(lp1) != len(lpc) or d > bar:
         sys.exit("FAIL %s: under the moved trace the device and the CPU differ by %.3g "
-                 "(bar %.0e)" % (tag, d, CPU_TOL))
+                 "(unpinned %.3g, bar %.2g)" % (tag, d, d0, bar))
     print("moe replay %s: %d routings x %d traced as the CPU's, replayed with no "
-          "override, moved trace followed (%d overrides%s, CPU distance %.1e)%s" %
+          "override, moved trace followed (%d overrides%s, CPU distance %.1e, unpinned "
+          "%.1e)%s" %
           (tag, len(rg), used, differed,
-           ", every expert routed: a reorder" if reorder else "", d,
+           ", every expert routed: a reorder" if reorder else "", d, d0,
            ", by-expert tiles %d" % twin if twin else ""))
 
 
