@@ -1,0 +1,171 @@
+# R3.25, CUDA half: structural mutants against the CUDA device identity gates, 2026-11-02
+
+**Question.** Does each tolerance-bounded identity gate a CUDA host runs catch a real mistake in a CUDA kernel or in
+the host encoder? This is the CUDA half of the Metal audit (`../r3.25-metal-gate-audit-2026-10-31/`). The trigger
+was R4.10: on the toy Mamba-2 fixture, a scan with its D skip dropped passed test-gpu-identity's cross-backend 2e-3.
+
+**Host.** The datacenter MIG slice: an RTX PRO 6000, MIG 1g.24gb, sm_120. Runner main 550164c0ff13,
+clang 22.1.8. To rebuild mutated kernels, the mutant runs regenerate the PTX with the local nvcc 13.2; the pinned
+toolchain is 13.0. Healthy residue on the regenerated PTX matches the committed PTX's: spark's three runs are
+within about 10% (3.3e-6 against 3.7e-6), and every other fixture is the same to three digits. The final check
+(below) runs on the committed PTX.
+
+**Method.** `cuda-mutant-audit.py`, run from the runner tree root:
+1. Apply one structural mutant to `src/kernels.cu` (then regenerate the PTX) or `src/cuda.c`, and check the number
+   of replacements.
+2. Rebuild, then run every gate below. The script then restores the files and rebuilds.
+
+Mutants:
+- the attention residual dropped (host encoder, 3 sites);
+- the SSM D skip dropped (both scan kernels);
+- SiLU replaced by tanh-GELU in the dense gated FFN;
+- the RMS norm skipped (scale 1);
+- its eps dropped;
+- rope one position later in `k_rope`;
+- the attention scale ×1.05 (host, 2 sites);
+- the matvec bias dropped (all 14 sites);
+- K left unrotated (host);
+- rope skipped for Q and K (`k_rope`, `k_rope_seq`).
+
+Gates (19):
+- test-gpu-identity on 14 fixtures. These are the 11 that `make test` runs, plus the three hybrids that only
+  Metal's targets run: ornith (qwen35), test-m2-s40-g1 (Mamba-2) and nemotron-h.
+- test-prefix at chunk 4 and 64.
+- `make test-cuda-nvfp4`, `test-cuda-tc-kq` and `test-cuda-moe-replay`.
+
+Two notes on scope:
+- `test-cuda-tc-kq` ran its Q3_K and NVFP4 cases only, because this host has no llama-quantize.
+- test-prefix and tc-kq compare CUDA with CUDA: a mutant on the shared path cannot show there, by design ("s" in
+  the table).
+
+Pass 1 ran the gates at their own bounds (`pass1-default-bound.log`, plus `pass1b-rope-default-bound.log` for the
+two rope mutants added after pass 1). Pass 2 ran the gpu-identity gates at the proposed bounds (`pass2-tight.log`),
+because the limit moves nothing else.
+
+## Table
+
+Each cell gives the deviation, as a fraction of the mean logit range for gpu-identity and prefix, and as the max
+logprob difference for nvfp4. The marks:
+- **C**: caught at the gate's own bound.
+- **T**: caught only at the proposed bound.
+- **n**: the deviation is the healthy residue, so the mutated path is not on this fixture.
+- **s**: a CUDA-against-CUDA gate.
+- **-**: the mutant moved the result and passed.
+
+| gate | healthy | attn residual | SSM D skip | silu to gelu | norm skipped | norm eps | rope +1 (Q and K) | attn scale x1.05 | bias dropped | K rope skipped | rope skipped |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `gpu-id test.gguf` | 2.55e-08 | 4.46e-02 **C** | 2.55e-08 n | 2.02e-03 **C** | 8.31e-02 **C** | 7.71e-04 **T** | 3.66e-07 - | 5.85e-05 **T** | 2.55e-08 n | 9.56e-04 **T** | 9.00e-04 **T** |
+| `gpu-id test.gguf 0 1` | 3.02e-07 | 4.46e-02 **C** | 3.02e-07 n | 2.02e-03 **C** | 8.31e-02 **C** | 7.71e-04 **T** | 4.75e-07 - | 5.85e-05 **T** | 3.02e-07 n | 9.56e-04 **T** | 9.00e-04 **T** |
+| `gpu-id noisy-norms` | 1.75e-08 | 5.42e-02 **C** | 1.75e-08 n | 1.81e-03 **T** | 8.77e-02 **C** | 7.95e-04 **T** | 1.86e-08 - | 1.59e-06 - | 1.75e-08 n | 1.94e-05 **T** | 1.92e-05 **T** |
+| `gpu-id gptoss-top1` | 4.47e-08 | 2.06e-01 **C** | 4.47e-08 n | 4.47e-08 n | 5.16e-01 **C** | 1.20e-03 **T** | 3.32e-07 - | 6.30e-05 **T** | 2.07e-03 **C** | 7.83e-04 **T** | 5.93e-04 **T** |
+| `gpu-id k_off` | 2.55e-08 | 4.46e-02 **C** | 2.55e-08 n | 2.02e-03 **C** | 8.31e-02 **C** | 7.71e-04 **T** | 3.66e-07 - | 5.85e-05 **T** | 2.55e-08 n | 9.56e-04 **T** | 9.00e-04 **T** |
+| `gpu-id k_nope` | 2.39e-08 | 4.47e-02 **C** | 2.39e-08 n | 2.02e-03 **C** | 8.32e-02 **C** | 7.72e-04 **T** | 2.39e-08 n | 6.88e-05 **T** | 2.39e-08 n | 2.39e-08 n | 2.39e-08 n |
+| `gpu-id k_half` | 2.43e-08 | 4.46e-02 **C** | 2.43e-08 n | 2.02e-03 **C** | 8.31e-02 **C** | 7.71e-04 **T** | 3.54e-07 - | 6.41e-05 **T** | 2.43e-08 n | 7.38e-04 **T** | 7.40e-04 **T** |
+| `gpu-id k_temp_live` | 8.02e-04 | 4.70e-02 **C** | 8.02e-04 n | 2.22e-03 **C** | 8.43e-02 **C** | 9.44e-04 - | 8.02e-04 n | 5.43e-04 - | 8.02e-04 n | 8.02e-04 n | 8.02e-04 n |
+| `gpu-id spark` | 3.33e-06 | 1.44e-01 **C** | 3.33e-06 n | 3.33e-06 n | 1.45e-01 **C** | 1.10e-03 **T** | 1.05e-05 - | 1.76e-04 **T** | 3.33e-06 n | 3.49e-03 **C** | 1.52e-03 **T** |
+| `gpu-id spark 0 1` | 3.32e-06 | 1.44e-01 **C** | 3.32e-06 n | 3.32e-06 n | 1.45e-01 **C** | 1.10e-03 **T** | 1.05e-05 - | 1.76e-04 **T** | 3.32e-06 n | 3.49e-03 **C** | 1.52e-03 **T** |
+| `gpu-id spark-swa` | 1.56e-06 | 1.51e-01 **C** | 1.56e-06 n | 1.56e-06 n | 1.45e-01 **C** | 1.10e-03 **T** | 1.52e-05 - | 1.81e-04 **T** | 1.56e-06 n | 3.75e-03 **C** | 1.58e-03 **T** |
+| `gpu-id ornith (qwen35)` | 4.56e-08 | 1.92e-02 **C** | 4.56e-08 n | 9.32e-04 **T** | 1.01e-01 **C** | 1.13e-03 **T** | 1.48e-06 - | 4.33e-04 **T** | 4.56e-08 n | 8.77e-03 **C** | 7.25e-03 **C** |
+| `gpu-id mamba2 s40` | 1.24e-08 | 1.86e-02 **C** | 8.17e-04 **T** | 1.72e-03 **T** | 2.64e+00 **C** | 4.11e-08 - | 3.11e-08 - | 8.68e-06 - | 1.24e-08 n | 1.84e-04 **T** | 1.67e-04 **T** |
+| `gpu-id nemotron-h` | 1.73e-08 | 2.56e-02 **C** | 8.94e-03 **C** | 1.73e-08 n | 1.45e-01 **C** | 1.39e-03 **T** | 1.73e-08 n | 2.31e-05 **T** | 1.73e-08 n | 1.73e-08 n | 1.73e-08 n |
+| `prefix chunk 4` | 0.00e+00 | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s |
+| `prefix chunk 64` | 0.00e+00 | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s |
+| `cuda-nvfp4` | 9.60e-07 | **C** | 9.60e-07 n | 8.42e-03 - | **C** | 4.06e-03 - | 4.76e-06 - | 5.20e-04 - | 9.60e-07 n | 7.94e-03 - | 6.02e-03 - |
+| `cuda-tc-kq (TC prefill)` | ok | s | s | s | s | s | s | s | s | s | s |
+| `cuda-moe-replay` | 1.90e-03 | **C** | **C** | 1.50e-04 **C** | **C** | **C** | 2.10e-03 - | 1.00e-03 **C** | 3.20e-04 **C** | **C** | 3.60e-03 **C** |
+
+| mutant | caught at 2e-3 (19 gates) | gpu-id caught at the tight bound (14) | reachable and still missed at the tight bound |
+|---|---|---|---|
+| attn residual | 16 | 14 | none |
+| SSM D skip | 2 | 2 | none |
+| silu to gelu | 7 | 9 | none |
+| norm skipped | 16 | 14 | none |
+| norm eps | 1 | 12 | k_temp_live 9.44e-04, mamba2 s40 4.11e-08 |
+| rope +1 (Q and K) | 0 | 0 | test.gguf 3.66e-07, test.gguf 0 1 4.75e-07, noisy-norms 1.86e-08, gptoss-top1 3.32e-07, k_off 3.66e-07, k_half 3.54e-07, spark 1.05e-05, spark 0 1 1.05e-05, spark-swa 1.52e-05, ornith (qwen35) 1.48e-06, mamba2 s40 3.11e-08 |
+| attn scale x1.05 | 1 | 11 | noisy-norms 1.59e-06, k_temp_live 5.43e-04, mamba2 s40 8.68e-06 |
+| bias dropped | 2 | 1 | none |
+| K rope skipped | 5 | 11 | none |
+| rope skipped | 2 | 11 | none |
+
+The `cuda-moe-replay` column is not counted as evidence; see below.
+
+## What the table says
+
+**The cross-backend 2e-3 is blind on CUDA, as it was on Metal.** At 2e-3, the gpu-identity gates catch only the
+gross mistakes, the residual dropped and the norm skipped, on every fixture.
+- **No gpu-identity fixture catches two mistakes:** the norm's eps dropped (7.7e-4 to 1.4e-3, mamba2 aside) and
+  the attention scale ×1.05 (1.6e-6 to 5.4e-4).
+- **Rope:** K unrotated passes everything but spark and ornith, and rope skipped everything but ornith.
+- **The SSM D skip** passes mamba2 s40 (8.2e-4), and only nemotron-h catches it.
+- **SiLU to GELU** passes noisy-norms, ornith and mamba2.
+
+That is a blind bound, not a blind fixture: the healthy residue is 1e-8 to 3e-7 (spark 3.7e-6).
+
+**At the proposed bound, most fixtures that reach a mutant catch it.** Only rope one position later escapes every
+fixture, and it is an equivalent mutant: `k_rope` rotates Q and K at the same position, so the shift leaves every
+relative angle unchanged. The residue moves (to 1.5e-5 at most), and the program is still correct; the Metal half
+saw the same on its decode path. The two rope mutants that break the rotation are caught by 11 of 14 fixtures.
+The other three use no rope: k_nope, nemotron-h, and k_temp_live, which is NoPE throughout.
+
+**What remains, by cause:**
+- **Fixture: biases.** Only gptoss-top1 has biases. A dense fixture with QKV or FFN biases would close it; the
+  Metal half saw the same.
+- **Fixture: the norm's eps on mamba2 s40.** `HYBRID_TEST_AMP=1` makes the hidden state's mean square far larger
+  than eps, so dropping eps moves the logits by only 3e-8. Every other fixture but k_temp_live catches it.
+- **Bound: the attention scale on noisy-norms (1.6e-6) and mamba2 s40 (8.7e-6).** Under 1e-5. A 1e-6 limit for
+  those two would catch it: their residue is 1.8e-8 and 1.2e-8, so the margins are 57× and 80×. This patch does not
+  propose it, because 11 other fixtures already catch the mutant.
+- **k_temp_live keeps 2e-3 on CUDA.** Its CUDA residue is 8.0e-4, against Metal's 1.9e-7. At that level it hides
+  the norm's eps (9.4e-4) and the attention scale (5.4e-4); 12 and 11 of the 14 fixtures catch those. The residue
+  is not a position slip:
+  - the temperature at position ±1 gives 8.4e-4 and 8.5e-4;
+  - one-token forwards give 8.0e-4 as well, so the prefill tiles are not the cause.
+
+  Its cause is open. The fixture scales Q by up to about 17× (temperature scale 5, floor 4), which magnifies any
+  difference in the attention's rounding. Why that difference is about 4,000 times Metal's is worth its own look.
+- **No CUDA gate runs the hybrids.** On a CUDA host, `make test` holds no Mamba-2, nemotron-h or qwen35 fixture to
+  the CPU's logits; those gpu-identity runs are Metal targets (`test-metal-mamba2`, `test-metal-qwen35`). Of the
+  gates a CUDA host does run, none caught the D skip dropped (moe-replay's one failure did not reproduce; see
+  below).
+- **`test-cuda-moe-replay` is not reliable evidence here.** It failed under the D-skip mutant in pass 1, although
+  none of its fixtures has an SSM. With the same mutant applied, a rerun with full output passed, and so did four
+  clean runs (108 to 301 s). The gate fails now and then, for a reason the one-line pass-1 record does not show.
+  Its other catches in the table are therefore not counted as evidence. Most of them failed within seconds, which
+  looks like a real trace mismatch, but only a repeat could tell.
+
+## The proposed tightening (the patch)
+
+- **`GPU_ID_TIGHT = GPU_ID_LIMIT=1e-5`** for the toy fixtures, on every GPU host. This replaces `METAL_ID_TIGHT`:
+  Metal's values carry over unchanged, and CUDA now uses them too. The CUDA margin is 33× over the worst toy
+  residue (`test.gguf 0 1`, 3.0e-7), and 19× over the worst hybrid (ornith-s128, 5.2e-7).
+- **`GPU_ID_TIGHT_SPARK = GPU_ID_LIMIT=2e-5`** for the three spark runs. The CUDA residue is 3.7e-6, a 5.4× margin.
+- **`GPU_ID_TIGHT_TEMP`** for k_temp_live: 1e-5 on Metal, as before. It is empty on CUDA, which keeps the
+  cross-backend 2e-3 there, at a 2.5× margin.
+- **test-cuda-nvfp4:** the generated fixture is held to a logprob difference of 1e-4. Its residue is 9.6e-7, and at
+  2e-2 the eps (4.1e-3), the activation (8.4e-3), both rope mutants (6e-3 and 7.9e-3) and the attention scale
+  (5.2e-4) passed. A real file named in `NVFP4_MODEL` keeps 2e-2.
+- **`make test-cuda-hybrids`** (new): the hybrid fixtures of `test-metal-mamba2` and `test-metal-qwen35` on CUDA
+  at 1e-5. Those are the Mamba-2 hybrids at d_state 40, 72 and 128, nemotron-h, and ornith at its default plus
+  states 40, 72 and 128. All eight pass, at 1.2e-8 to 5.2e-7. It is not yet hooked into a suite, because a CUDA
+  host runs the `test-cuda-*` targets by name.
+
+## Final check: the patch on the committed PTX (`final-check.log`)
+
+The patch applied to runner main, with the committed PTX rebuilt:
+- **gpu-identity:** the 11 runs of the shared recipe pass at their new bounds, in effect as `make -n` expands them.
+  The toy fixtures are at 1.75e-8 to 3.02e-7 (limit 1e-5), spark at 1.41e-6 to 3.7e-6 (limit 2e-5), and
+  k_temp_live at 8.02e-4 (limit 2e-3).
+- **`make test-cuda-nvfp4`:** passes, at 9.60e-7 against 1e-4.
+- **`make test-cuda-hybrids`:** passes on all eight fixtures.
+
+**Before landing:** another CUDA architecture (sm_86) needs to run the unmutated gates at these bounds, because
+residue depends on the device's rounding. Spark's 5.4× is the thinnest margin, and the nvfp4 fixture's 1e-4 has
+been measured on sm_120 only.
+
+## Files
+
+- `cuda-mutant-audit.py` runs the audit: `cuda-mutant-audit.py OUT.log [LIMIT]`. Set `ONLY=name,...` for a
+  supplementary pass over named mutants.
+- `make-table.py` builds the table above from the three pass logs.
+- The logs: `pass1-default-bound.log`, `pass1b-rope-default-bound.log`, `pass2-tight.log`, `hybrids-1e-5.log`,
+  `final-check.log`.

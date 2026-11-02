@@ -1,0 +1,40 @@
+PTX: committed
+== gpu-id at the patch's bounds, committed PTX
+GPU_ID_LIMIT=1e-5 test.gguf: gpu-identity: test.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32   6216 logits over 24 positions | 5539 differ, mean|dlogit| 4.42e-08 = 2.55e-08 of mean range 1.74 (limit 1e-05), worst 2.38e-07 gpu-identity: ok 
+GPU_ID_LIMIT=1e-5 test.gguf 0 1: gpu-identity: test.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 1   6216 logits over 24 positions | 6154 differ, mean|dlogit| 5.24e-07 = 3.02e-07 of mean range 1.74 (limit 1e-05), worst 2.66e-06 gpu-identity: ok 
+GPU_ID_LIMIT=1e-5 test-noisy-norms.gguf: gpu-identity: test-noisy-norms.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32   6216 logits over 24 positions | 5208 differ, mean|dlogit| 3e-08 = 1.75e-08 of mean range 1.71 (limit 1e-05), worst 2.38e-07 gpu-identity: ok 
+GPU_ID_LIMIT=1e-5 test-moe-fixture.gptoss-top1.gguf: gpu-identity: test-moe-fixture.gptoss-top1.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32   6216 logits over 24 positions | 5438 differ, mean|dlogit| 3.26e-08 = 4.47e-08 of mean range 0.729 (limit 1e-05), worst 2.38e-07 gpu-identity: ok 
+GPU_ID_LIMIT=1e-5 test-attn/k_off.gguf: gpu-identity: test-attn/k_off.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32   6216 logits over 24 positions | 5539 differ, mean|dlogit| 4.42e-08 = 2.55e-08 of mean range 1.74 (limit 1e-05), worst 2.38e-07 gpu-identity: ok 
+GPU_ID_LIMIT=1e-5 test-attn/k_nope.gguf: gpu-identity: test-attn/k_nope.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32   6216 logits over 24 positions | 5498 differ, mean|dlogit| 4.14e-08 = 2.39e-08 of mean range 1.74 (limit 1e-05), worst 3.58e-07 gpu-identity: ok 
+GPU_ID_LIMIT=1e-5 test-attn/k_half.gguf: gpu-identity: test-attn/k_half.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32   6216 logits over 24 positions | 5529 differ, mean|dlogit| 4.22e-08 = 2.43e-08 of mean range 1.74 (limit 1e-05), worst 2.38e-07 gpu-identity: ok 
+GPU_ID_LIMIT= test-attn/k_temp_live.gguf: gpu-identity: test-attn/k_temp_live.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32   6216 logits over 24 positions | 6188 differ, mean|dlogit| 0.00139 = 0.000802 of mean range 1.73 (limit 0.002), worst 0.0136 gpu-identity: ok 
+GPU_ID_LIMIT=2e-5 test-spark.gguf: gpu-identity: test-spark.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32   6216 logits over 24 positions | 6205 differ, mean|dlogit| 3.8e-06 = 3.7e-06 of mean range 1.03 (limit 2e-05), worst 2.83e-05 gpu-identity: ok 
+GPU_ID_LIMIT=2e-5 test-spark.gguf 0 1: gpu-identity: test-spark.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 1   6216 logits over 24 positions | 6208 differ, mean|dlogit| 3.62e-06 = 3.53e-06 of mean range 1.03 (limit 2e-05), worst 2.85e-05 gpu-identity: ok 
+GPU_ID_LIMIT=2e-5 test-spark-swa.gguf: gpu-identity: test-spark-swa.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32   6216 logits over 24 positions | 6017 differ, mean|dlogit| 1.42e-06 = 1.41e-06 of mean range 1 (limit 2e-05), worst 1.85e-05 gpu-identity: ok 
+== make test-cuda-nvfp4 (fixture bound 1e-4)
+test-nvfp4.gguf cpu/cuda logprob max diff 9.60e-07 over 117 positions
+cuda nvfp4 ok
+== make test-cuda-hybrids
+test-m2-s40-g1.gguf: gpu-identity: ok
+test-m2-s72-g2.gguf: gpu-identity: ok
+test-m2-s128-g2.gguf: gpu-identity: ok
+test-m2-nemotron.gguf: gpu-identity: ok
+test-ornith.gguf: gpu-identity: ok
+test-ornith-s40.gguf: gpu-identity: ok
+test-ornith-s72.gguf: gpu-identity: ok
+test-ornith-s128.gguf: gpu-identity: ok
+cuda hybrids ok
+== make -n: the tightened recipe lines
+./test-gpu-identity --self-test
+GPU_ID_LIMIT=1e-5 ./test-gpu-identity
+GPU_ID_LIMIT=1e-5 ./test-gpu-identity test-noisy-norms.gguf
+GPU_ID_LIMIT=1e-5 ./test-gpu-identity test-moe-fixture.gptoss-top1.gguf
+GPU_ID_LIMIT=1e-5 ./test-gpu-identity test-attn/k_off.gguf
+GPU_ID_LIMIT=1e-5 ./test-gpu-identity test-attn/k_nope.gguf
+GPU_ID_LIMIT=1e-5 ./test-gpu-identity test-attn/k_half.gguf
+./test-gpu-identity test-attn/k_temp_live.gguf
+GPU_ID_LIMIT=1e-5 ./test-gpu-identity test.gguf 0 1
+GPU_ID_LIMIT=2e-5 ./test-gpu-identity test-spark.gguf
+GPU_ID_LIMIT=2e-5 ./test-gpu-identity test-spark.gguf 0 1
+GPU_ID_LIMIT=2e-5 ./test-gpu-identity test-spark-swa.gguf
+done 17:06:33
