@@ -1,0 +1,9 @@
+== Qwen3-30B-A3B-Q4_K_M, test-gpu-identity (run at a trial GPU_DEV_FRAC of 1e-3; the constant stays 2e-3)
+Qwen3-30B-A3B-Q4_K_M batch: exit 1 14s 0.00106 (range 36.5, limit 0.001, worst 0.952) gpu-split: budget=25.13GB fixed=0.79GB G=48/48 full=1 used=18.92GB
+Qwen3-30B-A3B-Q4_K_M single: exit 1 19s 0.00146 (range 36.5, limit 0.001, worst 1.84) gpu-split: budget=25.13GB fixed=0.79GB G=48/48 full=1 used=18.92GB
+== the same file, runner --score on a 40-token prompt, RUNNER_MOE_TRACE on both sides, then the CPU's trace replayed on CUDA (RUNNER_MOE_REPLAY)
+routings 1872; 21 differ, 3 in the expert set (the rest slot order only)
+  pos 22 layer 39: CPU-only [(28, 0.0738257)] CUDA-only [(89, 0.0738349)]
+  pos 22 layer 41: CPU-only [(100, 0.0577204)] CUDA-only [(121, 0.0595889)]
+  pos 22 layer 44: CPU-only [(94, 0.0723085)] CUDA-only [(73, 0.0709637)]
+CPU vs CUDA |dlogprob| over 39 positions: max 1.14 mean 0.0342; with the CPU's routing replayed: max 0.00148 mean 0.000211
