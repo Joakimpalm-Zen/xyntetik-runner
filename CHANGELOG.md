@@ -20,6 +20,24 @@ Current release and unreleased changes. Compatibility follows the
   mistral3 since 1.11.0. Found by the CUDA gate audit (R3.25), which also
   puts the fixture that shows it on the 1e-5 bound.
 
+- **CPU prefill attention scales with threads again.** A prefill batch's
+  attention ran one thread-pool pass per query row, so on many cores the
+  dispatch, not the arithmetic, set the time, and more threads made it slower
+  (3.7 s at 16 threads against 1.9 s at 4 for a 588-token prompt on a
+  Threadripper, Qwen3-0.6B Q8_0). It now runs the whole batch in one pass over
+  heads, each running every row exactly as before: outputs are byte-identical
+  at any thread count, and nothing more is allocated. On that host, at 16
+  threads, three interleaved rounds against the previous build read 0.87x to
+  1.72x (medians 1.10x to 1.52x over SmolLM2-135M and Qwen3-0.6B, GCC and
+  Clang builds); at 1 and 4 threads it is level. `RUNNER_ATTN_BATCH=0`
+  restores the per-row passes. On Apple Silicon with an f16 cache, the
+  attention's value sum also holds 16 channels in registers across the whole
+  span instead of storing and reloading them at every position, with each
+  channel's sum
+  unchanged: on an Apple M1 a 3,497-token SmolLM2-135M prefill went from 106
+  to 121 tok/s on one thread and from 234 to 334 on four, the scores
+  byte-identical to the previous build (R3.27).
+
 - **A PR-time check for POSIX calls the Windows build lacks.**
   `scripts/check-portability.py` runs in every PR's metadata check and fails
   on a call to a function the MinGW-w64 CRT does not declare (`setenv`,
@@ -28,6 +46,7 @@ Current release and unreleased changes. Compatibility follows the
   keeps from Windows. The Windows suite runs on main only, so a bare `setenv`
   in a C test had passed every PR check and broken main (#553, fixed in
   #554). A line guarded some other way carries a `portability: ok` comment.
+
 
 - **`RUNNER_CPU_I8` on a build with no int8 kernel is ignored, with a
   notice.** It used to switch the route on in name only: every matvec ran
