@@ -1026,6 +1026,63 @@ static void test_i8_dot(int type, int n) {
     free(row); free(x); free(w); free(xq); free(xr);
 }
 
+// The int8 prefill tiles (R3.1.5 B): four rows packed once against eleven
+// activation columns (two four-column passes and a tail of three). The NEON
+// kernel must give the scalar kernel's bits, and both the double-precision
+// dot of the same weights with the same quantized activations, to fp32
+// rounding. A scale companion other than one folds into the pack.
+static int g_i8t_checked = 0;
+
+static void test_i8_tile(int type, int n) {
+    if (!i8_tile_ok(type, n)) return;
+    g_i8t_checked++;
+    enum { R = I8_TILE_ROWS, NC = 11 };
+    size_t rowsz = ggml_row_size(type, n), asz = i8_act_size(n);
+    uint8_t *rows = malloc(rowsz * R);
+    double *w = malloc(sizeof(double) * (size_t)n * R);
+    float *x = malloc(sizeof(float) * (size_t)n);
+    uint8_t *xq = malloc(asz * NC);
+    void *pack = malloc(i8_tile_size(n));
+    float got[R * NC], ref[R * NC];
+    for (int trial = 0; trial < 4; trial++) {
+        set_trial(trial);
+        const void *rp[R];
+        for (int r = 0; r < R; r++) {
+            make_row(type, rows + rowsz * r, n);
+            ref_weights(type, rows + rowsz * r, w + (size_t)n * r, n);
+            rp[r] = rows + rowsz * r;
+        }
+        for (int c = 0; c < NC; c++) {
+            for (int i = 0; i < n; i++) x[i] = frnd();
+            if (trial == 3 && c == 2) memset(x, 0, sizeof(float) * (size_t)n);
+            i8_quant_act(x, xq + asz * c, n);
+        }
+        float scale = trial == 2 ? 0.5f : 1.0f;
+        CHECK(i8_tile_pack(type, rp, n, scale, pack), "i8_tile_pack %s n=%d",
+              ggml_type_name(type), n);
+        i8_tile_dot(pack, n, xq, asz, NC, got, NC);
+        i8_tile_dot_scalar(pack, n, xq, asz, NC, ref, NC);
+        CHECK(memcmp(got, ref, sizeof got) == 0,
+              "i8_tile_dot %s n=%d trial=%d: the kernel differs from the scalar one",
+              ggml_type_name(type), n, trial);
+        for (int r = 0; r < R; r++)
+            for (int c = 0; c < NC; c++) {
+                const ref_block_i8a *xb = (const ref_block_i8a *)(xq + asz * c);
+                double q = 0, mag = 0;
+                for (int i = 0; i < n; i++) {
+                    double xv = (double)xb[i / I8_REF_QK].d * xb[i / I8_REF_QK].qs[i % I8_REF_QK];
+                    q += w[(size_t)n * r + i] * scale * xv;
+                    mag += fabs(w[(size_t)n * r + i] * scale * xv);
+                }
+                CHECK(fabs(ref[r * NC + c] - q) <= 5e-5 * mag + 1e-4,
+                      "i8_tile_dot %s n=%d trial=%d row %d col %d: got %g vs same-quant ref %g",
+                      ggml_type_name(type), n, trial, r, c, (double)ref[r * NC + c], q);
+            }
+        if (g_fail > 20) break;
+    }
+    free(rows); free(w); free(x); free(xq); free(pack);
+}
+
 // ------------------------------------------------------------ f16 -> f32
 //
 // dequant_row(T_F16) is the batched prefill path's weight decode and does not
@@ -1290,6 +1347,15 @@ int main(void) {
         test_i8_dot(types[t], 4096);
         test_i8_dot(types[t], 256);
     }
+    for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
+        test_i8_tile(types[t], 4096);
+        test_i8_tile(types[t], 256);
+    }
+    // Q8_0, Q4_0, Q4_K and Q6_K at both lengths, on every build
+    CHECK(g_i8t_checked == 8, "int8 prefill tiles: %d combos exercised, expected 8",
+          g_i8t_checked);
+    CHECK(!i8_tile_ok(T_Q6_K, 128) && !i8_tile_ok(T_Q8_0, 48) && !i8_tile_ok(T_Q5_K, 256),
+          "i8_tile_ok declines a partial block and a type it has no pack for");
     CHECK(!i8_dot_ok(T_Q4_K, 128), "i8_dot_ok must decline a partial K-block");
     CHECK(!i8_dot_ok(T_IQ2_XXS, 4096), "i8_dot_ok must decline ungated formats");
     // On a build with the fused route compiled in, all five promoted formats

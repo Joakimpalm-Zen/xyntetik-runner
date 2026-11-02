@@ -3,7 +3,20 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## v1.11.0 - 2026-11-02
+## Unreleased
+
+- **CPU prefill in int8, opt-in.** With `RUNNER_CPU_I8_PREFILL=1`, CPU
+  batches of 8 or more rows (prompt prefill, chunked scoring) quantize the
+  activations to int8 once a matvec and run them against four-row int8 packs
+  of the weights with the dot-product instructions (Q8_0, Q4_0, Q4_K and
+  Q6_K, arm64 with the dot-product extension). It is measurably farther from
+  the publisher's model than the f32 route, so it stays off by default: on
+  Qwen3-0.6B Q8_0 against Qwen's float32 model over 2,000 positions, mean
+  KLD 0.00747 against 0.00610 (1.22x, Wilcoxon p 5e-86), margin-qualified
+  top-1 100% on both. On an Apple M1 at 4 threads, CPU prefill of 512 tokens
+  went from 187 to 315 tok/s on that file and from 29.7 to 44.4 tok/s on
+  Qwen3-4B Q4_K_M. The route line names it (`cpu_act` ends in
+  `+int8-prefill`). No x86 kernel yet (R3.1.5 B).
 
 - **Metal decode microbatch on the GEMM tiles, opt-in.** With
   `RUNNER_METAL_BATCH_TILES=1`, 6 or more `--parallel` slots decoding
@@ -20,6 +33,8 @@ Current release and unreleased changes. Compatibility follows the
   `RUNNER_SCORE_MICRO=N` scores each
   position as one column of an N-wide microbatch, which is how the route is
   measured; on the default route it scores solo's bytes (R3.24 (b)).
+
+## v1.11.0 - 2026-11-02
 
 - **Records name files by base name, never by host path.** The provenance
   records (`.quant.json`, `.merge.json`, `.train.json`, `.context.json`),

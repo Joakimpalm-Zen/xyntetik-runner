@@ -170,6 +170,7 @@ void  fp4_accum_row(const void *src, float a, float *out, int n);
 //                             for each row: vec_dot_i8(type, row, buf, n); }
 //
 bool   i8_dot_enabled(void);              // RUNNER_CPU_I8 pin, cached
+bool   i8_prefill_enabled(void);          // RUNNER_CPU_I8_PREFILL pin, cached
 bool   i8_dot_ok(int type, int n);        // fused kernel exists for (type, n)
 size_t i8_act_size(int n);                // scratch bytes for n activations
 void   i8_quant_act(const float *x, void *dst, int n);
@@ -189,6 +190,21 @@ void   vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
 bool   vec_dot_xs_ok(int type);
 void   vec_dot_xsums(const float *x, int n, float *xs);
 float  vec_dot_xs(int type, const void *row, const float *x, const float *xs, int n);
+// The int8 prefill tiles (R3.1.5 B, RUNNER_CPU_I8_PREFILL). I8_TILE_ROWS
+// weight rows are repacked once into int8 codes with a scale and an offset per
+// 16 elements and row (i8_tile_pack, false for a type or length it does not
+// take), then dotted against int8 activation columns from i8_quant_act:
+// out[r * ldo + c] for the pack's rows r and columns c < ncol. The NEON
+// kernel and the scalar one perform the same fused operations in the same
+// order, so they agree bit for bit; neither is vec_dot_i8's order.
+#define I8_TILE_ROWS 4
+bool   i8_tile_ok(int type, int n);
+size_t i8_tile_size(int n);
+bool   i8_tile_pack(int type, const void *const *rows, int n, float scale, void *pack);
+void   i8_tile_dot(const void *pack, int n, const void *xq, size_t xq_stride,
+                   int ncol, float *out, int ldo);
+void   i8_tile_dot_scalar(const void *pack, int n, const void *xq, size_t xq_stride,
+                          int ncol, float *out, int ldo);
 // Force the route on (1) or off (0) regardless of RUNNER_CPU_I8; -1 returns
 // to the env default. Mirrors gpu_tc_force so one harness can drive both.
 void   i8_dot_force(int on);

@@ -4150,6 +4150,30 @@ bool i8_dot_enabled(void) {
 
 void i8_dot_force(int on) { g_i8_force = on < 0 ? -1 : (on != 0); }
 
+// RUNNER_CPU_I8_PREFILL (R3.1.5 B): batches of MV_SMALL_BATCH or more columns
+// (prefill, chunked scoring) take the int8 dot too, activations quantized once
+// a matvec. Off by default: the same activation rounding as RUNNER_CPU_I8,
+// so the same tolerance class and the same gate.
+static _Atomic int g_i8p_env = -1;
+
+// Only where the vector kernel exists (arm64 with the dot-product extension):
+// elsewhere the flag is ignored with one notice, since the scalar twin is a
+// test oracle, not a prefill route. An x86 kernel is the follow-up.
+bool i8_prefill_enabled(void) {
+    if (g_i8p_env < 0) {
+        const char *e = getenv("RUNNER_CPU_I8_PREFILL");
+        int on = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+#if !RUNNER_I8_NEON
+        if (on)
+            fprintf(stderr, "RUNNER_CPU_I8_PREFILL: no int8 prefill kernel on this "
+                    "build (arm64 with the dot-product extension only); ignored\n");
+        on = 0;
+#endif
+        g_i8p_env = on;
+    }
+    return g_i8p_env != 0;
+}
+
 // Counted where the activations are quantized: once per matvec, never in the
 // per-row hot loop. It is still shared across threads — `--parallel N` runs N
 // slot threads and each calls matvec_b for its own request — so the increment
@@ -4593,6 +4617,241 @@ float vec_dot_i8(int type, const void *row, const void *xq, int n) {
         return s;
     }
 }
+
+// ------------------------------------------- int8 prefill tiles (R3.1.5 B)
+//
+// Batches of MV_SMALL_BATCH or more columns under RUNNER_CPU_I8_PREFILL. Four
+// weight rows are repacked once into int8 codes with one scale d and one
+// offset m per 16 elements and row, which every type taken here reduces to:
+//     Q8_0  w = q * d                 Q4_0  w = (nib - 8) * d
+//     Q4_K  w = nib * d*sc - dmin*mn  Q6_K  w = q6 * d*sc   (q6 in -32..31)
+// so a row's dot against one 16-element activation block b is
+//     d[r] * dx_b * isum(r, b)  +  m[r] * dx_b * sx_b
+// with isum the int8 dot of the codes with the block's quants and sx_b their
+// sum (i8_quant_act's s), the affine form vec_dot_i8 uses. The interleave
+// stores four rows' four consecutive codes in each 4-byte group of a 16-byte
+// vector, so SDOT by lane computes four rows against one activation block in
+// four instructions. The scale companion of a tensor folds into d and m.
+//
+// Pack layout for n elements, nb = n / 16 blocks:
+//   int8  q[nb][4][16]   q[b][v][4r + t] = code of row r, element 16b + 4v + t
+//   float d[nb][4], m[nb][4]
+//   int   has_min        (0 when every m is zero: Q8_0, Q4_0, Q6_K)
+typedef struct { int32_t has_min; int32_t pad[3]; } i8t_head;
+
+bool i8_tile_ok(int type, int n) {
+    switch (type) {
+        case T_Q8_0:
+        case T_Q4_0: return n % QK == 0;
+        case T_Q4_K:
+        case T_Q6_K: return n % QK_K == 0;
+        default:     return false;
+    }
+}
+
+// the pack, then the scratch one row decodes into (n codes, 2 x n / 16 floats)
+size_t i8_tile_size(int n) {
+    size_t nb = (size_t)(n / 16);
+    return sizeof(i8t_head) + nb * (64 + 2 * 4 * sizeof(float)) +
+           (size_t)n + 2 * nb * sizeof(float);
+}
+
+// One row as int8 codes and per-16 scales and offsets.
+static void i8t_row(int type, const void *row, int n, float scale,
+                    int8_t *c, float *d16, float *m16) {
+    switch (type) {
+    case T_Q8_0: {
+        const block_q8_0 *b = row;
+        for (int i = 0; i < n / QK; i++, b++) {
+            memcpy(c + i * QK, b->qs, QK);
+            d16[2 * i] = d16[2 * i + 1] = f16_to_f32(b->d) * scale;
+            m16[2 * i] = m16[2 * i + 1] = 0.0f;
+        }
+        break;
+    }
+    case T_Q4_0: {
+        const block_q4_0 *b = row;
+        for (int i = 0; i < n / QK; i++, b++) {
+            for (int j = 0; j < 16; j++) {
+                c[i * QK + j]      = (int8_t)((b->qs[j] & 0xF) - 8);
+                c[i * QK + j + 16] = (int8_t)((b->qs[j] >> 4) - 8);
+            }
+            d16[2 * i] = d16[2 * i + 1] = f16_to_f32(b->d) * scale;
+            m16[2 * i] = m16[2 * i + 1] = 0.0f;
+        }
+        break;
+    }
+    case T_Q4_K: {
+        const block_q4_K *b = row;
+        for (int i = 0; i < n / QK_K; i++, b++) {
+            float d = f16_to_f32(b->d) * scale, dmin = f16_to_f32(b->dmin) * scale;
+            const uint8_t *q = b->qs;
+            int8_t *cc = c + i * QK_K;
+            float *dd = d16 + i * (QK_K / 16), *mm = m16 + i * (QK_K / 16);
+            for (int j = 0, is = 0; j < QK_K / 64; j++, is += 2, q += 32) {
+                uint8_t sc, mn;
+                get_scale_min_k4(is, b->scales, &sc, &mn);
+                dd[4 * j] = dd[4 * j + 1] = d * sc;
+                mm[4 * j] = mm[4 * j + 1] = -dmin * mn;
+                get_scale_min_k4(is + 1, b->scales, &sc, &mn);
+                dd[4 * j + 2] = dd[4 * j + 3] = d * sc;
+                mm[4 * j + 2] = mm[4 * j + 3] = -dmin * mn;
+                for (int l = 0; l < 32; l++) {
+                    cc[64 * j + l]      = (int8_t)(q[l] & 0xF);
+                    cc[64 * j + l + 32] = (int8_t)(q[l] >> 4);
+                }
+            }
+        }
+        break;
+    }
+    case T_Q6_K: {
+        const block_q6_K *b = row;
+        for (int i = 0; i < n / QK_K; i++, b++) {
+            float d = f16_to_f32(b->d) * scale;
+            const uint8_t *ql = b->ql, *qh = b->qh;
+            int8_t *cc = c + i * QK_K;
+            for (int k = 0; k < QK_K / 16; k++) {
+                d16[i * (QK_K / 16) + k] = d * b->scales[k];
+                m16[i * (QK_K / 16) + k] = 0.0f;
+            }
+            for (int half = 0; half < 2; half++, cc += 128, ql += 64, qh += 32)
+                for (int l = 0; l < 32; l++) {
+                    cc[l]      = (int8_t)(((ql[l]      & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32);
+                    cc[l + 32] = (int8_t)(((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32);
+                    cc[l + 64] = (int8_t)(((ql[l]      >> 4)  | (((qh[l] >> 4) & 3) << 4)) - 32);
+                    cc[l + 96] = (int8_t)(((ql[l + 32] >> 4)  | (((qh[l] >> 6) & 3) << 4)) - 32);
+                }
+        }
+        break;
+    }
+    default: break;
+    }
+}
+
+bool i8_tile_pack(int type, const void *const *rows, int n, float scale, void *pack) {
+    if (!i8_tile_ok(type, n)) return false;
+    int nb = n / 16;
+    i8t_head *h = pack;
+    int8_t *q = (int8_t *)(h + 1);
+    float *d = (float *)(q + (size_t)nb * 64), *m = d + (size_t)nb * 4;
+    float *d16 = m + (size_t)nb * 4, *m16 = d16 + nb;
+    int8_t *c = (int8_t *)(m16 + nb);
+    h->has_min = 0;
+    for (int r = 0; r < I8_TILE_ROWS; r++) {
+        i8t_row(type, rows[r], n, scale, c, d16, m16);
+        // four codes a word: q[b][v][r] takes the row's word 4b + v (the
+        // pack and its scratch are 4-byte aligned: a 16-byte head, then
+        // multiples of 16 bytes and floats)
+        uint32_t *qw = (uint32_t *)q;
+        const uint32_t *cw = (const uint32_t *)c;
+        for (int b = 0; b < nb; b++) {
+            for (int v = 0; v < 4; v++)
+                qw[(size_t)b * 16 + v * 4 + r] = cw[b * 4 + v];
+            d[b * 4 + r] = d16[b];
+            m[b * 4 + r] = m16[b];
+            if (m16[b] != 0.0f) h->has_min = 1;
+        }
+    }
+    return true;
+}
+
+// The reference kernel: per row, an exact int32 dot per block, then
+//   acc = fma((float)isum, d * dx, acc);  acc = fma(m, dx * sx, acc)
+// in block order. The NEON kernel is these operations lane for lane.
+void i8_tile_dot_scalar(const void *pack, int n, const void *xq, size_t xq_stride,
+                        int ncol, float *out, int ldo) {
+    int nb = n / 16;
+    const i8t_head *h = pack;
+    const int8_t *q = (const int8_t *)(h + 1);
+    const float *d = (const float *)(q + (size_t)nb * 64), *m = d + (size_t)nb * 4;
+    for (int c = 0; c < ncol; c++) {
+        const block_i8a *xb = (const block_i8a *)((const uint8_t *)xq + (size_t)c * xq_stride);
+        for (int r = 0; r < I8_TILE_ROWS; r++) {
+            float acc = 0.0f;
+            for (int b = 0; b < nb; b++) {
+                int32_t isum = 0;
+                for (int v = 0; v < 4; v++)
+                    for (int t = 0; t < 4; t++)
+                        isum += q[(size_t)b * 64 + v * 16 + r * 4 + t] * xb[b].qs[v * 4 + t];
+                acc = fmaf((float)isum, d[b * 4 + r] * xb[b].d, acc);
+                if (h->has_min)
+                    acc = fmaf(m[b * 4 + r], xb[b].d * (float)xb[b].s, acc);
+            }
+            out[(size_t)r * ldo + c] = acc;
+        }
+    }
+}
+
+#if RUNNER_I8_NEON
+// four rows against one activation block: four SDOTs by lane, then the
+// block's scale (and offset) folded into the four rows' float accumulators
+#define I8T_BLOCK(acc, xb)                                                       \
+    do {                                                                         \
+        int8x16_t xv = vld1q_s8((xb)->qs);                                       \
+        int32x4_t s = vdotq_laneq_s32(vdupq_n_s32(0), w0, xv, 0);                \
+        s = vdotq_laneq_s32(s, w1, xv, 1);                                       \
+        s = vdotq_laneq_s32(s, w2, xv, 2);                                       \
+        s = vdotq_laneq_s32(s, w3, xv, 3);                                       \
+        acc = vfmaq_f32(acc, vcvtq_f32_s32(s), vmulq_n_f32(dv, (xb)->d));        \
+        if (has_min)                                                             \
+            acc = vfmaq_f32(acc, mv, vdupq_n_f32((xb)->d * (float)(xb)->s));     \
+    } while (0)
+
+void i8_tile_dot(const void *pack, int n, const void *xq, size_t xq_stride,
+                 int ncol, float *out, int ldo) {
+    int nb = n / 16;
+    const i8t_head *h = pack;
+    const int8_t *q = (const int8_t *)(h + 1);
+    const float *d = (const float *)(q + (size_t)nb * 64), *m = d + (size_t)nb * 4;
+    const bool has_min = h->has_min != 0;
+    const float32x4_t zero = vdupq_n_f32(0);
+    int c = 0;
+    // four columns a pass share each block's weight loads
+    for (; c + 4 <= ncol; c += 4) {
+        const block_i8a *x0 = (const block_i8a *)((const uint8_t *)xq + (size_t)c * xq_stride);
+        const block_i8a *x1 = (const block_i8a *)((const uint8_t *)x0 + xq_stride);
+        const block_i8a *x2 = (const block_i8a *)((const uint8_t *)x1 + xq_stride);
+        const block_i8a *x3 = (const block_i8a *)((const uint8_t *)x2 + xq_stride);
+        float32x4_t a0 = zero, a1 = zero, a2 = zero, a3 = zero;
+        for (int b = 0; b < nb; b++) {
+            const int8_t *qb = q + (size_t)b * 64;
+            int8x16_t w0 = vld1q_s8(qb), w1 = vld1q_s8(qb + 16);
+            int8x16_t w2 = vld1q_s8(qb + 32), w3 = vld1q_s8(qb + 48);
+            float32x4_t dv = vld1q_f32(d + b * 4);
+            float32x4_t mv = has_min ? vld1q_f32(m + b * 4) : zero;
+            I8T_BLOCK(a0, &x0[b]);
+            I8T_BLOCK(a1, &x1[b]);
+            I8T_BLOCK(a2, &x2[b]);
+            I8T_BLOCK(a3, &x3[b]);
+        }
+        float t[4][4];
+        vst1q_f32(t[0], a0); vst1q_f32(t[1], a1); vst1q_f32(t[2], a2); vst1q_f32(t[3], a3);
+        for (int r = 0; r < 4; r++)
+            for (int k = 0; k < 4; k++) out[(size_t)r * ldo + c + k] = t[k][r];
+    }
+    for (; c < ncol; c++) {
+        const block_i8a *x0 = (const block_i8a *)((const uint8_t *)xq + (size_t)c * xq_stride);
+        float32x4_t a0 = zero;
+        for (int b = 0; b < nb; b++) {
+            const int8_t *qb = q + (size_t)b * 64;
+            int8x16_t w0 = vld1q_s8(qb), w1 = vld1q_s8(qb + 16);
+            int8x16_t w2 = vld1q_s8(qb + 32), w3 = vld1q_s8(qb + 48);
+            float32x4_t dv = vld1q_f32(d + b * 4);
+            float32x4_t mv = has_min ? vld1q_f32(m + b * 4) : zero;
+            I8T_BLOCK(a0, &x0[b]);
+        }
+        float t[4];
+        vst1q_f32(t, a0);
+        for (int r = 0; r < 4; r++) out[(size_t)r * ldo + c] = t[r];
+    }
+}
+#undef I8T_BLOCK
+#else
+void i8_tile_dot(const void *pack, int n, const void *xq, size_t xq_stride,
+                 int ncol, float *out, int ldo) {
+    i8_tile_dot_scalar(pack, n, xq, xq_stride, ncol, out, ldo);
+}
+#endif
 
 // ---------------------------------------------------------------- threadpool
 
