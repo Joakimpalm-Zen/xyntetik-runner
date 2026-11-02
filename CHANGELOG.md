@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The macOS build has the int8 dot path again.** Apple Silicon builds now
+  target `-mcpu=apple-m1`, the floor of every Apple Silicon Mac, instead of
+  `-march=native`. On a macOS virtual machine, which is where the release
+  binaries are built, `-march=native` means generic armv8-a without the
+  dot-product extension, so the 1.11.0 macOS binary was built without the
+  int8 kernels: `RUNNER_CPU_I8` and `RUNNER_CPU_I8_PREFILL` fell back to the
+  f32 route there without saying so. A local build on a Mac had them. CI and
+  the release now check that the macOS binary takes the int8 route.
+
 - **CPU prefill in int8, opt-in.** With `RUNNER_CPU_I8_PREFILL=1`, CPU
   batches of 8 or more rows (prompt prefill, chunked scoring) quantize the
   activations to int8 once a matvec and run them against four-row int8 packs

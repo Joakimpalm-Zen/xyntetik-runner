@@ -10,9 +10,15 @@ PYTHON  ?= $(shell if python3 -c "import pytest" >/dev/null 2>&1; then echo pyth
                     elif python3 -c "" >/dev/null 2>&1; then echo python3; \
                     else echo python; fi)
 # gnu11 (not c11): strict ISO mode hides M_PI and POSIX symbols on glibc/MinGW
-# -march=native unlocks the AVX2/FMA/F16C dot kernels in quants.c on x86;
-# other ISAs (ARM macs) compile the scalar fallbacks
-CFLAGS  ?= -O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=native
+# -march=native unlocks the AVX2/FMA/F16C dot kernels in quants.c on x86.
+# Apple Silicon takes -mcpu=apple-m1 instead, the floor of every Apple Silicon
+# Mac: on a macOS virtual machine (GitHub's macos runners) -march=native
+# reports generic armv8-a, which drops the dot-product extension, so the int8
+# SDOT kernels (RUNNER_CPU_I8, RUNNER_CPU_I8_PREFILL) were #if-compiled out of
+# CI and of the 1.11.0 macOS release binary (0 SDOT instructions, found
+# 2026-11-02). The source tests only DOTPROD, FMA and SHA2, all in the M1.
+HOST_ARCH_FLAGS := $(if $(and $(filter Darwin,$(shell uname -s 2>/dev/null)),$(filter arm64,$(shell uname -m 2>/dev/null))),-mcpu=apple-m1,-march=native)
+CFLAGS  ?= -O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter $(HOST_ARCH_FLAGS)
 # Mandatory engine codegen, appended so it survives a hostile *environment*
 # CFLAGS. A conda/distro toolchain that exports CFLAGS=-march=nocona -O2
 # otherwise silently defeats the `?=` default above: __AVX2__ goes undefined,
@@ -26,7 +32,7 @@ CFLAGS  ?= -O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march
 # Cross-compile a local build with ARCH_FLAGS=-march=<target>. NB: do NOT name
 # this RUNNER_ARCH — GitHub Actions sets RUNNER_ARCH=X64/ARM64 in the build
 # environment, which a `?=` inherits and then leaks as a bogus bare compiler arg.
-ARCH_FLAGS ?= -march=native
+ARCH_FLAGS ?= $(HOST_ARCH_FLAGS)
 CFLAGS += -O3 -ffast-math -std=gnu11 $(ARCH_FLAGS)
 LDFLAGS  = -lm -lpthread
 # The build platform, decided once from the shell the build runs in. Windows
