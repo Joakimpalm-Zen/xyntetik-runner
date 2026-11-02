@@ -1,0 +1,733 @@
+{
+ "cases": [
+  {
+   "category": "nested_arguments",
+   "id": "runner-000-nested_arguments",
+   "latency_ms": 14332.55,
+   "ordinal": 0,
+   "status": "passed"
+  },
+  {
+   "category": "tool_selection",
+   "id": "runner-001-tool_selection",
+   "latency_ms": 6470.16,
+   "ordinal": 1,
+   "status": "passed"
+  },
+  {
+   "category": "forced_truncation",
+   "id": "runner-002-forced_truncation",
+   "latency_ms": 977.97,
+   "ordinal": 2,
+   "status": "passed"
+  },
+  {
+   "category": "stream_normalization",
+   "id": "runner-003-stream_normalization",
+   "latency_ms": 1197.17,
+   "ordinal": 3,
+   "status": "passed"
+  },
+  {
+   "category": "tool_stream_normalization",
+   "id": "runner-004-tool_stream_normalization",
+   "latency_ms": 3619.31,
+   "ordinal": 4,
+   "status": "passed"
+  },
+  {
+   "category": "large_enum_selection",
+   "id": "runner-005-large_enum_selection",
+   "latency_ms": 25885.48,
+   "ordinal": 5,
+   "status": "passed"
+  },
+  {
+   "category": "reasoning_then_tool",
+   "id": "runner-006-reasoning_then_tool",
+   "latency_ms": 12795.24,
+   "ordinal": 6,
+   "status": "passed"
+  },
+  {
+   "category": "structured_final",
+   "id": "runner-007-structured_final",
+   "latency_ms": 19061.31,
+   "ordinal": 7,
+   "status": "passed"
+  },
+  {
+   "category": "nested_arguments",
+   "id": "runner-008-nested_arguments",
+   "latency_ms": 7033.64,
+   "ordinal": 8,
+   "status": "passed"
+  },
+  {
+   "category": "tool_selection",
+   "id": "runner-009-tool_selection",
+   "latency_ms": 6106.35,
+   "ordinal": 9,
+   "status": "passed"
+  },
+  {
+   "category": "forced_truncation",
+   "id": "runner-010-forced_truncation",
+   "latency_ms": 714.18,
+   "ordinal": 10,
+   "status": "passed"
+  },
+  {
+   "category": "stream_normalization",
+   "id": "runner-011-stream_normalization",
+   "latency_ms": 1323.5,
+   "ordinal": 11,
+   "status": "passed"
+  },
+  {
+   "category": "tool_stream_normalization",
+   "id": "runner-012-tool_stream_normalization",
+   "latency_ms": 3640.12,
+   "ordinal": 12,
+   "status": "passed"
+  },
+  {
+   "category": "large_enum_selection",
+   "id": "runner-013-large_enum_selection",
+   "latency_ms": 15023.35,
+   "ordinal": 13,
+   "status": "passed"
+  },
+  {
+   "category": "reasoning_then_tool",
+   "id": "runner-014-reasoning_then_tool",
+   "latency_ms": 10221.15,
+   "ordinal": 14,
+   "status": "passed"
+  },
+  {
+   "category": "structured_final",
+   "id": "runner-015-structured_final",
+   "latency_ms": 17312.19,
+   "ordinal": 15,
+   "status": "passed"
+  },
+  {
+   "category": "nested_arguments",
+   "id": "runner-016-nested_arguments",
+   "latency_ms": 6671.96,
+   "ordinal": 16,
+   "status": "passed"
+  },
+  {
+   "category": "tool_selection",
+   "id": "runner-017-tool_selection",
+   "latency_ms": 6452.83,
+   "ordinal": 17,
+   "status": "passed"
+  },
+  {
+   "category": "forced_truncation",
+   "id": "runner-018-forced_truncation",
+   "latency_ms": 1294.58,
+   "ordinal": 18,
+   "status": "passed"
+  },
+  {
+   "category": "stream_normalization",
+   "id": "runner-019-stream_normalization",
+   "latency_ms": 1473.24,
+   "ordinal": 19,
+   "status": "passed"
+  },
+  {
+   "category": "tool_stream_normalization",
+   "id": "runner-020-tool_stream_normalization",
+   "latency_ms": 3599.24,
+   "ordinal": 20,
+   "status": "passed"
+  },
+  {
+   "category": "large_enum_selection",
+   "id": "runner-021-large_enum_selection",
+   "latency_ms": 14839.64,
+   "ordinal": 21,
+   "status": "passed"
+  },
+  {
+   "category": "reasoning_then_tool",
+   "id": "runner-022-reasoning_then_tool",
+   "latency_ms": 10056.27,
+   "ordinal": 22,
+   "status": "passed"
+  },
+  {
+   "category": "structured_final",
+   "id": "runner-023-structured_final",
+   "latency_ms": 17425.68,
+   "ordinal": 23,
+   "status": "passed"
+  },
+  {
+   "category": "nested_arguments",
+   "id": "runner-024-nested_arguments",
+   "latency_ms": 6704.83,
+   "ordinal": 24,
+   "status": "passed"
+  },
+  {
+   "category": "tool_selection",
+   "id": "runner-025-tool_selection",
+   "latency_ms": 6277.56,
+   "ordinal": 25,
+   "status": "passed"
+  },
+  {
+   "category": "forced_truncation",
+   "id": "runner-026-forced_truncation",
+   "latency_ms": 1537.38,
+   "ordinal": 26,
+   "status": "passed"
+  },
+  {
+   "category": "stream_normalization",
+   "id": "runner-027-stream_normalization",
+   "latency_ms": 1633.25,
+   "ordinal": 27,
+   "status": "passed"
+  },
+  {
+   "category": "tool_stream_normalization",
+   "id": "runner-028-tool_stream_normalization",
+   "latency_ms": 3626.65,
+   "ordinal": 28,
+   "status": "passed"
+  },
+  {
+   "category": "large_enum_selection",
+   "id": "runner-029-large_enum_selection",
+   "latency_ms": 14295.16,
+   "ordinal": 29,
+   "status": "passed"
+  },
+  {
+   "category": "reasoning_then_tool",
+   "id": "runner-030-reasoning_then_tool",
+   "latency_ms": 10420.78,
+   "ordinal": 30,
+   "status": "passed"
+  },
+  {
+   "category": "structured_final",
+   "id": "runner-031-structured_final",
+   "latency_ms": 15766.64,
+   "ordinal": 31,
+   "status": "passed"
+  },
+  {
+   "category": "nested_arguments",
+   "id": "runner-032-nested_arguments",
+   "latency_ms": 6672.67,
+   "ordinal": 32,
+   "status": "passed"
+  },
+  {
+   "category": "tool_selection",
+   "id": "runner-033-tool_selection",
+   "latency_ms": 6428.67,
+   "ordinal": 33,
+   "status": "passed"
+  },
+  {
+   "category": "forced_truncation",
+   "id": "runner-034-forced_truncation",
+   "latency_ms": 1981.34,
+   "ordinal": 34,
+   "status": "passed"
+  },
+  {
+   "category": "stream_normalization",
+   "id": "runner-035-stream_normalization",
+   "latency_ms": 1739.09,
+   "ordinal": 35,
+   "status": "passed"
+  },
+  {
+   "category": "tool_stream_normalization",
+   "id": "runner-036-tool_stream_normalization",
+   "latency_ms": 3482.9,
+   "ordinal": 36,
+   "status": "passed"
+  },
+  {
+   "category": "large_enum_selection",
+   "id": "runner-037-large_enum_selection",
+   "latency_ms": 14728.16,
+   "ordinal": 37,
+   "status": "passed"
+  },
+  {
+   "category": "reasoning_then_tool",
+   "id": "runner-038-reasoning_then_tool",
+   "latency_ms": 10910.7,
+   "ordinal": 38,
+   "status": "passed"
+  },
+  {
+   "category": "structured_final",
+   "id": "runner-039-structured_final",
+   "latency_ms": 16597.57,
+   "ordinal": 39,
+   "status": "passed"
+  },
+  {
+   "category": "nested_arguments",
+   "id": "runner-040-nested_arguments",
+   "latency_ms": 6777.77,
+   "ordinal": 40,
+   "status": "passed"
+  },
+  {
+   "category": "tool_selection",
+   "id": "runner-041-tool_selection",
+   "latency_ms": 6311.9,
+   "ordinal": 41,
+   "status": "passed"
+  },
+  {
+   "category": "forced_truncation",
+   "id": "runner-042-forced_truncation",
+   "latency_ms": 979.2,
+   "ordinal": 42,
+   "status": "passed"
+  },
+  {
+   "category": "stream_normalization",
+   "id": "runner-043-stream_normalization",
+   "latency_ms": 1145.3,
+   "ordinal": 43,
+   "status": "passed"
+  },
+  {
+   "category": "tool_stream_normalization",
+   "id": "runner-044-tool_stream_normalization",
+   "latency_ms": 3600.47,
+   "ordinal": 44,
+   "status": "passed"
+  },
+  {
+   "category": "large_enum_selection",
+   "id": "runner-045-large_enum_selection",
+   "latency_ms": 14595.7,
+   "ordinal": 45,
+   "status": "passed"
+  },
+  {
+   "category": "reasoning_then_tool",
+   "id": "runner-046-reasoning_then_tool",
+   "latency_ms": 10811.15,
+   "ordinal": 46,
+   "status": "passed"
+  },
+  {
+   "category": "structured_final",
+   "id": "runner-047-structured_final",
+   "latency_ms": 18639.74,
+   "ordinal": 47,
+   "status": "passed"
+  },
+  {
+   "category": "nested_arguments",
+   "id": "runner-048-nested_arguments",
+   "latency_ms": 6857.78,
+   "ordinal": 48,
+   "status": "passed"
+  },
+  {
+   "category": "tool_selection",
+   "id": "runner-049-tool_selection",
+   "latency_ms": 6482.47,
+   "ordinal": 49,
+   "status": "passed"
+  },
+  {
+   "category": "forced_truncation",
+   "id": "runner-050-forced_truncation",
+   "latency_ms": 686.26,
+   "ordinal": 50,
+   "status": "passed"
+  },
+  {
+   "category": "stream_normalization",
+   "id": "runner-051-stream_normalization",
+   "latency_ms": 1317.88,
+   "ordinal": 51,
+   "status": "passed"
+  },
+  {
+   "category": "tool_stream_normalization",
+   "id": "runner-052-tool_stream_normalization",
+   "latency_ms": 3554.84,
+   "ordinal": 52,
+   "status": "passed"
+  },
+  {
+   "category": "large_enum_selection",
+   "id": "runner-053-large_enum_selection",
+   "latency_ms": 14473.93,
+   "ordinal": 53,
+   "status": "passed"
+  },
+  {
+   "category": "reasoning_then_tool",
+   "id": "runner-054-reasoning_then_tool",
+   "latency_ms": 10344.47,
+   "ordinal": 54,
+   "status": "passed"
+  },
+  {
+   "category": "structured_final",
+   "id": "runner-055-structured_final",
+   "latency_ms": 16814.15,
+   "ordinal": 55,
+   "status": "passed"
+  },
+  {
+   "category": "nested_arguments",
+   "id": "runner-056-nested_arguments",
+   "latency_ms": 6724.66,
+   "ordinal": 56,
+   "status": "passed"
+  },
+  {
+   "category": "tool_selection",
+   "id": "runner-057-tool_selection",
+   "latency_ms": 6167.08,
+   "ordinal": 57,
+   "status": "passed"
+  },
+  {
+   "category": "forced_truncation",
+   "id": "runner-058-forced_truncation",
+   "latency_ms": 1260.72,
+   "ordinal": 58,
+   "status": "passed"
+  },
+  {
+   "category": "stream_normalization",
+   "id": "runner-059-stream_normalization",
+   "latency_ms": 1421.56,
+   "ordinal": 59,
+   "status": "passed"
+  },
+  {
+   "category": "tool_stream_normalization",
+   "id": "runner-060-tool_stream_normalization",
+   "latency_ms": 3572.2,
+   "ordinal": 60,
+   "status": "passed"
+  },
+  {
+   "category": "large_enum_selection",
+   "id": "runner-061-large_enum_selection",
+   "latency_ms": 14218.22,
+   "ordinal": 61,
+   "status": "passed"
+  },
+  {
+   "category": "reasoning_then_tool",
+   "id": "runner-062-reasoning_then_tool",
+   "latency_ms": 10431.45,
+   "ordinal": 62,
+   "status": "passed"
+  },
+  {
+   "category": "structured_final",
+   "id": "runner-063-structured_final",
+   "latency_ms": 18734.88,
+   "ordinal": 63,
+   "status": "passed"
+  },
+  {
+   "category": "nested_arguments",
+   "id": "runner-064-nested_arguments",
+   "latency_ms": 6776.46,
+   "ordinal": 64,
+   "status": "passed"
+  },
+  {
+   "category": "tool_selection",
+   "id": "runner-065-tool_selection",
+   "latency_ms": 6453.6,
+   "ordinal": 65,
+   "status": "passed"
+  },
+  {
+   "category": "forced_truncation",
+   "id": "runner-066-forced_truncation",
+   "latency_ms": 1536.62,
+   "ordinal": 66,
+   "status": "passed"
+  },
+  {
+   "category": "stream_normalization",
+   "id": "runner-067-stream_normalization",
+   "latency_ms": 1735.5,
+   "ordinal": 67,
+   "status": "passed"
+  },
+  {
+   "category": "tool_stream_normalization",
+   "id": "runner-068-tool_stream_normalization",
+   "latency_ms": 3586.8,
+   "ordinal": 68,
+   "status": "passed"
+  },
+  {
+   "category": "large_enum_selection",
+   "id": "runner-069-large_enum_selection",
+   "latency_ms": 14878.93,
+   "ordinal": 69,
+   "status": "passed"
+  },
+  {
+   "category": "reasoning_then_tool",
+   "id": "runner-070-reasoning_then_tool",
+   "latency_ms": 10232.62,
+   "ordinal": 70,
+   "status": "passed"
+  },
+  {
+   "category": "structured_final",
+   "id": "runner-071-structured_final",
+   "latency_ms": 15628.1,
+   "ordinal": 71,
+   "status": "passed"
+  },
+  {
+   "category": "nested_arguments",
+   "id": "runner-072-nested_arguments",
+   "latency_ms": 6740.43,
+   "ordinal": 72,
+   "status": "passed"
+  },
+  {
+   "category": "tool_selection",
+   "id": "runner-073-tool_selection",
+   "latency_ms": 6264.96,
+   "ordinal": 73,
+   "status": "passed"
+  },
+  {
+   "category": "forced_truncation",
+   "id": "runner-074-forced_truncation",
+   "latency_ms": 1965.47,
+   "ordinal": 74,
+   "status": "passed"
+  },
+  {
+   "category": "stream_normalization",
+   "id": "runner-075-stream_normalization",
+   "latency_ms": 1695.82,
+   "ordinal": 75,
+   "status": "passed"
+  },
+  {
+   "category": "tool_stream_normalization",
+   "id": "runner-076-tool_stream_normalization",
+   "latency_ms": 3569.94,
+   "ordinal": 76,
+   "status": "passed"
+  },
+  {
+   "category": "large_enum_selection",
+   "id": "runner-077-large_enum_selection",
+   "latency_ms": 14535.97,
+   "ordinal": 77,
+   "status": "passed"
+  },
+  {
+   "category": "reasoning_then_tool",
+   "id": "runner-078-reasoning_then_tool",
+   "latency_ms": 10336.57,
+   "ordinal": 78,
+   "status": "passed"
+  },
+  {
+   "category": "structured_final",
+   "id": "runner-079-structured_final",
+   "latency_ms": 18742.0,
+   "ordinal": 79,
+   "status": "passed"
+  },
+  {
+   "category": "nested_arguments",
+   "id": "runner-080-nested_arguments",
+   "latency_ms": 6678.21,
+   "ordinal": 80,
+   "status": "passed"
+  },
+  {
+   "category": "tool_selection",
+   "id": "runner-081-tool_selection",
+   "latency_ms": 6390.38,
+   "ordinal": 81,
+   "status": "passed"
+  },
+  {
+   "category": "forced_truncation",
+   "id": "runner-082-forced_truncation",
+   "latency_ms": 978.0,
+   "ordinal": 82,
+   "status": "passed"
+  },
+  {
+   "category": "stream_normalization",
+   "id": "runner-083-stream_normalization",
+   "latency_ms": 1149.29,
+   "ordinal": 83,
+   "status": "passed"
+  },
+  {
+   "category": "tool_stream_normalization",
+   "id": "runner-084-tool_stream_normalization",
+   "latency_ms": 3547.41,
+   "ordinal": 84,
+   "status": "passed"
+  },
+  {
+   "category": "large_enum_selection",
+   "id": "runner-085-large_enum_selection",
+   "latency_ms": 14606.66,
+   "ordinal": 85,
+   "status": "passed"
+  },
+  {
+   "category": "reasoning_then_tool",
+   "id": "runner-086-reasoning_then_tool",
+   "latency_ms": 10699.37,
+   "ordinal": 86,
+   "status": "passed"
+  },
+  {
+   "category": "structured_final",
+   "id": "runner-087-structured_final",
+   "latency_ms": 17095.82,
+   "ordinal": 87,
+   "status": "passed"
+  },
+  {
+   "category": "nested_arguments",
+   "id": "runner-088-nested_arguments",
+   "latency_ms": 6734.66,
+   "ordinal": 88,
+   "status": "passed"
+  },
+  {
+   "category": "tool_selection",
+   "id": "runner-089-tool_selection",
+   "latency_ms": 6279.05,
+   "ordinal": 89,
+   "status": "passed"
+  },
+  {
+   "category": "forced_truncation",
+   "id": "runner-090-forced_truncation",
+   "latency_ms": 697.35,
+   "ordinal": 90,
+   "status": "passed"
+  },
+  {
+   "category": "stream_normalization",
+   "id": "runner-091-stream_normalization",
+   "latency_ms": 1285.74,
+   "ordinal": 91,
+   "status": "passed"
+  },
+  {
+   "category": "tool_stream_normalization",
+   "id": "runner-092-tool_stream_normalization",
+   "latency_ms": 3581.62,
+   "ordinal": 92,
+   "status": "passed"
+  },
+  {
+   "category": "large_enum_selection",
+   "id": "runner-093-large_enum_selection",
+   "latency_ms": 14528.33,
+   "ordinal": 93,
+   "status": "passed"
+  },
+  {
+   "category": "reasoning_then_tool",
+   "id": "runner-094-reasoning_then_tool",
+   "latency_ms": 10288.82,
+   "ordinal": 94,
+   "status": "passed"
+  },
+  {
+   "category": "structured_final",
+   "id": "runner-095-structured_final",
+   "latency_ms": 18524.69,
+   "ordinal": 95,
+   "status": "passed"
+  },
+  {
+   "category": "nested_arguments",
+   "id": "runner-096-nested_arguments",
+   "latency_ms": 6758.79,
+   "ordinal": 96,
+   "status": "passed"
+  },
+  {
+   "category": "tool_selection",
+   "id": "runner-097-tool_selection",
+   "latency_ms": 6398.24,
+   "ordinal": 97,
+   "status": "passed"
+  },
+  {
+   "category": "forced_truncation",
+   "id": "runner-098-forced_truncation",
+   "latency_ms": 1256.19,
+   "ordinal": 98,
+   "status": "passed"
+  },
+  {
+   "category": "stream_normalization",
+   "id": "runner-099-stream_normalization",
+   "latency_ms": 1420.07,
+   "ordinal": 99,
+   "status": "passed"
+  }
+ ],
+ "configuration": {
+  "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf",
+  "temperature": 0
+ },
+ "metrics": {
+  "elapsed_ms": 784311.48,
+  "valid_structured_tasks_per_second": 0.128
+ },
+ "resources": {
+  "peak_rss_kb": 14329308,
+  "peak_rss_kind": "peak"
+ },
+ "runtime": {
+  "name": "runner",
+  "version": "runner 1.10.0"
+ },
+ "schema_version": "xyntetik.agent-torture.v4",
+ "totals": {
+  "attempted": 100,
+  "attempted_pass_rate": 1.0,
+  "call_rate": 1.0,
+  "declined": 0,
+  "excused": 0,
+  "failed": 0,
+  "failures_by_category": {},
+  "passed": 100,
+  "requests": 100,
+  "scored": 100
+ }
+}

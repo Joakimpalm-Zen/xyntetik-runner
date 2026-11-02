@@ -4774,6 +4774,122 @@
       ]
     },
     {
+      "id": "devstral-small-2-24b-instruct-2512-q4_k_m",
+      "model": "Devstral Small 2 24B Instruct 2512 (Mistral AI)",
+      "family": "Devstral",
+      "tier": "tier2",
+      "claim": "Text and tools, a third party's Q4_K_M of the FP8 checkpoint: against the publisher's checkpoint dequantized to float32 it reads 0.0223 mean KLD and 99.53% margin-qualified top-1 (300 positions, CPU), inside the 0.05 / 97% bar; agent-torture 100 of 100 on the CPU.",
+      "architecture": "mistral3",
+      "upstream": {
+        "checkpoint": "mistralai/Devstral-Small-2-24B-Instruct-2512",
+        "revision": "55c5b41e98c2dbd21b0c8afffc540dcfc9eb5128"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "mistralai/Devstral-Small-2-24B-Instruct-2512"
+      },
+      "files": [
+        {
+          "name": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf",
+          "repo": "unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF",
+          "revision": "6e458b8add42681bfd023de5eab93637694aaf82",
+          "sha256": "d14ba9edee1bb4c4996a726deb81e49ae81800a3216f0774634238c380aee496",
+          "bytes": 14334446752
+        }
+      ],
+      "quantization": "Q4_K_M (unsloth)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text",
+          "tools"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Against Mistral AI's FP8 checkpoint dequantized exactly to float32 on the CPU (transformers' Mistral3ForConditionalGeneration driven with text only, gold-logits.py with float32_stragglers: 239 tensors the checkpoint stores in BF16 cast to float32 after the load, exact; --offload-dir; 300 positions at stride 15 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked CPU score files): Q4_K_M 0.0223 mean KLD / 92.33% top-1 / 99.53% margin-qualified, Q8_0 0.00126 / 99.33% / 100%. ggml-org's Q8_0 scores byte-identically to unsloth's (the same tensors; the files differ in 8,800 bytes of metadata). Record: docs/compat-reports/devstral-small-2-reference-2026-11-02/README.md.",
+        "context": 9216,
+        "limitations": "Every GGUF of this model requantizes the publisher's FP8 checkpoint, and the publisher serves it with static FP8 activations: the float32 dequantization is the reference arithmetic, not the publisher's serving arithmetic. 14 GB (Q4_K_M) and 25 GB (Q8_0) of weights; the vision tower is not loaded.",
+        "evidence": [
+          "docs/compat-reports/devstral-small-2-reference-2026-11-02/README.md"
+        ],
+        "missing": "The Metal and CUDA cells; vision (the text path only); task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": null,
+        "metal": null
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-02",
+          "reason": "R4.4.4: Devstral certified with the tool-calling axis, admitted 2026-11-02 at Tier 2 with a CPU cell, a float32 reference measurement and the agent-torture suite. Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "devstral-small-2-24b-instruct-2512-q8_0",
+      "model": "Devstral Small 2 24B Instruct 2512 (Mistral AI)",
+      "family": "Devstral",
+      "tier": "tier2",
+      "claim": "Text and tools, a third party's Q8_0 of the FP8 checkpoint, the fidelity file of the two: against the publisher's checkpoint dequantized to float32 it reads 0.00126 mean KLD and 100% margin-qualified top-1 (300 positions, CPU). ggml-org's Q8_0 scores byte-identically.",
+      "architecture": "mistral3",
+      "upstream": {
+        "checkpoint": "mistralai/Devstral-Small-2-24B-Instruct-2512",
+        "revision": "55c5b41e98c2dbd21b0c8afffc540dcfc9eb5128"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "mistralai/Devstral-Small-2-24B-Instruct-2512"
+      },
+      "files": [
+        {
+          "name": "Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf",
+          "repo": "unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF",
+          "revision": "6e458b8add42681bfd023de5eab93637694aaf82",
+          "sha256": "0760502e9228234f6cfa843f8870b8fc91c46a13664cf766c639229cccc80866",
+          "bytes": 25055317152
+        }
+      ],
+      "quantization": "Q8_0 (unsloth)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text",
+          "tools"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Against Mistral AI's FP8 checkpoint dequantized exactly to float32 on the CPU (transformers' Mistral3ForConditionalGeneration driven with text only, gold-logits.py with float32_stragglers: 239 tensors the checkpoint stores in BF16 cast to float32 after the load, exact; --offload-dir; 300 positions at stride 15 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked CPU score files): Q4_K_M 0.0223 mean KLD / 92.33% top-1 / 99.53% margin-qualified, Q8_0 0.00126 / 99.33% / 100%. ggml-org's Q8_0 scores byte-identically to unsloth's (the same tensors; the files differ in 8,800 bytes of metadata). Record: docs/compat-reports/devstral-small-2-reference-2026-11-02/README.md.",
+        "context": 9216,
+        "limitations": "Every GGUF of this model requantizes the publisher's FP8 checkpoint, and the publisher serves it with static FP8 activations: the float32 dequantization is the reference arithmetic, not the publisher's serving arithmetic. 14 GB (Q4_K_M) and 25 GB (Q8_0) of weights; the vision tower is not loaded.",
+        "evidence": [
+          "docs/compat-reports/devstral-small-2-reference-2026-11-02/README.md"
+        ],
+        "missing": "The Metal and CUDA cells; vision (the text path only); task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": null,
+        "metal": null
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-02",
+          "reason": "R4.4.4: Devstral certified with the tool-calling axis, admitted 2026-11-02 at Tier 2 with a CPU cell, a float32 reference measurement and the agent-torture suite. Maintained on report.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
       "id": "lfm2.5-1.2b-instruct-q8_0",
       "model": "LFM2.5-1.2B-Instruct (LiquidAI)",
       "family": "LFM2.5",
