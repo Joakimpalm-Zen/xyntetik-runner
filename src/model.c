@@ -5830,6 +5830,7 @@ static void mv_rows(void *ctx, int i0, int i1) {
         size_t psz = i8_tile_size(n_in);
         uint8_t *packs = malloc(psz * I8T_GROUPS);
         float *tout = malloc(sizeof(float) * I8_TILE_ROWS * I8T_COLS);
+        int tail = i1;   // first row the tiles did not write
         if (packs && tout) {
             for (int r0 = i0; r0 < i1; r0 += I8T_GROUPS * I8_TILE_ROWS) {
                 int ng = 0;
@@ -5839,6 +5840,8 @@ static void mv_rows(void *ctx, int i0, int i1) {
                     const void *rows[I8_TILE_ROWS];
                     for (int k = 0; k < I8_TILE_ROWS; k++)
                         rows[k] = base + (size_t)(rg + k < i1 ? rg + k : i1 - 1) * j->rsz;
+                    // mv_takes_i8 admitted the type and length (i8_tile_ok,
+                    // the pack's only refusal), so this always packs
                     if (!i8_tile_pack(type, rows, n_in, sc, packs + (size_t)g * psz)) break;
                     ng++;
                 }
@@ -5857,27 +5860,23 @@ static void mv_rows(void *ctx, int i0, int i1) {
                         }
                     }
                 }
-                if (ng < I8T_GROUPS && r0 + ng * I8_TILE_ROWS < i1) {
-                    // a pack that failed (no memory): those rows dot one by one
-                    for (int r = r0 + ng * I8_TILE_ROWS;
-                         r < i1 && r < r0 + I8T_GROUPS * I8_TILE_ROWS; r++) {
-                        const void *row = base + (size_t)r * j->rsz;
-                        float b0 = j->bias ? j->bias[r] : 0.0f;
-                        for (int c = 0; c < j->n_batch; c++)
-                            j->y[(size_t)c * j->y_stride + r] =
-                                vec_dot_i8(type, row, (const uint8_t *)j->xq +
-                                           (size_t)c * j->xq_stride, n_in) * sc + b0;
-                    }
+                // unreachable (see above); were a pack refused, the f32
+                // route would take every row from its group on
+                if (r0 + ng * I8_TILE_ROWS < i1 && ng < I8T_GROUPS) {
+                    tail = r0 + ng * I8_TILE_ROWS;
+                    break;
                 }
             }
             free(packs);
             free(tout);
-            return;
+            if (tail >= i1) return;
+            i0 = tail;
+        } else {
+            free(packs);
+            free(tout);
         }
-        free(packs);
-        free(tout);
-        // no scratch: the columns' f32 activations are still here, so the
-        // f32 route below answers instead
+        // no scratch (or a pack refused): the columns' f32 activations are
+        // still here, so the f32 route below answers for the rows left
     }
     // batched: dequantize weight rows once, reuse for every token, and run
     // them against a few activation columns per register tile (quants.c's

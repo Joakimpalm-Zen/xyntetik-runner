@@ -34,7 +34,6 @@ Current release and unreleased changes. Compatibility follows the
   position as one column of an N-wide microbatch, which is how the route is
   measured; on the default route it scores solo's bytes (R3.24 (b)).
 
-
 ## v1.11.0 - 2026-11-02
 
 - **Records name files by base name, never by host path.** The provenance
