@@ -14,8 +14,8 @@ Current release and unreleased changes. Compatibility follows the
   at any thread count, and nothing more is allocated. On that host (shared and
   loaded) the attention stage at 16 threads fell from 3.7 s to 1.3 s; end to
   end, interleaved 512-token rounds read 1.0x to 1.4x the per-row passes.
-  `RUNNER_ATTN_BATCH=0` restores them. On an f16 cache, the attention's
-  value sum also holds 16 channels in registers across the whole span instead
+  `RUNNER_ATTN_BATCH=0` restores them. On Apple Silicon with an f16 cache,
+  the attention's value sum also holds 16 channels in registers across the whole span instead
   of storing and reloading them at every position, with each channel's sum
   unchanged: on an Apple M1 a 3,497-token SmolLM2-135M prefill went from 106
   to 121 tok/s on one thread and from 234 to 334 on four, the scores

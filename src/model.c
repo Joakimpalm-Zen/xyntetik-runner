@@ -6352,6 +6352,22 @@ static __attribute__((noinline)) void attn_softmax(const attn_job *j, int h) {
 // so a slice gives each channel the bits the whole row gives it; i0 and n are
 // whole KV blocks (32 channels of q8_0, 16 of fp4) so the row helpers read
 // the same bytes per channel.
+//
+// The f16 tile below is built only with Clang where f16 converts in hardware
+// (Apple Silicon, where it was measured). Its sums live in registers, which
+// makes each one a reduction the compiler may reassociate under -ffast-math,
+// so it runs under Clang's fp reassociate(off). GCC (x86-64, -O3) did
+// reassociate it: it vectorized the tile across positions, four partial sums
+// a channel added at the end, on the flat cache but not on the ring (whose
+// t % ring it could not), so a ringed layer stopped matching the flat one
+// (tests/test_kv_ring.py, 1.4e-6, 2026-11-02). GCC's per-function
+// no-associative-math restored the bits but left the tile scalar, half the
+// speed of the loop below (SmolLM2-135M, a 3,497-token prefill, 1 thread:
+// 30 against 57 tok/s), and the reassociated tile was already slower than
+// that loop there (51). Elsewhere every channel takes the loop below.
+#if defined(__clang__) && defined(__ARM_FP16_FORMAT_IEEE)
+#define ATTN_VALUES_TILE 1
+#endif
 static __attribute__((noinline)) void attn_values(const attn_job *j, int h,
                                                   int i0, int n) {
     model_t *m = j->m;
@@ -6361,7 +6377,9 @@ static __attribute__((noinline)) void attn_values(const attn_job *j, int h,
     size_t hoff_v = kv_bytes_of_kind(j->vk, (size_t)(h / kv_mul) * hd + (size_t)i0);
     float *out = j->out + h * hd + i0;
     memset(out, 0, sizeof(float) * n);
+#ifdef ATTN_VALUES_TILE
     if (j->vk == 0) {
+        _Pragma("clang fp reassociate(off)")
         // f16 cache: tiles of 16 channels held in registers across the whole
         // span (R3.27). Each channel's sum is the loop below's: a term a
         // position, in position order, written the same way, so a channel
@@ -6385,6 +6403,7 @@ static __attribute__((noinline)) void attn_values(const attn_job *j, int h,
         n -= c0;
         hoff_v += (size_t)c0 * sizeof(f16_t);
     }
+#endif
     for (int t = j->t0; t <= j->pos; t++) {
         size_t slot = j->ring ? (size_t)(t % j->ring) : (size_t)t;
         const uint8_t *vt = j->vc + slot * j->v_row_b + hoff_v;
