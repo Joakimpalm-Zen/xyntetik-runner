@@ -532,11 +532,32 @@ class Client:
 
 
 # ------------------------------------------------------- schema validation
-def validate_against_schema(value, schema, path="$"):
+def _local_ref(root, ref):
+    # a URI fragment: percent-decoded first, then ~1 and ~0 (RFC 6901)
+    from urllib.parse import unquote
+    ref = unquote(ref)
+    node = root
+    for part in ref[2:].split("/") if ref != "#" else []:
+        node = node[part.replace("~1", "/").replace("~0", "~")]
+    return node
+
+
+def validate_against_schema(value, schema, path="$", root=None):
     """Minimal JSON-Schema check covering the subset runner's schema.c accepts.
 
     Violations raise SchemaError, so a structurally valid but non-conforming
-    response is never confused with a protocol fault."""
+    response is never confused with a protocol fault. A local $ref is
+    followed against the document the check started from."""
+    root = schema if root is None else root
+    if "$ref" in schema:
+        return validate_against_schema(value, _local_ref(root, schema["$ref"]), path, root)
+    if "anyOf" in schema:
+        for alt in schema["anyOf"]:
+            try:
+                return validate_against_schema(value, alt, path, root)
+            except SchemaError:
+                pass
+        raise SchemaError("no anyOf alternative matches", at=path, got=value)
     t = schema.get("type")
     if t == "object":
         if not isinstance(value, dict):
@@ -548,7 +569,7 @@ def validate_against_schema(value, schema, path="$"):
                                   got=sorted(value))
         for k, v in value.items():
             if k in props:
-                validate_against_schema(v, props[k], f"{path}.{k}")
+                validate_against_schema(v, props[k], f"{path}.{k}", root)
             elif schema.get("additionalProperties") is False:
                 raise SchemaError("unexpected property", at=path, key=k)
     elif t == "array":
@@ -562,7 +583,7 @@ def validate_against_schema(value, schema, path="$"):
                               maxItems=schema["maxItems"])
         if "items" in schema:
             for i, v in enumerate(value):
-                validate_against_schema(v, schema["items"], f"{path}[{i}]")
+                validate_against_schema(v, schema["items"], f"{path}[{i}]", root)
     elif t == "string":
         if not isinstance(value, str):
             raise SchemaError("expected string", at=path, got=type(value).__name__)
@@ -575,6 +596,9 @@ def validate_against_schema(value, schema, path="$"):
     elif t == "boolean":
         if not isinstance(value, bool):
             raise SchemaError("expected boolean", at=path, got=type(value).__name__)
+    elif t == "null":
+        if value is not None:
+            raise SchemaError("expected null", at=path, got=type(value).__name__)
     if "enum" in schema and value not in schema["enum"]:
         raise SchemaError("value outside enum", at=path, got=value,
                           enum=schema["enum"])

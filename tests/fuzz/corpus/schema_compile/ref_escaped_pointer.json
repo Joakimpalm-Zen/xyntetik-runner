@@ -1,0 +1,1 @@
+{"$defs": {"a/b~c": {"type": "integer"}, "My Type": {"type": "boolean"}}, "type": "object", "properties": {"k": {"$ref": "#/$defs/a~1b~0c"}, "m": {"$ref": "#/$defs/My%20Type"}}, "required": ["k", "m"]}

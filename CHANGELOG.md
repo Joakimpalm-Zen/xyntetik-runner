@@ -14,6 +14,18 @@ Current release and unreleased changes. Compatibility follows the
   f32 route there without saying so. A local build on a Mac had them. CI and
   the release now check that the macOS binary takes the int8 route.
 
+- **Local `$ref` and `$defs` in request schemas.** A `json_schema`
+  response format or a tool's parameters may now reach nested definitions
+  through local references, the way Pydantic's `model_json_schema()` and MCP
+  tool definitions write them: `#/$defs/...`, `#/definitions/...` or any JSON
+  pointer into the same schema is inlined at compile time and constrains
+  exactly as its target. Until now every such schema was a 400 ("unsupported
+  schema keyword '$defs'"). Refused by name: a reference outside the document,
+  one that does not resolve, a recursive one, `$dynamicRef`, and a
+  non-annotation keyword beside `$ref`. The prompt renders the tools as sent.
+  A nested `anyOf` that cannot be dispatched is still refused, and its message
+  now names `anyOf` rather than `oneOf` (R2.9.2).
+
 - **CPU prefill in int8, opt-in.** With `RUNNER_CPU_I8_PREFILL=1`, CPU
   batches of 8 or more rows (prompt prefill, chunked scoring) quantize the
   activations to int8 once a matvec and run them against four-row int8 packs

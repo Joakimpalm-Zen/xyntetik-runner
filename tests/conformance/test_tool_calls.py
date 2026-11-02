@@ -222,6 +222,51 @@ def test_a_parameterless_tool_is_callable(client):
     json.loads(arguments)
 
 
+# An MCP tool's inputSchema the way servers publish it: the argument type under
+# $defs, reached by $ref, plus the older `definitions` spelling (R2.9.2). The
+# referenced enum has one member, so the call shows the reference constrains.
+MCP_SEARCH = {"type": "function", "function": {"name": "search", "parameters": {
+    "type": "object",
+    "properties": {"filter": {"$ref": "#/$defs/Filter"},
+                   "sort": {"$ref": "#/definitions/Sort"}},
+    "required": ["filter", "sort"],
+    "$defs": {"Filter": {"type": "object",
+                         "properties": {"field": {"type": "string"},
+                                        "op": {"type": "string", "enum": ["eq"]}},
+                         "required": ["field", "op"], "additionalProperties": False}},
+    "definitions": {"Sort": {"type": "object",
+                             "properties": {"desc": {"type": "boolean"}},
+                             "required": ["desc"]}}}}}
+
+
+def test_a_tool_whose_parameters_use_local_refs(client):
+    params = MCP_SEARCH["function"]["parameters"]
+    r = client.chat(dict(BASE, max_tokens=64, tools=[MCP_SEARCH],
+                         tool_choice={"type": "function", "function": {"name": "search"}}),
+                    name="tools-local-refs")
+    r.expect_status(200)
+    _, name, arguments = _only_call(r)
+    if name != "search":
+        raise ProtocolError("wrong tool called", request=r.name, got=name)
+    if r.finish_reason == "tool_calls":
+        parsed = json.loads(arguments)
+        validate_against_schema(parsed, params, path="$.search")
+        if parsed["filter"]["op"] != "eq":
+            raise ProtocolError("referenced enum not enforced", request=r.name,
+                                got=parsed["filter"])
+
+
+def test_a_recursive_tool_schema_is_refused_by_name(client):
+    tree = {"type": "function", "function": {"name": "walk", "parameters": {
+        "$defs": {"Node": {"type": "object", "properties": {
+            "children": {"type": "array", "items": {"$ref": "#/$defs/Node"}}}}},
+        "type": "object", "properties": {"root": {"$ref": "#/$defs/Node"}}}}}
+    r = client.chat(dict(BASE, max_tokens=8, tools=[tree], tool_choice="required"),
+                    name="tools-recursive-ref")
+    r.expect_status(400)
+    r.expect_error_envelope(contains="recursive $ref '#/$defs/Node'")
+
+
 # -------------------------------------------------- buffered vs streamed
 # Phase 2 exit criterion. Both paths are driven by the same constrained
 # envelope, so a difference here means one of them is mapping it wrong —

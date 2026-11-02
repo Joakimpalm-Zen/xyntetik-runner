@@ -1,0 +1,1 @@
+{"$defs": {"A": {"$ref": "#/$defs/B"}, "B": {"$ref": "#/definitions/C"}}, "definitions": {"C": {"type": "string", "enum": ["x"]}}, "type": "object", "properties": {"a": {"$ref": "#/$defs/A"}}, "required": ["a"]}
