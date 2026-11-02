@@ -38,6 +38,15 @@ Current release and unreleased changes. Compatibility follows the
   to 121 tok/s on one thread and from 234 to 334 on four, the scores
   byte-identical to the previous build (R3.27).
 
+- **`--train-gpu` measured on a sparse-MoE model, and no faster there on
+  a small device.** Qwen3-30B-A3B Q4_K_M trains whole on a 24 GB MIG slice
+  (15.9 GB on the device), with losses within 1.6e-3 of the CPU trainer's
+  over three steps. A step took 52 to 55 s against 53 s for the CPU trainer
+  on 16 threads: the step is device-bound on many small expert products.
+  The no-norm MoE fixture joins `make test`'s device-mode gradient gates.
+  Record: `docs/compat-reports/train-gpu-2026-11-02-linux-x86_64-qwen3-30b-a3b.md`
+  (R17.3.3).
+
 - **A PR-time check for POSIX calls the Windows build lacks.**
   `scripts/check-portability.py` runs in every PR's metadata check and fails
   on a call to a function the MinGW-w64 CRT does not declare (`setenv`,
