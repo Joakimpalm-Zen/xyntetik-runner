@@ -5,6 +5,28 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **MoE routing traces and replays on CUDA.** `RUNNER_MOE_TRACE` wrote
+  nothing from a GPU run and `RUNNER_MOE_REPLAY` pinned only the CPU
+  routers, so a CUDA run could be neither recorded nor held to a recorded
+  routing. The device routers now do both, through every MoE path (fused,
+  grouped, by-expert, eager): a replay forces the recorded experts with this
+  run's own weights, as on the CPU, and the exit line counts the device's
+  overrides and uncovered pairs with the CPU's. A traced or replayed run
+  decodes without CUDA graphs. `make test-cuda-moe-replay` (R3.21.2).
+
+- **`scripts/gold-logits.py`: a reference larger than memory, and the
+  reference's own ids to an endpoint.** `--offload-dir DIR --max-memory GIB`
+  holds whole blocks up to the budget and reads the rest at use, cast to
+  float32; a BF16 to float32 cast is exact, so the logits equal an in-memory
+  float32 load bit for bit (tested on a dense and a MoE toy). A model whose
+  tensors transformers converts on load is written to DIR first, and the
+  stage line says how many bytes (#528). `--endpoint-ids` sends an endpoint
+  the reference's exact token ids instead of text, so a server that picks
+  its own BOS (a GGUF without `add_bos_token`) is measured on the same
+  context: llama.cpp's K2-Horizon-1B Q8_0 column read 0.091 mean KLD over the
+  text path and 0.0064 with ids. The text path stays the default, and the
+  summary records which input ran (#531).
+
 - **Hemmingway-1 and Hemmingway-1.5 in the validated roster.** Four
   third-party files (Q4_K_M and Q8_0 of each) measured against
   HemmingwayAI's BF16 weights in float32 over 2,000 positions: the
@@ -99,14 +121,6 @@ Current release and unreleased changes. Compatibility follows the
 
 ## v1.10.0 - 2026-11-01
 
-- **MoE routing traces and replays on CUDA.** `RUNNER_MOE_TRACE` wrote
-  nothing from a GPU run and `RUNNER_MOE_REPLAY` pinned only the CPU
-  routers, so a CUDA run could be neither recorded nor held to a recorded
-  routing. The device routers now do both, through every MoE path (fused,
-  grouped, by-expert, eager): a replay forces the recorded experts with this
-  run's own weights, as on the CPU, and the exit line counts the device's
-  overrides and uncovered pairs with the CPU's. A traced or replayed run
-  decodes without CUDA graphs. `make test-cuda-moe-replay` (R3.21.2).
 - **Short prompt chunks on Metal take the GEMM tiles.** A Metal forward of 4
   to 16 rows (a prompt's last chunk, a chunked score) ran the multi-column
   identity matvec, which on a Q4_K file reused nothing: 16 rows cost 1.3 s on
