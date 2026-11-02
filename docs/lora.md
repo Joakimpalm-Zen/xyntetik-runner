@@ -262,6 +262,15 @@ MIG slice with 6 CPU threads the same six steps took 8.6 s against 21.7 s
 (2.5x); the device calls were about 0.4 s of a 1.4 s step, so on a small
 model the CPU's share, not the GPU, sets the step time.
 
+On a sparse-MoE model the device holds the experts too, and there a small
+device does not pay. Qwen3-30B-A3B Q4_K_M fits whole on a 24 GB datacenter
+MIG slice (16,054 tensors, 15.9 GB), and its losses over three steps matched
+the CPU trainer's within 1.6e-3 relative. But a step took 52 to 55 s,
+against 53 s for the CPU trainer on 16 threads of the same host. The step is
+device-bound: about 680,000 small device products a step (372,000 forward,
+307,000 transposed) took 49 of its 52 s (`RUNNER_TRAIN_PROF=1`). A larger
+GPU is not measured.
+
 The adapter is not the CPU run's byte for byte: the device products add in
 another order. It matches within rounding: on Qwen3.5-0.8B the losses matched
 to 1e-6 and the held-out evals to six digits after 6 steps. Within a run the
@@ -776,7 +785,8 @@ projection and their partial RoPE.
 On sparse-MoE models with Qwen3-MoE or Mixtral routing (softmax router, top-k,
 with or without renormalization), the adapter goes on the attention
 projections, and the backward runs through the frozen experts and the
-router's softmax weights.
+router's softmax weights. Under `--train-gpu` the experts' products run on
+the GPU too (see "Training on the GPU" above).
 
 It refuses by name: adapters on the experts themselves, other MoE routers
 (sigmoid, group-limited, biased), shared experts, attention sinks, the Mamba-2

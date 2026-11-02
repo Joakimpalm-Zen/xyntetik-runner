@@ -3041,6 +3041,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-gemma3.gguf test-lora-gemma3.full.gguf
 	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-gemma4.gguf test-lora-gemma4.full.gguf
 	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf strict
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf strict
 	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-g4v.gguf test-lora-g4v.full.gguf
 	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-es8.gguf test-lora-es8.full.gguf stiff
 	./$(TEST_MVT)
