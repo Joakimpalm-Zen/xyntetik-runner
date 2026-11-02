@@ -6896,8 +6896,8 @@ static void dbg_stat_f16(const char *tag, int layer, const f16_t *v, size_t n) {
 // RUNNER_MOE_TRACE=path appends one JSONL record per routed token per MoE
 // layer: {"pos":N,"layer":L,"experts":[...],"gates":[...]}. Off by default;
 // zero cost when unset (one cached getenv + a cached FILE*, same shape as
-// dbg_act_mode above). CPU path only — the CUDA MoE kernels route on-device
-// and never reach this call site.
+// dbg_act_mode above). The CUDA paths write theirs through
+// model_moe_trace_route, norms included.
 static FILE *moe_trace_file(void) {
     static plat_env_file f;   // any slot may ask first (compat.h)
     return plat_env_file_get(&f, "RUNNER_MOE_TRACE");
@@ -7243,8 +7243,9 @@ bool model_moe_trace_on(void) {
     return moe_trace_file() != NULL;
 }
 
-void model_moe_trace_route(int pos, int layer, const int *sel, const float *selw, int used) {
-    moe_trace_emit(pos, layer, sel, selw, NULL, used);
+void model_moe_trace_route(int pos, int layer, const int *sel, const float *selw,
+                           const float *norms, int used) {
+    moe_trace_emit(pos, layer, sel, selw, norms, used);
 }
 
 // ------------------------------------------------------ MoE gate-reuse probe

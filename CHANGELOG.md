@@ -5,6 +5,20 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA MoE routing traces record each expert's output norm.** The CUDA
+  trace left the norms field empty, so a trace taken on the device could not
+  be compared field by field with the CPU's. Every CUDA MoE path (fused,
+  grouped, eager, by expert, and their gemma-4 forms) now writes the CPU's
+  definition: the expert output's norm with the routing weight divided back
+  out and the down bias added. `make test-cuda-moe-replay` compares every
+  device record with the CPU's: experts exactly, gates within 1e-3 and norms
+  within 2e-2 relative (measured spread: gates 5.2e-5, norms 4.0e-3 in the
+  chunked mode). Tracing only; scores are unchanged. The real-file
+  `test-gpu-identity` bound stays 2e-3: dense and IQ files read at most
+  4.0e-4, but Qwen3-30B-A3B reads 1.06e-3 to 1.46e-3 because near-tie top-8
+  routing choices flip between backends (21 of 1,872 on one prompt; 1.5e-3
+  with the CPU's routing replayed). The audit report has the tables (R3.25).
+
 - **CUDA decode applies the attention temperature past its first step.**
   Llama 4 and mistral3 files that declare the attention temperature
   (Devstral Small 2, Ministral 3, Magistral Small 1.2) decoded with a stale

@@ -1,0 +1,25 @@
+== IQ real files (Qwen3-0.6B BF16 → IQ with an imatrix of 64 x 512 tokens of runner docs; Qwen3-4B requantized from Q4_K_M, imatrix 32 x 512), llama.cpp 73a43d1, test-gpu-identity at GPU_DEV_FRAC 5e-4 and 1e-3 during measurement (the limit column; the constant stays 2e-3)
+qwen3-0.6b-IQ1_S batch: exit 0 4s 0.000399 (range 30.7, limit 0.0005, worst 0.15)
+qwen3-0.6b-IQ1_S single: exit 0 7s 0.000359 (range 30.7, limit 0.0005, worst 0.131)
+qwen3-0.6b-IQ2_XS batch: exit 0 4s 5.93e-05 (range 33, limit 0.0005, worst 0.0161)
+qwen3-0.6b-IQ2_XS single: exit 0 8s 5.96e-05 (range 33, limit 0.0005, worst 0.0187)
+qwen3-0.6b-IQ3_S batch: exit 0 4s 2.59e-05 (range 31.7, limit 0.0005, worst 0.0077)
+qwen3-0.6b-IQ3_S single: exit 0 5s 2.75e-05 (range 31.7, limit 0.0005, worst 0.00795)
+qwen3-4b-IQ1_S (requantized from Q4_K_M) batch: exit 0 20s 0.000285 (range 24.1, limit 0.0005, worst 0.0705)
+qwen3-4b-IQ1_S (requantized from Q4_K_M) single: exit 0 37s 0.00029 (range 24.1, limit 0.0005, worst 0.0779)
+qwen3-4b-IQ2_XS (requantized from Q4_K_M) batch: exit 0 20s 6.49e-05 (range 34.4, limit 0.0005, worst 0.0431)
+qwen3-4b-IQ2_XS (requantized from Q4_K_M) single: exit 0 45s 6.39e-05 (range 34.4, limit 0.0005, worst 0.0511)
+qwen3-0.6b-IQ1_M batch: exit 0 0.000265 (range 29.9, limit 0.0005, worst 0.109)
+qwen3-0.6b-IQ1_M single: exit 0 0.000312 (range 29.9, limit 0.0005, worst 0.13)
+qwen3-0.6b-IQ2_XXS batch: exit 0 0.000104 (range 33.3, limit 0.0005, worst 0.0366)
+qwen3-0.6b-IQ2_XXS single: exit 0 8.87e-05 (range 33.3, limit 0.0005, worst 0.0256)
+== tests/test_iquants.py's toy IQ files, built as the test builds them (make-test-model.py --wide, imatrix on its corpus)
+toy m-IQ3_XXS: gpu-identity: m-IQ3_XXS.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32 1.9e-06 (range 2.02, limit 0.0005) gpu-identity: ok
+toy m-IQ3_S: gpu-identity: m-IQ3_S.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32 5.2e-07 (range 2.09, limit 0.0005) gpu-identity: ok
+toy m-IQ2_XXS: gpu-identity: m-IQ2_XXS.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32 5.43e-07 (range 2.07, limit 0.0005) gpu-identity: ok
+toy m-IQ2_XS: gpu-identity: m-IQ2_XS.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32 3.95e-07 (range 2.25, limit 0.0005) gpu-identity: ok
+toy m-IQ2_S: gpu-identity: m-IQ2_S.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32 9.34e-07 (range 2.09, limit 0.0005) gpu-identity: ok
+toy m-IQ1_S: gpu-identity: m-IQ1_S.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32 3.51e-07 (range 2.21, limit 0.0005) gpu-identity: ok
+toy m-IQ1_M: gpu-identity: m-IQ1_M.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32 4.92e-07 (range 2.35, limit 0.0005) gpu-identity: ok
+toy m-IQ4_XS: gpu-identity: m-IQ4_XS.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32 1.98e-07 (range 2.15, limit 0.0005) gpu-identity: ok
+toy m-IQ4_NL: gpu-identity: m-IQ4_NL.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32 4.59e-07 (range 2.17, limit 0.0005) gpu-identity: ok

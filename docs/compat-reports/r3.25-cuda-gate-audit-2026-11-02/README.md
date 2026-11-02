@@ -211,6 +211,120 @@ but lowering it would need real-file residues on CUDA, a separate decision.
   states 40, 72 and 128. All eight pass, at 1.2e-8 to 5.2e-7. It is not yet hooked into a suite, because a CUDA
   host runs the `test-cuda-*` targets by name.
 
+## The CUDA MoE routing trace's norms (follow-up)
+
+**The gap.** The routing trace (`RUNNER_MOE_TRACE`) has carried a `norms` field since JC-R3: the L2 norm of each
+selected expert's output, after its down projection and bias and before the routing weight. On CUDA, every record
+had `"norms": []`. The device routers wrote their records at routing time, before any expert output existed. The
+check above found the gap: on gptoss-top1, CPU and CUDA route identically at all 234 points, but only the CPU record
+has norms.
+
+**The fix** (`src/cuda.c`, host only).
+- **Routing holds its records.** `enc_moe_route` and the eager routers now keep the tile's records instead of writing
+  them (`moe_trace_add`).
+- **Every MoE path fills in the norms** where its expert outputs exist, and `gpu_moe_ffn` and `gpu_gemma_moe_ffn`
+  write the records (`moe_trace_flush`). The paths are fused, grouped, eager and by-expert, each in its gemma-4
+  variant too.
+- **The norm matches the CPU's definition.** Where the device folded the routing weight (and gemma-4's down scale)
+  into the hidden state, it is divided back out, and where the bias is added later, it is added.
+- **A missing norm is visible.** A norm a path leaves uncomputed writes an empty array, as before.
+- **Trace runs only.** Tracing was already eager (`graph_bad`). The trace syncs and copies back each output it
+  measures, and nothing else changes; moe-replay's exact "tracing changed the scores" check still passes.
+- `model_moe_trace_route` takes the norms (`src/model.h`, `src/model.c`).
+
+**The test** (`scripts/cuda-moe-replay.py`, run by `make test-cuda-moe-replay`). For every model, arm and mode, the
+device trace is now compared with the CPU trace field by field:
+- the experts, exactly, as before;
+- every record holds as many gates and norms as experts;
+- the gates within 1e-3;
+- the norms within 2e-2, relative.
+
+Those bounds come from `trace-fields.log` (three fixtures × four arms × two modes):
+
+| | solo | chunked |
+|---|---|---|
+| gates, absolute | 1e-6 | 5.2e-5 |
+| norms, relative | 3.5e-4 | 4.0e-3 |
+
+The chunked tiles stage activations at half precision. A norm of the weighted output, a dropped bias or a slot
+mix-up is off by a tenth or more.
+
+The test passes on the patch (24 cases, 108 s, as before; `moe-replay-trace-fields.log`) and fails on runner main
+without it: "the device trace at (0, 0) holds 2 gates and 0 norms for 2 experts". It also fails a mutant that
+leaves the routing weight in the norm (device 4.27 against the CPU's 8.51). `test-cuda-moe-twin`, `test-cuda-keepn`
+and the gpu-identity gates pass unchanged. `test-cuda-moe-legacy` needs llama-quantize, which this host lacks
+(runner main fails the same way).
+
+## GPU_DEV_FRAC on real files (follow-up): measured, kept at 2e-3
+
+**Why measure.** The cross-backend constant (2e-3) was sized on k_temp_live's 8.02e-4, which turned out to be the
+decode-graph bug above. Every `test-gpu-identity` run without `GPU_ID_LIMIT` uses it: real models, the CUDA gate's
+quantized fixtures, and `tests/test_iquants.py`. The question was whether real files' honest residue allows a
+tighter bound.
+
+**Healthy residue on real files** (`real-files.log`, `iq-files.log`, `moe-flips.log`). These ran on CUDA sm_120
+with the patch (the graph fix included), each batched (prefill batch 32) and one token at a time. The IQ files were
+quantized here from Qwen3-0.6B BF16 with an importance matrix (llama.cpp 73a43d1's llama-quantize and
+llama-imatrix). The Qwen3-4B ones were requantized from its Q4_K_M.
+
+| file | type | batched | one token |
+|---|---|---|---|
+| SmolLM2-135M-Instruct | Q8_0 | 7.26e-5 | 4.68e-5 |
+| Qwen2.5-0.5B-Instruct (QKV bias) | Q4_K_M | 3.62e-5 | 3.75e-5 |
+| Qwen3-0.6B (q/k norm) | Q4_0 | 2.82e-5 | 2.51e-5 |
+| Qwen3-0.6B | BF16 | 2.43e-5 | 2.69e-5 |
+| TinyLlama-1.1B-Chat | Q2_K | 2.12e-5 | 2.04e-5 |
+| Qwen3.5-0.8B (Gated DeltaNet) | Q4_K_M | 3.5e-6 | 3.63e-6 |
+| granite-4.0-h-micro (Mamba-2 hybrid) | Q4_K_M | 6.57e-6 | 3.95e-6 |
+| Qwen3-4B | Q4_K_M | 2.67e-5 | 3.5e-5 |
+| granite-4.1-8b (the gate's documented example) | Q4_0 | 3.87e-5 | 3.49e-5 |
+| Qwen3-30B-A3B (top-8 of 128 MoE) | Q4_K_M | **1.06e-3** | **1.46e-3** |
+| Qwen3-0.6B | IQ3_S | 2.59e-5 | 2.75e-5 |
+| Qwen3-0.6B | IQ2_XS | 5.93e-5 | 5.96e-5 |
+| Qwen3-0.6B | IQ2_XXS | 1.04e-4 | 8.87e-5 |
+| Qwen3-0.6B | IQ1_M | 2.65e-4 | 3.12e-4 |
+| Qwen3-0.6B | IQ1_S | **3.99e-4** | 3.59e-4 |
+| Qwen3-4B | IQ2_XS | 6.49e-5 | 6.39e-5 |
+| Qwen3-4B | IQ1_S | 2.85e-4 | 2.90e-4 |
+
+**What the table shows:**
+- **The k-quants and BF16** stay at 7.3e-5 and below. The worst is SmolLM2-135M Q8_0, and Metal measured 5.4e-5 on
+  the same file.
+- **The 1-bit codebooks** reach 4.0e-4. That is not a decoder difference: `tests/test_iquants.py`'s toy IQ files,
+  built here the way the test builds them, measure 2e-7 to 1.9e-6 for every type, IQ1_S at 3.5e-7. The real file's
+  depth amplifies an ordinary difference.
+- **The CUDA gate's quantized fixtures** stay at 1.34e-5 or below: varff 1.3e-5, moe-twin 2.1e-6, q3k 1.0e-6,
+  keepn 2.0e-7, qwen4exp 1.9e-7.
+- **Qwen3-30B-A3B reaches 1.46e-3**, a different kind of residue: routing flips at near-ties.
+  - **The flips.** On a 40-token prompt scored with `RUNNER_MOE_TRACE` on both sides, 21 of 1,872 routings differ.
+    18 of them are only a different slot order, and 3 change the expert set, all at one position. The first is
+    layer 39 of position 22: the CPU picks expert 28 (gate 0.0738257), the device expert 89 (0.0738349), 1.2e-4
+    apart. Layers 41 and 44 then follow.
+  - **They are not arithmetic.** The CPU-vs-CUDA |dlogprob| is 1.14 at most. With the CPU's routing replayed on the
+    device (`RUNNER_MOE_REPLAY`), it falls to 1.5e-3 at most and 2.1e-4 on average.
+  - **Any backend will do this.** A top-8-of-128 router turns any cross-backend rounding into a different expert
+    wherever two gates nearly tie. The MoE fixtures (2.1e-6) are too small to show it, and how often it happens
+    depends on the prompt.
+
+**Real mistakes on real files.** Two of the audit's host mutants, on SmolLM2, Qwen2.5-0.5B and Qwen3-0.6B
+(`real-files.log`):
+- **The attention scale ×1.05:** 2.05e-3 to 5.6e-3. That is 1.03× to 2.8× over 2e-3.
+- **K unrotated:** 7.5e-2 to 9.8e-2.
+
+**The decision: `GPU_DEV_FRAC` stays at 2e-3 for now.** 1e-3 would suit every dense file: 2.5× over IQ1_S, 13.8×
+over the k-quants, and 2.05× under the attention-scale mistake. But it fails Qwen3-30B-A3B on a tie flip, a false
+alarm for anyone gating a MoE file. At 2e-3 that file has 1.37× of room, prompt-dependent.
+
+**The follow-up.** A routing-pinned mode for MoE files in `test-gpu-identity`:
+- measure the arithmetic with the CPU's routing replayed on the device;
+- report the flip rate separately;
+- then take 1e-3 for dense and pinned-MoE files.
+
+The comment at `GPU_DEV_FRAC` (`tests/test_gpu_identity.c`) now records these measurements. An earlier draft
+proposed 5e-4 (before the IQ files) and then 1e-3 (before the MoE). Both were withdrawn on the measurements above.
+
+**Still to measure:** sm_86 and Metal on the same files.
+
 ## Final check: the patch on the committed PTX (`final-check2.log`)
 
 The whole patch, graph fix included, on runner main 550164c0ff13 with the committed PTX rebuilt:
@@ -235,6 +349,8 @@ been measured on sm_120 only.
 - `make-table.py` builds the table above from the pass logs.
 - The logs: `pass1-default-bound.log`, `pass1b-rope-default-bound.log`, `pass1c-rerun-default-bound.log`,
   `pass2-tight.log`, `pass2-fixed.log`, `pass2c-rerun.log`, `hybrids-1e-5.log`, `final-check.log`,
-  `final-check2.log`.
+  `final-check2.log`, `trace-fields.log`, `moe-replay-trace-fields.log`, `real-files.log`, `iq-files.log`,
+  `moe-flips.log`.
+- `trace-fields.py RUNNER MODEL...` measures the CPU-against-CUDA trace fields per arm and mode.
 - `make-table.py pass1-default-bound.log,pass1b-rope-default-bound.log pass2-fixed.log,pass2c-rerun.log` rebuilds
   the table.

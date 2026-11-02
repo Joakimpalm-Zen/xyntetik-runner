@@ -618,6 +618,12 @@ typedef struct {
     int         replay_npos, replay_nlayer;
     bool        route_trace;
     int         route_pos;
+    // RUNNER_MOE_TRACE: the MoE layer in flight's routings, held until its
+    // path has the expert outputs whose norms the record carries (moe_trace_*)
+    int         tr_n, tr_cap, tr_used, tr_layer;
+    size_t      tr_cap_slots;
+    int        *tr_pos, *tr_sel;
+    float      *tr_w, *tr_norm;
     bool        moe_grouped_ok;         // expert types have width-classed kernels
     bool        moe_twin_ok;            // ... and the by-expert path can be fused-identical
     CUdeviceptr g_scr;                  // gemma-4-MoE dual-branch scratch: 5*n_embd
@@ -4949,6 +4955,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
     free(g->h_ple); free(g->h_ple_tmp);
     free(g->h_moe_sel); free(g->h_moe_selw);
     free(g->h_moe_gidx); free(g->h_moe_gw);
+    free(g->tr_pos); free(g->tr_sel); free(g->tr_w); free(g->tr_norm);
     free(g->h_moe_gpos); free(g->h_moe_gsel);
     if (g->kvg_host) {
         if (g->kvg_pinned && cu.MemFreeHost) cu.MemFreeHost(g->kvg_host);
@@ -5528,6 +5535,129 @@ static bool stage_x(gpu_t *g, model_t *m, const int32_t *tokens, int tn) {
 // RUNNER_MOE_TRACE the tile's routing is read back and written to the trace.
 // layer and col0 (the first routed column within the tile) place each column
 // at its position.
+// RUNNER_MOE_TRACE on the device paths. A record carries, besides the
+// routing, each selected expert's output norm: the L2 norm of its own FFN
+// output after the down projection and bias, before the routing weight (and
+// gemma-4's down scale), as model.c writes it. enc_moe_route and
+// route_trace_host hold a layer's routings here; the path fills in the norms
+// where it has the expert outputs, and gpu_moe_ffn / gpu_gemma_moe_ffn write
+// the records. A trace run is eager (graph_bad), and every norm costs a sync
+// and a copy back. A norm left uncomputed (-1) writes an empty "norms" array.
+static void moe_trace_flush(gpu_t *g) {
+    for (int r = 0; r < g->tr_n; r++) {
+        size_t o = (size_t)r * g->tr_used;
+        bool all = true;
+        for (int s = 0; s < g->tr_used; s++)
+            if (g->tr_norm[o + s] < 0.0f) all = false;   // -1: not computed
+        model_moe_trace_route(g->tr_pos[r], g->tr_layer, g->tr_sel + o, g->tr_w + o,
+                              all ? g->tr_norm + o : NULL, g->tr_used);
+    }
+    g->tr_n = 0;
+}
+
+static bool moe_trace_add(gpu_t *g, int pos, int layer, const int *sel,
+                          const float *w, int used) {
+    if (g->tr_n && (layer != g->tr_layer || used != g->tr_used)) moe_trace_flush(g);
+    if (g->tr_n + 1 > g->tr_cap || (size_t)(g->tr_n + 1) * used > g->tr_cap_slots) {
+        int cap = 2 * (g->tr_n + 1);
+        size_t slots = (size_t)cap * used;
+        int *p = realloc(g->tr_pos, sizeof(int) * (size_t)cap);
+        if (p) g->tr_pos = p;
+        int *q = p ? realloc(g->tr_sel, sizeof(int) * slots) : NULL;
+        if (q) g->tr_sel = q;
+        float *v = q ? realloc(g->tr_w, sizeof(float) * slots) : NULL;
+        if (v) g->tr_w = v;
+        float *nv = v ? realloc(g->tr_norm, sizeof(float) * slots) : NULL;
+        if (!nv) return false;
+        g->tr_norm = nv;
+        g->tr_cap = cap;
+        g->tr_cap_slots = slots;
+    }
+    size_t o = (size_t)g->tr_n * used;
+    g->tr_layer = layer;
+    g->tr_used = used;
+    g->tr_pos[g->tr_n] = pos;
+    memcpy(g->tr_sel + o, sel, sizeof(int) * (size_t)used);
+    memcpy(g->tr_w + o, w, sizeof(float) * (size_t)used);
+    for (int s = 0; s < used; s++) g->tr_norm[o + s] = -1.0f;
+    g->tr_n++;
+    return true;
+}
+
+// ||v / sc + b||: an output row the device scaled by sc (1 where it did not),
+// with the down bias b (NULL where the row has it or the model has none);
+// -1, the "not computed" mark, where sc is 0
+static float moe_out_norm(const float *v, int n, float sc, const float *b) {
+    if (sc == 0.0f) return -1.0f;
+    float ss = 0.0f;
+    for (int i = 0; i < n; i++) {
+        float d = v[i] / sc + (b ? b[i] : 0.0f);
+        ss += d * d;
+    }
+    return sqrtf(ss);
+}
+
+// The records rec0 .. rec0 + n - 1 (tile columns), slot-major on the device:
+// row (r, s) at src + (r * used + s) * es floats, each scaled by its routing
+// weight times dscale[e] (the gemma-4 down scale, NULL elsewhere), the down
+// bias not yet added.
+static bool moe_trace_norms_slots(gpu_t *g, const layer_t *ly, CUdeviceptr src,
+                                  int rec0, int n, int n_embd, int es,
+                                  const float *dscale) {
+    if (!g->route_trace || n <= 0) return true;
+    int used = g->tr_used;
+    size_t rows = (size_t)n * used;
+    float *h = malloc(sizeof(float) * rows * (size_t)es);
+    if (!h) return false;
+    bool ok = cu.StreamSynchronize(g->stream) == 0 &&
+              cu.MemcpyDtoH(h, src, sizeof(float) * rows * (size_t)es) == 0;
+    for (size_t r = 0; ok && r < rows; r++) {
+        size_t k = (size_t)rec0 * used + r;
+        int e = g->tr_sel[k];
+        float sc = g->tr_w[k] * (dscale ? dscale[e] : 1.0f);
+        g->tr_norm[k] = moe_out_norm(h + r * (size_t)es, n_embd, sc,
+                                     ly->ffn_down_exps_b
+                                         ? ly->ffn_down_exps_b + (size_t)e * n_embd : NULL);
+    }
+    free(h);
+    return ok;
+}
+
+// Expert e's unscaled output rows for the tile columns tok[0 .. cnt), packed
+// at n_embd (the grouped paths), the down bias not yet added.
+static bool moe_trace_norms_rows(gpu_t *g, const layer_t *ly, CUdeviceptr src,
+                                 const int *tok, int cnt, int e, int n_embd) {
+    if (!g->route_trace || cnt <= 0) return true;
+    int used = g->tr_used;
+    float *h = malloc(sizeof(float) * (size_t)cnt * n_embd);
+    if (!h) return false;
+    bool ok = cu.StreamSynchronize(g->stream) == 0 &&
+              cu.MemcpyDtoH(h, src, sizeof(float) * (size_t)cnt * n_embd) == 0;
+    const float *b = ly->ffn_down_exps_b ? ly->ffn_down_exps_b + (size_t)e * n_embd : NULL;
+    for (int r = 0; ok && r < cnt; r++)
+        for (int s = 0; s < used; s++) {
+            size_t k = (size_t)tok[r] * used + s;
+            if (g->tr_sel[k] == e)
+                g->tr_norm[k] = moe_out_norm(h + (size_t)r * n_embd, n_embd, 1.0f, b);
+        }
+    free(h);
+    return ok;
+}
+
+// One slot's output row on the eager paths: record rec, slot s, scaled by sc
+// (1 where the weight was applied after the down projection), bias included.
+static bool moe_trace_norm_one(gpu_t *g, CUdeviceptr src, int rec, int s,
+                               int n_embd, float sc) {
+    if (!g->route_trace) return true;
+    float *h = malloc(sizeof(float) * (size_t)n_embd);
+    if (!h) return false;
+    bool ok = cu.StreamSynchronize(g->stream) == 0 &&
+              cu.MemcpyDtoH(h, src, sizeof(float) * (size_t)n_embd) == 0;
+    if (ok) g->tr_norm[(size_t)rec * g->tr_used + s] = moe_out_norm(h, n_embd, sc, NULL);
+    free(h);
+    return ok;
+}
+
 static bool enc_moe_route(gpu_t *g, CUdeviceptr logits, CUdeviceptr sel,
                           CUdeviceptr selw, int ne, int used, int tokens,
                           int ls, int layer, int col0) {
@@ -5547,8 +5677,9 @@ static bool enc_moe_route(gpu_t *g, CUdeviceptr logits, CUdeviceptr sel,
         cu.MemcpyDtoH(g->h_moe_selw, selw, sizeof(float) * (size_t)tokens * used) != 0)
         return false;
     for (int t = 0; t < tokens; t++)
-        model_moe_trace_route(g->route_pos + col0 + t, layer, g->h_moe_sel + (size_t)t * used,
-                              g->h_moe_selw + (size_t)t * used, used);
+        if (!moe_trace_add(g, g->route_pos + col0 + t, layer, g->h_moe_sel + (size_t)t * used,
+                           g->h_moe_selw + (size_t)t * used, used))
+            return false;
     return true;
 }
 
@@ -5569,12 +5700,12 @@ static const int *route_forced_host(const gpu_t *g, int t, int layer, int used) 
     return g->replay_tab ? model_moe_replay_ids(g->route_pos + t, layer, used) : NULL;
 }
 
-static void route_trace_host(const gpu_t *g, int t, int layer, const int *sel,
+static bool route_trace_host(gpu_t *g, int t, int layer, const int *sel,
                              const float *selw, float denom, int used) {
-    if (!g->route_trace) return;
+    if (!g->route_trace) return true;
     float w[256];
     for (int s = 0; s < used; s++) w[s] = selw[s] / denom;
-    model_moe_trace_route(g->route_pos + t, layer, sel, w, used);
+    return moe_trace_add(g, g->route_pos + t, layer, sel, w, used);
 }
 
 // One launch computes every selected expert's matvec: grid.y = expert slot,
@@ -5736,6 +5867,7 @@ static bool gpu_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
                                  g->sw->geb[l], g->sw->ueb[l])
                && enc_moe_mv(g, m, ly->ffn_down_exps, dstride, g->moe_hb,
                              g->moe_eout, sel, nff, n_embd, used, nff, n_embd)
+               && moe_trace_norms_slots(g, ly, g->moe_eout, t, 1, n_embd, n_embd, NULL)
                && enc_moe_sum(g, xin, g->moe_eout, n_embd, used, n_embd,
                               g->sw->deb[l], sel, selw);
         if (!ok) return false;
@@ -5894,6 +6026,8 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
                && enc_actmul(g, m, g->moe_hb, g->moe_hb2, cnt * nff)
                && enc_moe_gemm(g, m, &dv, g->moe_hb, g->moe_dout, nff,
                                n_embd, cnt, nff, n_embd)
+               && moe_trace_norms_rows(g, ly, g->moe_dout, g->h_moe_gidx + e_start[e],
+                                       cnt, e, n_embd)
                && enc_moe_scatter(g, g->moe_eout, g->moe_dout, idx, wts,
                                   n_embd, cnt, n_embd, n_embd);
         if (!ok) return false;
@@ -5970,6 +6104,8 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
                           cnt, 1, 256, pa)
                 && enc_moe_gemm(g, m, &dv, g->moe_hb, g->moe_dout, nff,
                                 n_embd, cnt, 2 * nff, n_embd)
+                && moe_trace_norms_rows(g, ly, g->moe_dout, g->h_moe_gidx + e_start[e],
+                                        cnt, e, n_embd)
                 && enc_moe_scatter(g, g->moe_eout, g->moe_dout, idx, wts,
                                    n_embd, cnt, n_embd, n_embd);
         if (!eok) return false;
@@ -6054,7 +6190,7 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
             lg[best] = -1.0f;
         }
         if (forced) model_moe_replay_count((unsigned long)used, differed, 0);
-        route_trace_host(g, t, l, sel, selw, denom, used);
+        if (!route_trace_host(g, t, l, sel, selw, denom, used)) return false;
         // RUNNER_DEBUG_MOE: dump the first two routings' selection + weights
         // as hex — the discriminator that isolated the 2026-07-29 identity
         // regression (device-vs-host expf + reciprocal-math, both 1-ulp).
@@ -6098,7 +6234,8 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
             if (!db && !enc_scale(g, g->hb, w, nff, 1, nff))   // fold weight into the hidden
                 return false;
             CUdeviceptr dst = s == 0 ? aout : g->moe_eout;
-            if (!enc_mv(g, m, &dv, g->hb, dst, nff, n_embd, db, 1, nff, n_embd))
+            if (!enc_mv(g, m, &dv, g->hb, dst, nff, n_embd, db, 1, nff, n_embd) ||
+                !moe_trace_norm_one(g, dst, t, s, n_embd, db ? 1.0f : w))
                 return false;
             if (db && !enc_scale(g, dst, w, n_embd, 1, n_embd))
                 return false;
@@ -6266,14 +6403,16 @@ static bool gpu_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly, int tn,
         if (!ok) return false;
     }
     // every token's slots summed in slot order into its column of xb
+    if (!moe_trace_norms_slots(g, ly, g->moe_slots, 0, tn, n_embd, n_embd, NULL))
+        return false;
     void *ps[] = { &g->xb, &g->moe_slots, &n_embd, &used, &n_embd, &g->sw->deb[l],
                    &g->moe_sel, &g->moe_selw, &xdim };
     g_moe_twin_tiles++;
     return launch(g, g->sw->f_moe_sum_tile, (n_embd + 255) / 256, tn, 1, 256, ps);
 }
 
-static bool gpu_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int tn,
-                        int xdim) {
+static bool gpu_moe_ffn_path(gpu_t *g, model_t *m, const layer_t *ly, int tn,
+                             int xdim) {
     if (g->moe_fused_ok) {
         // grouped: tolerance arithmetic, never a verify round's rows
         if (tn > 1 && g->moe_grouped_ok && !g->exact_rows)
@@ -6287,6 +6426,16 @@ static bool gpu_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int tn,
         return gpu_moe_ffn_fused(g, m, ly, tn, xdim);
     }
     return gpu_moe_ffn_eager(g, m, ly, tn, xdim);
+}
+
+// The tile's trace records start at its column 0 (moe_trace_norms_*), and
+// are written once its path has filled in their norms.
+static bool gpu_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int tn,
+                        int xdim) {
+    if (g->route_trace) moe_trace_flush(g);
+    bool ok = gpu_moe_ffn_path(g, m, ly, tn, xdim);
+    if (g->route_trace) moe_trace_flush(g);
+    return ok;
 }
 
 // gemma-4-MoE dual-branch FFN on GPU: a dense GELU shared expert AND a routed
@@ -6346,6 +6495,8 @@ static bool gpu_gemma_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
                             selw, g->sw->g_dsc[l], sel, used, 0, 0)
           && enc_moe_mv(g, m, ly->ffn_down_exps, dstride, g->moe_hb,
                         g->moe_eout, sel, nff, n_embd, used, 2 * nff, n_embd)
+          && moe_trace_norms_slots(g, ly, g->moe_eout, t, 1, n_embd, n_embd,
+                                   ly->down_exps_scale)
           && enc_moe_sum(g, mout, g->moe_eout, n_embd, used, n_embd, 0, 0, 0);
         if (!ok) return false;
         // post_ffw_norm_2 on the routed branch, then out (=dense) += routed
@@ -6412,7 +6563,7 @@ static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int
             sel[s] = best; selw[s] = bp; denom += bp; lg[best] = -1.0f;
         }
         if (forced) model_moe_replay_count((unsigned long)used, differed, 0);
-        route_trace_host(g, t, l, sel, selw, denom, used);
+        if (!route_trace_host(g, t, l, sel, selw, denom, used)) return false;
         for (int s = 0; s < used; s++) {
             int e = sel[s];
             float sc = (selw[s] / denom) *
@@ -6429,14 +6580,11 @@ static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int
               && enc_actmul(g, m, g->hb, up, nff)         // GELU(gate)*up -> hb[0,nff)
               && enc_scale(g, g->hb, sc, nff, 1, nff);    // fold selw*down_scale
             if (!ok) return false;
-            if (s == 0) {
-                if (!enc_mv(g, m, &dv, g->hb, mout, nff, n_embd, 0, 1, nff, n_embd))
-                    return false;
-            } else {
-                if (!enc_mv(g, m, &dv, g->hb, g->moe_eout, nff, n_embd, 0, 1, nff, n_embd) ||
-                    !enc_add(g, mout, g->moe_eout, n_embd, 1, n_embd, n_embd))
-                    return false;
-            }
+            CUdeviceptr dst = s == 0 ? mout : g->moe_eout;
+            if (!enc_mv(g, m, &dv, g->hb, dst, nff, n_embd, 0, 1, nff, n_embd) ||
+                !moe_trace_norm_one(g, dst, t, s, n_embd, sc) ||
+                (s > 0 && !enc_add(g, mout, g->moe_eout, n_embd, 1, n_embd, n_embd)))
+                return false;
         }
         // post_ffw_norm_2 on the routed branch, then out (=dense) += routed
         if (!enc_rmsnorm(g, mout, mout, g->sw->g_pn2[l], n_embd, eps, 1, n_embd, n_embd) ||
@@ -6532,6 +6680,9 @@ static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
     }
     // every token's slots in slot order (no down bias on gemma), then
     // post_ffw_norm_2 and dense += routed, all per column
+    if (!moe_trace_norms_slots(g, ly, g->moe_slots, 0, tn, n_embd, n_embd,
+                               ly->down_exps_scale))
+        return false;
     CUdeviceptr zero = 0;
     void *ps[] = { &mout_b, &g->moe_slots, &n_embd, &used, &n_embd, &zero,
                    &g->moe_sel, &g->moe_selw, &n_embd };
@@ -6541,8 +6692,8 @@ static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
         && enc_add(g, g->xb, mout_b, n_embd, tn, xdim, n_embd);
 }
 
-static bool gpu_gemma_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int l,
-                              int tn, int xdim) {
+static bool gpu_gemma_moe_ffn_path(gpu_t *g, model_t *m, const layer_t *ly, int l,
+                                   int tn, int xdim) {
     if (g->moe_fused_ok) {
         if (tn > 1 && g->moe_grouped_ok && !g->exact_rows)
             return gpu_gemma_moe_ffn_grouped(g, m, ly, l, tn, xdim);
@@ -6552,6 +6703,15 @@ static bool gpu_gemma_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int l,
         return gpu_gemma_moe_ffn_fused(g, m, ly, l, tn, xdim);
     }
     return gpu_gemma_moe_ffn_eager(g, m, ly, l, tn, xdim);
+}
+
+// as gpu_moe_ffn: the tile's trace records, written with their norms
+static bool gpu_gemma_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int l,
+                              int tn, int xdim) {
+    if (g->route_trace) moe_trace_flush(g);
+    bool ok = gpu_gemma_moe_ffn_path(g, m, ly, l, tn, xdim);
+    if (g->route_trace) moe_trace_flush(g);
+    return ok;
 }
 
 // Qwen3.5 Gated DeltaNet layer. Learned projections use the same quant-aware
