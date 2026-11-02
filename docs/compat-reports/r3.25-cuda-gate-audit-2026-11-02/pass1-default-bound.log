@@ -1,0 +1,182 @@
+R3.25 CUDA half, 2026-11-02 14:16:52, GPU_ID_LIMIT=default (2e-3)
+baseline (PTX regenerated with the local nvcc)
+  gpu-id test.gguf           PASS 2.55e-08    59s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id test.gguf 0 1       PASS 3.02e-07     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id noisy-norms         PASS 1.75e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id gptoss-top1         PASS 4.47e-08     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_off               PASS 2.55e-08     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_nope              PASS 2.39e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_half              PASS 2.43e-08     8s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_temp_live         PASS 8.02e-04    12s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark               PASS 3.33e-06     6s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark 0 1           PASS 3.32e-06    10s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark-swa           PASS 1.56e-06     2s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id ornith (qwen35)     PASS 4.56e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id mamba2 s40          PASS 1.24e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id nemotron-h          PASS 1.73e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  prefix chunk 4             PASS 0.00e+00    18s | test-prefix: all checks passed
+  prefix chunk 64            PASS 0.00e+00   134s | test-prefix: all checks passed
+  cuda-nvfp4                 PASS 9.60e-07     5s | cuda nvfp4 ok
+  cuda-tc-kq (TC prefill)    PASS             48s | llama-quantize: RUNNER_LLAMA_CPP_BIN is not set
+  cuda-moe-replay            PASS 1.90e-03  1146s | wed (366 overrides, every expert routed: a reorder, CPU distance 1.9e-03, unpinned 1.9e-03), by-expert tiles 6
+attn-residual-dropped (3 replacements): caught by 16/19
+  gpu-id test.gguf           FAIL 4.46e-02     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id test.gguf 0 1       FAIL 4.46e-02    22s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id noisy-norms         FAIL 5.42e-02    17s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id gptoss-top1         FAIL 2.06e-01    31s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_off               FAIL 4.46e-02    71s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_nope              FAIL 4.47e-02    58s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_half              FAIL 4.46e-02    20s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_temp_live         FAIL 4.70e-02    42s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark               FAIL 1.44e-01    43s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark 0 1           FAIL 1.44e-01    18s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark-swa           FAIL 1.51e-01    10s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id ornith (qwen35)     FAIL 1.92e-02     7s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id mamba2 s40          FAIL 1.86e-02     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id nemotron-h          FAIL 2.56e-02     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  prefix chunk 4             PASS 0.00e+00   132s | test-prefix: all checks passed
+  prefix chunk 64            PASS 0.00e+00    58s | test-prefix: all checks passed
+  cuda-nvfp4                 FAIL            177s | make: *** [Makefile:2387: test-cuda-nvfp4] Error 1
+  cuda-tc-kq (TC prefill)    PASS            432s | llama-quantize: RUNNER_LLAMA_CPP_BIN is not set
+  cuda-moe-replay            FAIL             19s | make: *** [Makefile:2138: test-cuda-moe-replay] Error 1
+ssm-D-skip-dropped (2 replacements): caught by 2/19
+  gpu-id test.gguf           PASS 2.55e-08    48s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id test.gguf 0 1       PASS 3.02e-07    21s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id noisy-norms         PASS 1.75e-08     9s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id gptoss-top1         PASS 4.47e-08     8s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_off               PASS 2.55e-08     6s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_nope              PASS 2.39e-08    11s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_half              PASS 2.43e-08    16s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_temp_live         PASS 8.02e-04     4s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark               PASS 3.33e-06     9s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark 0 1           PASS 3.32e-06     7s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark-swa           PASS 1.56e-06     4s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id ornith (qwen35)     PASS 4.56e-08    10s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id mamba2 s40          PASS 8.17e-04     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id nemotron-h          FAIL 8.94e-03     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  prefix chunk 4             PASS 0.00e+00    34s | test-prefix: all checks passed
+  prefix chunk 64            PASS 0.00e+00    43s | test-prefix: all checks passed
+  cuda-nvfp4                 PASS 9.60e-07    55s | cuda nvfp4 ok
+  cuda-tc-kq (TC prefill)    PASS            675s | llama-quantize: RUNNER_LLAMA_CPP_BIN is not set
+  cuda-moe-replay            FAIL            443s | make: *** [Makefile:2138: test-cuda-moe-replay] Error 1
+silu-to-gelu (dense FFN) (1 replacements): caught by 7/19
+  gpu-id test.gguf           FAIL 2.02e-03    50s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id test.gguf 0 1       FAIL 2.02e-03     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id noisy-norms         PASS 1.81e-03     6s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id gptoss-top1         PASS 4.47e-08     4s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_off               FAIL 2.02e-03     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_nope              FAIL 2.02e-03     3s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_half              FAIL 2.02e-03     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_temp_live         FAIL 2.22e-03     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark               PASS 3.33e-06     2s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark 0 1           PASS 3.32e-06     2s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark-swa           PASS 1.56e-06     3s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id ornith (qwen35)     PASS 9.32e-04     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id mamba2 s40          PASS 1.72e-03     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id nemotron-h          PASS 1.73e-08     4s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  prefix chunk 4             PASS 0.00e+00    22s | test-prefix: all checks passed
+  prefix chunk 64            PASS 0.00e+00    20s | test-prefix: all checks passed
+  cuda-nvfp4                 PASS 8.42e-03     5s | cuda nvfp4 ok
+  cuda-tc-kq (TC prefill)    PASS             71s | llama-quantize: RUNNER_LLAMA_CPP_BIN is not set
+  cuda-moe-replay            FAIL 1.50e-04    30s | make: *** [Makefile:2138: test-cuda-moe-replay] Error 1
+rmsnorm-skipped (scale 1) (1 replacements): caught by 16/19
+  gpu-id test.gguf           FAIL 8.31e-02    53s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id test.gguf 0 1       FAIL 8.31e-02     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id noisy-norms         FAIL 8.77e-02     7s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id gptoss-top1         FAIL 5.16e-01    18s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_off               FAIL 8.31e-02     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_nope              FAIL 8.32e-02     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_half              FAIL 8.31e-02     7s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_temp_live         FAIL 8.43e-02     8s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark               FAIL 1.45e-01     6s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark 0 1           FAIL 1.45e-01     6s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark-swa           FAIL 1.45e-01     2s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id ornith (qwen35)     FAIL 1.01e-01     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id mamba2 s40          FAIL 2.64e+00     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id nemotron-h          FAIL 1.45e-01     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  prefix chunk 4             PASS 0.00e+00    58s | test-prefix: all checks passed
+  prefix chunk 64            PASS 0.00e+00    30s | test-prefix: all checks passed
+  cuda-nvfp4                 FAIL              4s | make: *** [Makefile:2387: test-cuda-nvfp4] Error 1
+  cuda-tc-kq (TC prefill)    PASS             61s | llama-quantize: RUNNER_LLAMA_CPP_BIN is not set
+  cuda-moe-replay            FAIL             38s | make: *** [Makefile:2138: test-cuda-moe-replay] Error 1
+rmsnorm-eps-dropped (1 replacements): caught by 1/19
+  gpu-id test.gguf           PASS 7.71e-04    58s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id test.gguf 0 1       PASS 7.71e-04     3s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id noisy-norms         PASS 7.95e-04     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id gptoss-top1         PASS 1.20e-03     4s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_off               PASS 7.71e-04     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_nope              PASS 7.72e-04     3s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_half              PASS 7.71e-04     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_temp_live         PASS 9.44e-04     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark               PASS 1.10e-03     3s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark 0 1           PASS 1.10e-03     2s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark-swa           PASS 1.10e-03     6s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id ornith (qwen35)     PASS 1.13e-03     8s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id mamba2 s40          PASS 4.11e-08     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id nemotron-h          PASS 1.39e-03     4s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  prefix chunk 4             PASS 0.00e+00    32s | test-prefix: all checks passed
+  prefix chunk 64            PASS 0.00e+00    41s | test-prefix: all checks passed
+  cuda-nvfp4                 PASS 4.06e-03    11s | cuda nvfp4 ok
+  cuda-tc-kq (TC prefill)    PASS            103s | llama-quantize: RUNNER_LLAMA_CPP_BIN is not set
+  cuda-moe-replay            FAIL              5s | make: *** [Makefile:2138: test-cuda-moe-replay] Error 1
+rope-position-plus-one (k_rope) (1 replacements): caught by 0/19
+  gpu-id test.gguf           PASS 3.66e-07    31s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id test.gguf 0 1       PASS 4.75e-07     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id noisy-norms         PASS 1.86e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id gptoss-top1         PASS 3.32e-07     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_off               PASS 3.66e-07     5s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_nope              PASS 2.39e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_half              PASS 3.54e-07     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_temp_live         PASS 8.02e-04     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark               PASS 1.05e-05     1s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark 0 1           PASS 1.05e-05     1s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark-swa           PASS 1.52e-05     1s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id ornith (qwen35)     PASS 1.48e-06     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id mamba2 s40          PASS 3.11e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id nemotron-h          PASS 1.73e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  prefix chunk 4             PASS 0.00e+00     9s | test-prefix: all checks passed
+  prefix chunk 64            PASS 0.00e+00    12s | test-prefix: all checks passed
+  cuda-nvfp4                 PASS 4.76e-06     3s | cuda nvfp4 ok
+  cuda-tc-kq (TC prefill)    PASS             37s | llama-quantize: RUNNER_LLAMA_CPP_BIN is not set
+  cuda-moe-replay            PASS 2.10e-03   316s | wed (366 overrides, every expert routed: a reorder, CPU distance 2.0e-03, unpinned 2.0e-03), by-expert tiles 6
+attn-scale-x1.05 (2 replacements): caught by 1/19
+  gpu-id test.gguf           PASS 5.85e-05    24s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id test.gguf 0 1       PASS 5.85e-05    13s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id noisy-norms         PASS 1.59e-06     3s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id gptoss-top1         PASS 6.30e-05    15s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_off               PASS 5.85e-05    22s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_nope              PASS 6.88e-05     8s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_half              PASS 6.41e-05     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_temp_live         PASS 5.43e-04    11s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark               PASS 1.76e-04    16s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark 0 1           PASS 1.76e-04    19s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark-swa           PASS 1.81e-04     2s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id ornith (qwen35)     PASS 4.33e-04     3s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id mamba2 s40          PASS 8.68e-06    18s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id nemotron-h          PASS 2.31e-05     2s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  prefix chunk 4             PASS 0.00e+00    40s | test-prefix: all checks passed
+  prefix chunk 64            PASS 0.00e+00    30s | test-prefix: all checks passed
+  cuda-nvfp4                 PASS 5.20e-04    16s | cuda nvfp4 ok
+  cuda-tc-kq (TC prefill)    PASS             91s | llama-quantize: RUNNER_LLAMA_CPP_BIN is not set
+  cuda-moe-replay            FAIL 1.00e-03   198s | make: *** [Makefile:2138: test-cuda-moe-replay] Error 1
+matvec-bias-dropped (all) (14 replacements): caught by 2/19
+  gpu-id test.gguf           PASS 2.55e-08    35s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id test.gguf 0 1       PASS 3.02e-07    10s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id noisy-norms         PASS 1.75e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id gptoss-top1         FAIL 2.07e-03     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_off               PASS 2.55e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_nope              PASS 2.39e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_half              PASS 2.43e-08     6s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id k_temp_live         PASS 8.02e-04     4s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark               PASS 3.33e-06     1s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark 0 1           PASS 3.32e-06     1s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id spark-swa           PASS 1.56e-06     1s | gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id ornith (qwen35)     PASS 4.56e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id mamba2 s40          PASS 1.24e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  gpu-id nemotron-h          PASS 1.73e-08     1s | gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+  prefix chunk 4             PASS 0.00e+00    27s | test-prefix: all checks passed
+  prefix chunk 64            PASS 0.00e+00    10s | test-prefix: all checks passed
+  cuda-nvfp4                 PASS 9.60e-07     8s | cuda nvfp4 ok
+  cuda-tc-kq (TC prefill)    PASS             56s | llama-quantize: RUNNER_LLAMA_CPP_BIN is not set
+  cuda-moe-replay            FAIL 3.20e-04    90s | make: *** [Makefile:2138: test-cuda-moe-replay] Error 1
+restored 2026-11-02 16:20:22

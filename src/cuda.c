@@ -685,6 +685,7 @@ typedef struct {
     CUstream     stream;
     CUgraph      graph[2];
     CUgraphExec  gexec[2];
+    float        graph_temp[2];         // the attention temperature each graph holds
     // the window's first position, then one per later ATT_COLS-column
     // attention sub-tile (set_pos): k_attn finds its sub-tile's start
     // through the pointer it is handed
@@ -9277,7 +9278,23 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
     // a double-buffered Mamba-2 state alternates halves every forward: one
     // graph per parity (the half this forward writes)
     int gi = (m->granite_hybrid || m->nemotron_h) && g->mamba_state ? g->rec_cur : 0;
+    // The attention temperature is a host value the graph holds:
+    // enc_rope_or_temp computes it from pos and passes it to k_scale (or
+    // skips the launch at 1.0). It steps every floor_scale positions, so a
+    // graph captured before a step replayed the old factor on every token
+    // after it: k_temp_live's logits 8.0e-4 of range off the CPU's, and at
+    // llama 4's floor of 8192 no temperature at all past position 8191 when
+    // the graph was captured below it (R3.25 CUDA half, 2026-11-02).
+    // Capture again when the factor moves.
+    float temp = model_attn_temp(m, pos);
+    if (g->gexec[gi] && g->graph_temp[gi] != temp) {
+        cu.GraphExecDestroy(g->gexec[gi]);
+        cu.GraphDestroy(g->graph[gi]);
+        g->gexec[gi] = NULL;
+        g->graph[gi] = NULL;
+    }
     if (!g->gexec[gi]) {
+        g->graph_temp[gi] = temp;
         prof.capturing = 1;
         // capture records the launch sequence without executing it; the
         // recorded graph is position-invariant because pos lives in

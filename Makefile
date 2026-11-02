@@ -2382,6 +2382,9 @@ test-cuda-qwen4exp: runner $(TEST_GPU_ID) $(TEST_CUDA_TEARDOWN) test.gguf
 # scale in their tails against the CPU seam. Token identity on a generated
 # fixture and on any real NVFP4 file named in NVFP4_MODEL, logprob agreement
 # to reduction-order residue, and proof the device actually ran the layers.
+# The generated fixture's residue is 9.6e-7 and is held to 1e-4: at the 2e-2
+# a real file needs, the norm's eps dropped (4.1e-3), the FFN activation
+# swapped (8.4e-3) and K left unrotated (7.9e-3) all passed (R3.25 CUDA half).
 # Skips itself on a box whose --caps report no CUDA device.
 test-cuda-nvfp4: runner
 	@set -e; \
@@ -2394,11 +2397,38 @@ test-cuda-nvfp4: runner
 		  $(PYTHON) -c "import json,sys; p=json.load(open('cuda-nvfp4-gpu.json'))['profile']; assert p['gpu_layers'] > 0, 'CUDA declined ' + sys.argv[1]" $$f; \
 		  ./$(RUNNER_EXE) -m $$f --score -p "The capital of France is Paris, and the runner trains the model on hardware you own." --gpu off --no-tray 2>/dev/null > cuda-nvfp4-cpu.score; \
 		  ./$(RUNNER_EXE) -m $$f --score -p "The capital of France is Paris, and the runner trains the model on hardware you own." --gpu auto --no-tray 2>/dev/null > cuda-nvfp4-gpu.score; \
-		  $(PYTHON) -c "import json,sys; a=json.load(open('cuda-nvfp4-cpu.score'))['logprobs']; b=json.load(open('cuda-nvfp4-gpu.score'))['logprobs']; d=max(abs(x-y) for x,y in zip(a,b)); assert len(a)==len(b)>3 and d < 2e-2, (len(a), len(b), d); print(sys.argv[1], 'cpu/cuda logprob max diff %.2e over %d positions' % (d, len(a)))" $$f; \
+		  $(PYTHON) -c "import json,sys; a=json.load(open('cuda-nvfp4-cpu.score'))['logprobs']; b=json.load(open('cuda-nvfp4-gpu.score'))['logprobs']; d=max(abs(x-y) for x,y in zip(a,b)); assert len(a)==len(b)>3 and d < (1e-4 if sys.argv[1] == 'test-nvfp4.gguf' else 2e-2), (len(a), len(b), d); print(sys.argv[1], 'cpu/cuda logprob max diff %.2e over %d positions' % (d, len(a)))" $$f; \
 		done; \
 		echo "cuda nvfp4 ok"; \
 	else \
 		echo "cuda nvfp4 smoke skipped: no CUDA device reported by --caps"; \
+	fi
+
+# The recurrent hybrids on CUDA (R3.25 CUDA half): no other CUDA gate holds
+# the Mamba-2 scan, the gated norm or the Gated DeltaNet mixer to the CPU's
+# logits, and the D skip dropped from the scan passed all of them. These are
+# test-metal-mamba2's and test-metal-qwen35's fixtures at their 1e-5 (CUDA
+# residue 1.2e-8 to 5.2e-7; the dropped D skip 8.2e-4 on test-m2-s40-g1).
+# Skips itself on a box whose --caps report no CUDA device.
+test-cuda-hybrids: runner $(TEST_GPU_ID) test-ornith.gguf
+	@set -e; \
+	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)"; then \
+	  for c in 40:1 72:2 128:2; do w=$${c%%:*}; gr=$${c##*:}; \
+	    HYBRID_TEST_AMP=1 HYBRID_TEST_STATE=$$w HYBRID_TEST_GROUPS=$$gr \
+	      $(PYTHON) scripts/make-test-hybrid.py test-m2-s$$w-g$$gr --dense --rope > /dev/null; done; \
+	  $(PYTHON) scripts/make-test-nemotron.py test-m2-nemotron > /dev/null; \
+	  for w in 40 72 128; do \
+	    ORNITH_TEST_STATE=$$w $(PYTHON) scripts/make-test-ornith.py test-ornith-s$$w.gguf > /dev/null; done; \
+	  for f in test-m2-s40-g1.gguf test-m2-s72-g2.gguf test-m2-s128-g2.gguf test-m2-nemotron.gguf \
+	           test-ornith.gguf test-ornith-s40.gguf test-ornith-s72.gguf test-ornith-s128.gguf; do \
+	    GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f > test-cuda-hybrids.out 2>&1 || { cat test-cuda-hybrids.out; exit 1; }; \
+	    if grep -q 'skipped' test-cuda-hybrids.out; then cat test-cuda-hybrids.out; \
+	      echo "test-cuda-hybrids: $$f did not run on the device"; exit 1; fi; \
+	    echo "$$f: $$(tail -1 test-cuda-hybrids.out)"; \
+	  done; \
+	  echo "cuda hybrids ok"; \
+	else \
+	  echo "cuda hybrids skipped: no CUDA device reported by --caps"; \
 	fi
 
 test-metal-gemma4-moe: runner
@@ -2904,16 +2934,20 @@ else
 	@echo "test-metal-qwen35 skipped: macOS-only backend"
 endif
 
-# R3.25 (Metal half): the toy fixtures' honest Metal residue is 1e-8 to 2e-6
-# of the logit range, and structural mistakes move them 6e-5 to 8e-4: rope
-# skipped, rope one position off, the attention scale x1.05, the norm's eps
-# dropped all passed test-gpu-identity's cross-backend 2e-3. On Metal these
-# fixtures are held to bounds 10x and more over their residue (GPU_ID_LIMIT
-# only tightens); a CUDA host keeps the cross-backend bound until its own
-# audit sets its residue (R3.25, CUDA half).
+# R3.25: the toy fixtures' honest device residue is 1e-8 to 2e-6 of the logit
+# range on Metal and 1e-8 to 3.7e-6 on CUDA, and structural mistakes move them
+# 2e-5 to 2e-3: rope skipped or one position off, K unrotated, the attention
+# scale x1.05, the norm's eps dropped, the activation swapped all passed
+# test-gpu-identity's cross-backend 2e-3 on one backend or both. A GPU host
+# holds these fixtures to bounds well over their residue (GPU_ID_LIMIT only
+# tightens): 1e-5 (30x and more on CUDA), and 2e-5 for spark (CUDA residue
+# 3.7e-6). k_temp_live's decode crosses six temperature steps, so its 1e-5
+# also holds the CUDA decode graph to each token's own temperature: a graph
+# that replayed its capture position's factor measured 8.0e-4 there (R3.25
+# CUDA half, 2026-11-02).
+GPU_ID_TIGHT = GPU_ID_LIMIT=1e-5
+GPU_ID_TIGHT_SPARK = GPU_ID_LIMIT=2e-5
 ifeq ($(BUILD_OS),Darwin)
-METAL_ID_TIGHT = GPU_ID_LIMIT=1e-5
-METAL_ID_TIGHT_SPARK = GPU_ID_LIMIT=2e-5
 # test-prefix compares a reused prefix's last row with a cold prefill's, and
 # a row the GEMM tiles computed differs from the identity matvec's by about
 # 1.6e-5 of range on test.gguf (the tiles stage activations at half
@@ -3099,9 +3133,9 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_MV_TOL)
 	./$(TEST_ATTN_TOL)
 	./$(TEST_GPU_ID) --self-test
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID)
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID)
 	$(PYTHON) scripts/make-test-model.py --noisy-norms --qk-norm test-noisy-norms.gguf > /dev/null
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-noisy-norms.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-noisy-norms.gguf
 	./$(TEST_QUANTS_SIMD)
 	./$(TEST_IQ_DECODE)
 	./$(TEST_KQ_STAGE)
@@ -3130,7 +3164,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# no router bias or selects all its experts, and both hide a dropped bias
 	@# under the tolerances -- which is exactly how the CUDA fused path shipped
 	@# without one. See the fixture's comment in scripts/make-test-moe.py.
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.gptoss-top1.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.gptoss-top1.gguf
 	./$(TEST_MOE_ROUTER) test-moe-fixture
 	./$(TEST_PAGING_WARN) test-moe-fixture
 	./$(TEST_AUTOFIT) test.gguf
@@ -3147,24 +3181,24 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	$(PYTHON) -m pytest -q tests/test_attn_knobs.py
 	@# CPU/GPU agreement at logit precision on each knob. Token identity (the
 	@# text gates) is blind at fixture scale -- see the test's header.
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_off.gguf
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_nope.gguf
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_half.gguf
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_temp_live.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_off.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_nope.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_half.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_temp_live.gguf
 	@# The same comparison with every forward a single token. That is a
 	@# backend STATE, not a slower schedule: scratch sized lazily on the first
 	@# multi-token batch stays nil for such a run, and the text gates above are
 	@# blind to what that does at fixture scale.
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test.gguf 0 1
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test.gguf 0 1
 	@# spark2_5 on the device (2026-10-30): Q, K and V as row slices of one
 	@# fused tensor, the per-head output gate, the exact-erf GELU and two rope
 	@# widths and bases, against the CPU at logit precision, batched and one
 	@# token at a time, and with every layer sliding
 	$(PYTHON) scripts/make-test-model.py --spark2-5 test-spark.gguf > /dev/null
 	$(PYTHON) scripts/make-test-model.py --spark2-5 --spark-all-swa test-spark-swa.gguf > /dev/null
-	$(METAL_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark.gguf
-	$(METAL_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark.gguf 0 1
-	$(METAL_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark-swa.gguf
+	$(GPU_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark.gguf
+	$(GPU_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark.gguf 0 1
+	$(GPU_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark-swa.gguf
 	./$(TEST_QUANTIZE)
 	./$(TEST_VRAM_ROLLBACK)
 	./$(TEST_GGUF_GETTERS)
@@ -3632,7 +3666,7 @@ test-cuda-gated: runner test.gguf
 	$(PYTHON) scripts/check-junit.py --no-skips-matching '(?i)cuda|device|gpu' \
 	    --allow-skip 'CUDA runtime is available' .build/ci/cuda-gated.xml
 
-.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-qwen4exp test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
 .PHONY: test-gates test-gates-core test-gates-batch test-python
 .PHONY: test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 

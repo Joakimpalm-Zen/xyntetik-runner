@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA decode applies the attention temperature past its first step.**
+  Llama 4 and mistral3 files that declare the attention temperature
+  (Devstral Small 2, Ministral 3, Magistral Small 1.2) decoded with a stale
+  factor on CUDA when the whole model ran on the device. The decode graph is
+  captured once and replayed, and the factor reached the kernel as a host
+  argument, so every replay used the factor of the position it was captured
+  at. A graph captured below the floor (llama 4: 8,192 positions; mistral3:
+  the file's original context length) applied no temperature past it, and
+  one captured above it kept that factor for later tokens, including those
+  of a later, shorter request. Prefill, and decode with graphs off
+  (`RUNNER_CUDA_GRAPH_OFF=1`), were right. The graph is now captured again
+  when the factor moves, once per floor. In llama 4 since v0.1.5-alpha and
+  mistral3 since 1.11.0. Found by the CUDA gate audit (R3.25), which also
+  puts the fixture that shows it on the 1e-5 bound.
+
 - **A PR-time check for POSIX calls the Windows build lacks.**
   `scripts/check-portability.py` runs in every PR's metadata check and fails
   on a call to a function the MinGW-w64 CRT does not declare (`setenv`,

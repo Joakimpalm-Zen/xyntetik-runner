@@ -71,13 +71,14 @@ static int g_n_batch = N_BATCH;
 // Mean |dlogit| as a fraction of the mean logit range. Measured residue:
 // Metal/M1 2.3e-8 (F32 toy), 1.9e-7 (llama-4 temperature fixture), 5.4e-5
 // (SmolLM2 Q8_0 -- quantized weights dequantize slightly differently on the
-// two sides, which dominates). CUDA on the datacenter MIG slice measures 8.02e-4 on the
-// k_temp_live fixture -- its reductions round differently again -- which a
-// 5e-4 bound calibrated on Metal wrongly failed (found by the 2026-08-16
-// Linux CUDA host run; the gate blocked that box's `make test` on untouched code).
-// The bound is one cross-backend constant on purpose, sized ~2.5x above the
-// worst measured honest residue and still 10x BELOW the smallest real
-// mistake: dropping the attention temperature measures 2.05e-2.
+// two sides, which dominates). CUDA on the datacenter MIG slice measured 8.02e-4 on the
+// k_temp_live fixture, which a 5e-4 bound calibrated on Metal failed (the
+// 2026-08-16 Linux CUDA host run), and the bound below was sized for it. That
+// was not rounding: the CUDA decode graph replayed the temperature of the
+// position it was captured at (R3.25, fixed 2026-11-02; 1.0e-7 since).
+// The bound is one cross-backend constant on purpose, sized ~2.5x above that
+// measurement and still 10x BELOW the smallest real mistake: dropping the
+// attention temperature measures 2.05e-2. A toy fixture takes GPU_ID_LIMIT.
 #define GPU_DEV_FRAC 2e-3
 
 // GPU_ID_LIMIT=F: a tighter bound for one fixture, never a looser one (a
