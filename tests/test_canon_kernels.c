@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #define QK 32
 typedef struct { f16_t d; int8_t qs[QK]; } block_q8_0;
@@ -95,8 +96,31 @@ static int bits_equal(float a, float b) {
     return ua == ub || (isnan(a) && isnan(b));
 }
 
+// RUNNER_CPU_I8 is honoured only where an int8 kernel exists: the route line
+// and receipts read i8_dot_enabled() to name the route, and a build without
+// the kernel (this canonical build on arm64, or the 1.11.0 macOS binary built
+// for generic armv8-a) runs every matvec f32. Enabled implies a kernel, on
+// every build, from the environment and when forced.
+static int check_i8_flag_needs_a_kernel(void) {
+    bool kernel = i8_dot_ok(T_Q8_0, 32);
+    setenv("RUNNER_CPU_I8", "1", 1);
+    bool env_on = i8_dot_enabled();
+    i8_dot_force(1);
+    bool forced_on = i8_dot_enabled();
+    i8_dot_force(-1);
+    if (env_on != kernel || forced_on != kernel) {
+        fprintf(stderr, "FAIL: RUNNER_CPU_I8 enabled=%d forced=%d on a build where an "
+                "int8 kernel %s\n", env_on, forced_on, kernel ? "exists" : "does not exist");
+        return 1;
+    }
+    printf("int8 flag: %s (kernel %s)\n", env_on ? "on" : "off, with a notice",
+           kernel ? "present" : "absent");
+    return 0;
+}
+
 int main(void) {
     f16_init();
+    if (check_i8_flag_needs_a_kernel()) return 1;
     // lengths: multiples of 32, the f16 16-step, and ragged tails
     const int lens[] = { 32, 64, 96, 128, 256, 1024, 2048, 2064, 2071, 48, 17, 1, 1536 };
     int checks = 0;

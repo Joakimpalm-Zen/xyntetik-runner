@@ -1978,7 +1978,9 @@ counts. `RUNNER_CPU_I8=1` opts into a fused int8 decode dot (AVX-512 VNNI,
 AVX2 fallback): 2.4-2.5x on the kernel in isolation, but it quantizes the
 activations, so it is **off by default** - no format cleared the 0/64
 teacher-forced flip bar with a decode gain worth taking on the measurement
-box. `./test-i8-tol MODEL.gguf` is the gate.
+box. `./test-i8-tol MODEL.gguf` is the gate. A build with no int8 kernel (neither
+AVX2 nor arm64 with the dot-product extension) ignores `RUNNER_CPU_I8` with one
+notice, so the route line and receipts never name a route that did not run.
 `RUNNER_CPU_I8_PREFILL=1` (opt-in, arm64 with the dot-product extension) takes
 the same int8 activations for CPU batches of 8 or more rows, prompt prefill and
 chunked scoring: four weight rows are repacked once into int8 codes with a

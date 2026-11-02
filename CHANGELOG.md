@@ -5,6 +5,12 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`RUNNER_CPU_I8` on a build with no int8 kernel is ignored, with a
+  notice.** It used to switch the route on in name only: every matvec ran
+  f32, while the route line and receipts said `cpu_act` `int8`, a route that
+  never ran. That was so on the 1.11.0 macOS binary (see the entry on the
+  macOS build above). `RUNNER_CPU_I8_PREFILL` already behaved this way.
+
 - **The macOS build has the int8 dot path again.** Apple Silicon builds now
   target `-mcpu=apple-m1`, the floor of every Apple Silicon Mac, instead of
   `-march=native`. On a macOS virtual machine, which is where the release
