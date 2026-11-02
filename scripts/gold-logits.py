@@ -149,13 +149,14 @@ def parse_top(d):
 def float32_stragglers(model):
     """Cast to float32, in place, the tensors a float32 load left narrower.
 
-    from_pretrained(dtype=float32) on an FP8 checkpoint without a GPU
-    dequantizes the FP8 weights to float32 exactly (weight times scale, both
-    upcast) but leaves the tensors the checkpoint stores in BF16, the
-    embedding, the norms and the head, at BF16 when they are held in memory
-    (transformers 5.14 and 5.16, Devstral Small 2, 2026-11-02): the forward
-    then refuses at the first float32 Linear (bf16 != float), after the
-    whole load. BF16 or F16 to float32 is exact, so casting them keeps the
+    from_pretrained(dtype=float32) on an FP8 checkpoint of a multimodal
+    class without a GPU dequantizes the FP8 weights to float32 exactly
+    (weight times scale, both upcast) but leaves every tensor the checkpoint
+    stores in BF16 (the embedding, the norms, the head, the vision tower) at
+    BF16 when it is held in memory (transformers 5.14 and 5.16, Devstral
+    Small 2, 2026-11-02; a causal-LM class or a checkpoint without FP8 loads
+    all float32): the forward then refuses at the first float32 Linear
+    (bf16 != float), after the whole load. BF16 or F16 to float32 is exact, so casting them keeps the
     reference the float32 model. A narrow tensor on the meta device
     (offloaded, not castable here) or a floating dtype that is not an exact
     subset of float32 is refused, named. Returns the names cast."""
