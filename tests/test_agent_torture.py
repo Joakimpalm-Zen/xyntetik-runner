@@ -17,18 +17,20 @@ def test_default_matrix_is_repeatable_and_balanced():
     their own terms but are not case-for-case comparable with v3 — hence the
     SCHEMA_VERSION bump, which is what tells a reader which matrix a result
     file describes. v3 added tool_stream_normalization when the atem work
-    taught the harness to verify streamed tool calls."""
+    taught the harness to verify streamed tool calls; v5 added
+    reasoning_then_native_tool (R4.13.3), and 126 is nine families' 14."""
     first = MOD.build_cases()
     second = MOD.build_cases()
     assert first == second
-    assert len(first) == 120
-    assert len({case["id"] for case in first}) == 120
+    assert len(first) == 126
+    assert len({case["id"] for case in first}) == 126
     assert {case["category"] for case in first} == {
         "nested_arguments", "tool_selection", "forced_truncation",
         "stream_normalization", "tool_stream_normalization",
         "large_enum_selection", "reasoning_then_tool", "structured_final",
+        "reasoning_then_native_tool",
     }
-    assert all(sum(c["category"] == category for c in first) == 15
+    assert all(sum(c["category"] == category for c in first) == 14
                for category in {c["category"] for c in first})
 
 
@@ -43,6 +45,27 @@ def test_reasoning_then_tool_replays_prose_before_demanding_a_call():
     assert roles == ["user", "assistant", "user"], roles
     assert len(messages[1]["content"]) > 40, "the replayed reasoning is trivial"
     assert cases[0]["request"]["tool_choice"]["function"]["name"] == "record_conclusion"
+
+
+def test_reasoning_then_native_tool_carries_no_unenforceable_constraint():
+    """v5's family exists so a template's native call syntax can carry the call
+    after the model's thinking: its tool must have no length, pattern or range
+    constraint (reasoning_then_tool's minLength is what sends Runner to the
+    generic envelope), and the turn keeps reasoning_then_tool's shape."""
+    cases = [c for c in MOD.build_cases() if c["category"] == "reasoning_then_native_tool"]
+    assert cases
+    request = cases[0]["request"]
+    assert [m["role"] for m in request["messages"]] == ["user", "assistant", "user"]
+    assert request["tool_choice"]["function"]["name"] == "record_finding"
+    params = request["tools"][0]["function"]["parameters"]
+    banned = {"minLength", "maxLength", "pattern", "minimum", "maximum",
+              "exclusiveMinimum", "exclusiveMaximum", "format"}
+    for name, prop in params["properties"].items():
+        assert not banned & set(prop), (name, prop)
+    # the v4 family's tool does carry one, which is the point of the pair
+    old = [c for c in MOD.build_cases() if c["category"] == "reasoning_then_tool"][0]
+    props = old["request"]["tools"][0]["function"]["parameters"]["properties"]
+    assert any(banned & set(p) for p in props.values())
 
 
 def test_structured_final_constrains_a_final_answer_not_a_call():
@@ -108,7 +131,7 @@ def test_report_schema_and_totals(tmp_path):
     MOD.write_json(path, report)
     decoded = json.loads(path.read_text())
 
-    assert decoded["schema_version"] == "xyntetik.agent-torture.v4"
+    assert decoded["schema_version"] == "xyntetik.agent-torture.v5"
     assert decoded["runtime"] == {"name": "runner", "version": "runner test"}
     assert decoded["configuration"]["model"] == "fixture.gguf"
     assert decoded["totals"] == {
@@ -295,3 +318,31 @@ def test_a_budget_spent_in_reasoning_is_excused_not_failed():
     assert t["requests"] == 3 and t["excused"] == 1 and t["scored"] == 2
     assert t["passed"] == 1 and t["failed"] == 1 and t["declined"] == 1
     assert t["attempted"] == 1 and t["attempted_pass_rate"] == 1.0
+
+
+def test_timeout_reaches_the_client(monkeypatch, tmp_path):
+    # a slow host (a 27B on a CPU) needs more than the harness's 120 s a
+    # request; --timeout hands its value to the client, and only then
+    seen = []
+
+    class FakeClient:
+        def __init__(self, server, report, *timeout):
+            seen.append(timeout)
+
+    class Target:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(MOD, "Client", FakeClient)
+    monkeypatch.setattr(MOD, "build_cases", lambda count: [])
+    for t in (None, 600.0):
+        try:
+            MOD.run(Target(), "runner", "v", "m.gguf", tmp_path / str(t), 0, timeout=t)
+        except Exception:
+            pass   # an empty matrix may not make a report; the client is what counts
+    assert seen == [(), (600.0,)]
+    with pytest.raises(SystemExit):
+        MOD.main(["--timeout", "0"])

@@ -25,6 +25,14 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+// setenv is POSIX; MinGW has _putenv_s (main's windows-suite-gates-core
+// builds this test, a PR's CI does not)
+#ifdef _WIN32
+#define setenv_compat(k, v) _putenv_s(k, v)
+#else
+#define setenv_compat(k, v) setenv(k, v, 1)
+#endif
+
 #define QK 32
 typedef struct { f16_t d; int8_t qs[QK]; } block_q8_0;
 
@@ -103,7 +111,7 @@ static int bits_equal(float a, float b) {
 // every build, from the environment and when forced.
 static int check_i8_flag_needs_a_kernel(void) {
     bool kernel = i8_dot_ok(T_Q8_0, 32);
-    setenv("RUNNER_CPU_I8", "1", 1);
+    setenv_compat("RUNNER_CPU_I8", "1");
     bool env_on = i8_dot_enabled();
     i8_dot_force(1);
     bool forced_on = i8_dot_enabled();
