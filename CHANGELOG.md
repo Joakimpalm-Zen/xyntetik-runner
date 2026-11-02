@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Six messages and edges the pre-1.12.0 sweep found.** A one-shot run
+  whose `-n` does not fit in `-c` now ends with `[context full: -c N holds
+  the prompt and K of the M tokens -n asked for; rerun with -c X or
+  larger]` instead of stopping silently (the server already finished such a
+  request with `length`, and the tests now pin it). A GGUF cut short in its
+  metadata or tensor table says it is truncated, with the bytes it needs and
+  the bytes it has, instead of `bad GGUF metadata value for ...`. `--verify`
+  on a receipt a JSON tool re-serialized says so (the chain hash covers the
+  runner's compact bytes) instead of `no chain in record`, which stays for a
+  record that has none. `runner attest VERB --help` prints that verb's usage
+  and exits 0. A value flag at the end of the line names itself (`error: -p
+  needs a value`) before the usage. A failed `-hf` lookup removes the cache
+  directory it created, never one that was there before. Each has a test
+  that fails without it.
+
 - **CUDA MoE routing traces record each expert's output norm.** The CUDA
   trace left the norms field empty, so a trace taken on the device could not
   be compared field by field with the CPU's. Every CUDA MoE path (fused,

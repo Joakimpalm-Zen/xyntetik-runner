@@ -1418,62 +1418,87 @@ static void usage_to(FILE *f, const char *prog) {
         prog);
 }
 
+// The verbs' part of `runner attest --help`, also cut per verb for `runner
+// attest VERB --help` (usage_attest_verb_to): a verb's block is its synopsis
+// line at two spaces and every deeper-indented line after it.
+static const char ATTEST_VERBS[] =
+    "  keygen OUT [--algo ed25519|ml-dsa-44]\n"
+    "        write a receipt-signing key (xyntetik.runner.signkey.v1) to\n"
+    "        OUT and print its public key. ed25519 is the default (32-byte\n"
+    "        key, 64-byte signature); ml-dsa-44 is FIPS 204 post-quantum\n"
+    "        (1312-byte key, 2420-byte signature, deterministic)\n"
+    "  sign RECORD --key KEYFILE [--prev PREV]\n"
+    "        sign any JSON object file in place: the transcript's chain and\n"
+    "        signature objects; --prev links it to record PREV\n"
+    "  check RECORD [--trust-key K]\n"
+    "        verify one record's signature and chain fields\n"
+    "  lineage FILE [--trust-key K]\n"
+    "        walk FILE's provenance chain (a model or adapter file, its\n"
+    "        record, an answer's receipt, or a receipts directory) back to\n"
+    "        its origins: every link re-hashed, every signature checked.\n"
+    "        Exit 0 verified and signed, 1 consistent but not all signed,\n"
+    "        2 broken or no record\n"
+    "  bundle RECEIPT OUT_DIR [--model-sig F] [--model-pubkey F] [--key KEYFILE]\n"
+    "        put the receipt, its model signature and key, the receipt\n"
+    "        key's fingerprint and a sha256 manifest in one directory a\n"
+    "        verifier can take; --key signs the manifest\n"
+    "  check-bundle DIR [--trust-key K]\n"
+    "        verify a bundle offline: files match the manifest, the chain\n"
+    "        recomputes, signatures verify. Exit 0 OK, 2 BAD, 3\n"
+    "        UNVERIFIABLE. Does not replay: that is --verify with the model\n"
+    "  pack RECEIPTS_DIR OUT_DIR [--envelope F] [--attach F]... [--model-sig F]\n"
+    "       [--model-pubkey F] [--key KEYFILE]\n"
+    "        an evidence pack of every receipt-*.json in RECEIPTS_DIR (one\n"
+    "        model, one build), the model signature and key, the envelope\n"
+    "        manifest the receipts name and attached files (oversight\n"
+    "        records, ...), under a sha256 manifest with one inference per\n"
+    "        receipt and the chain they form; --key signs it\n"
+    "  check-pack DIR [--trust-key K]\n"
+    "        verify a pack offline like check-bundle, and that the receipts\n"
+    "        form the chain it states\n"
+    "  sign-model MODEL --key KEY.pem [--out SIG]\n"
+    "        write an OpenSSF Model Signing bundle for MODEL (every part of\n"
+    "        a split GGUF) to MODEL.sig, or to SIG; deterministic ECDSA\n"
+    "        (RFC 6979) with a PEM EC private key (SEC1 or PKCS#8,\n"
+    "        unencrypted, P-256/384/521)\n"
+    "  watermark-keygen OUT\n"
+    "        write a new watermark key to OUT\n"
+    "  detect FILE --key WMKEY [-m MODEL]\n"
+    "        score FILE against the watermark key: a transcript record (no\n"
+    "        -m) or a text (-m for its tokenizer). Exit 0 WATERMARKED, 2\n"
+    "        NOT_DETECTED, 3 INSUFFICIENT\n";
+static const char ATTEST_TAIL[] =
+    "--trust-key K is the key's hex, sha256: plus the hex SHA-256 of its\n"
+    "bytes, or a file holding either (keygen's output as written). Any\n"
+    "other option is passed to the runner as given.\n";
+
 // `runner attest <verb> ...`: the record, key, bundle and pack utilities,
 // which need files and never a model. Each verb is a rewrite of the flags
 // behind it (cli_expand_subcommand), so the flags' own checks and records
 // are what runs.
 static void usage_attest_to(FILE *f) {
-    fprintf(f,
-        "usage: runner attest <verb> [arguments] [options]\n\n"
-        "verbs:\n"
-        "  keygen OUT [--algo ed25519|ml-dsa-44]\n"
-        "        write a receipt-signing key (xyntetik.runner.signkey.v1) to\n"
-        "        OUT and print its public key. ed25519 is the default (32-byte\n"
-        "        key, 64-byte signature); ml-dsa-44 is FIPS 204 post-quantum\n"
-        "        (1312-byte key, 2420-byte signature, deterministic)\n"
-        "  sign RECORD --key KEYFILE [--prev PREV]\n"
-        "        sign any JSON object file in place: the transcript's chain and\n"
-        "        signature objects; --prev links it to record PREV\n"
-        "  check RECORD [--trust-key K]\n"
-        "        verify one record's signature and chain fields\n"
-        "  lineage FILE [--trust-key K]\n"
-        "        walk FILE's provenance chain (a model or adapter file, its\n"
-        "        record, an answer's receipt, or a receipts directory) back to\n"
-        "        its origins: every link re-hashed, every signature checked.\n"
-        "        Exit 0 verified and signed, 1 consistent but not all signed,\n"
-        "        2 broken or no record\n"
-        "  bundle RECEIPT OUT_DIR [--model-sig F] [--model-pubkey F] [--key KEYFILE]\n"
-        "        put the receipt, its model signature and key, the receipt\n"
-        "        key's fingerprint and a sha256 manifest in one directory a\n"
-        "        verifier can take; --key signs the manifest\n"
-        "  check-bundle DIR [--trust-key K]\n"
-        "        verify a bundle offline: files match the manifest, the chain\n"
-        "        recomputes, signatures verify. Exit 0 OK, 2 BAD, 3\n"
-        "        UNVERIFIABLE. Does not replay: that is --verify with the model\n"
-        "  pack RECEIPTS_DIR OUT_DIR [--envelope F] [--attach F]... [--model-sig F]\n"
-        "       [--model-pubkey F] [--key KEYFILE]\n"
-        "        an evidence pack of every receipt-*.json in RECEIPTS_DIR (one\n"
-        "        model, one build), the model signature and key, the envelope\n"
-        "        manifest the receipts name and attached files (oversight\n"
-        "        records, ...), under a sha256 manifest with one inference per\n"
-        "        receipt and the chain they form; --key signs it\n"
-        "  check-pack DIR [--trust-key K]\n"
-        "        verify a pack offline like check-bundle, and that the receipts\n"
-        "        form the chain it states\n"
-        "  sign-model MODEL --key KEY.pem [--out SIG]\n"
-        "        write an OpenSSF Model Signing bundle for MODEL (every part of\n"
-        "        a split GGUF) to MODEL.sig, or to SIG; deterministic ECDSA\n"
-        "        (RFC 6979) with a PEM EC private key (SEC1 or PKCS#8,\n"
-        "        unencrypted, P-256/384/521)\n"
-        "  watermark-keygen OUT\n"
-        "        write a new watermark key to OUT\n"
-        "  detect FILE --key WMKEY [-m MODEL]\n"
-        "        score FILE against the watermark key: a transcript record (no\n"
-        "        -m) or a text (-m for its tokenizer). Exit 0 WATERMARKED, 2\n"
-        "        NOT_DETECTED, 3 INSUFFICIENT\n\n"
-        "--trust-key K is the key's hex, sha256: plus the hex SHA-256 of its\n"
-        "bytes, or a file holding either (keygen's output as written). Any\n"
-        "other option is passed to the runner as given.\n");
+    fprintf(f, "usage: runner attest <verb> [arguments] [options]\n\nverbs:\n%s\n%s",
+            ATTEST_VERBS, ATTEST_TAIL);
+}
+
+static void usage_attest_verb_to(FILE *f, const char *verb) {
+    size_t vl = strlen(verb);
+    for (const char *p = ATTEST_VERBS; *p;) {
+        const char *e = strchr(p, '\n') + 1;
+        if (p[2] != ' ' && !strncmp(p + 2, verb, vl) && (p[2 + vl] == ' ' || p[2 + vl] == '\n')) {
+            bool trust;
+            fprintf(f, "usage: runner attest %.*s", (int)(e - p - 2), p + 2);
+            const char *t = strstr(p, "--trust-key");
+            trust = t && t < e;
+            for (p = e; *p && p[2] == ' '; p = e) {
+                e = strchr(p, '\n') + 1;
+                fprintf(f, "%.*s", (int)(e - p), p);
+            }
+            if (trust) fprintf(f, "\n%s", ATTEST_TAIL);
+            return;
+        }
+        p = e;
+    }
 }
 
 // `runner train DATA -m MODEL ...`: AdamW LoRA training on the CPU, or on a
@@ -2273,7 +2298,8 @@ bad:
 static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
-        #define NEXT (i + 1 < argc ? argv[++i] : (usage(argv[0]), exit(1), (char*)0))
+        #define NEXT (i + 1 < argc ? argv[++i] : (fprintf(stderr, "error: %s needs a value\n", a), \
+                                                   usage(argv[0]), exit(1), (char*)0))
         if (!o->pull_other && strcmp(a, "--pull") && strcmp(a, "--json")) o->pull_other = a;
         if      (!strcmp(a, "-m")) o->model_path = NEXT;
         else if (!strcmp(a, "--pull")) o->pull_spec = NEXT;
@@ -2917,6 +2943,10 @@ static int cli_expand_subcommand(int *argc, char ***argv) {
             fprintf(stderr, "error: runner attest: unknown verb %s (runner attest --help)\n", verb);
             return 1;
         }
+        if (i < *argc && (!strcmp((*argv)[i], "--help") || !strcmp((*argv)[i], "-h"))) {
+            usage_attest_verb_to(stdout, verb);
+            return 0;
+        }
         key_flag = verbs[v].key;
         for (int k = 0; k < verbs[v].npos; k++) {
             if (i >= *argc || (*argv)[i][0] == '-') {
@@ -3463,7 +3493,19 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
         char *cpos = strstr(vbuf, ",\"chain\"");
         char *clast = cpos;
         while (clast && (clast = strstr(clast + 1, ",\"chain\"")) != NULL) cpos = clast;
-        if (!cpos) { fprintf(stderr, "UNVERIFIABLE: no chain in record\n"); free(vbuf); *rc = 3; return true; }
+        if (!cpos) {
+            // the chain is found by its bytes, as the runner writes them; a
+            // record whose JSON still holds one was re-serialized, and the
+            // chain hash and signature cover the bytes it no longer has
+            jv *pj = json_parse(vbuf, vlen);
+            bool held = pj && jv_get(pj, "chain");
+            jv_free(pj);
+            fprintf(stderr, held ? "UNVERIFIABLE: the record holds a chain but is not the "
+                                   "bytes it was written and signed as (re-serialized: "
+                                   "the chain hash covers the runner's compact JSON)\n"
+                                 : "UNVERIFIABLE: no chain in record\n");
+            free(vbuf); *rc = 3; return true;
+        }
         char want[65];
         envelope_data_sha256(vbuf, (size_t)(cpos - vbuf), want);
         vr->rsig = receipt_signature_check(vbuf, vlen, vr->rec_pub);
@@ -6494,6 +6536,16 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
     }
     printf("\n");
     if (rt->e.hit_stop && !o->json_mode) fprintf(stderr, "[end of text]\n");
+    else if ((o->n_predict < 0 || n_gen < o->n_predict) && rt->e.pos >= rt->m.n_ctx - 1) {
+        // the context filled before -n did: say so, or the reply just stops
+        if (o->n_predict < 0)
+            fprintf(stderr, "[context full: -c %d holds the prompt and %d generated "
+                    "tokens; rerun with a larger -c]\n", rt->m.n_ctx, n_gen);
+        else
+            fprintf(stderr, "[context full: -c %d holds the prompt and %d of the %d "
+                    "tokens -n asked for; rerun with -c %d or larger]\n", rt->m.n_ctx,
+                    n_gen, o->n_predict, (n_prompt + o->n_predict + 1023) / 1024 * 1024);
+    }
     fprintf(stderr, "\nprompt: %d tok, %.2f tok/s | gen: %d tok, %.2f tok/s\n",
             n_prompt, n_prompt / (ptime > 0 ? ptime : 1e-9),
             n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));

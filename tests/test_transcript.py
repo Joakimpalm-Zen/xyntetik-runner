@@ -194,6 +194,30 @@ def test_verify_verdicts(runner_bin, base, tmp_path):
     assert b"without an adapter" in p.stderr
 
 
+def test_a_reserialized_record_names_the_cause(runner_bin, base, tmp_path):
+    """The chain is found by its bytes as the runner writes them. A record
+    loaded and dumped again by a JSON tool keeps its chain but not those
+    bytes, and was reported as having "no chain in record" (the pre-1.12.0
+    sweep). It stays UNVERIFIABLE, with the real cause named; a record that
+    truly lacks a chain is still told so."""
+    rec = tmp_path / "r.json"
+    _run(runner_bin, base, rec)
+    again = tmp_path / "again.json"
+    again.write_text(json.dumps(json.loads(rec.read_bytes())))   # ", " and ": "
+    p = _verify(runner_bin, base, again)
+    assert p.returncode == 3
+    assert b"no chain in record" not in p.stderr
+    assert b"re-serialized" in p.stderr and b"holds a chain" in p.stderr, p.stderr
+
+    bare = json.loads(rec.read_bytes())
+    del bare["chain"]
+    none = tmp_path / "none.json"
+    none.write_text(json.dumps(bare, separators=(",", ":")))
+    p = _verify(runner_bin, base, none)
+    assert p.returncode == 3
+    assert b"UNVERIFIABLE: no chain in record" in p.stderr, p.stderr
+
+
 def test_verify_rejects_invalid_sampling_values_before_replay(
         runner_bin, base, tmp_path):
     rec = tmp_path / "sampling.json"
