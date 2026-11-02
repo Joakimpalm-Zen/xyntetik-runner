@@ -643,7 +643,7 @@ def _version(exe):
 
 
 def run(target, runtime_name, version, model_label, out, count,
-        request_model=None):
+        request_model=None, timeout=None):
     """Run the matrix against ``target`` (a spawned RunnerServer or a
     RemoteTarget) and write report.json + raw.jsonl. Runtime-labeled so
     reports from different runtimes compare directly. ``request_model`` sets
@@ -660,7 +660,7 @@ def run(target, runtime_name, version, model_label, out, count,
     artifacts = []
     started = time.monotonic()
     with target as server:
-        client = Client(server, sink)
+        client = Client(server, sink) if timeout is None else Client(server, sink, timeout)
         for case in cases:
             t0 = time.monotonic()
             artifact = {"schema_version": SCHEMA_VERSION, "id": case["id"],
@@ -734,7 +734,14 @@ def main(argv=None):
     parser.add_argument("--out", type=Path,
                         default=ROOT / "tests" / "torture" / "out")
     parser.add_argument("--cases", type=int, default=120)
+    # a 27B on a CPU with thinking on takes a minute or two a case, and a
+    # cold page-in more: the harness's 120 s is too short there (the cases
+    # read as transport failures, not as anything the runtime got wrong)
+    parser.add_argument("--timeout", type=float,
+                        help="seconds a request may take (default: the harness's 120)")
     args = parser.parse_args(argv)
+    if args.timeout is not None and args.timeout <= 0:
+        parser.error("--timeout must be positive")
 
     if args.draft and args.endpoint:
         parser.error("--draft is only valid when spawning Runner")
@@ -773,12 +780,13 @@ def main(argv=None):
             baseline_out = args.out / "baseline"
             baseline = run(spawned_target(exe, args.model, baseline_out),
                            runtime_name, version, model_label, baseline_out,
-                           args.cases, request_model=args.model_name)
+                           args.cases, request_model=args.model_name,
+                           timeout=args.timeout)
         target = spawned_target(exe, args.model, args.out, args.draft,
                                 args.draft_k)
 
     report = run(target, runtime_name, version, model_label, args.out,
-                 args.cases, request_model=args.model_name)
+                 args.cases, request_model=args.model_name, timeout=args.timeout)
     mismatches = []
     speculation_active = True
     if args.draft:

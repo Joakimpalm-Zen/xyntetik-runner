@@ -318,3 +318,31 @@ def test_a_budget_spent_in_reasoning_is_excused_not_failed():
     assert t["requests"] == 3 and t["excused"] == 1 and t["scored"] == 2
     assert t["passed"] == 1 and t["failed"] == 1 and t["declined"] == 1
     assert t["attempted"] == 1 and t["attempted_pass_rate"] == 1.0
+
+
+def test_timeout_reaches_the_client(monkeypatch, tmp_path):
+    # a slow host (a 27B on a CPU) needs more than the harness's 120 s a
+    # request; --timeout hands its value to the client, and only then
+    seen = []
+
+    class FakeClient:
+        def __init__(self, server, report, *timeout):
+            seen.append(timeout)
+
+    class Target:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(MOD, "Client", FakeClient)
+    monkeypatch.setattr(MOD, "build_cases", lambda count: [])
+    for t in (None, 600.0):
+        try:
+            MOD.run(Target(), "runner", "v", "m.gguf", tmp_path / str(t), 0, timeout=t)
+        except Exception:
+            pass   # an empty matrix may not make a report; the client is what counts
+    assert seen == [(), (600.0,)]
+    with pytest.raises(SystemExit):
+        MOD.main(["--timeout", "0"])
