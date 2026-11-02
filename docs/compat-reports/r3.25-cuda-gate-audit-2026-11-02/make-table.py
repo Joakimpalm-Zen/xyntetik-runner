@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Gate x mutant table for the R3.25 CUDA half, from the audit logs.
-make-table.py PASS1.log PASS1B.log PASS2.log > table.md"""
+make-table.py PASS1.log PASS1B.log PASS2.log > table.md
+A gpu-identity cell shows pass 2's deviation (the later build), every other cell pass 1's."""
 import re, sys
 
 
@@ -35,16 +36,18 @@ gates = list(p1["baseline"])
 print("| gate | healthy | " + " | ".join(SHORT[m] for m in muts) + " |")
 print("|---|---|" + "---|" * len(muts))
 for g in gates:
-    row = ["`%s`" % g, p1["baseline"][g][1] or "ok"]
+    src = p2 if g in p2["baseline"] else p1
+    row = ["`%s`" % g, src["baseline"][g][1] or "ok"]
     for m in muts:
-        s1, d = p1[m][g]
+        s1 = p1[m][g][0]
+        d = src[m][g][1]
         if s1 == "FAIL":
             mark = "**C**"          # caught at the default bound
         elif g in p2.get(m, {}) and p2[m][g][0] == "FAIL":
             mark = "**T**"          # caught only at the tight bound
         elif g in SELF:
             mark = "s"              # CUDA against CUDA: a mutant on the shared path cannot show
-        elif d and d == p1["baseline"][g][1]:
+        elif d and d == src["baseline"][g][1]:
             mark = "n"              # the deviation is the healthy residue: the path is not reached
         else:
             mark = "-"              # moved, or not measured, and still passed

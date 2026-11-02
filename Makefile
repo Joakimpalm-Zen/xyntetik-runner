@@ -2941,13 +2941,13 @@ endif
 # test-gpu-identity's cross-backend 2e-3 on one backend or both. A GPU host
 # holds these fixtures to bounds well over their residue (GPU_ID_LIMIT only
 # tightens): 1e-5 (30x and more on CUDA), and 2e-5 for spark (CUDA residue
-# 3.7e-6). k_temp_live is held to 1e-5 on Metal (residue 1.9e-7), but its CUDA
-# residue is 8.0e-4, so a CUDA host keeps the cross-backend bound there (CUDA
-# half, 2026-11-02).
+# 3.7e-6). k_temp_live's decode crosses six temperature steps, so its 1e-5
+# also holds the CUDA decode graph to each token's own temperature: a graph
+# that replayed its capture position's factor measured 8.0e-4 there (R3.25
+# CUDA half, 2026-11-02).
 GPU_ID_TIGHT = GPU_ID_LIMIT=1e-5
 GPU_ID_TIGHT_SPARK = GPU_ID_LIMIT=2e-5
 ifeq ($(BUILD_OS),Darwin)
-GPU_ID_TIGHT_TEMP = GPU_ID_LIMIT=1e-5
 # test-prefix compares a reused prefix's last row with a cold prefill's, and
 # a row the GEMM tiles computed differs from the identity matvec's by about
 # 1.6e-5 of range on test.gguf (the tiles stage activations at half
@@ -3184,7 +3184,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_off.gguf
 	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_nope.gguf
 	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_half.gguf
-	$(GPU_ID_TIGHT_TEMP) ./$(TEST_GPU_ID) test-attn/k_temp_live.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_temp_live.gguf
 	@# The same comparison with every forward a single token. That is a
 	@# backend STATE, not a slower schedule: scratch sized lazily on the first
 	@# multi-token batch stays nil for such a run, and the text gates above are

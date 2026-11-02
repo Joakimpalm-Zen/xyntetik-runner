@@ -53,9 +53,12 @@ GATES = [  # name, command, kind
  ("cuda-tc-kq (TC prefill)", MAKE + ["test-cuda-tc-kq"], "make"),
  ("cuda-moe-replay", MAKE + ["test-cuda-moe-replay"], "make"),
 ]
-# Pass 2's per-fixture bounds: LIMIT for the toy fixtures, 2e-5 for spark (CUDA residue 3.7e-6), and
-# k_temp_live left at the cross-backend 2e-3 (CUDA residue 8.0e-4, see the README)
-SPECIAL = {"gpu-id spark": "2e-5", "gpu-id spark 0 1": "2e-5", "gpu-id spark-swa": "2e-5", "gpu-id k_temp_live": None}
+# Pass 2's per-fixture bounds: LIMIT for the toy fixtures and 2e-5 for spark (CUDA residue 3.7e-6). With
+# TEMP_DEFAULT=1, k_temp_live keeps the cross-backend 2e-3, as it had to before the decode graph's
+# temperature fix (its residue was 8.0e-4, see the README)
+SPECIAL = {"gpu-id spark": "2e-5", "gpu-id spark 0 1": "2e-5", "gpu-id spark-swa": "2e-5"}
+if os.environ.get("TEMP_DEFAULT"):
+    SPECIAL["gpu-id k_temp_live"] = None
 if LIMIT:  # the limit only moves the gpu-identity gates, so pass 2 runs those alone
     GATES = [g for g in GATES if g[2] == "id"]
 BINS = ["runner", "test-gpu-identity", "test-prefix", "test-tc-tol", "test-moe-tol"]
@@ -111,7 +114,8 @@ def write(log, title, res):
 orig = {f: open(f).read() for f in (K, C)}
 with open(OUT, "w") as log:
     log.write("R3.25 CUDA half, %s, GPU_ID_LIMIT=%s%s\n" % (time.strftime("%F %T"), LIMIT or "default (2e-3)",
-              " (spark 2e-5, k_temp_live default)" if LIMIT else ""))
+              " (spark 2e-5%s)" % (", k_temp_live default" if os.environ.get("TEMP_DEFAULT") else "")
+              if LIMIT else ""))
     try:
         build(True)
         if not ONLY:
