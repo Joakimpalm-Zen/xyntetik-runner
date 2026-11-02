@@ -1124,9 +1124,9 @@ Project artifacts have their measured status in the
 [published-artifact ledger](#published-artifacts):
 
 ```sh
-# the lead artifact: Qwen3-30B-A3B, attention Q8_0 / experts Q4_0, 17.99 GB,
+# the lead artifact: Qwen3-30B-A3B made by `runner derive`, 17.1 GB,
 # passes the fidelity bar where the official uniform Q4_K_M fails it
-./runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve
+./runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-derive-GGUF --serve
 # the fastest smoke test on a small machine, 2.63 GB: against its own BF16
 # parent it agrees on 77.75% of tokens (mean KLD 0.286), a try-the-runner
 # artifact, not a faithful gemma-4-E2B; its card carries the full numbers
@@ -1566,7 +1566,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.10.0
+./runner --version   # -> runner 1.11.0
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -1679,7 +1679,7 @@ The independently built container has a separate Debian build baseline.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v1.10.0`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v1.11.0`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which

@@ -37,7 +37,7 @@ HEIGHT OUT.png [mobile]` drives headless Chrome with device emulation and
 prints the page's layout width against the viewport (`scrollW` above
 `innerW` is a horizontal overflow) and the first elements that reach past
 it, then writes a full-page screenshot; `SHOT_SELECTOR='#id'` captures one
-element instead. Check every changed page at 1440 and at 390 with `mobile`.
+element instead, and `SHOT_SCHEME=light` or `dark` emulates the colour scheme. Check every changed page at 1440 and at 390 with `mobile`, and a page with themed graphics in both schemes.
 A plain `--window-size` is clamped to about 500 px and fakes an overflow at
 phone width, which is why the emulation is there. Each run uses a Chrome
 profile of its own and `CHROME` names the browser binary when it is not the
