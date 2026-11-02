@@ -106,7 +106,7 @@ chmod +x runner-macos-arm64 && mv runner-macos-arm64 runner
 SHA-256 record and serves it on `http://127.0.0.1:8080`:
 
 ```sh
-./runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve
+./runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-derive-GGUF --serve
 # on an 8 GB machine, start smaller:
 ./runner -hf ibm-granite/granite-4.1-3b-GGUF:Q8_0 --serve
 ```
@@ -212,9 +212,10 @@ what the file is not for and its weakest number, then whether it passes the bar.
 **How.** One command, from a parent file and a target size:
 
 ```sh
+# hf:DIR is a local download of Qwen/Qwen3-30B-A3B (huggingface-cli download Qwen/Qwen3-30B-A3B --local-dir Qwen3-30B-A3B)
 ./runner derive -m Qwen3-30B-A3B-Q8_0.gguf -o out.gguf --target-size 17106040320 \
     --high q4_0 --low q3_k --match _exps --imatrix Qwen_Qwen3-30B-A3B.imatrix \
-    --reference hf:Qwen3-30B-A3B --reference-arg --upcast-at-use
+    --reference hf:./Qwen3-30B-A3B --reference-arg --upcast-at-use
 ```
 
 <p align="center">

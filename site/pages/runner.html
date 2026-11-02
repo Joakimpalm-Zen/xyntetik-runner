@@ -137,10 +137,11 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
           <img src="/assets/readme-derive-process-light.svg" alt="The usual way shrinks a model with the same mix for every model, scores it elsewhere if at all and writes the card by hand; runner derive is one command that makes the file, measures it against the publisher's float32 model and writes its card and record" width="640" height="300" loading="lazy">
         </picture>
       </figure>
-<pre><code>./runner derive -m Qwen3-30B-A3B-Q8_0.gguf -o out.gguf \
+<pre><code># hf:DIR is a local download of Qwen/Qwen3-30B-A3B (huggingface-cli download Qwen/Qwen3-30B-A3B --local-dir Qwen3-30B-A3B)
+./runner derive -m Qwen3-30B-A3B-Q8_0.gguf -o out.gguf \
     --target-size 17106040320 --high q4_0 --low q3_k \
     --match _exps --imatrix Qwen_Qwen3-30B-A3B.imatrix \
-    --reference hf:Qwen3-30B-A3B --reference-arg --upcast-at-use</code></pre>
+    --reference hf:./Qwen3-30B-A3B --reference-arg --upcast-at-use</code></pre>
       <figure class="shot">
         <a href="{{hf}}/Qwen3-30B-A3B-derive-GGUF"><picture>
           <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-derive-result-dark.svg">

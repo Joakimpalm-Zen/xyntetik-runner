@@ -1124,9 +1124,9 @@ Project artifacts have their measured status in the
 [published-artifact ledger](#published-artifacts):
 
 ```sh
-# the lead artifact: Qwen3-30B-A3B, attention Q8_0 / experts Q4_0, 17.99 GB,
+# the lead artifact: Qwen3-30B-A3B made by `runner derive`, 17.1 GB,
 # passes the fidelity bar where the official uniform Q4_K_M fails it
-./runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF --serve
+./runner -hf Joakimpalm-Zen/Qwen3-30B-A3B-derive-GGUF --serve
 # the fastest smoke test on a small machine, 2.63 GB: against its own BF16
 # parent it agrees on 77.75% of tokens (mean KLD 0.286), a try-the-runner
 # artifact, not a faithful gemma-4-E2B; its card carries the full numbers
