@@ -197,8 +197,13 @@ jobs:
       # count cannot tell, since clang vectorizes the scalar twin with SDOT
       - name: dotprod path in the binary
         run: |
-          RUNNER_CPU_I8_PREFILL=1 ./runner -m test.gguf --gpu off --score -p "hello world" 2>&1 >/dev/null \
-            | tee /dev/stderr | grep -q '"cpu_act":"f32+int8-prefill"'
+          out=$(RUNNER_CPU_I8_PREFILL=1 ./runner -m test.gguf --gpu off --score -p "hello world" 2>&1 >/dev/null) \
+            || { echo "$out"; echo "the runner failed"; exit 1; }
+          echo "$out"
+          case "$out" in
+            *'"cpu_act":"f32+int8-prefill"'*) ;;
+            *) echo "no int8 prefill route: built without the dot-product extension"; exit 1 ;;
+          esac
       - name: Metal gates (make test-metal)
         run: .venv/bin/python scripts/ci-run.py --timeout 1500 metal -- make test-metal PYTHON=.venv/bin/python
       - name: agent-protocol conformance harness on the Metal path
