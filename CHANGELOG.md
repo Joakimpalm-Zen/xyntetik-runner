@@ -10,10 +10,12 @@ Current release and unreleased changes. Compatibility follows the
   dispatch, not the arithmetic, set the time, and more threads made it slower
   (3.7 s at 16 threads against 1.9 s at 4 for a 588-token prompt on a
   Threadripper, Qwen3-0.6B Q8_0). It now runs the whole batch in one pass over
-  (row, head) items, each computing exactly as before: outputs are
-  byte-identical at any thread count. 512-token prefill at 16 threads read
-  1.3x to 1.9x the per-row passes on that host. `RUNNER_ATTN_BATCH=0` restores
-  them (R3.27).
+  heads, each running every row exactly as before: outputs are byte-identical
+  at any thread count, and nothing more is allocated. On that host (shared and
+  loaded) the attention stage at 16 threads fell from 3.7 s to 1.3 s; end to
+  end, interleaved 512-token rounds read 1.0x to 1.4x the per-row passes.
+  `RUNNER_ATTN_BATCH=0` restores them (R3.27).
+
 - **A PR-time check for POSIX calls the Windows build lacks.**
   `scripts/check-portability.py` runs in every PR's metadata check and fails
   on a call to a function the MinGW-w64 CRT does not declare (`setenv`,
