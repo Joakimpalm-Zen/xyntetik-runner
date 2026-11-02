@@ -15,10 +15,12 @@
 typedef struct {
     const uint8_t *p, *end;
     bool ok;
+    uint64_t want;   // the read that ran past the end: bytes asked for at p
 } cursor;
 
 static bool need(cursor *c, size_t n) {
-    if (!c->ok || (size_t)(c->end - c->p) < n) { c->ok = false; return false; }
+    if (!c->ok) return false;
+    if ((size_t)(c->end - c->p) < n) { c->ok = false; c->want = n; return false; }
     return true;
 }
 
@@ -80,7 +82,11 @@ static bool rd_kv_value(cursor *c, gguf_kv *kv, uint32_t type) {
                 // declaring arr_n = 2^32 spends ~9s reserving 64 GiB before
                 // being correctly rejected. The scalar branch below already
                 // bounds itself this way via need().
-                if (kv->arr_n > (uint64_t)(c->end - c->p) / 8) return false;
+                if (kv->arr_n > (uint64_t)(c->end - c->p) / 8) {
+                    c->ok = false;   // the file ends before the array could
+                    c->want = kv->arr_n > UINT64_MAX / 8 ? UINT64_MAX : kv->arr_n * 8;
+                    return false;
+                }
                 if (kv->arr_n > SIZE_MAX / sizeof(gg_str)) return false;
                 kv->arr_str = calloc((size_t)kv->arr_n, sizeof(gg_str));
                 if (kv->arr_n > 0 && !kv->arr_str) return false;
@@ -134,6 +140,18 @@ static int cmp_tensor_offset(const void *a, const void *b) {
     return ia < ib ? -1 : ia > ib;   // a fixed order among equal offsets
 }
 
+// A read that ran past the mapping: the file ends before its own header
+// does, which is what a stopped download looks like. Say where it ends and
+// how far the header reaches, rather than blaming the value being read.
+static void report_short(const char *path, const gguf_file *g, const cursor *c,
+                         const char *what, const char *key) {
+    uint64_t at = (uint64_t)(c->p - (const uint8_t *)g->map), upto = 0;
+    if (!checked_u64_add(at, c->want, &upto)) upto = UINT64_MAX;
+    fprintf(stderr, "error: %s is truncated: %s%s%s needs at least %llu bytes but the "
+            "file is %llu bytes (an incomplete download?)\n", path, what, key ? " " : "",
+            key ? key : "", (unsigned long long)upto, (unsigned long long)g->map_size);
+}
+
 static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
     memset(g, 0, sizeof(*g));
     g->header_only = header_only;
@@ -163,7 +181,7 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
         goto fail;
     }
 
-    cursor c = { g->map, (const uint8_t *)g->map + g->map_size, true };
+    cursor c = { g->map, (const uint8_t *)g->map + g->map_size, true, 0 };
     if (rd_u32(&c) != 0x46554747) { // "GGUF"
         fprintf(stderr, "error: %s is not a GGUF file\n", path);
         goto fail;
@@ -181,7 +199,11 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
     if (g->n_kv > 0 && !g->kv) goto fail;
     for (uint64_t i = 0; i < g->n_kv; i++) {
         gg_str key = {0};
-        if (!rd_str(&c, &key)) { fprintf(stderr, "error: bad GGUF metadata\n"); goto fail; }
+        if (!rd_str(&c, &key)) {
+            if (!c.ok) report_short(path, g, &c, "the key of a metadata entry", NULL);
+            else fprintf(stderr, "error: bad GGUF metadata\n");
+            goto fail;
+        }
         if (str_has_nul(&key)) {
             free(key.s);
             fprintf(stderr, "error: GGUF metadata key contains an embedded NUL\n");
@@ -190,7 +212,8 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
         g->kv[i].key  = key.s;
         g->kv[i].type = rd_u32(&c);
         if (!rd_kv_value(&c, &g->kv[i], g->kv[i].type)) {
-            fprintf(stderr, "error: bad GGUF metadata value for %s\n", key.s);
+            if (!c.ok) report_short(path, g, &c, "the metadata value of", key.s);
+            else fprintf(stderr, "error: bad GGUF metadata value for %s\n", key.s);
             goto fail;
         }
     }
@@ -200,7 +223,10 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
     for (uint64_t i = 0; i < g->n_tensors; i++) {
         gguf_tensor *t = &g->tensors[i];
         gg_str name = {0};
-        if (!rd_str(&c, &name)) goto fail;
+        if (!rd_str(&c, &name)) {
+            if (!c.ok) report_short(path, g, &c, "the tensor table", NULL);
+            goto fail;
+        }
         if (name.n >= sizeof(t->name) || str_has_nul(&name)) {
             free(name.s);
             fprintf(stderr, "error: invalid tensor metadata (name is too long "
@@ -221,7 +247,7 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
         uint64_t off = rd_u64(&c);
         t->data = (void *)(uintptr_t)off; // fixed up below
     }
-    if (!c.ok) { fprintf(stderr, "error: truncated GGUF header\n"); goto fail; }
+    if (!c.ok) { report_short(path, g, &c, "the tensor table", NULL); goto fail; }
 
     // Reject duplicate metadata keys and tensor names rather than silently
     // resolving to the first entry — a crafted file could otherwise shadow a

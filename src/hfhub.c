@@ -155,6 +155,14 @@ int hf_select_file(const char *const *names, int n, const char *tag, char *err, 
 
 // -------------------------------------------------------------- transfer
 
+// A lookup that found nothing to fetch takes back the directory it made for
+// the repository, and the file list in it; one that existed before stays.
+static void forget_lookup(bool made, const char *list, const char *dir) {
+    if (!made) return;
+    plat_remove(list);
+    plat_rmdir(dir);
+}
+
 // mkdir -p over `path`'s directories (the last component included)
 static bool mkdir_p(const char *path) {
     char buf[2048];
@@ -427,6 +435,10 @@ static char *fetch_impl(const char *spec, const char *flag, bool strict, hf_file
     }
     flat[fl] = 0;
     snprintf(repodir, sizeof repodir, "%s%c%s", root, HF_SEP, flat);
+    // a lookup that fails leaves no trace: the directory goes again if this
+    // run made it (an existing one, with files from earlier runs, stays)
+    plat_stat_t rst;
+    bool made = plat_stat(repodir, &rst) != 0;
     if (!mkdir_p(repodir)) {
         snprintf(err, errcap, "cannot create cache directory %s: %s", repodir, strerror(errno));
         return NULL;
@@ -442,6 +454,7 @@ static char *fetch_impl(const char *spec, const char *flag, bool strict, hf_file
         size_t at = strlen(err);
         if (at < errcap)
             snprintf(err + at, errcap - at, " (does %.200s exist? a gated or private repository needs HF_TOKEN)", repo);
+        forget_lookup(made, api_path, repodir);
         return NULL;
     }
     size_t jn = 0;
@@ -452,6 +465,7 @@ static char *fetch_impl(const char *spec, const char *flag, bool strict, hf_file
     if (!sib || sib->type != J_ARR) {
         jv_free(doc);
         snprintf(err, errcap, "unexpected file list from the Hub for %s", repo);
+        forget_lookup(made, api_path, repodir);
         return NULL;
     }
     const char **names = calloc((size_t)(sib->n ? sib->n : 1), sizeof *names);
@@ -464,6 +478,7 @@ static char *fetch_impl(const char *spec, const char *flag, bool strict, hf_file
             snprintf(err, errcap, "%s lists a file name the cache will not hold (%.120s); "
                                   "refusing the repository", repo, rf);
             free(names); jv_free(doc);
+            forget_lookup(made, api_path, repodir);
             return NULL;
         }
         names[n++] = rf;
@@ -478,6 +493,7 @@ static char *fetch_impl(const char *spec, const char *flag, bool strict, hf_file
             snprintf(at, errcap - (size_t)(at - err), "%s%s", flag, tail);
         }
         free(names); jv_free(doc);
+        forget_lookup(made, api_path, repodir);
         return NULL;
     }
 
