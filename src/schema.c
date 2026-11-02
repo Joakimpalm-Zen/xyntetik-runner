@@ -1342,15 +1342,19 @@ static snode *compile_oneof(jv *alts, bool exclusive, char *err, int errcap, int
         for (int i = 0; i < n->n_alts; i++) {
             bool mine[256] = { false };
             if (!union_start_bytes(n->alts[i], mine)) {
+                // name the keyword the caller wrote: until 2026-11-02 an
+                // anyOf was refused as "oneOf alternative ..." (R2.9.1)
                 snprintf(err, errcap,
-                         "oneOf alternative %d cannot be dispatched by its first byte", i);
+                         "%s alternative %d cannot be dispatched by its first byte",
+                         exclusive ? "oneOf" : "anyOf", i);
                 schema_free(n);
                 return NULL;
             }
             for (int b = 0; b < 256; b++) {
                 if (mine[b] && seen[b]) {
                     snprintf(err, errcap,
-                             "oneOf alternatives are ambiguous (share a starting byte)");
+                             "%s alternatives are ambiguous (share a starting byte)",
+                             exclusive ? "oneOf" : "anyOf");
                     schema_free(n);
                     return NULL;
                 }
@@ -1577,7 +1581,7 @@ snode *compile_node(jv *s, char *err, int errcap, int depth) {
     return NULL;
 }
 
-snode *schema_compile(struct jv *schema, char *err, int errcap) {
+snode *schema_compile_raw(struct jv *schema, char *err, int errcap) {
     err[0] = 0;
     snode *n = compile_node(schema, err, errcap, 0);
     // An allocation failure unwinds as a bare NULL from wherever it happened,
@@ -3245,4 +3249,235 @@ char *sval_close_alloc(sval *v, int *len, int max) {
     emitq q = { buf, cap, 0, v->depth + 2, true, max };
     *len = sval_close_q(v, &q);
     return q.out;
+}
+
+// ------------------------------------------------ local $ref inlining (R2.9.2)
+//
+// Real clients send schemas with references: Pydantic's model_json_schema()
+// puts every nested model under $defs and points at it with $ref, MCP servers
+// publish tool inputSchemas the same way, and older generators use
+// `definitions`. The compiler below takes none of those keywords, so every such
+// schema was a 400 (R2.9.1: eight of eight cases refused). This pass rewrites a
+// schema with every local, non-recursive $ref replaced by a copy of its
+// target and the $defs / definitions tables dropped, so the compiler sees the
+// schema it already handles and the constraint is exactly the referenced one.
+//
+// What it refuses, by name: a reference outside the document (anything not
+// starting with '#'), one that does not resolve, a recursive one (a target
+// that reaches itself again; a grammar of fixed size cannot hold an unbounded
+// tree), $dynamicRef / $recursiveRef, and a keyword other than an annotation
+// beside $ref (2020-12 applies siblings as a conjunction, which inlining alone
+// would drop). Values of const, enum, default and examples are data and are
+// copied as they are, so a "$ref" inside one is not followed.
+
+enum { REFX_DEPTH = 64, REFX_MAX_NODES = 20000 };
+
+typedef struct {
+    jv *root;
+    const char *stack[REFX_DEPTH];   // the references being expanded
+    int depth;
+    long nodes;
+    char *err;
+    int errcap;
+} refx;
+
+// keywords whose value is a map of schemas, one schema, or a list of schemas
+static const char *const REFX_MAPS[] = { "properties", "patternProperties",
+                                         "dependentSchemas", NULL };
+static const char *const REFX_ONE[] = { "items", "additionalProperties", "not",
+    "contains", "propertyNames", "if", "then", "else", "additionalItems",
+    "unevaluatedItems", "unevaluatedProperties", NULL };
+static const char *const REFX_LIST[] = { "anyOf", "oneOf", "allOf", "prefixItems", NULL };
+static const char *const REFX_ANNOT[] = { "title", "description", "$comment",
+    "default", "examples", "deprecated", "readOnly", "writeOnly", NULL };
+
+// a local JSON pointer ("#", "#/$defs/A", "#/properties/x~1y") against the root
+static jv *refx_target(jv *root, const char *ref) {
+    jv *node = root;
+    const char *p = ref + 1;
+    char part[256];
+    while (*p) {
+        if (*p != '/') return NULL;
+        p++;
+        int n = 0;
+        while (*p && *p != '/') {
+            char c = *p++;
+            if (c == '~') {
+                if (*p == '0') c = '~';
+                else if (*p == '1') c = '/';
+                else return NULL;
+                p++;
+            }
+            if (n + 1 >= (int)sizeof part) return NULL;
+            part[n++] = c;
+        }
+        part[n] = 0;
+        if (!node) return NULL;
+        if (node->type == J_OBJ) node = jv_get(node, part);
+        else if (node->type == J_ARR) {
+            char *end;
+            long i = strtol(part, &end, 10);
+            if (!n || *end || i < 0 || i >= node->n) return NULL;
+            node = node->items[i];
+        } else return NULL;
+    }
+    return node;
+}
+
+static bool refx_schema(refx *x, jv *s, sbuf *o);
+
+static bool refx_ref(refx *x, jv *s, jv *ref, sbuf *o) {
+    if (ref->type != J_STR) {
+        snprintf(x->err, x->errcap, "$ref must be a string");
+        return false;
+    }
+    for (int i = 0; i < s->n; i++) {
+        const char *k = s->keys[i];
+        if (!strcmp(k, "$ref") || !strcmp(k, "$defs") || !strcmp(k, "definitions") ||
+            kw_in(k, REFX_ANNOT))
+            continue;
+        snprintf(x->err, x->errcap, "keyword '%.30s' beside $ref is not supported "
+                 "(only annotations)", k);
+        return false;
+    }
+    const char *r = ref->str;
+    if (r[0] != '#') {
+        snprintf(x->err, x->errcap, "$ref '%.60s': only local references (#/...) "
+                 "are supported", r);
+        return false;
+    }
+    for (int i = 0; i < x->depth; i++)
+        if (!strcmp(x->stack[i], r)) {
+            snprintf(x->err, x->errcap, "recursive $ref '%.60s' is not supported", r);
+            return false;
+        }
+    if (x->depth == REFX_DEPTH) {
+        snprintf(x->err, x->errcap, "$ref chain deeper than %d", REFX_DEPTH);
+        return false;
+    }
+    jv *t = refx_target(x->root, r);
+    if (!t) {
+        snprintf(x->err, x->errcap, "$ref '%.60s' does not resolve", r);
+        return false;
+    }
+    x->stack[x->depth++] = r;
+    bool ok = refx_schema(x, t, o);
+    x->depth--;
+    return ok;
+}
+
+static bool refx_schema(refx *x, jv *s, sbuf *o) {
+    if (++x->nodes > REFX_MAX_NODES) {
+        snprintf(x->err, x->errcap, "schema too large once its $refs are inlined");
+        return false;
+    }
+    if (!s || s->type != J_OBJ) {   // a boolean schema, or something the compiler refuses
+        if (s) jv_dump(s, o); else sb_lit(o, "null");
+        return true;
+    }
+    if (jv_get(s, "$dynamicRef") || jv_get(s, "$recursiveRef")) {
+        snprintf(x->err, x->errcap, "$dynamicRef and $recursiveRef are not supported");
+        return false;
+    }
+    jv *ref = jv_get(s, "$ref");
+    if (ref) return refx_ref(x, s, ref, o);
+    sb_lit(o, "{");
+    bool first = true;
+    for (int i = 0; i < s->n; i++) {
+        const char *k = s->keys[i];
+        jv *v = s->items[i];
+        if (!strcmp(k, "$defs") || !strcmp(k, "definitions")) continue;
+        if (!first) sb_lit(o, ",");
+        first = false;
+        sb_str(o, k);
+        sb_lit(o, ":");
+        if (kw_in(k, REFX_MAPS) && v->type == J_OBJ) {
+            sb_lit(o, "{");
+            for (int j = 0; j < v->n; j++) {
+                if (j) sb_lit(o, ",");
+                sb_str(o, v->keys[j]);
+                sb_lit(o, ":");
+                if (!refx_schema(x, v->items[j], o)) return false;
+            }
+            sb_lit(o, "}");
+        } else if ((kw_in(k, REFX_LIST) || (kw_in(k, REFX_ONE) && v->type == J_ARR)) &&
+                   v->type == J_ARR) {
+            sb_lit(o, "[");
+            for (int j = 0; j < v->n; j++) {
+                if (j) sb_lit(o, ",");
+                if (!refx_schema(x, v->items[j], o)) return false;
+            }
+            sb_lit(o, "]");
+        } else if (kw_in(k, REFX_ONE)) {
+            if (!refx_schema(x, v, o)) return false;
+        } else {
+            jv_dump(v, o);
+        }
+    }
+    sb_lit(o, "}");
+    return true;
+}
+
+// true when a $ref, $defs or definitions key appears anywhere in v (a cheap,
+// conservative scan: a property that happens to be called "definitions" only
+// costs a copy)
+static bool refx_needed(const jv *v) {
+    if (!v) return false;
+    if (v->type == J_OBJ)
+        for (int i = 0; i < v->n; i++) {
+            const char *k = v->keys[i];
+            if (!strcmp(k, "$ref") || !strcmp(k, "$defs") || !strcmp(k, "definitions") ||
+                !strcmp(k, "$dynamicRef") || !strcmp(k, "$recursiveRef") ||
+                refx_needed(v->items[i]))
+                return true;
+        }
+    if (v->type == J_ARR)
+        for (int i = 0; i < v->n; i++) if (refx_needed(v->items[i])) return true;
+    return false;
+}
+
+jv *schema_resolve_refs(jv *s, jv **owned, char *err, int errcap) {
+    *owned = NULL;
+    if (!refx_needed(s)) return s;
+    refx x = { .root = s, .err = err, .errcap = errcap };
+    x.stack[x.depth++] = "#";   // the root itself: a "#" inside it recurses
+    sbuf o = { 0 };
+    bool ok = refx_schema(&x, s, &o);
+    jv *r = ok && !o.failed && o.s ? json_parse(o.s, o.n) : NULL;
+    if (ok && !r) snprintf(err, errcap, "out of memory inlining $refs");
+    free(o.s);
+    *owned = r;
+    return r;
+}
+
+jv *schema_resolve_tool_refs(jv *tools, jv **owned, char *err, int errcap) {
+    *owned = NULL;
+    if (!tools || tools->type != J_ARR || !refx_needed(tools)) return tools;
+    sbuf o = { 0 };
+    jv_dump(tools, &o);
+    jv *copy = !o.failed && o.s ? json_parse(o.s, o.n) : NULL;
+    free(o.s);
+    if (!copy) {
+        snprintf(err, errcap, "out of memory inlining $refs");
+        return NULL;
+    }
+    for (int i = 0; i < copy->n; i++) {
+        jv *t = copy->items[i];
+        jv *fn = jv_get(t, "function") ? jv_get(t, "function") : t;
+        jv *params = jv_get(fn, "parameters");
+        if (!params || !refx_needed(params)) continue;
+        char why[128];
+        jv *own;
+        jv *r = schema_resolve_refs(params, &own, why, sizeof why);
+        if (!r || !jv_set(fn, "parameters", own)) {
+            if (r) snprintf(why, sizeof why, "out of memory");
+            snprintf(err, errcap, "tool \"%.40s\": %s",
+                     jv_str(jv_get(fn, "name"), "?"), why);
+            jv_free(own);
+            jv_free(copy);
+            return NULL;
+        }
+    }
+    *owned = copy;
+    return copy;
 }

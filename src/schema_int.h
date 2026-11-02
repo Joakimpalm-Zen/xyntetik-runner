@@ -14,5 +14,7 @@ snode *sn_new(int kind);                 // NULL on allocation failure
 bool   enum_index(snode *n);             // sorts n->lits into n->order
 bool   compile_bound(jv *v, int dflt, int *out);
 snode *compile_node(jv *s, char *err, int errcap, int depth);
+// schema_compile without the $ref pass, for the wrappers in schema_tools.c
+snode *schema_compile_raw(jv *schema, char *err, int errcap);
 
 #endif // RUNNER_SCHEMA_INT_H

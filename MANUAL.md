@@ -976,6 +976,18 @@ an alternative lists and `oneOf` only the values exactly one alternative
 lists, so `oneOf: [{"enum": [1, 2]}, {"enum": [2, 3]}]` admits 1 and 3; a
 `oneOf` that leaves no value is refused.
 
+Local references are inlined at compile time, the way Pydantic's
+`model_json_schema()` and MCP tool definitions write them: a `$ref` to
+`#/$defs/...`, `#/definitions/...` or any other JSON pointer into the same
+schema is replaced by its target, and the constraint is the target's. A tool's
+`$ref`s resolve against that tool's own `parameters`. Refused by name: a
+reference outside the document (`https://...`, `other.json#/...`), one that
+does not resolve, a recursive one (a tree that contains itself; a grammar of
+fixed size cannot hold it), `$dynamicRef` and `$recursiveRef`, and a keyword
+beside `$ref` other than an annotation (`title`, `description`, `default`,
+`examples` and the like). The prompt shows the tools as the client sent them;
+only the constraint sees them inlined.
+
 Object schemas may be closed fixed-property records, unconstrained open
 objects, or homogeneous maps: with no declared properties (or an empty
 `properties` object), a schema-valued `additionalProperties` is enforced for

@@ -277,7 +277,7 @@ oom:
     return NULL;
 }
 
-snode *schema_compile_atem_tools(struct jv *tools, char *err, int errcap) {
+static snode *schema_compile_atem_tools_raw(struct jv *tools, char *err, int errcap) {
     err[0] = 0;
     if (!tools || tools->type != J_ARR || tools->n <= 0 || tools->n > 60) {
         snprintf(err, errcap, "atem tools must be a non-empty array of at most 60 tools");
@@ -323,8 +323,8 @@ fail:
     return NULL;
 }
 
-bool schema_atem_constrainable(struct jv *tools, char *err, int errcap) {
-    snode *probe = schema_compile_atem_tools(tools, err, errcap);
+static bool schema_atem_constrainable_raw(struct jv *tools, char *err, int errcap) {
+    snode *probe = schema_compile_atem_tools_raw(tools, err, errcap);
     if (!probe) return false;
     schema_free(probe);
     return true;
@@ -400,7 +400,7 @@ fail:
     return NULL;
 }
 
-snode *schema_compile_atem_turn(struct jv *tools, bool allow_user,
+static snode *schema_compile_atem_turn_raw(struct jv *tools, bool allow_user,
                                 const char *only_tool,
                                 struct jv *final_schema,
                                 enum atem_turn_start start,
@@ -468,7 +468,7 @@ static snode *atem_more_calls(jv *tools, const char *only, int remaining,
     raw->whitespace_significant = true;
     if (!remaining) return raw;
     snode *seq = atem_seq(2);
-    snode *call = seq ? schema_compile_atem_turn(tools, false, only, NULL,
+    snode *call = seq ? schema_compile_atem_turn_raw(tools, false, only, NULL,
                                                  ATEM_TURN_DIRECT, err, errcap)
                       : NULL;
     snode *tail = call ? atem_more_calls(tools, only, remaining - 1, err, errcap)
@@ -491,12 +491,12 @@ oom:
     return NULL;
 }
 
-snode *schema_compile_atem_parallel(struct jv *tools, const char *only_tool,
+static snode *schema_compile_atem_parallel_raw(struct jv *tools, const char *only_tool,
                                     char *err, int errcap) {
     // one to NATIVE_PARALLEL_MAX_CALLS calls; it was a fixed PAIR until
     // 2026-10-09 (see atem_more_calls)
     snode *root = atem_seq(2);
-    snode *first = root ? schema_compile_atem_turn(
+    snode *first = root ? schema_compile_atem_turn_raw(
         tools, false, only_tool, NULL, ATEM_TURN_DIRECT, err, errcap) : NULL;
     snode *rest = first ? atem_more_calls(tools, only_tool,
                                           NATIVE_PARALLEL_MAX_CALLS - 1,
@@ -651,7 +651,7 @@ static snode *qwen_text_calls(jv *tools, const char *only_tool, int remaining,
     return qwen_text_handoff(seq);
 }
 
-snode *schema_compile_qwen_turn(jv *tools, bool allow_final,
+static snode *schema_compile_qwen_turn_raw(jv *tools, bool allow_final,
                                 const char *only_tool, jv *final_schema,
                                 bool allow_reasoning, bool parallel,
                                 char *err, int errcap) {
@@ -693,7 +693,7 @@ snode *schema_compile_qwen_turn(jv *tools, bool allow_final,
     // turn, so the same compiler builds it. The sentinel carries the two
     // newlines the reference template writes after `</think>`, which is also
     // the form runner emits itself for enable_thinking=false.
-    after = schema_compile_qwen_turn(tools, allow_final, only_tool,
+    after = schema_compile_qwen_turn_raw(tools, allow_final, only_tool,
                                      final_schema, false, parallel, err, errcap);
     thought = atem_seq(2);
     if (!thought || !after ||
@@ -786,7 +786,7 @@ static snode *native_parallel_calls(native_call_fn mk, jv *tools,
     return root;
 }
 
-snode *schema_compile_qwen_parallel(jv *tools, const char *only_tool,
+static snode *schema_compile_qwen_parallel_raw(jv *tools, const char *only_tool,
                                     char *err, int errcap) {
     err[0] = 0;
     return native_parallel_calls(qwen_call, tools, only_tool, err, errcap);
@@ -866,7 +866,7 @@ static snode *nemo_rest(jv *tools, const char *only, const char *fam,
 // block, one entry, or up to NATIVE_PARALLEL_MAX_CALLS when parallel. The
 // opener may follow the blank line a reasoning model writes after `</think>`
 // (native_lead_lit). The turn end after the block is the model's own stop.
-snode *schema_compile_nemotron_turn(jv *tools, const char *only_tool,
+static snode *schema_compile_nemotron_turn_raw(jv *tools, const char *only_tool,
                                     bool parallel, char *err, int errcap) {
     err[0] = 0;
     if (!tools || tools->type != J_ARR || tools->n <= 0 || tools->n > 60) {
@@ -929,7 +929,7 @@ fail:
 // list. Auto: prose ending at the model's stop, or handing off to the list
 // at the full `[TOOL_CALLS]`; with a response_format, that schema instead of
 // the prose (its `{` cannot open the marker).
-snode *schema_compile_mistral_turn(jv *tools, bool allow_text,
+static snode *schema_compile_mistral_turn_raw(jv *tools, bool allow_text,
                                    const char *only_tool, jv *final_schema,
                                    bool parallel, char *err, int errcap) {
     err[0] = 0;
@@ -1087,7 +1087,7 @@ static snode *msys_calls(jv *tools, const char *only, bool parallel, char *err, 
 // or named: `[TOOL_CALLS]` and the calls. Auto: prose ending at the model's
 // stop, or handing off to the calls at the full `[TOOL_CALLS]`; with a
 // response_format, that schema instead of the prose.
-snode *schema_compile_msys_turn(jv *tools, bool allow_text, const char *only_tool,
+static snode *schema_compile_msys_turn_raw(jv *tools, bool allow_text, const char *only_tool,
                                 jv *final_schema, bool parallel, char *err, int errcap) {
     err[0] = 0;
     if (!tools || tools->type != J_ARR || tools->n <= 0 || tools->n > 60) {
@@ -1237,7 +1237,7 @@ static snode *coder_text_calls(jv *tools, const char *only, int left, char *err,
     atem_seq_add(seq,call);atem_seq_add(seq,tail);return qwen_text_handoff(seq);
 }
 
-snode *schema_compile_qwen_xml_turn(jv *tools, bool allow_final,
+static snode *schema_compile_qwen_xml_turn_raw(jv *tools, bool allow_final,
                                     const char *only, jv *final_schema,
                                     bool parallel, char *err, int errcap) {
     err[0]=0;
@@ -1253,7 +1253,7 @@ snode *schema_compile_qwen_xml_turn(jv *tools, bool allow_final,
     return native_parallel_calls(coder_call, tools, only, err, errcap);
 }
 
-snode *schema_compile_muse_user_payload(struct jv *schema,
+static snode *schema_compile_muse_user_payload_raw(struct jv *schema,
                                         char *err, int errcap) {
     err[0] = 0;
     snode *root = sn_new(SN_UNION);
@@ -1488,7 +1488,7 @@ fail:
     return NULL;
 }
 
-snode *schema_compile_harmony_turn(jv *tools, bool allow_final,
+static snode *schema_compile_harmony_turn_raw(jv *tools, bool allow_final,
                                    const char *only_tool, jv *final_schema,
                                    bool allow_reasoning,
                                    char *err, int errcap) {
@@ -1950,7 +1950,7 @@ static snode *g4_body(jv *tools, bool allow_final, const char *only_tool,
     return u;
 }
 
-snode *schema_compile_gemma4_turn(jv *tools, bool allow_final,
+static snode *schema_compile_gemma4_turn_raw(jv *tools, bool allow_final,
                                   const char *only_tool, jv *final_schema,
                                   bool allow_reasoning, bool primed_reasoning,
                                   char *err, int errcap) {
@@ -2048,18 +2048,18 @@ fail:
 // unbounded nested array, or any future refusal all report identically here.
 // Callers use this BEFORE prompt rendering to fall back to the generic
 // envelope for the whole request -- prompt and grammar must switch together.
-bool schema_qwen_xml_constrainable(jv *tools, const char *only_tool,
+static bool schema_qwen_xml_constrainable_raw(jv *tools, const char *only_tool,
                                    bool parallel, char *err, int errcap) {
     // the turn a required or named choice compiles: no final branch
-    snode *probe = schema_compile_qwen_xml_turn(tools, false, only_tool, NULL,
+    snode *probe = schema_compile_qwen_xml_turn_raw(tools, false, only_tool, NULL,
                                                 parallel, err, errcap);
     if (!probe) return false;
     schema_free(probe);
     return true;
 }
 
-bool schema_gemma4_constrainable(jv *tools, char *err, int errcap) {
-    snode *probe = schema_compile_gemma4_turn(tools, true, NULL, NULL,
+static bool schema_gemma4_constrainable_raw(jv *tools, char *err, int errcap) {
+    snode *probe = schema_compile_gemma4_turn_raw(tools, true, NULL, NULL,
                                               true, false, err, errcap);
     if (!probe) return false;
     schema_free(probe);
@@ -2131,11 +2131,191 @@ static snode *g4_parallel_calls(jv *tools, const char *only_tool, int max_calls,
 // shares the G4_MAX_EXPANSIONS budget, so a tool whose argument grammar fit
 // two copies may not fit eight; the cap then steps down (8, 4, 2, 1) rather
 // than refusing a request the pair accepted.
-snode *schema_compile_gemma4_parallel(jv *tools, const char *only_tool,
+static snode *schema_compile_gemma4_parallel_raw(jv *tools, const char *only_tool,
                                       char *err, int errcap) {
     for (int max_calls = NATIVE_PARALLEL_MAX_CALLS; ; max_calls /= 2) {
         err[0] = 0;
         snode *root = g4_parallel_calls(tools, only_tool, max_calls, err, errcap);
         if (root || max_calls <= 1 || !strstr(err, "maxItems")) return root;
     }
+}
+
+// ------------------------------------------- the public entries (R2.9.2)
+//
+// Every entry resolves local $refs first (schema_resolve_refs, schema.c) on a
+// private copy, so each grammar below compiles a schema with no $ref in it and
+// the request's own tools stay as the caller sent them (a template renders
+// those). A schema with no reference is passed through untouched.
+
+typedef struct { jv *tools, *final, *own_tools, *own_final; } refd;
+
+static bool refd_init(refd *r, jv *tools, jv *final, char *err, int errcap) {
+    r->own_tools = r->own_final = NULL;
+    r->tools = schema_resolve_tool_refs(tools, &r->own_tools, err, errcap);
+    if (tools && !r->tools) return false;
+    r->final = final ? schema_resolve_refs(final, &r->own_final, err, errcap) : NULL;
+    if (final && !r->final) { jv_free(r->own_tools); return false; }
+    return true;
+}
+
+static void refd_free(refd *r) { jv_free(r->own_tools); jv_free(r->own_final); }
+
+snode *schema_compile(struct jv *schema, char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, NULL, schema, err, errcap)) return NULL;
+    snode *n = schema_compile_raw(r.final, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+snode *schema_compile_atem_tools(struct jv *tools, char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, NULL, err, errcap)) return NULL;
+    snode *n = schema_compile_atem_tools_raw(r.tools, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+bool schema_atem_constrainable(struct jv *tools, char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, NULL, err, errcap)) return false;
+    bool ok = schema_atem_constrainable_raw(r.tools, err, errcap);
+    refd_free(&r);
+    return ok;
+}
+
+snode *schema_compile_atem_turn(struct jv *tools, bool allow_user, const char *only_tool,
+                                struct jv *final_schema, enum atem_turn_start start,
+                                char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, final_schema, err, errcap)) return NULL;
+    snode *n = schema_compile_atem_turn_raw(r.tools, allow_user, only_tool, r.final,
+                                            start, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+snode *schema_compile_atem_parallel(struct jv *tools, const char *only_tool,
+                                    char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, NULL, err, errcap)) return NULL;
+    snode *n = schema_compile_atem_parallel_raw(r.tools, only_tool, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+snode *schema_compile_qwen_xml_turn(struct jv *tools, bool allow_final,
+                                    const char *only_tool, struct jv *final_schema,
+                                    bool parallel, char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, final_schema, err, errcap)) return NULL;
+    snode *n = schema_compile_qwen_xml_turn_raw(r.tools, allow_final, only_tool, r.final,
+                                                parallel, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+snode *schema_compile_qwen_turn(struct jv *tools, bool allow_final, const char *only_tool,
+                                struct jv *final_schema, bool allow_reasoning,
+                                bool parallel, char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, final_schema, err, errcap)) return NULL;
+    snode *n = schema_compile_qwen_turn_raw(r.tools, allow_final, only_tool, r.final,
+                                            allow_reasoning, parallel, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+snode *schema_compile_qwen_parallel(struct jv *tools, const char *only_tool,
+                                    char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, NULL, err, errcap)) return NULL;
+    snode *n = schema_compile_qwen_parallel_raw(r.tools, only_tool, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+snode *schema_compile_nemotron_turn(struct jv *tools, const char *only_tool,
+                                    bool parallel, char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, NULL, err, errcap)) return NULL;
+    snode *n = schema_compile_nemotron_turn_raw(r.tools, only_tool, parallel, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+snode *schema_compile_mistral_turn(jv *tools, bool allow_text, const char *only_tool,
+                                   jv *final_schema, bool parallel, char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, final_schema, err, errcap)) return NULL;
+    snode *n = schema_compile_mistral_turn_raw(r.tools, allow_text, only_tool, r.final,
+                                               parallel, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+snode *schema_compile_msys_turn(jv *tools, bool allow_text, const char *only_tool,
+                                jv *final_schema, bool parallel, char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, final_schema, err, errcap)) return NULL;
+    snode *n = schema_compile_msys_turn_raw(r.tools, allow_text, only_tool, r.final,
+                                            parallel, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+snode *schema_compile_muse_user_payload(struct jv *schema, char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, NULL, schema, err, errcap)) return NULL;
+    snode *n = schema_compile_muse_user_payload_raw(r.final, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+snode *schema_compile_harmony_turn(struct jv *tools, bool allow_final, const char *only_tool,
+                                   struct jv *final_schema, bool allow_reasoning,
+                                   char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, final_schema, err, errcap)) return NULL;
+    snode *n = schema_compile_harmony_turn_raw(r.tools, allow_final, only_tool, r.final,
+                                               allow_reasoning, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+snode *schema_compile_gemma4_turn(struct jv *tools, bool allow_final, const char *only_tool,
+                                  struct jv *final_schema, bool allow_reasoning,
+                                  bool primed_reasoning, char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, final_schema, err, errcap)) return NULL;
+    snode *n = schema_compile_gemma4_turn_raw(r.tools, allow_final, only_tool, r.final,
+                                              allow_reasoning, primed_reasoning, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+snode *schema_compile_gemma4_parallel(struct jv *tools, const char *only_tool,
+                                      char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, NULL, err, errcap)) return NULL;
+    snode *n = schema_compile_gemma4_parallel_raw(r.tools, only_tool, err, errcap);
+    refd_free(&r);
+    return n;
+}
+
+bool schema_gemma4_constrainable(struct jv *tools, char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, NULL, err, errcap)) return false;
+    bool ok = schema_gemma4_constrainable_raw(r.tools, err, errcap);
+    refd_free(&r);
+    return ok;
+}
+
+bool schema_qwen_xml_constrainable(struct jv *tools, const char *only_tool,
+                                   bool parallel, char *err, int errcap) {
+    refd r;
+    if (!refd_init(&r, tools, NULL, err, errcap)) return false;
+    bool ok = schema_qwen_xml_constrainable_raw(r.tools, only_tool, parallel, err, errcap);
+    refd_free(&r);
+    return ok;
 }

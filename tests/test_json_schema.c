@@ -591,7 +591,6 @@ static void test_schema_rejects_unenforceable_keywords(void) {
         "{\"type\":\"integer\",\"multipleOf\":2}",
         "{\"allOf\":[{\"type\":\"string\"}]}",
         "{\"not\":{\"type\":\"string\"}}",
-        "{\"$ref\":\"#/$defs/x\"}",
         "{\"type\":\"array\",\"uniqueItems\":true}",
         "{\"type\":\"array\",\"prefixItems\":[{\"type\":\"string\"}]}",
         "{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"}},"
@@ -610,6 +609,14 @@ static void test_schema_rejects_unenforceable_keywords(void) {
         assert(strstr(err, "keyword") != NULL);
         jv_free(schema_json);
     }
+    // a $ref is inlined since R2.9.2; one with no target is refused by name
+    const char *dangling = "{\"$ref\":\"#/$defs/x\"}";
+    jv *dj = json_parse(dangling, strlen(dangling));
+    assert(dj != NULL);
+    char derr[128];
+    assert(schema_compile(dj, derr, sizeof(derr)) == NULL);
+    assert(strstr(derr, "$ref '#/$defs/x' does not resolve") != NULL);
+    jv_free(dj);
 }
 
 // `{"type":["object","null"]}` -- a nullable structured parameter, and one of

@@ -3945,7 +3945,9 @@ static bool creq_schema(const creq_ctx *c, completion_req *q, creq_err *err) {
         }
         if (!schema) {
             char msg[256];
-            snprintf(msg, sizeof(msg), "unsupported tool schema: %s", serr);
+            // a reference the envelope could not inline is the real reason
+            snprintf(msg, sizeof(msg), "unsupported tool schema: %s",
+                     env->ref_err ? env->ref_err : serr);
             creq_set(err, 400, msg);
             return false;
         }

@@ -6072,10 +6072,27 @@ int tool_envelope_build_ex(jv *tools, jv *choice, jv *final_schema,
             goto bad;
         }
         // no parameters declared: any object, which is as tight as this
-        // compiler can express without a properties map
+        // compiler can express without a properties map. Local $refs are
+        // inlined first: in the envelope they would resolve against the
+        // envelope, not against the tool's own parameters. One that cannot be
+        // inlined is embedded as sent and refused by the compiler, by name,
+        // only if this envelope is what constrains the turn: a family that
+        // parses its native syntax renders such a tool, as its reference does.
+        jv *own = NULL;
+        if (params && params->type == J_OBJ) {
+            char why[128];
+            jv *r = schema_resolve_refs(params, &own, why, sizeof why);
+            if (r) params = r;
+            else if (!out->ref_err) {
+                char m[200];
+                snprintf(m, sizeof m, "tool \"%.60s\": %s", name, why);
+                out->ref_err = strdup(m);
+            }
+        }
         envelope_branch(&schema, emitted == 0, name,
                         params && params->type == J_OBJ ? params : NULL,
                         "{\"type\":\"object\"}");
+        jv_free(own);
         emitted++;
 
         jv_dump(tools->items[i], &turn);
@@ -6085,9 +6102,18 @@ int tool_envelope_build_ex(jv *tools, jv *choice, jv *final_schema,
         snprintf(err, errcap, "tool_choice names a tool that is not declared");
         goto bad;
     }
-    if (kind == TCH_AUTO)
-        envelope_branch(&schema, emitted == 0, FINAL_BRANCH, final_schema,
-                        FINAL_TEXT_SCHEMA);
+    if (kind == TCH_AUTO) {
+        jv *own = NULL;
+        jv *fs = final_schema;
+        if (fs) {   // as above: unresolvable stays as sent, for the compiler
+            char why[128];
+            jv *r = schema_resolve_refs(final_schema, &own, why, sizeof why);
+            if (r) fs = r;
+            else if (!out->ref_err) out->ref_err = strdup(why);
+        }
+        envelope_branch(&schema, emitted == 0, FINAL_BRANCH, fs, FINAL_TEXT_SCHEMA);
+        jv_free(own);
+    }
     sb_lit(&schema, "]}");
     if (parallel)
         sb_lit(&schema, "}},\"required\":[\"calls\"]}");
@@ -6104,6 +6130,7 @@ bad:
     free(schema.s);
     free(turn.s);
     free(out->named);
+    free(out->ref_err);
     memset(out, 0, sizeof(*out));
     return failure;
 }
@@ -6111,6 +6138,8 @@ bad:
 void tool_envelope_free(tool_envelope *e) {
     if (!e) return;
     free(e->schema_src);
+    free(e->ref_err);
+    e->ref_err = NULL;
     free(e->system_turn);
     free(e->named);
     if (e->owns_tools) jv_free(e->tools);

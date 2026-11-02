@@ -156,6 +156,15 @@ bool schema_gemma4_constrainable(struct jv *tools, char *err, int errcap);
 // enforce (a string with a length or pattern constraint, ...).
 bool schema_qwen_xml_constrainable(struct jv *tools, const char *only_tool,
                                    bool parallel, char *err, int errcap);
+// Local $ref inlining (R2.9.2), which every entry above applies first: `s`
+// itself when it has nothing to resolve (*owned NULL), else a copy with each
+// local, non-recursive $ref replaced by its target and $defs/definitions
+// dropped (*owned set, the caller frees it), or NULL with the reason in err
+// (a remote, unresolvable or recursive reference). The tools form resolves
+// each tool's parameters against itself. The generic tool envelope, which
+// copies parameters into one document, embeds them resolved.
+struct jv *schema_resolve_refs(struct jv *s, struct jv **owned, char *err, int errcap);
+struct jv *schema_resolve_tool_refs(struct jv *tools, struct jv **owned, char *err, int errcap);
 void   schema_free(snode *n);
 
 // streaming validator state (memcpy-copyable for token lookahead)

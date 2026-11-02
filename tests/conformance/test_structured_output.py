@@ -135,6 +135,62 @@ def test_enum_constraint_is_actually_enforced(client, report):
             raise SchemaError("enum constraint not enforced", got=doc["only"])
 
 
+# A schema the way Pydantic's model_json_schema() writes one: the nested model
+# under $defs, reached by $ref, an Optional as anyOf with null (R2.9.2). The
+# referenced enum has one member, so the reference is shown to constrain, not
+# only to be accepted.
+PYDANTIC = {
+    "$defs": {"Address": {"properties": {"street": {"title": "Street", "type": "string"},
+                                         "kind": {"enum": ["home"], "title": "Kind",
+                                                  "type": "string"}},
+                          "required": ["street", "kind"], "title": "Address",
+                          "type": "object"}},
+    "properties": {"name": {"title": "Name", "type": "string"},
+                   "address": {"$ref": "#/$defs/Address"},
+                   "nickname": {"anyOf": [{"type": "string"}, {"type": "null"}],
+                                "default": None, "title": "Nickname"}},
+    "required": ["name", "address"], "title": "Person", "type": "object"}
+
+
+def test_json_schema_with_local_refs(client, report):
+    """A local $ref is inlined at compile time: the schema engages and the
+    referenced definition's constraint holds."""
+    r = client.chat(dict(BASE, max_tokens=96,
+                         response_format={"type": "json_schema",
+                                          "json_schema": {"name": "person",
+                                                          "schema": PYDANTIC}}),
+                    name="json-schema-refs").expect_status(200)
+    if r.telemetry.get("schema") is not True:
+        raise ProtocolError("json_schema with $defs accepted but schema not engaged",
+                            telemetry=r.telemetry)
+    doc = _decode_constrained(r, report, "json_schema_refs", "json_schema with $refs")
+    if doc is not None:
+        validate_against_schema(doc, PYDANTIC)
+        if doc["address"]["kind"] != "home":
+            raise SchemaError("referenced enum not enforced", got=doc["address"])
+
+
+@pytest.mark.parametrize("schema,why", [
+    ({"$defs": {"Node": {"type": "object", "properties": {
+        "children": {"type": "array", "items": {"$ref": "#/$defs/Node"}}}}},
+      "$ref": "#/$defs/Node"}, "recursive $ref '#/$defs/Node'"),
+    ({"type": "object", "properties": {"a": {"$ref": "https://example.com/a.json"}}},
+     "only local references"),
+    ({"type": "object", "properties": {"a": {"$ref": "#/$defs/Missing"}}},
+     "does not resolve"),
+    ({"$defs": {"S": {"type": "string"}}, "type": "object",
+      "properties": {"a": {"$ref": "#/$defs/S", "maxLength": 3}}},
+     "beside $ref"),
+], ids=["recursive", "remote", "unresolved", "sibling"])
+def test_json_schema_refs_it_cannot_inline_are_refused_by_name(client, schema, why):
+    r = client.chat(dict(BASE, max_tokens=8,
+                         response_format={"type": "json_schema",
+                                          "json_schema": {"schema": schema}}),
+                    name="json-schema-bad-ref")
+    r.expect_status(400)
+    r.expect_error_envelope(contains=why)
+
+
 def test_json_mode_survives_streaming(client, report):
     """Constrained decoding must work on the streaming path too — the
     constraint lives in the sampler, not in the response writer."""

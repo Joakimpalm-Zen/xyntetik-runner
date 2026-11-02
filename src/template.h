@@ -714,6 +714,11 @@ typedef struct {
     int   proto;          // enum tool_proto — the native protocol, or TP_GENERIC
     struct jv *tools;     // borrowed request declarations for native compiler
     bool  owns_tools;     // Anthropic translation survives prompt construction
+    // Why a tool's (or the final branch's) $refs could not be inlined into
+    // schema_src, embedded as sent instead: the reason the compile of that
+    // envelope reports, since resolved against the envelope it would only say
+    // "does not resolve" (R2.9.2). NULL when every reference inlined.
+    char *ref_err;
     char *named;          // owned named-tool choice, when kind == TCH_NAMED
     // The native protocol is PARSED but the sampler is not constrained to it:
     // no grammar is compiled, the model writes its turn in the syntax its own
