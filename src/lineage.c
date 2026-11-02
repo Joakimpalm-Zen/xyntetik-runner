@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "compat.h"
 #include "envelope.h"
 #include "receipts.h"
 
@@ -13,21 +14,26 @@ bool lineage_sidecar(const char *artifact, char *out, size_t cap) {
     return record_sidecar(artifact, out, cap);
 }
 
+// A record is published beside its file, so it names every file by base name
+// and sha256, never by where it sat on the machine that made it; the walker
+// looks for a named file beside the record that names it.
 bool lineage_put_input(sbuf *b, const char *path, const char *sha) {
     char own[65];
     if (!sha) {
         if (!envelope_file_sha256(path, own)) return false;
         sha = own;
     }
+    const char *name = plat_path_base(path);
     sb_lit(b, "{\"path\":\"");
-    sb_esc(b, path, strlen(path));
+    sb_esc(b, name, strlen(name));
     sb_lit(b, "\",\"sha256\":\"");
     sb_lit(b, sha);
     sb_lit(b, "\"");
     char rec[4096], rsha[65];
     if (lineage_sidecar(path, rec, sizeof rec) && envelope_file_sha256(rec, rsha)) {
+        const char *rname = plat_path_base(rec);
         sb_lit(b, ",\"record\":{\"path\":\"");
-        sb_esc(b, rec, strlen(rec));
+        sb_esc(b, rname, strlen(rname));
         sb_lit(b, "\",\"sha256\":\"");
         sb_lit(b, rsha);
         sb_lit(b, "\"}");
@@ -172,16 +178,17 @@ bool lineage_require_eval(const char *model, const char *kind, const char *trust
     return ok;
 }
 
-// A record cited by path that is not there any more: a chain copied to
-// another machine or folder keeps its records together, so look for the same
-// file name beside the record that cites it. The hash still decides whether
-// it is the record that was cited.
+// A file a record names, found beside the record that names it: records name
+// files by base name, and a chain copied to another machine or folder keeps
+// its records and files together. An older record's full path is tried first
+// while it is still there. The hash still decides whether it is the file
+// that was cited.
 static const char *relocate(const char *cited, const char *citing, char *buf, size_t cap) {
     char probe[65];
-    if (envelope_file_sha256(cited, probe)) return cited;
     const char *name = strrchr(cited, '/');
     const char *bs = strrchr(cited, '\\');
     if (bs && (!name || bs > name)) name = bs;
+    if (name && envelope_file_sha256(cited, probe)) return cited;
     name = name ? name + 1 : cited;
     const char *dir_end = strrchr(citing, '/');
     const char *bs2 = strrchr(citing, '\\');
@@ -198,16 +205,18 @@ static void walk_input(const char *key, jv *in, const char *citing, const char *
     const char *sha = jv_str(jv_get(in, "sha256"), NULL);
     char s[13];
     short_sha(sha, s);
+    char here[4096];
+    const char *file = relocate(path, citing, here, sizeof here);
     jv *link = jv_get(in, "record");
     indent(depth);
     if (!link) {
         printf("%s: %s sha256 %s  ORIGIN (no record: a download, or made before records)\n",
                key, path, s);
-        walk_evals(path, sha, trust_hex, depth + 1, w);
+        walk_evals(file, sha, trust_hex, depth + 1, w);
         return;
     }
     printf("%s: %s sha256 %s\n", key, path, s);
-    walk_evals(path, sha, trust_hex, depth + 1, w);
+    walk_evals(file, sha, trust_hex, depth + 1, w);
     char moved[4096];
     walk_record(relocate(jv_str(jv_get(link, "path"), ""), citing, moved, sizeof moved),
                 jv_str(jv_get(link, "sha256"), NULL), sha, trust_hex, depth + 1, w);
@@ -242,6 +251,8 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     jv *out = jv_get(rec, out_key);
     const char *out_path = jv_str(jv_get(out, "path"), "?");
     const char *out_sha = jv_str(jv_get(out, "sha256"), NULL);
+    char out_here[4096];
+    const char *out_file = relocate(out_path, rec_path, out_here, sizeof out_here);
     char pub[SIGN_PUBHEX_CAP];
     int sig = record_signature_state(rec_path, trust_hex, pub);
     char s[13];
@@ -250,7 +261,7 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     bool link_ok = !want_out_sha || (out_sha && !strcmp(want_out_sha, out_sha));
     // and the output file, where it is still on disk, is that file
     char disk[65];
-    bool on_disk = envelope_file_sha256(out_path, disk);
+    bool on_disk = envelope_file_sha256(out_file, disk);
     bool disk_ok = !on_disk || (out_sha && !strcmp(disk, out_sha));
     const char *verdict;
     if (!link_ok) { verdict = "BROKEN: its output is not the file the next step used"; note(w, 2); }

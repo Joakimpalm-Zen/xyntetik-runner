@@ -3836,7 +3836,7 @@ static int run_context_surgery(const cli_opts *o, const char *load_path) {
            sr.source_context, sr.original_context,
            (double)sr.source_factor);
     sb_fmt(&rec, "\"target\":{\"path\":\"");
-    sb_esc(&rec, o->context_out, strlen(o->context_out));
+    sb_esc(&rec, plat_path_base(o->context_out), strlen(plat_path_base(o->context_out)));
     sb_fmt(&rec, "\",\"sha256\":\"%s\",\"context_length\":%d,"
                    "\"original_context_length\":%u,\"yarn_factor\":%.9g},",
            osha, o->mp.n_ctx, sr.original_context, (double)o->mp.yarn_factor);
@@ -3900,7 +3900,7 @@ static int run_merge_lora(const cli_opts *o) {
         const char *target = o->quant_type ? o->quant_type : "keep";
         sb_esc(&rec, target, strlen(target));
         sb_lit(&rec, "\",\"merged\":{\"path\":\"");
-        sb_esc(&rec, o->merge_out, strlen(o->merge_out));
+        sb_esc(&rec, plat_path_base(o->merge_out), strlen(plat_path_base(o->merge_out)));
         sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
         sb_lit(&rec, "\"}");
         // what the output grid kept of the delta (quants.h
@@ -4007,7 +4007,7 @@ static int run_quantize(const cli_opts *o) {
         sb_lit(&rec, "\"");
     }
     sb_lit(&rec, ",\"output\":{\"path\":\"");
-    sb_esc(&rec, o->quant_out, strlen(o->quant_out));
+    sb_esc(&rec, plat_path_base(o->quant_out), strlen(plat_path_base(o->quant_out)));
     sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, osha);
     sb_lit(&rec, "\"}}\n");
     bool wrote = write_record(o->quant_out, ".quant.json", "quantize", &rec, o->sign_key);
@@ -5433,7 +5433,7 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
         return false;
     }
     sb_lit(&rec, "\"adapter\":{\"path\":\"");
-    sb_esc(&rec, o->train_out, strlen(o->train_out));
+    sb_esc(&rec, plat_path_base(o->train_out), strlen(plat_path_base(o->train_out)));
     sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
     sb_lit(&rec, "\"}}\n");
     bool ok = write_record(o->train_out, ".train.json", "train", &rec, o->sign_key);
