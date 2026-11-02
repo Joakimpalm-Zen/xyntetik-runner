@@ -55,7 +55,7 @@ nav: runner
     <nav class="toc mt-2" aria-label="On this page">
       <a href="#sixty-seconds">Try it</a>
       <a href="#fit">Will it fit</a>
-      <a href="#make">Make your own file</a>
+      <a href="#make">Derive</a>
       <a href="#memory">More context, less memory</a>
       <a href="#coexistence">Gives memory back</a>
       <a href="#more">Also in the box</a>
@@ -125,23 +125,29 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
 <section class="section" id="make">
   <div class="wrap split">
     <div class="sticky">
-      <p class="eyebrow">Make your own file</p>
-      <h2>Shrink a model and see what it cost.</h2>
-      <p>A model file is a huge table of numbers, and the usual way to shrink it squeezes every part the same amount, including the parts that matter most. Runner lets you choose which parts to squeeze and which to keep sharp, and then tells you how far the result drifted from the original.</p>
-      <p>A <a href="{{hf}}/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF">17.99 GB Qwen3-30B file</a> built this way is smaller than the official 4-bit file and closer to the original: 99.50% agreement where that file reads 94.75%. <a href="{{repo}}/blob/main/MANUAL.md#models-and-conversion">Plan formats and limits</a></p>
+      <p class="eyebrow">Runner: Derive</p>
+      <h2>Make your own file, measured.</h2>
+      <p>The usual way to shrink a model squeezes every part by the same rule, and the file is rarely measured against the original afterwards. <code>runner derive</code> measures which parts can take the squeeze, makes the file, measures how far it drifted from the publisher's model, and writes the numbers into the file's card. The card leads with what the file is not for and its weakest number, then whether it passes the bar.</p>
+      <p>A <a href="{{hf}}/Qwen3-30B-A3B-derive-GGUF">17.1 GB Qwen3-30B-A3B file</a> came from one command. Against Qwen's float32 model over the same 2,000 positions it reads 0.0290 mean KLD and 99.01% margin-qualified top-1; Qwen's official Q4_K_M, 1.45 GB larger, reads 0.0909 and 94.80% and fails the bar. Our hand-built selective file is still slightly closer on mean KLD (p 0.02) and 0.88 GB larger; on margin-qualified top-1 the two tie. All three were measured on one text, the project's gold corpus. <a href="{{repo}}/blob/main/docs/compat-reports/qwen3-30b-a3b-derive-2026-11-02/README.md">The record</a> · <a href="{{repo}}/blob/main/MANUAL.md#cli-derive">Options</a></p>
     </div>
     <div>
-<pre><code>{"default": "keep", "rules": [{"match": "_exps.weight", "type": "q4_0"}]}</code></pre>
-<pre><code># keep some tensors sharp and squeeze others, from a plan file
-./runner -m model-Q8_0.gguf --rewrite out.gguf --type-plan plan.json
-# drop the experts a mixture-of-experts model rarely uses
-./runner -m model.gguf --rewrite pruned.gguf --prune-experts keep.json
-# remove one block's attention or feed-forward sublayer
-./runner -m model.gguf --rewrite cut.gguf --remove-sublayer attn:48
-# then score the result against its parent
-python3 scripts/kld-compare-raw.py --model-a out.gguf \
-    --model-b model-Q8_0.gguf --runner ./runner \
-    --corpus corpus.txt --max-positions 400 --out fidelity.json</code></pre>
+      <figure class="shot">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-derive-process-dark.svg">
+          <img src="/assets/readme-derive-process-light.svg" alt="The usual way shrinks a model with the same mix for every model, scores it elsewhere if at all and writes the card by hand; runner derive is one command that makes the file, measures it against the publisher's float32 model and writes its card and record" width="640" height="300" loading="lazy">
+        </picture>
+      </figure>
+<pre><code>./runner derive -m Qwen3-30B-A3B-Q8_0.gguf -o out.gguf \
+    --target-size 17106040320 --high q4_0 --low q3_k \
+    --match _exps --imatrix Qwen_Qwen3-30B-A3B.imatrix \
+    --reference hf:Qwen3-30B-A3B --reference-arg --upcast-at-use</code></pre>
+      <figure class="shot">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-derive-result-dark.svg">
+          <img src="/assets/readme-derive-result-light.svg" alt="Three Qwen3-30B-A3B files against Qwen's float32 model over the same 2,000 positions: the official Q4_K_M at 18.56 GB reads 0.0909 mean KLD and fails the 0.05 bar, our hand-built 17.99 GB selective file 0.0279, and the 17.11 GB derive file 0.0290" width="640" height="300" loading="lazy">
+        </picture>
+        <figcaption class="measured">Measured 2026-11-02 against Qwen/Qwen3-30B-A3B in float32 arithmetic, 2,000 positions of one text. Lower-level tools (<code>--type-plan</code>, <code>--prune-experts</code>, <code>--remove-sublayer</code>) still run on their own: <a href="{{repo}}/blob/main/MANUAL.md#models-and-conversion">plan formats and limits</a>.</figcaption>
+      </figure>
     </div>
   </div>
 </section>

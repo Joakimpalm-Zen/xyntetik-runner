@@ -2,7 +2,7 @@
   "title": "Three Qwen3-30B-A3B files against Qwen's float32 model over the same 2,000 positions: the official Q4_K_M at 18.56 GB reads 0.0909 mean KLD and fails the 0.05 bar; our 17.99 GB selective file reads 0.0279; the 17.11 GB file runner derive made reads 0.0290",
   "heading": "Size against distance from Qwen's float32 model",
   "window": "Qwen3-30B-A3B, 2,000 positions of gold-corpus-2k at stride 2, BF16 weights upcast at use",
-  "footer": "the derive file is 0.88 GB smaller than the selective file and slightly further on mean KLD (p 0.02); top-1 is a tie",
+  "footer": "the derive file is 0.88 GB smaller than the selective file and slightly further on mean KLD (p 0.02); margin-qualified top-1 is a tie",
   "bar_mean_kld": 0.05,
   "files": [
     {"label": "official Q4_K_M", "bytes": 18556685824, "mean_kld": 0.0909, "mq_top1_pct": 94.80, "ours": false},

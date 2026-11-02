@@ -28,7 +28,7 @@ sides are solo `--score --score-top 20` files on the CPU (runner at 2c54cf27).
 
 - **derive against the official Q4_K_M:** closer by the paired per-position KLD (Wilcoxon p 2e-235) and on the
   margin-qualified top-1 (73 positions to 9, McNemar p 1e-13).
-- **derive against the selective file:** the selective file is closer on mean KLD (p 0.02); top-1 is a tie.
+- **derive against the selective file:** the selective file is closer on mean KLD (p 0.02); margin-qualified top-1 is a tie.
 - R4.7.3 read 0.0292 for the same bytes in the same window. Its Runner side was scored on another route (the record
   does not name it); this record's sides are solo scores.
 

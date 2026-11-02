@@ -206,8 +206,8 @@ where the official file reads 0.0909 and 94.80%.
 
 **Why.** The usual way to shrink a model squeezes every part by the same rule, and the file is rarely measured
 against the original afterwards. `runner derive` measures which parts can take the squeeze, makes the file, measures
-how far it drifted from the publisher's model, and writes the numbers into the file's card. A file that fails the
-bar says so in the first line of its own card.
+how far it drifted from the publisher's model, and writes the numbers into the file's card. The card leads with
+what the file is not for and its weakest number, then whether it passes the bar.
 
 **How.** One command, from a parent file and a target size:
 
@@ -225,7 +225,7 @@ bar says so in the first line of its own card.
 </p>
 
 The hand-built selective file is still slightly closer on mean KLD (p 0.02), and derive's file is 0.88 GB smaller;
-on top-1 the two tie. [The record](docs/compat-reports/qwen3-30b-a3b-derive-2026-11-02/README.md) ·
+on margin-qualified top-1 the two tie (p 0.68). All three were measured on one text, the project's gold corpus. [The record](docs/compat-reports/qwen3-30b-a3b-derive-2026-11-02/README.md) ·
 [`runner derive` options](MANUAL.md#cli-derive)
 
 **Lower-level tools.** derive strings these together, and each also runs on its own. A plan file sets each

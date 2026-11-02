@@ -22,5 +22,5 @@
 <text x="411.0" y="252" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10" fill="#5F6C72">0.05</text>
 <text x="560.0" y="252" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10" fill="#5F6C72">0.10</text>
 <text x="411.0" y="266" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5F6C72">mean KLD against the float32 model (shorter is closer)</text>
-<text x="320" y="288" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5F6C72">the derive file is 0.88 GB smaller than the selective file and slightly further on mean KLD (p 0.02); top-1 is a tie</text>
+<text x="320" y="288" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="10.5" fill="#5F6C72">the derive file is 0.88 GB smaller than the selective file and slightly further on mean KLD (p 0.02); margin-qualified top-1 is a tie</text>
 </svg>

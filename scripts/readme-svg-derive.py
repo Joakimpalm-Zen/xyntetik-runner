@@ -99,7 +99,7 @@ def process(theme):
           sw=1.5, colors=["ink", "ink", "accent"])
     s.box(478, 196, 144, 62, ["its card and record:", "sha256, recipe, window", "and the numbers"],
           stroke="accent", sw=1.5, colors=["ink", "ink", "accent"])
-    s.text(320, 284, "a file that fails the bar says so in the first line of its own card", size=10.5,
+    s.text(320, 284, "the card leads with its limits and weakest number, then pass or fail", size=10.5,
            color="muted", anchor="middle")
     return s
 

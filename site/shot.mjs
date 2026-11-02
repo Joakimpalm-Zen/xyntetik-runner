@@ -2,7 +2,8 @@
 // with device emulation. Prints the page's layout width against the viewport
 // (a horizontal overflow shows as scrollW > innerW) and the first elements
 // that reach past the viewport, then writes a full-page screenshot, or with
-// SHOT_SELECTOR set, a screenshot of that element only.
+// SHOT_SELECTOR set, a screenshot of that element only. SHOT_SCHEME=light or
+// dark emulates prefers-color-scheme, so both themes of a page can be checked.
 //
 //   node site/shot.mjs URL WIDTH HEIGHT OUT.png [mobile]
 //
@@ -59,6 +60,10 @@ async function run() {
   await send("Page.enable");
   await send("Runtime.enable");
   await metrics(+H);
+  const scheme = process.env.SHOT_SCHEME;
+  if (scheme && !["light", "dark"].includes(scheme)) throw new Error(`SHOT_SCHEME is light or dark, not ${scheme}`);
+  if (scheme) await send("Emulation.setEmulatedMedia",
+    { features: [{ name: "prefers-color-scheme", value: scheme }] });
   await send("Page.navigate", { url });
   for (let i = 0; i < 40 && !events.includes("Page.loadEventFired"); i++) await sleep(250);
   // the scroll-revealed elements, shown as a reader who scrolled sees them
@@ -69,7 +74,7 @@ async function run() {
     wide: [...document.querySelectorAll('body *')]
       .filter(e => e.getBoundingClientRect().right > window.innerWidth + 1)
       .slice(0, 6).map(e => e.tagName + '.' + e.className)})`);
-  console.log(url, W, fit);
+  console.log(url, W, scheme || "default", fit);
   const { docH } = JSON.parse(fit);
   const sel = process.env.SHOT_SELECTOR;
   let clip;
