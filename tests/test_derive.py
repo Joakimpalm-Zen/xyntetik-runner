@@ -495,3 +495,8 @@ shutil.copy({str(tmp_path / "ours.json")!r}, a[a.index("--out") + 1])
     assert t2.split("## Against other files in the same window", 1)[1].split("## ")[0] == \
         sec.split("## ")[0]
     assert "--reference hf:org/model@abc123" in t2 and f"--reference hf:{hf.name} " not in t2
+    # a gold run from another window is refused, not paired over the overlap
+    short = _fake_gold_rows(tmp_path, "short.json", worse[: n // 2])
+    p = subprocess.run([str(runner_bin), "derive", "--card-from", str(moved / "m.derive.json"), "-o",
+                        str(moved / "x.md"), "--compare", f"half={short}"], capture_output=True, text=True)
+    assert p.returncode != 0 and "window" in p.stderr

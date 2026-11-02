@@ -910,6 +910,14 @@ static bool compare_json(const char *ours_gold, const char *spec, sbuf *out) {
             c += at && !ao;
         }
     }
+    // the paired tests mean something only over the same positions: a run
+    // from another window is refused rather than paired over the overlap
+    if (!diffs || !tk || n != orows->n || trows->n != orows->n) {
+        fprintf(stderr, "error: --compare %s: %d of this file's %d positions pair with its %d rows; "
+                "the other file must be measured in the same window\n", label, n, orows->n, trows->n);
+        free(diffs); free(tk); jv_free(og); jv_free(tg);
+        return false;
+    }
     double z = 0, pw = 1;
     bool have_w = n && wilcoxon_signed_rank(diffs, n, &z, &pw);
     double med = 0;
