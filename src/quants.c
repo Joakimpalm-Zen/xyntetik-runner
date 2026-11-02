@@ -4963,6 +4963,9 @@ struct tpool {
     pthread_mutex_t run_mu;   // one run at a time: shared pools serialize their holders
     fpenv_t fpenv;            // the creator's FP control state, for the workers (fpenv.h)
     _Atomic int refs;         // holders (tpool_retain / tpool_destroy)
+    int chunks;               // RUNNER_TPOOL_CHUNK: chunks a thread, 0 = static slices
+    int chunk;                // this run's chunk size (dynamic runs only)
+    _Atomic int next;         // this run's next unclaimed item (dynamic runs only)
 };
 
 // One spin iteration is a pause plus an atomic load: ~15 ns on this class of
@@ -4986,6 +4989,27 @@ static int tp_spin_budget(void) {
         return TP_SPIN_DEFAULT;
     }
     return (int)v;
+}
+
+// RUNNER_TPOOL_CHUNK=K (prototype, R3.1.5 B x86 profile): each run's items are
+// claimed from an atomic counter in chunks of about n / (threads * K) instead
+// of one static slice a thread, so a thread the OS deschedules on a loaded
+// host holds up one chunk, not a whole slice. An item's result does not depend
+// on which thread computes it.
+static int tp_chunks_cfg(void) {
+    const char *e = getenv("RUNNER_TPOOL_CHUNK");
+    long v = e && *e ? strtol(e, NULL, 10) : 0;
+    return v < 0 ? 0 : v > 64 ? 64 : (int)v;
+}
+
+// the dynamic share of one thread: claim chunks until none are left
+static void tp_claim(tpool *tp, tp_fn fn, void *ctx, int n) {
+    for (;;) {
+        int i0 = atomic_fetch_add_explicit(&tp->next, tp->chunk, memory_order_relaxed);
+        if (i0 >= n) return;
+        int i1 = i0 + tp->chunk < n ? i0 + tp->chunk : n;
+        fn(ctx, i0, i1);
+    }
 }
 
 static inline void tp_relax(void) {
@@ -5041,9 +5065,13 @@ static void *tp_worker(void *argp) {
         // published by the seq_cst gen store in tpool_run
         tp_fn fn = tp->fn; void *ctx = tp->ctx; int n = tp->n_items;
 
-        int i0, i1;
-        tp_slice(idx, tp->n_threads, n, &i0, &i1);
-        if (i0 < i1) fn(ctx, i0, i1);
+        if (tp->chunks) {
+            tp_claim(tp, fn, ctx, n);
+        } else {
+            int i0, i1;
+            tp_slice(idx, tp->n_threads, n, &i0, &i1);
+            if (i0 < i1) fn(ctx, i0, i1);
+        }
 
         if (atomic_fetch_add(&tp->n_done, 1) + 1 == tp->n_threads - 1 &&
             atomic_load(&tp->caller_parked)) {
@@ -5076,6 +5104,7 @@ tpool *tpool_create(int n_threads) {
     if (!tp) return NULL;
     tp->n_threads = n_threads;
     tp->spin = tp_spin_budget();
+    tp->chunks = tp_chunks_cfg();
     tp->fpenv = fpenv_get();
     atomic_store(&tp->refs, 1);
     if (pthread_mutex_init(&tp->run_mu, NULL) != 0) { free(tp); return NULL; }
@@ -5163,6 +5192,11 @@ void tpool_run(tpool *tp, tp_fn fn, void *ctx, int n_items) {
 
 static void tpool_run_locked(tpool *tp, tp_fn fn, void *ctx, int n_items) {
     tp->fn = fn; tp->ctx = ctx; tp->n_items = n_items;
+    if (tp->chunks) {
+        int c = (n_items + tp->n_threads * tp->chunks - 1) / (tp->n_threads * tp->chunks);
+        tp->chunk = c < 1 ? 1 : c;
+        atomic_store_explicit(&tp->next, 0, memory_order_relaxed);
+    }
     atomic_store_explicit(&tp->n_done, 0, memory_order_relaxed);
     atomic_store_explicit(&tp->caller_parked, 0, memory_order_relaxed);
     // seq_cst: publishes fn/ctx/n_items to the spinning workers AND orders
@@ -5174,9 +5208,13 @@ static void tpool_run_locked(tpool *tp, tp_fn fn, void *ctx, int n_items) {
         pthread_mutex_unlock(&tp->mu);
     }
 
-    int i0, i1;
-    tp_slice(0, tp->n_threads, n_items, &i0, &i1);
-    if (i0 < i1) fn(ctx, i0, i1);
+    if (tp->chunks) {
+        tp_claim(tp, fn, ctx, n_items);
+    } else {
+        int i0, i1;
+        tp_slice(0, tp->n_threads, n_items, &i0, &i1);
+        if (i0 < i1) fn(ctx, i0, i1);
+    }
 
     int target = tp->n_threads - 1;
     for (int spins = 0;; spins++) {
