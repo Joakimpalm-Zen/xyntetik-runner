@@ -1044,18 +1044,31 @@ static void test_i8_tile(int type, int n) {
     uint8_t *xq = malloc(asz * NC);
     void *pack = malloc(i8_tile_size(n));
     float got[R * NC], ref[R * NC];
-    for (int trial = 0; trial < 4; trial++) {
+    for (int trial = 0; trial < 5; trial++) {
         set_trial(trial);
         const void *rp[R];
         for (int r = 0; r < R; r++) {
             make_row(type, rows + rowsz * r, n);
+            // trial 4, the x86 kernels' int16 bound: every Q8_0 code at -128
+            // (|w| = 128, the one code abs cannot fold) against activations at
+            // the quantizer's clamp, +127 and -127 alternating
+            if (trial == 4 && type == T_Q8_0)
+                for (int b = 0; b < n / QK; b++)
+                    memset(((block_q8_0 *)(rows + rowsz * r))[b].qs, 0x80, QK);
             ref_weights(type, rows + rowsz * r, w + (size_t)n * r, n);
             rp[r] = rows + rowsz * r;
         }
         for (int c = 0; c < NC; c++) {
-            for (int i = 0; i < n; i++) x[i] = frnd();
+            for (int i = 0; i < n; i++) x[i] = trial == 4 ? ((i + c) % 2 ? 1.0f : -1.0f) : frnd();
             if (trial == 3 && c == 2) memset(x, 0, sizeof(float) * (size_t)n);
             i8_quant_act(x, xq + asz * c, n);
+            if (trial == 4) {
+                const ref_block_i8a *xb = (const ref_block_i8a *)(xq + asz * c);
+                for (int i = 0; i < n; i++)
+                    CHECK(abs(xb[i / I8_REF_QK].qs[i % I8_REF_QK]) == 127,
+                          "trial 4: activation code %d is not at the clamp",
+                          xb[i / I8_REF_QK].qs[i % I8_REF_QK]);
+            }
         }
         float scale = trial == 2 ? 0.5f : 1.0f;
         CHECK(i8_tile_pack(type, rp, n, scale, pack), "i8_tile_pack %s n=%d",

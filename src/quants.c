@@ -4156,17 +4156,17 @@ void i8_dot_force(int on) { g_i8_force = on < 0 ? -1 : (on != 0); }
 // so the same tolerance class and the same gate.
 static _Atomic int g_i8p_env = -1;
 
-// Only where the vector kernel exists (arm64 with the dot-product extension):
-// elsewhere the flag is ignored with one notice, since the scalar twin is a
-// test oracle, not a prefill route. An x86 kernel is the follow-up.
+// Only where a vector kernel exists (arm64 with the dot-product extension, or
+// AVX2, which AVX-512 VNNI speeds up): elsewhere the flag is ignored with one
+// notice, since the scalar twin is a test oracle, not a prefill route.
 bool i8_prefill_enabled(void) {
     if (g_i8p_env < 0) {
         const char *e = getenv("RUNNER_CPU_I8_PREFILL");
         int on = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
-#if !RUNNER_I8_NEON
+#if !RUNNER_I8_NEON && !RUNNER_AVX2
         if (on)
             fprintf(stderr, "RUNNER_CPU_I8_PREFILL: no int8 prefill kernel on this "
-                    "build (arm64 with the dot-product extension only); ignored\n");
+                    "build (arm64 with the dot-product extension, or AVX2); ignored\n");
         on = 0;
 #endif
         g_i8p_env = on;
@@ -4846,6 +4846,85 @@ void i8_tile_dot(const void *pack, int n, const void *xq, size_t xq_stride,
     }
 }
 #undef I8T_BLOCK
+#elif RUNNER_AVX2
+// x86: no SDOT by lane, so each activation block's 4-byte groups are spread
+// across the rows with one in-lane byte shuffle per 32 codes, and the products
+// go through i8_mac32 (dpbusd on AVX-512 VNNI, maddubs + madd on AVX2), which
+// wants an unsigned first operand: |w| against x carrying w's sign. That stays
+// inside maddubs' int16 pair bound: |w| <= 128 (Q8_0's -128) and |x| <= 127,
+// since i8_quant_act scales by amax / 127 and rounds half away from zero, so a
+// code never reaches 128 (2 x 128 x 127 = 32,512 < 32,767). The integer sums
+// are exact, and the float operations are the scalar twin's in its order.
+#define I8T_X86_BLOCK(acc, xb)                                                     \
+    do {                                                                           \
+        __m256i xv = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *)(xb)->qs)); \
+        __m256i s = i8_mac32(_mm256_setzero_si256(), a01,                         \
+                             _mm256_sign_epi8(_mm256_shuffle_epi8(xv, p01), w01)); \
+        s = i8_mac32(s, a23, _mm256_sign_epi8(_mm256_shuffle_epi8(xv, p23), w23)); \
+        __m128i r4 = _mm_add_epi32(_mm256_castsi256_si128(s),                     \
+                                   _mm256_extracti128_si256(s, 1));               \
+        acc = _mm_fmadd_ps(_mm_cvtepi32_ps(r4), _mm_mul_ps(dv, _mm_set1_ps((xb)->d)), acc); \
+        if (has_min)                                                               \
+            acc = _mm_fmadd_ps(mv, _mm_set1_ps((xb)->d * (float)(xb)->s), acc);   \
+    } while (0)
+
+void i8_tile_dot(const void *pack, int n, const void *xq, size_t xq_stride,
+                 int ncol, float *out, int ldo) {
+    int nb = n / 16;
+    const i8t_head *h = pack;
+    const int8_t *q = (const int8_t *)(h + 1);
+    const float *d = (const float *)(q + (size_t)nb * 64), *m = d + (size_t)nb * 4;
+    const bool has_min = h->has_min != 0;
+    // lane 0 of each 32 bytes is the 4-byte group v, lane 1 group v + 1, each
+    // repeated for the four rows: groups 0 and 1, then 2 and 3
+    const __m256i p01 = _mm256_setr_epi8(0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3,
+                                         4, 5, 6, 7, 4, 5, 6, 7, 4, 5, 6, 7, 4, 5, 6, 7);
+    const __m256i p23 = _mm256_setr_epi8(8, 9, 10, 11, 8, 9, 10, 11, 8, 9, 10, 11, 8, 9, 10, 11,
+                                         12, 13, 14, 15, 12, 13, 14, 15, 12, 13, 14, 15, 12, 13, 14, 15);
+    const __m128 zero = _mm_setzero_ps();
+    int c = 0;
+    for (; c + 4 <= ncol; c += 4) {
+        const block_i8a *x0 = (const block_i8a *)((const uint8_t *)xq + (size_t)c * xq_stride);
+        const block_i8a *x1 = (const block_i8a *)((const uint8_t *)x0 + xq_stride);
+        const block_i8a *x2 = (const block_i8a *)((const uint8_t *)x1 + xq_stride);
+        const block_i8a *x3 = (const block_i8a *)((const uint8_t *)x2 + xq_stride);
+        __m128 c0 = zero, c1 = zero, c2 = zero, c3 = zero;
+        for (int b = 0; b < nb; b++) {
+            const int8_t *qb = q + (size_t)b * 64;
+            __m256i w01 = _mm256_loadu_si256((const __m256i *)qb);
+            __m256i w23 = _mm256_loadu_si256((const __m256i *)(qb + 32));
+            __m256i a01 = _mm256_abs_epi8(w01), a23 = _mm256_abs_epi8(w23);
+            __m128 dv = _mm_loadu_ps(d + b * 4);
+            __m128 mv = has_min ? _mm_loadu_ps(m + b * 4) : zero;
+            I8T_X86_BLOCK(c0, &x0[b]);
+            I8T_X86_BLOCK(c1, &x1[b]);
+            I8T_X86_BLOCK(c2, &x2[b]);
+            I8T_X86_BLOCK(c3, &x3[b]);
+        }
+        float t[4][4];
+        _mm_storeu_ps(t[0], c0); _mm_storeu_ps(t[1], c1);
+        _mm_storeu_ps(t[2], c2); _mm_storeu_ps(t[3], c3);
+        for (int r = 0; r < 4; r++)
+            for (int k = 0; k < 4; k++) out[(size_t)r * ldo + c + k] = t[k][r];
+    }
+    for (; c < ncol; c++) {
+        const block_i8a *x0 = (const block_i8a *)((const uint8_t *)xq + (size_t)c * xq_stride);
+        __m128 c0 = zero;
+        for (int b = 0; b < nb; b++) {
+            const int8_t *qb = q + (size_t)b * 64;
+            __m256i w01 = _mm256_loadu_si256((const __m256i *)qb);
+            __m256i w23 = _mm256_loadu_si256((const __m256i *)(qb + 32));
+            __m256i a01 = _mm256_abs_epi8(w01), a23 = _mm256_abs_epi8(w23);
+            __m128 dv = _mm_loadu_ps(d + b * 4);
+            __m128 mv = has_min ? _mm_loadu_ps(m + b * 4) : zero;
+            I8T_X86_BLOCK(c0, &x0[b]);
+        }
+        float t[4];
+        _mm_storeu_ps(t, c0);
+        for (int r = 0; r < 4; r++) out[(size_t)r * ldo + c] = t[r];
+    }
+}
+#undef I8T_X86_BLOCK
 #else
 void i8_tile_dot(const void *pack, int n, const void *xq, size_t xq_stride,
                  int ncol, float *out, int ldo) {
