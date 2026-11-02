@@ -65,6 +65,21 @@ def test_a_fidelity_eval_is_recorded_signed_and_shown(runner_bin, work):
     assert "eval fidelity: vs base.gguf" in w.stdout and "pass  VERIFIED (signed" in w.stdout
 
 
+def test_an_eval_record_names_files_by_base_name(runner_bin, work, tmp_path_factory):
+    """Run from elsewhere on absolute paths, the evaluation still names its
+    files by base name, and --lineage finds it beside the model."""
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    p = _run([sys.executable, SCRIPT, "fidelity", "--model", work / "q.gguf", "--reference",
+              work / "base.gguf", "--corpus", work / "corpus.txt", "--max-positions", "16",
+              "--runner", runner_bin, "--max-mean-kld", "1"], elsewhere)
+    assert p.returncode == 0, p.stderr
+    rec = json.loads((work / "q.gguf.eval.fidelity.json").read_text(encoding="utf-8"))
+    from test_lineage import host_paths
+    assert host_paths(rec, [work, elsewhere]) == [], rec
+    w = _run([runner_bin, "--lineage", work / "q.gguf"], elsewhere)
+    assert "eval fidelity: vs base.gguf" in w.stdout, w.stdout
+
+
 def test_a_failed_threshold_is_recorded_and_exits_1(runner_bin, work):
     p = _fidelity(runner_bin, work, "--min-top1", "101")
     assert p.returncode == 1, p.stderr

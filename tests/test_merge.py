@@ -86,7 +86,7 @@ def test_provenance_record_escapes_output_path(runner_bin, fixtures, tmp_path):
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     record = pathlib.Path(f"{merged}.merge.json")
     rec = json.loads(record.read_text())
-    assert rec["merged"]["path"] == str(merged)
+    assert rec["merged"]["path"] == merged.name   # base name, escaped
 
 
 def test_quant_target_writes_that_type(runner_bin, fixtures, tmp_path):

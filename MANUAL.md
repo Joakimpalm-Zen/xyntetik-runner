@@ -661,8 +661,10 @@ beside it: `--rewrite` (with `--prune-experts`, `--remove-sublayer` or
 `.merge.json`, `runner train` writes `.train.json` and `--context-surgery` writes
 `.context.json`. Each record names its input and output files by sha256,
 the options that shaped the bytes and the runner that ran it, and for each
-input that was itself made by a step it links that step's record by path
-and sha256. With `--sign-key` the record is signed in place, the same chain
+input that was itself made by a step it links that step's record by name
+and sha256. A record names every file by its base name, never by where it
+sat on the machine that made it, so it can be published beside the file.
+With `--sign-key` the record is signed in place, the same chain
 and signature objects a receipt carries.
 
 ```sh
@@ -679,9 +681,10 @@ record is byte for byte the one the next step recorded, the output file
 verifies (by the `--trust-key` signer when one is given). A consistent but
 unsigned record reads UNSIGNED; anything else is BROKEN. An input no step
 on this machine made (the publisher's download, a dataset) is the chain's
-ORIGIN, named by its sha256. The records alone are enough: copied together
-to another folder, they verify without the model files, looked up by name
-when their recorded paths are gone. Exit 0 every link verified and signed,
+ORIGIN, named by its sha256. The walk looks for each named file and record
+beside the record that names it (an older record's full path is tried first
+while it is there). The records alone are enough: copied together
+to another folder, they verify without the model files. Exit 0 every link verified and signed,
 1 consistent but not all signed, 2 broken or no record.
 
 A receipt links the chain too. A one-shot `--record` file and every
@@ -2287,7 +2290,7 @@ the measurement read. [Design](docs/derive-design.md).
 | `runner derive`: `--corpus F`, `--window S:T:N` | The text (default `tests/fixtures/gold-corpus-2k.txt` beside the binary) and the positions S + n x T for n < N (default `8:15:300`, the records' window). A corpus shorter than the window, or a `-c` smaller than it, is refused before anything is made. |
 | `runner derive`: `--base-model REPO[@REV]`, `--credit TEXT` | Name what the files cannot: the publisher's repository and revision (the card's `base_model`, and the reference named by repository rather than by its local folder), and credits for inputs such as someone else's importance matrix (repeatable). Both are recorded; `--card-from` accepts them for a record that lacks them. |
 | `runner derive`: `--compare LABEL=GOLD.json[:SIDE][:BYTES]` | With `--reference`: another file measured against the same reference in the same window (a `scripts/gold-logits.py` output; SIDE picks `a` or `b` of a two-sided run, BYTES is its size). LABEL goes on the card as written, so a Markdown link to the file works; it cannot hold `=`. Repeatable, up to 8. Each goes into the record's `comparisons` with the paired tests against this file (Wilcoxon on per-position KLD, McNemar on margin-qualified top-1) and onto the card, files closer than this one first. The window must match position for position. |
-| `runner derive --card-from OUT.derive.json [-o CARD.md]` | Write the card from a derive record alone, with no measurement: the card a newer runner words differently, for a file measured before. Every card derive writes comes from its record this way, so the two cannot disagree. A record that moved off the machine that measured it finds its gold run by name beside the record. |
+| `runner derive --card-from OUT.derive.json [-o CARD.md]` | Write the card from a derive record alone, with no measurement: the card a newer runner words differently, for a file measured before. Every card derive writes comes from its record this way, so the two cannot disagree. The record names its files by base name with their sha256 (the corpus, the score files, the plan), never by host path, and finds them beside itself. |
 | `runner derive`: `-c N`, `-t N`, `--gpu X` | Passed to the sub-runs (`--gpu` defaults to `off` for the score runs; `-c` defaults to the window's span). |
 
 The parent must declare `general.license`: the card copies it, and a parent

@@ -3,7 +3,25 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.11.0 - 2026-11-02
+
+- **Records name files by base name, never by host path.** The provenance
+  records (`.quant.json`, `.merge.json`, `.train.json`, `.context.json`),
+  `runner derive`'s record and `scripts/eval-record.py`'s evaluations wrote
+  each file's path as given on the command line, so a record published
+  beside its file showed where the file sat on the machine that made it.
+  They write the base name now, and derive's record adds the sha256 of
+  every file it names (the corpus, the score files, the plan). `runner
+  attest lineage` and `runner derive --card-from` look for a named file
+  beside the record that names it, and still read older records' full paths.
+
+- **`scripts/gold-logits.py`: an FP8 checkpoint of a multimodal class loads
+  as float32.** Without a GPU, transformers dequantizes the FP8 weights to
+  float32 exactly but leaves every tensor such a checkpoint stores in BF16
+  (embedding, norms, head, vision tower) at BF16, so the forward refused
+  after the whole load (Devstral Small 2). Those tensors are cast to float32
+  after the load (exact), the report's `reference_dtype` counts them, and a
+  tensor that cannot be cast exactly is refused by name (#545).
 
 - **MoE routing traces and replays on CUDA.** `RUNNER_MOE_TRACE` wrote
   nothing from a GPU run and `RUNNER_MOE_REPLAY` pinned only the CPU

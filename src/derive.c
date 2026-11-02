@@ -34,10 +34,10 @@
 #define BAR_MQ_TOP1 97.0
 
 // the recipe: rewrite flags passed through as given, recorded by key
-static const struct { const char *flag, *key; } RECIPE[] = {
-    { "--quant", "quant" }, { "--type-plan", "type_plan" }, { "--imatrix", "imatrix" },
-    { "--prune-experts", "prune_experts" }, { "--remove-sublayer", "remove_sublayer" },
-    { "--merge-lora", "merge_lora" },
+static const struct { const char *flag, *key; bool file; } RECIPE[] = {
+    { "--quant", "quant", false }, { "--type-plan", "type_plan", true },
+    { "--imatrix", "imatrix", true }, { "--prune-experts", "prune_experts", true },
+    { "--remove-sublayer", "remove_sublayer", false }, { "--merge-lora", "merge_lora", true },
 };
 #define N_RECIPE (int)(sizeof RECIPE / sizeof RECIPE[0])
 
@@ -790,6 +790,26 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
 
 // A string member as a base name ("" when absent): the card names files, never
 // host paths.
+// The record is published beside the file, so it names every file by base
+// name, with KEY_sha256 beside it, never by where it sat on this machine.
+static void put_file(sbuf *r, const char *key, const char *path, bool comma) {
+    sb_fmt(r, "%s\"%s\":", comma ? "," : "", key);
+    if (!path) { sb_lit(r, "null"); return; }
+    sb_str(r, plat_path_base(path));
+    char sha[65];
+    sb_fmt(r, ",\"%s_sha256\":", key);
+    if (envelope_file_sha256(path, sha)) sb_fmt(r, "\"%s\"", sha); else sb_lit(r, "null");
+}
+
+// A directory's own name (the publisher's checkout), trailing separators aside.
+static void put_dir_name(sbuf *r, const char *path) {
+    char buf[1024];
+    snprintf(buf, sizeof buf, "%s", path);
+    size_t n = strlen(buf);
+    while (n > 1 && (buf[n - 1] == '/' || buf[n - 1] == '\\')) buf[--n] = 0;
+    sb_str(r, plat_path_base(buf));
+}
+
 static const char *rec_base(jv *obj, const char *key) {
     const char *v = jv_str(jv_get(obj, key), NULL);
     return v ? plat_path_base(v) : "";
@@ -949,13 +969,13 @@ static bool compare_json(const char *ours_gold, const char *spec, sbuf *out) {
 // unflattering metric first, the reference named exactly, base names only.
 // derive writes every card through here, and `runner derive --card-from REC`
 // rewrites one with a newer runner's wording without measuring again.
-// A file the record names, as recorded, or (the record moved off the machine
-// that measured it) by the same name beside the record.
+// A file the record names, beside the record: records name files by base
+// name. An older record's full path is used first while it is still there.
 static const char *beside_record(const char *rec_path, const char *recorded, char *buf, size_t n) {
-    FILE *f = recorded ? plat_fopen(recorded, "rb") : NULL;
-    if (f || !recorded) { if (f) fclose(f); return recorded; }
-    const char *b = recorded;
-    for (const char *q = recorded; *q; q++) if (*q == '/' || *q == '\\') b = q + 1;
+    if (!recorded) return NULL;
+    const char *b = plat_path_base(recorded);
+    FILE *f = b != recorded ? plat_fopen(recorded, "rb") : NULL;
+    if (f) { fclose(f); return recorded; }
     const char *d = rec_path, *e = NULL;
     for (const char *q = rec_path; *q; q++) if (*q == '/' || *q == '\\') e = q;
     if (e) snprintf(buf, n, "%.*s/%s", (int)(e - d), d, b);
@@ -1157,7 +1177,9 @@ static bool card_from_record(const char *rec_path, const char *card_path,
         const char *dt = jv_str(jv_get(ref, "dtype"), NULL);
         jv *gold = NULL;
         if (!dt) {
-            const char *gp = jv_str(jv_get(meas, "reference_score"), NULL);
+            char near[1200];
+            const char *gp = beside_record(rec_path, jv_str(jv_get(meas, "reference_score"), NULL),
+                                           near, sizeof near);
             size_t n = 0;
             char *gs = gp ? plat_read_file(gp, (size_t)1 << 30, &n) : NULL;
             gold = gs ? json_parse(gs, n) : NULL;
@@ -1374,7 +1396,7 @@ int derive_main(int argc, char **argv) {
     sb_str(&r, publisher ? "publisher-float32" : "parent-file");
     sb_lit(&r, ",\"reference\":{");
     if (publisher) {
-        sb_lit(&r, "\"hf\":"); sb_str(&r, o.reference_hf);
+        sb_lit(&r, "\"hf\":"); put_dir_name(&r, o.reference_hf);
         sb_lit(&r, ",\"class\":"); sb_str(&r, m.reference_class);
         sb_lit(&r, ",\"dtype\":"); sb_str(&r, m.reference_dtype);
         sb_lit(&r, ",\"script\":\"scripts/gold-logits.py\",\"args\":[");
@@ -1384,7 +1406,7 @@ int derive_main(int argc, char **argv) {
         }
         sb_lit(&r, "]");
     } else {
-        sb_lit(&r, "\"file\":"); sb_str(&r, o.parent);
+        sb_lit(&r, "\"file\":"); sb_str(&r, plat_path_base(o.parent));
         sb_fmt(&r, ",\"sha256\":\"%s\",\"arithmetic\":\"runner, cpu\"", psha);
     }
     sb_lit(&r, "},\"comparisons\":[");
@@ -1406,8 +1428,12 @@ int derive_main(int argc, char **argv) {
     bool first = true;
     for (int k = 0; k < N_RECIPE; k++) {
         if (!o.recipe[k]) continue;
-        sb_fmt(&r, "%s\"%s\":", first ? "" : ",", RECIPE[k].key);
-        sb_str(&r, o.recipe[k]);
+        if (RECIPE[k].file) {
+            put_file(&r, RECIPE[k].key, o.recipe[k], !first);
+        } else {
+            sb_fmt(&r, "%s\"%s\":", first ? "" : ",", RECIPE[k].key);
+            sb_str(&r, o.recipe[k]);
+        }
         first = false;
     }
     if (o.target_size) {
@@ -1416,8 +1442,8 @@ int derive_main(int argc, char **argv) {
         sb_lit(&r, ",\"low\":"); sb_str(&r, o.low);
         sb_lit(&r, ",\"match\":"); sb_str(&r, o.match ? o.match : "");
         sb_lit(&r, ",\"group\":"); sb_str(&r, o.group_tensor ? "tensor" : "block");
-        sb_lit(&r, ",\"quant_error\":"); sb_str(&r, sz.report);
-        sb_lit(&r, ",\"type_plan\":"); sb_str(&r, sz.plan);
+        put_file(&r, "quant_error", sz.report, true);
+        put_file(&r, "type_plan", sz.plan, true);
         sb_fmt(&r, ",\"save_bytes\":%lld,\"demoted\":[", sz.save_bytes);
         for (int k = 0; k < sz.n_demoted; k++) {
             if (k) sb_lit(&r, ",");
@@ -1425,7 +1451,7 @@ int derive_main(int argc, char **argv) {
         }
         sb_lit(&r, "]");
     }
-    sb_lit(&r, "},\"parent\":{\"path\":"); sb_str(&r, o.parent);
+    sb_lit(&r, "},\"parent\":{\"path\":"); sb_str(&r, plat_path_base(o.parent));
     sb_fmt(&r, ",\"sha256\":\"%s\",\"bytes\":%lld,\"license\":", psha, pbytes);
     sb_str(&r, pm.license);
     sb_lit(&r, ",\"license_source\":");
@@ -1434,10 +1460,11 @@ int derive_main(int argc, char **argv) {
     sb_str(&r, o.base_model ? o.base_model : *pm.repo ? pm.repo : NULL);
     sb_fmt(&r, ",\"file_type\":%d,\"name\":", pm.file_type);
     sb_str(&r, *pm.name ? pm.name : NULL);
-    sb_lit(&r, "},\"file\":{\"path\":"); sb_str(&r, o.out);
-    sb_fmt(&r, ",\"sha256\":\"%s\",\"bytes\":%lld,\"record\":", fsha, fbytes);
-    sb_str(&r, quant_rec);
-    sb_lit(&r, "},\"measurement\":{\"corpus\":"); sb_str(&r, o.corpus);
+    sb_lit(&r, "},\"file\":{\"path\":"); sb_str(&r, plat_path_base(o.out));
+    sb_fmt(&r, ",\"sha256\":\"%s\",\"bytes\":%lld", fsha, fbytes);
+    put_file(&r, "record", quant_rec, true);
+    sb_lit(&r, "},\"measurement\":{");
+    put_file(&r, "corpus", o.corpus, false);
     sb_fmt(&r, ",\"positions\":%d,\"window\":{\"start\":%d,\"stride\":%d,\"count\":%d}",
            m.positions, o.start, o.stride, o.count);
     sb_lit(&r, ",\"mean_kld\":"); sb_num(&r, m.mean_kld);
@@ -1447,8 +1474,8 @@ int derive_main(int argc, char **argv) {
     sb_lit(&r, ",\"margin_qualified_positions\":");
     if (m.have_qualified) sb_fmt(&r, "%d", m.qualified); else sb_lit(&r, "null");
     sb_lit(&r, ",\"margin_qualified_top1_pct\":"); sb_num(&r, m.mq_top1_pct);
-    sb_lit(&r, ",\"reference_score\":"); sb_str(&r, publisher ? gold_out : ref_score);
-    sb_lit(&r, ",\"file_score\":"); sb_str(&r, file_score);
+    put_file(&r, "reference_score", publisher ? gold_out : ref_score, true);
+    put_file(&r, "file_score", file_score, true);
     sb_lit(&r, ",\"bar\":");
     if (publisher) {
         sb_fmt(&r, "{\"max_mean_kld\":%g,\"min_margin_qualified_top1_pct\":%g,\"passes\":%s}",

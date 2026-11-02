@@ -387,8 +387,8 @@ def test_provenance_record_escapes_data_and_output_paths(
     _train(runner_bin, base, out, data=data_name, steps=1)
     record = pathlib.Path(f"{out}.train.json")
     rec = json.loads(record.read_text())
-    assert rec["data"]["path"] == str(base / data_name)
-    assert rec["adapter"]["path"] == str(out)
+    assert rec["data"]["path"] == data_name           # base name, escaped
+    assert rec["adapter"]["path"] == out.name
 
 
 def test_provenance_hashes_binary_when_invoked_through_path(
@@ -652,14 +652,14 @@ def test_continued_training_records_the_adapter_it_started_from(runner_bin, base
     rec = json.loads((tmp_path / "second.gguf.train.json").read_text())
     assert rec["lora_rank"] == 4 and rec["alpha"] == 8
     src = rec["from_adapter"]
-    assert src["path"] == str(first) and src["sha256"] == _sha(first)
-    assert src["record"]["path"] == str(first) + ".train.json"
+    assert src["path"] == first.name and src["sha256"] == _sha(first)
+    assert src["record"]["path"] == first.name + ".train.json"
     assert src["record"]["sha256"] == _sha(str(first) + ".train.json")
     walk = subprocess.run([runner_bin, "--lineage", str(second)], cwd=ROOT,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
     out = walk.stdout.decode()
     assert walk.returncode == 1, out   # consistent, unsigned
-    assert "from_adapter: " + str(first) in out
+    assert "from_adapter: " + first.name in out
     assert out.count("train -> ") == 2, out
 
 

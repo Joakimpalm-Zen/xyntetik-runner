@@ -56,6 +56,58 @@ def _chain(exe, d, sign=True):
         assert (d / rec).exists(), rec
 
 
+def host_paths(obj, roots):
+    """Every string in a record that names a place on this machine: an
+    absolute path, or anything under one of the test's directories."""
+    found = []
+
+    def walk(v):
+        if isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+        elif isinstance(v, str) and (v.startswith("/") or v[1:3] in (":\\", ":/")
+                                     or any(str(r) in v for r in roots)):
+            found.append(v)
+    walk(obj)
+    return found
+
+
+def test_records_name_files_by_base_name_and_walk_from_anywhere(runner_bin, tmp_path):
+    """A record is published beside its file, so it names files by base name
+    and sha256, never by where they sat on the machine that made them; the
+    walker finds a named file beside the record that names it, so the chain
+    still verifies, files included, after the folder moves."""
+    work, elsewhere = tmp_path / "work", tmp_path / "elsewhere"
+    work.mkdir(); elsewhere.mkdir()
+    shutil.copy(ROOT / "test.gguf", work / "base.gguf")
+    (work / "data.txt").write_text("the cat sat on the mat.\nthe dog sat on the log.\n")
+    w = lambda n: str(work / n)
+    assert _run(runner_bin, ["--keygen", w("key.json")], elsewhere).returncode == 0
+    key = ["--sign-key", w("key.json")]
+    for st in (["-m", w("base.gguf"), "--train", w("data.txt"), "--train-steps", "1",
+                "--train-out", w("a.gguf"), "--gpu", "off", *key],
+               ["-m", w("base.gguf"), "--lora", w("a.gguf"), "--merge-lora", w("merged.gguf"), *key],
+               ["-m", w("merged.gguf"), "--quantize", w("final.gguf"), "--quant", "q8_0", *key]):
+        p = _run(runner_bin, st, elsewhere)
+        assert p.returncode == 0, (st, p.stderr)
+    for rec in ("a.gguf.train.json", "merged.gguf.merge.json", "final.gguf.quant.json"):
+        assert host_paths(json.loads((work / rec).read_text()), [tmp_path]) == [], rec
+    moved = tmp_path / "moved"
+    shutil.move(str(work), str(moved))
+    p = _run(runner_bin, ["--lineage", str(moved / "final.gguf")], elsewhere)
+    assert p.returncode == 0, p.stdout
+    assert p.stdout.count("VERIFIED (signed") == 3, p.stdout
+    assert "output file not present" not in p.stdout, p.stdout   # found beside its record
+    b = bytearray((moved / "merged.gguf").read_bytes())
+    b[-1] ^= 1
+    (moved / "merged.gguf").write_bytes(bytes(b))
+    p = _run(runner_bin, ["--lineage", str(moved / "final.gguf")], elsewhere)
+    assert p.returncode == 2 and "no longer matches its record" in p.stdout, p.stdout
+
+
 def test_a_signed_chain_verifies_back_to_its_origins(runner_bin, tmp_path):
     _chain(runner_bin, tmp_path)
     p = _run(runner_bin, ["--lineage", "final.gguf"], tmp_path)
