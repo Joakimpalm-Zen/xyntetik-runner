@@ -28,6 +28,7 @@
 // from its sequential step in the last bits, and decoding never got that far
 // in this gate (a speculative verify through the microbatch found it).
 #include "runner.h"
+#include "compat.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -183,6 +184,10 @@ static int run(const char *path, int prefix) {
 
 int main(int argc, char **argv) {
     const char *path = argc > 1 ? argv[1] : "test.gguf";
+    // the opt-in tiled microbatch is tolerance-class (test_metal_batch_tiles.py);
+    // this gate holds the default route, whatever the caller's environment
+    // (an empty value is off; MinGW's setenv removes the variable for it)
+    plat_setenv("RUNNER_METAL_BATCH_TILES", "");
     f16_init();
     int r = run(path, 0);
     if (r == 2) {

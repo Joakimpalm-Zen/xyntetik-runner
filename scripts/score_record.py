@@ -35,7 +35,9 @@ def same_scores(a, b):
 
 
 def path_of(rec):
-    """'solo', 'keep', 'mixed', or None for a record that predates score_route."""
+    """'solo', 'keep', 'micro' (every position a column of a decode
+    microbatch, RUNNER_SCORE_MICRO), 'mixed', or None for a record that
+    predates score_route."""
     r = rec.get("score_route")
     if not isinstance(r, dict):
         return None
@@ -44,6 +46,8 @@ def path_of(rec):
         return "solo"
     if "keep" in paths and "solo" not in paths:
         return "keep"
+    if paths == {"micro"}:
+        return "micro"
     return "mixed" if paths else None
 
 

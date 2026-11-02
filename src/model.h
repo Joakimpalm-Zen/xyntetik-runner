@@ -1488,7 +1488,9 @@ void         model_batch_free(model_batch *b);
 //
 // Guarantee: out[i] is bit-identical to what model_forward(seq, tok[i], pos[i])
 // would have returned. Batching is a throughput decision and never a numerical
-// one — see tests/test_batch.c, which is that claim as a test.
+// one — see tests/test_batch.c, which is that claim as a test. The one
+// exception is opt-in: Metal's RUNNER_METAL_BATCH_TILES runs 6 or more
+// columns on the GEMM tiles, tolerance-class (tests/test_metal_batch_tiles.py).
 //
 // Returns false only if a sequence could not be evaluated at all.
 // Did this batch get a backend microbatch? False means every decode falls

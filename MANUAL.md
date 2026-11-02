@@ -2348,6 +2348,13 @@ per step, measured faster in aggregate at 4-8 slots on Metal, and
 (`test-batch-identity`). Dense models only; MoE/recurrent families decode sequentially.
 `RUNNER_METAL_BATCH=0` restores sequential on Metal.
 
+`RUNNER_METAL_BATCH_TILES=1` (opt-in, Metal) runs the microbatch's weight products on the
+prefill GEMM tiles once 6 or more slots decode together. It is not bit-identical to
+sequential decode: the tiles sum in another order, so a slot's tokens can differ from what
+it would decode alone. On an Apple M1 with K2-Horizon-1B it raised aggregate decode at 8
+slots from 45.2 to 63.2 tok/s (Q4_K_M) and from 58.2 to 69.9 tok/s (Q8_0); below 6 slots
+the tiles were slower, so the identity route keeps those widths. Against the publisher's float32 model over 2,000 positions it read 1.006x the identity route's mean KLD on the Q8_0 (0.003625 against 0.003604) and 0.9996x on the Q4_K_M, not distinguishable on either, and margin-qualified top-1 of 95.84% against 95.98% on the Q4_K_M. The route line and receipts name it (`micro=tiles` in the backend detail).
+
 ### Generation and context
 
 | Option | Purpose |
@@ -2794,10 +2801,17 @@ in chunks of 16 rows; `RUNNER_SPEC_BATCH=N` (up to 64 on CUDA) widens them,
 so a MoE model's batched expert paths, which a wider prompt window admits,
 are the ones scored.
 
+`RUNNER_SCORE_MICRO=N` (2 to 8) scores every position as one column of an N-wide decode
+microbatch: the text in column 0 and N-1 more instances of the same file decoding the same
+text beside it. It is how a microbatch route such as `RUNNER_METAL_BATCH_TILES` is measured
+against the publisher's model. On the default route the scores are solo's bytes. A backend
+that declines the microbatch for the model is refused rather than scored solo, and the mode
+cannot be combined with `RUNNER_SCORE_CHUNKED`. `paths` reads `micro`.
+
 The run ends with one line on stderr, `score: route {...}`: the paths its forwards took
 (with counts and widest rows) and the counted kernels, the object `--bench-json` reports as
 `route`. The JSON's last field, `score_route`, carries the part a comparison needs: the
-model file (`file`, `bytes`), the `paths` (`solo` or `keep`, each with `forwards` and
+model file (`file`, `bytes`), the `paths` (`solo`, `keep` or `micro`, each with `forwards` and
 `rows_max`), `backend` and `backend_detail`. A byte comparison of two score files leaves
 `score_route` out (`scripts/score_record.py`), since it differs whenever a route switch is
 on.

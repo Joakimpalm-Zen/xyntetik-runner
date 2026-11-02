@@ -68,6 +68,14 @@ def test_chunked_takes_the_batched_rows(runner_bin, model):
     assert score_record.rows_max(rec) == 8
 
 
+def test_a_microbatch_score_reads_micro():
+    # RUNNER_SCORE_MICRO: every position a column of a decode microbatch
+    rec = {"score_route": {"paths": {"micro": {"forwards": 9, "rows_max": 8}}}}
+    assert score_record.path_of(rec) == "micro"
+    rec["score_route"]["paths"]["solo"] = {"forwards": 1, "rows_max": 1}
+    assert score_record.path_of(rec) == "mixed"
+
+
 def test_route_field_is_last_and_left_out_of_a_byte_comparison(runner_bin, model):
     a = _score(runner_bin, model)
     assert list(a)[-1] == "score_route"
