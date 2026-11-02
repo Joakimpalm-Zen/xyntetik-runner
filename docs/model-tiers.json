@@ -4818,7 +4818,25 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.11.0",
+          "date": "2026-11-02",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "537eb8c4842e535aba21083a4ecef715c8002457",
+          "caps": {
+            "version": "1.11.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "f09eceb7648b6dd3301fe816d8049e8dd9131ef0a5f073e61097e87f36514764",
+          "ran": "runner -m Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/devstral-small-2-24b-instruct-2512-q4_k_m.linux-x86_64-cuda.cpu.txt"
+        },
         "cuda": null,
         "metal": null
       },
@@ -4829,7 +4847,19 @@
           "reason": "R4.4.4: Devstral certified with the tool-calling axis, admitted 2026-11-02 at Tier 2 with a CPU cell, a float32 reference measurement and the agent-torture suite. Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.11.0",
+        "date": "2026-11-02"
+      }
     },
     {
       "id": "devstral-small-2-24b-instruct-2512-q8_0",
@@ -4876,7 +4906,25 @@
         "backend": "cpu"
       },
       "backends": {
-        "cpu": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.11.0",
+          "date": "2026-11-02",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "537eb8c4842e535aba21083a4ecef715c8002457",
+          "caps": {
+            "version": "1.11.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 16,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "f09eceb7648b6dd3301fe816d8049e8dd9131ef0a5f073e61097e87f36514764",
+          "ran": "runner -m Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/devstral-small-2-24b-instruct-2512-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
         "cuda": null,
         "metal": null
       },
@@ -4887,7 +4935,19 @@
           "reason": "R4.4.4: Devstral certified with the tool-calling axis, admitted 2026-11-02 at Tier 2 with a CPU cell, a float32 reference measurement and the agent-torture suite. Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.11.0",
+        "date": "2026-11-02"
+      }
     },
     {
       "id": "lfm2.5-1.2b-instruct-q8_0",
