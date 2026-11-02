@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Gate x mutant table for the R3.25 CUDA half, from the audit logs.
-make-table.py PASS1.log PASS1B.log PASS2.log > table.md
+make-table.py PASS1.log[,MORE.log...] PASS2.log[,MORE.log...] > table.md
+A later log's rows replace an earlier one's for the same mutant (a rerun); the baseline is the first log's.
 A gpu-identity cell shows pass 2's deviation (the later build), every other cell pass 1's."""
 import re, sys
 
@@ -22,9 +23,15 @@ def parse(path):
     return blocks
 
 
-p1 = parse(sys.argv[1])
-p1.update({k: v for k, v in parse(sys.argv[2]).items() if k != "baseline"})
-p2 = parse(sys.argv[3])
+def merged(arg):
+    logs = arg.split(",")
+    out = parse(logs[0])
+    for extra in logs[1:]:
+        out.update({k: v for k, v in parse(extra).items() if k != "baseline"})
+    return out
+
+
+p1, p2 = merged(sys.argv[1]), merged(sys.argv[2])
 SHORT = {"attn-residual-dropped": "attn residual", "ssm-D-skip-dropped": "SSM D skip",
          "silu-to-gelu (dense FFN)": "silu to gelu", "rmsnorm-skipped (scale 1)": "norm skipped",
          "rmsnorm-eps-dropped": "norm eps", "rope-position-plus-one (k_rope)": "rope +1 (Q and K)",

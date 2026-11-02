@@ -85,6 +85,9 @@ def dev(kind, txt):
     return "%.2e" % max(vals) if vals else ""
 
 
+CUR = "baseline"
+
+
 def run_gates():
     res = {}
     for name, cmd, kind in GATES:
@@ -101,6 +104,9 @@ def run_gates():
         stat = "PASS" if rc == 0 else "FAIL"
         if rc == 0 and re.search(r"\bskipped\b", txt) and kind != "make":
             stat = "SKIP"
+        if stat == "FAIL":  # the full output: a make gate's last line is only make's own "Error 1"
+            os.makedirs(OUT + ".fail", exist_ok=True)
+            open(os.path.join(OUT + ".fail", re.sub(r"\W+", "_", CUR + "__" + name) + ".txt"), "w").write(txt)
         last = (txt.strip().splitlines() or [""])[-1]
         res[name] = (stat, dev(kind, txt), round(time.time() - t0), last[-110:])
     return res
@@ -120,6 +126,7 @@ with open(OUT, "w") as log:
         build(True)
         if not ONLY:
             write(log, "baseline (PTX regenerated with the local nvcc)", run_gates())
+        stale = False   # the PTX still holds the last kernels.cu mutant (restored in the source only)
         for name, f, old, new, n in MUTANTS:
             src = orig[f]
             count = src.count(old)
@@ -127,9 +134,12 @@ with open(OUT, "w") as log:
             open(f, "w").write(src.replace(old, new))
             time.sleep(1)
             os.utime(f)
-            build(f == K)
+            build(f == K or stale)
+            stale = False
+            CUR = name
             res = run_gates()
             open(f, "w").write(orig[f])
+            stale = f == K
             caught = [g for g, (s, _, _, _) in res.items() if s == "FAIL"]
             write(log, "%s (%d replacements): caught by %d/%d" % (name, count, len(caught), len(GATES)), res)
     finally:

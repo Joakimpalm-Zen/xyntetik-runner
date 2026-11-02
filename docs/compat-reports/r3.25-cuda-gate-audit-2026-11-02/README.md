@@ -44,7 +44,20 @@ moves nothing else:
 - `pass2-tight.log` is the first run, with k_temp_live still at 2e-3;
 - `pass2-fixed.log` reran it with the decode-graph fix below and k_temp_live at 1e-5.
 
-The table uses `pass2-fixed.log`.
+**A fault in the first runs.** Until 18:30 the audit script left stale PTX after a kernel mutant. It restored
+`kernels.cu` but rebuilt the PTX only for the next kernel mutant, so a following `cuda.c` mutant ran on the previous
+one's kernels. Two rows were affected:
+- **The attention scale ×1.05** (in passes 1, 2 and 2-fixed) also carried rope +1. That mutant moves the residue by
+  1.5e-5 at most. The clean rerun matches the old row to within 0.2%, with the same catches.
+- **K unrotated** (in passes 2 and 2-fixed) also carried the bias dropped. gptoss-top1, the one fixture with biases,
+  gave 2.4e-3 instead of its true 7.8e-4. Pass 1b ran K unrotated first, so it was clean.
+
+The script is fixed, and the two mutants were rerun clean:
+- `pass1c-rerun-default-bound.log`, the attention scale at the default bounds. It ran on the patched tree, so the
+  nvfp4 cell there is at the new 1e-4.
+- `pass2c-rerun.log`, both mutants at the proposed bounds.
+
+The table uses `pass2-fixed.log` and, for those two rows, `pass2c-rerun.log`.
 
 ## Table
 
@@ -58,19 +71,19 @@ logprob difference for nvfp4. The marks:
 
 | gate | healthy | attn residual | SSM D skip | silu to gelu | norm skipped | norm eps | rope +1 (Q and K) | attn scale x1.05 | bias dropped | K rope skipped | rope skipped |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| `gpu-id test.gguf` | 2.55e-08 | 4.46e-02 **C** | 2.55e-08 n | 2.02e-03 **C** | 8.31e-02 **C** | 7.71e-04 **T** | 3.66e-07 - | 5.85e-05 **T** | 2.55e-08 n | 9.56e-04 **T** | 9.00e-04 **T** |
-| `gpu-id test.gguf 0 1` | 3.02e-07 | 4.46e-02 **C** | 3.02e-07 n | 2.02e-03 **C** | 8.31e-02 **C** | 7.71e-04 **T** | 4.75e-07 - | 5.85e-05 **T** | 3.02e-07 n | 9.56e-04 **T** | 9.00e-04 **T** |
-| `gpu-id noisy-norms` | 1.75e-08 | 5.42e-02 **C** | 1.75e-08 n | 1.81e-03 **T** | 8.77e-02 **C** | 7.95e-04 **T** | 1.86e-08 - | 1.59e-06 - | 1.75e-08 n | 1.94e-05 **T** | 1.92e-05 **T** |
-| `gpu-id gptoss-top1` | 4.47e-08 | 2.06e-01 **C** | 4.47e-08 n | 4.47e-08 n | 5.16e-01 **C** | 1.20e-03 **T** | 3.32e-07 - | 6.30e-05 **T** | 2.07e-03 **C** | 2.44e-03 **T** | 5.93e-04 **T** |
-| `gpu-id k_off` | 2.55e-08 | 4.46e-02 **C** | 2.55e-08 n | 2.02e-03 **C** | 8.31e-02 **C** | 7.71e-04 **T** | 3.66e-07 - | 5.85e-05 **T** | 2.55e-08 n | 9.56e-04 **T** | 9.00e-04 **T** |
+| `gpu-id test.gguf` | 2.55e-08 | 4.46e-02 **C** | 2.55e-08 n | 2.02e-03 **C** | 8.31e-02 **C** | 7.71e-04 **T** | 3.66e-07 - | 5.84e-05 **T** | 2.55e-08 n | 9.56e-04 **T** | 9.00e-04 **T** |
+| `gpu-id test.gguf 0 1` | 3.02e-07 | 4.46e-02 **C** | 3.02e-07 n | 2.02e-03 **C** | 8.31e-02 **C** | 7.71e-04 **T** | 4.75e-07 - | 5.84e-05 **T** | 3.02e-07 n | 9.56e-04 **T** | 9.00e-04 **T** |
+| `gpu-id noisy-norms` | 1.75e-08 | 5.42e-02 **C** | 1.75e-08 n | 1.81e-03 **T** | 8.77e-02 **C** | 7.95e-04 **T** | 1.86e-08 - | 1.60e-06 - | 1.75e-08 n | 1.94e-05 **T** | 1.92e-05 **T** |
+| `gpu-id gptoss-top1` | 4.47e-08 | 2.06e-01 **C** | 4.47e-08 n | 4.47e-08 n | 5.16e-01 **C** | 1.20e-03 **T** | 3.32e-07 - | 6.31e-05 **T** | 2.07e-03 **C** | 7.83e-04 **T** | 5.93e-04 **T** |
+| `gpu-id k_off` | 2.55e-08 | 4.46e-02 **C** | 2.55e-08 n | 2.02e-03 **C** | 8.31e-02 **C** | 7.71e-04 **T** | 3.66e-07 - | 5.84e-05 **T** | 2.55e-08 n | 9.56e-04 **T** | 9.00e-04 **T** |
 | `gpu-id k_nope` | 2.39e-08 | 4.47e-02 **C** | 2.39e-08 n | 2.02e-03 **C** | 8.32e-02 **C** | 7.72e-04 **T** | 2.39e-08 n | 6.88e-05 **T** | 2.39e-08 n | 2.39e-08 n | 2.39e-08 n |
-| `gpu-id k_half` | 2.43e-08 | 4.46e-02 **C** | 2.43e-08 n | 2.02e-03 **C** | 8.31e-02 **C** | 7.71e-04 **T** | 3.54e-07 - | 6.41e-05 **T** | 2.43e-08 n | 7.38e-04 **T** | 7.40e-04 **T** |
+| `gpu-id k_half` | 2.43e-08 | 4.46e-02 **C** | 2.43e-08 n | 2.02e-03 **C** | 8.31e-02 **C** | 7.71e-04 **T** | 3.54e-07 - | 6.40e-05 **T** | 2.43e-08 n | 7.38e-04 **T** | 7.40e-04 **T** |
 | `gpu-id k_temp_live` | 1.02e-07 | 4.70e-02 **C** | 1.02e-07 n | 2.01e-03 **C** | 8.43e-02 **C** | 8.71e-04 **T** | 1.02e-07 n | 1.14e-03 **T** | 1.02e-07 n | 1.02e-07 n | 1.02e-07 n |
-| `gpu-id spark` | 3.33e-06 | 1.44e-01 **C** | 3.33e-06 n | 3.33e-06 n | 1.45e-01 **C** | 1.10e-03 **T** | 1.05e-05 - | 1.76e-04 **T** | 3.33e-06 n | 3.49e-03 **C** | 1.52e-03 **T** |
-| `gpu-id spark 0 1` | 3.32e-06 | 1.44e-01 **C** | 3.32e-06 n | 3.32e-06 n | 1.45e-01 **C** | 1.10e-03 **T** | 1.05e-05 - | 1.76e-04 **T** | 3.32e-06 n | 3.49e-03 **C** | 1.52e-03 **T** |
-| `gpu-id spark-swa` | 1.56e-06 | 1.51e-01 **C** | 1.56e-06 n | 1.56e-06 n | 1.45e-01 **C** | 1.10e-03 **T** | 1.52e-05 - | 1.81e-04 **T** | 1.56e-06 n | 3.75e-03 **C** | 1.58e-03 **T** |
+| `gpu-id spark` | 3.33e-06 | 1.44e-01 **C** | 3.33e-06 n | 3.33e-06 n | 1.45e-01 **C** | 1.10e-03 **T** | 1.05e-05 - | 1.75e-04 **T** | 3.33e-06 n | 3.49e-03 **C** | 1.52e-03 **T** |
+| `gpu-id spark 0 1` | 3.32e-06 | 1.44e-01 **C** | 3.32e-06 n | 3.32e-06 n | 1.45e-01 **C** | 1.10e-03 **T** | 1.05e-05 - | 1.75e-04 **T** | 3.32e-06 n | 3.49e-03 **C** | 1.52e-03 **T** |
+| `gpu-id spark-swa` | 1.56e-06 | 1.51e-01 **C** | 1.56e-06 n | 1.56e-06 n | 1.45e-01 **C** | 1.10e-03 **T** | 1.52e-05 - | 1.80e-04 **T** | 1.56e-06 n | 3.75e-03 **C** | 1.58e-03 **T** |
 | `gpu-id ornith (qwen35)` | 4.56e-08 | 1.92e-02 **C** | 4.56e-08 n | 9.32e-04 **T** | 1.01e-01 **C** | 1.13e-03 **T** | 1.48e-06 - | 4.33e-04 **T** | 4.56e-08 n | 8.77e-03 **C** | 7.25e-03 **C** |
-| `gpu-id mamba2 s40` | 1.24e-08 | 1.86e-02 **C** | 8.17e-04 **T** | 1.72e-03 **T** | 2.64e+00 **C** | 4.11e-08 - | 3.11e-08 - | 8.68e-06 - | 1.24e-08 n | 1.84e-04 **T** | 1.67e-04 **T** |
+| `gpu-id mamba2 s40` | 1.24e-08 | 1.86e-02 **C** | 8.17e-04 **T** | 1.72e-03 **T** | 2.64e+00 **C** | 4.11e-08 - | 3.11e-08 - | 8.69e-06 - | 1.24e-08 n | 1.84e-04 **T** | 1.67e-04 **T** |
 | `gpu-id nemotron-h` | 1.73e-08 | 2.56e-02 **C** | 8.94e-03 **C** | 1.73e-08 n | 1.45e-01 **C** | 1.39e-03 **T** | 1.73e-08 n | 2.31e-05 **T** | 1.73e-08 n | 1.73e-08 n | 1.73e-08 n |
 | `prefix chunk 4` | 0.00e+00 | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s |
 | `prefix chunk 64` | 0.00e+00 | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s | 0.00e+00 s |
@@ -86,7 +99,7 @@ logprob difference for nvfp4. The marks:
 | norm skipped | 16 | 14 | none |
 | norm eps | 1 | 13 | mamba2 s40 4.11e-08 |
 | rope +1 (Q and K) | 0 | 0 | test.gguf 3.66e-07, test.gguf 0 1 4.75e-07, noisy-norms 1.86e-08, gptoss-top1 3.32e-07, k_off 3.66e-07, k_half 3.54e-07, spark 1.05e-05, spark 0 1 1.05e-05, spark-swa 1.52e-05, ornith (qwen35) 1.48e-06, mamba2 s40 3.11e-08 |
-| attn scale x1.05 | 1 | 12 | noisy-norms 1.59e-06, mamba2 s40 8.68e-06 |
+| attn scale x1.05 | 1 | 12 | noisy-norms 1.60e-06, mamba2 s40 8.69e-06 |
 | bias dropped | 2 | 1 | none |
 | K rope skipped | 5 | 11 | none |
 | rope skipped | 2 | 11 | none |
@@ -95,9 +108,10 @@ The `cuda-moe-replay` column is not counted as evidence; see below.
 
 The k_temp_live row's pass-1 cells (all at 2e-3) were measured before the fix, on top of its 8.0e-4.
 
-One cell moved between runs of the same build: under K unrotated, gptoss-top1 gave 7.8e-4 in pass 1b and 2.4e-3
-in both pass 2 runs. Its healthy residue (4.5e-8) never moves. A top-1 router near a tie may pick its expert
-differently from run to run; that is a lead for the moe-replay question below.
+Every deviation repeats exactly on a given build: five runs of gptoss-top1 under K unrotated all give 7.83e-4. The
+2.4e-3 that first looked like a router tie was the stale-PTX fault above. CPU and CUDA also route identically: on
+gptoss-top1 the two sides select the same expert at all 234 (position, layer) points of a scored prompt (the CUDA
+trace leaves the `norms` field empty, which is the only difference).
 
 ## What the table says
 
@@ -130,10 +144,14 @@ The other three use no rope: k_nope, nemotron-h, and k_temp_live, which is NoPE 
   gates a CUDA host does run, none caught the D skip dropped (moe-replay's one failure did not reproduce; see
   below).
 - **`test-cuda-moe-replay` is not reliable evidence here.** It failed under the D-skip mutant in pass 1, although
-  none of its fixtures has an SSM. With the same mutant applied, a rerun with full output passed, and so did four
-  clean runs (108 to 301 s). The gate fails now and then, for a reason the one-line pass-1 record does not show.
-  Its other catches in the table are therefore not counted as evidence. Most of them failed within seconds, which
-  looks like a real trace mismatch, but only a repeat could tell.
+  none of its fixtures has an SSM. With the same mutant applied, a rerun with full output passed. So did four clean
+  runs (108 to 301 s), and then twenty more on runner main, every one of them (89 to 124 s). That makes 25 straight
+  passes; at the rule of three, the failure rate is under about 12%.
+  - **What failed is not known.** The audit kept only a gate's last line, which for a make target is make's own
+    "Error 1". The failing run took 443 s, against about 100 s since, while the CPUs were contended. The script now
+    keeps a failing gate's full output.
+  - **Its other catches in the table are not counted as evidence.** Most of them failed within seconds, which looks
+    like a real trace mismatch, but only a repeat could tell.
 
 ## k_temp_live: the decode graph replayed a stale temperature (fixed in this patch)
 
@@ -214,6 +232,9 @@ been measured on sm_120 only.
 
 - `cuda-mutant-audit.py` runs the audit: `cuda-mutant-audit.py OUT.log [LIMIT]`. Set `ONLY=name,...` for a
   supplementary pass over named mutants.
-- `make-table.py` builds the table above from the three pass logs.
-- The logs: `pass1-default-bound.log`, `pass1b-rope-default-bound.log`, `pass2-tight.log`, `pass2-fixed.log`,
-  `hybrids-1e-5.log`, `final-check.log`, `final-check2.log`.
+- `make-table.py` builds the table above from the pass logs.
+- The logs: `pass1-default-bound.log`, `pass1b-rope-default-bound.log`, `pass1c-rerun-default-bound.log`,
+  `pass2-tight.log`, `pass2-fixed.log`, `pass2c-rerun.log`, `hybrids-1e-5.log`, `final-check.log`,
+  `final-check2.log`.
+- `make-table.py pass1-default-bound.log,pass1b-rope-default-bound.log pass2-fixed.log,pass2c-rerun.log` rebuilds
+  the table.
