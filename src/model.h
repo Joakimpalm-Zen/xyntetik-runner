@@ -324,6 +324,11 @@ typedef struct {
     // for an A/B; the split is bit-identical, so only speed can differ.
     int       attn_split;
     long      attn_split_runs;  // split passes taken: the gate's engagement check
+    // R3.27 batched attention: a prefill batch's (row, head) items in one pool
+    // pass; 0 on, -1 one pass per row (RUNNER_ATTN_BATCH=0 sets -1 at load).
+    // Bit-identical either way, so only speed can differ.
+    int       attn_batch;
+    long      attn_batch_runs;  // batched passes taken: the gate's engagement check
     size_t   *kv_off;        // [n_layer+1] element offsets into VCACHE (and
                              // into kcache too unless tied-V is on)
     // [n_layer+1] element offsets into KCACHE. NULL means the two caches share

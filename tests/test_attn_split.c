@@ -59,12 +59,13 @@ static int32_t tok_at(int i, int nv) { return (int32_t)(3 + (i * 131 + 17) % (nv
 
 // every position's logits, solo decode; then the last token's logits from a
 // batched prefill of the same tokens (N_BATCH_CHUNK at a time)
-static bool run(const char *path, const opts *o, int threads, int split,
+static bool run(const char *path, const opts *o, int threads, int split, int abatch,
                 float *solo, float *batch, int *nv_out, char *what, size_t what_n,
-                long *split_runs, int *n_head) {
+                long *split_runs, long *batch_runs, int *n_head) {
     model_t m;
     if (!load(&m, path, o, threads)) { fprintf(stderr, "attn-split: cannot load %s\n", path); return false; }
     m.attn_split = split;
+    m.attn_batch = abatch;
     int nv = m.n_vocab;
     *nv_out = nv;
     if (o->ring && m.kv_ring <= 0) { fprintf(stderr, "attn-split: %s: ring did not engage\n", path); model_free(&m); return false; }
@@ -87,6 +88,7 @@ static bool run(const char *path, const opts *o, int threads, int split,
     memcpy(batch, lg, sizeof(float) * (size_t)nv);
     snprintf(what, what_n, "%d heads", m.n_head);
     *split_runs = m.attn_split_runs;
+    *batch_runs = m.attn_batch_runs;
     *n_head = m.n_head;
     model_free(&m);
     return true;
@@ -118,10 +120,12 @@ static int check(const char *arg) {
     float *ref = malloc(sizeof(float) * (size_t)N_POS * nv), *refb = malloc(sizeof(float) * nv);
     float *got = malloc(sizeof(float) * (size_t)N_POS * nv), *gotb = malloc(sizeof(float) * nv);
     if (!ref || !refb || !got || !gotb) return 1;
-    long runs = 0;
+    long runs = 0, bruns = 0;
     int n_head = 0;
-    if (!run(path, &o, 1, -1, ref, refb, &nv, what, sizeof what, &runs, &n_head)) return 1;
+    // the reference: one thread, split off, a prefill's rows one pass each
+    if (!run(path, &o, 1, -1, -1, ref, refb, &nv, what, sizeof what, &runs, &bruns, &n_head)) return 1;
     if (runs) { printf("attn-split: FAIL %s: split off, yet %ld split passes ran\n", arg, runs); return 1; }
+    if (bruns) { printf("attn-split: FAIL %s: batched attention off, yet %ld batched passes ran\n", arg, bruns); return 1; }
 
     static const int THREADS[] = { 1, 2, 3, 4, 7 };
     static const int MODES[] = { 1, 0 };   // forced split, automatic
@@ -129,7 +133,13 @@ static int check(const char *arg) {
     for (size_t ti = 0; ti < sizeof THREADS / sizeof *THREADS; ti++)
         for (size_t mi = 0; mi < sizeof MODES / sizeof *MODES; mi++) {
             int n = THREADS[ti], mode = MODES[mi];
-            if (!run(path, &o, n, mode, got, gotb, &nv, what, sizeof what, &runs, &n_head)) return 1;
+            if (!run(path, &o, n, mode, 0, got, gotb, &nv, what, sizeof what, &runs, &bruns, &n_head)) return 1;
+            // the batched prefill (R3.27) must have taken its one-pass route
+            if (!bruns) {
+                printf("attn-split: FAIL %s %d threads: the batched prefill took no "
+                       "batched attention pass\n", arg, n);
+                bad = 1;
+            }
             // engagement: an identity that holds because the split never ran
             // proves nothing. Forced mode must split; automatic mode must
             // split exactly when more than a quarter of the threads would
