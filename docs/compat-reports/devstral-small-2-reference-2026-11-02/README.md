@@ -42,10 +42,10 @@ own deployment. The text path only (the vision tower is not loaded), the CPU onl
 llama.cpp build 12032 (commit `dde879bc4`, clang 22, CPU, `-fa off --jinja`), served with `llama-server` and read
 through the same reference with the reference's own token ids (`--endpoint-ids`):
 
-| File | Runner mean KLD | llama.cpp mean KLD | Paired, same positions |
-|---|---|---|---|
-| unsloth Q4_K_M | 0.0223 | 0.0259 | Runner closer (Wilcoxon p 7e-16), equal margin-qualified top-1 |
-| unsloth Q8_0 | 0.00126 | 0.00207 | Runner closer (Wilcoxon p 4e-28), equal margin-qualified top-1 |
+| File | Runner mean KLD | llama.cpp mean KLD | Runner margin-qualified top-1 | llama.cpp margin-qualified top-1 | Paired, same positions |
+|---|---|---|---|---|---|
+| unsloth Q4_K_M | 0.0223 | 0.0259 | 99.53% | 99.53% | Runner closer (Wilcoxon p 7e-16); no discordant qualified position |
+| unsloth Q8_0 | 0.00126 | 0.00207 | 100% | 100% | Runner closer (Wilcoxon p 4e-28); no discordant qualified position |
 
 Agent torture on the same Q4_K_M: llama.cpp passes 74 of 100 (`agent-torture-llamacpp-q4_k_m.json`). Every one of
 its 26 failures falls in two categories, and each has one cause:
