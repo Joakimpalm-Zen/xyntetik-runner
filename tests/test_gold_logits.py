@@ -272,6 +272,110 @@ def test_upcast_at_use_is_float32_bit_for_bit(tmp_path):
         assert next(stored.parameters()).dtype == torch.bfloat16   # put back after the forward
 
 
+def test_float32_stragglers_upcasts_bf16_left_by_the_loader_exactly():
+    """A float32 load can leave the tensors a checkpoint stores in BF16 at
+    BF16 (the embedding and norms of an FP8 checkpoint dequantized on the CPU,
+    2026-11-02), so the forward fails at the first float32 Linear. The helper
+    casts them to float32 in place, which is exact, and names them."""
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+    torch.manual_seed(0)
+    m = nn.Sequential(nn.Embedding(11, 8), nn.Linear(8, 8))
+    m[0].to(torch.bfloat16)
+    m.register_buffer("scale", torch.ones(8, dtype=torch.float16) / 3)
+    before = m[0].weight.detach().clone()
+    names = gold.float32_stragglers(m)
+    assert names == ["0.weight", "scale"]
+    assert m[0].weight.dtype == m.scale.dtype == torch.float32
+    assert torch.equal(m[0].weight, before.float())
+    m(torch.arange(5))   # one dtype end to end
+    assert gold.float32_stragglers(m) == []
+
+
+def test_float32_stragglers_refuses_what_it_cannot_cast_exactly():
+    """A narrow tensor still on the meta device (offloaded, so not castable
+    here) or a dtype that is not an exact subset of float32 is refused,
+    named, rather than run at the wrong precision."""
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    nn = torch.nn
+    m = nn.Linear(4, 4, device="meta", dtype=torch.bfloat16)
+    with pytest.raises(SystemExit, match="weight"):
+        gold.float32_stragglers(m)
+    m = nn.Linear(4, 4)
+    m.register_buffer("odd", torch.zeros(4, dtype=torch.float64))
+    with pytest.raises(SystemExit, match="odd"):
+        gold.float32_stragglers(m)
+
+
+def test_an_fp8_checkpoint_on_the_cpu_is_the_exact_float32_dequantization(tmp_path, monkeypatch):
+    """An FP8 checkpoint of a multimodal class (E4M3 language-model linears,
+    one BF16 scale per tensor, the rest stored in BF16: Devstral Small 2's
+    layout) loaded on the CPU in float32 and passed through
+    float32_stragglers gives bit for bit the logits of a float32 model
+    built from weight times scale computed in float32. Without the helper
+    this transformers (5.14, 5.16) leaves every tensor it did not dequantize
+    at BF16, so the forward refuses (bf16 != float); a plain causal-LM class
+    or a checkpoint without FP8 loads all float32."""
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    if not hasattr(torch, "float8_e4m3fn") or not hasattr(transformers, "Mistral3ForConditionalGeneration"):
+        pytest.skip("this torch or transformers has no FP8 or Mistral3")
+    from safetensors.torch import load_file, save_file
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)   # the CPU dequantize path
+    text = transformers.MistralConfig(vocab_size=97, hidden_size=32, intermediate_size=48,
+                                      num_attention_heads=4, num_key_value_heads=2, head_dim=8,
+                                      num_hidden_layers=2, max_position_embeddings=128,
+                                      tie_word_embeddings=False, initializer_range=0.3)
+    vision = transformers.PixtralVisionConfig(hidden_size=16, intermediate_size=32, num_hidden_layers=1,
+                                              num_attention_heads=2, image_size=32, patch_size=16,
+                                              head_dim=8)
+    cls = transformers.Mistral3ForConditionalGeneration
+    torch.manual_seed(0)
+    plain = cls(transformers.Mistral3Config(text_config=text, vision_config=vision)).to(torch.bfloat16)
+
+    def fp8(w):
+        scale = (w.float().abs().max() / 448).to(torch.bfloat16)
+        return (w.float() / scale.float()).to(torch.float8_e4m3fn), scale
+
+    def quantized(name):
+        return "language_model" in name and name.endswith("proj.weight")
+
+    exact = {}
+    for k, w in plain.state_dict().items():
+        q, scale = fp8(w) if quantized(k) else (w, None)
+        exact[k] = q.float() * scale.float() if scale is not None else w.float()
+    ckpt = tmp_path / "fp8"
+    plain.save_pretrained(ckpt)
+    sd = load_file(ckpt / "model.safetensors")
+    for k, w in list(sd.items()):
+        if quantized(k):
+            sd[k], sd[k[:-len("weight")] + "weight_scale_inv"] = fp8(w)
+            sd[k[:-len("weight")] + "activation_scale"] = torch.ones((), dtype=torch.bfloat16)
+    save_file(sd, ckpt / "model.safetensors", metadata={"format": "pt"})
+    c = json.loads((ckpt / "config.json").read_text())
+    c["quantization_config"] = {"quant_method": "fp8", "activation_scheme": "static",
+                                "weight_block_size": None,
+                                "modules_to_not_convert": ["model.vision_tower",
+                                                           "model.multi_modal_projector", "lm_head"]}
+    (ckpt / "config.json").write_text(json.dumps(c))
+    want_model = cls(plain.config).float().eval()
+    want_model.load_state_dict(exact)
+    ids = torch.arange(1, 30).view(1, 29)
+    with torch.no_grad():
+        want = want_model(input_ids=ids).logits
+    got_model = cls.from_pretrained(ckpt, dtype=torch.float32).eval()
+    assert gold.float32_stragglers(got_model)   # the load left some at BF16
+    for k, v in got_model.state_dict().items():
+        assert v.dtype == torch.float32, k
+        assert torch.equal(v, exact[k]), k
+    with torch.no_grad():
+        got = got_model(input_ids=ids).logits
+    assert torch.equal(got, want), (got - want).abs().max().item()
+
+
 def test_upcast_at_use_takes_the_decoder_stack_not_the_longest_list():
     """A MoE whose experts are a ModuleList longer than its layer list: the
     blocks are still the layers (picking the longest list would hook one
