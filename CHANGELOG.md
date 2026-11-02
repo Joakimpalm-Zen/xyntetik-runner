@@ -41,6 +41,18 @@ Current release and unreleased changes. Compatibility follows the
   Q8_0 0.00126 and 100%; ggml-org's Q8_0 scores byte-identically to unsloth's.
   Agent torture on the Q4_K_M passes 100 of 100 cases (Tier 2, #551).
 
+- **Agent torture v5: reasoning, then a native tool call.** A new case
+  family, `reasoning_then_native_tool`, holds the thinking channel followed
+  by a call in the family's native syntax: its tool carries no length,
+  pattern or range constraint, so families whose function-XML cannot enforce
+  those (Qwen3-Coder) are measured on the native path rather than the generic
+  envelope. The default matrix is 126 cases (nine families of 14), and
+  reports read `xyntetik.agent-torture.v5`; v4 results stay valid on their own
+  terms. `scripts/agent-torture.py --timeout SECONDS` gives a slow host more
+  than the harness's 120 s a request. On Qwen3.8-27B (CPU, qwen38 template,
+  thinking on) the new case passes, the reasoning then the native call
+  (#506).
+
 - **CPU prefill in int8, opt-in.** With `RUNNER_CPU_I8_PREFILL=1`, CPU
   batches of 8 or more rows (prompt prefill, chunked scoring) quantize the
   activations to int8 once a matvec and run them against four-row int8 packs
