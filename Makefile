@@ -2879,6 +2879,7 @@ test-metal:
 	$(MAKE) --no-print-directory test-metal-kv-fp4
 	$(MAKE) --no-print-directory test-metal-kv-q8
 	$(MAKE) --no-print-directory test-metal-qwen35 PYTHON="$(PYTHON)"
+	$(MAKE) --no-print-directory test-metal-qwen35moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-metal-mamba2 PYTHON="$(PYTHON)"
 
 # qwen35 on Metal (R4.10): the Gated DeltaNet mixer and the gated attention on
@@ -2917,6 +2918,32 @@ ifeq ($(BUILD_OS),Darwin)
 	echo "test-metal-mamba2: ok"
 else
 	@echo "test-metal-mamba2 skipped: macOS-only backend"
+endif
+
+# The shared expert and qwen35moe on Metal (R4.27): the gated shared expert
+# (Qwen2-MoE form, with and without its scalar router: the dense-equivalent
+# shexp and shexpg fixtures) and the qwen35moe toy (the Gated DeltaNet trunk,
+# routed experts and a sigmoid-gated shared expert on every block) at head
+# widths 8, 40, 72 and 128, to the CPU's logits at 1e-5 of range. A dropped
+# sigmoid or a dropped shared-expert add fails every gated fixture by 2.7e-3
+# or more (measured 2026-11-02); healthy residue is 5.9e-7 at most. Toy
+# identity only: no qwen35moe file fits the 8 GB Mac this was built on.
+test-metal-qwen35moe: runner $(TEST_GPU_ID) $(TEST_SPEC_ID)
+ifeq ($(BUILD_OS),Darwin)
+	@set -e; $(PYTHON) scripts/make-test-moe.py test-moe-fixture > /dev/null; \
+	ORNITH_TEST_MOE=1 $(PYTHON) scripts/make-test-ornith.py test-ornith-moe.gguf > /dev/null; \
+	for w in 40 72 128; do \
+	  ORNITH_TEST_MOE=1 ORNITH_TEST_STATE=$$w $(PYTHON) scripts/make-test-ornith.py test-ornith-moe-s$$w.gguf > /dev/null; done; \
+	for f in test-moe-fixture.shexp.gguf test-moe-fixture.shexpg.gguf test-ornith-moe.gguf \
+	         test-ornith-moe-s40.gguf test-ornith-moe-s72.gguf test-ornith-moe-s128.gguf; do \
+	  GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f > test-metal-qwen35moe.out 2>&1 || { cat test-metal-qwen35moe.out; exit 1; }; \
+	  if grep -q 'skipped' test-metal-qwen35moe.out; then cat test-metal-qwen35moe.out; \
+	    echo "test-metal-qwen35moe: $$f did not run on the device"; exit 1; fi; \
+	  echo "$$f: $$(tail -1 test-metal-qwen35moe.out)"; \
+	  ./$(TEST_SPEC_ID) $$f | tail -1 | grep -q 'ok (gpu' || { ./$(TEST_SPEC_ID) $$f; exit 1; }; \
+	done; echo "test-metal-qwen35moe: ok"
+else
+	@echo "test-metal-qwen35moe skipped: macOS-only backend"
 endif
 
 test-metal-qwen35: runner $(TEST_GPU_ID) $(TEST_SPEC_ID) test-ornith.gguf
