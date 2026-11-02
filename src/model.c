@@ -5820,6 +5820,65 @@ static void mv_rows(void *ctx, int i0, int i1) {
         }
         return;
     }
+    if (j->xq) {
+        // int8 prefill (RUNNER_CPU_I8_PREFILL, R3.1.5 B): I8T_GROUPS groups of
+        // I8_TILE_ROWS rows are repacked once (quants.c), then every chunk of
+        // I8T_COLS activation columns runs against them while both sit in L1
+        // (16 packed rows and 32 columns: about 24 + 48 KB at n_in 1,024). A
+        // short last group repeats its last row and drops the extra outputs.
+        enum { I8T_GROUPS = 4, I8T_COLS = 32 };
+        size_t psz = i8_tile_size(n_in);
+        uint8_t *packs = malloc(psz * I8T_GROUPS);
+        float *tout = malloc(sizeof(float) * I8_TILE_ROWS * I8T_COLS);
+        if (packs && tout) {
+            for (int r0 = i0; r0 < i1; r0 += I8T_GROUPS * I8_TILE_ROWS) {
+                int ng = 0;
+                for (int g = 0; g < I8T_GROUPS; g++) {
+                    int rg = r0 + g * I8_TILE_ROWS;
+                    if (rg >= i1) break;
+                    const void *rows[I8_TILE_ROWS];
+                    for (int k = 0; k < I8_TILE_ROWS; k++)
+                        rows[k] = base + (size_t)(rg + k < i1 ? rg + k : i1 - 1) * j->rsz;
+                    if (!i8_tile_pack(type, rows, n_in, sc, packs + (size_t)g * psz)) break;
+                    ng++;
+                }
+                for (int c0 = 0; c0 < j->n_batch; c0 += I8T_COLS) {
+                    int nc = j->n_batch - c0 < I8T_COLS ? j->n_batch - c0 : I8T_COLS;
+                    const uint8_t *xc = (const uint8_t *)j->xq + (size_t)c0 * j->xq_stride;
+                    for (int g = 0; g < ng; g++) {
+                        int rg = r0 + g * I8_TILE_ROWS;
+                        i8_tile_dot(packs + (size_t)g * psz, n_in, xc, j->xq_stride,
+                                    nc, tout, I8T_COLS);
+                        for (int k = 0; k < I8_TILE_ROWS && rg + k < i1; k++) {
+                            float b0 = j->bias ? j->bias[rg + k] : 0.0f;
+                            for (int c = 0; c < nc; c++)
+                                j->y[(size_t)(c0 + c) * j->y_stride + rg + k] =
+                                    tout[k * I8T_COLS + c] + b0;
+                        }
+                    }
+                }
+                if (ng < I8T_GROUPS && r0 + ng * I8_TILE_ROWS < i1) {
+                    // a pack that failed (no memory): those rows dot one by one
+                    for (int r = r0 + ng * I8_TILE_ROWS;
+                         r < i1 && r < r0 + I8T_GROUPS * I8_TILE_ROWS; r++) {
+                        const void *row = base + (size_t)r * j->rsz;
+                        float b0 = j->bias ? j->bias[r] : 0.0f;
+                        for (int c = 0; c < j->n_batch; c++)
+                            j->y[(size_t)c * j->y_stride + r] =
+                                vec_dot_i8(type, row, (const uint8_t *)j->xq +
+                                           (size_t)c * j->xq_stride, n_in) * sc + b0;
+                    }
+                }
+            }
+            free(packs);
+            free(tout);
+            return;
+        }
+        free(packs);
+        free(tout);
+        // no scratch: the columns' f32 activations are still here, so the
+        // f32 route below answers instead
+    }
     // batched: dequantize weight rows once, reuse for every token, and run
     // them against a few activation columns per register tile (quants.c's
     // vec_dot_f32_tile: 4 x 3 on AVX2, 8 x 3 and 4 x 4 on NEON) - the
@@ -5930,8 +5989,9 @@ static void mv_rows(void *ctx, int i0, int i1) {
 enum { I8_MIN_ROWS = 32 };
 
 static bool mv_takes_i8(const gguf_tensor *w, int n_in, int n_out, int n_batch) {
-    return n_batch < MV_SMALL_BATCH && n_out >= I8_MIN_ROWS && i8_dot_enabled() &&
-           i8_dot_ok(w->type, n_in);
+    if (n_batch >= MV_SMALL_BATCH)
+        return i8_prefill_enabled() && i8_tile_ok(w->type, n_in);
+    return n_out >= I8_MIN_ROWS && i8_dot_enabled() && i8_dot_ok(w->type, n_in);
 }
 
 // The int8 activation columns: the quantization depends on the activations
