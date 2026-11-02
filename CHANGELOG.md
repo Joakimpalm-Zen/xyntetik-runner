@@ -64,7 +64,8 @@ Current release and unreleased changes. Compatibility follows the
   every stage's GPU time is exact. It is a measuring tool; the syncs slow a
   step. Measured with it (R3.24): on Metal the weight products grow almost
   linearly with the slots though the weights are shared, because each
-  column re-does the dequantize-and-dot; a multi-column kernel is next.
+  column re-does the dequantize-and-dot. The entry above is the kernel that
+  finding led to.
 
 - **Ministral 3 (`mistral3`).** Mistral's edge models load, chat and call
   tools. The architecture is llama with two additions:
