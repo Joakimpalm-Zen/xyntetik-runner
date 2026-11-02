@@ -6696,7 +6696,11 @@ static void route_collect(const model_t *m, route_facts *r) {
     r->codegen = route_codegen();
     // the activation the CPU's matvecs dot against: f32, or int8 under the
     // tolerance-gated RUNNER_CPU_I8 (a device path names its own in detail)
-    r->cpu_act = i8_dot_enabled() ? "int8" : "f32";
+    // RUNNER_CPU_I8_PREFILL adds "+int8-prefill": batches of 8 or more
+    // columns run the int8 tiles whatever the decode route is
+    r->cpu_act = i8_prefill_enabled() ? (i8_dot_enabled() ? "int8+int8-prefill"
+                                                          : "f32+int8-prefill")
+                                      : i8_dot_enabled() ? "int8" : "f32";
     route_weights(m, r->weights, sizeof r->weights);
     route_tuning(r->tuning, sizeof r->tuning);
 }
