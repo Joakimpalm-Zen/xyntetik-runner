@@ -91,11 +91,27 @@ def test_derive_writes_the_file_its_record_and_its_card(made):
     assert "bar" not in rec["measurement"] or rec["measurement"]["bar"] is None
 
 
+def test_the_records_name_files_by_base_name_never_by_host_path(made):
+    """derive ran on absolute paths; its record and the rewrite's record are
+    published beside the file, so they name every file by base name (with
+    its sha256 where the record identifies it), never by where it sat."""
+    tmp, parent, out, so, se = made
+    from test_lineage import host_paths
+    for suffix in (".derive.json", ".quant.json"):
+        rec = json.loads(pathlib.Path(str(out) + suffix).read_text(encoding="utf-8"))
+        assert host_paths(rec, [tmp]) == [], suffix
+    rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text(encoding="utf-8"))
+    assert rec["parent"]["path"] == parent.name and len(rec["parent"]["sha256"]) == 64
+    assert rec["file"]["path"] == out.name and len(rec["file"]["sha256"]) == 64
+    assert rec["measurement"]["corpus"] == "corpus.txt"
+    assert len(rec["measurement"]["corpus_sha256"]) == 64
+
+
 def test_the_record_matches_an_independent_reading_of_the_two_score_files(made):
     tmp, parent, out, so, se = made
     rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
-    ref = json.loads(pathlib.Path(rec["measurement"]["reference_score"]).read_text())
-    run = json.loads(pathlib.Path(rec["measurement"]["file_score"]).read_text())
+    ref = json.loads((out.parent / rec["measurement"]["reference_score"]).read_text())
+    run = json.loads((out.parent / rec["measurement"]["file_score"]).read_text())
     assert ref["tokens"] == run["tokens"]
     k = ref.get("n_special", 0)
     rt, ft = tops(ref), tops(run)
@@ -178,7 +194,7 @@ def test_a_publisher_reference_card_says_pass_or_fail_first(runner_bin, tmp_path
     # then ids[:min_prefix + max_positions * stride + 1] (gold-logits.py's
     # `body`); one token short and the real script refuses the file after its
     # whole float32 forward (found on Qwen3-30B-A3B, 2026-11-01)
-    sc = json.loads(pathlib.Path(rec["measurement"]["file_score"]).read_text())
+    sc = json.loads((out.parent / rec["measurement"]["file_score"]).read_text())
     assert len(sc["tokens"]) >= sc.get("n_special", 0) + 8 + 40 * 4 + 1
     body = pathlib.Path(str(out) + ".README.md").read_text(encoding="utf-8").split("\n---\n", 1)[1]
     paras = [p for p in body.strip().split("\n\n")]
@@ -225,9 +241,9 @@ def test_target_size_plans_as_type_plan_by_sensitivity_does(runner_bin, tmp_path
     assert r["target_size"] == target and r["high"] == "q8_0" and r["low"] == "q4_0"
     assert 0 < len(r["demoted"]) < len({x["tensor"].split(".")[1] if x["tensor"].startswith("blk.")
                                         else x["tensor"] for x in rows})
-    ours = json.loads(pathlib.Path(r["type_plan"]).read_text())
+    ours = json.loads((out.parent / r["type_plan"]).read_text())
     p = subprocess.run([sys.executable, ROOT / "scripts/type-plan-by-sensitivity.py",
-                        r["quant_error"], "--high", "q8_0", "--low", "q4_0",
+                        out.parent / r["quant_error"], "--high", "q8_0", "--low", "q4_0",
                         "--save-bytes", str(r["save_bytes"])],
                        capture_output=True, text=True, cwd=ROOT)
     assert p.returncode == 0, p.stderr
@@ -482,9 +498,9 @@ shutil.copy({str(tmp_path / "ours.json")!r}, a[a.index("--out") + 1])
     r2.pop("comparisons")
     r2["base_model_repo"] = None
     r2["measurement"] = dict(rec["measurement"], reference_score="/nowhere/" + pathlib.Path(
-        rec["measurement"]["reference_score"]).name)
+        rec["measurement"]["reference_score"]).name)   # an older record's full path
     (moved / "m.derive.json").write_text(json.dumps(r2))
-    shutil.copy(rec["measurement"]["reference_score"], moved)
+    shutil.copy(out.parent / rec["measurement"]["reference_score"], moved)
     card2 = moved / "m.md"
     p = subprocess.run([str(runner_bin), "derive", "--card-from", str(moved / "m.derive.json"), "-o",
                         str(card2), "--base-model", "org/model@abc123",

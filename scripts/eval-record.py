@@ -55,10 +55,12 @@ def sidecar(path):
 
 
 def file_entry(path):
-    e = {"path": str(path), "sha256": sha256_file(path)}
+    """A file by base name and sha256: the record is published beside the
+    file, so it never says where a file sat on this machine."""
+    e = {"path": os.path.basename(str(path)), "sha256": sha256_file(path)}
     rec = sidecar(str(path))
     if rec:
-        e["record"] = {"path": rec, "sha256": sha256_file(rec)}
+        e["record"] = {"path": os.path.basename(rec), "sha256": sha256_file(rec)}
     return e
 
 

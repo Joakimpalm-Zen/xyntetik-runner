@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Records name files by base name, never by host path.** The provenance
+  records (`.quant.json`, `.merge.json`, `.train.json`, `.context.json`),
+  `runner derive`'s record and `scripts/eval-record.py`'s evaluations wrote
+  each file's path as given on the command line, so a record published
+  beside its file showed where the file sat on the machine that made it.
+  They write the base name now, and derive's record adds the sha256 of
+  every file it names (the corpus, the score files, the plan). `runner
+  attest lineage` and `runner derive --card-from` look for a named file
+  beside the record that names it, and still read older records' full paths.
+
 - **The training yield line is valid JSON for any `--stop-file` path.** The
   path was copied into `{"yield":...}` raw, so a Windows path's backslashes,
   or a quote anywhere, broke the line for a caller reading the training
