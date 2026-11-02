@@ -6361,6 +6361,30 @@ static __attribute__((noinline)) void attn_values(const attn_job *j, int h,
     size_t hoff_v = kv_bytes_of_kind(j->vk, (size_t)(h / kv_mul) * hd + (size_t)i0);
     float *out = j->out + h * hd + i0;
     memset(out, 0, sizeof(float) * n);
+    if (j->vk == 0) {
+        // f16 cache: tiles of 16 channels held in registers across the whole
+        // span (R3.27). Each channel's sum is the loop below's: a term a
+        // position, in position order, written the same way, so a channel
+        // keeps its bits; the tile only stops out[] from being stored and
+        // reloaded at every position, which was most of this function's time
+        // (Apple M1, a 3,497-token prefill, 2026-11-02).
+        enum { VT = 16 };
+        int c0 = 0;
+        for (; c0 + VT <= n; c0 += VT) {
+            float acc[VT] = { 0 };
+            for (int t = j->t0; t <= j->pos; t++) {
+                size_t slot = j->ring ? (size_t)(t % j->ring) : (size_t)t;
+                const f16_t *vh = (const f16_t *)(j->vc + slot * j->v_row_b + hoff_v) + c0;
+                float a = att[t];
+                for (int k = 0; k < VT; k++) acc[k] += a * f16_load(vh + k);
+            }
+            memcpy(out + c0, acc, sizeof acc);
+        }
+        if (c0 == n) return;
+        out += c0;
+        n -= c0;
+        hoff_v += (size_t)c0 * sizeof(f16_t);
+    }
     for (int t = j->t0; t <= j->pos; t++) {
         size_t slot = j->ring ? (size_t)(t % j->ring) : (size_t)t;
         const uint8_t *vt = j->vc + slot * j->v_row_b + hoff_v;
