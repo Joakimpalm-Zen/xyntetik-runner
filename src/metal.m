@@ -110,6 +110,7 @@ typedef struct {
     id<MTLBuffer> moe_logits, moe_sel, moe_selw, moe_hb, moe_hb2, moe_eout;
     id<MTLBuffer> moe_colmap, moe_eoff;   // grouped-MMA slot map + offsets
     id<MTLBuffer> moe_trace_logits;
+    id<MTLBuffer> moe_sh, moe_shl;   // shared expert: [out | gate | up] per column, its gate logits
     id<MTLBuffer> inv_freq, inv_freq_local, out_norm, dummy;
     id<MTLBuffer> *ppn;                 // gemma4 E-series per-layer post_norm
     id<MTLBuffer> ple, ple_tmp;         // [n][n_layer][P] slices, [n][P] gate
@@ -290,7 +291,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
                              g->moe_logits, g->moe_sel, g->moe_selw,
                              g->moe_trace_logits,
                              g->moe_hb, g->moe_hb2, g->moe_eout,
-                             g->moe_colmap, g->moe_eoff,
+                             g->moe_colmap, g->moe_eoff, g->moe_sh, g->moe_shl,
                              g->inv_freq, g->inv_freq_local, g->out_norm,
                              g->dummy, g->suppress, g->ple, g->ple_tmp,
                              g->agate, g->dn_qkv, g->dn_z, g->dn_braw,
@@ -534,6 +535,8 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
     id<MTLBuffer> moe_trace_logits = nil;
     id<MTLBuffer> moe_hb = nil, moe_hb2 = nil, moe_eout = nil;
     id<MTLBuffer> moe_colmap = nil, moe_eoff = nil;
+    id<MTLBuffer> moe_sh = nil, moe_shl = nil;
+    bool shexp = m->n_expert > 0 && m->n_ff_shexp > 0;
     if (m->n_expert > 0) {
         size_t route_slots = nb * (size_t)m->n_expert_used *
                              (size_t)m->n_layer;
@@ -554,6 +557,11 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
         if (getenv("RUNNER_MOE_TRACE"))
             moe_trace_logits = new_f32_scratch(g->dev, nb * (size_t)m->n_layer *
                                                         (size_t)m->n_expert);
+        if (shexp) {
+            moe_sh  = new_f32_scratch(g->dev, nb * ((size_t)m->n_embd +
+                                                   2 * (size_t)m->n_ff_shexp));
+            moe_shl = new_f32_scratch(g->dev, nb);
+        }
     }
     if (!metal_buffer_ok(x) || !metal_buffer_ok(xb) || !metal_buffer_ok(xb2) ||
         !metal_buffer_ok(q) || !metal_buffer_ok(kt) || !metal_buffer_ok(vt) ||
@@ -566,7 +574,8 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
           !metal_buffer_ok(moe_selw) || !metal_buffer_ok(moe_hb) ||
           !metal_buffer_ok(moe_hb2) || !metal_buffer_ok(moe_eout) ||
           !metal_buffer_ok(moe_colmap) || !metal_buffer_ok(moe_eoff) ||
-          (getenv("RUNNER_MOE_TRACE") && !metal_buffer_ok(moe_trace_logits))))) {
+          (getenv("RUNNER_MOE_TRACE") && !metal_buffer_ok(moe_trace_logits)) ||
+          (shexp && (!metal_buffer_ok(moe_sh) || !metal_buffer_ok(moe_shl)))))) {
         release_buf(x); release_buf(xb); release_buf(xb2); release_buf(q);
         release_buf(kt); release_buf(vt); release_buf(hb); release_buf(hb2);
         release_buf(att); release_buf(logits);
@@ -575,6 +584,7 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
         release_buf(moe_hb); release_buf(moe_hb2); release_buf(moe_eout);
         release_buf(moe_colmap); release_buf(moe_eoff);
         release_buf(moe_trace_logits);
+        release_buf(moe_sh); release_buf(moe_shl);
         return false;
     }
 
@@ -598,11 +608,13 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
         release_buf(g->moe_hb2); release_buf(g->moe_eout);
         release_buf(g->moe_colmap); release_buf(g->moe_eoff);
         release_buf(g->moe_trace_logits);
+        release_buf(g->moe_sh); release_buf(g->moe_shl);
         g->moe_logits = moe_logits; g->moe_sel = moe_sel;
         g->moe_selw = moe_selw; g->moe_hb = moe_hb;
         g->moe_hb2 = moe_hb2; g->moe_eout = moe_eout;
         g->moe_colmap = moe_colmap; g->moe_eoff = moe_eoff;
         g->moe_trace_logits = moe_trace_logits;
+        g->moe_sh = moe_sh; g->moe_shl = moe_shl;
     }
     if (metal_recurrent(m) && !metal_dn_scratch(g, m, nb)) return false;
     g->batch_cap = n;
@@ -759,9 +771,16 @@ static bool metal_moe_supported(const model_t *m) {
         fprintf(stderr, "gpu: this model's MoE router has no Metal kernel — using CPU\n");
         return false;
     }
-    if (m->n_ff_shexp > 0) {
-        fprintf(stderr, "gpu: shared-expert MoE has no Metal path yet — using CPU\n");
-        return false;
+    // The shared expert runs as the CPU's shexp_add does (enc_shexp): a gated
+    // dense FFN at its own width, scaled by sigmoid of its scalar router when
+    // there is one (Qwen2-MoE, Qwen3.5-MoE) and unscaled when there is none.
+    // nemotron_h_moe's gate-less squared-ReLU shared expert has no path here.
+    for (int l = 0; l < m->n_layer; l++) {
+        const layer_t *ly = &m->layers[l];
+        if (ly->w_up_shexp && !ly->w_gate_shexp) {
+            fprintf(stderr, "gpu: a gate-less shared expert has no Metal path yet — using CPU\n");
+            return false;
+        }
     }
     if (m->ffn_act != ACT_SILU &&
         !(m->gptoss && m->ffn_act == ACT_SWIGLU_OAI) &&
@@ -1790,8 +1809,7 @@ static bool metal_admit(model_t *m) {
         }
     }
     if (m->qwen35) {
-        const char *why = m->n_expert > 0 ? "with routed experts"
-                        : m->hyper_conn ? "with hyper-connections (qwen4exp)"
+        const char *why = m->hyper_conn ? "with hyper-connections (qwen4exp)"
                         : m->mtp_ready ? "drafting from its MTP head (--mtp)"
                         : m->clef ? "with Clef's decision head"
                         : m->ssm.inner / m->ssm.v_heads > 256 ? "with a head wider than 256"
@@ -3708,6 +3726,32 @@ static void enc_gemma_moe_experts_batch(gpu_t *g,
 #undef XP
 }
 
+// The shared expert of n columns, from the normed input the router read
+// (g->xb, column stride xdim), into moe_sh's first n * n_embd floats: the
+// CPU's shexp_add up to its final add, which enc_moe_ffn_batch makes once the
+// routed sum is in g->xb. moe_sh holds [out n*n_embd | gate n*nf | up n*nf].
+static void enc_shexp(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                      model_t *m, layer_t *ly, int n, int xdim) {
+    int ne = m->n_embd, nf = m->n_ff_shexp;
+    NSUInteger o_off = 0;
+    NSUInteger g_off = foff((size_t)n * ne);
+    NSUInteger u_off = foff((size_t)n * ne + (size_t)n * nf);
+    enc_mv_n(g, e, m, ly->w_up_shexp, g->xb, 0, g->moe_sh, u_off,
+             ne, nf, nil, n, xdim, nf);
+    enc_mv_n(g, e, m, ly->w_gate_shexp, g->xb, 0, g->moe_sh, g_off,
+             ne, nf, nil, n, xdim, nf);
+    enc_elem(g, e, metal_act_pipeline(g, m), g->moe_sh, g_off,
+             g->moe_sh, u_off, n * nf);
+    enc_mv_n(g, e, m, ly->w_down_shexp, g->moe_sh, g_off, g->moe_sh, o_off,
+             nf, ne, nil, n, nf, ne);
+    if (ly->ffn_gate_inp_shexp) {
+        enc_mv_n(g, e, m, ly->ffn_gate_inp_shexp, g->xb, 0, g->moe_shl, 0,
+                 ne, 1, nil, n, xdim, 1);
+        // one logit per column: the "head" is the whole row
+        enc_head_sigmul_n(g, e, g->moe_sh, g->moe_shl, ne, ne, n, ne, 1);
+    }
+}
+
 static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                               model_t *m, layer_t *ly, int l,
                               int n, int xdim, bool norm_done,
@@ -3736,7 +3780,12 @@ static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                           foff((size_t)b * ne),
                           sel_off + foff((size_t)b * used));
     }
+    // the shared expert reads g->xb before the routed sum overwrites it
+    if (ly->w_up_shexp) enc_shexp(g, e, m, ly, n, xdim);
     enc_moe_experts_batch(g, e, m, ly, n, xdim, sel_off, sum_add);
+    if (ly->w_up_shexp)
+        enc_elem_n(g, e, g->p_add, g->xb, 0, g->moe_sh, 0,
+                   m->n_embd, n, xdim, m->n_embd);
 }
 
 static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
@@ -4758,7 +4807,7 @@ static bool metal_fwd_layer(metal_fwd *F, int l) {
                !ly->skip_ffn && !m->layers[l + 1].skip_mixer &&
                !metal_front_capable(g, m, l + 1);
     bool sum_add = n == 1 && metal_fuse_on() && !f2b && ly->is_moe &&
-                   !ly->moe_gemma && !g->pfn[l] &&
+                   !ly->moe_gemma && !ly->w_up_shexp && !g->pfn[l] &&
                    m->resid_scale == 1.0f && !ly->ple_gate &&
                    !nantrace && !nanstage;
     metal_layer_plan P = { hd, n_kv, q_dim_l, kv_dim_l, window, owns_kv, fpipe, front, qw, kw, vw, qb, f2a, f2b, sum_add };

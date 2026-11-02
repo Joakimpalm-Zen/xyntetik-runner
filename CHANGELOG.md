@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Shared-expert MoE and qwen35moe on Metal.** Metal had no path for an
+  always-on shared expert, so every MoE model with one (the Qwen2-MoE form)
+  and `qwen35moe` (Qwen3.5/3.6-35B-A3B and the models built on them) ran on
+  the CPU. The gated shared expert now runs on the device, composed from the
+  dense FFN's kernels, a one-row router matvec and the per-column sigmoid
+  scale, and `qwen35moe` follows. Checked on toy models only, to the CPU's
+  logits at 1e-5 of range (`make test-metal-qwen35moe`, residue 5.9e-7 at
+  most; a dropped sigmoid or a dropped add fails by 2.7e-3 or more): no
+  `qwen35moe` file fits the 8 GB Mac it was built on, so no file row is
+  measured on Metal. The gate-less squared-ReLU shared expert keeps the CPU,
+  and CUDA still refuses `qwen35moe` (R4.27).
+
 - **A PR-time check for POSIX calls the Windows build lacks.**
   `scripts/check-portability.py` runs in every PR's metadata check and fails
   on a call to a function the MinGW-w64 CRT does not declare (`setenv`,
