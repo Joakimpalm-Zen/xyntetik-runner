@@ -500,3 +500,11 @@ shutil.copy({str(tmp_path / "ours.json")!r}, a[a.index("--out") + 1])
     p = subprocess.run([str(runner_bin), "derive", "--card-from", str(moved / "m.derive.json"), "-o",
                         str(moved / "x.md"), "--compare", f"half={short}"], capture_output=True, text=True)
     assert p.returncode != 0 and "window" in p.stderr
+    # a label is Markdown as written, so a reader can follow a link to the file
+    link = "[org/other-GGUF Q4_K_M (official)](https://huggingface.co/org/other-GGUF)"
+    p = subprocess.run([str(runner_bin), "derive", "--card-from", str(moved / "m.derive.json"), "-o",
+                        str(moved / "l.md"), "--compare", f"{link}={other}:a:300000"],
+                       capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr[-1500:]
+    t3 = (moved / "l.md").read_text()
+    assert f"than {link} (0.00 GB" in t3 and f"`{link}`" not in t3

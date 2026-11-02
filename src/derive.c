@@ -863,7 +863,7 @@ static bool compare_json(const char *ours_gold, const char *spec, sbuf *out) {
         fprintf(stderr, "error: --compare is LABEL=GOLD.json[:SIDE][:BYTES] (got %s)\n", spec);
         return false;
     }
-    char label[160], path[1024], side[4] = "a";
+    char label[512], path[1024], side[4] = "a";
     long long bytes = -1;
     snprintf(label, sizeof label, "%.*s", (int)(eq - spec), spec);
     snprintf(path, sizeof path, "%s", eq + 1);
@@ -1087,19 +1087,19 @@ static bool card_from_record(const char *rec_path, const char *card_path,
                              fabs(xb - fbytes) / 1e9, xb > fbytes ? "larger" : "smaller");
                 const char *lab = jv_str(jv_get(x, "label"), "?");
                 if (cls == 0)
-                    sb_fmt(&c, "- `%s`%s is closer to the float32 model than this file on mean KLD: "
+                    sb_fmt(&c, "- %s%s is closer to the float32 model than this file on mean KLD: "
                            "%.4f against %.4f (paired Wilcoxon p %.2g).", lab, size, km, mean, pw);
                 else if (cls == 1)
-                    sb_fmt(&c, "- `%s`%s and this file are not distinguishable on mean KLD: %.4f "
+                    sb_fmt(&c, "- %s%s and this file are not distinguishable on mean KLD: %.4f "
                            "against %.4f (paired Wilcoxon p %.2g).", lab, size, km, mean, pw);
                 else
-                    sb_fmt(&c, "- This file is closer to the float32 model than `%s`%s on mean KLD: "
+                    sb_fmt(&c, "- This file is closer to the float32 model than %s%s on mean KLD: "
                            "%.4f against %.4f (paired Wilcoxon p %.2g).", lab, size, mean, km, pw);
                 sb_fmt(&c, " Margin-qualified top-1: %.2f%% against this file's %.2f%% (%d positions "
-                       "only this file got, %d only `%s` got; McNemar p %.2g, %s).", xmq, mqp,
+                       "only this file got, %d only that file got; McNemar p %.2g, %s).", xmq, mqp,
                        (int)rec_num(x, "mcnemar_this_only", 0), (int)rec_num(x, "mcnemar_other_only", 0),
-                       lab, pm, pm < 0.05 ? "a difference" : "a tie");
-                if (jv_bool(jv_get(x, "fails_bar"), false)) sb_fmt(&c, " `%s` fails the bar.", lab);
+                       pm, pm < 0.05 ? "a difference" : "a tie");
+                if (jv_bool(jv_get(x, "fails_bar"), false)) sb_lit(&c, " That file fails the bar.");
                 sb_lit(&c, "\n");
             }
         sb_lit(&c, "\n");
