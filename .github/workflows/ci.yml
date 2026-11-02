@@ -190,6 +190,20 @@ jobs:
         run: make
       - name: make test model
         run: python3 scripts/make-test-model.py test.gguf
+      # the Makefile builds Apple Silicon for -mcpu=apple-m1, not the runner
+      # VM's generic armv8-a: without the dot-product extension the int8
+      # kernels compile out unseen (1.11.0 shipped that way). The route line
+      # names the int8 prefill only where its kernel was compiled in; an SDOT
+      # count cannot tell, since clang vectorizes the scalar twin with SDOT
+      - name: dotprod path in the binary
+        run: |
+          out=$(RUNNER_CPU_I8_PREFILL=1 ./runner -m test.gguf --gpu off --score -p "hello world" 2>&1 >/dev/null) \
+            || { echo "$out"; echo "the runner failed"; exit 1; }
+          echo "$out"
+          case "$out" in
+            *'"cpu_act":"f32+int8-prefill"'*) ;;
+            *) echo "no int8 prefill route: built without the dot-product extension"; exit 1 ;;
+          esac
       - name: Metal gates (make test-metal)
         run: .venv/bin/python scripts/ci-run.py --timeout 1500 metal -- make test-metal PYTHON=.venv/bin/python
       - name: agent-protocol conformance harness on the Metal path

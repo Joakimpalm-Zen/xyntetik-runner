@@ -1636,7 +1636,7 @@ tables in [docs/portable-bitexact-2026-09-05.md](docs/portable-bitexact-2026-09-
 | Platform | Toolchain | Accelerated path |
 |---|---|---|
 | Linux x86_64 | GCC | AVX2/FMA; CUDA on NVIDIA Turing / compute capability 7.5 or newer, driver with CUDA 13.0+ support (R580 series) |
-| macOS arm64 | Apple Clang | ARM NEON; Metal on Apple Silicon |
+| macOS arm64 | Apple Clang | ARM NEON with the dot-product extension (built for `-mcpu=apple-m1`, the floor of every Apple Silicon Mac); Metal on Apple Silicon |
 | Windows x86_64 | MinGW-w64 via MSYS2 | AVX2/FMA; CUDA on NVIDIA Turing / compute capability 7.5 or newer, driver with CUDA 13.0+ support (R580 series) |
 
 CI builds all three and runs the suite on hosted machines, which have no GPU.

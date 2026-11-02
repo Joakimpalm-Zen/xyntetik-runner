@@ -22,19 +22,23 @@ jobs:
           # x86 builds pin -march=x86-64-v3 (AVX2/FMA/F16C, what the hot
           # kernels use) instead of the Makefile's -march=native, so a binary
           # built on whatever CPU the CI runner has runs on any AVX2 machine.
+          # macOS pins -mcpu=apple-m1, the floor of every Apple Silicon Mac:
+          # -march=native on the runner VM is generic armv8-a, without the
+          # dot-product extension, and 1.11.0 shipped with the int8 SDOT
+          # kernels compiled out (checked below, "dotprod path").
           # Preserve the 1.5.0 Linux ABI; ubuntu-latest can change libc.
           - os: ubuntu-24.04
             artifact: runner-linux-x86_64
             binary: runner
-            march: x86-64-v3
+            arch_flags: -march=x86-64-v3
           - os: macos-latest
             artifact: runner-macos-arm64
             binary: runner
-            march: native
+            arch_flags: -mcpu=apple-m1
           - os: windows-latest
             artifact: runner-windows-x86_64.exe
             binary: runner.exe
-            march: x86-64-v3
+            arch_flags: -march=x86-64-v3
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -51,7 +55,7 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-python
       - name: build
-        run: make CFLAGS="-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=${{ matrix.march }}"
+        run: make CFLAGS="-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter ${{ matrix.arch_flags }}"
       - name: Linux GLIBC compatibility
         if: runner.os == 'Linux'
         run: python3 scripts/check-glibc.py ./runner --max-version 2.38
@@ -64,6 +68,19 @@ jobs:
         run: |
           python3 scripts/make-test-model.py test.gguf
           ./${{ matrix.binary }} -m test.gguf -p "hello" -n 8 --temp 0
+      - name: dotprod path in the macOS binary
+        # the int8 kernels need the dot-product extension; the route line
+        # names the int8 prefill only where its kernel was compiled in, and a
+        # binary built for generic armv8-a (1.11.0) must not ship
+        if: runner.os == 'macOS'
+        run: |
+          out=$(RUNNER_CPU_I8_PREFILL=1 ./runner -m test.gguf --gpu off --score -p "hello world" 2>&1 >/dev/null) \
+            || { echo "$out"; echo "the runner failed"; exit 1; }
+          echo "$out"
+          case "$out" in
+            *'"cpu_act":"f32+int8-prefill"'*) ;;
+            *) echo "no int8 prefill route: built without the dot-product extension"; exit 1 ;;
+          esac
       - name: Linux GLIBC 2.38 runtime smoke
         if: runner.os == 'Linux'
         run: |
@@ -90,14 +107,14 @@ jobs:
           commit:     ${GITHUB_SHA}
           built:      $(date -u +%Y-%m-%dT%H:%M:%SZ)
           runner-os:  ${{ matrix.os }}
-          march:      ${{ matrix.march }}
+          arch:       ${{ matrix.arch_flags }}
           EOF
           if [ "${{ runner.os }}" = "Linux" ]; then
             {
               echo "compiler:   $(cc --version | head -1)"
               echo "libc:       $(getconf GNU_LIBC_VERSION)"
               echo "image:      $ImageOS $ImageVersion"
-              echo "cflags:     -O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=${{ matrix.march }}"
+              echo "cflags:     -O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter ${{ matrix.arch_flags }}"
               python3 scripts/check-glibc.py ./runner --max-version 2.38
             } >> BUILD-INFO.txt
           fi
