@@ -24,4 +24,7 @@ jobs:
       - run: python3 scripts/model-tiers.py --check
       - run: python3 scripts/model-tiers.py --docs-check
       - run: python3 scripts/check-ci-roster.py
+      # POSIX calls MinGW-w64 lacks: the Windows suite runs on main only, so
+      # a bare setenv in a test reached main before (#553 -> #554)
+      - run: python3 scripts/check-portability.py
       - run: python3 -m unittest discover -s tests -p test_ci_contracts.py

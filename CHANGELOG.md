@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A PR-time check for POSIX calls the Windows build lacks.**
+  `scripts/check-portability.py` runs in every PR's metadata check and fails
+  on a call to a function the MinGW-w64 CRT does not declare (`setenv`,
+  `unsetenv`, `realpath`, `getline`, `fork`, `mmap` and twelve more,
+  each verified against the mingw-w64 headers) outside code the preprocessor
+  keeps from Windows. The Windows suite runs on main only, so a bare `setenv`
+  in a C test had passed every PR check and broken main (#553, fixed in
+  #554). A line guarded some other way carries a `portability: ok` comment.
+
 - **`RUNNER_CPU_I8` on a build with no int8 kernel is ignored, with a
   notice.** It used to switch the route on in name only: every matvec ran
   f32, while the route line and receipts said `cpu_act` `int8`, a route that
