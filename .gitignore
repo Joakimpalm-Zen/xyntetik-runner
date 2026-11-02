@@ -36,6 +36,7 @@ tc-overflow.out
 test-cuda-batch-identity.out
 test-metal-qwen35.out
 test-metal-mamba2.out
+test-cuda-hybrids.out
 test-cuda-spec-identity.out
 test-json-schema
 test-json-schema.exe
