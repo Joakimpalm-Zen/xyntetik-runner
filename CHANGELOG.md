@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.12.0 - 2026-11-02
 
 - **`RUNNER_CPU_I8` on a build with no int8 kernel is ignored, with a
   notice.** It used to switch the route on in name only: every matvec ran
@@ -31,6 +31,15 @@ Current release and unreleased changes. Compatibility follows the
   non-annotation keyword beside `$ref`. The prompt renders the tools as sent.
   A nested `anyOf` that cannot be dispatched is still refused, and its message
   now names `anyOf` rather than `oneOf` (R2.9.2).
+
+- **Devstral Small 2 in the validated roster, with its tool-calling record.**
+  unsloth's Q4_K_M and Q8_0 measured against Mistral AI's FP8 checkpoint
+  dequantized exactly to float32 (every GGUF of the model requantizes that
+  checkpoint, and the publisher serves it with static FP8 activations, so
+  this is the reference arithmetic, not the publisher's serving arithmetic),
+  300 positions: Q4_K_M 0.0223 mean KLD and 99.53% margin-qualified top-1,
+  Q8_0 0.00126 and 100%; ggml-org's Q8_0 scores byte-identically to unsloth's.
+  Agent torture on the Q4_K_M passes 100 of 100 cases (Tier 2, #551).
 
 - **CPU prefill in int8, opt-in.** With `RUNNER_CPU_I8_PREFILL=1`, CPU
   batches of 8 or more rows (prompt prefill, chunked scoring) quantize the
