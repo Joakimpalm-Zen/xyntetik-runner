@@ -52,14 +52,14 @@ def test_token_ids_are_used_exactly_and_replay(runner_bin, model, tmp_path):
         st, a = _post(srv, {"prompt": TEXT, "max_tokens": 6, "temperature": 0,
                             "cache_prompt": False})
         assert st == 200, a
-        ids = json.loads(_receipts(d)[0].read_text())["prompt"]["tokens"]
+        ids = json.loads(_receipts(d)[0].read_text(encoding="utf-8"))["prompt"]["tokens"]
         assert ids and all(isinstance(i, int) for i in ids), ids
         st, b = _post(srv, {"prompt": ids, "max_tokens": 6, "temperature": 0,
                             "cache_prompt": False})
         assert st == 200, b
     recs = _receipts(d)
     assert len(recs) == 2
-    rb = json.loads(recs[1].read_text())
+    rb = json.loads(recs[1].read_text(encoding="utf-8"))
     assert rb["prompt"]["tokens"] == ids            # used as sent, not re-tokenized
     # the record also carries a text, decoded from the ids: readable, but not
     # always the caller's original spelling (a SentencePiece piece decodes

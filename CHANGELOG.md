@@ -13,6 +13,20 @@ Current release and unreleased changes. Compatibility follows the
   the weights are CC-BY-NC-4.0, and nothing is redistributed or derived from
   them (Tier 2, #523).
 
+- **The training yield line is valid JSON for any `--stop-file` path.** The
+  path was copied into `{"yield":...}` raw, so a Windows path's backslashes,
+  or a quote anywhere, broke the line for a caller reading the training
+  output as JSON lines. It is escaped now (#542).
+
+- **`POST /unload` right after a reply frees the model before it answers.**
+  A request still counts as active for a moment after its reply reaches the
+  client, so an `/unload` sent the moment a completion returned was answered
+  `"deferred":true` and the model stayed mapped a little longer. On Windows a
+  mapped file cannot be replaced, so overwriting the model right after the
+  `200` failed (`OSError` EINVAL; seen once in main CI's `test_oms`).
+  `/unload` now waits out that tail, bounded at 250 ms, before it defers; a
+  generation really in flight is still answered `"deferred":true`, within those 250 ms.
+
 - **Metal decode microbatch: the weight products read each block once for all
   slots.** When several `--parallel` slots decode together on Metal, the Q8_0,
   Q6_K and Q4_K matvecs and the head now load each weight block once for the
@@ -56,7 +70,9 @@ Current release and unreleased changes. Compatibility follows the
   pass or fail. `--reference-arg ARG` passes arguments to that reference run
   (`--upcast-at-use`, or `--offload-dir` and `--max-memory`) for a model too
   large for float32 in memory. `--license ID` gives the licence of a parent whose
-  file declares none, and never overrides one it declares. The license is copied from the parent, and a parent without
+  file declares none, and never overrides one it declares. `runner derive --card-from REC` rewrites a
+  card from its record alone; every card is written from the record, so the
+  two cannot disagree. The license is copied from the parent, and a parent without
   one is refused. `--score` gains `--score-out F` and `--score-tokens N`, and
   its JSON gains `n_special` (R17.6.1).
 

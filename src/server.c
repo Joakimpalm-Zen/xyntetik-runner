@@ -2501,6 +2501,21 @@ static int recv_request(sock_t fd, char *buf, size_t n, double deadline) {
     }
 }
 
+// RUNNER_TEST_REQUEST_TAIL_MS=N sleeps N ms after a request's reply is sent,
+// before the slot stops counting it active: a test hook, the way
+// RUNNER_TEST_STEP_DELAY_MS slows a step. That tail is microseconds, so the
+// /unload that lands in it (test_unload_honesty) is otherwise a rare CI race.
+// Read once; 0 when unset.
+static int test_request_tail_ms(void) {
+    static _Atomic int ms = -1;
+    if (ms < 0) {
+        const char *v = getenv("RUNNER_TEST_REQUEST_TAIL_MS");
+        int d = v && *v ? atoi(v) : 0;
+        ms = d < 0 ? 0 : d;
+    }
+    return ms;
+}
+
 static void handle_conn(slot_t *s, sock_t fd) {
     // a stalled or dead client must not pin an inference slot: the whole
     // request (header + body) has to arrive within this budget. Generation
@@ -2862,6 +2877,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
             // Drop the request from the count BEFORE the bookkeeping lock:
             // an /unload that saw this request active left pending_unload for
             // us, and the count must already be zero when we honour it.
+            if (test_request_tail_ms()) plat_sleep_ms(test_request_tail_ms());
             atomic_fetch_sub(&SV.active_requests, 1);
             if (SV.n_reg > 0) {
                 bool unloaded = false;

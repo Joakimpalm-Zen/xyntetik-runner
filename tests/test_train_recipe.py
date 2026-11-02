@@ -212,6 +212,24 @@ def test_stop_file_yields_and_the_run_resumes(runner_bin, fx, tmp_path):
     assert (tmp_path / "n.gguf").read_bytes() == (tmp_path / "y2.gguf").read_bytes()
 
 
+def test_the_yield_line_is_json_for_any_stop_file_path(runner_bin, fx, tmp_path):
+    # The path used to be copied into the line raw, so a backslash or a quote
+    # made it invalid JSON (#542). The separator is written out, not taken
+    # from os.sep: MSYS2's Python joins with '/', which hid the backslash.
+    # Windows forbids '"' in a name; elsewhere the name carries both.
+    name = "STOP" if os.name == "nt" else 'ST"O\\P'
+    stop = str(tmp_path) + ("\\" if os.name == "nt" else "/") + name
+    pathlib.Path(stop).write_text("", encoding="utf-8")
+    p = subprocess.run([str(runner_bin), "-m", str(fx / "base.gguf"), "--train",
+                        str(fx / "rows.jsonl"), "--train-steps", "3", "--lr", "3e-3",
+                        "--train-out", str(tmp_path / "y.gguf"), "-t", "2", "--gpu", "off",
+                        "--stop-file", stop],
+                       cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+    assert p.returncode == 75, p.stderr.decode(errors="replace")
+    lines = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
+    assert [l for l in lines if "yield" in l] == [{"yield": stop, "step": 1}]
+
+
 def test_a_non_finite_step_is_refused(runner_bin, fx, tmp_path):
     (tmp_path / "base.gguf").write_bytes((fx / "base.gguf").read_bytes())
     (tmp_path / "w.jsonl").write_text(json.dumps({"prompt": "the runner",
