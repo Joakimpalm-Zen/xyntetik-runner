@@ -11,12 +11,14 @@ Current release and unreleased changes. Compatibility follows the
   (3.7 s at 16 threads against 1.9 s at 4 for a 588-token prompt on a
   Threadripper, Qwen3-0.6B Q8_0). It now runs the whole batch in one pass over
   heads, each running every row exactly as before: outputs are byte-identical
-  at any thread count, and nothing more is allocated. On that host (shared and
-  loaded) the attention stage at 16 threads fell from 3.7 s to 1.3 s; end to
-  end, interleaved 512-token rounds read 1.0x to 1.4x the per-row passes.
-  `RUNNER_ATTN_BATCH=0` restores them. On Apple Silicon with an f16 cache,
-  the attention's value sum also holds 16 channels in registers across the whole span instead
-  of storing and reloading them at every position, with each channel's sum
+  at any thread count, and nothing more is allocated. On that host, at 16
+  threads, three interleaved rounds against the previous build read 0.87x to
+  1.72x (medians 1.10x to 1.52x over SmolLM2-135M and Qwen3-0.6B, GCC and
+  Clang builds); at 1 and 4 threads it is level. `RUNNER_ATTN_BATCH=0`
+  restores the per-row passes. On Apple Silicon with an f16 cache, the
+  attention's value sum also holds 16 channels in registers across the whole
+  span instead of storing and reloading them at every position, with each
+  channel's sum
   unchanged: on an Apple M1 a 3,497-token SmolLM2-135M prefill went from 106
   to 121 tok/s on one thread and from 234 to 334 on four, the scores
   byte-identical to the previous build (R3.27).
