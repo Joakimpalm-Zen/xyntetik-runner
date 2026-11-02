@@ -7,6 +7,7 @@ bar in the same window: 0.0909 mean KLD and 94.80% margin-qualified top-1, again
 
 ## The file
 
+Published as [Joakimpalm-Zen/Qwen3-30B-A3B-derive-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-derive-GGUF), with its card and records.
 `runner derive -m Qwen3-30B-A3B-Q8_0.gguf --target-size 17106040320 --high q4_0 --low q3_k --match _exps --imatrix
 Qwen_Qwen3-30B-A3B.imatrix` on Qwen's own Q8_0, with bartowski's importance matrix. The planner demoted 11 of 48 expert
 groups to q3_k, saving 882,376,704 bytes. Its plan is R4.7.3's `plan-sens.json`, and the file is R4.7.3's K=11 file byte

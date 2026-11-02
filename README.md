@@ -218,10 +218,10 @@ what the file is not for and its weakest number, then whether it passes the bar.
 ```
 
 <p align="center">
-  <picture>
+  <a href="https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-derive-GGUF"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="site/assets/readme-derive-result-dark.svg">
     <img src="site/assets/readme-derive-result-light.svg" alt="Three Qwen3-30B-A3B files against Qwen's float32 model over the same 2,000 positions: the official Q4_K_M at 18.56 GB reads 0.0909 mean KLD and fails the 0.05 bar, our hand-built 17.99 GB selective file 0.0279, and the 17.11 GB derive file 0.0290" width="640">
-  </picture>
+  </picture></a>
 </p>
 
 The hand-built selective file is still slightly closer on mean KLD (p 0.02), and derive's file is 0.88 GB smaller;

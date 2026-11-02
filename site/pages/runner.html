@@ -142,10 +142,10 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
     --match _exps --imatrix Qwen_Qwen3-30B-A3B.imatrix \
     --reference hf:Qwen3-30B-A3B --reference-arg --upcast-at-use</code></pre>
       <figure class="shot">
-        <picture>
+        <a href="{{hf}}/Qwen3-30B-A3B-derive-GGUF"><picture>
           <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-derive-result-dark.svg">
           <img src="/assets/readme-derive-result-light.svg" alt="Three Qwen3-30B-A3B files against Qwen's float32 model over the same 2,000 positions: the official Q4_K_M at 18.56 GB reads 0.0909 mean KLD and fails the 0.05 bar, our hand-built 17.99 GB selective file 0.0279, and the 17.11 GB derive file 0.0290" width="640" height="300" loading="lazy">
-        </picture>
+        </picture></a>
         <figcaption class="measured">Measured 2026-11-02 against Qwen/Qwen3-30B-A3B in float32 arithmetic, 2,000 positions of one text. Lower-level tools (<code>--type-plan</code>, <code>--prune-experts</code>, <code>--remove-sublayer</code>) still run on their own: <a href="{{repo}}/blob/main/MANUAL.md#models-and-conversion">plan formats and limits</a>.</figcaption>
       </figure>
     </div>
