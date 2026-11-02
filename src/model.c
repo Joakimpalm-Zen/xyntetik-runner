@@ -5550,6 +5550,8 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     {
         const char *e = getenv("RUNNER_ATTN_SPLIT");
         m->attn_split = e && !strcmp(e, "0") ? -1 : 0;
+        e = getenv("RUNNER_ATTN_BATCH");
+        m->attn_batch = e && (!strcmp(e, "0") || !strcmp(e, "off")) ? -1 : 0;
     }
     if (!runtime_kv_layout(m, p, n_ctx)) return false;
     int q_dim = 0, kv_dim = 0;
@@ -6285,15 +6287,7 @@ typedef struct {
     bool         tied;
     const float *knw;       // attn_k_norm weights [hd] (set when tied)
     int          layer;
-    // one head's score row (n_ctx wide, absolute positions), or NULL for the
-    // shared m->att, one row a head. The batched prefill gives each pool item
-    // a row of its own thread's, so many query rows can run at once (R3.27).
-    float       *att;
 } attn_job;
-
-static inline float *attn_att(const attn_job *j, int h) {
-    return j->att ? j->att : j->m->att + (size_t)h * j->m->n_ctx;
-}
 
 // One head's scores att[t] = q.k_t * scale for t in [t_lo, t_hi]. Each score
 // is one dot computed whole, so which call computes it cannot change its bits.
@@ -6306,7 +6300,7 @@ static __attribute__((noinline)) void attn_scores(const attn_job *j, int h,
     int hd = j->hd;
     int kv_mul = m->n_head / (j->kv_dim / hd);
     const float *qh = j->q + h * hd;
-    float *att = attn_att(j, h);
+    float *att = m->att + (size_t)h * m->n_ctx;
     int kvh = h / kv_mul;
     size_t hoff_k = kv_bytes_of_kind(j->kk, (size_t)kvh * hd);
     size_t hoff_v = kv_bytes_of_kind(j->vk, (size_t)kvh * hd);
@@ -6348,7 +6342,7 @@ static __attribute__((noinline)) void attn_scores(const attn_job *j, int h,
 // One head's softmax over its whole span. Never split: its running sum and
 // its vectorized exp both depend on where a range starts.
 static __attribute__((noinline)) void attn_softmax(const attn_job *j, int h) {
-    float *att = attn_att(j, h);
+    float *att = j->m->att + (size_t)h * j->m->n_ctx;
     if (j->sinks) softmax_sink(att + j->t0, j->pos + 1 - j->t0, j->sinks[h]);
     else          softmax(att + j->t0, j->pos + 1 - j->t0);
 }
@@ -6363,7 +6357,7 @@ static __attribute__((noinline)) void attn_values(const attn_job *j, int h,
     model_t *m = j->m;
     int hd = j->hd;
     int kv_mul = m->n_head / (j->kv_dim / hd);
-    const float *att = attn_att(j, h);
+    const float *att = m->att + (size_t)h * m->n_ctx;
     size_t hoff_v = kv_bytes_of_kind(j->vk, (size_t)(h / kv_mul) * hd + (size_t)i0);
     float *out = j->out + h * hd + i0;
     memset(out, 0, sizeof(float) * n);
@@ -10650,7 +10644,7 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         attn_job aj = { m, kc_l, vc_l, qt, ao + (size_t)t * q_dim, t,
                        attn_window_start(swa, t),
                        hd, kv_dim, k_row_b, v_row_b, 0,
-                       0, 0, scale, NULL, false, NULL, l, NULL };
+                       0, 0, scale, NULL, false, NULL, l };
         attn_run(m, &aj, n_head);
         if (gate) {
             // sigmoid gate applied element-wise to the attention output
@@ -13138,82 +13132,61 @@ NUM_STAGE void attn_rope_store(model_t *m, const fwd_layer *c) {
     }
 }
 
-// R3.27: a batch's attention in ONE pool pass over (query row, head) items.
+// R3.27: a batch's attention in ONE pool pass, one item a head.
 // The per-row loop below ran a pool pass per query row (a 588-token prefill
 // on 28 layers is 16,464 passes of a few tens of microseconds each), so the
 // dispatch and the wait, not the arithmetic, set the time, and more threads
 // made it slower: 1.9 s at 4 threads, 3.7 s at 16 (Threadripper 9980X,
 // Qwen3-0.6B, 2026-11-02). Each item runs the same attn_scores, attn_softmax
-// and attn_values on one row and one head, in the same order, with a score
-// row of its own thread's in place of the shared m->att: every output keeps
-// its bits, at any thread count. RUNNER_ATTN_BATCH=0 restores the per-row
-// passes.
-typedef struct { attn_job *jobs; int n, n_head; } attn_batch_job;
+// and attn_values for its head on every row, in row order, in that head's row
+// of m->att: every output keeps its bits, at any thread count, and nothing
+// is allocated. RUNNER_ATTN_BATCH=0 (model_t.attn_batch -1) restores the
+// per-row passes; tests/test_attn_split.c holds the identity.
+typedef struct { model_t *m; const fwd_layer *c; } attn_batch_job;
 
-static bool attn_batch_on(void) {
-    static _Atomic int v = -1;
-    if (v < 0) {
-        const char *e = getenv("RUNNER_ATTN_BATCH");
-        v = !(e && *e && (!strcmp(e, "0") || !strcmp(e, "off")));
-    }
-    return v;
+static attn_job attn_row_job(model_t *m, const fwd_layer *c, int b);
+
+// One item a head: every row of the batch for that head, in row order, in the
+// head's own row of m->att (no two items share one, and nothing is allocated,
+// so the training step's allocation contract is unchanged).
+static void attn_batch_items(void *ctx, int h0, int h1) {
+    attn_batch_job *bj = ctx;
+    for (int h = h0; h < h1; h++)
+        for (int b = 0; b < bj->c->n; b++) {
+            attn_job j = attn_row_job(bj->m, bj->c, b);
+            attn_scores(&j, h, j.t0, j.pos);
+            attn_softmax(&j, h);
+            attn_values(&j, h, 0, j.hd);
+        }
 }
 
-static void attn_batch_items(void *ctx, int i0, int i1) {
-    attn_batch_job *bj = ctx;
-    // this thread's score row, n_ctx wide; kept for the thread's life and
-    // grown when a longer context asks
-    static _Thread_local float *row;
-    static _Thread_local size_t row_n;
-    size_t need = (size_t)bj->jobs[0].m->n_ctx;
-    if (row_n < need) {
-        float *r = realloc(row, sizeof(float) * need);
-        if (!r) {   // no scratch: the shared rows, one item at a time below
-            for (int i = i0; i < i1; i++) {
-                attn_job *j = &bj->jobs[i / bj->n_head];
-                attn_heads(j, i % bj->n_head, i % bj->n_head + 1);
-            }
-            return;
-        }
-        row = r;
-        row_n = need;
-    }
-    for (int i = i0; i < i1; i++) {
-        attn_job j = bj->jobs[i / bj->n_head];
-        int h = i % bj->n_head;
-        j.att = row;
-        attn_scores(&j, h, j.t0, j.pos);
-        attn_softmax(&j, h);
-        attn_values(&j, h, 0, j.hd);
-    }
+// row b's attention job in this layer: the query, its output row, its span
+static attn_job attn_row_job(model_t *m, const fwd_layer *c, int b) {
+    const int l = c->l, p = c->pos + b;
+    int t0 = c->local && p - m->swa_window + 1 > 0 ? p - m->swa_window + 1 : 0;
+    attn_job aj = { m, c->kc_l, c->vc_l, m->q + (size_t)b * c->q_dim,
+                    m->xb2 + (size_t)b * c->xdim, p, t0, c->hd, c->kv_dim,
+                    c->k_row_b, c->v_row_b, model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                    model_kv_kind_k(m), model_kv_kind_v(m), c->scale, c->ly->attn_sinks,
+                    model_layer_tied_v(m, l), c->ly->knorm_w, l };
+    return aj;
 }
 
 NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
     const layer_t *ly = c->ly;
-    const int l = c->l, n = c->n, pos = c->pos, xdim = c->xdim;
-    const int hd = c->hd, q_dim = c->q_dim, kv_dim = c->kv_dim;
-    const bool local = c->local;
-    const float scale = c->scale;
+    const int l = c->l, n = c->n, xdim = c->xdim;
+    const int hd = c->hd, q_dim = c->q_dim;
     const int dbg = c->dbg;
-    uint8_t *kc_l = c->kc_l, *vc_l = c->vc_l;
-    const size_t k_row_b = c->k_row_b, v_row_b = c->v_row_b;
-    // the batch's rows in one pool pass (R3.27), else one pass per row
-    attn_job *jobs = n > 1 && attn_batch_on() ? malloc(sizeof(attn_job) * (size_t)n) : NULL;
-    for (int b = 0; b < n; b++) {
-        int p = pos + b;
-        int t0 = local && p - m->swa_window + 1 > 0 ? p - m->swa_window + 1 : 0;
-        attn_job aj = { m, kc_l, vc_l, m->q + (size_t)b * q_dim,
-                        m->xb2 + (size_t)b * xdim, p, t0, hd, kv_dim,
-                        k_row_b, v_row_b, model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                        model_kv_kind_k(m), model_kv_kind_v(m), scale, ly->attn_sinks,
-                        model_layer_tied_v(m, l), ly->knorm_w, l, NULL };
-        if (jobs) jobs[b] = aj;
-        else attn_run(m, &aj, m->n_head);
-    }
-    if (jobs) {
-        attn_batch_job bj = { jobs, n, m->n_head };
-        tpool_run(m->tp, attn_batch_items, &bj, n * m->n_head);
-        free(jobs);
+    // the batch's rows in one pool pass over heads (R3.27), else one pass a row
+    if (n > 1 && m->attn_batch >= 0) {
+        attn_batch_job bj = { m, c };
+        tpool_run(m->tp, attn_batch_items, &bj, m->n_head);
+        m->attn_batch_runs++;
+    } else {
+        for (int b = 0; b < n; b++) {
+            attn_job aj = attn_row_job(m, c, b);
+            attn_run(m, &aj, m->n_head);
+        }
     }
     // per-row output gates: each touches its own row only
     for (int b = 0; b < n; b++) {
