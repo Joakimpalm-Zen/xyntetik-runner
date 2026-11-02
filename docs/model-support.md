@@ -623,6 +623,18 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>Devstral</b>, 1 model: CPU ✅ · CUDA - · Metal - · Train ✅</summary>
+<p><b>Devstral Small 2 24B Instruct 2512 (Mistral AI)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#devstral-small-2-24b-instruct-2512-q4_k_m"><code>Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.11.0<sup>b</sup><br>2026-11-02</td><td></td><td></td><td nowrap>✅ 1.11.0<br>2026-11-02</td></tr>
+<tr><td><a href="#devstral-small-2-24b-instruct-2512-q8_0"><code>Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf</code></a></td><td nowrap>✅ 1.11.0<sup>b</sup><br>2026-11-02</td><td></td><td></td><td nowrap>✅ 1.11.0<br>2026-11-02</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>LFM2.5</b>, 4 models: CPU ✅ · CUDA n/a · Metal - · Train n/a</summary>
 <p><b>LFM2.5-1.2B-Instruct (LiquidAI)</b></p>
 <table>
@@ -1906,6 +1918,56 @@ Text path and native tool calls ([TOOL_CALLS]name[ARGS]{json}), the publisher's 
 - **LoRA adapter serving:** supported (runner 1.10.0, 2026-11-01).
 - **Tier history:** Tier 2, maintained on report from 2026-11-01 ([log](#transition-log)).
 
+### Devstral
+
+#### Devstral Small 2 24B Instruct 2512 (Mistral AI)
+
+<a id="devstral-small-2-24b-instruct-2512-q4_k_m"></a>
+##### `Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf`
+
+Text and tools, a third party's Q4_K_M of the FP8 checkpoint: against the publisher's checkpoint dequantized to float32 it reads 0.0223 mean KLD and 99.53% margin-qualified top-1 (300 positions, CPU), inside the 0.05 / 97% bar; agent-torture 100 of 100 on the CPU.
+
+- **File:** `Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf` (sha256 `d14ba9edee1bb4c4996a726deb81e49ae81800a3216f0774634238c380aee496`, 14,334,446,752 bytes, from [unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF](https://huggingface.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF) at revision `6e458b8add42`).
+- **Upstream checkpoint:** mistralai/Devstral-Small-2-24B-Instruct-2512 at revision `55c5b41e98c2`.
+- **Quantization:** Q4_K_M (unsloth).
+- **Licence:** `apache-2.0`, as the mistralai/Devstral-Small-2-24B-Instruct-2512 model card states it.
+- **Features claimed:** text, tools. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against Mistral AI's FP8 checkpoint dequantized exactly to float32 on the CPU (transformers' Mistral3ForConditionalGeneration driven with text only, gold-logits.py with float32_stragglers: 239 tensors the checkpoint stores in BF16 cast to float32 after the load, exact; --offload-dir; 300 positions at stride 15 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked CPU score files): Q4_K_M 0.0223 mean KLD / 92.33% top-1 / 99.53% margin-qualified, Q8_0 0.00126 / 99.33% / 100%. ggml-org's Q8_0 scores byte-identically to unsloth's (the same tensors; the files differ in 8,800 bytes of metadata). Record: docs/compat-reports/devstral-small-2-reference-2026-11-02/README.md.
+- **Context tested:** 9216.
+- **Known limitations:** Every GGUF of this model requantizes the publisher's FP8 checkpoint, and the publisher serves it with static FP8 activations: the float32 dequantization is the reference arithmetic, not the publisher's serving arithmetic. 14 GB (Q4_K_M) and 25 GB (Q8_0) of weights; the vision tower is not loaded.
+- **Still missing:** The Metal and CUDA cells; vision (the text path only); task quality.
+- **Evidence:** [docs/compat-reports/devstral-small-2-reference-2026-11-02/README.md](compat-reports/devstral-small-2-reference-2026-11-02/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.11.0 on 2026-11-02.
+- **CPU:** ✅ v1.11.0 2026-11-02 on linux-x86_64-cuda (borrowed hardware) at commit `537eb8c4842e`, output sha256 `f09eceb7648b6dd3`, [pin](../tests/compatibility/tier-smoke/devstral-small-2-24b-instruct-2512-q4_k_m.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.11.0, 2026-11-02).
+- **LoRA adapter serving:** supported (runner 1.11.0, 2026-11-02).
+- **Tier history:** Tier 2, maintained on report from 2026-11-02 ([log](#transition-log)).
+
+<a id="devstral-small-2-24b-instruct-2512-q8_0"></a>
+##### `Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf`
+
+Text and tools, a third party's Q8_0 of the FP8 checkpoint, the fidelity file of the two: against the publisher's checkpoint dequantized to float32 it reads 0.00126 mean KLD and 100% margin-qualified top-1 (300 positions, CPU). ggml-org's Q8_0 scores byte-identically.
+
+- **File:** `Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf` (sha256 `0760502e9228234f6cfa843f8870b8fc91c46a13664cf766c639229cccc80866`, 25,055,317,152 bytes, from [unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF](https://huggingface.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF) at revision `6e458b8add42`).
+- **Upstream checkpoint:** mistralai/Devstral-Small-2-24B-Instruct-2512 at revision `55c5b41e98c2`.
+- **Quantization:** Q8_0 (unsloth).
+- **Licence:** `apache-2.0`, as the mistralai/Devstral-Small-2-24B-Instruct-2512 model card states it.
+- **Features claimed:** text, tools. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against Mistral AI's FP8 checkpoint dequantized exactly to float32 on the CPU (transformers' Mistral3ForConditionalGeneration driven with text only, gold-logits.py with float32_stragglers: 239 tensors the checkpoint stores in BF16 cast to float32 after the load, exact; --offload-dir; 300 positions at stride 15 over gold-corpus-2k, token-id keyed at every position, the Runner sides from chunked CPU score files): Q4_K_M 0.0223 mean KLD / 92.33% top-1 / 99.53% margin-qualified, Q8_0 0.00126 / 99.33% / 100%. ggml-org's Q8_0 scores byte-identically to unsloth's (the same tensors; the files differ in 8,800 bytes of metadata). Record: docs/compat-reports/devstral-small-2-reference-2026-11-02/README.md.
+- **Context tested:** 9216.
+- **Known limitations:** Every GGUF of this model requantizes the publisher's FP8 checkpoint, and the publisher serves it with static FP8 activations: the float32 dequantization is the reference arithmetic, not the publisher's serving arithmetic. 14 GB (Q4_K_M) and 25 GB (Q8_0) of weights; the vision tower is not loaded.
+- **Still missing:** The Metal and CUDA cells; vision (the text path only); task quality.
+- **Evidence:** [docs/compat-reports/devstral-small-2-reference-2026-11-02/README.md](compat-reports/devstral-small-2-reference-2026-11-02/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.11.0 on 2026-11-02.
+- **CPU:** ✅ v1.11.0 2026-11-02 on linux-x86_64-cuda (borrowed hardware) at commit `537eb8c4842e`, output sha256 `f09eceb7648b6dd3`, [pin](../tests/compatibility/tier-smoke/devstral-small-2-24b-instruct-2512-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.11.0, 2026-11-02).
+- **LoRA adapter serving:** supported (runner 1.11.0, 2026-11-02).
+- **Tier history:** Tier 2, maintained on report from 2026-11-02 ([log](#transition-log)).
+
 ### LFM2.5
 
 #### LFM2.5-1.2B-Instruct (LiquidAI)
@@ -2539,5 +2601,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-11-01 | [Hemmingway-1.5 (HemmingwayAI), `HemmingwayAI_Hemmingway-1.5-Q8_0.gguf`](#hemmingway-1.5-q8_0) | Tier 2, maintained on report | Owner's Hub-search validation queue of 2026-10-29 (R4.27), validation only under CC-BY-NC-4.0: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report. | none recorded |
 | 2026-11-01 | [Ministral 3 3B Instruct 2512 (Mistral AI), `Ministral-3-3B-Instruct-2512-Q4_K_M.gguf`](#ministral-3-3b-instruct-2512-q4_k_m) | Tier 2, maintained on report | R4.4 admission of the mistral3 architecture: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report. | none recorded |
 | 2026-11-01 | [Ministral 3 3B Instruct 2512 (Mistral AI), `Ministral-3-3B-Instruct-2512-Q8_0.gguf`](#ministral-3-3b-instruct-2512-q8_0) | Tier 2, maintained on report | R4.4 admission of the mistral3 architecture: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report. | none recorded |
+| 2026-11-02 | [Devstral Small 2 24B Instruct 2512 (Mistral AI), `Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf`](#devstral-small-2-24b-instruct-2512-q4_k_m) | Tier 2, maintained on report | R4.4.4: Devstral certified with the tool-calling axis, admitted 2026-11-02 at Tier 2 with a CPU cell, a float32 reference measurement and the agent-torture suite. Maintained on report. | none recorded |
+| 2026-11-02 | [Devstral Small 2 24B Instruct 2512 (Mistral AI), `Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf`](#devstral-small-2-24b-instruct-2512-q8_0) | Tier 2, maintained on report | R4.4.4: Devstral certified with the tool-calling axis, admitted 2026-11-02 at Tier 2 with a CPU cell, a float32 reference measurement and the agent-torture suite. Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->

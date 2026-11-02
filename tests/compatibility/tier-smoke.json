@@ -2948,6 +2948,62 @@
           }
         }
       }
+    },
+    "devstral-small-2-24b-instruct-2512-q4_k_m": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/devstral-small-2-24b-instruct-2512-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "sha256": "f09eceb7648b6dd3301fe816d8049e8dd9131ef0a5f073e61097e87f36514764",
+          "bytes": 209,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-02",
+            "runner_version": "1.11.0",
+            "commit": "92a3a6b1ad59664c583412658facf92c284028b2"
+          }
+        }
+      }
+    },
+    "devstral-small-2-24b-instruct-2512-q8_0": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/devstral-small-2-24b-instruct-2512-q8_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "f09eceb7648b6dd3301fe816d8049e8dd9131ef0a5f073e61097e87f36514764",
+          "bytes": 209,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-02",
+            "runner_version": "1.11.0",
+            "commit": "92a3a6b1ad59664c583412658facf92c284028b2"
+          }
+        }
+      }
     }
   }
 }
