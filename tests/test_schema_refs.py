@@ -85,6 +85,16 @@ def test_a_pointer_with_escapes_resolves(srv):
     assert _constrained(srv, schema) == {"k": "only"}
 
 
+def test_a_percent_encoded_fragment_resolves(srv):
+    # a URI fragment: %20 is decoded first, and %7E1 becomes ~1, then "/"
+    schema = {"$defs": {"My Type": {"type": "string", "enum": ["t"]},
+                        "a/b": {"type": "string", "enum": ["s"]}},
+              "type": "object", "properties": {"k": {"$ref": "#/$defs/My%20Type"},
+                                               "j": {"$ref": "#/$defs/a%7E1b"}},
+              "required": ["k", "j"]}
+    assert _constrained(srv, schema) == {"k": "t", "j": "s"}
+
+
 def test_a_reference_into_properties_resolves(srv):
     schema = {"type": "object",
               "properties": {"a": {"type": "string", "enum": ["x"]},

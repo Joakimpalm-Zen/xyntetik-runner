@@ -3291,10 +3291,34 @@ static const char *const REFX_LIST[] = { "anyOf", "oneOf", "allOf", "prefixItems
 static const char *const REFX_ANNOT[] = { "title", "description", "$comment",
     "default", "examples", "deprecated", "readOnly", "writeOnly", NULL };
 
-// a local JSON pointer ("#", "#/$defs/A", "#/properties/x~1y") against the root
+// a local JSON pointer ("#", "#/$defs/A", "#/properties/x~1y") against the root.
+// The reference is a URI fragment, so it is percent-decoded first
+// (#/$defs/My%20Type), then each part's ~1 and ~0 (RFC 6901, sections 4 and 6).
 static jv *refx_target(jv *root, const char *ref) {
+    char dec[512];
+    size_t m = 0;
+    for (const char *q = ref + 1; *q; q++) {
+        char c = *q;
+        if (c == '%') {
+            int v = 0;
+            for (int h = 1; h <= 2; h++) {
+                char x = q[h];
+                int d = x >= '0' && x <= '9' ? x - '0'
+                      : x >= 'a' && x <= 'f' ? x - 'a' + 10
+                      : x >= 'A' && x <= 'F' ? x - 'A' + 10 : -1;
+                if (d < 0) return NULL;
+                v = v * 16 + d;
+            }
+            if (v == 0) return NULL;
+            c = (char)v;
+            q += 2;
+        }
+        if (m + 1 >= sizeof dec) return NULL;
+        dec[m++] = c;
+    }
+    dec[m] = 0;
     jv *node = root;
-    const char *p = ref + 1;
+    const char *p = dec;
     char part[256];
     while (*p) {
         if (*p != '/') return NULL;
@@ -3316,9 +3340,9 @@ static jv *refx_target(jv *root, const char *ref) {
         if (node->type == J_OBJ) node = jv_get(node, part);
         else if (node->type == J_ARR) {
             char *end;
-            long i = strtol(part, &end, 10);
-            if (!n || *end || i < 0 || i >= node->n) return NULL;
-            node = node->items[i];
+            long k = strtol(part, &end, 10);
+            if (!n || *end || k < 0 || k >= node->n) return NULL;
+            node = node->items[k];
         } else return NULL;
     }
     return node;

@@ -533,6 +533,9 @@ class Client:
 
 # ------------------------------------------------------- schema validation
 def _local_ref(root, ref):
+    # a URI fragment: percent-decoded first, then ~1 and ~0 (RFC 6901)
+    from urllib.parse import unquote
+    ref = unquote(ref)
     node = root
     for part in ref[2:].split("/") if ref != "#" else []:
         node = node[part.replace("~1", "/").replace("~0", "~")]
