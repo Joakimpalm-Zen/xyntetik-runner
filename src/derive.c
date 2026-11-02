@@ -47,6 +47,8 @@ typedef struct {
     const char *license;       // --license: for a parent that declares none
     const char *base_model;    // --base-model REPO[@REV]: the publisher's repository
     const char *credits[8];    // --credit TEXT: inputs the card credits
+    const char *compares[8];   // --compare LABEL=GOLD.json[:SIDE][:BYTES]
+    int n_compares;
     int n_credits;
     int n_ref_args;
     const char *ctx, *threads, *gpu;
@@ -103,6 +105,9 @@ static void derive_usage(FILE *f) {
         "  --base-model REPO[@REV]  the publisher's repository (and revision): the\n"
         "                 card's base_model, and the reference's name on the card\n"
         "  --credit TEXT  credit an input on the card (repeatable), e.g. an imatrix\n"
+        "  --compare LABEL=GOLD.json[:SIDE][:BYTES]  with --reference: another file's\n"
+        "                 gold-logits run in the same window (side a or b, its size),\n"
+        "                 on the card with the paired tests (repeatable)\n"
         "  --license ID   the licence of a parent that declares no general.license\n"
         "                 (its source's terms; refused if the parent declares another)\n"
         "  --corpus FILE  the text (default tests/fixtures/gold-corpus-2k.txt)\n"
@@ -163,6 +168,10 @@ static int parse_args(int argc, char **argv, derive_opts *o) {
         else if (!strcmp(a, "--corpus")) o->corpus = v;
         else if (!strcmp(a, "--license")) o->license = v;
         else if (!strcmp(a, "--base-model")) o->base_model = v;
+        else if (!strcmp(a, "--compare")) {
+            if (o->n_compares == 8) { fprintf(stderr, "error: at most 8 --compare\n"); return 1; }
+            o->compares[o->n_compares++] = v;
+        }
         else if (!strcmp(a, "--credit")) {
             if (o->n_credits == 8) { fprintf(stderr, "error: at most 8 --credit\n"); return 1; }
             o->credits[o->n_credits++] = v;
@@ -211,6 +220,11 @@ static int parse_args(int argc, char **argv, derive_opts *o) {
             fprintf(stderr, "error: runner derive: unknown option %s (runner derive --help)\n", a);
             return 1;
         }
+    }
+    if (o->n_compares && !o->reference_hf) {
+        fprintf(stderr, "error: --compare sets other files beside this one against the publisher "
+                "reference and needs --reference hf:DIR\n");
+        return 1;
     }
     if (o->n_ref_args && !o->reference_hf) {
         fprintf(stderr, "error: --reference-arg passes arguments to the publisher reference and "
@@ -786,12 +800,177 @@ static double rec_num(jv *obj, const char *key, double dflt) {
     return num_of(obj, key, &v) ? v : dflt;
 }
 
+// Paired tests, ported from scripts/gold-logits.py so a card's numbers are
+// the ones the script prints: McNemar's exact two-sided test on discordant
+// pairs, and the normal-approximation Wilcoxon signed-rank on per-position
+// differences (ties averaged, zeros dropped; fewer than 5 is no test).
+static double mcnemar_exact(int b, int c) {
+    int n = b + c, m = b < c ? b : c;
+    if (n == 0) return 1.0;
+    double tail = 0;
+    for (int k = 0; k <= m; k++)
+        tail += exp(lgamma(n + 1.0) - lgamma(k + 1.0) - lgamma(n - k + 1.0) - n * log(2.0));
+    return tail * 2.0 < 1.0 ? tail * 2.0 : 1.0;
+}
+
+static const double *g_absd;
+static int cmp_absd(const void *a, const void *b) {
+    double x = fabs(g_absd[*(const int *)a]), y = fabs(g_absd[*(const int *)b]);
+    return (x > y) - (x < y);
+}
+
+static bool wilcoxon_signed_rank(const double *diffs, int n_all, double *z_out, double *p_out) {
+    double *d = malloc(sizeof(double) * (size_t)(n_all ? n_all : 1));
+    int *ord = malloc(sizeof(int) * (size_t)(n_all ? n_all : 1));
+    double *rk = malloc(sizeof(double) * (size_t)(n_all ? n_all : 1));
+    int n = 0;
+    bool ok = false;
+    if (d && ord && rk) {
+        for (int i = 0; i < n_all; i++) if (diffs[i] != 0.0) d[n++] = diffs[i];
+        if (n >= 5) {
+            for (int i = 0; i < n; i++) ord[i] = i;
+            g_absd = d;
+            qsort(ord, (size_t)n, sizeof(int), cmp_absd);
+            for (int i = 0; i < n;) {
+                int j = i;
+                while (j + 1 < n && fabs(d[ord[j + 1]]) == fabs(d[ord[i]])) j++;
+                double r = (i + j) / 2.0 + 1.0;
+                for (int k = i; k <= j; k++) rk[ord[k]] = r;
+                i = j + 1;
+            }
+            double w = 0;
+            for (int i = 0; i < n; i++) if (d[i] > 0) w += rk[i];
+            double mu = n * (n + 1) / 4.0, sd = sqrt(n * (n + 1) * (2.0 * n + 1) / 24.0);
+            if (sd > 0) {
+                *z_out = (w - mu) / sd;
+                *p_out = erfc(fabs(*z_out) / sqrt(2.0));
+                ok = true;
+            }
+        }
+    }
+    free(d); free(ord); free(rk);
+    return ok;
+}
+
+// One --compare: LABEL=GOLD.json[:SIDE][:BYTES] against this file's own gold
+// run, over the positions both share. Appends one JSON object to `out`.
+// diffs are this file's KLD minus the other's, so z > 0 means the other file
+// is closer; McNemar counts margin-qualified positions (the reference's top
+// two more than 0.5 nats apart) one got right and the other wrong.
+static bool compare_json(const char *ours_gold, const char *spec, sbuf *out) {
+    const char *eq = strchr(spec, '=');
+    if (!eq || eq == spec) {
+        fprintf(stderr, "error: --compare is LABEL=GOLD.json[:SIDE][:BYTES] (got %s)\n", spec);
+        return false;
+    }
+    char label[160], path[1024], side[4] = "a";
+    long long bytes = -1;
+    snprintf(label, sizeof label, "%.*s", (int)(eq - spec), spec);
+    snprintf(path, sizeof path, "%s", eq + 1);
+    for (int pass = 0; pass < 2; pass++) {   // trailing :BYTES, then :SIDE
+        char *colon = strrchr(path, ':');
+        if (!colon) break;
+        const char *t = colon + 1;
+        bool digits = *t != '\0';
+        for (const char *q = t; *q; q++) digits &= *q >= '0' && *q <= '9';
+        if (digits && bytes < 0) { bytes = atoll(t); *colon = '\0'; }
+        else if (!strcmp(t, "a") || !strcmp(t, "b")) { snprintf(side, sizeof side, "%s", t); *colon = '\0'; }
+        else break;
+    }
+    jv *og = read_json(ours_gold), *tg = read_json(path);
+    jv *orows = jv_get(og, "rows"), *trows = jv_get(tg, "rows");
+    if (!orows || !trows || orows->type != J_ARR || trows->type != J_ARR) {
+        fprintf(stderr, "error: --compare needs gold-logits runs with per-position rows (%s, %s)\n",
+                ours_gold, path);
+        jv_free(og); jv_free(tg);
+        return false;
+    }
+    int cap = orows->n, n = 0, qual = 0, b = 0, c = 0, top_o = 0, q_o = 0;
+    double *diffs = malloc(sizeof(double) * (size_t)(cap ? cap : 1));
+    double *tk = malloc(sizeof(double) * (size_t)(cap ? cap : 1));
+    double sum_t = 0;
+    for (int i = 0; diffs && tk && i < orows->n; i++) {
+        jv *ro = orows->items[i];
+        double pos = rec_num(ro, "pos", -1);
+        jv *rt = NULL;
+        for (int j = 0; j < trows->n && !rt; j++)
+            if (rec_num(trows->items[j], "pos", -2) == pos) rt = trows->items[j];
+        jv *so = jv_get(ro, "a"), *st = jv_get(rt, side);
+        double ko, kt;
+        if (!rt || !num_of(so, "kld", &ko) || !num_of(st, "kld", &kt)) continue;
+        bool ao = jv_bool(jv_get(so, "agree"), false), at = jv_bool(jv_get(st, "agree"), false);
+        diffs[n] = ko - kt;
+        tk[n++] = kt;
+        sum_t += kt;
+        top_o += at;
+        if (rec_num(ro, "gold_margin", 0) > 0.5) {
+            qual++;
+            q_o += at;
+            b += ao && !at;
+            c += at && !ao;
+        }
+    }
+    double z = 0, pw = 1;
+    bool have_w = n && wilcoxon_signed_rank(diffs, n, &z, &pw);
+    double med = 0;
+    if (n) {
+        qsort(tk, (size_t)n, sizeof(double), cmp_double);
+        med = n % 2 ? tk[n / 2] : 0.5 * (tk[n / 2 - 1] + tk[n / 2]);
+    }
+    double mean = n ? sum_t / n : 0, mqp = qual ? 100.0 * q_o / qual : 0;
+    sb_lit(out, "{\"label\":"); sb_str(out, label);
+    sb_lit(out, ",\"gold\":"); sb_str(out, plat_path_base(path));
+    sb_fmt(out, ",\"side\":\"%s\",\"bytes\":", side);
+    if (bytes >= 0) sb_fmt(out, "%lld", bytes); else sb_lit(out, "null");
+    sb_fmt(out, ",\"positions\":%d,\"mean_kld\":", n); sb_num(out, mean);
+    sb_lit(out, ",\"median_kld\":"); sb_num(out, med);
+    sb_lit(out, ",\"top1_agreement_pct\":"); sb_num(out, n ? 100.0 * top_o / n : 0);
+    sb_lit(out, ",\"margin_qualified_top1_pct\":"); sb_num(out, mqp);
+    sb_lit(out, ",\"wilcoxon_z\":"); if (have_w) sb_num(out, z); else sb_lit(out, "null");
+    sb_lit(out, ",\"wilcoxon_p\":"); if (have_w) sb_num(out, pw); else sb_lit(out, "null");
+    sb_fmt(out, ",\"mcnemar_this_only\":%d,\"mcnemar_other_only\":%d,\"mcnemar_p\":", b, c);
+    sb_num(out, mcnemar_exact(b, c));
+    sb_fmt(out, ",\"fails_bar\":%s}", mean > BAR_MEAN_KLD || mqp < BAR_MQ_TOP1 ? "true" : "false");
+    free(diffs); free(tk);
+    jv_free(og); jv_free(tg);
+    return n > 0;
+}
+
+
 // The card from a derive record alone: what the file is and is not first, the
 // unflattering metric first, the reference named exactly, base names only.
 // derive writes every card through here, and `runner derive --card-from REC`
 // rewrites one with a newer runner's wording without measuring again.
+// A file the record names, as recorded, or (the record moved off the machine
+// that measured it) by the same name beside the record.
+static const char *beside_record(const char *rec_path, const char *recorded, char *buf, size_t n) {
+    FILE *f = recorded ? plat_fopen(recorded, "rb") : NULL;
+    if (f || !recorded) { if (f) fclose(f); return recorded; }
+    const char *b = recorded;
+    for (const char *q = recorded; *q; q++) if (*q == '/' || *q == '\\') b = q + 1;
+    const char *d = rec_path, *e = NULL;
+    for (const char *q = rec_path; *q; q++) if (*q == '/' || *q == '\\') e = q;
+    if (e) snprintf(buf, n, "%.*s/%s", (int)(e - d), d, b);
+    else snprintf(buf, n, "%s", b);
+    f = plat_fopen(buf, "rb");
+    if (!f) return recorded;
+    fclose(f);
+    return buf;
+}
+
+// The text the measurement read, as the card names it: the project's own
+// corpus described, any other by its name.
+static void put_corpus(sbuf *c, const char *base) {
+    if (!strcmp(base, "gold-corpus-2k.txt"))
+        sb_lit(c, "the project's gold corpus (`gold-corpus-2k.txt`: English technical "
+               "documentation with code, English prose and one Swedish passage)");
+    else
+        sb_fmt(c, "`%s`", base);
+}
+
 static bool card_from_record(const char *rec_path, const char *card_path,
-                             const char *base_fill, const char *const *credit_fill, int n_credit_fill) {
+                             const char *base_fill, const char *const *credit_fill, int n_credit_fill,
+                             const char *const *cmp_fill, int n_cmp_fill) {
     jv *r = read_json(rec_path);
     if (!r) return false;
     if (strcmp(jv_str(jv_get(r, "schema_version"), ""), "xyntetik.runner.derive.v1")) {
@@ -832,19 +1011,92 @@ static bool card_from_record(const char *rec_path, const char *card_path,
         sb_lit(&c, "\n");
     }
     sb_lit(&c, "tags:\n- gguf\n- runner-derive\n---\n\n");
-    if (publisher) {
+    // what the file is and is not for first, then the weakest number, then
+    // the verdict (the card rules: limits first, the unflattering metric
+    // before the flattering one)
+    const char *corpus = rec_base(meas, "corpus");
+    char of[300];
+    if (*repo_id) snprintf(of, sizeof of, " of `%s`", repo_id);
+    else of[0] = '\0';
+    sb_fmt(&c, "`%s` is a %.1f GB GGUF%s, made from `%s` by `runner derive`, for local inference "
+           "in GGUF engines. ", ob, fbytes / 1e9, of, pb);
+    if (publisher)
+        sb_lit(&c, "It is not the publisher's model, only measured against it, and it was measured "
+               "on one text only: ");
+    else
+        sb_lit(&c, "It was measured against the parent file in Runner's arithmetic, not the "
+               "publisher's float32 model, so this card states no bar verdict, and on one text "
+               "only: ");
+    put_corpus(&c, corpus);
+    sb_fmt(&c, ", %d positions. No task benchmark was run.\n\n", positions);
+    sb_fmt(&c, "Weakest number first: top-1 agreement with the %s is %.2f%%",
+           publisher ? "publisher's float32 model" : "parent file", top1);
+    if (top1 < 100.0)
+        sb_fmt(&c, ": at about one position in %.0f the file's most likely next token differs from "
+               "the reference's", 100.0 / (100.0 - top1));
+    sb_lit(&c, ".\n\n");
+    if (publisher)
         sb_fmt(&c, "This file %s the bar: mean KLD %.4f against the publisher's float32 model "
-               "(bar %.2f) and margin-qualified top-1 %.2f%% (bar %.0f%%), over %d positions.\n\n",
-               passes ? "passes" : "fails", mean, BAR_MEAN_KLD, mqp, BAR_MQ_TOP1, positions);
-        sb_fmt(&c, "`%s` was made from `%s` by `runner derive` for local inference in GGUF "
-               "engines. It is not the publisher's model, only measured against it.\n\n", ob, pb);
-    } else {
-        sb_fmt(&c, "`%s` was made from `%s` by `runner derive` for local inference in GGUF "
-               "engines. It was measured against the parent file in Runner's arithmetic, not "
-               "the publisher's float32 model, so this card states no bar verdict.\n\n", ob, pb);
-        sb_fmt(&c, "Against the parent: mean KLD %.4f, max KLD %.4f, top-1 agreement %.2f%% over "
-               "%d positions.\n\n", mean, mx, top1, positions);
+               "(bar %.2f) and margin-qualified top-1 %.2f%% (bar %.0f%%).\n\n",
+               passes ? "passes" : "fails", mean, BAR_MEAN_KLD, mqp, BAR_MQ_TOP1);
+    else
+        sb_fmt(&c, "Against the parent: mean KLD %.4f, max KLD %.4f.\n\n", mean, mx);
+    // other files measured in the same window: the record's, or computed now
+    // from --card-from's --compare against the record's own gold run
+    jv *cmps = jv_get(r, "comparisons"), *cmp_owned = NULL;
+    if ((!cmps || cmps->type != J_ARR || !cmps->n) && n_cmp_fill && publisher) {
+        sbuf cj = {0};
+        sb_lit(&cj, "[");
+        bool okc = true;
+        for (int i = 0; okc && i < n_cmp_fill; i++) {
+            if (i) sb_lit(&cj, ",");
+            char near[1200];
+            okc = compare_json(beside_record(rec_path, jv_str(jv_get(meas, "reference_score"), ""), near,
+                                             sizeof near), cmp_fill[i], &cj);
+        }
+        sb_lit(&cj, "]");
+        if (!okc) { free(cj.s); free(c.s); jv_free(r); return false; }
+        cmp_owned = json_parse(cj.s, cj.n);
+        free(cj.s);
+        cmps = cmp_owned;
     }
+    if (cmps && cmps->type == J_ARR && cmps->n) {
+        sb_lit(&c, "## Against other files in the same window\n\n"
+               "Each file measured against the same reference at the same positions; paired "
+               "tests against this file. Files closer than this one come first.\n\n");
+        // three passes: closer than this file, not distinguishable, further
+        for (int pass = 0; pass < 3; pass++)
+            for (int i = 0; i < cmps->n; i++) {
+                jv *x = cmps->items[i];
+                double km = rec_num(x, "mean_kld", 0), pw = rec_num(x, "wilcoxon_p", 1);
+                double xmq = rec_num(x, "margin_qualified_top1_pct", 0), pm = rec_num(x, "mcnemar_p", 1);
+                double xb = rec_num(x, "bytes", -1);
+                int cls = pw < 0.05 ? (km < mean ? 0 : 2) : 1;
+                if (cls != pass) continue;
+                char size[96] = "";
+                if (xb > 0)
+                    snprintf(size, sizeof size, " (%.2f GB, %.2f GB %s than this file)", xb / 1e9,
+                             fabs(xb - fbytes) / 1e9, xb > fbytes ? "larger" : "smaller");
+                const char *lab = jv_str(jv_get(x, "label"), "?");
+                if (cls == 0)
+                    sb_fmt(&c, "- `%s`%s is closer to the float32 model than this file on mean KLD: "
+                           "%.4f against %.4f (paired Wilcoxon p %.2g).", lab, size, km, mean, pw);
+                else if (cls == 1)
+                    sb_fmt(&c, "- `%s`%s and this file are not distinguishable on mean KLD: %.4f "
+                           "against %.4f (paired Wilcoxon p %.2g).", lab, size, km, mean, pw);
+                else
+                    sb_fmt(&c, "- This file is closer to the float32 model than `%s`%s on mean KLD: "
+                           "%.4f against %.4f (paired Wilcoxon p %.2g).", lab, size, mean, km, pw);
+                sb_fmt(&c, " Margin-qualified top-1: %.2f%% against this file's %.2f%% (%d positions "
+                       "only this file got, %d only `%s` got; McNemar p %.2g, %s).", xmq, mqp,
+                       (int)rec_num(x, "mcnemar_this_only", 0), (int)rec_num(x, "mcnemar_other_only", 0),
+                       lab, pm, pm < 0.05 ? "a difference" : "a tie");
+                if (jv_bool(jv_get(x, "fails_bar"), false)) sb_fmt(&c, " `%s` fails the bar.", lab);
+                sb_lit(&c, "\n");
+            }
+        sb_lit(&c, "\n");
+    }
+    jv_free(cmp_owned);
     sb_lit(&c, "## Size\n\n| | bytes |\n|---|---:|\n");
     sb_fmt(&c, "| parent `%s` | %lld |\n| this file | %lld (%.1f%% of the parent) |\n\n",
            pb, pbytes, fbytes, pbytes > 0 ? 100.0 * (double)fbytes / (double)pbytes : 0.0);
@@ -857,7 +1109,21 @@ static bool card_from_record(const char *rec_path, const char *card_path,
                nd, nd == 1 ? "" : "s", jv_str(jv_get(rec, "high"), "?"), jv_str(jv_get(rec, "low"), "?"));
     }
     sb_lit(&c, "## Recipe\n\n```sh\n");
-    sb_lit(&c, jv_str(jv_get(r, "command"), ""));
+    {
+        // the reference by repository and revision where the record knows it,
+        // not by the local folder it was read from, so a reader can reproduce it
+        const char *cmd = jv_str(jv_get(r, "command"), "");
+        char from[600];
+        snprintf(from, sizeof from, " --reference hf:%s", rec_base(ref, "hf"));
+        const char *hit = publisher && repo && *repo ? strstr(cmd, from) : NULL;
+        if (hit) {
+            sb_put(&c, cmd, (size_t)(hit - cmd));
+            sb_fmt(&c, " --reference hf:%s", repo);
+            sb_lit(&c, hit + strlen(from));
+        } else {
+            sb_lit(&c, cmd);
+        }
+    }
     sb_lit(&c, "\n```\n\n## Fidelity\n\n"
            "| reference | positions | mean KLD | median KLD | max KLD | top-1 | margin-qualified top-1 |\n"
            "|---|---:|---:|---:|---:|---:|---:|\n");
@@ -962,15 +1228,16 @@ static void put_command(sbuf *b, const derive_opts *o) {
 // beside it under the file's name unless -o says where
 static int card_only(int argc, char **argv) {
     const char *rec = NULL, *out = NULL, *base = NULL;
-    const char *credits[8];
-    int nc = 0;
+    const char *credits[8], *cmps[8];
+    int nc = 0, ncmp = 0;
     for (int i = 1; i + 1 < argc; i += 2) {
         if (!strcmp(argv[i], "--card-from")) rec = argv[i + 1];
         else if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--out")) out = argv[i + 1];
         else if (!strcmp(argv[i], "--base-model")) base = argv[i + 1];
         else if (!strcmp(argv[i], "--credit") && nc < 8) credits[nc++] = argv[i + 1];
+        else if (!strcmp(argv[i], "--compare") && ncmp < 8) cmps[ncmp++] = argv[i + 1];
         else {
-            fprintf(stderr, "error: --card-from takes -o CARD, --base-model and --credit beside it "
+            fprintf(stderr, "error: --card-from takes -o CARD, --base-model, --credit and --compare beside it "
                     "(got %s)\n", argv[i]);
             return 1;
         }
@@ -992,7 +1259,7 @@ static int card_only(int argc, char **argv) {
         memcpy(card, rec, n - k);
         strcpy(card + n - k, ".README.md");
     }
-    bool ok = card_from_record(rec, out ? out : card, base, credits, nc);
+    bool ok = card_from_record(rec, out ? out : card, base, credits, nc, cmps, ncmp);
     if (ok) printf("derive: card %s from %s\n", out ? out : card, rec);
     free(card);
     return ok ? 0 : 1;
@@ -1112,7 +1379,12 @@ int derive_main(int argc, char **argv) {
         sb_lit(&r, "\"file\":"); sb_str(&r, o.parent);
         sb_fmt(&r, ",\"sha256\":\"%s\",\"arithmetic\":\"runner, cpu\"", psha);
     }
-    sb_lit(&r, "},\"credits\":[");
+    sb_lit(&r, "},\"comparisons\":[");
+    for (int i = 0; i < o.n_compares; i++) {
+        if (i) sb_lit(&r, ",");
+        if (!compare_json(gold_out, o.compares[i], &r)) return 1;
+    }
+    sb_lit(&r, "],\"credits\":[");
     for (int i = 0; i < o.n_credits; i++) {
         if (i) sb_lit(&r, ",");
         sb_str(&r, o.credits[i]);
@@ -1182,7 +1454,7 @@ int derive_main(int argc, char **argv) {
     // 5. the card, written from the record just written: the record is the
     //    one source, and --card-from rewrites a card from it alone
     free(cmd.s);
-    if (!card_from_record(rec_path, card_path, NULL, NULL, 0)) return 1;
+    if (!card_from_record(rec_path, card_path, NULL, NULL, 0, NULL, 0)) return 1;
 
     printf("derive: %s (%lld bytes, %.1f%% of the parent); mean KLD %.4f, top-1 %.2f%% "
            "against the %s%s; record %s, card %s\n",

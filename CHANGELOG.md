@@ -58,15 +58,26 @@ Current release and unreleased changes. Compatibility follows the
   `scripts/type-plan-by-sensitivity.py` does, so selective precision needs no
   hand-written plan. The default reference is the parent file, and its card
   says so in its first lines and states no bar verdict. `--reference hf:DIR`
-  measures against the publisher's float32 model, and that card leads with
-  pass or fail. `--reference-arg ARG` passes arguments to that reference run
+  measures against the publisher's float32 model. Every card opens with what
+  the file is and is not for and the one text it was measured on, then its
+  weakest number (raw top-1 agreement), then pass or fail against the bar.
+  `--compare LABEL=GOLD.json[:SIDE][:BYTES]` (repeatable) puts other files
+  measured in the same window on the card with the paired tests (Wilcoxon on
+  per-position KLD, McNemar on margin-qualified top-1, as
+  `scripts/gold-logits.py` computes them), files closer than this one first.
+  `--reference-arg ARG` passes arguments to that reference run
   (`--upcast-at-use`, or `--offload-dir` and `--max-memory`) for a model too
   large for float32 in memory. `--license ID` gives the licence of a parent whose
   file declares none, and never overrides one it declares. `runner derive --card-from REC` rewrites a
   card from its record alone; every card is written from the record, so the
   two cannot disagree. `--base-model REPO[@REV]` and `--credit TEXT` name
-  the publisher's repository and credit inputs on the card. The license is copied from the parent, and a parent without
-  one is refused. `--score` gains `--score-out F` and `--score-tokens N`, and
+  the publisher's repository and credit inputs on the card; with the
+  repository known, the card's recipe names the reference as
+  `hf:REPO@REV` rather than the local folder. `--card-from` accepts
+  `--base-model`, `--credit` and `--compare` for a record that lacks them, and
+  finds the record's gold run by name beside the record when it moved. Without
+  `--license` the licence is copied from the parent, and a parent without one
+  is refused. `--score` gains `--score-out F` and `--score-tokens N`, and
   its JSON gains `n_special` (R17.6.1).
 
 - **An activation trace that says where two forwards part.** Final logits

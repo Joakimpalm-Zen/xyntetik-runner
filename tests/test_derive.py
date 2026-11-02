@@ -19,6 +19,7 @@ import math
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 
@@ -180,8 +181,13 @@ def test_a_publisher_reference_card_says_pass_or_fail_first(runner_bin, tmp_path
     sc = json.loads(pathlib.Path(rec["measurement"]["file_score"]).read_text())
     assert len(sc["tokens"]) >= sc.get("n_special", 0) + 8 + 40 * 4 + 1
     body = pathlib.Path(str(out) + ".README.md").read_text(encoding="utf-8").split("\n---\n", 1)[1]
-    first = body.strip().splitlines()[0]
-    assert ("passes the bar" in first) if passes else ("fails the bar" in first)
+    paras = [p for p in body.strip().split("\n\n")]
+    # what the file is and is not for comes first, then the weakest number,
+    # then the bar line (the card rules: limits first, the unflattering
+    # metric before the flattering one)
+    assert "not the publisher's model" in paras[0] and "measured on one text only" in paras[0]
+    assert paras[1].startswith("Weakest number first:") and "top-1 agreement" in paras[1]
+    assert ("passes the bar" in paras[2]) if passes else ("fails the bar" in paras[2])
 
 
 def test_the_publisher_reference_is_refused_without_its_python(runner_bin, tmp_path):
@@ -405,3 +411,87 @@ def test_base_model_and_credits_name_what_the_files_cannot(runner_bin, tmp_path)
                        capture_output=True, text=True)
     assert p.returncode == 0, p.stderr
     assert card2.read_text() == card
+
+
+def _fake_gold_rows(tmp, name, rows_a, rows_b=None, mean=0.01, mq=99.0):
+    """A stand-in gold run with per-position rows (pos, gold_margin, a/b kld and agree)."""
+    rows = []
+    for i, (k, ag) in enumerate(rows_a):
+        r = {"pos": 8 + 4 * i, "gold_margin": 1.0 if i % 3 else 0.2, "a": {"kld": k, "agree": ag}}
+        if rows_b:
+            r["b"] = {"kld": rows_b[i][0], "agree": rows_b[i][1]}
+        rows.append(r)
+    out = tmp / name
+    out.write_text(json.dumps({"summary": {"positions": len(rows), "reference_class": "FakeForCausalLM",
+        "sides": {"a": {"mean_kld_vs_gold": sum(k for k, _ in rows_a) / len(rows_a)}}}, "rows": rows}))
+    return out
+
+
+def test_compare_renders_other_files_in_the_same_window_unflattering_first(runner_bin, tmp_path):
+    """--compare LABEL=GOLD.json[:SIDE][:BYTES] (repeatable) puts other files
+    measured in the same window on the card, with the paired tests: Wilcoxon on
+    per-position KLD and McNemar on margin-qualified top-1, the numbers
+    scripts/gold-logits.py computes (its functions are the anchor here). A file
+    closer than this one is named before a file this one beats."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gold_logits", ROOT / "scripts" / "gold-logits.py")
+    gl = importlib.util.module_from_spec(spec); spec.loader.exec_module(gl)
+    n = 40
+    ours = [(0.010 + 0.0005 * (i % 7), True) for i in range(n)]
+    better = [(0.007 + 0.0004 * (i % 5), True) for i in range(n)]
+    worse = [(0.090 + 0.001 * (i % 9), i % 4 != 0) for i in range(n)]
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    script = tmp_path / "fake_gold_rows.py"
+    script.write_text(f'''import json, shutil, sys
+a = sys.argv
+shutil.copy({str(tmp_path / "ours.json")!r}, a[a.index("--out") + 1])
+''')
+    ours_g = _fake_gold_rows(tmp_path, "ours.json", ours)
+    d = json.loads(ours_g.read_text())
+    d["summary"]["sides"]["a"].update({"max_kld_vs_gold": 0.02, "top1_agreement_pct": 96.0,
+                                       "margin_qualified_top1_pct": 99.0})
+    ours_g.write_text(json.dumps(d))
+    other = _fake_gold_rows(tmp_path, "other.json", worse, better)
+    out = tmp_path / "cmp.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                       "--compare", f"worse file={other}:a:300000",
+                       "--compare", f"better file={other}:b:400000",
+                       env={"RUNNER_GOLD_LOGITS": str(script)})
+    assert rc == 0, se[-1500:]
+    rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
+    by = {c["label"]: c for c in rec["comparisons"]}
+    for label, rows in (("worse file", worse), ("better file", better)):
+        z, pw, _ = gl.wilcoxon_signed_rank([o[0] - r[0] for o, r in zip(ours, rows)])
+        assert by[label]["wilcoxon_p"] == pytest.approx(pw, rel=1e-9)
+        mq = [i for i in range(n) if i % 3]
+        b = sum(1 for i in mq if ours[i][1] and not rows[i][1])
+        c = sum(1 for i in mq if rows[i][1] and not ours[i][1])
+        assert by[label]["mcnemar_p"] == pytest.approx(gl.mcnemar_exact(b, c), rel=1e-9)
+    card = pathlib.Path(str(out) + ".README.md").read_text()
+    sec = card.split("## Against other files in the same window", 1)[1]
+    assert sec.index("better file") < sec.index("worse file")   # the unflattering comparison first
+    assert "closer to the float32 model than this file" in sec
+    # a record moved off the machine that measured it: --card-from finds the
+    # gold run by name beside the record, computes the same comparisons, and
+    # the recipe names the reference by repository, not the local folder
+    moved = tmp_path / "moved"
+    moved.mkdir()
+    r2 = dict(rec)
+    r2.pop("comparisons")
+    r2["base_model_repo"] = None
+    r2["measurement"] = dict(rec["measurement"], reference_score="/nowhere/" + pathlib.Path(
+        rec["measurement"]["reference_score"]).name)
+    (moved / "m.derive.json").write_text(json.dumps(r2))
+    shutil.copy(rec["measurement"]["reference_score"], moved)
+    card2 = moved / "m.md"
+    p = subprocess.run([str(runner_bin), "derive", "--card-from", str(moved / "m.derive.json"), "-o",
+                        str(card2), "--base-model", "org/model@abc123",
+                        "--compare", f"worse file={other}:a:300000",
+                        "--compare", f"better file={other}:b:400000"], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr[-1500:]
+    t2 = card2.read_text()
+    assert t2.split("## Against other files in the same window", 1)[1].split("## ")[0] == \
+        sec.split("## ")[0]
+    assert "--reference hf:org/model@abc123" in t2 and f"--reference hf:{hf.name} " not in t2
