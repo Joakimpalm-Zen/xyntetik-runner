@@ -4139,11 +4139,28 @@ bool i8_dot_ok(int type, int n) {
 static _Atomic int g_i8_env = -1;     // -1 unparsed, else the env verdict
 static _Atomic int g_i8_force = -1;   // -1 follow env, else the forced verdict
 
+// A build with no int8 kernel (neither the AVX2 nor the arm64 dot-product
+// one, as i8_dot_ok admits them) ignores RUNNER_CPU_I8 with one notice: every
+// matvec would run f32 anyway, and the route line and receipts read this to
+// name the route, so "int8" there would claim a route that never ran. That
+// was so on the 1.11.0 macOS binary, built for generic armv8-a (#552).
+#if RUNNER_AVX2 || RUNNER_I8_NEON
+#define RUNNER_I8_KERNEL 1
+#else
+#define RUNNER_I8_KERNEL 0
+#endif
+
 bool i8_dot_enabled(void) {
-    if (g_i8_force >= 0) return g_i8_force != 0;
+    if (g_i8_force >= 0) return RUNNER_I8_KERNEL && g_i8_force != 0;
     if (g_i8_env < 0) {
         const char *e = getenv("RUNNER_CPU_I8");
-        g_i8_env = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+        int on = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+        if (on && !RUNNER_I8_KERNEL) {
+            fprintf(stderr, "RUNNER_CPU_I8: no int8 dot kernel on this build "
+                    "(AVX2, or arm64 with the dot-product extension); ignored\n");
+            on = 0;
+        }
+        g_i8_env = on;
     }
     return g_i8_env != 0;
 }
