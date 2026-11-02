@@ -3309,7 +3309,7 @@ static jv *refx_target(jv *root, const char *ref) {
                 if (d < 0) return NULL;
                 v = v * 16 + d;
             }
-            if (v == 0) return NULL;
+            if (v == 0) return NULL;   // a NUL would cut the key short
             c = (char)v;
             q += 2;
         }

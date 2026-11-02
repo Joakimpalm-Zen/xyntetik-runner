@@ -129,6 +129,12 @@ def test_a_property_named_definitions_is_kept(srv):
     ({"type": "object", "properties": {"a": {"$dynamicRef": "#node"}}},
      "$dynamicRef and $recursiveRef are not supported"),
     ({"type": "object", "properties": {"a": {"$ref": 7}}}, "$ref must be a string"),
+    # a decoded NUL is refused, never a key cut short at it: "a%00" must not
+    # resolve to the "a" this schema defines
+    ({"$defs": {"a": {"type": "string"}}, "type": "object",
+      "properties": {"k": {"$ref": "#/$defs/a%00"}}}, "$ref '#/$defs/a%00' does not resolve"),
+    ({"$defs": {"a": {"type": "string"}}, "type": "object",
+      "properties": {"k": {"$ref": "#/$defs/a%0"}}}, "$ref '#/$defs/a%0' does not resolve"),
 ])
 def test_what_cannot_be_inlined_is_refused_by_name(srv, schema, why):
     st, body = _schema(srv, schema)
