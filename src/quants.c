@@ -4156,10 +4156,20 @@ void i8_dot_force(int on) { g_i8_force = on < 0 ? -1 : (on != 0); }
 // so the same tolerance class and the same gate.
 static _Atomic int g_i8p_env = -1;
 
+// Only where the vector kernel exists (arm64 with the dot-product extension):
+// elsewhere the flag is ignored with one notice, since the scalar twin is a
+// test oracle, not a prefill route. An x86 kernel is the follow-up.
 bool i8_prefill_enabled(void) {
     if (g_i8p_env < 0) {
         const char *e = getenv("RUNNER_CPU_I8_PREFILL");
-        g_i8p_env = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+        int on = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+#if !RUNNER_I8_NEON
+        if (on)
+            fprintf(stderr, "RUNNER_CPU_I8_PREFILL: no int8 prefill kernel on this "
+                    "build (arm64 with the dot-product extension only); ignored\n");
+        on = 0;
+#endif
+        g_i8p_env = on;
     }
     return g_i8p_env != 0;
 }

@@ -1966,6 +1966,17 @@ AVX2 fallback): 2.4-2.5x on the kernel in isolation, but it quantizes the
 activations, so it is **off by default** - no format cleared the 0/64
 teacher-forced flip bar with a decode gain worth taking on the measurement
 box. `./test-i8-tol MODEL.gguf` is the gate.
+`RUNNER_CPU_I8_PREFILL=1` (opt-in, arm64 with the dot-product extension) takes
+the same int8 activations for CPU batches of 8 or more rows, prompt prefill and
+chunked scoring: four weight rows are repacked once into int8 codes with a
+scale and an offset per 16 elements (Q8_0, Q4_0, Q4_K, Q6_K) and dotted four
+rows at a time with `SDOT`. On an Apple M1 at 4 threads it read CPU prefill of
+512 tokens at 315 tok/s against 187 on Qwen3-0.6B Q8_0, and 44.4 against 29.7
+on Qwen3-4B Q4_K_M. It is off by default because it is farther from the
+publisher's model than the f32 route: against Qwen's float32 Qwen3-0.6B over
+2,000 positions, mean KLD 0.00747 against 0.00610, a difference the paired
+test separates (p 5e-86), with margin-qualified top-1 at 100% on both. The
+route line names it (`cpu_act` ends in `+int8-prefill`).
 
 **CUDA (experimental):** `RUNNER_CUDA_Q8X=1` quantizes each matvec's
 activation to int8 (per 32 elements) and runs the IQ3_S, IQ3_XXS, IQ4_XS,

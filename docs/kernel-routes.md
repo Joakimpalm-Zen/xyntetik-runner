@@ -37,6 +37,7 @@ produced are recorded beside the code that consults them.
 | `vec_dot`, the native quantized dot | one column, f32 activations | the CPU reference | `test-quants-simd` against scalar code |
 | `vec_dot_multi` | 2 to 7 columns (`MV_SMALL_BATCH` is 8) | bit-exact to the per-column `vec_dot` loop | `test-batch` (logits), `test-dot-route` (dispatch and a same-process cost ratio) |
 | dequantized f32 tile, `vec_dot_f32_tile` | 8 or more columns | bit-exact per output to the f32 dot of the dequantized row, whatever the blocking (`fmaf` tails) | `test-quants-simd`, `test-batch` |
+| int8 prefill tiles, `i8_tile_dot` | `RUNNER_CPU_I8_PREFILL=1`, 8 or more columns, a type with a pack (`i8_tile_ok`: Q8_0, Q4_0, Q4_K, Q6_K); NEON with dot-product, the scalar twin elsewhere | tolerance; off by default: mean KL 1.22x the f32 route's against float32 on Qwen3-0.6B Q8_0 (p 5e-86), prefill +68% / +49% on an Apple M1 (Q8_0 / Q4_K_M) | `test_quants_simd` (the kernel equals its scalar twin bit for bit, both the same-quantization dot), `tests/test_cpu_i8_prefill.py` |
 | fused int8 dot, `vec_dot_i8` | `RUNNER_CPU_I8=1`, fewer than 8 columns, at least 32 output rows, a supported type (`i8_dot_ok`) | tolerance; off by default because no format cleared 0/64 with a gain worth taking | `./test-i8-tol MODEL.gguf` |
 | canonical-order kernels | a `make T3=1` build | bit-exact to an independent C definition of the same reduction tree, on every target | `test-canon-kernels`, `test-pmath` |
 
