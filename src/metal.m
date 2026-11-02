@@ -5036,11 +5036,6 @@ void gpu_batch_free(gpu_batch *b) {
     free(b);
 }
 
-// RUNNER_METAL_TIMING=2 (R3.24): the decode microbatch commits and waits at
-// each stage boundary, so every stage's GPU time is its own command buffer's.
-// Slow by construction (a sync per stage) and off otherwise; the GPU spans are
-// exact. One column takes this encoder too under the profile, so a single
-// slot's stages are measured at the same boundaries as N slots'.
 // One weight product of the microbatch: the identity matvec, each column its
 // solo decode's bits, or under RUNNER_METAL_BATCH_TILES the GEMM tiles where
 // they take the weight (the matvec stays the route for any they do not).
@@ -5065,6 +5060,11 @@ static void enc_mb_mv(gpu_t *g, id<MTLComputeCommandEncoder> e,
                 n_col, x_stride, y_stride, true);
 }
 
+// RUNNER_METAL_TIMING=2 (R3.24): the decode microbatch commits and waits at
+// each stage boundary, so every stage's GPU time is its own command buffer's.
+// Slow by construction (a sync per stage) and off otherwise; the GPU spans are
+// exact. One column takes this encoder too under the profile, so a single
+// slot's stages are measured at the same boundaries as N slots'.
 enum { MB_QKV, MB_ATTN, MB_O, MB_UP, MB_DOWN, MB_HEAD, MB_STAGES };
 static const char *const mb_stage_name[MB_STAGES] =
     { "qkv", "attn", "o", "gate_up", "down", "head" };
@@ -5127,13 +5127,13 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->attn_norm[l],
                       n_embd, m0->rms_eps, n, n_embd, xdim);
         enc_mb_mv(g, e, ly->wq, g->xb, 0, g->q, 0,
-                    n_embd, q_dim_l, g->bq[l], n, xdim, q_dim);
+                  n_embd, q_dim_l, g->bq[l], n, xdim, q_dim);
         if (owns_kv) {
             enc_mb_mv(g, e, ly->wk, g->xb, 0, g->kt, 0,
-                        n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim);
+                      n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim);
             if (ly->wv)
                 enc_mb_mv(g, e, ly->wv, g->xb, 0, g->vt, 0,
-                            n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim);
+                          n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim);
         }
         if (g->qn[l])
             enc_qknorm_n(g, e, m0, g->q, 0, g->qn[l], m0->n_head, hd, n, q_dim);
@@ -5188,7 +5188,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         MB_CUT(MB_ATTN);
 
         enc_mb_mv(g, e, ly->wo, g->xb2, 0, g->xb, 0,
-                    q_dim_l, n_embd, g->bo[l], n, xdim, xdim);
+                  q_dim_l, n_embd, g->bo[l], n, xdim, xdim);
         if (g->pan[l])
             enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pan[l],
                           n_embd, m0->post_norm_eps, n, xdim, xdim);
@@ -5201,13 +5201,13 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->ffn_norm[l],
                       n_embd, m0->rms_eps, n, n_embd, xdim);
         enc_mb_mv(g, e, ly->w_gate, g->xb, 0, g->hb, 0,
-                    n_embd, nff_l, nil, n, xdim, nff_l);
+                  n_embd, nff_l, nil, n, xdim, nff_l);
         enc_mb_mv(g, e, ly->w_up, g->xb, 0, g->hb2, 0,
-                    n_embd, nff_l, nil, n, xdim, nff_l);
+                  n_embd, nff_l, nil, n, xdim, nff_l);
         enc_elem(g, e, metal_act_pipeline(g, m0), g->hb, 0, g->hb2, 0, n * nff_l);
         MB_CUT(MB_UP);
         enc_mb_mv(g, e, ly->w_down, g->hb, 0, g->xb, 0,
-                    nff_l, n_embd, nil, n, nff_l, xdim);
+                  nff_l, n_embd, nil, n, nff_l, xdim);
         if (g->pfn[l])
             enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pfn[l],
                           n_embd, m0->post_norm_eps, n, xdim, xdim);
@@ -5228,7 +5228,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                     g->xb, foff((size_t)c * xdim), g->out_norm,
                     n_embd, m0->rms_eps);
     enc_mb_mv(g, e, m0->output, g->xb, 0, b->logits_n, 0,
-                n_embd, b->n_vocab, nil, n, xdim, b->n_vocab);
+              n_embd, b->n_vocab, nil, n, xdim, b->n_vocab);
 
     [e endEncoding];
     [cb commit];
