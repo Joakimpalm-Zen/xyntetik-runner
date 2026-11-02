@@ -5826,7 +5826,7 @@ static void score_top_fill(const float *lg, int nv, float lse, int n, int *ids,
     for (int j = 0; j < k; j++) lps[j] -= lse;
 }
 
-static int run_score(cli_opts *o, cli_run *rt) {
+static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     int n_prompt;
     // Teacher-forced scoring (adaptation D1): per-position
     // log P(token | prefix) over the RAW prompt bytes — no template, no
@@ -5870,6 +5870,43 @@ static int run_score(cli_opts *o, cli_run *rt) {
     }
     const char *ch_env = getenv("RUNNER_SCORE_CHUNKED");
     bool solo = !(ch_env && *ch_env && strcmp(ch_env, "0") != 0);
+    // RUNNER_SCORE_MICRO=N (2 to MODEL_BATCH_MAX): every position is one
+    // column of an N-wide decode microbatch, the text in column 0 and N-1 more
+    // instances of the same file decoding the same text beside it, so a
+    // microbatch route (Metal's RUNNER_METAL_BATCH_TILES) gets its D1 row
+    // against the solo score. A column's logits depend only on its own
+    // inputs on every route, so the companions' text does not matter. Refused
+    // when the backend declines the microbatch: the score would be solo.
+    int micro = (int)env_i64("RUNNER_SCORE_MICRO", 0, MODEL_BATCH_MAX, 0);
+    if (micro == 1) micro = 0;
+    model_t *mx = NULL;
+    model_batch *mb = NULL;
+    if (micro) {
+        if (!solo) {
+            fprintf(stderr, "error: RUNNER_SCORE_MICRO and RUNNER_SCORE_CHUNKED "
+                    "name different routes; set one\n");
+            return 1;
+        }
+        mx = calloc((size_t)micro - 1, sizeof(model_t));
+        model_t *seqs[MODEL_BATCH_MAX] = { &rt->m };
+        int loaded = 0;
+        bool ok = mx != NULL;
+        for (int i = 0; ok && i < micro - 1; i++) {
+            ok = model_load(&mx[i], load_path, &o->mp);
+            if (ok) seqs[1 + loaded++] = &mx[i];
+        }
+        if (ok) mb = model_batch_create(seqs, micro);
+        if (!ok || !model_batch_engaged(mb)) {
+            fprintf(stderr, "error: RUNNER_SCORE_MICRO=%d: %s\n", micro,
+                    ok ? "the backend declined the microbatch for this model, "
+                         "so the score would be solo"
+                       : "cannot load the companion instances");
+            model_batch_free(mb);
+            for (int i = 0; i < loaded; i++) model_free(&mx[i]);
+            free(mx);
+            return 1;
+        }
+    }
     printf("{\"schema_version\":\"xyntetik.runner.score.v1\","
            "\"n_tokens\":%d,\"n_scored\":%d,\"tokens\":[", n_prompt,
            n_prompt - 1);
@@ -5920,7 +5957,19 @@ static int run_score(cli_opts *o, cli_run *rt) {
             }
             pos += k;
         } else {
-            float *lg = model_forward(&rt->m, rt->toks[pos], pos);
+            float *lg = NULL;
+            if (micro) {
+                int idx[MODEL_BATCH_MAX], mpos[MODEL_BATCH_MAX];
+                int32_t mtok[MODEL_BATCH_MAX];
+                float *mout[MODEL_BATCH_MAX];
+                for (int i = 0; i < micro; i++) {
+                    idx[i] = i; mtok[i] = rt->toks[pos]; mpos[i] = pos;
+                }
+                if (model_batch_decode(mb, idx, mtok, mpos, micro, mout))
+                    lg = mout[0];
+            } else {
+                lg = model_forward(&rt->m, rt->toks[pos], pos);
+            }
             if (!lg) { fail = 1; break; }
             int arg = 0;
             for (int i = 1; i < rt->m.n_vocab; i++)
@@ -5937,6 +5986,11 @@ static int run_score(cli_opts *o, cli_run *rt) {
             if (arg == rt->toks[pos + 1]) top1++;
             pos += 1;
         }
+    }
+    if (micro) {
+        model_batch_free(mb);
+        for (int i = 0; i < micro - 1; i++) model_free(&mx[i]);
+        free(mx);
     }
     if (fail) {
         free(argmaxes); free(top_id); free(top_lp);
@@ -6797,7 +6851,7 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     else if (detect_text) rc = run_detect_text(o, rt, &wmk, detect_text);
     else if (o->decide_path) rc = run_decide(o, rt);
     else if (o->systemone_path) rc = run_systemone(o, rt);
-    else if (o->score) rc = run_score(o, rt);
+    else if (o->score) rc = run_score(o, rt, load_path);
     else if (o->doctor) rc = run_doctor(o, rt, tmpl_override);
     else if (o->bench_json) rc = run_bench(o, rt);
     else if (o->resume_path) rc = run_resume(o, rt, &simg, load_path);

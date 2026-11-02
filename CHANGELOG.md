@@ -5,6 +5,22 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal decode microbatch on the GEMM tiles, opt-in.** With
+  `RUNNER_METAL_BATCH_TILES=1`, 6 or more `--parallel` slots decoding
+  together run their weight products on the prefill GEMM tiles instead of
+  the per-column identity matvec. It is not bit-identical to sequential
+  decode, so it stays off by default, and the route line and receipts name
+  it (`micro=tiles`). On an Apple M1 with K2-Horizon-1B, aggregate decode at
+  8 slots went from 45.2 to 63.2 tok/s (Q4_K_M) and from 58.2 to 69.9 tok/s
+  (Q8_0); at 2 to 5 slots the tiles were slower, so those widths keep the
+  identity route. Against the publisher's float32 model over 2,000 positions
+  it read 1.006x the identity route's mean KLD on the Q8_0 and 0.9996x on the
+  Q4_K_M, not distinguishable on either
+  (`docs/compat-reports/r3.24b-metal-microbatch-tiles-2026-11-02/`).
+  `RUNNER_SCORE_MICRO=N` scores each
+  position as one column of an N-wide microbatch, which is how the route is
+  measured; on the default route it scores solo's bytes (R3.24 (b)).
+
 - **Records name files by base name, never by host path.** The provenance
   records (`.quant.json`, `.merge.json`, `.train.json`, `.context.json`),
   `runner derive`'s record and `scripts/eval-record.py`'s evaluations wrote

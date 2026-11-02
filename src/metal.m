@@ -2663,6 +2663,21 @@ static bool metal_mvfc_on(void) {
     return v;
 }
 
+// RUNNER_METAL_BATCH_TILES=1 (R3.24 (b), opt-in by owner decision
+// 2026-11-01): the decode microbatch's weight products take the prefill GEMM
+// tiles instead of the multi-column identity matvec. The tiles sum in another
+// order, so a slot's tokens are no longer its solo decode's bits: a
+// tolerance-class route with its own D1 rows, off by default, and named in the
+// route detail (micro=tiles) so a receipt says which ran.
+static bool metal_batch_tiles_on(void) {
+    static _Atomic int v = -1;
+    if (v < 0) {
+        const char *s = getenv("RUNNER_METAL_BATCH_TILES");
+        v = s && *s && strcmp(s, "0") && strcmp(s, "off");
+    }
+    return v;
+}
+
 static int metal_col_tile(void) {
     static _Atomic int v = -1;
     if (v < 0) {
@@ -2678,6 +2693,11 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
                         id<MTLBuffer> y, NSUInteger y_off,
                         int n_in, int n_out, id<MTLBuffer> bias,
                         int n_col, int x_stride, int y_stride, bool decode);
+static bool enc_mm_tiles(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                         gguf_tensor *w, id<MTLBuffer> x, NSUInteger x_off,
+                         id<MTLBuffer> y, NSUInteger y_off,
+                         int n_in, int n_out, id<MTLBuffer> bias,
+                         int n_col, int x_stride, int y_stride);
 
 // The per-column scale buffer for the tiled GEMMs, grown to the batch on
 // demand (a buffer allocation is not an encoder operation, so growing it
@@ -2715,7 +2735,24 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                     n_col, x_stride, y_stride, false);
         return;
     }
-    if (n_col > 1 && g->p_tensor[w->type] && n_in % 256 == 0) {
+    if (n_col > 1 && enc_mm_tiles(g, e, w, x, x_off, y, y_off, n_in, n_out,
+                                  bias, n_col, x_stride, y_stride))
+        return;
+    enc_mv_cols(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
+                n_col, x_stride, y_stride, n_col == 1);
+}
+
+// The GEMM tiles of enc_mv_n: the Metal 4 tensor GEMM where it admitted the
+// weight type, else the simdgroup tile. Returns false, encoding nothing, when
+// neither takes this weight and shape. Tolerance-class against the matvec (a
+// different summation order), so the decode microbatch reaches it only under
+// its opt-in (metal_batch_tiles_on).
+static bool enc_mm_tiles(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                         gguf_tensor *w, id<MTLBuffer> x, NSUInteger x_off,
+                         id<MTLBuffer> y, NSUInteger y_off,
+                         int n_in, int n_out, id<MTLBuffer> bias,
+                         int n_col, int x_stride, int y_stride) {
+    if (g->p_tensor[w->type] && n_in % 256 == 0) {
         [e setComputePipelineState:g->p_tensor[w->type]];
         mm_args ma = { n_in, n_out, n_col,
                        metal_bind_weights(g, e,
@@ -2733,12 +2770,12 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
         [e dispatchThreadgroups:MTLSizeMake((n_out + 127) / 128,
                                             (n_col + 255) / 256, 1)
           threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
-        return;
+        return true;
     }
     // Tiled GEMM when this is a real batch and a kernel exists for the weight
     // type. n_in must be a whole number of k-steps (every real model's is) and
     // K-quant kernels index a 256-superblock, so require that too.
-    if (n_col > 1 && metal_mm_on() && g->p_mm[w->type] &&
+    if (metal_mm_on() && g->p_mm[w->type] &&
         n_in % 32 == 0 &&
         !(ggml_block_size(w->type) == 256 && n_in % 256 != 0) &&
         metal_ensure_xsc(g, n_col)) {
@@ -2777,10 +2814,9 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
         [e dispatchThreadgroups:MTLSizeMake((n_out + MM_TILE_M - 1) / MM_TILE_M,
                                             (n_col + MM_TILE_N - 1) / MM_TILE_N, 1)
           threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
-        return;
+        return true;
     }
-    enc_mv_cols(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
-                n_col, x_stride, y_stride, n_col == 1);
+    return false;
 }
 
 // The identity matvec tail of enc_mv_n, callable directly: the microbatch
@@ -4932,21 +4968,23 @@ bool gpu_hidden_rows_ok(const model_t *m) {
 // docs/kernel-routes.md has each one's obligation): decode fusion, the
 // simdgroup prefill GEMM, the fast or identity decode matvec, the
 // cooperative or identity attention read, grouped-MMA MoE prefill and its
-// staging, and whether the Metal 4 tensor GEMM admitted any type.
+// staging, whether the Metal 4 tensor GEMM admitted any type, and the
+// decode microbatch's opt-in tiles (micro=tiles, named only when on).
 const char *gpu_route_detail(const model_t *m) {
     const gpu_t *g = m ? (const gpu_t *)m->gpu : NULL;
     static _Thread_local char buf[160];
     bool tensor = false;
     for (int t = 0; g && t < METAL_TYPE_SLOTS; t++) if (g->p_tensor[t]) tensor = true;
     int moe = metal_moe_mm_on();
-    snprintf(buf, sizeof buf, "fusion=%s mm=%s mv=%s attn=%s%s%s tensor=%s",
+    snprintf(buf, sizeof buf, "fusion=%s mm=%s mv=%s attn=%s%s%s tensor=%s%s",
              metal_fuse_on() ? "on" : "off", metal_mm_on() ? "on" : "off",
              metal_mv_state() == MV_ALL ? "fast"
              : metal_mv_state() == MV_Q4_K && g && g->mv_q4k_default ? "fast-q4_K" : "identity",
              metal_attn_coop_on() ? "coop" : "identity",
              m && m->n_expert > 0 ? " moe_mm=" : "",
              m && m->n_expert > 0 ? (moe == 2 ? "half" : moe ? "f32" : "off") : "",
-             tensor ? "on" : "off");
+             tensor ? "on" : "off",
+             metal_batch_tiles_on() ? " micro=tiles" : "");
     return buf;
 }
 
@@ -4980,9 +5018,14 @@ gpu_batch *gpu_batch_create(model_t **seqs, int n) {
         gpu_batch_free(b);
         return NULL;
     }
-    fprintf(stderr, "gpu: Metal microbatch decode on for %d slots "
-            "(bit-identical to sequential; RUNNER_METAL_BATCH=0 disables)\n",
-            n);
+    if (metal_batch_tiles_on())
+        fprintf(stderr, "gpu: Metal microbatch decode on for %d slots, GEMM "
+                "tiles (RUNNER_METAL_BATCH_TILES: tolerance-class, not "
+                "bit-identical to sequential)\n", n);
+    else
+        fprintf(stderr, "gpu: Metal microbatch decode on for %d slots "
+                "(bit-identical to sequential; RUNNER_METAL_BATCH=0 disables)\n",
+                n);
     return b;
 }
 
@@ -4998,6 +5041,30 @@ void gpu_batch_free(gpu_batch *b) {
 // Slow by construction (a sync per stage) and off otherwise; the GPU spans are
 // exact. One column takes this encoder too under the profile, so a single
 // slot's stages are measured at the same boundaries as N slots'.
+// One weight product of the microbatch: the identity matvec, each column its
+// solo decode's bits, or under RUNNER_METAL_BATCH_TILES the GEMM tiles where
+// they take the weight (the matvec stays the route for any they do not).
+// The tiles cost about the same at any width up to their 32 columns, the
+// matvec grows with every column, so the tiles start at MB_TILES_MIN.
+// Measured on an Apple M1, K2-Horizon-1B, aggregate tok/s of N concurrent
+// 96-token requests, matvec against tiles (2026-11-02): Q4_K_M N=2 34.4 /
+// 19.5, N=4 40.7 / 35.8, N=5 42.2 / 43.0, N=6 43.5 / 50.4, N=8 45.2 / 63.2;
+// Q8_0 N=4 54.1 / 39.9, N=6 56.7 / 56.0, N=7 57.3 / 62.9, N=8 58.2 / 69.9.
+enum { MB_TILES_MIN = 6 };
+
+static void enc_mb_mv(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                      gguf_tensor *w, id<MTLBuffer> x, NSUInteger x_off,
+                      id<MTLBuffer> y, NSUInteger y_off,
+                      int n_in, int n_out, id<MTLBuffer> bias,
+                      int n_col, int x_stride, int y_stride) {
+    if (n_col >= MB_TILES_MIN && metal_batch_tiles_on() &&
+        enc_mm_tiles(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
+                     n_col, x_stride, y_stride))
+        return;
+    enc_mv_cols(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
+                n_col, x_stride, y_stride, true);
+}
+
 enum { MB_QKV, MB_ATTN, MB_O, MB_UP, MB_DOWN, MB_HEAD, MB_STAGES };
 static const char *const mb_stage_name[MB_STAGES] =
     { "qkv", "attn", "o", "gate_up", "down", "head" };
@@ -5059,14 +5126,14 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
 
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->attn_norm[l],
                       n_embd, m0->rms_eps, n, n_embd, xdim);
-        enc_mv_cols(g, e, ly->wq, g->xb, 0, g->q, 0,
-                    n_embd, q_dim_l, g->bq[l], n, xdim, q_dim, true);
+        enc_mb_mv(g, e, ly->wq, g->xb, 0, g->q, 0,
+                    n_embd, q_dim_l, g->bq[l], n, xdim, q_dim);
         if (owns_kv) {
-            enc_mv_cols(g, e, ly->wk, g->xb, 0, g->kt, 0,
-                        n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim, true);
+            enc_mb_mv(g, e, ly->wk, g->xb, 0, g->kt, 0,
+                        n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim);
             if (ly->wv)
-                enc_mv_cols(g, e, ly->wv, g->xb, 0, g->vt, 0,
-                            n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim, true);
+                enc_mb_mv(g, e, ly->wv, g->xb, 0, g->vt, 0,
+                            n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim);
         }
         if (g->qn[l])
             enc_qknorm_n(g, e, m0, g->q, 0, g->qn[l], m0->n_head, hd, n, q_dim);
@@ -5120,8 +5187,8 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         }
         MB_CUT(MB_ATTN);
 
-        enc_mv_cols(g, e, ly->wo, g->xb2, 0, g->xb, 0,
-                    q_dim_l, n_embd, g->bo[l], n, xdim, xdim, true);
+        enc_mb_mv(g, e, ly->wo, g->xb2, 0, g->xb, 0,
+                    q_dim_l, n_embd, g->bo[l], n, xdim, xdim);
         if (g->pan[l])
             enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pan[l],
                           n_embd, m0->post_norm_eps, n, xdim, xdim);
@@ -5133,14 +5200,14 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         int nff_l = ly->n_ff;
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->ffn_norm[l],
                       n_embd, m0->rms_eps, n, n_embd, xdim);
-        enc_mv_cols(g, e, ly->w_gate, g->xb, 0, g->hb, 0,
-                    n_embd, nff_l, nil, n, xdim, nff_l, true);
-        enc_mv_cols(g, e, ly->w_up, g->xb, 0, g->hb2, 0,
-                    n_embd, nff_l, nil, n, xdim, nff_l, true);
+        enc_mb_mv(g, e, ly->w_gate, g->xb, 0, g->hb, 0,
+                    n_embd, nff_l, nil, n, xdim, nff_l);
+        enc_mb_mv(g, e, ly->w_up, g->xb, 0, g->hb2, 0,
+                    n_embd, nff_l, nil, n, xdim, nff_l);
         enc_elem(g, e, metal_act_pipeline(g, m0), g->hb, 0, g->hb2, 0, n * nff_l);
         MB_CUT(MB_UP);
-        enc_mv_cols(g, e, ly->w_down, g->hb, 0, g->xb, 0,
-                    nff_l, n_embd, nil, n, nff_l, xdim, true);
+        enc_mb_mv(g, e, ly->w_down, g->hb, 0, g->xb, 0,
+                    nff_l, n_embd, nil, n, nff_l, xdim);
         if (g->pfn[l])
             enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pfn[l],
                           n_embd, m0->post_norm_eps, n, xdim, xdim);
@@ -5160,8 +5227,8 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         enc_rmsnorm(g, e, g->x, foff((size_t)c * n_embd),
                     g->xb, foff((size_t)c * xdim), g->out_norm,
                     n_embd, m0->rms_eps);
-    enc_mv_cols(g, e, m0->output, g->xb, 0, b->logits_n, 0,
-                n_embd, b->n_vocab, nil, n, xdim, b->n_vocab, true);
+    enc_mb_mv(g, e, m0->output, g->xb, 0, b->logits_n, 0,
+                n_embd, b->n_vocab, nil, n, xdim, b->n_vocab);
 
     [e endEncoding];
     [cb commit];

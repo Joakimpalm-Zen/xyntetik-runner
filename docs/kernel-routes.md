@@ -183,6 +183,7 @@ Around the matvec:
 | Route | Taken when | Obligation | Gate |
 | --- | --- | --- | --- |
 | identity matvec, multi-column | 2 to 16 columns | bit-exact to that many single-column dispatches | `test-batch-identity` |
+| decode microbatch on the GEMM tiles (`enc_mb_mv`) | `RUNNER_METAL_BATCH_TILES=1` (opt-in), 6 to 8 microbatch columns, the tensor or simdgroup GEMM takes the weight (else the identity matvec) | tolerance; a slot's logits are not its solo decode's; D1 rows on K2-Horizon-1B: mean KL 1.006x (Q8_0) and 0.9996x (Q4_K_M) of the identity route's, not distinguishable; aggregate decode +20% / +40% at 8 slots on an Apple M1, slower below 6; named `micro=tiles` in the route detail | `tests/test_metal_batch_tiles.py` (0 flips against solo, the tiles ran, the 6-column threshold); D1 rows from `RUNNER_SCORE_MICRO=8` score files |
 | Metal 4 tensor GEMM | more than one column, `RUNNER_METAL_TENSOR=1`, an M5 or newer GPU on macOS 26.2 or newer, the per-type self-test passed at load, `n_in` a multiple of 256 | tolerance; opt-in, a failing type falls back alone | the load-time self-test, then `./test-tc-tol` |
 | simdgroup GEMM (`k_mm_*`) | more than one column, `RUNNER_METAL_MM` not `0` (promoted), `n_in` a whole number of k-steps and of superblocks | tolerance; activations staged scaled by the column maximum | `./test-tc-tol MODEL.gguf`, `make test-tc-overflow` on Darwin |
 | identity matvec (`k_mv`) | otherwise | token-identical to the CPU scalar route | `test-gpu-identity`, `make test-metal-kquant` and the other `test-metal-*` text gates |
