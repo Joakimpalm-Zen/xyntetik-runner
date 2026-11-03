@@ -408,8 +408,19 @@ static uint64_t model_identity(const model_t *m, const tokenizer *tok) {
     // v2: the LoRA adapter id joined the identity — a cached prefix computed
     // under one adapter (or none) must never serve a run under another. The
     // version bump deliberately invalidates every v1 persisted prefix once.
-    h = h64s(h, "runner.prefix.v2");
-    h = h64s(h, m->path);
+    // v3 (R1.20): the file, not how its path was spelled. v2 hashed the path
+    // as typed, so the same file loaded as ./m.gguf and as /abs/m.gguf had
+    // two keys: a session image would not resume and two slots would not
+    // share a prefix (the SS-000 tester, 2026-11-03). The stat-backed
+    // identity below already names the file (inode, size, nanosecond
+    // timestamps, beside content samples); without it, the resolved path
+    // stands in. The bump invalidates every v2 persisted prefix and session
+    // image once.
+    h = h64s(h, "runner.prefix.v3");
+    if (!m->file_id_ok) {
+        char canon[4096];
+        h = h64s(h, m->path && plat_realpath(m->path, canon, sizeof canon) ? canon : m->path);
+    }
     h = h64i(h, (long long)m->lora_id);
     h = h64s(h, m->arch);
     h = h64i(h, m->file_id_ok);

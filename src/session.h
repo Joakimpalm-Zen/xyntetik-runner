@@ -95,4 +95,12 @@ bool session_image_write(const char *path, const engine *e, const char *model_pa
                    bool json_mode, bool ignore_eos, const char *schema_sha256,
                    char sha_out[65]);
 
+// Why an engine cannot resume an image whose model key differs from its own,
+// as a sentence for a refusal: the context length or the KV type the image
+// recorded beside its key, with both values ("context 4096 in the image,
+// 2048 here"), else the model geometry the key also covers. NULL when the
+// keys agree. buf holds the sentence.
+const char *session_key_mismatch(const session_meta *sm, const engine *e,
+                                 char *buf, size_t cap);
+
 #endif
