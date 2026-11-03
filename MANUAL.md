@@ -1090,7 +1090,7 @@ Constrained decoding pays for the sampler on every step, and several shipped
 presets - SmolLM2's, llama3's, mistral's, gpt-oss's - set `top_k = 0`, which
 means no truncation and a pass over the whole vocabulary. Setting `--top-k 40`
 (or `"top_k": 40` per request) measured **12–27% higher decode throughput**
-than the same run at the preset's `top-k 0`, on an M1 with
+than the same run at the preset's `top-k 0`, on an Apple M1 with
 SmolLM2-135M-Instruct under JSON- and schema-constrained decoding.
 
 It is an option, not a default, and it is not certified. Truncating to 40
@@ -1477,7 +1477,7 @@ every type the Metal backend loads: `q2_K`, `q3_K`, `q4_0`, `q4_1`, `q5_0`,
 codebook i-quants (`iq1_s`, `iq1_m`, `iq2_xxs`, `iq2_xs`, `iq2_s`, `iq3_xxs`,
 `iq3_s`), `f16`, `bf16` and `f32`. `q4_1`, `q5_0`, `q5_1` and `q5_K` gained
 their `k_mm_*` on 2026-10-21; until then they prefilled through the matvec,
-three to five times slower on an M1. Quantization changes only the weight
+three to five times slower on an Apple M1. Quantization changes only the weight
 encoding: it cannot give an architecture a Metal path it lacks, because those
 gaps are missing kernels for operations (weight-normed routers, gate-less
 shared experts), not missing quant support. The dense `qwen35` Gated DeltaNet
@@ -1644,7 +1644,7 @@ kernels that compute one fixed reduction tree on every target
 Measured on a 165-token scoring run of the same Q8_0 model: 0 of 165
 positions bit-identical between an Apple M1 and an x86-64 box in the
 default build, 165 of 165 in the T3 build, and the same on riscv64 under
-qemu. Cost: 7% decode on x86-64, 17% on the M1, all of it the strict-float
+qemu. Cost: 7% decode on x86-64, 17% on the Apple M1, all of it the strict-float
 flags. A T3 receipt carries `"flavor":"t3"` in its `build` object. This is
 measured, not yet a claimed tier: the batched prefill tile, the k-quant
 formats, MoE and the GPU backends are not canonical yet. Details and
@@ -1807,7 +1807,7 @@ GEMMs. Full offload is the preferred and default shape. A file above
 tensor layout allows a contiguous prefix wrap *and* the whole model still fits
 in RAM; when it does not, the backend falls back to CPU rather than split,
 because pinning part of a model that does not fit measured 8–35x slower than
-CPU-only on an 8 GB M1. `--gpu N` forces a split anyway. Multi-part
+CPU-only on an 8 GB Apple M1. `--gpu N` forces a split anyway. Multi-part
 (split) GGUF sets take a **full Metal offload**: the weight wraps are keyed by
 host address, so each part's mapping gets its own tensor-boundary wraps, and a
 2-part 86 GB set measured byte-identical to the single file it was merged
@@ -1825,7 +1825,7 @@ before any model dispatch; compile, pipeline, or numeric failure falls back
 to the established simdgroup GEMM for that type. The path is deliberately
 not the default: on the admission gate every admitted type was numerically
 sound but only matched, rather than beating by the required 1.2x, the
-existing kernel. M1-M4 never compile or dispatch it and retain the same
+existing kernel. Apple M1 to M4 never compile or dispatch it and retain the same
 default path and performance. `RUNNER_METAL_TENSOR=0` is the explicit pin.
 
 **CUDA:** Linux and Windows use the dynamically loaded driver API and embedded
@@ -1903,7 +1903,7 @@ result looks graph-dependent; `RUNNER_CUDA_GRAPH_RECUR=0` does it for the
 qwen35 family alone, whose decode replays a graph since 2026-10-21. `./test-attn-tol MODEL.gguf` is the
 attention gate.
 Weights are wrapped zero-copy from the model mmap. A file larger than the
-device's `maxBufferLength` - 4.29 GB on an M1, against a 5.73 GB working set -
+device's `maxBufferLength` - 4.29 GB on an Apple M1, against a 5.73 GB working set -
 is wrapped in several buffers instead of being copied or forced into a
 CPU/GPU layer split. The cuts fall on tensor boundaries, so no tensor spans two
 buffers and output is byte-identical to a single-buffer wrap;
@@ -1977,7 +1977,7 @@ bit-identical to solo decode (`test-batch-identity`, `test-spec-identity`).
 `RUNNER_METAL_MV=0` restores the identity kernel for every type;
 `RUNNER_METAL_MV=1` also takes the fast q4_0 / q8_0 kernels (float4
 accumulation, the q4_0 zero-point factored out of the inner loop), which
-clear the flip bar but measured neutral on an 8-core M1 and stay opt-in. See
+clear the flip bar but measured neutral on an 8-core Apple M1 and stay opt-in. See
 `docs/negative-result-metal-multirow-matvec.md` for the matvec numerical
 contract and its verification gates.
 
@@ -2428,7 +2428,7 @@ the tiles were slower, so the identity route keeps those widths. Against the pub
 
 Prompt batch size, default `64`. Unless `--gpu off` was given, the default is sized from
 **total** RAM instead: `512` at 12 GB or more, `256` at 6 GB or more, `64` below — so
-the tiled prefill GEMM gets more columns per dispatch (measured on Metal/M1: +9% prompt
+the tiled prefill GEMM gets more columns per dispatch (measured on Metal/Apple M1: +9% prompt
 tok/s at 512 over the flat 64 default). Total RAM rather than free RAM on purpose: batch
 size changes how reassociating prefill paths tile their sums, and a default read off the
 machine's ambient load would make "the same command" produce different tokens on a busy
@@ -2622,7 +2622,7 @@ verified the same way, so they change speed and never the output
 ([docs/context-drafts.md](docs/context-drafts.md)). Works in one-shot, chat and
 single-model serve mode (`draft.source` is `lookup` in `GET /v1/capabilities`; ignored
 in swap mode with a `reason`), on every path the verify walk runs on (CPU, and the same
-GPU cases `--draft` accepts). Measured 2026-09-04 on an M1 CPU: 1.47x on a verbatim
+GPU cases `--draft` accepts). Measured 2026-09-04 on an Apple M1 CPU: 1.47x on a verbatim
 repeat at 98% acceptance and parity elsewhere on SmolLM2-135M Q8_0, and a LOSS on every
 row but the repeat on the compute-bound TinyLlama-1.1B Q2_K (0.84-0.93x), because a
 rejected draft is a wasted verify column; the literature's 2-4x needs a bandwidth-bound
@@ -2776,7 +2776,7 @@ memory (36.9 MB at rank 8 on a 1.5B), a partial split lets each half apply its o
 blocks, and the CPU-versus-GPU gap with the adapter is no wider than without it (CUDA:
 max |Δlogprob| 1.110e-3 against 1.255e-3, Qwen2.5-1.5B Q4_K_M, RTX 3070; Metal: mean
 3.0e-4 against 3.1e-4, SmolLM2-135M Q8_0 with a rank-8 adapter on all 210 projections,
-M1). On Metal a block with an adapter decodes on the split path, without the fused
+Apple M1). On Metal a block with an adapter decodes on the split path, without the fused
 front kernel, so decode slows: 117 to 44 tok/s on that 135M (still above the CPU's 37),
 and 9.8 to 8.3 tok/s on Llama-3.2-3B Q4_K_M with a rank-16 adapter on Q and V of every
 block (the CPU decodes it at 5.7). Prefill barely moves in either case. Fails
@@ -3109,7 +3109,7 @@ A session is a raw prompt (no chat template) with the sampler fields a completio
 and `ignore_eos`. With `suspend_after` it stops after that many tokens and writes the
 image into `DIR`; the answer carries the text so far and the `id`, which is the image's
 own sha256, so the same state is the same id. A resume continues it exactly: on the
-8 GB M1 serving Llama-3.2-3B on Metal, a 60-token sampled generation suspended at 25 and
+8 GB Apple M1 serving Llama-3.2-3B on Metal, a 60-token sampled generation suspended at 25 and
 resumed, and one suspended at 25 and again at 40, both returned the uninterrupted run's
 text byte for byte. `fork_seed` continues under another seed, the same text every time it
 is asked for; like a session's own `seed`, it is a whole number from 0 to 2^53 - 1. The images are the CLI's format. A served session holds the device from
@@ -3647,7 +3647,7 @@ switches:
 | `RUNNER_METAL_FUSE` | on | Decode-path kernel fusion, up to the attention-front megakernel: norm + Q/K/V (Q8_0/Q4_0/Q4_K/Q6_K rosters) + qk-norm + rope + KV-store as ONE dispatch, whole heads per threadgroup, the normed row staged in threadgroup memory; plus rope+store, residual-add+rmsnorm and MoE gate+up+activation fusions on the paths the megakernel does not cover. −52% dispatches per token; +5–6% decode on the 120B and 30B, byte-identical. The post-FFN residual add rides the MoE expert sum on layers where it isn't already deferred into the next norm. The megakernel admits MoE models only — it recovers dispatch-chain latency, and a fast dense model is matvec-bound and measured slower under it (`RUNNER_METAL_FRONT=all` lifts that for tests; `RUNNER_METAL_FRONT=0` disables just the megakernel while keeping the other fusions, the isolation lever the q4_0 contraction hunt was run with). Every fused kernel reproduces the unfused arithmetic element for element — **byte-identical**, gated across a six-architecture roster in `make test` (`test-metal-fuse`). q8 KV, NoPE layers, sandwich norms and the gemma dual branch keep the unfused path automatically; `0` restores it everywhere. |
 | `RUNNER_METAL_MOE_MM` | on | Grouped simdgroup-MMA MoE prefill (default): per-expert GEMM tiles over gathered token columns, float-staged operands, +21-31% measured prefill on 30B/120B-class MoE, decode untouched. Judged by the house fidelity bar (`test-moe-mm-ab`), not byte identity — top-k routing flips near-ties under any reassociation, so `0` restores the matvec path and is pinned by every byte-identity gate; `half` selects the half-staged comparison arm. Dense models unaffected. |
 | `RUNNER_DEBUG_ROUTE` | unset/off | Print one stderr line describing the route a forward actually took whenever it changes, written after the forward, so a device forward that fell back is reported on the CPU it finished on: `backend` and `device`, the layer `split`, `experts_on_host` under `--cpu-moe`, the `rows` and `path` (`solo`, `batch`, `keep` for speculative verification, `mtp`, `micro` for a slot microbatch), the `kv` type, the `weights` types by share, the CPU's activation (`cpu_act`: `f32`, or `int8` under `RUNNER_CPU_I8`, with `+int8-prefill` appended under `RUNNER_CPU_I8_PREFILL`), the backend's own selections (CUDA `graph`, `tc`, `q8x`, `i8`, `small_batch`, `moe`; Metal `fusion`, `mm`, `mv`, `attn`, `moe_mm`, `tensor`), the reason for a CPU `fallback` when a GPU was asked for, the `build` with its codegen flags, and every `RUNNER_*` variable set (`tuning`; a name containing KEY, TOKEN, SECRET or PASS shows only that it is set). Off, a forward costs two stores and a compare. `--bench-json` reports the run's record as its `route` object. |
-| `RUNNER_METAL_TENSOR` | unset/off | On M5+ with macOS 26.2+, opt Q4_K, Q8_0, and Q4_0 prefill into the separately admitted Metal 4 MPP tensor GEMM (per-type self-test; a failing type falls back alone). Experimental and not promoted: every admitted type passes its correctness gate but measured only parity with the simdgroup GEMM on M5, short of the 1.2x default-promotion bar. Ignored on M1-M4. |
+| `RUNNER_METAL_TENSOR` | unset/off | On M5+ with macOS 26.2+, opt Q4_K, Q8_0, and Q4_0 prefill into the separately admitted Metal 4 MPP tensor GEMM (per-type self-test; a failing type falls back alone). Experimental and not promoted: every admitted type passes its correctness gate but measured only parity with the simdgroup GEMM on M5, short of the 1.2x default-promotion bar. Ignored on Apple M1 to M4. |
 
 Beyond these, the binary reads a number of development switches -
 `RUNNER_DEBUG_TOKENS`, `RUNNER_DEBUG_ACT`, `RUNNER_MOE_TRACE`,
@@ -4984,7 +4984,7 @@ Q8_0 at c=4096, stock defaults, engines run sequentially, llama.cpp from
 the prebuilt b10639 release. Reproduce it with
 [`scripts/idle_coexistence.py`](scripts/idle_coexistence.py).
 
-On an 8 GB M1 (quiet machine), while loaded and idle:
+On an 8 GB Apple M1 (quiet machine), while loaded and idle:
 
 | while idle | runner | llama-server b10639 |
 |---|---|---|
@@ -4999,7 +4999,7 @@ as evictable zero-copy mappings the OS can reclaim whenever another app
 needs the RAM, wakes about once every two seconds, and hands everything
 back on `/unload` (or automatically with `--ttl`). What that costs is the
 first token after the memory has been reclaimed, which waits for the weights
-to be read back: 3.2 s on the pressured M1. On a discrete-GPU box (RTX 3070)
+to be read back: 3.2 s on the pressured Apple M1. On a discrete-GPU box (RTX 3070)
 both engines hold ~4 GB of VRAM loaded, and Runner's differences are idle
 discipline (0.00 vs 0.3-0.6 CPU seconds per minute) and lifecycle control
 (`/unload` returned all 4 GB of VRAM; llama-server has no unload).
