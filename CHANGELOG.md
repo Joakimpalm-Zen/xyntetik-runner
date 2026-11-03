@@ -3,6 +3,22 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
+## Unreleased
+
+- **`test-gpu-identity` pins a MoE file's routing and bounds dense and
+  pinned runs at 1e-3 of the logit range (was 2e-3).** A MoE file now runs
+  on the device twice: with its own routing, bounded at 2e-3 as before, and
+  with the CPU run's expert choices replayed, bounded at 1e-3. A top-8
+  router picks another expert wherever two gates nearly tie, so free routing
+  on Qwen3-30B-A3B read 1.46e-3 on CUDA; the pinned run measures the
+  arithmetic alone. The gate prints how many expert slots the pin forced and how
+  many differed from the device's own choice, and fails when the pin missed
+  a routing. 1e-3 sits 2.5x over the worst dense real file measured (IQ1_S,
+  4.0e-4) and 2.05x under the smallest real mistake (attention scale x1.05,
+  2.05e-3).
+- **`RUNNER_MOE_REPLAY` pins Metal's router too** (the batched and the
+  per-column route), with the same counters as the CPU and CUDA routers.
+
 ## v1.12.0 - 2026-11-03
 
 - **`--quant q4_k` wrote corrupt tensors on rows that divide by 32 but not

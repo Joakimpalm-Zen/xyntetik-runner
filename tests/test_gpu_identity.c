@@ -31,6 +31,15 @@
 // Skips (never passes quietly) when there is no GPU on the machine, or when
 // the model fell back to the CPU -- comparing the CPU against itself is the
 // vacuity every tolerance gate here is written to avoid.
+//
+// A MoE file runs a third arm (R3.25.1): the device again, with the CPU run's
+// expert choices replayed at every routing (model_moe_pin_*, the
+// RUNNER_MOE_REPLAY switch fed from memory). A top-8-of-128 router turns any
+// cross-backend rounding into another expert wherever two gates nearly tie,
+// so the free-routing arm answers to GPU_DEV_FRAC_ROUTED and the pinned arm,
+// which measures the arithmetic alone, to GPU_DEV_FRAC like a dense file.
+// The flips the pin removed are reported, not bounded: how often a near-tie
+// lands depends on the prompt.
 #include "runner.h"
 #include "finite_check.h"
 
@@ -83,7 +92,13 @@ static int g_n_batch = N_BATCH;
 // 1-bit codebooks up to 4.0e-4 (Qwen3-0.6B IQ1_S), and a top-8 MoE 1.5e-3,
 // where a router near a tie picks another expert on the device (Qwen3-30B-A3B;
 // 2.1e-4 with the CPU's routing replayed). A toy fixture takes GPU_ID_LIMIT.
-#define GPU_DEV_FRAC 2e-3
+// R3.25.1 pinned the MoE routing (the third arm above) and took the bound to
+// 1e-3 for dense and pinned-MoE runs: 2.5x over IQ1_S, 13.8x over the
+// k-quants and 2.05x under the attention scale x1.05 on real files (2.05e-3).
+// A MoE run with free routing keeps 2e-3, where Qwen3-30B-A3B had 1.37x of
+// room on the audit's prompt.
+#define GPU_DEV_FRAC 1e-3
+#define GPU_DEV_FRAC_ROUTED 2e-3
 
 // GPU_ID_LIMIT=F: a tighter bound for one fixture, never a looser one (a
 // value above GPU_DEV_FRAC is refused). The cross-backend constant is sized
@@ -104,6 +119,9 @@ static double gpu_dev_limit(void) {
 }
 
 static int g_gpu_layers = 0;
+
+// set by run(): the model's routed experts a token, 0 for a dense model
+static int g_expert_used;
 
 // Deliberately not the tolerance-gate corpus: this runs on toy fixtures whose
 // vocabularies are tiny, so the text only has to tokenize, not to be prose.
@@ -148,6 +166,7 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
     }
     *used_gpu = m.gpu != NULL;
     *n_vocab_out = m.n_vocab;
+    g_expert_used = m.n_expert > 0 ? m.n_expert_used : 0;
     const bool loaded_on_gpu = m.gpu != NULL;
 
     float *out = malloc(sizeof(float) * (size_t)STEPS * (size_t)m.n_vocab);
@@ -179,9 +198,11 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
 }
 
 // The verdict on two [steps][nv] logit sets. 0 = ok, 1 = FAILED, printed as
-// the gate's last line either way. Kept apart from the model runs so that
+// the gate's last line either way (an ok only when `last`: a MoE file's free
+// arm is followed by the pinned one). Kept apart from the model runs so that
 // `--self-test` can drive it with synthetic inputs under the release flags.
-static int compare_logits(const float *cpu, const float *gpu, int nv, int steps) {
+static int compare_logits(const float *cpu, const float *gpu, int nv, int steps,
+                          double limit, bool last) {
     size_t n = (size_t)steps * (size_t)nv;
 
     // Non-finite logits on EITHER side fail before any reduction. Until
@@ -250,15 +271,15 @@ static int compare_logits(const float *cpu, const float *gpu, int nv, int steps)
 
     printf("  %zu logits over %d positions | %zu differ, mean|dlogit| %.3g "
            "= %.3g of mean range %.3g (limit %g), worst %.3g\n",
-           n, steps, n_diff, mean_dev, frac, range, gpu_dev_limit(), worst);
+           n, steps, n_diff, mean_dev, frac, range, limit, worst);
 
-    if (frac > gpu_dev_limit()) {
+    if (frac > limit) {
         printf("FAIL: CPU and GPU disagree by more than reduction-order "
                "rounding — this is a missing or wrong operation on one side, "
                "not a rounding difference\ngpu-identity: FAILED\n");
         return 1;
     }
-    printf("gpu-identity: ok\n");
+    if (last) printf("gpu-identity: ok\n");
     return 0;
 }
 
@@ -306,7 +327,7 @@ static int self_test(void) {
         }
         printf("self-test: %s (expect %s)\n", cases[c].name,
                cases[c].expect ? "FAILED" : "ok");
-        int rc = compare_logits(cpu, gpu, NV, ST);
+        int rc = compare_logits(cpu, gpu, NV, ST, GPU_DEV_FRAC, true);
         if (rc != cases[c].expect) {
             printf("SELF-TEST FAIL: '%s' read as %s, expected %s\n",
                    cases[c].name, rc ? "FAILED" : "ok",
@@ -363,7 +384,9 @@ int main(int argc, char **argv) {
 
     int nv_cpu = 0, nv_gpu = 0;
     bool cpu_used_gpu = false, gpu_used_gpu = false;
+    model_moe_pin_record(true);   // a MoE file's routing, for the pinned arm
     float *cpu = run(path, GPU_OFF, &nv_cpu, &cpu_used_gpu, toks, n_tok);
+    model_moe_pin_record(false);
     if (!cpu) { printf("gpu-identity: FAILED (cpu run)\n"); return 1; }
     float *gpu = run(path, GPU_AUTO, &nv_gpu, &gpu_used_gpu, toks, n_tok);
     if (!gpu) { free(cpu); printf("gpu-identity: FAILED (gpu run)\n"); return 1; }
@@ -491,7 +514,52 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    int rc = compare_logits(cpu, gpu, nv_cpu, STEPS);
-    free(cpu); free(gpu);
+    if (!g_expert_used) {
+        int rc = compare_logits(cpu, gpu, nv_cpu, STEPS, gpu_dev_limit(), true);
+        free(cpu); free(gpu);
+        return rc;
+    }
+
+    // A MoE file: free routing at the routed bound, then the pinned arm.
+    double limit = gpu_dev_limit();
+    printf("  free routing (the device's own expert choices):\n");
+    int rc = compare_logits(cpu, gpu, nv_cpu, STEPS,
+                            limit < GPU_DEV_FRAC_ROUTED ? limit : GPU_DEV_FRAC_ROUTED, false);
+    free(gpu);
+    if (rc) { free(cpu); return rc; }
+    size_t routings = model_moe_pin_replay(true);
+    if (!routings) {
+        printf("FAIL: the routing pin has nothing to replay (%s)\ngpu-identity: FAILED\n",
+               getenv("RUNNER_MOE_REPLAY") && *getenv("RUNNER_MOE_REPLAY")
+                   ? "RUNNER_MOE_REPLAY is set; unset it for this gate"
+                   : "the CPU run recorded no routing");
+        free(cpu);
+        return 1;
+    }
+    int nv_pin = 0;
+    bool pin_used = false;
+    float *pin = run(path, GPU_AUTO, &nv_pin, &pin_used, toks, n_tok);
+    model_moe_pin_replay(false);
+    unsigned long forced, differed, missing;
+    model_moe_pin_counts(&forced, &differed, &missing);
+    unsigned long slots = (unsigned long)routings * (unsigned long)g_expert_used;
+    printf("  routing pin: %zu routings from the CPU run, %lu of %lu expert slots "
+           "forced, %lu of them (%.3g) differed from the device's own choice\n",
+           routings, forced, slots, differed, forced ? (double)differed / (double)forced : 0.0);
+    // Every routing forced exactly once: a router the pin does not reach
+    // would measure free routing again under the tighter bound.
+    if (!pin || !pin_used || g_fell_back || nv_pin != nv_cpu || forced != slots || missing) {
+        printf("FAIL: %s\ngpu-identity: FAILED\n",
+               !pin ? "the pinned device run failed"
+               : !pin_used || g_fell_back ? "the pinned run did not stay on the device"
+               : nv_pin != nv_cpu ? "vocab size differs in the pinned run"
+               : "the pin did not reach every routing of the device run (a router "
+                 "RUNNER_MOE_REPLAY does not pin on this backend)");
+        free(cpu); free(pin);
+        return 1;
+    }
+    printf("  pinned routing (the CPU run's expert choices):\n");
+    rc = compare_logits(cpu, pin, nv_cpu, STEPS, limit, true);
+    free(cpu); free(pin);
     return rc;
 }

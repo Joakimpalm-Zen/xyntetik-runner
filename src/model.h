@@ -1540,6 +1540,18 @@ int *model_moe_replay_table(int n_layer, int used, int *npos);
 const int *model_moe_replay_ids(int pos, int layer, int used);
 void model_moe_replay_count(unsigned long forced, unsigned long differed,
                             unsigned long missing);
+// The routing pin of test-gpu-identity (R3.25.1), the same choice and counts
+// from memory: model_moe_pin_record(true) records every CPU routing from now
+// on (clearing the last record), false stops; model_moe_pin_replay(true)
+// replays what was recorded to every router RUNNER_MOE_REPLAY pins, for
+// models loaded from then on, and returns the routings it holds (0: nothing
+// recorded, a duplicate (position, layer), or a RUNNER_MOE_REPLAY file is
+// set); false ends it. model_moe_pin_counts: the slots forced, those whose
+// own choice differed, the (position, layer) pairs it did not hold.
+void model_moe_pin_record(bool on);
+size_t model_moe_pin_replay(bool on);
+void model_moe_pin_counts(unsigned long *forced, unsigned long *differed,
+                          unsigned long *missing);
 bool model_moe_trace_on(void);
 void model_moe_trace_route(int pos, int layer, const int *sel, const float *selw,
                            const float *norms, int used);

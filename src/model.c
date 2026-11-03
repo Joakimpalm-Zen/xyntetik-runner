@@ -7112,9 +7112,9 @@ static void act_trace_route(int pos, int layer, const int *sel, const float *sel
 // replay differ by their arithmetic and never by a discrete routing flip.
 // A position or layer the trace does not hold routes as usual. At exit it
 // says how many routings it forced and how many of those differed from what
-// this run would have chosen (the flips the pin removed). The GPU routers
-// pin through model_moe_replay_table (k_moe_route_replay, the same choice and
-// counters); Metal's are not pinned.
+// this run would have chosen (the flips the pin removed). The CUDA and Metal
+// routers pin through model_moe_replay_table (k_moe_route_replay, the same
+// choice and counters).
 #define ROUTE_USED_MAX 64   // experts a token uses; every admitted family is under it
 typedef struct { int pos, layer, n; int ids[ROUTE_USED_MAX]; } route_rec;
 static struct {
@@ -7219,7 +7219,7 @@ static void route_replay_load(void) {
         g_replay.on = true;
         atexit(route_replay_report);
         fprintf(stderr, "moe-replay: routing pinned to %s (%zu position x layer "
-                "records); CPU and CUDA routers\n", path, g_replay.n);
+                "records); CPU, CUDA and Metal routers\n", path, g_replay.n);
     }
     g_replay.tried = true;
     pthread_mutex_unlock(&g_replay_mu);
@@ -7282,6 +7282,72 @@ void model_moe_replay_count(unsigned long forced, unsigned long differed,
     g_replay.forced += forced;
     g_replay.differed += differed;
     g_replay.missing += missing;
+}
+
+// test-gpu-identity's routing pin (R3.25.1): RUNNER_MOE_REPLAY's choice and
+// counters, fed from the routings an earlier run in this process recorded in
+// memory instead of from a trace file. Recording sees the CPU routers at a
+// forward's own positions (moe_route and gemma_route; the probes and the
+// training backward are not routings of the forward).
+static struct { bool on; route_rec *r; size_t n, cap; } g_pin;
+
+static void route_pin_note(int pos, int layer, const int *sel, int used) {
+    if (!g_pin.on || used > ROUTE_USED_MAX) return;
+    pthread_mutex_lock(&g_replay_mu);
+    if (g_pin.n == g_pin.cap) {
+        size_t cap = g_pin.cap ? 2 * g_pin.cap : 4096;
+        route_rec *nr = realloc(g_pin.r, cap * sizeof *nr);
+        if (!nr) { fprintf(stderr, "error: out of memory recording the routing pin\n"); exit(1); }
+        g_pin.r = nr;
+        g_pin.cap = cap;
+    }
+    route_rec *r = &g_pin.r[g_pin.n++];
+    r->pos = pos;
+    r->layer = layer;
+    r->n = used;
+    memcpy(r->ids, sel, sizeof(int) * (size_t)used);
+    pthread_mutex_unlock(&g_replay_mu);
+}
+
+void model_moe_pin_record(bool on) {
+    pthread_mutex_lock(&g_replay_mu);
+    if (on) g_pin.n = 0;
+    g_pin.on = on;
+    pthread_mutex_unlock(&g_replay_mu);
+}
+
+size_t model_moe_pin_replay(bool on) {
+    if (!g_replay.tried) route_replay_load();
+    pthread_mutex_lock(&g_replay_mu);
+    size_t n = 0;
+    if (!on) {
+        if (g_replay.on && g_replay.r == g_pin.r) {
+            g_replay.on = false;
+            g_replay.r = NULL;
+            g_replay.n = 0;
+        }
+    } else if (!g_replay.on && g_pin.n) {   // a RUNNER_MOE_REPLAY file keeps its own
+        g_pin.on = false;
+        qsort(g_pin.r, g_pin.n, sizeof *g_pin.r, route_rec_cmp);
+        size_t dup = 0;
+        for (size_t i = 1; i < g_pin.n; i++)
+            dup += route_rec_cmp(&g_pin.r[i - 1], &g_pin.r[i]) == 0;
+        if (!dup) {
+            g_replay.r = g_pin.r;
+            g_replay.n = n = g_pin.n;
+            g_replay.forced = g_replay.differed = g_replay.missing = 0;
+            g_replay.on = true;
+        }
+    }
+    pthread_mutex_unlock(&g_replay_mu);
+    return n;
+}
+
+void model_moe_pin_counts(unsigned long *forced, unsigned long *differed,
+                          unsigned long *missing) {
+    *forced = g_replay.forced;
+    *differed = g_replay.differed;
+    *missing = g_replay.missing;
 }
 
 bool model_moe_trace_on(void) {
@@ -8417,6 +8483,7 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     DT_BEGIN;
     moe_route(m, ly, xin, n_embd, ne, used, sel, selw, true,
               route_replay_ids(m->fwd_pos, layer_idx, used));
+    route_pin_note(m->fwd_pos, layer_idx, sel, used);
     model_moe_prefetch(m, ly, sel, used);
     DT_MARK(DT_ROUTE);
     // RUNNER_MOE_PROBE: same lookback replay as gemma_route's caller — see
@@ -8458,6 +8525,7 @@ NUM_STAGE void moe_grouped_route(model_t *m, const layer_t *ly, int n, int xdim,
         moe_route(m, ly, xin, n_embd, ne, used,
                   m->moe_sel + (size_t)b * used, m->moe_selw + (size_t)b * used, true,
                   route_replay_ids(m->fwd_pos + b, (int)(ly - m->layers), used));
+        route_pin_note(m->fwd_pos + b, (int)(ly - m->layers), m->moe_sel + (size_t)b * used, used);
         // RUNNER_MOE_PROBE: replay against 1/2/3 layers back, before m->xb
         // is overwritten with this layer's FFN output further below.
         if (probe) moe_probe_replay(m, ly, b, m->moe_sel + (size_t)b * used);
@@ -8686,6 +8754,7 @@ static void gemma_moe_ffn(model_t *m, const layer_t *ly, int n, int xdim) {
         int sel[256]; float selw[256], norms[MOE_EXPERTS_MAX];
         gemma_route(m, ly, attn, n_embd, ne, used, sel, selw, b == n - 1,
                     route_replay_ids(m->fwd_pos + b, layer_idx, used));
+        route_pin_note(m->fwd_pos + b, layer_idx, sel, used);
         model_moe_prefetch(m, ly, sel, used);
         // RUNNER_MOE_PROBE: replay THIS layer's router against the 1/2/3
         // layers-back hidden state instead of attn, and record whether that

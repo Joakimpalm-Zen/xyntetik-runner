@@ -3654,8 +3654,19 @@ layer) twice (a served run with several sequences, or a re-prefill): a replay
 trace comes from one sequence. On CUDA the device routers record and replay
 the same way since 2026-10-31 (the fused, grouped, by-expert and eager paths;
 a traced or replayed run decodes without CUDA graphs, and its trace records
-carry no `norms`); Metal's routers are not pinned. Off by default, and nothing
-changes without it.
+carry no `norms`); Metal's since 2026-11-03 (its one router, both the
+batched and the per-column route). Off by default, and nothing changes
+without it.
+
+`test-gpu-identity` runs a MoE file twice on the device: with its own
+routing, bounded at 2e-3 of the logit range, and with the CPU run's expert
+choices replayed (the same pin, from memory), bounded at 1e-3 like a dense
+file. A top-8 router turns any cross-backend rounding into another expert
+where two gates nearly tie (Qwen3-30B-A3B: 3 of 1,872 routings on one
+prompt), which the free run's bound has to absorb; the pinned run measures the
+arithmetic alone. It prints how many expert slots the pin forced and how many
+of those differed from the device's own choice, and fails when the pin did
+not reach every routing.
 
 On Metal, `RUNNER_MOE_TRACE=routes.jsonl` snapshots every MoE layer's complete
 pre-softmax router-logit vector on the device before the live scratch is reused,
