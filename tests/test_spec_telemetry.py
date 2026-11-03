@@ -111,3 +111,23 @@ def test_two_slots_of_an_mtp_model_shut_down_cleanly(tmp_path):
     # about the shutdown path; the harness does not judge it there either.
     if sys.platform != "win32":
         assert srv.exit_code == 0, srv.exit_code
+
+
+def test_spec_prof_prints_when_a_constrained_document_completes():
+    """R3.3.10: RUNNER_SPEC_PROF=1 prints its line at every exit of the
+    speculative walk. Three early returns on a completed constrained
+    document (--json: a close before a token's forward, mid-round, at a plain
+    token) printed the round summary but skipped the profile, so a --json run
+    never reported where its time went. The model drafts for itself, so its
+    rounds accept and the document closes inside the walk."""
+    import os
+    model = ROOT / "test.gguf"
+    env = dict(os.environ, RUNNER_SPEC_PROF="1")
+    p = subprocess.run(
+        [str(find_runner(ROOT)), "-m", str(model), "-p", "A JSON object:", "-n", "400",
+         "--temp", "0", "--gpu", "off", "--json", "--draft", str(model), "--no-tray"],
+        cwd=ROOT, env=env, capture_output=True, timeout=120)
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode == 0, err
+    json.loads(p.stdout.decode(errors="replace").split("A JSON object:", 1)[-1])
+    assert "spec: " in err and "spec-prof: draft " in err, err[-800:]

@@ -19,6 +19,14 @@ Current release and unreleased changes. Compatibility follows the
   only; a layer with sinks (gpt-oss, flint) keeps the tile. The route
   detail says `attn_wide=on`. Report:
   `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03`.
+
+- **`RUNNER_SPEC_PROF=1` prints its profile line on a `--json` run too.** The
+  speculative walk left through three early exits when a constrained document
+  completed (a close before a token's forward, mid-round, at a plain token);
+  they printed the round summary but not the profile. The MANUAL's
+  `--draft-k` row now states the range, 1 to 15 (a round verifies the drafts
+  plus the correction, at most 16 rows).
+
 - **CUDA decode attention reads the cache once (R3.29).** The grouped decode
   kernel read K twice, a pass for the softmax maximum and then K with V; it
   now makes one pass with a running maximum, stages K and V as 16-byte
