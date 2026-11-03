@@ -14,6 +14,24 @@ Current release and unreleased changes. Compatibility follows the
   agreement 63.2% before, 95.8% now. A file that declares the key keeps it.
   Requantize nothing; reload the file.
 
+- **`RUNNER_DEBUG_TIME` reports the attention core inside the attention
+  stage.** A new `attn core` line times only the scores, softmax and values
+  pass, without the projections. Timing only; output unchanged.
+
+- **Metal prefill attention takes 512-wide heads on the tile, byte-identical,
+  by default for gemma-4's E-series (R3.6.3.2).** gemma-4's 512-wide global
+  layers ran the one-column kernel over the whole history, 66% of an 8K
+  Nemotron 3.5 Bolt E4B prefill on the 8 GB laptop. They now take
+  `k_attn_tile`, the kernel 256-wide heads already used, with `k_attn`'s
+  arithmetic in `k_attn`'s order, so the output is the same bytes: one
+  global layer's attention at 8K ran in 3.4 s against 25.0 s, and the 8K
+  prefill's GPU time went from 274 s to 117-123 s (about 2.3x; 4K: 1.43x in
+  tok/s). Decode is unchanged. Measured only on the 8 GB laptop and only to
+  8K: a 16K prefill of this file does not fit that laptop without swap. On
+  by default for gemma4 with per-layer embeddings, the family CUDA's wide
+  kernel defaults to; `RUNNER_METAL_ATTN_TILE_WIDE=0` keeps the one-column
+  kernel for heads wider than 256, `=1` takes the tile on any model. The
+  route detail says `attn_wide=on`.
 - **CUDA prefill attention for 256- to 512-wide heads runs on the tensor
   cores, by default for gemma-4's E-series (R3.6.3.1).** gemma-4's 512-wide
   global layers took the tile's 8-row kernel on the CUDA cores, 79% of a
@@ -58,6 +76,20 @@ Current release and unreleased changes. Compatibility follows the
   their order, and tensors a split never reads from the device (the head, the
   embedding, gemma-4 E-series' per-layer tables) may follow the layers; any
   other tensor there still refuses the split, and the message names it.
+
+
+- **A session resume or a shared prefix is no longer refused when the model's
+  path is spelled differently.** The engine's model key hashed the `-m` path
+  as typed, so the same file loaded as `./models/m.gguf` and as its absolute
+  path had two keys: a session image written under one spelling was refused
+  under the other, and two slots did not share prefix-cache entries. The key
+  now names the file (its stat identity and content samples, or its resolved
+  path where stat cannot tell); a file replaced in place still changes it.
+  **What changes for callers:** the key version moves to v3, so prefix caches
+  and session images saved by an earlier build are refused once (the refusal
+  says so). A refusal that remains now names what
+  differs, with both values and the flag that resumes it ("context 256 in the
+  image, 128 here: resume with -c 256").
 
 - **CUDA decode attention reads the cache once (R3.29).** The grouped decode
   kernel read K twice, a pass for the softmax maximum and then K with V; it
