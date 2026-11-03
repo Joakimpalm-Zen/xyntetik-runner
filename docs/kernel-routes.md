@@ -114,8 +114,9 @@ Around the matvec:
   block, four warps splitting head_dim, the partial scores summed in warp
   order, one pass with a running maximum. On by default for gemma-4's
   E-series (gemma4 with per-layer embeddings: Nemotron 3.5 Bolt E4B,
-  gemma-4-E2B and E4B), owner decision 2026-11-03, its float32-reference row
-  on Bolt E4B owed; `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the tile there, `=1`
+  gemma-4-E2B and E4B), owner decision 2026-11-03, with its float32-reference
+  row on Bolt E4B (2,000 positions: mean KL 0.9965x the tile's, Wilcoxon p
+  0.188, McNemar 2/0); `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the tile there, `=1`
   forces it on any model it admits. fp16 caches only, and never a layer
   with sinks (gpt-oss, flint keep the tile). One global layer at about 31K
   on an RTX 3070: 53-57 ms against `k_attn_tile8`'s 352 ms; Bolt E4B prefill

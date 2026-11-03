@@ -13,8 +13,9 @@ Current release and unreleased changes. Compatibility follows the
   31K in 55 ms against 352. Nemotron 3.5 Bolt E4B prefill: +8% to +19% at
   512 tokens, +30% to +40% at 4K, 2.0x at 16K, 2.6x at 32K; decode and the
   greedy text unchanged. On by default for gemma4 with per-layer embeddings
-  (owner decision); `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the tile. Its
-  float32-reference row on Bolt E4B is owed (the lab reads it). fp16 caches
+  (owner decision), its float32-reference row on Bolt E4B not
+  distinguishable from the tile's (mean KL 0.9965x, Wilcoxon p 0.188);
+  `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the tile. fp16 caches
   only; a layer with sinks (gpt-oss, flint) keeps the tile. The route
   detail says `attn_wide=on`. Report:
   `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03`.

@@ -3,9 +3,6 @@
 **Unflattering first.**
 - **The 4K row is the noisy one.** On Google's gemma-4-E4B QAT file, the second interleaved round read +2%
   (757.9 against 740.5 tok/s) where the first read +35%. Bolt E4B reads +30% and +40% at 4K.
-- **The float32-reference row (D1) is owed.** The new default rests on the owner's decision, the CPU identity
-  bound, the tier smoke and the greedy rows until the lab reads it. A miss goes to the coordinator the moment
-  it reads.
 - **It is a long-context gain.** Decode is unchanged, and at 512 tokens the gain is 8% to 25%.
 - **The kernel is far from the tensor cores' peak.** At head_dim 512 a block needs 76 KB of shared memory, so
   one block fits an SM (two at 256). On a 256-wide sliding layer, Nsight Compute reads 167 registers, 16%
@@ -77,17 +74,27 @@ Decode tok/s is unchanged on both files, and the 32 greedy tokens are identical 
 - The KV ring on Bolt, with the kernel. `RUNNER_KV_RING=1` (1,024 rows on 20 sliding layers) against `=0`,
   scored chunked over 8,196 positions: logprobs and top-k identical. `tests/test_kv_ring.py`: 12 passed.
 
-## Against the publisher's float32 model (D1): owed
+## Against the publisher's float32 model (D1): passes
 
-The score files are made: `RUNNER_SCORE_CHUNKED=1 RUNNER_SPEC_BATCH=64 runner --score 20 -f
-tests/fixtures/gold-corpus-2k.txt -c 8448` on Bolt E4B (sha256 `c8af2b8a...`), main 340fffa0 against
-1a2d85ee, 8,196 positions each. nll_mean is 4.10656 against 4.10715, and top-1 differs at 11 positions. The
-lab reads positions 4,000 to 6,000 against `nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16` in float32, by the
-attention routes' rule (Wilcoxon not worse at p < 0.05, mean KL at most 1.01x, McNemar not worse).
+Read on the lab host against `nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16` at `49843eed` in float32, positions
+4,000 to 5,999 of `tests/fixtures/gold-corpus-2k.txt`. Both sides were scored chunked on Bolt E4B (sha256
+`c8af2b8a...`): main 340fffa0 (the tile) against 1a2d85ee (`k_attn_tcw`). The rule is the attention routes'
+(2026-10-20):
+
+| Rule | Tile | `k_attn_tcw` | Reading |
+|---|---|---|---|
+| Mean KL at most 1.01x | 0.14269 | 0.14220 | 0.9965x, pass |
+| Paired Wilcoxon on per-position KL not worse at p < 0.05 | | | z 1.32, p 0.188, pass |
+| McNemar on margin-qualified top-1 not worse | 1,607 of 1,718 | 1,605 of 1,718 | discordant 2 / 0, p 0.5, pass |
+
+The scorer's verdict is "not distinguishable". The read needed `--force-bos`: the score files begin with the GGUF's
+BOS (id 2), which the publisher's tokenizer does not add to a bare text (the documented Gemma 4 case). The
+command, the environment and every hash are in `d1-result.md`; the scorer's output is `gold-main-vs-r3631.json`
+(sha256 `750668a03af38296...`). The score files: `RUNNER_SCORE_CHUNKED=1 RUNNER_SPEC_BATCH=64 runner --score 20
+-f tests/fixtures/gold-corpus-2k.txt -c 8448`, 8,196 positions each.
 
 ## Not in this change
 
-- The D1 row (lab).
 - The other 256-wide Tier 1 files (Qwen3.8-27B x2, Qwen3.8-Flash-Next x2, Mellum): their identity and smoke
   rows after the merge, the ones under 8 GB on the RTX 3070 and the 13 GB ones on the lab slice. They are not
   in the default family, so the kernel reaches them only under `=1`.
