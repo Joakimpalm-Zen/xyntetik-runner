@@ -457,6 +457,7 @@ typedef struct gpu_weights {
     CUfunction  f_mamba_conv, f_mamba_ssd, f_mamba_gate_norm, f_relu2;
     // whole-tile twins of the per-token recurrent kernels (C2.3, RUNNER_CUDA_RECUR_SEQ)
     CUfunction  f_q35_conv_seq, f_q35_delta_seq, f_mamba_conv_seq, f_mamba_ssd_seq;
+    CUfunction  f_ssd_chunk_local, f_ssd_chunk_carry, f_ssd_chunk_out;   // R4.10
     CUfunction  f_q35_delta1, f_q35_delta_norm;   // the column-split one-token step
     CUfunction  f_colabsmax;            // per-column |x| max for the scaled TC GEMMs
     CUfunction  f_attn_dec, f_attn_merge;   // flash-decoding attention (decode)
@@ -660,6 +661,7 @@ typedef struct {
     unsigned long fwd_snap;             // fwd_count when the rollback point was taken
     // Mamba-2 recurrent buffers (granitehybrid/nemotron_h)
     CUdeviceptr mamba_proj, mamba_xBC, mamba_y;         // per-tile scratch
+    CUdeviceptr mamba_cum, mamba_cstate;  // the chunked scan's decays and chunk states
     CUdeviceptr mamba_conv, mamba_state;                // persistent conv ring + SSD state
     CUdeviceptr mamba_conv_prev;                        // pre-forward rollback snapshot (ring)
     // The SSD state is two halves of mamba_state. Each forward reads the
@@ -757,6 +759,23 @@ typedef struct {
 // flash-decoding KV split count — must match ATTN_SPLITS in kernels.cu; fixed
 // (not context-dependent) so the decode CUDA graph stays valid across positions
 #define ATTN_SPLITS 8
+
+// the chunked Mamba-2 scan's chunk length: must match SSD_Q in kernels.cu
+#define SSD_Q 32
+// RUNNER_CUDA_SSD_CHUNK=1: a Mamba-2 prefill tile scans its SSD state in
+// SSD_Q-token chunks at once (R4.10, k_mamba2_ssd_chunk_*), not token by
+// token; a tolerance route (the sum regroups), so opt-in until its
+// float32-reference row. A tile filing per-row snapshots keeps the serial scan.
+static bool ssd_chunk_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_SSD_CHUNK");
+        on = e && *e && strcmp(e, "0") != 0;
+    }
+    return on == 1;
+}
+static _Atomic unsigned long g_ssd_chunk_dispatches;
+unsigned long gpu_ssd_chunk_dispatches(void) { return g_ssd_chunk_dispatches; }
 
 // output rows per batched-matvec block — must match GEMM_WARPS in kernels.cu
 #define GEMM_WARPS 8
@@ -2687,6 +2706,9 @@ static bool shared_load_module(gpu_weights *w) {
     cu.ModuleGetFunction(&w->f_q35_delta_norm, w->mod, "k_q35_delta_norm");
     cu.ModuleGetFunction(&w->f_mamba_conv_seq, w->mod, "k_mamba2_conv_seq");
     cu.ModuleGetFunction(&w->f_mamba_ssd_seq, w->mod, "k_mamba2_ssd_seq");
+    cu.ModuleGetFunction(&w->f_ssd_chunk_local, w->mod, "k_mamba2_ssd_chunk_local");
+    cu.ModuleGetFunction(&w->f_ssd_chunk_carry, w->mod, "k_mamba2_ssd_chunk_carry");
+    cu.ModuleGetFunction(&w->f_ssd_chunk_out, w->mod, "k_mamba2_ssd_chunk_out");
     cu.ModuleGetFunction(&w->f_attn_merge32, w->mod, "k_attn_merge32");
     cu.ModuleGetFunction(&w->f_attn_dec_gqa_seq, w->mod, "k_attn_dec_gqa_seq");
     cu.ModuleGetFunction(&w->f_attn_merge32_seq, w->mod, "k_attn_merge32_seq");
@@ -3577,6 +3599,13 @@ static bool cuda_alloc_recurrent(model_t *m, gpu_t *g, const cuda_dims *D) {
         CK(cu.MemAlloc(&g->mamba_proj,  sizeof(float) * (size_t)g->win * dip));
         CK(cu.MemAlloc(&g->mamba_xBC,   sizeof(float) * (size_t)g->win * cd));
         CK(cu.MemAlloc(&g->mamba_y,     sizeof(float) * (size_t)g->win * m->ssm.inner));
+        if (ssd_chunk_on()) {
+            // the chunked scan: a decay per token and head, a state per chunk
+            size_t nc = ((size_t)g->win + SSD_Q - 1) / SSD_Q;
+            CK(cu.MemAlloc(&g->mamba_cum, sizeof(float) * (size_t)g->win * m->ssm.v_heads));
+            CK(cu.MemAlloc(&g->mamba_cstate,
+                           sizeof(float) * nc * (size_t)m->ssm.inner * m->ssm.state));
+        }
         CK(cu.MemAlloc(&g->mamba_conv,       sizeof(float) * conv_alloc));
         CK(cu.MemAlloc(&g->mamba_state,      2 * sizeof(float) * state_elems));
         CK(cu.MemAlloc(&g->mamba_conv_prev,  sizeof(float) * conv_alloc));
@@ -5009,6 +5038,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            g->mtp_h, g->mtp_pending, g->mtp_cat, g->mtp_hid,
                            g->mtp_en, g->mtp_hn, g->mtp_rows, g->snap_state, g->snap_hist,
                            g->mamba_proj, g->mamba_xBC, g->mamba_y,
+                           g->mamba_cum, g->mamba_cstate,
                            g->mamba_conv, g->mamba_state,
                            g->mamba_conv_prev,
                            // the hyper-connection streams, the split-K partials
@@ -6957,9 +6987,27 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
         void *ps[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &state_in, &state,
                        &g->mamba_y, &inner, &hd, &ds, &ng, &gsz, &conv_dim,
                        &d_in_proj, &tn, &ssnap, &sstride };
-        if (!launch(g, g->sw->f_mamba_conv_seq, (conv_dim + 255) / 256, 1, 1, 256, pc) ||
-            !launch(g, g->sw->f_mamba_ssd_seq, nh, 1, 1, hd, ps))
+        if (!launch(g, g->sw->f_mamba_conv_seq, (conv_dim + 255) / 256, 1, 1, 256, pc))
             return false;
+        if (!snap && tn > SSD_Q && ssd_chunk_on() && g->mamba_cstate && g->sw->f_ssd_chunk_local &&
+            g->sw->f_ssd_chunk_carry && g->sw->f_ssd_chunk_out) {
+            // the chunk-parallel scan (R4.10): local chunks, the carry, the
+            // carried state's share of each chunk's outputs
+            unsigned nc = (unsigned)((tn + SSD_Q - 1) / SSD_Q);
+            void *pl[] = { &g->mamba_xBC, &g->mamba_proj, &Aw, &dtw, &Dw, &g->mamba_y,
+                           &g->mamba_cum, &g->mamba_cstate, &inner, &hd, &ds, &ng, &gsz,
+                           &conv_dim, &d_in_proj, &tn, &nh };
+            void *pr[] = { &state_in, &state, &g->mamba_cum, &g->mamba_cstate, &hd, &ds, &tn, &nh };
+            void *po[] = { &g->mamba_xBC, &g->mamba_cum, &g->mamba_cstate, &g->mamba_y,
+                           &inner, &hd, &ds, &ng, &gsz, &conv_dim, &tn, &nh };
+            if (!launch(g, g->sw->f_ssd_chunk_local, nh, nc, 1, hd, pl) ||
+                !launch(g, g->sw->f_ssd_chunk_carry, nh, 1, 1, hd, pr) ||
+                !launch(g, g->sw->f_ssd_chunk_out, nh, nc, 1, hd, po))
+                return false;
+            g_ssd_chunk_dispatches++;
+        } else if (!launch(g, g->sw->f_mamba_ssd_seq, nh, 1, 1, hd, ps)) {
+            return false;
+        }
         int t0 = 0;
         void *pg[] = { &g->mamba_proj, &g->mamba_y, &gn, &inner, &ng, &per_g,
                        &eps, &d_in_proj, &t0 };
@@ -8939,7 +8987,8 @@ const char *gpu_route_detail(const model_t *m) {
              m->n_expert > 0 ? " moe=" : "",
              m->n_expert > 0 ? (!g->moe_fused_ok ? "eager" : g->moe_grouped_ok ? "grouped"
                                 : g->moe_twin_ok && moe_twin_on(m) ? "by-expert" : "fused") : "",
-             recur_seq_admits(g, m) ? " recur=tile" : "");
+             recur_seq_admits(g, m) ? (ssd_chunk_on() && g->mamba_cstate ? " recur=tile+chunk" : " recur=tile")
+                                    : "");
     return buf;
 }
 void gpu_kv_host_wrote(model_t *m, int lo) {

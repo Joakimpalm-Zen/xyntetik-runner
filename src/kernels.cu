@@ -7640,4 +7640,115 @@ extern "C" __global__ void k_mamba2_ssd_seq(
         if (j < ds) sp[j] = s_[j];
 }
 
+// ---- the chunk-parallel SSD scan (R4.10, RUNNER_CUDA_SSD_CHUNK) ----
+// k_mamba2_ssd_seq walks a tile's tokens in order on n_head x head_dim
+// threads. The recurrence s_t = dA_t s_{t-1} + dt_t B_t x_t is linear in the
+// state, so a tile splits into SSD_Q-token chunks scanned at once:
+//   1. k_mamba2_ssd_chunk_local: grid (n_head, chunks). Each chunk scans from
+//      a zero state: y_t = C_t . s_t + D x_t, the cumulative decay
+//      cum_t = prod dA since the chunk's start (per head, in cum), and the
+//      chunk's final local state in cstate.
+//   2. k_mamba2_ssd_chunk_carry: grid n_head. In chunk order, the state
+//      entering each chunk replaces its local state in cstate, and
+//      s_in(c + 1) = cum_end(c) s_in(c) + local(c); the last is the layer's
+//      state.
+//   3. k_mamba2_ssd_chunk_out: grid (n_head, chunks). y_t += cum_t (C_t . s_in).
+// The sum is regrouped against the serial scan (C . (local + cum s_in) as
+// C . local + cum (C . s_in)), so this is a tolerance route; a tile that
+// files per-row snapshots (a verify round, the decode microbatch) keeps
+// k_mamba2_ssd_seq.
+#define SSD_Q 32
+
+extern "C" __global__ void k_mamba2_ssd_chunk_local(
+        const float *xBC, const float *proj, const float *A, const float *dt_b,
+        const float *D, float *y, float *cum, float *cstate,
+        int inner, int hd, int ds, int ng, int gsz, int conv_dim, int d_in_proj, int tn, int nh) {
+    int h = blockIdx.x, c = blockIdx.y, p = threadIdx.x;
+    if (p >= hd) return;
+    int g = h / gsz;
+    int t0 = c * SSD_Q, t1 = t0 + SSD_Q < tn ? t0 + SSD_Q : tn;
+    float s_[RS_MAX_SD];
+    #pragma unroll
+    for (int j = 0; j < RS_MAX_SD; j++) s_[j] = 0.0f;
+    float cm = 1.0f;
+    for (int t = t0; t < t1; t++) {
+        float dtr = proj[(size_t)t * d_in_proj + inner + conv_dim + h] + dt_b[h];
+        float dt = dtr > 20.0f ? dtr : logf(1.0f + expf(dtr));
+        float dA = expf(dt * A[h]);
+        cm *= dA;
+        const float *xrow = xBC + (size_t)t * conv_dim;
+        const float *Bg = xrow + inner + (size_t)g * ds;
+        const float *Cg = xrow + inner + (size_t)ng * ds + (size_t)g * ds;
+        float x = xrow[(size_t)h * hd + p];
+        float x_dt = x * dt;
+        float sumf = 0.0f;
+        #pragma unroll
+        for (int j = 0; j < RS_MAX_SD; j++) {
+            if (j < ds) {
+                float s = s_[j] * dA + Bg[j] * x_dt;
+                sumf += s * Cg[j];
+                s_[j] = s;
+            }
+        }
+        y[(size_t)t * inner + (size_t)h * hd + p] = sumf + D[h] * x;
+        if (p == 0) cum[(size_t)t * nh + h] = cm;
+    }
+    float *cs = cstate + (((size_t)c * nh + h) * hd + p) * ds;
+    #pragma unroll
+    for (int j = 0; j < RS_MAX_SD; j++)
+        if (j < ds) cs[j] = s_[j];
+}
+
+extern "C" __global__ void k_mamba2_ssd_chunk_carry(
+        const float *state_in, float *state, const float *cum, float *cstate,
+        int hd, int ds, int tn, int nh) {
+    int h = blockIdx.x, p = threadIdx.x;
+    if (p >= hd) return;
+    const float *si = state_in + ((size_t)h * hd + p) * ds;
+    float s_[RS_MAX_SD];
+    #pragma unroll
+    for (int j = 0; j < RS_MAX_SD; j++)
+        if (j < ds) s_[j] = si[j];
+    int nc = (tn + SSD_Q - 1) / SSD_Q;
+    for (int c = 0; c < nc; c++) {
+        int tl = (c + 1) * SSD_Q < tn ? (c + 1) * SSD_Q - 1 : tn - 1;
+        float ce = cum[(size_t)tl * nh + h];
+        float *cs = cstate + (((size_t)c * nh + h) * hd + p) * ds;
+        #pragma unroll
+        for (int j = 0; j < RS_MAX_SD; j++) {
+            if (j < ds) {
+                float loc = cs[j];
+                cs[j] = s_[j];                            // the state entering chunk c
+                s_[j] = ce * s_[j] + loc;
+            }
+        }
+    }
+    float *sp = state + ((size_t)h * hd + p) * ds;
+    #pragma unroll
+    for (int j = 0; j < RS_MAX_SD; j++)
+        if (j < ds) sp[j] = s_[j];
+}
+
+extern "C" __global__ void k_mamba2_ssd_chunk_out(
+        const float *xBC, const float *cum, const float *cstate, float *y,
+        int inner, int hd, int ds, int ng, int gsz, int conv_dim, int tn, int nh) {
+    int h = blockIdx.x, c = blockIdx.y, p = threadIdx.x;
+    if (p >= hd) return;
+    int g = h / gsz;
+    int t0 = c * SSD_Q, t1 = t0 + SSD_Q < tn ? t0 + SSD_Q : tn;
+    const float *cs = cstate + (((size_t)c * nh + h) * hd + p) * ds;
+    float s_[RS_MAX_SD];
+    #pragma unroll
+    for (int j = 0; j < RS_MAX_SD; j++)
+        if (j < ds) s_[j] = cs[j];
+    for (int t = t0; t < t1; t++) {
+        const float *Cg = xBC + (size_t)t * conv_dim + inner + (size_t)ng * ds + (size_t)g * ds;
+        float dot = 0.0f;
+        #pragma unroll
+        for (int j = 0; j < RS_MAX_SD; j++)
+            if (j < ds) dot += Cg[j] * s_[j];
+        y[(size_t)t * inner + (size_t)h * hd + p] += cum[(size_t)t * nh + h] * dot;
+    }
+}
+
 #include "kernels_train.cuh"
