@@ -17,26 +17,19 @@ It exits 1 and names each offending file, line and pattern.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
 
-# Host paths, and the names of machines and agent sessions, none of which
-# belongs in a public file (AGENTS.md, "Never publish conversation content or
-# session identifiers"; owner rule: no machine names in public).
-FORBIDDEN = [
-    (re.compile(r"/home/lab/"), "the lab host's home path"),
-    (re.compile(r"/Users/[^/\s\"'`]+/"), "a macOS home path"),
-    (re.compile(r"C:[\\/]+projectgrid", re.I), "the Windows host's work path"),
-    (re.compile(r"\bZEN-GAMING\b", re.I), "a machine name"),
-    (re.compile(r"\bgalaxa1\b", re.I), "an agent session name"),
-    (re.compile(r"\bwindows3070\b", re.I), "an agent session name"),
-    (re.compile(r"\bDawn-\d\b"), "an agent session name"),
-    (re.compile(r"\bexec-share/"), "the lab's shared work directory"),
-]
-# Files that legitimately spell a pattern: this checker (its list and its
-# self-test).
-ALLOW = {"scripts/check-content-hygiene.py"}
+# Host paths, and the names of machines and agent sessions: the one list
+# both checkers read (scripts/public_content.py).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from public_content import FORBIDDEN  # noqa: E402
+
+# Files that legitimately spell a pattern: the list itself and this checker
+# (its self-test).
+ALLOW = {"scripts/public_content.py", "scripts/check-content-hygiene.py"}
 
 
 def added_lines(diff: str):
