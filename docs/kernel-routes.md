@@ -108,6 +108,19 @@ Around the matvec:
   8-key tiles: gemma-4's global layers), whose long-context rows on
   gemma-4-26B-A4B and the dense gemma-4-E2B read no further from the
   reference than `k_attn`'s (`RUNNER_CUDA_ATTN_TILE512=0` keeps `k_attn`).
+  Head widths 256 to 512 take the tensor cores too where `k_attn_tcw` is
+  on (R3.6.3.1, route detail `attn_wide=on`): `k_attn_tc`'s operands (Q and
+  P in two halves, fp16 K and V, f32 accumulation) for 16 query rows a
+  block, four warps splitting head_dim, the partial scores summed in warp
+  order, one pass with a running maximum. On by default for gemma-4's
+  E-series (gemma4 with per-layer embeddings: Nemotron 3.5 Bolt E4B,
+  gemma-4-E2B and E4B), owner decision 2026-11-03, its float32-reference row
+  on Bolt E4B owed; `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the tile there, `=1`
+  forces it on any model it admits. fp16 caches only, and never a layer
+  with sinks (gpt-oss, flint keep the tile). One global layer at about 31K
+  on an RTX 3070: 53-57 ms against `k_attn_tile8`'s 352 ms; Bolt E4B prefill
+  2.0x at 16K and 2.6x at 32K. Gate: `make test-cuda-attn-wide`,
+  `tests/test_attn_wide_repeat.py`.
   One opt-in stays off: `RUNNER_CUDA_ATTN_TC_FULL=1` puts the tensor-core
   attention on the layers without a window in a family the default keeps on
   the tile (gpt-oss's full-attention layers), whose gpt-oss-20b row read
