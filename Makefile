@@ -2428,6 +2428,46 @@ test-cuda-qwen4exp: runner $(TEST_GPU_ID) $(TEST_CUDA_TEARDOWN) test.gguf
 		rm -f test-q4e-split-0000?-of-00002.gguf cuda-q4e-serve.log; \
 	else echo "cuda qwen4exp gate: skipped (no CUDA device)"; fi
 
+# qwen35moe on CUDA (R4.27 A2): the toy (Gated DeltaNet trunk, routed experts
+# and a sigmoid-gated shared expert on every block) at head widths 8, 40, 72
+# and 128, and the gated shared expert alone (shexpg), to the CPU's logits at
+# 1e-5 of range: free routing and the CPU's routing pinned, batched and one
+# token at a time, on the fused, eager and grouped expert routes; then the
+# placements by --score (experts on the host, a two-layer split, both) at
+# 2e-5 in logprob with no argmax flip, and speculative identity. Skips itself
+# without a CUDA device.
+test-cuda-qwen35moe: runner $(TEST_GPU_ID) $(TEST_SPEC_ID)
+	@set -e; \
+	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)"; then \
+	  echo "test-cuda-qwen35moe skipped: no CUDA device"; exit 0; fi; \
+	$(PYTHON) scripts/make-test-moe.py test-moe-fixture > /dev/null; \
+	ORNITH_TEST_MOE=1 $(PYTHON) scripts/make-test-ornith.py test-ornith-moe.gguf > /dev/null; \
+	for w in 40 72 128; do \
+	  ORNITH_TEST_MOE=1 ORNITH_TEST_STATE=$$w $(PYTHON) scripts/make-test-ornith.py test-ornith-moe-s$$w.gguf > /dev/null; done; \
+	for f in test-moe-fixture.shexpg.gguf test-ornith-moe.gguf test-ornith-moe-s40.gguf \
+	         test-ornith-moe-s72.gguf test-ornith-moe-s128.gguf; do \
+	  for E in "" RUNNER_MOE_EAGER=1 RUNNER_MOE_GROUPED=1; do \
+	    for a in "" "0 1"; do \
+	      env $$E GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f $$a > test-cuda-qwen35moe.out 2>&1 || { cat test-cuda-qwen35moe.out; exit 1; }; \
+	      if grep -q 'skipped' test-cuda-qwen35moe.out; then cat test-cuda-qwen35moe.out; \
+	        echo "test-cuda-qwen35moe: $$f did not run on the device"; exit 1; fi; \
+	      grep -q 'routing pin:.* 0 of them' test-cuda-qwen35moe.out || { cat test-cuda-qwen35moe.out; \
+	        echo "test-cuda-qwen35moe: $$f [$$E $$a] has no pinned arm, or the pin differed"; exit 1; }; \
+	      echo "$$f [$${E:-fused}$${a:+, one token at a time}]: $$(grep 'routing pin' test-cuda-qwen35moe.out | sed 's/^ *//'); $$(tail -1 test-cuda-qwen35moe.out)"; \
+	    done; \
+	  done; \
+	  ./$(TEST_SPEC_ID) $$f | tail -1 | grep -q 'ok (gpu' || { ./$(TEST_SPEC_ID) $$f; exit 1; }; \
+	done; \
+	P="hello world one two three four five six"; \
+	./$(RUNNER_EXE) -b 1 -m test-ornith-moe-s40.gguf --score -p "$$P" --gpu off --no-tray -c 128 2>/dev/null > cuda-q35m-cpu.score; \
+	for arm in "" "--cpu-moe" "--gpu-layers 2" "--gpu-layers 2 --cpu-moe"; do \
+	  ./$(RUNNER_EXE) -b 1 -m test-ornith-moe-s40.gguf --score -p "$$P" $$arm --no-tray -c 128 2>cuda-q35m-gpu.err > cuda-q35m-gpu.score; \
+	  grep -q "CUDA backend" cuda-q35m-gpu.err || { echo "FAIL: [$$arm] did not run on the device"; cat cuda-q35m-gpu.err; exit 1; }; \
+	  $(PYTHON) -c "import json,sys; a=json.load(open('cuda-q35m-cpu.score')); b=json.load(open('cuda-q35m-gpu.score')); d=max(abs(x-y) for x,y in zip(a['logprobs'],b['logprobs'])); am=sum(1 for x,y in zip(a['argmax'],b['argmax']) if x!=y); assert len(a['logprobs'])==len(b['logprobs'])>0 and d < 2e-5 and am == 0, (len(a['logprobs']), len(b['logprobs']), d, am); print('test-ornith-moe-s40.gguf [%s]: cpu/cuda logprob max diff %.2e, argmax flips %d' % (sys.argv[1] or 'all on device', d, am))" "$$arm"; \
+	done; \
+	rm -f cuda-q35m-cpu.score cuda-q35m-gpu.score cuda-q35m-gpu.err; \
+	echo "test-cuda-qwen35moe: ok"
+
 # CUDA NVFP4 (ModelOpt two-level export): the device kernels and the companion
 # scale in their tails against the CPU seam. Token identity on a generated
 # fixture and on any real NVFP4 file named in NVFP4_MODEL, logprob agreement
@@ -3802,7 +3842,7 @@ test-cuda-gated: runner test.gguf
 	$(PYTHON) scripts/check-junit.py --no-skips-matching '(?i)cuda|device|gpu' \
 	    --allow-skip 'CUDA runtime is available' .build/ci/cuda-gated.xml
 
-.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
 .PHONY: test-gates test-gates-core test-gates-batch test-python
 .PHONY: test-deepseek2 test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 

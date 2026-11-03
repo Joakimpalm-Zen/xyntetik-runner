@@ -19,6 +19,8 @@
 #   nvfp4        make test-cuda-nvfp4 (NVFP4 kernels and their scale companion)
 #   qwen4exp     make test-cuda-qwen4exp (the family's placements, the shared
 #                split GGUF, the MTP head, the BF16 split-K decode route)
+#   qwen35moe    make test-cuda-qwen35moe (the qwen35moe toy and the gated
+#                shared expert, free and pinned routing; the placements)
 #   q3k          make test-cuda-q3k (the Q3_K decode GEMV on a Q3_K fixture)
 #   tc-kq        make test-cuda-tc-kq (the tensor-core prefill of Q5_K, Q3_K,
 #                Q2_K, Q4_1, Q5_0 and Q5_1, teacher-forced tolerance)
@@ -265,7 +267,7 @@ fi
 add_step caps pass 0
 
 FAIL=0
-DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp q3k:test-cuda-q3k tc-kq:test-cuda-tc-kq i8:test-cuda-i8 moe-legacy:test-cuda-moe-legacy varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin keepn:test-cuda-keepn moe-replay:test-cuda-moe-replay batch-id:test-cuda-batch-identity hybrids:test-cuda-hybrids attn-wide:test-cuda-attn-wide spec-id:test-cuda-spec-identity"
+DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp qwen35moe:test-cuda-qwen35moe q3k:test-cuda-q3k tc-kq:test-cuda-tc-kq i8:test-cuda-i8 moe-legacy:test-cuda-moe-legacy varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin keepn:test-cuda-keepn moe-replay:test-cuda-moe-replay batch-id:test-cuda-batch-identity hybrids:test-cuda-hybrids attn-wide:test-cuda-attn-wide spec-id:test-cuda-spec-identity"
 for pair in $DEVICE_STEPS; do
   name=${pair%%:*}; target=${pair#*:}
   # shellcheck disable=SC2086
