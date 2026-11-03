@@ -43,6 +43,29 @@ static void wput(wbuf *w, const void *p, size_t n) {
     w->n += n;
 }
 
+static const char *kv_type_of(const model_t *m) {
+    return m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
+}
+
+const char *session_key_mismatch(const session_meta *sm, const engine *e,
+                                 char *buf, size_t cap) {
+    if (e->model_key == sm->model_key) return NULL;
+    const model_t *m = e->m;
+    // the key hashes the geometry, n_ctx and the KV flags (model_identity);
+    // the image keeps the two a caller sets beside it, so name those first
+    if (sm->n_ctx != m->n_ctx)
+        snprintf(buf, cap, "context %d in the image, %d here: resume with -c %d",
+                 sm->n_ctx, m->n_ctx, sm->n_ctx);
+    else if (strcmp(sm->kv_type, kv_type_of(m)))
+        snprintf(buf, cap, "KV type %s in the image, %s here: resume with --kv %s",
+                 sm->kv_type, kv_type_of(m), sm->kv_type);
+    else
+        snprintf(buf, cap, "the model geometry differs (context and KV type agree; "
+                 "model key %016llx in the image, %016llx here)",
+                 (unsigned long long)sm->model_key, (unsigned long long)e->model_key);
+    return buf;
+}
+
 bool session_write(const char *path, const engine *e, const session_meta *mt,
                    const float *logits, int n_vocab, char sha_out[65]) {
     size_t sn = engine_state_bytes(e);
@@ -274,8 +297,7 @@ bool session_image_write(const char *path, const engine *e, const char *model_pa
     const model_t *m = e->m;
     mt.model_key = e->model_key;
     mt.n_ctx = m->n_ctx;
-    snprintf(mt.kv_type, sizeof mt.kv_type, "%s",
-             m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16");
+    snprintf(mt.kv_type, sizeof mt.kv_type, "%s", kv_type_of(m));
     mt.n_prompt = n_prompt;
     mt.n_tokens = e->pos;
     mt.max_new = max_new;

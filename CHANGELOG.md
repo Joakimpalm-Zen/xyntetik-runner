@@ -19,6 +19,14 @@ Current release and unreleased changes. Compatibility follows the
   only; a layer with sinks (gpt-oss, flint) keeps the tile. The route
   detail says `attn_wide=on`. Report:
   `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03`.
+
+- **A refused session resume names what differs.** An image resumed where
+  its model key differs was refused as "this engine's model key (context, KV
+  type, geometry) is not the image's". The refusal now names the context
+  length or the KV type the image recorded, with both values and the flag
+  that resumes it ("context 4096 in the image, 2048 here: resume with -c
+  4096"), and the model geometry when both agree. The key is unchanged.
+
 - **CUDA decode attention reads the cache once (R3.29).** The grouped decode
   kernel read K twice, a pass for the softmax maximum and then K with V; it
   now makes one pass with a running maximum, stages K and V as 16-byte

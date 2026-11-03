@@ -238,3 +238,32 @@ def test_fork_seed_is_held_to_the_session_seed_range(exe, model, tmp_path, fork_
         code, ok = _post(srv, f"/v1/runner/sessions/{a['id']}/resume",
                          {"fork_seed": 2 ** 53 - 1})
         assert code == 200 and ok["forked"], (code, ok)
+
+
+def test_a_refused_resume_names_the_setting_and_both_values(exe, model, tmp_path):
+    """R1.20: the model key hashes the geometry, the context length and the KV
+    flags, so an image resumed on a server started at another -c or --kv was
+    refused as "this engine's model key (context, KV type, geometry) is not
+    the image's", which does not say which. The image stores its context and
+    KV type beside the key: the refusal names the one that differs, with both
+    values, and the key itself does not change."""
+    sessions = str(tmp_path / "s")
+    with RunnerServer(exe, model, ctx=512, extra_args=[
+            "--gpu", "off", "-t", "2", "--sessions", sessions]) as srv:
+        code, a = _post(srv, "/v1/runner/sessions", dict(START, suspend_after=10))
+        assert code == 200 and a["finish_reason"] == "suspended", a
+    with RunnerServer(exe, model, ctx=256, extra_args=[
+            "--gpu", "off", "-t", "2", "--sessions", sessions]) as srv:
+        code, err = _post(srv, f"/v1/runner/sessions/{a['id']}/resume", {})
+        assert code == 409, err
+        assert "context 512 in the image, 256 here" in json.dumps(err), err
+    with RunnerServer(exe, model, ctx=512, extra_args=[
+            "--gpu", "off", "-t", "2", "--kv", "q8", "--sessions", sessions]) as srv:
+        code, err = _post(srv, f"/v1/runner/sessions/{a['id']}/resume", {})
+        assert code == 409, err
+        assert "KV type f16 in the image, q8 here" in json.dumps(err), err
+    # the setting the refusal names is the one that resumes it
+    with RunnerServer(exe, model, ctx=512, extra_args=[
+            "--gpu", "off", "-t", "2", "--sessions", sessions]) as srv:
+        code, b = _post(srv, f"/v1/runner/sessions/{a['id']}/resume", {})
+        assert code == 200, b

@@ -3081,7 +3081,8 @@ Mamba-2 hybrid, and through a chain of two suspensions.
 `--resume` takes the sampler, context length, KV type, budget and constraint from the
 image, and refuses `-s`, `-n`, `-c`, `--kv`, `--temp`, `--top-k`, `--top-p`, `--min-p`
 and `--repeat-penalty` rather than silently overriding them, as it refuses `--json` or
-`--ignore-eos` on an image made without them. It also refuses a model whose sha256 or engine model key differs from the image's, an
+`--ignore-eos` on an image made without them. It also refuses a model whose sha256 or engine model key differs from the image's (the refusal names the
+context length or KV type when one differs, with the image's value and this run's, else the model geometry), an
 image whose trailer does not match its bytes, and a schema image without the same
 `--json` (the schema itself is not in the image, only its digest). Resumed by a
 different binary, it warns: the continuation is exact only on the build that suspended
