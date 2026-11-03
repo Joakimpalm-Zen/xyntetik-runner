@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Nemotron 3.5 Lightning (`nemotron_h_moe`) routed its experts with the wrong
+  function; fixed. Every nemotron_h_moe file has given wrong output since
+  v0.2.0.** The publisher's router is a sigmoid; the published GGUFs carry no
+  `expert_gating_func` key, and the loader read the missing key as a softmax.
+  On the real Lightning-30B Q8_0 against llama.cpp's logits over the same
+  1,109 positions: perplexity 18.31 before, 11.83 now (llama.cpp 11.73), top-1
+  agreement 63.2% before, 95.8% now. A file that declares the key keeps it.
+  Requantize nothing; reload the file.
+
 - **CUDA prefill attention for 256- to 512-wide heads runs on the tensor
   cores, by default for gemma-4's E-series (R3.6.3.1).** gemma-4's 512-wide
   global layers took the tile's 8-row kernel on the CUDA cores, 79% of a
