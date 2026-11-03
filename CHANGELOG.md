@@ -48,6 +48,17 @@ Current release and unreleased changes. Compatibility follows the
   `--draft-k` row now states the range, 1 to 15 (a round verifies the drafts
   plus the correction, at most 16 rows).
 
+
+- **A Metal layer split no longer refuses a file stored in name order or with
+  its output norm last.** A split wraps a prefix of the file, and it refused
+  layers stored out of block order and any non-layer tensor after them; Qwen's
+  Qwen2.5-1.5B-Instruct Q8_0 does both (blk.0, blk.1, blk.10 to blk.19, blk.2,
+  ..., then `output_norm.weight`), so `--gpu N` on it ran wholly on the CPU.
+  The wrap now reaches the farthest tensor of the device's layers whatever
+  their order, and tensors a split never reads from the device (the head, the
+  embedding, gemma-4 E-series' per-layer tables) may follow the layers; any
+  other tensor there still refuses the split, and the message names it.
+
 - **CUDA decode attention reads the cache once (R3.29).** The grouped decode
   kernel read K twice, a pass for the softmax maximum and then K with V; it
   now makes one pass with a running maximum, stages K and V as 16-byte
