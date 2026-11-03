@@ -74,10 +74,16 @@ def self_test() -> int:
     allowed = problems(planted.replace("docs/x.json", "scripts/check-content-hygiene.py"))
     clean = problems("--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+runs on /usr/local/bin\n")
     deleted = problems("--- a/f.txt\n+++ b/f.txt\n@@ -1 +0,0 @@\n-" + "/home/" + "lab/x\n")
+    # the machine names refused bare, the chip names allowed (split here too)
+    bw, m1 = "Black" + "well", "M" + "1"
+    chips = problems(f"--- a/d.md\n+++ b/d.md\n@@ -1 +1,2 @@\n+the NVIDIA {bw} card, an RTX PRO 6000 {bw}\n"
+                     f"+the Apple {m1} laptop\n")
+    bare = problems(f"--- a/d.md\n+++ b/d.md\n@@ -1 +1,2 @@\n+measured on the {bw} box\n+and the {m1}\n")
     ok = (len(found) == 2 and found[0].startswith("docs/x.json:1:") and found[1].startswith("docs/x.json:3:")
-          and not allowed and not clean and not deleted)
+          and not allowed and not clean and not deleted and not chips and len(bare) == 2)
     print(f"content-hygiene self-test: {'ok' if ok else 'FAILED'} (planted {len(found)}, allowlisted "
-          f"{len(allowed)}, clean {len(clean)}, deleted line {len(deleted)})")
+          f"{len(allowed)}, clean {len(clean)}, deleted line {len(deleted)}, chip names {len(chips)}, "
+          f"bare machine names {len(bare)})")
     return 0 if ok else 1
 
 

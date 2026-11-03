@@ -122,6 +122,8 @@ def self_test() -> int:
         "R4.27: measured on the " + "gala" + "xa1 slice\n",
         "Merge branch 'r3' of " + "/home/" + "lab/runner into r3\n",
         "Merge pull request #9 from x/y\n\nCUDA cells from " + "windows" + "3070\n",
+        "measured on the " + "Black" + "well box\n",
+        "Metal cell on the " + "M" + "1\n",
     ]
     good = [
         "Fix thing\n\nCo-Authored-By: Claude Code (Fable 5.1) & Joakimpalm-Zen\n",
@@ -132,6 +134,9 @@ def self_test() -> int:
         "docs: link https://github.com/Joakimpalm-Zen/xyntetik-runner/releases\n",
         "server: session_reconnection keeps the slot; see session_persistence.md\n",
         "cuda: the RTX 3070 cell on the 16 GB Windows host; the lab box's MIG slice\n",
+        "cuda: sm_120 on the NVIDIA " + "Black" + "well RTX PRO 6000 " + "Black" + "well\n",
+        "metal: the Apple " + "M" + "1 laptop\n",
+        "docs: the NVIDIA\n" + "Black" + "well and Apple\n" + "M" + "1, wrapped\n",
     ]
     ok = all(problems(b) for b in bad) and not any(problems(g) for g in good)
     if not ok:

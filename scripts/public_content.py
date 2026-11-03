@@ -19,6 +19,11 @@ FORBIDDEN = [
     (re.compile(r"\bwindows3070\b", re.I), "an agent session name"),
     (re.compile(r"\bDawn-\d\b"), "an agent session name"),
     (re.compile(r"\bexec-share/"), "the lab's shared work directory"),
+    # The owner's rule (2026-10-13) names the machines; the chip names stay
+    # allowed: "NVIDIA Blackwell", "RTX PRO 6000 Blackwell", "Apple M1",
+    # also with the line wrapped between the two words.
+    (re.compile(r"(?<!RTX PRO 6000[ \n])(?<!NVIDIA[ \n])\bBlackwell\b"), "a machine name"),
+    (re.compile(r"(?<!Apple[ \n])\bM1\b"), "a machine name"),
 ]
 
 
