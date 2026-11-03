@@ -3,7 +3,100 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## v1.12.0 - 2026-11-02
+## v1.12.0 - 2026-11-03
+
+- **Six messages and edges the pre-1.12.0 sweep found.** A one-shot run
+  whose `-n` does not fit in `-c` now ends with `[context full: -c N holds
+  the prompt and K of the M tokens -n asked for; rerun with -c X or
+  larger]` instead of stopping silently (the server already finished such a
+  request with `length`, and the tests now pin it). A GGUF cut short in its
+  metadata or tensor table says it is truncated, with the bytes it needs and
+  the bytes it has, instead of `bad GGUF metadata value for ...`. `--verify`
+  on a receipt a JSON tool re-serialized says so (the chain hash covers the
+  runner's compact bytes) instead of `no chain in record`, which stays for a
+  record that has none. `runner attest VERB --help` prints that verb's usage
+  and exits 0. A value flag at the end of the line names itself (`error: -p
+  needs a value`) before the usage. A failed `-hf` lookup removes the cache
+  directory it created, never one that was there before. Each has a test
+  that fails without it.
+
+- **CUDA MoE routing traces record each expert's output norm.** The CUDA
+  trace left the norms field empty, so a trace taken on the device could not
+  be compared field by field with the CPU's. Every CUDA MoE path (fused,
+  grouped, eager, by expert, and their gemma-4 forms) now writes the CPU's
+  definition: the expert output's norm with the routing weight divided back
+  out and the down bias added. `make test-cuda-moe-replay` compares every
+  device record with the CPU's: experts exactly, gates within 1e-3 and norms
+  within 2e-2 relative (measured spread: gates 5.2e-5, norms 4.0e-3 in the
+  chunked mode). Tracing only; scores are unchanged. The real-file
+  `test-gpu-identity` bound stays 2e-3: dense and IQ files read at most
+  4.0e-4, but Qwen3-30B-A3B reads 1.06e-3 to 1.46e-3 because near-tie top-8
+  routing choices flip between backends (21 of 1,872 on one prompt; 1.5e-3
+  with the CPU's routing replayed). The audit report has the tables (R3.25).
+
+- **CUDA decode applies the attention temperature past its first step.**
+  Llama 4 and mistral3 files that declare the attention temperature
+  (Devstral Small 2, Ministral 3, Magistral Small 1.2) decoded with a stale
+  factor on CUDA when the whole model ran on the device. The decode graph is
+  captured once and replayed, and the factor reached the kernel as a host
+  argument, so every replay used the factor of the position it was captured
+  at. A graph captured below the floor (llama 4: 8,192 positions; mistral3:
+  the file's original context length) applied no temperature past it, and
+  one captured above it kept that factor for later tokens, including those
+  of a later, shorter request. Prefill, and decode with graphs off
+  (`RUNNER_CUDA_GRAPH_OFF=1`), were right. The graph is now captured again
+  when the factor moves, once per floor. In llama 4 since v0.1.5-alpha and
+  mistral3 since 1.11.0. Found by the CUDA gate audit (R3.25), which also
+  puts the fixture that shows it on the 1e-5 bound.
+
+- **CPU prefill attention scales with threads again.** A prefill batch's
+  attention ran one thread-pool pass per query row, so on many cores the
+  dispatch, not the arithmetic, set the time, and more threads made it slower
+  (3.7 s at 16 threads against 1.9 s at 4 for a 588-token prompt on a
+  Threadripper, Qwen3-0.6B Q8_0). It now runs the whole batch in one pass over
+  heads, each running every row exactly as before: outputs are byte-identical
+  at any thread count, and nothing more is allocated. On that host, at 16
+  threads, three interleaved rounds against the previous build read 0.87x to
+  1.72x (medians 1.10x to 1.52x over SmolLM2-135M and Qwen3-0.6B, GCC and
+  Clang builds); at 1 and 4 threads it is level. `RUNNER_ATTN_BATCH=0`
+  restores the per-row passes. On Apple Silicon with an f16 cache, the
+  attention's value sum also holds 16 channels in registers across the whole
+  span instead of storing and reloading them at every position, with each
+  channel's sum
+  unchanged: on an Apple M1 a 3,497-token SmolLM2-135M prefill went from 106
+  to 121 tok/s on one thread and from 234 to 334 on four, the scores
+  byte-identical to the previous build (R3.27).
+
+- **`--train-gpu` measured on a sparse-MoE model, and no faster there on
+  a small device.** Qwen3-30B-A3B Q4_K_M trains whole on a 24 GB MIG slice
+  (15.9 GB on the device), with losses within 1.6e-3 of the CPU trainer's
+  over three steps. A step took 52 to 55 s against 53 s for the CPU trainer
+  on 16 threads: the step is device-bound on many small expert products.
+  The no-norm MoE fixture joins `make test`'s device-mode gradient gates.
+  Record: `docs/compat-reports/train-gpu-2026-11-02-linux-x86_64-qwen3-30b-a3b.md`
+  (R17.3.3).
+
+- **Shared-expert MoE and qwen35moe on Metal.** Metal had no path for an
+  always-on shared expert, so every MoE model with one (the Qwen2-MoE form)
+  and `qwen35moe` (Qwen3.5/3.6-35B-A3B and the models built on them) ran on
+  the CPU. The gated shared expert now runs on the device, composed from the
+  dense FFN's kernels, a one-row router matvec and the per-column sigmoid
+  scale, and `qwen35moe` follows. Checked on toy models only, to the CPU's
+  logits at 1e-5 of range (`make test-metal-qwen35moe`, residue 5.9e-7 at
+  most; a dropped sigmoid or a dropped add fails by 2.7e-3 or more): no
+  `qwen35moe` file fits the 8 GB Mac it was built on, so no file row is
+  measured on Metal. The gate-less squared-ReLU shared expert keeps the CPU,
+  and CUDA still refuses `qwen35moe` (R4.27).
+
+- **A PR-time check for POSIX calls the Windows build lacks.**
+  `scripts/check-portability.py` runs in every PR's metadata check and fails
+  on a call to a function the MinGW-w64 CRT does not declare (`setenv`,
+  `unsetenv`, `realpath`, `getline`, `fork`, `mmap` and twelve more,
+  each verified against the mingw-w64 headers) outside code the preprocessor
+  keeps from Windows. The Windows suite runs on main only, so a bare `setenv`
+  in a C test had passed every PR check and broken main (#553, fixed in
+  #554). A line guarded some other way carries a `portability: ok` comment.
+
 
 - **`RUNNER_CPU_I8` on a build with no int8 kernel is ignored, with a
   notice.** It used to switch the route on in name only: every matvec ran

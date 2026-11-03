@@ -28,6 +28,8 @@ out = args[args.index("-o") + 1]
 url = args[-1]
 hub = os.environ["FAKE_HUB_DIR"]
 if "/api/models/" in url:
+    if os.environ.get("FAKE_HUB_MISSING"):
+        sys.exit(22)   # curl -f on the Hub's 404 for a repository it lacks
     shutil.copy(os.path.join(hub, "files.json"), out)
     sys.exit(0)
 if "/resolve/main/" in url:
@@ -137,6 +139,22 @@ def test_sha_mismatch_is_refused_and_leaves_nothing(runner_bin, hub):
     repodir = hub["cache"] / "fake--repo"
     assert not (repodir / "model-Q4_K_M.gguf").exists()
     assert not (repodir / "model-Q4_K_M.gguf.part").exists()
+
+
+def test_a_failed_lookup_takes_back_the_directory_it_made(runner_bin, hub):
+    """A repository the Hub does not have left an empty owner--repo directory
+    behind in the cache (the pre-1.12.0 sweep). It goes again; a directory
+    that was there before the failed lookup keeps everything in it."""
+    env = dict(hub["env"], FAKE_HUB_MISSING="1")
+    r = run(runner_bin, env, "-hf", "no-such/repo", "-p", "hi")
+    assert r.returncode != 0 and "does no-such/repo exist" in r.stderr
+    assert not (hub["cache"] / "no-such--repo").exists()
+    kept = hub["cache"] / "kept--repo"
+    kept.mkdir(parents=True)
+    (kept / "note.txt").write_text("from an earlier run")
+    r = run(runner_bin, env, "-hf", "kept/repo", "-p", "hi")
+    assert r.returncode != 0
+    assert (kept / "note.txt").read_text() == "from an earlier run"
 
 
 def test_unknown_tag_names_the_files(runner_bin, hub):

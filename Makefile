@@ -2382,6 +2382,9 @@ test-cuda-qwen4exp: runner $(TEST_GPU_ID) $(TEST_CUDA_TEARDOWN) test.gguf
 # scale in their tails against the CPU seam. Token identity on a generated
 # fixture and on any real NVFP4 file named in NVFP4_MODEL, logprob agreement
 # to reduction-order residue, and proof the device actually ran the layers.
+# The generated fixture's residue is 9.6e-7 and is held to 1e-4: at the 2e-2
+# a real file needs, the norm's eps dropped (4.1e-3), the FFN activation
+# swapped (8.4e-3) and K left unrotated (7.9e-3) all passed (R3.25 CUDA half).
 # Skips itself on a box whose --caps report no CUDA device.
 test-cuda-nvfp4: runner
 	@set -e; \
@@ -2394,11 +2397,38 @@ test-cuda-nvfp4: runner
 		  $(PYTHON) -c "import json,sys; p=json.load(open('cuda-nvfp4-gpu.json'))['profile']; assert p['gpu_layers'] > 0, 'CUDA declined ' + sys.argv[1]" $$f; \
 		  ./$(RUNNER_EXE) -m $$f --score -p "The capital of France is Paris, and the runner trains the model on hardware you own." --gpu off --no-tray 2>/dev/null > cuda-nvfp4-cpu.score; \
 		  ./$(RUNNER_EXE) -m $$f --score -p "The capital of France is Paris, and the runner trains the model on hardware you own." --gpu auto --no-tray 2>/dev/null > cuda-nvfp4-gpu.score; \
-		  $(PYTHON) -c "import json,sys; a=json.load(open('cuda-nvfp4-cpu.score'))['logprobs']; b=json.load(open('cuda-nvfp4-gpu.score'))['logprobs']; d=max(abs(x-y) for x,y in zip(a,b)); assert len(a)==len(b)>3 and d < 2e-2, (len(a), len(b), d); print(sys.argv[1], 'cpu/cuda logprob max diff %.2e over %d positions' % (d, len(a)))" $$f; \
+		  $(PYTHON) -c "import json,sys; a=json.load(open('cuda-nvfp4-cpu.score'))['logprobs']; b=json.load(open('cuda-nvfp4-gpu.score'))['logprobs']; d=max(abs(x-y) for x,y in zip(a,b)); assert len(a)==len(b)>3 and d < (1e-4 if sys.argv[1] == 'test-nvfp4.gguf' else 2e-2), (len(a), len(b), d); print(sys.argv[1], 'cpu/cuda logprob max diff %.2e over %d positions' % (d, len(a)))" $$f; \
 		done; \
 		echo "cuda nvfp4 ok"; \
 	else \
 		echo "cuda nvfp4 smoke skipped: no CUDA device reported by --caps"; \
+	fi
+
+# The recurrent hybrids on CUDA (R3.25 CUDA half): no other CUDA gate holds
+# the Mamba-2 scan, the gated norm or the Gated DeltaNet mixer to the CPU's
+# logits, and the D skip dropped from the scan passed all of them. These are
+# test-metal-mamba2's and test-metal-qwen35's fixtures at their 1e-5 (CUDA
+# residue 1.2e-8 to 5.2e-7; the dropped D skip 8.2e-4 on test-m2-s40-g1).
+# Skips itself on a box whose --caps report no CUDA device.
+test-cuda-hybrids: runner $(TEST_GPU_ID) test-ornith.gguf
+	@set -e; \
+	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)"; then \
+	  for c in 40:1 72:2 128:2; do w=$${c%%:*}; gr=$${c##*:}; \
+	    HYBRID_TEST_AMP=1 HYBRID_TEST_STATE=$$w HYBRID_TEST_GROUPS=$$gr \
+	      $(PYTHON) scripts/make-test-hybrid.py test-m2-s$$w-g$$gr --dense --rope > /dev/null; done; \
+	  $(PYTHON) scripts/make-test-nemotron.py test-m2-nemotron > /dev/null; \
+	  for w in 40 72 128; do \
+	    ORNITH_TEST_STATE=$$w $(PYTHON) scripts/make-test-ornith.py test-ornith-s$$w.gguf > /dev/null; done; \
+	  for f in test-m2-s40-g1.gguf test-m2-s72-g2.gguf test-m2-s128-g2.gguf test-m2-nemotron.gguf \
+	           test-ornith.gguf test-ornith-s40.gguf test-ornith-s72.gguf test-ornith-s128.gguf; do \
+	    GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f > test-cuda-hybrids.out 2>&1 || { cat test-cuda-hybrids.out; exit 1; }; \
+	    if grep -q 'skipped' test-cuda-hybrids.out; then cat test-cuda-hybrids.out; \
+	      echo "test-cuda-hybrids: $$f did not run on the device"; exit 1; fi; \
+	    echo "$$f: $$(tail -1 test-cuda-hybrids.out)"; \
+	  done; \
+	  echo "cuda hybrids ok"; \
+	else \
+	  echo "cuda hybrids skipped: no CUDA device reported by --caps"; \
 	fi
 
 test-metal-gemma4-moe: runner
@@ -2849,6 +2879,7 @@ test-metal:
 	$(MAKE) --no-print-directory test-metal-kv-fp4
 	$(MAKE) --no-print-directory test-metal-kv-q8
 	$(MAKE) --no-print-directory test-metal-qwen35 PYTHON="$(PYTHON)"
+	$(MAKE) --no-print-directory test-metal-qwen35moe PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-metal-mamba2 PYTHON="$(PYTHON)"
 
 # qwen35 on Metal (R4.10): the Gated DeltaNet mixer and the gated attention on
@@ -2889,6 +2920,32 @@ else
 	@echo "test-metal-mamba2 skipped: macOS-only backend"
 endif
 
+# The shared expert and qwen35moe on Metal (R4.27): the gated shared expert
+# (Qwen2-MoE form, with and without its scalar router: the dense-equivalent
+# shexp and shexpg fixtures) and the qwen35moe toy (the Gated DeltaNet trunk,
+# routed experts and a sigmoid-gated shared expert on every block) at head
+# widths 8, 40, 72 and 128, to the CPU's logits at 1e-5 of range. A dropped
+# sigmoid or a dropped shared-expert add fails every gated fixture by 2.7e-3
+# or more (measured 2026-11-02); healthy residue is 5.9e-7 at most. Toy
+# identity only: no qwen35moe file fits the 8 GB Mac this was built on.
+test-metal-qwen35moe: runner $(TEST_GPU_ID) $(TEST_SPEC_ID)
+ifeq ($(BUILD_OS),Darwin)
+	@set -e; $(PYTHON) scripts/make-test-moe.py test-moe-fixture > /dev/null; \
+	ORNITH_TEST_MOE=1 $(PYTHON) scripts/make-test-ornith.py test-ornith-moe.gguf > /dev/null; \
+	for w in 40 72 128; do \
+	  ORNITH_TEST_MOE=1 ORNITH_TEST_STATE=$$w $(PYTHON) scripts/make-test-ornith.py test-ornith-moe-s$$w.gguf > /dev/null; done; \
+	for f in test-moe-fixture.shexp.gguf test-moe-fixture.shexpg.gguf test-ornith-moe.gguf \
+	         test-ornith-moe-s40.gguf test-ornith-moe-s72.gguf test-ornith-moe-s128.gguf; do \
+	  GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) $$f > test-metal-qwen35moe.out 2>&1 || { cat test-metal-qwen35moe.out; exit 1; }; \
+	  if grep -q 'skipped' test-metal-qwen35moe.out; then cat test-metal-qwen35moe.out; \
+	    echo "test-metal-qwen35moe: $$f did not run on the device"; exit 1; fi; \
+	  echo "$$f: $$(tail -1 test-metal-qwen35moe.out)"; \
+	  ./$(TEST_SPEC_ID) $$f | tail -1 | grep -q 'ok (gpu' || { ./$(TEST_SPEC_ID) $$f; exit 1; }; \
+	done; echo "test-metal-qwen35moe: ok"
+else
+	@echo "test-metal-qwen35moe skipped: macOS-only backend"
+endif
+
 test-metal-qwen35: runner $(TEST_GPU_ID) $(TEST_SPEC_ID) test-ornith.gguf
 ifeq ($(BUILD_OS),Darwin)
 	@set -e; for w in 40 72 128; do \
@@ -2904,16 +2961,20 @@ else
 	@echo "test-metal-qwen35 skipped: macOS-only backend"
 endif
 
-# R3.25 (Metal half): the toy fixtures' honest Metal residue is 1e-8 to 2e-6
-# of the logit range, and structural mistakes move them 6e-5 to 8e-4: rope
-# skipped, rope one position off, the attention scale x1.05, the norm's eps
-# dropped all passed test-gpu-identity's cross-backend 2e-3. On Metal these
-# fixtures are held to bounds 10x and more over their residue (GPU_ID_LIMIT
-# only tightens); a CUDA host keeps the cross-backend bound until its own
-# audit sets its residue (R3.25, CUDA half).
+# R3.25: the toy fixtures' honest device residue is 1e-8 to 2e-6 of the logit
+# range on Metal and 1e-8 to 3.7e-6 on CUDA, and structural mistakes move them
+# 2e-5 to 2e-3: rope skipped or one position off, K unrotated, the attention
+# scale x1.05, the norm's eps dropped, the activation swapped all passed
+# test-gpu-identity's cross-backend 2e-3 on one backend or both. A GPU host
+# holds these fixtures to bounds well over their residue (GPU_ID_LIMIT only
+# tightens): 1e-5 (30x and more on CUDA), and 2e-5 for spark (CUDA residue
+# 3.7e-6). k_temp_live's decode crosses six temperature steps, so its 1e-5
+# also holds the CUDA decode graph to each token's own temperature: a graph
+# that replayed its capture position's factor measured 8.0e-4 there (R3.25
+# CUDA half, 2026-11-02).
+GPU_ID_TIGHT = GPU_ID_LIMIT=1e-5
+GPU_ID_TIGHT_SPARK = GPU_ID_LIMIT=2e-5
 ifeq ($(BUILD_OS),Darwin)
-METAL_ID_TIGHT = GPU_ID_LIMIT=1e-5
-METAL_ID_TIGHT_SPARK = GPU_ID_LIMIT=2e-5
 # test-prefix compares a reused prefix's last row with a cold prefill's, and
 # a row the GEMM tiles computed differs from the identity matvec's by about
 # 1.6e-5 of range on test.gguf (the tiles stage activations at half
@@ -3041,6 +3102,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-gemma3.gguf test-lora-gemma3.full.gguf
 	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-gemma4.gguf test-lora-gemma4.full.gguf
 	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf strict
+	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf strict
 	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-g4v.gguf test-lora-g4v.full.gguf
 	RUNNER_TEST_TRAIN_DEV=1 RUNNER_TRAIN_ROWS=5 ./$(TEST_LORA_GRAD) test-es8.gguf test-lora-es8.full.gguf stiff
 	./$(TEST_MVT)
@@ -3099,9 +3161,9 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_MV_TOL)
 	./$(TEST_ATTN_TOL)
 	./$(TEST_GPU_ID) --self-test
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID)
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID)
 	$(PYTHON) scripts/make-test-model.py --noisy-norms --qk-norm test-noisy-norms.gguf > /dev/null
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-noisy-norms.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-noisy-norms.gguf
 	./$(TEST_QUANTS_SIMD)
 	./$(TEST_IQ_DECODE)
 	./$(TEST_KQ_STAGE)
@@ -3130,7 +3192,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# no router bias or selects all its experts, and both hide a dropped bias
 	@# under the tolerances -- which is exactly how the CUDA fused path shipped
 	@# without one. See the fixture's comment in scripts/make-test-moe.py.
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.gptoss-top1.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.gptoss-top1.gguf
 	./$(TEST_MOE_ROUTER) test-moe-fixture
 	./$(TEST_PAGING_WARN) test-moe-fixture
 	./$(TEST_AUTOFIT) test.gguf
@@ -3147,24 +3209,24 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	$(PYTHON) -m pytest -q tests/test_attn_knobs.py
 	@# CPU/GPU agreement at logit precision on each knob. Token identity (the
 	@# text gates) is blind at fixture scale -- see the test's header.
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_off.gguf
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_nope.gguf
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_half.gguf
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_temp_live.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_off.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_nope.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_half.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-attn/k_temp_live.gguf
 	@# The same comparison with every forward a single token. That is a
 	@# backend STATE, not a slower schedule: scratch sized lazily on the first
 	@# multi-token batch stays nil for such a run, and the text gates above are
 	@# blind to what that does at fixture scale.
-	$(METAL_ID_TIGHT) ./$(TEST_GPU_ID) test.gguf 0 1
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test.gguf 0 1
 	@# spark2_5 on the device (2026-10-30): Q, K and V as row slices of one
 	@# fused tensor, the per-head output gate, the exact-erf GELU and two rope
 	@# widths and bases, against the CPU at logit precision, batched and one
 	@# token at a time, and with every layer sliding
 	$(PYTHON) scripts/make-test-model.py --spark2-5 test-spark.gguf > /dev/null
 	$(PYTHON) scripts/make-test-model.py --spark2-5 --spark-all-swa test-spark-swa.gguf > /dev/null
-	$(METAL_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark.gguf
-	$(METAL_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark.gguf 0 1
-	$(METAL_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark-swa.gguf
+	$(GPU_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark.gguf
+	$(GPU_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark.gguf 0 1
+	$(GPU_ID_TIGHT_SPARK) ./$(TEST_GPU_ID) test-spark-swa.gguf
 	./$(TEST_QUANTIZE)
 	./$(TEST_VRAM_ROLLBACK)
 	./$(TEST_GGUF_GETTERS)
@@ -3288,7 +3350,7 @@ test-python: test-python-deps runner $(DIFFTOK) $(TEST_INSTANCES) $(TEST_TC_TOL)
              test.gguf test-lora.full.gguf test-moe-train.moe4-train.gguf test-es.gguf
 	@[ -f test-moe-fixture.moe4.gguf ] || $(PYTHON) scripts/make-test-moe.py test-moe-fixture > /dev/null
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	$(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest $(PYTEST_XDIST) --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_cuda_act_probe.py tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_hf_fetch.py tests/test_pull.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_metal_microbatch_profile.py tests/test_metal_batch_tiles.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_glibc_release.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_moe_replay.py tests/test_act_trace.py tests/test_mistral3.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_score_route.py tests/test_cpu_i8_prefill.py tests/test_decide.py tests/test_clef.py tests/test_lfm2.py tests/test_qwen35moe.py tests/test_qwen36_preserve_thinking.py tests/test_spark2_5.py tests/test_flint.py tests/test_k2_horizon.py tests/test_yarn_betas.py tests/test_hf_spec_bounds.py tests/test_doc_counts.py tests/test_lora.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_train_recipe.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_model_tiers.py tests/test_site_tiers.py tests/test_tier_smoke.py tests/test_difftok.py tests/test_unicode_classes.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_type_plan_by_sensitivity.py tests/test_derive.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_cuda_upload_report.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_top_logprobs_keys.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_schema_refs.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_utf8_io.py tests/test_cli_lifecycle.py tests/test_cli_surface.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py
+	$(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest $(PYTEST_XDIST) --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_check_portability.py tests/test_cuda_act_probe.py tests/test_fit_check.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_context_full.py tests/test_hf_fetch.py tests/test_pull.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_metal_microbatch_profile.py tests/test_metal_batch_tiles.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_glibc_release.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_gguf_truncated.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_lookup.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_moe_replay.py tests/test_act_trace.py tests/test_mistral3.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_score.py tests/test_score_route.py tests/test_cpu_i8_prefill.py tests/test_decide.py tests/test_clef.py tests/test_lfm2.py tests/test_qwen35moe.py tests/test_qwen36_preserve_thinking.py tests/test_spark2_5.py tests/test_flint.py tests/test_k2_horizon.py tests/test_yarn_betas.py tests/test_hf_spec_bounds.py tests/test_doc_counts.py tests/test_lora.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_train_recipe.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_model_tiers.py tests/test_site_tiers.py tests/test_tier_smoke.py tests/test_difftok.py tests/test_unicode_classes.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_type_plan_by_sensitivity.py tests/test_derive.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_cuda_upload_report.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_top_logprobs_keys.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_session_images.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_schema_refs.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_utf8_io.py tests/test_cli_lifecycle.py tests/test_cli_surface.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py
 
 # --------------------------------------------------------------------------
 # Template conformance: runner's native C chat renderer vs the model's OWN
@@ -3632,7 +3694,7 @@ test-cuda-gated: runner test.gguf
 	$(PYTHON) scripts/check-junit.py --no-skips-matching '(?i)cuda|device|gpu' \
 	    --allow-skip 'CUDA runtime is available' .build/ci/cuda-gated.xml
 
-.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-qwen4exp test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
+.PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
 .PHONY: test-gates test-gates-core test-gates-batch test-python
 .PHONY: test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 

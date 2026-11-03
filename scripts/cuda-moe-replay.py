@@ -10,7 +10,8 @@ forwards, so a prefill path routes whole tiles):
 
   * a traced run scores the same as a plain one, and its trace holds the
     experts the CPU routers choose at every (position, layer), scored the
-    same way;
+    same way, with the CPU trace's other fields: the gates, and the norm of
+    every selected expert's output, both within the arithmetic of the path;
   * replaying that trace scores the same, forcing every slot and counting
     no differing choice and no uncovered pair;
   * a trace with every expert id moved to the next one (a bijection, so each
@@ -51,6 +52,12 @@ CLEAR = ("RUNNER_MOE_TRACE", "RUNNER_MOE_REPLAY", "RUNNER_MOE_EAGER", "RUNNER_MO
 # for gemma-4's chunked fixture) by this factor plus a floor; a wrong weight
 # or renormalisation is off by ~0.1
 CPU_FACTOR, CPU_FLOOR = 4.0, 1e-4
+# the device trace's gates and expert-output norms against the CPU's. Over the
+# three fixtures and every arm (R3.25, 2026-11-02) the gates were 1e-6 apart
+# solo and 5.2e-5 chunked, the norms 3.5e-4 solo and 4.0e-3 chunked, relative
+# (the chunked tiles stage activations at half precision); a norm of the
+# weighted output, a dropped bias or a slot mix-up is off by a tenth or more
+GATE_TOL, NORM_RTOL = 1e-3, 2e-2
 
 
 def score(runner, model, gpu, env):
@@ -93,6 +100,31 @@ def trace_of(path):
     return recs
 
 
+def trace_fields(tag, t_gpu, t_cpu):
+    """Every device record's gates and norms against the CPU record's; the
+    worst gate and (relative) norm distance."""
+    def recs(path):
+        with open(path, encoding="utf-8") as fh:
+            return {(r["pos"], r["layer"]): r for r in map(json.loads, fh)}
+    g, c = recs(t_gpu), recs(t_cpu)
+    wg = wn = 0.0
+    for key, r in sorted(g.items()):
+        cr = c[key]
+        for side, rec in (("device", r), ("CPU", cr)):
+            if len(rec["gates"]) != len(rec["experts"]) or len(rec["norms"]) != len(rec["experts"]):
+                sys.exit("FAIL %s: the %s trace at %s holds %d gates and %d norms for %d experts"
+                         % (tag, side, key, len(rec["gates"]), len(rec["norms"]),
+                            len(rec["experts"])))
+        dg = max(abs(a - b) for a, b in zip(r["gates"], cr["gates"]))
+        dn = max(abs(a - b) / max(abs(b), 1e-30) for a, b in zip(r["norms"], cr["norms"]))
+        if dg > GATE_TOL or dn > NORM_RTOL:
+            sys.exit("FAIL %s: at %s the device trace's gates %s and norms %s are not the "
+                     "CPU's %s and %s" % (tag, key, r["gates"], r["norms"], cr["gates"],
+                                          cr["norms"]))
+        wg, wn = max(wg, dg), max(wn, dn)
+    return wg, wn
+
+
 def write_trace(path, recs):
     with open(path, "w", encoding="utf-8") as fh:
         for (pos, layer), ex in sorted(recs.items()):
@@ -133,6 +165,7 @@ def check(runner, model, arm, mode, tmp):
                  "%d pairs differ, first %s" % (tag, len(rg), len(rc), len(diff),
                                                 sorted(diff)[:3]))
     used = len(next(iter(rg.values())))
+    fg, fn = trace_fields(tag, t_gpu, t_cpu)
 
     lp, _, err = score(runner, model, True, dict(env, RUNNER_MOE_REPLAY=t_gpu))
     forced, differed, missing = counts(err)
@@ -174,10 +207,10 @@ def check(runner, model, arm, mode, tmp):
                  "(unpinned %.3g, bar %.2g)" % (tag, d, d0, bar))
     print("moe replay %s: %d routings x %d traced as the CPU's, replayed with no "
           "override, moved trace followed (%d overrides%s, CPU distance %.1e, unpinned "
-          "%.1e)%s" %
+          "%.1e)%s, trace fields within gate %.1e norm %.1e" %
           (tag, len(rg), used, differed,
            ", every expert routed: a reorder" if reorder else "", d, d0,
-           ", by-expert tiles %d" % twin if twin else ""))
+           ", by-expert tiles %d" % twin if twin else "", fg, fn))
 
 
 def main():

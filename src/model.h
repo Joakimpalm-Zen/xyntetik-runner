@@ -324,6 +324,11 @@ typedef struct {
     // for an A/B; the split is bit-identical, so only speed can differ.
     int       attn_split;
     long      attn_split_runs;  // split passes taken: the gate's engagement check
+    // R3.27 batched attention: a prefill batch's (row, head) items in one pool
+    // pass; 0 on, -1 one pass per row (RUNNER_ATTN_BATCH=0 sets -1 at load).
+    // Bit-identical either way, so only speed can differ.
+    int       attn_batch;
+    long      attn_batch_runs;  // batched passes taken: the gate's engagement check
     size_t   *kv_off;        // [n_layer+1] element offsets into VCACHE (and
                              // into kcache too unless tied-V is on)
     // [n_layer+1] element offsets into KCACHE. NULL means the two caches share
@@ -1528,13 +1533,15 @@ void model_score_route_json(const model_t *m, const char *model_json, char *out,
 // model_moe_replay_ids: one (position, layer)'s recorded experts or NULL,
 // counted as uncovered, for a router on the host (the CUDA eager paths).
 // model_moe_replay_count adds the device's counts to the exit report.
-// model_moe_trace_route writes one routing as a trace record (no norms).
+// model_moe_trace_route writes one routing as a trace record, with each
+// selected expert's output norm (NULL: an empty "norms" array).
 bool model_moe_replay_on(void);
 int *model_moe_replay_table(int n_layer, int used, int *npos);
 const int *model_moe_replay_ids(int pos, int layer, int used);
 void model_moe_replay_count(unsigned long forced, unsigned long differed,
                             unsigned long missing);
 bool model_moe_trace_on(void);
-void model_moe_trace_route(int pos, int layer, const int *sel, const float *selw, int used);
+void model_moe_trace_route(int pos, int layer, const int *sel, const float *selw,
+                           const float *norms, int used);
 
 #endif // RUNNER_MODEL_H

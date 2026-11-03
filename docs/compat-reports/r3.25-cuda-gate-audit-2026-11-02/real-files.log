@@ -1,0 +1,40 @@
+== real files (550164c + patch v4, 2026-11-02 18:54:33)
+SmolLM2-135M-Instruct-Q8_0 batch: exit 0 11s 7.26e-05 (range 38.5, worst 0.0148);
+SmolLM2-135M-Instruct-Q8_0 single: exit 0 2s 4.68e-05 (range 38.5, worst 0.0103);
+Qwen2.5-0.5B-Instruct-Q4_K_M batch: exit 0 10s 3.62e-05 (range 33.5, worst 0.014);
+Qwen2.5-0.5B-Instruct-Q4_K_M single: exit 0 9s 3.75e-05 (range 33.5, worst 0.0139);
+Qwen3-0.6B-q4_0 batch: exit 0 53s 2.82e-05 (range 34.5, worst 0.00941);
+Qwen3-0.6B-q4_0 single: exit 0 6s 2.51e-05 (range 34.6, worst 0.00879);
+tinyllama-1.1b-chat-v1.0.Q2_K batch: exit 0 59s 2.12e-05 (range 32.8, worst 0.00567);
+tinyllama-1.1b-chat-v1.0.Q2_K single: exit 0 42s 2.04e-05 (range 32.8, worst 0.00924);
+Qwen3.5-0.8B-Q4_K_M batch: exit 0 15s 3.5e-06 (range 36.4, worst 0.00238);
+Qwen3.5-0.8B-Q4_K_M single: exit 0 5s 3.63e-06 (range 36.4, worst 0.00135);
+Qwen3-0.6B-bf16 batch: exit 0 189s 2.43e-05 (range 34.6, worst 0.00887);
+Qwen3-0.6B-bf16 single: exit 0 5s 2.69e-05 (range 34.6, worst 0.00966);
+granite-4.0-h-micro-Q4_K_M batch: exit 0 250s 6.57e-06 (range 36.1, worst 0.00359);
+granite-4.0-h-micro-Q4_K_M single: exit 0 18s 3.95e-06 (range 36.1, worst 0.0039);
+== the CUDA gate's quantized fixtures (default bound)
+test-cuda-varff: exit 0 1s, worst 1.34e-05 over 2 runs gpu-identity: ok
+test-cuda-q3k: exit 0 2s, worst 1.03e-06 over 1 runs gpu-identity: ok
+test-cuda-qwen4exp: exit 0 18s, worst 1.88e-07 over 1 runs split GGUF, 2 slots: device weights shared
+test-cuda-iquants: exit 2 0s, worst  over 0 runs make: *** [Makefile:2021: test-cuda-iquants] Error 1
+test-cuda-moe-twin: exit 0 13s, worst 2.14e-06 over 6 runs gpu-identity: ok
+test-cuda-keepn: exit 0 18s, worst 1.98e-07 over 16 runs gpu-identity: ok
+done 19:06:39
+granite-4.1-8b-Q4_0 batch: exit 0 39s 3.87e-05 (range 37.6, worst 0.0375) gpu-split: budget=25.13GB fixed=0.80GB G=40/40 full=1 used=5.30GB
+granite-4.1-8b-Q4_0 single: exit 0 39s 3.49e-05 (range 37.6, worst 0.0215) gpu-split: budget=25.13GB fixed=0.80GB G=40/40 full=1 used=5.30GB
+Qwen3-4B-Q4_K_M batch: exit 0 12s 2.67e-05 (range 47.5, worst 0.0345) gpu-split: budget=25.13GB fixed=0.80GB G=36/36 full=1 used=2.98GB
+Qwen3-4B-Q4_K_M single: exit 0 23s 3.5e-05 (range 47.4, worst 0.0507) gpu-split: budget=25.13GB fixed=0.80GB G=36/36 full=1 used=2.98GB
+== mutants on real files (host cuda.c mutants, default bound)
+attn-scale-x1.05 SmolLM2-135M-Instruct-Q8_0: 0.0056
+attn-scale-x1.05 Qwen2.5-0.5B-Instruct-Q4_K_M: 0.00205
+attn-scale-x1.05 Qwen3-0.6B-q4_0: 0.00281
+rope-K-skipped SmolLM2-135M-Instruct-Q8_0: 0.0982
+rope-K-skipped Qwen2.5-0.5B-Instruct-Q4_K_M: 0.075
+rope-K-skipped Qwen3-0.6B-q4_0: 0.0781
+== the CUDA gate targets at GPU_DEV_FRAC 5e-4 (a measurement run; the constant stays 2e-3)
+test-cuda-varff: worst 1.34e-05 (limit 5e-4), gpu-identity: ok
+test-cuda-q3k: worst 1.03e-06 (limit 5e-4), gpu-identity: ok
+test-cuda-qwen4exp: worst 1.88e-07 (limit 5e-4), split GGUF, 2 slots: device weights shared
+test-cuda-moe-twin: worst 2.14e-06 (limit 5e-4), gpu-identity: ok
+test-cuda-keepn: worst 1.98e-07 (limit 5e-4), gpu-identity: ok

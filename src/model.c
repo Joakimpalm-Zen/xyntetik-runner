@@ -5550,6 +5550,8 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     {
         const char *e = getenv("RUNNER_ATTN_SPLIT");
         m->attn_split = e && !strcmp(e, "0") ? -1 : 0;
+        e = getenv("RUNNER_ATTN_BATCH");
+        m->attn_batch = e && (!strcmp(e, "0") || !strcmp(e, "off")) ? -1 : 0;
     }
     if (!runtime_kv_layout(m, p, n_ctx)) return false;
     int q_dim = 0, kv_dim = 0;
@@ -6350,6 +6352,22 @@ static __attribute__((noinline)) void attn_softmax(const attn_job *j, int h) {
 // so a slice gives each channel the bits the whole row gives it; i0 and n are
 // whole KV blocks (32 channels of q8_0, 16 of fp4) so the row helpers read
 // the same bytes per channel.
+//
+// The f16 tile below is built only with Clang where f16 converts in hardware
+// (Apple Silicon, where it was measured). Its sums live in registers, which
+// makes each one a reduction the compiler may reassociate under -ffast-math,
+// so it runs under Clang's fp reassociate(off). GCC (x86-64, -O3) did
+// reassociate it: it vectorized the tile across positions, four partial sums
+// a channel added at the end, on the flat cache but not on the ring (whose
+// t % ring it could not), so a ringed layer stopped matching the flat one
+// (tests/test_kv_ring.py, 1.4e-6, 2026-11-02). GCC's per-function
+// no-associative-math restored the bits but left the tile scalar, half the
+// speed of the loop below (SmolLM2-135M, a 3,497-token prefill, 1 thread:
+// 30 against 57 tok/s), and the reassociated tile was already slower than
+// that loop there (51). Elsewhere every channel takes the loop below.
+#if defined(__clang__) && defined(__ARM_FP16_FORMAT_IEEE)
+#define ATTN_VALUES_TILE 1
+#endif
 static __attribute__((noinline)) void attn_values(const attn_job *j, int h,
                                                   int i0, int n) {
     model_t *m = j->m;
@@ -6359,6 +6377,33 @@ static __attribute__((noinline)) void attn_values(const attn_job *j, int h,
     size_t hoff_v = kv_bytes_of_kind(j->vk, (size_t)(h / kv_mul) * hd + (size_t)i0);
     float *out = j->out + h * hd + i0;
     memset(out, 0, sizeof(float) * n);
+#ifdef ATTN_VALUES_TILE
+    if (j->vk == 0) {
+        _Pragma("clang fp reassociate(off)")
+        // f16 cache: tiles of 16 channels held in registers across the whole
+        // span (R3.27). Each channel's sum is the loop below's: a term a
+        // position, in position order, written the same way, so a channel
+        // keeps its bits; the tile only stops out[] from being stored and
+        // reloaded at every position, which was most of this function's time
+        // (Apple M1, a 3,497-token prefill, 2026-11-02).
+        enum { VT = 16 };
+        int c0 = 0;
+        for (; c0 + VT <= n; c0 += VT) {
+            float acc[VT] = { 0 };
+            for (int t = j->t0; t <= j->pos; t++) {
+                size_t slot = j->ring ? (size_t)(t % j->ring) : (size_t)t;
+                const f16_t *vh = (const f16_t *)(j->vc + slot * j->v_row_b + hoff_v) + c0;
+                float a = att[t];
+                for (int k = 0; k < VT; k++) acc[k] += a * f16_load(vh + k);
+            }
+            memcpy(out + c0, acc, sizeof acc);
+        }
+        if (c0 == n) return;
+        out += c0;
+        n -= c0;
+        hoff_v += (size_t)c0 * sizeof(f16_t);
+    }
+#endif
     for (int t = j->t0; t <= j->pos; t++) {
         size_t slot = j->ring ? (size_t)(t % j->ring) : (size_t)t;
         const uint8_t *vt = j->vc + slot * j->v_row_b + hoff_v;
@@ -6896,8 +6941,8 @@ static void dbg_stat_f16(const char *tag, int layer, const f16_t *v, size_t n) {
 // RUNNER_MOE_TRACE=path appends one JSONL record per routed token per MoE
 // layer: {"pos":N,"layer":L,"experts":[...],"gates":[...]}. Off by default;
 // zero cost when unset (one cached getenv + a cached FILE*, same shape as
-// dbg_act_mode above). CPU path only — the CUDA MoE kernels route on-device
-// and never reach this call site.
+// dbg_act_mode above). The CUDA paths write theirs through
+// model_moe_trace_route, norms included.
 static FILE *moe_trace_file(void) {
     static plat_env_file f;   // any slot may ask first (compat.h)
     return plat_env_file_get(&f, "RUNNER_MOE_TRACE");
@@ -7243,8 +7288,9 @@ bool model_moe_trace_on(void) {
     return moe_trace_file() != NULL;
 }
 
-void model_moe_trace_route(int pos, int layer, const int *sel, const float *selw, int used) {
-    moe_trace_emit(pos, layer, sel, selw, NULL, used);
+void model_moe_trace_route(int pos, int layer, const int *sel, const float *selw,
+                           const float *norms, int used) {
+    moe_trace_emit(pos, layer, sel, selw, norms, used);
 }
 
 // ------------------------------------------------------ MoE gate-reuse probe
@@ -13130,24 +13176,64 @@ NUM_STAGE void attn_rope_store(model_t *m, const fwd_layer *c) {
     }
 }
 
+// R3.27: a batch's attention in ONE pool pass, one item a head.
+// The per-row loop below ran a pool pass per query row (a 588-token prefill
+// on 28 layers is 16,464 passes of a few tens of microseconds each), so the
+// dispatch and the wait, not the arithmetic, set the time, and more threads
+// made it slower: 1.9 s at 4 threads, 3.7 s at 16 (Threadripper 9980X,
+// Qwen3-0.6B, 2026-11-02). Each item runs the same attn_scores, attn_softmax
+// and attn_values for its head on every row, in row order, in that head's row
+// of m->att: every output keeps its bits, at any thread count, and nothing
+// is allocated. RUNNER_ATTN_BATCH=0 (model_t.attn_batch -1) restores the
+// per-row passes; tests/test_attn_split.c holds the identity.
+typedef struct { model_t *m; const fwd_layer *c; } attn_batch_job;
+
+static attn_job attn_row_job(model_t *m, const fwd_layer *c, int b);
+
+// One item a head: every row of the batch for that head, in row order, in the
+// head's own row of m->att (no two items share one, and nothing is allocated,
+// so the training step's allocation contract is unchanged).
+static void attn_batch_items(void *ctx, int h0, int h1) {
+    attn_batch_job *bj = ctx;
+    for (int h = h0; h < h1; h++)
+        for (int b = 0; b < bj->c->n; b++) {
+            attn_job j = attn_row_job(bj->m, bj->c, b);
+            attn_scores(&j, h, j.t0, j.pos);
+            attn_softmax(&j, h);
+            attn_values(&j, h, 0, j.hd);
+        }
+}
+
+// row b's attention job in this layer: the query, its output row, its span
+static attn_job attn_row_job(model_t *m, const fwd_layer *c, int b) {
+    const int l = c->l, p = c->pos + b;
+    int t0 = c->local && p - m->swa_window + 1 > 0 ? p - m->swa_window + 1 : 0;
+    attn_job aj = { m, c->kc_l, c->vc_l, m->q + (size_t)b * c->q_dim,
+                    m->xb2 + (size_t)b * c->xdim, p, t0, c->hd, c->kv_dim,
+                    c->k_row_b, c->v_row_b, model_kv_is_ring(m, l) ? m->kv_ring : 0,
+                    model_kv_kind_k(m), model_kv_kind_v(m), c->scale, c->ly->attn_sinks,
+                    model_layer_tied_v(m, l), c->ly->knorm_w, l };
+    return aj;
+}
+
 NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
     const layer_t *ly = c->ly;
-    const int l = c->l, n = c->n, pos = c->pos, xdim = c->xdim;
-    const int hd = c->hd, q_dim = c->q_dim, kv_dim = c->kv_dim;
-    const bool local = c->local;
-    const float scale = c->scale;
+    const int l = c->l, n = c->n, xdim = c->xdim;
+    const int hd = c->hd, q_dim = c->q_dim;
     const int dbg = c->dbg;
-    uint8_t *kc_l = c->kc_l, *vc_l = c->vc_l;
-    const size_t k_row_b = c->k_row_b, v_row_b = c->v_row_b;
+    // the batch's rows in one pool pass over heads (R3.27), else one pass a row
+    if (n > 1 && m->attn_batch >= 0) {
+        attn_batch_job bj = { m, c };
+        tpool_run(m->tp, attn_batch_items, &bj, m->n_head);
+        m->attn_batch_runs++;
+    } else {
+        for (int b = 0; b < n; b++) {
+            attn_job aj = attn_row_job(m, c, b);
+            attn_run(m, &aj, m->n_head);
+        }
+    }
+    // per-row output gates: each touches its own row only
     for (int b = 0; b < n; b++) {
-        int p = pos + b;
-        int t0 = local && p - m->swa_window + 1 > 0 ? p - m->swa_window + 1 : 0;
-        attn_job aj = { m, kc_l, vc_l, m->q + (size_t)b * q_dim,
-                        m->xb2 + (size_t)b * xdim, p, t0, hd, kv_dim,
-                        k_row_b, v_row_b, model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                        model_kv_kind_k(m), model_kv_kind_v(m), scale, ly->attn_sinks,
-                        model_layer_tied_v(m, l), ly->knorm_w, l };
-        attn_run(m, &aj, m->n_head);
         if (m->attn_gate_heads && ly->wq_gate) {
             // one gate per head over its head_dim outputs (spark2_5)
             for (int h = 0; h < m->n_head; h++) {

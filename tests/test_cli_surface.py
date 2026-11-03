@@ -340,6 +340,39 @@ def test_attest_help_and_no_verb(runner_bin):
     assert p.returncode != 0 and b"frobnicate" in p.stderr
 
 
+ATTEST_VERBS = ["keygen", "sign", "check", "lineage", "bundle", "check-bundle", "pack",
+                "check-pack", "sign-model", "watermark-keygen", "detect"]
+
+
+@pytest.mark.parametrize("verb", ATTEST_VERBS)
+def test_attest_verb_help_prints_that_verbs_usage(runner_bin, verb):
+    """`runner attest VERB --help` was read as VERB missing its argument (exit
+    1, the pre-1.12.0 sweep); it prints the verb's own block of `runner attest
+    --help`, and the bare verb still asks for its argument."""
+    for h in ("--help", "-h"):
+        p = run(runner_bin, "attest", verb, h)
+        assert p.returncode == 0, p.stderr
+        out = p.stdout.decode()
+        assert out.startswith("usage: runner attest %s " % verb) or \
+            out.startswith("usage: runner attest %s\n" % verb), out
+        assert out.splitlines()[0][len("usage: runner attest "):] in \
+            run(runner_bin, "attest", "--help").stdout.decode()
+        others = [v for v in ATTEST_VERBS if v != verb and not v.endswith("-" + verb)
+                  and not verb.endswith("-" + v)]
+        assert not any(re.search(r"^  %s " % re.escape(v), out, re.M) for v in others), out
+    p = run(runner_bin, "attest", verb)
+    assert p.returncode != 0 and b"needs" in p.stderr
+
+
+@pytest.mark.parametrize("flag", ["-p", "-m", "-n", "-c", "--port", "--lora"])
+def test_a_flag_missing_its_value_is_named(runner_bin, flag):
+    """A value flag at the end of the line printed the usage and nothing
+    else (the pre-1.12.0 sweep); the first line now names the flag."""
+    p = run(runner_bin, "-m", str(FIXTURE), flag) if flag != "-m" else run(runner_bin, "-p", "hi", flag)
+    assert p.returncode == 1
+    assert p.stderr.decode().splitlines()[0] == "error: %s needs a value" % flag, p.stderr[:200]
+
+
 def test_attest_bundle_and_pack_take_positionals(runner_bin, tmp_path):
     """The positional pair stands for the --export-* and --*-out flags; a
     missing receipt fails inside the export, after the pair was accepted."""
