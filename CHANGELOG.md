@@ -5,6 +5,30 @@ Current release and unreleased changes. Compatibility follows the
 
 ## v1.12.0 - 2026-11-03
 
+- **`--quant q4_k` wrote corrupt tensors on rows that divide by 32 but not
+  256 (since v0.5.7); fixed.** Such a row cannot take a 256-block K-quant,
+  so the quantizer falls back to Q5_0, the 32-block type of the nearest bit
+  budget, as llama.cpp does. There was no Q5_0 writer: the row's float
+  bytes were written under a Q5_0 header. **Any file Runner wrote with
+  `--quant q4_k` (through `--quantize`, `--rewrite`, `runner derive` or a
+  type plan) from v0.5.7 on, from a model with such rows, is corrupt and
+  must be requantized.** Such rows occur in SmolLM2-135M (576 wide),
+  Qwen2.5-0.5B (896) and Kvist-14B (5,760), among others. To check a file:
+  the quantize histogram lists `Q5_0` tensors (`--info fit` names the weight
+  type), and the file scores NaN or garbage (SmolLM2-135M: NaN logits, no tokens). Q5_0 now
+  has its writer, byte-identical to ggml's; a fallback is only ever a type
+  the quantizer writes; and a row with no writer stops the quantizer
+  instead of being copied. Files from llama.cpp, and Runner files at
+  other types, are not affected.
+
+- **Smaller fixes from the pre-1.12.0 sweep.** A `--quant` name the
+  quantizer does not take (`Q4_K_M`, llama.cpp's mix name, or `q4_K`) is
+  refused with the names it does take. `runner derive` whose rewrite fails
+  leaves nothing beside OUT; it left the parent's score file. And the
+  route-line wording for the two 1.12.0 opt-ins is corrected: the route line
+  and the `--score` and `--bench-json` route records name them, receipts do
+  not.
+
 - **Six messages and edges the pre-1.12.0 sweep found.** A one-shot run
   whose `-n` does not fit in `-c` now ends with `[context full: -c N holds
   the prompt and K of the M tokens -n asked for; rerun with -c X or
@@ -100,8 +124,8 @@ Current release and unreleased changes. Compatibility follows the
 
 - **`RUNNER_CPU_I8` on a build with no int8 kernel is ignored, with a
   notice.** It used to switch the route on in name only: every matvec ran
-  f32, while the route line and receipts said `cpu_act` `int8`, a route that
-  never ran. That was so on the 1.11.0 macOS binary (see the entry on the
+  f32, while the route line and the `--score` and `--bench-json` route
+  records said `cpu_act` `int8`, a route that never ran. That was so on the 1.11.0 macOS binary (see the entry on the
   macOS build above). `RUNNER_CPU_I8_PREFILL` already behaved this way.
 
 - **The macOS build has the int8 dot path again.** Apple Silicon builds now
@@ -163,8 +187,9 @@ Current release and unreleased changes. Compatibility follows the
   `RUNNER_METAL_BATCH_TILES=1`, 6 or more `--parallel` slots decoding
   together run their weight products on the prefill GEMM tiles instead of
   the per-column identity matvec. It is not bit-identical to sequential
-  decode, so it stays off by default, and the route line and receipts name
-  it (`micro=tiles`). On an Apple M1 with K2-Horizon-1B, aggregate decode at
+  decode, so it stays off by default, and the route line and the `--score`
+  and `--bench-json` route records name it (`micro=tiles`); receipts do not
+  carry the route yet. On an Apple M1 with K2-Horizon-1B, aggregate decode at
   8 slots went from 45.2 to 63.2 tok/s (Q4_K_M) and from 58.2 to 69.9 tok/s
   (Q8_0); at 2 to 5 slots the tiles were slower, so those widths keep the
   identity route. Against the publisher's float32 model over 2,000 positions

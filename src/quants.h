@@ -119,6 +119,10 @@ int   merge_lora_gguf(const char *in_path, const char *adapter_path,
 // CLI-name -> T_* for every type the quantizer can write ("keep" -> T_KEEP);
 // -2 for a name it cannot.
 int   quantize_type_from_name(const char *s);
+// the names quantize_type_from_name takes, for the messages that refuse one
+// (type_from_name in quantize.c is the list; test_type_plan.py holds the two
+// in step)
+#define QUANT_TYPE_NAMES "keep|q8_0|q4_0|q3_k|q4_k|q6_k|mxfp4|f16|bf16"
 // dot(row, x) over n elements
 float vec_dot(int type, const void *row, const float *x, int n);
 // out[b] = dot(w, x + b*x_stride) for nb columns sharing one weight row

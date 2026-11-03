@@ -65,6 +65,7 @@ static inline void fp_denormals_restore(fp_denormal_state s) { (void)s; }
 
 
 typedef struct { f16_t d; uint8_t qs[16]; } wblock_q4_0;
+typedef struct { f16_t d; uint8_t qh[4]; uint8_t qs[16]; } wblock_q5_0;   // 22 bytes
 typedef struct { uint8_t e; uint8_t qs[16]; } wblock_mxfp4;   // 17 bytes
 typedef struct { f16_t d; int8_t qs[32]; }  wblock_q8_0;
 typedef struct {
@@ -177,6 +178,36 @@ static void quantize_row_q4_0(const float *x, uint8_t *dst, int n) {
             if (q1 < 0) q1 = 0;
             b->qs[j] = (uint8_t)(q0 | (q1 << 4));
         }
+    }
+}
+
+// ggml's quantize_row_q5_0_ref: the block's largest-magnitude value maps to
+// -16, every value to round(x / d) + 16 in 5 bits, the low four packed two to
+// a byte and the fifth gathered into qh. Written for the 32-block fallback of
+// a Q4_K target (width_fallback), which wrote no Q5_0 writer from v0.5.7 on:
+// those tensors were raw float bytes under a Q5_0 header.
+static void quantize_row_q5_0(const float *x, uint8_t *dst, int n) {
+    wblock_q5_0 *b = (wblock_q5_0 *)dst;
+    for (int i = 0; i < n / 32; i++, b++) {
+        const float *xp = x + i * 32;
+        float amax = 0, vmax = 0;
+        for (int j = 0; j < 32; j++) {
+            if (amax < fabsf(xp[j])) { amax = fabsf(xp[j]); vmax = xp[j]; }
+        }
+        float d = vmax / -16;
+        float id = d ? 1.0f / d : 0.0f;
+        b->d = f32_to_f16(d);
+        uint32_t qh = 0;
+        for (int j = 0; j < 16; j++) {
+            int q0 = (int8_t)(xp[j] * id + 16.5f);
+            int q1 = (int8_t)(xp[j + 16] * id + 16.5f);
+            if (q0 > 31) q0 = 31;
+            if (q1 > 31) q1 = 31;
+            b->qs[j] = (uint8_t)((q0 & 0x0F) | ((q1 & 0x0F) << 4));
+            qh |= (uint32_t)((q0 & 0x10) >> 4) << j;
+            qh |= (uint32_t)((q1 & 0x10) >> 4) << (j + 16);
+        }
+        memcpy(b->qh, &qh, sizeof qh);
     }
 }
 
@@ -732,19 +763,28 @@ static void quantize_row_any(int type, const float *rowf, uint8_t *rowq, int n) 
     switch (type) {
         case T_Q8_0: quantize_row_q8_0(rowf, rowq, n); break;
         case T_Q4_0: quantize_row_q4_0(rowf, rowq, n); break;
+        case T_Q5_0: quantize_row_q5_0(rowf, rowq, n); break;
         case T_Q3_K: quantize_row_q3_K(rowf, rowq, n); break;
         case T_Q4_K: quantize_row_q4_K(rowf, rowq, n); break;
         case T_Q6_K: quantize_row_q6_K(rowf, rowq, n); break;
         case T_MXFP4: quantize_row_mxfp4(rowf, rowq, n); break;
         case T_F16:  quantize_row_f16(rowf, rowq, n); break;
         case T_BF16: quantize_row_bf16(rowf, rowq, n); break;
-        default:     memcpy(rowq, rowf, sizeof(float) * (size_t)n); break;
+        case T_F32:  memcpy(rowq, rowf, sizeof(float) * (size_t)n); break;
+        default:
+            // no writer: the float row copied here under another type's
+            // header is what the Q5_0 fallback wrote from v0.5.7 to 1.12.0.
+            // Every caller checks quantize_row_writable first, so reaching
+            // this is a bug, and a file must not be written past it.
+            fprintf(stderr, "quantize: internal error: no writer for %s\n",
+                    ggml_type_name(type));
+            abort();
     }
 }
 
 static bool quantize_row_writable(int type) {
     return type == T_F32 || type == T_F16 || type == T_BF16 ||
-           type == T_Q8_0 || type == T_Q4_0 || type == T_Q3_K ||
+           type == T_Q8_0 || type == T_Q4_0 || type == T_Q5_0 || type == T_Q3_K ||
            type == T_Q4_K || type == T_Q6_K || type == T_MXFP4;
 }
 
@@ -1264,7 +1304,7 @@ static bool type_plan_load(const char *path, type_plan_t *plan) {
             has_default = true;
             if (plan->dflt == -2) {
                 fprintf(stderr, "error: type-plan default \"%s\" is not one of "
-                        "keep|q8_0|q4_0|q3_k|q4_k|q6_k|mxfp4|f16|bf16\n", jv_str(d, "?"));
+                        QUANT_TYPE_NAMES "\n", jv_str(d, "?"));
                 ok = false;
             }
         }
@@ -1290,7 +1330,7 @@ static bool type_plan_load(const char *path, type_plan_t *plan) {
             int ty = type_from_name(jv_str(t, NULL));
             if (ty == -2) {
                 fprintf(stderr, "error: type-plan rule %d type \"%s\" is not "
-                        "one of keep|q8_0|q4_0|q3_k|q4_k|q6_k|mxfp4|f16|bf16\n", i, jv_str(t, "?"));
+                        "one of " QUANT_TYPE_NAMES "\n", i, jv_str(t, "?"));
                 ok = false;
                 break;
             }
@@ -1755,7 +1795,9 @@ static int width_fallback(int want, int64_t n) {
     default:
         return want;                       // no 32-block cousin: decline as before
     }
-    return type_fits_row(fb, n) ? fb : want;
+    // a fallback this file cannot write is no fallback: declining leaves the
+    // tensor at its source type, as for a type with no 32-block cousin
+    return type_fits_row(fb, n) && quantize_row_writable(fb) ? fb : want;
 }
 
 static bool quantize_install_injected(void) {

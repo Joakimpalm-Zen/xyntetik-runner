@@ -524,3 +524,16 @@ shutil.copy({str(tmp_path / "ours.json")!r}, a[a.index("--out") + 1])
     assert p.returncode == 0, p.stderr[-1500:]
     t3 = (moved / "l.md").read_text()
     assert f"than {link} (0.00 GB" in t3 and f"`{link}`" not in t3
+
+
+def test_a_failed_rewrite_leaves_nothing_beside_out(runner_bin, tmp_path):
+    """The parent is scored before the rewrite; a rewrite that fails (here a
+    type name the quantizer does not take) left OUT.parent.score.json behind,
+    a measurement of a file that was never made (the pre-1.12.0 sweep)."""
+    parent = make_parent(tmp_path)
+    out = tmp_path / "out" / "child.gguf"
+    out.parent.mkdir()
+    rc, _, err = derive(runner_bin, parent, out, "--quant", "Q4_K_M")
+    assert rc != 0 and "the rewrite failed" in err, err
+    assert sorted(p.name for p in out.parent.iterdir()) == ["corpus.txt"], \
+        sorted(p.name for p in out.parent.iterdir())
