@@ -64,6 +64,21 @@ void model_embd_transform(const model_t *m, float *row) {
     abort();
 }
 
+bool model_moe_replay_on(void) {
+    return false;   // no RUNNER_MOE_REPLAY in this fixture
+}
+
+int *model_moe_replay_table(int n_layer, int used, int *npos) {
+    (void)n_layer; (void)used; (void)npos;
+    abort();
+}
+
+void model_moe_replay_count(unsigned long forced, unsigned long differed,
+                            unsigned long missing) {
+    (void)forced; (void)differed; (void)missing;
+    abort();
+}
+
 // Every per-layer buffer table gpu_init() allocates must come back.
 //
 // gpu_release_state keeps THREE hand-written rosters of the same set — the
