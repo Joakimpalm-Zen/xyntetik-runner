@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **On CUDA, `--draft lookup` now drafts 7 tokens a round by default and
+  `--draft mtp` 2; every other source and backend keeps 4 (R3.3.7).** On an
+  RTX 3070, lookup on an in-context edit reads 2.86x plain at 7 against
+  2.43x at 4. Qwen3.5-4B's NextN head reads 1.13x at 2 on code and tool
+  calls, against 1.01x and 1.18x at 4; on prose it stays a loss (0.88x at
+  2). An adaptive width that followed each turn's acceptance was measured
+  first and stopped by its kill read: 0.97x of the best fixed width, where
+  it needed 1.05x. An explicit `--draft-k` is unchanged. Report:
+  `docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03`.
+
 - **Nemotron 3.5 Lightning (`nemotron_h_moe`) routed its experts with the wrong
   function; fixed. Every nemotron_h_moe file has given wrong output since
   v0.2.0.** The publisher's router is a sigmoid; the published GGUFs carry no

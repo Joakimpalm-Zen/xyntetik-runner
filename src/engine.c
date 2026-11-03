@@ -2585,7 +2585,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
                                    // window inside it (RUNNER_SPEC_BATCH can raise
                                    // spec_batch to 64 for a chunked --score,
                                    // RUNNER_SCORE_CHUNKED=1)
-    int K = e->draft_k;
+    int K = engine_draft_k(e);
     if (K < 1) K = 1;
     if (K > m->spec_batch - 1) K = m->spec_batch - 1;
     if (K > SPEC_DRAFT_MAX - 1) K = SPEC_DRAFT_MAX - 1;
@@ -3142,6 +3142,24 @@ bool engine_wants_spec(const engine *e) {
     if (e->lp_cap || e->cl_cap) return false;
     if (e->dm || e->mtp_on || e->lookup_on) return true;
     return e->gram_ff && (e->schema || e->json_mode);
+}
+
+// R3.3.7, per backend and draft source, from the SS-001 rows on an RTX 3070
+// (docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03): on CUDA a
+// verify row costs about 0.2 of a step up to eight rows, so a lookup round
+// takes 7 (2.86x plain on an edit trace against 2.43x at 4; the ninth row
+// steps off the exact route); the NextN head pays its own draft step per
+// token and does best at 2 (code and tool pooled; 4 gave back most of it).
+// Everywhere else 4 stands: the CPU's verify row costs 0.45 to 0.78 of a step,
+// so its curve flattens by 4. An adaptive width was measured and lost to these
+// fixed ones (the same report).
+int engine_draft_k(const engine *e) {
+    if (e->draft_k > 0) return e->draft_k;
+    if (!strcmp(model_backend_name(e->m), "cuda") && !e->dm) {
+        if (e->mtp_on) return 2;
+        if (e->lookup_on) return 7;
+    }
+    return 4;
 }
 
 int engine_lookup_draft(const int32_t *hist, int len, int k, int32_t *out) {
