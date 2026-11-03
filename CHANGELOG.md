@@ -5,6 +5,22 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--quant q4_k` wrote corrupt tensors on rows that divide by 32 but not
+  256 (since v0.5.7); fixed.** Such a row cannot take a 256-block K-quant,
+  so the quantizer falls back to Q5_0, the 32-block type of the nearest bit
+  budget, as llama.cpp does. There was no Q5_0 writer: the row's float
+  bytes were written under a Q5_0 header. **Any file Runner wrote with
+  `--quant q4_k` (through `--quantize`, `--rewrite`, `runner derive` or a
+  type plan) from v0.5.7 on, from a model with such rows, is corrupt and
+  must be requantized.** Such rows occur in SmolLM2-135M (576 wide),
+  Qwen2.5-0.5B (896) and Kvist-14B (5,760), among others. To check a file:
+  the quantize histogram lists `Q5_0` tensors (`--info fit` names the weight
+  type), and the file scores NaN or garbage (SmolLM2-135M: NaN logits, no tokens). Q5_0 now
+  has its writer, byte-identical to ggml's; a fallback is only ever a type
+  the quantizer writes; and a row with no writer stops the quantizer
+  instead of being copied. Files from llama.cpp, and Runner files at
+  other types, are not affected.
+
 - **Smaller fixes from the pre-1.12.0 sweep.** A `--quant` name the
   quantizer does not take (`Q4_K_M`, llama.cpp's mix name, or `q4_K`) is
   refused with the names it does take. `runner derive` whose rewrite fails

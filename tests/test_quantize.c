@@ -493,9 +493,94 @@ static void check_ggml_golden(void) {
         }
         free(mine); free(ref);
     }
+    // q5_0, the Q4_K target's 32-block fallback: against ggml c1d0e7a's
+    // quantize_row_q5_0_ref, the function quantize_q5_0 calls without an
+    // importance matrix (the README has how the file was made)
+    {
+        assert(quantize_gguf(in, out, T_Q5_0, NULL) == 0);
+        size_t n;
+        unsigned char *mine = slurp_tensor(out, "blk.0.ffn_down.weight", &n);
+        snprintf(path, sizeof path, "%sggml-c1d0e7a-q5_0.bin", dir);
+        f = fopen(path, "rb");
+        assert(f);
+        unsigned char *ref = malloc(n + 1);
+        size_t got = fread(ref, 1, n + 1, f);
+        fclose(f);
+        size_t first = 0;
+        while (first < n && first < got && mine[first] == ref[first]) first++;
+        if (got != n || first != n) {
+            fprintf(stderr, "FAIL: q5_0 writer differs from ggml c1d0e7a at byte %zu of %zu "
+                    "(ggml file %zu bytes)\n", first, n, got);
+            assert(0);
+        }
+        free(mine); free(ref);
+    }
     remove(in); remove(out);
     printf("ok: q8_0, q4_0, q3_k, q4_k, q6_k and mxfp4 writers are byte-identical to ggml "
-           "b10353 on a real tensor\n");
+           "b10353, and q5_0 to ggml c1d0e7a, on a real tensor\n");
+}
+
+// A row that divides by 32 but not 256 cannot take a 256-block K-quant; the
+// quantizer writes the 32-block type of the nearest bit budget. Each such
+// fallback must be a type this file writes: from v0.5.7 to 1.12.0 a Q4_K
+// target fell back to Q5_0, which had no writer, and the tensor came out as
+// float bytes under a Q5_0 header (SmolLM2-135M, 576 wide: NaN logits). For
+// every writable K-quant target on a 64-wide tensor: the fallback type is
+// the expected one, its bytes are what that type's own writer makes of the
+// same rows, and they dequantize to the source within the type's error.
+static void check_width_fallback(void) {
+    enum { COLS = 64, ROWS = 16, N = COLS * ROWS };
+    static float x[N];
+    for (int i = 0; i < N; i++) x[i] = sinf(0.37f * (float)i) * (0.5f + (float)(i % 7) * 0.1f);
+    const char *in = "q_fb_in.gguf", *out = "q_fb_out.gguf", *direct = "q_fb_direct.gguf";
+    tdesc ts[1] = { { "blk.0.ffn_up.weight", {COLS, ROWS}, 2, x, N, T_F32 } };
+    write_gguf(in, ts, 1, 0);
+    // bounds: about one quantization step of a 1.1-amplitude block (q4_0 1/8,
+    // q5_0 1/16, q8_0 1/128 of the block maximum); the float bytes the old
+    // fallback wrote dequantize to values of order 1e5 and fail them all
+    static const struct { int want, got; double tol; } F[] = {
+        { T_Q3_K, T_Q4_0, 0.15 }, { T_Q4_K, T_Q5_0, 0.075 }, { T_Q6_K, T_Q8_0, 0.01 },
+    };
+    for (size_t k = 0; k < sizeof F / sizeof F[0]; k++) {
+        assert(quantize_gguf(in, out, F[k].want, NULL) == 0);
+        assert(quantize_gguf(in, direct, F[k].got, NULL) == 0);
+        gguf_file g;
+        assert(gguf_open(&g, out));
+        gguf_tensor *t = gguf_find_tensor(&g, "blk.0.ffn_up.weight");
+        assert(t);
+        if ((int)t->type != F[k].got) {
+            fprintf(stderr, "FAIL: %s on a 64-wide row fell back to %s, not %s\n",
+                    ggml_type_name(F[k].want), ggml_type_name((int)t->type),
+                    ggml_type_name(F[k].got));
+            assert(0);
+        }
+        size_t rs = t->nbytes / ROWS;
+        float row[COLS];
+        double worst = 0;
+        for (int r = 0; r < ROWS; r++) {
+            dequant_row((int)t->type, (const uint8_t *)t->data + (size_t)r * rs, row, COLS);
+            for (int c = 0; c < COLS; c++) {
+                assert(isfinite(row[c]));
+                double d = fabs((double)row[c] - x[r * COLS + c]);
+                if (d > worst) worst = d;
+            }
+        }
+        if (worst > F[k].tol) {
+            fprintf(stderr, "FAIL: %s fallback (%s) dequantizes %.4g from its source "
+                    "(bound %.4g)\n", ggml_type_name(F[k].want), ggml_type_name(F[k].got),
+                    worst, F[k].tol);
+            assert(0);
+        }
+        size_t n1, n2;
+        unsigned char *a = slurp_tensor(out, "blk.0.ffn_up.weight", &n1);
+        unsigned char *b = slurp_tensor(direct, "blk.0.ffn_up.weight", &n2);
+        assert(n1 == n2 && memcmp(a, b, n1) == 0);
+        free(a); free(b);
+        gguf_close(&g);
+    }
+    remove(in); remove(out); remove(direct);
+    printf("ok: q3_k, q4_k and q6_k on a 64-wide row fall back to q4_0, q5_0 and q8_0, "
+           "each written by its own writer and within its error\n");
 }
 
 // R4.7.3: --quant-error. The report's error for a type is the writer's own:
@@ -1173,6 +1258,7 @@ int main(void) {
     check_mxfp4_dequant();
     check_error_report();
     check_ggml_golden();
+    check_width_fallback();
 
     remove(in); remove(out); remove(inplace); remove(dest); remove(bad);
     printf("all quantize tests passed\n");
