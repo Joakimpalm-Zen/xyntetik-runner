@@ -1,4 +1,4 @@
-# repeat_penalty A/B on Qwen3-Coder-30B-A3B-Instruct Q4_K_M, Blackwell MIG, temperature 0.7 top_p 0.8 top_k 20, the report case A, eight fixed seeds each, 2026-09-15
+# repeat_penalty A/B on Qwen3-Coder-30B-A3B-Instruct Q4_K_M, the lab box's MIG slice, temperature 0.7 top_p 0.8 top_k 20, the report case A, eight fixed seeds each, 2026-09-15
   pen=1.0 run 1: ok tool_calls ['{"command":"ls"}'] ''
   pen=1.0 run 2: ok tool_calls ['{"command":"ls"}'] ''
   pen=1.0 run 3: ok tool_calls ['{"command":"ls"}'] ''

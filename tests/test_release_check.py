@@ -694,9 +694,9 @@ def test_home_directory_paths_are_recognised():
     rx = re.compile(check_release.HOME_PATH_RE)
     for text in ["loaded /" + "home/lab/workspace/m.gguf",
                  '"path": "/' + "Users/someone/models/m.gguf",
-                 "C:" + "\\Users\\zen\\m.gguf",
-                 "C:" + "\\\\Users\\\\zen\\\\m.gguf",
-                 "C:" + "/Users/zen/m.gguf"]:
+                 "C:" + "\\Users\\someone\\m.gguf",
+                 "C:" + "\\\\Users\\\\someone\\\\m.gguf",
+                 "C:" + "/Users" + "/someone/m.gguf"]:
         assert rx.search(text), text
     for text in ["/tmp/agent-sweep-x/home/.continue/config.yaml",
                  "~/xs-work/models/m.gguf", "models/m.gguf"]:

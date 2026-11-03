@@ -6966,8 +6966,23 @@ static int gemma4_map(const tool_envelope *e, const char *doc, size_t n,
 // Parse a complete native XML call using the declared types. In particular,
 // raw strings are never guessed to be JSON. Malformed members reject the
 // whole call; a partial argument list must not become an executable call.
+//
+// R2.10: on a parse-only envelope (an auto turn, the model's free turn), a
+// call whose function block is complete may be closed by the NEXT call's
+// `<tool_call>` instead of its own `</tool_call>`. Nemotron 3.5 Lightning at
+// temperature 0 writes three openers, each with a complete function, and one
+// closer at the end. The block is the model's own call by every member; only
+// the framing between calls is missing. vLLM's Python qwen3coder parser
+// (v0.11.0: <tool_call>(.*?)</tool_call>, then every <function=...</function>
+// inside) recovers such calls; its Rust parser (2026-10-22) and llama.cpp's
+// qwen3-coder PEG parser (2026-10-31) require the closer, and llama.cpp
+// constrains the turn after its first opener so the case cannot arise there.
+// Runner's auto turn is unconstrained by measurement (template.c's qwen3_xml
+// envelope), so the parser is the only place to decide. *implicit reports
+// the tolerance; NULL (a constrained turn, which the grammar framed) keeps
+// the closer required. A last call with no closer at all stays a fault.
 static bool coder_one_call(const tool_envelope *env, const char **pp,
-                           const char *end, int index, sbuf *tc) {
+                           const char *end, int index, sbuf *tc, bool *implicit) {
     const char *p = *pp;
     if (end-p < 11 || memcmp(p,"<tool_call>",11)) return false;
     p = trim_left(p+11,end);
@@ -7028,7 +7043,13 @@ static bool coder_one_call(const tool_envelope *env, const char **pp,
     }
     if (end-p<11 || memcmp(p,"</function>",11)) goto bad;
     p=trim_left(p+11,end);
-    if (end-p<12 || memcmp(p,"</tool_call>",12)) goto bad;
+    const char *after;
+    bool closed_by_next = false;
+    if (end-p >= 12 && !memcmp(p,"</tool_call>",12)) after = p+12;
+    else if (implicit && env->parse_only && end-p >= 11 && !memcmp(p,"<tool_call>",11)) {
+        after = p;   // the next call's opener: left for the caller to read
+        closed_by_next = true;
+    } else goto bad;
     // declared members by declaration index, then the undeclared in the
     // order they came; a stable selection over at most 64 entries
     sb_lit(&args,"{");
@@ -7064,15 +7085,17 @@ static bool coder_one_call(const tool_envelope *env, const char **pp,
     sb_fmt(tc,"{\"id\":\"call_%d\",\"type\":\"function\",\"function\":{\"name\":\"",index);
     sb_esc(tc,name,(int)(ne-name));sb_lit(tc,"\",\"arguments\":\"");
     sb_esc(tc,args.s,(int)args.n);sb_lit(tc,"\"}}");
-    *pp=p+12;free(args.s);return !tc->failed;
+    *pp=after;free(args.s);
+    if (closed_by_next) *implicit = true;
+    return !tc->failed;
 bad:
     for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
     free(args.s);return false;
 }
 
 static bool qwen_call_for(const tool_envelope *e, const char **p,
-                          const char *end, int index, sbuf *tc) {
-    return e->proto==TP_QWEN_XML ? coder_one_call(e,p,end,index,tc)
+                          const char *end, int index, sbuf *tc, bool *implicit) {
+    return e->proto==TP_QWEN_XML ? coder_one_call(e,p,end,index,tc,implicit)
                                : qwen_one_call(p,end,index,tc);
 }
 
@@ -7113,7 +7136,7 @@ static int qwen_map(const tool_envelope *e, const char *doc, size_t n,
         }
         const char *at=open;
         if (calls) sb_lit(tc,",");
-        if (!qwen_call_for(e,&at,end,calls,tc)) {
+        if (!qwen_call_for(e,&at,end,calls,tc,NULL)) {
             if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, call %d does not parse against its declaration\n", calls + 1);
             return -1;
         }
@@ -8561,12 +8584,31 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
             // Hold the whole native call until its arguments are complete.
             // Never emit a callable event for malformed or partial XML.
             const char *close=strstr(s->head,QWEN_CALL_END);
-            if (!close) return 0;
+            // R2.10, parse-only: a complete function block followed by the
+            // next call's opener ends this call too (coder_one_call decides
+            // whether it is one), so the call goes out when the opener
+            // arrives and stands even if the turn never writes a closer
+            const char *next=NULL;
+            if (lenient) {
+                const char *fe=strstr(s->head,"</function>");
+                if (fe) {
+                    const char *q=fe+strlen("</function>"), *he=s->head+s->head_n;
+                    while (q<he && ts_ws(*q)) q++;
+                    size_t ol=strlen(QWEN_CALL_OPEN);
+                    if ((size_t)(he-q)>=ol && !memcmp(q,QWEN_CALL_OPEN,ol) && (!close || q<close))
+                        next=q;
+                }
+            }
+            if (!close && !next) return 0;
             const char *at=s->head;
             sbuf tc={0}, wrapped={0};
             bool past_bound = lenient && s->n_calls >= s->env->max_calls;
-            if (past_bound || !qwen_call_for(s->env,&at,s->head+s->head_n,0,&tc)) {
+            bool closed_by_next = false;
+            if (past_bound || !qwen_call_for(s->env,&at,s->head+s->head_n,0,&tc,&closed_by_next)) {
                 free(tc.s);
+                // Only a closer settles a block that does not parse: an
+                // opener-shaped run inside a value still arriving is no end
+                if (!close) return 0;
                 // Constrained: the grammar produced this block, so a block that
                 // does not map is a harness fault and the turn holds until
                 // finish reports it. Parse-only: the model wrote an invalid
@@ -8597,11 +8639,14 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
             else {
                 s->called=s->any_called=true;
                 s->n_calls++;
+                if (closed_by_next) s->implicit_close = true;
                 if (s->sink.call_begin) rc=s->sink.call_begin(s->sink.ud,name);
                 if (!rc && s->sink.call_args) rc=s->sink.call_args(s->sink.ud,args,(int)strlen(args));
                 if (!rc && s->sink.call_end) rc=s->sink.call_end(s->sink.ud);
             }
             jv_free(arr);free(tc.s);free(wrapped.s);
+            // closed by the next call's opener (R2.10): `at` is that opener,
+            // which the text state below hands back to the call state
             head_drop(s,(size_t)(at-s->head));
             // the newline the template writes after a call is framing; what
             // the model says after it is content (below), as before a call
@@ -9305,6 +9350,12 @@ static int map_call_end(void *ud) {
 
 int tool_stream_map(const tool_envelope *e, const char *doc, size_t n,
                     bool truncated, sbuf *content, sbuf *tc, int *n_calls) {
+    return tool_stream_map_ex(e, doc, n, truncated, content, tc, n_calls, NULL);
+}
+
+int tool_stream_map_ex(const tool_envelope *e, const char *doc, size_t n,
+                       bool truncated, sbuf *content, sbuf *tc, int *n_calls,
+                       bool *implicit_close) {
     map_sink m = { content, tc, 0, {0} };
     tool_stream_sink sink = { &m, NULL, map_content, map_call_begin,
                               map_call_args, map_call_end };
@@ -9312,6 +9363,7 @@ int tool_stream_map(const tool_envelope *e, const char *doc, size_t n,
     tool_stream_init(&s, e, &sink);
     int rc = n ? tool_stream_feed(&s, doc, (int)n) : 0;
     int fin = tool_stream_finish_ex(&s, truncated);
+    if (implicit_close) *implicit_close = s.implicit_close;
     tool_stream_free(&s);
     free(m.args.s);
     *n_calls = m.n;

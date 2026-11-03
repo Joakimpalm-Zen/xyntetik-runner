@@ -2,8 +2,9 @@ name: commit-hygiene
 
 # The mechanical half of AGENTS.md "Never publish conversation content or
 # session identifiers": every commit in a pull request, plus its title and
-# body, is scanned for session URLs and ids, e-mail addresses and
-# non-conforming Co-Authored-By trailers, and every line the change adds to a
+# body, is scanned for session URLs and ids, e-mail addresses, host paths and
+# machine or session names (one list with the file check, merge commits
+# included), and non-conforming Co-Authored-By trailers, and every line the change adds to a
 # tracked file for host paths and machine or session names. No path filter: the rule applies to
 # a docs-only change exactly as much as to an engine change.
 on:

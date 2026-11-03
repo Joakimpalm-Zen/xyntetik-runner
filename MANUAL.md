@@ -2479,6 +2479,7 @@ instance instead.
 | `--yield-on-request [on\|off]` | In `--serve`, release the resident model at the next idle point when another process has asked it to (`vram_request_yield`). A request, never preemption. `on` by default when serving (bare `--yield-on-request` is `on`); `off` keeps the model. See the same section. |
 | `--reserve P` or `--reserve vram=P,ram=P,cpu=P` | One percentage caps this process at `P` percent of total RAM and VRAM; the named form sets each budget on its own: `vram` (the CUDA layer-fit budget, [details](#cli-reserve-vram)), `ram`, and `cpu` (size the default thread count as a percentage of cores). Without `-c` the context is auto-fit to what the reservation leaves after the weights. |
 | `--kv f16\|q8\|k8v4\|fp4` | Choose KV cache storage; precision, memory use and backend support differ by format. [Details](#cli-kv). |
+| `--kv-ring auto\|on\|off` | Give sliding-window layers only their window of KV rows, output-identical to the flat cache. `auto` (default) turns it on only when the weights and the flat cache do not fit; `-v` says why it is on or off. [Details](#cli-kv-ring). |
 | `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. A Gemma 4 E-series per-layer token table stays pageable. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
 | `--draft SOURCE` | Speculative decoding from one source per run, named by its spelling. `PATH`: a same-vocabulary draft GGUF ([details](#cli-draft)). `mtp`: the model's own NextN/MTP predictor block ([details](#cli-mtp)). `mtp:FILE`: that block from a companion GGUF when the model file was exported without one ([details](#cli-mtp)). `lookup`: n-gram matches in the context itself, no weights and no draft forward ([details](#cli-draft-lookup)). A second source on the line is refused, not ignored. A server given a swap registry (`-m a=...,b=...`) refuses to start with a draft, which needs a single served model. |
@@ -2509,6 +2510,36 @@ the context that fits; `k8v4` keeps K at q8_0 and stores only V as fp4, about 41
 because K is the side a 4-bit cache hurts (see the measured split under [Long contexts](#long-contexts)). All are
 lossy: output is not token-identical to an f16 cache, and the cost is measured per model
 with `scripts/kld-compare-raw.py` against the same file's f16 cache. f16 is the default.
+
+<a id="cli-kv-ring"></a>
+#### `--kv-ring auto|on|off`
+
+A sliding-window layer never attends past its window, so the rows a flat cache keeps for
+it beyond the window are written once and never read. The ring gives those layers the
+window plus one batch of rows, indexed modulo that count; full-attention layers keep
+their `n_ctx` rows. Output is unchanged: the ring holds exactly the rows the flat cache
+would have been read from (bit-identical `--score` logprobs and server continuations,
+`tests/test_kv_ring.py`, on the CPU, CUDA and Metal paths).
+
+**What it costs.** Rewind and the prefix cache resume only from what the ring still holds
+([the rule](docs/kv-ring.md)): a shared-prefix hit is lost when the cached prompt runs
+past the shared part by more than one batch (`-b`) plus one token, which the flat cache
+would have served. A re-rendered last turn, a short user message after a shared system
+prompt, an exact repeat and a conversation that extends the cached prompt still hit. A
+saved prefix cache, an exported named context or a session image takes only a ring with no
+gap below its span. Metal's multi-sequence decode microbatch runs ring members one at a
+time.
+
+**`auto`** (the default) turns the ring on when the weights and every slot's flat cache
+would not fit what the model is placed in: the device's offload budget on a discrete GPU
+(the loader's own arithmetic), the working-set limit on unified memory, available RAM on
+the CPU, capped by `--reserve-ram`'s share. That is when the flat cache pushes layers off
+the device or the host into paging, and the ring is what lets the context fit. Otherwise
+it stays off, because it would buy nothing and cost those hits. `-v` prints the decision
+with its figures, for example `kv ring  off (auto: weights 2512 MB + flat cache 805 MB
+fit the GPU working set 5727 MB; --kv-ring on forces it)`. `on` and `off` force it, and
+`RUNNER_KV_RING` (`1`/`on`, `0`/`off`, `auto`) overrides the flag. Models without sliding
+layers ignore it.
 
 <a id="cli-draft"></a>
 #### `--draft PATH`
@@ -3122,7 +3153,8 @@ fit: Trinity-Nano-Preview-Q4_K_M.gguf
 The KV line charges each layer its own rows, as a load allocates them: per-layer KV heads,
 the sliding layers' own head width on gemma-4, nothing for a layer whose attention was
 removed or that reads another layer's cache (gemma-4 E-series). On a sliding-window model a
-note says the figure is the flat cache, which `RUNNER_KV_RING` shrinks.
+note says the figure is the flat cache, which a load shrinks with the KV ring when the
+weights and that cache do not fit ([`--kv-ring auto`](#cli-kv-ring)).
 
 The verdict is `FITS`, `FITS WITH --kv q8` (or `k8v4`, or `fp4`), or `PAGES`, always with the
 arithmetic that produced it.
@@ -3609,7 +3641,7 @@ switches:
 | `RUNNER_VRAM_PRIORITY` | `0` | Baseline for `--vram-priority`; the flag overrides it. |
 | `RUNNER_TEST_CGROUP_ROOT` | unset | Test-only. Read cgroup limits from this directory as if it were the process's own cgroup, on any platform, instead of `/sys/fs/cgroup` on Linux and none elsewhere. `tests/test_caps.py` points it at fixture trees; nothing else should set it. |
 | `RUNNER_VRAM_REGISTRY_DIR` | the platform runtime dir | Where the cross-process VRAM ledger files live, one per GPU. Point every cooperating runner at the same directory when the default runtime directory is not shared between them (containers, service accounts); the tests use it to isolate a ledger. |
-| `RUNNER_KV_RING` | unset | Give sliding-window layers only the KV rows they can read, indexed modulo that count, instead of a full `n_ctx` rows each. A local layer never attends past its window, so the rest of its cache is written once and never read: on gemma-3-4b at `-c 32768` this takes the cache from 4563 MB to 800 MB, within 1% of the theoretical floor. Output is unchanged - the ring holds exactly the rows the flat allocation would have been read from, gated as bit-identical `--score` logprobs against the default path. Works on the CPU, CUDA and Metal paths: CUDA resolves every device cache address through `kv_slot()` (verified bit-identical on an RTX 3070 at a partial split and a full offload, 2121 scored positions each, max |Δlogprob| exactly 0), and Metal resolves the same modulo through `kv_row_off` in its store and attention kernels — gated bit-identical teacher-forced logprobs against the flat allocation across many ring wraps (`tests/test_kv_ring.py`, mutation-proven). **It is opt-in because it costs something:** the prefix cache and partial rewind also address KV as flat absolute rows, so both are refused while a ring is active and a server loses shared-prompt reuse. Worth it when context length is the binding constraint, not otherwise. Dense and full-attention-only models ignore it. |
+| `RUNNER_KV_RING` | unset | Override [`--kv-ring`](#cli-kv-ring): `1` or `on` gives sliding-window layers only the KV rows they can read, `0` or `off` keeps the flat cache, `auto` is the flag's default rule (on when the weights and the flat cache do not fit). On gemma-3-4b at `-c 32768` the ring takes the cache from 4563 MB to 800 MB, within 1% of the theoretical floor. Output is unchanged, gated as bit-identical `--score` logprobs and server continuations against the flat cache across many ring wraps on the CPU, CUDA (`kv_slot()`; an RTX 3070 at a partial split and a full offload, 2121 scored positions each, max \|Δlogprob\| exactly 0) and Metal (`kv_row_off`) paths (`tests/test_kv_ring.py`, mutation-proven). Rewind and the prefix cache resume from what the ring still holds ([the rule](docs/kv-ring.md)). Dense and full-attention-only models ignore it. |
 | `RUNNER_TIEDV` | unset | Stop storing K rows for layers that ship no `attn_v.weight` (gemma-4's full-attention globals: V is the raw K projection, so K = rope(V·w) can be derived from the stored V at read time). On gemma-4-31B at `-c 32768` the K cache drops from 14.76 GB to 13.42 GB. This is a compute-for-memory trade and it is **not byte-identical**: the derived row replays the store path's arithmetic against the f16-rounded stored V, measured on the 31B as 100% f16 row agreement at short context (worst row 99.95%), teacher-forced mean \|Δlogprob\| 1.3e-3 with `nll_mean` moving 8.7e-5 and no top-1 change over 297 positions. CPU-only and f16-KV-only: a GPU run and a q8 cache both refuse loudly (the device kernels read stored K rows; a q8 cache would re-quantize the derived row), `--lora` refuses the combination (a K-side adapter delta would bypass the derived rows), and like `RUNNER_KV_RING` the asymmetric layout disables the shared prefix cache. Layers that carry a real `attn_v.weight` are untouched; models with no V-less layers ignore it. Gate: `tests/test_tiedv.py`; diagnostic: `RUNNER_TIEDV_CHECK=1` prints per-row derived-vs-stored K agreement while the flat cache still stores real K. |
 | `RUNNER_PREFETCH` | unset/off | Opt-in: on load, hint the whole weight mapping to the OS (`madvise(MADV_WILLNEED)` / `PrefetchVirtualMemory`) when the model fits in available RAM. **Off by default because the measurement said so**: on a 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load 60% *slower* than plain demand faulting (11.5 s vs 18.4 s, interleaved with eviction between arms) — macOS demand paging outruns its own WILLNEED readahead. Linux and Windows have prior art the other way (batched readahead, `PrefetchVirtualMemory`) and can measure on their own hardware before flipping it on. Pages stay fully evictable either way; suppressed under `--mlock` and for oversubscribed models. |
 | `RUNNER_METAL_FUSE` | on | Decode-path kernel fusion, up to the attention-front megakernel: norm + Q/K/V (Q8_0/Q4_0/Q4_K/Q6_K rosters) + qk-norm + rope + KV-store as ONE dispatch, whole heads per threadgroup, the normed row staged in threadgroup memory; plus rope+store, residual-add+rmsnorm and MoE gate+up+activation fusions on the paths the megakernel does not cover. −52% dispatches per token; +5–6% decode on the 120B and 30B, byte-identical. The post-FFN residual add rides the MoE expert sum on layers where it isn't already deferred into the next norm. The megakernel admits MoE models only — it recovers dispatch-chain latency, and a fast dense model is matvec-bound and measured slower under it (`RUNNER_METAL_FRONT=all` lifts that for tests; `RUNNER_METAL_FRONT=0` disables just the megakernel while keeping the other fusions, the isolation lever the q4_0 contraction hunt was run with). Every fused kernel reproduces the unfused arithmetic element for element — **byte-identical**, gated across a six-architecture roster in `make test` (`test-metal-fuse`). q8 KV, NoPE layers, sandwich norms and the gemma dual branch keep the unfused path automatically; `0` restores it everywhere. |
@@ -4015,6 +4047,23 @@ grammar hands off from free text to a constrained call at the full opener
 and admits as many calls as `parallel_tool_calls` allows. `--info tools`
 reports `qwen3_xml` for this family and `qwen_json` for the ChatML JSON
 protocol, both native. Not measured here: any checkpoint's task quality.
+
+A `tool_choice: auto` turn in this XML is parsed, not constrained (under the
+XML grammar Qwen3-Coder-30B read 2 of 6 cases at its own temperature,
+2026-09-14), so the parser alone
+decides what the model's framing means. One tolerance, on that path only: a
+call whose function block is complete (every parameter closed and valid
+against its declaration, then `</function>`) may be closed by the next call's
+`<tool_call>` instead of its own `</tool_call>`, which Nemotron 3.5 Lightning
+writes at temperature 0 (three openers, one closer at the end). Each such call
+stands, and `runner_telemetry.finish_detail` says
+`tool_call_implicit_close`. A last call with no closer, a parameter in another
+spelling (`<parameter pattern="...">`) and anything on a `required` or named
+turn's grammar stay faults (`envelope_unmapped`). vLLM's Python parser
+(v0.11.0) recovers these calls; its Rust parser and llama.cpp's require the
+closer, and llama.cpp constrains the turn after its first opener. Because the
+two newest parsers require it, the tolerance exists for the model's benefit,
+not as a format: a model author should fix the envelope.
 
 Nemotron Nano (`nemotron`) speaks its own protocol: the declarations as one
 `<AVAILABLE_TOOLS>[...]` JSON list after the caller's system text, and a

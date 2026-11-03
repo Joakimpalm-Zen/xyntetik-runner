@@ -17,26 +17,19 @@ It exits 1 and names each offending file, line and pattern.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
 
-# Host paths, and the names of machines and agent sessions, none of which
-# belongs in a public file (AGENTS.md, "Never publish conversation content or
-# session identifiers"; owner rule: no machine names in public).
-FORBIDDEN = [
-    (re.compile(r"/home/lab/"), "the lab host's home path"),
-    (re.compile(r"/Users/[^/\s\"'`]+/"), "a macOS home path"),
-    (re.compile(r"C:[\\/]+projectgrid", re.I), "the Windows host's work path"),
-    (re.compile(r"\bZEN-GAMING\b", re.I), "a machine name"),
-    (re.compile(r"\bgalaxa1\b", re.I), "an agent session name"),
-    (re.compile(r"\bwindows3070\b", re.I), "an agent session name"),
-    (re.compile(r"\bDawn-\d\b"), "an agent session name"),
-    (re.compile(r"\bexec-share/"), "the lab's shared work directory"),
-]
-# Files that legitimately spell a pattern: this checker (its list and its
-# self-test).
-ALLOW = {"scripts/check-content-hygiene.py"}
+# Host paths, and the names of machines and agent sessions: the one list
+# both checkers read (scripts/public_content.py).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from public_content import FORBIDDEN  # noqa: E402
+
+# Files that legitimately spell a pattern: the list itself and this checker
+# (its self-test).
+ALLOW = {"scripts/public_content.py", "scripts/check-content-hygiene.py"}
 
 
 def added_lines(diff: str):
@@ -81,10 +74,16 @@ def self_test() -> int:
     allowed = problems(planted.replace("docs/x.json", "scripts/check-content-hygiene.py"))
     clean = problems("--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+runs on /usr/local/bin\n")
     deleted = problems("--- a/f.txt\n+++ b/f.txt\n@@ -1 +0,0 @@\n-" + "/home/" + "lab/x\n")
+    # the machine names refused bare, the chip names allowed (split here too)
+    bw, m1 = "Black" + "well", "M" + "1"
+    chips = problems(f"--- a/d.md\n+++ b/d.md\n@@ -1 +1,2 @@\n+the NVIDIA {bw} card, an RTX PRO 6000 {bw}\n"
+                     f"+the Apple {m1} laptop\n")
+    bare = problems(f"--- a/d.md\n+++ b/d.md\n@@ -1 +1,2 @@\n+measured on the {bw} box\n+and the {m1}\n")
     ok = (len(found) == 2 and found[0].startswith("docs/x.json:1:") and found[1].startswith("docs/x.json:3:")
-          and not allowed and not clean and not deleted)
+          and not allowed and not clean and not deleted and not chips and len(bare) == 2)
     print(f"content-hygiene self-test: {'ok' if ok else 'FAILED'} (planted {len(found)}, allowlisted "
-          f"{len(allowed)}, clean {len(clean)}, deleted line {len(deleted)})")
+          f"{len(allowed)}, clean {len(clean)}, deleted line {len(deleted)}, chip names {len(chips)}, "
+          f"bare machine names {len(bare)})")
     return 0 if ok else 1
 
 
