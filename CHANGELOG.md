@@ -14,6 +14,9 @@ Current release and unreleased changes. Compatibility follows the
   agreement 63.2% before, 95.8% now. A file that declares the key keeps it.
   Requantize nothing; reload the file.
 
+- **`RUNNER_DEBUG_TIME` reports the attention core inside the attention
+  stage.** A new `attn core` line times only the scores, softmax and values
+  pass, without the projections. Timing only; output unchanged.
 - **CUDA prefill attention for 256- to 512-wide heads runs on the tensor
   cores, by default for gemma-4's E-series (R3.6.3.1).** gemma-4's 512-wide
   global layers took the tile's 8-row kernel on the CUDA cores, 79% of a
