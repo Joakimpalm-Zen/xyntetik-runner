@@ -689,8 +689,10 @@ to another folder, they verify without the model files. Exit 0 every link verifi
 
 A receipt links the chain too. A one-shot `--record` file and every
 receipt of a served answer (`--serve --record DIR`) name the model (and adapter) by
-sha256, and when a step on this machine made that file, the receipt links
-the step's record. `runner attest lineage run.json` starts from the answer: the
+base name and sha256, and when a step on this machine made that file, the receipt links
+the step's record. A receipt's model is looked for beside the receipt, then in the
+working directory (a receipts folder is not where the models sit), and its step record
+beside the model. `runner attest lineage run.json` starts from the answer: the
 receipt's own signature, then the model and the adapter walked back
 through their records to their origins.
 
@@ -2618,7 +2620,7 @@ whether the draft is `active` there.
 | `--record PATH` | With `-p`: record the run's hashes, settings, tokens, output bytes and chain hash to the file `PATH` for replay ([details](#cli-transcript)). With `--serve`: `PATH` is a directory, and every finished generation on the chat, completions, Responses and Messages surfaces writes the same record into it as `receipt-<sequence>.json`, so `-m MODEL --verify FILE` replays it; chained in write order (each record's `chain.prev` is the previous one's hash, continued across restarts from the newest record, and a newest record that does not parse refuses the start rather than beginning a second chain), signed with `--sign-key` when given, and with a `serve` object naming the surface, the request id, how the prompt's KV was obtained (`prompt_reuse`, `cached_tokens`) and what shaped the output beyond the sampler (`shaped_by`: `json_schema`, `json_mode`, `tools`, `stop`, `reasoning_budget`, `loop_guard`, ...; `constraints` gives each with what identifies it, `tool_calls` the calls the turn delivered, buffered or streamed, and `tool_results` the tool results the request carried, each as the tool's text and its JSON parse). A turn shaped only by a JSON schema, JSON mode or `ignore_eos` replays under the same flag (`--json FILE` matched by digest, `--json`, `--ignore-eos`); `--verify` refuses any other shaping as `UNVERIFIABLE` rather than replay it without what shaped it. A tool turn parsed from the model's native syntax without a grammar is not a constraint: its tokens are the sampler's. Each response's `runner_telemetry.receipt` names its `file` and `chain_hash`. The model and binary digests come from the load-time provenance, so the first receipt waits for the background model digest. Receipts hold the prompt and the output and never leave the directory. Replay prefills the prompt in one batch. A record whose prompt was prefilled cold in one batch replays exactly; one whose prefix KV was reused (a cached prefix, or an earlier turn's decoded rows) replayed VERIFIED at T1 on the test fixtures, but CPU prefill is not batch-invariant on every host (measured 2026-10-01 on arm64, granite-4.1-3b Q8_0: 92% of batched prefill dots differ in the last bits from the same dot decoded alone), so such a record can report `DIVERGED` at a near-tie. A reused prefix is bit-identical only when the chunk geometry matches, on any backend (the prefix-reuse note under [Endpoints](#endpoints)). `serve.prompt_reuse` says which kind a record is. |
 | `--record-keep N` | With `--serve --record DIR`: keep the newest N receipts (default all). |
 | `--record-prev FILE` | With `--record`: link the new record to FILE (FILE's chain hash becomes this record's `chain.prev`; a chain head carries 64 zeros). With `--verify`: check that link, `UNVERIFIABLE` on a break. |
-| `--verify FILE` | Replay a record against `-m` and report `VERIFIED` (exit 0), `DIVERGED` at a token or output byte (exit 2), or `UNVERIFIABLE` for an invalid record, an artifact mismatch, or output shaped by a constraint the replay would not reproduce (exit 3; `--json`, `--json FILE` and `--ignore-eos` must match the record's `constraints`). The recorded replay settings override conflicting CLI values. See [the exact determinism scope](docs/determinism-scope.md). |
+| `--verify FILE` | Replay a record against `-m` and report `VERIFIED` (exit 0), `DIVERGED` at a token or output byte (exit 2), or `UNVERIFIABLE` for an invalid record, an artifact mismatch, or output shaped by a constraint the replay would not reproduce (exit 3; `--json`, `--json FILE` and `--ignore-eos` must match the record's `constraints`). Without `-m`, a v2 record's model is the file its `model.name` names in the working directory; either way its sha256 must match the record's before the replay, or the verdict is `UNVERIFIABLE` naming both. The route the record ran (`profile.route`) must be the replay's on the same backend (`UNVERIFIABLE` naming both routes otherwise: replay with the `RUNNER_*` switches the record ran with); on another backend the replay is a token replay and the route is reported, not required. The verdict's `route` is `matched`, `other backend`, or `not recorded` for a record older than the field. The recorded replay settings override conflicting CLI values. See [the exact determinism scope](docs/determinism-scope.md). |
 | `--require-signed` | With `--verify`: an unsigned record is `UNVERIFIABLE`. Signature, trust and link checks all run before the model is loaded for the replay. |
 | `--trust-key K` | The public key a record, bundle, pack, lineage, evaluation or snapshot manifest must be signed by: its hex bytes, `sha256:` plus the hex SHA-256 of those bytes (an ML-DSA-44 key is 2624 hex characters; its digest fits a policy file), or a file holding either (`runner attest keygen`'s output as written). With `--verify`: unsigned, or signed by any other key, is `UNVERIFIABLE`; the verdict JSON carries `signed`, `public_key` and `prev` either way. |
 | `--sign-key FILE` | With `--rewrite` or `runner train`: sign the step's provenance record in place. With `--record`: sign the receipt with the key in FILE. The signature object is appended inside the record after the chain and covers every byte before its own `,"signature"` key, chain hash included, so any Ed25519 (or ML-DSA-44) library verifies it from the file bytes and the embedded public key alone. |
@@ -2901,8 +2903,13 @@ flag and ignore it.
 <a id="cli-transcript"></a>
 #### `--record FILE`
 
-Record a one-shot `-p` run as `xyntetik.runner.transcript.v1`: model, adapter and binary
-hashes; the effective execution profile (including fallback KV type, GPU layer
+Record a one-shot `-p` run as `xyntetik.runner.transcript.v2`: the model and adapter by
+base name and sha256, never by host path (a receipt is evidence you may post), with
+`model.source` (`hf:<owner>/<repo>@<revision>`) for a file fetched with `-hf` and, for a
+file a step on this machine made, the step's record as `record` (base name and sha256);
+the binary's hash; the effective execution profile, with the route the run took
+(`profile.route`: the backend, the CPU's activation `cpu_act` and the backend's
+`backend_detail` line, the same words as the route line and `--bench-json`) (including fallback KV type, GPU layer
 count and, on CUDA, the prompt window); the exact 64-bit seed (the state the
 sampler started from: `-s N` mixed through splitmix64, which `--verify`
 installs as it is, so a record written before seeds were mixed, when the
@@ -2911,7 +2918,9 @@ state was `N` itself, still replays) and sampling config; prompt/output text and
 individually be valid UTF-8); a `speculation` object naming the draft source (`model`,
 `mtp` or `lookup`) with its round, drafted and accepted counts when one was configured
 (absent for plain decoding, so those records are unchanged); and a chain hash over the
-serialized record body.
+serialized record body. `--verify`, `--lineage`, bundles and packs read v1 records too,
+whose `model` and `adapter` held the `path` they were loaded from; a v1 record replays with
+an explicit `-m`.
 
 <a id="cli-model-sig"></a>
 #### `--model-sig FILE`

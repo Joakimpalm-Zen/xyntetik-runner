@@ -63,7 +63,7 @@ static inline int hex_digit_value(int c) {
     return -1;
 }
 
-// ---- notarized inference D1: xyntetik.runner.transcript.v1 ----------------
+// ---- notarized inference D1: xyntetik.runner.transcript.v2 ----------------
 // The record that makes one inference a REPLAYABLE COMPUTATION: everything a
 // verifier needs to rerun (model sha, build identity, profile, config, seed,
 // prompt) plus what was produced (token ids, text, finish reason), bound by a
@@ -71,7 +71,12 @@ static inline int hex_digit_value(int c) {
 // same-binary = bit-exact replay; T2 cross-ISA = token replay (libm is the
 // bit blocker). The chain hash covers every byte of the file BEFORE the
 // `,"chain"` key — recomputable by any reader with a text editor and
-// sha256sum, which is the point.
+// sha256sum, which is the point. v2 (R1.17/R1.18) names the model, the
+// adapter and their step records by base name and sha256, never by host
+// path (a receipt is evidence a user may post), adds the model's -hf source,
+// and carries profile.route; readers accept v1, whose objects hold "path".
+#define TRANSCRIPT_SCHEMA    "xyntetik.runner.transcript.v2"
+#define TRANSCRIPT_SCHEMA_V1 "xyntetik.runner.transcript.v1"
 typedef struct {
     const char *out_path;
     const char *runner_version;
@@ -88,8 +93,11 @@ typedef struct {
     bool        kv_q8;
     bool        kv_fp4;
     bool        kv_split;
-    const char *model_path;        // hashed
-    const char *adapter_path;      // NULL = no adapter; hashed when set
+    const char *model_path;        // hashed; written as its base name
+    // profile.route (model_route_receipt_json): backend, cpu_act and
+    // backend_detail, which --verify checks on replay. NULL writes none.
+    const char *route_json;
+    const char *adapter_path;      // NULL = no adapter; hashed, base name
     float       adapter_scale;
     uint64_t    seed;
     float       temp, top_p, min_p, repeat_penalty;
@@ -159,6 +167,17 @@ typedef struct {
     bool        envelope_known;
     int         envelope_state;
 } transcript_info;
+
+// Where the file at `path` came from ("hf:<owner>/<repo>@<rev>", the -hf
+// fetch), written as model.source by every receipt that names that file.
+void transcript_model_source(const char *path, const char *source);
+
+// Readers of either version: receipt_schema_ok accepts v2 and v1;
+// receipt_file_name gives a model, adapter or record object's file name (v2
+// "name", or the base of a v1 "path"), "" when it holds neither.
+struct jv;
+bool receipt_schema_ok(const char *schema_version);
+const char *receipt_file_name(struct jv *obj);
 
 // Signing keys: xyntetik.runner.signkey.v1, a 32-byte seed and the public
 // key it derives as hex in a JSON object, with an "algo" of "ed25519" (RFC

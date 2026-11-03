@@ -241,3 +241,24 @@ def test_a_listing_with_an_impossible_size_is_refused(runner_bin, hub):
         assert "size" in p.stderr, (bad, p.stderr)
         assert resolve_calls(hub["log"]) == [], (bad, calls(hub["log"]))
     assert good.exists()
+
+
+def test_a_receipt_names_the_hub_source_not_the_cache(runner_bin, hub, tmp_path):
+    # R1.17: a model fetched with -hf is named by base name, sha256 and its
+    # source, the commit the listing named; the cache path stays out
+    rec = tmp_path / "r.json"
+    r = run(runner_bin, hub["env"], "-hf", "fake/repo:Q8_0", "-p", "hi", "-n", "2",
+            "--temp", "0", "--gpu", "off", "--transcript", str(rec))
+    assert r.returncode == 0, r.stderr
+    m = json.loads(rec.read_text())["model"]
+    assert m["name"] == "model-Q8_0.gguf" and "path" not in m
+    assert m["source"] == "hf:fake/repo@main"     # a listing without a commit
+    assert str(hub["cache"]) not in rec.read_text()
+    files = json.loads((hub["dir"] / "files.json").read_text())
+    files["sha"] = "0123456789abcdef0123456789abcdef01234567"
+    (hub["dir"] / "files.json").write_text(json.dumps(files))
+    r = run(runner_bin, hub["env"], "-hf", "fake/repo:Q8_0", "-p", "hi", "-n", "2",
+            "--temp", "0", "--gpu", "off", "--transcript", str(rec))
+    assert r.returncode == 0, r.stderr
+    m = json.loads(rec.read_text())["model"]
+    assert m["source"] == "hf:fake/repo@0123456789abcdef0123456789abcdef01234567"

@@ -129,16 +129,31 @@ export interface Provenance {
   statement: string;
 }
 
-/** xyntetik.runner.transcript.v1: the receipt a CLI run writes. */
+/** A file a receipt names: by base name and sha256 (v2), with the record of
+ *  the step that made it when one did; v1 receipts held the loaded path. */
+export interface ReceiptFile {
+  name?: string;
+  /** v1 only */
+  path?: string;
+  sha256: string;
+  record?: { name?: string; path?: string; sha256: string };
+}
+
+/** xyntetik.runner.transcript.v2 (v1 still read): the receipt a CLI run or a
+ *  served answer writes. */
 export interface TranscriptRecord {
-  schema_version: "xyntetik.runner.transcript.v1";
+  schema_version: "xyntetik.runner.transcript.v2" | "xyntetik.runner.transcript.v1";
   runner: string;
   build: { binary_sha256: string; compiler: string; os: string; arch: string;
            flavor?: string };
   profile: { device: string; gpu: boolean; gpu_layers: number; threads: number;
-             ctx: number; kv: string; batch: number };
-  model: { path: string; sha256: string };
-  adapter: null | { path: string; sha256: string; scale: number };
+             ctx: number; kv: string; batch: number; gpu_window?: number;
+             gpu_route?: string;
+             /** v2: the route the run took; --verify checks it on replay */
+             route?: { backend: string; cpu_act: string; backend_detail: string } };
+  /** source: "hf:<owner>/<repo>@<revision>" for a file fetched with -hf */
+  model: ReceiptFile & { source?: string };
+  adapter: null | (ReceiptFile & { scale: number });
   config: { seed: number; seed_u64: string; temp: number; top_k: number; top_p: number;
             min_p: number; repeat_penalty: number; n_predict: number; template: string;
             bos: boolean };

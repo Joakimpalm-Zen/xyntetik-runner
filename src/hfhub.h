@@ -48,6 +48,12 @@ bool hf_is_first_part(const char *name, unsigned *count, size_t *prefix_len);
 // sent as a bearer token so gated repositories work.
 char *hf_fetch(const char *spec, char *err, size_t errcap);
 
+// Where a file hf_fetch returned came from, for a receipt:
+// "hf:<owner>/<repo>@<revision>", the revision being the commit the Hub's
+// listing named (its files were verified against that listing), or "main"
+// when the listing names none. NULL for any other path.
+const char *hf_source_for(const char *path);
+
 // One file of a fetched model, as hf_fetch_files reports it.
 typedef struct {
     char *path;                // absolute local path (malloc'd)

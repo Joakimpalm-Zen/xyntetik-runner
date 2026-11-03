@@ -199,14 +199,22 @@ static const char *relocate(const char *cited, const char *citing, char *buf, si
 }
 
 // One input of a record: a file by hash, and the record that made it if any.
+// A receipt (v2) names its model and adapter by base name, and a server's
+// receipts folder is not where its models sit: beside the receipt first,
+// then the working directory, the place --verify looks too. The record that
+// made the file sits beside the file.
 static void walk_input(const char *key, jv *in, const char *citing, const char *trust_hex,
-                       int depth, walk_state *w) {
-    const char *path = jv_str(jv_get(in, "path"), "?");
+                       int depth, walk_state *w, bool receipt) {
+    const char *path = jv_get(in, "name") ? jv_str(jv_get(in, "name"), "?")
+                                          : jv_str(jv_get(in, "path"), "?");
     const char *sha = jv_str(jv_get(in, "sha256"), NULL);
-    char s[13];
+    char s[13], probe[65];
     short_sha(sha, s);
     char here[4096];
     const char *file = relocate(path, citing, here, sizeof here);
+    if (receipt && !envelope_file_sha256(file, probe) && plat_path_base(path) == path &&
+        envelope_file_sha256(path, probe))
+        file = path;
     jv *link = jv_get(in, "record");
     indent(depth);
     if (!link) {
@@ -218,7 +226,9 @@ static void walk_input(const char *key, jv *in, const char *citing, const char *
     printf("%s: %s sha256 %s\n", key, path, s);
     walk_evals(file, sha, trust_hex, depth + 1, w);
     char moved[4096];
-    walk_record(relocate(jv_str(jv_get(link, "path"), ""), citing, moved, sizeof moved),
+    const char *lname = jv_get(link, "name") ? jv_str(jv_get(link, "name"), "")
+                                             : jv_str(jv_get(link, "path"), "");
+    walk_record(relocate(lname, file, moved, sizeof moved),
                 jv_str(jv_get(link, "sha256"), NULL), sha, trust_hex, depth + 1, w);
 }
 
@@ -283,7 +293,7 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
         if (!strcmp(INPUT_KEYS[i], out_key)) continue;   // a train record's "adapter" is its output
         jv *in = jv_get(rec, INPUT_KEYS[i]);
         if (in && in->type == J_OBJ && jv_get(in, "sha256"))
-            walk_input(INPUT_KEYS[i], in, rec_path, trust_hex, depth + 1, w);
+            walk_input(INPUT_KEYS[i], in, rec_path, trust_hex, depth + 1, w, false);
     }
     jv_free(rec);
 }
@@ -358,7 +368,7 @@ static int walk_receipts_dir(const char *dir, const char *trust_hex) {
         for (size_t i = 0; i < 2; i++) {
             jv *in = jv_get(first_rec[k], KEYS[i]);
             if (in && in->type == J_OBJ && jv_get(in, "sha256"))
-                walk_input(KEYS[i], in, paths[0], trust_hex, 2, &w);
+                walk_input(KEYS[i], in, paths[0], trust_hex, 2, &w, true);
         }
         jv_free(first_rec[k]);
     }
@@ -382,8 +392,7 @@ int lineage_walk(const char *start, const char *trust_hex) {
     size_t sl = strlen(start);
     if (sl > 5 && !strcmp(start + sl - 5, ".json")) probe = read_json(start);
     const char *ok_key = NULL;
-    if (probe && !strcmp(jv_str(jv_get(probe, "schema_version"), ""),
-                         "xyntetik.runner.transcript.v1")) {
+    if (probe && receipt_schema_ok(jv_str(jv_get(probe, "schema_version"), ""))) {
         // a receipt: a served or one-shot answer. Its signature, then the
         // model and adapter it names, walked back through their records.
         char pub[SIGN_PUBHEX_CAP];
@@ -397,7 +406,7 @@ int lineage_walk(const char *start, const char *trust_hex) {
         for (size_t i = 0; i < 2; i++) {
             jv *in = jv_get(probe, KEYS[i]);
             if (in && in->type == J_OBJ && jv_get(in, "sha256"))
-                walk_input(KEYS[i], in, start, trust_hex, 1, &w);
+                walk_input(KEYS[i], in, start, trust_hex, 1, &w, true);
         }
         jv_free(probe);
         printf("RESULT: %s\n", w.worst == 0 ? "VERIFIED (every link consistent and signed)"

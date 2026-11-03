@@ -6846,6 +6846,13 @@ void model_score_route_json(const model_t *m, const char *model_json, char *out,
              model_json, paths, r.backend, r.detail);
 }
 
+void model_route_receipt_json(const model_t *m, char *out, int cap) {
+    route_facts r;
+    route_collect(m, &r);
+    snprintf(out, cap, "{\"backend\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\"}",
+             r.backend, r.cpu_act, r.detail);
+}
+
 void model_route_json(const model_t *m, char *out, int cap) {
     route_facts r;
     route_collect(m, &r);

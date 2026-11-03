@@ -1521,6 +1521,9 @@ void model_debug_time_report(void);
 // widest rows, the process's kernel counters and the compiler.
 void model_route_note(model_t *m, int rows, const char *path);
 void model_route_json(const model_t *m, char *out, int cap);
+// The part a receipt carries as profile.route and --verify checks on replay:
+// the backend, the CPU's activation and the backend's detail line.
+void model_route_receipt_json(const model_t *m, char *out, int cap);
 // The part of that record a --score file carries (score_route): the model
 // file (model_json, the caller's object), the paths its forwards took (solo:
 // one row a forward; keep: the batched rows of a chunked score), each with its

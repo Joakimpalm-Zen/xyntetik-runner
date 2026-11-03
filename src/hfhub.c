@@ -385,6 +385,14 @@ void hf_files_free(hf_files *f) {
     memset(f, 0, sizeof *f);
 }
 
+// The last file fetch_impl handed out and where it came from, for
+// hf_source_for: "hf:<owner>/<repo>@<revision>".
+static char g_src_path[2048], g_src[640];
+
+const char *hf_source_for(const char *path) {
+    return path && g_src[0] && !strcmp(path, g_src_path) ? g_src : NULL;
+}
+
 // hf_fetch and hf_fetch_files: `flag` names the option in messages, `strict`
 // refuses a file the Hub lists with neither a digest nor a size, `out` (may
 // be NULL) receives the report
@@ -549,6 +557,15 @@ static char *fetch_impl(const char *spec, const char *flag, bool strict, hf_file
             snprintf(err, errcap, "cache path too long for %s", first);
         else if (!(result = strdup(target)))
             snprintf(err, errcap, "out of memory");
+        if (result) {
+            // the commit the listing describes (the files were checked against
+            // its LFS digests), else the ref the download names
+            const char *rev = jv_str(jv_get(doc, "sha"), "");
+            bool commit = strlen(rev) == 40;
+            for (size_t i = 0; commit && i < 40; i++) commit = isxdigit((unsigned char)rev[i]);
+            snprintf(g_src_path, sizeof g_src_path, "%s", result);
+            snprintf(g_src, sizeof g_src, "hf:%s@%s", repo, commit ? rev : "main");
+        }
     }
     free(names);
     jv_free(doc);

@@ -1,7 +1,7 @@
 // Per-request receipts in serve mode (R1.2.2).
 //
 // With `--receipts DIR`, every finished generation on the chat, completions,
-// Responses and Messages surfaces writes a xyntetik.runner.transcript.v1
+// Responses and Messages surfaces writes a xyntetik.runner.transcript.v2
 // record into DIR -- the same record the CLI's --transcript writes, replayed
 // by the same `--verify` -- plus a "serve" object naming the surface, the
 // request id, how the prompt's KV was obtained and what shaped the output
