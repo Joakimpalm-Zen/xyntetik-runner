@@ -19,6 +19,25 @@ Current release and unreleased changes. Compatibility follows the
 - **`RUNNER_MOE_REPLAY` pins Metal's router too** (the batched and the
   per-column route), with the same counters as the CPU and CUDA routers.
 
+- **Receipts name the model by base name and sha256, never by host path,
+  and carry the route they ran (`xyntetik.runner.transcript.v2`).** A
+  receipt is evidence a user may post, and v1 wrote the path the model was
+  loaded from, which showed where it sat on the machine. A `--record` or
+  `--transcript` file and every served receipt now name the model and the
+  adapter as `{"name", "sha256"}`, with `"source": "hf:<owner>/<repo>@<rev>"`
+  for a file fetched with `-hf` (the commit the Hub's listing named), and
+  link a step's record by base name too. `profile.route` records the
+  backend, `cpu_act` and `backend_detail`; `--verify` requires the same
+  route on the same backend (`UNVERIFIABLE` naming both routes otherwise)
+  and reports it on another (`"route"` in the verdict: `matched`,
+  `other backend`, `not recorded`). Without `-m`, `--verify` loads the file
+  the record names from the working directory; the sha256 is checked before
+  the replay, and a mismatch is `UNVERIFIABLE` naming both files. v1
+  receipts still verify with `-m`, and `--lineage`, bundles and packs read
+  both versions. **What changes for callers:** the receipt JSON loses
+  `model.path` and `adapter.path` (read `name`), and its schema_version is
+  v2.
+
 ## v1.12.0 - 2026-11-03
 
 - **`--quant q4_k` wrote corrupt tensors on rows that divide by 32 but not

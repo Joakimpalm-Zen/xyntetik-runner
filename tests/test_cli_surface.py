@@ -145,7 +145,7 @@ def test_record_is_the_transcript_in_one_shot(runner_bin, tmp_path):
             "--record", str(out), "--gpu", "off", "--no-tray")
     assert p.returncode == 0, p.stderr.decode(errors="replace")[-400:]
     rec = json.loads(out.read_text())
-    assert rec["schema_version"] == "xyntetik.runner.transcript.v1"
+    assert rec["schema_version"] == "xyntetik.runner.transcript.v2"
     v = run(runner_bin, "-m", str(FIXTURE), "--verify", str(out), "--gpu",
             "off", "--no-tray")
     assert v.returncode == 0, v.stderr.decode(errors="replace")[-400:]

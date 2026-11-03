@@ -417,9 +417,26 @@ static void tsb_record_link(tsb *w, const char *file) {
     char rec[4096], rsha[65];
     if (!file || !record_sidecar(file, rec, sizeof rec) ||
         !envelope_file_sha256(rec, rsha)) return;
-    tsb_put(w, ",\"record\":{\"path\":", sizeof ",\"record\":{\"path\":" - 1);
-    tsb_json_str(w, rec, strlen(rec));
+    const char *name = plat_path_base(rec);
+    tsb_put(w, ",\"record\":{\"name\":", sizeof ",\"record\":{\"name\":" - 1);
+    tsb_json_str(w, name, strlen(name));
     tsb_fmt(w, ",\"sha256\":\"%s\"}", rsha);
+}
+
+bool receipt_schema_ok(const char *sv) {
+    return sv && (!strcmp(sv, TRANSCRIPT_SCHEMA) || !strcmp(sv, TRANSCRIPT_SCHEMA_V1));
+}
+
+const char *receipt_file_name(jv *obj) {
+    const char *n = jv_str(jv_get(obj, "name"), NULL);
+    return n ? n : plat_path_base(jv_str(jv_get(obj, "path"), ""));
+}
+
+static char g_model_src_path[2048], g_model_src[640];
+
+void transcript_model_source(const char *path, const char *source) {
+    snprintf(g_model_src_path, sizeof g_model_src_path, "%s", path && source ? path : "");
+    snprintf(g_model_src, sizeof g_model_src, "%s", path && source ? source : "");
 }
 
 bool transcript_write(const transcript_info *ti) {
@@ -455,7 +472,7 @@ bool transcript_write(const transcript_info *ti) {
 
     tsb w = {0};
     static const char record_head[] =
-        "{\"schema_version\":\"xyntetik.runner.transcript.v1\",\"runner\":";
+        "{\"schema_version\":\"" TRANSCRIPT_SCHEMA "\",\"runner\":";
     tsb_put(&w, record_head, sizeof record_head - 1);
     tsb_json_str(&w, ti->runner_version, strlen(ti->runner_version));
     tsb_fmt(&w, ",\"build\":{\"binary_sha256\":\"%s\",\"compiler\":",
@@ -482,10 +499,19 @@ bool transcript_write(const transcript_info *ti) {
     // the arithmetic routes the CUDA instance ran with (gpu.h GR_*), which
     // --verify pins: "reference" or route names, never free text
     if (ti->gpu_route) tsb_fmt(&w, ",\"gpu_route\":\"%s\"", ti->gpu_route);
+    if (ti->route_json) {
+        tsb_put(&w, ",\"route\":", sizeof ",\"route\":" - 1);
+        tsb_put(&w, ti->route_json, strlen(ti->route_json));
+    }
     tsb_put(&w, "},", 2);
-    tsb_put(&w, "\"model\":{\"path\":", 16);
-    tsb_json_str(&w, ti->model_path, strlen(ti->model_path));
+    const char *mname = plat_path_base(ti->model_path);
+    tsb_put(&w, "\"model\":{\"name\":", sizeof "\"model\":{\"name\":" - 1);
+    tsb_json_str(&w, mname, strlen(mname));
     tsb_fmt(&w, ",\"sha256\":\"%s\"", msha);
+    if (g_model_src[0] && !strcmp(ti->model_path, g_model_src_path)) {
+        tsb_put(&w, ",\"source\":", sizeof ",\"source\":" - 1);
+        tsb_json_str(&w, g_model_src, strlen(g_model_src));
+    }
     tsb_record_link(&w, ti->model_path);
     tsb_put(&w, "},", 2);
     if (ti->envelope_known) {
@@ -508,8 +534,9 @@ bool transcript_write(const transcript_info *ti) {
         else         tsb_put(&w, "null},", 6);
     }
     if (ti->adapter_path) {
-        tsb_put(&w, "\"adapter\":{\"path\":", 18);
-        tsb_json_str(&w, ti->adapter_path, strlen(ti->adapter_path));
+        const char *aname = plat_path_base(ti->adapter_path);
+        tsb_put(&w, "\"adapter\":{\"name\":", sizeof "\"adapter\":{\"name\":" - 1);
+        tsb_json_str(&w, aname, strlen(aname));
         tsb_fmt(&w, ",\"sha256\":\"%s\",\"scale\":%g", asha,
                 (double)ti->adapter_scale);
         tsb_record_link(&w, ti->adapter_path);

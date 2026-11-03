@@ -1190,8 +1190,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                 independently verified unchanged\n\n"
         "records and verification (runner attest --help for the rest):\n"
         "  --record PATH  with -p: record the run as a replay-verifiable\n"
-        "                 transcript at PATH (xyntetik.runner.transcript.v1:\n"
-        "                 model and binary sha256, profile, config, seed,\n"
+        "                 transcript at PATH (xyntetik.runner.transcript.v2:\n"
+        "                 model base name and sha256, binary sha256, profile\n"
+        "                 and route, config, seed,\n"
         "                 prompt and output token ids, chain hash; same binary\n"
         "                 + same record replays bit-exact, cross-ISA replays\n"
         "                 token-exact). With --serve: PATH is a directory that\n"
@@ -1209,7 +1210,10 @@ static void usage_to(FILE *f, const char *prog) {
         "                 before the ,\"signature\" key, chain hash included;\n"
         "                 the object names the algo)\n"
         "  --verify F     replay a transcript (see --record) against the\n"
-        "                 loaded -m model and byte-diff the result. Verdicts:\n"
+        "                 loaded -m model (without -m: the file the record's\n"
+        "                 model.name names, in the working directory) and\n"
+        "                 byte-diff the result; the route it ran must match on\n"
+        "                 the same backend. Verdicts:\n"
         "                 VERIFIED (exit 0; tier T1 same-binary or T2\n"
         "                 token-replay), DIVERGED at token N (exit 2),\n"
         "                 UNVERIFIABLE (exit 3: bad chain hash, wrong model\n"
@@ -3127,8 +3131,7 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
             return true;
         }
         jv *dj = json_parse(dbuf, dn);
-        if (dj && !strcmp(jv_str(jv_get(dj, "schema_version"), ""),
-                          "xyntetik.runner.transcript.v1")) {
+        if (dj && receipt_schema_ok(jv_str(jv_get(dj, "schema_version"), ""))) {
             // a record carries its own token ids and the prompt as context:
             // no tokenizer, no model
             int np = 0, no = 0;
@@ -3290,6 +3293,35 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         }
         fprintf(stderr, "hf: %s -> %s\n", o->hf_spec, fetched);
         o->model_path = fetched;   // lives for the process
+        transcript_model_source(fetched, hf_source_for(fetched));
+    }
+    // --verify without -m: a v2 record names its model by base name, found
+    // in the working directory (the sha256 is checked before the replay)
+    if (!o->model_path && o->verify_path) {
+        size_t vn = 0;
+        char *vb = plat_read_file(o->verify_path, MAX_INPUT_FILE, &vn);
+        jv *vj = vb ? json_parse(vb, vn) : NULL;
+        free(vb);
+        jv *vm = jv_get(vj, "model");
+        const char *name = jv_str(jv_get(vm, "name"), NULL);
+        static char found[1024];
+        plat_stat_t st;
+        if (name && *name && !strcmp(plat_path_base(name), name) &&
+            strcmp(name, ".") && strcmp(name, "..") &&
+            snprintf(found, sizeof found, "%s", name) < (int)sizeof found &&
+            plat_stat(found, &st) == 0) {
+            o->model_path = found;
+        } else {
+            if (!vj) fprintf(stderr, "UNVERIFIABLE: cannot read %s\n", o->verify_path);
+            else fprintf(stderr, "UNVERIFIABLE: the record's model is %s (sha256 %s); pass "
+                         "it with -m or put it in the working directory\n",
+                         name ? name : jv_str(jv_get(vm, "path"), "?"),
+                         jv_str(jv_get(vm, "sha256"), "?"));
+            jv_free(vj);
+            *rc = 3;
+            return true;
+        }
+        jv_free(vj);
     }
     if (!o->model_path) { usage(prog); *rc = 1; return true; }
     // The escapes are -p's (a shell argument cannot hold a newline easily);
@@ -3514,7 +3546,7 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
         if (!vr->rec) { fprintf(stderr, "UNVERIFIABLE: malformed record\n"); *rc = 3; return true; }
         const char *sv = jv_str(jv_get(vr->rec, "schema_version"), "");
         const char *ch = jv_str(jv_get(jv_get(vr->rec, "chain"), "hash"), "");
-        if (strcmp(sv, "xyntetik.runner.transcript.v1") != 0) {
+        if (!receipt_schema_ok(sv)) {
             fprintf(stderr, "UNVERIFIABLE: schema %s\n", sv); jv_free(vr->rec); *rc = 3; return true;
         }
         if (strcmp(ch, want) != 0) {
@@ -3645,6 +3677,7 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
              gpu_window_d > 4096 || gpu_window_d != (double)(int)gpu_window_d ||
              (int)gpu_window_d % 64 != 0)) ||
             (gpu_route_v && gpu_route_m < 0) ||
+            (jv_get(prof, "route") && jv_get(prof, "route")->type != J_OBJ) ||
             (strcmp(kv, "f16") != 0 && strcmp(kv, "q8") != 0 &&
              strcmp(kv, "fp4") != 0 && strcmp(kv, "k8v4") != 0)) {
             fprintf(stderr, "UNVERIFIABLE: malformed execution profile\n");
@@ -5601,8 +5634,9 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     char sha[65] = "";
     envelope_file_sha256(load_path, sha);
     if (strcmp(sha, jv_str(jv_get(vm, "sha256"), "")) != 0) {
-        fprintf(stderr, "UNVERIFIABLE: -m %s sha256 %s does not match "
-                "the record's %s\n", load_path, sha,
+        // named by both sides: the file loaded and the model the record names
+        fprintf(stderr, "UNVERIFIABLE: model %s sha256 %s does not match the "
+                "record's %s sha256 %s\n", load_path, sha, receipt_file_name(vm),
                 jv_str(jv_get(vm, "sha256"), "?"));
         jv_free(vr->rec);
         return 3;
@@ -5684,6 +5718,37 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
         return 3;
     }
     (void)vt0;
+    // R1.18: the route the record ran (profile.route) against the replay's.
+    // On the same backend it must match, as the rest of the profile does; on
+    // another backend the replay is a token replay (T2) and the route is
+    // reported, not required. A record without one predates the field.
+    const char *route_state = "not recorded";
+    jv *rroute = jv_get(vprof, "route");
+    if (rroute) {
+        char rj[512];
+        model_route_receipt_json(&rt->m, rj, sizeof rj);
+        jv *now = json_parse(rj, strlen(rj));
+        const char *rb = jv_str(jv_get(rroute, "backend"), ""),
+                   *ra = jv_str(jv_get(rroute, "cpu_act"), ""),
+                   *rd = jv_str(jv_get(rroute, "backend_detail"), "");
+        const char *nb = jv_str(jv_get(now, "backend"), ""),
+                   *na = jv_str(jv_get(now, "cpu_act"), ""),
+                   *nd = jv_str(jv_get(now, "backend_detail"), "");
+        if (strcmp(rb, nb)) {
+            route_state = "other backend";
+        } else if (strcmp(ra, na) || strcmp(rd, nd)) {
+            fprintf(stderr, "UNVERIFIABLE: the replay did not take the recorded route: "
+                    "recorded %s cpu_act=%s [%s], replay %s cpu_act=%s [%s] (replay "
+                    "with the RUNNER_* switches the record ran with)\n",
+                    rb, ra, rd, nb, na, nd);
+            jv_free(now);
+            free(replay_out.buf); jv_free(vr->rec);
+            return 3;
+        } else {
+            route_state = "matched";
+        }
+        jv_free(now);
+    }
     // tier: same binary = T1 (bit-exact by the gated contract), else
     // T2 (token replay across builds; libm is the known bit blocker)
     char bsha[65] = "";
@@ -5721,12 +5786,13 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
         printf("{\"schema_version\":\"xyntetik.runner.verify.v1\","
                "\"verdict\":\"VERIFIED\",\"tier\":\"%s\","
                "\"tokens\":%d,\"signed\":%s,\"public_key\":\"%s\","
-               "\"prev\":\"%s\"}\n", tier, n_gen,
-               vr->rsig == RSIG_OK ? "true" : "false", vr->rec_pub, vr->prev);
+               "\"prev\":\"%s\",\"route\":\"%s\"}\n", tier, n_gen,
+               vr->rsig == RSIG_OK ? "true" : "false", vr->rec_pub, vr->prev,
+               route_state);
         fprintf(stderr, "VERIFIED (%s %s): %d output tokens replayed "
-                "identically\n", tier,
+                "identically; route %s\n", tier,
                 strcmp(tier, "T1") == 0 ? "same-binary"
-                                        : "token-replay", n_gen);
+                                        : "token-replay", n_gen, route_state);
         rc = 0;
     } else if (div_at >= 0) {
         int want = div_at < jo->n ? (int)jv_num(jo->items[div_at], -1)
@@ -5736,8 +5802,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
                "\"verdict\":\"DIVERGED\",\"unit\":\"token\","
                "\"at\":%d,"
                "\"expected\":%d,\"got\":%d,\"signed\":%s,"
-               "\"public_key\":\"%s\"}\n", div_at, want, got,
-               vr->rsig == RSIG_OK ? "true" : "false", vr->rec_pub);
+               "\"public_key\":\"%s\",\"route\":\"%s\"}\n", div_at, want, got,
+               vr->rsig == RSIG_OK ? "true" : "false", vr->rec_pub, route_state);
         fprintf(stderr, "DIVERGED at token %d: record has %d, replay "
                 "produced %d\n", div_at, want, got);
         rc = 2;
@@ -5750,9 +5816,9 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
         printf("{\"schema_version\":\"xyntetik.runner.verify.v1\","
                "\"verdict\":\"DIVERGED\",\"unit\":\"byte\","
                "\"at\":%zu,\"expected\":%d,\"got\":%d,\"signed\":%s,"
-               "\"public_key\":\"%s\"}\n",
+               "\"public_key\":\"%s\",\"route\":\"%s\"}\n",
                byte_div_at, want, got,
-               vr->rsig == RSIG_OK ? "true" : "false", vr->rec_pub);
+               vr->rsig == RSIG_OK ? "true" : "false", vr->rec_pub, route_state);
         fprintf(stderr, "DIVERGED at output byte %zu: record has %d, "
                 "replay produced %d\n", byte_div_at, want, got);
         rc = 2;
@@ -6587,6 +6653,8 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
                      "\"context\":%d,\"marked_tokens\":%d}", WM_SCHEME,
                      wmk->id, WM_LAYERS, WM_CONTEXT, cli_wm->marked);
         char *transcript_exe = plat_executable_path();
+        char route_json[512];
+        model_route_receipt_json(&rt->m, route_json, sizeof route_json);
         transcript_info ti = {
             .out_path = o->transcript_path,
             .runner_version = RUNNER_VERSION,
@@ -6610,6 +6678,7 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
             .n_batch = rt->m.n_batch, .kv_q8 = rt->m.kv_q8, .kv_fp4 = rt->m.kv_fp4,
             .kv_split = rt->m.kv_split,
             .model_path = load_path,
+            .route_json = route_json,
             .adapter_path = o->lora_path, .adapter_scale = o->lora_scale,
             .seed = t_seed,
             .temp = rt->e.smp->temp, .top_p = rt->e.smp->top_p,

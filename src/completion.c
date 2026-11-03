@@ -2953,6 +2953,8 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
                                         : SV.mp.lora_path;
     int env_state = 0;
     bool env_known = provenance_envelope_state(&env_state);
+    char route_json[512];
+    model_route_receipt_json(m, route_json, sizeof route_json);
     transcript_info ti = {
         .runner_version = RUNNER_VERSION,
         .compiler = __VERSION__,
@@ -2975,6 +2977,7 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
         .n_batch = m->n_batch, .kv_q8 = m->kv_q8, .kv_fp4 = m->kv_fp4,
         .kv_split = m->kv_split,
         .model_path = m->path,
+        .route_json = route_json,
         .adapter_path = apath, .adapter_scale = SV.mp.lora_scale,
         .seed = gen_rng,
         .temp = s->smp.temp, .top_p = s->smp.top_p, .min_p = s->smp.min_p,

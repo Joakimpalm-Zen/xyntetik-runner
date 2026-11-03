@@ -192,7 +192,7 @@ def test_an_answer_walks_back_from_its_receipt(runner_bin, tmp_path):
                           "--sign-key", "key.json"], tmp_path)
     assert p.returncode == 0, p.stderr
     rec = json.loads((tmp_path / "run.json").read_text())
-    assert rec["model"]["record"]["path"].endswith("final.gguf.quant.json")
+    assert rec["model"]["record"]["name"] == "final.gguf.quant.json"
     v = _run(runner_bin, ["-m", "final.gguf", "--verify", "run.json"], tmp_path)
     assert v.returncode == 0, v.stdout + v.stderr      # the link does not disturb replay
     w = _run(runner_bin, ["--lineage", "run.json"], tmp_path)

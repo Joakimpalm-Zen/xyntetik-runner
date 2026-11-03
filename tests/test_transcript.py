@@ -1,4 +1,4 @@
-"""--transcript: notarized inference D1 (xyntetik.runner.transcript.v1).
+"""--transcript: notarized inference D1 (xyntetik.runner.transcript.v2).
 
 The record makes one inference a replayable computation. Gates: two
 identical runs produce identical output tokens (T1 substrate); the chain
@@ -85,7 +85,7 @@ def test_replay_substrate_and_chain(runner_bin, base, tmp_path):
     assert r1["config"]["seed"] == _splitmix64(7) == 7191089600892374487
     assert r1["config"]["seed_u64"] == "7191089600892374487"
     assert r1["output"]["finish"] in ("stop", "length")
-    assert r1["schema_version"] == "xyntetik.runner.transcript.v1"
+    assert r1["schema_version"] == "xyntetik.runner.transcript.v2"
 
 
 def test_binary_hash_uses_running_image_not_argv0(runner_bin, base, tmp_path,
@@ -590,3 +590,89 @@ def test_seed_zero_samples_and_replays(runner_bin, base, tmp_path):
     p = _verify(runner_bin, base, rec)
     assert p.returncode == 0, p.stderr.decode(errors="replace")
     assert json.loads(p.stdout)["verdict"] == "VERIFIED"
+
+
+# R1.17/R1.18: a receipt is evidence a user may post. v2 names the model by
+# base name and sha256 (no host path), carries the route it ran, and still
+# reads a v1 receipt, whose model object held the path.
+
+def _verify_in(runner_bin, rec, cwd, *extra, env=None):
+    return subprocess.run([runner_bin, *extra, "--verify", str(rec)], cwd=cwd,
+                          env=env, capture_output=True, text=True, timeout=120)
+
+
+def test_receipt_names_no_host_path(runner_bin, base, tmp_path):
+    d = tmp_path / "deep-host-folder-7f3a" / "models"
+    d.mkdir(parents=True)
+    m = d / "base.gguf"
+    shutil.copy(base, m)
+    out = tmp_path / "r.json"
+    r = _run(runner_bin, m, out)
+    text = out.read_text()
+    assert "deep-host-folder-7f3a" not in text and str(tmp_path) not in text
+    assert r["model"] == {"name": "base.gguf",
+                          "sha256": hashlib.sha256(m.read_bytes()).hexdigest()}
+    route = r["profile"]["route"]
+    assert route["backend"] == "cpu" and route["cpu_act"] == "f32"
+    # without -m, the base name is found in the working directory
+    v = _verify_in(runner_bin, out, d)
+    assert v.returncode == 0 and '"route":"matched"' in v.stdout, v.stdout + v.stderr
+    # and nowhere else: the record does not say where the file was
+    v = _verify_in(runner_bin, out, tmp_path)
+    assert v.returncode == 3 and "base.gguf" in v.stderr and \
+        "pass it with -m or put it in the working directory" in v.stderr, v.stderr
+
+
+def test_a_file_by_that_name_with_another_sha_is_refused_by_name(runner_bin, base, tmp_path):
+    out = tmp_path / "r.json"
+    r = _run(runner_bin, base, out)
+    other = tmp_path / "other"
+    other.mkdir()
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--attn-knobs",
+                    "1,0.1", str(other / "base.gguf")], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    v = _verify_in(runner_bin, out, other)
+    want = r["model"]["sha256"]
+    assert v.returncode == 3, v.stdout + v.stderr
+    assert "UNVERIFIABLE: model base.gguf sha256" in v.stderr and \
+        f"does not match the record's base.gguf sha256 {want}" in v.stderr, v.stderr
+
+
+def _as_v1(rec_path, model_path):
+    """The receipt as the runner wrote it before v2: the model by path, no
+    route; the chain hash recomputed over the rewritten bytes."""
+    r = json.loads(rec_path.read_bytes())
+    r["schema_version"] = "xyntetik.runner.transcript.v1"
+    r["model"] = {"path": str(model_path), "sha256": r["model"]["sha256"]}
+    del r["profile"]["route"]
+    chain = r.pop("chain")
+    body = json.dumps(r, separators=(",", ":"), ensure_ascii=False).encode()[:-1]
+    chain["hash"] = hashlib.sha256(body).hexdigest()
+    return body + b',"chain":' + json.dumps(chain, separators=(",", ":")).encode() + b"}"
+
+
+def test_an_old_v1_receipt_still_verifies(runner_bin, base, tmp_path):
+    out = tmp_path / "r.json"
+    _run(runner_bin, base, out)
+    old = tmp_path / "old.json"
+    old.write_bytes(_as_v1(out, base))
+    v = _verify_in(runner_bin, old, tmp_path, "-m", str(base))
+    assert v.returncode == 0, v.stdout + v.stderr
+    assert '"verdict":"VERIFIED"' in v.stdout and '"route":"not recorded"' in v.stdout
+
+
+def test_the_route_is_checked_on_replay(runner_bin, base, tmp_path):
+    out = tmp_path / "r.json"
+    env = dict(os.environ, RUNNER_CPU_I8="1")
+    p = subprocess.run(
+        [runner_bin, "-m", str(base), "-p", "the runner trains the", "-n", "6",
+         "--temp", "0", "--gpu", "off", "-t", "2", "--transcript", str(out)],
+        cwd=ROOT, env=env, capture_output=True, timeout=120)
+    assert p.returncode == 0, p.stderr
+    assert json.loads(out.read_bytes())["profile"]["route"]["cpu_act"] == "int8"
+    plain = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_CPU_I8")}
+    v = _verify_in(runner_bin, out, ROOT, "-m", str(base), env=plain)
+    assert v.returncode == 3 and "did not take the recorded route" in v.stderr and \
+        "cpu_act=int8" in v.stderr and "cpu_act=f32" in v.stderr, v.stderr
+    v = _verify_in(runner_bin, out, ROOT, "-m", str(base), env=env)
+    assert v.returncode == 0 and '"route":"matched"' in v.stdout, v.stdout + v.stderr

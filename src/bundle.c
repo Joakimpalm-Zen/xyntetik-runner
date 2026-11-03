@@ -75,9 +75,9 @@ int bundle_export(const bundle_opts *o) {
     char chain[65];
     char pk[SIGN_PUBHEX_CAP] = "", fp[65] = "";
     const char *algo = NULL;
-    if (!j || strcmp(schema, "xyntetik.runner.transcript.v1")) {
+    if (!j || !receipt_schema_ok(schema)) {
         fprintf(stderr, "error: bundle: %s is not a transcript receipt "
-                "(xyntetik.runner.transcript.v1)\n", o->receipt);
+                "(" TRANSCRIPT_SCHEMA " or v1)\n", o->receipt);
         goto out;
     }
     // A bundle vouches for the receipt it carries; one whose own chain does
@@ -186,7 +186,7 @@ int bundle_export(const bundle_opts *o) {
         sb_lit(&m, "null");
     }
     sb_lit(&m, "},\"model\":{\"name\":");
-    sb_str(&m, plat_path_base(jv_str(jv_get(model, "path"), "")));
+    sb_str(&m, receipt_file_name(model));
     sb_lit(&m, ",\"sha256\":");
     sb_str(&m, jv_str(jv_get(model, "sha256"), NULL));
     sb_lit(&m, ",\"oms\":");
@@ -466,8 +466,7 @@ int pack_export(const pack_opts *o) {
         r[i].name = names[i];
         if (!(r[i].bytes = plat_read_file(path, BUNDLE_MAX_FILE, &r[i].n)) ||
             !(r[i].j = json_parse(r[i].bytes, r[i].n)) ||
-            strcmp(jv_str(jv_get(r[i].j, "schema_version"), ""),
-                   "xyntetik.runner.transcript.v1")) {
+            !receipt_schema_ok(jv_str(jv_get(r[i].j, "schema_version"), ""))) {
             fprintf(stderr, "error: pack: %s is not a transcript receipt\n", names[i]);
             goto out;
         }
@@ -648,7 +647,7 @@ int pack_export(const pack_opts *o) {
     sb_fmt(&m, ",\"last_hash\":\"%s\"}", r[nr - 1].hash);
     jv *model = jv_get(r[0].j, "model"), *build = jv_get(r[0].j, "build");
     sb_lit(&m, ",\"model\":{\"name\":");
-    sb_str(&m, plat_path_base(jv_str(jv_get(model, "path"), "")));
+    sb_str(&m, receipt_file_name(model));
     sb_lit(&m, ",\"sha256\":");
     sb_str(&m, jv_str(jv_get(model, "sha256"), NULL));
     sb_lit(&m, ",\"oms\":");
