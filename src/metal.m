@@ -56,6 +56,7 @@ typedef struct {
     id<MTLComputePipelineState> p_tensor[METAL_TYPE_SLOTS];   // Metal 4 MPP prefill
     id<MTLComputePipelineState> p_mvf[METAL_TYPE_SLOTS];      // fast decode matvec
     id<MTLComputePipelineState> p_mvfc_q4k;   // its Q4_K twin, columns inside the block walk
+    id<MTLComputePipelineState> p_mvg_q4k[5];   // R3.28 candidates, [rows a simdgroup]
     id<MTLComputePipelineState> p_mvc[METAL_TYPE_SLOTS];      // identity matvec twins, columns inside
     id<MTLComputePipelineState> p_mv2[METAL_TYPE_SLOTS];      // two-row identity decode matvec
     id<MTLComputePipelineState> p_moe_mv[METAL_TYPE_SLOTS];   // indexed by ggml type
@@ -352,6 +353,8 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     }
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvf[i] release];
     [g->p_mvfc_q4k release];
+    [g->p_mvg_q4k[2] release];
+    [g->p_mvg_q4k[4] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvc[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mv2[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv[i] release];
@@ -2036,6 +2039,8 @@ static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib
     g->p_mvf[T_Q4_K]  = mk_pipeline(dev, lib, @"k_mvf_q4_K");
     // the column-inner twins (R3.24 (a)), each admitted only where it gives
     // its one-column kernel's bits on this device
+    g->p_mvg_q4k[2]   = mk_pipeline(dev, lib, @"k_mvg2_q4_K");
+    g->p_mvg_q4k[4]   = mk_pipeline(dev, lib, @"k_mvg4_q4_K");
     g->p_mvfc_q4k     = mk_pipeline(dev, lib, @"k_mvfc_q4_K");
     if (g->p_mvfc_q4k && !metal_mvc_self_test(dev, g->p_mvf[T_Q4_K], g->p_mvfc_q4k, T_Q4_K, 2)) {
         [g->p_mvfc_q4k release];
@@ -2922,6 +2927,14 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
             mv = g->p_mvfc_q4k;
             if (a.col_tile > 8) a.col_tile = col_tile = 8;
         }
+        { // R3.28 experiment: R328_Q4K=2|4 takes the candidate at one column
+            static int g4 = -1;
+            if (g4 < 0) { const char *d = getenv("R328_Q4K"); g4 = d ? atoi(d) : 0; }
+            if (w->type == T_Q4_K && n_col == 1 && (g4 == 2 || g4 == 4) && g->p_mvg_q4k[g4]) {
+                mv = g->p_mvg_q4k[g4];
+                rows_sg = g4;
+            }
+        }
         g_mv_dispatches++;
         g_disp.mvf++;
     } else if (n_col == 1 && g->p_mv2[w->type] && metal_mv2_on()) {
@@ -2939,6 +2952,13 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
             if (a.col_tile > 8) a.col_tile = col_tile = 8;
         }
         g_disp.mv++;
+    }
+    { // R3.28 PROFILE ONLY, not for commit: drop this type's decode matvecs
+        static int skip = -2;
+        if (skip == -2) { const char *d = getenv("R328_SKIP"); skip = d ? atoi(d) : -1; }
+        static int nin = -2;
+        if (nin == -2) { const char *d = getenv("R328_SKIP_NIN"); nin = d ? atoi(d) : 0; }
+        if (decode && skip == w->type && (!nin || nin == n_in)) return;
     }
     [e setComputePipelineState:mv];
     a.w_off = metal_bind_weights(g, e,

@@ -2085,6 +2085,63 @@ kernel void k_mvf_q4_K(MV_PARAMS) {
     }
 }
 
+// R3.28 candidate: Q4_K decode with a narrower activation slice a lane. The
+// default kernels give a lane a whole quarter-superblock, 64 activations
+// (256 bytes) against 36 weight bytes of one row, and the profile read them
+// at about 55% of the Q8_0 route's bandwidth. Here eight lanes share a
+// superblock (a lane takes 16 low and 16 high nibbles of one quarter, so 32
+// activations), four superblocks a simdgroup step, and NR rows reuse the
+// lane's activations. TOLERANCE class, one column.
+#define MVG_Q4K(NAME, NR_)                                                     \
+kernel void NAME(MV_PARAMS) {                                                 \
+    enum { NR = NR_ };                                                        \
+    uint row0 = (tgpig.x * (ntg.x / 32) + sgitg) * NR;                        \
+    if (row0 >= (uint)a.n_out) return;                                        \
+    device const float *x = x_all;                                            \
+    device float *y = y_all;                                                  \
+    int nb = a.n_in / 256;                                                    \
+    int il = tiisg & 7, jj = il >> 1, h = il & 1;                             \
+    float s[NR];                                                              \
+    for (int r = 0; r < NR; r++) s[r] = 0;                                    \
+    for (int b = (int)(tiisg >> 3); b < nb; b += 4) {                         \
+        device const packed_float4 *xl4 =                                     \
+            (device const packed_float4 *)(x + b * 256 + jj * 64 + h * 16);   \
+        device const packed_float4 *xh4 = xl4 + 8;                            \
+        float4 xl[4], xh[4], sl = 0, sh = 0;                                  \
+        for (int k = 0; k < 4; k++) {                                         \
+            xl[k] = xl4[k]; xh[k] = xh4[k]; sl += xl[k]; sh += xh[k];         \
+        }                                                                     \
+        float sx1 = sl.x + sl.y + sl.z + sl.w, sx2 = sh.x + sh.y + sh.z + sh.w; \
+        for (int r = 0; r < NR; r++) {                                        \
+            uint row = row0 + r;                                              \
+            if (row >= (uint)a.n_out) break;                                  \
+            device const uchar *blk = wb + a.w_off + ((ulong)row * nb + b) * 144; \
+            float d = (float)*(device const half *)blk;                       \
+            float dmin = (float)*(device const half *)(blk + 2);              \
+            uchar s1, m1, s2, m2;                                             \
+            get_scale_min_k4(jj * 2 + 0, blk + 4, &s1, &m1);                  \
+            get_scale_min_k4(jj * 2 + 1, blk + 4, &s2, &m2);                  \
+            device const packed_uchar4 *q4 =                                  \
+                (device const packed_uchar4 *)(blk + 16 + jj * 32 + h * 16);  \
+            float4 t1 = 0, t2 = 0;                                            \
+            for (int k = 0; k < 4; k++) {                                     \
+                uchar4 qq = q4[k];                                            \
+                t1 = fma(float4(qq & 0xF), xl[k], t1);                        \
+                t2 = fma(float4(qq >> 4), xh[k], t2);                         \
+            }                                                                 \
+            s[r] += d * s1 * (t1.x + t1.y + t1.z + t1.w) - dmin * m1 * sx1 +  \
+                    d * s2 * (t2.x + t2.y + t2.z + t2.w) - dmin * m2 * sx2;   \
+        }                                                                     \
+    }                                                                         \
+    for (int r = 0; r < NR; r++) {                                            \
+        uint row = row0 + r;                                                  \
+        float v = simd_sum(s[r]);                                             \
+        if (tiisg == 0 && row < (uint)a.n_out) y[row] = a.has_bias ? v + bias[row] : v; \
+    }                                                                         \
+}
+MVG_Q4K(k_mvg2_q4_K, 2)
+MVG_Q4K(k_mvg4_q4_K, 4)
+
 // k_mvf_q4_K over several columns with each block's weights read once
 // (R3.24 (a)): per lane step it loads the two rows' scales, mins and quants a
 // single time, then runs every column of the tile through exactly the
