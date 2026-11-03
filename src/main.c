@@ -3908,8 +3908,8 @@ static int run_merge_lora(const cli_opts *o) {
     // per-tensor precision unless a different output type is asked for
     int tt = o->quant_type ? quantize_type_from_name(o->quant_type) : T_KEEP;
     if (tt == -2) {
-        fprintf(stderr, "error: --quant '%s' is not a writable type\n",
-                o->quant_type);
+        fprintf(stderr, "error: --quant '%s' is not a writable type (one of "
+                QUANT_TYPE_NAMES ")\n", o->quant_type);
         return 1;
     }
     merge_survival sv = {0};
@@ -3988,7 +3988,7 @@ static int run_quantize(const cli_opts *o) {
         tt = quantize_type_from_name(o->quant_type);
         if (tt == -2) {
             fprintf(stderr, "error: --quant '%s' is not a writable "
-                    "type\n", o->quant_type);
+                    "type (one of " QUANT_TYPE_NAMES ")\n", o->quant_type);
             return 1;
         }
     } else {
@@ -4126,7 +4126,8 @@ static int run_quant_error(const cli_opts *o) {
     for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
         int t = quantize_type_from_name(tok);
         if (t < 0 || n == 16) {
-            fprintf(stderr, "error: --quant-error: '%s' is not a writable type\n", tok);
+            fprintf(stderr, "error: --quant-error: '%s' is not a writable type (one of "
+                    QUANT_TYPE_NAMES ", keep excepted)\n", tok);
             return 1;
         }
         types[n++] = t;

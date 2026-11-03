@@ -1358,6 +1358,9 @@ int derive_main(int argc, char **argv) {
     rc = run_self(self, a);
     if (rc != 0) {
         fprintf(stderr, "error: runner derive: the rewrite failed (exit %d)\n", rc);
+        // nothing was made, so nothing is left beside OUT: the parent's
+        // score was only the measurement's other half
+        plat_remove(ref_score);
         return 1;
     }
     // 3. measure it

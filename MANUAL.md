@@ -1983,7 +1983,8 @@ activations, so it is **off by default** - no format cleared the 0/64
 teacher-forced flip bar with a decode gain worth taking on the measurement
 box. `./test-i8-tol MODEL.gguf` is the gate. A build with no int8 kernel (neither
 AVX2 nor arm64 with the dot-product extension) ignores `RUNNER_CPU_I8` with one
-notice, so the route line and receipts never name a route that did not run.
+notice, so the route line and the `--score` and `--bench-json` route records
+never name a route that did not run (receipts do not carry `cpu_act`).
 `RUNNER_CPU_I8_PREFILL=1` (opt-in, arm64 with the dot-product extension) takes
 the same int8 activations for CPU batches of 8 or more rows, prompt prefill and
 chunked scoring: four weight rows are repacked once into int8 codes with a
@@ -2382,7 +2383,7 @@ prefill GEMM tiles once 6 or more slots decode together. It is not bit-identical
 sequential decode: the tiles sum in another order, so a slot's tokens can differ from what
 it would decode alone. On an Apple M1 with K2-Horizon-1B it raised aggregate decode at 8
 slots from 45.2 to 63.2 tok/s (Q4_K_M) and from 58.2 to 69.9 tok/s (Q8_0); below 6 slots
-the tiles were slower, so the identity route keeps those widths. Against the publisher's float32 model over 2,000 positions it read 1.006x the identity route's mean KLD on the Q8_0 (0.003625 against 0.003604) and 0.9996x on the Q4_K_M, not distinguishable on either, and margin-qualified top-1 of 95.84% against 95.98% on the Q4_K_M. The route line and receipts name it (`micro=tiles` in the backend detail).
+the tiles were slower, so the identity route keeps those widths. Against the publisher's float32 model over 2,000 positions it read 1.006x the identity route's mean KLD on the Q8_0 (0.003625 against 0.003604) and 0.9996x on the Q4_K_M, not distinguishable on either, and margin-qualified top-1 of 95.84% against 95.98% on the Q4_K_M. The route line and the `--score` and `--bench-json` route records name it (`micro=tiles` in the backend detail); receipts do not carry the route.
 
 ### Generation and context
 

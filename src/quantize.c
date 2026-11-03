@@ -1304,7 +1304,7 @@ static bool type_plan_load(const char *path, type_plan_t *plan) {
             has_default = true;
             if (plan->dflt == -2) {
                 fprintf(stderr, "error: type-plan default \"%s\" is not one of "
-                        "keep|q8_0|q4_0|q3_k|q4_k|q6_k|mxfp4|f16|bf16\n", jv_str(d, "?"));
+                        QUANT_TYPE_NAMES "\n", jv_str(d, "?"));
                 ok = false;
             }
         }
@@ -1330,7 +1330,7 @@ static bool type_plan_load(const char *path, type_plan_t *plan) {
             int ty = type_from_name(jv_str(t, NULL));
             if (ty == -2) {
                 fprintf(stderr, "error: type-plan rule %d type \"%s\" is not "
-                        "one of keep|q8_0|q4_0|q3_k|q4_k|q6_k|mxfp4|f16|bf16\n", i, jv_str(t, "?"));
+                        "one of " QUANT_TYPE_NAMES "\n", i, jv_str(t, "?"));
                 ok = false;
                 break;
             }
