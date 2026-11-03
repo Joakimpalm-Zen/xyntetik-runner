@@ -25,7 +25,7 @@ Current release and unreleased changes. Compatibility follows the
   catch-up and a rejection restores it, so a round feeds the draft at most
   `--draft-k` + 1 tokens; output is unchanged. CUDA rolls a fold back by one
   forward only, so a CUDA-resident recurrent draft keeps the old refeed. The
-  spec line on stderr gains `draft fed N`.
+  spec line on stderr gains `draft catch-up N`.
 
 - **`RUNNER_CUDA_I8=1` runs CUDA prefill on int8 tensor cores (opt-in,
   compute capability 8.0+, Q8_0, Q4_K and Q6_K).** The activations are

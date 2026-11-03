@@ -13,9 +13,12 @@ tokens.
 The gate is the two properties that define the fix: greedy output identical
 to plain decoding (the draft only proposes), and the tokens fed to the draft
 bounded by the prompt plus draft_k + 1 a round, counted by the runner itself
-(the `draft fed` field of the spec line). The draft is the same fixture with
-a convolution bias, so it shares the vocabulary and disagrees often enough
-that rejections happen; a run without one would prove nothing and fails.
+(the `draft catch-up` field of the spec line: the tokens the draft is fed
+to catch up, apart from the draft_k it drafts each round). The draft is the
+same fixture's MoE twin, which shares the vocabulary and disagrees often
+enough that rejections happen; a run without one would prove nothing and
+fails. (The convolution-bias twin is refused at load as a draft, and a
+refused draft runs no speculation at all: the test reads the spec line.)
 """
 import pathlib
 import re
@@ -32,7 +35,7 @@ PROMPT = "the quick brown fox jumps over the lazy dog and the cat sat on the mat
 def pair(tmp_path_factory):
     d = tmp_path_factory.mktemp("rdraft")
     target, draft = d / "target.gguf", d / "draft.gguf"
-    for out, extra in ((target, []), (draft, ["--conv-bias"])):
+    for out, extra in ((target, []), (draft, ["--moe"])):
         subprocess.run([sys.executable, ROOT / "scripts/make-test-lfm2.py", str(out), *extra],
                        check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
     return target, draft
@@ -53,7 +56,7 @@ def test_a_rejected_round_feeds_the_draft_at_most_k_plus_one_tokens(runner_bin, 
     spec = _run(runner_bin, target, "--draft", str(draft), "--draft-k", k)
     assert spec.stdout == plain.stdout          # the draft only proposes
     err = spec.stderr.decode(errors="replace")
-    m = re.search(r"spec: (\d+) rounds, (\d+) drafted, (\d+) accepted .* draft fed (\d+)", err)
+    m = re.search(r"spec: (\d+) rounds, (\d+) drafted, (\d+) accepted .* draft catch-up (\d+)", err)
     assert m, err
     rounds, drafted, accepted, fed = (int(g) for g in m.groups())
     assert 0 < accepted < drafted, (accepted, drafted)   # rejections happened

@@ -278,7 +278,7 @@ typedef struct {
                  gr_drafted, gr_accepted,        // grammar-pinned drafts only
                  lk_drafted, lk_accepted,        // prompt-lookup drafts only
                  hint_drafted, hint_accepted,    // of those, from draft hints
-                 draft_fed; }                    // tokens fed to the draft model
+                 draft_fed; }                    // tokens the draft's catch-up fed
              spec_st;                            // reset per generation
     // JC-R2 Phase 0 trace (RUNNER_GRAMMAR_TRACE=path): the current grammar
     // round's pinned bytes + drafted ids, stashed at draft time and emitted

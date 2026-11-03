@@ -2608,7 +2608,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         if (dm || e->mtp_on || e->lookup_on || getenv("RUNNER_SPEC_STATS")) \
             fprintf(stderr, \
             "spec: %d rounds, %d drafted, %d accepted (%.2f tok/round)" \
-            ", grammar %d/%d, lookup %d/%d, draft fed %d\n", \
+            ", grammar %d/%d, lookup %d/%d, draft catch-up %d\n", \
             st_rounds, st_drafted, st_accepted, \
             st_rounds ? (double)n_gen / st_rounds : 0, \
             st_gr_accepted, st_gr_drafted, \
@@ -2732,7 +2732,6 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             d[nd++] = best;
             st_drafted++;
             dl = model_forward(dm, best, e->dpos++);
-            e->spec_st.draft_fed++;
         }
         // Tracer 6: the batched verify below advances a recurrent TARGET's fold
         // through every row; snapshot the round-start fold so a partially-
