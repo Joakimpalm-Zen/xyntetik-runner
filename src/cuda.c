@@ -7313,7 +7313,7 @@ static unsigned attn_dec_gqa_smem(const model_t *m, int hd, int n_kv) {
     kw = ((kw + 3) / 4) | 1;
     vw = ((vw + 3) / 4) | 1;
     return (unsigned)sizeof(float) *
-           (unsigned)(GMAX * (hd + 1) + TK * (kw > vw ? kw : vw) + GMAX * TK + GMAX);
+           (unsigned)(GMAX * (hd + 1) + 2 * TK * (kw > vw ? kw : vw) + GMAX * TK + GMAX);
 }
 
 // The grouped decode attention for the single query column, or false

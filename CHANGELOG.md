@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA decode attention reads the cache once (R3.29).** The grouped decode
+  kernel read K twice, a pass for the softmax maximum and then K with V; it
+  now makes one pass with a running maximum, stages K and V as 16-byte
+  chunks prefetched into registers, and fits three blocks an SM. On an RTX
+  3070, decode against the previous build: 1.00x to 1.02x at 512 tokens,
+  1.24x to 1.38x at 16K and 1.37x to 1.55x at 32K across Llama-3.2-3B,
+  Qwen2.5-3B, Qwen3-4B and Qwen2.5-7B. It is still 0.66x (Qwen2.5-3B) to
+  0.86x (Llama-3.2-3B) of llama.cpp b11748 at 16K. The order of the sums
+  changed: the same bytes run to run for a geometry, its float32-reference
+  row owed. Report: `docs/compat-reports/r3.29-cuda-decode-attention-2026-11-03`.
 - **`RUNNER_CUDA_I8=1` runs CUDA prefill on int8 tensor cores (opt-in,
   compute capability 8.0+, Q8_0, Q4_K and Q6_K).** The activations are
   quantized per 32-element block, and the weights' own integer quants go to
