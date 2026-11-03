@@ -4339,6 +4339,71 @@ kernel void k_moe_route(device const float *logits [[buffer(0)]],
     for (int s = 0; s < used; s++) tw[s] /= denom;
 }
 
+// RUNNER_MOE_REPLAY on the device (R3.25.1; CUDA's k_moe_route_replay):
+// k_moe_route's arithmetic, but at a (position, layer) the table holds, slot s
+// takes the recorded expert, as model.c's routers do: the weight is this run's
+// own probability for it, the remaining experts compete for the later slots,
+// and the renormalisation is the same. tab is [npos][nlayer][used], -1 in
+// slot 0 where the trace has no record; column t is position pos0 + t.
+// cnt[0..2] count the forced slots, the slots whose own choice differed, and
+// the (position, layer) pairs the table did not hold (model.c's counters).
+kernel void k_moe_route_replay(device const float *logits [[buffer(0)]],
+                               device int         *sel    [[buffer(1)]],
+                               device float       *selw   [[buffer(2)]],
+                               constant int       &ne     [[buffer(3)]],
+                               constant int       &used   [[buffer(4)]],
+                               constant int       &tokens [[buffer(5)]],
+                               constant int       &ls     [[buffer(6)]],
+                               device const int   *tab    [[buffer(7)]],
+                               device atomic_uint *cnt    [[buffer(8)]],
+                               constant int       &npos   [[buffer(9)]],
+                               constant int       &nlayer [[buffer(10)]],
+                               constant int       &pos0   [[buffer(11)]],
+                               constant int       &layer  [[buffer(12)]],
+                               uint t [[thread_position_in_grid]]) {
+    if ((int)t >= tokens) return;
+    float lg[256];
+    device const float *src = logits + (ulong)t * ls;
+    for (int e = 0; e < ne; e++) lg[e] = src[e];
+
+    float mx = lg[0];
+    for (int e = 1; e < ne; e++)
+        if (lg[e] > mx) mx = lg[e];
+    float sum = 0.0f;
+    for (int e = 0; e < ne; e++) {
+        float p = exp(lg[e] - mx);
+        lg[e] = p;
+        sum += p;
+    }
+    for (int e = 0; e < ne; e++) lg[e] /= sum;
+
+    int pos = pos0 + (int)t;
+    device const int *forced = pos >= 0 && pos < npos && layer < nlayer
+        ? tab + ((ulong)pos * nlayer + layer) * used : nullptr;
+    if (forced && forced[0] < 0) forced = nullptr;
+    if (!forced) atomic_fetch_add_explicit(&cnt[2], 1u, memory_order_relaxed);
+    device int *ts = sel + (ulong)t * used;
+    device float *tw = selw + (ulong)t * used;
+    float denom = 0.0f;
+    for (int s = 0; s < used; s++) {
+        int best = 0;
+        float bp = -1.0f;
+        for (int e = 0; e < ne; e++)
+            if (lg[e] > bp) { bp = lg[e]; best = e; }
+        if (forced) {
+            atomic_fetch_add_explicit(&cnt[0], 1u, memory_order_relaxed);
+            if (forced[s] != best) atomic_fetch_add_explicit(&cnt[1], 1u, memory_order_relaxed);
+            if (forced[s] < ne) { best = forced[s]; bp = lg[best]; }
+        }
+        ts[s] = best;
+        tw[s] = bp;
+        denom += bp;
+        lg[best] = -1.0f;
+    }
+    if (denom < 6.103515625e-5f) denom = 6.103515625e-5f;
+    for (int s = 0; s < used; s++) tw[s] /= denom;
+}
+
 kernel void k_trace_copy_f32(device const float *src [[buffer(0)]],
                              device float       *dst [[buffer(1)]],
                              constant int       &n   [[buffer(2)]],

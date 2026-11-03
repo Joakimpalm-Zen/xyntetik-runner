@@ -3193,6 +3193,15 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# under the tolerances -- which is exactly how the CUDA fused path shipped
 	@# without one. See the fixture's comment in scripts/make-test-moe.py.
 	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.gptoss-top1.gguf
+	@# the same fixture at the default bounds: free routing answers to 2e-3,
+	@# the pinned run to 1e-3 (a min() against 1e-3 once held both to 1e-3,
+	@# and every fixture run sets GPU_ID_LIMIT, so only a real file showed it)
+	@./$(TEST_GPU_ID) test-moe-fixture.gptoss-top1.gguf > test-gpu-id-bounds.out 2>&1 || { cat test-gpu-id-bounds.out; exit 1; }; \
+	if ! grep -q 'skipped' test-gpu-id-bounds.out; then \
+	  { grep -A1 'free routing' test-gpu-id-bounds.out | grep -q '(limit 0.002)' && \
+	    grep -A1 'pinned routing' test-gpu-id-bounds.out | grep -q '(limit 0.001)'; } || { \
+	    cat test-gpu-id-bounds.out; echo "FAIL: gpu-identity's default bounds are not 2e-3 free, 1e-3 pinned"; exit 1; }; \
+	  echo "gpu-identity default bounds: 2e-3 free, 1e-3 pinned"; fi
 	./$(TEST_MOE_ROUTER) test-moe-fixture
 	./$(TEST_PAGING_WARN) test-moe-fixture
 	./$(TEST_AUTOFIT) test.gguf

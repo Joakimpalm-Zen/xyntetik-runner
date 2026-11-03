@@ -50,6 +50,7 @@ typedef struct {
     id<MTLComputePipelineState> p_sigmul;   // attention output gate (x *= sigmoid(g))
     id<MTLComputePipelineState> p_head_sigmul, p_gelu_erf;   // spark2_5
     id<MTLComputePipelineState> p_moe_route, p_moe_actmul, p_moe_sum, p_trace_copy;
+    id<MTLComputePipelineState> p_moe_route_replay;
     id<MTLComputePipelineState> p_mv[METAL_TYPE_SLOTS];       // indexed by ggml type
     id<MTLComputePipelineState> p_mm[METAL_TYPE_SLOTS];       // tiled prefill GEMM
     id<MTLComputePipelineState> p_tensor[METAL_TYPE_SLOTS];   // Metal 4 MPP prefill
@@ -110,6 +111,12 @@ typedef struct {
     id<MTLBuffer> moe_logits, moe_sel, moe_selw, moe_hb, moe_hb2, moe_eout;
     id<MTLBuffer> moe_colmap, moe_eoff;   // grouped-MMA slot map + offsets
     id<MTLBuffer> moe_trace_logits;
+    // RUNNER_MOE_REPLAY (and test-gpu-identity's pin) on the router, R3.25.1:
+    // the recorded choices as [replay_npos][replay_nlayer][used] ids, the
+    // three counters model.c reports, and the first column's position
+    id<MTLBuffer> replay_tab, replay_cnt;
+    int           replay_npos, replay_nlayer, route_pos;
+    bool          replay_tried;
     id<MTLBuffer> moe_sh, moe_shl;   // shared expert: [out | gate | up] per column, its gate logits
     id<MTLBuffer> inv_freq, inv_freq_local, out_norm, dummy;
     id<MTLBuffer> *ppn;                 // gemma4 E-series per-layer post_norm
@@ -237,6 +244,45 @@ typedef struct { int n_in, n_out; uint64_t w_off, estride;
                  int xs, ys, has_bias, bias_stride, slots_per_token;
                  int n_slots; } moe_args;   // n_slots: expert-major only
 
+// RUNNER_MOE_REPLAY's device counts (forced slots, slots that differed,
+// uncovered pairs) into model.c's report, and reset.
+static void metal_replay_flush(gpu_t *g) {
+    if (!g->replay_cnt) return;
+    unsigned *c = (unsigned *)g->replay_cnt.contents;
+    if (c[0] || c[1] || c[2]) {
+        model_moe_replay_count(c[0], c[1], c[2]);
+        c[0] = c[1] = c[2] = 0;
+    }
+}
+
+// RUNNER_MOE_REPLAY (or test-gpu-identity's pin) on the router: model.c's
+// table, built once per backend at its first forward. A table the device
+// cannot hold leaves the router free, which the replay counts then show.
+static void metal_replay_setup(gpu_t *g, model_t *m) {
+    if (g->replay_tried) return;
+    g->replay_tried = true;
+    if (m->n_expert <= 0 || !model_moe_replay_on()) return;
+    int np = 0;
+    int *tab = model_moe_replay_table(m->n_layer, m->n_expert_used, &np);
+    if (!tab) return;
+    size_t cells = (size_t)np * m->n_layer * m->n_expert_used;
+    g->replay_tab = [g->dev newBufferWithBytes:tab length:sizeof(int) * (cells ? cells : 1)
+                                       options:MTLResourceStorageModeShared];
+    free(tab);
+    g->replay_cnt = [g->dev newBufferWithLength:3 * sizeof(unsigned)
+                                       options:MTLResourceStorageModeShared];
+    if (!g->replay_tab || !g->replay_cnt) {
+        fprintf(stderr, "gpu: Metal MoE replay table allocation failed; the "
+                "router stays free\n");
+        [g->replay_tab release]; [g->replay_cnt release];
+        g->replay_tab = g->replay_cnt = nil;
+        return;
+    }
+    memset(g->replay_cnt.contents, 0, 3 * sizeof(unsigned));
+    g->replay_npos = np;
+    g->replay_nlayer = m->n_layer;
+}
+
 static void gpu_release_state(gpu_t *g, int n_layer) {
     if (!g) return;
     for (int l = 0; l < n_layer; l++) {
@@ -283,13 +329,14 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     [g->p_m2_conv release]; [g->p_m2_scan release]; [g->p_m2_gnorm release];
     [g->p_relu2 release];
     [g->p_lora_a release]; [g->p_lora_b release];
+    metal_replay_flush(g);
     lora_dev_release(g);
     for (int i = 0; i < g->n_wbuf; i++) [g->wbuf[i] release];
     id<MTLBuffer> bufs[] = { g->kc, g->vc, g->x, g->xb, g->xb2,
                              g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
                              g->logits, g->att_acc, g->att_ms,
                              g->moe_logits, g->moe_sel, g->moe_selw,
-                             g->moe_trace_logits,
+                             g->moe_trace_logits, g->replay_tab, g->replay_cnt,
                              g->moe_hb, g->moe_hb2, g->moe_eout,
                              g->moe_colmap, g->moe_eoff, g->moe_sh, g->moe_shl,
                              g->inv_freq, g->inv_freq_local, g->out_norm,
@@ -326,6 +373,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     [g->p_scale release];
     [g->p_moe_route release]; [g->p_moe_actmul release];
     [g->p_moe_sum release]; [g->p_trace_copy release];
+    [g->p_moe_route_replay release];
     if (g->xsc) [g->xsc release];
     if (g->p_colabsmax) [g->p_colabsmax release];
     [g->queue release];
@@ -1946,6 +1994,7 @@ static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib
     g->p_gelu_erf     = mk_pipeline(dev, lib, @"k_gelu_erf_mul");
     g->p_scale        = mk_pipeline(dev, lib, @"k_scale");
     g->p_moe_route    = mk_pipeline(dev, lib, @"k_moe_route");
+    g->p_moe_route_replay = mk_pipeline(dev, lib, @"k_moe_route_replay");
     g->p_moe_actmul   = mk_pipeline(dev, lib, @"k_moe_actmul");
     g->p_moe_sum      = mk_pipeline(dev, lib, @"k_moe_sum");
     g->p_trace_copy   = mk_pipeline(dev, lib, @"k_trace_copy_f32");
@@ -2110,7 +2159,7 @@ static bool metal_check_pipelines(model_t *m, gpu_t *g) {
         !g->p_head_sigmul || !g->p_gelu_erf ||
         !g->queue || !g->p_qknorm || !g->p_headnorm ||
         !g->p_moe_route || !g->p_moe_actmul || !g->p_moe_sum ||
-        !g->p_trace_copy)
+        !g->p_trace_copy || !g->p_moe_route_replay)
         return gpu_init_fail(m, g, nil, "pipeline allocation");
     if (m->qwen35 && (!g->p_dn_conv || !g->p_dn_ring || !g->p_dn_l2norm ||
                       !g->p_dn_recur || !g->p_dn_gnorm || !g->p_q35_split))
@@ -3053,11 +3102,14 @@ static void enc_scale(gpu_t *g, id<MTLComputeCommandEncoder> e,
 // live on the backend: model_forward_batch applies them on the host for both
 // the batched and the solo path, so the two cannot drift apart. A Metal-side
 // copy existed here and double-applied the softcap.
+// `col` is the first token's column in the forward (its position is
+// g->route_pos + col), `layer` the MoE layer: the replay router's key.
 static void enc_moe_route(gpu_t *g, id<MTLComputeCommandEncoder> e,
                           int ne, int used, int tokens,
-                          NSUInteger logits_off, NSUInteger sel_off) {
+                          NSUInteger logits_off, NSUInteger sel_off,
+                          int layer, int col) {
     int ls = ne;
-    [e setComputePipelineState:g->p_moe_route];
+    [e setComputePipelineState:g->replay_tab ? g->p_moe_route_replay : g->p_moe_route];
     [e setBuffer:g->moe_logits offset:logits_off atIndex:0];
     [e setBuffer:g->moe_sel offset:sel_off atIndex:1];
     [e setBuffer:g->moe_selw offset:sel_off atIndex:2];
@@ -3065,6 +3117,15 @@ static void enc_moe_route(gpu_t *g, id<MTLComputeCommandEncoder> e,
     [e setBytes:&used length:4 atIndex:4];
     [e setBytes:&tokens length:4 atIndex:5];
     [e setBytes:&ls length:4 atIndex:6];
+    if (g->replay_tab) {
+        int pos0 = g->route_pos + col;
+        [e setBuffer:g->replay_tab offset:0 atIndex:7];
+        [e setBuffer:g->replay_cnt offset:0 atIndex:8];
+        [e setBytes:&g->replay_npos length:4 atIndex:9];
+        [e setBytes:&g->replay_nlayer length:4 atIndex:10];
+        [e setBytes:&pos0 length:4 atIndex:11];
+        [e setBytes:&layer length:4 atIndex:12];
+    }
     g_disp.moe++;
     [e dispatchThreads:MTLSizeMake(tokens, 1, 1)
       threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
@@ -3554,9 +3615,11 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     }
     bool partial = m->gpu_layers > 0 && m->gpu_layers < m->n_layer;
     bool rows = m->spec_exact && n > 1;
+    metal_replay_setup((gpu_t *)m->gpu, m);
     float *lg = rows ? metal_forward_rows(m, tokens, n, pos, partial)
                      : gpu_forward_native_batch(m, tokens, n, pos);
     if (!lg) return false;
+    metal_replay_flush((gpu_t *)m->gpu);
     if (partial) {
         if (!rows) metal_handoff_boundary(m, n);
         if (logits) *logits = NULL;
@@ -3773,12 +3836,12 @@ static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                foff((size_t)b * ne), m->n_embd, ne, g->gib[l]);
     enc_moe_trace_logits(g, e, l, n, ne);
     if (metal_moe_batch_on()) {
-        enc_moe_route(g, e, ne, used, n, 0, sel_off);
+        enc_moe_route(g, e, ne, used, n, 0, sel_off, l, 0);
     } else {
         for (int b = 0; b < n; b++)
             enc_moe_route(g, e, ne, used, 1,
                           foff((size_t)b * ne),
-                          sel_off + foff((size_t)b * used));
+                          sel_off + foff((size_t)b * used), l, b);
     }
     // the shared expert reads g->xb before the routed sum overwrites it
     if (ly->w_up_shexp) enc_shexp(g, e, m, ly, n, xdim);
@@ -3832,12 +3895,12 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     enc_moe_trace_logits(g, e, l, n, ne);
     NSUInteger sel_off = foff((size_t)l * n * used);
     if (metal_moe_batch_on()) {
-        enc_moe_route(g, e, ne, used, n, 0, sel_off);
+        enc_moe_route(g, e, ne, used, n, 0, sel_off, l, 0);
     } else {
         for (int b = 0; b < n; b++)
             enc_moe_route(g, e, ne, used, 1,
                           foff((size_t)b * ne),
-                          sel_off + foff((size_t)b * used));
+                          sel_off + foff((size_t)b * used), l, b);
     }
     GP(g->moe_logits, (size_t)n * ne, "moe:router-logits");
     enc_gemma_moe_experts_batch(g, e, m, ly, l, n, xdim, sel_off, cbp, ep);
@@ -4891,6 +4954,7 @@ static float *metal_fwd_submit(metal_fwd *F, double t_enc0) {
 static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                                        int n, int pos) {
     gpu_t *g = m->gpu;
+    g->route_pos = pos;
     int n_embd = m->n_embd;
     int q_dim  = m->n_head * m->head_dim;
     int kv_dim = m->n_head_kv * m->head_dim;
