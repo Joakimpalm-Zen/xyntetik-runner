@@ -1114,8 +1114,8 @@ static void session_path(char *out, size_t cap, const char *id) {
 
 // Why this slot's model cannot hold a session, or NULL.
 static const char *session_unsupported(const model_t *m) {
-    if (model_kv_ring_active(m) || m->tied_v)
-        return "this model's KV layout (a ring or tied-V cache) has no "
+    if (m->tied_v)
+        return "this model's KV layout (a tied-V cache) has no "
                "contiguous state to image";
     if (model_has_recurrent(m) && m->gpu)
         return "a recurrent model on a device keeps state the host cannot "

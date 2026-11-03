@@ -319,6 +319,8 @@ typedef struct {
     bool     *l_no_ffn;      // [n_layer] FFN removed
     int       n_removed;     // removed sublayers in total (0 = a normal file)
     int       kv_ring;       // rows a sliding layer owns (0 = flat n_ctx rows)
+    int       kv_ring_lo;    // oldest position every ring layer still holds
+                             // (model_kv_ring_note keeps it; docs/kv-ring.md)
     // R3.1.7 split attention: 0 decides per call (fewer heads than threads,
     // a long span), 1 always, -1 never. RUNNER_ATTN_SPLIT=0 sets -1 at load,
     // for an A/B; the split is bit-identical, so only speed can differ.
@@ -749,6 +751,24 @@ static inline bool model_kv_ring_active(const model_t *m) {
     if (m->kv_ring <= 0 || m->kv_ring >= m->n_ctx || !m->l_is_swa) return false;
     for (int l = 0; l < m->n_layer; l++) if (m->l_is_swa[l]) return true;
     return false;
+}
+// The ring's low watermark (docs/kv-ring.md). A write of positions
+// [pos, pos + n) overwrites the slots of [pos - R, pos + n - R), so the oldest
+// position still held is max(lo, pos + n - R); a write at 0 starts afresh.
+// Every forward that writes KV notes it (model_forward_batch, the microbatch).
+static inline void model_kv_ring_note(model_t *m, int pos, int n) {
+    if (!model_kv_ring_active(m)) return;
+    int lo = pos == 0 ? 0 : m->kv_ring_lo, w = pos + n - m->kv_ring;
+    m->kv_ring_lo = w > lo ? w : lo;
+}
+// Can this instance resume at `keep` (attend from position keep on, with the
+// rows it holds)? Position keep reads [keep - swa_window + 1, keep), which
+// must all still be held. keep = 0 reads nothing. Always true without a ring.
+// The one rule rewind, the prefix cache and the state snapshots ask.
+static inline bool model_kv_ring_resumes(const model_t *m, int keep) {
+    if (!model_kv_ring_active(m) || keep <= 0) return true;
+    int need = keep - m->swa_window + 1;
+    return (need > 0 ? need : 0) >= m->kv_ring_lo;
 }
 static inline float model_attn_scale(const model_t *m, int l) {
     return m->attn_scale > 0 ? m->attn_scale

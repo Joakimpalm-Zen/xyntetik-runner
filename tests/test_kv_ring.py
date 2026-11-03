@@ -15,10 +15,9 @@ The identity only means something if the ring actually WRAPS, so these tests
 assert the ring engaged and use a prompt many times longer than the window; a
 prompt shorter than the ring would pass without exercising a single modulo.
 
-Ring-off is the default and stays so: the prefix cache and partial rewind still
-address KV as flat absolute rows and refuse under a ring. CUDA's former two
-flat-copy sites now mirror a ring as a whole. Losing the server's shared prefix
-cache and partial rewind remains a real trade.
+Partial rewind and the prefix cache resume from what the ring still holds
+(R5.5, docs/kv-ring.md), gated at the end of this file through the server.
+CUDA's former two flat-copy sites mirror a ring as a whole.
 """
 import json
 import os
@@ -26,6 +25,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import urllib.request
 
 import pytest
 
@@ -194,3 +194,111 @@ def test_ring_leaves_a_model_without_sliding_layers_alone(
     flat = _generate(runner_bin, dense_model, ring=False)
     ring = _generate(runner_bin, dense_model, ring=True)
     assert ring.stdout == flat.stdout
+
+
+# R5.5: the paths that used to refuse under a ring -- partial rewind and the
+# shared prefix cache -- now resume from what the ring still holds, by one
+# rule (docs/kv-ring.md): a state at `pos` resumes at `keep` when
+# keep == 0, pos <= R, or keep >= pos - n_batch - 1. The anchor is the same
+# as above, the flat allocation, through the server: every request's
+# continuation logprobs (and top-5 alternatives) must be bit-identical, ring
+# against flat, while the ring server reports which path it took. The flat
+# reference takes the same path: where the ring must miss, the flat request
+# is sent with cache_prompt false, a cold recompute, because a flat hit
+# prefills the tail in another batch geometry and CPU prefill is not
+# batch-invariant in the last bits (measured here before the change: a ring
+# reset against a flat rewind differed by 1e-15 in a top-5 logprob).
+# Mutation record (2026-11-03, CPU and Metal): installing a snapshot's ring
+# rows one slot off fails the fork request, a resume rule that always says yes
+# fails the miss request, and a watermark that forgets earlier writes fails
+# only the watermark test below.
+
+sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+from harness import RunnerServer  # noqa: E402
+
+BATCH = 16                     # R = SWA_WINDOW + BATCH = 48 rows
+
+
+def _ids(seed, n):
+    import random
+    r = random.Random(seed)
+    return [r.randrange(3, 250) for _ in range(n)]
+
+
+T, V, W, Y = _ids(1, 600), _ids(2, 12), _ids(3, 24), _ids(4, 12)
+# r1 cold; r2 keeps the slot's 600 (a rewind past the 8 generated tokens);
+# r3 shares only 300 tokens, which the ring no longer holds: a miss under the
+# ring, a hit flat; r4 shares 605 with r2's cached entry (n = 612), within
+# n_batch + 1 of its end: a shared-cache fork under both
+REQUESTS = [(T, 8), (T + V, 8), (T[:300] + W, 8), (T + V[:5] + Y, 8)]
+FLAT_COLD = {2}                # the flat reference recomputes where the ring misses
+# The watermark: after 16 generated tokens the ring has recycled the slots of
+# positions up to ~568; a one-token extension then leaves the slot at ~602,
+# where a rule that assumed the ring holds [pos - R, pos) would let a rewind to
+# 590 read positions 559-567 from slots later writes took
+HOLE = [(T, 16), (T + V[:1], 1), (T[:590] + W, 8)]
+
+
+def _serve(runner_bin, model, ring, gpu, requests=REQUESTS, flat_cold=FLAT_COLD):
+    env = dict(os.environ)
+    if ring:
+        env["RUNNER_KV_RING"] = "1"
+    else:
+        env.pop("RUNNER_KV_RING", None)
+    out = []
+    with RunnerServer(runner_bin, model, ctx=N_CTX, parallel=1, env=env,
+                      extra_args=["-b", str(BATCH), "-t", "2", "--gpu", gpu]) as srv:
+        for i, (toks, n_out) in enumerate(requests):
+            body = {"prompt": toks, "max_tokens": n_out, "temperature": 0, "logprobs": 5}
+            if not ring and i in flat_cold:
+                body["cache_prompt"] = False
+            req = urllib.request.Request(
+                srv.base_url + "/v1/completions",
+                data=json.dumps(body).encode(),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=300) as r:
+                d = json.load(r)
+            lp = d["choices"][0]["logprobs"]
+            t = d["runner_telemetry"]
+            out.append({"tokens": lp["tokens"], "lp": lp["token_logprobs"],
+                        "top": lp["top_logprobs"], "how": t["prompt_reuse"],
+                        "cached": t["prompt_cached_tokens"]})
+    return out
+
+
+@pytest.mark.parametrize("gpu", ["off", "auto"])
+def test_ring_rewind_and_prefix_cache_match_the_flat_cache(runner_bin, swa_model, gpu):
+    if gpu == "auto":
+        caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT, check=True,
+                                         stdout=subprocess.PIPE).stdout)
+        if (caps.get("gpu") or {}).get("backend") not in ("cuda", "metal"):
+            pytest.skip("no CUDA or Metal device: the CPU cell above is the run")
+    flat = _serve(runner_bin, swa_model, False, gpu)
+    ring = _serve(runner_bin, swa_model, True, gpu)
+    for i, (a, b) in enumerate(zip(flat, ring)):
+        assert b["tokens"] == a["tokens"], (i, a["tokens"], b["tokens"])
+        assert b["lp"] == a["lp"], (i, a["lp"], b["lp"])
+        assert b["top"] == a["top"], i
+    hows = [(r["how"], r["cached"]) for r in ring]
+    # the rewind keeps the slot's prompt, the uncovered prefix is recomputed,
+    # and the covered one forks from the shared cache
+    assert hows[1] == ("kv", 600), hows
+    assert hows[2][1] == 0, hows
+    assert hows[3] == ("prefix_cache", 605), hows
+    # and the flat reference took the same paths where it was not sent cold
+    assert [(flat[i]["how"], flat[i]["cached"]) for i in (1, 3)] == [("kv", 600), ("prefix_cache", 605)]
+
+
+@pytest.mark.parametrize("gpu", ["off", "auto"])
+def test_ring_resume_rule_follows_what_later_writes_recycled(runner_bin, swa_model, gpu):
+    if gpu == "auto":
+        caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT, check=True,
+                                         stdout=subprocess.PIPE).stdout)
+        if (caps.get("gpu") or {}).get("backend") not in ("cuda", "metal"):
+            pytest.skip("no CUDA or Metal device: the CPU cell above is the run")
+    flat = _serve(runner_bin, swa_model, False, gpu, HOLE, {2})
+    ring = _serve(runner_bin, swa_model, True, gpu, HOLE, {2})
+    for i, (a, b) in enumerate(zip(flat, ring)):
+        assert b["tokens"] == a["tokens"] and b["lp"] == a["lp"] and b["top"] == a["top"], i
+    hows = [(r["how"], r["cached"]) for r in ring]
+    assert hows[1] == ("kv", 600) and hows[2] == ("ring_reset", 0), hows

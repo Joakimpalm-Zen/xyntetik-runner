@@ -13787,6 +13787,7 @@ float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                            bool want_logits) {
     int path = n > 0 && m->spec_want_all >= n ? RP_KEEP : n == 1 ? RP_SOLO : RP_BATCH;
     float *lg = forward_batch_run(m, tokens, n, pos, want_logits);
+    model_kv_ring_note(m, pos, n);
     route_ran(m, path, n);
     return lg;
 }
@@ -14468,6 +14469,7 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
             for (int i = done; i < done + take; i++) {
                 model_t *m = b->seqs[idx[i]];
                 apply_head_transforms(m, out[i]);
+                model_kv_ring_note(m, pos[i], 1);
                 route_ran(m, RP_MICRO, take);
             }
             // The backend's logit rows live in ONE buffer per batch that the

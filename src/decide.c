@@ -57,7 +57,7 @@ static bool canon_seat(engine *e, canon_prefix *c, const int32_t *ptoks, int np,
     while (k < c->n && k < np - 1 && c->toks[k] == ptoks[k]) k++;
     // a recurrent fold is not sliceable: such a model scores every question
     // cold, which is the same function of the prompt
-    if (k == 0 || model_has_recurrent(e->m) || model_kv_ring_active(e->m)) {
+    if (k == 0 || model_has_recurrent(e->m)) {
         engine_reset(e);
         c->upto = -1;
         return true;
