@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal Q4_K decode: a faster fast kernel, 1.19x on Qwen3-4B and
+  Llama-3.2-3B Q4_K_M (R3.28.2).** The Q4_K inputs the fast route takes (at
+  least 2048 wide on dense models) run `k_mvg_q4_K`: eight lanes share a
+  superblock and a lane's 32 activations serve four rows, where
+  `k_mvf_q4_K` gave a lane 64 activations for one quarter of two rows. On
+  an Apple M1, decode: Qwen3-4B 12.59 against 10.61 tok/s, Llama-3.2-3B
+  17.09 against 14.34, Llama-3.2-1B 1.08x, K2-Horizon-1B 1.02x. A
+  tolerance route like the one it replaces: `test-mv-tol` 0/64 flips on
+  Qwen3-4B, and its float32-reference row is in the PR. The decode
+  microbatch's multi-column twin is admitted only after a load-time
+  self-test finds its columns bit-identical to the one-column kernel.
+  `RUNNER_METAL_MVG=0` keeps `k_mvf_q4_K`. The route detail says
+  `mv=mvg-q4_K>=2048`.
 - **Metal: the fast Q4_K decode matvec is the default only for inputs at
   least 2048 wide (R3.28.1).** On 1536-wide inputs it was 15% slower than
   the identity kernel (K2-Horizon-1B Q4_K_M: 11.11 against 9.62 ms of Q4_K

@@ -1967,14 +1967,27 @@ reassociating fast kernel by default (two rows a simdgroup, vector
 accumulation; a mixture-of-experts model keeps the identity kernel, since
 the fidelity rows behind the default are dense): decode +10.8% on
 Llama-3.2-1B and +12.5% on Llama-3.2-3B Q4_K_M on an Apple M1, -0.9% on
-Qwen2.5-1.5B. It takes Q4_K inputs at least 2048 wide; narrower ones keep
+Qwen2.5-1.5B. Since R3.28.2 that fast route runs `k_mvg_q4_K`, which gives
+eight lanes a superblock and lets a lane's 32 activations serve four rows,
+in place of `k_mvf_q4_K`: on an Apple M1 it decodes Qwen3-4B Q4_K_M at
+12.59 against 10.61 tok/s (1.19x) and Llama-3.2-3B Q4_K_M at 17.09
+against 14.34 (1.19x), Llama-3.2-1B 1.08x, K2-Horizon-1B 1.02x. It is a
+tolerance route like the kernel it replaces (`./test-mv-tol` 0/64 flips on
+Qwen3-4B), and its multi-column twin is admitted only when a load-time
+self-test finds its columns bit-identical to the one-column kernel.
+`RUNNER_METAL_MVG=0` keeps `k_mvf_q4_K` on those inputs. The route takes
+Q4_K inputs at least 2048 wide; narrower ones keep
 the identity kernel (R3.28.1). Q4_K decode time per input width on an
 Apple M1, fast against identity, ms a token: 1536 wide 11.11 against 9.62
 (K2-Horizon-1B, where the fast kernel lost), 2048 10.96 against 12.96
 (Llama-3.2-1B), 3072 36.48 against 40.21 (Llama-3.2-3B), 5120 1.88 against
 2.45, 8192 1.61 against 2.98 and 5.38 against 7.91. Widths between 1536 and
 2048 were not measured and take the exact kernel. The route detail says
-`mv=fast-q4_K>=2048`. It is a tolerance route, not the identity kernel's bits,
+`mv=mvg-q4_K>=2048` (`mv=fast-q4_K>=2048` under `RUNNER_METAL_MVG=0`).
+Per input width with the new kernel (fast / identity / `k_mvg_q4_K`, ms a
+token): 1536 12.28 / 10.28 / 10.35, 2048 11.41 / 12.67 / 9.31, 2560
+47.88 / 45.88 / 34.56, 3072 38.05 / 42.14 / 27.68, 4096 5.95 / 8.21 /
+5.74, 9728 7.01 / 10.38 / 6.67. It is a tolerance route, not the identity kernel's bits,
 promoted on its fidelity rows against the publisher's float32 model (mean
 KL 0.9993x on Llama-3.2-3B and 0.9998x on Qwen2.5-1.5B against the identity
 route, paired tests not distinguishable) and on `./test-mv-tol MODEL.gguf`

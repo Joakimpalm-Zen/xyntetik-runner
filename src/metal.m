@@ -1472,13 +1472,27 @@ static int metal_mv_state(void) {
 // the route detail names the floor from the same constant (mv=fast-q4_K>=2048)
 #define MV_STR_(x) #x
 #define MV_STR(x) MV_STR_(x)
-// R3.28.2 EXPERIMENT: R3282_MVG=1 takes k_mvg_q4_K for every Q4_K decode
-// matvec of a dense model (never under RUNNER_METAL_MV=0)
+// The narrow-slice Q4_K kernel (k_mvg_q4_K, R3.28.2) takes the Q4_K decode
+// matvecs the fast route would: inputs at least MV_Q4K_FAST_MIN wide on a
+// dense model by default, every Q4_K matvec under RUNNER_METAL_MV=1, none
+// under =0. Q4_K decode time per input width on an Apple M1, fast /
+// identity / k_mvg, ms a token (three rounds each): 1536 12.28 / 10.28 /
+// 10.35 (a tie with identity, so the exact kernel keeps it), 2048 11.41 /
+// 12.67 / 9.31, 2560 47.88 / 45.88 / 34.56, 3072 38.05 / 42.14 / 27.68,
+// 4096 5.95 / 8.21 / 5.74, 5120 1.20 / 2.63 / 0.91, 8192 4.78 / 7.73 /
+// 4.45, 9728 7.01 / 10.38 / 6.67. RUNNER_METAL_MVG=0 keeps k_mvf_q4_K
+// there instead (the A/B against the kernel it replaced).
+static bool metal_mvg_on(void) {
+    static _Atomic int v = -1;
+    if (v < 0) {
+        const char *e = getenv("RUNNER_METAL_MVG");
+        v = !(e && *e && (strcmp(e, "0") == 0 || strcmp(e, "off") == 0));
+    }
+    return v > 0;
+}
+static bool metal_mv_fast_for(const gpu_t *g, int type, int n_in);
 static bool metal_q4k_mvg_for(const gpu_t *g, int n_in) {
-    static _Atomic int on = -1;
-    if (on < 0) { const char *e = getenv("R3282_MVG"); on = e && *e == '1'; }
-    (void)n_in;
-    return on == 1 && metal_mv_state() != MV_OFF && g->mv_q4k_default;
+    return metal_mvg_on() && metal_mv_fast_for(g, T_Q4_K, n_in);
 }
 static bool metal_mv_fast_for(const gpu_t *g, int type, int n_in) {
     int st = metal_mv_state();
@@ -5175,7 +5189,8 @@ const char *gpu_route_detail(const model_t *m) {
              metal_fuse_on() ? "on" : "off", metal_mm_on() ? "on" : "off",
              metal_mv_state() == MV_ALL ? "fast"
              : metal_mv_state() == MV_Q4_K && g && g->mv_q4k_default
-                 ? "fast-q4_K>=" MV_STR(MV_Q4K_FAST_MIN) : "identity",
+                 ? (metal_mvg_on() ? "mvg-q4_K>=" MV_STR(MV_Q4K_FAST_MIN)
+                                   : "fast-q4_K>=" MV_STR(MV_Q4K_FAST_MIN)) : "identity",
              metal_attn_coop_on() ? "coop" : "identity",
              m && m->n_expert > 0 ? " moe_mm=" : "",
              m && m->n_expert > 0 ? (moe == 2 ? "half" : moe ? "f32" : "off") : "",
