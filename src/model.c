@@ -1134,6 +1134,12 @@ void model_moe_place_host(model_t *m, int host_layers) {
 
 static uint64_t model_cuda_weight_estimate(const model_t *m,
                                            const model_params *p) {
+    // gemma-4 E-series' per-layer token table is row-gathered on the host at
+    // every split and never uploaded (--info fit's `gathered`); counting it
+    // put E4B's device weights at the whole 5.2 GB file, which turned the KV
+    // ring on and over-claimed VRAM on a card where the flat cache costs no
+    // layer (RTX 3070, 32k: 42 of 42 layers either way, R5.5).
+    uint64_t host_only = m->ple_tok_embd ? m->ple_tok_embd->nbytes : 0;
     // An explicit --gpu-layers N puts N leading layers on the device and
     // nothing else (the embeddings and output projection only when N is
     // every layer), so the ask is those layers' bytes. It was the whole file
@@ -1152,13 +1158,16 @@ static uint64_t model_cuda_weight_estimate(const model_t *m,
             char c = 0;
             if (sscanf(t->name, "blk.%d.%c", &l, &c) == 2) {
                 if (l < G) total += t->nbytes;
-            } else if (G == m->n_layer) {
+            } else if (G == m->n_layer && t != m->ple_tok_embd) {
                 total += t->nbytes;
             }
         }
         return total;
     }
-    if (!p->cpu_moe || m->n_expert <= 0) return gguf_mapped_size(&m->gf);
+    if (!p->cpu_moe || m->n_expert <= 0) {
+        uint64_t all = gguf_mapped_size(&m->gf);
+        return all > host_only ? all - host_only : all;
+    }
     // An explicit partial split leaves some expert banks device-resident, so
     // the estimate cannot assume every expert stays on the host. AUTO fits
     // into whatever is free, so it estimates as the all-host lower bound.

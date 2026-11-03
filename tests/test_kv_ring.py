@@ -345,3 +345,72 @@ def test_auto_turns_the_ring_on_only_when_the_flat_cache_does_not_fit(
     # the same load with the RAM it has: the flat cache fits, the ring stays off
     if caps["ram_available_bytes"] > 4 * flat * 1e6:
         assert re.search(r"^kv ring\s+off \(auto: .* fit available RAM", line(), re.M)
+
+
+def _tensor_bytes(path, want):
+    """Bytes of tensor `want`, read from the GGUF itself (not the runner)."""
+    import struct
+    f = open(path, "rb")
+    _magic, _ver, ntens, nkv = struct.unpack("<IIQQ", f.read(24))
+
+    def rstr():
+        return f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf-8", "replace")
+
+    def skip(t):
+        if t == 8:
+            rstr(); return
+        if t == 9:
+            et = struct.unpack("<I", f.read(4))[0]
+            for _ in range(struct.unpack("<Q", f.read(8))[0]):
+                skip(et)
+            return
+        f.read({0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}[t])
+
+    align = 32
+    for _ in range(nkv):
+        k = rstr()
+        t = struct.unpack("<I", f.read(4))[0]
+        if k == "general.alignment" and t == 4:
+            align = struct.unpack("<I", f.read(4))[0]
+        else:
+            skip(t)
+    metas = []
+    for _ in range(ntens):
+        name = rstr()
+        nd = struct.unpack("<I", f.read(4))[0]
+        f.read(8 * nd)
+        f.read(4)
+        metas.append((struct.unpack("<Q", f.read(8))[0], name))
+    data_start = (f.tell() + align - 1) // align * align
+    f.close()
+    metas.sort()
+    size = os.path.getsize(path) - data_start
+    for i, (off, name) in enumerate(metas):
+        if name == want:
+            return (metas[i + 1][0] if i + 1 < len(metas) else size) - off
+    raise KeyError(want)
+
+
+def test_auto_does_not_count_the_host_only_token_table_as_device_weight(
+        runner_bin, tmp_path):
+    """The rule's first real file fired it wrongly: gemma-4-E4B Q4_0 at -c
+    32768 on an 8 GB RTX 3070 (R5.5, 2026-11-03) read "weights 5155 MB +
+    flat cache 1879 MB exceed the device budget 6923 MB" and turned the ring
+    on, while the loader put 42 of 42 layers on the card with the flat cache
+    (4.71 GB used). The weight estimate counted the E-series per-layer token
+    table, which is row-gathered on the host at every split and never
+    uploaded; the same estimate fed the VRAM registry's claim. On a fixture
+    with a wide table, the weights the decision quotes are the file less
+    that table, measured from the GGUF itself."""
+    m = tmp_path / "es.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(m),
+                    "--eseries", "3,2048"], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    table = _tensor_bytes(m, "per_layer_token_embd.weight")
+    assert table > 8e6, table          # wide enough that counting it shows
+    p = _run(runner_bin, m, None, ["-v", "-p", "hi", "-n", "1"])
+    err = p.stderr.decode(errors="replace")
+    got = re.search(r"^kv ring\s+\S+ \(auto: weights (\d+) MB", err, re.M)
+    assert got, err
+    want = (os.path.getsize(m) - table) / 1e6
+    assert abs(int(got.group(1)) - want) <= 1, (got.group(1), want, table)
