@@ -1,0 +1,170 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "R4.29 nemotron-3.5-lightning Q4_0, CPU, runner 590bab5b, case B at temperature 0",
+ "started": "2026-11-03T16:12:00+0100",
+ "host": "x86-64 Linux, CPU",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:18995",
+ "model": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
+ "model_file": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
+ "model_sha256": "61f87e75974e4b535dcdf9aad056541a9514f1dfa4538b463b081d19b7a00e3c",
+ "runner": "runner",
+ "runner_sha256": "3998e0c05c57f48fb5859346a66a19276115c6392ab25b244531fb952ce1b231",
+ "capabilities_route": true,
+ "sampling_served": {
+  "preset": "nemotron35",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 0,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "context": 8192,
+ "overrides": {
+  "temperature": 0.0
+ },
+ "tool_choice": "auto (absent)",
+ "max_tokens": 400,
+ "cases": {
+  "B": {
+   "title": "prose and parallel calls",
+   "prompt": "Check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.",
+   "tools": [
+    "glob",
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 11.907,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "We need to check existence of boss.json, boss.toml, boss.yaml anywhere in project. Use glob tool for each pattern. So we will call functions.glob with pattern \"boss.json\", similarly for others. Then report results.",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.json\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 349,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 72,
+      "total_tokens": 421
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 349,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 4.061607,
+      "generation_tok_s": 17.727,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "nemotron35",
+       "temperature": 0.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "request",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "nemotron35",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 9e-06,
+       "tokenize_seconds": 0.000196,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 7.843154,
+       "prefill_tokens": 349,
+       "prefill_tok_s": 44.497,
+       "first_visible_seconds": 10.667188
+      },
+      "prompt_reuse": "recurrent_reset",
+      "receipt": {
+       "file": "receipt-0000000007.json",
+       "chain_hash": "85a391ae28d77504c86c0b1f363ae1d3567a68924c8ba7a2355f893fad0a1fde"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 4.221,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "We need to check existence of boss.json, boss.toml, boss.yaml anywhere in project. Use glob tool for each pattern. So we will call functions.glob with pattern \"boss.json\", similarly for others. Then report results.",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.json\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": {
+      "prompt_cached_tokens": 348,
+      "sampling": {
+       "preset": "nemotron35",
+       "temperature": 0.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "request",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "nemotron35",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 2.7e-05,
+       "tokenize_seconds": 0.000324,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.06153,
+       "prefill_tokens": 1,
+       "prefill_tok_s": 16.252,
+       "first_visible_seconds": 2.915552
+      },
+      "prompt_reuse": "turn_mark",
+      "receipt": {
+       "file": "receipt-0000000008.json",
+       "chain_hash": "0e057b94a2f376c191d8b7be5180104ab341657248f61c73d5fc5e4ed893ea5c"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  }
+ },
+ "verdict": "PASS",
+ "finished": "2026-11-03T16:12:25+0100"
+}

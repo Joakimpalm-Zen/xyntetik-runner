@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Nemotron 3.5 Lightning-30B-A3B joins the validated roster at Tier 2 (the
+  publisher's Q4_0; the Q8_0 is the fidelity file).** Against NVIDIA's BF16
+  checkpoint in float32 at use, at the model's declared time-step limit: Q4_0
+  0.0476 mean KLD and 97.62% margin-qualified top-1, Q8_0 0.0146 and 99.05%,
+  the BF16 GGUF 0.0055 and 100% (300 positions, CPU); llama.cpp 73a43d1 reads
+  0.0499 and 0.0173 on the same files, and Runner is the closer by per-position
+  KLD on both. Every number is from the build with the sigmoid router (#575).
+  Two corrections to the reference are recorded: transformers 5.14.1's naive
+  Mamba-2 scan is wrong across chunks (5.16.1 is the reference), and the 5.16.1
+  mixer clamps dt at the initialisation floor rather than the config's declared
+  limit (0.246 against 0.0055 on the BF16 file; the declared limit predicts the
+  corpus better). CPU only: the router has no device kernel. The three
+  `qwen35moe` Upcoming rows no longer claim the architecture does not load.
+  Record: `docs/compat-reports/nemotron-3.5-lightning-30b-a3b-2026-11-03`.
+
 - **Nemotron 3.5 Lightning (`nemotron_h_moe`) routed its experts with the wrong
   function; fixed. Every nemotron_h_moe file has given wrong output since
   v0.2.0.** The publisher's router is a sigmoid; the published GGUFs carry no

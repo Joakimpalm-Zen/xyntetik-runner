@@ -1,0 +1,444 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "R4.29 nemotron-3.5-lightning Q4_0, CPU, runner 590bab5b",
+ "started": "2026-11-03T16:10:57+0100",
+ "host": "x86-64 Linux, CPU",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:18995",
+ "model": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
+ "model_file": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
+ "model_sha256": "61f87e75974e4b535dcdf9aad056541a9514f1dfa4538b463b081d19b7a00e3c",
+ "runner": "runner",
+ "runner_sha256": "3998e0c05c57f48fb5859346a66a19276115c6392ab25b244531fb952ce1b231",
+ "capabilities_route": true,
+ "sampling_served": {
+  "preset": "nemotron35",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 0,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "context": 8192,
+ "overrides": {},
+ "tool_choice": "auto (absent)",
+ "max_tokens": 400,
+ "cases": {
+  "A": {
+   "title": "single call",
+   "prompt": "List the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 8.786,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "We need to list files in current directory. Use bash command \"ls -l\".",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -l\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 272,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 43,
+      "total_tokens": 315
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 272,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 2.371351,
+      "generation_tok_s": 18.133,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "nemotron35",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "nemotron35",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 3.4e-05,
+       "tokenize_seconds": 0.000241,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 6.346303,
+       "prefill_tokens": 272,
+       "prefill_tok_s": 42.86,
+       "first_visible_seconds": 7.391108
+      },
+      "prompt_reuse": "none",
+      "receipt": {
+       "file": "receipt-0000000001.json",
+       "chain_hash": "4dcb775eb2b6c42bb951abaf8527c0e60f3e4a7c9afa48659e3702bfc28fe15c"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 3.26,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants to list files in the current directory. Use bash command \"ls\". Probably also include details like -la? Just list files. We'll run bash \"ls\".",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": {
+      "prompt_cached_tokens": 271,
+      "sampling": {
+       "preset": "nemotron35",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "nemotron35",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 3e-06,
+       "tokenize_seconds": 0.000166,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.058802,
+       "prefill_tokens": 1,
+       "prefill_tok_s": 17.006,
+       "first_visible_seconds": 2.087409
+      },
+      "prompt_reuse": "turn_mark",
+      "receipt": {
+       "file": "receipt-0000000002.json",
+       "chain_hash": "3a7e3cf2f0a55f7535a9f36b8c28efe955b1357ba750fa1a650a7efc9ad7d231"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "B": {
+   "title": "prose and parallel calls",
+   "prompt": "Check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.",
+   "tools": [
+    "glob",
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 12.86,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "We need to check existence of boss.json, boss.toml, boss.yaml anywhere in project using glob tool for each pattern. So we need to call glob with pattern \"boss.json\", \"boss.toml\", \"boss.yaml\". Probably need to search entire project; maybe pattern just the filename, glob will match anywhere. We'll call each.",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.json\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 349,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 94,
+      "total_tokens": 443
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 349,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 5.139378,
+      "generation_tok_s": 18.29,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "nemotron35",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "nemotron35",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 2.8e-05,
+       "tokenize_seconds": 0.000301,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 7.70706,
+       "prefill_tokens": 349,
+       "prefill_tok_s": 45.283,
+       "first_visible_seconds": 11.632516
+      },
+      "prompt_reuse": "recurrent_reset",
+      "receipt": {
+       "file": "receipt-0000000003.json",
+       "chain_hash": "629b5d4fce6e12ac4089325a9166b9cb09e53339a85acbd4779dda9a38a01cc1"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 7.016,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "We need to check existence of boss.json, boss.toml, boss.yaml anywhere in project. Use glob tool for each pattern. So we will call functions.glob with pattern \"boss.json\", similarly for toml and yaml. Probably need to search whole project, but glob likely searches relative to root. We'll just run three calls.",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.json\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": {
+      "prompt_cached_tokens": 348,
+      "sampling": {
+       "preset": "nemotron35",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "nemotron35",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 2e-06,
+       "tokenize_seconds": 0.000206,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.055423,
+       "prefill_tokens": 1,
+       "prefill_tok_s": 18.043,
+       "first_visible_seconds": 3.750318
+      },
+      "prompt_reuse": "turn_mark",
+      "receipt": {
+       "file": "receipt-0000000004.json",
+       "chain_hash": "2c3706dfc10bd0b775cdc5e57292c1dc90049b0ca9b947365b09c4316caffbf7"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "C": {
+   "title": "prose then call",
+   "prompt": "Briefly say what you are about to do, then list the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 10.756,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user asks: \"Briefly say what you are about to do, then list the files in the current directory.\" So we need to first briefly say what we are about to do (list files), then list them. Use the bash tool to run \"ls\". Should output. We'll do that.",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 284,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 87,
+      "total_tokens": 371
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 284,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 4.85723,
+      "generation_tok_s": 17.911,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "nemotron35",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "nemotron35",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 4e-06,
+       "tokenize_seconds": 0.000177,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 5.885532,
+       "prefill_tokens": 284,
+       "prefill_tok_s": 48.254,
+       "first_visible_seconds": 9.541309
+      },
+      "prompt_reuse": "recurrent_reset",
+      "receipt": {
+       "file": "receipt-0000000005.json",
+       "chain_hash": "1b0bbbde42ae43658db5cd454ecd8771db6e71c79cc017d8a4bdb096e66fc936"
+      }
+     },
+     "result": "FAIL",
+     "reasons": [
+      "no prose beside the call"
+     ]
+    },
+    "stream": {
+     "wall_s": 9.435,
+     "finish_reason": "tool_calls",
+     "content": "I'll list the files in the current directory.\n",
+     "reasoning": "We need to respond: \"Briefly say what you are about to do, then list the files in the current directory.\" So first we need to say what we are about to do (list files). Then we need to actually list files using bash command \"ls\". So we need to output a brief statement, then call the bash tool to list files.\n\nWe should follow instruction: \"Briefly say what you are about to do, then list the files in the current directory.\" So maybe output: \"I will now list the files in the current directory:\" then use bash. The tool will produce output. Then we respond with the listing.",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": {
+      "prompt_cached_tokens": 283,
+      "sampling": {
+       "preset": "nemotron35",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "nemotron35",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 5e-06,
+       "tokenize_seconds": 0.000164,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.057424,
+       "prefill_tokens": 1,
+       "prefill_tok_s": 17.414,
+       "first_visible_seconds": 7.61205
+      },
+      "prompt_reuse": "turn_mark",
+      "receipt": {
+       "file": "receipt-0000000006.json",
+       "chain_hash": "606494d46e9cd8ff730c10b023e916303ed032d9c1784f314f144e379ef733f8"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  }
+ },
+ "verdict": "FAIL",
+ "finished": "2026-11-03T16:12:00+0100"
+}
