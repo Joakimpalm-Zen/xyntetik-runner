@@ -272,3 +272,33 @@ def test_type_plan_strict_refuses_a_plan_it_would_not_apply(runner_bin, tmp_path
                            "--quant", "q8_0", "--type-plan-strict"], cwd=ROOT,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
     assert proc.returncode == 1 and b"needs --type-plan" in proc.stderr
+
+
+def test_a_q4_k_fallback_row_is_a_real_q5_0(runner_bin, tmp_path):
+    """A row that divides by 32 but not by 256 cannot take Q4_K; it falls back
+    to Q5_0, the 32-block type of the nearest bit budget. From v0.5.7 to
+    1.12.0 there was no Q5_0 writer: the float row was copied under a Q5_0
+    header, and the file gave NaN logits (SmolLM2-135M, 576 wide, the
+    pre-1.12.0 sweep). The test model's rows are 64 wide, so every quantized
+    tensor takes the fallback; the file must score, and close to its source.
+    """
+    base = tmp_path / "base.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(base)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    out = tmp_path / "q4k.gguf"
+    proc = subprocess.run([runner_bin, "-m", str(base), "--quantize", str(out),
+                           "--quant", "q4_k"], cwd=ROOT, capture_output=True,
+                          timeout=180)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    assert b"Q5_0:" in proc.stderr, proc.stderr.decode(errors="replace")
+
+    def nll(path):
+        p = subprocess.run([runner_bin, "-m", str(path), "--gpu", "off", "--score",
+                            "-p", "the runner trains the model on the text it reads"],
+                           cwd=ROOT, capture_output=True, timeout=180)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        assert b"nan" not in p.stdout, "the fallback file scores NaN"
+        return json.loads(p.stdout)["nll_mean"]
+
+    src, q = nll(base), nll(out)
+    assert abs(q - src) < 0.1 * max(1.0, abs(src)), (src, q)
