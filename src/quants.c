@@ -4870,9 +4870,326 @@ void i8_tile_dot(const void *pack, int n, const void *xq, size_t xq_stride,
 }
 #endif
 
+// ---- K-quant int8 decode dot (R3.1.4) ----
+// The decode matvec of Q4_K and Q6_K rows against activations quantized once
+// per matvec into 256-element blocks: one float scale, the int8 values, and
+// the sum of every 16 (block_i8k, llama.cpp's q8_K layout). Shape taken from
+// llama.cpp b11748's ggml_vec_dot_q4_K_q8_K / ggml_vec_dot_q6_K_q8_K (AVX2):
+// the weight block's scales and mins are unpacked ONCE per 256 into int16
+// lanes; the products run maddubs (u8 weight x s8 activation, pairs to int16)
+// then madd against the scales (pairs to int32), and the whole superblock
+// accumulates in int32; a Q4_K block's mins and a Q6_K block's -32 offset
+// come off the activation group sums. The existing int8 route
+// (dot_q4_K_i8) takes 16-element activation blocks with a float scale each,
+// so it converts and multiplies every 32 weights and unpacks scales in scalar
+// code; on the i7-7700K it read 1.00x the float route on Qwen3-0.6B Q4_K_M.
+// One difference from llama.cpp: each superblock's int32 sum is reduced
+// exactly to a scalar before its single float multiply-add, in block order,
+// so the AVX2 kernel and the scalar one below give the same bytes. The
+// activations round as i8_quant_act does (single rounding, half away from
+// zero), clamped to +-127 by the scale.
+typedef struct { float d; int8_t qs[QK_K]; int16_t bsums[QK_K / 16]; } block_i8k;
+
+static int g_i8k_env = -1;
+bool i8k_dot_enabled(void) {
+    if (g_i8k_env < 0) {
+        const char *e = getenv("RUNNER_CPU_I8K");
+        g_i8k_env = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+    }
+    return g_i8k_env != 0;
+}
+
+bool i8k_dot_ok(int type, int n) {
+    return (type == T_Q4_K || type == T_Q6_K) && n % QK_K == 0;
+}
+
+size_t i8k_act_size(int n) { return (size_t)(n / QK_K) * sizeof(block_i8k); }
+
+void i8k_quant_act(const float *x, void *dst, int n) {
+    block_i8k *b = dst;
+    for (int i = 0; i < n / QK_K; i++, b++, x += QK_K) {
+        float amax = 0;
+        for (int k = 0; k < QK_K; k++) {
+            float a = fabsf(x[k]);
+            if (a > amax) amax = a;
+        }
+        float d = amax / 127.0f, id = d > 0 ? 1.0f / d : 0.0f;
+        b->d = d;
+        for (int g = 0; g < QK_K / 16; g++) {
+            int s = 0;
+            for (int k = g * 16; k < g * 16 + 16; k++) {
+                int v = (int)fmaf(x[k], id, copysignf(0.5f, x[k]));
+                v = v > 127 ? 127 : v < -127 ? -127 : v;
+                b->qs[k] = (int8_t)v;
+                s += v;
+            }
+            b->bsums[g] = (int16_t)s;
+        }
+    }
+}
+
+// Q4_K's 12 scale bytes as eight 6-bit scales then eight 6-bit mins
+static inline void q4k_unpack_scales(const uint8_t *s12, uint8_t out[16]) {
+    uint32_t u[4];
+    memcpy(u, s12, 12);
+    const uint32_t k1 = 0x3f3f3f3f, k2 = 0x0f0f0f0f, k3 = 0x03030303;
+    u[3] = ((u[2] >> 4) & k2) | (((u[1] >> 6) & k3) << 4);
+    uint32_t aux = u[1] & k1;
+    u[1] = (u[2] & k2) | (((u[0] >> 6) & k3) << 4);
+    u[2] = aux;
+    u[0] &= k1;
+    memcpy(out, u, 16);
+}
+
+static float dot_q4_K_i8k_scalar(const block_q4_K *b, const block_i8k *y, int n) {
+    float acc = 0;
+    for (int i = 0; i < n / QK_K; i++, b++, y++) {
+        uint8_t sm[16];
+        q4k_unpack_scales(b->scales, sm);
+        int32_t sumi = 0, summ = 0;
+        for (int j = 0; j < QK_K / 64; j++) {
+            int32_t lo = 0, hi = 0;
+            for (int l = 0; l < 32; l++) {
+                lo += (b->qs[32 * j + l] & 0xF) * y->qs[64 * j + l];
+                hi += (b->qs[32 * j + l] >> 4) * y->qs[64 * j + 32 + l];
+            }
+            sumi += sm[2 * j] * lo + sm[2 * j + 1] * hi;
+        }
+        for (int g = 0; g < 8; g++) summ += sm[8 + g] * (y->bsums[2 * g] + y->bsums[2 * g + 1]);
+        acc += y->d * f16_to_f32(b->d) * (float)sumi;
+        acc -= y->d * f16_to_f32(b->dmin) * (float)summ;
+    }
+    return acc;
+}
+
+static float dot_q6_K_i8k_scalar(const block_q6_K *b, const block_i8k *y, int n) {
+    float acc = 0;
+    for (int i = 0; i < n / QK_K; i++, b++, y++) {
+        int32_t sumi = 0;
+        for (int half = 0; half < 2; half++) {
+            const uint8_t *ql = b->ql + 64 * half, *qh = b->qh + 32 * half;
+            const int8_t *sc = b->scales + 8 * half, *q8 = y->qs + 128 * half;
+            for (int l = 0; l < 32; l++) {
+                int is = l / 16;
+                int q1 = (ql[l] & 0xF) | ((qh[l] & 3) << 4);
+                int q2 = (ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4);
+                int q3 = (ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4);
+                int q4 = (ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4);
+                sumi += sc[is] * q1 * q8[l] + sc[is + 2] * q2 * q8[l + 32] +
+                        sc[is + 4] * q3 * q8[l + 64] + sc[is + 6] * q4 * q8[l + 96];
+            }
+        }
+        int32_t off = 0;
+        for (int g = 0; g < 16; g++) off += b->scales[g] * y->bsums[g];
+        sumi -= 32 * off;
+        acc += y->d * f16_to_f32(b->d) * (float)sumi;
+    }
+    return acc;
+}
+
+#if RUNNER_AVX2
+static inline int32_t hsum_i32x8(__m256i v) {
+    __m128i s = _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0x4E));
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0xB1));
+    return _mm_cvtsi128_si32(s);
+}
+
+static float dot_q4_K_i8k(const block_q4_K *b, const block_i8k *y, int n) {
+    const __m256i m4 = _mm256_set1_epi8(0xF);
+    float acc = 0;
+    for (int i = 0; i < n / QK_K; i++, b++, y++) {
+        uint8_t sm[16];
+        q4k_unpack_scales(b->scales, sm);
+        const __m256i ms = _mm256_cvtepu8_epi16(_mm_loadu_si128((const __m128i *)sm));
+        // the mins against the 32-element activation sums
+        const __m256i bs = _mm256_loadu_si256((const __m256i *)y->bsums);
+        const __m128i b32 = _mm_hadd_epi16(_mm256_castsi256_si128(bs), _mm256_extracti128_si256(bs, 1));
+        __m128i m4s = _mm_madd_epi16(_mm256_extracti128_si256(ms, 1), b32);
+        m4s = _mm_add_epi32(m4s, _mm_shuffle_epi32(m4s, 0x4E));
+        m4s = _mm_add_epi32(m4s, _mm_shuffle_epi32(m4s, 0xB1));
+        const int32_t summ = _mm_cvtsi128_si32(m4s);
+        const __m128i sc128 = _mm256_castsi256_si128(ms);
+        const __m256i scales = _mm256_inserti128_si256(_mm256_castsi128_si256(sc128), sc128, 1);
+        const uint8_t *q4 = b->qs;
+        const int8_t *q8 = y->qs;
+        __m256i sumi = _mm256_setzero_si256();
+        for (int j = 0; j < QK_K / 64; j++) {
+            // scale 2j for the low nibbles, 2j+1 for the high ones, every lane
+            const __m256i sl = _mm256_shuffle_epi8(scales, _mm256_set1_epi16((short)(((4 * j + 1) << 8) | (4 * j))));
+            const __m256i sh = _mm256_shuffle_epi8(scales, _mm256_set1_epi16((short)(((4 * j + 3) << 8) | (4 * j + 2))));
+            const __m256i qb = _mm256_loadu_si256((const __m256i *)q4); q4 += 32;
+            const __m256i ql = _mm256_and_si256(qb, m4);
+            const __m256i qh = _mm256_and_si256(_mm256_srli_epi16(qb, 4), m4);
+            __m256i pl = _mm256_maddubs_epi16(ql, _mm256_loadu_si256((const __m256i *)q8)); q8 += 32;
+            __m256i ph = _mm256_maddubs_epi16(qh, _mm256_loadu_si256((const __m256i *)q8)); q8 += 32;
+            sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(_mm256_madd_epi16(sl, pl),
+                                                           _mm256_madd_epi16(sh, ph)));
+        }
+        acc += y->d * f16_to_f32(b->d) * (float)hsum_i32x8(sumi);
+        acc -= y->d * f16_to_f32(b->dmin) * (float)summ;
+    }
+    return acc;
+}
+
+static float dot_q6_K_i8k(const block_q6_K *b, const block_i8k *y, int n) {
+    const __m256i m3 = _mm256_set1_epi8(3), m15 = _mm256_set1_epi8(15);
+    float acc = 0;
+    for (int i = 0; i < n / QK_K; i++, b++, y++) {
+        const __m128i sc8 = _mm_loadu_si128((const __m128i *)b->scales);
+        const __m256i sc16 = _mm256_cvtepi8_epi16(sc8);
+        const __m256i bs = _mm256_loadu_si256((const __m256i *)y->bsums);
+        const int32_t off = hsum_i32x8(_mm256_madd_epi16(bs, sc16));
+        const uint8_t *ql = b->ql, *qh = b->qh;
+        const int8_t *q8 = y->qs;
+        __m256i sumi = _mm256_setzero_si256();
+        for (int j = 0; j < QK_K / 128; j++) {
+            const __m256i l1 = _mm256_loadu_si256((const __m256i *)ql); ql += 32;
+            const __m256i l2 = _mm256_loadu_si256((const __m256i *)ql); ql += 32;
+            const __m256i h = _mm256_loadu_si256((const __m256i *)qh); qh += 32;
+            const __m256i h0 = _mm256_slli_epi16(_mm256_and_si256(h, m3), 4);
+            const __m256i h1 = _mm256_slli_epi16(_mm256_and_si256(h, _mm256_set1_epi8(12)), 2);
+            const __m256i h2 = _mm256_and_si256(h, _mm256_set1_epi8(48));
+            const __m256i h3 = _mm256_srli_epi16(_mm256_and_si256(h, _mm256_set1_epi8(-64)), 2);
+            const __m256i w0 = _mm256_or_si256(_mm256_and_si256(l1, m15), h0);
+            const __m256i w1 = _mm256_or_si256(_mm256_and_si256(l2, m15), h1);
+            const __m256i w2 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(l1, 4), m15), h2);
+            const __m256i w3 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(l2, 4), m15), h3);
+            const __m256i w[4] = { w0, w1, w2, w3 };
+            for (int k = 0; k < 4; k++) {
+                // elements 0-15 of this 32 take scale 8j+2k, 16-31 take 8j+2k+1
+                const __m256i s = _mm256_inserti128_si256(
+                    _mm256_castsi128_si256(_mm_set1_epi16(b->scales[8 * j + 2 * k])),
+                    _mm_set1_epi16(b->scales[8 * j + 2 * k + 1]), 1);
+                __m256i p = _mm256_maddubs_epi16(w[k], _mm256_loadu_si256((const __m256i *)q8)); q8 += 32;
+                sumi = _mm256_add_epi32(sumi, _mm256_madd_epi16(s, p));
+            }
+        }
+        acc += y->d * f16_to_f32(b->d) * (float)(hsum_i32x8(sumi) - 32 * off);
+    }
+    return acc;
+}
+#endif
+
+float vec_dot_i8k(int type, const void *row, const void *xk, int n) {
+#if RUNNER_AVX2
+    if (type == T_Q4_K) return dot_q4_K_i8k(row, xk, n);
+    if (type == T_Q6_K) return dot_q6_K_i8k(row, xk, n);
+#endif
+    if (type == T_Q4_K) return dot_q4_K_i8k_scalar(row, xk, n);
+    return dot_q6_K_i8k_scalar(row, xk, n);
+}
+
+float vec_dot_i8k_scalar(int type, const void *row, const void *xk, int n) {
+    if (type == T_Q4_K) return dot_q4_K_i8k_scalar(row, xk, n);
+    return dot_q6_K_i8k_scalar(row, xk, n);
+}
+
 // ---------------------------------------------------------------- threadpool
 
 #define TP_MAX 64
+
+// ---- RUNNER_CPU_PROF=1 (R3.1.4): where a CPU decode step goes ----
+// Counts only the steps between tprof_step_begin/end (model_forward: one
+// token). Per pool run, the calling thread's wall time and each thread's time
+// inside fn, keyed by (fn, tag), the tag being the caller's (a matvec's weight
+// types); serial regions are named by their caller. The report at exit gives
+// per step: wall, the slowest thread's busy time (wall minus it is the pool's
+// handoff), and the mean busy time (max minus mean is the imbalance).
+enum { TPROF_MAX = 256, TPROF_REGIONS = 8 };
+typedef struct { tp_fn fn; uint64_t tag; long n; double wall, bmax, bsum; int nthr; } tprof_ent;
+static int tprof_env = -1;
+static int tprof_live;                 // inside a profiled step
+static uint64_t tprof_cur_tag;
+static tprof_ent tprof_tab[TPROF_MAX];
+static int tprof_n;
+static const char *tprof_rname[TPROF_REGIONS];
+static double tprof_rt[TPROF_REGIONS];
+static long tprof_rn[TPROF_REGIONS];
+static int tprof_nr;
+static double tprof_steps_s, tprof_t0;
+static long tprof_steps;
+
+double tprof_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+static void tprof_report(void);
+bool tprof_enabled(void) {
+    if (tprof_env < 0) {
+        const char *e = getenv("RUNNER_CPU_PROF");
+        tprof_env = e && *e && strcmp(e, "0") != 0;
+        if (tprof_env) atexit(tprof_report);
+    }
+    return tprof_env;
+}
+
+void tprof_step_begin(void) { tprof_live = 1; tprof_t0 = tprof_now(); }
+void tprof_step_end(void) {
+    tprof_steps_s += tprof_now() - tprof_t0;
+    tprof_steps++;
+    tprof_live = 0;
+}
+void tprof_set_tag(uint64_t tag) { tprof_cur_tag = tag; }
+
+void tprof_region(const char *name, double s) {
+    if (!tprof_live) return;
+    int i = 0;
+    while (i < tprof_nr && tprof_rname[i] != name) i++;
+    if (i == tprof_nr) {
+        if (tprof_nr == TPROF_REGIONS) return;
+        tprof_rname[tprof_nr++] = name;
+    }
+    tprof_rt[i] += s;
+    tprof_rn[i]++;
+}
+
+static void tprof_add(tp_fn fn, double wall, const double *busy, int nthr) {
+    uint64_t tag = tprof_cur_tag;
+    int i = 0;
+    while (i < tprof_n && !(tprof_tab[i].fn == fn && tprof_tab[i].tag == tag)) i++;
+    if (i == tprof_n) {
+        if (tprof_n == TPROF_MAX) return;
+        tprof_tab[tprof_n++] = (tprof_ent){ .fn = fn, .tag = tag, .nthr = nthr };
+    }
+    double mx = 0, sum = 0;
+    for (int t = 0; t < nthr; t++) {
+        if (busy[t] > mx) mx = busy[t];
+        sum += busy[t];
+    }
+    tprof_ent *e = &tprof_tab[i];
+    e->n++;
+    e->wall += wall;
+    e->bmax += mx;
+    e->bsum += sum / nthr;
+}
+
+void tpool_run(tpool *tp, tp_fn fn, void *ctx, int n_items);
+static void tprof_report(void) {
+    if (!tprof_steps) return;
+    double st = tprof_steps_s / tprof_steps;
+    fprintf(stderr, "cpu-prof: %ld steps, %.3f ms a step; fn addresses against tpool_run at %p\n",
+            tprof_steps, st * 1e3, (void *)tpool_run);
+    fprintf(stderr, "cpu-prof: fn tag runs/step wall_ms bmax_ms bmean_ms share\n");
+    double acc = 0;
+    for (int i = 0; i < tprof_n; i++) {
+        tprof_ent *e = &tprof_tab[i];
+        double k = 1.0 / tprof_steps;
+        acc += e->wall * k;
+        fprintf(stderr, "cpu-prof: run %p %016llx %.2f %.4f %.4f %.4f %.4f\n", (void *)e->fn,
+                (unsigned long long)e->tag, e->n * k, e->wall * k * 1e3, e->bmax * k * 1e3,
+                e->bsum * k * 1e3, e->wall * k / st);
+    }
+    for (int i = 0; i < tprof_nr; i++) {
+        double k = 1.0 / tprof_steps;
+        acc += tprof_rt[i] * k;
+        fprintf(stderr, "cpu-prof: region %s %.2f %.4f %.4f\n", tprof_rname[i], tprof_rn[i] * k,
+                tprof_rt[i] * k * 1e3, tprof_rt[i] * k / st);
+    }
+    fprintf(stderr, "cpu-prof: unaccounted %.4f ms %.4f\n", (st - acc) * 1e3, (st - acc) / st);
+}
 
 // Decode issues one tpool_run per matvec — around 200 per token on a 3B dense
 // model — so the pool's handoff cost is multiplied by 200 before it reaches
@@ -4901,6 +5218,8 @@ struct tpool {
     pthread_mutex_t run_mu;   // one run at a time: shared pools serialize their holders
     fpenv_t fpenv;            // the creator's FP control state, for the workers (fpenv.h)
     _Atomic int refs;         // holders (tpool_retain / tpool_destroy)
+    int prof;                 // this run is profiled (RUNNER_CPU_PROF)
+    double busy[TP_MAX];      // each thread's seconds inside fn, this run
 };
 
 // One spin iteration is a pause plus an atomic load: ~15 ns on this class of
@@ -4981,7 +5300,11 @@ static void *tp_worker(void *argp) {
 
         int i0, i1;
         tp_slice(idx, tp->n_threads, n, &i0, &i1);
-        if (i0 < i1) fn(ctx, i0, i1);
+        if (tp->prof) {
+            double t0 = tprof_now();
+            if (i0 < i1) fn(ctx, i0, i1);
+            tp->busy[idx] = tprof_now() - t0;
+        } else if (i0 < i1) fn(ctx, i0, i1);
 
         if (atomic_fetch_add(&tp->n_done, 1) + 1 == tp->n_threads - 1 &&
             atomic_load(&tp->caller_parked)) {
@@ -5095,7 +5418,15 @@ void tpool_run(tpool *tp, tp_fn fn, void *ctx, int n_items) {
     // (measured 2026-10-07: 6 tok/s total against 9.3 for one slot). For a
     // pool with one holder the lock is uncontended, ~50 ns per run.
     pthread_mutex_lock(&tp->run_mu);
-    tpool_run_locked(tp, fn, ctx, n_items);
+    if (tprof_live) {
+        tp->prof = 1;
+        double t0 = tprof_now();
+        tpool_run_locked(tp, fn, ctx, n_items);
+        tprof_add(fn, tprof_now() - t0, tp->busy, tp->n_threads);
+        tp->prof = 0;
+    } else {
+        tpool_run_locked(tp, fn, ctx, n_items);
+    }
     pthread_mutex_unlock(&tp->run_mu);
 }
 
@@ -5114,7 +5445,11 @@ static void tpool_run_locked(tpool *tp, tp_fn fn, void *ctx, int n_items) {
 
     int i0, i1;
     tp_slice(0, tp->n_threads, n_items, &i0, &i1);
-    if (i0 < i1) fn(ctx, i0, i1);
+    if (tp->prof) {
+        double t0 = tprof_now();
+        if (i0 < i1) fn(ctx, i0, i1);
+        tp->busy[0] = tprof_now() - t0;
+    } else if (i0 < i1) fn(ctx, i0, i1);
 
     int target = tp->n_threads - 1;
     for (int spins = 0;; spins++) {
