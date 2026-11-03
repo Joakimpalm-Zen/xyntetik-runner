@@ -1544,12 +1544,13 @@ void model_moe_replay_count(unsigned long forced, unsigned long differed,
 // from memory: model_moe_pin_record(true) records every CPU routing from now
 // on (clearing the last record), false stops; model_moe_pin_replay(true)
 // replays what was recorded to every router RUNNER_MOE_REPLAY pins, for
-// models loaded from then on, and returns the routings it holds (0: nothing
-// recorded, a duplicate (position, layer), or a RUNNER_MOE_REPLAY file is
-// set); false ends it. model_moe_pin_counts: the slots forced, those whose
+// models loaded from then on, and returns the routings it holds; on 0 it
+// sets *why (when why is not NULL) to the cause: nothing recorded, a
+// duplicate (position, layer), or a RUNNER_MOE_REPLAY file is set. false
+// ends it. model_moe_pin_counts: the slots forced, those whose
 // own choice differed, the (position, layer) pairs it did not hold.
 void model_moe_pin_record(bool on);
-size_t model_moe_pin_replay(bool on);
+size_t model_moe_pin_replay(bool on, const char **why);
 void model_moe_pin_counts(unsigned long *forced, unsigned long *differed,
                           unsigned long *missing);
 bool model_moe_trace_on(void);

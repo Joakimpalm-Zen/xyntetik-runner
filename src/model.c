@@ -7316,17 +7316,23 @@ void model_moe_pin_record(bool on) {
     pthread_mutex_unlock(&g_replay_mu);
 }
 
-size_t model_moe_pin_replay(bool on) {
+size_t model_moe_pin_replay(bool on, const char **why) {
     if (!g_replay.tried) route_replay_load();
     pthread_mutex_lock(&g_replay_mu);
     size_t n = 0;
+    const char *cause = NULL;
     if (!on) {
         if (g_replay.on && g_replay.r == g_pin.r) {
             g_replay.on = false;
             g_replay.r = NULL;
             g_replay.n = 0;
         }
-    } else if (!g_replay.on && g_pin.n) {   // a RUNNER_MOE_REPLAY file keeps its own
+    } else if (g_replay.on) {   // a RUNNER_MOE_REPLAY file keeps its own
+        cause = g_replay.r == g_pin.r ? "the pin is already installed"
+              : "RUNNER_MOE_REPLAY is set; unset it for this gate";
+    } else if (!g_pin.n) {
+        cause = "the CPU run recorded no routing";
+    } else {
         g_pin.on = false;
         qsort(g_pin.r, g_pin.n, sizeof *g_pin.r, route_rec_cmp);
         size_t dup = 0;
@@ -7337,9 +7343,12 @@ size_t model_moe_pin_replay(bool on) {
             g_replay.n = n = g_pin.n;
             g_replay.forced = g_replay.differed = g_replay.missing = 0;
             g_replay.on = true;
+        } else {
+            cause = "a duplicate (position, layer) in the CPU run's routing";
         }
     }
     pthread_mutex_unlock(&g_replay_mu);
+    if (why) *why = cause;
     return n;
 }
 

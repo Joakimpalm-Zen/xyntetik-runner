@@ -528,19 +528,18 @@ int main(int argc, char **argv) {
                             gpu_dev_limit(GPU_DEV_FRAC_ROUTED), false);
     free(gpu);
     if (rc) { free(cpu); return rc; }
-    size_t routings = model_moe_pin_replay(true);
+    const char *why = NULL;
+    size_t routings = model_moe_pin_replay(true, &why);
     if (!routings) {
         printf("FAIL: the routing pin has nothing to replay (%s)\ngpu-identity: FAILED\n",
-               getenv("RUNNER_MOE_REPLAY") && *getenv("RUNNER_MOE_REPLAY")
-                   ? "RUNNER_MOE_REPLAY is set; unset it for this gate"
-                   : "the CPU run recorded no routing");
+               why ? why : "no cause given");
         free(cpu);
         return 1;
     }
     int nv_pin = 0;
     bool pin_used = false;
     float *pin = run(path, GPU_AUTO, &nv_pin, &pin_used, toks, n_tok);
-    model_moe_pin_replay(false);
+    model_moe_pin_replay(false, NULL);
     unsigned long forced, differed, missing;
     model_moe_pin_counts(&forced, &differed, &missing);
     unsigned long slots = (unsigned long)routings * (unsigned long)g_expert_used;
