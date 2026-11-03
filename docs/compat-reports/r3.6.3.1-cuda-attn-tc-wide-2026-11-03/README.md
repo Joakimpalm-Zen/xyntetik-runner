@@ -61,6 +61,9 @@ warm cache, prompt tok/s:
 
 Decode tok/s is unchanged on both files, and the 32 greedy tokens are identical on both at every length.
 
+gemma-4-E2B, in the same default family, has its own row in `e2b.md`: prefill 1.47x at 4K and 2.34x at 16K,
+gpu-identity 2.84e-5, its Tier 2 CUDA cell byte-identical to its pin.
+
 ## Gates
 
 - `make test-cuda-attn-wide` (new): the CPU identity at 1e-5 on 256- and 512-wide fixtures, the route required
