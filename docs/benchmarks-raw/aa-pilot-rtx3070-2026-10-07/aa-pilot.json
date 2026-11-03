@@ -357,7 +357,7 @@
  "notes": [
   "block 0 (first scored block) was still cold: prefill 298 vs ~820 tok/s, CPU 15.6 s vs ~8.6 s, despite the 5-request warm-up block; the 'pairs 2 to 8' rows drop that pair (7 pairs, t with 6 df)",
   "box not quieted (sunshine, Defender, Search on); GE-009's container had just exited; Docker's WSL VM up and idle",
-  "lock C:\\projectgrid\\box-gpu.lock held 03:18:01-03:20:31; the pid field was written malformed ('+') by the cmd wrapper and the lock was released on exit",
+  "lock box-gpu.lock held 03:18:01-03:20:31; the pid field was written malformed ('+') by the cmd wrapper and the lock was released on exit",
   "preconditions (no queue.lock, no ge002 container, no box-gpu.lock) cleared at 03:18 after a 23 min wait from the 02:55 task start"
  ]
 }
