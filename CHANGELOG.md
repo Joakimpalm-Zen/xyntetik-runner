@@ -51,6 +51,21 @@ Current release and unreleased changes. Compatibility follows the
   MB), and the VRAM registry claims that much less. `--info fit` is
   unchanged: it already left the table out.
 
+- **A qwen3_xml call closed by the next call's opener stands, on an auto
+  turn only, and says so.** Nemotron 3.5 Lightning at temperature 0 writes
+  three `<tool_call>` openers, each with a complete function block, and one
+  `</tool_call>` at the end; Runner refused the whole turn as
+  `envelope_unmapped`. On a parse-only (auto) turn a call whose function block
+  is complete now ends at the next opener, goes out when that opener arrives,
+  and the turn reports `finish_detail: tool_call_implicit_close`. A last call
+  with no closer, an attribute-spelled parameter (`<parameter pattern="...">`,
+  the same model at its own sampling) and every grammar-framed turn stay
+  faults. Prior art disagrees: vLLM's Python parser (v0.11.0) recovers these
+  calls, its Rust parser and llama.cpp's require the closer, and llama.cpp
+  constrains the turn after its first opener, which Runner's auto turn does
+  not (measured 2026-09-14). The fixture is the model's own temperature-0
+  bytes.
+
 - **`test-gpu-identity` pins a MoE file's routing and bounds dense and
   pinned runs at 1e-3 of the logit range (was 2e-3).** A MoE file now runs
   on the device twice: with its own routing, bounded at 2e-3 as before, and

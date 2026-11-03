@@ -3762,6 +3762,76 @@ static void test_xml_parse_only_invalid_block_is_a_fault_not_content(void) {
 // A call the turn ended inside: on a cut turn it is a truncated call, dropped
 // and never completed (the caller keeps "length"); on a turn the model ended
 // itself it is a fault. Text that merely mentions the tag is content.
+// R2.10: Nemotron 3.5 Lightning-30B-A3B Q4_0 at temperature 0 (six identical
+// turns, R4.29 row 1, CUDA) wrote three `<tool_call>` openers, each with a
+// complete function block, and one `</tool_call>` at the end. On a
+// parse-only (auto) turn each call stands, closed by the next opener, and
+// the stream says so (implicit_close, finish_detail
+// tool_call_implicit_close). The bytes below are the turn after its
+// `</think>` (temp0-three-openers.output.txt, sha256 6a322d4200de5b46...),
+// and the seed-6 turn at the file's own sampling (e232b13dc84fc229...).
+static const char *LIGHTNING_T0 =
+    "\n<tool_call>\n<function=glob>\n<parameter=pattern>\nboss.json\n</parameter>\n</function>\n"
+    "<tool_call>\n<function=glob>\n<parameter=pattern>\nboss.toml\n</parameter>\n</function>\n"
+    "<tool_call>\n<function=glob>\n<parameter=pattern>\nboss.yaml\n</parameter>\n</function>\n"
+    "</tool_call>\n";
+
+static void test_xml_parse_only_call_closed_by_the_next_opener(void) {
+    jv *tools = parse(XML_TOOLS);
+    tool_envelope e; xml_parse_only_env(TMPL_NEMOTRON35, tools, &e);
+    // the fixture: three calls, each with its own pattern, flagged
+    sbuf c = {0}, tc = {0}; int n = 0; bool implicit = false;
+    assert(tool_stream_map_ex(&e, LIGHTNING_T0, strlen(LIGHTNING_T0), false,
+                              &c, &tc, &n, &implicit) == 0);
+    assert(n == 3 && implicit);
+    assert(strstr(tc.s, "boss.json") && strstr(tc.s, "boss.toml") && strstr(tc.s, "boss.yaml"));
+    assert(c.n == 0);
+    free(c.s); free(tc.s);
+    // the same calls at every chunk boundary a token stream can produce
+    for (size_t step = 1; step <= strlen(LIGHTNING_T0); step++) {
+        demux_log log; demux_step(&e, LIGHTNING_T0, step, &log);
+        assert(log.begins == 3 && log.ends == 3);
+        assert(strstr(log.args.s, "{\"pattern\":\"boss.json\"}") &&
+               strstr(log.args.s, "{\"pattern\":\"boss.toml\"}") &&
+               strstr(log.args.s, "{\"pattern\":\"boss.yaml\"}"));
+        assert(log.content.n == 0);
+        log_free(&log);
+    }
+    // three properly closed calls are not a tolerance
+    const char *closed =
+        "<tool_call>\n<function=glob>\n<parameter=pattern>\na\n</parameter>\n</function>\n</tool_call>\n"
+        "<tool_call>\n<function=glob>\n<parameter=pattern>\nb\n</parameter>\n</function>\n</tool_call>\n";
+    sbuf c2 = {0}, tc2 = {0}; int n2 = 0; bool implicit2 = true;
+    assert(tool_stream_map_ex(&e, closed, strlen(closed), false, &c2, &tc2, &n2, &implicit2) == 0);
+    assert(n2 == 2 && !implicit2);
+    free(c2.s); free(tc2.s);
+    // a last call with no closer at all is still a call the model left open:
+    // the two closed by an opener stand, the turn reports the fault
+    size_t cut = strlen(LIGHTNING_T0) - strlen("</tool_call>\n");
+    char *open_end = malloc(cut + 1);
+    assert(open_end);
+    memcpy(open_end, LIGHTNING_T0, cut);
+    open_end[cut] = 0;
+    sbuf c3 = {0}, tc3 = {0}; int n3 = 0; bool implicit3 = false;
+    assert(tool_stream_map_ex(&e, open_end, strlen(open_end), false, &c3, &tc3, &n3, &implicit3) == -1);
+    assert(n3 == 2 && implicit3);
+    free(c3.s); free(tc3.s); free(open_end);
+    // the seed-6 turn: a parameter in attribute spelling is no call
+    const char *attr =
+        "\n<tool_call>\n<function=glob>\n<parameter pattern=\"boss.json\"\n</parameter>\n</function>\n</tool_call>\n";
+    sbuf c4 = {0}, tc4 = {0}; int n4 = 0; bool implicit4 = false;
+    assert(tool_stream_map_ex(&e, attr, strlen(attr), false, &c4, &tc4, &n4, &implicit4) == -1);
+    assert(n4 == 0 && !implicit4);
+    free(c4.s); free(tc4.s);
+    // a constrained turn (the grammar framed it) keeps the closer required
+    tool_envelope strict = e;
+    strict.parse_only = false;
+    sbuf c5 = {0}, tc5 = {0};
+    assert(tool_envelope_map(&strict, LIGHTNING_T0, strlen(LIGHTNING_T0), &c5, &tc5) == -1);
+    free(c5.s); free(tc5.s);
+    jv_free(tools);
+}
+
 static void test_xml_parse_only_open_block_at_finish(void) {
     jv *tools = parse(XML_TOOLS);
     tool_envelope e; xml_parse_only_env(TMPL_ORNITH, tools, &e);
@@ -3965,6 +4035,7 @@ int main(void) {
     test_xml_parse_only_keeps_prose_around_calls();
     test_xml_parse_only_invalid_block_is_a_fault_not_content();
     test_xml_parse_only_open_block_at_finish();
+    test_xml_parse_only_call_closed_by_the_next_opener();
     test_coder_grammar_has_no_insignificant_whitespace();
     test_qwen_json_closing_tag_inside_a_string();
     test_buffered_mapper_rejects_invalid_arguments();
