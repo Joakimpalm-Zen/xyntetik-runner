@@ -850,6 +850,9 @@ typedef struct {
                           // this is what finish_reason "tool_calls" reads
     bool  fault;          // parse-only: a complete block was not a valid call
                           // and was dropped; tool_stream_finish reports it
+    bool  implicit_close; // parse-only qwen3_xml: a call was closed by the
+                          // next call's opener, not its own closer (R2.10);
+                          // the finish detail names the tolerance
     bool  skip_ws;        // qwen: drop the framing whitespace after a call
     int   n_calls;        // calls emitted so far (the parse-only bound)
     int   depth;          // nesting inside the value being forwarded
@@ -881,6 +884,11 @@ int  tool_stream_finish_ex(tool_stream *s, bool truncated);
 int  tool_stream_map(const tool_envelope *e, const char *doc, size_t n,
                      bool truncated, struct sbuf *content, struct sbuf *tc,
                      int *n_calls);
+// tool_stream_map, also reporting whether a call was closed by the next
+// call's opener (tool_stream.implicit_close, R2.10); implicit_close may be NULL
+int  tool_stream_map_ex(const tool_envelope *e, const char *doc, size_t n,
+                        bool truncated, struct sbuf *content, struct sbuf *tc,
+                        int *n_calls, bool *implicit_close);
 // Parse-only bound on calls per turn (the grammar bounds constrained turns).
 #define TOOL_STREAM_MAX_CALLS 32
 // true once a tool branch was selected, i.e. finish_reason is "tool_calls"

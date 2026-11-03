@@ -4048,6 +4048,21 @@ and admits as many calls as `parallel_tool_calls` allows. `--info tools`
 reports `qwen3_xml` for this family and `qwen_json` for the ChatML JSON
 protocol, both native. Not measured here: any checkpoint's task quality.
 
+A `tool_choice: auto` turn in this XML is parsed, not constrained (under the
+XML grammar Qwen3-Coder-30B read 2 of 6 cases at its own temperature,
+2026-09-14), so the parser alone
+decides what the model's framing means. One tolerance, on that path only: a
+call whose function block is complete (every parameter closed and valid
+against its declaration, then `</function>`) may be closed by the next call's
+`<tool_call>` instead of its own `</tool_call>`, which Nemotron 3.5 Lightning
+writes at temperature 0 (three openers, one closer at the end). Each such call
+stands, and `runner_telemetry.finish_detail` says
+`tool_call_implicit_close`. A last call with no closer, a parameter in another
+spelling (`<parameter pattern="...">`) and anything on a `required` or named
+turn's grammar stay faults (`envelope_unmapped`). vLLM's Python parser
+(v0.11.0) recovers these calls; its Rust parser and llama.cpp's require the
+closer, and llama.cpp constrains the turn after its first opener.
+
 Nemotron Nano (`nemotron`) speaks its own protocol: the declarations as one
 `<AVAILABLE_TOOLS>[...]` JSON list after the caller's system text, and a
 turn's calls as one `<TOOLCALL>[{"name": ..., "arguments": {...}}, ...]</TOOLCALL>`

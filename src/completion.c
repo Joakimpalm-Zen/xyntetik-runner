@@ -51,6 +51,9 @@ typedef struct {
     // never what the client receives
     tool_stream tsx;
     bool  tsx_on;
+    // the buffered parse-only map closed a call by the next one's opener
+    // (R2.10); the streamed turn reads tsx.implicit_close
+    bool  tool_implicit;
     int   tool_index;   // OpenAI tool_calls[].index; one call per turn for now
     // Responses streaming: the typed events are ordered and each one carries a
     // monotonic sequence_number, so the emitter is a small state machine over
@@ -2346,8 +2349,8 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
         // void the turn: the valid calls and the prose are the model's real
         // output and are kept; the finish reason names the fault.
         int n_calls = 0;
-        int rc = tool_stream_map(env, doc, doc_n,
-                                 truncated, &mapped, tc, &n_calls);
+        int rc = tool_stream_map_ex(env, doc, doc_n, truncated, &mapped, tc,
+                                    &n_calls, &g->tool_implicit);
         free(turn.s);
         if (mapped.failed || tc->failed) { free(mapped.s); return -1; }
         *fault = rc < 0;
@@ -5340,6 +5343,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // was cut, the text is usable), and finish_detail says by what
     if (stop.shut_down && !g.stopped && !e->hit_stop && !e->oom)
         cut_detail = "shutdown";
+    // a parse-only qwen3_xml call closed by the next call's opener (R2.10):
+    // the calls stand, and the detail says the framing was tolerated
+    if (!cut_detail && g.tsx_on && g.tsx.implicit_close)
+        cut_detail = "tool_call_implicit_close";
     // a streamed call reports the same terminal reason a buffered one does.
     // Only a CLEANLY FINISHED document may claim "tool_calls": a budget
     // truncation still parses (the closer guarantees that) but the envelope
@@ -5382,6 +5389,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
             if (n_tc < 0) { n_tc = 0; finish = "envelope_error"; }
             // a parse-only fault keeps what was valid and says what went wrong
             if (fault) finish = "envelope_error";
+            if (g.tool_implicit && !t.cut_detail) t.cut_detail = "tool_call_implicit_close";
         } else if (chat) {
             if (s->tmpl == TMPL_MUSE && q.schema)
                 muse_user_payload_strip(&g.out);
