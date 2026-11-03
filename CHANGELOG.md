@@ -19,6 +19,16 @@ Current release and unreleased changes. Compatibility follows the
   only; a layer with sinks (gpt-oss, flint) keeps the tile. The route
   detail says `attn_wide=on`. Report:
   `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03`.
+- **CUDA decode attention for eight query heads per KV head (R3.29.1).**
+  With eight heads in a block, the grouped decode kernel read each V pair
+  once per head and each probability alone, and was bound by shared-memory
+  work. A thread now reads its V pair once for all its heads and the
+  probabilities four keys at a time, in the same order: the scores are the
+  same bytes. On an RTX 3070 at 16K, decode against the previous build:
+  1.18x on Qwen2.5-3B (0.66x to 0.78x of llama.cpp b11748), 1.08x on
+  Qwen2.5-7B, 1.03x to 1.04x on Qwen3-4B and Llama-3.2-3B; 1.00x to 1.01x
+  at 512. Report: `docs/compat-reports/r3.29.1-cuda-decode-gqa8-2026-11-03`.
+
 - **CUDA decode attention reads the cache once (R3.29).** The grouped decode
   kernel read K twice, a pass for the softmax maximum and then K with V; it
   now makes one pass with a running maximum, stages K and V as 16-byte
