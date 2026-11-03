@@ -5,6 +5,20 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal prefill attention takes 512-wide heads on the tile, byte-identical,
+  by default for gemma-4's E-series (R3.6.3.2).** gemma-4's 512-wide global
+  layers ran the one-column kernel over the whole history, 66% of an 8K
+  Nemotron 3.5 Bolt E4B prefill on the 8 GB laptop. They now take
+  `k_attn_tile`, the kernel 256-wide heads already used, with `k_attn`'s
+  arithmetic in `k_attn`'s order, so the output is the same bytes: one
+  global layer's attention at 8K ran in 3.4 s against 25.0 s, and the 8K
+  prefill's GPU time went from 274 s to 117-123 s (about 2.3x; 4K: 1.43x in
+  tok/s). Decode is unchanged. Measured only on the 8 GB laptop and only to
+  8K: a 16K prefill of this file does not fit that laptop without swap. On
+  by default for gemma4 with per-layer embeddings, the family CUDA's wide
+  kernel defaults to; `RUNNER_METAL_ATTN_TILE_WIDE=0` keeps the one-column
+  kernel for heads wider than 256, `=1` takes the tile on any model. The
+  route detail says `attn_wide=on`.
 - **CUDA prefill attention for 256- to 512-wide heads runs on the tensor
   cores, by default for gemma-4's E-series (R3.6.3.1).** gemma-4's 512-wide
   global layers took the tile's 8-row kernel on the CUDA cores, 79% of a
