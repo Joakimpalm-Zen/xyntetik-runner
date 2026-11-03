@@ -13,6 +13,11 @@
   matrix) write for the slice widened exactly to float32. They come from llama.cpp b10353 (f8def7fe)
   `ggml/src/ggml-quants.c` compiled with `-O3 -fno-fast-math -ffp-contract=off` (MIT, see NOTICE).
 
+- `ggml-c1d0e7a-q5_0.bin`: what ggml's `quantize_row_q5_0_ref` (the function `quantize_q5_0` calls without an
+  importance matrix) writes for the same slice. Its text was taken from llama.cpp c1d0e7a `ggml/src/ggml-quants.c`
+  unchanged, with `GGML_FP32_TO_FP16` as the hardware half conversion, and compiled with `-O3 -fno-fast-math
+  -ffp-contract=off` (MIT, see NOTICE). Q5_0 is the 32-block fallback of a Q4_K target.
+
 ggml's own K-quant bytes depend on floating-point contraction: built with multiply-adds fused, it writes the q4_k
 and q6_k files here differently. The reference is the uncontracted arithmetic, which every compiler gives under
 `-ffp-contract=off`.
@@ -27,4 +32,5 @@ bba686455a2bd94f438568cbfced47fe1afe30f5ca181c256715b548249ce07b  ggml-b10353-q8
 ba1afdbc11f640903f15a615eea65cbd510405c180bad9acfeec54a921d3dbc6  ggml-b10353-q4_k.bin
 59ed9fda6db400af97011f538c6a71065f297e35b9cdd6e8e6cf91a5b08b74b9  ggml-b10353-q6_k.bin
 88fdf0a94b38bdfb5f2477dab52b11d7c65ba152a798afdcfde647f7a4f82095  ggml-b10353-mxfp4.bin
+8a95b5d1cdf2748bafbbffab8ee5e12d649fb35aace4474a93a65fd584447b45  ggml-c1d0e7a-q5_0.bin
 ```
