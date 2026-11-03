@@ -1454,10 +1454,25 @@ static int metal_mv_state(void) {
 
 // whether a matvec over weights of `type` takes the fast kernel (when the
 // type has one): every type under RUNNER_METAL_MV=1, Q4_K on a dense model
-// by default
-static bool metal_mv_fast_for(const gpu_t *g, int type) {
+// by default where its input is at least MV_Q4K_FAST_MIN wide.
+//
+// The width floor (R3.28.1): per-width Q4_K decode time on an Apple M1,
+// fast against identity, ms a token (three rounds each): 1536-wide inputs
+// 11.11 / 9.62 (K2-Horizon-1B Q4_K_M: the fast kernel 15% slower), 2048
+// 10.96 / 12.96 (Llama-3.2-1B) and 1.36 / 1.66 (K2-Horizon), 3072 36.48 /
+// 40.21 (Llama-3.2-3B), 5120 1.88 / 2.45, 8192 1.61 / 2.98 and 5.38 / 7.91.
+// Only 1536 lost, so the identity kernel keeps inputs under 2048 (widths
+// between were not measured and take the exact kernel). The rule depends
+// on the type and width alone, so a microbatch column and the solo step
+// pick the same kernel and keep the same bits.
+#define MV_Q4K_FAST_MIN 2048
+// the route detail names the floor from the same constant (mv=fast-q4_K>=2048)
+#define MV_STR_(x) #x
+#define MV_STR(x) MV_STR_(x)
+static bool metal_mv_fast_for(const gpu_t *g, int type, int n_in) {
     int st = metal_mv_state();
-    return st == MV_ALL || (st == MV_Q4_K && type == T_Q4_K && g->mv_q4k_default);
+    return st == MV_ALL || (st == MV_Q4_K && type == T_Q4_K && g->mv_q4k_default &&
+                            n_in >= MV_Q4K_FAST_MIN);
 }
 
 void gpu_moe_eager_force(int on) { (void)on; }
@@ -2952,7 +2967,7 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // (decode-only by construction) has never looked.
     id<MTLComputePipelineState> mv = g->p_mv[w->type];
     int rows_sg = 1;   // output rows a simdgroup computes
-    if (decode && metal_mv_fast_for(g, w->type) && g->p_mvf[w->type]) {
+    if (decode && metal_mv_fast_for(g, w->type, n_in) && g->p_mvf[w->type]) {
         mv = g->p_mvf[w->type];
         rows_sg = w->type == T_Q4_K ? 2 : 1;   // k_mvf_q4_K takes two rows
         // several decode columns of Q4_K: the twin that reads each block
@@ -5133,7 +5148,8 @@ const char *gpu_route_detail(const model_t *m) {
     snprintf(buf, sizeof buf, "fusion=%s mm=%s mv=%s attn=%s%s%s tensor=%s%s",
              metal_fuse_on() ? "on" : "off", metal_mm_on() ? "on" : "off",
              metal_mv_state() == MV_ALL ? "fast"
-             : metal_mv_state() == MV_Q4_K && g && g->mv_q4k_default ? "fast-q4_K" : "identity",
+             : metal_mv_state() == MV_Q4_K && g && g->mv_q4k_default
+                 ? "fast-q4_K>=" MV_STR(MV_Q4K_FAST_MIN) : "identity",
              metal_attn_coop_on() ? "coop" : "identity",
              m && m->n_expert > 0 ? " moe_mm=" : "",
              m && m->n_expert > 0 ? (moe == 2 ? "half" : moe ? "f32" : "off") : "",

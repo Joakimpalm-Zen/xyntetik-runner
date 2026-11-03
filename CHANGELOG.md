@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal: the fast Q4_K decode matvec is the default only for inputs at
+  least 2048 wide (R3.28.1).** On 1536-wide inputs it was 15% slower than
+  the identity kernel (K2-Horizon-1B Q4_K_M: 11.11 against 9.62 ms of Q4_K
+  time a token on an Apple M1), while it won at every width from 2048 to
+  8192 on the Llama-3.2-1B/3B Q4_K_M files it was promoted on. Narrower Q4_K
+  inputs now keep the identity kernel, so K2-Horizon-1B Q4_K_M decodes
+  1.061x faster (39.7 against 37.5 tok/s). The Llama files are unchanged:
+  their `--score` output is byte-identical to before, decode 0.997x and
+  1.022x, inside the run-to-run spread. Measured on one laptop, with one
+  file for the narrow case; widths between 1536 and 2048 were not measured
+  and take the exact kernel. The route detail says `mv=fast-q4_K>=2048`.
 - **Nemotron 3.5 Lightning (`nemotron_h_moe`) routed its experts with the wrong
   function; fixed. Every nemotron_h_moe file has given wrong output since
   v0.2.0.** The publisher's router is a sigmoid; the published GGUFs carry no
