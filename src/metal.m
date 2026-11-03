@@ -1799,10 +1799,25 @@ static bool metal_partial_pays(const model_t *m, uint64_t wrapped) {
     return total + margin <= have && wrapped <= total;
 }
 
+// A non-layer tensor stored after the layers is outside any prefix wrap. The
+// split may leave it there only when the device never reads it from the
+// wrap under a split: the head (output_norm, output) runs on the device only
+// at a full offload (the whole file wrapped) and the CPU finishes a split,
+// out_norm is copied into its own buffer anyway, and token_embd is
+// dequantized on the host. Qwen's Qwen2.5-1.5B-Instruct Q8_0 stores
+// output_norm.weight last, so one trailing 1 kB norm refused every split of
+// the file until R4.31.
+static bool metal_split_never_reads(const char *name) {
+    return !strcmp(name, "output_norm.weight") || !strcmp(name, "output.weight") ||
+           !strcmp(name, "token_embd.weight");
+}
+
 static int metal_fit_layers(model_t *m, uint64_t budget, int cap,
-                            bool *layout_ok, uint64_t *wrap_end) {
+                            bool *layout_ok, uint64_t *wrap_end,
+                            const char **refused) {
     *layout_ok = false;
     *wrap_end = 0;
+    *refused = NULL;
     uint64_t *end_of = calloc((size_t)m->n_layer + 1, sizeof(uint64_t));
     if (!end_of) return 0;
     uint64_t prologue_end = 0;
@@ -1814,9 +1829,15 @@ static int metal_fit_layers(model_t *m, uint64_t budget, int cap,
         uint64_t end = beg + w->nbytes;
         int li = strncmp(w->name, "blk.", 4) ? -1 : atoi(w->name + 4);
         if (li < 0) {
-            if (prev_layer >= 0) { ok = false; break; }   // non-layer after a layer
+            if (prev_layer >= 0) {                         // non-layer after a layer
+                if (metal_split_never_reads(w->name)) continue;
+                *refused = w->name;
+                ok = false;
+                break;
+            }
             if (end > prologue_end) prologue_end = end;
         } else if (li >= m->n_layer || li < prev_layer) {
+            *refused = w->name;
             ok = false;                                    // out of range or unordered
         } else {
             prev_layer = li;
@@ -2251,15 +2272,19 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
         if (need_split) {
             bool layout_ok = false;
             uint64_t wrap_end = 0;
-            int fit = metal_fit_layers(m, budget, cap, &layout_ok, &wrap_end);
+            const char *refused = NULL;
+            int fit = metal_fit_layers(m, budget, cap, &layout_ok, &wrap_end, &refused);
             if (!layout_ok) {
-                if (wlen > budget)
-                    return gpu_init_fail(m, g, nil,
-                        "model exceeds the Metal working set and its tensor "
-                        "layout forbids a partial split (non-layer tensors "
-                        "after blk.0, or blocks out of order)");
-                fprintf(stderr, "gpu: --gpu-layers ignored — tensor layout "
-                        "does not allow a partial split\n");
+                char why[256];
+                snprintf(why, sizeof why, "its tensor layout forbids a partial split "
+                         "(%s is stored after the layers or out of order; a split "
+                         "wraps a file prefix)", refused ? refused : "a tensor");
+                if (wlen > budget) {
+                    char msg[320];
+                    snprintf(msg, sizeof msg, "model exceeds the Metal working set and %s", why);
+                    return gpu_init_fail(m, g, nil, msg);
+                }
+                fprintf(stderr, "gpu: --gpu-layers ignored — %s\n", why);
             } else if (fit < 1) {
                 return gpu_init_fail(m, g, nil,
                     "not even one layer fits the Metal working set");

@@ -19,6 +19,15 @@ Current release and unreleased changes. Compatibility follows the
   only; a layer with sinks (gpt-oss, flint) keeps the tile. The route
   detail says `attn_wide=on`. Report:
   `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03`.
+
+- **A Metal layer split no longer refuses a file whose output norm is stored
+  last.** A split wraps a prefix of the file, and any non-layer tensor stored
+  after the layers refused it; Qwen's Qwen2.5-1.5B-Instruct Q8_0 stores
+  `output_norm.weight` (1 kB) last, so `--gpu N` on it ran wholly on the CPU.
+  The head and the embedding, which a split never reads from the device, may
+  now follow the layers; any other tensor there still refuses the split, and
+  the message names it.
+
 - **CUDA decode attention reads the cache once (R3.29).** The grouped decode
   kernel read K twice, a pass for the softmax maximum and then K with V; it
   now makes one pass with a running maximum, stages K and V as 16-byte

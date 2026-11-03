@@ -17,6 +17,7 @@ ZERO_FIRST_DIM = False
 WRAP_FIRST_OFFSET = False
 ARCH = "llama"
 ALPHA_ORDER = False
+NORM_LAST = False   # --norm-last: output_norm.weight stored after every layer
 DROP_V = set()      # --drop-v: layers whose attn_v.weight is omitted (V = raw K)  # --alpha-order: tensors stored in name order, not block order
 AGENT_PROFILE = False
 AGENT_FEATURES = ["dense", "json_schema"]
@@ -253,6 +254,10 @@ while i < len(args):
         # shape on the fixture so the backward's absent-V path is gated.
         i += 1
         DROP_V = {int(x) for x in args[i].split(",")}
+    elif a == "--norm-last":
+        # Store output_norm.weight last, after the layers, as Qwen's
+        # Qwen2.5-1.5B-Instruct Q8_0 does; the model is the same.
+        NORM_LAST = True
     elif a == "--alpha-order":
         # Store the tensors in name order (blk.0, blk.1, blk.10, ..., output,
         # token_embd) instead of block order. Real files come out this way
@@ -1099,6 +1104,9 @@ if QUANT in ("nvfp4", "nvfp4-fork40") and not any(
 tensors = _typed
 if ALPHA_ORDER:
     tensors = sorted(tensors, key=lambda t: t[0])
+if NORM_LAST:
+    tensors = [t for t in tensors if t[0] != "output_norm.weight"] + \
+              [t for t in tensors if t[0] == "output_norm.weight"]
 if GPU_UNSUPPORTED and not any(t[0] == GPU_UNSUPPORTED for t in tensors):
     sys.exit(f"--gpu-unsupported tensor {GPU_UNSUPPORTED!r} was not generated")
 
