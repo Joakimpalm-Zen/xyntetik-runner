@@ -85,7 +85,8 @@ Around the matvec:
   score is `k_attn`'s, the softmax and the V sum reassociate) unless
   `RUNNER_CUDA_ATTN_TILE=0`, and single-token attention `k_attn_dec_gqa` and
   `k_attn_merge32` (a KV row read once per head group, whole 32-row tiles
-  per split, one pass over each split with a running maximum since R3.29;
+  per split, one pass over each split with a running maximum since R3.29,
+  each V pair read once for all of a thread's heads since R3.29.1;
   the same bytes run to run for a geometry and position,
   `tests/test_attn_dec_repeat.py`) unless `RUNNER_CUDA_ATTN_DEC=0`; both recorded as routes
   (`attn-tile`, `attn-dec`). Obligation: tolerance, and no measurable

@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Nemotron 3.5 Lightning (`nemotron_h_moe`) routed its experts with the wrong
+  function; fixed. Every nemotron_h_moe file has given wrong output since
+  v0.2.0.** The publisher's router is a sigmoid; the published GGUFs carry no
+  `expert_gating_func` key, and the loader read the missing key as a softmax.
+  On the real Lightning-30B Q8_0 against llama.cpp's logits over the same
+  1,109 positions: perplexity 18.31 before, 11.83 now (llama.cpp 11.73), top-1
+  agreement 63.2% before, 95.8% now. A file that declares the key keeps it.
+  Requantize nothing; reload the file.
+
 - **Metal prefill attention takes 512-wide heads on the tile, byte-identical,
   by default for gemma-4's E-series (R3.6.3.2).** gemma-4's 512-wide global
   layers ran the one-column kernel over the whole history, 66% of an 8K
@@ -33,6 +42,37 @@ Current release and unreleased changes. Compatibility follows the
   only; a layer with sinks (gpt-oss, flint) keeps the tile. The route
   detail says `attn_wide=on`. Report:
   `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03`.
+- **CUDA decode attention for eight query heads per KV head (R3.29.1).**
+  With eight heads in a block, the grouped decode kernel read each V pair
+  once per head and each probability alone, and was bound by shared-memory
+  work. A thread now reads its V pair once for all its heads and the
+  probabilities four keys at a time, in the same order: the scores are the
+  same bytes. On an RTX 3070 at 16K, decode against the previous build:
+  1.18x on Qwen2.5-3B (0.66x to 0.78x of llama.cpp b11748), 1.08x on
+  Qwen2.5-7B, 1.03x to 1.04x on Qwen3-4B and Llama-3.2-3B; 1.00x to 1.01x
+  at 512. Report: `docs/compat-reports/r3.29.1-cuda-decode-gqa8-2026-11-03`.
+
+
+- **`RUNNER_SPEC_PROF=1` prints its profile line on a `--json` run too.** The
+
+- **`RUNNER_SPEC_PROF=1` prints its profile line on a schema-constrained run too.** The
+  speculative walk left through three early exits when a constrained document
+  completed (a close before a token's forward, mid-round, at a plain token);
+  they printed the round summary but not the profile. The MANUAL's
+  `--draft-k` row now states the range, 1 to 15 (a round verifies the drafts
+  plus the correction, at most 16 rows).
+
+
+- **A Metal layer split no longer refuses a file stored in name order or with
+  its output norm last.** A split wraps a prefix of the file, and it refused
+  layers stored out of block order and any non-layer tensor after them; Qwen's
+  Qwen2.5-1.5B-Instruct Q8_0 does both (blk.0, blk.1, blk.10 to blk.19, blk.2,
+  ..., then `output_norm.weight`), so `--gpu N` on it ran wholly on the CPU.
+  The wrap now reaches the farthest tensor of the device's layers whatever
+  their order, and tensors a split never reads from the device (the head, the
+  embedding, gemma-4 E-series' per-layer tables) may follow the layers; any
+  other tensor there still refuses the split, and the message names it.
+
 - **CUDA decode attention reads the cache once (R3.29).** The grouped decode
   kernel read K twice, a pass for the softmax maximum and then K with V; it
   now makes one pass with a running maximum, stages K and V as 16-byte
@@ -41,8 +81,10 @@ Current release and unreleased changes. Compatibility follows the
   1.24x to 1.38x at 16K and 1.37x to 1.55x at 32K across Llama-3.2-3B,
   Qwen2.5-3B, Qwen3-4B and Qwen2.5-7B. It is still 0.66x (Qwen2.5-3B) to
   0.86x (Llama-3.2-3B) of llama.cpp b11748 at 16K. The order of the sums
-  changed: the same bytes run to run for a geometry, its float32-reference
-  row owed. Report: `docs/compat-reports/r3.29-cuda-decode-attention-2026-11-03`.
+  changed: the same bytes run to run for a geometry, and its
+  float32-reference row is not distinguishable from the two-pass kernel's
+  (Qwen3-0.6B, mean KL 1.0006x, Wilcoxon p 0.890). Report:
+  `docs/compat-reports/r3.29-cuda-decode-attention-2026-11-03`.
 
 - **A recurrent draft model no longer refeeds its whole context on every
   rejected draft.** A draft whose layers fold state (LFM2, Gated DeltaNet)
