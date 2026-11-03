@@ -3,7 +3,7 @@
 Current release and unreleased changes. Compatibility follows the
 [versioning policy](docs/versioning.md).
 
-## Unreleased
+## v1.12.0 - 2026-11-03
 
 - **`--quant q4_k` wrote corrupt tensors on rows that divide by 32 but not
   256 (since v0.5.7); fixed.** Such a row cannot take a 256-block K-quant,
@@ -148,6 +148,27 @@ Current release and unreleased changes. Compatibility follows the
   non-annotation keyword beside `$ref`. The prompt renders the tools as sent.
   A nested `anyOf` that cannot be dispatched is still refused, and its message
   now names `anyOf` rather than `oneOf` (R2.9.2).
+
+- **Devstral Small 2 in the validated roster, with its tool-calling record.**
+  unsloth's Q4_K_M and Q8_0 measured against Mistral AI's FP8 checkpoint
+  dequantized exactly to float32 (every GGUF of the model requantizes that
+  checkpoint, and the publisher serves it with static FP8 activations, so
+  this is the reference arithmetic, not the publisher's serving arithmetic),
+  300 positions: Q4_K_M 0.0223 mean KLD and 99.53% margin-qualified top-1,
+  Q8_0 0.00126 and 100%; ggml-org's Q8_0 scores byte-identically to unsloth's.
+  Agent torture on the Q4_K_M passes 100 of 100 cases (Tier 2, #551).
+
+- **Agent torture v5: reasoning, then a native tool call.** A new case
+  family, `reasoning_then_native_tool`, holds the thinking channel followed
+  by a call in the family's native syntax: its tool carries no length,
+  pattern or range constraint, so families whose function-XML cannot enforce
+  those (Qwen3-Coder) are measured on the native path rather than the generic
+  envelope. The default matrix is 126 cases (nine families of 14), and
+  reports read `xyntetik.agent-torture.v5`; v4 results stay valid on their own
+  terms. `scripts/agent-torture.py --timeout SECONDS` gives a slow host more
+  than the harness's 120 s a request. On Qwen3.8-27B (CPU, qwen38 template,
+  thinking on) the new case passes, the reasoning then the native call
+  (#506).
 
 - **CPU prefill in int8, opt-in.** With `RUNNER_CPU_I8_PREFILL=1`, CPU
   batches of 8 or more rows (prompt prefill, chunked scoring) quantize the

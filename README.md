@@ -75,9 +75,9 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Published release: 1.11.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) makes, measures and cards a model file in one command with `runner derive`, whose card leads with what the file is not for and its weakest number; it loads Ministral 3, records and replays MoE routing on CUDA, and reads each weight block once for all slots in a Metal decode microbatch. A derive measurement reads one text and runs no task benchmark ([changelog](CHANGELOG.md)). Its Linux asset keeps the GLIBC 2.38 ceiling and starts on Ubuntu 24.04 ([how that is held](docs/linux-1.6.1-candidate.md)).
+> **Published release: 1.12.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) accepts the schemas Pydantic and MCP servers write, with local `$ref` and `$defs`, on structured output and tool parameters; admits Devstral Small 2 with its tool-calling record; fixes CUDA decode's attention temperature on Llama 4 and mistral3 models (1.11.0 and earlier applied none past the floor) and the quantizer's q4_k fallback (Runner-written q4_k files made since 2026-09-23 from models with rows that divide by 32 but not 256 are corrupt and must be requantized); runs shared-expert MoE models and `qwen35moe` on Metal (checked on toy models only); and adds two opt-in routes that are not bit-identical to the default, the Metal decode microbatch on GEMM tiles at six or more slots and int8 CPU prefill on Apple Silicon. Its macOS binary has the int8 dot path that the 1.11.0 macOS binary was built without ([changelog](CHANGELOG.md)). Its Linux asset keeps the GLIBC 2.38 ceiling and starts on Ubuntu 24.04 ([how that is held](docs/linux-1.6.1-candidate.md)).
 
-> **Version `1.11.0`.** The command line, the HTTP API, the record formats and
+> **Version `1.12.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
@@ -490,7 +490,7 @@ passing evaluation made for those exact bytes.
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.11.0
+./runner --version   # -> runner 1.12.0
 ```
 
 Linux, macOS and Windows. NVIDIA GPUs need a driver with CUDA 13.0 support
