@@ -463,6 +463,7 @@ typedef struct gpu_weights {
     CUfunction  f_attn_tile32, f_attn_tile16, f_attn_tile8; // tiled prefill attention (tile_attn)
     CUfunction  f_attn_dec_gqa, f_attn_merge32; // grouped decode attention (tile_attn)
     CUfunction  f_attn_tc;                  // tensor-core prefill attention (tile_attn)
+    CUfunction  f_attn_tcw;                 // its wide-head twin, head_dim 256 to 512
     CUfunction  f_kv_gather;                // one-copy decode KV write-back (X3)
     // kernel tables indexed by ggml tensor type; sized past the largest
     // supported type id (T_MXFP4 = 39), not the count of supported types
@@ -748,6 +749,9 @@ typedef struct {
 // k_attn_tc (kernels.cu AQ_*): Q hi, Q lo and one K/V tile of 64 rows of
 // 136 halves, plus 64 row scales, in dynamic shared memory
 #define AQ_SMEM (3 * 64 * (128 + 8) * 2 + 64 * 4)
+// k_attn_tcw (kernels.cu AW_*): Q hi and lo (16 rows) and a K/V tile (32
+// rows) of hd + 8 halves, four 16 x 36 partial S tiles, 16 row scales
+#define AW_SMEM(hd) ((2 * 16 + 32) * ((hd) + 8) * 2 + 4 * 16 * 36 * 4 + 16 * 4)
 #define CU_FUNC_ATTR_MAX_DYN_SMEM 8   // CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES
 #define CU_DEV_ATTR_CC_MAJOR 75       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR
 #define CU_DEV_ATTR_CC_MINOR 76       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR
@@ -2680,6 +2684,9 @@ static bool shared_load_module(gpu_weights *w) {
     if (cu.ModuleGetFunction(&w->f_attn_tc, w->mod, "k_attn_tc") != 0 || !cu.FuncSetAttribute ||
         cu.FuncSetAttribute(w->f_attn_tc, CU_FUNC_ATTR_MAX_DYN_SMEM, AQ_SMEM) != 0)
         w->f_attn_tc = NULL;
+    if (cu.ModuleGetFunction(&w->f_attn_tcw, w->mod, "k_attn_tcw") != 0 || !cu.FuncSetAttribute ||
+        cu.FuncSetAttribute(w->f_attn_tcw, CU_FUNC_ATTR_MAX_DYN_SMEM, AW_SMEM(512)) != 0)
+        w->f_attn_tcw = NULL;
     cu.ModuleGetFunction(&w->f_kv_gather, w->mod, "k_kv_gather");
     cu.ModuleGetFunction(&w->f_q35_conv_seq, w->mod, "k_q35_conv_seq");
     cu.ModuleGetFunction(&w->f_q35_delta_seq, w->mod, "k_q35_delta_seq");
@@ -7257,6 +7264,47 @@ static bool tile_attn_tc(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
     return true;
 }
 
+// RUNNER_CUDA_ATTN_TC_WIDE: the tensor-core prefill attention for head
+// widths 256 to 512 (k_attn_tcw, R3.6.3.1), where k_attn_tc does not reach
+// and the tile's 8- and 16-row kernels run on the CUDA cores. On by default
+// for gemma-4's E-series (gemma4 with per-layer embeddings: Nemotron 3.5
+// Bolt E4B, gemma-4-E2B/E4B), whose 512-wide global layers it takes from
+// k_attn_tile8 (owner decision 2026-11-03); 0 keeps the tile there, 1 forces
+// it on every model it admits.
+static bool attn_tcw_family(const model_t *m) {
+    return m && strcmp(m->arch, "gemma4") == 0 && m->n_embd_ple > 0;
+}
+static bool attn_tcw_on(const model_t *m) {
+    static _Atomic int on = -1;   // -1 unread, 2 unset (the family default)
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_ATTN_TC_WIDE");
+        on = !e || !*e ? 2 : strcmp(e, "0") != 0;
+    }
+    return on == 2 ? attn_tcw_family(m) : on == 1;
+}
+static _Atomic unsigned long g_attn_tcw_dispatches;
+unsigned long gpu_attn_tcw_dispatches(void) { return g_attn_tcw_dispatches; }
+
+// The wide-head tensor-core prefill attention over a whole tile, or false
+// when it does not apply: switch off, kernel absent, a quantized K or V
+// cache, sinks, or a head width that is not 256, 384 or 512 (whole 32-wide
+// quarters a warp). 16 query rows a block.
+static bool tile_attn_tcw(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
+                          const attn_args *aa, CUdeviceptr sinks, bool *ok) {
+    if (!attn_tcw_on(m) || !g->sw->f_attn_tcw || model_kv_kind_k(m) || model_kv_kind_v(m) ||
+        sinks || hd % 128 || hd < 256 || hd > 512 || n_kv < 1 || m->n_head % n_kv)
+        return false;
+    int G = m->n_head / n_kv, R = 16;
+    int hb = G < R ? G : R, qs = R / hb, ngh = (G + hb - 1) / hb;
+    attn_args a = *aa;
+    void *pa[] = { &g->q, &g->kc, &g->vc, &g->xb2, &a, &g->pos_dev, &sinks,
+                   &tn, &hb, &qs };
+    *ok = launch_smem(g, g->sw->f_attn_tcw, (unsigned)(n_kv * ngh), (unsigned)((tn + qs - 1) / qs),
+                      1, 128, AW_SMEM(hd), pa);
+    if (*ok) { g_attn_tcw_dispatches++; g_attn_tiled_dispatches++; }
+    return true;
+}
+
 // RUNNER_CUDA_ATTN_DEC: the grouped decode attention (k_attn_dec_gqa, one
 // block per KV head and slice serving its query heads), on by default since
 // its float32-reference rows matched k_attn_dec's (the same three models);
@@ -7423,6 +7471,8 @@ static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
             ok = ok && launch(g, g->sw->f_attn_dec, m->n_head, ATTN_SPLITS, 1, 128, pd);
             void *pm[] = { &g->xb2, &g->attn_part, &aa, &g->pos_dev, &sinks };
             ok = ok && launch(g, g->sw->f_attn_merge, m->n_head, 1, 1, 128, pm);
+        } else if (tile_attn_tcw(g, m, tn, hd, n_kv, &aa, sinks, &ok)) {
+            // ran (or failed) on the tensor cores, a wide head
         } else if (tile_attn_tc(g, m, tn, hd, n_kv, &aa, sinks, &ok)) {
             // ran (or failed) on the tensor cores over the whole tile
         } else if (tile_attn_tiled(g, m, tn, hd, n_kv, &aa, sinks, &ok)) {
@@ -8922,8 +8972,15 @@ const char *gpu_route_detail(const model_t *m) {
     // tc: the promoted, forced or off state, then "+nvfp4" where
     // RUNNER_CUDA_TC_NVFP4=1 forces NVFP4's route and "-nvfp4" where =0 holds
     // it off; i8: the int8 tensor-core prefill (RUNNER_CUDA_I8) armed, its
-    // kernels loaded and its buffers made, so a receipt names that route
-    snprintf(buf, sizeof buf, "graph=%s tc=%s%s tc2=%s q8x=%s i8=%s small_batch=%s attn_tile=%s "
+    // kernels loaded and its buffers made, so a receipt names that route;
+    // " attn_wide=on" where k_attn_tcw takes some layer of this model
+    bool wide = false;
+    if (attn_tcw_on(m) && g->sw->f_attn_tcw && !model_kv_kind_k(m) && !model_kv_kind_v(m))
+        for (int l = 0; l < m->n_layer && !wide; l++) {
+            int hd = model_head_dim(m, l);
+            wide = !(g->sw->sinks && g->sw->sinks[l]) && hd % 128 == 0 && hd >= 256 && hd <= 512;
+        }
+    snprintf(buf, sizeof buf, "graph=%s tc=%s%s tc2=%s q8x=%s i8=%s small_batch=%s attn_tile=%s%s "
              "window=%d tc_cols=%d%s%s%s",
              g->graph_bad ? "off" : g->gexec[0] || g->gexec[1] ? "replay" : "none",
              g_tc_state < 0 || moe_tc_family(m)
@@ -8935,6 +8992,7 @@ const char *gpu_route_detail(const model_t *m) {
              gpu_small_batch_on() ? "on" : "off",
              attn_tc_on(m) ? (attn_dec_on() ? "tc+dec" : "tc")
              : attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
+             wide ? " attn_wide=on" : "",
              g->win, g->xh ? G2_BN : TC_N,
              m->n_expert > 0 ? " moe=" : "",
              m->n_expert > 0 ? (!g->moe_fused_ok ? "eager" : g->moe_grouped_ok ? "grouped"

@@ -5,6 +5,29 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Nemotron 3.5 Lightning (`nemotron_h_moe`) routed its experts with the wrong
+  function; fixed. Every nemotron_h_moe file has given wrong output since
+  v0.2.0.** The publisher's router is a sigmoid; the published GGUFs carry no
+  `expert_gating_func` key, and the loader read the missing key as a softmax.
+  On the real Lightning-30B Q8_0 against llama.cpp's logits over the same
+  1,109 positions: perplexity 18.31 before, 11.83 now (llama.cpp 11.73), top-1
+  agreement 63.2% before, 95.8% now. A file that declares the key keeps it.
+  Requantize nothing; reload the file.
+
+- **CUDA prefill attention for 256- to 512-wide heads runs on the tensor
+  cores, by default for gemma-4's E-series (R3.6.3.1).** gemma-4's 512-wide
+  global layers took the tile's 8-row kernel on the CUDA cores, 79% of a
+  32K prefill on an RTX 3070. `k_attn_tcw` takes them, and the 256-wide
+  sliding layers, with `k_attn_tc`'s operands: one global layer at about
+  31K in 55 ms against 352. Nemotron 3.5 Bolt E4B prefill: +8% to +19% at
+  512 tokens, +30% to +40% at 4K, 2.0x at 16K, 2.6x at 32K; decode and the
+  greedy text unchanged. On by default for gemma4 with per-layer embeddings
+  (owner decision), its float32-reference row on Bolt E4B not
+  distinguishable from the tile's (mean KL 0.9965x, Wilcoxon p 0.188);
+  `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the tile. fp16 caches
+  only; a layer with sinks (gpt-oss, flint) keeps the tile. The route
+  detail says `attn_wide=on`. Report:
+  `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03`.
 - **CUDA decode attention reads the cache once (R3.29).** The grouped decode
   kernel read K twice, a pass for the softmax maximum and then K with V; it
   now makes one pass with a running maximum, stages K and V as 16-byte

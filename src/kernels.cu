@@ -7385,6 +7385,241 @@ k_attn_tc(const float *q, const unsigned char *kc, const unsigned char *vc, floa
     }
 }
 
+// ------------------------- tensor-core prefill attention, wide heads (R3.6.3.1)
+// RUNNER_CUDA_ATTN_TC_WIDE (tile_attn in cuda.c): k_attn_tc's operands and
+// products for head_dim 256 to 512, where k_attn_tc's per-warp O (hd / 8 n8
+// tiles for a 16-row strip) does not fit in registers. A block owns 16 query
+// rows (heads of one KV group times a strip of tokens, k_attn_tc's rows) and
+// its four warps split head_dim in quarters: each warp takes S = Q K^T over
+// its quarter (Q as two halves, as k_attn_tc), the four partials are summed
+// in shared memory in warp order, so every warp holds the same S. One pass
+// over the keys in tiles of 32: a running maximum per row, the tile's
+// p = expf(s - max) against it, the row sum and the warp's quarter of O
+// rescaled by expf(old - new) where it rises, then O += P V for the quarter
+// (P as two halves, V through ldmatrix.trans). Obligation: tolerance, as
+// k_attn_tc; for a geometry the tile order, the partial sums' order and the
+// butterflies are fixed, so a run is the same bytes twice.
+#define AW_ROWS 16
+#define AW_TK   32
+#define AW_SLD  (AW_TK + 4)     // floats a row of one warp's partial S
+// shared: Q hi and lo (16 rows each) and one K or V tile (32 rows) of
+// hd + 8 halves, the four partial S tiles, the row scales
+#define AW_SMEM(hd) ((2 * AW_ROWS + AW_TK) * ((hd) + 8) * 2 + 4 * AW_ROWS * AW_SLD * 4 + AW_ROWS * 4)
+
+extern "C" __global__ void __launch_bounds__(128)
+k_attn_tcw(const float *q, const unsigned char *kc, const unsigned char *vc, float *out,
+           attn_args a, const int *posp, const float *sinks, int tn, int hb, int qs) {
+    extern __shared__ __align__(16) unsigned char aw_dyn[];
+    const int hd = a.head_dim, LD = hd + 8;
+    __half *Qs  = (__half *)aw_dyn;
+    __half *Qlo = Qs + AW_ROWS * LD;
+    __half *KVs = Qlo + AW_ROWS * LD;
+    float *Sp = (float *)(KVs + AW_TK * LD);             // [4 warps][16][AW_SLD]
+    float *qscale = Sp + 4 * AW_ROWS * AW_SLD;
+    const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    const int G = a.n_head / a.n_head_kv;
+    const int ngh = (G + hb - 1) / hb;
+    const int kvh = blockIdx.x / ngh, hg = blockIdx.x % ngh;
+    const int h0 = kvh * G + hg * hb;
+    const int nh = G - hg * hb < hb ? G - hg * hb : hb;
+    const int tk0 = blockIdx.y * qs;
+    const int nt = tn - tk0 < qs ? tn - tk0 : qs;
+    const int pos0 = *posp;
+    const int kv_dim = a.n_head_kv * hd;
+    const ulong64 row_b = (ulong64)kv_dim * 2;            // fp16 rows only
+    const ulong64 base = a.l_off + (ulong64)kvh * hd * 2;
+    const ulong64 base_v = a.v_off + (ulong64)kvh * hd * 2;
+    const int dq = hd / 4, d0 = warp * dq, ndt = dq / 8;  // this warp's quarter
+    (void)sinks;                                          // cuda.c sends none here
+
+    // ---- Q rows, each scaled by an exact power of two (k_attn_tc's) ----
+    for (int r = warp; r < AW_ROWS; r += 4) {
+        int hx = r / qs, ti = r - hx * qs;
+        bool ok = hx < nh && ti < nt;
+        const float *qr = q + (ulong64)(tk0 + ti) * a.qs + (ulong64)(h0 + hx) * hd;
+        float mx = 0.0f;
+        if (ok) for (int d = lane; d < hd; d += 32) mx = fmaxf(mx, fabsf(qr[d]));
+        for (int off = 16; off > 0; off >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, off));
+        int e = 0;
+        if (mx > 0.0f) { frexpf(mx, &e); }
+        float s = mx > 0.0f ? ldexpf(1.0f, 14 - e) : 1.0f;
+        if (lane == 0) qscale[r] = s;
+        for (int d = lane; d < hd; d += 32) {
+            float v = ok ? qr[d] * s : 0.0f;
+            __half h = __float2half(v);
+            Qs[r * LD + d] = h;
+            Qlo[r * LD + d] = __float2half(v - __half2float(h));
+        }
+    }
+    // every warp holds all 16 rows: lane / 4 is row r0 and r0 + 8 of a tile
+    const int r0 = lane >> 2, r1 = r0 + 8;
+    auto rowpos = [&](int r, int *lo, int *hi_) {
+        int hx = r / qs, ti = r - hx * qs;
+        bool ok = hx < nh && ti < nt;
+        int pr = pos0 + tk0 + ti;
+        int t0r = (a.window > 0 && pr - a.window + 1 > 0) ? pr - a.window + 1 : 0;
+        *lo = ok ? t0r : 1;
+        *hi_ = ok ? pr : 0;                               // empty range for unused rows
+    };
+    int lo0, hi0, lo1, hi1;
+    rowpos(r0, &lo0, &hi0);
+    rowpos(r1, &lo1, &hi1);
+    const int plast = pos0 + tk0 + nt - 1;
+    int klo = 0;
+    if (a.window > 0) { int f = pos0 + tk0 - a.window + 1; klo = f > 0 ? f : 0; }
+    __syncthreads();
+    const float qs0 = qscale[r0], qs1 = qscale[r1];
+    auto stage = [&](const unsigned char *cache, ulong64 b0, int kt) {
+        const int per_row = hd / 8;                       // 16 bytes a thread a step
+        for (int i = tid; i < AW_TK * per_row; i += 128) {
+            int k = i / per_row, c = i - k * per_row, t = kt + k;
+            uint4 v = make_uint4(0u, 0u, 0u, 0u);
+            if (t <= plast) v = *(const uint4 *)(cache + b0 + kv_slot(t, a.ring) * row_b + (ulong64)c * 16);
+            *(uint4 *)(KVs + k * LD + c * 8) = v;
+        }
+    };
+    float O[16][4];                                       // ndt n8 tiles (dq <= 128)
+    #pragma unroll
+    for (int j = 0; j < 16; j++) O[j][0] = O[j][1] = O[j][2] = O[j][3] = 0.0f;
+    float m0 = -1e30f, m1 = -1e30f, l0 = 0.0f, l1 = 0.0f;
+    float *mine = Sp + warp * AW_ROWS * AW_SLD;
+    for (int kt = klo; kt <= plast; kt += AW_TK) {
+        __syncthreads();                                  // the last tile's V and partials are read
+        stage(kc, base, kt);
+        __syncthreads();
+        // ---- this warp's partial S over its quarter of head_dim ----
+        float S[4][4];
+        #pragma unroll
+        for (int j = 0; j < 4; j++) S[j][0] = S[j][1] = S[j][2] = S[j][3] = 0.0f;
+        for (int kk = d0 / 8; kk < (d0 + dq) / 8; kk += 2) {     // k16 per step
+            unsigned qa[4], ql[4];
+            g2_ldsm_x4(qa[0], qa[1], qa[2], qa[3], Qs + (lane & 15) * LD + kk * 8 + (lane >> 4) * 8);
+            g2_ldsm_x4(ql[0], ql[1], ql[2], ql[3], Qlo + (lane & 15) * LD + kk * 8 + (lane >> 4) * 8);
+            #pragma unroll
+            for (int np = 0; np < 2; np++) {              // two n8 key tiles a load
+                unsigned kb[4];
+                g2_ldsm_x4(kb[0], kb[1], kb[2], kb[3],
+                           KVs + (np * 16 + (lane & 7) + ((lane >> 4) << 3)) * LD
+                               + kk * 8 + ((lane >> 3) & 1) * 8);
+                g2_mma(S[2 * np], qa[0], qa[1], kb[0]);
+                g2_mma(S[2 * np], qa[2], qa[3], kb[1]);
+                g2_mma(S[2 * np], ql[0], ql[1], kb[0]);
+                g2_mma(S[2 * np], ql[2], ql[3], kb[1]);
+                g2_mma(S[2 * np + 1], qa[0], qa[1], kb[2]);
+                g2_mma(S[2 * np + 1], qa[2], qa[3], kb[3]);
+                g2_mma(S[2 * np + 1], ql[0], ql[1], kb[2]);
+                g2_mma(S[2 * np + 1], ql[2], ql[3], kb[3]);
+            }
+        }
+        #pragma unroll
+        for (int j = 0; j < 4; j++) {
+            int col = j * 8 + (lane & 3) * 2;
+            mine[r0 * AW_SLD + col] = S[j][0];
+            mine[r0 * AW_SLD + col + 1] = S[j][1];
+            mine[r1 * AW_SLD + col] = S[j][2];
+            mine[r1 * AW_SLD + col + 1] = S[j][3];
+        }
+        __syncthreads();                                  // partials written, K read
+        stage(vc, base_v, kt);
+        // ---- the whole S, the four partials in warp order ----
+        #pragma unroll
+        for (int j = 0; j < 4; j++)
+            #pragma unroll
+            for (int e = 0; e < 4; e++) {
+                int r = e < 2 ? r0 : r1, col = j * 8 + (lane & 3) * 2 + (e & 1);
+                float s = Sp[r * AW_SLD + col];
+                #pragma unroll
+                for (int w = 1; w < 4; w++) s += Sp[(w * AW_ROWS + r) * AW_SLD + col];
+                S[j][e] = s;
+            }
+        // ---- the running maximum, the tile's probabilities, the rescale ----
+        float tm0 = -1e30f, tm1 = -1e30f;
+        #pragma unroll
+        for (int j = 0; j < 4; j++)
+            #pragma unroll
+            for (int e = 0; e < 4; e++) {
+                int t = kt + j * 8 + (lane & 3) * 2 + (e & 1);
+                bool top = e < 2;
+                int lo = top ? lo0 : lo1, hi = top ? hi0 : hi1;
+                float v = (t >= lo && t <= hi) ? S[j][e] / (top ? qs0 : qs1) * a.scale : -1e30f;
+                S[j][e] = v;
+                if (top) tm0 = fmaxf(tm0, v); else tm1 = fmaxf(tm1, v);
+            }
+        for (int off = 1; off < 4; off <<= 1) {
+            tm0 = fmaxf(tm0, __shfl_xor_sync(0xffffffffu, tm0, off));
+            tm1 = fmaxf(tm1, __shfl_xor_sync(0xffffffffu, tm1, off));
+        }
+        const float n0 = fmaxf(m0, tm0), n1 = fmaxf(m1, tm1);
+        const float c0 = expf(m0 - n0), c1 = expf(m1 - n1);
+        m0 = n0;
+        m1 = n1;
+        unsigned pa[4][2], pl[4][2];                      // P as A operands, its low halves
+        float ps0 = 0.0f, ps1 = 0.0f;
+        #pragma unroll
+        for (int j = 0; j < 4; j++) {
+            float p[4];
+            #pragma unroll
+            for (int e = 0; e < 4; e++)
+                p[e] = S[j][e] > -1e29f ? expf(S[j][e] - (e < 2 ? n0 : n1)) : 0.0f;
+            ps0 += p[0] + p[1];
+            ps1 += p[2] + p[3];
+            pa[j][0] = g2_pack(p[0], p[1]);
+            pa[j][1] = g2_pack(p[2], p[3]);
+            pl[j][0] = g2_pack(p[0] - __half2float(__float2half(p[0])),
+                               p[1] - __half2float(__float2half(p[1])));
+            pl[j][1] = g2_pack(p[2] - __half2float(__float2half(p[2])),
+                               p[3] - __half2float(__float2half(p[3])));
+        }
+        l0 = l0 * c0 + ps0;
+        l1 = l1 * c1 + ps1;
+        #pragma unroll
+        for (int j = 0; j < 16; j++) {
+            O[j][0] *= c0; O[j][1] *= c0;
+            O[j][2] *= c1; O[j][3] *= c1;
+        }
+        __syncthreads();                                  // V staged
+        // ---- O += P V over this warp's quarter ----
+        #pragma unroll
+        for (int dp = 0; dp < 16; dp += 4) {              // compile-time trip, so O stays in registers
+            if (dp >= ndt) break;
+            #pragma unroll
+            for (int j = 0; j < 4; j++) {                 // k8 key chunks
+                unsigned vb[4];
+                unsigned addr = (unsigned)__cvta_generic_to_shared(
+                    KVs + (j * 8 + (lane & 7)) * LD + d0 + dp * 8 + (lane >> 3) * 8);
+                asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];\n"
+                             : "=r"(vb[0]), "=r"(vb[1]), "=r"(vb[2]), "=r"(vb[3]) : "r"(addr));
+                #pragma unroll
+                for (int i = 0; i < 4; i++)
+                    if (dp + i < ndt) {
+                        g2_mma(O[dp + i], pa[j][0], pa[j][1], vb[i]);
+                        g2_mma(O[dp + i], pl[j][0], pl[j][1], vb[i]);
+                    }
+            }
+        }
+    }
+    for (int off = 1; off < 4; off <<= 1) {
+        l0 += __shfl_xor_sync(0xffffffffu, l0, off);
+        l1 += __shfl_xor_sync(0xffffffffu, l1, off);
+    }
+    // ---- O / sum into the row's token and head, this warp's quarter ----
+    #pragma unroll
+    for (int half_ = 0; half_ < 2; half_++) {
+        int r = half_ ? r1 : r0;
+        int hx = r / qs, ti = r - hx * qs;
+        if (hx >= nh || ti >= nt) continue;
+        float inv = 1.0f / (half_ ? l1 : l0);
+        float *o = out + (ulong64)(tk0 + ti) * a.os + (ulong64)(h0 + hx) * hd + d0;
+        #pragma unroll
+        for (int j = 0; j < 16; j++) {
+            if (j >= ndt) break;
+            int d = j * 8 + (lane & 3) * 2;
+            o[d]     = O[j][half_ * 2 + 0] * inv;
+            o[d + 1] = O[j][half_ * 2 + 1] * inv;
+        }
+    }
+}
+
 // ------------------------------------------------ decode KV row gather (X3)
 // RUNNER_CUDA_KV_GATHER (cuda.c kv_gather_*): the host KV cache stays
 // authoritative, so every decoded token's K and V rows go back to it. That
