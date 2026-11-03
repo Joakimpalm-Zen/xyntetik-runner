@@ -1917,7 +1917,13 @@ per-buffer ceiling still cannot be wrapped and says so.
 `RUNNER_METAL_ATTN_COOP=0` pins the byte-identical decode attention kernel.
 At prefill the batch's columns are scored eight per threadgroup from one read
 of each K element (`k_attn_tile`), which is byte-identical to the one-column
-kernel and is pinned off with `RUNNER_METAL_ATTN_TILE=0`.
+kernel and is pinned off with `RUNNER_METAL_ATTN_TILE=0`. Heads up to 256
+wide take it on every model, and heads up to 512 wide on gemma-4's E-series
+(gemma4 with per-layer embeddings, such as Nemotron 3.5 Bolt E4B), whose
+512-wide global layers otherwise run the one-column kernel over the whole
+history (route detail `attn_wide=on`). `RUNNER_METAL_ATTN_TILE_WIDE=0` keeps
+the one-column kernel for heads wider than 256, and `=1` takes the tile for
+them on any model; the output is the same bytes either way.
 The default is the cooperative KV read: one simdgroup owns a KV row and its
 lanes split `head_dim`, so a load covers 32 consecutive elements instead of 32
 rows. It reassociates the per-row dot into a `simd_sum`, which is why it
