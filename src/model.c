@@ -6618,6 +6618,10 @@ static const char *const dt_names[DT_N] = {
     "ple", "hc_mix", "attention", "deltanet/ssm", "hc_combine", "moe_route",
     "experts", "shared_expert", "dense_ffn", "head" };
 static double dt_acc[DT_N];
+// the attention core alone (scores, softmax, values: attn_rows' pool pass),
+// a part of the attention stage, which also holds the QKV/O projections and
+// the norms; read by R3.27's kill number and its kernel work
+static double dt_attn_core;
 // whole-pass accounting beside the stage split: backbone forwards by row
 // count (one row, or a batch) and the NextN/MTP head's runs
 static double dt_fwd_t[2], dt_mtp_t;
@@ -6953,6 +6957,9 @@ void model_debug_time_report(void) {
             fprintf(stderr, "TIME %-14s %8.3f s  %5.1f%%", dt_names[k], dt_acc[k], 100.0 * dt_acc[k] / tot);
             if (dev) fprintf(stderr, "  (device %.3f s, host %.3f s)", dt_dev[k], dt_acc[k] - dt_dev[k]);
             fputc('\n', stderr);
+            if (k == DT_ATTN && dt_attn_core > 0)
+                fprintf(stderr, "TIME   %-12s %8.3f s  %5.1f%%  (inside attention: scores, softmax, values)\n",
+                        "attn core", dt_attn_core, 100.0 * dt_attn_core / tot);
         }
     for (int k = 0; k < 2; k++)
         if (dt_fwd_n[k]) fprintf(stderr, "TIME forward %s: %ld passes, %ld rows, %8.3f s (%.1f ms/pass)\n",
@@ -13374,6 +13381,7 @@ NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
     const int hd = c->hd, q_dim = c->q_dim;
     const int dbg = c->dbg;
     // the batch's rows in one pool pass over heads (R3.27), else one pass a row
+    double core_t0 = dbg_time_on() ? dt_now() : 0;
     if (n > 1 && m->attn_batch >= 0) {
         attn_batch_job bj = { m, c };
         tpool_run(m->tp, attn_batch_items, &bj, m->n_head);
@@ -13384,6 +13392,7 @@ NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
             attn_run(m, &aj, m->n_head);
         }
     }
+    if (dbg_time_on()) dt_attn_core += dt_now() - core_t0;
     // per-row output gates: each touches its own row only
     for (int b = 0; b < n; b++) {
         if (m->attn_gate_heads && ly->wq_gate) {
