@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Nemotron 3.5 Lightning (`nemotron_h_moe`) routed its experts with the wrong
+  function; fixed. Every nemotron_h_moe file has given wrong output since
+  v0.2.0.** The publisher's router is a sigmoid; the published GGUFs carry no
+  `expert_gating_func` key, and the loader read the missing key as a softmax.
+  On the real Lightning-30B Q8_0 against llama.cpp's logits over the same
+  1,109 positions: perplexity 18.31 before, 11.83 now (llama.cpp 11.73), top-1
+  agreement 63.2% before, 95.8% now. A file that declares the key keeps it.
+  Requantize nothing; reload the file.
+
 - **CUDA prefill attention for 256- to 512-wide heads runs on the tensor
   cores, by default for gemma-4's E-series (R3.6.3.1).** gemma-4's 512-wide
   global layers took the tile's 8-row kernel on the CUDA cores, 79% of a
@@ -37,8 +46,10 @@ Current release and unreleased changes. Compatibility follows the
   1.24x to 1.38x at 16K and 1.37x to 1.55x at 32K across Llama-3.2-3B,
   Qwen2.5-3B, Qwen3-4B and Qwen2.5-7B. It is still 0.66x (Qwen2.5-3B) to
   0.86x (Llama-3.2-3B) of llama.cpp b11748 at 16K. The order of the sums
-  changed: the same bytes run to run for a geometry, its float32-reference
-  row owed. Report: `docs/compat-reports/r3.29-cuda-decode-attention-2026-11-03`.
+  changed: the same bytes run to run for a geometry, and its
+  float32-reference row is not distinguishable from the two-pass kernel's
+  (Qwen3-0.6B, mean KL 1.0006x, Wilcoxon p 0.890). Report:
+  `docs/compat-reports/r3.29-cuda-decode-attention-2026-11-03`.
 
 - **A recurrent draft model no longer refeeds its whole context on every
   rejected draft.** A draft whose layers fold state (LFM2, Gated DeltaNet)

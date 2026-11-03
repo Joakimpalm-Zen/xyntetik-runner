@@ -9,7 +9,6 @@
 - The Qwen3-4B 32K row is unstable: at that context its fp16 cache leaves 3 of 36 layers on the CPU, and the
   one-pass arm read 32.5 and 42.0 tok/s in its two rounds. It is shown, not read.
 - At 512 tokens the change is worth 0 to 2%.
-- The read against the publisher's float32 model (D1) is owed: the lab runs it (below).
 
 ## What was slow
 
@@ -86,19 +85,25 @@ Determinism is per geometry and position: the slice bounds, the tile order, the 
 rescale sequence are fixed. The order differs from the two-pass kernel's, so a receipt from an earlier build
 replays at tier T2 (token replay across builds), as any kernel change between builds does.
 
-## Against the publisher's float32 model (D1): owed
+## Against the publisher's float32 model (D1): passes
 
-The score files are made: `runner --score 20 -f tests/fixtures/gold-corpus-2k.txt -c 8192`, scored solo so
-every position takes the decode attention, on `qwen3-0.6b-q8_0.gguf` (sha256 `9465e63a...`), main 853e478c
-against ff613375 (8,007 positions each). The read over positions 4,000 to 6,000 against `Qwen/Qwen3-0.6B` at
-`c1899de2` in float32 needs more memory than this 16 GB host has. It was stopped for low memory after its
-forward, so it runs on the lab host. The decision rule is the one fixed for attn-dec on 2026-10-20: the paired
-Wilcoxon on per-position KL not worse at p < 0.05, mean KL at most 1.01x, and McNemar on margin-qualified top-1
-not worse. A miss keeps the one-pass kernel behind a flag, not a second rewrite.
+The score files: `runner --score 20 -f tests/fixtures/gold-corpus-2k.txt -c 8192`, scored solo so every position
+takes the decode attention, on `qwen3-0.6b-q8_0.gguf` (sha256 `9465e63a...`), main 853e478c (two-pass) against
+ff613375 (one-pass), 8,007 positions each. The 16 GB host stopped its own read for low memory after the
+forward, so the lab host read positions 4,000 to 5,999 against `Qwen/Qwen3-0.6B` at `c1899de2` in float32, by
+the rule fixed for attn-dec on 2026-10-20:
+
+| Rule | Two-pass | One-pass | Reading |
+|---|---|---|---|
+| Mean KL at most 1.01x | 0.0055037 | 0.0055070 | 1.0006x, pass |
+| Paired Wilcoxon on per-position KL not worse at p < 0.05 | | | z 0.14, p 0.890, pass |
+| McNemar on margin-qualified top-1 not worse | 1,432 of 1,432 | 1,432 of 1,432 | discordant 0 / 0, pass |
+
+The scorer's verdict is "not distinguishable". The command, the environment and every hash are in
+`d1-result.md`; the scorer's output is `gold-main-vs-r329.json` (sha256 `23e0d283d25e9e5e...`).
 
 ## Not in this change
 
 - The 8-heads-per-KV-head case (Qwen2.5-3B: 39% of DRAM peak even at 256 blocks). Its score phase reads each K
   row from shared memory once per head; reading a chunk once for all heads of the group is the next lever.
 - The split count by geometry (trial kept outside the tree; see above).
-- The D1 row (lab).
