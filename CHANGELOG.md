@@ -28,6 +28,18 @@ Current release and unreleased changes. Compatibility follows the
   0.86x (Llama-3.2-3B) of llama.cpp b11748 at 16K. The order of the sums
   changed: the same bytes run to run for a geometry, its float32-reference
   row owed. Report: `docs/compat-reports/r3.29-cuda-decode-attention-2026-11-03`.
+
+- **A recurrent draft model no longer refeeds its whole context on every
+  rejected draft.** A draft whose layers fold state (LFM2, Gated DeltaNet)
+  went back to position 0 on each rejection, so its catch-up refed the whole
+  context every round: an LFM2.5-350M draft for LFM2.5-1.2B on a four-core
+  CPU ran at 0.13x of plain decoding on prose (113 rounds at about 526 ms of
+  draft work each). Each round now snapshots the draft's fold after its
+  catch-up and a rejection restores it, so a round feeds the draft at most
+  `--draft-k` + 1 tokens; output is unchanged. CUDA rolls a fold back by one
+  forward only, so a CUDA-resident recurrent draft keeps the old refeed. The
+  spec line on stderr gains `draft catch-up N`.
+
 - **`RUNNER_CUDA_I8=1` runs CUDA prefill on int8 tensor cores (opt-in,
   compute capability 8.0+, Q8_0, Q4_K and Q6_K).** The activations are
   quantized per 32-element block, and the weights' own integer quants go to

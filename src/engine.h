@@ -242,6 +242,8 @@ typedef struct {
     // round, the target verifies them in one batched forward
     model_t *dm;           // draft model (NULL = off)
     int      dpos;         // draft KV position (may trail pos)
+    int      dsnap;        // a recurrent draft's fold snapshot position, -1 none
+                           // (R3.3.8: a rejection restores it, not position 0)
     int      draft_k;      // drafts per round
     // NextN/MTP head drafts: no draft model; the target's own predictor
     // block proposes draft_k tokens per round (model_mtp_* in model.h).
@@ -275,7 +277,8 @@ typedef struct {
     struct { int rounds, drafted, accepted,      // all drafts (every source)
                  gr_drafted, gr_accepted,        // grammar-pinned drafts only
                  lk_drafted, lk_accepted,        // prompt-lookup drafts only
-                 hint_drafted, hint_accepted; }  // of those, from draft hints
+                 hint_drafted, hint_accepted,    // of those, from draft hints
+                 draft_fed; }                    // tokens the draft's catch-up fed
              spec_st;                            // reset per generation
     // JC-R2 Phase 0 trace (RUNNER_GRAMMAR_TRACE=path): the current grammar
     // round's pinned bytes + drafted ids, stashed at draft time and emitted

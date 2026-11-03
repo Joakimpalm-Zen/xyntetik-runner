@@ -41,6 +41,7 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
     free(e->cdoc);
     memset(e, 0, sizeof(*e));
     e->cdoc_rec = true;
+    e->dsnap = -1;
     e->m = m;
     e->tok = tok;
     e->smp = smp;
@@ -117,6 +118,7 @@ void engine_reset(engine *e) {
     constraint_reset(e);
     cdoc_release(e);
     e->dpos = 0;
+    e->dsnap = -1;
     if (e->mtp_on) model_mtp_reset(e->m, 0);
 }
 
@@ -165,14 +167,26 @@ void engine_think_started(engine *e) {
 
 // Rewind the DRAFT model's position. An attention-KV draft takes the cheap
 // clamp: its rows are position-addressable and the catch-up refeeds
-// hist[dpos..pos). A RECURRENT draft cannot — its fold sits at the old dpos and
-// is not sliceable back to `target` — so it goes all the way to 0: the catch-up
-// then refeeds from position 0, whose centralized reset (model_forward_batch's
-// pos==0) rebuilds the fold correctly. Costs a full draft refeed per rewind,
-// paid only by recurrent drafts.
+// hist[dpos..pos). A RECURRENT draft's fold sits at the old dpos and is not
+// sliceable back to `target`, so it returns to the snapshot each round takes
+// right after its catch-up (dsnap, the target's own spec_fold_sync pattern):
+// the next catch-up refeeds the accepted drafts and the correction, at most
+// draft_k + 1 tokens. Until R3.3.8 it went to 0 on every rejection, a whole
+// context refeed (SS-000 row 3: 113 rounds at about 526 ms of draft work each
+// from a 350M LFM2.5 draft). Position 0 stays the fallback when the snapshot
+// is past `target` (a new prompt agreeing for less), or the backend cannot
+// restore it (CUDA rolls back one forward only, and a draft runs one a
+// token): its centralized reset (model_forward_batch's pos==0) rebuilds the
+// fold correctly.
 static void dpos_rewind(engine *e, int target) {
     if (e->dpos <= target) return;
-    e->dpos = (e->dm && model_has_recurrent(e->dm)) ? 0 : target;
+    if (!e->dm || !model_has_recurrent(e->dm)) { e->dpos = target; return; }
+    if (e->dsnap >= 0 && e->dsnap <= target && model_recurrent_restore(e->dm, e->dsnap))
+        e->dpos = e->dsnap;
+    else {
+        e->dpos = 0;
+        e->dsnap = -1;
+    }
 }
 
 // Tracer 6 — recurrent-fold rollback for a partially-accepted speculative
@@ -779,6 +793,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
         memcpy(e->hist, toks, sizeof(int32_t) * (size_t)best);
         e->pos = best;
         e->dpos = 0;          // the draft model's KV was not forked
+        e->dsnap = -1;
         e->hit_stop = false; e->stop_id = -1;
         sampler_reset(e->smp);   // a forked prefix is prompt: it does not seed the penalty window
         jsonv_init(&e->jv);
@@ -2593,11 +2608,11 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         if (dm || e->mtp_on || e->lookup_on || getenv("RUNNER_SPEC_STATS")) \
             fprintf(stderr, \
             "spec: %d rounds, %d drafted, %d accepted (%.2f tok/round)" \
-            ", grammar %d/%d, lookup %d/%d\n", \
+            ", grammar %d/%d, lookup %d/%d, draft catch-up %d\n", \
             st_rounds, st_drafted, st_accepted, \
             st_rounds ? (double)n_gen / st_rounds : 0, \
             st_gr_accepted, st_gr_drafted, \
-            st_lk_accepted, st_lk_drafted); } while (0)
+            st_lk_accepted, st_lk_drafted, e->spec_st.draft_fed); } while (0)
     // RUNNER_SPEC_PROF=1: per-phase wall time of the walk, printed with the
     // round summary. Draft = head/draft-model work, verify = the batched
     // keep-forward, logits = lazy per-row heads, tail = the closing forward.
@@ -2701,7 +2716,12 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             dl = model_forward_batch(dm, e->hist + e->dpos, chunk, e->dpos,
                                      e->dpos + chunk == e->pos + 1);
             e->dpos += chunk;
+            e->spec_st.draft_fed += chunk;
         }
+        // a recurrent draft's fold now covers hist[0..pos], the pending token
+        // included: the point a rejection returns to (dpos_rewind)
+        if (!nd && dl && dm && model_has_recurrent(dm))
+            e->dsnap = model_recurrent_snapshot(dm, e->dpos) ? e->dpos : -1;
         // draft up to K tokens greedily (nd == 0 degrades to plain decoding)
         while (!gr && dl && nd < K && e->pos + nd + 1 < m->n_ctx &&
                e->dpos + 1 < dm->n_ctx) {
