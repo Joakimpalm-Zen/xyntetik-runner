@@ -36,8 +36,10 @@ Current release and unreleased changes. Compatibility follows the
   1.24x to 1.38x at 16K and 1.37x to 1.55x at 32K across Llama-3.2-3B,
   Qwen2.5-3B, Qwen3-4B and Qwen2.5-7B. It is still 0.66x (Qwen2.5-3B) to
   0.86x (Llama-3.2-3B) of llama.cpp b11748 at 16K. The order of the sums
-  changed: the same bytes run to run for a geometry, its float32-reference
-  row owed. Report: `docs/compat-reports/r3.29-cuda-decode-attention-2026-11-03`.
+  changed: the same bytes run to run for a geometry, and its
+  float32-reference row is not distinguishable from the two-pass kernel's
+  (Qwen3-0.6B, mean KL 1.0006x, Wilcoxon p 0.890). Report:
+  `docs/compat-reports/r3.29-cuda-decode-attention-2026-11-03`.
 
 - **A recurrent draft model no longer refeeds its whole context on every
   rejected draft.** A draft whose layers fold state (LFM2, Gated DeltaNet)
