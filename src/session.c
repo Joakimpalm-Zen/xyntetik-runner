@@ -60,8 +60,10 @@ const char *session_key_mismatch(const session_meta *sm, const engine *e,
         snprintf(buf, cap, "KV type %s in the image, %s here: resume with --kv %s",
                  sm->kv_type, kv_type_of(m), sm->kv_type);
     else
-        snprintf(buf, cap, "the model geometry differs (context and KV type agree; "
-                 "model key %016llx in the image, %016llx here)",
+        snprintf(buf, cap, "the model's identity differs: its geometry, tokenizer or "
+                 "file (context and KV type agree; an image written before 1.13.0 "
+                 "keyed the model by its path as typed and resumes on 1.12 only; model "
+                 "key %016llx in the image, %016llx here)",
                  (unsigned long long)sm->model_key, (unsigned long long)e->model_key);
     return buf;
 }
