@@ -284,3 +284,32 @@ def test_granitehybrid_cpu_moe_runs_on_the_device(runner_bin, models, cfg):
     # the shared expert has no gate: every bank stays on the host
     assert re.search(r"experts 0/\d+ layers on GPU", err), err
     assert proc.stdout == cpu.stdout
+
+
+def test_nemotron_h_moe_routes_with_a_sigmoid_when_the_file_names_no_gating(
+        runner_bin, tmp_path):
+    """The publisher's router (NemotronHTopkRouter) is a sigmoid, and the
+    published GGUFs carry no expert_gating_func key; llama.cpp's graph
+    hardcodes the sigmoid. Runner read the missing key as softmax: on the real
+    Lightning-30B Q8_0 it scored a perplexity of 18.31 where llama.cpp scored
+    11.73 (top-1 agreement 63%, 2026-11-03). The anchor is the key's own
+    numbering (1 softmax, 2 sigmoid): a file without the key must score
+    exactly as the same file declaring 2, and not as one declaring 1. The
+    fixture's router is random, so the two functions route differently."""
+    scores = {}
+    for tag, gating in (("absent", None), ("sigmoid", "2"), ("softmax", "1")):
+        pfx = tmp_path / tag
+        env = dict(os.environ)
+        env.pop("HYBRID_TEST_GATING", None)
+        if gating:
+            env["HYBRID_TEST_GATING"] = gating
+        subprocess.run([sys.executable, ROOT / "scripts/make-test-hybrid.py", str(pfx),
+                        "--arch", "nemotron_h_moe"], check=True, cwd=ROOT, env=env,
+                       stdout=subprocess.DEVNULL)
+        p = subprocess.run([runner_bin, "-m", str(pfx.with_suffix(".gguf")), "--score",
+                            "-p", "the quick brown fox jumps over the lazy dog", "--gpu", "off",
+                            "--no-tray"], cwd=ROOT, capture_output=True, timeout=120)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        scores[tag] = json.loads(p.stdout)["logprobs"]
+    assert scores["absent"] == scores["sigmoid"]
+    assert scores["absent"] != scores["softmax"]

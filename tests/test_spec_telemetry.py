@@ -111,3 +111,29 @@ def test_two_slots_of_an_mtp_model_shut_down_cleanly(tmp_path):
     # about the shutdown path; the harness does not judge it there either.
     if sys.platform != "win32":
         assert srv.exit_code == 0, srv.exit_code
+
+
+def test_spec_prof_prints_when_a_constrained_document_completes(tmp_path):
+    """R3.3.10: RUNNER_SPEC_PROF=1 prints its line at every exit of the
+    speculative walk. Three early returns on a completed constrained
+    document (a close before a token's forward, mid-round, at a plain token)
+    printed the round summary but skipped the profile, so such a run never
+    reported where its time went. A schema closes the turn the moment its
+    object ends (plain --json mode on this fixture writes `{}` and then runs
+    on to a stop token, which leaves through the common exit and proved
+    nothing: the old build printed the line there too). The model drafts for
+    itself."""
+    import os
+    model = ROOT / "test.gguf"
+    schema = tmp_path / "s.json"
+    schema.write_text('{"type":"object","properties":{"a":{"type":"integer"}},"required":["a"]}')
+    env = dict(os.environ, RUNNER_SPEC_PROF="1")
+    p = subprocess.run(
+        [str(find_runner(ROOT)), "-m", str(model), "-p", "A JSON object:", "-n", "400",
+         "--temp", "0", "--gpu", "off", "--json", str(schema), "--draft", str(model),
+         "--no-tray"],
+        cwd=ROOT, env=env, capture_output=True, timeout=120)
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode == 0, err
+    assert "a" in json.loads(p.stdout.decode(errors="replace"))
+    assert "spec: " in err and "spec-prof: draft " in err, err[-800:]
