@@ -105,10 +105,12 @@ static int g_n_batch = N_BATCH;
 // for real files' residue; on a toy whose honest residue is a millionth of
 // that, a whole wrong term can hide under it: the Mamba-2 scan with its D
 // skip dropped moved a toy hybrid's logits by 4.9e-4 of range, inside 2e-3,
-// where the healthy kernels sit at 1.4e-8 (R4.10, 2026-10-31).
-static double gpu_dev_limit(void) {
+// where the healthy kernels sit at 1.4e-8 (R4.10, 2026-10-31). Unset, the
+// arm's own bound applies: GPU_DEV_FRAC, or GPU_DEV_FRAC_ROUTED for a MoE
+// file's free routing (a min() against GPU_DEV_FRAC held that arm to 1e-3).
+static double gpu_dev_limit(double dflt) {
     const char *e = getenv("GPU_ID_LIMIT");
-    if (!e || !*e) return GPU_DEV_FRAC;
+    if (!e || !*e) return dflt;
     double v = strtod(e, NULL);
     if (!(v > 0) || v > GPU_DEV_FRAC) {
         fprintf(stderr, "GPU_ID_LIMIT=%s: a fixture's bound must be in (0, %g]\n",
@@ -342,7 +344,7 @@ static int self_test(void) {
 }
 
 int main(int argc, char **argv) {
-    (void)gpu_dev_limit();   // a bad GPU_ID_LIMIT stops before any run
+    (void)gpu_dev_limit(GPU_DEV_FRAC);   // a bad GPU_ID_LIMIT stops before any run
     if (argc > 1 && strcmp(argv[1], "--self-test") == 0) return self_test();
     const char *path = argc > 1 ? argv[1] : "test.gguf";
     if (argc > 2) g_gpu_layers = atoi(argv[2]);
@@ -515,16 +517,15 @@ int main(int argc, char **argv) {
     }
 
     if (!g_expert_used) {
-        int rc = compare_logits(cpu, gpu, nv_cpu, STEPS, gpu_dev_limit(), true);
+        int rc = compare_logits(cpu, gpu, nv_cpu, STEPS, gpu_dev_limit(GPU_DEV_FRAC), true);
         free(cpu); free(gpu);
         return rc;
     }
 
     // A MoE file: free routing at the routed bound, then the pinned arm.
-    double limit = gpu_dev_limit();
     printf("  free routing (the device's own expert choices):\n");
     int rc = compare_logits(cpu, gpu, nv_cpu, STEPS,
-                            limit < GPU_DEV_FRAC_ROUTED ? limit : GPU_DEV_FRAC_ROUTED, false);
+                            gpu_dev_limit(GPU_DEV_FRAC_ROUTED), false);
     free(gpu);
     if (rc) { free(cpu); return rc; }
     size_t routings = model_moe_pin_replay(true);
@@ -559,7 +560,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     printf("  pinned routing (the CPU run's expert choices):\n");
-    rc = compare_logits(cpu, pin, nv_cpu, STEPS, limit, true);
+    rc = compare_logits(cpu, pin, nv_cpu, STEPS, gpu_dev_limit(GPU_DEV_FRAC), true);
     free(cpu); free(pin);
     return rc;
 }
