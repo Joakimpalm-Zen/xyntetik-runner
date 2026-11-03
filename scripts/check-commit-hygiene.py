@@ -3,7 +3,9 @@
 
 The rule is AGENTS.md "Never publish conversation content or session
 identifiers": no session URLs or ids, no tool-default trailers that carry
-them, no e-mail addresses, and exactly one signature form,
+them, no e-mail addresses, no host paths or machine or session names (the
+list the file check reads, scripts/public_content.py), and exactly one
+signature form,
 
     Co-Authored-By: <Agent> (<Model>) & Joakimpalm-Zen
 
@@ -23,9 +25,13 @@ rule was already written down; this makes it enforced.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import public_content  # noqa: E402  the host paths and machine/session names
 
 # Anything matching one of these is a session identifier or a tool-default
 # trailer carrying one. Case-insensitive.
@@ -57,6 +63,10 @@ def problems(text: str) -> list[str]:
         for m in rx.finditer(text):
             line = text[text.rfind("\n", 0, m.start()) + 1:].split("\n", 1)[0]
             out.append(f"{what}: {line.strip()[:120]}")
+    # the same host paths and machine or session names the file check
+    # refuses (scripts/public_content.py): a message is as public as a file
+    for what, hit in public_content.found(text):
+        out.append(f"{what}: {hit}")
     trailer_lines = set()
     for m in TRAILER.finditer(text):
         body = m.group(1).strip()
@@ -108,6 +118,12 @@ def self_test() -> int:
         "Co-Authored-By: Copilot <175728472+Copilot@users.noreply.github.com>\n",
         "Co-Authored-By: Claude <claude@example.com>\n",
         "contact me at someone@example.com\n",
+        # the names are split so this file does not spell them
+        "R4.27: measured on the " + "gala" + "xa1 slice\n",
+        "Merge branch 'r3' of " + "/home/" + "lab/runner into r3\n",
+        "Merge pull request #9 from x/y\n\nCUDA cells from " + "windows" + "3070\n",
+        "measured on the " + "Black" + "well box\n",
+        "Metal cell on the " + "M" + "1\n",
     ]
     good = [
         "Fix thing\n\nCo-Authored-By: Claude Code (Fable 5.1) & Joakimpalm-Zen\n",
@@ -117,6 +133,10 @@ def self_test() -> int:
         "Merge pull request #34 from Joakimpalm-Zen/release-0.4.9\n",
         "docs: link https://github.com/Joakimpalm-Zen/xyntetik-runner/releases\n",
         "server: session_reconnection keeps the slot; see session_persistence.md\n",
+        "cuda: the RTX 3070 cell on the 16 GB Windows host; the lab box's MIG slice\n",
+        "cuda: sm_120 on the NVIDIA " + "Black" + "well RTX PRO 6000 " + "Black" + "well\n",
+        "metal: the Apple " + "M" + "1 laptop\n",
+        "docs: the NVIDIA\n" + "Black" + "well and Apple\n" + "M" + "1, wrapped\n",
     ]
     ok = all(problems(b) for b in bad) and not any(problems(g) for g in good)
     if not ok:

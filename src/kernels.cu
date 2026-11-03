@@ -5411,7 +5411,7 @@ extern "C" __global__ void k_moe_route(const float *logits, int *sel,
     // reciprocal mirror of the host's -freciprocal-math codegen briefly
     // lived here chasing selw bit-identity; that goal was retired by the
     // eager certification pin (RUNNER_MOE_EAGER=1, bf93510), and the
-    // Blackwell splice-proof (suite plan, 2026-07-29 evening: per-kernel
+    // lab MIG-slice splice-proof (suite plan, 2026-07-29 evening: per-kernel
     // PTX hashing + splicing the old body restores 102.9 tok/s from 79.7)
     // showed the rcp.rn.f32 form JITs ~58 us/launch slower on the MIG —
     // x48 layers = 23% of MoE decode. Plain division satisfies the fused
