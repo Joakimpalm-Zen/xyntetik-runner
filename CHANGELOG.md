@@ -20,13 +20,15 @@ Current release and unreleased changes. Compatibility follows the
   detail says `attn_wide=on`. Report:
   `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03`.
 
-- **A Metal layer split no longer refuses a file whose output norm is stored
-  last.** A split wraps a prefix of the file, and any non-layer tensor stored
-  after the layers refused it; Qwen's Qwen2.5-1.5B-Instruct Q8_0 stores
-  `output_norm.weight` (1 kB) last, so `--gpu N` on it ran wholly on the CPU.
-  The head and the embedding, which a split never reads from the device, may
-  now follow the layers; any other tensor there still refuses the split, and
-  the message names it.
+- **A Metal layer split no longer refuses a file stored in name order or with
+  its output norm last.** A split wraps a prefix of the file, and it refused
+  layers stored out of block order and any non-layer tensor after them; Qwen's
+  Qwen2.5-1.5B-Instruct Q8_0 does both (blk.0, blk.1, blk.10 to blk.19, blk.2,
+  ..., then `output_norm.weight`), so `--gpu N` on it ran wholly on the CPU.
+  The wrap now reaches the farthest tensor of the device's layers whatever
+  their order, and tensors a split never reads from the device (the head, the
+  embedding, gemma-4 E-series' per-layer tables) may follow the layers; any
+  other tensor there still refuses the split, and the message names it.
 
 - **CUDA decode attention reads the cache once (R3.29).** The grouped decode
   kernel read K twice, a pass for the softmax maximum and then K with V; it

@@ -17,7 +17,8 @@ ZERO_FIRST_DIM = False
 WRAP_FIRST_OFFSET = False
 ARCH = "llama"
 ALPHA_ORDER = False
-NORM_LAST = False   # --norm-last: output_norm.weight stored after every layer
+MOVE_LAST = []      # --move-last NAME: that tensor stored after every other
+EXTRA_TAIL = []     # --extra-tail NAME: a 4-float tensor no loader reads, stored last
 DROP_V = set()      # --drop-v: layers whose attn_v.weight is omitted (V = raw K)  # --alpha-order: tensors stored in name order, not block order
 AGENT_PROFILE = False
 AGENT_FEATURES = ["dense", "json_schema"]
@@ -254,10 +255,18 @@ while i < len(args):
         # shape on the fixture so the backward's absent-V path is gated.
         i += 1
         DROP_V = {int(x) for x in args[i].split(",")}
-    elif a == "--norm-last":
-        # Store output_norm.weight last, after the layers, as Qwen's
-        # Qwen2.5-1.5B-Instruct Q8_0 does; the model is the same.
-        NORM_LAST = True
+    elif a == "--extra-tail":
+        # Append a small tensor no architecture names, after every other
+        # (repeatable): a layout check that cannot know whether a tensor is
+        # read must refuse it.
+        i += 1
+        EXTRA_TAIL.append(args[i])
+    elif a == "--move-last":
+        # Store the named tensor last, after the layers (repeatable), as
+        # Qwen's Qwen2.5-1.5B-Instruct Q8_0 stores output_norm.weight; the
+        # model is the same.
+        i += 1
+        MOVE_LAST.append(args[i])
     elif a == "--alpha-order":
         # Store the tensors in name order (blk.0, blk.1, blk.10, ..., output,
         # token_embd) instead of block order. Real files come out this way
@@ -1104,9 +1113,12 @@ if QUANT in ("nvfp4", "nvfp4-fork40") and not any(
 tensors = _typed
 if ALPHA_ORDER:
     tensors = sorted(tensors, key=lambda t: t[0])
-if NORM_LAST:
-    tensors = [t for t in tensors if t[0] != "output_norm.weight"] + \
-              [t for t in tensors if t[0] == "output_norm.weight"]
+for _name in EXTRA_TAIL:
+    tensors.append((_name, [4], struct.pack("<4f", 0.0, 0.0, 0.0, 0.0), 0))   # F32
+for _name in MOVE_LAST:
+    if not any(t[0] == _name for t in tensors):
+        sys.exit(f"--move-last {_name!r} names no tensor")
+    tensors = [t for t in tensors if t[0] != _name] + [t for t in tensors if t[0] == _name]
 if GPU_UNSUPPORTED and not any(t[0] == GPU_UNSUPPORTED for t in tensors):
     sys.exit(f"--gpu-unsupported tensor {GPU_UNSUPPORTED!r} was not generated")
 

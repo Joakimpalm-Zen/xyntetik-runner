@@ -1803,13 +1803,28 @@ static bool metal_partial_pays(const model_t *m, uint64_t wrapped) {
 // split may leave it there only when the device never reads it from the
 // wrap under a split: the head (output_norm, output) runs on the device only
 // at a full offload (the whole file wrapped) and the CPU finishes a split,
-// out_norm is copied into its own buffer anyway, and token_embd is
-// dequantized on the host. Qwen's Qwen2.5-1.5B-Instruct Q8_0 stores
-// output_norm.weight last, so one trailing 1 kB norm refused every split of
-// the file until R4.31.
-static bool metal_split_never_reads(const char *name) {
-    return !strcmp(name, "output_norm.weight") || !strcmp(name, "output.weight") ||
-           !strcmp(name, "token_embd.weight");
+// out_norm is copied into its own buffer anyway, token_embd is dequantized
+// on the host, gemma-4 E-series' per-layer projection and its norm are read by
+// the host's prepass, and a row-gathered table (metal_host_only: E-series'
+// per-layer token table) is left out of every wrap. A tensor this list does
+// not name is refused: the device might read it.
+//
+// The layers themselves may be stored in any order: the wrap reaches the
+// farthest tensor of the device's layers (end_of below is a running
+// maximum), and a host layer stored inside that span is wrapped zero-copy and
+// never read, its bytes counted against the budget like any wrapped byte.
+// Qwen's Qwen2.5-1.5B-Instruct Q8_0 is stored in name order (blk.0, blk.1,
+// blk.10 to blk.19, blk.2, ...) with output_norm.weight last, and both the
+// order and the trailing norm refused every split of it until R4.31.
+static bool metal_split_never_reads(const model_t *m, const gguf_tensor *w) {
+    return !strcmp(w->name, "output_norm.weight") || !strcmp(w->name, "output.weight") ||
+           !strcmp(w->name, "token_embd.weight") ||
+           // gemma-4 E-series' per-layer input: the host's prepass reads the
+           // projection and its norm (model_ple_prepass); the device reads
+           // only each block's own ple_proj
+           !strcmp(w->name, "per_layer_model_proj.weight") ||
+           !strcmp(w->name, "per_layer_proj_norm.weight") ||
+           metal_host_only(m, w);   // the row-gathered tables, never wrapped
 }
 
 static int metal_fit_layers(model_t *m, uint64_t budget, int cap,
@@ -1830,17 +1845,17 @@ static int metal_fit_layers(model_t *m, uint64_t budget, int cap,
         int li = strncmp(w->name, "blk.", 4) ? -1 : atoi(w->name + 4);
         if (li < 0) {
             if (prev_layer >= 0) {                         // non-layer after a layer
-                if (metal_split_never_reads(w->name)) continue;
+                if (metal_split_never_reads(m, w)) continue;
                 *refused = w->name;
                 ok = false;
                 break;
             }
             if (end > prologue_end) prologue_end = end;
-        } else if (li >= m->n_layer || li < prev_layer) {
+        } else if (li >= m->n_layer) {
             *refused = w->name;
-            ok = false;                                    // out of range or unordered
+            ok = false;                                    // out of range
         } else {
-            prev_layer = li;
+            prev_layer = li;                               // any order (see above)
             if (end > end_of[li + 1]) end_of[li + 1] = end;
         }
     }
@@ -2277,8 +2292,8 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
             if (!layout_ok) {
                 char why[256];
                 snprintf(why, sizeof why, "its tensor layout forbids a partial split "
-                         "(%s is stored after the layers or out of order; a split "
-                         "wraps a file prefix)", refused ? refused : "a tensor");
+                         "(%s is stored after a layer, or names a layer out of range; "
+                         "a split wraps a file prefix)", refused ? refused : "a tensor");
                 if (wlen > budget) {
                     char msg[320];
                     snprintf(msg, sizeof msg, "model exceeds the Metal working set and %s", why);
