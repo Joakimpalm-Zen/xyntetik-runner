@@ -4061,7 +4061,9 @@ stands, and `runner_telemetry.finish_detail` says
 spelling (`<parameter pattern="...">`) and anything on a `required` or named
 turn's grammar stay faults (`envelope_unmapped`). vLLM's Python parser
 (v0.11.0) recovers these calls; its Rust parser and llama.cpp's require the
-closer, and llama.cpp constrains the turn after its first opener.
+closer, and llama.cpp constrains the turn after its first opener. Because the
+two newest parsers require it, the tolerance exists for the model's benefit,
+not as a format: a model author should fix the envelope.
 
 Nemotron Nano (`nemotron`) speaks its own protocol: the declarations as one
 `<AVAILABLE_TOOLS>[...]` JSON list after the caller's system text, and a
