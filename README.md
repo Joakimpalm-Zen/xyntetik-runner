@@ -261,6 +261,8 @@ and shrinks the other half to 4 bits.
 ./runner -m model.gguf --serve -c 32768 --kv q8     # the gentler setting, about half
 ```
 
+On a sliding-window model (gemma-3, gemma-4, gpt-oss and others) Runner keeps only each sliding layer's window when the full cache would not fit, with identical output ([`--kv-ring`](MANUAL.md#cli-kv-ring)).
+
 `--info fit` shows what each setting buys on your machine before you load anything.
 [Cache formats and their measured cost](MANUAL.md#long-contexts)
 

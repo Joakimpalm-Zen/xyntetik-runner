@@ -5045,6 +5045,63 @@ static void runtime_context(model_t *m, const model_params *p) {
     if (m->n_batch > n_ctx) m->n_batch = n_ctx;
 }
 
+// Bytes of one instance's KV cache with sliding layers owning `swa_rows`
+// rows and the rest n_ctx, as runtime_kv_layout would allocate it.
+static uint64_t kv_cache_bytes(const model_t *m, int swa_rows, int n_ctx) {
+    uint64_t t = 0;
+    for (int l = 0; l < m->n_layer; l++)
+        if (model_kv_owner(m, l) == l)
+            t += (uint64_t)(model_is_swa(m, l) ? swa_rows : n_ctx) *
+                 model_kv_row_bytes_sum(m, l);
+    return t;
+}
+
+// --kv-ring / RUNNER_KV_RING (the override): on, off, or auto. Auto turns
+// the ring on when the weights plus every slot's flat cache would not fit
+// what the model is placed in: the device's offload budget on a discrete
+// GPU (the loader's own arithmetic, gpu_offload_budget), the working-set
+// limit on unified memory, available RAM on the CPU. There the flat cache is
+// what pushes layers off the device (or the host into paging); otherwise the
+// ring buys nothing and costs some prefix-cache hits. The reason either way
+// is kept for -v.
+static bool kv_ring_wanted(model_t *m, const model_params *p, int rows, int n_ctx) {
+    int mode = p->kv_ring;
+    const char *e = getenv("RUNNER_KV_RING");
+    if (e && *e)
+        mode = !strcmp(e, "auto") ? KV_RING_AUTO
+             : !strcmp(e, "0") || !strcmp(e, "off") ? KV_RING_OFF : KV_RING_ON;
+    char *why = m->kv_ring_why;
+    size_t cap_why = sizeof m->kv_ring_why;
+    const char *src = e && *e ? "RUNNER_KV_RING" : "--kv-ring";
+    if (mode == KV_RING_ON)  { snprintf(why, cap_why, "on (%s)", src); return true; }
+    if (mode == KV_RING_OFF) { snprintf(why, cap_why, "off (%s)", src); return false; }
+    uint64_t slots = p->n_seq > 1 ? (uint64_t)p->n_seq : 1;
+    uint64_t flat = kv_cache_bytes(m, n_ctx, n_ctx) * slots;
+    uint64_t ring = kv_cache_bytes(m, rows, n_ctx) * slots;
+    uint64_t weights = model_cuda_weight_estimate(m, p), cap = 0, head = 0;
+    size_t ws = 0;
+    const char *where;
+    if (p->gpu_mode != GPU_OFF && gpu_offload_budget(p->reserve_vram_pct, &cap, &head)) {
+        cap = cap > head ? cap - head : 0;
+        where = "the device budget";
+    } else if (p->gpu_mode != GPU_OFF && gpu_max_working_set(&ws)) {
+        cap = ws;
+        where = "the GPU working set";
+    } else {
+        // --reserve-ram P: this process may use P% of RAM
+        cap = plat_ram_available_bytes();
+        uint64_t share = p->reserve_ram_pct > 0
+                       ? plat_ram_bytes() / 100 * (uint64_t)p->reserve_ram_pct : 0;
+        if (share && share < cap) cap = share;
+        where = share && share == cap ? "--reserve-ram's share of RAM" : "available RAM";
+    }
+    bool on = cap > 0 && ring < flat && weights + flat > cap;
+    snprintf(why, cap_why, "%s (auto: weights %.0f MB + flat cache %.0f MB %s %s %.0f MB%s)",
+             on ? "on" : "off", weights / 1e6, flat / 1e6, on ? "exceed" : "fit",
+             where, cap / 1e6, on ? "" : "; --kv-ring on forces it");
+    return on;
+}
+
 // The KV cache's layout: the sliding-window ring (opt-in), every layer's
 // offset into the cache, the MTP head's region, and tied-V's K table (opt-in).
 static bool runtime_kv_layout(model_t *m, const model_params *p, int n_ctx) {
@@ -5055,10 +5112,11 @@ static bool runtime_kv_layout(model_t *m, const model_params *p, int n_ctx) {
     // first token still reads back to pos - swa_window + 1, so the live span is
     // swa_window + n_batch - 1; one spare row keeps the arithmetic obvious.
     //
-    // OPT-IN, and it is not free. Two engine features address KV as flat
-    // absolute rows (see model_kv_byte_off) and refuse under a ring rather than
-    // read out of bounds, so a server loses shared prefix caching and rewind.
-    // That is a real trade, which is why the default stays flat.
+    // Not free, which is why auto (the default) turns it on only when the
+    // flat cache does not fit: rewind and the prefix cache resume from what
+    // the ring still holds (docs/kv-ring.md), so a shared-prefix hit is lost
+    // when the cached prompt runs past the shared part by more than n_batch + 1
+    // tokens, and Metal's decode microbatch runs ring members one at a time.
     //
     // The device kernels must know the modulo too, or a ring layer on the GPU
     // reads a row holding a different token: on an RTX 3070 partial split
@@ -5067,17 +5125,16 @@ static bool runtime_kv_layout(model_t *m, const model_params *p, int n_ctx) {
     // ring through attn_args and kv_slot(); Metal's do not, so a Metal build
     // refuses rather than returning wrong numbers.
     m->kv_ring = 0;
+    m->kv_ring_lo = 0;
+    m->kv_ring_why[0] = 0;
     if (m->swa_window > 0 && m->l_is_swa) {
-        const char *e = getenv("RUNNER_KV_RING");
-        if (e && *e && strcmp(e, "0") != 0) {
-            int rows = model_kv_ring_rows(m->swa_window, m->n_batch, n_ctx);
-            // Metal joined the ring on 2026-09-01: its store and attention
-            // kernels resolve rows through the same modulo the CPU and CUDA
-            // paths use (kv_row_off / model_kv_row_at / kv_slot), so the
-            // former refusal here is gone. The microbatch decode declines
-            // ring members and falls back to sequential, which is ring-aware.
-            if (rows < n_ctx) m->kv_ring = rows;
-        }
+        int rows = model_kv_ring_rows(m->swa_window, m->n_batch, n_ctx);
+        // Metal joined the ring on 2026-09-01: its store and attention
+        // kernels resolve rows through the same modulo the CPU and CUDA
+        // paths use (kv_row_off / model_kv_row_at / kv_slot), so the
+        // former refusal here is gone. The microbatch decode declines
+        // ring members and falls back to sequential, which is ring-aware.
+        if (rows < n_ctx && kv_ring_wanted(m, p, rows, n_ctx)) m->kv_ring = rows;
     }
     // per-layer element offsets into the (possibly heterogeneous) KV cache
     m->kv_off = malloc(sizeof(size_t) * (m->n_layer + 2));
@@ -5526,9 +5583,10 @@ static void runtime_report(const model_t *m, size_t kv_bytes, size_t k_bytes) {
                 "kv reachable", reach / 1e6, n_swa, m->n_layer,
                 m->swa_window);
     if (model_kv_ring_active(m))
-        fprintf(stderr, "%-24s %d rows on %d sliding layers "
-                "(no prefix cache, no partial rewind)\n",
-                "kv ring", m->kv_ring, n_swa);
+        fprintf(stderr, "%-24s %d rows on %d sliding layers, %s\n",
+                "kv ring", m->kv_ring, n_swa, m->kv_ring_why);
+    else if (m->kv_ring_why[0])
+        fprintf(stderr, "%-24s %s\n", "kv ring", m->kv_ring_why);
     fprintf(stderr, "%-24s %d\n", "batch", m->n_batch);
     gguf_tensor *w0 = m->layers[0].recurrent ? m->layers[0].wqkv
                                               : m->layers[0].wq;

@@ -1369,6 +1369,13 @@ static void usage_to(FILE *f, const char *prog) {
         "                 28%%; E2M1 values, one UE4M3 scale per 16 channels,\n"
         "                 quantised after RoPE). All three are lossy: output\n"
         "                 differs from an f16 cache, fp4 K costs the most\n"
+        "  --kv-ring auto|on|off  give sliding-window layers only their window\n"
+        "                 of KV rows (output-identical to the flat cache). auto\n"
+        "                 (default): on when the weights and the flat cache do\n"
+        "                 not fit the device budget or RAM; -v says why. A\n"
+        "                 shared-prefix hit is lost when the cached prompt runs\n"
+        "                 past the shared part by more than one batch.\n"
+        "                 RUNNER_KV_RING overrides it\n"
         "  --mlock        wire the weights into RAM so the OS cannot evict them.\n"
         "                 Off by default and allowed to fail: on a machine with\n"
         "                 little headroom, locking the model can cause the very\n"
@@ -1794,8 +1801,9 @@ static int run_fit_check(const char *path, int n_ctx_want,
     // allocates them; what a load can still do differently is the opt-in
     // ring, which gives sliding-window layers only their window.
     if (f.swa)
-        printf("  note          KV is the flat cache a load allocates; "
-               "RUNNER_KV_RING gives sliding-window layers only their window\n");
+        printf("  note          KV is the flat cache; a load turns on the KV ring "
+               "(--kv-ring auto) when the weights and this cache do not fit, "
+               "giving sliding-window layers only their window\n");
 
     gguf_close(&g);
     return 0;
@@ -2479,6 +2487,13 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             else if (!strcmp(v, "fp4")) o->mp.kv_fp4 = true;
             else if (!strcmp(v, "k8v4")) o->mp.kv_split = true;
             else if (strcmp(v, "f16")) { fprintf(stderr, "error: --kv expects f16, q8, k8v4 or fp4\n"); *rc = 1; return false; }
+        }
+        else if (!strcmp(a, "--kv-ring")) {
+            const char *v = NEXT;
+            if (!strcmp(v, "auto")) o->mp.kv_ring = KV_RING_AUTO;
+            else if (!strcmp(v, "on")) o->mp.kv_ring = KV_RING_ON;
+            else if (!strcmp(v, "off")) o->mp.kv_ring = KV_RING_OFF;
+            else { fprintf(stderr, "error: --kv-ring expects auto, on or off\n"); *rc = 1; return false; }
         }
         else if (!strcmp(a, "--mlock")) o->mp.mlock = true;
         else if (!strcmp(a, "--moe-prefetch")) {

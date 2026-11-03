@@ -321,6 +321,7 @@ typedef struct {
     int       kv_ring;       // rows a sliding layer owns (0 = flat n_ctx rows)
     int       kv_ring_lo;    // oldest position every ring layer still holds
                              // (model_kv_ring_note keeps it; docs/kv-ring.md)
+    char      kv_ring_why[192];   // why the ring is on or off, for -v
     // R3.1.7 split attention: 0 decides per call (fewer heads than threads,
     // a long span), 1 always, -1 never. RUNNER_ATTN_SPLIT=0 sets -1 at load,
     // for an A/B; the split is bit-identical, so only speed can differ.
@@ -850,6 +851,7 @@ uint64_t  model_gpu_budget(uint64_t driver_free, uint64_t driver_total,
 // Ring row admission without signed overflow: returns n_ctx when the window
 // plus one in-flight batch would not make a smaller allocation.
 int       model_kv_ring_rows(int window, int batch, int n_ctx);
+enum { KV_RING_AUTO = 0, KV_RING_ON = 1, KV_RING_OFF = 2 };
 // Whether to warn that the KV cache, not the model's own size, is what pushed
 // layers off the device -- the one case a smaller -c can take back.
 bool      model_kv_trade_note(int gpu_layers, int n_layer, uint64_t kv_dev,
@@ -1007,6 +1009,11 @@ typedef struct {
     // K rows q8_0 and V rows fp4 (--kv k8v4): measured 2026-09-18 as the
     // side that survives 4 bits (K does not); about 41% of the f16 bytes.
     bool  kv_split;
+    // --kv-ring (docs/kv-ring.md): KV_RING_AUTO (0, the default) gives
+    // sliding-window layers only their window when the weights and the flat
+    // cache would not fit the device budget (or, on the CPU, available RAM);
+    // KV_RING_ON and KV_RING_OFF force it. RUNNER_KV_RING overrides either.
+    int   kv_ring;
     // --moe-prefetch: hand routed experts to the OS as whole blocks before the
     // FFN reads them. 0 = auto (platform default: on for Apple Silicon when
     // weights exceed available RAM, off elsewhere — the A/B'd split), 1 =

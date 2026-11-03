@@ -58,10 +58,10 @@ def dense_model(tmp_path_factory):
 
 def _run(runner_bin, model, ring, args, gpu="off"):
     env = dict(os.environ)
-    if ring:
-        env["RUNNER_KV_RING"] = "1"
+    if ring is None:
+        env.pop("RUNNER_KV_RING", None)   # the default: --kv-ring auto
     else:
-        env.pop("RUNNER_KV_RING", None)
+        env["RUNNER_KV_RING"] = "1" if ring else "0"
     return subprocess.run(
         [runner_bin, "-m", str(model), "-c", str(N_CTX), "-t", "2",
          "--gpu", gpu, *args],
@@ -85,7 +85,11 @@ def _mb(text, label):
 
 
 def test_ring_engages_and_is_off_by_default(runner_bin, swa_model):
-    assert "kv ring" not in _info(runner_bin, swa_model, ring=False)
+    # auto, the default: this fixture's flat cache fits, so the ring stays off
+    # and -v says why
+    line = next((l for l in _info(runner_bin, swa_model, ring=None).splitlines()
+                 if l.startswith("kv ring")), "")
+    assert re.match(r"kv ring\s+off \(auto: weights .* fit ", line), line
     line = next((l for l in _info(runner_bin, swa_model, ring=True).splitlines()
                  if l.startswith("kv ring")), "")
     assert line, "ring did not engage"
@@ -241,10 +245,7 @@ HOLE = [(T, 16), (T + V[:1], 1), (T[:590] + W, 8)]
 
 def _serve(runner_bin, model, ring, gpu, requests=REQUESTS, flat_cold=FLAT_COLD):
     env = dict(os.environ)
-    if ring:
-        env["RUNNER_KV_RING"] = "1"
-    else:
-        env.pop("RUNNER_KV_RING", None)
+    env["RUNNER_KV_RING"] = "1" if ring else "0"
     out = []
     with RunnerServer(runner_bin, model, ctx=N_CTX, parallel=1, env=env,
                       extra_args=["-b", str(BATCH), "-t", "2", "--gpu", gpu]) as srv:
@@ -302,3 +303,45 @@ def test_ring_resume_rule_follows_what_later_writes_recycled(runner_bin, swa_mod
         assert b["tokens"] == a["tokens"] and b["lp"] == a["lp"] and b["top"] == a["top"], i
     hows = [(r["how"], r["cached"]) for r in ring]
     assert hows[1] == ("kv", 600) and hows[2] == ("ring_reset", 0), hows
+
+
+@pytest.fixture(scope="module")
+def deep_swa_model(tmp_path_factory):
+    # 64 blocks, half of them sliding: about 8 KB of flat KV a token, so a
+    # context sized from this machine's RAM can outgrow a 1% budget
+    return _make(tmp_path_factory, "ringdeep", ["--swa", f"{SWA_WINDOW},2", "--layers", "64"])
+
+
+def test_auto_turns_the_ring_on_only_when_the_flat_cache_does_not_fit(
+        runner_bin, deep_swa_model):
+    """--kv-ring auto, the default. The budget is --reserve-ram 1 (this
+    process may use 1% of RAM) on the CPU, so the test sets it rather than
+    needing a machine whose RAM runs out. The anchor for the figure the
+    decision reads is the allocator: the flat cache the reason quotes is the
+    cache a load with the ring off allocates."""
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT, check=True,
+                                     stdout=subprocess.PIPE).stdout)
+    ram = caps["ram_bytes"]
+    ctx = max(4096, -(-int(ram * 0.015 / 8192) // 1024) * 1024)
+    if ctx > 1 << 20:
+        pytest.skip(f"{ram} bytes of RAM needs a context past 1M on this fixture")
+
+    def line(*extra):
+        p = subprocess.run([runner_bin, "-m", str(deep_swa_model), "-v", "-p", "hi", "-n", "1",
+                            "-c", str(ctx), "--gpu", "off", *extra], cwd=ROOT,
+                           env={k: v for k, v in os.environ.items() if k != "RUNNER_KV_RING"},
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+        err = p.stderr.decode(errors="replace")
+        assert p.returncode == 0, err
+        return err
+
+    on = line("--reserve-ram", "1")
+    m = re.search(r"^kv ring\s+\d+ rows on 32 sliding layers, on \(auto: weights \d+ MB \+ "
+                  r"flat cache (\d+) MB exceed --reserve-ram's share of RAM \d+ MB\)", on, re.M)
+    assert m, on
+    flat = _mb(line("--reserve-ram", "1", "--kv-ring", "off"), "kv cache")
+    assert abs(flat - int(m.group(1))) < 1, (flat, m.group(1))
+    assert _mb(on, "kv cache") < flat
+    # the same load with the RAM it has: the flat cache fits, the ring stays off
+    if caps["ram_available_bytes"] > 4 * flat * 1e6:
+        assert re.search(r"^kv ring\s+off \(auto: .* fit available RAM", line(), re.M)
