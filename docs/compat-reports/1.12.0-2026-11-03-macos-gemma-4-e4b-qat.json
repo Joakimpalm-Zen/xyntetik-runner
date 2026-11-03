@@ -1,6 +1,6 @@
 {
   "schema_version": "xyntetik.runner.model-compat-report.v1",
-  "generated_utc": "2026-11-03T03:53:42Z",
+  "generated_utc": "2026-11-03T04:43:12Z",
   "host": {
     "os": "Darwin",
     "machine": "arm64"
@@ -23,13 +23,13 @@
         "load": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 3412.8,
-          "stderr_tail": "gemma4: E-series (per-layer embeddings + shared KV); validated at the quantization noise floor, not token-identically (docs/model-support.md)\nrope: using model frequency factors (rope_freqs.weight)\nwarning: weights are 2.8 GB but only 2.7 GB of RAM is available \u2014 expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.\nloaded models/gemma-4-E4B_q4_0-it.gguf | gemma4 | 42 layers | ctx 4096 | 4 threads | 0.18s\nsampling: gemma4 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\nsampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 64\n\nprompt: 4 tok, 1.43 tok/s | gen: 1 tok, 2.70 tok/s\n"
+          "elapsed_ms": 3572.0,
+          "stderr_tail": "gemma4: E-series (per-layer embeddings + shared KV); validated at the quantization noise floor, not token-identically (docs/model-support.md)\nrope: using model frequency factors (rope_freqs.weight)\nwarning: weights are 2.8 GB but only 2.8 GB of RAM is available \u2014 expect the model to be evicted and every token to page from disk. --mlock pins them; a smaller model is the other fix.\nloaded models/gemma-4-E4B_q4_0-it.gguf | gemma4 | 42 layers | ctx 4096 | 4 threads | 0.17s\nsampling: gemma4 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\nsampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 64\n\nprompt: 4 tok, 1.39 tok/s | gen: 1 tok, 2.06 tok/s\n"
         },
         "chat": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 2579.0,
+          "elapsed_ms": 2409.18,
           "prompt": "What is 2+2?",
           "gpu": "off",
           "failure_reasons": [],
