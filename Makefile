@@ -2060,6 +2060,8 @@ llama-quantize-path:
 # through test-tc-tol's teacher-forced tolerance gate on a 256-wide fixture at
 # Q8_0, Q4_K and Q6_K (runner --quantize): the measured arm must run the int8
 # kernels (test-tc-tol fails an arm that set RUNNER_CUDA_I8 and never did).
+# The route detail a receipt carries must say i8=on under the flag and i8=off
+# without, so a replay on the other route refuses instead of diverging.
 # A device below compute capability 8.0 has no int8 kernels: the step says so
 # and passes, as the compute_80 TC2 leg does there.
 test-cuda-i8: runner $(TEST_TC_TOL)
@@ -2078,7 +2080,14 @@ test-cuda-i8: runner $(TEST_TC_TOL)
 	  if ! grep -q 'tc-tol: ok' test-cuda-i8.out || grep -q 'skipped' test-cuda-i8.out; then \
 	    cat test-cuda-i8.out; echo "test-cuda-i8: $$f did not run"; exit 1; fi; \
 	  echo "$$f: $$(grep 'int8' test-cuda-i8.out | head -1 | sed 's/^ *//') $$(grep 'tc-tol: ok' test-cuda-i8.out)"; \
-	done
+	done; \
+	for v in 1 0; do \
+	  want=$$([ $$v = 1 ] && echo on || echo off); \
+	  RUNNER_CUDA_I8=$$v ./$(RUNNER_EXE) -m test-i8-q8_0.gguf --gpu auto --score -p "the int8 route names itself" \
+	    --no-tray 2> /dev/null | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin)['score_route']['backend_detail']; \
+	    sys.exit(0 if ' i8=$$want ' in d else 'test-cuda-i8: RUNNER_CUDA_I8=$$v route detail lacks i8=$$want: ' + d)"; \
+	done; \
+	echo "test-cuda-i8: the route detail says i8=on under RUNNER_CUDA_I8=1, i8=off without"
 
 # The tensor-core prefill of the K-quants and legacy quants that had none
 # until 2026-10-21 (kernels_kq_stage.cuh, decoders held to dequant_row by

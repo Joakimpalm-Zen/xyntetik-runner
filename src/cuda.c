@@ -8914,15 +8914,16 @@ bool gpu_hidden_rows_ok(const model_t *m) {
 const char *gpu_route_detail(const model_t *m) {
     const gpu_t *g = m ? m->gpu : NULL;
     if (!g) return "";
-    static _Thread_local char buf[200];
+    static _Thread_local char buf[240];
     if (g_tc_state == TC_ENV_UNSET) (void)tc_on(m, T_Q4_K);   // reads the env once
     // window: the prompt columns one pass of the device layers takes
     // (model_gpu_window); tc_cols: the column tile each tensor-core GEMM
     // launch covers inside it, so a window of 512 is 8 such launches
     // tc: the promoted, forced or off state, then "+nvfp4" where
     // RUNNER_CUDA_TC_NVFP4=1 forces NVFP4's route and "-nvfp4" where =0 holds
-    // it off
-    snprintf(buf, sizeof buf, "graph=%s tc=%s%s tc2=%s q8x=%s small_batch=%s attn_tile=%s "
+    // it off; i8: the int8 tensor-core prefill (RUNNER_CUDA_I8) armed, its
+    // kernels loaded and its buffers made, so a receipt names that route
+    snprintf(buf, sizeof buf, "graph=%s tc=%s%s tc2=%s q8x=%s i8=%s small_batch=%s attn_tile=%s "
              "window=%d tc_cols=%d%s%s%s",
              g->graph_bad ? "off" : g->gexec[0] || g->gexec[1] ? "replay" : "none",
              g_tc_state < 0 || moe_tc_family(m)
@@ -8930,7 +8931,8 @@ const char *gpu_route_detail(const model_t *m) {
                  : g_tc_state ? "forced" : "off",
              g_tc_state >= 0 || tc_nvfp4_env() < 0 ? "" : tc_nvfp4_env() ? "+nvfp4" : "-nvfp4",
              !g->xh ? "off" : g->sw->mod80 ? "on-sm80" : "on",
-             gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
+             gpu_q8x_on() ? "on" : "off", g->i8_xq && g->sw->f_quant_i8 ? "on" : "off",
+             gpu_small_batch_on() ? "on" : "off",
              attn_tc_on(m) ? (attn_dec_on() ? "tc+dec" : "tc")
              : attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
              g->win, g->xh ? G2_BN : TC_N,
