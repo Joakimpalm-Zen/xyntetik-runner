@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`RUNNER_CUDA_I8=1` runs CUDA prefill on int8 tensor cores (opt-in,
+  compute capability 8.0+, Q8_0, Q4_K and Q6_K).** The activations are
+  quantized per 32-element block, and the weights' own integer quants go to
+  `mma.sync` unconverted. It is off by default: `test-tc-tol` fails on
+  Qwen3-0.6B Q8_0, whose greedy tokens diverge from the scalar route at a
+  near-tie, although no file tested flips a top-1 token in the gate's 64
+  teacher-forced positions. On an RTX 3070 the GEMM time is 1.66x less than
+  the fp16 route's on Qwen3-1.7B Q8_0 and 1.18x less on Llama-3.2-3B Q4_K_M,
+  and prefill gains 8% to 36% across four files, with decode unchanged. The
+  read against the publisher's float32 model did not run (stopped for low
+  memory on the 16 GB host). The route detail a receipt carries says `i8=on`
+  or `i8=off`. Report: `docs/compat-reports/r3.14-cuda-int8-prefill-2026-11-03`.
 - **`test-gpu-identity` pins a MoE file's routing and bounds dense and
   pinned runs at 1e-3 of the logit range (was 2e-3).** A MoE file now runs
   on the device twice: with its own routing, bounded at 2e-3 as before, and

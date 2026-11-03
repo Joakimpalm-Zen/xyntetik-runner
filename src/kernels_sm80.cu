@@ -31,6 +31,7 @@ typedef unsigned long long ulong64;
 #include "kernels_tc2.cuh"
 #include "kernels_tc2_iq.cuh"
 #include "kernels_tc2_kq.cuh"
+#include "kernels_i8.cuh"
 
 #define G2_80(NAME, F)                                                              \
 extern "C" __global__ void __launch_bounds__(256)                                   \
@@ -90,3 +91,8 @@ G2_80W(k_gemm2_80w_q4_1, G2Q41)
 G2_80W(k_gemm2_80w_q5_0, G2Q50)
 G2_80W(k_gemm2_80w_q5_1, G2Q51)
 G2_80W(k_gemm2_80w_nvfp4, G2NV4)
+
+// the int8 tensor-core prefill (R3.14, kernels_i8.cuh)
+GEMM_I8(k_gemm_i8_q4_K, I8Q4K)
+GEMM_I8(k_gemm_i8_q6_K, I8Q6K)
+GEMM_I8(k_gemm_i8_q8_0, I8Q80)

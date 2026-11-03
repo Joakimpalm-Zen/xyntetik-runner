@@ -480,6 +480,8 @@ typedef struct gpu_weights {
     CUfunction  f_gemm2[KT_N];          // pipelined tensor-core GEMM (TC2), by type
     CUmodule    mod80;                  // the compute_80 module, on a CC >= 8.0 device
     CUfunction  f_gemm2_80[KT_N];       // its TC2 kernels (m16n8k16), by type
+    // its int8 GEMMs (R3.14, RUNNER_CUDA_I8=1) and their activation quantizer
+    CUfunction  f_gemm_i8[KT_N], f_quant_i8;
     CUfunction  f_gemm2_80w[KT_N];      // the same at a 128-column tile
     CUfunction  f_x_half;               // its scaled fp16 activations (k_x_half_scaled)
     CUfunction  f_gemv[KT_N];           // decode coalesced GEMV variants (Q8_0/Q4_K)
@@ -589,6 +591,10 @@ typedef struct {
     CUdeviceptr xh_src;
     int         xh_n, xh_xs, xh_batch;
     bool        xh_reuse;
+    // the int8 route's activations (RUNNER_CUDA_I8): the window's columns as
+    // int8 per 32-element block, the block scales and dx * sum(xq)
+    CUdeviceptr i8_xq, i8_xd, i8_xs;
+    int         i8_cap;
     unsigned long mv_seq, xh_seq;
     // sparse-MoE: router logits [MVB][n_expert], per-slot expert down-out
     // [rows][n_embd] (rows = max(used, MVB); the eager path uses column 0)
@@ -731,6 +737,14 @@ typedef struct {
 #define G2_SMEM ((2 * G2_BM * (G2_BK + 8) + 2 * G2_BN * (G2_BK + 8)) * 2)
 #define G2_BN_W 128   // the compute_80 module's 128-column tile (kernels_tc2.cuh)
 #define G2_SMEM_W ((2 * G2_BM * (G2_BK + 8) + 2 * G2_BN_W * (G2_BK + 8)) * 2)
+// the int8 GEMM (kernels_i8.cuh I8_*, compute_80 module, R3.14): TC2's tile
+// with int8 operands, plus the stage's weight scales and mins and the
+// activation scales and sums
+#define I8_BM 128
+#define I8_BN 64
+#define I8_BK 64
+#define I8_SMEM (2 * I8_BM * (I8_BK + 16) + 2 * I8_BN * (I8_BK + 16) + \
+                 (2 * I8_BM * 4 + 2 * I8_BM * 4 + 2 * I8_BN * 2 * 2 + I8_BM * 17) * 4)
 // k_attn_tc (kernels.cu AQ_*): Q hi, Q lo and one K/V tile of 64 rows of
 // 136 halves, plus 64 row scales, in dynamic shared memory
 #define AQ_SMEM (3 * 64 * (128 + 8) * 2 + 64 * 4)
@@ -1236,6 +1250,7 @@ static bool moe_twin_eligible(const model_t *m, const gpu_weights *w) {
 
 static void gpu_ctx_free(model_t *m, gpu_t *g);
 static void route_replay_flush(gpu_t *g);
+static bool gpu_i8_on(void);
 static bool gpu_q8x_on(void);
 
 #define CK(call) do { CUresult _r = (call); if (_r != 0) { \
@@ -2638,6 +2653,21 @@ static bool shared_load_module(gpu_weights *w) {
                         f = NULL;
                     w->f_gemm2_80w[TC2_80W[i].type] = f;
                 }
+                // the int8 GEMMs (R3.14): resolved like the TC2 kernels, so a
+                // module without them leaves the route off
+                static const struct { int type; const char *name; } I8K[] = {
+                    { T_Q4_K, "k_gemm_i8_q4_K" }, { T_Q6_K, "k_gemm_i8_q6_K" },
+                    { T_Q8_0, "k_gemm_i8_q8_0" },
+                };
+                if (cu.ModuleGetFunction(&w->f_quant_i8, w->mod80, "k_quant_i8") != 0)
+                    w->f_quant_i8 = NULL;
+                for (size_t i = 0; w->f_quant_i8 && i < sizeof I8K / sizeof *I8K; i++) {
+                    CUfunction f = NULL;
+                    if (cu.ModuleGetFunction(&f, w->mod80, I8K[i].name) != 0 ||
+                        cu.FuncSetAttribute(f, CU_FUNC_ATTR_MAX_DYN_SMEM, I8_SMEM) != 0)
+                        f = NULL;
+                    w->f_gemm_i8[I8K[i].type] = f;
+                }
             }
         }
     }
@@ -3497,6 +3527,13 @@ static bool cuda_alloc_activations(model_t *m, gpu_t *g, const cuda_dims *D) {
         // TC2's activations, in half for every window column
         g->xh_cap = (int)tc2_xh_width(m, xdim, q35_mixdim);
         CK(cu.MemAlloc(&g->xh, 2 * (size_t)g->win * (size_t)g->xh_cap));
+        if (gpu_i8_on() && g->xh_cap % 32 == 0) {
+            g->i8_cap = g->xh_cap;
+            size_t nb = (size_t)g->win * (size_t)(g->i8_cap / 32);
+            CK(cu.MemAlloc(&g->i8_xq, (size_t)g->win * (size_t)g->i8_cap));
+            CK(cu.MemAlloc(&g->i8_xd, sizeof(float) * nb));
+            CK(cu.MemAlloc(&g->i8_xs, sizeof(float) * nb));
+        }
     }
     CK(cu.MemAlloc(&g->pos_dev, sizeof(int) * (size_t)((g->win + ATT_COLS - 1) / ATT_COLS)));
     return true;
@@ -4467,9 +4504,24 @@ static bool gpu_tc2_on(void) { return tc2_mode() != TC2_OFF; }
 static bool tc2_forced(void) { return tc2_mode() == TC2_FORCED; }
 static _Atomic unsigned long g_tc2_dispatches;
 unsigned long gpu_tc2_dispatches(void) { return g_tc2_dispatches; }
+static _Atomic unsigned long g_i8_dispatches;
+unsigned long gpu_i8_dispatches(void) { return g_i8_dispatches; }
 static _Atomic unsigned long g_tc2_reused;
 unsigned long gpu_tc2_reused(void) { return g_tc2_reused; }
 // RUNNER_CUDA_XH_REUSE=0: every TC2 GEMM stages its own columns (the A/B)
+// RUNNER_CUDA_I8=1: the int8 tensor-core prefill (R3.14) for the types it
+// has kernels for, on a compute capability 8.0+ device. A tolerance route
+// (int8 activations per 32-element block), opt-in until a type passes its
+// gates.
+static bool gpu_i8_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_I8");
+        on = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+    }
+    return on > 0;
+}
+
 static bool xh_reuse_on(void) {
     static _Atomic int on = -1;
     if (on < 0) { const char *e = getenv("RUNNER_CUDA_XH_REUSE"); on = !(e && *e == '0'); }
@@ -4653,6 +4705,25 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                         1, xs, ys))
                 return false;
         return true;
+    }
+    // Prefill (batch>1) on the int8 route (RUNNER_CUDA_I8, R3.14), the
+    // tensor-core route's int8 variant: where the TC route is on for the type
+    // (tc_on, so a forced-off reference stays scalar), the window's columns
+    // quantized to int8 per 32-element block once, then one launch of the
+    // type's int8 GEMM over every column. Counted as a tensor-core dispatch.
+    if (batch > 1 && w->scale == 1.0f && g->i8_xq && g->sw->f_quant_i8 && tc_on(m, w->type) &&
+        g->sw->f_gemm_i8[w->type] && n_in % I8_BK == 0 && n_in <= g->i8_cap &&
+        batch <= g->win) {
+        int nbk = n_in / 32 * batch;
+        void *pq[] = { &x, &g->i8_xq, &g->i8_xd, &g->i8_xs, &n_in, &batch, &xs };
+        if (!launch(g, g->sw->f_quant_i8, (unsigned)((nbk + 7) / 8), 1, 1, 256, pq))
+            return false;
+        void *pg[] = { &weights, &g->i8_xq, &g->i8_xd, &g->i8_xs, &y, &a, &b };
+        g_i8_dispatches++;
+        g_tc_dispatches++;
+        g_tc_dispatches_type[w->type]++;
+        return launch_smem(g, g->sw->f_gemm_i8[w->type], (unsigned)((n_out + I8_BM - 1) / I8_BM),
+                           (unsigned)((batch + I8_BN - 1) / I8_BN), 1, 256, I8_SMEM, pg);
     }
     // Prefill (batch>1) on the tensor-core route, the pipelined TC2 GEMM where
     // it has a kernel for the type: the window's column maxima and its fp16
@@ -4948,7 +5019,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            g->splitk, g->shexp_in, g->shexp_g, g->shexp_u,
                            g->shexp_o, g->shexp_gate, g->kvg_tab, g->kvg_dev, g->kvg_pos,
                            g->vcol_pos, g->vcol_kcp, g->vcol_vcp,
-                           g->replay_tab, g->replay_cnt };
+                           g->replay_tab, g->replay_cnt, g->i8_xq, g->i8_xd, g->i8_xs };
     for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
         if (bufs[i]) cu.MemFree(bufs[i]);
     free(g->h_x); free(g->h_logits); free(g->h_moe_logits);
@@ -8843,15 +8914,16 @@ bool gpu_hidden_rows_ok(const model_t *m) {
 const char *gpu_route_detail(const model_t *m) {
     const gpu_t *g = m ? m->gpu : NULL;
     if (!g) return "";
-    static _Thread_local char buf[200];
+    static _Thread_local char buf[240];
     if (g_tc_state == TC_ENV_UNSET) (void)tc_on(m, T_Q4_K);   // reads the env once
     // window: the prompt columns one pass of the device layers takes
     // (model_gpu_window); tc_cols: the column tile each tensor-core GEMM
     // launch covers inside it, so a window of 512 is 8 such launches
     // tc: the promoted, forced or off state, then "+nvfp4" where
     // RUNNER_CUDA_TC_NVFP4=1 forces NVFP4's route and "-nvfp4" where =0 holds
-    // it off
-    snprintf(buf, sizeof buf, "graph=%s tc=%s%s tc2=%s q8x=%s small_batch=%s attn_tile=%s "
+    // it off; i8: the int8 tensor-core prefill (RUNNER_CUDA_I8) armed, its
+    // kernels loaded and its buffers made, so a receipt names that route
+    snprintf(buf, sizeof buf, "graph=%s tc=%s%s tc2=%s q8x=%s i8=%s small_batch=%s attn_tile=%s "
              "window=%d tc_cols=%d%s%s%s",
              g->graph_bad ? "off" : g->gexec[0] || g->gexec[1] ? "replay" : "none",
              g_tc_state < 0 || moe_tc_family(m)
@@ -8859,7 +8931,8 @@ const char *gpu_route_detail(const model_t *m) {
                  : g_tc_state ? "forced" : "off",
              g_tc_state >= 0 || tc_nvfp4_env() < 0 ? "" : tc_nvfp4_env() ? "+nvfp4" : "-nvfp4",
              !g->xh ? "off" : g->sw->mod80 ? "on-sm80" : "on",
-             gpu_q8x_on() ? "on" : "off", gpu_small_batch_on() ? "on" : "off",
+             gpu_q8x_on() ? "on" : "off", g->i8_xq && g->sw->f_quant_i8 ? "on" : "off",
+             gpu_small_batch_on() ? "on" : "off",
              attn_tc_on(m) ? (attn_dec_on() ? "tc+dec" : "tc")
              : attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
              g->win, g->xh ? G2_BN : TC_N,
