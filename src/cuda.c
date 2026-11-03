@@ -744,7 +744,7 @@ typedef struct {
 #define I8_BN 64
 #define I8_BK 64
 #define I8_SMEM (2 * I8_BM * (I8_BK + 16) + 2 * I8_BN * (I8_BK + 16) + \
-                 (2 * I8_BM * 4 + 2 * I8_BM * 4 + 2 * I8_BN * 2 * 2) * 4)
+                 (2 * I8_BM * 4 + 2 * I8_BM * 4 + 2 * I8_BN * 2 * 2 + I8_BM * 17) * 4)
 // k_attn_tc (kernels.cu AQ_*): Q hi, Q lo and one K/V tile of 64 rows of
 // 136 halves, plus 64 row scales, in dynamic shared memory
 #define AQ_SMEM (3 * 64 * (128 + 8) * 2 + 64 * 4)

@@ -1873,6 +1873,15 @@ kernel. `RUNNER_CUDA_TC_NVFP4=0` holds NVFP4 alone on the scalar kernel
 architecture outside the promoted list (`tc=promoted+nvfp4`).
 `RUNNER_CUDA_TC=1` forces the tensor-core route for every type that has a
 kernel, NVFP4 among them, including the types not promoted by default.
+`RUNNER_CUDA_I8=1` (opt-in, compute capability 8.0+) takes the tensor-core
+route's prefill GEMMs on int8 tensor cores for Q8_0, Q4_K and Q6_K: the
+activations quantized per 32-element block, the weights' own integer quants
+unconverted. On an RTX 3070 it read prefill of 1,965 tokens at 5,207 tok/s
+against 3,839 on Qwen3-1.7B Q8_0, and 2,330 against 2,162 on Qwen3-4B Q4_K_M.
+It is off by default because `./test-tc-tol` fails on Qwen3-0.6B Q8_0 (its
+greedy tokens diverge from the scalar route's at a near-tie), although no file
+flips a top-1 token in the gate's 64 teacher-forced positions. `--bench-json`
+counts its launches as `cuda_i8` in the route record.
 
 On Metal that now covers **decode as well as prefill**: the cooperative KV
 attention read was promoted on 2026-08-17 after clearing zero teacher-forced

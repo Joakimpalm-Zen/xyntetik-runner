@@ -29,8 +29,10 @@
 // dynamic shared memory: A and B int8 tiles, then the weight scales and mins
 // (I8_NS a row) and the activation scales and sums (2 a column), each double
 // buffered
+#define I8_RW 17                    // raw words a row's stage the cooperative copy holds (Q8_0)
 #define I8_SMEM (2 * I8_BM * I8_LD + 2 * I8_BN * I8_LD +                     \
-                 (2 * I8_BM * I8_NS + 2 * I8_BM * I8_NS + 2 * I8_BN * 2 * 2) * 4)
+                 (2 * I8_BM * I8_NS + 2 * I8_BM * I8_NS + 2 * I8_BN * 2 * 2 + \
+                  I8_BM * I8_RW) * 4)
 
 static __device__ __forceinline__ void i8_ldsm_x4(unsigned &r0, unsigned &r1, unsigned &r2,
                                                   unsigned &r3, const signed char *p) {
@@ -89,7 +91,11 @@ extern "C" __global__ void k_quant_i8(const float *x, signed char *xq, float *xd
 // 32, each half with its 6-bit scale and min: ws = d * sc, wm = dmin * m.
 struct I8Q4K {
     typedef G2Q4K::raw raw;
-    enum { G = 32, kMins = 1 };
+    // kRW 0: the per-row load below; a cooperative copy measured slower for the
+    // K-quants (their loaders already move a row's segment in a few wide loads)
+    enum { G = 32, kMins = 1, kRW = 0 };
+    static __device__ __forceinline__ uint word(const uchar *, int, int) { return 0; }
+    static __device__ __forceinline__ void load_smem(raw &, const uint *) {}
     static __device__ __forceinline__ void load(raw &r, const uchar *rowp, int ks, int n_in) {
         G2Q4K::load(r, rowp, ks, n_in);
     }
@@ -123,7 +129,15 @@ struct I8Q4K {
 // Q8_0: two 34-byte blocks, ws = d, no min.
 struct I8Q80 {
     typedef G2Q80::raw raw;
-    enum { G = 32, kMins = 0 };
+    enum { G = 32, kMins = 0, kRW = 17 };
+    // the stage's 68 bytes, 4-byte aligned (a row is a whole number of 68-byte pairs)
+    static __device__ __forceinline__ uint word(const uchar *rowp, int ks, int w) {
+        return ((const uint *)(rowp + (ulong64)(ks >> 5) * 34))[w];
+    }
+    static __device__ __forceinline__ void load_smem(raw &r, const uint *slot) {
+        #pragma unroll
+        for (int i = 0; i < 17; i++) r.w[i] = slot[i];
+    }
     static __device__ __forceinline__ void load(raw &r, const uchar *rowp, int ks, int n_in) {
         G2Q80::load(r, rowp, ks, n_in);
     }
@@ -154,7 +168,9 @@ struct I8Q80 {
 // ws = d * sc, no min.
 struct I8Q6K {
     typedef G2Q6K::raw raw;
-    enum { G = 16, kMins = 0 };
+    enum { G = 16, kMins = 0, kRW = 0 };              // per-row load, as I8Q4K
+    static __device__ __forceinline__ uint word(const uchar *, int, int) { return 0; }
+    static __device__ __forceinline__ void load_smem(raw &, const uint *) {}
     static __device__ __forceinline__ void load(raw &r, const uchar *rowp, int ks, int n_in) {
         G2Q6K::load(r, rowp, ks, n_in);
     }
@@ -204,6 +220,7 @@ __device__ __forceinline__ void gemm_i8_body(const uchar *wb, const signed char 
     float *sWm = sWs + 2 * I8_BM * I8_NS;               // [2][BM][NS]
     float *sXd = sWm + 2 * I8_BM * I8_NS;               // [2][BN][2]
     float *sXs = sXd + 2 * I8_BN * 2;                   // [2][BN][2]
+    uint *sR = (uint *)(sXs + 2 * I8_BN * 2);           // [BM][kRW] the next stage's raw words
     const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
     const int wm_ = warp & 3, wn = warp >> 2;
     const int row0 = blockIdx.x * I8_BM, col0 = blockIdx.y * I8_BN;
@@ -217,12 +234,24 @@ __device__ __forceinline__ void gemm_i8_body(const uchar *wb, const signed char 
     // 64 x 64-byte tile and one column's two block scales and sums
     const int at = tid - I8_BM;
     typename F::raw rw;
+    // cooperative copy: consecutive threads take consecutive words of a row,
+    // so a warp's load covers two or three rows' contiguous bytes
+    enum { RW = F::kRW ? F::kRW : 1, NW = (I8_BM * RW + 255) / 256 };
+    uint cw[NW];
     uint4 xr[2];
     float xd2[2], xs2[2];
     auto load = [&](int s) {
         const int ks = s * I8_BK;
+        if (F::kRW) {
+            #pragma unroll
+            for (int j = 0; j < NW; j++) {
+                const int k = tid + j * 256, row = k / RW, w = k - row * RW, r = row0 + row;
+                cw[j] = (k < I8_BM * RW && r < a.n_out)
+                      ? F::word(wb + a.w_off + (ulong64)r * rb, ks, w) : 0u;
+            }
+        }
         if (wrole) {
-            if (wvalid) F::load(rw, wrow, ks, a.n_in);
+            if (!F::kRW && wvalid) F::load(rw, wrow, ks, a.n_in);
         } else {
             #pragma unroll
             for (int j = 0; j < 2; j++) {
@@ -241,9 +270,28 @@ __device__ __forceinline__ void gemm_i8_body(const uchar *wb, const signed char 
             }
         }
     };
-    auto store = [&](int s, int buf) {
+    auto repack = [&](int s, int buf) {                 // kRW: sR to the int8 tile
         const int ks = s * I8_BK;
         if (wrole) {
+            signed char *d = sA + buf * I8_BM * I8_LD + tid * I8_LD;
+            float *ws = sWs + (buf * I8_BM + tid) * I8_NS;
+            float *wmn = sWm + (buf * I8_BM + tid) * I8_NS;
+            typename F::raw r;
+            F::load_smem(r, sR + tid * RW);
+            F::store(d, ws, wmn, r, ks);
+        }
+    };
+    auto store = [&](int s, int buf) {
+        const int ks = s * I8_BK;
+        if (F::kRW) {
+            #pragma unroll
+            for (int j = 0; j < NW; j++) {
+                const int k = tid + j * 256;
+                if (k < I8_BM * RW) sR[k] = cw[j];
+            }
+        }
+        if (wrole) {
+            if (F::kRW) return;
             signed char *d = sA + buf * I8_BM * I8_LD + tid * I8_LD;
             float *ws = sWs + (buf * I8_BM + tid) * I8_NS;
             float *wmn = sWm + (buf * I8_BM + tid) * I8_NS;
@@ -288,6 +336,7 @@ __device__ __forceinline__ void gemm_i8_body(const uchar *wb, const signed char 
         for (int e = 0; e < 2; e++) lc[nt][e] = wn * 32 + nt * 8 + (lane & 3) * 2 + e;
     load(0);
     store(0, 0);
+    if (F::kRW) { __syncthreads(); repack(0, 0); }
     __syncthreads();
     for (int s = 0; s < nst; s++) {
         const int cur = s & 1;
@@ -308,6 +357,25 @@ __device__ __forceinline__ void gemm_i8_body(const uchar *wb, const signed char 
                 i8_ldsm_x4(bf[np][0], bf[np][1], bf[np][2], bf[np][3],
                            B + (wn * 32 + np * 16 + (lane & 7) + ((lane >> 4) << 3)) * I8_LD
                              + kb * 32 + ((lane >> 3) & 1) * 16);
+            // this thread's block scales, read from shared memory once a 32-block
+            float wsr[2][2][2], wmr[2][2], xdr[NT][2], xsr[NT][2];
+            #pragma unroll
+            for (int mt = 0; mt < 2; mt++)
+                #pragma unroll
+                for (int h = 0; h < 2; h++) {
+                    const int r = lr[mt][h];
+                    wsr[mt][h][0] = Ws[r * I8_NS + 2 * kb];
+                    wsr[mt][h][1] = Ws[r * I8_NS + 2 * kb + 1];
+                    wmr[mt][h] = F::kMins ? Wm[r * I8_NS + 2 * kb] : 0.0f;
+                }
+            #pragma unroll
+            for (int nt = 0; nt < NT; nt++)
+                #pragma unroll
+                for (int e = 0; e < 2; e++) {
+                    const int cc = lc[nt][e];
+                    xdr[nt][e] = Xd[cc * 2 + kb];
+                    xsr[nt][e] = F::kMins ? Xs[cc * 2 + kb] : 0.0f;
+                }
             #pragma unroll
             for (int mt = 0; mt < 2; mt++)
                 #pragma unroll
@@ -318,9 +386,8 @@ __device__ __forceinline__ void gemm_i8_body(const uchar *wb, const signed char 
                         i8_mma32(c, af[mt][0], af[mt][1], af[mt][2], af[mt][3], b[0], b[1]);
                         #pragma unroll
                         for (int e = 0; e < 4; e++) {
-                            const int r = lr[mt][e >> 1], cc = lc[nt][e & 1];
-                            float v = Ws[r * I8_NS + 2 * kb] * Xd[cc * 2 + kb] * (float)c[e];
-                            if (F::kMins) v -= Wm[r * I8_NS + 2 * kb] * Xs[cc * 2 + kb];
+                            float v = wsr[mt][e >> 1][0] * xdr[nt][e & 1] * (float)c[e];
+                            if (F::kMins) v -= wmr[mt][e >> 1] * xsr[nt][e & 1];
                             acc[mt][nt][e] += v;
                         }
                     } else {
@@ -329,15 +396,15 @@ __device__ __forceinline__ void gemm_i8_body(const uchar *wb, const signed char 
                         i8_mma16(c1, af[mt][2], af[mt][3], b[1]);
                         #pragma unroll
                         for (int e = 0; e < 4; e++) {
-                            const int r = lr[mt][e >> 1], cc = lc[nt][e & 1];
-                            float sc = Ws[r * I8_NS + 2 * kb] * (float)c0[e] +
-                                       Ws[r * I8_NS + 2 * kb + 1] * (float)c1[e];
-                            acc[mt][nt][e] += Xd[cc * 2 + kb] * sc;
+                            float sc = wsr[mt][e >> 1][0] * (float)c0[e] +
+                                       wsr[mt][e >> 1][1] * (float)c1[e];
+                            acc[mt][nt][e] += xdr[nt][e & 1] * sc;
                         }
                     }
                 }
         }
         if (s + 1 < nst) store(s + 1, cur ^ 1);
+        if (F::kRW && s + 1 < nst) { __syncthreads(); repack(s + 1, cur ^ 1); }
         __syncthreads();
     }
     #pragma unroll
