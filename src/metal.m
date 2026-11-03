@@ -1369,6 +1369,21 @@ static bool metal_attn_tile_on(void) {
     return v;
 }
 
+// RUNNER_METAL_ATTN_TILE_WIDE: the tile for heads 257 to 512 wide (R3.6.3.2),
+// which otherwise run k_attn. Byte-identical either way, so the switch is a
+// speed choice. On by default for gemma-4's E-series (gemma4 with per-layer
+// embeddings: Nemotron 3.5 Bolt E4B, gemma-4-E2B/E4B), the family CUDA's
+// wide kernel defaults to and the one it was measured on; 0 keeps k_attn
+// for those heads, 1 takes the tile for every model with them.
+static bool metal_attn_wide_on(const model_t *m) {
+    static _Atomic int on = -1;   // -1 unread, 2 unset (the family default)
+    if (on < 0) {
+        const char *e = getenv("RUNNER_METAL_ATTN_TILE_WIDE");
+        on = !e || !*e ? 2 : strcmp(e, "0") != 0;
+    }
+    return on == 2 ? m && strcmp(m->arch, "gemma4") == 0 && m->n_embd_ple > 0 : on == 1;
+}
+
 static void lora_dev_release(gpu_t *g) {
     for (int i = 0; i < g->lora_n; i++) {
         if (g->lora_a && g->lora_a[i]) [g->lora_a[i] release];
@@ -4476,8 +4491,13 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
     // Prefill: the tiled kernel, same arithmetic, shared KV reads.
     // Must agree with ATTN_TILE in kernels.metal.
     enum { ATTN_TILE = 8 };
-    bool tile = (n > 1) && hd <= 256 && metal_attn_tile_on() &&
-                g->p_attn_tile;
+    // Up to 512-wide heads under metal_attn_wide_on (R3.6.3.2): gemma-4's
+    // 512-wide global layers took k_attn, one column a threadgroup over the
+    // whole history, which was 66% of an 8K Bolt E4B prefill on the 8 GB
+    // laptop; on the tile one such layer's attention runs about 7x faster,
+    // with k_attn's bits.
+    bool tile = (n > 1) && (hd <= 256 || (hd <= 512 && metal_attn_wide_on(m))) &&
+                metal_attn_tile_on() && g->p_attn_tile;
     [e setComputePipelineState:tile ? g->p_attn_tile
                           : coop ? g->p_attn_coop : g->p_attn];
     [e setBuffer:q      offset:q_off atIndex:0];
@@ -4491,7 +4511,13 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
     // at the red[] scratch in the kernel. The reduction halves tpg
     // each step, so a non-power-of-two would drop lanes silently.
     int32_t tile_cols = n;
-    if (tile) [e setBytes:&tile_cols length:sizeof(tile_cols) atIndex:7];
+    if (tile) {
+        [e setBytes:&tile_cols length:sizeof(tile_cols) atIndex:7];
+        // the tile's query staging, two float4 an element of the head;
+        // never under the 256 elements it was a fixed array of, so a head
+        // up to 256 wide keeps the threadgroup it had (8 KB of queries)
+        [e setThreadgroupMemoryLength:(NSUInteger)(hd > 256 ? hd : 256) * 2 * 16 atIndex:0];
+    }
     NSUInteger amax = (tile ? g->p_attn_tile
                             : coop ? g->p_attn_coop : g->p_attn)
                           .maxTotalThreadsPerThreadgroup;
@@ -5123,18 +5149,26 @@ bool gpu_hidden_rows_ok(const model_t *m) {
 // simdgroup prefill GEMM, the fast or identity decode matvec, the
 // cooperative or identity attention read, grouped-MMA MoE prefill and its
 // staging, whether the Metal 4 tensor GEMM admitted any type, and the
-// decode microbatch's opt-in tiles (micro=tiles, named only when on).
+// decode microbatch's opt-in tiles (micro=tiles, named only when on), and
+// " attn_wide=on" where the prefill tile takes a head wider than 256.
 const char *gpu_route_detail(const model_t *m) {
     const gpu_t *g = m ? (const gpu_t *)m->gpu : NULL;
-    static _Thread_local char buf[160];
+    static _Thread_local char buf[176];
     bool tensor = false;
     for (int t = 0; g && t < METAL_TYPE_SLOTS; t++) if (g->p_tensor[t]) tensor = true;
+    bool wide = false;
+    if (m && metal_attn_tile_on() && metal_attn_wide_on(m))
+        for (int l = 0; l < m->n_layer && !wide; l++) {
+            int hd = model_head_dim(m, l);
+            wide = hd > 256 && hd <= 512;
+        }
     int moe = metal_moe_mm_on();
-    snprintf(buf, sizeof buf, "fusion=%s mm=%s mv=%s attn=%s%s%s tensor=%s%s",
+    snprintf(buf, sizeof buf, "fusion=%s mm=%s mv=%s attn=%s%s%s%s tensor=%s%s",
              metal_fuse_on() ? "on" : "off", metal_mm_on() ? "on" : "off",
              metal_mv_state() == MV_ALL ? "fast"
              : metal_mv_state() == MV_Q4_K && g && g->mv_q4k_default ? "fast-q4_K" : "identity",
              metal_attn_coop_on() ? "coop" : "identity",
+             wide ? " attn_wide=on" : "",
              m && m->n_expert > 0 ? " moe_mm=" : "",
              m && m->n_expert > 0 ? (moe == 2 ? "half" : moe ? "f32" : "off") : "",
              tensor ? "on" : "off",
