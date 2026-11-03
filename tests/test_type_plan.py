@@ -272,3 +272,27 @@ def test_type_plan_strict_refuses_a_plan_it_would_not_apply(runner_bin, tmp_path
                            "--quant", "q8_0", "--type-plan-strict"], cwd=ROOT,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
     assert proc.returncode == 1 and b"needs --type-plan" in proc.stderr
+
+
+def test_a_type_name_it_cannot_write_lists_the_ones_it_can(runner_bin, tmp_path):
+    """`--quant Q4_K_M` (llama.cpp's mix name) or `q4_K` read only "is not a
+    writable type" (the pre-1.12.0 sweep). The refusal now lists the names,
+    and every listed name is one --quant takes (src/quants.h QUANT_TYPE_NAMES
+    against type_from_name)."""
+    base = tmp_path / "base.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(base)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    p = subprocess.run([runner_bin, "-m", str(base), "--quantize", str(tmp_path / "x.gguf"),
+                        "--quant", "Q4_K_M"], cwd=ROOT, capture_output=True, text=True,
+                       timeout=60)
+    assert p.returncode != 0
+    line = next(l for l in p.stderr.splitlines() if "not a writable type" in l)
+    names = line.split("(one of ")[1].rstrip(")").split("|")
+    assert "q4_k" in names and "keep" in names, line
+    header = (ROOT / "src/quants.h").read_text()
+    assert f'#define QUANT_TYPE_NAMES "{"|".join(names)}"' in header
+    for name in names:
+        q = subprocess.run([runner_bin, "-m", str(base), "--quantize",
+                            str(tmp_path / f"{name}.gguf"), "--quant", name],
+                           cwd=ROOT, capture_output=True, text=True, timeout=120)
+        assert q.returncode == 0, (name, q.stderr)
