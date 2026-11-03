@@ -2612,9 +2612,15 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             st_rounds, st_drafted, st_accepted, \
             st_rounds ? (double)n_gen / st_rounds : 0, \
             st_gr_accepted, st_gr_drafted, \
-            st_lk_accepted, st_lk_drafted, e->spec_st.draft_fed); } while (0)
+            st_lk_accepted, st_lk_drafted, e->spec_st.draft_fed); \
+        /* in the macro so every exit prints it: three early returns on a \
+           completed constrained document (--json) used to skip it (R3.3.10) */ \
+        if (prof) fprintf(stderr, "spec-prof: draft %.0f ms, verify %.0f ms, logits %.0f ms, " \
+                        "fold-sync %.0f ms, tail %.0f ms, total %.0f ms\n", \
+                        t_draft * 1e3, t_verify * 1e3, t_logits * 1e3, t_sync * 1e3, \
+                        t_tail * 1e3, (now_s() - t0) * 1e3); } while (0)
     // RUNNER_SPEC_PROF=1: per-phase wall time of the walk, printed with the
-    // round summary. Draft = head/draft-model work, verify = the batched
+    // round summary (by SPEC_STATS, at every exit). Draft = head/draft-model work, verify = the batched
     // keep-forward, logits = lazy per-row heads, tail = the closing forward.
     const bool prof = getenv("RUNNER_SPEC_PROF") != NULL;
     double t_draft = 0, t_verify = 0, t_logits = 0, t_tail = 0, t_sync = 0, tp = 0;
@@ -2886,10 +2892,6 @@ done:
     constraint_close(e, cb, ud);
     if (gen_time) *gen_time = now_s() - t0;
     SPEC_STATS();
-    if (prof) fprintf(stderr, "spec-prof: draft %.0f ms, verify %.0f ms, logits %.0f ms, "
-                    "fold-sync %.0f ms, tail %.0f ms, total %.0f ms\n",
-                    t_draft * 1e3, t_verify * 1e3, t_logits * 1e3, t_sync * 1e3,
-                    t_tail * 1e3, (now_s() - t0) * 1e3);
     #undef SPEC_STATS
     return n_gen;
 }

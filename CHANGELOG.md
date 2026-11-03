@@ -38,6 +38,16 @@ Current release and unreleased changes. Compatibility follows the
   Qwen2.5-7B, 1.03x to 1.04x on Qwen3-4B and Llama-3.2-3B; 1.00x to 1.01x
   at 512. Report: `docs/compat-reports/r3.29.1-cuda-decode-gqa8-2026-11-03`.
 
+
+- **`RUNNER_SPEC_PROF=1` prints its profile line on a `--json` run too.** The
+
+- **`RUNNER_SPEC_PROF=1` prints its profile line on a schema-constrained run too.** The
+  speculative walk left through three early exits when a constrained document
+  completed (a close before a token's forward, mid-round, at a plain token);
+  they printed the round summary but not the profile. The MANUAL's
+  `--draft-k` row now states the range, 1 to 15 (a round verifies the drafts
+  plus the correction, at most 16 rows).
+
 - **CUDA decode attention reads the cache once (R3.29).** The grouped decode
   kernel read K twice, a pass for the softmax maximum and then K with V; it
   now makes one pass with a running maximum, stages K and V as 16-byte
