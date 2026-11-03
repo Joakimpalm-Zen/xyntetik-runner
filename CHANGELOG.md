@@ -5,8 +5,9 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
-- **On CUDA, `--draft lookup` now drafts 7 tokens a round by default and
-  `--draft mtp` 2; every other source and backend keeps 4 (R3.3.7).** On an
+- **On CUDA with every layer on the device, `--draft lookup` now drafts 7
+  tokens a round by default and `--draft mtp` 2; every other source,
+  backend and partial offload keeps 4 (R3.3.7).** On an
   RTX 3070, lookup on an in-context edit reads 2.86x plain at 7 against
   2.43x at 4. Qwen3.5-4B's NextN head reads 1.13x at 2 on code and tool
   calls, against 1.01x and 1.18x at 4; on prose it stays a loss (0.88x at

@@ -3151,11 +3151,13 @@ bool engine_wants_spec(const engine *e) {
 // steps off the exact route); the NextN head pays its own draft step per
 // token and does best at 2 (code and tool pooled; 4 gave back most of it).
 // Everywhere else 4 stands: the CPU's verify row costs 0.45 to 0.78 of a step,
-// so its curve flattens by 4. An adaptive width was measured and lost to these
-// fixed ones (the same report).
+// so its curve flattens by 4, and a partial offload keeps CPU layers that pay
+// that per row (the CUDA rows were all at full offload). An adaptive width was
+// measured and lost to these fixed ones (the same report).
 int engine_draft_k(const engine *e) {
     if (e->draft_k > 0) return e->draft_k;
-    if (!strcmp(model_backend_name(e->m), "cuda") && !e->dm) {
+    const model_t *m = e->m;
+    if (!strcmp(model_backend_name(m), "cuda") && m->gpu_layers >= m->n_layer && !e->dm) {
         if (e->mtp_on) return 2;
         if (e->lookup_on) return 7;
     }

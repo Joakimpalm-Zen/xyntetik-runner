@@ -16,10 +16,11 @@ With no `--draft-k`, a round's width is `engine_draft_k()` (`src/engine.c`):
 
 | Backend | `--draft lookup` | `--draft mtp` | `--draft PATH` |
 |---|---|---|---|
-| CUDA | 7 | 2 | 4 |
-| CPU, Metal | 4 | 4 | 4 |
+| CUDA, every layer on the device | 7 | 2 | 4 |
+| CUDA partial offload, CPU, Metal | 4 | 4 | 4 |
 
-An explicit `--draft-k` wins, as before. The startup line of each source prints the width the run takes.
+A partial offload keeps 4: its CPU layers pay 0.45 to 0.78 of a step a verify row, and every CUDA row here ran at
+full offload. An explicit `--draft-k` wins, as before. The startup line of each source prints the width the run takes.
 `tests/test_draft_k_defaults.py` pins the table: the CPU column on every host, the CUDA column where a CUDA
 device is. The verify walk is untouched, so the output is plain decoding's at any width.
 

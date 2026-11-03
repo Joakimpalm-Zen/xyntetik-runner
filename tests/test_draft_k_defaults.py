@@ -71,6 +71,16 @@ def test_cuda_defaults(runner_bin, models, source, want):
     assert width(runner_bin, models, source, "99", "--draft-k", "5") == 5
 
 
+@pytest.mark.parametrize("source", ["lookup", "draft"])
+def test_cuda_partial_offload_keeps_four(runner_bin, models, source):
+    # the CUDA widths assume every layer on the device: CPU layers still pay
+    # 0.45 to 0.78 of a step a verify row (the NextN head refuses a partial
+    # offload outright)
+    if backend(runner_bin) != "cuda":
+        pytest.skip("needs a CUDA device")
+    assert width(runner_bin, models, source, "1") == 4
+
+
 def test_draft_k_zero_is_still_refused(runner_bin, models):
     p = subprocess.run([runner_bin, "-m", str(models["plain"]), "-p", "x", "-n", "1",
                         "--gpu", "off", "--draft", "lookup", "--draft-k", "0"],
