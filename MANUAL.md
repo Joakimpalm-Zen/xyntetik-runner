@@ -4844,7 +4844,7 @@ documented `event: error` mid-stream. See [Structured output](#structured-output
 Client compatibility is a dated executable observation, not something inferred
 from an API name. The 2026-09-15 sweep (`scripts/agent-client-sweep.py`, a
 per-run sentinel in a fixture directory, Qwen3-4B Q4_K_M on a datacenter MIG slice
-slice, record in `docs/cross-family-remedy-evidence/agent-client-sweep-qwen3-4b-blackwell-2026-09-15.json`)
+slice, record in `docs/cross-family-remedy-evidence/agent-client-sweep-qwen3-4b-lab-slice-2026-09-15.json`)
 recorded complete tool -> execution -> result -> answer loops for OpenCode
 1.18.31, Claude Code 2.1.272, Codex CLI 0.154.0 (hosted web search disabled,
 as below), Continue CLI 1.5.47, Cline CLI 3.0.61 and pi 0.85.1; Aider 0.86.2

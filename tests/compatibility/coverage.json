@@ -17,12 +17,12 @@
    "artifact": "qwen3.8-27b-gsq-rco-iq3_s-recovered",
    "tool_protocol": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-blackwell-marked-think.json",
-    "note": "6/6 at the corrected prompt (thought block as its control token); 6/6 before it (tool-protocol-qwen38-gsq-iq3s-blackwell-branch.json); required 2/2; baseline 53dc280 read 4/6 FAIL"
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-lab-slice-marked-think.json",
+    "note": "6/6 at the corrected prompt (thought block as its control token); 6/6 before it (tool-protocol-qwen38-gsq-iq3s-lab-slice-branch.json); required 2/2; baseline 53dc280 read 4/6 FAIL"
    },
    "client_loop": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/opencode-1.18.31-qwen38-gsq-iq3s-blackwell.txt"
+    "evidence": "docs/cross-family-remedy-evidence/opencode-1.18.31-qwen38-gsq-iq3s-lab-slice.txt"
    },
    "sampling_anchor": {
     "status": "PASS",
@@ -104,7 +104,7 @@
    "artifact": "qwen3-coder-30b-a3b-instruct-q4_k_m",
    "tool_protocol": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen3-coder-30b-blackwell-final.json",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen3-coder-30b-lab-slice-final.json",
     "note": "6/6 at the corrected preset; constrained 2/6 and penalty-1.05 3/6 recorded beside it"
    },
    "client_loop": {
@@ -126,7 +126,7 @@
    "artifact": "gemma-4-12b-it-qat-q4_0",
    "tool_protocol": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-gemma4-12b-qat-q4_0-blackwell-gemma4-preset.json",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-gemma4-12b-qat-q4_0-lab-slice-gemma4-preset.json",
     "note": "cases A and B 4/4; case C (prose then call) FAIL on both presets: Gemma 4's own format is call-first, open item"
    },
    "client_loop": {
@@ -171,7 +171,7 @@
    },
    "client_loop": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/agent-client-sweep-qwen3-4b-blackwell-2026-09-15.json",
+    "evidence": "docs/cross-family-remedy-evidence/agent-client-sweep-qwen3-4b-lab-slice-2026-09-15.json",
     "note": "seven clients on Qwen3-4B Q4_K_M"
    },
    "sampling_anchor": {
@@ -914,7 +914,7 @@
    },
    "client_loop": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/agent-client-sweep-qwen3-4b-blackwell-2026-09-15.json"
+    "evidence": "docs/cross-family-remedy-evidence/agent-client-sweep-qwen3-4b-lab-slice-2026-09-15.json"
    },
    "backends": {
     "cpu": "NOT RUN",
@@ -938,11 +938,11 @@
    ],
    "tool_protocol": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-blackwell-marked-think.json"
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-lab-slice-marked-think.json"
    },
    "client_loop": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/opencode-1.18.31-qwen38-gsq-iq3s-blackwell.txt"
+    "evidence": "docs/cross-family-remedy-evidence/opencode-1.18.31-qwen38-gsq-iq3s-lab-slice.txt"
    },
    "backends": {
     "cpu": "NOT RUN",
@@ -984,7 +984,7 @@
    ],
    "tool_protocol": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen3-coder-30b-blackwell-final.json"
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen3-coder-30b-lab-slice-final.json"
    },
    "client_loop": {
     "status": "NOT RUN"
@@ -1089,7 +1089,7 @@
    ],
    "tool_protocol": {
     "status": "PASS",
-    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-gemma4-12b-qat-q4_0-blackwell-gemma4-preset.json",
+    "evidence": "docs/cross-family-remedy-evidence/tool-protocol-gemma4-12b-qat-q4_0-lab-slice-gemma4-preset.json",
     "note": "report cases A and B; case C open"
    },
    "client_loop": {

@@ -5,7 +5,7 @@ llama.cpp reference **master 73a43d1 (2026-09-06)**, built on the Linux CUDA hos
 box with `-DGGML_OPENMP=OFF -DBUILD_SHARED_LIBS=OFF`. The tokenizer reference
 is each model's own Hugging Face tokenizer through the `tokenizers` library.
 Raw gate outputs are in `docs/granite-42-qwen38-evidence/`, the compat-matrix
-rows in `docs/compat-reports/0.4.10-2026-09-06-blackwell-*.json`.
+rows in `docs/compat-reports/0.4.10-2026-09-06-lab-slice-*.json`.
 
 Files under test, SHA-256 pinned in `tests/compatibility/models.json`:
 
@@ -270,7 +270,7 @@ performs, and the runner's is the smaller.
   (`conformance-qwen38-granite42-tokens.txt`), `reasoning_effort`
   honoured on the chat and Responses surfaces with the template's own
   three values. The Qwen 3.8 matrix row was re-run under it (chat pass,
-  greedy 5/5; `docs/compat-reports/0.4.10-2026-09-06-blackwell-qwen3.8-27b-ud-q4_k_m.json`).
+  greedy 5/5; `docs/compat-reports/0.4.10-2026-09-06-lab-slice-qwen3.8-27b-ud-q4_k_m.json`).
 
 ## Reading the greedy numbers
 
