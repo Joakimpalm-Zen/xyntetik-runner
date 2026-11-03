@@ -3282,6 +3282,14 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
     // squared-ReLU MoE — a router, gate-less routed experts (relu(up)^2, no
     // gate branch), and an always-on gate-less shared expert. Routing reuses
     // the general moe_route (group/scale/norm); only the activation differs.
+    // The router is SIGMOID: the publisher's NemotronHTopkRouter is a sigmoid
+    // over the router logits, selection adds e_score_correction_bias
+    // (exp_probs_b), then the selected weights are normalized and scaled.
+    // The published GGUFs carry no expert_gating_func key (llama.cpp's
+    // nemotron-h-moe graph hardcodes sigmoid), and until 2026-11-03 this read
+    // a missing key as softmax: on the real Q8_0 Runner scored a perplexity of
+    // 18.31 where llama.cpp scored 11.73, top-1 agreement 63% (the lab's R4.29
+    // row). A file that does declare the key keeps it.
     if (nh_moe) {
         m->n_expert        = (int)gguf_get_u32(g, AK("expert_count"), 0);
         m->n_expert_used   = (int)gguf_get_u32(g, AK("expert_used_count"), 0);
@@ -3290,9 +3298,9 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
         m->n_expert_groups = (int)gguf_get_u32(g, AK("expert_group_count"), 1);
         m->n_group_used    = (int)gguf_get_u32(g, AK("expert_group_used_count"), 1);
         m->expert_gating   = (int)gguf_get_u32(g, AK("expert_gating_func"),
-                                               EXPERT_GATE_SOFTMAX);
+                                               EXPERT_GATE_SIGMOID);
         if (m->expert_gating == EXPERT_GATE_NONE)
-            m->expert_gating = EXPERT_GATE_SOFTMAX;
+            m->expert_gating = EXPERT_GATE_SIGMOID;
         m->expert_w_scale  = gguf_get_f32(g, AK("expert_weights_scale"), 1.0f);
         m->expert_norm_w   = gguf_get_bool(g, AK("expert_weights_norm"), true);
         if (m->n_expert <= 0 || m->n_expert > 256 ||

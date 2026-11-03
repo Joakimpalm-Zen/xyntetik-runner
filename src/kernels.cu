@@ -6906,14 +6906,18 @@ attn_dec_gqa_body(const float *q, const unsigned char *kc, const unsigned char *
         }
         return;
     }
-    float *Q = ad_sm;                                   // [G][hd + 1]
-    unsigned *Ks = (unsigned *)(Q + AD_GMAX * (hd + 1)); // [AD_TK][bws]
+    // Q rows at a stride of hd + 4 floats, so a 16-byte-aligned row reads as
+    // float4 (R3.29.1); every lane of a warp reads its head's row at once,
+    // a broadcast, so the stride needs no bank padding
+    const int QL = hd + 4;
+    float *Q = ad_sm;                                   // [G][QL]
+    unsigned *Ks = (unsigned *)(Q + AD_GMAX * QL);      // [AD_TK][bws]
     unsigned *Vs = Ks + AD_TK * bws;                    // [AD_TK][bws]
     float *Pr = (float *)(Vs + AD_TK * bws);            // [G][AD_TK]
     float *corr = Pr + AD_GMAX * AD_TK;                 // [G] this tile's rescale
     for (int i = tid; i < G * hd; i += AD_THREADS) {
         int g = i / hd, d = i - g * hd;
-        Q[g * (hd + 1) + d] = q[(ulong64)(h0 + g) * hd + d];
+        Q[g * QL + d] = q[(ulong64)(h0 + g) * hd + d];
     }
     auto stage = [&](unsigned *dst, const unsigned char *cache, ulong64 b0, ulong64 rb, int nbytes,
                      int kt) {
@@ -6991,23 +6995,25 @@ attn_dec_gqa_body(const float *q, const unsigned char *kc, const unsigned char *
             const bool live = kt + sk < s1;
             float sc = -1e30f;
             if (live && fast) {
-                // kv_dot's fp16 arithmetic in its order, read through the swizzle
+                // kv_dot's fp16 arithmetic in its order, read through the
+                // swizzle, the chunk's eight Q values as two float4
                 const uint4 *r = (const uint4 *)Ks + sk * nc;
-                const float *qh = Q + sg * (hd + 1);
+                const float4 *q4 = (const float4 *)(Q + sg * QL);
                 float d = 0;
                 for (int c = 0; c < nc; c++) {
                     const uint4 u = r[c ^ (sk & 7)];
                     const __half2 *h2 = (const __half2 *)&u;
+                    const float4 qa = q4[2 * c], qb = q4[2 * c + 1];
+                    const float qv[8] = { qa.x, qa.y, qa.z, qa.w, qb.x, qb.y, qb.z, qb.w };
                     #pragma unroll
                     for (int e = 0; e < 4; e++) {
                         const float2 kf = __half22float2(h2[e]);
-                        const int i = c * 4 + e;
-                        d += qh[2 * i] * kf.x + qh[2 * i + 1] * kf.y;
+                        d += qv[2 * e] * kf.x + qv[2 * e + 1] * kf.y;
                     }
                 }
                 sc = d * a.scale;
             } else if (live) {
-                sc = kv_dot((const unsigned char *)(Ks + sk * bws), Q + sg * (hd + 1), hd, a.q8) * a.scale;
+                sc = kv_dot((const unsigned char *)(Ks + sk * bws), Q + sg * QL, hd, a.q8) * a.scale;
             }
             float tm = sc;
             for (int off = AD_TK / 2; off > 0; off >>= 1) tm = fmaxf(tm, __shfl_xor_sync(0xffffffffu, tm, off));
@@ -7022,22 +7028,64 @@ attn_dec_gqa_body(const float *q, const unsigned char *kc, const unsigned char *
             if (sk == 0) corr[sg] = c;
         }
         __syncthreads();
-        #pragma unroll
-        for (int j = 0; j < 4; j++) {
-            int idx = tid + j * AD_THREADS;
-            if (idx >= G * P2) break;
-            int g = idx / P2, i2 = idx - g * P2;
-            const float c = corr[g];
-            float2 o = make_float2(acc[j].x * c, acc[j].y * c);
-            for (int k = 0; k < AD_TK; k++) {
-                float pk = Pr[g * AD_TK + k];
-                float2 vf = fast ? __half22float2(((const __half2 *)((const uint4 *)Vs + k * nc +
-                                                                       ((i2 >> 2) ^ (k & 7))))[i2 & 3])
-                                 : kv_pair((const unsigned char *)(Vs + k * bws), i2, a.vq8);
-                o.x += pk * vf.x;
-                o.y += pk * vf.y;
+        if (fast && AD_THREADS % P2 == 0) {
+            // every column a thread owns has the same pair i2 (the stride
+            // AD_THREADS is a whole number of rows), so each V pair is read
+            // once for all of them and the probabilities four keys at a
+            // time; each output adds the same terms in the same order
+            const int i2 = tid % P2;
+            int gj[4], nj = 0;
+            #pragma unroll
+            for (int j = 0; j < 4; j++) {
+                int idx = tid + j * AD_THREADS;
+                gj[j] = idx / P2;
+                if (idx < G * P2) nj = j + 1;
             }
-            acc[j] = o;
+            float2 o[4];
+            #pragma unroll
+            for (int j = 0; j < 4; j++) {
+                const float c = j < nj ? corr[gj[j]] : 0.0f;
+                o[j] = make_float2(acc[j].x * c, acc[j].y * c);
+            }
+            for (int k = 0; k < AD_TK; k += 4) {
+                float2 vf[4];
+                #pragma unroll
+                for (int kk = 0; kk < 4; kk++)
+                    vf[kk] = __half22float2(((const __half2 *)((const uint4 *)Vs + (k + kk) * nc +
+                                                              ((i2 >> 2) ^ ((k + kk) & 7))))[i2 & 3]);
+                #pragma unroll
+                for (int j = 0; j < 4; j++) {
+                    if (j >= nj) break;
+                    const float4 p4 = *(const float4 *)(Pr + gj[j] * AD_TK + k);
+                    const float pk[4] = { p4.x, p4.y, p4.z, p4.w };
+                    #pragma unroll
+                    for (int kk = 0; kk < 4; kk++) {
+                        o[j].x += pk[kk] * vf[kk].x;
+                        o[j].y += pk[kk] * vf[kk].y;
+                    }
+                }
+            }
+            #pragma unroll
+            for (int j = 0; j < 4; j++)
+                if (j < nj) acc[j] = o[j];
+        } else {
+            #pragma unroll
+            for (int j = 0; j < 4; j++) {
+                int idx = tid + j * AD_THREADS;
+                if (idx >= G * P2) break;
+                int g = idx / P2, i2 = idx - g * P2;
+                const float c = corr[g];
+                float2 o = make_float2(acc[j].x * c, acc[j].y * c);
+                for (int k = 0; k < AD_TK; k++) {
+                    float pk = Pr[g * AD_TK + k];
+                    float2 vf = fast ? __half22float2(((const __half2 *)((const uint4 *)Vs + k * nc +
+                                                                           ((i2 >> 2) ^ (k & 7))))[i2 & 3])
+                                     : kv_pair((const unsigned char *)(Vs + k * bws), i2, a.vq8);
+                    o.x += pk * vf.x;
+                    o.y += pk * vf.y;
+                }
+                acc[j] = o;
+            }
         }
     }
     if (sk == 0 && sg < G) {

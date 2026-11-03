@@ -144,6 +144,11 @@ def meta():
             ku(f"{p}.expert_used_count", N_USED),
             ku(f"{p}.expert_feed_forward_length", FF_EXP),
             ku(f"{p}.expert_shared_feed_forward_length", FF_SHEXP)]),
+        # HYBRID_TEST_GATING=N writes expert_gating_func (1 softmax, 2 sigmoid,
+        # llama.cpp's numbering); unset writes none, as the published
+        # nemotron_h_moe GGUFs do
+        *([ku(f"{p}.expert_gating_func", int(os.environ["HYBRID_TEST_GATING"]))]
+          if os.environ.get("HYBRID_TEST_GATING") else []),
         # Mamba-2 SSM block
         ku(f"{p}.ssm.conv_kernel", SSM_CONV),
         ku(f"{p}.ssm.inner_size", SSM_INNER),

@@ -433,6 +433,41 @@ static bool edit_until_the_stamp_moves(const char *path) {
     return false;
 }
 
+// R1.20: the key names the file, not how its path was spelled. The same file
+// loaded as a relative and as an absolute path keyed differently until
+// 2026-11-03, so a session image would not resume and two slots would not
+// share a prefix. Also with the stat identity disabled, where the resolved
+// path stands in for it.
+// MinGW has no unsetenv; an empty value removes the variable there
+#ifdef _WIN32
+#define env_unset(k) _putenv_s(k, "")
+#else
+#define env_unset(k) unsetenv(k)
+#endif
+static void test_key_ignores_the_path_spelling(void) {
+    char abs[4096];
+    if (!plat_realpath(g_path, abs, sizeof abs)) { ck(0, "resolve the fixture path"); return; }
+    const char *orig = g_path;
+    for (int no_id = 0; no_id < 2; no_id++) {
+        if (no_id) plat_setenv("RUNNER_TEST_NO_FILE_ID", "1");
+        model_params p = base_params();
+        slot a, b;
+        g_path = orig;
+        bool oa = slot_open(&a, &p);
+        g_path = abs;
+        bool ob = slot_open(&b, &p);
+        g_path = orig;
+        ck(oa && ob, "load the fixture by both spellings");
+        if (oa && ob)
+            ck(a.e.model_key == b.e.model_key,
+               no_id ? "a relative and an absolute spelling share a key (resolved path)"
+                     : "a relative and an absolute spelling share a key (file identity)");
+        if (oa) slot_close(&a);
+        if (ob) slot_close(&b);
+        if (no_id) env_unset("RUNNER_TEST_NO_FILE_ID");
+    }
+}
+
 static void test_key_changes_after_in_place_weight_edit(void) {
     const char *orig = g_path;
     const char *tmp = "prefix-key-replaced.gguf";
@@ -606,6 +641,7 @@ int main(int argc, char **argv) {
     test_fork_is_bit_identical();
     test_key_rejects_incompatible_snapshots();
     test_key_changes_after_in_place_weight_edit();
+    test_key_ignores_the_path_spelling();
     test_eviction();
     if (g_fail) { fprintf(stderr, "test-prefix FAILED\n"); return 1; }
     fprintf(stderr, "test-prefix: all checks passed\n");
