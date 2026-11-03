@@ -267,11 +267,11 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
     //     for keep>0 on the recompute path is tracer 5 (prefix-cache), which
     //     stores the recurrent blob in the snapshot and drives this same
     //     restore. keep == e->pos is a pure extension: the fold is already right.
-    // A ring recycles rows, so "keep the first `keep` rows" names rows that
-    // have been overwritten. A pure EXTENSION is still fine (the ring holds
-    // exactly what the next step reads); any real rewind recomputes from 0,
-    // which is the recurrent path's own precedent two paragraphs down.
-    if (keep < e->pos && model_kv_ring_active(e->m)) { keep = 0; how = REWIND_RING; }
+    // A ring recycles rows: "keep the first `keep` rows" holds only while the
+    // ring still has every row position `keep` reads (model_kv_ring_resumes,
+    // docs/kv-ring.md); a rewind of up to n_batch + 1 tokens does. Otherwise
+    // recompute from 0, the recurrent path's own precedent below.
+    if (keep < e->pos && !model_kv_ring_resumes(e->m, keep)) { keep = 0; how = REWIND_RING; }
     if (model_has_recurrent(e->m) && keep < e->pos) {
         int mark = model_recurrent_mark_pos(e->m);
         if (model_recurrent_restore(e->m, keep)) {
@@ -459,29 +459,53 @@ static uint64_t model_identity(const model_t *m, const tokenizer *tok) {
 // n-major KV layout is what makes a partial restore a straight memcpy of the
 // first c rows of each block (Fact 1 turned into code); the fold blob is NOT
 // sliceable, so it is only restored on an exact full-prefix hit (tracer 5).
+// A ring layer (docs/kv-ring.md) holds at most kv_ring positions, so its part
+// of a snapshot over n tokens is the last min(n, kv_ring) positions, in
+// position order; a flat layer's is [0, n).
+static int pfx_rows(const model_t *m, int l, int n) {
+    return model_kv_is_ring(m, l) && n > m->kv_ring ? m->kv_ring : n;
+}
+
+// The oldest position a snapshot over n tokens stores for a ring layer.
+static int pfx_ring_first(const model_t *m, int n) {
+    return model_kv_ring_active(m) && n > m->kv_ring ? n - m->kv_ring : 0;
+}
+
 size_t prefix_cache_entry_bytes(const model_t *m, int n) {
     size_t t = 0;
     for (int l = 0; l < m->n_layer; l++) {
         // shared-KV layers alias an earlier layer's rows: snapshotting them
         // would copy the same bytes twice and make save/load disagree
         if (model_kv_owner(m, l) != l) continue;
-        t += (size_t)n * model_kv_row_bytes_sum(m, l);
+        t += (size_t)pfx_rows(m, l, n) * model_kv_row_bytes_sum(m, l);
     }
     t += model_recurrent_blob_bytes(m);  // 0 for a non-recurrent model
     return t;
 }
 
-// Site 1 of 2 for the flat-row assumption (model.h, model_kv_byte_off): this
-// copies a contiguous [0, n) run per layer. A layer owning fewer than n_ctx
-// rows reads past its allocation here, and no one-shot -p run would notice.
+// Site 1 of 2 for the flat-row assumption (model.h, model_kv_byte_off): a
+// flat layer is a contiguous [0, n) run; a ring layer's positions are read
+// from their slots (model_kv_row_at), oldest first, so the block is in
+// position order whatever the ring's phase.
 static void pfx_save(const model_t *m, uint8_t *dst, int n) {
     size_t off = 0;
     for (int l = 0; l < m->n_layer; l++) {
         if (model_kv_owner(m, l) != l) continue;
-        size_t blk_k = (size_t)n * model_k_row_bytes(m, l);
-        size_t blk_v = (size_t)n * model_v_row_bytes(m, l);
-        memcpy(dst + off,         (const uint8_t *)m->kcache + model_k_byte_off(m, l), blk_k);
-        memcpy(dst + off + blk_k, (const uint8_t *)m->vcache + model_v_byte_off(m, l), blk_v);
+        size_t row_k = model_k_row_bytes(m, l), row_v = model_v_row_bytes(m, l);
+        int rows = pfx_rows(m, l, n);
+        size_t blk_k = (size_t)rows * row_k, blk_v = (size_t)rows * row_v;
+        const uint8_t *k = (const uint8_t *)m->kcache + model_k_byte_off(m, l);
+        const uint8_t *v = (const uint8_t *)m->vcache + model_v_byte_off(m, l);
+        if (!model_kv_is_ring(m, l)) {
+            memcpy(dst + off, k, blk_k);
+            memcpy(dst + off + blk_k, v, blk_v);
+        } else {
+            for (int i = 0, p = n - rows; i < rows; i++, p++) {
+                size_t slot = (size_t)model_kv_row_at(m, l, p);
+                memcpy(dst + off + (size_t)i * row_k, k + slot * row_k, row_k);
+                memcpy(dst + off + blk_k + (size_t)i * row_v, v + slot * row_v, row_v);
+            }
+        }
         off += blk_k + blk_v;
     }
     // the live fold is at position n here (the slot fed exactly n tokens), so it
@@ -489,17 +513,36 @@ static void pfx_save(const model_t *m, uint8_t *dst, int n) {
     model_recurrent_blob_save(m, dst + off);
 }
 
-// install the first `n` rows of a snapshot taken over `stride` rows
-static void pfx_load(model_t *m, const uint8_t *src, int stride, int n) {
+// Install the first `n` positions of a snapshot taken over `stride`. A ring
+// layer gets back each stored position from max(ring_lo, n - kv_ring) on, at
+// its slot; ring_lo is the oldest position the snapshot holds (the caller has
+// checked that position n reads nothing older, model_kv_ring_resumes's rule),
+// and becomes the instance's watermark.
+static void pfx_load(model_t *m, const uint8_t *src, int stride, int n, int ring_lo) {
     size_t off = 0;
+    int first = pfx_ring_first(m, stride);
+    int from = ring_lo > first ? ring_lo : first;
+    if (model_kv_ring_active(m) && n - m->kv_ring > from) from = n - m->kv_ring;
     for (int l = 0; l < m->n_layer; l++) {
         if (model_kv_owner(m, l) != l) continue;
         size_t row_k = model_k_row_bytes(m, l), row_v = model_v_row_bytes(m, l);
-        size_t blk_k = (size_t)stride * row_k, blk_v = (size_t)stride * row_v;
-        memcpy((uint8_t *)m->kcache + model_k_byte_off(m, l), src + off, (size_t)n * row_k);
-        memcpy((uint8_t *)m->vcache + model_v_byte_off(m, l), src + off + blk_k, (size_t)n * row_v);
+        int rows = pfx_rows(m, l, stride);
+        size_t blk_k = (size_t)rows * row_k, blk_v = (size_t)rows * row_v;
+        uint8_t *k = (uint8_t *)m->kcache + model_k_byte_off(m, l);
+        uint8_t *v = (uint8_t *)m->vcache + model_v_byte_off(m, l);
+        if (!model_kv_is_ring(m, l)) {
+            memcpy(k, src + off, (size_t)n * row_k);
+            memcpy(v, src + off + blk_k, (size_t)n * row_v);
+        } else {
+            for (int p = from; p < n; p++) {
+                size_t slot = (size_t)model_kv_row_at(m, l, p), i = (size_t)(p - (stride - rows));
+                memcpy(k + slot * row_k, src + off + i * row_k, row_k);
+                memcpy(v + slot * row_v, src + off + blk_k + i * row_v, row_v);
+            }
+        }
         off += blk_k + blk_v;
     }
+    if (model_kv_ring_active(m)) m->kv_ring_lo = from;
     model_kv_host_wrote(m, 0);
 }
 
@@ -533,7 +576,30 @@ typedef struct pfx_entry {
     // so a reader needs no lock to read them.
     int       readers;
     bool      dropped;
+    // under a KV ring: the oldest position the snapshot holds (rewinds before
+    // it was taken can leave it above the stored span's first position), and
+    // whether it holds the whole span, which is what a file can carry
+    int       ring_lo;
+    bool      ring_whole;
 } pfx_entry;
+
+// What a ring snapshot over n tokens holds: from the instance's watermark
+// (or, read back from a file, which carries only whole spans, the span's
+// first position) to n.
+static void pfx_ring_mark(const model_t *m, pfx_entry *ne, int n, bool from_file) {
+    int first = pfx_ring_first(m, n);
+    ne->ring_lo = !from_file && model_kv_ring_active(m) && m->kv_ring_lo > first
+                ? m->kv_ring_lo : first;
+    ne->ring_whole = ne->ring_lo <= first;
+}
+
+// Can an entry's first `best` positions be resumed from? The rule of
+// model_kv_ring_resumes, against the entry's own watermark.
+static bool pfx_ring_serves(const model_t *m, const pfx_entry *p, int best) {
+    if (!model_kv_ring_active(m) || best <= 0) return true;
+    int need = best - m->swa_window + 1;
+    return (need > 0 ? need : 0) >= p->ring_lo;
+}
 
 static struct {
     pfx_entry      *head;
@@ -656,23 +722,22 @@ void prefix_cache_stats_get(prefix_cache_stats *out) {
 }
 
 prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
-    // Ring layers own kv_ring rows, not n_ctx, and pfx_load installs a
-    // contiguous [0, n) run per layer: any prefix longer than the ring would
-    // write past the allocation. Refuse the whole mechanism rather than
-    // special-case it -- a snapshot of recycled rows is not a prefix.
-    // Tied-V is the same shape from the other side: its K cache is smaller
-    // than kv_off describes, so the flat copy would read past kcache.
+    // A ring snapshot holds the last positions before its end, so an entry
+    // serves a shared prefix only when the ring part still covers what the
+    // prefix's next position reads (pfx_ring_serves, docs/kv-ring.md).
+    // Tied-V refuses the mechanism: its K cache is smaller than kv_off
+    // describes, so the flat copy would read past kcache.
     // Refusing the shared tier must not skip the slot's own rewind: this is
     // the only call between two requests that resets e->pos, and returning
     // {0} here left the engine at the previous prompt's end, so the next
     // prompt appended to stale context (identical 59-token prompts answered
     // differently at c=128 and the third overflowed). keep is what
-    // engine_rewind says it is: 0 on a real rewind under a ring, a valid
-    // prefix under tied-V, where the K/V rows are still position-addressed.
+    // engine_rewind says it is: a valid prefix under tied-V, where the K/V
+    // rows are still position-addressed.
     prefix_reuse r = { 0, 0, 0.0 };
     // the slot's own KV first: it is already in place and costs nothing
     r.keep = engine_rewind(e, toks, n);
-    if (model_kv_ring_active(e->m) || e->m->tied_v) return r;
+    if (e->m->tied_v) return r;
     if (!e->hist || n < 2) return r;
 
     pthread_mutex_lock(&PFX.mu);
@@ -689,7 +754,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
         if (p->bytes != prefix_cache_entry_bytes(e->m, p->n)) continue; // stale layout
         int c = 0;
         while (c < p->n && c < n - 1 && p->toks[c] == toks[c]) c++;
-        if (c > best) { best = c; hit = p; }
+        if (c > best && pfx_ring_serves(e->m, p, c)) { best = c; hit = p; }
     }
     // A shared snapshot stores KV (sliceable, Fact 1) plus — for a recurrent
     // model — the fold blob captured at hit->n. The fold is NOT sliceable, so a
@@ -703,7 +768,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
         // pfx_load writes host rows behind CUDA's device mirror and tells it
         // so (model_kv_host_wrote), so the next forward uploads them rather
         // than decoding against the previous request's device rows.
-        pfx_load(e->m, hit->kv, hit->n, best);
+        pfx_load(e->m, hit->kv, hit->n, best, hit->ring_lo);
         if (recur) {
             // exact hit: the fold blob sits right after the KV data (entry bytes
             // for hit->n minus the fixed blob), captured at hit->n == best.
@@ -738,11 +803,12 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
 
 void engine_prefix_publish(engine *e, const int32_t *toks, int n,
                            int fed, double prefill_s) {
-    // Same reason as engine_prefix_reuse: pfx_save copies a contiguous run
-    // the ring does not own (and under tied-V, K rows kv_off describes but
-    // kcache does not hold). Publishing would read out of bounds.
-    if (model_kv_ring_active(e->m) || e->m->tied_v) return;
-    if (!e->hist || n < PFX_MIN_TOKENS || e->pos < n) return;
+    // Under tied-V pfx_save would read K rows kv_off describes but kcache
+    // does not hold. A ring holds the prompt's end only while the slot is at
+    // it: past it, decode has recycled rows the snapshot would claim.
+    bool ring = model_kv_ring_active(e->m);
+    if (e->m->tied_v) return;
+    if (!e->hist || n < PFX_MIN_TOKENS || e->pos < n || (ring && e->pos != n)) return;
 
     pthread_mutex_lock(&PFX.mu);
     pfx_defaults();
@@ -771,12 +837,12 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     // restores that blob verbatim on the exact hit that is the ONLY way a
     // recurrent entry is ever forked -- so every use of it decodes from a state
     // the prompt never had, and answers. Storing nothing costs a prefill; this
-    // costs the answer.
+    // costs the answer. A ring is the same: it holds no state at store_n.
     bool recur = model_has_recurrent(e->m);
     size_t per_tok = prefix_cache_entry_bytes(e->m, 1);
     int store_n = n;
     if (per_tok > 0 && prefix_cache_entry_bytes(e->m, store_n) > PFX.budget / 2)
-        store_n = recur ? 0 : (int)((PFX.budget / 2) / per_tok);
+        store_n = recur || ring ? 0 : (int)((PFX.budget / 2) / per_tok);
     if (store_n < PFX_MIN_TOKENS) { pthread_mutex_unlock(&PFX.mu); return; }
 
     // Already covered? Refresh it. A strict extension of an existing entry
@@ -847,6 +913,7 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     }
     memcpy(nt, toks, sizeof(int32_t) * (size_t)store_n);
     pfx_save(e->m, kv, store_n);
+    pfx_ring_mark(e->m, ne, store_n, false);
     ne->key = e->model_key; ne->toks = nt; ne->n = store_n;
     ne->kv = kv; ne->bytes = need; ne->used = now;
     ne->next = PFX.head; PFX.head = ne;
@@ -880,8 +947,8 @@ static pfx_entry **pfx_find_named(const char *name) {
 
 int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) {
     if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
-    // the two layouts engine_prefix_publish refuses, for the same reason
-    if (model_kv_ring_active(e->m) || e->m->tied_v || !e->hist)
+    // the layout engine_prefix_publish refuses, for the same reason
+    if (e->m->tied_v || !e->hist)
         return PFX_CTX_UNSUPPORTED;
     // A recurrent model on a device keeps its fold there, out of the host
     // blob's reach, so engine_prefix_reuse never forks a snapshot for it. A
@@ -901,6 +968,7 @@ int prefix_context_pin(engine *e, const char *name, const int32_t *toks, int n) 
     if (!ne || !nt || !kv) { free(ne); free(nt); free(kv); return PFX_CTX_NOSPACE; }
     memcpy(nt, toks, sizeof(int32_t) * (size_t)n);
     pfx_save(e->m, kv, n);
+    pfx_ring_mark(e->m, ne, n, false);
 
     pthread_mutex_lock(&PFX.mu);
     pfx_defaults();
@@ -1024,13 +1092,16 @@ int prefix_cache_save(const char *path) {
         return -1;
     }
 
+    // A file carries no ring watermark, so a ring entry with a hole below its
+    // span (a rewind before it was taken) stays in memory only.
     pthread_mutex_lock(&PFX.mu);
     uint32_t count = 0;
-    for (pfx_entry *p = PFX.head; p; p = p->next) count++;
+    for (pfx_entry *p = PFX.head; p; p = p->next) count += p->ring_whole;
 
     uint64_t digest = 0xcbf29ce484222325ull;
     bool ok = wr(f, PFX_MAGIC, PFX_MAGIC_N) && wr(f, &count, sizeof count);
     for (pfx_entry *p = PFX.head; ok && p; p = p->next) {
+        if (!p->ring_whole) continue;
         uint64_t key = p->key, bytes = p->bytes;
         int32_t  n   = p->n;
         ok = wr(f, &key, sizeof key) && wr(f, &n, sizeof n) &&
@@ -1109,6 +1180,7 @@ int prefix_cache_load(const char *path, const engine *e) {
         }
         ne->key = key; ne->toks = toks; ne->n = n;
         ne->kv = kv; ne->bytes = (size_t)bytes; ne->used = now;
+        pfx_ring_mark(e->m, ne, n, true);
         ne->next = PFX.head; PFX.head = ne;
         PFX.bytes += (size_t)bytes;
         loaded++;
@@ -1148,6 +1220,11 @@ int prefix_context_export(const char *name, const char *path) {
         return PFX_CTX_UNKNOWN;
     }
     pfx_entry *p = *pp;
+    if (!p->ring_whole) {   // a file carries no ring watermark (prefix_cache_save)
+        pthread_mutex_unlock(&PFX.mu);
+        free(tmp);
+        return PFX_CTX_UNSUPPORTED;
+    }
     p->readers++;
     pthread_mutex_unlock(&PFX.mu);
     // From here the entry is read without the lock (see `readers`).
@@ -1184,8 +1261,7 @@ int prefix_context_export(const char *name, const char *path) {
 int prefix_context_import(const engine *e, const char *name, const char *path,
                           const char *origin) {
     if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
-    if (!e || !e->m || model_kv_ring_active(e->m) || e->m->tied_v ||
-        (model_has_recurrent(e->m) && e->m->gpu))
+    if (!e || !e->m || e->m->tied_v || (model_has_recurrent(e->m) && e->m->gpu))
         return PFX_CTX_UNSUPPORTED;
     FILE *f = plat_fopen(path, "rb");
     if (!f) return PFX_CTX_UNKNOWN;
@@ -1241,6 +1317,7 @@ int prefix_context_import(const engine *e, const char *name, const char *path,
     if (old) pfx_drop(old);
     ne->key = key; ne->toks = toks; ne->n = n;
     ne->kv = kv; ne->bytes = (size_t)bytes; ne->used = now; ne->created = now;
+    pfx_ring_mark(e->m, ne, n, true);
     ne->pinned = true;
     snprintf(ne->name, sizeof ne->name, "%s", name);
     snprintf(ne->origin, sizeof ne->origin, "%s", origin ? origin : "");
@@ -2987,18 +3064,20 @@ size_t engine_state_bytes(const engine *e) {
 }
 
 bool engine_state_save(const engine *e, uint8_t *dst) {
-    if (!e || !e->m || !dst || model_kv_ring_active(e->m) || e->m->tied_v)
+    // an image carries no ring watermark: a ring with a hole below its span
+    // (a rewind before this point) cannot be imaged whole
+    if (!e || !e->m || !dst || e->m->tied_v ||
+        (model_kv_ring_active(e->m) && e->m->kv_ring_lo > pfx_ring_first(e->m, e->pos)))
         return false;
     pfx_save(e->m, dst, e->pos);
     return true;
 }
 
 bool engine_state_load(engine *e, const int32_t *hist, int n, const uint8_t *src) {
-    if (!e || !e->m || !e->hist || !src || n < 1 || n > e->m->n_ctx ||
-        model_kv_ring_active(e->m) || e->m->tied_v)
+    if (!e || !e->m || !e->hist || !src || n < 1 || n > e->m->n_ctx || e->m->tied_v)
         return false;
     engine_reset(e);
-    pfx_load(e->m, src, n, n);
+    pfx_load(e->m, src, n, n, pfx_ring_first(e->m, n));
     if (model_has_recurrent(e->m)) {
         size_t kvb = prefix_cache_entry_bytes(e->m, n) - model_recurrent_blob_bytes(e->m);
         if (!model_recurrent_blob_load(e->m, src + kvb)) return false;

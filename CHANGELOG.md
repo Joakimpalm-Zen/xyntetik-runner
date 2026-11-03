@@ -17,6 +17,40 @@ Current release and unreleased changes. Compatibility follows the
   read against the publisher's float32 model did not run (stopped for low
   memory on the 16 GB host). The route detail a receipt carries says `i8=on`
   or `i8=off`. Report: `docs/compat-reports/r3.14-cuda-int8-prefill-2026-11-03`.
+
+- **The sliding-window KV ring is on by default where the flat cache does
+  not fit (`--kv-ring auto|on|off`), and rewind and the prefix cache work
+  with it.** The cost first: under the ring a shared-prefix hit is lost
+  when the cached prompt runs past the shared part by more than one batch
+  plus one token, which the flat cache would serve; a saved prefix cache, an
+  exported named context or a session image takes only a ring with no gap
+  below its span; Metal's decode microbatch runs ring members one at a
+  time. The auto rule fired wrongly on the first real file it met
+  (gemma-4-E4B at 32k on an 8 GB RTX 3070, where the flat cache costs no
+  layer): the device weight estimate counted E-series' host-only per-layer
+  token table, and now leaves it out. That estimate also fed the VRAM
+  registry's claim, the `-c 0 --reserve-vram` auto-fit and the KV-trade
+  note, all too large on E-series files since 2026-08-01. Rewind and
+  snapshots resume from what the ring still holds by one rule
+  ([docs/kv-ring.md](docs/kv-ring.md)), with the ring's oldest held position
+  tracked where KV is written; output is bit-identical to the flat cache
+  through the server on the CPU, Metal and CUDA paths. Measured on the RTX
+  3070 (gemma-4-E4B Q4_0, 4k to 32k, two interleaved rounds): the cache is
+  2.2 to 3.2 times smaller (1879 to 579 MB at 32k) with the same output;
+  speed is level, not better (prompt within 1.2% bar one flat-arm round at
+  8k, decode within 1.2% at 8k to 32k; the 4k rows stopped after one
+  token), because the flat cache costs that card no layer; and a repeated
+  3,000-token system prompt hits the prefix cache on both arms (0.16 to
+  0.17 s). On that card the flat cache
+  fits at 32k, so auto leaves the ring off there. `RUNNER_KV_RING` still
+  overrides the flag. **What changes for callers:** on a sliding-window
+  model whose flat cache does not fit, the ring is now on without asking;
+  `--kv-ring off` restores the flat cache. On CUDA, `-c 0 --reserve-vram`
+  fits a larger context on a gemma-4 E-series file than before, because the
+  weight charge drops by the per-layer token table (E4B: 5,155 to 2,843
+  MB), and the VRAM registry claims that much less. `--info fit` is
+  unchanged: it already left the table out.
+
 - **`test-gpu-identity` pins a MoE file's routing and bounds dense and
   pinned runs at 1e-3 of the logit range (was 2e-3).** A MoE file now runs
   on the device twice: with its own routing, bounded at 2e-3 as before, and
