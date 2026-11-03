@@ -56,6 +56,7 @@ typedef struct {
     id<MTLComputePipelineState> p_tensor[METAL_TYPE_SLOTS];   // Metal 4 MPP prefill
     id<MTLComputePipelineState> p_mvf[METAL_TYPE_SLOTS];      // fast decode matvec
     id<MTLComputePipelineState> p_mvfc_q4k;   // its Q4_K twin, columns inside the block walk
+    id<MTLComputePipelineState> p_mvg_q4k, p_mvgc_q4k;   // narrow-slice Q4_K decode and its column twin
     id<MTLComputePipelineState> p_mvc[METAL_TYPE_SLOTS];      // identity matvec twins, columns inside
     id<MTLComputePipelineState> p_mv2[METAL_TYPE_SLOTS];      // two-row identity decode matvec
     id<MTLComputePipelineState> p_moe_mv[METAL_TYPE_SLOTS];   // indexed by ggml type
@@ -352,6 +353,8 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     }
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvf[i] release];
     [g->p_mvfc_q4k release];
+    [g->p_mvg_q4k release];
+    [g->p_mvgc_q4k release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvc[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mv2[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv[i] release];
@@ -1469,6 +1472,14 @@ static int metal_mv_state(void) {
 // the route detail names the floor from the same constant (mv=fast-q4_K>=2048)
 #define MV_STR_(x) #x
 #define MV_STR(x) MV_STR_(x)
+// R3.28.2 EXPERIMENT: R3282_MVG=1 takes k_mvg_q4_K for every Q4_K decode
+// matvec of a dense model (never under RUNNER_METAL_MV=0)
+static bool metal_q4k_mvg_for(const gpu_t *g, int n_in) {
+    static _Atomic int on = -1;
+    if (on < 0) { const char *e = getenv("R3282_MVG"); on = e && *e == '1'; }
+    (void)n_in;
+    return on == 1 && metal_mv_state() != MV_OFF && g->mv_q4k_default;
+}
 static bool metal_mv_fast_for(const gpu_t *g, int type, int n_in) {
     int st = metal_mv_state();
     return st == MV_ALL || (st == MV_Q4_K && type == T_Q4_K && g->mv_q4k_default &&
@@ -2088,6 +2099,12 @@ static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib
     // the column-inner twins (R3.24 (a)), each admitted only where it gives
     // its one-column kernel's bits on this device
     g->p_mvfc_q4k     = mk_pipeline(dev, lib, @"k_mvfc_q4_K");
+    g->p_mvg_q4k      = mk_pipeline(dev, lib, @"k_mvg_q4_K");
+    g->p_mvgc_q4k     = mk_pipeline(dev, lib, @"k_mvgc_q4_K");
+    if (g->p_mvgc_q4k && !metal_mvc_self_test(dev, g->p_mvg_q4k, g->p_mvgc_q4k, T_Q4_K, 4)) {
+        [g->p_mvgc_q4k release];
+        g->p_mvgc_q4k = nil;
+    }
     if (g->p_mvfc_q4k && !metal_mvc_self_test(dev, g->p_mvf[T_Q4_K], g->p_mvfc_q4k, T_Q4_K, 2)) {
         [g->p_mvfc_q4k release];
         g->p_mvfc_q4k = nil;
@@ -2967,7 +2984,16 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // (decode-only by construction) has never looked.
     id<MTLComputePipelineState> mv = g->p_mv[w->type];
     int rows_sg = 1;   // output rows a simdgroup computes
-    if (decode && metal_mv_fast_for(g, w->type, n_in) && g->p_mvf[w->type]) {
+    if (decode && w->type == T_Q4_K && g->p_mvg_q4k && metal_q4k_mvg_for(g, n_in)) {
+        mv = g->p_mvg_q4k;
+        rows_sg = 4;   // MVG_NR
+        if (n_col > 1 && g->p_mvgc_q4k && metal_mvfc_on()) {
+            mv = g->p_mvgc_q4k;
+            if (a.col_tile > 8) a.col_tile = col_tile = 8;
+        }
+        g_mv_dispatches++;
+        g_disp.mvf++;
+    } else if (decode && metal_mv_fast_for(g, w->type, n_in) && g->p_mvf[w->type]) {
         mv = g->p_mvf[w->type];
         rows_sg = w->type == T_Q4_K ? 2 : 1;   // k_mvf_q4_K takes two rows
         // several decode columns of Q4_K: the twin that reads each block
