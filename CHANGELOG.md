@@ -14,6 +14,10 @@ Current release and unreleased changes. Compatibility follows the
   agreement 63.2% before, 95.8% now. A file that declares the key keeps it.
   Requantize nothing; reload the file.
 
+- **`RUNNER_DEBUG_TIME` reports the attention core inside the attention
+  stage.** A new `attn core` line times only the scores, softmax and values
+  pass, without the projections. Timing only; output unchanged.
+
 - **Metal prefill attention takes 512-wide heads on the tile, byte-identical,
   by default for gemma-4's E-series (R3.6.3.2).** gemma-4's 512-wide global
   layers ran the one-column kernel over the whole history, 66% of an 8K
@@ -72,6 +76,20 @@ Current release and unreleased changes. Compatibility follows the
   their order, and tensors a split never reads from the device (the head, the
   embedding, gemma-4 E-series' per-layer tables) may follow the layers; any
   other tensor there still refuses the split, and the message names it.
+
+
+- **A session resume or a shared prefix is no longer refused when the model's
+  path is spelled differently.** The engine's model key hashed the `-m` path
+  as typed, so the same file loaded as `./models/m.gguf` and as its absolute
+  path had two keys: a session image written under one spelling was refused
+  under the other, and two slots did not share prefix-cache entries. The key
+  now names the file (its stat identity and content samples, or its resolved
+  path where stat cannot tell); a file replaced in place still changes it.
+  **What changes for callers:** the key version moves to v3, so prefix caches
+  and session images saved by an earlier build are refused once (the refusal
+  says so). A refusal that remains now names what
+  differs, with both values and the flag that resumes it ("context 256 in the
+  image, 128 here: resume with -c 256").
 
 - **CUDA decode attention reads the cache once (R3.29).** The grouped decode
   kernel read K twice, a pass for the softmax maximum and then K with V; it

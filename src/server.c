@@ -1369,9 +1369,8 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
         why = "the resident model's digest is not available";
     if (!why && strcmp(msha, sm->model_sha256) != 0)
         why = "the resident model is not the model the image was made with";
-    if (!why && e->model_key != sm->model_key)
-        why = "this engine's model key (context, KV type, geometry) is not "
-              "the image's";
+    char keywhy[192];
+    if (!why) why = session_key_mismatch(sm, e, keywhy, sizeof keywhy);
     if (!why && (img.n_vocab != s->m->n_vocab ||
                  img.state_n != prefix_cache_entry_bytes(s->m, sm->n_tokens)))
         why = "the image's state does not fit this model";
