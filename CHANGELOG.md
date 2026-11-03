@@ -20,13 +20,6 @@ Current release and unreleased changes. Compatibility follows the
   detail says `attn_wide=on`. Report:
   `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03`.
 
-- **A refused session resume names what differs.** An image resumed where
-  its model key differs was refused as "this engine's model key (context, KV
-  type, geometry) is not the image's". The refusal now names the context
-  length or the KV type the image recorded, with both values and the flag
-  that resumes it ("context 4096 in the image, 2048 here: resume with -c
-  4096"), and the model geometry when both agree. The key is unchanged.
-
 - **A session resume or a shared prefix is no longer refused when the model's
   path is spelled differently.** The engine's model key hashed the `-m` path
   as typed, so the same file loaded as `./models/m.gguf` and as its absolute
@@ -34,8 +27,9 @@ Current release and unreleased changes. Compatibility follows the
   under the other, and two slots did not share prefix-cache entries. The key
   now names the file (its stat identity and content samples, or its resolved
   path where stat cannot tell); a file replaced in place still changes it.
-  The key version moves to v3, so prefix caches and session images saved by
-  an earlier build are refused once. A refusal that remains now names what
+  **What changes for callers:** the key version moves to v3, so prefix caches
+  and session images saved by an earlier build are refused once (the refusal
+  says so). A refusal that remains now names what
   differs, with both values and the flag that resumes it ("context 256 in the
   image, 128 here: resume with -c 256").
 
