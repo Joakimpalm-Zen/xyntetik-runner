@@ -21,6 +21,8 @@ Current release and unreleased changes. Compatibility follows the
   `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03`.
 
 - **`RUNNER_SPEC_PROF=1` prints its profile line on a `--json` run too.** The
+
+- **`RUNNER_SPEC_PROF=1` prints its profile line on a schema-constrained run too.** The
   speculative walk left through three early exits when a constrained document
   completed (a close before a token's forward, mid-round, at a plain token);
   they printed the round summary but not the profile. The MANUAL's
