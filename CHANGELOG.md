@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`test-gpu-identity` judges a MoE file by its pinned-routing arm (R1.25).**
+  With `RUNNER_CUDA_ATTN_TC_WIDE=1`, Qwen3.8-Flash-Next failed the free-routing
+  arm at 2.41e-3 of the logit range against 2e-3. A dump of every device
+  attention call found the wide-head kernel within 1.7e-6 of a float64
+  reference over its own inputs, as close as the tile kernel. The device's
+  router had chosen another expert at 3 of 45,600 slots, near-ties tipped by
+  rounding, and with the CPU's choices pinned the run reads 4.42e-6. The free
+  arm is now reported and does not fail by itself. The gate fails instead
+  when more than 1% of slots tip: a Metal router with its bias dropped tips
+  20 to 40% of them, which pinning alone would have passed. A G = 12 fixture
+  (24 query heads on 2 KV heads, `make-test-model.py --heads`) joins
+  `test-cuda-attn-wide`. No kernel changes.
+
 - **The CUDA int8 prefill route (`RUNNER_CUDA_I8=1`) stays opt-in for every
   type (R3.14.1).** Against the publisher's float32 models, Q8_0 (Qwen3-0.6B)
   reads 1.51x the default route's mean KL. Q4_K with Q6_K (Qwen3-4B Q4_K_M)

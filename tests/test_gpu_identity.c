@@ -36,10 +36,13 @@
 // expert choices replayed at every routing (model_moe_pin_*, the
 // RUNNER_MOE_REPLAY switch fed from memory). A top-8-of-128 router turns any
 // cross-backend rounding into another expert wherever two gates nearly tie,
-// so the free-routing arm answers to GPU_DEV_FRAC_ROUTED and the pinned arm,
-// which measures the arithmetic alone, to GPU_DEV_FRAC like a dense file.
-// The flips the pin removed are reported, not bounded: how often a near-tie
-// lands depends on the prompt.
+// so the pinned arm, which measures the arithmetic alone, is the verdict, at
+// GPU_DEV_FRAC like a dense file. The free-routing arm is reported against
+// GPU_DEV_FRAC_ROUTED and never fails by itself: on Qwen3.8-Flash-Next three
+// tipped slots of 45,600 moved its logits past that bound with a kernel that
+// matched a float64 reference to 1.7e-6 (R1.25). What the pin removed is
+// bounded instead: a share of tipped slots above GPU_TIP_FRAC is a router
+// that computes something else, which the pin alone would hide.
 #include "runner.h"
 #include "finite_check.h"
 
@@ -99,6 +102,13 @@ static int g_n_batch = N_BATCH;
 // room on the audit's prompt.
 #define GPU_DEV_FRAC 1e-3
 #define GPU_DEV_FRAC_ROUTED 2e-3
+// The share of a MoE file's expert slots where the device's own router may
+// choose another expert than the CPU's before the gate calls it a router
+// defect, not near-ties tipped by rounding. Real files tip far fewer
+// (Qwen3.8-Flash-Next 3 and 8 of 45,600, Qwen3-30B-A3B 3 of 1,872
+// routings); the toy fixtures tip none, and a Metal router with its bias
+// dropped tips 20 to 40% of them (R1.25, 2026-11-04).
+#define GPU_TIP_FRAC 1e-2
 
 // GPU_ID_LIMIT=F: a tighter bound for one fixture, never a looser one (a
 // value above GPU_DEV_FRAC is refused). The cross-backend constant is sized
@@ -203,8 +213,11 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
 // the gate's last line either way (an ok only when `last`: a MoE file's free
 // arm is followed by the pinned one). Kept apart from the model runs so that
 // `--self-test` can drive it with synthetic inputs under the release flags.
+// report_only: over the limit prints the numbers and returns 2 instead of
+// failing (a MoE file's free-routing arm); a non-finite or all-zero run still
+// fails, since neither is a routing outcome.
 static int compare_logits(const float *cpu, const float *gpu, int nv, int steps,
-                          double limit, bool last) {
+                          double limit, bool last, bool report_only) {
     size_t n = (size_t)steps * (size_t)nv;
 
     // Non-finite logits on EITHER side fail before any reduction. Until
@@ -275,6 +288,7 @@ static int compare_logits(const float *cpu, const float *gpu, int nv, int steps,
            "= %.3g of mean range %.3g (limit %g), worst %.3g\n",
            n, steps, n_diff, mean_dev, frac, range, limit, worst);
 
+    if (frac > limit && report_only) return 2;
     if (frac > limit) {
         printf("FAIL: CPU and GPU disagree by more than reduction-order "
                "rounding — this is a missing or wrong operation on one side, "
@@ -329,7 +343,7 @@ static int self_test(void) {
         }
         printf("self-test: %s (expect %s)\n", cases[c].name,
                cases[c].expect ? "FAILED" : "ok");
-        int rc = compare_logits(cpu, gpu, NV, ST, GPU_DEV_FRAC, true);
+        int rc = compare_logits(cpu, gpu, NV, ST, GPU_DEV_FRAC, true, false);
         if (rc != cases[c].expect) {
             printf("SELF-TEST FAIL: '%s' read as %s, expected %s\n",
                    cases[c].name, rc ? "FAILED" : "ok",
@@ -517,17 +531,20 @@ int main(int argc, char **argv) {
     }
 
     if (!g_expert_used) {
-        int rc = compare_logits(cpu, gpu, nv_cpu, STEPS, gpu_dev_limit(GPU_DEV_FRAC), true);
+        int rc = compare_logits(cpu, gpu, nv_cpu, STEPS, gpu_dev_limit(GPU_DEV_FRAC), true, false);
         free(cpu); free(gpu);
         return rc;
     }
 
     // A MoE file: free routing at the routed bound, then the pinned arm.
     printf("  free routing (the device's own expert choices):\n");
-    int rc = compare_logits(cpu, gpu, nv_cpu, STEPS,
-                            gpu_dev_limit(GPU_DEV_FRAC_ROUTED), false);
+    int rc_free = compare_logits(cpu, gpu, nv_cpu, STEPS,
+                                 gpu_dev_limit(GPU_DEV_FRAC_ROUTED), false, true);
     free(gpu);
-    if (rc) { free(cpu); return rc; }
+    if (rc_free == 1) { free(cpu); return 1; }
+    if (rc_free == 2)
+        printf("  free routing is over the routed bound: expert choices tipped, "
+               "counted below; the pinned arm is the verdict\n");
     const char *why = NULL;
     size_t routings = model_moe_pin_replay(true, &why);
     if (!routings) {
@@ -558,8 +575,17 @@ int main(int argc, char **argv) {
         free(cpu); free(pin);
         return 1;
     }
+    double tipped = forced ? (double)differed / (double)forced : 0.0;
+    if (tipped > GPU_TIP_FRAC) {
+        printf("FAIL: the device's router chose another expert at %lu of %lu slots "
+               "(%.3g, bound %g): more than near-ties tipped by rounding, a router "
+               "that computes something else\ngpu-identity: FAILED\n",
+               differed, forced, tipped, GPU_TIP_FRAC);
+        free(cpu); free(pin);
+        return 1;
+    }
     printf("  pinned routing (the CPU run's expert choices):\n");
-    rc = compare_logits(cpu, pin, nv_cpu, STEPS, gpu_dev_limit(GPU_DEV_FRAC), true);
+    int rc = compare_logits(cpu, pin, nv_cpu, STEPS, gpu_dev_limit(GPU_DEV_FRAC), true, false);
     free(cpu); free(pin);
     return rc;
 }
