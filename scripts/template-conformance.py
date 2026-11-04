@@ -492,6 +492,24 @@ FAMILIES = {
         tool_family=True, thinking_var="enable_thinking", hostile_args=True,
         tokenizer=("Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
+    # Qwen3.6-27B (dense): the same template bytes as the 35B-A3B's (sha256
+    # e84f32a2 at Qwen/Qwen3.6-27B 6a9e13bd), its own tokenizer; the R4.29
+    # gate ran this family lab-locally (23 of 23 conformant, 23 of 23
+    # token-identical) and the registration is committed so the record's
+    # command reproduces.
+    "qwen36-27b": Family(
+        "qwen36", ("hf", "Qwen/Qwen3.6-27B"),
+        note="Qwen/Qwen3.6-27B chat_template.jinja at 6a9e13bd, "
+             "byte-identical in ggml-org's GGUF at 1132d039",
+        tool_family=True, thinking_var="enable_thinking", hostile_args=True,
+        tokenizer=("Qwen3.6-27B-Q4_K_M.gguf",),
+        cannot={"system-mid-history": NO_MID_SYSTEM}),
+    "deepseek2": Family(
+        "deepseek2", ("hf", "deepseek-ai/DeepSeek-V2-Lite-Chat"),
+        note="DeepSeek-V2-Lite-Chat's chat_template (tokenizer_config.json), "
+             "byte-identical in mradermacher's GGUF at 9ee9f1f8 (R4.4.5)",
+        tokenizer=("DeepSeek-V2-Lite-Chat.Q8_0.gguf",
+                   "DeepSeek-V2-Lite-Chat.Q4_K_M.gguf")),
     "lucie": Family(
         "llama3", ("hf", "OpenLLM-France/Lucie-7B-Instruct-v1.1"),
         note="llama3 framing with a leading bos and trimmed content",

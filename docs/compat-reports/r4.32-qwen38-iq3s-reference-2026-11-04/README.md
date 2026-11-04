@@ -5,9 +5,11 @@
 a learned derivative of its parent, not a faithful quantization of it. So
 is ISTA-DASLab's unmodified GSQ-RCO IQ3_S it was made from. Our scale
 recovery moved the file toward the parent. No file is withdrawn. The roster
-row's claim and anchor now lead with the reference reading, and its tier is
-unchanged: that is the owner's decision. The Hub card edits are in this
-directory as text and are not pushed to the Hub until the owner says so.
+row's claim and anchor now lead with the reference reading, and by the
+owner's decision of 2026-11-04 the row moves to Tier 2, maintained on
+report, and stays published. The Hub card edits are in this directory as
+text; the owner approved them, and they are pushed to the Hub from the lab
+after this PR merges.
 
 ## The reads
 
@@ -101,8 +103,9 @@ tensors equal up to the converter's head reorder).
 
 | Where | Change | State |
 |---|---|---|
-| `docs/model-tiers.json`, row `qwen3.8-27b-gsq-rco-iq3_s-recovered` | claim, anchor, limitations, upstream revision, evidence; tier unchanged | applied in this PR |
+| `docs/model-tiers.json`, row `qwen3.8-27b-gsq-rco-iq3_s-recovered` | claim, anchor, limitations, upstream revision, evidence; tier2 with a transition entry and a published exception (owner decision 2026-11-04) | applied in this PR |
+| `docs/model-tiers.json`, row `qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head` | the limit sentence as its limitations; tier unchanged, its own reference read pending | applied in this PR |
 | `docs/model-support.md` | re-rendered from the roster | applied in this PR |
 | `MANUAL.md`, published-files list | the 0.0450 sentence replaced by the reference reading | applied in this PR |
-| Hub card `Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF` | [hub-card-27b.md](hub-card-27b.md) | text only, waits for the owner |
-| Hub card `Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF` | [hub-card-flash-next.md](hub-card-flash-next.md) | text only, waits for the owner |
+| Hub card `Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF` | [hub-card-27b.md](hub-card-27b.md) | text only; pushed from the lab after the merge |
+| Hub card `Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF` | [hub-card-flash-next.md](hub-card-flash-next.md) | text only; pushed from the lab after the merge |

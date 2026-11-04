@@ -211,13 +211,15 @@ def test_moe_gpu_forward_does_not_fall_back(runner_bin, models):
                 + proc.stderr.decode(errors="replace"))
 
 
-def test_cpu_moe_auto_keeps_an_ungated_shared_expert_on_the_host(runner_bin, models):
+def test_cpu_moe_auto_places_an_ungated_shared_expert_on_the_device(runner_bin, models):
     """--cpu-moe auto must not place a bank the device cannot run. An ungated
     shared expert (the DeepSeek shape, which the llama architecture admits)
-    has no device path: the auto fit placed such banks on the device anyway,
-    after the admission guard that knows the shape had run, and the forward
-    crashed reading the absent gate. Attention stays on the device, every
-    bank stays on the host, and the output is the CPU's."""
+    had no device path until R4.4.5 c0b: the auto fit placed such banks on
+    the device anyway, after the admission guard that knows the shape had run,
+    and the forward crashed reading the absent gate. Since c0b tile_shexp adds
+    it without the gate, so the fit places every bank on the device, and the
+    output is the CPU's. (Granite 4 hybrid keeps its banks on the host by
+    name: tests/test_hybrid_admission.py.)"""
     caps = json.loads(subprocess.run(
         [runner_bin, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
         check=True, text=True).stdout)
@@ -230,7 +232,7 @@ def test_cpu_moe_auto_keeps_an_ungated_shared_expert_on_the_host(runner_bin, mod
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
     err = proc.stderr.decode(errors="replace")
     assert proc.returncode == 0, err
-    assert re.search(r"experts 0/\d+ layers on GPU", err), err
+    assert re.search(r"experts (\d+)/\1 layers on GPU, 0 on host", err), err
     assert proc.stdout == cpu
 
 def test_caps_advertise_moe_tensor_placement(runner_bin):

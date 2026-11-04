@@ -5,24 +5,179 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
-- **Qwen3.8-27B GSQ-RCO IQ3_S recovered: the roster row now leads with the
-  float32 reference reading, 0.41 mean KLD, 8x the bar (R4.32).** Against
-  Qwen's float32 reference the published file reads 0.4119 / 85.04%
-  margin-qualified top-1 in the house window and 0.4084 / 86.12% at
-  positions 4000-5999. ISTA-DASLab's unmodified source reads 0.5616 /
-  82.48% and 0.4718 / 86.36%. Both predict the corpus better than the
-  parent (perplexity 21.54 and 53.48 against 73.29), so GSQ-RCO is a
-  learned derivative, not a faithful quantization; the scale recovery moved
-  the file toward the parent. The row's earlier 0.0450 / 97.80% (500 short
-  Wikitext-2 prefixes against our BF16 GGUF) stays beneath, labelled. The
-  tier is unchanged and the Hub card edits wait for the owner. Report:
-  `docs/compat-reports/r4.32-qwen38-iq3s-reference-2026-11-04`.
+- **Qwen3.8-27B GSQ-RCO IQ3_S recovered moves to Tier 2: against Qwen's
+  float32 reference it reads 0.41 mean KLD, 8x the bar (R4.32).** In the
+  house window the published file reads 0.4119 mean KLD and 85.04%
+  margin-qualified top-1; at positions 4000-5999 it reads 0.4084 / 86.12%.
+  ISTA-DASLab's unmodified source reads 0.5616 / 82.48% and 0.4718 /
+  86.36%. Both predict the corpus better than the parent (perplexity 21.54
+  and 53.48 against 73.29), so GSQ-RCO is a learned derivative, not a
+  faithful quantization. The scale recovery moved the file toward the
+  parent. The row's earlier 0.0450 / 97.80% was measured against our BF16
+  GGUF on 500 short Wikitext-2 prefixes, not against the publisher's
+  float32 model; it stays beneath, labelled. Owner decision 2026-11-04:
+  the row is maintained on report, stays published under a written
+  exception, and keeps its records as dated evidence. The Flash-Next
+  sibling's row gains the limit sentence; its own reference read is
+  pending. Report: `docs/compat-reports/r4.32-qwen38-iq3s-reference-2026-11-04`.
+
+- **`test-gpu-identity` judges a MoE file by its pinned-routing arm (R1.25).**
+  With `RUNNER_CUDA_ATTN_TC_WIDE=1`, Qwen3.8-Flash-Next failed the free-routing
+  arm at 2.41e-3 of the logit range against 2e-3. A dump of every device
+  attention call found the wide-head kernel within 1.7e-6 of a float64
+  reference over its own inputs, as close as the tile kernel. The device's
+  router had chosen another expert at 3 of 45,600 slots, near-ties tipped by
+  rounding, and with the CPU's choices pinned the run reads 4.42e-6. The free
+  arm is now reported and does not fail by itself. The gate fails instead
+  when more than 1% of slots tip: a Metal router with its bias dropped tips
+  20 to 40% of them, which pinning alone would have passed. A G = 12 fixture
+  (24 query heads on 2 KV heads, `make-test-model.py --heads`) joins
+  `test-cuda-attn-wide`. No kernel changes.
+
+- **CUDA runs the ungated (DeepSeek-style) shared expert on the device (R4.4.5 step c0b).** Before this, a MoE
+  whose shared expert has no scalar gate sent the whole model to the CPU on CUDA unless `--cpu-moe` kept the banks
+  on the host. `tile_shexp` now adds such a shared expert's output without the sigmoid.
+  - Granite 4 hybrid keeps its banks on the host by name, because its CUDA cells were measured that way. A relu2 or
+    gate-less shared expert keeps its refusal.
+  - `make test` adds gpu-identity on the `shexp` fixture: zero routed experts, with the dense FFN as the shared
+    expert. Its worst difference is 2.7e-7 against a limit of 1e-5, and on the device it scores bit for bit as the
+    dense oracle does.
+  - The gated shape (`shexpg`) and every CUDA MoE byte gate read the same before and after.
+
+- **Metal Q4_K decode: the fast kernel unpacks its scales without a branch,
+  1.18x on Qwen3-4B Q4_K_M with the same bits (R3.28.5).** Q4_K's 6-bit
+  scales unpack one way for sub-blocks 0 to 3 and another for 4 to 7, and
+  `k_mvg_q4_K`'s lanes sit on both sides within a simdgroup, so every lane
+  paid both paths. Now three 16-bit loads at fixed offsets and a select
+  give the same integers: the output is bitwise unchanged. On an Apple M1,
+  Q4_K at Qwen3-4B's 2560-wide inputs reads 47.9 GB/s against 38.2, and
+  decode over R3.28.3 is 17.59 against 14.92 tok/s on Qwen3-4B, 1.15x on
+  Llama-3.2-3B, 1.13x on Llama-3.2-1B, 1.02x on K2-Horizon-1B (whose
+  1536-wide bulk runs the identity kernel).
+- **Metal Q6_K decode: the narrow-slice kernel too, 1.20x more on
+  Qwen3-4B Q4_K_M (R3.28.3).** A Q4_K_M file keeps its LM head, attn_v and
+  half its ffn_down at Q6_K, which decoded at about 27 GB/s on an Apple M1.
+  Q6_K inputs at least 1536 wide now run `k_mvg_q6_K`, R3.28.2's shape for
+  Q6_K, at 51 to 55 GB/s: decode over the R3.28.2 build, Qwen3-4B 15.08
+  against 12.56 tok/s, Llama-3.2-1B 1.36x, Llama-3.2-3B 1.23x,
+  K2-Horizon-1B 1.24x. Unlike `k_mv2_q6_K`, whose bits are the identity
+  kernel's, it is a tolerance route: `test-mv-tol` 0/64 flips on Qwen3-4B,
+  and its float32-reference row is in the PR. `RUNNER_METAL_MVG=0` restores
+  both previous kernels. The route detail says
+  `mv=mvg-q4_K>=2048+q6_K>=1536`.
+- **Mellum2.1-12B-A2.5B-Thinking gains a Tier 2 row for bartowski's Q5_K_S
+  (8.96 GB), the smallest Mellum 2.1 file measured to pass the bar.** Against
+  the publisher's BF16 parent in float32 it reads 0.0289 mean KLD and 98.33%
+  margin-qualified top-1 (plain top-1 93.0%), where the publisher's Q4_K_M
+  reads 0.1172 / 92.89% and Runner's own 9.38 GB selective-precision attempt
+  0.0983 / 92.89%. Four published Q5-band files were scored; both with
+  experts at Q5_K pass, both with experts at Q4_K miss. Owner decision
+  2026-11-04; a third party's file, pinned by sha256 and repository revision.
+  Report: `docs/compat-reports/mellum2.1-q5-band-2026-11-04`.
+
+
+- **CUDA's MoE router can leave the selected weights as the softmax gave them (R4.4.5 step c0).** `k_moe_route`
+  and its replay twin take a renormalise flag, which is the file's `expert_weights_norm`. The eager path's host
+  routers read the same field. Every family that renormalises today keeps the flag on, with the same bytes:
+  - the CUDA MoE byte gates read the same before and after, and so do the scores of the MoE fixtures;
+  - in the PTX, only `k_moe_route` and `k_moe_route_replay` changed, of 495 kernels.
+
+  A softmax router with `expert_weights_norm` false no longer sends the model to the CPU on CUDA. deepseek2 is
+  still refused on CUDA by name until its attention lands. Metal's router has no such flag and keeps the
+  refusal. `make test` gains CPU-against-device runs on the shared-router pair `rsoft` and `rsoftnn` and on
+  `gnonorm` (worst 1.9e-7 and 2.7e-7, limit 1e-5). `test-moe-router` checks that the pair differs on the host
+  (0.041).
+
+- **DeepSeek-V2 (`deepseek2`) runs on the CPU (R4.4.5 step b).** These are the limits for now:
+  - The CPU only; the GPU backends run it on the CPU with a reason.
+  - The naive multi-head latent attention, so the cache is the full per-head K and V (16 x 192 x 2 values a token a
+    layer on V2-Lite), not the 576-value latent.
+
+  - The absorbed multi-head latent attention by default: the cache holds one 576-wide head a token a layer
+    ([k_pe | normed latent], read by every query head; 1,152 values with the K and V rows against the naive form's
+    6,144 on V2-Lite). `RUNNER_MLA_NAIVE=1` keeps the naive form (16 heads of 192), the identity gate's oracle.
+  - The legacy unsplit `attn_kv_b` only; the split `attn_k_b`/`attn_v_b` layout is refused.
+  - No LoRA.
+
+  Against the publisher's float32 code (`modeling_deepseek.py`, `--trust-remote-code`), DeepSeek-V2-Lite-Chat Q8_0
+  reads mean KLD 0.0100 and margin-qualified top-1 100% over the house window. llama.cpp reads 0.0155 / 99.54% on the
+  same file, and Runner is the closer (Wilcoxon p 9e-15). The rest is the publisher's:
+
+  same file, and Runner is the closer (Wilcoxon p 9e-15). That read is the naive form. Against the same reference at
+  positions 4000-5999 of the gold corpus, the absorbed form is not distinguishable from it: mean KLD 0.01286 against
+  0.01285 (1.001x), Wilcoxon p 0.095, McNemar p 1.0, margin-qualified top-1 99.48% for both. The rest is the
+  publisher's:
+  - the softmax scale mscale² / sqrt(key_length);
+  - softmax routing without renormalisation;
+  - the `deepseek-llm` pre-tokenizer (`test-tokenizer-classes`; 0 of 721 corpus segments and 0 of 99,442 vocabulary
+    entries differ from the publisher's tokenizer);
+  - the `deepseek2` chat template, conformant with 16 of 16 cases token-identical.
+
+- **Metal Q4_K decode: a faster fast kernel, 1.19x on Qwen3-4B and
+  Llama-3.2-3B Q4_K_M (R3.28.2).** The Q4_K inputs the fast route takes (at
+  least 2048 wide on dense models) run `k_mvg_q4_K`: eight lanes share a
+  superblock and a lane's 32 activations serve four rows, where
+  `k_mvf_q4_K` gave a lane 64 activations for one quarter of two rows. On
+  an Apple M1, decode: Qwen3-4B 12.59 against 10.61 tok/s, Llama-3.2-3B
+  17.09 against 14.34, Llama-3.2-1B 1.08x, K2-Horizon-1B 1.02x. A
+  tolerance route like the one it replaces: `test-mv-tol` 0/64 flips on
+  Qwen3-4B, and its float32-reference row (mean KL 0.9999x of the old
+  kernel's) is in the PR. A decode microbatch's columns each run the
+  one-column arithmetic, so they keep the solo step's bits.
+  `RUNNER_METAL_MVG=0` keeps `k_mvf_q4_K`. The route detail says
+  `mv=mvg-q4_K>=2048`.
+
+- **CUDA: the wide-head tensor-core prefill attention is on by default for
+  qwen35 at head width 256 (Qwen3.5, 3.6 and 3.8) (R3.6.3.2).** On
+  Qwen3.8-27B (GSQ-RCO IQ3_S, a CUDA MIG slice), 16K prefill reads 1.82x
+  (329.6 against 181.1 tok/s) and 4K 1.23x. Decode is unchanged. The D1
+  rule passes: mean KL 0.9998x the tile's, Wilcoxon p 0.82, McNemar 0/0
+  over 2,000 positions. gpu-identity is ok on both settings. The default
+  keys on the measured width, and `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the
+  tile. Not yet measured: the Flash-Next sibling (qwen4exp), Metal, and
+  the RTX 3070 at these sizes. Report:
+  `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-qwen35-2026-11-04`.
 
 - **The CUDA int8 prefill route (`RUNNER_CUDA_I8=1`) stays opt-in for every
   type (R3.14.1).** Against the publisher's float32 models, Q8_0 (Qwen3-0.6B)
   reads 1.51x the default route's mean KL. Q4_K with Q6_K (Qwen3-4B Q4_K_M)
   reads 1.008x, and is worse on the paired Wilcoxon (p 0.037). Both miss the
   routes' rule. Report: `docs/compat-reports/r3.14-cuda-int8-prefill-2026-11-03`.
+
+- **Qwen3.6-27B joins the validated roster at Tier 2 on ggml-org's
+  conversions (no publisher GGUF exists), and the Q4_K_M fails the fidelity
+  bar.** Against Qwen's BF16 checkpoint in float32 at use (300 positions,
+  CPU): the Q4_K_M reads 0.129 mean KLD and 95.9% margin-qualified top-1 on
+  Runner, 0.154 and 93.8% on llama.cpp 73a43d1, against a bar of 0.05 and
+  97%, and the gap grows with depth; the file itself is the distance (0.101
+  top-20 KL against Runner's own Q8_0). The Q8_0 passes on Runner (0.0273 and
+  99.59%; one reference near-tie carries most of the mean) and is the row's
+  fidelity file with a CPU cell; llama.cpp reads 0.0626 on it, above the bar.
+  Tokenizer differential 0 of 247,091 entries, template byte-identical to
+  Qwen's with 23 of 23 conformance cases, tool gate A and B pass and C passes
+  buffered. Record: `docs/compat-reports/qwen3.6-27b-2026-11-04`.
+
+- **On CUDA with every layer on the device, `--draft lookup` now drafts 7
+  tokens a round by default and `--draft mtp` 2; every other source,
+  backend and partial offload keeps 4 (R3.3.7).** On an
+  RTX 3070, lookup on an in-context edit reads 2.86x plain at 7 against
+  2.43x at 4. Qwen3.5-4B's NextN head reads 1.13x at 2 on code and tool
+  calls, against 1.01x and 1.18x at 4; on prose it stays a loss (0.88x at
+  2). An adaptive width that followed each turn's acceptance was measured
+  first and stopped by its kill read: 0.97x of the best fixed width, where
+  it needed 1.05x. An explicit `--draft-k` is unchanged. Report:
+  `docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03`.
+
+- **`RUNNER_CPU_I8K=1`: an opt-in int8 decode route for Q4_K and Q6_K on
+  AVX2 CPUs, off by default because it fails the fidelity bar (R3.1.4).** On
+  a 4-core i7-7700K, Q4_K_M decode reads 1.23 to 1.39x the f32 route, 0.85
+  to 0.96x of llama.cpp. Against Qwen's float32 models its mean KL is 1.09x
+  the f32 route's on Qwen3-0.6B and 1.17x on Qwen3-1.7B (worse on the paired
+  test, p 9e-32 and 3e-49). The small-core gap to llama.cpp is that int8
+  rounding, which the default does not pay. `RUNNER_CPU_PROF=1` prints where
+  a CPU decode step goes. The route record's `cpu_act` names the route, and
+  `--score`'s `score_route` now carries `cpu_act`. Report:
+  `docs/compat-reports/r3.1.4-cpu-small-core-decode-2026-11-04`.
 
 - **`--quant-error` costs a row its type cannot describe at the type the
   rewrite writes instead.** A tensor whose rows the asked type's block does
@@ -49,6 +204,32 @@ Current release and unreleased changes. Compatibility follows the
   corpus better). CPU only: the router has no device kernel. The three
   `qwen35moe` Upcoming rows no longer claim the architecture does not load.
   Record: `docs/compat-reports/nemotron-3.5-lightning-30b-a3b-2026-11-03`.
+
+- **Metal: the fast Q4_K decode matvec is the default only for inputs at
+  least 2048 wide (R3.28.1).** On 1536-wide inputs it was 15% slower than
+  the identity kernel (K2-Horizon-1B Q4_K_M: 11.11 against 9.62 ms of Q4_K
+  time a token on an Apple M1), while it won at every width from 2048 to
+  8192 on the Llama-3.2-1B/3B Q4_K_M files it was promoted on. Narrower Q4_K
+  inputs now keep the identity kernel, so K2-Horizon-1B Q4_K_M decodes
+  1.061x faster (39.7 against 37.5 tok/s). The Llama files are unchanged:
+  their `--score` output is byte-identical to before, decode 0.997x and
+  1.022x, inside the run-to-run spread. Measured on one laptop, with one
+  file for the narrow case; widths between 1536 and 2048 were not measured
+  and take the exact kernel. The route detail says `mv=fast-q4_K>=2048`.
+
+- **Granite-4.2-30B joins the validated roster at Tier 2, and its publisher's
+  Q4_K_M fails the fidelity bar.** Against IBM's BF16 checkpoint in float32
+  at use (300 positions, CPU): the Q4_K_M reads 0.139 mean KLD and 93.9%
+  margin-qualified top-1 on Runner, 0.151 and 92.5% on llama.cpp 73a43d1,
+  where the bar is 0.05 and 97%; the file itself is the distance (0.111
+  top-20 KL against Runner's own Q8_0). IBM's Q8_0 passes on both engines
+  (Runner 0.0041 and 99.56%, llama.cpp 0.0241 and 99.12%) and is the row's
+  fidelity file, with a CPU cell on the Linux CUDA host (31.1 GB, more than a
+  24 GB device holds). Tokenizer differential 0 of 99,474 entries, template
+  byte-identical to the publisher's with 24 of 24 conformance cases, tool gate
+  A and B pass and C passes buffered (streamed, the run spent its reasoning
+  budget before any call). Record:
+  `docs/compat-reports/granite-4.2-30b-2026-11-04`.
 
 - **Nemotron 3.5 Lightning (`nemotron_h_moe`) routed its experts with the wrong
   function; fixed. Every nemotron_h_moe file has given wrong output since

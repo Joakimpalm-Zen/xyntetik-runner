@@ -1,0 +1,26 @@
+== start 01:01:24Z
+-- r0 all 01:03:55Z -> (85.82, 0.72)
+-- r0 noQ4K 01:04:20Z -> (38.435, 0.57)
+-- r0 noQ6K 01:04:47Z -> (69.13, 0.73)
+-- r0 noHead 01:05:16Z -> (74.185, 0.64)
+-- r0 noAttn 01:05:46Z -> (74.975, 0.65)
+-- r0 rest 01:06:05Z -> (0.875, 0.325)
+-- r1 rest 01:06:23Z -> (0.885, 0.34)
+-- r1 noAttn 01:06:52Z -> (74.61, 0.68)
+-- r1 noHead 01:07:20Z -> (72.805, 0.71)
+-- r1 noQ6K 01:07:48Z -> (69.265, 0.785)
+-- r1 noQ4K 01:08:11Z -> (38.46, 0.59)
+-- r1 all 01:08:41Z -> (85.4, 0.7)
+-- r2 all 01:09:10Z -> (85.36, 0.765)
+-- r2 noQ4K 01:09:34Z -> (38.474999999999994, 0.63)
+-- r2 noQ6K 01:10:02Z -> (69.905, 0.68)
+-- r2 noHead 01:10:31Z -> (73.545, 0.72)
+-- r2 noAttn 01:11:00Z -> (75.825, 0.63)
+-- r2 rest 01:11:19Z -> (0.91, 0.37)
+== end 01:11:19Z
+all     gpu [85.82, 85.4, 85.36] median 85.40 ms | encode median 0.72 ms
+noQ4K   gpu [38.44, 38.46, 38.47] median 38.46 ms | encode median 0.59 ms
+noQ6K   gpu [69.13, 69.27, 69.91] median 69.27 ms | encode median 0.73 ms
+noHead  gpu [74.19, 72.81, 73.55] median 73.55 ms | encode median 0.71 ms
+noAttn  gpu [74.97, 74.61, 75.83] median 74.97 ms | encode median 0.65 ms
+rest    gpu [0.88, 0.89, 0.91] median 0.89 ms | encode median 0.34 ms

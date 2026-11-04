@@ -236,7 +236,7 @@ A map of what the binary does, with the section that documents each part.
 - **Training and adapters.** LoRA training through quantized GGUF weights on
   CPU and CUDA, `--lora` serving on CPU, CUDA and Metal, `--merge-lora`,
   `--info adapter`. [Adaptation](#adaptation)
-- **Models and formats.** 29 admitted architectures, refused by name when
+- **Models and formats.** 30 admitted architectures, refused by name when
   unknown; 24 weight formats including the K-quants, all seven codebook
   i-quants, MXFP4 and NVFP4; KV caches in f16, q8, fp4 and split k8v4, with a
   ring for sliding-window layers; speculative decoding from a draft model, the
@@ -1389,8 +1389,9 @@ reported beside it).
   nine preregistered runs on one frozen 30B model; the cards say where the
   fidelity bar does and does not transfer to public benchmarks.
 - [Qwen3.8-27B GSQ-RCO IQ3_S, recovered scales](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF)
-  (11.77 GB) reads 0.41 mean KLD against Qwen's float32 reference, 8x the
-  bar: it is a learned derivative, not a faithful quantization. It is
+  (11.77 GB) moved to Tier 2, maintained on report, on 2026-11-04 (owner
+  decision): it reads 0.41 mean KLD against Qwen's float32 reference, 8x
+  the bar, and is a learned derivative, not a faithful quantization. It is
   ISTA-DASLab's GSQ-RCO IQ3_S file, whose codes and scales were fitted on
   calibration data, with every quantised block's fp16 scales retrained by
   distillation against the BF16 parent (same integer codes, layout and byte
@@ -1530,7 +1531,8 @@ merely dense matvec/matmul support.
 | `k2-horizon` | IFM K2-Horizon, the dense members (0.9B, 3.7B, 7B): a llama-shaped decoder (GQA, SiLU MLP, NeoX rope, untied head) whose RMSNorms normalise the hidden vector in `attention.group_norm_groups` equal slices before one full-width weight (the 7B uses 4, the 0.9B 1); tokenizer pre `k2-horizon`. A grouped file runs on the CPU (the GPU backends implement full-width RMSNorm only) and refuses LoRA training by name; an ungrouped one runs on the GPU as usual. The family's larger members (per-head QK norms, an attention output gate, routed experts, value experts) are refused by name. |
 | `spark2_5` | XHToken Spark 2.5 and 2.6 (X2.5 and X2.6, 1.7B and 4B): a dense transformer with Q, K and V fused in `attn_qkv`, a 512-token sliding window on three of every four layers, NeoX rope at different widths and bases on the two layer types, a per-head sigmoid output gate and a gated exact-erf GELU; tokenizer pre `spark2_5`; its own `spark` and `spark25` chat templates. It runs on the CPU, Metal and CUDA. Metal has no erf, so its exact GELU computes erf by Abramowitz and Stegun 7.1.26 (absolute error at most 1.5e-7), where the CPU and CUDA use erff ([the record](docs/compat-reports/spark2_5-gpu-2026-10-30/README.md)). LoRA training is refused (the per-head gate is not in the backward); serving an adapter works. |
 | `flint` | RecursiveSI flint (39.8B, 256 experts, top 6): QK norms and learned attention sinks on every block, a 513-token sliding window with NeoX rope on the blocks the pattern marks and NoPE full attention on the rest, two leading dense blocks, then sigmoid-routed experts (renormalised) beside an always-on shared expert; tokenizer pre `flint`. CPU only for now: the GPU backends refuse it by name and run it on the CPU. The file's rope pattern must equal its sliding pattern (it does on every published flint file); LoRA training is refused by name. |
-| `mellum` | JetBrains Mellum2.x: `qwen3moe` attention and router (64 experts, top-8, no shared expert) with a 1,024-token sliding window on three of every four layers and YaRN on the full layers only; tokenizer pre `mellum2` is the SmolLM split; its own `mellum` chat template. CPU and CUDA; CUDA runs its MoE on the scalar route (the tensor-core and grouped routes are not measured for this family). Admitted 2026-10-29; the publisher Q4_K_M fails the 0.05 bar against its BF16 parent on both Runner and llama.cpp (the file, not the engine), and the record is in `docs/model-support.md`. |
+| `mellum` | JetBrains Mellum2.x: `qwen3moe` attention and router (64 experts, top-8, no shared expert) with a 1,024-token sliding window on three of every four layers and YaRN on the full layers only; tokenizer pre `mellum2` is the SmolLM split; its own `mellum` chat template. CPU and CUDA; CUDA runs its MoE on the scalar route (the tensor-core and grouped routes are not measured for this family). Admitted 2026-10-29; the publisher Q4_K_M fails the 0.05 bar against its BF16 parent on both Runner and llama.cpp (the file, not the engine); the publisher's Q8_0 (12.9 GB) and bartowski's Q5_K_S (8.96 GB, Tier 2 since 2026-11-04) pass it, and the record is in `docs/model-support.md`. |
+| `deepseek2` | DeepSeek-V2 (measured: DeepSeek-V2-Lite-Chat, 15.7B, 64 experts, top 6), CPU only: multi-head latent attention, absorbed by default. Q comes from `attn_q` (or `attn_q_a` -> norm -> `attn_q_b`); one latent and one rope key per token come from `attn_kv_a_mqa`, the latent is RMS-normed and decompressed per head by the unsplit `attn_kv_b`, and the cache holds one 576-wide head per token: [k_pe \| normed latent], read by every query head as K and V. Q per head is [q_pe \| k_bᵀ q_nope] (kv_b's k-rows weighted by q_nope), and each head's output latent goes through kv_b's v-rows, dequantized at load, to `attn_output`. `RUNNER_MLA_NAIVE=1` keeps the publisher's naive form: heads `key_length` wide (Q, K as [pe \| nope], V as [v \| 0], the value width packed before `attn_output`). The softmax scale is the publisher's mscale² / sqrt(`key_length`), YaRN on every position, then a leading dense block, softmax routing without renormalisation and gated shared experts. Tokenizer pre `deepseek-llm` is the publisher's sequence of isolated splits (0 of 721 corpus segments and 0 of 99,442 vocabulary entries differ from its tokenizer); chat template `deepseek2` (conformant, 16 of 16 token-identical). Against the publisher's float32 `modeling_deepseek.py` the Q8_0 reads mean KLD 0.0100, margin-qualified top-1 100% (llama.cpp 0.0155 / 99.54%). That read is the naive form; the absorbed form is not distinguishable from it at positions 4000-5999 (mean KLD 0.01286 against 0.01285, Wilcoxon p 0.095, McNemar p 1.0). Refused by name: the split `attn_k_b`/`attn_v_b` layout, LoRA serving and training; the GPU backends run it on the CPU with a reason. |
 | `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. The 27B (62 blocks) scales attention by its config's `query_pre_attn_scalar`, which is n_embd / n_head (168), not its 128-wide heads; every other size uses the head width (`tests/test_attn_scale.c`). |
 | `gemma4` | Heterogeneous attention, thinking channels, E-series, supported dense/MoE layouts, and the family's native tool protocol. Both E-series export shapes load. A layer at or past `block_count - attention.shared_kv_layers` computes no K and no V (it attends over the cache an earlier layer filled), so the current quantized exports - the ggml-org Q4_0, Google's own QAT Q4_0 and the community QAT F16 - omit `attn_k.weight`, `attn_v.weight` and `attn_k_norm.weight` on exactly those layers: 666 tensors on E4B where the BF16 export has 720. Those three are optional on the shared-KV tail and still required on every KV-owning layer, where a missing one is refused by name. |
 | `phi3` | Fused QKV and gate/up tensors, LongRoPE factors. |
@@ -1986,7 +1988,28 @@ reassociating fast kernel by default (two rows a simdgroup, vector
 accumulation; a mixture-of-experts model keeps the identity kernel, since
 the fidelity rows behind the default are dense): decode +10.8% on
 Llama-3.2-1B and +12.5% on Llama-3.2-3B Q4_K_M on an Apple M1, -0.9% on
-Qwen2.5-1.5B. It is a tolerance route, not the identity kernel's bits,
+Qwen2.5-1.5B. Since R3.28.2 that fast route runs `k_mvg_q4_K` (its scales unpacked without a branch since R3.28.5, the same bits, 1.18x more on Qwen3-4B), which gives
+eight lanes a superblock and lets a lane's 32 activations serve four rows,
+in place of `k_mvf_q4_K`: on an Apple M1 it decodes Qwen3-4B Q4_K_M at
+12.59 against 10.61 tok/s (1.19x) and Llama-3.2-3B Q4_K_M at 17.09
+against 14.34 (1.19x), Llama-3.2-1B 1.08x, K2-Horizon-1B 1.02x. It is a
+tolerance route like the kernel it replaces (`./test-mv-tol` 0/64 flips on
+Qwen3-4B; its float32-reference row reads mean KL 0.9999x of the old
+kernel's), and a decode microbatch's columns each run the one-column
+arithmetic, so they keep the solo step's bits.
+`RUNNER_METAL_MVG=0` keeps `k_mvf_q4_K` on those inputs. The route takes
+Q4_K inputs at least 2048 wide; narrower ones keep
+the identity kernel (R3.28.1). Q4_K decode time per input width on an
+Apple M1, fast against identity, ms a token: 1536 wide 11.11 against 9.62
+(K2-Horizon-1B, where the fast kernel lost), 2048 10.96 against 12.96
+(Llama-3.2-1B), 3072 36.48 against 40.21 (Llama-3.2-3B), 5120 1.88 against
+2.45, 8192 1.61 against 2.98 and 5.38 against 7.91. Widths between 1536 and
+2048 were not measured and take the exact kernel. The route detail says
+`mv=mvg-q4_K>=2048+q6_K>=1536` (`mv=fast-q4_K>=2048` under `RUNNER_METAL_MVG=0`).
+Per input width with the new kernel (fast / identity / `k_mvg_q4_K`, ms a
+token): 1536 12.28 / 10.28 / 10.35, 2048 11.41 / 12.67 / 9.31, 2560
+47.88 / 45.88 / 34.56, 3072 38.05 / 42.14 / 27.68, 4096 5.95 / 8.21 /
+5.74, 9728 7.01 / 10.38 / 6.67. It is a tolerance route, not the identity kernel's bits,
 promoted on its fidelity rows against the publisher's float32 model (mean
 KL 0.9993x on Llama-3.2-3B and 0.9998x on Qwen2.5-1.5B against the identity
 route, paired tests not distinguishable) and on `./test-mv-tol MODEL.gguf`
@@ -2000,7 +2023,16 @@ clear the flip bar but measured neutral on an 8-core Apple M1 and stay opt-in. S
 `docs/negative-result-metal-multirow-matvec.md` for the matvec numerical
 contract and its verification gates.
 
-Q6_K decode matvecs run two rows a simdgroup on the default path
+Q6_K decode matvecs at inputs of at least 1536 run `k_mvg_q6_K` on a dense
+model (R3.28.3): R3.28.2's narrow slice applied to Q6_K, eight lanes a
+superblock and a lane's 32 activations serving four rows. On an Apple M1 it
+reads the LM head and ffn_down at 51 to 55 GB/s against `k_mv2_q6_K`'s 27, and
+decodes Qwen3-4B Q4_K_M at 15.08 against 12.56 tok/s (1.20x over R3.28.2),
+Llama-3.2-1B 1.36x, Llama-3.2-3B 1.23x, K2-Horizon-1B 1.24x. It is a
+tolerance route (`./test-mv-tol` 0/64 flips on Qwen3-4B), where
+`k_mv2_q6_K` gives the identity kernel's bits; `RUNNER_METAL_MVG=0` puts
+`k_mv2_q6_K` back (and `k_mvf_q4_K` for Q4_K). Narrower Q6_K inputs, and
+every Q6_K matvec under `RUNNER_METAL_MVG=0`, run two rows a simdgroup
 (`k_mv2_q6_K`): the one-row kernel's bits, checked against it at load on the
 running device. `RUNNER_METAL_MV2=0` keeps the one-row kernel.
 The CPU quant dot/dequant module is a separate translation unit compiled with
@@ -2027,6 +2059,26 @@ publisher's model than the f32 route: against Qwen's float32 Qwen3-0.6B over
 2,000 positions, mean KLD 0.00747 against 0.00610, a difference the paired
 test separates (p 5e-86), with margin-qualified top-1 at 100% on both. The
 route line names it (`cpu_act` ends in `+int8-prefill`).
+`RUNNER_CPU_I8K=1` (opt-in, AVX2) is a tolerance-class decode route for Q4_K
+and Q6_K rows. Each decode matvec's activations are quantized once into
+256-element int8 blocks (llama.cpp's q8_K layout), and every row dots
+against them in integer arithmetic, in the shape of llama.cpp's
+q4_K x q8_K kernels. On a 4-core i7-7700K it read Q4_K_M decode 1.37 to
+1.39x the f32 route at 4 threads and 1.23 to 1.26x at 8, which is 0.85 to
+0.96x of llama.cpp. It is **off by default because it fails the fidelity
+bar on both files measured**. Against Qwen's float32 models, at 2,000
+positions:
+- Qwen3-0.6B Q4_K_M: mean KL 1.09x the f32 route's (paired test p 9e-32).
+- Qwen3-1.7B Q4_K_M: mean KL 1.17x (p 3e-49), with margin-qualified top-1
+  falling from 97.37% to 96.67%.
+The small-core gap to llama.cpp is this int8 rounding, which the default does
+not pay. Only one-column matvecs take the route, so with speculative decoding
+a verify row is not the solo step's bits. `cpu_act` ends in
+`+int8k-decode`. A build without AVX2 ignores the flag with one notice.
+`RUNNER_CPU_PROF=1` prints a per-step breakdown of CPU decode at exit: each
+pool run's wall and busy time by work function and weight types, and the
+serial regions. In a server with several slots, profiled steps run one at a
+time, so profile a single request.
 
 **CUDA (experimental):** `RUNNER_CUDA_Q8X=1` quantizes each matvec's
 activation to int8 (per 32 elements) and runs the IQ3_S, IQ3_XXS, IQ4_XS,
@@ -2502,7 +2554,7 @@ instance instead.
 | `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. A Gemma 4 E-series per-layer token table stays pageable. Runner maps its weights, so a one-shot CLI run of a mapped 4B file on an 8 GB Mac pays about 3 GB of page-in inside its first prompt (Qwen3-4B Q4_K_M: 28 against 85 tok/s of 512-token prefill, 2026-11-04); `--mlock` or a resident server holds the weights. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
 | `--draft SOURCE` | Speculative decoding from one source per run, named by its spelling. `PATH`: a same-vocabulary draft GGUF ([details](#cli-draft)). `mtp`: the model's own NextN/MTP predictor block ([details](#cli-mtp)). `mtp:FILE`: that block from a companion GGUF when the model file was exported without one ([details](#cli-mtp)). `lookup`: n-gram matches in the context itself, no weights and no draft forward ([details](#cli-draft-lookup)). A second source on the line is refused, not ignored. A server given a swap registry (`-m a=...,b=...`) refuses to start with a draft, which needs a single served model. |
-| `--draft-k N` | Draft tokens per speculative round, `1` to `15`, default `4`, for every draft source (a round verifies the drafts plus the correction, at most 16 rows). All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
+| `--draft-k N` | Draft tokens per speculative round, `1` to `15`, for every draft source (a round verifies the drafts plus the correction, at most 16 rows). The default is `4`, except on CUDA with every layer on the device, where it is `7` for `--draft lookup` and `2` for `--draft mtp`. A partial offload keeps `4`, since its CPU layers pay most of a step for each verify row. The startup line prints the width a run takes. Measured on an RTX 3070 (2026-11-03, 256 greedy tokens): lookup on an in-context edit reads 2.86x plain at 7 against 2.43x at 4, since a verify row costs about 0.2 of a step up to eight rows. Qwen3.5-4B's NextN head reads 1.13x on code and on tool calls at 2 (tool reaches 1.20x at 3). On prose the head loses at every width: 0.88x plain at 2, and 0.68x at the old default of 4. Leave it off for prose. A width that follows each turn's acceptance was measured against these fixed widths and lost (0.97x), so there is no automatic width ([report](docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03/README.md)). All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
 | `--draft-required` | Fail instead of falling back to plain decoding when a requested draft model is refused. [Details](#cli-draft-required). |
 
 <a id="cli-reserve-vram"></a>
@@ -3666,7 +3718,7 @@ switches:
 | `RUNNER_PREFETCH` | unset/off | Opt-in: on load, hint the whole weight mapping to the OS (`madvise(MADV_WILLNEED)` / `PrefetchVirtualMemory`) when the model fits in available RAM. **Off by default because the measurement said so**: on a 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load 60% *slower* than plain demand faulting (11.5 s vs 18.4 s, interleaved with eviction between arms) — macOS demand paging outruns its own WILLNEED readahead. Linux and Windows have prior art the other way (batched readahead, `PrefetchVirtualMemory`) and can measure on their own hardware before flipping it on. Pages stay fully evictable either way; suppressed under `--mlock` and for oversubscribed models. |
 | `RUNNER_METAL_FUSE` | on | Decode-path kernel fusion, up to the attention-front megakernel: norm + Q/K/V (Q8_0/Q4_0/Q4_K/Q6_K rosters) + qk-norm + rope + KV-store as ONE dispatch, whole heads per threadgroup, the normed row staged in threadgroup memory; plus rope+store, residual-add+rmsnorm and MoE gate+up+activation fusions on the paths the megakernel does not cover. −52% dispatches per token; +5–6% decode on the 120B and 30B, byte-identical. The post-FFN residual add rides the MoE expert sum on layers where it isn't already deferred into the next norm. The megakernel admits MoE models only — it recovers dispatch-chain latency, and a fast dense model is matvec-bound and measured slower under it (`RUNNER_METAL_FRONT=all` lifts that for tests; `RUNNER_METAL_FRONT=0` disables just the megakernel while keeping the other fusions, the isolation lever the q4_0 contraction hunt was run with). Every fused kernel reproduces the unfused arithmetic element for element — **byte-identical**, gated across a six-architecture roster in `make test` (`test-metal-fuse`). q8 KV, NoPE layers, sandwich norms and the gemma dual branch keep the unfused path automatically; `0` restores it everywhere. |
 | `RUNNER_METAL_MOE_MM` | on | Grouped simdgroup-MMA MoE prefill (default): per-expert GEMM tiles over gathered token columns, float-staged operands, +21-31% measured prefill on 30B/120B-class MoE, decode untouched. Judged by the house fidelity bar (`test-moe-mm-ab`), not byte identity — top-k routing flips near-ties under any reassociation, so `0` restores the matvec path and is pinned by every byte-identity gate; `half` selects the half-staged comparison arm. Dense models unaffected. |
-| `RUNNER_DEBUG_ROUTE` | unset/off | Print one stderr line describing the route a forward actually took whenever it changes, written after the forward, so a device forward that fell back is reported on the CPU it finished on: `backend` and `device`, the layer `split`, `experts_on_host` under `--cpu-moe`, the `rows` and `path` (`solo`, `batch`, `keep` for speculative verification, `mtp`, `micro` for a slot microbatch), the `kv` type, the `weights` types by share, the CPU's activation (`cpu_act`: `f32`, or `int8` under `RUNNER_CPU_I8`, with `+int8-prefill` appended under `RUNNER_CPU_I8_PREFILL`), the backend's own selections (CUDA `graph`, `tc`, `q8x`, `i8`, `small_batch`, `moe`; Metal `fusion`, `mm`, `mv`, `attn`, `moe_mm`, `tensor`), the reason for a CPU `fallback` when a GPU was asked for, the `build` with its codegen flags, and every `RUNNER_*` variable set (`tuning`; a name containing KEY, TOKEN, SECRET or PASS shows only that it is set). Off, a forward costs two stores and a compare. `--bench-json` reports the run's record as its `route` object. |
+| `RUNNER_DEBUG_ROUTE` | unset/off | Print one stderr line describing the route a forward actually took whenever it changes, written after the forward, so a device forward that fell back is reported on the CPU it finished on: `backend` and `device`, the layer `split`, `experts_on_host` under `--cpu-moe`, the `rows` and `path` (`solo`, `batch`, `keep` for speculative verification, `mtp`, `micro` for a slot microbatch), the `kv` type, the `weights` types by share, the CPU's activation (`cpu_act`: `f32`, or `int8` under `RUNNER_CPU_I8`, with `+int8-prefill` appended under `RUNNER_CPU_I8_PREFILL` and `+int8k-decode` under `RUNNER_CPU_I8K`), the backend's own selections (CUDA `graph`, `tc`, `q8x`, `i8`, `small_batch`, `moe`; Metal `fusion`, `mm`, `mv`, `attn`, `moe_mm`, `tensor`), the reason for a CPU `fallback` when a GPU was asked for, the `build` with its codegen flags, and every `RUNNER_*` variable set (`tuning`; a name containing KEY, TOKEN, SECRET or PASS shows only that it is set). Off, a forward costs two stores and a compare. `--bench-json` reports the run's record as its `route` object. |
 | `RUNNER_DEBUG_TIME` | unset/off | Print the forwards' CPU wall time per block stage at the end of a run, summed over every forward: `ple`, `hc_mix`, `attention` (the mixer through its post-norm, so the Q/K/V and output projections are inside it), `deltanet/ssm`, `moe_route`, `experts`, `shared_expert`, `dense_ffn`, `hc_combine` and `head`, each with its share of the total. Under `attention` an `attn core` line times only the scores, softmax and values pass, the part an attention kernel can change. CUDA and Metal time their phases with their own profilers. Off, a stage costs one cached flag test. |
 | `RUNNER_METAL_TENSOR` | unset/off | On M5+ with macOS 26.2+, opt Q4_K, Q8_0, and Q4_0 prefill into the separately admitted Metal 4 MPP tensor GEMM (per-type self-test; a failing type falls back alone). Experimental and not promoted: every admitted type passes its correctness gate but measured only parity with the simdgroup GEMM on M5, short of the 1.2x default-promotion bar. Ignored on Apple M1 to M4. |
 
@@ -3731,14 +3783,17 @@ batched and the per-column route). Off by default, and nothing changes
 without it.
 
 `test-gpu-identity` runs a MoE file twice on the device: with its own
-routing, bounded at 2e-3 of the logit range, and with the CPU run's expert
-choices replayed (the same pin, from memory), bounded at 1e-3 like a dense
-file. A top-8 router turns any cross-backend rounding into another expert
+routing, and with the CPU run's expert choices replayed (the same pin, from
+memory). A top-8 router turns any cross-backend rounding into another expert
 where two gates nearly tie (Qwen3-30B-A3B: 3 of 1,872 routings on one
-prompt), which the free run's bound has to absorb; the pinned run measures the
-arithmetic alone. It prints how many expert slots the pin forced and how many
-of those differed from the device's own choice, and fails when the pin did
-not reach every routing.
+prompt), so the pinned run, which measures the arithmetic alone, is the
+verdict, at 1e-3 of the logit range like a dense file. The free run is
+reported against 2e-3 and does not fail by itself: on Qwen3.8-Flash-Next,
+three tipped expert slots of 45,600 moved it past 2e-3 while every attention
+call matched a float64 reference to 1.7e-6. It prints how many expert slots
+the pin forced and how many of those differed from the device's own choice,
+and fails when more than 1% differed (a router that computes something else,
+which the pin alone would hide) or when the pin did not reach every routing.
 
 On Metal, `RUNNER_MOE_TRACE=routes.jsonl` snapshots every MoE layer's complete
 pre-softmax router-logit vector on the device before the live scratch is reused,

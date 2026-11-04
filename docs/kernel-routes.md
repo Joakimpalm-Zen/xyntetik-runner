@@ -117,8 +117,11 @@ Around the matvec:
   E-series (gemma4 with per-layer embeddings: Nemotron 3.5 Bolt E4B,
   gemma-4-E2B and E4B), owner decision 2026-11-03, with its float32-reference
   row on Bolt E4B (2,000 positions: mean KL 0.9965x the tile's, Wilcoxon p
-  0.188, McNemar 2/0); `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the tile there, `=1`
-  forces it on any model it admits. fp16 caches only, and never a layer
+  0.188, McNemar 2/0); and for qwen35 at head width 256 (Qwen3.5, 3.6 and
+  3.8), R3.6.3.2, on Qwen3.8-27B's row (1.82x prefill at 16K; 2,000
+  positions: mean KL 0.9998x the tile's, Wilcoxon p 0.82, McNemar 0/0);
+  `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the tile there, `=1` forces it on any
+  model it admits. fp16 caches only, and never a layer
   with sinks (gpt-oss, flint keep the tile). One global layer at about 31K
   on an RTX 3070: 53-57 ms against `k_attn_tile8`'s 352 ms; Bolt E4B prefill
   2.0x at 16K and 2.6x at 32K. Gate: `make test-cuda-attn-wide`,
@@ -206,7 +209,8 @@ Around the matvec:
 | Metal 4 tensor GEMM | more than one column, `RUNNER_METAL_TENSOR=1`, an M5 or newer GPU on macOS 26.2 or newer, the per-type self-test passed at load, `n_in` a multiple of 256 | tolerance; opt-in, a failing type falls back alone | the load-time self-test, then `./test-tc-tol` |
 | simdgroup GEMM (`k_mm_*`) | more than one column, `RUNNER_METAL_MM` not `0` (promoted), `n_in` a whole number of k-steps and of superblocks | tolerance; activations staged scaled by the column maximum | `./test-tc-tol MODEL.gguf`, `make test-tc-overflow` on Darwin |
 | identity matvec (`k_mv`) | otherwise | token-identical to the CPU scalar route | `test-gpu-identity`, `make test-metal-kquant` and the other `test-metal-*` text gates |
-| fast decode matvec (`k_mvf_*`: Q4_0, Q8_0, Q4_K) | decode columns (one token, or the microbatch's slots), kernel present; Q4_K by default on dense models since 2026-10-23 (MoE models keep identity: their D1 rows do not exist), every type under `RUNNER_METAL_MV=1`, none under `=0` | tolerance; Q4_K promoted on D1 rows (mean KL 0.9993x / 0.9998x, decode +11-13% on the Llama 1B / 3B files), Q4_0 / Q8_0 neutral when measured and opt-in; never on prefill; each column is the one-column kernel's bits, so microbatch and verify rows equal solo decode | `./test-mv-tol MODEL.gguf`; `test-batch-identity` and `test-spec-identity` on `test-q4k.gguf` in `make test` |
+| fast decode matvec (`k_mvf_*`: Q4_0, Q8_0; Q4_K runs `k_mvg_q4_K` since R3.28.2, its microbatch columns walking the one-column arithmetic, `k_mvf_q4_K` under `RUNNER_METAL_MVG=0`) | decode columns (one token, or the microbatch's slots), kernel present; Q4_K by default on dense models since 2026-10-23 for inputs at least 2048 wide (R3.28.1: the fast kernel was 15% slower at 1536; narrower inputs keep identity; route detail `mv=mvg-q4_K>=2048+q6_K>=1536`; MoE models keep identity: their D1 rows do not exist), every type under `RUNNER_METAL_MV=1`, none under `=0` | tolerance; Q4_K promoted on D1 rows (mean KL 0.9993x / 0.9998x, decode +11-13% on the Llama 1B / 3B files), Q4_0 / Q8_0 neutral when measured and opt-in; never on prefill; each column is the one-column kernel's bits, so microbatch and verify rows equal solo decode | `./test-mv-tol MODEL.gguf`; `test-batch-identity` and `test-spec-identity` on `test-q4k.gguf` in `make test` |
+| narrow-slice Q6_K matvec (`k_mvg_q6_K`, R3.28.3) | decode columns of a dense model's Q6_K tensor whose input is at least 1536 wide (every one under `RUNNER_METAL_MV=1`), not under `RUNNER_METAL_MVG=0` or `RUNNER_METAL_MV=0`; route detail `mv=mvg-q4_K>=2048+q6_K>=1536` | tolerance (a different summation order from `k_mv_q6_K`); each microbatch column runs the one-column arithmetic | `./test-mv-tol MODEL.gguf`; `test-batch-identity` and `test-spec-identity` on `test-q6k.gguf` in `make test`; its float32-reference row in R3.28.3 |
 | two-row identity matvec (`k_mv2_q6_K`) | one column, a Q6_K tensor, not the fast route, `RUNNER_METAL_MV2` not `0`, the load-time self-test passed | bit-exact to `k_mv_q6_K` (the self-test runs both on pseudo-random blocks and refuses the kernel on a device where any bit differs) | the load-time self-test; the identity and `test-metal-*` gates through the default route |
 
 Around the matvec:

@@ -249,12 +249,11 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Qwen3.8</b>, 2 models: CPU 🟨 1 of 4 · CUDA 🟨 3 of 4 · Metal n/a · Train 🟨 2 of 4</summary>
+<summary><b>Qwen3.8</b>, 2 models: CPU 🟨 1 of 3 · CUDA 🟨 2 of 3 · Metal n/a · Train 🟨 1 of 3</summary>
 <p><b>Qwen3.8-27B</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#qwen3.8-27b-gsq-rco-iq3_s-recovered"><code>Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf</code></a></td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
 <tr><td><a href="#qwen3.8-27b-mtp-q8_0"><code>Qwen3.8-27B-MTP-Q8_0.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
 </tbody>
 </table>
@@ -325,12 +324,13 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Qwen3.8</b>, 2 models: CPU - · CUDA 🟨 1 of 2 · Metal - · Train 🟨 1 of 2</summary>
+<summary><b>Qwen3.8</b>, 2 models: CPU - · CUDA 🟨 2 of 3 · Metal - · Train 🟨 2 of 3</summary>
 <p><b>Qwen3.8-27B</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="#qwen3.8-27b-ud-q4_k_m"><code>Qwen3.8-27B-UD-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.5.1<sup>b</sup><br>2026-10-24</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.5.1<br>2026-10-24</td></tr>
+<tr><td><a href="#qwen3.8-27b-gsq-rco-iq3_s-recovered"><code>Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf</code></a></td><td></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
 </tbody>
 </table>
 <p><b>Qwen3.8-Flash-Next</b>, experimental</p>
@@ -579,12 +579,47 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>Granite-4.2-30B</b>, 1 model: CPU 🟨 1 of 2 · CUDA 🟨 1 of 2 · Metal - · Train ✅</summary>
+<p><b>Granite-4.2-30B</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#granite-4.2-30b-q4_k_m"><code>granite-4.2-30b-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-03</td><td></td><td nowrap>✅ 1.12.0<br>2026-11-03</td></tr>
+<tr><td><a href="#granite-4.2-30b-q8_0"><code>granite-4.2-30b-Q8_0.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td></td><td></td><td nowrap>✅ 1.12.0<br>2026-11-04</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>NVIDIA Nemotron 3.5 Lightning</b>, 1 model: CPU ✅ · CUDA n/a · Metal - · Train n/a</summary>
 <p><b>Nemotron 3.5 Lightning-30B-A3B (NVIDIA)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="#nemotron-3.5-lightning-30b-a3b-q4_0"><code>NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-03</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td><td>no: recurrent architecture (Mamba-2)</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Qwen3.6-27B</b>, 1 model: CPU 🟨 1 of 2 · CUDA 🟨 1 of 2 · Metal - · Train ✅</summary>
+<p><b>Qwen3.6-27B</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#qwen3.6-27b-q4_k_m"><code>Qwen3.6-27B-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td></td><td nowrap>✅ 1.12.0<br>2026-11-04</td></tr>
+<tr><td><a href="#qwen3.6-27b-q8_0"><code>Qwen3.6-27B-Q8_0.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td></td><td></td><td nowrap>✅ 1.12.0<br>2026-11-04</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
+<summary><b>Mellum2.1</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train ✅</summary>
+<p><b>Mellum2.1-12B-A2.5B-Thinking (JetBrains)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#mellum2.1-12b-a2.5b-thinking-q5_k_s"><code>Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td></td><td nowrap>✅ 1.12.0<br>2026-11-04</td></tr>
 </tbody>
 </table>
 </details>
@@ -750,7 +785,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Qwen3.6-27B, Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
+**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -787,29 +822,6 @@ Text path only: NVIDIA's post-train of Gemma-4-E4B-it in the publisher's own Q4_
 ### Qwen3.8
 
 #### Qwen3.8-27B
-
-<a id="qwen3.8-27b-gsq-rco-iq3_s-recovered"></a>
-##### `Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf`
-
-Reads 0.41 mean KLD against Qwen's float32 reference, 8x the bar; a learned derivative, not a faithful quantization. ISTA-DASLab's GSQ-RCO IQ3_S of Qwen3.8-27B (codes and scales fitted on calibration data) with every quantised block's fp16 scales retrained against the BF16 parent, text path: it predicts the reference corpus better than its parent (perplexity 21.54 against 73.29) and reads closer to the parent than the unmodified source file.
-
-- **File:** `Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf` (sha256 `873df48dd3ecf205f73c29716e80fbe766e4202ef4ed394b2c24607a8628458f`, 11,771,546,784 bytes, from [Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF) at revision `7b10f923a7f7`).
-- **Upstream checkpoint:** Qwen/Qwen3.8-27B at revision `1d4bf0f2ff60`.
-- **Quantization:** IQ3_S codebook mix, recovered scales.
-- **Licence:** `apache-2.0`, as the Qwen/Qwen3.8-27B model card states it.
-- **Features claimed:** text, tools (qwen38). A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** Against Qwen/Qwen3.8-27B@1d4bf0f2 in float32: mean KLD 0.4119, margin-qualified top-1 85.04% in the house window and 0.4084 / 86.12% at positions 4000-5999 (the unmodified source file: 0.5616 / 82.48% and 0.4718 / 86.36%; Wilcoxon on KLD p 1.7e-10 and 0.0017); corpus perplexity 21.54, source 53.48, parent 73.29. A fresh BF16 GGUF of the parent reads 0.00002 / 100%. Beneath it, the earlier anchor: against the project's BF16 GGUF on 500 short Wikitext-2 prefixes, 0.0450 KLD and 97.80% margin-qualified top-1 (plain top-1 87.20%).
-- **Context tested:** not recorded.
-- **Known limitations:** Outside the fidelity bar against the publisher's float32 reference (mean KLD 0.41 against a bar of 0.05; margin-qualified top-1 85-86% against 97%). A learned derivative fitted on calibration data: its perplexity on the reference corpus is below the parent's. The 500-prefix anchor does not describe longer or other text.
-- **Still missing:** A CPU row on the file; pinned greedy output.
-- **Evidence:** [docs/compat-reports/r4.32-qwen38-iq3s-reference-2026-11-04/README.md](compat-reports/r4.32-qwen38-iq3s-reference-2026-11-04/README.md), [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.7.1 on 2026-10-29.
-- **CPU:** ☐ not run
-- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `6bc726d37ed11e94`, [pin](../tests/compatibility/tier-smoke/qwen3.8-27b-gsq-rco-iq3_s-recovered.windows-x86_64-cuda.cuda.txt)
-- **Metal:** [n/a](../MANUAL.md#support-matrix): Dense qwen35 runs on Metal (R4.10; gated on toy fixtures and Qwen3.5-0.8B), but this file has no Metal row: it does not fit the 8 GB Metal test host's memory.
-- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
-- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
-- **Tier history:** Tier 1, actively validated from 2026-10-22 ([log](#transition-log)).
 
 <a id="qwen3.8-27b-mtp-q8_0"></a>
 ##### `Qwen3.8-27B-MTP-Q8_0.gguf`
@@ -848,6 +860,7 @@ Experimental: the qwen4exp architecture is admitted with its publisher float32 c
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison is feasible and owed):** CPU forward anchored on llama.cpp on a toy fixture and on the upstream 2-part trunk (greedy 12 tokens identical to llama.cpp b11433), agreement with another engine; the publisher's float32 comparison is owed.
 - **Context tested:** not recorded.
+- **Known limitations:** The trunk's fidelity to its parent is unmeasured. The trunk is ISTA-DASLab's GSQ-RCO IQ3_S, a learned post-training quantization fitted on calibration data. The same method's Qwen3.8-27B file reads outside the fidelity bar against Qwen's float32 reference (R4.32), so until this trunk's own reference read runs, treat it as a derivative of unknown distance from the parent.
 - **Still missing:** Every gate on this file; the publisher float32 comparison.
 - **Evidence:** [docs/qwen4exp-admission-evidence/README.md](qwen4exp-admission-evidence/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
@@ -980,7 +993,7 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 <a id="mellum2.1-12b-a2.5b-thinking-q4_k_m"></a>
 ##### `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf`
 
-Text path, JetBrains' own Q4_K_M. Publisher Q4_K_M against the publisher's BF16 parent: mean KLD 0.128, top-1 85.7% (Runner), 0.131 / 85.9% (llama.cpp); the file fails the 0.05 bar on both engines and the gap grows with depth. Against the publisher Q8_0 it fails the quant bar too (mean KLD 0.131, top-1 80.0%, 400 positions); Q8_0 (12.9 GB) is the fidelity file (Runner Q8_0 vs the parent 0.0187 / 94.3%), and the publisher's MXFP4_MOE file is untested.
+Text path, JetBrains' own Q4_K_M. Publisher Q4_K_M against the publisher's BF16 parent: mean KLD 0.128, top-1 85.7% (Runner), 0.131 / 85.9% (llama.cpp); the file fails the 0.05 bar on both engines and the gap grows with depth. Against the publisher Q8_0 it fails the quant bar too (mean KLD 0.131, top-1 80.0%, 400 positions). The publisher's Q8_0 (12.9 GB, Runner vs the parent 0.0187 / 94.3%) passes, and so does bartowski's Q5_K_S (8.96 GB, 0.0289 / 98.33% margin-qualified, 2026-11-04, the row below); the publisher's MXFP4_MOE file is untested.
 
 - **File:** `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf` (sha256 `ecc4d5b8107fc219e23c494b2d107552137637b6c6002ee713e0ba8af7fa2755`, 8,071,295,264 bytes, from [JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF](https://huggingface.co/JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF) at revision `4159d684ffdb`).
 - **Upstream checkpoint:** JetBrains/Mellum2.1-12B-A2.5B-Thinking at revision `92ddae9fc766`.
@@ -989,7 +1002,7 @@ Text path, JetBrains' own Q4_K_M. Publisher Q4_K_M against the publisher's BF16 
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** This file against the BF16 parent computed in float32 (transformers' own mellum code, 300 positions to 7,420 tokens, token-id keyed): Runner 0.1282 mean KLD / 85.7% top-1 / 93.7% margin-qualified, llama.cpp b11748 0.1305 / 85.9% / 94.0% (298 scored), about 0.08 in words 0-750 and 0.16 past 2,000; Runner vs llama.cpp on this file 0.0177. Q8_0 against the parent: Runner 0.0187 / 94.3% / 100%, llama.cpp 0.0234 / 93.6% / 100%. Q4_K_M vs Q8_0 bar FAIL (400 positions, 0.131, 80.0%); tokenizer 0/721, template 23/23, a needle retrieved at 3,568 tokens. Record: shade research/evaluation/mellum-parity-2026-10-29 (README.md, reference/README.md, windows-q4/README.md).
 - **Context tested:** not recorded.
-- **Known limitations:** No fidelity claim for Q4_K_M: it fails the 0.05 bar against the BF16 parent on both engines, and the gap is the file, not the engine. The publisher's MXFP4_MOE file is the untested alternative. CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. The 8.07 GB file does not load resident on an 8 GB machine, and on an 8 GB card it runs as a layer split.
+- **Known limitations:** No fidelity claim for Q4_K_M: it fails the 0.05 bar against the BF16 parent on both engines, and the gap is the file, not the engine. The passing files are the publisher's Q8_0 (12.9 GB) and bartowski's Q5_K_S (8.96 GB, a third-party file, its own row); the publisher's MXFP4_MOE file is untested. CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. The 8.07 GB file does not load resident on an 8 GB machine, and on an 8 GB card it runs as a layer split.
 - **Still missing:** The Metal row; the Q8_0 cells (12.9 GB is not servable on the Windows CUDA host's 16 GB beside its other work).
 - **Evidence:** [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [docs/compat-reports/1.7.0-2026-10-29-windows-x86_64-mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/1.7.0-2026-10-29-windows-x86_64-mellum2.1-12b-a2.5b-thinking-q4_k_m.json), [docs/compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json).
 - **Validation run:** on windows-x86_64-cuda, cuda backend; last run 1.7.0 on 2026-10-29.
@@ -1156,6 +1169,30 @@ Unsloth's dynamic Q4_K_M of Qwen3.8-27B, text path: it passes the quant bar agai
 - **LoRA training:** supported (runner 1.5.1, 2026-10-24).
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
+
+<a id="qwen3.8-27b-gsq-rco-iq3_s-recovered"></a>
+##### `Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf`
+
+Reads 0.41 mean KLD against Qwen's float32 reference, 8x the bar; a learned derivative, not a faithful quantization. ISTA-DASLab's GSQ-RCO IQ3_S of Qwen3.8-27B (codes and scales fitted on calibration data) with every quantised block's fp16 scales retrained against the BF16 parent, text path: it predicts the reference corpus better than its parent (perplexity 21.54 against 73.29) and reads closer to the parent than the unmodified source file.
+
+- **File:** `Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf` (sha256 `873df48dd3ecf205f73c29716e80fbe766e4202ef4ed394b2c24607a8628458f`, 11,771,546,784 bytes, from [Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF) at revision `7b10f923a7f7`).
+- **Upstream checkpoint:** Qwen/Qwen3.8-27B at revision `1d4bf0f2ff60`.
+- **Quantization:** IQ3_S codebook mix, recovered scales.
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3.8-27B model card states it.
+- **Published below Tier 1:** Owner decision 2026-11-04 (R4.32): outside the fidelity bar against the publisher's float32 reference (0.41 mean KLD); maintained on report.
+- **Features claimed:** text, tools (qwen38). A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against Qwen/Qwen3.8-27B@1d4bf0f2 in float32: mean KLD 0.4119, margin-qualified top-1 85.04% in the house window and 0.4084 / 86.12% at positions 4000-5999 (the unmodified source file: 0.5616 / 82.48% and 0.4718 / 86.36%; Wilcoxon on KLD p 1.7e-10 and 0.0017); corpus perplexity 21.54, source 53.48, parent 73.29. A fresh BF16 GGUF of the parent reads 0.00002 / 100%. Beneath it, the earlier anchor: against the project's BF16 GGUF on 500 short Wikitext-2 prefixes, 0.0450 KLD and 97.80% margin-qualified top-1 (plain top-1 87.20%).
+- **Context tested:** not recorded.
+- **Known limitations:** Outside the fidelity bar against the publisher's float32 reference (mean KLD 0.41 against a bar of 0.05; margin-qualified top-1 85-86% against 97%). A learned derivative fitted on calibration data: its perplexity on the reference corpus is below the parent's. The 500-prefix anchor does not describe longer or other text.
+- **Still missing:** A CPU row on the file; pinned greedy output.
+- **Evidence:** [docs/compat-reports/r4.32-qwen38-iq3s-reference-2026-11-04/README.md](compat-reports/r4.32-qwen38-iq3s-reference-2026-11-04/README.md), [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.7.1 on 2026-10-29.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `6bc726d37ed11e94`, [pin](../tests/compatibility/tier-smoke/qwen3.8-27b-gsq-rco-iq3_s-recovered.windows-x86_64-cuda.cuda.txt)
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Dense qwen35 runs on Metal (R4.10; gated on toy fixtures and Qwen3.5-0.8B), but this file has no Metal row: it does not fit the 8 GB Metal test host's memory.
+- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
+- **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
 
 #### Experimental: Qwen3.8-Flash-Next
 
@@ -1733,6 +1770,56 @@ Admitted and maintained on report: existing regression tests keep running and sh
 
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
+### Granite-4.2-30B
+
+#### Granite-4.2-30B
+
+<a id="granite-4.2-30b-q4_k_m"></a>
+##### `granite-4.2-30b-Q4_K_M.gguf`
+
+IBM's Q4_K_M runs below the fidelity bar: against the publisher's BF16 parent in float32, mean KLD 0.139 and margin-qualified top-1 93.9% (Runner), 0.151 / 92.5% (llama.cpp), where the bar is 0.05 / 97%. The file itself is the distance: against Runner's Q8_0 it reads top-20 KL 0.111, top-1 83.7%. The fidelity file is IBM's Q8_0, row granite-4.2-30b-q8_0 (Runner 0.0041 / 99.56%, llama.cpp 0.0241 / 99.12%).
+
+- **File:** `granite-4.2-30b-Q4_K_M.gguf` (sha256 `f299dace85d77ee0e24ca0b6720bd211b1f4cd1f65b9c0a2111e79692e29c9be`, 17,721,455,328 bytes, from [ibm-granite/granite-4.2-30b-GGUF](https://huggingface.co/ibm-granite/granite-4.2-30b-GGUF) at revision `27b350a791e8`).
+- **Upstream checkpoint:** ibm-granite/granite-4.2-30b at revision `9e668ce1c538`.
+- **Quantization:** Q4_K_M (IBM).
+- **Licence:** `apache-2.0`, as the ibm-granite/granite-4.2-30b model card states it.
+- **Features claimed:** text, tools. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against IBM's BF16 checkpoint ibm-granite/granite-4.2-30b in float32 at use on the CPU (transformers 5.16.1's GraniteForCausalLM, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, no BOS, the Runner sides from chunked CPU score files): Q4_K_M 0.1393 mean KLD / 83.00% top-1 / 93.86% margin-qualified, below the bar (0.05 / 97%); Q8_0 0.0041 / 97.67% / 99.56%, passing. llama.cpp 73a43d1 reads 0.1512 / 92.54% on the Q4_K_M and 0.0241 / 99.12% on the Q8_0; Runner is the closer by per-position KLD on both (p 0.0014, p 8e-35). The Q4_K_M's distance is the file's: against Runner's own Q8_0 it reads top-20 KL 0.111 with 83.7% top-1 agreement. Record: docs/compat-reports/granite-4.2-30b-2026-11-04/README.md.
+- **Context tested:** 9216.
+- **Known limitations:** Below the fidelity bar on both engines (the file, not the engine). Tool gate case C streamed misses on a reasoning budget at temperature 1.0 (the 400-token budget spent in reasoning, no call parsed); A, B and C buffered pass. Context past the gold window's 4,509 tokens and task quality are not measured.
+- **Still missing:** The Metal cell; the CPU cell on this file; context past 4,509 tokens; task quality.
+- **Evidence:** [docs/compat-reports/granite-4.2-30b-2026-11-04/README.md](compat-reports/granite-4.2-30b-2026-11-04/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.12.0 on 2026-11-03.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.12.0 2026-11-03 on linux-x86_64-cuda (borrowed hardware) at commit `8b2729f82aec`, output sha256 `eeb1b390d202e1b0`, [pin](../tests/compatibility/tier-smoke/granite-4.2-30b-q4_k_m.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.12.0, 2026-11-03).
+- **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-03).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
+
+<a id="granite-4.2-30b-q8_0"></a>
+##### `granite-4.2-30b-Q8_0.gguf`
+
+IBM's Q8_0, the fidelity file of Granite-4.2-30B: against the publisher's BF16 parent in float32, mean KLD 0.0041, margin-qualified top-1 99.56% (Runner), 0.0241 / 99.12% (llama.cpp); Runner is the closer at 270 of 300 positions. 31.1 GB of weights: larger than a 24 GB device, so its cell is the CPU.
+
+- **File:** `granite-4.2-30b-Q8_0.gguf` (sha256 `005b0933353e9ba219b26e2667705bdb8dbc74eb50e4a4e6cb70fca108710f81`, 31,111,705,312 bytes, from [ibm-granite/granite-4.2-30b-GGUF](https://huggingface.co/ibm-granite/granite-4.2-30b-GGUF) at revision `27b350a791e8`).
+- **Upstream checkpoint:** ibm-granite/granite-4.2-30b at revision `9e668ce1c538`.
+- **Quantization:** Q8_0 (IBM).
+- **Licence:** `apache-2.0`, as the ibm-granite/granite-4.2-30b model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against IBM's BF16 checkpoint ibm-granite/granite-4.2-30b in float32 at use on the CPU (transformers 5.16.1's GraniteForCausalLM, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, no BOS, the Runner sides from chunked CPU score files): Q4_K_M 0.1393 mean KLD / 83.00% top-1 / 93.86% margin-qualified, below the bar (0.05 / 97%); Q8_0 0.0041 / 97.67% / 99.56%, passing. llama.cpp 73a43d1 reads 0.1512 / 92.54% on the Q4_K_M and 0.0241 / 99.12% on the Q8_0; Runner is the closer by per-position KLD on both (p 0.0014, p 8e-35). The Q4_K_M's distance is the file's: against Runner's own Q8_0 it reads top-20 KL 0.111 with 83.7% top-1 agreement. Record: docs/compat-reports/granite-4.2-30b-2026-11-04/README.md.
+- **Context tested:** 9216.
+- **Known limitations:** 31.1 GB of weights: on a 24 GB device it runs as a partial offload, which is not measured. The tool gate ran on the Q4_K_M sibling, not on this file. Context past the gold window's 4,509 tokens and task quality are not measured.
+- **Still missing:** The CUDA cell (a partial offload on a 24 GB device) and the Metal cell; the tool gate on this file; context past 4,509 tokens; task quality.
+- **Evidence:** [docs/compat-reports/granite-4.2-30b-2026-11-04/README.md](compat-reports/granite-4.2-30b-2026-11-04/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.12.0 on 2026-11-04.
+- **CPU:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `8b2729f82aec`, output sha256 `f9609a2de500147a`, [pin](../tests/compatibility/tier-smoke/granite-4.2-30b-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.12.0, 2026-11-04).
+- **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-04).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
+
 ### NVIDIA Nemotron 3.5 Lightning
 
 #### Nemotron 3.5 Lightning-30B-A3B (NVIDIA)
@@ -1759,6 +1846,83 @@ Text and tools, the publisher's own Q4_0: against the publisher's BF16 checkpoin
 - **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.12.0, 2026-11-03).
 - **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h_moe) (runner 1.12.0, 2026-11-03).
 - **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-03 ([log](#transition-log)).
+
+### Qwen3.6-27B
+
+#### Qwen3.6-27B
+
+<a id="qwen3.6-27b-q4_k_m"></a>
+##### `Qwen3.6-27B-Q4_K_M.gguf`
+
+ggml-org's Q4_K_M (a third-party conversion, llama.cpp b15ca93; no publisher GGUF exists) runs below the fidelity bar: against Qwen's BF16 parent in float32, mean KLD 0.129 and margin-qualified top-1 95.9% (Runner), 0.154 / 93.8% (llama.cpp), where the bar is 0.05 / 97%, and the gap grows with depth. The file itself is the distance: against Runner's Q8_0 it reads top-20 KL 0.101, top-1 89.3%. The fidelity file is ggml-org's Q8_0, row qwen3.6-27b-q8_0 (Runner 0.0273 / 99.59%).
+
+- **File:** `Qwen3.6-27B-Q4_K_M.gguf` (sha256 `65b753ea835627f7b511143c6ceb976525c7f21f5df8c664bc0a9c23d1c49921`, 19,095,766,304 bytes, from [ggml-org/Qwen3.6-27B-GGUF](https://huggingface.co/ggml-org/Qwen3.6-27B-GGUF) at revision `1132d03976d8`).
+- **Upstream checkpoint:** Qwen/Qwen3.6-27B at revision `6a9e13bd6fc8`.
+- **Quantization:** Q4_K_M (ggml-org).
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3.6-27B model card states it.
+- **Features claimed:** text, tools. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against Qwen's BF16 checkpoint Qwen/Qwen3.6-27B in float32 at use on the CPU (transformers 5.16.1's Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, no special prefix, the Runner sides from chunked CPU score files; the Gated DeltaNet cross-chunk check of row 1 passes on 5.16.1): Q4_K_M 0.1288 mean KLD / 89.33% top-1 / 95.85% margin-qualified, below the bar (0.05 / 97%) and growing with depth; Q8_0 0.0273 / 98.00% / 99.59%, passing (one reference near-tie at position 1,238 carries most of the mean: without it 0.0082). llama.cpp 73a43d1 reads 0.1539 / 93.78% on the Q4_K_M and 0.0626 / 98.34% on the Q8_0, both below the bar; Runner is the closer by per-position KLD on both (p 0.0008, p 1.9e-24). The files are ggml-org's conversions (llama.cpp b15ca93), no publisher GGUF exists. Record: docs/compat-reports/qwen3.6-27b-2026-11-04/README.md.
+- **Context tested:** 9216.
+- **Known limitations:** Below the fidelity bar on both engines (the file, not the engine), worst past position 2,000 (0.156 on Runner). A third party's conversion with --no-mtp: the MTP and dflash heads and the vision mmproj files are not in the row. Tool gate case C streamed misses on a reasoning budget at temperature 1.0 (the qwen36 preset; no call parsed); A, B and C buffered pass. The RUNNER_CUDA_ATTN_TC_WIDE route (#574) is not measured on this head_dim-256 model. Context past the gold window's 4,509 tokens and task quality are not measured.
+- **Still missing:** The Metal cell; the CPU cell on this file; the #574 wide-head route on this model; the MTP head, dflash and vision; context past 4,509 tokens; task quality.
+- **Evidence:** [docs/compat-reports/qwen3.6-27b-2026-11-04/README.md](compat-reports/qwen3.6-27b-2026-11-04/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.12.0 on 2026-11-04.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `7567c9486df7`, output sha256 `877a19216b6da899`, [pin](../tests/compatibility/tier-smoke/qwen3.6-27b-q4_k_m.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.12.0, 2026-11-04).
+- **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-04).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
+
+<a id="qwen3.6-27b-q8_0"></a>
+##### `Qwen3.6-27B-Q8_0.gguf`
+
+ggml-org's Q8_0 (a third-party conversion, llama.cpp b15ca93; no publisher GGUF exists), the fidelity file of Qwen3.6-27B: against Qwen's BF16 parent in float32, mean KLD 0.0273 and margin-qualified top-1 99.59% (Runner; one reference near-tie carries most of the mean, 0.0082 without it); llama.cpp reads 0.0626 / 98.34%, above the bar; Runner is the closer at 239 of 300 positions. 28.6 GB of weights: larger than a 24 GB device, so its cell is the CPU.
+
+- **File:** `Qwen3.6-27B-Q8_0.gguf` (sha256 `73f8260284708ed78ae266df672288b6ad1f2c73ec7ffeb7514b5cecdba646c9`, 28,595,762,464 bytes, from [ggml-org/Qwen3.6-27B-GGUF](https://huggingface.co/ggml-org/Qwen3.6-27B-GGUF) at revision `1132d03976d8`).
+- **Upstream checkpoint:** Qwen/Qwen3.6-27B at revision `6a9e13bd6fc8`.
+- **Quantization:** Q8_0 (ggml-org).
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3.6-27B model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against Qwen's BF16 checkpoint Qwen/Qwen3.6-27B in float32 at use on the CPU (transformers 5.16.1's Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, no special prefix, the Runner sides from chunked CPU score files; the Gated DeltaNet cross-chunk check of row 1 passes on 5.16.1): Q4_K_M 0.1288 mean KLD / 89.33% top-1 / 95.85% margin-qualified, below the bar (0.05 / 97%) and growing with depth; Q8_0 0.0273 / 98.00% / 99.59%, passing (one reference near-tie at position 1,238 carries most of the mean: without it 0.0082). llama.cpp 73a43d1 reads 0.1539 / 93.78% on the Q4_K_M and 0.0626 / 98.34% on the Q8_0, both below the bar; Runner is the closer by per-position KLD on both (p 0.0008, p 1.9e-24). The files are ggml-org's conversions (llama.cpp b15ca93), no publisher GGUF exists. Record: docs/compat-reports/qwen3.6-27b-2026-11-04/README.md.
+- **Context tested:** 9216.
+- **Known limitations:** 28.6 GB of weights: on a 24 GB device it runs as a partial offload, which is not measured. The tool gate ran on the Q4_K_M sibling, not on this file. A third party's conversion with --no-mtp: the MTP and dflash heads and the vision mmproj files are not in the row. Context past the gold window's 4,509 tokens and task quality are not measured.
+- **Still missing:** The CUDA cell (a partial offload on a 24 GB device) and the Metal cell; the tool gate on this file; the MTP head, dflash and vision; context past 4,509 tokens; task quality.
+- **Evidence:** [docs/compat-reports/qwen3.6-27b-2026-11-04/README.md](compat-reports/qwen3.6-27b-2026-11-04/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.12.0 on 2026-11-04.
+- **CPU:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `7567c9486df7`, output sha256 `877a19216b6da899`, [pin](../tests/compatibility/tier-smoke/qwen3.6-27b-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.12.0, 2026-11-04).
+- **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-04).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
+
+### Mellum2.1
+
+#### Mellum2.1-12B-A2.5B-Thinking (JetBrains)
+
+<a id="mellum2.1-12b-a2.5b-thinking-q5_k_s"></a>
+##### `Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf`
+
+Text path, a third party's Q5_K_S (bartowski, with an importance matrix), the smallest Mellum 2.1 file measured to pass the bar: against the publisher's BF16 parent computed in float32 it reads 0.0289 mean KLD and 98.33% margin-qualified top-1 (plain top-1 93.0%, worst position 0.476, its first 750 positions at 0.0497, 300 positions), where the publisher's own Q4_K_M reads 0.1172 / 92.89%. 8.96 GB: a 16 GB Apple Silicon machine or a 12 GB card, not an 8 GB one. Not the publisher's file: its bytes are pinned by sha256 and repository revision.
+
+- **File:** `Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf` (sha256 `9fe81c18e6628a918757a356614abb4590b5c415a8281272fae3298eafb678c1`, 8,963,422,944 bytes, from [bartowski/Mellum2.1-12B-A2.5B-Thinking-GGUF](https://huggingface.co/bartowski/Mellum2.1-12B-A2.5B-Thinking-GGUF) at revision `355e97042763`).
+- **Upstream checkpoint:** JetBrains/Mellum2.1-12B-A2.5B-Thinking at revision `92ddae9fc766`.
+- **Quantization:** Q5_K_S (bartowski, importance matrix calibration-v6): expert gate and up Q5_K, expert down Q5_1, attention, embeddings and output Q8_0 (eleven middle-layer attn_q at Q6_K or Q5_K), routers F32.
+- **Licence:** `apache-2.0`, as the JetBrains/Mellum2.1-12B-A2.5B-Thinking model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** This file against the BF16 parent computed in float32 (transformers' own mellum code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, positions 8 to 4,493, token-id keyed, no special prefix; Runner main 7567c948 on the Linux CUDA host's MIG slice): 0.0289 mean KLD / 93.0% top-1 / 98.33% margin-qualified top-1 of 239, median 0.0126, worst position 0.476; by depth 0.0497 (8 to 749), 0.0282 (750 to 1,999), 0.0230 (2,000 to 4,493). In the same window the publisher's Q4_K_M reads 0.1172 / 88.67% / 92.89%, bartowski's own Q4_K_M (8.82 GB) 0.0533 / 92.33% / 97.07% (fails the KLD half by 0.0033), Ninnix96's Q5K-Q5_0 (8.98 GB) 0.0376 / 90.67% / 97.49% (passes), and the BF16 parent GGUF 0.0025 / 99.0% / 100%. The header declares general.license apache-2.0, architecture mellum, 28 blocks, 64 experts, 8 used; sha256 checked against the Hub's LFS record. Record: docs/compat-reports/mellum2.1-q5-band-2026-11-04/README.md.
+- **Context tested:** not recorded.
+- **Known limitations:** A third party's file, not the publisher's: the pin is the sha256 and the repository revision, and the file can leave the Hub without notice. Plain top-1 93.0%; the first 750 positions sit at the bar's edge (0.0497). One window over one corpus, no benchmark claim, no speed row. The tool protocol's live gate has not run on this file (template conformance is the family's, 23/23). CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. 8.96 GB does not load resident on an 8 GB machine; on an 8 GB card it runs as a layer split.
+- **Still missing:** The Metal row and the Windows CUDA host's cells; the CPU-vs-CUDA check and the live tool gate on this file; an llama.cpp column in the same window.
+- **Evidence:** [docs/compat-reports/mellum2.1-q5-band-2026-11-04/README.md](compat-reports/mellum2.1-q5-band-2026-11-04/README.md), [docs/compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.12.0 on 2026-11-04.
+- **CPU:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `253f1342dd8f`, output sha256 `e3eeabfa48cf4a6f`, [pin](../tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q5_k_s.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `5019687ca8d0`, output sha256 `e3eeabfa48cf4a6f`, [pin](../tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q5_k_s.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.12.0, 2026-11-04).
+- **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-04).
+- **Tier history:** Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
 
 ### MiniCPM5
 
@@ -2426,28 +2590,6 @@ Text path only: the vision projector is not loaded. The qwen35moe architecture r
 - **Missing for Tier 1:** Tokenizer and template checks, then the gate list; CUDA after R4.27 A2.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
-### Granite-4.2-30B
-
-<a id="granite-4.2-30b"></a>
-#### Granite-4.2-30B
-
-Not validated: the granite architecture is admitted and IBM's official GGUF exists, but no gate has run on a 30B file.
-
-- **Numerical anchor:** Family: granite-4.2-3B bf16 against IBM's float32 reference covers the family.
-- **Missing for Tier 1:** One gate run on the Linux CUDA host: quant bar, tool gate, pinned output, device record; a file pinned by sha256.
-- **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
-
-### Qwen3.6-27B
-
-<a id="qwen3.6-27b"></a>
-#### Qwen3.6-27B
-
-Not validated: the qwen35 family loads, but no gate has run on a Qwen3.6-27B file.
-
-- **Numerical anchor:** Family: Qwen3.5-0.8B bf16 against Qwen's float32 reference covers the family.
-- **Missing for Tier 1:** One gate run: tokenizer, template, quant bar, pinned output, device record; a file pinned by sha256.
-- **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
-
 ### Nemotron 3 Nano (30B-A3B)
 
 <a id="nemotron-3-nano-30b-a3b"></a>
@@ -2550,9 +2692,11 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-22 | [Qwen3.8-35B-A3B](#qwen3.8-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Ornith-1.5-35B-A3B](#ornith-1.5-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [MiniCPM-V-4.7-35B-A3B](#minicpm-v-4.7-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
-| 2026-10-22 | [Granite-4.2-30B](#granite-4.2-30b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [Granite-4.2-30B, `granite-4.2-30b-Q4_K_M.gguf`](#granite-4.2-30b-q4_k_m) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [Granite-4.2-30B, `granite-4.2-30b-Q8_0.gguf`](#granite-4.2-30b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3.5 Lightning-30B-A3B (NVIDIA), `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`](#nemotron-3.5-lightning-30b-a3b-q4_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
-| 2026-10-22 | [Qwen3.6-27B](#qwen3.6-27b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [Qwen3.6-27B, `Qwen3.6-27B-Q4_K_M.gguf`](#qwen3.6-27b-q4_k_m) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [Qwen3.6-27B, `Qwen3.6-27B-Q8_0.gguf`](#qwen3.6-27b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Cloudflare Clef Flash (clef, on Qwen3.5-9B), `Clef-Flash-Q4_K_M.gguf`](#cloudflare-clef-flash) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3 Nano (30B-A3B)](#nemotron-3-nano-30b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3.5 Bolt-74B-A9B](#nemotron-3.5-bolt-74b-a9b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
@@ -2631,5 +2775,11 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-11-02 | [Devstral Small 2 24B Instruct 2512 (Mistral AI), `Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf`](#devstral-small-2-24b-instruct-2512-q4_k_m) | Tier 2, maintained on report | R4.4.4: Devstral certified with the tool-calling axis, admitted 2026-11-02 at Tier 2 with a CPU cell, a float32 reference measurement and the agent-torture suite. Maintained on report. | none recorded |
 | 2026-11-02 | [Devstral Small 2 24B Instruct 2512 (Mistral AI), `Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf`](#devstral-small-2-24b-instruct-2512-q8_0) | Tier 2, maintained on report | R4.4.4: Devstral certified with the tool-calling axis, admitted 2026-11-02 at Tier 2 with a CPU cell, a float32 reference measurement and the agent-torture suite. Maintained on report. | none recorded |
 | 2026-11-03 | [Nemotron 3.5 Lightning-30B-A3B (NVIDIA), `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`](#nemotron-3.5-lightning-30b-a3b-q4_0) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-03 at Tier 2 with a CPU cell on the Linux CUDA host, a float32 reference measurement on the publisher's BF16 checkpoint, the tokenizer differential, template conformance and the tool gate, all on the fixed build (runner #575). Maintained on report; Tier 1 is the owner's call. | none recorded |
+| 2026-11-04 | [Qwen3.8-27B, `Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf`](#qwen3.8-27b-gsq-rco-iq3_s-recovered) | Tier 2, maintained on report | Owner decision 2026-11-04 (R4.32): the float32 reference read of 2026-11-04 puts the file at 0.41 mean KLD against Qwen's reference, where the card's 0.0450 was a BF16-GGUF-anchored measurement. Maintained on report; it stays published and its records stay as dated evidence. | 1.7.1 |
+| 2026-11-04 | [Granite-4.2-30B, `granite-4.2-30b-Q4_K_M.gguf`](#granite-4.2-30b-q4_k_m) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: IBM's file pinned by sha256, the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
+| 2026-11-04 | [Granite-4.2-30B, `granite-4.2-30b-Q8_0.gguf`](#granite-4.2-30b-q8_0) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: IBM's file pinned by sha256, the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
+| 2026-11-04 | [Qwen3.6-27B, `Qwen3.6-27B-Q4_K_M.gguf`](#qwen3.6-27b-q4_k_m) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: ggml-org's conversion pinned by sha256 (no publisher GGUF exists), the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
+| 2026-11-04 | [Qwen3.6-27B, `Qwen3.6-27B-Q8_0.gguf`](#qwen3.6-27b-q8_0) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: ggml-org's conversion pinned by sha256 (no publisher GGUF exists), the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
+| 2026-11-04 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf`](#mellum2.1-12b-a2.5b-thinking-q5_k_s) | Tier 2, maintained on report | Owner decision 2026-11-04: admitted at Tier 2 as the recommended sub-10 GB file of the Mellum2.1 row after the 2026-11-04 scoring study found it the smallest file to pass the bar against the float32 reference (policy decision 2026-10-27: Tier 1 follows pull or the owner's call; a third party's file is maintained on report). The float32 measurement is the admitting evidence; the Linux CUDA host's cells are recorded as the smoke runs. | none recorded |
 
 <!-- model-tiers:rows:end -->

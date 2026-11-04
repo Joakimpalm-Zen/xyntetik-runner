@@ -1,0 +1,43 @@
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB
+gpu-split: budget=25.13GB fixed=1.76GB G=64/64 full=1 used=16.96GB
+gpu-split: prompt window 512 columns (batch 512, 7.45 GB spare, 440708 bytes a column with TC2's activations)
+gpu: the device's tensors (64 layers and the head) lie in 2 stretches of the file; uploading them as runs
+gpu: CUDA backend on CUDA MIG slice 1g.24gb (11.4 GB weights in VRAM)
+gpu: VRAM 8.42 GB free of 25.37 GB after init (kv 4.56 GB + scratch 0.55 GB this instance)
+loaded Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf | qwen35 | 64 layers | ctx 17408 | 40 threads | 2.12s
+sampling: qwen38 (temp 1.00, top_p 0.95, top_k 20, min_p 0.00, repeat_penalty 1.00)
+sampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 20, min_p 0.00
+
+prompt: 512/16576 tokens
+prompt: 1024/16576 tokens
+prompt: 1536/16576 tokens
+prompt: 2048/16576 tokens
+prompt: 2560/16576 tokens
+prompt: 3072/16576 tokens
+prompt: 3584/16576 tokens
+prompt: 4096/16576 tokens
+prompt: 4608/16576 tokens
+prompt: 5120/16576 tokens
+prompt: 5632/16576 tokens
+prompt: 6144/16576 tokens
+prompt: 6656/16576 tokens
+prompt: 7168/16576 tokens
+prompt: 7680/16576 tokens
+prompt: 8192/16576 tokens
+prompt: 8704/16576 tokens
+prompt: 9216/16576 tokens
+prompt: 9728/16576 tokens
+prompt: 10240/16576 tokens
+prompt: 10752/16576 tokens
+prompt: 11264/16576 tokens
+prompt: 11776/16576 tokens
+prompt: 12288/16576 tokens
+prompt: 12800/16576 tokens
+prompt: 13312/16576 tokens
+prompt: 13824/16576 tokens
+prompt: 14336/16576 tokens
+prompt: 14848/16576 tokens
+prompt: 15360/16576 tokens
+prompt: 15872/16576 tokens
+prompt: 16384/16576 tokens
+prompt: 16576/16576 tokens

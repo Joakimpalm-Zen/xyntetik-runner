@@ -292,7 +292,14 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // [TOOL_CALLS]name[ARGS]arguments each, and </s>, a result as
        // [TOOL_RESULTS]text[/TOOL_RESULTS]. Detected by the [SYSTEM_PROMPT]
        // literal, which the older three never carry. Appended last.
-       TMPL_MISTRAL_SYS };
+       TMPL_MISTRAL_SYS,
+       // DeepSeek-V2 chat (deepseek2; DeepSeek-V2-Lite-Chat's
+       // tokenizer_config.json, byte-identical in mradermacher's GGUF): BOS
+       // (the tokenizer's), then "User: {c}\n\n", "Assistant: {c}" and the
+       // end-of-sentence token, a system turn as "{c}\n\n" where it stands,
+       // and the generation prompt "Assistant:" with no space after it. No
+       // tool protocol and no thinking. Detected by its two role literals.
+       TMPL_DEEPSEEK2 };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of

@@ -535,6 +535,17 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
             float lf = logf(factor);
             m->rope_mscale = (0.1f * lf + 1.0f) / (0.1f * log_mul * lf + 1.0f);
         }
+        // deepseek2's converter writes yarn_log_multiplier as 0.1 x
+        // mscale_all_dim (0.0707 on V2-Lite), not mistral3's mscale_all_dim.
+        // The publisher multiplies the softmax scale by yarn_get_mscale(factor,
+        // mscale_all_dim)^2 = (1 + log_mul ln factor)^2 (1.5896 at factor 40)
+        // and the cos/sin by mscale / mscale_all_dim, which is 1 on every file
+        // the GGUF can describe: it stores no separate mscale.
+        if (m->deepseek2) {
+            float mla_ms = 1.0f + log_mul * logf(factor);
+            m->rope_mscale = 1.0f;
+            m->attn_scale  = mla_ms * mla_ms / sqrtf((float)m->mla_qk);
+        }
     }
     // The local table above was built from the raw base, BEFORE the block that
     // scales the global frequencies. For an arch whose sliding layers share
@@ -1263,7 +1274,7 @@ const char *const *model_supported_archs(size_t *count) {
         "smollm", "stablelm", "gemma3", "gemma4", "phi3", "gpt-oss",
         "apertus", "afmoe", "muse-glimmer", "granite", "granitehybrid",
         "nemotron_h", "nemotron_h_moe", "clef", "mellum", "lfm2", "lfm2moe",
-        "spark2_5", "k2-horizon", "flint", "mistral3",
+        "spark2_5", "k2-horizon", "flint", "mistral3", "deepseek2",
     };
     if (count) *count = sizeof(arches) / sizeof(arches[0]);
     return arches;
@@ -1578,6 +1589,7 @@ static void model_free_weights(model_t *m) {
         free(l->attn_norm_w); free(l->ffn_norm_w);
         free(l->bq); free(l->bk); free(l->bv); free(l->bo);
         free(l->qnorm_w); free(l->knorm_w);
+        free(l->q_a_norm_w); free(l->kv_a_norm_w); free(l->mla_kvb);
         free(l->post_attn_norm_w); free(l->post_ffn_norm_w);
         free(l->down_exps_scale); free(l->gate_inp_scale);
         free(l->attn_sinks);
@@ -2405,6 +2417,68 @@ static bool bind_meta_afmoe(model_t *m, gguf_file *g, const char *arch) {
 //     top-6 by sigmoid score (an optional selection bias), renormalised,
 //     plus an always-on shared expert -- bind_meta_moe's keys drive all of it;
 //   * untied output, no embedding scale.
+// DeepSeek-V2 (deepseek2: the publisher's modeling_deepseek.py and llama.cpp's
+// src/models/deepseek2.cpp), R4.4.5 step b, the CPU path:
+//   * multi-head latent attention: Q per head [q_nope | q_pe] from attn_q (or
+//     attn_q_a -> RMS norm -> attn_q_b), one latent [kv_lora_rank] and one
+//     rope key [rope_dim] per token from attn_kv_a_mqa, the latent RMS-normed
+//     by attn_kv_a_norm, then per head [k_nope | v] from the legacy unsplit
+//     attn_kv_b. Run in the publisher's naive form (the latent decompressed
+//     every token) in key_length-wide heads: Q and K as [pe | nope], so
+//     rope_apply's leading-dims rotation on consecutive pairs is the
+//     publisher's (its view(d/2, 2).transpose then rotate_half is the same
+//     rotation on adjacent pairs), and V as [v | 0];
+//   * the softmax scale mscale^2 / sqrt(key_length) and cos/sin factor 1, set
+//     in rope_setup, which runs after binding;
+//   * the first leading_dense_block_count blocks dense, then softmax routing
+//     without renormalisation (expert_weights_norm, absent, reads false: the
+//     publisher's norm_topk_prob) and gated SwiGLU shared experts of
+//     expert_shared_count routed widths (bind_meta_moe).
+// What this path cannot serve is refused by name: the split attn_k_b /
+// attn_v_b layout (step b covers the unsplit kv_b) and a geometry outside it.
+static bool bind_meta_deepseek2(model_t *m, gguf_file *g, const char *arch) {
+    char key[128];
+    m->deepseek2    = true;
+    m->rope_neox    = false;
+    m->n_dense_lead = (int)gguf_get_u32(g, AK("leading_dense_block_count"), 0);
+    m->mla_kv_lora  = (int)gguf_get_u32(g, AK("attention.kv_lora_rank"), 0);
+    m->mla_q_lora   = (int)gguf_get_u32(g, AK("attention.q_lora_rank"), 0);
+    m->mla_v_dim    = (int)gguf_get_u32(g, AK("attention.value_length"), 0);
+    if (gguf_find_tensor(g, "blk.0.attn_k_b.weight") ||
+        gguf_find_tensor(g, "blk.0.attn_v_b.weight")) {
+        fprintf(stderr, "error: deepseek2: this file splits kv_b into attn_k_b "
+                "and attn_v_b; the CPU path reads the unsplit attn_kv_b only\n");
+        return false;
+    }
+    if (m->mla_kv_lora <= 0 || m->mla_kv_lora > MDL_DIM_MAX ||
+        m->mla_q_lora < 0 || m->mla_q_lora > MDL_DIM_MAX ||
+        m->mla_v_dim <= 0 || m->mla_v_dim > m->head_dim ||
+        m->rope_dim <= 0 || m->rope_dim >= m->head_dim || m->rope_dim % 2 ||
+        m->n_head_kv != m->n_head ||
+        m->n_dense_lead < 0 || m->n_dense_lead > m->n_layer) {
+        fprintf(stderr, "error: deepseek2 geometry not served (kv_lora %d, "
+                "q_lora %d, key %d, value %d, rope %d, heads %d, kv heads %d, "
+                "dense lead %d)\n", m->mla_kv_lora, m->mla_q_lora, m->head_dim,
+                m->mla_v_dim, m->rope_dim, m->n_head, m->n_head_kv, m->n_dense_lead);
+        return false;
+    }
+    // The absorbed form, the default: the cache holds one row per token and
+    // layer, [k_pe | normed latent], read by every head (MQA); Q per head is
+    // [q_pe | k_b^T q_nope], so q.k is the publisher's q_pe.k_pe +
+    // q_nope.k_nope re-associated, and V is the same row (only its latent
+    // slice reaches the output, through kv_b's v-rows). The naive form stays
+    // behind RUNNER_MLA_NAIVE=1, the oracle the identity gate compares with.
+    const char *naive = getenv("RUNNER_MLA_NAIVE");
+    m->mla_absorb = !(naive && *naive && strcmp(naive, "0") != 0);
+    m->mla_qk = m->head_dim;
+    m->attn_scale = 1.0f / sqrtf((float)m->mla_qk);   // rope_setup adds YaRN's mscale^2
+    if (m->mla_absorb) {
+        m->head_dim  = m->mla_kv_lora + m->rope_dim;
+        m->n_head_kv = 1;
+    }
+    return true;
+}
+
 static bool bind_meta_flint(model_t *m, gguf_file *g, const char *arch) {
     char key[128];
     m->flint        = true;
@@ -4183,6 +4257,41 @@ gate:
     return true;
 }
 
+// deepseek2's attention tensors, in the layout bind_meta_deepseek2 admitted.
+static bool bind_mla(model_t *m, gguf_file *g, layer_t *l, int i, bool *okp) {
+    bool ok = *okp;
+    const int hd = m->mla_qk, r = m->mla_kv_lora, rd = m->rope_dim;
+    const int H = m->n_head, ql = m->mla_q_lora;
+    if (ql > 0) {
+        l->wq_a = need_tensor(g, "blk.%d.attn_q_a.weight", i, &ok);
+        l->wq   = need_tensor(g, "blk.%d.attn_q_b.weight", i, &ok);
+        l->q_a_norm_w = tensor_to_f32(
+            need_tensor(g, "blk.%d.attn_q_a_norm.weight", i, &ok), ql, &ok);
+    } else
+        l->wq = need_tensor(g, "blk.%d.attn_q.weight", i, &ok);
+    l->wkv_a = need_tensor(g, "blk.%d.attn_kv_a_mqa.weight", i, &ok);
+    l->wkv_b = need_tensor(g, "blk.%d.attn_kv_b.weight", i, &ok);
+    l->kv_a_norm_w = tensor_to_f32(
+        need_tensor(g, "blk.%d.attn_kv_a_norm.weight", i, &ok), r, &ok);
+    l->wo = need_tensor(g, "blk.%d.attn_output.weight", i, &ok);
+    *okp = ok;
+    if (!ok) return true;   // the caller reports the missing tensor's layer
+    if ((ql > 0 && (!check_shape(l->wq_a, m->n_embd, ql, "attn_q_a", i) ||
+                    !check_shape(l->wq, ql, H * hd, "attn_q_b", i))) ||
+        (ql == 0 && !check_shape(l->wq, m->n_embd, H * hd, "attn_q", i)) ||
+        !check_shape(l->wkv_a, m->n_embd, r + rd, "attn_kv_a_mqa", i) ||
+        !check_shape(l->wkv_b, r, H * (hd - rd + m->mla_v_dim), "attn_kv_b", i) ||
+        !check_shape(l->wo, H * m->mla_v_dim, m->n_embd, "attn_output", i))
+        return false;
+    if (m->mla_absorb) {
+        // dequantized once: the absorbed Q reads k-rows as a transposed product
+        // (a weighted sum of rows), the output the v-rows (113 MB each on V2-Lite)
+        l->mla_kvb = tensor_to_f32(l->wkv_b, (int64_t)r * H * (hd - rd + m->mla_v_dim), &ok);
+        *okp = ok;
+    }
+    return true;
+}
+
 // A block's routed experts: router, expert banks (stacked or split),
 // their biases and scales, the shared expert, and their shapes.
 static bool bind_layer_moe(model_t *m, gguf_file *g, layer_t *l, int i, bool *okp) {
@@ -4314,7 +4423,11 @@ static bool bind_check_projections(const model_t *m, const layer_t *l, int i,
     // Recurrent (Mamba-2) layers carry no attention projections; their
     // mixer tensors were shape-checked at bind time. Only the MoE
     // checks below apply to them.
-    if (!l->recurrent) {
+    if (!l->recurrent && m->deepseek2 && !l->is_moe &&
+        (!check_shape(l->w_gate, m->n_embd, l->n_ff, "ffn_gate", i) ||
+         !check_shape(l->w_up,   m->n_embd, l->n_ff, "ffn_up",   i)))
+        return false;
+    if (!l->recurrent && !m->deepseek2) {   // deepseek2: checked in bind_mla
     if (!check_shape(l->wo, qd, m->n_embd, "attn_output", i))
         return false;
     if (!fused_qkv && !m->qwen35) {
@@ -4522,7 +4635,9 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
     }
     if (l->recurrent && m->granite_hybrid && !bind_mamba2_mixer(m, g, l, i, &ok)) return false;
     if (l->recurrent && m->lfm2 && !bind_lfm2_mixer(m, g, l, i, &ok)) return false;
-    if (!l->recurrent && !no_attn && !bind_attention(m, g, l, i, fused_qkv, &ok))
+    if (!l->recurrent && !no_attn &&
+        !(m->deepseek2 ? bind_mla(m, g, l, i, &ok)
+                       : bind_attention(m, g, l, i, fused_qkv, &ok)))
         return false;
     if (no_attn && !bind_removed_mixer(m, g, i)) return false;
     if (!l->recurrent && !fused_qkv && !no_ffn &&
@@ -4674,6 +4789,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     if (strcmp(arch, "spark2_5") == 0 && !bind_meta_spark25(m, g, arch)) return false;
     if (strcmp(arch, "k2-horizon") == 0 && !bind_meta_k2h(m, g, arch)) return false;
     if (strcmp(arch, "flint") == 0 && !bind_meta_flint(m, g, arch)) return false;
+    if (strcmp(arch, "deepseek2") == 0 && !bind_meta_deepseek2(m, g, arch)) return false;
     // mellum (JetBrains Mellum2.x) is qwen3moe's attention and router with a
     // 3:1 sliding/full layout: bind_swa_default reads its boolean pattern, the
     // local table ropes at rope.freq_base_swa unscaled, and YaRN with its
@@ -4709,6 +4825,13 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         return false;
     if (!bind_resolve_defaults(m, g, arch)) return false;
     if (!bind_meta_moe(m, g, arch)) return false;
+    if (m->deepseek2) {
+        // the publisher's norm_topk_prob is false and the GGUF says so by
+        // omission (llama.cpp reads expert_weights_norm with default false
+        // for this arch); bind_meta_moe defaults it true for Qwen and Mixtral
+        char key[128];
+        m->expert_norm_w = gguf_get_bool(g, AK("expert_weights_norm"), false);
+    }
     if (!bind_validate_geometry(m, g, arch, hybrid_typed)) return false;
 
     if (!bind_global_tensors(m, g)) return false;
@@ -5252,6 +5375,15 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
     m->q      = malloc(sizeof(float) * (size_t)B * q_dim);
     m->k_tmp  = malloc(sizeof(float) * (size_t)B * kv_dim);
     m->v_tmp  = malloc(sizeof(float) * (size_t)B * kv_dim);
+    if (m->deepseek2) {
+        // per row: kv_a [kv_lora + rope], the normed latent [kv_lora], kv_b's
+        // output [heads x (nope + v)] and the q-lora activation (mla_project)
+        size_t row = (size_t)(m->mla_kv_lora + m->rope_dim) + (size_t)m->mla_kv_lora +
+                     (size_t)m->n_head * (m->mla_qk - m->rope_dim + m->mla_v_dim) +
+                     (size_t)m->mla_q_lora + (m->mla_absorb ? (size_t)m->n_head * m->mla_qk : 0);
+        m->mla_scratch = malloc(sizeof(float) * row * (size_t)B);
+        if (!m->mla_scratch) return false;
+    }
     if (m->n_embd_ple > 0) {
         // [token][layer][n_embd_ple] for the batch, plus one scratch of the
         // same width (the pre-pass dequantises a table row into it; the layer
@@ -5508,6 +5640,9 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_bytes
             cpu_why = "flint is validated on the CPU only; its GPU path "
                       "(sinks with a sliding window, NoPE full layers, "
                       "sigmoid routing with shared experts) is not checked yet";
+        else if (m->deepseek2)
+            cpu_why = "deepseek2 (multi-head latent attention) is validated on "
+                      "the CPU only; its GPU path is not checked yet";
     }
     if (cpu_why) {
         fprintf(stderr, "gpu: %s — using CPU\n", cpu_why);
@@ -5680,6 +5815,7 @@ static void runtime_free(model_t *m) {
     free(m->ssm_conv_keep); free(m->ssm_state_keep);
     free(m->k_tmp); free(m->v_tmp);
     free(m->q_gate); free(m->ssm_qkv); free(m->ssm_z); free(m->ssm_aux);
+    free(m->mla_scratch);
     free(m->ssm_cw);
     if (!m->ssm_state_backend) { free(m->ssm_conv_state); free(m->ssm_state_mem); }
     m->ssm_state_backend = false;
@@ -5820,6 +5956,7 @@ typedef struct {
     const float *xs;  // per-32 sums of x for vec_dot_xs (one column), or NULL
     bool exact;       // a verify round's columns: the per-column route up to
                       // VEC_DOT_MULTI_MAX wide (matvec_b, t_mv_exact)
+    const void *xk;   // one column in 256-element int8 blocks (RUNNER_CPU_I8K)
 } mv_job;
 
 // Batches narrower than this take the per-column native dot (see mv_rows);
@@ -5858,6 +5995,14 @@ static void mv_rows(void *ctx, int i0, int i1) {
             // the vec_dot_multi commit). Two to seven rows stay on the multi
             // route, where it still wins (MTP verify tiles 4.57 vs 4.19 tok/s
             // at four threads against a per-column loop). Byte-equal either way.
+            if (j->xk) {
+                for (int r = i0; r < i1; r++) {
+                    const void *row = base + (size_t)r * j->rsz;
+                    j->y[r] = vec_dot_i8k(type, row, j->xk, n_in) * sc +
+                              (j->bias ? j->bias[r] : 0.0f);
+                }
+                return;
+            }
             if (j->xs) {
                 for (int r = i0; r < i1; r++) {
                     const void *row = base + (size_t)r * j->rsz;
@@ -6133,17 +6278,30 @@ static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
         return;
     }
     mv_job j = { w, x, bias, y, n_in, n_batch, x_stride, y_stride,
-                 ggml_row_size(w->type, n_in), NULL, 0, NULL, t_mv_exact };
+                 ggml_row_size(w->type, n_in), NULL, 0, NULL, t_mv_exact, NULL };
     void *xq = NULL;
     float xs_stack[MV_XS_STACK], *xs_heap = NULL;
-    if (mv_takes_i8(w, n_in, n_out, n_batch) &&
+    double tq = tprof_enabled() ? tprof_now() : 0;
+    void *xk = NULL;
+    if (n_batch == 1 && i8k_dot_enabled() && i8k_dot_ok(w->type, n_in) &&
+        (xk = malloc(i8k_act_size(n_in)))) {
+        i8k_quant_act(x, xk, n_in);
+        j.xk = xk;
+    } else if (mv_takes_i8(w, n_in, n_out, n_batch) &&
         (xq = mv_quant_act(x, x_stride, n_in, n_batch))) {
         j.xq = xq;
         j.xq_stride = i8_act_size(n_in);
     } else {
         j.xs = mv_xsums(w, x, n_in, n_batch, xs_stack, &xs_heap);
     }
+    if (tq) {
+        tprof_region(xq || xk ? "act-quant" : "xsums", tprof_now() - tq);
+        tprof_set_tag((1ull << (w->type < 60 ? w->type : 59)) | (xq || xk ? 1ull << 63 : 0) |
+                      (n_out >= 32768 ? 1ull << 61 : 0));
+    }
     tpool_run(tp, mv_rows, &j, n_out);
+    if (tq) tprof_set_tag(0);
+    free(xk);
     free(xq);
     free(xs_heap);
 }
@@ -6229,11 +6387,23 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
     float xs_stack[MV_XS_STACK], *xs_heap = NULL;
     const float *xsum = NULL;
     bool xs_tried = false;
+    double tq = tprof_enabled() ? tprof_now() : 0;
+    uint64_t tag = 0;
+    void *xk = NULL;
+    bool xk_tried = false;
     for (int s = 0; s < np; s++) {
+        tag |= 1ull << (p[s].w->type < 60 ? p[s].w->type : 59);
         mv_job j = { p[s].w, x, p[s].bias, p[s].y, n_in, n_batch, x_stride,
                      p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
-                     t_mv_exact };
-        if (mv_takes_i8(p[s].w, n_in, p[s].n_out, n_batch)) {
+                     t_mv_exact, NULL };
+        if (n_batch == 1 && i8k_dot_enabled() && i8k_dot_ok(p[s].w->type, n_in)) {
+            if (!xk_tried) {
+                xk_tried = true;
+                if ((xk = malloc(i8k_act_size(n_in)))) i8k_quant_act(x, xk, n_in);
+            }
+            j.xk = xk;
+        }
+        if (!j.xk && mv_takes_i8(p[s].w, n_in, p[s].n_out, n_batch)) {
             if (!xq_tried) {
                 xq = mv_quant_act(x, x_stride, n_in, n_batch);
                 xq_tried = true;
@@ -6253,7 +6423,13 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
         mm.job[s] = j;
         mm.start[s + 1] = mm.start[s] + p[s].n_out;
     }
+    if (tq) {
+        tprof_region(xq || xk ? "act-quant" : "xsums", tprof_now() - tq);
+        tprof_set_tag(tag | (xq || xk ? 1ull << 63 : 0) | 1ull << 62);
+    }
     tpool_run(tp, mv_multi_rows, &mm, mm.start[np]);
+    if (tq) tprof_set_tag(0);
+    free(xk);
     free(xq);
     free(xs_heap);
 }
@@ -6280,7 +6456,7 @@ static void matvec_b_parts_x(tpool *tp, const mv_part *p, const float *const *xs
     for (int s = 0; s < np; s++) {
         mv_job j = { p[s].w, xs[s], p[s].bias, p[s].y, n_in, 1, n_in,
                      p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
-                     false };
+                     false, NULL };
         if (mv_takes_i8(p[s].w, n_in, p[s].n_out, 1)) {
             xq[s] = mv_quant_act(xs[s], n_in, n_in, 1);
             if (xq[s]) { j.xq = xq[s]; j.xq_stride = i8_act_size(n_in); }
@@ -6689,6 +6865,8 @@ static const char *route_backend(const model_t *m) {
 #endif
 }
 
+const char *model_backend_name(const model_t *m) { return route_backend(m); }
+
 static const char *route_build(void) {
 #if defined(RUNNER_T3_BUILD)
     return "t3/" RUNNER_BUILD_ARCH;
@@ -6792,7 +6970,7 @@ static void route_weights(const model_t *m, char *out, size_t cap) {
 
 typedef struct {
     const char *backend, *kv, *detail, *build, *codegen, *cpu_act;
-    char device[128], weights[96], tuning[512];
+    char device[128], weights[96], tuning[512], act[48];
     int  gpu_layers, n_layer, moe_layers, moe_host;
 } route_facts;
 
@@ -6821,9 +6999,13 @@ static void route_collect(const model_t *m, route_facts *r) {
     // tolerance-gated RUNNER_CPU_I8 (a device path names its own in detail)
     // RUNNER_CPU_I8_PREFILL adds "+int8-prefill": batches of 8 or more
     // columns run the int8 tiles whatever the decode route is
-    r->cpu_act = i8_prefill_enabled() ? (i8_dot_enabled() ? "int8+int8-prefill"
-                                                          : "f32+int8-prefill")
-                                      : i8_dot_enabled() ? "int8" : "f32";
+    // RUNNER_CPU_I8K adds "+int8k-decode": one-column Q4_K and Q6_K matvecs
+    // take the K-quant int8 dot whatever the route above is
+    snprintf(r->act, sizeof r->act, "%s%s",
+             i8_prefill_enabled() ? (i8_dot_enabled() ? "int8+int8-prefill" : "f32+int8-prefill")
+                                  : i8_dot_enabled() ? "int8" : "f32",
+             i8k_dot_enabled() ? "+int8k-decode" : "");
+    r->cpu_act = r->act;
     route_weights(m, r->weights, sizeof r->weights);
     route_tuning(r->tuning, sizeof r->tuning);
 }
@@ -6921,8 +7103,8 @@ void model_score_route_json(const model_t *m, const char *model_json, char *out,
     route_collect(m, &r);
     char paths[400];
     route_paths_json(m, paths, sizeof paths);
-    snprintf(out, cap, "{\"model\":%s,\"paths\":%s,\"backend\":\"%s\",\"backend_detail\":\"%s\"}",
-             model_json, paths, r.backend, r.detail);
+    snprintf(out, cap, "{\"model\":%s,\"paths\":%s,\"backend\":\"%s\",\"cpu_act\":\"%s\","
+             "\"backend_detail\":\"%s\"}", model_json, paths, r.backend, r.cpu_act, r.detail);
 }
 
 void model_route_receipt_json(const model_t *m, char *out, int cap) {
@@ -9353,6 +9535,13 @@ bool model_lora_serve_supported(const model_t *m, char *why, size_t cap) {
                  "hybrid yet (%s)", m->arch);
         return false;
     }
+    if (m->deepseek2) {
+        // the hook sites are attn_q/k/v; multi-head latent attention has
+        // attn_kv_a_mqa and attn_kv_b instead
+        snprintf(why, cap, "--lora does not cover multi-head latent "
+                 "attention yet (%s)", m->arch);
+        return false;
+    }
     if (m->n_removed > 0) {
         // The hook sites assume every dense projection exists in every
         // block; an adapter targeting a removed projection would bind to
@@ -10106,6 +10295,7 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     else if (m->granite_hybrid || m->nemotron_h)
         r = "recurrent architecture (Mamba-2)";
     else if (m->lfm2) r = "recurrent architecture (short convolution)";
+    else if (m->deepseek2) r = "multi-head latent attention (deepseek2)";
     else if (m->hyper_conn) r = "hyper-connections (qwen4exp)";
     else if (m->qwen35 && m->n_expert > 0) r = "MoE on a Gated DeltaNet model";
     // R17.3 (2026-10-08): an adapter on the ATTENTION of a sparse-MoE model
@@ -13209,8 +13399,103 @@ NUM_STAGE void layer_recurrent(model_t *m, fwd_layer *c) {
     DT_MARK_AT(c->dt_t0, DT_RECUR);
 }
 
+// deepseek2: Q, K and V for every row in the naive multi-head latent
+// attention, laid out [pe | nope] (Q, K) and [v | 0] (V) in head_dim-wide
+// heads (bind_meta_deepseek2). Adapters are refused on this path.
+NUM_STAGE void mla_project(model_t *m, const fwd_layer *c) {
+    const layer_t *ly = c->ly;
+    const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
+    const int hd = c->hd, q_dim = c->q_dim, kv_dim = c->kv_dim;
+    const int H = m->n_head, r = m->mla_kv_lora, rd = m->rope_dim, nope = hd - rd;
+    // kv_b's width from the publisher's head (mla_qk), as runtime_buffers
+    // sizes the scratch: in the absorbed form hd is kv_lora + rope (576), and
+    // a width from it put qa and qr past the scratch's end (R4.4.5)
+    const int vd = m->mla_v_dim, kvb = H * (m->mla_qk - rd + vd), ql = m->mla_q_lora;
+    float *kva = m->mla_scratch;                    // [n][r + rd]
+    float *lat = kva + (size_t)n * (r + rd);        // [n][r]
+    float *kvo = lat + (size_t)n * r;               // [n][kvb]
+    float *qa  = kvo + (size_t)n * kvb;             // [n][ql]
+    if (m->mla_absorb) {
+        // hd here is kv_lora + rope_dim (576); the publisher's head is mla_qk
+        const int qk = m->mla_qk, qn = qk - rd, kvw = qn + vd, qdr = H * qk;
+        float *qr = qa + (size_t)n * ql;            // [n][H * qk], the raw Q
+        if (ql > 0) {
+            matvec_b(m->tp, qa, ql, ly->wq_a, m->xb, xdim, n_embd, ql, NULL, n);
+            for (int b = 0; b < n; b++)
+                rmsnorm(qa + (size_t)b * ql, qa + (size_t)b * ql, ly->q_a_norm_w, ql, m->rms_eps);
+            matvec_b(m->tp, qr, qdr, ly->wq, qa, ql, ql, qdr, NULL, n);
+        } else
+            matvec_b(m->tp, qr, qdr, ly->wq, m->xb, xdim, n_embd, qdr, NULL, n);
+        matvec_b(m->tp, kva, r + rd, ly->wkv_a, m->xb, xdim, n_embd, r + rd, NULL, n);
+        for (int b = 0; b < n; b++) {
+            rmsnorm(lat + (size_t)b * r, kva + (size_t)b * (r + rd), ly->kv_a_norm_w, r, m->rms_eps);
+            for (int h = 0; h < H; h++) {
+                const float *src = qr + (size_t)b * qdr + (size_t)h * qk;
+                float *dst = m->q + (size_t)b * q_dim + (size_t)h * hd;
+                memcpy(dst, src + qn, sizeof(float) * rd);
+                float *qab = dst + rd;              // k_b^T q_nope: kv_b's k-rows weighted
+                memset(qab, 0, sizeof(float) * r);
+                for (int d = 0; d < qn; d++) {
+                    const float sd = src[d];
+                    const float *row = ly->mla_kvb + ((size_t)h * kvw + d) * r;
+                    for (int j = 0; j < r; j++) qab[j] += sd * row[j];
+                }
+            }
+            float *k = m->k_tmp + (size_t)b * kv_dim;   // one KV head
+            memcpy(k, kva + (size_t)b * (r + rd) + r, sizeof(float) * rd);
+            memcpy(k + rd, lat + (size_t)b * r, sizeof(float) * r);
+            memcpy(m->v_tmp + (size_t)b * kv_dim, k, sizeof(float) * kv_dim);
+        }
+        if (c->dbg) {
+            dbg_stat("q-raw", l, m->q + (size_t)(n - 1) * q_dim, q_dim);
+            dbg_stat("k-raw", l, m->k_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
+        }
+        return;
+    }
+    // Q in the publisher's per-head order [nope | pe], into k_tmp first
+    // (kv_dim == q_dim here: every head owns its K)
+    if (ql > 0) {
+        matvec_b(m->tp, qa, ql, ly->wq_a, m->xb, xdim, n_embd, ql, NULL, n);
+        for (int b = 0; b < n; b++)
+            rmsnorm(qa + (size_t)b * ql, qa + (size_t)b * ql, ly->q_a_norm_w, ql, m->rms_eps);
+        matvec_b(m->tp, m->k_tmp, kv_dim, ly->wq, qa, ql, ql, q_dim, NULL, n);
+    } else
+        matvec_b(m->tp, m->k_tmp, kv_dim, ly->wq, m->xb, xdim, n_embd, q_dim, NULL, n);
+    for (int b = 0; b < n; b++)
+        for (int h = 0; h < H; h++) {
+            const float *src = m->k_tmp + (size_t)b * kv_dim + (size_t)h * hd;
+            float *dst = m->q + (size_t)b * q_dim + (size_t)h * hd;
+            memcpy(dst, src + nope, sizeof(float) * rd);
+            memcpy(dst + rd, src, sizeof(float) * nope);
+        }
+    // the latent and the shared rope key, the latent normed, then per head
+    // [k_nope | v] from kv_b
+    matvec_b(m->tp, kva, r + rd, ly->wkv_a, m->xb, xdim, n_embd, r + rd, NULL, n);
+    for (int b = 0; b < n; b++)
+        rmsnorm(lat + (size_t)b * r, kva + (size_t)b * (r + rd), ly->kv_a_norm_w, r, m->rms_eps);
+    matvec_b(m->tp, kvo, kvb, ly->wkv_b, lat, r, r, kvb, NULL, n);
+    for (int b = 0; b < n; b++) {
+        const float *pe = kva + (size_t)b * (r + rd) + r;
+        for (int h = 0; h < H; h++) {
+            const float *kv = kvo + (size_t)b * kvb + (size_t)h * (nope + vd);
+            float *k = m->k_tmp + (size_t)b * kv_dim + (size_t)h * hd;
+            float *v = m->v_tmp + (size_t)b * kv_dim + (size_t)h * hd;
+            memcpy(k, pe, sizeof(float) * rd);
+            memcpy(k + rd, kv, sizeof(float) * nope);
+            memcpy(v, kv + nope, sizeof(float) * vd);
+            memset(v + vd, 0, sizeof(float) * (hd - vd));
+        }
+    }
+    if (c->dbg) {
+        dbg_stat("q-raw", l, m->q + (size_t)(n - 1) * q_dim, q_dim);
+        dbg_stat("k-raw", l, m->k_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
+        dbg_stat("v-raw", l, m->v_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
+    }
+}
+
 // Q (and the output gate), K and V for every row, with their adapter deltas.
 NUM_STAGE void attn_project(model_t *m, const fwd_layer *c) {
+    if (m->deepseek2) { mla_project(m, c); return; }
     const layer_t *ly = c->ly;
     const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
     const int hd = c->hd, q_dim = c->q_dim, kv_dim = c->kv_dim;
@@ -13423,6 +13708,41 @@ NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
 NUM_STAGE void attn_output(model_t *m, const fwd_layer *c) {
     const layer_t *ly = c->ly;
     const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim, q_dim = c->q_dim;
+    if (m->deepseek2 && m->mla_absorb) {
+        // each head's output is [sum p.k_pe | sum p.latent]; its latent slice
+        // goes through kv_b's v-rows to the head's value width, then attn_output
+        const int hd = c->hd, rd = m->rope_dim, r = m->mla_kv_lora, vd = m->mla_v_dim;
+        const int qn = m->mla_qk - rd, kvw = qn + vd, H = m->n_head;
+        float *tmp = m->mla_scratch;                // [n][H * vd]; free after mla_project
+        for (int b = 0; b < n; b++)
+            for (int h = 0; h < H; h++) {
+                const float *lo = m->xb2 + (size_t)b * xdim + (size_t)h * hd + rd;
+                for (int e = 0; e < vd; e++) {
+                    const float *row = ly->mla_kvb + ((size_t)h * kvw + qn + e) * r;
+                    float acc = 0.0f;
+                    for (int j = 0; j < r; j++) acc += row[j] * lo[j];
+                    tmp[(size_t)b * H * vd + (size_t)h * vd + e] = acc;
+                }
+            }
+        for (int b = 0; b < n; b++)
+            memcpy(m->xb2 + (size_t)b * xdim, tmp + (size_t)b * H * vd, sizeof(float) * (size_t)H * vd);
+        matvec_b(m->tp, m->xb, xdim, ly->wo, m->xb2, xdim, H * vd, n_embd, ly->bo, n);
+        (void)l; (void)q_dim;
+        return;
+    }
+    if (m->deepseek2) {
+        // pack the first mla_v_dim of each head (the rest is V's zero pad):
+        // head h moves down to h * vd, never over a head not yet moved
+        const int hd = c->hd, vd = m->mla_v_dim;
+        for (int b = 0; b < n; b++) {
+            float *o = m->xb2 + (size_t)b * xdim;
+            for (int h = 1; h < m->n_head; h++)
+                memmove(o + (size_t)h * vd, o + (size_t)h * hd, sizeof(float) * vd);
+        }
+        matvec_b(m->tp, m->xb, xdim, ly->wo, m->xb2, xdim, m->n_head * vd, n_embd, ly->bo, n);
+        (void)l;
+        return;
+    }
     matvec_b(m->tp, m->xb, xdim, ly->wo, m->xb2, xdim, q_dim, n_embd, ly->bo, n);
     LORA_HOOK(LW_O, m->xb, xdim, m->xb2, xdim, q_dim, n_embd, n);
 }
@@ -14478,7 +14798,11 @@ int model_mtp_position(const model_t *m) { return m->mtp_pos + m->mtp_qn; }
 
 float *model_forward(model_t *m, int token, int pos) {
     int32_t t = token;
-    return model_forward_batch(m, &t, 1, pos, true);
+    if (!tprof_enabled() || m->gpu) return model_forward_batch(m, &t, 1, pos, true);
+    tprof_step_begin();
+    float *lg = model_forward_batch(m, &t, 1, pos, true);
+    tprof_step_end();
+    return lg;
 }
 
 // ------------------------------------------------ continuous batching (Phase 6)

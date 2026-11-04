@@ -1,8 +1,10 @@
 # 27B Hub card: replacement blocks
 
 Card: `Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF`, README.md as
-of revision `4b19c412`. Text only: nothing is pushed to the Hub until the
-owner says so. Only the blocks below change, and every section not named
+of revision `4b19c412`. Text only: the owner approved it on 2026-11-04,
+and it is pushed to the Hub from the lab after the PR merges. The card
+states no tier (its status points to the roster), so the move to Tier 2
+needs no card text. Only the blocks below change, and every section not named
 here stays as it is.
 
 ## Front matter
