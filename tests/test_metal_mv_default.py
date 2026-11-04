@@ -7,8 +7,10 @@ on the Q4_K_M Llamas. It is a tolerance route: its fidelity anchor is those
 rows and `./test-mv-tol MODEL.gguf` (0/64 teacher-forced flips), not this
 file. This file pins the routing every other gate relies on:
 
-- unset: Q4_K tensors take the fast kernel, every other type the identity
-  kernel (Q8_0 and Q4_0 measured neutral and stay opt-in);
+- unset: Q4_K tensors whose input is at least 2048 wide take the fast
+  kernel, narrower Q4_K inputs and every other type the identity kernel
+  (Q8_0 and Q4_0 measured neutral and stay opt-in; the fast kernel was 15%
+  slower than identity at 1536-wide inputs, R3.28.1);
 - RUNNER_METAL_MV=0: the identity kernel everywhere, the switch every
   CPU-against-GPU byte comparison sets;
 - RUNNER_METAL_MV=1: the fast kernel for every type that has one, as before.
@@ -51,15 +53,19 @@ def runner_bin():
 @pytest.fixture(scope="module")
 def fixtures(runner_bin, tmp_path_factory):
     d = tmp_path_factory.mktemp("mv")
-    base = d / "wide.gguf"
-    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--wide", str(base)],
-                   check=True, cwd=ROOT, capture_output=True)
+    # 256-wide rows with a 2048-wide FFN: ffn_down's input reaches the fast
+    # kernel's width floor and the other projections' do not; the narrow
+    # file's FFN is 512 wide, under the floor everywhere
     out = {}
-    for q in ("q4_k", "q8_0"):
-        f = d / f"wide-{q}.gguf"
-        subprocess.run([str(runner_bin), "-m", str(base), "--quantize", str(f), "--quant", q],
+    for tag, extra in (("", ["--n-ff", "2048"]), ("narrow-", [])):
+        base = d / f"{tag}wide.gguf"
+        subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--wide", *extra, str(base)],
                        check=True, cwd=ROOT, capture_output=True)
-        out[q] = f
+        for q in (("q4_k", "q8_0") if not tag else ("q4_k",)):
+            f = d / f"{tag}wide-{q}.gguf"
+            subprocess.run([str(runner_bin), "-m", str(base), "--quantize", str(f), "--quant", q],
+                           check=True, cwd=ROOT, capture_output=True)
+            out[tag + q] = f
     return out
 
 
@@ -82,19 +88,30 @@ def score(runner_bin, model, mv):
     return json.dumps(scores, sort_keys=True), route.group(1)
 
 
-def test_q4_k_takes_the_fast_kernel_by_default(runner_bin, fixtures):
+def test_q4_k_takes_the_fast_kernel_by_default_from_2048_wide(runner_bin, fixtures):
     default, route = score(runner_bin, fixtures["q4_k"], None)
     identity, id_route = score(runner_bin, fixtures["q4_k"], "0")
     fast, fast_route = score(runner_bin, fixtures["q4_k"], "1")
-    assert (route, id_route, fast_route) == ("fast-q4_K", "identity", "fast")
-    assert default == fast
-    assert default != identity     # the fast kernel engaged: its bits differ
+    assert (route, id_route, fast_route) == ("fast-q4_K>=2048", "identity", "fast")
+    assert default != identity     # the fast kernel engaged on ffn_down
+    assert default != fast         # and the 256-wide projections kept identity
+
+
+def test_q4_k_under_the_width_floor_keeps_the_identity_kernel(runner_bin, fixtures):
+    """R3.28.1: no Q4_K input of this file reaches 2048, so the default is
+    the identity kernel's bits, while =1 still reaches the fast kernel."""
+    default, route = score(runner_bin, fixtures["narrow-q4_k"], None)
+    identity, _ = score(runner_bin, fixtures["narrow-q4_k"], "0")
+    fast, _ = score(runner_bin, fixtures["narrow-q4_k"], "1")
+    assert route == "fast-q4_K>=2048"
+    assert default == identity
+    assert fast != identity
 
 
 def test_q8_0_keeps_the_identity_kernel_by_default(runner_bin, fixtures):
     default, route = score(runner_bin, fixtures["q8_0"], None)
     identity, _ = score(runner_bin, fixtures["q8_0"], "0")
     fast, _ = score(runner_bin, fixtures["q8_0"], "1")
-    assert route == "fast-q4_K"
+    assert route == "fast-q4_K>=2048"
     assert default == identity
     assert fast != identity        # the opt-in still reaches the Q8_0 kernel

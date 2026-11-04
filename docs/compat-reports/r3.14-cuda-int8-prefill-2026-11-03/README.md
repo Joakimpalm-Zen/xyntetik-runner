@@ -4,7 +4,8 @@
 `RUNNER_CUDA_I8=1 ./test-tc-tol` fails: its 32 greedy tokens after a 128-token prompt diverge from the scalar route
 at token 3, where the scalar route's own margin is 0.00008 of the logit range. After a 1,965-token prompt the 32
 greedy tokens differ from the default (fp16 tensor-core) route on three of four files; only Qwen3-4B Q4_K_M stays
-identical. The read against the publisher's float32 model (D1) did not run (below). Against that, prefill is faster
+identical. The read against the publisher's float32 model (D1) did not run here; the R3.14.1 reads (below)
+miss for both weight-type pairs, so no type is promoted. Against that, prefill is faster
 on every file: the int8 GEMMs take 1.66x less time than the fp16 route's on Q8_0 and 1.18x less on Q4_K_M, and no
 file flips a top-1 token in the 64 teacher-forced positions of the gate.
 
@@ -76,9 +77,49 @@ the harness on the 16 GB host stopped it for low memory. The peak was not measur
 The obvious rerun is a chunked read (`logits_to_keep`, or fewer positions per forward). The route's verdict does not
 wait on it: it fails `test-tc-tol` on Qwen3-0.6B, so it ships opt-in either way.
 
+## R3.14.1: the D1 reads, no promotion (2026-11-04)
+
+The reads ran on the lab's CPU against each publisher's parent in float32. The decision rule is the routes'
+(2026-10-20): the paired Wilcoxon on per-position KL not worse at p < 0.05, mean KL at most 1.01x, and McNemar on
+margin-qualified top-1 not worse. A type is promoted only if all three hold. **Neither pair passes, so the route
+stays opt-in for every type.**
+
+| Pair | Mean KL, default / int8 | Ratio (limit 1.01x) | Wilcoxon on per-position KL | McNemar, margin-qualified top-1 | Verdict |
+|---|---|---|---|---|---|
+| Q8_0 (Qwen3-0.6B) | 0.005497 / 0.008280 | **1.506x** | int8 worse, z 24.1, p 1.7e-128 | 0 / 0 discordant of 1,432, p 1.0 | miss |
+| Q4_K + Q6_K (Qwen3-4B Q4_K_M) | 0.044202 / 0.044552 | 1.0079x | **int8 worse, z 2.08, p 0.037** | 3 / 3 discordant of 1,621, p 1.0 | miss |
+
+The K-quant pair misses narrowly, on the Wilcoxon alone (two-sided; one-sided p 0.019). It is recorded as a miss,
+and a rerun does not reopen it.
+
+| Pair | Default: max KL / top-1 / margin-qualified top-1 | int8: the same |
+|---|---|---|
+| Q8_0 | 0.123 / 97.55% / 100% | 0.221 / 97.05% / 100% |
+| K-quant | 1.411 / 92.20% / 97.29% | 1.586 / 92.10% / 97.29% |
+
+**The score files.**
+- Runner main 340fffa0 on an RTX 3070 (driver 596.36), one binary and one file a pair, differing only by
+  `RUNNER_CUDA_I8`.
+- Scored chunked, so every position goes through the prefill GEMMs in 64-row tiles (126 forwards, 8,007
+  positions): `RUNNER_SCORE_CHUNKED=1 RUNNER_SPEC_BATCH=64 runner --score 20 -f tests/fixtures/gold-corpus-2k.txt
+  -c 8192`.
+- The int8 side ran 24,625 Q8_0 GEMMs on Qwen3-0.6B, and 27,000 Q4_K plus 4,625 Q6_K on Qwen3-4B.
+- The files:
+  - `Qwen3-0.6B-Q8_0.gguf`: Qwen/Qwen3-0.6B-GGUF at `23749fef`, sha256 `9465e63a22add535...`.
+  - `Qwen_Qwen3-4B-Q4_K_M.gguf`: bartowski at `cb76885d`, sha256 `fbe1d5edd4ce802a...`. It carries both K-quant
+    types, so one read covers Q4_K and Q6_K together.
+
+**The reads.**
+- `scripts/gold-logits.py` (main 8b2729f, byte-identical to 340fffa0's), positions 4,000 to 5,999 at stride 1, every
+  position matched by token id.
+- Parents: `Qwen/Qwen3-0.6B` at `c1899de2` and `Qwen/Qwen3-4B` at `1cfa9a72`, loaded in float32 with transformers
+  5.14.1 and torch 2.11.0.
+- Read outputs: sha256 `3c5d70181e4e9c1d...` (Q8_0) and `7c1330a6f06bd177...` (K-quant).
+
 ## Not in this change
 
-- R3.14.1: promotion per type and architecture past the 0/64-flip gate, and the D1 read rerun chunked.
+- R3.14.1's D1 reads (above): neither type is promoted. Promotion past the 0/64-flip gate stays open for another
+  architecture's row.
 - K-quant speed: Q4_K and Q6_K gain 1.18x on the GEMM. A load that suits their layouts is open.
 - Other architectures: only sm_86 is measured. Below compute capability 8.0 there are no int8 kernels, and the flag
   leaves the fp16 tensor-core route in place.
