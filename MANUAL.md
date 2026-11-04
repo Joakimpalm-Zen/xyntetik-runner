@@ -1973,8 +1973,9 @@ in place of `k_mvf_q4_K`: on an Apple M1 it decodes Qwen3-4B Q4_K_M at
 12.59 against 10.61 tok/s (1.19x) and Llama-3.2-3B Q4_K_M at 17.09
 against 14.34 (1.19x), Llama-3.2-1B 1.08x, K2-Horizon-1B 1.02x. It is a
 tolerance route like the kernel it replaces (`./test-mv-tol` 0/64 flips on
-Qwen3-4B), and its multi-column twin is admitted only when a load-time
-self-test finds its columns bit-identical to the one-column kernel.
+Qwen3-4B; its float32-reference row reads mean KL 0.9999x of the old
+kernel's), and a decode microbatch's columns each run the one-column
+arithmetic, so they keep the solo step's bits.
 `RUNNER_METAL_MVG=0` keeps `k_mvf_q4_K` on those inputs. The route takes
 Q4_K inputs at least 2048 wide; narrower ones keep
 the identity kernel (R3.28.1). Q4_K decode time per input width on an

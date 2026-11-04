@@ -13,9 +13,9 @@ Current release and unreleased changes. Compatibility follows the
   an Apple M1, decode: Qwen3-4B 12.59 against 10.61 tok/s, Llama-3.2-3B
   17.09 against 14.34, Llama-3.2-1B 1.08x, K2-Horizon-1B 1.02x. A
   tolerance route like the one it replaces: `test-mv-tol` 0/64 flips on
-  Qwen3-4B, and its float32-reference row is in the PR. The decode
-  microbatch's multi-column twin is admitted only after a load-time
-  self-test finds its columns bit-identical to the one-column kernel.
+  Qwen3-4B, and its float32-reference row (mean KL 0.9999x of the old
+  kernel's) is in the PR. A decode microbatch's columns each run the
+  one-column arithmetic, so they keep the solo step's bits.
   `RUNNER_METAL_MVG=0` keeps `k_mvf_q4_K`. The route detail says
   `mv=mvg-q4_K>=2048`.
 - **Metal: the fast Q4_K decode matvec is the default only for inputs at

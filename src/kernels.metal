@@ -2161,9 +2161,12 @@ kernel void k_mvfc_q4_K(MV_PARAMS) {
 // four superblocks a simdgroup step, and the lane's activations serve four
 // rows. TOLERANCE class like k_mvf_q4_K (a different summation order from
 // both Q4_K kernels): its fidelity row is R3.28.2's. It walks columns the
-// way MV_HEAD does, each with the one-column arithmetic, and
-// k_mvgc_q4_K below reads each block once for several columns with each
-// column's bits unchanged (metal_mvc_self_test admits it).
+// way MV_HEAD does, each with the one-column arithmetic, so a microbatch
+// column is the solo step's bits. A column-inner twin reading each block once
+// was dropped: under Metal's fast math the compiler reassociated its loop, so
+// it was not bit-identical to this kernel (rounding level, at most 2e-5
+// relative; bit-identical with fast math off), and the column walk measured
+// faster than k_mvf_q4_K with its twin anyway (4 columns 1.076x, 8 1.039x).
 #define MVG_NR 4
 kernel void k_mvg_q4_K(MV_PARAMS) {
     uint row0 = (tgpig.x * (ntg.x / 32) + sgitg) * MVG_NR;
@@ -2209,67 +2212,6 @@ kernel void k_mvg_q4_K(MV_PARAMS) {
         float v = simd_sum(s[r]);
         if (tiisg == 0 && row < (uint)a.n_out) y[row] = a.has_bias ? v + bias[row] : v;
     }
-    }
-}
-
-// k_mvg_q4_K over several columns with each block read once: per lane step
-// the four rows' scales, mins and quants are loaded a single time, then
-// every column of the tile runs exactly the one-column kernel's arithmetic
-// for that step into its own partials. At most MVFC_COLS columns a
-// threadgroup (the host caps col_tile).
-kernel void k_mvgc_q4_K(MV_PARAMS) {
-    uint row0 = (tgpig.x * (ntg.x / 32) + sgitg) * MVG_NR;
-    if (row0 >= (uint)a.n_out) return;
-    int col_lo = (int)tgpig.y * a.col_tile;
-    int ncol = min(min(a.col_tile, MVFC_COLS), a.n_col - col_lo);
-    int nb = a.n_in / 256;
-    int il = tiisg & 7, jj = il >> 1, h = il & 1;
-    float s[MVFC_COLS][MVG_NR];
-    for (int c = 0; c < MVFC_COLS; c++) for (int r = 0; r < MVG_NR; r++) s[c][r] = 0;
-    for (int b = (int)(tiisg >> 3); b < nb; b += 4) {
-        float d[MVG_NR], dmin[MVG_NR];
-        uchar s1[MVG_NR], m1[MVG_NR], s2[MVG_NR], m2[MVG_NR];
-        uchar4 q[MVG_NR][4];
-        int nr = 0;
-        for (int r = 0; r < MVG_NR; r++) {
-            uint row = row0 + r;
-            if (row >= (uint)a.n_out) break;
-            device const uchar *blk = wb + a.w_off + ((ulong)row * nb + b) * 144;
-            d[r] = (float)*(device const half *)blk;
-            dmin[r] = (float)*(device const half *)(blk + 2);
-            get_scale_min_k4(jj * 2 + 0, blk + 4, &s1[r], &m1[r]);
-            get_scale_min_k4(jj * 2 + 1, blk + 4, &s2[r], &m2[r]);
-            device const packed_uchar4 *q4 = (device const packed_uchar4 *)(blk + 16 + jj * 32 + h * 16);
-            for (int k = 0; k < 4; k++) q[r][k] = q4[k];
-            nr++;
-        }
-        for (int c = 0; c < ncol; c++) {
-            device const float *x = x_all + (ulong)(col_lo + c) * a.x_stride;
-            device const packed_float4 *xl4 =
-                (device const packed_float4 *)(x + b * 256 + jj * 64 + h * 16);
-            device const packed_float4 *xh4 = xl4 + 8;
-            float4 xl[4], xh[4], sl = 0, sh = 0;
-            for (int k = 0; k < 4; k++) { xl[k] = xl4[k]; xh[k] = xh4[k]; sl += xl[k]; sh += xh[k]; }
-            float sx1 = sl.x + sl.y + sl.z + sl.w, sx2 = sh.x + sh.y + sh.z + sh.w;
-            for (int r = 0; r < nr; r++) {
-                float4 t1 = 0, t2 = 0;
-                for (int k = 0; k < 4; k++) {
-                    uchar4 qq = q[r][k];
-                    t1 = fma(float4(qq & 0xF), xl[k], t1);
-                    t2 = fma(float4(qq >> 4), xh[k], t2);
-                }
-                s[c][r] += d[r] * s1[r] * (t1.x + t1.y + t1.z + t1.w) - dmin[r] * m1[r] * sx1 +
-                           d[r] * s2[r] * (t2.x + t2.y + t2.z + t2.w) - dmin[r] * m2[r] * sx2;
-            }
-        }
-    }
-    for (int c = 0; c < ncol; c++) {
-        device float *y = y_all + (ulong)(col_lo + c) * a.y_stride;
-        for (int r = 0; r < MVG_NR; r++) {
-            uint row = row0 + r;
-            float v = simd_sum(s[c][r]);
-            if (tiisg == 0 && row < (uint)a.n_out) y[row] = a.has_bias ? v + bias[row] : v;
-        }
     }
 }
 
