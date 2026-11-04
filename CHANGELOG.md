@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA runs the ungated (DeepSeek-style) shared expert on the device (R4.4.5 step c0b).** Before this, a MoE
+  whose shared expert has no scalar gate sent the whole model to the CPU on CUDA unless `--cpu-moe` kept the banks
+  on the host. `tile_shexp` now adds such a shared expert's output without the sigmoid.
+  - Granite 4 hybrid keeps its banks on the host by name, because its CUDA cells were measured that way. A relu2 or
+    gate-less shared expert keeps its refusal.
+  - `make test` adds gpu-identity on the `shexp` fixture: zero routed experts, with the dense FFN as the shared
+    expert. Its worst difference is 2.7e-7 against a limit of 1e-5, and on the device it scores bit for bit as the
+    dense oracle does.
+  - The gated shape (`shexpg`) and every CUDA MoE byte gate read the same before and after.
+
 - **Metal Q4_K decode: the fast kernel unpacks its scales without a branch,
   1.18x on Qwen3-4B Q4_K_M with the same bits (R3.28.5).** Q4_K's 6-bit
   scales unpack one way for sub-blocks 0 to 3 and another for 4 to 7, and

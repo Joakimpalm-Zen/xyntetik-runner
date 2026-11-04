@@ -3276,6 +3276,10 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.rsoft.gguf
 	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.rsoftnn.gguf
 	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.gnonorm.gguf
+	@# the ungated (DeepSeek-style) shared expert on the device (R4.4.5 c0b):
+	@# zero routed experts and the dense FFN as the shared one, CPU against the
+	@# device, exact on the host against the dense oracle by construction
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.shexp.gguf
 	@# the same fixture at the default bounds: free routing answers to 2e-3,
 	@# the pinned run to 1e-3 (a min() against 1e-3 once held both to 1e-3,
 	@# and every fixture run sets GPU_ID_LIMIT, so only a real file showed it)

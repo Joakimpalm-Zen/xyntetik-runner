@@ -1111,10 +1111,13 @@ static bool moe_any_on_device(const model_t *m) {
 }
 
 // Whether the device can run layer l's expert bank. The routed kernels and
-// the device twin of shexp_add cover a gated-SiLU shared expert with its
-// scalar sigmoid gate (Qwen3.5/3.8); an ungated shared expert (Granite 4
-// hybrid, DeepSeek-style) or a relu2 one has no device path and stays on the
-// host. Admission refuses a pinned device bank that fails this, and the
+// the device twin of shexp_add cover a SiLU shared expert with its scalar
+// sigmoid gate (Qwen3.5/3.8) or without one (DeepSeek-style, R4.4.5 c0b); a
+// relu2 or gate-less one has no device path and stays on the host. Granite 4
+// hybrid's ungated shared expert has the device path but keeps its banks on
+// the host by name: its CUDA cells were measured that way
+// (compat-reports/cpu-cuda-hybrid), and moving them is its own measured
+// change. Admission refuses a pinned device bank that fails this, and the
 // --cpu-moe auto fit places only banks that pass it: the fit runs after
 // admission, so a check there alone let auto put Granite's banks on the
 // device, where the shared expert dereferenced its absent gate.
@@ -1122,7 +1125,9 @@ static bool moe_bank_device_ok(const model_t *m, int l) {
     const layer_t *ly = &m->layers[l];
     if (!ly->is_moe || m->n_ff_shexp <= 0) return true;
     if (m->ffn_relu2) return false;
-    return !ly->w_up_shexp || (ly->w_gate_shexp && ly->ffn_gate_inp_shexp);
+    if (!ly->w_up_shexp) return true;
+    if (!ly->w_gate_shexp) return false;
+    return ly->ffn_gate_inp_shexp || !m->granite_hybrid;
 }
 
 // The fused device-routing MoE path needs the fused-3D expert layout (a
@@ -3205,8 +3210,9 @@ static bool cuda_admit(model_t *m) {
     // [n_expert_used, expert_count]. Each layer's router, routing and expert
     // tables take that layer's count (R4.7.4); scratch sized by the declared
     // count covers every layer.
-    // The shared always-on expert has no device path: the routed MoE
-    // kernels write the FFN output and nothing adds a second dense branch.
+    // The shared always-on expert runs on the device as tile_shexp, gated by
+    // its scalar sigmoid or not; the shapes moe_bank_device_ok refuses send
+    // the model to the CPU unless --cpu-moe keeps those banks on the host.
     if (m->n_ff_shexp > 0 && moe_any_on_device(m)) {
         bool ok_shape = true;
         for (int l = 0; ok_shape && l < m->n_layer; l++)
@@ -7547,20 +7553,21 @@ static bool tile_branch_out(gpu_t *g, model_t *m, CUdeviceptr post_norm, int tn,
     return ok;
 }
 
-// The gated shared expert, the device twin of shexp_add, added into the
-// routed experts' output.
+// The shared expert, the device twin of shexp_add, added into the routed
+// experts' output.
 static bool tile_shexp(gpu_t *g, model_t *m, layer_t *ly, int tn, int xdim) {
     int n_embd = m->n_embd;
     bool ok = true;
-    // the gated shared expert, the device twin of shexp_add:
-    // out += sigmoid(gate_inp_shexp . in) * down(act(gate(in)) * up(in))
+    // the device twin of shexp_add:
+    // out += sigmoid(gate_inp_shexp . in) * down(act(gate(in)) * up(in)),
+    // or without the sigmoid where the file has no gate_inp_shexp
     int nf = m->n_ff_shexp;
     ok = ok && enc_mv(g, m, ly->w_up_shexp, g->shexp_in, g->shexp_u, n_embd, nf, 0, tn, xdim, nf)
             && enc_mv(g, m, ly->w_gate_shexp, g->shexp_in, g->shexp_g, n_embd, nf, 0, tn, xdim, nf)
             && enc_actmul(g, m, g->shexp_g, g->shexp_u, tn * nf)
             && enc_mv(g, m, ly->w_down_shexp, g->shexp_g, g->shexp_o, nf, n_embd, 0, tn, nf, n_embd);
-    // the scalar gate is required here: moe_bank_device_ok() keeps an
-    // ungated shared expert off the device
+    if (!ly->ffn_gate_inp_shexp)    // DeepSeek-style, ungated (R4.4.5 c0b)
+        return ok && enc_add(g, g->xb, g->shexp_o, n_embd, tn, xdim, n_embd);
     ok = ok && enc_mv(g, m, ly->ffn_gate_inp_shexp, g->shexp_in, g->shexp_gate, n_embd, 1, 0, tn, xdim, 1);
     if (ok) {
         int vs = n_embd;
