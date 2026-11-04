@@ -70,6 +70,17 @@ Current release and unreleased changes. Compatibility follows the
   it needed 1.05x. An explicit `--draft-k` is unchanged. Report:
   `docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03`.
 
+- **`RUNNER_CPU_I8K=1`: an opt-in int8 decode route for Q4_K and Q6_K on
+  AVX2 CPUs, off by default because it fails the fidelity bar (R3.1.4).** On
+  a 4-core i7-7700K, Q4_K_M decode reads 1.23 to 1.39x the f32 route, 0.85
+  to 0.96x of llama.cpp. Against Qwen's float32 models its mean KL is 1.09x
+  the f32 route's on Qwen3-0.6B and 1.17x on Qwen3-1.7B (worse on the paired
+  test, p 9e-32 and 3e-49). The small-core gap to llama.cpp is that int8
+  rounding, which the default does not pay. `RUNNER_CPU_PROF=1` prints where
+  a CPU decode step goes. The route record's `cpu_act` names the route, and
+  `--score`'s `score_route` now carries `cpu_act`. Report:
+  `docs/compat-reports/r3.1.4-cpu-small-core-decode-2026-11-04`.
+
 - **`--quant-error` costs a row its type cannot describe at the type the
   rewrite writes instead.** A tensor whose rows the asked type's block does
   not divide (a MoE expert width of 896 under `q4_k`) read `null` in the
