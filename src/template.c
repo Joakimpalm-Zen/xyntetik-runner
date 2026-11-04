@@ -98,6 +98,10 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
         if (strstr(meta_tmpl, "<|ifm|im_start|>")) return TMPL_K2H;
         // flint: its own sanitising macro, ahead of zephyr's <|user|> test
         if (strstr(meta_tmpl, "macro flint_text(")) return TMPL_FLINT;
+        // DeepSeek-V2 chat: plain-text role prefixes no other family writes
+        if (strstr(meta_tmpl, "{{ 'User: ' + message['content'] + '\n\n' }}") &&
+            strstr(meta_tmpl, "{{ 'Assistant: ' + message['content'] + eos_token }}"))
+            return TMPL_DEEPSEEK2;
         // Spark: DeepSeek-style turn tokens with its own ASCII role tags
         if (strstr(meta_tmpl, "<|Bot|>") && strstr(meta_tmpl, "<|System|>"))
             return strstr(meta_tmpl, "thinking_effort") ? TMPL_SPARK
@@ -276,6 +280,7 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "mistral-v1")) return TMPL_MISTRAL_V1;
     if (!strcmp(name, "mistral-nemo")) return TMPL_MISTRAL_NEMO;
     if (!strcmp(name, "mistral-sys")) return TMPL_MISTRAL_SYS;
+    if (!strcmp(name, "deepseek2")) return TMPL_DEEPSEEK2;
     if (!strcmp(name, "phi3"))    return TMPL_PHI3;
     if (!strcmp(name, "phi4"))    return TMPL_PHI4;
     if (!strcmp(name, "nemotron")) return TMPL_NEMOTRON;
@@ -380,6 +385,7 @@ const char *template_name(int t) {
         case TMPL_MISTRAL_V1: return "mistral-v1";
         case TMPL_MISTRAL_NEMO: return "mistral-nemo";
         case TMPL_MISTRAL_SYS: return "mistral-sys";
+        case TMPL_DEEPSEEK2: return "deepseek2";
         case TMPL_PHI3:    return "phi3";
         case TMPL_PHI4:    return "phi4";
         case TMPL_NEMOTRON: return "nemotron";
@@ -4627,6 +4633,20 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
         return render_mistral(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_MISTRAL_SYS:
         return render_mistral_sys(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
+    case TMPL_DEEPSEEK2:
+        // the template drops any other role silently, as here
+        for (int i = 0; i < n_msgs; i++) {
+            if (!strcmp(msgs[i].role, "user"))
+                off = emit(out, cap, off, "User: %s\n\n", msgs[i].content, NULL);
+            else if (!strcmp(msgs[i].role, "assistant"))
+                off = emit(out, cap, off, "Assistant: %s<｜end▁of▁sentence｜>",
+                           msgs[i].content, NULL);
+            else if (!strcmp(msgs[i].role, "system"))
+                off = emit(out, cap, off, "%s\n\n", msgs[i].content, NULL);
+        }
+        if (add_assistant)
+            off = emit(out, cap, off, "Assistant:", NULL, NULL);
+        break;
     default: // TMPL_RAW: concatenate contents
         for (int i = 0; i < n_msgs; i++)
             off = emit(out, cap, off, "%s", msgs[i].content, NULL);
