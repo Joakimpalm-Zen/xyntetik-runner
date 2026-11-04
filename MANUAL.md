@@ -1090,7 +1090,7 @@ Constrained decoding pays for the sampler on every step, and several shipped
 presets - SmolLM2's, llama3's, mistral's, gpt-oss's - set `top_k = 0`, which
 means no truncation and a pass over the whole vocabulary. Setting `--top-k 40`
 (or `"top_k": 40` per request) measured **12–27% higher decode throughput**
-than the same run at the preset's `top-k 0`, on an M1 with
+than the same run at the preset's `top-k 0`, on an Apple M1 with
 SmolLM2-135M-Instruct under JSON- and schema-constrained decoding.
 
 It is an option, not a default, and it is not certified. Truncating to 40
@@ -1128,6 +1128,9 @@ The [quick start](#quick-start) uses Granite 4.1 3B Q8_0. The choices below
 separate a fidelity-gated starting point from a smaller smoke test and a
 larger project artifact. File size is not the total RAM requirement; use
 [`--info fit`](#deciding-before-you-download) for the model and context you need.
+On an 8 GB Mac, a one-shot CLI run of a mapped 4B file pays about 3 GB of
+page-in inside its first prompt; `--mlock` or a resident server
+holds the weights.
 
 | Model | File size | Role |
 |---|---|---|
@@ -1477,7 +1480,7 @@ every type the Metal backend loads: `q2_K`, `q3_K`, `q4_0`, `q4_1`, `q5_0`,
 codebook i-quants (`iq1_s`, `iq1_m`, `iq2_xxs`, `iq2_xs`, `iq2_s`, `iq3_xxs`,
 `iq3_s`), `f16`, `bf16` and `f32`. `q4_1`, `q5_0`, `q5_1` and `q5_K` gained
 their `k_mm_*` on 2026-10-21; until then they prefilled through the matvec,
-three to five times slower on an M1. Quantization changes only the weight
+three to five times slower on an Apple M1. Quantization changes only the weight
 encoding: it cannot give an architecture a Metal path it lacks, because those
 gaps are missing kernels for operations (weight-normed routers, gate-less
 shared experts), not missing quant support. The dense `qwen35` Gated DeltaNet
@@ -1644,7 +1647,7 @@ kernels that compute one fixed reduction tree on every target
 Measured on a 165-token scoring run of the same Q8_0 model: 0 of 165
 positions bit-identical between an Apple M1 and an x86-64 box in the
 default build, 165 of 165 in the T3 build, and the same on riscv64 under
-qemu. Cost: 7% decode on x86-64, 17% on the M1, all of it the strict-float
+qemu. Cost: 7% decode on x86-64, 17% on the Apple M1, all of it the strict-float
 flags. A T3 receipt carries `"flavor":"t3"` in its `build` object. This is
 measured, not yet a claimed tier: the batched prefill tile, the k-quant
 formats, MoE and the GPU backends are not canonical yet. Details and
@@ -1807,7 +1810,7 @@ GEMMs. Full offload is the preferred and default shape. A file above
 tensor layout allows a contiguous prefix wrap *and* the whole model still fits
 in RAM; when it does not, the backend falls back to CPU rather than split,
 because pinning part of a model that does not fit measured 8–35x slower than
-CPU-only on an 8 GB M1. `--gpu N` forces a split anyway. Multi-part
+CPU-only on an 8 GB Apple M1. `--gpu N` forces a split anyway. Multi-part
 (split) GGUF sets take a **full Metal offload**: the weight wraps are keyed by
 host address, so each part's mapping gets its own tensor-boundary wraps, and a
 2-part 86 GB set measured byte-identical to the single file it was merged
@@ -1825,7 +1828,7 @@ before any model dispatch; compile, pipeline, or numeric failure falls back
 to the established simdgroup GEMM for that type. The path is deliberately
 not the default: on the admission gate every admitted type was numerically
 sound but only matched, rather than beating by the required 1.2x, the
-existing kernel. M1-M4 never compile or dispatch it and retain the same
+existing kernel. Apple M1 to M4 never compile or dispatch it and retain the same
 default path and performance. `RUNNER_METAL_TENSOR=0` is the explicit pin.
 
 **CUDA:** Linux and Windows use the dynamically loaded driver API and embedded
@@ -1880,7 +1883,10 @@ unconverted. On an RTX 3070 it read prefill of 1,965 tokens at 5,207 tok/s
 against 3,839 on Qwen3-1.7B Q8_0, and 2,330 against 2,162 on Qwen3-4B Q4_K_M.
 It is off by default because `./test-tc-tol` fails on Qwen3-0.6B Q8_0 (its
 greedy tokens diverge from the scalar route's at a near-tie), although no file
-flips a top-1 token in the gate's 64 teacher-forced positions. The route
+flips a top-1 token in the gate's 64 teacher-forced positions. Its reads
+against the publisher's float32 models miss for both pairs (Q8_0 at 1.51x
+the default route's mean KL; Q4_K with Q6_K at 1.008x, worse at Wilcoxon
+p 0.037), so no type is promoted. The route
 detail (and so a receipt) says `i8=on`, and `--bench-json` counts its launches
 as `cuda_i8` in the route record.
 
@@ -1903,7 +1909,7 @@ result looks graph-dependent; `RUNNER_CUDA_GRAPH_RECUR=0` does it for the
 qwen35 family alone, whose decode replays a graph since 2026-10-21. `./test-attn-tol MODEL.gguf` is the
 attention gate.
 Weights are wrapped zero-copy from the model mmap. A file larger than the
-device's `maxBufferLength` - 4.29 GB on an M1, against a 5.73 GB working set -
+device's `maxBufferLength` - 4.29 GB on an Apple M1, against a 5.73 GB working set -
 is wrapped in several buffers instead of being copied or forced into a
 CPU/GPU layer split. The cuts fall on tensor boundaries, so no tensor spans two
 buffers and output is byte-identical to a single-buffer wrap;
@@ -1973,7 +1979,14 @@ reassociating fast kernel by default (two rows a simdgroup, vector
 accumulation; a mixture-of-experts model keeps the identity kernel, since
 the fidelity rows behind the default are dense): decode +10.8% on
 Llama-3.2-1B and +12.5% on Llama-3.2-3B Q4_K_M on an Apple M1, -0.9% on
-Qwen2.5-1.5B. It is a tolerance route, not the identity kernel's bits,
+Qwen2.5-1.5B. It takes Q4_K inputs at least 2048 wide; narrower ones keep
+the identity kernel (R3.28.1). Q4_K decode time per input width on an
+Apple M1, fast against identity, ms a token: 1536 wide 11.11 against 9.62
+(K2-Horizon-1B, where the fast kernel lost), 2048 10.96 against 12.96
+(Llama-3.2-1B), 3072 36.48 against 40.21 (Llama-3.2-3B), 5120 1.88 against
+2.45, 8192 1.61 against 2.98 and 5.38 against 7.91. Widths between 1536 and
+2048 were not measured and take the exact kernel. The route detail says
+`mv=fast-q4_K>=2048`. It is a tolerance route, not the identity kernel's bits,
 promoted on its fidelity rows against the publisher's float32 model (mean
 KL 0.9993x on Llama-3.2-3B and 0.9998x on Qwen2.5-1.5B against the identity
 route, paired tests not distinguishable) and on `./test-mv-tol MODEL.gguf`
@@ -1983,7 +1996,7 @@ bit-identical to solo decode (`test-batch-identity`, `test-spec-identity`).
 `RUNNER_METAL_MV=0` restores the identity kernel for every type;
 `RUNNER_METAL_MV=1` also takes the fast q4_0 / q8_0 kernels (float4
 accumulation, the q4_0 zero-point factored out of the inner loop), which
-clear the flip bar but measured neutral on an 8-core M1 and stay opt-in. See
+clear the flip bar but measured neutral on an 8-core Apple M1 and stay opt-in. See
 `docs/negative-result-metal-multirow-matvec.md` for the matvec numerical
 contract and its verification gates.
 
@@ -2434,7 +2447,7 @@ the tiles were slower, so the identity route keeps those widths. Against the pub
 
 Prompt batch size, default `64`. Unless `--gpu off` was given, the default is sized from
 **total** RAM instead: `512` at 12 GB or more, `256` at 6 GB or more, `64` below — so
-the tiled prefill GEMM gets more columns per dispatch (measured on Metal/M1: +9% prompt
+the tiled prefill GEMM gets more columns per dispatch (measured on Metal/Apple M1: +9% prompt
 tok/s at 512 over the flat 64 default). Total RAM rather than free RAM on purpose: batch
 size changes how reassociating prefill paths tile their sums, and a default read off the
 machine's ambient load would make "the same command" produce different tokens on a busy
@@ -2486,10 +2499,10 @@ instance instead.
 | `--reserve P` or `--reserve vram=P,ram=P,cpu=P` | One percentage caps this process at `P` percent of total RAM and VRAM; the named form sets each budget on its own: `vram` (the CUDA layer-fit budget, [details](#cli-reserve-vram)), `ram`, and `cpu` (size the default thread count as a percentage of cores). Without `-c` the context is auto-fit to what the reservation leaves after the weights. |
 | `--kv f16\|q8\|k8v4\|fp4` | Choose KV cache storage; precision, memory use and backend support differ by format. [Details](#cli-kv). |
 | `--kv-ring auto\|on\|off` | Give sliding-window layers only their window of KV rows, output-identical to the flat cache. `auto` (default) turns it on only when the weights and the flat cache do not fit; `-v` says why it is on or off. [Details](#cli-kv-ring). |
-| `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. A Gemma 4 E-series per-layer token table stays pageable. |
+| `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. A Gemma 4 E-series per-layer token table stays pageable. Runner maps its weights, so a one-shot CLI run of a mapped 4B file on an 8 GB Mac pays about 3 GB of page-in inside its first prompt (Qwen3-4B Q4_K_M: 28 against 85 tok/s of 512-token prefill, 2026-11-04); `--mlock` or a resident server holds the weights. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
 | `--draft SOURCE` | Speculative decoding from one source per run, named by its spelling. `PATH`: a same-vocabulary draft GGUF ([details](#cli-draft)). `mtp`: the model's own NextN/MTP predictor block ([details](#cli-mtp)). `mtp:FILE`: that block from a companion GGUF when the model file was exported without one ([details](#cli-mtp)). `lookup`: n-gram matches in the context itself, no weights and no draft forward ([details](#cli-draft-lookup)). A second source on the line is refused, not ignored. A server given a swap registry (`-m a=...,b=...`) refuses to start with a draft, which needs a single served model. |
-| `--draft-k N` | Draft tokens per speculative round, `1` to `15`, default `4`, for every draft source (a round verifies the drafts plus the correction, at most 16 rows). All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
+| `--draft-k N` | Draft tokens per speculative round, `1` to `15`, for every draft source (a round verifies the drafts plus the correction, at most 16 rows). The default is `4`, except on CUDA with every layer on the device, where it is `7` for `--draft lookup` and `2` for `--draft mtp`. A partial offload keeps `4`, since its CPU layers pay most of a step for each verify row. The startup line prints the width a run takes. Measured on an RTX 3070 (2026-11-03, 256 greedy tokens): lookup on an in-context edit reads 2.86x plain at 7 against 2.43x at 4, since a verify row costs about 0.2 of a step up to eight rows. Qwen3.5-4B's NextN head reads 1.13x on code and on tool calls at 2 (tool reaches 1.20x at 3). On prose the head loses at every width: 0.88x plain at 2, and 0.68x at the old default of 4. Leave it off for prose. A width that follows each turn's acceptance was measured against these fixed widths and lost (0.97x), so there is no automatic width ([report](docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03/README.md)). All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
 | `--draft-required` | Fail instead of falling back to plain decoding when a requested draft model is refused. [Details](#cli-draft-required). |
 
 <a id="cli-reserve-vram"></a>
@@ -2628,7 +2641,7 @@ verified the same way, so they change speed and never the output
 ([docs/context-drafts.md](docs/context-drafts.md)). Works in one-shot, chat and
 single-model serve mode (`draft.source` is `lookup` in `GET /v1/capabilities`; ignored
 in swap mode with a `reason`), on every path the verify walk runs on (CPU, and the same
-GPU cases `--draft` accepts). Measured 2026-09-04 on an M1 CPU: 1.47x on a verbatim
+GPU cases `--draft` accepts). Measured 2026-09-04 on an Apple M1 CPU: 1.47x on a verbatim
 repeat at 98% acceptance and parity elsewhere on SmolLM2-135M Q8_0, and a LOSS on every
 row but the repeat on the compute-bound TinyLlama-1.1B Q2_K (0.84-0.93x), because a
 rejected draft is a wasted verify column; the literature's 2-4x needs a bandwidth-bound
@@ -2782,7 +2795,7 @@ memory (36.9 MB at rank 8 on a 1.5B), a partial split lets each half apply its o
 blocks, and the CPU-versus-GPU gap with the adapter is no wider than without it (CUDA:
 max |Δlogprob| 1.110e-3 against 1.255e-3, Qwen2.5-1.5B Q4_K_M, RTX 3070; Metal: mean
 3.0e-4 against 3.1e-4, SmolLM2-135M Q8_0 with a rank-8 adapter on all 210 projections,
-M1). On Metal a block with an adapter decodes on the split path, without the fused
+Apple M1). On Metal a block with an adapter decodes on the split path, without the fused
 front kernel, so decode slows: 117 to 44 tok/s on that 135M (still above the CPU's 37),
 and 9.8 to 8.3 tok/s on Llama-3.2-3B Q4_K_M with a rank-16 adapter on Q and V of every
 block (the CPU decodes it at 5.7). Prefill barely moves in either case. Fails
@@ -3116,7 +3129,7 @@ A session is a raw prompt (no chat template) with the sampler fields a completio
 and `ignore_eos`. With `suspend_after` it stops after that many tokens and writes the
 image into `DIR`; the answer carries the text so far and the `id`, which is the image's
 own sha256, so the same state is the same id. A resume continues it exactly: on the
-8 GB M1 serving Llama-3.2-3B on Metal, a 60-token sampled generation suspended at 25 and
+8 GB Apple M1 serving Llama-3.2-3B on Metal, a 60-token sampled generation suspended at 25 and
 resumed, and one suspended at 25 and again at 40, both returned the uninterrupted run's
 text byte for byte. `fork_seed` continues under another seed, the same text every time it
 is asked for; like a session's own `seed`, it is a whole number from 0 to 2^53 - 1. The images are the CLI's format. A served session holds the device from
@@ -3655,7 +3668,7 @@ switches:
 | `RUNNER_METAL_MOE_MM` | on | Grouped simdgroup-MMA MoE prefill (default): per-expert GEMM tiles over gathered token columns, float-staged operands, +21-31% measured prefill on 30B/120B-class MoE, decode untouched. Judged by the house fidelity bar (`test-moe-mm-ab`), not byte identity — top-k routing flips near-ties under any reassociation, so `0` restores the matvec path and is pinned by every byte-identity gate; `half` selects the half-staged comparison arm. Dense models unaffected. |
 | `RUNNER_DEBUG_ROUTE` | unset/off | Print one stderr line describing the route a forward actually took whenever it changes, written after the forward, so a device forward that fell back is reported on the CPU it finished on: `backend` and `device`, the layer `split`, `experts_on_host` under `--cpu-moe`, the `rows` and `path` (`solo`, `batch`, `keep` for speculative verification, `mtp`, `micro` for a slot microbatch), the `kv` type, the `weights` types by share, the CPU's activation (`cpu_act`: `f32`, or `int8` under `RUNNER_CPU_I8`, with `+int8-prefill` appended under `RUNNER_CPU_I8_PREFILL`), the backend's own selections (CUDA `graph`, `tc`, `q8x`, `i8`, `small_batch`, `moe`; Metal `fusion`, `mm`, `mv`, `attn`, `moe_mm`, `tensor`), the reason for a CPU `fallback` when a GPU was asked for, the `build` with its codegen flags, and every `RUNNER_*` variable set (`tuning`; a name containing KEY, TOKEN, SECRET or PASS shows only that it is set). Off, a forward costs two stores and a compare. `--bench-json` reports the run's record as its `route` object. |
 | `RUNNER_DEBUG_TIME` | unset/off | Print the forwards' CPU wall time per block stage at the end of a run, summed over every forward: `ple`, `hc_mix`, `attention` (the mixer through its post-norm, so the Q/K/V and output projections are inside it), `deltanet/ssm`, `moe_route`, `experts`, `shared_expert`, `dense_ffn`, `hc_combine` and `head`, each with its share of the total. Under `attention` an `attn core` line times only the scores, softmax and values pass, the part an attention kernel can change. CUDA and Metal time their phases with their own profilers. Off, a stage costs one cached flag test. |
-| `RUNNER_METAL_TENSOR` | unset/off | On M5+ with macOS 26.2+, opt Q4_K, Q8_0, and Q4_0 prefill into the separately admitted Metal 4 MPP tensor GEMM (per-type self-test; a failing type falls back alone). Experimental and not promoted: every admitted type passes its correctness gate but measured only parity with the simdgroup GEMM on M5, short of the 1.2x default-promotion bar. Ignored on M1-M4. |
+| `RUNNER_METAL_TENSOR` | unset/off | On M5+ with macOS 26.2+, opt Q4_K, Q8_0, and Q4_0 prefill into the separately admitted Metal 4 MPP tensor GEMM (per-type self-test; a failing type falls back alone). Experimental and not promoted: every admitted type passes its correctness gate but measured only parity with the simdgroup GEMM on M5, short of the 1.2x default-promotion bar. Ignored on Apple M1 to M4. |
 
 Beyond these, the binary reads a number of development switches -
 `RUNNER_DEBUG_TOKENS`, `RUNNER_DEBUG_ACT`, `RUNNER_MOE_TRACE`,
@@ -4852,7 +4865,7 @@ documented `event: error` mid-stream. See [Structured output](#structured-output
 Client compatibility is a dated executable observation, not something inferred
 from an API name. The 2026-09-15 sweep (`scripts/agent-client-sweep.py`, a
 per-run sentinel in a fixture directory, Qwen3-4B Q4_K_M on a datacenter MIG slice
-slice, record in `docs/cross-family-remedy-evidence/agent-client-sweep-qwen3-4b-blackwell-2026-09-15.json`)
+slice, record in `docs/cross-family-remedy-evidence/agent-client-sweep-qwen3-4b-lab-slice-2026-09-15.json`)
 recorded complete tool -> execution -> result -> answer loops for OpenCode
 1.18.31, Claude Code 2.1.272, Codex CLI 0.154.0 (hosted web search disabled,
 as below), Continue CLI 1.5.47, Cline CLI 3.0.61 and pi 0.85.1; Aider 0.86.2
@@ -4992,7 +5005,7 @@ Q8_0 at c=4096, stock defaults, engines run sequentially, llama.cpp from
 the prebuilt b10639 release. Reproduce it with
 [`scripts/idle_coexistence.py`](scripts/idle_coexistence.py).
 
-On an 8 GB M1 (quiet machine), while loaded and idle:
+On an 8 GB Apple M1 (quiet machine), while loaded and idle:
 
 | while idle | runner | llama-server b10639 |
 |---|---|---|
@@ -5007,7 +5020,7 @@ as evictable zero-copy mappings the OS can reclaim whenever another app
 needs the RAM, wakes about once every two seconds, and hands everything
 back on `/unload` (or automatically with `--ttl`). What that costs is the
 first token after the memory has been reclaimed, which waits for the weights
-to be read back: 3.2 s on the pressured M1. On a discrete-GPU box (RTX 3070)
+to be read back: 3.2 s on the pressured Apple M1. On a discrete-GPU box (RTX 3070)
 both engines hold ~4 GB of VRAM loaded, and Runner's differences are idle
 discipline (0.00 vs 0.3-0.6 CPU seconds per minute) and lifecycle control
 (`/unload` returned all 4 GB of VRAM; llama-server has no unload).

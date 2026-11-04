@@ -602,6 +602,18 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>Qwen3.6-27B</b>, 1 model: CPU 🟨 1 of 2 · CUDA 🟨 1 of 2 · Metal - · Train ✅</summary>
+<p><b>Qwen3.6-27B</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#qwen3.6-27b-q4_k_m"><code>Qwen3.6-27B-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td></td><td nowrap>✅ 1.12.0<br>2026-11-04</td></tr>
+<tr><td><a href="#qwen3.6-27b-q8_0"><code>Qwen3.6-27B-Q8_0.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td></td><td></td><td nowrap>✅ 1.12.0<br>2026-11-04</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>MiniCPM5</b>, 1 model: CPU ✅ · CUDA ✅ · Metal ✅ · Train ✅</summary>
 <p><b>MiniCPM5-2B (openbmb)</b></p>
 <table>
@@ -762,7 +774,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Qwen3.6-27B, Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
+**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -1821,6 +1833,56 @@ Text and tools, the publisher's own Q4_0: against the publisher's BF16 checkpoin
 - **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h_moe) (runner 1.12.0, 2026-11-03).
 - **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-03 ([log](#transition-log)).
 
+### Qwen3.6-27B
+
+#### Qwen3.6-27B
+
+<a id="qwen3.6-27b-q4_k_m"></a>
+##### `Qwen3.6-27B-Q4_K_M.gguf`
+
+ggml-org's Q4_K_M (a third-party conversion, llama.cpp b15ca93; no publisher GGUF exists) runs below the fidelity bar: against Qwen's BF16 parent in float32, mean KLD 0.129 and margin-qualified top-1 95.9% (Runner), 0.154 / 93.8% (llama.cpp), where the bar is 0.05 / 97%, and the gap grows with depth. The file itself is the distance: against Runner's Q8_0 it reads top-20 KL 0.101, top-1 89.3%. The fidelity file is ggml-org's Q8_0, row qwen3.6-27b-q8_0 (Runner 0.0273 / 99.59%).
+
+- **File:** `Qwen3.6-27B-Q4_K_M.gguf` (sha256 `65b753ea835627f7b511143c6ceb976525c7f21f5df8c664bc0a9c23d1c49921`, 19,095,766,304 bytes, from [ggml-org/Qwen3.6-27B-GGUF](https://huggingface.co/ggml-org/Qwen3.6-27B-GGUF) at revision `1132d03976d8`).
+- **Upstream checkpoint:** Qwen/Qwen3.6-27B at revision `6a9e13bd6fc8`.
+- **Quantization:** Q4_K_M (ggml-org).
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3.6-27B model card states it.
+- **Features claimed:** text, tools. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against Qwen's BF16 checkpoint Qwen/Qwen3.6-27B in float32 at use on the CPU (transformers 5.16.1's Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, no special prefix, the Runner sides from chunked CPU score files; the Gated DeltaNet cross-chunk check of row 1 passes on 5.16.1): Q4_K_M 0.1288 mean KLD / 89.33% top-1 / 95.85% margin-qualified, below the bar (0.05 / 97%) and growing with depth; Q8_0 0.0273 / 98.00% / 99.59%, passing (one reference near-tie at position 1,238 carries most of the mean: without it 0.0082). llama.cpp 73a43d1 reads 0.1539 / 93.78% on the Q4_K_M and 0.0626 / 98.34% on the Q8_0, both below the bar; Runner is the closer by per-position KLD on both (p 0.0008, p 1.9e-24). The files are ggml-org's conversions (llama.cpp b15ca93), no publisher GGUF exists. Record: docs/compat-reports/qwen3.6-27b-2026-11-04/README.md.
+- **Context tested:** 9216.
+- **Known limitations:** Below the fidelity bar on both engines (the file, not the engine), worst past position 2,000 (0.156 on Runner). A third party's conversion with --no-mtp: the MTP and dflash heads and the vision mmproj files are not in the row. Tool gate case C streamed misses on a reasoning budget at temperature 1.0 (the qwen36 preset; no call parsed); A, B and C buffered pass. The RUNNER_CUDA_ATTN_TC_WIDE route (#574) is not measured on this head_dim-256 model. Context past the gold window's 4,509 tokens and task quality are not measured.
+- **Still missing:** The Metal cell; the CPU cell on this file; the #574 wide-head route on this model; the MTP head, dflash and vision; context past 4,509 tokens; task quality.
+- **Evidence:** [docs/compat-reports/qwen3.6-27b-2026-11-04/README.md](compat-reports/qwen3.6-27b-2026-11-04/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.12.0 on 2026-11-04.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `7567c9486df7`, output sha256 `877a19216b6da899`, [pin](../tests/compatibility/tier-smoke/qwen3.6-27b-q4_k_m.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.12.0, 2026-11-04).
+- **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-04).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
+
+<a id="qwen3.6-27b-q8_0"></a>
+##### `Qwen3.6-27B-Q8_0.gguf`
+
+ggml-org's Q8_0 (a third-party conversion, llama.cpp b15ca93; no publisher GGUF exists), the fidelity file of Qwen3.6-27B: against Qwen's BF16 parent in float32, mean KLD 0.0273 and margin-qualified top-1 99.59% (Runner; one reference near-tie carries most of the mean, 0.0082 without it); llama.cpp reads 0.0626 / 98.34%, above the bar; Runner is the closer at 239 of 300 positions. 28.6 GB of weights: larger than a 24 GB device, so its cell is the CPU.
+
+- **File:** `Qwen3.6-27B-Q8_0.gguf` (sha256 `73f8260284708ed78ae266df672288b6ad1f2c73ec7ffeb7514b5cecdba646c9`, 28,595,762,464 bytes, from [ggml-org/Qwen3.6-27B-GGUF](https://huggingface.co/ggml-org/Qwen3.6-27B-GGUF) at revision `1132d03976d8`).
+- **Upstream checkpoint:** Qwen/Qwen3.6-27B at revision `6a9e13bd6fc8`.
+- **Quantization:** Q8_0 (ggml-org).
+- **Licence:** `apache-2.0`, as the Qwen/Qwen3.6-27B model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against Qwen's BF16 checkpoint Qwen/Qwen3.6-27B in float32 at use on the CPU (transformers 5.16.1's Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, no special prefix, the Runner sides from chunked CPU score files; the Gated DeltaNet cross-chunk check of row 1 passes on 5.16.1): Q4_K_M 0.1288 mean KLD / 89.33% top-1 / 95.85% margin-qualified, below the bar (0.05 / 97%) and growing with depth; Q8_0 0.0273 / 98.00% / 99.59%, passing (one reference near-tie at position 1,238 carries most of the mean: without it 0.0082). llama.cpp 73a43d1 reads 0.1539 / 93.78% on the Q4_K_M and 0.0626 / 98.34% on the Q8_0, both below the bar; Runner is the closer by per-position KLD on both (p 0.0008, p 1.9e-24). The files are ggml-org's conversions (llama.cpp b15ca93), no publisher GGUF exists. Record: docs/compat-reports/qwen3.6-27b-2026-11-04/README.md.
+- **Context tested:** 9216.
+- **Known limitations:** 28.6 GB of weights: on a 24 GB device it runs as a partial offload, which is not measured. The tool gate ran on the Q4_K_M sibling, not on this file. A third party's conversion with --no-mtp: the MTP and dflash heads and the vision mmproj files are not in the row. Context past the gold window's 4,509 tokens and task quality are not measured.
+- **Still missing:** The CUDA cell (a partial offload on a 24 GB device) and the Metal cell; the tool gate on this file; the MTP head, dflash and vision; context past 4,509 tokens; task quality.
+- **Evidence:** [docs/compat-reports/qwen3.6-27b-2026-11-04/README.md](compat-reports/qwen3.6-27b-2026-11-04/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.12.0 on 2026-11-04.
+- **CPU:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `7567c9486df7`, output sha256 `877a19216b6da899`, [pin](../tests/compatibility/tier-smoke/qwen3.6-27b-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.12.0, 2026-11-04).
+- **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-04).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
+
 ### MiniCPM5
 
 #### MiniCPM5-2B (openbmb)
@@ -2487,17 +2549,6 @@ Text path only: the vision projector is not loaded. The qwen35moe architecture r
 - **Missing for Tier 1:** Tokenizer and template checks, then the gate list; CUDA after R4.27 A2.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
-### Qwen3.6-27B
-
-<a id="qwen3.6-27b"></a>
-#### Qwen3.6-27B
-
-Not validated: the qwen35 family loads, but no gate has run on a Qwen3.6-27B file.
-
-- **Numerical anchor:** Family: Qwen3.5-0.8B bf16 against Qwen's float32 reference covers the family.
-- **Missing for Tier 1:** One gate run: tokenizer, template, quant bar, pinned output, device record; a file pinned by sha256.
-- **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
-
 ### Nemotron 3 Nano (30B-A3B)
 
 <a id="nemotron-3-nano-30b-a3b"></a>
@@ -2603,7 +2654,8 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-22 | [Granite-4.2-30B, `granite-4.2-30b-Q4_K_M.gguf`](#granite-4.2-30b-q4_k_m) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Granite-4.2-30B, `granite-4.2-30b-Q8_0.gguf`](#granite-4.2-30b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3.5 Lightning-30B-A3B (NVIDIA), `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`](#nemotron-3.5-lightning-30b-a3b-q4_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
-| 2026-10-22 | [Qwen3.6-27B](#qwen3.6-27b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [Qwen3.6-27B, `Qwen3.6-27B-Q4_K_M.gguf`](#qwen3.6-27b-q4_k_m) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [Qwen3.6-27B, `Qwen3.6-27B-Q8_0.gguf`](#qwen3.6-27b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Cloudflare Clef Flash (clef, on Qwen3.5-9B), `Clef-Flash-Q4_K_M.gguf`](#cloudflare-clef-flash) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3 Nano (30B-A3B)](#nemotron-3-nano-30b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3.5 Bolt-74B-A9B](#nemotron-3.5-bolt-74b-a9b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
@@ -2684,5 +2736,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-11-03 | [Nemotron 3.5 Lightning-30B-A3B (NVIDIA), `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`](#nemotron-3.5-lightning-30b-a3b-q4_0) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-03 at Tier 2 with a CPU cell on the Linux CUDA host, a float32 reference measurement on the publisher's BF16 checkpoint, the tokenizer differential, template conformance and the tool gate, all on the fixed build (runner #575). Maintained on report; Tier 1 is the owner's call. | none recorded |
 | 2026-11-04 | [Granite-4.2-30B, `granite-4.2-30b-Q4_K_M.gguf`](#granite-4.2-30b-q4_k_m) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: IBM's file pinned by sha256, the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
 | 2026-11-04 | [Granite-4.2-30B, `granite-4.2-30b-Q8_0.gguf`](#granite-4.2-30b-q8_0) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: IBM's file pinned by sha256, the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
+| 2026-11-04 | [Qwen3.6-27B, `Qwen3.6-27B-Q4_K_M.gguf`](#qwen3.6-27b-q4_k_m) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: ggml-org's conversion pinned by sha256 (no publisher GGUF exists), the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
+| 2026-11-04 | [Qwen3.6-27B, `Qwen3.6-27B-Q8_0.gguf`](#qwen3.6-27b-q8_0) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: ggml-org's conversion pinned by sha256 (no publisher GGUF exists), the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
 
 <!-- model-tiers:rows:end -->
