@@ -1496,6 +1496,22 @@ static bool metal_mv_fast_for(const gpu_t *g, int type, int n_in);
 static bool metal_q4k_mvg_for(const gpu_t *g, int n_in) {
     return metal_mvg_on() && metal_mv_fast_for(g, T_Q4_K, n_in);
 }
+// The narrow-slice Q6_K kernel (k_mvg_q6_K, R3.28.3) takes Q6_K decode
+// matvecs of a dense model whose input is at least MV_Q6K_FAST_MIN wide (every
+// Q6_K matvec under RUNNER_METAL_MV=1, none under =0); RUNNER_METAL_MVG=0
+// keeps k_mv2_q6_K / k_mv_q6_K there. Q6_K decode time per input width on an
+// Apple M1, k_mv2_q6_K / k_mvg_q6_K, ms a step (three rounds): 1536 (K2-Horizon
+// attn_v and head) 4.77 / 2.05, 2048 0.41 / -0.02 (a 6.9 MB bucket), 2560
+// 2.13 / 1.22, 3072 2.18 / 1.08, 5120 3.95 / 1.85, 8192 3.70 / 2.07 and 9.68 /
+// 6.23, 9728 13.31 / 7.14; the LM heads 11.98 / 5.82 (Qwen3-4B), 8.61 / 3.71
+// and 10.70 / 5.83 (Llama-3.2-1B, -3B). Narrower inputs were not measured
+// and keep the exact kernel. Unlike k_mv2_q6_K it is a tolerance route.
+#define MV_Q6K_FAST_MIN 1536
+static bool metal_q6k_mvg_for(const gpu_t *g, int n_in) {
+    int st = metal_mv_state();
+    return metal_mvg_on() && (st == MV_ALL ||
+           (st == MV_Q4_K && g->mv_q4k_default && n_in >= MV_Q6K_FAST_MIN));
+}
 static bool metal_mv_fast_for(const gpu_t *g, int type, int n_in) {
     int st = metal_mv_state();
     return st == MV_ALL || (st == MV_Q4_K && type == T_Q4_K && g->mv_q4k_default &&
@@ -2996,10 +3012,7 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // (decode-only by construction) has never looked.
     id<MTLComputePipelineState> mv = g->p_mv[w->type];
     int rows_sg = 1;   // output rows a simdgroup computes
-    static int q6x = -1;   // R3.28.3 EXPERIMENT: R3283_Q6=1 takes k_mvg_q6_K for Q6_K decode
-    if (q6x < 0) { const char *d = getenv("R3283_Q6"); q6x = d && *d == '1'; }
-    if (decode && w->type == T_Q6_K && g->p_mvg_q6k && q6x && metal_mv_state() != MV_OFF &&
-        g->mv_q4k_default) {
+    if (decode && w->type == T_Q6_K && g->p_mvg_q6k && metal_q6k_mvg_for(g, n_in)) {
         mv = g->p_mvg_q6k;
         rows_sg = 4;   // MVG6_NR; several columns walk the one-column arithmetic
         g_mv_dispatches++;
@@ -5191,7 +5204,7 @@ const char *gpu_route_detail(const model_t *m) {
              metal_fuse_on() ? "on" : "off", metal_mm_on() ? "on" : "off",
              metal_mv_state() == MV_ALL ? "fast"
              : metal_mv_state() == MV_Q4_K && g && g->mv_q4k_default
-                 ? (metal_mvg_on() ? "mvg-q4_K>=" MV_STR(MV_Q4K_FAST_MIN)
+                 ? (metal_mvg_on() ? "mvg-q4_K>=" MV_STR(MV_Q4K_FAST_MIN) "+q6_K>=" MV_STR(MV_Q6K_FAST_MIN)
                                    : "fast-q4_K>=" MV_STR(MV_Q4K_FAST_MIN)) : "identity",
              metal_attn_coop_on() ? "coop" : "identity",
              m && m->n_expert > 0 ? " moe_mm=" : "",
