@@ -1880,7 +1880,10 @@ unconverted. On an RTX 3070 it read prefill of 1,965 tokens at 5,207 tok/s
 against 3,839 on Qwen3-1.7B Q8_0, and 2,330 against 2,162 on Qwen3-4B Q4_K_M.
 It is off by default because `./test-tc-tol` fails on Qwen3-0.6B Q8_0 (its
 greedy tokens diverge from the scalar route's at a near-tie), although no file
-flips a top-1 token in the gate's 64 teacher-forced positions. The route
+flips a top-1 token in the gate's 64 teacher-forced positions. Its reads
+against the publisher's float32 models miss for both pairs (Q8_0 at 1.51x
+the default route's mean KL; Q4_K with Q6_K at 1.008x, worse at Wilcoxon
+p 0.037), so no type is promoted. The route
 detail (and so a receipt) says `i8=on`, and `--bench-json` counts its launches
 as `cuda_i8` in the route record.
 
