@@ -57,6 +57,24 @@ def test_solo_is_the_default_and_says_so(runner_bin, model):
     assert score_record.model_of(rec) == ("dense.gguf", model.stat().st_size)
 
 
+def test_score_route_names_the_cpu_activation(runner_bin, model):
+    # two solo scores of one file through different CPU decode routes are a
+    # decode-route comparison (R3.1.4); the record must say which is which
+    rec = _score(runner_bin, model, RUNNER_CPU_I8="0", RUNNER_CPU_I8K="0")
+    assert rec["score_route"]["cpu_act"] == "f32", rec["score_route"]
+    e = dict(os.environ, RUNNER_CPU_I8="0", RUNNER_CPU_I8K="1")
+    e.pop("RUNNER_SCORE_CHUNKED", None)
+    p = subprocess.run([runner_bin, "-m", str(model), "--score", "-p", PROMPT, "-t", "2",
+                        "--gpu", "off"], cwd=ROOT, env=e, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    act = json.loads(p.stdout)["score_route"]["cpu_act"]
+    # a build without the AVX2 kernel ignores the flag with a notice, and the
+    # record then says f32: it never names a route that did not run
+    ignored = b"RUNNER_CPU_I8K: no K-quant int8 decode kernel" in p.stderr
+    assert act == ("f32" if ignored else "f32+int8k-decode"), act
+
+
 def test_spec_batch_alone_stays_solo(runner_bin, model):
     rec = _score(runner_bin, model, RUNNER_SPEC_BATCH="8")
     assert score_record.path_of(rec) == "solo", rec["score_route"]

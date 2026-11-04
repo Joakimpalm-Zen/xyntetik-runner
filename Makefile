@@ -1633,6 +1633,15 @@ test-q4k.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
 	./$(RUNNER_EXE) -m test-q4k-src.gguf --quantize test-q4k.gguf --quant q4_k > /dev/null
 	rm -f test-q4k-src.gguf
 
+# Q6_K reaches the narrow-slice Q6_K decode matvec (k_mvg_q6_K, R3.28.3) at
+# inputs of at least 1536: the same 256-wide rows and 2048-wide FFN as
+# test-q4k.gguf, so ffn_down takes the new kernel and the projections keep
+# k_mv2_q6_K. The batch and spec identity gates run on it.
+test-q6k.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
+	$(PYTHON) scripts/make-test-model.py --wide --n-ff 2048 test-q6k-src.gguf > /dev/null
+	./$(RUNNER_EXE) -m test-q6k-src.gguf --quantize test-q6k.gguf --quant q6_k > /dev/null
+	rm -f test-q6k-src.gguf
+
 # BF16 reaches its own CUDA decode-microbatch twins. The F32 and Q8_0 runs do
 # not execute k_gemvb_bf16_x4/_x8, so neither can hold their identity contract.
 test-bf16.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
@@ -3073,7 +3082,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
-      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf \
+      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q6k.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf \
       test-qk.gguf test-gemma3.gguf test-gemma4.gguf test-es.gguf test-muse.gguf test-granite.gguf \
       test-gemma3-62.gguf test-gemma3-26.gguf test-qwen4exp.gguf test-lfm2.gguf test-lfm2-moe.gguf
 	./$(TEST_RECURRENT)
@@ -3368,7 +3377,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	$(MAKE) --no-print-directory test-help-interface
 	$(MAKE) --no-print-directory test-shader-embed
 	$(MAKE) --no-print-directory test-metal PYTHON="$(PYTHON)"
-	@for f in test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf; do \
+	@for f in test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q6k.gguf; do \
 	  ./$(TEST_SPEC_ID) $$f || exit 1; ./$(TEST_SPEC_ID) $$f cpu || exit 1; done
 	@# the host files a per-row recurrent checkpoint on every verify forward
 	@# for qwen35 and the Mamba-2 hybrids (Granite MoE and dense, Nemotron-H's
@@ -3389,7 +3398,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 # the Metal microbatch identity on two fixtures, and the attention split.
 # They are the longest gates and share nothing with the rest, so CI runs them
 # as their own job.
-test-gates-batch: runner $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_ATTN_SPLIT) test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-muse.gguf
+test-gates-batch: runner $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_ATTN_SPLIT) test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q6k.gguf test-muse.gguf
 	./$(TEST_BATCH)
 	@# and again on a QUANTIZED fixture: the F32 run above cannot reach a
 	@# quantized matvec at all, so on its own it gates nothing real
@@ -3409,6 +3418,7 @@ test-gates-batch: runner $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_ATTN_SPLIT) test.
 	./$(TEST_BATCH) test-apertus-batch.gguf 2
 	./$(TEST_BATCH_ID) test.gguf
 	./$(TEST_BATCH_ID) test-q4k.gguf
+	./$(TEST_BATCH_ID) test-q6k.gguf
 	$(MAKE) --no-print-directory test-attn-split
 
 # The python half: the client tests and the root pytest. Its prerequisites
