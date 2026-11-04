@@ -2032,7 +2032,8 @@ a verify row is not the solo step's bits. `cpu_act` ends in
 `+int8k-decode`. A build without AVX2 ignores the flag with one notice.
 `RUNNER_CPU_PROF=1` prints a per-step breakdown of CPU decode at exit: each
 pool run's wall and busy time by work function and weight types, and the
-serial regions.
+serial regions. In a server with several slots, profiled steps run one at a
+time, so profile a single request.
 
 **CUDA (experimental):** `RUNNER_CUDA_Q8X=1` quantizes each matvec's
 activation to int8 (per 32 elements) and runs the IQ3_S, IQ3_XXS, IQ4_XS,

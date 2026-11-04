@@ -4885,23 +4885,31 @@ void i8_tile_dot(const void *pack, int n, const void *xq, size_t xq_stride,
 // code; on the i7-7700K it read 1.00x the float route on Qwen3-0.6B Q4_K_M.
 // One difference from llama.cpp: each superblock's int32 sum is reduced
 // exactly to a scalar before its single float multiply-add, in block order,
-// so the AVX2 kernel and the scalar one below give the same bytes. The
+// so the AVX2 kernel and the scalar one below give the same bytes. That
+// multiply-add is an explicit fmaf (i8k_acc) on both sides: written as
+// acc += d * s, GCC at x86-64-v3 contracted the two functions' chains
+// differently (-ffp-contract=fast is its default) and they parted in the last
+// bit (CI, 2026-11-04); an fmaf rounds once wherever it compiles. The
 // activations round as i8_quant_act does (single rounding, half away from
 // zero), clamped to +-127 by the scale.
 typedef struct { float d; int8_t qs[QK_K]; int16_t bsums[QK_K / 16]; } block_i8k;
 
-static int g_i8k_env = -1;
-bool i8k_dot_enabled(void) {
-    if (g_i8k_env < 0) {
-        const char *e = getenv("RUNNER_CPU_I8K");
-        g_i8k_env = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+// resolved once, whichever thread asks first: the server's request threads
+// all reach the matvec (a lazy -1 cache raced under TSan, test-decide-race)
+static pthread_once_t g_i8k_once = PTHREAD_ONCE_INIT;
+static int g_i8k_env;
+static void i8k_env_init(void) {
+    const char *e = getenv("RUNNER_CPU_I8K");
+    g_i8k_env = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
 #if !RUNNER_AVX2
-        if (g_i8k_env)
-            fprintf(stderr, "RUNNER_CPU_I8K: no K-quant int8 decode kernel on this build "
-                    "(AVX2 only); ignored\n");
-        g_i8k_env = 0;
+    if (g_i8k_env)
+        fprintf(stderr, "RUNNER_CPU_I8K: no K-quant int8 decode kernel on this build "
+                "(AVX2 only); ignored\n");
+    g_i8k_env = 0;
 #endif
-    }
+}
+bool i8k_dot_enabled(void) {
+    pthread_once(&g_i8k_once, i8k_env_init);
     return g_i8k_env != 0;
 }
 
@@ -4947,6 +4955,9 @@ static inline void q4k_unpack_scales(const uint8_t *s12, uint8_t out[16]) {
     memcpy(out, u, 16);
 }
 
+// one superblock's contribution: d times the exact integer sum, rounded once
+static inline float i8k_acc(float acc, float d, int32_t s) { return fmaf(d, (float)s, acc); }
+
 static float dot_q4_K_i8k_scalar(const block_q4_K *b, const block_i8k *y, int n) {
     float acc = 0;
     for (int i = 0; i < n / QK_K; i++, b++, y++) {
@@ -4962,8 +4973,8 @@ static float dot_q4_K_i8k_scalar(const block_q4_K *b, const block_i8k *y, int n)
             sumi += sm[2 * j] * lo + sm[2 * j + 1] * hi;
         }
         for (int g = 0; g < 8; g++) summ += sm[8 + g] * (y->bsums[2 * g] + y->bsums[2 * g + 1]);
-        acc += y->d * f16_to_f32(b->d) * (float)sumi;
-        acc -= y->d * f16_to_f32(b->dmin) * (float)summ;
+        acc = i8k_acc(acc, y->d * f16_to_f32(b->d), sumi);
+        acc = i8k_acc(acc, -(y->d * f16_to_f32(b->dmin)), summ);
     }
     return acc;
 }
@@ -4988,7 +4999,7 @@ static float dot_q6_K_i8k_scalar(const block_q6_K *b, const block_i8k *y, int n)
         int32_t off = 0;
         for (int g = 0; g < 16; g++) off += b->scales[g] * y->bsums[g];
         sumi -= 32 * off;
-        acc += y->d * f16_to_f32(b->d) * (float)sumi;
+        acc = i8k_acc(acc, y->d * f16_to_f32(b->d), sumi);
     }
     return acc;
 }
@@ -5032,8 +5043,8 @@ static float dot_q4_K_i8k(const block_q4_K *b, const block_i8k *y, int n) {
             sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(_mm256_madd_epi16(sl, pl),
                                                            _mm256_madd_epi16(sh, ph)));
         }
-        acc += y->d * f16_to_f32(b->d) * (float)hsum_i32x8(sumi);
-        acc -= y->d * f16_to_f32(b->dmin) * (float)summ;
+        acc = i8k_acc(acc, y->d * f16_to_f32(b->d), hsum_i32x8(sumi));
+        acc = i8k_acc(acc, -(y->d * f16_to_f32(b->dmin)), summ);
     }
     return acc;
 }
@@ -5071,7 +5082,7 @@ static float dot_q6_K_i8k(const block_q6_K *b, const block_i8k *y, int n) {
                 sumi = _mm256_add_epi32(sumi, _mm256_madd_epi16(s, p));
             }
         }
-        acc += y->d * f16_to_f32(b->d) * (float)(hsum_i32x8(sumi) - 32 * off);
+        acc = i8k_acc(acc, y->d * f16_to_f32(b->d), hsum_i32x8(sumi) - 32 * off);
     }
     return acc;
 }
@@ -5104,9 +5115,15 @@ float vec_dot_i8k_scalar(int type, const void *row, const void *xk, int n) {
 // handoff), and the mean busy time (max minus mean is the imbalance).
 enum { TPROF_MAX = 256, TPROF_REGIONS = 8 };
 typedef struct { tp_fn fn; uint64_t tag; long n; double wall, bmax, bsum; int nthr; } tprof_ent;
-static int tprof_env = -1;
-static int tprof_live;                 // inside a profiled step
-static uint64_t tprof_cur_tag;
+// Several threads forward at once in the server (one per slot): the step
+// flag and the tag are each thread's own, so a pool run records only for the
+// thread inside a profiled step, and profiled steps hold tprof_mu, so the
+// tables below have one writer at a time.
+static pthread_once_t tprof_once = PTHREAD_ONCE_INIT;
+static int tprof_env;
+static pthread_mutex_t tprof_mu = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local int tprof_live;   // inside a profiled step
+static _Thread_local uint64_t tprof_cur_tag;
 static tprof_ent tprof_tab[TPROF_MAX];
 static int tprof_n;
 static const char *tprof_rname[TPROF_REGIONS];
@@ -5123,20 +5140,26 @@ double tprof_now(void) {
 }
 
 static void tprof_report(void);
+static void tprof_env_init(void) {
+    const char *e = getenv("RUNNER_CPU_PROF");
+    tprof_env = e && *e && strcmp(e, "0") != 0;
+    if (tprof_env) atexit(tprof_report);
+}
 bool tprof_enabled(void) {
-    if (tprof_env < 0) {
-        const char *e = getenv("RUNNER_CPU_PROF");
-        tprof_env = e && *e && strcmp(e, "0") != 0;
-        if (tprof_env) atexit(tprof_report);
-    }
+    pthread_once(&tprof_once, tprof_env_init);
     return tprof_env;
 }
 
-void tprof_step_begin(void) { tprof_live = 1; tprof_t0 = tprof_now(); }
+void tprof_step_begin(void) {
+    pthread_mutex_lock(&tprof_mu);
+    tprof_live = 1;
+    tprof_t0 = tprof_now();
+}
 void tprof_step_end(void) {
     tprof_steps_s += tprof_now() - tprof_t0;
     tprof_steps++;
     tprof_live = 0;
+    pthread_mutex_unlock(&tprof_mu);
 }
 void tprof_set_tag(uint64_t tag) { tprof_cur_tag = tag; }
 

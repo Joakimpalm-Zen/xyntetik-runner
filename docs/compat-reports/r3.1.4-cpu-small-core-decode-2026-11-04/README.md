@@ -98,8 +98,13 @@ read before the kernels were written:
 
 **One difference: the exact-reduction twin.** llama.cpp keeps eight float lanes across superblocks and reduces
 them at the end. Here each superblock's int32 vector is reduced exactly to one integer, which takes one float
-multiply-add with the two scales, in block order. The AVX2 kernel and a portable scalar twin
-(`vec_dot_i8k_scalar`) therefore give the same bytes. The activation rounding is the runner's existing int8
+multiply-add with the two scales, in block order. That multiply-add is an explicit `fmaf` on both sides. The
+first version wrote it as `acc += d * s`. GCC contracts that into an FMA by default (`-ffp-contract=fast`), and
+at `-march=x86-64-v3` it contracted the two functions' chains differently: 12 trials of the twin test parted
+in the last bit on CI's Linux build (2026-11-04). The same failure reproduced locally with gcc 16 at
+x86-64-v3. It went away with `-ffp-contract=off` and stayed with `-fno-associative-math`, so the cause was
+contraction, not reassociation. With the `fmaf`, the AVX2 kernel and a portable scalar twin
+(`vec_dot_i8k_scalar`) give the same bytes under every flag set the gate was run with. The activation rounding is the runner's existing int8
 rule (one rounding, half away from zero, `trunc(fma(x, 1/d, copysign(0.5, x)))`), clamped to +-127 by the
 scale.
 
