@@ -1,0 +1,25 @@
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB
+gpu-split: budget=25.13GB fixed=1.44GB G=22/48 full=0 used=24.63GB
+gpu-split: prompt window 64 columns (batch 32, 0.50 GB spare, 586632 bytes a column with TC2's activations)
+gpu: the device's tensors (22 layers) lie in 7 stretches of the file; uploading them as runs
+gpu: weights 21.40 GB on the device after 2 s (10678 MB/s from the file)
+gpu: weights on the device: 23.25 GB in 2 s (10720 MB/s from the file)
+gpu: CUDA backend on CUDA MIG slice 1g.24gb (22/48 layers, 23.3 GB in VRAM; CPU runs the rest)
+gpu: 91 weight matrices are codebook i-quants (IQ4_XS, ...) and the tensor-core prefill is turned off (RUNNER_CUDA_TC=0) for 'qwen4exp': prompts are prefilled by the scalar kernel, which can be slower than the CPU. Unset RUNNER_CUDA_TC to use the promoted kernels.
+gpu: VRAM 1.45 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.33 GB this instance)
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB
+gpu-split: budget=25.13GB fixed=1.44GB G=22/48 full=0 used=24.63GB
+gpu-split: prompt window 64 columns (batch 32, 0.50 GB spare, 586632 bytes a column with TC2's activations)
+gpu: the device's tensors (22 layers) lie in 7 stretches of the file; uploading them as runs
+gpu: weights 22.47 GB on the device after 2 s (11231 MB/s from the file)
+gpu: weights on the device: 23.25 GB in 2 s (11262 MB/s from the file)
+gpu: CUDA backend on CUDA MIG slice 1g.24gb (22/48 layers, 23.3 GB in VRAM; CPU runs the rest)
+gpu: 91 weight matrices are codebook i-quants (IQ4_XS, ...) and the tensor-core prefill is turned off (RUNNER_CUDA_TC=0) for 'qwen4exp': prompts are prefilled by the scalar kernel, which can be slower than the CPU. Unset RUNNER_CUDA_TC to use the promoted kernels.
+gpu: VRAM 1.45 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.33 GB this instance)
+gpu-identity: trunk-with-head/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32
+  free routing (the device's own expert choices):
+  5959680 logits over 24 positions | 5956211 differ, mean|dlogit| 0.000173 = 5.74e-06 of mean range 30.2 (limit 0.002), worst 0.00437
+  routing pin: 4560 routings from the CPU run, 45600 of 45600 expert slots forced, 8 of them (0.000175) differed from the device's own choice
+  pinned routing (the CPU run's expert choices):
+  5959680 logits over 24 positions | 5956236 differ, mean|dlogit| 0.000171 = 5.66e-06 of mean range 30.2 (limit 0.001), worst 0.00407
+gpu-identity: ok

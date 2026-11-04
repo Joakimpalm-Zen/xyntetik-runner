@@ -1,0 +1,67 @@
+{
+  "schema": "xyntetik.runner.tier-smoke-result.v1",
+  "row": "qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head",
+  "backend": "cuda",
+  "device_class": "linux-x86_64-cuda",
+  "generated_utc": "2026-11-04T06:31:00Z",
+  "commit": "7567c9486df7f14ffd5211d426514a3357bc8c22",
+  "ran": "runner -m Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+  "caps": {
+    "version": "1.12.0",
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu_cores": 40,
+    "gpu_backend": "cuda",
+    "gpu_name": "CUDA MIG slice 1g.24gb"
+  },
+  "banner": "gpu: CUDA backend on CUDA MIG slice 1g.24gb (22/48 layers, 23.3 GB in VRAM; CPU runs the rest)",
+  "threads": 20,
+  "seconds": 8.31,
+  "files": [
+    {
+      "sha256": "522632bbb6f2c353621762be5bd48b270b1ff9fe60a9630bd47d5ef097aa0fa2",
+      "bytes": 26481462400
+    },
+    {
+      "sha256": "f82cc8f151e15b73bbb84c75baf78f179df1b9b368437d7c75d8b3a7618cb8c8",
+      "bytes": 28347013600
+    },
+    {
+      "sha256": "53ada4d2c3f2e189ce209520ecad0ae9649028b19e6bb9a55a021613b204e93b",
+      "bytes": 28800138432
+    },
+    {
+      "sha256": "3a8c77474c82c5e81212ef3c5ef2330e75413cc60241d600fcfd87e4e2143b66",
+      "bytes": 2803798784
+    }
+  ],
+  "with": null,
+  "status": "match",
+  "output": {
+    "sha256": "d10ba25da7047454a710e0cf7bbbf5fea726c9a13aaa2faee515da122abaa13c",
+    "bytes": 223,
+    "finish_reason": "length",
+    "completion_tokens": 48
+  },
+  "pin": {
+    "path": "tests/compatibility/tier-smoke/qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head.linux-x86_64-cuda.cuda.txt",
+    "sha256": "d10ba25da7047454a710e0cf7bbbf5fea726c9a13aaa2faee515da122abaa13c"
+  },
+  "expect": {
+    "substring": "Mercury",
+    "found": true
+  },
+  "adapt_info": {
+    "architecture": "qwen4exp",
+    "adapter_serving": {
+      "supported": true,
+      "reason": null,
+      "device_kernels": "cuda"
+    },
+    "training": {
+      "supported": false,
+      "reason": "hyper-connections (qwen4exp)",
+      "host": "cpu"
+    }
+  }
+}

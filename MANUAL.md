@@ -3774,14 +3774,17 @@ batched and the per-column route). Off by default, and nothing changes
 without it.
 
 `test-gpu-identity` runs a MoE file twice on the device: with its own
-routing, bounded at 2e-3 of the logit range, and with the CPU run's expert
-choices replayed (the same pin, from memory), bounded at 1e-3 like a dense
-file. A top-8 router turns any cross-backend rounding into another expert
+routing, and with the CPU run's expert choices replayed (the same pin, from
+memory). A top-8 router turns any cross-backend rounding into another expert
 where two gates nearly tie (Qwen3-30B-A3B: 3 of 1,872 routings on one
-prompt), which the free run's bound has to absorb; the pinned run measures the
-arithmetic alone. It prints how many expert slots the pin forced and how many
-of those differed from the device's own choice, and fails when the pin did
-not reach every routing.
+prompt), so the pinned run, which measures the arithmetic alone, is the
+verdict, at 1e-3 of the logit range like a dense file. The free run is
+reported against 2e-3 and does not fail by itself: on Qwen3.8-Flash-Next,
+three tipped expert slots of 45,600 moved it past 2e-3 while every attention
+call matched a float64 reference to 1.7e-6. It prints how many expert slots
+the pin forced and how many of those differed from the device's own choice,
+and fails when more than 1% differed (a router that computes something else,
+which the pin alone would hide) or when the pin did not reach every routing.
 
 On Metal, `RUNNER_MOE_TRACE=routes.jsonl` snapshots every MoE layer's complete
 pre-softmax router-logit vector on the device before the live scratch is reused,
