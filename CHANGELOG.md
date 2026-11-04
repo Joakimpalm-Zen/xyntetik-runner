@@ -11,6 +11,19 @@ Current release and unreleased changes. Compatibility follows the
   reads 1.008x, and is worse on the paired Wilcoxon (p 0.037). Both miss the
   routes' rule. Report: `docs/compat-reports/r3.14-cuda-int8-prefill-2026-11-03`.
 
+- **Qwen3.6-27B joins the validated roster at Tier 2 on ggml-org's
+  conversions (no publisher GGUF exists), and the Q4_K_M fails the fidelity
+  bar.** Against Qwen's BF16 checkpoint in float32 at use (300 positions,
+  CPU): the Q4_K_M reads 0.129 mean KLD and 95.9% margin-qualified top-1 on
+  Runner, 0.154 and 93.8% on llama.cpp 73a43d1, against a bar of 0.05 and
+  97%, and the gap grows with depth; the file itself is the distance (0.101
+  top-20 KL against Runner's own Q8_0). The Q8_0 passes on Runner (0.0273 and
+  99.59%; one reference near-tie carries most of the mean) and is the row's
+  fidelity file with a CPU cell; llama.cpp reads 0.0626 on it, above the bar.
+  Tokenizer differential 0 of 247,091 entries, template byte-identical to
+  Qwen's with 23 of 23 conformance cases, tool gate A and B pass and C passes
+  buffered. Record: `docs/compat-reports/qwen3.6-27b-2026-11-04`.
+
 - **`--quant-error` costs a row its type cannot describe at the type the
   rewrite writes instead.** A tensor whose rows the asked type's block does
   not divide (a MoE expert width of 896 under `q4_k`) read `null` in the
