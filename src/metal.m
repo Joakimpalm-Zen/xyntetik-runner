@@ -57,6 +57,7 @@ typedef struct {
     id<MTLComputePipelineState> p_mvf[METAL_TYPE_SLOTS];      // fast decode matvec
     id<MTLComputePipelineState> p_mvfc_q4k;   // its Q4_K twin, columns inside the block walk
     id<MTLComputePipelineState> p_mvg_q4k;   // narrow-slice Q4_K decode (R3.28.2)
+    id<MTLComputePipelineState> p_mvg_q6k;   // narrow-slice Q6_K decode (R3.28.3)
     id<MTLComputePipelineState> p_mvc[METAL_TYPE_SLOTS];      // identity matvec twins, columns inside
     id<MTLComputePipelineState> p_mv2[METAL_TYPE_SLOTS];      // two-row identity decode matvec
     id<MTLComputePipelineState> p_moe_mv[METAL_TYPE_SLOTS];   // indexed by ggml type
@@ -354,6 +355,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvf[i] release];
     [g->p_mvfc_q4k release];
     [g->p_mvg_q4k release];
+    [g->p_mvg_q6k release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mvc[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_mv2[i] release];
     for (int i = 0; i < METAL_TYPE_SLOTS; i++) [g->p_moe_mv[i] release];
@@ -1109,8 +1111,9 @@ static bool metal_mvc_self_test(id<MTLDevice> dev, id<MTLComputePipelineState> p
         [wbuf release]; [xb release]; [y1 release]; [y2 release]; [bb release];
     }
     [q release];
-    if (!ok) fprintf(stderr, "gpu: the column-inner %s matvec is not bit-identical on this device, "
-                     "the decode microbatch keeps the column walk\n", ggml_type_name(type));
+    if (!ok) fprintf(stderr, "gpu: the column-inner %s matvec (%d rows a simdgroup) is not bit-identical "
+                     "on this device, the decode microbatch keeps the column walk\n",
+                     ggml_type_name(type), rows);
     return ok;
 }
 
@@ -2113,6 +2116,7 @@ static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib
     // its one-column kernel's bits on this device
     g->p_mvfc_q4k     = mk_pipeline(dev, lib, @"k_mvfc_q4_K");
     g->p_mvg_q4k      = mk_pipeline(dev, lib, @"k_mvg_q4_K");
+    g->p_mvg_q6k      = mk_pipeline(dev, lib, @"k_mvg_q6_K");
     if (g->p_mvfc_q4k && !metal_mvc_self_test(dev, g->p_mvf[T_Q4_K], g->p_mvfc_q4k, T_Q4_K, 2)) {
         [g->p_mvfc_q4k release];
         g->p_mvfc_q4k = nil;
@@ -2992,7 +2996,15 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // (decode-only by construction) has never looked.
     id<MTLComputePipelineState> mv = g->p_mv[w->type];
     int rows_sg = 1;   // output rows a simdgroup computes
-    if (decode && w->type == T_Q4_K && g->p_mvg_q4k && metal_q4k_mvg_for(g, n_in)) {
+    static int q6x = -1;   // R3.28.3 EXPERIMENT: R3283_Q6=1 takes k_mvg_q6_K for Q6_K decode
+    if (q6x < 0) { const char *d = getenv("R3283_Q6"); q6x = d && *d == '1'; }
+    if (decode && w->type == T_Q6_K && g->p_mvg_q6k && q6x && metal_mv_state() != MV_OFF &&
+        g->mv_q4k_default) {
+        mv = g->p_mvg_q6k;
+        rows_sg = 4;   // MVG6_NR; several columns walk the one-column arithmetic
+        g_mv_dispatches++;
+        g_disp.mvf++;
+    } else if (decode && w->type == T_Q4_K && g->p_mvg_q4k && metal_q4k_mvg_for(g, n_in)) {
         mv = g->p_mvg_q4k;
         rows_sg = 4;   // MVG_NR; several columns walk the one-column arithmetic
         g_mv_dispatches++;
