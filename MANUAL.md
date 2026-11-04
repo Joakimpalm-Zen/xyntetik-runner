@@ -1979,7 +1979,7 @@ reassociating fast kernel by default (two rows a simdgroup, vector
 accumulation; a mixture-of-experts model keeps the identity kernel, since
 the fidelity rows behind the default are dense): decode +10.8% on
 Llama-3.2-1B and +12.5% on Llama-3.2-3B Q4_K_M on an Apple M1, -0.9% on
-Qwen2.5-1.5B. Since R3.28.2 that fast route runs `k_mvg_q4_K`, which gives
+Qwen2.5-1.5B. Since R3.28.2 that fast route runs `k_mvg_q4_K` (its scales unpacked without a branch since R3.28.5, the same bits, 1.18x more on Qwen3-4B), which gives
 eight lanes a superblock and lets a lane's 32 activations serve four rows,
 in place of `k_mvf_q4_K`: on an Apple M1 it decodes Qwen3-4B Q4_K_M at
 12.59 against 10.61 tok/s (1.19x) and Llama-3.2-3B Q4_K_M at 17.09
