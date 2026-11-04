@@ -537,3 +537,39 @@ def test_a_failed_rewrite_leaves_nothing_beside_out(runner_bin, tmp_path):
     assert rc != 0 and "the rewrite failed" in err, err
     assert sorted(p.name for p in out.parent.iterdir()) == ["corpus.txt"], \
         sorted(p.name for p in out.parent.iterdir())
+
+
+def test_a_row_the_low_type_cannot_describe_is_costed_at_the_rewrite_fallback(runner_bin, tmp_path):
+    """A tensor whose rows q4_k's 256-block does not divide (a MoE expert
+    width of 896; here ffn_down at 352) is written by the rewrite at the
+    32-block fallback q5_0. The --quant-error report costs it at that type,
+    says so in written_as, and derive --target-size plans and writes through
+    it instead of refusing the plan for a missing q4_k entry."""
+    parent = tmp_path / "wide.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(parent),
+                    "--wide", "--n-ff", "352", "--license", "apache-2.0"],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    report = tmp_path / "qe.jsonl"
+    subprocess.run([str(runner_bin), "-m", str(parent), "--quant-error", str(report),
+                    "--quant", "q8_0,q4_k"], check=True, capture_output=True)
+    rows = [json.loads(l) for l in report.read_text().splitlines() if l.strip()]
+    by = {r["tensor"]: r for r in rows}
+    down = by["blk.0.ffn_down.weight"]
+    assert down["cols"] == 352
+    q4 = down["types"]["q4_k"]
+    assert q4["written_as"] == "q5_0"
+    assert q4["bytes"] == 352 // 32 * 22 * down["rows"]   # a q5_0 block: 22 bytes per 32
+    assert q4["error"] > 0
+    attn = by["blk.0.attn_q.weight"]["types"]["q4_k"]
+    assert attn["bytes"] > 0 and "written_as" not in attn
+    hi = sum(r["types"]["q8_0"]["bytes"] for r in rows)
+    lo = sum(r["types"]["q4_k"]["bytes"] for r in rows)
+    target = parent.stat().st_size - (hi - lo) // 2 - sum(
+        r["rows"] * r["cols"] * 4 for r in rows) + hi
+    out = tmp_path / "sized.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--target-size", str(target),
+                       "--high", "q8_0", "--low", "q4_k")
+    assert rc == 0, se[-1500:]
+    rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
+    assert rec["file"]["bytes"] <= target
+    assert "has no q4_k entry" not in se

@@ -587,7 +587,10 @@ static void check_width_fallback(void) {
 // it equals the weighted squared difference between the source rows and
 // what quantize_gguf writes for them, read back; the errors order q8_0 <
 // q4_0 < q3_k on random data; an imatrix reweights them; a row width a type
-// cannot describe reads null for it.
+// cannot describe is costed at the 32-block type the writer falls back to
+// (width_fallback), named in written_as. A row the report lists is a
+// multiple of 32 wide (should_quantize), so every asked type has a costed
+// entry; null is kept for a type with no 32-block cousin.
 static double report_error(const char *path, const char *tensor, const char *type) {
     FILE *f = fopen(path, "r");
     assert(f);
@@ -606,6 +609,27 @@ static double report_error(const char *path, const char *tensor, const char *typ
     }
     fclose(f);
     return e;
+}
+
+// the entry's written_as type for a tensor, or "" when the entry has none
+static const char *report_written_as(const char *path, const char *tensor, const char *type) {
+    static char got[32];
+    FILE *f = fopen(path, "r");
+    assert(f);
+    char line[4096], key[64], tk[160];
+    got[0] = '\0';
+    snprintf(key, sizeof key, "\"%s\":{", type);
+    snprintf(tk, sizeof tk, "\"tensor\":\"%s\"", tensor);
+    while (fgets(line, sizeof line, f)) {
+        if (!strstr(line, tk)) continue;
+        const char *p = strstr(line, key);
+        const char *end = p ? strchr(p, '}') : NULL;
+        const char *w = p ? strstr(p, "\"written_as\":\"") : NULL;
+        if (w && end && w < end) sscanf(w + 14, "%31[^\"]", got);
+        break;
+    }
+    fclose(f);
+    return got;
 }
 
 static void check_error_report(void) {
@@ -630,9 +654,15 @@ static void check_error_report(void) {
     double e4 = report_error(rep, "blk.0.attn_q.weight", "q4_0");
     double e3 = report_error(rep, "blk.0.attn_q.weight", "q3_k");
     assert(e8 > 0 && e8 < e4 && e4 < e3);
-    // a 96-wide row: no 256-block for q3_k, so null; q4_0 is costed
-    assert(report_error(rep, "blk.0.attn_k.weight", "q3_k") == -2.0);
-    assert(report_error(rep, "blk.0.attn_k.weight", "q4_0") > 0);
+    // a 96-wide row: no 256-block for q3_k, so it is costed as the q4_0 the
+    // writer falls back to, says so, and carries q4_0's own error; the
+    // 256-wide row's q3_k entry names no fallback
+    double k4 = report_error(rep, "blk.0.attn_k.weight", "q4_0");
+    double k3 = report_error(rep, "blk.0.attn_k.weight", "q3_k");
+    assert(k4 > 0 && k3 == k4);
+    assert(!strcmp(report_written_as(rep, "blk.0.attn_k.weight", "q3_k"), "q4_0"));
+    assert(!strcmp(report_written_as(rep, "blk.0.attn_k.weight", "q4_0"), ""));
+    assert(!strcmp(report_written_as(rep, "blk.0.attn_q.weight", "q3_k"), ""));
     // the writer's own error: quantize to q4_0 and read the rows back
     assert(quantize_gguf(in, q4, T_Q4_0, NULL) == 0);
     size_t n;
