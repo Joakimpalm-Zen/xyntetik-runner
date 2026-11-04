@@ -1,6 +1,14 @@
 # R3.1.4: CPU decode on a small AVX2 core (2026-11-04)
 
-**Unflattering first.** _(Written when the D1 reads land.)_
+**Unflattering first.**
+- **The lever costs fidelity, so it is not the default.** The int8 decode route (`RUNNER_CPU_I8K=1`) reads
+  1.23 to 1.39x the f32 route end to end, but its D1 rows miss the fidelity rule on both files.
+  - Qwen3-0.6B Q4_K_M: mean KL 1.090x the f32 route's.
+  - Qwen3-1.7B Q4_K_M: mean KL 1.173x, worse on all three tests, with margin-qualified top-1 falling under 97%
+    (97.37% to 96.67%).
+- **The gap to llama.cpp stays recorded, not closed.** The default route reads 0.57 to 0.77x of llama.cpp b11748
+  on Q4_K_M. llama.cpp pays the same kind of activation rounding for its speed; the runner does not by default.
+- **One host, two Q4_K_M files.** The 0.6B arms spread up to 18% across rounds on this desktop.
 
 ## The host and the files
 
@@ -114,12 +122,65 @@ a score file says which route made it.
 - Greedy text on Qwen3-0.6B Q4_K_M is the same as the float route's for the first 40 tokens of a short prompt.
   It is not identical in general (below).
 
-## Against the publisher's float32 model (D1)
+## Against the publisher's float32 model (D1): miss on both files
 
-_(The lab's reads, from the score files at runner fc790a29: solo, 8,007 positions each, route off and on. Mean
-NLL off / on: 0.6B 3.57381 / 3.58642, 1.7B 3.18179 / 3.18415.)_
+**The score files.**
+- Runner fc790a29 on this CPU (`--gpu off -t 4`), one binary and one file a pair, differing only by
+  `RUNNER_CPU_I8K`.
+- Scored solo, one forward per position, because the route takes one-column matvecs only:
+  `runner --score 20 -f tests/fixtures/gold-corpus-2k.txt -c 8192`. 8,007 positions each.
+- Their `score_route` differ only by `cpu_act` (`f32` / `f32+int8k-decode`).
+- Mean NLL, f32 / int8k: 0.6B 3.57381 / 3.58642, 1.7B 3.18179 / 3.18415.
 
-## Speed
+**The reads.** The lab ran `scripts/gold-logits.py --solo-ok` (main 7567c94, byte-identical to 8b2729f's):
+- positions 4,000 to 5,999 at stride 1, every one matched by token id, no dropped mass;
+- the publishers' parents in float32, on the CPU (transformers 5.14.1, torch 2.11.0):
+  - `Qwen/Qwen3-0.6B` at `c1899de2`, `model.safetensors` sha256 `f47f71177f32bcd1...`;
+  - `Qwen/Qwen3-1.7B` at `70d244cc`, shards `169ad53ec313c3a3...` and `912becff8d60672a...`.
 
-_(Interleaved A/B, the float route, this route and llama.cpp, Q4_K_M at `-t 4` and `-t 8`: held until the D1
-reads land.)_
+The rule is the routes' (2026-10-20): the paired Wilcoxon on per-position KL not worse at p < 0.05, mean KL at most
+1.01x, and McNemar on margin-qualified top-1 not worse. Two-sided p values.
+
+| Pair | Mean KL, f32 / int8k | Ratio (limit 1.01x) | Wilcoxon | McNemar, margin-qualified top-1 (f32-only / int8k-only) | Verdict |
+|---|---|---|---|---|---|
+| Qwen3-0.6B Q4_K_M | 0.102364 / 0.111578 | **1.090x** | **int8k worse, z 11.73, p 9.2e-32** | 18 / 12 of 1,432, p 0.36 | miss |
+| Qwen3-1.7B Q4_K_M | 0.043993 / 0.051598 | **1.173x** | **int8k worse, z 14.75, p 3.2e-49** | **17 / 6 of 1,561, p 0.035** | miss |
+
+| Pair | f32: max KL / top-1 / margin-qualified top-1 | int8k: the same |
+|---|---|---|
+| 0.6B | 2.669 / 84.30% / 94.55% | 3.045 / 83.45% / 94.13% |
+| 1.7B | 1.046 / 90.05% / 97.37% | 0.994 / 89.60% / 96.67% |
+
+The two reads, by name and sha256:
+- `gold-q3-0.6B-i8koff-vs-on.json`: `6581b6fba08e00ef...`
+- `gold-q3-1.7B-i8koff-vs-on.json`: `61f6edc1996f14a4...`
+
+The score files, by name and sha256:
+- `score-q3-0.6B-q4_k_m-i8koff-fc790a29.json`: `f785a6462f79c3f1...`
+- `score-q3-0.6B-q4_k_m-i8kon-fc790a29.json`: `e92b71e13f59b57f...`
+- `score-q3-1.7B-q4_k_m-i8koff-fc790a29.json`: `eada3190febd0339...`
+- `score-q3-1.7B-q4_k_m-i8kon-fc790a29.json`: `e2298ea8d5a0fd01...`
+
+## Speed (kill 2: 1.15x read, against a D1 row that misses)
+
+Runner fc790a29 with `RUNNER_CPU_I8K` unset and `=1`, against llama.cpp b11748 (`-ngl 0`, CUDA hidden): decode,
+128 tokens after a short prompt. A warm-up round, then three rounds with the three arms rotated. The table gives
+medians, with each arm's spread over the rounds in brackets.
+
+| File | `-t` | f32 | int8k | llama.cpp | int8k / f32 | int8k / llama.cpp |
+|---|---|---|---|---|---|---|
+| 0.6B Q4_K_M | 4 | 42.4 (12%) | 59.1 (18%) | 69.8 (8%) | 1.39 | 0.85 |
+| | 8 | 54.9 (8%) | 67.5 (8%) | 74.1 (3%) | 1.23 | 0.91 |
+| 1.7B Q4_K_M | 4 | 18.4 (17%) | 25.1 (6%) | 27.8 (2%) | 1.37 | 0.90 |
+| | 8 | 22.9 (1%) | 28.8 (0%) | 30.1 (6%) | 1.26 | 0.96 |
+
+The 1.15x bar is met on every cell, which is why the route ships at all. Its D1 rows are why it ships opt-in. With
+the route on, the profile's Q4_K and Q6_K dots keep their shares of a shorter step: 0.6B 16.8 ms against 26.1, and
+1.7B 41.7 against 59.0, at `-t 4` (one profiled run each). The thread pool's imbalance falls from 13% to 6% of the
+step on the 0.6B.
+
+## The close
+
+The small-core decode gap to llama.cpp on K-quant files is int8 activation rounding. llama.cpp pays it in
+fidelity, and the runner's default does not. The route stays available, named as tolerance class, and the gap
+stays recorded rather than chased. Q8_0 decode is at parity already, bound by memory.

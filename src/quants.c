@@ -4895,6 +4895,12 @@ bool i8k_dot_enabled(void) {
     if (g_i8k_env < 0) {
         const char *e = getenv("RUNNER_CPU_I8K");
         g_i8k_env = e && *e && strcmp(e, "0") != 0 && strcmp(e, "off") != 0;
+#if !RUNNER_AVX2
+        if (g_i8k_env)
+            fprintf(stderr, "RUNNER_CPU_I8K: no K-quant int8 decode kernel on this build "
+                    "(AVX2 only); ignored\n");
+        g_i8k_env = 0;
+#endif
     }
     return g_i8k_env != 0;
 }
