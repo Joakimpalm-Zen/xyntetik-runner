@@ -1417,6 +1417,8 @@ bool   model_forward_verify(model_t *m, const int32_t *tokens, int n, int pos);
 void   model_forward_refold(model_t *m, const int32_t *tokens, int n, int pos);
 // whether the batched verify path above can run at all for this model
 bool   model_spec_verify_ok(const model_t *m);
+// the backend the route record names: "cpu", "cuda", "metal" (or "gpu")
+const char *model_backend_name(const model_t *m);
 float *model_spec_row_logits(model_t *m, int b);
 // The caller wrote KV rows [lo, ...) into the host cache itself (a prefix
 // snapshot or a session image installed): a device mirror of the cache takes

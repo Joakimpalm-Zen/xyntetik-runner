@@ -1397,7 +1397,8 @@ static void usage_to(FILE *f, const char *prog) {
         "                 companion GGUF, an MTP-only export, when the\n"
         "                 model file carries none) or lookup (n-gram matches in\n"
         "                 the context itself: no weights, no draft forward)\n"
-        "  --draft-k N    draft tokens per round (default 4)\n"
+        "  --draft-k N    draft tokens per round (default 4; on CUDA 7 for\n"
+        "                 lookup and 2 for the NextN head)\n"
         "  --draft-required  fail instead of decoding plain if --draft PATH is\n"
         "                 refused (local CLI only; serve mode reports\n"
         "                 draft.active from /v1/capabilities)\n\n"
@@ -2213,7 +2214,7 @@ static void cli_opts_init(cli_opts *o) {
     o->port = 8080;
     o->parallel = 1;
     o->ttl = -1;   // -1: 300 for swap mode, never for single
-    o->draft_k = 4;
+    o->draft_k = 0;   // the engine's default per backend and source
     o->reasoning_temp = -1.0f;
     o->thinking = THINK_DEFAULT;
     o->lora_scale = 1.0f;
@@ -4488,8 +4489,9 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
     if (o->draft_path) {
         rt->e.dm = spec_draft_load(o->draft_path, &rt->m, &o->mp);
         if (rt->e.dm) {
-            fprintf(stderr, "draft: %s (%d tokens per round)\n", o->draft_path, o->draft_k);
             rt->e.draft_k = o->draft_k;
+            fprintf(stderr, "draft: %s (%d tokens per round)\n", o->draft_path,
+                    engine_draft_k(&rt->e));
         } else if (o->draft_required) {
             fprintf(stderr, "error: --draft-required: %s was refused above and"
                             " the run would have decoded without it\n",
@@ -4506,7 +4508,7 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
         rt->e.mtp_on = true;
         rt->e.draft_k = o->draft_k;
         fprintf(stderr, "mtp: drafting from the model's NextN head "
-                "(%d tokens per round)\n", o->draft_k);
+                "(%d tokens per round)\n", engine_draft_k(&rt->e));
     }
     if (o->draft_lookup) {
         if (!model_spec_verify_ok(&rt->m)) {
@@ -4518,7 +4520,7 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
         rt->e.draft_k = o->draft_k;
         fprintf(stderr, "lookup: drafting from the context (n-grams of %d..%d "
                 "tokens, up to %d per round)\n", ENGINE_LOOKUP_N_MIN,
-                ENGINE_LOOKUP_N_MAX, o->draft_k);
+                ENGINE_LOOKUP_N_MAX, engine_draft_k(&rt->e));
     }
     if (o->schema_file) {
         size_t ssz = 0;
@@ -6495,16 +6497,16 @@ static int run_resume(cli_opts *o, cli_run *rt, session_image *simg, const char 
     const session_meta *sm = &simg->meta;
     char have[65];
     const char *why = NULL;
+    char keywhy[192];
     if (!envelope_file_sha256(load_path, have) || strcmp(have, sm->model_sha256))
         why = "-m is not the model the image was made with (model sha256)";
-    else if (rt->e.model_key != sm->model_key)
-        why = "this engine's model key (context, KV type, geometry) is not the "
-              "image's";
-    else if (simg->n_vocab != rt->m.n_vocab ||
-             simg->state_n != prefix_cache_entry_bytes(&rt->m, sm->n_tokens))
+    if (!why) why = session_key_mismatch(sm, &rt->e, keywhy, sizeof keywhy);
+    if (!why && (simg->n_vocab != rt->m.n_vocab ||
+                 simg->state_n != prefix_cache_entry_bytes(&rt->m, sm->n_tokens)))
         why = "the image's state does not fit this model";
     if (!why && !engine_state_load(&rt->e, simg->tokens, sm->n_tokens, simg->state))
-        why = "this model's KV layout (a ring or tied-V cache) cannot be resumed";
+        why = "this model's KV layout (a tied-V cache, or a ring with a gap below its "
+              "span) cannot be resumed";
     if (why) {
         fprintf(stderr, "error: --resume %s: %s\n", o->resume_path, why);
         session_image_free(simg);

@@ -511,3 +511,22 @@ def test_every_committed_pin_entry_has_its_text_at_the_recorded_digest():
             assert hashlib.sha256(data).hexdigest() == pin["sha256"], (row, cell)
     stray = sorted(p.name for p in pin_dir.glob("*.txt") if p.resolve() not in listed)
     assert not stray, f"pin texts without an entry: {stray}"
+
+
+def test_every_committed_pin_spec_carries_its_rows_backend_args():
+    """--record compares a pin's spec to the settings it would run with now,
+    and those include the row's arguments for the pin's backend. Six CUDA pins
+    made on 2026-10-24 (1.5.1) predate the spec's backend_args field, so their
+    rows' --gpu split was missing from the stored spec and a smoke of each was
+    refused as "pinned with different settings". A pin's spec must name the
+    same backend_args for its backend as the row does, or none when the row
+    has none."""
+    reg = json.loads((ROOT / "tests" / "compatibility" / "tier-smoke.json").read_text(encoding="utf-8"))
+    defaults = reg.get("defaults") or {}
+    for row, body in reg["rows"].items():
+        rowargs = body.get("backend_args", defaults.get("backend_args")) or {}
+        for cell, pin in (body.get("pins") or {}).items():
+            backend = cell.split("/")[1]
+            want = list(rowargs.get(backend) or [])
+            got = list(pin["spec"].get("backend_args") or [])
+            assert got == want, f"{row} {cell}: pin spec backend_args {got}, row {want}"

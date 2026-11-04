@@ -3820,7 +3820,6 @@ kernel void k_lora_b(device const float *B [[buffer(0)]],
 // So this is not a tolerance route: tests/test_metal_attn_tile.py holds its
 // output byte-identical to k_attn's, and RUNNER_METAL_ATTN_TILE=0 pins k_attn.
 #define ATTN_TILE 8
-#define ATTN_TILE_MAX_HD 256   // the host keeps wider heads on k_attn
 #define ATTN_VBLK 128          // rows of scores held in threadgroup memory
 struct attn_tile_args { int n_col; };
 
@@ -3832,11 +3831,14 @@ kernel void k_attn_tile(device const float *q_all   [[buffer(0)]],
                    constant attn_args &a   [[buffer(5)]],
                    device const float *sinks [[buffer(6)]],
                    constant attn_tile_args &ta [[buffer(7)]],
+                   // the queries, 2 * max(head_dim, 256) float4 sized by the host
+                   // (head_dim up to 512, 16 KB; the threadgroup then holds
+                   // about 21 KB with red[] and pt[])
+                   threadgroup float4 *qt [[threadgroup(0)]],
                    uint3 tgpig [[threadgroup_position_in_grid]],
                    uint3 tid3 [[thread_position_in_threadgroup]],
                    uint3 tpg3 [[threads_per_threadgroup]]) {
     threadgroup float red[256];
-    threadgroup float4 qt[2 * ATTN_TILE_MAX_HD];
     threadgroup float4 pt[2 * ATTN_VBLK];
     uint tid = tid3.x, tpg = tpg3.x;
     uint h = tgpig.x;

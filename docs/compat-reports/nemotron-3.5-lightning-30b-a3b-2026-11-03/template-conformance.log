@@ -1,0 +1,31 @@
+  nemotron-lightning user-only+gen              ok
+  nemotron-lightning user-only-nogen            ok
+  nemotron-lightning system+user+gen            ok
+  nemotron-lightning system+multiturn+gen       ok
+  nemotron-lightning multiturn+gen              ok
+  nemotron-lightning multiturn-nogen            ok
+  nemotron-lightning trailing-assistant+gen     ok
+  nemotron-lightning trailing-assistant-nogen   ok
+  nemotron-lightning consecutive-user           ok
+  nemotron-lightning consecutive-assistant      ok
+  nemotron-lightning system-mid-history         ok
+  nemotron-lightning content-array              ok
+  nemotron-lightning empty-assistant-content    ok
+  nemotron-lightning empty-user-content         ok
+  nemotron-lightning unicode-emoji              ok
+  nemotron-lightning long-content               ok
+  nemotron-lightning think-on                   ok
+  nemotron-lightning think-off                  ok
+  nemotron-lightning tools-no-system+gen        ok
+  nemotron-lightning tool-call+result           ok
+  nemotron-lightning multi-tool-call            ok
+  nemotron-lightning tool-call-with-text        ok
+  nemotron-lightning tool-then-conversation     ok
+  nemotron-lightning tool-call-args-hostile     ok
+
+nemotron-lightning CLEAN                          [gguf:models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf 58933db77d3099b4] tok:NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf
+
+24 cases compared, 0 known-bug differences (backlog), 0 new, 0 changed, 0 fixed-but-still-listed, 0 not expressible by the family
+token-level: 24 cases checked (24 identical, 0 differing), 0 NOT CHECKED for want of a tokenizer
+
+OK: every compared case is conformant or an accounted-for deviation; 0 known bugs remain in the backlog.
