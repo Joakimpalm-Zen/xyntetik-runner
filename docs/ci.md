@@ -6,11 +6,17 @@ minutes for the whole suite, so on a pull request they run what is specific
 to them: macOS runs only what needs a Mac, the Metal gates of `make test`
 as the one named target `make test-metal` and the server conformance suite
 on the Metal path; Windows runs the build, its platform-only steps, the
-client tests and the server conformance suite. The whole suite runs on both
-on every engine push to main, on the daily schedule and on dispatch, as
-three parallel jobs per platform (`macos-suite-gates-core`,
+client tests and the server conformance suite, plus the suite's Metal pytest
+files (`tests/test_metal_*.py`). The whole suite runs on Windows on every
+engine push to main, and on both platforms on the daily schedule and on
+dispatch, as three parallel jobs per platform (`macos-suite-gates-core`,
 `macos-suite-gates-batch`, `macos-suite-python`, and the `windows-suite-`
-three): `make test` is the union of the targets `test-gates-core` (the C
+three). The macOS suite left the push trigger on 2026-11-04: GitHub's hosted
+macOS arm64 pool is capacity-limited, and four macOS jobs a push, queued
+behind the pull request's own, were cancelled by the pool often enough to
+keep main red for hours (28 cancellations against 4 real failures on main
+over the previous two weeks, all four in the Metal pytest files that the
+pull-request job now runs). Here `make test` is the union of the targets `test-gates-core` (the C
 self-checks), `test-gates-batch` (the microbatch identity family and the
 attention split, the longest gates) and `test-python` (the client tests and
 the root pytest, which the jobs run under pytest-xdist with

@@ -206,6 +206,11 @@ jobs:
           esac
       - name: Metal gates (make test-metal)
         run: .venv/bin/python scripts/ci-run.py --timeout 1500 metal -- make test-metal PYTHON=.venv/bin/python
+      # the suite's Metal pytest files, kept on every pull request now that the
+      # whole suite runs on macOS only daily: these are what macos-suite-python
+      # caught alone (test_metal_mv_default, 2026-10-31 and 2026-11-02)
+      - name: Metal pytest files
+        run: .venv/bin/python scripts/ci-run.py --timeout 1200 metal-pytest -- .venv/bin/python -m pytest -q -ra --junitxml=.build/ci/metal-pytest.xml tests/test_metal_*.py
       - name: agent-protocol conformance harness on the Metal path
         run: PYTHON=.venv/bin/python ./scripts/conformance.sh --junitxml=.build/ci/conformance.xml
 
@@ -869,7 +874,13 @@ jobs:
   macos-suite:
     name: macos-suite-${{ matrix.part }}
     needs: changes
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.changes.outputs.engine == 'true')
+    # Daily and on dispatch, not on every push: GitHub's hosted macOS arm64
+    # pool is capacity-limited ("jobs targeting macOS arm64 runners may
+    # experience longer queue times"; a job "not acquired by Runner of type
+    # hosted even after multiple attempts" is cancelled), and four macOS jobs
+    # a push kept main red for hours on 2026-11-04. The `macos` job above
+    # keeps the Metal gates and the Metal pytest files on every pull request.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 60
     strategy:
