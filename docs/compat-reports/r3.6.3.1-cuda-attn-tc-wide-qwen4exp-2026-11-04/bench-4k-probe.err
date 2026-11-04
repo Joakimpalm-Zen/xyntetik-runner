@@ -1,0 +1,21 @@
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB
+gpu-split: budget=25.13GB fixed=1.47GB G=22/48 full=0 used=24.86GB
+gpu-split: prompt window 512 columns (batch 512, 0.27 GB spare, 586632 bytes a column with TC2's activations)
+gpu: the device's tensors (22 layers) lie in 7 stretches of the file; uploading them as runs
+gpu: weights 21.53 GB on the device after 2 s (10746 MB/s from the file)
+gpu: weights on the device: 23.25 GB in 2 s (10774 MB/s from the file)
+gpu: CUDA backend on CUDA MIG slice 1g.24gb (22/48 layers, 23.3 GB in VRAM; CPU runs the rest)
+gpu: VRAM 1.02 GB free of 25.37 GB after init (kv 0.21 GB + scratch 0.36 GB this instance)
+loaded trunk-with-head/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf | qwen4exp | 48 layers | ctx 4608 | 40 threads | 3.71s
+mtp: 1 predictor block(s) declared, excluded from the backbone; not consumed (pass --mtp to draft from it)
+sampling: qwen38 (temp 1.00, top_p 0.95, top_k 20, min_p 0.00, repeat_penalty 1.00)
+sampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 20
+
+prompt: 512/4005 tokens
+prompt: 1024/4005 tokens
+prompt: 1536/4005 tokens
+prompt: 2048/4005 tokens
+prompt: 2560/4005 tokens
+prompt: 3072/4005 tokens
+prompt: 3584/4005 tokens
+prompt: 4005/4005 tokens
