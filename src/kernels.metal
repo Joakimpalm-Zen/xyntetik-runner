@@ -328,15 +328,18 @@ kernel void k_mv_q5_1(MV_PARAMS) {
     MV_TAIL;
 }
 
+// Branch-free (R3.28.6): lanes of one simdgroup ask for sub-blocks on both
+// sides of j < 4, and a branch made every lane pay both paths. Indexing by
+// j & 3 keeps every read inside the 12 scale bytes for either form (for
+// j >= 4, q[j - 4], q[j] and q[j + 4] are q[j & 3], q[(j & 3) + 4] and
+// q[(j & 3) + 8]), and the select gives the integers the branch gave.
 static inline void get_scale_min_k4(int j, device const uchar *q,
                                     thread uchar *d, thread uchar *m) {
-    if (j < 4) {
-        *d = q[j] & 63;
-        *m = q[j + 4] & 63;
-    } else {
-        *d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4);
-        *m = (q[j + 4] >> 4)  | ((q[j    ] >> 6) << 4);
-    }
+    int k = j & 3;
+    uchar b0 = q[k], b4 = q[k + 4], b8 = q[k + 8];
+    bool lo = j < 4;
+    *d = lo ? (uchar)(b0 & 63) : (uchar)((b8 & 0xF) | ((b0 >> 6) << 4));
+    *m = lo ? (uchar)(b4 & 63) : (uchar)((b8 >> 4)  | ((b4 >> 6) << 4));
 }
 
 // bf16 is the top 16 bits of an f32, so widening is a shift and a reinterpret

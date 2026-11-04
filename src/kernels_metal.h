@@ -330,15 +330,18 @@ static const char *k_metal_src =
     "    MV_TAIL;\n"
     "}\n"
     "\n"
+    "// Branch-free (R3.28.6): lanes of one simdgroup ask for sub-blocks on both\n"
+    "// sides of j < 4, and a branch made every lane pay both paths. Indexing by\n"
+    "// j & 3 keeps every read inside the 12 scale bytes for either form (for\n"
+    "// j >= 4, q[j - 4], q[j] and q[j + 4] are q[j & 3], q[(j & 3) + 4] and\n"
+    "// q[(j & 3) + 8]), and the select gives the integers the branch gave.\n"
     "static inline void get_scale_min_k4(int j, device const uchar *q,\n"
     "                                    thread uchar *d, thread uchar *m) {\n"
-    "    if (j < 4) {\n"
-    "        *d = q[j] & 63;\n"
-    "        *m = q[j + 4] & 63;\n"
-    "    } else {\n"
-    "        *d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4);\n"
-    "        *m = (q[j + 4] >> 4)  | ((q[j    ] >> 6) << 4);\n"
-    "    }\n"
+    "    int k = j & 3;\n"
+    "    uchar b0 = q[k], b4 = q[k + 4], b8 = q[k + 8];\n"
+    "    bool lo = j < 4;\n"
+    "    *d = lo ? (uchar)(b0 & 63) : (uchar)((b8 & 0xF) | ((b0 >> 6) << 4));\n"
+    "    *m = lo ? (uchar)(b4 & 63) : (uchar)((b8 >> 4)  | ((b4 >> 6) << 4));\n"
     "}\n"
     "\n"
     "// bf16 is the top 16 bits of an f32, so widening is a shift and a reinterpret\n"
@@ -5915,4 +5918,4 @@ static const char *k_metal_src =
     "\n"
 ;
 // SHA-256 of kernels.metal as embedded above.
-static const char *k_metal_sha = "2230d6cde824bea12ffe0d9d62d476a2c9f45c0731dff79ce6856588fa2cae08";
+static const char *k_metal_sha = "6b5d8a7f55ff4ca44bcd186178591889fe014c165edfcd43fb918405b3532fd3";
