@@ -5195,7 +5195,7 @@ bool model_moe_hot_parse(model_t *m, const char *text) {
 static bool moe_hot_load(model_t *m) {
     const char *path = getenv("RUNNER_MOE_HOT");
     if (!path || !*path) return true;
-    FILE *f = fopen(path, "rb");
+    FILE *f = plat_fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "error: RUNNER_MOE_HOT: cannot open %s\n", path);
         return false;
