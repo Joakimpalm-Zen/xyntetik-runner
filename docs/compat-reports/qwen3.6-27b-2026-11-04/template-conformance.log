@@ -1,0 +1,31 @@
+  qwen36-27b    user-only+gen              ok
+  qwen36-27b    user-only-nogen            ok
+  qwen36-27b    system+user+gen            ok
+  qwen36-27b    system+multiturn+gen       ok
+  qwen36-27b    multiturn+gen              ok
+  qwen36-27b    multiturn-nogen            ok
+  qwen36-27b    trailing-assistant+gen     ok
+  qwen36-27b    trailing-assistant-nogen   ok
+  qwen36-27b    consecutive-user           ok
+  qwen36-27b    consecutive-assistant      ok
+  qwen36-27b    system-mid-history         cannot-express  reference refuses: the template raises: 'System message must be at the beginning.'
+  qwen36-27b    content-array              ok
+  qwen36-27b    empty-assistant-content    ok
+  qwen36-27b    empty-user-content         ok
+  qwen36-27b    unicode-emoji              ok
+  qwen36-27b    long-content               ok
+  qwen36-27b    think-on                   ok
+  qwen36-27b    think-off                  ok
+  qwen36-27b    tools-no-system+gen        ok
+  qwen36-27b    tool-call+result           ok
+  qwen36-27b    multi-tool-call            ok
+  qwen36-27b    tool-call-with-text        ok
+  qwen36-27b    tool-then-conversation     ok
+  qwen36-27b    tool-call-args-hostile     ok
+
+qwen36-27b      CLEAN (1 n/a)                  [hf:Qwen/Qwen3.6-27B e84f32a23fdda276] tok:Qwen3.6-27B-Q4_K_M.gguf
+
+23 cases compared, 0 known-bug differences (backlog), 0 new, 0 changed, 0 fixed-but-still-listed, 1 not expressible by the family
+token-level: 23 cases checked (23 identical, 0 differing), 0 NOT CHECKED for want of a tokenizer
+
+OK: every compared case is conformant or an accounted-for deviation; 0 known bugs remain in the backlog.

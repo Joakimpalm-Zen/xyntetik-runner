@@ -3,7 +3,7 @@
 **Unflattering first: the int8 route is measurably farther from the publisher's model than the f32 route, and it
 stays opt-in.** On Qwen3-0.6B Q8_0 against Qwen's float32 model over 2,000 positions, its mean KLD is 0.00747 against
 the f32 route's 0.00610 (1.22x), which the paired Wilcoxon test separates (p 5e-86). Margin-qualified top-1 is 100% on
-both. It reaches 46% of llama.cpp's own int8 build on the same file, short of the plan's 50% for the M1. There is no
+both. It reaches 46% of llama.cpp's own int8 build on the same file, short of the plan's 50% for the Apple M1. There is no
 x86 kernel yet.
 
 ## What the route does
@@ -32,7 +32,7 @@ a fifth of the tile time). Eight columns a pass measured within noise of four.
 ## Against the publisher's float32 model (D1)
 
 `runner --score --score-top 20` with `RUNNER_SCORE_CHUNKED=1` (16-row batches, so every position comes from the
-prefill route) over the first 4,100 tokens of `tests/fixtures/gold-corpus-2k.txt` on the M1 CPU, read against
+prefill route) over the first 4,100 tokens of `tests/fixtures/gold-corpus-2k.txt` on the Apple M1 CPU, read against
 `Qwen/Qwen3-0.6B` at `c1899de2` in float32 (`scripts/gold-logits.py`), 2,000 positions at stride 2 from position 8,
 every position matched by token id. The file is `Qwen3-0.6B-Q8_0.gguf` (sha256 `9465e63a...`).
 

@@ -217,7 +217,12 @@ Around the matvec:
   pins the byte-identical kernel. The grouped-query chunk kernel is
   bit-exact to the cooperative chunk kernel (`RUNNER_METAL_ATTN_GQA=0`), and
   the prefill tile kernel is bit-exact to the one-column kernel
-  (`RUNNER_METAL_ATTN_TILE=0`).
+  (`RUNNER_METAL_ATTN_TILE=0`). The tile takes heads up to 512 wide on
+  gemma-4's E-series (R3.6.3.2, route detail `attn_wide=on`), the family
+  CUDA's wide kernel defaults to; `RUNNER_METAL_ATTN_TILE_WIDE=0` keeps the
+  one-column kernel for heads wider than 256, `=1` takes the tile on any
+  model. Its obligation is unchanged (bit-exact), gated by
+  `tests/test_metal_attn_tile.py` at 512-wide heads.
 - **Decode fusion.** `RUNNER_METAL_FUSE` (default on) folds rope and KV store,
   residual and norm, the MoE gate and up projections, and the attention
   front into single dispatches, each bit-exact to the unfused chain. Gate:

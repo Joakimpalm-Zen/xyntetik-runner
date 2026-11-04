@@ -49,7 +49,7 @@ keeps one and deletes seven:
 5. kept fork 7, deleted seven, ran it to its end: 160 tokens
 ```
 
-That was Llama-3.2-3B Q4_K_M on Metal on the 8 GB M1, 76 s for all of it; with
+That was Llama-3.2-3B Q4_K_M on Metal on the 8 GB Apple M1, 76 s for all of it; with
 the default SmolLM2-135M it takes 6 s. None of the eight forks read the
 prompt again: each starts from the image's KV.
 

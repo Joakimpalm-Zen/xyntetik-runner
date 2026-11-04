@@ -504,7 +504,11 @@
             ],
             "request": {
               "enable_thinking": false
-            }
+            },
+            "backend_args": [
+              "--gpu",
+              "47"
+            ]
           },
           "pinned": {
             "date": "2026-10-24",
@@ -590,7 +594,11 @@
             ],
             "request": {
               "enable_thinking": false
-            }
+            },
+            "backend_args": [
+              "--gpu",
+              "51"
+            ]
           },
           "pinned": {
             "date": "2026-10-24",
@@ -676,7 +684,11 @@
             ],
             "request": {
               "enable_thinking": false
-            }
+            },
+            "backend_args": [
+              "--gpu",
+              "32"
+            ]
           },
           "pinned": {
             "date": "2026-10-24",
@@ -762,7 +774,11 @@
             ],
             "request": {
               "enable_thinking": false
-            }
+            },
+            "backend_args": [
+              "--gpu",
+              "43"
+            ]
           },
           "pinned": {
             "date": "2026-10-24",
@@ -848,7 +864,11 @@
             ],
             "request": {
               "enable_thinking": false
-            }
+            },
+            "backend_args": [
+              "--gpu",
+              "43"
+            ]
           },
           "pinned": {
             "date": "2026-10-24",
@@ -910,7 +930,11 @@
             ],
             "request": {
               "enable_thinking": false
-            }
+            },
+            "backend_args": [
+              "--gpu",
+              "38"
+            ]
           },
           "pinned": {
             "date": "2026-10-24",
@@ -3001,6 +3025,92 @@
             "date": "2026-11-02",
             "runner_version": "1.11.0",
             "commit": "92a3a6b1ad59664c583412658facf92c284028b2"
+          }
+        }
+      }
+    },
+    "nemotron-3.5-lightning-30b-a3b-q4_0": {
+      "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+      "n_predict": 80,
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/nemotron-3.5-lightning-30b-a3b-q4_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "4635ac8b266740e82a0ce4e5c313e65c307570073e6197f0b57e99e5ffa3af87",
+          "bytes": 312,
+          "finish_reason": "stop",
+          "completion_tokens": 64,
+          "spec": {
+            "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+            "n_predict": 80,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-03",
+            "runner_version": "1.12.0",
+            "commit": "590bab5b9ee693263fd5998a8ce133f457a1bb21"
+          }
+        }
+      }
+    },
+    "qwen3.6-27b-q4_k_m": {
+      "pins": {
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/qwen3.6-27b-q4_k_m.linux-x86_64-cuda.cuda.txt",
+          "sha256": "877a19216b6da89997a14e466ad4b4fdf09c3a3977f2a1053af09ab75de835e8",
+          "bytes": 231,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-04",
+            "runner_version": "1.12.0",
+            "commit": "7567c9486df7f14ffd5211d426514a3357bc8c22"
+          }
+        }
+      }
+    },
+    "qwen3.6-27b-q8_0": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/qwen3.6-27b-q8_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "877a19216b6da89997a14e466ad4b4fdf09c3a3977f2a1053af09ab75de835e8",
+          "bytes": 231,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-04",
+            "runner_version": "1.12.0",
+            "commit": "7567c9486df7f14ffd5211d426514a3357bc8c22"
           }
         }
       }

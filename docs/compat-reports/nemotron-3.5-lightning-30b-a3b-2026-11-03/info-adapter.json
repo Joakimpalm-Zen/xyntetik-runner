@@ -1,0 +1,1 @@
+{"architecture":"nemotron_h_moe","adapter_serving":{"supported":false,"reason":"--lora does not cover Mamba-2 hybrid architectures yet (nemotron_h_moe)","device_kernels":null},"training":{"supported":false,"reason":"recurrent architecture (Mamba-2)","host":"cpu"}}

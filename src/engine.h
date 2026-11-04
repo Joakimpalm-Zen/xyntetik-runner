@@ -244,7 +244,7 @@ typedef struct {
     int      dpos;         // draft KV position (may trail pos)
     int      dsnap;        // a recurrent draft's fold snapshot position, -1 none
                            // (R3.3.8: a rejection restores it, not position 0)
-    int      draft_k;      // drafts per round
+    int      draft_k;      // drafts per round; 0 = the default (engine_draft_k)
     // NextN/MTP head drafts: no draft model; the target's own predictor
     // block proposes draft_k tokens per round (model_mtp_* in model.h).
     // The engine feeds the head every token the target consumes, so the
@@ -336,6 +336,10 @@ void engine_set_stop(engine *e, bool (*stop)(void *ud), void *ud);
 // active constraint): shared by engine_generate and the server's scheduler
 // dispatch so they cannot drift.
 bool engine_wants_spec(const engine *e);
+
+// The draft width a round takes: draft_k when the caller set one, else the
+// default for this backend and draft source (R3.3.7; engine.c).
+int engine_draft_k(const engine *e);
 
 // The prompt-lookup search, the whole of the fourth draft source. `hist` is
 // the context so far, hist[len-1] the token whose successors are wanted.
