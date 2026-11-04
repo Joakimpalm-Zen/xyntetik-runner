@@ -6495,16 +6495,16 @@ static int run_resume(cli_opts *o, cli_run *rt, session_image *simg, const char 
     const session_meta *sm = &simg->meta;
     char have[65];
     const char *why = NULL;
+    char keywhy[192];
     if (!envelope_file_sha256(load_path, have) || strcmp(have, sm->model_sha256))
         why = "-m is not the model the image was made with (model sha256)";
-    else if (rt->e.model_key != sm->model_key)
-        why = "this engine's model key (context, KV type, geometry) is not the "
-              "image's";
-    else if (simg->n_vocab != rt->m.n_vocab ||
-             simg->state_n != prefix_cache_entry_bytes(&rt->m, sm->n_tokens))
+    if (!why) why = session_key_mismatch(sm, &rt->e, keywhy, sizeof keywhy);
+    if (!why && (simg->n_vocab != rt->m.n_vocab ||
+                 simg->state_n != prefix_cache_entry_bytes(&rt->m, sm->n_tokens)))
         why = "the image's state does not fit this model";
     if (!why && !engine_state_load(&rt->e, simg->tokens, sm->n_tokens, simg->state))
-        why = "this model's KV layout (a ring or tied-V cache) cannot be resumed";
+        why = "this model's KV layout (a tied-V cache, or a ring with a gap below its "
+              "span) cannot be resumed";
     if (why) {
         fprintf(stderr, "error: --resume %s: %s\n", o->resume_path, why);
         session_image_free(simg);

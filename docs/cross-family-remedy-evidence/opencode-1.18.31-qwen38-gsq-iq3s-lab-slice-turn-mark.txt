@@ -1,5 +1,5 @@
 # OpenCode 1.18.31 against Qwen3.8-27B GSQ-RCO IQ3_S (sha256 873df48d...), the lab box's MIG 1g.24gb slice, recurrent-turn-mark branch (marked thought block + turn mark), 2026-09-15
-# same fixture and task as opencode-1.18.31-qwen38-gsq-iq3s-blackwell.txt (586 s, 0 cached on every turn)
+# same fixture and task as opencode-1.18.31-qwen38-gsq-iq3s-lab-slice.txt (586 s, 0 cached on every turn)
 opencode 1.18.31
 rc=0 wall=364s
 

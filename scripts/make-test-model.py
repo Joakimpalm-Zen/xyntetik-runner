@@ -617,7 +617,7 @@ for i in range(N_LAYER + MTP_LAYERS):
             (f"blk.{i}.nextn.shared_head_norm.weight", [N_EMBD], ones(N_EMBD)),
         ]
     if ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO:
-        head_dim = g4_hd(i) if G4HETERO else N_EMBD // N_HEAD
+        head_dim = g4_hd(i) if G4HETERO else HEAD_DIM or N_EMBD // N_HEAD
         # G4HETERO varies the K-norm weights: the tied-V derivation
         # multiplies the stored V by exactly these, so all-ones would let
         # an implementation that forgets the multiply pass its gate.
@@ -746,7 +746,7 @@ meta_kvs = [
     ku("tokenizer.ggml.eos_token_id", 2),
     kb("tokenizer.ggml.add_bos_token", True),
 ]
-if HEAD_DIM:
+if HEAD_DIM and not (ESERIES_SHARED_KV or ESERIES_PLE):   # the E-series branch publishes its own
     meta_kvs += [
         ku(f"{ARCH}.attention.key_length", HEAD_DIM),
         ku(f"{ARCH}.attention.value_length", HEAD_DIM),
@@ -789,14 +789,16 @@ if YARN_FACTOR is not None:
         meta_kvs.append(kf(f"{ARCH}.rope.scaling.yarn_attn_factor", YARN_ATTN))
 if ESERIES_SHARED_KV or ESERIES_PLE:
     # every third layer is a full-attention layer, the rest slide
+    # (--head-dim widens every layer's heads, sliding and full alike)
     pattern = [(i % 3) != 2 for i in range(N_LAYER)]
+    ehd = HEAD_DIM or N_EMBD // N_HEAD
     meta_kvs += [
-        ku(f"{ARCH}.attention.key_length", N_EMBD // N_HEAD),
-        ku(f"{ARCH}.attention.value_length", N_EMBD // N_HEAD),
-        ku(f"{ARCH}.attention.key_length_swa", N_EMBD // N_HEAD),
+        ku(f"{ARCH}.attention.key_length", ehd),
+        ku(f"{ARCH}.attention.value_length", ehd),
+        ku(f"{ARCH}.attention.key_length_swa", ehd),
         ku(f"{ARCH}.attention.sliding_window", 32),
         kab(f"{ARCH}.attention.sliding_window_pattern", pattern),
-        ku(f"{ARCH}.rope.dimension_count", N_EMBD // N_HEAD),
+        ku(f"{ARCH}.rope.dimension_count", ROPE_DIM or ehd),
         kf(f"{ARCH}.final_logit_softcapping", 30.0),
     ]
 if ARCH == "gemma4" and not (ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO):

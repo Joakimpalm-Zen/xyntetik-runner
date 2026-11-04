@@ -82,7 +82,7 @@ case) and on a context whose only match sits at the far start:
 
 Bound stated: under 50 us per round at 32k context, under 12 us at 8k,
 against a decode step of 8 to 100 ms on this machine, so below 0.1% of a
-token at any context the M1 can hold. `RUNNER_SPEC_PROF=1` reported 0 ms of
+token at any context the Apple M1 can hold. `RUNNER_SPEC_PROF=1` reported 0 ms of
 draft time on every measured run.
 
 The round itself when nothing is drafted: a binary mutated to never draft
@@ -112,7 +112,7 @@ The brief named this model. `runner --info fit` on the day:
 A probe run confirmed it (the repeat prompt: 50 of 50 drafts accepted,
 4.57 tokens per round, and 0.31 tok/s with every token paging). A paging
 decode measures the disk, not the walk, so the row is withheld rather than
-reported as a speedup. The 8 GB M1 with a concurrent build job is the
+reported as a speedup. The 8 GB Apple M1 with a concurrent build job is the
 reason; the number should be taken on a machine where the model is
 resident.
 
@@ -151,7 +151,7 @@ science 12.0-12.3 / 9.5-11.5.
 The literature's 2 to 4x is for a bandwidth-bound decode, where a verify
 column is nearly free and the acceptance rate converts almost directly into
 speed. Neither model here decodes that way on this box. The 135M model is
-overhead-bound (a 145 MB weight pass at 100+ tok/s is far under the M1's
+overhead-bound (a 145 MB weight pass at 100+ tok/s is far under the Apple M1's
 bandwidth), so a 5-row verify is not free, and the summary and code-edit
 rows land at parity despite 80% acceptance on the edit. TinyLlama at Q2_K is
 compute-bound in the dequant (11 to 17 tok/s for 1.1B parameters), which is
@@ -166,7 +166,7 @@ What the gate does establish: the walk is exact, the accounting is exact, a
 draftless round is free, and the search finds what it should (98% and 92%
 acceptance on the repeat rows, 80% on the code edit). The speedup itself is
 a property of the target's decode regime and remains to be measured on a
-resident 3B to 8B Q8_0 target, which is where the M1's decode is
+resident 3B to 8B Q8_0 target, which is where the Apple M1's decode is
 bandwidth-bound.
 
 ### The minimum n, measured
@@ -207,7 +207,7 @@ proposals (the separator, the longest-n rule, an occurrence with nothing
 after it); `tests/test_draft_lookup.py` holds the output byte-identical with
 and without hints, the accounting, and the two refusals.
 
-Measured on an M1 with SmolLM2-135M Q8_0, `--draft-k 8`, a 216-token
+Measured on an Apple M1 with SmolLM2-135M Q8_0, `--draft-k 8`, a 216-token
 non-repeating Python file as the hint and the model made to write exactly
 that file (the scripted-reply test hook, so this is the ceiling, not a
 typical turn): CPU 92.5 to 210.6 tok/s, Metal 127.0 to 261.0 tok/s, 184 of
