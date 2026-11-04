@@ -153,7 +153,9 @@ Two reads on the same binary:
   `RUNNER_CUDA_TC_NVFP4=0`; the default must be far faster (the tensor-core path is
   engaged). Read it with the card alone; a shared card is not a speed read. 1.13.0:
   1,326.99 against 21.71 tok/s (1.12.0: 1,200.84 and 22.68).
-- **MoE replay**: `make test-cuda-moe-replay`, exit 0, every case within the gate.
+- **MoE replay**: `make test-cuda-moe-replay`, exit 0, every case within the gate. Budget about 80 minutes on an RTX 3070
+  (1.13.0: 4,696 s for the 24 cases); set `CUDA_CACHE_MAXSIZE=4294967296` first so the
+  compiled kernels are not evicted between the fixtures. Start it with the gate, not after.
   1.13.0: 24 cases, 4,696 s. It is long. If it is not done by the merge, the
   release ships on the CUDA gate and the record follows on main (1.13.0: #626).
 
