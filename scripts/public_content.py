@@ -22,7 +22,10 @@ FORBIDDEN = [
     # The owner's rule (2026-10-13) names the machines; the chip names stay
     # allowed: "NVIDIA Blackwell", "RTX PRO 6000 Blackwell", "Apple M1",
     # also with the line wrapped between the two words.
-    (re.compile(r"(?<!RTX PRO 6000[ \n])(?<!NVIDIA[ \n])\bBlackwell\b"), "a machine name"),
+    # Blackwell in any case (2026-11-03, R1.19.1: nineteen evidence files had
+    # been named for the lab box in lowercase); M1 stays case-sensitive, as
+    # a lowercase "m1" is not the chip.
+    (re.compile(r"(?<!RTX PRO 6000[ \n])(?<!NVIDIA[ \n])\bBlackwell\b", re.I), "a machine name"),
     (re.compile(r"(?<!Apple[ \n])\bM1\b"), "a machine name"),
 ]
 
