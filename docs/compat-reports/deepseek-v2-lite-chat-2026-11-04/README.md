@@ -25,7 +25,7 @@ by sha256 and repository revision; both are a third party's static quants (mrade
 
 The method is the house's: 300 positions at stride 15 (8 to 4,493) of `tests/fixtures/gold-corpus-2k.txt`, every one
 matched by token id, with no dropped mass on either side. Margin-qualified positions are the 216 where the reference's
-top-1 leads by more than 0.5 nats. The kill numbers were declared before the runs (exec-share PLAN-d): per file and
+top-1 leads by more than 0.5 nats. The kill numbers were declared before the runs (PLAN-d in the lab's record store, r445): per file and
 backend, mean KLD at most 0.05 and margin-qualified top-1 at least 97%; a file that misses gets no row.
 
 - **CPU against CUDA.** The window cannot tell them apart on any file (paired per-position KLD, Wilcoxon p 0.51 on the
