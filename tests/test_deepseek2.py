@@ -13,6 +13,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import struct
 import subprocess
 import sys
@@ -24,6 +25,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from gguf_fixture import read_header  # noqa: E402
 
 TEXT = "the quick brown fox jumps over the lazy dog"
+# 176 tokens: past a 64-row chunk, so a forward carries the scratch's full batch
+LONG = ("the quick brown fox jumps over the lazy dog and then the dog sleeps under the old oak tree by the "
+        "river while the fox runs")
 
 
 def _score(exe, model, out, naive, gpu="off", route=False):
@@ -217,6 +221,24 @@ def test_cuda_naive_equals_the_cpu(fixture, cuda_naive):
     assert cpu["tokens"] == cuda_naive["tokens"]
     worst = max(abs(a - b) for a, b in zip(cpu["logprobs"], cuda_naive["logprobs"]))
     assert worst < 1e-4, "max |cuda - cpu| naive logprob %.3g" % worst
+def test_a_full_batch_prefill_in_both_forms(fixture):
+    # a prompt prefill feeds forwards of the scratch's full batch (n_batch
+    # rows): the absorbed form once computed kv_b's width from its 576-wide
+    # head, put qa and qr past the MLA scratch whenever a forward carried more
+    # than about half the batch, and aborted on glibc's heap check here
+    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
+    model, _ = fixture
+    out = {}
+    for naive in (False, True):
+        env = dict(os.environ, RUNNER_MLA_NAIVE="1" if naive else "0")
+        p = subprocess.run([str(exe), "-m", str(model), "--gpu", "off", "-t", "2", "-c", "256", "-p", LONG,
+                            "-n", "8", "--temp", "0", "--no-tray"], env=env, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
+        err = p.stderr.decode(errors="replace")
+        assert p.returncode == 0, err[-2000:]
+        assert re.search(r"prompt: (\d+) tok", err) and int(re.search(r"prompt: (\d+) tok", err).group(1)) > 128, err
+        out[naive] = p.stdout
+    assert out[False] == out[True]
 
 
 def test_the_family_template_and_refusals(fixture):

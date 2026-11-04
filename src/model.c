@@ -13414,7 +13414,10 @@ NUM_STAGE void mla_project(model_t *m, const fwd_layer *c) {
     const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim;
     const int hd = c->hd, q_dim = c->q_dim, kv_dim = c->kv_dim;
     const int H = m->n_head, r = m->mla_kv_lora, rd = m->rope_dim, nope = hd - rd;
-    const int vd = m->mla_v_dim, kvb = H * (nope + vd), ql = m->mla_q_lora;
+    // kv_b's width from the publisher's head (mla_qk), as runtime_buffers
+    // sizes the scratch: in the absorbed form hd is kv_lora + rope (576), and
+    // a width from it put qa and qr past the scratch's end (R4.4.5)
+    const int vd = m->mla_v_dim, kvb = H * (m->mla_qk - rd + vd), ql = m->mla_q_lora;
     float *kva = m->mla_scratch;                    // [n][r + rd]
     float *lat = kva + (size_t)n * (r + rd);        // [n][r]
     float *kvo = lat + (size_t)n * r;               // [n][kvb]
