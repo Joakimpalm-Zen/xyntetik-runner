@@ -5,6 +5,45 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **deepseek2 runs on CUDA in the absorbed multi-head latent attention, its default (R4.4.5 step c2).**
+  - The cache holds one 576-wide head per token and layer, as on the CPU. The naive form (step c1, below) stays
+    behind `RUNNER_MLA_NAIVE=1` as the oracle.
+  - Three kernels:
+    - `k_mla_q_absorb` builds each head's Q as [q_pe | k_bᵀ q_nope] from the layer's `attn_kv_b`, dequantized at
+      load (226 MB on V2-Lite, charged in the VRAM plan);
+    - `k_mla_kv_absorb` writes the one [k_pe | latent] row as both K and V;
+    - `k_mla_v_absorb` takes each head's output latent through its v-rows before `attn_output`.
+  - The 576-wide head runs on the plain attention kernels. The tiled and tensor-core prefill stop at 512 and 128.
+  - **Measured on the toy:** `test-deepseek2`'s CUDA arm is 4.0e-5 from the plain-Python reference and 9.5e-7
+    from the CPU. gpu-identity reads 2.4e-7 against a limit of 1e-5.
+  - **Measured on DeepSeek-V2-Lite-Chat Q8_0, CPU against CUDA (gpu-identity):**
+    - free routing reads 4.8e-4 of the logit range (limit 2e-3), with 7 of 14,820 expert slots differing (ties);
+    - pinned routing reads 1.9e-5 (limit 1e-3).
+  - **The cost:** scoring the 8,719-token gold corpus on the prefill route (`RUNNER_SCORE_CHUNKED=1`) on the CUDA
+    MIG slice takes 191 s absorbed against 146 s naive, at a host load average of 17 to 30. On the CPU the absorbed
+    form takes 798 s.
+  - **Against the publisher's float32 `modeling_deepseek.py`,** CUDA's absorbed form against the CPU's on the
+    prefill route, by the routes' rule:
+    - at positions 4000-5999 (1,999 positions), the read declared for it: mean KLD ratio 0.9993, Wilcoxon p 0.11,
+      McNemar 1/0;
+    - on the 300-position house window it read 1.018, over the rule's 1.01, with the other two tests passing.
+      Both reads are kept.
+
+- **deepseek2 runs on CUDA in the naive multi-head latent attention (R4.4.5 step c1), with `RUNNER_MLA_NAIVE=1`.**
+  - Three layout kernels, `k_mla_q`, `k_mla_kv` and `k_mla_pack_v`, put Q and K as [pe | nope] and V as [v | 0],
+    and pack the value width before `attn_output`. They are copies only.
+  - The latent's projections, its norm, the rope, the cache and the 192-wide attention run on existing kernels.
+  - Still on the CPU, with a reason:
+    - the q-lora pair (`attn_q_a`: DeepSeek-V2 and V3, not V2-Lite), refused by name;
+    - the multi-sequence microbatch, which declines deepseek2.
+  - **Measured on the toy:** `test-deepseek2`'s CUDA arm is 4.0e-5 from the plain-Python reference and 4.8e-7 from
+    the CPU. gpu-identity reads 9.8e-7 against a limit of 1e-5.
+  - **Measured on DeepSeek-V2-Lite-Chat Q8_0, CPU against CUDA (gpu-identity):**
+    - free routing reads 4.5e-4 of the logit range (limit 2e-3), with 11 of 14,820 expert slots differing (ties);
+    - pinned routing reads 1.9e-5 (limit 1e-3).
+  - Decode runs plain launches. The shared-expert path fails graph capture, as the gated shape (`shexpg`) already
+    did before this change.
+
 - **Qwen3.8-27B GSQ-RCO IQ3_S recovered moves to Tier 2: against Qwen's
   float32 reference it reads 0.41 mean KLD, 8x the bar (R4.32).** In the
   house window the published file reads 0.4119 mean KLD and 85.04%
@@ -89,7 +128,7 @@ Current release and unreleased changes. Compatibility follows the
   (0.041).
 
 - **DeepSeek-V2 (`deepseek2`) runs on the CPU (R4.4.5 step b).** These are the limits for now:
-  - The CPU only; the GPU backends run it on the CPU with a reason.
+  - The GPU backends run it on the CPU with a reason, except CUDA's naive form (step c1, above).
   - The naive multi-head latent attention, so the cache is the full per-head K and V (16 x 192 x 2 values a token a
     layer on V2-Lite), not the 576-value latent.
 
@@ -134,9 +173,13 @@ Current release and unreleased changes. Compatibility follows the
   rule passes: mean KL 0.9998x the tile's, Wilcoxon p 0.82, McNemar 0/0
   over 2,000 positions. gpu-identity is ok on both settings. The default
   keys on the measured width, and `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the
-  tile. Not yet measured: the Flash-Next sibling (qwen4exp), Metal, and
-  the RTX 3070 at these sizes. Report:
+  tile. Not yet measured: Metal and the RTX 3070 at these sizes. Report:
   `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-qwen35-2026-11-04`.
+  The Flash-Next sibling (qwen4exp) stays on the tile: on the same slice,
+  with 26 of its 48 layers on the CPU, its 4K prefill reads 0.992x, and
+  16K and D1 were not run. With routing pinned, gpu-identity reads
+  4.42e-6 (R1.25). Report:
+  `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-qwen4exp-2026-11-04`.
 
 - **The CUDA int8 prefill route (`RUNNER_CUDA_I8=1`) stays opt-in for every
   type (R3.14.1).** Against the publisher's float32 models, Q8_0 (Qwen3-0.6B)
