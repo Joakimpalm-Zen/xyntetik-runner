@@ -1,0 +1,10 @@
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB
+gpu-split: budget=25.13GB fixed=1.66GB G=64/64 full=1 used=12.32GB
+gpu-split: prompt window 64 columns (batch 32, 12.09 GB spare, 440708 bytes a column with TC2's activations)
+gpu: the device's tensors (64 layers and the head) lie in 2 stretches of the file; uploading them as runs
+gpu: CUDA backend on CUDA MIG slice 1g.24gb (11.4 GB weights in VRAM)
+gpu: 350 weight matrices are codebook i-quants (IQ2_S, ...) and the tensor-core prefill is turned off (RUNNER_CUDA_TC=0) for 'qwen35': prompts are prefilled by the scalar kernel, which can be slower than the CPU. Unset RUNNER_CUDA_TC to use the promoted kernels.
+gpu: VRAM 13.24 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.45 GB this instance)
+gpu-identity: Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32
+  5959680 logits over 24 positions | 5955704 differ, mean|dlogit| 0.000225 = 6.44e-06 of mean range 35 (limit 0.001), worst 0.00463
+gpu-identity: ok

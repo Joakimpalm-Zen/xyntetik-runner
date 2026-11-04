@@ -99,6 +99,7 @@ BPE_PRE = None     # --bpe-pre NAME: a GPT-2 byte-level BPE vocabulary declaring
 LAYERS = None      # --layers N: block count (a family's size tells some rules)
 HEAD_DIM = None    # --head-dim N: decouple head_dim from N_EMBD / N_HEAD
 ROPE_DIM = None    # --rope-dim N: rotate only the first N dims of each head
+HEADS = None       # --heads Q:KV: query and KV head counts (with --head-dim)
 SAMPLING = None
 PRISM_HADAMARD = False
 args = sys.argv[1:]
@@ -423,6 +424,19 @@ while i < len(args):
         # value_length and rope.dimension_count (the plain and gemma3 shapes)
         i += 1
         HEAD_DIM = int(args[i])
+    elif a == "--heads":
+        # query and KV head counts other than 4 and 2, so a kernel's grouping
+        # of query heads per KV head (G = Q / KV) can be set: Qwen3.8-Flash-
+        # Next's 24 on 2 (G = 12) is a row split no other fixture reaches.
+        # Only with --head-dim, whose shape sizes the heads from HEAD_DIM;
+        # the rest still read N_EMBD / N_HEAD.
+        i += 1
+        try:
+            HEADS = tuple(int(x) for x in args[i].split(":"))
+        except ValueError:
+            HEADS = ()
+        if len(HEADS) != 2 or HEADS[0] < 1 or HEADS[1] < 1 or HEADS[0] % HEADS[1]:
+            sys.exit(f"make-test-model: --heads wants Q:KV with KV dividing Q, got {args[i]!r}")
     elif a == "--rope-dim":
         # partial-dimension rope (Qwen3.5's full-attention layers rotate a
         # quarter of each head): rope.dimension_count below the head width
@@ -452,6 +466,10 @@ N_EMBD, N_HEAD, N_KV, N_FF, N_LAYER = 64, 4, 2, 128, 2
 MLA_NOPE, MLA_ROPE, MLA_V, MLA_R = 8, 8, 8, 16
 if ARCH == "deepseek2":
     N_KV = N_HEAD
+if HEADS:
+    if not HEAD_DIM or QK_NORM or ARCH != "llama" or ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO:
+        sys.exit("make-test-model: --heads needs --head-dim on the plain llama shape")
+    N_HEAD, N_KV = HEADS
 if WIDE:
     N_EMBD, N_FF = 256, 512
 if N_FF_SET is not None:
