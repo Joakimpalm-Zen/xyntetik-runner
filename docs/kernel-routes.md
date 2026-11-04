@@ -117,8 +117,11 @@ Around the matvec:
   E-series (gemma4 with per-layer embeddings: Nemotron 3.5 Bolt E4B,
   gemma-4-E2B and E4B), owner decision 2026-11-03, with its float32-reference
   row on Bolt E4B (2,000 positions: mean KL 0.9965x the tile's, Wilcoxon p
-  0.188, McNemar 2/0); `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the tile there, `=1`
-  forces it on any model it admits. fp16 caches only, and never a layer
+  0.188, McNemar 2/0); and for qwen35 at head width 256 (Qwen3.5, 3.6 and
+  3.8), R3.6.3.2, on Qwen3.8-27B's row (1.82x prefill at 16K; 2,000
+  positions: mean KL 0.9998x the tile's, Wilcoxon p 0.82, McNemar 0/0);
+  `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the tile there, `=1` forces it on any
+  model it admits. fp16 caches only, and never a layer
   with sinks (gpt-oss, flint keep the tile). One global layer at about 31K
   on an RTX 3070: 53-57 ms against `k_attn_tile8`'s 352 ms; Bolt E4B prefill
   2.0x at 16K and 2.6x at 32K. Gate: `make test-cuda-attn-wide`,
