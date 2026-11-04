@@ -1026,6 +1026,75 @@ static void test_i8_dot(int type, int n) {
     free(row); free(x); free(w); free(xq); free(xr);
 }
 
+// The K-quant int8 decode dot (R3.1.4, RUNNER_CPU_I8K): Q4_K and Q6_K rows
+// against 256-element activation blocks. (a) the vector kernel and its scalar
+// twin give the same bytes (each superblock is integer to its one float
+// multiply-add); (b) against a double reference on the same quantized
+// activations; (c) against the true dot, within half a quantization step per
+// element. The block layout is the quantizer's: d, 256 int8, 16 int16 sums.
+typedef struct { float d; int8_t qs[256]; int16_t bsums[16]; } ref_block_i8k;
+static int g_i8k_checked;
+
+static void test_i8k_dot(int type, int n) {
+    if (!i8k_dot_ok(type, n)) return;
+    g_i8k_checked++;
+    size_t rowsz = ggml_row_size(type, n);
+    uint8_t *row = malloc(rowsz);
+    float *x = malloc((size_t)n * sizeof(float));
+    double *w = malloc((size_t)n * sizeof(double));
+    ref_block_i8k *xk = malloc(i8k_act_size(n));
+    CHECK(i8k_act_size(n) == (size_t)(n / 256) * sizeof(ref_block_i8k),
+          "i8k_act_size(%d) = %zu, reference layout is %zu", n, i8k_act_size(n),
+          (size_t)(n / 256) * sizeof(ref_block_i8k));
+    for (int trial = 0; trial < RANDOM_TRIALS + FILL_TRIALS; trial++) {
+        set_trial(trial);
+        make_row(type, row, n);
+        for (int i = 0; i < n; i++) x[i] = frnd();
+        if (trial >= RANDOM_TRIALS) fill_x(trial, x, n);
+        if (trial == 3) memset(x, 0, 256 * sizeof(float));
+        if (trial == 4) for (int i = 0; i < 256; i++) x[i] = frnd() * 4096.0f;
+        ref_weights(type, row, w, n);
+        i8k_quant_act(x, xk, n);
+        for (int b = 0; b < n / 256; b++)
+            for (int g = 0; g < 16; g++) {
+                int s = 0;
+                for (int k = 0; k < 16; k++) s += xk[b].qs[g * 16 + k];
+                CHECK(s == xk[b].bsums[g], "i8k_quant_act trial=%d: block %d sum %d is %d",
+                      trial, b, g, xk[b].bsums[g]);
+            }
+        float got = vec_dot_i8k(type, row, xk, n);
+        float sc = vec_dot_i8k_scalar(type, row, xk, n);
+        CHECK(memcmp(&got, &sc, sizeof got) == 0,
+              "vec_dot_i8k %s n=%d trial=%d: %.9g against its scalar twin %.9g",
+              ggml_type_name(type), n, trial, (double)got, (double)sc);
+        double qref = 0, qmag = 0, ref = 0, bound = 0;
+        for (int b = 0; b < n / 256; b++) {
+            double amax = 0, sw = 0;
+            for (int k = 0; k < 256; k++) {
+                int i = b * 256 + k;
+                double xv = (double)xk[b].d * xk[b].qs[k];
+                qref += w[i] * xv;
+                qmag += fabs(w[i] * xv);
+                ref += w[i] * x[i];
+                if (fabs(x[i]) > amax) amax = fabs(x[i]);
+                sw += fabs(w[i]);
+            }
+            bound += amax / 254.0 * sw;
+        }
+        double qtol = 5e-5 * qmag + 1e-4;
+        CHECK(fabs(got - qref) <= qtol,
+              "vec_dot_i8k %s n=%d trial=%d: got %g vs same-quant ref %g (tol %g)",
+              ggml_type_name(type), n, trial, (double)got, qref, qtol);
+        CHECK(fabs(got - ref) <= bound + 1e-4,
+              "vec_dot_i8k %s n=%d trial=%d: got %g true ref %g exceeds the "
+              "activation-quantization bound %g",
+              ggml_type_name(type), n, trial, (double)got, ref, bound);
+        if (g_fail > 20) break;
+    }
+    g_fill = -1;
+    free(row); free(x); free(w); free(xk);
+}
+
 // The int8 prefill tiles (R3.1.5 B): four rows packed once against eleven
 // activation columns (two four-column passes and a tail of three). The NEON
 // kernel must give the scalar kernel's bits, and both the double-precision
@@ -1351,6 +1420,15 @@ int main(void) {
         test_i8_tile(types[t], 4096);
         test_i8_tile(types[t], 256);
     }
+    for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
+        test_i8k_dot(types[t], 4096);
+        test_i8k_dot(types[t], 256);
+    }
+    // Q4_K and Q6_K at both lengths, on every build (the scalar twin elsewhere)
+    CHECK(g_i8k_checked == 4, "K-quant int8 decode dot: %d combos exercised, expected 4",
+          g_i8k_checked);
+    CHECK(!i8k_dot_ok(T_Q4_K, 128) && !i8k_dot_ok(T_Q8_0, 4096),
+          "i8k_dot_ok declines a partial block and a type it has no kernel for");
     // Q8_0, Q4_0, Q4_K and Q6_K at both lengths, on every build
     CHECK(g_i8t_checked == 8, "int8 prefill tiles: %d combos exercised, expected 8",
           g_i8t_checked);

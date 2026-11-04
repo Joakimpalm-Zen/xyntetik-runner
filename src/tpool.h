@@ -22,4 +22,16 @@ void   tpool_retain(tpool *tp);
 int    tpool_shared_threads(int n_threads, int parallel, int cpus, int floor);
 int    tpool_size(const tpool *tp);  // workers incl. the calling thread
 
+// RUNNER_CPU_PROF=1: a per-step breakdown of CPU decode, printed at exit
+// (quants.c). The forward brackets each one-token step; a caller tags the
+// runs it is about to issue and names its serial regions.
+#include <stdbool.h>
+#include <stdint.h>
+bool   tprof_enabled(void);
+double tprof_now(void);
+void   tprof_step_begin(void);
+void   tprof_step_end(void);
+void   tprof_set_tag(uint64_t tag);
+void   tprof_region(const char *name, double s);
+
 #endif // RUNNER_TPOOL_H

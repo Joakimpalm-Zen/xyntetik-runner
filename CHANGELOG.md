@@ -83,6 +83,17 @@ Current release and unreleased changes. Compatibility follows the
   it needed 1.05x. An explicit `--draft-k` is unchanged. Report:
   `docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03`.
 
+- **`RUNNER_CPU_I8K=1`: an opt-in int8 decode route for Q4_K and Q6_K on
+  AVX2 CPUs, off by default because it fails the fidelity bar (R3.1.4).** On
+  a 4-core i7-7700K, Q4_K_M decode reads 1.23 to 1.39x the f32 route, 0.85
+  to 0.96x of llama.cpp. Against Qwen's float32 models its mean KL is 1.09x
+  the f32 route's on Qwen3-0.6B and 1.17x on Qwen3-1.7B (worse on the paired
+  test, p 9e-32 and 3e-49). The small-core gap to llama.cpp is that int8
+  rounding, which the default does not pay. `RUNNER_CPU_PROF=1` prints where
+  a CPU decode step goes. The route record's `cpu_act` names the route, and
+  `--score`'s `score_route` now carries `cpu_act`. Report:
+  `docs/compat-reports/r3.1.4-cpu-small-core-decode-2026-11-04`.
+
 - **`--quant-error` costs a row its type cannot describe at the type the
   rewrite writes instead.** A tensor whose rows the asked type's block does
   not divide (a MoE expert width of 896 under `q4_k`) read `null` in the
@@ -120,6 +131,21 @@ Current release and unreleased changes. Compatibility follows the
   1.022x, inside the run-to-run spread. Measured on one laptop, with one
   file for the narrow case; widths between 1536 and 2048 were not measured
   and take the exact kernel. The route detail says `mv=fast-q4_K>=2048`.
+
+- **Granite-4.2-30B joins the validated roster at Tier 2, and its publisher's
+  Q4_K_M fails the fidelity bar.** Against IBM's BF16 checkpoint in float32
+  at use (300 positions, CPU): the Q4_K_M reads 0.139 mean KLD and 93.9%
+  margin-qualified top-1 on Runner, 0.151 and 92.5% on llama.cpp 73a43d1,
+  where the bar is 0.05 and 97%; the file itself is the distance (0.111
+  top-20 KL against Runner's own Q8_0). IBM's Q8_0 passes on both engines
+  (Runner 0.0041 and 99.56%, llama.cpp 0.0241 and 99.12%) and is the row's
+  fidelity file, with a CPU cell on the Linux CUDA host (31.1 GB, more than a
+  24 GB device holds). Tokenizer differential 0 of 99,474 entries, template
+  byte-identical to the publisher's with 24 of 24 conformance cases, tool gate
+  A and B pass and C passes buffered (streamed, the run spent its reasoning
+  budget before any call). Record:
+  `docs/compat-reports/granite-4.2-30b-2026-11-04`.
+
 - **Nemotron 3.5 Lightning (`nemotron_h_moe`) routed its experts with the wrong
   function; fixed. Every nemotron_h_moe file has given wrong output since
   v0.2.0.** The publisher's router is a sigmoid; the published GGUFs carry no

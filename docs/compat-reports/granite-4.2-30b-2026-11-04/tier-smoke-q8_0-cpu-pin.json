@@ -1,0 +1,55 @@
+{
+  "schema": "xyntetik.runner.tier-smoke-result.v1",
+  "row": "granite-4.2-30b-q8_0",
+  "backend": "cpu",
+  "device_class": "linux-x86_64-cuda",
+  "generated_utc": "2026-11-04T00:05:38Z",
+  "commit": "8b2729f82aecc39ced70583fd0dc28134c68a329",
+  "ran": "runner -m granite-4.2-30b-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+  "caps": {
+    "version": "1.12.0",
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu_cores": 40,
+    "gpu_backend": "cuda",
+    "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+  },
+  "banner": null,
+  "threads": 20,
+  "seconds": 16.9,
+  "files": [
+    {
+      "sha256": "005b0933353e9ba219b26e2667705bdb8dbc74eb50e4a4e6cb70fca108710f81",
+      "bytes": 31111705312
+    }
+  ],
+  "with": null,
+  "status": "pinned",
+  "output": {
+    "sha256": "f9609a2de500147a23cd66aad0c98cdfef79e983ff09d8c37010601271a1703c",
+    "bytes": 158,
+    "finish_reason": "length",
+    "completion_tokens": 48
+  },
+  "pin": {
+    "path": "tests/compatibility/tier-smoke/granite-4.2-30b-q8_0.linux-x86_64-cuda.cpu.txt",
+    "sha256": "f9609a2de500147a23cd66aad0c98cdfef79e983ff09d8c37010601271a1703c"
+  },
+  "expect": {
+    "substring": "Mercury",
+    "found": true
+  },
+  "adapt_info": {
+    "architecture": "granite",
+    "adapter_serving": {
+      "supported": true,
+      "reason": null,
+      "device_kernels": "cuda"
+    },
+    "training": {
+      "supported": true,
+      "reason": null,
+      "host": "cpu"
+    }
+  }
+}
