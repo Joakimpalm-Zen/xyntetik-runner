@@ -1,0 +1,12 @@
+rope: YaRN scaling x16.00 (model metadata)
+gpu: OS video memory budget 7.60 GB for this process, 0.14 GB in use; offload budget 7.46 GB, headroom 0.54 GB
+gpu-split: budget=7.46GB fixed=0.58GB G=28/28 full=1 used=5.04GB
+gpu-split: experts 8/28 layers on GPU, 20 on host
+gpu-split: prompt window 512 columns (batch 512, 2.18 GB spare, 261572 bytes a column with TC2's activations)
+gpu: weights 1.99 GB on the device after 2 s (975 MB/s from the file)
+gpu: weights on the device: 4.25 GB in 4 s (1021 MB/s from the file)
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (28/28 attention layers, 4.2 GB in VRAM; 20/28 expert layers on CPU)
+gpu: VRAM 2.77 GB free of 8.59 GB after init (kv 0.23 GB + scratch 0.04 GB this instance)
+warning: weights are 12.9 GB but only 10.3 GB of RAM is available. This is a sparse MoE and touches about 2.6 GB per token, which does fit — expect a slow start and disk reads whenever routing reaches a cold expert, not a stall on every token.
+loaded ~/models/r330/Mellum2.1-12B-A2.5B-Thinking-Q8_0.gguf | mellum | 28 layers | ctx 4096 | 4 threads | 5.17s
+sampling: generic (temp 0.80, top_p 0.95, top_k 40, min_p 0.05, repeat_penalty 1.00)

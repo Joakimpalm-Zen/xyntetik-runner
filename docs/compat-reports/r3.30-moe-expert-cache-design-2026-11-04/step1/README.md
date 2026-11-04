@@ -1,16 +1,83 @@
-# R3.30 step 1: the routing trace and the three policies (record, awaiting the trace)
+# R3.30 step 1: the routing trace and the three policies
 
-**Status: the tools are ready and checked on a synthetic control. The first trace run was stopped by the host for
-low memory (a CPU serve of the 12.9 GB file on a 16 GB box, during the first prompt), and it is not restarted
-without the owner's word.** The rerun as planned:
-- **Placement:** on the RTX 3070 with `--cpu-moe auto` (`trace.py ... 256 -- --gpu 99 --cpu-moe auto`), the
-  placement the policies are scored against. `RUNNER_MOE_TRACE` covers the CUDA routers as well as the CPU's.
-- **Length:** 256 tokens a prompt, as a memory guard.
-- **File:** the Q8_0 (`JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF@4159d684`, sha256 `69e0ac02...`,
-  12,925,417,760 bytes, verified against the Hub's LFS digest).
+**Result: not a kill. A static hot set alone projects 1.66x decode over today's `--cpu-moe auto`, above the 1.3x
+kill, so step 2 is a placement change with no cache.** At the bytes today's placement gives the card's expert banks
+(12 of 28 layers, 768 expert slots of 1,792), the mean over six prompts reads:
 
-**Kill** (from the note): the best policy's implied decode gain over (a) under 1.3x stops the item at this
-boundary. A flat routing kills it before any policy is read.
+| | (a) static layers, today | (b) hot set, leave one out | (b) in sample | (c) LRU R=4 | (c) LRU R=8 | (c) LRU R=16 |
+|---|---:|---:|---:|---:|---:|---:|
+| served from the card, decode routings | 0.429 | **0.785** | 0.875 | 0.790 | 0.862 | 0.883 |
+| implied decode gain over (a) | 1.000x | **1.660x** | 1.994x | 1.676x | 1.936x | 2.031x |
+| uploads a decode token | 0 | 0 | 0 | 4.0 | 7.1-7.9 | 10.1-12.8 |
+
+- **The hot set needs no uploads,** and its leave-one-out frequencies are honest: the in-sample row is printed only
+  to show the overfit.
+- **The LRU's gain** assumes its uploads stay off the critical path. At about 0.55 ms an expert over PCIe 3.0 on this
+  host, R=8's 7.6 uploads cost about 4 ms a token if they do not.
+- **Caveat for step 2:** the gain is projected from whole-bank slopes. A per-expert placement splits every layer
+  between the card and the host, so step 2's first read is measured tok/s against `--cpu-moe auto` on the same file
+  and card.
+
+**Kill numbers, stated before the first measurement and read in this order:**
+1. **The ceiling, from the bench:** the gain if every routed expert were served from the card. Under 1.3x stops the
+   item before any trace. It reads **2.76x**.
+2. **Flat routing, from the first prompt's trace:** a layer's top-32 share at the uniform noise floor (about 0.56)
+   stops the item. It reads **0.940** on the first prompt and 0.923-0.940 on all six.
+3. **The policies:** the best honest policy under 1.3x over (a) stops the item. The hot set reads **1.660x**.
+
+## The run (2026-11-04, the RTX 3070, runner main cc62365d)
+
+- **File:** `JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF@4159d684`, the Q8_0 (sha256 `69e0ac02...`, 12,925,417,760
+  bytes, verified against the Hub's LFS digest).
+- **Memory:** the host has 16 GB and the file is 12.9 GB. A first CPU trace, and then `bench.sh`'s loop, were stopped
+  by the host for low memory. Everything in `run/` ran one config or one prompt a call as its own foreground job
+  (`bench1.sh`, `trace.py` with `R330_PROMPTS`). The bench's 28 and 24 host banks were not run: their expert bytes
+  alone (11.8 and 10.1 GB) do not fit the 10.1 GB of RAM available.
+- **Placement:** `--cpu-moe auto` puts 12 of 28 layers' expert banks on the card and 16 on the host (5.9 GB in VRAM).
+
+### The bench: today's speed and the host cost of one expert
+
+`bench1.sh`, 128 decode tokens, three rounds with the order rotated (`run/bench/`):
+
+| Host banks | Routed host experts a token | Decode tok/s (3 rounds) | ms a token, median |
+|---|---:|---|---:|
+| 16 (`auto`) | 128 | 13.37, 14.44, 13.45 | **74.33** |
+| 18 | 144 | 13.01, 13.83, 13.76 | 72.67 |
+| 20 | 160 | 11.25, 12.42, 11.84 | 84.49 |
+
+- **Host cost of one routed expert:** 0.370 ms, the least-squares slope over all nine runs (intercept 23.8 ms).
+- **The noise:** the round-to-round spread is about 8%, and 18 banks' median is under 16's. The slope is the one
+  number used from this table besides `T_static` = 74.33 ms.
+- **The ceiling:** 74.33 / (74.33 - 128 x 0.370) = 2.76x. 1.3x needs a served share of at least 0.635.
+
+### The trace
+
+`trace.py ... 256 -- --gpu 99 --cpu-moe auto`, greedy, through Mellum's chat template (`run/runs.jsonl`, the
+servers' logs in `run/server/`):
+
+| Prompt | Prompt tokens | Working set: 1 / 8 / 32 / 128 tokens | Reuse distance p50 / p90 | Top-32 / top-16 share |
+|---|---:|---|---|---|
+| code | 102 | 224 / 624 / 1,007 / 1,390 | 1 / 10 | 0.940 / 0.763 |
+| copy | 527 | 224 / 671 / 1,077 / 1,418 | 1 / 11 | 0.923 / 0.713 |
+| edit | 3,167 | 224 / 662 / 1,086 / 1,415 | 1 / 12 | 0.929 / 0.751 |
+| long | 3,866 | 224 / 665 / 1,067 / 1,404 | 1 / 11 | 0.939 / 0.763 |
+| prose | 63 | 224 / 662 / 1,053 / 1,418 | 1 / 11 | 0.936 / 0.742 |
+| tool | 126 | 224 / 633 / 1,045 / 1,434 | 1 / 10 | 0.927 / 0.742 |
+
+- **The skew is strong:** a layer's 32 most used experts take 92-94% of its decode routings, against about 0.56 on
+  uniform routing of this length.
+- **The working set is not small:** 128 tokens touch about 1,410 of the 1,792 experts. The gain comes from the skew
+  of the frequencies, not from a small working set.
+- **Per prompt, the hot set reads 0.664 (copy) to 0.843 (edit).** Every prompt clears the 0.635 a 1.3x needs.
+
+### Files
+
+- `run/sim-k12.txt`: `sim.py run 12 4,8,16 --model 74.33,0.3703`, the tables above.
+- `run/trace-*.jsonl.gz`: the traces with each record's position, layer and experts. The gates and norms are dropped
+  to keep them small (55 MB raw). Decompressed beside `run/runs.jsonl`, they give `sim.py` the same output byte for
+  byte; `run/raw-traces.sha256` names the raw files.
+- `run/bench/`: the nine bench runs' JSON and stderr.
+- Host paths in the logs read `~/`.
 
 ## The tools
 
@@ -19,6 +86,7 @@ boundary. A flat routing kills it before any policy is read.
 | `trace.py` | one server per prompt, each with its own trace, the turn through the model's chat template, greedy |
 | `user-turns.json` | the six SS-000 frozen prompts' user turns (code, copy, edit, long, prose, tool), cut from the `*.qwen3.txt` renders |
 | `sim.py` | the trace statistics, then the three policies at equal bytes and the implied gain |
+| `bench1.sh` | one bench config a call, as `run/` used it |
 | `bench.sh` | decode at `--cpu-moe auto` and at 28, 24, 20 and 16 host banks, three interleaved rounds: today's speed, the placement record, and the slope that gives the host cost of one routed expert |
 | `synth.py` | the control below |
 

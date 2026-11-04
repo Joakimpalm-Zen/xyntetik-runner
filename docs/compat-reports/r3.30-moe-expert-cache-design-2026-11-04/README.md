@@ -2,6 +2,10 @@
 
 **Status: design only. No code exists, and none is written before this note is approved.**
 
+**Step 1 (2026-11-04): not a kill.** A static hot set picked from the other prompts' frequencies serves 0.785 of
+decode routings from the card against today's 0.429, a projected 1.66x, so step 2 is a placement change with no
+cache ([step1/README.md](step1/README.md)).
+
 **Kill numbers:**
 - **Speed:** under 1.3x decode over today's partial-offload placement of the same file on the same card kills
   the item.
