@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--quant-error` costs a row its type cannot describe at the type the
+  rewrite writes instead.** A tensor whose rows the asked type's block does
+  not divide (a MoE expert width of 896 under `q4_k`) read `null` in the
+  report, so `runner derive --target-size --low q4_k` refused the plan
+  ("has no q4_k entry") where `--rewrite --quant q4_k` of the same parent
+  writes the tensor at `q5_0` through the width fallback. The report now
+  costs such a row at that fallback type and names it in `written_as`; a
+  plan built from the report predicts the file the rewrite makes, and derive
+  plans every MoE whose expert width is not a multiple of 256. Found by a
+  derive run on the lab box.
+
 - **Nemotron 3.5 Lightning (`nemotron_h_moe`) routed its experts with the wrong
   function; fixed. Every nemotron_h_moe file has given wrong output since
   v0.2.0.** The publisher's router is a sigmoid; the published GGUFs carry no
