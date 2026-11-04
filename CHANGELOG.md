@@ -5,6 +5,22 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **deepseek2 runs on CUDA in the naive multi-head latent attention (R4.4.5 step c1), with `RUNNER_MLA_NAIVE=1`.**
+  - Three layout kernels, `k_mla_q`, `k_mla_kv` and `k_mla_pack_v`, put Q and K as [pe | nope] and V as [v | 0],
+    and pack the value width before `attn_output`. They are copies only.
+  - The latent's projections, its norm, the rope, the cache and the 192-wide attention run on existing kernels.
+  - Still on the CPU, with a reason:
+    - the absorbed form, which is the default (until c2);
+    - the q-lora pair (`attn_q_a`: DeepSeek-V2 and V3, not V2-Lite), refused by name;
+    - the multi-sequence microbatch, which declines deepseek2.
+  - **Measured on the toy:** `test-deepseek2`'s CUDA arm is 4.0e-5 from the plain-Python reference and 4.8e-7 from
+    the CPU. gpu-identity reads 9.8e-7 against a limit of 1e-5.
+  - **Measured on DeepSeek-V2-Lite-Chat Q8_0, CPU against CUDA (gpu-identity):**
+    - free routing reads 4.5e-4 of the logit range (limit 2e-3), with 11 of 14,820 expert slots differing (ties);
+    - pinned routing reads 1.9e-5 (limit 1e-3).
+  - Decode runs plain launches. The shared-expert path fails graph capture, as the gated shape (`shexpg`) already
+    did before this change.
+
 - **`test-gpu-identity` judges a MoE file by its pinned-routing arm (R1.25).**
   With `RUNNER_CUDA_ATTN_TC_WIDE=1`, Qwen3.8-Flash-Next failed the free-routing
   arm at 2.41e-3 of the logit range against 2e-3. A dump of every device
@@ -73,7 +89,7 @@ Current release and unreleased changes. Compatibility follows the
   (0.041).
 
 - **DeepSeek-V2 (`deepseek2`) runs on the CPU (R4.4.5 step b).** These are the limits for now:
-  - The CPU only; the GPU backends run it on the CPU with a reason.
+  - The GPU backends run it on the CPU with a reason, except CUDA's naive form (step c1, above).
   - The naive multi-head latent attention, so the cache is the full per-head K and V (16 x 192 x 2 values a token a
     layer on V2-Lite), not the 576-value latent.
 
