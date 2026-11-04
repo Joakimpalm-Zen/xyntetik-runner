@@ -62,6 +62,17 @@ Current release and unreleased changes. Compatibility follows the
   `RUNNER_METAL_MVG=0` keeps `k_mvf_q4_K`. The route detail says
   `mv=mvg-q4_K>=2048`.
 
+- **CUDA: the wide-head tensor-core prefill attention is on by default for
+  qwen35 at head width 256 (Qwen3.5, 3.6 and 3.8) (R3.6.3.2).** On
+  Qwen3.8-27B (GSQ-RCO IQ3_S, a CUDA MIG slice), 16K prefill reads 1.82x
+  (329.6 against 181.1 tok/s) and 4K 1.23x. Decode is unchanged. The D1
+  rule passes: mean KL 0.9998x the tile's, Wilcoxon p 0.82, McNemar 0/0
+  over 2,000 positions. gpu-identity is ok on both settings. The default
+  keys on the measured width, and `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the
+  tile. Not yet measured: the Flash-Next sibling (qwen4exp), Metal, and
+  the RTX 3070 at these sizes. Report:
+  `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-qwen35-2026-11-04`.
+
 - **The CUDA int8 prefill route (`RUNNER_CUDA_I8=1`) stays opt-in for every
   type (R3.14.1).** Against the publisher's float32 models, Q8_0 (Qwen3-0.6B)
   reads 1.51x the default route's mean KL. Q4_K with Q6_K (Qwen3-4B Q4_K_M)
