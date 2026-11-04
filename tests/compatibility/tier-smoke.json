@@ -504,7 +504,11 @@
             ],
             "request": {
               "enable_thinking": false
-            }
+            },
+            "backend_args": [
+              "--gpu",
+              "47"
+            ]
           },
           "pinned": {
             "date": "2026-10-24",
@@ -590,7 +594,11 @@
             ],
             "request": {
               "enable_thinking": false
-            }
+            },
+            "backend_args": [
+              "--gpu",
+              "51"
+            ]
           },
           "pinned": {
             "date": "2026-10-24",
@@ -676,7 +684,11 @@
             ],
             "request": {
               "enable_thinking": false
-            }
+            },
+            "backend_args": [
+              "--gpu",
+              "32"
+            ]
           },
           "pinned": {
             "date": "2026-10-24",
@@ -762,7 +774,11 @@
             ],
             "request": {
               "enable_thinking": false
-            }
+            },
+            "backend_args": [
+              "--gpu",
+              "43"
+            ]
           },
           "pinned": {
             "date": "2026-10-24",
@@ -848,7 +864,11 @@
             ],
             "request": {
               "enable_thinking": false
-            }
+            },
+            "backend_args": [
+              "--gpu",
+              "43"
+            ]
           },
           "pinned": {
             "date": "2026-10-24",
@@ -910,7 +930,11 @@
             ],
             "request": {
               "enable_thinking": false
-            }
+            },
+            "backend_args": [
+              "--gpu",
+              "38"
+            ]
           },
           "pinned": {
             "date": "2026-10-24",
