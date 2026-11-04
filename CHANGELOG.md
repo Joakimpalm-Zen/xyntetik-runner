@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Mellum2.1-12B-A2.5B-Thinking gains a Tier 2 row for bartowski's Q5_K_S
+  (8.96 GB), the smallest Mellum 2.1 file measured to pass the bar.** Against
+  the publisher's BF16 parent in float32 it reads 0.0289 mean KLD and 98.33%
+  margin-qualified top-1 (plain top-1 93.0%), where the publisher's Q4_K_M
+  reads 0.1172 / 92.89% and Runner's own 9.38 GB selective-precision attempt
+  0.0983 / 92.89%. Four published Q5-band files were scored; both with
+  experts at Q5_K pass, both with experts at Q4_K miss. Owner decision
+  2026-11-04; a third party's file, pinned by sha256 and repository revision.
+  Report: `docs/compat-reports/mellum2.1-q5-band-2026-11-04`.
+
 - **Metal Q4_K decode: a faster fast kernel, 1.19x on Qwen3-4B and
   Llama-3.2-3B Q4_K_M (R3.28.2).** The Q4_K inputs the fast route takes (at
   least 2048 wide on dense models) run `k_mvg_q4_K`: eight lanes share a

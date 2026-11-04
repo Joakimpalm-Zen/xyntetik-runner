@@ -602,6 +602,17 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>Mellum2.1</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<p><b>Mellum2.1-12B-A2.5B-Thinking (JetBrains)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#mellum2.1-12b-a2.5b-thinking-q5_k_s"><code>Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>MiniCPM5</b>, 1 model: CPU ✅ · CUDA ✅ · Metal ✅ · Train ✅</summary>
 <p><b>MiniCPM5-2B (openbmb)</b></p>
 <table>
@@ -991,7 +1002,7 @@ Built for one job, tool-calling agent loops on this runner from a 24 GB card, an
 <a id="mellum2.1-12b-a2.5b-thinking-q4_k_m"></a>
 ##### `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf`
 
-Text path, JetBrains' own Q4_K_M. Publisher Q4_K_M against the publisher's BF16 parent: mean KLD 0.128, top-1 85.7% (Runner), 0.131 / 85.9% (llama.cpp); the file fails the 0.05 bar on both engines and the gap grows with depth. Against the publisher Q8_0 it fails the quant bar too (mean KLD 0.131, top-1 80.0%, 400 positions); Q8_0 (12.9 GB) is the fidelity file (Runner Q8_0 vs the parent 0.0187 / 94.3%), and the publisher's MXFP4_MOE file is untested.
+Text path, JetBrains' own Q4_K_M. Publisher Q4_K_M against the publisher's BF16 parent: mean KLD 0.128, top-1 85.7% (Runner), 0.131 / 85.9% (llama.cpp); the file fails the 0.05 bar on both engines and the gap grows with depth. Against the publisher Q8_0 it fails the quant bar too (mean KLD 0.131, top-1 80.0%, 400 positions). The publisher's Q8_0 (12.9 GB, Runner vs the parent 0.0187 / 94.3%) passes, and so does bartowski's Q5_K_S (8.96 GB, 0.0289 / 98.33% margin-qualified, 2026-11-04, the row below); the publisher's MXFP4_MOE file is untested.
 
 - **File:** `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf` (sha256 `ecc4d5b8107fc219e23c494b2d107552137637b6c6002ee713e0ba8af7fa2755`, 8,071,295,264 bytes, from [JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF](https://huggingface.co/JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF) at revision `4159d684ffdb`).
 - **Upstream checkpoint:** JetBrains/Mellum2.1-12B-A2.5B-Thinking at revision `92ddae9fc766`.
@@ -1000,7 +1011,7 @@ Text path, JetBrains' own Q4_K_M. Publisher Q4_K_M against the publisher's BF16 
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** This file against the BF16 parent computed in float32 (transformers' own mellum code, 300 positions to 7,420 tokens, token-id keyed): Runner 0.1282 mean KLD / 85.7% top-1 / 93.7% margin-qualified, llama.cpp b11748 0.1305 / 85.9% / 94.0% (298 scored), about 0.08 in words 0-750 and 0.16 past 2,000; Runner vs llama.cpp on this file 0.0177. Q8_0 against the parent: Runner 0.0187 / 94.3% / 100%, llama.cpp 0.0234 / 93.6% / 100%. Q4_K_M vs Q8_0 bar FAIL (400 positions, 0.131, 80.0%); tokenizer 0/721, template 23/23, a needle retrieved at 3,568 tokens. Record: shade research/evaluation/mellum-parity-2026-10-29 (README.md, reference/README.md, windows-q4/README.md).
 - **Context tested:** not recorded.
-- **Known limitations:** No fidelity claim for Q4_K_M: it fails the 0.05 bar against the BF16 parent on both engines, and the gap is the file, not the engine. The publisher's MXFP4_MOE file is the untested alternative. CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. The 8.07 GB file does not load resident on an 8 GB machine, and on an 8 GB card it runs as a layer split.
+- **Known limitations:** No fidelity claim for Q4_K_M: it fails the 0.05 bar against the BF16 parent on both engines, and the gap is the file, not the engine. The passing files are the publisher's Q8_0 (12.9 GB) and bartowski's Q5_K_S (8.96 GB, a third-party file, its own row); the publisher's MXFP4_MOE file is untested. CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. The 8.07 GB file does not load resident on an 8 GB machine, and on an 8 GB card it runs as a layer split.
 - **Still missing:** The Metal row; the Q8_0 cells (12.9 GB is not servable on the Windows CUDA host's 16 GB beside its other work).
 - **Evidence:** [tests/compatibility/coverage.json](../tests/compatibility/coverage.json), [docs/compat-reports/1.7.0-2026-10-29-windows-x86_64-mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/1.7.0-2026-10-29-windows-x86_64-mellum2.1-12b-a2.5b-thinking-q4_k_m.json), [docs/compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json).
 - **Validation run:** on windows-x86_64-cuda, cuda backend; last run 1.7.0 on 2026-10-29.
@@ -1820,6 +1831,31 @@ ggml-org's Q8_0 (a third-party conversion, llama.cpp b15ca93; no publisher GGUF 
 - **LoRA training:** supported (runner 1.12.0, 2026-11-04).
 - **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-04).
 - **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
+
+### Mellum2.1
+
+#### Mellum2.1-12B-A2.5B-Thinking (JetBrains)
+
+<a id="mellum2.1-12b-a2.5b-thinking-q5_k_s"></a>
+##### `Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf`
+
+Text path, a third party's Q5_K_S (bartowski, with an importance matrix), the smallest Mellum 2.1 file measured to pass the bar: against the publisher's BF16 parent computed in float32 it reads 0.0289 mean KLD and 98.33% margin-qualified top-1 (plain top-1 93.0%, worst position 0.476, its first 750 positions at 0.0497, 300 positions), where the publisher's own Q4_K_M reads 0.1172 / 92.89%. 8.96 GB: a 16 GB Apple Silicon machine or a 12 GB card, not an 8 GB one. Not the publisher's file: its bytes are pinned by sha256 and repository revision.
+
+- **File:** `Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf` (sha256 `9fe81c18e6628a918757a356614abb4590b5c415a8281272fae3298eafb678c1`, 8,963,422,944 bytes, from [bartowski/Mellum2.1-12B-A2.5B-Thinking-GGUF](https://huggingface.co/bartowski/Mellum2.1-12B-A2.5B-Thinking-GGUF) at revision `355e97042763`).
+- **Upstream checkpoint:** JetBrains/Mellum2.1-12B-A2.5B-Thinking at revision `92ddae9fc766`.
+- **Quantization:** Q5_K_S (bartowski, importance matrix calibration-v6): expert gate and up Q5_K, expert down Q5_1, attention, embeddings and output Q8_0 (eleven middle-layer attn_q at Q6_K or Q5_K), routers F32.
+- **Licence:** `apache-2.0`, as the JetBrains/Mellum2.1-12B-A2.5B-Thinking model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** This file against the BF16 parent computed in float32 (transformers' own mellum code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, positions 8 to 4,493, token-id keyed, no special prefix; Runner main 7567c948 on the Linux CUDA host's MIG slice): 0.0289 mean KLD / 93.0% top-1 / 98.33% margin-qualified top-1 of 239, median 0.0126, worst position 0.476; by depth 0.0497 (8 to 749), 0.0282 (750 to 1,999), 0.0230 (2,000 to 4,493). In the same window the publisher's Q4_K_M reads 0.1172 / 88.67% / 92.89%, bartowski's own Q4_K_M (8.82 GB) 0.0533 / 92.33% / 97.07% (fails the KLD half by 0.0033), Ninnix96's Q5K-Q5_0 (8.98 GB) 0.0376 / 90.67% / 97.49% (passes), and the BF16 parent GGUF 0.0025 / 99.0% / 100%. The header declares general.license apache-2.0, architecture mellum, 28 blocks, 64 experts, 8 used; sha256 checked against the Hub's LFS record. Record: docs/compat-reports/mellum2.1-q5-band-2026-11-04/README.md.
+- **Context tested:** not recorded.
+- **Known limitations:** A third party's file, not the publisher's: the pin is the sha256 and the repository revision, and the file can leave the Hub without notice. Plain top-1 93.0%; the first 750 positions sit at the bar's edge (0.0497). One window over one corpus, no benchmark claim, no speed row. The tool protocol's live gate has not run on this file (template conformance is the family's, 23/23). CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. 8.96 GB does not load resident on an 8 GB machine; on an 8 GB card it runs as a layer split.
+- **Still missing:** The Metal row and the Windows CUDA host's cells; the CPU-vs-CUDA check and the live tool gate on this file; an llama.cpp column in the same window.
+- **Evidence:** [docs/compat-reports/mellum2.1-q5-band-2026-11-04/README.md](compat-reports/mellum2.1-q5-band-2026-11-04/README.md), [docs/compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; no run recorded yet.
+- **CPU:** ☐ not run
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **Tier history:** Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
 
 ### MiniCPM5
 
@@ -2684,5 +2720,6 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-11-03 | [Nemotron 3.5 Lightning-30B-A3B (NVIDIA), `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`](#nemotron-3.5-lightning-30b-a3b-q4_0) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-03 at Tier 2 with a CPU cell on the Linux CUDA host, a float32 reference measurement on the publisher's BF16 checkpoint, the tokenizer differential, template conformance and the tool gate, all on the fixed build (runner #575). Maintained on report; Tier 1 is the owner's call. | none recorded |
 | 2026-11-04 | [Qwen3.6-27B, `Qwen3.6-27B-Q4_K_M.gguf`](#qwen3.6-27b-q4_k_m) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: ggml-org's conversion pinned by sha256 (no publisher GGUF exists), the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
 | 2026-11-04 | [Qwen3.6-27B, `Qwen3.6-27B-Q8_0.gguf`](#qwen3.6-27b-q8_0) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: ggml-org's conversion pinned by sha256 (no publisher GGUF exists), the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
+| 2026-11-04 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf`](#mellum2.1-12b-a2.5b-thinking-q5_k_s) | Tier 2, maintained on report | Owner decision 2026-11-04: admitted at Tier 2 as the recommended sub-10 GB file of the Mellum2.1 row after the 2026-11-04 scoring study found it the smallest file to pass the bar against the float32 reference (policy decision 2026-10-27: Tier 1 follows pull or the owner's call; a third party's file is maintained on report). The float32 measurement is the admitting evidence; the Linux CUDA host's cells are recorded as the smoke runs. | none recorded |
 
 <!-- model-tiers:rows:end -->
