@@ -1,0 +1,81 @@
+{
+ "what": "llama.cpp's server cuts partial UTF-8 to a valid prefix; the reference decode writes U+FFFD",
+ "vocab_ids_affected": 202,
+ "flagged_positions": [
+  {
+   "pos": 968,
+   "gold_logits_count": 1,
+   "truncated_ids_in_runner_top20": 1,
+   "ids": [
+    {
+     "id": 11410,
+     "llama_cpp": " ",
+     "reference": " �"
+    }
+   ]
+  },
+  {
+   "pos": 1058,
+   "gold_logits_count": 6,
+   "truncated_ids_in_runner_top20": 6,
+   "ids": [
+    {
+     "id": 64139,
+     "llama_cpp": " ",
+     "reference": " �"
+    },
+    {
+     "id": 2928,
+     "llama_cpp": " ",
+     "reference": " �"
+    },
+    {
+     "id": 29753,
+     "llama_cpp": " ",
+     "reference": " �"
+    },
+    {
+     "id": 11410,
+     "llama_cpp": " ",
+     "reference": " �"
+    },
+    {
+     "id": 62904,
+     "llama_cpp": " ",
+     "reference": " �"
+    },
+    {
+     "id": 96169,
+     "llama_cpp": " ",
+     "reference": " �"
+    }
+   ]
+  },
+  {
+   "pos": 2858,
+   "gold_logits_count": 1,
+   "truncated_ids_in_runner_top20": 1,
+   "ids": [
+    {
+     "id": 21784,
+     "llama_cpp": " ",
+     "reference": " �"
+    }
+   ]
+  },
+  {
+   "pos": 2873,
+   "gold_logits_count": 1,
+   "truncated_ids_in_runner_top20": 1,
+   "ids": [
+    {
+     "id": 21784,
+     "llama_cpp": " ",
+     "reference": " �"
+    }
+   ]
+  }
+ ],
+ "gold_logits_total": 9,
+ "explained": 9
+}

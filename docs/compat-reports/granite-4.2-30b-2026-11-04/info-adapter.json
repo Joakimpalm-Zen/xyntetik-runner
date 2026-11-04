@@ -1,0 +1,1 @@
+{"architecture":"granite","adapter_serving":{"supported":true,"reason":null,"device_kernels":"cuda"},"training":{"supported":true,"reason":null,"host":"cpu"}}

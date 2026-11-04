@@ -5,6 +5,27 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal Q4_K decode: the fast kernel unpacks its scales without a branch,
+  1.18x on Qwen3-4B Q4_K_M with the same bits (R3.28.5).** Q4_K's 6-bit
+  scales unpack one way for sub-blocks 0 to 3 and another for 4 to 7, and
+  `k_mvg_q4_K`'s lanes sit on both sides within a simdgroup, so every lane
+  paid both paths. Now three 16-bit loads at fixed offsets and a select
+  give the same integers: the output is bitwise unchanged. On an Apple M1,
+  Q4_K at Qwen3-4B's 2560-wide inputs reads 47.9 GB/s against 38.2, and
+  decode over R3.28.3 is 17.59 against 14.92 tok/s on Qwen3-4B, 1.15x on
+  Llama-3.2-3B, 1.13x on Llama-3.2-1B, 1.02x on K2-Horizon-1B (whose
+  1536-wide bulk runs the identity kernel).
+- **Metal Q6_K decode: the narrow-slice kernel too, 1.20x more on
+  Qwen3-4B Q4_K_M (R3.28.3).** A Q4_K_M file keeps its LM head, attn_v and
+  half its ffn_down at Q6_K, which decoded at about 27 GB/s on an Apple M1.
+  Q6_K inputs at least 1536 wide now run `k_mvg_q6_K`, R3.28.2's shape for
+  Q6_K, at 51 to 55 GB/s: decode over the R3.28.2 build, Qwen3-4B 15.08
+  against 12.56 tok/s, Llama-3.2-1B 1.36x, Llama-3.2-3B 1.23x,
+  K2-Horizon-1B 1.24x. Unlike `k_mv2_q6_K`, whose bits are the identity
+  kernel's, it is a tolerance route: `test-mv-tol` 0/64 flips on Qwen3-4B,
+  and its float32-reference row is in the PR. `RUNNER_METAL_MVG=0` restores
+  both previous kernels. The route detail says
+  `mv=mvg-q4_K>=2048+q6_K>=1536`.
 - **Mellum2.1-12B-A2.5B-Thinking gains a Tier 2 row for bartowski's Q5_K_S
   (8.96 GB), the smallest Mellum 2.1 file measured to pass the bar.** Against
   the publisher's BF16 parent in float32 it reads 0.0289 mean KLD and 98.33%
@@ -14,7 +35,6 @@ Current release and unreleased changes. Compatibility follows the
   experts at Q5_K pass, both with experts at Q4_K miss. Owner decision
   2026-11-04; a third party's file, pinned by sha256 and repository revision.
   Report: `docs/compat-reports/mellum2.1-q5-band-2026-11-04`.
-
 - **Metal Q4_K decode: a faster fast kernel, 1.19x on Qwen3-4B and
   Llama-3.2-3B Q4_K_M (R3.28.2).** The Q4_K inputs the fast route takes (at
   least 2048 wide on dense models) run `k_mvg_q4_K`: eight lanes share a
@@ -59,6 +79,17 @@ Current release and unreleased changes. Compatibility follows the
   it needed 1.05x. An explicit `--draft-k` is unchanged. Report:
   `docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03`.
 
+- **`RUNNER_CPU_I8K=1`: an opt-in int8 decode route for Q4_K and Q6_K on
+  AVX2 CPUs, off by default because it fails the fidelity bar (R3.1.4).** On
+  a 4-core i7-7700K, Q4_K_M decode reads 1.23 to 1.39x the f32 route, 0.85
+  to 0.96x of llama.cpp. Against Qwen's float32 models its mean KL is 1.09x
+  the f32 route's on Qwen3-0.6B and 1.17x on Qwen3-1.7B (worse on the paired
+  test, p 9e-32 and 3e-49). The small-core gap to llama.cpp is that int8
+  rounding, which the default does not pay. `RUNNER_CPU_PROF=1` prints where
+  a CPU decode step goes. The route record's `cpu_act` names the route, and
+  `--score`'s `score_route` now carries `cpu_act`. Report:
+  `docs/compat-reports/r3.1.4-cpu-small-core-decode-2026-11-04`.
+
 - **`--quant-error` costs a row its type cannot describe at the type the
   rewrite writes instead.** A tensor whose rows the asked type's block does
   not divide (a MoE expert width of 896 under `q4_k`) read `null` in the
@@ -96,6 +127,21 @@ Current release and unreleased changes. Compatibility follows the
   1.022x, inside the run-to-run spread. Measured on one laptop, with one
   file for the narrow case; widths between 1536 and 2048 were not measured
   and take the exact kernel. The route detail says `mv=fast-q4_K>=2048`.
+
+- **Granite-4.2-30B joins the validated roster at Tier 2, and its publisher's
+  Q4_K_M fails the fidelity bar.** Against IBM's BF16 checkpoint in float32
+  at use (300 positions, CPU): the Q4_K_M reads 0.139 mean KLD and 93.9%
+  margin-qualified top-1 on Runner, 0.151 and 92.5% on llama.cpp 73a43d1,
+  where the bar is 0.05 and 97%; the file itself is the distance (0.111
+  top-20 KL against Runner's own Q8_0). IBM's Q8_0 passes on both engines
+  (Runner 0.0041 and 99.56%, llama.cpp 0.0241 and 99.12%) and is the row's
+  fidelity file, with a CPU cell on the Linux CUDA host (31.1 GB, more than a
+  24 GB device holds). Tokenizer differential 0 of 99,474 entries, template
+  byte-identical to the publisher's with 24 of 24 conformance cases, tool gate
+  A and B pass and C passes buffered (streamed, the run spent its reasoning
+  budget before any call). Record:
+  `docs/compat-reports/granite-4.2-30b-2026-11-04`.
+
 - **Nemotron 3.5 Lightning (`nemotron_h_moe`) routed its experts with the wrong
   function; fixed. Every nemotron_h_moe file has given wrong output since
   v0.2.0.** The publisher's router is a sigmoid; the published GGUFs carry no

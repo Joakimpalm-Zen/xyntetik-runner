@@ -1,0 +1,14 @@
+{
+ "what": "Runner Q4_K_M against Runner Q8_0 at the 300 gold positions; top-20 KL, the Q8_0 side as P",
+ "positions": 300,
+ "mean_kl": 0.11106291045640837,
+ "median_kl": 0.03641194907121376,
+ "p99_kl": 1.121304198156586,
+ "max_kl": 3.2953100185196464,
+ "top1_agreement_pct": 83.66666666666667,
+ "full_corpus_ppl": {
+  "q4_k_m": 15.8507141,
+  "q8_0": 14.9995429
+ },
+ "n_scored": 8434
+}
