@@ -2273,6 +2273,120 @@ kernel void k_mvgc_q4_K(MV_PARAMS) {
     }
 }
 
+// The narrow-slice Q6_K decode matvec (R3.28.3, k_mvg_q6_K): the shape of
+// k_mvg_q4_K applied to Q6_K. A half-superblock's 128 weights come from 64
+// bytes of low nibbles and 32 of high bit pairs: byte l of ql feeds weights l
+// and l + 64, byte l + 32 feeds l + 32 and l + 96, byte l of qh all four.
+// Eight lanes share a superblock, a lane taking eight consecutive l of one
+// half (24 bytes, 32 weights, one pair of scales), four superblocks a
+// simdgroup step, and the lane's 32 activations serve four rows.
+// TOLERANCE class (k_mv_q6_K's per-weight arithmetic, a different
+// summation order). It walks columns with the one-column arithmetic;
+// k_mvgc_q6_K reads each block once for several columns.
+#define MVG6_NR 4
+kernel void k_mvg_q6_K(MV_PARAMS) {
+    uint row0 = (tgpig.x * (ntg.x / 32) + sgitg) * MVG6_NR;
+    if (row0 >= (uint)a.n_out) return;
+    int col_lo = (int)tgpig.y * a.col_tile;
+    int col_hi = min(col_lo + a.col_tile, a.n_col);
+    int nb = a.n_in / 256;
+    int il = tiisg & 7, half_i = il >> 2, l0 = (il & 3) * 8, is = l0 >> 4;
+    for (int col = col_lo; col < col_hi; col++) {
+    device const float *x = x_all + (ulong)col * a.x_stride;
+    device float *y = y_all + (ulong)col * a.y_stride;
+    float s[MVG6_NR];
+    for (int r = 0; r < MVG6_NR; r++) s[r] = 0;
+    for (int b = (int)(tiisg >> 3); b < nb; b += 4) {
+        device const packed_float4 *xp = (device const packed_float4 *)(x + b * 256 + half_i * 128 + l0);
+        float4 xa[2], xb[2], xc[2], xd[2];
+        for (int k = 0; k < 2; k++) { xa[k] = xp[k]; xb[k] = xp[8 + k]; xc[k] = xp[16 + k]; xd[k] = xp[24 + k]; }
+        for (int r = 0; r < MVG6_NR; r++) {
+            uint row = row0 + r;
+            if (row >= (uint)a.n_out) break;
+            device const uchar *blk = wb + a.w_off + ((ulong)row * nb + b) * 210;
+            device const packed_uchar4 *l4  = (device const packed_uchar4 *)(blk + half_i * 64 + l0);
+            device const packed_uchar4 *l4b = (device const packed_uchar4 *)(blk + half_i * 64 + 32 + l0);
+            device const packed_uchar4 *h4  = (device const packed_uchar4 *)(blk + 128 + half_i * 32 + l0);
+            device const char *sc = (device const char *)(blk + 192) + half_i * 8;
+            float d = (float)*(device const half *)(blk + 208);
+            float4 a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+            for (int k = 0; k < 2; k++) {
+                uchar4 lo = l4[k], hi = l4b[k], h = h4[k];
+                a0 = fma(float4(lo & 0xF) + float4((h >> 0) & 3) * 16.0f - 32.0f, xa[k], a0);
+                a1 = fma(float4(hi & 0xF) + float4((h >> 2) & 3) * 16.0f - 32.0f, xb[k], a1);
+                a2 = fma(float4(lo >> 4)  + float4((h >> 4) & 3) * 16.0f - 32.0f, xc[k], a2);
+                a3 = fma(float4(hi >> 4)  + float4((h >> 6) & 3) * 16.0f - 32.0f, xd[k], a3);
+            }
+            s[r] += d * (sc[is] * (a0.x + a0.y + a0.z + a0.w) + sc[is + 2] * (a1.x + a1.y + a1.z + a1.w) +
+                         sc[is + 4] * (a2.x + a2.y + a2.z + a2.w) + sc[is + 6] * (a3.x + a3.y + a3.z + a3.w));
+        }
+    }
+    for (int r = 0; r < MVG6_NR; r++) {
+        uint row = row0 + r;
+        float v = simd_sum(s[r]);
+        if (tiisg == 0 && row < (uint)a.n_out) y[row] = a.has_bias ? v + bias[row] : v;
+    }
+    }
+}
+
+// k_mvg_q6_K over several columns with each block read once, each column
+// running the one-column kernel's arithmetic for its step (admitted by
+// metal_mvc_self_test). At most MVFC_COLS columns a threadgroup.
+kernel void k_mvgc_q6_K(MV_PARAMS) {
+    uint row0 = (tgpig.x * (ntg.x / 32) + sgitg) * MVG6_NR;
+    if (row0 >= (uint)a.n_out) return;
+    int col_lo = (int)tgpig.y * a.col_tile;
+    int ncol = min(min(a.col_tile, MVFC_COLS), a.n_col - col_lo);
+    int nb = a.n_in / 256;
+    int il = tiisg & 7, half_i = il >> 2, l0 = (il & 3) * 8, is = l0 >> 4;
+    float s[MVFC_COLS][MVG6_NR];
+    for (int c = 0; c < MVFC_COLS; c++) for (int r = 0; r < MVG6_NR; r++) s[c][r] = 0;
+    for (int b = (int)(tiisg >> 3); b < nb; b += 4) {
+        float d[MVG6_NR], s0[MVG6_NR], s1[MVG6_NR], s2[MVG6_NR], s3[MVG6_NR];
+        uchar4 lo[MVG6_NR][2], hi[MVG6_NR][2], hh[MVG6_NR][2];
+        int nr = 0;
+        for (int r = 0; r < MVG6_NR; r++) {
+            uint row = row0 + r;
+            if (row >= (uint)a.n_out) break;
+            device const uchar *blk = wb + a.w_off + ((ulong)row * nb + b) * 210;
+            device const packed_uchar4 *l4  = (device const packed_uchar4 *)(blk + half_i * 64 + l0);
+            device const packed_uchar4 *l4b = (device const packed_uchar4 *)(blk + half_i * 64 + 32 + l0);
+            device const packed_uchar4 *h4  = (device const packed_uchar4 *)(blk + 128 + half_i * 32 + l0);
+            device const char *sc = (device const char *)(blk + 192) + half_i * 8;
+            d[r] = (float)*(device const half *)(blk + 208);
+            s0[r] = sc[is]; s1[r] = sc[is + 2]; s2[r] = sc[is + 4]; s3[r] = sc[is + 6];
+            for (int k = 0; k < 2; k++) { lo[r][k] = l4[k]; hi[r][k] = l4b[k]; hh[r][k] = h4[k]; }
+            nr++;
+        }
+        for (int c = 0; c < ncol; c++) {
+            device const float *x = x_all + (ulong)(col_lo + c) * a.x_stride;
+            device const packed_float4 *xp = (device const packed_float4 *)(x + b * 256 + half_i * 128 + l0);
+            float4 xa[2], xb[2], xc[2], xd[2];
+            for (int k = 0; k < 2; k++) { xa[k] = xp[k]; xb[k] = xp[8 + k]; xc[k] = xp[16 + k]; xd[k] = xp[24 + k]; }
+            for (int r = 0; r < nr; r++) {
+                float4 a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+                for (int k = 0; k < 2; k++) {
+                    uchar4 l = lo[r][k], u = hi[r][k], h = hh[r][k];
+                    a0 = fma(float4(l & 0xF) + float4((h >> 0) & 3) * 16.0f - 32.0f, xa[k], a0);
+                    a1 = fma(float4(u & 0xF) + float4((h >> 2) & 3) * 16.0f - 32.0f, xb[k], a1);
+                    a2 = fma(float4(l >> 4)  + float4((h >> 4) & 3) * 16.0f - 32.0f, xc[k], a2);
+                    a3 = fma(float4(u >> 4)  + float4((h >> 6) & 3) * 16.0f - 32.0f, xd[k], a3);
+                }
+                s[c][r] += d[r] * (s0[r] * (a0.x + a0.y + a0.z + a0.w) + s1[r] * (a1.x + a1.y + a1.z + a1.w) +
+                                   s2[r] * (a2.x + a2.y + a2.z + a2.w) + s3[r] * (a3.x + a3.y + a3.z + a3.w));
+            }
+        }
+    }
+    for (int c = 0; c < ncol; c++) {
+        device float *y = y_all + (ulong)(col_lo + c) * a.y_stride;
+        for (int r = 0; r < MVG6_NR; r++) {
+            uint row = row0 + r;
+            float v = simd_sum(s[c][r]);
+            if (tiisg == 0 && row < (uint)a.n_out) y[row] = a.has_bias ? v + bias[row] : v;
+        }
+    }
+}
+
 // k_mv_q8_0 over several columns with each block's quants read once (R3.24
 // (a)): per lane step the block's scale and its 32 quants are loaded a single
 // time, then every column of the tile runs exactly k_mv_q8_0's arithmetic for
