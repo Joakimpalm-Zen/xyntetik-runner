@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--quant-error` costs a row its type cannot describe at the type the
+  rewrite writes instead.** A tensor whose rows the asked type's block does
+  not divide (a MoE expert width of 896 under `q4_k`) read `null` in the
+  report, so `runner derive --target-size --low q4_k` refused the plan
+  ("has no q4_k entry") where `--rewrite --quant q4_k` of the same parent
+  writes the tensor at `q5_0` through the width fallback. The report now
+  costs such a row at that fallback type and names it in `written_as`; a
+  plan built from the report predicts the file the rewrite makes, and derive
+  plans every MoE whose expert width is not a multiple of 256. Found by a
+  derive run on the lab box.
+
 - **Nemotron 3.5 Lightning-30B-A3B joins the validated roster at Tier 2 (the
   publisher's Q4_0; the Q8_0 is the fidelity file).** Against NVIDIA's BF16
   checkpoint in float32 at use, at the model's declared time-step limit: Q4_0
@@ -29,6 +40,24 @@ Current release and unreleased changes. Compatibility follows the
   agreement 63.2% before, 95.8% now. A file that declares the key keeps it.
   Requantize nothing; reload the file.
 
+- **`RUNNER_DEBUG_TIME` reports the attention core inside the attention
+  stage.** A new `attn core` line times only the scores, softmax and values
+  pass, without the projections. Timing only; output unchanged.
+
+- **Metal prefill attention takes 512-wide heads on the tile, byte-identical,
+  by default for gemma-4's E-series (R3.6.3.2).** gemma-4's 512-wide global
+  layers ran the one-column kernel over the whole history, 66% of an 8K
+  Nemotron 3.5 Bolt E4B prefill on the 8 GB laptop. They now take
+  `k_attn_tile`, the kernel 256-wide heads already used, with `k_attn`'s
+  arithmetic in `k_attn`'s order, so the output is the same bytes: one
+  global layer's attention at 8K ran in 3.4 s against 25.0 s, and the 8K
+  prefill's GPU time went from 274 s to 117-123 s (about 2.3x; 4K: 1.43x in
+  tok/s). Decode is unchanged. Measured only on the 8 GB laptop and only to
+  8K: a 16K prefill of this file does not fit that laptop without swap. On
+  by default for gemma4 with per-layer embeddings, the family CUDA's wide
+  kernel defaults to; `RUNNER_METAL_ATTN_TILE_WIDE=0` keeps the one-column
+  kernel for heads wider than 256, `=1` takes the tile on any model. The
+  route detail says `attn_wide=on`.
 - **CUDA prefill attention for 256- to 512-wide heads runs on the tensor
   cores, by default for gemma-4's E-series (R3.6.3.1).** gemma-4's 512-wide
   global layers took the tile's 8-row kernel on the CUDA cores, 79% of a

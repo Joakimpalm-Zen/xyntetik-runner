@@ -3692,7 +3692,6 @@ static const char *k_metal_src =
     "// So this is not a tolerance route: tests/test_metal_attn_tile.py holds its\n"
     "// output byte-identical to k_attn's, and RUNNER_METAL_ATTN_TILE=0 pins k_attn.\n"
     "#define ATTN_TILE 8\n"
-    "#define ATTN_TILE_MAX_HD 256   // the host keeps wider heads on k_attn\n"
     "#define ATTN_VBLK 128          // rows of scores held in threadgroup memory\n"
     "struct attn_tile_args { int n_col; };\n"
     "\n"
@@ -3704,11 +3703,14 @@ static const char *k_metal_src =
     "                   constant attn_args &a   [[buffer(5)]],\n"
     "                   device const float *sinks [[buffer(6)]],\n"
     "                   constant attn_tile_args &ta [[buffer(7)]],\n"
+    "                   // the queries, 2 * max(head_dim, 256) float4 sized by the host\n"
+    "                   // (head_dim up to 512, 16 KB; the threadgroup then holds\n"
+    "                   // about 21 KB with red[] and pt[])\n"
+    "                   threadgroup float4 *qt [[threadgroup(0)]],\n"
     "                   uint3 tgpig [[threadgroup_position_in_grid]],\n"
     "                   uint3 tid3 [[thread_position_in_threadgroup]],\n"
     "                   uint3 tpg3 [[threads_per_threadgroup]]) {\n"
     "    threadgroup float red[256];\n"
-    "    threadgroup float4 qt[2 * ATTN_TILE_MAX_HD];\n"
     "    threadgroup float4 pt[2 * ATTN_VBLK];\n"
     "    uint tid = tid3.x, tpg = tpg3.x;\n"
     "    uint h = tgpig.x;\n"
@@ -5785,4 +5787,4 @@ static const char *k_metal_src =
     "\n"
 ;
 // SHA-256 of kernels.metal as embedded above.
-static const char *k_metal_sha = "c1c9941fd29fa463a23270de83717d323da56b37c004a113a776f7b9fb86edb3";
+static const char *k_metal_sha = "36224b7f15900163091f01ad28aa1a507a11a4e28bd3aaaf952140ad06a55a64";
