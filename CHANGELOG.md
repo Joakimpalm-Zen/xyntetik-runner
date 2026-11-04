@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CI: the macOS suite runs daily and on dispatch, not on every push.** GitHub's hosted
+  macOS arm64 pool is capacity-limited and cancelled queued jobs often enough to keep
+  main red for hours on 2026-11-04 (28 cancellations against 4 real failures on main
+  over two weeks). The pull-request `macos` job keeps the Metal gates and now also
+  runs the suite's Metal pytest files, which is where the four real failures were.
+  The Windows suite and every Linux job are unchanged.
+
 - **DeepSeek-V2-Lite-Chat joins the validated roster at Tier 2 (R4.4.5 step d), with two of mradermacher's static
   files: the Q8_0, the fidelity file, and the Q6_K, the smallest to pass the fidelity bar.**
   - **The reads:** against the publisher's BF16 checkpoint run in float32 through its own `modeling_deepseek.py`
