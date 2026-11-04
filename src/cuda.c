@@ -1571,7 +1571,7 @@ static size_t expert_plan_bytes(const layer_t *ly, int n_expert, bool bound) {
 // prefix's reach had neither the hyper-connection mixers nor the shared
 // expert. tests/test_cuda_tensor_roles.py holds every tensor field of
 // layer_t to one of the lists or a named host-side role.
-enum { LAYER_MIXER_MAX = 19 };
+enum { LAYER_MIXER_MAX = 22 };
 
 // The mixer side, on the device whatever the FFN does: attention or the
 // recurrent mixer, the hyper-connection stream mixers (four projections and
@@ -1582,7 +1582,11 @@ static int layer_mixer_tensors(const layer_t *ly, gguf_tensor **out) {
         ly->ple_gate, ly->ple_proj, ly->wq, ly->wk, ly->wv, ly->wo, ly->wqkv,
         ly->wq_gate, ly->ssm_in, ly->ssm_conv, ly->ssm_beta, ly->ssm_alpha,
         ly->ssm_out, ly->hc_attn_down, ly->hc_attn_up, ly->hc_attn_inject,
-        ly->hc_ffn_down, ly->hc_ffn_up, ly->hc_ffn_inject };
+        ly->hc_ffn_down, ly->hc_ffn_up, ly->hc_ffn_inject,
+        // deepseek2's multi-head latent attention (R4.4.5): the q-lora down
+        // projection and the latent pair; attn_q/attn_output ride wq/wo.
+        // CUDA refuses the architecture until step (c) runs it on the device
+        ly->wq_a, ly->wkv_a, ly->wkv_b };
     int n = 0;
     for (int i = 0; i < LAYER_MIXER_MAX; i++)
         if (ts[i]) out[n++] = ts[i];
