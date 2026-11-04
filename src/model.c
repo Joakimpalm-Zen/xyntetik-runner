@@ -544,7 +544,7 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         if (m->deepseek2) {
             float mla_ms = 1.0f + log_mul * logf(factor);
             m->rope_mscale = 1.0f;
-            m->attn_scale  = mla_ms * mla_ms / sqrtf((float)m->head_dim);
+            m->attn_scale  = mla_ms * mla_ms / sqrtf((float)m->mla_qk);
         }
     }
     // The local table above was built from the raw base, BEFORE the block that
@@ -1589,7 +1589,7 @@ static void model_free_weights(model_t *m) {
         free(l->attn_norm_w); free(l->ffn_norm_w);
         free(l->bq); free(l->bk); free(l->bv); free(l->bo);
         free(l->qnorm_w); free(l->knorm_w);
-        free(l->q_a_norm_w); free(l->kv_a_norm_w);
+        free(l->q_a_norm_w); free(l->kv_a_norm_w); free(l->mla_kvb);
         free(l->post_attn_norm_w); free(l->post_ffn_norm_w);
         free(l->down_exps_scale); free(l->gate_inp_scale);
         free(l->attn_sinks);
@@ -2461,6 +2461,20 @@ static bool bind_meta_deepseek2(model_t *m, gguf_file *g, const char *arch) {
                 "dense lead %d)\n", m->mla_kv_lora, m->mla_q_lora, m->head_dim,
                 m->mla_v_dim, m->rope_dim, m->n_head, m->n_head_kv, m->n_dense_lead);
         return false;
+    }
+    // The absorbed form, the default: the cache holds one row per token and
+    // layer, [k_pe | normed latent], read by every head (MQA); Q per head is
+    // [q_pe | k_b^T q_nope], so q.k is the publisher's q_pe.k_pe +
+    // q_nope.k_nope re-associated, and V is the same row (only its latent
+    // slice reaches the output, through kv_b's v-rows). The naive form stays
+    // behind RUNNER_MLA_NAIVE=1, the oracle the identity gate compares with.
+    const char *naive = getenv("RUNNER_MLA_NAIVE");
+    m->mla_absorb = !(naive && *naive && strcmp(naive, "0") != 0);
+    m->mla_qk = m->head_dim;
+    m->attn_scale = 1.0f / sqrtf((float)m->mla_qk);   // rope_setup adds YaRN's mscale^2
+    if (m->mla_absorb) {
+        m->head_dim  = m->mla_kv_lora + m->rope_dim;
+        m->n_head_kv = 1;
     }
     return true;
 }
@@ -4246,7 +4260,7 @@ gate:
 // deepseek2's attention tensors, in the layout bind_meta_deepseek2 admitted.
 static bool bind_mla(model_t *m, gguf_file *g, layer_t *l, int i, bool *okp) {
     bool ok = *okp;
-    const int hd = m->head_dim, r = m->mla_kv_lora, rd = m->rope_dim;
+    const int hd = m->mla_qk, r = m->mla_kv_lora, rd = m->rope_dim;
     const int H = m->n_head, ql = m->mla_q_lora;
     if (ql > 0) {
         l->wq_a = need_tensor(g, "blk.%d.attn_q_a.weight", i, &ok);
@@ -4269,6 +4283,12 @@ static bool bind_mla(model_t *m, gguf_file *g, layer_t *l, int i, bool *okp) {
         !check_shape(l->wkv_b, r, H * (hd - rd + m->mla_v_dim), "attn_kv_b", i) ||
         !check_shape(l->wo, H * m->mla_v_dim, m->n_embd, "attn_output", i))
         return false;
+    if (m->mla_absorb) {
+        // dequantized once: the absorbed Q reads k-rows as a transposed product
+        // (a weighted sum of rows), the output the v-rows (113 MB each on V2-Lite)
+        l->mla_kvb = tensor_to_f32(l->wkv_b, (int64_t)r * H * (hd - rd + m->mla_v_dim), &ok);
+        *okp = ok;
+    }
     return true;
 }
 
@@ -5359,8 +5379,8 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         // per row: kv_a [kv_lora + rope], the normed latent [kv_lora], kv_b's
         // output [heads x (nope + v)] and the q-lora activation (mla_project)
         size_t row = (size_t)(m->mla_kv_lora + m->rope_dim) + (size_t)m->mla_kv_lora +
-                     (size_t)m->n_head * (m->head_dim - m->rope_dim + m->mla_v_dim) +
-                     (size_t)m->mla_q_lora;
+                     (size_t)m->n_head * (m->mla_qk - m->rope_dim + m->mla_v_dim) +
+                     (size_t)m->mla_q_lora + (m->mla_absorb ? (size_t)m->n_head * m->mla_qk : 0);
         m->mla_scratch = malloc(sizeof(float) * row * (size_t)B);
         if (!m->mla_scratch) return false;
     }
@@ -13348,6 +13368,43 @@ NUM_STAGE void mla_project(model_t *m, const fwd_layer *c) {
     float *lat = kva + (size_t)n * (r + rd);        // [n][r]
     float *kvo = lat + (size_t)n * r;               // [n][kvb]
     float *qa  = kvo + (size_t)n * kvb;             // [n][ql]
+    if (m->mla_absorb) {
+        // hd here is kv_lora + rope_dim (576); the publisher's head is mla_qk
+        const int qk = m->mla_qk, qn = qk - rd, kvw = qn + vd, qdr = H * qk;
+        float *qr = qa + (size_t)n * ql;            // [n][H * qk], the raw Q
+        if (ql > 0) {
+            matvec_b(m->tp, qa, ql, ly->wq_a, m->xb, xdim, n_embd, ql, NULL, n);
+            for (int b = 0; b < n; b++)
+                rmsnorm(qa + (size_t)b * ql, qa + (size_t)b * ql, ly->q_a_norm_w, ql, m->rms_eps);
+            matvec_b(m->tp, qr, qdr, ly->wq, qa, ql, ql, qdr, NULL, n);
+        } else
+            matvec_b(m->tp, qr, qdr, ly->wq, m->xb, xdim, n_embd, qdr, NULL, n);
+        matvec_b(m->tp, kva, r + rd, ly->wkv_a, m->xb, xdim, n_embd, r + rd, NULL, n);
+        for (int b = 0; b < n; b++) {
+            rmsnorm(lat + (size_t)b * r, kva + (size_t)b * (r + rd), ly->kv_a_norm_w, r, m->rms_eps);
+            for (int h = 0; h < H; h++) {
+                const float *src = qr + (size_t)b * qdr + (size_t)h * qk;
+                float *dst = m->q + (size_t)b * q_dim + (size_t)h * hd;
+                memcpy(dst, src + qn, sizeof(float) * rd);
+                float *qab = dst + rd;              // k_b^T q_nope: kv_b's k-rows weighted
+                memset(qab, 0, sizeof(float) * r);
+                for (int d = 0; d < qn; d++) {
+                    const float sd = src[d];
+                    const float *row = ly->mla_kvb + ((size_t)h * kvw + d) * r;
+                    for (int j = 0; j < r; j++) qab[j] += sd * row[j];
+                }
+            }
+            float *k = m->k_tmp + (size_t)b * kv_dim;   // one KV head
+            memcpy(k, kva + (size_t)b * (r + rd) + r, sizeof(float) * rd);
+            memcpy(k + rd, lat + (size_t)b * r, sizeof(float) * r);
+            memcpy(m->v_tmp + (size_t)b * kv_dim, k, sizeof(float) * kv_dim);
+        }
+        if (c->dbg) {
+            dbg_stat("q-raw", l, m->q + (size_t)(n - 1) * q_dim, q_dim);
+            dbg_stat("k-raw", l, m->k_tmp + (size_t)(n - 1) * kv_dim, kv_dim);
+        }
+        return;
+    }
     // Q in the publisher's per-head order [nope | pe], into k_tmp first
     // (kv_dim == q_dim here: every head owns its K)
     if (ql > 0) {
@@ -13604,6 +13661,28 @@ NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
 NUM_STAGE void attn_output(model_t *m, const fwd_layer *c) {
     const layer_t *ly = c->ly;
     const int l = c->l, n = c->n, n_embd = c->n_embd, xdim = c->xdim, q_dim = c->q_dim;
+    if (m->deepseek2 && m->mla_absorb) {
+        // each head's output is [sum p.k_pe | sum p.latent]; its latent slice
+        // goes through kv_b's v-rows to the head's value width, then attn_output
+        const int hd = c->hd, rd = m->rope_dim, r = m->mla_kv_lora, vd = m->mla_v_dim;
+        const int qn = m->mla_qk - rd, kvw = qn + vd, H = m->n_head;
+        float *tmp = m->mla_scratch;                // [n][H * vd]; free after mla_project
+        for (int b = 0; b < n; b++)
+            for (int h = 0; h < H; h++) {
+                const float *lo = m->xb2 + (size_t)b * xdim + (size_t)h * hd + rd;
+                for (int e = 0; e < vd; e++) {
+                    const float *row = ly->mla_kvb + ((size_t)h * kvw + qn + e) * r;
+                    float acc = 0.0f;
+                    for (int j = 0; j < r; j++) acc += row[j] * lo[j];
+                    tmp[(size_t)b * H * vd + (size_t)h * vd + e] = acc;
+                }
+            }
+        for (int b = 0; b < n; b++)
+            memcpy(m->xb2 + (size_t)b * xdim, tmp + (size_t)b * H * vd, sizeof(float) * (size_t)H * vd);
+        matvec_b(m->tp, m->xb, xdim, ly->wo, m->xb2, xdim, H * vd, n_embd, ly->bo, n);
+        (void)l; (void)q_dim;
+        return;
+    }
     if (m->deepseek2) {
         // pack the first mla_v_dim of each head (the rest is V's zero pad):
         // head h moves down to h * vd, never over a head not yet moved
