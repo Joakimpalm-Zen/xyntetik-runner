@@ -1,0 +1,311 @@
+diff --git a/src/engine.c b/src/engine.c
+index 81bea0f0..125b6cfb 100644
+--- a/src/engine.c
++++ b/src/engine.c
+@@ -2545,6 +2545,89 @@ static int spec_emit(engine *e, int tok, gen_cb cb, void *ud, int *n_gen,
+     return rc;
+ }
+ 
++// --draft-k auto (R3.3.7): the width of each round follows the turn's running
++// acceptance. The verify walk is unchanged, so the stream is plain decoding's
++// whatever width a round takes; only the cost of a round moves.
++//
++// Per round the drafts accepted before the first rejection are a run of
++// successes, so a round of nd drafts with acc accepted adds acc successes and,
++// when acc < nd, one failure. Both decay by SPEC_AUTO_DECAY a round (drafted
++// or not), so a turn that changes register (code to prose) moves the estimate
++// within a few rounds, and a width of 0 drifts back to the source's prior and
++// tries again. With p the per-token acceptance, a width K returns
++// 1 + p + ... + p^K tokens for c(K) + K * draft plain steps, c(K) the verify
++// cost of K + 1 rows; the round takes the K with the most tokens a step.
++//
++// c(K) per backend, measured (suite plan R3.3.7): CUDA from SS-001 R1 (a row
++// costs about 0.2 of a step up to eight rows, and the ninth jumps, so 7 is the
++// last width); the CPU from SS-000 row 1 (0.45 to 0.78 of a step a row, so 4).
++// Metal pays K + 1 steps for K + 1 rows (no verify twins until R3.3.9), so
++// auto does not speculate there. A NextN head is capped at 4 (SS-002: K 7 was
++// slower than plain at every measured acceptance on the 4B class).
++enum { SPEC_AUTO_KMAX = 7 };
++#define SPEC_AUTO_DECAY 0.8
++#define SPEC_AUTO_PRIOR_W 2.0
++static const double spec_cost_cuda[SPEC_AUTO_KMAX + 1] =
++    {1.00, 1.44, 1.61, 1.77, 1.92, 2.14, 2.35, 2.57};
++static const double spec_cost_cpu[SPEC_AUTO_KMAX + 1] =
++    {1.00, 1.56, 2.09, 2.62, 3.15, 0, 0, 0};
++
++typedef struct {
++    const double *cost;
++    int    kmax;       // 0: auto never drafts on this backend
++    double draft;      // plain steps a drafted token costs
++    double prior;      // per-token acceptance before the turn has any
++    double s, f;       // decayed successes and failures
++    int    hist[SPEC_AUTO_KMAX + 1];   // rounds per chosen width
++} spec_auto;
++
++static void spec_auto_init(spec_auto *a, const engine *e, int kcap) {
++    memset(a, 0, sizeof(*a));
++    const model_t *m = e->m;
++    const char *be = model_backend_name(m);
++    if (!strcmp(be, "cuda")) { a->cost = spec_cost_cuda; a->kmax = 7; }
++    else if (!strcmp(be, "cpu")) { a->cost = spec_cost_cpu; a->kmax = 4; }
++    else { a->cost = spec_cost_cuda; a->kmax = 0; }
++    if (e->mtp_on) {
++        if (a->kmax > 4) a->kmax = 4;
++        a->draft = m->gpu ? 0.23 : 0.16;   // SS-001 R2; the 10-31 CPU profile
++        a->prior = 0.7;
++    } else if (e->dm) {
++        // a draft forward is a weight pass of the draft file
++        a->draft = e->dm->file_id_ok && m->file_id_ok && m->file_size
++                 ? (double)e->dm->file_size / (double)m->file_size : 0.3;
++        a->prior = 0.7;
++    } else {
++        a->draft = 0;      // lookup: an integer search
++        a->prior = 0.9;
++    }
++    if (a->kmax > kcap) a->kmax = kcap;
++}
++
++static int spec_auto_width(spec_auto *a) {
++    double p = (a->s + SPEC_AUTO_PRIOR_W * a->prior) / (a->s + a->f + SPEC_AUTO_PRIOR_W);
++    int best = 0;
++    double best_r = 1.0, t = 1.0, pk = 1.0;
++    for (int k = 1; k <= a->kmax; k++) {
++        pk *= p;
++        t += pk;
++        double r = t / (a->cost[k] + k * a->draft);
++        if (r > best_r) { best_r = r; best = k; }
++    }
++    a->hist[best]++;
++    return best;
++}
++
++// a round's outcome; nd == 0 (a width of 0, or lookup found nothing) only ages
++// the evidence
++static void spec_auto_note(spec_auto *a, int nd, int acc) {
++    a->s *= SPEC_AUTO_DECAY;
++    a->f *= SPEC_AUTO_DECAY;
++    if (nd <= 0) return;
++    a->s += acc;
++    if (acc < nd) a->f += 1;
++}
++
+ // The speculative walk. One round: the pending token `cur` (emitted, sitting
+ // at hist[pos], not yet forwarded) rides as row 0 of a batched verify whose
+ // rows 1..nd are the drafts; the walk samples row by row against the target's
+@@ -2585,12 +2668,16 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
+                                    // window inside it (RUNNER_SPEC_BATCH can raise
+                                    // spec_batch to 64 for a chunked --score,
+                                    // RUNNER_SCORE_CHUNKED=1)
+-    int K = e->draft_k;
++    // draft_k 0 is --draft-k auto: K is then the widest a round may take
++    const bool autow = e->draft_k == 0;
++    int K = autow ? SPEC_AUTO_KMAX : e->draft_k;
+     if (K < 1) K = 1;
+     if (K > m->spec_batch - 1) K = m->spec_batch - 1;
+     if (K > SPEC_DRAFT_MAX - 1) K = SPEC_DRAFT_MAX - 1;
+     if (K > m->n_batch - 1) K = m->n_batch - 1; // activation buffers hold n_batch rows
+     if (K < 1) K = 1;
++    spec_auto sa;
++    if (autow) spec_auto_init(&sa, e, K);
+     int32_t b[SPEC_DRAFT_MAX];   // b[0] = pending token, b[1..nd] = drafts
+     int32_t *d = b + 1;
+     float *dl = NULL; // draft-model logits for position dpos
+@@ -2624,6 +2711,9 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
+             st_rounds ? (double)n_gen / st_rounds : 0, \
+             st_gr_accepted, st_gr_drafted, \
+             st_lk_accepted, st_lk_drafted, e->spec_st.draft_fed); \
++        if (autow) fprintf(stderr, "spec-auto: widths 0:%d 1:%d 2:%d 3:%d 4:%d 5:%d 6:%d 7:%d" \
++                           " (rounds per width, max %d)\n", sa.hist[0], sa.hist[1], sa.hist[2], \
++                           sa.hist[3], sa.hist[4], sa.hist[5], sa.hist[6], sa.hist[7], sa.kmax); \
+         /* in the macro so every exit prints it: three early returns on a \
+            completed constrained document (--json) used to skip it (R3.3.10) */ \
+         if (prof) fprintf(stderr, "spec-prof: draft %.0f ms, verify %.0f ms, logits %.0f ms, " \
+@@ -2673,6 +2763,8 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
+             continue;            // re-check the budget with the token pending
+         }
+         st_rounds++;
++        // this round's width (a grammar run below fills its own window)
++        const int Kr = autow ? spec_auto_width(&sa) : K;
+         // the head's pair for the pending token: (hidden of the last consumed
+         // token, cur) at position pos. A queue push; it runs with the draft.
+         if (e->mtp_on) model_mtp_feed(m, cur);
+@@ -2690,7 +2782,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
+         // is a one-row verify, i.e. plain decoding plus the search
+         if (prof) tp = now_s();
+         if (!nd && e->lookup_on && e->hist) {
+-            int cap = K;
++            int cap = Kr;
+             if (max_new >= 0 && cap > max_new - n_gen) cap = max_new - n_gen;
+             if (cap > m->n_ctx - e->pos - 1) cap = m->n_ctx - e->pos - 1;
+             if (cap > 0) nd = lk = engine_lookup_draft(e->hist, e->pos + 1, cap, d);
+@@ -2708,25 +2800,25 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
+         // following positions. Provisional rows land at pos+1.. and are
+         // overwritten by the true pairs once those tokens are known.
+         if (prof) tp = now_s();
+-        if (!nd && !dm && e->mtp_on) {
++        if (!nd && !dm && e->mtp_on && Kr > 0) {
+             if (model_mtp_position(m) != e->pos + 1)
+                 model_mtp_reset(m, e->pos + 1); // desynced: no draft this round
+             float *ml = model_mtp_draft_logits(m);
+             const float *h = model_mtp_hidden(m);
+-            while (ml && nd < K && e->pos + nd + 1 < m->n_ctx) {
++            while (ml && nd < Kr && e->pos + nd + 1 < m->n_ctx) {
+                 int best = 0;
+                 for (int i = 1; i < m->n_vocab; i++)
+                     if (ml[i] > ml[best]) best = i;
+                 d[nd++] = best;
+                 st_drafted++;
+-                if (nd >= K) break;
++                if (nd >= Kr) break;
+                 ml = model_mtp_step(m, h, best, e->pos + nd);
+                 h = model_mtp_hidden(m);
+             }
+         }
+         // catch the draft model up on hist[dpos..pos], the pending token
+         // included, so its drafts start at pos+1
+-        while (!nd && dm && e->dpos <= e->pos) {
++        while (!nd && dm && Kr > 0 && e->dpos <= e->pos) {
+             int want = e->pos + 1 - e->dpos;
+             int chunk = want < dm->n_batch ? want : dm->n_batch;
+             if (e->dpos + chunk > dm->n_ctx) { dl = NULL; break; }
+@@ -2737,10 +2829,10 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
+         }
+         // a recurrent draft's fold now covers hist[0..pos], the pending token
+         // included: the point a rejection returns to (dpos_rewind)
+-        if (!nd && dl && dm && model_has_recurrent(dm))
++        if (!nd && Kr > 0 && dl && dm && model_has_recurrent(dm))
+             e->dsnap = model_recurrent_snapshot(dm, e->dpos) ? e->dpos : -1;
+         // draft up to K tokens greedily (nd == 0 degrades to plain decoding)
+-        while (!gr && dl && nd < K && e->pos + nd + 1 < m->n_ctx &&
++        while (!gr && dl && Kr > 0 && nd < Kr && e->pos + nd + 1 < m->n_ctx &&
+                e->dpos + 1 < dm->n_ctx) {
+             int best = 0;
+             for (int i = 1; i < dm->n_vocab; i++)
+@@ -2781,6 +2873,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
+         // walk the rows: 0 = the pending token, 1..nd = the drafts. Row i's
+         // logits sample the token for position pos+i+1, which must equal
+         // draft d[i] (= b[i+1]) for the walk to continue.
++        const int acc0 = st_accepted;
+         int i = 0;
+         for (; i <= nd; i++) {
+             if (max_new >= 0 && n_gen >= max_new) break;
+@@ -2875,6 +2968,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
+             i = -1; // signal: already advanced
+             break;
+         }
++        if (autow && !gr) spec_auto_note(&sa, nd, st_accepted - acc0);
+         if (i >= 0) {
+             // budget or stop poll hit before row i was sampled: rows 0..i are
+             // consumed (b[i] was emitted by row i-1's accept), nothing pends
+diff --git a/src/engine.h b/src/engine.h
+index 08f12e33..6ca9a05f 100644
+--- a/src/engine.h
++++ b/src/engine.h
+@@ -244,7 +244,8 @@ typedef struct {
+     int      dpos;         // draft KV position (may trail pos)
+     int      dsnap;        // a recurrent draft's fold snapshot position, -1 none
+                            // (R3.3.8: a rejection restores it, not position 0)
+-    int      draft_k;      // drafts per round
++    int      draft_k;      // drafts per round; 0 = auto (R3.3.7: each round's
++                           // width follows the turn's acceptance, engine.c)
+     // NextN/MTP head drafts: no draft model; the target's own predictor
+     // block proposes draft_k tokens per round (model_mtp_* in model.h).
+     // The engine feeds the head every token the target consumes, so the
+diff --git a/src/main.c b/src/main.c
+index fb48e19f..b470477d 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -1397,7 +1397,8 @@ static void usage_to(FILE *f, const char *prog) {
+         "                 companion GGUF, an MTP-only export, when the\n"
+         "                 model file carries none) or lookup (n-gram matches in\n"
+         "                 the context itself: no weights, no draft forward)\n"
+-        "  --draft-k N    draft tokens per round (default 4)\n"
++        "  --draft-k N|auto  draft tokens per round (default 4); auto follows\n"
++        "                 the turn's acceptance\n"
+         "  --draft-required  fail instead of decoding plain if --draft PATH is\n"
+         "                 refused (local CLI only; serve mode reports\n"
+         "                 draft.active from /v1/capabilities)\n\n"
+@@ -2514,7 +2515,11 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
+             else o->draft_path = v;
+         }
+         else if (!strcmp(a, "--draft-required")) o->draft_required = true;
+-        else if (!strcmp(a, "--draft-k")) o->draft_k = (int)int_arg(a, NEXT, 1, 15);
++        else if (!strcmp(a, "--draft-k")) {
++            const char *v = NEXT;
++            // auto (R3.3.7) rides as 0: the engine sizes each round itself
++            o->draft_k = !strcmp(v, "auto") ? 0 : (int)int_arg(a, v, 1, 15);
++        }
+         else if (!strcmp(a, "--mtp"))     { o->mp.mtp = true; o->mtp_on = true; }
+         else if (!strcmp(a, "--mtp-file")) { o->mp.mtp_path = NEXT; o->mp.mtp = true; o->mtp_on = true; }
+         else if (!strcmp(a, "--draft-lookup")) o->draft_lookup = true;
+@@ -4470,6 +4475,14 @@ static int run_serve(cli_opts *o, cli_run *rt, const wm_key *wmk, bool wm_on,
+     return rc;
+ }
+ 
++// --draft-k as the startup lines print it
++static const char *draft_k_str(int k) {
++    static char buf[16];
++    if (k == 0) return "auto";
++    snprintf(buf, sizeof buf, "%d", k);
++    return buf;
++}
++
+ // The engine over the loaded model: the watermark hook, a draft model, the
+ // MTP head or the lookup draft, a --json-schema constraint, and the prompt
+ // token buffer. False when one of them is refused or cannot be had.
+@@ -4488,7 +4501,8 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
+     if (o->draft_path) {
+         rt->e.dm = spec_draft_load(o->draft_path, &rt->m, &o->mp);
+         if (rt->e.dm) {
+-            fprintf(stderr, "draft: %s (%d tokens per round)\n", o->draft_path, o->draft_k);
++            fprintf(stderr, "draft: %s (%s tokens per round)\n", o->draft_path,
++                    draft_k_str(o->draft_k));
+             rt->e.draft_k = o->draft_k;
+         } else if (o->draft_required) {
+             fprintf(stderr, "error: --draft-required: %s was refused above and"
+@@ -4506,7 +4520,7 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
+         rt->e.mtp_on = true;
+         rt->e.draft_k = o->draft_k;
+         fprintf(stderr, "mtp: drafting from the model's NextN head "
+-                "(%d tokens per round)\n", o->draft_k);
++                "(%s tokens per round)\n", draft_k_str(o->draft_k));
+     }
+     if (o->draft_lookup) {
+         if (!model_spec_verify_ok(&rt->m)) {
+@@ -4517,8 +4531,8 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
+         rt->e.lookup_on = true;
+         rt->e.draft_k = o->draft_k;
+         fprintf(stderr, "lookup: drafting from the context (n-grams of %d..%d "
+-                "tokens, up to %d per round)\n", ENGINE_LOOKUP_N_MIN,
+-                ENGINE_LOOKUP_N_MAX, o->draft_k);
++                "tokens, up to %s per round)\n", ENGINE_LOOKUP_N_MIN,
++                ENGINE_LOOKUP_N_MAX, draft_k_str(o->draft_k));
+     }
+     if (o->schema_file) {
+         size_t ssz = 0;
+diff --git a/src/model.c b/src/model.c
+index 8c90abb3..67e472ad 100644
+--- a/src/model.c
++++ b/src/model.c
+@@ -6685,6 +6685,8 @@ static const char *route_backend(const model_t *m) {
+ #endif
+ }
+ 
++const char *model_backend_name(const model_t *m) { return route_backend(m); }
++
+ static const char *route_build(void) {
+ #if defined(RUNNER_T3_BUILD)
+     return "t3/" RUNNER_BUILD_ARCH;
+diff --git a/src/model.h b/src/model.h
+index 77f33d4b..12d5a198 100644
+--- a/src/model.h
++++ b/src/model.h
+@@ -1417,6 +1417,8 @@ bool   model_forward_verify(model_t *m, const int32_t *tokens, int n, int pos);
+ void   model_forward_refold(model_t *m, const int32_t *tokens, int n, int pos);
+ // whether the batched verify path above can run at all for this model
+ bool   model_spec_verify_ok(const model_t *m);
++// the backend the route record names: "cpu", "cuda", "metal" (or "gpu")
++const char *model_backend_name(const model_t *m);
+ float *model_spec_row_logits(model_t *m, int b);
+ // The caller wrote KV rows [lo, ...) into the host cache itself (a prefix
+ // snapshot or a session image installed): a device mirror of the cache takes
