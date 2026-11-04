@@ -445,6 +445,13 @@ while i < len(args):
     i += 1
 
 N_EMBD, N_HEAD, N_KV, N_FF, N_LAYER = 64, 4, 2, 128, 2
+# --arch deepseek2: multi-head latent attention (R4.4.5). Per head 8 nope + 8 rope
+# dims of Q and K (key_length 16) and 8 of V, one 16-wide latent and one 8-wide
+# rope key per token, every head its own KV (the legacy unsplit attn_kv_b), YaRN
+# metadata so the publisher's mscale^2 scale is exercised. Dense FFN: no experts.
+MLA_NOPE, MLA_ROPE, MLA_V, MLA_R = 8, 8, 8, 16
+if ARCH == "deepseek2":
+    N_KV = N_HEAD
 if WIDE:
     N_EMBD, N_FF = 256, 512
 if N_FF_SET is not None:
@@ -583,6 +590,23 @@ for i in range(N_LAYER + MTP_LAYERS):
     if ZERO_BRANCHES:
         o_data = struct.pack(f"<{q_dim * N_EMBD}f", *([0.0] * (q_dim * N_EMBD)))
     drop_kv = i in DROPPED_KV
+    if ARCH == "deepseek2":
+        hd = MLA_NOPE + MLA_ROPE
+        tensors += [
+            (f"blk.{i}.attn_norm.weight", [N_EMBD], norm_w(N_EMBD)),
+            (f"blk.{i}.attn_q.weight", [N_EMBD, N_HEAD * hd], tensor_data(N_EMBD * N_HEAD * hd)),
+            (f"blk.{i}.attn_kv_a_mqa.weight", [N_EMBD, MLA_R + MLA_ROPE],
+             tensor_data(N_EMBD * (MLA_R + MLA_ROPE))),
+            (f"blk.{i}.attn_kv_a_norm.weight", [MLA_R], norm_w(MLA_R)),
+            (f"blk.{i}.attn_kv_b.weight", [MLA_R, N_HEAD * (MLA_NOPE + MLA_V)],
+             tensor_data(MLA_R * N_HEAD * (MLA_NOPE + MLA_V))),
+            (f"blk.{i}.attn_output.weight", [N_HEAD * MLA_V, N_EMBD], tensor_data(N_HEAD * MLA_V * N_EMBD)),
+            (f"blk.{i}.ffn_norm.weight", [N_EMBD], norm_w(N_EMBD)),
+            (f"blk.{i}.ffn_gate.weight", [N_EMBD, N_FF_I], tensor_data(N_EMBD * N_FF_I)),
+            (f"blk.{i}.ffn_up.weight", [N_EMBD, N_FF_I], tensor_data(N_EMBD * N_FF_I)),
+            (f"blk.{i}.ffn_down.weight", [N_FF_I, N_EMBD], tensor_data(N_FF_I * N_EMBD)),
+        ]
+        continue
     tensors += [
         (f"blk.{i}.attn_norm.weight", [N_EMBD], norm_w(N_EMBD)),
         (f"blk.{i}.attn_q.weight", [N_EMBD, q_dim], q_data),
@@ -746,7 +770,18 @@ meta_kvs = [
     ku("tokenizer.ggml.eos_token_id", 2),
     kb("tokenizer.ggml.add_bos_token", True),
 ]
-if HEAD_DIM and not (ESERIES_SHARED_KV or ESERIES_PLE):   # the E-series branch publishes its own
+if ARCH == "deepseek2":
+    meta_kvs += [
+        ku(f"{ARCH}.attention.key_length", MLA_NOPE + MLA_ROPE),
+        ku(f"{ARCH}.attention.value_length", MLA_V),
+        ku(f"{ARCH}.attention.kv_lora_rank", MLA_R),
+        ku(f"{ARCH}.rope.dimension_count", MLA_ROPE),
+        ks(f"{ARCH}.rope.scaling.type", "yarn"),
+        kf(f"{ARCH}.rope.scaling.factor", 40.0),
+        ku(f"{ARCH}.rope.scaling.original_context_length", 64),
+        kf(f"{ARCH}.rope.scaling.yarn_log_multiplier", 0.0707),
+    ]
+elif HEAD_DIM and not (ESERIES_SHARED_KV or ESERIES_PLE):   # the E-series branch publishes its own
     meta_kvs += [
         ku(f"{ARCH}.attention.key_length", HEAD_DIM),
         ku(f"{ARCH}.attention.value_length", HEAD_DIM),

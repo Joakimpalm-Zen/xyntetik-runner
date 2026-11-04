@@ -1649,6 +1649,11 @@ test-apertus: runner
 test-moe: runner
 	$(PYTHON) -m pytest -q tests/test_moe.py
 
+# deepseek2 (R4.4.5): the CPU multi-head latent attention against a plain-Python
+# forward of the publisher's math on a two-layer fixture, and the family's refusals
+test-deepseek2: runner
+	$(PYTHON) -m pytest -q tests/test_deepseek2.py
+
 # --prune-experts: stacked-layout MoE expert pruning in the quantize path.
 test-prune-experts: runner
 	$(PYTHON) -m pytest -q tests/test_prune_experts.py
@@ -3376,6 +3381,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	  test-spec-cpu-nemotron.gguf; do ./$(TEST_SPEC_ID) $$f cpu || exit 1; done
 	$(PYTHON) scripts/check-generated.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
+	$(MAKE) --no-print-directory test-deepseek2 PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
 
 # The microbatch gates: byte identity of the batched forward against the
@@ -3767,7 +3773,7 @@ test-cuda-gated: runner test.gguf
 
 .PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
 .PHONY: test-gates test-gates-core test-gates-batch test-python
-.PHONY: test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+.PHONY: test-deepseek2 test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # The TypeScript client (R10.7): type-checked with the pinned compiler and run
 # against a live runner on the CI fixture. Needs Node 18+ and npm (the pinned
