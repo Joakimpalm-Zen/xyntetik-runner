@@ -3682,7 +3682,8 @@ with exit status 3 instead of releasing the GPU and continuing on the CPU; the
 comparison and certification harnesses set it, so a device fault part-way through a
 run cannot be recorded as a device result),
 `RUNNER_REQUANT_ONLY` / `RUNNER_FORCE_REQUANT` (substring-scoped and
-size-check-bypassing requantization for experiments), the
+size-check-bypassing requantization for experiments),
+`RUNNER_CUDA_ATTN_DUMP=<dir>` (each CUDA prompt tile's attention Q, fp16 K/V cache rows, output and geometry, with which kernel ran, for `scripts/attn-dump-compare.py` to check against a float64 reference), the
 `RUNNER_METAL_*`/`RUNNER_CUDA_*` kernel knobs and failure injectors. They print
 or dump internals for the tools under `scripts/` (`moe-prune-plan.py` consumes
 `RUNNER_MOE_TRACE`, `classify-grammar-trace.py` consumes

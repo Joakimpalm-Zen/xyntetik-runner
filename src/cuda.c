@@ -7438,15 +7438,18 @@ static bool tile_attn_rows(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
     return ok;
 }
 
-// R1.25 instrument (unmerged branch): RUNNER_CUDA_ATTN_DUMP=<dir> writes, for
-// every prompt tile's attention, the kernel's inputs and output as the device
-// holds them: Q (tn x q_dim float32), this layer's K and V cache rows 0 to the
+// RUNNER_CUDA_ATTN_DUMP=<dir> (a development switch, R1.25) writes, for every
+// prompt tile's attention, the kernel's inputs and output as the device holds
+// them: Q (tn x q_dim float32), this layer's K and V cache rows 0 to the
 // tile's last position (fp16 as stored), the output (tn x q_dim float32), and
-// a JSON line of geometry and which kernel ran (the k_attn_tcw dispatch delta).
+// a JSON line of geometry and which kernel ran (the k_attn_tcw dispatch
+// delta). scripts/attn-dump-compare.py reads it. Unset, a tile pays one
+// cached flag test. It found Qwen3.8-Flash-Next's wide-head attention within
+// 1.7e-6 of float64 on every call, which moved R1.25 to the identity gate.
 static bool attn_dump(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
                       int q_dim, int xdim, const attn_args *aa, unsigned long tcw0) {
-    static const char *dir = NULL;
-    static int read = 0, seq = 0;
+    static const char *_Atomic dir = NULL;
+    static _Atomic int read = 0, seq = 0;
     if (!read) { dir = getenv("RUNNER_CUDA_ATTN_DUMP"); read = 1; }
     if (!dir || !*dir || tn < 2) return true;
     if (cu.StreamSynchronize(g->stream) != 0) return false;
@@ -7474,12 +7477,12 @@ static bool attn_dump(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
     size_t len[] = { qb, qb, kb, kb };
     for (int i = 0; ok && i < (fp16 ? 4 : 2); i++) {
         snprintf(path, sizeof path, "%s/c%04d-L%02d.%s", dir, n, l, ext[i]);
-        FILE *f = fopen(path, "wb");
+        FILE *f = plat_fopen(path, "wb");
         ok = f && fwrite(buf[i], 1, len[i], f) == len[i];
         if (f) fclose(f);
     }
     snprintf(path, sizeof path, "%s/meta.jsonl", dir);
-    FILE *f = ok ? fopen(path, "a") : NULL;
+    FILE *f = ok ? plat_fopen(path, "a") : NULL;
     if (f) {
         fprintf(f, "{\"call\":%d,\"layer\":%d,\"pos\":%d,\"tn\":%d,\"head_dim\":%d,"
                 "\"n_head\":%d,\"n_kv\":%d,\"q_dim\":%d,\"scale\":%.9g,\"window\":%d,"

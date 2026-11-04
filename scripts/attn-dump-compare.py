@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""R1.25 instrument (unmerged branch): compare two RUNNER_CUDA_ATTN_DUMP runs.
+"""Check RUNNER_CUDA_ATTN_DUMP output (a development switch, R1.25).
 
     attn-dump-compare.py DIR_A [DIR_B] [--detail N]
 
