@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Qwen3.8-27B GSQ-RCO IQ3_S recovered: the roster row now leads with the
+  float32 reference reading, 0.41 mean KLD, 8x the bar (R4.32).** Against
+  Qwen's float32 reference the published file reads 0.4119 / 85.04%
+  margin-qualified top-1 in the house window and 0.4084 / 86.12% at
+  positions 4000-5999. ISTA-DASLab's unmodified source reads 0.5616 /
+  82.48% and 0.4718 / 86.36%. Both predict the corpus better than the
+  parent (perplexity 21.54 and 53.48 against 73.29), so GSQ-RCO is a
+  learned derivative, not a faithful quantization; the scale recovery moved
+  the file toward the parent. The row's earlier 0.0450 / 97.80% (500 short
+  Wikitext-2 prefixes against our BF16 GGUF) stays beneath, labelled. The
+  tier is unchanged and the Hub card edits wait for the owner. Report:
+  `docs/compat-reports/r4.32-qwen38-iq3s-reference-2026-11-04`.
+
 - **The CUDA int8 prefill route (`RUNNER_CUDA_I8=1`) stays opt-in for every
   type (R3.14.1).** Against the publisher's float32 models, Q8_0 (Qwen3-0.6B)
   reads 1.51x the default route's mean KL. Q4_K with Q6_K (Qwen3-4B Q4_K_M)

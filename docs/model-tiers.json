@@ -1112,11 +1112,11 @@
       "model": "Qwen3.8-27B",
       "family": "Qwen3.8",
       "tier": "tier1",
-      "claim": "ISTA-DASLab's IQ3_S file with every quantised block's fp16 scales retrained against the BF16 parent, text path: it reads inside the fidelity bar against that parent and is not a lossless Qwen3.8-27B.",
+      "claim": "Reads 0.41 mean KLD against Qwen's float32 reference, 8x the bar; a learned derivative, not a faithful quantization. ISTA-DASLab's GSQ-RCO IQ3_S of Qwen3.8-27B (codes and scales fitted on calibration data) with every quantised block's fp16 scales retrained against the BF16 parent, text path: it predicts the reference corpus better than its parent (perplexity 21.54 against 73.29) and reads closer to the parent than the unmodified source file.",
       "architecture": "qwen35",
       "upstream": {
         "checkpoint": "Qwen/Qwen3.8-27B",
-        "revision": null
+        "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
       },
       "licence": {
         "id": "apache-2.0",
@@ -1139,10 +1139,11 @@
           "tools:qwen38"
         ],
         "fp32_reference": "measured",
-        "anchor": "Against the BF16 parent: mean KLD 0.0450, margin-qualified top-1 97.80% on 500 held-out positions, inside the bar. Family: Qwen3.5-0.8B bf16 against Qwen's float32 reference (1.5.0 golden pass).",
+        "anchor": "Against Qwen/Qwen3.8-27B@1d4bf0f2 in float32: mean KLD 0.4119, margin-qualified top-1 85.04% in the house window and 0.4084 / 86.12% at positions 4000-5999 (the unmodified source file: 0.5616 / 82.48% and 0.4718 / 86.36%; Wilcoxon on KLD p 1.7e-10 and 0.0017); corpus perplexity 21.54, source 53.48, parent 73.29. A fresh BF16 GGUF of the parent reads 0.00002 / 100%. Beneath it, the earlier anchor: against the project's BF16 GGUF on 500 short Wikitext-2 prefixes, 0.0450 KLD and 97.80% margin-qualified top-1 (plain top-1 87.20%).",
         "context": null,
-        "limitations": null,
+        "limitations": "Outside the fidelity bar against the publisher's float32 reference (mean KLD 0.41 against a bar of 0.05; margin-qualified top-1 85-86% against 97%). A learned derivative fitted on calibration data: its perplexity on the reference corpus is below the parent's. The 500-prefix anchor does not describe longer or other text.",
         "evidence": [
+          "docs/compat-reports/r4.32-qwen38-iq3s-reference-2026-11-04/README.md",
           "docs/granite-42-qwen38-cert-2026-09-06.md",
           "docs/golden-pass-2026-10-22.md",
           "tests/compatibility/coverage.json"

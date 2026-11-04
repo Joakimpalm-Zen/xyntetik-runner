@@ -1,0 +1,8 @@
+2026-11-04 05:35:53 cgroup anon+shmem 1 GB
+2026-11-04 05:38:23 source in memory: Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf: 11.77 GB in 148 s (80 MB/s), sha256 64b53b64c7aa39f2 = the Hub's LFS sha256, in memory
+2026-11-04 05:51:09 score source (CPU) exit 0: "ppl":53.4773575 "paths":{"keep":{"forwards":507,"rows_max":16}}
+2026-11-04 05:51:11 source GGUF released
+2026-11-04 06:02:26 parent in memory: holding 18 files in memory, 55.6 GB (pid 1202846)
+2026-11-04 06:05:06 gold house exit 0
+2026-11-04 06:08:35 gold d1window exit 0
+2026-11-04 06:08:39 all released

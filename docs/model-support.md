@@ -791,17 +791,18 @@ Text path only: NVIDIA's post-train of Gemma-4-E4B-it in the publisher's own Q4_
 <a id="qwen3.8-27b-gsq-rco-iq3_s-recovered"></a>
 ##### `Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf`
 
-ISTA-DASLab's IQ3_S file with every quantised block's fp16 scales retrained against the BF16 parent, text path: it reads inside the fidelity bar against that parent and is not a lossless Qwen3.8-27B.
+Reads 0.41 mean KLD against Qwen's float32 reference, 8x the bar; a learned derivative, not a faithful quantization. ISTA-DASLab's GSQ-RCO IQ3_S of Qwen3.8-27B (codes and scales fitted on calibration data) with every quantised block's fp16 scales retrained against the BF16 parent, text path: it predicts the reference corpus better than its parent (perplexity 21.54 against 73.29) and reads closer to the parent than the unmodified source file.
 
 - **File:** `Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf` (sha256 `873df48dd3ecf205f73c29716e80fbe766e4202ef4ed394b2c24607a8628458f`, 11,771,546,784 bytes, from [Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF) at revision `7b10f923a7f7`).
-- **Upstream checkpoint:** Qwen/Qwen3.8-27B.
+- **Upstream checkpoint:** Qwen/Qwen3.8-27B at revision `1d4bf0f2ff60`.
 - **Quantization:** IQ3_S codebook mix, recovered scales.
 - **Licence:** `apache-2.0`, as the Qwen/Qwen3.8-27B model card states it.
 - **Features claimed:** text, tools (qwen38). A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** Against the BF16 parent: mean KLD 0.0450, margin-qualified top-1 97.80% on 500 held-out positions, inside the bar. Family: Qwen3.5-0.8B bf16 against Qwen's float32 reference (1.5.0 golden pass).
+- **Numerical anchor (a publisher float32 comparison exists):** Against Qwen/Qwen3.8-27B@1d4bf0f2 in float32: mean KLD 0.4119, margin-qualified top-1 85.04% in the house window and 0.4084 / 86.12% at positions 4000-5999 (the unmodified source file: 0.5616 / 82.48% and 0.4718 / 86.36%; Wilcoxon on KLD p 1.7e-10 and 0.0017); corpus perplexity 21.54, source 53.48, parent 73.29. A fresh BF16 GGUF of the parent reads 0.00002 / 100%. Beneath it, the earlier anchor: against the project's BF16 GGUF on 500 short Wikitext-2 prefixes, 0.0450 KLD and 97.80% margin-qualified top-1 (plain top-1 87.20%).
 - **Context tested:** not recorded.
+- **Known limitations:** Outside the fidelity bar against the publisher's float32 reference (mean KLD 0.41 against a bar of 0.05; margin-qualified top-1 85-86% against 97%). A learned derivative fitted on calibration data: its perplexity on the reference corpus is below the parent's. The 500-prefix anchor does not describe longer or other text.
 - **Still missing:** A CPU row on the file; pinned greedy output.
-- **Evidence:** [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Evidence:** [docs/compat-reports/r4.32-qwen38-iq3s-reference-2026-11-04/README.md](compat-reports/r4.32-qwen38-iq3s-reference-2026-11-04/README.md), [docs/granite-42-qwen38-cert-2026-09-06.md](granite-42-qwen38-cert-2026-09-06.md), [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.7.1 on 2026-10-29.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `6bc726d37ed11e94`, [pin](../tests/compatibility/tier-smoke/qwen3.8-27b-gsq-rco-iq3_s-recovered.windows-x86_64-cuda.cuda.txt)
