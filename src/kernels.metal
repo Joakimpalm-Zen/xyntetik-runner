@@ -2167,6 +2167,10 @@ kernel void k_mvfc_q4_K(MV_PARAMS) {
 // it was not bit-identical to this kernel (rounding level, at most 2e-5
 // relative; bit-identical with fast math off), and the column walk measured
 // faster than k_mvf_q4_K with its twin anyway (4 columns 1.076x, 8 1.039x).
+// The scale unpack is get_scale_min_k4's pair for the lane's fixed
+// sub-blocks, branch-free (R3.28.5): the branch on j < 4 split every
+// simdgroup's lanes, so each paid both sides; at Qwen3-4B's 2560-wide inputs
+// it took the kernel from 38.2 to 47.9 GB/s with the same bits.
 #define MVG_NR 4
 kernel void k_mvg_q4_K(MV_PARAMS) {
     uint row0 = (tgpig.x * (ntg.x / 32) + sgitg) * MVG_NR;
@@ -2175,6 +2179,7 @@ kernel void k_mvg_q4_K(MV_PARAMS) {
     int col_hi = min(col_lo + a.col_tile, a.n_col);
     int nb = a.n_in / 256;
     int il = tiisg & 7, jj = il >> 1, h = il & 1;
+    bool hi = jj >= 2;   // sub-blocks 4 to 7 take the high-bit form
     for (int col = col_lo; col < col_hi; col++) {
     device const float *x = x_all + (ulong)col * a.x_stride;
     device float *y = y_all + (ulong)col * a.y_stride;
@@ -2193,9 +2198,16 @@ kernel void k_mvg_q4_K(MV_PARAMS) {
             device const uchar *blk = wb + a.w_off + ((ulong)row * nb + b) * 144;
             float d = (float)*(device const half *)blk;
             float dmin = (float)*(device const half *)(blk + 2);
-            uchar s1, m1, s2, m2;
-            get_scale_min_k4(jj * 2 + 0, blk + 4, &s1, &m1);
-            get_scale_min_k4(jj * 2 + 1, blk + 4, &s2, &m2);
+            // the pair (2jj, 2jj + 1) of get_scale_min_k4, branch-free: the
+            // lane's sub-blocks are fixed, so these 16-bit loads sit at fixed
+            // offsets, and lanes with jj < 2 and jj >= 2 no longer diverge
+            device const uchar *q = blk + 4;
+            ushort B = *(device const ushort *)(q + ((jj * 2) & 3));
+            ushort C = *(device const ushort *)(q + ((jj * 2) & 3) + 4);
+            ushort A = *(device const ushort *)(q + ((jj * 2) & 3) + 8);
+            ushort sc = hi ? (ushort)((A & 0x0F0F) | ((B >> 2) & 0x3030)) : (ushort)(B & 0x3F3F);
+            ushort mn = hi ? (ushort)(((A >> 4) & 0x0F0F) | ((C >> 2) & 0x3030)) : (ushort)(C & 0x3F3F);
+            uchar s1 = sc & 0xFF, s2 = sc >> 8, m1 = mn & 0xFF, m2 = mn >> 8;
             device const packed_uchar4 *q4 = (device const packed_uchar4 *)(blk + 16 + jj * 32 + h * 16);
             float4 t1 = 0, t2 = 0;
             for (int k = 0; k < 4; k++) {

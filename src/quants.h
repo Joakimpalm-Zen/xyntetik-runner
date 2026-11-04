@@ -179,6 +179,16 @@ bool   i8_dot_ok(int type, int n);        // fused kernel exists for (type, n)
 size_t i8_act_size(int n);                // scratch bytes for n activations
 void   i8_quant_act(const float *x, void *dst, int n);
 float  vec_dot_i8(int type, const void *row, const void *xq, int n);
+// The K-quant int8 decode dot (R3.1.4, RUNNER_CPU_I8K=1, off by default):
+// Q4_K and Q6_K rows against 256-element activation blocks (llama.cpp's
+// q8_K layout), integer through each superblock. A tolerance route like the
+// one above; vec_dot_i8k_scalar is its portable twin, byte-equal to it.
+bool   i8k_dot_enabled(void);
+bool   i8k_dot_ok(int type, int n);
+size_t i8k_act_size(int n);
+void   i8k_quant_act(const float *x, void *dst, int n);
+float  vec_dot_i8k(int type, const void *row, const void *xk, int n);
+float  vec_dot_i8k_scalar(int type, const void *row, const void *xk, int n);
 // One weight row against up to VEC_DOT_MULTI_MAX activation columns, each
 // output byte-equal to vec_dot(type, row, xs[c], n): the weight block is
 // decoded once for every column (the small-batch win for codebook quants).

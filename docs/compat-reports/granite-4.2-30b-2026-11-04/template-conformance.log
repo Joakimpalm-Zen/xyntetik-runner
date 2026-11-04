@@ -1,0 +1,31 @@
+  granite42     user-only+gen              ok
+  granite42     user-only-nogen            ok
+  granite42     system+user+gen            ok
+  granite42     system+multiturn+gen       ok
+  granite42     multiturn+gen              ok
+  granite42     multiturn-nogen            ok
+  granite42     trailing-assistant+gen     ok
+  granite42     trailing-assistant-nogen   ok
+  granite42     consecutive-user           ok
+  granite42     consecutive-assistant      ok
+  granite42     system-mid-history         ok
+  granite42     content-array              ok
+  granite42     empty-assistant-content    ok
+  granite42     empty-user-content         ok
+  granite42     unicode-emoji              ok
+  granite42     long-content               ok
+  granite42     think-on                   ok
+  granite42     think-off                  ok
+  granite42     tools-no-system+gen        ok
+  granite42     tool-call+result           ok
+  granite42     multi-tool-call            ok
+  granite42     tool-call-with-text        ok
+  granite42     tool-then-conversation     ok
+  granite42     tool-call-args-hostile     ok
+
+granite42       CLEAN                          [hf:ibm-granite/granite-4.2-3b f0ba43f79b3cabca] tok:granite-4.2-3b-Q4_K_M.gguf
+
+24 cases compared, 0 known-bug differences (backlog), 0 new, 0 changed, 0 fixed-but-still-listed, 0 not expressible by the family
+token-level: 24 cases checked (24 identical, 0 differing), 0 NOT CHECKED for want of a tokenizer
+
+OK: every compared case is conformant or an accounted-for deviation; 0 known bugs remain in the backlog.
