@@ -5,6 +5,38 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The CUDA int8 prefill route (`RUNNER_CUDA_I8=1`) stays opt-in for every
+  type (R3.14.1).** Against the publisher's float32 models, Q8_0 (Qwen3-0.6B)
+  reads 1.51x the default route's mean KL. Q4_K with Q6_K (Qwen3-4B Q4_K_M)
+  reads 1.008x, and is worse on the paired Wilcoxon (p 0.037). Both miss the
+  routes' rule. Report: `docs/compat-reports/r3.14-cuda-int8-prefill-2026-11-03`.
+
+- **`--quant-error` costs a row its type cannot describe at the type the
+  rewrite writes instead.** A tensor whose rows the asked type's block does
+  not divide (a MoE expert width of 896 under `q4_k`) read `null` in the
+  report, so `runner derive --target-size --low q4_k` refused the plan
+  ("has no q4_k entry") where `--rewrite --quant q4_k` of the same parent
+  writes the tensor at `q5_0` through the width fallback. The report now
+  costs such a row at that fallback type and names it in `written_as`; a
+  plan built from the report predicts the file the rewrite makes, and derive
+  plans every MoE whose expert width is not a multiple of 256. Found by a
+  derive run on the lab box.
+
+- **Nemotron 3.5 Lightning-30B-A3B joins the validated roster at Tier 2 (the
+  publisher's Q4_0; the Q8_0 is the fidelity file).** Against NVIDIA's BF16
+  checkpoint in float32 at use, at the model's declared time-step limit: Q4_0
+  0.0476 mean KLD and 97.62% margin-qualified top-1, Q8_0 0.0146 and 99.05%,
+  the BF16 GGUF 0.0055 and 100% (300 positions, CPU); llama.cpp 73a43d1 reads
+  0.0499 and 0.0173 on the same files, and Runner is the closer by per-position
+  KLD on both. Every number is from the build with the sigmoid router (#575).
+  Two corrections to the reference are recorded: transformers 5.14.1's naive
+  Mamba-2 scan is wrong across chunks (5.16.1 is the reference), and the 5.16.1
+  mixer clamps dt at the initialisation floor rather than the config's declared
+  limit (0.246 against 0.0055 on the BF16 file; the declared limit predicts the
+  corpus better). CPU only: the router has no device kernel. The three
+  `qwen35moe` Upcoming rows no longer claim the architecture does not load.
+  Record: `docs/compat-reports/nemotron-3.5-lightning-30b-a3b-2026-11-03`.
+
 - **Nemotron 3.5 Lightning (`nemotron_h_moe`) routed its experts with the wrong
   function; fixed. Every nemotron_h_moe file has given wrong output since
   v0.2.0.** The publisher's router is a sigmoid; the published GGUFs carry no

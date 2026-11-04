@@ -1128,6 +1128,9 @@ The [quick start](#quick-start) uses Granite 4.1 3B Q8_0. The choices below
 separate a fidelity-gated starting point from a smaller smoke test and a
 larger project artifact. File size is not the total RAM requirement; use
 [`--info fit`](#deciding-before-you-download) for the model and context you need.
+On an 8 GB Mac, a one-shot CLI run of a mapped 4B file pays about 3 GB of
+page-in inside its first prompt; `--mlock` or a resident server
+holds the weights.
 
 | Model | File size | Role |
 |---|---|---|
@@ -1880,7 +1883,10 @@ unconverted. On an RTX 3070 it read prefill of 1,965 tokens at 5,207 tok/s
 against 3,839 on Qwen3-1.7B Q8_0, and 2,330 against 2,162 on Qwen3-4B Q4_K_M.
 It is off by default because `./test-tc-tol` fails on Qwen3-0.6B Q8_0 (its
 greedy tokens diverge from the scalar route's at a near-tie), although no file
-flips a top-1 token in the gate's 64 teacher-forced positions. The route
+flips a top-1 token in the gate's 64 teacher-forced positions. Its reads
+against the publisher's float32 models miss for both pairs (Q8_0 at 1.51x
+the default route's mean KL; Q4_K with Q6_K at 1.008x, worse at Wilcoxon
+p 0.037), so no type is promoted. The route
 detail (and so a receipt) says `i8=on`, and `--bench-json` counts its launches
 as `cuda_i8` in the route record.
 
@@ -2486,7 +2492,7 @@ instance instead.
 | `--reserve P` or `--reserve vram=P,ram=P,cpu=P` | One percentage caps this process at `P` percent of total RAM and VRAM; the named form sets each budget on its own: `vram` (the CUDA layer-fit budget, [details](#cli-reserve-vram)), `ram`, and `cpu` (size the default thread count as a percentage of cores). Without `-c` the context is auto-fit to what the reservation leaves after the weights. |
 | `--kv f16\|q8\|k8v4\|fp4` | Choose KV cache storage; precision, memory use and backend support differ by format. [Details](#cli-kv). |
 | `--kv-ring auto\|on\|off` | Give sliding-window layers only their window of KV rows, output-identical to the flat cache. `auto` (default) turns it on only when the weights and the flat cache do not fit; `-v` says why it is on or off. [Details](#cli-kv-ring). |
-| `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. A Gemma 4 E-series per-layer token table stays pageable. |
+| `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. A Gemma 4 E-series per-layer token table stays pageable. Runner maps its weights, so a one-shot CLI run of a mapped 4B file on an 8 GB Mac pays about 3 GB of page-in inside its first prompt (Qwen3-4B Q4_K_M: 28 against 85 tok/s of 512-token prefill, 2026-11-04); `--mlock` or a resident server holds the weights. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
 | `--draft SOURCE` | Speculative decoding from one source per run, named by its spelling. `PATH`: a same-vocabulary draft GGUF ([details](#cli-draft)). `mtp`: the model's own NextN/MTP predictor block ([details](#cli-mtp)). `mtp:FILE`: that block from a companion GGUF when the model file was exported without one ([details](#cli-mtp)). `lookup`: n-gram matches in the context itself, no weights and no draft forward ([details](#cli-draft-lookup)). A second source on the line is refused, not ignored. A server given a swap registry (`-m a=...,b=...`) refuses to start with a draft, which needs a single served model. |
 | `--draft-k N` | Draft tokens per speculative round, `1` to `15`, default `4`, for every draft source (a round verifies the drafts plus the correction, at most 16 rows). All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
@@ -2656,7 +2662,7 @@ whether the draft is `active` there.
 | `--type-plan PLAN.json` | Apply a per-tensor rewrite plan; first matching substring rule wins. [Details](#cli-type-plan). |
 | `--type-plan-strict` | With `--type-plan`: fail before writing anything when a rule would be declined (block width, never-grow) or fall back to a 32-block type, instead of reporting it and building the file. Off by default. |
 | `--imatrix FILE` | With `--rewrite`: an importance matrix, in llama.cpp's GGUF or legacy `.dat` imatrix format, so a published one serves as it is. It weights the rounding of `q3_k` and `q4_0` rows toward the input columns a calibration text drives hardest: per column `w * sqrt(sigma2 + x^2)`, the weighted Q3_K and Q4_0 quantizers of ggml. Other output types are written as without it, a matrix the calibration never reached (an expert no token was routed to) is written unweighted, and an entry whose size does not fit its tensor fails the rewrite. The summary line counts what it shaped; the `.quant.json` record names the file by sha256. Without it every writer emits the reference bytes it always has. |
-| `--quant-error OUT.jsonl` | Write no model: for every tensor a rewrite would quantize and every `--quant` type (a comma list, e.g. `q4_0,q3_k`), one JSON line with the type's bytes and the squared round-trip error the rewrite's own writer leaves, summed over rows and weighted per input column by `--imatrix` when given (1 without one), so it reads as the expected squared output perturbation the type adds to that matrix. A type whose block cannot describe the row reads `null`. `scripts/type-plan-by-sensitivity.py` turns the report into a `--type-plan` that demotes whole blocks (or single tensors) to a lower type in order of the error they add per byte they save. The ranking is a proxy: measure the plan's file against the reference before trusting it. |
+| `--quant-error OUT.jsonl` | Write no model: for every tensor a rewrite would quantize and every `--quant` type (a comma list, e.g. `q4_0,q3_k`), one JSON line with the type's bytes and the squared round-trip error the rewrite's own writer leaves, summed over rows and weighted per input column by `--imatrix` when given (1 without one), so it reads as the expected squared output perturbation the type adds to that matrix. A type whose block cannot describe the row is costed as the 32-block type the rewrite writes in its place (the width fallback, `q4_k` to `q5_0`), with `"written_as"` naming it, so a plan built from the report predicts the file; a type with no fallback reads `null`. `scripts/type-plan-by-sensitivity.py` turns the report into a `--type-plan` that demotes whole blocks (or single tensors) to a lower type in order of the error they add per byte they save. The ranking is a proxy: measure the plan's file against the reference before trusting it. |
 | `--merge-lora` | Trigger: `--rewrite OUT` folds `--lora` into the base weights and writes a standalone GGUF. Quantized merges round the delta; a merge that keeps under 50% of it is refused. [Details](#cli-merge-lora). |
 | `--merge-allow-erased` | With `--merge-lora`: write the merge even when the output grid rounded the delta away. [Details](#cli-merge-lora). |
 | `--context-surgery` | Trigger: `--rewrite OUT` compiles `-c TARGET --rope yarn=FACTOR` into a native-YaRN GGUF and writes `OUT.context.json` provenance. The target must equal original context × factor and extend both source values. Every tensor payload is independently reparsed and byte-compared before success; precision does not change. |

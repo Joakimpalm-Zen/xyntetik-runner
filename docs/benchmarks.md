@@ -21,6 +21,49 @@ fraction of the card's SMs. Absolute tok/s will differ on other hardware; the
 with the compute/bandwidth balance (the same kernels measured different ratios
 on an RTX 3070).
 
+## Results, 2026-11-04: Runner against mlx-lm, Apple M1 8 GB
+
+Runner is at 32% to 49% of mlx-lm on these two models, on prefill and
+decode alike. This compares an engine and a format together, not the engine
+alone: the two 4-bit files are different quantizations (mlx-lm's affine
+4-bit in groups of 64 against Q4_K_M's super-blocks), so the row makes no
+claim about either file's fidelity.
+
+| model | prefill tok/s, 512 tokens: Runner / mlx-lm | of mlx-lm | decode tok/s, 128 tokens: Runner / mlx-lm | of mlx-lm |
+|---|---|---:|---|---:|
+| Qwen3-0.6B | 498.8 / 1,248.2 | 40% | 34.7 / 110.1 | 32% |
+| Qwen3-4B | 84.7 / 174.5 | 49% | 9.8 / 22.0 | 45% |
+
+| | |
+|---|---|
+| Machine | Apple M1, 8 GB, macOS 27.0.1 (26A434) |
+| Runner | main `78db276c`, Metal, full offload (`--gpu 99`) |
+| mlx-lm | 0.32.2 with mlx 0.32.4, in a Python 3.14 venv |
+| Runner files | `Qwen3-0.6B-Q4_K_M` (bartowski/Qwen_Qwen3-0.6B-GGUF at `60b85c0e`, sha256 `9acfc1e0...`), `Qwen3-4B-Q4_K_M` (sha256 `7485fe6f...`) |
+| mlx-lm files | mlx-community/Qwen3-0.6B-4bit at `73e3e38d`, mlx-community/Qwen3-4B-4bit at `4dcb3d10` |
+| Prompt | the first 512 tokens of `tests/fixtures/gold-corpus-2k.txt` (both tokenizers count 512), 128 greedy tokens with no stop at the end of text |
+| Method | three interleaved rounds, the median; each run in its own process under a swap guard |
+
+How each engine was timed:
+
+- mlx-lm reports `stream_generate`'s own prompt and generation rates, after
+  a warm-up generation in the same process. It reads its weights into
+  memory at load, before its timer.
+- Runner reports its stats line. It maps the weights, so a page that is not
+  resident is read from disk during the timed prompt. On this 8 GB machine,
+  the 2.5 GB Qwen3-4B file could not stay in the page cache next to the
+  rest: without `--mlock`, two of three warm attempts paged in about 3.2 GB
+  during the run and read 28 tok/s of prefill. The Qwen3-4B row therefore
+  uses `--mlock`, which makes the weights resident at load, before the
+  timer, as mlx-lm's are; its three rounds read 83.8, 86.2 and 84.7. The
+  Qwen3-0.6B row needed no `--mlock`: its runs paged in under 13 MB.
+
+Runner's Q4_K decode on this machine changes with R3.28.2 (the
+narrow-slice Q4_K kernel, open as #591 when this was measured). Its branch,
+`348c3420`, measured the same way in three more rounds, reads Qwen3-4B at
+83.7 tok/s of prefill and 11.3 of decode against mlx-lm's 173.3 and 21.7 in
+those rounds: 48% and 52%.
+
 ## Results, 2026-10-21: after the 2026-10 performance work, three hosts
 
 The same hosts, files and method as the baseline section below, measured on
