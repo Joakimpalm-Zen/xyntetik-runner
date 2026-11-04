@@ -104,10 +104,12 @@ static int g_n_batch = N_BATCH;
 #define GPU_DEV_FRAC_ROUTED 2e-3
 // The share of a MoE file's expert slots where the device's own router may
 // choose another expert than the CPU's before the gate calls it a router
-// defect, not near-ties tipped by rounding. Real files tip far fewer
-// (Qwen3.8-Flash-Next 3 and 8 of 45,600, Qwen3-30B-A3B 3 of 1,872
-// routings); the toy fixtures tip none, and a Metal router with its bias
-// dropped tips 20 to 40% of them (R1.25, 2026-11-04).
+// defect, not near-ties tipped by rounding. Where 1e-2 comes from (R1.25,
+// 2026-11-04): the most a real file has tipped is 1.75e-4 of its slots
+// (Qwen3.8-Flash-Next, 8 of 45,600; 3 at RUNNER_CUDA_ATTN_TC_WIDE=1), 57x
+// below the bound; a Metal router with its bias dropped tips 0.2 to 0.4 of
+// the gptoss fixtures' slots, 20x to 40x above it; the healthy toy fixtures
+// tip none.
 #define GPU_TIP_FRAC 1e-2
 
 // GPU_ID_LIMIT=F: a tighter bound for one fixture, never a looser one (a
