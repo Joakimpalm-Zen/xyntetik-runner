@@ -1,0 +1,18 @@
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB
+gpu-split: budget=25.13GB fixed=1.69GB G=64/64 full=1 used=13.53GB
+gpu-split: prompt window 512 columns (batch 512, 10.89 GB spare, 440708 bytes a column with TC2's activations)
+gpu: the device's tensors (64 layers and the head) lie in 2 stretches of the file; uploading them as runs
+gpu: CUDA backend on CUDA MIG slice 1g.24gb (11.4 GB weights in VRAM)
+gpu: VRAM 11.85 GB free of 25.37 GB after init (kv 1.21 GB + scratch 0.47 GB this instance)
+loaded Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf | qwen35 | 64 layers | ctx 4608 | 40 threads | 2.11s
+sampling: qwen38 (temp 1.00, top_p 0.95, top_k 20, min_p 0.00, repeat_penalty 1.00)
+sampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 20, min_p 0.00
+
+prompt: 512/4005 tokens
+prompt: 1024/4005 tokens
+prompt: 1536/4005 tokens
+prompt: 2048/4005 tokens
+prompt: 2560/4005 tokens
+prompt: 3072/4005 tokens
+prompt: 3584/4005 tokens
+prompt: 4005/4005 tokens

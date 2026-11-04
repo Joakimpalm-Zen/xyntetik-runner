@@ -1,0 +1,70 @@
+{
+  "positions": 2000,
+  "hf": "Qwen/Qwen3.8-27B@1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "corpus": "tests/fixtures/gold-corpus-2k.txt",
+  "reference_class": "Qwen3_5ForCausalLM",
+  "reference_logits": "scored rows only",
+  "special_prefix_tokens": 0,
+  "endpoint_input": "prefix text",
+  "special_prefix_forced": false,
+  "token_spelling": "in-sentence (anchored decode)",
+  "token_match": "by id where the endpoint gives ids, else by spelling with unlisted special tokens dropped",
+  "positions_skipped_no_logprobs": 0,
+  "fresh_prompt": false,
+  "reference_dtype": "float32 arithmetic on weights stored at torch.bfloat16, cast at use per decoder block (64 blocks, config num_hidden_layers 64; 67 units hooked)",
+  "reference_device": "cpu",
+  "sides": {
+    "a": {
+      "endpoint": "score-tcw0.json",
+      "model": "score file",
+      "mean_kld_vs_gold": 0.40838990965449046,
+      "max_kld_vs_gold": 8.961162400479848,
+      "top1_agreement_pct": 80.4,
+      "margin_qualified_top1_pct": 86.11778846153847,
+      "matched_by_id_positions": 2000,
+      "positions_with_dropped_mass": 0,
+      "max_dropped_gold_mass": 0.0,
+      "id_spelling_mismatches": 0
+    },
+    "b": {
+      "endpoint": "score-tcw1.json",
+      "model": "score file",
+      "mean_kld_vs_gold": 0.4083203208010075,
+      "max_kld_vs_gold": 8.956171688271626,
+      "top1_agreement_pct": 80.45,
+      "margin_qualified_top1_pct": 86.11778846153847,
+      "matched_by_id_positions": 2000,
+      "positions_with_dropped_mass": 0,
+      "max_dropped_gold_mass": 0.0,
+      "id_spelling_mismatches": 0
+    }
+  },
+  "significance": {
+    "qualified_positions": 1664,
+    "margin_qualified_hits_a": 1433,
+    "margin_qualified_hits_b": 1433,
+    "discordant_a_only": 0,
+    "discordant_b_only": 0,
+    "mcnemar_exact_p": 1.0,
+    "kld_wilcoxon_z": 0.2290566734705105,
+    "kld_wilcoxon_p": 0.8188248677767266,
+    "kld_wilcoxon_n": 1999,
+    "large_disagreement": {
+      "threshold_nats": 1.0,
+      "positions": 0,
+      "a_worse": 0,
+      "b_worse": 0,
+      "p_a_worse": 1.0,
+      "p_b_worse": 1.0
+    },
+    "verdict": "not distinguishable"
+  },
+  "score_paths": {
+    "paths": {
+      "a": "keep",
+      "b": "keep"
+    },
+    "route_comparison": true,
+    "solo_ok": false
+  }
+}

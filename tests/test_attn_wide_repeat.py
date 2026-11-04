@@ -59,3 +59,35 @@ def test_wide_tile_is_the_same_bytes_twice(runner_bin, tmp_path, hd):
     assert body_bytes(a) == body_bytes(b)
     off = json.loads(_score(runner_bin, model, "0"))
     assert "attn_wide" not in off["score_route"]["backend_detail"], off["score_route"]
+
+
+def _gen_qwen35(path, state):
+    # scripts/make-test-ornith.py: the qwen35 hybrid (Gated DeltaNet layers
+    # and full-attention ones), its attention heads ORNITH_TEST_STATE wide
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", str(path)], check=True, cwd=ROOT,
+                   stdout=subprocess.PIPE, env=dict(os.environ, ORNITH_TEST_STATE=str(state)))
+
+
+def test_qwen35_at_head_width_256_takes_the_wide_tile_by_default(runner_bin, tmp_path):
+    """The default list (R3.6.3.2): qwen35 at head width 256 runs k_attn_tcw with the switch unset,
+    =0 keeps the tile, and a 256-wide model of another architecture stays off by default."""
+    model = tmp_path / "q35.gguf"
+    _gen_qwen35(model, 256)
+    on = json.loads(_score(runner_bin, model, ""))
+    assert " attn_wide=on " in on["score_route"]["backend_detail"], on["score_route"]
+    off = json.loads(_score(runner_bin, model, "0"))
+    assert "attn_wide" not in off["score_route"]["backend_detail"], off["score_route"]
+    other = tmp_path / "m.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(other), "--head-dim", "256"],
+                   check=True, cwd=ROOT, stdout=subprocess.PIPE)
+    dense = json.loads(_score(runner_bin, other, ""))
+    assert "attn_wide" not in dense["score_route"]["backend_detail"], dense["score_route"]
+
+
+def test_qwen35_at_another_head_width_stays_off_by_default(runner_bin, tmp_path):
+    # the kernel admits 512, but the default keys on the measured width: a
+    # 512-wide qwen35 stays on the tile unless RUNNER_CUDA_ATTN_TC_WIDE=1
+    model = tmp_path / "q35n.gguf"
+    _gen_qwen35(model, 512)
+    rec = json.loads(_score(runner_bin, model, ""))
+    assert "attn_wide" not in rec["score_route"]["backend_detail"], rec["score_route"]
