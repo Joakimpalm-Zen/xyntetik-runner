@@ -44,6 +44,22 @@ Current release and unreleased changes. Compatibility follows the
   - Decode runs plain launches. The shared-expert path fails graph capture, as the gated shape (`shexpg`) already
     did before this change.
 
+- **Qwen3.8-27B GSQ-RCO IQ3_S recovered moves to Tier 2: against Qwen's
+  float32 reference it reads 0.41 mean KLD, 8x the bar (R4.32).** In the
+  house window the published file reads 0.4119 mean KLD and 85.04%
+  margin-qualified top-1; at positions 4000-5999 it reads 0.4084 / 86.12%.
+  ISTA-DASLab's unmodified source reads 0.5616 / 82.48% and 0.4718 /
+  86.36%. Both predict the corpus better than the parent (perplexity 21.54
+  and 53.48 against 73.29), so GSQ-RCO is a learned derivative, not a
+  faithful quantization. The scale recovery moved the file toward the
+  parent. The row's earlier 0.0450 / 97.80% was measured against our BF16
+  GGUF on 500 short Wikitext-2 prefixes, not against the publisher's
+  float32 model; it stays beneath, labelled. Owner decision 2026-11-04:
+  the row is maintained on report, stays published under a written
+  exception, and keeps its records as dated evidence. The Flash-Next
+  sibling's row gains the limit sentence; its own reference read is
+  pending. Report: `docs/compat-reports/r4.32-qwen38-iq3s-reference-2026-11-04`.
+
 - **`test-gpu-identity` judges a MoE file by its pinned-routing arm (R1.25).**
   With `RUNNER_CUDA_ATTN_TC_WIDE=1`, Qwen3.8-Flash-Next failed the free-routing
   arm at 2.41e-3 of the logit range against 2e-3. A dump of every device

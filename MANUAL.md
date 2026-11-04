@@ -1389,12 +1389,20 @@ reported beside it).
   nine preregistered runs on one frozen 30B model; the cards say where the
   fidelity bar does and does not transfer to public benchmarks.
 - [Qwen3.8-27B GSQ-RCO IQ3_S, recovered scales](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF)
-  (11.77 GB) is ISTA-DASLab's IQ3_S file with every quantised block's fp16
-  scales retrained by distillation against the BF16 parent: same integer
-  codes, same layout, same byte length, and it reads mean KLD 0.0450 with
-  margin-qualified top-1 97.80% on 500 held-out positions, inside the bar.
-  The unmodified source reads 0.0480 and 97.60% on the same positions, so
-  the edge over it is a consistent direction this sample does not resolve.
+  (11.77 GB) moved to Tier 2, maintained on report, on 2026-11-04 (owner
+  decision): it reads 0.41 mean KLD against Qwen's float32 reference, 8x
+  the bar, and is a learned derivative, not a faithful quantization. It is
+  ISTA-DASLab's GSQ-RCO IQ3_S file, whose codes and scales were fitted on
+  calibration data, with every quantised block's fp16 scales retrained by
+  distillation against the BF16 parent (same integer codes, layout and byte
+  length). Against the reference it reads 0.4119 / 85.04% margin-qualified
+  in the house window and 0.4084 / 86.12% at positions 4000-5999. The
+  unmodified source reads 0.5616 / 82.48% and 0.4718 / 86.36%, so the
+  recovery moved the file toward the parent. Both predict the corpus better
+  than the parent does (perplexity 21.54 and 53.48 against 73.29). The
+  earlier reading, 0.0450 / 97.80% against our BF16 GGUF on 500 short
+  Wikitext-2 prefixes, holds for those positions only
+  ([R4.32 report](docs/compat-reports/r4.32-qwen38-iq3s-reference-2026-11-04/README.md)).
   Evidence and code:
   [scale-recovery dataset](https://huggingface.co/datasets/Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-scale-recovery-evidence).
 - [Muse-Glimmer-30B surgical 6.34%, Q4_K with recovered scales](https://huggingface.co/Joakimpalm-Zen/Muse-Glimmer-30B-Surgical-6p34-Q4_K-recovered-GGUF)
