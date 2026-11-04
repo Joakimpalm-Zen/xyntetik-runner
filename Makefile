@@ -1624,9 +1624,12 @@ test-q8.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 # Q4_K reaches Metal's default fast decode matvec (k_mvf_q4_K, the owner's
 # 2026-10-23 promotion), whose microbatch columns must be the solo step's
 # bits: the batch and spec identity gates run on it. 256-wide rows, so the
-# K-quant superblocks tile; written by the runner's own quantizer.
+# K-quant superblocks tile, and a 2048-wide FFN, so ffn_down's input reaches
+# the fast kernel's width floor (R3.28.1) while the 256-wide projections
+# keep the identity kernel: both routes in one file. Written by the
+# runner's own quantizer.
 test-q4k.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
-	$(PYTHON) scripts/make-test-model.py --wide test-q4k-src.gguf > /dev/null
+	$(PYTHON) scripts/make-test-model.py --wide --n-ff 2048 test-q4k-src.gguf > /dev/null
 	./$(RUNNER_EXE) -m test-q4k-src.gguf --quantize test-q4k.gguf --quant q4_k > /dev/null
 	rm -f test-q4k-src.gguf
 

@@ -158,7 +158,7 @@ the same `--out` refuses unless `--force`.
 
 Before every server spawn the harness waits, printing status every 15s,
 until `pgrep -f "runner -m"` shows no *other* runner process — a
-memory-constrained shared box (e.g. an 8 GB M1) cannot hold two model loads
+memory-constrained shared box (e.g. an 8 GB Apple M1) cannot hold two model loads
 at once, so the harness never contends with a concurrent job for RAM.
 Disable with `--skip-idle-wait` on a box where that is not a concern.
 
@@ -171,7 +171,7 @@ For the suite plan's first target — granite-4.1-8b, 15 official quants in
 one IBM repo — that is 16 total passes (2 for zero-point + 14 additional
 variants, since the reference's own row reuses the zero-point check run) at
 whatever `--cases`/`--kld-positions` the run budget allows. This is sized
-for the Linux CUDA host, not the shared 8 GB M1: the smoke run in this commit
+for the Linux CUDA host, not the shared 8 GB Apple M1: the smoke run in this commit
 intentionally used small budgets (16 cases, 20 KLD positions) to fit the
 memory-constrained box it validated on.
 
