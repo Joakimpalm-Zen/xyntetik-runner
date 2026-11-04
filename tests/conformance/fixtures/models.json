@@ -1,6 +1,7 @@
 {
   "data": [
     {
+      "context_window": "<number>",
       "id": "<redacted>",
       "object": "model",
       "owned_by": "runner"

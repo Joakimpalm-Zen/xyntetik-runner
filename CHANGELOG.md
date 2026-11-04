@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`GET /v1/models` says the context the server runs at.** Each entry
+  carries `context_window`: the resident model's context, else the
+  configured `-c`; absent only on a registry that has loaded nothing yet
+  and was given no `-c`. The list carried only `id`, `object` and
+  `owned_by`, so a client that plans its prompts had to guess: the Dojo
+  pi extension guessed 32,768, compacted itself to a standstill against a
+  262k server and overran a 16k one. The conformance fixture and the
+  registry smoke carry the field.
+
 - **CUDA: `RUNNER_MOE_HOT`, a file of hot experts kept on the device for
   `--cpu-moe` host layers; 1.96x decode on Mellum 2.1 Q8_0 on an RTX 3070
   (R3.30).** Limits first:
