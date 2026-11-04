@@ -5,6 +5,22 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **DeepSeek-V2 (`deepseek2`) runs on the CPU (R4.4.5 step b).** These are the limits for now:
+  - The CPU only; the GPU backends run it on the CPU with a reason.
+  - The naive multi-head latent attention, so the cache is the full per-head K and V (16 x 192 x 2 values a token a
+    layer on V2-Lite), not the 576-value latent.
+  - The legacy unsplit `attn_kv_b` only; the split `attn_k_b`/`attn_v_b` layout is refused.
+  - No LoRA.
+
+  Against the publisher's float32 code (`modeling_deepseek.py`, `--trust-remote-code`), DeepSeek-V2-Lite-Chat Q8_0
+  reads mean KLD 0.0100 and margin-qualified top-1 100% over the house window. llama.cpp reads 0.0155 / 99.54% on the
+  same file, and Runner is the closer (Wilcoxon p 9e-15). The rest is the publisher's:
+  - the softmax scale mscale² / sqrt(key_length);
+  - softmax routing without renormalisation;
+  - the `deepseek-llm` pre-tokenizer (`test-tokenizer-classes`; 0 of 721 corpus segments and 0 of 99,442 vocabulary
+    entries differ from the publisher's tokenizer);
+  - the `deepseek2` chat template, conformant with 16 of 16 cases token-identical.
+
 - **Metal Q4_K decode: a faster fast kernel, 1.19x on Qwen3-4B and
   Llama-3.2-3B Q4_K_M (R3.28.2).** The Q4_K inputs the fast route takes (at
   least 2048 wide on dense models) run `k_mvg_q4_K`: eight lanes share a
