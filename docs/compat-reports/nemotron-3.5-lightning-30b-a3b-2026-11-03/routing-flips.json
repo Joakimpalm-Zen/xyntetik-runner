@@ -1,0 +1,31 @@
+{
+ "pairs": 23023,
+ "differ": 2306,
+ "by_layer": {
+  "1": 1,
+  "3": 1,
+  "6": 1,
+  "8": 10,
+  "10": 19,
+  "13": 16,
+  "15": 32,
+  "17": 44,
+  "20": 76,
+  "22": 59,
+  "24": 121,
+  "27": 123,
+  "29": 132,
+  "31": 137,
+  "34": 158,
+  "36": 157,
+  "38": 192,
+  "40": 190,
+  "43": 180,
+  "45": 167,
+  "47": 191,
+  "49": 164,
+  "51": 135
+ },
+ "first_position_with_a_flip": 143,
+ "what": "expert sets per (position, MoE layer), positions 0-1001: Runner 590bab5b on the BF16 GGUF against transformers 5.16.1 at floor 0"
+}
