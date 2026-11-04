@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`test-gpu-identity` judges a MoE file by its pinned-routing arm (R1.25).**
+  With `RUNNER_CUDA_ATTN_TC_WIDE=1`, Qwen3.8-Flash-Next failed the free-routing
+  arm at 2.41e-3 of the logit range against 2e-3. A dump of every device
+  attention call found the wide-head kernel within 1.7e-6 of a float64
+  reference over its own inputs, as close as the tile kernel. The device's
+  router had chosen another expert at 3 of 45,600 slots, near-ties tipped by
+  rounding, and with the CPU's choices pinned the run reads 4.42e-6. The free
+  arm is now reported and does not fail by itself. The gate fails instead
+  when more than 1% of slots tip: a Metal router with its bias dropped tips
+  20 to 40% of them, which pinning alone would have passed. A G = 12 fixture
+  (24 query heads on 2 KV heads, `make-test-model.py --heads`) joins
+  `test-cuda-attn-wide`. No kernel changes.
+
 - **Metal Q4_K decode: the fast kernel unpacks its scales without a branch,
   1.18x on Qwen3-4B Q4_K_M with the same bits (R3.28.5).** Q4_K's 6-bit
   scales unpack one way for sub-blocks 0 to 3 and another for 4 to 7, and
@@ -26,6 +39,16 @@ Current release and unreleased changes. Compatibility follows the
   and its float32-reference row is in the PR. `RUNNER_METAL_MVG=0` restores
   both previous kernels. The route detail says
   `mv=mvg-q4_K>=2048+q6_K>=1536`.
+- **Mellum2.1-12B-A2.5B-Thinking gains a Tier 2 row for bartowski's Q5_K_S
+  (8.96 GB), the smallest Mellum 2.1 file measured to pass the bar.** Against
+  the publisher's BF16 parent in float32 it reads 0.0289 mean KLD and 98.33%
+  margin-qualified top-1 (plain top-1 93.0%), where the publisher's Q4_K_M
+  reads 0.1172 / 92.89% and Runner's own 9.38 GB selective-precision attempt
+  0.0983 / 92.89%. Four published Q5-band files were scored; both with
+  experts at Q5_K pass, both with experts at Q4_K miss. Owner decision
+  2026-11-04; a third party's file, pinned by sha256 and repository revision.
+  Report: `docs/compat-reports/mellum2.1-q5-band-2026-11-04`.
+
 
 - **DeepSeek-V2 (`deepseek2`) runs on the CPU (R4.4.5 step b).** These are the limits for now:
   - The CPU only; the GPU backends run it on the CPU with a reason.
@@ -65,6 +88,17 @@ Current release and unreleased changes. Compatibility follows the
   one-column arithmetic, so they keep the solo step's bits.
   `RUNNER_METAL_MVG=0` keeps `k_mvf_q4_K`. The route detail says
   `mv=mvg-q4_K>=2048`.
+
+- **CUDA: the wide-head tensor-core prefill attention is on by default for
+  qwen35 at head width 256 (Qwen3.5, 3.6 and 3.8) (R3.6.3.2).** On
+  Qwen3.8-27B (GSQ-RCO IQ3_S, a CUDA MIG slice), 16K prefill reads 1.82x
+  (329.6 against 181.1 tok/s) and 4K 1.23x. Decode is unchanged. The D1
+  rule passes: mean KL 0.9998x the tile's, Wilcoxon p 0.82, McNemar 0/0
+  over 2,000 positions. gpu-identity is ok on both settings. The default
+  keys on the measured width, and `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the
+  tile. Not yet measured: the Flash-Next sibling (qwen4exp), Metal, and
+  the RTX 3070 at these sizes. Report:
+  `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-qwen35-2026-11-04`.
 
 - **The CUDA int8 prefill route (`RUNNER_CUDA_I8=1`) stays opt-in for every
   type (R3.14.1).** Against the publisher's float32 models, Q8_0 (Qwen3-0.6B)

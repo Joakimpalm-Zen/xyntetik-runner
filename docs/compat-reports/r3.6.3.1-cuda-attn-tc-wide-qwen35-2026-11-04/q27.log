@@ -1,0 +1,36 @@
+2026-11-04 03:56:12 runner 7567c9486df7f14ffd5211d426514a3357bc8c22; CUDA MIG slice, 1g.24gb, sm_120
+2026-11-04 03:58:42 holding 1 files in memory, 11.8 GB (pid 1180020)
+2026-11-04 04:02:29 gpu-identity TC_WIDE=1 exit 0:   5959680 logits over 24 positions | 5956063 differ, mean|dlogit| 0.000237 = 6.79e-06 of mean range 35 (limit 0.001), worst 0.00589 gpu-identity: ok 
+2026-11-04 04:04:23 gpu-identity TC_WIDE=0 exit 0:   5959680 logits over 24 positions | 5955704 differ, mean|dlogit| 0.000225 = 6.44e-06 of mean range 35 (limit 0.001), worst 0.00463 gpu-identity: ok 
+2026-11-04 04:04:37 tier smoke TC_WIDE=1 exit 1: tests/compatibility/tier-smoke/qwen3.8-27b-gsq-rco-iq3_s-recovered.linux-x86_64-cuda.cuda.txt was pinned with different settings ({'prompt': 'List the eight planets of the Solar System in order from the Sun, one per line, then describe each
+2026-11-04 04:04:50 prefill 4k warm-up: "prompt_tokens":4005,"generated_tokens":1,"prompt_tok_s":377.347
+2026-11-04 04:05:06 prefill 4k round 1 TC_WIDE=0: "prompt_tok_s":306.565,"gen_tok_s":18.077,"prompt_s":13.064 
+2026-11-04 04:05:19 prefill 4k round 1 TC_WIDE=1: "prompt_tok_s":377.423,"gen_tok_s":18.069,"prompt_s":10.611 attn_wide=on
+2026-11-04 04:05:32 prefill 4k round 2 TC_WIDE=1: "prompt_tok_s":377.503,"gen_tok_s":17.785,"prompt_s":10.609 attn_wide=on
+2026-11-04 04:05:47 prefill 4k round 2 TC_WIDE=0: "prompt_tok_s":306.637,"gen_tok_s":18.018,"prompt_s":13.061 
+2026-11-04 04:06:03 prefill 4k round 3 TC_WIDE=0: "prompt_tok_s":306.606,"gen_tok_s":18.091,"prompt_s":13.062 
+2026-11-04 04:06:16 prefill 4k round 3 TC_WIDE=1: "prompt_tok_s":377.491,"gen_tok_s":17.672,"prompt_s":10.610 attn_wide=on
+2026-11-04 04:06:29 prefill 4k round 4 TC_WIDE=1: "prompt_tok_s":377.313,"gen_tok_s":17.814,"prompt_s":10.615 attn_wide=on
+2026-11-04 04:06:44 prefill 4k round 4 TC_WIDE=0: "prompt_tok_s":306.533,"gen_tok_s":17.919,"prompt_s":13.065 
+2026-11-04 04:06:59 prefill 4k round 5 TC_WIDE=0: "prompt_tok_s":306.501,"gen_tok_s":18.214,"prompt_s":13.067 
+2026-11-04 04:07:12 prefill 4k round 5 TC_WIDE=1: "prompt_tok_s":377.379,"gen_tok_s":18.141,"prompt_s":10.613 attn_wide=on
+2026-11-04 04:08:05 prefill 16k warm-up: "prompt_tokens":16576,"generated_tokens":1,"prompt_tok_s":329.085
+2026-11-04 04:09:39 prefill 16k round 1 TC_WIDE=0: "prompt_tok_s":181.125,"gen_tok_s":16.980,"prompt_s":91.517 
+2026-11-04 04:10:32 prefill 16k round 1 TC_WIDE=1: "prompt_tok_s":329.544,"gen_tok_s":17.490,"prompt_s":50.300 attn_wide=on
+2026-11-04 04:11:24 prefill 16k round 2 TC_WIDE=1: "prompt_tok_s":329.582,"gen_tok_s":17.469,"prompt_s":50.294 attn_wide=on
+2026-11-04 04:12:58 prefill 16k round 2 TC_WIDE=0: "prompt_tok_s":181.173,"gen_tok_s":17.132,"prompt_s":91.493 
+2026-11-04 04:14:32 prefill 16k round 3 TC_WIDE=0: "prompt_tok_s":181.141,"gen_tok_s":17.495,"prompt_s":91.509 
+2026-11-04 04:15:25 prefill 16k round 3 TC_WIDE=1: "prompt_tok_s":329.651,"gen_tok_s":17.396,"prompt_s":50.283 attn_wide=on
+2026-11-04 04:16:17 prefill 16k round 4 TC_WIDE=1: "prompt_tok_s":329.638,"gen_tok_s":17.237,"prompt_s":50.285 attn_wide=on
+2026-11-04 04:17:51 prefill 16k round 4 TC_WIDE=0: "prompt_tok_s":181.151,"gen_tok_s":17.186,"prompt_s":91.504 
+2026-11-04 04:19:25 prefill 16k round 5 TC_WIDE=0: "prompt_tok_s":181.130,"gen_tok_s":17.484,"prompt_s":91.515 
+2026-11-04 04:20:18 prefill 16k round 5 TC_WIDE=1: "prompt_tok_s":329.607,"gen_tok_s":17.303,"prompt_s":50.290 attn_wide=on
+2026-11-04 04:21:14 score TC_WIDE=0 exit 0: "ppl":21.5422226 "backend_detail":"graph=none tc=promoted tc2=on-sm80 q8x=off i8=off small_batch=on attn_tile=on+dec window=512 tc_cols=64 recur=tile"
+2026-11-04 04:22:00 score TC_WIDE=1 exit 0: "ppl":21.5398165 "backend_detail":"graph=none tc=promoted tc2=on-sm80 q8x=off i8=off small_batch=on attn_tile=on+dec attn_wide=on window=512 tc_cols=64 recur=tile"
+2026-11-04 04:22:02 released
+2026-11-04 04:33:47 parent in memory: holding 18 files in memory, 55.6 GB (pid 1185850)
+2026-11-04 04:34:01 reference loaded, the parent's held copy released (ownmem: cloned 26895998528 values into process memory in 5 s; RSS 50.6 GiB, anonymous 50.5, shmem 0.0, file 0.1)
+2026-11-04 04:37:47 D1 gold-logits exit 0
+2026-11-04 04:42:03 tier smoke (lab manifest copy) TC_WIDE=1 exit 0: match    qwen3.8-27b-gsq-rco-iq3_s-recovered linux-x86_64-cuda cuda (7.79 s, fact found) 
+2026-11-04 04:42:18 tier smoke (lab manifest copy) TC_WIDE=0 exit 0: match    qwen3.8-27b-gsq-rco-iq3_s-recovered linux-x86_64-cuda cuda (7.85 s, fact found) 
+2026-11-04 04:42:19 released

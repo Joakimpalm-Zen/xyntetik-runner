@@ -1,0 +1,8 @@
+2026-11-04 04:45:36 disk: 6.0T free; cgroup anon+shmem 1 GB
+2026-11-04 04:56:47 parent in memory: holding 18 files in memory, 55.6 GB (pid 1189938)
+2026-11-04 04:58:49 convert exit 0: 53808281952 bytes, sha256 22caa62cf4d378e48bc670457ef618e24a2fa9637665deed1b224843c56e1254 (not the lab backbone (53808282048 bytes, f50473e0))
+2026-11-04 05:13:40 score BF16 (CPU) exit 0: "ppl":73.2852207 "paths":{"keep":{"forwards":507,"rows_max":16}}
+2026-11-04 05:13:43 BF16 GGUF released
+2026-11-04 05:16:26 gold house exit 0
+2026-11-04 05:19:59 gold d1window exit 0
+2026-11-04 05:20:02 released
