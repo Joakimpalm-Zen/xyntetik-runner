@@ -408,10 +408,15 @@ jobs:
       - name: smoke test (server, backslash model path)
         # regression: a C:\...\model.gguf -m path used to land unescaped in the
         # response's "model" field, making every completion body invalid JSON
+        # The step is bounded: on 2026-11-04 it sat for 50 minutes on a hosted
+        # runner (the job's 45-minute limit cancelled it and kept no log), where
+        # the whole job takes five; a hang now fails in five with its log, and
+        # /health answers at once, so its poll is bounded by seconds, not 90.
+        timeout-minutes: 5
         run: |
           trap 'pids=$(jobs -pr); if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; sleep 1; kill -KILL $pids 2>/dev/null || true; wait $pids 2>/dev/null || true; fi' EXIT
           ./runner.exe -m "$(cygpath -w "$PWD")\\test.gguf" --serve --port 8125 &
-          for i in $(seq 60); do curl --connect-timeout 5 --max-time 90 -sf -o /dev/null http://127.0.0.1:8125/health && break; sleep 0.5; done
+          for i in $(seq 60); do curl --connect-timeout 5 --max-time 10 -sf -o /dev/null http://127.0.0.1:8125/health && break; sleep 0.5; done
           curl --connect-timeout 5 --max-time 90 -sf -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":0}' \
             http://127.0.0.1:8125/v1/chat/completions | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['model'] == 'test.gguf', d['model']; print('windows path model field ok')"
           kill %1
@@ -419,6 +424,7 @@ jobs:
         # the runner must exit when the process named by --parent-pid dies;
         # tests/test_parent_pid.py pins this everywhere but Windows, so the
         # shell form stays here only
+        timeout-minutes: 5
         run: |
           # the parent proves the server is up before it dies (a runner that
           # never served proves nothing), then the shell polls for it to go
