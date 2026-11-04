@@ -387,6 +387,18 @@ def test_a_dated_mark_in_the_readme_is_a_stale_string(monkeypatch, tmp_path, cap
     assert "stale release string 'v1.1.4'" in capsys.readouterr().err
 
 
+def test_a_stale_version_banner_in_the_manual_is_a_stale_string(monkeypatch, tmp_path,
+                                                              capsys):
+    """MANUAL.md carries the README's "Version `X.Y.Z`" banner. The scan read
+    a version only after the word Runner, so that copy said 1.6.0 from 1.7.0
+    to 1.13.0's cut; the banner form is a release string now."""
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    write(tmp_path / "MANUAL.md", "> **Version `1.1.0`.** See docs/versioning.md.\n")
+    assert not check_release.check(args)
+    assert "MANUAL.md contains stale release string '1.1.0'" in capsys.readouterr().err
+
+
 def test_competitor_versions_are_not_read_as_release_strings():
     """The README cites other runtimes by version, and the docs cite runner's
     own history. Neither is drift, and flagging either would fail every
