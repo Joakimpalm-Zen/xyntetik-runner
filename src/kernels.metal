@@ -2215,6 +2215,62 @@ kernel void k_mvg_q4_K(MV_PARAMS) {
     }
 }
 
+// R3.28.5 EXPERIMENT: k_mvg_q4_K with its scale unpack branch-free
+kernel void k_mvgs_q4_K(MV_PARAMS) {
+    uint row0 = (tgpig.x * (ntg.x / 32) + sgitg) * MVG_NR;
+    if (row0 >= (uint)a.n_out) return;
+    int col_lo = (int)tgpig.y * a.col_tile;
+    int col_hi = min(col_lo + a.col_tile, a.n_col);
+    int nb = a.n_in / 256;
+    int il = tiisg & 7, jj = il >> 1, h = il & 1;
+    bool hi = jj >= 2;   // sub-blocks 4 to 7 take the high-bit form
+    for (int col = col_lo; col < col_hi; col++) {
+    device const float *x = x_all + (ulong)col * a.x_stride;
+    device float *y = y_all + (ulong)col * a.y_stride;
+    float s[MVG_NR];
+    for (int r = 0; r < MVG_NR; r++) s[r] = 0;
+    for (int b = (int)(tiisg >> 3); b < nb; b += 4) {
+        device const packed_float4 *xl4 =
+            (device const packed_float4 *)(x + b * 256 + jj * 64 + h * 16);
+        device const packed_float4 *xh4 = xl4 + 8;
+        float4 xl[4], xh[4], sl = 0, sh = 0;
+        for (int k = 0; k < 4; k++) { xl[k] = xl4[k]; xh[k] = xh4[k]; sl += xl[k]; sh += xh[k]; }
+        float sx1 = sl.x + sl.y + sl.z + sl.w, sx2 = sh.x + sh.y + sh.z + sh.w;
+        for (int r = 0; r < MVG_NR; r++) {
+            uint row = row0 + r;
+            if (row >= (uint)a.n_out) break;
+            device const uchar *blk = wb + a.w_off + ((ulong)row * nb + b) * 144;
+            float d = (float)*(device const half *)blk;
+            float dmin = (float)*(device const half *)(blk + 2);
+            // the pair (2jj, 2jj + 1) of get_scale_min_k4, branch-free: the
+            // lane's sub-blocks are fixed, so these 16-bit loads sit at fixed
+            // offsets, and lanes with jj < 2 and jj >= 2 no longer diverge
+            device const uchar *q = blk + 4;
+            ushort B = *(device const ushort *)(q + ((jj * 2) & 3));
+            ushort C = *(device const ushort *)(q + ((jj * 2) & 3) + 4);
+            ushort A = *(device const ushort *)(q + ((jj * 2) & 3) + 8);
+            ushort sc = hi ? (ushort)((A & 0x0F0F) | ((B >> 2) & 0x3030)) : (ushort)(B & 0x3F3F);
+            ushort mn = hi ? (ushort)(((A >> 4) & 0x0F0F) | ((C >> 2) & 0x3030)) : (ushort)(C & 0x3F3F);
+            uchar s1 = sc & 0xFF, s2 = sc >> 8, m1 = mn & 0xFF, m2 = mn >> 8;
+            device const packed_uchar4 *q4 = (device const packed_uchar4 *)(blk + 16 + jj * 32 + h * 16);
+            float4 t1 = 0, t2 = 0;
+            for (int k = 0; k < 4; k++) {
+                uchar4 qq = q4[k];
+                t1 = fma(float4(qq & 0xF), xl[k], t1);
+                t2 = fma(float4(qq >> 4), xh[k], t2);
+            }
+            s[r] += d * s1 * (t1.x + t1.y + t1.z + t1.w) - dmin * m1 * sx1 +
+                    d * s2 * (t2.x + t2.y + t2.z + t2.w) - dmin * m2 * sx2;
+        }
+    }
+    for (int r = 0; r < MVG_NR; r++) {
+        uint row = row0 + r;
+        float v = simd_sum(s[r]);
+        if (tiisg == 0 && row < (uint)a.n_out) y[row] = a.has_bias ? v + bias[row] : v;
+    }
+    }
+}
+
 // The narrow-slice Q6_K decode matvec (R3.28.3, k_mvg_q6_K): the shape of
 // k_mvg_q4_K applied to Q6_K. A half-superblock's 128 weights come from 64
 // bytes of low nibbles and 32 of high bit pairs: byte l of ql feeds weights l
