@@ -1,0 +1,450 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "R4.29 granite-4.2-30b Q4_K_M, CUDA (MIG slice), runner 8b2729f",
+ "started": "2026-11-03T23:28:41+0100",
+ "host": "x86-64 Linux, CPU",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:18996",
+ "model": "granite-4.2-30b-Q4_K_M.gguf",
+ "model_file": "granite-4.2-30b-Q4_K_M.gguf",
+ "model_sha256": "f299dace85d77ee0e24ca0b6720bd211b1f4cd1f65b9c0a2111e79692e29c9be",
+ "runner": "runner",
+ "runner_sha256": "b95e8d22f18cfb20d047118c3824044cf65d5cf4097bdc854a57613a5f72fb77",
+ "capabilities_route": true,
+ "sampling_served": {
+  "preset": "granite42",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 0,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "context": 8192,
+ "overrides": {},
+ "tool_choice": "auto (absent)",
+ "max_tokens": 400,
+ "cases": {
+  "A": {
+   "title": "single call",
+   "prompt": "List the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 6.877,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "Okay, the user wants me to list the files in the current directory. Let me check the tools I have available. There's a bash tool that can run shell commands. Since listing files is a basic operation, I can use the 'ls' command with the bash tool. I should call the bash tool with the command \"ls\" to get the list of files. I don't need any additional parameters here. Let me make sure the command is correctly formatted.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 272,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 123,
+      "total_tokens": 395
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 272,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 6.246393,
+      "generation_tok_s": 19.691,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "granite42",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "granite42",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 3.2e-05,
+       "tokenize_seconds": 0.000264,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.624638,
+       "prefill_tokens": 272,
+       "prefill_tok_s": 435.453,
+       "first_visible_seconds": 5.55531
+      },
+      "prompt_reuse": "none",
+      "receipt": {
+       "file": "receipt-0000000001.json",
+       "chain_hash": "4029c509946008aa662b38c0b4274225c153e288b53ec4e0c1f7f04671596237"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 6.038,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "Okay, the user wants me to list the files in the current directory. Let me check which tools I have available. Oh right, there's the bash tool that can run shell commands. So I should use that to execute the 'ls' command, which lists files and directories. I need to make sure I call the bash function correctly with the command parameter. Let me structure the tool call properly in JSON inside the XML tags.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -la\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": {
+      "prompt_cached_tokens": 271,
+      "sampling": {
+       "preset": "granite42",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "granite42",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 3e-06,
+       "tokenize_seconds": 0.000194,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.0505,
+       "prefill_tokens": 1,
+       "prefill_tok_s": 19.802,
+       "first_visible_seconds": 4.61415
+      },
+      "prompt_reuse": "kv",
+      "receipt": {
+       "file": "receipt-0000000002.json",
+       "chain_hash": "67a288906d24700e61a72c392c70fd11b537e278fe56fe04461a5805b8fdfc24"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "B": {
+   "title": "prose and parallel calls",
+   "prompt": "Check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.",
+   "tools": [
+    "glob",
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 16.947,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "Okay, the user wants to check if boss.json, boss.toml, and boss.yaml exist anywhere in the project. They specifically mentioned using the glob tool for each pattern. Let me see.\n\nFirst, I need to use the glob function for each of these filenames. The glob tool takes a pattern, so I should run it once for each file type. The patterns would be \"boss.json\", \"boss.toml\", and \"boss.yaml\". \n\nWait, the user said \"anywhere in this project\", so the glob pattern doesn't need any specific directory, just the filename. So each call should be to search for that exact filename. \n\nI should make three separate tool calls, each with the respective pattern. Then, after getting the results, I can compile the answer to tell the user which files exist. But the user just wants to check existence, so the response should list each file and whether it was found. \n\nI need to make sure to call the glob tool correctly for each. Let me structure the tool calls one after another. Each in their own tool_call block.\n",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.json\"}",
+       "id": "call_0"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.toml\"}",
+       "id": "call_1"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.yaml\"}",
+       "id": "call_2"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 339,
+      "prompt_tokens_details": {
+       "cached_tokens": 25
+      },
+      "completion_tokens": 320,
+      "total_tokens": 659
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 25,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 314,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 16.307732,
+      "generation_tok_s": 19.623,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "granite42",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "granite42",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 6e-06,
+       "tokenize_seconds": 0.000237,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.637994,
+       "prefill_tokens": 314,
+       "prefill_tok_s": 492.168,
+       "first_visible_seconds": 12.595179
+      },
+      "prompt_reuse": "kv",
+      "receipt": {
+       "file": "receipt-0000000003.json",
+       "chain_hash": "81e98bb8442091f3bdf09099a0ce4b7e7296279781485f28e4493ed3c1a40412"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 17.238,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "Okay, the user wants to check if boss.json, boss.toml, and boss.yaml exist anywhere in the project. They specifically mentioned using the glob tool for each pattern. Let me think about how to approach this.\n\nFirst, I need to call the glob tool for each file extension. The glob tool takes a pattern, so for each file type, I should create a pattern like \"boss.json\", \"boss.toml\", and \"boss.yaml\". Since the user wants to check anywhere in the project, the patterns don't need a path prefix, just the filename.\n\nWait, but maybe the user wants to search recursively. The glob tool's description says \"Find files matching a glob pattern\". So if I use \"boss.json\" as the pattern, it should search all directories. But maybe I should confirm, but since the user didn't specify, I'll proceed with the given patterns.\n\nSo I need to make three separate calls to the glob tool, each with one of the patterns. The user said \"use the glob tool for each pattern\", so I should do each one individually.\n\nLet me structure the tool calls. First for boss.json, then boss.toml, then boss.yaml. Each in their own tool_call block.\n\nI should output each tool_call in order. The user might be expecting the results for each file type. Alright, let's start with the first one: boss.json.\n",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"boss.json\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": {
+      "prompt_cached_tokens": 338,
+      "sampling": {
+       "preset": "granite42",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "granite42",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 3e-06,
+       "tokenize_seconds": 0.000231,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.050643,
+       "prefill_tokens": 1,
+       "prefill_tok_s": 19.746,
+       "first_visible_seconds": 15.798773
+      },
+      "prompt_reuse": "kv",
+      "receipt": {
+       "file": "receipt-0000000004.json",
+       "chain_hash": "4b8d1c007b9829c3bb4aef775d1517c9116815864c0c5c59ed77ef4f0d5eebc4"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "C": {
+   "title": "prose then call",
+   "prompt": "Briefly say what you are about to do, then list the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 13.909,
+     "finish_reason": "tool_calls",
+     "content": "\nI am about to list the files in the current directory using the `ls` command.\n",
+     "reasoning": "Okay, the user wants me to briefly say what I'm about to do and then list the files in the current directory. Let me start by understanding the tools I have. There's a bash tool that can run shell commands. So, to list the files, I should use the 'ls' command.\n\nFirst, I need to inform the user that I'm going to list the files in the current directory. Then, I'll execute the 'ls' command using the bash tool. Let me check if there are any parameters needed for the bash tool. The tool requires a \"command\" parameter. So, I'll structure the tool call with the command \"ls\" to list the files.\n\nWait, should I include any flags with 'ls'? The user just said \"list the files\", so maybe a simple 'ls' is sufficient. They didn't specify options like -l or -a, so I'll stick with the default. Alright, the tool call should be {\"name\": \"bash\", \"arguments\": {\"command\": \"ls\"}}. That should do it.\n",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 283,
+      "prompt_tokens_details": {
+       "cached_tokens": 257
+      },
+      "completion_tokens": 270,
+      "total_tokens": 553
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 257,
+      "prompt_forked_tokens": 257,
+      "prompt_eval_tokens": 26,
+      "prefix_cache_saved_seconds": 0.576588,
+      "generation_seconds": 13.729656,
+      "generation_tok_s": 19.665,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "granite42",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "granite42",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 7e-06,
+       "tokenize_seconds": 0.000256,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.175177,
+       "prefill_tokens": 26,
+       "prefill_tok_s": 148.421,
+       "first_visible_seconds": 11.716813
+      },
+      "prompt_reuse": "prefix_cache",
+      "receipt": {
+       "file": "receipt-0000000005.json",
+       "chain_hash": "1de54f91002fdbabc932d8cb3490a00d1a636f5b3f4e14042ee9a1f770de5749"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 20.426,
+     "finish_reason": "length",
+     "content": "",
+     "reasoning": "Okay, the user wants me to briefly say what I'm about to do and then list the files in the current directory. Let me start by figuring out what tools I have available. Oh right, there's the bash tool that can run shell commands. So first, I should explain that I'm going to use the bash tool to list the files. Then, I'll execute the command to list them.\n\nWait, the user said \"briefly say what you are about to do\" so I need to state that first. Then proceed to list the files. So my first step is to generate a message indicating that I'm going to list the directory contents using the bash tool. Then, call the bash tool with the command 'ls' to get the files. But how do I structure the response? The user wants the assistant to first state the action, then provide the file list.\n\nBut according to the tools, I can only call functions when needed. So the initial response should be to state the action, then in the same turn, call the tool. Wait, the user's instruction says: \"Briefly say what you are about to do, then list the files in the current directory.\" So the user wants two things: first, a brief statement of what I'm doing, then the actual list of files.\n\nBut how do I do that in the context of the tools? Because each turn, I can either respond normally or call a tool. But the user wants both steps: first say what I'm doing, then list the files. So maybe I need to first respond with a message that says \"I am about to list the files in the current directory using the bash tool.\" Then, in the same response, call the tool to get the file list. But according to the instructions, after the tool call, the system will provide the tool's response, and then I can proceed.\n\nWait, but the user's query is",
+     "calls": [],
+     "telemetry": {
+      "prompt_cached_tokens": 282,
+      "sampling": {
+       "preset": "granite42",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 0,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "preset",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "granite42",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 7e-06,
+       "tokenize_seconds": 0.000258,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.050567,
+       "prefill_tokens": 1,
+       "prefill_tok_s": 19.776,
+       "first_visible_seconds": null
+      },
+      "prompt_reuse": "kv",
+      "receipt": {
+       "file": "receipt-0000000006.json",
+       "chain_hash": "21607531210748b3701093f9dc9e681fa3b6ee2572d34d20cd9cc01879d5515a"
+      }
+     },
+     "result": "FAIL",
+     "reasons": [
+      "finish_reason 'length'",
+      "no parsed call",
+      "no prose beside the call"
+     ]
+    }
+   }
+  }
+ },
+ "verdict": "FAIL",
+ "finished": "2026-11-03T23:30:11+0100"
+}

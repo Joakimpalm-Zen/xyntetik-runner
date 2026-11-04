@@ -842,6 +842,25 @@
     "metal": "NOT RUN"
    },
    "note": "Mistral's [SYSTEM_PROMPT] form: the system text or the template's own default (read from the file), one [AVAILABLE_TOOLS] list after it, [INST]...[/INST] turns, an assistant turn as its text and its calls then </s>, results as [TOOL_RESULTS]...[/TOOL_RESULTS]"
+  },
+  "deepseek2": {
+   "artifact": null,
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "the deepseek2 template has no tool protocol in the publisher's chat template; no live anchor run is recorded"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   },
+   "note": "R4.4.5: template conformance 16 of 16 token-identical against the publisher's jinja (make template-conformance, family deepseek2); the gates in this row have not run"
   }
  },
  "architectures": {
@@ -1473,6 +1492,25 @@
     "cuda": "NOT RUN",
     "metal": "NOT RUN"
    }
+  },
+  "deepseek2": {
+   "templates": [
+    "deepseek2"
+   ],
+   "artifacts": [],
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "No live tool-protocol anchor run is recorded for this architecture."
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "backends": {
+    "cpu": "PASS",
+    "cuda": "UNSUPPORTED",
+    "metal": "UNSUPPORTED"
+   },
+   "note": "EXPERIMENTAL (R4.4.5). CPU measured: make test-deepseek2 (the CPU multi-head latent attention against a plain-Python forward of the publisher's math, worst 4.0e-5) and DeepSeek-V2-Lite-Chat Q8_0 against the publisher's float32 modeling_deepseek.py (mean KLD 0.0100, margin-qualified top-1 100%, MANUAL's deepseek2 row); the pinned file and its evidence land with step (d)'s certification. The GPU backends run it on the CPU with a reason. Live tool and client loops are unmeasured."
   }
  }
 }
