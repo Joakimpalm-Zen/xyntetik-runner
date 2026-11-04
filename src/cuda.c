@@ -617,6 +617,7 @@ typedef struct {
     int        *h_moe_sel, *h_moe_gidx;
     float      *h_moe_selw, *h_moe_gw;
     bool        moe_fused_ok;           // every MoE layer runs the indirect path
+    int         moe_renorm;             // k_moe_route's renorm: expert_weights_norm
     // RUNNER_MOE_REPLAY / RUNNER_MOE_TRACE on the device routers (R3.21.2):
     // the trace as [replay_npos][n_layer][used] ids, the three counters
     // model.c reports, whether each routing is written to the trace, and the
@@ -1110,10 +1111,13 @@ static bool moe_any_on_device(const model_t *m) {
 }
 
 // Whether the device can run layer l's expert bank. The routed kernels and
-// the device twin of shexp_add cover a gated-SiLU shared expert with its
-// scalar sigmoid gate (Qwen3.5/3.8); an ungated shared expert (Granite 4
-// hybrid, DeepSeek-style) or a relu2 one has no device path and stays on the
-// host. Admission refuses a pinned device bank that fails this, and the
+// the device twin of shexp_add cover a SiLU shared expert with its scalar
+// sigmoid gate (Qwen3.5/3.8) or without one (DeepSeek-style, R4.4.5 c0b); a
+// relu2 or gate-less one has no device path and stays on the host. Granite 4
+// hybrid's ungated shared expert has the device path but keeps its banks on
+// the host by name: its CUDA cells were measured that way
+// (compat-reports/cpu-cuda-hybrid), and moving them is its own measured
+// change. Admission refuses a pinned device bank that fails this, and the
 // --cpu-moe auto fit places only banks that pass it: the fit runs after
 // admission, so a check there alone let auto put Granite's banks on the
 // device, where the shared expert dereferenced its absent gate.
@@ -1121,7 +1125,9 @@ static bool moe_bank_device_ok(const model_t *m, int l) {
     const layer_t *ly = &m->layers[l];
     if (!ly->is_moe || m->n_ff_shexp <= 0) return true;
     if (m->ffn_relu2) return false;
-    return !ly->w_up_shexp || (ly->w_gate_shexp && ly->ffn_gate_inp_shexp);
+    if (!ly->w_up_shexp) return true;
+    if (!ly->w_gate_shexp) return false;
+    return ly->ffn_gate_inp_shexp || !m->granite_hybrid;
 }
 
 // The fused device-routing MoE path needs the fused-3D expert layout (a
@@ -3164,8 +3170,8 @@ typedef struct {
 // kernels, swiglu_oai and the router/expert bias plumbing landed
 // (2026-08-01); the old refusal is gone.
 // Generalized MoE routing has no device kernel: k_moe_route is softmax +
-// top-k + renormalize with no bias input, and regenerating kernels_ptx.h
-// is the CUDA-13.3 machine's job. Refuse the backend rather than route
+// top-k, renormalized or not (expert_weights_norm), with no bias input, and
+// regenerating kernels_ptx.h is tools/ptx-toolchain/make-ptx.sh's job. Refuse the backend rather than route
 // with the wrong function and produce confident, wrong output.
 // Mamba-2 hybrids (granitehybrid, nemotron_h) have a device SSD-scan
 // + conv1d kernel (k_mamba2_*), dispatched from gpu_mamba2_recurrent and
@@ -3186,7 +3192,7 @@ static bool cuda_admit(model_t *m) {
                 "not on the CUDA backend yet — using CPU\n");
         return false;
     }
-    if (m->n_expert > 0 && !model_moe_router_is_plain(m)) {
+    if (m->n_expert > 0 && !model_moe_router_is_plain_any_norm(m)) {
         fprintf(stderr, "gpu: this model's MoE router (gating=%d groups=%d "
                 "norm_w=%d scale=%g) has no device kernel — running on CPU\n",
                 m->expert_gating, m->n_expert_groups, (int)m->expert_norm_w,
@@ -3204,8 +3210,9 @@ static bool cuda_admit(model_t *m) {
     // [n_expert_used, expert_count]. Each layer's router, routing and expert
     // tables take that layer's count (R4.7.4); scratch sized by the declared
     // count covers every layer.
-    // The shared always-on expert has no device path: the routed MoE
-    // kernels write the FFN output and nothing adds a second dense branch.
+    // The shared always-on expert runs on the device as tile_shexp, gated by
+    // its scalar sigmoid or not; the shapes moe_bank_device_ok refuses send
+    // the model to the CPU unless --cpu-moe keeps those banks on the host.
     if (m->n_ff_shexp > 0 && moe_any_on_device(m)) {
         bool ok_shape = true;
         for (int l = 0; ok_shape && l < m->n_layer; l++)
@@ -3640,6 +3647,7 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
                     "— using CPU\n");
             goto fail;
         }
+        g->moe_renorm = m->expert_norm_w ? 1 : 0;
         if (model_moe_replay_on()) {
             int np = 0;
             int *tab = model_moe_replay_table(m->n_layer, m->n_expert_used, &np);
@@ -5609,7 +5617,8 @@ static bool stage_x(gpu_t *g, model_t *m, const int32_t *tokens, int tn) {
 // entirely on the device, so a MoE decode step has no host round-trip and is
 // CUDA-graph capturable (the moe-gpu-routing spec's P1).
 
-// Device softmax -> top-k -> renormalize for `tokens` routed columns. The
+// Device softmax -> top-k -> renormalize (g->moe_renorm: off under
+// expert_weights_norm false) for `tokens` routed columns. The
 // kernel is serial per token and mirrors moe_route() bit for bit (see the
 // contract comment in kernels.cu).
 // Under RUNNER_MOE_REPLAY the replay twin routes instead (the recorded choice
@@ -5747,10 +5756,11 @@ static bool enc_moe_route(gpu_t *g, CUdeviceptr logits, CUdeviceptr sel,
     if (g->replay_tab) {
         int pos0 = g->route_pos + col0;
         void *p[] = { &logits, &sel, &selw, &ne, &used, &tokens, &ls, &g->replay_tab,
-                      &g->replay_npos, &g->replay_nlayer, &pos0, &layer, &g->replay_cnt };
+                      &g->replay_npos, &g->replay_nlayer, &pos0, &layer, &g->replay_cnt,
+                      &g->moe_renorm };
         ok = launch(g, g->sw->f_moe_route_replay, (unsigned)(tokens + 31) / 32, 1, 1, 32, p);
     } else {
-        void *p[] = { &logits, &sel, &selw, &ne, &used, &tokens, &ls };
+        void *p[] = { &logits, &sel, &selw, &ne, &used, &tokens, &ls, &g->moe_renorm };
         ok = launch(g, g->sw->f_moe_route, (unsigned)(tokens + 31) / 32, 1, 1, 32, p);
     }
     if (!ok || !g->route_trace) return ok;
@@ -6200,7 +6210,8 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
 
 // Eager fallback (legacy split expert layout, or an expert tensor type the
 // indirect kernels do not cover). Routing — softmax over ALL experts, top-k,
-// renormalize (Mixtral/Qwen3) — runs on the host from router logits read
+// renormalize (Mixtral/Qwen3; not under expert_weights_norm false) — runs
+// on the host from router logits read
 // back per token; the per-expert SwiGLU matmuls run on the GPU by pointing
 // enc_mv at each expert's slice. Host-dependent routing is why this path
 // forces the eager (graph_bad) decode.
@@ -6272,6 +6283,9 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
             lg[best] = -1.0f;
         }
         if (forced) model_moe_replay_count((unsigned long)used, differed, 0);
+        // expert_weights_norm false (deepseek2): the softmax weights as they
+        // are; x / 1.0f is exact, so the weights below are selw unchanged
+        if (!m->expert_norm_w) denom = 1.0f;
         if (!route_trace_host(g, t, l, sel, selw, denom, used)) return false;
         // RUNNER_DEBUG_MOE: dump the first two routings' selection + weights
         // as hex — the discriminator that isolated the 2026-07-29 identity
@@ -6645,6 +6659,9 @@ static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int
             sel[s] = best; selw[s] = bp; denom += bp; lg[best] = -1.0f;
         }
         if (forced) model_moe_replay_count((unsigned long)used, differed, 0);
+        // expert_weights_norm false (deepseek2): the softmax weights as they
+        // are; x / 1.0f is exact, so the weights below are selw unchanged
+        if (!m->expert_norm_w) denom = 1.0f;
         if (!route_trace_host(g, t, l, sel, selw, denom, used)) return false;
         for (int s = 0; s < used; s++) {
             int e = sel[s];
@@ -7540,20 +7557,21 @@ static bool tile_branch_out(gpu_t *g, model_t *m, CUdeviceptr post_norm, int tn,
     return ok;
 }
 
-// The gated shared expert, the device twin of shexp_add, added into the
-// routed experts' output.
+// The shared expert, the device twin of shexp_add, added into the routed
+// experts' output.
 static bool tile_shexp(gpu_t *g, model_t *m, layer_t *ly, int tn, int xdim) {
     int n_embd = m->n_embd;
     bool ok = true;
-    // the gated shared expert, the device twin of shexp_add:
-    // out += sigmoid(gate_inp_shexp . in) * down(act(gate(in)) * up(in))
+    // the device twin of shexp_add:
+    // out += sigmoid(gate_inp_shexp . in) * down(act(gate(in)) * up(in)),
+    // or without the sigmoid where the file has no gate_inp_shexp
     int nf = m->n_ff_shexp;
     ok = ok && enc_mv(g, m, ly->w_up_shexp, g->shexp_in, g->shexp_u, n_embd, nf, 0, tn, xdim, nf)
             && enc_mv(g, m, ly->w_gate_shexp, g->shexp_in, g->shexp_g, n_embd, nf, 0, tn, xdim, nf)
             && enc_actmul(g, m, g->shexp_g, g->shexp_u, tn * nf)
             && enc_mv(g, m, ly->w_down_shexp, g->shexp_g, g->shexp_o, nf, n_embd, 0, tn, nf, n_embd);
-    // the scalar gate is required here: moe_bank_device_ok() keeps an
-    // ungated shared expert off the device
+    if (!ly->ffn_gate_inp_shexp)    // DeepSeek-style, ungated (R4.4.5 c0b)
+        return ok && enc_add(g, g->xb, g->shexp_o, n_embd, tn, xdim, n_embd);
     ok = ok && enc_mv(g, m, ly->ffn_gate_inp_shexp, g->shexp_in, g->shexp_gate, n_embd, 1, 0, tn, xdim, 1);
     if (ok) {
         int vs = n_embd;

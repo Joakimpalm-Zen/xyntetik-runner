@@ -5376,9 +5376,15 @@ extern "C" __global__ void k_scale(float *x, float s, int n, int xs) {
 //
 // logits: [tokens][ls]; sel/selw: [tokens][used]. lg[] is a local (per-
 // thread) working copy so the router logits buffer itself stays intact.
+//
+// renorm: 1 divides the selected weights by their sum (every family that
+// renormalises, expert_weights_norm true), 0 keeps them as the softmax gave
+// them (deepseek2, expert_weights_norm false: the publisher's
+// norm_topk_prob = False). The flag is uniform across the launch; with it
+// on, each weight is the same division it was.
 extern "C" __global__ void k_moe_route(const float *logits, int *sel,
                                        float *selw, int ne, int used,
-                                       int tokens, int ls) {
+                                       int tokens, int ls, int renorm) {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= tokens) return;
     // MOE_ROUTE_MAX experts per token in local memory (one thread per token);
@@ -5431,7 +5437,8 @@ extern "C" __global__ void k_moe_route(const float *logits, int *sel,
         lg[best] = -1.0f;
     }
     // per-element division, same rationale as the softmax normalization
-    for (int s = 0; s < used; s++) tw[s] /= denom;
+    if (renorm)
+        for (int s = 0; s < used; s++) tw[s] /= denom;
 }
 
 // RUNNER_MOE_REPLAY on the device (R3.21.2): k_moe_route's arithmetic, but at
@@ -5442,11 +5449,12 @@ extern "C" __global__ void k_moe_route(const float *logits, int *sel,
 // where the trace has no record; column t is position pos0 + t. cnt[0..2]
 // count the forced slots, the slots whose own choice differed, and the
 // (position, layer) pairs the trace did not hold (model.c's counters).
+// renorm as k_moe_route's.
 extern "C" __global__ void k_moe_route_replay(const float *logits, int *sel,
                                               float *selw, int ne, int used,
                                               int tokens, int ls, const int *tab,
                                               int npos, int nlayer, int pos0,
-                                              int layer, unsigned *cnt) {
+                                              int layer, unsigned *cnt, int renorm) {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= tokens) return;
     float lg[512];
@@ -5485,7 +5493,8 @@ extern "C" __global__ void k_moe_route_replay(const float *logits, int *sel,
         denom += bp;
         lg[best] = -1.0f;
     }
-    for (int s = 0; s < used; s++) tw[s] /= denom;
+    if (renorm)
+        for (int s = 0; s < used; s++) tw[s] /= denom;
 }
 
 // -------------------------------------------- indirect expert matvec (MoE)

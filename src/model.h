@@ -725,6 +725,14 @@ static inline bool model_moe_router_is_plain(const model_t *m) {
            m->n_expert_groups <= 1 && m->expert_norm_w &&
            (m->expert_w_scale == 0.0f || m->expert_w_scale == 1.0f);
 }
+// The same router with the renormalisation either way. CUDA's k_moe_route
+// takes expert_weights_norm as its renorm flag (R4.4.5, deepseek2); Metal's
+// router has no such flag and keeps the predicate above.
+static inline bool model_moe_router_is_plain_any_norm(const model_t *m) {
+    return m->expert_gating == EXPERT_GATE_SOFTMAX &&
+           m->n_expert_groups <= 1 &&
+           (m->expert_w_scale == 0.0f || m->expert_w_scale == 1.0f);
+}
 // Does layer l apply rope? llama.cpp: n_no_rope_layer_step > 0 &&
 // (il + 1) % n_no_rope_layer_step != 0.
 // muse-glimmer instead ropes exactly its sliding layers (use_rope =

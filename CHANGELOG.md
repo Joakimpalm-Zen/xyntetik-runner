@@ -18,6 +18,16 @@ Current release and unreleased changes. Compatibility follows the
   (24 query heads on 2 KV heads, `make-test-model.py --heads`) joins
   `test-cuda-attn-wide`. No kernel changes.
 
+- **CUDA runs the ungated (DeepSeek-style) shared expert on the device (R4.4.5 step c0b).** Before this, a MoE
+  whose shared expert has no scalar gate sent the whole model to the CPU on CUDA unless `--cpu-moe` kept the banks
+  on the host. `tile_shexp` now adds such a shared expert's output without the sigmoid.
+  - Granite 4 hybrid keeps its banks on the host by name, because its CUDA cells were measured that way. A relu2 or
+    gate-less shared expert keeps its refusal.
+  - `make test` adds gpu-identity on the `shexp` fixture: zero routed experts, with the dense FFN as the shared
+    expert. Its worst difference is 2.7e-7 against a limit of 1e-5, and on the device it scores bit for bit as the
+    dense oracle does.
+  - The gated shape (`shexpg`) and every CUDA MoE byte gate read the same before and after.
+
 - **Metal Q4_K decode: the fast kernel unpacks its scales without a branch,
   1.18x on Qwen3-4B Q4_K_M with the same bits (R3.28.5).** Q4_K's 6-bit
   scales unpack one way for sub-blocks 0 to 3 and another for 4 to 7, and
@@ -49,6 +59,18 @@ Current release and unreleased changes. Compatibility follows the
   2026-11-04; a third party's file, pinned by sha256 and repository revision.
   Report: `docs/compat-reports/mellum2.1-q5-band-2026-11-04`.
 
+
+- **CUDA's MoE router can leave the selected weights as the softmax gave them (R4.4.5 step c0).** `k_moe_route`
+  and its replay twin take a renormalise flag, which is the file's `expert_weights_norm`. The eager path's host
+  routers read the same field. Every family that renormalises today keeps the flag on, with the same bytes:
+  - the CUDA MoE byte gates read the same before and after, and so do the scores of the MoE fixtures;
+  - in the PTX, only `k_moe_route` and `k_moe_route_replay` changed, of 495 kernels.
+
+  A softmax router with `expert_weights_norm` false no longer sends the model to the CPU on CUDA. deepseek2 is
+  still refused on CUDA by name until its attention lands. Metal's router has no such flag and keeps the
+  refusal. `make test` gains CPU-against-device runs on the shared-router pair `rsoft` and `rsoftnn` and on
+  `gnonorm` (worst 1.9e-7 and 2.7e-7, limit 1e-5). `test-moe-router` checks that the pair differs on the host
+  (0.041).
 
 - **DeepSeek-V2 (`deepseek2`) runs on the CPU (R4.4.5 step b).** These are the limits for now:
   - The CPU only; the GPU backends run it on the CPU with a reason.
