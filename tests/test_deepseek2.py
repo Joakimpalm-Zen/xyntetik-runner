@@ -30,12 +30,17 @@ LONG = ("the quick brown fox jumps over the lazy dog and then the dog sleeps und
         "river while the fox runs")
 
 
-def _score(exe, model, out, naive):
+def _score(exe, model, out, naive, gpu="off", route=False):
     env = dict(os.environ, RUNNER_MLA_NAIVE="1" if naive else "0")
-    p = subprocess.run([str(exe), "-m", str(model), "--gpu", "off", "-t", "2", "-c", "256", "--score", "-p", TEXT,
+    p = subprocess.run([str(exe), "-m", str(model), "--gpu", gpu, "-t", "2", "-c", "256", "--score", "-p", TEXT,
                         "--score-out", str(out), "--no-tray"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    assert p.returncode == 0, p.stderr.decode(errors="replace")
-    return json.loads(out.read_text())
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode == 0, err
+    score = json.loads(out.read_text())
+    if route:   # the stderr route line names the device layers the score file leaves out
+        line = next(x for x in err.splitlines() if x.startswith("score: route "))
+        score["route_line"] = json.loads(line[len("score: route "):])
+    return score
 
 
 @pytest.fixture(scope="module")
@@ -186,6 +191,36 @@ def test_absorbed_equals_naive(fixture):
     assert worst < 1e-4, "absorbed against naive: max |dlogprob| %.3g" % worst
 
 
+@pytest.fixture(scope="module")
+def cuda_naive(fixture, tmp_path_factory):
+    # the naive form on the CUDA device (R4.4.5 c1); the absorbed form stays on
+    # the CPU there until c2, so RUNNER_MLA_NAIVE=1
+    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
+    caps = json.loads(subprocess.run([str(exe), "--caps"], stdout=subprocess.PIPE).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("no CUDA backend")
+    model, _ = fixture
+    score = _score(exe, model, tmp_path_factory.mktemp("ds2cuda") / "naive-cuda.json", True, gpu="99", route=True)
+    route = score["route_line"]
+    assert route["backend"] == "cuda" and route["gpu_layers"] == route["layers"], route
+    return score
+
+
+def test_cuda_naive_matches_the_publishers_math(fixture, cuda_naive):
+    model, _ = fixture
+    kv, w = load(model)
+    ref = reference_logprobs(kv, w, cuda_naive["tokens"])
+    worst = max(abs(a - b) for a, b in zip(cuda_naive["logprobs"], ref))
+    # the CPU's bound (PLAN-c G1)
+    assert worst < 5e-4, "max |cuda - reference| logprob %.3g" % worst
+
+
+def test_cuda_naive_equals_the_cpu(fixture, cuda_naive):
+    _, scores = fixture
+    cpu = scores[True]
+    assert cpu["tokens"] == cuda_naive["tokens"]
+    worst = max(abs(a - b) for a, b in zip(cpu["logprobs"], cuda_naive["logprobs"]))
+    assert worst < 1e-4, "max |cuda - cpu| naive logprob %.3g" % worst
 def test_a_full_batch_prefill_in_both_forms(fixture):
     # a prompt prefill feeds forwards of the scratch's full batch (n_batch
     # rows): the absorbed form once computed kv_b's width from its 576-wide
