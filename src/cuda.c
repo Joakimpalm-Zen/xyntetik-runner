@@ -7290,10 +7290,14 @@ static bool tile_attn_tc(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
 // and the tile's 8- and 16-row kernels run on the CUDA cores. On by default
 // for gemma-4's E-series (gemma4 with per-layer embeddings: Nemotron 3.5
 // Bolt E4B, gemma-4-E2B/E4B), whose 512-wide global layers it takes from
-// k_attn_tile8 (owner decision 2026-11-03); 0 keeps the tile there, 1 forces
-// it on every model it admits.
+// k_attn_tile8 (owner decision 2026-11-03), and for qwen35 at head width 256
+// (Qwen3.5/3.6/3.8: every fourth layer full attention; 1.82x prefill at 16K
+// on Qwen3.8-27B with the D1 rule passing, R3.6.3.2); 0 keeps the tile
+// there, 1 forces it on every model it admits.
 static bool attn_tcw_family(const model_t *m) {
-    return m && strcmp(m->arch, "gemma4") == 0 && m->n_embd_ple > 0;
+    if (!m) return false;
+    if (strcmp(m->arch, "gemma4") == 0) return m->n_embd_ple > 0;
+    return strcmp(m->arch, "qwen35") == 0 && m->head_dim == 256;
 }
 static bool attn_tcw_on(const model_t *m) {
     static _Atomic int on = -1;   // -1 unread, 2 unset (the family default)
