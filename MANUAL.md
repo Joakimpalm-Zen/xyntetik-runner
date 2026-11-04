@@ -1979,7 +1979,14 @@ reassociating fast kernel by default (two rows a simdgroup, vector
 accumulation; a mixture-of-experts model keeps the identity kernel, since
 the fidelity rows behind the default are dense): decode +10.8% on
 Llama-3.2-1B and +12.5% on Llama-3.2-3B Q4_K_M on an Apple M1, -0.9% on
-Qwen2.5-1.5B. It is a tolerance route, not the identity kernel's bits,
+Qwen2.5-1.5B. It takes Q4_K inputs at least 2048 wide; narrower ones keep
+the identity kernel (R3.28.1). Q4_K decode time per input width on an
+Apple M1, fast against identity, ms a token: 1536 wide 11.11 against 9.62
+(K2-Horizon-1B, where the fast kernel lost), 2048 10.96 against 12.96
+(Llama-3.2-1B), 3072 36.48 against 40.21 (Llama-3.2-3B), 5120 1.88 against
+2.45, 8192 1.61 against 2.98 and 5.38 against 7.91. Widths between 1536 and
+2048 were not measured and take the exact kernel. The route detail says
+`mv=fast-q4_K>=2048`. It is a tolerance route, not the identity kernel's bits,
 promoted on its fidelity rows against the publisher's float32 model (mean
 KL 0.9993x on Llama-3.2-3B and 0.9998x on Qwen2.5-1.5B against the identity
 route, paired tests not distinguishable) and on `./test-mv-tol MODEL.gguf`
