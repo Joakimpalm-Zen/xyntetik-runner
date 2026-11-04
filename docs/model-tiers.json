@@ -3504,21 +3504,191 @@
       "vision_upstream": true
     },
     {
-      "id": "granite-4.2-30b",
+      "id": "granite-4.2-30b-q4_k_m",
       "model": "Granite-4.2-30B",
-      "tier": "upcoming",
-      "claim": "Not validated: the granite architecture is admitted and IBM's official GGUF exists, but no gate has run on a 30B file.",
+      "tier": "tier2",
+      "claim": "IBM's Q4_K_M runs below the fidelity bar: against the publisher's BF16 parent in float32, mean KLD 0.139 and margin-qualified top-1 93.9% (Runner), 0.151 / 92.5% (llama.cpp), where the bar is 0.05 / 97%. The file itself is the distance: against Runner's Q8_0 it reads top-20 KL 0.111, top-1 83.7%. The fidelity file is IBM's Q8_0, row granite-4.2-30b-q8_0 (Runner 0.0041 / 99.56%, llama.cpp 0.0241 / 99.12%).",
       "architecture": "granite",
-      "missing": "One gate run on the Linux CUDA host: quant bar, tool gate, pinned output, device record; a file pinned by sha256.",
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-11-04",
+          "reason": "R4.29 gate run, admitted 2026-11-04 at Tier 2: IBM's file pinned by sha256, the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call.",
+          "last_validated_release": null
         }
       ],
-      "anchor": "Family: granite-4.2-3B bf16 against IBM's float32 reference covers the family."
+      "family": "Granite-4.2-30B",
+      "upstream": {
+        "checkpoint": "ibm-granite/granite-4.2-30b",
+        "revision": "9e668ce1c538387ef24d3644e9b0606647762636"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "ibm-granite/granite-4.2-30b"
+      },
+      "files": [
+        {
+          "name": "granite-4.2-30b-Q4_K_M.gguf",
+          "repo": "ibm-granite/granite-4.2-30b-GGUF",
+          "revision": "27b350a791e81d9a4d1ddca1c49282e9ec533768",
+          "sha256": "f299dace85d77ee0e24ca0b6720bd211b1f4cd1f65b9c0a2111e79692e29c9be",
+          "bytes": 17721455328
+        }
+      ],
+      "quantization": "Q4_K_M (IBM)",
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.12.0",
+          "date": "2026-11-03",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "8b2729f82aecc39ced70583fd0dc28134c68a329",
+          "caps": {
+            "version": "1.12.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 128,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "eeb1b390d202e1b0cfbca49ebe2908a07eae741d2609817eacd316e7bc30d143",
+          "ran": "runner -m granite-4.2-30b-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.2-30b-q4_k_m.linux-x86_64-cuda.cuda.txt"
+        },
+        "metal": null
+      },
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.12.0",
+        "date": "2026-11-03"
+      },
+      "published": false,
+      "envelope": {
+        "features": [
+          "text",
+          "tools"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Against IBM's BF16 checkpoint ibm-granite/granite-4.2-30b in float32 at use on the CPU (transformers 5.16.1's GraniteForCausalLM, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, no BOS, the Runner sides from chunked CPU score files): Q4_K_M 0.1393 mean KLD / 83.00% top-1 / 93.86% margin-qualified, below the bar (0.05 / 97%); Q8_0 0.0041 / 97.67% / 99.56%, passing. llama.cpp 73a43d1 reads 0.1512 / 92.54% on the Q4_K_M and 0.0241 / 99.12% on the Q8_0; Runner is the closer by per-position KLD on both (p 0.0014, p 8e-35). The Q4_K_M's distance is the file's: against Runner's own Q8_0 it reads top-20 KL 0.111 with 83.7% top-1 agreement. Record: docs/compat-reports/granite-4.2-30b-2026-11-04/README.md.",
+        "context": 9216,
+        "limitations": "Below the fidelity bar on both engines (the file, not the engine). Tool gate case C streamed misses on a reasoning budget at temperature 1.0 (the 400-token budget spent in reasoning, no call parsed); A, B and C buffered pass. Context past the gold window's 4,509 tokens and task quality are not measured.",
+        "evidence": [
+          "docs/compat-reports/granite-4.2-30b-2026-11-04/README.md"
+        ],
+        "missing": "The Metal cell; the CPU cell on this file; context past 4,509 tokens; task quality."
+      }
+    },
+    {
+      "id": "granite-4.2-30b-q8_0",
+      "model": "Granite-4.2-30B",
+      "tier": "tier2",
+      "claim": "IBM's Q8_0, the fidelity file of Granite-4.2-30B: against the publisher's BF16 parent in float32, mean KLD 0.0041, margin-qualified top-1 99.56% (Runner), 0.0241 / 99.12% (llama.cpp); Runner is the closer at 270 of 300 positions. 31.1 GB of weights: larger than a 24 GB device, so its cell is the CPU.",
+      "architecture": "granite",
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-11-04",
+          "reason": "R4.29 gate run, admitted 2026-11-04 at Tier 2: IBM's file pinned by sha256, the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call.",
+          "last_validated_release": null
+        }
+      ],
+      "family": "Granite-4.2-30B",
+      "upstream": {
+        "checkpoint": "ibm-granite/granite-4.2-30b",
+        "revision": "9e668ce1c538387ef24d3644e9b0606647762636"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "ibm-granite/granite-4.2-30b"
+      },
+      "files": [
+        {
+          "name": "granite-4.2-30b-Q8_0.gguf",
+          "repo": "ibm-granite/granite-4.2-30b-GGUF",
+          "revision": "27b350a791e81d9a4d1ddca1c49282e9ec533768",
+          "sha256": "005b0933353e9ba219b26e2667705bdb8dbc74eb50e4a4e6cb70fca108710f81",
+          "bytes": 31111705312
+        }
+      ],
+      "quantization": "Q8_0 (IBM)",
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.12.0",
+          "date": "2026-11-04",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "8b2729f82aecc39ced70583fd0dc28134c68a329",
+          "caps": {
+            "version": "1.12.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "f9609a2de500147a23cd66aad0c98cdfef79e983ff09d8c37010601271a1703c",
+          "ran": "runner -m granite-4.2-30b-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.2-30b-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": null,
+        "metal": null
+      },
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.12.0",
+        "date": "2026-11-04"
+      },
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Against IBM's BF16 checkpoint ibm-granite/granite-4.2-30b in float32 at use on the CPU (transformers 5.16.1's GraniteForCausalLM, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, no BOS, the Runner sides from chunked CPU score files): Q4_K_M 0.1393 mean KLD / 83.00% top-1 / 93.86% margin-qualified, below the bar (0.05 / 97%); Q8_0 0.0041 / 97.67% / 99.56%, passing. llama.cpp 73a43d1 reads 0.1512 / 92.54% on the Q4_K_M and 0.0241 / 99.12% on the Q8_0; Runner is the closer by per-position KLD on both (p 0.0014, p 8e-35). The Q4_K_M's distance is the file's: against Runner's own Q8_0 it reads top-20 KL 0.111 with 83.7% top-1 agreement. Record: docs/compat-reports/granite-4.2-30b-2026-11-04/README.md.",
+        "context": 9216,
+        "limitations": "31.1 GB of weights: on a 24 GB device it runs as a partial offload, which is not measured. The tool gate ran on the Q4_K_M sibling, not on this file. Context past the gold window's 4,509 tokens and task quality are not measured.",
+        "evidence": [
+          "docs/compat-reports/granite-4.2-30b-2026-11-04/README.md"
+        ],
+        "missing": "The CUDA cell (a partial offload on a 24 GB device) and the Metal cell; the tool gate on this file; context past 4,509 tokens; task quality."
+      }
     },
     {
       "id": "nemotron-3.5-lightning-30b-a3b-q4_0",
