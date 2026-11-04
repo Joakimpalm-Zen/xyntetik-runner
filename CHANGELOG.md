@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA's MoE router can leave the selected weights as the softmax gave them (R4.4.5 step c0).** `k_moe_route`
+  and its replay twin take a renormalise flag, which is the file's `expert_weights_norm`. The eager path's host
+  routers read the same field. Every family that renormalises today keeps the flag on, with the same bytes:
+  - the CUDA MoE byte gates read the same before and after, and so do the scores of the MoE fixtures;
+  - in the PTX, only `k_moe_route` and `k_moe_route_replay` changed, of 495 kernels.
+
+  A softmax router with `expert_weights_norm` false no longer sends the model to the CPU on CUDA. deepseek2 is
+  still refused on CUDA by name until its attention lands. Metal's router has no such flag and keeps the
+  refusal. `make test` gains CPU-against-device runs on the shared-router pair `rsoft` and `rsoftnn` and on
+  `gnonorm` (worst 1.9e-7 and 2.7e-7, limit 1e-5). `test-moe-router` checks that the pair differs on the host
+  (0.041).
+
 - **DeepSeek-V2 (`deepseek2`) runs on the CPU (R4.4.5 step b).** These are the limits for now:
   - The CPU only; the GPU backends run it on the CPU with a reason.
   - The absorbed multi-head latent attention by default: the cache holds one 576-wide head a token a layer

@@ -617,6 +617,7 @@ typedef struct {
     int        *h_moe_sel, *h_moe_gidx;
     float      *h_moe_selw, *h_moe_gw;
     bool        moe_fused_ok;           // every MoE layer runs the indirect path
+    int         moe_renorm;             // k_moe_route's renorm: expert_weights_norm
     // RUNNER_MOE_REPLAY / RUNNER_MOE_TRACE on the device routers (R3.21.2):
     // the trace as [replay_npos][n_layer][used] ids, the three counters
     // model.c reports, whether each routing is written to the trace, and the
@@ -3160,8 +3161,8 @@ typedef struct {
 // kernels, swiglu_oai and the router/expert bias plumbing landed
 // (2026-08-01); the old refusal is gone.
 // Generalized MoE routing has no device kernel: k_moe_route is softmax +
-// top-k + renormalize with no bias input, and regenerating kernels_ptx.h
-// is the CUDA-13.3 machine's job. Refuse the backend rather than route
+// top-k, renormalized or not (expert_weights_norm), with no bias input, and
+// regenerating kernels_ptx.h is tools/ptx-toolchain/make-ptx.sh's job. Refuse the backend rather than route
 // with the wrong function and produce confident, wrong output.
 // Mamba-2 hybrids (granitehybrid, nemotron_h) have a device SSD-scan
 // + conv1d kernel (k_mamba2_*), dispatched from gpu_mamba2_recurrent and
@@ -3182,7 +3183,7 @@ static bool cuda_admit(model_t *m) {
                 "not on the CUDA backend yet — using CPU\n");
         return false;
     }
-    if (m->n_expert > 0 && !model_moe_router_is_plain(m)) {
+    if (m->n_expert > 0 && !model_moe_router_is_plain_any_norm(m)) {
         fprintf(stderr, "gpu: this model's MoE router (gating=%d groups=%d "
                 "norm_w=%d scale=%g) has no device kernel — running on CPU\n",
                 m->expert_gating, m->n_expert_groups, (int)m->expert_norm_w,
@@ -3636,6 +3637,7 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
                     "— using CPU\n");
             goto fail;
         }
+        g->moe_renorm = m->expert_norm_w ? 1 : 0;
         if (model_moe_replay_on()) {
             int np = 0;
             int *tab = model_moe_replay_table(m->n_layer, m->n_expert_used, &np);
@@ -5605,7 +5607,8 @@ static bool stage_x(gpu_t *g, model_t *m, const int32_t *tokens, int tn) {
 // entirely on the device, so a MoE decode step has no host round-trip and is
 // CUDA-graph capturable (the moe-gpu-routing spec's P1).
 
-// Device softmax -> top-k -> renormalize for `tokens` routed columns. The
+// Device softmax -> top-k -> renormalize (g->moe_renorm: off under
+// expert_weights_norm false) for `tokens` routed columns. The
 // kernel is serial per token and mirrors moe_route() bit for bit (see the
 // contract comment in kernels.cu).
 // Under RUNNER_MOE_REPLAY the replay twin routes instead (the recorded choice
@@ -5743,10 +5746,11 @@ static bool enc_moe_route(gpu_t *g, CUdeviceptr logits, CUdeviceptr sel,
     if (g->replay_tab) {
         int pos0 = g->route_pos + col0;
         void *p[] = { &logits, &sel, &selw, &ne, &used, &tokens, &ls, &g->replay_tab,
-                      &g->replay_npos, &g->replay_nlayer, &pos0, &layer, &g->replay_cnt };
+                      &g->replay_npos, &g->replay_nlayer, &pos0, &layer, &g->replay_cnt,
+                      &g->moe_renorm };
         ok = launch(g, g->sw->f_moe_route_replay, (unsigned)(tokens + 31) / 32, 1, 1, 32, p);
     } else {
-        void *p[] = { &logits, &sel, &selw, &ne, &used, &tokens, &ls };
+        void *p[] = { &logits, &sel, &selw, &ne, &used, &tokens, &ls, &g->moe_renorm };
         ok = launch(g, g->sw->f_moe_route, (unsigned)(tokens + 31) / 32, 1, 1, 32, p);
     }
     if (!ok || !g->route_trace) return ok;
@@ -6196,7 +6200,8 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
 
 // Eager fallback (legacy split expert layout, or an expert tensor type the
 // indirect kernels do not cover). Routing — softmax over ALL experts, top-k,
-// renormalize (Mixtral/Qwen3) — runs on the host from router logits read
+// renormalize (Mixtral/Qwen3; not under expert_weights_norm false) — runs
+// on the host from router logits read
 // back per token; the per-expert SwiGLU matmuls run on the GPU by pointing
 // enc_mv at each expert's slice. Host-dependent routing is why this path
 // forces the eager (graph_bad) decode.
@@ -6268,6 +6273,9 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
             lg[best] = -1.0f;
         }
         if (forced) model_moe_replay_count((unsigned long)used, differed, 0);
+        // expert_weights_norm false (deepseek2): the softmax weights as they
+        // are; x / 1.0f is exact, so the weights below are selw unchanged
+        if (!m->expert_norm_w) denom = 1.0f;
         if (!route_trace_host(g, t, l, sel, selw, denom, used)) return false;
         // RUNNER_DEBUG_MOE: dump the first two routings' selection + weights
         // as hex — the discriminator that isolated the 2026-07-29 identity
@@ -6641,6 +6649,9 @@ static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int
             sel[s] = best; selw[s] = bp; denom += bp; lg[best] = -1.0f;
         }
         if (forced) model_moe_replay_count((unsigned long)used, differed, 0);
+        // expert_weights_norm false (deepseek2): the softmax weights as they
+        // are; x / 1.0f is exact, so the weights below are selw unchanged
+        if (!m->expert_norm_w) denom = 1.0f;
         if (!route_trace_host(g, t, l, sel, selw, denom, used)) return false;
         for (int s = 0; s < used; s++) {
             int e = sel[s];
