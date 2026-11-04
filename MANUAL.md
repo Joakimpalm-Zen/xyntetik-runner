@@ -1128,6 +1128,9 @@ The [quick start](#quick-start) uses Granite 4.1 3B Q8_0. The choices below
 separate a fidelity-gated starting point from a smaller smoke test and a
 larger project artifact. File size is not the total RAM requirement; use
 [`--info fit`](#deciding-before-you-download) for the model and context you need.
+On an 8 GB Mac, a one-shot CLI run of a mapped 4B file pays about 3 GB of
+page-in inside its first prompt; `--mlock` or a resident server
+holds the weights.
 
 | Model | File size | Role |
 |---|---|---|
@@ -2486,7 +2489,7 @@ instance instead.
 | `--reserve P` or `--reserve vram=P,ram=P,cpu=P` | One percentage caps this process at `P` percent of total RAM and VRAM; the named form sets each budget on its own: `vram` (the CUDA layer-fit budget, [details](#cli-reserve-vram)), `ram`, and `cpu` (size the default thread count as a percentage of cores). Without `-c` the context is auto-fit to what the reservation leaves after the weights. |
 | `--kv f16\|q8\|k8v4\|fp4` | Choose KV cache storage; precision, memory use and backend support differ by format. [Details](#cli-kv). |
 | `--kv-ring auto\|on\|off` | Give sliding-window layers only their window of KV rows, output-identical to the flat cache. `auto` (default) turns it on only when the weights and the flat cache do not fit; `-v` says why it is on or off. [Details](#cli-kv-ring). |
-| `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. A Gemma 4 E-series per-layer token table stays pageable. |
+| `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. A Gemma 4 E-series per-layer token table stays pageable. Runner maps its weights, so a one-shot CLI run of a mapped 4B file on an 8 GB Mac pays about 3 GB of page-in inside its first prompt (Qwen3-4B Q4_K_M: 28 against 85 tok/s of 512-token prefill, 2026-11-04); `--mlock` or a resident server holds the weights. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
 | `--draft SOURCE` | Speculative decoding from one source per run, named by its spelling. `PATH`: a same-vocabulary draft GGUF ([details](#cli-draft)). `mtp`: the model's own NextN/MTP predictor block ([details](#cli-mtp)). `mtp:FILE`: that block from a companion GGUF when the model file was exported without one ([details](#cli-mtp)). `lookup`: n-gram matches in the context itself, no weights and no draft forward ([details](#cli-draft-lookup)). A second source on the line is refused, not ignored. A server given a swap registry (`-m a=...,b=...`) refuses to start with a draft, which needs a single served model. |
 | `--draft-k N` | Draft tokens per speculative round, `1` to `15`, default `4`, for every draft source (a round verifies the drafts plus the correction, at most 16 rows). All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
