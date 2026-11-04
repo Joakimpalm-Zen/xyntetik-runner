@@ -18,6 +18,41 @@ Current release and unreleased changes. Compatibility follows the
   (24 query heads on 2 KV heads, `make-test-model.py --heads`) joins
   `test-cuda-attn-wide`. No kernel changes.
 
+- **Metal Q4_K decode: the fast kernel unpacks its scales without a branch,
+  1.18x on Qwen3-4B Q4_K_M with the same bits (R3.28.5).** Q4_K's 6-bit
+  scales unpack one way for sub-blocks 0 to 3 and another for 4 to 7, and
+  `k_mvg_q4_K`'s lanes sit on both sides within a simdgroup, so every lane
+  paid both paths. Now three 16-bit loads at fixed offsets and a select
+  give the same integers: the output is bitwise unchanged. On an Apple M1,
+  Q4_K at Qwen3-4B's 2560-wide inputs reads 47.9 GB/s against 38.2, and
+  decode over R3.28.3 is 17.59 against 14.92 tok/s on Qwen3-4B, 1.15x on
+  Llama-3.2-3B, 1.13x on Llama-3.2-1B, 1.02x on K2-Horizon-1B (whose
+  1536-wide bulk runs the identity kernel).
+- **Metal Q6_K decode: the narrow-slice kernel too, 1.20x more on
+  Qwen3-4B Q4_K_M (R3.28.3).** A Q4_K_M file keeps its LM head, attn_v and
+  half its ffn_down at Q6_K, which decoded at about 27 GB/s on an Apple M1.
+  Q6_K inputs at least 1536 wide now run `k_mvg_q6_K`, R3.28.2's shape for
+  Q6_K, at 51 to 55 GB/s: decode over the R3.28.2 build, Qwen3-4B 15.08
+  against 12.56 tok/s, Llama-3.2-1B 1.36x, Llama-3.2-3B 1.23x,
+  K2-Horizon-1B 1.24x. Unlike `k_mv2_q6_K`, whose bits are the identity
+  kernel's, it is a tolerance route: `test-mv-tol` 0/64 flips on Qwen3-4B,
+  and its float32-reference row is in the PR. `RUNNER_METAL_MVG=0` restores
+  both previous kernels. The route detail says
+  `mv=mvg-q4_K>=2048+q6_K>=1536`.
+- **Metal Q4_K decode: a faster fast kernel, 1.19x on Qwen3-4B and
+  Llama-3.2-3B Q4_K_M (R3.28.2).** The Q4_K inputs the fast route takes (at
+  least 2048 wide on dense models) run `k_mvg_q4_K`: eight lanes share a
+  superblock and a lane's 32 activations serve four rows, where
+  `k_mvf_q4_K` gave a lane 64 activations for one quarter of two rows. On
+  an Apple M1, decode: Qwen3-4B 12.59 against 10.61 tok/s, Llama-3.2-3B
+  17.09 against 14.34, Llama-3.2-1B 1.08x, K2-Horizon-1B 1.02x. A
+  tolerance route like the one it replaces: `test-mv-tol` 0/64 flips on
+  Qwen3-4B, and its float32-reference row (mean KL 0.9999x of the old
+  kernel's) is in the PR. A decode microbatch's columns each run the
+  one-column arithmetic, so they keep the solo step's bits.
+  `RUNNER_METAL_MVG=0` keeps `k_mvf_q4_K`. The route detail says
+  `mv=mvg-q4_K>=2048`.
+
 - **The CUDA int8 prefill route (`RUNNER_CUDA_I8=1`) stays opt-in for every
   type (R3.14.1).** Against the publisher's float32 models, Q8_0 (Qwen3-0.6B)
   reads 1.51x the default route's mean KL. Q4_K with Q6_K (Qwen3-4B Q4_K_M)
@@ -36,6 +71,17 @@ Current release and unreleased changes. Compatibility follows the
   Tokenizer differential 0 of 247,091 entries, template byte-identical to
   Qwen's with 23 of 23 conformance cases, tool gate A and B pass and C passes
   buffered. Record: `docs/compat-reports/qwen3.6-27b-2026-11-04`.
+
+- **On CUDA with every layer on the device, `--draft lookup` now drafts 7
+  tokens a round by default and `--draft mtp` 2; every other source,
+  backend and partial offload keeps 4 (R3.3.7).** On an
+  RTX 3070, lookup on an in-context edit reads 2.86x plain at 7 against
+  2.43x at 4. Qwen3.5-4B's NextN head reads 1.13x at 2 on code and tool
+  calls, against 1.01x and 1.18x at 4; on prose it stays a loss (0.88x at
+  2). An adaptive width that followed each turn's acceptance was measured
+  first and stopped by its kill read: 0.97x of the best fixed width, where
+  it needed 1.05x. An explicit `--draft-k` is unchanged. Report:
+  `docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03`.
 
 - **`--quant-error` costs a row its type cannot describe at the type the
   rewrite writes instead.** A tensor whose rows the asked type's block does

@@ -6689,6 +6689,8 @@ static const char *route_backend(const model_t *m) {
 #endif
 }
 
+const char *model_backend_name(const model_t *m) { return route_backend(m); }
+
 static const char *route_build(void) {
 #if defined(RUNNER_T3_BUILD)
     return "t3/" RUNNER_BUILD_ARCH;
