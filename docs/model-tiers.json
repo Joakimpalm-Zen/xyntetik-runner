@@ -4274,10 +4274,39 @@
       },
       "backends": {
         "cpu": null,
-        "cuda": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.12.0",
+          "date": "2026-11-04",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "5019687ca8d0c79668cb1b210d6703ecf6ffac21",
+          "caps": {
+            "version": "1.12.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "e3eeabfa48cf4a6f17a8d1de566b90e43e954491b682018196bd867a4032b990",
+          "ran": "runner -m Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q5_k_s.linux-x86_64-cuda.cuda.txt"
+        },
         "metal": null
       },
-      "lora": null,
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.12.0",
+        "date": "2026-11-04"
+      },
       "transitions": [
         {
           "tier": "tier2",

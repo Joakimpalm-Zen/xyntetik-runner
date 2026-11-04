@@ -602,12 +602,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Mellum2.1</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>Mellum2.1</b>, 1 model: CPU - · CUDA ✅ · Metal - · Train ✅</summary>
 <p><b>Mellum2.1-12B-A2.5B-Thinking (JetBrains)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#mellum2.1-12b-a2.5b-thinking-q5_k_s"><code>Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf</code></a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td><a href="#mellum2.1-12b-a2.5b-thinking-q5_k_s"><code>Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf</code></a></td><td></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td></td><td nowrap>✅ 1.12.0<br>2026-11-04</td></tr>
 </tbody>
 </table>
 </details>
@@ -1851,10 +1851,12 @@ Text path, a third party's Q5_K_S (bartowski, with an importance matrix), the sm
 - **Known limitations:** A third party's file, not the publisher's: the pin is the sha256 and the repository revision, and the file can leave the Hub without notice. Plain top-1 93.0%; the first 750 positions sit at the bar's edge (0.0497). One window over one corpus, no benchmark claim, no speed row. The tool protocol's live gate has not run on this file (template conformance is the family's, 23/23). CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. 8.96 GB does not load resident on an 8 GB machine; on an 8 GB card it runs as a layer split.
 - **Still missing:** The Metal row and the Windows CUDA host's cells; the CPU-vs-CUDA check and the live tool gate on this file; an llama.cpp column in the same window.
 - **Evidence:** [docs/compat-reports/mellum2.1-q5-band-2026-11-04/README.md](compat-reports/mellum2.1-q5-band-2026-11-04/README.md), [docs/compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json](compat-reports/cpu_cuda/mellum2.1-12b-a2.5b-thinking-q4_k_m.json).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; no run recorded yet.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.12.0 on 2026-11-04.
 - **CPU:** ☐ not run
-- **CUDA:** ☐ not run
+- **CUDA:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `5019687ca8d0`, output sha256 `e3eeabfa48cf4a6f`, [pin](../tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-q5_k_s.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.12.0, 2026-11-04).
+- **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-04).
 - **Tier history:** Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
 
 ### MiniCPM5
