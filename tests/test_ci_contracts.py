@@ -11,7 +11,15 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
+# The classes below read the Makefile through `make` itself. A Windows shell
+# outside MSYS2 (plain Git Bash, cmd) has no make on PATH, where these used to
+# fail with FileNotFoundError; CI runs them from MSYS2, which has it (R1.23).
+needs_make = unittest.skipUnless(
+    shutil.which("make"), "needs GNU make on PATH (on Windows, MSYS2's "
+    "C:/msys64/usr/bin/make.exe: run from the MSYS2 shell)")
 
+
+@needs_make
 class SanitizerBuild(unittest.TestCase):
     def test_debug_instruments_transformations_and_aborts_on_ub(self):
         p = subprocess.run(["make", "-Bn", "debug"], cwd=ROOT,
@@ -578,6 +586,7 @@ class CudaGateRefusesADegradedLaunch(_CudaGateCopy, unittest.TestCase):
                 self.assertIs(self.summary[0]["env"]["login_shell"], bool(args))
 
 
+@needs_make
 class LlamaQuantizeByName(unittest.TestCase):
     """The CUDA gate steps that quantize fixtures run llama-quantize from
     RUNNER_LLAMA_CPP_BIN, resolved by name. A llama.cpp Windows release
@@ -638,6 +647,7 @@ class LlamaQuantizeByName(unittest.TestCase):
                          len(self.QUANTIZE_TARGETS))
 
 
+@needs_make
 class PlatformDetection(unittest.TestCase):
     """The Windows branch is chosen from the shell the build runs in, not
     from an environment variable a minimal shell may not carry. A bash.exe

@@ -78,9 +78,12 @@ def self_test() -> int:
     bw, m1 = "Black" + "well", "M" + "1"
     chips = problems(f"--- a/d.md\n+++ b/d.md\n@@ -1 +1,2 @@\n+the NVIDIA {bw} card, an RTX PRO 6000 {bw}\n"
                      f"+the Apple {m1} laptop\n")
-    bare = problems(f"--- a/d.md\n+++ b/d.md\n@@ -1 +1,2 @@\n+measured on the {bw} box\n+and the {m1}\n")
+    bare = problems(f"--- a/d.md\n+++ b/d.md\n@@ -1 +1,3 @@\n+measured on the {bw} box\n+and the {m1}\n"
+                    f"+see 0.4.10-{bw.lower()}-qwen.json\n")
+    # Blackwell is refused in any case, M1 only as written: a lowercase m1 is not the chip
+    chips += problems(f"--- a/d.md\n+++ b/d.md\n@@ -1 +1 @@\n+the {m1.lower()} register\n")
     ok = (len(found) == 2 and found[0].startswith("docs/x.json:1:") and found[1].startswith("docs/x.json:3:")
-          and not allowed and not clean and not deleted and not chips and len(bare) == 2)
+          and not allowed and not clean and not deleted and not chips and len(bare) == 3)
     print(f"content-hygiene self-test: {'ok' if ok else 'FAILED'} (planted {len(found)}, allowlisted "
           f"{len(allowed)}, clean {len(clean)}, deleted line {len(deleted)}, chip names {len(chips)}, "
           f"bare machine names {len(bare)})")

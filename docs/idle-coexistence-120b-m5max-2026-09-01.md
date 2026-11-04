@@ -1,6 +1,6 @@
 # Idle coexistence at 120B — 128 GB Apple Silicon Mac, 2026-09-01
 
-The README's designed-to-stay-on measurement was made on an 8 GB M1 with a
+The README's designed-to-stay-on measurement was made on an 8 GB Apple M1 with a
 3.6 GB model, where llama-server's resident set was 47% of the machine. The
 question a 128 GB host answers: does the design difference still matter when
 RAM is abundant? Measured with `scripts/idle_coexistence.py` (same four-state
@@ -23,9 +23,9 @@ And the flip side, reported as always:
 | request after a 60 s idle, TTFT | 0.606 s | **0.121 s** |
 
 The answer to the question: abundance does not dissolve the difference, it
-scales it. On the M1 the residency gap was 3.8 GB; here it is **60.8 GB —
+scales it. On the Apple M1 the residency gap was 3.8 GB; here it is **60.8 GB —
 roughly half the machine wired down by an idle process** for as long as it
-lives, exactly the M1 finding at 16x the size. The latency price Runner pays
+lives, exactly the Apple M1 finding at 16x the size. The latency price Runner pays
 for evictability also scales (10 s to fault 63 GB of weights back in against
 0.25 s answered from residency), so the trade reads the same at both ends of
 the hardware range: a dedicated inference box wants llama-server's residency;
@@ -33,7 +33,7 @@ a machine that is also a workstation wants an engine whose idle cost is 35 MB
 and whose memory comes back with an HTTP call.
 
 Two notes for anyone comparing against the README table: this llama.cpp is a
-2026-08 self-built `010be968`, not the prebuilt b10639 the M1 row pinned, and
+2026-08 self-built `010be968`, not the prebuilt b10639 the Apple M1 row pinned, and
 its idle CPU (0.12 s/min) is far better than the 161-wakeups/s behavior
 measured there — idle discipline upstream has improved; the wired-residency
 design difference is unchanged. Raw JSON reports for both engines were

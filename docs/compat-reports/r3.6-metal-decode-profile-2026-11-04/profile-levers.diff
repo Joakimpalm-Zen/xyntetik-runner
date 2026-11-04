@@ -1,0 +1,35 @@
+diff --git a/src/metal.m b/src/metal.m
+index 17ae073b..1127e0b8 100644
+--- a/src/metal.m
++++ b/src/metal.m
+@@ -3035,6 +3035,18 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
+         }
+         g_disp.mv++;
+     }
++    { // R3.6 PROFILE ONLY, never committed: drop decode matvecs by type/width or the head
++        static int nin = -2, hd = -2;
++        static const char *skl = (const char *)1;
++        if (skl == (const char *)1) skl = getenv("R36_SKIP");   // comma list of types
++        char tb[16]; snprintf(tb, sizeof tb, ",%d,", w->type);
++        char lb[64]; snprintf(lb, sizeof lb, ",%s,", skl ? skl : "");
++        int sk = skl && strstr(lb, tb) ? w->type : -1;
++        if (nin == -2) { const char *d = getenv("R36_SKIP_NIN"); nin = d ? atoi(d) : 0; }
++        if (hd == -2) { const char *d = getenv("R36_SKIP_HEAD"); hd = d && *d == '1'; }
++        if (decode && n_out >= 100000 && hd) return;
++        if (decode && n_out < 100000 && sk == w->type && (!nin || nin == n_in)) return;
++    }
+     [e setComputePipelineState:mv];
+     a.w_off = metal_bind_weights(g, e,
+                   (uint64_t)(uintptr_t)w->data,
+@@ -4436,6 +4448,11 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
+                                 id<MTLBuffer> kc, id<MTLBuffer> vc,
+                                 id<MTLBuffer> out, NSUInteger out_off, bool timing) {
+     int q8 = model_kv_kind_k(m), vq8 = model_kv_kind_v(m);   // cache KINDS
++    { // R3.6 PROFILE ONLY: drop decode attention
++        static int sa = -1;
++        if (sa < 0) { const char *d = getenv("R36_SKIP_ATTN"); sa = d && *d == '1'; }
++        if (n == 1 && sa) return;
++    }
+ 
+     // Chunked path: decode only (n == 1), long enough range to be
+     // worth splitting, and a head_dim the partial buffer was sized

@@ -8,7 +8,7 @@ the identity and inputs named by its record.
 Measured 2026-09-05 on SmolLM2-135M-Instruct Q8_0, a fixed 165-token
 teacher-forced paragraph: the measured canonical decode configuration
 produced bit-identical log probabilities on arm64, x86-64, and emulated
-riscv64. Decode cost was about 17% on the M1 and 7% on x86. The RISC-V run
+riscv64. Decode cost was about 17% on the Apple M1 and 7% on x86. The RISC-V run
 used user-mode emulation and establishes no real-board speed result.
 
 This was a scoped decode measurement, not a universal cross-ISA promise for
