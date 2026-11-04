@@ -112,7 +112,11 @@ def test_model_swap_serves_both_names_and_a_broken_entry_is_refused(tmp_path):
     try:
         _post(srv.base_url, "/v1/chat/completions", dict(chat, model="a"))
         _post(srv.base_url, "/v1/chat/completions", dict(chat, model="b"))
-        assert len(_get(srv.base_url, "/v1/models")["data"]) == 2
+        listed = _get(srv.base_url, "/v1/models")["data"]
+        assert len(listed) == 2
+        # Every entry says the context the server runs at (-c 256 here), so a
+        # client plans its prompts from the server's figure, not a guess.
+        assert [m["context_window"] for m in listed] == [256, 256]
         caps = _get(srv.base_url, "/v1/capabilities")
         assert caps["swap"] and len(caps["models"]) == 2
     finally:

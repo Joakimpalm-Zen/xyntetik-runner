@@ -1998,6 +1998,22 @@ static void send_health(sock_t fd) {
     send_response(fd, 200, "application/json", b, n);
 }
 
+// The context the server runs at, for /v1/models: the resident model's, else
+// the configured one; 0 when neither is known (a registry before its first
+// load with no -c), and then the field is left out. A client that plans its
+// prompts (pi, an agent harness) reads it instead of assuming a figure: the
+// Dojo pi extension assumed 32,768 and either compacted itself to a standstill
+// against a long context or overran a short one.
+static int models_context_window(void) {
+    int ctx = context_load();
+    return ctx > 0 ? ctx : SV.mp.n_ctx;
+}
+
+static void sb_context_window(sbuf *r) {
+    int ctx = models_context_window();
+    if (ctx > 0) sb_fmt(r, ",\"context_window\":%d", ctx);
+}
+
 static void send_models(sock_t fd) {
     sbuf r = {0};
     sb_lit(&r, "{\"object\":\"list\",\"data\":[");
@@ -2009,14 +2025,18 @@ static void send_models(sock_t fd) {
             char esc[(sizeof(SV.reg[0].name) - 1) * 6 + 2];
             json_escape(SV.reg[i].name, strlen(SV.reg[i].name), esc, sizeof(esc));
             sb_fmt(&r, "%s{\"id\":\"%s\",\"object\":\"model\","
-                       "\"owned_by\":\"runner\"}", i ? "," : "", esc);
+                       "\"owned_by\":\"runner\"", i ? "," : "", esc);
+            sb_context_window(&r);
+            sb_lit(&r, "}");
         }
     } else {
         // the single-model id is a path basename: 255 bytes on every real
         // filesystem, worst-case \uXXXX escape per byte bounds the output
         char esc[255 * 6 + 2];
         json_escape(SV.model_name, strlen(SV.model_name), esc, sizeof(esc));
-        sb_fmt(&r, "{\"id\":\"%s\",\"object\":\"model\",\"owned_by\":\"runner\"}", esc);
+        sb_fmt(&r, "{\"id\":\"%s\",\"object\":\"model\",\"owned_by\":\"runner\"", esc);
+        sb_context_window(&r);
+        sb_lit(&r, "}");
     }
     // R8.6: every loaded adapter is a model id of its own
     for (int i = 0; i < SV.n_adapters; i++) {
@@ -2025,7 +2045,9 @@ static void send_models(sock_t fd) {
         sb_esc(&r, bn, strlen(bn));
         sb_lit(&r, ":");
         sb_esc(&r, SV.adapters[i].name, strlen(SV.adapters[i].name));
-        sb_lit(&r, "\",\"object\":\"model\",\"owned_by\":\"runner\"}");
+        sb_lit(&r, "\",\"object\":\"model\",\"owned_by\":\"runner\"");
+        sb_context_window(&r);
+        sb_lit(&r, "}");
     }
     sb_lit(&r, "]}");
     send_built(fd, &r);
