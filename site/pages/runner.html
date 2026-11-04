@@ -173,7 +173,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
     <div>
       <div class="table-wrap">
         <table class="data">
-          <thead><tr><th>while loaded and idle, 8 GB M1</th><th>Runner</th><th>llama-server b10639</th></tr></thead>
+          <thead><tr><th>while loaded and idle, 8 GB Apple M1</th><th>Runner</th><th>llama-server b10639</th></tr></thead>
           <tbody>
             <tr><td>wired (unevictable) memory</td><td class="num win">+8 MB</td><td class="num">+3,819 MB</td></tr>
             <tr><td>CPU wakeups per second</td><td class="num win">0.5</td><td class="num">161</td></tr>
@@ -197,7 +197,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       <p class="eyebrow">Designed to stay on</p>
       <h2>What a resident server does while it serves nothing</h2>
       <p>Benchmarks rarely show it, so it was measured. llama-server wires the whole model into unified memory, holds it until the process dies, and its idle loop ticks at about 160 Hz. Runner keeps weights as evictable zero-copy mappings the OS can reclaim when another app needs the RAM, wakes about once every two seconds, and hands everything back on <code>/unload</code> or automatically with <code>--ttl</code>.</p>
-      <p>What that costs is the first answer after the memory has been taken back, which waits for the model to be read in again: about 3 s for the 3.6 GB model on the 8 GB M1, about 10 s for the 63 GB model. Runner is built to be left running all day next to your actual work.</p>
+      <p>What that costs is the first answer after the memory has been taken back, which waits for the model to be read in again: about 3 s for the 3.6 GB model on the 8 GB Apple M1, about 10 s for the 63 GB model. Runner is built to be left running all day next to your actual work.</p>
       <p>On a discrete GPU (RTX 3070) the footprint gap disappears, both engines hold about 4 GB of VRAM loaded, and the remaining differences are idle discipline and lifecycle control: <code>/unload</code> returned all 4 GB of VRAM; llama-server has no unload.</p>
     </div>
   </div>

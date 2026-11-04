@@ -5,6 +5,12 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The CUDA int8 prefill route (`RUNNER_CUDA_I8=1`) stays opt-in for every
+  type (R3.14.1).** Against the publisher's float32 models, Q8_0 (Qwen3-0.6B)
+  reads 1.51x the default route's mean KL. Q4_K with Q6_K (Qwen3-4B Q4_K_M)
+  reads 1.008x, and is worse on the paired Wilcoxon (p 0.037). Both miss the
+  routes' rule. Report: `docs/compat-reports/r3.14-cuda-int8-prefill-2026-11-03`.
+
 - **`--quant-error` costs a row its type cannot describe at the type the
   rewrite writes instead.** A tensor whose rows the asked type's block does
   not divide (a MoE expert width of 896 under `q4_k`) read `null` in the
@@ -31,6 +37,17 @@ Current release and unreleased changes. Compatibility follows the
   `qwen35moe` Upcoming rows no longer claim the architecture does not load.
   Record: `docs/compat-reports/nemotron-3.5-lightning-30b-a3b-2026-11-03`.
 
+- **Metal: the fast Q4_K decode matvec is the default only for inputs at
+  least 2048 wide (R3.28.1).** On 1536-wide inputs it was 15% slower than
+  the identity kernel (K2-Horizon-1B Q4_K_M: 11.11 against 9.62 ms of Q4_K
+  time a token on an Apple M1), while it won at every width from 2048 to
+  8192 on the Llama-3.2-1B/3B Q4_K_M files it was promoted on. Narrower Q4_K
+  inputs now keep the identity kernel, so K2-Horizon-1B Q4_K_M decodes
+  1.061x faster (39.7 against 37.5 tok/s). The Llama files are unchanged:
+  their `--score` output is byte-identical to before, decode 0.997x and
+  1.022x, inside the run-to-run spread. Measured on one laptop, with one
+  file for the narrow case; widths between 1536 and 2048 were not measured
+  and take the exact kernel. The route detail says `mv=fast-q4_K>=2048`.
 - **Nemotron 3.5 Lightning (`nemotron_h_moe`) routed its experts with the wrong
   function; fixed. Every nemotron_h_moe file has given wrong output since
   v0.2.0.** The publisher's router is a sigmoid; the published GGUFs carry no

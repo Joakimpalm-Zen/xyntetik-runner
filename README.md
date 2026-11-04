@@ -270,7 +270,7 @@ On a sliding-window model (gemma-3, gemma-4, gpt-oss and others) Runner keeps on
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> A server that gives your memory back
 
 A 63 GB model, loaded and idle on a 128 GB Apple Silicon Mac, holds 35 MB of
-wired memory under Runner and 60.8 GB under llama-server. On an 8 GB M1 it is
+wired memory under Runner and 60.8 GB under llama-server. On an 8 GB Apple M1 it is
 8 MB against 3,819 MB.
 
 <p align="center">
@@ -294,7 +294,7 @@ curl -X POST http://127.0.0.1:8080/unload         # or hand everything back now
 ```
 
 The first reply after the memory has been taken back waits for the model to
-be read in again, about 3 s for the 3.6 GB model on that M1.
+be read in again, about 3 s for the 3.6 GB model on that Apple M1.
 [Idle measurements](MANUAL.md#designed-to-stay-on) ·
 [Sharing a GPU](MANUAL.md#resource-control)
 

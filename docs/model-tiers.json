@@ -1885,11 +1885,12 @@
         ],
         "fp32_reference": "measured",
         "anchor": "Family: gemma-4-E2B bf16 against Google's float32 reference, where Runner is the closer engine (1.5.0 golden pass); that pass's served row is a different file (q4_0 throughout), not this mix.",
-        "context": null,
+        "context": 17600,
         "limitations": null,
         "evidence": [
           "docs/golden-pass-2026-10-22.md",
-          "MANUAL.md#published-artifacts"
+          "MANUAL.md#published-artifacts",
+          "docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03/e2b.md"
         ],
         "missing": null
       },
@@ -1919,13 +1920,13 @@
         },
         "cuda": {
           "kind": "gate",
-          "runner_version": "1.7.1",
-          "date": "2026-10-29",
+          "runner_version": "1.12.0",
+          "date": "2026-11-03",
           "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
+          "commit": "36b1787646b48773c010f40049354739b937d0ba",
           "caps": {
-            "version": "1.7.1",
+            "version": "1.12.0",
             "os": "windows",
             "arch": "x86_64",
             "cpu_cores": 8,
@@ -1965,8 +1966,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.1",
-        "date": "2026-10-29"
+        "runner_version": "1.12.0",
+        "date": "2026-11-03"
       },
       "transitions": [
         {

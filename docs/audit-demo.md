@@ -33,7 +33,7 @@ scripts/audit-demo.sh path/to/model.gguf # or any local GGUF
 
 ## Measured
 
-On the 8 GB M1 (Metal), SmolLM2-135M-Instruct Q8_0, 2026-10-02: recording
+On the 8 GB Apple M1 (Metal), SmolLM2-135M-Instruct Q8_0, 2026-10-02: recording
 10.0 s, the verifying replay 9.7 s, each forgery a few seconds more, the
 whole script 29 s. A larger model takes as long to verify as to generate.
 
