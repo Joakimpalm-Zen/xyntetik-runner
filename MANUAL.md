@@ -1980,7 +1980,7 @@ reassociating fast kernel by default (two rows a simdgroup, vector
 accumulation; a mixture-of-experts model keeps the identity kernel, since
 the fidelity rows behind the default are dense): decode +10.8% on
 Llama-3.2-1B and +12.5% on Llama-3.2-3B Q4_K_M on an Apple M1, -0.9% on
-Qwen2.5-1.5B. Since R3.28.2 that fast route runs `k_mvg_q4_K`, which gives
+Qwen2.5-1.5B. Since R3.28.2 that fast route runs `k_mvg_q4_K` (its scales unpacked without a branch since R3.28.5, the same bits, 1.18x more on Qwen3-4B), which gives
 eight lanes a superblock and lets a lane's 32 activations serve four rows,
 in place of `k_mvf_q4_K`: on an Apple M1 it decodes Qwen3-4B Q4_K_M at
 12.59 against 10.61 tok/s (1.19x) and Llama-3.2-3B Q4_K_M at 17.09
@@ -1997,7 +1997,7 @@ Apple M1, fast against identity, ms a token: 1536 wide 11.11 against 9.62
 (Llama-3.2-1B), 3072 36.48 against 40.21 (Llama-3.2-3B), 5120 1.88 against
 2.45, 8192 1.61 against 2.98 and 5.38 against 7.91. Widths between 1536 and
 2048 were not measured and take the exact kernel. The route detail says
-`mv=mvg-q4_K>=2048` (`mv=fast-q4_K>=2048` under `RUNNER_METAL_MVG=0`).
+`mv=mvg-q4_K>=2048+q6_K>=1536` (`mv=fast-q4_K>=2048` under `RUNNER_METAL_MVG=0`).
 Per input width with the new kernel (fast / identity / `k_mvg_q4_K`, ms a
 token): 1536 12.28 / 10.28 / 10.35, 2048 11.41 / 12.67 / 9.31, 2560
 47.88 / 45.88 / 34.56, 3072 38.05 / 42.14 / 27.68, 4096 5.95 / 8.21 /
@@ -2015,7 +2015,16 @@ clear the flip bar but measured neutral on an 8-core Apple M1 and stay opt-in. S
 `docs/negative-result-metal-multirow-matvec.md` for the matvec numerical
 contract and its verification gates.
 
-Q6_K decode matvecs run two rows a simdgroup on the default path
+Q6_K decode matvecs at inputs of at least 1536 run `k_mvg_q6_K` on a dense
+model (R3.28.3): R3.28.2's narrow slice applied to Q6_K, eight lanes a
+superblock and a lane's 32 activations serving four rows. On an Apple M1 it
+reads the LM head and ffn_down at 51 to 55 GB/s against `k_mv2_q6_K`'s 27, and
+decodes Qwen3-4B Q4_K_M at 15.08 against 12.56 tok/s (1.20x over R3.28.2),
+Llama-3.2-1B 1.36x, Llama-3.2-3B 1.23x, K2-Horizon-1B 1.24x. It is a
+tolerance route (`./test-mv-tol` 0/64 flips on Qwen3-4B), where
+`k_mv2_q6_K` gives the identity kernel's bits; `RUNNER_METAL_MVG=0` puts
+`k_mv2_q6_K` back (and `k_mvf_q4_K` for Q4_K). Narrower Q6_K inputs, and
+every Q6_K matvec under `RUNNER_METAL_MVG=0`, run two rows a simdgroup
 (`k_mv2_q6_K`): the one-row kernel's bits, checked against it at load on the
 running device. `RUNNER_METAL_MV2=0` keeps the one-row kernel.
 The CPU quant dot/dequant module is a separate translation unit compiled with

@@ -579,6 +579,18 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>Granite-4.2-30B</b>, 1 model: CPU 🟨 1 of 2 · CUDA 🟨 1 of 2 · Metal - · Train ✅</summary>
+<p><b>Granite-4.2-30B</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#granite-4.2-30b-q4_k_m"><code>granite-4.2-30b-Q4_K_M.gguf</code></a></td><td></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-03</td><td></td><td nowrap>✅ 1.12.0<br>2026-11-03</td></tr>
+<tr><td><a href="#granite-4.2-30b-q8_0"><code>granite-4.2-30b-Q8_0.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td></td><td></td><td nowrap>✅ 1.12.0<br>2026-11-04</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>NVIDIA Nemotron 3.5 Lightning</b>, 1 model: CPU ✅ · CUDA n/a · Metal - · Train n/a</summary>
 <p><b>Nemotron 3.5 Lightning-30B-A3B (NVIDIA)</b></p>
 <table>
@@ -762,7 +774,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
+**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -1744,6 +1756,56 @@ Admitted and maintained on report: existing regression tests keep running and sh
 
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
+### Granite-4.2-30B
+
+#### Granite-4.2-30B
+
+<a id="granite-4.2-30b-q4_k_m"></a>
+##### `granite-4.2-30b-Q4_K_M.gguf`
+
+IBM's Q4_K_M runs below the fidelity bar: against the publisher's BF16 parent in float32, mean KLD 0.139 and margin-qualified top-1 93.9% (Runner), 0.151 / 92.5% (llama.cpp), where the bar is 0.05 / 97%. The file itself is the distance: against Runner's Q8_0 it reads top-20 KL 0.111, top-1 83.7%. The fidelity file is IBM's Q8_0, row granite-4.2-30b-q8_0 (Runner 0.0041 / 99.56%, llama.cpp 0.0241 / 99.12%).
+
+- **File:** `granite-4.2-30b-Q4_K_M.gguf` (sha256 `f299dace85d77ee0e24ca0b6720bd211b1f4cd1f65b9c0a2111e79692e29c9be`, 17,721,455,328 bytes, from [ibm-granite/granite-4.2-30b-GGUF](https://huggingface.co/ibm-granite/granite-4.2-30b-GGUF) at revision `27b350a791e8`).
+- **Upstream checkpoint:** ibm-granite/granite-4.2-30b at revision `9e668ce1c538`.
+- **Quantization:** Q4_K_M (IBM).
+- **Licence:** `apache-2.0`, as the ibm-granite/granite-4.2-30b model card states it.
+- **Features claimed:** text, tools. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against IBM's BF16 checkpoint ibm-granite/granite-4.2-30b in float32 at use on the CPU (transformers 5.16.1's GraniteForCausalLM, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, no BOS, the Runner sides from chunked CPU score files): Q4_K_M 0.1393 mean KLD / 83.00% top-1 / 93.86% margin-qualified, below the bar (0.05 / 97%); Q8_0 0.0041 / 97.67% / 99.56%, passing. llama.cpp 73a43d1 reads 0.1512 / 92.54% on the Q4_K_M and 0.0241 / 99.12% on the Q8_0; Runner is the closer by per-position KLD on both (p 0.0014, p 8e-35). The Q4_K_M's distance is the file's: against Runner's own Q8_0 it reads top-20 KL 0.111 with 83.7% top-1 agreement. Record: docs/compat-reports/granite-4.2-30b-2026-11-04/README.md.
+- **Context tested:** 9216.
+- **Known limitations:** Below the fidelity bar on both engines (the file, not the engine). Tool gate case C streamed misses on a reasoning budget at temperature 1.0 (the 400-token budget spent in reasoning, no call parsed); A, B and C buffered pass. Context past the gold window's 4,509 tokens and task quality are not measured.
+- **Still missing:** The Metal cell; the CPU cell on this file; context past 4,509 tokens; task quality.
+- **Evidence:** [docs/compat-reports/granite-4.2-30b-2026-11-04/README.md](compat-reports/granite-4.2-30b-2026-11-04/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.12.0 on 2026-11-03.
+- **CPU:** ☐ not run
+- **CUDA:** ✅ v1.12.0 2026-11-03 on linux-x86_64-cuda (borrowed hardware) at commit `8b2729f82aec`, output sha256 `eeb1b390d202e1b0`, [pin](../tests/compatibility/tier-smoke/granite-4.2-30b-q4_k_m.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.12.0, 2026-11-03).
+- **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-03).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
+
+<a id="granite-4.2-30b-q8_0"></a>
+##### `granite-4.2-30b-Q8_0.gguf`
+
+IBM's Q8_0, the fidelity file of Granite-4.2-30B: against the publisher's BF16 parent in float32, mean KLD 0.0041, margin-qualified top-1 99.56% (Runner), 0.0241 / 99.12% (llama.cpp); Runner is the closer at 270 of 300 positions. 31.1 GB of weights: larger than a 24 GB device, so its cell is the CPU.
+
+- **File:** `granite-4.2-30b-Q8_0.gguf` (sha256 `005b0933353e9ba219b26e2667705bdb8dbc74eb50e4a4e6cb70fca108710f81`, 31,111,705,312 bytes, from [ibm-granite/granite-4.2-30b-GGUF](https://huggingface.co/ibm-granite/granite-4.2-30b-GGUF) at revision `27b350a791e8`).
+- **Upstream checkpoint:** ibm-granite/granite-4.2-30b at revision `9e668ce1c538`.
+- **Quantization:** Q8_0 (IBM).
+- **Licence:** `apache-2.0`, as the ibm-granite/granite-4.2-30b model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against IBM's BF16 checkpoint ibm-granite/granite-4.2-30b in float32 at use on the CPU (transformers 5.16.1's GraniteForCausalLM, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, no BOS, the Runner sides from chunked CPU score files): Q4_K_M 0.1393 mean KLD / 83.00% top-1 / 93.86% margin-qualified, below the bar (0.05 / 97%); Q8_0 0.0041 / 97.67% / 99.56%, passing. llama.cpp 73a43d1 reads 0.1512 / 92.54% on the Q4_K_M and 0.0241 / 99.12% on the Q8_0; Runner is the closer by per-position KLD on both (p 0.0014, p 8e-35). The Q4_K_M's distance is the file's: against Runner's own Q8_0 it reads top-20 KL 0.111 with 83.7% top-1 agreement. Record: docs/compat-reports/granite-4.2-30b-2026-11-04/README.md.
+- **Context tested:** 9216.
+- **Known limitations:** 31.1 GB of weights: on a 24 GB device it runs as a partial offload, which is not measured. The tool gate ran on the Q4_K_M sibling, not on this file. Context past the gold window's 4,509 tokens and task quality are not measured.
+- **Still missing:** The CUDA cell (a partial offload on a 24 GB device) and the Metal cell; the tool gate on this file; context past 4,509 tokens; task quality.
+- **Evidence:** [docs/compat-reports/granite-4.2-30b-2026-11-04/README.md](compat-reports/granite-4.2-30b-2026-11-04/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.12.0 on 2026-11-04.
+- **CPU:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `8b2729f82aec`, output sha256 `f9609a2de500147a`, [pin](../tests/compatibility/tier-smoke/granite-4.2-30b-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ☐ not run
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.12.0, 2026-11-04).
+- **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-04).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
+
 ### NVIDIA Nemotron 3.5 Lightning
 
 #### Nemotron 3.5 Lightning-30B-A3B (NVIDIA)
@@ -2487,17 +2549,6 @@ Text path only: the vision projector is not loaded. The qwen35moe architecture r
 - **Missing for Tier 1:** Tokenizer and template checks, then the gate list; CUDA after R4.27 A2.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
-### Granite-4.2-30B
-
-<a id="granite-4.2-30b"></a>
-#### Granite-4.2-30B
-
-Not validated: the granite architecture is admitted and IBM's official GGUF exists, but no gate has run on a 30B file.
-
-- **Numerical anchor:** Family: granite-4.2-3B bf16 against IBM's float32 reference covers the family.
-- **Missing for Tier 1:** One gate run on the Linux CUDA host: quant bar, tool gate, pinned output, device record; a file pinned by sha256.
-- **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
-
 ### Nemotron 3 Nano (30B-A3B)
 
 <a id="nemotron-3-nano-30b-a3b"></a>
@@ -2600,7 +2651,8 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-22 | [Qwen3.8-35B-A3B](#qwen3.8-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Ornith-1.5-35B-A3B](#ornith-1.5-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [MiniCPM-V-4.7-35B-A3B](#minicpm-v-4.7-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
-| 2026-10-22 | [Granite-4.2-30B](#granite-4.2-30b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [Granite-4.2-30B, `granite-4.2-30b-Q4_K_M.gguf`](#granite-4.2-30b-q4_k_m) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [Granite-4.2-30B, `granite-4.2-30b-Q8_0.gguf`](#granite-4.2-30b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3.5 Lightning-30B-A3B (NVIDIA), `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`](#nemotron-3.5-lightning-30b-a3b-q4_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Qwen3.6-27B, `Qwen3.6-27B-Q4_K_M.gguf`](#qwen3.6-27b-q4_k_m) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Qwen3.6-27B, `Qwen3.6-27B-Q8_0.gguf`](#qwen3.6-27b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
@@ -2682,6 +2734,8 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-11-02 | [Devstral Small 2 24B Instruct 2512 (Mistral AI), `Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf`](#devstral-small-2-24b-instruct-2512-q4_k_m) | Tier 2, maintained on report | R4.4.4: Devstral certified with the tool-calling axis, admitted 2026-11-02 at Tier 2 with a CPU cell, a float32 reference measurement and the agent-torture suite. Maintained on report. | none recorded |
 | 2026-11-02 | [Devstral Small 2 24B Instruct 2512 (Mistral AI), `Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf`](#devstral-small-2-24b-instruct-2512-q8_0) | Tier 2, maintained on report | R4.4.4: Devstral certified with the tool-calling axis, admitted 2026-11-02 at Tier 2 with a CPU cell, a float32 reference measurement and the agent-torture suite. Maintained on report. | none recorded |
 | 2026-11-03 | [Nemotron 3.5 Lightning-30B-A3B (NVIDIA), `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`](#nemotron-3.5-lightning-30b-a3b-q4_0) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-03 at Tier 2 with a CPU cell on the Linux CUDA host, a float32 reference measurement on the publisher's BF16 checkpoint, the tokenizer differential, template conformance and the tool gate, all on the fixed build (runner #575). Maintained on report; Tier 1 is the owner's call. | none recorded |
+| 2026-11-04 | [Granite-4.2-30B, `granite-4.2-30b-Q4_K_M.gguf`](#granite-4.2-30b-q4_k_m) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: IBM's file pinned by sha256, the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
+| 2026-11-04 | [Granite-4.2-30B, `granite-4.2-30b-Q8_0.gguf`](#granite-4.2-30b-q8_0) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: IBM's file pinned by sha256, the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
 | 2026-11-04 | [Qwen3.6-27B, `Qwen3.6-27B-Q4_K_M.gguf`](#qwen3.6-27b-q4_k_m) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: ggml-org's conversion pinned by sha256 (no publisher GGUF exists), the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
 | 2026-11-04 | [Qwen3.6-27B, `Qwen3.6-27B-Q8_0.gguf`](#qwen3.6-27b-q8_0) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-04 at Tier 2: ggml-org's conversion pinned by sha256 (no publisher GGUF exists), the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call. | none recorded |
 
