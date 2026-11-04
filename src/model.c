@@ -5109,7 +5109,9 @@ static int model_gpu_batch_default(void) {
 // follow ascending expert order within a layer, so a bank that holds a whole
 // layer has that layer's own layout. v1 covers the plain top-k SiLU MoE
 // (Mellum's shape); every other expert FFN, and the knob without --cpu-moe,
-// is refused rather than half honoured.
+// is refused rather than half honoured, as is a layer of more than
+// MOE_HOT_MAX_EXPERT experts (model_moe_hot_terms' miss list).
+#define MOE_HOT_MAX_EXPERT 256
 bool model_moe_hot_parse(model_t *m, const char *text) {
     const char *why = NULL;
     if (!m->cpu_moe)
@@ -5118,6 +5120,8 @@ bool model_moe_hot_parse(model_t *m, const char *text) {
              m->ffn_act != ACT_SILU)
         why = "v1 covers the plain top-k SiLU expert FFN only (no shared expert, "
               "dual branch or hyper-connections)";
+    else if (m->n_expert > MOE_HOT_MAX_EXPERT)
+        why = "v1 covers at most 256 experts a layer";
     for (int l = 0; !why && l < m->n_layer; l++) {
         const layer_t *ly = &m->layers[l];
         if (ly->is_moe && (ly->moe_split || ly->ffn_gate_inp_b || ly->ffn_gate_exps_b ||
@@ -14108,7 +14112,9 @@ bool model_moe_hot_terms(model_t *m, int layer, int n, const float *x, int xs,
     memcpy(m->moe_selw, selw, sizeof(float) * (size_t)n * used);
     for (int b = 0; b < n; b++)
         memcpy(m->xb + (size_t)b * n_embd, x + (size_t)b * xs, sizeof(float) * (size_t)n_embd);
-    int miss[256], nmiss = 0;
+    // the parser refuses a layer of more experts than this holds, so no
+    // missed expert is dropped
+    int miss[MOE_HOT_MAX_EXPERT], nmiss = 0;
     for (int i = 0; i < n * used; i++) {
         int e = sel[i];
         if (e < 0 || e >= ne || slot[e] >= 0) continue;
