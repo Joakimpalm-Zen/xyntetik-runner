@@ -1,0 +1,10 @@
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB
+gpu-split: budget=25.13GB fixed=1.71GB G=64/64 full=1 used=14.56GB
+gpu-split: prompt window 512 columns (batch 512, 9.86 GB spare, 440708 bytes a column with TC2's activations)
+gpu: the device's tensors (64 layers and the head) lie in 2 stretches of the file; uploading them as runs
+gpu: CUDA backend on CUDA MIG slice 1g.24gb (11.4 GB weights in VRAM)
+gpu: VRAM 10.77 GB free of 25.37 GB after init (kv 2.21 GB + scratch 0.50 GB this instance)
+loaded Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf | qwen35 | 64 layers | ctx 8448 | 40 threads | 2.09s
+sampling: qwen38 (temp 1.00, top_p 0.95, top_k 20, min_p 0.00, repeat_penalty 1.00)
+sampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 20, min_p 0.00
+score: route {"backend":"cuda","device":"CUDA MIG slice 1g.24gb","gpu_layers":64,"layers":64,"experts_on_host":0,"moe_layers":0,"paths":{"keep":{"forwards":127,"rows_max":64}},"kv":"f16","weights":"IQ3_S 31%,IQ4_XS 26%,IQ3_XXS 18%","cpu_act":"f32","backend_detail":"graph=none tc=promoted tc2=on-sm80 q8x=off i8=off small_batch=on attn_tile=on+dec window=512 tc_cols=64 recur=tile","kernels":{"gemm_by_type":{"Q2_K":1651,"Q4_K":4953,"IQ2_XXS":635,"IQ2_XS":1143,"IQ3_XXS":9906,"IQ3_S":18288,"IQ2_S":2032,"IQ4_XS":12192,"IQ1_M":127},"cuda_tc2":50927,"cuda_tc2_reuse":12192,"cuda_i8":0,"cuda_moe_twin":0,"cuda_splitk":0,"cuda_attn_tile":2032,"cuda_attn_tc":0,"cuda_attn_dec_gqa":0,"cuda_kv_gather":0,"metal_fast_mv":0,"metal_mv2":0,"metal_attn_coop":0,"metal_attn_tile":0,"metal_attn_gqa":0,"cpu_dot_multi":0},"fallback":"","build":"default/x86_64","codegen":"fast-math+avx512f+avx512vnni+avx2+fma+f16c","compiler":"Clang 22.1.8 (https://github.com/conda-forge/clangdev-feedstock ea395ac6404d6e02629177af708e8855d6389063)","tuning":"RUNNER_SCORE_CHUNKED=1,RUNNER_CUDA_ATTN_TC_WIDE=0,RUNNER_SPEC_BATCH=64"}

@@ -5936,6 +5936,7 @@ typedef struct {
     const float *xs;  // per-32 sums of x for vec_dot_xs (one column), or NULL
     bool exact;       // a verify round's columns: the per-column route up to
                       // VEC_DOT_MULTI_MAX wide (matvec_b, t_mv_exact)
+    const void *xk;   // one column in 256-element int8 blocks (RUNNER_CPU_I8K)
 } mv_job;
 
 // Batches narrower than this take the per-column native dot (see mv_rows);
@@ -5974,6 +5975,14 @@ static void mv_rows(void *ctx, int i0, int i1) {
             // the vec_dot_multi commit). Two to seven rows stay on the multi
             // route, where it still wins (MTP verify tiles 4.57 vs 4.19 tok/s
             // at four threads against a per-column loop). Byte-equal either way.
+            if (j->xk) {
+                for (int r = i0; r < i1; r++) {
+                    const void *row = base + (size_t)r * j->rsz;
+                    j->y[r] = vec_dot_i8k(type, row, j->xk, n_in) * sc +
+                              (j->bias ? j->bias[r] : 0.0f);
+                }
+                return;
+            }
             if (j->xs) {
                 for (int r = i0; r < i1; r++) {
                     const void *row = base + (size_t)r * j->rsz;
@@ -6249,17 +6258,30 @@ static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
         return;
     }
     mv_job j = { w, x, bias, y, n_in, n_batch, x_stride, y_stride,
-                 ggml_row_size(w->type, n_in), NULL, 0, NULL, t_mv_exact };
+                 ggml_row_size(w->type, n_in), NULL, 0, NULL, t_mv_exact, NULL };
     void *xq = NULL;
     float xs_stack[MV_XS_STACK], *xs_heap = NULL;
-    if (mv_takes_i8(w, n_in, n_out, n_batch) &&
+    double tq = tprof_enabled() ? tprof_now() : 0;
+    void *xk = NULL;
+    if (n_batch == 1 && i8k_dot_enabled() && i8k_dot_ok(w->type, n_in) &&
+        (xk = malloc(i8k_act_size(n_in)))) {
+        i8k_quant_act(x, xk, n_in);
+        j.xk = xk;
+    } else if (mv_takes_i8(w, n_in, n_out, n_batch) &&
         (xq = mv_quant_act(x, x_stride, n_in, n_batch))) {
         j.xq = xq;
         j.xq_stride = i8_act_size(n_in);
     } else {
         j.xs = mv_xsums(w, x, n_in, n_batch, xs_stack, &xs_heap);
     }
+    if (tq) {
+        tprof_region(xq || xk ? "act-quant" : "xsums", tprof_now() - tq);
+        tprof_set_tag((1ull << (w->type < 60 ? w->type : 59)) | (xq || xk ? 1ull << 63 : 0) |
+                      (n_out >= 32768 ? 1ull << 61 : 0));
+    }
     tpool_run(tp, mv_rows, &j, n_out);
+    if (tq) tprof_set_tag(0);
+    free(xk);
     free(xq);
     free(xs_heap);
 }
@@ -6345,11 +6367,23 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
     float xs_stack[MV_XS_STACK], *xs_heap = NULL;
     const float *xsum = NULL;
     bool xs_tried = false;
+    double tq = tprof_enabled() ? tprof_now() : 0;
+    uint64_t tag = 0;
+    void *xk = NULL;
+    bool xk_tried = false;
     for (int s = 0; s < np; s++) {
+        tag |= 1ull << (p[s].w->type < 60 ? p[s].w->type : 59);
         mv_job j = { p[s].w, x, p[s].bias, p[s].y, n_in, n_batch, x_stride,
                      p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
-                     t_mv_exact };
-        if (mv_takes_i8(p[s].w, n_in, p[s].n_out, n_batch)) {
+                     t_mv_exact, NULL };
+        if (n_batch == 1 && i8k_dot_enabled() && i8k_dot_ok(p[s].w->type, n_in)) {
+            if (!xk_tried) {
+                xk_tried = true;
+                if ((xk = malloc(i8k_act_size(n_in)))) i8k_quant_act(x, xk, n_in);
+            }
+            j.xk = xk;
+        }
+        if (!j.xk && mv_takes_i8(p[s].w, n_in, p[s].n_out, n_batch)) {
             if (!xq_tried) {
                 xq = mv_quant_act(x, x_stride, n_in, n_batch);
                 xq_tried = true;
@@ -6369,7 +6403,13 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
         mm.job[s] = j;
         mm.start[s + 1] = mm.start[s] + p[s].n_out;
     }
+    if (tq) {
+        tprof_region(xq || xk ? "act-quant" : "xsums", tprof_now() - tq);
+        tprof_set_tag(tag | (xq || xk ? 1ull << 63 : 0) | 1ull << 62);
+    }
     tpool_run(tp, mv_multi_rows, &mm, mm.start[np]);
+    if (tq) tprof_set_tag(0);
+    free(xk);
     free(xq);
     free(xs_heap);
 }
@@ -6396,7 +6436,7 @@ static void matvec_b_parts_x(tpool *tp, const mv_part *p, const float *const *xs
     for (int s = 0; s < np; s++) {
         mv_job j = { p[s].w, xs[s], p[s].bias, p[s].y, n_in, 1, n_in,
                      p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
-                     false };
+                     false, NULL };
         if (mv_takes_i8(p[s].w, n_in, p[s].n_out, 1)) {
             xq[s] = mv_quant_act(xs[s], n_in, n_in, 1);
             if (xq[s]) { j.xq = xq[s]; j.xq_stride = i8_act_size(n_in); }
@@ -6910,7 +6950,7 @@ static void route_weights(const model_t *m, char *out, size_t cap) {
 
 typedef struct {
     const char *backend, *kv, *detail, *build, *codegen, *cpu_act;
-    char device[128], weights[96], tuning[512];
+    char device[128], weights[96], tuning[512], act[48];
     int  gpu_layers, n_layer, moe_layers, moe_host;
 } route_facts;
 
@@ -6939,9 +6979,13 @@ static void route_collect(const model_t *m, route_facts *r) {
     // tolerance-gated RUNNER_CPU_I8 (a device path names its own in detail)
     // RUNNER_CPU_I8_PREFILL adds "+int8-prefill": batches of 8 or more
     // columns run the int8 tiles whatever the decode route is
-    r->cpu_act = i8_prefill_enabled() ? (i8_dot_enabled() ? "int8+int8-prefill"
-                                                          : "f32+int8-prefill")
-                                      : i8_dot_enabled() ? "int8" : "f32";
+    // RUNNER_CPU_I8K adds "+int8k-decode": one-column Q4_K and Q6_K matvecs
+    // take the K-quant int8 dot whatever the route above is
+    snprintf(r->act, sizeof r->act, "%s%s",
+             i8_prefill_enabled() ? (i8_dot_enabled() ? "int8+int8-prefill" : "f32+int8-prefill")
+                                  : i8_dot_enabled() ? "int8" : "f32",
+             i8k_dot_enabled() ? "+int8k-decode" : "");
+    r->cpu_act = r->act;
     route_weights(m, r->weights, sizeof r->weights);
     route_tuning(r->tuning, sizeof r->tuning);
 }
@@ -7039,8 +7083,8 @@ void model_score_route_json(const model_t *m, const char *model_json, char *out,
     route_collect(m, &r);
     char paths[400];
     route_paths_json(m, paths, sizeof paths);
-    snprintf(out, cap, "{\"model\":%s,\"paths\":%s,\"backend\":\"%s\",\"backend_detail\":\"%s\"}",
-             model_json, paths, r.backend, r.detail);
+    snprintf(out, cap, "{\"model\":%s,\"paths\":%s,\"backend\":\"%s\",\"cpu_act\":\"%s\","
+             "\"backend_detail\":\"%s\"}", model_json, paths, r.backend, r.cpu_act, r.detail);
 }
 
 void model_route_receipt_json(const model_t *m, char *out, int cap) {
@@ -14672,7 +14716,11 @@ int model_mtp_position(const model_t *m) { return m->mtp_pos + m->mtp_qn; }
 
 float *model_forward(model_t *m, int token, int pos) {
     int32_t t = token;
-    return model_forward_batch(m, &t, 1, pos, true);
+    if (!tprof_enabled() || m->gpu) return model_forward_batch(m, &t, 1, pos, true);
+    tprof_step_begin();
+    float *lg = model_forward_batch(m, &t, 1, pos, true);
+    tprof_step_end();
+    return lg;
 }
 
 // ------------------------------------------------ continuous batching (Phase 6)
