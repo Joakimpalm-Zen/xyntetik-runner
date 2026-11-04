@@ -113,7 +113,7 @@ Results contain:
 
 1. **Rates are properties of this set only.** The 150 hand-written prompts are a fixed benchmark, not a representative sample of any traffic. Results do not transfer to other sets without re-measurement.
 
-2. **Two x86 hosts, no Apple host.** the Windows CUDA host and the Linux CUDA host; the M1 run paged and was abandoned. The two retrained adapters are the published recipe's adapters, not byte copies of the lost originals.
+2. **Two x86 hosts, no Apple host.** the Windows CUDA host and the Linux CUDA host; the Apple M1 run paged and was abandoned. The two retrained adapters are the published recipe's adapters, not byte copies of the lost originals.
 
 3. **Greedy and constraint sampling are different instruments.** Raw leg (greedy decoding) and native leg (constrained tool_choice) measure different model behaviors. Both should be reported; neither alone is sufficient.
 

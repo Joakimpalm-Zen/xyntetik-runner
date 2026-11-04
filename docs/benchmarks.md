@@ -540,7 +540,7 @@ be evicted") and paged, while llama.cpp wires the model into memory. That is
 the coexistence trade the README describes, read from the losing side: on a
 pressured machine the resident engine decodes faster and the evictable one
 gives the memory back. The gemma row is that effect, not a kernel result;
-re-measure on a quiet M1 before reading it as one.
+re-measure on a quiet Apple M1 before reading it as one.
 
 ## Results — 2026-08-13, both sides re-measured on this box
 
