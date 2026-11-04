@@ -61,7 +61,7 @@ def fixtures(runner_bin, tmp_path_factory):
         base = d / f"{tag}wide.gguf"
         subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--wide", *extra, str(base)],
                        check=True, cwd=ROOT, capture_output=True)
-        for q in (("q4_k", "q8_0") if not tag else ("q4_k",)):
+        for q in (("q4_k", "q8_0", "q6_k") if not tag else ("q4_k",)):
             f = d / f"{tag}wide-{q}.gguf"
             subprocess.run([str(runner_bin), "-m", str(base), "--quantize", str(f), "--quant", q],
                            check=True, cwd=ROOT, capture_output=True)
@@ -69,11 +69,14 @@ def fixtures(runner_bin, tmp_path_factory):
     return out
 
 
-def score(runner_bin, model, mv):
-    env = {k: v for k, v in __import__("os").environ.items() if k != "RUNNER_METAL_MV"}
+def score(runner_bin, model, mv, mvg=None):
+    env = {k: v for k, v in __import__("os").environ.items()
+           if k not in ("RUNNER_METAL_MV", "RUNNER_METAL_MVG")}
     env["RUNNER_DEBUG_ROUTE"] = "1"
     if mv is not None:
         env["RUNNER_METAL_MV"] = mv
+    if mvg is not None:
+        env["RUNNER_METAL_MVG"] = mvg
     r = subprocess.run([str(runner_bin), "-m", str(model), "--gpu", "auto", "--score",
                         "-p", TEXT, "--no-tray"], env=env, capture_output=True, text=True,
                        timeout=120)
@@ -92,7 +95,7 @@ def test_q4_k_takes_the_fast_kernel_by_default_from_2048_wide(runner_bin, fixtur
     default, route = score(runner_bin, fixtures["q4_k"], None)
     identity, id_route = score(runner_bin, fixtures["q4_k"], "0")
     fast, fast_route = score(runner_bin, fixtures["q4_k"], "1")
-    assert (route, id_route, fast_route) == ("fast-q4_K>=2048", "identity", "fast")
+    assert (route, id_route, fast_route) == ("mvg-q4_K>=2048+q6_K>=1536", "identity", "fast")
     assert default != identity     # the fast kernel engaged on ffn_down
     assert default != fast         # and the 256-wide projections kept identity
 
@@ -103,7 +106,7 @@ def test_q4_k_under_the_width_floor_keeps_the_identity_kernel(runner_bin, fixtur
     default, route = score(runner_bin, fixtures["narrow-q4_k"], None)
     identity, _ = score(runner_bin, fixtures["narrow-q4_k"], "0")
     fast, _ = score(runner_bin, fixtures["narrow-q4_k"], "1")
-    assert route == "fast-q4_K>=2048"
+    assert route == "mvg-q4_K>=2048+q6_K>=1536"
     assert default == identity
     assert fast != identity
 
@@ -112,6 +115,29 @@ def test_q8_0_keeps_the_identity_kernel_by_default(runner_bin, fixtures):
     default, route = score(runner_bin, fixtures["q8_0"], None)
     identity, _ = score(runner_bin, fixtures["q8_0"], "0")
     fast, _ = score(runner_bin, fixtures["q8_0"], "1")
-    assert route == "fast-q4_K>=2048"
+    assert route == "mvg-q4_K>=2048+q6_K>=1536"
     assert default == identity
     assert fast != identity        # the opt-in still reaches the Q8_0 kernel
+
+
+def test_the_q4_k_fast_route_is_the_narrow_slice_kernel(runner_bin, fixtures):
+    """R3.28.2: the Q4_K inputs the fast route takes run k_mvg_q4_K;
+    RUNNER_METAL_MVG=0 puts k_mvf_q4_K back on them, with its own bits."""
+    default, route = score(runner_bin, fixtures["q4_k"], None)
+    old, old_route = score(runner_bin, fixtures["q4_k"], None, mvg="0")
+    identity, _ = score(runner_bin, fixtures["q4_k"], "0")
+    assert (route, old_route) == ("mvg-q4_K>=2048+q6_K>=1536", "fast-q4_K>=2048")
+    assert old != identity and default != identity
+    assert default != old          # a different kernel, a different summation order
+
+
+def test_q6_k_takes_the_narrow_slice_kernel_from_1536_wide(runner_bin, fixtures):
+    """R3.28.3: a Q6_K input at least 1536 wide (this file's 2048-wide
+    ffn_down) takes k_mvg_q6_K, a tolerance route; RUNNER_METAL_MVG=0 puts
+    k_mv2_q6_K back, whose bits are the identity kernel's."""
+    default, route = score(runner_bin, fixtures["q6_k"], None)
+    old, _ = score(runner_bin, fixtures["q6_k"], None, mvg="0")
+    identity, _ = score(runner_bin, fixtures["q6_k"], "0")
+    assert route == "mvg-q4_K>=2048+q6_K>=1536"
+    assert old == identity
+    assert default != identity
