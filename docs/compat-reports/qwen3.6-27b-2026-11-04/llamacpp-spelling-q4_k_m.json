@@ -1,0 +1,32 @@
+{
+ "what": "llama.cpp's server cuts partial UTF-8 to a valid prefix; the reference decode writes U+FFFD",
+ "vocab_ids_affected": 181,
+ "flagged_positions": [
+  {
+   "pos": 773,
+   "gold_logits_count": 1,
+   "truncated_ids_in_runner_top20": 1,
+   "ids": [
+    {
+     "id": 11654,
+     "llama_cpp": " ",
+     "reference": " �"
+    }
+   ]
+  },
+  {
+   "pos": 2753,
+   "gold_logits_count": 1,
+   "truncated_ids_in_runner_top20": 1,
+   "ids": [
+    {
+     "id": 11654,
+     "llama_cpp": " ",
+     "reference": " �"
+    }
+   ]
+  }
+ ],
+ "gold_logits_total": 2,
+ "explained": 2
+}

@@ -1,0 +1,450 @@
+{
+ "gate": "tool-protocol-check",
+ "label": "R4.29 qwen3.6-27b Q4_K_M, CUDA (MIG slice), runner 7567c94",
+ "started": "2026-11-04T02:31:33+0100",
+ "host": "x86-64 Linux, CPU",
+ "platform": "Linux-6.12.0-211.16.1.el10_2.x86_64-x86_64-with-glibc2.39",
+ "base_url": "http://127.0.0.1:18995",
+ "model": "Qwen3.6-27B-Q4_K_M.gguf",
+ "model_file": "Qwen3.6-27B-Q4_K_M.gguf",
+ "model_sha256": "65b753ea835627f7b511143c6ceb976525c7f21f5df8c664bc0a9c23d1c49921",
+ "runner": "runner",
+ "runner_sha256": "556a54c11932d493ecfb3717f4fb933161776f64b9f41b11cf5832617852d8ed",
+ "capabilities_route": true,
+ "sampling_served": {
+  "preset": "qwen36",
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "repeat_penalty": 1.0
+ },
+ "context": 8192,
+ "overrides": {},
+ "tool_choice": "auto (absent)",
+ "max_tokens": 400,
+ "cases": {
+  "A": {
+   "title": "single call",
+   "prompt": "List the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 8.583,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants to list the files in the current directory.\nI should use the `bash` tool to execute the `ls` command.\nI will use `ls -l` to show detailed information, or just `ls` if simple listing is enough. Usually, `ls -la` is a safe bet to see hidden files too, but a simple `ls` is often sufficient for a general request. I'll stick to a detailed listing for better utility. `ls -lah`.\n\nLet's call the `bash` tool with the command `ls -lah`.",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -lah\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 273,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 148,
+      "total_tokens": 421
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 273,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 7.871991,
+      "generation_tok_s": 18.801,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "qwen36",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "file",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen36",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 3e-05,
+       "tokenize_seconds": 0.000293,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.709426,
+       "prefill_tokens": 273,
+       "prefill_tok_s": 384.818,
+       "first_visible_seconds": 7.145037
+      },
+      "prompt_reuse": "none",
+      "receipt": {
+       "file": "receipt-0000000001.json",
+       "chain_hash": "e8fb41f232acc4961f87028365bfec32ea16f00b48e7aec45eb67c0178bd814f"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 3.209,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "The user wants to list the files in the current directory.\nI should use the `bash` tool to execute the `ls` command.",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls -l\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": {
+      "prompt_cached_tokens": 272,
+      "sampling": {
+       "preset": "qwen36",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "file",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen36",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 4e-06,
+       "tokenize_seconds": 0.00021,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.053152,
+       "prefill_tokens": 1,
+       "prefill_tok_s": 18.814,
+       "first_visible_seconds": 1.773165
+      },
+      "prompt_reuse": "turn_mark",
+      "receipt": {
+       "file": "receipt-0000000002.json",
+       "chain_hash": "968a9f54275265c58c162b7d5a4078340924bdfbb23d560a59396e69ed111376"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "B": {
+   "title": "prose and parallel calls",
+   "prompt": "Check whether boss.json, boss.toml and boss.yaml exist anywhere in this project. Use the glob tool for each pattern.",
+   "tools": [
+    "glob",
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 10.348,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "I need to check if the files `boss.json`, `boss.toml`, and `boss.yaml` exist anywhere in the current project.\nI will use the `glob` tool to search for each of these filenames.\n\n1.  Search for `**/boss.json`\n2.  Search for `**/boss.toml`\n3.  Search for `**/boss.yaml`\n\nLet's start with the first one.",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.json\"}",
+       "id": "call_0"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.toml\"}",
+       "id": "call_1"
+      },
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.yaml\"}",
+       "id": "call_2"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 346,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 181,
+      "total_tokens": 527
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 346,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 9.631918,
+      "generation_tok_s": 18.792,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "qwen36",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "file",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen36",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 7e-06,
+       "tokenize_seconds": 0.000252,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.713136,
+       "prefill_tokens": 346,
+       "prefill_tok_s": 485.181,
+       "first_visible_seconds": 5.716401
+      },
+      "prompt_reuse": "recurrent_reset",
+      "receipt": {
+       "file": "receipt-0000000003.json",
+       "chain_hash": "0c855bdd150894a75646d67865b7ba0d9468c78012542c2315bc071fb0ddd3f8"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 9.222,
+     "finish_reason": "tool_calls",
+     "content": "",
+     "reasoning": "I need to check for the existence of three files: `boss.json`, `boss.toml`, and `boss.yaml` in the current directory or any subdirectory.\nI will use the `glob` tool for each of these filenames.\n\n1.  Search for `boss.json`\n2.  Search for `boss.toml`\n3.  Search for `boss.yaml`\n\nI will start by running the glob tool for `boss.json`.\nThen I will run it for `boss.toml`.\nFinally, I will run it for `boss.yaml`.\nAfter gathering the results, I will report whether each file exists.\n\nLet's start with `boss.json`.",
+     "calls": [
+      {
+       "name": "glob",
+       "arguments": "{\"pattern\":\"**/boss.json\"}",
+       "id": "call_0"
+      }
+     ],
+     "telemetry": {
+      "prompt_cached_tokens": 345,
+      "sampling": {
+       "preset": "qwen36",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "file",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen36",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 4e-06,
+       "tokenize_seconds": 0.000239,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.053155,
+       "prefill_tokens": 1,
+       "prefill_tok_s": 18.813,
+       "first_visible_seconds": 7.731631
+      },
+      "prompt_reuse": "turn_mark",
+      "receipt": {
+       "file": "receipt-0000000004.json",
+       "chain_hash": "ce09838108e28a22f28c89c16013e4bf27c8cd522e766e8663c2a7c9c8a57876"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    }
+   }
+  },
+  "C": {
+   "title": "prose then call",
+   "prompt": "Briefly say what you are about to do, then list the files in the current directory.",
+   "tools": [
+    "bash"
+   ],
+   "modes": {
+    "buffered": {
+     "wall_s": 6.944,
+     "finish_reason": "tool_calls",
+     "content": "I am about to list the files in the current directory for you.\n\n",
+     "reasoning": "The user wants to see the files in the current directory.\nI should first briefly explain that I am about to list the directory contents.\nThen I will execute the command `ls` or similar to achieve this.\n\nPlan:\n1. State that I am listing the files.\n2. Run the `ls` command.\n3. Present the output.",
+     "calls": [
+      {
+       "name": "bash",
+       "arguments": "{\"command\":\"ls\"}",
+       "id": "call_0"
+      }
+     ],
+     "usage": {
+      "prompt_tokens": 284,
+      "prompt_tokens_details": {
+       "cached_tokens": 0
+      },
+      "completion_tokens": 118,
+      "total_tokens": 402
+     },
+     "telemetry": {
+      "prompt_cached_tokens": 0,
+      "prompt_forked_tokens": 0,
+      "prompt_eval_tokens": 284,
+      "prefix_cache_saved_seconds": 0.0,
+      "generation_seconds": 6.274662,
+      "generation_tok_s": 18.806,
+      "major_page_faults": 0,
+      "page_fault_counter": "major",
+      "json_mode": false,
+      "schema": false,
+      "speculative": false,
+      "sampling": {
+       "preset": "qwen36",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "file",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen36",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 2.2e-05,
+       "tokenize_seconds": 0.000283,
+       "device_wait_seconds": 1e-06,
+       "prefill_seconds": 0.66596,
+       "prefill_tokens": 284,
+       "prefill_tok_s": 426.452,
+       "first_visible_seconds": 4.921961
+      },
+      "prompt_reuse": "recurrent_reset",
+      "receipt": {
+       "file": "receipt-0000000005.json",
+       "chain_hash": "87d23f8f39315f5feb204f5f5a44e9dad1b985b12306ab49409a16c44da68821"
+      }
+     },
+     "result": "PASS",
+     "reasons": []
+    },
+    "stream": {
+     "wall_s": 21.362,
+     "finish_reason": "length",
+     "content": "",
+     "reasoning": "The user wants to know what I am about to do and then wants me to list the files in the current directory.\n1.  **Say what I am about to do**: I will state that I am about to list the files in the current directory using the `bash` tool.\n2.  **List the files**: I will execute the command `ls` to list the files.\n\nLet's proceed.\n\n**Step 1:** State intention.\n**Step 2:** Execute `ls`.\n\nI will combine these into a single response flow, but the tool use comes after the statement.\n\nPlan:\n1.  Tell the user I am going to list the files.\n2.  Call `bash` with command `ls -la` (to see all files including hidden ones, usually safer for a general \"list files\" request, though just `ls` is sufficient for \"briefly\"). I'll stick to `ls`.\n\nLet's refine the \"say what you are about to do\" part.\n\"I am about to list the files in the current directory.\"\n\nThen call the tool.\n\nWait, I should check if there are any specific constraints or context. No, just standard behavior.\n\nI will write the text, then call the tool.\nActually, the prompt asks to \"Briefly say what you are about to do, then list the files\".\nSo:\n1. Text: \"I am about to run the `ls` command to list the files in the current directory.\"\n2. Tool: `bash` -> `ls`\n3. Output: Print the result.\n\nLet's generate the tool call.\nCommand: `ls` or `ls -l`? `ls` is standard. `ls -la` gives more info. I'll use `ls -l` for better readability.\n\nWait, the user said \"list the files\". `ls` is",
+     "calls": [],
+     "telemetry": {
+      "prompt_cached_tokens": 283,
+      "sampling": {
+       "preset": "qwen36",
+       "temperature": 1.0,
+       "top_p": 0.95,
+       "top_k": 20,
+       "min_p": 0.0,
+       "repeat_penalty": 1.0,
+       "seed": 0,
+       "source": {
+        "temperature": "file",
+        "top_p": "file",
+        "top_k": "file",
+        "min_p": "preset",
+        "repeat_penalty": "preset"
+       }
+      },
+      "tool_protocol": {
+       "template": "qwen36",
+       "family": "qwen3_xml",
+       "tools": true,
+       "constrained": false,
+       "parse_only": true
+      },
+      "timing": {
+       "queue_seconds": 2.3e-05,
+       "tokenize_seconds": 0.000289,
+       "device_wait_seconds": 0.0,
+       "prefill_seconds": 0.053181,
+       "prefill_tokens": 1,
+       "prefill_tok_s": 18.804,
+       "first_visible_seconds": null
+      },
+      "prompt_reuse": "turn_mark",
+      "receipt": {
+       "file": "receipt-0000000006.json",
+       "chain_hash": "8e1f227cfa7be1a9adb1c0dcd9396527e291e69389e1f1213859114a093263f5"
+      }
+     },
+     "result": "FAIL",
+     "reasons": [
+      "finish_reason 'length'",
+      "no parsed call",
+      "no prose beside the call"
+     ]
+    }
+   }
+  }
+ },
+ "verdict": "FAIL",
+ "finished": "2026-11-04T02:32:44+0100"
+}
