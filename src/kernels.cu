@@ -3293,6 +3293,63 @@ extern "C" __global__ void k_mla_pack_v(const float *o, float *p, int H, int hd,
     p[(ulong64)blockIdx.y * H * vd + i] = o[(ulong64)blockIdx.y * xs + (ulong64)h * hd + e];
 }
 
+// The absorbed form (R4.4.5 c2), the device twin of model.c's absorbed
+// mla_project and attn_output: one KV head per token, [k_pe | normed latent]
+// (rd + r wide), read by every query head as K and V. kvb is the layer's
+// attn_kv_b dequantized at load, [H * kvw][r] with kvw = qn + vd: per head
+// qn k-rows, then vd v-rows.
+//
+// k_mla_q_absorb: q [cols][qs], per head [q_pe | k_b^T q_nope] from qr
+// [cols][H * qk] in the publisher's order [q_nope | q_pe]. The sum over the
+// nope dims runs in the CPU's order. grid (ceil((rd + r) / 256), H, cols).
+extern "C" __global__ void k_mla_q_absorb(const float *qr, const float *kvb,
+                                          float *q, int H, int qk, int rd,
+                                          int r, int kvw, int qs) {
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= rd + r) return;
+    int h = blockIdx.y, qn = qk - rd;
+    ulong64 c = blockIdx.z;
+    const float *src = qr + c * (ulong64)H * qk + (ulong64)h * qk;
+    float *dst = q + c * qs + (ulong64)h * (rd + r);
+    if (j < rd) { dst[j] = src[qn + j]; return; }
+    int jj = j - rd;
+    const float *row = kvb + (ulong64)h * kvw * r + jj;
+    float acc = 0.0f;
+    for (int d = 0; d < qn; d++) acc += src[d] * row[(ulong64)d * r];
+    dst[j] = acc;
+}
+// k_mla_kv_absorb: the one KV head, [k_pe | latent], into both kt and vt
+// (kvs wide) from kva [cols][r + rd] and the normed latent lat [cols][r].
+// grid (ceil((rd + r) / 256), cols).
+extern "C" __global__ void k_mla_kv_absorb(const float *kva, const float *lat,
+                                           float *kt, float *vt, int r, int rd,
+                                           int kvs) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= rd + r) return;
+    ulong64 c = blockIdx.y;
+    float v = i < rd ? kva[c * (ulong64)(r + rd) + r + i] : lat[c * (ulong64)r + i - rd];
+    kt[c * kvs + i] = v;
+    vt[c * kvs + i] = v;
+}
+// k_mla_v_absorb: each head's output latent (its last r of rd + r) through
+// the head's vd v-rows, packed for attn_output: o [cols][xs] -> p
+// [cols][H * vd]. One warp per output value. grid (ceil(vd / 8), H, cols),
+// 256 threads.
+extern "C" __global__ void k_mla_v_absorb(const float *o, const float *kvb,
+                                          float *p, int H, int rd, int r,
+                                          int qn, int vd, int xs) {
+    int w = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    int e = blockIdx.x * 8 + w, h = blockIdx.y;
+    if (e >= vd) return;            // whole warps: e is uniform across a warp
+    ulong64 c = blockIdx.z;
+    const float *lo = o + c * xs + (ulong64)h * (rd + r) + rd;
+    const float *row = kvb + ((ulong64)h * (qn + vd) + qn + e) * r;
+    float acc = 0.0f;
+    for (int j = lane; j < r; j += 32) acc += row[j] * lo[j];
+    for (int off = 16; off > 0; off >>= 1) acc += __shfl_down_sync(0xffffffffu, acc, off);
+    if (lane == 0) p[c * (ulong64)H * vd + (ulong64)h * vd + e] = acc;
+}
+
 // ------------------------------------------------------------- kv storage
 // The cache is either fp16 (2 bytes/value) or q8_0 (32 values per 34-byte
 // block: one fp16 scale + 32 int8 quants), selected at load and identical in

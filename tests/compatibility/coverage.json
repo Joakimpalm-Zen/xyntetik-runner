@@ -1510,7 +1510,7 @@
     "cuda": "PASS",
     "metal": "UNSUPPORTED"
    },
-   "note": "EXPERIMENTAL (R4.4.5). CPU measured: make test-deepseek2 (the CPU multi-head latent attention against a plain-Python forward of the publisher's math, worst 4.0e-5) and DeepSeek-V2-Lite-Chat Q8_0 against the publisher's float32 modeling_deepseek.py (mean KLD 0.0100, margin-qualified top-1 100%, MANUAL's deepseek2 row); the pinned file and its evidence land with step (d)'s certification. CUDA measured in the naive form (RUNNER_MLA_NAIVE=1, R4.4.5 c1): the toy's CUDA arm in test-deepseek2 and gpu-identity on the Q8_0 (pinned routing 1.9e-5 of the logit range, limit 1e-3); the absorbed form and Metal run it on the CPU with a reason. Live tool and client loops are unmeasured."
+   "note": "EXPERIMENTAL (R4.4.5). CPU measured: make test-deepseek2 (the CPU multi-head latent attention against a plain-Python forward of the publisher's math, worst 4.0e-5) and DeepSeek-V2-Lite-Chat Q8_0 against the publisher's float32 modeling_deepseek.py (mean KLD 0.0100, margin-qualified top-1 100%, MANUAL's deepseek2 row); the pinned file and its evidence land with step (d)'s certification. CUDA measured in both forms (R4.4.5 c1 naive, c2 absorbed, the default): the toy's CUDA arms in test-deepseek2 and gpu-identity on the Q8_0 (pinned routing 1.9e-5 of the logit range in each form, limit 1e-3); the q-lora pair and Metal run it on the CPU with a reason. Live tool and client loops are unmeasured."
   }
  }
 }

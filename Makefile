@@ -3283,10 +3283,11 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# zero routed experts and the dense FFN as the shared one, CPU against the
 	@# device, exact on the host against the dense oracle by construction
 	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.shexp.gguf
-	@# deepseek2's naive multi-head latent attention on the device (R4.4.5
-	@# c1), CPU against CUDA on the toy fixture; the absorbed form is CPU-only
-	@# until c2, so RUNNER_MLA_NAIVE=1
+	@# deepseek2's multi-head latent attention on the device (R4.4.5 c1, c2),
+	@# CPU against CUDA on the toy fixture in both forms: the absorbed one
+	@# (the default) and the naive one (RUNNER_MLA_NAIVE=1)
 	$(PYTHON) scripts/make-test-model.py --arch deepseek2 test-deepseek2.gguf > /dev/null
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-deepseek2.gguf
 	RUNNER_MLA_NAIVE=1 $(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-deepseek2.gguf
 	@# the same fixture at the default bounds: free routing answers to 2e-3,
 	@# the pinned run to 1e-3 (a min() against 1e-3 once held both to 1e-3,

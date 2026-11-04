@@ -192,35 +192,41 @@ def test_absorbed_equals_naive(fixture):
 
 
 @pytest.fixture(scope="module")
-def cuda_naive(fixture, tmp_path_factory):
-    # the naive form on the CUDA device (R4.4.5 c1); the absorbed form stays on
-    # the CPU there until c2, so RUNNER_MLA_NAIVE=1
+def cuda_scores(fixture, tmp_path_factory):
+    # both forms on the CUDA device (R4.4.5 c1 naive, c2 absorbed)
     exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
     caps = json.loads(subprocess.run([str(exe), "--caps"], stdout=subprocess.PIPE).stdout)
     if (caps.get("gpu") or {}).get("backend") != "cuda":
         pytest.skip("no CUDA backend")
     model, _ = fixture
-    score = _score(exe, model, tmp_path_factory.mktemp("ds2cuda") / "naive-cuda.json", True, gpu="99", route=True)
-    route = score["route_line"]
-    assert route["backend"] == "cuda" and route["gpu_layers"] == route["layers"], route
-    return score
+    d = tmp_path_factory.mktemp("ds2cuda")
+    out = {}
+    for naive in (False, True):
+        score = _score(exe, model, d / ("cuda-%s.json" % naive), naive, gpu="99", route=True)
+        route = score["route_line"]
+        assert route["backend"] == "cuda" and route["gpu_layers"] == route["layers"], route
+        out[naive] = score
+    return out
 
 
-def test_cuda_naive_matches_the_publishers_math(fixture, cuda_naive):
+@pytest.mark.parametrize("naive", [False, True], ids=["absorbed", "naive"])
+def test_cuda_matches_the_publishers_math(fixture, cuda_scores, naive):
     model, _ = fixture
     kv, w = load(model)
-    ref = reference_logprobs(kv, w, cuda_naive["tokens"])
-    worst = max(abs(a - b) for a, b in zip(cuda_naive["logprobs"], ref))
+    got = cuda_scores[naive]
+    ref = reference_logprobs(kv, w, got["tokens"])
+    worst = max(abs(a - b) for a, b in zip(got["logprobs"], ref))
     # the CPU's bound (PLAN-c G1)
     assert worst < 5e-4, "max |cuda - reference| logprob %.3g" % worst
 
 
-def test_cuda_naive_equals_the_cpu(fixture, cuda_naive):
+@pytest.mark.parametrize("naive", [False, True], ids=["absorbed", "naive"])
+def test_cuda_equals_the_cpu(fixture, cuda_scores, naive):
     _, scores = fixture
-    cpu = scores[True]
-    assert cpu["tokens"] == cuda_naive["tokens"]
-    worst = max(abs(a - b) for a, b in zip(cpu["logprobs"], cuda_naive["logprobs"]))
-    assert worst < 1e-4, "max |cuda - cpu| naive logprob %.3g" % worst
+    cpu, got = scores[naive], cuda_scores[naive]
+    assert cpu["tokens"] == got["tokens"]
+    worst = max(abs(a - b) for a, b in zip(cpu["logprobs"], got["logprobs"]))
+    assert worst < 1e-4, "max |cuda - cpu| logprob %.3g" % worst
 def test_a_full_batch_prefill_in_both_forms(fixture):
     # a prompt prefill feeds forwards of the scratch's full batch (n_batch
     # rows): the absorbed form once computed kv_b's width from its 576-wide
