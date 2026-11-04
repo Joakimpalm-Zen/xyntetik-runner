@@ -3251,6 +3251,48 @@ extern "C" __global__ void k_rope(float *v, const float *fr, rope_args a,
     p[i1] = x0 * s + x1 * c;
 }
 
+// ------------------------------------------------- deepseek2 (R4.4.5 c1)
+// The naive multi-head latent attention's layout, the device twin of
+// model.c's mla_project and attn_output. Heads run key_length (hd) wide with
+// the rope slice leading, so k_rope's leading-dims rotation is the
+// publisher's: Q and K as [pe | nope], V as [v | 0]. Pure copies, no
+// arithmetic, so every value is the CPU's bits for the same inputs.
+//
+// k_mla_q: qr [cols][qs] in the publisher's per-head order [nope | pe] into
+// q [cols][qs] as [pe | nope]. grid (ceil(H*hd / 256), cols).
+extern "C" __global__ void k_mla_q(const float *qr, float *q, int H, int hd,
+                                   int rd, int qs) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= H * hd) return;
+    int h = i / hd, d = i - h * hd, nope = hd - rd;
+    const float *src = qr + (ulong64)blockIdx.y * qs + (ulong64)h * hd;
+    q[(ulong64)blockIdx.y * qs + i] = d < rd ? src[nope + d] : src[d - rd];
+}
+// k_mla_kv: K [k_pe | k_nope] and V [v | 0] per head from kva
+// [cols][r + rd] (the latent, then the one shared rope key) and kvo
+// [cols][H * (nope + vd)] (kv_b's per-head [k_nope | v]). kt and vt rows are
+// kvs wide. grid (ceil(H*hd / 256), cols).
+extern "C" __global__ void k_mla_kv(const float *kva, const float *kvo,
+                                    float *kt, float *vt, int H, int hd, int rd,
+                                    int r, int vd, int kvs) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= H * hd) return;
+    int h = i / hd, d = i - h * hd, nope = hd - rd;
+    ulong64 c = blockIdx.y;
+    const float *kv = kvo + c * (ulong64)H * (nope + vd) + (ulong64)h * (nope + vd);
+    kt[c * kvs + i] = d < rd ? kva[c * (ulong64)(r + rd) + r + d] : kv[d - rd];
+    vt[c * kvs + i] = d < vd ? kv[nope + d] : 0.0f;
+}
+// k_mla_pack_v: each head's first vd outputs of hd, packed for attn_output:
+// o [cols][xs] -> p [cols][H * vd]. grid (ceil(H*vd / 256), cols).
+extern "C" __global__ void k_mla_pack_v(const float *o, float *p, int H, int hd,
+                                        int vd, int xs) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= H * vd) return;
+    int h = i / vd, e = i - h * vd;
+    p[(ulong64)blockIdx.y * H * vd + i] = o[(ulong64)blockIdx.y * xs + (ulong64)h * hd + e];
+}
+
 // ------------------------------------------------------------- kv storage
 // The cache is either fp16 (2 bytes/value) or q8_0 (32 values per 34-byte
 // block: one fp16 scale + 32 int8 quants), selected at load and identical in
@@ -5376,9 +5418,15 @@ extern "C" __global__ void k_scale(float *x, float s, int n, int xs) {
 //
 // logits: [tokens][ls]; sel/selw: [tokens][used]. lg[] is a local (per-
 // thread) working copy so the router logits buffer itself stays intact.
+//
+// renorm: 1 divides the selected weights by their sum (every family that
+// renormalises, expert_weights_norm true), 0 keeps them as the softmax gave
+// them (deepseek2, expert_weights_norm false: the publisher's
+// norm_topk_prob = False). The flag is uniform across the launch; with it
+// on, each weight is the same division it was.
 extern "C" __global__ void k_moe_route(const float *logits, int *sel,
                                        float *selw, int ne, int used,
-                                       int tokens, int ls) {
+                                       int tokens, int ls, int renorm) {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= tokens) return;
     // MOE_ROUTE_MAX experts per token in local memory (one thread per token);
@@ -5431,7 +5479,8 @@ extern "C" __global__ void k_moe_route(const float *logits, int *sel,
         lg[best] = -1.0f;
     }
     // per-element division, same rationale as the softmax normalization
-    for (int s = 0; s < used; s++) tw[s] /= denom;
+    if (renorm)
+        for (int s = 0; s < used; s++) tw[s] /= denom;
 }
 
 // RUNNER_MOE_REPLAY on the device (R3.21.2): k_moe_route's arithmetic, but at
@@ -5442,11 +5491,12 @@ extern "C" __global__ void k_moe_route(const float *logits, int *sel,
 // where the trace has no record; column t is position pos0 + t. cnt[0..2]
 // count the forced slots, the slots whose own choice differed, and the
 // (position, layer) pairs the trace did not hold (model.c's counters).
+// renorm as k_moe_route's.
 extern "C" __global__ void k_moe_route_replay(const float *logits, int *sel,
                                               float *selw, int ne, int used,
                                               int tokens, int ls, const int *tab,
                                               int npos, int nlayer, int pos0,
-                                              int layer, unsigned *cnt) {
+                                              int layer, unsigned *cnt, int renorm) {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= tokens) return;
     float lg[512];
@@ -5485,7 +5535,8 @@ extern "C" __global__ void k_moe_route_replay(const float *logits, int *sel,
         denom += bp;
         lg[best] = -1.0f;
     }
-    for (int s = 0; s < used; s++) tw[s] /= denom;
+    if (renorm)
+        for (int s = 0; s < used; s++) tw[s] /= denom;
 }
 
 // -------------------------------------------- indirect expert matvec (MoE)

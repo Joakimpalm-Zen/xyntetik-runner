@@ -237,6 +237,27 @@ static void test_boundaries_match_the_references(void) {
     expect_split("spark25", split_spark25, "x|\xE2\x80\x8B\xE2\x80\x8B|!");
     expect_split("spark25", split_spark25, "\xD2\x83|!");
     expect_split("spark25", split_spark25, "\xD2\x83\xD2\x83|!");
+    // deepseek-llm (DeepSeek-V2-Lite-Chat's tokenizer.json, its pre_tokenizer's
+    // own pre-tokens): the ASCII letters of level 3's [:-~] split a level-2
+    // run that also holds other letters ("caf|\u00e9", " Z|\u00fc|rich"), digits
+    // go one at a time, and \r and \n stand alone
+    expect_split("deepseek-llm", deepseek_llm_split_next, " \xC3\xA9|a");   // [' é', 'a']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "a| | b");   // ['a', ' ', ' b']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "Hello|,| world|!");   // ['Hello', ',', ' world', '!']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "x|1|2|3|y");   // ['x', '1', '2', '3', 'y']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "\xE4\xB8\xAD\xE6\x96\x87|abc");   // ['中文', 'abc']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "a|\x0A|\x0A|b");   // ['a', '\n', '\n', 'b']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "foo|  ");   // ['foo', '  ']
+    expect_split("deepseek-llm", deepseek_llm_split_next, " |\xE3\x80\x80\xE3\x80\x82|x");   // [' ', '\u3000。', 'x']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "(|\xC2\xB0|)");   // ['(', '°', ')']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "\xE2\x82\xAC|5");   // ['€', '5']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "can|'|t| stop");   // ['can', "'", 't', ' stop']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "caf|\xC3\xA9|)");   // ['caf', 'é', ')']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E");   // ['日本語']
+    expect_split("deepseek-llm", deepseek_llm_split_next, " Z|\xC3\xBC|rich|-|2");   // [' Z', 'ü', 'rich', '-', '2']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "x|\x0D|\x0A|y");   // ['x', '\r', '\n', 'y']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "\xC2\xB2|x");   // ['²', 'x']
+    expect_split("deepseek-llm", deepseek_llm_split_next, "\x09-|x");   // ['\t-', 'x']
 }
 
 int main(void) {

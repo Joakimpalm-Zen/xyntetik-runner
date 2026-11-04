@@ -5,6 +5,22 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **deepseek2 runs on CUDA in the naive multi-head latent attention (R4.4.5 step c1), with `RUNNER_MLA_NAIVE=1`.**
+  - Three layout kernels, `k_mla_q`, `k_mla_kv` and `k_mla_pack_v`, put Q and K as [pe | nope] and V as [v | 0],
+    and pack the value width before `attn_output`. They are copies only.
+  - The latent's projections, its norm, the rope, the cache and the 192-wide attention run on existing kernels.
+  - Still on the CPU, with a reason:
+    - the absorbed form, which is the default (until c2);
+    - the q-lora pair (`attn_q_a`: DeepSeek-V2 and V3, not V2-Lite), refused by name;
+    - the multi-sequence microbatch, which declines deepseek2.
+  - **Measured on the toy:** `test-deepseek2`'s CUDA arm is 4.0e-5 from the plain-Python reference and 4.8e-7 from
+    the CPU. gpu-identity reads 9.8e-7 against a limit of 1e-5.
+  - **Measured on DeepSeek-V2-Lite-Chat Q8_0, CPU against CUDA (gpu-identity):**
+    - free routing reads 4.5e-4 of the logit range (limit 2e-3), with 11 of 14,820 expert slots differing (ties);
+    - pinned routing reads 1.9e-5 (limit 1e-3).
+  - Decode runs plain launches. The shared-expert path fails graph capture, as the gated shape (`shexpg`) already
+    did before this change.
+
 - **`test-gpu-identity` judges a MoE file by its pinned-routing arm (R1.25).**
   With `RUNNER_CUDA_ATTN_TC_WIDE=1`, Qwen3.8-Flash-Next failed the free-routing
   arm at 2.41e-3 of the logit range against 2e-3. A dump of every device
@@ -17,6 +33,16 @@ Current release and unreleased changes. Compatibility follows the
   20 to 40% of them, which pinning alone would have passed. A G = 12 fixture
   (24 query heads on 2 KV heads, `make-test-model.py --heads`) joins
   `test-cuda-attn-wide`. No kernel changes.
+
+- **CUDA runs the ungated (DeepSeek-style) shared expert on the device (R4.4.5 step c0b).** Before this, a MoE
+  whose shared expert has no scalar gate sent the whole model to the CPU on CUDA unless `--cpu-moe` kept the banks
+  on the host. `tile_shexp` now adds such a shared expert's output without the sigmoid.
+  - Granite 4 hybrid keeps its banks on the host by name, because its CUDA cells were measured that way. A relu2 or
+    gate-less shared expert keeps its refusal.
+  - `make test` adds gpu-identity on the `shexp` fixture: zero routed experts, with the dense FFN as the shared
+    expert. Its worst difference is 2.7e-7 against a limit of 1e-5, and on the device it scores bit for bit as the
+    dense oracle does.
+  - The gated shape (`shexpg`) and every CUDA MoE byte gate read the same before and after.
 
 - **Metal Q4_K decode: the fast kernel unpacks its scales without a branch,
   1.18x on Qwen3-4B Q4_K_M with the same bits (R3.28.5).** Q4_K's 6-bit
@@ -48,6 +74,45 @@ Current release and unreleased changes. Compatibility follows the
   experts at Q5_K pass, both with experts at Q4_K miss. Owner decision
   2026-11-04; a third party's file, pinned by sha256 and repository revision.
   Report: `docs/compat-reports/mellum2.1-q5-band-2026-11-04`.
+
+
+- **CUDA's MoE router can leave the selected weights as the softmax gave them (R4.4.5 step c0).** `k_moe_route`
+  and its replay twin take a renormalise flag, which is the file's `expert_weights_norm`. The eager path's host
+  routers read the same field. Every family that renormalises today keeps the flag on, with the same bytes:
+  - the CUDA MoE byte gates read the same before and after, and so do the scores of the MoE fixtures;
+  - in the PTX, only `k_moe_route` and `k_moe_route_replay` changed, of 495 kernels.
+
+  A softmax router with `expert_weights_norm` false no longer sends the model to the CPU on CUDA. deepseek2 is
+  still refused on CUDA by name until its attention lands. Metal's router has no such flag and keeps the
+  refusal. `make test` gains CPU-against-device runs on the shared-router pair `rsoft` and `rsoftnn` and on
+  `gnonorm` (worst 1.9e-7 and 2.7e-7, limit 1e-5). `test-moe-router` checks that the pair differs on the host
+  (0.041).
+
+- **DeepSeek-V2 (`deepseek2`) runs on the CPU (R4.4.5 step b).** These are the limits for now:
+  - The GPU backends run it on the CPU with a reason, except CUDA's naive form (step c1, above).
+  - The naive multi-head latent attention, so the cache is the full per-head K and V (16 x 192 x 2 values a token a
+    layer on V2-Lite), not the 576-value latent.
+
+  - The absorbed multi-head latent attention by default: the cache holds one 576-wide head a token a layer
+    ([k_pe | normed latent], read by every query head; 1,152 values with the K and V rows against the naive form's
+    6,144 on V2-Lite). `RUNNER_MLA_NAIVE=1` keeps the naive form (16 heads of 192), the identity gate's oracle.
+  - The legacy unsplit `attn_kv_b` only; the split `attn_k_b`/`attn_v_b` layout is refused.
+  - No LoRA.
+
+  Against the publisher's float32 code (`modeling_deepseek.py`, `--trust-remote-code`), DeepSeek-V2-Lite-Chat Q8_0
+  reads mean KLD 0.0100 and margin-qualified top-1 100% over the house window. llama.cpp reads 0.0155 / 99.54% on the
+  same file, and Runner is the closer (Wilcoxon p 9e-15). The rest is the publisher's:
+
+  same file, and Runner is the closer (Wilcoxon p 9e-15). That read is the naive form. Against the same reference at
+  positions 4000-5999 of the gold corpus, the absorbed form is not distinguishable from it: mean KLD 0.01286 against
+  0.01285 (1.001x), Wilcoxon p 0.095, McNemar p 1.0, margin-qualified top-1 99.48% for both. The rest is the
+  publisher's:
+  - the softmax scale mscale² / sqrt(key_length);
+  - softmax routing without renormalisation;
+  - the `deepseek-llm` pre-tokenizer (`test-tokenizer-classes`; 0 of 721 corpus segments and 0 of 99,442 vocabulary
+    entries differ from the publisher's tokenizer);
+  - the `deepseek2` chat template, conformant with 16 of 16 cases token-identical.
+
 - **Metal Q4_K decode: a faster fast kernel, 1.19x on Qwen3-4B and
   Llama-3.2-3B Q4_K_M (R3.28.2).** The Q4_K inputs the fast route takes (at
   least 2048 wide on dense models) run `k_mvg_q4_K`: eight lanes share a
@@ -69,9 +134,13 @@ Current release and unreleased changes. Compatibility follows the
   rule passes: mean KL 0.9998x the tile's, Wilcoxon p 0.82, McNemar 0/0
   over 2,000 positions. gpu-identity is ok on both settings. The default
   keys on the measured width, and `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the
-  tile. Not yet measured: the Flash-Next sibling (qwen4exp), Metal, and
-  the RTX 3070 at these sizes. Report:
+  tile. Not yet measured: Metal and the RTX 3070 at these sizes. Report:
   `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-qwen35-2026-11-04`.
+  The Flash-Next sibling (qwen4exp) stays on the tile: on the same slice,
+  with 26 of its 48 layers on the CPU, its 4K prefill reads 0.992x, and
+  16K and D1 were not run. With routing pinned, gpu-identity reads
+  4.42e-6 (R1.25). Report:
+  `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-qwen4exp-2026-11-04`.
 
 - **The CUDA int8 prefill route (`RUNNER_CUDA_I8=1`) stays opt-in for every
   type (R3.14.1).** Against the publisher's float32 models, Q8_0 (Qwen3-0.6B)

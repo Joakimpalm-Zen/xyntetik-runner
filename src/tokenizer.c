@@ -478,6 +478,7 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
     else if (strcmp(pre, "mellum2") == 0) t->pre = TOK_PRE_SMOLLM;
     else if (strcmp(pre, "afmoe") == 0)  t->pre = TOK_PRE_AFMOE;
     else if (strcmp(pre, "flint") == 0)  t->pre = TOK_PRE_FLINT;
+    else if (strcmp(pre, "deepseek-llm") == 0) t->pre = TOK_PRE_DEEPSEEK_LLM;
     else if (strcmp(pre, "tekken") == 0) t->pre = TOK_PRE_TEKKEN;
     // pixtral: llama.cpp's name for the Tekken regex with its Unicode letter
     // classes, the one TOK_PRE_TEKKEN implements; NVIDIA's Nemotron 3.5
@@ -1552,6 +1553,98 @@ static int flint_split_next(const uint32_t *cp, int i, int ncp) {
     return j;
 }
 
+// deepseek-llm (DeepSeek LLM, V2 and V3's tokenizer.json): a Sequence of
+// isolated Splits, each applied to the previous one's pieces, then Digits
+// (individual) and ByteLevel without the GPT-2 regex:
+//   1. [\r\n]
+//   2. \s?[DS_L]+   (the 87 ranges below: Latin, Greek, Cyrillic, ... letters)
+//   3. \s?[!-/:-~ U+FF01-FF0F U+FF1A-FF5E U+2018-201F U+3000-3002]+
+//   4. \s+$          (the end is the end of the level-3 piece)
+//   5. [U+4E00-9FA5 U+0800-4E00 U+AC00-D7FF]+
+//   6. each \p{N} alone
+// Every final boundary is a boundary of each level's own scan restarted
+// there (a level only refines the one above it, and each regex scans left to
+// right from its piece start), so the piece starting at i is found by
+// walking the levels down from i. Level 3's [:-~] holds the ASCII letters, so
+// it splits a level-2 run such as " \u00e9a" into " \u00e9" and "a", as the
+// publisher's tokenizer does.
+static const uint32_t ds_letters[][2] = {
+    {0x0041, 0x005A}, {0x0061, 0x007A}, {0x00B5, 0x00B5}, {0x00C0, 0x00D6}, {0x00D8, 0x00F6}, {0x00F8, 0x01BA},
+    {0x01BC, 0x01BF}, {0x01C4, 0x0293}, {0x0295, 0x02AF}, {0x0370, 0x0373}, {0x0376, 0x0376}, {0x0377, 0x0377},
+    {0x037B, 0x037D}, {0x037F, 0x037F}, {0x0386, 0x0386}, {0x0388, 0x038A}, {0x038C, 0x038C}, {0x038E, 0x03A1},
+    {0x03A3, 0x03F5}, {0x03F7, 0x0481}, {0x048A, 0x052F}, {0x0531, 0x0556}, {0x10A0, 0x10C5}, {0x13A0, 0x13F5},
+    {0x13F8, 0x13FD}, {0x1C90, 0x1CBA}, {0x1CBD, 0x1CBF}, {0x1D00, 0x1D2B}, {0x1D6B, 0x1D77}, {0x1D79, 0x1D9A},
+    {0x1E00, 0x1F15}, {0x1F18, 0x1F1D}, {0x1F20, 0x1F45}, {0x1F48, 0x1F4D}, {0x1F50, 0x1F57}, {0x1F59, 0x1F59},
+    {0x1F5B, 0x1F5B}, {0x1F5D, 0x1F5D}, {0x1F5F, 0x1F7D}, {0x1F80, 0x1FB4}, {0x1FB6, 0x1FBC}, {0x1FBE, 0x1FBE},
+    {0x1FC2, 0x1FC4}, {0x1FC6, 0x1FCC}, {0x1FD0, 0x1FD3}, {0x1FD6, 0x1FDB}, {0x1FE0, 0x1FEC}, {0x1FF2, 0x1FF4},
+    {0x1FF6, 0x1FFC}, {0x2102, 0x2102}, {0x2107, 0x2107}, {0x210A, 0x2113}, {0x2115, 0x2115}, {0x2119, 0x211D},
+    {0x2124, 0x2124}, {0x2126, 0x2126}, {0x2128, 0x2128}, {0x212A, 0x212D}, {0x212F, 0x2134}, {0x2139, 0x2139},
+    {0x213C, 0x213F}, {0x2145, 0x2149}, {0x214E, 0x214E}, {0x2183, 0x2183}, {0x2184, 0x2184}, {0x2C00, 0x2C7B},
+    {0x2C7E, 0x2CE4}, {0x2CEB, 0x2CEE}, {0x2CF2, 0x2CF2}, {0x2CF3, 0x2CF3}, {0xA640, 0xA66D}, {0xA680, 0xA69B},
+    {0xA722, 0xA76F}, {0xA771, 0xA787}, {0xA78B, 0xA78E}, {0xAB70, 0xABBF}, {0xFB00, 0xFB06}, {0xFB13, 0xFB17},
+    {0xFF21, 0xFF3A}, {0xFF41, 0xFF5A}, {0x10400, 0x1044F}, {0x104B0, 0x104D3}, {0x104D8, 0x104FB}, {0x10C80, 0x10CB2},
+    {0x10CC0, 0x10CF2}, {0x118A0, 0x118DF}, {0x1E900, 0x1E943},
+};
+static bool cp_ds_letter(uint32_t c) {
+    int lo = 0, hi = (int)(sizeof ds_letters / sizeof ds_letters[0]) - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (c < ds_letters[mid][0]) hi = mid - 1;
+        else if (c > ds_letters[mid][1]) lo = mid + 1;
+        else return true;
+    }
+    return false;
+}
+static bool cp_ds_punct(uint32_t c) {
+    return (c >= 0x21 && c <= 0x2F) || (c >= 0x3A && c <= 0x7E) ||
+           (c >= 0xFF01 && c <= 0xFF0F) || (c >= 0xFF1A && c <= 0xFF5E) ||
+           (c >= 0x2018 && c <= 0x201F) || (c >= 0x3000 && c <= 0x3002);
+}
+static bool cp_ds_cjk(uint32_t c) {
+    return (c >= 0x4E00 && c <= 0x9FA5) || (c >= 0x0800 && c <= 0x4E00) ||
+           (c >= 0xAC00 && c <= 0xD7FF);
+}
+static bool cp_crlf(uint32_t c) { return c == '\r' || c == '\n'; }
+static int deepseek_llm_split_next(const uint32_t *cp, int i, int ncp) {
+    if (cp_crlf(cp[i])) return i + 1;                                  // level 1
+    // level 2: \s?L+ starting at j (no level-1 break inside the piece)
+    #define DS_L2_AT(j, end) (cp_ds_letter(cp[j]) || \
+        (cp_space(cp[j]) && !cp_crlf(cp[j]) && (j) + 1 < (end) && cp_ds_letter(cp[(j) + 1])))
+    int e2;
+    if (DS_L2_AT(i, ncp)) {
+        e2 = cp_ds_letter(cp[i]) ? i + 1 : i + 2;
+        while (e2 < ncp && cp_ds_letter(cp[e2])) e2++;
+    } else {
+        e2 = i + 1;
+        while (e2 < ncp && !cp_crlf(cp[e2]) && !DS_L2_AT(e2, ncp)) e2++;
+    }
+    #undef DS_L2_AT
+    // level 3 within [i, e2): \s?P+, the optional space greedy
+    int e3;
+    bool sp_p = cp_space(cp[i]) && i + 1 < e2 && cp_ds_punct(cp[i + 1]);
+    if (sp_p || cp_ds_punct(cp[i])) {
+        e3 = sp_p ? i + 2 : i + 1;
+        while (e3 < e2 && cp_ds_punct(cp[e3])) e3++;
+    } else {
+        e3 = i + 1;
+        while (e3 < e2 && !cp_ds_punct(cp[e3]) &&
+               !(cp_space(cp[e3]) && e3 + 1 < e2 && cp_ds_punct(cp[e3 + 1]))) e3++;
+    }
+    // level 4 within [i, e3): the trailing whitespace run
+    int t = e3;
+    while (t > i && cp_space(cp[t - 1])) t--;
+    int e4 = (t == i || t == e3) ? e3 : t;
+    // level 5 within [i, e4): CJK runs
+    int e5 = i + 1;
+    if (cp_ds_cjk(cp[i])) { while (e5 < e4 && cp_ds_cjk(cp[e5])) e5++; }
+    else while (e5 < e4 && !cp_ds_cjk(cp[e5])) e5++;
+    // level 6 within [i, e5): every digit alone
+    if (cp_digit(cp[i])) return i + 1;
+    int e6 = i + 1;
+    while (e6 < e5 && !cp_digit(cp[e6])) e6++;
+    return e6;
+}
+
 static int smollm_split_next(const uint32_t *cp, int i, int ncp) {
     if (cp_digit(cp[i])) return i + 1;
     int seg = i;
@@ -1726,6 +1819,7 @@ static int bpe_encode_split(tokenizer *t, const char *text, size_t n,
                 : t->pre == TOK_PRE_SPARK25   ? spark25_split_next(cp, i, ncp)
                 : t->pre == TOK_PRE_K2H       ? k2h_split_next(cp, i, ncp)
                 : t->pre == TOK_PRE_FLINT     ? flint_split_next(cp, i, ncp)
+                : t->pre == TOK_PRE_DEEPSEEK_LLM ? deepseek_llm_split_next(cp, i, ncp)
                                               : gpt2_split_next(cp, i, ncp);
         if (end <= i) end = i + 1; // never stall
         // map the original bytes of this pre-token through byte->unicode

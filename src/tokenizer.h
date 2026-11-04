@@ -33,7 +33,7 @@ enum { TOK_PRE_GPT2, TOK_PRE_LLAMA3, TOK_PRE_QWEN2, TOK_PRE_SMOLLM, TOK_PRE_AFMO
        // RecursiveSI flint: three Split passes in sequence, digits (1 to 3,
        // from the left), then runs of three CJK blocks, then an o200k-style
        // case-aware rule (flint_split_next)
-       TOK_PRE_FLINT };
+       TOK_PRE_FLINT, TOK_PRE_DEEPSEEK_LLM };
 
 typedef struct { const char *key; uint32_t klen; int32_t val; } hmap_ent;
 typedef struct { hmap_ent *e; size_t cap; } hmap;

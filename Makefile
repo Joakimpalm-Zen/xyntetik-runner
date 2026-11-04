@@ -1658,6 +1658,11 @@ test-apertus: runner
 test-moe: runner
 	$(PYTHON) -m pytest -q tests/test_moe.py
 
+# deepseek2 (R4.4.5): the CPU multi-head latent attention against a plain-Python
+# forward of the publisher's math on a two-layer fixture, and the family's refusals
+test-deepseek2: runner
+	$(PYTHON) -m pytest -q tests/test_deepseek2.py
+
 # --prune-experts: stacked-layout MoE expert pruning in the quantize path.
 test-prune-experts: runner
 	$(PYTHON) -m pytest -q tests/test_prune_experts.py
@@ -3266,6 +3271,23 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# under the tolerances -- which is exactly how the CUDA fused path shipped
 	@# without one. See the fixture's comment in scripts/make-test-moe.py.
 	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.gptoss-top1.gguf
+	@# k_moe_route's renorm flag (R4.4.5): one shared router renormalised
+	@# (rsoft) and not (rsoftnn, expert_weights_norm false), and the
+	@# dense-oracle gnonorm, CPU against the device. A device that ignored the
+	@# flag would give rsoftnn rsoft's weights; test-moe-router holds the two
+	@# apart on the host
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.rsoft.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.rsoftnn.gguf
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.gnonorm.gguf
+	@# the ungated (DeepSeek-style) shared expert on the device (R4.4.5 c0b):
+	@# zero routed experts and the dense FFN as the shared one, CPU against the
+	@# device, exact on the host against the dense oracle by construction
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-moe-fixture.shexp.gguf
+	@# deepseek2's naive multi-head latent attention on the device (R4.4.5
+	@# c1), CPU against CUDA on the toy fixture; the absorbed form is CPU-only
+	@# until c2, so RUNNER_MLA_NAIVE=1
+	$(PYTHON) scripts/make-test-model.py --arch deepseek2 test-deepseek2.gguf > /dev/null
+	RUNNER_MLA_NAIVE=1 $(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-deepseek2.gguf
 	@# the same fixture at the default bounds: free routing answers to 2e-3,
 	@# the pinned run to 1e-3 (a min() against 1e-3 once held both to 1e-3,
 	@# and every fixture run sets GPU_ID_LIMIT, so only a real file showed it)
@@ -3388,6 +3410,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	  test-spec-cpu-nemotron.gguf; do ./$(TEST_SPEC_ID) $$f cpu || exit 1; done
 	$(PYTHON) scripts/check-generated.py
 	$(MAKE) --no-print-directory test-moe PYTHON="$(PYTHON)"
+	$(MAKE) --no-print-directory test-deepseek2 PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
 
 # The microbatch gates: byte identity of the batched forward against the
@@ -3664,7 +3687,7 @@ clean:
 	rm -f metal-gptoss-moe-cpu.out metal-gptoss-moe-gpu.out metal-gptoss-moe-gpu.err
 	rm -f metal-gemma4-moe-cpu.out metal-gemma4-moe-gpu.out metal-gemma4-moe-gpu.err
 	rm -f metal-swa-cpu.out metal-swa-gpu.out metal-swa-gpu.err test-swa.gguf
-	rm -f test-spark.gguf test-spark-swa.gguf test-spark-q8.gguf test-spark-q40.gguf
+	rm -f test-spark.gguf test-spark-swa.gguf test-spark-q8.gguf test-spark-q40.gguf test-deepseek2.gguf
 	rm -f metal-es-cpu.out metal-es-gpu.out metal-es-gpu.err test-es.gguf test-es-cfg.gguf
 	rm -f $(addprefix fuzz-,$(FUZZ_TARGETS))
 	rm -rf fuzz-corpus
@@ -3780,7 +3803,7 @@ test-cuda-gated: runner test.gguf
 
 .PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
 .PHONY: test-gates test-gates-core test-gates-batch test-python
-.PHONY: test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
+.PHONY: test-deepseek2 test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
 
 # The TypeScript client (R10.7): type-checked with the pinned compiler and run
 # against a live runner on the CI fixture. Needs Node 18+ and npm (the pinned
