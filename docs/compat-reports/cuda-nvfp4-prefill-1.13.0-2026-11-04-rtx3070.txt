@@ -1,0 +1,10 @@
+# NVFP4 prefill, runner 1.13.0 (release/1.13.0 pin 2d34685b), RTX 3070 sm_86, driver 596.36, the card alone
+# qwen3.5-4b-nvfp4.gguf, a 1,971-token prompt, -n 32 --temp 0 -c 4096
+start 2026-11-04 19:43:21 UTC
+NVIDIA GeForce RTX 3070, 596.36, 812 MiB
+== RUNNER_CUDA_TC_NVFP4=default
+gpu-split: budget=7.46GB fixed=0.86GB G=32/32 full=1 used=3.41GB
+prompt: 1971 tok, 1326.99 tok/s | gen: 32 tok, 58.52 tok/s
+== RUNNER_CUDA_TC_NVFP4=0
+gpu-split: budget=7.46GB fixed=0.86GB G=32/32 full=1 used=3.41GB
+prompt: 1971 tok, 21.71 tok/s | gen: 32 tok, 57.35 tok/s
