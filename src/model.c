@@ -6117,12 +6117,63 @@ static int mv_exact_cols(void) {
     return i8_dot_enabled() ? MV_SMALL_BATCH - 1 : VEC_DOT_MULTI_MAX;
 }
 
+#ifdef RUNNER_ACCELERATE
+// R3.26 PROTOTYPE, not for merge: the f32 prefill GEMM through Accelerate's
+// cblas_sgemm (Apple's matrix unit). Declared here rather than by including
+// the Accelerate umbrella header and its global names; 101/111/112 are
+// CblasRowMajor, CblasNoTrans and CblasTrans.
+void cblas_sgemm(int order, int ta, int tb, int m, int n, int k, float alpha,
+                 const float *a, int lda, const float *b, int ldb, float beta,
+                 float *c, int ldc);
+typedef struct { const gguf_tensor *w; float *dst; int n_in; size_t rsz; } accel_dq;
+static void accel_dq_rows(void *ctx, int r0, int r1) {
+    accel_dq *d = ctx;
+    const uint8_t *base = d->w->data;
+    for (int r = r0; r < r1; r++) {
+        float *dst = d->dst + (size_t)r * d->n_in;
+        if (d->w->type == T_F32) memcpy(dst, base + (size_t)r * d->rsz, sizeof(float) * d->n_in);
+        else dequant_row(d->w->type, base + (size_t)r * d->rsz, dst, d->n_in);
+        if (d->w->scale != 1.0f) for (int i = 0; i < d->n_in; i++) dst[i] *= d->w->scale;
+    }
+}
+static bool accel_on(void) {
+    static _Atomic int v = -1;
+    if (v < 0) { const char *e = getenv("R326_ACCEL"); v = e && *e == '1'; }
+    return v > 0;
+}
+// true when it computed y: R326_ACCEL=1, a prefill batch, a weight under 64 MB in f32
+static bool accel_gemm(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
+                       const float *x, int x_stride, int n_in, int n_out,
+                       const float *bias, int n_batch) {
+    if (!accel_on() || n_batch < 32 || t_mv_exact) return false;
+    size_t bytes = sizeof(float) * (size_t)n_in * n_out;
+    if (bytes > (64u << 20)) return false;
+    float *wf = malloc(bytes);
+    if (!wf) return false;
+    accel_dq d = { w, wf, n_in, ggml_row_size(w->type, n_in) };
+    tpool_run(tp, accel_dq_rows, &d, n_out);
+    // Y[c][r] = sum_i X[c][i] W[r][i]: Y (n_batch x n_out, ld y_stride) = X W^T
+    cblas_sgemm(101, 111, 112, n_batch, n_out, n_in, 1.0f, x, x_stride, wf, n_in,
+                0.0f, y, y_stride);
+    free(wf);
+    if (bias)
+        for (int c = 0; c < n_batch; c++)
+            for (int r = 0; r < n_out; r++) y[(size_t)c * y_stride + r] += bias[r];
+    return true;
+}
+#endif
+
 static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
                      const float *x, int x_stride, int n_in, int n_out,
                      const float *bias, int n_batch) {
     if (t_mv_dev && gpu_train_mm(t_mv_dev, w, x, x_stride, y, y_stride, n_in,
                                  n_out, bias, n_batch))
         return;
+#ifdef RUNNER_ACCELERATE
+    if (!mv_takes_i8(w, n_in, n_out, n_batch) &&
+        accel_gemm(tp, y, y_stride, w, x, x_stride, n_in, n_out, bias, n_batch))
+        return;
+#endif
     int ec = mv_exact_cols();
     if (t_mv_exact && n_batch > ec) {
         for (int c = 0; c < n_batch; c += ec) {
@@ -6215,7 +6266,11 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
         }
         return;
     }
-    if (np == 1 || !mv_fuse_enabled()) {
+    if (np == 1 || !mv_fuse_enabled()
+#ifdef RUNNER_ACCELERATE
+        || (accel_on() && n_batch >= 32 && !t_mv_exact)   // each part its own GEMM
+#endif
+        ) {
         for (int s = 0; s < np; s++)
             matvec_b(tp, p[s].y, p[s].y_stride, p[s].w, x, x_stride, n_in,
                      p[s].n_out, p[s].bias, n_batch);

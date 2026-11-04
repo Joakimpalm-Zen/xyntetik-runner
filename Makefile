@@ -100,6 +100,9 @@ GPU_BACKEND_DEF = -DRUNNER_GPU_METAL
 # arithmetic regime.
 CFLAGS += -Werror=nan-infinity-disabled -Werror=unknown-attributes
 LDFLAGS += -framework Metal -framework Foundation
+# R3.26 PROTOTYPE: Accelerate's cblas_sgemm for the f32 CPU prefill GEMM
+CFLAGS += -DRUNNER_ACCELERATE
+LDFLAGS += -framework Accelerate
 # AppKit only on Darwin, only for the tray backend; UniformTypeIdentifiers
 # for the non-deprecated NSOpenPanel file filter
 LDFLAGS += -framework AppKit -framework UniformTypeIdentifiers
