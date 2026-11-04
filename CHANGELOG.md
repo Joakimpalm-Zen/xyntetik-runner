@@ -25,6 +25,30 @@ Current release and unreleased changes. Compatibility follows the
   reads 1.008x, and is worse on the paired Wilcoxon (p 0.037). Both miss the
   routes' rule. Report: `docs/compat-reports/r3.14-cuda-int8-prefill-2026-11-03`.
 
+- **Qwen3.6-27B joins the validated roster at Tier 2 on ggml-org's
+  conversions (no publisher GGUF exists), and the Q4_K_M fails the fidelity
+  bar.** Against Qwen's BF16 checkpoint in float32 at use (300 positions,
+  CPU): the Q4_K_M reads 0.129 mean KLD and 95.9% margin-qualified top-1 on
+  Runner, 0.154 and 93.8% on llama.cpp 73a43d1, against a bar of 0.05 and
+  97%, and the gap grows with depth; the file itself is the distance (0.101
+  top-20 KL against Runner's own Q8_0). The Q8_0 passes on Runner (0.0273 and
+  99.59%; one reference near-tie carries most of the mean) and is the row's
+  fidelity file with a CPU cell; llama.cpp reads 0.0626 on it, above the bar.
+  Tokenizer differential 0 of 247,091 entries, template byte-identical to
+  Qwen's with 23 of 23 conformance cases, tool gate A and B pass and C passes
+  buffered. Record: `docs/compat-reports/qwen3.6-27b-2026-11-04`.
+
+- **On CUDA with every layer on the device, `--draft lookup` now drafts 7
+  tokens a round by default and `--draft mtp` 2; every other source,
+  backend and partial offload keeps 4 (R3.3.7).** On an
+  RTX 3070, lookup on an in-context edit reads 2.86x plain at 7 against
+  2.43x at 4. Qwen3.5-4B's NextN head reads 1.13x at 2 on code and tool
+  calls, against 1.01x and 1.18x at 4; on prose it stays a loss (0.88x at
+  2). An adaptive width that followed each turn's acceptance was measured
+  first and stopped by its kill read: 0.97x of the best fixed width, where
+  it needed 1.05x. An explicit `--draft-k` is unchanged. Report:
+  `docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03`.
+
 - **`--quant-error` costs a row its type cannot describe at the type the
   rewrite writes instead.** A tensor whose rows the asked type's block does
   not divide (a MoE expert width of 896 under `q4_k`) read `null` in the
