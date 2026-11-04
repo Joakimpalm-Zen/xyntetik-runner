@@ -115,12 +115,6 @@ ARCH_GATE_EXEMPTIONS = {
     # real file (83 GB, two parts) is admitted to the manifest with the
     # anchor runs in R4.26.3, and this entry goes with it.
     "qwen4exp": "experimental; fixture-gated only until the R4.26.3 anchor",
-    # Experimental admission (R4.4.5). The toy fixture (make-test-model.py
-    # --arch deepseek2) exercises the loader and both CPU forms of the
-    # multi-head latent attention in make test-deepseek2; the pinned real file
-    # (DeepSeek-V2-Lite-Chat Q8_0) gets its manifest row with step (d)'s
-    # certification, and this entry goes with it.
-    "deepseek2": "experimental; fixture-gated only until the R4.4.5 step (d) certification",
 }
 
 

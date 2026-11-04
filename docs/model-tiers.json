@@ -7093,6 +7093,224 @@
         "runner_version": "1.9.0",
         "date": "2026-10-30"
       }
+    },
+    {
+      "id": "deepseek-v2-lite-chat-q8_0",
+      "model": "DeepSeek-V2-Lite-Chat (DeepSeek)",
+      "family": "DeepSeek-V2-Lite",
+      "tier": "tier2",
+      "claim": "A third party's Q8_0 (mradermacher, static), the fidelity file of DeepSeek-V2-Lite-Chat: against the publisher's BF16 parent computed in float32 it reads 0.0094 mean KLD and 100% margin-qualified top-1 on the CPU (CUDA 0.0096 / 100%), where llama.cpp reads 0.0155 / 99.54% on the same file. 16.70 GB: 17.8 GB on the device at a 9,216-token context, so a 20 or 24 GB card, not a 16 GB one. Not the publisher's file: its bytes are pinned by sha256 and repository revision.",
+      "architecture": "deepseek2",
+      "upstream": {
+        "checkpoint": "deepseek-ai/DeepSeek-V2-Lite-Chat",
+        "revision": "85864749cd611b4353ce1decdb286193298f64c7"
+      },
+      "licence": {
+        "id": "deepseek",
+        "from": "deepseek-ai/DeepSeek-V2-Lite-Chat"
+      },
+      "files": [
+        {
+          "name": "DeepSeek-V2-Lite-Chat.Q8_0.gguf",
+          "sha256": "78a1a180db56416782f71cd7e019ea3d7227cf11a918de9ca1d50f038caba0ec",
+          "bytes": 16702518016,
+          "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+          "revision": "9ee9f1f8f39f673e1022e176d586aef4228f630d"
+        }
+      ],
+      "quantization": "Q8_0 (mradermacher, static): every matrix Q8_0, norms and routers F32",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Against DeepSeek's BF16 checkpoint deepseek-ai/DeepSeek-V2-Lite-Chat at 85864749 in float32 at use on the CPU (the publisher's modeling_deepseek.py through --trust-remote-code on transformers 5.16.1, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, positions 8 to 4,493, token-id keyed, BOS forced; the Runner sides from chunked score files on main 0676f26 in the absorbed form, the default): Q8_0 0.0094 mean KLD / 96.67% top-1 / 100% margin-qualified top-1 of 216 on the CPU and 0.0096 / 96.00% / 100% on CUDA; Q6_K 0.0293 / 93.00% / 98.61% and 0.0296 / 93.00% / 98.61%; Q5_K_M 0.0704 / 88.33% / 96.76% and 0.0705 / 88.00% / 96.30%, below the bar (0.05 / 97%); Q4_K_M 0.1884 / 81.33% / 90.28% and 0.1876 / 81.67% / 90.28%, below. llama.cpp 73a43d1 on the same files reads 0.0155 / 99.54% (Q8_0), 0.0466 / 96.76% (Q6_K), 0.0861 / 96.30% (Q5_K_M) and 0.2023 / 89.35% (Q4_K_M); Runner is the closer by per-position KLD on every file (Wilcoxon p 1.2e-16, 3.2e-18, 4.7e-7, 3.2e-5). CPU against CUDA: gpu-identity's pinned-routing arm reads 1.85e-5 of the logit range (limit 1e-3), and the window cannot tell the two backends apart (p 0.51). Record: docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md.",
+        "context": 9216,
+        "limitations": "A third party's file, not the publisher's: the pin is the sha256 and the repository revision, and the file can leave the Hub without notice. One window over one corpus, no benchmark claim, no speed row. LoRA training and adapter serving are refused for deepseek2. On CUDA the multi-sequence decode microbatch declines MoE models, so concurrent sequences decode one at a time, and the model runs without CUDA graphs. The publisher's chat template has no tool protocol. Past the window's 4,493 positions the context is read only as whole-corpus perplexity (8,719 tokens at -c 9216).",
+        "evidence": [
+          "docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md"
+        ],
+        "missing": "The Metal row (a Metal build runs the model on the CPU) and the Windows CUDA host's cells; the KV cache's size and decode past the window (R4.4.5 step e); a live tool gate (the template has none); task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.12.0",
+          "date": "2026-11-04",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "0676f2639410c3db4b322e81c914187d0a190552",
+          "caps": {
+            "version": "1.12.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "eae8d81a354865063f6edb2a6e83c627b6c4b6d7f8c8749e5fac353dca7b294b",
+          "ran": "runner -m DeepSeek-V2-Lite-Chat.Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.12.0",
+          "date": "2026-11-04",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "0676f2639410c3db4b322e81c914187d0a190552",
+          "caps": {
+            "version": "1.12.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "eae8d81a354865063f6edb2a6e83c627b6c4b6d7f8c8749e5fac353dca7b294b",
+          "ran": "runner -m DeepSeek-V2-Lite-Chat.Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q8_0.linux-x86_64-cuda.cuda.txt"
+        },
+        "metal": {
+          "kind": "limit",
+          "reason": "deepseek2's multi-head latent attention is validated on the CPU and CUDA only; a Metal build runs the model on the CPU and says why.",
+          "matrix": "MANUAL.md#support-matrix"
+        }
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-04",
+          "reason": "R4.4.5 step (d), the certification of the deepseek2 admission, admitted 2026-11-04 at Tier 2 (the coordinator's rows): the file pinned by sha256 and repository revision, the tokenizer differential, template conformance, a float32 reference measurement on the publisher's BF16 checkpoint with a llama.cpp column, gpu-identity on the CPU against CUDA, the compatibility checks and the Linux CUDA host's CPU and CUDA cells. The licence (DeepSeek's model licence) was ruled eligible by the coordinator. Maintained on report; Tier 1 is the owner's call.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "multi-head latent attention (deepseek2)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover multi-head latent attention yet (deepseek2)"
+        },
+        "runner_version": "1.12.0",
+        "date": "2026-11-04"
+      }
+    },
+    {
+      "id": "deepseek-v2-lite-chat-q6_k",
+      "model": "DeepSeek-V2-Lite-Chat (DeepSeek)",
+      "family": "DeepSeek-V2-Lite",
+      "tier": "tier2",
+      "claim": "A third party's Q6_K (mradermacher, static), the smallest DeepSeek-V2-Lite-Chat file measured to pass the bar: against the publisher's BF16 parent computed in float32 it reads 0.0293 mean KLD and 98.61% margin-qualified top-1 on the CPU (CUDA 0.0296 / 98.61%; plain top-1 93.0%), where the same repository's Q5_K_M reads 0.0704 / 96.76% and its Q4_K_M 0.188 / 90.28%, both below the bar. 14.07 GB: 15.2 GB on the device at a 9,216-token context, a 16 GB card's fit, not a 12 GB one's. Not the publisher's file: its bytes are pinned by sha256 and repository revision.",
+      "architecture": "deepseek2",
+      "upstream": {
+        "checkpoint": "deepseek-ai/DeepSeek-V2-Lite-Chat",
+        "revision": "85864749cd611b4353ce1decdb286193298f64c7"
+      },
+      "licence": {
+        "id": "deepseek",
+        "from": "deepseek-ai/DeepSeek-V2-Lite-Chat"
+      },
+      "files": [
+        {
+          "name": "DeepSeek-V2-Lite-Chat.Q6_K.gguf",
+          "sha256": "3f634b8f08f4ef1039389e51989c77cce7f4ba22472f1493076c4f979dd417b9",
+          "bytes": 14066972416,
+          "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+          "revision": "9ee9f1f8f39f673e1022e176d586aef4228f630d"
+        }
+      ],
+      "quantization": "Q6_K (mradermacher, static): every matrix Q6_K except the expert down tensors and the dense block's down (rows 1,408 and 10,944 wide, not multiples of 256) at Q8_0; norms and routers F32",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Against DeepSeek's BF16 checkpoint deepseek-ai/DeepSeek-V2-Lite-Chat at 85864749 in float32 at use on the CPU (the publisher's modeling_deepseek.py through --trust-remote-code on transformers 5.16.1, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, positions 8 to 4,493, token-id keyed, BOS forced; the Runner sides from chunked score files on main 0676f26 in the absorbed form, the default): Q8_0 0.0094 mean KLD / 96.67% top-1 / 100% margin-qualified top-1 of 216 on the CPU and 0.0096 / 96.00% / 100% on CUDA; Q6_K 0.0293 / 93.00% / 98.61% and 0.0296 / 93.00% / 98.61%; Q5_K_M 0.0704 / 88.33% / 96.76% and 0.0705 / 88.00% / 96.30%, below the bar (0.05 / 97%); Q4_K_M 0.1884 / 81.33% / 90.28% and 0.1876 / 81.67% / 90.28%, below. llama.cpp 73a43d1 on the same files reads 0.0155 / 99.54% (Q8_0), 0.0466 / 96.76% (Q6_K), 0.0861 / 96.30% (Q5_K_M) and 0.2023 / 89.35% (Q4_K_M); Runner is the closer by per-position KLD on every file (Wilcoxon p 1.2e-16, 3.2e-18, 4.7e-7, 3.2e-5). CPU against CUDA: gpu-identity's pinned-routing arm reads 1.94e-5 of the logit range (limit 1e-3), and the window cannot tell the two backends apart (p 0.54). llama.cpp misses the margin half of the bar on this file, and the multi-head latent attention form is not why: on this unsplit-kv_b file llama.cpp runs the naive form, Runner in that same form reads 0.0294 / 98.61% (not distinguishable from its absorbed form, p 0.32), and against llama.cpp in the same form Runner is the closer (p 2.4e-18, McNemar 4/0), which leaves llama.cpp's CPU arithmetic (its 8-bit activation blocks, the one difference known, not isolated here). Record: docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md.",
+        "context": 9216,
+        "limitations": "A third party's file, not the publisher's: the pin is the sha256 and the repository revision, and the file can leave the Hub without notice. One window over one corpus, no benchmark claim, no speed row. LoRA training and adapter serving are refused for deepseek2. On CUDA the multi-sequence decode microbatch declines MoE models, so concurrent sequences decode one at a time, and the model runs without CUDA graphs. The publisher's chat template has no tool protocol. Past the window's 4,493 positions the context is read only as whole-corpus perplexity (8,719 tokens at -c 9216).",
+        "evidence": [
+          "docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md"
+        ],
+        "missing": "The Metal row (a Metal build runs the model on the CPU) and the Windows CUDA host's cells; the KV cache's size and decode past the window (R4.4.5 step e); a live tool gate (the template has none); task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.12.0",
+          "date": "2026-11-04",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "0676f2639410c3db4b322e81c914187d0a190552",
+          "caps": {
+            "version": "1.12.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "eae8d81a354865063f6edb2a6e83c627b6c4b6d7f8c8749e5fac353dca7b294b",
+          "ran": "runner -m DeepSeek-V2-Lite-Chat.Q6_K.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.12.0",
+          "date": "2026-11-04",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "0676f2639410c3db4b322e81c914187d0a190552",
+          "caps": {
+            "version": "1.12.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "70827d501fa8dc01eb53edd654e02da4829cf3aa439af54f451148fdf32baf12",
+          "ran": "runner -m DeepSeek-V2-Lite-Chat.Q6_K.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cuda.txt"
+        },
+        "metal": {
+          "kind": "limit",
+          "reason": "deepseek2's multi-head latent attention is validated on the CPU and CUDA only; a Metal build runs the model on the CPU and says why.",
+          "matrix": "MANUAL.md#support-matrix"
+        }
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-04",
+          "reason": "R4.4.5 step (d), the certification of the deepseek2 admission, admitted 2026-11-04 at Tier 2 (the coordinator's rows): the file pinned by sha256 and repository revision, the tokenizer differential, template conformance, a float32 reference measurement on the publisher's BF16 checkpoint with a llama.cpp column, gpu-identity on the CPU against CUDA, the compatibility checks and the Linux CUDA host's CPU and CUDA cells. The licence (DeepSeek's model licence) was ruled eligible by the coordinator. Maintained on report; Tier 1 is the owner's call.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "multi-head latent attention (deepseek2)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover multi-head latent attention yet (deepseek2)"
+        },
+        "runner_version": "1.12.0",
+        "date": "2026-11-04"
+      }
     }
   ]
 }

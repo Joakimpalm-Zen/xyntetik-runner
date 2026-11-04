@@ -1,0 +1,23 @@
+  deepseek2     user-only+gen              ok (-bos)
+  deepseek2     user-only-nogen            ok (-bos)
+  deepseek2     system+user+gen            ok (-bos)
+  deepseek2     system+multiturn+gen       ok (-bos)
+  deepseek2     multiturn+gen              ok (-bos)
+  deepseek2     multiturn-nogen            ok (-bos)
+  deepseek2     trailing-assistant+gen     ok (-bos)
+  deepseek2     trailing-assistant-nogen   ok (-bos)
+  deepseek2     consecutive-user           ok (-bos)
+  deepseek2     consecutive-assistant      ok (-bos)
+  deepseek2     system-mid-history         ok (-bos)
+  deepseek2     content-array              ok (-bos)
+  deepseek2     empty-assistant-content    ok (-bos)
+  deepseek2     empty-user-content         ok (-bos)
+  deepseek2     unicode-emoji              ok (-bos)
+  deepseek2     long-content               ok (-bos)
+
+deepseek2       CLEAN                          [hf:deepseek-ai/DeepSeek-V2-Lite-Chat 8aeba567270fa9a8] tok:DeepSeek-V2-Lite-Chat.Q8_0.gguf
+
+16 cases compared, 0 known-bug differences (backlog), 0 new, 0 changed, 0 fixed-but-still-listed, 0 not expressible by the family
+token-level: 16 cases checked (16 identical, 0 differing), 0 NOT CHECKED for want of a tokenizer
+
+OK: every compared case is conformant or an accounted-for deviation; 0 known bugs remain in the backlog.

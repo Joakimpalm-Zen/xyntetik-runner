@@ -1,0 +1,1 @@
+{"architecture":"deepseek2","adapter_serving":{"supported":false,"reason":"--lora does not cover multi-head latent attention yet (deepseek2)","device_kernels":null},"training":{"supported":false,"reason":"multi-head latent attention (deepseek2)","host":"cpu"}}
