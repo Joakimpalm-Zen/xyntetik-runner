@@ -1,8 +1,9 @@
 # Flash-Next Hub card: replacement block
 
 Card: `Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF`, README.md as of revision
-`401dd406`. Text only: the owner approved it on 2026-11-04, and it is
-pushed to the Hub from the lab after the PR merges. This repository has no recovery step. The trunk in `trunk-with-head/`
+`401dd406`. Text only: the owner approved it on 2026-11-04, and it was
+pushed to the Hub from the coordinator's machine after the merge (revision
+`d4731ed9`). This repository has no recovery step. The trunk in `trunk-with-head/`
 is ISTA-DASLab's GSQ-RCO IQ3_S bytes unchanged, and the head is the
 publisher's weights at `de4b8e4d`. The 27B result belongs to the GSQ-RCO
 method, so the card names it as a limit of the trunk. The Flash-Next

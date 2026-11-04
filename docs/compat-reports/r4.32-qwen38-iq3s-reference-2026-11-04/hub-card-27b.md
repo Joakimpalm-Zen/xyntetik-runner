@@ -2,7 +2,11 @@
 
 Card: `Joakimpalm-Zen/Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered-GGUF`, README.md as
 of revision `4b19c412`. Text only: the owner approved it on 2026-11-04,
-and it is pushed to the Hub from the lab after the PR merges. The card
+and it was pushed to the Hub from the coordinator's machine after the merge
+(revision `a796aa06`, with `RECOVERY.json` in the same commit). One lead-in
+sentence outside the blocks below changed with them: the envelope's "Two
+protocols, kept apart" became three, naming the reference read as the
+fidelity claim, the earlier anchor and the selection metric. The card
 states no tier (its status points to the roster), so the move to Tier 2
 needs no card text. Only the blocks below change, and every section not named
 here stays as it is.
