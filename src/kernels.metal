@@ -2167,56 +2167,12 @@ kernel void k_mvfc_q4_K(MV_PARAMS) {
 // it was not bit-identical to this kernel (rounding level, at most 2e-5
 // relative; bit-identical with fast math off), and the column walk measured
 // faster than k_mvf_q4_K with its twin anyway (4 columns 1.076x, 8 1.039x).
+// The scale unpack is get_scale_min_k4's pair for the lane's fixed
+// sub-blocks, branch-free (R3.28.5): the branch on j < 4 split every
+// simdgroup's lanes, so each paid both sides; at Qwen3-4B's 2560-wide inputs
+// it took the kernel from 38.2 to 47.9 GB/s with the same bits.
 #define MVG_NR 4
 kernel void k_mvg_q4_K(MV_PARAMS) {
-    uint row0 = (tgpig.x * (ntg.x / 32) + sgitg) * MVG_NR;
-    if (row0 >= (uint)a.n_out) return;
-    int col_lo = (int)tgpig.y * a.col_tile;
-    int col_hi = min(col_lo + a.col_tile, a.n_col);
-    int nb = a.n_in / 256;
-    int il = tiisg & 7, jj = il >> 1, h = il & 1;
-    for (int col = col_lo; col < col_hi; col++) {
-    device const float *x = x_all + (ulong)col * a.x_stride;
-    device float *y = y_all + (ulong)col * a.y_stride;
-    float s[MVG_NR];
-    for (int r = 0; r < MVG_NR; r++) s[r] = 0;
-    for (int b = (int)(tiisg >> 3); b < nb; b += 4) {
-        device const packed_float4 *xl4 =
-            (device const packed_float4 *)(x + b * 256 + jj * 64 + h * 16);
-        device const packed_float4 *xh4 = xl4 + 8;
-        float4 xl[4], xh[4], sl = 0, sh = 0;
-        for (int k = 0; k < 4; k++) { xl[k] = xl4[k]; xh[k] = xh4[k]; sl += xl[k]; sh += xh[k]; }
-        float sx1 = sl.x + sl.y + sl.z + sl.w, sx2 = sh.x + sh.y + sh.z + sh.w;
-        for (int r = 0; r < MVG_NR; r++) {
-            uint row = row0 + r;
-            if (row >= (uint)a.n_out) break;
-            device const uchar *blk = wb + a.w_off + ((ulong)row * nb + b) * 144;
-            float d = (float)*(device const half *)blk;
-            float dmin = (float)*(device const half *)(blk + 2);
-            uchar s1, m1, s2, m2;
-            get_scale_min_k4(jj * 2 + 0, blk + 4, &s1, &m1);
-            get_scale_min_k4(jj * 2 + 1, blk + 4, &s2, &m2);
-            device const packed_uchar4 *q4 = (device const packed_uchar4 *)(blk + 16 + jj * 32 + h * 16);
-            float4 t1 = 0, t2 = 0;
-            for (int k = 0; k < 4; k++) {
-                uchar4 qq = q4[k];
-                t1 = fma(float4(qq & 0xF), xl[k], t1);
-                t2 = fma(float4(qq >> 4), xh[k], t2);
-            }
-            s[r] += d * s1 * (t1.x + t1.y + t1.z + t1.w) - dmin * m1 * sx1 +
-                    d * s2 * (t2.x + t2.y + t2.z + t2.w) - dmin * m2 * sx2;
-        }
-    }
-    for (int r = 0; r < MVG_NR; r++) {
-        uint row = row0 + r;
-        float v = simd_sum(s[r]);
-        if (tiisg == 0 && row < (uint)a.n_out) y[row] = a.has_bias ? v + bias[row] : v;
-    }
-    }
-}
-
-// R3.28.5 EXPERIMENT: k_mvg_q4_K with its scale unpack branch-free
-kernel void k_mvgs_q4_K(MV_PARAMS) {
     uint row0 = (tgpig.x * (ntg.x / 32) + sgitg) * MVG_NR;
     if (row0 >= (uint)a.n_out) return;
     int col_lo = (int)tgpig.y * a.col_tile;
