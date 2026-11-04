@@ -160,6 +160,14 @@ typedef struct {
     // for every other arch, which always runs mixer THEN FFN.
     bool         skip_mixer, skip_ffn;
     gguf_tensor *wqkv, *wq_gate, *ssm_conv, *ssm_beta, *ssm_alpha, *ssm_out;
+    // deepseek2 multi-head latent attention (R4.4.5): Q from attn_q (or the
+    // q-lora pair attn_q_a -> norm -> attn_q_b), one shared latent and rope
+    // key from attn_kv_a_mqa ([latent | k_pe]), the latent RMS-normed by
+    // attn_kv_a_norm, then decompressed per head by the legacy unsplit
+    // attn_kv_b ([k_nope | v] rows per head). wq above is attn_q or attn_q_b.
+    gguf_tensor *wq_a, *wkv_a, *wkv_b;
+    float       *q_a_norm_w, *kv_a_norm_w;
+    float       *mla_kvb;   // attn_kv_b dequantized (the absorbed form's k- and v-rows)
     float *ssm_conv_w;   // qwen35: ssm_conv dequantized once at load, [convdim][kernel]
     float       *ssm_dt, *ssm_a, *ssm_norm_w;
     // Granite-4 h-series (`granitehybrid`) Mamba-2 mixer. A DIFFERENT tensor
@@ -605,6 +613,21 @@ typedef struct {
     bool   gptoss;           // gpt-oss: attention sinks + swiglu_oai + MoE
     bool   flint;            // flint: sinks + QK norms + NoPE full layers + MoE
                              // biases; no GPU kernels for those yet
+    // deepseek2 (R4.4.5 step b): multi-head latent attention on the CPU. The
+    // naive form: each token's latent is decompressed into per-head K and V
+    // (layer_t.wkv_b), laid out in head_dim (key_length) wide heads as
+    // Q, K = [pe | nope] (rope on the leading rope_dim dims) and V =
+    // [v | 0], so the shared attention kernels run unchanged; the first
+    // mla_v_dim of each head's output are packed before attn_output.
+    bool   deepseek2;
+    int    mla_kv_lora;      // attention.kv_lora_rank (512 on V2-Lite)
+    int    mla_q_lora;       // attention.q_lora_rank (0: a plain attn_q)
+    int    mla_v_dim;        // attention.value_length (128)
+    int    mla_qk;           // attention.key_length (192): the publisher's head width
+    bool   mla_absorb;       // the absorbed form: one 576-wide KV head [k_pe | latent],
+                             // Q per head [q_pe | k_b^T q_nope]; RUNNER_MLA_NAIVE=1 keeps
+                             // the naive form (the identity gate's oracle)
+    float *mla_scratch;      // per row: kv_a, normed latent, kv_b out, q-lora
     bool   attn_qkv_split;   // spark2_5: Q, K and V fused in blk.N.attn_qkv
                              // (FFN separate), sliced at bind time
     bool   attn_gate_heads;  // spark2_5: the output gate is one sigmoid per
@@ -700,6 +723,14 @@ static inline int model_rope_dim(const model_t *m, int l) {
 static inline bool model_moe_router_is_plain(const model_t *m) {
     return m->expert_gating == EXPERT_GATE_SOFTMAX &&
            m->n_expert_groups <= 1 && m->expert_norm_w &&
+           (m->expert_w_scale == 0.0f || m->expert_w_scale == 1.0f);
+}
+// The same router with the renormalisation either way. CUDA's k_moe_route
+// takes expert_weights_norm as its renorm flag (R4.4.5, deepseek2); Metal's
+// router has no such flag and keeps the predicate above.
+static inline bool model_moe_router_is_plain_any_norm(const model_t *m) {
+    return m->expert_gating == EXPERT_GATE_SOFTMAX &&
+           m->n_expert_groups <= 1 &&
            (m->expert_w_scale == 0.0f || m->expert_w_scale == 1.0f);
 }
 // Does layer l apply rope? llama.cpp: n_no_rope_layer_step > 0 &&

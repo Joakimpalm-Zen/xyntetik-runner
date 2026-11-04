@@ -147,6 +147,11 @@ int main(int argc, char **argv) {
         { "rsigmoid", "rsoft"   },   // expert_gating_func = 2
         { "rsqrtsp",  "rsoft"   },   // expert_gating_func = 4
         { "rsmw",     "rsoftnn" },   // expert_gating_func = 3, norm off
+        // expert_weights_norm false on the same router: the case the CUDA
+        // router's renorm flag covers (R4.4.5). make test runs both files
+        // through gpu-identity, which can only catch a device that ignores
+        // the flag if the two differ on the host
+        { "rsoftnn",  "rsoft"   },
     };
     for (int v = 0; v < (int)(sizeof(GATED) / sizeof(*GATED)); v++) {
         uint64_t fp_base = 0, fp_got = 0;
@@ -170,7 +175,7 @@ int main(int argc, char **argv) {
             }
             if (worst == 0.0) {
                 fprintf(stderr, "moe-router: %-9s FAIL  identical to %s on the "
-                        "same router — the gating function is not being "
+                        "same router — its gating knob is not being "
                         "applied\n", GATED[v].tag, GATED[v].base);
                 failures++;
             } else {

@@ -45,6 +45,10 @@
       "fixture": "plain",
       "reasoning": "tags"
     },
+    "deepseek2": {
+      "fixture": "plain",
+      "reasoning": "none"
+    },
     "gemma": {
       "fixture": "plain",
       "reasoning": "none"
