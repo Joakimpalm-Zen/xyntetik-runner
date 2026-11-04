@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal Q4_K decode: the fast kernel unpacks its scales without a branch,
+  1.18x on Qwen3-4B Q4_K_M with the same bits (R3.28.5).** Q4_K's 6-bit
+  scales unpack one way for sub-blocks 0 to 3 and another for 4 to 7, and
+  `k_mvg_q4_K`'s lanes sit on both sides within a simdgroup, so every lane
+  paid both paths. Now three 16-bit loads at fixed offsets and a select
+  give the same integers: the output is bitwise unchanged. On an Apple M1,
+  Q4_K at Qwen3-4B's 2560-wide inputs reads 47.9 GB/s against 38.2, and
+  decode over R3.28.3 is 17.59 against 14.92 tok/s on Qwen3-4B, 1.15x on
+  Llama-3.2-3B, 1.13x on Llama-3.2-1B, 1.02x on K2-Horizon-1B (whose
+  1536-wide bulk runs the identity kernel).
 - **Metal Q6_K decode: the narrow-slice kernel too, 1.20x more on
   Qwen3-4B Q4_K_M (R3.28.3).** A Q4_K_M file keeps its LM head, attn_v and
   half its ffn_down at Q6_K, which decoded at about 27 GB/s on an Apple M1.
