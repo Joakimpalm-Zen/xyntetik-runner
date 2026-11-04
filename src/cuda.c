@@ -7438,6 +7438,61 @@ static bool tile_attn_rows(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
     return ok;
 }
 
+// R1.25 instrument (unmerged branch): RUNNER_CUDA_ATTN_DUMP=<dir> writes, for
+// every prompt tile's attention, the kernel's inputs and output as the device
+// holds them: Q (tn x q_dim float32), this layer's K and V cache rows 0 to the
+// tile's last position (fp16 as stored), the output (tn x q_dim float32), and
+// a JSON line of geometry and which kernel ran (the k_attn_tcw dispatch delta).
+static bool attn_dump(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
+                      int q_dim, int xdim, const attn_args *aa, unsigned long tcw0) {
+    static const char *dir = NULL;
+    static int read = 0, seq = 0;
+    if (!read) { dir = getenv("RUNNER_CUDA_ATTN_DUMP"); read = 1; }
+    if (!dir || !*dir || tn < 2) return true;
+    if (cu.StreamSynchronize(g->stream) != 0) return false;
+    int pos = 0;
+    if (cu.MemcpyDtoH(&pos, g->pos_dev, sizeof pos) != 0) return false;
+    int kv_dim = n_kv * hd, rows = pos + tn;
+    bool fp16 = !aa->q8 && !aa->vq8 && !aa->ring;
+    size_t qb = sizeof(float) * (size_t)tn * q_dim, kb = (size_t)rows * kv_dim * 2;
+    float *qh = malloc(qb), *oh = malloc(qb), *row = malloc(sizeof(float) * (size_t)xdim);
+    unsigned char *kh = fp16 ? malloc(kb) : NULL, *vh = fp16 ? malloc(kb) : NULL;
+    bool ok = qh && oh && row && (!fp16 || (kh && vh));
+    ok = ok && cu.MemcpyDtoH(qh, g->q, qb) == 0;
+    for (int t = 0; ok && t < tn; t++) {
+        ok = cu.MemcpyDtoH(row, g->xb2 + (size_t)t * xdim * sizeof(float),
+                           sizeof(float) * (size_t)xdim) == 0;
+        if (ok) memcpy(oh + (size_t)t * q_dim, row, sizeof(float) * (size_t)q_dim);
+    }
+    if (ok && fp16)
+        ok = cu.MemcpyDtoH(kh, g->kc + aa->l_off, kb) == 0 &&
+             cu.MemcpyDtoH(vh, g->vc + aa->v_off, kb) == 0;
+    char path[1024];
+    int n = seq++;
+    const char *ext[] = { "q", "o", "k", "v" };
+    const void *buf[] = { qh, oh, kh, vh };
+    size_t len[] = { qb, qb, kb, kb };
+    for (int i = 0; ok && i < (fp16 ? 4 : 2); i++) {
+        snprintf(path, sizeof path, "%s/c%04d-L%02d.%s", dir, n, l, ext[i]);
+        FILE *f = fopen(path, "wb");
+        ok = f && fwrite(buf[i], 1, len[i], f) == len[i];
+        if (f) fclose(f);
+    }
+    snprintf(path, sizeof path, "%s/meta.jsonl", dir);
+    FILE *f = ok ? fopen(path, "a") : NULL;
+    if (f) {
+        fprintf(f, "{\"call\":%d,\"layer\":%d,\"pos\":%d,\"tn\":%d,\"head_dim\":%d,"
+                "\"n_head\":%d,\"n_kv\":%d,\"q_dim\":%d,\"scale\":%.9g,\"window\":%d,"
+                "\"ring\":%d,\"kv_fp16\":%s,\"tcw\":%lu}\n", n, l, pos, tn, hd, m->n_head,
+                n_kv, q_dim, (double)aa->scale, aa->window, aa->ring, fp16 ? "true" : "false",
+                g_attn_tcw_dispatches - tcw0);
+        fclose(f);
+    }
+    free(qh); free(oh); free(row); free(kh); free(vh);
+    if (!ok) fprintf(stderr, "attn-dump: failed at call %d layer %d\n", n, l);
+    return ok;
+}
+
 // Attention over the cache: flash-decoding at a single token (split, then
 // merge), the tiled prefill kernel or k_attn for a prompt tile.
 static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
@@ -7461,6 +7516,7 @@ static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
         // single reduction, or at k_attn_merge's global merge (the split
         // partials carry no normalization, so k_attn_dec is untouched)
         CUdeviceptr sinks = g->sw->sinks[l];
+        unsigned long tcw0 = g_attn_tcw_dispatches;
         if (tn > 1 && g->exact_rows) {
             ok = tile_attn_rows(g, m, tn, hd, n_kv, &aa, sinks);
         } else if (tn == 1 && tile_attn_dec_gqa(g, m, hd, n_kv, &aa, sinks, &ok)) {
@@ -7489,6 +7545,7 @@ static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
                 ok = launch(g, g->sw->f_attn, m->n_head, sn, 1, 128, pa);
             }
         }
+        if (ok && tn > 1) ok = attn_dump(g, m, l, tn, hd, n_kv, q_dim, xdim, &aa, tcw0);
     }
     return ok;
 }
