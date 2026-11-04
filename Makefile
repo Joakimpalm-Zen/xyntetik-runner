@@ -2478,23 +2478,26 @@ test-cuda-hybrids: runner $(TEST_GPU_ID) test-ornith.gguf
 
 # The wide-head tensor-core prefill attention (R3.6.3.1, k_attn_tcw) against
 # the CPU on fixtures with 256- and 512-wide heads (make-test-model.py
-# --head-dim; four query heads on two KV heads), forced on with
-# RUNNER_CUDA_ATTN_TC_WIDE=1 since the fixtures are not gemma-4 E-series. The
-# route record must say attn_wide=on, so the identity bound is the kernel's.
+# --head-dim; four query heads on two KV heads, and 24 on 2 at 256 wide, the
+# G = 12 grouping of Qwen3.8-Flash-Next that leaves a 16-row block 12 heads of
+# one token), forced on with RUNNER_CUDA_ATTN_TC_WIDE=1 since the fixtures are
+# not gemma-4 E-series. The route record must say attn_wide=on, so the
+# identity bound is the kernel's.
 test-cuda-attn-wide: runner $(TEST_GPU_ID)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)"; then \
-	  for w in 256 512; do \
-	    $(PYTHON) scripts/make-test-model.py --head-dim $$w test-attn-wide-$$w.gguf > /dev/null; \
-	    RUNNER_CUDA_ATTN_TC_WIDE=1 ./$(RUNNER_EXE) -m test-attn-wide-$$w.gguf --gpu auto --score \
+	  for c in 256:4:2 512:4:2 256:24:2; do \
+	    w=$${c%%:*}; h=$${c#*:}; h=$$(echo $$h | tr : x); \
+	    $(PYTHON) scripts/make-test-model.py --head-dim $$w --heads $${c#*:} test-attn-wide-$$w-$$h.gguf > /dev/null; \
+	    RUNNER_CUDA_ATTN_TC_WIDE=1 ./$(RUNNER_EXE) -m test-attn-wide-$$w-$$h.gguf --gpu auto --score \
 	      -p "the quick brown fox jumps over the lazy dog and keeps running past the mill" --no-tray 2> /dev/null | \
 	      $(PYTHON) -c "import json,sys; d=json.load(sys.stdin)['score_route']['backend_detail']; \
 	      sys.exit(0 if ' attn_wide=on ' in d else 'test-cuda-attn-wide: no attn_wide=on in ' + d)"; \
-	    RUNNER_CUDA_ATTN_TC_WIDE=1 GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) test-attn-wide-$$w.gguf > test-cuda-attn-wide.out 2>&1 || \
+	    RUNNER_CUDA_ATTN_TC_WIDE=1 GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) test-attn-wide-$$w-$$h.gguf > test-cuda-attn-wide.out 2>&1 || \
 	      { cat test-cuda-attn-wide.out; exit 1; }; \
 	    if grep -q 'skipped' test-cuda-attn-wide.out; then cat test-cuda-attn-wide.out; \
-	      echo "test-cuda-attn-wide: head_dim $$w did not run on the device"; exit 1; fi; \
-	    echo "head_dim $$w: $$(grep 'mean range' test-cuda-attn-wide.out | sed 's/^ *//')"; \
+	      echo "test-cuda-attn-wide: head_dim $$w heads $$h did not run on the device"; exit 1; fi; \
+	    echo "head_dim $$w heads $$h: $$(grep 'mean range' test-cuda-attn-wide.out | sed 's/^ *//')"; \
 	  done; \
 	  echo "cuda attn-wide ok"; \
 	else \
