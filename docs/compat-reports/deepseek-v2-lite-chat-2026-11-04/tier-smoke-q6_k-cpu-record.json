@@ -1,0 +1,55 @@
+{
+  "schema": "xyntetik.runner.tier-smoke-result.v1",
+  "row": "deepseek-v2-lite-chat-q6_k",
+  "backend": "cpu",
+  "device_class": "linux-x86_64-cuda",
+  "generated_utc": "2026-11-04T18:58:38Z",
+  "commit": "0676f2639410c3db4b322e81c914187d0a190552",
+  "ran": "runner -m DeepSeek-V2-Lite-Chat.Q6_K.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+  "caps": {
+    "version": "1.12.0",
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu_cores": 40,
+    "gpu_backend": "cuda",
+    "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+  },
+  "banner": null,
+  "threads": 20,
+  "seconds": 2.96,
+  "files": [
+    {
+      "sha256": "3f634b8f08f4ef1039389e51989c77cce7f4ba22472f1493076c4f979dd417b9",
+      "bytes": 14066972416
+    }
+  ],
+  "with": null,
+  "status": "match",
+  "output": {
+    "sha256": "eae8d81a354865063f6edb2a6e83c627b6c4b6d7f8c8749e5fac353dca7b294b",
+    "bytes": 185,
+    "finish_reason": "length",
+    "completion_tokens": 48
+  },
+  "pin": {
+    "path": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cpu.txt",
+    "sha256": "eae8d81a354865063f6edb2a6e83c627b6c4b6d7f8c8749e5fac353dca7b294b"
+  },
+  "expect": {
+    "substring": "Mercury",
+    "found": true
+  },
+  "adapt_info": {
+    "architecture": "deepseek2",
+    "adapter_serving": {
+      "supported": false,
+      "reason": "--lora does not cover multi-head latent attention yet (deepseek2)",
+      "device_kernels": null
+    },
+    "training": {
+      "supported": false,
+      "reason": "multi-head latent attention (deepseek2)",
+      "host": "cpu"
+    }
+  }
+}

@@ -2271,6 +2271,88 @@
           "expect_vocab_divergences": 0
         }
       }
+    },
+    {
+      "id": "deepseek-v2-lite-chat-q8_0",
+      "architecture": "deepseek2",
+      "family": "DeepSeek-V2",
+      "file": "models/DeepSeek-V2-Lite-Chat.Q8_0.gguf",
+      "sha256": "78a1a180db56416782f71cd7e019ea3d7227cf11a918de9ca1d50f038caba0ec",
+      "upstream": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+      "tokenizer_reference": "deepseek-ai/DeepSeek-V2-Lite-Chat",
+      "tokenizer_reference_revision": "85864749cd611b4353ce1decdb286193298f64c7",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/deepseek-v2-lite-chat.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "mradermacher's static Q8_0 (16,702,518,016 bytes, revision 9ee9f1f8 of mradermacher/DeepSeek-V2-Lite-Chat-GGUF), the unsplit attn_kv_b layout. Architecture deepseek2: multi-head latent attention (16 heads, kv_lora 512, rope 64, nope 128, v 128, no q-lora), absorbed by default (RUNNER_MLA_NAIVE=1 keeps the publisher's naive form); a leading dense block, then 64 routed experts top 6 with softmax routing not renormalised and two shared experts; YaRN factor 40 over 4,096. Tokenizer pre deepseek-llm: 0 of 721 corpus strings and 0 of 99,442 vocabulary entries differ from the publisher's tokenizer.json at 85864749. Fidelity against the BF16 parent in float32 (publisher's modeling_deepseek.py, token-id keyed, 300 positions): 0.0094 mean KLD / 100% margin-qualified top-1 on the CPU, 0.0096 / 100% on CUDA (llama.cpp 0.0155 / 99.54%); the fidelity file. cpu_cuda (docs/compat-reports/cpu_cuda/deepseek-v2-lite-chat-q8_0.json): pass_margin_qualified, 7/9 prompts byte-identical at 128 tokens under the pins, 2 margin-qualified near-ties tolerated inside the 0.5-nat band (' was' against ' kept' at token 1 (0.022 / 0.005 nats); '8' against 'size' at token 81 (0.035 / 0.022 nats)); 27 of 27 layers and the head on the device, eager routing. No llama.cpp reference is declared, so greedy_reference is not claimed. Record: docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
+            "RUNNER_MOE_EAGER": "1"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "User:",
+            "<｜end▁of▁sentence｜>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "deepseek-v2-lite-chat-q6_k",
+      "architecture": "deepseek2",
+      "family": "DeepSeek-V2",
+      "file": "models/DeepSeek-V2-Lite-Chat.Q6_K.gguf",
+      "sha256": "3f634b8f08f4ef1039389e51989c77cce7f4ba22472f1493076c4f979dd417b9",
+      "upstream": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+      "tokenizer_reference": "deepseek-ai/DeepSeek-V2-Lite-Chat",
+      "tokenizer_reference_revision": "85864749cd611b4353ce1decdb286193298f64c7",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/deepseek-v2-lite-chat.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "mradermacher's static Q6_K (14,066,972,416 bytes, revision 9ee9f1f8 of mradermacher/DeepSeek-V2-Lite-Chat-GGUF), the unsplit attn_kv_b layout. Architecture deepseek2: multi-head latent attention (16 heads, kv_lora 512, rope 64, nope 128, v 128, no q-lora), absorbed by default (RUNNER_MLA_NAIVE=1 keeps the publisher's naive form); a leading dense block, then 64 routed experts top 6 with softmax routing not renormalised and two shared experts; YaRN factor 40 over 4,096. Tokenizer pre deepseek-llm: 0 of 721 corpus strings and 0 of 99,442 vocabulary entries differ from the publisher's tokenizer.json at 85864749. Fidelity against the BF16 parent in float32 (publisher's modeling_deepseek.py, token-id keyed, 300 positions): 0.0293 / 98.61% on the CPU, 0.0296 / 98.61% on CUDA (llama.cpp 0.0466 / 96.76%); the smallest file to pass the bar (the Q5_K_M reads 0.0704 / 96.76%). cpu_cuda (docs/compat-reports/cpu_cuda/deepseek-v2-lite-chat-q6_k.json): pass, 9/9 prompts byte-identical at 128 tokens under the pins, 0 margin-qualified near-ties tolerated inside the 0.5-nat band; 27 of 27 layers and the head on the device, eager routing. No llama.cpp reference is declared, so greedy_reference is not claimed. Record: docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
+            "RUNNER_MOE_EAGER": "1"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "User:",
+            "<｜end▁of▁sentence｜>"
+          ]
+        }
+      }
     }
   ]
 }

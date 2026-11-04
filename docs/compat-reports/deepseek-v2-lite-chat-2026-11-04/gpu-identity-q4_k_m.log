@@ -1,0 +1,23 @@
+rope: YaRN scaling x40.00 (model metadata)
+rope: YaRN scaling x40.00 (model metadata)
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB
+gpu-split: budget=25.13GB fixed=0.80GB G=27/27 full=1 used=10.83GB
+gpu-split: prompt window 64 columns (batch 32, 14.12 GB spare, 462488 bytes a column with TC2's activations)
+gpu: the device's tensors (27 layers and the head) lie in 2 stretches of the file; uploading them as runs
+gpu: CUDA backend on CUDA MIG slice, 1g.24gb, sm_120 (10.2 GB weights in VRAM)
+gpu: VRAM 14.57 GB free of 25.37 GB after init (kv 0.01 GB + scratch 0.02 GB this instance)
+gpu: graph capture failed — plain launches
+rope: YaRN scaling x40.00 (model metadata)
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB
+gpu-split: budget=25.13GB fixed=0.80GB G=27/27 full=1 used=10.83GB
+gpu-split: prompt window 64 columns (batch 32, 14.12 GB spare, 462488 bytes a column with TC2's activations)
+gpu: the device's tensors (27 layers and the head) lie in 2 stretches of the file; uploading them as runs
+gpu: CUDA backend on CUDA MIG slice, 1g.24gb, sm_120 (10.2 GB weights in VRAM)
+gpu: VRAM 14.57 GB free of 25.37 GB after init (kv 0.01 GB + scratch 0.02 GB this instance)
+gpu-identity: DeepSeek-V2-Lite-Chat.Q4_K_M.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32
+  free routing (the device's own expert choices):
+  2457600 logits over 24 positions | 2457576 differ, mean|dlogit| 0.0311 = 0.000496 of mean range 62.7 (limit 0.002), worst 0.86
+  routing pin: 2470 routings from the CPU run, 14820 of 14820 expert slots forced, 14 of them (0.000945) differed from the device's own choice
+  pinned routing (the CPU run's expert choices):
+  2457600 logits over 24 positions | 2457250 differ, mean|dlogit| 0.0011 = 1.76e-05 of mean range 62.7 (limit 0.001), worst 0.0114
+gpu-identity: ok

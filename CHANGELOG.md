@@ -5,6 +5,20 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **DeepSeek-V2-Lite-Chat joins the validated roster at Tier 2 (R4.4.5 step d), with two of mradermacher's static
+  files: the Q8_0, the fidelity file, and the Q6_K, the smallest to pass the fidelity bar.**
+  - **The reads:** against the publisher's BF16 checkpoint run in float32 through its own `modeling_deepseek.py`
+    (300 positions), in the absorbed form, the default.
+    - The Q8_0 reads 0.0094 mean KLD and 100% margin-qualified top-1 on the CPU, and 0.0096 and 100% on CUDA.
+    - The Q6_K (14.07 GB, a 16 GB card's fit) reads 0.0293 and 98.61%, and 0.0296 and 98.61%.
+    - The Q5_K_M (0.0704, 96.76%) and the Q4_K_M (0.188, 90.28%) miss the bar (0.05, 97%) and get no row.
+  - **The llama.cpp column:** llama.cpp 73a43d1 reads every file further from the reference. On the Q6_K it misses
+    the margin half (0.0466, 96.76%). The multi-head latent attention form is not why: in llama.cpp's own naive form
+    Runner reads 0.0294 and 98.61%, and is still the closer (p 2.4e-18).
+  - **The other gates:** gpu-identity's pinned arm reads 1.85e-5 and 1.94e-5 of the logit range (limit 1e-3). The
+    tokenizer differential and the template's 16 cases are identical. The `deepseek2` entry leaves
+    `ARCH_GATE_EXEMPTIONS`. Record: `docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/`.
+
 ## v1.13.0 - 2026-11-04
 
 - **`GET /v1/models` says the context the server runs at.** Each entry
