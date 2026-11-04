@@ -3621,21 +3621,191 @@
       }
     },
     {
-      "id": "qwen3.6-27b",
+      "id": "qwen3.6-27b-q4_k_m",
       "model": "Qwen3.6-27B",
-      "tier": "upcoming",
-      "claim": "Not validated: the qwen35 family loads, but no gate has run on a Qwen3.6-27B file.",
+      "tier": "tier2",
+      "claim": "ggml-org's Q4_K_M (a third-party conversion, llama.cpp b15ca93; no publisher GGUF exists) runs below the fidelity bar: against Qwen's BF16 parent in float32, mean KLD 0.129 and margin-qualified top-1 95.9% (Runner), 0.154 / 93.8% (llama.cpp), where the bar is 0.05 / 97%, and the gap grows with depth. The file itself is the distance: against Runner's Q8_0 it reads top-20 KL 0.101, top-1 89.3%. The fidelity file is ggml-org's Q8_0, row qwen3.6-27b-q8_0 (Runner 0.0273 / 99.59%).",
       "architecture": "qwen35",
-      "missing": "One gate run: tokenizer, template, quant bar, pinned output, device record; a file pinned by sha256.",
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-11-04",
+          "reason": "R4.29 gate run, admitted 2026-11-04 at Tier 2: ggml-org's conversion pinned by sha256 (no publisher GGUF exists), the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call.",
+          "last_validated_release": null
         }
       ],
-      "anchor": "Family: Qwen3.5-0.8B bf16 against Qwen's float32 reference covers the family."
+      "family": "Qwen3.6-27B",
+      "upstream": {
+        "checkpoint": "Qwen/Qwen3.6-27B",
+        "revision": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Qwen/Qwen3.6-27B"
+      },
+      "files": [
+        {
+          "name": "Qwen3.6-27B-Q4_K_M.gguf",
+          "sha256": "65b753ea835627f7b511143c6ceb976525c7f21f5df8c664bc0a9c23d1c49921",
+          "bytes": 19095766304,
+          "repo": "ggml-org/Qwen3.6-27B-GGUF",
+          "revision": "1132d03976d88e30a09ab0ddbf1531d5e1b46e7c"
+        }
+      ],
+      "quantization": "Q4_K_M (ggml-org)",
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "cpu": null,
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.12.0",
+          "date": "2026-11-04",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "7567c9486df7f14ffd5211d426514a3357bc8c22",
+          "caps": {
+            "version": "1.12.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "877a19216b6da89997a14e466ad4b4fdf09c3a3977f2a1053af09ab75de835e8",
+          "ran": "runner -m Qwen3.6-27B-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3.6-27b-q4_k_m.linux-x86_64-cuda.cuda.txt"
+        },
+        "metal": null
+      },
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.12.0",
+        "date": "2026-11-04"
+      },
+      "published": false,
+      "envelope": {
+        "features": [
+          "text",
+          "tools"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Against Qwen's BF16 checkpoint Qwen/Qwen3.6-27B in float32 at use on the CPU (transformers 5.16.1's Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, no special prefix, the Runner sides from chunked CPU score files; the Gated DeltaNet cross-chunk check of row 1 passes on 5.16.1): Q4_K_M 0.1288 mean KLD / 89.33% top-1 / 95.85% margin-qualified, below the bar (0.05 / 97%) and growing with depth; Q8_0 0.0273 / 98.00% / 99.59%, passing (one reference near-tie at position 1,238 carries most of the mean: without it 0.0082). llama.cpp 73a43d1 reads 0.1539 / 93.78% on the Q4_K_M and 0.0626 / 98.34% on the Q8_0, both below the bar; Runner is the closer by per-position KLD on both (p 0.0008, p 1.9e-24). The files are ggml-org's conversions (llama.cpp b15ca93), no publisher GGUF exists. Record: docs/compat-reports/qwen3.6-27b-2026-11-04/README.md.",
+        "context": 9216,
+        "limitations": "Below the fidelity bar on both engines (the file, not the engine), worst past position 2,000 (0.156 on Runner). A third party's conversion with --no-mtp: the MTP and dflash heads and the vision mmproj files are not in the row. Tool gate case C streamed misses on a reasoning budget at temperature 1.0 (the qwen36 preset; no call parsed); A, B and C buffered pass. The RUNNER_CUDA_ATTN_TC_WIDE route (#574) is not measured on this head_dim-256 model. Context past the gold window's 4,509 tokens and task quality are not measured.",
+        "evidence": [
+          "docs/compat-reports/qwen3.6-27b-2026-11-04/README.md"
+        ],
+        "missing": "The Metal cell; the CPU cell on this file; the #574 wide-head route on this model; the MTP head, dflash and vision; context past 4,509 tokens; task quality."
+      }
+    },
+    {
+      "id": "qwen3.6-27b-q8_0",
+      "model": "Qwen3.6-27B",
+      "tier": "tier2",
+      "claim": "ggml-org's Q8_0 (a third-party conversion, llama.cpp b15ca93; no publisher GGUF exists), the fidelity file of Qwen3.6-27B: against Qwen's BF16 parent in float32, mean KLD 0.0273 and margin-qualified top-1 99.59% (Runner; one reference near-tie carries most of the mean, 0.0082 without it); llama.cpp reads 0.0626 / 98.34%, above the bar; Runner is the closer at 239 of 300 positions. 28.6 GB of weights: larger than a 24 GB device, so its cell is the CPU.",
+      "architecture": "qwen35",
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-10-22",
+          "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-11-04",
+          "reason": "R4.29 gate run, admitted 2026-11-04 at Tier 2: ggml-org's conversion pinned by sha256 (no publisher GGUF exists), the tokenizer differential, template conformance, the tool gate, a float32 reference measurement on the publisher's BF16 checkpoint and one backend cell on the Linux CUDA host. Maintained on report; Tier 1 is the owner's call.",
+          "last_validated_release": null
+        }
+      ],
+      "family": "Qwen3.6-27B",
+      "upstream": {
+        "checkpoint": "Qwen/Qwen3.6-27B",
+        "revision": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Qwen/Qwen3.6-27B"
+      },
+      "files": [
+        {
+          "name": "Qwen3.6-27B-Q8_0.gguf",
+          "sha256": "73f8260284708ed78ae266df672288b6ad1f2c73ec7ffeb7514b5cecdba646c9",
+          "bytes": 28595762464,
+          "repo": "ggml-org/Qwen3.6-27B-GGUF",
+          "revision": "1132d03976d88e30a09ab0ddbf1531d5e1b46e7c"
+        }
+      ],
+      "quantization": "Q8_0 (ggml-org)",
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.12.0",
+          "date": "2026-11-04",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "7567c9486df7f14ffd5211d426514a3357bc8c22",
+          "caps": {
+            "version": "1.12.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "877a19216b6da89997a14e466ad4b4fdf09c3a3977f2a1053af09ab75de835e8",
+          "ran": "runner -m Qwen3.6-27B-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen3.6-27b-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": null,
+        "metal": null
+      },
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.12.0",
+        "date": "2026-11-04"
+      },
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Against Qwen's BF16 checkpoint Qwen/Qwen3.6-27B in float32 at use on the CPU (transformers 5.16.1's Qwen3_5ForCausalLM, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, no special prefix, the Runner sides from chunked CPU score files; the Gated DeltaNet cross-chunk check of row 1 passes on 5.16.1): Q4_K_M 0.1288 mean KLD / 89.33% top-1 / 95.85% margin-qualified, below the bar (0.05 / 97%) and growing with depth; Q8_0 0.0273 / 98.00% / 99.59%, passing (one reference near-tie at position 1,238 carries most of the mean: without it 0.0082). llama.cpp 73a43d1 reads 0.1539 / 93.78% on the Q4_K_M and 0.0626 / 98.34% on the Q8_0, both below the bar; Runner is the closer by per-position KLD on both (p 0.0008, p 1.9e-24). The files are ggml-org's conversions (llama.cpp b15ca93), no publisher GGUF exists. Record: docs/compat-reports/qwen3.6-27b-2026-11-04/README.md.",
+        "context": 9216,
+        "limitations": "28.6 GB of weights: on a 24 GB device it runs as a partial offload, which is not measured. The tool gate ran on the Q4_K_M sibling, not on this file. A third party's conversion with --no-mtp: the MTP and dflash heads and the vision mmproj files are not in the row. Context past the gold window's 4,509 tokens and task quality are not measured.",
+        "evidence": [
+          "docs/compat-reports/qwen3.6-27b-2026-11-04/README.md"
+        ],
+        "missing": "The CUDA cell (a partial offload on a 24 GB device) and the Metal cell; the tool gate on this file; the MTP head, dflash and vision; context past 4,509 tokens; task quality."
+      }
     },
     {
       "id": "cloudflare-clef-flash",
