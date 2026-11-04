@@ -346,3 +346,25 @@ def test_a_greedy_image_does_not_carry_the_clock(runner_bin, fx):
                       "--session-out", d / "b2.img")
     assert rc == 0, err[-800:]
     assert (d / "a.img").read_bytes() == (d / "b2.img").read_bytes()
+
+
+def test_an_image_resumes_whatever_the_model_path_spelling(runner_bin, fx):
+    """R1.20: the engine's model key hashed the -m path as typed, so an image
+    written with a relative path was refused when resumed with the absolute
+    one (and the reverse), the same file under two spellings. The key now
+    names the file."""
+    d = fx["d"]
+    rel, ab = "model.gguf", str(fx["model"].resolve())
+
+    def run(model, *args):
+        r = subprocess.run([runner_bin, "-t", "2", "-m", model, *map(str, args)], cwd=d,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        return r.returncode, r.stderr.decode(errors="replace")
+
+    for write, resume, tag in ((rel, ab, "r2a"), (ab, rel, "a2r")):
+        img = d / f"spell-{tag}.img"
+        rc, err = run(write, "-p", "hello world", "-n", N, "--temp", "0",
+                      "--suspend-after", HALF, "--session-out", img)
+        assert rc == 0, err[-800:]
+        rc, err = run(resume, "--resume", img)
+        assert rc == 0, (tag, err[-800:])

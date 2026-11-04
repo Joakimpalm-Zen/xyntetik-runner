@@ -1684,12 +1684,12 @@
         "chat",
         "tool"
       ],
-      "notes": "The 2026-09-14 Windows report's third artifact, re-tested 2026-09-15 on the the Linux CUDA host MIG slice at shipped defaults with scripts/tool-protocol-check.py: 6/6 report cases buffered and streamed once its auto turn was parsed unconstrained and the preset's repeat penalty read 1.0 (the config's 1.05 read 0 of 8 well-formed calls; evidence docs/cross-family-remedy-evidence/qwen3-coder-30b-repeat-penalty-ab-blackwell.txt). No llama.cpp reference row taken here: the tool gate anchors on the family's own protocol, the greedy/tokenizer rows are the sibling qwen3-30b-a3b-q4_k_m's. Backends: CUDA (the Linux CUDA host, full residency), CPU (case A at temperature 0); Metal NOT RUN.",
+      "notes": "The 2026-09-14 Windows report's third artifact, re-tested 2026-09-15 on the the Linux CUDA host MIG slice at shipped defaults with scripts/tool-protocol-check.py: 6/6 report cases buffered and streamed once its auto turn was parsed unconstrained and the preset's repeat penalty read 1.0 (the config's 1.05 read 0 of 8 well-formed calls; evidence docs/cross-family-remedy-evidence/qwen3-coder-30b-repeat-penalty-ab-lab-slice.txt). No llama.cpp reference row taken here: the tool gate anchors on the family's own protocol, the greedy/tokenizer rows are the sibling qwen3-30b-a3b-q4_k_m's. Backends: CUDA (the Linux CUDA host, full residency), CPU (case A at temperature 0); Metal NOT RUN.",
       "check_params": {
         "tool": {
           "gate": "scripts/tool-protocol-check.py",
           "cases": "A,B,C",
-          "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen3-coder-30b-blackwell-final.json"
+          "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen3-coder-30b-lab-slice-final.json"
         },
         "chat": {
           "prompt": "What is 2+2?",
@@ -1725,7 +1725,7 @@
         "tool": {
           "gate": "scripts/tool-protocol-check.py",
           "cases": "A,B,C",
-          "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-blackwell-branch.json"
+          "evidence": "docs/cross-family-remedy-evidence/tool-protocol-qwen38-gsq-iq3s-lab-slice-branch.json"
         },
         "chat": {
           "prompt": "What is 2+2?",
@@ -1761,7 +1761,7 @@
         "tool": {
           "gate": "scripts/tool-protocol-check.py",
           "cases": "A,B,C",
-          "evidence": "docs/cross-family-remedy-evidence/tool-protocol-gemma4-12b-qat-q4_0-blackwell-gemma4-preset.json"
+          "evidence": "docs/cross-family-remedy-evidence/tool-protocol-gemma4-12b-qat-q4_0-lab-slice-gemma4-preset.json"
         },
         "chat": {
           "prompt": "What is 2+2?",

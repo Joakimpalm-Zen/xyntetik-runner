@@ -3044,8 +3044,11 @@ done:
 // imatrix's column weight (1 without one) and the tensor's scale companion
 // applied. With w the mean squared activation of each input column, that is
 // the expected squared output perturbation the type adds to the matrix: the
-// proxy scripts/type-plan-by-sensitivity.py ranks tensors by. Nothing is
-// written but the report.
+// proxy scripts/type-plan-by-sensitivity.py ranks tensors by. A type whose
+// block does not divide the row is costed as the 32-block type the rewrite
+// writes in its place (width_fallback), named in the entry's written_as, so
+// a plan built from the report predicts the file the rewrite makes; a type
+// with no fallback reads null. Nothing is written but the report.
 int quantize_error_report(const char *in_path, const int *types, int n_types,
                           const char *out_path) {
     gguf_file g;
@@ -3095,10 +3098,13 @@ int quantize_error_report(const char *in_path, const int *types, int n_types,
             }
             weighted |= w != NULL;
             for (int k = 0; k < n_types; k++) {
-                if (!type_fits_row(types[k], n0)) continue;
-                quantize_row_any_w(types[k], rowf, rowq, n0,
-                                   imatrix_weighted_type(types[k]) ? w : NULL);
-                dequant_row(types[k], rowq, deq, n0);
+                // the type the rewrite would write for this row
+                // (width_fallback), so the report costs what the file gets
+                int ek = width_fallback(types[k], n0);
+                if (!type_fits_row(ek, n0)) continue;
+                quantize_row_any_w(ek, rowf, rowq, n0,
+                                   imatrix_weighted_type(ek) ? w : NULL);
+                dequant_row(ek, rowq, deq, n0);
                 double s = 0;
                 for (int j = 0; j < n0; j++) {
                     double d = (double)rowf[j] - deq[j];
@@ -3113,18 +3119,27 @@ int quantize_error_report(const char *in_path, const int *types, int n_types,
                 "\"weighted\":%s,\"types\":{", t->name, ggml_type_name(t->type),
                 (unsigned long long)rows, n0, weighted ? "true" : "false");
         for (int k = 0; k < n_types; k++) {
-            bool fits = type_fits_row(types[k], n0);
+            int ek = width_fallback(types[k], n0);
+            bool fits = type_fits_row(ek, n0);
             // the --type-plan spelling (lower case), so a planner can write
             // the report's keys straight into a plan
-            char tn[16];
+            char tn[16], en[16];
             snprintf(tn, sizeof tn, "%s", ggml_type_name(types[k]));
             for (char *c = tn; *c; c++) *c = (char)tolower((unsigned char)*c);
+            snprintf(en, sizeof en, "%s", ggml_type_name(ek));
+            for (char *c = en; *c; c++) *c = (char)tolower((unsigned char)*c);
             fprintf(out, "%s\"%s\":", k ? "," : "", tn);
-            if (fits)
-                fprintf(out, "{\"bytes\":%llu,\"error\":%.9g}",
-                        (unsigned long long)(ggml_row_size(types[k], t->ne[0]) * rows),
+            if (fits) {
+                // keyed by the asked type (a plan says "q4_k" and the rewrite
+                // falls back the same way); written_as names the type the
+                // bytes and the error belong to when the block does not
+                // divide the row
+                fprintf(out, "{\"bytes\":%llu,\"error\":%.9g",
+                        (unsigned long long)(ggml_row_size(ek, t->ne[0]) * rows),
                         err[k] * sc2);
-            else
+                if (ek != types[k]) fprintf(out, ",\"written_as\":\"%s\"", en);
+                fputc('}', out);
+            } else
                 fprintf(out, "null");
         }
         fprintf(out, "}}\n");

@@ -45,6 +45,11 @@ def exe():
     return e
 
 
+# gemma-4's E-series shape at 512-wide heads, sliding and full layers alike:
+# the family the wide tile is on by default for
+WIDE512 = ("--eseries", "3,16", "--head-dim", "512")
+
+
 def _model(tmp_path, *flags):
     m = tmp_path / "m.gguf"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", *flags, str(m)],
@@ -76,7 +81,8 @@ def _run(exe, model, tile, extra):
     (("--wide",), ("--kv", "k8v4")),            # q8 K, fp4 V
     (("--wide",), ("--kv", "fp4")),             # fp4 both
     (("--arch", "qwen3", "--swa", "8,2"), ()),  # sliding window: per-column t0
-], ids=["f16", "q8", "k8v4", "fp4", "swa"])
+    (WIDE512, ()),                              # 512-wide heads (R3.6.3.2)
+], ids=["f16", "q8", "k8v4", "fp4", "swa", "wide512"])
 def test_tile_matches_the_one_column_kernel_bit_for_bit(exe, tmp_path, flags, extra):
     model = _model(tmp_path, *flags)
     text1, lp1, _ = _run(exe, model, 1, extra)
@@ -103,3 +109,42 @@ def test_the_tiled_kernel_is_the_one_that_runs(exe, tmp_path):
         counts[tile] = max(tiles) if tiles else -1
     assert counts[1] > 0, counts
     assert counts[0] == 0, counts
+
+
+def _tiles(exe, model, **env):
+    """The tiled attention dispatches a short prefill made, and the route
+    detail a --score receipt names."""
+    e = dict(os.environ, RUNNER_METAL_STATS="1", **env)
+    p = subprocess.run([exe, "-m", str(model), "-p", PROMPT, "-n", "2", "--temp", "0",
+                        "-b", "24", "--no-tray"], env=e,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")[-400:]
+    tiles = [int(line.split("(tile ")[1].split(")")[0])
+             for line in p.stderr.decode(errors="replace").splitlines()
+             if "metal-census" in line]
+    s = subprocess.run([exe, "-m", str(model), "--score", "-p", PROMPT, "--no-tray"], env=e,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+    assert s.returncode == 0, s.stderr.decode(errors="replace")[-400:]
+    detail = json.loads(s.stdout)["score_route"]["backend_detail"]
+    return (max(tiles) if tiles else -1), detail
+
+
+def test_wide_heads_take_the_tile_on_the_e_series_and_the_switch_keeps_k_attn(exe, tmp_path):
+    """R3.6.3.2: heads 257 to 512 wide ran k_attn, a column a threadgroup over
+    the whole history. On gemma-4's E-series the tile takes them by default,
+    the receipt says attn_wide=on, and RUNNER_METAL_ATTN_TILE_WIDE=0 keeps
+    k_attn for them (every layer of the fixture is 512 wide, so no tile)."""
+    model = _model(tmp_path, *WIDE512)
+    on, detail_on = _tiles(exe, model)
+    off, detail_off = _tiles(exe, model, RUNNER_METAL_ATTN_TILE_WIDE="0")
+    assert on > 0 and "attn_wide=on" in detail_on, (on, detail_on)
+    assert off == 0 and "attn_wide" not in detail_off, (off, detail_off)
+
+
+def test_a_wide_head_outside_the_family_waits_for_the_switch(exe, tmp_path):
+    """The default is the family it was measured on; =1 takes any model."""
+    model = _model(tmp_path, "--head-dim", "512")
+    dflt, detail = _tiles(exe, model)
+    forced, detail_forced = _tiles(exe, model, RUNNER_METAL_ATTN_TILE_WIDE="1")
+    assert dflt == 0 and "attn_wide" not in detail, (dflt, detail)
+    assert forced > 0 and "attn_wide=on" in detail_forced, (forced, detail_forced)

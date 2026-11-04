@@ -376,7 +376,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#gemma-4-e2b-it-q4_k_m-q4_0-mix"><code>gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td nowrap>✅ 1.7.1<br>2026-10-29</td></tr>
+<tr><td><a href="#gemma-4-e2b-it-q4_k_m-q4_0-mix"><code>gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf</code></a></td><td nowrap>✅ 1.7.1<br>2026-10-29</td><td nowrap>✅ 1.12.0<br>2026-11-03</td><td nowrap>✅ 1.5.1<br>2026-10-23</td><td nowrap>✅ 1.12.0<br>2026-11-03</td></tr>
 </tbody>
 </table>
 </details>
@@ -579,6 +579,17 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>NVIDIA Nemotron 3.5 Lightning</b>, 1 model: CPU ✅ · CUDA n/a · Metal - · Train n/a</summary>
+<p><b>Nemotron 3.5 Lightning-30B-A3B (NVIDIA)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#nemotron-3.5-lightning-30b-a3b-q4_0"><code>NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-03</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td><td>no: recurrent architecture (Mamba-2)</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>MiniCPM5</b>, 1 model: CPU ✅ · CUDA ✅ · Metal ✅ · Train ✅</summary>
 <p><b>MiniCPM5-2B (openbmb)</b></p>
 <table>
@@ -739,7 +750,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Nemotron 3.5 Lightning-30B-A3B, Qwen3.6-27B, Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
+**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Granite-4.2-30B, Qwen3.6-27B, Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -768,6 +779,7 @@ Text path only: NVIDIA's post-train of Gemma-4-E4B-it in the publisher's own Q4_
 - **CUDA:** ✅ v1.12.0 2026-11-03 on windows-x86_64-cuda at commit `1a2d85ee585f`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ✅ v1.7.0 2026-10-29 on macos-arm64-metal at commit `0800f47350d5`, output sha256 `0ae60d3e43338350`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-e4b-q4_k_m.macos-arm64-metal.metal.txt)
 - **8 GB laptop fit (Metal, 2026-10-29, runner 1.7.0 at commit `0800f47350d5`):** one resident server at `-c 4096 -b 32 --kv q8 --mlock` on an 8 GB Apple Silicon laptop wires 3.19 GB of weights while the 2.99 GB row-gathered table stays pageable; a 262-token prompt answers in 4.0-5.1 s to the first token and decodes 128 tokens at 8.5-9.0 tok/s; the first response after 8 minutes idle took 4.7 s with `--mlock` and 24.9 s without it (the weights were evicted while idle); the laptop swaps other applications to hold the weights, and the sliding-window KV ring (`RUNNER_KV_RING=1`) saved 77 MB of cache without changing these figures; it then cost the prefix cache, which since R5.5 resumes from what the ring holds (`--kv-ring`).
+- **8 GB laptop prefill (Metal, 2026-11-03, the R3.6.3.2 wide tile):** a 16K-token prefill of this file does not fit the 8 GB laptop without swap (five attempts, each stopped as other memory began to page out, the sliding-window KV ring on or off). An 8K prefill (7,902 tokens) takes 117 to 123 s of GPU time, 56.5 tok/s, against 274 s before the tile took the 512-wide global layers; a 4K prefill (3,902 tokens) reads 50.3 tok/s against 35.1.
 - **LoRA training:** supported (runner 1.12.0, 2026-11-03).
 - **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-03).
 - **Tier history:** Tier 2, maintained on report from 2026-10-28; Tier 1, actively validated from 2026-10-29 ([log](#transition-log)).
@@ -1271,15 +1283,15 @@ Text path only: the smoke-test file from the quickstart; it fails the fidelity b
 - **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; 552 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Family: gemma-4-E2B bf16 against Google's float32 reference, where Runner is the closer engine (1.5.0 golden pass); that pass's served row is a different file (q4_0 throughout), not this mix.
-- **Context tested:** not recorded.
+- **Context tested:** 17600.
 - **Still missing:** nothing the audit named
-- **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
+- **Evidence:** [docs/golden-pass-2026-10-22.md](golden-pass-2026-10-22.md), [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts), [docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03/e2b.md](compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03/e2b.md).
 - **Validation run:** on macos-arm64-metal, metal backend; last run 1.5.1 on 2026-10-23.
 - **CPU:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.windows-x86_64-cuda.cpu.txt)
-- **CUDA:** ✅ v1.7.1 2026-10-29 on windows-x86_64-cuda at commit `d07e80b85e6d`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.windows-x86_64-cuda.cuda.txt)
+- **CUDA:** ✅ v1.12.0 2026-11-03 on windows-x86_64-cuda at commit `36b1787646b4`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.windows-x86_64-cuda.cuda.txt)
 - **Metal:** ✅ v1.5.1 2026-10-23 on macos-arm64-metal at commit `7660980968b4`, output sha256 `4132fa520bc517ed`, [pin](../tests/compatibility/tier-smoke/gemma-4-e2b-it-q4_k_m-q4_0-mix.macos-arm64-metal.metal.txt)
-- **LoRA training:** supported (runner 1.7.1, 2026-10-29).
-- **LoRA adapter serving:** supported (runner 1.7.1, 2026-10-29).
+- **LoRA training:** supported (runner 1.12.0, 2026-11-03).
+- **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-03).
 - **Tier history:** Tier 1, actively validated from 2026-10-22; Tier 2, maintained on report from 2026-10-27 ([log](#transition-log)).
 
 ### Muse-Glimmer-30B
@@ -1719,6 +1731,33 @@ Admitted and maintained on report: existing regression tests keep running and sh
 Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
 
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
+
+### NVIDIA Nemotron 3.5 Lightning
+
+#### Nemotron 3.5 Lightning-30B-A3B (NVIDIA)
+
+<a id="nemotron-3.5-lightning-30b-a3b-q4_0"></a>
+##### `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`
+
+Text and tools, the publisher's own Q4_0: against the publisher's BF16 checkpoint in float32 at use (transformers 5.16.1 at the model's declared dt limit) it reads 0.0476 mean KLD and 97.62% margin-qualified top-1 (300 positions, CPU), inside the 0.05 / 97% bar by a narrow margin; the Q8_0 reads 0.0146 / 99.05% and is the fidelity file. Runner computed this architecture wrong until 2026-11-03 (a softmax router where the publisher's is a sigmoid, fixed in runner #575); every number here is from the fixed build. CPU only: CUDA refuses the router.
+
+- **File:** `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf` (sha256 `61f87e75974e4b535dcdf9aad056541a9514f1dfa4538b463b081d19b7a00e3c`, 18,898,091,584 bytes, from [ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF](https://huggingface.co/ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF) at revision `8cd082170ed3`).
+- **Upstream checkpoint:** nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 at revision `a9904d24bcc1`.
+- **Quantization:** Q4_0 (ggml-org).
+- **Licence:** `openmdw-1.1`, as the nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 model card states it.
+- **Features claimed:** text, tools. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Against NVIDIA's BF16 checkpoint in float32 at use on the CPU (transformers 5.16.1's NemotronH, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from solo CPU score files), at the model's declared time_step_limit (0, inf): Q4_0 0.0476 mean KLD / 89.33% top-1 / 97.62% margin-qualified; Q8_0 0.0146 / 92.33% / 99.05%; the BF16 GGUF 0.0055 / 96.33% / 100%. A second column records the transformers mixer's dt clamp at time_step_min (0.246 on the BF16 file, 0.252 on the Q8_0), which reads an initialisation range as a limit; the declared limit predicts the corpus better (PPL 17.05 against 18.66). llama.cpp 73a43d1 reads 0.0499 / 99.05% on the Q4_0 and 0.0173 / 100% on the Q8_0; Runner is the closer by per-position KLD on both (p 0.011, 0.006). Record: docs/compat-reports/nemotron-3.5-lightning-30b-a3b-2026-11-03/README.md.
+- **Context tested:** 9216.
+- **Known limitations:** 19 GB (Q4_0) and 34 GB (Q8_0) of weights, CPU only: the sigmoid-plus-bias router has no device kernel, so CUDA refuses the file and Metal is not measured. Tool gate C fails buffered (no prose beside the call). Near-tie expert flips grow with sequence position in this 128-expert router (the R3.25.1 effect), so long-range agreement with any reference is bounded by routing, not arithmetic. LoRA: neither training nor serving (Mamba-2 hybrid).
+- **Still missing:** The CUDA cell (no device kernel for the router) and the Metal cell; context past 4,509 tokens; task quality.
+- **Evidence:** [docs/compat-reports/nemotron-3.5-lightning-30b-a3b-2026-11-03/README.md](compat-reports/nemotron-3.5-lightning-30b-a3b-2026-11-03/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.12.0 on 2026-11-03.
+- **CPU:** ✅ v1.12.0 2026-11-03 on linux-x86_64-cuda (borrowed hardware) at commit `590bab5b9ee6`, output sha256 `4635ac8b266740e8`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-lightning-30b-a3b-q4_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** [n/a](../MANUAL.md#support-matrix): nemotron_h_moe's MoE router (sigmoid gating, weight scale 2.5) has no device kernel; CUDA refuses the model (cuda_admit) and the file runs on the CPU.
+- **Metal:** ☐ not run
+- **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.12.0, 2026-11-03).
+- **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h_moe) (runner 1.12.0, 2026-11-03).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-03 ([log](#transition-log)).
 
 ### MiniCPM5
 
@@ -2358,10 +2397,10 @@ No members.
 <a id="qwen3.8-35b-a3b"></a>
 #### Qwen3.8-35B-A3B
 
-Not admitted: Runner does not load the qwen35moe architecture yet.
+Not validated: the qwen35moe architecture loads and runs on the CPU (since 1.10.0; Qwen3.6-35B-A3B is a Tier 2 row on it), but no gate has run on a Qwen3.8-35B-A3B file; CUDA still refuses the architecture (R4.27 A2).
 
 - **Numerical anchor:** anchor: agreement with another engine, not fidelity. A float32 reference (140 GB) is not feasible; Qwen3.5-0.8B covers the recurrent path only.
-- **Missing for Tier 1:** The qwen35moe admission (Gated DeltaNet hybrid plus routed experts; the qwen35 recurrent path and the qwen3moe expert path both exist, the hybrid does not). One piece of engine work covers Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B and MiniCPM-V-4.7-35B-A3B; the first Upcoming item. Then tokenizer, template and quant-bar gates, a pinned output and a device record.
+- **Missing for Tier 1:** One gate run on the CPU lane: tokenizer, template, quant bar against the BF16 parent, pinned output, device record; a file pinned by sha256; CUDA after R4.27 A2.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
 ### Text path only: Ornith-1.5-35B-A3B
@@ -2369,10 +2408,10 @@ Not admitted: Runner does not load the qwen35moe architecture yet.
 <a id="ornith-1.5-35b-a3b"></a>
 #### Ornith-1.5-35B-A3B
 
-Text path only: the vision projector is not loaded, and Runner does not load the qwen35moe architecture yet.
+Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); no gate has run on an Ornith 1.5 file.
 
 - **Numerical anchor:** anchor: agreement with another engine, not fidelity.
-- **Missing for Tier 1:** The qwen35moe admission (see Qwen3.8-35B-A3B), then template conformance for Ornith 1.5 (the ornith template exists for 1.0 9B dense).
+- **Missing for Tier 1:** Template conformance for Ornith 1.5 (the ornith template exists for 1.0 9B dense), then the gate list; CUDA after R4.27 A2.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
 ### Text path only: MiniCPM-V-4.7-35B-A3B
@@ -2380,10 +2419,10 @@ Text path only: the vision projector is not loaded, and Runner does not load the
 <a id="minicpm-v-4.7-35b-a3b"></a>
 #### MiniCPM-V-4.7-35B-A3B
 
-Text path only: the vision projector is not loaded, and Runner does not load the qwen35moe architecture yet.
+Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); its tokenizer and template are unchecked and no gate has run.
 
 - **Numerical anchor:** anchor: agreement with another engine, not fidelity.
-- **Missing for Tier 1:** The qwen35moe admission (see Qwen3.8-35B-A3B); its tokenizer and template are unknown.
+- **Missing for Tier 1:** Tokenizer and template checks, then the gate list; CUDA after R4.27 A2.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
 ### Granite-4.2-30B
@@ -2395,19 +2434,6 @@ Not validated: the granite architecture is admitted and IBM's official GGUF exis
 
 - **Numerical anchor:** Family: granite-4.2-3B bf16 against IBM's float32 reference covers the family.
 - **Missing for Tier 1:** One gate run on the Linux CUDA host: quant bar, tool gate, pinned output, device record; a file pinned by sha256.
-- **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
-
-### Nemotron 3.5 Lightning-30B-A3B
-
-<a id="nemotron-3.5-lightning-30b-a3b-q4_0"></a>
-#### `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`
-
-Not validated: the file loads and its template conforms, but the tool gate, a pinned output and a device record are missing.
-
-- **File:** `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf` (sha256 `61f87e75974e4b535dcdf9aad056541a9514f1dfa4538b463b081d19b7a00e3c`, 18,898,091,584 bytes, from [ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF](https://huggingface.co/ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF) at revision `8cd082170ed3`).
-- **Licence:** `openmdw-1.1`, as the nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 model card states it.
-- **Numerical anchor:** anchor: agreement with another engine, not fidelity. The family's smallest member is 30B; 4/5 greedy against llama.cpp.
-- **Missing for Tier 1:** Tool gate, pinned output, device record, and the another-engine label.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
 ### Qwen3.6-27B
@@ -2524,7 +2550,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-22 | [Ornith-1.5-35B-A3B](#ornith-1.5-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [MiniCPM-V-4.7-35B-A3B](#minicpm-v-4.7-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Granite-4.2-30B](#granite-4.2-30b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
-| 2026-10-22 | [Nemotron 3.5 Lightning-30B-A3B, `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`](#nemotron-3.5-lightning-30b-a3b-q4_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [Nemotron 3.5 Lightning-30B-A3B (NVIDIA), `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`](#nemotron-3.5-lightning-30b-a3b-q4_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Qwen3.6-27B](#qwen3.6-27b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Cloudflare Clef Flash (clef, on Qwen3.5-9B), `Clef-Flash-Q4_K_M.gguf`](#cloudflare-clef-flash) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3 Nano (30B-A3B)](#nemotron-3-nano-30b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
@@ -2603,5 +2629,6 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-11-01 | [Ministral 3 3B Instruct 2512 (Mistral AI), `Ministral-3-3B-Instruct-2512-Q8_0.gguf`](#ministral-3-3b-instruct-2512-q8_0) | Tier 2, maintained on report | R4.4 admission of the mistral3 architecture: admitted 2026-11-01 at Tier 2 with a CPU cell and a float32 reference measurement. Maintained on report. | none recorded |
 | 2026-11-02 | [Devstral Small 2 24B Instruct 2512 (Mistral AI), `Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf`](#devstral-small-2-24b-instruct-2512-q4_k_m) | Tier 2, maintained on report | R4.4.4: Devstral certified with the tool-calling axis, admitted 2026-11-02 at Tier 2 with a CPU cell, a float32 reference measurement and the agent-torture suite. Maintained on report. | none recorded |
 | 2026-11-02 | [Devstral Small 2 24B Instruct 2512 (Mistral AI), `Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf`](#devstral-small-2-24b-instruct-2512-q8_0) | Tier 2, maintained on report | R4.4.4: Devstral certified with the tool-calling axis, admitted 2026-11-02 at Tier 2 with a CPU cell, a float32 reference measurement and the agent-torture suite. Maintained on report. | none recorded |
+| 2026-11-03 | [Nemotron 3.5 Lightning-30B-A3B (NVIDIA), `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`](#nemotron-3.5-lightning-30b-a3b-q4_0) | Tier 2, maintained on report | R4.29 gate run, admitted 2026-11-03 at Tier 2 with a CPU cell on the Linux CUDA host, a float32 reference measurement on the publisher's BF16 checkpoint, the tokenizer differential, template conformance and the tool gate, all on the fixed build (runner #575). Maintained on report; Tier 1 is the owner's call. | none recorded |
 
 <!-- model-tiers:rows:end -->

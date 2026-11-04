@@ -488,7 +488,8 @@
         }
       ],
       "measurements": [
-        "**8 GB laptop fit (Metal, 2026-10-29, runner 1.7.0 at commit `0800f47350d5`):** one resident server at `-c 4096 -b 32 --kv q8 --mlock` on an 8 GB Apple Silicon laptop wires 3.19 GB of weights while the 2.99 GB row-gathered table stays pageable; a 262-token prompt answers in 4.0-5.1 s to the first token and decodes 128 tokens at 8.5-9.0 tok/s; the first response after 8 minutes idle took 4.7 s with `--mlock` and 24.9 s without it (the weights were evicted while idle); the laptop swaps other applications to hold the weights, and the sliding-window KV ring (`RUNNER_KV_RING=1`) saved 77 MB of cache without changing these figures; it then cost the prefix cache, which since R5.5 resumes from what the ring holds (`--kv-ring`)."
+        "**8 GB laptop fit (Metal, 2026-10-29, runner 1.7.0 at commit `0800f47350d5`):** one resident server at `-c 4096 -b 32 --kv q8 --mlock` on an 8 GB Apple Silicon laptop wires 3.19 GB of weights while the 2.99 GB row-gathered table stays pageable; a 262-token prompt answers in 4.0-5.1 s to the first token and decodes 128 tokens at 8.5-9.0 tok/s; the first response after 8 minutes idle took 4.7 s with `--mlock` and 24.9 s without it (the weights were evicted while idle); the laptop swaps other applications to hold the weights, and the sliding-window KV ring (`RUNNER_KV_RING=1`) saved 77 MB of cache without changing these figures; it then cost the prefix cache, which since R5.5 resumes from what the ring holds (`--kv-ring`).",
+        "**8 GB laptop prefill (Metal, 2026-11-03, the R3.6.3.2 wide tile):** a 16K-token prefill of this file does not fit the 8 GB laptop without swap (five attempts, each stopped as other memory began to page out, the sliding-window KV ring on or off). An 8K prefill (7,902 tokens) takes 117 to 123 s of GPU time, 56.5 tok/s, against 274 s before the tile took the 512-wide global layers; a 4K prefill (3,902 tokens) reads 50.3 tok/s against 35.1."
       ]
     },
     {
@@ -1884,11 +1885,12 @@
         ],
         "fp32_reference": "measured",
         "anchor": "Family: gemma-4-E2B bf16 against Google's float32 reference, where Runner is the closer engine (1.5.0 golden pass); that pass's served row is a different file (q4_0 throughout), not this mix.",
-        "context": null,
+        "context": 17600,
         "limitations": null,
         "evidence": [
           "docs/golden-pass-2026-10-22.md",
-          "MANUAL.md#published-artifacts"
+          "MANUAL.md#published-artifacts",
+          "docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-2026-11-03/e2b.md"
         ],
         "missing": null
       },
@@ -1918,13 +1920,13 @@
         },
         "cuda": {
           "kind": "gate",
-          "runner_version": "1.7.1",
-          "date": "2026-10-29",
+          "runner_version": "1.12.0",
+          "date": "2026-11-03",
           "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "d07e80b85e6d980c90e2f6462f4a742444c3810b",
+          "commit": "36b1787646b48773c010f40049354739b937d0ba",
           "caps": {
-            "version": "1.7.1",
+            "version": "1.12.0",
             "os": "windows",
             "arch": "x86_64",
             "cpu_cores": 8,
@@ -1964,8 +1966,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.7.1",
-        "date": "2026-10-29"
+        "runner_version": "1.12.0",
+        "date": "2026-11-03"
       },
       "transitions": [
         {
@@ -3453,9 +3455,9 @@
       "id": "qwen3.8-35b-a3b",
       "model": "Qwen3.8-35B-A3B",
       "tier": "upcoming",
-      "claim": "Not admitted: Runner does not load the qwen35moe architecture yet.",
+      "claim": "Not validated: the qwen35moe architecture loads and runs on the CPU (since 1.10.0; Qwen3.6-35B-A3B is a Tier 2 row on it), but no gate has run on a Qwen3.8-35B-A3B file; CUDA still refuses the architecture (R4.27 A2).",
       "architecture": "qwen35moe",
-      "missing": "The qwen35moe admission (Gated DeltaNet hybrid plus routed experts; the qwen35 recurrent path and the qwen3moe expert path both exist, the hybrid does not). One piece of engine work covers Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B and MiniCPM-V-4.7-35B-A3B; the first Upcoming item. Then tokenizer, template and quant-bar gates, a pinned output and a device record.",
+      "missing": "One gate run on the CPU lane: tokenizer, template, quant bar against the BF16 parent, pinned output, device record; a file pinned by sha256; CUDA after R4.27 A2.",
       "transitions": [
         {
           "tier": "upcoming",
@@ -3470,9 +3472,9 @@
       "id": "ornith-1.5-35b-a3b",
       "model": "Ornith-1.5-35B-A3B",
       "tier": "upcoming",
-      "claim": "Text path only: the vision projector is not loaded, and Runner does not load the qwen35moe architecture yet.",
+      "claim": "Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); no gate has run on an Ornith 1.5 file.",
       "architecture": "qwen35moe",
-      "missing": "The qwen35moe admission (see Qwen3.8-35B-A3B), then template conformance for Ornith 1.5 (the ornith template exists for 1.0 9B dense).",
+      "missing": "Template conformance for Ornith 1.5 (the ornith template exists for 1.0 9B dense), then the gate list; CUDA after R4.27 A2.",
       "transitions": [
         {
           "tier": "upcoming",
@@ -3488,9 +3490,9 @@
       "id": "minicpm-v-4.7-35b-a3b",
       "model": "MiniCPM-V-4.7-35B-A3B",
       "tier": "upcoming",
-      "claim": "Text path only: the vision projector is not loaded, and Runner does not load the qwen35moe architecture yet.",
+      "claim": "Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); its tokenizer and template are unchecked and no gate has run.",
       "architecture": "qwen35moe",
-      "missing": "The qwen35moe admission (see Qwen3.8-35B-A3B); its tokenizer and template are unknown.",
+      "missing": "Tokenizer and template checks, then the gate list; CUDA after R4.27 A2.",
       "transitions": [
         {
           "tier": "upcoming",
@@ -3521,16 +3523,21 @@
     },
     {
       "id": "nemotron-3.5-lightning-30b-a3b-q4_0",
-      "model": "Nemotron 3.5 Lightning-30B-A3B",
-      "tier": "upcoming",
-      "claim": "Not validated: the file loads and its template conforms, but the tool gate, a pinned output and a device record are missing.",
+      "model": "Nemotron 3.5 Lightning-30B-A3B (NVIDIA)",
+      "tier": "tier2",
+      "claim": "Text and tools, the publisher's own Q4_0: against the publisher's BF16 checkpoint in float32 at use (transformers 5.16.1 at the model's declared dt limit) it reads 0.0476 mean KLD and 97.62% margin-qualified top-1 (300 positions, CPU), inside the 0.05 / 97% bar by a narrow margin; the Q8_0 reads 0.0146 / 99.05% and is the fidelity file. Runner computed this architecture wrong until 2026-11-03 (a softmax router where the publisher's is a sigmoid, fixed in runner #575); every number here is from the fixed build. CPU only: CUDA refuses the router.",
       "architecture": "nemotron_h_moe",
-      "missing": "Tool gate, pinned output, device record, and the another-engine label.",
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
+          "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-11-03",
+          "reason": "R4.29 gate run, admitted 2026-11-03 at Tier 2 with a CPU cell on the Linux CUDA host, a float32 reference measurement on the publisher's BF16 checkpoint, the tokenizer differential, template conformance and the tool gate, all on the fixed build (runner #575). Maintained on report; Tier 1 is the owner's call.",
           "last_validated_release": null
         }
       ],
@@ -3547,7 +3554,71 @@
         "id": "openmdw-1.1",
         "from": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
       },
-      "anchor": "anchor: agreement with another engine, not fidelity. The family's smallest member is 30B; 4/5 greedy against llama.cpp."
+      "anchor": "anchor: agreement with another engine, not fidelity. The family's smallest member is 30B; 4/5 greedy against llama.cpp.",
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.12.0",
+          "date": "2026-11-03",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "590bab5b9ee693263fd5998a8ce133f457a1bb21",
+          "caps": {
+            "version": "1.12.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 128,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "4635ac8b266740e82a0ce4e5c313e65c307570073e6197f0b57e99e5ffa3af87",
+          "ran": "runner -m NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/nemotron-3.5-lightning-30b-a3b-q4_0.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "limit",
+          "reason": "nemotron_h_moe's MoE router (sigmoid gating, weight scale 2.5) has no device kernel; CUDA refuses the model (cuda_admit) and the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "metal": null
+      },
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "recurrent architecture (Mamba-2)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover Mamba-2 hybrid architectures yet (nemotron_h_moe)"
+        },
+        "runner_version": "1.12.0",
+        "date": "2026-11-03"
+      },
+      "family": "NVIDIA Nemotron 3.5 Lightning",
+      "upstream": {
+        "checkpoint": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+        "revision": "a9904d24bcc1"
+      },
+      "quantization": "Q4_0 (ggml-org)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text",
+          "tools"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Against NVIDIA's BF16 checkpoint in float32 at use on the CPU (transformers 5.16.1's NemotronH, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from solo CPU score files), at the model's declared time_step_limit (0, inf): Q4_0 0.0476 mean KLD / 89.33% top-1 / 97.62% margin-qualified; Q8_0 0.0146 / 92.33% / 99.05%; the BF16 GGUF 0.0055 / 96.33% / 100%. A second column records the transformers mixer's dt clamp at time_step_min (0.246 on the BF16 file, 0.252 on the Q8_0), which reads an initialisation range as a limit; the declared limit predicts the corpus better (PPL 17.05 against 18.66). llama.cpp 73a43d1 reads 0.0499 / 99.05% on the Q4_0 and 0.0173 / 100% on the Q8_0; Runner is the closer by per-position KLD on both (p 0.011, 0.006). Record: docs/compat-reports/nemotron-3.5-lightning-30b-a3b-2026-11-03/README.md.",
+        "context": 9216,
+        "limitations": "19 GB (Q4_0) and 34 GB (Q8_0) of weights, CPU only: the sigmoid-plus-bias router has no device kernel, so CUDA refuses the file and Metal is not measured. Tool gate C fails buffered (no prose beside the call). Near-tie expert flips grow with sequence position in this 128-expert router (the R3.25.1 effect), so long-range agreement with any reference is bounded by routing, not arithmetic. LoRA: neither training nor serving (Mamba-2 hybrid).",
+        "evidence": [
+          "docs/compat-reports/nemotron-3.5-lightning-30b-a3b-2026-11-03/README.md"
+        ],
+        "missing": "The CUDA cell (no device kernel for the router) and the Metal cell; context past 4,509 tokens; task quality."
+      }
     },
     {
       "id": "qwen3.6-27b",

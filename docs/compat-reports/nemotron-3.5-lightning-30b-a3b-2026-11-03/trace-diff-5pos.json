@@ -1,0 +1,2132 @@
+{
+ "rtol": 0.001,
+ "points": [
+  {
+   "pos": 64,
+   "layer": -1,
+   "point": "embd",
+   "match": true,
+   "distance": 1.3681988906462989e-09,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 0,
+   "point": "resid",
+   "match": true,
+   "distance": 2.231078787898638e-06,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 1,
+   "point": "resid",
+   "match": true,
+   "distance": 2.23829439838702e-06,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 2,
+   "point": "resid",
+   "match": true,
+   "distance": 3.972626718503133e-06,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 3,
+   "point": "resid",
+   "match": true,
+   "distance": 3.8122178247245697e-06,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 4,
+   "point": "resid",
+   "match": true,
+   "distance": 3.612942631432314e-06,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 5,
+   "point": "resid",
+   "match": true,
+   "distance": 3.9446068869738215e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 6,
+   "point": "resid",
+   "match": true,
+   "distance": 3.312999081323658e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 7,
+   "point": "resid",
+   "match": true,
+   "distance": 3.417442258297262e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 8,
+   "point": "resid",
+   "match": true,
+   "distance": 3.097960418249286e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 9,
+   "point": "resid",
+   "match": true,
+   "distance": 2.8386674333336443e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 10,
+   "point": "resid",
+   "match": true,
+   "distance": 2.8862227662009625e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 11,
+   "point": "resid",
+   "match": true,
+   "distance": 2.6062152560270307e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 12,
+   "point": "resid",
+   "match": true,
+   "distance": 6.492731555440416e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 13,
+   "point": "resid",
+   "match": true,
+   "distance": 6.804206414234164e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 14,
+   "point": "resid",
+   "match": true,
+   "distance": 6.857106598450798e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 15,
+   "point": "resid",
+   "match": true,
+   "distance": 6.066770086511365e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 16,
+   "point": "resid",
+   "match": true,
+   "distance": 6.0246918129277465e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 17,
+   "point": "resid",
+   "match": true,
+   "distance": 5.892227623160439e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 18,
+   "point": "resid",
+   "match": true,
+   "distance": 5.226205654800335e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 19,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00012048322329390856,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 20,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011548195802212317,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 21,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010799303273953841,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 22,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011090109967072306,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 23,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010358628027363177,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 24,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010037822066119818,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 25,
+   "point": "resid",
+   "match": true,
+   "distance": 8.462770392122281e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 26,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0001451498285446892,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 27,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00012999222883503618,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 28,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011624411415976258,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 29,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010711766606408192,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 30,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010509332318591724,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 31,
+   "point": "resid",
+   "match": true,
+   "distance": 9.974886415856543e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 32,
+   "point": "resid",
+   "match": true,
+   "distance": 8.69194647816327e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 33,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00015637574871909615,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 34,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011543173838138465,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 35,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011584059710267179,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 36,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011120159745130811,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 37,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010768116036555025,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 38,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010732381647478656,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 39,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010497293687311543,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 40,
+   "point": "resid",
+   "match": true,
+   "distance": 9.227483376458995e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 41,
+   "point": "resid",
+   "match": true,
+   "distance": 8.928257310711004e-05,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 42,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00017912175665902238,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 43,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00017554881865919497,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 44,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00016436927989817694,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 45,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00016433586405800444,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 46,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00016663964131534602,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 47,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00014986645603815626,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 48,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00014574330427392888,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 49,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00013026273293179923,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 50,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010332058850344115,
+   "by": "values"
+  },
+  {
+   "pos": 64,
+   "layer": 51,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011282668131303516,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": -1,
+   "point": "embd",
+   "match": true,
+   "distance": 1.3671629975121712e-09,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 0,
+   "point": "resid",
+   "match": true,
+   "distance": 7.114937870738075e-06,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 1,
+   "point": "resid",
+   "match": true,
+   "distance": 6.598524391766189e-06,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 2,
+   "point": "resid",
+   "match": true,
+   "distance": 1.237157364989635e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 3,
+   "point": "resid",
+   "match": true,
+   "distance": 1.3594903602615963e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 4,
+   "point": "resid",
+   "match": true,
+   "distance": 1.300173710246425e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 5,
+   "point": "resid",
+   "match": true,
+   "distance": 6.432077911254521e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 6,
+   "point": "resid",
+   "match": true,
+   "distance": 6.079831417195496e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 7,
+   "point": "resid",
+   "match": true,
+   "distance": 4.8432376077359006e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 8,
+   "point": "resid",
+   "match": true,
+   "distance": 5.572166419528539e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 9,
+   "point": "resid",
+   "match": true,
+   "distance": 4.151709170556657e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 10,
+   "point": "resid",
+   "match": true,
+   "distance": 4.5714872208367166e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 11,
+   "point": "resid",
+   "match": true,
+   "distance": 4.436514833702994e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 12,
+   "point": "resid",
+   "match": true,
+   "distance": 9.589669677300426e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 13,
+   "point": "resid",
+   "match": true,
+   "distance": 9.620709582357719e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 14,
+   "point": "resid",
+   "match": true,
+   "distance": 7.853636395561079e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 15,
+   "point": "resid",
+   "match": true,
+   "distance": 8.345320576220453e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 16,
+   "point": "resid",
+   "match": true,
+   "distance": 7.202711463233637e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 17,
+   "point": "resid",
+   "match": true,
+   "distance": 7.571705537523334e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 18,
+   "point": "resid",
+   "match": true,
+   "distance": 6.51083808452292e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 19,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0001328920459068678,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 20,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00013364796339824557,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 21,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011790470239250617,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 22,
+   "point": "resid",
+   "match": true,
+   "distance": 0.000123647192681003,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 23,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010201393359512878,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 24,
+   "point": "resid",
+   "match": true,
+   "distance": 9.574782997201279e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 25,
+   "point": "resid",
+   "match": true,
+   "distance": 8.741305717246564e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 26,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00014521396489921063,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 27,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00014508283856505194,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 28,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00013440135384076455,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 29,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011938910652624345,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 30,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010168940527410676,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 31,
+   "point": "resid",
+   "match": true,
+   "distance": 9.972335047997155e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 32,
+   "point": "resid",
+   "match": true,
+   "distance": 9.035082820489864e-05,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 33,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00014900420651763765,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 34,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00014912666028181858,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 35,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00013439895846192667,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 36,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00013111948902069334,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 37,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011938139329932982,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 38,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00012264929361458253,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 39,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011188945772296685,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 40,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011293985542965227,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 41,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010311952620832767,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 42,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00025058244285101737,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 43,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00024207646074256726,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 44,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00022423054302882724,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 45,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00022205518617123777,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 46,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002064665037139852,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 47,
+   "point": "resid",
+   "match": true,
+   "distance": 0.000184543706019448,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 48,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00017206073455236542,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 49,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00012996024087254512,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 50,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00012004855158102234,
+   "by": "values"
+  },
+  {
+   "pos": 127,
+   "layer": 51,
+   "point": "resid",
+   "match": true,
+   "distance": 9.802743340121627e-05,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": -1,
+   "point": "embd",
+   "match": true,
+   "distance": 1.3900109371865467e-09,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 0,
+   "point": "resid",
+   "match": true,
+   "distance": 3.6776282131306484e-06,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 1,
+   "point": "resid",
+   "match": true,
+   "distance": 3.605793952697884e-06,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 2,
+   "point": "resid",
+   "match": true,
+   "distance": 4.255297628612367e-06,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 3,
+   "point": "resid",
+   "match": true,
+   "distance": 4.568759477816894e-06,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 4,
+   "point": "resid",
+   "match": true,
+   "distance": 4.49893481155979e-06,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 5,
+   "point": "resid",
+   "match": true,
+   "distance": 4.624543804675312e-05,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 6,
+   "point": "resid",
+   "match": true,
+   "distance": 4.0512007877982156e-05,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 7,
+   "point": "resid",
+   "match": true,
+   "distance": 3.684641382468348e-05,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 8,
+   "point": "resid",
+   "match": true,
+   "distance": 3.6306459128316564e-05,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 9,
+   "point": "resid",
+   "match": true,
+   "distance": 2.9632765553581933e-05,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 10,
+   "point": "resid",
+   "match": true,
+   "distance": 3.2946953004773816e-05,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 11,
+   "point": "resid",
+   "match": true,
+   "distance": 3.096346975438899e-05,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 12,
+   "point": "resid",
+   "match": true,
+   "distance": 8.7547504036445e-05,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 13,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010085546674257973,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 14,
+   "point": "resid",
+   "match": true,
+   "distance": 8.967206648811997e-05,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 15,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010122992645022975,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 16,
+   "point": "resid",
+   "match": true,
+   "distance": 8.888820990038544e-05,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 17,
+   "point": "resid",
+   "match": true,
+   "distance": 9.310339338770393e-05,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 18,
+   "point": "resid",
+   "match": true,
+   "distance": 7.566618795082124e-05,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 19,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0001200036059837747,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 20,
+   "point": "resid",
+   "match": true,
+   "distance": 0.000132442446992921,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 21,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011798250657199977,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 22,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00013122597881066574,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 23,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00012372553952673764,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 24,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00012565213713009926,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 25,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011437262983105917,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 26,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00014893760692987143,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 27,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00014353566263020825,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 28,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00013788007220257525,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 29,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00013052313606459702,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 30,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0001290653913241628,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 31,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00012386223765029075,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 32,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010885887670781996,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 33,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00033933932031727214,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 34,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0004369363179590044,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 35,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0004198797488320707,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 36,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0003847806701171727,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 37,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00034697388862779254,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 38,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0003535656022421711,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 39,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0003124383886161709,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 40,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002772544993126612,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 41,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00023666016984566789,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 42,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00028717399626395225,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 43,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002822759754554109,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 44,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002710896218122455,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 45,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002684834307831185,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 46,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002634567109105125,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 47,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002442607794811544,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 48,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00024992017084969815,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 49,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002208766703862355,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 50,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00024154826056146188,
+   "by": "values"
+  },
+  {
+   "pos": 130,
+   "layer": 51,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00022015644120744468,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": -1,
+   "point": "embd",
+   "match": true,
+   "distance": 1.458583268436796e-09,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 0,
+   "point": "resid",
+   "match": true,
+   "distance": 8.494731714988803e-06,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 1,
+   "point": "resid",
+   "match": true,
+   "distance": 1.0972989273311536e-05,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 2,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00020359516342781896,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 3,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00023400780400024057,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 4,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00025932397194578503,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 5,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0005449477739695462,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 6,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0005815966216937646,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 7,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0005398050141064037,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 8,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0006910449659400087,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 9,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0008370166648914364,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 10,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0009823201696392018,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 11,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0011770488812123659,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 12,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0013178706145964962,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 13,
+   "point": "resid",
+   "match": false,
+   "distance": 0.001536537910699179,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 14,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0020659836404539208,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 15,
+   "point": "resid",
+   "match": false,
+   "distance": 0.002138735191958314,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 16,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0029382009942665243,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 17,
+   "point": "resid",
+   "match": false,
+   "distance": 0.002852699482405821,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 18,
+   "point": "resid",
+   "match": false,
+   "distance": 0.003737415689281922,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 19,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0048226174149998404,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 20,
+   "point": "resid",
+   "match": false,
+   "distance": 0.005069991910384002,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 21,
+   "point": "resid",
+   "match": false,
+   "distance": 0.019038608530292215,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 22,
+   "point": "resid",
+   "match": false,
+   "distance": 0.02009971583457095,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 23,
+   "point": "resid",
+   "match": false,
+   "distance": 0.026591225112661692,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 24,
+   "point": "resid",
+   "match": false,
+   "distance": 0.03174666305695236,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 25,
+   "point": "resid",
+   "match": false,
+   "distance": 0.03470766355709074,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 26,
+   "point": "resid",
+   "match": false,
+   "distance": 0.037238361425673265,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 27,
+   "point": "resid",
+   "match": false,
+   "distance": 0.03769811699270489,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 28,
+   "point": "resid",
+   "match": false,
+   "distance": 0.048277971794723436,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 29,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0523956703596062,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 30,
+   "point": "resid",
+   "match": false,
+   "distance": 0.06337401726612632,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 31,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0701088511438174,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 32,
+   "point": "resid",
+   "match": false,
+   "distance": 0.07045279615219258,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 33,
+   "point": "resid",
+   "match": false,
+   "distance": 0.07428662316693914,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 34,
+   "point": "resid",
+   "match": false,
+   "distance": 0.08282613671271406,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 35,
+   "point": "resid",
+   "match": false,
+   "distance": 0.08743943017390718,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 36,
+   "point": "resid",
+   "match": false,
+   "distance": 0.08415660531843151,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 37,
+   "point": "resid",
+   "match": false,
+   "distance": 0.08575541017798484,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 38,
+   "point": "resid",
+   "match": false,
+   "distance": 0.09769507495673883,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 39,
+   "point": "resid",
+   "match": false,
+   "distance": 0.09664609359019255,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 40,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0971115144571745,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 41,
+   "point": "resid",
+   "match": false,
+   "distance": 0.09504286159193587,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 42,
+   "point": "resid",
+   "match": false,
+   "distance": 0.10973701323808376,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 43,
+   "point": "resid",
+   "match": false,
+   "distance": 0.11998142578636588,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 44,
+   "point": "resid",
+   "match": false,
+   "distance": 0.11842536304884717,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 45,
+   "point": "resid",
+   "match": false,
+   "distance": 0.12185395317528831,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 46,
+   "point": "resid",
+   "match": false,
+   "distance": 0.11524474101437533,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 47,
+   "point": "resid",
+   "match": false,
+   "distance": 0.11973220381300917,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 48,
+   "point": "resid",
+   "match": false,
+   "distance": 0.10277926651165259,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 49,
+   "point": "resid",
+   "match": false,
+   "distance": 0.10643040117221193,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 50,
+   "point": "resid",
+   "match": false,
+   "distance": 0.08189607224604718,
+   "by": "values"
+  },
+  {
+   "pos": 1000,
+   "layer": 51,
+   "point": "resid",
+   "match": false,
+   "distance": 0.09054231670404266,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": -1,
+   "point": "embd",
+   "match": true,
+   "distance": 1.821050717789162e-09,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 0,
+   "point": "resid",
+   "match": true,
+   "distance": 8.832556354699533e-06,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 1,
+   "point": "resid",
+   "match": true,
+   "distance": 1.0309996324788e-05,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 2,
+   "point": "resid",
+   "match": true,
+   "distance": 3.24990970788154e-05,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 3,
+   "point": "resid",
+   "match": true,
+   "distance": 4.0839380170586994e-05,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 4,
+   "point": "resid",
+   "match": true,
+   "distance": 6.551551703890867e-05,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 5,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00010715911154819838,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 6,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011713005976908633,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 7,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00011518866634050154,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 8,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00015408869384921404,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 9,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002097512982320335,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 10,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0002684836436971428,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 11,
+   "point": "resid",
+   "match": true,
+   "distance": 0.00034946641810509025,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 12,
+   "point": "resid",
+   "match": true,
+   "distance": 0.000501326632683875,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 13,
+   "point": "resid",
+   "match": true,
+   "distance": 0.000575541851555933,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 14,
+   "point": "resid",
+   "match": true,
+   "distance": 0.0008589059426209798,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 15,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0010505058444995501,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 16,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0016685695843653239,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 17,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0018018122477491904,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 18,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0028118549607859117,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 19,
+   "point": "resid",
+   "match": false,
+   "distance": 0.003921455332307022,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 20,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0046487453018989825,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 21,
+   "point": "resid",
+   "match": false,
+   "distance": 0.006094582541080368,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 22,
+   "point": "resid",
+   "match": false,
+   "distance": 0.00657010875009708,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 23,
+   "point": "resid",
+   "match": false,
+   "distance": 0.010741291028200801,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 24,
+   "point": "resid",
+   "match": false,
+   "distance": 0.011876829741200029,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 25,
+   "point": "resid",
+   "match": false,
+   "distance": 0.012565682844016815,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 26,
+   "point": "resid",
+   "match": false,
+   "distance": 0.01987349246642562,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 27,
+   "point": "resid",
+   "match": false,
+   "distance": 0.17565064517297094,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 28,
+   "point": "resid",
+   "match": false,
+   "distance": 0.1501946868643713,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 29,
+   "point": "resid",
+   "match": false,
+   "distance": 0.14524784991789697,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 30,
+   "point": "resid",
+   "match": false,
+   "distance": 0.12078022205506997,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 31,
+   "point": "resid",
+   "match": false,
+   "distance": 0.19436576085014812,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 32,
+   "point": "resid",
+   "match": false,
+   "distance": 0.17644235035239542,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 33,
+   "point": "resid",
+   "match": false,
+   "distance": 0.1746663536275019,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 34,
+   "point": "resid",
+   "match": false,
+   "distance": 0.1700696945643554,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 35,
+   "point": "resid",
+   "match": false,
+   "distance": 0.14850954231620728,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 36,
+   "point": "resid",
+   "match": false,
+   "distance": 0.150624356516162,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 37,
+   "point": "resid",
+   "match": false,
+   "distance": 0.1345561111823183,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 38,
+   "point": "resid",
+   "match": false,
+   "distance": 0.14346284683999505,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 39,
+   "point": "resid",
+   "match": false,
+   "distance": 0.1282529796422305,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 40,
+   "point": "resid",
+   "match": false,
+   "distance": 0.13700021078543234,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 41,
+   "point": "resid",
+   "match": false,
+   "distance": 0.1327902904934089,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 42,
+   "point": "resid",
+   "match": false,
+   "distance": 0.12226312132662448,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 43,
+   "point": "resid",
+   "match": false,
+   "distance": 0.13060009134677386,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 44,
+   "point": "resid",
+   "match": false,
+   "distance": 0.11193252555687536,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 45,
+   "point": "resid",
+   "match": false,
+   "distance": 0.11448338306653551,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 46,
+   "point": "resid",
+   "match": false,
+   "distance": 0.10564563033673739,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 47,
+   "point": "resid",
+   "match": false,
+   "distance": 0.10616098556903167,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 48,
+   "point": "resid",
+   "match": false,
+   "distance": 0.0887875391840841,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 49,
+   "point": "resid",
+   "match": false,
+   "distance": 0.09020615128106298,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 50,
+   "point": "resid",
+   "match": false,
+   "distance": 0.06970050397249562,
+   "by": "values"
+  },
+  {
+   "pos": 2100,
+   "layer": 51,
+   "point": "resid",
+   "match": false,
+   "distance": 0.08170555291599546,
+   "by": "values"
+  }
+ ],
+ "first": {
+  "pos": 1000,
+  "layer": 11,
+  "point": "resid",
+  "distance": 0.0011770488812123659,
+  "by": "values"
+ }
+}
