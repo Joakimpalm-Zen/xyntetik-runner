@@ -1107,9 +1107,15 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, int max_hd,
         for (int l = 0; l < m->n_layer; l++) {
             layer_t *ly = &m->layers[l];
             size_t wb = layer_weight_bytes(ly, m->n_expert, moe_on_host(m, l));
-            // KV bytes honour the cache format: a q8_0 cache is ~53% of fp16,
-            // so quantized KV directly buys more offloaded layers here
-            size_t kv = 2 * (size_t)m->n_ctx * model_kv_row_bytes(m, l);
+            // KV bytes mirror the allocation: model_kv_boundary_bytes is the
+            // same cumulative account MemAlloc sizes the device cache from,
+            // so a ringed sliding layer costs its ring rows rather than
+            // n_ctx, a shared-KV layer costs nothing beyond its owner's
+            // earlier rows, and the q8_0 format discount (~53% of fp16)
+            // still buys more offloaded layers. Charging every layer full
+            // n_ctx rows left most of a 24 GB card idle under RUNNER_KV_RING.
+            size_t kv = 2 * (model_kv_boundary_bytes(m, l + 1) -
+                             model_kv_boundary_bytes(m, l));
             if (used + wb + kv > vram_budget) break;
             used += wb + kv;
             G = l + 1;
