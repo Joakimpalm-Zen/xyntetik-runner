@@ -18,6 +18,9 @@ Current release and unreleased changes. Compatibility follows the
   - **The other gates:** gpu-identity's pinned arm reads 1.85e-5 and 1.94e-5 of the logit range (limit 1e-3). The
     tokenizer differential and the template's 16 cases are identical. The `deepseek2` entry leaves
     `ARCH_GATE_EXEMPTIONS`. Record: `docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/`.
+
+## v1.13.0 - 2026-11-04
+
 - **`GET /v1/models` says the context the server runs at.** Each entry
   carries `context_window`: the resident model's context, else the
   configured `-c`; absent only on a registry that has loaded nothing yet
@@ -90,9 +93,10 @@ Current release and unreleased changes. Compatibility follows the
   - Three layout kernels, `k_mla_q`, `k_mla_kv` and `k_mla_pack_v`, put Q and K as [pe | nope] and V as [v | 0],
     and pack the value width before `attn_output`. They are copies only.
   - The latent's projections, its norm, the rope, the cache and the 192-wide attention run on existing kernels.
-  - Still on the CPU, with a reason:
-    - the q-lora pair (`attn_q_a`: DeepSeek-V2 and V3, not V2-Lite), refused by name;
-    - the multi-sequence microbatch, which declines deepseek2.
+  - Still on the CPU, with a reason: the q-lora pair (`attn_q_a`: DeepSeek-V2 and V3, not V2-Lite), refused by
+    name.
+  - The multi-sequence microbatch declines deepseek2, as every MoE model: sequences decode one at a time on the
+    device.
   - **Measured on the toy:** `test-deepseek2`'s CUDA arm is 4.0e-5 from the plain-Python reference and 4.8e-7 from
     the CPU. gpu-identity reads 9.8e-7 against a limit of 1e-5.
   - **Measured on DeepSeek-V2-Lite-Chat Q8_0, CPU against CUDA (gpu-identity):**
@@ -186,9 +190,6 @@ Current release and unreleased changes. Compatibility follows the
 
 - **DeepSeek-V2 (`deepseek2`) runs on the CPU (R4.4.5 step b).** These are the limits for now:
   - The GPU backends run it on the CPU with a reason, except CUDA's naive form (step c1, above).
-  - The naive multi-head latent attention, so the cache is the full per-head K and V (16 x 192 x 2 values a token a
-    layer on V2-Lite), not the 576-value latent.
-
   - The absorbed multi-head latent attention by default: the cache holds one 576-wide head a token a layer
     ([k_pe | normed latent], read by every query head; 1,152 values with the K and V rows against the naive form's
     6,144 on V2-Lite). `RUNNER_MLA_NAIVE=1` keeps the naive form (16 heads of 192), the identity gate's oracle.
@@ -197,8 +198,6 @@ Current release and unreleased changes. Compatibility follows the
 
   Against the publisher's float32 code (`modeling_deepseek.py`, `--trust-remote-code`), DeepSeek-V2-Lite-Chat Q8_0
   reads mean KLD 0.0100 and margin-qualified top-1 100% over the house window. llama.cpp reads 0.0155 / 99.54% on the
-  same file, and Runner is the closer (Wilcoxon p 9e-15). The rest is the publisher's:
-
   same file, and Runner is the closer (Wilcoxon p 9e-15). That read is the naive form. Against the same reference at
   positions 4000-5999 of the gold corpus, the absorbed form is not distinguishable from it: mean KLD 0.01286 against
   0.01285 (1.001x), Wilcoxon p 0.095, McNemar p 1.0, margin-qualified top-1 99.48% for both. The rest is the
@@ -381,9 +380,6 @@ Current release and unreleased changes. Compatibility follows the
   1.18x on Qwen2.5-3B (0.66x to 0.78x of llama.cpp b11748), 1.08x on
   Qwen2.5-7B, 1.03x to 1.04x on Qwen3-4B and Llama-3.2-3B; 1.00x to 1.01x
   at 512. Report: `docs/compat-reports/r3.29.1-cuda-decode-gqa8-2026-11-03`.
-
-
-- **`RUNNER_SPEC_PROF=1` prints its profile line on a `--json` run too.** The
 
 - **`RUNNER_SPEC_PROF=1` prints its profile line on a schema-constrained run too.** The
   speculative walk left through three early exits when a constrained document

@@ -1,0 +1,6 @@
+{"prompt": "code", "usage": {"prompt_tokens": 102, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens": 256, "total_tokens": 358}, "finish": "length", "seconds": 22.1}
+{"prompt": "copy", "usage": {"prompt_tokens": 527, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens": 256, "total_tokens": 783}, "finish": "length", "seconds": 25.4}
+{"prompt": "edit", "usage": {"prompt_tokens": 3167, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens": 256, "total_tokens": 3423}, "finish": "length", "seconds": 60.4}
+{"prompt": "long", "usage": {"prompt_tokens": 3866, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens": 256, "total_tokens": 4122}, "finish": "length", "seconds": 68.7}
+{"prompt": "prose", "usage": {"prompt_tokens": 63, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens": 256, "total_tokens": 319}, "finish": "length", "seconds": 21.3}
+{"prompt": "tool", "usage": {"prompt_tokens": 126, "prompt_tokens_details": {"cached_tokens": 0}, "completion_tokens": 256, "total_tokens": 382}, "finish": "length", "seconds": 20.8}

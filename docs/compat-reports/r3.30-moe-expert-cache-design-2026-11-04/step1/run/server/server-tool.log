@@ -1,0 +1,21 @@
+rope: YaRN scaling x16.00 (model metadata)
+gpu: OS video memory budget 7.60 GB for this process, 0.14 GB in use; offload budget 7.46 GB, headroom 0.54 GB
+gpu-split: budget=7.46GB fixed=0.61GB G=28/28 full=1 used=7.07GB
+gpu-split: experts 12/28 layers on GPU, 16 on host (auto fit)
+gpu-split: prompt window 512 columns (batch 512, 0.14 GB spare, 261572 bytes a column with TC2's activations)
+gpu: weights 1.92 GB on the device after 2 s (945 MB/s from the file)
+gpu: weights on the device: 5.93 GB in 6 s (920 MB/s from the file)
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (28/28 attention layers, 5.9 GB in VRAM; 16/28 expert layers on CPU)
+gpu: VRAM 0.69 GB free of 8.59 GB after init (kv 0.47 GB + scratch 0.08 GB this instance)
+warning: weights are 12.9 GB but only 10.3 GB of RAM is available. This is a sparse MoE and touches about 2.6 GB per token, which does fit — expect a slow start and disk reads whenever routing reaches a cold expert, not a stall on every token.
+loaded ~/models/r330/Mellum2.1-12B-A2.5B-Thinking-Q8_0.gguf | mellum | 28 layers | ctx 8192 | 4 threads (divided across slots) | 7.70s
+sampling: generic (temp 0.80, top_p 0.95, top_k 40, min_p 0.05, repeat_penalty 1.00)
+server listening on http://127.0.0.1:18630 — 1 slot sharing 4 threads
+  POST /v1/chat/completions | POST /v1/responses | POST /v1/completions
+  POST /v1/embeddings | POST /v1/rerank | POST /v1/messages | POST /v1/messages/count_tokens
+  GET /v1/models | GET /v1/capabilities | GET /health | GET /metrics
+  GET /v1/runner/prefix-cache | POST /v1/runner/prefix-cache/clear | POST /unload
+  GET /v1/runner/provenance | POST /v1/runner/contexts | GET /v1/runner/contexts | DELETE /v1/runner/contexts/{id} | POST /v1/runner/contexts/{id}/snapshot
+  GET /v1/responses/{id} | GET /v1/responses/{id}/input_items | DELETE /v1/responses/{id}
+[slot 0] chatcmpl-0: start, 126 prompt (0 cached, none)
+[slot 0] chatcmpl-0: 126 prompt (0 cached) + 256 gen tok (21.0 tok/s) [1555563 page-ins — weights not resident]

@@ -1,0 +1,20 @@
+== trace statistics (decode tokens)
+prompt  prompt_tok  decode_tok  ws1  ws8  ws32  ws128  reuse_p50  reuse_p90  top32share  top16share
+code          102         256   224  624  1007   1390          1         10       0.940       0.763
+copy          527         256   224  671  1077   1418          1         11       0.923       0.713
+edit         3167         256   224  662  1086   1415          1         12       0.929       0.751
+long         3866         256   224  665  1067   1404          1         11       0.939       0.763
+prose          63         256   224  662  1053   1418          1         11       0.936       0.742
+tool          126         256   224  633  1045   1434          1         10       0.927       0.742
+(ws W: distinct experts touched in W decode tokens, of 1,792; reuse: decode tokens between two routings of one expert (uniform routing: mean 8); topN share: a layer's routings on its N most used of 64, uniform would be 0.500 / 0.250)
+
+== policies at equal bytes (served-from-bank share of decode routings)
+K  B     prompt  (a)static  (b)hot-LOO  (b)hot-in  (c)LRU R=4 [adm/tok]  (c)LRU R=8 [adm/tok]  (c)LRU R=16 [adm/tok]
+12   768 code        0.429       0.837      0.912         0.822 [ 4.0]         0.892 [ 7.1]         0.901 [10.1]
+12   768 copy        0.429       0.664      0.870         0.786 [ 4.0]         0.858 [ 7.6]         0.879 [11.2]
+12   768 edit        0.429       0.843      0.864         0.834 [ 4.0]         0.859 [ 7.9]         0.870 [12.8]
+12   768 long        0.429       0.824      0.811         0.818 [ 4.0]         0.868 [ 7.8]         0.881 [11.7]
+12   768 prose       0.429       0.738      0.907         0.757 [ 4.0]         0.862 [ 7.5]         0.887 [10.9]
+12   768 tool        0.429       0.803      0.888         0.722 [ 4.0]         0.832 [ 7.6]         0.883 [11.1]
+12   768 mean        0.429       0.785      0.875         0.790                0.862                0.883       
+   implied decode gain over (a): (b) 1.660x  (b in-sample) 1.994x  (c) R=4 1.676x  (c) R=8 1.936x  (c) R=16 2.031x   kill below 1.300x

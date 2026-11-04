@@ -26,12 +26,15 @@ ROOT = Path(__file__).resolve().parents[1]
 # A bare dotted triple cannot be the pattern: this tree cites competitor
 # versions (vLLM 0.27.1, Ollama 0.32.14), tool versions (Docker 29.1.3) and
 # loopback addresses, and none of those are drift. So a release string is one
-# of three unambiguous spellings -- the retired -alpha form, a `v`-prefixed tag
-# spelling, or a version this project names as its own.
+# of four unambiguous spellings -- the retired -alpha form, a `v`-prefixed tag
+# spelling, a version this project names as its own, or the banner's
+# "Version `X.Y.Z`" (MANUAL's copy of that banner said 1.6.0 through six
+# releases because no alternative read it).
 RELEASE_STRING_RE = re.compile(
     r"(?<![\w.\-])(v?\d+\.\d+\.\d+-alpha)(?![\w.\-])"
     r"|(?<![\w.\-])(v\d+\.\d+\.\d+)(?![\w.\-])"
-    r"|\b[Rr]unner:?[ \t]+`?(v?\d+\.\d+\.\d+(?:-alpha)?)(?![\w.\-])")
+    r"|\b[Rr]unner:?[ \t]+`?(v?\d+\.\d+\.\d+(?:-alpha)?)(?![\w.\-])"
+    r"|\bVersion[ \t]+`?(v?\d+\.\d+\.\d+)(?![\w.\-])")
 
 
 def fail(msg):
@@ -50,7 +53,8 @@ def binary_version(binary):
 def stale_release_strings(text, version, tag):
     stale = set()
     for match in RELEASE_STRING_RE.finditer(text):
-        s = match.group(1) or match.group(2) or match.group(3)
+        s = (match.group(1) or match.group(2) or match.group(3)
+             or match.group(4))
         if s not in {version, tag}:
             stale.add(s)
     return sorted(stale)
