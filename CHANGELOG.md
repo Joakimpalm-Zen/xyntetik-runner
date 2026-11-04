@@ -134,9 +134,13 @@ Current release and unreleased changes. Compatibility follows the
   rule passes: mean KL 0.9998x the tile's, Wilcoxon p 0.82, McNemar 0/0
   over 2,000 positions. gpu-identity is ok on both settings. The default
   keys on the measured width, and `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the
-  tile. Not yet measured: the Flash-Next sibling (qwen4exp), Metal, and
-  the RTX 3070 at these sizes. Report:
+  tile. Not yet measured: Metal and the RTX 3070 at these sizes. Report:
   `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-qwen35-2026-11-04`.
+  The Flash-Next sibling (qwen4exp) stays on the tile: on the same slice,
+  with 26 of its 48 layers on the CPU, its 4K prefill reads 0.992x, and
+  16K and D1 were not run. With routing pinned, gpu-identity reads
+  4.42e-6 (R1.25). Report:
+  `docs/compat-reports/r3.6.3.1-cuda-attn-tc-wide-qwen4exp-2026-11-04`.
 
 - **The CUDA int8 prefill route (`RUNNER_CUDA_I8=1`) stays opt-in for every
   type (R3.14.1).** Against the publisher's float32 models, Q8_0 (Qwen3-0.6B)
