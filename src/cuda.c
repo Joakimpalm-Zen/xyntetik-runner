@@ -454,6 +454,7 @@ typedef struct gpu_weights {
                 f_swiglu, f_xielu, f_add, f_scale;
     CUfunction  f_gelu_erf, f_head_gate;   // spark2_5: exact GELU, per-head gate
     CUfunction  f_mla_q, f_mla_kv, f_mla_pack_v;   // deepseek2's naive MLA layout
+    CUfunction  f_mla_q_absorb, f_mla_kv_absorb, f_mla_v_absorb;   // and the absorbed form
     CUfunction  f_q35_split, f_q35_gate, f_q35_conv, f_q35_delta;
     CUfunction  f_mamba_conv, f_mamba_ssd, f_mamba_gate_norm, f_relu2;
     // whole-tile twins of the per-token recurrent kernels (C2.3, RUNNER_CUDA_RECUR_SEQ)
@@ -538,6 +539,7 @@ typedef struct gpu_weights {
     CUdeviceptr *bq, *bk, *bv, *bo;     // per layer, may be 0
     CUdeviceptr *qn, *kn;               // qwen3 per-head q/k norms
     CUdeviceptr *mla_kvn;               // deepseek2: the latent's RMS norm (kv_lora wide)
+    CUdeviceptr *mla_kvb;               // and attn_kv_b dequantized (the absorbed form)
     // gemma-4 MoE dual-branch: dense-post/moe-pre/moe-post norms + the router
     // input scale (with 1/sqrt(n_embd) folded in), per MoE layer, may be 0
     CUdeviceptr *g_pn1, *g_prn2, *g_pn2, *g_gis;
@@ -1270,13 +1272,15 @@ static bool gpu_q8x_on(void);
     fprintf(stderr, "gpu: %s failed: %s\n", #call, cu_err(_r)); goto fail; } } while (0)
 
 // deepseek2's per-column MLA scratch (mla_buf), in floats: kv_a [kv_lora +
-// rope], the normed latent [kv_lora], kv_b's output [heads x (nope + v)] and
-// the packed V [heads x v]; 0 for every other architecture
+// rope], the normed latent [kv_lora], then kv_b's output [heads x (nope + v)]
+// in the naive form or the raw Q [heads x key_length] in the absorbed one,
+// and the packed V [heads x v]; 0 for every other architecture
 static size_t mla_cols(const model_t *m) {
     if (!m->deepseek2) return 0;
     size_t r = (size_t)m->mla_kv_lora, rd = (size_t)m->rope_dim, H = (size_t)m->n_head;
     size_t nope = (size_t)(m->mla_qk - m->rope_dim), vd = (size_t)m->mla_v_dim;
-    return (r + rd) + r + H * (nope + vd) + H * vd;
+    size_t mid = m->mla_absorb ? H * (size_t)m->mla_qk : H * (nope + vd);
+    return (r + rd) + r + mid + H * vd;
 }
 
 static CUdeviceptr f32_dbuf(const float *src, size_t n, const char *what,
@@ -1502,7 +1506,7 @@ static void shared_destroy(gpu_weights *w) {
             w->bq ? w->bq[l] : 0, w->bk ? w->bk[l] : 0,
             w->bv ? w->bv[l] : 0, w->bo ? w->bo[l] : 0,
             w->qn ? w->qn[l] : 0, w->kn ? w->kn[l] : 0,
-            w->mla_kvn ? w->mla_kvn[l] : 0,
+            w->mla_kvn ? w->mla_kvn[l] : 0, w->mla_kvb ? w->mla_kvb[l] : 0,
             w->pan ? w->pan[l] : 0, w->pfn ? w->pfn[l] : 0,
             w->g_pn1 ? w->g_pn1[l] : 0, w->g_prn2 ? w->g_prn2[l] : 0,
             w->g_pn2 ? w->g_pn2[l] : 0, w->g_gis ? w->g_gis[l] : 0,
@@ -1519,7 +1523,7 @@ static void shared_destroy(gpu_weights *w) {
     }
     free(w->attn_norm); free(w->ffn_norm);
     free(w->bq); free(w->bk); free(w->bv); free(w->bo);
-    free(w->qn); free(w->kn); free(w->mla_kvn);
+    free(w->qn); free(w->kn); free(w->mla_kvn); free(w->mla_kvb);
     free(w->pan); free(w->pfn); free(w->ple_pn);
     free(w->g_pn1); free(w->g_prn2); free(w->g_pn2); free(w->g_gis);
     free(w->g_dsc);
@@ -1651,6 +1655,9 @@ static size_t layer_weight_bytes(const layer_t *ly, int n_expert,
     int nmix = layer_mixer_tensors(ly, mix);
     for (int i = 0; i < nmix; i++)
         wb += plan_bytes(mix[i], bound);
+    // deepseek2's absorbed form also holds attn_kv_b dequantized (mla_kvb)
+    if (ly->mla_kvb && ly->wkv_b)
+        wb += sizeof(float) * (size_t)(ly->wkv_b->ne[0] * ly->wkv_b->ne[1]);
     if (ly->is_moe && host_experts) {
         // The complete expert FFN (router, routed tensors and a coupled
         // Gemma shared branch) executes on the host. Attention remains here.
@@ -2350,6 +2357,8 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_rope,       "k_rope" },      { &w->f_store,  "k_store_kv" },
         { &w->f_mla_q,      "k_mla_q" },     { &w->f_mla_kv, "k_mla_kv" },
         { &w->f_mla_pack_v, "k_mla_pack_v" },
+        { &w->f_mla_q_absorb, "k_mla_q_absorb" }, { &w->f_mla_kv_absorb, "k_mla_kv_absorb" },
+        { &w->f_mla_v_absorb, "k_mla_v_absorb" },
         { &w->f_attn,       "k_attn" },      { &w->f_silu,   "k_silu_mul" },
         { &w->f_attn_dec,   "k_attn_dec" },  { &w->f_attn_merge, "k_attn_merge" },
         { &w->f_gelu,       "k_gelu_mul" },  { &w->f_add,    "k_add" },
@@ -2848,6 +2857,7 @@ static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
     w->qn = calloc(n_tab, sizeof(CUdeviceptr));
     w->kn = calloc(n_tab, sizeof(CUdeviceptr));
     w->mla_kvn = calloc(n_tab, sizeof(CUdeviceptr));
+    w->mla_kvb = calloc(n_tab, sizeof(CUdeviceptr));
     w->pan = calloc(n_tab, sizeof(CUdeviceptr));
     w->pfn = calloc(n_tab, sizeof(CUdeviceptr));
     w->ple_pn = calloc(n_tab, sizeof(CUdeviceptr));
@@ -2883,6 +2893,7 @@ static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
     REQUIRE_PTR_TABLE(w->qn, "attn_q_norm");
     REQUIRE_PTR_TABLE(w->kn, "attn_k_norm");
     REQUIRE_PTR_TABLE(w->mla_kvn, "attn_kv_a_norm");
+    REQUIRE_PTR_TABLE(w->mla_kvb, "attn_kv_b f32");
     REQUIRE_PTR_TABLE(w->pan, "post_attention_norm");
     REQUIRE_PTR_TABLE(w->pfn, "post_ffn_norm");
     REQUIRE_PTR_TABLE(w->ple_pn, "per-layer embedding post_norm");
@@ -2931,6 +2942,11 @@ static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
                             "K norm", l);
         w->mla_kvn[l] = f32_dbuf(ly->kv_a_norm_w, (size_t)m->mla_kv_lora,
                                  "latent norm", l);
+        // the absorbed form's kv_b, dequantized at load (NULL in the naive form)
+        w->mla_kvb[l] = ly->mla_kvb && ly->wkv_b
+                        ? f32_dbuf(ly->mla_kvb, (size_t)(ly->wkv_b->ne[0] * ly->wkv_b->ne[1]),
+                                   "attn_kv_b f32", l)
+                        : 0;
         w->pan[l] = f32_dbuf(ly->post_attn_norm_w, m->n_embd,
                              "post-attention norm", l);
         w->pfn[l] = f32_dbuf(ly->post_ffn_norm_w, m->n_embd,
@@ -3024,6 +3040,7 @@ static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
         REQUIRE_UPLOAD(ly->qnorm_w && !w->qn[l], "Q norm");
         REQUIRE_UPLOAD(ly->knorm_w && !w->kn[l], "K norm");
         REQUIRE_UPLOAD(ly->kv_a_norm_w && !w->mla_kvn[l], "latent norm");
+        REQUIRE_UPLOAD(ly->mla_kvb && !w->mla_kvb[l], "attn_kv_b f32");
         REQUIRE_UPLOAD(ly->post_attn_norm_w && !w->pan[l],
                        "post-attention norm");
         REQUIRE_UPLOAD(ly->post_ffn_norm_w && !w->pfn[l],
@@ -3213,17 +3230,15 @@ static bool cuda_admit(model_t *m) {
                 "not on the CUDA backend yet — using CPU\n");
         return false;
     }
-    // deepseek2 runs here in the naive multi-head latent attention (R4.4.5
-    // c1; model.c keeps the absorbed form on the CPU until c2). The q-lora
-    // pair (attn_q_a -> norm -> attn_q_b: DeepSeek-V2 and V3, not V2-Lite)
-    // has no device path yet
+    // deepseek2 runs here in both forms of the multi-head latent attention
+    // (R4.4.5 c1 naive, c2 absorbed). The q-lora pair (attn_q_a -> norm ->
+    // attn_q_b: DeepSeek-V2 and V3, not V2-Lite) has no device path yet
     if (m->deepseek2) {
         bool qlora = false;
         for (int l = 0; l < m->n_layer; l++) qlora = qlora || m->layers[l].wq_a;
-        if (m->mla_absorb || qlora) {
-            fprintf(stderr, "gpu: deepseek2 %s is not on the CUDA backend yet — "
-                    "using CPU\n", m->mla_absorb ? "with the absorbed latent attention"
-                                                  : "with a q-lora (attn_q_a)");
+        if (qlora) {
+            fprintf(stderr, "gpu: deepseek2 with a q-lora (attn_q_a) is not on "
+                    "the CUDA backend yet — using CPU\n");
             return false;
         }
     }
@@ -7171,10 +7186,26 @@ static bool tile_mla_project(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
     int H = m->n_head, hd = model_head_dim(m, l), rd = m->rope_dim, r = m->mla_kv_lora;
     int vd = m->mla_v_dim, kvb = H * (hd - rd + vd);
     int q_dim = model_q_dim(m, l), kv_dim = model_kv_dim(m, l);
-    if (kv_dim != q_dim || ly->wq_a) return false;
     CUdeviceptr kva = g->mla_buf;
     CUdeviceptr lat = kva + sizeof(float) * (size_t)g->win * (size_t)(r + rd);
     CUdeviceptr kvo = lat + sizeof(float) * (size_t)g->win * (size_t)r;
+    if (ly->wq_a) return false;
+    if (m->mla_absorb) {
+        // the absorbed form (R4.4.5 c2): the raw Q [heads x key_length] into
+        // the scratch (kvo's place), then per head [q_pe | k_b^T q_nope] into
+        // q (hd = rope + kv_lora wide); one KV head [k_pe | latent] into kt
+        // and vt (kv_dim = hd)
+        int qk = m->mla_qk, kvw = qk - rd + vd, qr_w = H * qk;
+        bool ok = enc_mv(g, m, ly->wq, g->xb, kvo, n_embd, qr_w, 0, tn, xdim, qr_w)
+               && enc_mv_same_x(g, m, ly->wkv_a, g->xb, kva, n_embd, r + rd, 0, tn, xdim, r + rd)
+               && enc_rmsnorm(g, kva, lat, g->sw->mla_kvn[l], r, m->rms_eps, tn, r + rd, r);
+        void *pq[] = { &kvo, &g->sw->mla_kvb[l], &g->q, &H, &qk, &rd, &r, &kvw, &q_dim };
+        ok = ok && launch(g, g->sw->f_mla_q_absorb, (unsigned)((hd + 255) / 256), H, tn, 256, pq);
+        void *pk[] = { &kva, &lat, &g->kt, &g->vt, &r, &rd, &kv_dim };
+        ok = ok && launch(g, g->sw->f_mla_kv_absorb, (unsigned)((hd + 255) / 256), tn, 1, 256, pk);
+        return ok;
+    }
+    if (kv_dim != q_dim) return false;
     bool ok = enc_mv(g, m, ly->wq, g->xb, g->kt, n_embd, q_dim, 0, tn, xdim, kv_dim)
            && enc_mv_same_x(g, m, ly->wkv_a, g->xb, kva, n_embd, r + rd, 0, tn, xdim, r + rd)
            && enc_rmsnorm(g, kva, lat, g->sw->mla_kvn[l], r, m->rms_eps, tn, r + rd, r)
@@ -7606,11 +7637,19 @@ static bool tile_attn_out(gpu_t *g, model_t *m, layer_t *ly, int l, int tn,
         // packed for attn_output as model.c's attn_output packs them
         int H = m->n_head, hd = model_head_dim(m, l), vd = m->mla_v_dim, pw = H * vd;
         int r = m->mla_kv_lora, rd = m->rope_dim, kvb = H * (hd - rd + vd);
+        int mid = m->mla_absorb ? H * m->mla_qk : kvb;
         CUdeviceptr pv = g->mla_buf + sizeof(float) * (size_t)g->win *
-                         (size_t)(r + rd + r + kvb);
-        void *pp[] = { &g->xb2, &pv, &H, &hd, &vd, &xdim };
-        return launch(g, g->sw->f_mla_pack_v, (unsigned)((pw + 255) / 256), tn, 1, 256, pp)
-            && enc_mv(g, m, ly->wo, pv, g->xb, pw, n_embd, g->sw->bo[l], tn, pw, xdim);
+                         (size_t)(r + rd + r + mid);
+        if (m->mla_absorb) {
+            // each head's output latent through its v-rows (R4.4.5 c2)
+            int qn = m->mla_qk - rd;
+            void *pa[] = { &g->xb2, &g->sw->mla_kvb[l], &pv, &H, &rd, &r, &qn, &vd, &xdim };
+            ok = launch(g, g->sw->f_mla_v_absorb, (unsigned)((vd + 7) / 8), H, tn, 256, pa);
+        } else {
+            void *pp[] = { &g->xb2, &pv, &H, &hd, &vd, &xdim };
+            ok = launch(g, g->sw->f_mla_pack_v, (unsigned)((pw + 255) / 256), tn, 1, 256, pp);
+        }
+        return ok && enc_mv(g, m, ly->wo, pv, g->xb, pw, n_embd, g->sw->bo[l], tn, pw, xdim);
     }
     ok = ok && enc_mv(g, m, ly->wo, g->xb2, g->xb, q_dim, n_embd, g->sw->bo[l], tn, xdim, xdim)
             && enc_lora(g, l, LW_O, g->xb2, g->xb, q_dim, n_embd, tn, xdim, xdim);

@@ -5641,10 +5641,7 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_bytes
                       "(sinks with a sliding window, NoPE full layers, "
                       "sigmoid routing with shared experts) is not checked yet";
 #if defined(RUNNER_GPU_CUDA)
-        // CUDA runs the naive form (R4.4.5 c1); the absorbed one is c2's
-        else if (m->deepseek2 && m->mla_absorb)
-            cpu_why = "deepseek2's absorbed latent attention has no CUDA path "
-                      "yet (RUNNER_MLA_NAIVE=1 runs the naive form on the device)";
+        // CUDA runs both forms (R4.4.5 c1 naive, c2 absorbed)
 #else
         else if (m->deepseek2)
             cpu_why = "deepseek2 (multi-head latent attention) is validated on "

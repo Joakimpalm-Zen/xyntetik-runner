@@ -5,12 +5,35 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **deepseek2 runs on CUDA in the absorbed multi-head latent attention, its default (R4.4.5 step c2).**
+  - The cache holds one 576-wide head per token and layer, as on the CPU. The naive form (step c1, below) stays
+    behind `RUNNER_MLA_NAIVE=1` as the oracle.
+  - Three kernels:
+    - `k_mla_q_absorb` builds each head's Q as [q_pe | k_bᵀ q_nope] from the layer's `attn_kv_b`, dequantized at
+      load (226 MB on V2-Lite, charged in the VRAM plan);
+    - `k_mla_kv_absorb` writes the one [k_pe | latent] row as both K and V;
+    - `k_mla_v_absorb` takes each head's output latent through its v-rows before `attn_output`.
+  - The 576-wide head runs on the plain attention kernels. The tiled and tensor-core prefill stop at 512 and 128.
+  - **Measured on the toy:** `test-deepseek2`'s CUDA arm is 4.0e-5 from the plain-Python reference and 9.5e-7
+    from the CPU. gpu-identity reads 2.4e-7 against a limit of 1e-5.
+  - **Measured on DeepSeek-V2-Lite-Chat Q8_0, CPU against CUDA (gpu-identity):**
+    - free routing reads 4.8e-4 of the logit range (limit 2e-3), with 7 of 14,820 expert slots differing (ties);
+    - pinned routing reads 1.9e-5 (limit 1e-3).
+  - **The cost:** scoring the 8,719-token gold corpus on the prefill route (`RUNNER_SCORE_CHUNKED=1`) on the CUDA
+    MIG slice takes 191 s absorbed against 146 s naive, at a host load average of 17 to 30. On the CPU the absorbed
+    form takes 798 s.
+  - **Against the publisher's float32 `modeling_deepseek.py`,** CUDA's absorbed form against the CPU's on the
+    prefill route, by the routes' rule:
+    - at positions 4000-5999 (1,999 positions), the read declared for it: mean KLD ratio 0.9993, Wilcoxon p 0.11,
+      McNemar 1/0;
+    - on the 300-position house window it read 1.018, over the rule's 1.01, with the other two tests passing.
+      Both reads are kept.
+
 - **deepseek2 runs on CUDA in the naive multi-head latent attention (R4.4.5 step c1), with `RUNNER_MLA_NAIVE=1`.**
   - Three layout kernels, `k_mla_q`, `k_mla_kv` and `k_mla_pack_v`, put Q and K as [pe | nope] and V as [v | 0],
     and pack the value width before `attn_output`. They are copies only.
   - The latent's projections, its norm, the rope, the cache and the 192-wide attention run on existing kernels.
   - Still on the CPU, with a reason:
-    - the absorbed form, which is the default (until c2);
     - the q-lora pair (`attn_q_a`: DeepSeek-V2 and V3, not V2-Lite), refused by name;
     - the multi-sequence microbatch, which declines deepseek2.
   - **Measured on the toy:** `test-deepseek2`'s CUDA arm is 4.0e-5 from the plain-Python reference and 4.8e-7 from
