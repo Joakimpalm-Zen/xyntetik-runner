@@ -54,12 +54,21 @@ Current release and unreleased changes. Compatibility follows the
   - The CPU only; the GPU backends run it on the CPU with a reason.
   - The naive multi-head latent attention, so the cache is the full per-head K and V (16 x 192 x 2 values a token a
     layer on V2-Lite), not the 576-value latent.
+
+  - The absorbed multi-head latent attention by default: the cache holds one 576-wide head a token a layer
+    ([k_pe | normed latent], read by every query head; 1,152 values with the K and V rows against the naive form's
+    6,144 on V2-Lite). `RUNNER_MLA_NAIVE=1` keeps the naive form (16 heads of 192), the identity gate's oracle.
   - The legacy unsplit `attn_kv_b` only; the split `attn_k_b`/`attn_v_b` layout is refused.
   - No LoRA.
 
   Against the publisher's float32 code (`modeling_deepseek.py`, `--trust-remote-code`), DeepSeek-V2-Lite-Chat Q8_0
   reads mean KLD 0.0100 and margin-qualified top-1 100% over the house window. llama.cpp reads 0.0155 / 99.54% on the
   same file, and Runner is the closer (Wilcoxon p 9e-15). The rest is the publisher's:
+
+  same file, and Runner is the closer (Wilcoxon p 9e-15). That read is the naive form. Against the same reference at
+  positions 4000-5999 of the gold corpus, the absorbed form is not distinguishable from it: mean KLD 0.01286 against
+  0.01285 (1.001x), Wilcoxon p 0.095, McNemar p 1.0, margin-qualified top-1 99.48% for both. The rest is the
+  publisher's:
   - the softmax scale mscale² / sqrt(key_length);
   - softmax routing without renormalisation;
   - the `deepseek-llm` pre-tokenizer (`test-tokenizer-classes`; 0 of 721 corpus segments and 0 of 99,442 vocabulary

@@ -167,6 +167,7 @@ typedef struct {
     // attn_kv_b ([k_nope | v] rows per head). wq above is attn_q or attn_q_b.
     gguf_tensor *wq_a, *wkv_a, *wkv_b;
     float       *q_a_norm_w, *kv_a_norm_w;
+    float       *mla_kvb;   // attn_kv_b dequantized (the absorbed form's k- and v-rows)
     float *ssm_conv_w;   // qwen35: ssm_conv dequantized once at load, [convdim][kernel]
     float       *ssm_dt, *ssm_a, *ssm_norm_w;
     // Granite-4 h-series (`granitehybrid`) Mamba-2 mixer. A DIFFERENT tensor
@@ -622,6 +623,10 @@ typedef struct {
     int    mla_kv_lora;      // attention.kv_lora_rank (512 on V2-Lite)
     int    mla_q_lora;       // attention.q_lora_rank (0: a plain attn_q)
     int    mla_v_dim;        // attention.value_length (128)
+    int    mla_qk;           // attention.key_length (192): the publisher's head width
+    bool   mla_absorb;       // the absorbed form: one 576-wide KV head [k_pe | latent],
+                             // Q per head [q_pe | k_b^T q_nope]; RUNNER_MLA_NAIVE=1 keeps
+                             // the naive form (the identity gate's oracle)
     float *mla_scratch;      // per row: kv_a, normed latent, kv_b out, q-lora
     bool   attn_qkv_split;   // spark2_5: Q, K and V fused in blk.N.attn_qkv
                              // (FFN separate), sliced at bind time

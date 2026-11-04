@@ -11,7 +11,9 @@ mistake in them shows as a difference.
 """
 import json
 import math
+import os
 import pathlib
+import re
 import struct
 import subprocess
 import sys
@@ -23,6 +25,17 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from gguf_fixture import read_header  # noqa: E402
 
 TEXT = "the quick brown fox jumps over the lazy dog"
+# 176 tokens: past a 64-row chunk, so a forward carries the scratch's full batch
+LONG = ("the quick brown fox jumps over the lazy dog and then the dog sleeps under the old oak tree by the "
+        "river while the fox runs")
+
+
+def _score(exe, model, out, naive):
+    env = dict(os.environ, RUNNER_MLA_NAIVE="1" if naive else "0")
+    p = subprocess.run([str(exe), "-m", str(model), "--gpu", "off", "-t", "2", "-c", "256", "--score", "-p", TEXT,
+                        "--score-out", str(out), "--no-tray"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    return json.loads(out.read_text())
 
 
 @pytest.fixture(scope="module")
@@ -34,11 +47,8 @@ def fixture(tmp_path_factory):
     model = d / "ds2.gguf"
     subprocess.run([sys.executable, str(ROOT / "scripts" / "make-test-model.py"), "--arch", "deepseek2", str(model)],
                    check=True, stdout=subprocess.DEVNULL)
-    out = d / "score.json"
-    p = subprocess.run([str(exe), "-m", str(model), "--gpu", "off", "-t", "2", "-c", "256", "--score", "-p", TEXT,
-                        "--score-out", str(out), "--no-tray"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    assert p.returncode == 0, p.stderr.decode(errors="replace")
-    return model, json.loads(out.read_text())
+    # the absorbed form (the default) and the naive one (RUNNER_MLA_NAIVE=1)
+    return model, {False: _score(exe, model, d / "absorbed.json", False), True: _score(exe, model, d / "naive.json", True)}
 
 
 def load(model):
@@ -151,8 +161,10 @@ def reference_logprobs(kv, w, tokens):
     return out
 
 
-def test_mla_matches_the_publishers_math(fixture):
-    model, score = fixture
+@pytest.mark.parametrize("naive", [False, True], ids=["absorbed", "naive"])
+def test_mla_matches_the_publishers_math(fixture, naive):
+    model, scores = fixture
+    score = scores[naive]
     kv, w = load(model)
     tokens = score["tokens"]
     ref = reference_logprobs(kv, w, tokens)
@@ -162,6 +174,36 @@ def test_mla_matches_the_publishers_math(fixture):
     # measured 4.0e-5 on 62 positions; the same reference with transformers' built-in scale (no mscale^2) reads
     # 2.1e-3, so the bound separates the two by 4x on each side
     assert worst < 5e-4, "max |runner - reference| logprob %.3g over %d positions" % (worst, len(ref))
+
+
+def test_absorbed_equals_naive(fixture):
+    # the same function re-associated: q.k = q_pe.k_pe + (k_b^T q_nope).latent, and
+    # v_b applied after the weighted sum of latents rather than before
+    _, scores = fixture
+    a, b = scores[False], scores[True]
+    assert a["tokens"] == b["tokens"]
+    worst = max(abs(x - y) for x, y in zip(a["logprobs"], b["logprobs"]))
+    assert worst < 1e-4, "absorbed against naive: max |dlogprob| %.3g" % worst
+
+
+def test_a_full_batch_prefill_in_both_forms(fixture):
+    # a prompt prefill feeds forwards of the scratch's full batch (n_batch
+    # rows): the absorbed form once computed kv_b's width from its 576-wide
+    # head, put qa and qr past the MLA scratch whenever a forward carried more
+    # than about half the batch, and aborted on glibc's heap check here
+    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
+    model, _ = fixture
+    out = {}
+    for naive in (False, True):
+        env = dict(os.environ, RUNNER_MLA_NAIVE="1" if naive else "0")
+        p = subprocess.run([str(exe), "-m", str(model), "--gpu", "off", "-t", "2", "-c", "256", "-p", LONG,
+                            "-n", "8", "--temp", "0", "--no-tray"], env=env, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
+        err = p.stderr.decode(errors="replace")
+        assert p.returncode == 0, err[-2000:]
+        assert re.search(r"prompt: (\d+) tok", err) and int(re.search(r"prompt: (\d+) tok", err).group(1)) > 128, err
+        out[naive] = p.stdout
+    assert out[False] == out[True]
 
 
 def test_the_family_template_and_refusals(fixture):
