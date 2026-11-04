@@ -649,6 +649,12 @@ typedef struct {
                              // bounces). Decided once per file at upload and
                              // shared by every instance on that upload.
     int    cpu_moe_layers;   // requested host-expert layer count (params copy)
+    // RUNNER_MOE_HOT (R3.30): a host layer's experts the CUDA upload keeps in
+    // a device hot bank. [n_layer * n_expert] slot of each expert in its
+    // layer's bank, -1 = host; NULL when the knob is unset.
+    int   *moe_hot_slot;
+    int   *moe_hot_n;        // [n_layer] slots in each layer's hot bank
+    int    moe_hot_total;    // slots over every layer
     int    moe_auto_placed;  // --cpu-moe auto: device expert banks the last plan placed
     int    moe_auto_trim;    // --cpu-moe auto: banks to hold back after a device
                              // init ran out of memory (model.c retries gpu_init)
@@ -1324,6 +1330,17 @@ void model_recurrent_mark_drop(model_t *m);
 bool   model_moe_ffn_cpu(model_t *m, int layer, int n);
 // qwen4exp: experts on the premixed input in m->xb, output left in m->xb
 bool   model_moe_ffn_cpu_premixed(model_t *m, int layer, int n);
+// RUNNER_MOE_HOT: parse a hot file's text into m->moe_hot_*; false, having
+// said why on stderr, when the file is malformed or the model is out of the
+// placement's scope
+bool   model_moe_hot_parse(model_t *m, const char *text);
+// RUNNER_MOE_HOT's host half: over n rows of normed input x (stride xs) and
+// the device's routing sel/selw, the experts layer's hot bank lacks, by the
+// CPU path's own grouped expert. terms[(b * used + s) * n_embd] gets slot s's
+// routing weight times its down output for each slot routed off the bank;
+// the other slots are left as they are.
+bool   model_moe_hot_terms(model_t *m, int layer, int n, const float *x, int xs,
+                           const int *sel, const float *selw, float *terms);
 // qwen4exp: the PLE block over m->x_hc rows (device boundary)
 bool   model_ple4_block_host(model_t *m, int layer, const int32_t *tokens, int n, int pos);
 // byte cost of one layer's expert half (router + experts + gemma shared branch)

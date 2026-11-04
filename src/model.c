@@ -5103,6 +5103,125 @@ static int model_gpu_batch_default(void) {
 
 // What this instance asks of the GPU split: the VRAM cap, a forced layer
 // count, and the per-layer expert placement under --cpu-moe.
+// RUNNER_MOE_HOT (R3.30): which of a host layer's experts the CUDA upload
+// keeps in a device hot bank. The file is "layer expert" pairs, one a line,
+// '#' to the line's end a comment; a pair listed twice counts once. Slots
+// follow ascending expert order within a layer, so a bank that holds a whole
+// layer has that layer's own layout. v1 covers the plain top-k SiLU MoE
+// (Mellum's shape); every other expert FFN, and the knob without --cpu-moe,
+// is refused rather than half honoured, as is a layer of more than
+// MOE_HOT_MAX_EXPERT experts (model_moe_hot_terms' miss list).
+#define MOE_HOT_MAX_EXPERT 256
+bool model_moe_hot_parse(model_t *m, const char *text) {
+    const char *why = NULL;
+    if (!m->cpu_moe)
+        why = "it places a --cpu-moe host layer's experts, and --cpu-moe is off";
+    else if (m->moe_gemma || m->n_ff_shexp > 0 || m->hyper_conn || m->ffn_relu2 ||
+             m->ffn_act != ACT_SILU)
+        why = "v1 covers the plain top-k SiLU expert FFN only (no shared expert, "
+              "dual branch or hyper-connections)";
+    else if (m->n_expert > MOE_HOT_MAX_EXPERT)
+        why = "v1 covers at most 256 experts a layer";
+    for (int l = 0; !why && l < m->n_layer; l++) {
+        const layer_t *ly = &m->layers[l];
+        if (ly->is_moe && (ly->moe_split || ly->ffn_gate_inp_b || ly->ffn_gate_exps_b ||
+                           ly->ffn_up_exps_b || ly->ffn_down_exps_b || ly->down_exps_scale ||
+                           ly->n_expert != m->n_expert))
+            why = "v1 covers the plain top-k SiLU expert FFN only (no expert biases, "
+                  "scales or split expert tensors)";
+    }
+    if (why) {
+        fprintf(stderr, "error: RUNNER_MOE_HOT: %s\n", why);
+        return false;
+    }
+    int ne = m->n_expert, nl = m->n_layer;
+    bool *in = calloc((size_t)nl * ne, sizeof(bool));
+    int *slot = malloc(sizeof(int) * (size_t)nl * ne);
+    int *cnt = calloc((size_t)nl, sizeof(int));
+    if (!in || !slot || !cnt) {
+        free(in); free(slot); free(cnt);
+        fprintf(stderr, "error: RUNNER_MOE_HOT: out of memory\n");
+        return false;
+    }
+    int line = 0;
+    for (const char *p = text; p && *p; ) {
+        const char *eol = strchr(p, '\n');
+        size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        char buf[128];
+        line++;
+        if (len >= sizeof buf) len = sizeof buf - 1;
+        memcpy(buf, p, len);
+        buf[len] = 0;
+        char *hash = strchr(buf, '#');
+        if (hash) *hash = 0;
+        int l, e, at = 0;
+        char c;
+        if (sscanf(buf, " %d %d %n", &l, &e, &at) == 2) {
+            if (sscanf(buf + at, " %c", &c) == 1)
+                why = "a line holds more than a layer and an expert";
+            else if (l < 0 || l >= nl || !m->layers[l].is_moe)
+                why = "the layer is not an MoE layer of this model";
+            else if (e < 0 || e >= ne)
+                why = "the expert is out of the layer's range";
+            else
+                in[(size_t)l * ne + e] = true;
+        } else if (sscanf(buf, " %c", &c) == 1) {
+            why = "a line is not \"layer expert\"";
+        }
+        if (why) break;
+        p = eol ? eol + 1 : NULL;
+    }
+    if (why) {
+        fprintf(stderr, "error: RUNNER_MOE_HOT: line %d: %s\n", line, why);
+        free(in); free(slot); free(cnt);
+        return false;
+    }
+    int total = 0;
+    for (int l = 0; l < nl; l++)
+        for (int e = 0; e < ne; e++) {
+            size_t i = (size_t)l * ne + e;
+            slot[i] = in[i] ? cnt[l]++ : -1;
+            total += in[i];
+        }
+    free(in);
+    free(m->moe_hot_slot);
+    free(m->moe_hot_n);
+    m->moe_hot_slot = slot;
+    m->moe_hot_n = cnt;
+    m->moe_hot_total = total;
+    return true;
+}
+
+static bool moe_hot_load(model_t *m) {
+    const char *path = getenv("RUNNER_MOE_HOT");
+    if (!path || !*path) return true;
+    FILE *f = plat_fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "error: RUNNER_MOE_HOT: cannot open %s\n", path);
+        return false;
+    }
+    size_t cap = 1 << 16, n = 0;
+    char *text = malloc(cap + 1);
+    for (size_t r; text && (r = fread(text + n, 1, cap - n, f)) > 0; ) {
+        n += r;
+        if (n == cap) {
+            char *t = realloc(text, cap * 2 + 1);
+            if (!t) { free(text); text = NULL; break; }
+            text = t;
+            cap *= 2;
+        }
+    }
+    fclose(f);
+    if (!text) {
+        fprintf(stderr, "error: RUNNER_MOE_HOT: out of memory reading %s\n", path);
+        return false;
+    }
+    text[n] = 0;
+    bool ok = model_moe_hot_parse(m, text);
+    free(text);
+    return ok;
+}
+
 static bool runtime_placement(model_t *m, const model_params *p) {
     m->reserve_vram_pct = p->reserve_vram_pct;
     m->gpu_layers_override = p->gpu_layers_override;
@@ -5120,7 +5239,7 @@ static bool runtime_placement(model_t *m, const model_params *p) {
         model_moe_place_host(m, m->cpu_moe_layers);
         m->moe_host[m->n_layer] = true;   // the NextN/MTP block's experts, if any, stay on the host
     }
-    return true;
+    return moe_hot_load(m);
 }
 
 // The context and the prompt batch: the request's, or the reservation auto-fit
@@ -5848,6 +5967,9 @@ void model_free(model_t *m) {
     model_lora_free(m);
     free(m->moe_host);
     m->moe_host = NULL;
+    free(m->moe_hot_slot);
+    free(m->moe_hot_n);
+    m->moe_hot_slot = m->moe_hot_n = NULL;
     // Deregister on the clean path. The unclean paths (SIGKILL, crash) are
     // covered by dead-pid reaping in the next runner's claim, which is how the
     // orphans that motivated the registry would have been cleared.
@@ -6975,7 +7097,7 @@ static void route_weights(const model_t *m, char *out, size_t cap) {
 typedef struct {
     const char *backend, *kv, *detail, *build, *codegen, *cpu_act;
     char device[128], weights[96], tuning[512], act[48];
-    int  gpu_layers, n_layer, moe_layers, moe_host;
+    int  gpu_layers, n_layer, moe_layers, moe_host, moe_hot;
 } route_facts;
 
 static void route_collect(const model_t *m, route_facts *r) {
@@ -6995,6 +7117,8 @@ static void route_collect(const model_t *m, route_facts *r) {
             r->moe_layers++;
             if (m->moe_host && m->moe_host[l]) r->moe_host++;
         }
+    // RUNNER_MOE_HOT: the expert slots the device holds in host layers
+    r->moe_hot = m->gpu && m->moe_hot_slot ? m->moe_hot_total : 0;
     r->kv = m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
     r->detail = m->gpu ? gpu_route_detail(m) : "";
     r->build = route_build();
@@ -7025,10 +7149,10 @@ void model_route_note(model_t *m, int rows, const char *path) {
     char line[1280];
     snprintf(line, sizeof line,
              "route: backend=%s device=\"%s\" split=%d/%d experts_on_host=%d/%d "
-             "rows=%d path=%s kv=%s weights=\"%s\" cpu_act=%s%s%s fallback=\"%s\" "
+             "moe_hot=%d rows=%d path=%s kv=%s weights=\"%s\" cpu_act=%s%s%s fallback=\"%s\" "
              "build=%s%s tuning=\"%s\"",
              r.backend, r.device, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers,
-             rows, path, r.kv, r.weights, r.cpu_act, r.detail[0] ? " " : "", r.detail,
+             r.moe_hot, rows, path, r.kv, r.weights, r.cpu_act, r.detail[0] ? " " : "", r.detail,
              m->route_fallback, r.build, r.codegen, r.tuning);
     uint64_t h = 1469598103934665603ull;
     for (const char *p = line; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211ull; }
@@ -7131,11 +7255,12 @@ void model_route_json(const model_t *m, char *out, int cap) {
     route_paths_json(m, paths, sizeof paths);
     snprintf(out, cap,
              "{\"backend\":\"%s\",\"device\":\"%s\",\"gpu_layers\":%d,\"layers\":%d,"
-             "\"experts_on_host\":%d,\"moe_layers\":%d,\"paths\":%s,"
+             "\"experts_on_host\":%d,\"moe_layers\":%d,\"moe_hot\":%d,\"paths\":%s,"
              "\"kv\":\"%s\",\"weights\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\","
              "\"kernels\":%s,\"fallback\":\"%s\",\"build\":\"%s\",\"codegen\":\"%s\","
              "\"compiler\":\"%s\",\"tuning\":\"%s\"}",
-             r.backend, dev, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers, paths,
+             r.backend, dev, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers, r.moe_hot,
+             paths,
              r.kv, wts, r.cpu_act, r.detail, kern, why, r.build,
              r.codegen[0] == '+' ? r.codegen + 1 : r.codegen, cc, tun);
 }
@@ -13973,6 +14098,48 @@ bool model_moe_ffn_cpu(model_t *m, int layer, int n) {
 // mixer, so the FFN input (n rows, stride xdim) sits in m->xb; run the routed
 // and shared experts on the host and leave the FFN OUTPUT in m->xb for the
 // device's hc_combine. No norm, no residual add here.
+bool model_moe_hot_terms(model_t *m, int layer, int n, const float *x, int xs,
+                         const int *sel, const float *selw, float *terms) {
+    if (!m || !m->moe_hot_slot || layer < 0 || layer >= m->n_layer ||
+        n < 1 || n > m->n_batch || !m->layers[layer].is_moe)
+        return false;
+    const layer_t *ly = &m->layers[layer];
+    int n_embd = m->n_embd, used = m->n_expert_used, ne = ly->n_expert;
+    const int *slot = m->moe_hot_slot + (size_t)layer * m->n_expert;
+    // the grouped expert reads the routing and the rows where the host
+    // path keeps them
+    memcpy(m->moe_sel, sel, sizeof(int) * (size_t)n * used);
+    memcpy(m->moe_selw, selw, sizeof(float) * (size_t)n * used);
+    for (int b = 0; b < n; b++)
+        memcpy(m->xb + (size_t)b * n_embd, x + (size_t)b * xs, sizeof(float) * (size_t)n_embd);
+    // the parser refuses a layer of more experts than this holds, so no
+    // missed expert is dropped
+    int miss[MOE_HOT_MAX_EXPERT], nmiss = 0;
+    for (int i = 0; i < n * used; i++) {
+        int e = sel[i];
+        if (e < 0 || e >= ne || slot[e] >= 0) continue;
+        int seen = 0;
+        for (int k = 0; k < nmiss; k++) if (miss[k] == e) { seen = 1; break; }
+        if (!seen && nmiss < (int)(sizeof miss / sizeof *miss)) miss[nmiss++] = e;
+    }
+    model_moe_prefetch(m, ly, miss, nmiss);
+    // ascending expert, as moe_ffn_grouped runs them
+    for (int e = 0; e < ne; e++) {
+        int k = 0;
+        while (k < nmiss && miss[k] != e) k++;
+        if (k < nmiss) moe_grouped_expert(m, ly, e, n, n_embd, false);
+    }
+    for (int i = 0; i < n * used; i++) {
+        int e = sel[i];
+        if (e < 0 || e >= ne || slot[e] >= 0) continue;
+        const float *d = m->moe_dall + (size_t)i * n_embd;
+        float *o = terms + (size_t)i * n_embd;
+        float w = selw[i];
+        for (int j = 0; j < n_embd; j++) o[j] = w * d[j];
+    }
+    return true;
+}
+
 bool model_moe_ffn_cpu_premixed(model_t *m, int layer, int n) {
     if (!m || layer < 0 || layer > m->n_layer || (layer == m->n_layer && !m->mtp_ready) ||
         n < 1 || n > m->n_batch)

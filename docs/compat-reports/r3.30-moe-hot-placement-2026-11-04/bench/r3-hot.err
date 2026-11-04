@@ -1,0 +1,41 @@
+rope: YaRN scaling x16.00 (model metadata)
+gpu: OS video memory budget 7.60 GB for this process, 0.14 GB in use; offload budget 7.46 GB, headroom 0.54 GB
+gpu-split: budget=7.46GB fixed=5.65GB G=28/28 full=1 used=6.59GB
+gpu-split: experts 0/28 layers on GPU, 28 on host
+gpu-split: prompt window 512 columns (batch 512, 0.63 GB spare, 261572 bytes a column with TC2's activations)
+gpu-split: RUNNER_MOE_HOT 768 expert slots in 28 host layers on the device (5.07 GB)
+gpu: weights 0.88 GB on the device after 2 s (420 MB/s from the file)
+gpu: CUDA backend on NVIDIA GeForce RTX 3070 (28/28 attention layers, 5.9 GB in VRAM; 28/28 expert layers on CPU)
+gpu: VRAM 0.92 GB free of 8.59 GB after init (kv 0.23 GB + scratch 0.04 GB this instance)
+warning: weights are 12.9 GB but only 5.6 GB of RAM is available. This is a sparse MoE and touches about 2.6 GB per token, which does fit — expect a slow start and disk reads whenever routing reaches a cold expert, not a stall on every token.
+loaded ~/models/r330/Mellum2.1-12B-A2.5B-Thinking-Q8_0.gguf | mellum | 28 layers | ctx 4096 | 4 threads | 4.06s
+sampling: generic (temp 0.80, top_p 0.95, top_k 40, min_p 0.05, repeat_penalty 1.00)
+moe-hot: blk.0 129 calls 149 tokens, per call route 0.241 host 2.684 wait 0.032 fill 0.048 ms; hit 0.782 of 1192 routings
+moe-hot: blk.1 129 calls 149 tokens, per call route 0.193 host 1.534 wait 0.025 fill 0.038 ms; hit 0.800 of 1192 routings
+moe-hot: blk.2 129 calls 149 tokens, per call route 0.190 host 2.193 wait 0.009 fill 0.054 ms; hit 0.704 of 1192 routings
+moe-hot: blk.3 129 calls 149 tokens, per call route 0.194 host 2.196 wait 0.006 fill 0.065 ms; hit 0.651 of 1192 routings
+moe-hot: blk.4 129 calls 149 tokens, per call route 0.199 host 2.155 wait 0.009 fill 0.064 ms; hit 0.637 of 1192 routings
+moe-hot: blk.5 129 calls 149 tokens, per call route 0.196 host 1.918 wait 0.019 fill 0.052 ms; hit 0.699 of 1192 routings
+moe-hot: blk.6 129 calls 149 tokens, per call route 0.197 host 2.381 wait 0.002 fill 0.069 ms; hit 0.596 of 1192 routings
+moe-hot: blk.7 129 calls 149 tokens, per call route 0.187 host 1.859 wait 0.015 fill 0.055 ms; hit 0.670 of 1192 routings
+moe-hot: blk.8 129 calls 149 tokens, per call route 0.201 host 2.795 wait 0.002 fill 0.076 ms; hit 0.550 of 1192 routings
+moe-hot: blk.9 129 calls 149 tokens, per call route 0.187 host 1.892 wait 0.025 fill 0.044 ms; hit 0.747 of 1192 routings
+moe-hot: blk.10 129 calls 149 tokens, per call route 0.187 host 1.903 wait 0.016 fill 0.057 ms; hit 0.740 of 1192 routings
+moe-hot: blk.11 129 calls 149 tokens, per call route 0.192 host 1.731 wait 0.003 fill 0.078 ms; hit 0.607 of 1192 routings
+moe-hot: blk.12 129 calls 149 tokens, per call route 0.197 host 1.234 wait 0.003 fill 0.076 ms; hit 0.599 of 1192 routings
+moe-hot: blk.13 129 calls 149 tokens, per call route 0.197 host 1.431 wait 0.004 fill 0.070 ms; hit 0.573 of 1192 routings
+moe-hot: blk.14 129 calls 149 tokens, per call route 0.189 host 1.030 wait 0.022 fill 0.052 ms; hit 0.764 of 1192 routings
+moe-hot: blk.15 129 calls 149 tokens, per call route 0.190 host 1.105 wait 0.005 fill 0.047 ms; hit 0.737 of 1192 routings
+moe-hot: blk.16 129 calls 149 tokens, per call route 0.192 host 1.221 wait 0.007 fill 0.057 ms; hit 0.690 of 1192 routings
+moe-hot: blk.17 129 calls 149 tokens, per call route 0.199 host 0.765 wait 0.054 fill 0.033 ms; hit 0.856 of 1192 routings
+moe-hot: blk.18 129 calls 149 tokens, per call route 0.196 host 1.045 wait 0.002 fill 0.058 ms; hit 0.643 of 1192 routings
+moe-hot: blk.19 129 calls 149 tokens, per call route 0.191 host 1.055 wait 0.010 fill 0.052 ms; hit 0.793 of 1192 routings
+moe-hot: blk.20 129 calls 149 tokens, per call route 0.197 host 1.341 wait 0.010 fill 0.051 ms; hit 0.805 of 1192 routings
+moe-hot: blk.21 129 calls 149 tokens, per call route 0.191 host 0.683 wait 0.036 fill 0.037 ms; hit 0.838 of 1192 routings
+moe-hot: blk.22 129 calls 149 tokens, per call route 0.200 host 0.923 wait 0.004 fill 0.041 ms; hit 0.707 of 1192 routings
+moe-hot: blk.23 129 calls 149 tokens, per call route 0.187 host 0.816 wait 0.039 fill 0.056 ms; hit 0.752 of 1192 routings
+moe-hot: blk.24 129 calls 149 tokens, per call route 0.201 host 1.219 wait 0.013 fill 0.055 ms; hit 0.786 of 1192 routings
+moe-hot: blk.25 129 calls 149 tokens, per call route 0.205 host 0.607 wait 0.041 fill 0.032 ms; hit 0.869 of 1192 routings
+moe-hot: blk.26 129 calls 149 tokens, per call route 0.196 host 0.947 wait 0.014 fill 0.050 ms; hit 0.716 of 1192 routings
+moe-hot: blk.27 129 calls 149 tokens, per call route 0.190 host 0.942 wait 0.008 fill 0.041 ms; hit 0.733 of 1192 routings
+moe-hot: all layers 3612 calls 4172 tokens, ms route 707.1 host 5367.2 wait 56.1 fill 194.6; hit 0.716 of 33376 routings
