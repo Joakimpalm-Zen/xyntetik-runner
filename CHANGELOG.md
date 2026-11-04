@@ -5,6 +5,17 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal Q6_K decode: the narrow-slice kernel too, 1.20x more on
+  Qwen3-4B Q4_K_M (R3.28.3).** A Q4_K_M file keeps its LM head, attn_v and
+  half its ffn_down at Q6_K, which decoded at about 27 GB/s on an Apple M1.
+  Q6_K inputs at least 1536 wide now run `k_mvg_q6_K`, R3.28.2's shape for
+  Q6_K, at 51 to 55 GB/s: decode over the R3.28.2 build, Qwen3-4B 15.08
+  against 12.56 tok/s, Llama-3.2-1B 1.36x, Llama-3.2-3B 1.23x,
+  K2-Horizon-1B 1.24x. Unlike `k_mv2_q6_K`, whose bits are the identity
+  kernel's, it is a tolerance route: `test-mv-tol` 0/64 flips on Qwen3-4B,
+  and its float32-reference row is in the PR. `RUNNER_METAL_MVG=0` restores
+  both previous kernels. The route detail says
+  `mv=mvg-q4_K>=2048+q6_K>=1536`.
 - **Metal Q4_K decode: a faster fast kernel, 1.19x on Qwen3-4B and
   Llama-3.2-3B Q4_K_M (R3.28.2).** The Q4_K inputs the fast route takes (at
   least 2048 wide on dense models) run `k_mvg_q4_K`: eight lanes share a
