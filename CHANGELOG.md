@@ -5,6 +5,41 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: `RUNNER_MOE_HOT`, a file of hot experts kept on the device for
+  `--cpu-moe` host layers; 1.96x decode on Mellum 2.1 Q8_0 on an RTX 3070
+  (R3.30).** Limits first:
+  - It is opt-in and measured on one file on one card.
+  - The hot file comes from a routing trace (`RUNNER_MOE_TRACE`), so it
+    fits the text the trace saw.
+  - v1 covers the plain top-k SiLU expert FFN only. Shared experts, expert
+    biases or scales, gemma-4's dual branch and hyper-connections are
+    refused at load, as is a malformed file or the knob without
+    `--cpu-moe`.
+  - The measurement beats step 1's projection, and why is not established.
+
+  A listed layer runs mixed. The device norms and routes, and runs the
+  listed experts with the fused path's kernels on a bank of their slices.
+  At the same time the host runs the rest with the CPU path's own expert
+  function. The device then sums the slots in the router's order.
+
+  Measured on Mellum2.1-12B-A2.5B-Thinking Q8_0 with 768 slots (5.07 GB),
+  chosen by frequency from six traced prompts. On a prompt the trace never
+  saw, decode reads 27.82 against `--cpu-moe auto`'s 14.19 tok/s (medians
+  of three interleaved rounds), with a hit share of 0.716 to 0.735. Step 1 projected
+  1.66x from whole-bank slopes. `RUNNER_MOE_HOT_PROF=1` prints where each
+  mixed layer's time goes.
+
+  The identity gates (`tests/test_moe_hot.py`):
+  - A layer with every expert listed gives `--cpu-moe 0`'s bytes.
+  - A mixed layer's sum is neither placement's bytes. It is the same bytes
+    run to run, and within 1e-7 relative perplexity of the all-host
+    placement.
+  - The host terms are the CPU path's own by construction, not by a
+    separate byte test.
+
+  The route record gains `moe_hot`. Report:
+  `docs/compat-reports/r3.30-moe-hot-placement-2026-11-04`.
+
 - **deepseek2 runs on CUDA in the absorbed multi-head latent attention, its default (R4.4.5 step c2).**
   - The cache holds one 576-wide head per token and layer, as on the CPU. The naive form (step c1, below) stays
     behind `RUNNER_MLA_NAIVE=1` as the oracle.

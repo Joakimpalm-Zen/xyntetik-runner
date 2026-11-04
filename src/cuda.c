@@ -554,6 +554,10 @@ typedef struct gpu_weights {
     // ([n_expert][n_embd]) bias tables
     CUdeviceptr *sinks;
     CUdeviceptr *gib, *geb, *ueb, *deb;
+    // RUNNER_MOE_HOT (R3.30): per host layer, its hot experts' gate, up and
+    // down slices in one allocation ([S] gate | [S] up | [S] down), 0 where
+    // the layer has none
+    CUdeviceptr *hot_bank;
     CUdeviceptr *ssm_dt, *ssm_a, *ssm_norm;
     // Mamba-2 (granitehybrid/nemotron_h): D skip, conv1d bias, gated RMS
     // norm weight (length ssm.inner, unlike qwen35's ssm_norm at ssm.state)
@@ -608,6 +612,12 @@ typedef struct {
     // device routing results [MVB][used] and per-slot expert hidden scratch
     // [rows][gw] (gw = 2*n_ff_exp for gemma's fused gate_up, n_ff_exp else)
     CUdeviceptr moe_sel, moe_selw, moe_hb, moe_hb2;
+    // RUNNER_MOE_HOT: the routing remapped to hot-bank slots [MVB][used], and
+    // its host staging: the slots, the normed rows and the host experts' terms
+    CUdeviceptr moe_hot_sel;
+    int        *h_hot_sel;
+    float      *h_hot_x, *h_hot_terms;
+    int         hot_xdim;
     // gemma4 E-series: ple holds [token][layer][n_embd_ple] for the batch,
     // uploaded once per forward; ple_g is the per-layer gate scratch.
     CUdeviceptr ple, ple_g;
@@ -1099,6 +1109,34 @@ static bool moe_on_host(const model_t *m, int l) {
     return m->cpu_moe && m->moe_host && m->moe_host[l];
 }
 
+// RUNNER_MOE_HOT (R3.30): a host layer whose hot experts the device holds
+// and runs; the rest of its routed experts stay on the host
+static bool moe_hot_on(const model_t *m, int l) {
+    return m->moe_hot_n && l >= 0 && l < m->n_layer && m->moe_hot_n[l] > 0 &&
+           m->layers[l].is_moe && moe_on_host(m, l);
+}
+
+// One hot expert's gate, up and down slices, the bank's slot stride.
+static void moe_hot_strides(const layer_t *ly, int n_embd, int nff, uint64_t *gs,
+                            uint64_t *us, uint64_t *ds) {
+    *gs = (uint64_t)nff * ggml_row_size(ly->ffn_gate_exps->type, n_embd);
+    *us = (uint64_t)nff * ggml_row_size(ly->ffn_up_exps->type, n_embd);
+    *ds = (uint64_t)n_embd * ggml_row_size(ly->ffn_down_exps->type, nff);
+}
+
+// The bytes the hot banks claim on the device, routers included.
+static uint64_t moe_hot_bytes(const model_t *m) {
+    uint64_t total = 0;
+    for (int l = 0; l < m->n_layer; l++) {
+        if (!moe_hot_on(m, l)) continue;
+        const layer_t *ly = &m->layers[l];
+        uint64_t gs, us, ds;
+        moe_hot_strides(ly, m->n_embd, m->n_ff_exp, &gs, &us, &ds);
+        total += (uint64_t)m->moe_hot_n[l] * (gs + us + ds) + ly->ffn_gate_inp->nbytes;
+    }
+    return total;
+}
+
 static bool moe_any_on_host(const model_t *m) {
     if (!m->cpu_moe) return false;
     for (int l = 0; l < m->n_layer; l++)
@@ -1111,7 +1149,7 @@ static bool moe_any_on_host(const model_t *m) {
 static bool moe_any_on_device(const model_t *m) {
     if (m->n_expert <= 0) return false;
     for (int l = 0; l < m->n_layer; l++)
-        if (m->layers[l].is_moe && !moe_on_host(m, l)) return true;
+        if (m->layers[l].is_moe && (!moe_on_host(m, l) || moe_hot_on(m, l))) return true;
     return false;
 }
 
@@ -1145,7 +1183,7 @@ static bool moe_fused_eligible(const model_t *m) {
     if (!moe_any_on_device(m)) return false;
     for (int l = 0; l < m->n_layer; l++) {
         const layer_t *ly = &m->layers[l];
-        if (!ly->is_moe || moe_on_host(m, l)) continue;
+        if (!ly->is_moe || (moe_on_host(m, l) && !moe_hot_on(m, l))) continue;
         if (ly->moe_split) return false;
         if (ly->moe_gemma) {
             if (!moe_indirect_type_ok(ly->ffn_gate_up_exps->type) ||
@@ -1517,6 +1555,7 @@ static void shared_destroy(gpu_weights *w) {
             w->sinks ? w->sinks[l] : 0,
             w->gib ? w->gib[l] : 0, w->geb ? w->geb[l] : 0,
             w->ueb ? w->ueb[l] : 0, w->deb ? w->deb[l] : 0,
+            w->hot_bank ? w->hot_bank[l] : 0,
         };
         for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
             if (bufs[i]) cu.MemFree(bufs[i]);
@@ -1532,6 +1571,7 @@ static void shared_destroy(gpu_weights *w) {
     free(w->ssm_D); free(w->ssm_conv_b); free(w->ssm_gnorm);
     free(w->sinks);
     free(w->gib); free(w->geb); free(w->ueb); free(w->deb);
+    free(w->hot_bank);
     for (int i = 0; i < w->n_bindings; i++)
         if (w->bindings[i].device) cu.MemFree(w->bindings[i].device);
     free(w->bindings);
@@ -1994,6 +2034,7 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
     // So each instance is charged here and each layer's KV below.
     P->instances = m->gpu_instances > 1 ? (size_t)m->gpu_instances : 1;
     fixed += inst * P->instances;
+    fixed += moe_hot_bytes(m);   // RUNNER_MOE_HOT's banks and their routers
     P->vram_budget = vram_budget;
     P->fixed = fixed;
     P->mtp_dev = mtp_dev;
@@ -2842,6 +2883,50 @@ fail:
 }
 
 // The per-layer tables of norms, biases and recurrent and MoE constants.
+// RUNNER_MOE_HOT: layer l's hot experts into one device allocation, slot by
+// slot from the mapped file, and its router beside the other bound tensors.
+static bool moe_hot_upload(gpu_weights *w, model_t *m, int l) {
+    const layer_t *ly = &m->layers[l];
+    int S = m->moe_hot_n[l];
+    const int *slot = m->moe_hot_slot + (size_t)l * m->n_expert;
+    uint64_t gs, us, ds;
+    moe_hot_strides(ly, m->n_embd, m->n_ff_exp, &gs, &us, &ds);
+    if (!binding_add(w, m, ly->ffn_gate_inp)) return false;
+    size_t bytes = (size_t)S * (size_t)(gs + us + ds);
+    CUdeviceptr d = 0;
+    CUresult rc = cu.MemAlloc(&d, bytes);
+    if (rc != 0) {
+        fprintf(stderr, "gpu: CUDA allocation for blk.%d's hot bank (%d experts, "
+                "%.2f GB) failed: %s — using CPU\n", l, S, bytes / 1e9, cu_err(rc));
+        return false;
+    }
+    const uint8_t *g = ly->ffn_gate_exps->data, *u = ly->ffn_up_exps->data,
+                  *dn = ly->ffn_down_exps->data;
+    for (int e = 0; e < ly->n_expert; e++) {
+        int k = slot[e];
+        if (k < 0) continue;
+        if (cu.MemcpyHtoD(d + (size_t)k * gs, g + (size_t)e * gs, gs) != 0 ||
+            cu.MemcpyHtoD(d + (size_t)S * gs + (size_t)k * us, u + (size_t)e * us, us) != 0 ||
+            cu.MemcpyHtoD(d + (size_t)S * (gs + us) + (size_t)k * ds, dn + (size_t)e * ds,
+                          ds) != 0) {
+            fprintf(stderr, "gpu: CUDA upload of blk.%d's hot bank failed — using CPU\n", l);
+            cu.MemFree(d);
+            return false;
+        }
+    }
+    w->hot_bank[l] = d;
+    w->bound_bytes += bytes;
+    bool first = true;
+    for (int k = 0; k < l; k++) if (moe_hot_on(m, k)) first = false;
+    if (first) {
+        int layers = 0;
+        for (int k = 0; k < m->n_layer; k++) layers += moe_hot_on(m, k);
+        fprintf(stderr, "gpu-split: RUNNER_MOE_HOT %d expert slots in %d host layers on "
+                "the device (%.2f GB)\n", m->moe_hot_total, layers, moe_hot_bytes(m) / 1e9);
+    }
+    return true;
+}
+
 static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
     // one slot past the backbone for the NextN/MTP block when it is bound
     const int n_tab = m->n_layer + (m->mtp_ready ? 1 : 0);
@@ -2877,6 +2962,7 @@ static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
     w->geb      = calloc(n_tab, sizeof(CUdeviceptr));
     w->ueb      = calloc(n_tab, sizeof(CUdeviceptr));
     w->deb      = calloc(n_tab, sizeof(CUdeviceptr));
+    w->hot_bank = calloc(n_tab, sizeof(CUdeviceptr));
 #define REQUIRE_PTR_TABLE(ptr, label) do { if (!(ptr)) { \
         fprintf(stderr, "gpu: CUDA shared per-layer pointer-table " \
                 "allocation failed (%s) — using CPU\n", label); \
@@ -2975,6 +3061,7 @@ static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
         // gpt-oss: per-head sink logits + router/per-expert bias tables
         w->sinks[l] = f32_dbuf(ly->attn_sinks, m->n_head,
                                 "attention sinks", l);
+        if (moe_hot_on(m, l) && !moe_hot_upload(w, m, l)) goto fail;
         if (ly->is_moe && !moe_on_host(m, l)) {
             w->gib[l] = f32_dbuf(ly->ffn_gate_inp_b, ly->n_expert,
                                  "MoE router bias", l);
@@ -3332,7 +3419,8 @@ static bool cuda_admit(model_t *m) {
         layer_t *ly = &m->layers[l];
         // A host-resident bank never reaches a device kernel; an AUTO fit may
         // still promote this layer later, so only a pinned host layer skips.
-        if (!ly->is_moe || (moe_on_host(m, l) && m->cpu_moe_layers != CPU_MOE_AUTO))
+        if (!ly->is_moe || (moe_on_host(m, l) && m->cpu_moe_layers != CPU_MOE_AUTO &&
+                            !moe_hot_on(m, l)))
             continue;
         if (!gpu_tensor_type_ok(ly->ffn_gate_inp)) return false;
         if (ly->moe_split) {
@@ -3699,6 +3787,21 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
             fprintf(stderr, "gpu: CUDA MoE host staging allocation failed "
                     "— using CPU\n");
             goto fail;
+        }
+        if (m->moe_hot_n) {
+            int hx = m->n_embd;
+            for (int l = 0; l < m->n_layer; l++)
+                if (model_q_dim(m, l) > hx) hx = model_q_dim(m, l);
+            g->hot_xdim = hx;
+            CK(cu.MemAlloc(&g->moe_hot_sel, sizeof(int) * (size_t)g->win * used_c));
+            g->h_hot_sel   = malloc(sizeof(int)   * (size_t)g->win * used_c);
+            g->h_hot_x     = malloc(sizeof(float) * (size_t)g->win * hx);
+            g->h_hot_terms = malloc(sizeof(float) * (size_t)g->win * used_c * m->n_embd);
+            if (!g->h_hot_sel || !g->h_hot_x || !g->h_hot_terms) {
+                fprintf(stderr, "gpu: CUDA RUNNER_MOE_HOT host staging allocation "
+                        "failed — using CPU\n");
+                goto fail;
+            }
         }
         g->moe_renorm = m->expert_norm_w ? 1 : 0;
         if (model_moe_replay_on()) {
@@ -5071,7 +5174,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
                            g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
                            g->attn_part, g->logits, g->xsc, g->xh, g->pos_dev, g->q8x_q, g->q8x_d,
                            g->moe_logits, g->moe_eout, g->moe_sel,
-                           g->moe_selw, g->moe_hb, g->moe_hb2,
+                           g->moe_selw, g->moe_hb, g->moe_hb2, g->moe_hot_sel,
                            g->moe_gath, g->moe_dout, g->moe_gidx, g->moe_gw,
                            g->moe_gpos, g->moe_gsel, g->moe_slots,
                            g->g_scr, g->ple, g->ple_g,
@@ -5097,6 +5200,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
     free(g->h_x); free(g->h_logits); free(g->h_moe_logits);
     free(g->h_ple); free(g->h_ple_tmp);
     free(g->h_moe_sel); free(g->h_moe_selw);
+    free(g->h_hot_sel); free(g->h_hot_x); free(g->h_hot_terms);
     free(g->h_moe_gidx); free(g->h_moe_gw);
     free(g->tr_pos); free(g->tr_sel); free(g->tr_w); free(g->tr_norm);
     free(g->h_moe_gpos); free(g->h_moe_gsel);
@@ -5858,6 +5962,11 @@ static bool route_trace_host(gpu_t *g, int t, int layer, const int *sel,
 // byte stride (the moe_expert_weight arithmetic, moved into kernel args).
 // base is the whole fused tensor, so binding_find's bounds check covers
 // every expert's slice at once.
+static bool enc_moe_mv_at(gpu_t *g, gguf_tensor *base, CUdeviceptr weights,
+                          uint64_t w_off, uint64_t estride, CUdeviceptr x,
+                          CUdeviceptr y, CUdeviceptr sel, int n_in, int n_out,
+                          int nslots, int xs, int ys);
+
 static bool enc_moe_mv(gpu_t *g, model_t *m, gguf_tensor *base,
                        uint64_t estride, CUdeviceptr x, CUdeviceptr y,
                        CUdeviceptr sel, int n_in, int n_out, int nslots,
@@ -5869,6 +5978,16 @@ static bool enc_moe_mv(gpu_t *g, model_t *m, gguf_tensor *base,
                         "(no binding covers it)", base->name);
         return false;
     }
+    return enc_moe_mv_at(g, base, weights, w_off, estride, x, y, sel, n_in, n_out,
+                         nslots, xs, ys);
+}
+
+// enc_moe_mv's launch on an expert stack at weights + w_off, estride bytes an
+// expert: the bound tensor's, or a RUNNER_MOE_HOT bank's slots.
+static bool enc_moe_mv_at(gpu_t *g, gguf_tensor *base, CUdeviceptr weights,
+                          uint64_t w_off, uint64_t estride, CUdeviceptr x,
+                          CUdeviceptr y, CUdeviceptr sel, int n_in, int n_out,
+                          int nslots, int xs, int ys) {
     CUfunction f = g->sw->f_moe_mv[base->type];
     if (!f) {
         gpu_first_error("no indirect MoE kernel for quant type %s",
@@ -6579,6 +6698,179 @@ static bool gpu_moe_ffn_path(gpu_t *g, model_t *m, const layer_t *ly, int tn,
 
 // The tile's trace records start at its column 0 (moe_trace_norms_*), and
 // are written once its path has filled in their norms.
+// RUNNER_MOE_HOT_PROF: where a mixed layer's time goes, per layer, printed
+// at exit. route = the router, its sync and the routing's read-back and
+// remap; host = the host experts, computed while the device runs the hot
+// bank; wait = the sync after both; fill = the host terms' upload and the
+// sum. Single-thread instrument, like RUNNER_CUDA_PROFILE.
+static struct {
+    int    on, inited, nl;
+    double *t[4];          // per layer: route, host, wait, fill (ms)
+    long  *calls, *tok, *hit, *miss;
+} hotp;
+
+static double hot_now(void) {
+#ifdef _WIN32
+    static LARGE_INTEGER f;
+    LARGE_INTEGER c;
+    if (!f.QuadPart) QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (double)c.QuadPart * 1000.0 / (double)f.QuadPart;
+#else
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+#endif
+}
+
+static void hot_prof_report(void) {
+    double sum[4] = {0};
+    long calls = 0, tok = 0, hit = 0, miss = 0;
+    for (int l = 0; l < hotp.nl; l++) {
+        if (!hotp.calls[l]) continue;
+        fprintf(stderr, "moe-hot: blk.%d %ld calls %ld tokens, per call route %.3f host %.3f "
+                "wait %.3f fill %.3f ms; hit %.3f of %ld routings\n", l, hotp.calls[l],
+                hotp.tok[l], hotp.t[0][l] / hotp.calls[l], hotp.t[1][l] / hotp.calls[l],
+                hotp.t[2][l] / hotp.calls[l], hotp.t[3][l] / hotp.calls[l],
+                (double)hotp.hit[l] / (double)(hotp.hit[l] + hotp.miss[l]),
+                hotp.hit[l] + hotp.miss[l]);
+        for (int k = 0; k < 4; k++) sum[k] += hotp.t[k][l];
+        calls += hotp.calls[l]; tok += hotp.tok[l]; hit += hotp.hit[l]; miss += hotp.miss[l];
+    }
+    if (calls)
+        fprintf(stderr, "moe-hot: all layers %ld calls %ld tokens, ms route %.1f host %.1f "
+                "wait %.1f fill %.1f; hit %.3f of %ld routings\n", calls, tok, sum[0], sum[1],
+                sum[2], sum[3], (double)hit / (double)(hit + miss), hit + miss);
+}
+
+static void hot_prof_init(const model_t *m) {
+    if (hotp.inited) return;
+    hotp.inited = 1;
+    hotp.on = getenv("RUNNER_MOE_HOT_PROF") != NULL;
+    if (!hotp.on) return;
+    hotp.nl = m->n_layer;
+    for (int k = 0; k < 4; k++) hotp.t[k] = calloc((size_t)m->n_layer, sizeof(double));
+    hotp.calls = calloc((size_t)m->n_layer, sizeof(long));
+    hotp.tok   = calloc((size_t)m->n_layer, sizeof(long));
+    hotp.hit   = calloc((size_t)m->n_layer, sizeof(long));
+    hotp.miss  = calloc((size_t)m->n_layer, sizeof(long));
+    if (!hotp.t[0] || !hotp.t[1] || !hotp.t[2] || !hotp.t[3] || !hotp.calls ||
+        !hotp.tok || !hotp.hit || !hotp.miss) {
+        hotp.on = 0;
+        return;
+    }
+    atexit(hot_prof_report);
+}
+
+// RUNNER_MOE_HOT (R3.30): a host layer whose hot experts sit in a device bank.
+// The device routes as the fused path does; the routing comes back, each slot
+// is remapped to its bank slot (a host expert's to slot 0, overwritten
+// below), and the device runs the fused path's gate, up, activation and down
+// kernels on the bank while the host runs the other experts with the CPU
+// path's own grouped expert. Their terms (routing weight times down output)
+// replace those slots' rows, and k_moe_sum adds the slots in the router's
+// order. Reads the normed rows in g->xb and leaves the FFN output there, as
+// gpu_moe_ffn_fused does. A slot's bytes are its backend's; the layer's sum
+// is neither placement's, and gpu-identity's tolerance is its gate.
+static bool gpu_moe_ffn_hot(gpu_t *g, model_t *m, const layer_t *ly, int tn, int xdim) {
+    gpu_weights *w = g->sw;
+    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
+    int nff = m->n_ff_exp;
+    int l = (int)(ly - m->layers);
+    const int *slot = m->moe_hot_slot + (size_t)l * m->n_expert;
+    int S = m->moe_hot_n[l];
+    uint64_t gs, us, ds;
+    moe_hot_strides(ly, n_embd, nff, &gs, &us, &ds);
+    CUdeviceptr bank = w->hot_bank[l];
+    hot_prof_init(m);
+    double t0 = hotp.on ? hot_now() : 0;
+    if (xdim > g->hot_xdim) return false;
+    if (!enc_router(g, m, ly->ffn_gate_inp, g->xb, xdim, g->moe_logits, n_embd, ne,
+                    w->gib[l], tn) ||
+        !enc_moe_route(g, g->moe_logits, g->moe_sel, g->moe_selw, ne, used, tn, ne, l, 0))
+        return false;
+    size_t nsl = (size_t)tn * used;
+    if (cu.StreamSynchronize(g->stream) != 0 ||
+        cu.MemcpyDtoH(g->h_moe_sel, g->moe_sel, sizeof(int) * nsl) != 0 ||
+        cu.MemcpyDtoH(g->h_moe_selw, g->moe_selw, sizeof(float) * nsl) != 0)
+        return false;
+    long misses = 0;
+    for (size_t i = 0; i < nsl; i++) {
+        int e = g->h_moe_sel[i];
+        int k = e >= 0 && e < ne ? slot[e] : -1;
+        g->h_hot_sel[i] = k >= 0 ? k : 0;
+        misses += k < 0;
+    }
+    if (cu.MemcpyHtoD(g->moe_hot_sel, g->h_hot_sel, sizeof(int) * nsl) != 0 ||
+        (misses && cu.MemcpyDtoH(g->h_hot_x, g->xb, sizeof(float) * (size_t)tn * xdim) != 0))
+        return false;
+    double t1 = hotp.on ? hot_now() : 0, t2 = t1, wait = 0;
+    // moe_eout holds max(used, MVB) rows: a chunk of tokens' slots at a time
+    int rows = used > g->win ? used : g->win;
+    int chunk = rows / used;
+    if (chunk < 1) chunk = 1;
+    bool host_done = false;
+    for (int t0c = 0; t0c < tn; t0c += chunk) {
+        int t1c = t0c + chunk < tn ? t0c + chunk : tn;
+        for (int t = t0c; t < t1c; t++) {
+            CUdeviceptr xin  = g->xb + (size_t)t * xdim * sizeof(float);
+            CUdeviceptr hsel = g->moe_hot_sel + (size_t)t * used * sizeof(int);
+            CUdeviceptr sel  = g->moe_sel  + (size_t)t * used * sizeof(int);
+            CUdeviceptr selw = g->moe_selw + (size_t)t * used * sizeof(float);
+            CUdeviceptr eout = g->moe_eout + (size_t)(t - t0c) * used * n_embd * sizeof(float);
+            if (!enc_moe_mv_at(g, ly->ffn_gate_exps, bank, 0, gs, xin, g->moe_hb, hsel,
+                               n_embd, nff, used, 0, nff) ||
+                !enc_moe_mv_at(g, ly->ffn_up_exps, bank, (uint64_t)S * gs, us, xin,
+                               g->moe_hb2, hsel, n_embd, nff, used, 0, nff) ||
+                !enc_moe_actmul(g, m, g->moe_hb, g->moe_hb2, nff, nff, nff, selw,
+                                w->moe_ones, sel, used, 0, 0) ||
+                !enc_moe_mv_at(g, ly->ffn_down_exps, bank, (uint64_t)S * (gs + us), ds,
+                               g->moe_hb, eout, hsel, nff, n_embd, used, nff, n_embd))
+                return false;
+        }
+        // the host experts of the whole tile, once, while the first chunk runs
+        if (!host_done) {
+            if (misses && !model_moe_hot_terms(m, l, tn, g->h_hot_x, xdim, g->h_moe_sel,
+                                                g->h_moe_selw, g->h_hot_terms))
+                return false;
+            host_done = true;
+            if (hotp.on) t2 = hot_now();
+        }
+        double ts = hotp.on ? hot_now() : 0;
+        if (cu.StreamSynchronize(g->stream) != 0) return false;
+        if (hotp.on) wait += hot_now() - ts;
+        for (int t = t0c; misses && t < t1c; t++)
+            for (int sl = 0; sl < used; sl++) {
+                size_t i = (size_t)t * used + sl;
+                int e = g->h_moe_sel[i];
+                if (e >= 0 && e < ne && slot[e] >= 0) continue;
+                CUdeviceptr row = g->moe_eout +
+                    ((size_t)(t - t0c) * used + sl) * n_embd * sizeof(float);
+                if (cu.MemcpyHtoD(row, g->h_hot_terms + i * n_embd,
+                                  sizeof(float) * (size_t)n_embd) != 0)
+                    return false;
+            }
+        for (int t = t0c; t < t1c; t++) {
+            CUdeviceptr xin  = g->xb + (size_t)t * xdim * sizeof(float);
+            CUdeviceptr sel  = g->moe_sel  + (size_t)t * used * sizeof(int);
+            CUdeviceptr selw = g->moe_selw + (size_t)t * used * sizeof(float);
+            CUdeviceptr eout = g->moe_eout + (size_t)(t - t0c) * used * n_embd * sizeof(float);
+            if (!enc_moe_sum(g, xin, eout, n_embd, used, n_embd, 0, sel, selw)) return false;
+        }
+    }
+    if (hotp.on) {
+        double t4 = hot_now();
+        hotp.t[0][l] += t1 - t0;
+        hotp.t[1][l] += t2 - t1;
+        hotp.t[2][l] += wait;
+        hotp.t[3][l] += (t4 - t2) - wait;
+        hotp.calls[l]++;
+        hotp.tok[l] += tn;
+        hotp.hit[l] += (long)nsl - misses;
+        hotp.miss[l] += misses;
+    }
+    return true;
+}
+
 static bool gpu_moe_ffn(gpu_t *g, model_t *m, const layer_t *ly, int tn,
                         int xdim) {
     if (g->route_trace) moe_trace_flush(g);
@@ -7816,6 +8108,18 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
         // nemotron_h SSM/attention blocks, and --remove-sublayer mlp:N
         if (ly->skip_ffn) goto mamba_tail;
 
+        if (moe_hot_on(m, l) && g->sw->hot_bank[l]) {
+            // RUNNER_MOE_HOT: the device norms and routes; the hot bank and
+            // the host share the experts (gpu_moe_ffn_hot)
+            ok = ok && enc_rmsnorm(g, g->x, g->xb, g->sw->ffn_norm[l], n_embd, m->rms_eps,
+                                   tn, n_embd, xdim);
+            prof_mark(g, PH_NORM);
+            if (ok && g->route_trace) moe_trace_flush(g);
+            ok = ok && gpu_moe_ffn_hot(g, m, ly, tn, xdim);
+            if (ok && g->route_trace) moe_trace_flush(g);
+            prof_mark(g, PH_HOSTMOE);
+            goto ffn_done;
+        }
         if (ly->is_moe && moe_on_host(m, l) && m->hyper_conn) {
             // qwen4exp: the device mixes the FFN input, the host runs the
             // routed + shared experts on that tile, the device scatters the
