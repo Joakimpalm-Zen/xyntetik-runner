@@ -82,6 +82,7 @@ unsigned long gpu_attn_tile_dispatches(void) { return 0; }
 unsigned long gpu_attn_tiled_dispatches(void) { return 0; }
 unsigned long gpu_attn_tc_dispatches(void) { return 0; }
 unsigned long gpu_attn_dec_gqa_dispatches(void) { return 0; }
+unsigned long gpu_attn_dec_mla_dispatches(void) { return 0; }
 unsigned long gpu_kv_gather_tokens(void) { return 0; }
 unsigned long gpu_attn_gqa_dispatches(void) { return 0; }
 unsigned long gpu_splitk_dispatches(void) { return 0; }

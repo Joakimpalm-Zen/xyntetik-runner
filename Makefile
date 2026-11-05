@@ -3329,6 +3329,13 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	$(PYTHON) scripts/make-test-model.py --arch deepseek2 test-deepseek2.gguf > /dev/null
 	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-deepseek2.gguf
 	RUNNER_MLA_NAIVE=1 $(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-deepseek2.gguf
+	@# the absorbed MLA decode (R3.31): DeepSeek-V2-Lite's geometry, 16 heads
+	@# on one 576-wide row, the shape k_attn_dec_mla's fast tile takes, at the
+	@# fp16 cache and at q8 (the toy's 24-wide row keeps f16), 512 tokens
+	$(PYTHON) scripts/make-test-model.py --arch deepseek2 --mla-wide test-deepseek2-wide.gguf > /dev/null
+	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-deepseek2-wide.gguf 99 32 512
+	GPU_ID_KV=q8 $(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-deepseek2-wide.gguf 99 32 512
+	RUNNER_MLA_NAIVE=1 $(GPU_ID_TIGHT) ./$(TEST_GPU_ID) test-deepseek2-wide.gguf 99 32 512
 	@# the same fixture at the default bounds: free routing answers to 2e-3,
 	@# the pinned run to 1e-3 (a min() against 1e-3 once held both to 1e-3,
 	@# and every fixture run sets GPU_ID_LIMIT, so only a real file showed it)
@@ -3728,7 +3735,7 @@ clean:
 	rm -f metal-gptoss-moe-cpu.out metal-gptoss-moe-gpu.out metal-gptoss-moe-gpu.err
 	rm -f metal-gemma4-moe-cpu.out metal-gemma4-moe-gpu.out metal-gemma4-moe-gpu.err
 	rm -f metal-swa-cpu.out metal-swa-gpu.out metal-swa-gpu.err test-swa.gguf
-	rm -f test-spark.gguf test-spark-swa.gguf test-spark-q8.gguf test-spark-q40.gguf test-deepseek2.gguf
+	rm -f test-spark.gguf test-spark-swa.gguf test-spark-q8.gguf test-spark-q40.gguf test-deepseek2.gguf test-deepseek2-wide.gguf
 	rm -f metal-es-cpu.out metal-es-gpu.out metal-es-gpu.err test-es.gguf test-es-cfg.gguf
 	rm -f $(addprefix fuzz-,$(FUZZ_TARGETS))
 	rm -rf fuzz-corpus
@@ -3831,7 +3838,11 @@ CUDA_GATED_TESTS = tests/test_apertus.py tests/test_gpu_declines.py tests/test_a
                    tests/test_train_teacher.py tests/test_bench_json.py tests/test_clef.py \
                    tests/test_remove_sublayer.py tests/test_lora_qwen35.py \
                    tests/test_transcript.py tests/test_spec_gpu.py \
-                   tests/test_server_sessions.py tests/test_draft_k_defaults.py
+                   tests/test_server_sessions.py tests/test_draft_k_defaults.py \
+                   tests/test_attn_dec_repeat.py
+# test_attn_dec_repeat.py holds k_attn_dec_mla's rescale: only its long case
+# (over 1,000 positions, several tiles a slice) sees it, which the 512-token
+# gpu-identity cannot (R3.31).
 # test_spec_gpu.py and test_draft_k_defaults.py read test.gguf from the tree
 # root (the others build their fixtures in a temporary directory), so the
 # target builds it: on a fresh

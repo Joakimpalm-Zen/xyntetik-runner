@@ -84,6 +84,7 @@ QK_NORM = False    # --qk-norm: per-head attn_q_norm/attn_k_norm (qwen3-style)
 # weight gives the same logits (R3.25's Metal audit, 2026-10-31).
 NOISY_NORMS = False
 WIDE = False       # 256-wide rows, large enough for an i-quant test block
+MLA_WIDE = False   # --mla-wide: deepseek2 at DeepSeek-V2-Lite's attention geometry (R3.31)
 # --quant for the codebook i-quants: GGML type id and bytes per 256-value block
 CODEBOOK = {"iq2_xxs": (16, 66), "iq2_xs": (17, 74), "iq2_s": (22, 82),
             "iq3_xxs": (18, 98), "iq3_s": (21, 110)}
@@ -324,6 +325,8 @@ while i < len(args):
         N_FF_SET = int(args[i])
     elif a == "--wide":
         WIDE = True
+    elif a == "--mla-wide":
+        MLA_WIDE = True
     elif a == "--gpu-unsupported":
         # Admission-diagnostic fixture: IQ2_XXS is a supported CPU type with
         # no Metal kernel (CUDA has one since 2026-09-14; there the test
@@ -464,6 +467,15 @@ N_EMBD, N_HEAD, N_KV, N_FF, N_LAYER = 64, 4, 2, 128, 2
 # rope key per token, every head its own KV (the legacy unsplit attn_kv_b), YaRN
 # metadata so the publisher's mscale^2 scale is exercised. Dense FFN: no experts.
 MLA_NOPE, MLA_ROPE, MLA_V, MLA_R = 8, 8, 8, 16
+if MLA_WIDE:
+    # --mla-wide (R3.31): DeepSeek-V2-Lite's attention, 16 heads of 128 nope +
+    # 64 rope and a 128-wide value over a 512-wide latent, so the absorbed
+    # form's one KV row is 576 wide: the shape k_attn_dec_mla's fast tile and
+    # the q8 and fp4 caches take (the default fixture's 24 takes neither)
+    if ARCH != "deepseek2":
+        sys.exit("make-test-model: --mla-wide is a deepseek2 shape")
+    N_HEAD = 16
+    MLA_NOPE, MLA_ROPE, MLA_V, MLA_R = 128, 64, 128, 512
 if ARCH == "deepseek2":
     N_KV = N_HEAD
 if HEADS:

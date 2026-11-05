@@ -16,6 +16,54 @@ Current release and unreleased changes. Compatibility follows the
     before the read). bartowski's Q5_K_S reads 0.0289 and 98.33% at 31 MB less. Record:
     `docs/compat-reports/mellum2.1-rewrite-q5-2026-11-05/`.
 
+- **deepseek2's absorbed form on CUDA decodes faster than the naive form, and its cache is half the size (R3.31).**
+  - **The cache:** the absorbed form keeps one [k_pe | latent] row per token and layer, and its output reads only V's
+    latent slice, which is K's row. The allocator still gave it a V table beside K, both 576 wide. Now the V table is
+    the K table on the host and the device: 31,104 B a token at f16 instead of 62,208. At 32,768 tokens the Q6_K's
+    cache goes from 2,038 MB to 1,019 MB, and its device total from 16.55 GB to 15.53 GB. Under `--kv k8v4` (K q8_0,
+    V fp4) V keeps its own table. Scores are byte-identical before and after in both forms, on the CPU and CUDA, at
+    every `--kv` format.
+  - **The decode:** the absorbed form's 16 query heads share one 576-wide row, a shape the grouped decode attention
+    did not take (at most 8 heads up to 256 wide). So each head read every cached row and its V copy for itself.
+    `k_attn_dec_mla` reads a slice's rows once for all 16 heads and takes V from the K row, merged as the grouped
+    kernel's partials are. Decode on a CUDA MIG slice (1g.24gb, sm_120), the Q6_K, 64 tokens at temperature 0, load
+    average 4 to 18:
+
+    | Context | Absorbed, new | Absorbed, before | Naive |
+    |---|---|---|---|
+    | 4,096 | 99.95 tok/s | 43.53 | 84.20 |
+    | 8,192 | 89.43 | 26.25 | 66.12 |
+    | 16,384 | 74.07 | 10.41 (R4.4.5 e) | 45.88 |
+    | 32,768 | 55.01 | 5.36 (R4.4.5 e) | 28.30 (forced split, after the fix below) |
+
+    The kill (absorbed under 0.9x of naive at 4k or 8k) was declared before the first read; the read is 1.19x and
+    1.35x. gpu-identity with routing pinned reads 1.35e-5 of the logit range at 512 tokens (limit 1e-3).
+    - The gate: an `--mla-wide` fixture with the real geometry, at 1e-5 in `test-gates-core`, plus
+      `test_absorbed_mla_decode_*`, which repeats the decode byte for byte and holds it to the CPU at 1e-4 over
+      1,000 positions. Both catch V read from the wrong slice. Only the long pytest catches a dropped rescale:
+      gpu-identity's 512 tokens give each slice a single tile. So the pytest is in `test-cuda-gated`'s list, and
+      gpu-identity's reach is a known limit of the gate.
+    - At 16,384 the output differs from the previous kernel's at the 11th generated token. There the two kernels
+      split " teacher" and " beacon" by 0.052 and 0.016 nats, a near tie. The previous kernel on this build
+      reproduces R4.4.5 (e)'s output byte for byte.
+    - `RUNNER_CUDA_ATTN_MLA=0` keeps the previous kernel.
+  - **A forced split past the budget now says what it costs, and a run the device left says so at the end.** The
+    naive form at 32,768 tokens never finished in R4.4.5 (e). `--gpu 99` forced all 27 layers where the budget
+    holds 26, and the split line kept the fitted plan's bytes (`used=24.24GB` of 25.13). The prompt window sized
+    itself from that figure, so it took 0.72 GB of "spare" that the 27th layer already held. The device had 0.01 GB
+    left, the first launch ran out of memory, and the CPU finished the run in 84 minutes. The closing speed line
+    did not say so.
+    - The split line and the window now charge the forced layers. The same command reads `used=25.15GB`, gets a
+      64-column window with 0.17 GB free, and stays on the device: 422 s, prompt 77.89 tok/s, decode 28.30 tok/s
+      (load 11 to 14). Its output is byte for byte the absorbed form's.
+    - When the device fails mid-run, a line after the closing speeds says the run finished on the CPU and that
+      the speeds are the CPU's. Before, the only notice came before the first tile, and a harness that keeps only
+      the end of stderr lost it.
+    - An explicit `--gpu-layers` is still honoured past the budget. `RUNNER_GPU_FALLBACK=fail` still ends such a
+      run instead of finishing it on the CPU.
+  - **Not changed:** the absorbed prefill (114.7 against naive's 191.7 tok/s at 4,096). Decode still runs without a
+    CUDA graph for deepseek2 (the shared-expert path), in both forms.
+
 - **CUDA runs `qwen35moe` (R4.27 A2): Qwen3.6-35B-A3B's Q4_K_M row gains its CUDA cell.** The by-name hold in
   `cuda_admit` is gone. The device path is a composition that already existed: dense qwen35's trunk, the routed MoE
   kernels and the gated shared expert (`tile_shexp`).
