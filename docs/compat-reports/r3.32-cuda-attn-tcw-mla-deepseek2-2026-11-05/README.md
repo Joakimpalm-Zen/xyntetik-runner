@@ -57,10 +57,10 @@ Prompt tok/s:
   - The prefill pair is chunked (64-row tiles), so every position goes through the prefill route.
   - The decode pair is unchunked, so every position goes through decode attention.
 
-| Route | Mean KL before | Mean KL after | Ratio (at most 1.01) | Wilcoxon (not worse) | McNemar (not worse) |
-|---|---|---|---|---|---|
-| Prefill: `k_attn_tcw_mla` against `k_attn` | 0.040823 | 0.040243 | 0.986 | z 0.27, p 0.79 | 3 / 2, p 1.0 |
-| Decode: `k_attn_dec_mla` (R3.31) against `k_attn_dec` | 0.040741 | 0.040371 | 0.991 | z -0.89, p 0.37 | 1 / 1, p 1.0 |
+| Route | Mean KL before | Mean KL after | Ratio (at most 1.01) | Margin-qualified top-1 before / after (1,545 positions) | Wilcoxon (not worse) | McNemar (not worse) |
+|---|---|---|---|---|---|---|
+| Prefill: `k_attn_tcw_mla` against `k_attn` | 0.040823 | 0.040243 | 0.986 | 98.19% / 98.12% | z 0.27, p 0.79 | 3 / 2, p 1.0 |
+| Decode: `k_attn_dec_mla` (R3.31) against `k_attn_dec` | 0.040741 | 0.040371 | 0.991 | 98.19% / 98.19% | z -0.89, p 0.37 | 1 / 1, p 1.0 |
 
 Both pass, so the prefill kernel is deepseek2's default and the decode kernel stays the default.
 
