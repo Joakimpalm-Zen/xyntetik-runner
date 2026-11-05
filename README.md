@@ -231,7 +231,9 @@ on margin-qualified top-1 the two tie (p 0.68). All three were measured on one t
 
 **Lower-level tools.** derive strings these together, and each also runs on its own. A plan file sets each
 tensor's precision by name, `--prune-experts` drops the experts a mixture-of-experts model rarely uses, and
-`--remove-sublayer` takes out one block's attention or feed-forward branch:
+`--remove-sublayer` takes out one block's attention or feed-forward branch. A three-rule plan wrote
+[an 8.99 GB Mellum 2.1 file](https://huggingface.co/Joakimpalm-Zen/Mellum2.1-12B-A2.5B-Thinking-selective-Q8_0-expQ5_K-GGUF) (attention Q8_0, experts Q5_K) that passes the bar against JetBrains' float32
+model, 0.0293 mean KLD and 98.74% margin-qualified top-1, where the publisher's own Q4_K_M reads 0.1172 and fails:
 
 ```sh
 ./runner -m model-Q8_0.gguf --rewrite out.gguf --type-plan plan.json
