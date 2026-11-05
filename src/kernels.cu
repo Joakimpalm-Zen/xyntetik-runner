@@ -7278,6 +7278,251 @@ extern "C" __global__ void k_attn_merge32_seq(float *out, const float *part,
                       part + (ulong64)tk * a.n_head * AD_SPLITS * (a.head_dim + 2), a, sinks);
     (void)posp;
 }
+
+// ---------------------------------------- the absorbed MLA decode (R3.31)
+// deepseek2's absorbed form is MQA with one wide head: G query heads (16 in
+// V2-Lite) share one [k_pe | latent] row per token, hd = rope + kv_lora (576),
+// and V is that row's latent slice [vlo, hd): the cache keeps no V table
+// (model_kv_v_shared). k_attn_dec_gqa serves at most AD_GMAX heads of
+// hd <= 256, so these layers ran k_attn_dec, one block per query head, each
+// reading every cached row and its V copy for itself (16 x 2,304 B a token
+// at f16). Here one block reads a slice's rows once for all G heads:
+// k_attn_dec_gqa's arithmetic with one staged tile instead of two (warp g
+// scores head g, lane k key k, kv_dot's fp16 order; the running max per head
+// and the exp(old - new) rescale), V's pairs read from the staged K row, the
+// same (weighted V, max, sum) partial per head over AD_SPLITS fixed slices,
+// merged by k_attn_merge32. The partial's pe slice [0, vlo) is zero: the
+// output kernel (k_mla_v_absorb) reads only the latent slice.
+// Determinism: as k_attn_dec_gqa's, fixed for a geometry and a position.
+#define MD_THREADS 512
+#define MD_GMAX 16     // query heads a block serves (G > 16: k_attn_dec)
+#define MD_NJ 8        // V pairs a thread owns: G * (hd - vlo) / 2 <= MD_NJ * MD_THREADS
+#define MD_KR 5        // 16-byte chunks a thread prefetches: the fast tile, hd <= 640
+
+__device__ __forceinline__ void
+attn_dec_mla_body(const float *q, const unsigned char *kc, float *part,
+                  const attn_args &a, const int pos, const int vlo) {
+    extern __shared__ float md_sm[];
+    const int kvh = blockIdx.x, sp = blockIdx.y, tid = threadIdx.x;
+    const int hd = a.head_dim, G = a.n_head / a.n_head_kv, h0 = kvh * G;
+    const int kv_dim = a.n_head_kv * hd;
+    const ulong64 row_b = KV_ROW_BYTES(kv_dim, a.q8);
+    const ulong64 base = a.l_off + kv_head_off(kvh, hd, a.q8);
+    const int kbytes = (int)KV_ROW_BYTES(hd, a.q8);
+    const int bws = ((kbytes + 3) / 4) | 1;
+    int t0 = 0;
+    if (a.window > 0 && pos - a.window + 1 > 0) t0 = pos - a.window + 1;
+    const int total = pos + 1 - t0;
+    int slice = (total + AD_SPLITS - 1) / AD_SPLITS;
+    slice = (slice + AD_TK - 1) / AD_TK * AD_TK;
+    const int s0 = t0 + sp * slice;
+    int s1 = s0 + slice;
+    if (s1 > pos + 1) s1 = pos + 1;
+    if (s0 >= s1) {                      // empty slice: the merge's sentinel
+        if (tid < G) {
+            float *P = part + ((ulong64)(h0 + tid) * AD_SPLITS + sp) * (hd + 2);
+            P[hd] = -1e30f;
+            P[hd + 1] = 0.0f;
+        }
+        return;
+    }
+    const int QL = hd + 4;
+    float *Q = md_sm;                                   // [G][QL]
+    unsigned *Ks = (unsigned *)(Q + MD_GMAX * QL);      // [AD_TK][bws], or the fast tile's chunks
+    float *Pr = (float *)(Ks + AD_TK * bws);            // [G][AD_TK]
+    float *corr = Pr + MD_GMAX * AD_TK;                 // [G] this tile's rescale
+    for (int i = tid; i < G * hd; i += MD_THREADS) {
+        int g = i / hd, d = i - g * hd;
+        Q[g * QL + d] = q[(ulong64)(h0 + g) * hd + d];
+    }
+    const int sg = tid / AD_TK, sk = tid - sg * AD_TK;
+    const int P2 = (hd - vlo) / 2, pv0 = vlo / 2;       // V's pairs: the latent slice of the row
+    // k_attn_dec_gqa's fast tile: fp16 rows of whole 64-element groups,
+    // 16-byte chunks, chunk c of row k at c ^ (k & 7), the next tile
+    // prefetched into registers while this one computes
+    const int nc = hd / 8, nch = AD_TK * nc;
+    const bool fast = !a.q8 && hd % 64 == 0 && nch <= MD_KR * MD_THREADS &&
+                      ((base | row_b) & 15) == 0;
+    uint4 kr[MD_KR];
+    auto fetch = [&](int kt) {
+        #pragma unroll
+        for (int j = 0; j < MD_KR; j++) {
+            const int i = tid + j * MD_THREADS;
+            if (i >= nch) break;
+            const int k = i / nc, c = i - k * nc, t = kt + k;
+            const ulong64 slot = t < s1 ? kv_slot(t, a.ring) : 0;
+            kr[j] = t < s1 ? *(const uint4 *)(kc + base + slot * row_b + (ulong64)c * 16)
+                           : make_uint4(0u, 0u, 0u, 0u);
+        }
+    };
+    auto put = [&]() {
+        #pragma unroll
+        for (int j = 0; j < MD_KR; j++) {
+            const int i = tid + j * MD_THREADS;
+            if (i >= nch) break;
+            const int k = i / nc, c = i - k * nc;
+            ((uint4 *)Ks)[k * nc + (c ^ (k & 7))] = kr[j];
+        }
+    };
+    auto stage = [&](int kt) {   // k_attn_dec_gqa's stage, K only
+        if (((base | row_b | (ulong64)kbytes) & 3) == 0) {
+            int nw = kbytes / 4;
+            for (int i = tid; i < AD_TK * nw; i += MD_THREADS) {
+                int k = i / nw, w = i - k * nw, t = kt + k;
+                Ks[k * bws + w] = t < s1 ? *(const unsigned *)(kc + base + kv_slot(t, a.ring) * row_b + (ulong64)w * 4)
+                                         : 0u;
+            }
+        } else {
+            for (int i = tid; i < AD_TK * kbytes; i += MD_THREADS) {
+                int k = i / kbytes, c = i - k * kbytes, t = kt + k;
+                ((unsigned char *)(Ks + k * bws))[c] = t < s1 ? kc[base + kv_slot(t, a.ring) * row_b + (ulong64)c] : 0;
+            }
+        }
+    };
+    // pair p of staged row k, through the fast tile's swizzle or as kv_pair
+    auto vpair = [&](int k, int p) -> float2 {
+        return fast ? __half22float2(((const __half2 *)((const uint4 *)Ks + k * nc + ((p >> 2) ^ (k & 7))))[p & 3])
+                    : kv_pair((const unsigned char *)(Ks + k * bws), p, a.q8);
+    };
+    if (fast) fetch(s0);
+    float2 acc[MD_NJ];
+    #pragma unroll
+    for (int j = 0; j < MD_NJ; j++) acc[j] = make_float2(0.0f, 0.0f);
+    float mrun = -1e30f, sum = 0.0f;
+    for (int kt = s0; kt < s1; kt += AD_TK) {
+        __syncthreads();                                // the last tile's K and Pr are read
+        if (fast) {
+            put();
+            if (kt + AD_TK < s1) fetch(kt + AD_TK);
+        } else {
+            stage(kt);
+        }
+        __syncthreads();
+        if (sg < G) {
+            const bool live = kt + sk < s1;
+            float sc = -1e30f;
+            if (live && fast) {
+                const uint4 *r = (const uint4 *)Ks + sk * nc;
+                const float4 *q4 = (const float4 *)(Q + sg * QL);
+                float d = 0;
+                for (int c = 0; c < nc; c++) {
+                    const uint4 u = r[c ^ (sk & 7)];
+                    const __half2 *h2 = (const __half2 *)&u;
+                    const float4 qa = q4[2 * c], qb = q4[2 * c + 1];
+                    const float qv[8] = { qa.x, qa.y, qa.z, qa.w, qb.x, qb.y, qb.z, qb.w };
+                    #pragma unroll
+                    for (int e = 0; e < 4; e++) {
+                        const float2 kf = __half22float2(h2[e]);
+                        d += qv[2 * e] * kf.x + qv[2 * e + 1] * kf.y;
+                    }
+                }
+                sc = d * a.scale;
+            } else if (live) {
+                sc = kv_dot((const unsigned char *)(Ks + sk * bws), Q + sg * QL, hd, a.q8) * a.scale;
+            }
+            float tm = sc;
+            for (int off = AD_TK / 2; off > 0; off >>= 1) tm = fmaxf(tm, __shfl_xor_sync(0xffffffffu, tm, off));
+            const float mnew = fmaxf(mrun, tm);
+            const float c = expf(mrun - mnew);
+            const float pv = live ? expf(sc - mnew) : 0.0f;
+            float ts = pv;
+            for (int off = AD_TK / 2; off > 0; off >>= 1) ts += __shfl_xor_sync(0xffffffffu, ts, off);
+            sum = sum * c + ts;
+            mrun = mnew;
+            Pr[sg * AD_TK + sk] = pv;
+            if (sk == 0) corr[sg] = c;
+        }
+        __syncthreads();
+        if (MD_THREADS % P2 == 0) {
+            // every pair a thread owns has the same i2 (the stride is a whole
+            // number of heads' pairs), so each V pair is read once for all of
+            // them, four keys at a time
+            const int i2 = tid % P2;
+            int gj[MD_NJ], nj = 0;
+            #pragma unroll
+            for (int j = 0; j < MD_NJ; j++) {
+                int idx = tid + j * MD_THREADS;
+                gj[j] = idx / P2;
+                if (idx < G * P2) nj = j + 1;
+            }
+            float2 o[MD_NJ];
+            #pragma unroll
+            for (int j = 0; j < MD_NJ; j++) {
+                const float c = j < nj ? corr[gj[j]] : 0.0f;
+                o[j] = make_float2(acc[j].x * c, acc[j].y * c);
+            }
+            for (int k = 0; k < AD_TK; k += 4) {
+                float2 vf[4];
+                #pragma unroll
+                for (int kk = 0; kk < 4; kk++) vf[kk] = vpair(k + kk, pv0 + i2);
+                #pragma unroll
+                for (int j = 0; j < MD_NJ; j++) {
+                    if (j >= nj) break;
+                    const float4 p4 = *(const float4 *)(Pr + gj[j] * AD_TK + k);
+                    const float pk[4] = { p4.x, p4.y, p4.z, p4.w };
+                    #pragma unroll
+                    for (int kk = 0; kk < 4; kk++) {
+                        o[j].x += pk[kk] * vf[kk].x;
+                        o[j].y += pk[kk] * vf[kk].y;
+                    }
+                }
+            }
+            #pragma unroll
+            for (int j = 0; j < MD_NJ; j++)
+                if (j < nj) acc[j] = o[j];
+        } else {
+            #pragma unroll
+            for (int j = 0; j < MD_NJ; j++) {
+                int idx = tid + j * MD_THREADS;
+                if (idx >= G * P2) break;
+                int g = idx / P2, i2 = idx - g * P2;
+                const float c = corr[g];
+                float2 o = make_float2(acc[j].x * c, acc[j].y * c);
+                for (int k = 0; k < AD_TK; k++) {
+                    float pk = Pr[g * AD_TK + k];
+                    float2 vf = vpair(k, pv0 + i2);
+                    o.x += pk * vf.x;
+                    o.y += pk * vf.y;
+                }
+                acc[j] = o;
+            }
+        }
+    }
+    if (sk == 0 && sg < G) {
+        float *P = part + ((ulong64)(h0 + sg) * AD_SPLITS + sp) * (hd + 2);
+        P[hd] = mrun;
+        P[hd + 1] = sum;
+    }
+    for (int i = tid; i < G * vlo; i += MD_THREADS) {   // the pe slice nothing reads
+        int g = i / vlo, d = i - g * vlo;
+        part[((ulong64)(h0 + g) * AD_SPLITS + sp) * (hd + 2) + d] = 0.0f;
+    }
+    #pragma unroll
+    for (int j = 0; j < MD_NJ; j++) {
+        int idx = tid + j * MD_THREADS;
+        if (idx >= G * P2) break;
+        int g = idx / P2, i2 = idx - g * P2;
+        float *P = part + ((ulong64)(h0 + g) * AD_SPLITS + sp) * (hd + 2);
+        P[vlo + 2 * i2] = acc[j].x;
+        P[vlo + 2 * i2 + 1] = acc[j].y;
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(MD_THREADS, 1)
+k_attn_dec_mla(const float *q, const unsigned char *kc, float *part, attn_args a,
+               const int *posp, int vlo) {
+    attn_dec_mla_body(q, kc, part, a, *posp, vlo);
+}
+
+// the verify rows' twin (tile_attn_rows): grid (KV head, slice, column), each
+// column at its own position over the one cache, into its own partials
+extern "C" __global__ void __launch_bounds__(MD_THREADS, 1)
+k_attn_dec_mla_seq(const float *q, const ulong64 *kcp, float *part, attn_args a,
+                   const int *posp, int vlo) {
+    const int tk = blockIdx.z;
+    attn_dec_mla_body(q + (ulong64)tk * a.qs, (const unsigned char *)kcp[tk],
+                      part + (ulong64)tk * a.n_head * AD_SPLITS * (a.head_dim + 2), a, posp[tk], vlo);
+}
 #define G2_KERNEL(NAME, F)                                                              \
 extern "C" __global__ void __launch_bounds__(256)                                       \
 NAME(const uchar *wb, const __half *xh, float *y, mv_args a, const float *bias,          \

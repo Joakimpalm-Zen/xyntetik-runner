@@ -5,6 +5,36 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **deepseek2's absorbed form on CUDA decodes faster than the naive form, and its cache is half the size (R3.31).**
+  - **The cache:** the absorbed form keeps one [k_pe | latent] row per token and layer, and its output reads only V's
+    latent slice, which is K's row. The allocator still gave it a V table beside K, both 576 wide. Now the V table is
+    the K table on the host and the device: 31,104 B a token at f16 instead of 62,208. At 32,768 tokens the Q6_K's
+    cache goes from 2,038 MB to 1,019 MB, and its device total from 16.55 GB to 15.53 GB. Under `--kv k8v4` (K q8_0,
+    V fp4) V keeps its own table. Scores are byte-identical before and after in both forms, on the CPU and CUDA, at
+    every `--kv` format.
+  - **The decode:** the absorbed form's 16 query heads share one 576-wide row, a shape the grouped decode attention
+    did not take (at most 8 heads up to 256 wide). So each head read every cached row and its V copy for itself.
+    `k_attn_dec_mla` reads a slice's rows once for all 16 heads and takes V from the K row, merged as the grouped
+    kernel's partials are. Decode on a CUDA MIG slice (1g.24gb, sm_120), the Q6_K, 64 tokens at temperature 0, load
+    average 4 to 18:
+
+    | Context | Absorbed, new | Absorbed, before | Naive |
+    |---|---|---|---|
+    | 4,096 | 99.95 tok/s | 43.53 | 84.20 |
+    | 8,192 | 89.43 | 26.25 | 66.12 |
+    | 16,384 | 74.07 | 10.41 (R4.4.5 e) | 45.88 |
+    | 32,768 | 55.01 | 5.36 (R4.4.5 e) | not finished (R4.4.5 e) |
+
+    The kill (absorbed under 0.9x of naive at 4k or 8k) was declared before the first read; the read is 1.19x and
+    1.35x. gpu-identity with routing pinned reads 1.35e-5 of the logit range at 512 tokens (limit 1e-3).
+    - The gate: an `--mla-wide` fixture with the real geometry, at 1e-5 in `test-gates-core`, plus
+      `test_absorbed_mla_decode_*`, which repeats the decode byte for byte and holds it to the CPU at 1e-4 over
+      1,000 positions. Both catch V read from the wrong slice. Only the long pytest catches a dropped rescale:
+      gpu-identity's 512 tokens give each slice a single tile.
+    - `RUNNER_CUDA_ATTN_MLA=0` keeps the previous kernel.
+  - **Not changed:** the absorbed prefill (114.7 against naive's 191.7 tok/s at 4,096). Decode still runs without a
+    CUDA graph for deepseek2 (the shared-expert path), in both forms.
+
 - **CI: the macOS suite runs daily and on dispatch, not on every push.** GitHub's hosted
   macOS arm64 pool is capacity-limited and cancelled queued jobs often enough to keep
   main red for hours on 2026-11-04 (28 cancellations against 4 real failures on main
