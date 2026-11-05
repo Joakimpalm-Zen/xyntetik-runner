@@ -1171,8 +1171,8 @@ curl -L -o model.gguf \
 
 ### Requantization and expert pruning
 
-Repack weight matrices to `q8_0`, `q4_0`, `q3_k`, `q4_k`, `q6_k`, `f16`, or
-`bf16`:
+Repack weight matrices to `q8_0`, `q4_0`, `q5_1`, `q3_k`, `q4_k`, `q5_k`, `q6_k`,
+`iq4_nl`, `mxfp4`, `f16`, or `bf16`:
 
 ```sh
 ./runner -m model-f16.gguf --rewrite model-q4.gguf --quant q4_0
@@ -1180,7 +1180,7 @@ Repack weight matrices to `q8_0`, `q4_0`, `q3_k`, `q4_k`, `q6_k`, `f16`, or
 
 Norms, biases, and rope factors stay f32; tensors already smaller than the
 target are retained. A row a 256-wide K-quant or i-quant cannot describe
-(`q3_k`, `q4_k`, `q6_k` need a row width divisible by 256) is written in the
+(`q3_k`, `q4_k`, `q5_k`, `q6_k` need a row width divisible by 256) is written in the
 32-block type of the nearest bit budget instead, reported per tensor on
 stderr (`q2_k`/`q3_k` and the 1- to 3-bit i-quants to `q4_0`, `q4_k`/`iq4_xs`
 to `q5_0`, `q5_k` to `q5_1`, `q6_k` to `q8_0`, the same map llama.cpp uses),
@@ -2717,7 +2717,7 @@ whether the draft is `active` there.
 | Option | Purpose |
 |---|---|
 | `--rewrite OUT` | The one tensor-rewrite pass: write a rewritten model to `OUT` and exit, with a provenance record beside it. Without a trigger it is a requantization (see `--quant`); `--merge-lora` and `--context-surgery` are its triggers, one per pass. Each kind of pass keeps its own record (`OUT.quant.json`, `OUT.merge.json`, `OUT.context.json`), so a lineage walk reads the same records it always read. |
-| `--quant q8_0\|q4_0\|q3_k\|q4_k\|q6_k\|mxfp4\|f16\|bf16\|keep` | Requantization target (`mxfp4`: OCP microscaling FP4, one power-of-two scale per 32 values, the bytes ggml's reference writer emits, so gpt-oss's expert format can be written as well as read); default `q4_0`, or keep per-tensor types when pruning, removing or merging alone. Requires `--rewrite`; without it the flag is refused rather than ignored. |
+| `--quant q8_0\|q4_0\|q5_1\|q3_k\|q4_k\|q5_k\|q6_k\|iq4_nl\|mxfp4\|f16\|bf16\|keep` | Requantization target (`mxfp4`: OCP microscaling FP4, one power-of-two scale per 32 values, the bytes ggml's reference writer emits, so gpt-oss's expert format can be written as well as read; `q5_1`, `q5_k` and `iq4_nl` are ggml's writers without an importance matrix, byte for byte); default `q4_0`, or keep per-tensor types when pruning, removing or merging alone. Requires `--rewrite`; without it the flag is refused rather than ignored. |
 | `--type-plan PLAN.json` | Apply a per-tensor rewrite plan; first matching substring rule wins. [Details](#cli-type-plan). |
 | `--type-plan-strict` | With `--type-plan`: fail before writing anything when a rule would be declined (block width, never-grow) or fall back to a 32-block type, instead of reporting it and building the file. Off by default. |
 | `--imatrix FILE` | With `--rewrite`: an importance matrix, in llama.cpp's GGUF or legacy `.dat` imatrix format, so a published one serves as it is. It weights the rounding of `q3_k` and `q4_0` rows toward the input columns a calibration text drives hardest: per column `w * sqrt(sigma2 + x^2)`, the weighted Q3_K and Q4_0 quantizers of ggml. Other output types are written as without it, a matrix the calibration never reached (an expert no token was routed to) is written unweighted, and an entry whose size does not fit its tensor fails the rewrite. The summary line counts what it shaped; the `.quant.json` record names the file by sha256. Without it every writer emits the reference bytes it always has. |
@@ -2790,7 +2790,7 @@ its cgroup memory limit leaves, not the host's.
 #### `--type-plan PLAN.json`
 
 Per-tensor rewrite plan. First substring rule wins; types are `keep`, `q8_0`, `q4_0`,
-`q3_k`, `q4_k`, `q6_k`, `f16`, and `bf16`. Example:
+`q5_1`, `q3_k`, `q4_k`, `q5_k`, `q6_k`, `iq4_nl`, `mxfp4`, `f16`, and `bf16`. Example:
 `{"default":"keep","rules":[{"match":"_exps.weight","type":"q3_k"}]}`. Requires
 `--rewrite`. A rule whose type's block does not divide the row width is honoured in the
 32-block fallback type (reported BY NAME with the type asked for and the type written);
