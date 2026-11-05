@@ -422,6 +422,9 @@ typedef struct {
     // asked for ("" while it is not), and the last route line printed
     char     route_fallback[160];
     uint64_t route_last;
+    // the device failed mid-run and the CPU finished it (gpu_runtime_failure):
+    // the run's closing speeds are then the CPU's, and say so
+    bool     gpu_lost;
     // the forward paths this instance ran (plan P1): solo, batch, keep, mtp,
     // micro; how many forwards and the widest row count of each
     uint32_t route_runs[MODEL_ROUTE_PATHS];
@@ -826,6 +829,16 @@ static inline int model_kv_kind_k(const model_t *m) {
 static inline int model_kv_kind_v(const model_t *m) {
     return (m->kv_fp4 || m->kv_split) ? 2 : m->kv_q8 ? 1 : 0;
 }
+// deepseek2's absorbed form keeps one [k_pe | latent] row per token and layer
+// and reads V as that same row: the output takes only V's latent slice, which
+// is K's (attn_output, k_mla_v_absorb). So the V table IS the K table: one
+// allocation, V's offsets land on K's rows, the store writes K only, and every
+// copy and account skips V (R3.31; it allocated and wrote a second 576-wide
+// table until then, 62,208 against 31,104 B a token at f16). Only while the
+// two share a format: under --kv k8v4 (K q8_0, V fp4) V keeps its own table.
+static inline bool model_kv_v_shared(const model_t *m) {
+    return m->mla_absorb && model_kv_kind_k(m) == model_kv_kind_v(m);
+}
 static inline size_t kv_bytes_of_kind(int kind, size_t e) {
     return kind == 2 ? e / 16 * 9 : kind == 1 ? e / 32 * 34 : e * sizeof(f16_t);
 }
@@ -841,9 +854,15 @@ static inline size_t model_k_row_bytes(const model_t *m, int l) {
 static inline size_t model_v_row_bytes(const model_t *m, int l) {
     return model_v_bytes_of(m, (size_t)model_kv_dim(m, l));
 }
+// The bytes a V row owns: 0 when V is the K table (model_kv_v_shared), so
+// snapshots, host-device copies and accounts skip it. Reads still address V
+// through model_v_row_bytes and model_v_byte_off, which land on K's rows.
+static inline size_t model_v_row_bytes_own(const model_t *m, int l) {
+    return model_kv_v_shared(m) ? 0 : model_v_row_bytes(m, l);
+}
 // K row + V row: the per-position cost accounts use
 static inline size_t model_kv_row_bytes_sum(const model_t *m, int l) {
-    return model_k_row_bytes(m, l) + model_v_row_bytes(m, l);
+    return model_k_row_bytes(m, l) + model_v_row_bytes_own(m, l);
 }
 
 // Reservation auto-fit (`-c 0` with --reserve-ram/--reserve-vram): how many
@@ -964,7 +983,8 @@ static inline size_t model_v_boundary_bytes(const model_t *m, int l) {
 }
 // K + V raw cumulative boundary: allocation and device-split accounting
 static inline size_t model_kv_boundary_bytes_sum(const model_t *m, int l) {
-    return model_k_boundary_bytes(m, l) + model_v_boundary_bytes(m, l);
+    return model_k_boundary_bytes(m, l) +
+           (model_kv_v_shared(m) ? 0 : model_v_boundary_bytes(m, l));
 }
 void        model_ple_prepass(model_t *m, const int32_t *tokens, int n,
                               const float *x, float *out, float *scratch);

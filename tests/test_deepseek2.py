@@ -256,3 +256,27 @@ def test_the_family_template_and_refusals(fixture):
     assert rec["architecture"] == "deepseek2"
     assert rec["adapter_serving"]["supported"] is False and "latent" in rec["adapter_serving"]["reason"]
     assert rec["training"]["supported"] is False
+
+
+def test_the_absorbed_cache_is_one_table(fixture):
+    # R3.31: the absorbed form's V is its K row ([k_pe | latent]; the output
+    # reads V's latent slice), so its cache is one 24-wide table, not a K table
+    # and a V copy beside it (twice the bytes until then). The naive form keeps
+    # its K and padded-V tables of every head.
+    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
+    model, _ = fixture
+    kv = load(model)[0]
+    n_layer, ctx = kv["deepseek2.block_count"], 16384
+    r, rd = kv["deepseek2.attention.kv_lora_rank"], kv["deepseek2.rope.dimension_count"]
+    n_head, qk = kv["deepseek2.attention.head_count"], kv["deepseek2.attention.key_length"]
+    got = {}
+    for naive in (False, True):
+        env = dict(os.environ, RUNNER_MLA_NAIVE="1" if naive else "0")
+        p = subprocess.run([str(exe), "-m", str(model), "--gpu", "off", "-t", "2", "-c", str(ctx), "-p", TEXT,
+                            "-n", "1", "-v", "--no-tray"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        err = p.stderr.decode(errors="replace")
+        assert p.returncode == 0, err[-2000:]
+        got[naive] = (re.search(r"^kv cache\s+([0-9.]+) MB", err, re.M).group(1),
+                      "one table: V reads the K row" in err)
+    assert got[False] == ("%.1f" % (n_layer * ctx * (r + rd) * 2 / 1e6), True), got
+    assert got[True] == ("%.1f" % (n_layer * ctx * n_head * qk * 2 * 2 / 1e6), False), got

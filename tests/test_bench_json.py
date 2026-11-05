@@ -130,6 +130,32 @@ def test_the_route_line_names_where_a_failed_forward_ended(runner_bin, model):
     assert lines and "backend=cpu" in lines[0], lines
 
 
+def test_the_closing_line_says_a_failed_forward_finished_on_the_cpu(runner_bin, model):
+    """The speeds the CLI ends with are the CPU's when the device failed mid-run,
+    and the line after them says so: the one fallback line comes before the first
+    tile, and a harness that keeps only the end of stderr lost it (R3.31: a forced
+    32K split finished on the CPU in 84 minutes with nothing at the end)."""
+    import os
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("needs a CUDA device for the injected forward failure")
+    cmd = [runner_bin, "-m", str(model), "-p", "hello there", "-n", "3",
+           "--temp", "0", "--no-tray"]
+    note = "gpu: this run finished on the CPU (forward failed at runtime)"
+    lost = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=120, env=dict(os.environ, RUNNER_CUDA_INJECT_FAILURE="1"))
+    assert lost.returncode == 0, lost.stderr.decode(errors="replace")
+    err = lost.stderr.decode(errors="replace").splitlines()
+    speeds = [i for i, l in enumerate(err) if l.startswith("prompt: ") and "| gen: " in l]
+    assert speeds and len(err) > speeds[-1] + 1, err[-4:]
+    assert err[speeds[-1] + 1].startswith(note), err[-4:]
+    kept = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=120)
+    assert kept.returncode == 0, kept.stderr.decode(errors="replace")
+    assert b"finished on the CPU" not in kept.stderr
+
+
 def test_gpu_fallback_fail_ends_the_run(runner_bin, model):
     """RUNNER_GPU_FALLBACK=fail: a device forward that fails at runtime ends
     the process with status 3 instead of finishing on the CPU, so a gate or a

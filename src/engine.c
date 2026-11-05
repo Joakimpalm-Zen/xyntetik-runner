@@ -448,7 +448,7 @@ static uint64_t model_identity(const model_t *m, const tokenizer *tok) {
         h = h64i(h, model_rope_dim(m, l));
         h = h64i(h, model_is_swa(m, l));
         h = h64i(h, (long long)model_k_row_bytes(m, l));
-        h = h64i(h, (long long)model_v_row_bytes(m, l));
+        h = h64i(h, (long long)model_v_row_bytes_own(m, l));   // 0: V is K's table
         const gguf_tensor *sample[2] = { m->layers[l].wq, m->layers[l].w_down };
         for (int k = 0; k < 2; k++) {
             if (!sample[k] || !sample[k]->data) { h = h64s(h, NULL); continue; }
@@ -516,7 +516,7 @@ static void pfx_save(const model_t *m, uint8_t *dst, int n) {
     size_t off = 0;
     for (int l = 0; l < m->n_layer; l++) {
         if (model_kv_owner(m, l) != l) continue;
-        size_t row_k = model_k_row_bytes(m, l), row_v = model_v_row_bytes(m, l);
+        size_t row_k = model_k_row_bytes(m, l), row_v = model_v_row_bytes_own(m, l);
         int rows = pfx_rows(m, l, n);
         size_t blk_k = (size_t)rows * row_k, blk_v = (size_t)rows * row_v;
         const uint8_t *k = (const uint8_t *)m->kcache + model_k_byte_off(m, l);
@@ -550,7 +550,7 @@ static void pfx_load(model_t *m, const uint8_t *src, int stride, int n, int ring
     if (model_kv_ring_active(m) && n - m->kv_ring > from) from = n - m->kv_ring;
     for (int l = 0; l < m->n_layer; l++) {
         if (model_kv_owner(m, l) != l) continue;
-        size_t row_k = model_k_row_bytes(m, l), row_v = model_v_row_bytes(m, l);
+        size_t row_k = model_k_row_bytes(m, l), row_v = model_v_row_bytes_own(m, l);
         int rows = pfx_rows(m, l, stride);
         size_t blk_k = (size_t)rows * row_k, blk_v = (size_t)rows * row_v;
         uint8_t *k = (uint8_t *)m->kcache + model_k_byte_off(m, l);

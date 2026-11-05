@@ -491,6 +491,7 @@ typedef struct gpu_weights {
     // cross-sequence decode microbatch (Phase 6): per-column position and KV
     CUfunction  f_rope_seq, f_store_seq, f_attn_dec_seq;
     CUfunction  f_attn_dec_gqa_seq, f_attn_merge32_seq; // f_attn_dec_gqa's twins
+    CUfunction  f_attn_dec_mla, f_attn_dec_mla_seq;     // the absorbed MLA decode (R3.31)
     // multi-column twins of f_gemv, per microbatch width (see BW_* below):
     // f_gemvb[w][type], w indexing the width class, not the width itself
     CUfunction  f_gemvb[BW_N][KT_N];
@@ -769,6 +770,11 @@ typedef struct {
 // rows) of hd + 8 halves, four 16 x 36 partial S tiles, 16 row scales
 #define AW_SMEM(hd) ((2 * 16 + 32) * ((hd) + 8) * 2 + 4 * 16 * 36 * 4 + 16 * 4)
 #define CU_FUNC_ATTR_MAX_DYN_SMEM 8   // CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES
+// k_attn_dec_mla's geometry (kernels.cu's MD_*, R3.31) and the dynamic shared
+// memory its attribute is set to at load: G <= 16 heads' Q beside one 32-row
+// tile of rows up to 640 wide
+enum { MD_THREADS = 512, MD_GMAX = 16, MD_NJ = 8, MD_TK = 32 };
+#define MD_SMEM_MAX (4 * (MD_GMAX * (640 + 4) + MD_TK * 321 + MD_GMAX * MD_TK + MD_GMAX))
 #define CU_DEV_ATTR_CC_MAJOR 75       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR
 #define CU_DEV_ATTR_CC_MINOR 76       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR
 #define TC_N    64   // tensor-core GEMM token tile (keep in sync)
@@ -2120,7 +2126,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
                                            m->moe_auto_placed);
         if (m->moe_auto_trim == 0) m->moe_auto_placed = placed;
     }
-    free(cost); free(bank); free(is_moe);
+    free(bank); free(is_moe);
     // a full split also needs token_embd + output weights resident.
     // Invariant, belt and braces: "the device owns every layer" and "the
     // device owns the output projection" must agree, because the forward
@@ -2149,6 +2155,14 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         G = m->gpu_layers_override;
         if (G > m->n_layer) G = m->n_layer;
         full = (G == m->n_layer);
+        // Past the fitted split, charge the forced layers: the split line
+        // and P->used (which sizes the prompt window) otherwise kept the
+        // fitted plan's bytes. DeepSeek-V2-Lite naive at 32K, all 27 of 26
+        // forced: the line said 24.24 of 25.13 GB, the window took 0.72 GB
+        // of "spare" the 27th layer held, the first launch ran out of memory
+        // and the run finished on the CPU (R3.31). Below the fitted split
+        // the fitted figure stands, as an upper bound.
+        for (int l = natural_G; l < G; l++) used += cost[l];
         if (G > natural_G)
             fprintf(stderr, "gpu: --gpu-layers %d places %d layers past the %d the "
                             "offload budget holds (%.2f GB); the excess may fail to "
@@ -2157,6 +2171,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
                     m->gpu_layers_override, G - natural_G, natural_G,
                     (double)vram_budget / 1e9);
     }
+    free(cost);
     // Composition warning (no silent worst-of-both). Under tensor-role
     // placement the expert banks are what fill VRAM, so capping the
     // attention split below what already fits moves attention to the CPU
@@ -2773,6 +2788,14 @@ static bool shared_load_module(gpu_weights *w) {
     cu.ModuleGetFunction(&w->f_attn_merge32, w->mod, "k_attn_merge32");
     cu.ModuleGetFunction(&w->f_attn_dec_gqa_seq, w->mod, "k_attn_dec_gqa_seq");
     cu.ModuleGetFunction(&w->f_attn_merge32_seq, w->mod, "k_attn_merge32_seq");
+    // the absorbed MLA decode stages G heads' Q beside one tile of 576-wide
+    // rows: past the 48 KB a launch gets without asking (MD_SMEM_MAX)
+    if (cu.ModuleGetFunction(&w->f_attn_dec_mla, w->mod, "k_attn_dec_mla") != 0 || !cu.FuncSetAttribute ||
+        cu.FuncSetAttribute(w->f_attn_dec_mla, CU_FUNC_ATTR_MAX_DYN_SMEM, MD_SMEM_MAX) != 0)
+        w->f_attn_dec_mla = NULL;
+    if (cu.ModuleGetFunction(&w->f_attn_dec_mla_seq, w->mod, "k_attn_dec_mla_seq") != 0 || !cu.FuncSetAttribute ||
+        cu.FuncSetAttribute(w->f_attn_dec_mla_seq, CU_FUNC_ATTR_MAX_DYN_SMEM, MD_SMEM_MAX) != 0)
+        w->f_attn_dec_mla_seq = NULL;
     cu.ModuleGetFunction(&w->f_attn_tile16, w->mod, "k_attn_tile16");
     cu.ModuleGetFunction(&w->f_attn_tile8, w->mod, "k_attn_tile8");
     return true;
@@ -3578,8 +3601,12 @@ static bool cuda_alloc_kv(model_t *m, gpu_t *g) {
     size_t k_bytes = model_k_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
     size_t v_bytes = model_v_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
     CK(cu.MemAlloc(&g->kc, k_bytes));
-    CK(cu.MemAlloc(&g->vc, v_bytes));
     CK(cu.MemsetD8(g->kc, 0, k_bytes));
+    if (model_kv_v_shared(m)) {   // the absorbed MLA form's V is its K row
+        g->vc = g->kc;
+        return true;
+    }
+    CK(cu.MemAlloc(&g->vc, v_bytes));
     CK(cu.MemsetD8(g->vc, 0, v_bytes));
     return true;
 fail:
@@ -5166,7 +5193,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
         if (g->graph[i] && cu.GraphDestroy) cu.GraphDestroy(g->graph[i]);
     }
     if (g->stream && cu.StreamDestroy) cu.StreamDestroy(g->stream);
-    CUdeviceptr bufs[] = { g->kc, g->vc, g->x, g->xb, g->xb2,
+    CUdeviceptr bufs[] = { g->kc, g->vc == g->kc ? 0 : g->vc, g->x, g->xb, g->xb2,
                            g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
                            g->attn_part, g->logits, g->xsc, g->xh, g->pos_dev, g->q8x_q, g->q8x_d,
                            g->moe_logits, g->moe_eout, g->moe_sel,
@@ -5592,7 +5619,7 @@ static bool kv_gather_init(gpu_t *g, model_t *m) {
         t[l].koff = model_k_byte_off(m, l);
         t[l].voff = model_v_byte_off(m, l);
         t[l].krow = (unsigned)model_k_row_bytes(m, l);
-        t[l].vrow = (unsigned)model_v_row_bytes(m, l);
+        t[l].vrow = (unsigned)model_v_row_bytes_own(m, l);   // 0: V is K's table
         t[l].ring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
         t[l].stage = (unsigned)at;
         at += t[l].krow + t[l].vrow;
@@ -5685,15 +5712,16 @@ static int kv_spans(const model_t *m, int l, int lo, int hi, int s_lo[2], int s_
 
 // one span of layer l's K and V rows between the host cache and the device
 static bool kv_move(gpu_t *g, model_t *m, int l, int lo, int hi, bool up) {
-    size_t krow = model_k_row_bytes(m, l), vrow = model_v_row_bytes(m, l);
+    size_t krow = model_k_row_bytes(m, l), vrow = model_v_row_bytes_own(m, l);
     size_t koff = model_k_byte_off(m, l) + (size_t)lo * krow;
     size_t voff = model_v_byte_off(m, l) + (size_t)lo * vrow;
     size_t kb = (size_t)(hi - lo) * krow, vb = (size_t)(hi - lo) * vrow;
+    // vb is 0 when V is K's table: the K copy already moved its rows
     if (up)
         return cu.MemcpyHtoD(g->kc + koff, (uint8_t *)m->kcache + koff, kb) == 0 &&
-               cu.MemcpyHtoD(g->vc + voff, (uint8_t *)m->vcache + voff, vb) == 0;
+               (vb == 0 || cu.MemcpyHtoD(g->vc + voff, (uint8_t *)m->vcache + voff, vb) == 0);
     return cu.MemcpyDtoH((uint8_t *)m->kcache + koff, g->kc + koff, kb) == 0 &&
-           cu.MemcpyDtoH((uint8_t *)m->vcache + voff, g->vc + voff, vb) == 0;
+           (vb == 0 || cu.MemcpyDtoH((uint8_t *)m->vcache + voff, g->vc + voff, vb) == 0);
 }
 
 // upload host KV rows [lo, hi) for every device layer: rows the device does
@@ -7529,7 +7557,11 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
         int vu = vq8 == 2 ? kv_dim / 16 : vq8 ? kv_dim / 32 : kv_dim;
         int units = ku > vu ? ku : vu;
         int kring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
-        void *ps[] = { &g->kt, &g->vt, &g->kc, &g->vc, &kv_dim, &l_off,
+        // a shared V (the absorbed MLA form) is K's table: its store writes
+        // the rotated K row over itself, the same bytes in the same thread,
+        // where vt's unrotated copy would overwrite k_pe
+        CUdeviceptr *vsrc = model_kv_v_shared(m) ? &g->kt : &g->vt;
+        void *ps[] = { &g->kt, vsrc, &g->kc, &g->vc, &kv_dim, &l_off,
                        &g->pos_dev, &q8, &kring, &v_off, &vq8 };
         ok = ok && launch(g, g->sw->f_store, (units + 63) / 64, tn, 1, 64, ps);
     }
@@ -7791,6 +7823,52 @@ static bool tile_attn_dec_gqa(gpu_t *g, model_t *m, int hd, int n_kv,
     return true;
 }
 
+// The absorbed MLA decode (k_attn_dec_mla, R3.31): its dynamic shared memory
+// for a layer's geometry, or 0 when it does not apply (off, not the shared
+// one-table layout, or a shape it does not take: k_attn_dec then). One answer
+// for the solo decode and the verify rows, so a row runs its solo arithmetic.
+// MD_* (above) mirror kernels.cu.
+static bool attn_mla_on(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_CUDA_ATTN_MLA");
+        on = !(e && *e && strcmp(e, "0") == 0);
+    }
+    return on == 1;
+}
+static unsigned attn_dec_mla_smem(const gpu_t *g, const model_t *m, int hd, int n_kv) {
+    if (!attn_dec_on() || !attn_mla_on() || !g->sw->f_attn_dec_mla || !g->sw->f_attn_merge32 ||
+        !model_kv_v_shared(m) || n_kv < 1 || m->n_head % n_kv)
+        return 0;
+    int G = m->n_head / n_kv, vlo = m->rope_dim;
+    if (G > MD_GMAX || hd > 640 || hd % 2 || vlo % 2 || vlo < 0 || vlo >= hd ||
+        G * (hd - vlo) / 2 > MD_NJ * MD_THREADS)
+        return 0;
+    int kb = model_kv_kind_k(m) == 2 ? hd / 16 * 9 : model_kv_kind_k(m) ? hd / 32 * 34 : 2 * hd;
+    int bws = ((kb + 3) / 4) | 1;
+    return (unsigned)sizeof(float) *
+           (unsigned)(MD_GMAX * (hd + 4) + MD_TK * bws + MD_GMAX * MD_TK + MD_GMAX);
+}
+static _Atomic unsigned long g_attn_dec_mla_dispatches;
+unsigned long gpu_attn_dec_mla_dispatches(void) { return g_attn_dec_mla_dispatches; }
+
+// The absorbed MLA decode for the single query column, or false (nothing
+// launched) when it does not apply; its partials are k_attn_dec_gqa's, merged
+// by k_attn_merge32
+static bool tile_attn_dec_mla(gpu_t *g, model_t *m, int hd, int n_kv,
+                              const attn_args *aa, CUdeviceptr sinks, bool *ok) {
+    unsigned smem = attn_dec_mla_smem(g, m, hd, n_kv);
+    if (!smem) return false;
+    attn_args a = *aa;
+    int vlo = m->rope_dim;
+    void *pd[] = { &g->q, &g->kc, &g->attn_part, &a, &g->pos_dev, &vlo };
+    void *pm[] = { &g->xb2, &g->attn_part, &a, &g->pos_dev, &sinks };
+    *ok = launch_smem(g, g->sw->f_attn_dec_mla, (unsigned)n_kv, 32, 1, MD_THREADS, smem, pd) &&
+          launch(g, g->sw->f_attn_merge32, (unsigned)m->n_head, 1, 1, 128, pm);
+    if (*ok) g_attn_dec_mla_dispatches++;
+    return true;
+}
+
 // Which decode attention a microbatch column runs on a layer: the twin of
 // what tile_attn runs for the same column alone. 1: k_attn_dec_gqa_seq (the
 // solo decode takes k_attn_dec_gqa there), 0: k_attn_dec_seq (k_attn_dec),
@@ -7826,6 +7904,13 @@ static bool tile_attn_rows(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
     }
     attn_args a = *aa;
     bool ok = true;
+    unsigned mla = attn_dec_mla_smem(g, m, hd, n_kv);
+    if (mla && !g->sw->f_attn_dec_mla_seq) {
+        gpu_first_error("the absorbed MLA decode has no multi-row twin in this "
+                        "module; refusing the exact verify tile");
+        return false;
+    }
+    int vlo = m->rope_dim;
     for (int c0 = 0; c0 < tn && ok; c0 += 16) {
         unsigned cn = (unsigned)(tn - c0 < 16 ? tn - c0 : 16);
         CUdeviceptr q   = g->q + (size_t)c0 * a.qs * sizeof(float);
@@ -7834,7 +7919,11 @@ static bool tile_attn_rows(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
         CUdeviceptr kcp = g->vcol_kcp + (size_t)c0 * sizeof(uint64_t);
         CUdeviceptr vcp = g->vcol_vcp + (size_t)c0 * sizeof(uint64_t);
         void *pm[] = { &out, &g->attn_part, &a, &pos, &sinks };
-        if (gq) {
+        if (mla) {
+            void *pg[] = { &q, &kcp, &g->attn_part, &a, &pos, &vlo };
+            ok = launch_smem(g, g->sw->f_attn_dec_mla_seq, (unsigned)n_kv, 32, cn, MD_THREADS, mla, pg) &&
+                 launch(g, g->sw->f_attn_merge32_seq, (unsigned)m->n_head, cn, 1, 128, pm);
+        } else if (gq) {
             void *pg[] = { &q, &kcp, &vcp, &g->attn_part, &a, &pos };
             ok = launch_smem(g, g->sw->f_attn_dec_gqa_seq, (unsigned)n_kv, 32, cn, 256,
                              attn_dec_gqa_smem(m, hd, n_kv), pg) &&
@@ -7932,6 +8021,8 @@ static bool tile_attn(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
         unsigned long tcw0 = g_attn_tcw_dispatches;
         if (tn > 1 && g->exact_rows) {
             ok = tile_attn_rows(g, m, tn, hd, n_kv, &aa, sinks);
+        } else if (tn == 1 && tile_attn_dec_mla(g, m, hd, n_kv, &aa, sinks, &ok)) {
+            // ran (or failed): the absorbed MLA slices, then their merge
         } else if (tn == 1 && tile_attn_dec_gqa(g, m, hd, n_kv, &aa, sinks, &ok)) {
             // ran (or failed): grouped slices, then their merge
         } else if (tn == 1) {
