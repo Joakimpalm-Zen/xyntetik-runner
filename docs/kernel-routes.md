@@ -120,12 +120,20 @@ Around the matvec:
   0.188, McNemar 2/0); and for qwen35 at head width 256 (Qwen3.5, 3.6 and
   3.8), R3.6.3.2, on Qwen3.8-27B's row (1.82x prefill at 16K; 2,000
   positions: mean KL 0.9998x the tile's, Wilcoxon p 0.82, McNemar 0/0);
-  `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the tile there, `=1` forces it on any
-  model it admits. fp16 caches only, and never a layer
+  and for deepseek2's absorbed MLA row through its twin `k_attn_tcw_mla`
+  (R3.32): one 576-wide [k_pe 64 | latent 512] row that the 16 query heads
+  share, S over the whole row, V the staged row's latent slice (the one
+  table, so no V tile is staged), the 16 heads as a block's 16 rows (the
+  packing of llama.cpp's mma_f16 <576, 512, 16>). On DeepSeek-V2-Lite-Chat
+  Q6_K, prefill 1.05x the naive form's at 4K and 1.11x at 8K (1.76x and
+  2.46x the previous path, `k_attn` one block per head and column); 1,999
+  positions against the publisher's float32 model: mean KL 0.986x the
+  previous path's, Wilcoxon p 0.79, McNemar 3/2. `RUNNER_CUDA_ATTN_TC_WIDE=0`
+  keeps the tile there, `=1` forces it on any model it admits. fp16 caches only, and never a layer
   with sinks (gpt-oss, flint keep the tile). One global layer at about 31K
   on an RTX 3070: 53-57 ms against `k_attn_tile8`'s 352 ms; Bolt E4B prefill
-  2.0x at 16K and 2.6x at 32K. Gate: `make test-cuda-attn-wide`,
-  `tests/test_attn_wide_repeat.py`.
+  2.0x at 16K and 2.6x at 32K. Gate: `make test-cuda-attn-wide` (with the
+  `--mla-wide` fixture at 512 tokens), `tests/test_attn_wide_repeat.py`.
   One opt-in stays off: `RUNNER_CUDA_ATTN_TC_FULL=1` puts the tensor-core
   attention on the layers without a window in a family the default keeps on
   the tile (gpt-oss's full-attention layers), whose gpt-oss-20b row read

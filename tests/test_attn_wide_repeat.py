@@ -91,3 +91,41 @@ def test_qwen35_at_another_head_width_stays_off_by_default(runner_bin, tmp_path)
     _gen_qwen35(model, 512)
     rec = json.loads(_score(runner_bin, model, ""))
     assert "attn_wide" not in rec["score_route"]["backend_detail"], rec["score_route"]
+
+
+def test_absorbed_mla_takes_the_wide_tile_by_default(runner_bin, tmp_path):
+    """R3.32: deepseek2's absorbed row (16 heads on one 576-wide [k_pe | latent]
+    row, the --mla-wide fixture) runs k_attn_tcw_mla under
+    RUNNER_CUDA_ATTN_TC_WIDE=1: the same bytes twice through the chunked prefill
+    route, within the CPU's distance, with its own kernel counter. deepseek2's
+    absorbed row is on the default list since its float32-reference D1 read
+    passed, so the switch unset runs it too, and =0 keeps the previous path."""
+    model = tmp_path / "mla.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--arch", "deepseek2", "--mla-wide",
+                    str(model)], check=True, cwd=ROOT, stdout=subprocess.PIPE)
+    a = _score(runner_bin, model, "1")
+    b = _score(runner_bin, model, "1")
+    rec = json.loads(a)
+    assert " attn_wide=on " in rec["score_route"]["backend_detail"], rec["score_route"]
+    assert rec["n_scored"] > 300, rec["n_scored"]
+    assert body_bytes(a) == body_bytes(b)
+    cpu = subprocess.run([str(runner_bin), "-m", str(model), "--gpu", "off", "-c", "1024", "--score", "-p", TEXT,
+                          "--no-tray"], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+    assert cpu.returncode == 0, cpu.stderr.decode(errors="replace")
+    worst = max(abs(x - y) for x, y in zip(rec["logprobs"], json.loads(cpu.stdout)["logprobs"]))
+    assert worst < 1e-4, worst
+    unset = _score(runner_bin, model, "")
+    assert " attn_wide=on " in json.loads(unset)["score_route"]["backend_detail"]
+    assert body_bytes(unset) == body_bytes(a)
+    off = json.loads(_score(runner_bin, model, "0"))
+    assert "attn_wide" not in off["score_route"]["backend_detail"], off["score_route"]
+
+    def ran(w):
+        p = subprocess.run([str(runner_bin), "-m", str(model), "--gpu", "auto", "--bench-json"], cwd=ROOT,
+                           env=dict(os.environ, RUNNER_CUDA_ATTN_TC_WIDE=w),
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        line = next(l for l in p.stdout.decode().splitlines() if l.startswith("{"))
+        return json.loads(line)["route"]["kernels"]["cuda_attn_tcw_mla"]
+    assert ran("1") > 0 and ran("") > 0
+    assert ran("0") == 0

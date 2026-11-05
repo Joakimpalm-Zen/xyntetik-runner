@@ -466,6 +466,7 @@ typedef struct gpu_weights {
     CUfunction  f_attn_dec_gqa, f_attn_merge32; // grouped decode attention (tile_attn)
     CUfunction  f_attn_tc;                  // tensor-core prefill attention (tile_attn)
     CUfunction  f_attn_tcw;                 // its wide-head twin, head_dim 256 to 512
+    CUfunction  f_attn_tcw_mla;             // and the absorbed MLA row's (R3.32)
     CUfunction  f_kv_gather;                // one-copy decode KV write-back (X3)
     // kernel tables indexed by ggml tensor type; sized past the largest
     // supported type id (T_MXFP4 = 39), not the count of supported types
@@ -2778,6 +2779,9 @@ static bool shared_load_module(gpu_weights *w) {
     if (cu.ModuleGetFunction(&w->f_attn_tcw, w->mod, "k_attn_tcw") != 0 || !cu.FuncSetAttribute ||
         cu.FuncSetAttribute(w->f_attn_tcw, CU_FUNC_ATTR_MAX_DYN_SMEM, AW_SMEM(512)) != 0)
         w->f_attn_tcw = NULL;
+    if (cu.ModuleGetFunction(&w->f_attn_tcw_mla, w->mod, "k_attn_tcw_mla") != 0 || !cu.FuncSetAttribute ||
+        cu.FuncSetAttribute(w->f_attn_tcw_mla, CU_FUNC_ATTR_MAX_DYN_SMEM, AW_SMEM(576)) != 0)
+        w->f_attn_tcw_mla = NULL;
     cu.ModuleGetFunction(&w->f_kv_gather, w->mod, "k_kv_gather");
     cu.ModuleGetFunction(&w->f_q35_conv_seq, w->mod, "k_q35_conv_seq");
     cu.ModuleGetFunction(&w->f_q35_delta_seq, w->mod, "k_q35_delta_seq");
@@ -7709,11 +7713,26 @@ static bool tile_attn_tc(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
 // Bolt E4B, gemma-4-E2B/E4B), whose 512-wide global layers it takes from
 // k_attn_tile8 (owner decision 2026-11-03), and for qwen35 at head width 256
 // (Qwen3.5/3.6/3.8: every fourth layer full attention; 1.82x prefill at 16K
-// on Qwen3.8-27B with the D1 rule passing, R3.6.3.2); 0 keeps the tile
+// on Qwen3.8-27B with the D1 rule passing, R3.6.3.2), and for deepseek2's
+// absorbed row through k_attn_tcw_mla (R3.32: 1.05x / 1.11x the naive form's
+// prefill at 4K / 8K on DeepSeek-V2-Lite-Chat Q6_K, and its D1 read against
+// the publisher's float32 model passing, mean KL 0.986x); 0 keeps the tile
 // there, 1 forces it on every model it admits.
+// The absorbed MLA row k_attn_tcw_mla takes (R3.32), as the column its latent
+// starts at, or -1: one table (V is the K row, model_kv_v_shared), a rope
+// slice of whole 8-wide groups, quarters of the row that are whole k16 steps,
+// and a latent of whole 128-wide quarters up to 512 (DeepSeek-V2-Lite: 576 =
+// 64 + 512), within the shared memory the kernel was granted (AW_SMEM(576)).
+static int tcw_mla_vlo(const model_t *m, int hd) {
+    int rd = m->rope_dim, dv = hd - rd;
+    if (!model_kv_v_shared(m) || rd < 8 || rd % 8 || hd > 576) return -1;
+    return (hd / 4) % 16 == 0 && dv % 128 == 0 && dv <= 512 ? rd : -1;
+}
+
 static bool attn_tcw_family(const model_t *m) {
     if (!m) return false;
     if (strcmp(m->arch, "gemma4") == 0) return m->n_embd_ple > 0;
+    if (m->deepseek2) return tcw_mla_vlo(m, model_head_dim(m, 0)) >= 0;
     return strcmp(m->arch, "qwen35") == 0 && m->head_dim == 256;
 }
 static bool attn_tcw_on(const model_t *m) {
@@ -7726,24 +7745,34 @@ static bool attn_tcw_on(const model_t *m) {
 }
 static _Atomic unsigned long g_attn_tcw_dispatches;
 unsigned long gpu_attn_tcw_dispatches(void) { return g_attn_tcw_dispatches; }
+static _Atomic unsigned long g_attn_tcw_mla_dispatches;
+unsigned long gpu_attn_tcw_mla_dispatches(void) { return g_attn_tcw_mla_dispatches; }
 
 // The wide-head tensor-core prefill attention over a whole tile, or false
 // when it does not apply: switch off, kernel absent, a quantized K or V
 // cache, sinks, or a head width that is not 256, 384 or 512 (whole 32-wide
-// quarters a warp). 16 query rows a block.
+// quarters a warp) and not an absorbed MLA row k_attn_tcw_mla takes. 16
+// query rows a block.
 static bool tile_attn_tcw(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
                           const attn_args *aa, CUdeviceptr sinks, bool *ok) {
-    if (!attn_tcw_on(m) || !g->sw->f_attn_tcw || model_kv_kind_k(m) || model_kv_kind_v(m) ||
-        sinks || hd % 128 || hd < 256 || hd > 512 || n_kv < 1 || m->n_head % n_kv)
+    if (!attn_tcw_on(m) || model_kv_kind_k(m) || model_kv_kind_v(m) || sinks ||
+        n_kv < 1 || m->n_head % n_kv)
+        return false;
+    int vlo = g->sw->f_attn_tcw_mla ? tcw_mla_vlo(m, hd) : -1;
+    if (vlo < 0 && (!g->sw->f_attn_tcw || hd % 128 || hd < 256 || hd > 512))
         return false;
     int G = m->n_head / n_kv, R = 16;
     int hb = G < R ? G : R, qs = R / hb, ngh = (G + hb - 1) / hb;
     attn_args a = *aa;
     void *pa[] = { &g->q, &g->kc, &g->vc, &g->xb2, &a, &g->pos_dev, &sinks,
-                   &tn, &hb, &qs };
-    *ok = launch_smem(g, g->sw->f_attn_tcw, (unsigned)(n_kv * ngh), (unsigned)((tn + qs - 1) / qs),
+                   &tn, &hb, &qs, &vlo };
+    *ok = launch_smem(g, vlo >= 0 ? g->sw->f_attn_tcw_mla : g->sw->f_attn_tcw,
+                      (unsigned)(n_kv * ngh), (unsigned)((tn + qs - 1) / qs),
                       1, 128, AW_SMEM(hd), pa);
-    if (*ok) { g_attn_tcw_dispatches++; g_attn_tiled_dispatches++; }
+    if (*ok) {
+        g_attn_tcw_dispatches++; g_attn_tiled_dispatches++;
+        if (vlo >= 0) g_attn_tcw_mla_dispatches++;
+    }
     return true;
 }
 
@@ -9570,10 +9599,12 @@ const char *gpu_route_detail(const model_t *m) {
     // kernels loaded and its buffers made, so a receipt names that route;
     // " attn_wide=on" where k_attn_tcw takes some layer of this model
     bool wide = false;
-    if (attn_tcw_on(m) && g->sw->f_attn_tcw && !model_kv_kind_k(m) && !model_kv_kind_v(m))
+    if (attn_tcw_on(m) && !model_kv_kind_k(m) && !model_kv_kind_v(m))
         for (int l = 0; l < m->n_layer && !wide; l++) {
             int hd = model_head_dim(m, l);
-            wide = !(g->sw->sinks && g->sw->sinks[l]) && hd % 128 == 0 && hd >= 256 && hd <= 512;
+            wide = !(g->sw->sinks && g->sw->sinks[l]) &&
+                   ((g->sw->f_attn_tcw && hd % 128 == 0 && hd >= 256 && hd <= 512) ||
+                    (g->sw->f_attn_tcw_mla && tcw_mla_vlo(m, hd) >= 0));
         }
     snprintf(buf, sizeof buf, "graph=%s tc=%s%s tc2=%s q8x=%s i8=%s small_batch=%s attn_tile=%s%s "
              "window=%d tc_cols=%d%s%s%s",
