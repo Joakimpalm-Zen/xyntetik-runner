@@ -1,0 +1,100 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-11-05T07:05:08Z",
+  "host": {
+    "os": "Linux",
+    "machine": "x86_64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.13.0"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "qwen3.6-35b-a3b-q4_k_m",
+      "architecture": "qwen35moe",
+      "file": "models/Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf",
+      "expected_sha256": "b46fedd33e0bfb0cae308aa3c158d0a4b2c4a1d2185a1ed6f093cdaf39064772",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 7423.1,
+          "stderr_tail": "r this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB\ngpu-split: budget=25.13GB fixed=1.17GB G=40/40 full=1 used=22.06GB\ngpu-split: prompt window 512 columns (batch 512, 2.65 GB spare, 304584 bytes a column)\ngpu: the device's tensors (40 layers and the head) lie in 2 stretches of the file; uploading them as runs\ngpu: CUDA backend on CUDA MIG slice, 1g.24gb, sm_120 (21.1 GB weights in VRAM)\ngpu: VRAM 3.36 GB free of 25.37 GB after init (kv 0.34 GB + scratch 0.20 GB this instance)\nloaded Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf | qwen35moe | 40 layers | ctx 4096 | 20 threads | 6.77s\nmtp: 1 predictor block(s) declared, excluded from the backbone; not consumed (pass --mtp to draft from it)\nsampling: qwen36 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\nsampling: from the file (general.sampling.*): temp 1.00, top_p 0.95, top_k 20\n\nprompt: 3 tok, 63.41 tok/s | gen: 1 tok, 72.32 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 141.3,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": "",
+          "vocab": {
+            "gated": true,
+            "expect": 0,
+            "differ": 0,
+            "of": 247091,
+            "status": "pass"
+          }
+        },
+        "cpu_cuda": {
+          "status": "pass_margin_qualified",
+          "returncode": 0,
+          "elapsed_ms": 68148.39,
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
+            "RUNNER_MOE_EAGER": "1"
+          },
+          "min_prompt_tokens": 85,
+          "cpu_cuda_identity": {
+            "result": "pass_margin_qualified",
+            "exact": "8/9",
+            "near_tie_tolerated": 1
+          },
+          "identical": "8/9",
+          "failed_prompts": [],
+          "report": "cpu_cuda/qwen3.6-35b-a3b-q4_k_m.json",
+          "output_tail": "is 17 * 23?\\nA:'\nok  : 'The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.'\nok  : 'In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction'\nok  : \"def parse_header(buf, size):\\n    if size < 8:\\n        raise ValueError('short header')\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != GGUF_MAGIC:\\n        raise ValueError('not a gguf file')\\n    return magic, version\\n\\n# The loader above rejects a truncated header before unpacking it, which\"\nok  : 'The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who'\n\ncpu_cuda: pass_margin_qualified \u2014 8/9 exact, 1 near-tie tolerated (eager routing)\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 5378.38,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "2 + 2 = 4\n"
+        }
+      },
+      "resolved_file": "models/Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf",
+      "actual_sha256": "b46fedd33e0bfb0cae308aa3c158d0a4b2c4a1d2185a1ed6f093cdaf39064772",
+      "file_status": "pass",
+      "complete": false
+    }
+  ],
+  "complete": false,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "cpu_cuda": {
+        "pass_margin_qualified": 1
+      },
+      "chat": {
+        "pass": 1
+      }
+    }
+  }
+}

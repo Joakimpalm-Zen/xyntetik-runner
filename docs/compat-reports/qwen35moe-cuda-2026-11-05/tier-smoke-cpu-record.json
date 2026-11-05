@@ -1,0 +1,55 @@
+{
+  "schema": "xyntetik.runner.tier-smoke-result.v1",
+  "row": "qwen3.6-35b-a3b-q4_k_m",
+  "backend": "cpu",
+  "device_class": "linux-x86_64-cuda",
+  "generated_utc": "2026-11-05T07:05:08Z",
+  "commit": "88dd8f7963bab7c0a7524e6b347b9b87555d48f4",
+  "ran": "runner -m Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+  "caps": {
+    "version": "1.13.0",
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu_cores": 40,
+    "gpu_backend": "cuda",
+    "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+  },
+  "banner": null,
+  "threads": 20,
+  "seconds": 3.28,
+  "files": [
+    {
+      "sha256": "b46fedd33e0bfb0cae308aa3c158d0a4b2c4a1d2185a1ed6f093cdaf39064772",
+      "bytes": 22285080192
+    }
+  ],
+  "with": null,
+  "status": "match",
+  "output": {
+    "sha256": "f3a25e63edc8ebf782ae5bb9ede7de145de7761ed2bcc1cb407cd7c1a9e384e2",
+    "bytes": 228,
+    "finish_reason": "length",
+    "completion_tokens": 48
+  },
+  "pin": {
+    "path": "tests/compatibility/tier-smoke/qwen3.6-35b-a3b-q4_k_m.linux-x86_64-cuda.cpu.txt",
+    "sha256": "f3a25e63edc8ebf782ae5bb9ede7de145de7761ed2bcc1cb407cd7c1a9e384e2"
+  },
+  "expect": {
+    "substring": "Mercury",
+    "found": true
+  },
+  "adapt_info": {
+    "architecture": "qwen35moe",
+    "adapter_serving": {
+      "supported": true,
+      "reason": null,
+      "device_kernels": "cuda"
+    },
+    "training": {
+      "supported": false,
+      "reason": "MoE on a Gated DeltaNet model",
+      "host": "cpu"
+    }
+  }
+}

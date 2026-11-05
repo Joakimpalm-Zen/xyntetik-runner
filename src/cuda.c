@@ -3330,16 +3330,12 @@ typedef struct {
 // expert has no gate, which moe_bank_device_ok() keeps off the device, so
 // --cpu-moe and --cpu-moe auto keep the banks home and anything that would
 // put one on the device trips the shared-expert guard below.
+// qwen35moe (the Gated DeltaNet trunk with routed experts and a gated shared
+// expert, no hyper-connections) runs here since R4.27 A2: the composition of
+// dense qwen35's trunk, the routed MoE kernels and tile_shexp, held by
+// test-cuda-qwen35moe (free and pinned routing at 1e-5 on the toy, the host
+// and split placements) and the real-file cells.
 static bool cuda_admit(model_t *m) {
-    // qwen35moe: the Gated DeltaNet trunk with routed experts and no
-    // hyper-connections has run on the device only as qwen4exp's (with
-    // them); until its own identity gates and cells run, it stays on the
-    // host by name rather than as an unmeasured support claim
-    if (m->qwen35 && m->n_expert > 0 && !m->hyper_conn) {
-        fprintf(stderr, "gpu: qwen35moe (Gated DeltaNet with routed experts) is "
-                "not on the CUDA backend yet — using CPU\n");
-        return false;
-    }
     // deepseek2 runs here in both forms of the multi-head latent attention
     // (R4.4.5 c1 naive, c2 absorbed). The q-lora pair (attn_q_a -> norm ->
     // attn_q_b: DeepSeek-V2 and V3, not V2-Lite) has no device path yet

@@ -2251,9 +2251,10 @@
       "checks": [
         "load",
         "tokenizer",
+        "cpu_cuda",
         "chat"
       ],
-      "notes": "bartowski's standard Q4_K_M (22,285,080,192 bytes, revision 5c2410d7 of bartowski/Qwen_Qwen3.6-35B-A3B-GGUF; the most-downloaded standard Q4_K_M, the other large publisher shipping only a dynamic one), architecture qwen35moe: 40 blocks (30 Gated DeltaNet, 10 gated attention), hidden 2048, 256 experts top 8 plus a gated shared expert on every block, vocabulary 248,320, and the NextN block. Its tokenizer and chat template are Qwen's at 995ad96e: 0 of 721 corpus strings and 0 of 247,091 vocabulary entries differ from the publisher's tokenizer.json, and the template in the GGUF is byte-identical to chat_template.jinja (template family qwen36). No llama.cpp greedy reference is declared, so greedy_reference is not claimed.",
+      "notes": "bartowski's standard Q4_K_M (22,285,080,192 bytes, revision 5c2410d7 of bartowski/Qwen_Qwen3.6-35B-A3B-GGUF; the most-downloaded standard Q4_K_M, the other large publisher shipping only a dynamic one), architecture qwen35moe: 40 blocks (30 Gated DeltaNet, 10 gated attention), hidden 2048, 256 experts top 8 plus a gated shared expert on every block, vocabulary 248,320, and the NextN block. Its tokenizer and chat template are Qwen's at 995ad96e: 0 of 721 corpus strings and 0 of 247,091 vocabulary entries differ from the publisher's tokenizer.json, and the template in the GGUF is byte-identical to chat_template.jinja (template family qwen36). The cpu_cuda check (since R4.27 A2, with the MoE pins) reads 8 of 9 prompts byte-identical and the ninth margin-qualified (docs/compat-reports/qwen35moe-cuda-2026-11-05/README.md). No llama.cpp greedy reference is declared, so greedy_reference is not claimed.",
       "check_params": {
         "chat": {
           "prompt": "What is 2+2?",
@@ -2269,6 +2270,16 @@
         },
         "tokenizer": {
           "expect_vocab_divergences": 0
+        },
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
+            "RUNNER_MOE_EAGER": "1"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
         }
       }
     },
