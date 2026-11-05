@@ -9,6 +9,7 @@
 #include "model.h"   // model_lora_arch_ok (static inline)
 
 #include <ctype.h>
+#include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
@@ -81,6 +82,12 @@ typedef struct {
     int8_t scales[16];
     f16_t d;
 } wblock_q6_K;
+typedef struct { f16_t d, m; uint8_t qh[4]; uint8_t qs[16]; } wblock_q5_1;   // 24 bytes
+typedef struct {
+    f16_t d, dmin;
+    uint8_t scales[12], qh[32], qs[128];
+} wblock_q5_K;                                                             // 176 bytes
+typedef struct { f16_t d; uint8_t qs[16]; } wblock_iq4_nl;                 // 18 bytes
 
 static void quantize_row_q8_0(const float *x, uint8_t *dst, int n) {
     wblock_q8_0 *b = (wblock_q8_0 *)dst;
@@ -206,6 +213,35 @@ static void quantize_row_q5_0(const float *x, uint8_t *dst, int n) {
             b->qs[j] = (uint8_t)((q0 & 0x0F) | ((q1 & 0x0F) << 4));
             qh |= (uint32_t)((q0 & 0x10) >> 4) << j;
             qh |= (uint32_t)((q1 & 0x10) >> 4) << (j + 16);
+        }
+        memcpy(b->qh, &qh, sizeof qh);
+    }
+}
+
+// ggml's quantize_row_q5_1_ref: per 32 values a scale d = (max - min) / 31 and
+// the block's min, each value (x - min) / d rounded half up to 5 bits, packed
+// as Q5_0 is. The 32-block cousin of a Q5_K target (width_fallback) and a
+// type of its own (R4.33).
+static void quantize_row_q5_1(const float *x, uint8_t *dst, int n) {
+    wblock_q5_1 *b = (wblock_q5_1 *)dst;
+    for (int i = 0; i < n / 32; i++, b++) {
+        const float *xp = x + i * 32;
+        float min = FLT_MAX, max = -FLT_MAX;
+        for (int j = 0; j < 32; j++) {
+            if (xp[j] < min) min = xp[j];
+            if (xp[j] > max) max = xp[j];
+        }
+        float d = (max - min) / ((1 << 5) - 1);
+        float id = d ? 1.0f / d : 0.0f;
+        b->d = f32_to_f16(d);
+        b->m = f32_to_f16(min);
+        uint32_t qh = 0;
+        for (int j = 0; j < 16; j++) {
+            uint8_t q0 = (uint8_t)((xp[j] - min) * id + 0.5f);
+            uint8_t q1 = (uint8_t)((xp[j + 16] - min) * id + 0.5f);
+            b->qs[j] = (uint8_t)((q0 & 0x0F) | ((q1 & 0x0F) << 4));
+            qh |= (uint32_t)((q0 & 0x10u) >> 4) << j;
+            qh |= (uint32_t)((q1 & 0x10u) >> 4) << (j + 16);
         }
         memcpy(b->qh, &qh, sizeof qh);
     }
@@ -428,11 +464,13 @@ static void quantize_row_q6_K(const float *x, uint8_t *dst, int n) {
     }
 }
 
-// ggml's make_qkx2_quants with Q4_K's fixed search parameters (rmin -1,
-// rdelta 0.1, 20 steps, squared-error weighting).
+// ggml's make_qkx2_quants with squared-error weighting (use_mad false): the
+// search steps the inverse scale from (nmax + rmin) / (max - min) by rdelta,
+// nstep times. Q4_K searches from -1 in 20 steps, Q5_K from -0.5 in 15.
 static float make_qkx2_quants(int n, int nmax, const float *x,
                               const float *weights, uint8_t *L,
-                              float *the_min, uint8_t *Laux) {
+                              float *the_min, uint8_t *Laux,
+                              float rmin, float rdelta, int nstep) {
     float min = x[0], max = x[0];
     float sum_w = weights[0], sum_x = weights[0] * x[0];
     for (int i = 1; i < n; i++) {
@@ -458,8 +496,12 @@ static float make_qkx2_quants(int n, int nmax, const float *x,
         float diff = scale * l + min - x[i];
         best_mad += weights[i] * diff * diff;
     }
-    for (int is = 0; is <= 20; is++) {
-        iscale = (-1.0f + 0.1f * is + nmax) / (max - min);
+    if (nstep < 1) {
+        *the_min = -min;
+        return scale;
+    }
+    for (int is = 0; is <= nstep; is++) {
+        iscale = (rmin + rdelta * is + nmax) / (max - min);
         float sum_l = 0.0f, sum_l2 = 0.0f, sum_xl = 0.0f;
         for (int i = 0; i < n; i++) {
             int l = nearest_int(iscale * (x[i] - min));
@@ -522,7 +564,8 @@ static void quantize_row_q4_K(const float *x, uint8_t *dst, int n) {
             for (int l = 0; l < 32; l++)
                 weights[l] = av_x + fabsf(x[32 * j + l]);
             scales[j] = make_qkx2_quants(32, 15, x + 32 * j, weights,
-                                         L + 32 * j, &mins[j], Laux);
+                                         L + 32 * j, &mins[j], Laux,
+                                         -1.0f, 0.1f, 20);
             if (scales[j] > max_scale) max_scale = scales[j];
             if (mins[j] > max_min) max_min = mins[j];
         }
@@ -564,6 +607,145 @@ static void quantize_row_q4_K(const float *x, uint8_t *dst, int n) {
                 qs[l] = (uint8_t)(L[j + l] | (L[j + l + 32] << 4));
             qs += 32;
         }
+    }
+}
+
+// ggml's quantize_row_q5_K_ref (R4.33): Q4_K's layout with 5-bit codes, the
+// fifth bit of each code gathered into qh, two bits per 64 values. The search
+// is make_qkx2_quants at nmax 31 from -0.5 in 15 steps. Inverse of dq_q5_K in
+// quants.c.
+static void quantize_row_q5_K(const float *x, uint8_t *dst, int n) {
+    wblock_q5_K *out = (wblock_q5_K *)dst;
+    for (int ib = 0; ib < n / 256; ib++, out++, x += 256) {
+        uint8_t L[256], Laux[32];
+        float weights[32], mins[8], scales[8];
+        float max_scale = 0.0f, max_min = 0.0f;
+        for (int j = 0; j < 8; j++) {
+            float sum_x2 = 0.0f;
+            for (int l = 0; l < 32; l++)
+                sum_x2 += x[32 * j + l] * x[32 * j + l];
+            float av_x = sqrtf(sum_x2 / 32.0f);
+            for (int l = 0; l < 32; l++)
+                weights[l] = av_x + fabsf(x[32 * j + l]);
+            scales[j] = make_qkx2_quants(32, 31, x + 32 * j, weights,
+                                         L + 32 * j, &mins[j], Laux,
+                                         -0.5f, 0.1f, 15);
+            if (scales[j] > max_scale) max_scale = scales[j];
+            if (mins[j] > max_min) max_min = mins[j];
+        }
+        float inv_scale = max_scale > 0.0f ? 63.0f / max_scale : 0.0f;
+        float inv_min = max_min > 0.0f ? 63.0f / max_min : 0.0f;
+        memset(out, 0, sizeof(*out));
+        for (int j = 0; j < 8; j++) {
+            uint8_t ls = (uint8_t)nearest_int(inv_scale * scales[j]);
+            uint8_t lm = (uint8_t)nearest_int(inv_min * mins[j]);
+            if (ls > 63) ls = 63;
+            if (lm > 63) lm = 63;
+            if (j < 4) {
+                out->scales[j] = ls;
+                out->scales[j + 4] = lm;
+            } else {
+                out->scales[j + 4] = (uint8_t)((ls & 0xF) | ((lm & 0xF) << 4));
+                out->scales[j - 4] |= (uint8_t)((ls >> 4) << 6);
+                out->scales[j]     |= (uint8_t)((lm >> 4) << 6);
+            }
+        }
+        out->d = f32_to_f16(max_scale / 63.0f);
+        out->dmin = f32_to_f16(max_min / 63.0f);
+        for (int j = 0; j < 8; j++) {
+            uint8_t sc, mn;
+            scale_min_k4(j, out->scales, &sc, &mn);
+            float d = f16_to_f32(out->d) * sc;
+            if (d == 0.0f) continue;
+            float dm = f16_to_f32(out->dmin) * mn;
+            for (int l = 0; l < 32; l++) {
+                int q = nearest_int((x[32 * j + l] + dm) / d);
+                if (q < 0) q = 0;
+                if (q > 31) q = 31;
+                L[32 * j + l] = (uint8_t)q;
+            }
+        }
+        uint8_t *ql = out->qs, *qh = out->qh;
+        uint8_t m1 = 1, m2 = 2;
+        for (int j = 0; j < 256; j += 64) {
+            for (int l = 0; l < 32; l++) {
+                int l1 = L[j + l], l2 = L[j + l + 32];
+                if (l1 > 15) { l1 -= 16; qh[l] |= m1; }
+                if (l2 > 15) { l2 -= 16; qh[l] |= m2; }
+                ql[l] = (uint8_t)(l1 | (l2 << 4));
+            }
+            m1 <<= 2; m2 <<= 2;
+            ql += 32;
+        }
+    }
+}
+
+// ggml's IQ4_NL without an importance matrix (R4.33): quantize_iq4_nl and
+// quantize_row_iq4_nl_ref both run quantize_row_iq4_nl_impl(32, 32, ..., 7)
+// with no weights. Per 32 values one f16 scale and a 4-bit index into a fixed
+// non-linear grid; the scale is the weighted least-squares fit (weights x^2)
+// over 15 trial inverse scales around the one that maps the largest
+// magnitude to the grid's end. Inverse of dq_iq4_nl in quants.c.
+static const int8_t iq4nl_values[16] = {
+    -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
+};
+
+static int iq4nl_best_index(float x) {
+    const int8_t *val = iq4nl_values;
+    if (x <= val[0]) return 0;
+    if (x >= val[15]) return 15;
+    int ml = 0, mu = 15;
+    while (mu - ml > 1) {
+        int mav = (ml + mu) / 2;
+        if (x < val[mav]) mu = mav; else ml = mav;
+    }
+    return x - val[mu - 1] < val[mu] - x ? mu - 1 : mu;
+}
+
+static void quantize_row_iq4_nl(const float *x, uint8_t *dst, int n) {
+    wblock_iq4_nl *b = (wblock_iq4_nl *)dst;
+    const int ntry = 7;
+    for (int ib = 0; ib < n / 32; ib++, b++, x += 32) {
+        uint8_t L[32];
+        float weight[32];
+        for (int j = 0; j < 32; j++) weight[j] = x[j] * x[j];
+        float amax = 0, max = 0;
+        for (int j = 0; j < 32; j++) {
+            float ax = fabsf(x[j]);
+            if (ax > amax) { amax = ax; max = x[j]; }
+        }
+        float scale = 0;
+        if (amax >= 1e-15f) {                    // ggml's GROUP_MAX_EPS
+            float d = -max / iq4nl_values[0];
+            float id = 1 / d;
+            float sumqx = 0, sumq2 = 0;
+            for (int j = 0; j < 32; j++) {
+                int l = iq4nl_best_index(id * x[j]);
+                L[j] = (uint8_t)l;
+                float q = iq4nl_values[l];
+                sumqx += weight[j] * q * x[j];
+                sumq2 += weight[j] * q * q;
+            }
+            d = sumq2 > 0 ? sumqx / sumq2 : 0.0f;
+            float best = d * sumqx;
+            for (int itry = -ntry; itry <= ntry; itry++) {
+                id = (itry + iq4nl_values[0]) / max;
+                sumqx = sumq2 = 0;
+                for (int j = 0; j < 32; j++) {
+                    float q = iq4nl_values[iq4nl_best_index(id * x[j])];
+                    sumqx += weight[j] * q * x[j];
+                    sumq2 += weight[j] * q * q;
+                }
+                if (sumq2 > 0 && sumqx * sumqx > best * sumq2) {
+                    d = sumqx / sumq2; best = d * sumqx;
+                }
+            }
+            scale = d;
+        }
+        b->d = f32_to_f16(scale);
+        float id = scale ? 1 / scale : 0;
+        for (int j = 0; j < 32; j++) L[j] = (uint8_t)iq4nl_best_index(id * x[j]);
+        for (int j = 0; j < 16; j++) b->qs[j] = (uint8_t)(L[j] | (L[16 + j] << 4));
     }
 }
 
@@ -764,9 +946,12 @@ static void quantize_row_any(int type, const float *rowf, uint8_t *rowq, int n) 
         case T_Q8_0: quantize_row_q8_0(rowf, rowq, n); break;
         case T_Q4_0: quantize_row_q4_0(rowf, rowq, n); break;
         case T_Q5_0: quantize_row_q5_0(rowf, rowq, n); break;
+        case T_Q5_1: quantize_row_q5_1(rowf, rowq, n); break;
         case T_Q3_K: quantize_row_q3_K(rowf, rowq, n); break;
         case T_Q4_K: quantize_row_q4_K(rowf, rowq, n); break;
+        case T_Q5_K: quantize_row_q5_K(rowf, rowq, n); break;
         case T_Q6_K: quantize_row_q6_K(rowf, rowq, n); break;
+        case T_IQ4_NL: quantize_row_iq4_nl(rowf, rowq, n); break;
         case T_MXFP4: quantize_row_mxfp4(rowf, rowq, n); break;
         case T_F16:  quantize_row_f16(rowf, rowq, n); break;
         case T_BF16: quantize_row_bf16(rowf, rowq, n); break;
@@ -784,8 +969,9 @@ static void quantize_row_any(int type, const float *rowf, uint8_t *rowq, int n) 
 
 static bool quantize_row_writable(int type) {
     return type == T_F32 || type == T_F16 || type == T_BF16 ||
-           type == T_Q8_0 || type == T_Q4_0 || type == T_Q5_0 || type == T_Q3_K ||
-           type == T_Q4_K || type == T_Q6_K || type == T_MXFP4;
+           type == T_Q8_0 || type == T_Q4_0 || type == T_Q5_0 || type == T_Q5_1 ||
+           type == T_Q3_K || type == T_Q4_K || type == T_Q5_K || type == T_Q6_K ||
+           type == T_IQ4_NL || type == T_MXFP4;
 }
 
 // The types an importance matrix shapes; every other type is written as
@@ -1227,7 +1413,8 @@ static void prune_plan_free(prune_plan_t *p) {
 //
 // Rules are tried in order and the first substring match wins; "default"
 // applies to everything unmatched. Types are the ones this quantizer can
-// actually write (q8_0, q4_0, q3_k, q4_k, q6_k, f16, bf16, keep) — naming
+// actually write (q8_0, q4_0, q5_1, q3_k, q4_k, q5_k, q6_k, iq4_nl, mxfp4,
+// f16, bf16, keep) — naming
 // one it cannot is an error at load, not a silent fallback.
 typedef struct { char *match; int type; } type_rule_t;
 typedef struct { type_rule_t *rules; int n; int dflt; } type_plan_t;
@@ -1238,8 +1425,11 @@ static int type_from_name(const char *s) {
     if (!strcmp(s, "q8_0")) return T_Q8_0;
     if (!strcmp(s, "q4_0")) return T_Q4_0;
     if (!strcmp(s, "q3_k")) return T_Q3_K;
+    if (!strcmp(s, "q5_1")) return T_Q5_1;
     if (!strcmp(s, "q4_k")) return T_Q4_K;
+    if (!strcmp(s, "q5_k")) return T_Q5_K;
     if (!strcmp(s, "q6_k")) return T_Q6_K;
+    if (!strcmp(s, "iq4_nl")) return T_IQ4_NL;
     if (!strcmp(s, "mxfp4")) return T_MXFP4;
     if (!strcmp(s, "f16"))  return T_F16;
     if (!strcmp(s, "bf16")) return T_BF16;
@@ -3000,8 +3190,8 @@ static int quantize_gguf_plan_inner(const char *in_path, const char *out_path, i
                        merge_set_t *ms, uint32_t surgery_context,
                        float surgery_factor, context_surgery_result *surgery_result) {
     if (target != T_KEEP && !quantize_row_writable(target)) {
-        fprintf(stderr, "error: quantize target must be q8_0, q4_0, q3_k, "
-                "q4_k, q6_k, mxfp4, f16, or bf16\n");
+        fprintf(stderr, "error: quantize target must be q8_0, q4_0, q5_1, q3_k, "
+                "q4_k, q5_k, q6_k, iq4_nl, mxfp4, f16, or bf16\n");
         return 1;
     }
     quantize_job job;

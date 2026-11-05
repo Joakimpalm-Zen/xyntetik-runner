@@ -5,6 +5,12 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`--rewrite` and `--type-plan` write `q5_k`, `q5_1` and `iq4_nl` (R4.33).** These are ports of ggml's writers
+  without an importance matrix (llama.cpp c1d0e7a). On the quant-golden slice their bytes are ggml's own, byte for
+  byte, and the golden files are new. A `q5_k` rule on a row that is not a multiple of 256 writes `q5_1`, its
+  32-block cousin: Mellum 2.1's 896-wide expert down projections need exactly that. With `--imatrix` the three are
+  written without weights, as `q4_k` and `q6_k` are; importance-weighted writers for them are R4.34.
+
 - **CUDA runs `qwen35moe` (R4.27 A2): Qwen3.6-35B-A3B's Q4_K_M row gains its CUDA cell.** The by-name hold in
   `cuda_admit` is gone. The device path is a composition that already existed: dense qwen35's trunk, the routed MoE
   kernels and the gated shared expert (`tile_shexp`).

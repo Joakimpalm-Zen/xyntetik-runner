@@ -493,14 +493,18 @@ static void check_ggml_golden(void) {
         }
         free(mine); free(ref);
     }
-    // q5_0, the Q4_K target's 32-block fallback: against ggml c1d0e7a's
-    // quantize_row_q5_0_ref, the function quantize_q5_0 calls without an
-    // importance matrix (the README has how the file was made)
-    {
-        assert(quantize_gguf(in, out, T_Q5_0, NULL) == 0);
+    // q5_0, the Q4_K target's 32-block fallback, and the R4.33 writers q5_1,
+    // q5_k and iq4_nl: against ggml c1d0e7a's writers without an importance
+    // matrix, the functions quantize_q5_0, quantize_q5_1, quantize_q5_K and
+    // quantize_iq4_nl run (the README has how the files were made)
+    static const struct { const char *name; int type; } C[] = {
+        { "q5_0", T_Q5_0 }, { "q5_1", T_Q5_1 }, { "q5_k", T_Q5_K }, { "iq4_nl", T_IQ4_NL },
+    };
+    for (size_t k = 0; k < sizeof C / sizeof C[0]; k++) {
+        assert(quantize_gguf(in, out, C[k].type, NULL) == 0);
         size_t n;
         unsigned char *mine = slurp_tensor(out, "blk.0.ffn_down.weight", &n);
-        snprintf(path, sizeof path, "%sggml-c1d0e7a-q5_0.bin", dir);
+        snprintf(path, sizeof path, "%sggml-c1d0e7a-%s.bin", dir, C[k].name);
         f = fopen(path, "rb");
         assert(f);
         unsigned char *ref = malloc(n + 1);
@@ -509,15 +513,15 @@ static void check_ggml_golden(void) {
         size_t first = 0;
         while (first < n && first < got && mine[first] == ref[first]) first++;
         if (got != n || first != n) {
-            fprintf(stderr, "FAIL: q5_0 writer differs from ggml c1d0e7a at byte %zu of %zu "
-                    "(ggml file %zu bytes)\n", first, n, got);
+            fprintf(stderr, "FAIL: %s writer differs from ggml c1d0e7a at byte %zu of %zu "
+                    "(ggml file %zu bytes)\n", C[k].name, first, n, got);
             assert(0);
         }
         free(mine); free(ref);
     }
     remove(in); remove(out);
     printf("ok: q8_0, q4_0, q3_k, q4_k, q6_k and mxfp4 writers are byte-identical to ggml "
-           "b10353, and q5_0 to ggml c1d0e7a, on a real tensor\n");
+           "b10353, and q5_0, q5_1, q5_k and iq4_nl to ggml c1d0e7a, on a real tensor\n");
 }
 
 // A row that divides by 32 but not 256 cannot take a 256-block K-quant; the
@@ -1000,10 +1004,13 @@ int main(void) {
         printf("ok: a type plan's \"keep\" keeps a type this tool cannot write\n");
     }
 
-    // Q4_K / Q6_K writers: round-trip through the production dq_ readers
-    // within each type's grid resolution, and byte-deterministic across
-    // runs. A layout disagreement with quants.c cannot pass the error
-    // bound; a nondeterministic search cannot pass the byte compare.
+    // Q4_K / Q6_K writers, and R4.33's Q5_K, Q5_1 and IQ4_NL: round-trip
+    // through the production dq_ readers within each type's grid
+    // resolution, and byte-deterministic across runs. A layout disagreement
+    // with quants.c cannot pass the error bound; a nondeterministic search
+    // cannot pass the byte compare. The values span [-0.48, 0.49]: Q5_K's and
+    // Q5_1's 31 steps put half a step near 0.016, and IQ4_NL's widest gap (104
+    // to 127 of 127) is half 0.044 at that scale.
     {
         const char *kin = "q_kq_in.gguf", *k1 = "q_kq1.gguf", *k2 = "q_kq2.gguf";
         enum { K_N = 256, K_ROWS = 4 };
@@ -1018,6 +1025,7 @@ int main(void) {
         write_gguf(kin, kts, 2, 0);
         const struct { int t; float bound; } KQ[] = {
             { T_Q4_K, 0.04f }, { T_Q6_K, 0.02f },
+            { T_Q5_K, 0.025f }, { T_Q5_1, 0.025f }, { T_IQ4_NL, 0.05f },
         };
         for (size_t k = 0; k < sizeof(KQ) / sizeof(*KQ); k++) {
             assert(quantize_gguf(kin, k1, KQ[k].t, NULL) == 0);
@@ -1045,8 +1053,8 @@ int main(void) {
             gguf_close(&g);
         }
         remove(kin); remove(k1); remove(k2);
-        printf("ok: q4_k/q6_k round-trip within grid resolution, "
-               "deterministically\n");
+        printf("ok: q4_k/q6_k/q5_k/q5_1/iq4_nl round-trip within grid "
+               "resolution, deterministically\n");
     }
 
     // --merge-lora: fold scale*B·A into the base weights through the writer.
