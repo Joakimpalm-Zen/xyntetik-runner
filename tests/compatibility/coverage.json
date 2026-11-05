@@ -974,10 +974,12 @@
   "qwen35moe": {
    "templates": [
     "qwen35",
-    "qwen36"
+    "qwen36",
+    "ornith"
    ],
    "artifacts": [
-    "qwen3.6-35b-a3b-q4_k_m"
+    "qwen3.6-35b-a3b-q4_k_m",
+    "ornith-1.5-35b-a3b-q8_0"
    ],
    "tool_protocol": {
     "status": "NOT RUN"
