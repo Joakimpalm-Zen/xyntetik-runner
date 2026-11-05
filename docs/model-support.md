@@ -775,12 +775,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Qwen 3.6</b>, 1 model: CPU ✅ · CUDA n/a · Metal n/a · Train n/a</summary>
+<summary><b>Qwen 3.6</b>, 1 model: CPU ✅ · CUDA ✅ · Metal n/a · Train n/a</summary>
 <p><b>Qwen3.6-35B-A3B (Qwen)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#qwen3.6-35b-a3b-q4_k_m"><code>Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.9.0<sup>b</sup><br>2026-10-30</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
+<tr><td><a href="#qwen3.6-35b-a3b-q4_k_m"><code>Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.13.0<sup>b</sup><br>2026-11-05</td><td nowrap>✅ 1.13.0<sup>b</sup><br>2026-11-05</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
 </tbody>
 </table>
 </details>
@@ -2550,15 +2550,15 @@ Text path, bartowski's standard Q4_K_M of Qwen's Qwen3.6-35B-A3B, which passes t
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Both bartowski files against Qwen's BF16 parent at 995ad96e computed in float32 on the CPU (transformers 5.16.1 Qwen3_5MoeForCausalLM, float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from CPU score files at a9eaca5f): Q4_K_M 0.0475 mean KLD / 89.0% top-1 / 97.2% margin-qualified, Q8_0 0.0349 / 94.7% / 99.1%. Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against Qwen's tokenizer.json, template conformance 23/23 in text and tokens against the file's own chat_template.jinja (the repository's bytes). Record: docs/compat-reports/qwen3.6-35b-a3b-reference-2026-10-31/README.md.
 - **Context tested:** 4096.
-- **Known limitations:** CPU only for this file: CUDA refuses qwen35moe by name, and Metal runs qwen35moe on toy models only (make test-metal-qwen35moe), since this file (22.3 GB) has not been run on a Mac that holds it. Text only: the vision tower Qwen ships beside it is not loaded. --mtp drafts from the file's NextN head with output unchanged, but is slower than plain decoding on the CPU (20.1 against 26.4 tok/s). Licence: Apache-2.0.
-- **Still missing:** A CUDA path, and a Metal run on a Mac that holds the file; task quality and the tool protocol on the real checkpoint (the parser is pinned on fixtures only).
-- **Evidence:** [docs/compat-reports/qwen3.6-35b-a3b-reference-2026-10-31/README.md](compat-reports/qwen3.6-35b-a3b-reference-2026-10-31/README.md), [docs/compat-reports/qwen35moe-toy-2026-10-30/README.md](compat-reports/qwen35moe-toy-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.9.0 on 2026-10-30.
-- **CPU:** ✅ v1.9.0 2026-10-30 on linux-x86_64-cuda (borrowed hardware) at commit `0dcbc6d8037c`, output sha256 `f3a25e63edc8ebf7`, [pin](../tests/compatibility/tier-smoke/qwen3.6-35b-a3b-q4_k_m.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** [n/a](../MANUAL.md#support-matrix): qwen35moe (Gated DeltaNet with routed experts) has no validated CUDA path; CUDA refuses it by name and the file runs on the CPU.
+- **Known limitations:** CPU and CUDA for this file (CUDA since R4.27 A2, measured on a CUDA MIG slice, 1g.24gb, sm_120, with all 40 blocks on the device: its tier-smoke output is byte-identical to the CPU's); Metal runs qwen35moe on toy models only (make test-metal-qwen35moe), since this file (22.3 GB) has not been run on a Mac that holds it. Text only: the vision tower Qwen ships beside it is not loaded. --mtp drafts from the file's NextN head with output unchanged, but is slower than plain decoding on the CPU (20.1 against 26.4 tok/s). Licence: Apache-2.0.
+- **Still missing:** A Metal run on a Mac that holds the file, and the Windows CUDA host's cells (not run: no CUDA consumer host); task quality and the tool protocol on the real checkpoint (the parser is pinned on fixtures only).
+- **Evidence:** [docs/compat-reports/qwen35moe-cuda-2026-11-05/README.md](compat-reports/qwen35moe-cuda-2026-11-05/README.md), [docs/compat-reports/qwen3.6-35b-a3b-reference-2026-10-31/README.md](compat-reports/qwen3.6-35b-a3b-reference-2026-10-31/README.md), [docs/compat-reports/qwen35moe-toy-2026-10-30/README.md](compat-reports/qwen35moe-toy-2026-10-30/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.13.0 on 2026-11-05.
+- **CPU:** ✅ v1.13.0 2026-11-05 on linux-x86_64-cuda (borrowed hardware) at commit `88dd8f7963ba`, output sha256 `f3a25e63edc8ebf7`, [pin](../tests/compatibility/tier-smoke/qwen3.6-35b-a3b-q4_k_m.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.13.0 2026-11-05 on linux-x86_64-cuda (borrowed hardware) at commit `88dd8f7963ba`, output sha256 `f3a25e63edc8ebf7`, [pin](../tests/compatibility/tier-smoke/qwen3.6-35b-a3b-q4_k_m.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): Not measured: Metal runs qwen35moe on toy models (make test-metal-qwen35moe, to the CPU's logits at 1e-5), but this file (22.3 GB) has not been run on a Mac that holds it.
-- **LoRA training:** no: MoE on a Gated DeltaNet model (runner 1.9.0, 2026-10-30).
-- **LoRA adapter serving:** supported (runner 1.9.0, 2026-10-30).
+- **LoRA training:** no: MoE on a Gated DeltaNet model (runner 1.13.0, 2026-11-05).
+- **LoRA adapter serving:** supported (runner 1.13.0, 2026-11-05).
 - **Tier history:** Upcoming, planned admission from 2026-10-30; Tier 2, maintained on report from 2026-10-30 ([log](#transition-log)).
 
 ### DeepSeek-V2-Lite
@@ -2624,10 +2624,10 @@ No members.
 <a id="qwen3.8-35b-a3b"></a>
 #### Qwen3.8-35B-A3B
 
-Not validated: the qwen35moe architecture loads and runs on the CPU (since 1.10.0; Qwen3.6-35B-A3B is a Tier 2 row on it), but no gate has run on a Qwen3.8-35B-A3B file; CUDA still refuses the architecture (R4.27 A2).
+Not validated: the qwen35moe architecture loads and runs on the CPU (since 1.10.0; Qwen3.6-35B-A3B is a Tier 2 row on it), but no gate has run on a Qwen3.8-35B-A3B file; CUDA runs the architecture since R4.27 A2 (Qwen3.6-35B-A3B's cells), not yet on a Qwen3.8 file.
 
 - **Numerical anchor:** anchor: agreement with another engine, not fidelity. A float32 reference (140 GB) is not feasible; Qwen3.5-0.8B covers the recurrent path only.
-- **Missing for Tier 1:** One gate run on the CPU lane: tokenizer, template, quant bar against the BF16 parent, pinned output, device record; a file pinned by sha256; CUDA after R4.27 A2.
+- **Missing for Tier 1:** One gate run on the CPU lane: tokenizer, template, quant bar against the BF16 parent, pinned output, device record; a file pinned by sha256; the CUDA cells on that file.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
 ### Text path only: Ornith-1.5-35B-A3B
@@ -2638,7 +2638,7 @@ Not validated: the qwen35moe architecture loads and runs on the CPU (since 1.10.
 Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); no gate has run on an Ornith 1.5 file.
 
 - **Numerical anchor:** anchor: agreement with another engine, not fidelity.
-- **Missing for Tier 1:** Template conformance for Ornith 1.5 (the ornith template exists for 1.0 9B dense), then the gate list; CUDA after R4.27 A2.
+- **Missing for Tier 1:** Template conformance for Ornith 1.5 (the ornith template exists for 1.0 9B dense), then the gate list; the CUDA cells on its file.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
 ### Text path only: MiniCPM-V-4.7-35B-A3B
@@ -2649,7 +2649,7 @@ Text path only: the vision projector is not loaded. The qwen35moe architecture r
 Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); its tokenizer and template are unchecked and no gate has run.
 
 - **Numerical anchor:** anchor: agreement with another engine, not fidelity.
-- **Missing for Tier 1:** Tokenizer and template checks, then the gate list; CUDA after R4.27 A2.
+- **Missing for Tier 1:** Tokenizer and template checks, then the gate list; the CUDA cells on its file.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
 ### Nemotron 3 Nano (30B-A3B)

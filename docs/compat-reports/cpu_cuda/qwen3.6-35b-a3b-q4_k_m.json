@@ -1,0 +1,96 @@
+{
+ "model": "Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": true,
+ "dense_rule": null,
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 40,
+  "layers_total": 40,
+  "output_weight_on_gpu": true,
+  "whole_graph": true
+ },
+ "cpu_cuda_identity": {
+  "result": "pass_margin_qualified",
+  "exact": "8/9",
+  "gpu_arm_on_cpu": false,
+  "near_tie_tolerated": 1,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 8,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is Paris.\nThe capital of France is",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n    if n <= 0:\n        return []\n    elif n == 1:\n        return [0]\n    elif n == 2:\n        return [0, 1]\n    else:\n        fib = [0, 1]\n        for i in range(2, n):\n            fib.append(fib[i-1] + fib[i-2])\n        return fib\n\n# Test the function\nprint(fibonacci(10))  # Output: [0, 1, 1, 2, 3, 5, 8, ",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "near_tie",
+   "detail": {
+    "pos": 96,
+    "cpu_token": " \u0423\u0447\u0430\u0441\u0442",
+    "gpu_token": " \u041d\u043e\u0432",
+    "cpu_margin_to_gpu_pick": 0.085380554,
+    "gpu_margin_to_cpu_pick": 0.06342697099999994
+   },
+   "cpu": " 9 10 0/10\n\u041d\u0430\u0437\u0430\u0434\n\n# \u041a\u0430\u043a \u043f\u0440\u0430\u0432\u0438\u043b\u044c\u043d\u043e \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0438\u0442\u044c 3-\u0444\u0430\u0437\u043d\u044b\u0439 \u0434\u0432\u0438\u0433\u0430\u0442\u0435\u043b\u044c \u043a 220\u0412\n\n\u0422\u0435\u043c\u0430 \u0432 \u0440\u0430\u0437\u0434\u0435\u043b\u0435 \"\u042d\u043b\u0435\u043a\u0442\u0440\u043e\u043c\u043e\u0442\u043e\u0440\u044b\", \u0441\u043e\u0437\u0434\u0430\u043d\u0430 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u043c Alexey1980, 14.03.16.\n\n1. \u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f:\n14.03.16\n\u0421\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f:\n1\n\u0411\u043b\u0430\u0433\u043e\u0434\u0430\u0440\u043d\u043e\u0441\u0442\u0438:\n0\n\n### \u0423\u0447\u0430\u0441\u0442\u043d\u0438\u043a\n\n\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f:\n14.03.16\n\u0421\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f:\n1\n\u0411\u043b\u0430\u0433\u043e\u0434\u0430\u0440\u043d\u043e\u0441\u0442\u0438:\n0",
+   "gpu": " 9 10 0/10\n\u041d\u0430\u0437\u0430\u0434\n\n# \u041a\u0430\u043a \u043f\u0440\u0430\u0432\u0438\u043b\u044c\u043d\u043e \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0438\u0442\u044c 3-\u0444\u0430\u0437\u043d\u044b\u0439 \u0434\u0432\u0438\u0433\u0430\u0442\u0435\u043b\u044c \u043a 220\u0412\n\n\u0422\u0435\u043c\u0430 \u0432 \u0440\u0430\u0437\u0434\u0435\u043b\u0435 \"\u042d\u043b\u0435\u043a\u0442\u0440\u043e\u043c\u043e\u0442\u043e\u0440\u044b\", \u0441\u043e\u0437\u0434\u0430\u043d\u0430 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u043c Alexey1980, 14.03.16.\n\n1. \u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f:\n14.03.16\n\u0421\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f:\n1\n\u0411\u043b\u0430\u0433\u043e\u0434\u0430\u0440\u043d\u043e\u0441\u0442\u0438:\n0\n\n### \u041d\u043e\u0432\u0438\u0447\u043e\u043a\n\n\u0420\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u044f:\n14.03.16\n\u0421\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f:\n1\n\u0411\u043b\u0430\u0433\u043e\u0434\u0430\u0440\u043d\u043e\u0441\u0442\u0438:\n"
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there was a young adventurer named Alex. Alex was a curious and brave teenager who loved to explore new things, especially when it came to the world of computers.\n\nOne day, Alex found a mysterious book that talked about something called \"programming\". Intrigued, Alex decided to take a journey into this unknown world.\n\nIn this world, there was a special language called Python. Alex learned that in Python, there were these things called \"functions\". Functions were like little magic spells that could do specific tasks.\n\nFor example, there was a function called \"add\". This function could add two numbers together. Alex saw how it worked",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 391\nQ: What is 17 * 23?\nA: 391\nQ: What is 17 * 23?\nA: 391\nQ: What is 17 * 23?\nA: 391\nQ: What is 17 * 23?\nA: 391\nQ: What is 17 * 23?\nA: 391\nQ: What is 17 * 23?\nA: 391\nQ: What",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " He also noted the time the sun rose and set.\n\n**1. Wind direction**  \nThe keeper used a compass rose to label the wind. The eight main directions are:\n\n- North (N)  \n- Northeast (NE)  \n- East (E)  \n- Southeast (SE)  \n- South (S)  \n- Southwest (SW)  \n- West (W)  \n- Northwest (NW)\n\n**2. Cloud cover**  \nHe described the sky with three categories:\n\n- **Clear** \u2013 no clouds visible.  \n- **Partly cloudy** \u2013 some clouds, but the sun is still visible.",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " of this error was not completed until 1940. The catalogue was later expanded to include 10,749 objects, and the revised edition was published in 1957. The catalogue was further expanded in 1988 to include 10,806 objects.\nThe catalogue was compiled by Charles Messier, a French astronomer who was born in 1730. Messier was a comet hunter, and he compiled the catalogue to help him distinguish between comets and other objects in the sky that might be mistaken for comets. The catalogue includes a variety of objects",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " is good.\n# However, the unpacking itself is not safe: if the file is truncated, it will\n# raise a struct.error. This is not caught by the loader, so the error will\n# propagate to the caller. This is not ideal, as it makes it harder to handle\n# errors gracefully.\n\n# To fix this, we can wrap the unpacking in a try-except block and raise a\n# ValueError if the unpacking fails. This will make the error message more\n# informative and easier to handle.\n\ndef parse_header(buf, size):\n    if size < 8:\n",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " wanders its alleys.\n\nThe name \u201cLisbon\u201d comes from the Latin *Lisbona*, itself a later form of the older *Olisipo*, a name that appears in Roman sources and may derive from a pre\u2011Roman Iberian word meaning \u201cport\u201d or \u201charbour\u201d. The city\u2019s coat of arms shows a red castle topped with seven golden crowns; the crowns are traditionally said to represent the seven hills, although the exact symbolism has shifted over the centuries.\n\nLisbon\u2019s climate is Mediterranean, with hot, dry summers and mild, wet winters. The average annual temperature is about",
+   "gpu": null
+  }
+ ]
+}

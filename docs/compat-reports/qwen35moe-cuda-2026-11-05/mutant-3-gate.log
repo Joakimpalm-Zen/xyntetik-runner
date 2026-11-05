@@ -1,0 +1,35 @@
+cc -O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=native -O3 -ffast-math -std=gnu11 -march=native -DRUNNER_GPU_CUDA -I src -I tests tests/test_gpu_identity.c .build/3040818528/gguf.o .build/3040818528/compat.o .build/3040818528/quants.o .build/3040818528/tokenizer.o .build/3040818528/model.o .build/3040818528/vramreg.o .build/3040818528/cuda.o .build/3040818528/finite_check.o -o test-gpu-identity -lm -lpthread -ldl
+cc -O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter -march=native -O3 -ffast-math -std=gnu11 -march=native -DRUNNER_GPU_CUDA -I src tests/test_spec_identity.c .build/3040818528/gguf.o .build/3040818528/compat.o .build/3040818528/quants.o .build/3040818528/tokenizer.o .build/3040818528/model.o .build/3040818528/vramreg.o .build/3040818528/cuda.o -o test-spec-identity -lm -lpthread -ldl
+test-moe-fixture.shexpg.gguf [fused]: routing pin: 190 routings from the CPU run, 190 of 190 expert slots forced, 0 of them (0) differed from the device's own choice; gpu-identity: ok
+test-moe-fixture.shexpg.gguf [fused, one token at a time]: routing pin: 190 routings from the CPU run, 190 of 190 expert slots forced, 0 of them (0) differed from the device's own choice; gpu-identity: ok
+test-moe-fixture.shexpg.gguf [RUNNER_MOE_EAGER=1]: routing pin: 190 routings from the CPU run, 190 of 190 expert slots forced, 0 of them (0) differed from the device's own choice; gpu-identity: ok
+test-moe-fixture.shexpg.gguf [RUNNER_MOE_EAGER=1, one token at a time]: routing pin: 190 routings from the CPU run, 190 of 190 expert slots forced, 0 of them (0) differed from the device's own choice; gpu-identity: ok
+test-moe-fixture.shexpg.gguf [RUNNER_MOE_GROUPED=1]: routing pin: 190 routings from the CPU run, 190 of 190 expert slots forced, 0 of them (0) differed from the device's own choice; gpu-identity: ok
+test-moe-fixture.shexpg.gguf [RUNNER_MOE_GROUPED=1, one token at a time]: routing pin: 190 routings from the CPU run, 190 of 190 expert slots forced, 0 of them (0) differed from the device's own choice; gpu-identity: ok
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB
+gpu-split: budget=25.13GB fixed=0.79GB G=2/2 full=1 used=0.79GB
+gpu-split: prompt window 256 columns (batch 256, 24.34 GB spare, 3240 bytes a column with TC2's activations)
+gpu: CUDA backend on CUDA MIG slice, 1g.24gb, sm_120 (0.0 GB weights in VRAM)
+gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+gpu: reusing resident weights (0.0 GB, now shared by 2 instances)
+gpu: CUDA backend on CUDA MIG slice, 1g.24gb, sm_120 (0.0 GB weights in VRAM)
+gpu: VRAM 25.11 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+gpu: graph capture failed — plain launches
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB
+gpu-split: budget=25.13GB fixed=0.79GB G=4/4 full=1 used=0.79GB
+gpu-split: prompt window 64 columns (batch 32, 24.34 GB spare, 3664 bytes a column with TC2's activations)
+gpu: CUDA backend on CUDA MIG slice, 1g.24gb, sm_120 (0.0 GB weights in VRAM)
+gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB
+gpu-split: budget=25.13GB fixed=0.79GB G=4/4 full=1 used=0.79GB
+gpu-split: prompt window 64 columns (batch 32, 24.34 GB spare, 3664 bytes a column with TC2's activations)
+gpu: CUDA backend on CUDA MIG slice, 1g.24gb, sm_120 (0.0 GB weights in VRAM)
+gpu: VRAM 25.12 GB free of 25.37 GB after init (kv 0.00 GB + scratch 0.00 GB this instance)
+gpu-identity: test-ornith-moe.gguf | 96 tokens, 24 teacher-forced positions, prefill batch 32
+  free routing (the device's own expert choices):
+  6216 logits over 24 positions | 6216 differ, mean|dlogit| 0.0297 = 0.0287 of mean range 1.03 (limit 1e-05), worst 0.161
+  free routing is over the routed bound: expert choices tipped, counted below; the pinned arm is the verdict
+  routing pin: 380 routings from the CPU run, 1140 of 1140 expert slots forced, 309 of them (0.271) differed from the device's own choice
+FAIL: the device's router chose another expert at 309 of 1140 slots (0.271, bound 0.01): more than near-ties tipped by rounding, a router that computes something else
+gpu-identity: FAILED
+make: *** [Makefile:2440: test-cuda-qwen35moe] Error 1

@@ -986,11 +986,11 @@
     "status": "NOT RUN"
    },
    "backends": {
-    "cpu": "NOT RUN",
-    "cuda": "UNSUPPORTED",
+    "cpu": "PASS",
+    "cuda": "PASS",
     "metal": "UNSUPPORTED"
    },
-   "note": "fixture-gated (tests/test_qwen35moe.py, the NextN head in tests/test_mtp_consume.py) and a converted random qwen3_5_moe against transformers' float32 (docs/compat-reports/qwen35moe-toy-2026-10-30); Qwen3.6-35B-A3B is its first file row, its derivatives follow"
+   "note": "fixture-gated (tests/test_qwen35moe.py, the NextN head in tests/test_mtp_consume.py) and a converted random qwen3_5_moe against transformers' float32 (docs/compat-reports/qwen35moe-toy-2026-10-30); Qwen3.6-35B-A3B is its first file row, its derivatives follow; R4.27 A2 (2026-11-05): Qwen3.6-35B-A3B's Q4_K_M passes tier-smoke on the CPU and on CUDA with byte-identical output, gpu-identity 3.6e-6 of the logit range with routing pinned (docs/compat-reports/qwen35moe-cuda-2026-11-05)"
   },
   "qwen3moe": {
    "templates": [

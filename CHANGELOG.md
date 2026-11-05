@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA runs `qwen35moe` (R4.27 A2): Qwen3.6-35B-A3B's Q4_K_M row gains its CUDA cell.** The by-name hold in
+  `cuda_admit` is gone. The device path is a composition that already existed: dense qwen35's trunk, the routed MoE
+  kernels and the gated shared expert (`tile_shexp`).
+  - **The gate:** `make test-cuda-qwen35moe`, a `cuda-gate.sh` step, holds the qwen35moe toys and the gated shared
+    expert to the CPU's logits at 1e-5 of the range, with free and pinned routing, on every expert route. It also
+    checks speculative identity and the host and split placements. It passed on its first run, and it catches four
+    declared mutants: the shared expert's gate dropped, the shared expert skipped, the wrong DeltaNet gate, and a
+    kernel that adds without the sigmoid.
+  - **The real file**, on a CUDA MIG slice (1g.24gb, sm_120): all 40 blocks on the device, gpu-identity 3.6e-6 of the
+    logit range with routing pinned (limit 1e-3), and tier-smoke output byte-identical to the CPU's.
+    `compat_matrix`'s cpu_cuda check is new on the row and reads 8 of 9 exact, with one margin-qualified near tie.
+  - **Not claimed:** fidelity on CUDA against the float32 reference (the row's KLD reads are the CPU's), speed, and the
+    Windows CUDA host's cells (not run: no CUDA consumer host). The three upcoming qwen35moe rows still need their
+    own gates. Record: `docs/compat-reports/qwen35moe-cuda-2026-11-05/`.
+
 - **CI: the macOS suite runs daily and on dispatch, not on every push.** GitHub's hosted
   macOS arm64 pool is capacity-limited and cancelled queued jobs often enough to keep
   main red for hours on 2026-11-04 (28 cancellations against 4 real failures on main
