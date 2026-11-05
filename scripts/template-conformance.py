@@ -403,6 +403,25 @@ FAMILIES = {
         thinking_var="enable_thinking",
         tokenizer=("Ornith-1.0-9B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
+    # Ornith-1.5-35B-A3B (qwen35moe, R4.27.3): ornith-ai's GGUF carries its
+    # own template (7,828 bytes, sha256 f55f5293), 1.0's with qwen36's
+    # argument rule and the first two system or developer messages merged;
+    # the repository's chat_template.jinja lacks the merge, and its
+    # tokenizer_config.json still holds Qwen3.6's. The file's own is the
+    # oracle, as for lfm2-8b. It drops a mid-history system or developer turn
+    # silently, which the ornith renderer refuses.
+    "ornith15-35b-a3b": Family(
+        "ornith", ("gguf", "models/Ornith-1.5-35B-Q8_0.gguf"),
+        note="the template embedded in ornith-ai/Ornith-1.5-35B-A3B-GGUF at 12393612 "
+             "(Q8_0 and Q4_K_M byte-identical)",
+        tool_family=True, hostile_args=True, developer_role=True,
+        thinking_var="enable_thinking",
+        tokenizer=("Ornith-1.5-35B-Q8_0.gguf", "Ornith-1.5-35B-Q4_K_M.gguf"),
+        cannot={c: ("runner", "the ornith renderer refuses a system or "
+                    "developer turn after history has started; this file's "
+                    "template renders the conversation without it (drops it "
+                    "silently)")
+                for c in ("system-mid-history", "developer-mid-history")}),
     "qwen38": Family(
         "qwen38", ("hf", "Qwen/Qwen3.8-27B"),
         note="Qwen 3.8's own template: reasoning-effort preamble, preserved "

@@ -1,0 +1,5 @@
+907c9a4f21e227c3bb638fc59e7c48a9782344213c89bcace8475589fa40ca78  gold-bf16-vs-q8_0.json
+cb5354c61e6e7a1e4fd3a6ab2c95ebbaf5ba95bff41bbd660333ebcc9eb080bb  gold-q4_k_m.json
+6eb1269dd84bdc458921a70c5c2f1aafccc860950e7da3a5060e643e7be10d62  gold-q6_k.json
+71e53fa59701780cae942efeb079b4df54b8b61b401d0d7681057aedd6aa1536  gold-q6_k-runner-vs-llamacpp.json
+42accc493ed6faf6f8a0a5863243a38762b6819c6e9e17c45a110e14f02f0c3e  gold-q8_0.json

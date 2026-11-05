@@ -3477,22 +3477,121 @@
       "anchor": "anchor: agreement with another engine, not fidelity. A float32 reference (140 GB) is not feasible; Qwen3.5-0.8B covers the recurrent path only."
     },
     {
-      "id": "ornith-1.5-35b-a3b",
-      "model": "Ornith-1.5-35B-A3B",
-      "tier": "upcoming",
-      "claim": "Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); no gate has run on an Ornith 1.5 file.",
+      "id": "ornith-1.5-35b-a3b-q8_0",
+      "model": "Ornith-1.5-35B-A3B (ornith-ai)",
+      "family": "Ornith 1.5",
+      "tier": "tier2",
+      "claim": "Text path only (the vision projector is not loaded): ornith-ai's own Q8_0 of Ornith-1.5-35B-A3B, which passes the fidelity bar by a hair: against ornith-ai's BF16 parent computed in float32 it reads 0.0484 mean KLD and 97.5% margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU); its median KLD (0.0154) is 3.7x Qwen3.6-35B-A3B's Q8_0 on the same base. The publisher's Q4_K_M and Q6_K miss (0.171 and 0.103), and another engine reads the same spikes in them.",
       "architecture": "qwen35moe",
-      "missing": "Template conformance for Ornith 1.5 (the ornith template exists for 1.0 9B dense), then the gate list; the CUDA cells on its file.",
+      "upstream": {
+        "checkpoint": "ornith-ai/Ornith-1.5-35B-A3B",
+        "revision": "10fbf86fed7ecee4a061f8b499a618f46001cac1"
+      },
+      "licence": {
+        "id": "mit",
+        "from": "ornith-ai/Ornith-1.5-35B-A3B"
+      },
+      "files": [
+        {
+          "name": "Ornith-1.5-35B-Q8_0.gguf",
+          "repo": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+          "revision": "12393612fd4f730ff5aadc23e9b8f9648aa49ceb",
+          "sha256": "de46c4baf4b4dd85ea438bb0f757f21c38841a353506579979bba114311658c3",
+          "bytes": 37802149280
+        }
+      ],
+      "quantization": "Q8_0 (ornith-ai)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "ornith-ai's files against the BF16 parent at 10fbf86f computed in float32 on the CPU (transformers 5.16.1, float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files): Q8_0 0.0484 mean KLD / 91.3% top-1 / 97.5% margin-qualified (median 0.0154); Q6_K 0.1033 / 89.0% / 95.8%; Q4_K_M 0.1710 / 83.7% / 92.1%. llama.cpp 36a0e2f on the Q6_K reads 0.1191 with the same spikes (position 338: 5.47 against Runner's 4.69). Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against the parent's tokenizer.json; template conformance 24/24 in text and tokens against the file's own template. Record: docs/compat-reports/ornith-1.5-35b-a3b-2026-11-05/README.md.",
+        "context": 4096,
+        "limitations": "CPU and CUDA for this file (37.8 GB: on a CUDA MIG slice, 1g.24gb, sm_120, the fitted split places part of it on the device); Metal runs qwen35moe on toy models only. Text only: the vision projector ornith-ai ships beside it is not loaded. The publisher's K-quant files (Q4_K_M, Q6_K) are below the bar on both Runner and llama.cpp, with error spikes at the same positions; the 64 tensors they share at Q6_K (output.weight, 21 ffn_down_exps, 21 ffn_down_shexp, 14 attn_qkv, 7 attn_v) are the suspects, not yet isolated. A system or developer message after the conversation has started is refused, where the file's template drops it silently. ornith-ai's own BF16 GGUF reads 0.026 mean KLD against the same parent (a clean conversion sits near 0), so about half the Q8_0's distance is in the publisher's conversion or the weights it came from; no source revision is declared. Licence: MIT.",
+        "evidence": [
+          "docs/compat-reports/ornith-1.5-35b-a3b-2026-11-05/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal run on a Mac that holds the file (37.8 GB), and the Windows CUDA host's cells; which of the K-quant files' 64 shared Q6_K tensors carries their spikes, and where the BF16 GGUF departs from the parent; task quality and the tool protocol on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "metal": {
+          "kind": "limit",
+          "reason": "Not measured: Metal runs qwen35moe on toy models (make test-metal-qwen35moe, to the CPU's logits at 1e-5), but this file (37.8 GB) has not been run on a Mac that holds it.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.13.0",
+          "date": "2026-11-05",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "b3e877035c6c57f664e9bd6164bd58ad56ca01a1",
+          "caps": {
+            "version": "1.13.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "aec461cf4146ea4677ebf84382376ce214928038aeddc140dceacc34810ce04c",
+          "ran": "runner -m Ornith-1.5-35B-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/ornith-1.5-35b-a3b-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.13.0",
+          "date": "2026-11-05",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "b3e877035c6c57f664e9bd6164bd58ad56ca01a1",
+          "caps": {
+            "version": "1.13.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "aec461cf4146ea4677ebf84382376ce214928038aeddc140dceacc34810ce04c",
+          "ran": "runner -m Ornith-1.5-35B-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/ornith-1.5-35b-a3b-q8_0.linux-x86_64-cuda.cuda.txt"
+        }
+      },
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-11-05",
+          "reason": "Admitted 2026-11-05 at Tier 2 with the admitting CPU cell from the lab CPU lane (R4.27.3). Maintained on report.",
+          "last_validated_release": null
         }
       ],
-      "anchor": "anchor: agreement with another engine, not fidelity.",
-      "vision_upstream": true
+      "vision_upstream": true,
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "MoE on a Gated DeltaNet model"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.13.0",
+        "date": "2026-11-05"
+      }
     },
     {
       "id": "minicpm-v-4.7-35b-a3b",
@@ -3500,7 +3599,7 @@
       "tier": "upcoming",
       "claim": "Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); its tokenizer and template are unchecked and no gate has run.",
       "architecture": "qwen35moe",
-      "missing": "Tokenizer and template checks, then the gate list; the CUDA cells on its file.",
+      "missing": "The publisher's GGUF (openbmb/MiniCPM-V-4.7-35B-A3B-gguf at cf943fbe) labels its pre-tokenizer qwen35, while openbmb's own tokenizer.json uses the Qwen2-style regex without \\p{M}: Runner follows the label and differs from the publisher on combining marks (3 of 721 corpus strings, R4.27.2); its chat template is MiniCPM-V's own (thinking off by default, an empty think block in history), which no Runner renderer matches yet. Then the gate list; the CUDA cells on its file.",
       "transitions": [
         {
           "tier": "upcoming",
