@@ -5,6 +5,33 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **deepseek2's absorbed prefill on CUDA runs on the tensor cores and passes the naive form's (R3.32).** The absorbed
+  form's 576-wide row was past every tiled prefill kernel, so its prompt tiles ran `k_attn`: one block per head and
+  column, with every cached row read again for each of the 16 heads. `k_attn_tcw_mla`, the wide tensor-core tile's
+  twin, takes the row. S runs over all 576 columns, V is the staged row's 512-wide latent (the one table, R3.31), and
+  the 16 heads are a block's 16 rows. On by default for deepseek2's absorbed form with an f16 cache.
+  `RUNNER_CUDA_ATTN_TC_WIDE=0` keeps the previous path, and quantized caches keep it too. Prefill on a CUDA MIG slice
+  (1g.24gb, sm_120), DeepSeek-V2-Lite-Chat Q6_K, 64 tokens at temperature 0, load average 8 to 14:
+
+  | Context | Absorbed, new | Absorbed, before | Naive |
+  |---|---|---|---|
+  | 4,096 | 201.64 tok/s | 114.69 | 191.57 |
+  | 8,192 | 192.43 | 78.24 | 173.38 |
+
+  - **The kill**, declared before the first read: under 0.9x of naive at 4K or 8K, or any identity miss. The read is
+    1.05x and 1.11x. Decode is unchanged, and the outputs are byte for byte the previous path's.
+  - **The default** followed the attention routes' rule against the publisher's float32 model (1,999 positions at
+    4,000 to 5,999): mean KL 0.986x the previous path's, Wilcoxon p 0.79, McNemar 3/2.
+  - **Gates:** `make test-cuda-attn-wide` takes the `--mla-wide` fixture at 1e-5 of the logit range, and catches V read
+    from the wrong slice and a dropped rescale. `tests/test_attn_wide_repeat.py` checks the same bytes twice, the
+    distance to the CPU and the default. The tile's existing families write the same bytes as before.
+  - **The roster's CUDA cells, re-pinned:** both deepseek2 rows' CUDA tier-smoke replies had moved off their pins
+    with R3.31's decode kernel (#631), not with this change, and #631 did not compare them. They were stale on main
+    from #631 until this change, and no release was cut in that window. The decode kernel's own D1 read, missing
+    from #631, passes: mean KL 0.991x the previous kernel's, Wilcoxon p 0.37, McNemar 1/1. With that, both cells are
+    retired, pinned and recorded again. The CPU cells match their pins unchanged. Record:
+    `docs/compat-reports/r3.32-cuda-attn-tcw-mla-deepseek2-2026-11-05/`.
+
 - **`--rewrite` and `--type-plan` write `q5_k`, `q5_1` and `iq4_nl` (R4.33).** These are ports of ggml's writers
   without an importance matrix (llama.cpp c1d0e7a). On the quant-golden slice their bytes are ggml's own, byte for
   byte, and the golden files are new. A `q5_k` rule on a row that is not a multiple of 256 writes `q5_1`, its
@@ -61,7 +88,7 @@ Current release and unreleased changes. Compatibility follows the
       the end of stderr lost it.
     - An explicit `--gpu-layers` is still honoured past the budget. `RUNNER_GPU_FALLBACK=fail` still ends such a
       run instead of finishing it on the CPU.
-  - **Not changed:** the absorbed prefill (114.7 against naive's 191.7 tok/s at 4,096). Decode still runs without a
+  - **Not changed here:** the absorbed prefill (114.7 against naive's 191.7 tok/s at 4,096; R3.32 above). Decode still runs without a
     CUDA graph for deepseek2 (the shared-expert path), in both forms.
 
 - **CUDA runs `qwen35moe` (R4.27 A2): Qwen3.6-35B-A3B's Q4_K_M row gains its CUDA cell.** The by-name hold in

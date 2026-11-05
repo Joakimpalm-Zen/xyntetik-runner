@@ -7209,13 +7209,13 @@ static int route_kernels(char *out, int cap) {
     if (n < cap)
         n += snprintf(out + n, (size_t)(cap - n),
                       "},\"cuda_tc2\":%lu,\"cuda_tc2_reuse\":%lu,\"cuda_i8\":%lu,\"cuda_moe_twin\":%lu,\"cuda_splitk\":%lu,\"cuda_attn_tile\":%lu,"
-                      "\"cuda_attn_tc\":%lu,\"cuda_attn_dec_gqa\":%lu,\"cuda_attn_dec_mla\":%lu,\"cuda_kv_gather\":%lu,\"metal_fast_mv\":%lu,\"metal_mv2\":%lu,"
+                      "\"cuda_attn_tc\":%lu,\"cuda_attn_dec_gqa\":%lu,\"cuda_attn_dec_mla\":%lu,\"cuda_attn_tcw_mla\":%lu,\"cuda_kv_gather\":%lu,\"metal_fast_mv\":%lu,\"metal_mv2\":%lu,"
                       "\"metal_attn_coop\":%lu,\"metal_attn_tile\":%lu,\"metal_attn_gqa\":%lu,"
                       "\"cpu_dot_multi\":%lu}",
                       gpu_tc2_dispatches(), gpu_tc2_reused(), gpu_i8_dispatches(), gpu_moe_twin_tiles(), gpu_splitk_dispatches(),
                       gpu_attn_tiled_dispatches(),
                       gpu_attn_tc_dispatches(), gpu_attn_dec_gqa_dispatches(), gpu_attn_dec_mla_dispatches(),
-                      gpu_kv_gather_tokens(),
+                      gpu_attn_tcw_mla_dispatches(), gpu_kv_gather_tokens(),
                       gpu_mv_dispatches(), gpu_mv2_dispatches(),
                       gpu_attn_coop_dispatches(), gpu_attn_tile_dispatches(),
                       gpu_attn_gqa_dispatches(), vec_dot_multi_calls());

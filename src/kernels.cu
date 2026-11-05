@@ -7806,10 +7806,23 @@ k_attn_tc(const float *q, const unsigned char *kc, const unsigned char *vc, floa
 // shared: Q hi and lo (16 rows each) and one K or V tile (32 rows) of
 // hd + 8 halves, the four partial S tiles, the row scales
 #define AW_SMEM(hd) ((2 * AW_ROWS + AW_TK) * ((hd) + 8) * 2 + 4 * AW_ROWS * AW_SLD * 4 + AW_ROWS * 4)
+//
+// MLA (k_attn_tcw_mla, R3.32): deepseek2's absorbed row, one KV head of
+// [k_pe vlo | latent hd - vlo] that 16 query heads share, V the latent slice
+// of the same row (the one table, R3.31). S runs over the whole row in four
+// hd / 4 quarters (576: 144, nine k16 steps); the staged K tile is the V
+// tile, so none is staged for V; O covers the latent in four quarters of
+// (hd - vlo) / 4 (512: 128) from column vlo, and the pe slice of the output
+// is written as zeros, as k_attn_dec_mla writes it. With G 16 a block's 16
+// rows are the 16 heads at one token: llama.cpp's mma_f16 <576, 512, 16>
+// packing.
 
-extern "C" __global__ void __launch_bounds__(128)
-k_attn_tcw(const float *q, const unsigned char *kc, const unsigned char *vc, float *out,
-           attn_args a, const int *posp, const float *sinks, int tn, int hb, int qs) {
+template <bool MLA>
+__device__ __forceinline__ void attn_tcw_body(const float *q, const unsigned char *kc,
+                                              const unsigned char *vc, float *out,
+                                              const attn_args &a, const int *posp,
+                                              const float *sinks, int tn, int hb, int qs,
+                                              int vlo) {
     extern __shared__ __align__(16) unsigned char aw_dyn[];
     const int hd = a.head_dim, LD = hd + 8;
     __half *Qs  = (__half *)aw_dyn;
@@ -7830,7 +7843,9 @@ k_attn_tcw(const float *q, const unsigned char *kc, const unsigned char *vc, flo
     const ulong64 row_b = (ulong64)kv_dim * 2;            // fp16 rows only
     const ulong64 base = a.l_off + (ulong64)kvh * hd * 2;
     const ulong64 base_v = a.v_off + (ulong64)kvh * hd * 2;
-    const int dq = hd / 4, d0 = warp * dq, ndt = dq / 8;  // this warp's quarter
+    const int dq = hd / 4, d0 = warp * dq;                // this warp's quarter of S
+    // and of O: the same quarter, or under MLA a quarter of the latent
+    const int dv = MLA ? (hd - vlo) / 4 : dq, v0 = MLA ? vlo + warp * dv : d0, ndt = dv / 8;
     (void)sinks;                                          // cuda.c sends none here
 
     // ---- Q rows, each scaled by an exact power of two (k_attn_tc's) ----
@@ -7921,7 +7936,7 @@ k_attn_tcw(const float *q, const unsigned char *kc, const unsigned char *vc, flo
             mine[r1 * AW_SLD + col + 1] = S[j][3];
         }
         __syncthreads();                                  // partials written, K read
-        stage(vc, base_v, kt);
+        if (!MLA) stage(vc, base_v, kt);                  // MLA: the K tile is the V tile
         // ---- the whole S, the four partials in warp order ----
         #pragma unroll
         for (int j = 0; j < 4; j++)
@@ -7987,7 +8002,7 @@ k_attn_tcw(const float *q, const unsigned char *kc, const unsigned char *vc, flo
             for (int j = 0; j < 4; j++) {                 // k8 key chunks
                 unsigned vb[4];
                 unsigned addr = (unsigned)__cvta_generic_to_shared(
-                    KVs + (j * 8 + (lane & 7)) * LD + d0 + dp * 8 + (lane >> 3) * 8);
+                    KVs + (j * 8 + (lane & 7)) * LD + v0 + dp * 8 + (lane >> 3) * 8);
                 asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                              : "=r"(vb[0]), "=r"(vb[1]), "=r"(vb[2]), "=r"(vb[3]) : "r"(addr));
                 #pragma unroll
@@ -8010,7 +8025,7 @@ k_attn_tcw(const float *q, const unsigned char *kc, const unsigned char *vc, flo
         int hx = r / qs, ti = r - hx * qs;
         if (hx >= nh || ti >= nt) continue;
         float inv = 1.0f / (half_ ? l1 : l0);
-        float *o = out + (ulong64)(tk0 + ti) * a.os + (ulong64)(h0 + hx) * hd + d0;
+        float *o = out + (ulong64)(tk0 + ti) * a.os + (ulong64)(h0 + hx) * hd + v0;
         #pragma unroll
         for (int j = 0; j < 16; j++) {
             if (j >= ndt) break;
@@ -8018,7 +8033,24 @@ k_attn_tcw(const float *q, const unsigned char *kc, const unsigned char *vc, flo
             o[d]     = O[j][half_ * 2 + 0] * inv;
             o[d + 1] = O[j][half_ * 2 + 1] * inv;
         }
+        if (MLA && warp == 0) {                           // the pe slice nothing reads
+            float *pe = out + (ulong64)(tk0 + ti) * a.os + (ulong64)(h0 + hx) * hd;
+            for (int d = (lane & 3) * 2; d < vlo; d += 8) { pe[d] = 0.0f; pe[d + 1] = 0.0f; }
+        }
     }
+}
+
+extern "C" __global__ void __launch_bounds__(128)
+k_attn_tcw(const float *q, const unsigned char *kc, const unsigned char *vc, float *out,
+           attn_args a, const int *posp, const float *sinks, int tn, int hb, int qs) {
+    attn_tcw_body<false>(q, kc, vc, out, a, posp, sinks, tn, hb, qs, 0);
+}
+
+extern "C" __global__ void __launch_bounds__(128)
+k_attn_tcw_mla(const float *q, const unsigned char *kc, const unsigned char *vc, float *out,
+               attn_args a, const int *posp, const float *sinks, int tn, int hb, int qs,
+               int vlo) {
+    attn_tcw_body<true>(q, kc, vc, out, a, posp, sinks, tn, hb, qs, vlo);
 }
 
 // ------------------------------------------------ decode KV row gather (X3)

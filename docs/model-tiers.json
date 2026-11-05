@@ -7174,20 +7174,20 @@
         },
         "cuda": {
           "kind": "gate",
-          "runner_version": "1.12.0",
-          "date": "2026-11-04",
+          "runner_version": "1.13.0",
+          "date": "2026-11-05",
           "device_class": "linux-x86_64-cuda",
           "result": "pass",
-          "commit": "0676f2639410c3db4b322e81c914187d0a190552",
+          "commit": "6eb09de793434dab43f474efeb51e15438a16ab8",
           "caps": {
-            "version": "1.12.0",
+            "version": "1.13.0",
             "os": "linux",
             "arch": "x86_64",
             "cpu_cores": 40,
             "gpu_backend": "cuda",
             "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
           },
-          "output_sha256": "eae8d81a354865063f6edb2a6e83c627b6c4b6d7f8c8749e5fac353dca7b294b",
+          "output_sha256": "cedb5bd6c51ecd3bb00508d0cdd2a3a597daf376df178903db8bd59aec8505a1",
           "ran": "runner -m DeepSeek-V2-Lite-Chat.Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
           "evidence": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q8_0.linux-x86_64-cuda.cuda.txt"
         },
@@ -7214,8 +7214,8 @@
           "supported": false,
           "reason": "--lora does not cover multi-head latent attention yet (deepseek2)"
         },
-        "runner_version": "1.12.0",
-        "date": "2026-11-04"
+        "runner_version": "1.13.0",
+        "date": "2026-11-05"
       }
     },
     {
@@ -7283,20 +7283,20 @@
         },
         "cuda": {
           "kind": "gate",
-          "runner_version": "1.12.0",
-          "date": "2026-11-04",
+          "runner_version": "1.13.0",
+          "date": "2026-11-05",
           "device_class": "linux-x86_64-cuda",
           "result": "pass",
-          "commit": "0676f2639410c3db4b322e81c914187d0a190552",
+          "commit": "6eb09de793434dab43f474efeb51e15438a16ab8",
           "caps": {
-            "version": "1.12.0",
+            "version": "1.13.0",
             "os": "linux",
             "arch": "x86_64",
             "cpu_cores": 40,
             "gpu_backend": "cuda",
             "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
           },
-          "output_sha256": "70827d501fa8dc01eb53edd654e02da4829cf3aa439af54f451148fdf32baf12",
+          "output_sha256": "eae8d81a354865063f6edb2a6e83c627b6c4b6d7f8c8749e5fac353dca7b294b",
           "ran": "runner -m DeepSeek-V2-Lite-Chat.Q6_K.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
           "evidence": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cuda.txt"
         },
@@ -7323,8 +7323,8 @@
           "supported": false,
           "reason": "--lora does not cover multi-head latent attention yet (deepseek2)"
         },
-        "runner_version": "1.12.0",
-        "date": "2026-11-04"
+        "runner_version": "1.13.0",
+        "date": "2026-11-05"
       }
     }
   ]

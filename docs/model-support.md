@@ -791,8 +791,8 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td><a href="#deepseek-v2-lite-chat-q8_0"><code>DeepSeek-V2-Lite-Chat.Q8_0.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: multi-head latent attention (deepseek2)</td></tr>
-<tr><td><a href="#deepseek-v2-lite-chat-q6_k"><code>DeepSeek-V2-Lite-Chat.Q6_K.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: multi-head latent attention (deepseek2)</td></tr>
+<tr><td><a href="#deepseek-v2-lite-chat-q8_0"><code>DeepSeek-V2-Lite-Chat.Q8_0.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td nowrap>✅ 1.13.0<sup>b</sup><br>2026-11-05</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: multi-head latent attention (deepseek2)</td></tr>
+<tr><td><a href="#deepseek-v2-lite-chat-q6_k"><code>DeepSeek-V2-Lite-Chat.Q6_K.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td nowrap>✅ 1.13.0<sup>b</sup><br>2026-11-05</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: multi-head latent attention (deepseek2)</td></tr>
 </tbody>
 </table>
 </details>
@@ -2580,12 +2580,12 @@ A third party's Q8_0 (mradermacher, static), the fidelity file of DeepSeek-V2-Li
 - **Known limitations:** A third party's file, not the publisher's: the pin is the sha256 and the repository revision, and the file can leave the Hub without notice. One window over one corpus, no benchmark claim, no speed row. LoRA training and adapter serving are refused for deepseek2. On CUDA the multi-sequence decode microbatch declines MoE models, so concurrent sequences decode one at a time, and the model runs without CUDA graphs. The publisher's chat template has no tool protocol. Past the window's 4,493 positions the context is read only as whole-corpus perplexity (8,719 tokens at -c 9216).
 - **Still missing:** The Metal row (a Metal build runs the model on the CPU) and the Windows CUDA host's cells; the KV cache's size and decode past the window (R4.4.5 step e); a live tool gate (the template has none); task quality.
 - **Evidence:** [docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md](compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.12.0 on 2026-11-04.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.13.0 on 2026-11-05.
 - **CPU:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `0676f2639410`, output sha256 `eae8d81a35486506`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q8_0.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `0676f2639410`, output sha256 `eae8d81a35486506`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q8_0.linux-x86_64-cuda.cuda.txt)
+- **CUDA:** ✅ v1.13.0 2026-11-05 on linux-x86_64-cuda (borrowed hardware) at commit `6eb09de79343`, output sha256 `cedb5bd6c51ecd3b`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): deepseek2's multi-head latent attention is validated on the CPU and CUDA only; a Metal build runs the model on the CPU and says why.
-- **LoRA training:** no: multi-head latent attention (deepseek2) (runner 1.12.0, 2026-11-04).
-- **LoRA adapter serving:** no: --lora does not cover multi-head latent attention yet (deepseek2) (runner 1.12.0, 2026-11-04).
+- **LoRA training:** no: multi-head latent attention (deepseek2) (runner 1.13.0, 2026-11-05).
+- **LoRA adapter serving:** no: --lora does not cover multi-head latent attention yet (deepseek2) (runner 1.13.0, 2026-11-05).
 - **Tier history:** Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
 
 <a id="deepseek-v2-lite-chat-q6_k"></a>
@@ -2603,12 +2603,12 @@ A third party's Q6_K (mradermacher, static), the smallest DeepSeek-V2-Lite-Chat 
 - **Known limitations:** A third party's file, not the publisher's: the pin is the sha256 and the repository revision, and the file can leave the Hub without notice. One window over one corpus, no benchmark claim, no speed row. LoRA training and adapter serving are refused for deepseek2. On CUDA the multi-sequence decode microbatch declines MoE models, so concurrent sequences decode one at a time, and the model runs without CUDA graphs. The publisher's chat template has no tool protocol. Past the window's 4,493 positions the context is read only as whole-corpus perplexity (8,719 tokens at -c 9216).
 - **Still missing:** The Metal row (a Metal build runs the model on the CPU) and the Windows CUDA host's cells; the KV cache's size and decode past the window (R4.4.5 step e); a live tool gate (the template has none); task quality.
 - **Evidence:** [docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md](compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.12.0 on 2026-11-04.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.13.0 on 2026-11-05.
 - **CPU:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `0676f2639410`, output sha256 `eae8d81a35486506`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `0676f2639410`, output sha256 `70827d501fa8dc01`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cuda.txt)
+- **CUDA:** ✅ v1.13.0 2026-11-05 on linux-x86_64-cuda (borrowed hardware) at commit `6eb09de79343`, output sha256 `eae8d81a35486506`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): deepseek2's multi-head latent attention is validated on the CPU and CUDA only; a Metal build runs the model on the CPU and says why.
-- **LoRA training:** no: multi-head latent attention (deepseek2) (runner 1.12.0, 2026-11-04).
-- **LoRA adapter serving:** no: --lora does not cover multi-head latent attention yet (deepseek2) (runner 1.12.0, 2026-11-04).
+- **LoRA training:** no: multi-head latent attention (deepseek2) (runner 1.13.0, 2026-11-05).
+- **LoRA adapter serving:** no: --lora does not cover multi-head latent attention yet (deepseek2) (runner 1.13.0, 2026-11-05).
 - **Tier history:** Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
 
 <a id="tier3"></a>

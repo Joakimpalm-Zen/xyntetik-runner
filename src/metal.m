@@ -1340,6 +1340,7 @@ unsigned long gpu_attn_tiled_dispatches(void) { return 0; }   // CUDA's tiled pr
 unsigned long gpu_attn_tc_dispatches(void) { return 0; }      // CUDA's tensor-core attention
 unsigned long gpu_attn_dec_gqa_dispatches(void) { return 0; } // CUDA's grouped decode attention
 unsigned long gpu_attn_dec_mla_dispatches(void) { return 0; } // CUDA's absorbed MLA decode attention
+unsigned long gpu_attn_tcw_mla_dispatches(void) { return 0; } // CUDA's absorbed MLA tensor-core prefill attention
 unsigned long gpu_kv_gather_tokens(void) { return 0; }        // CUDA's KV copy-back
 unsigned long gpu_attn_coop_dispatches(void) { return g_coop_dispatches; }
 

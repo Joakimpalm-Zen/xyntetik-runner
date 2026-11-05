@@ -3249,30 +3249,6 @@
     },
     "deepseek-v2-lite-chat-q6_k": {
       "pins": {
-        "linux-x86_64-cuda/cuda": {
-          "path": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cuda.txt",
-          "sha256": "70827d501fa8dc01eb53edd654e02da4829cf3aa439af54f451148fdf32baf12",
-          "bytes": 193,
-          "finish_reason": "length",
-          "completion_tokens": 48,
-          "spec": {
-            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
-            "n_predict": 48,
-            "ctx": 512,
-            "server_args": [
-              "-b",
-              "64"
-            ],
-            "request": {
-              "enable_thinking": false
-            }
-          },
-          "pinned": {
-            "date": "2026-11-04",
-            "runner_version": "1.12.0",
-            "commit": "0676f2639410c3db4b322e81c914187d0a190552"
-          }
-        },
         "linux-x86_64-cuda/cpu": {
           "path": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cpu.txt",
           "sha256": "eae8d81a354865063f6edb2a6e83c627b6c4b6d7f8c8749e5fac353dca7b294b",
@@ -3295,6 +3271,30 @@
             "date": "2026-11-04",
             "runner_version": "1.12.0",
             "commit": "0676f2639410c3db4b322e81c914187d0a190552"
+          }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cuda.txt",
+          "sha256": "eae8d81a354865063f6edb2a6e83c627b6c4b6d7f8c8749e5fac353dca7b294b",
+          "bytes": 185,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-05",
+            "runner_version": "1.13.0",
+            "commit": "6eb09de793434dab43f474efeb51e15438a16ab8"
           }
         }
       }
@@ -3327,8 +3327,8 @@
         },
         "linux-x86_64-cuda/cuda": {
           "path": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q8_0.linux-x86_64-cuda.cuda.txt",
-          "sha256": "eae8d81a354865063f6edb2a6e83c627b6c4b6d7f8c8749e5fac353dca7b294b",
-          "bytes": 185,
+          "sha256": "cedb5bd6c51ecd3bb00508d0cdd2a3a597daf376df178903db8bd59aec8505a1",
+          "bytes": 194,
           "finish_reason": "length",
           "completion_tokens": 48,
           "spec": {
@@ -3344,9 +3344,9 @@
             }
           },
           "pinned": {
-            "date": "2026-11-04",
-            "runner_version": "1.12.0",
-            "commit": "0676f2639410c3db4b322e81c914187d0a190552"
+            "date": "2026-11-05",
+            "runner_version": "1.13.0",
+            "commit": "6eb09de793434dab43f474efeb51e15438a16ab8"
           }
         }
       }

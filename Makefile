@@ -2527,7 +2527,9 @@ test-cuda-hybrids: runner $(TEST_GPU_ID) test-ornith.gguf
 # G = 12 grouping of Qwen3.8-Flash-Next that leaves a 16-row block 12 heads of
 # one token), forced on with RUNNER_CUDA_ATTN_TC_WIDE=1 since the fixtures are
 # not gemma-4 E-series. The route record must say attn_wide=on, so the
-# identity bound is the kernel's.
+# identity bound is the kernel's. Then deepseek2's absorbed MLA row
+# (--mla-wide: 16 heads on one 576-wide [k_pe | latent] row) through
+# k_attn_tcw_mla (R3.32), its dispatch counted, at 512 tokens.
 test-cuda-attn-wide: runner $(TEST_GPU_ID)
 	@set -e; \
 	if ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)"; then \
@@ -2544,6 +2546,14 @@ test-cuda-attn-wide: runner $(TEST_GPU_ID)
 	      echo "test-cuda-attn-wide: head_dim $$w heads $$h did not run on the device"; exit 1; fi; \
 	    echo "head_dim $$w heads $$h: $$(grep 'mean range' test-cuda-attn-wide.out | sed 's/^ *//')"; \
 	  done; \
+	  $(PYTHON) scripts/make-test-model.py --arch deepseek2 --mla-wide test-attn-wide-mla.gguf > /dev/null; \
+	  RUNNER_CUDA_ATTN_TC_WIDE=1 ./$(RUNNER_EXE) -m test-attn-wide-mla.gguf --gpu auto --bench-json 2> /dev/null | \
+	    $(PYTHON) -c "import json,sys; r=json.loads(next(l for l in sys.stdin if l.startswith('{')))['route']; \
+	    sys.exit(0 if ' attn_wide=on ' in r['backend_detail'] and r['kernels']['cuda_attn_tcw_mla'] > 0 \
+	    else 'test-cuda-attn-wide: k_attn_tcw_mla did not run on the absorbed MLA fixture')"; \
+	  RUNNER_CUDA_ATTN_TC_WIDE=1 GPU_ID_LIMIT=1e-5 ./$(TEST_GPU_ID) test-attn-wide-mla.gguf 99 32 512 > test-cuda-attn-wide.out 2>&1 || \
+	    { cat test-cuda-attn-wide.out; exit 1; }; \
+	  echo "absorbed MLA 576 (k_attn_tcw_mla): $$(grep 'mean range' test-cuda-attn-wide.out | sed 's/^ *//')"; \
 	  echo "cuda attn-wide ok"; \
 	else \
 	  echo "cuda attn-wide skipped: no CUDA device reported by --caps"; \
