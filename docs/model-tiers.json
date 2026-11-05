@@ -3509,12 +3509,12 @@
         "fp32_reference": "measured",
         "anchor": "ornith-ai's files against the BF16 parent at 10fbf86f computed in float32 on the CPU (transformers 5.16.1, float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files): Q8_0 0.0484 mean KLD / 91.3% top-1 / 97.5% margin-qualified (median 0.0154); Q6_K 0.1033 / 89.0% / 95.8%; Q4_K_M 0.1710 / 83.7% / 92.1%. llama.cpp 36a0e2f on the Q6_K reads 0.1191 with the same spikes (position 338: 5.47 against Runner's 4.69). Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against the parent's tokenizer.json; template conformance 24/24 in text and tokens against the file's own template. Record: docs/compat-reports/ornith-1.5-35b-a3b-2026-11-05/README.md.",
         "context": 4096,
-        "limitations": "CPU and CUDA for this file (36.9 GB: on a CUDA MIG slice, 1g.24gb, sm_120, the fitted split places part of it on the device); Metal runs qwen35moe on toy models only. Text only: the vision projector ornith-ai ships beside it is not loaded. The publisher's K-quant files (Q4_K_M, Q6_K) are below the bar on both Runner and llama.cpp, with error spikes at the same positions; the 64 tensors they share at Q6_K (output.weight, 21 ffn_down_exps, 21 ffn_down_shexp, 14 attn_qkv, 7 attn_v) are the suspects, not yet isolated. A system or developer message after the conversation has started is refused, where the file's template drops it silently. ornith-ai's own BF16 GGUF reads 0.026 mean KLD against the same parent (a clean conversion sits near 0), so about half the Q8_0's distance is in the publisher's conversion or the weights it came from; no source revision is declared. Licence: MIT.",
+        "limitations": "CPU and CUDA for this file (37.8 GB: on a CUDA MIG slice, 1g.24gb, sm_120, the fitted split places part of it on the device); Metal runs qwen35moe on toy models only. Text only: the vision projector ornith-ai ships beside it is not loaded. The publisher's K-quant files (Q4_K_M, Q6_K) are below the bar on both Runner and llama.cpp, with error spikes at the same positions; the 64 tensors they share at Q6_K (output.weight, 21 ffn_down_exps, 21 ffn_down_shexp, 14 attn_qkv, 7 attn_v) are the suspects, not yet isolated. A system or developer message after the conversation has started is refused, where the file's template drops it silently. ornith-ai's own BF16 GGUF reads 0.026 mean KLD against the same parent (a clean conversion sits near 0), so about half the Q8_0's distance is in the publisher's conversion or the weights it came from; no source revision is declared. Licence: MIT.",
         "evidence": [
           "docs/compat-reports/ornith-1.5-35b-a3b-2026-11-05/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "A Metal run on a Mac that holds the file (36.9 GB), and the Windows CUDA host's cells; which of the K-quant files' 64 shared Q6_K tensors carries their spikes, and where the BF16 GGUF departs from the parent; task quality and the tool protocol on the real checkpoint."
+        "missing": "A Metal run on a Mac that holds the file (37.8 GB), and the Windows CUDA host's cells; which of the K-quant files' 64 shared Q6_K tensors carries their spikes, and where the BF16 GGUF departs from the parent; task quality and the tool protocol on the real checkpoint."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
@@ -3523,7 +3523,7 @@
       "backends": {
         "metal": {
           "kind": "limit",
-          "reason": "Not measured: Metal runs qwen35moe on toy models (make test-metal-qwen35moe, to the CPU's logits at 1e-5), but this file (36.9 GB) has not been run on a Mac that holds it.",
+          "reason": "Not measured: Metal runs qwen35moe on toy models (make test-metal-qwen35moe, to the CPU's logits at 1e-5), but this file (37.8 GB) has not been run on a Mac that holds it.",
           "matrix": "MANUAL.md#support-matrix"
         },
         "cpu": {
