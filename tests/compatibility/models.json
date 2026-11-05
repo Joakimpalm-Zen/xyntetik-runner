@@ -2284,6 +2284,51 @@
       }
     },
     {
+      "id": "ornith-1.5-35b-a3b-q8_0",
+      "architecture": "qwen35moe",
+      "family": "Ornith 1.5",
+      "file": "models/Ornith-1.5-35B-Q8_0.gguf",
+      "sha256": "de46c4baf4b4dd85ea438bb0f757f21c38841a353506579979bba114311658c3",
+      "upstream": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+      "tokenizer_reference": "ornith-ai/Ornith-1.5-35B-A3B",
+      "tokenizer_reference_revision": "10fbf86fed7ecee4a061f8b499a618f46001cac1",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/ornith-1.5-35b-a3b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "ornith-ai's own Q8_0 (revision 12393612 of ornith-ai/Ornith-1.5-35B-A3B-GGUF), architecture qwen35moe: 40 blocks (30 Gated DeltaNet, 10 gated attention) plus the NextN block, 256 experts top 8 with a gated shared expert. Its tokenizer is the publisher's at 10fbf86f: 0 of 721 corpus strings and 0 of 247,091 vocabulary entries differ; its template (the file's own, which differs from the repository's chat_template.jinja only in merging the first two system or developer messages) renders 24 of 24 conformance cases identical in text and tokens under the ornith renderer (R4.27.3). No llama.cpp greedy reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 400,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "<|im_start|>",
+            "<tool_call>",
+            "<think>"
+          ]
+        },
+        "tokenizer": {
+          "expect_vocab_divergences": 0
+        },
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
+            "RUNNER_MOE_EAGER": "1"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        }
+      }
+    },
+    {
       "id": "deepseek-v2-lite-chat-q8_0",
       "architecture": "deepseek2",
       "family": "DeepSeek-V2",

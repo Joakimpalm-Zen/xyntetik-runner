@@ -579,6 +579,17 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>Ornith 1.5</b>, 1 model: CPU ✅ · CUDA ✅ · Metal n/a · Train n/a</summary>
+<p><b>Ornith-1.5-35B-A3B (ornith-ai)</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#ornith-1.5-35b-a3b-q8_0"><code>Ornith-1.5-35B-Q8_0.gguf</code></a></td><td nowrap>✅ 1.13.0<sup>b</sup><br>2026-11-05</td><td nowrap>✅ 1.13.0<sup>b</sup><br>2026-11-05</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>Granite-4.2-30B</b>, 1 model: CPU 🟨 1 of 2 · CUDA 🟨 1 of 2 · Metal - · Train ✅</summary>
 <p><b>Granite-4.2-30B</b></p>
 <table>
@@ -797,7 +808,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, Ornith-1.5-35B-A3B (text path only), MiniCPM-V-4.7-35B-A3B (text path only), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
+**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, MiniCPM-V-4.7-35B-A3B (text path only), Nemotron 3 Nano (30B-A3B), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -1782,6 +1793,33 @@ Admitted and maintained on report: existing regression tests keep running and sh
 
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
+### Ornith 1.5
+
+#### Text path only: Ornith-1.5-35B-A3B (ornith-ai)
+
+<a id="ornith-1.5-35b-a3b-q8_0"></a>
+##### `Ornith-1.5-35B-Q8_0.gguf`
+
+Text path only (the vision projector is not loaded): ornith-ai's own Q8_0 of Ornith-1.5-35B-A3B, which passes the fidelity bar by a hair: against ornith-ai's BF16 parent computed in float32 it reads 0.0484 mean KLD and 97.5% margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU); its median KLD (0.0154) is 3.7x Qwen3.6-35B-A3B's Q8_0 on the same base. The publisher's Q4_K_M and Q6_K miss (0.171 and 0.103), and another engine reads the same spikes in them.
+
+- **File:** `Ornith-1.5-35B-Q8_0.gguf` (sha256 `de46c4baf4b4dd85ea438bb0f757f21c38841a353506579979bba114311658c3`, 37,802,149,280 bytes, from [ornith-ai/Ornith-1.5-35B-A3B-GGUF](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF) at revision `12393612fd4f`).
+- **Upstream checkpoint:** ornith-ai/Ornith-1.5-35B-A3B at revision `10fbf86fed7e`.
+- **Quantization:** Q8_0 (ornith-ai).
+- **Licence:** `mit`, as the ornith-ai/Ornith-1.5-35B-A3B model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** ornith-ai's files against the BF16 parent at 10fbf86f computed in float32 on the CPU (transformers 5.16.1, float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files): Q8_0 0.0484 mean KLD / 91.3% top-1 / 97.5% margin-qualified (median 0.0154); Q6_K 0.1033 / 89.0% / 95.8%; Q4_K_M 0.1710 / 83.7% / 92.1%. llama.cpp 36a0e2f on the Q6_K reads 0.1191 with the same spikes (position 338: 5.47 against Runner's 4.69). Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against the parent's tokenizer.json; template conformance 24/24 in text and tokens against the file's own template. Record: docs/compat-reports/ornith-1.5-35b-a3b-2026-11-05/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU and CUDA for this file (36.9 GB: on a CUDA MIG slice, 1g.24gb, sm_120, the fitted split places part of it on the device); Metal runs qwen35moe on toy models only. Text only: the vision projector ornith-ai ships beside it is not loaded. The publisher's K-quant files (Q4_K_M, Q6_K) are below the bar on both Runner and llama.cpp, with error spikes at the same positions; the 64 tensors they share at Q6_K (output.weight, 21 ffn_down_exps, 21 ffn_down_shexp, 14 attn_qkv, 7 attn_v) are the suspects, not yet isolated. A system or developer message after the conversation has started is refused, where the file's template drops it silently. ornith-ai's own BF16 GGUF reads 0.026 mean KLD against the same parent (a clean conversion sits near 0), so about half the Q8_0's distance is in the publisher's conversion or the weights it came from; no source revision is declared. Licence: MIT.
+- **Still missing:** A Metal run on a Mac that holds the file (36.9 GB), and the Windows CUDA host's cells; which of the K-quant files' 64 shared Q6_K tensors carries their spikes, and where the BF16 GGUF departs from the parent; task quality and the tool protocol on the real checkpoint.
+- **Evidence:** [docs/compat-reports/ornith-1.5-35b-a3b-2026-11-05/README.md](compat-reports/ornith-1.5-35b-a3b-2026-11-05/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.13.0 on 2026-11-05.
+- **CPU:** ✅ v1.13.0 2026-11-05 on linux-x86_64-cuda (borrowed hardware) at commit `b3e877035c6c`, output sha256 `aec461cf4146ea46`, [pin](../tests/compatibility/tier-smoke/ornith-1.5-35b-a3b-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.13.0 2026-11-05 on linux-x86_64-cuda (borrowed hardware) at commit `b3e877035c6c`, output sha256 `aec461cf4146ea46`, [pin](../tests/compatibility/tier-smoke/ornith-1.5-35b-a3b-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Not measured: Metal runs qwen35moe on toy models (make test-metal-qwen35moe, to the CPU's logits at 1e-5), but this file (36.9 GB) has not been run on a Mac that holds it.
+- **LoRA training:** no: MoE on a Gated DeltaNet model (runner 1.13.0, 2026-11-05).
+- **LoRA adapter serving:** supported (runner 1.13.0, 2026-11-05).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-05 ([log](#transition-log)).
+
 ### Granite-4.2-30B
 
 #### Granite-4.2-30B
@@ -2630,17 +2668,6 @@ Not validated: the qwen35moe architecture loads and runs on the CPU (since 1.10.
 - **Missing for Tier 1:** One gate run on the CPU lane: tokenizer, template, quant bar against the BF16 parent, pinned output, device record; a file pinned by sha256; the CUDA cells on that file.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
-### Text path only: Ornith-1.5-35B-A3B
-
-<a id="ornith-1.5-35b-a3b"></a>
-#### Ornith-1.5-35B-A3B
-
-Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); no gate has run on an Ornith 1.5 file.
-
-- **Numerical anchor:** anchor: agreement with another engine, not fidelity.
-- **Missing for Tier 1:** Template conformance for Ornith 1.5 (the ornith template exists for 1.0 9B dense), then the gate list; the CUDA cells on its file.
-- **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
-
 ### Text path only: MiniCPM-V-4.7-35B-A3B
 
 <a id="minicpm-v-4.7-35b-a3b"></a>
@@ -2649,7 +2676,7 @@ Text path only: the vision projector is not loaded. The qwen35moe architecture r
 Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); its tokenizer and template are unchecked and no gate has run.
 
 - **Numerical anchor:** anchor: agreement with another engine, not fidelity.
-- **Missing for Tier 1:** Tokenizer and template checks, then the gate list; the CUDA cells on its file.
+- **Missing for Tier 1:** The publisher's GGUF (openbmb/MiniCPM-V-4.7-35B-A3B-gguf at cf943fbe) labels its pre-tokenizer qwen35, while openbmb's own tokenizer.json uses the Qwen2-style regex without \p{M}: Runner follows the label and differs from the publisher on combining marks (3 of 721 corpus strings, R4.27.2); its chat template is MiniCPM-V's own (thinking off by default, an empty think block in history), which no Runner renderer matches yet. Then the gate list; the CUDA cells on its file.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
 ### Nemotron 3 Nano (30B-A3B)
@@ -2752,7 +2779,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-22 | [Apertus (apertus)](#arch-apertus) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Granite 4 h-series hybrid (granitehybrid)](#arch-granitehybrid) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Qwen3.8-35B-A3B](#qwen3.8-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
-| 2026-10-22 | [Ornith-1.5-35B-A3B](#ornith-1.5-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [Ornith-1.5-35B-A3B (ornith-ai), `Ornith-1.5-35B-Q8_0.gguf`](#ornith-1.5-35b-a3b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [MiniCPM-V-4.7-35B-A3B](#minicpm-v-4.7-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Granite-4.2-30B, `granite-4.2-30b-Q4_K_M.gguf`](#granite-4.2-30b-q4_k_m) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Granite-4.2-30B, `granite-4.2-30b-Q8_0.gguf`](#granite-4.2-30b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
@@ -2845,5 +2872,6 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-11-04 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf`](#mellum2.1-12b-a2.5b-thinking-q5_k_s) | Tier 2, maintained on report | Owner decision 2026-11-04: admitted at Tier 2 as the recommended sub-10 GB file of the Mellum2.1 row after the 2026-11-04 scoring study found it the smallest file to pass the bar against the float32 reference (policy decision 2026-10-27: Tier 1 follows pull or the owner's call; a third party's file is maintained on report). The float32 measurement is the admitting evidence; the Linux CUDA host's cells are recorded as the smoke runs. | none recorded |
 | 2026-11-04 | [DeepSeek-V2-Lite-Chat (DeepSeek), `DeepSeek-V2-Lite-Chat.Q8_0.gguf`](#deepseek-v2-lite-chat-q8_0) | Tier 2, maintained on report | R4.4.5 step (d), the certification of the deepseek2 admission, admitted 2026-11-04 at Tier 2 (the coordinator's rows): the file pinned by sha256 and repository revision, the tokenizer differential, template conformance, a float32 reference measurement on the publisher's BF16 checkpoint with a llama.cpp column, gpu-identity on the CPU against CUDA, the compatibility checks and the Linux CUDA host's CPU and CUDA cells. The licence (DeepSeek's model licence) was ruled eligible by the coordinator. Maintained on report; Tier 1 is the owner's call. | none recorded |
 | 2026-11-04 | [DeepSeek-V2-Lite-Chat (DeepSeek), `DeepSeek-V2-Lite-Chat.Q6_K.gguf`](#deepseek-v2-lite-chat-q6_k) | Tier 2, maintained on report | R4.4.5 step (d), the certification of the deepseek2 admission, admitted 2026-11-04 at Tier 2 (the coordinator's rows): the file pinned by sha256 and repository revision, the tokenizer differential, template conformance, a float32 reference measurement on the publisher's BF16 checkpoint with a llama.cpp column, gpu-identity on the CPU against CUDA, the compatibility checks and the Linux CUDA host's CPU and CUDA cells. The licence (DeepSeek's model licence) was ruled eligible by the coordinator. Maintained on report; Tier 1 is the owner's call. | none recorded |
+| 2026-11-05 | [Ornith-1.5-35B-A3B (ornith-ai), `Ornith-1.5-35B-Q8_0.gguf`](#ornith-1.5-35b-a3b-q8_0) | Tier 2, maintained on report | Admitted 2026-11-05 at Tier 2 with the admitting CPU cell from the lab CPU lane (R4.27.3). Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->
