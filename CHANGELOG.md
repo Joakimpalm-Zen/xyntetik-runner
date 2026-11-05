@@ -5,6 +5,12 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: `-v` crashed on any file whose first block is Mamba-2; found on Nemotron 3 Nano.** The verbose summary's
+  "weight type" line read block 0's fused qkv (if recurrent) or its `wq`, and a Mamba-2 block has neither (its
+  matrices are `ssm_in` and `ssm_out`). The line now takes the block's first matrix that exists, `ssm_in` included.
+  On a file whose first block is attention or a fused-qkv recurrent block, the report is byte for byte as before.
+  `tests/test_hybrid_admission.py` runs `-v` on the Mamba-first nemotron_h fixture.
+
 - **deepseek2's absorbed prefill on CUDA runs on the tensor cores and passes the naive form's (R3.32).** The absorbed
   form's 576-wide row was past every tiled prefill kernel, so its prompt tiles ran `k_attn`: one block per head and
   column, with every cached row read again for each of the 16 heads. `k_attn_tcw_mla`, the wide tensor-core tile's
