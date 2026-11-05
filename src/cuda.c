@@ -3582,8 +3582,12 @@ static bool cuda_alloc_kv(model_t *m, gpu_t *g) {
     size_t k_bytes = model_k_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
     size_t v_bytes = model_v_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
     CK(cu.MemAlloc(&g->kc, k_bytes));
-    CK(cu.MemAlloc(&g->vc, v_bytes));
     CK(cu.MemsetD8(g->kc, 0, k_bytes));
+    if (model_kv_v_shared(m)) {   // the absorbed MLA form's V is its K row
+        g->vc = g->kc;
+        return true;
+    }
+    CK(cu.MemAlloc(&g->vc, v_bytes));
     CK(cu.MemsetD8(g->vc, 0, v_bytes));
     return true;
 fail:
@@ -5170,7 +5174,7 @@ static void gpu_ctx_free(model_t *m, gpu_t *g) {
         if (g->graph[i] && cu.GraphDestroy) cu.GraphDestroy(g->graph[i]);
     }
     if (g->stream && cu.StreamDestroy) cu.StreamDestroy(g->stream);
-    CUdeviceptr bufs[] = { g->kc, g->vc, g->x, g->xb, g->xb2,
+    CUdeviceptr bufs[] = { g->kc, g->vc == g->kc ? 0 : g->vc, g->x, g->xb, g->xb2,
                            g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
                            g->attn_part, g->logits, g->xsc, g->xh, g->pos_dev, g->q8x_q, g->q8x_d,
                            g->moe_logits, g->moe_eout, g->moe_sel,
@@ -5596,7 +5600,7 @@ static bool kv_gather_init(gpu_t *g, model_t *m) {
         t[l].koff = model_k_byte_off(m, l);
         t[l].voff = model_v_byte_off(m, l);
         t[l].krow = (unsigned)model_k_row_bytes(m, l);
-        t[l].vrow = (unsigned)model_v_row_bytes(m, l);
+        t[l].vrow = (unsigned)model_v_row_bytes_own(m, l);   // 0: V is K's table
         t[l].ring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
         t[l].stage = (unsigned)at;
         at += t[l].krow + t[l].vrow;
@@ -5689,15 +5693,16 @@ static int kv_spans(const model_t *m, int l, int lo, int hi, int s_lo[2], int s_
 
 // one span of layer l's K and V rows between the host cache and the device
 static bool kv_move(gpu_t *g, model_t *m, int l, int lo, int hi, bool up) {
-    size_t krow = model_k_row_bytes(m, l), vrow = model_v_row_bytes(m, l);
+    size_t krow = model_k_row_bytes(m, l), vrow = model_v_row_bytes_own(m, l);
     size_t koff = model_k_byte_off(m, l) + (size_t)lo * krow;
     size_t voff = model_v_byte_off(m, l) + (size_t)lo * vrow;
     size_t kb = (size_t)(hi - lo) * krow, vb = (size_t)(hi - lo) * vrow;
+    // vb is 0 when V is K's table: the K copy already moved its rows
     if (up)
         return cu.MemcpyHtoD(g->kc + koff, (uint8_t *)m->kcache + koff, kb) == 0 &&
-               cu.MemcpyHtoD(g->vc + voff, (uint8_t *)m->vcache + voff, vb) == 0;
+               (vb == 0 || cu.MemcpyHtoD(g->vc + voff, (uint8_t *)m->vcache + voff, vb) == 0);
     return cu.MemcpyDtoH((uint8_t *)m->kcache + koff, g->kc + koff, kb) == 0 &&
-           cu.MemcpyDtoH((uint8_t *)m->vcache + voff, g->vc + voff, vb) == 0;
+           (vb == 0 || cu.MemcpyDtoH((uint8_t *)m->vcache + voff, g->vc + voff, vb) == 0);
 }
 
 // upload host KV rows [lo, hi) for every device layer: rows the device does
@@ -7533,7 +7538,11 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
         int vu = vq8 == 2 ? kv_dim / 16 : vq8 ? kv_dim / 32 : kv_dim;
         int units = ku > vu ? ku : vu;
         int kring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
-        void *ps[] = { &g->kt, &g->vt, &g->kc, &g->vc, &kv_dim, &l_off,
+        // a shared V (the absorbed MLA form) is K's table: its store writes
+        // the rotated K row over itself, the same bytes in the same thread,
+        // where vt's unrotated copy would overwrite k_pe
+        CUdeviceptr *vsrc = model_kv_v_shared(m) ? &g->kt : &g->vt;
+        void *ps[] = { &g->kt, vsrc, &g->kc, &g->vc, &kv_dim, &l_off,
                        &g->pos_dev, &q8, &kring, &v_off, &vq8 };
         ok = ok && launch(g, g->sw->f_store, (units + 63) / 64, tn, 1, 64, ps);
     }

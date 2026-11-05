@@ -1210,7 +1210,7 @@ static uint64_t model_cuda_weight_estimate(const model_t *m,
 // shortfall is left to the backend's existing adaptive split, which trims
 // layers onto the CPU — refusing there would regress every legitimate
 // partial-offload run on a small GPU into a hard failure.
-static bool model_vram_claim(model_t *m, const model_params *p, size_t kv_bytes) {
+static bool model_vram_claim(model_t *m, const model_params *p, size_t kv_claim) {
     char gpu_id[128];
     if (!gpu_device_id(gpu_id, sizeof(gpu_id))) return true;   // no GPU: nothing to account
     size_t vfree = 0, vtotal = 0;
@@ -1224,7 +1224,7 @@ static bool model_vram_claim(model_t *m, const model_params *p, size_t kv_bytes)
     // this server) shares that upload, so it claims no weights of its own.
     uint64_t weights = gpu_shared_weights_resident(m)
                      ? 0 : model_cuda_weight_estimate(m, p);
-    uint64_t need = weights + (uint64_t)kv_bytes * 2 + (512ull << 20);
+    uint64_t need = weights + (uint64_t)kv_claim + (512ull << 20);
     if (p->reserve_vram_pct > 0) {
         uint64_t cap = (uint64_t)vtotal / 100 * (uint64_t)p->reserve_vram_pct;
         if (cap < need) need = cap;   // --reserve-vram already caps the ask
@@ -5266,7 +5266,8 @@ static void runtime_context(model_t *m, const model_params *p) {
         for (int l = 0; l < m->n_layer; l++) {
             if (model_kv_owner(m, l) != l) continue;  // shared-KV: no rows here
             int d = model_kv_dim(m, l);
-            kv_per_tok += model_k_bytes_of(m, (size_t)d) + model_v_bytes_of(m, (size_t)d);
+            kv_per_tok += model_k_bytes_of(m, (size_t)d) +
+                          (model_kv_v_shared(m) ? 0 : model_v_bytes_of(m, (size_t)d));
         }
         long long best = -1;
         if (p->reserve_ram_pct > 0) {
@@ -5466,7 +5467,8 @@ static bool runtime_kv_layout(model_t *m, const model_params *p, int n_ctx) {
 static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
                             int xdim, size_t kv_bytes, size_t k_bytes) {
     m->kcache = calloc(1, k_bytes ? k_bytes : 1);
-    m->vcache = calloc(1, kv_bytes);
+    // the absorbed MLA form's V is its K row (model_kv_v_shared)
+    m->vcache = model_kv_v_shared(m) ? m->kcache : calloc(1, kv_bytes);
     m->kv_owner = KV_OWNER_MALLOC;
     m->x      = malloc(sizeof(float) * (size_t)B * m->n_embd);
     if (m->hyper_conn) {
@@ -5723,7 +5725,7 @@ static bool runtime_threads_rope(model_t *m, gguf_file *g, const char *arch,
 // A GPU backend for this instance, where it serves the model correctly: the
 // VRAM claim, the device upload with --cpu-moe auto's retries, and the note
 // when the KV cache is what pushed layers off the device.
-static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_bytes) {
+static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_claim) {
     // Two kinds of model a GPU backend here would serve wrongly, so they
     // never reach one. A removed sublayer is omitted by the CPU forward
     // and the Metal walk, but the CUDA decode loops still drive every
@@ -5776,7 +5778,7 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_bytes
     // a concurrent runner sees this claim rather than discovering it as a
     // mysteriously shrunken free figure. CPU-only runs never get here, so
     // they are never accounted and never refused.
-    if (!model_vram_claim(m, p, kv_bytes)) return false;
+    if (!model_vram_claim(m, p, kv_claim)) return false;
     size_t vfree_before = 0, vtotal_before = 0;
     gpu_mem_info(&vfree_before, &vtotal_before);
     gpu_init(m);                        // sets m->gpu on success
@@ -5848,6 +5850,8 @@ static void runtime_report(const model_t *m, size_t kv_bytes, size_t k_bytes) {
     fprintf(stderr, "%-24s %.1f MB (%s)\n", "kv cache", (kv_bytes + k_bytes) / 1e6,
             m->kv_fp4 ? "fp4" : m->kv_split ? "q8_0 K, fp4 V"
             : m->kv_q8 ? "q8_0" : "fp16");
+    if (model_kv_v_shared(m))
+        fprintf(stderr, "%-24s one table: V reads the K row (absorbed MLA)\n", "kv layout");
     int n_swa = model_kv_swa_layers(m);
     size_t reach = model_kv_reachable_bytes(m);
     // reach and the allocation both count K and V (per-side row bytes
@@ -5897,7 +5901,8 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     int B      = m->n_batch;
     // the V table always spans the head's region too; the tied-V K table
     // (kv_off_k, n_layer+1 entries) exists only when the head is refused
-    size_t kv_bytes = model_v_boundary_bytes(m, m->n_layer + 1);
+    // kv_bytes is 0 when V is the K table (the absorbed MLA form)
+    size_t kv_bytes = model_kv_v_shared(m) ? 0 : model_v_boundary_bytes(m, m->n_layer + 1);
     size_t k_bytes  = m->kv_off_k ? model_k_boundary_bytes(m, m->n_layer)
                                   : model_k_boundary_bytes(m, m->n_layer + 1);
     if (!runtime_buffers(m, n_ctx, B, q_dim, kv_dim, xdim, kv_bytes, k_bytes))
@@ -5905,7 +5910,10 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
 
     if (!runtime_threads_rope(m, g, arch, p)) return false;
 
-    if (p->gpu_mode == GPU_AUTO && !runtime_gpu_admit(m, p, kv_bytes)) return false;
+    // the claim was one side times two until R3.31; it stays that for every
+    // layout but the shared one, whose single table is the whole cache
+    size_t kv_claim = model_kv_v_shared(m) ? k_bytes : kv_bytes * 2;
+    if (p->gpu_mode == GPU_AUTO && !runtime_gpu_admit(m, p, kv_claim)) return false;
 
     if (p->verbose) runtime_report(m, kv_bytes, k_bytes);
     return true;
@@ -5925,8 +5933,8 @@ static void runtime_free(model_t *m) {
     free(m->rope_inv_freq);
     free(m->rope_inv_freq_local);
     if (m->kv_owner == KV_OWNER_MALLOC) {
+        if (m->vcache != m->kcache) free(m->vcache);
         free(m->kcache);
-        free(m->vcache);
     }
     m->kcache = NULL;
     m->vcache = NULL;
@@ -13736,6 +13744,7 @@ NUM_STAGE void attn_rope_store(model_t *m, const fwd_layer *c) {
             else if (kk == 1) q8_quant_row(ksrc, kc, kv_dim);
             else for (int i = 0; i < kv_dim; i++) ((f16_t *)kc)[i] = f32_to_f16(ksrc[i]);
         }
+        if (model_kv_v_shared(m)) continue;   // V is the row K's store just wrote
         if (vk == 2)      fp4_quant_row(vsrc, vc, kv_dim);
         else if (vk == 1) q8_quant_row(vsrc, vc, kv_dim);
         else for (int i = 0; i < kv_dim; i++) ((f16_t *)vc)[i] = f32_to_f16(vsrc[i]);
