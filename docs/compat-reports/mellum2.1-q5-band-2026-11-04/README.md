@@ -68,3 +68,5 @@ and the down type).
 Not a benchmark claim, not a speed row, not a claim about other text: one 300-position window over one corpus. The
 8.96 GB file is not for an 8 GB machine. The Q8_0 (12.9 GB) remains the publisher's own passing file. The byte pins
 of the Q5_K_S smoke cells, when recorded, are under `tests/compatibility/tier-smoke/`.
+
+Since 2026-11-05 (R4.33) Runner writes this recipe itself: [mellum2.1-rewrite-q5-2026-11-05](../mellum2.1-rewrite-q5-2026-11-05/README.md).

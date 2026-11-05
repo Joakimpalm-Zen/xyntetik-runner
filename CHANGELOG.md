@@ -10,6 +10,11 @@ Current release and unreleased changes. Compatibility follows the
   byte, and the golden files are new. A `q5_k` rule on a row that is not a multiple of 256 writes `q5_1`, its
   32-block cousin: Mellum 2.1's 896-wide expert down projections need exactly that. With `--imatrix` the three are
   written without weights, as `q4_k` and `q6_k` are; importance-weighted writers for them are R4.34.
+  - **Mellum 2.1 under 9 GB, written by Runner:** `--type-plan` with default `q8_0`, routers kept and `_exps.weight`
+    at `q5_k`, from the BF16 parent, writes 8,994,830,528 bytes. Against JetBrains' BF16 parent in float32 it reads a
+    mean KLD of 0.0293 and a margin-qualified top-1 of 98.74% (300 positions; bar 0.05 and 97%, declared as the kill
+    before the read). bartowski's Q5_K_S reads 0.0289 and 98.33% at 31 MB less. Record:
+    `docs/compat-reports/mellum2.1-rewrite-q5-2026-11-05/`.
 
 - **CUDA runs `qwen35moe` (R4.27 A2): Qwen3.6-35B-A3B's Q4_K_M row gains its CUDA cell.** The by-name hold in
   `cuda_admit` is gone. The device path is a composition that already existed: dense qwen35's trunk, the routed MoE
