@@ -8,7 +8,7 @@
   bar. B5's same window read 0.0497.
 - It is one 300-position window over one corpus.
 - The three new types are written without an importance matrix.
-- The file is not published, and no roster row is claimed here.
+- The file was published on 2026-11-05 as [Joakimpalm-Zen/Mellum2.1-12B-A2.5B-Thinking-selective-Q8_0-expQ5_K-GGUF](https://huggingface.co/Joakimpalm-Zen/Mellum2.1-12B-A2.5B-Thinking-selective-Q8_0-expQ5_K-GGUF) (the same bytes, sha256 `8a145881...`, under a descriptive name). No roster row is claimed here; the row is its own item.
 
 What passes is the recipe the Q5-band report found, written by Runner itself (R4.33):
 `runner --rewrite --type-plan` from the BF16 parent writes 8,994,830,528 bytes, reads a mean KLD of **0.0293** and a
@@ -34,8 +34,8 @@ was not needed.
   The 896-wide expert down projections cannot take Q5_K's 256-wide block, so they are written as Q5_1, its 32-block
   cousin (28 tensors, reported by the rewrite).
 - **Output:** `R1.gguf`, 8,994,830,528 bytes, sha256
-  `8a1458812a81e61229018184968ae954f0f943d31ad8c8cc8144326d73b76af6`. It is kept on the Linux CUDA host, not
-  published, so a roster row can cite it later without a new read. The
+  `8a1458812a81e61229018184968ae954f0f943d31ad8c8cc8144326d73b76af6`. It was published on 2026-11-05 (see the
+  top of this record), so a roster row can cite it without a new read. The
   header declares architecture mellum, apache-2.0, 28 blocks, 64 experts and 8 used. It has 339 tensors, the parent's
   339, and each tensor's type is the plan's.
 - **Runner side:** `runner --score --score-top 20 --score-tokens 4510 -c 4510 --gpu 99` on a CUDA MIG slice
