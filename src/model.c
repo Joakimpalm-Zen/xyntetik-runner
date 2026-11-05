@@ -14273,6 +14273,7 @@ static void gpu_runtime_failure(model_t *m) {
             "backend, continuing on CPU\n");
     snprintf(m->route_fallback, sizeof m->route_fallback,
              "forward failed at runtime");
+    m->gpu_lost = true;
     gpu_disable(m);
 }
 

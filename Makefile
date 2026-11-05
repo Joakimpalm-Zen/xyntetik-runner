@@ -3798,7 +3798,11 @@ CUDA_GATED_TESTS = tests/test_apertus.py tests/test_gpu_declines.py tests/test_a
                    tests/test_train_teacher.py tests/test_bench_json.py tests/test_clef.py \
                    tests/test_remove_sublayer.py tests/test_lora_qwen35.py \
                    tests/test_transcript.py tests/test_spec_gpu.py \
-                   tests/test_server_sessions.py tests/test_draft_k_defaults.py
+                   tests/test_server_sessions.py tests/test_draft_k_defaults.py \
+                   tests/test_attn_dec_repeat.py
+# test_attn_dec_repeat.py holds k_attn_dec_mla's rescale: only its long case
+# (over 1,000 positions, several tiles a slice) sees it, which the 512-token
+# gpu-identity cannot (R3.31).
 # test_spec_gpu.py and test_draft_k_defaults.py read test.gguf from the tree
 # root (the others build their fixtures in a temporary directory), so the
 # target builds it: on a fresh

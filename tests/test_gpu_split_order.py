@@ -106,5 +106,17 @@ def test_gpu_layers_past_the_fitted_split_says_so(fixtures):
     assert "past the" not in fitted, fitted
     _, forced = _run(block, "--gpu", "auto", "--reserve-vram", "1", "--gpu-layers", "99")
     assert "--gpu-layers 99 places" in forced and f"past the {g} the offload budget holds" in forced, forced
+    # The split line charges the forced layers: it kept the fitted plan's
+    # bytes, and so did the prompt window, which spent memory the forced
+    # layers held (R3.31: DeepSeek-V2-Lite naive at 32K, 27 of 26 forced, ran
+    # out of memory at its first launch and finished on the CPU).
+    def _gb(text, key):
+        line = next((l for l in text.splitlines() if l.startswith("gpu-split: budget=")), "")
+        assert line, text
+        return float(line.split(f"{key}=")[1].split("GB")[0])
+    if split:
+        assert _gb(forced, "used") > _gb(fitted, "used"), (fitted, forced)
+    assert _gb(forced, "used") > _gb(forced, "fixed"), forced
+    assert _gb(forced, "used") > _gb(forced, "budget"), forced
     _, unforced = _run(block, "--gpu", "auto")
     assert "past the" not in unforced, unforced

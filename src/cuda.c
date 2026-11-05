@@ -2126,7 +2126,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
                                            m->moe_auto_placed);
         if (m->moe_auto_trim == 0) m->moe_auto_placed = placed;
     }
-    free(cost); free(bank); free(is_moe);
+    free(bank); free(is_moe);
     // a full split also needs token_embd + output weights resident.
     // Invariant, belt and braces: "the device owns every layer" and "the
     // device owns the output projection" must agree, because the forward
@@ -2155,6 +2155,14 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         G = m->gpu_layers_override;
         if (G > m->n_layer) G = m->n_layer;
         full = (G == m->n_layer);
+        // Past the fitted split, charge the forced layers: the split line
+        // and P->used (which sizes the prompt window) otherwise kept the
+        // fitted plan's bytes. DeepSeek-V2-Lite naive at 32K, all 27 of 26
+        // forced: the line said 24.24 of 25.13 GB, the window took 0.72 GB
+        // of "spare" the 27th layer held, the first launch ran out of memory
+        // and the run finished on the CPU (R3.31). Below the fitted split
+        // the fitted figure stands, as an upper bound.
+        for (int l = natural_G; l < G; l++) used += cost[l];
         if (G > natural_G)
             fprintf(stderr, "gpu: --gpu-layers %d places %d layers past the %d the "
                             "offload budget holds (%.2f GB); the excess may fail to "
@@ -2163,6 +2171,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
                     m->gpu_layers_override, G - natural_G, natural_G,
                     (double)vram_budget / 1e9);
     }
+    free(cost);
     // Composition warning (no silent worst-of-both). Under tensor-role
     // placement the expert banks are what fill VRAM, so capping the
     // attention split below what already fits moves attention to the CPU

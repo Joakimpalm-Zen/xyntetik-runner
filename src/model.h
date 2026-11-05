@@ -422,6 +422,9 @@ typedef struct {
     // asked for ("" while it is not), and the last route line printed
     char     route_fallback[160];
     uint64_t route_last;
+    // the device failed mid-run and the CPU finished it (gpu_runtime_failure):
+    // the run's closing speeds are then the CPU's, and say so
+    bool     gpu_lost;
     // the forward paths this instance ran (plan P1): solo, batch, keep, mtp,
     // micro; how many forwards and the widest row count of each
     uint32_t route_runs[MODEL_ROUTE_PATHS];

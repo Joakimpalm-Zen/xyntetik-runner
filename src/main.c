@@ -6492,6 +6492,17 @@ static int run_bench(cli_opts *o, cli_run *rt) {
     return 0;
 }
 
+// After the closing speeds: a device that failed mid-run left the rest to the
+// CPU, and the speeds are then the CPU's. The one line gpu_runtime_failure
+// prints comes before the first tile, and a harness that keeps only the end
+// of stderr never sees it (R3.31: a forced 32K split finished on the CPU in
+// 84 minutes with nothing at the end to say so).
+static void gpu_lost_note(const model_t *m) {
+    if (m->gpu_lost)
+        fprintf(stderr, "gpu: this run finished on the CPU (%s); the speeds "
+                "above are the CPU's\n", m->route_fallback);
+}
+
 static int run_resume(cli_opts *o, cli_run *rt, session_image *simg, const char *load_path) {
     // R1.3: continue a suspended generation from its image, exactly
     const session_meta *sm = &simg->meta;
@@ -6550,6 +6561,7 @@ static int run_resume(cli_opts *o, cli_run *rt, session_image *simg, const char 
     if (rt->e.hit_stop && !o->json_mode) fprintf(stderr, "[end of text]\n");
     fprintf(stderr, "\nresumed gen: %d tok, %.2f tok/s\n", n_new,
             n_new / (gt > 0 ? gt : 1e-9));
+    gpu_lost_note(&rt->m);
     free(lg);
     session_image_free(simg);
     return rc;
@@ -6633,6 +6645,7 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
     fprintf(stderr, "\nprompt: %d tok, %.2f tok/s | gen: %d tok, %.2f tok/s\n",
             n_prompt, n_prompt / (ptime > 0 ? ptime : 1e-9),
             n_gen, n_gen / (gtime > 0 ? gtime : 1e-9));
+    gpu_lost_note(&rt->m);
     model_debug_time_report();
     int t_rc = 0;
     if (o->transcript_path) {
