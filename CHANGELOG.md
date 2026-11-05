@@ -11,6 +11,28 @@ Current release and unreleased changes. Compatibility follows the
   On a file whose first block is attention or a fused-qkv recurrent block, the report is byte for byte as before.
   `tests/test_hybrid_admission.py` runs `-v` on the Mamba-first nemotron_h fixture.
 
+- **Ornith-1.5-35B-A3B joins the roster at Tier 2 on ornith-ai's own Q8_0, text path only (R4.27.3).** It passes the
+  fidelity bar by a hair against ornith-ai's BF16 parent computed in float32: 0.0484 mean KLD and 97.50%
+  margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU).
+  - **What is not flattering:**
+    - Its median KLD, 0.0154, is 3.7x Qwen3.6-35B-A3B's Q8_0 on the same base.
+    - ornith-ai's own BF16 GGUF already sits 0.026 from the parent, where a clean conversion sits near zero, and the
+      file names no source revision. So about half the distance is in the publisher's conversion or the weights it
+      came from.
+    - The publisher's Q6_K (0.103) and Q4_K_M (0.171) miss. llama.cpp reads the same error spikes in them, and
+      Runner is the closer engine. The 64 tensors the two K-quant files share at Q6_K are named in the row.
+  - **Checks:**
+    - Tokenizer 0 of 721 corpus strings and 0 of 247,091 vocabulary entries.
+    - Template conformance 24 of 24 in text and tokens against the file's own template, under the `ornith` renderer
+      (a new `ornith15-35b-a3b` conformance family). A system or developer turn after history has started is
+      refused, where the file's template drops it silently.
+    - CPU and CUDA tier-smoke replies are byte-identical. CUDA runs the 37.8 GB file split, 26 of 40 blocks on a
+      24 GB MIG slice. gpu-identity with routing pinned: 4.8e-6 of the range.
+    - Record: `docs/compat-reports/ornith-1.5-35b-a3b-2026-11-05/`.
+  - **The Upcoming rows:** MiniCPM-V-4.7-35B-A3B's now names why it is not admitted. The publisher's GGUF labels its
+    pre-tokenizer `qwen35` while openbmb's tokenizer.json uses the Qwen2-style regex, so Runner differs from the
+    publisher on combining marks (3 of 721 corpus strings), and its chat template is its own.
+
 - **deepseek2's absorbed prefill on CUDA runs on the tensor cores and passes the naive form's (R3.32).** The absorbed
   form's 576-wide row was past every tiled prefill kernel, so its prompt tiles ran `k_attn`: one block per head and
   column, with every cached row read again for each of the 16 heads. `k_attn_tcw_mla`, the wide tensor-core tile's
