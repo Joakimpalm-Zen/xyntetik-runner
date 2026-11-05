@@ -1891,6 +1891,37 @@
       }
     },
     {
+      "id": "nemotron-3-nano-30b-a3b-q4_k_m",
+      "architecture": "nemotron_h_moe",
+      "family": "Nemotron 3.5 Lightning",
+      "file": "models/NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+      "sha256": "0f111a0d49777a2a0178758b1aee14e5365c495987499401ef3ebe87754322a8",
+      "upstream": "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF",
+      "tokenizer_reference": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+      "tokenizer_reference_revision": "bf77c3174f68ad409e1c2aa60daeb46e32d1c606",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/nemotron-3-nano-30b-a3b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "ggml-org's automatic conversion of nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 (revision fe801509 of ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF; NVIDIA publishes no GGUF), architecture nemotron_h_moe: 52 blocks (23 Mamba-2, 23 MoE, 6 attention), 128 experts top 6 plus a shared expert, a sigmoid router with a selection bias. Its tokenizer is NVIDIA's at bf77c317: 0 of 721 corpus strings and 0 of 128,635 vocabulary entries differ; its template is the repository's chat_template.jinja byte for byte and renders 24 of 24 conformance cases identical under nemotron35 (R4.27.4.1). CPU only: CUDA refuses the router.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[INST]",
+            "<<SYS>>",
+            "<|im_start|>"
+          ]
+        }
+      }
+    },
+    {
       "id": "lfm2.5-1.2b-instruct-q8_0",
       "architecture": "lfm2",
       "family": "LFM2.5",
