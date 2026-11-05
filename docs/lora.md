@@ -634,7 +634,8 @@ server.
 A merge computes `W' = W + (alpha/r) · B · A` for every adapted projection and
 writes a standalone GGUF that runs in any GGUF runtime, with no adapter
 needed. Each merged tensor is written at its own type, or at `--quant T`
-(`q8_0`, `q4_0`, `q3_k`, `q4_k`, `q6_k`, `f16`, `bf16`, or `keep`); untouched
+(`q8_0`, `q4_0`, `q5_1`, `q3_k`, `q4_k`, `q5_k`, `q6_k`, `iq4_nl`, `mxfp4`, `f16`,
+`bf16`, or `keep`); untouched
 tensors are copied byte for byte; the merge is deterministic, and
 `merged.gguf.merge.json` records the base, adapter and merged hashes.
 

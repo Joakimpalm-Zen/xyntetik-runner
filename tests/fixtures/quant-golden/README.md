@@ -17,6 +17,13 @@
   importance matrix) writes for the same slice. Its text was taken from llama.cpp c1d0e7a `ggml/src/ggml-quants.c`
   unchanged, with `GGML_FP32_TO_FP16` as the hardware half conversion, and compiled with `-O3 -fno-fast-math
   -ffp-contract=off` (MIT, see NOTICE). Q5_0 is the 32-block fallback of a Q4_K target.
+- `ggml-c1d0e7a-{q5_1,q5_k,iq4_nl}.bin` (R4.33): what ggml's `quantize_q5_1`, `quantize_q5_K` and `quantize_iq4_nl`
+  write for the same slice with no importance matrix. Those reach `quantize_row_q5_1_ref`, `quantize_row_q5_K_ref`
+  and `quantize_row_iq4_nl_impl(32, 32, ..., 7)`. They come from llama.cpp c1d0e7a's `ggml/src/ggml-quants.c`
+  compiled whole with `-O3 -fno-fast-math -ffp-contract=off -mf16c` (gcc 13.3), beside a harness that widens the
+  slice to float32 and stubs the four ggml.c symbols the file links against (MIT, see NOTICE). Built with
+  multiply-adds fused (`-ffp-contract=fast -mfma`), ggml writes these three files byte for byte the same on these
+  rows. So the slice does not guard contraction for these types; the q4_k and q6_k files still do.
 
 ggml's own K-quant bytes depend on floating-point contraction: built with multiply-adds fused, it writes the q4_k
 and q6_k files here differently. The reference is the uncontracted arithmetic, which every compiler gives under
@@ -33,4 +40,7 @@ ba1afdbc11f640903f15a615eea65cbd510405c180bad9acfeec54a921d3dbc6  ggml-b10353-q4
 59ed9fda6db400af97011f538c6a71065f297e35b9cdd6e8e6cf91a5b08b74b9  ggml-b10353-q6_k.bin
 88fdf0a94b38bdfb5f2477dab52b11d7c65ba152a798afdcfde647f7a4f82095  ggml-b10353-mxfp4.bin
 8a95b5d1cdf2748bafbbffab8ee5e12d649fb35aace4474a93a65fd584447b45  ggml-c1d0e7a-q5_0.bin
+3db45d3fc28d59456fcef1fae2cc304dd29e72838872697e8b462d7657ffcfa4  ggml-c1d0e7a-q5_1.bin
+a13633339e21eb3b7713dab1e53d05ed2f9f9515fa6b384410d5ec8c3762216a  ggml-c1d0e7a-q5_k.bin
+e5ed0cd27ed13825715886f697e4f93aa694a8c6d5e3a5575525be908f2be129  ggml-c1d0e7a-iq4_nl.bin
 ```

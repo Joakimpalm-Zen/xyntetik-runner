@@ -326,3 +326,64 @@ def test_a_type_name_it_cannot_write_lists_the_ones_it_can(runner_bin, tmp_path)
                             str(tmp_path / f"{name}.gguf"), "--quant", name],
                            cwd=ROOT, capture_output=True, text=True, timeout=120)
         assert q.returncode == 0, (name, q.stderr)
+
+
+def test_q5_k_q5_1_and_iq4_nl_are_written_as_asked_and_score(runner_bin, tmp_path):
+    """R4.33: q5_k, q5_1 and iq4_nl are writable from --quant and --type-plan.
+    Each writes its own type (ggml ids 13, 7 and 20) on a 256-divisible
+    fixture, and the file scores close to its source. A q5_k rule on rows
+    that are not a multiple of 256 writes Q5_1, its 32-block cousin, as
+    Mellum 2.1's 896-wide expert down projections need. The writers' bytes
+    are ggml's (tests/test_quantize.c, the quant-golden twins)."""
+    wide = tmp_path / "wide.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--wide",
+                    str(wide)], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    narrow = tmp_path / "narrow.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(narrow)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+
+    def nll(path):
+        p = subprocess.run([runner_bin, "-m", str(path), "--gpu", "off", "--score",
+                            "-p", "the runner trains the model on the text it reads"],
+                           cwd=ROOT, capture_output=True, timeout=180)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        assert b"nan" not in p.stdout, (path, p.stdout)
+        return json.loads(p.stdout)["nll_mean"]
+
+    src = nll(wide)
+    src_t = read_tensors(wide)
+    quantized = [n for n, (_ty, ne, _raw) in src_t.items() if len(ne) == 2 and "embd" not in n]
+    assert quantized
+    for name, gid in (("q5_k", 13), ("q5_1", 7), ("iq4_nl", 20)):
+        out = tmp_path / f"{name}.gguf"
+        proc = subprocess.run([runner_bin, "-m", str(wide), "--quantize", str(out),
+                               "--quant", name], cwd=ROOT, capture_output=True, timeout=180)
+        assert proc.returncode == 0, (name, proc.stderr.decode(errors="replace"))
+        dst = read_tensors(out)
+        assert any(dst[n][0] == gid for n in quantized), (name, {n: dst[n][0] for n in quantized})
+        q = nll(out)
+        assert abs(q - src) < 0.1 * max(1.0, abs(src)), (name, src, q)
+
+    plan = {"default": "keep", "rules": [{"match": "ffn_down", "type": "q5_1"},
+                                         {"match": "attn", "type": "iq4_nl"},
+                                         {"match": "ffn", "type": "q5_k"}]}
+    mixed = tmp_path / "mixed.gguf"
+    proc = run_plan(runner_bin, wide, mixed, plan, tmp_path)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    dst = read_tensors(mixed)
+    seen = {dst[n][0] for n in quantized}
+    for n in quantized:
+        want = 7 if "ffn_down" in n else 20 if "attn" in n else 13 if "ffn" in n else src_t[n][0]
+        assert dst[n][0] == want, (n, dst[n][0], want)
+    assert {7, 13, 20} <= seen, seen
+    nll(mixed)
+
+    fb = tmp_path / "narrow-q5k.gguf"
+    proc = subprocess.run([runner_bin, "-m", str(narrow), "--quantize", str(fb),
+                           "--quant", "q5_k"], cwd=ROOT, capture_output=True, timeout=180)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    assert b"Q5_1:" in proc.stderr, proc.stderr.decode(errors="replace")
+    narrow_t = read_tensors(narrow)
+    assert any(t == 7 for n, (t, ne, _r) in read_tensors(fb).items()
+               if len(ne) == 2 and narrow_t[n][0] != t), "no tensor took the Q5_1 fallback"
+    nll(fb)
