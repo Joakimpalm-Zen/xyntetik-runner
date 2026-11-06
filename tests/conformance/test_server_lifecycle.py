@@ -620,7 +620,10 @@ def test_drain_hard_bound_holds_when_nobody_reads_the_log(shape):
         # let /unload finish cleanly; delivery elsewhere needs the watchdog.
         expected = (0, 128 + signal.SIGTERM) if shape == "accept-path-unload" else (128 + signal.SIGTERM,)
         assert rc in expected, (shape, rc)
-        assert took < (10 if default_budget else 3), (shape, took)
+        # 9.9, not 10: the contract is ten seconds on any machine, so the exit has
+        # to aim well inside it. It lands near 9.5 s; a shared macOS runner stalled
+        # 9.95 s past 10.0 (a 10 ms sleep there overshoots by up to 90 ms).
+        assert took < (9.9 if default_budget else 3), (shape, took)
         if shape == "log-still-read":
             note = _drain_pipe(r)
             assert b"exiting without waiting" in note

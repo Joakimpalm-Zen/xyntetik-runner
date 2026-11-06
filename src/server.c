@@ -3259,10 +3259,15 @@ static void *drain_watchdog(void *arg) {
         // deadline is absolute: a late wake costs the budget nothing.
         plat_sleep_ms(hard < 1 ? 10 : 100);
     }
-    // Reserve the final 200 ms for the diagnostic and process termination,
-    // rather than adding that wait AFTER the advertised ten-second bound.
-    // Short test budgets reserve at most half, leaving time for the drain.
-    double reserve = hard < 0.4 ? hard / 2 : 0.2;
+    // The diagnostic and the exit fit inside the advertised ten-second bound, with
+    // room for timers that run late. On a shared macOS runner a 10 ms sleep overshot
+    // by 26 ms at the median and 90 ms at worst, and the note started 154 ms late,
+    // so a 50 ms margin ended 2 stops of 8 past ten seconds. The real bound gives
+    // the note a second and leaves half of it unspent: the exit is due at 9.5 s.
+    // Short test budgets reserve less, leaving time for the drain.
+    bool full = hard >= 2;
+    double reserve = full ? 1.0 : hard < 0.4 ? hard / 2 : 0.2;
+    double margin = full ? 0.5 : reserve / 4;
     double until = t / 1e6 + hard, note_at = until - reserve;
     for (;;) {
         if (atomic_load(&drain_owner) != me) return NULL;   // that run shut down in time
@@ -3279,9 +3284,8 @@ static void *drain_watchdog(void *arg) {
     pthread_t th;
     if (pthread_create(&th, NULL, drain_note, NULL) == 0) {
         pthread_detach(th);
-        // Leave a quarter of the reserve for waking and exiting. A blocked
-        // note never earns an extension of the stop deadline.
-        double note_until = until - reserve / 4;
+        // A blocked note never earns an extension of the stop deadline.
+        double note_until = until - margin;
         while (!atomic_load(&drain_note_sent) && plat_now() + 0.01 < note_until)
             plat_sleep_ms(10);
     }
