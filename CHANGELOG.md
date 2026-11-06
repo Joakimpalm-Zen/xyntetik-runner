@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: instance cleanup no longer delays server startup (R10.23).**
+  Registration and discovery lists request a separate cleanup process instead
+  of deleting stale records on the caller's path. One helper sweeps a folder
+  at a time; it can finish after the server exits. Dead records are filtered
+  immediately and eventually removed as storage progresses, including on
+  hosts without a tray. Cleanup launch failures never fail a server start.
+
 - **Windows: a second server on a port in use is refused, not silently sharing it (R10.22).** `SO_REUSEADDR` let both
   bind on Windows. The second printed `server listening` and got no request, and when the first stopped, its clients'
   connections were reset. It now exits with `cannot bind 127.0.0.1:PORT: is another server on this port?`, as Linux
