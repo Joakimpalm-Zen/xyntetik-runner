@@ -1,0 +1,23 @@
+# NVFP4 prefill, runner 1.14.0 (release/1.14.0 pin 522d85ec), a CUDA MIG slice, 1g.24gb, sm_120, driver 610.43.02
+# The slice is one MIG instance of a shared GPU, and the host's CPUs carry other work (load averages below).
+# qwen3.5-4b-nvfp4.gguf, FreedomAISVR/Qwen3.5-4B-NVFP4-GGUF at fb9f8b9ec432e38872ec9d9707183642cf885ad6,
+#   sha256 317ef79785a9380ac72d23ab33af9376afd926b4c0781fae246f033daf91a05f; a 1,971-token prompt, -n 32 --temp 0 -c 4096
+# The prompt: the shortest head of tests/fixtures/gold-corpus-2k.txt
+#   (sha256 56e9fcba658f72ae029598926ccb84beadf71757c603cf59aaf587a70b78d066), counted in Unicode characters,
+#   that this commit's difftok (add_bos=false, parse_special=true) encodes to exactly 1,971 tokens on this file:
+#   7,555 characters, 7,598 bytes (7,554 characters give 1,970), sha256
+#   a25ab76dfd7ba46f22a8e2c94a7ee0ad91dcf997336bc77786ae23a825136f3d. The runner counts the same 1,971.
+# It is a different text from 1.13.0's, so these tok/s figures are not comparable with 1.13.0's. The read is the
+#   default against RUNNER_CUDA_TC_NVFP4=0 on the same prompt.
+start 2026-11-06 02:11:07 UTC, load 12.82 11.96 11.41
+NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition, 610.43.02
+== RUNNER_CUDA_TC_NVFP4=default
+gpu-split: budget=25.13GB fixed=1.11GB G=32/32 full=1 used=3.65GB
+prompt: 1971 tok, 826.16 tok/s | gen: 32 tok, 63.76 tok/s
+end 02:11:21 UTC, load 12.86 12.00 11.43
+== RUNNER_CUDA_TC_NVFP4=0
+gpu-split: budget=25.13GB fixed=1.11GB G=32/32 full=1 used=3.65GB
+prompt: 1971 tok, 19.38 tok/s | gen: 32 tok, 63.75 tok/s
+end 02:13:07 UTC, load 10.82 11.33 11.24
+# The default prefill is 42.6 times the RUNNER_CUDA_TC_NVFP4=0 prefill. The 32 generated tokens are the same in
+#   both runs (output sha256 b9b8c69d2349fac84ee54e0d09967532b2e0a2c07d459b88afdd20a9c9461c79).
