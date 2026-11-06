@@ -5,6 +5,27 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: two qwen35-labelled finetunes trained with the qwen2 split now tokenize as their publishers do
+  (R4.27.5).** openbmb's MiniCPM-V-4.7-35B-A3B and empero-ai's Qwen3.8-35B-A3B-Distill ship GGUFs labelled qwen35,
+  while the tokenizer.json each publisher saved under transformers 5.x uses the qwen2 regex (`\p{L}+`, combining
+  marks split from their letters). llama.cpp's converter registers both splits' hashes as "qwen35", so no published
+  label can carry the difference. Runner now keys a rule on the header fields the publishers' converters wrote, and
+  a firing rule prints a note naming the rule and the fields it matched.
+  - **Checks:**
+    - Against each publisher's tokenizer.json: 0 of 721 corpus strings and 0 of 247,091 vocabulary entries
+      (before: 3 and 5,503).
+    - Every other roster file (74 rows): token ids byte-identical to the previous build on the corpus and the
+      tier-smoke prompts.
+    - The qwen35 family's 17 linux-x86_64-cuda pins all match, the base's two among them: the 9 CPU pins on the
+      change before the 1.14.0 merge, the 8 CUDA pins after it. Ornith's CUDA pin matched on a rerun; its first
+      run ended in a harness-reported error after a complete reply, under heavy outside load.
+  - **Limits:**
+    - The rule is a list of four sources (Clef and XiaomiMiMo's Qwen3.5 distill, already read as qwen2 and now in
+      the same list, plus the two new ones). A requant that rewrites the matched fields falls outside it.
+    - Clef and MiMo files now print the note too; their ids are unchanged.
+    - cloudflare-clef-iq3_s-recovered's file declares architecture qwen35 and still reads with the qwen35 split.
+  - Record: `docs/compat-reports/r4.27.5-qwen2-trained-rule-2026-11-06/`.
+
 - **The project's own Mellum 2.1 rewrite joins the roster at Tier 2 on the published file, text path only
   (R4.33.4).** `mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k` is Runner's `--rewrite --type-plan` of JetBrains'
   BF16 parent: Q8_0, with the experts at Q5_K and the 896-wide expert down projections at Q5_1. It is pinned by the
