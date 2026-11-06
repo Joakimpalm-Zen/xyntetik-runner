@@ -3200,7 +3200,7 @@ static bool stop_was_requested(void) { return win_stop_requested != 0; }
 // with fprintf, so a full stderr pipe defeated it; the first fix then let it
 // watch until the process ended, and a cleanly stopped server's watchdog
 // exited the process at its old deadline, during the next server's life.
-static double drain_grace_s = 2.0, drain_hard_s = 10.0;
+static double drain_grace_s = 2.0, drain_hard_s = 10.0, drain_late_s = 0;
 static _Atomic(const char *) drain_stage;   // static strings, safe for the watchdog to read
 #define DRAIN_FIRING UINT_MAX     // drain_owner once a watchdog has claimed the exit
 static atomic_uint drain_owner, drain_runs;
@@ -3212,11 +3212,15 @@ double server_drain_deadline(void) {
 
 // The test hooks shorten both bounds (RUNNER_TEST_DRAIN_GRACE_MS,
 // RUNNER_TEST_DRAIN_HARD_MS), the way RUNNER_TEST_STEP_DELAY_MS slows a step.
+// RUNNER_TEST_DRAIN_LATE_MS wakes the watchdog that much late, as a shared
+// runner's timers do: nothing else makes that happen on demand.
 static void drain_bounds_init(void) {
     const char *g = getenv("RUNNER_TEST_DRAIN_GRACE_MS");
     const char *h = getenv("RUNNER_TEST_DRAIN_HARD_MS");
     drain_grace_s = g && *g ? atof(g) / 1000.0 : 2.0;
     drain_hard_s = h && *h ? atof(h) / 1000.0 : 10.0;
+    const char *l = getenv("RUNNER_TEST_DRAIN_LATE_MS");
+    drain_late_s = l && *l ? atof(l) / 1000.0 : 0;
     atomic_store(&stop_at_us, 0);
     atomic_store(&drain_stage, "admission");
 }
@@ -3259,15 +3263,15 @@ static void *drain_watchdog(void *arg) {
         // deadline is absolute: a late wake costs the budget nothing.
         plat_sleep_ms(hard < 1 ? 10 : 100);
     }
-    // The diagnostic and the exit fit inside the advertised ten-second bound, with
-    // room for timers that run late. On a shared macOS runner a 10 ms sleep overshot
+    // The diagnostic and the exit fit inside the bound, with room for timers that
+    // run late, whatever the budget. On a shared macOS runner a 10 ms sleep overshot
     // by 26 ms at the median and 90 ms at worst, and the note started 154 ms late,
-    // so a 50 ms margin ended 2 stops of 8 past ten seconds. The real bound gives
-    // the note a second and leaves half of it unspent: the exit is due at 9.5 s.
-    // Short test budgets reserve less, leaving time for the drain.
-    bool full = hard >= 2;
-    double reserve = full ? 1.0 : hard < 0.4 ? hard / 2 : 0.2;
-    double margin = full ? 0.5 : reserve / 4;
+    // so a 50 ms margin ended 2 stops of 8 past ten seconds and lost the note on a
+    // short budget. The note gets the reserve and the exit is due halfway through
+    // it: 9 s and 9.5 s at the real bound. A budget too short for 0.4 s reserves
+    // half of itself, leaving the rest for the drain.
+    double reserve = hard >= 2 ? 1.0 : hard / 2 < 0.4 ? hard / 2 : 0.4;
+    double margin = reserve / 2;
     double until = t / 1e6 + hard, note_at = until - reserve;
     for (;;) {
         if (atomic_load(&drain_owner) != me) return NULL;   // that run shut down in time
@@ -3275,6 +3279,7 @@ static void *drain_watchdog(void *arg) {
         if (left <= 0) break;
         plat_sleep_ms(left > 0.1 ? 100 : (int)(left * 1000) + 1);
     }
+    if (drain_late_s > 0) plat_sleep_ms((int)(drain_late_s * 1000));
     // claim the exit, unless the run released its bound at this very moment
     unsigned owner = me;
     if (!atomic_compare_exchange_strong(&drain_owner, &owner, DRAIN_FIRING)) return NULL;
@@ -3284,10 +3289,14 @@ static void *drain_watchdog(void *arg) {
     pthread_t th;
     if (pthread_create(&th, NULL, drain_note, NULL) == 0) {
         pthread_detach(th);
-        // A blocked note never earns an extension of the stop deadline.
-        double note_until = until - margin;
-        while (!atomic_load(&drain_note_sent) && plat_now() + 0.01 < note_until)
+        // A note that started late still gets a turn, or the exit would beat the
+        // thread to the write; the bound caps that. A blocked note earns no more.
+        double now = plat_now(), stop = until - margin;
+        if (stop < now + 0.05) stop = now + 0.05 < until ? now + 0.05 : until;
+        while (!atomic_load(&drain_note_sent)) {
             plat_sleep_ms(10);
+            if (plat_now() + 0.01 >= stop) break;
+        }
     }
     _exit(128 + atomic_load(&stop_sig));
 }

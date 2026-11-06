@@ -553,8 +553,8 @@ def _fill_pipe(w):
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signal contract")
 @pytest.mark.parametrize("shape", ["step-that-does-not-end", "swap-set-unload",
-                                  "log-still-read", "default-stop-budget",
-                                  "accept-path-unload"])
+                                  "log-still-read", "log-read-late-timer",
+                                  "default-stop-budget", "accept-path-unload"])
 def test_drain_hard_bound_holds_when_nobody_reads_the_log(shape):
     """The hard bound is the last word on a stop, so nothing it waits on may
     be able to wait forever. The 2026-10-16 review: with the server's output
@@ -567,7 +567,11 @@ def test_drain_hard_bound_holds_when_nobody_reads_the_log(shape):
     # The public ten-second stop contract is the absolute anchor. Shortened
     # bounds alone missed the diagnostic's extra 200 ms after that deadline.
     default_budget = shape == "default-stop-budget"
+    log_read = shape in ("log-still-read", "log-read-late-timer")
     env = {"RUNNER_TEST_DRAIN_GRACE_MS": "200", "RUNNER_TEST_DRAIN_HARD_MS": "500"}
+    if shape == "log-read-late-timer":
+        # the lateness measured on a shared macOS runner, which cost the note
+        env["RUNNER_TEST_DRAIN_LATE_MS"] = "155"
     if default_budget:
         env.pop("RUNNER_TEST_DRAIN_HARD_MS")
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -597,7 +601,7 @@ def test_drain_hard_bound_holds_when_nobody_reads_the_log(shape):
                          b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
             time.sleep(0.6)                  # the step is under way
         _drain_pipe(r)
-        if shape != "log-still-read":
+        if not log_read:
             _fill_pipe(w)
         if shape == "accept-path-unload":
             # /unload is handled on the accept thread. Its unload log blocks
@@ -624,7 +628,7 @@ def test_drain_hard_bound_holds_when_nobody_reads_the_log(shape):
         # to aim well inside it. It lands near 9.5 s; a shared macOS runner stalled
         # 9.95 s past 10.0 (a 10 ms sleep there overshoots by up to 90 ms).
         assert took < (9.9 if default_budget else 3), (shape, took)
-        if shape == "log-still-read":
+        if log_read:
             note = _drain_pipe(r)
             assert b"exiting without waiting" in note
             assert b"slot drain/join" in note
