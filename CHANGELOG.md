@@ -20,7 +20,8 @@ Current release and unreleased changes. Compatibility follows the
     queued and then its surface's terminator naming `client_too_slow`, and the server logs it. Plain streams have no
     such limit.
   - A reading client's speculative generation still holds the turn for its length. That is unchanged.
-  - Measured on Windows on an RTX 3070. Linux is not measured.
+  - Measured on Windows on an RTX 3070 and on macOS on an Apple M1. Linux is covered by a test on a full socket, not
+    by an end-to-end read.
 
   A session's answer is now built under the turn and written after it, as embeddings already were. Windows did not
   stall on that write, because Winsock takes one large send whole, but it broke the rule. `make runner-turn-guard`

@@ -5,8 +5,9 @@ froze every other slot for 30 s with the GPU idle, and one that trickled held th
 as a client that reads: 21.1 to 21.2 s for a 6000-token generation, with the GPU at 97%.
 
 **Limits, first:**
-- **Linux is not measured.** All of this ran on Windows on an RTX 3070. `sock_send_nb` has a separate POSIX path, and
-  Linux's `send` blocks differently: the session write that did not stall here may well have stalled there.
+- **Measured on Windows (RTX 3070) and macOS (Apple M1, Metal), not end to end on Linux.** The Linux read at 6,000
+  tokens did not fill the socket. `tests/test_stream_out.c` now fills a real TCP socket with a write timeout set, and
+  runs on Linux in `make test` and on macOS in CI, so the POSIX writer is held on both. See `macos-read.md`.
 - **New behaviour: a client 4 MiB behind a speculative stream is cut off.** Today's alternative was stopping every
   other slot. The 4 MiB cut is tested end to end with a smaller cap on a CPU server; 6000 tokens is under 1 MiB, so the
   full cap was not reached on the card.

@@ -230,6 +230,36 @@ static void test_the_socket_stays_a_blocking_socket(void) {
     sock_close(r);
 }
 
+// A real server socket has a write timeout, and macOS answers send(MSG_DONTWAIT)
+// on a full socket only after waiting that timeout out: 30 s a write, under the
+// device turn, which is how a stalled client held the turn past 300 s on Metal
+// (R3.36). So this fills a real TCP socket with the timeout set, and times every
+// call. The anchor is the timeout itself: no call may come near it.
+static void test_a_full_socket_does_not_wait_out_the_write_timeout(void) {
+    sock_t w, r;
+    pair(&w, &r);
+    sock_send_timeout(w, 2.0);
+    stream_out o;
+    stream_out_init(&o, (size_t)8 << 20);
+    char frame[158];
+    memset(frame, 'x', sizeof frame);
+    double worst = 0;
+    int after_full = 0;
+    for (int i = 0; i < 40000 && after_full < 200 && worst < 1.0; i++) {
+        double t0 = now();
+        int rc = stream_out_write(&o, w, frame, sizeof frame);
+        double took = now() - t0;
+        if (took > worst) worst = took;
+        CHECK(rc == STREAM_OUT_OK);
+        if (stream_out_pending(&o) > 0) after_full++;
+    }
+    CHECK(after_full == 200);   // the socket really did fill, and the queue took over
+    CHECK(worst < 1.0);         // half the timeout: one wait for it is 2 s
+    stream_out_free(&o);
+    sock_close(w);
+    sock_close(r);
+}
+
 int main(void) {
     sock_init();
     test_a_stalled_peer_never_blocks_and_stops_at_the_cap();
@@ -238,6 +268,7 @@ int main(void) {
     test_a_queued_byte_is_not_overtaken();
     test_a_closed_peer_is_gone_soon();
     test_the_socket_stays_a_blocking_socket();
+    test_a_full_socket_does_not_wait_out_the_write_timeout();
     if (failures) { printf("stream_out: %d failed\n", failures); return 1; }
     puts("stream_out ok");
     return 0;

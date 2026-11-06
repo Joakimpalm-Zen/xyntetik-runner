@@ -3,6 +3,7 @@
 #include "compat.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -299,9 +300,17 @@ int sock_send_nb(sock_t fd, const char *buf, size_t n) {
     if (w >= 0) return w;
     return err == WSAEWOULDBLOCK ? 0 : -1;
 #else
-    int w = (int)send(fd, buf, n, MSG_DONTWAIT);
+    // O_NONBLOCK and not MSG_DONTWAIT: with a full send buffer macOS keeps a
+    // MSG_DONTWAIT send waiting for the socket's whole SO_SNDTIMEO, 30 s here,
+    // and for ever on a socket with none (R3.36). The flag is on the open file,
+    // which only this request's thread writes to.
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) return -1;
+    int w = (int)send(fd, buf, n, 0);
+    int err = errno;
+    fcntl(fd, F_SETFL, flags);
     if (w >= 0) return w;
-    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR ? 0 : -1;
+    return err == EAGAIN || err == EWOULDBLOCK || err == EINTR ? 0 : -1;
 #endif
 }
 
