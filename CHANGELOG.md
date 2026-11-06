@@ -5,6 +5,12 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: instance discovery no longer removes records at process exit (R10.20).**
+  Filesystem removal could block after the server's shutdown watchdog had
+  finished. Clean stops now leave their record for the next discovery list
+  or registration to sweep. Dead owners are never listed; available process-start
+  stamps guard against pid reuse. Runner and tray exits use the same policy.
+
 - **MiniCPM-V-4.7-35B-A3B joins the roster at Tier 2 on openbmb's own Q8_0, text path only (R4.27.2).** The file is
   the GGUF repository's root Q8_0 (thinking fixed off, openbmb's recommended default). Against openbmb's BF16 parent's
   language model computed in float32 it reads 0.0088 mean KLD and 100.00% margin-qualified top-1 (bars 0.05 and 97%,
