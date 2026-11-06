@@ -3693,22 +3693,121 @@
       }
     },
     {
-      "id": "minicpm-v-4.7-35b-a3b",
-      "model": "MiniCPM-V-4.7-35B-A3B",
-      "tier": "upcoming",
-      "claim": "Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); its tokenizer reads as the publisher's (R4.27.5), its template is unchecked and no gate has run.",
+      "id": "minicpm-v-4.7-35b-a3b-q8_0",
+      "model": "MiniCPM-V-4.7-35B-A3B (openbmb)",
+      "family": "MiniCPM-V 4.7",
+      "tier": "tier2",
+      "claim": "Text path only (the vision projector is not loaded): openbmb's own Q8_0 of MiniCPM-V-4.7-35B-A3B, the GGUF repository's root file (thinking fixed off, openbmb's recommended default), which passes the fidelity bar: against openbmb's BF16 parent's language model computed in float32 it reads 0.0088 mean KLD and 100.0% margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU). The publisher's Q4_K_M misses (0.0594 and 95.4%).",
       "architecture": "qwen35moe",
-      "missing": "Its chat template is MiniCPM-V's own (thinking off by default, an empty think block in history), which no Runner renderer matches yet. Then the gate list; the CUDA cells on its file. The tokenizer is no longer a blocker: the publisher's GGUF (openbmb/MiniCPM-V-4.7-35B-A3B-gguf at cf943fbe) labels its pre-tokenizer qwen35 while openbmb's own tokenizer.json uses the Qwen2-style regex without \\p{M}, and since R4.27.5 Runner reads every file at cf943fbe with that split by its general.name: 0 of 721 corpus strings and 0 of 247,091 vocabulary entries against the tokenizer.json at 98e79ba9, on the Q4_K_M (before: 3 and 5,503).",
+      "upstream": {
+        "checkpoint": "openbmb/MiniCPM-V-4.7-35B-A3B",
+        "revision": "98e79ba972b586ac6146d3505771ce1467e199ba"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "openbmb/MiniCPM-V-4.7-35B-A3B"
+      },
+      "files": [
+        {
+          "name": "MiniCPM-V-4_7-35B-A3B-Q8_0.gguf",
+          "repo": "openbmb/MiniCPM-V-4.7-35B-A3B-gguf",
+          "revision": "cf943fbe32f840b20ca05ccc146e7dc72baf9a9b",
+          "sha256": "851fdec9d87d689342c3df04e509de4565ac3a96a226f06e7b12af651311b5ef",
+          "bytes": 36902368928
+        }
+      ],
+      "quantization": "Q8_0 (openbmb)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "openbmb's files against the BF16 parent at 98e79ba9 computed in float32 on the CPU (transformers 5.16.1, Qwen3_5MoeForCausalLM on the checkpoint's language-model weights through its own text_config, as transformers has no class for minicpmv4_7; float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files): Q8_0 0.0088 mean KLD / 96.0% top-1 / 100.0% margin-qualified (median 0.0027); Q4_K_M 0.0594 / 88.3% / 95.4%. Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against openbmb's tokenizer.json, which uses the qwen2 split (R4.27.5); template conformance against the file's own template under minicpmv-fixed (R4.27.6), the reasoning-history case accounted as a token-only deviation. Record: docs/compat-reports/minicpm-v-4.7-35b-a3b-2026-11-06/README.md.",
+        "context": 4096,
+        "limitations": "CPU and CUDA for this file (36.9 GB: on a CUDA MIG slice, 1g.24gb, sm_120, the fitted split places 26 of 40 blocks on the device); Metal runs qwen35moe on toy models only. Text only: the vision tower and merger are not loaded, and image or video content is refused. The root files' template fixes thinking off (openbmb: not trained as a reasoning model), so enable_thinking has no effect on this file, as in llama.cpp; the thinking/ files carry the repository's template (minicpmv) and are not this row. The fidelity reference is transformers' Qwen3.5-MoE text model on the checkpoint's language-model weights: MiniCPM-V's own modeling code (not in transformers 5.16.1, not in the repository) was not run. The tokenizer reads with the qwen2 split by R4.27.5's rule, keyed on general.name 35a3_hf_v47_0923; a requant that rewrites it reads the qwen35 split. The publisher's Q4_K_M (0.0594) misses the bar. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/minicpm-v-4.7-35b-a3b-2026-11-06/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal run on a Mac that holds the file (36.9 GB), and the Windows CUDA host's cells; the thinking/ files (another template, minicpmv); the vision path; task quality and the tool protocol on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "metal": {
+          "kind": "limit",
+          "reason": "Not measured: Metal runs qwen35moe on toy models (make test-metal-qwen35moe, to the CPU's logits at 1e-5), but this file (36.9 GB) has not been run on a Mac that holds it.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.14.0",
+          "date": "2026-11-06",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "eb145de05e829681f183bfd966b50e1b8ce963f8",
+          "caps": {
+            "version": "1.14.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "6041f75317b6c6c9ffd53143546de0b69c33de67d4bf2eaaa1f846b8e5ba882e",
+          "ran": "runner -m MiniCPM-V-4_7-35B-A3B-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/minicpm-v-4.7-35b-a3b-q8_0.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.14.0",
+          "date": "2026-11-06",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "eb145de05e829681f183bfd966b50e1b8ce963f8",
+          "caps": {
+            "version": "1.14.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "6041f75317b6c6c9ffd53143546de0b69c33de67d4bf2eaaa1f846b8e5ba882e",
+          "ran": "runner -m MiniCPM-V-4_7-35B-A3B-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/minicpm-v-4.7-35b-a3b-q8_0.linux-x86_64-cuda.cuda.txt"
+        }
+      },
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-11-06",
+          "reason": "Admitted 2026-11-06 at Tier 2 with the admitting CPU and CUDA cells from the lab lanes (R4.27.2), on openbmb's root Q8_0 after its tokenizer (R4.27.5) and template (R4.27.6) were read as the publisher's. Maintained on report.",
+          "last_validated_release": null
         }
       ],
-      "anchor": "anchor: agreement with another engine, not fidelity.",
-      "vision_upstream": true
+      "vision_upstream": true,
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "MoE on a Gated DeltaNet model"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.14.0",
+        "date": "2026-11-06"
+      }
     },
     {
       "id": "granite-4.2-30b-q4_k_m",
