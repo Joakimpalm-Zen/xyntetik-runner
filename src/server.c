@@ -73,10 +73,14 @@
 // server_template_text_override is the conformance renderer's stand-in for
 // the model's template text: it drives these handlers with no model loaded.
 const char *server_template_text_override;
-const char *slot_default_system(const slot_t *s, bool tools) {
+static const char *slot_template_text(const slot_t *s) {
     const char *t = server_template_text_override;
     if (!t && s->m) t = gguf_get_str(&s->m->gf, "tokenizer.chat_template", NULL);
-    return template_default_system(s->tmpl, t, tools);
+    return t;
+}
+
+const char *slot_default_system(const slot_t *s, bool tools) {
+    return template_default_system(s->tmpl, slot_template_text(s), tools);
 }
 
 // Declared in api.h, where the reason it exists is written down.
@@ -570,8 +574,7 @@ typedef void (*chat_prompt_fn)(slot_t *s, sock_t fd, const char *prompt,
                                const render_state *rs);
 
 bool template_kwarg_refused(slot_t *s, sock_t fd, jv *req) {
-    const char *key = req_template_kwarg_unrendered(
-        req, gguf_get_str(&s->m->gf, "tokenizer.chat_template", NULL));
+    const char *key = req_template_kwarg_unrendered(req, slot_template_text(s));
     if (!key) return false;
     char msg[256];
     snprintf(msg, sizeof msg, "chat_template_kwargs.%.96s: this model's chat template "

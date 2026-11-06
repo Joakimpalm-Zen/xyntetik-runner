@@ -188,3 +188,20 @@ def test_the_unknown_key_is_found_among_known_ones(serve):
     s = serve(READS["is_defined"])
     code, out = s.post("/v1/chat/completions", chat({"enable_thinking": False, "verification": True}))
     assert code == 400 and "verification" in out["error"]["message"], out
+
+
+def test_the_conformance_renderer_still_runs_with_no_model_loaded():
+    # it drives the handlers with an empty slot and supplies the template text itself,
+    # so the check reaches the text the way the handlers do, not through a model
+    exe = ROOT / ("template-conformance-render.exe" if sys.platform == "win32" else "template-conformance-render")
+    if not exe.exists():
+        pytest.skip("make template-conformance-render first")
+    case = {"id": "c", "template": "chatml", "chat_template": READS["is_defined"] + TAIL,
+            "request": {"model": "x", "messages": [{"role": "user", "content": "hello"}]}}
+    refused = dict(case, id="r", request=dict(case["request"], chat_template_kwargs={"verification": True}))
+    p = subprocess.run([str(exe)], input=json.dumps({"cases": [case, refused]}), capture_output=True, text=True,
+                       cwd=ROOT)
+    assert p.returncode == 0, p.stderr
+    plain, kw = json.loads(p.stdout)["results"]
+    assert plain.get("error") is None and "hello" in plain["prompt"]
+    assert "verification" in kw["error"]

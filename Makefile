@@ -3525,7 +3525,7 @@ test-gates-batch: runner $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_ATTN_SPLIT) test.
 # (lease interop), test-tc-tol (TC eligibility, iquants), test-gpu-identity
 # (iquants), test-lora-grad (DeltaNet autograd), the manifest-less runner
 # (Windows console tests).
-test-python: test-python-deps runner runner-turn-guard test.gguf $(DIFFTOK) $(TEST_INSTANCES) $(TEST_TC_TOL) $(TEST_GPU_ID) $(TEST_LORA_GRAD) $(RUNNER_NO_MANIFEST) \
+test-python: test-python-deps runner runner-turn-guard test.gguf $(TMPL_CONF_RENDER) $(DIFFTOK) $(TEST_INSTANCES) $(TEST_TC_TOL) $(TEST_GPU_ID) $(TEST_LORA_GRAD) $(RUNNER_NO_MANIFEST) \
              test.gguf test-lora.full.gguf test-moe-train.moe4-train.gguf test-es.gguf
 	@[ -f test-moe-fixture.moe4.gguf ] || $(PYTHON) scripts/make-test-moe.py test-moe-fixture > /dev/null
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
