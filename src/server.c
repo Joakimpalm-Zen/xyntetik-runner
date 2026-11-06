@@ -3255,7 +3255,9 @@ static void *drain_watchdog(void *arg) {
     long long t;
     while (!(t = atomic_load(&stop_at_us))) {
         if (atomic_load(&drain_owner) != me) return NULL;
-        plat_sleep_ms(10);
+        // This loop runs for the server's whole life, so it wakes rarely. The
+        // deadline is absolute: a late wake costs the budget nothing.
+        plat_sleep_ms(hard < 1 ? 10 : 100);
     }
     // Reserve the final 200 ms for the diagnostic and process termination,
     // rather than adding that wait AFTER the advertised ten-second bound.
@@ -3829,8 +3831,11 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     atomic_store(&drain_owner, drain_run);
     atomic_store(&drain_note_sent, 0);
     pthread_t wd;
-    if (pthread_create(&wd, NULL, drain_watchdog, (void *)(uintptr_t)drain_run) != 0)
-        _exit(1);   // cannot serve with an unenforceable stop contract
+    if (pthread_create(&wd, NULL, drain_watchdog, (void *)(uintptr_t)drain_run) != 0) {
+        // cannot serve with an unenforceable stop contract
+        fprintf(stderr, "server: cannot start the stop watchdog thread\n");
+        _exit(1);
+    }
     pthread_detach(wd);
 
     if (SV.n_reg > 0 && !SV.single)
