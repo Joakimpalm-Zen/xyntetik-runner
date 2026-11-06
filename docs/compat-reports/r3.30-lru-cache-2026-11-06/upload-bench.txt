@@ -1,0 +1,7 @@
+One expert, 6,580,224 bytes, idle card, PCIe 3.0 x16 (upload_bench.py)
+pageable HtoD (mapped file, warm pages)      median   0.761 ms  p90   1.087    8.65 GB/s
+pinned HtoD sync                             median   0.538 ms  p90   0.573   12.23 GB/s
+pinned HtoD async, second stream             median   0.521 ms  p90   0.581   12.62 GB/s
+staged: memcpy from mapping + pinned async   median   1.058 ms  p90   1.304    6.22 GB/s
+memcpy from mapping to pinned alone          median   0.519 ms  p90   0.691   12.68 GB/s
+Admission list replayed as three pageable slices, alone, 200 experts/s: 2.427 and 2.104 ms each

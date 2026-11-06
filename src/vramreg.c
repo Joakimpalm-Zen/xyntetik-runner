@@ -416,7 +416,7 @@ static void registry_rollback(const char *path, long pid, long seq);
 vram_lease *vram_claim(const char *gpu_id, const char *model_path,
                        uint64_t need_bytes, int priority,
                        vram_free_fn free_fn, void *free_ud,
-                       int wait_secs, const _Atomic int *cancel,
+                       int wait_secs, const vram_cancel *cancel,
                        vram_status *st, char *err, size_t err_cap) {
     // atomic: two slots claiming concurrently must not mint one seq, or
     // vram_release later removes the wrong entry
@@ -467,18 +467,22 @@ vram_lease *vram_claim(const char *gpu_id, const char *model_path,
             registry_rollback(path, c.pid, c.seq);   // drop our 'W' marker
             return NULL;
         }
-        if (cancel && atomic_load(cancel)) {
-            if (waiting) registry_rollback(path, c.pid, c.seq);   // drop our 'W' marker
-            if (err && err_cap) snprintf(err, err_cap, "vram wait cancelled");
-            return NULL;
-        }
         if (plat_now() >= deadline) {
             if (waiting) registry_rollback(path, c.pid, c.seq);   // drop our 'W' marker
             return NULL;
         }
-        // sleep in short slices so a cancellation (an /unload or a shutdown
-        // that wants this wait gone) is honoured within ~100ms, not a second
-        for (int i = 0; i < 10 && !(cancel && atomic_load(cancel)); i++) plat_sleep_ms(100);
+        // sleep in short slices so a cancellation (an /unload, a shutdown or a
+        // client that has gone) is honoured within ~100ms, not a second. It ends
+        // the claim here and not at the next attempt, which could be admitted
+        // and carry a load through to be thrown away.
+        for (int i = 0; i < 10; i++) {
+            if (cancel && cancel->stop(cancel->ud)) {
+                if (waiting) registry_rollback(path, c.pid, c.seq);   // drop our 'W' marker
+                if (err && err_cap) snprintf(err, err_cap, "vram wait cancelled");
+                return NULL;
+            }
+            plat_sleep_ms(100);
+        }
     }
 
     vram_lease *l = calloc(1, sizeof(*l));

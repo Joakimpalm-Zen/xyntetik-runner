@@ -1,0 +1,55 @@
+12:23:29
+p1-page guard ok, RAM line 5.8
+p1-page req 0 chunks 129 tok/s 35.58 second half 42.52
+p1-page req 1 chunks 129 tok/s 56.78 second half 58.44
+p1-page req 2 chunks 129 tok/s 56.66 second half 58.29
+p1-page req 3 chunks 129 tok/s 49.09 second half 50.5
+p1-page side load: 2660 experts in 7s (380.0/s), 1.341 ms each
+p1-page req 4 chunks 129 tok/s 49.46 second half 51.18
+p1-page side load: 2660 experts in 7s (380.0/s), 1.365 ms each
+12:23:57
+p1-pin guard ok, RAM line 5.8
+p1-pin req 0 chunks 129 tok/s 52.16 second half 56.83
+p1-pin req 1 chunks 129 tok/s 55.76 second half 58.71
+p1-pin req 2 chunks 129 tok/s 56.87 second half 58.63
+p1-pin req 3 chunks 129 tok/s 50.71 second half 51.96
+p1-pin side load: 2660 experts in 7s (380.0/s), 0.566 ms each
+p1-pin req 4 chunks 129 tok/s 50.2 second half 52.02
+p1-pin side load: 2660 experts in 7s (380.0/s), 0.568 ms each
+12:24:24
+p2-pin guard ok, RAM line 5.9
+p2-pin req 0 chunks 129 tok/s 52.22 second half 56.58
+p2-pin req 1 chunks 129 tok/s 56.31 second half 58.38
+p2-pin req 2 chunks 129 tok/s 56.91 second half 58.8
+p2-pin req 3 chunks 129 tok/s 50.2 second half 51.5
+p2-pin side load: 2660 experts in 7s (380.0/s), 0.593 ms each
+p2-pin req 4 chunks 129 tok/s 50.17 second half 51.64
+p2-pin side load: 2660 experts in 7s (380.0/s), 0.580 ms each
+12:24:51
+p2-page guard ok, RAM line 5.8
+p2-page req 0 chunks 129 tok/s 51.73 second half 55.76
+p2-page req 1 chunks 129 tok/s 56.88 second half 58.03
+p2-page req 2 chunks 129 tok/s 55.54 second half 58.5
+p2-page req 3 chunks 129 tok/s 49.18 second half 50.8
+p2-page side load: 2660 experts in 7s (380.0/s), 1.338 ms each
+p2-page req 4 chunks 129 tok/s 49.02 second half 50.76
+p2-page side load: 2660 experts in 7s (380.0/s), 1.318 ms each
+12:25:18
+p3-page guard ok, RAM line 5.8
+p3-page req 0 chunks 129 tok/s 51.99 second half 56.85
+p3-page req 1 chunks 129 tok/s 57.12 second half 59.25
+p3-page req 2 chunks 129 tok/s 57.09 second half 58.16
+p3-page req 3 chunks 129 tok/s 48.8 second half 50.36
+p3-page side load: 2660 experts in 7s (380.0/s), 1.372 ms each
+p3-page req 4 chunks 129 tok/s 48.74 second half 49.8
+p3-page side load: 2660 experts in 7s (380.0/s), 1.324 ms each
+12:25:45
+p3-pin guard ok, RAM line 5.9
+p3-pin req 0 chunks 129 tok/s 51.89 second half 56.85
+p3-pin req 1 chunks 129 tok/s 56.99 second half 58.83
+p3-pin req 2 chunks 129 tok/s 57.77 second half 59.83
+p3-pin req 3 chunks 129 tok/s 50.55 second half 52.29
+p3-pin side load: 2660 experts in 7s (380.0/s), 0.594 ms each
+p3-pin req 4 chunks 129 tok/s 50.59 second half 51.88
+p3-pin side load: 2660 experts in 7s (380.0/s), 0.599 ms each
+12:26:12

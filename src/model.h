@@ -1048,11 +1048,10 @@ typedef struct {
     // space frees (see vram_claim's header comment for the exact, bounded
     // rule). No effect at all outside a --wait-for-vram queue.
     int   vram_priority;
-    // Load cancellation: when non-NULL and it becomes nonzero, a load queued in
-    // the --wait-for-vram retry loop gives up promptly and the load fails. A
-    // lock-free atomic, read across threads (RNR-008). The serving layer points
-    // this at its unload/shutdown flag; standalone loads leave it NULL.
-    const _Atomic int *load_cancel;
+    // Load cancellation: asked at each poll of the --wait-for-vram queue, where
+    // a stop makes the load fail promptly (vramreg.h). The serving layer sets
+    // it; standalone loads leave it NULL.
+    const struct vram_cancel *load_cancel;
     // store the KV cache as q8_0 instead of fp16: halves cache bytes, so it
     // roughly doubles the context that fits a given VRAM/RAM reservation.
     // Lossy — output is NOT token-identical to an fp16 cache — so f16 stays
