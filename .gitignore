@@ -1,6 +1,8 @@
 runner
 runner.exe
 runner-no-write-timeout
+runner-turn-guard
+runner-turn-guard.exe
 runner-sigpipe-default
 runner-gpu-stub
 runner-debug
@@ -229,6 +231,8 @@ test-moe-router.exe
 test-attn/
 test-sched-turn
 test-sched-turn.exe
+test-stream-out
+test-stream-out.exe
 test-prefix-persist
 test-prefix-persist.exe
 test-server-restart

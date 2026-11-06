@@ -3635,6 +3635,28 @@ the file changed on disk, a `model_sha256` expectation is refused with
 `resident_identity_unknown` rather than guessed. A request without the
 field behaves as before, loading on demand.
 
+**A client that reads a speculative stream too slowly is cut off.** On a GPU
+server with `--parallel` above 1 and speculation on (`--draft`, or
+`RUNNER_GRAMMAR_FF`), a generation keeps the device for its whole length, so
+its stream is queued rather than waited on: a client that stops reading cannot
+stop the other slots. **Limit:** the queue holds 4 MiB a stream. A client that
+far behind is cut off, and the generation stops. It then receives everything
+queued, followed by its surface's own terminator, so it is told rather than
+left waiting:
+
+- OpenAI surfaces: a final chunk with `finish_reason: "error"` and
+  `runner_telemetry.finish_detail: "client_too_slow"`, then `data: [DONE]`.
+- Responses: `response.incomplete` with reason `client_too_slow`.
+- Anthropic: an `error` event whose `runner_telemetry.finish_detail` is
+  `client_too_slow`.
+
+The text is partial and should not be read as an answer. The server log says
+`client cut off for being too slow`. A slow client under the limit gets every
+byte, and ties up only its own slot until it has them. A stream on plain
+decoding has no queue and no such limit, because it never holds the device
+while it writes. A reading client's speculative generation still keeps the
+other slots waiting for its length; this limit does not change that.
+
 ### Health and metrics
 
 `/health` lists what each busy slot is doing, because a reply's headers are

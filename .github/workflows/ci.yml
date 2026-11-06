@@ -204,6 +204,10 @@ jobs:
             *'"cpu_act":"f32+int8-prefill"'*) ;;
             *) echo "no int8 prefill route: built without the dot-product extension"; exit 1 ;;
           esac
+      # make test's C gates run on Linux. This one is here too because macOS treats
+      # a send on a full socket differently, and only a Mac can show that (R3.36).
+      - name: Socket writer (test-stream-out)
+        run: make test-stream-out && ./test-stream-out
       - name: Metal gates (make test-metal)
         run: .venv/bin/python scripts/ci-run.py --timeout 1500 metal -- make test-metal PYTHON=.venv/bin/python
       # the suite's Metal pytest files, kept on every pull request now that the
