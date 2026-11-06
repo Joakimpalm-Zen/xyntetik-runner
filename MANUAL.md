@@ -3829,8 +3829,11 @@ for example a prompt whose weights are still being read from a slow disk. If
 the server has not exited 10 seconds after the signal, it exits without
 waiting, with exit code 128 plus the signal number (143 for SIGTERM, 130 for
 SIGINT). That holds whatever it was waiting on: work still inside a step, or
-a log line blocked because the server's output is a pipe nobody reads. A
-second signal during the drain exits at once with code 130.
+a log line blocked because the server's output is a pipe nobody reads. The
+budget includes queued-client cleanup and the final shutdown diagnostic; it
+also applies while an admission-path handler is still running. A
+second signal during the drain exits at once with code 130. When the final
+diagnostic can be written, it names the active shutdown stage.
 
 ### OpenAI Chat Completions
 
