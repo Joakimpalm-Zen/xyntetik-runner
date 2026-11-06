@@ -126,7 +126,12 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
             // assistant turns after the last user query; the 0.8B also
             // inverts the thinking default, and 3.6 adds preserve_thinking.
             // Told apart by the tests only their templates write (see the
-            // enum comments).
+            // enum comments). MiniCPM-V 4.7 first: its template carries 3.5's
+            // tests too.
+            if (strstr(meta_tmpl, "ns.parts | join('\\n')") &&
+                strstr(meta_tmpl, "'\\n<think>\\n\\n</think>\\n\\n' + content"))
+                return strstr(meta_tmpl, "thinking hard-disabled for llama.cpp GGUF")
+                           ? TMPL_MINICPMV_FIXED : TMPL_MINICPMV;
             if (strstr(meta_tmpl, "loop.index0 > ns.last_query_index"))
                 return strstr(meta_tmpl, "enable_thinking is true")
                            ? TMPL_QWEN35_NOTHINK
@@ -289,6 +294,8 @@ int template_from_name(const char *name) {
     if (!strcmp(name, "qwen35")) return TMPL_QWEN35;
     if (!strcmp(name, "qwen35-nothink")) return TMPL_QWEN35_NOTHINK;
     if (!strcmp(name, "qwen36")) return TMPL_QWEN36;
+    if (!strcmp(name, "minicpmv")) return TMPL_MINICPMV;
+    if (!strcmp(name, "minicpmv-fixed")) return TMPL_MINICPMV_FIXED;
     if (!strcmp(name, "granite42")) return TMPL_GRANITE42;
     if (!strcmp(name, "nemotron35")) return TMPL_NEMOTRON35;
     if (!strcmp(name, "qwen3-coder")) return TMPL_QWEN3_CODER;
@@ -394,6 +401,8 @@ const char *template_name(int t) {
         case TMPL_QWEN35: return "qwen35";
         case TMPL_QWEN35_NOTHINK: return "qwen35-nothink";
         case TMPL_QWEN36: return "qwen36";
+        case TMPL_MINICPMV: return "minicpmv";
+        case TMPL_MINICPMV_FIXED: return "minicpmv-fixed";
         case TMPL_GRANITE42: return "granite42";
         case TMPL_NEMOTRON35: return "nemotron35";
         case TMPL_QWEN38: return "qwen38";
@@ -1901,7 +1910,8 @@ static size_t render_nemotron_nano(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
-// TMPL_ORNITH, TMPL_QWEN35, TMPL_QWEN35_NOTHINK and TMPL_QWEN36.
+// TMPL_ORNITH, TMPL_QWEN35, TMPL_QWEN35_NOTHINK, TMPL_QWEN36 and MiniCPM-V's
+// two (whose assistant turns' blocks message_text writes).
 static size_t render_qwen35(int tmpl, const chat_msg *msgs, int n_msgs,
                             bool add_assistant, int thinking, const jv *tools,
                             char *out, size_t cap, render_state *st) {
@@ -1938,9 +1948,13 @@ static size_t render_qwen35(int tmpl, const chat_msg *msgs, int n_msgs,
         // for no reasoning the one construct that starts it.
         // Qwen 3.5-0.8B inverts the default: only an explicit `true`
         // opens the block (chat_template.jinja:149).
+        // MiniCPM-V 4.7 keeps the 0.8B's default; its GGUF root files close
+        // the block whatever enable_thinking says (their template's comment
+        // stands where the test was).
         int mode = thinking & THINK_MODE_MASK;
-        bool closed = tmpl == TMPL_QWEN35_NOTHINK ? mode != THINK_ON
-                                                  : mode == THINK_OFF;
+        bool closed = tmpl == TMPL_MINICPMV_FIXED ? true
+                    : tmpl == TMPL_QWEN35_NOTHINK || tmpl == TMPL_MINICPMV
+                        ? mode != THINK_ON : mode == THINK_OFF;
         off = emit(out, cap, off,
                    closed ? "<think>\n\n</think>\n\n" : "<think>\n",
                    NULL, NULL);
@@ -4576,6 +4590,8 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
     case TMPL_QWEN35:
     case TMPL_QWEN35_NOTHINK:
     case TMPL_QWEN36:
+    case TMPL_MINICPMV:
+    case TMPL_MINICPMV_FIXED:
         return render_qwen35(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_QWEN3_CODER:
         return render_qwen3_coder(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);

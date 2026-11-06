@@ -150,6 +150,14 @@
       "fixture": "plain",
       "reasoning": "tags"
     },
+    "minicpmv": {
+      "fixture": "plain",
+      "reasoning": "tags"
+    },
+    "minicpmv-fixed": {
+      "fixture": "plain",
+      "reasoning": "tags"
+    },
     "qwen38": {
       "fixture": "plain",
       "reasoning": "tags"

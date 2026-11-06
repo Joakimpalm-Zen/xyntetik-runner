@@ -3192,6 +3192,47 @@ static void test_qwen35_is_not_ornith(tokenizer *t) {
     assert(!strcmp(out, "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>\n"));
 }
 
+// MiniCPM-V 4.7 (openbmb): Qwen 3.5-0.8B's template with a thought block on
+// every assistant turn and its parts joined with '\n', told apart before the
+// 3.5 tests it also carries; the GGUF repository's root files replace the
+// generation prompt's thinking test with a comment and always close the block.
+// Fragments of the publisher's chat_template.jinja (98e79ba9) and of the root
+// Q4_K_M's embedded template (cf943fbe). The history rule lives in
+// server.c's message_text; template-conformance.py's minicpmv47 families
+// hold it against the jinja.
+static void test_minicpmv_templates(tokenizer *t) {
+    const char *mv =
+        "<function=example_function_name>{{- ns.parts | join('\\n') -}}"
+        "{%- if loop.index0 > ns.last_query_index and reasoning_content %}"
+        "{{- '<|im_start|>' + message.role + '\\n<think>\\n\\n</think>\\n\\n' + content }}"
+        "<think>{%- if enable_thinking is defined and enable_thinking is true %}";
+    const char *mvf =
+        "<function=example_function_name>{{- ns.parts | join('\\n') -}}"
+        "{%- if loop.index0 > ns.last_query_index and reasoning_content %}"
+        "{{- '<|im_start|>' + message.role + '\\n<think>\\n\\n</think>\\n\\n' + content }}"
+        "<think>{#- thinking hard-disabled for llama.cpp GGUF xxxx -#}";
+    assert(template_detect(mv, t) == TMPL_MINICPMV);
+    assert(template_detect(mvf, t) == TMPL_MINICPMV_FIXED);
+    assert(tmpl_qwen35(TMPL_MINICPMV) && tmpl_ornith_like(TMPL_MINICPMV_FIXED));
+    assert(tmpl_minicpmv(TMPL_MINICPMV) && !tmpl_minicpmv(TMPL_QWEN35_NOTHINK));
+    assert(template_from_name("minicpmv") == TMPL_MINICPMV);
+    assert(template_from_name("minicpmv-fixed") == TMPL_MINICPMV_FIXED);
+    assert(!strcmp(template_name(TMPL_MINICPMV_FIXED), "minicpmv-fixed"));
+
+    char out[1024];
+    const chat_msg one[] = { CHAT_MSG("user", "hi") };
+    // the repository's template closes the block unless told to think
+    render_messages(TMPL_MINICPMV, one, 1, true, THINK_DEFAULT, out, sizeof(out));
+    assert(!strcmp(out, "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n"
+                        "<think>\n\n</think>\n\n"));
+    render_messages(TMPL_MINICPMV, one, 1, true, THINK_ON, out, sizeof(out));
+    assert(!strcmp(out, "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n<think>\n"));
+    // the root files' closes it even when told to think
+    render_messages(TMPL_MINICPMV_FIXED, one, 1, true, THINK_ON, out, sizeof(out));
+    assert(!strcmp(out, "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n"
+                        "<think>\n\n</think>\n\n"));
+}
+
 // A tool-call argument that is not a string, as the publishers' templates
 // write it (template-conformance.py's tool-call-args-hostile case): Qwen 3.5
 // and ornith a boolean or null through Python's str(), Qwen 3.6 and 3.8 as
@@ -3454,6 +3495,7 @@ int main(void) {
     test_granite42_tool_turns();
     test_detect_and_render_qwen38(&t);
     test_qwen35_is_not_ornith(&t);
+    test_minicpmv_templates(&t);
     test_qwen_xml_argument_values();
     test_phi4_has_no_newlines(&t);
     test_nemotron_nano_framing(&t);

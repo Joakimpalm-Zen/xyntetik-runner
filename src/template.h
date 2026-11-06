@@ -299,7 +299,21 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // end-of-sentence token, a system turn as "{c}\n\n" where it stands,
        // and the generation prompt "Assistant:" with no space after it. No
        // tool protocol and no thinking. Detected by its two role literals.
-       TMPL_DEEPSEEK2 };
+       TMPL_DEEPSEEK2,
+       // MiniCPM-V 4.7 (openbmb/MiniCPM-V-4.7-35B-A3B chat_template.jinja, the
+       // same bytes in the GGUF repository's thinking/ files): TMPL_QWEN35_NOTHINK
+       // with one more rule. Every assistant turn opens with a thought block,
+       // its reasoning only after the last user query and when non-empty, the
+       // empty `<think>\n\n</think>\n\n` otherwise (chat_template.jinja:88-91),
+       // where Qwen 3.5 writes the turns at or before the last query without
+       // one. Its content parts are joined with '\n', as message_text joins
+       // them. Detected by that join beside the empty block. Appended last.
+       TMPL_MINICPMV,
+       // The same template as the GGUF repository's root files carry it: the
+       // generation prompt's thinking test replaced by a comment, so the
+       // prompt is always the closed block, whatever enable_thinking says.
+       // Detected by that comment. Appended last.
+       TMPL_MINICPMV_FIXED };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
@@ -364,7 +378,7 @@ static inline bool is_gemma4(int tmpl) {
 // default, both handled where the block is written.
 static inline bool tmpl_ornith_like(int t) {
     return t == TMPL_ORNITH || t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK ||
-           t == TMPL_QWEN36;
+           t == TMPL_QWEN36 || t == TMPL_MINICPMV || t == TMPL_MINICPMV_FIXED;
 }
 // Granite 4.2 and the template derived from it (Nemotron 3.5): the same
 // framing, think seeding, call syntax and system fold; they differ in the
@@ -414,11 +428,17 @@ void py_strip(const char **s, size_t *n);
 char *py_strip_dup(const char *s);            // a trimmed heap copy, NULL on OOM
 size_t py_strip_inplace(char *s, size_t n);   // trims a heap buffer, new length
 // The templates whose references trim content and reasoning (the six |trim
-// sites of Qwen 3.5's, 3.6's and ornith's chat_template.jinja): the ornith
-// family, every member of which carries them
+// sites of Qwen 3.5's, 3.6's, ornith's and MiniCPM-V 4.7's
+// chat_template.jinja): the ornith family, every member of which carries them
 static inline bool template_content_trims(int t) { return tmpl_ornith_like(t); }
 static inline bool tmpl_qwen35(int t) {
-    return t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK || t == TMPL_QWEN36;
+    return t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK || t == TMPL_QWEN36 ||
+           t == TMPL_MINICPMV || t == TMPL_MINICPMV_FIXED;
+}
+// MiniCPM-V 4.7's two templates: Qwen 3.5's with a thought block on every
+// assistant turn (see TMPL_MINICPMV)
+static inline bool tmpl_minicpmv(int t) {
+    return t == TMPL_MINICPMV || t == TMPL_MINICPMV_FIXED;
 }
 
 // How the generation prompt should treat a thinking model.

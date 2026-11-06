@@ -248,15 +248,18 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
         // between is the caller's and goes in unmarked.
         // Qwen 3.5 writes the block (empty or not) only on the assistant
         // turns after the last user query, which the caller selects too.
-        // Mellum writes it only when the reasoning is non-empty.
-        if ((tmpl == TMPL_ORNITH || tmpl == TMPL_QWEN38 ||
+        // Mellum writes it only when the reasoning is non-empty. MiniCPM-V
+        // 4.7 writes it on every assistant turn, its reasoning only on the
+        // turns the caller selects and empty on the rest.
+        if ((tmpl == TMPL_ORNITH || tmpl == TMPL_QWEN38 || tmpl_minicpmv(tmpl) ||
              ((tmpl == TMPL_CHATML_THINK || tmpl_qwen35(tmpl)) &&
               replay_reason) ||
              (tmpl == TMPL_MELLUM && replay_reason && reason && *reason) ||
              (tmpl == TMPL_MINICPM5 && replay_reason)) &&
             !strcmp(role, "assistant")) {
             prompt_lit(&b, "<think>\n");
-            if (reason) sb_put(&b, reason, reason_n);
+            if (reason && (replay_reason || !tmpl_minicpmv(tmpl)))
+                sb_put(&b, reason, reason_n);
             prompt_lit(&b, "\n</think>\n\n");
         } else if ((tmpl == TMPL_MIMO || tmpl_argkv(tmpl)) &&
                    !strcmp(role, "assistant") && reason && *reason) {
