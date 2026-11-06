@@ -12,6 +12,22 @@ Current release and unreleased changes. Compatibility follows the
   recorded RTX 3070 run, not part of `make test`. Report:
   `docs/compat-reports/r3.37-context-turn-leak-2026-11-06`.
 
+- **A client that stops reading no longer stops the other slots (R3.36).** A speculative stream wrote to the client
+  while holding the device turn, so one stalled client froze every other slot for 30 s, and a client trickling reads
+  held it for as long as it liked (over 150 s measured). No blocking client write now happens under the turn, on any
+  path. Limits first:
+  - **New limit:** a speculative stream queues at most 4 MiB. A client that far behind is cut off, gets what was
+    queued and then its surface's terminator naming `client_too_slow`, and the server logs it. Plain streams have no
+    such limit.
+  - A reading client's speculative generation still holds the turn for its length. That is unchanged.
+  - Measured on Windows on an RTX 3070. Linux is not measured.
+
+  A session's answer is now built under the turn and written after it, as embeddings already were. Windows did not
+  stall on that write, because Winsock takes one large send whole, but it broke the rule. `make runner-turn-guard`
+  builds the rule in: a client write under the turn ends the process, and the turn runs on a CPU server, so
+  `tests/test_turn_write_guard.py` holds any future path to it without a GPU. Report:
+  `docs/compat-reports/r3.36-no-write-under-turn-2026-11-06`.
+
 - **MiniCPM-V-4.7-35B-A3B joins the roster at Tier 2 on openbmb's own Q8_0, text path only (R4.27.2).** The file is
   the GGUF repository's root Q8_0 (thinking fixed off, openbmb's recommended default). Against openbmb's BF16 parent's
   language model computed in float32 it reads 0.0088 mean KLD and 100.00% margin-qualified top-1 (bars 0.05 and 97%,

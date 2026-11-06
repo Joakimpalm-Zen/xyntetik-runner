@@ -1,0 +1,10 @@
+.FFFF.FFF                                                                [100%]
+=========================== short test summary info ===========================
+FAILED tests/test_turn_write_guard.py::test_a_speculative_stream_writes_nothing_under_the_turn[/v1/completions-body0]
+FAILED tests/test_turn_write_guard.py::test_a_speculative_stream_writes_nothing_under_the_turn[/v1/chat/completions-body1]
+FAILED tests/test_turn_write_guard.py::test_a_speculative_stream_writes_nothing_under_the_turn[/v1/responses-body2]
+FAILED tests/test_turn_write_guard.py::test_a_speculative_stream_writes_nothing_under_the_turn[/v1/messages-body3]
+FAILED tests/test_turn_write_guard.py::test_a_session_answers_after_the_turn
+FAILED tests/test_turn_write_guard.py::test_a_suspended_session_resumes_after_the_turn
+FAILED tests/test_turn_write_guard.py::test_other_slots_still_serve_after_all_of_it
+7 failed, 2 passed in 5.09s

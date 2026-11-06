@@ -1,0 +1,9 @@
+spec-reading r0 worst probe (start s, latency, device wait) (1.1, 21.312, 21.226) probes 47 | gpu util, last 40% of that wait: mean 96.9 n 15 | bytes read [948784]
+spec-reading r1 worst probe (start s, latency, device wait) (1.1, 21.291, 21.216) probes 47 | gpu util, last 40% of that wait: mean 96.9 n 14 | bytes read [954785]
+spec-stalled r0 worst probe (start s, latency, device wait) (1.1, 30.353, 30.276) probes 32 | gpu util, last 40% of that wait: mean 9.1 n 21 | bytes read []
+spec-stalled r1 worst probe (start s, latency, device wait) (1.1, 30.334, 30.235) probes 32 | gpu util, last 40% of that wait: mean 9.1 n 21 | bytes read []
+spec-stalled r2 worst probe (start s, latency, device wait) (1.1, 30.322, 30.243) probes 32 | gpu util, last 40% of that wait: mean 9.0 n 21 | bytes read []
+plain-stalled r0 worst probe (start s, latency, device wait) (2.9, 0.133, 0.007) probes 75 | gpu util, last 40% of that wait: mean None n 0 | bytes read []
+plain-stalled r1 worst probe (start s, latency, device wait) (2.3, 0.135, 0.004) probes 74 | gpu util, last 40% of that wait: mean None n 0 | bytes read []
+stalled-gap r0: plain stream's largest gap 31.252 s, starting 0.11 s after the stalled client; tokens 3002
+stalled-gap r1: plain stream's largest gap 31.253 s, starting 0.11 s after the stalled client; tokens 3002
