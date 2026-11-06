@@ -246,6 +246,8 @@ static void check_tray_http_short_write(void) {
 #endif
 
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--internal-instance-sweep"))
+        return instances_sweep_worker();
     // ---- child mode: we ARE the "managed runner" the core spawned
     if (argc > 1 && strcmp(argv[1], "--serve") == 0) {
         const char *home = getenv("XYNTETIK_TEST_HOME");

@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: instance cleanup no longer delays server startup (R10.23).**
+  Registration and discovery lists request a separate cleanup process instead
+  of deleting stale records on the caller's path. One helper sweeps a folder
+  at a time; it can finish after the server exits. Dead records are filtered
+  immediately and eventually removed as storage progresses, including on
+  hosts without a tray. Cleanup launch failures never fail a server start.
+
 - **Response ids are random, and a stored response can no longer be guessed (R10.15).** `chatcmpl-`, `cmpl-`, `resp_`
   and `msg_` ids were a counter from 0: they repeated after every restart and across hosts, and anyone who could
   reach the server could read or delete a `store:true` response at `/v1/responses/resp_0`. An id is now its prefix and

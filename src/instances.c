@@ -24,6 +24,7 @@
 #include <dirent.h>
 #include <limits.h>
 #include <signal.h>
+#include <sys/file.h>
 #include <unistd.h>
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -182,15 +183,27 @@ static bool write_self(void) {
     return ok;
 }
 
-// An exited process leaves its record, and one killed between the write and
-// the rename leaves `<pid>.json.tmp`. Only a reader swept them, and the only
-// reader in this binary is the tray: a machine that never ran it kept every
-// record of every dead process. Each registering process now sweeps first.
-// The list itself removes dead records; the temporaries are removed here, and
-// only when the pid in their name is not alive, so a live writer's is kept.
+static instance_rec *list_records(int *n_out, bool remove_stale);
+
+static void request_sweep(void) {
+    // Best-effort: never sweep synchronously on a spawn failure.
+    plat_spawn_self_detached("--internal-instance-sweep");
+}
+
+// Only the independent helper deletes records and abandoned temporaries.
+// Registration requests it even without a tray, so dead records are eventually
+// cleared as I/O progresses. Its filesystem waits cannot pin a server thread.
 static void sweep_stale(void) {
+    const char *delay = getenv("RUNNER_TEST_INSTANCE_SWEEP_DELAY_MS");
+    if (delay && atoi(delay) > 0) {
+        const char *marker = getenv("RUNNER_TEST_INSTANCE_SWEEP_MARKER");
+        FILE *f = marker ? plat_fopen(marker, "wb") : NULL;
+        if (f) { fprintf(f, "%ld\n", (long)getpid()); fclose(f); }
+        plat_sleep_ms(atoi(delay));
+    }
     int n = 0;
-    instances_list_free(instances_list(&n), n);
+    instance_rec *live = list_records(&n, true);
+    instances_list_free(live, n);
     const char *d = instances_dir();
     if (!d) return;
     plat_dir *dp = plat_opendir(d);
@@ -208,10 +221,28 @@ static void sweep_stale(void) {
     plat_closedir(dp);
 }
 
+int instances_sweep_worker(void) {
+    const char *dir = instances_dir();
+    char path[1200];
+    if (!dir || !path_child(path, sizeof path, dir, lease_sep(), "sweep.lock")) return 0;
+    FILE *lock = plat_fopen(path, "a+b");
+    if (!lock) return 0;
+#ifdef _WIN32
+    HANDLE handle = (HANDLE)_get_osfhandle(_fileno(lock));
+    OVERLAPPED ov = {0};
+    bool held = LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                          0, 1, 0, &ov) != 0;
+#else
+    bool held = flock(fileno(lock), LOCK_EX | LOCK_NB) == 0;
+#endif
+    if (held) sweep_stale();
+    fclose(lock);   // releases the lock; never unlink the lock file
+    return 0;
+}
+
 bool instances_register(const char *mode, int port,
                         const char *const *model_names,
                         const char *const *model_paths, int n_models) {
-    sweep_stale();
     snprintf(g_self.mode, sizeof g_self.mode, "%s", mode ? mode : "cli");
     g_self.port = port;
     if (!plat_pid_start_time((long)getpid(), &g_self.procstart))
@@ -233,6 +264,7 @@ bool instances_register(const char *mode, int port,
     }
     if (g_self.models_json.failed) return false;
     g_self.registered = write_self();
+    request_sweep();
     return g_self.registered;
 }
 
@@ -328,12 +360,13 @@ static bool record_owner_alive(const instance_rec *r) {
     return true;
 }
 
-instance_rec *instances_list(int *n_out) {
+static instance_rec *list_records(int *n_out, bool remove_stale) {
     *n_out = 0;
     const char *d = instances_dir();
     if (!d) return NULL;
     instance_rec *arr = NULL;
     int n = 0, cap = 0;
+    bool stale = false;
     plat_dir *dp = plat_opendir(d);
     if (!dp) return NULL;
     for (const char *name; (name = plat_readdir(dp)) != NULL; ) {
@@ -353,15 +386,19 @@ instance_rec *instances_list(int *n_out) {
             arr = grown;
             arr[n++] = r;
         } else {
-            // stale (crash leftover) or unreadable: sweep it
+            // Exclude stale records immediately; deletion belongs to the helper.
             rec_free_members(&r);
-            plat_remove(path);
+            if (remove_stale) plat_remove(path);
+            else stale = true;
         }
     }
     plat_closedir(dp);
     *n_out = n;
+    if (stale) request_sweep();
     return arr;
 }
+
+instance_rec *instances_list(int *n_out) { return list_records(n_out, false); }
 
 static void rec_free_members(instance_rec *r) {
     for (int m = 0; m < r->n_models; m++) {

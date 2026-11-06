@@ -9,6 +9,7 @@
 #include <stdatomic.h>
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1360,6 +1361,23 @@ int plat_spawn_wait(const char *const argv[]) {
     return rc == -1 ? -1 : (int)rc;
 }
 
+static bool spawn_detached(const char *executable, const char *arg) {
+    char *a = win_quote(executable), *b = win_quote(arg);
+    size_t n = a && b ? strlen(a) + strlen(b) + 2 : 0;
+    char *cmd = n ? malloc(n) : NULL;
+    if (cmd) snprintf(cmd, n, "%s %s", a, b);
+    wchar_t *file = utf8_to_wide(executable);
+    wchar_t *wide = cmd ? utf8_to_wide(cmd) : NULL;
+    STARTUPINFOW si = {0};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi;
+    bool ok = file && wide && CreateProcessW(file, wide, NULL, NULL, FALSE,
+                        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, NULL, NULL, &si, &pi);
+    if (ok) { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); }
+    free(a); free(b); free(cmd); free(file); free(wide);
+    return ok;
+}
+
 #else // POSIX
 
 #include <dirent.h>
@@ -1412,7 +1430,50 @@ int plat_spawn_wait(const char *const argv[]) {
     return -1;
 }
 
+static void *reap_detached(void *arg) {
+    // Only an interruptible child wait, never filesystem I/O. Nothing joins
+    // this thread at exit, and a child stuck in unlink is a separate process.
+    while (waitpid((pid_t)(intptr_t)arg, NULL, 0) < 0 && errno == EINTR) {}
+    return NULL;
+}
+
+static bool spawn_detached(const char *executable, const char *arg) {
+    long last_fd = sysconf(_SC_OPEN_MAX);
+    if (last_fd < 0 || last_fd > INT_MAX) last_fd = 65536;
+    pid_t pid = fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+        // After a multithreaded fork, use only async-signal-safe operations
+        // until exec. Do not carry model handles, leases or output pipes.
+        setsid();
+        int nullfd = open("/dev/null", O_RDWR);
+        if (nullfd < 0) _exit(127);
+        for (int i = 0; i < 3; i++) if (dup2(nullfd, i) < 0) _exit(127);
+        bool closed = false;
+#if defined(__linux__) && defined(SYS_close_range)
+        closed = syscall(SYS_close_range, 3u, ~0u, 0u) == 0;
 #endif
+        if (!closed) for (long fd = 3; fd < last_fd; fd++) close((int)fd);
+        char *const argv[] = {(char *)executable, (char *)arg, NULL};
+        execv(executable, argv);
+        _exit(127);   // exec failure is best-effort: the caller never waits
+    }
+    pthread_t reaper;
+    if (pthread_create(&reaper, NULL, reap_detached, (void *)(intptr_t)pid) == 0)
+        pthread_detach(reaper);
+    // If reaper allocation failed, the child still runs; the OS reaps it
+    // when this process exits. Never turn cleanup into a startup wait.
+    return true;
+}
+
+#endif
+
+bool plat_spawn_self_detached(const char *arg) {
+    char *exe = plat_executable_path();
+    bool ok = exe && spawn_detached(exe, arg);
+    free(exe);
+    return ok;
+}
 
 unsigned plat_code_page(void) {
 #ifdef _WIN32
