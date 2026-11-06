@@ -7,6 +7,7 @@ fixture; no network model or external service is involved.
 
 import json
 import os
+import re
 import socket
 import sys
 import time
@@ -76,6 +77,12 @@ def _wait_for_starts(path, count, timeout=10):
     raise AssertionError(f"request {count} never entered prefill")
 
 
+def _started_id(path, index):
+    """The id of a request in the order they started: ids are random (R10.15)."""
+    with open(path, "rb") as f:
+        return re.findall(rb"\] (\S+): start,", f.read())[index]
+
+
 def _wait_for_log_count(path, marker, count, timeout=60):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -123,10 +130,10 @@ def test_disconnect_stops_prefill_without_false_cancellation(tmp_path):
         # Runner serves one request per connection. Closing after the first
         # response with the deliberately unread second request may send RST and
         # discard that response, so the lifecycle log is the honest oracle:
-        # two cmpl-2 lines mean start + normal completion. A false cancellation
+        # two lines for the third request mean start + normal completion. A false cancellation
         # during prefill produces only the start line.
         _drain_one_request_connection(piped)
-        _wait_for_log_count(log, b"] cmpl-2:", 2)
+        _wait_for_log_count(log, b"] " + _started_id(log, 2) + b":", 2)
 
         # A clean close must release the only slot within one batch-one chunk.
         abandoned = _open(srv.port, long_body)

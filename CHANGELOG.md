@@ -5,6 +5,50 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal: a microbatch no longer frees the logits a slot is about to read (R3.38).** With `--parallel` on Metal, the
+  first slot's scratch grew on demand when other slots decoded together. If that slot had just been fed a single token,
+  as after a prefix hit, the growth freed the buffer it was about to pick its next token from, and the read could crash
+  the server or pick from other data. On SmolLM2-135M the forced sequence segfaulted. The scratch is now sized once,
+  when the batch is created, as the CUDA backend already does.
+  - **Checks:** `tests/test_batch_identity.c` forces the sequence and holds the pointer and its contents.
+  - **Limits:** the first slot's scratch for the batch width is allocated at startup instead of on first use. The live
+    server interleaving was not reproduced end to end; the sequence was forced through the model API.
+
+- **Metal gives its memory back on `/unload` (R6.17).** On Metal, each model load left memory in the GPU driver until the
+  process exited: `POST /unload` said the model was gone, and on SmolLM2-135M Q8_0 the driver still held +122, +280 and
+  +278 MB after three request and `/unload` cycles. It now holds +3, +2 and -5 MB. Metal's autoreleased objects were
+  never drained on Runner's plain C threads, and a command buffer keeps what it used alive; every Objective-C entry point
+  of the Metal backend now drains its own autorelease pool. RSS and Metal's own count never showed this memory, which
+  is wired, so on an 8 GB Mac it pushed other programs into swap: one test binary took 3.8 GB on a 370 KB model, and
+  now peaks at 729 MB.
+  - **Checks:** `tests/test_metal_memory.py` reads the driver's own figure across four `/unload` cycles, and holds every
+    entry point to its pool. Decode 128.71 against 128.50 tok/s (-0.16%), output byte-identical over 12 runs.
+  - **Limits:** the weights, KV and scratch were already released; what stayed was about 120 MB a load, and it did not
+    scale with the model on the two sizes measured (370 KB and 145 MB). Measured on Apple M1 only. CUDA and the CPU are
+    untouched.
+- **Response ids are random, and a stored response can no longer be guessed (R10.15).** `chatcmpl-`, `cmpl-`, `resp_`
+  and `msg_` ids were a counter from 0: they repeated after every restart and across hosts, and anyone who could
+  reach the server could read or delete a `store:true` response at `/v1/responses/resp_0`. An id is now its prefix and
+  128 random bits, 32 hex digits. The log lines and receipts carry the same id. Tool-call and output-item ids
+  (`call_0`, `fc_0`) keep their numbers: they name a place in one response and look nothing up.
+  - **Checks:** the four APIs, a stream, a restart, and a counted id reading nothing, in
+    `tests/test_responses_store.py`.
+  - **Limits:** the id is still the only credential on a stored response. A client that parsed the number out of an id
+    no longer can. If the OS has no random generator the server now refuses to start.
+- **Fix: instance discovery no longer removes records at process exit (R10.20).**
+  Filesystem removal could block after the server's shutdown watchdog had
+  finished. Clean stops now leave their record for the next discovery list
+  or registration to sweep. Dead owners are never listed; available process-start
+  stamps guard against pid reuse. Runner and tray exits use the same policy.
+- **A stop that has to be forced now lands well inside its ten seconds (R10.20).** When a drain cannot finish, the
+  watchdog exited 50 ms before the bound, and a shared macOS runner ended 2 stops of 8 past it (10.007 s at worst):
+  timers there run up to 90 ms late. A late timer could also lose the shutdown note, the one line that says what a
+  forced stop was waiting on. The note now starts at 9 s, the exit is due at 9.5 s, and a note that starts late still
+  gets its turn.
+  - **Checks:** the default-budget case in `tests/conformance/test_server_lifecycle.py` now requires 9.9 s, so a margin
+    this thin fails on any machine. A new case wakes the watchdog 155 ms late and requires the note.
+  - **Limits:** a stuck request gets 0.5 s less before it is cut off. A clean stop is unchanged.
+
 - **A context released while its request waited for the GPU no longer hangs the server (R3.37).** The
   `context_unavailable` 409 returned without giving the device turn back, so every later completion hung while
   `/health` still read `ok`. It took a pinned context deleted during that wait, on a GPU server with more than one

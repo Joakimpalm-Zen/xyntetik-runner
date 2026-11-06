@@ -182,6 +182,59 @@ static int run(const char *path, int prefix) {
     return g_fail ? 1 : 0;
 }
 
+#ifdef RUNNER_GPU_METAL
+float *gpu_spec_logits(model_t *m, int row);
+
+// The logits a forward returns point into the model's own device buffer, and a
+// slot reads them after giving up its device turn. A microbatch led by that
+// model must leave them alone: slot 0 fed one token (a prefix hit) has the
+// smallest scratch there is, and two other slots decoding together grew it under
+// its feet, freeing the buffer it was about to pick from. On a real model the
+// read then segfaulted (R3.38). In the server's order: the batch exists first.
+static void lead_keeps_its_logits(const char *path) {
+    static model_t m[3];
+    model_t *mp[3];
+    model_params p;
+    memset(&p, 0, sizeof p);
+    p.gpu_mode = GPU_AUTO;
+    p.n_threads = 4;
+    p.n_ctx = CTX;
+    p.n_batch = 32;
+    for (int i = 0; i < 3; i++) {
+        if (!model_load(&m[i], path, &p)) { g_fail = 1; return; }
+        mp[i] = &m[i];
+    }
+    model_batch *b = model_batch_create(mp, 3);
+    int32_t toks[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    float *lg = NULL, *saved = NULL;
+    if (b) {
+        for (int i = 1; i < 3; i++) model_forward_batch(&m[i], toks, 8, 0, true);
+        lg = model_forward_batch(&m[0], toks, 1, 0, true);
+        int nv = m[0].n_vocab;
+        saved = malloc(sizeof(float) * (size_t)nv);
+        if (!lg || !saved) { g_fail = 1; goto done; }
+        memcpy(saved, lg, sizeof(float) * (size_t)nv);
+        int idx[2] = { 1, 2 }, pos[2] = { 8, 8 };
+        int32_t tok[2] = { 9, 10 };
+        float *out[2] = { 0 };
+        if (!model_batch_decode(b, idx, tok, pos, 2, out)) {
+            printf("FAIL: the microbatch did not decode\n");
+            g_fail = 1;
+        } else if (gpu_spec_logits(&m[0], 0) != lg) {
+            printf("FAIL: a microbatch replaced the buffer its lead's logits are in\n");
+            g_fail = 1;
+        } else if (memcmp(lg, saved, sizeof(float) * (size_t)nv)) {
+            printf("FAIL: a microbatch changed its lead's logits\n");
+            g_fail = 1;
+        }
+    }
+done:
+    free(saved);
+    if (b) model_batch_free(b);
+    for (int i = 0; i < 3; i++) model_free(&m[i]);
+}
+#endif
+
 int main(int argc, char **argv) {
     const char *path = argc > 1 ? argv[1] : "test.gguf";
     // the opt-in tiled microbatch is tolerance-class (test_metal_batch_tiles.py);
@@ -195,6 +248,9 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (r == 0) r = run(path, LONG_PREFIX);
+#ifdef RUNNER_GPU_METAL
+    if (r == 0) lead_keeps_its_logits(path);
+#endif
     if (r != 0 || g_fail) { printf("batch-identity: FAILED\n"); return 1; }
     printf("batch-identity: ok (%d seqs x %d steps at positions from %d and "
            "from %d, byte-identical, microbatch engaged)\n", NSEQ, STEPS,

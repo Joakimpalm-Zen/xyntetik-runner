@@ -7,6 +7,7 @@
 #include "provenance.h"
 #include "receipts.h"
 #include "compat.h"
+#include "envelope.h"
 
 #include "http.h"
 #include "scheduler.h"
@@ -4979,6 +4980,20 @@ uint64_t server_request_stream(uint64_t seed, uint64_t arrival) {
     return sampler_seed_state(seed + arrival * 0x9E3779B97F4A7C15ull);
 }
 
+// A stored response is read and deleted by its id alone, so an id is a
+// secret (R10.15). 128 bits of a hash of the server's seed and a count: unique
+// and unguessable, with the OS asked once at the start and not on each request,
+// where a failure (no file descriptors left) could only give a weaker id.
+static void request_id(char *out, size_t cap, const char *prefix) {
+    uint8_t in[sizeof SV.id_seed + 8], d[32];
+    uint64_t n = atomic_fetch_add(&SV.req_counter, 1);
+    memcpy(in, SV.id_seed, sizeof SV.id_seed);
+    memcpy(in + sizeof SV.id_seed, &n, 8);
+    envelope_data_sha256_raw(in, sizeof in, d);
+    size_t at = (size_t)snprintf(out, cap, "%s", prefix);
+    for (int i = 0; i < 16; i++) snprintf(out + at + 2 * i, cap - at - 2 * i, "%02x", d[i]);
+}
+
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            jv *req, const tool_envelope *env,
                            const render_state *rs) {
@@ -5002,11 +5017,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // Allocated here rather than beside the response struct, so the start line
     // below and the completion line share one name.
     char req_id[48];
-    snprintf(req_id, sizeof(req_id), "%s%d",
-             api == API_RESPONSES ? "resp_" : api == API_MESSAGES ? "msg_"
-                                            : api == API_CHAT ? "chatcmpl-"
-                                                              : "cmpl-",
-             atomic_fetch_add(&SV.req_counter, 1));
+    request_id(req_id, sizeof(req_id),
+               api == API_RESPONSES ? "resp_" : api == API_MESSAGES ? "msg_"
+                                    : api == API_CHAT ? "chatcmpl-" : "cmpl-");
 
     completion_req q;
     if (!completion_read(s, fd, api, req, env, chat, chat ? rs : NULL, &q))
