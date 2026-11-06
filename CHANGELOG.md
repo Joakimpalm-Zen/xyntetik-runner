@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal gives its memory back on `/unload` (R6.17).** On Metal, each model load left memory in the GPU driver until the
+  process exited: `POST /unload` said the model was gone, and on SmolLM2-135M Q8_0 the driver still held +122, +280 and
+  +278 MB after three request and `/unload` cycles. It now holds +3, +2 and -5 MB. Metal's autoreleased objects were
+  never drained on Runner's plain C threads, and a command buffer keeps what it used alive; every Objective-C entry point
+  of the Metal backend now drains its own autorelease pool. RSS and Metal's own count never showed this memory, which
+  is wired, so on an 8 GB Mac it pushed other programs into swap: one test binary took 3.8 GB on a 370 KB model, and
+  now peaks at 729 MB.
+  - **Checks:** `tests/test_metal_memory.py` reads the driver's own figure across four `/unload` cycles, and holds every
+    entry point to its pool. Decode 128.71 against 128.50 tok/s (-0.16%), output byte-identical over 12 runs.
+  - **Limits:** the weights, KV and scratch were already released; what stayed was about 120 MB a load, and it did not
+    scale with the model on the two sizes measured (370 KB and 145 MB). Measured on Apple M1 only. CUDA and the CPU are
+    untouched.
+
 - **MiniCPM-V-4.7-35B-A3B joins the roster at Tier 2 on openbmb's own Q8_0, text path only (R4.27.2).** The file is
   the GGUF repository's root Q8_0 (thinking fixed off, openbmb's recommended default). Against openbmb's BF16 parent's
   language model computed in float32 it reads 0.0088 mean KLD and 100.00% margin-qualified top-1 (bars 0.05 and 97%,
