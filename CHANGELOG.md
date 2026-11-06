@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Metal: a microbatch no longer frees the logits a slot is about to read (R3.38).** With `--parallel` on Metal, the
+  first slot's scratch grew on demand when other slots decoded together. If that slot had just been fed a single token,
+  as after a prefix hit, the growth freed the buffer it was about to pick its next token from, and the read could crash
+  the server or pick from other data. On SmolLM2-135M the forced sequence segfaulted. The scratch is now sized once,
+  when the batch is created, as the CUDA backend already does.
+  - **Checks:** `tests/test_batch_identity.c` forces the sequence and holds the pointer and its contents.
+  - **Limits:** the first slot's scratch for the batch width is allocated at startup instead of on first use. The live
+    server interleaving was not reproduced end to end; the sequence was forced through the model API.
+
 - **Metal gives its memory back on `/unload` (R6.17).** On Metal, each model load left memory in the GPU driver until the
   process exited: `POST /unload` said the model was gone, and on SmolLM2-135M Q8_0 the driver still held +122, +280 and
   +278 MB after three request and `/unload` cycles. It now holds +3, +2 and -5 MB. Metal's autoreleased objects were

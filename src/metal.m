@@ -5285,6 +5285,14 @@ gpu_batch *gpu_batch_create(model_t **seqs, int n) {
     gpu_t *lead = NULL;
     if (!metal_batch_eligible(seqs, n, &lead)) return NULL;
     model_t *m0 = seqs[0];
+    // The lead's scratch for every width the batch can take, now, before any
+    // request exists. Growing it per step replaced g->logits while the lead's
+    // own slot, between its prefill and its first pick, still pointed into it.
+    if (!metal_ensure_batch(lead, m0, n < MODEL_BATCH_MAX ? n : MODEL_BATCH_MAX)) {
+        fprintf(stderr, "gpu: Metal batch scratch allocation failed, using "
+                "sequential GPU forwards\n");
+        return NULL;
+    }
     gpu_batch *b = calloc(1, sizeof(gpu_batch));
     if (!b) return NULL;
     b->seqs = malloc(sizeof(model_t *) * (size_t)n);
@@ -5370,11 +5378,13 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     int n_embd = b->n_embd;
     int xdim   = b->xdim;
 
-    // The lead's scratch is sized by the largest n any forward has used —
-    // a slot that only ever decoded has batch_cap == 1, and writing column
-    // 1 into one-column buffers lands in whichever allocation the heap put
-    // next (found exactly that way: x's column 1 aliased xb). Grow first.
-    if (!metal_ensure_batch(g, m0, n)) return false;
+    // gpu_batch_create sized the lead's scratch. Writing column 1 into
+    // one-column buffers lands in whichever allocation the heap put next (found
+    // exactly that way: x's column 1 aliased xb), and growing here would free
+    // logits a slot still holds. So a width past the scratch is refused, which no
+    // caller can reach today, and model_batch_decode then runs the sequences one
+    // at a time: the same tokens, more slowly, and no request is dropped.
+    if (n > g->batch_cap) return false;
 
     // per-column embeds (CPU-side, exactly as the solo path does)
     size_t ers = ggml_row_size(m0->tok_embd->type, n_embd);
