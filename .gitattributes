@@ -35,6 +35,11 @@ python/tests/fixtures/** -text
 # for a nine-line pin, 2026-10-24).
 tests/compatibility/tier-smoke/*.txt -text
 
+# The NVFP4 prefill read's prompt: its sha256 is recorded in every read's report
+# and held by tests/test_cuda_act_probe.py, and the read runs on a CUDA host,
+# which may be a Windows checkout.
+tests/fixtures/nvfp4-prefill-prompt.txt -text
+
 # The quantizer's ggml golden: tests/test_quantize.c writes the BF16 slice and
 # compares every byte with ggml's output files.
 tests/fixtures/quant-golden/*.bf16 -text

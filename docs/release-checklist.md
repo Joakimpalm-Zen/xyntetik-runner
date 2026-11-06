@@ -148,11 +148,17 @@ warnings; probe 16/16 finite and within float rounding.
 
 Two reads on the same binary:
 
-- **NVFP4 prefill**: `qwen3.5-4b-nvfp4.gguf`, a 1,971-token prompt,
-  `-n 32 --temp 0 -c 4096`, every layer on the card. Run it by default and with
-  `RUNNER_CUDA_TC_NVFP4=0`; the default must be far faster (the tensor-core path is
-  engaged). Read it with the card alone; a shared card is not a speed read. 1.13.0:
-  1,326.99 against 21.71 tok/s (1.12.0: 1,200.84 and 22.68).
+- **NVFP4 prefill**: `qwen3.5-4b-nvfp4.gguf`, `-f tests/fixtures/nvfp4-prefill-prompt.txt`
+  (1,971 tokens on that file), `-n 32 --temp 0 -c 4096`, every layer on the card. Run
+  it by default and with `RUNNER_CUDA_TC_NVFP4=0`; the default must be far faster (the
+  tensor-core path is engaged). Read it with the card alone; a shared card is not a
+  speed read. Record the prompt's sha256 in the report, as the gate prints it
+  (`a25ab76dfd7ba46f22a8e2c94a7ee0ad91dcf997336bc77786ae23a825136f3d`): tok/s compares
+  only between reports with the same hash. The fixture is the shortest head of
+  `tests/fixtures/gold-corpus-2k.txt` that encodes to 1,971 tokens: 7,555 characters,
+  7,598 bytes. 1.14.0 is the first read on it, on a shared slice: 826.16 against 19.38
+  tok/s. 1.13.0 (1,326.99 against 21.71) and 1.12.0 (1,200.84 and 22.68) named their
+  prompt only by its length, so they compare with neither.
 - **MoE replay**: `make test-cuda-moe-replay`, exit 0, every case within the gate. Budget about 80 minutes on an RTX 3070
   (1.13.0: 4,696 s for the 24 cases); set `CUDA_CACHE_MAXSIZE=4294967296` first so the
   compiled kernels are not evicted between the fixtures. Start it with the gate, not after.
