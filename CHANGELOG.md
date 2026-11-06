@@ -5,6 +5,12 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: `RUNNER_MOE_HOT` gives back the host copies of the experts it holds on the device (R3.35).** A server with
+  Mellum 2.1 Q8_0's 768-slot hot file held 5.05 GB of pages the host path never reads. After warm decode on a 16 GB
+  host, its working set reads 5.39 GB against 10.44 GB, and available memory 5.85 GB against 0.78 GB. Measured on one
+  file on one Windows host. This is a RAM change, not a speed claim: warm decode is unchanged. Load still peaks at
+  6.14 GB, and prints how many experts it gave back. Report:
+  `docs/compat-reports/r3.35-hot-host-copies-2026-11-06`.
 - **A client that disconnects stops its queued model load (R10.12.3.1).** A load waiting in the `--wait-for-vram` queue
   went on waiting after its client had gone, up to the 300 s default, holding the one slot of a swap server. The wait
   now stops within about 100 ms and the server carries on. It stops only if nobody is queued behind that client: a
