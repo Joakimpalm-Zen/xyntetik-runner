@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`runner derive --target-size` gains a middle rung: `--mid T`, or `--ladder T1,...,Tn` high to low (R4.34.1).** A
+  group is demoted one rung at a time instead of straight to the lowest type. Over the ladder, each group's (bytes,
+  error) points are reduced to their lower convex hull, and the cheapest next step over all groups (added error per
+  byte saved) is taken until the file fits.
+  - A rung that costs more per byte than going past it is skipped for that group. The record names each skip, and
+    names where each demoted group ended (`ladder`, `demoted_to`, `skipped`).
+  - Two rungs (`--high`, `--low`) plan exactly as before.
+  - `scripts/type-plan-by-sensitivity.py` takes the same `--ladder` and `--mid`, and the test holds the two to the
+    same plan.
+
 ## v1.15.0 - 2026-11-07
 
 - **Fix: transient VRAM accounting no longer forces durable writes (R6.24).**
