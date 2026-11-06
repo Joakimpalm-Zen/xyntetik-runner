@@ -30,6 +30,23 @@ FORBIDDEN = [
 ]
 
 
+# A record is what a run wrote, committed as evidence. `~/` keeps the owner's
+# name out of it and not the tree: a run from a linked models folder wrote
+# `~/AI_projects/.../models/...` into a report and every check passed it
+# (R6.14). A record keeps `~/<file>` or `models/<file>`. Prose and source may
+# name a home tree, as `~/.cache/xyntetik-runner`, so this reads records only,
+# and commit messages not at all.
+RECORD = re.compile(r"^docs/(compat-reports|benchmarks-raw|[^/]+-evidence)/")
+RECORD_FORBIDDEN = [
+    (re.compile(r"(?<![/.~])~/[^/\s\"'`]+/[^\s\"'`]"), "a home path with a tree under it, in a record"),
+]
+
+
+def forbidden_in(path):
+    """The patterns a file at `path` is held to."""
+    return FORBIDDEN + RECORD_FORBIDDEN if RECORD.match(path) else FORBIDDEN
+
+
 def found(text):
     """(description, matched text) for each pattern found in text."""
     out = []
