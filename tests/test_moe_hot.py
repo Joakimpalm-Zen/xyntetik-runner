@@ -111,6 +111,22 @@ def _score(model, cpu_moe, hot=None, tmp=None):
     return p.stdout, tuple(int(x) for x in m.groups())
 
 
+@pytest.mark.parametrize("hot,listed", [
+    ("0 0\n0 1\n1 2\n", 3),
+    ("".join(f"{l} {e}\n" for l in range(N_LAYER) for e in range(4)), 8),
+])
+def test_the_bank_gives_back_its_listed_experts_host_copies(fixtures, tmp_path, hot, listed):
+    # The count is the hot file's own, by hand. It says what the runner asked the OS to drop, not
+    # what the OS dropped: a fixture's slices are smaller than a page, so no resident-memory number
+    # can be read here, and that claim's evidence is the R3.35 report's measurement on a real file.
+    _cuda()
+    p = _run(["-m", str(fixtures / "m.moe4.gguf"), "--gpu", "auto", "--cpu-moe", "99", "-p", "hello",
+              "-n", "2", "--temp", "0"], hot, tmp_path)
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode == 0, err
+    assert f"RUNNER_MOE_HOT gave back the host copies of {listed} experts" in err
+
+
 @pytest.mark.parametrize("name", ["m.moe4.gguf", "m-q8.gguf"])
 def test_every_expert_in_the_bank_is_the_device_placements_bytes(fixtures, tmp_path, name):
     _cuda()
