@@ -1,8 +1,12 @@
 # R3.30 step 2: hot experts on the device for `--cpu-moe` host layers (`RUNNER_MOE_HOT`)
 
-**Result: 1.96x decode over `--cpu-moe auto`, above the 1.3x kill.** The file is Mellum2.1-12B-A2.5B-Thinking Q8_0, on
-the RTX 3070 (the Windows CUDA host). Decode on a prompt the routing trace never saw reads **27.82 against 14.19
-tok/s**, medians of three interleaved rounds.
+**Result: 1.52x warm decode over `--cpu-moe auto`, above the 1.3x kill.** The file is Mellum2.1-12B-A2.5B-Thinking Q8_0,
+on the RTX 3070 (the Windows CUDA host). Warm decode in one long-lived process, on a prompt the routing trace never
+saw, reads **40.69 against 26.75 tok/s**, medians of three interleaved rounds.
+
+**Corrected 2026-11-06.** This record first read 1.96x (27.82 against 14.19 tok/s). That is a fresh-process reading:
+each run was its own process, so it measured a first request, which pays for paging the mapped file. The first
+request reads 26 to 33 tok/s against the warm 40.69. The original table and raw records are kept below, labelled.
 
 **Limits, first:**
 - **Scope:** opt-in, one file, one card.
@@ -11,9 +15,27 @@ tok/s**, medians of three interleaved rounds.
   those six.
 - **v1 covers the plain top-k SiLU expert FFN only.** The runner refuses a shared expert, expert biases or scales,
   gemma-4's dual branch, hyper-connections, a malformed file, or the knob without `--cpu-moe`.
-- **The measurement beats step 1's projection of 1.66x, and why is not established** (see "Against the projection").
+- **The first request is slower than the warm figure,** and by an amount that depends on the page cache at launch
+  (see "Against the projection").
 
-## The reads
+## The warm read (2026-11-06)
+
+**Run:** runner main eb145de0, the same file and `hot-all.txt`, one long-lived server per run, three interleaved
+rounds (`warm/matrix.log`, its `all` and `auto` rows). Identical requests at a fixed seed, on step 1's bench prompt,
+128 decode tokens. The request's routing matches a `--bench-json` run at that seed record for record.
+
+| | First request | Warm requests, by round | Warm median |
+|---|---:|---|---:|
+| `hot` | 26.23, 29.68, 29.35 | 40.38, 40.86, 40.69 | **40.69** |
+| `auto` | 16.89, 18.29, 18.29 | 26.71, 26.75, 26.86 | **26.75** |
+
+- **The ratio:** 1.52x on the medians.
+- **The first request:** 26 to 33 tok/s across sessions. The 33 comes from `hot` run back to back, the 26 from runs
+  alternating with other placements (`docs/compat-reports/r3.33-first-request-paging-2026-11-06/`).
+
+## The fresh-process reads (2026-11-04)
+
+These are the original measurements, kept as run. They are not the placement's steady speed.
 
 **Run:** runner at this PR's head on main 90cddfe2, the Q8_0 (`JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF@4159d684`,
 sha256 `69e0ac02...`), `bench2.sh`.
@@ -57,15 +79,21 @@ Per mixed-layer call in round 2 (`bench/r2-hot.err`; 129 calls a layer, the prom
 ## Against the projection
 
 Step 1 projected 1.66x. It charged each routed host expert the whole-bank slope (0.370 ms over 16, 18 and 20 host
-banks) and left the rest of the token unchanged. The measured 1.96x is above that, and this record does not explain
-the difference.
+banks) and left the rest of the token unchanged.
 
-Three things differ from the model, and none is measured separately:
-- The host's misses run grouped (`moe_grouped_expert`) and overlap the device's work in the same layer.
-- `auto`'s host layers also pay the norm and the router on the CPU.
-- The two runs' texts and routings are not the same.
+**The open question is answered: warm, the measurement does not beat the model.**
+- **Step 1's 1.66x assumed a served share of 0.785.** This prompt's decode share is 0.738, where the same model gives
+  1.53x. The warm read is 1.52x.
+- **Both placements sit on one line.** Warm, `auto` takes 37.39 ms a token with 128 routed host experts and `hot`
+  24.58 ms with about 59, which is about 0.19 ms a host expert. Step 3's static files give 0.218 ms from four shares
+  (`docs/compat-reports/r3.30-lru-cache-2026-11-06/`).
+- **The 1.96x came from the arms paying different cold costs.** From the fresh-process reading to warm, `auto` gains
+  1.89x (14.19 to 26.75) and `hot` 1.46x (27.82 to 40.69). Those readings are two days apart.
+- **Why they paid different amounts is an inference,** from page-cache state at launch, and was not set or measured
+  directly. The first request's own cost is measured in the R3.33 report.
 
-The record claims the measured number only.
+The note on grouped misses, the CPU router and differing text, which this section first listed as possible causes,
+is not needed to reach 1.52x. None of those was measured separately.
 
 ## Identity (`tests/test_moe_hot.py`, the RTX 3070)
 
@@ -85,7 +113,9 @@ chunked so every row goes through the FFN.
 
 ## Files
 
-- `bench/`: the six runs' `--bench-json` records and stderr; the hot runs carry the profile. Host paths read `~/`.
+- `warm/matrix.log`: the warm read's server log, every row of step 3's matrix (`all` is `hot`).
+- `bench/`: the six fresh-process runs' `--bench-json` records and stderr; the hot runs carry the profile. Host paths
+  read `~/`.
 - `bench2.sh`: one run a call.
 - `hotset.py`: the hot file from step 1's traces (`docs/compat-reports/r3.30-moe-expert-cache-design-2026-11-04/step1/run/`,
   PR #619).
