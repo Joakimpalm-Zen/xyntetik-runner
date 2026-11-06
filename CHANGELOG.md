@@ -5,6 +5,21 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The project's own Mellum 2.1 rewrite joins the roster at Tier 2 on the published file, text path only
+  (R4.33.4).** `mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k` is Runner's `--rewrite --type-plan` of JetBrains'
+  BF16 parent: Q8_0, with the experts at Q5_K and the 896-wide expert down projections at Q5_1. It is pinned by the
+  Hub revision `4941f110` and its sha256. Against the parent in float32 it reads 0.0293 mean KLD and 98.74%
+  margin-qualified top-1 (R4.33's record, the same bytes, no new pass).
+  - **What is not flattering:** it is 31.4 MB larger than bartowski's Q5_K_S for 0.0004 more mean KLD. It was written
+    without an importance matrix. Its first window reads 0.0419. The header's `general.name` is a conversion
+    artifact ("Ckpt Mem"), kept so the bytes stay as published.
+  - **Checks:** tokenizer 0 of 721 corpus strings and 0 of 97,302 vocabulary entries; template conformance 23 of 23
+    (the file's template is JetBrains' byte for byte). The CPU and CUDA tier-smoke replies are byte-identical.
+  - **The Upcoming rows:** Nemotron 3.5 Bolt 74B-A9B's and Super VL 120B-A12B's now name why they are not admitted.
+    Runner refuses both files at load. Both use LatentMoE (expert projections behind a 1,024-wide latent), which
+    Runner does not implement. Super VL declares 512 experts, past Runner's cap of 256. Bolt declares its expert
+    counts and widths per layer, and Runner reads them as scalars (R4.27.4.2, R4.27.4.3).
+
 ## v1.14.0 - 2026-11-06
 
 - **Fix: `-v` crashed on any file whose first block is Mamba-2; found on Nemotron 3 Nano.** The verbose summary's
