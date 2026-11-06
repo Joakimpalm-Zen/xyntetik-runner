@@ -2508,6 +2508,7 @@
       "files": [
         {
           "name": "merged-Q8_0.gguf",
+          "path": "merged/merged-Q8_0.gguf",
           "repo": "Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M",
           "revision": "5902b309ee51e0e93ee719a86d5e4f624cd4f5d7",
           "sha256": "b9d21e525d91b20a1fc3437cf34c7ecfa03afda722d960b95bcfd113f2b7ea02",
@@ -2758,6 +2759,7 @@
       "files": [
         {
           "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf",
+          "path": "trunk-with-head/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf",
           "repo": "Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF",
           "revision": "c104e657903116b7ad852cdd31b9775ad4c7e5d9",
           "sha256": "522632bbb6f2c353621762be5bd48b270b1ff9fe60a9630bd47d5ef097aa0fa2",
@@ -2765,6 +2767,7 @@
         },
         {
           "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00002-of-00004.gguf",
+          "path": "trunk-with-head/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00002-of-00004.gguf",
           "repo": "Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF",
           "revision": "c104e657903116b7ad852cdd31b9775ad4c7e5d9",
           "sha256": "f82cc8f151e15b73bbb84c75baf78f179df1b9b368437d7c75d8b3a7618cb8c8",
@@ -2772,6 +2775,7 @@
         },
         {
           "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00003-of-00004.gguf",
+          "path": "trunk-with-head/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00003-of-00004.gguf",
           "repo": "Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF",
           "revision": "c104e657903116b7ad852cdd31b9775ad4c7e5d9",
           "sha256": "53ada4d2c3f2e189ce209520ecad0ae9649028b19e6bb9a55a021613b204e93b",
@@ -2779,6 +2783,7 @@
         },
         {
           "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00004-of-00004.gguf",
+          "path": "trunk-with-head/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00004-of-00004.gguf",
           "repo": "Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF",
           "revision": "c104e657903116b7ad852cdd31b9775ad4c7e5d9",
           "sha256": "3a8c77474c82c5e81212ef3c5ef2330e75413cc60241d600fcfd87e4e2143b66",
@@ -3120,6 +3125,7 @@
       "files": [
         {
           "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+          "path": "IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
           "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
           "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
           "sha256": "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3",
@@ -3127,6 +3133,7 @@
         },
         {
           "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+          "path": "IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
           "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
           "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
           "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",

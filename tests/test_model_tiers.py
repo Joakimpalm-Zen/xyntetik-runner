@@ -303,6 +303,87 @@ def test_a_model_file_does_not_name_a_row_to_run_with():
     assert any("runs_with" in e for e in errors(roster(row)))
 
 
+def path_row(path, **file_over):
+    row = tier1_row()
+    row["files"][0].update(path=path, **file_over)
+    return row
+
+
+def test_a_path_is_the_files_name_in_a_folder_of_its_repository():
+    assert errors(roster(path_row("Q8_0/toy-Q8_0.gguf"))) == []
+    assert errors(roster(path_row("a/b/toy-Q8_0.gguf"))) == []
+    for bad in ("toy-Q8_0.gguf", "Q8_0/other.gguf", "/Q8_0/toy-Q8_0.gguf", "../toy-Q8_0.gguf",
+                "a/../toy-Q8_0.gguf", "a//toy-Q8_0.gguf", "a\\toy-Q8_0.gguf", ""):
+        assert any("files[0].path" in e for e in errors(roster(path_row(bad)))), bad
+
+
+def test_a_path_needs_a_repository_to_be_in():
+    assert any("files[0].path" in e for e in errors(roster(path_row("Q8_0/toy-Q8_0.gguf", repo=None))))
+
+
+def test_the_resolve_url_is_built_from_the_record():
+    f = {"name": "a b.gguf", "path": "Q8 0/a b.gguf", "repo": "o/r", "revision": "abc"}
+    assert mt.resolve_url(f) == "https://huggingface.co/o/r/resolve/abc/Q8%200/a%20b.gguf"
+    f = {"name": "a.gguf", "repo": "o/r", "revision": None}
+    assert mt.resolve_url(f) == "https://huggingface.co/o/r/resolve/main/a.gguf"
+
+
+def test_the_rendered_row_names_the_folder():
+    assert any("in `Q8_0/`" in line for line in mt._files(path_row("Q8_0/toy-Q8_0.gguf")))
+    assert not any(" in `" in line for line in mt._files(tier1_row()))
+
+
+def hub_answer(status=200, sha=SHA_A, size=1234):
+    return lambda url: (status, sha, size)
+
+
+def test_check_hub_passes_a_file_the_hub_serves_as_recorded():
+    assert mt.check_hub(roster(), hub_answer()) == []
+
+
+@pytest.mark.parametrize("answer,word", [
+    (hub_answer(status=404), "404"),
+    (hub_answer(sha="b" * 64), "sha256"),
+    (hub_answer(size=1), "bytes"),
+    (hub_answer(sha=None), "sha256"),
+])
+def test_check_hub_names_the_row_and_what_differs(answer, word):
+    bad = mt.check_hub(roster(), answer)
+    assert len(bad) == 1 and "toy-q8_0" in bad[0] and word in bad[0]
+
+
+def test_check_hub_refuses_a_file_with_no_repository():
+    row = tier1_row()
+    row["files"][0]["repo"] = None
+    bad = mt.check_hub(roster(row), hub_answer())
+    assert len(bad) == 1 and "repo" in bad[0]
+
+
+def test_check_hub_reports_an_unreachable_hub_as_a_failure():
+    def down(url):
+        raise OSError("no route")
+    bad = mt.check_hub(roster(), down)
+    assert len(bad) == 1 and "no route" in bad[0]
+
+
+def test_the_records_in_a_folder_are_the_hubs():
+    """Read from the Hub's tree on 2026-11-06 at each row's pinned revision.
+    The sha256 cannot stand in for this: the Hub holds the IQ3_S row's second
+    part byte for byte under four folders."""
+    want = {
+        "qwen3-4b-runner-tooluse-merged-q8_0": "merged",
+        "qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head": "trunk-with-head",
+        "qwen3.8-flash-next-gsq-rco-iq3_s": "IQ3_S",
+    }
+    rows = {r["id"]: r for r in json.loads(ROSTER.read_text(encoding="utf-8"))["rows"]}
+    for row_id, folder in want.items():
+        for f in rows[row_id]["files"]:
+            assert f["path"] == f"{folder}/{f['name']}"
+    others = [r["id"] for r in rows.values() if r["id"] not in want
+              and any("path" in f for f in r.get("files") or [])]
+    assert others == []
+
+
 def test_duplicate_row_ids_are_refused():
     assert any("duplicate" in e for e in errors(roster(tier1_row(), tier1_row())))
 
