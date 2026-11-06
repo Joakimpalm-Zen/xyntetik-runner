@@ -1566,6 +1566,17 @@ static void usage_train_to(FILE *f) {
 // and the usage would put the error hundreds of lines above it (R10.19).
 static void usage_pointer(void) { fputs("see runner --help\n", stderr); }
 
+// No arguments, or only the tray opt-outs: --no-tray is there for wrappers that
+// want a bare runner guaranteed text-only, so that run is a bare one too.
+static bool invoked_bare(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--no-tray")) continue;
+        if (!strcmp(argv[i], "--tray") && i + 1 < argc) { i++; continue; }
+        return false;
+    }
+    return true;
+}
+
 // --transcript capture: stream to stdout AND keep the exact bytes for the
 // record (the transcript's output.text is what the terminal saw, verbatim)
 typedef struct {
@@ -2094,6 +2105,7 @@ typedef struct {
     int port, parallel, ttl;
     long parent_pid;
     bool no_tray, force_uncertified;
+    bool bare;   // nothing asked of this run: see invoked_bare
     // R1.2.2: per-request receipts in serve mode
     const char *receipts_dir;
     int receipts_keep;
@@ -3326,8 +3338,12 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         jv_free(vj);
     }
     if (!o->model_path) {
+        // Someone running runner for the first time needs the usage, and it
+        // still ends with the error line. Any other run asked for something,
+        // and gets the short form.
+        if (o->bare) usage_to(stderr, prog);
         fprintf(stderr, "error: need -m MODEL or -hf REPO[:TAG]\n");
-        usage_pointer();
+        if (!o->bare) usage_pointer();
         *rc = 1;
         return true;
     }
@@ -6863,6 +6879,7 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
 #endif
 
     if (!cli_parse(o, argc, argv, &rc)) return rc;
+    o->bare = invoked_bare(argc, argv);
     if (o->pull_spec) return run_pull(o);
     if (!cli_resolve_shape(o)) return 1;
     if (!cli_resolve_trust_key(o)) return 1;

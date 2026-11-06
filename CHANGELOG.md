@@ -8,11 +8,12 @@ Current release and unreleased changes. Compatibility follows the
 - **A usage error ends with the error (R10.19).** An unknown option, a flag with no value, no model and no prompt each
   printed the whole usage, 382 lines, so a script or a person reading the end of the output never saw why: one export
   script read `unknown option --out` as a refusal of the quantization. They now print the error line and
-  `see runner --help`, and the full usage is for `--help`. Running with no model printed the usage with no error at
-  all; it now says `error: need -m MODEL or -hf REPO[:TAG]`. Exit codes are unchanged.
+  `see runner --help`, and the full usage is for `--help`. A bare `runner`, with no arguments or only `--no-tray`, still
+  prints the usage, for someone running it for the first time, and now ends with
+  `error: need -m MODEL or -hf REPO[:TAG]`. Exit codes are unchanged.
   - **Checks:** the whole of stderr for each case, in `tests/test_cli_surface.py`.
   - **Limits:** `runner attest` and `runner train` with nothing after them still print their own short usage. A script
-    that looked for `usage:` on stderr after a failure no longer finds it; `unknown option` now reads
+    that looked for `usage:` on stderr after a failure other than a bare run no longer finds it; `unknown option` now reads
     `error: unknown option`.
 - **A client that disconnects stops its queued model load (R10.12.3.1).** A load waiting in the `--wait-for-vram` queue
   went on waiting after its client had gone, up to the 300 s default, holding the one slot of a swap server. The wait

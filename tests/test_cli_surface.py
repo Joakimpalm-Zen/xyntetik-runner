@@ -391,8 +391,8 @@ USAGE_ERRORS = [
     (["--frobnicate"], "error: unknown option --frobnicate"),
     (["-m"], "error: -m needs a value"),
     (["-m", "x.gguf", "--quantize"], "error: --quantize needs a value"),
-    ([], "error: need -m MODEL or -hf REPO[:TAG]"),
     (["-p", "hi"], "error: need -m MODEL or -hf REPO[:TAG]"),
+    (["--no-tray", "-p", "hi"], "error: need -m MODEL or -hf REPO[:TAG]"),
 ]
 
 
@@ -403,6 +403,17 @@ def test_a_usage_error_ends_with_the_error_and_a_pointer(runner_bin, args, line)
     p = run(runner_bin, *args)
     assert p.returncode == 1 and p.stdout == b""
     assert p.stderr.decode().splitlines() == [line, "see runner --help"]
+
+
+@pytest.mark.parametrize("args", [[], ["--no-tray"], ["--tray", "off"]])
+def test_a_bare_runner_shows_the_usage_and_ends_with_the_error(runner_bin, args):
+    """Someone running runner for the first time needs the usage, and the end
+    of the output is still the error line."""
+    p = run(runner_bin, *args)
+    lines = p.stderr.decode().splitlines()
+    assert p.returncode == 1 and p.stdout == b""
+    assert lines[0].startswith("usage:") and len(lines) > 100
+    assert lines[-1] == "error: need -m MODEL or -hf REPO[:TAG]"
 
 
 def test_a_model_with_no_prompt_says_so_and_stops(runner_bin, tmp_path):
