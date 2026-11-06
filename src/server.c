@@ -3376,6 +3376,11 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // half is filed; nothing needs it today, and it costs threading a context
     // through six translation units.
     memset(&SV, 0, sizeof(SV));
+    if (!plat_random(SV.id_seed, sizeof SV.id_seed)) {
+        fprintf(stderr, "error: the OS random generator is unavailable, and a "
+                "response id must not be guessable\n");
+        return 1;
+    }
 #ifndef _WIN32
     atomic_store(&stop_requested, 0);
     atomic_store(&listener_fd, -1);

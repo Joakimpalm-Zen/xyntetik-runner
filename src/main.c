@@ -1,4 +1,3 @@
-#define _CRT_RAND_S
 // runner — CLI: one-shot completion, interactive chat, and server launcher.
 #include "decide.h"
 #include "clef.h"
@@ -156,24 +155,6 @@ static bool hex_eq_nocase(const char *a, const char *b) {
         if (ca != cb) return false;
         if (!ca) return true;
     }
-}
-
-static bool os_random(uint8_t *out, size_t n) {
-#ifdef _WIN32
-    for (size_t i = 0; i < n; i += 4) {
-        unsigned v;
-        if (rand_s(&v) != 0) return false;
-        for (size_t k = 0; k < 4 && i + k < n; k++)
-            out[i + k] = (uint8_t)(v >> (8 * k));
-    }
-    return true;
-#else
-    FILE *f = plat_fopen("/dev/urandom", "rb");
-    if (!f) return false;
-    size_t r = fread(out, 1, n, f);
-    fclose(f);
-    return r == n;
-#endif
 }
 
 // The chain hash of a receipt on disk (its `chain.hash`), for linking the
@@ -3096,7 +3077,7 @@ static bool run_record_utility(const cli_opts *o, int *rc) {
     if (o->watermark_keygen) {
         uint8_t key[32];
         char id[17];
-        if (!os_random(key, sizeof key)) {
+        if (!plat_random(key, sizeof key)) {
             fprintf(stderr, "error: --watermark-keygen: the OS random generator "
                     "is unavailable\n");
             *rc = 1;
@@ -3244,7 +3225,7 @@ static int run_keygen(const cli_opts *o) {
                 "ml-dsa-44)\n", o->keygen_algo);
         return 1;
     }
-    if (!os_random(seed, sizeof seed)) {
+    if (!plat_random(seed, sizeof seed)) {
         fprintf(stderr, "error: --keygen: the OS random generator is unavailable\n");
         return 1;
     }

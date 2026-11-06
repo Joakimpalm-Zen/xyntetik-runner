@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Response ids are random, and a stored response can no longer be guessed (R10.15).** `chatcmpl-`, `cmpl-`, `resp_`
+  and `msg_` ids were a counter from 0: they repeated after every restart and across hosts, and anyone who could
+  reach the server could read or delete a `store:true` response at `/v1/responses/resp_0`. An id is now its prefix and
+  128 random bits, 32 hex digits. The log lines and receipts carry the same id. Tool-call and output-item ids
+  (`call_0`, `fc_0`) keep their numbers: they name a place in one response and look nothing up.
+  - **Checks:** the four APIs, a stream, a restart, and a counted id reading nothing, in
+    `tests/test_responses_store.py`.
+  - **Limits:** the id is still the only credential on a stored response. A client that parsed the number out of an id
+    no longer can. If the OS has no random generator the server now refuses to start.
+
 - **MiniCPM-V 4.7's chat templates get their own renderers, text path (R4.27.6).** openbmb's GGUF repository ships
   two sets with byte-identical weights that differ only in the embedded template: the root files (thinking fixed off,
   openbmb's recommended default) and `thinking/` (the repository's chat_template.jinja). Runner read them as `qwen35`
