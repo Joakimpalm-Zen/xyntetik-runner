@@ -701,6 +701,75 @@ bool req_thinking_mode_valid(struct jv *req) {
     return true;
 }
 
+static bool jinja_name_char(char c) {
+    return isalnum((unsigned char)c) || c == '_';
+}
+
+// A scan of the tags, not a parse: every doubtful case reads as "not read",
+// because a wrong refusal breaks a client that works today, and the reference
+// would have ignored the key.
+bool template_reads_variable(const char *t, const char *name) {
+    if (!t || !name || !*name) return false;
+    size_t nl = strlen(name);
+    const char *p = t;
+    while ((p = strchr(p, '{')) != NULL) {
+        if (p[1] == '#') {
+            const char *e = strstr(p + 2, "#}");
+            if (!e) return false;
+            p = e + 2;
+            continue;
+        }
+        if (p[1] != '{' && p[1] != '%') { p++; continue; }
+        char close = p[1] == '{' ? '}' : '%';
+        p += 2;
+        char before = 0;   // the last character of the tag that was not a space
+        while (*p && !(p[0] == close && p[1] == '}')) {
+            if (*p == '\'' || *p == '"') {
+                char q = *p++;
+                while (*p && *p != q) p += p[0] == '\\' && p[1] ? 2 : 1;
+                if (*p) p++;
+                before = q;
+                continue;
+            }
+            if (jinja_name_char(*p)) {
+                const char *s = p;
+                while (jinja_name_char(*p)) p++;
+                const char *n = p;
+                while (*n == ' ' || *n == '\t' || *n == '\n' || *n == '\r') n++;
+                bool assigned = n[0] == '=' && n[1] != '=';
+                if ((size_t)(p - s) == nl && !memcmp(s, name, nl) && before != '.' && !assigned)
+                    return true;
+                before = p[-1];
+                continue;
+            }
+            if (*p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') before = *p;
+            p++;
+        }
+        if (*p) p += 2;
+    }
+    return false;
+}
+
+const char *req_template_kwarg_unrendered(struct jv *req, const char *tmpl_text) {
+    // Every key a family's renderer reads, where a family with no use for one
+    // answers it as it always has, then what any render supplies by itself.
+    // Nearly every template reads those, so they say nothing about a switch.
+    static const char *const rendered[] = {
+        "enable_thinking", "preserve_thinking", "reasoning_effort",
+        "reasoning_strength", "bare_recipients",
+        "messages", "tools", "add_generation_prompt", "bos_token", "eos_token",
+    };
+    jv *kw = req ? jv_get((jv *)req, "chat_template_kwargs") : NULL;
+    if (!kw || kw->type != J_OBJ || !tmpl_text) return NULL;
+    for (int i = 0; i < kw->n; i++) {
+        bool known = kw->items[i]->type == J_NULL;
+        for (size_t k = 0; k < sizeof rendered / sizeof *rendered && !known; k++)
+            known = !strcmp(kw->keys[i], rendered[k]);
+        if (!known && template_reads_variable(tmpl_text, kw->keys[i])) return kw->keys[i];
+    }
+    return NULL;
+}
+
 // Qwen 3.6's `preserve_thinking` (chat_template_kwargs, or the top level as
 // enable_thinking is taken): true keeps the thought of every assistant turn,
 // where the template's default keeps those after the last user query only.

@@ -4511,6 +4511,21 @@ or inside `chat_template_kwargs`: `true` replays the `reasoning_content` of
 every assistant turn, where the default keeps only those after the last user
 query as Qwen 3.5 does. A value that is not a boolean or null is refused
 with a 400.
+
+Runner renders each family with its own code and does not evaluate the file's
+Jinja, so it takes only the keys it knows from `chat_template_kwargs`:
+`enable_thinking`, `preserve_thinking`, `reasoning_effort`,
+`reasoning_strength` and `bare_recipients`. **Limit:** any other key is decided
+by the file's own template text. If the template reads the key as a variable,
+the switch would have no effect here, so the request is refused with a 400
+(`unsupported_template_kwarg`, naming the key) rather than served as if it were
+off: Sage-A1.5's `verification` is one, and the refusal does not depend on the
+value, so `false` is refused too. If the template does not read it, the
+reference ignores it and so does Runner, and a client that sends it keeps
+working. A name in a comment, a string or plain text is not a read, and neither
+is another value's attribute. A null value counts as absent. The values a
+render supplies itself (`messages`, `tools`, `add_generation_prompt`,
+`bos_token`, `eos_token`) are not refused, and are ignored here as before.
 A turn that ends on a stop TOKEN also reports that token's own decision as
 `stop_logprobs` (its logprob, the top alternatives and their ids) whenever
 `logprobs` was requested. It rides beside `stop_token` rather than inside

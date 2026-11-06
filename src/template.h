@@ -587,6 +587,17 @@ struct jv;
 // THINK_DEFAULT when absent, so a silent request renders what the model's own
 // reference template would render
 bool req_thinking_mode_valid(struct jv *req);
+// Does this Jinja text read `name` as a variable? A comment, plain text, a
+// string, another value's attribute and the template's own assignment do not
+// count: a reference gives a chat_template_kwargs key to the template as a
+// variable, so only a read can change what it renders.
+bool template_reads_variable(const char *text, const char *name);
+// The first chat_template_kwargs key this template reads and Runner does not
+// render, or NULL. Runner renders each family by hand, so such a key would be
+// dropped and the client served the off shape; one the template does not read
+// is ignored by the reference too, and stays ignored. A null value is absent,
+// as it is for every key Runner reads.
+const char *req_template_kwarg_unrendered(struct jv *req, const char *tmpl_text);
 int req_preserve_thinking(struct jv *req);
 int req_thinking_mode(struct jv *req);
 // `reasoning_effort` from the request (top level or chat_template_kwargs):

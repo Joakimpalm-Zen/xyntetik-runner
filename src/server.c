@@ -569,6 +569,17 @@ typedef void (*chat_prompt_fn)(slot_t *s, sock_t fd, const char *prompt,
                                jv *req, const tool_envelope *env,
                                const render_state *rs);
 
+bool template_kwarg_refused(slot_t *s, sock_t fd, jv *req) {
+    const char *key = req_template_kwarg_unrendered(
+        req, gguf_get_str(&s->m->gf, "tokenizer.chat_template", NULL));
+    if (!key) return false;
+    char msg[256];
+    snprintf(msg, sizeof msg, "chat_template_kwargs.%.96s: this model's chat template "
+             "reads it and Runner does not render it, so it cannot take effect", key);
+    send_error_detail(fd, 400, msg, "chat_template_kwargs", "unsupported_template_kwarg");
+    return true;
+}
+
 static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                                bool add_assistant, chat_prompt_fn run);
 
@@ -612,6 +623,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                    "top level or inside chat_template_kwargs");
         return;
     }
+    if (template_kwarg_refused(s, fd, req)) return;
     int preserve_thinking = req_preserve_thinking(req);
     if (preserve_thinking < 0) {
         send_error(fd, 400,

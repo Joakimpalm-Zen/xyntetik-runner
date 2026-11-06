@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A `chat_template_kwargs` switch Runner cannot render is refused, not silently dropped (R2.13).** Sage-A1.5's
+  `verification` rendered as off with no error, because Runner renders each family with its own code and reads only
+  the keys it knows. A key the file's own template reads as a variable, and Runner does not render, now gets a 400 naming
+  it (`unsupported_template_kwarg`). A key the template does not read is ignored, as the reference ignores it. Limits:
+  the check is by name, so `false` is refused too, and it is a scan of the tags rather than a Jinja parse, which counts
+  anything doubtful as not read. `enable_thinking`, `preserve_thinking`, `reasoning_effort`, `reasoning_strength`,
+  `bare_recipients` and the values a render supplies itself are unaffected.
+
 - **Fix: the project's Clef IQ3_S backbone tokenizes as Cloudflare/clef's own tokenizer, and its row no longer
   claims the decision model (R4.36).** `Clef-backbone-IQ3_S.gguf` is Clef's backbone in Runner's qwen35 view, so it
   declares architecture qwen35 and the Clef rule (architecture clef) missed it: it read with the qwen35 split, 3 of 721
