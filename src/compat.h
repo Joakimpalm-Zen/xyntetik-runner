@@ -291,6 +291,10 @@ void        plat_closedir(plat_dir *d);
 // child as two arguments.
 int plat_spawn_wait(const char *const argv[]);
 
+// Re-exec this image with one argument, no shell, no inherited
+// descriptors, and no caller wait. False if launch could not be scheduled.
+bool plat_spawn_self_detached(const char *arg);
+
 // Install a completed same-filesystem temporary file at `path`, replacing an
 // existing regular file. POSIX rename() has replacement semantics; Windows
 // needs MoveFileEx(..., REPLACE_EXISTING) for the same operation.

@@ -7,6 +7,7 @@ that sleep to end. The conformance harness hid it behind RUNNER_TTL_POLL_S=
 reaper now sleeps in slices and checks for the stop between them.
 """
 import os
+import json
 import pathlib
 import signal
 import socket
@@ -19,12 +20,12 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal contract")
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal contract")
 
 
 @pytest.fixture(scope="module")
 def runner_bin():
-    exe = ROOT / "runner"
+    exe = ROOT / ("runner.exe" if os.name == "nt" else "runner")
     if not exe.exists():
         pytest.skip("runner binary not built")
     return exe
@@ -44,6 +45,7 @@ def _free_port():
         return s.getsockname()[1]
 
 
+@posix_only
 def test_sigterm_does_not_wait_for_the_reaper_poll(runner_bin, model):
     env = dict(os.environ)
     env.pop("RUNNER_TTL_POLL_S", None)   # the shipped 5 s cadence, deliberately
@@ -75,6 +77,7 @@ def test_sigterm_does_not_wait_for_the_reaper_poll(runner_bin, model):
 
 @pytest.mark.parametrize("registry", [False, True], ids=["single-model", "swap-set"])
 @pytest.mark.parametrize("sweep", ["list", "next-server"])
+@posix_only
 def test_clean_stop_leaves_record_for_discovery_to_sweep(runner_bin, model, tmp_path,
                                                          registry, sweep):
     # Process death, established by wait(), is the independent liveness
@@ -87,7 +90,8 @@ def test_clean_stop_leaves_record_for_discovery_to_sweep(runner_bin, model, tmp_
     assert helper.is_file(), "build test-instances with make"
     home = tmp_path / "home"
     home.mkdir()
-    env = dict(os.environ, HOME=str(home), APPDATA=str(home))
+    env = dict(os.environ, HOME=str(home), APPDATA=str(home),
+               RUNNER_TEST_INSTANCE_SWEEP_DELAY_MS="5000")
     records = home / ".xyntetik" / "runner" / "instances"
     spec = f"a={model},b={model}" if registry else str(model)
 
@@ -106,10 +110,74 @@ def test_clean_stop_leaves_record_for_discovery_to_sweep(runner_bin, model, tmp_
         result = subprocess.run([helper, "list"], env=env, check=True,
                                 capture_output=True, text=True, timeout=10)
         assert str(pid) not in result.stdout.splitlines()
+        deadline = time.monotonic() + 8
+        while record.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
         assert not record.exists(), "the public list sweeps the dead owner"
     else:
         # Do not list first: registration alone must remove the old file,
         # including on hosts that never run a tray or discovery controller.
         with server() as second:
-            assert not record.exists(), "the next server sweeps the old file"
+            deadline = time.monotonic() + 8
+            while record.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert not record.exists(), "the next server eventually sweeps the old file"
             assert (records / f"{second.proc.pid}.json").is_file()
+
+
+def test_blocked_sweep_does_not_hold_start_or_exit(runner_bin, model, tmp_path):
+    sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+    from harness import RunnerServer
+
+    home = tmp_path / "home"
+    records = home / ("xyntetik" if os.name == "nt" else ".xyntetik") / "runner" / "instances"
+    records.mkdir(parents=True)
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    assert dead.wait(timeout=5) == 0  # independent proof that this PID is dead
+    stale = records / f"{dead.pid}.json"
+    stale.write_text(json.dumps({"pid": dead.pid, "mode": "serve"}))
+    temporary = records / f"{dead.pid}.json.tmp"
+    temporary.touch()
+    live = records / f"{os.getpid()}.json"
+    live.write_text(json.dumps({"pid": os.getpid(), "mode": "cli"}))
+    marker = tmp_path / "sweeper.pid"
+    env = dict(os.environ, HOME=str(home), APPDATA=str(home),
+               RUNNER_TEST_INSTANCE_SWEEP_DELAY_MS="5000",
+               RUNNER_TEST_INSTANCE_SWEEP_MARKER=str(marker))
+    worker = None
+    first = RunnerServer(runner_bin, str(model), ctx=128, env=env, start_timeout=3,
+                         extra_args=["--gpu", "off", "-t", "2"])
+    try:
+        first.start()
+        deadline = time.monotonic() + 3
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        worker = int(marker.read_text())
+        assert worker != first.proc.pid, "cleanup must run in a separate process"
+        assert stale.exists(), "cleanup is still blocked after the server became healthy"
+        t0 = time.monotonic()
+        first.stop(strict=True)
+        assert time.monotonic() - t0 < 2, "server exit waited for its cleanup helper"
+        assert not first.killed
+
+        # A second start does not wait for the worker lock or run a duplicate sweep.
+        second = RunnerServer(runner_bin, str(model), ctx=128, env=env, start_timeout=3,
+                              extra_args=["--gpu", "off", "-t", "2"])
+        with second:
+            assert int(marker.read_text()) == worker
+        # No discovery list runs: the helper alone must clear the readerless backlog,
+        # including records left by both servers after they stopped.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and (stale.exists() or temporary.exists() or
+                (records / f"{first.proc.pid}.json").exists() or
+                (records / f"{second.proc.pid}.json").exists()):
+            time.sleep(0.02)
+        assert sorted(p.name for p in records.glob("*.json")) == [live.name]
+        assert not temporary.exists()
+    finally:
+        first.stop()
+        if worker is not None:
+            try:
+                os.kill(worker, signal.SIGTERM)
+            except OSError:
+                pass

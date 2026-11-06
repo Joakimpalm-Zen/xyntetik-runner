@@ -30,12 +30,13 @@ WINDOWS = os.name == "nt"
 # below 32768 is never a source port, so the poll only ever reaches a server.
 # (The same mechanism ended a kld-compare CI run on 2026-10-23.)
 _PORT_LOW, _PORT_HIGH = 20000, 32767
+BIND_ATTEMPTS = 5
 
 
 def free_port():
-    """A port below the ephemeral ranges that binds now. Racy in principle;
-    the server binds immediately after and start() fails loudly if it lost
-    the race."""
+    """A port below the ephemeral ranges that binds now. Racy in principle:
+    two parallel workers can draw the same one. The server binds immediately
+    after, the loser exits, and start() takes another port."""
     rng = random.SystemRandom()
     for _ in range(500):
         port = rng.randint(_PORT_LOW, _PORT_HIGH)
@@ -91,6 +92,7 @@ class RunnerServer:
         self.proc = None
         self._log = None
         self._own_log = None
+        self.kept_log = None   # where a failing test's server log was left
         self.peak_rss_kb = None
         self.exit_code = None
         self.killed = False
@@ -103,13 +105,39 @@ class RunnerServer:
         self.start()
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, exc_type, exc, tb):
+        # A failing test keeps the server's log, and shows its tail: a test that
+        # failed with a clean stop used to delete the only record of what the
+        # server did. A skip passes through here too and is not a failure.
+        # (By name: pytest's failure and skip are not Exceptions, so a type test
+        # would lose pytest.fail, and this file does not import pytest.)
+        failing = exc is not None and exc_type.__name__ != "Skipped"
         # a crash on shutdown is a crash: reported unless the block is
         # already unwinding an exception of its own
-        self.stop(strict=exc[0] is None)
+        self.stop(strict=exc_type is None, keep_log=failing)
+        if failing:
+            self.kept_log = self.log_path or self._own_log
+            exc.add_note(f"runner server log {self.kept_log}, its tail:\n{self._tail()}")
+            self._own_log = None
         return False
 
     def start(self):
+        for attempt in range(BIND_ATTEMPTS):
+            try:
+                return self._start_once()
+            except TransportError as e:
+                # Only a lost bind is a reason to try again: anything else is
+                # the failure a test is here to see.
+                if attempt == BIND_ATTEMPTS - 1 or "cannot bind" not in (e.context.get("log") or ""):
+                    raise
+                self._log.close()
+                self._log = None
+                if self._own_log:
+                    os.unlink(self._own_log)
+                    self._own_log = None
+        return self
+
+    def _start_once(self):
         self.port = free_port()
         argv = (list(self.exe) if isinstance(self.exe, list) else [self.exe]) + [
                 "-m", self.model, "--serve", "--no-tray",
@@ -169,7 +197,7 @@ class RunnerServer:
             raise TransportError("runner died mid-suite",
                                  returncode=self.proc.returncode, log=self._tail())
 
-    def stop(self, strict=False):
+    def stop(self, strict=False, keep_log=False):
         """SIGTERM, wait, and record how the runner went. A server that had
         become healthy exits 0 on SIGTERM; anything else after a normal stop
         is a shutdown defect (a double free at exit passed every server test
@@ -194,7 +222,7 @@ class RunnerServer:
         self._log = None
         unclean = strict and (self.killed or (not WINDOWS and self.exit_code != 0))
         log = self._tail() if unclean else None
-        if self._own_log:
+        if self._own_log and not keep_log:
             os.unlink(self._own_log)
             self._own_log = None
         if unclean:

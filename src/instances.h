@@ -5,7 +5,8 @@
 // future scheduler — can see what is running on this machine without
 // port-scanning or process-list guessing. Exit leaves the record alone so
 // filesystem cleanup cannot stall termination. Readers and new registrations
-// sweep dead owners, checking process-start stamps when available. Utility modes
+// filter dead owners, and an independent helper sweeps them asynchronously,
+// checking process-start stamps when available. Utility modes
 // (--quantize, --caps, --bench-json, --version) do not register.
 //
 // Registration is BEST-EFFORT: a failure to write the record must never
@@ -48,11 +49,15 @@ bool instances_set_port(int port);
 // call more than once. Do not call at exit: filesystem removal can block.
 void instances_unregister(void);
 
-// List live records, deleting stale ones (dead pid) as they are found.
+// List live records, scheduling stale cleanup without waiting for deletion.
 // Returns a malloc'd array (free with instances_list_free), count in *n.
 // Never returns records for pids that are not alive.
 instance_rec *instances_list(int *n);
 void instances_list_free(instance_rec *recs, int n);
+
+// Internal re-exec entry point. Cleanup owns its lock and all deletion I/O
+// in a separate process; callers never wait for it at startup or exit.
+int instances_sweep_worker(void);
 
 // True if a process with this pid is alive (platform-appropriate check).
 bool instance_pid_alive(long pid);

@@ -28,6 +28,15 @@ static int fails = 0;
     fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, msg); fails++; } \
 } while (0)
 
+static void await_sweep(const char *path) {
+    for (int i = 0; i < 500; i++) {
+        FILE *f = fopen(path, "rb");
+        if (!f) return;
+        fclose(f);
+        plat_sleep_ms(10);
+    }
+}
+
 static void write_fake(const char *dir, long pid, const char *name) {
     char path[1300];
     snprintf(path, sizeof path, "%s/%ld.json", dir, pid);
@@ -112,6 +121,8 @@ static int lease_helper(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--internal-instance-sweep"))
+        return instances_sweep_worker();
     if (argc > 1) return lease_helper(argc, argv);
     char tmpl[512];
 #ifdef _WIN32
@@ -173,6 +184,7 @@ int main(int argc, char **argv) {
             if (r[i].port == 8124) found_reused = true;
         CHECK(!found_reused, "reused-PID record is not attributed to its new owner");
         instances_list_free(r, n);
+        await_sweep(reused);
         f = fopen(reused, "rb");
         CHECK(f == NULL, "reused-PID record is swept");
         if (f) fclose(f);
@@ -209,6 +221,7 @@ int main(int argc, char **argv) {
     {
         char dead[1300];
         snprintf(dead, sizeof dead, "%s/%ld.json", dir, (long)getpid() + 2000000);
+        await_sweep(dead);
         FILE *f = fopen(dead, "rb");
         CHECK(f == NULL, "stale record file deleted by the sweep");
         if (f) fclose(f);
@@ -241,6 +254,8 @@ int main(int argc, char **argv) {
         FILE *f = fopen(deadtmp, "wb"); if (f) fclose(f);
         if (livetmp[0]) { f = fopen(livetmp, "wb"); if (f) fclose(f); }
         CHECK(instances_register("cli", 0, NULL, NULL, 0), "register sweeps");
+        await_sweep(dead);
+        await_sweep(deadtmp);
         f = fopen(dead, "rb");
         CHECK(f == NULL, "a dead process's record is swept at registration");
         if (f) fclose(f);
@@ -266,6 +281,7 @@ int main(int argc, char **argv) {
         r = instances_list(&n);
         CHECK(n == 0, "corrupt record ignored");
         instances_list_free(r, n);
+        await_sweep(junk);
         f = fopen(junk, "rb");
         CHECK(f == NULL, "corrupt record swept");
         if (f) fclose(f);
@@ -290,6 +306,7 @@ int main(int argc, char **argv) {
         instances_list_free(r, n);
         char zp[1300];
         snprintf(zp, sizeof zp, "%s/%ld.json", dir, (long)z);
+        await_sweep(zp);
         FILE *f = fopen(zp, "rb");
         CHECK(f == NULL, "zombie record swept");
         if (f) fclose(f);

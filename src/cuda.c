@@ -4024,8 +4024,31 @@ static bool release_host_pages(gguf_tensor *t, void *ctx) {
     return true;
 }
 
+// RUNNER_MOE_HOT: the slices moe_hot_upload copied into layer l's bank. The
+// host stays home for the other experts, so its tensors keep their pages and
+// only a listed expert's go. Its slices are the bank's bytes and the host path
+// never reads them (model_moe_hot_terms runs the misses), so nothing here
+// changes a value either. Returns the experts released.
+static int moe_hot_release_host(model_t *m, const layer_t *ly, int l) {
+    const int *slot = m->moe_hot_slot + (size_t)l * m->n_expert;
+    uint64_t gs, us, ds;
+    moe_hot_strides(ly, m->n_embd, m->n_ff_exp, &gs, &us, &ds);
+    const uint8_t *g = ly->ffn_gate_exps->data, *u = ly->ffn_up_exps->data,
+                  *dn = ly->ffn_down_exps->data;
+    int n = 0;
+    for (int e = 0; e < ly->n_expert; e++) {
+        if (slot[e] < 0) continue;
+        plat_release_pages(g + (size_t)e * gs, gs);
+        plat_release_pages(u + (size_t)e * us, us);
+        plat_release_pages(dn + (size_t)e * ds, ds);
+        n++;
+    }
+    return n;
+}
+
 static void cuda_release_host_weights(model_t *m) {
     if (m->weights_locked) return;
+    int hot = 0;
     for (int l = 0; l < m->gpu_layers && l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
         gguf_tensor *mix[LAYER_MIXER_MAX];
@@ -4033,9 +4056,13 @@ static void cuda_release_host_weights(model_t *m) {
         for (int i = 0; i < nmix; i++) release_host_pages(mix[i], NULL);
         if (!(ly->is_moe && moe_on_host(m, l)))
             layer_ffn_tensors_each(ly, ly->n_expert, release_host_pages, NULL);
+        else if (moe_hot_on(m, l))
+            hot += moe_hot_release_host(m, ly, l);
     }
     if (m->gpu_layers >= m->n_layer) release_host_pages(m->output, NULL);
     release_host_pages(m->tok_embd, NULL);
+    if (hot)
+        fprintf(stderr, "gpu-split: RUNNER_MOE_HOT gave back the host copies of %d experts\n", hot);
 }
 
 static bool kv_gather_init(gpu_t *g, model_t *m);
