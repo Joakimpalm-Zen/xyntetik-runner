@@ -945,3 +945,35 @@ def test_keep_alive_refuses_when_it_cannot_be_honored():
         assert after["resident"] == before["resident"], (before, after)
         # the normal case -- no keep_alive field -- is untouched and still serves
         assert _chat(srv.base_url)["choices"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="temporary measurement")
+def test_zz_measure_stop_on_this_runner(tmp_path):
+    """Temporary, never merged: how late is the stop on a shared macOS runner."""
+    import socket
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    model = os.environ.get("RUNNER_TEST_MODEL", os.path.join(root, "test.gguf"))
+    trace = tmp_path / "trace"
+    env = {"RUNNER_TEST_DRAIN_GRACE_MS": "200", "R_TRACE": str(trace)}
+    over = []
+    for _ in range(600):
+        a = time.monotonic(); time.sleep(0.01); over.append((time.monotonic() - a - 0.01) * 1000)
+    over.sort()
+    took = []
+    for _ in range(8):
+        proc, port, r, w = _serve_on_a_pipe("a=%s,b=%s" % (model, model), 1, env)
+        body = json.dumps({"model": "a", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 4,
+                           "temperature": 0}).encode()
+        urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:%d/v1/chat/completions" % port, data=body,
+                               headers={"Content-Type": "application/json"}), timeout=30).read()
+        _drain_pipe(r)
+        _fill_pipe(w)
+        t0 = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        os.waitpid(proc.pid, 0)
+        took.append(round(time.monotonic() - t0, 4))
+        proc.returncode = 143
+        os.close(r)
+        os.close(w)
+    pytest.fail("MEASURE took %s | server wake/note/pre-exit %s | sleep(10ms) overshoot ms p50 %.2f p99 %.2f max %.2f" % (
+        took, trace.read_text().replace("\n", " ; "), over[300], over[594], over[-1]))

@@ -3259,6 +3259,7 @@ static void *drain_watchdog(void *arg) {
         // deadline is absolute: a late wake costs the budget nothing.
         plat_sleep_ms(hard < 1 ? 10 : 100);
     }
+    double tr_wake = plat_now();
     // The diagnostic and the exit fit inside the advertised ten-second bound, with
     // room for timers that run late. On a shared macOS runner a 10 ms sleep overshot
     // by 26 ms at the median and 90 ms at worst, and the note started 154 ms late,
@@ -3275,6 +3276,7 @@ static void *drain_watchdog(void *arg) {
         if (left <= 0) break;
         plat_sleep_ms(left > 0.1 ? 100 : (int)(left * 1000) + 1);
     }
+    double tr_note = plat_now();
     // claim the exit, unless the run released its bound at this very moment
     unsigned owner = me;
     if (!atomic_compare_exchange_strong(&drain_owner, &owner, DRAIN_FIRING)) return NULL;
@@ -3289,6 +3291,8 @@ static void *drain_watchdog(void *arg) {
         while (!atomic_load(&drain_note_sent) && plat_now() + 0.01 < note_until)
             plat_sleep_ms(10);
     }
+    { const char *tp = getenv("R_TRACE"); if (tp) { FILE *f = fopen(tp, "a"); if (f) { double e = plat_now(), b = t / 1e6;
+      fprintf(f, "%.4f %.4f %.4f\n", tr_wake - b, tr_note - b, e - b); fclose(f); } } }
     _exit(128 + atomic_load(&stop_sig));
 }
 
