@@ -1022,6 +1022,7 @@
     "qwen3.6-35b-a3b-q4_k_m",
     "ornith-1.5-35b-a3b-q8_0",
     "empero-qwen3.8-35b-a3b-distill-q6_k",
+    "sage-a1.5-q6_k",
     "minicpm-v-4.7-35b-a3b-q8_0"
    ],
    "tool_protocol": {

@@ -46,17 +46,17 @@ def test_help_is_an_answer_on_stdout(runner_bin):
     assert p.stdout.startswith("usage:") and p.stderr == ""
 
 
-def test_an_unknown_option_is_refused_with_usage_on_stderr(runner_bin):
+def test_an_unknown_option_is_refused_on_stderr(runner_bin):
     p = run(runner_bin, "--bogus")
     assert p.returncode == 1
     assert "unknown option --bogus" in p.stderr
-    assert "usage:" in p.stderr and p.stdout == ""
+    assert "usage:" not in p.stderr and p.stdout == ""
 
 
-def test_a_flag_missing_its_value_prints_usage_and_fails(runner_bin):
+def test_a_flag_missing_its_value_fails_on_stderr(runner_bin):
     p = run(runner_bin, "-m")
     assert p.returncode == 1
-    assert "usage:" in p.stderr and p.stdout == ""
+    assert "-m needs a value" in p.stderr and p.stdout == ""
 
 
 def test_an_early_exit_ends_parsing_where_it_stands(runner_bin):

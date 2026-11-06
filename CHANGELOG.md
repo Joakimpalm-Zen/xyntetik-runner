@@ -12,6 +12,42 @@ Current release and unreleased changes. Compatibility follows the
   the check is by name, so `false` is refused too, and it is a scan of the tags rather than a Jinja parse, which counts
   anything doubtful as not read. `enable_thinking`, `preserve_thinking`, `reasoning_effort`, `reasoning_strength`,
   `bare_recipients` and the values a render supplies itself are unaffected.
+- **A usage error ends with the error (R10.19).** An unknown option, a flag with no value, no model and no prompt each
+  printed the whole usage, 382 lines, so a script or a person reading the end of the output never saw why: one export
+  script read `unknown option --out` as a refusal of the quantization. They now print the error line and
+  `see runner --help`, and the full usage is for `--help`. A bare `runner`, with no arguments or only `--no-tray`, still
+  prints the usage, for someone running it for the first time, and now ends with
+  `error: need -m MODEL or -hf REPO[:TAG]`. Exit codes are unchanged.
+  - **Checks:** the whole of stderr for each case, in `tests/test_cli_surface.py`.
+  - **Limits:** `runner attest` and `runner train` with nothing after them still print their own short usage. A script
+    that looked for `usage:` on stderr after a failure other than a bare run no longer finds it; `unknown option` now reads
+    `error: unknown option`.
+- **Sage-A1.5 joins the roster at Tier 2 on InternScience's own Q6_K, and occamy-1.0 is listed Upcoming (R4.27.7).**
+  Both are qwen35moe derivatives of Qwen3.6-35B-A3B, each read against its own BF16 parent computed in float32 (bars
+  0.05 mean KLD and 97% margin-qualified top-1, 300 positions, CPU).
+  - **Sage-A1.5:** InternScience's model, built by its publisher on Qwen3.6-35B-A3B and InternScience's Agents-A1.
+    - Q6_K: 0.0395 mean KLD and 97.9% margin-qualified, passes. The Q4_K_M misses (0.145).
+    - Tokenizer 0 of 721 and 0 of 247,091 against its tokenizer.json (the qwen35 split).
+    - Template conformance 25 of 25 in text and tokens.
+    - CPU and CUDA cells pinned and matched; cpu_cuda 9 of 9 exact with routing pinned.
+    - Limits: the template's `verification` switch is not served (a request with it does not get the trigger), and the
+      GGUF names itself "Agents A1.5". Record: `docs/compat-reports/sage-a1.5-2026-11-06/`.
+  - **occamy-1.0:** Accio-Lab's finetune. No publisher file passes: Q8_0 0.0590 / 98.7%, Q6_K 0.0836 / 95.4%, Q5_K_M
+    0.0970 / 95.8%, Q4_K_M 0.258 / 85.7%. Tokenizer (the qwen2 split its header labels) and template (25 of 25) pass.
+    Where the distance comes from is not yet read. Record: `docs/compat-reports/occamy-1.0-2026-11-06/`.
+- **Fix: instance cleanup no longer delays server startup (R10.23).**
+  Registration and discovery lists request a separate cleanup process instead
+  of deleting stale records on the caller's path. One helper sweeps a folder
+  at a time; it can finish after the server exits. Dead records are filtered
+  immediately and eventually removed as storage progresses, including on
+  hosts without a tray. Cleanup launch failures never fail a server start.
+
+- **Windows: a second server on a port in use is refused, not silently sharing it (R10.22).** `SO_REUSEADDR` let both
+  bind on Windows. The second printed `server listening` and got no request, and when the first stopped, its clients'
+  connections were reset. It now exits with `cannot bind 127.0.0.1:PORT: is another server on this port?`, as Linux
+  already refused. This was the cause of a rare `WinError 10054` under `pytest -n`, when two workers drew the same port;
+  the test harness now takes another port on a lost bind. Linux and macOS keep `SO_REUSEADDR`, and a restart straight
+  after serving still binds. Measured on Windows.
 
 - **Fix: the project's Clef IQ3_S backbone tokenizes as Cloudflare/clef's own tokenizer, and its row no longer
   claims the decision model (R4.36).** `Clef-backbone-IQ3_S.gguf` is Clef's backbone in Runner's qwen35 view, so it

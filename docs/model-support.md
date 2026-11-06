@@ -581,12 +581,19 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Qwen3.6</b>, 1 model: CPU ✅ · CUDA ✅ · Metal n/a · Train n/a</summary>
+<summary><b>Qwen3.6</b>, 2 models: CPU ✅ · CUDA ✅ · Metal n/a · Train n/a</summary>
 <p><b>Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B)</b></p>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="#empero-qwen3.8-35b-a3b-distill-q6_k"><code>Qwen3.8-35B-A3B-Q6_K.gguf</code></a></td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
+</tbody>
+</table>
+<p><b>Sage-A1.5 (InternScience's, built on Qwen3.6-35B-A3B and Agents-A1)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#sage-a1.5-q6_k"><code>Sage-A1.5-Q6_K.gguf</code></a></td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
 </tbody>
 </table>
 </details>
@@ -840,7 +847,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
+**Upcoming** (planned, not supported yet): Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B), occamy-1.0 (Accio-Lab's finetune of Qwen3.6-35B-A3B).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -1852,6 +1859,31 @@ Text path only (the vision projector is not loaded): empero-ai's Q6_K of its Qwe
 - **LoRA adapter serving:** supported (runner 1.14.0, 2026-11-06).
 - **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-06 ([log](#transition-log)).
 
+#### Sage-A1.5 (InternScience's, built on Qwen3.6-35B-A3B and Agents-A1)
+
+<a id="sage-a1.5-q6_k"></a>
+##### `Sage-A1.5-Q6_K.gguf`
+
+Text path only (the vision projector is not loaded): InternScience's Q6_K of its Sage-A1.5, which its publisher built on Qwen3.6-35B-A3B and InternScience's Agents-A1 and which is not a Qwen release, passes the fidelity bar: against InternScience's BF16 parent computed in float32 it reads 0.0395 mean KLD and 97.9% margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU). The publisher's Q4_K_M misses (0.145).
+
+- **File:** `Sage-A1.5-Q6_K.gguf` (sha256 `6862a4df34d209fc83d454f491460a4ebac23d1778c563b3266acf81bcd2397e`, 29,208,731,872 bytes, from [InternScience/Sage-A1.5-Q6_K-GGUF](https://huggingface.co/InternScience/Sage-A1.5-Q6_K-GGUF) at revision `8dfbf093a3e2`).
+- **Upstream checkpoint:** InternScience/Sage-A1.5 at revision `0e3205cf441c`.
+- **Quantization:** Q6_K (InternScience).
+- **Licence:** `apache-2.0`, as the InternScience/Sage-A1.5 model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** InternScience's files against the BF16 parent at 0e3205cf computed in float32 on the CPU (transformers 5.16.1, float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files): Q6_K 0.0395 mean KLD / 95.3% top-1 / 97.9% margin-qualified; Q4_K_M 0.1445 / 84.3% / 92.5%. Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against the publisher's tokenizer.json (the qwen35 split, as its header labels it); template conformance 25/25 in text and tokens against the file's own template, Qwen3.6-35B-A3B's with a verification switch. Record: docs/compat-reports/sage-a1.5-2026-11-06/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU and CUDA for this file (29.2 GB: on a CUDA MIG slice, 1g.24gb, sm_120, the fitted split places 34 of 40 blocks on the device); Metal runs qwen35moe on toy models only. Text only: the vision projector InternScience ships beside it is not loaded. Not a Qwen release: InternScience's Sage-A1.5, built by its publisher on Qwen3.6-35B-A3B and InternScience's Agents-A1 (both apache-2.0); the GGUF's internal name is "Agents A1.5". The template's verification switch (chat_template_kwargs verification) is not served: such a request does not get the verification trigger the template appends to the system message. The file carries Qwen's NextN predictor block, consumed only with --mtp. The publisher's Q4_K_M (0.145) misses the bar. A system message after the conversation has started is refused, as the template refuses it. Licence: apache-2.0.
+- **Still missing:** A Metal run on a Mac that holds the file (29.2 GB), and the Windows CUDA host's cells; task quality and the tool protocol on the real checkpoint.
+- **Evidence:** [docs/compat-reports/sage-a1.5-2026-11-06/README.md](compat-reports/sage-a1.5-2026-11-06/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.14.0 on 2026-11-06.
+- **CPU:** ✅ v1.14.0 2026-11-06 on linux-x86_64-cuda (borrowed hardware) at commit `e11ffcaddcb4`, output sha256 `0341fe4d30b107df`, [pin](../tests/compatibility/tier-smoke/sage-a1.5-q6_k.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.14.0 2026-11-06 on linux-x86_64-cuda (borrowed hardware) at commit `e11ffcaddcb4`, output sha256 `0341fe4d30b107df`, [pin](../tests/compatibility/tier-smoke/sage-a1.5-q6_k.linux-x86_64-cuda.cuda.txt)
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Not measured: Metal runs qwen35moe on toy models (make test-metal-qwen35moe, to the CPU's logits at 1e-5), but this file (29.2 GB) has not been run on a Mac that holds it.
+- **LoRA training:** no: MoE on a Gated DeltaNet model (runner 1.14.0, 2026-11-06).
+- **LoRA adapter serving:** supported (runner 1.14.0, 2026-11-06).
+- **Tier history:** Tier 2, maintained on report from 2026-11-06 ([log](#transition-log)).
+
 ### Ornith 1.5
 
 #### Text path only: Ornith-1.5-35B-A3B (ornith-ai)
@@ -2825,6 +2857,17 @@ Not admitted: a new architecture.
 - **Missing for Tier 1:** Read the model code first, then an admission; 78B at Q4 is about 45 GB, the lab CPU box only.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
+### occamy-1.0 (Accio-Lab's finetune of Qwen3.6-35B-A3B)
+
+<a id="occamy-1.0"></a>
+#### occamy-1.0 (Accio-Lab's finetune of Qwen3.6-35B-A3B)
+
+Text path only: Accio-Lab's finetune of Qwen3.6-35B-A3B, not a Qwen release. None of the publisher's K-quant files passes the fidelity bar against Accio-Lab's BF16 parent computed in float32: Q8_0 0.0590 mean KLD and 98.7% margin-qualified top-1, Q6_K 0.0836 and 95.4%, Q5_K_M 0.0970 and 95.8%, Q4_K_M 0.258 and 85.7% (bars 0.05 and 97%, 300 positions, CPU; R4.27.7).
+
+- **Numerical anchor:** anchor: the publisher's files against its BF16 parent in float32, all below the bar (record).
+- **Missing for Tier 1:** A file that passes the bar. The publisher's GGUF files (Accio-Lab/occamy-1.0-GGUF at 15027de4) read 1.7x (Q8_0) to 5.4x (Q4_K_M) the base Qwen3.6-35B-A3B's files by the same method, with the Q5_K_M and Q6_K near one level; where that distance comes from is not yet read (a conversion of the parent by the lab would separate the publisher's files from the engine). The tokenizer (0/721, 0/247,091 against the publisher's tokenizer.json, the qwen2 split its header labels) and the template (25/25 in text and tokens, Qwen3.6-35B-A3B's bytes) pass; record: docs/compat-reports/occamy-1.0-2026-11-06/README.md.
+- **Tier history:** Upcoming, planned admission from 2026-11-06 ([log](#transition-log)).
+
 <a id="exempt"></a>
 ## Published, not a Runner model file
 
@@ -2977,7 +3020,9 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-11-05 | [Ornith-1.5-35B-A3B (ornith-ai), `Ornith-1.5-35B-Q8_0.gguf`](#ornith-1.5-35b-a3b-q8_0) | Tier 2, maintained on report | Admitted 2026-11-05 at Tier 2 with the admitting CPU cell from the lab CPU lane (R4.27.3). Maintained on report. | none recorded |
 | 2026-11-05 | [NVIDIA Nemotron 3 Nano 30B-A3B (NVIDIA), `NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf`](#nemotron-3-nano-30b-a3b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-11-05 at Tier 2 with the admitting CPU cell from the lab CPU lane (R4.27.4.1). Maintained on report. | none recorded |
 | 2026-11-06 | [Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B), `Qwen3.8-35B-A3B-Q6_K.gguf`](#empero-qwen3.8-35b-a3b-distill-q6_k) | Tier 2, maintained on report | Admitted 2026-11-06 at Tier 2 with the admitting CPU and CUDA cells from the lab lanes (R4.27.1), as empero-ai's finetune of Qwen3.6-35B-A3B; the Upcoming qwen3.8-35b-a3b row it replaces named a Qwen model that Qwen has not released. Maintained on report. | none recorded |
+| 2026-11-06 | [Sage-A1.5 (InternScience's, built on Qwen3.6-35B-A3B and Agents-A1), `Sage-A1.5-Q6_K.gguf`](#sage-a1.5-q6_k) | Tier 2, maintained on report | Admitted 2026-11-06 at Tier 2 with the admitting CPU and CUDA cells from the lab lanes (R4.27.7), as InternScience's Sage-A1.5, built on Qwen3.6-35B-A3B and Agents-A1. Maintained on report. | none recorded |
 | 2026-11-06 | [MiniCPM-V-4.7-35B-A3B (openbmb), `MiniCPM-V-4_7-35B-A3B-Q8_0.gguf`](#minicpm-v-4.7-35b-a3b-q8_0) | Tier 2, maintained on report | Admitted 2026-11-06 at Tier 2 with the admitting CPU and CUDA cells from the lab lanes (R4.27.2), on openbmb's root Q8_0 after its tokenizer (R4.27.5) and template (R4.27.6) were read as the publisher's. Maintained on report. | none recorded |
 | 2026-11-06 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-selective-q8_0-expq5_k.gguf`](#mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k) | Tier 2, maintained on report | R4.33.4: admitted at Tier 2 on R4.33's float32 measurement of these bytes, the file the project published on 2026-11-05; the Linux CUDA host's cells are recorded as the smoke runs. | none recorded |
+| 2026-11-06 | [occamy-1.0 (Accio-Lab's finetune of Qwen3.6-35B-A3B)](#occamy-1.0) | Upcoming, planned admission | Measured 2026-11-06 (R4.27.7): no publisher file passes the fidelity bar against the publisher's own parent in float32; listed Upcoming with the reason, by the coordinator's ruling. | none recorded |
 
 <!-- model-tiers:rows:end -->

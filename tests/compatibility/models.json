@@ -2450,6 +2450,51 @@
       }
     },
     {
+      "id": "sage-a1.5-q6_k",
+      "architecture": "qwen35moe",
+      "family": "Qwen3.6",
+      "file": "models/Sage-A1.5-Q6_K.gguf",
+      "sha256": "6862a4df34d209fc83d454f491460a4ebac23d1778c563b3266acf81bcd2397e",
+      "upstream": "InternScience/Sage-A1.5-Q6_K-GGUF",
+      "tokenizer_reference": "InternScience/Sage-A1.5",
+      "tokenizer_reference_revision": "0e3205cf441cf01df0c0d238cc4738d0e43b4ca7",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/sage-a1.5.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "InternScience's own Q6_K (revision 8dfbf093 of InternScience/Sage-A1.5-Q6_K-GGUF) of its Sage-A1.5, built on Qwen3.6-35B-A3B and Agents-A1, not a Qwen release; architecture qwen35moe: 40 blocks (30 Gated DeltaNet, 10 gated attention) plus the NextN block, 256 experts top 8 with a gated shared expert. Its tokenizer is the publisher's at 0e3205cf (the qwen35 split): 0 of 721 corpus strings and 0 of 247,091 vocabulary entries differ; its template (Qwen3.6-35B-A3B's with a verification switch) renders 25 of 25 conformance cases identical in text and tokens under the qwen36 renderer (R4.27.7). No llama.cpp greedy reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 400,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "<|im_start|>",
+            "<tool_call>",
+            "<think>"
+          ]
+        },
+        "tokenizer": {
+          "expect_vocab_divergences": 0
+        },
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
+            "RUNNER_MOE_EAGER": "1"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        }
+      }
+    },
+    {
       "id": "deepseek-v2-lite-chat-q8_0",
       "architecture": "deepseek2",
       "family": "DeepSeek-V2",

@@ -3583,6 +3583,116 @@
       }
     },
     {
+      "id": "sage-a1.5-q6_k",
+      "model": "Sage-A1.5 (InternScience's, built on Qwen3.6-35B-A3B and Agents-A1)",
+      "family": "Qwen3.6",
+      "tier": "tier2",
+      "claim": "Text path only (the vision projector is not loaded): InternScience's Q6_K of its Sage-A1.5, which its publisher built on Qwen3.6-35B-A3B and InternScience's Agents-A1 and which is not a Qwen release, passes the fidelity bar: against InternScience's BF16 parent computed in float32 it reads 0.0395 mean KLD and 97.9% margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU). The publisher's Q4_K_M misses (0.145).",
+      "architecture": "qwen35moe",
+      "upstream": {
+        "checkpoint": "InternScience/Sage-A1.5",
+        "revision": "0e3205cf441cf01df0c0d238cc4738d0e43b4ca7"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "InternScience/Sage-A1.5"
+      },
+      "files": [
+        {
+          "name": "Sage-A1.5-Q6_K.gguf",
+          "repo": "InternScience/Sage-A1.5-Q6_K-GGUF",
+          "revision": "8dfbf093a3e252e047a72f5cda56133a3cbd9ddd",
+          "sha256": "6862a4df34d209fc83d454f491460a4ebac23d1778c563b3266acf81bcd2397e",
+          "bytes": 29208731872
+        }
+      ],
+      "quantization": "Q6_K (InternScience)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "InternScience's files against the BF16 parent at 0e3205cf computed in float32 on the CPU (transformers 5.16.1, float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files): Q6_K 0.0395 mean KLD / 95.3% top-1 / 97.9% margin-qualified; Q4_K_M 0.1445 / 84.3% / 92.5%. Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against the publisher's tokenizer.json (the qwen35 split, as its header labels it); template conformance 25/25 in text and tokens against the file's own template, Qwen3.6-35B-A3B's with a verification switch. Record: docs/compat-reports/sage-a1.5-2026-11-06/README.md.",
+        "context": 4096,
+        "limitations": "CPU and CUDA for this file (29.2 GB: on a CUDA MIG slice, 1g.24gb, sm_120, the fitted split places 34 of 40 blocks on the device); Metal runs qwen35moe on toy models only. Text only: the vision projector InternScience ships beside it is not loaded. Not a Qwen release: InternScience's Sage-A1.5, built by its publisher on Qwen3.6-35B-A3B and InternScience's Agents-A1 (both apache-2.0); the GGUF's internal name is \"Agents A1.5\". The template's verification switch (chat_template_kwargs verification) is not served: such a request does not get the verification trigger the template appends to the system message. The file carries Qwen's NextN predictor block, consumed only with --mtp. The publisher's Q4_K_M (0.145) misses the bar. A system message after the conversation has started is refused, as the template refuses it. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/sage-a1.5-2026-11-06/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal run on a Mac that holds the file (29.2 GB), and the Windows CUDA host's cells; task quality and the tool protocol on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "metal": {
+          "kind": "limit",
+          "reason": "Not measured: Metal runs qwen35moe on toy models (make test-metal-qwen35moe, to the CPU's logits at 1e-5), but this file (29.2 GB) has not been run on a Mac that holds it.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.14.0",
+          "date": "2026-11-06",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "e11ffcaddcb46bb95bdc02e1dfcd13dfc5f15a2a",
+          "caps": {
+            "version": "1.14.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "0341fe4d30b107df7305f2188e8bba7f53395a8e8e313db8279f4612baef59fe",
+          "ran": "runner -m Sage-A1.5-Q6_K.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/sage-a1.5-q6_k.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.14.0",
+          "date": "2026-11-06",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "e11ffcaddcb46bb95bdc02e1dfcd13dfc5f15a2a",
+          "caps": {
+            "version": "1.14.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "0341fe4d30b107df7305f2188e8bba7f53395a8e8e313db8279f4612baef59fe",
+          "ran": "runner -m Sage-A1.5-Q6_K.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/sage-a1.5-q6_k.linux-x86_64-cuda.cuda.txt"
+        }
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-06",
+          "reason": "Admitted 2026-11-06 at Tier 2 with the admitting CPU and CUDA cells from the lab lanes (R4.27.7), as InternScience's Sage-A1.5, built on Qwen3.6-35B-A3B and Agents-A1. Maintained on report.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "MoE on a Gated DeltaNet model"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.14.0",
+        "date": "2026-11-06"
+      }
+    },
+    {
       "id": "ornith-1.5-35b-a3b-q8_0",
       "model": "Ornith-1.5-35B-A3B (ornith-ai)",
       "family": "Ornith 1.5",
@@ -7825,6 +7935,23 @@
         "runner_version": "1.13.0",
         "date": "2026-11-05"
       }
+    },
+    {
+      "id": "occamy-1.0",
+      "model": "occamy-1.0 (Accio-Lab's finetune of Qwen3.6-35B-A3B)",
+      "tier": "upcoming",
+      "claim": "Text path only: Accio-Lab's finetune of Qwen3.6-35B-A3B, not a Qwen release. None of the publisher's K-quant files passes the fidelity bar against Accio-Lab's BF16 parent computed in float32: Q8_0 0.0590 mean KLD and 98.7% margin-qualified top-1, Q6_K 0.0836 and 95.4%, Q5_K_M 0.0970 and 95.8%, Q4_K_M 0.258 and 85.7% (bars 0.05 and 97%, 300 positions, CPU; R4.27.7).",
+      "architecture": "qwen35moe",
+      "missing": "A file that passes the bar. The publisher's GGUF files (Accio-Lab/occamy-1.0-GGUF at 15027de4) read 1.7x (Q8_0) to 5.4x (Q4_K_M) the base Qwen3.6-35B-A3B's files by the same method, with the Q5_K_M and Q6_K near one level; where that distance comes from is not yet read (a conversion of the parent by the lab would separate the publisher's files from the engine). The tokenizer (0/721, 0/247,091 against the publisher's tokenizer.json, the qwen2 split its header labels) and the template (25/25 in text and tokens, Qwen3.6-35B-A3B's bytes) pass; record: docs/compat-reports/occamy-1.0-2026-11-06/README.md.",
+      "transitions": [
+        {
+          "tier": "upcoming",
+          "effective": "2026-11-06",
+          "reason": "Measured 2026-11-06 (R4.27.7): no publisher file passes the fidelity bar against the publisher's own parent in float32; listed Upcoming with the reason, by the coordinator's ruling.",
+          "last_validated_release": null
+        }
+      ],
+      "anchor": "anchor: the publisher's files against its BF16 parent in float32, all below the bar (record)."
     }
   ]
 }

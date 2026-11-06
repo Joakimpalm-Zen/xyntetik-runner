@@ -2302,7 +2302,7 @@ flags into unrelated feature sections.
 | `-i` | Stateful interactive chat. |
 | `--serve` | Start the HTTP server. |
 | `--tray [off\|auto]` | Bare: be the macOS/Windows tray controller instead of running a model, required where there is no terminal. `off` opts out of the tray everywhere, including the one that otherwise follows `--serve` and `-i`; `auto` is that default spelled out. See [Desktop tray](#desktop-tray). |
-| `--port N` | Server port, default `8080`. Refused without `--serve`. |
+| `--port N` | Server port, default `8080`. Refused without `--serve`. A port another server holds is refused at startup, with `cannot bind`, on every platform. |
 | `--parallel N` | Independent inference slots, default `1`; eligible CUDA/Metal dense models use microbatched decode. Valid with `--serve`, and with `--info fit` to size the estimate for the slots. [Details](#cli-parallel). |
 | `--ttl N` | Swap-mode idle unload timeout, default `300`; `0` disables it. Refused without `--serve`. |
 | `--force-uncertified` | Load a model even when its measured-envelope sidecar records an `outside-envelope` verdict for this runtime (refused by default). See [Measured-envelope gate](#measured-envelope-gate). |
