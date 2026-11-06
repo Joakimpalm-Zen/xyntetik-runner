@@ -2360,6 +2360,51 @@
       }
     },
     {
+      "id": "empero-qwen3.8-35b-a3b-distill-q6_k",
+      "architecture": "qwen35moe",
+      "family": "Qwen3.6",
+      "file": "models/Qwen3.8-35B-A3B-Q6_K.gguf",
+      "sha256": "0bb743311ee5d58eeeeff67d42d0e62a52347539e825ceb320d1a2178003f47b",
+      "upstream": "empero-ai/Qwen3.8-35B-A3B-Distill-GGUF",
+      "tokenizer_reference": "empero-ai/Qwen3.8-35B-A3B-Distill",
+      "tokenizer_reference_revision": "bcc2dbe2f21b213625df2dc1a5a690212373af07",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/empero-qwen3.8-35b-a3b-distill.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "empero-ai's own Q6_K (revision b1f9d1dc of empero-ai/Qwen3.8-35B-A3B-Distill-GGUF) of its Qwen3.8-35B-A3B-Distill, a finetune of Qwen3.6-35B-A3B, not a Qwen release; architecture qwen35moe: 40 blocks (30 Gated DeltaNet, 10 gated attention) plus the NextN block, 256 experts top 8 with a gated shared expert. Its tokenizer is the publisher's at bcc2dbe2, read with the qwen2 split by R4.27.5's rule: 0 of 721 corpus strings and 0 of 247,091 vocabulary entries differ; its template (Qwen3.6-35B-A3B's bytes) renders 23 of 23 conformance cases identical in text and tokens under the qwen36 renderer (R4.27.1). No llama.cpp greedy reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 400,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "<|im_start|>",
+            "<tool_call>",
+            "<think>"
+          ]
+        },
+        "tokenizer": {
+          "expect_vocab_divergences": 0
+        },
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
+            "RUNNER_MOE_EAGER": "1"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        }
+      }
+    },
+    {
       "id": "deepseek-v2-lite-chat-q8_0",
       "architecture": "deepseek2",
       "family": "DeepSeek-V2",

@@ -3460,21 +3460,120 @@
       ]
     },
     {
-      "id": "qwen3.8-35b-a3b",
-      "model": "Qwen3.8-35B-A3B",
-      "tier": "upcoming",
-      "claim": "Not validated: the qwen35moe architecture loads and runs on the CPU (since 1.10.0; Qwen3.6-35B-A3B is a Tier 2 row on it), but no gate has run on a Qwen3.8-35B-A3B file; CUDA runs the architecture since R4.27 A2 (Qwen3.6-35B-A3B's cells), not yet on a Qwen3.8 file.",
+      "id": "empero-qwen3.8-35b-a3b-distill-q6_k",
+      "model": "Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B)",
+      "family": "Qwen3.6",
+      "tier": "tier2",
+      "claim": "Text path only (the vision projector is not loaded): empero-ai's Q6_K of its Qwen3.8-35B-A3B-Distill, a finetune of Qwen3.6-35B-A3B and not a Qwen release, which passes the fidelity bar: against empero-ai's BF16 parent computed in float32 it reads 0.0336 mean KLD and 98.6% margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU). The publisher's Q4_K_M and Q5_K_M miss (0.128 and 0.051).",
       "architecture": "qwen35moe",
-      "missing": "One gate run on the CPU lane: tokenizer, template, quant bar against the BF16 parent, pinned output, device record; a file pinned by sha256; the CUDA cells on that file.",
+      "upstream": {
+        "checkpoint": "empero-ai/Qwen3.8-35B-A3B-Distill",
+        "revision": "bcc2dbe2f21b213625df2dc1a5a690212373af07"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "empero-ai/Qwen3.8-35B-A3B-Distill"
+      },
+      "files": [
+        {
+          "name": "Qwen3.8-35B-A3B-Q6_K.gguf",
+          "repo": "empero-ai/Qwen3.8-35B-A3B-Distill-GGUF",
+          "revision": "b1f9d1dcc3de8aa867669b0ab919384aeeb9b8d5",
+          "sha256": "0bb743311ee5d58eeeeff67d42d0e62a52347539e825ceb320d1a2178003f47b",
+          "bytes": 29208731296
+        }
+      ],
+      "quantization": "Q6_K (empero-ai)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "empero-ai's files against the BF16 parent at bcc2dbe2 computed in float32 on the CPU (transformers 5.16.1, float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files): Q6_K 0.0336 mean KLD / 91.7% top-1 / 98.6% margin-qualified; Q5_K_M 0.0508 / 89.3% / 95.5%; Q4_K_M 0.1278 / 85.0% / 94.6%. Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against the publisher's tokenizer.json, which uses the qwen2 split (R4.27.5); template conformance 23/23 in text and tokens against the file's own template, which is Qwen3.6-35B-A3B's byte for byte. Record: docs/compat-reports/empero-qwen3.8-35b-a3b-distill-2026-11-06/README.md.",
+        "context": 4096,
+        "limitations": "CPU and CUDA for this file (29.2 GB: on a CUDA MIG slice, 1g.24gb, sm_120, the fitted split places 34 of 40 blocks on the device); Metal runs qwen35moe on toy models only. Text only: the vision projector empero-ai ships beside it is not loaded. A finetune, not a Qwen release: empero-ai's off-policy distillation (SFT on teacher traces) of Qwen3.6-35B-A3B; the name is the publisher's. Its tokenizer reads with the qwen2 split by R4.27.5's rule, keyed on header fields empero-ai's converter wrote (general.name \"Ours\", the empero-ai tag, the base model's URL); a requant that rewrites them reads the qwen35 split. The publisher's Q4_K_M (0.128) and Q5_K_M (0.051) miss the bar; its Q4_K_M reads 2.7x the base's Q4_K_M by the same method (bartowski's, 0.0475), not examined further. A system message after the conversation has started is refused, as the template refuses it. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/empero-qwen3.8-35b-a3b-distill-2026-11-06/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal run on a Mac that holds the file (29.2 GB), and the Windows CUDA host's cells; task quality and the tool protocol on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "metal": {
+          "kind": "limit",
+          "reason": "Not measured: Metal runs qwen35moe on toy models (make test-metal-qwen35moe, to the CPU's logits at 1e-5), but this file (29.2 GB) has not been run on a Mac that holds it.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.14.0",
+          "date": "2026-11-06",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "bae5907817e428b2c3b1bdc931c3a4ccd4402653",
+          "caps": {
+            "version": "1.14.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "f3a25e63edc8ebf782ae5bb9ede7de145de7761ed2bcc1cb407cd7c1a9e384e2",
+          "ran": "runner -m Qwen3.8-35B-A3B-Q6_K.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.14.0",
+          "date": "2026-11-06",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "bae5907817e428b2c3b1bdc931c3a4ccd4402653",
+          "caps": {
+            "version": "1.14.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "4ac464a064329c34fd324bd617ff5db8bea657b825fc921320ffce1b6d666f93",
+          "ran": "runner -m Qwen3.8-35B-A3B-Q6_K.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cuda.txt"
+        }
+      },
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-11-06",
+          "reason": "Admitted 2026-11-06 at Tier 2 with the admitting CPU and CUDA cells from the lab lanes (R4.27.1), as empero-ai's finetune of Qwen3.6-35B-A3B; the Upcoming qwen3.8-35b-a3b row it replaces named a Qwen model that Qwen has not released. Maintained on report.",
+          "last_validated_release": null
         }
       ],
-      "anchor": "anchor: agreement with another engine, not fidelity. A float32 reference (140 GB) is not feasible; Qwen3.5-0.8B covers the recurrent path only."
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "MoE on a Gated DeltaNet model"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.14.0",
+        "date": "2026-11-06"
+      }
     },
     {
       "id": "ornith-1.5-35b-a3b-q8_0",

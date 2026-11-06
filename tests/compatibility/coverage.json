@@ -979,7 +979,8 @@
    ],
    "artifacts": [
     "qwen3.6-35b-a3b-q4_k_m",
-    "ornith-1.5-35b-a3b-q8_0"
+    "ornith-1.5-35b-a3b-q8_0",
+    "empero-qwen3.8-35b-a3b-distill-q6_k"
    ],
    "tool_protocol": {
     "status": "NOT RUN"

@@ -523,6 +523,18 @@ FAMILIES = {
         tool_family=True, thinking_var="enable_thinking", hostile_args=True,
         tokenizer=("Qwen3.6-27B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
+    # empero-ai's Qwen3.8-35B-A3B-Distill (qwen35moe, R4.27.1), a finetune of
+    # Qwen3.6-35B-A3B: its GGUF carries Qwen3.6-35B-A3B's template byte for
+    # byte (7,764 bytes, sha256 e84f32a2), as does empero-ai's
+    # chat_template.jinja. The file's own is the oracle, as for Ornith 1.5;
+    # its tokenizer reads with the qwen2 split (R4.27.5).
+    "empero-qwen38-35b-a3b-distill": Family(
+        "qwen36", ("gguf", "models/Qwen3.8-35B-A3B-Q6_K.gguf"),
+        note="the template embedded in empero-ai/Qwen3.8-35B-A3B-Distill-GGUF at "
+             "b1f9d1dc, byte-identical to empero-ai's chat_template.jinja at bcc2dbe2",
+        tool_family=True, thinking_var="enable_thinking", hostile_args=True,
+        tokenizer=("Qwen3.8-35B-A3B-Q6_K.gguf", "Qwen3.8-35B-A3B-Q4_K_M.gguf"),
+        cannot={"system-mid-history": NO_MID_SYSTEM}),
     "deepseek2": Family(
         "deepseek2", ("hf", "deepseek-ai/DeepSeek-V2-Lite-Chat"),
         note="DeepSeek-V2-Lite-Chat's chat_template (tokenizer_config.json), "
