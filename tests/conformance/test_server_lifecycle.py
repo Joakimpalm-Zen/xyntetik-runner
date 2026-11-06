@@ -555,7 +555,8 @@ def _fill_pipe(w):
 @pytest.mark.parametrize("shape", ["step-that-does-not-end", "swap-set-unload",
                                   "log-still-read", "default-stop-budget",
                                   "accept-path-unload"])
-def test_drain_hard_bound_holds_when_nobody_reads_the_log(shape):
+@pytest.mark.parametrize("rep", range(6))
+def test_drain_hard_bound_holds_when_nobody_reads_the_log(shape, rep):
     """The hard bound is the last word on a stop, so nothing it waits on may
     be able to wait forever. The 2026-10-16 review: with the server's output
     on a pipe nobody reads, the watchdog's own message blocked on the full
@@ -570,6 +571,7 @@ def test_drain_hard_bound_holds_when_nobody_reads_the_log(shape):
     env = {"RUNNER_TEST_DRAIN_GRACE_MS": "200", "RUNNER_TEST_DRAIN_HARD_MS": "500"}
     if default_budget:
         env.pop("RUNNER_TEST_DRAIN_HARD_MS")
+    env["R_TRACE"] = "/tmp/r-trace-" + shape
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     model = os.environ.get("RUNNER_TEST_MODEL", os.path.join(root, "test.gguf"))
     swap = shape in ("swap-set-unload", "default-stop-budget", "accept-path-unload")
@@ -945,3 +947,16 @@ def test_keep_alive_refuses_when_it_cannot_be_honored():
         assert after["resident"] == before["resident"], (before, after)
         # the normal case -- no keep_alive field -- is untouched and still serves
         assert _chat(srv.base_url)["choices"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="temporary measurement")
+def test_zz_report_every_shape():
+    """Temporary, never merged: fails on purpose to put the server's stamps in the log."""
+    import glob
+    out = []
+    for f in sorted(glob.glob("/tmp/r-trace-*")):
+        rows = [l.split() for l in open(f).read().splitlines()]
+        out.append("%s n=%d note %s exit %s sent %s" % (
+            os.path.basename(f)[8:], len(rows), max(r[1] for r in rows), max(r[3] for r in rows),
+            "".join(r[2] for r in rows)))
+    pytest.fail("MEASURE " + " | ".join(out))
