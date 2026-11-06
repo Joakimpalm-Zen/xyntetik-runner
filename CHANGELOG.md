@@ -273,8 +273,9 @@ Current release and unreleased changes. Compatibility follows the
   registry smoke carry the field.
 
 - **CUDA: `RUNNER_MOE_HOT`, a file of hot experts kept on the device for
-  `--cpu-moe` host layers; 1.96x decode on Mellum 2.1 Q8_0 on an RTX 3070
-  (R3.30).** Limits first:
+  `--cpu-moe` host layers; 1.52x warm decode on Mellum 2.1 Q8_0 on an RTX 3070
+  (R3.30).** Corrected 2026-11-06: this entry first read 1.96x, a
+  fresh-process number. Limits first:
   - It is opt-in and measured on one file on one card.
   - The hot file comes from a routing trace (`RUNNER_MOE_TRACE`), so it
     fits the text the trace saw.
@@ -282,7 +283,8 @@ Current release and unreleased changes. Compatibility follows the
     biases or scales, gemma-4's dual branch and hyper-connections are
     refused at load, as is a malformed file or the knob without
     `--cpu-moe`.
-  - The measurement beats step 1's projection, and why is not established.
+  - The first request in a process is slower than the warm figure: 26 to 33
+    tok/s against 40.69.
 
   A listed layer runs mixed. The device norms and routes, and runs the
   listed experts with the fused path's kernels on a bank of their slices.
@@ -291,10 +293,19 @@ Current release and unreleased changes. Compatibility follows the
 
   Measured on Mellum2.1-12B-A2.5B-Thinking Q8_0 with 768 slots (5.07 GB),
   chosen by frequency from six traced prompts. On a prompt the trace never
-  saw, decode reads 27.82 against `--cpu-moe auto`'s 14.19 tok/s (medians
-  of three interleaved rounds), with a hit share of 0.716 to 0.735. Step 1 projected
-  1.66x from whole-bank slopes. `RUNNER_MOE_HOT_PROF=1` prints where each
-  mixed layer's time goes.
+  saw, warm decode in one long-lived process reads 40.69 against
+  `--cpu-moe auto`'s 26.75 tok/s (medians of three interleaved rounds), with
+  a hit share of 0.716 to 0.735. Step 1's model gives 1.53x at that prompt's
+  share, so the measurement agrees with it. Its 1.66x assumed a share of
+  0.785, which this prompt does not reach.
+
+  The 1.96x first published here is a fresh-process reading, 27.82 against
+  14.19 tok/s, and does not measure the placement alone: going from that
+  reading to warm, `auto` gains 1.89x and `hot` 1.46x. A first request pays
+  for paging the mapped file. Why the two placements paid different amounts
+  is an inference from page-cache state, not an isolated measurement.
+
+  `RUNNER_MOE_HOT_PROF=1` prints where each mixed layer's time goes.
 
   The identity gates (`tests/test_moe_hot.py`):
   - A layer with every expert listed gives `--cpu-moe 0`'s bytes.
