@@ -367,7 +367,7 @@ def test_attest_verb_help_prints_that_verbs_usage(runner_bin, verb):
 @pytest.mark.parametrize("flag", ["-p", "-m", "-n", "-c", "--port", "--lora"])
 def test_a_flag_missing_its_value_is_named(runner_bin, flag):
     """A value flag at the end of the line printed the usage and nothing
-    else (the pre-1.12.0 sweep); the first line now names the flag."""
+    else (the pre-1.12.0 sweep); the first line names the flag."""
     p = run(runner_bin, "-m", str(FIXTURE), flag) if flag != "-m" else run(runner_bin, "-p", "hi", flag)
     assert p.returncode == 1
     assert p.stderr.decode().splitlines()[0] == "error: %s needs a value" % flag, p.stderr[:200]
@@ -385,6 +385,38 @@ def test_attest_bundle_and_pack_take_positionals(runner_bin, tmp_path):
     assert b"go together" not in p.stderr, p.stderr[-300:]
     p = run(runner_bin, "attest", "bundle", str(tmp_path / "missing.json"))
     assert p.returncode != 0 and b"OUT_DIR" in p.stderr
+
+
+USAGE_ERRORS = [
+    (["--frobnicate"], "error: unknown option --frobnicate"),
+    (["-m"], "error: -m needs a value"),
+    (["-m", "x.gguf", "--quantize"], "error: --quantize needs a value"),
+    ([], "error: need -m MODEL or -hf REPO[:TAG]"),
+    (["-p", "hi"], "error: need -m MODEL or -hf REPO[:TAG]"),
+]
+
+
+@pytest.mark.parametrize("args,line", USAGE_ERRORS)
+def test_a_usage_error_ends_with_the_error_and_a_pointer(runner_bin, args, line):
+    """R10.19: a script reads the end of the output, and 382 lines of usage
+    put the error out of its sight."""
+    p = run(runner_bin, *args)
+    assert p.returncode == 1 and p.stdout == b""
+    assert p.stderr.decode().splitlines() == [line, "see runner --help"]
+
+
+def test_a_model_with_no_prompt_says_so_and_stops(runner_bin, tmp_path):
+    model = tmp_path / "m.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(model)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    p = run(runner_bin, "-m", str(model))
+    assert p.returncode == 1
+    assert p.stderr.decode().splitlines()[-2:] == ["error: need -p PROMPT, -i, or --serve", "see runner --help"]
+
+
+def test_the_full_usage_is_for_help_alone(runner_bin):
+    p = run(runner_bin, "--help")
+    assert p.returncode == 0 and p.stderr == b"" and len(p.stdout.splitlines()) > 100
 
 
 def test_attest_watermark_keygen_and_detect(runner_bin, tmp_path):

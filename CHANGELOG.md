@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A usage error ends with the error (R10.19).** An unknown option, a flag with no value, no model and no prompt each
+  printed the whole usage, 382 lines, so a script or a person reading the end of the output never saw why: one export
+  script read `unknown option --out` as a refusal of the quantization. They now print the error line and
+  `see runner --help`, and the full usage is for `--help`. Running with no model printed the usage with no error at
+  all; it now says `error: need -m MODEL or -hf REPO[:TAG]`. Exit codes are unchanged.
+  - **Checks:** the whole of stderr for each case, in `tests/test_cli_surface.py`.
+  - **Limits:** `runner attest` and `runner train` with nothing after them still print their own short usage. A script
+    that looked for `usage:` on stderr after a failure no longer finds it; `unknown option` now reads
+    `error: unknown option`.
+
 - **MiniCPM-V 4.7's chat templates get their own renderers, text path (R4.27.6).** openbmb's GGUF repository ships
   two sets with byte-identical weights that differ only in the embedded template: the root files (thinking fixed off,
   openbmb's recommended default) and `thinking/` (the repository's chat_template.jinja). Runner read them as `qwen35`

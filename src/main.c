@@ -1581,7 +1581,9 @@ static void usage_train_to(FILE *f) {
         "are still accepted on the main command line.\n");
 }
 
-static void usage(const char *prog) { usage_to(stderr, prog); }
+// What follows a usage error's own line. A script reads the end of the output,
+// and the usage would put the error hundreds of lines above it (R10.19).
+static void usage_pointer(void) { fputs("see runner --help\n", stderr); }
 
 // --transcript capture: stream to stdout AND keep the exact bytes for the
 // record (the transcript's output.text is what the terminal saw, verbatim)
@@ -2315,7 +2317,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         #define NEXT (i + 1 < argc ? argv[++i] : (fprintf(stderr, "error: %s needs a value\n", a), \
-                                                   usage(argv[0]), exit(1), (char*)0))
+                                                   usage_pointer(), exit(1), (char*)0))
         if (!o->pull_other && strcmp(a, "--pull") && strcmp(a, "--json")) o->pull_other = a;
         if      (!strcmp(a, "-m")) o->model_path = NEXT;
         else if (!strcmp(a, "--pull")) o->pull_spec = NEXT;
@@ -2717,7 +2719,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             *rc = 0;
             return false;
         }
-        else { fprintf(stderr, "unknown option %s\n", a); usage(argv[0]); *rc = 1; return false; }
+        else { fprintf(stderr, "error: unknown option %s\n", a); usage_pointer(); *rc = 1; return false; }
     }
     return true;
 }
@@ -3342,7 +3344,12 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         }
         jv_free(vj);
     }
-    if (!o->model_path) { usage(prog); *rc = 1; return true; }
+    if (!o->model_path) {
+        fprintf(stderr, "error: need -m MODEL or -hf REPO[:TAG]\n");
+        usage_pointer();
+        *rc = 1;
+        return true;
+    }
     // The escapes are -p's (a shell argument cannot hold a newline easily);
     // a file's bytes are the prompt as written. Unescaping after the append
     // rewrote a file's own backslash sequences, so a scored corpus's
@@ -3382,7 +3389,7 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         !o->bench_json && !o->doctor && !o->tool_info && !o->adapt_info && !o->train_path && !o->dpo_path && !o->verify_path &&
         !o->decide_path && !o->systemone_path && !have_detect_text && !o->resume_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
-        usage(prog);
+        usage_pointer();
         *rc = 1;
         return true;
     }
