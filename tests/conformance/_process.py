@@ -92,6 +92,7 @@ class RunnerServer:
         self.proc = None
         self._log = None
         self._own_log = None
+        self.kept_log = None   # where a failing test's server log was left
         self.peak_rss_kb = None
         self.exit_code = None
         self.killed = False
@@ -104,10 +105,20 @@ class RunnerServer:
         self.start()
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, exc_type, exc, tb):
+        # A failing test keeps the server's log, and shows its tail: a test that
+        # failed with a clean stop used to delete the only record of what the
+        # server did. A skip passes through here too and is not a failure.
+        # (By name: pytest's failure and skip are not Exceptions, so a type test
+        # would lose pytest.fail, and this file does not import pytest.)
+        failing = exc is not None and exc_type.__name__ != "Skipped"
         # a crash on shutdown is a crash: reported unless the block is
         # already unwinding an exception of its own
-        self.stop(strict=exc[0] is None)
+        self.stop(strict=exc_type is None, keep_log=failing)
+        if failing:
+            self.kept_log = self.log_path or self._own_log
+            exc.add_note(f"runner server log {self.kept_log}, its tail:\n{self._tail()}")
+            self._own_log = None
         return False
 
     def start(self):
@@ -186,7 +197,7 @@ class RunnerServer:
             raise TransportError("runner died mid-suite",
                                  returncode=self.proc.returncode, log=self._tail())
 
-    def stop(self, strict=False):
+    def stop(self, strict=False, keep_log=False):
         """SIGTERM, wait, and record how the runner went. A server that had
         become healthy exits 0 on SIGTERM; anything else after a normal stop
         is a shutdown defect (a double free at exit passed every server test
@@ -211,7 +222,7 @@ class RunnerServer:
         self._log = None
         unclean = strict and (self.killed or (not WINDOWS and self.exit_code != 0))
         log = self._tail() if unclean else None
-        if self._own_log:
+        if self._own_log and not keep_log:
             os.unlink(self._own_log)
             self._own_log = None
         if unclean:
