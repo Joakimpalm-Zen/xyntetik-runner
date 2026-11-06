@@ -498,6 +498,31 @@ FAMILIES = {
         trims_content=True,
         tokenizer=("Qwen3.5-0.8B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
+    # MiniCPM-V 4.7 (qwen35moe, R4.27.6): openbmb's GGUF repository at
+    # cf943fbe ships two sets with byte-identical weights. The thinking/ files
+    # carry the repository's chat_template.jinja at 98e79ba9 (7,249 bytes,
+    # sha256 49c37bcc), Qwen 3.5-0.8B's with a thought block on every
+    # assistant turn and its content parts joined with '\n'; the root files
+    # carry it with the generation prompt's thinking test replaced by a
+    # comment (5aaa30dc), so the block is always closed. Each file's own
+    # template is the oracle, the root Q4_K_M's tokenizer for both (one
+    # tokenizer, one set of weights).
+    "minicpmv47": Family(
+        "minicpmv", ("gguf", "models/MiniCPM-V-4_7-35B-A3B-Q4_K_M-thinking.gguf"),
+        note="the template embedded in openbmb/MiniCPM-V-4.7-35B-A3B-gguf's thinking/ "
+             "files at cf943fbe, byte-identical to the repository's chat_template.jinja",
+        tool_family=True, hostile_args=True, thinking_var="enable_thinking",
+        content_parts=True, reasoning_history=True, trims_content=True,
+        tokenizer=("MiniCPM-V-4_7-35B-A3B-Q4_K_M.gguf",),
+        cannot={"system-mid-history": NO_MID_SYSTEM}),
+    "minicpmv47-fixed": Family(
+        "minicpmv-fixed", ("gguf", "models/MiniCPM-V-4_7-35B-A3B-Q4_K_M.gguf"),
+        note="the template embedded in openbmb/MiniCPM-V-4.7-35B-A3B-gguf's root files "
+             "at cf943fbe: thinking fixed off",
+        tool_family=True, hostile_args=True, thinking_var="enable_thinking",
+        content_parts=True, reasoning_history=True, trims_content=True,
+        tokenizer=("MiniCPM-V-4_7-35B-A3B-Q4_K_M.gguf",),
+        cannot={"system-mid-history": NO_MID_SYSTEM}),
     # Cloudflare Clef-Flash (clef, on Qwen3.5-9B): the template embedded in
     # the pinned ggml-org Q4_K_M, byte-identical to chat_template.jinja in
     # Cloudflare/clef-flash at f0b7d3cd and to Qwen3.5-9B's (7756 bytes).

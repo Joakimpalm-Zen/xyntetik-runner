@@ -5,6 +5,22 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **MiniCPM-V 4.7's chat templates get their own renderers, text path (R4.27.6).** openbmb's GGUF repository ships
+  two sets with byte-identical weights that differ only in the embedded template: the root files (thinking fixed off,
+  openbmb's recommended default) and `thinking/` (the repository's chat_template.jinja). Runner read them as `qwen35`
+  and `qwen35-nothink`. They now read as `minicpmv-fixed` and `minicpmv`: Qwen 3.5-0.8B's template with a thought
+  block on every assistant turn (empty unless the turn carries reasoning after the last user query), and for the root
+  files a generation prompt that is always closed. Content parts are joined with '\n', as Runner already joined them.
+  A `minicpmv` sampling preset is openbmb's README's recommended instruct-mode setting, as published: temperature
+  0.7, top_p 0.95, top_k 100, min_p 0, repetition_penalty 1.03.
+  - **Checks:**
+    - template-conformance `--require-tokens` against each file's own template: 56 cases conformant in text; the two
+      reasoning-history cases differ only by caller-spelled `<think>` tags Runner reads as text, accounted under the
+      token-only kind (R2.4.11).
+    - Every other family's renders, and the template detected for every roster file, unchanged.
+  - **Limits:** text path only (image and video placeholders are not rendered); no MiniCPM-V row is admitted here
+    (R4.27.2 continues on this). Record: `docs/compat-reports/r4.27.6-minicpmv-template-2026-11-06/`.
+
 - **template-conformance: a token-only deviation kind (R2.4.11).** A case can render byte-identically on both sides
   yet tokenize differently on purpose: Runner reads a control token only in the template's own bytes, so one the
   caller spelled in its content is text (tests/test_prompt_marks.c), where the reference tokenizer reads it as the

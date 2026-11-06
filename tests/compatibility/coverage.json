@@ -533,6 +533,44 @@
    },
    "note": "the Qwen3.6 template revision: Qwen 3.5's rules with a preserve_thinking switch (read from chat_template_kwargs or the top level) and JSON scalars in tool-call arguments"
   },
+  "minicpmv": {
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "as qwen35 (the function-XML protocol with Qwen 3.5's argument rule); the template renders the thinking/ file's own bytes (template-conformance minicpmv47, 2026-11-06); the live tool gate has not been run"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the minicpmv preset is openbmb's README's recommended instruct-mode setting, as published (repetition_penalty 1.03 included); not read against a live run"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   },
+   "note": "MiniCPM-V 4.7's chat_template.jinja (openbmb, 98e79ba9; the GGUF repository's thinking/ files): Qwen 3.5-0.8B's with a thought block on every assistant turn"
+  },
+  "minicpmv-fixed": {
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "as minicpmv; the root files' template (template-conformance minicpmv47-fixed, 2026-11-06)"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "the minicpmv preset, as minicpmv"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   },
+   "note": "the template of the GGUF repository's root files (cf943fbe): minicpmv with the generation prompt's thinking test replaced by a comment, so the block is always closed"
+  },
   "phi4": {
    "tool_protocol": {
     "status": "NOT RUN",
@@ -975,7 +1013,9 @@
    "templates": [
     "qwen35",
     "qwen36",
-    "ornith"
+    "ornith",
+    "minicpmv",
+    "minicpmv-fixed"
    ],
    "artifacts": [
     "qwen3.6-35b-a3b-q4_k_m",

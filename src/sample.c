@@ -696,6 +696,12 @@ static const sampler_preset PRESETS[] = {
     { "qwen35-nothink", "Qwen3.5-0.8B model card best practices (non-thinking mode, text)",
       1.00f, 1.00f, 0.00f, 1.00f, 20 },
 
+    // openbmb/MiniCPM-V-4.7-35B-A3B(-gguf) README, "recommended instruct-mode
+    // sampling parameters": temperature 0.7, top_p 0.95, top_k 100, min_p 0.0,
+    // repetition_penalty 1.03 (its presence_penalty 0 is this sampler's).
+    { "minicpmv", "MiniCPM-V 4.7 README (recommended instruct-mode sampling)",
+      0.70f, 0.95f, 0.00f, 1.03f, 100 },
+
     // Qwen/Qwen3.6-35B-A3B model card, thinking mode for general tasks:
     // temperature 1.0, top_p 0.95, top_k 20, min_p 0.0 (Qwen 3.5's; its
     // presence_penalty 1.5 has no knob here either).
@@ -828,6 +834,7 @@ const sampler_preset *sampler_preset_for(const char *arch, const char *name,
     if (tmpl == TMPL_NEMOTRON35)  return by_name("nemotron35");
     if (tmpl == TMPL_QWEN35)      return by_name("qwen35");
     if (tmpl == TMPL_QWEN35_NOTHINK) return by_name("qwen35-nothink");
+    if (tmpl_minicpmv(tmpl))      return by_name("minicpmv");
     if (tmpl == TMPL_QWEN36)      return by_name("qwen36");
     if (tmpl == TMPL_NEMOTRON)    return by_name("nemotron");
     if (tmpl == TMPL_APERTUS)     return by_name("apertus");
