@@ -4387,7 +4387,6 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
             const char *const paths[] = { load_path };
             instances_register(o->serve ? "serve" : "cli", o->serve ? o->port : 0,
                                names, paths, 1);
-            atexit(instances_unregister);
         }
         if (rt->m.mtp_layers)
             fprintf(stderr, "mtp: %d predictor block(s) declared, excluded from "
@@ -4444,7 +4443,6 @@ static int run_serve(cli_opts *o, cli_run *rt, const wm_key *wmk, bool wm_on,
         // swap-mode server: models come and go at runtime; the record
         // carries none and readers ask /v1/models live
         instances_register("serve", o->port, NULL, NULL, 0);
-        atexit(instances_unregister);
     }
     int rc = server_run(registry ? NULL : &rt->m, registry ? NULL : &rt->tok,
                         o->model_path, &o->mp, o->smp, &o->ov, o->port, o->parallel, o->n_threads,

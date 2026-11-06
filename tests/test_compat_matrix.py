@@ -867,6 +867,78 @@ def test_reports_carry_no_machine_paths(tmp_path):
     assert out["plain"] == "no paths here"
 
 
+def _linked_model(module, tmp_path, monkeypatch):
+    """A worktree whose models/ is a link to a folder under the home directory,
+    run as the release checklist runs it, with --models-root at the worktree:
+    the file resolves out of every root but the home."""
+    home = tmp_path / "home"
+    shelf = home / "AI_projects" / "main" / "models"
+    shelf.mkdir(parents=True)
+    model = shelf / "m.gguf"
+    model.write_bytes(b"GGUF")
+    tree = tmp_path / "worktree"
+    tree.mkdir()
+    (tree / "models").symlink_to(shelf, target_is_directory=True)
+    monkeypatch.setattr(module.Path, "home", classmethod(lambda cls: home.resolve()))
+    monkeypatch.setattr(module, "ROOT", tree)
+    manifest = tmp_path / "models.json"
+    manifest.write_text(json.dumps({"schema_version": "xyntetik.runner.model-compat.v1", "models": [{
+        "id": "m", "architecture": "llama", "family": "Llama", "file": "models/m.gguf",
+        "sha256": hashlib.sha256(b"GGUF").hexdigest(), "tokenizer_reference": "m/m",
+        "checks": ["load", "cpu_cuda"], "check_params": {"cpu_cuda": {"tokens": 1}}}]}), encoding="utf-8")
+    return manifest, tree
+
+
+def test_a_model_reached_through_a_link_is_recorded_as_models_and_its_name(monkeypatch, tmp_path):
+    """R6.14: the report's stderr_tail held `loaded ~/AI_projects/.../models/m.gguf`."""
+    module = load_module()
+    manifest, models = _linked_model(module, tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "run_load", lambda runner, model, gpu, timeout: {
+        "status": "pass", "stderr_tail": f"loaded {model} | llama"})
+    out = tmp_path / "out" / "report.json"
+    module.main(["--manifest", str(manifest), "--models-root", str(models), "--runner", str(_executable(tmp_path / "runner", "exit 0\n")),
+                 "--verify-files", "--load", "--out", str(out)])
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["models"][0]["checks"]["load"]["stderr_tail"] == "loaded models/m.gguf | llama"
+
+
+def test_a_report_a_check_wrote_beside_the_ledger_is_scrubbed_too(monkeypatch, tmp_path):
+    """cpu_cuda_check.py and run_tool write their own files, which the ledger's
+    scrub never saw: committed ones name the model under a home tree."""
+    module = load_module()
+    manifest, models = _linked_model(module, tmp_path, monkeypatch)
+
+    def fake_cpu_cuda(runner, model, params, timeout, report_dir=None, model_id=None):
+        path = Path(report_dir) / "cpu_cuda" / f"{model_id}.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"model": str(model), "tokens": 128}), encoding="utf-8")
+        return {"status": "pass", "report": str(path)}
+    monkeypatch.setattr(module, "run_cpu_cuda", fake_cpu_cuda)
+    monkeypatch.setattr(module, "run_load", lambda *a: {"status": "pass"})
+    out = tmp_path / "out" / "report.json"
+    module.main(["--manifest", str(manifest), "--models-root", str(models), "--runner", str(_executable(tmp_path / "runner", "exit 0\n")),
+                 "--verify-files", "--execute-checks", "--out", str(out)])
+    written = json.loads((tmp_path / "out" / "cpu_cuda" / "m.json").read_text(encoding="utf-8"))
+    assert written == {"model": "models/m.gguf", "tokens": 128}
+
+
+def test_a_report_a_check_left_broken_does_not_lose_the_ledger(monkeypatch, tmp_path):
+    module = load_module()
+    manifest, models = _linked_model(module, tmp_path, monkeypatch)
+
+    def fake_cpu_cuda(runner, model, params, timeout, report_dir=None, model_id=None):
+        path = Path(report_dir) / "cpu_cuda" / f"{model_id}.json"
+        path.parent.mkdir(parents=True)
+        path.write_text("{ not json", encoding="utf-8")
+        return {"status": "pass", "report": str(path)}
+    monkeypatch.setattr(module, "run_cpu_cuda", fake_cpu_cuda)
+    monkeypatch.setattr(module, "run_load", lambda *a: {"status": "pass"})
+    out = tmp_path / "out" / "report.json"
+    module.main(["--manifest", str(manifest), "--models-root", str(models), "--runner", str(_executable(tmp_path / "runner", "exit 0\n")),
+                 "--verify-files", "--execute-checks", "--out", str(out)])
+    assert json.loads(out.read_text(encoding="utf-8"))["models"][0]["id"] == "m"
+
+
 def test_the_vocabulary_comparison_gates_only_where_a_row_declares_its_count(monkeypatch, tmp_path):
     """difftok --vocab compares over the publisher's whole vocabulary. A row
     that declares expect_vocab_divergences gates on it; any other row reports

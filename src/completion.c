@@ -5045,6 +5045,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         // prompt was built on (released between the check and here, or a
         // model that cannot fork one): the request named a warm prefix, so
         // it is refused rather than served cold under that name.
+        // The turn goes back first, as at the end of this span: an exit that
+        // keeps it stops every other slot, and the write below can block.
+        sched_prefill_end();
+        engine_set_prefill_yield(e, NULL, NULL);
         free(prep.toks);
         completion_cleanup(e, q.schema, NULL);
         send_error_detail(fd, 409, "the named context could not be forked for "
