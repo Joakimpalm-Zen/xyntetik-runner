@@ -315,6 +315,90 @@ static void test_bpe_interior_nul(tokenizer *t) {
     assert(tok_encode(t, "a\0b", got, 8, false, true) == 1);
 }
 
+// The qwen35 fixture with header keys put in front of its own (gguf_get
+// returns the first match): the split tokenizer_init chose, and the mark rule
+// that split implies. The fixture's own array is back in place before close.
+typedef struct { const char *key; const char *s; const char *const *arr; int n; } fake_kv;
+
+static int qwen35_fixture_pre_with(const fake_kv *kvs, int n) {
+    gguf_file g;
+    if (!gguf_open(&g, "tests/fixtures/vocab-bpe-qwen35.gguf")) {
+        fprintf(stderr, "cannot open the qwen35 fixture\n");
+        exit(1);
+    }
+    gguf_kv *own = g.kv;
+    uint64_t n_own = g.n_kv;
+    gguf_kv *kv = calloc(n_own + (uint64_t)n, sizeof *kv);
+    gg_str strs[8][4];
+    assert(kv && n <= 8);
+    for (int i = 0; i < n; i++) {
+        kv[i].key = (char *)kvs[i].key;
+        if (kvs[i].arr) {
+            assert(kvs[i].n <= 4);
+            for (int j = 0; j < kvs[i].n; j++)
+                strs[i][j] = (gg_str){ strlen(kvs[i].arr[j]), (char *)kvs[i].arr[j] };
+            kv[i].type = GGUF_T_ARR;
+            kv[i].arr_type = GGUF_T_STR;
+            kv[i].arr_n = (uint64_t)kvs[i].n;
+            kv[i].arr_str = strs[i];
+        } else {
+            kv[i].type = GGUF_T_STR;
+            kv[i].str = (gg_str){ strlen(kvs[i].s), (char *)kvs[i].s };
+        }
+    }
+    memcpy(kv + n, own, n_own * sizeof *kv);
+    g.kv = kv;
+    g.n_kv = n_own + (uint64_t)n;
+    tokenizer t;
+    if (!tokenizer_init(&t, &g)) {
+        fprintf(stderr, "tokenizer_init failed on the qwen35 fixture\n");
+        exit(1);
+    }
+    int pre = t.pre;
+    if (pre == TOK_PRE_QWEN2) test_bpe_mark_inside_run_qwen2(&t);
+    else if (pre == TOK_PRE_QWEN35) test_bpe_mark_inside_run_qwen35(&t);
+    tokenizer_free(&t);
+    g.kv = own;
+    g.n_kv = n_own;
+    free(kv);
+    gguf_close(&g);
+    return pre;
+}
+
+// R4.27.5: a qwen35-labelled file of a model trained with the qwen2 split is
+// told by what its converter wrote into the header, and every key of a rule
+// must match: one missing or different keeps the qwen35 split.
+static void test_qwen2_trained_rules(void) {
+    static const char *const empero_tags[] = { "qwen3.6", "empero-ai", "distillation" };
+    static const char *const other_tags[] = { "qwen3.6", "distillation" };
+    const char *base = "https://huggingface.co/Qwen/Qwen3.6-35B-A3B";
+    current = "tests/fixtures/vocab-bpe-qwen35.gguf (header rules)";
+    assert(qwen35_fixture_pre_with(NULL, 0) == TOK_PRE_QWEN35);
+    // openbmb's MiniCPM-V-4.7-35B-A3B
+    fake_kv minicpm[] = { { "general.architecture", "qwen35moe", NULL, 0 },
+                          { "general.name", "35a3_hf_v47_0923", NULL, 0 } };
+    assert(qwen35_fixture_pre_with(minicpm, 2) == TOK_PRE_QWEN2);
+    minicpm[0].s = "qwen35";
+    assert(qwen35_fixture_pre_with(minicpm, 2) == TOK_PRE_QWEN35);
+    // empero-ai's Qwen3.8-35B-A3B-Distill: name, tag and base together
+    fake_kv empero[] = { { "general.architecture", "qwen35moe", NULL, 0 },
+                         { "general.name", "Ours", NULL, 0 },
+                         { "general.tags", NULL, empero_tags, 3 },
+                         { "general.base_model.0.repo_url", base, NULL, 0 } };
+    assert(qwen35_fixture_pre_with(empero, 4) == TOK_PRE_QWEN2);
+    assert(qwen35_fixture_pre_with(empero, 3) == TOK_PRE_QWEN35);   // no base
+    empero[2].arr = other_tags;
+    empero[2].n = 2;
+    assert(qwen35_fixture_pre_with(empero, 4) == TOK_PRE_QWEN35);   // no tag
+    empero[2].arr = empero_tags;
+    empero[2].n = 3;
+    empero[3].s = "https://huggingface.co/Qwen/Qwen3.5-35B-A3B";
+    assert(qwen35_fixture_pre_with(empero, 4) == TOK_PRE_QWEN35);   // another base
+    // the earlier rule, by architecture
+    fake_kv clef[] = { { "general.architecture", "clef", NULL, 0 } };
+    assert(qwen35_fixture_pre_with(clef, 1) == TOK_PRE_QWEN2);
+}
+
 static void run_bpe_fixture(const char *path, int pre, void (*digits)(tokenizer *)) {
     current = path;
     gguf_file g;
@@ -948,6 +1032,7 @@ int main(void) {
                     TOK_PRE_QWEN35, test_bpe_digit_grouping_qwen2);
     run_bpe_fixture("tests/fixtures/vocab-bpe-smollm.gguf",
                     TOK_PRE_SMOLLM, test_bpe_digit_grouping_qwen2);
+    test_qwen2_trained_rules();
 
     run_bpe_spm_fixture("tests/fixtures/vocab-bpe-spm-gemma4.gguf");
 

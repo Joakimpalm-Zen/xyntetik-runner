@@ -1,0 +1,1062 @@
+{
+ "schema": "r4.27.5 K-b: token ids of the build before the change against the change, on the 721-string corpus plus the tier-smoke prompts",
+ "harness_before": "difftok at main 3e761116 (sha256 f28513c9...)",
+ "harness_after": "difftok at r4.27.5-pretok-rule",
+ "prompts": [
+  "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+  "Which planet is closest to the Sun? Answer in two sentences.",
+  "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun."
+ ],
+ "rows": [
+  {
+   "row": "cloudflare-clef-iq3_m",
+   "architecture": "clef",
+   "files": [
+    "Cloudflare_clef-IQ3_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [
+    "tokenizer: Clef (general.architecture clef) was trained with the qwen2 split (\\p{L}+, marks split from letters); the declared qwen35 is read as qwen2"
+   ],
+   "notes_identical": false
+  },
+  {
+   "row": "qwen3.8-27b-ud-q4_k_m",
+   "architecture": "qwen35",
+   "files": [
+    "Qwen3.8-27B-UD-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "gemma-4-12b-it-qat-q4_0",
+   "architecture": "gemma4",
+   "files": [
+    "gemma-4-12b-it-qat-q4_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "nemotron-3.5-bolt-e4b-q4_k_m",
+   "architecture": "gemma4",
+   "files": [
+    "Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "gemma-4-26b-a4b-it-qat-q4_0",
+   "architecture": "gemma4",
+   "files": [
+    "gemma-4-26B_q4_0-it.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "gemma-4-31b-it-q4_0",
+   "architecture": "gemma4",
+   "files": [
+    "gemma-4-31B-it-Q4_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "muse-glimmer-30b-kquant",
+   "architecture": "muse-glimmer",
+   "files": [
+    "Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "granite-4.2-8b-q4_k_m",
+   "architecture": "granite",
+   "files": [
+    "granite-4.2-8b-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "granite-4.2-8b-q8_0",
+   "architecture": "granite",
+   "files": [
+    "granite-4.2-8b-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "trinity-nano-preview-q8_0",
+   "architecture": "afmoe",
+   "files": [
+    "Trinity-Nano-Preview-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "qwen3.8-27b-gsq-rco-iq3_s-recovered",
+   "architecture": "qwen35",
+   "files": [
+    "Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "qwen3.8-27b-mtp-q8_0",
+   "architecture": "qwen35",
+   "files": [
+    "Qwen3.8-27B-MTP-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "xyntetik-kvist-14b-bf16",
+   "architecture": "muse-glimmer",
+   "files": [
+    "Xyntetik-Kvist-14B-BF16.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "xyntetik-kvist-14b-q8_0",
+   "architecture": "muse-glimmer",
+   "files": [
+    "Xyntetik-Kvist-14B-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "xyntetik-kvist-14b-q5_0-mix",
+   "architecture": "muse-glimmer",
+   "files": [
+    "Xyntetik-Kvist-14B-Q5_0-mix.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "xyntetik-kvist-14b-iq4_nl-mix",
+   "architecture": "muse-glimmer",
+   "files": [
+    "Xyntetik-Kvist-14B-IQ4_NL-mix.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "qwen3-30b-a3b-expq4_0-attnq8_0",
+   "architecture": "qwen3moe",
+   "files": [
+    "Qwen3-30B-A3B-expq4_0-attnq8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "qwen3-coder-30b-a3b-instruct-keep120-q4_k_m",
+   "architecture": "qwen3moe",
+   "files": [
+    "Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "gemma-4-e2b-it-q4_k_m-q4_0-mix",
+   "architecture": "gemma4",
+   "files": [
+    "gemma-4-E2B-it-Q4_K_M-Q4_0-mix.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "nvidia-nemotron-nano-9b-v2-q8_0",
+   "architecture": "nemotron_h",
+   "files": [
+    "NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "gemma-4-31b-it-attn48-removed-q4_0",
+   "architecture": "gemma4",
+   "files": [
+    "gemma-4-31B-it-attn48-removed-q4_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "muse-glimmer-30b-surgical-4p75-q4_k",
+   "architecture": "muse-glimmer",
+   "files": [
+    "Muse-Glimmer-30B-surgical-4p75-Q4_K.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "muse-glimmer-30b-surgical-6p34-q8_0",
+   "architecture": "muse-glimmer",
+   "files": [
+    "Muse-Glimmer-30B-surgical-6p34-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "muse-glimmer-30b-surgical-6p34-q4_k-recovered",
+   "architecture": "muse-glimmer",
+   "files": [
+    "Muse-Glimmer-30B-surgical-6p34-Q4_K-recovered.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "qwen3-4b-runner-tooluse-merged-q8_0",
+   "architecture": "qwen3",
+   "files": [
+    "merged-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "qwen3-4b-runner-tooluse-lora",
+   "architecture": "qwen3",
+   "files": [
+    "Qwen3-4B-ToolUse-LoRA.gguf"
+   ],
+   "rc_main": 1,
+   "rc_new": 1,
+   "ids_identical": true,
+   "lines": 0,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "qwen3.8-flash-next-gsq-rco-iq3_s-with-mtp-head",
+   "architecture": "qwen4exp",
+   "files": [
+    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf",
+    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00002-of-00004.gguf",
+    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00003-of-00004.gguf",
+    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00004-of-00004.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "qwen3.8-flash-next-mtp-q8_0",
+   "architecture": "qwen4exp",
+   "files": [
+    "Qwen3.8-Flash-Next-MTP-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "gpt-oss-20b-keep30-mxfp4",
+   "architecture": "gpt-oss",
+   "files": [
+    "gpt-oss-20b-keep30-MXFP4.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "qwen3-4b-q4_k_m-bartowski",
+   "architecture": "qwen3",
+   "files": [
+    "Qwen_Qwen3-4B-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "qwen3.8-flash-next-gsq-rco-iq3_s",
+   "architecture": "qwen4exp",
+   "files": [
+    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "cloudflare-clef-iq3_s-recovered",
+   "architecture": "clef",
+   "files": [
+    "Clef-backbone-IQ3_S.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "cloudflare-clef-iq3_s-native",
+   "architecture": "clef",
+   "files": [
+    "Clef-IQ3_S.clef.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [
+    "tokenizer: Clef (general.architecture clef) was trained with the qwen2 split (\\p{L}+, marks split from letters); the declared qwen35 is read as qwen2"
+   ],
+   "notes_identical": false
+  },
+  {
+   "row": "cloudflare-clef-iq3_s-recovery-qr-001e-lora",
+   "architecture": "clef",
+   "files": [
+    "clef-IQ3_S-recovery-QR-001e.lora.F16.gguf"
+   ],
+   "rc_main": 1,
+   "rc_new": 1,
+   "ids_identical": true,
+   "lines": 0,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "cloudflare-clef-iq3_s-recovery-qr-001b-lora",
+   "architecture": "clef",
+   "files": [
+    "clef-IQ3_S-recovery-QR-001b.lora.F16.gguf"
+   ],
+   "rc_main": 1,
+   "rc_new": 1,
+   "ids_identical": true,
+   "lines": 0,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "ornith-1.5-35b-a3b-q8_0",
+   "architecture": "qwen35moe",
+   "files": [
+    "Ornith-1.5-35B-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "granite-4.2-30b-q4_k_m",
+   "architecture": "granite",
+   "files": [
+    "granite-4.2-30b-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "granite-4.2-30b-q8_0",
+   "architecture": "granite",
+   "files": [
+    "granite-4.2-30b-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "nemotron-3.5-lightning-30b-a3b-q4_0",
+   "architecture": "nemotron_h_moe",
+   "files": [
+    "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "qwen3.6-27b-q4_k_m",
+   "architecture": "qwen35",
+   "files": [
+    "Qwen3.6-27B-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "qwen3.6-27b-q8_0",
+   "architecture": "qwen35",
+   "files": [
+    "Qwen3.6-27B-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "cloudflare-clef-flash",
+   "architecture": "clef",
+   "files": [
+    "Clef-Flash-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [
+    "tokenizer: Clef (general.architecture clef) was trained with the qwen2 split (\\p{L}+, marks split from letters); the declared qwen35 is read as qwen2"
+   ],
+   "notes_identical": false
+  },
+  {
+   "row": "cloudflare-clef-flash-q8_0",
+   "architecture": "clef",
+   "files": [
+    "Clef-Flash-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [
+    "tokenizer: Clef (general.architecture clef) was trained with the qwen2 split (\\p{L}+, marks split from letters); the declared qwen35 is read as qwen2"
+   ],
+   "notes_identical": false
+  },
+  {
+   "row": "nemotron-3-nano-30b-a3b-q4_k_m",
+   "architecture": "nemotron_h_moe",
+   "files": [
+    "NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "mellum2.1-12b-a2.5b-thinking-q4_k_m",
+   "architecture": "mellum",
+   "files": [
+    "Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "mellum2.1-12b-a2.5b-thinking-q5_k_s",
+   "architecture": "mellum",
+   "files": [
+    "Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "minicpm5-2b-q8_0",
+   "architecture": "llama",
+   "files": [
+    "MiniCPM5-2B-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "minicpm5-2b-q4_k_m",
+   "architecture": "llama",
+   "files": [
+    "MiniCPM5-2B-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "hemmingway-1-q4_k_m",
+   "architecture": "qwen35",
+   "files": [
+    "Hemmingway-1.Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "hemmingway-1-q8_0",
+   "architecture": "qwen35",
+   "files": [
+    "Hemmingway-1.Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "hemmingway-1.5-q4_k_m",
+   "architecture": "qwen35",
+   "files": [
+    "HemmingwayAI_Hemmingway-1.5-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "hemmingway-1.5-q8_0",
+   "architecture": "qwen35",
+   "files": [
+    "HemmingwayAI_Hemmingway-1.5-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "ministral-3-3b-instruct-2512-q4_k_m",
+   "architecture": "mistral3",
+   "files": [
+    "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "ministral-3-3b-instruct-2512-q8_0",
+   "architecture": "mistral3",
+   "files": [
+    "Ministral-3-3B-Instruct-2512-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "devstral-small-2-24b-instruct-2512-q4_k_m",
+   "architecture": "mistral3",
+   "files": [
+    "Devstral-Small-2-24B-Instruct-2512-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "devstral-small-2-24b-instruct-2512-q8_0",
+   "architecture": "mistral3",
+   "files": [
+    "Devstral-Small-2-24B-Instruct-2512-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "lfm2.5-1.2b-instruct-q8_0",
+   "architecture": "lfm2",
+   "files": [
+    "LFM2.5-1.2B-Instruct-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "lfm2.5-1.2b-instruct-q4_k_m",
+   "architecture": "lfm2",
+   "files": [
+    "LFM2.5-1.2B-Instruct-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "mimo-v2.6-distill-qwen-9b-q4_k_m",
+   "architecture": "qwen35",
+   "files": [
+    "MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [
+    "tokenizer: XiaomiMiMo's Qwen3.5 distill (the chat template's <tool_call><function= opener) was trained with the qwen2 split (\\p{L}+, marks split from letters); the declared qwen35 is read as qwen2"
+   ],
+   "notes_identical": false
+  },
+  {
+   "row": "lfm2.5-350m-q8_0",
+   "architecture": "lfm2",
+   "files": [
+    "LFM2.5-350M-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "lfm2.5-350m-q4_k_m",
+   "architecture": "lfm2",
+   "files": [
+    "LFM2.5-350M-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "lfm2.5-8b-a1b-q4_k_m",
+   "architecture": "lfm2moe",
+   "files": [
+    "LFM2.5-8B-A1B-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "lfm2.5-24b-a2b-q4_k_m",
+   "architecture": "lfm2moe",
+   "files": [
+    "LFM2.5-24B-A2B-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "spark-x2.6-4b-q4_k_m",
+   "architecture": "spark2_5",
+   "files": [
+    "Spark-X2.6-4B-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "spark-x2.5-4b-q4_k_m",
+   "architecture": "spark2_5",
+   "files": [
+    "Spark-X2.5-4B-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "k2-horizon-0.9b-q8_0",
+   "architecture": "k2-horizon",
+   "files": [
+    "K2-Horizon-1B-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "k2-horizon-0.9b-q4_k_m",
+   "architecture": "k2-horizon",
+   "files": [
+    "K2-Horizon-1B-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "k2-horizon-7b-q8_0",
+   "architecture": "k2-horizon",
+   "files": [
+    "K2-Horizon-7B-Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "k2-horizon-7b-q4_k_m",
+   "architecture": "k2-horizon",
+   "files": [
+    "K2-Horizon-7B-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "flint-int4-q4_1",
+   "architecture": "flint",
+   "files": [
+    "flint-int4-q4_1.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "qwen3.6-35b-a3b-q4_k_m",
+   "architecture": "qwen35moe",
+   "files": [
+    "Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "deepseek-v2-lite-chat-q8_0",
+   "architecture": "deepseek2",
+   "files": [
+    "DeepSeek-V2-Lite-Chat.Q8_0.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "deepseek-v2-lite-chat-q6_k",
+   "architecture": "deepseek2",
+   "files": [
+    "DeepSeek-V2-Lite-Chat.Q6_K.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  },
+  {
+   "row": "mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k",
+   "architecture": "mellum",
+   "files": [
+    "Mellum2.1-12B-A2.5B-Thinking-selective-q8_0-expq5_k.gguf"
+   ],
+   "rc_main": 0,
+   "rc_new": 0,
+   "ids_identical": true,
+   "lines": 724,
+   "notes_main": [],
+   "notes_new": [],
+   "notes_identical": true
+  }
+ ]
+}

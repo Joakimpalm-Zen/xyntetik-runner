@@ -2730,10 +2730,10 @@ Not validated: the qwen35moe architecture loads and runs on the CPU (since 1.10.
 <a id="minicpm-v-4.7-35b-a3b"></a>
 #### MiniCPM-V-4.7-35B-A3B
 
-Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); its tokenizer and template are unchecked and no gate has run.
+Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); its tokenizer reads as the publisher's (R4.27.5), its template is unchecked and no gate has run.
 
 - **Numerical anchor:** anchor: agreement with another engine, not fidelity.
-- **Missing for Tier 1:** The publisher's GGUF (openbmb/MiniCPM-V-4.7-35B-A3B-gguf at cf943fbe) labels its pre-tokenizer qwen35, while openbmb's own tokenizer.json uses the Qwen2-style regex without \p{M}: Runner follows the label and differs from the publisher on combining marks (3 of 721 corpus strings, R4.27.2); its chat template is MiniCPM-V's own (thinking off by default, an empty think block in history), which no Runner renderer matches yet. Then the gate list; the CUDA cells on its file.
+- **Missing for Tier 1:** Its chat template is MiniCPM-V's own (thinking off by default, an empty think block in history), which no Runner renderer matches yet. Then the gate list; the CUDA cells on its file. The tokenizer is no longer a blocker: the publisher's GGUF (openbmb/MiniCPM-V-4.7-35B-A3B-gguf at cf943fbe) labels its pre-tokenizer qwen35 while openbmb's own tokenizer.json uses the Qwen2-style regex without \p{M}, and since R4.27.5 Runner reads every file at cf943fbe with that split by its general.name: 0 of 721 corpus strings and 0 of 247,091 vocabulary entries against the tokenizer.json at 98e79ba9, on the Q4_K_M (before: 3 and 5,503).
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
 ### Text path only: Nemotron 3.5 Bolt-74B-A9B
