@@ -73,3 +73,20 @@ importance-weighted writers cover q3_k and q4_0 only (R4.34).
 
 This is not a benchmark claim, not a speed row, and not a claim about other text. It is one window over one corpus.
 The 8.99 GB file is not for an 8 GB machine.
+
+## The roster row (R4.33.4, 2026-11-06)
+
+The published file became the row `mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k`. There was no new reference
+pass: the numbers above are the published bytes' own.
+
+- **The bytes:** streamed from the Hub at revision `4941f110` with the sha256 taken in the same pass: `8a1458812a81...`,
+  the Hub's LFS record and the rewrite's output. Header: mellum, apache-2.0, 28 blocks, 64 experts, 8 used, 339
+  tensors, each of the plan's type. Its template is JetBrains' `chat_template.jinja` at `92ddae9f` byte for byte
+  (4,849 B).
+- **Tokenizer:** `scripts/difftok.py` against JetBrains' tokenizer.json at `92ddae9f`: 0 of 721 corpus strings and
+  0 of 97,302 vocabulary entries differ.
+- **Template:** `--info tools` picks the `mellum` template. `template-conformance --family mellum`: 23 of 23 cases are
+  identical in text and tokens.
+- **tier-smoke:** the CPU and CUDA replies are byte-identical (`b08f1e19`), both with the expected fact, at runner
+  `cf645fff` on main `0abf82f1`, on a CUDA MIG slice (1g.24gb, sm_120) and the host's CPUs.
+- **Not run on this file:** the live tool gate, the CPU-vs-CUDA check, a Metal row, and an llama.cpp column.

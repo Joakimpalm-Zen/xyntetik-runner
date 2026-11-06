@@ -4337,9 +4337,9 @@
       "id": "nemotron-3.5-bolt-74b-a9b",
       "model": "Nemotron 3.5 Bolt-74B-A9B",
       "tier": "upcoming",
-      "claim": "Text path only: Bolt ships a vision projector that is not loaded, and the model has never been loaded.",
+      "claim": "Text path only: Bolt ships a vision projector that is not loaded. Runner refuses NVIDIA's own GGUF at load: its LatentMoE layout is not implemented (R4.27.4.2).",
       "architecture": "nemotron_h_moe",
-      "missing": "A sharded load test (22 GB is tight on a 24 GB slice), then the Lightning gate list.",
+      "missing": "Loader support for NVIDIA's own GGUF (nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF at e0fecb69, 22.0 GB, experts at IQ2_XXS, Mamba-2 projections at NVFP4): the LatentMoE projections the experts run behind (ffn_latent_down and ffn_latent_up, 4,096 to 1,024 wide); the per-layer expert_used_count and expert_feed_forward_length arrays, which Runner reads as scalars (it reports 0 experts used and refuses the expert config); and per-layer expert counts by tensor shape (240 at block 1 against the declared 496). The 149.8 GB BF16 parent cannot be held beside a float32 reference on the lab host, so the anchor would be another engine on the same bytes. Then the Lightning gate list.",
       "transitions": [
         {
           "tier": "upcoming",
@@ -4355,9 +4355,9 @@
       "id": "nemotron-3.5-super-vl-120b-a12b",
       "model": "Nemotron 3.5 Super VL-120B-A12B",
       "tier": "upcoming",
-      "claim": "Text path only: image input is not implemented in Runner and a VL name never implies vision support; the model has never been loaded.",
+      "claim": "Text path only: image input is not implemented in Runner and a VL name never implies vision support. Runner refuses ggml-org's GGUF at load: 512 experts is above its cap, and the LatentMoE layout is not implemented (R4.27.4.3).",
       "architecture": "nemotron_h_moe",
-      "missing": "A load test on the lab CPU box (Q4_K_M about 65 GB in two parts), then the Lightning gate list.",
+      "missing": "Loader support for ggml-org's conversion (NVIDIA publishes no GGUF of this model; ggml-org/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF at 99144d1d, Q4_0 71.9 GB): the 512-expert config (Runner caps nemotron_h_moe at 256) and the LatentMoE projections the experts run behind (ffn_latent_down and ffn_latent_up, 4,096 to 1,024 wide). The 248.9 GB BF16 parent cannot be held for a float32 reference, so the anchor would be another engine on the same bytes. Then the Lightning gate list.",
       "transitions": [
         {
           "tier": "upcoming",
@@ -4607,6 +4607,116 @@
           "tier": "tier2",
           "effective": "2026-11-04",
           "reason": "Owner decision 2026-11-04: admitted at Tier 2 as the recommended sub-10 GB file of the Mellum2.1 row after the 2026-11-04 scoring study found it the smallest file to pass the bar against the float32 reference (policy decision 2026-10-27: Tier 1 follows pull or the owner's call; a third party's file is maintained on report). The float32 measurement is the admitting evidence; the Linux CUDA host's cells are recorded as the smoke runs.",
+          "last_validated_release": null
+        }
+      ]
+    },
+    {
+      "id": "mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k",
+      "model": "Mellum2.1-12B-A2.5B-Thinking (JetBrains)",
+      "family": "Mellum2.1",
+      "tier": "tier2",
+      "claim": "Text path, the project's own rewrite of JetBrains' BF16 parent, published by the project: Runner's --rewrite with a type plan (Q8_0 throughout, the expert gate and up projections Q5_K, the 896-wide expert down projections Q5_1, routers kept). Against the publisher's BF16 parent computed in float32 it reads 0.0293 mean KLD and 98.74% margin-qualified top-1 (plain top-1 94.0%, its first 750 positions at 0.0419, 300 positions), beside bartowski's Q5_K_S at 0.0289 / 98.33%. 8.99 GB: a 16 GB Apple Silicon machine or a 12 GB card, not an 8 GB one.",
+      "architecture": "mellum",
+      "upstream": {
+        "checkpoint": "JetBrains/Mellum2.1-12B-A2.5B-Thinking",
+        "revision": "92ddae9fc7665e9f801d141d2e5a6b2caf2460c4"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "JetBrains/Mellum2.1-12B-A2.5B-Thinking"
+      },
+      "files": [
+        {
+          "name": "Mellum2.1-12B-A2.5B-Thinking-selective-q8_0-expq5_k.gguf",
+          "repo": "Joakimpalm-Zen/Mellum2.1-12B-A2.5B-Thinking-selective-Q8_0-expQ5_K-GGUF",
+          "revision": "4941f110e4272d7dcb5593404887cdbba8e7db46",
+          "sha256": "8a1458812a81e61229018184968ae954f0f943d31ad8c8cc8144326d73b76af6",
+          "bytes": 8994830528
+        }
+      ],
+      "quantization": "Runner's selective rewrite (R4.33, --rewrite --type-plan): Q8_0 by default, expert gate and up Q5_K, expert down Q5_1 (896 wide, too narrow for Q5_K's 256-wide block), routers F32 (kept); no importance matrix",
+      "published": true,
+      "published_exception": "Policy decision 2026-10-27: Tier 1 follows pull; a new repository (published 2026-11-05) has no downloads yet.",
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "This file against the BF16 parent computed in float32 (transformers' own mellum code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, positions 8 to 4,493, token-id keyed, no special prefix; Runner scored on the Linux CUDA host's MIG slice): 0.0293 mean KLD / 94.0% top-1 / 98.74% margin-qualified top-1 of 239, median 0.0126, worst position 0.437; by depth 0.0419 (8 to 749), 0.0325 (750 to 1,999), 0.0239 (2,000 to 4,493). In the same window bartowski's Q5_K_S reads 0.0289 / 93.0% / 98.33% and the publisher's Q4_K_M 0.1172 / 88.67% / 92.89%. The header declares general.license apache-2.0, architecture mellum, 28 blocks, 64 experts, 8 used; 339 tensors, each of the plan's type; the template is byte-identical to the publisher's; sha256 checked against the Hub's LFS record. Record: docs/compat-reports/mellum2.1-rewrite-q5-2026-11-05/README.md.",
+        "context": null,
+        "limitations": "One window over one corpus, no benchmark claim, no speed row. Plain top-1 94.0%; the first window (positions 8 to 749) reads 0.0419. Written without an importance matrix, and 31.4 MB larger than bartowski's Q5_K_S for 0.0004 more mean KLD. The header's general.name reads \"Ckpt Mem\" (a conversion artifact, kept so the pinned bytes stay as published; the card says so). The tool protocol's live gate has not run on this file (template conformance is the family's, 23/23, and the file's template is the publisher's byte for byte). CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. 8.99 GB does not load resident on an 8 GB machine; on an 8 GB card it runs as a layer split.",
+        "evidence": [
+          "docs/compat-reports/mellum2.1-rewrite-q5-2026-11-05/README.md"
+        ],
+        "missing": "The Metal row and the Windows CUDA host's cells; the CPU-vs-CUDA check and the live tool gate on this file; an llama.cpp column in the same window."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.13.0",
+          "date": "2026-11-06",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "0abf82f1063aadd7cf4e9b43c4488e02a5a5a14f",
+          "caps": {
+            "version": "1.13.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "b08f1e191fceca667aa7ab22e99057199a5bf2cfbfc2e41aea7a90ba77c97f59",
+          "ran": "runner -m Mellum2.1-12B-A2.5B-Thinking-selective-q8_0-expq5_k.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.13.0",
+          "date": "2026-11-06",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "0abf82f1063aadd7cf4e9b43c4488e02a5a5a14f",
+          "caps": {
+            "version": "1.13.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "b08f1e191fceca667aa7ab22e99057199a5bf2cfbfc2e41aea7a90ba77c97f59",
+          "ran": "runner -m Mellum2.1-12B-A2.5B-Thinking-selective-q8_0-expq5_k.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k.linux-x86_64-cuda.cuda.txt"
+        },
+        "metal": {
+          "kind": "limit",
+          "reason": "Not measured: no Mac has run this file (8.99 GB).",
+          "matrix": "MANUAL.md#support-matrix"
+        }
+      },
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.13.0",
+        "date": "2026-11-06"
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-06",
+          "reason": "R4.33.4: admitted at Tier 2 on R4.33's float32 measurement of these bytes, the file the project published on 2026-11-05; the Linux CUDA host's cells are recorded as the smoke runs.",
           "last_validated_release": null
         }
       ]

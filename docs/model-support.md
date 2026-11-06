@@ -631,6 +631,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td><a href="#mellum2.1-12b-a2.5b-thinking-q5_k_s"><code>Mellum2.1-12B-A2.5B-Thinking-Q5_K_S.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td></td><td nowrap>✅ 1.12.0<br>2026-11-04</td></tr>
+<tr><td><a href="#mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k"><code>Mellum2.1-12B-A2.5B-Thinking-selective-q8_0-expq5_k.gguf</code></a></td><td nowrap>✅ 1.13.0<sup>b</sup><br>2026-11-06</td><td nowrap>✅ 1.13.0<sup>b</sup><br>2026-11-06</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td nowrap>✅ 1.13.0<br>2026-11-06</td></tr>
 </tbody>
 </table>
 </details>
@@ -1974,6 +1975,30 @@ Text path, a third party's Q5_K_S (bartowski, with an importance matrix), the sm
 - **LoRA adapter serving:** supported (runner 1.12.0, 2026-11-04).
 - **Tier history:** Tier 2, maintained on report from 2026-11-04 ([log](#transition-log)).
 
+<a id="mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k"></a>
+##### `Mellum2.1-12B-A2.5B-Thinking-selective-q8_0-expq5_k.gguf`
+
+Text path, the project's own rewrite of JetBrains' BF16 parent, published by the project: Runner's --rewrite with a type plan (Q8_0 throughout, the expert gate and up projections Q5_K, the 896-wide expert down projections Q5_1, routers kept). Against the publisher's BF16 parent computed in float32 it reads 0.0293 mean KLD and 98.74% margin-qualified top-1 (plain top-1 94.0%, its first 750 positions at 0.0419, 300 positions), beside bartowski's Q5_K_S at 0.0289 / 98.33%. 8.99 GB: a 16 GB Apple Silicon machine or a 12 GB card, not an 8 GB one.
+
+- **File:** `Mellum2.1-12B-A2.5B-Thinking-selective-q8_0-expq5_k.gguf` (sha256 `8a1458812a81e61229018184968ae954f0f943d31ad8c8cc8144326d73b76af6`, 8,994,830,528 bytes, from [Joakimpalm-Zen/Mellum2.1-12B-A2.5B-Thinking-selective-Q8_0-expQ5_K-GGUF](https://huggingface.co/Joakimpalm-Zen/Mellum2.1-12B-A2.5B-Thinking-selective-Q8_0-expQ5_K-GGUF) at revision `4941f110e427`).
+- **Upstream checkpoint:** JetBrains/Mellum2.1-12B-A2.5B-Thinking at revision `92ddae9fc766`.
+- **Quantization:** Runner's selective rewrite (R4.33, --rewrite --type-plan): Q8_0 by default, expert gate and up Q5_K, expert down Q5_1 (896 wide, too narrow for Q5_K's 256-wide block), routers F32 (kept); no importance matrix.
+- **Licence:** `apache-2.0`, as the JetBrains/Mellum2.1-12B-A2.5B-Thinking model card states it.
+- **Published below Tier 1:** Policy decision 2026-10-27: Tier 1 follows pull; a new repository (published 2026-11-05) has no downloads yet.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** This file against the BF16 parent computed in float32 (transformers' own mellum code, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, positions 8 to 4,493, token-id keyed, no special prefix; Runner scored on the Linux CUDA host's MIG slice): 0.0293 mean KLD / 94.0% top-1 / 98.74% margin-qualified top-1 of 239, median 0.0126, worst position 0.437; by depth 0.0419 (8 to 749), 0.0325 (750 to 1,999), 0.0239 (2,000 to 4,493). In the same window bartowski's Q5_K_S reads 0.0289 / 93.0% / 98.33% and the publisher's Q4_K_M 0.1172 / 88.67% / 92.89%. The header declares general.license apache-2.0, architecture mellum, 28 blocks, 64 experts, 8 used; 339 tensors, each of the plan's type; the template is byte-identical to the publisher's; sha256 checked against the Hub's LFS record. Record: docs/compat-reports/mellum2.1-rewrite-q5-2026-11-05/README.md.
+- **Context tested:** not recorded.
+- **Known limitations:** One window over one corpus, no benchmark claim, no speed row. Plain top-1 94.0%; the first window (positions 8 to 749) reads 0.0419. Written without an importance matrix, and 31.4 MB larger than bartowski's Q5_K_S for 0.0004 more mean KLD. The header's general.name reads "Ckpt Mem" (a conversion artifact, kept so the pinned bytes stay as published; the card says so). The tool protocol's live gate has not run on this file (template conformance is the family's, 23/23, and the file's template is the publisher's byte for byte). CUDA MoE on the scalar route; tensor-core and grouped routes not measured for this family. 8.99 GB does not load resident on an 8 GB machine; on an 8 GB card it runs as a layer split.
+- **Still missing:** The Metal row and the Windows CUDA host's cells; the CPU-vs-CUDA check and the live tool gate on this file; an llama.cpp column in the same window.
+- **Evidence:** [docs/compat-reports/mellum2.1-rewrite-q5-2026-11-05/README.md](compat-reports/mellum2.1-rewrite-q5-2026-11-05/README.md).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.13.0 on 2026-11-06.
+- **CPU:** ✅ v1.13.0 2026-11-06 on linux-x86_64-cuda (borrowed hardware) at commit `0abf82f1063a`, output sha256 `b08f1e191fceca66`, [pin](../tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.13.0 2026-11-06 on linux-x86_64-cuda (borrowed hardware) at commit `0abf82f1063a`, output sha256 `b08f1e191fceca66`, [pin](../tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k.linux-x86_64-cuda.cuda.txt)
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Not measured: no Mac has run this file (8.99 GB).
+- **LoRA training:** supported (runner 1.13.0, 2026-11-06).
+- **LoRA adapter serving:** supported (runner 1.13.0, 2026-11-06).
+- **Tier history:** Tier 2, maintained on report from 2026-11-06 ([log](#transition-log)).
+
 ### MiniCPM5
 
 #### MiniCPM5-2B (openbmb)
@@ -2695,10 +2720,10 @@ Not admitted as a file: never loaded; it declares the same architecture id as Li
 <a id="nemotron-3.5-bolt-74b-a9b"></a>
 #### Nemotron 3.5 Bolt-74B-A9B
 
-Text path only: Bolt ships a vision projector that is not loaded, and the model has never been loaded.
+Text path only: Bolt ships a vision projector that is not loaded. Runner refuses NVIDIA's own GGUF at load: its LatentMoE layout is not implemented (R4.27.4.2).
 
 - **Numerical anchor:** anchor: agreement with another engine, not fidelity.
-- **Missing for Tier 1:** A sharded load test (22 GB is tight on a 24 GB slice), then the Lightning gate list.
+- **Missing for Tier 1:** Loader support for NVIDIA's own GGUF (nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF at e0fecb69, 22.0 GB, experts at IQ2_XXS, Mamba-2 projections at NVFP4): the LatentMoE projections the experts run behind (ffn_latent_down and ffn_latent_up, 4,096 to 1,024 wide); the per-layer expert_used_count and expert_feed_forward_length arrays, which Runner reads as scalars (it reports 0 experts used and refuses the expert config); and per-layer expert counts by tensor shape (240 at block 1 against the declared 496). The 149.8 GB BF16 parent cannot be held beside a float32 reference on the lab host, so the anchor would be another engine on the same bytes. Then the Lightning gate list.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
 ### Text path only: Nemotron 3.5 Super VL-120B-A12B
@@ -2706,10 +2731,10 @@ Text path only: Bolt ships a vision projector that is not loaded, and the model 
 <a id="nemotron-3.5-super-vl-120b-a12b"></a>
 #### Nemotron 3.5 Super VL-120B-A12B
 
-Text path only: image input is not implemented in Runner and a VL name never implies vision support; the model has never been loaded.
+Text path only: image input is not implemented in Runner and a VL name never implies vision support. Runner refuses ggml-org's GGUF at load: 512 experts is above its cap, and the LatentMoE layout is not implemented (R4.27.4.3).
 
 - **Numerical anchor:** anchor: agreement with another engine, not fidelity.
-- **Missing for Tier 1:** A load test on the lab CPU box (Q4_K_M about 65 GB in two parts), then the Lightning gate list.
+- **Missing for Tier 1:** Loader support for ggml-org's conversion (NVIDIA publishes no GGUF of this model; ggml-org/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF at 99144d1d, Q4_0 71.9 GB): the 512-expert config (Runner caps nemotron_h_moe at 256) and the LatentMoE projections the experts run behind (ffn_latent_down and ffn_latent_up, 4,096 to 1,024 wide). The 248.9 GB BF16 parent cannot be held for a float32 reference, so the anchor would be another engine on the same bytes. Then the Lightning gate list.
 - **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
 
 ### Kolibri-1 (Aleph Alpha, 78B)
@@ -2873,5 +2898,6 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-11-04 | [DeepSeek-V2-Lite-Chat (DeepSeek), `DeepSeek-V2-Lite-Chat.Q8_0.gguf`](#deepseek-v2-lite-chat-q8_0) | Tier 2, maintained on report | R4.4.5 step (d), the certification of the deepseek2 admission, admitted 2026-11-04 at Tier 2 (the coordinator's rows): the file pinned by sha256 and repository revision, the tokenizer differential, template conformance, a float32 reference measurement on the publisher's BF16 checkpoint with a llama.cpp column, gpu-identity on the CPU against CUDA, the compatibility checks and the Linux CUDA host's CPU and CUDA cells. The licence (DeepSeek's model licence) was ruled eligible by the coordinator. Maintained on report; Tier 1 is the owner's call. | none recorded |
 | 2026-11-04 | [DeepSeek-V2-Lite-Chat (DeepSeek), `DeepSeek-V2-Lite-Chat.Q6_K.gguf`](#deepseek-v2-lite-chat-q6_k) | Tier 2, maintained on report | R4.4.5 step (d), the certification of the deepseek2 admission, admitted 2026-11-04 at Tier 2 (the coordinator's rows): the file pinned by sha256 and repository revision, the tokenizer differential, template conformance, a float32 reference measurement on the publisher's BF16 checkpoint with a llama.cpp column, gpu-identity on the CPU against CUDA, the compatibility checks and the Linux CUDA host's CPU and CUDA cells. The licence (DeepSeek's model licence) was ruled eligible by the coordinator. Maintained on report; Tier 1 is the owner's call. | none recorded |
 | 2026-11-05 | [Ornith-1.5-35B-A3B (ornith-ai), `Ornith-1.5-35B-Q8_0.gguf`](#ornith-1.5-35b-a3b-q8_0) | Tier 2, maintained on report | Admitted 2026-11-05 at Tier 2 with the admitting CPU cell from the lab CPU lane (R4.27.3). Maintained on report. | none recorded |
+| 2026-11-06 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-selective-q8_0-expq5_k.gguf`](#mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k) | Tier 2, maintained on report | R4.33.4: admitted at Tier 2 on R4.33's float32 measurement of these bytes, the file the project published on 2026-11-05; the Linux CUDA host's cells are recorded as the smoke runs. | none recorded |
 
 <!-- model-tiers:rows:end -->
