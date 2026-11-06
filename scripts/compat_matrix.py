@@ -358,9 +358,12 @@ def run_load(runner, model, gpu, timeout):
     }
 
 
-def scrub_paths(obj, roots):
+def scrub_paths(obj, roots, models=()):
     """The report with every absolute machine path rewritten relative to the
-    first root it lies under (the home directory as `~`). Reports are
+    first root it lies under (the home directory as `~`), and each file of
+    `models` as `models/<basename>`, however it was reached: a file behind a
+    link resolves out of every root but the home, and `~/` would then carry
+    the tree above it into the report (R6.14). Reports are
     committed as public evidence: a path into the box's workspace, the
     user's home or a scratch directory says nothing about the model and
     something about the machine (R6.2.x). Applied to every string, so the
@@ -375,8 +378,12 @@ def scrub_paths(obj, roots):
             if len(form) > 1:
                 pairs.append((form, "~" if r == Path.home().resolve() else ""))
     pairs.sort(key=lambda p: -len(p[0]))   # the most specific root wins
+    files = [(form, f"models/{Path(m).name}") for m in models
+             for form in {str(m), str(m).replace("\\", "/")}]
 
     def fix(text):
+        for path, name in files:
+            text = text.replace(path, name)
         for root, repl in pairs:
             text = re.sub(re.escape(root) + r"[\\/]([^\s\"']*)",
                           lambda mo: (repl + "/" if repl else "") + mo.group(1).replace("\\", "/"),
@@ -388,10 +395,22 @@ def scrub_paths(obj, roots):
     if isinstance(obj, str):
         return fix(obj)
     if isinstance(obj, list):
-        return [scrub_paths(v, roots) for v in obj]
+        return [scrub_paths(v, roots, models) for v in obj]
     if isinstance(obj, dict):
-        return {k: scrub_paths(v, roots) for k, v in obj.items()}
+        return {k: scrub_paths(v, roots, models) for k, v in obj.items()}
     return obj
+
+
+def scrub_check_report(path, roots, models):
+    """A check's own report beside the ledger, which is committed with it.
+    One a check left unreadable stays as it is; the ledger still has to be
+    written, and the content check reads what is committed."""
+    report = Path(path)
+    try:
+        doc = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    report.write_text(json.dumps(scrub_paths(doc, roots, models), indent=1) + "\n", encoding="utf-8")
 
 
 def resolve_model(entry, models_root):
@@ -591,8 +610,11 @@ def main(argv=None):
         "models": [],
     }
     failed = False
+    resolved = []
     for entry in selected:
         path, path_reason = resolve_model(entry, args.models_root)
+        if path:
+            resolved.append(path)
         item = {"id": entry["id"], "architecture": entry["architecture"],
                 "file": entry["file"], "expected_sha256": entry["sha256"],
                 "checks": {}}
@@ -720,9 +742,12 @@ def main(argv=None):
             status = check["status"]
             statuses[status] = statuses.get(status, 0) + 1
 
-    report = scrub_paths(report, [args.models_root, ROOT,
-                                  args.out.parent if args.out else None,
-                                  Path.home()])
+    roots = [args.models_root, ROOT, args.out.parent if args.out else None, Path.home()]
+    for item in report["models"]:
+        for check in item["checks"].values():
+            if check.get("report"):
+                scrub_check_report(check["report"], roots, resolved)
+    report = scrub_paths(report, roots, resolved)
     rendered = json.dumps(report, indent=2) + "\n"
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
