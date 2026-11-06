@@ -5,6 +5,11 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: instance discovery no longer removes records at process exit (R10.20).**
+  Filesystem removal could block after the server's shutdown watchdog had
+  finished. Clean stops now leave their record for the next discovery list
+  or registration to sweep. Dead owners are never listed; available process-start
+  stamps guard against pid reuse. Runner and tray exits use the same policy.
 - **A stop that has to be forced now lands well inside its ten seconds (R10.20).** When a drain cannot finish, the
   watchdog exited 50 ms before the bound, and a shared macOS runner ended 2 stops of 8 past it (10.007 s at worst):
   timers there run up to 90 ms late. A late timer could also lose the shutdown note, the one line that says what a

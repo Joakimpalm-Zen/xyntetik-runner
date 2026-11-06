@@ -1035,8 +1035,6 @@ int tray_main(void) {
     instances_list_free(rg, ng);
 
     instances_register("tray", 0, NULL, NULL, 0);
-    atexit(instances_unregister);
     int rc = tray_platform_run();
-    instances_unregister();
     return rc;
 }
