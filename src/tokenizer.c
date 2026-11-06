@@ -413,6 +413,71 @@ static bool special_id_ok(const tokenizer *t, const char *key, int id) {
     return false;
 }
 
+static bool gguf_str_arr_has(gguf_file *g, const char *key, const char *want) {
+    gguf_kv *kv = gguf_get(g, key);
+    if (!kv || kv->type != GGUF_T_ARR || kv->arr_type != GGUF_T_STR) return false;
+    for (uint64_t i = 0; i < kv->arr_n; i++)
+        if (kv->arr_str[i].s && strcmp(kv->arr_str[i].s, want) == 0) return true;
+    return false;
+}
+
+// A file labelled qwen35 whose model was trained with the qwen2 split: the
+// rule that knows it and the header fields it matched, or NULL. The label
+// cannot say so. llama.cpp's converter hashes the tokenizer's reading of a
+// fixed text (conversion/base.py, get_vocab_base_pre); the two splits hash
+// apart, since the text carries Khmer vowel signs, but both hashes are
+// registered as "qwen35" (d30d75d9 for Qwen's own tokenizer.json, 1444df51 for
+// the \p{L}+ one), so no published label carries the difference. transformers
+// 5.x reads every Qwen3.5/3.6 tokenizer.json with the qwen2 regex, in memory
+// and on save, so a finetune trained under it saw the qwen2 split and ships a
+// tokenizer.json that says so (R4.27.5). A file labelled "qwen2", the honest
+// label for that split, gets it from the name; a file already published as
+// qwen35 is told by what its converter wrote into the header.
+static const char *qwen2_trained_rule(gguf_file *g) {
+    const char *arch = gguf_get_str(g, "general.architecture", "");
+    const char *name = gguf_get_str(g, "general.name", "");
+    // Clef (Cloudflare's Qwen3.8 and Qwen3.5 post-trains) was trained with
+    // the qwen2 split: its tokenizer.json carries \p{L}+ where Qwen's own
+    // carries [\p{L}\p{M}]+, and transformers builds the qwen2 regex for it
+    // (the publisher's encode_record splits "हिन्..." at
+    // every mark). llama.cpp's converter still writes "qwen35" into every
+    // Clef GGUF, so the declared name is read as the trained-with split here;
+    // text with combining marks tokenizes differently from llama.cpp by design.
+    if (strcmp(arch, "clef") == 0)
+        return "Clef (general.architecture clef)";
+    // XiaomiMiMo's Qwen3.5 distill (MiMo-V2.6-Distill-Qwen-9B) is the same
+    // case on an ordinary qwen35 file: its tokenizer.json at 1f09ddcc carries
+    // the qwen2 regex (\p{L}+, marks never join a letter run) over Qwen3.5's
+    // vocabulary, and the converter wrote "qwen35". Its architecture names
+    // nothing, so the file is told by its own chat template: the compact
+    // `<tool_call><function=` opener only MiMo's writes (template.c,
+    // TMPL_MIMO). Measured on the bartowski Q4_K_M: 3 of 721 corpus strings,
+    // all Devanagari or Thai, differed under the qwen35 split, 0 under qwen2.
+    if (strstr(gguf_get_str(g, "tokenizer.chat_template", ""), "<tool_call><function="))
+        return "XiaomiMiMo's Qwen3.5 distill (the chat template's <tool_call><function= opener)";
+    // openbmb's MiniCPM-V-4.7-35B-A3B: tokenizer.json at 98e79ba9 carries the
+    // qwen2 regex over Qwen3.6's vocabulary (its config was saved by
+    // transformers 5.18.0). Every GGUF of openbmb/MiniCPM-V-4.7-35B-A3B-gguf
+    // at cf943fbe, the thinking ones too, names the checkpoint
+    // "35a3_hf_v47_0923". Under qwen35, 3 of 721 corpus strings and 5,503
+    // vocabulary entries differed from the publisher's tokenizer (R4.27.2).
+    if (strcmp(arch, "qwen35moe") == 0 && strcmp(name, "35a3_hf_v47_0923") == 0)
+        return "openbmb's MiniCPM-V-4.7-35B-A3B (general.name 35a3_hf_v47_0923)";
+    // empero-ai's Qwen3.8-35B-A3B-Distill, a finetune of Qwen3.6-35B-A3B:
+    // tokenizer.json at bcc2dbe2 is exactly what transformers 5.x writes on
+    // re-saving Qwen3.6's (its config: 5.17.0). The GGUFs of
+    // empero-ai/Qwen3.8-35B-A3B-Distill-GGUF at b1f9d1dc name the model
+    // "Ours", tag it empero-ai, and name Qwen3.6-35B-A3B as the base. Under
+    // qwen35, 3 of 721 and 5,503 differed, as for MiniCPM-V (R4.27.1).
+    if (strcmp(arch, "qwen35moe") == 0 && strcmp(name, "Ours") == 0 &&
+        gguf_str_arr_has(g, "general.tags", "empero-ai") &&
+        strcmp(gguf_get_str(g, "general.base_model.0.repo_url", ""),
+               "https://huggingface.co/Qwen/Qwen3.6-35B-A3B") == 0)
+        return "empero-ai's Qwen3.8-35B-A3B-Distill (general.name Ours, general.tags "
+               "empero-ai, general.base_model.0.repo_url Qwen/Qwen3.6-35B-A3B)";
+    return NULL;
+}
+
 bool tokenizer_init(tokenizer *t, gguf_file *g) {
     memset(t, 0, sizeof(*t));
 
@@ -510,26 +575,16 @@ bool tokenizer_init(tokenizer *t, gguf_file *g) {
                     t->pre_unknown);
         }
     }
-    // Clef (Cloudflare's Qwen3.8 and Qwen3.5 post-trains) was trained with
-    // the qwen2 split: its tokenizer.json carries \p{L}+ where Qwen's own
-    // carries [\p{L}\p{M}]+, and transformers builds the qwen2 regex for it
-    // (the publisher's encode_record splits "\u0939\u093f\u0928\u094d..." at
-    // every mark). llama.cpp's converter still writes "qwen35" into every
-    // Clef GGUF, so the declared name is read as the trained-with split here;
-    // text with combining marks tokenizes differently from llama.cpp by design.
-    // XiaomiMiMo's Qwen3.5 distill (MiMo-V2.6-Distill-Qwen-9B) is the same
-    // case on an ordinary qwen35 file: its tokenizer.json at 1f09ddcc carries
-    // the qwen2 regex (\p{L}+, marks never join a letter run) over Qwen3.5's
-    // vocabulary, and the converter wrote "qwen35". Its architecture names
-    // nothing, so the file is told by its own chat template: the compact
-    // `<tool_call><function=` opener only MiMo's writes (template.c,
-    // TMPL_MIMO). Measured on the bartowski Q4_K_M: 3 of 721 corpus strings,
-    // all Devanagari or Thai, differed under the qwen35 split, 0 under qwen2.
-    const char *chat_tmpl = gguf_get_str(g, "tokenizer.chat_template", "");
-    if (t->pre == TOK_PRE_QWEN35 &&
-        (strcmp(gguf_get_str(g, "general.architecture", ""), "clef") == 0 ||
-         strstr(chat_tmpl, "<tool_call><function=")))
-        t->pre = TOK_PRE_QWEN2;
+    // a qwen35 file trained with the qwen2 split reads as qwen2, and says why
+    if (t->pre == TOK_PRE_QWEN35) {
+        const char *rule = qwen2_trained_rule(g);
+        if (rule) {
+            t->pre = TOK_PRE_QWEN2;
+            fprintf(stderr, "tokenizer: %s was trained with the qwen2 split "
+                            "(\\p{L}+, marks split from letters); the declared qwen35 "
+                            "is read as qwen2\n", rule);
+        }
+    }
     // Qwen's tokenizer.json normalizes with NFC (Qwen2 through Qwen3.8, and
     // so Clef); stablelm2 shares the qwen2 split but not that normalizer
     t->nfc = strcmp(pre, "qwen2") == 0 || strcmp(pre, "qwen35") == 0 ||
