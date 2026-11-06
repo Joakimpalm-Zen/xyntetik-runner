@@ -54,12 +54,19 @@ typedef struct {
 // wait_secs > 0 queues and retries until the deadline instead of refusing; a
 // queued wait is itself visible to other waiters (advisory ordering above) but
 // invisible to the fit arithmetic — a waiter reserves nothing.
-// `cancel` (nullable) aborts the queue wait early when *cancel goes nonzero.
+// `cancel` (nullable) is asked at every poll of the queue wait and only there, so
+// once a claim is admitted nothing here can undo it. A claim whose `cancel` said
+// stop is never admitted, even if the memory came free on that same poll.
 // `st` (nullable) reports the ledger state behind the decision.
+typedef struct vram_cancel {
+    bool (*stop)(void *ud);
+    void *ud;
+} vram_cancel;
+
 vram_lease *vram_claim(const char *gpu_id, const char *model_path,
                        uint64_t need_bytes, int priority,
                        vram_free_fn free_fn, void *free_ud,
-                       int wait_secs, const _Atomic int *cancel,
+                       int wait_secs, const vram_cancel *cancel,
                        vram_status *st, char *err, size_t err_cap);
 
 // The allocation happened: `actual_bytes` is now real device memory, visible to

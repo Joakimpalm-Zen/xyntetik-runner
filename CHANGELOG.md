@@ -12,6 +12,56 @@ Current release and unreleased changes. Compatibility follows the
   the test harness now takes another port on a lost bind. Linux and macOS keep `SO_REUSEADDR`, and a restart straight
   after serving still binds. Measured on Windows.
 
+- **Fix: the project's Clef IQ3_S backbone tokenizes as Cloudflare/clef's own tokenizer, and its row no longer
+  claims the decision model (R4.36).** `Clef-backbone-IQ3_S.gguf` is Clef's backbone in Runner's qwen35 view, so it
+  declares architecture qwen35 and the Clef rule (architecture clef) missed it: it read with the qwen35 split, 3 of 721
+  corpus strings and 5,503 of 247,091 vocabulary entries off the publisher's. A rule entry keyed on its header
+  (qwen35 and general.name "Clef Backbone View") reads it with the qwen2 split; 0 and 0 now. Its row,
+  `cloudflare-clef-iq3_s-recovered`, claimed "a decision model served at /v1/systemone", which is the
+  `cloudflare-clef-iq3_s-native` row's file: it now says the text-only backbone.
+  - **Checks:** every other roster file's ids unchanged (74 rows), the backbone's alone different, on exactly the
+    three combining-mark strings; the house readings' corpus tokenizes identically before and after, so its numbers
+    (0.0879 / 94.0%, 0.0736 / 95.6%, 0.0757 / 95.6%) carry over; the recovery adapters were trained on the qwen2
+    split's ids, which the backbone now serves.
+  - Record: `docs/compat-reports/r4.36-clef-backbone-2026-11-06/`.
+- **CUDA: `RUNNER_MOE_HOT` gives back the host copies of the experts it holds on the device (R3.35).** A server with
+  Mellum 2.1 Q8_0's 768-slot hot file held 5.05 GB of pages the host path never reads. After warm decode on a 16 GB
+  host, its working set reads 5.39 GB against 10.44 GB, and available memory 5.85 GB against 0.78 GB. Measured on one
+  file on one Windows host. This is a RAM change, not a speed claim: warm decode is unchanged. Load still peaks at
+  6.14 GB, and prints how many experts it gave back. Report:
+  `docs/compat-reports/r3.35-hot-host-copies-2026-11-06`.
+- **A client that disconnects stops its queued model load (R10.12.3.1).** A load waiting in the `--wait-for-vram` queue
+  went on waiting after its client had gone, up to the 300 s default, holding the one slot of a swap server. The wait
+  now stops within about 100 ms and the server carries on. It stops only if nobody is queued behind that client: a
+  live client keeps the wait and its place in the VRAM queue. A client that goes after the load is admitted costs
+  nothing, and the finished load stays resident for the next request. A wait that `/unload` or a shutdown stopped can
+  also no longer be admitted on the same poll and load a model only to discard it.
+  - **Checks:** `tests/test_queued_load_disconnect.py` runs the real wait on any host; the stop-against-freed-memory
+    race is in `tests/test_vram_registry.c`.
+  - **Limits:** CUDA only: CPU and Metal have no queue to wait in. A queued client that sent its request and then left
+    counts as present, because its close cannot be seen behind the unread request, so the wait goes on as it did. A
+    load past the queue is not interrupted. A swap that stops here has already unloaded the previous model.
+- **Metal: a microbatch no longer frees the logits a slot is about to read (R3.38).** With `--parallel` on Metal, the
+  first slot's scratch grew on demand when other slots decoded together. If that slot had just been fed a single token,
+  as after a prefix hit, the growth freed the buffer it was about to pick its next token from, and the read could crash
+  the server or pick from other data. On SmolLM2-135M the forced sequence segfaulted. The scratch is now sized once,
+  when the batch is created, as the CUDA backend already does.
+  - **Checks:** `tests/test_batch_identity.c` forces the sequence and holds the pointer and its contents.
+  - **Limits:** the first slot's scratch for the batch width is allocated at startup instead of on first use. The live
+    server interleaving was not reproduced end to end; the sequence was forced through the model API.
+
+- **Metal gives its memory back on `/unload` (R6.17).** On Metal, each model load left memory in the GPU driver until the
+  process exited: `POST /unload` said the model was gone, and on SmolLM2-135M Q8_0 the driver still held +122, +280 and
+  +278 MB after three request and `/unload` cycles. It now holds +3, +2 and -5 MB. Metal's autoreleased objects were
+  never drained on Runner's plain C threads, and a command buffer keeps what it used alive; every Objective-C entry point
+  of the Metal backend now drains its own autorelease pool. RSS and Metal's own count never showed this memory, which
+  is wired, so on an 8 GB Mac it pushed other programs into swap: one test binary took 3.8 GB on a 370 KB model, and
+  now peaks at 729 MB.
+  - **Checks:** `tests/test_metal_memory.py` reads the driver's own figure across four `/unload` cycles, and holds every
+    entry point to its pool. Decode 128.71 against 128.50 tok/s (-0.16%), output byte-identical over 12 runs.
+  - **Limits:** the weights, KV and scratch were already released; what stayed was about 120 MB a load, and it did not
+    scale with the model on the two sizes measured (370 KB and 145 MB). Measured on Apple M1 only. CUDA and the CPU are
+    untouched.
 - **Response ids are random, and a stored response can no longer be guessed (R10.15).** `chatcmpl-`, `cmpl-`, `resp_`
   and `msg_` ids were a counter from 0: they repeated after every restart and across hosts, and anyone who could
   reach the server could read or delete a `store:true` response at `/v1/responses/resp_0`. An id is now its prefix and
@@ -41,6 +91,23 @@ Current release and unreleased changes. Compatibility follows the
   slot. The branch now gives the turn back before it writes. Needs a CUDA device to test, so the before and after are a
   recorded RTX 3070 run, not part of `make test`. Report:
   `docs/compat-reports/r3.37-context-turn-leak-2026-11-06`.
+
+- **A client that stops reading no longer stops the other slots (R3.36).** A speculative stream wrote to the client
+  while holding the device turn, so one stalled client froze every other slot for 30 s, and a client trickling reads
+  held it for as long as it liked (over 150 s measured). No blocking client write now happens under the turn, on any
+  path. Limits first:
+  - **New limit:** a speculative stream queues at most 4 MiB. A client that far behind is cut off, gets what was
+    queued and then its surface's terminator naming `client_too_slow`, and the server logs it. Plain streams have no
+    such limit.
+  - A reading client's speculative generation still holds the turn for its length. That is unchanged.
+  - Measured on Windows on an RTX 3070 and on macOS on an Apple M1. Linux is covered by a test on a full socket, not
+    by an end-to-end read.
+
+  A session's answer is now built under the turn and written after it, as embeddings already were. Windows did not
+  stall on that write, because Winsock takes one large send whole, but it broke the rule. `make runner-turn-guard`
+  builds the rule in: a client write under the turn ends the process, and the turn runs on a CPU server, so
+  `tests/test_turn_write_guard.py` holds any future path to it without a GPU. Report:
+  `docs/compat-reports/r3.36-no-write-under-turn-2026-11-06`.
 
 - **MiniCPM-V-4.7-35B-A3B joins the roster at Tier 2 on openbmb's own Q8_0, text path only (R4.27.2).** The file is
   the GGUF repository's root Q8_0 (thinking fixed off, openbmb's recommended default). Against openbmb's BF16 parent's
@@ -328,8 +395,9 @@ Current release and unreleased changes. Compatibility follows the
   registry smoke carry the field.
 
 - **CUDA: `RUNNER_MOE_HOT`, a file of hot experts kept on the device for
-  `--cpu-moe` host layers; 1.96x decode on Mellum 2.1 Q8_0 on an RTX 3070
-  (R3.30).** Limits first:
+  `--cpu-moe` host layers; 1.52x warm decode on Mellum 2.1 Q8_0 on an RTX 3070
+  (R3.30).** Corrected 2026-11-06: this entry first read 1.96x, a
+  fresh-process number. Limits first:
   - It is opt-in and measured on one file on one card.
   - The hot file comes from a routing trace (`RUNNER_MOE_TRACE`), so it
     fits the text the trace saw.
@@ -337,7 +405,8 @@ Current release and unreleased changes. Compatibility follows the
     biases or scales, gemma-4's dual branch and hyper-connections are
     refused at load, as is a malformed file or the knob without
     `--cpu-moe`.
-  - The measurement beats step 1's projection, and why is not established.
+  - The first request in a process is slower than the warm figure: 26 to 33
+    tok/s against 40.69.
 
   A listed layer runs mixed. The device norms and routes, and runs the
   listed experts with the fused path's kernels on a bank of their slices.
@@ -346,10 +415,19 @@ Current release and unreleased changes. Compatibility follows the
 
   Measured on Mellum2.1-12B-A2.5B-Thinking Q8_0 with 768 slots (5.07 GB),
   chosen by frequency from six traced prompts. On a prompt the trace never
-  saw, decode reads 27.82 against `--cpu-moe auto`'s 14.19 tok/s (medians
-  of three interleaved rounds), with a hit share of 0.716 to 0.735. Step 1 projected
-  1.66x from whole-bank slopes. `RUNNER_MOE_HOT_PROF=1` prints where each
-  mixed layer's time goes.
+  saw, warm decode in one long-lived process reads 40.69 against
+  `--cpu-moe auto`'s 26.75 tok/s (medians of three interleaved rounds), with
+  a hit share of 0.716 to 0.735. Step 1's model gives 1.53x at that prompt's
+  share, so the measurement agrees with it. Its 1.66x assumed a share of
+  0.785, which this prompt does not reach.
+
+  The 1.96x first published here is a fresh-process reading, 27.82 against
+  14.19 tok/s, and does not measure the placement alone: going from that
+  reading to warm, `auto` gains 1.89x and `hot` 1.46x. A first request pays
+  for paging the mapped file. Why the two placements paid different amounts
+  is an inference from page-cache state, not an isolated measurement.
+
+  `RUNNER_MOE_HOT_PROF=1` prints where each mixed layer's time goes.
 
   The identity gates (`tests/test_moe_hot.py`):
   - A layer with every expert listed gives `--cpu-moe 0`'s bytes.

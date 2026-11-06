@@ -3313,7 +3313,7 @@
       "model": "Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)",
       "family": "Cloudflare Clef",
       "tier": "tier2",
-      "claim": "Text path only: a decision model served at /v1/systemone; requests with images or videos are refused. The project's own IQ3_S quantization of the Clef backbone with two recovery adapters trained on it; the house bar against the BF16 twin (mean KLD at most 0.05 and margin-qualified top-1 at least 97% on 500 held-out positions) is NOT met: the base reads 0.0879 / 94.0%, the best adapter 0.0736 / 95.6%, stated on the card with the evidence.",
+      "claim": "Text path only: the text-only backbone of the project's Clef IQ3_S files, in Runner's qwen35 view and without Clef's joint decision head (the full decision model, served at /v1/systemone, is cloudflare-clef-iq3_s-native's file); requests with images or videos are refused. The project's own IQ3_S quantization of the Clef backbone with two recovery adapters trained on it; the house bar against the BF16 twin (mean KLD at most 0.05 and margin-qualified top-1 at least 97% on 500 held-out positions) is NOT met: the base reads 0.0879 / 94.0%, the best adapter 0.0736 / 95.6%, stated on the card with the evidence. Since R4.36 it tokenizes with Cloudflare/clef's own split (the qwen2 regex); the readings' corpus has no combining marks, so their tokens are the same under either split.",
       "vision_upstream": true,
       "architecture": "clef",
       "upstream": {
@@ -3387,7 +3387,7 @@
       "model": "Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)",
       "family": "Cloudflare Clef",
       "tier": "tier2",
-      "claim": "Text path only: the QR-001e recovery adapter for the project's Clef IQ3_S backbone, served with --lora on that file: an adapter, not a model; the best recovery round (house reading 0.0736 / 95.6%), below the house bar, as its card states.",
+      "claim": "Text path only: the QR-001e recovery adapter for the project's Clef IQ3_S backbone, served with --lora on that file: an adapter, not a model; the best recovery round (house reading 0.0736 / 95.6%), below the house bar, as its card states. It was trained on the ids of Cloudflare/clef's own tokenizer (the qwen2 split), which the backbone serves since R4.36; before, the backbone read text with the qwen35 split, which differs from it around combining marks.",
       "vision_upstream": true,
       "architecture": "clef",
       "upstream": {
@@ -3429,7 +3429,7 @@
       "model": "Cloudflare Clef IQ3_S recovered (clef, on Qwen3.8-27B)",
       "family": "Cloudflare Clef",
       "tier": "tier2",
-      "claim": "Text path only: the QR-001b recovery adapter for the project's Clef IQ3_S backbone, served with --lora on that file: an adapter, not a model; the first recovery round (house reading 0.0757 / 95.6%), below the house bar, as its card states.",
+      "claim": "Text path only: the QR-001b recovery adapter for the project's Clef IQ3_S backbone, served with --lora on that file: an adapter, not a model; the first recovery round (house reading 0.0757 / 95.6%), below the house bar, as its card states. It was trained on the ids of Cloudflare/clef's own tokenizer (the qwen2 split), which the backbone serves since R4.36; before, the backbone read text with the qwen35 split, which differs from it around combining marks.",
       "vision_upstream": true,
       "architecture": "clef",
       "upstream": {

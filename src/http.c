@@ -3,7 +3,9 @@
 #include "compat.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #ifdef __linux__
@@ -263,7 +265,20 @@ bool parse_request_line(char *hdr, char method[8], char path[256],
 
 // ---------------------------------------------------------------- helpers
 
+#ifdef RUNNER_TEST_TURN_GUARD
+_Thread_local int sock_write_forbidden;
+#endif
+
 bool send_all(sock_t fd, const char *s, size_t n) {
+#ifdef RUNNER_TEST_TURN_GUARD
+    // The rule this build exists to enforce: a blocking client write under the
+    // device turn stops every other slot for as long as the client likes.
+    if (sock_write_forbidden) {
+        fprintf(stderr, "turn-guard: blocking client write under the device turn\n");
+        fflush(stderr);
+        _exit(86);
+    }
+#endif
     while (n > 0) {
         int w = sock_send(fd, s, n);
         if (w <= 0) return false;
@@ -271,6 +286,92 @@ bool send_all(sock_t fd, const char *s, size_t n) {
         n -= (size_t)w;
     }
     return true;
+}
+
+int sock_send_nb(sock_t fd, const char *buf, size_t n) {
+#ifdef _WIN32
+    // Winsock has no MSG_DONTWAIT, and a readiness check then a blocking send
+    // is not the same thing: the send can still wait for room.
+    u_long on = 1, off = 0;
+    if (ioctlsocket(fd, FIONBIO, &on) != 0) return -1;
+    int w = send(fd, buf, (int)n, 0);
+    int err = w < 0 ? WSAGetLastError() : 0;
+    ioctlsocket(fd, FIONBIO, &off);
+    if (w >= 0) return w;
+    return err == WSAEWOULDBLOCK ? 0 : -1;
+#else
+    // O_NONBLOCK and not MSG_DONTWAIT: with a full send buffer macOS keeps a
+    // MSG_DONTWAIT send waiting for the socket's whole SO_SNDTIMEO, 30 s here,
+    // and for ever on a socket with none (R3.36). The flag is on the open file,
+    // which only this request's thread writes to.
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) return -1;
+    int w = (int)send(fd, buf, n, 0);
+    int err = errno;
+    fcntl(fd, F_SETFL, flags);
+    if (w >= 0) return w;
+    return err == EAGAIN || err == EWOULDBLOCK || err == EINTR ? 0 : -1;
+#endif
+}
+
+void stream_out_init(stream_out *o, size_t cap) {
+    memset(o, 0, sizeof *o);
+    o->cap = cap;
+}
+
+size_t stream_out_pending(const stream_out *o) { return o->tail - o->head; }
+
+void stream_out_block_for_test(stream_out *o, bool blocked) { o->blocked = blocked; }
+
+void stream_out_free(stream_out *o) {
+    free(o->buf);
+    o->buf = NULL;
+    o->head = o->tail = o->alloc = 0;
+}
+
+int stream_out_write(stream_out *o, sock_t fd, const char *s, size_t n) {
+    // the queue first, so a later write cannot overtake it
+    while (!o->blocked && o->tail > o->head) {
+        int w = sock_send_nb(fd, o->buf + o->head, o->tail - o->head);
+        if (w < 0) return STREAM_OUT_GONE;
+        if (w == 0) break;
+        o->head += (size_t)w;
+    }
+    if (o->head == o->tail) o->head = o->tail = 0;
+    while (!o->blocked && o->tail == 0 && n > 0) {
+        int w = sock_send_nb(fd, s, n);
+        if (w < 0) return STREAM_OUT_GONE;
+        if (w == 0) break;
+        s += w;
+        n -= (size_t)w;
+    }
+    if (n == 0) return STREAM_OUT_OK;
+    size_t queued = o->tail - o->head;
+    if (n > o->cap - queued) return STREAM_OUT_FULL;
+    if (o->tail + n > o->alloc && o->head > 0) {
+        memmove(o->buf, o->buf + o->head, queued);
+        o->head = 0;
+        o->tail = queued;
+    }
+    if (o->tail + n > o->alloc) {
+        size_t want = o->alloc ? o->alloc * 2 : 64 * 1024;
+        if (want < queued + n) want = queued + n;
+        if (want > o->cap) want = o->cap;
+        char *b = realloc(o->buf, want);
+        if (!b) return STREAM_OUT_FULL;
+        o->buf = b;
+        o->alloc = want;
+    }
+    memcpy(o->buf + o->tail, s, n);
+    o->tail += n;
+    return STREAM_OUT_OK;
+}
+
+bool stream_out_drain(stream_out *o, sock_t fd) {
+    size_t n = o->tail - o->head;
+    bool ok = n == 0 || send_all(fd, o->buf + o->head, n);
+    o->head = o->tail = 0;
+    return ok;
 }
 
 const char *reason_phrase(int code) {
