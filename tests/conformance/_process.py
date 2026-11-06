@@ -13,6 +13,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 from _errors import TransportError
@@ -89,6 +90,7 @@ class RunnerServer:
         self.port = None
         self.proc = None
         self._log = None
+        self._own_log = None
         self.peak_rss_kb = None
         self.exit_code = None
         self.killed = False
@@ -113,7 +115,13 @@ class RunnerServer:
                 "-m", self.model, "--serve", "--no-tray",
                 "--port", str(self.port), "--parallel", str(self.parallel),
                 "-c", str(self.ctx)] + self.extra_args
-        self._log = open(self.log_path, "wb") if self.log_path else subprocess.DEVNULL
+        # With no log path the server still writes to a file of ours, kept
+        # until a clean stop: a failure has to be able to show what it said.
+        if self.log_path:
+            self._log = open(self.log_path, "wb")
+        else:
+            fd, self._own_log = tempfile.mkstemp(prefix="runner-server-", suffix=".log")
+            self._log = os.fdopen(fd, "wb")
         # the reaper's 5 s poll is a wall-clock tax on every TTL/reload gate
         # (32 tests, 3.8 min); a test that needs the shipped cadence passes
         # env with its own RUNNER_TTL_POLL_S
@@ -181,12 +189,17 @@ class RunnerServer:
                 self.proc.kill()
                 self.proc.wait(timeout=10)
         self.exit_code = self.proc.returncode
-        if self._log not in (None, subprocess.DEVNULL):
+        if self._log is not None:
             self._log.close()
         self._log = None
-        if strict and (self.killed or (not WINDOWS and self.exit_code != 0)):
+        unclean = strict and (self.killed or (not WINDOWS and self.exit_code != 0))
+        log = self._tail() if unclean else None
+        if self._own_log:
+            os.unlink(self._own_log)
+            self._own_log = None
+        if unclean:
             raise TransportError("runner exited uncleanly on stop",
-                                 returncode=self.exit_code, log=self._tail())
+                                 returncode=self.exit_code, log=log)
 
     # ------------------------------------------------------------------
     def _health_ok(self):
@@ -200,9 +213,12 @@ class RunnerServer:
             return False
 
     def _tail(self, n=2000):
-        if not self.log_path or not os.path.exists(self.log_path):
+        path = self.log_path or self._own_log
+        if not path or not os.path.exists(path):
             return "<no log>"
-        with open(self.log_path, "rb") as f:
+        if self._log is not None:
+            self._log.flush()
+        with open(path, "rb") as f:
             return f.read()[-n:].decode("utf-8", "replace")
 
 
