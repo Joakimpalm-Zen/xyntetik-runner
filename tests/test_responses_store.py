@@ -11,6 +11,7 @@ conformance suite already pins.
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -203,3 +204,53 @@ def test_a_wrong_typed_input_is_refused_with_a_previous_response(runner_bin, mod
         assert _resp(srv, input=5)[0] == 400
         st, b = _resp(srv, input=5, previous_response_id=a["id"])
         assert st == 400, b
+
+
+# R10.15. A stored response is read and deleted by its id, with no other
+# credential, so an id is a secret: it must not repeat and must not be guessed.
+ID_APIS = [
+    ("/v1/chat/completions", "chatcmpl-",
+     {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 2, "temperature": 0}),
+    ("/v1/completions", "cmpl-", {"prompt": "hi", "max_tokens": 2, "temperature": 0}),
+    ("/v1/responses", "resp_", {"input": "hi", "max_output_tokens": 2, "temperature": 0}),
+    ("/v1/messages", "msg_", {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 2,
+                              "temperature": 0}),
+]
+
+
+def _ids(srv):
+    return [_req(srv, "POST", path, body)[1]["id"] for path, _, body in ID_APIS]
+
+
+def test_every_api_answers_with_128_random_bits(runner_bin, model):
+    with _serve(runner_bin, model) as srv:
+        first, second = _ids(srv), _ids(srv)
+    for (_, prefix, _), a, b in zip(ID_APIS, first, second):
+        assert re.fullmatch(re.escape(prefix) + "[0-9a-f]{32}", a), a
+        assert a != b
+
+
+def test_a_streamed_response_has_the_same_kind_of_id(runner_bin, model):
+    with _serve(runner_bin, model) as srv:
+        st, events = _req(srv, "POST", "/v1/chat/completions",
+                          {**ID_APIS[0][2], "stream": True}, stream=True)
+    assert st == 200 and re.fullmatch("chatcmpl-[0-9a-f]{32}", events[0]["id"]), events[0]
+
+
+def test_ids_do_not_repeat_after_a_restart(runner_bin, model):
+    """The same requests in the same order: a counter gave the same ids."""
+    with _serve(runner_bin, model) as srv:
+        before = _ids(srv)
+    with _serve(runner_bin, model) as srv:
+        after = _ids(srv)
+    assert not set(before) & set(after), (before, after)
+
+
+def test_a_counted_id_reads_nothing(runner_bin, model):
+    with _serve(runner_bin, model) as srv:
+        st, stored = _resp(srv, input="Name a colour.", store=True)
+        assert st == 200
+        for guess in ("resp_0", "resp_1"):
+            assert _req(srv, "GET", f"/v1/responses/{guess}")[0] == 404
+            assert _req(srv, "DELETE", f"/v1/responses/{guess}")[0] == 404
+        assert _req(srv, "GET", f"/v1/responses/{stored['id']}")[0] == 200

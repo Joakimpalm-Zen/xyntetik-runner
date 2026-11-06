@@ -3,9 +3,9 @@
 // Every runner process in a RUN mode (one-shot generation, --serve, --tray)
 // writes one JSON record at startup so a controller — the tray, or any
 // future scheduler — can see what is running on this machine without
-// port-scanning or process-list guessing. The record is removed at normal
-// exit; a crash leaves a stale file, which every reader sweeps by checking
-// the pid and deleting records of dead processes. Utility modes
+// port-scanning or process-list guessing. Exit leaves the record alone so
+// filesystem cleanup cannot stall termination. Readers and new registrations
+// sweep dead owners, checking process-start stamps when available. Utility modes
 // (--quantize, --caps, --bench-json, --version) do not register.
 //
 // Registration is BEST-EFFORT: a failure to write the record must never
@@ -44,8 +44,8 @@ bool instances_register(const char *mode, int port,
 // port only after bind; registration happens at model load).
 bool instances_set_port(int port);
 
-// Remove this process's record. Safe to call more than once, and from
-// atexit.
+// Explicitly withdraw this process's record while still running. Safe to
+// call more than once. Do not call at exit: filesystem removal can block.
 void instances_unregister(void);
 
 // List live records, deleting stale ones (dead pid) as they are found.

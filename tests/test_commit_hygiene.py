@@ -8,10 +8,13 @@ the name list lived in the file check alone. The test runs the real checker
 over real commits in a scratch repository. The names are spelled in pieces so
 this file does not publish them.
 """
+import importlib.util
 import os
 import pathlib
 import subprocess
 import sys
+
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CHECK = ROOT / "scripts" / "check-commit-hygiene.py"
@@ -88,3 +91,44 @@ def test_the_hook_and_the_pull_request_text_use_the_same_list(tmp_path):
     # the commit-msg hook runs this checker on the message file
     hook = (ROOT / ".githooks" / "commit-msg").read_text()
     assert "scripts/check-commit-hygiene.py" in hook and "--message-file" in hook
+
+
+def _content_check():
+    spec = importlib.util.spec_from_file_location("content_hygiene", ROOT / "scripts/check-content-hygiene.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _added(path, line):
+    return f"--- a/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n+{line}\n"
+
+
+@pytest.mark.parametrize("path", ["docs/compat-reports/x.json", "docs/compat-reports/r/bench/r1.err",
+                                  "docs/benchmarks-raw/d/rows.jsonl", "docs/golden-pass-evidence/a/b.json"])
+@pytest.mark.parametrize("line", ['"stderr_tail": "loaded ~/AI_projects/w/models/m.gguf | llama"',
+                                  '"model": "~/models/m.gguf"', '"t": "ok\\\\n~/a/b.gguf"',
+                                  "RUNNER_MOE_HOT=~/val/run/hot-", "at ~/.cache/x/y.gguf"])
+def test_a_record_refuses_a_home_path_with_a_tree_under_it(path, line):
+    bad = _content_check().problems(_added(path, line))
+    assert len(bad) == 1 and path in bad[0] and "~/" in bad[0], bad
+
+
+@pytest.mark.parametrize("line", ['"model": "~/m.gguf"', '"model": "models/m.gguf"', "see ~/ for it",
+                                  "the folder ~/models/ here", "https://example.org/~/a/b",
+                                  "/opt/x~y/z", "a ~ b/c/d"])
+def test_a_record_keeps_a_file_in_home_and_models_paths(line):
+    assert _content_check().problems(_added("docs/compat-reports/x.json", line)) == []
+
+
+@pytest.mark.parametrize("path", ["MANUAL.md", "README.md", "src/main.c", "docs/release-checklist.md",
+                                  "docs/truncation-benchmark.md"])
+def test_prose_and_source_may_name_a_home_tree(path):
+    assert _content_check().problems(_added(path, "the cache is ~/.cache/xyntetik-runner/hf")) == []
+
+
+def test_the_commit_message_check_does_not_read_the_record_rule():
+    spec = importlib.util.spec_from_file_location("public_content", ROOT / "scripts/public_content.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.found("the cache is at ~/.cache/xyntetik-runner/hf") == []
