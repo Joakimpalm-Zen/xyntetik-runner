@@ -121,7 +121,7 @@ class Family:
                  thinking_var=None, skip=None, tokenizer=(), cannot=None,
                  oracle_tool_shape=None, call_ids=None, content_parts=False,
                  reasoning_history=False, reasoning_keys=(), hostile_args=False,
-                 developer_role=False):
+                 developer_role=False, trims_content=False):
         self.runner = runner            # --chat-template name
         self.source = source            # ("hf", repo) | ("gguf", path)
         self.note = note
@@ -138,6 +138,10 @@ class Family:
         # parse_content joins the text parts with nothing between), so the
         # content-array case hands it the array, not runner's joined string.
         self.content_parts = content_parts
+        # The template trims every message's content and its reasoning
+        # (`|trim`, python's str.strip()), so the matrix carries padded turns
+        # (R2.4.10).
+        self.trims_content = trims_content
         # The template replays a thought from the turn's reasoning_content
         # (LFM2: on the last assistant turn only), so the matrix carries
         # assistant turns with reasoning in history.
@@ -401,6 +405,7 @@ FAMILIES = {
         note="docs/ornith-reference.md names the model; the -GGUF repo is the "
              "same checkpoint", tool_family=True, hostile_args=True,
         thinking_var="enable_thinking",
+        trims_content=True,
         tokenizer=("Ornith-1.0-9B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     # Ornith-1.5-35B-A3B (qwen35moe, R4.27.3): ornith-ai's GGUF carries its
@@ -416,6 +421,7 @@ FAMILIES = {
              "(Q8_0 and Q4_K_M byte-identical)",
         tool_family=True, hostile_args=True, developer_role=True,
         thinking_var="enable_thinking",
+        trims_content=True,
         tokenizer=("Ornith-1.5-35B-Q8_0.gguf", "Ornith-1.5-35B-Q4_K_M.gguf"),
         cannot={c: ("runner", "the ornith renderer refuses a system or "
                     "developer turn after history has started; this file's "
@@ -481,12 +487,14 @@ FAMILIES = {
         note="ornith's template with the thought block kept only on the "
              "assistant turns after the last user query",
         tool_family=True, hostile_args=True, thinking_var="enable_thinking",
+        trims_content=True,
         tokenizer=("Qwen3.5-4B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     "qwen35-0.8b": Family(
         "qwen35-nothink", ("hf", "Qwen/Qwen3.5-0.8B"),
         note="the small Qwen 3.5 defaults thinking OFF in its template",
         tool_family=True, hostile_args=True, thinking_var="enable_thinking",
+        trims_content=True,
         tokenizer=("Qwen3.5-0.8B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     # Cloudflare Clef-Flash (clef, on Qwen3.5-9B): the template embedded in
@@ -497,6 +505,7 @@ FAMILIES = {
         note="Clef-Flash's own template, read from the pinned Q4_K_M; the "
              "chat path of a decision model, served on its qwen35 backbone",
         tool_family=True, hostile_args=True, thinking_var="enable_thinking",
+        trims_content=True,
         tokenizer=("Clef-Flash-Q4_K_M.gguf", "Clef-Flash-Q8_0.gguf"),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     # Qwen3.6-35B-A3B (qwen35moe): Qwen 3.5's template with two changes, a
@@ -509,6 +518,7 @@ FAMILIES = {
         note="Qwen/Qwen3.6-35B-A3B chat_template.jinja at 995ad96e, "
              "byte-identical in bartowski's GGUF at 5c2410d7",
         tool_family=True, thinking_var="enable_thinking", hostile_args=True,
+        trims_content=True,
         tokenizer=("Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     # Qwen3.6-27B (dense): the same template bytes as the 35B-A3B's (sha256
@@ -521,6 +531,7 @@ FAMILIES = {
         note="Qwen/Qwen3.6-27B chat_template.jinja at 6a9e13bd, "
              "byte-identical in ggml-org's GGUF at 1132d039",
         tool_family=True, thinking_var="enable_thinking", hostile_args=True,
+        trims_content=True,
         tokenizer=("Qwen3.6-27B-Q4_K_M.gguf",),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     # empero-ai's Qwen3.8-35B-A3B-Distill (qwen35moe, R4.27.1), a finetune of
@@ -533,6 +544,7 @@ FAMILIES = {
         note="the template embedded in empero-ai/Qwen3.8-35B-A3B-Distill-GGUF at "
              "b1f9d1dc, byte-identical to empero-ai's chat_template.jinja at bcc2dbe2",
         tool_family=True, thinking_var="enable_thinking", hostile_args=True,
+        trims_content=True,
         tokenizer=("Qwen3.8-35B-A3B-Q6_K.gguf", "Qwen3.8-35B-A3B-Q4_K_M.gguf"),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     "deepseek2": Family(
@@ -859,6 +871,27 @@ def matrix(family):
             {"role": "assistant", "content": "It is -3 C in Oslo."},
             {"role": "user", "content": "Should I bring a coat?"},
         ], True, "default"))
+    if family.trims_content:
+        # Padded content (R2.4.10): whitespace at both ends of every role's
+        # text, ASCII and two Unicode spaces (U+00A0, U+3000), which the
+        # qwen35-family references trim (`|trim`, python's str.strip()); the
+        # tool row also pads the replayed reasoning and the result.
+        cases.append(("padded-content", [
+            {"role": "system", "content": " \u3000" + SYS + "\n "},
+            {"role": "user", "content": "\n  " + U1 + "\u00a0 "},
+            {"role": "assistant", "content": "\t Blue.  \n"},
+            {"role": "user", "content": " " + U2 + "\u3000\n"},
+        ], True, "default"))
+        if family.tool_family:
+            cases.append(("padded-tool-turn", [
+                {"role": "system", "content": "\n" + SYS + " \u00a0"},
+                {"role": "user", "content": "  Weather in Oslo?\t"},
+                {"role": "assistant", "content": "  Checking.\n ",
+                 "reasoning_content": " \n The user wants the weather. \u3000",
+                 "tool_calls": [CALL]},
+                {"role": "tool", "name": "get_weather", "tool_call_id": "call_1",
+                 "content": '\n {"temp_c": -3}  '},
+            ], True, "default"))
     if family.reasoning_history:
         # A thought in history. LFM2 writes the LAST assistant turn's own
         # (reasoning_content) as <think>...</think> whatever follows it, and

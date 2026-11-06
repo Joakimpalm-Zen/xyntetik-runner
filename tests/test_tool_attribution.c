@@ -1127,6 +1127,83 @@ static void test_history_serialization_contract(void) {
         ct_run_family(&fams[i]);
 }
 
+// CONTRACT (R2.4.10): the qwen35-family references trim every message's
+// content (`|trim`, python's str.strip(), Unicode whitespace included), and so
+// must every surface that flattens a message for them. The same conversation
+// with whitespace padded round the system text, the user text and the tool
+// result renders, on each of the three surfaces, exactly as it does unpadded;
+// on a family whose reference does not trim (ChatML) the padding stays.
+#define PC_SYS(p) p "Be brief." p
+#define PC_USER(p) p "weather in Oslo?" p
+#define PC_RES(p) p "sunny, 21C" p
+#define PC_CHAT(p) \
+    "{\"model\":\"m\",\"messages\":[" \
+    "{\"role\":\"system\",\"content\":\"" PC_SYS(p) "\"}," \
+    "{\"role\":\"user\",\"content\":\"" PC_USER(p) "\"}," \
+    "{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\"," \
+    "\"type\":\"function\",\"function\":{\"name\":\"get_weather\"," \
+    "\"arguments\":\"{\\\"city\\\":\\\"Oslo\\\"}\"}}]}," \
+    "{\"role\":\"tool\",\"tool_call_id\":\"call_1\"," \
+    "\"content\":\"" PC_RES(p) "\"}]," TA_ONE_TOOL_CHAT "}"
+#define PC_RESP(p) \
+    "{\"model\":\"m\",\"instructions\":\"" PC_SYS(p) "\",\"input\":[" \
+    "{\"type\":\"message\",\"role\":\"user\",\"content\":\"" PC_USER(p) "\"}," \
+    "{\"type\":\"function_call\",\"call_id\":\"call_1\"," \
+    "\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Oslo\\\"}\"}," \
+    "{\"type\":\"function_call_output\",\"call_id\":\"call_1\"," \
+    "\"output\":\"" PC_RES(p) "\"}]," TA_ONE_TOOL_RESP "}"
+#define PC_MSG(p) \
+    "{\"model\":\"m\",\"max_tokens\":16,\"system\":\"" PC_SYS(p) "\",\"messages\":[" \
+    "{\"role\":\"user\",\"content\":\"" PC_USER(p) "\"}," \
+    "{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\"," \
+    "\"id\":\"call_1\",\"name\":\"get_weather\",\"input\":{\"city\":\"Oslo\"}}]}," \
+    "{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\"," \
+    "\"tool_use_id\":\"call_1\",\"content\":\"" PC_RES(p) "\"}]}]," \
+    TA_ONE_TOOL_ANTH "}"
+// ASCII whitespace and two Unicode spaces (U+00A0, U+3000)
+#define PC_PAD " \\n\\t\\u00a0\\u3000 "
+
+static void pc_surface(const char *label, void (*route)(slot_t *, sock_t, jv *),
+                       const char *plain, const char *padded, bool trims) {
+    ta_run(route, plain);
+    char *a = ta_prompt ? strdup(ta_prompt) : NULL;
+    ta_run(route, padded);
+    char *b = ta_prompt ? strdup(ta_prompt) : NULL;
+    char what[192];
+    snprintf(what, sizeof what, "%s: both bodies built a prompt", label);
+    ck(a && b, what);
+    if (trims)
+        snprintf(what, sizeof what, "%s: the padded conversation renders as the plain one", label);
+    else
+        snprintf(what, sizeof what, "%s: the padding stays on a family that does not trim", label);
+    ck(a && b && (strcmp(a, b) == 0) == trims, what);
+    if (getenv("RUNNER_ATTR_TRACE")) {
+        fprintf(stderr, "--- %s PLAIN : %s\n", label, a ? a : "(null)");
+        fprintf(stderr, "--- %s PADDED: %s\n", label, b ? b : "(null)");
+    }
+    free(a); free(b);
+}
+
+static void test_padded_content_contract(void) {
+    static const struct { const char *label; int tmpl; bool trims; } fams[] = {
+        { "ornith", TMPL_ORNITH, true },
+        { "qwen35", TMPL_QWEN35, true },
+        { "qwen36", TMPL_QWEN36, true },
+        { "chatml", TMPL_CHATML, false },
+    };
+    for (size_t i = 0; i < sizeof fams / sizeof fams[0]; i++) {
+        ta_tmpl = fams[i].tmpl;
+        char l[64];
+        snprintf(l, sizeof l, "%s chat", fams[i].label);
+        pc_surface(l, handle_chat, PC_CHAT(""), PC_CHAT(PC_PAD), fams[i].trims);
+        snprintf(l, sizeof l, "%s responses", fams[i].label);
+        pc_surface(l, handle_responses, PC_RESP(""), PC_RESP(PC_PAD), fams[i].trims);
+        snprintf(l, sizeof l, "%s messages", fams[i].label);
+        pc_surface(l, handle_messages, PC_MSG(""), PC_MSG(PC_PAD), fams[i].trims);
+    }
+    ta_tmpl = TMPL_HARMONY;
+}
+
 // CONTRACT: the tool DECLARATION block -- the tools the client OFFERS the model
 // -- must render in the family's model-native syntax on every surface, and
 // byte-identically across them.
@@ -1484,6 +1561,7 @@ static void test_chat_text_spelled_exhausted_refuses(void) {
 int main(void) {
     test_history_serialization_contract();
     test_declaration_rendering_contract();
+    test_padded_content_contract();
     test_responses_orphan_output_two_tools();
     test_responses_orphan_output_one_tool();
     test_responses_resolvable_is_unchanged();
