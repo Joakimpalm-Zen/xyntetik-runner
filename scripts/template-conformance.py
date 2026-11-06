@@ -40,6 +40,7 @@ Exit status:
 
 import argparse
 import datetime
+import difflib
 import hashlib
 import json
 import os
@@ -1451,7 +1452,8 @@ def token_check(binary, jobs):
             out[cid] = ("same", {"n": len(a), "delta": 0})
         else:
             out[cid] = ("differ", {"n": len(a), "delta": len(b) - len(a),
-                                   "at": first_diff_at(a, b)})
+                                   "at": first_diff_at(a, b),
+                                   "ref_ids": a, "mine_ids": b})
     return out
 
 
@@ -1462,6 +1464,18 @@ def token_check(binary, jobs):
 # is unexplained. Loaded from JSON so the policy is one reviewable file rather
 # than lambdas buried in a script, and so a citation can be re-verified.
 
+# A TOKEN-ONLY deviation (R2.4.11): a case whose two renders are byte-identical
+# but whose tokens differ ON PURPOSE. Runner reads a control token only in the
+# template's own bytes, so one the CALLER spelled in its content is text
+# (tests/test_prompt_marks.c), where the reference tokenizer reads it as the
+# control token. It names one case and carries no patch; it is accepted only
+# when token_only_verdict() says every difference is exactly that.
+TOKEN_ONLY = "token-only"
+TOKEN_ONLY_CITE = "tests/test_prompt_marks.c"
+# GGUF token types the reference reads in text: CONTROL and USER_DEFINED
+CONTROL_TYPES = (3, 4)
+
+
 class Deviation:
     def __init__(self, raw):
         self.id = raw["id"]
@@ -1469,7 +1483,17 @@ class Deviation:
         self.why = raw.get("why", "")
         self.cites = [c for c in (raw.get("cite"),
                                   raw.get("corroborating_cite")) if c]
-        self.patch_spec = raw["patch"]
+        self.kind = raw.get("kind", "text")
+        self.case = raw.get("case")
+        if self.kind == TOKEN_ONLY:
+            if not self.case or "patch" in raw:
+                raise SystemExit("allowlist: %s: a token-only deviation names "
+                                 "one `case` and carries no `patch`" % self.id)
+            self.patch_spec = None
+        elif self.kind == "text":
+            self.patch_spec = raw["patch"]
+        else:
+            raise SystemExit("allowlist: %s: unknown kind %r" % (self.id, self.kind))
         self.used = 0
 
     def key(self):
@@ -1557,9 +1581,77 @@ def check_citations(devs, families):
                 rot.append("%s: no `cite` -- an entry that cannot cite a "
                            "reason is an unfixed bug, move it to the baseline"
                            % d.id)
+            if d.kind == TOKEN_ONLY and not any(
+                    c.get("file") == TOKEN_ONLY_CITE for c in d.cites):
+                rot.append("%s: a token-only deviation must cite %s, the rule "
+                           "it rests on" % (d.id, TOKEN_ONLY_CITE))
             for c in d.cites:
                 rot += check_one_citation(d.id, c, cache)
     return rot
+
+
+def caller_text(msgs):
+    """Every string a case's messages carry (content, parts, reasoning, call
+    arguments, results), joined: what the caller supplied."""
+    out = []
+    def walk(v):
+        if isinstance(v, str):
+            out.append(v)
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+    walk(msgs)
+    return "\n".join(out)
+
+
+def token_only_verdict(text_identical, ref_ids, mine_ids, vocab_tokens,
+                       vocab_types, caller):
+    """(accepted, why) for a token-only deviation. Accepted only when the
+    render text is byte-identical with no patch applied and, aligning the two
+    id sequences, every reference-side id in a differing span is a control
+    token (vocab_types in CONTROL_TYPES) whose spelling is in `caller`, with no
+    differing span empty on the reference side."""
+    if not text_identical:
+        return False, "the render text is not byte-identical"
+    spelled = []
+    ops = difflib.SequenceMatcher(None, ref_ids, mine_ids,
+                                  autojunk=False).get_opcodes()
+    for tag, i1, i2, j1, j2 in ops:
+        if tag == "equal":
+            continue
+        if i1 == i2:
+            return False, ("runner ids %s at %d have no reference counterpart"
+                           % (mine_ids[j1:j2], j1))
+        for t in ref_ids[i1:i2]:
+            if not (0 <= t < len(vocab_types)) or vocab_types[t] not in CONTROL_TYPES:
+                sp = vocab_tokens[t] if 0 <= t < len(vocab_tokens) else None
+                return False, ("reference id %d (%r) at %d is not a control "
+                               "token" % (t, sp, i1))
+            sp = vocab_tokens[t]
+            if sp not in caller:
+                return False, ("control token %d %r is not spelled in the "
+                               "caller's content" % (t, sp))
+            spelled.append(sp)
+    if not spelled:
+        return False, "the two token sequences agree"
+    return True, ("caller-spelled %s read as text (%d reference ids)"
+                  % (", ".join(sorted(set(spelled))), len(spelled)))
+
+
+_VOCAB = {}
+
+
+def gguf_vocab(path):
+    """(tokens, token_types) from a GGUF header, cached per path."""
+    if path not in _VOCAB:
+        with open(path, "rb") as f:
+            kv, _t, _e = read_header(f)
+        _VOCAB[path] = (kv.get("tokenizer.ggml.tokens") or [],
+                        kv.get("tokenizer.ggml.token_type") or [])
+    return _VOCAB[path]
 
 
 def check_one_citation(did, c, cache):
@@ -1684,6 +1776,8 @@ def run(args):
     rot_extra = []      # oracle-specific rot (the harmony fixture)
     rebased = []        # caches invalidated because the family's source moved
     tokens = {}         # cid_full -> (verdict, detail)
+    tok_accepted = {}   # cid_full -> (deviation id, why): token-only, accounted
+    tok_refused = {}    # cid_full -> (deviation id, why): token-only, refused
     tok_sources = {}    # family -> the GGUF its tokenizer came from
     tok_missing = {}    # family -> why the token check could not run
     new_drift = changed = fixed = 0
@@ -1756,8 +1850,9 @@ def run(args):
                               "fetched_at": meta.get("fetched_at", "?")}
 
         fam_devs = devs.get(n, [])
+        tok_devs = {d.case: d for d in fam_devs if d.kind == TOKEN_ONLY}
         patches = [(d, compile_patch(d, meta.get("bos_token")))
-                   for d in fam_devs]
+                   for d in fam_devs if d.kind == "text"]
 
         tok_gguf = tokenizer_path(fam)
         # The oracle's own text goes along: the server reads a model's
@@ -1784,6 +1879,7 @@ def run(args):
                     os.environ.get("RUNNER_MODELS_DIR")
                     or os.path.join(ROOT, "models")))
         tok_jobs = []
+        tok_ctx = {}    # cid_full -> (tokenizer GGUF, the caller's text)
 
         for cid, msgs, add_gen, thinking, omsgs_override in cases:
             cid_full = "%s/%s" % (n, cid)
@@ -1880,6 +1976,7 @@ def run(args):
             entry = known.get(cid_full)
             if tok_gguf:
                 tok_jobs.append((cid_full, tok_gguf, want, mine_ids))
+                tok_ctx[cid_full] = (tok_gguf, caller_text(msgs))
 
             if mine == want:
                 if entry and not args.write_baseline:
@@ -1913,6 +2010,29 @@ def run(args):
 
         # ---- token-level, for the cases that produced two renders
         tokens.update(token_check(binary, tok_jobs))
+        # ---- token-only deviations: accepted only on token_only_verdict
+        texts = {"%s/%s" % (fn, c): (v, d) for fn, c, v, d in results if fn == n}
+        for case_id, tdev in sorted(tok_devs.items()):
+            cid_full = "%s/%s" % (n, case_id)
+            if cid_full not in texts:
+                continue
+            v, d = texts[cid_full]
+            tv = tokens.get(cid_full)
+            if v != "ok":
+                tok_refused[cid_full] = (tdev.id, "the render text is not "
+                                         "byte-identical (%s)" % v)
+                continue
+            if not tv or tv[0] != "differ":
+                continue
+            gguf, caller = tok_ctx[cid_full]
+            vt, vty = gguf_vocab(gguf)
+            ok, why = token_only_verdict(d == "ok", tv[1]["ref_ids"],
+                                         tv[1]["mine_ids"], vt, vty, caller)
+            if ok:
+                tdev.used += 1
+                tok_accepted[cid_full] = (tdev.id, why)
+            else:
+                tok_refused[cid_full] = (tdev.id, why)
 
     # ---- allowlist rot
     #
@@ -1923,6 +2043,14 @@ def run(args):
     rot = check_citations(devs, names)
     for n in names:
         for d in devs.get(n, []):
+            if d.kind == TOKEN_ONLY:
+                # unused only where the case's tokens were checked and agree
+                if (tokens.get("%s/%s" % (n, d.case), ("",))[0] == "same"
+                        and not args.raw):
+                    rot.append("UNUSED %s: the case's tokens agree. Runner no "
+                               "longer takes this deviation -- delete the "
+                               "entry." % d.id)
+                continue
             if n in oracle_meta and not d.used and not args.raw:
                 rot.append("UNUSED %s: the patch never fired. Runner no "
                            "longer takes this deviation (or the reference "
@@ -1961,7 +2089,8 @@ def run(args):
 
     return report(args, results, not_checked, structural, rot, moved,
                   oracle_meta, checked, new_drift, changed, fixed,
-                  tokens, tok_sources, tok_missing, known, rebased)
+                  tokens, tok_sources, tok_missing, known, rebased,
+                  tok_accepted, tok_refused)
 
 
 def token_line(tokens, cid_full):
@@ -1979,7 +2108,9 @@ def token_line(tokens, cid_full):
 
 def report(args, results, not_checked, structural, rot, moved, oracle_meta,
            checked, new_drift, changed, fixed, tokens, tok_sources,
-           tok_missing, known, rebased):
+           tok_missing, known, rebased, tok_accepted=None, tok_refused=None):
+    tok_accepted = tok_accepted or {}
+    tok_refused = tok_refused or {}
     for r in rebased:
         print("ORACLE CACHE INVALIDATED  %s" % r)
     per_family = {}
@@ -2000,7 +2131,12 @@ def report(args, results, not_checked, structural, rot, moved, oracle_meta,
             line = "%s  %s" % (verdict, detail)
         # Identical text whose TOKENS differ would mean the tokenizer is not a
         # function of the text -- report it rather than trust the byte compare.
-        if verdict == "ok" and tokens.get(cid_full, ("", ))[0] == "differ":
+        if cid_full in tok_refused:
+            tok_drift.append("%s: TOKEN-ONLY %s refused: %s"
+                             % ((cid_full,) + tok_refused[cid_full]))
+        elif cid_full in tok_accepted:
+            pass
+        elif verdict == "ok" and tokens.get(cid_full, ("", ))[0] == "differ":
             tok_drift.append("%s: the two renders are byte-identical but "
                              "the server would feed different tokens: a "
                              "control token the renderer wrote outside its "
@@ -2053,6 +2189,10 @@ def report(args, results, not_checked, structural, rot, moved, oracle_meta,
     print("token-level: %d cases checked (%d identical, %d differing), "
           "%d NOT CHECKED for want of a tokenizer"
           % (tok_same + tok_diff, tok_same, tok_diff, tok_none))
+    if tok_accepted:
+        print("\nTOKEN-ONLY DEVIATIONS ACCOUNTED (%d):" % len(tok_accepted))
+        for cid_full, (did, why) in sorted(tok_accepted.items()):
+            print("  %s: %s, %s" % (cid_full, did, why))
     # The number the fix campaign is chasing: how much of the backlog is
     # costing real tokens rather than only reading badly in a diff.
     costly = [(cid, d["delta"]) for cid, (v, d) in sorted(tokens.items())
