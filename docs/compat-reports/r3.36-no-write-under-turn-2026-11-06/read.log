@@ -1,0 +1,17 @@
+probe alone [(0.077, 0.0), (0.094, 0.0), (0.089, 0.0)]
+spec reading: other slot's wait 21.224 s, gpu during it 96.5%
+spec reading: other slot's wait 21.226 s, gpu during it 96.6%
+spec stalled: other slot's wait 21.108 s, gpu during it 97.1%
+spec stalled: other slot's wait 21.209 s, gpu during it 96.7%
+spec stalled: other slot's wait 21.093 s, gpu during it 97.3%
+spec trickle: other slot's wait 21.16 s, gpu during it 97.1%
+spec trickle: other slot's wait 21.107 s, gpu during it 97.3%
+session reading: other slot's wait 21.542 s, gpu during it 97.0%
+session reading: other slot's wait 21.581 s, gpu during it 97.0%
+session stalled: other slot's wait 21.579 s, gpu during it 96.9%
+session stalled: other slot's wait 21.59 s, gpu during it 96.9%
+session stalled: other slot's wait 21.6 s, gpu during it 96.9%
+session trickle: other slot's wait 21.577 s, gpu during it 97%
+session trickle: other slot's wait 21.589 s, gpu during it 97%
+identity: reading 6000 chars [DONE] True, late 6000 chars [DONE] True, same text True
+PASS: no client extended the turn

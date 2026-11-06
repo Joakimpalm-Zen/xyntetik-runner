@@ -32,5 +32,9 @@ void sched_prefill_end(void);
 // the server was; all this changes is where the forward happens.
 int  sched_generate(slot_t *s, float *logits, int max_new,
                     gen_cb cb, void *ud, double *gen_time, double deadline);
+// Will sched_generate run this request's callback with the device turn held?
+// The speculative walk does: it stays solo, under one turn. Its callback must
+// not block on a client then (stream_out in http.h).
+bool sched_generate_holds_turn(const slot_t *s);
 
 #endif // RUNNER_SCHEDULER_H

@@ -513,15 +513,15 @@ FAMILIES = {
              "files at cf943fbe, byte-identical to the repository's chat_template.jinja",
         tool_family=True, hostile_args=True, thinking_var="enable_thinking",
         content_parts=True, reasoning_history=True, trims_content=True,
-        tokenizer=("MiniCPM-V-4_7-35B-A3B-Q4_K_M.gguf",),
+        tokenizer=("MiniCPM-V-4_7-35B-A3B-Q8_0.gguf", "MiniCPM-V-4_7-35B-A3B-Q4_K_M.gguf"),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     "minicpmv47-fixed": Family(
-        "minicpmv-fixed", ("gguf", "models/MiniCPM-V-4_7-35B-A3B-Q4_K_M.gguf"),
+        "minicpmv-fixed", ("gguf", "models/MiniCPM-V-4_7-35B-A3B-Q8_0.gguf"),
         note="the template embedded in openbmb/MiniCPM-V-4.7-35B-A3B-gguf's root files "
              "at cf943fbe: thinking fixed off",
         tool_family=True, hostile_args=True, thinking_var="enable_thinking",
         content_parts=True, reasoning_history=True, trims_content=True,
-        tokenizer=("MiniCPM-V-4_7-35B-A3B-Q4_K_M.gguf",),
+        tokenizer=("MiniCPM-V-4_7-35B-A3B-Q8_0.gguf", "MiniCPM-V-4_7-35B-A3B-Q4_K_M.gguf"),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
     # Cloudflare Clef-Flash (clef, on Qwen3.5-9B): the template embedded in
     # the pinned ggml-org Q4_K_M, byte-identical to chat_template.jinja in

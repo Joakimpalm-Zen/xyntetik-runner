@@ -116,9 +116,17 @@ static void dev_take(void) {
     while (mine != SCH.dev_serving)
         pthread_cond_wait(&SCH.dev_cv, &SCH.dev_mu);
     pthread_mutex_unlock(&SCH.dev_mu);
+#ifdef RUNNER_TEST_TURN_GUARD
+    sock_write_forbidden++;
+    // the gate's anchor: a write here must end the process, or the guard is dead
+    if (getenv("RUNNER_TURN_GUARD_SELFTEST")) send_all(SOCK_INVALID, "x", 1);
+#endif
 }
 
 static void dev_give(void) {
+#ifdef RUNNER_TEST_TURN_GUARD
+    sock_write_forbidden--;
+#endif
     pthread_mutex_lock(&SCH.dev_mu);
     SCH.dev_serving++;
     pthread_cond_broadcast(&SCH.dev_cv);
@@ -264,6 +272,9 @@ bool sched_start(void) {
     }
     // Only a GPU-backed model needs the device turn; see the field's comment.
     SCH.device_turn = SV.slots[0].m->gpu != NULL;
+#ifdef RUNNER_TEST_TURN_GUARD
+    SCH.device_turn = true;   // the turnstile needs no GPU, so neither does its test
+#endif
     SCH.batch = model_batch_create(ms, n);
     free(ms);
     if (!SCH.batch) { sched_free_buffers(); return false; }
@@ -358,6 +369,10 @@ static const float *sched_forward(int id, int32_t tok, int pos, double deadline)
     q->state = SEQ_OFF;
     pthread_mutex_unlock(&SCH.mu);
     return ok ? q->logits : NULL;
+}
+
+bool sched_generate_holds_turn(const slot_t *s) {
+    return sched_on() && SCH.device_turn && engine_wants_spec(&s->e);
 }
 
 // engine_generate's contract, served out of shared microbatches.

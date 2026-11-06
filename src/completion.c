@@ -7,6 +7,7 @@
 #include "provenance.h"
 #include "receipts.h"
 #include "compat.h"
+#include "envelope.h"
 
 #include "http.h"
 #include "scheduler.h"
@@ -124,6 +125,12 @@ typedef struct {
     bool  doc_on;
     sbuf  doc;
     long  close_at;
+    // R3.36: a stream written under the device turn goes through `wq`, which
+    // cannot block; what the client has not taken is written after the turn.
+    // too_slow: it fell STREAM_OUT_CAP behind and the generation was stopped.
+    bool  out_on;
+    bool  too_slow;
+    stream_out wq;
 } gen_ctx;
 
 typedef struct {
@@ -175,15 +182,32 @@ static void chunk_open(gen_ctx *g, sbuf *c) {
     sb_lit(c, "\",\"choices\":[{\"index\":0,");
 }
 
+// Every byte of a stream leaves here. False is a client that is gone. A client
+// cut off for being too slow is still there and is owed the terminator, so that
+// is not a failed write: the frames after the cut are dropped whole.
+static bool stream_write(gen_ctx *g, const char *s, size_t n) {
+    if (!g->out_on) return send_all(g->fd, s, n);
+    if (g->too_slow) return true;
+    int r = stream_out_write(&g->wq, g->fd, s, n);
+    if (r == STREAM_OUT_FULL) g->too_slow = true;
+    return r != STREAM_OUT_GONE;
+}
+
+// What a write tells the generation. The cut stops it only while the queue is
+// in use: after the drain the terminator is ordinary writes, and they must go.
+static int stream_stops(const gen_ctx *g) {
+    return g->dead || (g->out_on && g->too_slow) ? 1 : 0;
+}
+
 // frame one built chunk body as an SSE event and push it; a failed send marks
 // the client gone, which is what aborts generation upstream
 static int chunk_send(gen_ctx *g, sbuf *c) {
     sbuf sse = {0};
     sb_fmt(&sse, "data: %s\n\n", c->s ? c->s : "");
-    if (c->failed || sse.failed || !send_all(g->fd, sse.s, sse.n)) g->dead = true;
+    if (c->failed || sse.failed || !stream_write(g, sse.s, sse.n)) g->dead = true;
     free(c->s);
     free(sse.s);
-    return g->dead ? 1 : 0;
+    return stream_stops(g);
 }
 
 // One token's rendered piece for the logprob tables: the decoded bytes, or
@@ -738,10 +762,10 @@ static int sse_send(gen_ctx *g, const char *type, sbuf *fields, bool seq) {
     if (seq) sb_fmt(&e, ",\"sequence_number\":%ld", g->seq++);
     if (fields->s) sb_put(&e, fields->s, fields->n);
     sb_lit(&e, "}\n\n");
-    if (fields->failed || e.failed || !send_all(g->fd, e.s, e.n)) g->dead = true;
+    if (fields->failed || e.failed || !stream_write(g, e.s, e.n)) g->dead = true;
     free(fields->s);
     free(e.s);
-    return g->dead ? 1 : 0;
+    return stream_stops(g);
 }
 
 static int resp_send(gen_ctx *g, const char *type, sbuf *fields) {
@@ -2014,6 +2038,7 @@ static const char *openai_finish(const char *finish) {
     // runner ended it for repeating itself (lab, 2026-09-26).
     if (!strcmp(finish, "loop"))            return "length";
     if (!strcmp(finish, "envelope_error"))  return "error";
+    if (!strcmp(finish, "client_too_slow")) return "error";
     return finish;
 }
 
@@ -2022,6 +2047,7 @@ static const char *finish_detail_of(const char *finish) {
     if (!strcmp(finish, "reasoning_limit")) return "reasoning_limit";
     if (!strcmp(finish, "loop"))            return "loop";
     if (!strcmp(finish, "envelope_error"))  return "envelope_unmapped";
+    if (!strcmp(finish, "client_too_slow")) return "client_too_slow";
     return NULL;
 }
 
@@ -2031,11 +2057,18 @@ static const char *finish_detail_of(const char *finish) {
 // e->oom (an allocation failure mid-generation) and "envelope_error" (a
 // constrained document the demultiplexer could not map back).
 //
+// "client_too_slow" ends on the same terminators, and it is the one cause that
+// is the client's: it fell STREAM_OUT_CAP behind a stream written under the
+// device turn. It may have real text behind it, but the turn was cut by the
+// server and nothing in it is complete, so a client must not read it as an
+// answer. Only a stream can reach it.
+//
 // It is deliberately NOT the same class as "length" or "stop": those are
 // completions with a boundary, and a client can use what it got. A fault has
 // no usable turn behind it at all.
 static bool generation_faulted(const char *finish) {
-    return !strcmp(finish, "error") || !strcmp(finish, "envelope_error");
+    return !strcmp(finish, "error") || !strcmp(finish, "envelope_error") ||
+           !strcmp(finish, "client_too_slow");
 }
 
 // Why a Responses turn did not complete, or NULL when it did: the one
@@ -2047,6 +2080,7 @@ static bool generation_faulted(const char *finish) {
 // guard is max_output_tokens.
 static const char *responses_incomplete_reason(const char *finish) {
     if (!strcmp(finish, "envelope_error")) return "envelope_unmapped";
+    if (!strcmp(finish, "client_too_slow")) return "client_too_slow";
     if (!strcmp(finish, "error"))          return "out_of_memory";
     if (!strcmp(finish, "length") || !strcmp(finish, "reasoning_limit") ||
         !strcmp(finish, "loop"))
@@ -2104,6 +2138,9 @@ static void anth_error_json(sbuf *r, const char *finish) {
         ? "the model's constrained tool-call document could not be mapped "
           "back to a response, so this turn produced no readable content. "
           "The request was valid; retry it."
+        : !strcmp(finish, "client_too_slow")
+        ? "this stream was cut off: the client read it too slowly and fell "
+          "too far behind. The request was valid; retry it and read faster."
         : "generation ran out of memory before producing a response. "
           "The request was valid; retry it.";
     sb_lit(r, "\"error\":{\"type\":\"api_error\",\"message\":\"");
@@ -4943,6 +4980,20 @@ uint64_t server_request_stream(uint64_t seed, uint64_t arrival) {
     return sampler_seed_state(seed + arrival * 0x9E3779B97F4A7C15ull);
 }
 
+// A stored response is read and deleted by its id alone, so an id is a
+// secret (R10.15). 128 bits of a hash of the server's seed and a count: unique
+// and unguessable, with the OS asked once at the start and not on each request,
+// where a failure (no file descriptors left) could only give a weaker id.
+static void request_id(char *out, size_t cap, const char *prefix) {
+    uint8_t in[sizeof SV.id_seed + 8], d[32];
+    uint64_t n = atomic_fetch_add(&SV.req_counter, 1);
+    memcpy(in, SV.id_seed, sizeof SV.id_seed);
+    memcpy(in + sizeof SV.id_seed, &n, 8);
+    envelope_data_sha256_raw(in, sizeof in, d);
+    size_t at = (size_t)snprintf(out, cap, "%s", prefix);
+    for (int i = 0; i < 16; i++) snprintf(out + at + 2 * i, cap - at - 2 * i, "%02x", d[i]);
+}
+
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            jv *req, const tool_envelope *env,
                            const render_state *rs) {
@@ -4966,11 +5017,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // Allocated here rather than beside the response struct, so the start line
     // below and the completion line share one name.
     char req_id[48];
-    snprintf(req_id, sizeof(req_id), "%s%d",
-             api == API_RESPONSES ? "resp_" : api == API_MESSAGES ? "msg_"
-                                            : api == API_CHAT ? "chatcmpl-"
-                                                              : "cmpl-",
-             atomic_fetch_add(&SV.req_counter, 1));
+    request_id(req_id, sizeof(req_id),
+               api == API_RESPONSES ? "resp_" : api == API_MESSAGES ? "msg_"
+                                    : api == API_CHAT ? "chatcmpl-" : "cmpl-");
 
     completion_req q;
     if (!completion_read(s, fd, api, req, env, chat, chat ? rs : NULL, &q))
@@ -5032,6 +5081,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         // prompt was built on (released between the check and here, or a
         // model that cannot fork one): the request named a warm prefix, so
         // it is refused rather than served cold under that name.
+        // The turn goes back first, as at the end of this span: an exit that
+        // keeps it stops every other slot, and the write below can block.
+        sched_prefill_end();
+        engine_set_prefill_yield(e, NULL, NULL);
         free(prep.toks);
         completion_cleanup(e, q.schema, NULL);
         send_error_detail(fd, 409, "the named context could not be forked for "
@@ -5194,8 +5247,31 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     g.calls_on = q.stream && (api == API_CHAT || api == API_MESSAGES);
     g.doc_on = e->schema || e->json_mode;
     g.close_at = -1;
+    g.out_on = sched_generate_holds_turn(s);
+    if (g.out_on) {
+        stream_out_init(&g.wq, STREAM_OUT_CAP);
+#ifdef RUNNER_TEST_TURN_GUARD
+        // the cut, reached without filling the kernel's buffers
+        const char *cap = getenv("RUNNER_TEST_STREAM_OUT_CAP");
+        if (cap) {
+            g.wq.cap = (size_t)atol(cap);
+            stream_out_block_for_test(&g.wq, true);
+        }
+#endif
+    }
     int n_gen = sched_generate(s, logits, q.max_tokens, gen_collect, &g, &gtime,
                                q.req_deadline);
+    if (g.out_on) {
+        // The turn is back: only this slot waits on the client from here. What
+        // it has not taken is written now, however slowly it reads.
+        g.out_on = false;
+        if (!stream_out_drain(&g.wq, fd)) g.dead = true;
+        stream_out_free(&g.wq);
+        if (g.too_slow)
+            fprintf(stderr, "[slot %d] %s: client cut off for being too slow "
+                    "(%zu MiB behind a stream written under the device turn)\n",
+                    s->id, g.id, STREAM_OUT_CAP >> 20);
+    }
     if (g.doc_on) {
         prep.diag.closure_json = closure_json(g.doc.s, g.doc.n, g.close_at);
         free(g.doc.s);
@@ -5325,6 +5401,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // can read, and reporting "stop" over an empty message would tell the
     // caller the model chose to say nothing.
     const char *finish = e->oom ? "error"
+                       : g.too_slow ? "client_too_slow"
                        : unmapped ? "envelope_error"
                        // the reasoning cap is the reason only while it left
                        // the payload unfinished: a document the model went on
@@ -5449,6 +5526,7 @@ done: ;
             // client that never left: an unmappable envelope set the same flag.
             // The two are named apart so a log line means what it says.
             g.dead ? " [client gone]"
+                   : g.too_slow ? " [client too slow]"
                    : unmapped ? " [envelope unmapped]" : "", paging);
     completion_cleanup(e, q.schema, &g);
 }

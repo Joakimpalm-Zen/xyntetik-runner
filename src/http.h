@@ -51,6 +51,38 @@ const char *sock_errstr(void);
 bool sock_timed_out(void);
 void sock_recv_timeout(sock_t fd, double s);
 void sock_send_timeout(sock_t fd, double s);
+// One non-blocking send: the bytes taken, 0 when the socket would block, -1 when
+// the connection is gone. The socket stays blocking for every other caller.
+int  sock_send_nb(sock_t fd, const char *buf, size_t n);
+
+// A client write that cannot block, for a stream written while the device turn
+// is held (R3.36): one client's pace must not stop the other slots. What the
+// socket will not take now waits here, in order, up to a bound; the caller
+// writes the rest with stream_out_drain once the turn is back.
+//
+// A client this far behind is cut off rather than held for. The queue only ever
+// grows by whole writes, so a refused write leaves the stream parseable.
+#define STREAM_OUT_CAP ((size_t)4 << 20)
+enum { STREAM_OUT_OK, STREAM_OUT_GONE, STREAM_OUT_FULL };
+typedef struct {
+    char  *buf;
+    size_t head, tail, alloc, cap;
+    bool   blocked;    // stream_out_block_for_test
+} stream_out;
+void   stream_out_init(stream_out *o, size_t cap);
+int    stream_out_write(stream_out *o, sock_t fd, const char *s, size_t n);
+bool   stream_out_drain(stream_out *o, sock_t fd);   // blocking: never under the turn
+size_t stream_out_pending(const stream_out *o);
+void   stream_out_free(stream_out *o);
+// The socket reads as full whatever it would take, so a test reaches the cap
+// without first filling the kernel's buffers.
+void   stream_out_block_for_test(stream_out *o, bool blocked);
+
+#ifdef RUNNER_TEST_TURN_GUARD
+// Nonzero on a thread holding the device turn; send_all ends the process then.
+// A test build only (make runner-turn-guard): see tests/test_turn_write_guard.py.
+extern _Thread_local int sock_write_forbidden;
+#endif
 
 // Parse the two HTTP fields that decide request framing; false rejects the
 // request outright. See http.c for why a duplicate Content-Length is refused.

@@ -1,3 +1,4 @@
+#define _CRT_RAND_S   // rand_s, for plat_random: before the first system header
 // sched_getaffinity (machine_cpu_count counts the mask this process may run on)
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
@@ -1457,6 +1458,24 @@ bool plat_replace_file(const char *tmp_path, const char *path) {
     return ok;
 #else
     return rename(tmp_path, path) == 0;
+#endif
+}
+
+bool plat_random(uint8_t *out, size_t n) {
+#ifdef _WIN32
+    for (size_t i = 0; i < n; i += 4) {
+        unsigned v;
+        if (rand_s(&v) != 0) return false;
+        for (size_t k = 0; k < 4 && i + k < n; k++)
+            out[i + k] = (uint8_t)(v >> (8 * k));
+    }
+    return true;
+#else
+    FILE *f = plat_fopen("/dev/urandom", "rb");
+    if (!f) return false;
+    size_t r = fread(out, 1, n, f);
+    fclose(f);
+    return r == n;
 #endif
 }
 

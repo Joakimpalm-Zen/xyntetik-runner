@@ -37,6 +37,14 @@ docs/model-support.md is rendered from it.
     scripts/model-tiers.py --record ROW --result smoke-result.json
     scripts/model-tiers.py --write-docs     # re-render docs/model-support.md
     scripts/model-tiers.py --docs-check     # fail when it differs from the render
+    scripts/model-tiers.py --check-hub      # every file's resolve URL, against the Hub
+
+A file's `name` is its bare file name, which a local models folder holds it
+under. A file in a folder of its repository also carries `path`, the name with
+that folder; a resolve URL is built from `path` when there is one. `--check`
+holds the shape of a path offline, and `--check-hub`, which needs the network
+and so is not part of `--check`, proves each URL: a HEAD at the pinned revision
+must end in 200 with the sha256 and size the record names.
 
 docs/model-support.md is the only render: it opens with the validation runs
 at a glance (one block per family, Tier 1 then Tier 2, then the Upcoming
@@ -57,6 +65,9 @@ import json
 import os
 import re
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROSTER = os.path.join(ROOT, "docs", "model-tiers.json")
@@ -241,7 +252,67 @@ def _file_errors(where, files):
             errs.append(f"{where}: files[{i}].sha256 must be 64 lowercase hex")
         if not isinstance(f.get("bytes"), int) or f["bytes"] <= 0:
             errs.append(f"{where}: files[{i}].bytes")
+        if "path" in f and not _path_ok(f):
+            errs.append(f"{where}: files[{i}].path must be the name in a folder of the file's repo")
     return errs
+
+
+def _path_ok(f):
+    parts = str(f["path"]).split("/")
+    return (bool(f.get("repo")) and len(parts) > 1 and parts[-1] == f.get("name")
+            and not any(p in ("", ".", "..") or "\\" in p for p in parts))
+
+
+def resolve_url(f):
+    """The file at its pinned revision, built from the record alone."""
+    path = urllib.parse.quote(f.get("path", f["name"]))
+    return f"https://huggingface.co/{f['repo']}/resolve/{f.get('revision') or 'main'}/{path}"
+
+
+def hub_head(url):
+    """(status, sha256, bytes) of a HEAD on `url`, following the redirect to
+    the storage host. The Hub names the LFS object only on that redirect."""
+    linked = {}
+
+    class Keep(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            linked.setdefault("sha256", (headers.get("X-Linked-Etag") or "").strip('"') or None)
+            size = headers.get("X-Linked-Size")
+            linked.setdefault("bytes", int(size) if size else None)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "xyntetik-roster-check"})
+    try:
+        with urllib.request.build_opener(Keep).open(req, timeout=60) as r:
+            status = r.status
+    except urllib.error.HTTPError as e:
+        status = e.code
+    return status, linked.get("sha256"), linked.get("bytes")
+
+
+def check_hub(doc, head=hub_head):
+    """What differs between each file's record and what the Hub serves."""
+    bad = []
+    for row in doc["rows"]:
+        for f in row.get("files") or []:
+            where = f"{row['id']}: {f['name']}"
+            if not f.get("repo"):
+                bad.append(f"{where}: no repo to resolve it in")
+                continue
+            url = resolve_url(f)
+            try:
+                status, sha, size = head(url)
+            except OSError as e:
+                bad.append(f"{where}: {url}: {e}")
+                continue
+            if status != 200:
+                bad.append(f"{where}: {url} answered {status}")
+                continue
+            if sha != f["sha256"]:
+                bad.append(f"{where}: the Hub serves sha256 {sha}, the row names {f['sha256']}")
+            if size != f["bytes"]:
+                bad.append(f"{where}: the Hub serves {size} bytes, the row names {f['bytes']}")
+    return bad
 
 
 def validate(doc, devices):
@@ -871,6 +942,8 @@ def _files(row):
         where = ""
         if f.get("repo"):
             where = f", from [{f['repo']}](https://huggingface.co/{f['repo']})"
+            if f.get("path"):
+                where += f" in `{f['path'].rsplit('/', 1)[0]}/`"
             if f.get("revision"):
                 where += f" at revision `{f['revision'][:12]}`"
         size = f", {f['bytes']:,} bytes" if f.get("bytes") else ""
@@ -1054,6 +1127,8 @@ def main():
     ap.add_argument("--device-evidence", default=DEVICE_EVIDENCE)
     ap.add_argument("--check", action="store_true",
                     help="validate the roster's structure (no clock involved)")
+    ap.add_argument("--check-hub", action="store_true",
+                    help="HEAD every file's resolve URL (needs the network)")
     ap.add_argument("--gate", action="store_true",
                     help="the release gate: refuse while a Tier 1 row has no recorded "
                          "pass on its backend or a recorded failure on any")
@@ -1105,6 +1180,14 @@ def main():
         for b in bad:
             print(f"{b}: the rendered block differs from docs/model-tiers.json; "
                   f"run scripts/model-tiers.py --write-docs", file=sys.stderr)
+        return 1 if bad else 0
+    if args.check_hub:
+        bad = check_hub(doc)
+        for b in bad:
+            print(b, file=sys.stderr)
+        total = sum(len(r.get("files") or []) for r in doc["rows"])
+        print(f"hub: {total - len(bad)} of {total} files as recorded" if bad else
+              f"hub ok: {total} files resolve at their revision with the recorded sha256 and bytes")
         return 1 if bad else 0
     if args.gate:
         bad = gate(doc, today(args.today), borrowed=borrowed_classes(devices))

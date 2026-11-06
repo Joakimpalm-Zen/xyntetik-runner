@@ -2203,6 +2203,13 @@ raw material for that layer, not the layer itself.
   waiters, not a reservation: a process that never passes `--wait-for-vram`,
   or that claims VRAM some other way, is invisible to it and can still take
   memory out of turn.
+- **A client that leaves the queue.** When a server's load is waiting here for
+  one request and that client disconnects, the wait stops and the server carries
+  on, unless another client is queued behind it, which keeps the wait and its
+  place. A queued client that has sent its request counts as present even if it
+  has left, because its close cannot be seen behind the unread request. A load
+  already past the queue is not stopped: it finishes and stays resident for the
+  next request. A swap that stops here has already unloaded the previous model.
 - **Cooperative yield.** `--serve --yield-on-request` opts a resident model
   into releasing itself when asked. The ask is a REQUEST, checked only at the
   one place `--serve` is ever idle between requests - never mid-generation,
@@ -3635,6 +3642,28 @@ the file changed on disk, a `model_sha256` expectation is refused with
 `resident_identity_unknown` rather than guessed. A request without the
 field behaves as before, loading on demand.
 
+**A client that reads a speculative stream too slowly is cut off.** On a GPU
+server with `--parallel` above 1 and speculation on (`--draft`, or
+`RUNNER_GRAMMAR_FF`), a generation keeps the device for its whole length, so
+its stream is queued rather than waited on: a client that stops reading cannot
+stop the other slots. **Limit:** the queue holds 4 MiB a stream. A client that
+far behind is cut off, and the generation stops. It then receives everything
+queued, followed by its surface's own terminator, so it is told rather than
+left waiting:
+
+- OpenAI surfaces: a final chunk with `finish_reason: "error"` and
+  `runner_telemetry.finish_detail: "client_too_slow"`, then `data: [DONE]`.
+- Responses: `response.incomplete` with reason `client_too_slow`.
+- Anthropic: an `error` event whose `runner_telemetry.finish_detail` is
+  `client_too_slow`.
+
+The text is partial and should not be read as an answer. The server log says
+`client cut off for being too slow`. A slow client under the limit gets every
+byte, and ties up only its own slot until it has them. A stream on plain
+decoding has no queue and no such limit, because it never holds the device
+while it writes. A reading client's speculative generation still keeps the
+other slots waiting for its length; this limit does not change that.
+
 ### Health and metrics
 
 `/health` lists what each busy slot is doing, because a reply's headers are
@@ -3829,8 +3858,11 @@ for example a prompt whose weights are still being read from a slow disk. If
 the server has not exited 10 seconds after the signal, it exits without
 waiting, with exit code 128 plus the signal number (143 for SIGTERM, 130 for
 SIGINT). That holds whatever it was waiting on: work still inside a step, or
-a log line blocked because the server's output is a pipe nobody reads. A
-second signal during the drain exits at once with code 130.
+a log line blocked because the server's output is a pipe nobody reads. The
+budget includes queued-client cleanup and the final shutdown diagnostic; it
+also applies while an admission-path handler is still running. A
+second signal during the drain exits at once with code 130. When the final
+diagnostic can be written, it names the active shutdown stage.
 
 ### OpenAI Chat Completions
 

@@ -1,4 +1,4 @@
-"""A stop never waits for the TTL reaper's poll.
+"""Process-level stop latency and discovery cleanup contracts.
 
 Shutdown joins the reaper thread, and the reaper slept its whole poll (5 s
 shipped) in one call: every SIGTERM, Ctrl-C and test teardown waited for
@@ -71,3 +71,45 @@ def test_sigterm_does_not_wait_for_the_reaper_poll(runner_bin, model):
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=10)
+
+
+@pytest.mark.parametrize("registry", [False, True], ids=["single-model", "swap-set"])
+@pytest.mark.parametrize("sweep", ["list", "next-server"])
+def test_clean_stop_leaves_record_for_discovery_to_sweep(runner_bin, model, tmp_path,
+                                                         registry, sweep):
+    # Process death, established by wait(), is the independent liveness
+    # anchor. Exit must leave the record alone: unlink can block after the
+    # server's shutdown watchdog has released its bound (R10.20).
+    sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+    from harness import RunnerServer
+
+    helper = ROOT / "test-instances"
+    assert helper.is_file(), "build test-instances with make"
+    home = tmp_path / "home"
+    home.mkdir()
+    env = dict(os.environ, HOME=str(home), APPDATA=str(home))
+    records = home / ".xyntetik" / "runner" / "instances"
+    spec = f"a={model},b={model}" if registry else str(model)
+
+    def server():
+        return RunnerServer(runner_bin, spec, ctx=128, env=env,
+                            extra_args=["--gpu", "off", "-t", "2"])
+
+    with server() as first:
+        pid = first.proc.pid
+        record = records / f"{pid}.json"
+        assert record.is_file(), "a live server publishes its instance record"
+    assert first.exit_code == 0 and not first.killed
+    assert record.is_file(), "clean exit must not unlink the instance record"
+
+    if sweep == "list":
+        result = subprocess.run([helper, "list"], env=env, check=True,
+                                capture_output=True, text=True, timeout=10)
+        assert str(pid) not in result.stdout.splitlines()
+        assert not record.exists(), "the public list sweeps the dead owner"
+    else:
+        # Do not list first: registration alone must remove the old file,
+        # including on hosts that never run a tray or discovery controller.
+        with server() as second:
+            assert not record.exists(), "the next server sweeps the old file"
+            assert (records / f"{second.proc.pid}.json").is_file()
