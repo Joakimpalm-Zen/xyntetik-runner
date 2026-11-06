@@ -591,6 +591,16 @@ FAMILIES = {
              "when its four tool cases drifted at the declarations",
         tool_family=True, hostile_args=True, thinking_var="enable_thinking",
         tokenizer=("NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",)),
+    # NVIDIA Nemotron 3 Nano 30B-A3B (nemotron_h_moe, R4.27.4.1): the template
+    # in ggml-org's conversion (fe801509) is the publisher's chat_template.jinja
+    # at bf77c317 byte for byte (10,504 bytes, sha256 ab7813c3), under the
+    # renderer Runner picks for it
+    "nemotron3-nano": Family(
+        "nemotron35", ("gguf", "models/NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf"),
+        note="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 chat_template.jinja at "
+             "bf77c317, byte-identical in ggml-org's GGUF at fe801509",
+        tool_family=True, hostile_args=True, thinking_var="enable_thinking",
+        tokenizer=("NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",)),
     "eurollm": Family(
         "chatml", ("gguf", "models/EuroLLM-9B-Instruct-Q4_K_M.gguf"),
         note="publisher page gated; the file's embedded template",

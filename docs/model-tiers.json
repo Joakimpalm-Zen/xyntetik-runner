@@ -4317,21 +4317,106 @@
       ]
     },
     {
-      "id": "nemotron-3-nano-30b-a3b",
-      "model": "Nemotron 3 Nano (30B-A3B)",
-      "tier": "upcoming",
-      "claim": "Not admitted as a file: never loaded; it declares the same architecture id as Lightning, with the layout unverified.",
+      "id": "nemotron-3-nano-30b-a3b-q4_k_m",
+      "model": "NVIDIA Nemotron 3 Nano 30B-A3B (NVIDIA)",
+      "family": "NVIDIA Nemotron 3.5 Lightning",
+      "tier": "tier2",
+      "claim": "Text path, ggml-org's automatic conversion (NVIDIA publishes no GGUF) of NVIDIA's Nemotron 3 Nano 30B-A3B at Q4_K_M, CPU only: against NVIDIA's BF16 parent computed in float32 at the model's declared dt limit it reads 0.0222 mean KLD and 99.50% margin-qualified top-1 (bars 0.05 and 97%, 300 positions); with the reference's configured clamp it reads 0.137.",
       "architecture": "nemotron_h_moe",
-      "missing": "A load test and a layout check, then the Lightning gate list.",
+      "upstream": {
+        "checkpoint": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        "revision": "bf77c3174f68ad409e1c2aa60daeb46e32d1c606"
+      },
+      "licence": {
+        "id": "nvidia-nemotron-open-model-license",
+        "from": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+      },
+      "files": [
+        {
+          "name": "NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+          "repo": "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF",
+          "revision": "fe801509a580ff84a5728d4a9104e3f6f7e9b0dd",
+          "sha256": "0f111a0d49777a2a0178758b1aee14e5365c495987499401ef3ebe87754322a8",
+          "bytes": 22421827488
+        }
+      ],
+      "quantization": "Q4_K_M (ggml-org's automatic conversion)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Against NVIDIA's BF16 checkpoint at bf77c317 in float32 at use on the CPU (transformers 5.16.1's NemotronH, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files), at the declared time_step_limit (0, inf): Q4_K_M 0.0222 mean KLD / 93.67% top-1 / 99.50% margin-qualified (median 0.0116); the configured clamp at time_step_min 0.001 reads 0.1366 / 94.53%. llama.cpp 73a43d1 on the same file reads 0.0243 (Runner the closer, Wilcoxon p 8.7e-4). Tokenizer 0/721 corpus strings and 0/128,635 vocabulary entries; template conformance 24/24 in text and tokens (the file's template is the repository's chat_template.jinja). Record: docs/compat-reports/nemotron-3-nano-30b-a3b-2026-11-05/README.md.",
+        "context": 4096,
+        "limitations": "22.4 GB of weights, CPU only: the sigmoid-plus-bias MoE router has no device kernel, so CUDA refuses the file, and Metal is not measured. A third-party conversion (ggml-org's automatic converter, revision not declared). Tool gate: case B fails buffered and streamed and case C fails buffered, each on finish_reason length before a parsed call. LoRA: neither training nor serving (Mamba-2 hybrid). Licence: NVIDIA's nemotron open model licence.",
+        "evidence": [
+          "docs/compat-reports/nemotron-3-nano-30b-a3b-2026-11-05/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Mac that holds the file (22.4 GB) for a Metal cell; the CUDA router kernel (sigmoid with a selection bias); the tool protocol's B and C cases; task quality on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cuda": {
+          "kind": "limit",
+          "reason": "nemotron_h_moe's MoE router (sigmoid gating with a selection bias, weight scale 2.5) has no device kernel: cuda_admit says \"this model's MoE router (gating=2 groups=1 norm_w=1 scale=2.5) has no device kernel\" and the file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "metal": {
+          "kind": "limit",
+          "reason": "Not measured: no Mac that holds the file (22.4 GB) has run it.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.13.0",
+          "date": "2026-11-05",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "05c140d8dd59e1aeafd0adb00b307ace5e3c4062",
+          "caps": {
+            "version": "1.13.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "3c6bc9926d90f3ce6c725239b36ad157a29adbada230adf8cb27c119deff107f",
+          "ran": "runner -m NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/nemotron-3-nano-30b-a3b-q4_k_m.linux-x86_64-cuda.cpu.txt"
+        }
+      },
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-11-05",
+          "reason": "Admitted 2026-11-05 at Tier 2 with the admitting CPU cell from the lab CPU lane (R4.27.4.1). Maintained on report.",
+          "last_validated_release": null
         }
       ],
-      "anchor": "Nano-9B-v2 bf16 covers the SSM path; the MoE path has no small member."
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "recurrent architecture (Mamba-2)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover Mamba-2 hybrid architectures yet (nemotron_h_moe)"
+        },
+        "runner_version": "1.13.0",
+        "date": "2026-11-05"
+      }
     },
     {
       "id": "nemotron-3.5-bolt-74b-a9b",
