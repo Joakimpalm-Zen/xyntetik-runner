@@ -1,0 +1,127 @@
+Write a detailed, friendly explanation for a curious teenager of how a modern
+large language model turns a sequence of words into a prediction of the next
+word. Cover tokenization, embeddings, attention, and why the model needs so
+much training data. Use a couple of everyday analogies.
+
+Berätta sedan på svenska, med samma vänliga och pedagogiska ton, hur en dator
+kan lära sig ett sådant språkmönster genom att läsa enorma mängder text. Ta
+upp varför flerspråkiga modeller ibland blandar ihop grammatik mellan språk,
+och ge ett konkret exempel på svenska.
+
+Finally, switch back to English and give a short recipe for a simple weekday
+dinner, followed by three follow-up questions a beginner cook might ask about
+substituting ingredients.
+# Gridcore Runner
+
+A compact **local LLM inference engine written from scratch in plain C** — no
+third-party runtime dependencies or ggml, one `make`, one binary. It uses only
+the platform C/math/threading/dynamic-loader libraries, loads
+standard **GGUF** models and runs them on **CPU (AVX2), CUDA, or Metal**, with
+an OpenAI-compatible server and sampler-level JSON-schema enforcement.
+
+**In 0.1.6 — `--parallel` on Windows serves real checkpoints correctly, and
+the multi-slot server got a hardening pass.** MinGW's 32-bit `stat()` was
+silently unsharing weights for any file past 2 GB: every slot re-decided its
+own CPU/GPU split under the previous slot's VRAM footprint, and the same
+greedy request could get a different answer depending on which slot took it.
+Files are now keyed by their native 64-bit identity, a guard reports any
+silent split disagreement loudly, and the fix is pinned at real-checkpoint
+scale. Also in: **Apertus on CUDA** with its tokenizer fixed (721-prompt
+mismatches 3 → 0), speculative drafts honoring `--kv q8`, `/v1/embeddings`
+working with the official OpenAI SDK, prefix snapshots that survive a
+restart, a long prefill no longer blocking the other slots, the write-side
+stall reproduced and gated for real, and a corrected published comparison —
+vLLM scores **80/105**, not the 20/100 a misconfigured run reported. Where a
+model is too numerically sensitive for token-identity to mean anything,
+agreement is measured against its own floor: `scripts/sensitivity_floor.py` reports
+what a given model does to a small numeric change, and
+`scripts/token_divergence.py` reports where two engines first disagree and by
+how much.
+
+Earlier, in 0.1.4: the tensor-core prefill GEMM became the default on
+tolerance-gated dense Q4_K models (**+47–77% prefill**, decode unchanged),
+dense decode reached **73–79% of llama.cpp** on the reference box with the
+head-to-head numbers published, losing rows included
+([docs/benchmarks.md](docs/benchmarks.md)), and six European models joined the
+pinned compatibility manifest under the [Europe & US model
+scope](docs/model-scope.md). See [CHANGELOG.md](CHANGELOG.md).
+
+## Quick start
+
+Download a prebuilt binary from the [latest release](../../releases/latest)
+(Linux / macOS / Windows), **or** build from source — CUDA needs only the
+NVIDIA driver, no toolkit; offload requires NVIDIA Turing / compute capability
+7.5 or newer:
+
+```
+git clone https://github.com/Joakimpalm-Zen/gridcore-runner && cd gridcore-runner
+make                 # produces ./runner (GPU auto-detected at runtime)
+./runner --version   # -> runner 0.1.6-alpha
+```
+
+Then point it at any GGUF model:
+
+```
+./runner -m model.gguf -i                                   # interactive chat
+./runner -m Qwen3-30B-A3B-Q4_K_M.gguf -p "..." --gpu auto   # sparse MoE on the GPU
+./runner -m model.gguf --serve --parallel 2                 # OpenAI-compatible API server
+./runner -m model.gguf -p "..." --json                      # guaranteed-valid JSON output
+./runner -m model.gguf -f big-document.txt -c 8192 -n 200   # 4x the training context
+./runner -m big.gguf --draft small.gguf -p "..."            # speculative decoding
+```
+
+> **Public alpha (`0.1.6-alpha`).** CI-tested on Linux/macOS/Windows and
+> daily-driven by the rest of the Gridcore stack, but it has met few machines
+> other than ours — which is what an alpha is for. Run your GGUF models and
+> [open an issue](../../issues) for anything that crashes, misbehaves, or
+> underperforms (`runner --version` and `runner --caps` make a report
+> actionable). Threat model: [SECURITY.md](SECURITY.md); the correctness gates
+> every change must hold: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Why runner
+
+**Tool calls that still parse when the budget runs out.** Constrained decoding
+is not novel — llama.cpp compiles JSON Schema to GBNF behind `response_format`,
+Ollama takes a schema in `format`. The difference is where it sits: runner's
+validator drives sampling on the path a tool call actually takes, so properties
+emit in declared order, unknown keys are impossible, and **a call truncated
+mid-emission still parses**. On the [agent-torture suite](docs/agent-torture.md)
+— same model, same box, each runtime a `--runtime` target — that is **12/12
+valid tool calls against 5/12 for llama.cpp and Ollama**, and the gap is
+entirely the hard cases: deep nesting and truncation. On a model small enough
+that llama.cpp's template path lands *no* parseable call (3/12), runner still
+returns 12/12. Bring your nastiest schema; the suite exists to be contested.
+
+**Small enough to own outright.** One C codebase, one `make`, no ggml split, no
+CMake, no submodules — readable in a sitting, changeable the same afternoon.
+`/health` in the accept loop, `--parent-pid` supervisor lifetime, speculative
+decoding under `--serve`: each was an afternoon here and would be a feature
+request against a 300k-line upstream. llama.cpp is broader and faster; runner is
+for when the engine is load-bearing and you need to read it to the last line.
+
+**One file to ship, and enough information to place it.** llamafile reached
+driver-only GPU first by bundling tinyBLAS beside the model; runner embeds the
+**PTX in the executable** instead — no toolkit, no cuBLAS, no DLLs to version
+alongside. Copy it to a node with a Turing-or-newer NVIDIA GPU and a driver and
+it offloads; anything else runs the CPU path. Then the half nobody ships:
+`--caps` reports cores, RAM, GPU, compute capability and the quant lists CPU and
+GPU each support, so a scheduler can decide *before* dispatching; `--reserve P`
+caps the process at a percentage of total VRAM and RAM with the context auto-fit
+to the remainder; `--parent-pid` ties its life to its supervisor. (Swapping
+models is table stakes — Ollama does it natively and better. Placement is the
+harder half.)
+
+**No `--host` flag to get wrong.** runner binds `127.0.0.1` with no override —
+no flag, no environment variable, no config key. llama-server and Ollama default
+to loopback too; they just kept the escape hatch. [SentinelLABS and Censys
+reported](https://www.sentinelone.com/labs/silent-brothers-ollama-hosts-form-anonymous-ai-network-beyond-platform-guardrails/)
+**175,108 unique internet-reachable Ollama hosts** across 130 countries from
+their 293-day scan ending in January 2026, nearly half with tool-calling
+capability. Exposed stock Ollama APIs have no authentication. One afternoon's
+`0.0.0.0` at a time. Here it is a gate, not a
+hope: `tests/test_bind.c` and `tests/conformance/test_loopback_bind.py` fail the
+build if the bind ever moves. Remote access belongs behind a reverse proxy, an
+SSH tunnel or Tailscale, where auth and TLS already live.
+
+**The trade, and how it is checked.** llama.cpp wins on raw speed, exotic quants
+(IQ2/IQ3, Vulkan) and architecture breadth: runner does Mixtral/Qw
