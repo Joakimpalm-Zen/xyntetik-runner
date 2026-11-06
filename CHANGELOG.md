@@ -5,6 +5,23 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Qwen3.8-35B-A3B-Distill, empero-ai's finetune of Qwen3.6-35B-A3B, joins the roster at Tier 2 on empero-ai's own
+  Q6_K, text path only (R4.27.1).** It is not a Qwen release; the row replaces the Upcoming `qwen3.8-35b-a3b`, which
+  named a Qwen model that Qwen has not published. Against empero-ai's BF16 parent computed in float32 the Q6_K reads
+  0.0336 mean KLD and 98.65% margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU).
+  - **Checks:**
+    - Tokenizer 0 of 721 corpus strings and 0 of 247,091 vocabulary entries against empero-ai's tokenizer.json, read
+      with the qwen2 split by R4.27.5's rule.
+    - Template conformance 23 of 23 in text and tokens under `qwen36`, against the file's own template
+      (Qwen3.6-35B-A3B's bytes; a new `empero-qwen38-35b-a3b-distill` family).
+    - CPU and CUDA cells pinned and matched; gpu-identity ok with routing pinned; cpu_cuda pass_margin_qualified.
+  - **Limits:**
+    - empero-ai's Q4_K_M (0.1278) and Q5_K_M (0.0508) miss the bar; the Q4_K_M reads 2.7x the base model's Q4_K_M by
+      the same method.
+    - The tokenizer rule is keyed on header fields; a requant that rewrites them reads the qwen35 split.
+    - On a 24 GB CUDA card the file runs split, 34 of 40 blocks on the device.
+    - Record: `docs/compat-reports/empero-qwen3.8-35b-a3b-distill-2026-11-06/`.
+
 - **Fix: two qwen35-labelled finetunes trained with the qwen2 split now tokenize as their publishers do
   (R4.27.5).** openbmb's MiniCPM-V-4.7-35B-A3B and empero-ai's Qwen3.8-35B-A3B-Distill ship GGUFs labelled qwen35,
   while the tokenizer.json each publisher saved under transformers 5.x uses the qwen2 regex (`\p{L}+`, combining

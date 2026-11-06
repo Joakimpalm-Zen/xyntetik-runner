@@ -579,6 +579,17 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>Qwen3.6</b>, 1 model: CPU ✅ · CUDA ✅ · Metal n/a · Train n/a</summary>
+<p><b>Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B)</b></p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#empero-qwen3.8-35b-a3b-distill-q6_k"><code>Qwen3.8-35B-A3B-Q6_K.gguf</code></a></td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>Ornith 1.5</b>, 1 model: CPU ✅ · CUDA ✅ · Metal n/a · Train n/a</summary>
 <p><b>Ornith-1.5-35B-A3B (ornith-ai)</b>, text path only</p>
 <table>
@@ -816,7 +827,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): Qwen3.8-35B-A3B, MiniCPM-V-4.7-35B-A3B (text path only), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
+**Upcoming** (planned, not supported yet): MiniCPM-V-4.7-35B-A3B (text path only), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -1801,6 +1812,33 @@ Admitted and maintained on report: existing regression tests keep running and sh
 
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
+### Qwen3.6
+
+#### Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B)
+
+<a id="empero-qwen3.8-35b-a3b-distill-q6_k"></a>
+##### `Qwen3.8-35B-A3B-Q6_K.gguf`
+
+Text path only (the vision projector is not loaded): empero-ai's Q6_K of its Qwen3.8-35B-A3B-Distill, a finetune of Qwen3.6-35B-A3B and not a Qwen release, which passes the fidelity bar: against empero-ai's BF16 parent computed in float32 it reads 0.0336 mean KLD and 98.6% margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU). The publisher's Q4_K_M and Q5_K_M miss (0.128 and 0.051).
+
+- **File:** `Qwen3.8-35B-A3B-Q6_K.gguf` (sha256 `0bb743311ee5d58eeeeff67d42d0e62a52347539e825ceb320d1a2178003f47b`, 29,208,731,296 bytes, from [empero-ai/Qwen3.8-35B-A3B-Distill-GGUF](https://huggingface.co/empero-ai/Qwen3.8-35B-A3B-Distill-GGUF) at revision `b1f9d1dcc3de`).
+- **Upstream checkpoint:** empero-ai/Qwen3.8-35B-A3B-Distill at revision `bcc2dbe2f21b`.
+- **Quantization:** Q6_K (empero-ai).
+- **Licence:** `apache-2.0`, as the empero-ai/Qwen3.8-35B-A3B-Distill model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** empero-ai's files against the BF16 parent at bcc2dbe2 computed in float32 on the CPU (transformers 5.16.1, float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files): Q6_K 0.0336 mean KLD / 91.7% top-1 / 98.6% margin-qualified; Q5_K_M 0.0508 / 89.3% / 95.5%; Q4_K_M 0.1278 / 85.0% / 94.6%. Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against the publisher's tokenizer.json, which uses the qwen2 split (R4.27.5); template conformance 23/23 in text and tokens against the file's own template, which is Qwen3.6-35B-A3B's byte for byte. Record: docs/compat-reports/empero-qwen3.8-35b-a3b-distill-2026-11-06/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU and CUDA for this file (29.2 GB: on a CUDA MIG slice, 1g.24gb, sm_120, the fitted split places 34 of 40 blocks on the device); Metal runs qwen35moe on toy models only. Text only: the vision projector empero-ai ships beside it is not loaded. A finetune, not a Qwen release: empero-ai's off-policy distillation (SFT on teacher traces) of Qwen3.6-35B-A3B; the name is the publisher's. Its tokenizer reads with the qwen2 split by R4.27.5's rule, keyed on header fields empero-ai's converter wrote (general.name "Ours", the empero-ai tag, the base model's URL); a requant that rewrites them reads the qwen35 split. The publisher's Q4_K_M (0.128) and Q5_K_M (0.051) miss the bar; its Q4_K_M reads 2.7x the base's Q4_K_M by the same method (bartowski's, 0.0475), not examined further. A system message after the conversation has started is refused, as the template refuses it. Licence: apache-2.0.
+- **Still missing:** A Metal run on a Mac that holds the file (29.2 GB), and the Windows CUDA host's cells; task quality and the tool protocol on the real checkpoint.
+- **Evidence:** [docs/compat-reports/empero-qwen3.8-35b-a3b-distill-2026-11-06/README.md](compat-reports/empero-qwen3.8-35b-a3b-distill-2026-11-06/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.14.0 on 2026-11-06.
+- **CPU:** ✅ v1.14.0 2026-11-06 on linux-x86_64-cuda (borrowed hardware) at commit `bae5907817e4`, output sha256 `f3a25e63edc8ebf7`, [pin](../tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.14.0 2026-11-06 on linux-x86_64-cuda (borrowed hardware) at commit `bae5907817e4`, output sha256 `4ac464a064329c34`, [pin](../tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cuda.txt)
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Not measured: Metal runs qwen35moe on toy models (make test-metal-qwen35moe, to the CPU's logits at 1e-5), but this file (29.2 GB) has not been run on a Mac that holds it.
+- **LoRA training:** no: MoE on a Gated DeltaNet model (runner 1.14.0, 2026-11-06).
+- **LoRA adapter serving:** supported (runner 1.14.0, 2026-11-06).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-06 ([log](#transition-log)).
+
 ### Ornith 1.5
 
 #### Text path only: Ornith-1.5-35B-A3B (ornith-ai)
@@ -2714,17 +2752,6 @@ No members.
 <a id="upcoming"></a>
 ## Upcoming, planned admission
 
-### Qwen3.8-35B-A3B
-
-<a id="qwen3.8-35b-a3b"></a>
-#### Qwen3.8-35B-A3B
-
-Not validated: the qwen35moe architecture loads and runs on the CPU (since 1.10.0; Qwen3.6-35B-A3B is a Tier 2 row on it), but no gate has run on a Qwen3.8-35B-A3B file; CUDA runs the architecture since R4.27 A2 (Qwen3.6-35B-A3B's cells), not yet on a Qwen3.8 file.
-
-- **Numerical anchor:** anchor: agreement with another engine, not fidelity. A float32 reference (140 GB) is not feasible; Qwen3.5-0.8B covers the recurrent path only.
-- **Missing for Tier 1:** One gate run on the CPU lane: tokenizer, template, quant bar against the BF16 parent, pinned output, device record; a file pinned by sha256; the CUDA cells on that file.
-- **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
-
 ### Text path only: MiniCPM-V-4.7-35B-A3B
 
 <a id="minicpm-v-4.7-35b-a3b"></a>
@@ -2824,7 +2851,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-22 | [Phi-3 (phi3)](#arch-phi3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Apertus (apertus)](#arch-apertus) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Granite 4 h-series hybrid (granitehybrid)](#arch-granitehybrid) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
-| 2026-10-22 | [Qwen3.8-35B-A3B](#qwen3.8-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B), `Qwen3.8-35B-A3B-Q6_K.gguf`](#empero-qwen3.8-35b-a3b-distill-q6_k) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Ornith-1.5-35B-A3B (ornith-ai), `Ornith-1.5-35B-Q8_0.gguf`](#ornith-1.5-35b-a3b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [MiniCPM-V-4.7-35B-A3B](#minicpm-v-4.7-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Granite-4.2-30B, `granite-4.2-30b-Q4_K_M.gguf`](#granite-4.2-30b-q4_k_m) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
@@ -2920,6 +2947,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-11-04 | [DeepSeek-V2-Lite-Chat (DeepSeek), `DeepSeek-V2-Lite-Chat.Q6_K.gguf`](#deepseek-v2-lite-chat-q6_k) | Tier 2, maintained on report | R4.4.5 step (d), the certification of the deepseek2 admission, admitted 2026-11-04 at Tier 2 (the coordinator's rows): the file pinned by sha256 and repository revision, the tokenizer differential, template conformance, a float32 reference measurement on the publisher's BF16 checkpoint with a llama.cpp column, gpu-identity on the CPU against CUDA, the compatibility checks and the Linux CUDA host's CPU and CUDA cells. The licence (DeepSeek's model licence) was ruled eligible by the coordinator. Maintained on report; Tier 1 is the owner's call. | none recorded |
 | 2026-11-05 | [Ornith-1.5-35B-A3B (ornith-ai), `Ornith-1.5-35B-Q8_0.gguf`](#ornith-1.5-35b-a3b-q8_0) | Tier 2, maintained on report | Admitted 2026-11-05 at Tier 2 with the admitting CPU cell from the lab CPU lane (R4.27.3). Maintained on report. | none recorded |
 | 2026-11-05 | [NVIDIA Nemotron 3 Nano 30B-A3B (NVIDIA), `NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf`](#nemotron-3-nano-30b-a3b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-11-05 at Tier 2 with the admitting CPU cell from the lab CPU lane (R4.27.4.1). Maintained on report. | none recorded |
+| 2026-11-06 | [Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B), `Qwen3.8-35B-A3B-Q6_K.gguf`](#empero-qwen3.8-35b-a3b-distill-q6_k) | Tier 2, maintained on report | Admitted 2026-11-06 at Tier 2 with the admitting CPU and CUDA cells from the lab lanes (R4.27.1), as empero-ai's finetune of Qwen3.6-35B-A3B; the Upcoming qwen3.8-35b-a3b row it replaces named a Qwen model that Qwen has not released. Maintained on report. | none recorded |
 | 2026-11-06 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-selective-q8_0-expq5_k.gguf`](#mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k) | Tier 2, maintained on report | R4.33.4: admitted at Tier 2 on R4.33's float32 measurement of these bytes, the file the project published on 2026-11-05; the Linux CUDA host's cells are recorded as the smoke runs. | none recorded |
 
 <!-- model-tiers:rows:end -->
