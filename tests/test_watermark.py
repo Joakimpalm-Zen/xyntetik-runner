@@ -10,6 +10,13 @@ for the g-words -- this file's SipHash checked against openssl's) and must
 count the same g-values the runner counts; hashlib names the key id. The
 statistics are the detector's own z against a Bernoulli(1/2) null, which
 tests/test_watermark.c holds on random streams.
+
+The keys these tests score with are fixed. The detector's threshold is a
+statistical one, so a key drawn fresh on each run makes every verdict below a
+new draw from that null: at z >= 4, about one fresh key in 30,000 reads an
+unmarked generation as WATERMARKED, and the suite then fails with nothing
+wrong. test_keygen is the one place a generated key is used, and it reads no
+verdict.
 """
 import hashlib
 import json
@@ -29,6 +36,8 @@ from harness import RunnerServer  # noqa: E402
 OPENSSL = shutil.which("openssl")
 LAYERS, CONTEXT = 30, 4
 M64 = (1 << 64) - 1
+KEY_A = hashlib.sha256(b"test_watermark.py key a").digest()
+KEY_B = hashlib.sha256(b"test_watermark.py key b").digest()
 
 
 def _rotl(x, b):
@@ -85,19 +94,26 @@ def py_detect(key, toks, start):
     return scored, ones
 
 
+def _key_id(key):
+    return hashlib.sha256(b"xyntetik.runner.watermark.key_id.v1" + key).digest()[:8].hex()
+
+
+def _write_key(path, key):
+    """A key file written here, not by --watermark-keygen: the runner refuses
+    a file whose key_id does not name its key, so hashlib's id is checked."""
+    path.write_text(json.dumps({"schema_version": "xyntetik.runner.watermark_key.v1",
+                                "key": key.hex(), "key_id": _key_id(key)}), encoding="utf-8")
+    return path
+
+
 @pytest.fixture(scope="module")
 def fx(runner_bin, tmp_path_factory):
     d = tmp_path_factory.mktemp("wm")
     model = d / "model.gguf"
     subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(model)],
                    check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
-    keys = []
-    for name in ("a.key", "b.key"):
-        p = subprocess.run([runner_bin, "--watermark-keygen", d / name],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        assert p.returncode == 0, p.stderr
-        keys.append(d / name)
-    return {"d": d, "model": model, "key": keys[0], "other": keys[1]}
+    return {"d": d, "model": model, "key": _write_key(d / "a.key", KEY_A),
+            "other": _write_key(d / "b.key", KEY_B)}
 
 
 def _run(runner_bin, *args):
@@ -124,15 +140,22 @@ def _key_bytes(path):
     return bytes.fromhex(json.loads(path.read_text(encoding="utf-8"))["key"])
 
 
-def test_keygen(runner_bin, fx):
-    k = json.loads(fx["key"].read_text(encoding="utf-8"))
+def test_keygen(runner_bin, fx, tmp_path):
+    a, b = tmp_path / "a.key", tmp_path / "b.key"
+    for path in (a, b):
+        p = _run(runner_bin, "--watermark-keygen", path)
+        assert p.returncode == 0, p.stderr
+    k = json.loads(a.read_text(encoding="utf-8"))
     assert k["schema_version"] == "xyntetik.runner.watermark_key.v1"
     key = bytes.fromhex(k["key"])
-    assert len(key) == 32 and _key_bytes(fx["other"]) != key
-    assert k["key_id"] == hashlib.sha256(
-        b"xyntetik.runner.watermark.key_id.v1" + key).digest()[:8].hex()
-    p = _run(runner_bin, "--watermark-keygen", fx["key"])
-    assert p.returncode != 0 and json.loads(fx["key"].read_text(encoding="utf-8")) == k
+    assert len(key) == 32 and _key_bytes(b) != key
+    assert k["key_id"] == _key_id(key)
+    p = _run(runner_bin, "--watermark-keygen", a)
+    assert p.returncode != 0 and json.loads(a.read_text(encoding="utf-8")) == k
+    # a generated key is one the runner marks with; no verdict is read from
+    # it, since a fresh key is a fresh draw from the detector's null
+    rec = _gen(runner_bin, fx, tmp_path / "k.json", "--watermark", a, n=8)
+    assert rec["watermark"]["key_id"] == k["key_id"]
 
 
 def test_python_siphash_is_openssls():
