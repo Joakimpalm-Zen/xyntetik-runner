@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Windows: a second server on a port in use is refused, not silently sharing it (R10.22).** `SO_REUSEADDR` let both
+  bind on Windows. The second printed `server listening` and got no request, and when the first stopped, its clients'
+  connections were reset. It now exits with `cannot bind 127.0.0.1:PORT: is another server on this port?`, as Linux
+  already refused. This was the cause of a rare `WinError 10054` under `pytest -n`, when two workers drew the same port;
+  the test harness now takes another port on a lost bind. Linux and macOS keep `SO_REUSEADDR`, and a restart straight
+  after serving still binds. Measured on Windows.
+
 - **Fix: the project's Clef IQ3_S backbone tokenizes as Cloudflare/clef's own tokenizer, and its row no longer
   claims the decision model (R4.36).** `Clef-backbone-IQ3_S.gguf` is Clef's backbone in Runner's qwen35 view, so it
   declares architecture qwen35 and the Clef rule (architecture clef) missed it: it read with the qwen35 split, 3 of 721
