@@ -2360,6 +2360,51 @@
       }
     },
     {
+      "id": "minicpm-v-4.7-35b-a3b-q8_0",
+      "architecture": "qwen35moe",
+      "family": "MiniCPM-V 4.7",
+      "file": "models/MiniCPM-V-4_7-35B-A3B-Q8_0.gguf",
+      "sha256": "851fdec9d87d689342c3df04e509de4565ac3a96a226f06e7b12af651311b5ef",
+      "upstream": "openbmb/MiniCPM-V-4.7-35B-A3B-gguf",
+      "tokenizer_reference": "openbmb/MiniCPM-V-4.7-35B-A3B",
+      "tokenizer_reference_revision": "98e79ba972b586ac6146d3505771ce1467e199ba",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/minicpm-v-4.7-35b-a3b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "openbmb's own Q8_0 (revision cf943fbe of openbmb/MiniCPM-V-4.7-35B-A3B-gguf, the root file: thinking fixed off in its template), architecture qwen35moe: 40 blocks (30 Gated DeltaNet, 10 gated attention), 256 experts top 8 with a gated shared expert; text path only. Its tokenizer is openbmb's at 98e79ba9, read with the qwen2 split by R4.27.5's rule: 0 of 721 corpus strings and 0 of 247,091 vocabulary entries differ; its template (the root files') renders conformant to the file's own under minicpmv-fixed (R4.27.6). No llama.cpp greedy reference is declared, so greedy_reference is not claimed.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 400,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "<|im_start|>",
+            "<tool_call>",
+            "<think>"
+          ]
+        },
+        "tokenizer": {
+          "expect_vocab_divergences": 0
+        },
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference",
+            "RUNNER_MOE_EAGER": "1"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        }
+      }
+    },
+    {
       "id": "empero-qwen3.8-35b-a3b-distill-q6_k",
       "architecture": "qwen35moe",
       "family": "Qwen3.6",

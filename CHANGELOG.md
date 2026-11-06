@@ -14,6 +14,23 @@ Current release and unreleased changes. Compatibility follows the
     `tests/test_responses_store.py`.
   - **Limits:** the id is still the only credential on a stored response. A client that parsed the number out of an id
     no longer can. If the OS has no random generator the server now refuses to start.
+- **MiniCPM-V-4.7-35B-A3B joins the roster at Tier 2 on openbmb's own Q8_0, text path only (R4.27.2).** The file is
+  the GGUF repository's root Q8_0 (thinking fixed off, openbmb's recommended default). Against openbmb's BF16 parent's
+  language model computed in float32 it reads 0.0088 mean KLD and 100.00% margin-qualified top-1 (bars 0.05 and 97%,
+  300 positions, CPU).
+  - **Checks:**
+    - Tokenizer 0 of 721 corpus strings and 0 of 247,091 vocabulary entries against openbmb's tokenizer.json, read
+      with the qwen2 split by R4.27.5's rule.
+    - Template conformance under `minicpmv-fixed` against the file's own template (R4.27.6); the reasoning-history
+      case accounted as a token-only deviation (R2.4.11).
+    - CPU and CUDA cells pinned and matched (byte-identical replies); gpu-identity ok with routing pinned; cpu_cuda 9
+      of 9 exact.
+  - **Limits:**
+    - openbmb's Q4_K_M (0.0594, 95.44%) misses the bar.
+    - The reference is transformers' Qwen3.5-MoE text model on the checkpoint's language-model weights, as
+      transformers has no class for minicpmv4_7 and the repository ships no modeling code.
+    - Text only; thinking is fixed off in this file; on a 24 GB CUDA card it runs split, 26 of 40 blocks.
+    - Record: `docs/compat-reports/minicpm-v-4.7-35b-a3b-2026-11-06/`.
 
 - **MiniCPM-V 4.7's chat templates get their own renderers, text path (R4.27.6).** openbmb's GGUF repository ships
   two sets with byte-identical weights that differ only in the embedded template: the root files (thinking fixed off,

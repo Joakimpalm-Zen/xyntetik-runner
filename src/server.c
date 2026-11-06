@@ -3201,7 +3201,7 @@ static bool stop_was_requested(void) { return win_stop_requested != 0; }
 // watch until the process ended, and a cleanly stopped server's watchdog
 // exited the process at its old deadline, during the next server's life.
 static double drain_grace_s = 2.0, drain_hard_s = 10.0;
-static atomic_int drain_joined;   // the slots are joined: what is left is teardown
+static _Atomic(const char *) drain_stage;   // static strings, safe for the watchdog to read
 #define DRAIN_FIRING UINT_MAX     // drain_owner once a watchdog has claimed the exit
 static atomic_uint drain_owner, drain_runs;
 
@@ -3218,13 +3218,13 @@ static void drain_bounds_init(void) {
     drain_grace_s = g && *g ? atof(g) / 1000.0 : 2.0;
     drain_hard_s = h && *h ? atof(h) / 1000.0 : 10.0;
     atomic_store(&stop_at_us, 0);
-    atomic_store(&drain_joined, 0);
+    atomic_store(&drain_stage, "admission");
 }
 
 // The watchdog's last line, written on a thread of its own with write(2).
 // stderr may be a full pipe, or another thread may be parked inside fprintf
 // on it holding the stream's lock; through stdio, either parks the watchdog
-// with it. The watchdog waits 200 ms for the note and exits regardless.
+// with it. The note and its wait must fit INSIDE the hard stop budget.
 static char drain_note_text[160];
 static atomic_int drain_note_sent;
 
@@ -3249,11 +3249,24 @@ static void *drain_note(void *arg) {
 // arg: the number of the server_run whose stop this watchdog bounds
 static void *drain_watchdog(void *arg) {
     unsigned me = (unsigned)(uintptr_t)arg;
-    long long t = atomic_load(&stop_at_us);
-    double hard = drain_hard_s, until = (t ? t / 1e6 : plat_now()) + hard;
+    double hard = drain_hard_s;
+    // Armed before serving: an accept-path handler, a full queue, or the
+    // rejection of queued clients can block before the worker joins begin.
+    long long t;
+    while (!(t = atomic_load(&stop_at_us))) {
+        if (atomic_load(&drain_owner) != me) return NULL;
+        // This loop runs for the server's whole life, so it wakes rarely. The
+        // deadline is absolute: a late wake costs the budget nothing.
+        plat_sleep_ms(hard < 1 ? 10 : 100);
+    }
+    // Reserve the final 200 ms for the diagnostic and process termination,
+    // rather than adding that wait AFTER the advertised ten-second bound.
+    // Short test budgets reserve at most half, leaving time for the drain.
+    double reserve = hard < 0.4 ? hard / 2 : 0.2;
+    double until = t / 1e6 + hard, note_at = until - reserve;
     for (;;) {
         if (atomic_load(&drain_owner) != me) return NULL;   // that run shut down in time
-        double left = until - plat_now();
+        double left = note_at - plat_now();
         if (left <= 0) break;
         plat_sleep_ms(left > 0.1 ? 100 : (int)(left * 1000) + 1);
     }
@@ -3261,15 +3274,16 @@ static void *drain_watchdog(void *arg) {
     unsigned owner = me;
     if (!atomic_compare_exchange_strong(&drain_owner, &owner, DRAIN_FIRING)) return NULL;
     snprintf(drain_note_text, sizeof drain_note_text,
-             atomic_load(&drain_joined)
-                 ? "shutdown: still tearing down %g s after the stop; exiting without waiting\n"
-                 : "shutdown: a request was still inside one step %g s after the stop; "
-                   "exiting without waiting for it\n",
-             hard);
+             "shutdown: %s still active within the %g s stop budget; exiting without waiting\n",
+             atomic_load(&drain_stage), hard);
     pthread_t th;
     if (pthread_create(&th, NULL, drain_note, NULL) == 0) {
         pthread_detach(th);
-        for (int i = 0; i < 20 && !atomic_load(&drain_note_sent); i++) plat_sleep_ms(10);
+        // Leave a quarter of the reserve for waking and exiting. A blocked
+        // note never earns an extension of the stop deadline.
+        double note_until = until - reserve / 4;
+        while (!atomic_load(&drain_note_sent) && plat_now() + 0.01 < note_until)
+            plat_sleep_ms(10);
     }
     _exit(128 + atomic_load(&stop_sig));
 }
@@ -3814,6 +3828,21 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         }
     }
 
+    // Watch from admission through teardown, including output and queued
+    // client cleanup. Starting after queue_shutdown left those waits unbound.
+    unsigned drain_run = atomic_fetch_add(&drain_runs, 1) + 1;
+    if (drain_run == 0 || drain_run == DRAIN_FIRING)
+        drain_run = atomic_fetch_add(&drain_runs, 2) + 2;
+    atomic_store(&drain_owner, drain_run);
+    atomic_store(&drain_note_sent, 0);
+    pthread_t wd;
+    if (pthread_create(&wd, NULL, drain_watchdog, (void *)(uintptr_t)drain_run) != 0) {
+        // cannot serve with an unenforceable stop contract
+        fprintf(stderr, "server: cannot start the stop watchdog thread\n");
+        _exit(1);
+    }
+    pthread_detach(wd);
+
     if (SV.n_reg > 0 && !SV.single)
         fprintf(stderr,
                 "server listening on http://127.0.0.1:%d — %d models, swap on demand"
@@ -3878,28 +3907,22 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         sock_close(lfd);
     }
 #endif
-    queue_shutdown();
-    // Bound the drain (drain_grace_s, drain_hard_s above). Detached: this
-    // run's last act releases its bound and the watchdog returns. A loop
-    // that ended without a stop request (the listener failed) drains by the
-    // same bounds.
+    // A loop that ended without a stop request (the listener failed) drains
+    // by the same bounds. The watchdog is already watching before this work.
     if (!atomic_load(&stop_at_us)) atomic_store(&stop_at_us, (long long)(plat_now() * 1e6));
-    unsigned drain_run = atomic_fetch_add(&drain_runs, 1) + 1;
-    if (drain_run == 0 || drain_run == DRAIN_FIRING)   // the counter wrapped
-        drain_run = atomic_fetch_add(&drain_runs, 2) + 2;
-    atomic_store(&drain_owner, drain_run);
-    pthread_t wd;
-    if (pthread_create(&wd, NULL, drain_watchdog, (void *)(uintptr_t)drain_run) == 0)
-        pthread_detach(wd);
+    queue_shutdown();
     // A worker parked in a --wait-for-vram queue would pin the joins below
     // for up to the full wait; the load gives up at its next poll instead.
     atomic_store(&SV.load_cancel, 1);
+    atomic_store(&drain_stage, "slot drain/join");
     for (int i = 0; i < parallel; i++) pthread_join(SV.slots[i].th, NULL);
-    atomic_store(&drain_joined, 1);
+    atomic_store(&drain_stage, "scheduler join");
     sched_shutdown();
     atomic_store(&SV.shutdown, true);
+    atomic_store(&drain_stage, "reaper join");
     if (SV.reaper_started) pthread_join(SV.reaper_th, NULL);
 
+    atomic_store(&drain_stage, "model unload");
     for (int i = 0; i < parallel; i++) {
         free(SV.slots[i].e.hist);
         free(SV.slots[i].hint_buf);
@@ -3920,6 +3943,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             if (i > 0) free(SV.slots[i].m);
         }
     }
+    atomic_store(&drain_stage, "cleanup");
     prefix_cache_clear();
     // the slots' models are gone; nothing borrows an adapter any more
     for (int i = 0; i < SV.n_adapters; i++) model_lora_set_free(SV.adapters[i].set);
