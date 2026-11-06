@@ -3430,6 +3430,58 @@
           }
         }
       }
+    },
+    "mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k": {
+      "pins": {
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k.linux-x86_64-cuda.cuda.txt",
+          "sha256": "b08f1e191fceca667aa7ab22e99057199a5bf2cfbfc2e41aea7a90ba77c97f59",
+          "bytes": 213,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-06",
+            "runner_version": "1.13.0",
+            "commit": "0abf82f1063aadd7cf4e9b43c4488e02a5a5a14f"
+          }
+        },
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k.linux-x86_64-cuda.cpu.txt",
+          "sha256": "b08f1e191fceca667aa7ab22e99057199a5bf2cfbfc2e41aea7a90ba77c97f59",
+          "bytes": 213,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-06",
+            "runner_version": "1.13.0",
+            "commit": "0abf82f1063aadd7cf4e9b43c4488e02a5a5a14f"
+          }
+        }
+      }
     }
   }
 }
