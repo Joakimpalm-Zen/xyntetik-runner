@@ -10,6 +10,21 @@ Current release and unreleased changes. Compatibility follows the
   finished. Clean stops now leave their record for the next discovery list
   or registration to sweep. Dead owners are never listed; available process-start
   stamps guard against pid reuse. Runner and tray exits use the same policy.
+- **A stop that has to be forced now lands well inside its ten seconds (R10.20).** When a drain cannot finish, the
+  watchdog exited 50 ms before the bound, and a shared macOS runner ended 2 stops of 8 past it (10.007 s at worst):
+  timers there run up to 90 ms late. A late timer could also lose the shutdown note, the one line that says what a
+  forced stop was waiting on. The note now starts at 9 s, the exit is due at 9.5 s, and a note that starts late still
+  gets its turn.
+  - **Checks:** the default-budget case in `tests/conformance/test_server_lifecycle.py` now requires 9.9 s, so a margin
+    this thin fails on any machine. A new case wakes the watchdog 155 ms late and requires the note.
+  - **Limits:** a stuck request gets 0.5 s less before it is cut off. A clean stop is unchanged.
+
+- **A context released while its request waited for the GPU no longer hangs the server (R3.37).** The
+  `context_unavailable` 409 returned without giving the device turn back, so every later completion hung while
+  `/health` still read `ok`. It took a pinned context deleted during that wait, on a GPU server with more than one
+  slot. The branch now gives the turn back before it writes. Needs a CUDA device to test, so the before and after are a
+  recorded RTX 3070 run, not part of `make test`. Report:
+  `docs/compat-reports/r3.37-context-turn-leak-2026-11-06`.
 
 - **MiniCPM-V-4.7-35B-A3B joins the roster at Tier 2 on openbmb's own Q8_0, text path only (R4.27.2).** The file is
   the GGUF repository's root Q8_0 (thinking fixed off, openbmb's recommended default). Against openbmb's BF16 parent's
