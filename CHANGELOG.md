@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **template-conformance: a token-only deviation kind (R2.4.11).** A case can render byte-identically on both sides
+  yet tokenize differently on purpose: Runner reads a control token only in the template's own bytes, so one the
+  caller spelled in its content is text (tests/test_prompt_marks.c), where the reference tokenizer reads it as the
+  control token. Until now the gate could only fail such a case as a broken premise. An allowlist entry of kind
+  `token-only` names the case, cites tests/test_prompt_marks.c, and is accepted only when the text is byte-identical
+  with no patch applied and every differing reference id is a control token the caller spelled; otherwise it is
+  refused and the case still fails. `tests/test_template_conformance_token_only.py` holds the rules; with the kind
+  added and no entries, every family's results are unchanged.
+
 - **Fix: the qwen35-family templates trim message content as their references do (R2.4.10).** Qwen 3.5's, Qwen 3.6's
   and ornith's chat_template.jinja trim every message's content and its reasoning_content (`|trim`, python's
   str.strip(), Unicode whitespace included) before they frame it; Runner trimmed none of it, so a padded system, user,
