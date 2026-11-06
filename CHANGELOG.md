@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Sage-A1.5 joins the roster at Tier 2 on InternScience's own Q6_K, and occamy-1.0 is listed Upcoming (R4.27.7).**
+  Both are qwen35moe derivatives of Qwen3.6-35B-A3B, each read against its own BF16 parent computed in float32 (bars
+  0.05 mean KLD and 97% margin-qualified top-1, 300 positions, CPU).
+  - **Sage-A1.5:** InternScience's model, built by its publisher on Qwen3.6-35B-A3B and InternScience's Agents-A1.
+    - Q6_K: 0.0395 mean KLD and 97.9% margin-qualified, passes. The Q4_K_M misses (0.145).
+    - Tokenizer 0 of 721 and 0 of 247,091 against its tokenizer.json (the qwen35 split).
+    - Template conformance 25 of 25 in text and tokens.
+    - CPU and CUDA cells pinned and matched; cpu_cuda 9 of 9 exact with routing pinned.
+    - Limits: the template's `verification` switch is not served (a request with it does not get the trigger), and the
+      GGUF names itself "Agents A1.5". Record: `docs/compat-reports/sage-a1.5-2026-11-06/`.
+  - **occamy-1.0:** Accio-Lab's finetune. No publisher file passes: Q8_0 0.0590 / 98.7%, Q6_K 0.0836 / 95.4%, Q5_K_M
+    0.0970 / 95.8%, Q4_K_M 0.258 / 85.7%. Tokenizer (the qwen2 split its header labels) and template (25 of 25) pass.
+    Where the distance comes from is not yet read. Record: `docs/compat-reports/occamy-1.0-2026-11-06/`.
 - **Fix: instance cleanup no longer delays server startup (R10.23).**
   Registration and discovery lists request a separate cleanup process instead
   of deleting stale records on the caller's path. One helper sweeps a folder

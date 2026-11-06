@@ -573,6 +573,31 @@ FAMILIES = {
         trims_content=True,
         tokenizer=("Qwen3.8-35B-A3B-Q6_K.gguf", "Qwen3.8-35B-A3B-Q4_K_M.gguf"),
         cannot={"system-mid-history": NO_MID_SYSTEM}),
+    # InternScience's Sage-A1.5 (qwen35moe, R4.27.7), built on Qwen3.6-35B-A3B and
+    # InternScience's Agents-A1: its GGUF embeds its chat_template.jinja at
+    # 0e3205cf byte for byte (9,025 bytes, sha256 0080393e), Qwen3.6-35B-A3B's
+    # with a `verification` switch that is off unless a request turns it on.
+    # The file's own template is the oracle; Runner picks qwen36 for it.
+    "sage-a1.5-qwen35moe": Family(
+        "qwen36", ("gguf", "models/Sage-A1.5-Q6_K.gguf"),
+        note="the template embedded in InternScience's Sage-A1.5 GGUF files, "
+             "byte-identical to InternScience/Sage-A1.5's chat_template.jinja at 0e3205cf",
+        tool_family=True, thinking_var="enable_thinking", hostile_args=True,
+        trims_content=True,
+        tokenizer=("Sage-A1.5-Q6_K.gguf", "Sage-A1.5-Q4_K_M.gguf"),
+        cannot={"system-mid-history": NO_MID_SYSTEM}),
+    # Accio-Lab's occamy-1.0 (qwen35moe, R4.27.7), a finetune of
+    # Qwen3.6-35B-A3B: its GGUF carries Qwen3.6-35B-A3B's template byte for
+    # byte (7,764 bytes, sha256 e84f32a2), as does Accio-Lab's
+    # chat_template.jinja at 72ca9603; its header labels the qwen2 split.
+    "occamy-1.0-qwen35moe": Family(
+        "qwen36", ("gguf", "models/occamy-1.0-Q4_K_M.gguf"),
+        note="the template embedded in Accio-Lab/occamy-1.0-GGUF at 15027de4, "
+             "byte-identical to Accio-Lab/occamy-1.0's chat_template.jinja at 72ca9603",
+        tool_family=True, thinking_var="enable_thinking", hostile_args=True,
+        trims_content=True,
+        tokenizer=("occamy-1.0-Q4_K_M.gguf",),
+        cannot={"system-mid-history": NO_MID_SYSTEM}),
     "deepseek2": Family(
         "deepseek2", ("hf", "deepseek-ai/DeepSeek-V2-Lite-Chat"),
         note="DeepSeek-V2-Lite-Chat's chat_template (tokenizer_config.json), "
