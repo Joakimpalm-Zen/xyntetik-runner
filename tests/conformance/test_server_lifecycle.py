@@ -11,6 +11,7 @@ import urllib.request
 
 import pytest
 
+from _errors import TransportError
 from harness import RunnerServer, find_runner, free_port
 
 
@@ -949,3 +950,14 @@ def test_keep_alive_refuses_when_it_cannot_be_honored():
         assert after["resident"] == before["resident"], (before, after)
         # the normal case -- no keep_alive field -- is untouched and still serves
         assert _chat(srv.base_url)["choices"]
+
+
+def test_a_failure_shows_what_the_server_said_with_no_log_path(tmp_path):
+    # Most tests pass no log path, and a failed stop in one used to report
+    # "<no log>": the stderr that would name the cause had gone to DEVNULL.
+    stand_in = tmp_path / "runner.py"
+    stand_in.write_text("import sys\nsys.stderr.write('the words that name the cause\\n')\nsys.exit(1)\n",
+                        encoding="utf-8")
+    with pytest.raises(TransportError) as failed:
+        RunnerServer([sys.executable, str(stand_in)], "model.gguf").start()
+    assert "the words that name the cause" in str(failed.value)
