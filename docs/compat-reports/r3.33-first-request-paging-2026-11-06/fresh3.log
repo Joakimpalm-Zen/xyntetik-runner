@@ -1,0 +1,6 @@
+y1-base tok/s 26.315 gen_s 4.864 prompt_s 2.537 ramavail 5.8
+y1-rel tok/s 32.092 gen_s 3.989 prompt_s 1.113 ramavail 10.9
+y2-rel tok/s 33.024 gen_s 3.876 prompt_s 0.923 ramavail 11.0
+y2-base tok/s 21.422 gen_s 5.975 prompt_s 1.269 ramavail 5.9
+y3-base tok/s 30.715 gen_s 4.167 prompt_s 1.137 ramavail 5.9
+y3-rel tok/s 32.93 gen_s 3.887 prompt_s 0.998 ramavail 10.9
