@@ -41,7 +41,7 @@ of runs and no mechanism is established, so this record does not claim it.
 
 The first request read 26.2-29.7 tok/s when runs alternated between different hot files and placements (step 3's
 `matrix.log`), and 32.7-33.0 when the same hot file ran back to back (`ab.log`). The likely reason is what the runs
-before it left in the page cache: the bytes a run touches, about 11.7 GB with `hot-all`, do not fit what the host can
+before it left in the page cache: the bytes a run touches, about 11.1 GB with `hot-all` (1,520 experts and 1.13 GB of other tensors), do not fit what the host can
 hold, so what survives depends on the order of runs. **This is an inference.** The two figures come from different
 sessions and the state was not set directly. It would also account for step 2's fresh-process numbers moving between
 rounds.
