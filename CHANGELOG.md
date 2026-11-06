@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A context released while its request waited for the GPU no longer hangs the server (R3.37).** The
+  `context_unavailable` 409 returned without giving the device turn back, so every later completion hung while
+  `/health` still read `ok`. It took a pinned context deleted during that wait, on a GPU server with more than one
+  slot. The branch now gives the turn back before it writes. Needs a CUDA device to test, so the before and after are a
+  recorded RTX 3070 run, not part of `make test`. Report:
+  `docs/compat-reports/r3.37-context-turn-leak-2026-11-06`.
+
 - **MiniCPM-V-4.7-35B-A3B joins the roster at Tier 2 on openbmb's own Q8_0, text path only (R4.27.2).** The file is
   the GGUF repository's root Q8_0 (thinking fixed off, openbmb's recommended default). Against openbmb's BF16 parent's
   language model computed in float32 it reads 0.0088 mean KLD and 100.00% margin-qualified top-1 (bars 0.05 and 97%,
