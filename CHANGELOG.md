@@ -5,6 +5,19 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: the project's Clef IQ3_S backbone tokenizes as Cloudflare/clef's own tokenizer, and its row no longer
+  claims the decision model (R4.36).** `Clef-backbone-IQ3_S.gguf` is Clef's backbone in Runner's qwen35 view, so it
+  declares architecture qwen35 and the Clef rule (architecture clef) missed it: it read with the qwen35 split, 3 of 721
+  corpus strings and 5,503 of 247,091 vocabulary entries off the publisher's. A rule entry keyed on its header
+  (qwen35 and general.name "Clef Backbone View") reads it with the qwen2 split; 0 and 0 now. Its row,
+  `cloudflare-clef-iq3_s-recovered`, claimed "a decision model served at /v1/systemone", which is the
+  `cloudflare-clef-iq3_s-native` row's file: it now says the text-only backbone.
+  - **Checks:** every other roster file's ids unchanged (74 rows), the backbone's alone different, on exactly the
+    three combining-mark strings; the house readings' corpus tokenizes identically before and after, so its numbers
+    (0.0879 / 94.0%, 0.0736 / 95.6%, 0.0757 / 95.6%) carry over; the recovery adapters were trained on the qwen2
+    split's ids, which the backbone now serves.
+  - Record: `docs/compat-reports/r4.36-clef-backbone-2026-11-06/`.
+
 - **MiniCPM-V 4.7's chat templates get their own renderers, text path (R4.27.6).** openbmb's GGUF repository ships
   two sets with byte-identical weights that differ only in the embedded template: the root files (thinking fixed off,
   openbmb's recommended default) and `thinking/` (the repository's chat_template.jinja). Runner read them as `qwen35`

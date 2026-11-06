@@ -475,6 +475,15 @@ static const char *qwen2_trained_rule(gguf_file *g) {
                "https://huggingface.co/Qwen/Qwen3.6-35B-A3B") == 0)
         return "empero-ai's Qwen3.8-35B-A3B-Distill (general.name Ours, general.tags "
                "empero-ai, general.base_model.0.repo_url Qwen/Qwen3.6-35B-A3B)";
+    // The project's own Clef backbone (Joakimpalm-Zen/Cloudflare-clef-IQ3_S-
+    // recovered-GGUF, Clef-backbone-IQ3_S.gguf): Clef's backbone in Runner's
+    // qwen35 view, so its architecture is not clef and the rule above misses
+    // it. Its tokenizer is Cloudflare/clef's (tokenizer.json 06b95093, the
+    // qwen2 split), and its recovery adapters were trained on that split's
+    // ids. Under qwen35, 3 of 721 corpus strings and 5,503 vocabulary entries
+    // differed from the publisher's tokenizer (R4.36).
+    if (strcmp(arch, "qwen35") == 0 && strcmp(name, "Clef Backbone View") == 0)
+        return "the project's Clef backbone (general.name Clef Backbone View)";
     return NULL;
 }
 

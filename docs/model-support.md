@@ -1138,7 +1138,7 @@ Text path only; the fidelity file of ggml-org's two: against Cloudflare's float3
 <a id="cloudflare-clef-iq3_s-recovered"></a>
 ##### `Clef-backbone-IQ3_S.gguf`
 
-Text path only: a decision model served at /v1/systemone; requests with images or videos are refused. The project's own IQ3_S quantization of the Clef backbone with two recovery adapters trained on it; the house bar against the BF16 twin (mean KLD at most 0.05 and margin-qualified top-1 at least 97% on 500 held-out positions) is NOT met: the base reads 0.0879 / 94.0%, the best adapter 0.0736 / 95.6%, stated on the card with the evidence.
+Text path only: the text-only backbone of the project's Clef IQ3_S files, in Runner's qwen35 view and without Clef's joint decision head (the full decision model, served at /v1/systemone, is cloudflare-clef-iq3_s-native's file); requests with images or videos are refused. The project's own IQ3_S quantization of the Clef backbone with two recovery adapters trained on it; the house bar against the BF16 twin (mean KLD at most 0.05 and margin-qualified top-1 at least 97% on 500 held-out positions) is NOT met: the base reads 0.0879 / 94.0%, the best adapter 0.0736 / 95.6%, stated on the card with the evidence. Since R4.36 it tokenizes with Cloudflare/clef's own split (the qwen2 regex); the readings' corpus has no combining marks, so their tokens are the same under either split.
 
 - **File:** `Clef-backbone-IQ3_S.gguf` (sha256 `dafa8752f756f21c941ffee1df6ab93fec499eaeddfea7e5ba5ba601abf747cb`, 12,419,329,216 bytes, from [Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF) at revision `9e9ce879b6cb`).
 - **Upstream checkpoint:** Cloudflare/clef at revision `0b331204bb13`.
@@ -1163,7 +1163,7 @@ Text path only: the full Clef decision model in one file, the project's IQ3_S ba
 <a id="cloudflare-clef-iq3_s-recovery-qr-001e-lora"></a>
 ##### `clef-IQ3_S-recovery-QR-001e.lora.F16.gguf`
 
-Text path only: the QR-001e recovery adapter for the project's Clef IQ3_S backbone, served with --lora on that file: an adapter, not a model; the best recovery round (house reading 0.0736 / 95.6%), below the house bar, as its card states.
+Text path only: the QR-001e recovery adapter for the project's Clef IQ3_S backbone, served with --lora on that file: an adapter, not a model; the best recovery round (house reading 0.0736 / 95.6%), below the house bar, as its card states. It was trained on the ids of Cloudflare/clef's own tokenizer (the qwen2 split), which the backbone serves since R4.36; before, the backbone read text with the qwen35 split, which differs from it around combining marks.
 
 - **File:** `clef-IQ3_S-recovery-QR-001e.lora.F16.gguf` (sha256 `67e249a6d95c20e1128f4f1ceabde9b1c311988a1154766562c5c44e56380b64`, 233,523,840 bytes, from [Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF) at revision `9e9ce879b6cb`).
 - **Upstream checkpoint:** Cloudflare/clef at revision `0b331204bb13`.
@@ -1176,7 +1176,7 @@ Text path only: the QR-001e recovery adapter for the project's Clef IQ3_S backbo
 <a id="cloudflare-clef-iq3_s-recovery-qr-001b-lora"></a>
 ##### `clef-IQ3_S-recovery-QR-001b.lora.F16.gguf`
 
-Text path only: the QR-001b recovery adapter for the project's Clef IQ3_S backbone, served with --lora on that file: an adapter, not a model; the first recovery round (house reading 0.0757 / 95.6%), below the house bar, as its card states.
+Text path only: the QR-001b recovery adapter for the project's Clef IQ3_S backbone, served with --lora on that file: an adapter, not a model; the first recovery round (house reading 0.0757 / 95.6%), below the house bar, as its card states. It was trained on the ids of Cloudflare/clef's own tokenizer (the qwen2 split), which the backbone serves since R4.36; before, the backbone read text with the qwen35 split, which differs from it around combining marks.
 
 - **File:** `clef-IQ3_S-recovery-QR-001b.lora.F16.gguf` (sha256 `2816dff4dbe0db506cf9c1b21d89f164a851f8a0b12fb253da3762a7928e1ae9`, 233,523,936 bytes, from [Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF](https://huggingface.co/Joakimpalm-Zen/Cloudflare-clef-IQ3_S-recovered-GGUF) at revision `9e9ce879b6cb`).
 - **Upstream checkpoint:** Cloudflare/clef at revision `0b331204bb13`.
