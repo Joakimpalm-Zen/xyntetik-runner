@@ -397,6 +397,13 @@ static void test_qwen2_trained_rules(void) {
     // the earlier rule, by architecture
     fake_kv clef[] = { { "general.architecture", "clef", NULL, 0 } };
     assert(qwen35_fixture_pre_with(clef, 1) == TOK_PRE_QWEN2);
+    // the project's Clef backbone, a qwen35 file by its name; the name on
+    // another architecture leaves the declared split
+    fake_kv backbone[] = { { "general.architecture", "qwen35", NULL, 0 },
+                           { "general.name", "Clef Backbone View", NULL, 0 } };
+    assert(qwen35_fixture_pre_with(backbone, 2) == TOK_PRE_QWEN2);
+    backbone[0].s = "qwen35moe";
+    assert(qwen35_fixture_pre_with(backbone, 2) == TOK_PRE_QWEN35);
 }
 
 static void run_bpe_fixture(const char *path, int pre, void (*digits)(tokenizer *)) {

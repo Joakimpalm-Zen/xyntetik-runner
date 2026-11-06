@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: the project's Clef IQ3_S backbone tokenizes as Cloudflare/clef's own tokenizer, and its row no longer
+  claims the decision model (R4.36).** `Clef-backbone-IQ3_S.gguf` is Clef's backbone in Runner's qwen35 view, so it
+  declares architecture qwen35 and the Clef rule (architecture clef) missed it: it read with the qwen35 split, 3 of 721
+  corpus strings and 5,503 of 247,091 vocabulary entries off the publisher's. A rule entry keyed on its header
+  (qwen35 and general.name "Clef Backbone View") reads it with the qwen2 split; 0 and 0 now. Its row,
+  `cloudflare-clef-iq3_s-recovered`, claimed "a decision model served at /v1/systemone", which is the
+  `cloudflare-clef-iq3_s-native` row's file: it now says the text-only backbone.
+  - **Checks:** every other roster file's ids unchanged (74 rows), the backbone's alone different, on exactly the
+    three combining-mark strings; the house readings' corpus tokenizes identically before and after, so its numbers
+    (0.0879 / 94.0%, 0.0736 / 95.6%, 0.0757 / 95.6%) carry over; the recovery adapters were trained on the qwen2
+    split's ids, which the backbone now serves.
+  - Record: `docs/compat-reports/r4.36-clef-backbone-2026-11-06/`.
 - **CUDA: `RUNNER_MOE_HOT` gives back the host copies of the experts it holds on the device (R3.35).** A server with
   Mellum 2.1 Q8_0's 768-slot hot file held 5.05 GB of pages the host path never reads. After warm decode on a 16 GB
   host, its working set reads 5.39 GB against 10.44 GB, and available memory 5.85 GB against 0.78 GB. Measured on one
