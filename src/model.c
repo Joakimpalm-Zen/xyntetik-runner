@@ -572,8 +572,21 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
 // The registry needs three things this file already knows: which GPU, how much
 // this instance intends to hold, and what it ended up holding.
 
+// Deliberate test hook: the --wait-for-vram queue exists only where the device
+// reports its free memory, which is CUDA, so nothing else could reach it. This
+// stands in for that device and leaves the ledger and the wait real. Same role
+// as RUNNER_TEST_GPU_OFF.
+static bool test_vram_free(uint64_t *free_bytes) {
+    const char *v = getenv("RUNNER_TEST_VRAM_FREE_MB");
+    if (!v) return false;
+    *free_bytes = strtoull(v, NULL, 10) << 20;
+    return true;
+}
+
 static uint64_t vram_free_now(void *ud) {
     (void)ud;
+    uint64_t test_free = 0;
+    if (test_vram_free(&test_free)) return test_free;
     size_t f = 0, t = 0;
     return gpu_mem_info(&f, &t) ? (uint64_t)f : 0;
 }
@@ -1212,9 +1225,13 @@ static uint64_t model_cuda_weight_estimate(const model_t *m,
 // partial-offload run on a small GPU into a hard failure.
 static bool model_vram_claim(model_t *m, const model_params *p, size_t kv_claim) {
     char gpu_id[128];
-    if (!gpu_device_id(gpu_id, sizeof(gpu_id))) return true;   // no GPU: nothing to account
+    uint64_t test_free = 0;
+    bool test = test_vram_free(&test_free);
+    if (test) snprintf(gpu_id, sizeof gpu_id, "test-device");
+    else if (!gpu_device_id(gpu_id, sizeof(gpu_id))) return true;   // no GPU: nothing to account
     size_t vfree = 0, vtotal = 0;
-    if (!gpu_mem_info(&vfree, &vtotal)) return true;           // unified memory (Metal)
+    if (test) vfree = vtotal = (size_t)test_free;
+    else if (!gpu_mem_info(&vfree, &vtotal)) return true;      // unified memory (Metal)
 
     // What a full offload would hold: the weights, this instance's KV cache,
     // and the same fixed margin cuda.c budgets for context + JIT + activations.
@@ -1235,7 +1252,18 @@ static bool model_vram_claim(model_t *m, const model_params *p, size_t kv_claim)
     m->vram = vram_claim(gpu_id, m->path, need, p->vram_priority,
                          vram_free_now, NULL,
                          p->vram_wait_secs, p->load_cancel, &st, err, sizeof(err));
-    if (m->vram) return true;
+    if (m->vram) {
+        // the moment after admission held open, for a test (RUNNER_TEST_STEP_DELAY_MS's role)
+        const char *delay = getenv("RUNNER_TEST_LOAD_DELAY_MS");
+        if (delay) {
+            fprintf(stderr, "test: load admitted\n");
+            plat_sleep_ms(atoi(delay));
+        }
+        return true;
+    }
+    // A wait that was stopped is over, whoever holds the memory: the fallback
+    // below would carry on into a load the caller has already given up.
+    if (p->load_cancel && p->load_cancel->stop(p->load_cancel->ud)) return false;
 
     if (st.holders > 0) {
         fprintf(stderr, "error: %s\n", err);

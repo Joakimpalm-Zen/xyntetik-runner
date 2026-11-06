@@ -153,7 +153,8 @@ typedef struct {
     // synchronization — RNR-008).
     bool         loading;         // a swap_to load is in flight, lock released
     bool         pending_unload;  // /unload arrived while busy; honoured at the next safe point
-    atomic_int   load_cancel;     // aborts a --wait-for-vram queue wait
+    atomic_int   load_cancel;     // aborts a --wait-for-vram queue wait, and discards the load
+    sock_t       load_owner;      // the request a load runs for; the loading thread's alone
     atomic_bool shutdown;
     pthread_t   reaper_th;
     bool        reaper_started;
@@ -279,7 +280,9 @@ void unload_draft(void);
 void handle_unload(sock_t fd);
 // Resolve + load the requested model; returns the registry index or a SWAP_*.
 int  swap_to(const char *want);
-int  swap_to_expect(const char *want, const resident_expect *ex);
+// `owner` is the requesting client, or SOCK_INVALID: a load with no client to
+// lose is stopped only by /unload and shutdown.
+int  swap_to_expect(const char *want, const resident_expect *ex, sock_t owner);
 bool validate_single_model_request(sock_t fd, jv *req);
 // The same expectation on a server whose slots hold the model directly.
 int  single_model_expect(const resident_expect *ex);

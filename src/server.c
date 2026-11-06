@@ -2824,7 +2824,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
             atomic_fetch_add(&SV.total_requests, 1);
             bool ok = true;
             int sw = SV.n_reg > 0
-                ? swap_to_expect(jv_str(jv_get(req, "model"), NULL), &expect)
+                ? swap_to_expect(jv_str(jv_get(req, "model"), NULL), &expect, fd)
                 : single_model_expect(&expect);
             if (sw == SWAP_EXPECT_MISMATCH || sw == SWAP_EXPECT_UNKNOWN) {
                 // R10.12.2: say what IS resident, so the client can decide
