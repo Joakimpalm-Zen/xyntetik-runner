@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Windows: a second server on a port in use is refused, not silently sharing it (R10.22).** `SO_REUSEADDR` let both
+  bind on Windows. The second printed `server listening` and got no request, and when the first stopped, its clients'
+  connections were reset. It now exits with `cannot bind 127.0.0.1:PORT: is another server on this port?`, as Linux
+  already refused. This was the cause of a rare `WinError 10054` under `pytest -n`, when two workers drew the same port;
+  the test harness now takes another port on a lost bind. Linux and macOS keep `SO_REUSEADDR`, and a restart straight
+  after serving still binds. Measured on Windows.
+
 - **Response ids are random, and a stored response can no longer be guessed (R10.15).** `chatcmpl-`, `cmpl-`, `resp_`
   and `msg_` ids were a counter from 0: they repeated after every restart and across hosts, and anyone who could
   reach the server could read or delete a `store:true` response at `/v1/responses/resp_0`. An id is now its prefix and
