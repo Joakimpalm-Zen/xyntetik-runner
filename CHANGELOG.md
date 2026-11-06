@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A `chat_template_kwargs` switch Runner cannot render is refused, not silently dropped (R2.13).** Sage-A1.5's
+  `verification` rendered as off with no error, because Runner renders each family with its own code and reads only
+  the keys it knows. A key the file's own template reads as a variable, and Runner does not render, now gets a 400 naming
+  it (`unsupported_template_kwarg`). A key the template does not read is ignored, as the reference ignores it. Limits:
+  the check is by name, so `false` is refused too, and it is a scan of the tags rather than a Jinja parse, which counts
+  anything doubtful as not read. `enable_thinking`, `preserve_thinking`, `reasoning_effort`, `reasoning_strength`,
+  `bare_recipients` and the values a render supplies itself are unaffected.
 - **A usage error ends with the error (R10.19).** An unknown option, a flag with no value, no model and no prompt each
   printed the whole usage, 382 lines, so a script or a person reading the end of the output never saw why: one export
   script read `unknown option --out` as a refusal of the quantization. They now print the error line and
