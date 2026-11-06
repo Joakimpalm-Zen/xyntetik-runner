@@ -217,6 +217,22 @@ def test_nemotron_h_loads_and_decodes(runner_bin, nemo_model):
     assert "refusing to run it through llama-style math" not in err
 
 
+def test_verbose_report_on_a_mamba2_first_layout(runner_bin, nemo_model):
+    """-v's summary names block 0's weight type. It read block 0's wqkv (if
+    recurrent) or wq, and a Mamba-2 block has neither (its matrices are ssm_in
+    and ssm_out), so -v crashed on any file whose first block is Mamba-2:
+    found on Nemotron 3 Nano 30B-A3B (R4.27.4.1). This fixture's block 0 is
+    recurrent."""
+    good, _ = nemo_model
+    proc = subprocess.run(
+        [runner_bin, "-m", str(good), "-p", "hi", "-n", "1", "--temp", "0",
+         "--gpu", "off", "-v"],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    err = proc.stderr.decode(errors="replace")
+    assert proc.returncode == 0, err
+    line = next((l for l in err.splitlines() if l.startswith("weight type")), "")
+    assert line.split()[-1] not in ("", "type"), err
+
 def test_nemotron_h_decode_is_deterministic(runner_bin, nemo_model):
     """Greedy decode must be reproducible run to run (the property the real
     token-identity gate builds on)."""

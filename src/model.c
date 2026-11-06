@@ -5867,9 +5867,12 @@ static void runtime_report(const model_t *m, size_t kv_bytes, size_t k_bytes) {
     else if (m->kv_ring_why[0])
         fprintf(stderr, "%-24s %s\n", "kv ring", m->kv_ring_why);
     fprintf(stderr, "%-24s %d\n", "batch", m->n_batch);
-    gguf_tensor *w0 = m->layers[0].recurrent ? m->layers[0].wqkv
-                                              : m->layers[0].wq;
-    fprintf(stderr, "%-24s %s\n", "weight type", ggml_type_name(w0->type));
+    // block 0's first matrix: a recurrent block's fused qkv, an attention
+    // block's wq, or a Mamba-2 block's in_proj, which has neither (a
+    // Mamba-2-first layout read a null tensor here: Nemotron 3 Nano, R4.27.4.1)
+    const layer_t *l0 = &m->layers[0];
+    gguf_tensor *w0 = l0->recurrent && l0->wqkv ? l0->wqkv : l0->wq ? l0->wq : l0->ssm_in;
+    fprintf(stderr, "%-24s %s\n", "weight type", w0 ? ggml_type_name(w0->type) : "(none in block 0)");
     fprintf(stderr, "%-24s %.1f\n", "rope base", m->rope_base);
 }
 

@@ -3403,6 +3403,34 @@
         }
       }
     },
+    "nemotron-3-nano-30b-a3b-q4_k_m": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/nemotron-3-nano-30b-a3b-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "sha256": "3c6bc9926d90f3ce6c725239b36ad157a29adbada230adf8cb27c119deff107f",
+          "bytes": 214,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-05",
+            "runner_version": "1.13.0",
+            "commit": "05c140d8dd59e1aeafd0adb00b307ace5e3c4062"
+          }
+        }
+      }
+    },
     "mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k": {
       "pins": {
         "linux-x86_64-cuda/cuda": {

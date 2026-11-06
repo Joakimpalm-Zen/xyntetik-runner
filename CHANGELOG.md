@@ -20,6 +20,24 @@ Current release and unreleased changes. Compatibility follows the
     Runner does not implement. Super VL declares 512 experts, past Runner's cap of 256. Bolt declares its expert
     counts and widths per layer, and Runner reads them as scalars (R4.27.4.2, R4.27.4.3).
 
+- **Fix: `-v` crashed on any file whose first block is Mamba-2; found on Nemotron 3 Nano.** The verbose summary's
+  "weight type" line read block 0's fused qkv (if recurrent) or its `wq`, and a Mamba-2 block has neither (its
+  matrices are `ssm_in` and `ssm_out`). The line now takes the block's first matrix that exists, `ssm_in` included.
+  On a file whose first block is attention or a fused-qkv recurrent block, the report is byte for byte as before.
+  `tests/test_hybrid_admission.py` runs `-v` on the Mamba-first nemotron_h fixture.
+
+- **NVIDIA Nemotron 3 Nano 30B-A3B joins the roster at Tier 2 on ggml-org's Q4_K_M, CPU only (R4.27.4.1).**
+  NVIDIA publishes no GGUF, so the file is ggml-org's automatic conversion. Against NVIDIA's BF16 parent computed in
+  float32, at the model's declared dt limit, it reads 0.0222 mean KLD and 99.50% margin-qualified top-1 (bars 0.05
+  and 97%, 300 positions). With the reference's configured clamp it reads 0.137, as Nemotron 3.5 Lightning did.
+  - **Checks:**
+    - Tokenizer 0 of 721 corpus strings and 0 of 128,635 vocabulary entries.
+    - Template conformance 24 of 24 in text and tokens under `nemotron35` (a new `nemotron3-nano` family).
+    - llama.cpp on the same file reads 0.0243, and Runner is the closer engine.
+  - **Limits:**
+    - CUDA refuses the file: its sigmoid-plus-bias router has no device kernel.
+    - The tool gate's case B fails, and case C fails buffered.
+    - Record: `docs/compat-reports/nemotron-3-nano-30b-a3b-2026-11-05/`.
 - **Ornith-1.5-35B-A3B joins the roster at Tier 2 on ornith-ai's own Q8_0, text path only (R4.27.3).** It passes the
   fidelity bar by a hair against ornith-ai's BF16 parent computed in float32: 0.0484 mean KLD and 97.50%
   margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU).
