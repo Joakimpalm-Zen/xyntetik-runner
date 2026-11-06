@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A usage error ends with the error (R10.19).** An unknown option, a flag with no value, no model and no prompt each
+  printed the whole usage, 382 lines, so a script or a person reading the end of the output never saw why: one export
+  script read `unknown option --out` as a refusal of the quantization. They now print the error line and
+  `see runner --help`, and the full usage is for `--help`. A bare `runner`, with no arguments or only `--no-tray`, still
+  prints the usage, for someone running it for the first time, and now ends with
+  `error: need -m MODEL or -hf REPO[:TAG]`. Exit codes are unchanged.
+  - **Checks:** the whole of stderr for each case, in `tests/test_cli_surface.py`.
+  - **Limits:** `runner attest` and `runner train` with nothing after them still print their own short usage. A script
+    that looked for `usage:` on stderr after a failure other than a bare run no longer finds it; `unknown option` now reads
+    `error: unknown option`.
 - **Sage-A1.5 joins the roster at Tier 2 on InternScience's own Q6_K, and occamy-1.0 is listed Upcoming (R4.27.7).**
   Both are qwen35moe derivatives of Qwen3.6-35B-A3B, each read against its own BF16 parent computed in float32 (bars
   0.05 mean KLD and 97% margin-qualified top-1, 300 positions, CPU).

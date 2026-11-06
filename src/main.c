@@ -1562,7 +1562,20 @@ static void usage_train_to(FILE *f) {
         "are still accepted on the main command line.\n");
 }
 
-static void usage(const char *prog) { usage_to(stderr, prog); }
+// What follows a usage error's own line. A script reads the end of the output,
+// and the usage would put the error hundreds of lines above it (R10.19).
+static void usage_pointer(void) { fputs("see runner --help\n", stderr); }
+
+// No arguments, or only the tray opt-outs: --no-tray is there for wrappers that
+// want a bare runner guaranteed text-only, so that run is a bare one too.
+static bool invoked_bare(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--no-tray")) continue;
+        if (!strcmp(argv[i], "--tray") && i + 1 < argc) { i++; continue; }
+        return false;
+    }
+    return true;
+}
 
 // --transcript capture: stream to stdout AND keep the exact bytes for the
 // record (the transcript's output.text is what the terminal saw, verbatim)
@@ -2092,6 +2105,7 @@ typedef struct {
     int port, parallel, ttl;
     long parent_pid;
     bool no_tray, force_uncertified;
+    bool bare;   // nothing asked of this run: see invoked_bare
     // R1.2.2: per-request receipts in serve mode
     const char *receipts_dir;
     int receipts_keep;
@@ -2296,7 +2310,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         #define NEXT (i + 1 < argc ? argv[++i] : (fprintf(stderr, "error: %s needs a value\n", a), \
-                                                   usage(argv[0]), exit(1), (char*)0))
+                                                   usage_pointer(), exit(1), (char*)0))
         if (!o->pull_other && strcmp(a, "--pull") && strcmp(a, "--json")) o->pull_other = a;
         if      (!strcmp(a, "-m")) o->model_path = NEXT;
         else if (!strcmp(a, "--pull")) o->pull_spec = NEXT;
@@ -2698,7 +2712,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             *rc = 0;
             return false;
         }
-        else { fprintf(stderr, "unknown option %s\n", a); usage(argv[0]); *rc = 1; return false; }
+        else { fprintf(stderr, "error: unknown option %s\n", a); usage_pointer(); *rc = 1; return false; }
     }
     return true;
 }
@@ -3323,7 +3337,16 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         }
         jv_free(vj);
     }
-    if (!o->model_path) { usage(prog); *rc = 1; return true; }
+    if (!o->model_path) {
+        // Someone running runner for the first time needs the usage, and it
+        // still ends with the error line. Any other run asked for something,
+        // and gets the short form.
+        if (o->bare) usage_to(stderr, prog);
+        fprintf(stderr, "error: need -m MODEL or -hf REPO[:TAG]\n");
+        if (!o->bare) usage_pointer();
+        *rc = 1;
+        return true;
+    }
     // The escapes are -p's (a shell argument cannot hold a newline easily);
     // a file's bytes are the prompt as written. Unescaping after the append
     // rewrote a file's own backslash sequences, so a scored corpus's
@@ -3363,7 +3386,7 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         !o->bench_json && !o->doctor && !o->tool_info && !o->adapt_info && !o->train_path && !o->dpo_path && !o->verify_path &&
         !o->decide_path && !o->systemone_path && !have_detect_text && !o->resume_path) {
         fprintf(stderr, "error: need -p PROMPT, -i, or --serve\n");
-        usage(prog);
+        usage_pointer();
         *rc = 1;
         return true;
     }
@@ -6856,6 +6879,7 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
 #endif
 
     if (!cli_parse(o, argc, argv, &rc)) return rc;
+    o->bare = invoked_bare(argc, argv);
     if (o->pull_spec) return run_pull(o);
     if (!cli_resolve_shape(o)) return 1;
     if (!cli_resolve_trust_key(o)) return 1;
