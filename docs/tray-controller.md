@@ -36,10 +36,14 @@ Every runner process in a *run* mode (one-shot generation, `--serve`,
 
 Records are written atomically (tmp + rename). Normal exit leaves the record
 in place so filesystem cleanup cannot delay termination. Every discovery
-list and every new registration sweeps dead owners; process-start stamps,
+list filters dead owners and requests cleanup; every new registration also
+starts an independent cleanup helper without waiting for it. A nonblocking
+worker lock keeps helpers from sweeping the same folder concurrently. Slow
+deletion cannot hold up a server's startup or exit, and dead records are
+eventually removed as storage makes progress, even without a tray. Process-start stamps,
 when available, distinguish a reused pid from the original owner. Stale
-records are excluded from the live list before they are removed, so the
-directory is self-healing even when no tray runs.
+records are excluded from the live list before they are removed. A failed
+helper launch simply skips that cleanup attempt; serving is unaffected.
 Utility modes (`--rewrite`, `--info caps`, `--bench-json`, `--version`) do not
 register.
 

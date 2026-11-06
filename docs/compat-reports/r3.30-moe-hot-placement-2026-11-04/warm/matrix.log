@@ -1,0 +1,97 @@
+12:04:36
+x1-all req 0 chunks 129 tok/s 26.23 second half 32.31
+x1-all req 1 chunks 129 tok/s 40.08 second half 42.34
+x1-all req 2 chunks 129 tok/s 40.67 second half 42.75
+12:04:58
+x1-auto req 0 chunks 129 tok/s 16.89 second half 21.13
+x1-auto req 1 chunks 129 tok/s 26.64 second half 26.54
+x1-auto req 2 chunks 129 tok/s 26.78 second half 26.67
+12:05:27
+x1-m1 req 0 chunks 129 tok/s 35.17 second half 40.86
+x1-m1 req 1 chunks 129 tok/s 49.52 second half 51.03
+x1-m1 req 2 chunks 129 tok/s 49.53 second half 51.32
+x1-m1 req 3 chunks 129 tok/s 45.51 second half 47.55
+x1-m1 side load: 1260 experts in 7s (180.0/s), 1.913 ms each
+x1-m1 req 4 chunks 129 tok/s 46.06 second half 48.34
+x1-m1 side load: 1260 experts in 7s (180.0/s), 1.859 ms each
+12:05:59
+x1-m2 req 0 chunks 129 tok/s 52.4 second half 56.51
+x1-m2 req 1 chunks 129 tok/s 56.82 second half 58.26
+x1-m2 req 2 chunks 129 tok/s 57.24 second half 59.17
+x1-m2 req 3 chunks 129 tok/s 49.08 second half 51.01
+x1-m2 side load: 2660 experts in 7s (380.0/s), 1.336 ms each
+x1-m2 req 4 chunks 129 tok/s 48.87 second half 50.81
+x1-m2 side load: 2660 experts in 7s (380.0/s), 1.331 ms each
+12:06:26
+x1-m3 req 0 chunks 129 tok/s 56.27 second half 61.47
+x1-m3 req 1 chunks 129 tok/s 62.33 second half 64.61
+x1-m3 req 2 chunks 129 tok/s 63.08 second half 65.37
+x1-m3 req 3 chunks 129 tok/s 51.76 second half 53.34
+x1-m3 side load: 3850 experts in 7s (550.0/s), 1.147 ms each
+x1-m3 req 4 chunks 129 tok/s 51.66 second half 53.49
+x1-m3 side load: 3847 experts in 7s (549.6/s), 1.218 ms each
+12:06:52
+x2-m3 req 0 chunks 129 tok/s 54.24 second half 60.75
+x2-m3 req 1 chunks 129 tok/s 63.11 second half 64.38
+x2-m3 req 2 chunks 129 tok/s 62.29 second half 64.82
+x2-m3 req 3 chunks 129 tok/s 52.62 second half 54.09
+x2-m3 side load: 3850 experts in 7s (550.0/s), 1.228 ms each
+x2-m3 req 4 chunks 129 tok/s 51.63 second half 53.08
+x2-m3 side load: 3850 experts in 7s (550.0/s), 1.223 ms each
+12:07:19
+x2-m2 req 0 chunks 129 tok/s 52.45 second half 57.02
+x2-m2 req 1 chunks 129 tok/s 57.65 second half 59.39
+x2-m2 req 2 chunks 129 tok/s 56.64 second half 58.83
+x2-m2 req 3 chunks 129 tok/s 49.5 second half 51.01
+x2-m2 side load: 2660 experts in 7s (380.0/s), 1.367 ms each
+x2-m2 req 4 chunks 129 tok/s 48.82 second half 49.9
+x2-m2 side load: 2660 experts in 7s (380.0/s), 1.336 ms each
+12:07:46
+x2-auto req 0 chunks 129 tok/s 18.29 second half 21.29
+x2-auto req 1 chunks 129 tok/s 26.74 second half 26.69
+x2-auto req 2 chunks 129 tok/s 26.75 second half 26.69
+12:08:12
+x2-m1 req 0 chunks 129 tok/s 35.34 second half 41.05
+x2-m1 req 1 chunks 129 tok/s 49.16 second half 51.26
+x2-m1 req 2 chunks 129 tok/s 49.05 second half 50.49
+x2-m1 req 3 chunks 129 tok/s 45.52 second half 47.27
+x2-m1 side load: 1260 experts in 7s (180.0/s), 1.702 ms each
+x2-m1 req 4 chunks 129 tok/s 45.28 second half 47.06
+x2-m1 side load: 1260 experts in 7s (180.0/s), 1.627 ms each
+12:08:44
+x2-all req 0 chunks 129 tok/s 29.68 second half 32.53
+x2-all req 1 chunks 129 tok/s 40.65 second half 42.49
+x2-all req 2 chunks 129 tok/s 41.07 second half 43.1
+12:09:02
+x3-m1 req 0 chunks 129 tok/s 41.48 second half 47.08
+x3-m1 req 1 chunks 129 tok/s 49.34 second half 51.22
+x3-m1 req 2 chunks 129 tok/s 49.5 second half 51.47
+x3-m1 req 3 chunks 129 tok/s 45.6 second half 47.16
+x3-m1 side load: 1260 experts in 7s (180.0/s), 1.871 ms each
+x3-m1 req 4 chunks 129 tok/s 45.18 second half 47.28
+x3-m1 side load: 1260 experts in 7s (180.0/s), 1.643 ms each
+12:09:32
+x3-all req 0 chunks 129 tok/s 29.35 second half 33.81
+x3-all req 1 chunks 129 tok/s 40.42 second half 42.54
+x3-all req 2 chunks 129 tok/s 40.95 second half 42.95
+12:09:51
+x3-m3 req 0 chunks 129 tok/s 48.06 second half 54.56
+x3-m3 req 1 chunks 129 tok/s 62.61 second half 64.52
+x3-m3 req 2 chunks 129 tok/s 63.77 second half 65.68
+x3-m3 req 3 chunks 129 tok/s 51.12 second half 52.6
+x3-m3 side load: 3850 experts in 7s (550.0/s), 1.169 ms each
+x3-m3 req 4 chunks 129 tok/s 52.26 second half 53.81
+x3-m3 side load: 3850 experts in 7s (550.0/s), 1.145 ms each
+12:10:19
+x3-auto req 0 chunks 129 tok/s 18.29 second half 21.18
+x3-auto req 1 chunks 129 tok/s 26.83 second half 26.83
+x3-auto req 2 chunks 129 tok/s 26.89 second half 26.78
+12:10:44
+x3-m2 req 0 chunks 129 tok/s 40.81 second half 46.19
+x3-m2 req 1 chunks 129 tok/s 55.87 second half 58.63
+x3-m2 req 2 chunks 129 tok/s 56.88 second half 57.95
+x3-m2 req 3 chunks 129 tok/s 48.85 second half 50.4
+x3-m2 side load: 2660 experts in 7s (380.0/s), 1.319 ms each
+x3-m2 req 4 chunks 129 tok/s 48.52 second half 50.27
+x3-m2 side load: 2660 experts in 7s (380.0/s), 1.363 ms each
+12:11:13

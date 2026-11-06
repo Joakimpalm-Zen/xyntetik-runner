@@ -1133,9 +1133,27 @@ static const char *session_unsupported(const model_t *m) {
     return NULL;
 }
 
+// What session_answer built under the device turn, for the caller to write
+// after giving it back: a client that stops reading must not hold the turn.
+typedef struct {
+    const char *why;   // the image failed: a 500 saying so
+    sbuf body;         // otherwise the answer; body.failed is out of memory
+} session_reply;
+
+static void session_reply_send(sock_t fd, session_reply *a) {
+    if (a->why)
+        send_error_detail(fd, 500, a->why, NULL, "session_image_failed");
+    else if (a->body.failed)
+        send_error(fd, 500, "out of memory");
+    else
+        send_response(fd, 200, "application/json", a->body.s, a->body.n);
+    free(a->body.s);
+    a->body = (sbuf){0};
+}
+
 // The generation from here: run to the stop point or the end, image a
-// generation that is still live at a stop point, answer.
-static void session_answer(slot_t *s, sock_t fd, float *logits, int n_prompt,
+// generation that is still live at a stop point, and build the answer.
+static void session_answer(slot_t *s, session_reply *out, float *logits, int n_prompt,
                            int max_new, int stop_at, bool ignore_eos,
                            const char *parent, bool forked) {
     engine *e = &s->e;
@@ -1181,7 +1199,7 @@ static void session_answer(slot_t *s, sock_t fd, float *logits, int n_prompt,
     double secs = now_s() - t0;
     if (why) {
         free(text.s);
-        send_error_detail(fd, 500, why, NULL, "session_image_failed");
+        out->why = why;
         return;
     }
     sbuf r = {0};
@@ -1196,9 +1214,8 @@ static void session_answer(slot_t *s, sock_t fd, float *logits, int n_prompt,
            tokens_total, generated, max_new,
            suspended ? "suspended" : hit_stop ? "stop" : "length", secs);
     free(text.s);
-    if (r.failed) { free(r.s); send_error(fd, 500, "out of memory"); return; }
-    send_response(fd, 200, "application/json", r.s, r.n);
-    free(r.s);
+    out->body = r;
+    if (r.failed) return;
     fprintf(stderr, "[slot %d] session%s%s: %d tokens, %d of %d generated%s\n",
             s->id, parent ? " resume " : " ", parent ? parent : "", tokens_total,
             generated, max_new, id[0] ? ", imaged" : "");
@@ -1324,9 +1341,11 @@ static void handle_session_start(slot_t *s, sock_t fd, jv *req) {
         return;
     }
     engine_gen_begin(e, max_new);
-    session_answer(s, fd, lg, n, max_new, stop_at, ignore_eos, NULL, false);
+    session_reply a = {0};
+    session_answer(s, &a, lg, n, max_new, stop_at, ignore_eos, NULL, false);
     e->ignore_eos = false;
     sched_prefill_end();
+    session_reply_send(fd, &a);
 }
 
 static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
@@ -1421,10 +1440,12 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
         return;
     }
     memcpy(lg, img.logits, sizeof(float) * (size_t)s->m->n_vocab);
-    session_answer(s, fd, lg, sm->n_prompt, sm->max_new, stop_at,
+    session_reply a = {0};
+    session_answer(s, &a, lg, sm->n_prompt, sm->max_new, stop_at,
                    sm->ignore_eos, id, fork);
     e->ignore_eos = false;
     sched_prefill_end();
+    session_reply_send(fd, &a);
     free(lg);
     session_image_free(&img);
 }
@@ -2803,7 +2824,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
             atomic_fetch_add(&SV.total_requests, 1);
             bool ok = true;
             int sw = SV.n_reg > 0
-                ? swap_to_expect(jv_str(jv_get(req, "model"), NULL), &expect)
+                ? swap_to_expect(jv_str(jv_get(req, "model"), NULL), &expect, fd)
                 : single_model_expect(&expect);
             if (sw == SWAP_EXPECT_MISMATCH || sw == SWAP_EXPECT_UNKNOWN) {
                 // R10.12.2: say what IS resident, so the client can decide
@@ -3804,13 +3825,22 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         return 1;
     }
     int one = 1;
+#ifdef _WIN32
+    // Not SO_REUSEADDR: on Windows that lets a second process bind a port in
+    // use. Both then listen, the second gets no request, and when the first
+    // goes its clients are reset. Exclusive also keeps another process from
+    // taking this port over; a restart straight after serving still binds.
+    setsockopt(lfd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&one, sizeof(one));
+#else
     setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
+#endif
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = htons((uint16_t)port);
     if (bind(lfd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        fprintf(stderr, "error: cannot bind 127.0.0.1:%d (%s)\n", port, sock_errstr());
+        fprintf(stderr, "error: cannot bind 127.0.0.1:%d: is another server on this port? "
+                "(%s)\n", port, sock_errstr());
         sock_close(lfd);
         return 1;
     }

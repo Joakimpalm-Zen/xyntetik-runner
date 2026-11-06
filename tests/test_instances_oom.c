@@ -120,7 +120,9 @@ static void walk(instance_rec *r, int n) {
     }
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--internal-instance-sweep"))
+        return instances_sweep_worker();
     char home[512];
 #ifdef _WIN32
     snprintf(home, sizeof home, "%s\\xyntetik-oom-%ld", getenv("TEMP"),

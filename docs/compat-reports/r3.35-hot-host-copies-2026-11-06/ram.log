@@ -1,0 +1,36 @@
+r1-base after load: ws, peak ws, available GB (5.28, 6.14, 5.84)
+r1-base req 0 tok/s 23.79 ws, peak ws, available GB (10.43, 10.43, 0.78)
+r1-base req 1 tok/s 40.28 ws, peak ws, available GB (10.43, 10.43, 0.77)
+r1-base req 2 tok/s 42.14 ws, peak ws, available GB (10.43, 10.43, 0.77)
+r1-base req 3 tok/s 42.53 ws, peak ws, available GB (10.43, 10.43, 0.77)
+r1-base greedy text sha256 422485c1b666db04 chars 637
+r1-new after load: ws, peak ws, available GB (0.23, 6.14, 10.99)
+r1-new req 0 tok/s 24.06 ws, peak ws, available GB (5.39, 6.14, 5.85)
+r1-new req 1 tok/s 41.97 ws, peak ws, available GB (5.39, 6.14, 5.85)
+r1-new req 2 tok/s 42.14 ws, peak ws, available GB (5.39, 6.14, 5.84)
+r1-new req 3 tok/s 42.36 ws, peak ws, available GB (5.39, 6.14, 5.84)
+r1-new greedy text sha256 422485c1b666db04 chars 637
+r2-new after load: ws, peak ws, available GB (0.23, 6.14, 11.01)
+r2-new req 0 tok/s 29.75 ws, peak ws, available GB (5.39, 6.14, 5.83)
+r2-new req 1 tok/s 41.54 ws, peak ws, available GB (5.39, 6.14, 5.85)
+r2-new req 2 tok/s 41.48 ws, peak ws, available GB (5.39, 6.14, 5.84)
+r2-new req 3 tok/s 42.08 ws, peak ws, available GB (5.39, 6.14, 5.85)
+r2-new greedy text sha256 422485c1b666db04 chars 637
+r2-base after load: ws, peak ws, available GB (5.28, 6.14, 5.95)
+r2-base req 0 tok/s 19.6 ws, peak ws, available GB (10.44, 10.44, 0.79)
+r2-base req 1 tok/s 41.68 ws, peak ws, available GB (10.44, 10.44, 0.77)
+r2-base req 2 tok/s 42.04 ws, peak ws, available GB (10.44, 10.44, 0.76)
+r2-base req 3 tok/s 41.86 ws, peak ws, available GB (10.44, 10.44, 0.78)
+r2-base greedy text sha256 422485c1b666db04 chars 637
+r3-base after load: ws, peak ws, available GB (5.28, 6.14, 5.97)
+r3-base req 0 tok/s 28.35 ws, peak ws, available GB (10.44, 10.44, 0.79)
+r3-base req 1 tok/s 41.91 ws, peak ws, available GB (10.44, 10.44, 0.79)
+r3-base req 2 tok/s 41.9 ws, peak ws, available GB (10.44, 10.44, 0.79)
+r3-base req 3 tok/s 42.09 ws, peak ws, available GB (10.44, 10.44, 0.79)
+r3-base greedy text sha256 422485c1b666db04 chars 637
+r3-new after load: ws, peak ws, available GB (0.23, 6.14, 11.01)
+r3-new req 0 tok/s 30.26 ws, peak ws, available GB (5.39, 6.14, 5.85)
+r3-new req 1 tok/s 41.74 ws, peak ws, available GB (5.39, 6.14, 5.85)
+r3-new req 2 tok/s 42.36 ws, peak ws, available GB (5.39, 6.14, 5.85)
+r3-new req 3 tok/s 41.76 ws, peak ws, available GB (5.39, 6.14, 5.86)
+r3-new greedy text sha256 422485c1b666db04 chars 637

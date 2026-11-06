@@ -30,12 +30,13 @@ WINDOWS = os.name == "nt"
 # below 32768 is never a source port, so the poll only ever reaches a server.
 # (The same mechanism ended a kld-compare CI run on 2026-10-23.)
 _PORT_LOW, _PORT_HIGH = 20000, 32767
+BIND_ATTEMPTS = 5
 
 
 def free_port():
-    """A port below the ephemeral ranges that binds now. Racy in principle;
-    the server binds immediately after and start() fails loudly if it lost
-    the race."""
+    """A port below the ephemeral ranges that binds now. Racy in principle:
+    two parallel workers can draw the same one. The server binds immediately
+    after, the loser exits, and start() takes another port."""
     rng = random.SystemRandom()
     for _ in range(500):
         port = rng.randint(_PORT_LOW, _PORT_HIGH)
@@ -121,6 +122,22 @@ class RunnerServer:
         return False
 
     def start(self):
+        for attempt in range(BIND_ATTEMPTS):
+            try:
+                return self._start_once()
+            except TransportError as e:
+                # Only a lost bind is a reason to try again: anything else is
+                # the failure a test is here to see.
+                if attempt == BIND_ATTEMPTS - 1 or "cannot bind" not in (e.context.get("log") or ""):
+                    raise
+                self._log.close()
+                self._log = None
+                if self._own_log:
+                    os.unlink(self._own_log)
+                    self._own_log = None
+        return self
+
+    def _start_once(self):
         self.port = free_port()
         argv = (list(self.exe) if isinstance(self.exe, list) else [self.exe]) + [
                 "-m", self.model, "--serve", "--no-tray",

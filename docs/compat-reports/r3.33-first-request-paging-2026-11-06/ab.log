@@ -1,0 +1,79 @@
+12:26:12
+z1-base guard ok, RAM line 5.9
+z1-base req 0 chunks 129 tok/s 32.71 second half 33.43
+z1-base req 1 chunks 129 tok/s 41.16 second half 43.25
+z1-base req 2 chunks 129 tok/s 40.83 second half 43.13
+z1-base pagein [26543, 58173, 62847, 54869, 8248, 40154, 4449, 13966, 37020, 20324, 12890, 0, 18, 0, 0, 0, 0, 0]
+12:26:32
+z1-rel guard ok, RAM line 11.0
+z1-rel req 0 chunks 129 tok/s 33.84 second half 36.09
+z1-rel req 1 chunks 129 tok/s 41.05 second half 43.25
+z1-rel req 2 chunks 129 tok/s 40.8 second half 42.67
+z1-rel pagein [154083, 3, 17, 8280, 31997, 7695, 35921, 21216, 22470, 0, 0, 0, 0, 0, 0, 2]
+12:26:49
+z1-basep guard ok, RAM line 5.9
+z1-basep primed 4.95 GB in 5.4s
+z1-basep req 0 chunks 129 tok/s 36.01 second half 37.23
+z1-basep req 1 chunks 129 tok/s 40.69 second half 42.52
+z1-basep req 2 chunks 129 tok/s 40.45 second half 42.08
+z1-basep pagein [92904, 133584, 126488, 120260, 118920, 114525, 115940, 117908, 120056, 118655, 104649, 95766, 211469, 209718, 211146, 213195, 195177, 131, 227, 112, 16, 19, 0, 0, 0, 0, 0, 3, 0]
+12:27:19
+z1-relp guard ok, RAM line 11.0
+z1-relp primed 4.95 GB in 5.3s
+z1-relp req 0 chunks 129 tok/s 37.71 second half 41.31
+z1-relp req 1 chunks 129 tok/s 41.1 second half 43.09
+z1-relp req 2 chunks 129 tok/s 41.36 second half 43.06
+z1-relp pagein [154499, 8546, 1, 8258, 192834, 210174, 199514, 207236, 208084, 69901, 243, 176, 32, 19, 0, 0, 0, 0, 0, 0, 0]
+12:27:41
+z2-relp guard ok, RAM line 11.0
+z2-relp primed 4.95 GB in 4.8s
+z2-relp req 0 chunks 129 tok/s 37.71 second half 41.34
+z2-relp req 1 chunks 129 tok/s 40.99 second half 42.67
+z2-relp req 2 chunks 129 tok/s 40.97 second half 42.75
+z2-relp pagein [91692, 124848, 127442, 114554, 116389, 115253, 113131, 114444, 115558, 117138, 118742, 13217, 170003, 190637, 195358, 204260, 170730, 176, 256, 96, 19, 0, 0, 0, 1, 0, 0, 0]
+12:28:10
+z2-basep guard ok, RAM line 5.9
+z2-basep primed 4.95 GB in 5.2s
+z2-basep req 0 chunks 129 tok/s 35.96 second half 38.03
+z2-basep req 1 chunks 129 tok/s 40.93 second half 42.96
+z2-basep req 2 chunks 129 tok/s 40.49 second half 41.42
+z2-basep pagein [84649, 125306, 129530, 114270, 119398, 115953, 111091, 117821, 116536, 118403, 118847, 104149, 206626, 206116, 207768, 209526, 170910, 178, 240, 96, 0, 19, 0, 0, 16, 0, 0, 0]
+12:28:40
+z2-rel guard ok, RAM line 11.0
+z2-rel req 0 chunks 129 tok/s 33.54 second half 35.79
+z2-rel req 1 chunks 129 tok/s 40.77 second half 42.59
+z2-rel req 2 chunks 129 tok/s 40.96 second half 42.3
+z2-rel pagein [155140, 3, 1, 8320, 27941, 6966, 29975, 15412, 22476, 0, 0, 0, 0, 0, 0, 2770]
+12:28:57
+z2-base guard ok, RAM line 5.9
+z2-base req 0 chunks 129 tok/s 32.93 second half 33.89
+z2-base req 1 chunks 129 tok/s 40.71 second half 42.72
+z2-base req 2 chunks 129 tok/s 40.83 second half 42.97
+z2-base pagein [92988, 133162, 128269, 122436, 119104, 121214, 116735, 119792, 121076, 124809, 90129, 28046, 3951, 18989, 28372, 20745, 9108, 0, 0, 3, 0, 0, 0, 0]
+12:29:23
+z3-rel guard ok, RAM line 11.0
+z3-rel req 0 chunks 129 tok/s 33.21 second half 35.1
+z3-rel req 1 chunks 129 tok/s 40.69 second half 42.11
+z3-rel req 2 chunks 129 tok/s 40.74 second half 42.59
+z3-rel pagein [154470, 375, 1, 8299, 37928, 7737, 31749, 22424, 24084, 0, 0, 0, 0, 0, 0, 1]
+12:29:40
+z3-basep guard ok, RAM line 5.9
+z3-basep primed 4.95 GB in 5.3s
+z3-basep req 0 chunks 129 tok/s 35.63 second half 37.88
+z3-basep req 1 chunks 129 tok/s 40.7 second half 43.0
+z3-basep req 2 chunks 129 tok/s 41.08 second half 43.07
+z3-basep pagein [91963, 128905, 126575, 117144, 116836, 115053, 112054, 117784, 116069, 117127, 117995, 95138, 208107, 197676, 197332, 208982, 182475, 146, 272, 112, 0, 19, 0, 0, 16, 0, 0, 0]
+12:30:10
+z3-base guard ok, RAM line 5.9
+z3-base req 0 chunks 129 tok/s 33.02 second half 34.4
+z3-base req 1 chunks 129 tok/s 40.98 second half 42.69
+z3-base req 2 chunks 129 tok/s 40.64 second half 42.85
+z3-base pagein [155683, 0, 8166, 23928, 7745, 29069, 11323, 21982, 0, 16, 0, 0, 0, 0, 0]
+12:30:27
+z3-relp guard ok, RAM line 11.0
+z3-relp primed 4.95 GB in 5.7s
+z3-relp req 0 chunks 129 tok/s 32.8 second half 40.19
+z3-relp req 1 chunks 129 tok/s 41.08 second half 43.33
+z3-relp req 2 chunks 129 tok/s 40.77 second half 42.96
+z3-relp pagein [155220, 0, 1, 8206, 181963, 207605, 180221, 181558, 182646, 138360, 112, 224, 144, 32, 19, 0, 0, 16, 0, 0, 2, 1]
+12:30:50

@@ -1,0 +1,117 @@
+slots 768, t_up 0.55 ms, token 33.0 ms; served share of decode routings
+prompt   static  | R  warm    prefill  free-adm  charged  uploads/tok  late/tok
+code     0.837  |  2 hot     free       0.839    0.839        2.00      0.00
+code     0.837  |  2 hot     none       0.823    0.823        1.99      0.00
+code     0.837  |  2 layers  free       0.691    0.691        2.00      0.00
+code     0.837  |  2 layers  none       0.627    0.627        1.99      0.00
+code     0.837  |  4 hot     free       0.875    0.875        3.98      0.00
+code     0.837  |  4 hot     none       0.854    0.854        3.96      0.00
+code     0.837  |  4 layers  free       0.822    0.822        4.00      0.00
+code     0.837  |  4 layers  none       0.747    0.747        3.98      0.00
+code     0.837  |  8 hot     free       0.892    0.892        7.04      0.00
+code     0.837  |  8 hot     none       0.884    0.884        7.02      0.00
+code     0.837  |  8 layers  free       0.892    0.892        7.05      0.00
+code     0.837  |  8 layers  none       0.848    0.848        7.14      0.00
+code     0.837  | 16 hot     free       0.900    0.900       10.08      0.00
+code     0.837  | 16 hot     none       0.894    0.894        9.91      0.00
+code     0.837  | 16 layers  free       0.901    0.901       10.06      0.00
+code     0.837  | 16 layers  none       0.882    0.882       10.11      0.00
+copy     0.664  |  2 hot     free       0.754    0.754        2.00      0.00
+copy     0.664  |  2 hot     none       0.749    0.749        1.99      0.00
+copy     0.664  |  2 layers  free       0.716    0.716        2.00      0.00
+copy     0.664  |  2 layers  none       0.593    0.593        1.99      0.00
+copy     0.664  |  4 hot     free       0.795    0.795        4.00      0.00
+copy     0.664  |  4 hot     none       0.798    0.798        3.98      0.00
+copy     0.664  |  4 layers  free       0.786    0.786        4.00      0.00
+copy     0.664  |  4 layers  none       0.705    0.705        3.98      0.00
+copy     0.664  |  8 hot     free       0.859    0.859        7.54      0.00
+copy     0.664  |  8 hot     none       0.858    0.858        7.52      0.00
+copy     0.664  |  8 layers  free       0.858    0.858        7.56      0.00
+copy     0.664  |  8 layers  none       0.829    0.829        7.70      0.00
+copy     0.664  | 16 hot     free       0.879    0.879       11.12      0.00
+copy     0.664  | 16 hot     none       0.877    0.877       10.82      0.00
+copy     0.664  | 16 layers  free       0.879    0.879       11.16      0.00
+copy     0.664  | 16 layers  none       0.864    0.864       11.17      0.00
+edit     0.843  |  2 hot     free       0.813    0.813        2.00      0.00
+edit     0.843  |  2 hot     none       0.823    0.823        1.99      0.00
+edit     0.843  |  2 layers  free       0.797    0.797        2.00      0.00
+edit     0.843  |  2 layers  none       0.630    0.630        1.99      0.00
+edit     0.843  |  4 hot     free       0.834    0.834        4.00      0.00
+edit     0.843  |  4 hot     none       0.839    0.839        3.98      0.00
+edit     0.843  |  4 layers  free       0.834    0.834        4.00      0.00
+edit     0.843  |  4 layers  none       0.729    0.729        3.98      0.00
+edit     0.843  |  8 hot     free       0.858    0.858        7.92      0.00
+edit     0.843  |  8 hot     none       0.859    0.859        7.82      0.00
+edit     0.843  |  8 layers  free       0.859    0.859        7.92      0.00
+edit     0.843  |  8 layers  none       0.817    0.817        7.92      0.00
+edit     0.843  | 16 hot     free       0.870    0.870       12.80      0.00
+edit     0.843  | 16 hot     none       0.870    0.870       12.43      0.00
+edit     0.843  | 16 layers  free       0.870    0.870       12.80      0.00
+edit     0.843  | 16 layers  none       0.856    0.856       12.59      0.00
+long     0.824  |  2 hot     free       0.748    0.748        2.00      0.00
+long     0.824  |  2 hot     none       0.827    0.827        1.99      0.00
+long     0.824  |  2 layers  free       0.733    0.733        2.00      0.00
+long     0.824  |  2 layers  none       0.608    0.608        1.99      0.00
+long     0.824  |  4 hot     free       0.818    0.818        4.00      0.00
+long     0.824  |  4 hot     none       0.852    0.852        3.98      0.00
+long     0.824  |  4 layers  free       0.818    0.818        4.00      0.00
+long     0.824  |  4 layers  none       0.729    0.729        3.98      0.00
+long     0.824  |  8 hot     free       0.868    0.868        7.78      0.00
+long     0.824  |  8 hot     none       0.873    0.873        7.66      0.00
+long     0.824  |  8 layers  free       0.868    0.868        7.78      0.00
+long     0.824  |  8 layers  none       0.828    0.828        7.79      0.00
+long     0.824  | 16 hot     free       0.881    0.881       11.67      0.00
+long     0.824  | 16 hot     none       0.879    0.879       11.32      0.00
+long     0.824  | 16 layers  free       0.881    0.881       11.67      0.00
+long     0.824  | 16 layers  none       0.863    0.863       11.64      0.00
+prose    0.738  |  2 hot     free       0.821    0.821        2.00      0.00
+prose    0.738  |  2 hot     none       0.807    0.807        1.99      0.00
+prose    0.738  |  2 layers  free       0.655    0.655        2.00      0.00
+prose    0.738  |  2 layers  none       0.608    0.608        1.99      0.00
+prose    0.738  |  4 hot     free       0.850    0.850        4.00      0.00
+prose    0.738  |  4 hot     none       0.842    0.842        3.98      0.00
+prose    0.738  |  4 layers  free       0.757    0.757        4.00      0.00
+prose    0.738  |  4 layers  none       0.715    0.715        3.98      0.00
+prose    0.738  |  8 hot     free       0.876    0.876        7.48      0.00
+prose    0.738  |  8 hot     none       0.868    0.868        7.38      0.00
+prose    0.738  |  8 layers  free       0.862    0.862        7.52      0.00
+prose    0.738  |  8 layers  none       0.826    0.826        7.45      0.00
+prose    0.738  | 16 hot     free       0.887    0.887       10.87      0.00
+prose    0.738  | 16 hot     none       0.883    0.883       10.67      0.00
+prose    0.738  | 16 layers  free       0.887    0.887       10.86      0.00
+prose    0.738  | 16 layers  none       0.868    0.868       10.88      0.00
+tool     0.803  |  2 hot     free       0.773    0.773        2.00      0.00
+tool     0.803  |  2 hot     none       0.789    0.789        1.99      0.00
+tool     0.803  |  2 layers  free       0.633    0.633        2.00      0.00
+tool     0.803  |  2 layers  none       0.600    0.600        1.99      0.00
+tool     0.803  |  4 hot     free       0.799    0.799        4.00      0.00
+tool     0.803  |  4 hot     none       0.801    0.801        3.98      0.00
+tool     0.803  |  4 layers  free       0.722    0.722        4.00      0.00
+tool     0.803  |  4 layers  none       0.683    0.683        3.98      0.00
+tool     0.803  |  8 hot     free       0.844    0.844        7.60      0.00
+tool     0.803  |  8 hot     none       0.838    0.838        7.57      0.00
+tool     0.803  |  8 layers  free       0.832    0.832        7.62      0.00
+tool     0.803  |  8 layers  none       0.795    0.795        7.63      0.00
+tool     0.803  | 16 hot     free       0.883    0.883       11.07      0.00
+tool     0.803  | 16 hot     none       0.878    0.878       10.93      0.00
+tool     0.803  | 16 layers  free       0.883    0.883       11.07      0.00
+tool     0.803  | 16 layers  none       0.863    0.863       11.20      0.00
+
+mean over the six leave-one-out prompts
+static 0.785
+R= 2 warm=hot     prefill=free  free-adm 0.791 charged 0.791 (+0.006 over static) uploads/tok 2.00 late/tok 0.00
+R= 2 warm=hot     prefill=none  free-adm 0.803 charged 0.803 (+0.018 over static) uploads/tok 1.99 late/tok 0.00
+R= 2 warm=layers  prefill=free  free-adm 0.704 charged 0.704 (+-0.081 over static) uploads/tok 2.00 late/tok 0.00
+R= 2 warm=layers  prefill=none  free-adm 0.611 charged 0.611 (+-0.174 over static) uploads/tok 1.99 late/tok 0.00
+R= 4 warm=hot     prefill=free  free-adm 0.829 charged 0.829 (+0.044 over static) uploads/tok 4.00 late/tok 0.00
+R= 4 warm=hot     prefill=none  free-adm 0.831 charged 0.831 (+0.046 over static) uploads/tok 3.98 late/tok 0.00
+R= 4 warm=layers  prefill=free  free-adm 0.790 charged 0.790 (+0.005 over static) uploads/tok 4.00 late/tok 0.00
+R= 4 warm=layers  prefill=none  free-adm 0.718 charged 0.718 (+-0.067 over static) uploads/tok 3.98 late/tok 0.00
+R= 8 warm=hot     prefill=free  free-adm 0.866 charged 0.866 (+0.081 over static) uploads/tok 7.56 late/tok 0.00
+R= 8 warm=hot     prefill=none  free-adm 0.863 charged 0.863 (+0.079 over static) uploads/tok 7.50 late/tok 0.00
+R= 8 warm=layers  prefill=free  free-adm 0.862 charged 0.862 (+0.077 over static) uploads/tok 7.58 late/tok 0.00
+R= 8 warm=layers  prefill=none  free-adm 0.824 charged 0.824 (+0.039 over static) uploads/tok 7.60 late/tok 0.00
+R=16 warm=hot     prefill=free  free-adm 0.883 charged 0.883 (+0.098 over static) uploads/tok 11.27 late/tok 0.00
+R=16 warm=hot     prefill=none  free-adm 0.880 charged 0.880 (+0.095 over static) uploads/tok 11.01 late/tok 0.00
+R=16 warm=layers  prefill=free  free-adm 0.883 charged 0.883 (+0.098 over static) uploads/tok 11.27 late/tok 0.00
+R=16 warm=layers  prefill=none  free-adm 0.866 charged 0.866 (+0.081 over static) uploads/tok 11.27 late/tok 0.00
