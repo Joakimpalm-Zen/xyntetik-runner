@@ -767,6 +767,13 @@ static void test_wait_for_vram_queues_then_proceeds(void) {
 // path (and a joining shutdown) for the full --wait-for-vram budget.
 static atomic_int cancel_flag;
 
+static bool cancel_flag_set(void *ud) {
+    (void)ud;
+    return atomic_load(&cancel_flag);
+}
+
+static const vram_cancel cancel_by_flag = { cancel_flag_set, NULL };
+
 static void *cancel_setter(void *arg) {
     (void)arg;
     plat_sleep_ms(300);
@@ -789,7 +796,7 @@ static void test_cancelled_wait_gives_up_promptly(void) {
     double t0 = plat_now();
     char err[1024] = {0};
     vram_lease *queued = vram_claim(gpu, "/models/queued.gguf", 20 * GB,
-                                    0, fixed_free, &free_all, 30, &cancel_flag,
+                                    0, fixed_free, &free_all, 30, &cancel_by_flag,
                                     NULL, err, sizeof(err));
     double waited = plat_now() - t0;
     pthread_join(th, NULL);
@@ -798,6 +805,39 @@ static void test_cancelled_wait_gives_up_promptly(void) {
     assert(strstr(err, "cancel") && "the error must say the wait was cancelled");
 
     vram_release(hog);
+}
+
+// A stop and the memory coming free can land on one poll. The stop wins: admitted
+// there, the load would run to its end to be thrown away. The queue marker goes
+// with the wait.
+static bool stop_as_memory_frees(void *ud) {
+    vram_lease **hog = ud;
+    static int asked;
+    // not on the first ask: a loop that asks once after its attempt and again
+    // while it sleeps must be caught at the second, with the next attempt ahead
+    if (++asked < 2) return false;
+    if (*hog) { vram_release(*hog); *hog = NULL; }
+    return true;
+}
+
+static void test_a_stop_beats_memory_freed_on_the_same_poll(void) {
+    const char *dir = scratch_dir();
+    const char *gpu = "wait-stop-race-test";
+    uint64_t free_all = 24 * GB;
+    vram_lease *hog = vram_claim(gpu, "/models/holder.gguf", 20 * GB,
+                                 0, fixed_free, &free_all, 0, NULL, NULL, NULL, 0);
+    assert(hog);
+    vram_cancel stop = { stop_as_memory_frees, &hog };
+    vram_lease *queued = vram_claim(gpu, "/models/queued.gguf", 20 * GB,
+                                    0, fixed_free, &free_all, 30, &stop, NULL, NULL, 0);
+    assert(!queued && "a stopped claim must not be admitted");
+    assert(!hog);
+    char path[600];
+    reg_file(dir, gpu, path, sizeof(path));
+    char buf[4096] = {0};
+    FILE *f = fopen(path, "r");
+    if (f) { size_t n = fread(buf, 1, sizeof buf - 1, f); buf[n] = 0; fclose(f); }
+    assert(!strstr(buf, "queued.gguf") && "the queue marker must go with the wait");
 }
 
 // A queue waits for other registered runners to let go. When the ledger lists
@@ -998,6 +1038,7 @@ int main(void) {
     test_reaping_keeps_live_neighbours();
     test_wait_for_vram_queues_then_proceeds();
     test_cancelled_wait_gives_up_promptly();
+    test_a_stop_beats_memory_freed_on_the_same_poll();
     test_wait_timeout_still_names_the_holder();
     test_wait_timeout_leaves_no_phantom_waiter();
     test_wait_with_nobody_registered_returns_at_once();

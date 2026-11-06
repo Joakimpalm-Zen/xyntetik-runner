@@ -133,6 +133,39 @@ void handle_unload(sock_t fd) {
     send_response(fd, 200, "application/json", b, strlen(b));
 }
 
+// Whether any client in the queue may still want an answer. Swap mode has one
+// slot, so a queued request is unread and could want any model. Its socket can
+// be called gone only when it closed having sent nothing: with bytes unread, a
+// close behind them does not show, and a half close (a client still waiting
+// for its answer) looks the same. Those count as live, as does anything the
+// peek cannot tell. Wrongly live costs a wait nobody needed, as before;
+// wrongly gone would cost a live client its place in the VRAM queue.
+static bool queue_has_live_client(void) {
+    int cap = (int)(sizeof(SV.q.fds) / sizeof(sock_t));
+    bool live = false;
+    pthread_mutex_lock(&SV.q.mu);
+    for (int i = 0; i < SV.q.count && !live; i++)
+        live = !sock_peer_closed(SV.q.fds[(SV.q.head + i) % cap]);
+    pthread_mutex_unlock(&SV.q.mu);
+    return live;
+}
+
+// Asked at each poll of the --wait-for-vram queue, on the loading thread, and
+// nowhere after it: a client that goes once the load is admitted costs nothing,
+// and the finished load stays for the next one. Setting load_cancel sends the
+// stopped wait down the path /unload's does.
+static bool load_should_stop(void *ud) {
+    (void)ud;
+    if (atomic_load(&SV.load_cancel)) return true;
+    if (SV.load_owner == SOCK_INVALID || !sock_peer_closed(SV.load_owner) ||
+        queue_has_live_client())
+        return false;
+    fprintf(stderr, "swap: the client left and nobody is queued behind it; "
+            "giving up the wait for VRAM\n");
+    atomic_store(&SV.load_cancel, 1);
+    return true;
+}
+
 // swap_to results below 0: the name matched no registry entry (a caller
 // typo — 400) vs the entry exists but its model failed to load (a broken
 // model — 5xx) vs the load was discarded because /unload or shutdown arrived
@@ -153,7 +186,7 @@ static bool request_model_matches(const char *want, const char *served) {
 }
 
 // resolve + load the requested model; returns entry index or SWAP_*
-int swap_to(const char *want) { return swap_to_expect(want, NULL); }
+int swap_to(const char *want) { return swap_to_expect(want, NULL, SOCK_INVALID); }
 
 bool request_expect_resident(sock_t fd, jv *req, resident_expect *ex) {
     memset(ex, 0, sizeof *ex);
@@ -210,7 +243,7 @@ int single_model_expect(const resident_expect *ex) {
     return ex && ex->set ? expect_verdict(ex) : 0;
 }
 
-int swap_to_expect(const char *want, const resident_expect *ex) {
+int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
     int idx = 0; // default: first entry
     if (want && *want) {
         idx = -1;
@@ -246,6 +279,7 @@ int swap_to_expect(const char *want, const resident_expect *ex) {
         // -1 and slot 0 has no model, so nothing else touches engine state;
         // the load builds into locals and installs under the lock at the end.
         SV.loading = true;
+        SV.load_owner = owner;
         atomic_store(&SV.load_cancel, 0);
         pthread_mutex_unlock(&SV.swap_mu);
 
@@ -532,9 +566,10 @@ bool init_swap_runtime(const model_params *mp, int n_threads, int ttl) {
     SV.mp = *mp;
     SV.mp.verbose = false;
     SV.mp.n_threads = n_threads;
-    // swap loads run without swap_mu; /unload and shutdown cancel a queued
-    // --wait-for-vram wait through this flag
-    SV.mp.load_cancel = &SV.load_cancel;
+    // swap loads run without swap_mu; /unload, shutdown and a client that has
+    // gone stop a queued --wait-for-vram wait through this
+    static const vram_cancel stop = { load_should_stop, NULL };
+    SV.mp.load_cancel = &stop;
     if (pthread_mutex_init(&SV.swap_mu, NULL) != 0) {
         fprintf(stderr, "error: cannot initialize model swap mutex\n");
         return false;

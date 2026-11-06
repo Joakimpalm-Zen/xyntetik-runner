@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **A client that disconnects stops its queued model load (R10.12.3.1).** A load waiting in the `--wait-for-vram` queue
+  went on waiting after its client had gone, up to the 300 s default, holding the one slot of a swap server. The wait
+  now stops within about 100 ms and the server carries on. It stops only if nobody is queued behind that client: a
+  live client keeps the wait and its place in the VRAM queue. A client that goes after the load is admitted costs
+  nothing, and the finished load stays resident for the next request. A wait that `/unload` or a shutdown stopped can
+  also no longer be admitted on the same poll and load a model only to discard it.
+  - **Checks:** `tests/test_queued_load_disconnect.py` runs the real wait on any host; the stop-against-freed-memory
+    race is in `tests/test_vram_registry.c`.
+  - **Limits:** CUDA only: CPU and Metal have no queue to wait in. A queued client that sent its request and then left
+    counts as present, because its close cannot be seen behind the unread request, so the wait goes on as it did. A
+    load past the queue is not interrupted. A swap that stops here has already unloaded the previous model.
+
 - **MiniCPM-V 4.7's chat templates get their own renderers, text path (R4.27.6).** openbmb's GGUF repository ships
   two sets with byte-identical weights that differ only in the embedded template: the root files (thinking fixed off,
   openbmb's recommended default) and `thinking/` (the repository's chat_template.jinja). Runner read them as `qwen35`

@@ -2203,6 +2203,13 @@ raw material for that layer, not the layer itself.
   waiters, not a reservation: a process that never passes `--wait-for-vram`,
   or that claims VRAM some other way, is invisible to it and can still take
   memory out of turn.
+- **A client that leaves the queue.** When a server's load is waiting here for
+  one request and that client disconnects, the wait stops and the server carries
+  on, unless another client is queued behind it, which keeps the wait and its
+  place. A queued client that has sent its request counts as present even if it
+  has left, because its close cannot be seen behind the unread request. A load
+  already past the queue is not stopped: it finishes and stays resident for the
+  next request. A swap that stops here has already unloaded the previous model.
 - **Cooperative yield.** `--serve --yield-on-request` opts a resident model
   into releasing itself when asked. The ask is a REQUEST, checked only at the
   one place `--serve` is ever idle between requests - never mid-generation,
