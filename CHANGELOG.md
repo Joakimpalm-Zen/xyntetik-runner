@@ -20,6 +20,8 @@ Current release and unreleased changes. Compatibility follows the
     Runner does not implement. Super VL declares 512 experts, past Runner's cap of 256. Bolt declares its expert
     counts and widths per layer, and Runner reads them as scalars (R4.27.4.2, R4.27.4.3).
 
+## v1.14.0 - 2026-11-06
+
 - **Fix: `-v` crashed on any file whose first block is Mamba-2; found on Nemotron 3 Nano.** The verbose summary's
   "weight type" line read block 0's fused qkv (if recurrent) or its `wq`, and a Mamba-2 block has neither (its
   matrices are `ssm_in` and `ssm_out`). The line now takes the block's first matrix that exists, `ssm_in` included.
