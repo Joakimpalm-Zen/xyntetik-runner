@@ -180,6 +180,8 @@ bool        plat_file_readable(const char *path);
 // allocated, or does not read back in full: a short or failed read is an
 // error, never a shorter file.
 char       *plat_read_file(const char *path, size_t max_bytes, size_t *n_out);
+// n bytes from the operating system's random generator; false when it has none.
+bool        plat_random(uint8_t *out, size_t n);
 // The last path component: what follows the last '/' or '\\' (both count on
 // every platform, so a path spelled the other platform's way still names
 // its file), or the whole string when it has neither.

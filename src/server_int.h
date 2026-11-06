@@ -117,7 +117,9 @@ typedef struct {
     bool       reasoning_temp_set;
     float      reasoning_temp;
     atomic_int ctx_size;
-    atomic_int req_counter;
+    // A request's id is 128 bits of SHA-256(id_seed || req_counter): see request_id.
+    atomic_ullong req_counter;
+    uint8_t id_seed[32];
     // swap mode
     reg_entry   reg[RUNNER_MAX_MODELS];
     int         n_reg;
