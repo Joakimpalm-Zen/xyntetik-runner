@@ -7029,6 +7029,8 @@ int main(int argc, char **argv) {
     // before anything reads argv or the environment: on Windows both arrive
     // in the ANSI code page unless the manifest made that UTF-8 (compat.h)
     plat_utf8_startup(&argc, &argv);
+    if (argc == 2 && !strcmp(argv[1], "--internal-instance-sweep"))
+        return instances_sweep_worker();
     // runner derive orchestrates the other modes as sub-runs of this binary
     if (argc >= 2 && !strcmp(argv[1], "derive")) return derive_main(argc - 1, argv + 1);
     int sub = cli_expand_subcommand(&argc, &argv);

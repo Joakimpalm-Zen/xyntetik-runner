@@ -15,6 +15,51 @@ Current release and unreleased changes. Compatibility follows the
   - **Limits:** `runner attest` and `runner train` with nothing after them still print their own short usage. A script
     that looked for `usage:` on stderr after a failure other than a bare run no longer finds it; `unknown option` now reads
     `error: unknown option`.
+- **Sage-A1.5 joins the roster at Tier 2 on InternScience's own Q6_K, and occamy-1.0 is listed Upcoming (R4.27.7).**
+  Both are qwen35moe derivatives of Qwen3.6-35B-A3B, each read against its own BF16 parent computed in float32 (bars
+  0.05 mean KLD and 97% margin-qualified top-1, 300 positions, CPU).
+  - **Sage-A1.5:** InternScience's model, built by its publisher on Qwen3.6-35B-A3B and InternScience's Agents-A1.
+    - Q6_K: 0.0395 mean KLD and 97.9% margin-qualified, passes. The Q4_K_M misses (0.145).
+    - Tokenizer 0 of 721 and 0 of 247,091 against its tokenizer.json (the qwen35 split).
+    - Template conformance 25 of 25 in text and tokens.
+    - CPU and CUDA cells pinned and matched; cpu_cuda 9 of 9 exact with routing pinned.
+    - Limits: the template's `verification` switch is not served (a request with it does not get the trigger), and the
+      GGUF names itself "Agents A1.5". Record: `docs/compat-reports/sage-a1.5-2026-11-06/`.
+  - **occamy-1.0:** Accio-Lab's finetune. No publisher file passes: Q8_0 0.0590 / 98.7%, Q6_K 0.0836 / 95.4%, Q5_K_M
+    0.0970 / 95.8%, Q4_K_M 0.258 / 85.7%. Tokenizer (the qwen2 split its header labels) and template (25 of 25) pass.
+    Where the distance comes from is not yet read. Record: `docs/compat-reports/occamy-1.0-2026-11-06/`.
+- **Fix: instance cleanup no longer delays server startup (R10.23).**
+  Registration and discovery lists request a separate cleanup process instead
+  of deleting stale records on the caller's path. One helper sweeps a folder
+  at a time; it can finish after the server exits. Dead records are filtered
+  immediately and eventually removed as storage progresses, including on
+  hosts without a tray. Cleanup launch failures never fail a server start.
+
+- **Windows: a second server on a port in use is refused, not silently sharing it (R10.22).** `SO_REUSEADDR` let both
+  bind on Windows. The second printed `server listening` and got no request, and when the first stopped, its clients'
+  connections were reset. It now exits with `cannot bind 127.0.0.1:PORT: is another server on this port?`, as Linux
+  already refused. This was the cause of a rare `WinError 10054` under `pytest -n`, when two workers drew the same port;
+  the test harness now takes another port on a lost bind. Linux and macOS keep `SO_REUSEADDR`, and a restart straight
+  after serving still binds. Measured on Windows.
+
+- **Fix: the project's Clef IQ3_S backbone tokenizes as Cloudflare/clef's own tokenizer, and its row no longer
+  claims the decision model (R4.36).** `Clef-backbone-IQ3_S.gguf` is Clef's backbone in Runner's qwen35 view, so it
+  declares architecture qwen35 and the Clef rule (architecture clef) missed it: it read with the qwen35 split, 3 of 721
+  corpus strings and 5,503 of 247,091 vocabulary entries off the publisher's. A rule entry keyed on its header
+  (qwen35 and general.name "Clef Backbone View") reads it with the qwen2 split; 0 and 0 now. Its row,
+  `cloudflare-clef-iq3_s-recovered`, claimed "a decision model served at /v1/systemone", which is the
+  `cloudflare-clef-iq3_s-native` row's file: it now says the text-only backbone.
+  - **Checks:** every other roster file's ids unchanged (74 rows), the backbone's alone different, on exactly the
+    three combining-mark strings; the house readings' corpus tokenizes identically before and after, so its numbers
+    (0.0879 / 94.0%, 0.0736 / 95.6%, 0.0757 / 95.6%) carry over; the recovery adapters were trained on the qwen2
+    split's ids, which the backbone now serves.
+  - Record: `docs/compat-reports/r4.36-clef-backbone-2026-11-06/`.
+- **CUDA: `RUNNER_MOE_HOT` gives back the host copies of the experts it holds on the device (R3.35).** A server with
+  Mellum 2.1 Q8_0's 768-slot hot file held 5.05 GB of pages the host path never reads. After warm decode on a 16 GB
+  host, its working set reads 5.39 GB against 10.44 GB, and available memory 5.85 GB against 0.78 GB. Measured on one
+  file on one Windows host. This is a RAM change, not a speed claim: warm decode is unchanged. Load still peaks at
+  6.14 GB, and prints how many experts it gave back. Report:
+  `docs/compat-reports/r3.35-hot-host-copies-2026-11-06`.
 - **A client that disconnects stops its queued model load (R10.12.3.1).** A load waiting in the `--wait-for-vram` queue
   went on waiting after its client had gone, up to the 300 s default, holding the one slot of a swap server. The wait
   now stops within about 100 ms and the server carries on. It stops only if nobody is queued behind that client: a
@@ -380,8 +425,9 @@ Current release and unreleased changes. Compatibility follows the
   registry smoke carry the field.
 
 - **CUDA: `RUNNER_MOE_HOT`, a file of hot experts kept on the device for
-  `--cpu-moe` host layers; 1.96x decode on Mellum 2.1 Q8_0 on an RTX 3070
-  (R3.30).** Limits first:
+  `--cpu-moe` host layers; 1.52x warm decode on Mellum 2.1 Q8_0 on an RTX 3070
+  (R3.30).** Corrected 2026-11-06: this entry first read 1.96x, a
+  fresh-process number. Limits first:
   - It is opt-in and measured on one file on one card.
   - The hot file comes from a routing trace (`RUNNER_MOE_TRACE`), so it
     fits the text the trace saw.
@@ -389,7 +435,8 @@ Current release and unreleased changes. Compatibility follows the
     biases or scales, gemma-4's dual branch and hyper-connections are
     refused at load, as is a malformed file or the knob without
     `--cpu-moe`.
-  - The measurement beats step 1's projection, and why is not established.
+  - The first request in a process is slower than the warm figure: 26 to 33
+    tok/s against 40.69.
 
   A listed layer runs mixed. The device norms and routes, and runs the
   listed experts with the fused path's kernels on a bank of their slices.
@@ -398,10 +445,19 @@ Current release and unreleased changes. Compatibility follows the
 
   Measured on Mellum2.1-12B-A2.5B-Thinking Q8_0 with 768 slots (5.07 GB),
   chosen by frequency from six traced prompts. On a prompt the trace never
-  saw, decode reads 27.82 against `--cpu-moe auto`'s 14.19 tok/s (medians
-  of three interleaved rounds), with a hit share of 0.716 to 0.735. Step 1 projected
-  1.66x from whole-bank slopes. `RUNNER_MOE_HOT_PROF=1` prints where each
-  mixed layer's time goes.
+  saw, warm decode in one long-lived process reads 40.69 against
+  `--cpu-moe auto`'s 26.75 tok/s (medians of three interleaved rounds), with
+  a hit share of 0.716 to 0.735. Step 1's model gives 1.53x at that prompt's
+  share, so the measurement agrees with it. Its 1.66x assumed a share of
+  0.785, which this prompt does not reach.
+
+  The 1.96x first published here is a fresh-process reading, 27.82 against
+  14.19 tok/s, and does not measure the placement alone: going from that
+  reading to warm, `auto` gains 1.89x and `hot` 1.46x. A first request pays
+  for paging the mapped file. Why the two placements paid different amounts
+  is an inference from page-cache state, not an isolated measurement.
+
+  `RUNNER_MOE_HOT_PROF=1` prints where each mixed layer's time goes.
 
   The identity gates (`tests/test_moe_hot.py`):
   - A layer with every expert listed gives `--cpu-moe 0`'s bytes.

@@ -3825,13 +3825,22 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         return 1;
     }
     int one = 1;
+#ifdef _WIN32
+    // Not SO_REUSEADDR: on Windows that lets a second process bind a port in
+    // use. Both then listen, the second gets no request, and when the first
+    // goes its clients are reset. Exclusive also keeps another process from
+    // taking this port over; a restart straight after serving still binds.
+    setsockopt(lfd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&one, sizeof(one));
+#else
     setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof(one));
+#endif
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = htons((uint16_t)port);
     if (bind(lfd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        fprintf(stderr, "error: cannot bind 127.0.0.1:%d (%s)\n", port, sock_errstr());
+        fprintf(stderr, "error: cannot bind 127.0.0.1:%d: is another server on this port? "
+                "(%s)\n", port, sock_errstr());
         sock_close(lfd);
         return 1;
     }
