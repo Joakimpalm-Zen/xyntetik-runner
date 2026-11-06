@@ -11,6 +11,7 @@ import urllib.request
 
 import pytest
 
+from _errors import TransportError
 from harness import RunnerServer, find_runner, free_port
 
 
@@ -552,7 +553,9 @@ def _fill_pipe(w):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signal contract")
-@pytest.mark.parametrize("shape", ["step-that-does-not-end", "swap-set-unload", "log-still-read"])
+@pytest.mark.parametrize("shape", ["step-that-does-not-end", "swap-set-unload",
+                                  "log-still-read", "log-read-late-timer",
+                                  "default-stop-budget", "accept-path-unload"])
 def test_drain_hard_bound_holds_when_nobody_reads_the_log(shape):
     """The hard bound is the last word on a stop, so nothing it waits on may
     be able to wait forever. The 2026-10-16 review: with the server's output
@@ -562,10 +565,19 @@ def test_drain_hard_bound_holds_when_nobody_reads_the_log(shape):
     "swap: unloading" after the bound had stopped watching. Both must exit
     at the bound, with 128 plus the signal. With the pipe still read, the
     watchdog's note still goes out."""
+    # The public ten-second stop contract is the absolute anchor. Shortened
+    # bounds alone missed the diagnostic's extra 200 ms after that deadline.
+    default_budget = shape == "default-stop-budget"
+    log_read = shape in ("log-still-read", "log-read-late-timer")
     env = {"RUNNER_TEST_DRAIN_GRACE_MS": "200", "RUNNER_TEST_DRAIN_HARD_MS": "500"}
+    if shape == "log-read-late-timer":
+        # the lateness measured on a shared macOS runner, which cost the note
+        env["RUNNER_TEST_DRAIN_LATE_MS"] = "155"
+    if default_budget:
+        env.pop("RUNNER_TEST_DRAIN_HARD_MS")
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     model = os.environ.get("RUNNER_TEST_MODEL", os.path.join(root, "test.gguf"))
-    swap = shape == "swap-set-unload"
+    swap = shape in ("swap-set-unload", "default-stop-budget", "accept-path-unload")
     if not swap:
         env["RUNNER_TEST_STEP_DELAY_MS"] = "20000"
     proc, port, r, w = _serve_on_a_pipe("a=%s,b=%s" % (model, model) if swap else model,
@@ -590,20 +602,37 @@ def test_drain_hard_bound_holds_when_nobody_reads_the_log(shape):
                          b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
             time.sleep(0.6)                  # the step is under way
         _drain_pipe(r)
-        if shape != "log-still-read":
+        if not log_read:
             _fill_pipe(w)
+        if shape == "accept-path-unload":
+            # /unload is handled on the accept thread. Its unload log blocks
+            # on the full pipe, before that thread can enter shutdown at all.
+            conn = socket.create_connection(("127.0.0.1", port), timeout=2)
+            conn.sendall(b"POST /unload HTTP/1.1\r\nHost: localhost\r\n"
+                         b"Content-Length: 0\r\n\r\n")
+            conn.settimeout(0.3)
+            with pytest.raises(socket.timeout):
+                conn.recv(1)
         t0 = time.monotonic()
         proc.send_signal(signal.SIGTERM)
         try:
-            rc = proc.wait(timeout=10)
+            rc = proc.wait(timeout=10 if default_budget else 3)
         except subprocess.TimeoutExpired:
-            pytest.fail("%s: still running %.1f s after SIGTERM with a 0.5 s hard bound"
+            pytest.fail("%s: still running %.1f s after SIGTERM"
                         % (shape, time.monotonic() - t0))
         took = time.monotonic() - t0
-        assert rc == 128 + signal.SIGTERM, (shape, rc)
-        assert took < 3, (shape, took)
-        if shape == "log-still-read":
-            assert b"exiting without waiting" in _drain_pipe(r)
+        # Delivery to the accept thread can interrupt its blocked write and
+        # let /unload finish cleanly; delivery elsewhere needs the watchdog.
+        expected = (0, 128 + signal.SIGTERM) if shape == "accept-path-unload" else (128 + signal.SIGTERM,)
+        assert rc in expected, (shape, rc)
+        # 9.9, not 10: the contract is ten seconds on any machine, so the exit has
+        # to aim well inside it. It lands near 9.5 s; a shared macOS runner stalled
+        # 9.95 s past 10.0 (a 10 ms sleep there overshoots by up to 90 ms).
+        assert took < (9.9 if default_budget else 3), (shape, took)
+        if log_read:
+            note = _drain_pipe(r)
+            assert b"exiting without waiting" in note
+            assert b"slot drain/join" in note
     finally:
         if conn is not None:
             conn.close()
@@ -921,3 +950,14 @@ def test_keep_alive_refuses_when_it_cannot_be_honored():
         assert after["resident"] == before["resident"], (before, after)
         # the normal case -- no keep_alive field -- is untouched and still serves
         assert _chat(srv.base_url)["choices"]
+
+
+def test_a_failure_shows_what_the_server_said_with_no_log_path(tmp_path):
+    # Most tests pass no log path, and a failed stop in one used to report
+    # "<no log>": the stderr that would name the cause had gone to DEVNULL.
+    stand_in = tmp_path / "runner.py"
+    stand_in.write_text("import sys\nsys.stderr.write('the words that name the cause\\n')\nsys.exit(1)\n",
+                        encoding="utf-8")
+    with pytest.raises(TransportError) as failed:
+        RunnerServer([sys.executable, str(stand_in)], "model.gguf").start()
+    assert "the words that name the cause" in str(failed.value)

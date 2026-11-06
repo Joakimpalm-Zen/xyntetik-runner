@@ -14,14 +14,21 @@ queue once for both. Writes
 
 with the home directory written as ~/ in both. Exit 0 only when both pass;
 the first nonzero exit of the two otherwise, after both have run.
+
+The NVFP4 prefill read is the operator's, on the same binary: it needs its
+own model file. After a pass this script prints that read's prompt,
+tests/fixtures/nvfp4-prefill-prompt.txt, with the sha256 the read's report
+records (docs/release-checklist.md, step 4).
 """
 import argparse
 import datetime
+import hashlib
 import os
 import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+NVFP4_PROMPT = "tests/fixtures/nvfp4-prefill-prompt.txt"
 
 
 def redact_home(path):
@@ -32,6 +39,15 @@ def redact_home(path):
         text = text.replace(form, "~")
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
+
+
+def nvfp4_read():
+    """The read's instruction, hashing the checkout's own copy of the prompt."""
+    with open(os.path.join(ROOT, NVFP4_PROMPT), "rb") as f:
+        sha = hashlib.sha256(f.read()).hexdigest()
+    return (f"release-cuda-gate: next, the NVFP4 prefill read (docs/release-checklist.md, step 4): "
+            f"-f {NVFP4_PROMPT} -n 32 --temp 0 -c 4096, by default and with RUNNER_CUDA_TC_NVFP4=0; "
+            f"record the prompt's sha256 in the report: {sha}")
 
 
 def main():
@@ -60,6 +76,8 @@ def main():
         if rc and not first_bad:
             first_bad = rc
     print("release-cuda-gate: " + ("both passed" if not first_bad else "do not release"))
+    if not first_bad:
+        print(nvfp4_read())
     return first_bad
 
 

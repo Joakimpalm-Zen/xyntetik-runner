@@ -182,7 +182,7 @@ static bool write_self(void) {
     return ok;
 }
 
-// A crashed process leaves its record, and one killed between the write and
+// An exited process leaves its record, and one killed between the write and
 // the rename leaves `<pid>.json.tmp`. Only a reader swept them, and the only
 // reader in this binary is the tray: a machine that never ran it kept every
 // record of every dead process. Each registering process now sweeps first.

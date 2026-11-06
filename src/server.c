@@ -1133,9 +1133,27 @@ static const char *session_unsupported(const model_t *m) {
     return NULL;
 }
 
+// What session_answer built under the device turn, for the caller to write
+// after giving it back: a client that stops reading must not hold the turn.
+typedef struct {
+    const char *why;   // the image failed: a 500 saying so
+    sbuf body;         // otherwise the answer; body.failed is out of memory
+} session_reply;
+
+static void session_reply_send(sock_t fd, session_reply *a) {
+    if (a->why)
+        send_error_detail(fd, 500, a->why, NULL, "session_image_failed");
+    else if (a->body.failed)
+        send_error(fd, 500, "out of memory");
+    else
+        send_response(fd, 200, "application/json", a->body.s, a->body.n);
+    free(a->body.s);
+    a->body = (sbuf){0};
+}
+
 // The generation from here: run to the stop point or the end, image a
-// generation that is still live at a stop point, answer.
-static void session_answer(slot_t *s, sock_t fd, float *logits, int n_prompt,
+// generation that is still live at a stop point, and build the answer.
+static void session_answer(slot_t *s, session_reply *out, float *logits, int n_prompt,
                            int max_new, int stop_at, bool ignore_eos,
                            const char *parent, bool forked) {
     engine *e = &s->e;
@@ -1181,7 +1199,7 @@ static void session_answer(slot_t *s, sock_t fd, float *logits, int n_prompt,
     double secs = now_s() - t0;
     if (why) {
         free(text.s);
-        send_error_detail(fd, 500, why, NULL, "session_image_failed");
+        out->why = why;
         return;
     }
     sbuf r = {0};
@@ -1196,9 +1214,8 @@ static void session_answer(slot_t *s, sock_t fd, float *logits, int n_prompt,
            tokens_total, generated, max_new,
            suspended ? "suspended" : hit_stop ? "stop" : "length", secs);
     free(text.s);
-    if (r.failed) { free(r.s); send_error(fd, 500, "out of memory"); return; }
-    send_response(fd, 200, "application/json", r.s, r.n);
-    free(r.s);
+    out->body = r;
+    if (r.failed) return;
     fprintf(stderr, "[slot %d] session%s%s: %d tokens, %d of %d generated%s\n",
             s->id, parent ? " resume " : " ", parent ? parent : "", tokens_total,
             generated, max_new, id[0] ? ", imaged" : "");
@@ -1324,9 +1341,11 @@ static void handle_session_start(slot_t *s, sock_t fd, jv *req) {
         return;
     }
     engine_gen_begin(e, max_new);
-    session_answer(s, fd, lg, n, max_new, stop_at, ignore_eos, NULL, false);
+    session_reply a = {0};
+    session_answer(s, &a, lg, n, max_new, stop_at, ignore_eos, NULL, false);
     e->ignore_eos = false;
     sched_prefill_end();
+    session_reply_send(fd, &a);
 }
 
 static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
@@ -1421,10 +1440,12 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
         return;
     }
     memcpy(lg, img.logits, sizeof(float) * (size_t)s->m->n_vocab);
-    session_answer(s, fd, lg, sm->n_prompt, sm->max_new, stop_at,
+    session_reply a = {0};
+    session_answer(s, &a, lg, sm->n_prompt, sm->max_new, stop_at,
                    sm->ignore_eos, id, fork);
     e->ignore_eos = false;
     sched_prefill_end();
+    session_reply_send(fd, &a);
     free(lg);
     session_image_free(&img);
 }
@@ -2803,7 +2824,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
             atomic_fetch_add(&SV.total_requests, 1);
             bool ok = true;
             int sw = SV.n_reg > 0
-                ? swap_to_expect(jv_str(jv_get(req, "model"), NULL), &expect)
+                ? swap_to_expect(jv_str(jv_get(req, "model"), NULL), &expect, fd)
                 : single_model_expect(&expect);
             if (sw == SWAP_EXPECT_MISMATCH || sw == SWAP_EXPECT_UNKNOWN) {
                 // R10.12.2: say what IS resident, so the client can decide
@@ -3200,8 +3221,8 @@ static bool stop_was_requested(void) { return win_stop_requested != 0; }
 // with fprintf, so a full stderr pipe defeated it; the first fix then let it
 // watch until the process ended, and a cleanly stopped server's watchdog
 // exited the process at its old deadline, during the next server's life.
-static double drain_grace_s = 2.0, drain_hard_s = 10.0;
-static atomic_int drain_joined;   // the slots are joined: what is left is teardown
+static double drain_grace_s = 2.0, drain_hard_s = 10.0, drain_late_s = 0;
+static _Atomic(const char *) drain_stage;   // static strings, safe for the watchdog to read
 #define DRAIN_FIRING UINT_MAX     // drain_owner once a watchdog has claimed the exit
 static atomic_uint drain_owner, drain_runs;
 
@@ -3212,19 +3233,23 @@ double server_drain_deadline(void) {
 
 // The test hooks shorten both bounds (RUNNER_TEST_DRAIN_GRACE_MS,
 // RUNNER_TEST_DRAIN_HARD_MS), the way RUNNER_TEST_STEP_DELAY_MS slows a step.
+// RUNNER_TEST_DRAIN_LATE_MS wakes the watchdog that much late, as a shared
+// runner's timers do: nothing else makes that happen on demand.
 static void drain_bounds_init(void) {
     const char *g = getenv("RUNNER_TEST_DRAIN_GRACE_MS");
     const char *h = getenv("RUNNER_TEST_DRAIN_HARD_MS");
     drain_grace_s = g && *g ? atof(g) / 1000.0 : 2.0;
     drain_hard_s = h && *h ? atof(h) / 1000.0 : 10.0;
+    const char *l = getenv("RUNNER_TEST_DRAIN_LATE_MS");
+    drain_late_s = l && *l ? atof(l) / 1000.0 : 0;
     atomic_store(&stop_at_us, 0);
-    atomic_store(&drain_joined, 0);
+    atomic_store(&drain_stage, "admission");
 }
 
 // The watchdog's last line, written on a thread of its own with write(2).
 // stderr may be a full pipe, or another thread may be parked inside fprintf
 // on it holding the stream's lock; through stdio, either parks the watchdog
-// with it. The watchdog waits 200 ms for the note and exits regardless.
+// with it. The note and its wait must fit INSIDE the hard stop budget.
 static char drain_note_text[160];
 static atomic_int drain_note_sent;
 
@@ -3249,27 +3274,50 @@ static void *drain_note(void *arg) {
 // arg: the number of the server_run whose stop this watchdog bounds
 static void *drain_watchdog(void *arg) {
     unsigned me = (unsigned)(uintptr_t)arg;
-    long long t = atomic_load(&stop_at_us);
-    double hard = drain_hard_s, until = (t ? t / 1e6 : plat_now()) + hard;
+    double hard = drain_hard_s;
+    // Armed before serving: an accept-path handler, a full queue, or the
+    // rejection of queued clients can block before the worker joins begin.
+    long long t;
+    while (!(t = atomic_load(&stop_at_us))) {
+        if (atomic_load(&drain_owner) != me) return NULL;
+        // This loop runs for the server's whole life, so it wakes rarely. The
+        // deadline is absolute: a late wake costs the budget nothing.
+        plat_sleep_ms(hard < 1 ? 10 : 100);
+    }
+    // The diagnostic and the exit fit inside the bound, with room for timers that
+    // run late, whatever the budget. On a shared macOS runner a 10 ms sleep overshot
+    // by 26 ms at the median and 90 ms at worst, and the note started 154 ms late,
+    // so a 50 ms margin ended 2 stops of 8 past ten seconds and lost the note on a
+    // short budget. The note gets the reserve and the exit is due halfway through
+    // it: 9 s and 9.5 s at the real bound. A budget too short for 0.4 s reserves
+    // half of itself, leaving the rest for the drain.
+    double reserve = hard >= 2 ? 1.0 : hard / 2 < 0.4 ? hard / 2 : 0.4;
+    double margin = reserve / 2;
+    double until = t / 1e6 + hard, note_at = until - reserve;
     for (;;) {
         if (atomic_load(&drain_owner) != me) return NULL;   // that run shut down in time
-        double left = until - plat_now();
+        double left = note_at - plat_now();
         if (left <= 0) break;
         plat_sleep_ms(left > 0.1 ? 100 : (int)(left * 1000) + 1);
     }
+    if (drain_late_s > 0) plat_sleep_ms((int)(drain_late_s * 1000));
     // claim the exit, unless the run released its bound at this very moment
     unsigned owner = me;
     if (!atomic_compare_exchange_strong(&drain_owner, &owner, DRAIN_FIRING)) return NULL;
     snprintf(drain_note_text, sizeof drain_note_text,
-             atomic_load(&drain_joined)
-                 ? "shutdown: still tearing down %g s after the stop; exiting without waiting\n"
-                 : "shutdown: a request was still inside one step %g s after the stop; "
-                   "exiting without waiting for it\n",
-             hard);
+             "shutdown: %s still active within the %g s stop budget; exiting without waiting\n",
+             atomic_load(&drain_stage), hard);
     pthread_t th;
     if (pthread_create(&th, NULL, drain_note, NULL) == 0) {
         pthread_detach(th);
-        for (int i = 0; i < 20 && !atomic_load(&drain_note_sent); i++) plat_sleep_ms(10);
+        // A note that started late still gets a turn, or the exit would beat the
+        // thread to the write; the bound caps that. A blocked note earns no more.
+        double now = plat_now(), stop = until - margin;
+        if (stop < now + 0.05) stop = now + 0.05 < until ? now + 0.05 : until;
+        while (!atomic_load(&drain_note_sent)) {
+            plat_sleep_ms(10);
+            if (plat_now() + 0.01 >= stop) break;
+        }
     }
     _exit(128 + atomic_load(&stop_sig));
 }
@@ -3376,6 +3424,11 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // half is filed; nothing needs it today, and it costs threading a context
     // through six translation units.
     memset(&SV, 0, sizeof(SV));
+    if (!plat_random(SV.id_seed, sizeof SV.id_seed)) {
+        fprintf(stderr, "error: the OS random generator is unavailable, and a "
+                "response id must not be guessable\n");
+        return 1;
+    }
 #ifndef _WIN32
     atomic_store(&stop_requested, 0);
     atomic_store(&listener_fd, -1);
@@ -3809,6 +3862,21 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         }
     }
 
+    // Watch from admission through teardown, including output and queued
+    // client cleanup. Starting after queue_shutdown left those waits unbound.
+    unsigned drain_run = atomic_fetch_add(&drain_runs, 1) + 1;
+    if (drain_run == 0 || drain_run == DRAIN_FIRING)
+        drain_run = atomic_fetch_add(&drain_runs, 2) + 2;
+    atomic_store(&drain_owner, drain_run);
+    atomic_store(&drain_note_sent, 0);
+    pthread_t wd;
+    if (pthread_create(&wd, NULL, drain_watchdog, (void *)(uintptr_t)drain_run) != 0) {
+        // cannot serve with an unenforceable stop contract
+        fprintf(stderr, "server: cannot start the stop watchdog thread\n");
+        _exit(1);
+    }
+    pthread_detach(wd);
+
     if (SV.n_reg > 0 && !SV.single)
         fprintf(stderr,
                 "server listening on http://127.0.0.1:%d — %d models, swap on demand"
@@ -3873,28 +3941,22 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         sock_close(lfd);
     }
 #endif
-    queue_shutdown();
-    // Bound the drain (drain_grace_s, drain_hard_s above). Detached: this
-    // run's last act releases its bound and the watchdog returns. A loop
-    // that ended without a stop request (the listener failed) drains by the
-    // same bounds.
+    // A loop that ended without a stop request (the listener failed) drains
+    // by the same bounds. The watchdog is already watching before this work.
     if (!atomic_load(&stop_at_us)) atomic_store(&stop_at_us, (long long)(plat_now() * 1e6));
-    unsigned drain_run = atomic_fetch_add(&drain_runs, 1) + 1;
-    if (drain_run == 0 || drain_run == DRAIN_FIRING)   // the counter wrapped
-        drain_run = atomic_fetch_add(&drain_runs, 2) + 2;
-    atomic_store(&drain_owner, drain_run);
-    pthread_t wd;
-    if (pthread_create(&wd, NULL, drain_watchdog, (void *)(uintptr_t)drain_run) == 0)
-        pthread_detach(wd);
+    queue_shutdown();
     // A worker parked in a --wait-for-vram queue would pin the joins below
     // for up to the full wait; the load gives up at its next poll instead.
     atomic_store(&SV.load_cancel, 1);
+    atomic_store(&drain_stage, "slot drain/join");
     for (int i = 0; i < parallel; i++) pthread_join(SV.slots[i].th, NULL);
-    atomic_store(&drain_joined, 1);
+    atomic_store(&drain_stage, "scheduler join");
     sched_shutdown();
     atomic_store(&SV.shutdown, true);
+    atomic_store(&drain_stage, "reaper join");
     if (SV.reaper_started) pthread_join(SV.reaper_th, NULL);
 
+    atomic_store(&drain_stage, "model unload");
     for (int i = 0; i < parallel; i++) {
         free(SV.slots[i].e.hist);
         free(SV.slots[i].hint_buf);
@@ -3915,6 +3977,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             if (i > 0) free(SV.slots[i].m);
         }
     }
+    atomic_store(&drain_stage, "cleanup");
     prefix_cache_clear();
     // the slots' models are gone; nothing borrows an adapter any more
     for (int i = 0; i < SV.n_adapters; i++) model_lora_set_free(SV.adapters[i].set);

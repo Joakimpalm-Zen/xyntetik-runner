@@ -553,6 +553,7 @@
    "note": "MiniCPM-V 4.7's chat_template.jinja (openbmb, 98e79ba9; the GGUF repository's thinking/ files): Qwen 3.5-0.8B's with a thought block on every assistant turn"
   },
   "minicpmv-fixed": {
+   "artifact": "minicpm-v-4.7-35b-a3b-q8_0",
    "tool_protocol": {
     "status": "NOT RUN",
     "note": "as minicpmv; the root files' template (template-conformance minicpmv47-fixed, 2026-11-06)"
@@ -1020,7 +1021,8 @@
    "artifacts": [
     "qwen3.6-35b-a3b-q4_k_m",
     "ornith-1.5-35b-a3b-q8_0",
-    "empero-qwen3.8-35b-a3b-distill-q6_k"
+    "empero-qwen3.8-35b-a3b-distill-q6_k",
+    "minicpm-v-4.7-35b-a3b-q8_0"
    ],
    "tool_protocol": {
     "status": "NOT RUN"

@@ -262,3 +262,22 @@ def test_a_receipt_names_the_hub_source_not_the_cache(runner_bin, hub, tmp_path)
     assert r.returncode == 0, r.stderr
     m = json.loads(rec.read_text())["model"]
     assert m["source"] == "hf:fake/repo@0123456789abcdef0123456789abcdef01234567"
+
+
+def test_a_multipart_file_in_a_folder_keeps_its_folder(runner_bin, hub):
+    """docs/model-tiers.json records such a file's `path`; every part must be
+    asked for at that path, as the Hub lists it."""
+    folder = hub["dir"] / "IQ3_S"
+    folder.mkdir()
+    siblings = []
+    for k in (1, 2):
+        name = f"IQ3_S/model-IQ3_S-0000{k}-of-00002.gguf"
+        (hub["dir"] / name).write_bytes(b"part %d" % k)
+        siblings.append({"rfilename": name, "size": 6,
+                         "lfs": {"sha256": sha256(hub["dir"] / name), "size": 6}})
+    (hub["dir"] / "files.json").write_text(json.dumps({"siblings": siblings}))
+    r = run(runner_bin, hub["env"], "--pull", "fake/repo:IQ3_S")
+    assert r.returncode == 0, r.stderr
+    assert [c[-1] for c in resolve_calls(hub["log"])] == [
+        f"https://huggingface.co/fake/repo/resolve/main/IQ3_S/model-IQ3_S-0000{k}-of-00002.gguf"
+        for k in (1, 2)]

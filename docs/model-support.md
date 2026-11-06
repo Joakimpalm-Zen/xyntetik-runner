@@ -186,7 +186,9 @@ overwritten in place.
 
 The checks: `scripts/model-tiers.py --check` (the roster's structure),
 `--gate` (the release gate's question; `--today` fixes the day the printed
-ages count from) and `--docs-check` (this page against the roster).
+ages count from), `--docs-check` (this page against the roster) and
+`--check-hub` (every file's resolve URL, built from its record, must answer 200
+with the recorded sha256 and size; it needs the network, so it is run by hand).
 
 <a id="cards-and-site"></a>
 ## The overview, the README, the cards and the site
@@ -601,6 +603,17 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>MiniCPM-V 4.7</b>, 1 model: CPU ✅ · CUDA ✅ · Metal n/a · Train n/a</summary>
+<p><b>MiniCPM-V-4.7-35B-A3B (openbmb)</b>, text path only</p>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td><a href="#minicpm-v-4.7-35b-a3b-q8_0"><code>MiniCPM-V-4_7-35B-A3B-Q8_0.gguf</code></a></td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>Granite-4.2-30B</b>, 1 model: CPU 🟨 1 of 2 · CUDA 🟨 1 of 2 · Metal - · Train ✅</summary>
 <p><b>Granite-4.2-30B</b></p>
 <table>
@@ -827,7 +840,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): MiniCPM-V-4.7-35B-A3B (text path only), Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
+**Upcoming** (planned, not supported yet): Nemotron 3.5 Bolt-74B-A9B (text path only), Nemotron 3.5 Super VL-120B-A12B (text path only), Kolibri-1 (Aleph Alpha, 78B).
 
 <a id="tier1"></a>
 ## Tier 1, actively validated
@@ -895,7 +908,7 @@ The NextN/MTP predictor head for Qwen3.8-27B, loaded with --draft mtp:FILE besid
 
 Experimental: the qwen4exp architecture is admitted with its publisher float32 comparison still unmeasured, and no gate has run on this 4-part file; the admission evidence is on the upstream 2-part trunk.
 
-- **File:** `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf` (sha256 `522632bbb6f2c353621762be5bd48b270b1ff9fe60a9630bd47d5ef097aa0fa2`, 26,481,462,400 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00002-of-00004.gguf` (sha256 `f82cc8f151e15b73bbb84c75baf78f179df1b9b368437d7c75d8b3a7618cb8c8`, 28,347,013,600 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00003-of-00004.gguf` (sha256 `53ada4d2c3f2e189ce209520ecad0ae9649028b19e6bb9a55a021613b204e93b`, 28,800,138,432 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00004-of-00004.gguf` (sha256 `3a8c77474c82c5e81212ef3c5ef2330e75413cc60241d600fcfd87e4e2143b66`, 2,803,798,784 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) at revision `c104e6579031`).
+- **File:** `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00001-of-00004.gguf` (sha256 `522632bbb6f2c353621762be5bd48b270b1ff9fe60a9630bd47d5ef097aa0fa2`, 26,481,462,400 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) in `trunk-with-head/` at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00002-of-00004.gguf` (sha256 `f82cc8f151e15b73bbb84c75baf78f179df1b9b368437d7c75d8b3a7618cb8c8`, 28,347,013,600 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) in `trunk-with-head/` at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00003-of-00004.gguf` (sha256 `53ada4d2c3f2e189ce209520ecad0ae9649028b19e6bb9a55a021613b204e93b`, 28,800,138,432 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) in `trunk-with-head/` at revision `c104e6579031`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-with-MTP-head-00004-of-00004.gguf` (sha256 `3a8c77474c82c5e81212ef3c5ef2330e75413cc60241d600fcfd87e4e2143b66`, 2,803,798,784 bytes, from [Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3.8-Flash-Next-MTP-GGUF) in `trunk-with-head/` at revision `c104e6579031`).
 - **Upstream checkpoint:** Qwen/Qwen3.8-Flash-Next.
 - **Quantization:** IQ3_S codebook mix with the MTP head (4 parts).
 - **Licence:** `qwen-community-1.0`, as the Qwen/Qwen3.8-Flash-Next model card states it.
@@ -1243,7 +1256,7 @@ Reads 0.41 mean KLD against Qwen's float32 reference, 8x the bar; a learned deri
 
 Experimental: ISTA-DASLab's IQ3_S trunk of Qwen3.8-Flash-Next, the file the published MTP head was built for and the one the qwen4exp admission evidence measured; maintained on report, and run on every release only as that head's trunk in its composed smoke.
 
-- **File:** `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf` (sha256 `4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3`, 54,817,524,224 bytes, from [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) at revision `ed59f92082b1`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf` (sha256 `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113`, 28,800,138,432 bytes, from [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) at revision `ed59f92082b1`).
+- **File:** `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf` (sha256 `4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3`, 54,817,524,224 bytes, from [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) in `IQ3_S/` at revision `ed59f92082b1`); `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf` (sha256 `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113`, 28,800,138,432 bytes, from [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) in `IQ3_S/` at revision `ed59f92082b1`).
 - **Licence:** `qwen-community-1.0`, as the Qwen/Qwen3.8-Flash-Next model card states it.
 - **Tier history:** Tier 2, maintained on report from 2026-10-22 ([log](#transition-log)).
 
@@ -1605,7 +1618,7 @@ The base the published tool-use adapter was trained through and runs on, named b
 
 Qwen3-4B with the tool-use LoRA merged and written at Q8_0, text path: a qwen3 client loop passes on CUDA; it is an adaptation demonstration, not a general improvement over Qwen3-4B.
 
-- **File:** `merged-Q8_0.gguf` (sha256 `b9d21e525d91b20a1fc3437cf34c7ecfa03afda722d960b95bcfd113f2b7ea02`, 4,280,405,440 bytes, from [Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M) at revision `5902b309ee51`).
+- **File:** `merged-Q8_0.gguf` (sha256 `b9d21e525d91b20a1fc3437cf34c7ecfa03afda722d960b95bcfd113f2b7ea02`, 4,280,405,440 bytes, from [Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M](https://huggingface.co/Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M) in `merged/` at revision `5902b309ee51`).
 - **Upstream checkpoint:** Qwen/Qwen3-4B.
 - **Quantization:** Q8_0.
 - **Licence:** `apache-2.0`, as the Qwen/Qwen3-4B model card states it.
@@ -1865,6 +1878,33 @@ Text path only (the vision projector is not loaded): ornith-ai's own Q8_0 of Orn
 - **LoRA training:** no: MoE on a Gated DeltaNet model (runner 1.13.0, 2026-11-05).
 - **LoRA adapter serving:** supported (runner 1.13.0, 2026-11-05).
 - **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-05 ([log](#transition-log)).
+
+### MiniCPM-V 4.7
+
+#### Text path only: MiniCPM-V-4.7-35B-A3B (openbmb)
+
+<a id="minicpm-v-4.7-35b-a3b-q8_0"></a>
+##### `MiniCPM-V-4_7-35B-A3B-Q8_0.gguf`
+
+Text path only (the vision projector is not loaded): openbmb's own Q8_0 of MiniCPM-V-4.7-35B-A3B, the GGUF repository's root file (thinking fixed off, openbmb's recommended default), which passes the fidelity bar: against openbmb's BF16 parent's language model computed in float32 it reads 0.0088 mean KLD and 100.0% margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU). The publisher's Q4_K_M misses (0.0594 and 95.4%).
+
+- **File:** `MiniCPM-V-4_7-35B-A3B-Q8_0.gguf` (sha256 `851fdec9d87d689342c3df04e509de4565ac3a96a226f06e7b12af651311b5ef`, 36,902,368,928 bytes, from [openbmb/MiniCPM-V-4.7-35B-A3B-gguf](https://huggingface.co/openbmb/MiniCPM-V-4.7-35B-A3B-gguf) at revision `cf943fbe32f8`).
+- **Upstream checkpoint:** openbmb/MiniCPM-V-4.7-35B-A3B at revision `98e79ba972b5`.
+- **Quantization:** Q8_0 (openbmb).
+- **Licence:** `apache-2.0`, as the openbmb/MiniCPM-V-4.7-35B-A3B model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** openbmb's files against the BF16 parent at 98e79ba9 computed in float32 on the CPU (transformers 5.16.1, Qwen3_5MoeForCausalLM on the checkpoint's language-model weights through its own text_config, as transformers has no class for minicpmv4_7; float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files): Q8_0 0.0088 mean KLD / 96.0% top-1 / 100.0% margin-qualified (median 0.0027); Q4_K_M 0.0594 / 88.3% / 95.4%. Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against openbmb's tokenizer.json, which uses the qwen2 split (R4.27.5); template conformance against the file's own template under minicpmv-fixed (R4.27.6), the reasoning-history case accounted as a token-only deviation. Record: docs/compat-reports/minicpm-v-4.7-35b-a3b-2026-11-06/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU and CUDA for this file (36.9 GB: on a CUDA MIG slice, 1g.24gb, sm_120, the fitted split places 26 of 40 blocks on the device); Metal runs qwen35moe on toy models only. Text only: the vision tower and merger are not loaded, and image or video content is refused. The root files' template fixes thinking off (openbmb: not trained as a reasoning model), so enable_thinking has no effect on this file, as in llama.cpp; the thinking/ files carry the repository's template (minicpmv) and are not this row. The fidelity reference is transformers' Qwen3.5-MoE text model on the checkpoint's language-model weights: MiniCPM-V's own modeling code (not in transformers 5.16.1, not in the repository) was not run. The tokenizer reads with the qwen2 split by R4.27.5's rule, keyed on general.name 35a3_hf_v47_0923; a requant that rewrites it reads the qwen35 split. The publisher's Q4_K_M (0.0594) misses the bar. Licence: apache-2.0.
+- **Still missing:** A Metal run on a Mac that holds the file (36.9 GB), and the Windows CUDA host's cells; the thinking/ files (another template, minicpmv); the vision path; task quality and the tool protocol on the real checkpoint.
+- **Evidence:** [docs/compat-reports/minicpm-v-4.7-35b-a3b-2026-11-06/README.md](compat-reports/minicpm-v-4.7-35b-a3b-2026-11-06/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.14.0 on 2026-11-06.
+- **CPU:** ✅ v1.14.0 2026-11-06 on linux-x86_64-cuda (borrowed hardware) at commit `eb145de05e82`, output sha256 `6041f75317b6c6c9`, [pin](../tests/compatibility/tier-smoke/minicpm-v-4.7-35b-a3b-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.14.0 2026-11-06 on linux-x86_64-cuda (borrowed hardware) at commit `eb145de05e82`, output sha256 `6041f75317b6c6c9`, [pin](../tests/compatibility/tier-smoke/minicpm-v-4.7-35b-a3b-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Not measured: Metal runs qwen35moe on toy models (make test-metal-qwen35moe, to the CPU's logits at 1e-5), but this file (36.9 GB) has not been run on a Mac that holds it.
+- **LoRA training:** no: MoE on a Gated DeltaNet model (runner 1.14.0, 2026-11-06).
+- **LoRA adapter serving:** supported (runner 1.14.0, 2026-11-06).
+- **Tier history:** Upcoming, planned admission from 2026-10-22; Tier 2, maintained on report from 2026-11-06 ([log](#transition-log)).
 
 ### Granite-4.2-30B
 
@@ -2752,17 +2792,6 @@ No members.
 <a id="upcoming"></a>
 ## Upcoming, planned admission
 
-### Text path only: MiniCPM-V-4.7-35B-A3B
-
-<a id="minicpm-v-4.7-35b-a3b"></a>
-#### MiniCPM-V-4.7-35B-A3B
-
-Text path only: the vision projector is not loaded. The qwen35moe architecture runs on the CPU (since 1.10.0); its tokenizer reads as the publisher's (R4.27.5), its template is unchecked and no gate has run.
-
-- **Numerical anchor:** anchor: agreement with another engine, not fidelity.
-- **Missing for Tier 1:** Its chat template is MiniCPM-V's own (thinking off by default, an empty think block in history), which no Runner renderer matches yet. Then the gate list; the CUDA cells on its file. The tokenizer is no longer a blocker: the publisher's GGUF (openbmb/MiniCPM-V-4.7-35B-A3B-gguf at cf943fbe) labels its pre-tokenizer qwen35 while openbmb's own tokenizer.json uses the Qwen2-style regex without \p{M}, and since R4.27.5 Runner reads every file at cf943fbe with that split by its general.name: 0 of 721 corpus strings and 0 of 247,091 vocabulary entries against the tokenizer.json at 98e79ba9, on the Q4_K_M (before: 3 and 5,503).
-- **Tier history:** Upcoming, planned admission from 2026-10-22 ([log](#transition-log)).
-
 ### Text path only: Nemotron 3.5 Bolt-74B-A9B
 
 <a id="nemotron-3.5-bolt-74b-a9b"></a>
@@ -2853,7 +2882,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-10-22 | [Granite 4 h-series hybrid (granitehybrid)](#arch-granitehybrid) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B), `Qwen3.8-35B-A3B-Q6_K.gguf`](#empero-qwen3.8-35b-a3b-distill-q6_k) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Ornith-1.5-35B-A3B (ornith-ai), `Ornith-1.5-35B-Q8_0.gguf`](#ornith-1.5-35b-a3b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
-| 2026-10-22 | [MiniCPM-V-4.7-35B-A3B](#minicpm-v-4.7-35b-a3b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [MiniCPM-V-4.7-35B-A3B (openbmb), `MiniCPM-V-4_7-35B-A3B-Q8_0.gguf`](#minicpm-v-4.7-35b-a3b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Granite-4.2-30B, `granite-4.2-30b-Q4_K_M.gguf`](#granite-4.2-30b-q4_k_m) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Granite-4.2-30B, `granite-4.2-30b-Q8_0.gguf`](#granite-4.2-30b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Nemotron 3.5 Lightning-30B-A3B (NVIDIA), `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`](#nemotron-3.5-lightning-30b-a3b-q4_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
@@ -2948,6 +2977,7 @@ Every tier a row has held, oldest first. Last validated release is the Runner ve
 | 2026-11-05 | [Ornith-1.5-35B-A3B (ornith-ai), `Ornith-1.5-35B-Q8_0.gguf`](#ornith-1.5-35b-a3b-q8_0) | Tier 2, maintained on report | Admitted 2026-11-05 at Tier 2 with the admitting CPU cell from the lab CPU lane (R4.27.3). Maintained on report. | none recorded |
 | 2026-11-05 | [NVIDIA Nemotron 3 Nano 30B-A3B (NVIDIA), `NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf`](#nemotron-3-nano-30b-a3b-q4_k_m) | Tier 2, maintained on report | Admitted 2026-11-05 at Tier 2 with the admitting CPU cell from the lab CPU lane (R4.27.4.1). Maintained on report. | none recorded |
 | 2026-11-06 | [Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B), `Qwen3.8-35B-A3B-Q6_K.gguf`](#empero-qwen3.8-35b-a3b-distill-q6_k) | Tier 2, maintained on report | Admitted 2026-11-06 at Tier 2 with the admitting CPU and CUDA cells from the lab lanes (R4.27.1), as empero-ai's finetune of Qwen3.6-35B-A3B; the Upcoming qwen3.8-35b-a3b row it replaces named a Qwen model that Qwen has not released. Maintained on report. | none recorded |
+| 2026-11-06 | [MiniCPM-V-4.7-35B-A3B (openbmb), `MiniCPM-V-4_7-35B-A3B-Q8_0.gguf`](#minicpm-v-4.7-35b-a3b-q8_0) | Tier 2, maintained on report | Admitted 2026-11-06 at Tier 2 with the admitting CPU and CUDA cells from the lab lanes (R4.27.2), on openbmb's root Q8_0 after its tokenizer (R4.27.5) and template (R4.27.6) were read as the publisher's. Maintained on report. | none recorded |
 | 2026-11-06 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-selective-q8_0-expq5_k.gguf`](#mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k) | Tier 2, maintained on report | R4.33.4: admitted at Tier 2 on R4.33's float32 measurement of these bytes, the file the project published on 2026-11-05; the Linux CUDA host's cells are recorded as the smoke runs. | none recorded |
 
 <!-- model-tiers:rows:end -->

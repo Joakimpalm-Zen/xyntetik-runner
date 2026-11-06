@@ -1,10 +1,13 @@
 """scripts/cuda-act-probe.py and scripts/release-cuda-gate.py without a device:
 the PTX the probe loads is the one the binary embeds and holds the three
 kernels with the parameter lists the probe passes; its comparison refuses a
-NaN; the gate writes a report's home directory as ~/."""
+NaN; the gate writes a report's home directory as ~/ and names the NVFP4
+prefill read's prompt with its sha256."""
+import hashlib
 import importlib.util
 import os
 import re
+import types
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -45,6 +48,29 @@ def test_the_gate_writes_the_home_directory_as_tilde(tmp_path, monkeypatch):
     report.write_text('{"binary": "/home/someone/runner/runner", "model": "/home/someone/m.gguf"}\n')
     gate.redact_home(str(report))
     assert report.read_text() == '{"binary": "~/runner/runner", "model": "~/m.gguf"}\n'
+
+
+def test_the_nvfp4_prefill_prompt_is_a_named_fixture(monkeypatch, capsys):
+    """A read names its prompt by bytes: 1.13.0's was named by length alone and
+    its text is gone. Anchors from outside the gate: the sha256 is the one the
+    1.14.0 report recorded, and the fixture is the shortest head of the corpus
+    Qwen3.5-4B's own tokenizer.json encodes to 1,971 tokens."""
+    name = "tests/fixtures/nvfp4-prefill-prompt.txt"
+    sha = "a25ab76dfd7ba46f22a8e2c94a7ee0ad91dcf997336bc77786ae23a825136f3d"
+    with open(os.path.join(ROOT, name), "rb") as f:
+        data = f.read()
+    assert hashlib.sha256(data).hexdigest() == sha and len(data) == 7598
+    # text mode on purpose: the corpus is not -text, so a Windows checkout holds CRLF
+    with open(os.path.join(ROOT, "tests", "fixtures", "gold-corpus-2k.txt"), encoding="utf-8") as f:
+        corpus = f.read()
+    assert data.decode("utf-8") == corpus[:7555]
+    gate = load("release-cuda-gate")
+    monkeypatch.setattr(gate.subprocess, "run", lambda argv: types.SimpleNamespace(returncode=0))
+    monkeypatch.setattr("sys.argv", ["release-cuda-gate.py", "--binary", "r", "--model", "m",
+                                     "--version", "0.0.0", "--date", "2000-01-01"])
+    assert gate.main() == 0
+    out = capsys.readouterr().out
+    assert name in out and sha in out and "-f " in out and "RUNNER_CUDA_TC_NVFP4=0" in out
 
 
 def test_the_probe_writes_its_report_with_lf_on_every_host(tmp_path, monkeypatch):

@@ -1,0 +1,7 @@
+probe alone [(0.087, 0.0), (0.093, 0.0), (0.091, 0.0)]
+sizing: 200 bytes 49670 generated 1500 bytes a token 33.1 secs 10.86 -> N 12080
+session reading N 12080 probe latency 110.438 device wait 110.358 read 407934 b'HTTP/1.1 200 OK'
+session reading N 12080 probe latency 110.024 device wait 109.942 read 407934 b'HTTP/1.1 200 OK'
+session stalled N 12080 probe latency 110.011 device wait 109.93 read None None
+session stalled N 12080 probe latency 109.759 device wait 109.666 read None None
+session trickle N 12080 probe latency 109.751 device wait 109.681 read None None
