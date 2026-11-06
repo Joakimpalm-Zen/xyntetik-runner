@@ -679,7 +679,18 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
 // backend in that state would be a lie that costs a whole run. Compiling the
 // library here is the same work gpu_init does moments later and only happens
 // on the --caps path. tests/test_metal_shaders.m is the build-time gate.
+// Metal's command buffers and encoders are autoreleased, and a command buffer
+// retains what it used. Runner calls in from plain C threads, which have no
+// autorelease pool, so without one they were never drained: every load left
+// about 113 MB in the GPU driver until the process exited, invisible to RSS and
+// to currentAllocatedSize, and POST /unload reported the model gone (R6.17). So
+// every exported function here that reaches Objective-C drains its own pool, and
+// callers stay plain C. Nothing is held across a return that depends on a pool:
+// each command buffer is local or in the stack-local metal_fwd, each is waited
+// for before its function returns, and what gpu_t keeps comes from new* calls,
+// owned and released in gpu_release_state. tests/test_metal_memory.py holds this.
 bool gpu_available(char *name, int cap) {
+    @autoreleasepool {
     id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
     if (!dev) {
         fprintf(stderr, "gpu: no Metal device is available — using CPU\n");
@@ -702,6 +713,7 @@ bool gpu_available(char *name, int cap) {
     [lib release];
     [dev release];
     return true;
+    }
 }
 
 bool gpu_unified_memory(void) { return true; }
@@ -725,6 +737,7 @@ const char *gpu_shader_source_sha(void) { return k_metal_sha; }
 const char *gpu_compute_capability(void) { return NULL; }   // a CUDA notion
 
 bool gpu_max_working_set(size_t *bytes) {
+    @autoreleasepool {
     id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
     if (!dev) return false;
     uint64_t ws = dev.recommendedMaxWorkingSetSize;
@@ -732,6 +745,7 @@ bool gpu_max_working_set(size_t *bytes) {
     if (ws == 0) return false;
     if (bytes) *bytes = (size_t)ws;
     return true;
+    }
 }
 
 // UNVERIFIED — written without a macOS machine to run it on. Nobody on this
@@ -2720,6 +2734,7 @@ static void metal_publish(model_t *m, gpu_t *g, id<MTLDevice> dev, int gpu_K,
 }
 
 bool gpu_init(model_t *m) {
+    @autoreleasepool {
     // A split GGUF has one mapping per part. The weight wraps are keyed by
     // HOST ADDRESS (not file offset), so each part's mapping gets its own
     // tensor-boundary wraps and a multi-part set takes a full offload like a
@@ -2755,6 +2770,7 @@ bool gpu_init(model_t *m) {
     if (!metal_upload_constants(m, g, dev)) return false;
     metal_publish(m, g, dev, gpu_K, wlen, ws_limit);
     return true;
+    }
 }
 
 // ---------------------------------------------------------------- encoding
@@ -3493,6 +3509,7 @@ bool gpu_mvcanon(model_t *mm, const gguf_tensor *w, const float *x, float *y,
 // unadapted model, because that failure is invisible in the output and looks
 // exactly like a weak adapter.
 bool gpu_lora_bind(model_t *mm) {
+    @autoreleasepool {
     gpu_t *g = mm->gpu;
     if (!g) return false;
     if (metal_recurrent(mm)) {
@@ -3564,9 +3581,12 @@ bool gpu_lora_bind(model_t *mm) {
     fprintf(stderr, "gpu: adapter on device for %d block%s (%.1f MB)\n",
             G, G == 1 ? "" : "s", bytes / 1e6);
     return true;
+    }
 }
 void gpu_lora_unbind(model_t *mm) {
+    @autoreleasepool {
     if (mm->gpu) lora_dev_release(mm->gpu);
+    }
 }
 
 bool gpu_train_init(model_t *mm) { (void)mm; return false; }
@@ -3652,6 +3672,7 @@ void gpu_train_placement(model_t *mm, int *on_dev, size_t *dev_bytes,
 }
 
 void gpu_free(model_t *m) {
+    @autoreleasepool {
     if (!m) return;
     gpu_t *g = m->gpu_owner ? (gpu_t *)m->gpu_owner : (gpu_t *)m->gpu;
     m->gpu = NULL;
@@ -3670,6 +3691,7 @@ void gpu_free(model_t *m) {
         m->ssm_state_backend = false;
     }
     gpu_release_state(g, m->n_layer);
+    }
 }
 
 // The native prompt-batch encoder implements exactly the plain llama shape.
@@ -3730,6 +3752,7 @@ static float *metal_forward_rows(model_t *m, const int32_t *tokens, int n, int p
 
 bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                        bool want_logits, float **logits) {
+    @autoreleasepool {
     // One encoder for every n, decode included. There used to be a second,
     // per-token encoder here; keeping two implementations of the same layer
     // loop cost three defects (features silently missing behind an
@@ -3756,6 +3779,7 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
     if (m->want_hidden && !m->hyper_conn && !rows) metal_handoff_boundary(m, n);
     if (logits) *logits = want_logits ? lg : NULL;
     return true;
+    }
 }
 
 
@@ -5257,9 +5281,18 @@ float *gpu_spec_logits(model_t *mm, int row) {
 }
 
 gpu_batch *gpu_batch_create(model_t **seqs, int n) {
+    @autoreleasepool {
     gpu_t *lead = NULL;
     if (!metal_batch_eligible(seqs, n, &lead)) return NULL;
     model_t *m0 = seqs[0];
+    // The lead's scratch for every width the batch can take, now, before any
+    // request exists. Growing it per step replaced g->logits while the lead's
+    // own slot, between its prefill and its first pick, still pointed into it.
+    if (!metal_ensure_batch(lead, m0, n < MODEL_BATCH_MAX ? n : MODEL_BATCH_MAX)) {
+        fprintf(stderr, "gpu: Metal batch scratch allocation failed, using "
+                "sequential GPU forwards\n");
+        return NULL;
+    }
     gpu_batch *b = calloc(1, sizeof(gpu_batch));
     if (!b) return NULL;
     b->seqs = malloc(sizeof(model_t *) * (size_t)n);
@@ -5289,13 +5322,16 @@ gpu_batch *gpu_batch_create(model_t **seqs, int n) {
                 "(bit-identical to sequential; RUNNER_METAL_BATCH=0 disables)\n",
                 n);
     return b;
+    }
 }
 
 void gpu_batch_free(gpu_batch *b) {
+    @autoreleasepool {
     if (!b) return;
     [b->logits_n release];
     free(b->seqs);
     free(b);
+    }
 }
 
 // One weight product of the microbatch: the identity matvec, each column its
@@ -5333,6 +5369,7 @@ static const char *const mb_stage_name[MB_STAGES] =
 
 bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                       const int *pos, int n, float **out) {
+    @autoreleasepool {
     if (!b || n < 1 || n > MODEL_BATCH_MAX) return false;
     bool prof = metal_timing_on() >= 2;
     if (n < 2 && !prof) return false;   // one column is just a solo forward
@@ -5341,11 +5378,13 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     int n_embd = b->n_embd;
     int xdim   = b->xdim;
 
-    // The lead's scratch is sized by the largest n any forward has used —
-    // a slot that only ever decoded has batch_cap == 1, and writing column
-    // 1 into one-column buffers lands in whichever allocation the heap put
-    // next (found exactly that way: x's column 1 aliased xb). Grow first.
-    if (!metal_ensure_batch(g, m0, n)) return false;
+    // gpu_batch_create sized the lead's scratch. Writing column 1 into
+    // one-column buffers lands in whichever allocation the heap put next (found
+    // exactly that way: x's column 1 aliased xb), and growing here would free
+    // logits a slot still holds. So a width past the scratch is refused, which no
+    // caller can reach today, and model_batch_decode then runs the sequences one
+    // at a time: the same tokens, more slowly, and no request is dropped.
+    if (n > g->batch_cap) return false;
 
     // per-column embeds (CPU-side, exactly as the solo path does)
     size_t ers = ggml_row_size(m0->tok_embd->type, n_embd);
@@ -5512,4 +5551,5 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     for (int c = 0; c < n; c++)
         out[c] = (float *)b->logits_n.contents + (size_t)c * b->n_vocab;
     return true;
+    }
 }

@@ -74,12 +74,20 @@ static void pin_lease_mtime(const char *path, time_t stamp) {
 #endif
 }
 
-// Helper modes for tests/test_lease_interop.py, which holds this C lease
-// against the Python class it ports:
+// Helper modes for test_stop_latency.py and test_lease_interop.py, which
+// holds this C lease against the Python class it ports:
 //   test-instances lease-identity PID   print PID's start identity
+//   test-instances list                 print live pids through the public list
 //   test-instances lease-hold PATH      acquire; print "held" or "refused PID";
 //                                       when held, keep it until stdin closes
 static int lease_helper(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "list")) {
+        int n = 0;
+        instance_rec *records = instances_list(&n);
+        for (int i = 0; i < n; i++) printf("%ld\n", records[i].pid);
+        instances_list_free(records, n);
+        return 0;
+    }
     if (argc == 3 && !strcmp(argv[1], "lease-identity")) {
         char id[96];
         if (!runner_lease_start_identity(atol(argv[2]), id, sizeof id)) return 1;
@@ -99,7 +107,7 @@ static int lease_helper(int argc, char **argv) {
         runner_lease_release(&l);
         return 0;
     }
-    fprintf(stderr, "usage: test-instances [lease-identity PID | lease-hold PATH]\n");
+    fprintf(stderr, "usage: test-instances [list | lease-identity PID | lease-hold PATH]\n");
     return 2;
 }
 
