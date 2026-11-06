@@ -16,6 +16,91 @@ Current release and unreleased changes. Compatibility follows the
   - **Limits:** CUDA only: CPU and Metal have no queue to wait in. A queued client that sent its request and then left
     counts as present, because its close cannot be seen behind the unread request, so the wait goes on as it did. A
     load past the queue is not interrupted. A swap that stops here has already unloaded the previous model.
+- **Metal: a microbatch no longer frees the logits a slot is about to read (R3.38).** With `--parallel` on Metal, the
+  first slot's scratch grew on demand when other slots decoded together. If that slot had just been fed a single token,
+  as after a prefix hit, the growth freed the buffer it was about to pick its next token from, and the read could crash
+  the server or pick from other data. On SmolLM2-135M the forced sequence segfaulted. The scratch is now sized once,
+  when the batch is created, as the CUDA backend already does.
+  - **Checks:** `tests/test_batch_identity.c` forces the sequence and holds the pointer and its contents.
+  - **Limits:** the first slot's scratch for the batch width is allocated at startup instead of on first use. The live
+    server interleaving was not reproduced end to end; the sequence was forced through the model API.
+
+- **Metal gives its memory back on `/unload` (R6.17).** On Metal, each model load left memory in the GPU driver until the
+  process exited: `POST /unload` said the model was gone, and on SmolLM2-135M Q8_0 the driver still held +122, +280 and
+  +278 MB after three request and `/unload` cycles. It now holds +3, +2 and -5 MB. Metal's autoreleased objects were
+  never drained on Runner's plain C threads, and a command buffer keeps what it used alive; every Objective-C entry point
+  of the Metal backend now drains its own autorelease pool. RSS and Metal's own count never showed this memory, which
+  is wired, so on an 8 GB Mac it pushed other programs into swap: one test binary took 3.8 GB on a 370 KB model, and
+  now peaks at 729 MB.
+  - **Checks:** `tests/test_metal_memory.py` reads the driver's own figure across four `/unload` cycles, and holds every
+    entry point to its pool. Decode 128.71 against 128.50 tok/s (-0.16%), output byte-identical over 12 runs.
+  - **Limits:** the weights, KV and scratch were already released; what stayed was about 120 MB a load, and it did not
+    scale with the model on the two sizes measured (370 KB and 145 MB). Measured on Apple M1 only. CUDA and the CPU are
+    untouched.
+- **Response ids are random, and a stored response can no longer be guessed (R10.15).** `chatcmpl-`, `cmpl-`, `resp_`
+  and `msg_` ids were a counter from 0: they repeated after every restart and across hosts, and anyone who could
+  reach the server could read or delete a `store:true` response at `/v1/responses/resp_0`. An id is now its prefix and
+  128 random bits, 32 hex digits. The log lines and receipts carry the same id. Tool-call and output-item ids
+  (`call_0`, `fc_0`) keep their numbers: they name a place in one response and look nothing up.
+  - **Checks:** the four APIs, a stream, a restart, and a counted id reading nothing, in
+    `tests/test_responses_store.py`.
+  - **Limits:** the id is still the only credential on a stored response. A client that parsed the number out of an id
+    no longer can. If the OS has no random generator the server now refuses to start.
+- **Fix: instance discovery no longer removes records at process exit (R10.20).**
+  Filesystem removal could block after the server's shutdown watchdog had
+  finished. Clean stops now leave their record for the next discovery list
+  or registration to sweep. Dead owners are never listed; available process-start
+  stamps guard against pid reuse. Runner and tray exits use the same policy.
+- **A stop that has to be forced now lands well inside its ten seconds (R10.20).** When a drain cannot finish, the
+  watchdog exited 50 ms before the bound, and a shared macOS runner ended 2 stops of 8 past it (10.007 s at worst):
+  timers there run up to 90 ms late. A late timer could also lose the shutdown note, the one line that says what a
+  forced stop was waiting on. The note now starts at 9 s, the exit is due at 9.5 s, and a note that starts late still
+  gets its turn.
+  - **Checks:** the default-budget case in `tests/conformance/test_server_lifecycle.py` now requires 9.9 s, so a margin
+    this thin fails on any machine. A new case wakes the watchdog 155 ms late and requires the note.
+  - **Limits:** a stuck request gets 0.5 s less before it is cut off. A clean stop is unchanged.
+
+- **A context released while its request waited for the GPU no longer hangs the server (R3.37).** The
+  `context_unavailable` 409 returned without giving the device turn back, so every later completion hung while
+  `/health` still read `ok`. It took a pinned context deleted during that wait, on a GPU server with more than one
+  slot. The branch now gives the turn back before it writes. Needs a CUDA device to test, so the before and after are a
+  recorded RTX 3070 run, not part of `make test`. Report:
+  `docs/compat-reports/r3.37-context-turn-leak-2026-11-06`.
+
+- **A client that stops reading no longer stops the other slots (R3.36).** A speculative stream wrote to the client
+  while holding the device turn, so one stalled client froze every other slot for 30 s, and a client trickling reads
+  held it for as long as it liked (over 150 s measured). No blocking client write now happens under the turn, on any
+  path. Limits first:
+  - **New limit:** a speculative stream queues at most 4 MiB. A client that far behind is cut off, gets what was
+    queued and then its surface's terminator naming `client_too_slow`, and the server logs it. Plain streams have no
+    such limit.
+  - A reading client's speculative generation still holds the turn for its length. That is unchanged.
+  - Measured on Windows on an RTX 3070 and on macOS on an Apple M1. Linux is covered by a test on a full socket, not
+    by an end-to-end read.
+
+  A session's answer is now built under the turn and written after it, as embeddings already were. Windows did not
+  stall on that write, because Winsock takes one large send whole, but it broke the rule. `make runner-turn-guard`
+  builds the rule in: a client write under the turn ends the process, and the turn runs on a CPU server, so
+  `tests/test_turn_write_guard.py` holds any future path to it without a GPU. Report:
+  `docs/compat-reports/r3.36-no-write-under-turn-2026-11-06`.
+
+- **MiniCPM-V-4.7-35B-A3B joins the roster at Tier 2 on openbmb's own Q8_0, text path only (R4.27.2).** The file is
+  the GGUF repository's root Q8_0 (thinking fixed off, openbmb's recommended default). Against openbmb's BF16 parent's
+  language model computed in float32 it reads 0.0088 mean KLD and 100.00% margin-qualified top-1 (bars 0.05 and 97%,
+  300 positions, CPU).
+  - **Checks:**
+    - Tokenizer 0 of 721 corpus strings and 0 of 247,091 vocabulary entries against openbmb's tokenizer.json, read
+      with the qwen2 split by R4.27.5's rule.
+    - Template conformance under `minicpmv-fixed` against the file's own template (R4.27.6); the reasoning-history
+      case accounted as a token-only deviation (R2.4.11).
+    - CPU and CUDA cells pinned and matched (byte-identical replies); gpu-identity ok with routing pinned; cpu_cuda 9
+      of 9 exact.
+  - **Limits:**
+    - openbmb's Q4_K_M (0.0594, 95.44%) misses the bar.
+    - The reference is transformers' Qwen3.5-MoE text model on the checkpoint's language-model weights, as
+      transformers has no class for minicpmv4_7 and the repository ships no modeling code.
+    - Text only; thinking is fixed off in this file; on a 24 GB CUDA card it runs split, 26 of 40 blocks.
+    - Record: `docs/compat-reports/minicpm-v-4.7-35b-a3b-2026-11-06/`.
 
 - **MiniCPM-V 4.7's chat templates get their own renderers, text path (R4.27.6).** openbmb's GGUF repository ships
   two sets with byte-identical weights that differ only in the embedded template: the root files (thinking fixed off,

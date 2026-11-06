@@ -34,9 +34,12 @@ Every runner process in a *run* mode (one-shot generation, `--serve`,
  "models": [{"name": "trinity.gguf", "path": "/abs/path/trinity.gguf"}]}
 ```
 
-Records are written atomically (tmp + rename) and removed at normal exit.
-A crash leaves a stale file; **every reader sweeps** — any record whose pid
-is no longer alive is deleted on sight, so the directory is self-healing.
+Records are written atomically (tmp + rename). Normal exit leaves the record
+in place so filesystem cleanup cannot delay termination. Every discovery
+list and every new registration sweeps dead owners; process-start stamps,
+when available, distinguish a reused pid from the original owner. Stale
+records are excluded from the live list before they are removed, so the
+directory is self-healing even when no tray runs.
 Utility modes (`--rewrite`, `--info caps`, `--bench-json`, `--version`) do not
 register.
 

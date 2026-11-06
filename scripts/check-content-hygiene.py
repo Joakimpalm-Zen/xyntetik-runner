@@ -25,7 +25,7 @@ import sys
 # Host paths, and the names of machines and agent sessions: the one list
 # both checkers read (scripts/public_content.py).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from public_content import FORBIDDEN  # noqa: E402
+from public_content import forbidden_in  # noqa: E402
 
 # Files that legitimately spell a pattern: the list itself and this checker
 # (its self-test).
@@ -54,7 +54,7 @@ def problems(diff: str) -> list[str]:
     for path, n, text in added_lines(diff):
         if path in ALLOW:
             continue
-        for rx, what in FORBIDDEN:
+        for rx, what in forbidden_in(path):
             m = rx.search(text)
             if m:
                 out.append(f"{path}:{n}: {what} ({m.group(0)!r})")
@@ -82,11 +82,17 @@ def self_test() -> int:
                     f"+see 0.4.10-{bw.lower()}-qwen.json\n")
     # Blackwell is refused in any case, M1 only as written: a lowercase m1 is not the chip
     chips += problems(f"--- a/d.md\n+++ b/d.md\n@@ -1 +1 @@\n+the {m1.lower()} register\n")
+    # a record keeps ~/<file> or models/<file>, and prose may name a home tree
+    tree = "+loaded ~/AI_projects/w/models/m.gguf\n"
+    record = problems(f"--- a/docs/compat-reports/r.json\n+++ b/docs/compat-reports/r.json\n@@ -1 +1,3 @@\n{tree}"
+                      "+loaded ~/m.gguf\n+loaded models/m.gguf\n")
+    prose = problems(f"--- a/MANUAL.md\n+++ b/MANUAL.md\n@@ -1 +1 @@\n{tree}")
     ok = (len(found) == 2 and found[0].startswith("docs/x.json:1:") and found[1].startswith("docs/x.json:3:")
-          and not allowed and not clean and not deleted and not chips and len(bare) == 3)
+          and not allowed and not clean and not deleted and not chips and len(bare) == 3
+          and len(record) == 1 and record[0].startswith("docs/compat-reports/r.json:1:") and not prose)
     print(f"content-hygiene self-test: {'ok' if ok else 'FAILED'} (planted {len(found)}, allowlisted "
           f"{len(allowed)}, clean {len(clean)}, deleted line {len(deleted)}, chip names {len(chips)}, "
-          f"bare machine names {len(bare)})")
+          f"bare machine names {len(bare)}, record home tree {len(record)}, prose home tree {len(prose)})")
     return 0 if ok else 1
 
 

@@ -66,7 +66,9 @@ host straight away, so the CUDA gate runs in parallel with the macOS gates
   heading.
 - Apply the record fixes found in step 0. Keep history strings in the CHANGELOG
   itself: it is not scanned for stale versions.
-- Run `python3 scripts/check-content-hygiene.py --staged` before each commit. Commit
+- Run `python3 scripts/check-content-hygiene.py --staged` before each commit. It refuses
+  a home path with a tree under it in a record: a record keeps `~/<file>` or
+  `models/<file>`. Commit
   the CHANGELOG and docs fixes as their own commit and push. A docs commit does not
   change the CUDA gate's binary.
 

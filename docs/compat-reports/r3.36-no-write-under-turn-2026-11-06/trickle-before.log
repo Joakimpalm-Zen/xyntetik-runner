@@ -1,0 +1,4 @@
+main 230286e1, r352_trickle: the same speculative request, a client reading a little at a time,
+a probe on the other slot with a 150 s limit. Server log: 160014 ms total, verify 3812 ms.
+trickle 2048 B every 5.0s: probe from 1.0s NOT SERVED in 150s (timed out); client read 61598 bytes
+trickle 65536 B every 20.0s: probe from 1.0s NOT SERVED in 150s (timed out); client read 133126 bytes

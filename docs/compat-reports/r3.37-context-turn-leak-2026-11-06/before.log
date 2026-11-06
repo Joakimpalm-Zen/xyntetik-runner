@@ -1,0 +1,7 @@
+round 0: context request 409, context_unavailable True
+  short: NOT SERVED in 30 s (timed out)
+  short: NOT SERVED in 30 s (timed out)
+  short: NOT SERVED in 30 s (timed out)
+  long prompt, yields between chunks: NOT SERVED in 30 s (timed out)
+health: b'{"status":"ok","version":"1.14.0","active_requests":3,"load_generation":1,"rss_b'
+FAIL: a completion was not served after the 409
