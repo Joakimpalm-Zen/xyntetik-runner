@@ -405,6 +405,18 @@ static inline bool tmpl_argkv(int t) {
 static inline bool tmpl_lfm2(int t) {
     return t == TMPL_LFM2 || t == TMPL_LFM2_8B || t == TMPL_LFM2_24B;
 }
+// jinja's `|trim` (python's str.strip(), Unicode whitespace included) on a
+// span: *s and *n narrowed to the text between the whitespace at either end.
+// The qwen35-family references trim every message's content and its
+// reasoning_content this way; each surface applies it where it flattens a
+// message, before the framing (template_content_trims).
+void py_strip(const char **s, size_t *n);
+char *py_strip_dup(const char *s);            // a trimmed heap copy, NULL on OOM
+size_t py_strip_inplace(char *s, size_t n);   // trims a heap buffer, new length
+// The templates whose references trim content and reasoning (the six |trim
+// sites of Qwen 3.5's, 3.6's and ornith's chat_template.jinja): the ornith
+// family, every member of which carries them
+static inline bool template_content_trims(int t) { return tmpl_ornith_like(t); }
 static inline bool tmpl_qwen35(int t) {
     return t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK || t == TMPL_QWEN36;
 }

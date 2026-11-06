@@ -5,6 +5,20 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: the qwen35-family templates trim message content as their references do (R2.4.10).** Qwen 3.5's, Qwen 3.6's
+  and ornith's chat_template.jinja trim every message's content and its reasoning_content (`|trim`, python's
+  str.strip(), Unicode whitespace included) before they frame it; Runner trimmed none of it, so a padded system, user,
+  assistant or tool turn reached the model with whitespace its reference never writes. Each surface
+  (chat/completions, /v1/responses, /v1/messages) now trims where it flattens a message, for the ornith, qwen35,
+  qwen35-nothink and qwen36 templates only.
+  - **Checks:**
+    - Two padded house cases (padded-content, padded-tool-turn) on the eight qwen35-family conformance families:
+      identical to each reference in text and tokens. A mutant without the trim fails exactly those cases.
+    - Every other case of every registered family renders byte-identically before and after (50 families, 1,057
+      renders); the template detected for every roster file is unchanged.
+    - test_tool_attribution: a padded conversation renders as the plain one on all three surfaces; ChatML keeps it.
+  - Record: `docs/compat-reports/r2.4.10-qwen35-trim-2026-11-06/`.
+
 - **Qwen3.8-35B-A3B-Distill, empero-ai's finetune of Qwen3.6-35B-A3B, joins the roster at Tier 2 on empero-ai's own
   Q6_K, text path only (R4.27.1).** It is not a Qwen release; the row replaces the Upcoming `qwen3.8-35b-a3b`, which
   named a Qwen model that Qwen has not published. Against empero-ai's BF16 parent computed in float32 the Q6_K reads

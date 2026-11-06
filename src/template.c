@@ -3524,6 +3524,46 @@ static bool k2_py_space(uint32_t c) {
            c == 0x2028 || c == 0x2029 || c == 0x202f || c == 0x205f ||
            c == 0x3000;
 }
+// jinja's `|trim`, python's str.strip(): the span of [*s, *s + *n) without the
+// code points str.isspace() calls whitespace at either end (UTF-8; a stray
+// byte reads as itself and is never whitespace above 0x7f)
+void py_strip(const char **s, size_t *n) {
+    const unsigned char *p = (const unsigned char *)*s, *e = p + *n;
+    while (p < e) {
+        int len;
+        uint32_t c = k2_cp(p, &len);
+        if (p + len > e || !k2_py_space(c)) break;
+        p += len;
+    }
+    while (e > p) {
+        const unsigned char *q = e - 1;
+        while (q > p && e - q < 4 && (*q & 0xC0) == 0x80) q--;
+        int len;
+        uint32_t c = k2_cp(q, &len);
+        if (q + len != e || !k2_py_space(c)) break;
+        e = q;
+    }
+    *s = (const char *)p;
+    *n = (size_t)(e - p);
+}
+
+// py_strip on a NUL-terminated string, as a new heap string (NULL: out of memory)
+char *py_strip_dup(const char *s) {
+    size_t n = strlen(s);
+    py_strip(&s, &n);
+    char *d = malloc(n + 1);
+    if (d) { memcpy(d, s, n); d[n] = 0; }
+    return d;
+}
+// The same in place on a heap buffer of n bytes; returns the new length
+size_t py_strip_inplace(char *s, size_t n) {
+    const char *p = s;
+    py_strip(&p, &n);
+    memmove(s, p, n);
+    s[n] = 0;
+    return n;
+}
+
 // `value.split() | join(" ")`: each whitespace run one space, none at the ends
 static void k2_collapse(const char *s, sbuf *o) {
     const unsigned char *p = (const unsigned char *)s;

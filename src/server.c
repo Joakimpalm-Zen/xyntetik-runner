@@ -220,6 +220,13 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
             sb_put(&txt, text, strlen(text));
         }
     }
+    // The qwen35-family references trim every message's content and its
+    // reasoning_content (`|trim`, python's str.strip()) before they frame it.
+    size_t reason_n = reason ? strlen(reason) : 0;
+    if (template_content_trims(tmpl)) {
+        if (txt.s) txt.n = py_strip_inplace(txt.s, txt.n);
+        if (reason) py_strip(&reason, &reason_n);
+    }
 
     sbuf b = {0};
     if (tmpl_ornith_like(tmpl) && !strcmp(role, "tool")) {
@@ -249,7 +256,7 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
              (tmpl == TMPL_MINICPM5 && replay_reason)) &&
             !strcmp(role, "assistant")) {
             prompt_lit(&b, "<think>\n");
-            if (reason) sb_put(&b, reason, strlen(reason));
+            if (reason) sb_put(&b, reason, reason_n);
             prompt_lit(&b, "\n</think>\n\n");
         } else if ((tmpl == TMPL_MIMO || tmpl_argkv(tmpl)) &&
                    !strcmp(role, "assistant") && reason && *reason) {

@@ -388,7 +388,7 @@
       "why": "BOS is not spelled into runner's templates at all: the tokenizer prepends it at encode time (tokenizer.c sets add_bos for the k2-horizon pre, as IFM's tokenizer.json does; K2-Horizon's template opens with `{{- bos_token }}`), so a template that also emitted it would double it.",
       "cite": {
         "file": "src/template.c",
-        "lines": "4395-4396",
+        "lines": "4435-4436",
         "anchor": "The template opens with `{{- bos_token }}`; that token comes from the"
       },
       "corroborating_cite": {

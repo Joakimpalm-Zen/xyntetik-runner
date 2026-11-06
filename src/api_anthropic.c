@@ -146,7 +146,10 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
                         char *err, int errcap) {
     jv *content = jv_get(msg, "content");
     if (content && content->type == J_STR) {
-        turn_add(t, role, strdup(content->str));  // NULL sets t->failed
+        char *c = strdup(content->str);           // NULL sets t->failed
+        // the qwen35-family references trim every message's content (`|trim`)
+        if (c && template_content_trims(tmpl)) py_strip_inplace(c, strlen(c));
+        turn_add(t, role, c);
         return true;
     }
     if (!content || content->type != J_ARR) {
@@ -328,7 +331,9 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
                 turn_add_native(t, "tool", w.s, NULL, NULL);
             } else if (tmpl_ornith_like(tmpl)) {
                 // ornith frames a result as a <tool_response> block in a user
-                // turn; its own render loop keys on that content prefix.
+                // turn; its own render loop keys on that content prefix. Its
+                // references trim the result first (`|trim`).
+                py_strip_inplace(result, strlen(result));
                 sbuf w = {0};
                 tool_result_wrap(tmpl, result, &w);
                 free(result);
@@ -409,6 +414,8 @@ static bool anth_blocks(jv *messages, int message_index, jv *msg,
     if (body.failed || calls_json.failed) {
         free(body.s); free(calls_json.s); t->failed = true; return true;
     }
+    // the qwen35-family references trim the message's content (`|trim`)
+    if (template_content_trims(tmpl) && body.s) body.n = py_strip_inplace(body.s, body.n);
     if (n_calls) {
         // assemble the assistant call turn in the family's native protocol
         sb_lit(&calls_json, "]");
@@ -880,6 +887,8 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
                                      &oom);
         if (terr[0] || oom) { free(sys); ok = false; }
         else {
+            // the qwen35-family references trim the system text (`|trim`)
+            if (sys && template_content_trims(s->tmpl)) py_strip_inplace(sys, strlen(sys));
             // ornith / granite 4.2 fold `system` into the declaration turn
             // (tools_system_fold), as the chat surface folds messages[0]
             if (tools_system_fold(s->tmpl, &ts, sys)) {

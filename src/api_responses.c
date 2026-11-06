@@ -203,6 +203,8 @@ static char *responses_item_text(jv *item, int tmpl, const char **role,
         if (out && out->type == J_STR) sb_put(&b, out->str, strlen(out->str));
         else if (out) jv_dump(out, &b);
         if (b.failed) { free(b.s); *oom = true; return NULL; }
+        // the qwen35-family references trim a result's content (`|trim`)
+        if (template_content_trims(tmpl) && b.s) b.n = py_strip_inplace(b.s, b.n);
         // ornith frames a result as a <tool_response> block in a USER turn;
         // its own render loop keys on that content prefix. Every other family
         // carries the result plain under role "tool" (chatml wraps it in the
@@ -271,6 +273,8 @@ static char *responses_item_text(jv *item, int tmpl, const char **role,
         }
     }
     if (b.failed) { free(b.s); *oom = true; return NULL; }
+    // the qwen35-family references trim every message's content (`|trim`)
+    if (template_content_trims(tmpl) && b.s) b.n = py_strip_inplace(b.s, b.n);
     return b.s;
 }
 
@@ -777,7 +781,8 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     char **owned = NULL;
     if (!ts.failed) {
         cm = malloc(sizeof(chat_msg) * (size_t)(n_items + 3));
-        owned = malloc(sizeof(char *) * (size_t)n_items);
+        // + the trimmed copies of `instructions` and a string input
+        owned = malloc(sizeof(char *) * ((size_t)n_items + 2));
     }
     // client-controlled size: a NULL here would be indexed below. Fail cleanly.
     if (!cm || !owned) {
@@ -791,11 +796,31 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     size_t total = ts.n + 128;
     int n_cm = 0, n_own = 0;
     const char *instructions = jv_str(jv_get(req, "instructions"), NULL);
+    // the qwen35-family references trim the system text and every message
+    // (`|trim`): `instructions` and a string input are borrowed, so trimmed
+    // copies stand in for them
+    const char *input_str = input->type == J_STR ? input->str : NULL;
+    if (template_content_trims(s->tmpl)) {
+        char *ti = instructions ? py_strip_dup(instructions) : NULL;
+        char *tu = input_str ? py_strip_dup(input_str) : NULL;
+        if ((instructions && !ti) || (input_str && !tu)) {
+            free(ti); free(tu);
+            free(cm); free(owned); free(ts.s);
+            tool_envelope_free(&env);
+            jv_free(tools);
+            jv_free(choice_owned);
+            send_error(fd, 500, "out of memory building responses prompt");
+            return;
+        }
+        if (ti) { owned[n_own++] = ti; instructions = ti; }
+        if (tu) { owned[n_own++] = tu; input_str = tu; }
+    }
     // ornith / granite 4.2 fold `instructions` into the declaration turn the
     // way the chat surface folds messages[0] (tools_system_fold): the same
     // conversation is the same prompt through every door
     if (tools_system_fold(s->tmpl, &ts, instructions)) {
         if (ts.failed) {
+            for (int k = 0; k < n_own; k++) free(owned[k]);
             free(cm); free(owned); free(ts.s);
             tool_envelope_free(&env);
             jv_free(tools);
@@ -829,8 +854,8 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         }
     }
     if (input->type == J_STR) {
-        cm[n_cm++] = (chat_msg){ .role = "user", .content = input->str };
-        total += strlen(input->str) + 64;
+        cm[n_cm++] = (chat_msg){ .role = "user", .content = input_str };
+        total += strlen(input_str) + 64;
     } else {
         for (int i = 0; i < input->n; i++) {
             const char *role = "user";
