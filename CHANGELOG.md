@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The DeepSeek-V2-Lite-Chat Q8_0 row's pins sit on a near tie, and v1.14.0's R3.32 note is corrected (R6.23).**
+  Docs only; the pins are unchanged.
+  - **Why the pins mismatched:** an overnight compare against the pins mismatched on both backends, but its builds
+    were clang's. The pins come from the Makefile's default compiler, gcc with `-march=native`, and main's gcc build
+    matches both.
+  - **The tie:** every build is deterministic. The reply is decided at prompt position 6, layer 7, where the sixth
+    routed expert is 39 or 49 with gates within 2e-6. The two texts that can result both contain "Mercury".
+  - **The release build:** gcc with `-march=x86-64-v3` gives the CUDA pin's text on both backends, so its CPU reply
+    differs from the CPU pin. The row's note in `docs/model-tiers.json` says so.
+  - **The v1.14.0 correction:** the entry for R3.32 said both deepseek2 CUDA cells were stale from #631. Only the
+    Q6_K's was. R3.32's prefill route moved the Q8_0's and re-pinned it in the same change.
+
 - **The model tiers are retired: `docs/model-support.md` is now one list.** Families, models and files sort
   alphabetically, and opening a family shows one table, with each model's name on a row above its files. Validation runs
   when the project chooses, not with every release, so `scripts/check-release.py` no longer refuses a tag on a row's
