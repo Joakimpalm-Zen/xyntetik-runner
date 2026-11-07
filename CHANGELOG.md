@@ -5,6 +5,8 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+## v1.15.0 - 2026-11-07
+
 - **Fix: transient VRAM accounting no longer forces durable writes (R6.24).**
   The ledger and yield sentinels describe live processes, so power-loss
   durability adds no useful guarantee. POSIX `fsync` and Windows
@@ -54,7 +56,7 @@ Current release and unreleased changes. Compatibility follows the
   - **Limits:** `runner attest` and `runner train` with nothing after them still print their own short usage. A script
     that looked for `usage:` on stderr after a failure other than a bare run no longer finds it; `unknown option` now reads
     `error: unknown option`.
-- **Sage-A1.5 joins the roster at Tier 2 on InternScience's own Q6_K, and occamy-1.0 is listed Upcoming (R4.27.7).**
+- **Sage-A1.5 joins the roster on InternScience's own Q6_K, and occamy-1.0 is listed Upcoming (R4.27.7).**
   Both are qwen35moe derivatives of Qwen3.6-35B-A3B, each read against its own BF16 parent computed in float32 (bars
   0.05 mean KLD and 97% margin-qualified top-1, 300 positions, CPU).
   - **Sage-A1.5:** InternScience's model, built by its publisher on Qwen3.6-35B-A3B and InternScience's Agents-A1.
@@ -178,7 +180,7 @@ Current release and unreleased changes. Compatibility follows the
   `tests/test_turn_write_guard.py` holds any future path to it without a GPU. Report:
   `docs/compat-reports/r3.36-no-write-under-turn-2026-11-06`.
 
-- **MiniCPM-V-4.7-35B-A3B joins the roster at Tier 2 on openbmb's own Q8_0, text path only (R4.27.2).** The file is
+- **MiniCPM-V-4.7-35B-A3B joins the roster on openbmb's own Q8_0, text path only (R4.27.2).** The file is
   the GGUF repository's root Q8_0 (thinking fixed off, openbmb's recommended default). Against openbmb's BF16 parent's
   language model computed in float32 it reads 0.0088 mean KLD and 100.00% margin-qualified top-1 (bars 0.05 and 97%,
   300 positions, CPU).
@@ -235,7 +237,7 @@ Current release and unreleased changes. Compatibility follows the
     - test_tool_attribution: a padded conversation renders as the plain one on all three surfaces; ChatML keeps it.
   - Record: `docs/compat-reports/r2.4.10-qwen35-trim-2026-11-06/`.
 
-- **Qwen3.8-35B-A3B-Distill, empero-ai's finetune of Qwen3.6-35B-A3B, joins the roster at Tier 2 on empero-ai's own
+- **Qwen3.8-35B-A3B-Distill, empero-ai's finetune of Qwen3.6-35B-A3B, joins the roster on empero-ai's own
   Q6_K, text path only (R4.27.1).** It is not a Qwen release; the row replaces the Upcoming `qwen3.8-35b-a3b`, which
   named a Qwen model that Qwen has not published. Against empero-ai's BF16 parent computed in float32 the Q6_K reads
   0.0336 mean KLD and 98.65% margin-qualified top-1 (bars 0.05 and 97%, 300 positions, CPU).
@@ -273,7 +275,7 @@ Current release and unreleased changes. Compatibility follows the
     - cloudflare-clef-iq3_s-recovered's file declares architecture qwen35 and still reads with the qwen35 split.
   - Record: `docs/compat-reports/r4.27.5-qwen2-trained-rule-2026-11-06/`.
 
-- **The project's own Mellum 2.1 rewrite joins the roster at Tier 2 on the published file, text path only
+- **The project's own Mellum 2.1 rewrite joins the roster on the published file, text path only
   (R4.33.4).** `mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k` is Runner's `--rewrite --type-plan` of JetBrains'
   BF16 parent: Q8_0, with the experts at Q5_K and the 896-wide expert down projections at Q5_1. It is pinned by the
   Hub revision `4941f110` and its sha256. Against the parent in float32 it reads 0.0293 mean KLD and 98.74%
