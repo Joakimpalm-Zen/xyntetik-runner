@@ -75,7 +75,7 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Published release: 1.14.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) makes DeepSeek-V2's absorbed form the fast one on CUDA: its cache is half the size and its decode and prefill now beat the naive form (measured on one file on one MIG slice; Metal still runs `deepseek2` on the CPU); writes `q5_k`, `q5_1` and `iq4_nl` with `--rewrite` and `--type-plan`, without an importance matrix, and one such Mellum 2.1 file under 9 GB passes the bar against the publisher; adds Tier 2 rows for Ornith-1.5-35B-A3B (its own Q8_0, which passes the bar by a hair, text path only), Nemotron 3 Nano 30B-A3B (ggml-org's Q4_K_M, CPU only: CUDA refuses its router) and two DeepSeek-V2-Lite-Chat files, and a CUDA cell for Qwen3.6-35B-A3B; and fixes `-v` crashing on any file whose first block is Mamba-2 ([changelog](CHANGELOG.md)). Its Linux asset keeps the GLIBC 2.38 ceiling and starts on Ubuntu 24.04 ([how that is held](docs/linux-1.6.1-candidate.md)).
+> **Published release: 1.14.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) makes DeepSeek-V2's absorbed form the fast one on CUDA: its cache is half the size and its decode and prefill now beat the naive form (measured on one file on one MIG slice; Metal still runs `deepseek2` on the CPU); writes `q5_k`, `q5_1` and `iq4_nl` with `--rewrite` and `--type-plan`, without an importance matrix, and one such Mellum 2.1 file under 9 GB passes the bar against the publisher; adds rows for Ornith-1.5-35B-A3B (its own Q8_0, which passes the bar by a hair, text path only), Nemotron 3 Nano 30B-A3B (ggml-org's Q4_K_M, CPU only: CUDA refuses its router) and two DeepSeek-V2-Lite-Chat files, and a CUDA cell for Qwen3.6-35B-A3B; and fixes `-v` crashing on any file whose first block is Mamba-2 ([changelog](CHANGELOG.md)). Its Linux asset keeps the GLIBC 2.38 ceiling and starts on Ubuntu 24.04 ([how that is held](docs/linux-1.6.1-candidate.md)).
 
 > **Version `1.14.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
@@ -383,11 +383,9 @@ admits; the files linked below are the ones it validates, each with one greedy
 prompt compared byte for byte against a pinned output on the device the file
 names, and the page records when each file last passed and with which Runner.
 Nothing is re-tested on a schedule: validation runs happen in the project's
-bigger validation runs and on immediate need. A release is refused while any
-Tier 1 file, on hardware the project owns, has no recorded pass or carries a
-recorded failure.
+bigger validation runs and on immediate need.
 
-[The validated files by family, what each tier promises, every file's full envelope and how to run the check](docs/model-support.md#overview)
+[The validated files by family, what each row claims, every file's full envelope and how to run the check](docs/model-support.md#overview)
 
 <a id="more"></a>
 ## Also in the box

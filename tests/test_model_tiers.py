@@ -458,14 +458,10 @@ def test_the_committed_families_are_the_owners_list():
     """Since 2026-10-27 Tier 1 follows pull: the families whose repositories
     showed at least 1,000 downloads in 30 days, plus the publisher files the
     owner named for active validation on 2026-10-29 (Bolt E4B, Mellum2.1);
-    the README lists them in the order of each one's first row."""
+    they are listed in alphabetical order."""
     families = [f for f, _ in mt.tier1_families(committed())]
     assert set(families) == {"Gemma 4", "Mellum2.1", "Qwen3.8", "Xyntetik-Kvist-14B"}
-    first = {}
-    for r in committed()["rows"]:
-        if r["tier"] == "tier1":
-            first.setdefault(r["family"], len(first))
-    assert families == sorted(first, key=first.get)
+    assert families == sorted(families, key=str.casefold)
 
 
 def test_no_cell_in_the_committed_roster_was_typed():
@@ -781,8 +777,8 @@ def test_record_refuses_a_companion_run_on_another_base():
 #
 # One collapsible block per Tier 1 family: a plain summary line (the bold
 # family name, its model count, a mark per backend and for Train over all
-# its files), then per model its line (the bold name, its label in plain
-# words) and a table with one row per roster file. The marks below are
+# its files), then one table: per model its row (the bold name, its label in
+# plain words) and under it one row per roster file. The marks below are
 # written out by hand from the owner's decisions of 2026-10-23 and
 # 2026-10-24: a recorded cell is the version and date of its gate, not run
 # is a blank cell, a limit is n/a linked to the manual; a family's mark is
@@ -796,10 +792,12 @@ def overview_families(doc):
     for block in re.findall(r"<details>\n(.*?)\n</details>", mt.render_overview(doc), re.S):
         summary = re.match(r"<summary>(.*)</summary>\n", block).group(1)
         models = []
-        for line, table in re.findall(r"<p>(.*?)</p>\n(<table>.*?</table>)", block, re.S):
-            rows = [re.findall(r"<td[^>]*>.*?</td>", tr)
-                    for tr in re.findall(r"<tr>(.*?)</tr>", table) if "<td" in tr]
-            models.append((line, rows))
+        for tr in re.findall(r"<tr>(.*?)</tr>", block):
+            heading = re.fullmatch(r'<td colspan="\d+">(.*)</td>', tr)
+            if heading:
+                models.append((heading.group(1), []))
+            elif "<td" in tr:
+                models[-1][1].append(re.findall(r"<td[^>]*>.*?</td>", tr))
         out.append((summary, models))
     return out
 
@@ -897,7 +895,7 @@ def test_every_tier1_file_gets_its_row_even_unrun():
 def test_each_family_is_one_collapsed_block_of_html_with_no_blank_line():
     """The block is one HTML block in GitHub's markdown: a blank line inside
     it would end the block and print the rest as text. Each model of the
-    family is its line and its table, one <tr> per file."""
+    family is its row in the family's one table, its files' rows under it."""
     other = tier1_row(id="toy-b", model="Toy B")
     other["files"] = [{"name": "toy-b.gguf", "sha256": "e" * 64, "bytes": 1}]
     text = mt.render_overview(roster(tier1_row(), other))
@@ -908,12 +906,12 @@ def test_each_family_is_one_collapsed_block_of_html_with_no_blank_line():
             "<th>Metal</th><th>Train</th></tr></thead>", "<tbody>"]
     assert lines[0] == ("<summary><b>Toy</b>, 2 models: CPU - · CUDA - · Metal - · "
                         "Train -</summary>")
-    assert lines[1] == "<p><b>Toy</b></p>" and lines[2:5] == head
+    assert lines[1:4] == head and block.count("<table>") == 1
+    assert lines[4] == '<tr><td colspan="5"><b>Toy</b></td></tr>'
     assert lines[5].startswith("<tr><td>") and "toy-Q8_0.gguf" in lines[5]
-    assert lines[6:8] == ["</tbody>", "</table>"]
-    assert lines[8] == "<p><b>Toy B</b></p>" and lines[9:12] == head
-    assert lines[12].startswith("<tr><td>") and "toy-b.gguf" in lines[12]
-    assert lines[13:] == ["</tbody>", "</table>", ""]
+    assert lines[6] == '<tr><td colspan="5"><b>Toy B</b></td></tr>'
+    assert lines[7].startswith("<tr><td>") and "toy-b.gguf" in lines[7]
+    assert lines[8:] == ["</tbody>", "</table>", ""]
     assert "\n\n" not in block
 
 
@@ -977,16 +975,16 @@ def test_the_summary_sums_up_each_backend_over_every_file_of_the_family():
     f["lora"] = lora()
     blocks = overview_families(roster(a, b, c, d, e, f))
     assert [marks(s) for s, _ in blocks] == [
+        {"CPU": "✅", "CUDA": "✅", "Metal": "✅", "Train": "✅"},
         {"CPU": "🟨 2 of 3", "CUDA": "🟨 1 of 3", "Metal": "n/a", "Train": "🟨 1 of 3"},
         {"CPU": "failed", "CUDA": "-", "Metal": "-", "Train": "n/a"},
-        {"CPU": "✅", "CUDA": "✅", "Metal": "✅", "Train": "✅"},
     ]
     assert [s.split(":")[0] for s, _ in blocks] == [
-        "<b>Mixed</b>, 2 models", "<b>Odd</b>, 1 model", "<b>All</b>, 1 model"]
-    assert [[len(rows) for _, rows in models] for _, models in blocks] == [[2, 1], [2], [1]]
+        "<b>All</b>, 1 model", "<b>Mixed</b>, 2 models", "<b>Odd</b>, 1 model"]
+    assert [[len(rows) for _, rows in models] for _, models in blocks] == [[1], [2, 1], [2]]
 
 
-def test_families_keep_roster_order_and_models_sort_by_name_within_one():
+def test_families_models_and_files_all_sort_by_name():
     """A family is listed where its first row stands in the roster; within
     it, models sort by name (the label aside) and files keep their roster
     order, so adding a row to a family does not move the family."""
@@ -998,14 +996,14 @@ def test_families_keep_roster_order_and_models_sort_by_name_within_one():
     first = tier1_row(id="first", model="First", family="First")
     first["files"] = [{"name": "first.gguf", "sha256": "f" * 64, "bytes": 1}]
     blocks = overview_families(roster(zeta, first, zeta2, alpha))
-    assert [s.split("</b>")[0] for s, _ in blocks] == ["<b>Last", "<b>First"]
-    assert [line.split("</b>")[0] for line, _ in blocks[0][1]] == ["<b>alpha", "<b>Zeta"]
-    assert [re.search(r"<code>(.*?)</code>", r[0]).group(1) for r in blocks[0][1][1][1]] == \
+    assert [s.split("</b>")[0] for s, _ in blocks] == ["<b>First", "<b>Last"]
+    assert [line.split("</b>")[0] for line, _ in blocks[1][1]] == ["<b>alpha", "<b>Zeta"]
+    assert [re.search(r"<code>(.*?)</code>", r[0]).group(1) for r in blocks[1][1][1][1]] == \
         ["toy-Q8_0.gguf", "zeta-b.gguf"]
     assert mt.render_overview(roster(zeta, first, alpha, zeta2)) == \
         mt.render_overview(roster(zeta, first, zeta2, alpha))
     assert [m for _, m, _ in mt.tier1_groups(roster(zeta, first, zeta2, alpha))] == \
-        ["alpha", "Zeta", "First"]
+        ["First", "alpha", "Zeta"]
 
 
 def test_a_declared_limit_links_the_manuals_support_matrix():
@@ -1028,10 +1026,10 @@ def test_the_legend_comes_first_and_names_every_mark():
     assert "\u2013" not in text and "\u2014" not in text
 
 
-def test_upcoming_models_are_one_line_under_the_blocks_and_tier2_has_its_own_line():
-    """Since 2026-10-28 the overview is the record of every file's last
-    validation run: Tier 1 families first, Tier 2 families under their own
-    line (dated evidence, not gated), Upcoming models as one line last."""
+def test_upcoming_models_are_one_line_under_one_list_of_families():
+    """The overview is the record of every file's last validation run: one
+    list of families, alphabetical, whatever a row's dormant tier field says
+    (tiers retired 2026-11-07), Upcoming models as one line last."""
     up = {"id": "later", "model": "Later VL", "tier": "upcoming",
           "claim": "Text path only: not admitted.", "architecture": "later",
           "missing": "an admission", "vision_upstream": True,
@@ -1045,13 +1043,10 @@ def test_upcoming_models_are_one_line_under_the_blocks_and_tier2_has_its_own_lin
     assert ("**Upcoming** (planned, not supported yet): Later VL (text path only), "
             "Sooner.") in tail.splitlines()
     assert "Later" not in text.rsplit("</details>", 1)[0]
-    t1_at = text.index("**Tier 1, actively validated**")
-    t2_at = text.index("**Tier 2, maintained on report**")
-    assert t1_at < text.index("<b>Toy</b>") < t2_at < text.index("<b>Elders</b>")
-    # the committed roster renders its Tier 2 families the same way
+    assert "Tier" not in text
+    assert text.index("<b>Elders</b>") < text.index("<b>Toy</b>")
     committed_text = mt.render_overview(committed())
-    assert "**Tier 2, maintained on report**" in committed_text
-    assert "<summary><b>Gemma 4</b>" in committed_text
+    assert "Tier" not in committed_text and "<summary><b>Gemma 4</b>" in committed_text
 
 
 # --- docs/model-support.md: envelopes and the transition log, rendered ----------
@@ -1064,9 +1059,9 @@ def test_the_support_doc_block_is_the_render_of_the_roster():
 
 
 def test_the_support_doc_lists_models_under_their_family_and_upcoming_alone():
-    """docs/model-support.md groups a tier the overview's way (a family's
-    heading, its models' headings, each file's envelope under its model);
-    an Upcoming model keeps its own heading, in the order of admission."""
+    """docs/model-support.md groups the one list the overview's way (a
+    family's heading, its models' headings, each file's envelope under its
+    model); an Upcoming model keeps its own heading."""
     t2 = tier1_row(id="old", model="Old", family="Elders", tier="tier2")
     t2["transitions"][-1]["tier"] = "tier2"
     up = {"id": "later", "model": "Later", "tier": "upcoming",
@@ -1079,11 +1074,10 @@ def test_the_support_doc_lists_models_under_their_family_and_upcoming_alone():
     heads = [l for l in text.splitlines() if l.startswith("#")]
     assert heads[0] == "## Validation runs at a glance"
     heads = heads[1:]
-    assert heads[:7] == ["## Tier 1, actively validated", "### Toy", "#### Toy",
-                         "##### `toy-Q8_0.gguf`", "#### Toy B", "##### `toy-b.gguf`",
-                         "## Tier 2, maintained on report"]
-    assert heads[7:10] == ["### Elders", "#### Old", "##### `toy-Q8_0.gguf`"]
-    up_at = heads.index("## Upcoming, planned admission")
+    assert heads[:7] == ["## Models", "### Elders", "#### Old", "##### `toy-Q8_0.gguf`",
+                         "### Toy", "#### Toy", "##### `toy-Q8_0.gguf`"]
+    assert heads[7:9] == ["#### Toy B", "##### `toy-b.gguf`"]
+    up_at = heads.index("## Upcoming, planned and not supported yet")
     assert heads[up_at + 1:up_at + 3] == ["### Later", "#### Later"]
 
 
