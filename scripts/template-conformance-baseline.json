@@ -162,7 +162,7 @@
     },
     "qwen38": {
       "source": "hf:Qwen/Qwen3.8-27B",
-      "sha256": "c3cf9e34abf4f9e3"
+      "sha256": "af16f654968d47d0"
     },
     "smollm2": {
       "source": "hf:HuggingFaceTB/SmolLM2-135M-Instruct",
