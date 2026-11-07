@@ -620,13 +620,14 @@ def test_release_check_accepts_fresh_device_evidence(monkeypatch, tmp_path):
     assert check_release.check(args) is True
 
 
-def test_release_check_refuses_a_never_validated_tier1_row(monkeypatch, tmp_path, capsys):
-    """A Tier 1 file with no recorded pass on its backend refuses the tag."""
+def test_release_check_does_not_read_a_rows_record(monkeypatch, tmp_path):
+    """Validation runs when the project chooses, not with every release
+    (owner decision 2026-11-07), so a row with no recorded pass never
+    refuses a tag."""
     _pinned(monkeypatch)
     args = good_args(tmp_path)
     args.model_tiers = tier_roster(tmp_path, gated_on=None)
-    assert check_release.check(args) is False
-    assert "toy-q8_0" in capsys.readouterr().err
+    assert check_release.check(args) is True
 
 
 @needs_git_checkout
@@ -645,14 +646,6 @@ def test_release_check_accepts_a_fresh_tier1_row(monkeypatch, tmp_path):
     args = good_args(tmp_path)
     args.model_tiers = tier_roster(tmp_path, gated_on="2026-10-22")
     assert check_release.check(args) is True
-
-
-def test_release_check_refuses_a_missing_tier_roster(monkeypatch, tmp_path):
-    """Naming a roster that is not there must not read as "nothing to check"."""
-    _pinned(monkeypatch)
-    args = good_args(tmp_path)
-    args.model_tiers = tmp_path / "gone.json"
-    assert check_release.check(args) is False
 
 
 # The release workflow's Windows job runs its steps in the msys2 shell, so a

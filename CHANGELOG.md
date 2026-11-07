@@ -5,10 +5,10 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
-- **The model validation tables are easier to navigate.** Families, models and files now sort alphabetically under each
-  tier, and opening a family shows one table, with each model's name on a row above its files. Tier 1 also gains
-  Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered, the project's own artifact, by owner decision. Its limits stand: it reads 0.41 mean
-  KLD against the publisher's float32 reference, a learned derivative rather than a faithful quantization.
+- **The model tiers are retired: `docs/model-support.md` is now one list.** Families, models and files sort
+  alphabetically, and opening a family shows one table, with each model's name on a row above its files. Validation runs
+  when the project chooses, not with every release, so `scripts/check-release.py` no longer refuses a tag on a row's
+  record. Upcoming stays apart: it means not supported yet. The transition log keeps the earlier record.
 
 - **Known `chat_template_kwargs` keys no longer vanish on the families that ignored them (R2.14).** Measured against 33
   references. Honoured now: `preserve_thinking` on LFM2 and LFM2-24B, `preserve_thinking: false` on Qwen 3.8 (its default

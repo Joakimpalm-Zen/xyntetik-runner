@@ -1026,10 +1026,10 @@ def test_the_legend_comes_first_and_names_every_mark():
     assert "\u2013" not in text and "\u2014" not in text
 
 
-def test_upcoming_models_are_one_line_under_the_blocks_and_tier2_has_its_own_line():
-    """Since 2026-10-28 the overview is the record of every file's last
-    validation run: Tier 1 families first, Tier 2 families under their own
-    line (dated evidence, not gated), Upcoming models as one line last."""
+def test_upcoming_models_are_one_line_under_one_list_of_families():
+    """The overview is the record of every file's last validation run: one
+    list of families, alphabetical, whatever a row's dormant tier field says
+    (tiers retired 2026-11-07), Upcoming models as one line last."""
     up = {"id": "later", "model": "Later VL", "tier": "upcoming",
           "claim": "Text path only: not admitted.", "architecture": "later",
           "missing": "an admission", "vision_upstream": True,
@@ -1043,13 +1043,10 @@ def test_upcoming_models_are_one_line_under_the_blocks_and_tier2_has_its_own_lin
     assert ("**Upcoming** (planned, not supported yet): Later VL (text path only), "
             "Sooner.") in tail.splitlines()
     assert "Later" not in text.rsplit("</details>", 1)[0]
-    t1_at = text.index("**Tier 1, actively validated**")
-    t2_at = text.index("**Tier 2, maintained on report**")
-    assert t1_at < text.index("<b>Toy</b>") < t2_at < text.index("<b>Elders</b>")
-    # the committed roster renders its Tier 2 families the same way
+    assert "Tier" not in text
+    assert text.index("<b>Elders</b>") < text.index("<b>Toy</b>")
     committed_text = mt.render_overview(committed())
-    assert "**Tier 2, maintained on report**" in committed_text
-    assert "<summary><b>Gemma 4</b>" in committed_text
+    assert "Tier" not in committed_text and "<summary><b>Gemma 4</b>" in committed_text
 
 
 # --- docs/model-support.md: envelopes and the transition log, rendered ----------
@@ -1062,9 +1059,9 @@ def test_the_support_doc_block_is_the_render_of_the_roster():
 
 
 def test_the_support_doc_lists_models_under_their_family_and_upcoming_alone():
-    """docs/model-support.md groups a tier the overview's way (a family's
-    heading, its models' headings, each file's envelope under its model);
-    an Upcoming model keeps its own heading, in the order of admission."""
+    """docs/model-support.md groups the one list the overview's way (a
+    family's heading, its models' headings, each file's envelope under its
+    model); an Upcoming model keeps its own heading."""
     t2 = tier1_row(id="old", model="Old", family="Elders", tier="tier2")
     t2["transitions"][-1]["tier"] = "tier2"
     up = {"id": "later", "model": "Later", "tier": "upcoming",
@@ -1077,11 +1074,10 @@ def test_the_support_doc_lists_models_under_their_family_and_upcoming_alone():
     heads = [l for l in text.splitlines() if l.startswith("#")]
     assert heads[0] == "## Validation runs at a glance"
     heads = heads[1:]
-    assert heads[:7] == ["## Tier 1, actively validated", "### Toy", "#### Toy",
-                         "##### `toy-Q8_0.gguf`", "#### Toy B", "##### `toy-b.gguf`",
-                         "## Tier 2, maintained on report"]
-    assert heads[7:10] == ["### Elders", "#### Old", "##### `toy-Q8_0.gguf`"]
-    up_at = heads.index("## Upcoming, planned admission")
+    assert heads[:7] == ["## Models", "### Elders", "#### Old", "##### `toy-Q8_0.gguf`",
+                         "### Toy", "#### Toy", "##### `toy-Q8_0.gguf`"]
+    assert heads[7:9] == ["#### Toy B", "##### `toy-b.gguf`"]
+    up_at = heads.index("## Upcoming, planned and not supported yet")
     assert heads[up_at + 1:up_at + 3] == ["### Later", "#### Later"]
 
 

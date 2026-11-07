@@ -1111,7 +1111,7 @@
       "id": "qwen3.8-27b-gsq-rco-iq3_s-recovered",
       "model": "Qwen3.8-27B",
       "family": "Qwen3.8",
-      "tier": "tier1",
+      "tier": "tier2",
       "claim": "Reads 0.41 mean KLD against Qwen's float32 reference, 8x the bar; a learned derivative, not a faithful quantization. ISTA-DASLab's GSQ-RCO IQ3_S of Qwen3.8-27B (codes and scales fitted on calibration data) with every quantised block's fp16 scales retrained against the BF16 parent, text path: it predicts the reference corpus better than its parent (perplexity 21.54 against 73.29) and reads closer to the parent than the unmodified source file.",
       "architecture": "qwen35",
       "upstream": {
@@ -1205,14 +1205,9 @@
           "effective": "2026-11-04",
           "reason": "Owner decision 2026-11-04 (R4.32): the float32 reference read of 2026-11-04 puts the file at 0.41 mean KLD against Qwen's reference, where the card's 0.0450 was a BF16-GGUF-anchored measurement. Maintained on report; it stays published and its records stay as dated evidence.",
           "last_validated_release": "1.7.1"
-        },
-        {
-          "tier": "tier1",
-          "effective": "2026-11-07",
-          "reason": "Owner decision 2026-11-07: the project's own artifact, so the release gate holds Runner to it. The fidelity limits of R4.32 stand: 0.41 mean KLD against the publisher's float32 reference, a learned derivative.",
-          "last_validated_release": "1.7.1"
         }
-      ]
+      ],
+      "published_exception": "Owner decision 2026-11-04 (R4.32): outside the fidelity bar against the publisher's float32 reference (0.41 mean KLD); maintained on report."
     },
     {
       "id": "qwen3.8-27b-mtp-q8_0",

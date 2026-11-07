@@ -720,6 +720,14 @@ def families(doc, tier):
                 [r for r in doc["rows"] if r["tier"] == tier])]
 
 
+def listed_families(doc):
+    """The one list: every family with a validated row, whatever its dormant
+    `tier` field says (tiers were retired 2026-11-07), only Upcoming apart."""
+    return [(fam, [(_qualifiers(rs), model, rs) for model, rs in groups])
+            for fam, groups in _family_groups(
+                [r for r in doc["rows"] if r["tier"] != "upcoming"])]
+
+
 def tier1_families(doc):
     """The Tier 1 families, the ones every surface lists (the site)."""
     return families(doc, "tier1")
@@ -866,14 +874,12 @@ def render_overview(doc, borrowed=None):
     2026-10-28 it lists Tier 2 the same way under Tier 1, so one table holds
     the version and date of every file's last validation run.
 
-    The legend, then one collapsed <details> block per family, Tier 1
-    families first and Tier 2 families under their own line, each list in
+    The legend, then one collapsed <details> block per family, in
     alphabetical order: its summary line names the family, counts its models
     and gives a mark per backend and for Train over all their files;
     inside, one table for the family: each model's row (its name and its
     label in plain words) and under it one row per roster file of that
-    model, run or not, the file name linked to its envelope. A Tier 1 file is one the release gate
-    holds Runner to; a Tier 2 file's marks are dated evidence. A quant the
+    model, run or not, the file name linked to its envelope. A file's marks are dated evidence. A quant the
     matrix admits outside the roster is the matrix's claim, not this list's.
     Upcoming models follow as one line of names, in alphabetical order.
 
@@ -886,25 +892,17 @@ def render_overview(doc, borrowed=None):
     columns = ("File",) + OVERVIEW_LABELS + ("Train",)
     head = "".join(f"<th>{h}</th>" for h in columns)
     lines = [OVERVIEW_LEGEND, ""]
-    for tier, intro in (("tier1", "**Tier 1, actively validated** (the release gate holds "
-                                  "Runner to these):"),
-                        ("tier2", "**Tier 2, maintained on report** (dated evidence, "
-                                  "not gated):")):
-        fams = families(doc, tier)
-        if not fams:
-            continue
-        lines += [intro, ""]
-        for family, models in fams:
-            lines += ["<details>", _family_summary(family, models), "<table>",
-                      f"<thead><tr>{head}</tr></thead>", "<tbody>"]
-            for quals, model, rows in models:
-                lines.append(_model_heading(quals, model, len(columns)))
-                for r in rows:
-                    cells = [_overview_file(r)] + [overview_mark((r.get("backends") or {}).get(b),
-                                                                 borrowed) for b in BACKENDS]
-                    cells.append(overview_train(r.get("lora")))
-                    lines.append("<tr>" + "".join(cells) + "</tr>")
-            lines += ["</tbody>", "</table>", "</details>", ""]
+    for family, models in listed_families(doc):
+        lines += ["<details>", _family_summary(family, models), "<table>",
+                  f"<thead><tr>{head}</tr></thead>", "<tbody>"]
+        for quals, model, rows in models:
+            lines.append(_model_heading(quals, model, len(columns)))
+            for r in rows:
+                cells = [_overview_file(r)] + [overview_mark((r.get("backends") or {}).get(b),
+                                                             borrowed) for b in BACKENDS]
+                cells.append(overview_train(r.get("lora")))
+                lines.append("<tr>" + "".join(cells) + "</tr>")
+        lines += ["</tbody>", "</table>", "</details>", ""]
     lines += ["**Upcoming** (planned, not supported yet): "
               + ", ".join(upcoming_names(doc)) + "."]
     return "\n".join(lines)
@@ -982,7 +980,7 @@ def _row_doc(row, by_id, level=4, borrowed=frozenset()):
                      f"loaded beside it with `{flag}`; the smoke and its pin are of "
                      f"that composed run.")
     if row.get("published_exception"):
-        lines.append(f"- **Published below Tier 1:** {row['published_exception']}")
+        lines.append(f"- **Published, with a limit:** {row['published_exception']}")
     env = row.get("envelope")
     if env:
         feats = ", ".join(f.replace(":", " (") + (")" if ":" in f else "")
@@ -999,7 +997,7 @@ def _row_doc(row, by_id, level=4, borrowed=frozenset()):
     elif row.get("anchor"):
         lines.append(f"- **Numerical anchor:** {row['anchor']}")
     if row.get("missing"):
-        lines.append(f"- **Missing for Tier 1:** {row['missing']}")
+        lines.append(f"- **Missing:** {row['missing']}")
     if row.get("smoke"):
         sm = row["smoke"]
         lent = (" (borrowed hardware: dated evidence, its absence does not hold a release)"
@@ -1019,15 +1017,14 @@ def _row_doc(row, by_id, level=4, borrowed=frozenset()):
         lines.append(f"- {m}")
     if row["tier"] == "tier1" or row.get("lora") is not None:
         lines += _lora_detail(row.get("lora"))
-    hist = "; ".join(f"{TIER_NAMES[t['tier']]} from {t['effective']}" for t in row["transitions"])
-    lines += [f"- **Tier history:** {hist} ([log](#transition-log)).", ""]
+    lines.append("")
     return lines
 
 
 def render_doc(doc, borrowed=None):
     """The block between DOC_BEGIN and DOC_END: the validation runs at a
-    glance (render_overview), then every row's envelope by tier, family and model
-    (an Upcoming model on its own, in the order of admission), the exempt
+    glance (render_overview), then every row's envelope by family and model
+    (Upcoming models on their own), the exempt
     repositories, and the transition log."""
     if borrowed is None:
         borrowed = borrowed_classes()
@@ -1037,35 +1034,33 @@ def render_doc(doc, borrowed=None):
     # inside one
     lines = ["", "", '<a id="overview"></a>', "## Validation runs at a glance", "",
              render_overview(doc, borrowed), ""]
-    for tier in TIERS:
-        rows = [r for r in doc["rows"] if r["tier"] == tier]
-        lines += [f'<a id="{tier}"></a>', f"## {TIER_NAMES[tier]}", ""]
-        if not rows:
-            lines += ["No members.", ""]
-            continue
-        if tier == "upcoming":
-            # the roster's order is the order of admission, which is the point
-            groups = {}
-            for r in rows:
-                groups.setdefault(r["model"], []).append(r)
-            for model, rs in groups.items():
-                lines += [f"### {_qualified(rs, model)}", ""]
-                for r in rs:
-                    lines += _row_doc(r, by_id, borrowed=borrowed)
-            continue
-        # the overview's grouping: families in roster order, models by name
-        for family, groups in _family_groups(rows):
-            lines += [f"### {family}", ""]
-            for model, rs in groups:
-                lines += [f"#### {_qualified(rs, model)}", ""]
-                for r in rs:
-                    lines += _row_doc(r, by_id, level=5, borrowed=borrowed)
+    # the anchors old links name stay, on the one list
+    lines += ['<a id="models"></a><a id="tier1"></a><a id="tier2"></a><a id="tier3"></a>',
+              "## Models", ""]
+    # the overview's grouping: families and models by name
+    for family, groups in _family_groups([r for r in doc["rows"] if r["tier"] != "upcoming"]):
+        lines += [f"### {family}", ""]
+        for model, rs in groups:
+            lines += [f"#### {_qualified(rs, model)}", ""]
+            for r in rs:
+                lines += _row_doc(r, by_id, level=5, borrowed=borrowed)
+    lines += ['<a id="upcoming"></a>', "## Upcoming, planned and not supported yet", ""]
+    groups = {}
+    for r in doc["rows"]:
+        if r["tier"] == "upcoming":
+            groups.setdefault(r["model"], []).append(r)
+    if not groups:
+        lines += ["No members.", ""]
+    for model, rs in sorted(groups.items(), key=lambda kv: (kv[0].casefold(), kv[0])):
+        lines += [f"### {_qualified(rs, model)}", ""]
+        for r in rs:
+            lines += _row_doc(r, by_id, borrowed=borrowed)
     lines += ['<a id="exempt"></a>', "## Published, not a Runner model file", ""]
     for e in doc.get("exempt") or []:
         path = f" (`{e['path']}`)" if e.get("path") else ""
         lines.append(f"- [{e['repo']}](https://huggingface.co/{e['repo']}){path}: {e['reason']}")
     lines += ["", '<a id="transition-log"></a>', "## Transition log", "",
-              "Every tier a row has held, oldest first. Last validated release is "
+              "The record from when tiers applied (retired 2026-11-07), oldest first. Last validated release is "
               "the Runner version of the newest passing gate the roster had recorded on "
               "the row when it moved; none recorded means the roster held no gate for it "
               "then, which is every row at the 2026-10-22 migration.", "",
