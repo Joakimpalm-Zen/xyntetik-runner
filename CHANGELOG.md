@@ -5,6 +5,18 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The DeepSeek-V2-Lite-Chat Q8_0 row's pins sit on a near tie, and v1.14.0's R3.32 note is corrected (R6.23).**
+  Docs only; the pins are unchanged.
+  - **Why the pins mismatched:** an overnight compare against the pins mismatched on both backends, but its builds
+    were clang's. The pins come from the Makefile's default compiler, gcc with `-march=native`, and main's gcc build
+    matches both.
+  - **The tie:** every build is deterministic. The reply is decided at prompt position 6, layer 7, where the sixth
+    routed expert is 39 or 49 with gates within 2e-6. The two texts that can result both contain "Mercury".
+  - **The release build:** gcc with `-march=x86-64-v3` gives the CUDA pin's text on both backends, so its CPU reply
+    differs from the CPU pin. The row's note in `docs/model-tiers.json` says so.
+  - **The v1.14.0 correction:** the entry for R3.32 said both deepseek2 CUDA cells were stale from #631. Only the
+    Q6_K's was. R3.32's prefill route moved the Q8_0's and re-pinned it in the same change.
+
 - **The model tiers are retired: `docs/model-support.md` is now one list.** Families, models and files sort
   alphabetically, and opening a family shows one table, with each model's name on a row above its files. Validation runs
   when the project chooses, not with every release, so `scripts/check-release.py` no longer refuses a tag on a row's
@@ -332,11 +344,12 @@ Current release and unreleased changes. Compatibility follows the
   - **Gates:** `make test-cuda-attn-wide` takes the `--mla-wide` fixture at 1e-5 of the logit range, and catches V read
     from the wrong slice and a dropped rescale. `tests/test_attn_wide_repeat.py` checks the same bytes twice, the
     distance to the CPU and the default. The tile's existing families write the same bytes as before.
-  - **The roster's CUDA cells, re-pinned:** both deepseek2 rows' CUDA tier-smoke replies had moved off their pins
-    with R3.31's decode kernel (#631), not with this change, and #631 did not compare them. They were stale on main
-    from #631 until this change, and no release was cut in that window. The decode kernel's own D1 read, missing
-    from #631, passes: mean KL 0.991x the previous kernel's, Wilcoxon p 0.37, McNemar 1/1. With that, both cells are
-    retired, pinned and recorded again. The CPU cells match their pins unchanged. Record:
+  - **The roster's CUDA cells, re-pinned:** the Q6_K row's CUDA tier-smoke reply had moved off its pin with R3.31's
+    decode kernel (#631), and #631 did not compare it. It was stale on main from #631 until this change, and no
+    release was cut in that window. The Q8_0 row's CUDA reply was moved by this change's own prefill route and
+    re-pinned with it, so that cell was never stale (corrected after the release, R6.23). The decode kernel's own D1
+    read, missing from #631, passes: mean KL 0.991x the previous kernel's, Wilcoxon p 0.37, McNemar 1/1. With that,
+    both cells are retired, pinned and recorded again. The CPU cells match their pins unchanged. Record:
     `docs/compat-reports/r3.32-cuda-attn-tcw-mla-deepseek2-2026-11-05/`.
 
 - **`--rewrite` and `--type-plan` write `q5_k`, `q5_1` and `iq4_nl` (R4.33).** These are ports of ggml's writers
