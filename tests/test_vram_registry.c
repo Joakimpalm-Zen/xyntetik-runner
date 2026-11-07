@@ -37,6 +37,17 @@
 
 #define GB (1024ull * 1024ull * 1024ull)
 
+#ifndef _WIN32
+// OS boundary: count forced durability instead of waiting on a physical disk.
+// Live-process accounting must not request a power-loss durability barrier.
+static atomic_int forced_flushes;
+int fsync(int fd) {
+    (void)fd;
+    atomic_fetch_add(&forced_flushes, 1);
+    return 0;
+}
+#endif
+
 // A fixed free-VRAM reading. Real callers hand in gpu_mem_info.
 static uint64_t fixed_free(void *ud) { return *(uint64_t *)ud; }
 
@@ -1018,7 +1029,70 @@ static void test_higher_priority_waiter_acquires_first(void) {
 }
 #endif
 
+static void test_torn_ledger_keeps_live_rows(void) {
+    const char *dir = scratch_dir();
+    const char *gpu = "torn-ledger-test";
+    char path[600];
+    reg_file(dir, gpu, path, sizeof path);
+    uint64_t start = 0;
+    bool have_start = plat_pid_start_time((long)getpid(), &start);
+    FILE *f = fopen(path, "wb");
+    assert(f);
+    fprintf(f, "%ld\t7147\t%llu\t%llu\tP\t%llu\t/live-prefix.gguf\n",
+            (long)getpid(), (unsigned long long)start,
+            (unsigned long long)time(NULL), (unsigned long long)(3 * GB));
+    fputs("interrupted rewrite\n", f);
+    if (have_start)
+        fprintf(f, "%ld\t7148\t%llu\t%llu\tP\t%llu\t/reused-pid.gguf\n",
+                (long)getpid(), (unsigned long long)(start + 1),
+                (unsigned long long)time(NULL), (unsigned long long)(20 * GB));
+    fputs("123\t7\t", f);   // a torn last row, without its fields or newline
+    fclose(f);
+
+    uint64_t free_all = 24 * GB;
+    vram_status status = {0};
+    assert(!vram_claim(gpu, "/mine.gguf", 22 * GB, 0, fixed_free, &free_all,
+                       0, NULL, &status, NULL, 0));
+    // External anchor: 24 GB free minus the valid 3 GB pending row = 21 GB.
+    assert(status.available == 21 * GB);
+    f = fopen(path, "rb");
+    assert(f);
+    char contents[2048];
+    size_t n = fread(contents, 1, sizeof contents - 1, f);
+    contents[n] = 0;
+    fclose(f);
+    assert(strstr(contents, "/live-prefix.gguf"));
+    assert(!strstr(contents, "interrupted") && !strstr(contents, "/reused-pid.gguf"));
+    int rows = 0;
+    for (size_t i = 0; i < n; i++) if (contents[i] == '\n') rows++;
+    assert(rows == 1);
+    vram_lease *mine = vram_claim(gpu, "/mine.gguf", 20 * GB, 0, fixed_free,
+                                 &free_all, 0, NULL, NULL, NULL, 0);
+    assert(mine);
+    vram_release(mine);
+}
+
+#ifndef _WIN32
+static void test_accounting_does_not_force_durability(void) {
+    scratch_dir();
+    uint64_t free_all = 24 * GB;
+    atomic_store(&forced_flushes, 0);
+    vram_lease *l = vram_claim("no-durability-test", "/mine.gguf", GB, 0,
+                              fixed_free, &free_all, 0, NULL, NULL, NULL, 0);
+    assert(l);
+    vram_commit(l, GB);
+    assert(vram_request_yield("no-durability-test", (long)getpid()));
+    vram_yield_clear(l);
+    vram_release(l);
+    assert(atomic_load(&forced_flushes) == 0 && "transient accounting must not fsync");
+}
+#endif
+
 int main(void) {
+    test_torn_ledger_keeps_live_rows();
+#ifndef _WIN32
+    test_accounting_does_not_force_durability();
+#endif
     test_second_runner_refuses_naming_the_holder();
     test_priority_tag_is_recorded_in_refusal();
     test_default_priority_matches_legacy_fields_plus_new_field();

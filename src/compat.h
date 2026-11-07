@@ -346,6 +346,8 @@ const char *plat_runtime_dir(void);
 // could not be written. When the platform has no working lock the
 // read-modify-write still happens unlocked — an unlockable filesystem must not
 // stop a runner from starting.
+// This is transient process accounting, not crash-durable storage: complete
+// writes precede truncation, but no forced durability flush is performed.
 typedef char *(*plat_rmw_fn)(const char *in, size_t in_len, void *ud);
 bool        plat_file_rmw(const char *path, plat_rmw_fn fn, void *ud);
 

@@ -5,6 +5,12 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: transient VRAM accounting no longer forces durable writes (R6.24).**
+  The ledger and yield sentinels describe live processes, so power-loss
+  durability adds no useful guarantee. POSIX `fsync` and Windows
+  `FlushFileBuffers` no longer stall every ledger user under the shared lock.
+  Locks and the complete-write-before-truncate order are unchanged; readers
+  retain valid rows, ignore malformed fragments and reap stale owners.
 - **The DeepSeek-V2-Lite-Chat Q8_0 row's pins sit on a near tie, and v1.14.0's R3.32 note is corrected (R6.23).**
   Docs only; the pins are unchanged.
   - **Why the pins mismatched:** an overnight compare against the pins mismatched on both backends, but its builds

@@ -462,10 +462,10 @@ bool plat_file_rmw(const char *path, plat_rmw_fn fn, void *ud) {
         // write can still damage its prefix, but must not also discard the
         // untouched tail or be reported as success.
         if (written && !SetEndOfFile(f)) written = false;
-        // In-place rmw has no rename barrier: force the pages to stable
-        // storage while the lock still excludes other writers, so a crash
-        // leaves the old record or the new one, never a torn mix.
-        if (written && !FlushFileBuffers(f)) written = false;
+        // Callers keep live-process VRAM accounting or disposable yield
+        // sentinels, not durable data. Power loss ends their owners; readers
+        // tolerate torn rows and reap stale owners. Do not stall the lock on
+        // a durability flush. In-place writes were never crash-atomic.
         free(out);
     }
 
@@ -927,11 +927,10 @@ bool plat_file_rmw(const char *path, plat_rmw_fn fn, void *ud) {
         }
         // Preserve the old tail until the full replacement has landed.
         if (written && ftruncate(fd, (off_t)n) != 0) written = false;
-        // In-place rmw has no rename barrier at all: a crash after close can
-        // lose any subset of these pages. Force them to stable storage while
-        // the lock still excludes other writers, so a reader after a power
-        // cut sees either the old record or the new one, never a torn mix.
-        if (written && fsync(fd) != 0) written = false;
+        // Only live-process VRAM accounting and disposable yield sentinels
+        // use this path. Readers tolerate torn rows and reap stale owners;
+        // power loss ends the owners too. An fsync under the lock buys no
+        // useful durability, and cannot make an in-place update crash-atomic.
         free(out);
     }
 
