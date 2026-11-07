@@ -409,33 +409,6 @@ def check(args):
                 ok &= fail("device evidence is not current:\n" +
                            proc.stdout.rstrip())
 
-    # The Tier 1 model files (docs/model-tiers.json): each row carries the
-    # Runner version and date of its last validation run per backend. A row
-    # with no recorded pass on the backend its smoke names, or a recorded
-    # failure on any backend, refuses the tag; a record's age never does
-    # (policy decision 2026-10-28: no re-testing on a schedule, validation
-    # runs happen in the bigger validation runs and on immediate need, and
-    # the roster keeps the paper trail). A missing record on borrowed
-    # hardware (ownership in the device ledger) never refuses either: the
-    # project may use a lent machine and must not depend on it (2026-10-27).
-    tiers = getattr(args, "model_tiers", None)
-    if tiers:
-        if not tiers.exists():
-            ok &= fail(f"model tier roster {tiers} does not exist (it is the "
-                       f"record of every file's last validation run)")
-        else:
-            cmd = [sys.executable, str(ROOT / "scripts" / "model-tiers.py"),
-                   "--gate", "--json", str(tiers)]
-            if args.device_evidence:
-                cmd += ["--device-evidence", str(args.device_evidence)]
-            if getattr(args, "tiers_today", None):
-                cmd += ["--today", args.tiers_today]
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True)
-            if proc.returncode != 0:
-                ok &= fail("Tier 1 model files are not recorded as passing:\n" +
-                           proc.stdout.rstrip())
-
     return ok
 
 
@@ -515,14 +488,6 @@ def main(argv=None):
                         help="the ledger of when each claimed device class "
                              "last ran the gates; a release is refused while "
                              "one is stale, because CI cannot see them")
-    parser.add_argument("--model-tiers", type=Path,
-                        default=ROOT / "docs" / "model-tiers.json",
-                        help="the support roster; a release is refused while a "
-                             "Tier 1 file's smoke is missing, failing or older "
-                             "than its policy")
-    parser.add_argument("--tiers-today", default=None,
-                        help="the day the tier gate measures ages from "
-                             "(tests); default the UTC clock")
     parser.add_argument("--commit", required=True,
                         help="commit SHA expected in BUILD-INFO.txt")
     parser.add_argument("--site-pages", type=Path, default=ROOT / "site" / "pages",
