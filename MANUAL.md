@@ -4231,8 +4231,8 @@ with `<｜start▁of▁sentence｜>` and a role tag (`<|System|>`, `<|User|>`,
 on X2.6 the thinking-effort text, the declared tools as JSON, then the
 caller's first system message. Thinking is on unless `enable_thinking` is
 false: the reply opens with `<think>`, or with `</think>` when it is off. X2.6
-takes `reasoning_effort` `high` (the default; `xhigh` reads as high) or `low`
-and refuses anything else, as its template does. Calls are
+takes `reasoning_effort` `high` (the default) or `low` and refuses anything
+else, `xhigh` included, as its template does. Calls are
 `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>`; the
 template escapes nothing, so a value ends at the first `</arg_value>` that a
 valid continuation follows. A `tool_choice: auto` turn is parsed on the way
@@ -4513,19 +4513,35 @@ query as Qwen 3.5 does. A value that is not a boolean or null is refused
 with a 400.
 
 Runner renders each family with its own code and does not evaluate the file's
-Jinja, so it takes only the keys it knows from `chat_template_kwargs`:
-`enable_thinking`, `preserve_thinking`, `reasoning_effort`,
-`reasoning_strength` and `bare_recipients`. **Limit:** any other key is decided
-by the file's own template text. If the template reads the key as a variable,
-the switch would have no effect here, so the request is refused with a 400
+Jinja, so a `chat_template_kwargs` key only takes effect where that family's
+renderer acts on it. **Limit:** where it does not, the file's own template text
+decides. If the template reads the key as a variable, the switch would have no
+effect here, so the request is refused with a 400
 (`unsupported_template_kwarg`, naming the key) rather than served as if it were
 off: Sage-A1.5's `verification` is one, and the refusal does not depend on the
 value, so `false` is refused too. If the template does not read it, the
 reference ignores it and so does Runner, and a client that sends it keeps
 working. A name in a comment, a string or plain text is not a read, and neither
-is another value's attribute. A null value counts as absent. The values a
-render supplies itself (`messages`, `tools`, `add_generation_prompt`,
-`bos_token`, `eos_token`) are not refused, and are ignored here as before.
+is another value's attribute. A null value counts as absent.
+
+Where each known key takes effect:
+
+| Key | Families | Surfaces |
+|---|---|---|
+| `enable_thinking` | Those with a thinking mode, including Apertus | All |
+| `preserve_thinking` | Qwen 3.6, Qwen 3.8 (`false` drops the thoughts before the last query), LFM2, LFM2-24B | Chat Completions |
+| `reasoning_effort` | Qwen 3.8, Spark, K2-Horizon, Muse, Granite 4.2 (only `low` has an effect) | Chat Completions, Responses |
+| `reasoning_strength` | Muse | Chat Completions, Responses |
+
+Three families take `enable_thinking` as a request for their own native control,
+where their templates have no variable of that name: Hermes 4 maps it to
+`thinking`, Nemotron to the state `/no_think` gives, and Muse to its reasoning
+turn. Muse takes `reasoning_effort` the same way, as `reasoning_strength`.
+
+`add_generation_prompt` `false` is refused where the template reads it, because
+the chat surfaces always open the assistant's turn. The values a render supplies
+itself (`messages`, `tools`, `add_generation_prompt`, `bos_token`, `eos_token`)
+are otherwise not refused, and are ignored here as before.
 A turn that ends on a stop TOKEN also reports that token's own decision as
 `stop_logprobs` (its logprob, the top alternatives and their ids) whenever
 `logprobs` was requested. It rides beside `stop_token` rather than inside

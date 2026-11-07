@@ -750,22 +750,56 @@ bool template_reads_variable(const char *t, const char *name) {
     return false;
 }
 
-const char *req_template_kwarg_unrendered(struct jv *req, const char *tmpl_text) {
-    // Every key a family's renderer reads, where a family with no use for one
-    // answers it as it always has, then what any render supplies by itself.
-    // Nearly every template reads those, so they say nothing about a switch.
-    static const char *const rendered[] = {
-        "enable_thinking", "preserve_thinking", "reasoning_effort",
-        "reasoning_strength", "bare_recipients",
+static bool name_in(const char *name, const char *const *list) {
+    for (; *list; list++)
+        if (!strcmp(name, *list)) return true;
+    return false;
+}
+
+// Does this family's renderer act on `key` on this surface? Measured, by
+// rendering every family with the key set and comparing (R2.14). Only the chat
+// surface replays by preserve_thinking; the Messages surface reads no effort.
+static bool renderer_honours(int tmpl, int surface, const char *key) {
+    static const char *const thinking[] = {
+        "apertus", "chatml-think", "gemma4", "gemma4-mainline", "granite42", "harmony",
+        "hermes4", "k2-horizon", "mellum", "mimo", "minicpm5", "minicpmv", "muse",
+        "nemotron", "nemotron35", "ornith", "qwen35", "qwen35-nothink", "qwen36",
+        "qwen38", "spark", "spark25", NULL };
+    static const char *const preserve[] = { "lfm2", "lfm2-24b", "qwen36", "qwen38", NULL };
+    static const char *const effort[] = {
+        "granite42", "k2-horizon", "muse", "qwen38", "spark", NULL };
+    const char *name = template_name(tmpl);
+    if (!strcmp(key, "enable_thinking")) return name_in(name, thinking);
+    if (!strcmp(key, "preserve_thinking"))
+        return surface == KWARG_CHAT && name_in(name, preserve);
+    if (!strcmp(key, "reasoning_effort"))
+        return surface != KWARG_MESSAGES && name_in(name, effort);
+    if (!strcmp(key, "reasoning_strength"))
+        return surface != KWARG_MESSAGES && !strcmp(name, "muse");
+    return false;
+}
+
+const char *req_template_kwarg_unrendered(int tmpl, int surface, struct jv *req,
+                                          const char *tmpl_text) {
+    // What any render supplies by itself: nearly every template reads these, so
+    // they say nothing about a switch. `bare_recipients` is Runner's own.
+    static const char *const supplied[] = {
         "messages", "tools", "add_generation_prompt", "bos_token", "eos_token",
-    };
+        "bare_recipients", NULL };
     jv *kw = req ? jv_get((jv *)req, "chat_template_kwargs") : NULL;
     if (!kw || kw->type != J_OBJ || !tmpl_text) return NULL;
     for (int i = 0; i < kw->n; i++) {
-        bool known = kw->items[i]->type == J_NULL;
-        for (size_t k = 0; k < sizeof rendered / sizeof *rendered && !known; k++)
-            known = !strcmp(kw->keys[i], rendered[k]);
-        if (!known && template_reads_variable(tmpl_text, kw->keys[i])) return kw->keys[i];
+        const char *key = kw->keys[i];
+        jv *v = kw->items[i];
+        if (v->type == J_NULL) continue;
+        // the chat surfaces always open the assistant's turn; a client that
+        // asks them not to, of a template that would listen, is told so
+        bool no_generation = !strcmp(key, "add_generation_prompt") &&
+                             v->type == J_BOOL && !v->b;
+        if (!no_generation &&
+            (name_in(key, supplied) || renderer_honours(tmpl, surface, key)))
+            continue;
+        if (template_reads_variable(tmpl_text, key)) return key;
     }
     return NULL;
 }
@@ -773,7 +807,8 @@ const char *req_template_kwarg_unrendered(struct jv *req, const char *tmpl_text)
 // Qwen 3.6's `preserve_thinking` (chat_template_kwargs, or the top level as
 // enable_thinking is taken): true keeps the thought of every assistant turn,
 // where the template's default keeps those after the last user query only.
-// 1 for true, 0 for false, null or absent, -1 for any other type.
+// Qwen 3.8's default keeps them all, so false is not absent there.
+// 1 for true, 2 for false, 0 for null or absent, -1 for any other type.
 int req_preserve_thinking(struct jv *req) {
     if (!req) return 0;
     jv *kw = jv_get((jv *)req, "chat_template_kwargs");
@@ -781,7 +816,7 @@ int req_preserve_thinking(struct jv *req) {
     if (!v || v->type == J_NULL) v = jv_get((jv *)req, "preserve_thinking");
     if (!v || v->type == J_NULL) return 0;
     if (v->type != J_BOOL) return -1;
-    return v->b ? 1 : 0;
+    return v->b ? 1 : 2;
 }
 
 int req_reasoning_effort(struct jv *req) {
@@ -808,7 +843,7 @@ int req_spark_effort(struct jv *req) {
     if (!v || v->type == J_NULL) return THINK_EFFORT_XHIGH;
     const char *s = jv_str(v, NULL);
     if (!s) return -1;
-    if (!strcmp(s, "high") || !strcmp(s, "xhigh")) return THINK_EFFORT_XHIGH;
+    if (!strcmp(s, "high")) return THINK_EFFORT_XHIGH;
     if (!strcmp(s, "low")) return THINK_EFFORT_LOW;
     return -1;
 }
@@ -853,6 +888,15 @@ int req_template_effort(int tmpl, struct jv *req, const char **why) {
         return e;
     }
     if (tmpl == TMPL_K2H) return req_k2h_effort(req, why);
+    if (tmpl == TMPL_GRANITE42) {
+        // `low_effort = reasoning_effort == "low"`: every other value is no
+        // switch at all, and the template takes it without complaint
+        jv *kw = req ? jv_get((jv *)req, "chat_template_kwargs") : NULL;
+        jv *v  = kw ? jv_get(kw, "reasoning_effort") : NULL;
+        if (!v || v->type == J_NULL) v = req ? jv_get((jv *)req, "reasoning_effort") : NULL;
+        const char *e = v ? jv_str(v, NULL) : NULL;
+        return e && !strcmp(e, "low") ? THINK_EFFORT_LOW : 0;
+    }
     if (tmpl == TMPL_MUSE) {
         // the reference's `reasoning_strength` kwarg (low, medium, high;
         // absent renders "high"); `reasoning_effort` is accepted as the
@@ -2277,7 +2321,7 @@ static size_t render_qwen38(int tmpl, const chat_msg *msgs, int n_msgs,
             } else {
                 rest = NULL;   // an open block: replay verbatim
             }
-        } else {
+        } else if (!msgs[i].no_thought) {
             off = emit(out, cap, off, "<think>\n\n</think>\n\n", NULL, NULL);
         }
         if (!rest) {
@@ -2348,6 +2392,9 @@ static size_t render_granite42(int tmpl, const chat_msg *msgs, int n_msgs,
     int last_user = -1;
     for (int i = first; i < n_msgs; i++)
         if (!strcmp(msgs[i].role, "user")) last_user = i;
+    // granite 4.2's `content + '\n\n{reasoning effort: low}'`, last user turn
+    bool low_effort = tmpl == TMPL_GRANITE42 &&
+                      (thinking & THINK_EFFORT_MASK) == THINK_EFFORT_LOW;
     for (int i = first; i < n_msgs; i++) {
         const char *role = msgs[i].role;
         const char *c = msgs[i].content;
@@ -2366,8 +2413,10 @@ static size_t render_granite42(int tmpl, const chat_msg *msgs, int n_msgs,
             continue;
         }
         if (strcmp(role, "assistant")) {
-            off = emit(out, cap, off, "<|im_start|>%s\n%s<|im_end|>\n",
-                       role, c);
+            off = emit(out, cap, off, "<|im_start|>%s\n%s", role, c);
+            if (low_effort && i == last_user)
+                off = emit(out, cap, off, "\n\n{reasoning effort: low}", NULL, NULL);
+            off = emit(out, cap, off, "<|im_end|>\n", NULL, NULL);
             continue;
         }
         // An assistant turn without a thought block is seeded with the
@@ -2675,9 +2724,11 @@ static size_t render_apertus(int tmpl, const chat_msg *msgs, int n_msgs,
     }
     if (sys)
         off = emit(out, cap, off, "<|system_start|>%s<|system_end|>", sys, NULL);
-    off = emit(out, cap, off,
-               "<|developer_start|>Deliberation: disabled\n"
-               "Tool Capabilities:", NULL, NULL);
+    // `enable_thinking is defined and enable_thinking`: off unless asked for
+    off = emit(out, cap, off, (thinking & THINK_MODE_MASK) == THINK_ON
+               ? "<|developer_start|>Deliberation: enabled\nTool Capabilities:"
+               : "<|developer_start|>Deliberation: disabled\nTool Capabilities:",
+               NULL, NULL);
     if (tools && tools->type == J_ARR && tools->n) {
         sbuf defs = {0};
         apertus_render_tools(tools, &defs);

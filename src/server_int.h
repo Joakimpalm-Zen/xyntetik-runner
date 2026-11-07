@@ -295,8 +295,8 @@ int  request_adapter(jv *req);
 // re-key the slot's prefix identity when it changes. False: answered 500.
 bool slot_use_adapter(slot_t *s, int idx, sock_t fd);
 // R2.13: answers 400 and returns true for a chat_template_kwargs key the
-// model's own template reads and Runner cannot render.
-bool template_kwarg_refused(slot_t *s, sock_t fd, jv *req);
+// model's own template reads and Runner cannot render on this surface.
+bool template_kwarg_refused(slot_t *s, sock_t fd, jv *req, int surface);
 bool init_swap_runtime(const model_params *mp, int n_threads, int ttl);
 // Admission: q_push sheds with 503 when the queue is full, q_pop blocks until
 // a connection arrives or the queue is shut down (SOCK_INVALID then).

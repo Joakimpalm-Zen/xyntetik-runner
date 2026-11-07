@@ -764,7 +764,7 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
                    "top level or inside chat_template_kwargs");
         return NULL;
     }
-    if (template_kwarg_refused(s, fd, req)) return NULL;
+    if (template_kwarg_refused(s, fd, req, KWARG_MESSAGES)) return NULL;
 
     jv *msgs = jv_get(req, "messages");
     if (!msgs || msgs->type != J_ARR || msgs->n == 0) {

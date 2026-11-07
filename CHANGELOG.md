@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Known `chat_template_kwargs` keys no longer vanish on the families that ignored them (R2.14).** Measured against 33
+  references. Honoured now: `preserve_thinking` on LFM2 and LFM2-24B, `preserve_thinking: false` on Qwen 3.8 (its default
+  keeps every thought), `enable_thinking` on Apertus, and `reasoning_effort: low` on Granite 4.2. Refused now, with the
+  400 R2.13 added, wherever the file's template reads the key: a key a family's renderer ignores, `preserve_thinking` on
+  Responses and Messages, `reasoning_effort` and `reasoning_strength` on Messages, and `add_generation_prompt: false`.
+  Spark refuses `reasoning_effort: xhigh`, as its template does. Limits: 19 families were not compared with their
+  references on this host, and are covered by the refusal rather than a measurement. A null `preserve_thinking` counts
+  as absent, where Qwen 3.8's template would treat it as false.
+
 - **A `chat_template_kwargs` switch Runner cannot render is refused, not silently dropped (R2.13).** Sage-A1.5's
   `verification` rendered as off with no error, because Runner renders each family with its own code and reads only
   the keys it knows. A key the file's own template reads as a variable, and Runner does not render, now gets a 400 naming
