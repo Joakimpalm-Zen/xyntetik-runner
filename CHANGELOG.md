@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: transient VRAM accounting no longer forces durable writes (R6.24).**
+  The ledger and yield sentinels describe live processes, so power-loss
+  durability adds no useful guarantee. POSIX `fsync` and Windows
+  `FlushFileBuffers` no longer stall every ledger user under the shared lock.
+  Locks and the complete-write-before-truncate order are unchanged; readers
+  retain valid rows, ignore malformed fragments and reap stale owners.
+
 - **The model tiers are retired: `docs/model-support.md` is now one list.** Families, models and files sort
   alphabetically, and opening a family shows one table, with each model's name on a row above its files. Validation runs
   when the project chooses, not with every release, so `scripts/check-release.py` no longer refuses a tag on a row's
