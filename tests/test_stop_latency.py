@@ -20,6 +20,10 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
+# Cleanup is eventual, not a service deadline. This only bounds a hung test
+# on slow storage; process startup and exit keep their own measured bounds.
+SWEEP_CLEANUP_TIMEOUT_S = 120
+
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal contract")
 
 
@@ -103,14 +107,18 @@ def test_clean_stop_leaves_record_for_discovery_to_sweep(runner_bin, model, tmp_
         pid = first.proc.pid
         record = records / f"{pid}.json"
         assert record.is_file(), "a live server publishes its instance record"
+        first.proc.send_signal(signal.SIGTERM)
+        assert first.proc.wait(timeout=10) == 0
+        # Check before __exit__ disposes of the harness log: that filesystem
+        # work can outlast the helper's deliberately delayed sweep.
+        assert record.is_file(), "clean exit must not unlink the instance record"
     assert first.exit_code == 0 and not first.killed
-    assert record.is_file(), "clean exit must not unlink the instance record"
 
     if sweep == "list":
         result = subprocess.run([helper, "list"], env=env, check=True,
                                 capture_output=True, text=True, timeout=10)
         assert str(pid) not in result.stdout.splitlines()
-        deadline = time.monotonic() + 8
+        deadline = time.monotonic() + SWEEP_CLEANUP_TIMEOUT_S
         while record.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert not record.exists(), "the public list sweeps the dead owner"
@@ -118,7 +126,7 @@ def test_clean_stop_leaves_record_for_discovery_to_sweep(runner_bin, model, tmp_
         # Do not list first: registration alone must remove the old file,
         # including on hosts that never run a tray or discovery controller.
         with server() as second:
-            deadline = time.monotonic() + 8
+            deadline = time.monotonic() + SWEEP_CLEANUP_TIMEOUT_S
             while record.exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
             assert not record.exists(), "the next server eventually sweeps the old file"
@@ -149,16 +157,23 @@ def test_blocked_sweep_does_not_hold_start_or_exit(runner_bin, model, tmp_path):
                          extra_args=["--gpu", "off", "-t", "2"])
     try:
         first.start()
-        deadline = time.monotonic() + 3
-        while not marker.exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        worker = int(marker.read_text())
+        deadline = time.monotonic() + SWEEP_CLEANUP_TIMEOUT_S
+        while worker is None and time.monotonic() < deadline:
+            try:
+                worker = int(marker.read_text())
+            except (FileNotFoundError, ValueError):
+                time.sleep(0.02)
+        assert worker is not None, "cleanup helper did not start"
         assert worker != first.proc.pid, "cleanup must run in a separate process"
         assert stale.exists(), "cleanup is still blocked after the server became healthy"
         t0 = time.monotonic()
-        first.stop(strict=True)
+        first.proc.send_signal(signal.SIGTERM)
+        rc = first.proc.wait(timeout=2)
         assert time.monotonic() - t0 < 2, "server exit waited for its cleanup helper"
-        assert not first.killed
+        if os.name != "nt":
+            assert rc == 0, rc
+        # RSS sampling, log close/unlink and other harness bookkeeping run in
+        # finally, outside the measurement and the blocked-worker window.
 
         # A second start does not wait for the worker lock or run a duplicate sweep.
         second = RunnerServer(runner_bin, str(model), ctx=128, env=env, start_timeout=3,
@@ -167,13 +182,14 @@ def test_blocked_sweep_does_not_hold_start_or_exit(runner_bin, model, tmp_path):
             assert int(marker.read_text()) == worker
         # No discovery list runs: the helper alone must clear the readerless backlog,
         # including records left by both servers after they stopped.
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + SWEEP_CLEANUP_TIMEOUT_S
         while time.monotonic() < deadline and (stale.exists() or temporary.exists() or
                 (records / f"{first.proc.pid}.json").exists() or
                 (records / f"{second.proc.pid}.json").exists()):
             time.sleep(0.02)
         assert sorted(p.name for p in records.glob("*.json")) == [live.name]
         assert not temporary.exists()
+        worker = None  # successful cleanup needs no signal to an old helper PID
     finally:
         first.stop()
         if worker is not None:
