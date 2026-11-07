@@ -62,7 +62,7 @@ static const struct {
     { "gemma4",           0,  15, 1, 1, 0, "gemma4",        1 },
     { "mistral",          0,   0, 1, 0, 0, "mistral_json",  1 },
     { "phi3",            15,  16, 0, 0, 0, "generic",       0 },
-    { "apertus",         92, 113, 1, 0, 0, "generic",       0 },
+    { "apertus",         92, 113, 1, 1, 0, "generic",       0 },
     { "ornith",           0,  34, 0, 0, 1, "qwen3_xml",     1 },
     { "muse",           170, 190, 1, 1, 1, "atem",          1 },
     { "granite",          0,  43, 0, 0, 0, "generic",       0 },
@@ -221,8 +221,11 @@ static void capacity_sweep(int t, const jv *tools) {
 }
 
 // The thinking argument carries the mode in its low bits and, above them,
-// the effort bits (read by qwen38 and muse) and the recipient bits (read by
-// muse). A request may set either for any family -- the server ORs a
+// the effort bits (read by qwen38, muse and spark, and granite42's low alone:
+// its template tests `reasoning_effort == "low"`, so medium is no switch) and
+// the recipient bits (read by muse). nemotron35 shares granite42's renderer
+// and its template has no such line, so it reads neither.
+// A request may set either for any family -- the server ORs a
 // request's bare_recipients into every family's argument -- so a family
 // that reads neither must render exactly what the mode alone renders.
 static void mode_bits_are_ignored(int t, const jv *tools) {
@@ -241,7 +244,9 @@ static void mode_bits_are_ignored(int t, const jv *tools) {
         for (size_t i = 0; i < sizeof MODES / sizeof *MODES; i++)
             for (size_t j = 0; j < sizeof BITS / sizeof *BITS; j++) {
                 bool effort = BITS[j] & THINK_EFFORT_MASK;
-                if ((effort && reads_effort) || (!effort && reads_recipients)) continue;
+                bool reads_this_effort = reads_effort ||
+                    (t == TMPL_GRANITE42 && BITS[j] == THINK_EFFORT_LOW);
+                if ((effort && reads_this_effort) || (!effort && reads_recipients)) continue;
                 size_t a = render(t, m, n, true, MODES[i], tools, A, sizeof A);
                 size_t b = render(t, m, n, true, MODES[i] | BITS[j], tools, B, sizeof B);
                 CHECK(a == b && !strcmp(A, B),
@@ -249,6 +254,14 @@ static void mode_bits_are_ignored(int t, const jv *tools) {
                       name, MODES[i], BITS[j], k ? "tool turn" : "one user turn");
             }
     }
+    // and the bit granite42 does read says what its template writes, once
+    if (t == TMPL_GRANITE42)
+        for (size_t i = 0; i < sizeof MODES / sizeof *MODES; i++) {
+            render(t, user, 1, true, MODES[i] | THINK_EFFORT_LOW, tools, B, sizeof B);
+            const char *at = strstr(B, "{reasoning effort: low}");
+            CHECK(at && !strstr(at + 1, "{reasoning effort: low}"),
+                  "%s: mode 0x%x low effort does not write its line once", name, MODES[i]);
+        }
     conv_free(&c);
 }
 
