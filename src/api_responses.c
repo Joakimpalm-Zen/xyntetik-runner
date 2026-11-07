@@ -618,7 +618,7 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
                    "top level or inside chat_template_kwargs");
         return;
     }
-    if (template_kwarg_refused(s, fd, req)) return;
+    if (template_kwarg_refused(s, fd, req, KWARG_RESPONSES)) return;
 
     jv *input = jv_get(req, "input");
     if (!input || input->type == J_NULL) {

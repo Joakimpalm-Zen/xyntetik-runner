@@ -1,0 +1,35 @@
+33 families read, 19 not checked
+  NOT CHECKED mellum models/Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf not present. Point RUNNER
+  NOT CHECKED lfm2-8b models/LFM2.5-8B-A1B-Q4_K_M.gguf not present. Point RUNNER_MODELS_DIR at 
+  NOT CHECKED k2-horizon models/K2-Horizon-1B-Q8_0.gguf not present. Point RUNNER_MODELS_DIR at th
+  NOT CHECKED gemma models/google_gemma-3-4b-it-Q4_K_M.gguf not present. Point RUNNER_MODELS_
+  NOT CHECKED gemma4 models/e4b-q4km.gguf not present. Point RUNNER_MODELS_DIR at the model sh
+  NOT CHECKED gemma4-mainline models/gemma-4-12B-it-Q4_K_M.gguf not present. Point RUNNER_MODELS_DIR at
+  NOT CHECKED ornith15-35b-a3b models/Ornith-1.5-35B-Q8_0.gguf not present. Point RUNNER_MODELS_DIR at t
+  NOT CHECKED minicpmv47 models/MiniCPM-V-4_7-35B-A3B-Q4_K_M-thinking.gguf not present. Point RUNN
+  NOT CHECKED minicpmv47-fixed models/MiniCPM-V-4_7-35B-A3B-Q8_0.gguf not present. Point RUNNER_MODELS_D
+  NOT CHECKED clef-flash models/Clef-Flash-Q4_K_M.gguf not present. Point RUNNER_MODELS_DIR at the
+  NOT CHECKED empero-qwen38-35b-a3b-distill models/Qwen3.8-35B-A3B-Q6_K.gguf not present. Point RUNNER_MODELS_DIR at 
+  NOT CHECKED mistral-sys models/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf not present. Point RUNNER
+  NOT CHECKED mistral-file models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf not present. Point RUNNER_MOD
+  NOT CHECKED nemotron-lightning models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf not present. Point
+  NOT CHECKED nemotron3-nano models/NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf not present. Point RUNN
+  NOT CHECKED eurollm models/EuroLLM-9B-Instruct-Q4_K_M.gguf not present. Point RUNNER_MODELS_D
+  NOT CHECKED granite models/granite-4.1-8b-Q4_0.gguf not present. Point RUNNER_MODELS_DIR at t
+  NOT CHECKED harmony no jinja source (('harmony', 'openai-harmony'))
+  NOT CHECKED raw no jinja source (None)
+
+reference moves, Runner does not (silently dropped):
+
+Runner moves, reference does not (invented):
+   muse enable_thinking=True
+   muse enable_thinking=False
+   muse reasoning_effort=low
+   muse reasoning_effort=medium
+   hermes4 enable_thinking=True
+   nemotron-nano enable_thinking=False
+
+reference raises, Runner renders:
+
+add_generation_prompt false moves the reference on 30 of 33 families
+base render failed: []

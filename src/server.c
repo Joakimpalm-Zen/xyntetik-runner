@@ -255,8 +255,8 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
         // Mellum writes it only when the reasoning is non-empty. MiniCPM-V
         // 4.7 writes it on every assistant turn, its reasoning only on the
         // turns the caller selects and empty on the rest.
-        if ((tmpl == TMPL_ORNITH || tmpl == TMPL_QWEN38 || tmpl_minicpmv(tmpl) ||
-             ((tmpl == TMPL_CHATML_THINK || tmpl_qwen35(tmpl)) &&
+        if ((tmpl == TMPL_ORNITH || tmpl_minicpmv(tmpl) ||
+             ((tmpl == TMPL_CHATML_THINK || tmpl == TMPL_QWEN38 || tmpl_qwen35(tmpl)) &&
               replay_reason) ||
              (tmpl == TMPL_MELLUM && replay_reason && reason && *reason) ||
              (tmpl == TMPL_MINICPM5 && replay_reason)) &&
@@ -573,8 +573,9 @@ typedef void (*chat_prompt_fn)(slot_t *s, sock_t fd, const char *prompt,
                                jv *req, const tool_envelope *env,
                                const render_state *rs);
 
-bool template_kwarg_refused(slot_t *s, sock_t fd, jv *req) {
-    const char *key = req_template_kwarg_unrendered(req, slot_template_text(s));
+bool template_kwarg_refused(slot_t *s, sock_t fd, jv *req, int surface) {
+    const char *key = req_template_kwarg_unrendered(s->tmpl, surface, req,
+                                                    slot_template_text(s));
     if (!key) return false;
     char msg[256];
     snprintf(msg, sizeof msg, "chat_template_kwargs.%.96s: this model's chat template "
@@ -626,7 +627,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                    "top level or inside chat_template_kwargs");
         return;
     }
-    if (template_kwarg_refused(s, fd, req)) return;
+    if (template_kwarg_refused(s, fd, req, KWARG_CHAT)) return;
     int preserve_thinking = req_preserve_thinking(req);
     if (preserve_thinking < 0) {
         send_error(fd, 400,
@@ -787,7 +788,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     }
     int last_user = -1;
     if (tmpl_chatml_think(s->tmpl) || tmpl_qwen35(s->tmpl) || s->tmpl == TMPL_LFM2_8B ||
-        s->tmpl == TMPL_LFM2_24B)
+        s->tmpl == TMPL_LFM2_24B || s->tmpl == TMPL_QWEN38)
         for (int i = 0; i < msgs->n; i++)
             if (!strcmp(chat_role(msgs->items[i]), "user")) last_user = i;
     // LFM2 keeps the thought of the last assistant turn only (the 8B's and
@@ -889,7 +890,14 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                               tmpl_argkv(s->tmpl) ||
                               (s->tmpl == TMPL_LFM2 && i == last_assistant) ||
                               ((s->tmpl == TMPL_LFM2_8B || s->tmpl == TMPL_LFM2_24B) &&
-                               i > last_user);
+                               i > last_user) ||
+                              // LFM2's `preserve_thinking or ...`
+                              ((s->tmpl == TMPL_LFM2 || s->tmpl == TMPL_LFM2_24B) &&
+                               preserve_thinking == 1);
+        // Qwen 3.8 keeps every thought unless told not to, then only those
+        // after the last query: an explicit false is not an absent key there
+        if (s->tmpl == TMPL_QWEN38)
+            replay_reason = preserve_thinking != 2 || i > last_user;
         char *content = message_text(msgs->items[i], s->tmpl, replay_reason,
                                      &oom);
         if (oom) break;
@@ -898,6 +906,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         if (tmpl_ornith_like(s->tmpl) && !strcmp(role, "tool")) role = "user";
         cm[n_cm++] = (chat_msg){
             .role = role, .content = content, .name = turn_name,
+            .no_thought = s->tmpl == TMPL_QWEN38 && !replay_reason,
         };
         total += strlen(role) + strlen(content) + 64;
     }

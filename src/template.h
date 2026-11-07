@@ -483,6 +483,9 @@ typedef struct {
     // Harmony history may carry separate analysis/commentary assistant
     // messages before a final answer or recipient-bearing call.
     const char *channel;
+    // Qwen 3.8 with preserve_thinking false: this turn writes no thought block,
+    // where one with no reasoning writes an empty block.
+    bool no_thought;
 } chat_msg;
 int         template_detect(const char *meta_tmpl, tokenizer *tok);
 int         template_from_name(const char *name); // -1 if unknown
@@ -593,11 +596,13 @@ bool req_thinking_mode_valid(struct jv *req);
 // variable, so only a read can change what it renders.
 bool template_reads_variable(const char *text, const char *name);
 // The first chat_template_kwargs key this template reads and Runner does not
-// render, or NULL. Runner renders each family by hand, so such a key would be
-// dropped and the client served the off shape; one the template does not read
-// is ignored by the reference too, and stays ignored. A null value is absent,
-// as it is for every key Runner reads.
-const char *req_template_kwarg_unrendered(struct jv *req, const char *tmpl_text);
+// render on this surface for this family, or NULL. Runner renders each family
+// by hand, so such a key would be dropped and the client served another shape;
+// one the template does not read is ignored by the reference too, and stays
+// ignored. A null value is absent, as it is for every key Runner reads.
+enum { KWARG_CHAT, KWARG_RESPONSES, KWARG_MESSAGES };
+const char *req_template_kwarg_unrendered(int tmpl, int surface, struct jv *req,
+                                          const char *tmpl_text);
 int req_preserve_thinking(struct jv *req);
 int req_thinking_mode(struct jv *req);
 // `reasoning_effort` from the request (top level or chat_template_kwargs):

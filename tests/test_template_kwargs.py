@@ -62,11 +62,12 @@ def make_model(tmp, name, template):
 
 
 class Server:
-    def __init__(self, model, tmp):
+    def __init__(self, model, tmp, extra=()):
         self.port = free_port()
         self.log = open(tmp / "server.log", "wb")
         self.p = subprocess.Popen([str(EXE), "-m", str(model), "--serve", "--port", str(self.port), "--gpu", "off",
-                                   "-c", "512", "--no-tray"], cwd=ROOT, stdout=self.log, stderr=self.log)
+                                   "-c", "512", "--no-tray", *extra], cwd=ROOT, stdout=self.log,
+                                  stderr=self.log)
         import time
         for _ in range(300):
             if self.p.poll() is not None:
@@ -99,8 +100,8 @@ def serve(tmp_path):
         pytest.skip("runner binary not built")
     made = []
 
-    def start(template):
-        s = Server(make_model(tmp_path, "m", template), tmp_path)
+    def start(template, extra=()):
+        s = Server(make_model(tmp_path, "m", template), tmp_path, extra)
         made.append(s)
         return s
     yield start
@@ -156,16 +157,11 @@ def test_null_is_absent_as_it_is_for_every_known_key(serve):
     assert code == 200, out
 
 
-@pytest.mark.parametrize("key,value", [
-    ("enable_thinking", True),
-    ("preserve_thinking", True),
-    ("reasoning_effort", "low"),
-    ("reasoning_strength", "low"),
-    ("bare_recipients", True),
-])
-def test_a_key_runner_renders_is_not_refused_though_the_template_reads_it(serve, key, value):
-    s = serve("{% if " + key + " %}x{% endif %}")
-    code, out = s.post("/v1/chat/completions", chat({key: value}))
+def test_runners_own_key_is_not_refused_though_a_template_reads_it(serve):
+    # no reference has bare_recipients; the other known keys depend on the family,
+    # and tests/test_known_kwargs.py holds each one to it
+    s = serve("{% if bare_recipients %}x{% endif %}")
+    code, out = s.post("/v1/chat/completions", chat({"bare_recipients": True}))
     assert code == 200, out
 
 
@@ -182,6 +178,29 @@ def test_a_value_the_renderer_itself_supplies_is_not_refused(serve, key, value):
     s = serve("{{ bos_token }}{{ eos_token }}{% if add_generation_prompt %}x{% endif %}{{ tools }}")
     code, out = s.post("/v1/chat/completions", chat({key: value}))
     assert code == 200, out
+
+
+@pytest.mark.parametrize("renderer,key,value,path,refused", [
+    # chat honours both; Responses reads the effort and no preserve_thinking; Messages neither
+    ("qwen36", "preserve_thinking", True, "/v1/chat/completions", False),
+    ("qwen36", "preserve_thinking", True, "/v1/responses", True),
+    ("qwen36", "preserve_thinking", True, "/v1/messages", True),
+    ("qwen38", "reasoning_effort", "low", "/v1/chat/completions", False),
+    ("qwen38", "reasoning_effort", "low", "/v1/responses", False),
+    ("qwen38", "reasoning_effort", "low", "/v1/messages", True),
+])
+def test_a_key_is_refused_on_a_surface_that_does_not_render_it(serve, renderer, key, value, path, refused):
+    s = serve("{% if " + key + " %}x{% endif %}", ("--chat-template", renderer))
+    kw = {"chat_template_kwargs": {key: value}}
+    body = {"/v1/chat/completions": chat({key: value}),
+            "/v1/responses": {"input": "hello", "max_output_tokens": 2, **kw},
+            "/v1/messages": {"model": "m.gguf", "max_tokens": 2,
+                             "messages": [{"role": "user", "content": "hello"}], **kw}}[path]
+    code, out = s.post(path, body)
+    if refused:
+        assert code == 400 and key in json.dumps(out), out
+    else:
+        assert code == 200, out
 
 
 def test_the_unknown_key_is_found_among_known_ones(serve):
