@@ -5,6 +5,11 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The model validation tables are easier to navigate.** Families, models and files now sort alphabetically under each
+  tier, and opening a family shows one table, with each model's name on a row above its files. Tier 1 also gains
+  Qwen3.8-27B-GSQ-RCO-IQ3_S-recovered, the project's own artifact, by owner decision. Its limits stand: it reads 0.41 mean
+  KLD against the publisher's float32 reference, a learned derivative rather than a faithful quantization.
+
 - **Known `chat_template_kwargs` keys no longer vanish on the families that ignored them (R2.14).** Measured against 33
   references. Honoured now: `preserve_thinking` on LFM2 and LFM2-24B, `preserve_thinking: false` on Qwen 3.8 (its default
   keeps every thought), `enable_thinking` on Apertus, and `reasoning_effort: low` on Granite 4.2. Refused now, with the

@@ -679,11 +679,19 @@ def _qualified(rows, name):
 
 def _model_groups(rows):
     """Rows grouped by model, groups sorted by model name, files within a
-    group in roster order: the render does not depend on insertion order."""
+    group sorted by file name: the render does not depend on insertion order."""
     groups = {}
     for r in rows:
         groups.setdefault(r["model"], []).append(r)
+    for rs in groups.values():
+        rs.sort(key=_file_key)
     return sorted(groups.items(), key=lambda kv: (kv[0].casefold(), kv[0]))
+
+
+def _file_key(row):
+    """A row's place among its model's files: by file name, then id."""
+    name = ((row.get("files") or [{}])[0]).get("name") or row["id"]
+    return (name.casefold(), row["id"])
 
 
 
@@ -694,19 +702,19 @@ def family_of(row):
 
 
 def _family_groups(rows):
-    """Rows grouped by family, the families in the order of each one's
-    first row (the roster's order), each family's models as _model_groups
-    sorts them."""
+    """Rows grouped by family, the families in alphabetical order so a reader
+    can find one, each family's models as _model_groups sorts them."""
     fams = {}
     for r in rows:
         fams.setdefault(family_of(r), []).append(r)
-    return [(fam, _model_groups(rs)) for fam, rs in fams.items()]
+    return [(fam, _model_groups(fams[fam]))
+            for fam in sorted(fams, key=lambda f: (f.casefold(), f))]
 
 
 def families(doc, tier):
     """The families the overview lists for a tier: one (family, models) per
-    family in roster order, its models as (qualifiers, model, rows) sorted
-    by name, each with its roster files in roster order."""
+    family in alphabetical order, its models as (qualifiers, model, rows)
+    sorted by name, each with its files sorted by name."""
     return [(fam, [(_qualifiers(rs), model, rs) for model, rs in groups])
             for fam, groups in _family_groups(
                 [r for r in doc["rows"] if r["tier"] == tier])]
@@ -725,15 +733,15 @@ def tier1_groups(doc):
 
 
 def upcoming_names(doc):
-    """Upcoming models as names, in the roster's order (the order of
-    admission), a vision model marked text path only."""
+    """Upcoming models as names, in alphabetical order, a vision model marked
+    text path only."""
     names = []
     for r in doc["rows"]:
         if r["tier"] == "upcoming":
             n = r["model"] + (" (text path only)" if r.get("vision_upstream") else "")
             if n not in names:
                 names.append(n)
-    return names
+    return sorted(names, key=lambda n: (n.casefold(), n))
 
 
 OVERVIEW_LABELS = ("CPU", "CUDA", "Metal")
@@ -844,11 +852,11 @@ def _family_summary(family, models):
             + " · ".join(marks) + "</summary>")
 
 
-def _model_heading(quals, model):
-    """A model's line inside its family's block: the bold name, then its
-    label in plain words."""
+def _model_heading(quals, model, width):
+    """A model's row in its family's table, above that model's files: the
+    bold name, then its label in plain words, across every column."""
     label = "".join(", " + q[0].lower() + q[1:] for q in quals)
-    return f"<p><b>{_esc(model)}</b>{_esc(label)}</p>"
+    return f'<tr><td colspan="{width}"><b>{_esc(model)}</b>{_esc(label)}</td></tr>'
 
 
 def render_overview(doc, borrowed=None):
@@ -859,16 +867,15 @@ def render_overview(doc, borrowed=None):
     the version and date of every file's last validation run.
 
     The legend, then one collapsed <details> block per family, Tier 1
-    families first and Tier 2 families under their own line, each in the
-    roster's order: its summary line names the family, counts its models
+    families first and Tier 2 families under their own line, each list in
+    alphabetical order: its summary line names the family, counts its models
     and gives a mark per backend and for Train over all their files;
-    inside, each model's line (its name and its label in plain words) and a
-    table with one row per roster file of that model, run or not, the file
-    name linked to its envelope. A Tier 1 file is one the release gate
+    inside, one table for the family: each model's row (its name and its
+    label in plain words) and under it one row per roster file of that
+    model, run or not, the file name linked to its envelope. A Tier 1 file is one the release gate
     holds Runner to; a Tier 2 file's marks are dated evidence. A quant the
     matrix admits outside the roster is the matrix's claim, not this list's.
-    Upcoming models follow as one line of names, in the roster's order (the
-    order of admission).
+    Upcoming models follow as one line of names, in alphabetical order.
 
     A block is plain HTML, one line per file: GitHub's markdown passes an
     HTML block through until a blank line, so none may fall inside one, and
@@ -876,7 +883,8 @@ def render_overview(doc, borrowed=None):
     """
     if borrowed is None:
         borrowed = borrowed_classes()
-    head = "".join(f"<th>{h}</th>" for h in ("File",) + OVERVIEW_LABELS + ("Train",))
+    columns = ("File",) + OVERVIEW_LABELS + ("Train",)
+    head = "".join(f"<th>{h}</th>" for h in columns)
     lines = [OVERVIEW_LEGEND, ""]
     for tier, intro in (("tier1", "**Tier 1, actively validated** (the release gate holds "
                                   "Runner to these):"),
@@ -887,17 +895,16 @@ def render_overview(doc, borrowed=None):
             continue
         lines += [intro, ""]
         for family, models in fams:
-            lines += ["<details>", _family_summary(family, models)]
+            lines += ["<details>", _family_summary(family, models), "<table>",
+                      f"<thead><tr>{head}</tr></thead>", "<tbody>"]
             for quals, model, rows in models:
-                lines += [_model_heading(quals, model), "<table>",
-                          f"<thead><tr>{head}</tr></thead>", "<tbody>"]
+                lines.append(_model_heading(quals, model, len(columns)))
                 for r in rows:
                     cells = [_overview_file(r)] + [overview_mark((r.get("backends") or {}).get(b),
                                                                  borrowed) for b in BACKENDS]
                     cells.append(overview_train(r.get("lora")))
                     lines.append("<tr>" + "".join(cells) + "</tr>")
-                lines += ["</tbody>", "</table>"]
-            lines += ["</details>", ""]
+            lines += ["</tbody>", "</table>", "</details>", ""]
     lines += ["**Upcoming** (planned, not supported yet): "
               + ", ".join(upcoming_names(doc)) + "."]
     return "\n".join(lines)
