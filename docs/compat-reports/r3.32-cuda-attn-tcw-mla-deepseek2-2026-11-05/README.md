@@ -1,10 +1,13 @@
 # R3.32: deepseek2's absorbed prefill on CUDA's tensor cores, and the re-pinned CUDA cells (2026-11-05)
 
 **What is not flattering, first:**
-- **Stale cells on main:** both deepseek2 roster rows' CUDA tier-smoke cells were stale on main from #631
-  (7504d0a8) until this change. R3.31's decode kernel moved their replies, and #631 did not compare them against
-  their pins. No release was cut in that window. This change re-pins both cells, and the decode kernel's own D1
-  read (below), missing from #631, passes.
+- **A stale cell on main:** the Q6_K row's CUDA tier-smoke cell was stale on main from #631 (7504d0a8) until this
+  change. R3.31's decode kernel moved its reply, and #631 did not compare it against its pin. No release was cut in
+  that window. This change re-pins both deepseek2 CUDA cells, and the decode kernel's own D1 read (below), missing
+  from #631, passes.
+- **Corrected 2026-11-07 (R6.23):** this record first said both cells were stale from #631. The Q8_0 row's was not.
+  #631 left it matching its pin, and this change's own prefill route moved it, so it was re-pinned in the same
+  change and was never stale on main. See "The Q8_0 cell" below.
 - **Scope:** one file family (DeepSeek-V2-Lite-Chat Q6_K and Q8_0), one host (a CUDA MIG slice, 1g.24gb,
   sm_120), contexts up to 8K for the speed read, and f16 caches only.
 - **Not here:** quantized caches keep the previous path. So do Metal and the CPU.
@@ -77,8 +80,9 @@ the Q6_K with tier-smoke, no write:
 | main at #631, the old decode kernel | `70827d50` | match |
 | R4.4.5 (d)'s build, which made the pin | `70827d50` | match |
 
-So R3.31's decode kernel moved the reply, and this change's prefill route did not. With the decode kernel's D1 read
-passing, both cells are retired, pinned and recorded again on this change's merged build.
+So on the Q6_K, R3.31's decode kernel moved the reply, and this change's prefill route did not. The Q8_0 was not
+bisected here; see "The Q8_0 cell" below. With the decode kernel's D1 read passing, both cells are retired, pinned and
+recorded again on this change's merged build.
 
 | Row | CUDA reply before (old pin) | Re-pinned reply | No-write check after | CPU cell |
 |---|---|---|---|---|
@@ -86,3 +90,26 @@ passing, both cells are retired, pinned and recorded again on this change's merg
 | `deepseek-v2-lite-chat-q8_0` | mismatch (pin `eae8d81a`) | `cedb5bd6` | match | match, unchanged |
 
 "Mercury" was found in every reply. The cells now name runner 1.13.0 on 2026-11-05.
+
+## The Q8_0 cell (added 2026-11-07, R6.23)
+
+A later read bisected the Q8_0's CUDA cell, which the table above did not. Its builds were made with the Makefile's
+default compiler (`CC ?= cc`, gcc 13.3 with `-march=native`), as the pins were. Three plain replies per build and
+switch, on the same host:
+
+| Build (gcc) | CUDA reply | Pin then |
+|---|---|---|
+| main just before #631 (bfb6fe6) | `eae8d81a` | `eae8d81a`, match |
+| main at #631 (7504d0a8), R3.31's decode kernel | `eae8d81a` | `eae8d81a`, match |
+| this change's prefill kernel (60b12b3), default | `cedb5bd6` | `eae8d81a`, mismatch |
+| 60b12b3, `RUNNER_CUDA_ATTN_TC_WIDE=0` | `eae8d81a` | `eae8d81a`, match |
+| this change's merged build (6eb09de), default | `cedb5bd6` | re-pinned to `cedb5bd6` |
+| 6eb09de, `RUNNER_CUDA_ATTN_TC_WIDE=0` | `eae8d81a` | |
+
+- **What moved it:** this change's prefill route moved the Q8_0's CUDA reply, and R3.31 did not. The re-pin itself
+  stands.
+- **The binaries are the record's own:** 6eb09de's gcc build is byte-identical to the re-pin's binary (runner
+  `cf645fff`), and 60b12b3's to the D1 reads' (`737a048c`).
+- **Why a prefill kernel moves it:** the reply sits on a near tie, the Q8_0 row's pin note in
+  `docs/model-tiers.json`. At prompt position 6, layer 7, the sixth routed expert is 39 or 49, and their gates are
+  within 2e-6. A kernel's reduction order, the backend, or the compiler decides which one is picked.
