@@ -14,6 +14,11 @@ Current release and unreleased changes. Compatibility follows the
   - **Checks:** `tests/test_derive.py`: an imatrix skewed onto the tensor the plain plan demotes first keeps it up
     and changes the plan; an imatrix that leaves one tensor out gives a plan with that tensor held and named, equal
     to the reference planner's.
+- **Test fix: the FP8 gold-logits test skips without `accelerate`.** transformers
+  loads an FP8 checkpoint only with `accelerate` installed, and the test guarded
+  only `torch` and `transformers`, so a machine with transformers but without
+  accelerate failed it with an ImportError instead of skipping, as the
+  neighbouring tests already do.
 
 - **`runner derive --target-size` gains a middle rung: `--mid T`, or `--ladder T1,...,Tn` high to low (R4.34.1).** A
   group is demoted one rung at a time instead of straight to the lowest type. Over the ladder, each group's (bytes,
