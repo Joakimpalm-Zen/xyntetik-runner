@@ -5,6 +5,16 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`runner derive --target-size` with `--imatrix` plans a whole file (R4.34.2).** llama.cpp's imatrix has no entry for
+  `output` or `token_embd` unless it was run with `--process-output`, so those two tensors' errors were unweighted
+  beside the weighted rest, and the planner refused the mix. A candidate the matrix does not cover is now held at the
+  top rung and left out of the ranking, and the stderr, the record (`held`, `held_at`) and the card name it.
+  - Holding them is a default, not evidence that they matter most.
+  - `scripts/type-plan-by-sensitivity.py` holds the same tensors, and `--allow-mixed` still ranks them together.
+  - **Checks:** `tests/test_derive.py`: an imatrix skewed onto the tensor the plain plan demotes first keeps it up
+    and changes the plan; an imatrix that leaves one tensor out gives a plan with that tensor held and named, equal
+    to the reference planner's.
+
 - **`runner derive --target-size` gains a middle rung: `--mid T`, or `--ladder T1,...,Tn` high to low (R4.34.1).** A
   group is demoted one rung at a time instead of straight to the lowest type. Over the ladder, each group's (bytes,
   error) points are reduced to their lower convex hull, and the cheapest next step over all groups (added error per

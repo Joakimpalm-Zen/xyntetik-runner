@@ -20,6 +20,7 @@ import os
 import pathlib
 import re
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -255,6 +256,89 @@ def test_target_size_plans_as_type_plan_by_sensitivity_does(runner_bin, tmp_path
     assert rc != 0 and "--target-size" in se
     rc, _, se = derive(runner_bin, parent, tmp_path / "z.gguf", "--target-size", str(target))
     assert rc != 0 and "--high" in se
+
+
+def write_imatrix_dat(path, entries):
+    """llama.cpp's legacy imatrix .dat: int32 n_entries, then per entry int32
+    name length, the name, int32 ncall, int32 nval, nval float32 values."""
+    with open(path, "wb") as f:
+        f.write(struct.pack("<i", len(entries)))
+        for name, vals in entries.items():
+            b = name.encode()
+            f.write(struct.pack("<i", len(b)) + b + struct.pack("<ii", 1, len(vals)))
+            f.write(struct.pack(f"<{len(vals)}f", *vals))
+
+
+def sized_target(runner_bin, parent, tmp_path):
+    """The report's rows and a byte target halfway between all-q8_0 and all-q4_0."""
+    report = tmp_path / "pre.jsonl"
+    subprocess.run([str(runner_bin), "-m", str(parent), "--quant-error", str(report),
+                    "--quant", "q8_0,q4_0"], check=True, capture_output=True)
+    rows = [json.loads(l) for l in report.read_text().splitlines() if l.strip()]
+    hi = sum(r["types"]["q8_0"]["bytes"] for r in rows)
+    lo = sum(r["types"]["q4_0"]["bytes"] for r in rows)
+    return rows, parent.stat().st_size - (hi - lo) // 2 - sum(r["rows"] * r["cols"] * 4 for r in rows) + hi
+
+
+def test_an_imatrix_changes_the_target_size_plan(runner_bin, tmp_path):
+    """R4.34.2 T2a: --target-size ranks by the imatrix-weighted errors. An
+    imatrix that covers every candidate, flat except for heavy columns on the
+    tensor the plain plan demotes first, must keep that tensor up and change
+    the demoted set."""
+    parent = make_parent(tmp_path)
+    rows, target = sized_target(runner_bin, parent, tmp_path)
+    plain = tmp_path / "plain.gguf"
+    rc, _, se = derive(runner_bin, parent, plain, "--target-size", str(target),
+                       "--high", "q8_0", "--low", "q4_0", "--group", "tensor")
+    assert rc == 0, se[-1500:]
+    demoted = json.loads(pathlib.Path(str(plain) + ".derive.json").read_text())["recipe"]["demoted"]
+    first = demoted[0]
+    imx = tmp_path / "skew.dat"
+    write_imatrix_dat(imx, {r["tensor"]: [1e4 if r["tensor"] == first else 1.0] * r["cols"] for r in rows})
+    out = tmp_path / "weighted.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--target-size", str(target), "--high", "q8_0",
+                       "--low", "q4_0", "--group", "tensor", "--imatrix", str(imx))
+    assert rc == 0, se[-1500:]
+    r = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())["recipe"]
+    assert first not in r["demoted"], (first, r["demoted"])
+    assert set(r["demoted"]) != set(demoted)
+    assert r["held"] == [] and r["held_at"] == "q8_0"
+    rep = [json.loads(l) for l in (out.parent / r["quant_error"]).read_text().splitlines() if l.strip()]
+    assert all(x["weighted"] for x in rep)
+
+
+def test_tensors_without_imatrix_data_are_held_not_refused(runner_bin, tmp_path):
+    """R4.34.2 T2b: an imatrix with no entry for a candidate (llama.cpp's
+    leaves out output and token_embd by default) used to make --target-size
+    refuse, because weighted and unweighted errors do not compare. The tensor
+    is now held at the top rung, left out of the ranking, and named in the
+    stderr, the record and the card; the reference planner agrees."""
+    parent = make_parent(tmp_path)
+    rows, target = sized_target(runner_bin, parent, tmp_path)
+    names = [r["tensor"] for r in rows]
+    left_out = "output.weight" if "output.weight" in names else names[0]
+    imx = tmp_path / "partial.dat"
+    write_imatrix_dat(imx, {r["tensor"]: [1.0] * r["cols"] for r in rows if r["tensor"] != left_out})
+    out = tmp_path / "held.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--target-size", str(target), "--high", "q8_0",
+                       "--low", "q4_0", "--group", "tensor", "--imatrix", str(imx))
+    assert rc == 0, se[-1500:]
+    assert f"held at q8_0 and not ranked: {left_out}" in se
+    rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
+    r = rec["recipe"]
+    assert r["held"] == [left_out] and r["held_at"] == "q8_0" and left_out not in r["demoted"]
+    ours = json.loads((out.parent / r["type_plan"]).read_text())
+    assert left_out not in {x["match"] for x in ours["rules"]} and ours["default"] == "q8_0"
+    p = subprocess.run([sys.executable, ROOT / "scripts/type-plan-by-sensitivity.py",
+                        out.parent / r["quant_error"], "--high", "q8_0", "--low", "q4_0",
+                        "--group", "tensor", "--save-bytes", str(r["save_bytes"])],
+                       capture_output=True, text=True, cwd=ROOT)
+    assert p.returncode == 0, p.stderr
+    assert ours == json.loads(p.stdout) and f"held at q8_0 and not ranked: {left_out}" in p.stderr
+    assert rec["file"]["bytes"] <= target
+    card = pathlib.Path(str(out) + ".README.md").read_text()
+    assert "had no entry in the importance matrix" in card and f"`{left_out}`" in card
+    assert "not evidence that they matter most" in card
 
 
 def test_a_ladder_plans_as_type_plan_by_sensitivity_does(runner_bin, tmp_path):

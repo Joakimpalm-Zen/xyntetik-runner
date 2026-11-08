@@ -89,6 +89,24 @@ def ladder_groups(rows, match, ladder, by):
     return list(groups.values())
 
 
+def hold_uncovered(rows, match, allow_mixed):
+    """R4.34.2: when the report is imatrix-weighted, a candidate the imatrix has
+    no entry for (llama.cpp's leaves out output and token_embd by default) has
+    an unweighted error that does not compare with the others. It is held at the
+    top rung and left out of the ranking, and named, unless --allow-mixed."""
+    cand = [r for r in rows if match in r["tensor"]]
+    if allow_mixed or not any(r["weighted"] for r in cand):
+        return rows, []
+    held = sorted(r["tensor"] for r in cand if not r["weighted"])
+    return [r for r in rows if r["tensor"] not in held], held
+
+
+def say_held(held, top):
+    if held:
+        print(f"no calibration data for {len(held)} tensor(s), held at {top} and not ranked: "
+              + ", ".join(held), file=sys.stderr)
+
+
 def next_step(g):
     """The group's next step down its lower convex hull: (cost, rung) with the
     least added error per byte saved from where it is, the nearer rung on a
@@ -178,11 +196,13 @@ def main():
         sys.exit("error: give --high T and --low T, or --ladder T1,...,Tn")
     if len(ladder) < 2 or len(set(ladder)) != len(ladder):
         sys.exit("error: a ladder is two or more different types, high to low")
+    rows, held = hold_uncovered(load(a.report), a.match, a.allow_mixed)
+    say_held(held, ladder[0])
     if len(ladder) > 2:
-        return ladder_plan(a, load(a.report), ladder)
+        return ladder_plan(a, rows, ladder)
     a.high, a.low = ladder
 
-    groups = groups_of(load(a.report), a.match, a.high, a.low, a.group)
+    groups = groups_of(rows, a.match, a.high, a.low, a.group)
     if not groups:
         sys.exit(f"error: no tensor in the report matches '{a.match}'")
     kinds = set().union(*(g["weighted"] for g in groups))
