@@ -1133,8 +1133,8 @@ static void usage_to(FILE *f, const char *prog) {
         "                 any rule would be declined or fall back, instead of\n"
         "                 reporting it and writing the file\n"
         "  --imatrix FILE  importance matrix (llama.cpp's GGUF or legacy .dat\n"
-        "                 imatrix) weighting the rounding of q3_k and q4_0\n"
-        "                 rows toward the input columns a calibration text\n"
+        "                 imatrix) weighting q3_k, q4_0, q4_k, q5_k, q6_k,\n"
+        "                 q5_1 and iq4_nl toward input columns a calibration text\n"
         "                 drives hardest; other types are written as without\n"
         "                 it. Named by sha256 in the provenance record\n"
         "  --quant-error OUT.jsonl  write no model: per tensor a rewrite would\n"
@@ -2127,7 +2127,7 @@ typedef struct {
     // file transformations
     const char *quant_out, *quant_type, *prune_experts, *remove_sublayer;
     const char *type_plan, *merge_out, *context_out;
-    const char *imatrix;    // R4.7.2: importance matrix for q3_k/q4_0 rows
+    const char *imatrix;    // calibration for the importance-weighted writers
     bool type_plan_strict, merge_allow_erased;
     // adapters and training
     const char *lora_path;

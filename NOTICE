@@ -24,6 +24,10 @@ b10353 (f8def7fe168bab245fbf15d3f18b26dbb1ef73c8). The ported parts:
   (tests/fixtures/quant-golden). ggml's own Q4_K and Q6_K bytes change when
   its build fuses multiply-adds, so a llama.cpp build that does differs from
   both in about 1% of those super-blocks, by one rounding step.
+  The weighted Q4_K, Q5_K, Q6_K, Q5_1 and IQ4_NL writers and positive
+  scale/min fit also follow ggml's quantize_* implementations and
+  make_qp_quants at c1d0e7a004015f23bc0233470b747b596f29b264, under the
+  same MIT notice. Their byte fixtures pin uncontracted arithmetic too.
 - src/model.h: the xIELU activation, transcribed from ggml's op_xielu.
 - src/kernels.metal: the Gated DeltaNet recurrence's lane layout in
   k_dn_recur (one simdgroup per value row of the state, the row's key
