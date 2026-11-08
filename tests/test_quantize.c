@@ -524,6 +524,96 @@ static void check_ggml_golden(void) {
            "b10353, and q5_0, q5_1, q5_k and iq4_nl to ggml c1d0e7a, on a real tensor\n");
 }
 
+static void check_weighted_bytes(const char *out, const char *type, bool edges) {
+    size_t n;
+    unsigned char *mine = slurp_tensor(out, "blk.0.ffn_down.weight", &n);
+    char path[256];
+    snprintf(path, sizeof path, "tests/fixtures/quant-golden/ggml-c1d0e7a-weighted-%s%s.bin",
+             type, edges ? "-edges" : "");
+    FILE *f = fopen(path, "rb"); assert(f);
+    unsigned char *ref = malloc(n + 1); assert(ref);
+    size_t got = fread(ref, 1, n + 1, f); fclose(f);
+    size_t first = 0;
+    while (first < n && first < got && mine[first] == ref[first]) first++;
+    if (got != n || first != n) {
+        fprintf(stderr, "FAIL: weighted %s %s differs from ggml c1d0e7a at byte %zu/%zu\n",
+                type, edges ? "boundaries" : "real slice", first, n);
+        assert(0);
+    }
+    free(mine); free(ref);
+}
+
+// External byte anchor: unmodified ggml at the pinned revision, not another
+// Runner build. Boundary inputs include zero groups, signed endpoints,
+// constant rows, tiny/large scales and exact half steps (fixture README).
+static void check_ggml_weighted_golden(void) {
+    enum { COLS = 1536, REAL_ROWS = 16, EDGE_ROWS = 8 };
+    static float real[COLS * REAL_ROWS], edges[COLS * EDGE_ROWS];
+    static uint16_t bf[COLS * REAL_ROWS];
+    static float weights[COLS], zero[COLS], sums[COLS], count[1];
+    FILE *f = fopen("tests/fixtures/quant-golden/smollm2-135m-l0-ffn_down-16rows.bf16", "rb");
+    assert(f && fread(bf, 2, COLS * REAL_ROWS, f) == COLS * REAL_ROWS); fclose(f);
+    for (int i = 0; i < COLS * REAL_ROWS; i++) {
+        uint32_t bits = (uint32_t)bf[i] << 16; memcpy(&real[i], &bits, 4);
+    }
+    f = fopen("tests/fixtures/quant-golden/weighted-edges.f32", "rb");
+    assert(f && fread(edges, 4, COLS * EDGE_ROWS, f) == COLS * EDGE_ROWS); fclose(f);
+    for (int c = 0; c < COLS; c++) {
+        weights[c] = c % 64 < 16 ? 0.0f : (c + 5 * (c / 256)) % 16 < 3 ? 50.0f : 1.0f;
+        sums[c] = 3 * weights[c];
+    }
+    count[0] = 3;
+    const char *in = "q_weighted_in.gguf", *out = "q_weighted_out.gguf";
+    const char *plain = "q_weighted_plain.gguf", *dat = "q_weighted.dat";
+    const char *zdat = "q_weighted_zero.dat", *bad = "q_weighted_bad.dat";
+    const char *gg = "q_weighted_imatrix.gguf", *tn = "blk.0.ffn_down.weight";
+    write_imatrix_dat(dat, tn, weights, COLS, 1);
+    write_imatrix_dat(zdat, tn, zero, COLS, 1);
+    write_imatrix_dat(bad, tn, weights, COLS / 2, 1);
+    tdesc imx[2] = {
+        {"blk.0.ffn_down.weight.in_sum2", {COLS, 1}, 2, sums, COLS, T_F32},
+        {"blk.0.ffn_down.weight.counts", {1, 1}, 2, count, 1, T_F32},
+    };
+    write_gguf(gg, imx, 2, 0);
+    static const struct { const char *name; int type; } types[] = {
+        {"q5_1", T_Q5_1},
+        {"q4_k", T_Q4_K},
+        {"q5_k", T_Q5_K},
+        {"q6_k", T_Q6_K},
+        {"iq4_nl", T_IQ4_NL},
+    };
+    for (size_t k = 0; k < sizeof types / sizeof *types; k++) {
+        for (int edge = 0; edge < 2; edge++) {
+            int rows = edge ? EDGE_ROWS : REAL_ROWS;
+            tdesc tensor = {tn, {COLS, rows}, 2, edge ? edges : real, COLS * rows, T_F32};
+            write_gguf(in, &tensor, 1, 0);
+            assert(quantize_set_imatrix(dat));
+            assert(quantize_gguf(in, out, types[k].type, NULL) == 0);
+            check_weighted_bytes(out, types[k].name, edge != 0);
+            if (!edge) {
+                // Same calibrated values in the other supported file format.
+                assert(quantize_set_imatrix(gg));
+                assert(quantize_gguf(in, out, types[k].type, NULL) == 0);
+                check_weighted_bytes(out, types[k].name, false);
+                // An uncalibrated matrix still uses the unchanged reference writer.
+                assert(quantize_set_imatrix(zdat));
+                assert(quantize_gguf(in, out, types[k].type, NULL) == 0);
+                assert(quantize_set_imatrix(NULL));
+                assert(quantize_gguf(in, plain, types[k].type, NULL) == 0);
+                size_t a, b;
+                unsigned char *x = slurp_tensor(out, tn, &a), *y = slurp_tensor(plain, tn, &b);
+                assert(a == b && !memcmp(x, y, a)); free(x); free(y);
+                assert(quantize_set_imatrix(bad));
+                assert(quantize_gguf(in, out, types[k].type, NULL) != 0);
+            }
+        }
+        printf("ok: weighted %s is a ggml c1d0e7a byte twin on the real slice and boundaries\n", types[k].name);
+    }
+    assert(quantize_set_imatrix(NULL));
+    const char *paths[] = {in, out, plain, dat, zdat, bad, gg};
+    for (size_t i = 0; i < sizeof paths / sizeof *paths; i++) remove(paths[i]);
+}
+
 // A row that divides by 32 but not 256 cannot take a 256-block K-quant; the
 // quantizer writes the 32-block type of the nearest bit budget. Each such
 // fallback must be a type this file writes: from v0.5.7 to 1.12.0 a Q4_K
@@ -1296,6 +1386,7 @@ int main(void) {
     check_mxfp4_dequant();
     check_error_report();
     check_ggml_golden();
+    check_ggml_weighted_golden();
     check_width_fallback();
 
     remove(in); remove(out); remove(inplace); remove(dest); remove(bad);

@@ -413,14 +413,20 @@ static float make_q6_quants(int n, int nmax, const float *x, int8_t *L) {
 // GGML Q6_K: sixteen 16-value groups of signed 6-bit codes, group scales
 // quantized to signed 8-bit against one f16 super-scale. Inverse of
 // dq_q6_K in quants.c; the hermetic round-trip test drives that reader.
-static void quantize_row_q6_K(const float *x, uint8_t *dst, int n) {
+static float make_qx_quants_w(int n, int nmax, const float *x, int8_t *L, const float *w);
+
+static void quantize_row_q6_K(const float *x, uint8_t *dst, int n, const float *qw) {
     wblock_q6_K *out = (wblock_q6_K *)dst;
     for (int ib = 0; ib < n / 256; ib++, out++, x += 256) {
         int8_t L[256];
         float scales[16];
         float max_scale = 0.0f, max_abs = 0.0f;
         for (int j = 0; j < 16; j++) {
-            scales[j] = make_q6_quants(16, 32, x + 16 * j, L + 16 * j);
+            // ggml uses the raw importance weights for Q6_K, not the
+            // variance-shaped weights used by the affine K writers.
+            scales[j] = qw ? make_qx_quants_w(16, 32, x + 16 * j, L + 16 * j,
+                                              qw + 256 * ib + 16 * j)
+                           : make_q6_quants(16, 32, x + 16 * j, L + 16 * j);
             float a = fabsf(scales[j]);
             if (a > max_abs) { max_abs = a; max_scale = scales[j]; }
         }
@@ -680,10 +686,11 @@ static void quantize_row_q5_K(const float *x, uint8_t *dst, int n) {
     }
 }
 
-// ggml's IQ4_NL without an importance matrix (R4.33): quantize_iq4_nl and
-// quantize_row_iq4_nl_ref both run quantize_row_iq4_nl_impl(32, 32, ..., 7)
-// with no weights. Per 32 values one f16 scale and a 4-bit index into a fixed
-// non-linear grid; the scale is the weighted least-squares fit (weights x^2)
+// ggml's quantize_iq4_nl runs quantize_row_iq4_nl_impl(32, 32, ..., 7),
+// with or without importance weights. (Its separate _ref entry uses -1.)
+// Per 32 values one f16 scale and a 4-bit index into a fixed
+// non-linear grid; the scale is a weighted least-squares fit (weights x^2
+// without calibration, or qw * sqrt(2 * mean(x^2) + x^2) within the block)
 // over 15 trial inverse scales around the one that maps the largest
 // magnitude to the grid's end. Inverse of dq_iq4_nl in quants.c.
 static const int8_t iq4nl_values[16] = {
@@ -702,13 +709,19 @@ static int iq4nl_best_index(float x) {
     return x - val[mu - 1] < val[mu] - x ? mu - 1 : mu;
 }
 
-static void quantize_row_iq4_nl(const float *x, uint8_t *dst, int n) {
+static void quantize_row_iq4_nl(const float *x, uint8_t *dst, int n, const float *qw) {
     wblock_iq4_nl *b = (wblock_iq4_nl *)dst;
     const int ntry = 7;
     for (int ib = 0; ib < n / 32; ib++, b++, x += 32) {
         uint8_t L[32];
         float weight[32];
-        for (int j = 0; j < 32; j++) weight[j] = x[j] * x[j];
+        float sigma2 = 0;
+        if (qw) {
+            for (int j = 0; j < 32; j++) sigma2 += x[j] * x[j];
+            sigma2 *= 2.0f / 32;
+        }
+        for (int j = 0; j < 32; j++)
+            weight[j] = qw ? qw[32 * ib + j] * sqrtf(sigma2 + x[j] * x[j]) : x[j] * x[j];
         float amax = 0, max = 0;
         for (int j = 0; j < 32; j++) {
             float ax = fabsf(x[j]);
@@ -793,11 +806,11 @@ static void quantize_row_mxfp4(const float *x, uint8_t *dst, int n) {
     }
 }
 
-// ---------------------------------------------- importance-weighted rows (R4.7.2)
+// ---------------------------------- importance-weighted rows (R4.7.2, R4.34.3)
 // ggml's make_qx_quants with explicit weights (rmse_type 1 and a quant_weights
 // array): the scale that minimises the WEIGHTED squared error over the
-// nearest-integer levels, searched at nineteen candidate scales. With an
-// importance matrix the weight of column i is qw[i] * sqrt(sigma2 + x[i]^2),
+// nearest-integer levels, searched at nineteen candidate scales. For Q3_K
+// and Q4_0 the weight of column i is qw[i] * sqrt(sigma2 + x[i]^2),
 // so a column the calibration text drives hard keeps its precision at the
 // expense of one it barely uses. Ported from ggml's quantize_row_q3_K_impl
 // and quantize_row_q4_0_impl (MIT, The ggml authors; see NOTICE); without an
@@ -918,6 +931,166 @@ static void quantize_row_q4_0_w(const float *x, uint8_t *dst, int n, const float
     }
 }
 
+// ggml c1d0e7a make_qp_quants: weighted positive scale/min quantization.
+static float make_qp_quants_w(int n, int nmax, const float *x, uint8_t *L, const float *w) {
+    float max = 0;
+    for (int i = 0; i < n; i++) max = max > x[i] ? max : x[i];
+    if (max < 1e-15f) { memset(L, 0, (size_t)n); return 0; }
+    float iscale = nmax / max;
+    for (int i = 0; i < n; i++) L[i] = (uint8_t)nearest_int(iscale * x[i]);
+    float scale = 1 / iscale, best_mse = 0;
+    for (int i = 0; i < n; i++) {
+        float diff = x[i] - scale * L[i];
+        best_mse += w[i] * diff * diff;
+    }
+    for (int is = -4; is <= 4; is++) {
+        if (is == 0) continue;
+        float trial = (0.1f * is + nmax) / max, d = 1 / trial, mse = 0;
+        for (int i = 0; i < n; i++) {
+            int l = nearest_int(trial * x[i]);
+            if (l > nmax) l = nmax;
+            float diff = x[i] - d * l;
+            mse += w[i] * diff * diff;
+        }
+        if (mse < best_mse) { best_mse = mse; iscale = trial; }
+    }
+    float sumlx = 0, suml2 = 0;
+    for (int i = 0; i < n; i++) {
+        int l = nearest_int(iscale * x[i]);
+        if (l > nmax) l = nmax;
+        L[i] = (uint8_t)l;
+        sumlx += w[i] * x[i] * l;
+        suml2 += w[i] * l * l;
+    }
+    for (int itry = 0; itry < 5; itry++) {
+        int changed = 0;
+        for (int i = 0; i < n; i++) {
+            float slx = sumlx - w[i] * x[i] * L[i];
+            float sl2 = suml2 - w[i] * L[i] * L[i];
+            if (slx > 0 && sl2 > 0) {
+                int l = nearest_int(x[i] * sl2 / slx);
+                if (l > nmax) l = nmax;
+                if (l != L[i]) {
+                    slx += w[i] * x[i] * l;
+                    sl2 += w[i] * l * l;
+                    if (slx * slx * suml2 > sumlx * sumlx * sl2) {
+                        L[i] = (uint8_t)l; sumlx = slx; suml2 = sl2; changed++;
+                    }
+                }
+            }
+        }
+        if (!changed) break;
+    }
+    return suml2 > 0 ? sumlx / suml2 : 0;
+}
+
+// Shared weighted Q4_K/Q5_K fit; only their final level packing differs.
+// The block's sum of input squares shapes each column weight, then group
+// weight sums also shape the six-bit scale/min fit (ggml c1d0e7a).
+static void quantize_affine_k_w(const float *x, const float *qw, int nmax,
+                                 uint8_t *L, uint8_t *packed, f16_t *dh, f16_t *mh) {
+    float sum_x2 = 0;
+    for (int i = 0; i < 256; i++) sum_x2 += x[i] * x[i];
+    float sigma2 = 2 * sum_x2 / 256;
+    float w[32], sw[8], mins[8], scales[8];
+    uint8_t aux[32], ls[8], lm[8];
+    for (int j = 0; j < 8; j++) {
+        for (int l = 0; l < 32; l++) {
+            float v = x[32 * j + l];
+            w[l] = qw[32 * j + l] * sqrtf(sigma2 + v * v);
+        }
+        sw[j] = 0;
+        for (int l = 0; l < 32; l++) sw[j] += w[l];
+        scales[j] = make_qkx2_quants(32, nmax, x + 32 * j, w, L + 32 * j,
+                                    &mins[j], aux, -0.9f, 0.05f, 36);
+    }
+    float d = make_qp_quants_w(8, 63, scales, ls, sw);
+    float m = make_qp_quants_w(8, 63, mins, lm, sw);
+    // Preserve Q5_K's explicit clamp in the reference packing path.
+    if (nmax == 31) for (int j = 0; j < 8; j++) {
+        if (ls[j] > 63) ls[j] = 63;
+        if (lm[j] > 63) lm[j] = 63;
+    }
+    for (int j = 0; j < 8; j++) {
+        if (j < 4) { packed[j] = ls[j]; packed[j + 4] = lm[j]; }
+        else {
+            packed[j + 4] = (uint8_t)((ls[j] & 15) | ((lm[j] & 15) << 4));
+            packed[j - 4] |= (uint8_t)((ls[j] >> 4) << 6);
+            packed[j] |= (uint8_t)((lm[j] >> 4) << 6);
+        }
+    }
+    *dh = f32_to_f16(d); *mh = f32_to_f16(m);
+    for (int j = 0; j < 8; j++) {
+        uint8_t sc, mn;
+        scale_min_k4(j, packed, &sc, &mn);
+        d = f16_to_f32(*dh) * sc;
+        if (d == 0) continue;
+        m = f16_to_f32(*mh) * mn;
+        for (int l = 0; l < 32; l++) {
+            int q = nearest_int((x[32 * j + l] + m) / d);
+            if (q < 0) q = 0;
+            if (q > nmax) q = nmax;
+            L[32 * j + l] = (uint8_t)q;
+        }
+    }
+}
+
+static void quantize_row_q4_K_w(const float *x, uint8_t *dst, int n, const float *qw) {
+    wblock_q4_K *b = (wblock_q4_K *)dst;
+    for (int ib = 0; ib < n / 256; ib++, b++, x += 256, qw += 256) {
+        uint8_t L[256];
+        memset(b, 0, sizeof *b);
+        quantize_affine_k_w(x, qw, 15, L, b->scales, &b->d, &b->dmin);
+        for (int j = 0; j < 256; j += 64)
+            for (int l = 0; l < 32; l++) b->qs[j / 2 + l] = (uint8_t)(L[j + l] | (L[j + l + 32] << 4));
+    }
+}
+
+// ggml c1d0e7a quantize_row_q5_1_impl: variance is over the whole row,
+// unlike the K writers' super-block variance. make_qkx2_quants is the
+// explicit-weight, squared-error case of ggml's make_qkx3_quants.
+static void quantize_row_q5_1_w(const float *x, uint8_t *dst, int n, const float *qw) {
+    wblock_q5_1 *b = (wblock_q5_1 *)dst;
+    float sum_x2 = 0.0f;
+    for (int j = 0; j < n; j++) sum_x2 += x[j] * x[j];
+    float sigma2 = sum_x2 / n;
+    for (int ib = 0; ib < n / 32; ib++, b++) {
+        const float *xb = x + 32 * ib, *wb = qw + 32 * ib;
+        float weight[32], min;
+        uint8_t L[32], aux[32];
+        for (int j = 0; j < 32; j++) weight[j] = wb[j] * sqrtf(sigma2 + xb[j] * xb[j]);
+        float d = make_qkx2_quants(32, 31, xb, weight, L, &min, aux, -0.9f, 0.05f, 36);
+        b->d = f32_to_f16(d);
+        b->m = f32_to_f16(-min);
+        uint32_t qh = 0;
+        for (int j = 0; j < 16; j++) {
+            b->qs[j] = (uint8_t)((L[j] & 15) | ((L[j + 16] & 15) << 4));
+            qh |= (uint32_t)((L[j] & 16) >> 4) << j;
+            qh |= (uint32_t)((L[j + 16] & 16) >> 4) << (j + 16);
+        }
+        memcpy(b->qh, &qh, sizeof qh);
+    }
+}
+
+static void quantize_row_q5_K_w(const float *x, uint8_t *dst, int n, const float *qw) {
+    wblock_q5_K *b = (wblock_q5_K *)dst;
+    for (int ib = 0; ib < n / 256; ib++, b++, x += 256, qw += 256) {
+        uint8_t L[256];
+        memset(b, 0, sizeof *b);
+        quantize_affine_k_w(x, qw, 31, L, b->scales, &b->d, &b->dmin);
+        uint8_t m1 = 1, m2 = 2;
+        for (int j = 0; j < 256; j += 64) {
+            for (int l = 0; l < 32; l++) {
+                int a = L[j + l], c = L[j + l + 32];
+                if (a > 15) { a -= 16; b->qh[l] |= m1; }
+                if (c > 15) { c -= 16; b->qh[l] |= m2; }
+                b->qs[j / 2 + l] = (uint8_t)(a | (c << 4));
+            }
+            m1 <<= 2; m2 <<= 2;
+        }
+    }
+}
+
 static void quantize_row_f16(const float *x, uint8_t *dst, int n) {
     f16_t *h = (f16_t *)dst;
     for (int i = 0; i < n; i++) h[i] = f32_to_f16(x[i]);
@@ -950,8 +1123,8 @@ static void quantize_row_any(int type, const float *rowf, uint8_t *rowq, int n) 
         case T_Q3_K: quantize_row_q3_K(rowf, rowq, n); break;
         case T_Q4_K: quantize_row_q4_K(rowf, rowq, n); break;
         case T_Q5_K: quantize_row_q5_K(rowf, rowq, n); break;
-        case T_Q6_K: quantize_row_q6_K(rowf, rowq, n); break;
-        case T_IQ4_NL: quantize_row_iq4_nl(rowf, rowq, n); break;
+        case T_Q6_K: quantize_row_q6_K(rowf, rowq, n, NULL); break;
+        case T_IQ4_NL: quantize_row_iq4_nl(rowf, rowq, n, NULL); break;
         case T_MXFP4: quantize_row_mxfp4(rowf, rowq, n); break;
         case T_F16:  quantize_row_f16(rowf, rowq, n); break;
         case T_BF16: quantize_row_bf16(rowf, rowq, n); break;
@@ -977,7 +1150,8 @@ static bool quantize_row_writable(int type) {
 // The types an importance matrix shapes; every other type is written as
 // without one.
 static bool imatrix_weighted_type(int type) {
-    return type == T_Q3_K || type == T_Q4_0;
+    return type == T_Q3_K || type == T_Q4_0 || type == T_Q5_1 ||
+           type == T_Q4_K || type == T_Q5_K || type == T_Q6_K || type == T_IQ4_NL;
 }
 
 // One row with its importance weights (NULL: the reference writer).
@@ -985,6 +1159,11 @@ static void quantize_row_any_w(int type, const float *rowf, uint8_t *rowq, int n
                                const float *qw) {
     if (qw && type == T_Q3_K) quantize_row_q3_K_w(rowf, rowq, n, qw);
     else if (qw && type == T_Q4_0) quantize_row_q4_0_w(rowf, rowq, n, qw);
+    else if (qw && type == T_Q5_1) quantize_row_q5_1_w(rowf, rowq, n, qw);
+    else if (qw && type == T_Q4_K) quantize_row_q4_K_w(rowf, rowq, n, qw);
+    else if (qw && type == T_Q5_K) quantize_row_q5_K_w(rowf, rowq, n, qw);
+    else if (qw && type == T_Q6_K) quantize_row_q6_K(rowf, rowq, n, qw);
+    else if (qw && type == T_IQ4_NL) quantize_row_iq4_nl(rowf, rowq, n, qw);
     else quantize_row_any(type, rowf, rowq, n);
 }
 
@@ -3156,15 +3335,15 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
         // R4.7.2: what the importance matrix shaped, and what it could not
         fprintf(stderr, "imatrix: %llu tensors weighted (%llu rows; %llu rows "
                 "without calibration data written unweighted); %llu converted "
-                "tensors are of a type the imatrix does not shape (only q3_k "
-                "and q4_0 are weighted)\n",
+                "tensors are of a type the imatrix does not shape (weighted: "
+                "q3_k, q4_0, q4_k, q5_k, q6_k, q5_1, iq4_nl)\n",
                 (unsigned long long)g_imx.tensors_weighted,
                 (unsigned long long)g_imx.rows_weighted,
                 (unsigned long long)g_imx.rows_without_data,
                 (unsigned long long)g_imx.tensors_other_type);
         if (!g_imx.tensors_weighted)
             fprintf(stderr, "warning: the imatrix named none of the tensors "
-                    "written as q3_k or q4_0\n");
+                    "written as an importance-weighted type\n");
     }
     if (ms)
         fprintf(stderr, "merge: %d adapted projection%s folded into the "

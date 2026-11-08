@@ -211,6 +211,10 @@ what the file is not for and its weakest number, then whether it passes the bar.
 
 **How.** One command, from a parent file and a target size:
 
+`--imatrix` calibrates rounding for `q3_k`, `q4_0`, `q4_k`, `q5_k`, `q6_k`, `q5_1` and `iq4_nl`
+using ggml's type-specific weighted writers. The five added formats match pinned ggml bytes on a real tensor
+slice and deterministic boundary rows; [the fixture records the inputs and reference build](tests/fixtures/quant-golden/README.md).
+
 ```sh
 # hf:DIR is a local download of Qwen/Qwen3-30B-A3B (huggingface-cli download Qwen/Qwen3-30B-A3B --local-dir Qwen3-30B-A3B)
 ./runner derive -m Qwen3-30B-A3B-Q8_0.gguf -o out.gguf --target-size 17106040320 \
