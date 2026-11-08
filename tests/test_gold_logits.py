@@ -321,6 +321,7 @@ def test_an_fp8_checkpoint_on_the_cpu_is_the_exact_float32_dequantization(tmp_pa
     pytest = __import__("pytest")
     torch = pytest.importorskip("torch")
     transformers = pytest.importorskip("transformers")
+    pytest.importorskip("accelerate")   # transformers loads an FP8 checkpoint only with accelerate installed
     if not hasattr(torch, "float8_e4m3fn") or not hasattr(transformers, "Mistral3ForConditionalGeneration"):
         pytest.skip("this torch or transformers has no FP8 or Mistral3")
     from safetensors.torch import load_file, save_file

@@ -5,6 +5,12 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Test fix: the FP8 gold-logits test skips without `accelerate`.** transformers
+  loads an FP8 checkpoint only with `accelerate` installed, and the test guarded
+  only `torch` and `transformers`, so a machine with transformers but without
+  accelerate failed it with an ImportError instead of skipping, as the
+  neighbouring tests already do.
+
 - **Importance-weighted Q4_K, Q5_K, Q6_K, Q5_1 and IQ4_NL writers (R4.34.3).**
   `--imatrix` now shapes these formats as well as Q3_K and Q4_0, using ggml's
   type-specific weighting and scale searches. All five are byte twins of
