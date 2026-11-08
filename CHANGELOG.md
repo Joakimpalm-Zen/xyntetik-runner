@@ -11,6 +11,15 @@ Current release and unreleased changes. Compatibility follows the
   accelerate failed it with an ImportError instead of skipping, as the
   neighbouring tests already do.
 
+- **`runner derive --target-size` gains a middle rung: `--mid T`, or `--ladder T1,...,Tn` high to low (R4.34.1).** A
+  group is demoted one rung at a time instead of straight to the lowest type. Over the ladder, each group's (bytes,
+  error) points are reduced to their lower convex hull, and the cheapest next step over all groups (added error per
+  byte saved) is taken until the file fits.
+  - A rung that costs more per byte than going past it is skipped for that group. The record names each skip, and
+    names where each demoted group ended (`ladder`, `demoted_to`, `skipped`).
+  - Two rungs (`--high`, `--low`) plan exactly as before.
+  - `scripts/type-plan-by-sensitivity.py` takes the same `--ladder` and `--mid`, and the test holds the two to the
+    same plan.
 - **Importance-weighted Q4_K, Q5_K, Q6_K, Q5_1 and IQ4_NL writers (R4.34.3).**
   `--imatrix` now shapes these formats as well as Q3_K and Q4_0, using ggml's
   type-specific weighting and scale searches. All five are byte twins of
