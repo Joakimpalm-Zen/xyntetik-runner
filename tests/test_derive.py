@@ -257,6 +257,58 @@ def test_target_size_plans_as_type_plan_by_sensitivity_does(runner_bin, tmp_path
     assert rc != 0 and "--high" in se
 
 
+def test_a_ladder_plans_as_type_plan_by_sensitivity_does(runner_bin, tmp_path):
+    """--target-size with a ladder (R4.34.1): --ladder T1,...,Tn (or --mid)
+    demotes one rung at a time down each group's lower convex hull, and the
+    plan must equal scripts/type-plan-by-sensitivity.py's with the same
+    ladder on the same report and byte target. The record names the ladder
+    and the rung each demoted group ended on."""
+    parent = make_parent(tmp_path)
+    ladder = "q8_0,q5_1,q4_0"
+    report = tmp_path / "pre.jsonl"
+    subprocess.run([str(runner_bin), "-m", str(parent), "--quant-error", str(report),
+                    "--quant", ladder], check=True, capture_output=True)
+    rows = [json.loads(l) for l in report.read_text().splitlines() if l.strip()]
+    hi = sum(r["types"]["q8_0"]["bytes"] for r in rows)
+    lo = sum(r["types"]["q4_0"]["bytes"] for r in rows)
+    target = parent.stat().st_size - (hi - lo) // 2 - sum(
+        r["rows"] * r["cols"] * 4 for r in rows) + hi
+    out = tmp_path / "ladder.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--target-size", str(target), "--ladder", ladder)
+    assert rc == 0, se[-1500:]
+    assert "derive: ladder q8_0,q5_1,q4_0: demoted" in se
+    rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
+    r = rec["recipe"]
+    assert r["ladder"] == ladder.split(",") and r["high"] == "q8_0" and r["low"] == "q4_0"
+    assert set(r["demoted_to"]) == set(r["demoted"])
+    assert set(r["demoted_to"].values()) <= {"q5_1", "q4_0"}
+    ours = json.loads((out.parent / r["type_plan"]).read_text())
+    p = subprocess.run([sys.executable, ROOT / "scripts/type-plan-by-sensitivity.py",
+                        out.parent / r["quant_error"], "--ladder", ladder,
+                        "--save-bytes", str(r["save_bytes"])],
+                       capture_output=True, text=True, cwd=ROOT)
+    assert p.returncode == 0, p.stderr
+    assert ours == json.loads(p.stdout)
+    assert rec["file"]["bytes"] <= target
+    card = pathlib.Path(str(out) + ".README.md").read_text()
+    assert "--ladder q8_0,q5_1,q4_0" in card and "down the ladder" in card
+    # --mid is the same ladder, and gives the same plan
+    out2 = tmp_path / "mid.gguf"
+    rc, _, se = derive(runner_bin, parent, out2, "--target-size", str(target),
+                       "--high", "q8_0", "--mid", "q5_1", "--low", "q4_0")
+    assert rc == 0, se[-1500:]
+    rec2 = json.loads(pathlib.Path(str(out2) + ".derive.json").read_text())
+    assert json.loads((out2.parent / rec2["recipe"]["type_plan"]).read_text()) == ours
+    # refusals
+    for extra, words in ((["--ladder", ladder, "--high", "q8_0"], "not both"),
+                         (["--ladder", "q8_0,q8_0"], "two or more different types"),
+                         (["--ladder", "q8_0,q7_x"], "not a writable type")):
+        rc, _, se = derive(runner_bin, parent, tmp_path / "z.gguf", "--target-size", str(target), *extra)
+        assert rc != 0 and words in se, se[-500:]
+    rc, _, se = derive(runner_bin, parent, tmp_path / "z.gguf", "--quant", "q4_0", "--ladder", ladder)
+    assert rc != 0 and "need --target-size" in se
+
+
 def test_files_beside_the_binary_are_found_from_its_real_directory(runner_bin, tmp_path):
     """derive finds scripts/ and the default corpus beside the binary itself:
     the directory of the resolved executable (readlink of /proc/self/exe on

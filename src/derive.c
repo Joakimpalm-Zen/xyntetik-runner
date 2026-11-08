@@ -21,6 +21,7 @@
 #include "json.h"
 #include "envelope.h"
 #include "fpclass.h"
+#include "quants.h"
 #include "runner.h"
 #include <math.h>
 #include <stdio.h>
@@ -58,6 +59,10 @@ typedef struct {
     // --target-size: a plan ranked from --quant-error (sized_plan)
     long long target_size;
     const char *high, *low, *match;
+    const char *mid, *ladder;      // --mid T, --ladder T1,...,Tn (R4.34.1)
+    const char *rungs[8];          // the ladder, high to low: --high[,--mid],--low or --ladder
+    int n_rungs;
+    char ladder_buf[256];
     bool group_tensor;
 } derive_opts;
 
@@ -65,8 +70,11 @@ typedef struct {
 typedef struct {
     char *report, *plan;      // OUT.quant-error.jsonl, OUT.type-plan.json
     long long save_bytes;     // the bytes the demotions had to save
-    char **demoted;           // the demoted groups, cheapest first
+    char **demoted;           // the demoted groups, in the order they left the top rung
+    const char **demoted_to;  // the rung each ended on
     int n_demoted;
+    int n_skipped;            // hull steps that jumped a dominated rung
+    char *skipped;            // "group from->to; ..." for the record, or NULL
 } sized_result;
 
 typedef struct {
@@ -86,12 +94,16 @@ static void derive_usage(FILE *f) {
         "recipe (at least one; each is the --rewrite flag of the same name):\n"
         "  --quant TYPE  --type-plan PLAN  --imatrix FILE  --prune-experts PLAN\n"
         "  --remove-sublayer LIST  --merge-lora ADAPTER\n"
-        "  --target-size BYTES --high T --low T [--match S] [--group block|tensor]\n"
+        "  --target-size BYTES --high T --low T [--mid T] [--match S] [--group block|tensor]\n"
+        "  --target-size BYTES --ladder T1,T2,...,Tn [--match S] [--group block|tensor]\n"
         "                 selective precision: cost every tensor with --quant-error,\n"
         "                 demote the groups that add the least error per byte saved\n"
         "                 from T high to T low until the file fits BYTES, as\n"
         "                 scripts/type-plan-by-sensitivity.py ranks them (with\n"
-        "                 --imatrix, the errors are importance-weighted)\n\n"
+        "                 --imatrix, the errors are importance-weighted). A ladder\n"
+        "                 (--mid, or --ladder high to low) demotes one rung at a\n"
+        "                 time: the cheapest next step down any group's lower\n"
+        "                 convex hull of (bytes, error) over the ladder\n\n"
         "measurement:\n"
         "  --reference hf:DIR  the publisher's model in float32 through\n"
         "                 scripts/gold-logits.py (Python with torch and\n"
@@ -188,6 +200,8 @@ static int parse_args(int argc, char **argv, derive_opts *o) {
         else if (!strcmp(a, "--gpu")) o->gpu = v;
         else if (!strcmp(a, "--high")) o->high = v;
         else if (!strcmp(a, "--low")) o->low = v;
+        else if (!strcmp(a, "--mid")) o->mid = v;
+        else if (!strcmp(a, "--ladder")) o->ladder = v;
         else if (!strcmp(a, "--match")) o->match = v;
         else if (!strcmp(a, "--group")) {
             if (strcmp(v, "block") && strcmp(v, "tensor")) {
@@ -236,20 +250,53 @@ static int parse_args(int argc, char **argv, derive_opts *o) {
         return 1;
     }
     if (o->target_size) {
-        // the plan is computed, and its types are --high and --low
-        if (!o->high || !o->low) {
+        // the plan is computed, and its types are the ladder: --high[,--mid],--low,
+        // or --ladder T1,...,Tn (high to low)
+        if (o->ladder) {
+            if (o->high || o->low || o->mid) {
+                fprintf(stderr, "error: give --ladder or --high/--low (with --mid), not both\n");
+                return 1;
+            }
+            snprintf(o->ladder_buf, sizeof o->ladder_buf, "%s", o->ladder);
+            for (char *tok = strtok(o->ladder_buf, ","); tok; tok = strtok(NULL, ",")) {
+                if (o->n_rungs == (int)(sizeof o->rungs / sizeof o->rungs[0])) {
+                    fprintf(stderr, "error: --ladder takes at most 8 types\n");
+                    return 1;
+                }
+                o->rungs[o->n_rungs++] = tok;
+            }
+        } else if (o->high && o->low) {
+            o->rungs[o->n_rungs++] = o->high;
+            if (o->mid) o->rungs[o->n_rungs++] = o->mid;
+            o->rungs[o->n_rungs++] = o->low;
+        } else {
             fprintf(stderr, "error: --target-size needs --high T and --low T, the candidates' "
-                    "type and the type a demoted group gets\n");
+                    "type and the type a demoted group gets (or --ladder T1,...,Tn)\n");
             return 1;
         }
+        bool distinct = o->n_rungs >= 2;
+        for (int i = 0; i < o->n_rungs; i++) {
+            for (int j = 0; j < i; j++) distinct &= strcmp(o->rungs[i], o->rungs[j]) != 0;
+            if (quantize_type_from_name(o->rungs[i]) < 0) {
+                fprintf(stderr, "error: '%s' is not a writable type (one of " QUANT_TYPE_NAMES
+                        ", keep excepted)\n", o->rungs[i]);
+                return 1;
+            }
+        }
+        if (!distinct) {
+            fprintf(stderr, "error: a ladder is two or more different types, high to low\n");
+            return 1;
+        }
+        o->high = o->rungs[0];
+        o->low = o->rungs[o->n_rungs - 1];
         if (o->recipe[0] || o->recipe[1]) {
             fprintf(stderr, "error: --target-size writes its own type plan from --high and "
                     "--low; drop %s\n", o->recipe[0] ? "--quant" : "--type-plan");
             return 1;
         }
-    } else if (o->high || o->low || o->match || o->group_tensor) {
-        fprintf(stderr, "error: --high, --low, --match and --group shape --target-size's "
-                "plan and need --target-size\n");
+    } else if (o->high || o->low || o->mid || o->ladder || o->match || o->group_tensor) {
+        fprintf(stderr, "error: --high, --low, --mid, --ladder, --match and --group shape "
+                "--target-size's plan and need --target-size\n");
         return 1;
     }
     bool any = o->target_size > 0;
@@ -605,15 +652,19 @@ static bool read_parent(const char *path, const char *given, parent_meta *p) {
     return true;
 }
 
-// One costed candidate group: a block's matching tensors, or one tensor.
+// One costed candidate group: a block's matching tensors, or one tensor, with
+// its bytes and round-trip error at every rung of the ladder (R4.34.1).
+#define DERIVE_MAX_RUNGS 8
 typedef struct {
     char *name;
     char **tensors;
     int n, cap;
-    double added;             // error at --low minus error at --high
-    long long saved;          // bytes at --high minus bytes at --low
+    long long bytes[DERIVE_MAX_RUNGS];
+    double err[DERIVE_MAX_RUNGS];
+    int at;                   // the rung it sits on (0: the top)
     bool weighted, unweighted;
-    double cost;
+    double cost;              // two rungs: added error per byte saved
+    long long saved;          // two rungs: bytes at the top minus at the bottom
 } dgroup;
 
 static int cmp_group(const void *a, const void *b) {
@@ -632,18 +683,40 @@ static bool type_cost(jv *row, const char *type, double *bytes, double *err) {
     return t && t->type == J_OBJ && num_of(t, "bytes", bytes) && num_of(t, "error", err);
 }
 
+// The group's next step down its lower convex hull from the rung it is on:
+// the lower rung with the least added error per byte saved, the nearer on a
+// tie (scripts/type-plan-by-sensitivity.py next_step). False when no lower
+// rung saves bytes.
+static bool next_step(const dgroup *g, int n_rungs, double *cost, int *to) {
+    bool found = false;
+    for (int j = g->at + 1; j < n_rungs; j++) {
+        long long saved = g->bytes[g->at] - g->bytes[j];
+        if (saved <= 0) continue;
+        double c = (g->err[j] - g->err[g->at]) / (double)saved;
+        if (!found || c < *cost) { *cost = c; *to = j; found = true; }
+    }
+    return found;
+}
+
 // --target-size: run --quant-error over the parent, rank the candidate
 // groups as scripts/type-plan-by-sensitivity.py does (added error per saved
 // byte, cheapest first, ties by name), demote until the predicted file fits,
 // and write the plan. The prediction is the parent's bytes with every
-// candidate at --high, from the report's own byte counts against the
-// parent's stored tensor sizes.
+// candidate at the ladder's top rung, from the report's own byte counts
+// against the parent's stored tensor sizes. Two rungs (--high, --low) demote
+// a group straight down, as before; more (--ladder, --mid) take the cheapest
+// next step down any group's lower convex hull, one rung at a time.
 static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
                        sized_result *res) {
+    const int nr = o->n_rungs;
+    const char *top = o->rungs[0], *bottom = o->rungs[nr - 1];
     res->report = suffixed(o->out, ".quant-error.jsonl");
     res->plan = suffixed(o->out, ".type-plan.json");
-    char types[64];
-    snprintf(types, sizeof types, "%s,%s", o->high, o->low);
+    char types[256];
+    size_t tl = 0;
+    types[0] = 0;
+    for (int k = 0; k < nr; k++)
+        tl += (size_t)snprintf(types + tl, sizeof types - tl, "%s%s", k ? "," : "", o->rungs[k]);
     const char *a[16];
     int n = 0;
     a[n++] = "-m"; a[n++] = o->parent; a[n++] = "--quant-error"; a[n++] = res->report;
@@ -667,7 +740,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     const char *match = o->match ? o->match : "";
     dgroup *gs = NULL;
     int ng = 0, gcap = 0;
-    long long delta = 0;   // all candidates at --high, against the parent
+    long long delta = 0;   // all candidates at the top rung, against the parent
     bool ok = true;
     for (char *line = text, *next; ok && line && *line; line = next) {
         next = strchr(line, '\n');
@@ -677,18 +750,20 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         const char *tn = jv_str(jv_get(row, "tensor"), NULL);
         if (!row || !tn) { fprintf(stderr, "error: %s: a malformed line\n", res->report); ok = false; }
         else if (strstr(tn, match)) {
-            double hb, he, lb, le;
-            bool has_h = type_cost(row, o->high, &hb, &he), has_l = type_cost(row, o->low, &lb, &le);
+            double rb[DERIVE_MAX_RUNGS], re[DERIVE_MAX_RUNGS];
+            int miss = -1;
+            for (int k = 0; k < nr && miss < 0; k++)
+                if (!type_cost(row, o->rungs[k], &rb[k], &re[k])) miss = k;
             gguf_tensor *t = gguf_find_tensor(&g, tn);
-            if (!has_h || !has_l) {
+            if (miss >= 0) {
                 fprintf(stderr, "error: %s has no %s entry (the type does not fit its rows, or the "
-                        "report did not cost it)\n", tn, has_h ? o->low : o->high);
+                        "report did not cost it)\n", tn, o->rungs[miss]);
                 ok = false;
             } else if (!t) {
                 fprintf(stderr, "error: the report names %s and the parent has no such tensor\n", tn);
                 ok = false;
             } else {
-                delta += (long long)hb - (long long)t->nbytes;
+                delta += (long long)rb[0] - (long long)t->nbytes;
                 // the group: "blk.N" for a ^blk\.(\d+)\. name (the digits as
                 // spelled), else the tensor itself
                 char key[160];
@@ -715,8 +790,10 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
                     d->tensors = realloc(d->tensors, sizeof *d->tensors * (size_t)d->cap);
                 }
                 d->tensors[d->n++] = strdup(tn);
-                d->added += le - he;
-                d->saved += (long long)hb - (long long)lb;
+                for (int k = 0; k < nr; k++) {
+                    d->bytes[k] += (long long)rb[k];
+                    d->err[k] += re[k];
+                }
                 if (jv_bool(jv_get(row, "weighted"), false)) d->weighted = true;
                 else d->unweighted = true;
             }
@@ -737,38 +814,90 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
                 "and the two do not compare; give an imatrix that covers them or narrow --match\n");
         return false;
     }
-    for (int k = 0; k < ng; k++) {
-        if (gs[k].saved <= 0) {
-            fprintf(stderr, "error: demoting %s to %s saves no bytes\n", gs[k].name, o->low);
-            return false;
-        }
-        gs[k].cost = gs[k].added / (double)gs[k].saved;
-    }
-    qsort(gs, (size_t)ng, sizeof *gs, cmp_group);
     long long at_high = pbytes + delta;
     res->save_bytes = at_high > o->target_size ? at_high - o->target_size : 0;
     long long saved = 0;
-    int nd = 0;
-    while (nd < ng && saved < res->save_bytes) saved += gs[nd++].saved;
+    int *order = calloc((size_t)ng, sizeof *order), nd = 0;
+    char skipped[4096];
+    size_t sl = 0;
+    int n_skipped = 0;
+    skipped[0] = 0;
+    if (nr == 2) {
+        // two rungs: straight down, cheapest group first (the rung-less ranking)
+        for (int k = 0; k < ng; k++) {
+            gs[k].saved = gs[k].bytes[0] - gs[k].bytes[1];
+            if (gs[k].saved <= 0) {
+                fprintf(stderr, "error: demoting %s to %s saves no bytes\n", gs[k].name, bottom);
+                free(order);
+                return false;
+            }
+            gs[k].cost = (gs[k].err[1] - gs[k].err[0]) / (double)gs[k].saved;
+        }
+        qsort(gs, (size_t)ng, sizeof *gs, cmp_group);
+        while (nd < ng && saved < res->save_bytes) {
+            gs[nd].at = 1;
+            saved += gs[nd].saved;
+            order[nd] = nd;
+            nd++;
+        }
+    } else {
+        for (int k = 0; k < ng; k++) {
+            double c;
+            int to;
+            if (!next_step(&gs[k], nr, &c, &to)) {
+                fprintf(stderr, "error: demoting %s to %s saves no bytes\n", gs[k].name, bottom);
+                free(order);
+                return false;
+            }
+        }
+        // the cheapest next hull step over every group, ties by name, until it fits
+        while (saved < res->save_bytes) {
+            int best = -1, best_to = 0;
+            double best_c = 0;
+            for (int k = 0; k < ng; k++) {
+                double c;
+                int to;
+                if (!next_step(&gs[k], nr, &c, &to)) continue;
+                if (best < 0 || c < best_c || (c == best_c && strcmp(gs[k].name, gs[best].name) < 0)) {
+                    best = k; best_c = c; best_to = to;
+                }
+            }
+            if (best < 0) break;
+            dgroup *d = &gs[best];
+            if (d->at == 0) order[nd++] = best;
+            if (best_to > d->at + 1) {
+                n_skipped++;
+                if (sl < sizeof skipped - 1)
+                    sl += (size_t)snprintf(skipped + sl, sizeof skipped - sl, "%s%s %s->%s", sl ? "; " : "",
+                                           d->name, o->rungs[d->at], o->rungs[best_to]);
+            }
+            saved += d->bytes[d->at] - d->bytes[best_to];
+            d->at = best_to;
+        }
+    }
     if (saved < res->save_bytes) {
         fprintf(stderr, "error: --target-size %lld is out of reach: every candidate at %s still "
-                "leaves about %lld bytes\n", o->target_size, o->low, at_high - saved);
+                "leaves about %lld bytes\n", o->target_size, bottom, at_high - saved);
+        free(order);
         return false;
     }
     sbuf b = {0};
     sb_lit(&b, "{\"default\":");
-    sb_str(&b, *match ? "keep" : o->high);
+    sb_str(&b, *match ? "keep" : top);
     sb_lit(&b, ",\"rules\":[");
     res->demoted = calloc((size_t)(nd ? nd : 1), sizeof *res->demoted);
+    res->demoted_to = calloc((size_t)(nd ? nd : 1), sizeof *res->demoted_to);
     bool first = true;
     for (int k = 0; k < nd; k++) {
-        res->demoted[res->n_demoted++] = gs[k].name;
-        qsort(gs[k].tensors, (size_t)gs[k].n, sizeof *gs[k].tensors, cmp_str);
-        for (int t = 0; t < gs[k].n; t++) {
+        dgroup *d = &gs[order[k]];
+        res->demoted[res->n_demoted] = d->name;
+        res->demoted_to[res->n_demoted++] = o->rungs[d->at];
+        qsort(d->tensors, (size_t)d->n, sizeof *d->tensors, cmp_str);
+        for (int t = 0; t < d->n; t++) {
             sb_lit(&b, first ? "{\"match\":" : ",{\"match\":");
-            sb_str(&b, gs[k].tensors[t]);
+            sb_str(&b, d->tensors[t]);
             sb_lit(&b, ",\"type\":");
-            sb_str(&b, o->low);
+            sb_str(&b, o->rungs[d->at]);
             sb_lit(&b, "}");
             first = false;
         }
@@ -777,14 +906,28 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         sb_lit(&b, first ? "{\"match\":" : ",{\"match\":");
         sb_str(&b, match);
         sb_lit(&b, ",\"type\":");
-        sb_str(&b, o->high);
+        sb_str(&b, top);
         sb_lit(&b, "}");
     }
     sb_lit(&b, "]}\n");
     bool wrote = write_text(res->plan, &b);
     free(b.s);
-    fprintf(stderr, "derive: demoted %d of %d groups to %s, saving %lld bytes\n",
-            nd, ng, o->low, saved);
+    free(order);
+    res->n_skipped = n_skipped;
+    res->skipped = n_skipped ? strdup(skipped) : NULL;
+    if (nr == 2) {
+        fprintf(stderr, "derive: demoted %d of %d groups to %s, saving %lld bytes\n",
+                nd, ng, bottom, saved);
+    } else {
+        fprintf(stderr, "derive: ladder %s: demoted %d of %d groups (", types, nd, ng);
+        for (int r = 1; r < nr; r++) {
+            int c = 0;
+            for (int k = 0; k < res->n_demoted; k++) c += !strcmp(res->demoted_to[k], o->rungs[r]);
+            fprintf(stderr, "%s%s %d", r > 1 ? ", " : "", o->rungs[r], c);
+        }
+        fprintf(stderr, "), saving %lld bytes; %d rung(s) skipped as dominated%s%s\n", saved,
+                n_skipped, n_skipped ? ": " : "", n_skipped ? skipped : "");
+    }
     return wrote;
 }
 
@@ -1132,9 +1275,16 @@ static bool card_from_record(const char *rec_path, const char *card_path,
     if (num_of(rec, "target_size", &target)) {
         jv *dem = jv_get(rec, "demoted");
         int nd = dem && dem->type == J_ARR ? dem->n : 0;
-        sb_fmt(&c, "The recipe's target was %lld bytes: %d group%s demoted from %s to %s, the "
-               "ones that add the least round-trip error per byte saved.\n\n", (long long)target,
-               nd, nd == 1 ? "" : "s", jv_str(jv_get(rec, "high"), "?"), jv_str(jv_get(rec, "low"), "?"));
+        jv *lad = jv_get(rec, "ladder");
+        if (lad && lad->type == J_ARR && lad->n > 2)
+            sb_fmt(&c, "The recipe's target was %lld bytes: %d group%s demoted down the ladder from %s to "
+                   "at most %s, one rung at a time, the steps that add the least round-trip error per "
+                   "byte saved first.\n\n", (long long)target, nd, nd == 1 ? "" : "s",
+                   jv_str(jv_get(rec, "high"), "?"), jv_str(jv_get(rec, "low"), "?"));
+        else
+            sb_fmt(&c, "The recipe's target was %lld bytes: %d group%s demoted from %s to %s, the "
+                   "ones that add the least round-trip error per byte saved.\n\n", (long long)target,
+                   nd, nd == 1 ? "" : "s", jv_str(jv_get(rec, "high"), "?"), jv_str(jv_get(rec, "low"), "?"));
     }
     sb_lit(&c, "## Recipe\n\n```sh\n");
     {
@@ -1241,7 +1391,12 @@ static void put_command(sbuf *b, const derive_opts *o) {
     for (int k = 0; k < N_RECIPE; k++)
         if (o->recipe[k]) sb_fmt(b, " %s %s", RECIPE[k].flag, plat_path_base(o->recipe[k]));
     if (o->target_size) {
-        sb_fmt(b, " --target-size %lld --high %s --low %s", o->target_size, o->high, o->low);
+        if (o->n_rungs > 2) {
+            sb_fmt(b, " --target-size %lld --ladder ", o->target_size);
+            for (int k = 0; k < o->n_rungs; k++) sb_fmt(b, "%s%s", k ? "," : "", o->rungs[k]);
+        } else {
+            sb_fmt(b, " --target-size %lld --high %s --low %s", o->target_size, o->high, o->low);
+        }
         if (o->match) sb_fmt(b, " --match %s", o->match);
         if (o->group_tensor) sb_lit(b, " --group tensor");
     }
@@ -1453,6 +1608,23 @@ int derive_main(int argc, char **argv) {
             sb_str(&r, sz.demoted[k]);
         }
         sb_lit(&r, "]");
+        if (o.n_rungs > 2) {
+            // the ladder, where each demoted group ended, and the rungs it jumped
+            sb_lit(&r, ",\"ladder\":[");
+            for (int k = 0; k < o.n_rungs; k++) {
+                if (k) sb_lit(&r, ",");
+                sb_str(&r, o.rungs[k]);
+            }
+            sb_lit(&r, "],\"demoted_to\":{");
+            for (int k = 0; k < sz.n_demoted; k++) {
+                if (k) sb_lit(&r, ",");
+                sb_str(&r, sz.demoted[k]);
+                sb_lit(&r, ":");
+                sb_str(&r, sz.demoted_to[k]);
+            }
+            sb_fmt(&r, "},\"skipped_rungs\":%d,\"skipped\":", sz.n_skipped);
+            sb_str(&r, sz.skipped ? sz.skipped : "");
+        }
     }
     sb_lit(&r, "},\"parent\":{\"path\":"); sb_str(&r, plat_path_base(o.parent));
     sb_fmt(&r, ",\"sha256\":\"%s\",\"bytes\":%lld,\"license\":", psha, pbytes);
