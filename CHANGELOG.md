@@ -5,6 +5,12 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Test fix: the FP8 gold-logits test skips without `accelerate`.** transformers
+  loads an FP8 checkpoint only with `accelerate` installed, and the test guarded
+  only `torch` and `transformers`, so a machine with transformers but without
+  accelerate failed it with an ImportError instead of skipping, as the
+  neighbouring tests already do.
+
 - **`runner derive --target-size` gains a middle rung: `--mid T`, or `--ladder T1,...,Tn` high to low (R4.34.1).** A
   group is demoted one rung at a time instead of straight to the lowest type. Over the ladder, each group's (bytes,
   error) points are reduced to their lower convex hull, and the cheapest next step over all groups (added error per
