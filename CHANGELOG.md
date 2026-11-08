@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Importance-weighted Q4_K, Q5_K, Q6_K, Q5_1 and IQ4_NL writers (R4.34.3).**
+  `--imatrix` now shapes these formats as well as Q3_K and Q4_0, using ggml's
+  type-specific weighting and scale searches. All five are byte twins of
+  ggml `c1d0e7a` on the committed real tensor slice and deterministic boundary
+  rows. The `.dat` and GGUF calibration paths agree, all-zero calibration
+  retains the reference bytes, and mismatched calibration shapes are refused.
+  The no-imatrix bytes and planner policy are unchanged.
+
 ## v1.15.0 - 2026-11-07
 
 - **Fix: transient VRAM accounting no longer forces durable writes (R6.24).**

@@ -70,7 +70,8 @@ int   quantize_gguf_plan(const char *in_path, const char *out_path, int target,
 // and reported, and that stays the default behaviour.
 void  quantize_set_type_plan_strict(bool on);
 // R4.7.2: an importance matrix (llama.cpp's GGUF or legacy .dat imatrix)
-// for the next rewrite's q3_k and q4_0 rows; NULL clears it. False, with
+// for the next rewrite's q3_k, q4_0, q4_k, q5_k, q6_k, q5_1 and iq4_nl
+// rows; NULL clears it. False, with
 // the reason on stderr, when the file cannot be read as one.
 bool  quantize_set_imatrix(const char *path);
 // R4.7.3: --quant-error. One JSON line per tensor a rewrite would quantize:
