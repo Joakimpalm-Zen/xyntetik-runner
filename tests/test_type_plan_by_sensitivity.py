@@ -68,8 +68,11 @@ def test_without_match_every_costed_tensor_is_a_candidate(tmp_path):
 
 def test_refusals(tmp_path):
     rep = report(tmp_path, {0: 1.0, 99: 1.0})
-    rc, _, err = plan(rep, "--match", "_exps", "--groups", "1")
-    assert rc != 0 and "imatrix-weighted and some are not" in err
+    # R4.34.2: the block the imatrix does not cover is held at the top rung and
+    # named, not refused; --allow-mixed still ranks the two together
+    rc, pl, err = plan(rep, "--match", "_exps", "--groups", "1")
+    assert rc == 0 and "held at q4_0 and not ranked: blk.99." in err
+    assert not any(r["match"].startswith("blk.99.") for r in pl["rules"])
     assert plan(rep, "--match", "_exps", "--groups", "1", "--allow-mixed")[0] == 0
     rep = report(tmp_path, {0: 1.0}, missing="blk.0.ffn_up_exps.weight")
     rc, _, err = plan(rep, "--match", "_exps", "--groups", "1")
