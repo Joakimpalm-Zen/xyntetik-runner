@@ -75,6 +75,8 @@ typedef struct {
     int n_demoted;
     int n_skipped;            // hull steps that jumped a dominated rung
     char *skipped;            // "group from->to; ..." for the record, or NULL
+    char **held;              // tensors the imatrix has no entry for, held at the top (R4.34.2)
+    int n_held;
 } sized_result;
 
 typedef struct {
@@ -740,6 +742,8 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     const char *match = o->match ? o->match : "";
     dgroup *gs = NULL;
     int ng = 0, gcap = 0;
+    char **held = NULL;    // candidates the imatrix has no entry for (R4.34.2)
+    int nh = 0, hcap = 0;
     long long delta = 0;   // all candidates at the top rung, against the parent
     bool ok = true;
     for (char *line = text, *next; ok && line && *line; line = next) {
@@ -764,6 +768,19 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
                 ok = false;
             } else {
                 delta += (long long)rb[0] - (long long)t->nbytes;
+                if (o->recipe[2] && !jv_bool(jv_get(row, "weighted"), false)) {
+                    // no calibration data for this tensor (llama.cpp's imatrix
+                    // leaves out output and token_embd by default): its error
+                    // does not compare with the weighted ones, so it stays at
+                    // the top rung, out of the ranking, and is named (R4.34.2)
+                    if (nh == hcap) {
+                        hcap = hcap ? hcap * 2 : 8;
+                        held = realloc(held, sizeof *held * (size_t)hcap);
+                    }
+                    held[nh++] = strdup(tn);
+                    jv_free(row);
+                    continue;
+                }
                 // the group: "blk.N" for a ^blk\.(\d+)\. name (the digits as
                 // spelled), else the tensor itself
                 char key[160];
@@ -803,10 +820,18 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     gguf_close(&g);
     free(text);
     if (!ok) return false;
+    if (!ng && nh) {
+        fprintf(stderr, "error: the imatrix has no entry for any of the %d candidate tensors; give one "
+                "that covers them or narrow --match\n", nh);
+        return false;
+    }
     if (!ng) {
         fprintf(stderr, "error: no tensor in the --quant-error report matches '%s'\n", match);
         return false;
     }
+    if (nh) qsort(held, (size_t)nh, sizeof *held, cmp_str);
+    res->held = held;
+    res->n_held = nh;
     bool w = false, u = false;
     for (int k = 0; k < ng; k++) { w |= gs[k].weighted; u |= gs[k].unweighted; }
     if (w && u) {
@@ -927,6 +952,11 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         }
         fprintf(stderr, "), saving %lld bytes; %d rung(s) skipped as dominated%s%s\n", saved,
                 n_skipped, n_skipped ? ": " : "", n_skipped ? skipped : "");
+    }
+    if (nh) {
+        fprintf(stderr, "derive: no calibration data for %d tensor(s), held at %s and not ranked:", nh, top);
+        for (int k = 0; k < nh; k++) fprintf(stderr, "%s %s", k ? "," : "", held[k]);
+        fprintf(stderr, "\n");
     }
     return wrote;
 }
@@ -1285,6 +1315,15 @@ static bool card_from_record(const char *rec_path, const char *card_path,
             sb_fmt(&c, "The recipe's target was %lld bytes: %d group%s demoted from %s to %s, the "
                    "ones that add the least round-trip error per byte saved.\n\n", (long long)target,
                    nd, nd == 1 ? "" : "s", jv_str(jv_get(rec, "high"), "?"), jv_str(jv_get(rec, "low"), "?"));
+        jv *held = jv_get(rec, "held");
+        if (held && held->type == J_ARR && held->n > 0) {
+            sb_fmt(&c, "%d tensor%s had no entry in the importance matrix, so %s held at %s and not ranked:",
+                   held->n, held->n == 1 ? "" : "s", held->n == 1 ? "it was" : "they were",
+                   jv_str(jv_get(rec, "held_at"), "?"));
+            for (int k = 0; k < held->n; k++)
+                sb_fmt(&c, "%s `%s`", k ? "," : "", jv_str(held->items[k], "?"));
+            sb_lit(&c, ". Holding them is the planner's default, not evidence that they matter most.\n\n");
+        }
     }
     sb_lit(&c, "## Recipe\n\n```sh\n");
     {
@@ -1499,7 +1538,7 @@ int derive_main(int argc, char **argv) {
         if (!window_fits(&o, ref)) return 1;
     }
     // 2. make the file (a --target-size recipe plans its types first)
-    sized_result sz;
+    sized_result sz = {0};
     memset(&sz, 0, sizeof sz);
     if (o.target_size && !sized_plan(self, &o, file_bytes(o.parent), &sz)) return 1;
     const char *a[32];
@@ -1608,6 +1647,16 @@ int derive_main(int argc, char **argv) {
             sb_str(&r, sz.demoted[k]);
         }
         sb_lit(&r, "]");
+        if (o.recipe[2]) {
+            // the candidates the imatrix had no entry for, held at the top rung (R4.34.2)
+            sb_lit(&r, ",\"held\":[");
+            for (int k = 0; k < sz.n_held; k++) {
+                if (k) sb_lit(&r, ",");
+                sb_str(&r, sz.held[k]);
+            }
+            sb_lit(&r, "],\"held_at\":");
+            sb_str(&r, o.rungs[0]);
+        }
         if (o.n_rungs > 2) {
             // the ladder, where each demoted group ended, and the rungs it jumped
             sb_lit(&r, ",\"ladder\":[");

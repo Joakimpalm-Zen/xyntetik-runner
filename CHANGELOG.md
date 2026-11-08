@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **`runner derive --target-size` with `--imatrix` plans a whole file (R4.34.2).** llama.cpp's imatrix has no entry for
+  `output` or `token_embd` unless it was run with `--process-output`, so those two tensors' errors were unweighted
+  beside the weighted rest, and the planner refused the mix. A candidate the matrix does not cover is now held at the
+  top rung and left out of the ranking, and the stderr, the record (`held`, `held_at`) and the card name it.
+  - Holding them is a default, not evidence that they matter most.
+  - `scripts/type-plan-by-sensitivity.py` holds the same tensors, and `--allow-mixed` still ranks them together.
+  - **Checks:** `tests/test_derive.py`: an imatrix skewed onto the tensor the plain plan demotes first keeps it up
+    and changes the plan; an imatrix that leaves one tensor out gives a plan with that tensor held and named, equal
+    to the reference planner's.
 - **Test fix: the FP8 gold-logits test skips without `accelerate`.** transformers
   loads an FP8 checkpoint only with `accelerate` installed, and the test guarded
   only `torch` and `transformers`, so a machine with transformers but without
