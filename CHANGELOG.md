@@ -5,6 +5,11 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Docs: the bartowski Qwen3.5-9B distill row no longer says the `qwen35` path
+  has no Metal backend.** It has run on Metal since v1.10.0 when the model fits
+  on the device whole; this 5.84 GB file does not on an 8 GB Mac, which is why
+  the row has no Metal cell.
+
 ## v1.15.0 - 2026-11-07
 
 - **Fix: transient VRAM accounting no longer forces durable writes (R6.24).**
