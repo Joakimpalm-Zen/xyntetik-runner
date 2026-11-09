@@ -435,6 +435,7 @@ typedef struct {
     bool   kv_q8;            // KV rows stored as q8_0 blocks (CPU and CUDA)
     bool   kv_fp4;           // KV rows stored as fp4 blocks (16 values in 9 bytes)
     bool   kv_split;         // K rows q8_0, V rows fp4 (--kv k8v4): the caches differ
+    bool   kv_f32;           // R8.25.2 --train-kv-f32: K and V rows f32, training only (kind 3)
     float *x, *xb, *xb2, *q, *hb, *hb2;   // [n_batch][dim] activations
     float *k_tmp, *v_tmp;                 // [n_batch][kv_dim]
     float *q_gate;                        // qwen35 full-attention output gate
@@ -828,9 +829,11 @@ static inline float model_attn_scale(const model_t *m, int l) {
 // the *_v_* family for V, and the *_sum forms where an account wants both.
 // fp4 packs 16 values into 9 bytes, q8_0 32 into 34, f16 2 each.
 static inline int model_kv_kind_k(const model_t *m) {
+    if (m->kv_f32) return 3;   // R8.25.2, training only
     return m->kv_fp4 ? 2 : (m->kv_q8 || m->kv_split) ? 1 : 0;
 }
 static inline int model_kv_kind_v(const model_t *m) {
+    if (m->kv_f32) return 3;
     return (m->kv_fp4 || m->kv_split) ? 2 : m->kv_q8 ? 1 : 0;
 }
 // deepseek2's absorbed form keeps one [k_pe | latent] row per token and layer
@@ -844,7 +847,8 @@ static inline bool model_kv_v_shared(const model_t *m) {
     return m->mla_absorb && model_kv_kind_k(m) == model_kv_kind_v(m);
 }
 static inline size_t kv_bytes_of_kind(int kind, size_t e) {
-    return kind == 2 ? e / 16 * 9 : kind == 1 ? e / 32 * 34 : e * sizeof(f16_t);
+    return kind == 3 ? e * sizeof(float) : kind == 2 ? e / 16 * 9
+         : kind == 1 ? e / 32 * 34 : e * sizeof(f16_t);
 }
 static inline size_t model_k_bytes_of(const model_t *m, size_t e) {
     return kv_bytes_of_kind(model_kv_kind_k(m), e);
@@ -1069,6 +1073,9 @@ typedef struct {
     // K rows q8_0 and V rows fp4 (--kv k8v4): measured 2026-09-18 as the
     // side that survives 4 bits (K does not); about 41% of the f16 bytes.
     bool  kv_split;
+    // R8.25.2: K and V rows as f32 (kind 3), for a training run only
+    // (--train-kv-f32); the CPU path, no tied V, never asked by inference
+    bool  kv_f32;
     // --kv-ring (docs/kv-ring.md): KV_RING_AUTO (0, the default) gives
     // sliding-window layers only their window when the weights and the flat
     // cache would not fit the device budget (or, on the CPU, available RAM);

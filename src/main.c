@@ -2147,6 +2147,7 @@ typedef struct {
     const char *recipe_flag;   // the first R8.17 flag given, for refusals
     bool train_gpu;            // R8.19 --train-gpu: every product on CUDA
     bool train_full;           // R8.25.2 --train-full: every dense projection, no adapter
+    bool train_kv_f32;         // R8.25.2 --train-kv-f32: an f32 KV cache for a training run
     const char *train_master;  // --train-master F: the float masters' source
     const char *train_out_master; // --train-out-master F: the final masters as an f32 file
     uint64_t train_gpu_budget; // --train-gpu-budget BYTES (0: the free memory)
@@ -2611,9 +2612,10 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--weight-decay"))
             o->weight_decay = (float)float_arg(a, NEXT, 0, 1);
         else if (!strcmp(a, "--train-gpu")) o->train_gpu = true;
-        else if (!strcmp(a, "--train-full")) o->train_full = true;
-        else if (!strcmp(a, "--train-master")) o->train_master = NEXT;
-        else if (!strcmp(a, "--train-out-master")) o->train_out_master = NEXT;
+        else if (!strcmp(a, "--train-full") && recipe_flag(o, a)) o->train_full = true;
+        else if (!strcmp(a, "--train-kv-f32") && recipe_flag(o, a)) { o->train_kv_f32 = true; o->mp.kv_f32 = true; }
+        else if (!strcmp(a, "--train-master") && recipe_flag(o, a)) o->train_master = NEXT;
+        else if (!strcmp(a, "--train-out-master") && recipe_flag(o, a)) o->train_out_master = NEXT;
         else if (!strcmp(a, "--train-gpu-budget")) {
             o->train_gpu_budget = u64_arg(a, NEXT);
             if (!o->train_gpu_budget) {
@@ -4620,6 +4622,12 @@ static bool train_full_prepare(cli_opts *o, cli_run *rt) {
 }
 
 static bool train_prepare(cli_opts *o, cli_run *rt) {
+    if (o->train_kv_f32 && (o->train_gpu || rt->m.gpu || !rt->m.kv_f32)) {
+        fprintf(stderr, "error: --train-kv-f32 keeps an f32 KV cache on the CPU path only "
+                "(run with --gpu off, without --train-gpu, without --kv, on a model "
+                "without tied V)\n");
+        return false;
+    }
     if (o->train_full && !rt->m.gpu) return train_full_prepare(o, rt);
     if (rt->m.gpu) {
         // v1 trains on the CPU path only (D8 is CUDA training); refuse
@@ -5515,6 +5523,7 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     }
     sb_lit(&rec, ",\"data\":");
     lineage_put_input(&rec, data_path, dsha);
+    sb_lit(&rec, rt->m.kv_f32 ? ",\"kv_cache\":\"f32\"" : "");
     if (model_full_on(&rt->m)) {
         // R8.25.2: what was trained, through which type, from which masters
         uint64_t fp = 0;

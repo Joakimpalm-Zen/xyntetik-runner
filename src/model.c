@@ -4782,6 +4782,10 @@ static void bind_kv_layout(model_t *m, const model_params *p) {
         else
             m->kv_fp4 = true;
     }
+    // R8.25.2 --train-kv-f32: K and V rows kept f32, so a training run's
+    // forward and backward read the projections unrounded; the CPU path only
+    if (p->kv_f32 && !m->kv_q8 && !m->kv_split && !m->kv_fp4 && p->gpu_mode == GPU_OFF)
+        m->kv_f32 = true;
 }
 
 static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
@@ -5465,7 +5469,7 @@ static bool runtime_kv_layout(model_t *m, const model_params *p, int n_ctx) {
             } else if (n_tied > 0 && p->gpu_mode != GPU_OFF) {
                 fprintf(stderr, "kv: tied-V refused — the GPU attention "
                         "kernels read a stored K row; rerun with --gpu off\n");
-            } else if (n_tied > 0 && (m->kv_q8 || m->kv_fp4 || m->kv_split)) {
+            } else if (n_tied > 0 && (m->kv_q8 || m->kv_fp4 || m->kv_split || m->kv_f32)) {
                 fprintf(stderr, "kv: tied-V refused — a %s cache would "
                         "re-quantize the derived K row rather than read it; "
                         "use the default f16 KV\n",
@@ -5876,7 +5880,7 @@ static void runtime_report(const model_t *m, size_t kv_bytes, size_t k_bytes) {
     fprintf(stderr, "%-24s %d\n", "vocab", m->n_vocab);
     fprintf(stderr, "%-24s %d (train %d)\n", "context", m->n_ctx, m->n_ctx_train);
     fprintf(stderr, "%-24s %.1f MB (%s)\n", "kv cache", (kv_bytes + k_bytes) / 1e6,
-            m->kv_fp4 ? "fp4" : m->kv_split ? "q8_0 K, fp4 V"
+            m->kv_f32 ? "f32, training only" : m->kv_fp4 ? "fp4" : m->kv_split ? "q8_0 K, fp4 V"
             : m->kv_q8 ? "q8_0" : "fp16");
     if (model_kv_v_shared(m))
         fprintf(stderr, "%-24s one table: V reads the K row (absorbed MLA)\n", "kv layout");
@@ -6746,6 +6750,10 @@ static __attribute__((noinline)) void attn_scores(const attn_job *j, int h,
                 s = fp4_dot_row(kt, qh, hd);
             } else if (j->kk == 1) {
                 s = vec_dot(T_Q8_0, kt, qh, hd);
+            } else if (j->kk == 3) {
+                const float *kf = (const float *)kt;
+                s = 0;
+                for (int i = 0; i < hd; i++) s += qh[i] * kf[i];
             } else {
                 const f16_t *kh = (const f16_t *)kt;
                 s = 0;
@@ -6829,6 +6837,9 @@ static __attribute__((noinline)) void attn_values(const attn_job *j, int h,
             fp4_accum_row(vt, a, out, n);
         } else if (j->vk == 1) {
             q8_accum_row(vt, a, out, n);
+        } else if (j->vk == 3) {
+            const float *vf = (const float *)vt;
+            for (int i = 0; i < n; i++) out[i] += a * vf[i];
         } else {
             const f16_t *vh = (const f16_t *)vt;
             for (int i = 0; i < n; i++) out[i] += a * f16_load(vh + i);
@@ -7159,7 +7170,7 @@ static void route_collect(const model_t *m, route_facts *r) {
         }
     // RUNNER_MOE_HOT: the expert slots the device holds in host layers
     r->moe_hot = m->gpu && m->moe_hot_slot ? m->moe_hot_total : 0;
-    r->kv = m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
+    r->kv = m->kv_f32 ? "f32" : m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
     r->detail = m->gpu ? gpu_route_detail(m) : "";
     r->build = route_build();
     r->codegen = route_codegen();
@@ -10702,7 +10713,13 @@ typedef struct {
     size_t k_row_b, v_row_b;   // f16 rows (training refuses quantized caches)
     float scale;
     int swa;               // window rows on a sliding layer, else 0
+    bool f32;              // R8.25.2 --train-kv-f32: f32 rows, not f16
 } attn_bw_job;
+
+// one cached K or V element in the backward: f16, or f32 under --train-kv-f32
+static inline float kvbw_at(const attn_bw_job *jb, const uint8_t *row, int i) {
+    return jb->f32 ? ((const float *)row)[i] : f16_load((const f16_t *)row + i);
+}
 
 // first attended position of t: the forward's own rule (attn_job.t0)
 static inline int attn_window_start(int swa, int t) {
@@ -10731,7 +10748,7 @@ static void attn_bw_p1(void *ctx, int i0, int i1) {
     int hd = jb->hd, T = jb->T, H = jb->n_head;
     for (int it = i0; it < i1; it++) {
         int tt = it / H, h = it % H, t = B->tb0 + tt, kvh = h / jb->kv_mul;
-        size_t hoff = (size_t)kvh * hd * sizeof(f16_t);
+        size_t hoff = (size_t)kvh * hd * (jb->f32 ? sizeof(float) : sizeof(f16_t));
         float *p = B->P + ((size_t)tt * H + h) * T;
         float *ds = B->DS + ((size_t)tt * H + h) * T;
         const float *qh = jb->q + (size_t)t * jb->q_dim + (size_t)h * hd;
@@ -10739,31 +10756,28 @@ static void attn_bw_p1(void *ctx, int i0, int i1) {
         float *dqh = jb->dq + (size_t)t * jb->q_dim + (size_t)h * hd;
         int t0 = attn_window_start(jb->swa, t);
         for (int s = t0; s <= t; s++) {
-            const f16_t *kh = (const f16_t *)(jb->kc_l +
-                              (size_t)s * jb->k_row_b + hoff);
+            const uint8_t *kh = jb->kc_l + (size_t)s * jb->k_row_b + hoff;
             float sc = 0;
             for (int i = 0; i < hd; i++)
-                sc += qh[i] * f16_load(kh + i);
+                sc += qh[i] * kvbw_at(jb, kh, i);
             p[s] = sc * jb->scale;
         }
         softmax(p + t0, t - t0 + 1);
         float sum_pd = 0.0f;
         for (int s = t0; s <= t; s++) {
-            const f16_t *vh = (const f16_t *)(jb->vc_l +
-                              (size_t)s * jb->v_row_b + hoff);
+            const uint8_t *vh = jb->vc_l + (size_t)s * jb->v_row_b + hoff;
             float dp = 0.0f;
             for (int i = 0; i < hd; i++)
-                dp = fmaf(daoh[i], f16_load(vh + i), dp);
+                dp = fmaf(daoh[i], kvbw_at(jb, vh, i), dp);
             ds[s] = dp;
             sum_pd = fmaf(p[s], dp, sum_pd);
         }
         for (int s = t0; s <= t; s++) {
-            const f16_t *kh = (const f16_t *)(jb->kc_l +
-                              (size_t)s * jb->k_row_b + hoff);
+            const uint8_t *kh = jb->kc_l + (size_t)s * jb->k_row_b + hoff;
             float dsc = p[s] * (ds[s] - sum_pd) * jb->scale;
             ds[s] = dsc;
             for (int i = 0; i < hd; i++)
-                dqh[i] = fmaf(dsc, f16_load(kh + i), dqh[i]);
+                dqh[i] = fmaf(dsc, kvbw_at(jb, kh, i), dqh[i]);
         }
     }
 }
@@ -11261,7 +11275,7 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         attn_job aj = { m, kc_l, vc_l, qt, ao + (size_t)t * q_dim, t,
                        attn_window_start(swa, t),
                        hd, kv_dim, k_row_b, v_row_b, 0,
-                       0, 0, scale, NULL, false, NULL, l };
+                       model_kv_kind_k(m), model_kv_kind_v(m), scale, NULL, false, NULL, l };
         attn_run(m, &aj, n_head);
         if (gate) {
             // sigmoid gate applied element-wise to the attention output
@@ -11642,7 +11656,8 @@ NUM_STAGE void lbw_attention(model_t *m, int l, int T, float *dx, lbw_state *s, 
     if (ok && !(t_mv_dev == m &&
                 gpu_train_attn_bw(m, &ta, kc_l, vc_l, q, dao, dq, dk, dv))) {
         attn_bw_job aj = { kc_l, vc_l, q, dao, dq, dk, dv, T, n_head,
-                           kv_mul, hd, q_dim, kv_dim, k_row_b, v_row_b, scale, swa };
+                           kv_mul, hd, q_dim, kv_dim, k_row_b, v_row_b, scale, swa,
+                           model_kv_kind_k(m) == 3 };
         ok = attn_bw_run(m->tp, &aj);
     }
     // Shared KV (R8.9.6): a sharing layer attended over its owner's cached
@@ -14140,12 +14155,14 @@ NUM_STAGE void attn_rope_store(model_t *m, const fwd_layer *c) {
         const float *ksrc = m->k_tmp + (size_t)b * kv_dim;
         const float *vsrc = m->v_tmp + (size_t)b * kv_dim;
         if (!tied) {   // a tied layer owns no K rows to write into
-            if (kk == 2)      fp4_quant_row(ksrc, kc, kv_dim);
+            if (kk == 3)      memcpy(kc, ksrc, sizeof(float) * (size_t)kv_dim);
+            else if (kk == 2) fp4_quant_row(ksrc, kc, kv_dim);
             else if (kk == 1) q8_quant_row(ksrc, kc, kv_dim);
             else for (int i = 0; i < kv_dim; i++) ((f16_t *)kc)[i] = f32_to_f16(ksrc[i]);
         }
         if (model_kv_v_shared(m)) continue;   // V is the row K's store just wrote
-        if (vk == 2)      fp4_quant_row(vsrc, vc, kv_dim);
+        if (vk == 3)      memcpy(vc, vsrc, sizeof(float) * (size_t)kv_dim);
+        else if (vk == 2) fp4_quant_row(vsrc, vc, kv_dim);
         else if (vk == 1) q8_quant_row(vsrc, vc, kv_dim);
         else for (int i = 0; i < kv_dim; i++) ((f16_t *)vc)[i] = f32_to_f16(vsrc[i]);
     }

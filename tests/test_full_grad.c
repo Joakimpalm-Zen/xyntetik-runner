@@ -53,6 +53,7 @@ static float urand(void) {   // uniform in [-1, 1)
     return (float)((g_lcg >> 40) & 0xFFFFFF) / 8388608.0f - 1.0f;
 }
 
+static bool g_kv_f32 = false, g_grade = false;
 static model_t load(const char *path) {
     model_params p;
     memset(&p, 0, sizeof(p));
@@ -60,6 +61,7 @@ static model_t load(const char *path) {
     p.n_threads = 2;
     p.n_ctx = 64;
     p.n_batch = 32;
+    p.kv_f32 = g_kv_f32;
     model_t m;
     memset(&m, 0, sizeof(m));
     if (!model_load(&m, path, &p)) {
@@ -126,6 +128,9 @@ static void directional(model_t *m, const int32_t *toks, float **g, uint64_t see
     double fd = fd_at[0];
     double rel = fabs(fd - d) / (fabs(d) > 1e-12 ? fabs(d) : 1e-12);
     printf("full-grad: reading, %s: <G,V> %.6g, central difference %.6g, relative %.2e\n", what, d, fd, rel);
+    // with an f32 KV cache (--train-kv-f32) there is no f16 staircase, and the
+    // declared A1 (1e-3 at eps 1e-3 along a random direction) is graded
+    if (g_kv_f32 && g_grade) CHECK(rel <= 1e-3, "%s: the directional derivative misses (relative %.2e)", what, rel);
 }
 
 // The graded check, the house method of tests/test_lora_grad.c: the f16 KV
@@ -240,6 +245,52 @@ int main(int argc, char **argv) {
         }
     for (int i = 0; i < m.n_layer * NS; i++) free(g[i]);
     model_free(&m);
+
+    // the same gradient with an f32 KV cache (--train-kv-f32): the random
+    // directions graded at the declared 1e-3, each matrix alone too
+    g_kv_f32 = true;
+    model_t mf = load(base);
+    CHECK(mf.kv_f32, "the f32 KV cache was not taken");
+    if (!model_full_train_init(&mf, NULL, why, sizeof why)) {
+        fprintf(stderr, "FAIL: model_full_train_init (f32 KV): %s\n", why);
+        return 1;
+    }
+    loss_of(&mf, toks);
+    float *gf[64 * NS];
+    for (int l = 0; l < mf.n_layer; l++)
+        for (int k = 0; k < NS; k++) {
+            int ni = 0, no = 0;
+            const float *gr = model_full_grad(&mf, l, SLOTS[k], &ni, &no);
+            gf[l * NS + k] = NULL;
+            if (!gr) continue;
+            gf[l * NS + k] = malloc(sizeof(float) * (size_t)ni * no);
+            memcpy(gf[l * NS + k], gr, sizeof(float) * (size_t)ni * no);
+        }
+    // A1 as first declared: two random directions over every matrix and the
+    // last layer's ffn_down alone, eps 1e-3, within 1e-3
+    g_grade = true;
+    directional(&mf, toks, gf, 0x9E3779B97F4A7C15ull, -1, -1, "f32 KV, every matrix, seed 1");
+    directional(&mf, toks, gf, 0xD1B54A32D192ED03ull, -1, -1, "f32 KV, every matrix, seed 2");
+    directional(&mf, toks, gf, 0x2545F4914F6CDD1Dull, mf.n_layer - 1, LW_DOWN, "f32 KV, the last layer's ffn_down alone");
+    g_grade = false;
+    // each matrix alone: a reading (an attention matrix's small derivative sits
+    // in the f32 forward's rounding noise at one eps; the sign check grades it)
+    for (int l = 0; l < mf.n_layer; l++)
+        for (int k = 0; k < NS; k++) {
+            char w[64];
+            snprintf(w, sizeof w, "f32 KV, layer %d slot %d alone", l, SLOTS[k]);
+            directional(&mf, toks, gf, 0x51ED2701ull + 97u * (uint64_t)(l * NS + k), l, SLOTS[k], w);
+        }
+    sign_directional(&mf, toks, gf, -1, -1, "f32 KV, every matrix");
+    for (int l = 0; l < mf.n_layer; l++)
+        for (int k = 0; k < NS; k++) {
+            char w[64];
+            snprintf(w, sizeof w, "f32 KV, layer %d slot %d", l, SLOTS[k]);
+            sign_directional(&mf, toks, gf, l, SLOTS[k], w);
+        }
+    for (int i = 0; i < mf.n_layer * NS; i++) free(gf[i]);
+    model_free(&mf);
+    g_kv_f32 = false;
 
     // the Q8_0 read copy: after a step it holds the master's own Q8_0 bytes
     gguf_file mg;
