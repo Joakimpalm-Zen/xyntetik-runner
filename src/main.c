@@ -6056,6 +6056,27 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     return rc;
 }
 
+// A record written before R3.39.2 named the tensor-core MODE in its route
+// detail ("tc=promoted" whenever RUNNER_CUDA_TC was unset), not the route: an
+// unpromoted model's records said "promoted" with no tensor-core GEMM run. Read
+// that word as "not recorded": the detail matches when it equals the replay's
+// with the tc token alone set aside, and the replay's token is the default's
+// own ("taken" or "off"). Every other token still has to match.
+static bool route_detail_pre_tc_match(const char *rd, const char *nd) {
+    const char *rp = strstr(rd, "tc=promoted");
+    if (!rp || (rp != rd && rp[-1] != ' ')) return false;
+    const char *np = strstr(nd, " tc=");
+    np = np ? np + 1 : (strncmp(nd, "tc=", 3) ? NULL : nd);
+    if (!np || (strncmp(np, "tc=taken", 8) && strncmp(np, "tc=off", 6))) return false;
+    size_t rl = (size_t)(rp - rd), nl = (size_t)(np - nd);
+    if (rl != nl || strncmp(rd, nd, rl)) return false;
+    const char *rr = rp + strlen("tc=promoted"), *nr = np + strcspn(np, " +");
+    // the NVFP4 suffix (tc=promoted+nvfp4) belongs to the token
+    if (*rr == '+') rr += strcspn(rr, " ");
+    if (*nr == '+') nr += strcspn(nr, " ");
+    return strcmp(rr, nr) == 0;
+}
+
 // ---- notarized inference D2: the replay
 static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const char *load_path) {
     jv *vm = jv_get(vr->rec, "model"), *va = jv_get(vr->rec, "adapter");
@@ -6190,9 +6211,14 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
         const char *nb = jv_str(jv_get(now, "backend"), ""),
                    *na = jv_str(jv_get(now, "cpu_act"), ""),
                    *nd = jv_str(jv_get(now, "backend_detail"), "");
+        jv *rtct = jv_get(rroute, "tc_types");
+        const char *rt_t = rtct ? jv_str(rtct, "") : NULL,
+                   *nt_t = jv_str(jv_get(now, "tc_types"), "");
+        bool pre_tc = false;
         if (strcmp(rb, nb)) {
             route_state = "other backend";
-        } else if (strcmp(ra, na) || strcmp(rd, nd)) {
+        } else if (strcmp(ra, na) ||
+                   (strcmp(rd, nd) && !(pre_tc = route_detail_pre_tc_match(rd, nd)))) {
             fprintf(stderr, "UNVERIFIABLE: the replay did not take the recorded route: "
                     "recorded %s cpu_act=%s [%s], replay %s cpu_act=%s [%s] (replay "
                     "with the RUNNER_* switches the record ran with)\n",
@@ -6200,8 +6226,20 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
             jv_free(now);
             free(replay_out.buf); jv_free(vr->rec);
             return 3;
+        } else if (rt_t && strcmp(rt_t, nt_t)) {
+            // a record that names its tensor-core types holds the replay to them
+            fprintf(stderr, "UNVERIFIABLE: the replay's tensor-core types differ from the "
+                    "record's: recorded [%s], replay [%s] (a promotion, an override, or "
+                    "RUNNER_CUDA_TC set differently)\n", rt_t, nt_t);
+            jv_free(now);
+            free(replay_out.buf); jv_free(vr->rec);
+            return 3;
         } else {
-            route_state = "matched";
+            // a record from before R3.39.2 wrote "tc=promoted" for the mode, not
+            // the route, and no tc_types: its tensor-core part is not recorded
+            route_state = pre_tc || (!rt_t && !strcmp(rb, "cuda"))
+                              ? "matched; tensor-core types not recorded (a record from before tc_types)"
+                              : "matched";
         }
         jv_free(now);
     }

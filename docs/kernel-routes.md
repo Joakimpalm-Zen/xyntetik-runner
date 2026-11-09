@@ -182,6 +182,15 @@ Around the matvec:
   the chunk width) so the grouped path's batched expert GEMMs are what the
   rows measure; `RUNNER_SPEC_BATCH` alone scores solo and runs none of them.
   Gates: `test-tc-tol`, `test-moe-tol`.
+- **What a record says about the tensor cores (R3.39.2).**
+  - **The route detail's `tc=` token** names the route: `taken` where the default takes the tensor cores for one of
+    the model's weight matrices, `off` where it does not, and `forced` under `RUNNER_CUDA_TC` (`moe-tc` for the MoE
+    families).
+  - **`profile.route.tc_types`** lists the weight types whose products the route takes on them. It is the policy fixed
+    by the binary, the model and the switches, not a dispatch count, so a prefix-cache hit does not change it.
+  - **`--verify` holds a replay to both.** A record written before R3.39.2 said `tc=promoted` for the mode, whatever
+    ran, and has no `tc_types`. For such a record the token is read as not recorded, and the verdict says so; every
+    other token still has to match.
 - **MoE prefill by expert.** A prompt tile of more than 8 columns that
   averages at least four tokens an expert groups its (token, expert) pairs
   by expert (`k_moe_place`) and runs each expert's columns through the
