@@ -7,7 +7,7 @@ import subprocess
 def _run(runner_bin, cache, *flags, alias=False):
     env = dict(os.environ, RUNNER_HF_CACHE=str(cache), RUNNER_CURL="inventory-must-not-run-curl")
     return subprocess.run([str(runner_bin), *(["--info", "cached"] if alias else ["cached"]),
-                           *flags], env=env, capture_output=True, text=True, timeout=30)
+                           *flags], env=env, capture_output=True, text=True, encoding="utf-8", timeout=30)
 
 
 def test_cached_reports_literal_bytes_offline(runner_bin, tmp_path):
@@ -170,7 +170,7 @@ def test_platform_default_root_and_64_bit_sizes(runner_bin, tmp_path):
         f.truncate(size)
     env = dict(os.environ, RUNNER_HF_CACHE="", HOME=str(tmp_path), LOCALAPPDATA=str(tmp_path))
     result = subprocess.run([str(runner_bin), "cached", "--json", "--sizes-only"],
-                            env=env, capture_output=True, text=True, timeout=30)
+                            env=env, capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, result.stderr
     doc = json.loads(result.stdout)
     assert os.path.normcase(os.path.normpath(doc["cache_root"])) == os.path.normcase(str(cache))
