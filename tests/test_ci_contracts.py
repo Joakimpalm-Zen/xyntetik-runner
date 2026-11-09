@@ -792,5 +792,35 @@ class PlatformCoreSelection(unittest.TestCase):
         self.assertIn('windows-suite', gate.split('\n    if:', 1)[0])
 
 
+
+
+class ReverseProxySelection(unittest.TestCase):
+    def classify(self, paths):
+        p = subprocess.run([sys.executable, str(ROOT / 'scripts/ci-gates-core.py'),
+                            '--scope', 'reverse-proxy', '--nul-stdin'],
+                           input='\0'.join(paths).encode(), capture_output=True, check=True)
+        return p.stdout.decode().strip()
+
+    def test_recipe_inputs_select_the_proxy_smoke(self):
+        for path in ('examples/reverse-proxy/compose.yaml', 'examples/reverse-proxy/Caddyfile',
+                     'examples/reverse-proxy/start.sh', 'docs/reverse-proxy.md',
+                     'scripts/test-reverse-proxy.py'):
+            with self.subTest(path=path):
+                self.assertEqual(self.classify([path]), 'true')
+
+    def test_unrelated_docs_and_c_only_diffs_skip_the_proxy(self):
+        for paths in (['README.md', 'docs/report.md'], ['src/model.c'],
+                      ['tests/test_full_grad.c'], ['.github/workflows/metadata.yml'], []):
+            with self.subTest(paths=paths):
+                self.assertEqual(self.classify(paths), 'false')
+
+    def test_recipe_docs_select_it_even_without_engine_changes(self):
+        self.assertEqual(self.classify(['docs/reverse-proxy.md']), 'true')
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        job = workflow.split('\n  reverse-proxy:\n', 1)[1].split('\n  thread-sanitizer:', 1)[0]
+        self.assertIn("needs.changes.outputs.reverse_proxy == 'true'", job)
+        self.assertNotIn("needs.changes.outputs.engine == 'true'", job)
+
+
 if __name__ == "__main__":
     unittest.main()

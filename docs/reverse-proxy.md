@@ -105,7 +105,9 @@ docker compose down
 ## Executable verification
 
 The required Linux CI job runs the actual Compose file and a generated tiny
-CPU fixture, not a mock upstream:
+CPU fixture, not a mock upstream. The shared path classifier selects it only
+for changes to `compose.yaml`, `Caddyfile`, `start.sh`, this recipe page, or
+`scripts/test-reverse-proxy.py`. Unrelated prose and C-only diffs skip it:
 
 ```sh
 make -j2 runner
