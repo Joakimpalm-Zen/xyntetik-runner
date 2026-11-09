@@ -160,8 +160,8 @@ export interface TranscriptRecord {
             min_p: number; repeat_penalty: number; n_predict: number; template: string;
             bos: boolean };
   model_signature?: ModelSignature;
-  speculation?: { source: string; rounds: number; drafted: number; accepted: number;
-                  lookup_drafted: number; lookup_accepted: number };
+  speculation?: { source: string; default?: true; rounds: number; drafted: number;
+                  accepted: number; lookup_drafted: number; lookup_accepted: number };
   generated_utc: string;
   prompt: { text: string; tokens: number[] };
   output: { text: string; bytes_hex: string; tokens: number[]; n: number;

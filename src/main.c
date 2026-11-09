@@ -1387,7 +1387,11 @@ static void usage_to(FILE *f, const char *prog) {
         "                 trunk on the device), mtp:FILE (that head from a\n"
         "                 companion GGUF, an MTP-only export, when the\n"
         "                 model file carries none) or lookup (n-gram matches in\n"
-        "                 the context itself: no weights, no draft forward)\n"
+        "                 the context itself: no weights, no draft forward),\n"
+        "                 or off (none, not even a default: on CUDA with every\n"
+        "                 layer on the device a server request with\n"
+        "                 draft_hints takes lookup, and --json output on\n"
+        "                 Qwen3.5-4B Q4_K_M takes its NextN head)\n"
         "  --draft-k N    draft tokens per round (default 4; on CUDA 7 for\n"
         "                 lookup and 2 for the NextN head)\n"
         "  --draft-required  fail instead of decoding plain if --draft PATH is\n"
@@ -2132,6 +2136,9 @@ typedef struct {
     // speculation and reasoning controls
     const char *draft_path;
     bool draft_required, mtp_on, draft_lookup, loop_guard;
+    // R3.39.4: --draft off (no source, not even a default one), and whether
+    // the head this run binds is the workload default rather than --draft mtp
+    bool draft_off, mtp_default, lookup_default;
     int draft_k;
     // R4.12.16: server-side default reasoning budget in tokens (0 = off); a
     // request's reasoning_max_tokens overrides it either way.
@@ -2527,6 +2534,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             if (!strcmp(v, "mtp")) { o->mp.mtp = true; o->mtp_on = true; }
             else if (!strncmp(v, "mtp:", 4)) { o->mp.mtp_path = v + 4; o->mp.mtp = true; o->mtp_on = true; }
             else if (!strcmp(v, "lookup")) o->draft_lookup = true;
+            else if (!strcmp(v, "off")) o->draft_off = true;
             else o->draft_path = v;
         }
         else if (!strcmp(a, "--draft-required")) o->draft_required = true;
@@ -3301,6 +3309,11 @@ static bool cli_draft_flags_ok(const cli_opts *o) {
                         "--draft/--mtp to draft from the context\n");
         return false;
     }
+    if (o->draft_off && (o->draft_path || o->mtp_on || o->draft_lookup)) {
+        fprintf(stderr, "error: --draft off names no source; drop the other "
+                        "--draft/--mtp/--draft-lookup\n");
+        return false;
+    }
     return true;
 }
 
@@ -3744,6 +3757,28 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
         // and ran the reference kernels. The record wins over --gpu-route.
         gpu_route_pin(gpu_route_v ? gpu_route_m : 0);
         vr->route = gpu_route_v ? gpu_route_m : 0;
+        // R3.39.4: and the draft source it ran. The walk emits plain
+        // decoding's tokens, but not along plain decoding's route (on CUDA the
+        // head's walk takes no decode graph), so the replay binds the source
+        // the record names, whether a flag or the workload default chose it,
+        // and never asks whether today's default would. The record wins over
+        // --draft here as over --gpu-route; "model" still needs --draft PATH.
+        jv *spec_v = jv_get(vr->rec, "speculation");
+        const char *rsrc = spec_v ? jv_str(jv_get(spec_v, "source"), "") : "";
+        jv *rdef = spec_v ? jv_get(spec_v, "default") : NULL;
+        bool rec_default = rdef && rdef->type == J_BOOL && rdef->b;
+        if (!strcmp(rsrc, "mtp") || !strcmp(rsrc, "lookup")) {
+            bool mtp = !strcmp(rsrc, "mtp");
+            o->draft_off = false;
+            o->draft_path = NULL;
+            o->draft_required = false;
+            o->mtp_on = mtp;
+            o->mp.mtp = mtp;
+            if (!mtp) o->mp.mtp_path = NULL;
+            o->draft_lookup = !mtp;
+            o->mtp_default = mtp && rec_default;
+            o->lookup_default = !mtp && rec_default;
+        }
         jv *record_adapter = jv_get(vr->rec, "adapter");
         if (record_adapter && record_adapter->type != J_NULL) {
             jv *scale_v = record_adapter->type == J_OBJ
@@ -4327,6 +4362,78 @@ static int run_adapt_info(cli_run *rt) {
 // shared-weight registry keys on context — disagree with its peers and
 // force a second upload of the same weights.
 //
+// R3.39.4 (engine_draft_default): the one NextN head with a measured row is
+// Qwen3.5-4B's (qwen35, 32 trunk layers plus one predictor block, width 2560,
+// no experts) as Q4_K_M (general.file_type 15), the file of the r3.3.7 tool
+// row. Read from the header, because whether to bind the head is decided
+// before the load. Another model, or another quant of this one, has no row.
+// Under RUNNER_TEST_DRAFT_SCOPE any file declaring one predictor block counts.
+static bool cli_head_measured(const char *path) {
+    gguf_file g;
+    if (!gguf_open_header(&g, path)) return false;
+    const char *arch = gguf_get_str(&g, "general.architecture", "");
+    char key[96];
+    snprintf(key, sizeof key, "%s.nextn_predict_layers", arch);
+    bool ok = gguf_get_u32(&g, key, 0) == 1;
+    if (!engine_draft_scope_forced())
+        ok = ok && !strcmp(arch, "qwen35") &&
+             gguf_get_u32(&g, "qwen35.block_count", 0) == 33 &&
+             gguf_get_u32(&g, "qwen35.embedding_length", 0) == 2560 &&
+             gguf_get_u32(&g, "qwen35.expert_count", 0) == 0 &&
+             gguf_get_u32(&g, "general.file_type", 0) == 15;
+    gguf_close(&g);
+    return ok;
+}
+
+// Whether this run may take the head by default: a one-shot generation whose
+// output is one JSON document (--json, --json-schema), no source named and no
+// --draft off, the GPU not turned off, on a CUDA build, and the measured
+// model. The load then binds the head; cli_mtp_default_settle keeps it only
+// at full offload. Every other mode (serve, chat, train, score, ...) decodes
+// plain; --verify binds whatever source its record names instead.
+static bool cli_mtp_default_wanted(const cli_opts *o, const char *load_path, bool registry) {
+    bool forced = engine_draft_scope_forced();
+#if !defined(RUNNER_GPU_CUDA)
+    if (!forced) return false;
+#endif
+    if (registry || o->serve || o->interactive || o->draft_off || o->draft_path ||
+        o->mtp_on || o->draft_lookup || (o->mp.gpu_mode == GPU_OFF && !forced))
+        return false;
+    // an explicit --gpu N below the measured model's 32 trunk layers is a
+    // partial offload by request: no row, and no reason to bind the head
+    if (!forced && o->mp.gpu_layers_override > 0 && o->mp.gpu_layers_override < 32)
+        return false;
+    if (!o->json_mode && !o->schema_file) return false;
+    if (o->train_path || o->dpo_path || o->verify_path || o->decide_path ||
+        o->systemone_path || o->score || o->doctor || o->resume_path ||
+        o->session_out || o->tool_info || o->adapt_info)
+        return false;
+    draft_workload w = { .cuda_full = true, .json_output = true,
+                         .head_measured = cli_head_measured(load_path) };
+    return engine_draft_default(&w) == DRAFT_DEFAULT_MTP;
+}
+
+// After a load that bound the head by default: keep it only where the row was
+// measured, CUDA with every layer on the device. A load that the head pushed
+// into a partial offload is redone without it, so the default never costs a
+// run the fit plain decoding would have had.
+static bool cli_mtp_default_settle(cli_opts *o, cli_run *rt, const char *load_path) {
+    engine probe = { .m = &rt->m };
+    const char *why = !engine_cuda_full(&probe) && !engine_draft_scope_forced()
+                        ? "not every layer is on the CUDA device"
+                    : !model_mtp_ready(&rt->m) ? "the head is not ready on this route"
+                    : NULL;
+    if (!why) {
+        o->mtp_on = true;
+        return true;
+    }
+    fprintf(stderr, "mtp: default off (%s); decoding plain\n", why);
+    o->mtp_default = false;
+    o->mp.mtp = false;
+    model_free(&rt->m);
+    return model_load(&rt->m, load_path, &o->mp);
+}
+
 // True when the process exits with *rc (a refusal, or one of the two modes).
 static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool registry,
                            int tmpl_override, const oms_policy *signing, int *rc) {
@@ -4342,7 +4449,14 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
     o->mp.lora_scale = o->lora_scale;
     if (!registry) {
         double t1 = now_s();
+        // (a --verify replay set mtp_default from its record, not from here)
+        bool mtp_wanted = cli_mtp_default_wanted(o, load_path, registry);
+        if (mtp_wanted) { o->mtp_default = true; o->mp.mtp = true; }
         if (!model_load(&rt->m, load_path, &o->mp)) { *rc = 1; return true; }
+        if (mtp_wanted && !cli_mtp_default_settle(o, rt, load_path)) {
+            *rc = 1;
+            return true;
+        }
         oms_result osr;
         if (!oms_check_model(load_path, signing, &osr)) { *rc = 1; return true; }
         if (osr.status[0])
@@ -4434,7 +4548,8 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         if (rt->m.mtp_layers)
             fprintf(stderr, "mtp: %d predictor block(s) declared, excluded from "
                     "the backbone; %s\n", rt->m.mtp_layers,
-                    rt->m.mtp_ready ? "bound as the draft head (--mtp)"
+                    rt->m.mtp_ready ? (o->mtp_default ? "bound as the draft head (the default for JSON output)"
+                                                      : "bound as the draft head (--mtp)")
                                 : "not consumed (pass --mtp to draft from it)");
         if (rt->m.agent_profile)
             fprintf(stderr, "agent-profile: protocol=%u tokenizer=%u schema=%s digest=%s features=%llu\n",
@@ -4480,6 +4595,7 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
 static int run_serve(cli_opts *o, cli_run *rt, const wm_key *wmk, bool wm_on,
                      bool registry, int tmpl_override, const oms_policy *signing) {
     if (wm_on) server_set_watermark(wmk);
+    server_set_draft_off(o->draft_off);
     if (o->n_adapters) server_set_adapters(o->adapter_names, o->adapter_paths,
                                         o->n_adapters, o->lora_scale);
     if (registry) {
@@ -4524,6 +4640,19 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
             return false;
         }
     }
+    // a --verify replay binds its record's source (R3.39.4); where this
+    // route cannot draft from it, the replay decodes plain, which emits the
+    // same tokens, and the route check then names the difference
+    if (o->verify_path && o->mtp_on && !model_mtp_ready(&rt->m)) {
+        fprintf(stderr, "verify: the record drafted from the NextN head, which this "
+                        "route cannot; the replay decodes plain\n");
+        o->mtp_on = false;
+    }
+    if (o->verify_path && o->draft_lookup && !model_spec_verify_ok(&rt->m)) {
+        fprintf(stderr, "verify: the record drafted from the context lookup, which "
+                        "this route cannot; the replay decodes plain\n");
+        o->draft_lookup = false;
+    }
     if (o->mtp_on) {
         if (!model_mtp_ready(&rt->m)) {
             fprintf(stderr, "error: --mtp: the head is bound but drafts need "
@@ -4532,8 +4661,13 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
         }
         rt->e.mtp_on = true;
         rt->e.draft_k = o->draft_k;
+        rt->e.draft_default = o->mtp_default;
         fprintf(stderr, "mtp: drafting from the model's NextN head "
-                "(%d tokens per round)\n", engine_draft_k(&rt->e));
+                "(%d tokens per round)%s\n", engine_draft_k(&rt->e),
+                !o->mtp_default ? ""
+                : o->verify_path ? "; the record's default source (JSON output)"
+                : "; the default for JSON output on Qwen3.5-4B Q4_K_M with every "
+                  "layer on CUDA, measured 1.13x plain (--draft off decodes plain)");
     }
     if (o->draft_lookup) {
         if (!model_spec_verify_ok(&rt->m)) {
@@ -4543,10 +4677,13 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
         }
         rt->e.lookup_on = true;
         rt->e.draft_k = o->draft_k;
+        rt->e.draft_default = o->lookup_default;
         fprintf(stderr, "lookup: drafting from the context (n-grams of %d..%d "
-                "tokens, up to %d per round)\n", ENGINE_LOOKUP_N_MIN,
-                ENGINE_LOOKUP_N_MAX, engine_draft_k(&rt->e));
+                "tokens, up to %d per round)%s\n", ENGINE_LOOKUP_N_MIN,
+                ENGINE_LOOKUP_N_MAX, engine_draft_k(&rt->e),
+                o->lookup_default ? "; the record's default source (draft_hints)" : "");
     }
+    engine_note_draft_route(&rt->e);
     if (o->schema_file) {
         size_t ssz = 0;
         char *sbuf = plat_read_file(o->schema_file, MAX_INPUT_FILE, &ssz);
@@ -6821,6 +6958,7 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
             .sign_key_path = o->sign_key,
             .spec_source = rt->e.dm ? "model" : rt->e.mtp_on ? "mtp"
                          : rt->e.lookup_on ? "lookup" : NULL,
+            .spec_default = rt->e.draft_default,
             .spec_rounds = rt->e.spec_st.rounds,
             .spec_drafted = rt->e.spec_st.drafted,
             .spec_accepted = rt->e.spec_st.accepted,

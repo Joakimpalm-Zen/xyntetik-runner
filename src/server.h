@@ -31,6 +31,11 @@ void server_set_adapters(const char *const *names, const char *const *paths,
 // Call before server_run.
 void server_set_watermark(const wm_key *key);
 
+// R3.39.4: --draft off: no request takes a draft source by default (a request
+// with draft_hints is then refused, as without --draft lookup). Call before
+// server_run.
+void server_set_draft_off(bool off);
+
 // Request the same graceful stop as the platform's first SIGINT / console
 // control event. This closes the listener so a server_run blocked in accept()
 // can drain and return. A second request keeps the operator-facing escalation

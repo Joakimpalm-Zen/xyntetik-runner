@@ -7200,10 +7200,11 @@ void model_route_note(model_t *m, int rows, const char *path) {
     char line[1280];
     snprintf(line, sizeof line,
              "route: backend=%s device=\"%s\" split=%d/%d experts_on_host=%d/%d "
-             "moe_hot=%d rows=%d path=%s kv=%s weights=\"%s\" cpu_act=%s%s%s fallback=\"%s\" "
+             "moe_hot=%d rows=%d path=%s%s%s kv=%s weights=\"%s\" cpu_act=%s%s%s fallback=\"%s\" "
              "build=%s%s tuning=\"%s\"",
              r.backend, r.device, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers,
-             r.moe_hot, rows, path, r.kv, r.weights, r.cpu_act, r.detail[0] ? " " : "", r.detail,
+             r.moe_hot, rows, path, m->route_draft[0] ? " draft=" : "", m->route_draft,
+             r.kv, r.weights, r.cpu_act, r.detail[0] ? " " : "", r.detail,
              m->route_fallback, r.build, r.codegen, r.tuning);
     uint64_t h = 1469598103934665603ull;
     for (const char *p = line; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211ull; }
@@ -7285,6 +7286,11 @@ void model_score_route_json(const model_t *m, const char *model_json, char *out,
     route_paths_json(m, paths, sizeof paths);
     snprintf(out, cap, "{\"model\":%s,\"paths\":%s,\"backend\":\"%s\",\"cpu_act\":\"%s\","
              "\"backend_detail\":\"%s\"}", model_json, paths, r.backend, r.cpu_act, r.detail);
+}
+
+void model_route_draft(model_t *m, const char *src, bool by_default) {
+    snprintf(m->route_draft, sizeof m->route_draft, "%s%s", src ? src : "",
+             src && by_default ? ":default" : "");
 }
 
 void model_route_receipt_json(const model_t *m, char *out, int cap) {

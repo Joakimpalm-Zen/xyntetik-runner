@@ -169,6 +169,8 @@ typedef struct {
     // benchmark harness has to ask before it reports a number as speculative
     // decoding. draft_note names the reason when requested && !active.
     bool        draft_requested;
+    // R3.39.4: --draft off, so no request takes a source by default either
+    bool        draft_off;
     // Successful single-model startup source, retained for reloads. Live
     // capabilities instead inspect each resident slot's actual engine.
     const char *draft_source;
