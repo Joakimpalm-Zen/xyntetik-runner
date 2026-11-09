@@ -10537,6 +10537,11 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     else if (m->n_expert > 0 && m->n_expert_groups > 1) r = "group-limited MoE routing";
     else if (m->n_expert > 0 && m->ffn_relu2) r = "gate-less MoE experts";
     else if (m->kv_q8) r = "q8 KV cache (use --kv f16)";
+    // the backward reads K and V rows as f16 (or f32 under --train-kv-f32):
+    // an fp4 or k8v4 cache reached it on main and its blocks were read as
+    // f16, a non-finite gradient at step 1 on Qwen3-0.6B (R8.25.2.2)
+    else if (m->kv_split) r = "k8v4 KV cache (use --kv f16)";
+    else if (m->kv_fp4) r = "fp4 KV cache (use --kv f16)";
     else if (m->ffn_act == ACT_SWIGLU_OAI || m->ffn_act == ACT_XIELU)
         r = "FFN activation not in the backward (gpt-oss/apertus)";
     else if (m->attn_gate_heads)
