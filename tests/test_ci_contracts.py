@@ -754,5 +754,43 @@ class PlatformDetection(unittest.TestCase):
         self.assert_windows(self.runner_link())
 
 
+
+
+class PlatformCoreSelection(unittest.TestCase):
+    def classify(self, paths):
+        p = subprocess.run([sys.executable, str(ROOT / 'scripts/ci-gates-core.py'),
+                            '--nul-stdin'], input='\0'.join(paths).encode(),
+                           capture_output=True, check=True)
+        return p.stdout.decode().strip()
+
+    def test_the_windows_regression_and_core_sources_select_the_gate(self):
+        for path in ('tests/test_full_grad.c', 'src/model.c', 'src/model.h',
+                     'Makefile', 'scripts/make-test-model.py',
+                     '.github/workflows/ci.yml', 'tests/fixtures/quant-golden/data.bin'):
+            with self.subTest(path=path):
+                self.assertEqual(self.classify([path]), 'true')
+
+    def test_prose_only_and_python_client_changes_keep_the_fast_path(self):
+        self.assertEqual(self.classify(['docs/changelog-archive.md', 'CHANGELOG.md',
+                                       'README.md', 'site/pages/index.html']), 'false')
+        self.assertEqual(self.classify(['python/src/xyntetik_runner/client.py']), 'false')
+        self.assertEqual(self.classify(['tests/test_decide.py']), 'false')
+        self.assertEqual(self.classify([]), 'false')
+
+    def test_a_core_path_in_a_mixed_diff_cannot_hide_behind_docs(self):
+        self.assertEqual(self.classify(['docs/report.md', 'tests/test_full_grad.c']), 'true')
+        self.assertEqual(self.classify(['tests/new_core_gate.c', 'docs/report.md']), 'true')
+
+    def test_the_selected_windows_suite_blocks_the_required_pr_gate(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        windows = workflow.split('\n  windows-suite:\n', 1)[1].split('\n  thread-sanitizer:', 1)[0]
+        self.assertIn("github.event_name == 'pull_request'", windows)
+        self.assertIn("needs.changes.outputs.gates_core == 'true'", windows)
+        self.assertIn('fromJSON', windows)
+        self.assertIn('["gates-core"]', windows)
+        gate = workflow.split('\n  pr-gate:\n', 1)[1]
+        self.assertIn('windows-suite', gate.split('\n    if:', 1)[0])
+
+
 if __name__ == "__main__":
     unittest.main()
