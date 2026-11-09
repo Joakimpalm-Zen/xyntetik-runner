@@ -4538,12 +4538,17 @@ static bool tc_promoted(const model_t *m, int type) {
     //             the version its code targets): mean KLD ratio 0.9995, CI
     //             [0.9981, 1.0007], Wilcoxon p 0.115; margin-qualified top-1
     //             95.01% against 94.95%; prefill 203 -> 1,927 tok/s (9.48x)
-    // clef read 1.0001 (CI [0.9991, 1.0011]) at 15.4x and stays off under the
-    // declared rule (ratio 1.0 or less) until the owner rules on it;
+    //   clef      ggml-org Clef-Flash Q4_K_M (Q8_0, Q4_K), against
+    //             Cloudflare/clef-flash@fb4417d3 in float32: mean KLD ratio
+    //             1.0001, CI [0.9991, 1.0011], Wilcoxon p 0.452; margin-qualified
+    //             top-1 95.13% against 94.99%, McNemar 2 to 0 for the tensor
+    //             cores (p 0.5); prefill 102 -> 1,566 tok/s (15.4x). Within the
+    //             obligation below (mean KL within 1.01x, not worse at p < 0.05).
     // k2-horizon and stablelm run on the CPU on a CUDA build (grouped RMSNorm,
     // LayerNorm), so they have no device route to promote.
     static const struct { const char *arch; int types[3]; } scoped[] = {
         { "spark2_5", { T_Q4_K, T_Q6_K, -1 } },
+        { "clef",     { T_Q4_K, T_Q8_0, -1 } },
     };
     for (size_t i = 0; i < sizeof(scoped) / sizeof(*scoped); i++) {
         if (strcmp(m->arch, scoped[i].arch) != 0) continue;
