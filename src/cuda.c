@@ -1719,11 +1719,14 @@ static size_t layer_weight_bytes(const layer_t *ly, int n_expert,
 
 // RUNNER_DEBUG_VRAM=1: the driver's free figure at each init stage, so the
 // placement plan can be checked against what the device actually spends
-static void vram_probe(const char *stage) {
+static bool vram_debug_on(void) {
     static _Atomic int on = -1;
     if (on < 0) { const char *e = getenv("RUNNER_DEBUG_VRAM"); on = e && *e && *e != '0'; }
+    return on == 1;
+}
+static void vram_probe(const char *stage) {
     size_t f = 0, t = 0;
-    if (on && cu.MemGetInfo && cu.MemGetInfo(&f, &t) == 0)
+    if (vram_debug_on() && cu.MemGetInfo && cu.MemGetInfo(&f, &t) == 0)
         fprintf(stderr, "vram: %-28s free %.3f GB\n", stage, f / 1e9);
 }
 
@@ -2057,6 +2060,7 @@ static size_t plan_full_extra(const model_t *m, const shared_plan *P) {
     return m->output->nbytes;
 }
 
+static uint64_t plan_runs_bytes(model_t *m, int G, int *runs_out);
 // How many leading layers go on the device, and which expert banks: the
 // gpu_plan_* decisions on this device's measured costs.
 static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
@@ -2125,7 +2129,46 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         int placed = gpu_plan_expert_banks(is_moe, bank, G, owed, vram_budget,
                                            &used, m->moe_host, m->moe_auto_trim,
                                            m->moe_auto_placed);
-        if (m->moe_auto_trim == 0) m->moe_auto_placed = placed;
+        // R4.26.18: the greedy pass above costs every tensor as its own 2 MiB-
+        // rounded allocation and each bank with a 9-granule allowance, but the
+        // upload joins the device tensors into runs and binds one allocation
+        // a run (shared_plan_upload), so it rounds once a run. On
+        // Qwen3-30B-A3B Q6_K that over-planned the slice by ~0.72 GB, more
+        // than a bank, with 6 runs on the device. Re-cost the weights by the
+        // runs this placement will make, then keep placing the next bank
+        // while that exact figure, and the head a full split owes, fits. A
+        // retry after a failed init (moe_auto_trim) keeps the greedy plan.
+        if (m->moe_auto_trim == 0) {
+            uint64_t kvsum = 0;
+            for (int l = 0; l < G; l++)
+                kvsum += (uint64_t)(model_kv_boundary_bytes_sum(m, l + 1) -
+                                    model_kv_boundary_bytes_sum(m, l)) * P->instances;
+            uint64_t greedy_w = used > fixed + kvsum ? used - fixed - kvsum : 0;
+            int runs = 0;
+            uint64_t exact_w = plan_runs_bytes(m, G, &runs);
+            if (exact_w && exact_w < greedy_w) {
+                used = used - greedy_w + exact_w;
+                for (int l = 0; l < G; l++) {
+                    if (!is_moe[l] || !m->moe_host[l]) continue;
+                    m->moe_host[l] = false;
+                    int r2 = 0;
+                    uint64_t w2 = plan_runs_bytes(m, G, &r2);
+                    uint64_t u2 = used - exact_w + w2;
+                    if (!w2 || u2 > vram_budget || owed > vram_budget - u2) {
+                        m->moe_host[l] = true;
+                        break;
+                    }
+                    used = u2; exact_w = w2; runs = r2; placed++;
+                }
+            }
+            if (vram_debug_on())
+                fprintf(stderr, "vram-plan: headroom+instance %.3f GB, kv %.3f GB, weights %.3f GB "
+                                "greedy, %.3f GB by %d runs, banks %d, head owed %.3f GB, used %.3f GB "
+                                "(bytes: weights %llu by runs, head %llu)\n",
+                        fixed / 1e9, kvsum / 1e9, greedy_w / 1e9, exact_w / 1e9, runs, placed,
+                        owed / 1e9, used / 1e9, (unsigned long long)exact_w, (unsigned long long)owed);
+            m->moe_auto_placed = placed;
+        }
     }
     free(bank); free(is_moe);
     // a full split also needs token_embd + output weights resident.
@@ -2350,6 +2393,28 @@ static int tensor_runs(const model_t *m, tensor_list *L, int *n_out,
     return runs;
 }
 
+// The device bytes of the weights for the first G layers as the upload will
+// allocate them (R4.26.18): their tensors' runs (tensor_runs), each one
+// binding rounded up to the driver's granularity, and a tensor outside the
+// main mapping a binding of its own. The head is not included: a full split
+// owes it separately (plan_full_extra). 0 when the list cannot be built.
+static bool runs_round_add(uint64_t lo, uint64_t hi, void *ctx) {
+    *(uint64_t *)ctx += gpu_plan_binding_bytes(hi - lo, true);
+    return true;
+}
+static uint64_t plan_runs_bytes(model_t *m, int G, int *runs_out) {
+    tensor_list L = { m, NULL, 0, 0, false };
+    device_tensors_each(m, G, false, false, list_add, &L);
+    uint64_t total = 0;
+    int outside = 0;
+    int runs = L.oom ? -1 : tensor_runs(m, &L, &outside, runs_round_add, &total);
+    if (runs >= 0)
+        for (int i = L.n - outside; i < L.n; i++)
+            total += gpu_plan_binding_bytes(L.t[i]->nbytes, true);
+    free(L.t);
+    if (runs_out) *runs_out = runs < 0 ? 0 : runs + outside;
+    return runs < 0 ? 0 : total;
+}
 typedef struct { uint64_t lo, hi; } span_ctx;
 static bool span_take(uint64_t lo, uint64_t hi, void *ctx) {
     span_ctx *c = ctx;
@@ -3257,8 +3322,11 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, size_t per_col,
     if (getenv("RUNNER_DEBUG_VRAM")) {
         size_t bb = 0;
         for (int i = 0; i < w->n_bindings; i++) bb += w->bindings[i].nbytes;
-        fprintf(stderr, "vram: %d bindings, %.3f GB requested; prefix upload %.3f GB\n",
-                w->n_bindings, bb / 1e9, w->weights_len / 1e9);
+        size_t br = 0;   // as the driver allocates them: each binding to its granularity
+        for (int i = 0; i < w->n_bindings; i++) br += (size_t)gpu_plan_binding_bytes(w->bindings[i].nbytes, true);
+        fprintf(stderr, "vram: %d bindings, %.3f GB requested; prefix upload %.3f GB "
+                        "(bytes: requested %zu, rounded %zu)\n",
+                w->n_bindings, bb / 1e9, w->weights_len / 1e9, bb, br);
     }
     return w;
 

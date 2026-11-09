@@ -5,6 +5,26 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: CUDA `--cpu-moe auto` over-planned the device's weights, leaving expert banks and prompt-window columns on
+  the table (R4.26.18).**
+  - **What the plan charged:** every tensor as its own allocation rounded to the driver's 2 MiB, plus a nine-granule
+    allowance per expert bank.
+  - **What the upload does:** it joins the device tensors into runs and binds one allocation a run, so it rounds once
+    a run.
+  - **The cost on Qwen3-30B-A3B Q6_K** (25.1 GB) on a 24 GB slice: the weights were planned 1.07 GB over what the
+    upload requested, in 6 bindings. Auto placed 43 of 48 expert banks, and the prompt window got 192 columns.
+  - **The fix:** after the greedy placement, the plan re-costs the weights by the runs that placement makes, then
+    keeps placing the next bank while that exact figure fits.
+  - **The result:** 45 banks and a 512-column window. The weights are planned within 16 MB of what the driver spent
+    (the constants and tables uploaded beside them), and the instance buffers within 12 MB.
+  - **The same run, 3 interleaved pairs:** prefill of a 4,252-token prompt 315 to 541 tok/s, mostly the window.
+    Decode 70.6 to 73.4 against 75.3 to 76.7 tok/s.
+  - A retry after a failed init keeps the greedy plan.
+  - **`RUNNER_DEBUG_VRAM`** prints the plan per category (`vram-plan:` headroom and instance, KV, weights greedy and by
+    runs, banks, head). The upload line gives bytes requested and as the driver rounds them.
+  - **Checks:** `tests/test_cuda_plan_runs.py` (CUDA): on three MoE fixtures, the plan's weights by runs equal the
+    upload's rounded bytes, up to the head's granule.
+
 - **Fix: `runner recommend` lists a file that sits in a folder of its repository (R10.28).** #690 left such files out
   on the belief that `-hf REPO:STEM` names only top-level files. It does not: `-hf` matches the base name and fetches
   the listing's full path (`resolve/main/merged/merged-Q8_0.gguf`). The skip came from Dojo's picker, which built the
