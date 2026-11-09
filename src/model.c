@@ -6003,6 +6003,7 @@ static void runtime_free(model_t *m) {
 void model_free(model_t *m) {
     gpu_free(m); // nulls kcache/vcache if the GPU owned them
     gpu_train_free(m);
+    model_full_free(m);
     model_lora_free(m);
     free(m->moe_host);
     m->moe_host = NULL;
@@ -10340,6 +10341,49 @@ static void lsb_dx(void *ctx, int t0, int t1) {
     }
 }
 
+// ---- R8.25.2 full-weight training: a float master per dense projection
+// One site: the model's tensor (its data now the read copy), the float master
+// with AdamW's moments, the dense gradient, and where the tensor's bytes sit
+// in the file the model was loaded from and in the master file.
+struct full_w {
+    gguf_tensor *t;
+    void *orig, *copy;          // the mapped bytes, and the private read copy
+    float *master, *grad, *m1, *m2;
+    int n_in, n_out;
+    uint64_t off, moff;         // file offsets: the model file, the master file
+    uint32_t mtype;             // the master file's type for this tensor
+    bool from_file;             // moff is valid
+};
+
+typedef struct {
+    float *g;
+    const float *x, *dy;
+    int n_in, n_out, nb;
+} fwg_job;
+
+// dW[o][:] += dy[t][o] * x[t][:] for rows [o0, o1), positions ascending: each
+// element's chain is fixed by the position order alone, so the bytes do not
+// depend on how the rows are split over threads
+static void fwg_rows(void *ctx, int o0, int o1) {
+    fwg_job *J = ctx;
+    for (int o = o0; o < o1; o++) {
+        float *gr = J->g + (size_t)o * J->n_in;
+        for (int t = 0; t < J->nb; t++) {
+            float c = J->dy[(size_t)t * J->n_out + o];
+            const float *xt = J->x + (size_t)t * J->n_in;
+            for (int i = 0; i < J->n_in; i++) gr[i] = fmaf(c, xt[i], gr[i]);
+        }
+    }
+}
+
+static void full_site_grad(model_t *m, int l, int slot, const float *xin,
+                           const float *dy, int n_in, int n_out, int nb) {
+    struct full_w *f = &m->full[(size_t)l * LW_SLOTS + slot];
+    if (!f->master || f->n_in != n_in || f->n_out != n_out) return;
+    fwg_job j = { f->grad, xin, dy, n_in, n_out, nb };
+    tpool_run(m->tp, fwg_rows, &j, n_out);
+}
+
 // adapter backward at one projection site, batched over the window: given
 // dy (grad wrt the site's output, nb rows) and xin (the site's input, nb
 // rows), accumulate dA/dB and add both the adapter's and the FROZEN
@@ -10352,6 +10396,9 @@ static bool lora_site_bw(model_t *m, int l, int slot, const gguf_tensor *w,
                          const float *xin, const float *dy, float *dxin,
                          int n_in, int n_out, int nb) {
     if (!matvec_t(m, w, dy, dxin, n_in, n_out, nb)) return false;
+    // full-weight training: the dense gradient at this site (R8.25.2); dxin
+    // above already went through the read copy, the straight-through path
+    if (m->full) full_site_grad(m, l, slot, xin, dy, n_in, n_out, nb);
     struct lora_w *lw = m->lora ? &m->lora[(size_t)l * LW_SLOTS + slot] : NULL;
     if (!lw || !lw->r) return true;
     if (!lw->ga) lw->ga = calloc((size_t)lw->r * n_in, sizeof(float));
@@ -12328,8 +12375,8 @@ bool model_lora_backward(model_t *m, const int32_t *toks, int T,
 // window of 2..n_ctx tokens, and a model the backward covers.
 static bool lora_backward_admit(model_t *m, int T) {
     char why[128];
-    if (!m->lora) {
-        fprintf(stderr, "error: backward needs a loaded adapter (--lora)\n");
+    if (!m->lora && !m->full) {
+        fprintf(stderr, "error: backward needs a loaded adapter (--lora) or --train-full\n");
         return false;
     }
     if (T < 2 || T > m->n_ctx) {
@@ -12886,6 +12933,327 @@ bool model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
     // parameters moved: the adapter is a new behavioral identity
     m->lora_id = m->lora_id * 0x100000001B3ull + 1;
     return true;
+}
+
+// ---- R8.25.2 full-weight training (model.h)
+static const int full_slots[] = { LW_Q, LW_K, LW_V, LW_O, LW_GATE, LW_UP, LW_DOWN };
+#define FULL_NSLOTS ((int)(sizeof full_slots / sizeof full_slots[0]))
+
+static bool full_float_type(uint32_t t) { return t == T_F32 || t == T_F16 || t == T_BF16; }
+
+typedef struct { struct full_w *f; size_t rb; bool ok; } frq_job;
+
+// the master's rows written into the read copy with the rewrite's own writer
+static void frq_rows(void *ctx, int r0, int r1) {
+    frq_job *J = ctx;
+    struct full_w *f = J->f;
+    for (int r = r0; r < r1; r++)
+        if (!quantize_row_into((int)f->t->type, f->master + (size_t)r * f->n_in,
+                               (uint8_t *)f->t->data + (size_t)r * J->rb, f->n_in))
+            J->ok = false;
+}
+
+static bool full_requant(model_t *m, struct full_w *f) {
+    frq_job j = { f, (size_t)(f->t->nbytes / (uint64_t)f->n_out), true };
+    tpool_run(m->tp, frq_rows, &j, f->n_out);
+    return j.ok;
+}
+
+bool model_full_on(const model_t *m) { return m->full != NULL; }
+
+void model_full_free(model_t *m) {
+    if (!m->full) return;
+    for (size_t k = 0; k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        struct full_w *f = &m->full[k];
+        if (f->t && f->copy) f->t->data = f->orig;   // the mapped bytes again
+        free(f->copy);
+        free(f->master);
+        free(f->grad);
+        free(f->m1);
+        free(f->m2);
+    }
+    free(m->full);
+    m->full = NULL;
+}
+
+bool model_full_train_init(model_t *m, gguf_file *master, char *why, size_t cap) {
+    if (m->gpu) { snprintf(why, cap, "a GPU-resident model (run --gpu off)"); return false; }
+    if (m->lora) { snprintf(why, cap, "an adapter is attached, and full-weight training replaces it"); return false; }
+    if (m->gf.n_maps > 1 || !m->gf.map) { snprintf(why, cap, "a split or unmapped GGUF"); return false; }
+    if (m->qwen35) { snprintf(why, cap, "recurrent (DeltaNet) layers are not covered yet"); return false; }
+    for (int l = 0; l < m->n_layer; l++)
+        if (m->layers[l].ffn_gate_inp) {
+            snprintf(why, cap, "MoE expert banks are not covered yet");
+            return false;
+        }
+    m->full = calloc((size_t)m->n_layer * LW_SLOTS, sizeof *m->full);
+    if (!m->full) { snprintf(why, cap, "out of memory"); return false; }
+    const uint8_t *base = m->gf.map;
+    int n = 0;
+    for (int l = 0; l < m->n_layer; l++)
+        for (int k = 0; k < FULL_NSLOTS; k++) {
+            gguf_tensor *t = lora_slot_base(m, l, full_slots[k]);
+            if (!t) continue;
+            struct full_w *f = &m->full[(size_t)l * LW_SLOTS + full_slots[k]];
+            const char *bad = NULL;
+            if (t->n_dims != 2 || t->scale != 1.0f) bad = "is not a plain 2-D matrix";
+            else if (t->type != T_F32 && t->type != T_Q8_0)
+                bad = "has a read type full-weight training cannot write (f32 or q8_0)";
+            gguf_tensor *mt = master ? gguf_find_tensor(master, t->name) : t;
+            if (!bad && !mt) bad = "has no tensor of that name in the master file";
+            else if (!bad && (mt->ne[0] != t->ne[0] || mt->ne[1] != t->ne[1]))
+                bad = "has another shape in the master file";
+            else if (!bad && !full_float_type(mt->type))
+                bad = master ? "is not float in the master file" : "is not float (give --train-master)";
+            if (bad) {
+                snprintf(why, cap, "%s %s", t->name, bad);
+                model_full_free(m);
+                return false;
+            }
+            f->t = t;
+            f->n_in = (int)t->ne[0];
+            f->n_out = (int)t->ne[1];
+            size_t ne = (size_t)f->n_in * (size_t)f->n_out;
+            f->master = malloc(sizeof(float) * ne);
+            f->grad = calloc(ne, sizeof(float));
+            f->copy = malloc((size_t)t->nbytes);
+            if (!f->master || !f->grad || !f->copy) {
+                snprintf(why, cap, "out of memory");
+                model_full_free(m);
+                return false;
+            }
+            size_t mrb = (size_t)(mt->nbytes / mt->ne[1]);
+            for (int r = 0; r < f->n_out; r++)
+                dequant_row((int)mt->type, (const uint8_t *)mt->data + (size_t)r * mrb,
+                            f->master + (size_t)r * f->n_in, f->n_in);
+            f->mtype = mt->type;
+            if (master && master->map && master->n_maps <= 1) {
+                f->moff = (uint64_t)((const uint8_t *)mt->data - (const uint8_t *)master->map);
+                f->from_file = true;
+            }
+            f->orig = t->data;
+            f->off = (uint64_t)((const uint8_t *)t->data - base);
+            if (!master) { f->moff = f->off; f->from_file = true; }   // the master is this file's
+            memcpy(f->copy, t->data, (size_t)t->nbytes);
+            t->data = f->copy;
+            // the first step reads the master's own quantization, not the file's
+            if (!full_requant(m, f)) {
+                snprintf(why, cap, "%s cannot be written as its own type", t->name);
+                model_full_free(m);
+                return false;
+            }
+            n++;
+        }
+    if (!n) {
+        snprintf(why, cap, "no dense projection to train");
+        model_full_free(m);
+        return false;
+    }
+    return true;
+}
+
+int model_full_count(const model_t *m, uint64_t *params, const char **read_type) {
+    int n = 0;
+    uint64_t p = 0;
+    int ty = -1;
+    bool mixed = false;
+    for (size_t k = 0; m->full && k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        const struct full_w *f = &m->full[k];
+        if (!f->master) continue;
+        n++;
+        p += (uint64_t)f->n_in * (uint64_t)f->n_out;
+        if (ty < 0) ty = (int)f->t->type;
+        else if (ty != (int)f->t->type) mixed = true;
+    }
+    if (params) *params = p;
+    if (read_type)
+        *read_type = mixed ? "mixed" : ty == T_F32 ? "f32" : ty == T_Q8_0 ? "q8_0" : "none";
+    return n;
+}
+
+void model_full_grad_zero(model_t *m) {
+    for (size_t k = 0; m->full && k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        struct full_w *f = &m->full[k];
+        if (f->grad) memset(f->grad, 0, sizeof(float) * (size_t)f->n_in * (size_t)f->n_out);
+    }
+}
+
+void model_full_grad_scale(model_t *m, float sc) {
+    for (size_t k = 0; m->full && k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        struct full_w *f = &m->full[k];
+        if (!f->grad) continue;
+        size_t ne = (size_t)f->n_in * (size_t)f->n_out;
+        for (size_t i = 0; i < ne; i++) f->grad[i] *= sc;
+    }
+}
+
+// each layer's L2 over its sites' gradients, the largest and the mean; false
+// when any gradient is not finite
+bool model_full_grad_norms(model_t *m, double *max_out, double *mean_out) {
+    double mx = 0, sum = 0;
+    int nl = 0;
+    for (int l = 0; m->full && l < m->n_layer; l++) {
+        double ss = 0;
+        bool any = false;
+        for (int k = 0; k < FULL_NSLOTS; k++) {
+            struct full_w *f = &m->full[(size_t)l * LW_SLOTS + full_slots[k]];
+            if (!f->grad) continue;
+            any = true;
+            size_t ne = (size_t)f->n_in * (size_t)f->n_out;
+            for (size_t i = 0; i < ne; i++) ss += (double)f->grad[i] * f->grad[i];
+        }
+        if (!any) continue;
+        if (!fp_finite_f64(ss)) return false;
+        double nrm = sqrt(ss);
+        if (nrm > mx) mx = nrm;
+        sum += nrm;
+        nl++;
+    }
+    if (max_out) *max_out = mx;
+    if (mean_out) *mean_out = nl ? sum / nl : 0;
+    return true;
+}
+
+#define FULL_ADAM_CHUNK 65536
+typedef struct {
+    struct full_w *f;
+    size_t n;
+    float lr, b1, b2, eps, wd, bc1, bc2;
+} fad_job;
+
+static void fad_chunks(void *ctx, int c0, int c1) {
+    fad_job *J = ctx;
+    struct full_w *f = J->f;
+    for (int c = c0; c < c1; c++) {
+        size_t i0 = (size_t)c * FULL_ADAM_CHUNK;
+        size_t i1 = i0 + FULL_ADAM_CHUNK < J->n ? i0 + FULL_ADAM_CHUNK : J->n;
+        adam_buf(f->master + i0, f->grad + i0, f->m1 + i0, f->m2 + i0, i1 - i0,
+                 J->lr, J->b1, J->b2, J->eps, J->wd, J->bc1, J->bc2);
+    }
+}
+
+bool model_full_adam_step(model_t *m, float lr, float beta1, float beta2,
+                          float eps, float wd, int step) {
+    if (!m->full) return true;
+    // every moment allocated before any parameter moves (model_lora_adam_step)
+    for (size_t k = 0; k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        struct full_w *f = &m->full[k];
+        if (!f->master) continue;
+        size_t ne = (size_t)f->n_in * (size_t)f->n_out;
+        if (!adam_state(&f->m1, ne) || !adam_state(&f->m2, ne)) return false;
+    }
+    float bc1 = 1.0f - powf(beta1, (float)step);
+    float bc2 = 1.0f - powf(beta2, (float)step);
+    for (size_t k = 0; k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        struct full_w *f = &m->full[k];
+        if (!f->master) continue;
+        size_t ne = (size_t)f->n_in * (size_t)f->n_out;
+        fad_job j = { f, ne, lr, beta1, beta2, eps, wd, bc1, bc2 };
+        tpool_run(m->tp, fad_chunks, &j, (int)((ne + FULL_ADAM_CHUNK - 1) / FULL_ADAM_CHUNK));
+        if (!full_requant(m, f)) return false;
+    }
+    return true;
+}
+
+const float *model_full_grad(const model_t *m, int layer, int slot, int *n_in, int *n_out) {
+    if (!m->full || layer < 0 || layer >= m->n_layer || slot < 0 || slot >= LW_SLOTS) return NULL;
+    const struct full_w *f = &m->full[(size_t)layer * LW_SLOTS + slot];
+    if (!f->grad) return NULL;
+    if (n_in) *n_in = f->n_in;
+    if (n_out) *n_out = f->n_out;
+    return f->grad;
+}
+
+bool model_full_dump(const model_t *m, const char *prefix, const char *full) {
+    char path[4096];
+    snprintf(path, sizeof path, "%s.norms.json", prefix);
+    FILE *f = plat_fopen(path, "w");
+    if (!f) return false;
+    fprintf(f, "{");
+    bool first = true, ok = true;
+    for (size_t k = 0; m->full && k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        const struct full_w *w = &m->full[k];
+        if (!w->grad) continue;
+        size_t ne = (size_t)w->n_in * (size_t)w->n_out;
+        double ss = 0;
+        for (size_t i = 0; i < ne; i++) ss += (double)w->grad[i] * w->grad[i];
+        fprintf(f, "%s\"%s\":%.9g", first ? "" : ",", w->t->name, sqrt(ss));
+        first = false;
+        char key[160];
+        snprintf(key, sizeof key, ",%s,", w->t->name);
+        char list[4096];
+        snprintf(list, sizeof list, ",%s,", full ? full : "");
+        if (strstr(list, key)) {
+            snprintf(path, sizeof path, "%s.%s.f32", prefix, w->t->name);
+            FILE *g = plat_fopen(path, "wb");
+            ok = g && fwrite(w->grad, sizeof(float), ne, g) == ne && ok;
+            if (g) fclose(g);
+        }
+    }
+    fprintf(f, "}\n");
+    return (fclose(f) == 0) && ok;
+}
+
+const float *model_full_master(const model_t *m, int layer, int slot) {
+    if (!m->full || layer < 0 || layer >= m->n_layer || slot < 0 || slot >= LW_SLOTS) return NULL;
+    return m->full[(size_t)layer * LW_SLOTS + slot].master;
+}
+
+bool model_full_write(model_t *m, const char *src_path, const char *out_path,
+                      bool from_master, char *why, size_t cap) {
+    if (!m->full) { snprintf(why, cap, "no full-weight training state"); return false; }
+    char tmp[4096];
+    snprintf(tmp, sizeof tmp, "%s.tmp", out_path);
+    FILE *in = plat_fopen(src_path, "rb");
+    FILE *out = in ? plat_fopen(tmp, "wb") : NULL;
+    if (!in || !out) {
+        snprintf(why, cap, "cannot open %s", in ? tmp : src_path);
+        if (in) fclose(in);
+        return false;
+    }
+    bool ok = true;
+    char *buf = malloc(1 << 20);
+    for (size_t r; ok && buf && (r = fread(buf, 1, 1 << 20, in)) > 0;)
+        ok = fwrite(buf, 1, r, out) == r;
+    ok = ok && buf && !ferror(in);
+    free(buf);
+    fclose(in);
+    for (size_t k = 0; ok && k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        struct full_w *f = &m->full[k];
+        if (!f->master) continue;
+        size_t ne = (size_t)f->n_in * (size_t)f->n_out;
+        const void *bytes;
+        size_t nbytes;
+        uint64_t at;
+        if (from_master) {
+            if (!f->from_file || f->mtype != T_F32) {
+                snprintf(why, cap, "%s is not f32 in the master file", f->t->name);
+                ok = false;
+                break;
+            }
+            bytes = f->master;
+            nbytes = sizeof(float) * ne;
+            at = f->moff;
+        } else {
+            bytes = f->t->data;
+            nbytes = (size_t)f->t->nbytes;
+            at = f->off;
+        }
+#ifdef _WIN32
+        ok = _fseeki64(out, (__int64)at, SEEK_SET) == 0;
+#else
+        ok = fseeko(out, (off_t)at, SEEK_SET) == 0;
+#endif
+        ok = ok && fwrite(bytes, 1, nbytes, out) == nbytes;
+        if (!ok) snprintf(why, cap, "cannot write %s", f->t->name);
+    }
+    ok = (fclose(out) == 0) && ok;
+    if (ok && !plat_replace_file(tmp, out_path)) {
+        snprintf(why, cap, "cannot replace %s", out_path);
+        ok = false;
+    }
+    if (!ok) remove(tmp);
+    return ok;
 }
 
 // R8.17: each layer's gradient norm, the L2 over that layer's adapter

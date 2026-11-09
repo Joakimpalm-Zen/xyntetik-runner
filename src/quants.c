@@ -1955,6 +1955,16 @@ void q8_quant_row(const float *x, void *dst, int n) {
 #endif
 }
 
+// R8.25.2: a weight row written as `type` with the rewrite's bytes. q8_quant_row
+// is quantize.c's quantize_row_q8_0 operation for operation (amax / 127, the
+// f16 scale, roundf), and tests/test_full_grad.c holds it to ggml b10353's
+// q8_0 golden on the quant-golden slice.
+bool quantize_row_into(int type, const float *src, void *dst, int n) {
+    if (type == T_F32) { memcpy(dst, src, sizeof(float) * (size_t)n); return true; }
+    if (type == T_Q8_0 && n % QK == 0) { q8_quant_row(src, dst, n); return true; }
+    return false;
+}
+
 // ------------------------------------------------------------ fp4 KV cache
 // The --kv fp4 cache stores each 16 values as one UE4M3 scale byte followed
 // by 8 bytes of E2M1 nibbles (byte j: low nibble = element j, high nibble =

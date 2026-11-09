@@ -478,6 +478,10 @@ typedef struct {
     bool     lora_borrowed;  // lora is a per-request adapter's table (R8.6)
     uint64_t lora_id;
     float    lora_alpha;     // adapter alpha (load or train-init), for saving
+    // R8.25.2 full-weight training: [n_layer][LW_SLOTS] float masters with
+    // AdamW state, one per dense projection, in place of an adapter; the
+    // projection tensors themselves are the read copy (NULL when off)
+    struct full_w *full;
     // D3 activation tape: [n_layer+1][tape_T][n_embd] layer-entry residual
     // streams (+ the final pre-norm hidden), recorded by solo forwards when
     // non-NULL. Owned by model_lora_backward for the duration of one call.
@@ -1166,6 +1170,39 @@ bool   model_lora_backward_kd(model_t *m, const int32_t *toks, int n,
 // --- adaptation D4: fresh trainable adapters (A seeded, B zero -> exact
 // no-op start), one AdamW step from the accumulated gradients (byte-
 // deterministic), and the adapter-GGUF writer (the format --lora reads).
+// R8.25.2 full-weight training. Every dense projection (attn q/k/v/o, ffn
+// gate/up/down) gets a float master; the model's own tensor becomes a private,
+// writable read copy of the file's type, F32 or Q8_0 (F32: the float path; Q8_0: training
+// through the shipped quantization), rewritten from the master after every
+// step, so the forward and the backward read exactly what a saved variant
+// holds. The master comes from `master` (a float GGUF of the same model,
+// matched by tensor name) or, when NULL, from the model's own float tensors.
+// The dense gradient dW += dy^T x is accumulated at every projection site of
+// the adapter backward, each row over positions in ascending order.
+bool   model_full_train_init(model_t *m, gguf_file *master, char *why, size_t cap);
+bool   model_full_on(const model_t *m);
+void   model_full_grad_zero(model_t *m);
+void   model_full_grad_scale(model_t *m, float f);
+bool   model_full_grad_norms(model_t *m, double *max_out, double *mean_out);
+bool   model_full_adam_step(model_t *m, float lr, float beta1, float beta2,
+                            float eps, float wd, int step);
+// the trained tensors (count, parameters) and the read type's name
+int    model_full_count(const model_t *m, uint64_t *params, const char **read_type);
+// Write a variant: src_path's bytes with every trained tensor replaced by the
+// read copy (from_master false; src_path must be the file the model was
+// loaded from) or by the float master (from_master true; src_path must be the
+// master file and its trained tensors F32). Offsets and types are unchanged,
+// so every other byte is src_path's.
+bool   model_full_write(model_t *m, const char *src_path, const char *out_path,
+                        bool from_master, char *why, size_t cap);
+// test hook: a site's gradient (n_out rows of n_in floats), or NULL
+const float *model_full_grad(const model_t *m, int layer, int slot, int *n_in, int *n_out);
+const float *model_full_master(const model_t *m, int layer, int slot);
+void   model_full_free(model_t *m);
+// Gate A2's hook (RUNNER_TRAIN_FULL_DUMP): every trained tensor's gradient L2
+// norm to PREFIX.norms.json, and the whole gradient of each tensor named in
+// `full` (comma-separated GGUF names) to PREFIX.NAME.f32
+bool   model_full_dump(const model_t *m, const char *prefix, const char *full);
 bool   model_lora_train_init(model_t *m, int rank, float alpha,
                              uint64_t seed);
 bool   model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,

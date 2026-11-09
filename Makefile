@@ -213,6 +213,7 @@ TEST_UTF8_CONSOLE = $(TEST_BATCH:test-batch%=test-utf8-console%)
 TEST_TC_TOL = $(TEST_BATCH:test-batch%=test-tc-tol%)
 TEST_I8_TOL = $(TEST_BATCH:test-batch%=test-i8-tol%)
 TEST_LORA_GRAD = $(TEST_BATCH:test-batch%=test-lora-grad%)
+TEST_FULL_GRAD = $(TEST_BATCH:test-batch%=test-full-grad%)
 TEST_DPO_GRAD = $(TEST_BATCH:test-batch%=test-dpo-grad%)
 TEST_KD_GRAD = $(TEST_BATCH:test-batch%=test-kd-grad%)
 TEST_MVT = $(TEST_BATCH:test-batch%=test-mvt%)
@@ -993,6 +994,14 @@ TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o 
                   $(GPU_OBJ)
 $(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-prope.gguf test-lora-prope.full.gguf test-prope-neox.gguf test-lora-prope-neox.full.gguf test-ornith.gguf test-lora-ornith.full.gguf test-clef.gguf test-lora-clef.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
+
+# R8.25.2 gate A1: full-weight training's dense gradient against finite
+# differences, its determinism, and the Q8_0 read copy after a step
+TEST_FULL_GRAD_SRC = tests/test_full_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
+                  $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
+                  $(GPU_OBJ)
+$(TEST_FULL_GRAD): $(TEST_FULL_GRAD_SRC) $(HDR) test.gguf test-q8.gguf
+	$(CC) $(CFLAGS) -I src $(TEST_FULL_GRAD_SRC) -o $@ $(LDFLAGS)
 
 # Every fixture generator imports this module for the GGUF byte encoding, so a
 # fixture is stale when it changes: it is a prerequisite beside each generator.
@@ -3137,7 +3146,7 @@ test-gates:
 	$(MAKE) --no-print-directory test-gates-core PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-gates-batch PYTHON="$(PYTHON)"
 
-test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
+test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
@@ -3182,6 +3191,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_PENALTY_WINDOW) test.gguf
 	./$(TEST_REQUEST_STOP)
 	./$(TEST_LORA_GRAD)
+	./$(TEST_FULL_GRAD) test.gguf test-q8.gguf
 	./$(TEST_DPO_GRAD)
 	./$(TEST_KD_GRAD)
 	./$(TEST_KD_GRAD) test-granite.gguf test-lora-granite.full.gguf

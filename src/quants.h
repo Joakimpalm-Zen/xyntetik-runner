@@ -39,6 +39,9 @@ static inline size_t ggml_row_size(int type, int64_t n) {
 
 // dequantize a full row of n elements
 void  dequant_row(int type, const void *src, float *dst, int n);
+// One row of n floats written as `type` (T_F32 or T_Q8_0) with the bytes
+// --rewrite writes; false for any other type. R8.25.2.
+bool  quantize_row_into(int type, const float *src, void *dst, int n);
 // target == T_KEEP: every tensor keeps its own on-disk type (--prune-experts
 // with no --quant — geometry changes, precision doesn't).
 #define T_KEEP (-1)
