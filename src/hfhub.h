@@ -78,4 +78,39 @@ typedef struct {
 bool hf_fetch_files(const char *spec, const char *flag, hf_files *out, char *err, size_t errcap);
 void hf_files_free(hf_files *f);
 
+// An offline view of present cache bytes, independent of the served registry
+// and recommendation roster. sha256 is empty when not computed; hash_status
+// says why. Listing metadata is optional and never a fresh Hub verification.
+typedef struct {
+    char *path, *name;
+    long long size;
+    char sha256[65], listed_sha256[65];
+    long long listed_size;       // -1 when absent
+    int listing_match;           // -1 unknown, 0 mismatch, 1 match
+    const char *hash_status;
+} hf_cached_file;
+typedef struct {
+    char *path, *cache_dir, *repo;
+    hf_cached_file *files;
+    int n;
+    unsigned parts;
+    long long size;
+    bool complete, auxiliary;
+} hf_cached_model;
+typedef struct {
+    char *path, *message;
+} hf_cache_error;
+typedef struct {
+    char *root;
+    hf_cached_model *models;
+    int n;
+    hf_cache_error *errors;
+    int n_errors;
+} hf_cache;
+// False only on a fatal setup/allocation failure (*out still needs freeing).
+// Per-entry read errors remain in out->errors. Full hashing is the default;
+// sizes_only never reads model content. Progress goes to stderr.
+bool hf_cache_read(bool sizes_only, hf_cache *out, char *err, size_t errcap);
+void hf_cache_free(hf_cache *out);
+
 #endif

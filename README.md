@@ -189,6 +189,12 @@ Not sure which file to try? `./runner recommend` lists the
 each with its measured fidelity line or marked unmeasured. It works offline from
 the list built into the binary. [Details](MANUAL.md#cli-recommend)
 
+`./runner cached` lists the files already downloaded by `-hf` or `--pull`,
+with their sizes and freshly computed SHA-256 digests. It works offline;
+`--sizes-only` skips hashing for a quick list, and `--json` gives structured
+output. Cached files and the models served by `/v1/models` are separate
+inventories. [Details and hashing cost](MANUAL.md#cli-cached)
+
 `./runner --info caps` says what this machine and build can run, and
 `./runner -m model.gguf --info doctor` loads a model, probes it and reports.
 [How the verdict is computed](MANUAL.md#deciding-before-you-download)

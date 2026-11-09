@@ -2304,8 +2304,9 @@ flags into unrelated feature sections.
 | `--parallel N` | Independent inference slots, default `1`; eligible CUDA/Metal dense models use microbatched decode. Valid with `--serve`, and with `--info fit` to size the estimate for the slots. [Details](#cli-parallel). |
 | `--ttl N` | Swap-mode idle unload timeout, default `300`; `0` disables it. Refused without `--serve`. |
 | `--force-uncertified` | Load a model even when its measured-envelope sidecar records an `outside-envelope` verdict for this runtime (refused by default). See [Measured-envelope gate](#measured-envelope-gate). |
-| `--json [FILE]` | Constrain output to one valid JSON object, or to the JSON Schema in `FILE`. The two are different constraints and a record names the one it ran under. With `--pull`, print the pull's result as one JSON object instead. |
-| `--info KIND` | Answer one question and exit. `caps`: machine, backend, quant, architecture, placement and sampling capabilities as JSON, no model needed. `tools`: load `-m` and print its tool-call protocol, chat template and sampling preset. `adapter`: whether a LoRA adapter can be served on `-m` and trained on it, with the sentence the real operation would refuse with. `doctor`: load `-m`, run one short probe and print a diagnostic report. `fit`: whether `-m` fits this machine, from its header alone. `recommend` (also `runner recommend`): the listed model files that fit this machine, with each one's fidelity line, offline. [Details](#cli-info). |
+| `--json [FILE]` | Constrain output to one valid JSON object, or to the JSON Schema in `FILE`. The two are different constraints and a record names the one it ran under. With `--pull` or `runner cached`, print the result as one JSON object instead. |
+| `--info KIND` | Answer one question and exit. `caps`: machine, backend, quant, architecture, placement and sampling capabilities as JSON, no model needed. `tools`: load `-m` and print its tool-call protocol, chat template and sampling preset. `adapter`: whether a LoRA adapter can be served on `-m` and trained on it, with the sentence the real operation would refuse with. `doctor`: load `-m`, run one short probe and print a diagnostic report. `fit`: whether `-m` fits this machine, from its header alone. `recommend` (also `runner recommend`): the listed model files that fit this machine, with each one's fidelity line, offline. `cached` (also `runner cached`): the files in the `-hf` cache, with sizes and fresh SHA-256 digests, offline. [Details](#cli-info). |
+| `--sizes-only` | With `runner cached` (`--info cached`): list actual sizes without reading model content or computing digests. [Details](#cli-cached). |
 | `--memory GIB` | With `--info recommend`: plan for this much RAM instead of this machine's. [Details](#cli-recommend). |
 | `--ram-share F` | With `--info recommend`: the share of the RAM a file's resident weights may take, `0.1` to `1`, default `0.5`. [Details](#cli-recommend). |
 | `--roster FILE` | With `--info recommend`: read this copy of `docs/model-tiers.json` instead of the one built into the binary. [Details](#cli-recommend). |
@@ -2458,6 +2459,57 @@ Each `sha256` is the local file's own digest, computed in every case.
 digest) or `hub_size` (a file the Hub stores outside LFS, checked by its
 listed size). A file the Hub lists with neither is refused by `--pull`
 rather than reported unverified (`-hf` still loads such a file).
+
+<a id="cli-cached"></a>
+#### `runner cached [--json] [--sizes-only]`
+
+`cached` (also `--info cached`) inventories the files actually present in the
+cache used by `-hf` and `--pull`, without network access or loading a model.
+`RUNNER_HF_CACHE` selects the root; otherwise it is
+`~/.cache/xyntetik-runner/hf` on POSIX or
+`%LOCALAPPDATA%\xyntetik-runner\hf` on Windows. A missing cache is an empty
+inventory and is not created. Only `--json` and `--sizes-only` may accompany
+this mode. `runner recommend` continues to give advice from the support
+roster; `/v1/models` continues to list what the server serves.
+
+The default reads **every cached model byte** to compute fresh SHA-256
+digests with a bounded streaming buffer and one reader at a time. A cache
+containing tens of GB costs a full sequential disk scan; this can take minutes.
+The current file and its size are printed to stderr as hashing starts.
+Use `--sizes-only` for a fast metadata-only inventory: `sha256` is then
+`null` and `hash_status` is `not_requested`.
+
+Regular `.gguf` files are listed, including projectors (`auxiliary: true`),
+with repository subfolders preserved. `.part` downloads and directory/file
+symlinks (Windows reparse points) are skipped. Multipart files form one entry
+with the first-part path, the sum of present component sizes, the numeric
+component order, `parts_expected`, and `complete`. Missing first or later parts
+remain visible as incomplete; that path is not a claim that the set can load.
+Presence in the cache does not imply admission, sufficient RAM, or service.
+
+With `--json`, stdout is exactly one object of schema
+`xyntetik.runner.cached.v1`, with `cache_root`, `models`, and `errors`.
+Each model has `path`, `repo` (nullable), `cache_dir`, `size_bytes`, `complete`,
+`auxiliary`, `parts_expected`, and `files`. Each file has `path`,
+`relative_path`, actual `size_bytes`, local `sha256` (nullable), and
+`hash_status` (`computed`, `not_requested`, `unreadable`, or `changed`).
+`path`, `size_bytes`, `files`, and `sha256` use the same meanings as `--pull`.
+There is no synthetic digest for a multipart model.
+
+Optional `listed_sha256`, `listed_size_bytes`, and `listing_match` compare
+against `.files.json`, the last cached Hub listing. They are nullable; a match
+is an **offline comparison**, not a fresh Hub verification. A stale, missing,
+or malformed listing never hides actual files and is never repaired here.
+The directory spelling `owner--repo` is ambiguous when either component
+contains `--`; `repo` is reported only when an explicit valid listing id maps
+back to that directory. Otherwise the local paths remain the identity.
+
+Exit status is `0` for an inventory, including empty or incomplete sets and
+listing mismatches. Read/traversal/hash failures produce explicit `errors`,
+retain the enumerable entries, and exit `1`; fatal setup/allocation/output
+failures also exit `1`. A file whose metadata changes during hashing gets
+`hash_status: "changed"` and no claimed stable digest. The before/after
+metadata check is best effort, not an atomic filesystem snapshot.
 
 <a id="cli-parallel"></a>
 #### `--parallel N`
