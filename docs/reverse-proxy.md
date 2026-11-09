@@ -136,3 +136,5 @@ References: [Caddy header matching](https://caddyserver.com/docs/caddyfile/match
 [upstream header controls](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#headers),
 [TLS certificate files](https://caddyserver.com/docs/caddyfile/directives/tls),
 and [Docker host networking](https://docs.docker.com/engine/network/drivers/host/).
+
+<!-- R7.7 selection probe: recipe-page-only diff; do not merge this branch. -->
