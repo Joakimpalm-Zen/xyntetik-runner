@@ -12,6 +12,8 @@ import socket
 import sys
 import time
 
+import pytest
+
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -26,9 +28,9 @@ def _body(prompt, *, max_tokens=1):
                       separators=(",", ":")).encode()
 
 
-def _open(port, body):
+def _open(port, body, path="/v1/completions"):
     s = socket.create_connection(("127.0.0.1", port), timeout=10)
-    s.sendall(b"POST /v1/completions HTTP/1.1\r\n"
+    s.sendall(("POST %s HTTP/1.1\r\n" % path).encode() +
               b"Host: localhost\r\n"
               b"Content-Type: application/json\r\n" +
               ("Content-Length: %d\r\n\r\n" % len(body)).encode() + body)
@@ -147,3 +149,59 @@ def test_disconnect_stops_prefill_without_false_cancellation(tmp_path):
             "the slot reused after cancellation diverged from its cold output"
         assert cancel_s * 2 < full_s, \
             f"dead prefill was not cut promptly: reuse {cancel_s:.3f}s, full {full_s:.3f}s"
+
+
+@pytest.mark.parametrize("path,long_option", [
+    ("/v1/decide", False), ("/v1/rerank", False),
+    ("/v1/embeddings", False), ("/v1/decide", True),
+])
+def test_disconnect_stops_readout_and_releases_slot(tmp_path, path, long_option):
+    """A live long readout completes; abandoning it frees the only slot.
+
+    There is no external absolute latency anchor. The control is the same
+    live request's duration, measured on this runner:
+    merely finishing the abandoned work cannot satisfy the reuse deadline.
+    A cold short completion also anchors the slot's subsequent output.
+    """
+    import urllib.request
+
+    text = "x " * 4000
+    if path == "/v1/decide":
+        payload = {"state": "state" if long_option else text, "questions": [
+            {"question": "answer?", "options": [text if long_option else "yes", "no"]}]}
+    elif path == "/v1/rerank":
+        payload = {"query": "relevant?", "documents": [text], "rendering": "raw-v1"}
+    else:
+        payload = {"input": text}
+    body = json.dumps(payload).encode()
+    short = _body("slot reuse", max_tokens=4)
+    model = os.path.join(ROOT, "test.gguf")
+    with RunnerServer(find_runner(ROOT), model, ctx=32768, parallel=1,
+                      extra_args=["--gpu", "off", "-b", "1", "-t", "1"],
+                      log_path=str(tmp_path / "readout.log")) as srv:
+        reference = _request(srv.port, short)
+        start = time.monotonic()
+        live = _read_response(_open(srv.port, body, path), timeout=120)
+        full_s = time.monotonic() - start
+        assert full_s > 1, "readout control was too short to gate cancellation"
+        assert live["usage"]["prompt_tokens"] > 0
+
+        abandoned = _open(srv.port, body, path)
+        try:
+            end = time.monotonic() + 10
+            while time.monotonic() < end:
+                with urllib.request.urlopen(srv.base_url + "/health", timeout=5) as r:
+                    health = json.load(r)
+                if health["active_requests"] == 1:
+                    break
+                time.sleep(0.01)
+            else:
+                raise AssertionError("long readout never became active")
+        finally:
+            abandoned.close()
+        start = time.monotonic()
+        reused = _request(srv.port, short, timeout=full_s / 2)
+        cancel_s = time.monotonic() - start
+        assert reused["choices"][0]["text"] == reference["choices"][0]["text"]
+        assert cancel_s * 2 < full_s, \
+            f"dead readout held slot: reuse {cancel_s:.3f}s, live {full_s:.3f}s"

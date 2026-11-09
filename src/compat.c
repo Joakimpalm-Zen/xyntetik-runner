@@ -523,12 +523,58 @@ void plat_parent_watch(long pid) {
 
 #include <sys/mman.h>
 #include <sys/resource.h>
+#ifdef __linux__
+#include <sys/sysmacros.h>   // major, minor (R3.41's readahead window)
+#endif
 
 #ifdef __APPLE__
 #include <sys/sysctl.h>
 #include <mach/mach.h>
 #include <mach/mach_host.h>
 #include <mach-o/dyld.h>
+#endif
+
+#ifdef __linux__
+// The readahead one MADV_WILLNEED call gets on Linux (R3.41): the kernel clamps
+// a hint to the device's max(io_pages, ra_pages) (force_page_cache_ra), so a
+// longer range is hinted one window at a time. The window is read from sysfs
+// for each mapped file's device and the smallest one seen is kept, so no hint
+// is ever wider than a device it may land on; 0 until a file is mapped.
+static _Atomic size_t g_willneed_window;
+
+static size_t block_queue_kb(unsigned maj, unsigned mnr, const char *knob) {
+    char path[96];
+    // a partition has no queue of its own: its parent's is one level up
+    static const char *const fmt[] = { "/sys/dev/block/%u:%u/queue/%s",
+                                       "/sys/dev/block/%u:%u/../queue/%s" };
+    for (int i = 0; i < 2; i++) {
+        snprintf(path, sizeof path, fmt[i], maj, mnr, knob);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        unsigned long kb = 0;
+        int ok = fscanf(f, "%lu", &kb) == 1;
+        fclose(f);
+        if (ok) return (size_t)kb;
+    }
+    return 0;
+}
+
+static void willneed_window_note(const struct stat *st) {
+    unsigned maj = major(st->st_dev), mnr = minor(st->st_dev);
+    size_t ra = block_queue_kb(maj, mnr, "read_ahead_kb");
+    size_t io = block_queue_kb(maj, mnr, "max_sectors_kb");
+    size_t kb = ra > io ? ra : io;
+    size_t w = (kb ? kb : 128) << 10;   // no block device (tmpfs, overlay): the kernel's default
+    size_t cur = g_willneed_window;
+    while ((cur == 0 || w < cur) &&
+           !atomic_compare_exchange_weak(&g_willneed_window, &cur, w)) {
+    }
+}
+
+size_t plat_willneed_window(void) {
+    size_t w = g_willneed_window;
+    return w ? w : (size_t)128 << 10;
+}
 #endif
 
 void *plat_mmap_ro(const char *path, size_t *size) {
@@ -539,6 +585,9 @@ void *plat_mmap_ro(const char *path, size_t *size) {
         close(fd);
         return NULL;
     }
+#ifdef __linux__
+    willneed_window_note(&st);
+#endif
     void *p = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd); // the mapping persists after close
     if (p == MAP_FAILED) return NULL;
@@ -547,14 +596,35 @@ void *plat_mmap_ro(const char *path, size_t *size) {
 }
 
 // madvise(MADV_WILLNEED) turns "fault this in 16 KB at a time, synchronously"
-// into one readahead over the whole range. That is the entire point on a model
-// larger than RAM: a 3.35 MB expert costs ~200 faults through the fault path
-// and one request through this one. Advisory and best-effort by definition —
-// if the kernel ignores it the weights still read correctly, just slower, so
-// no output can depend on whether it worked.
+// into readahead the kernel issues at once. That is the point on a model larger
+// than RAM: a 3.35 MB expert costs ~200 faults through the fault path and a few
+// large requests through this one. Advisory and best-effort by definition: if
+// the kernel ignores it the weights still read correctly, just slower, so no
+// output can depend on whether it worked.
+//
+// Linux takes it only in a form it accepts (R3.41, measured on 6.12):
+// - The start must be page-aligned, or madvise fails with EINVAL. GGUF tensor
+//   data is 32-byte aligned, so an expert's start almost never is: before this
+//   fix every expert hint was refused, and --moe-prefetch on did nothing.
+//   The start is truncated to its page.
+// - One call reads only the device's readahead window (2 MB on the lab's
+//   volume, 128 KB by default), so a 4.41 MB gpt-oss expert came in 47.6%. The
+//   range is hinted one window at a time (plat_willneed_window).
+// macOS is left as it was: it was measured as a win there, and its madvise is
+// not known to refuse an unaligned start.
 void plat_willneed(const void *addr, size_t len) {
     if (!addr || !len) return;
+#ifdef __linux__
+    static _Atomic long page;
+    long ps = page;
+    if (!ps) page = ps = sysconf(_SC_PAGESIZE);
+    uintptr_t lo = (uintptr_t)addr & ~((uintptr_t)ps - 1), hi = (uintptr_t)addr + len;
+    size_t w = plat_willneed_window();
+    for (uintptr_t a = lo; a < hi; a += w)
+        (void)madvise((void *)a, hi - a < w ? (size_t)(hi - a) : w, MADV_WILLNEED);
+#else
     (void)madvise((void *)(uintptr_t)addr, len, MADV_WILLNEED);
+#endif
 }
 
 bool plat_willneed_available(void) { return true; }   // madvise is always there
@@ -1279,6 +1349,22 @@ struct plat_dir {
     char *name;
 };
 
+int plat_stat_nofollow(const char *path, plat_stat_t *st, bool *link) {
+    wchar_t *wp = utf8_to_wide(path);
+    DWORD a = wp ? GetFileAttributesW(wp) : INVALID_FILE_ATTRIBUTES;
+    DWORD e = GetLastError();
+    free(wp);
+    *link = false;
+    if (a == INVALID_FILE_ATTRIBUTES) {
+        errno = e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? ENOENT
+              : e == ERROR_ACCESS_DENIED ? EACCES : EIO;
+        return -1;
+    }
+    *link = (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+    if (*link) { memset(st, 0, sizeof *st); return 0; }
+    return plat_stat(path, st);
+}
+
 plat_dir *plat_opendir(const char *path) {
     size_t n = strlen(path);
     char *pat = malloc(n + 3);
@@ -1306,10 +1392,14 @@ plat_dir *plat_opendir(const char *path) {
 }
 
 const char *plat_readdir(plat_dir *d) {
-    if (!d->pending && !FindNextFileW(d->h, &d->fd)) return NULL;
+    if (!d->pending && !FindNextFileW(d->h, &d->fd)) {
+        errno = GetLastError() == ERROR_NO_MORE_FILES ? 0 : EIO;
+        return NULL;
+    }
     d->pending = false;
     free(d->name);
     d->name = wide_to_utf8(d->fd.cFileName);
+    if (!d->name) errno = ENOMEM;
     return d->name;
 }
 
@@ -1396,6 +1486,12 @@ bool plat_realpath(const char *path, char *out, size_t cap) {
 
 struct plat_dir { DIR *d; };
 
+int plat_stat_nofollow(const char *path, plat_stat_t *st, bool *link) {
+    int rc = lstat(path, st);
+    *link = rc == 0 && S_ISLNK(st->st_mode);
+    return rc;
+}
+
 plat_dir *plat_opendir(const char *path) {
     DIR *dp = opendir(path);
     if (!dp) return NULL;
@@ -1406,6 +1502,7 @@ plat_dir *plat_opendir(const char *path) {
 }
 
 const char *plat_readdir(plat_dir *d) {
+    errno = 0;
     struct dirent *e = readdir(d->d);
     return e ? e->d_name : NULL;
 }

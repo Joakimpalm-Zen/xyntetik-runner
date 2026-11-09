@@ -42,6 +42,12 @@ void  *plat_mmap_ro(const char *path, size_t *size);
 // Ask the OS to fault a whole range in as one unit. Advisory: it can never
 // change what a later read returns, only how many faults that read costs.
 void   plat_willneed(const void *addr, size_t len);
+#ifdef __linux__
+// The span one WILLNEED call is given on Linux: the smallest readahead window
+// (max of read_ahead_kb and max_sectors_kb) over the devices of the files
+// mapped so far, 128 KB before any (R3.41). Exposed for tests/test_willneed.c.
+size_t plat_willneed_window(void);
+#endif
 // Whether plat_willneed actually does anything on this build+OS. POSIX always
 // has madvise; Windows needs PrefetchVirtualMemory, which is resolved at
 // runtime and absent before Windows 8. Callers use this so nothing announces
@@ -280,6 +286,9 @@ bool plat_realpath(const char *path, char *out, size_t cap);
 // A directory's entry names, "." and ".." included, in UTF-8. A name is
 // valid until the next plat_readdir on the same handle.
 typedef struct plat_dir plat_dir;
+// Metadata without following a symlink/reparse point. When *link is true,
+// the caller must skip it; the remaining metadata is not usable on Windows.
+int         plat_stat_nofollow(const char *path, plat_stat_t *st, bool *link);
 plat_dir   *plat_opendir(const char *path);
 const char *plat_readdir(plat_dir *d);
 void        plat_closedir(plat_dir *d);

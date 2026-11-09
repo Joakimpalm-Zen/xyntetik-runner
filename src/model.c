@@ -15487,7 +15487,8 @@ const char *model_pooling_name(uint32_t pooling_type) {
     }
 }
 
-bool model_embed(model_t *m, const int32_t *toks, int n, float *out) {
+bool model_embed(model_t *m, const int32_t *toks, int n, float *out,
+                 bool (*stop)(void *), void *stop_ud) {
     if (n <= 0 || n > m->n_ctx || !model_pooling_supported(m)) return false;
     bool last = m->pooling_type == MODEL_POOL_LAST;
     void *save_gpu = m->gpu;
@@ -15497,6 +15498,11 @@ bool model_embed(model_t *m, const int32_t *toks, int n, float *out) {
     float *tmp = malloc(sizeof(float) * m->n_embd);
     if (!tmp) { m->gpu = save_gpu; return false; }
     for (int i = 0; i < n; ) {
+        if (stop && stop(stop_ud)) {
+            free(tmp);
+            m->gpu = save_gpu;
+            return false;
+        }
         int chunk = n - i < m->n_batch ? n - i : m->n_batch;
         model_forward_batch(m, toks + i, chunk, i, false);
         // last-token pooling reads only the final position of the final

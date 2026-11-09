@@ -1052,6 +1052,7 @@ static void usage_to(FILE *f, const char *prog) {
         "                                         file (runner derive --help)\n"
         "       runner recommend [--memory GIB]   the listed model files that fit\n"
         "                                         this machine (--info recommend)\n\n"
+        "       runner cached [--json] [--sizes-only]  inventory the -hf cache offline\n\n"
         "One mode per run: a line that names two (-p beside --serve, --score\n"
         "beside --decide) is refused, never resolved by order.\n\n"
         "model and mode:\n"
@@ -1086,8 +1087,8 @@ static void usage_to(FILE *f, const char *prog) {
         "                 records an OUTSIDE-envelope verdict for this runtime\n"
         "                 (refused by default): loads with a loud warning\n"
         "  --json [FILE]  constrain output to a single valid JSON object, or\n"
-        "                 to the JSON Schema in FILE (with --pull: print the\n"
-        "                 result as one JSON object)\n"
+        "                 to the JSON Schema in FILE (with --pull or runner\n"
+        "                 cached: print the result as one JSON object)\n"
         "  --info KIND    answer a question and exit. caps: machine\n"
         "                 capabilities as JSON (needs no -m). tools: load -m\n"
         "                 and print its native tool-call protocol, chat\n"
@@ -1104,6 +1105,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                 (also runner recommend): the listed model files that\n"
         "                 fit this machine, largest first, each with its\n"
         "                 measured fidelity line or named unmeasured; offline\n"
+        "                 cached (also runner cached): files in the -hf cache,\n"
+        "                 with sizes and full SHA-256 digests; offline\n"
+        "  --sizes-only   with runner cached: skip content hashing (fast)\n"
         "  --memory GIB   with --info recommend: plan for this much RAM\n"
         "                 instead of this machine's\n"
         "  --ram-share F  with --info recommend: the share of the RAM the\n"
@@ -2281,7 +2285,8 @@ typedef struct {
     bool fit_info;                 // --info fit: fit-check -m without loading it
     // --info recommend (runner recommend, R10.25): its roster, the RAM to plan
     // for (0 = this machine's) and the share of it the resident weights may take
-    bool recommend;
+    bool recommend, cached, sizes_only;
+    const char *cached_other;
     const char *roster_path;
     double memory_gib, ram_share;
     const char *record_path;       // --record PATH: receipts dir under --serve, else transcript
@@ -2504,9 +2509,11 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         const char *a = argv[i];
         #define NEXT (i + 1 < argc ? argv[++i] : (fprintf(stderr, "error: %s needs a value\n", a), \
                                                    usage_pointer(), exit(1), (char*)0))
+        if (!o->cached_other && strcmp(a, "--info") && strcmp(a, "--json") && strcmp(a, "--sizes-only")) o->cached_other = a;
         if (!o->pull_other && strcmp(a, "--pull") && strcmp(a, "--json")) o->pull_other = a;
         if      (!strcmp(a, "-m")) o->model_path = NEXT;
         else if (!strcmp(a, "--pull")) o->pull_spec = NEXT;
+        else if (!strcmp(a, "--sizes-only")) o->sizes_only = true;
         else if (!strcmp(a, "-hf") || !strcmp(a, "--hf")) o->hf_spec = NEXT;
         else if (!strcmp(a, "-p")) o->prompt = NEXT;
         else if (!strcmp(a, "-f")) o->prompt_file = NEXT;
@@ -2878,13 +2885,15 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         // --info KIND: the questions answered without generating
         else if (!strcmp(a, "--info")) {
             const char *v = NEXT;
+            if (strcmp(v, "cached") && !o->cached_other) o->cached_other = "--info";
             if (!strcmp(v, "caps")) o->caps = true;
             else if (!strcmp(v, "tools")) o->tool_info = true;
             else if (!strcmp(v, "adapter")) o->adapt_info = true;
             else if (!strcmp(v, "doctor")) o->doctor = true;
             else if (!strcmp(v, "fit")) o->fit_info = true;
             else if (!strcmp(v, "recommend")) o->recommend = true;
-            else { fprintf(stderr, "error: --info expects caps, tools, adapter, doctor, fit or recommend\n"); *rc = 1; return false; }
+            else if (!strcmp(v, "cached")) o->cached = true;
+            else { fprintf(stderr, "error: --info expects caps, tools, adapter, doctor, fit, recommend or cached\n"); *rc = 1; return false; }
         }
         else if (!strcmp(a, "--caps")) o->caps = true;
         // --shadow-mode: hand off to the Python client's `shadow install`
@@ -2959,6 +2968,7 @@ static int cli_verbs(const cli_opts *o, const char **names, int cap) {
     VERB(o->caps, "--info caps");
     VERB(o->fit_info || o->fit_path, o->fit_info ? "--info fit" : "--fit");
     VERB(o->recommend, "--info recommend");
+    VERB(o->cached, "--info cached");
     VERB(o->shadow_mode, "--shadow-mode");
     VERB(o->keygen_path, "--keygen");
     VERB(o->sign_record, "--sign-record");
@@ -3120,13 +3130,14 @@ static int cli_expand_subcommand(int *argc, char ***argv) {
     const char *sub = (*argv)[1];
     // runner recommend [--memory GIB] [--ram-share F] [--roster FILE] is
     // --info recommend with the same flags (R10.25); nothing to rename
-    if (!strcmp(sub, "recommend")) {
-        static char info[] = "--info", mode[] = "recommend";
+    if (!strcmp(sub, "recommend") || !strcmp(sub, "cached")) {
+        static char info[] = "--info";
+        const char *mode = sub;
         char **out = malloc(sizeof *out * (size_t)(*argc + 2));
         if (!out) { fprintf(stderr, "error: out of memory\n"); return 1; }
         out[0] = (*argv)[0];
         out[1] = info;
-        out[2] = mode;
+        out[2] = (char *)mode;
         for (int k = 2; k < *argc; k++) out[k + 1] = (*argv)[k];
         out[*argc + 1] = NULL;
         *argc += 1;
@@ -3463,6 +3474,73 @@ static int run_pull(const cli_opts *o) {
            got.n > 1 ? ", every part" : "");
     hf_files_free(&got);
     return fflush(stdout) == 0 ? 0 : 1;
+}
+
+// Offline cache inventory formatting; discovery and hashing live in hfhub.
+static int run_cached(const cli_opts *o) {
+    hf_cache c;
+    char err[512];
+    if (!hf_cache_read(o->sizes_only, &c, err, sizeof err)) {
+        fprintf(stderr, "error: cached: %s\n", err);
+        hf_cache_free(&c); return 1;
+    }
+    sbuf b = {0};
+    if (o->json_mode) {
+        sb_lit(&b, "{\"schema_version\":\"xyntetik.runner.cached.v1\",\"cache_root\":");
+        sb_str(&b, c.root); sb_lit(&b, ",\"models\":[");
+        for (int i = 0; i < c.n; i++) {
+            hf_cached_model *m = &c.models[i];
+            sb_lit(&b, i ? ",{\"path\":" : "{\"path\":"); sb_str(&b, m->path);
+            sb_lit(&b, ",\"repo\":"); sb_str(&b, m->repo);
+            sb_lit(&b, ",\"cache_dir\":"); sb_str(&b, m->cache_dir);
+            sb_fmt(&b, ",\"size_bytes\":%lld,\"complete\":%s,\"auxiliary\":%s,\"parts_expected\":%u,\"files\":[",
+                   m->size, m->complete ? "true" : "false", m->auxiliary ? "true" : "false", m->parts);
+            for (int j = 0; j < m->n; j++) {
+                hf_cached_file *f = &m->files[j];
+                sb_lit(&b, j ? ",{\"path\":" : "{\"path\":"); sb_str(&b, f->path);
+                sb_lit(&b, ",\"relative_path\":"); sb_str(&b, f->name);
+                sb_fmt(&b, ",\"size_bytes\":%lld,\"sha256\":", f->size);
+                sb_str(&b, *f->sha256 ? f->sha256 : NULL);
+                sb_lit(&b, ",\"hash_status\":"); sb_str(&b, f->hash_status);
+                sb_lit(&b, ",\"listed_sha256\":"); sb_str(&b, *f->listed_sha256 ? f->listed_sha256 : NULL);
+                sb_lit(&b, ",\"listed_size_bytes\":");
+                if (f->listed_size < 0) sb_lit(&b, "null"); else sb_fmt(&b, "%lld", f->listed_size);
+                sb_lit(&b, ",\"listing_match\":");
+                sb_lit(&b, f->listing_match < 0 ? "null" : f->listing_match ? "true" : "false");
+                sb_lit(&b, "}");
+            }
+            sb_lit(&b, "]}");
+        }
+        sb_lit(&b, "],\"errors\":[");
+        for (int i = 0; i < c.n_errors; i++) {
+            sb_lit(&b, i ? ",{\"path\":" : "{\"path\":"); sb_str(&b, c.errors[i].path);
+            sb_lit(&b, ",\"error\":"); sb_str(&b, c.errors[i].message); sb_lit(&b, "}");
+        }
+        sb_lit(&b, "]}\n");
+    } else {
+        sb_fmt(&b, "cached: %d model file set%s in %s%s\n", c.n, c.n == 1 ? "" : "s", c.root,
+               o->sizes_only ? " (sizes only; no digests computed)" : "");
+        for (int i = 0; i < c.n; i++) {
+            hf_cached_model *m = &c.models[i];
+            sb_fmt(&b, "%s  %lld bytes  %s%s\n", m->path, m->size,
+                   m->complete ? "complete" : "incomplete", m->auxiliary ? " auxiliary" : "");
+            if (m->parts > 1) sb_fmt(&b, "  %d/%u parts present\n", m->n, m->parts);
+            for (int j = 0; j < m->n; j++) {
+                hf_cached_file *f = &m->files[j];
+                sb_fmt(&b, "  %s  %lld bytes  %s%s\n", f->name, f->size,
+                       *f->sha256 ? f->sha256 : f->hash_status,
+                       f->listing_match == 0 ? " (cached listing mismatch)" : "");
+            }
+        }
+        for (int i = 0; i < c.n_errors; i++)
+            sb_fmt(&b, "error: %s: %s\n", c.errors[i].path, c.errors[i].message);
+    }
+    int rc = c.n_errors ? 1 : 0;
+    if (b.failed || fwrite(b.s, 1, b.n, stdout) != b.n || fflush(stdout) != 0) {
+        fprintf(stderr, "error: cached: cannot write inventory\n"); rc = 1;
+    }
+    free(b.s); hf_cache_free(&c);
+    return rc;
 }
 
 static int run_keygen(const cli_opts *o) {
@@ -7316,6 +7394,18 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     if (!cli_parse(o, argc, argv, &rc)) return rc;
     o->bare = invoked_bare(argc, argv);
     if (o->pull_spec) return run_pull(o);
+    if (o->sizes_only && !o->cached) {
+        fprintf(stderr, "error: --sizes-only needs runner cached (--info cached)\n");
+        return 1;
+    }
+    if (o->cached) {
+        if (o->cached_other || o->schema_file) {
+            fprintf(stderr, "error: runner cached accepts only --json and --sizes-only; %s is not allowed\n",
+                    o->cached_other ? o->cached_other : "--json FILE");
+            return 1;
+        }
+        return run_cached(o);
+    }
     if (!cli_resolve_shape(o)) return 1;
     if (!cli_resolve_trust_key(o)) return 1;
 
@@ -7471,10 +7561,14 @@ int main(int argc, char **argv) {
         return instances_sweep_worker();
     // runner derive orchestrates the other modes as sub-runs of this binary
     if (argc >= 2 && !strcmp(argv[1], "derive")) return derive_main(argc - 1, argv + 1);
+    char **original_argv = argv;
     int sub = cli_expand_subcommand(&argc, &argv);
     if (sub >= 0) return sub;
     char *owned_prompt = NULL;
     int rc = cli_main(argc, argv, &owned_prompt);
     free(owned_prompt);
+    // Expanded vectors own only the pointer array; their entries borrow
+    // startup arguments or static flag spellings.
+    if (argv != original_argv) free(argv);
     return rc;
 }

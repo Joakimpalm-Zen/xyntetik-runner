@@ -1569,7 +1569,10 @@ enum { MODEL_POOL_NONE = 0, MODEL_POOL_MEAN = 1, MODEL_POOL_CLS = 2,
        MODEL_POOL_LAST = 3, MODEL_POOL_RANK = 4 };
 bool   model_pooling_supported(const model_t *m);
 const char *model_pooling_name(uint32_t pooling_type);
-bool   model_embed(model_t *m, const int32_t *toks, int n, float *out);
+// Optional request stop is polled between complete forward chunks. False on
+// stop; the caller discards the partial output and invalidates its KV prefix.
+bool   model_embed(model_t *m, const int32_t *toks, int n, float *out,
+                   bool (*stop)(void *), void *stop_ud);
 // Every position's final hidden state of `toks`, after the output norm
 // (what a transformers model returns as last_hidden_state), into
 // out[n][n_embd]. Runs from position 0 and clobbers KV slots [0, n): the
