@@ -195,6 +195,11 @@ with their sizes and freshly computed SHA-256 digests. It works offline;
 output. Cached files and the models served by `/v1/models` are separate
 inventories. [Details and hashing cost](MANUAL.md#cli-cached)
 
+For a remote proof of concept, keep Runner on loopback and put TLS and a
+bearer API key in the [tested Caddy/Compose front](docs/reverse-proxy.md).
+The recipe verifies unauthenticated refusal, authenticated fixture requests
+and the engine's loopback-only listener.
+
 `./runner --info caps` says what this machine and build can run, and
 `./runner -m model.gguf --info doctor` loads a model, probes it and reports.
 [How the verdict is computed](MANUAL.md#deciding-before-you-download)

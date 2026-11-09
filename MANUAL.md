@@ -3543,6 +3543,12 @@ Put it behind an authenticated reverse proxy or tunnel when remote access is
 needed; do not forward the port directly. Host and Origin validation rejects
 non-loopback authorities.
 
+The [Caddy/Compose PoC recipe](docs/reverse-proxy.md) supplies TLS and a
+bearer API key outside the engine, with an executable fixture test. It uses
+Linux host networking so the proxy can reach Runner's loopback address,
+rewrites upstream authority only after authentication, and leaves the
+engine's listener and security model unchanged.
+
 ### Endpoints
 
 | Method and path | Purpose |

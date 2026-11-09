@@ -32,6 +32,11 @@ are outside this model: add authentication and TLS in the proxy, and
 understand that runner has never claimed to be safe against hostile
 network input.
 
+A tested [TLS/API-key Caddy front](docs/reverse-proxy.md) and Compose file are
+provided for a proof of concept. The fixture test verifies the proxy's key
+boundary and Runner's unchanged loopback listener; this does not expand the
+engine's threat model to untrusted network callers.
+
 ## The HTTP surface
 
 The built-in server is a deliberate subset of HTTP/1.1, kept in one source

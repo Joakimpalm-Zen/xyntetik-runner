@@ -1,0 +1,24 @@
+services:
+  proxy:
+    image: caddy:2.11.9-alpine
+    network_mode: host
+    user: "${RUNNER_PROXY_UID:?Set RUNNER_PROXY_UID with id -u}:${RUNNER_PROXY_GID:?Set RUNNER_PROXY_GID with id -g}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    tmpfs:
+      - /tmp
+    entrypoint: [/bin/sh, /etc/caddy/start.sh]
+    environment:
+      RUNNER_PROXY_API_KEY: ${RUNNER_PROXY_API_KEY:?Generate a key with openssl rand -hex 32}
+      RUNNER_PORT: ${RUNNER_PORT:-8080}
+      RUNNER_PROXY_HOST: ${RUNNER_PROXY_HOST:-localhost}
+      RUNNER_PROXY_HTTPS_PORT: ${RUNNER_PROXY_HTTPS_PORT:-8443}
+      RUNNER_PROXY_TLS_CERT: /certs/tls.crt
+      RUNNER_PROXY_TLS_KEY: /certs/tls.key
+      XDG_DATA_HOME: /tmp/caddy-data
+      XDG_CONFIG_HOME: /tmp/caddy-config
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./start.sh:/etc/caddy/start.sh:ro
+      - ${RUNNER_PROXY_CERT_DIR:-./certs}:/certs:ro
