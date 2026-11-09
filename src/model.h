@@ -422,6 +422,8 @@ typedef struct {
     // asked for ("" while it is not), and the last route line printed
     char     route_fallback[160];
     uint64_t route_last;
+    // the draft source the engine runs (model_route_draft), "" for none
+    char     route_draft[24];
     // the device failed mid-run and the CPU finished it (gpu_runtime_failure):
     // the run's closing speeds are then the CPU's, and say so
     bool     gpu_lost;
@@ -1617,6 +1619,9 @@ void model_debug_time_report(void);
 // a JSON object (--bench-json): every path taken with its forward count and
 // widest rows, the process's kernel counters and the compiler.
 void model_route_note(model_t *m, int rows, const char *path);
+// The draft source the route line names (draft=SRC, draft=SRC:default when
+// the workload default chose it); NULL clears it (R3.39.4).
+void model_route_draft(model_t *m, const char *src, bool by_default);
 void model_route_json(const model_t *m, char *out, int cap);
 // The part a receipt carries as profile.route and --verify checks on replay:
 // the backend, the CPU's activation and the backend's detail line.

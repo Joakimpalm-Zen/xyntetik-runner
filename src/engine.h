@@ -259,6 +259,9 @@ typedef struct {
     // fast-forward still preempts it under a constraint, as it does the
     // others. See engine_lookup_draft.
     bool     lookup_on;
+    // R3.39.4: the active source above came from the workload default
+    // (engine_draft_default), not from a flag; the route line says so
+    bool     draft_default;
     // Draft hints (R3.7.4): text the caller expects the model to echo, a
     // file about to be quoted or a tool result, as token runs separated by
     // -1. Searched only when the context lookup proposed nothing, with the
@@ -340,6 +343,45 @@ bool engine_wants_spec(const engine *e);
 // The draft width a round takes: draft_k when the caller set one, else the
 // default for this backend and draft source (R3.3.7; engine.c).
 int engine_draft_k(const engine *e);
+
+// True when the target runs on CUDA with every layer on the device: the one
+// scope the measured draft rows cover (R3.3.7, R3.39.4).
+bool engine_cuda_full(const engine *e);
+
+// Names the run's draft source on the route line (RUNNER_DEBUG_ROUTE), with
+// ":default" when the workload default chose it. Call once the source is set.
+void engine_note_draft_route(engine *e);
+
+// R3.39.4: which draft source a run takes when the caller named none. The
+// lookup and the NextN head are identity class (the verify walk emits plain
+// decoding's tokens), so the only question is speed, and the answer is the
+// measured rows (docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03),
+// keyed on what the request says before a token is decoded:
+// - the server, a request with draft_hints (the caller declared text to be
+//   echoed, an edit): the lookup, 2.86x plain on an edit at width 7;
+// - the CLI, output constrained to one JSON document (--json, --schema) on
+//   the measured row's model (Qwen3.5-4B's NextN head): the head, 1.13x at 2;
+// - anything else is plain decoding: the head reads 0.88x on prose, and the
+//   lookup has no prose row. Only on CUDA with every layer on the device.
+// No per-request head on the server: while on, the head is fed every token,
+// prefill included, so a prose request would pay for it and a request that
+// turned it on would find no head KV under a reused prefix.
+typedef enum { DRAFT_DEFAULT_NONE = 0, DRAFT_DEFAULT_LOOKUP, DRAFT_DEFAULT_MTP } draft_default;
+typedef struct {
+    bool server;         // the HTTP server, else a one-shot CLI run
+    bool chosen;         // the caller named a source, or --draft off
+    bool cuda_full;      // engine_cuda_full
+    bool json_output;    // the output is constrained to one JSON document
+    bool hints;          // the request carries draft_hints
+    bool head_measured;  // the file's NextN head is the measured row's model
+} draft_workload;
+draft_default engine_draft_default(const draft_workload *w);
+
+// RUNNER_TEST_DRAFT_SCOPE=1, for tests only: the default sites treat any
+// backend as the measured scope and any single NextN head as the measured
+// model, so a CPU host can drive both defaults and verify their records.
+// It never changes a token: both sources are identity class.
+bool engine_draft_scope_forced(void);
 
 // The prompt-lookup search, the whole of the fourth draft source. `hist` is
 // the context so far, hist[len-1] the token whose successors are wanted.

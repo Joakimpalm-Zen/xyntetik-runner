@@ -61,7 +61,9 @@ produced the same bytes as plain decoding.
 drafted), `rounds`, `drafted`, `accepted`, and the lookup's share as
 `lookup_drafted`/`lookup_accepted`. The transcript record carries the same
 `speculation` object whenever a source was configured (absent for plain
-decoding, so those records are byte-for-byte what they were).
+decoding, so those records are byte-for-byte what they were), with
+`"default": true` when the workload default chose the source, and
+`--verify` replays it with that same source.
 `GET /v1/capabilities` reports `draft.source`. The three
 `runner_speculation_*` counters on `/metrics` keep their names and keep
 counting every source; the server test asserts that one lookup request
