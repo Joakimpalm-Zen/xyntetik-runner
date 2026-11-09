@@ -1,0 +1,24 @@
+{
+	admin off
+	persist_config off
+	auto_https disable_redirects
+}
+
+https://{$RUNNER_PROXY_HOST:localhost}:{$RUNNER_PROXY_HTTPS_PORT:8443} {
+	tls "{$RUNNER_PROXY_TLS_CERT}" "{$RUNNER_PROXY_TLS_KEY}"
+
+	route {
+		@authorized header Authorization "Bearer {$RUNNER_PROXY_API_KEY}"
+		handle @authorized {
+			reverse_proxy 127.0.0.1:{$RUNNER_PORT:8080} {
+				header_up Host 127.0.0.1:{$RUNNER_PORT:8080}
+				header_up -Origin
+				header_up -Authorization
+				flush_interval -1
+			}
+		}
+		handle {
+			respond "Unauthorized" 401
+		}
+	}
+}

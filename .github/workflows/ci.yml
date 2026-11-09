@@ -55,6 +55,7 @@ jobs:
       engine: ${{ steps.classify.outputs.engine }}
       tested: ${{ steps.classify.outputs.tested }}
       gates_core: ${{ steps.classify.outputs.gates_core }}
+      reverse_proxy: ${{ steps.classify.outputs.reverse_proxy }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -67,7 +68,7 @@ jobs:
           BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          engine=true; tested=false; gates_core=false
+          engine=true; tested=false; gates_core=false; reverse_proxy=false
           case "$EVENT" in
             pull_request|push)
               base=
@@ -78,6 +79,7 @@ jobs:
               [ -n "$base" ] || base=$(git rev-parse HEAD^1)
               changed=$(git diff --no-renames --name-only "$base" HEAD)
               gates_core=$(git diff --no-renames --name-only -z "$base" HEAD | python3 scripts/ci-gates-core.py --nul-stdin)
+              reverse_proxy=$(git diff --no-renames --name-only -z "$base" HEAD | python3 scripts/ci-gates-core.py --scope reverse-proxy --nul-stdin)
               printf '%s\n' "$changed" | sed 's/^/  changed: /'
               # docs/model-tiers.json is data the tests and the site build
               # consume, not prose: a record landing there runs the engine jobs
@@ -97,8 +99,8 @@ jobs:
               fi
             done
           fi
-          echo "engine=$engine gates_core=$gates_core tested=$tested tree=$tree"
-          { echo "engine=$engine"; echo "gates_core=$gates_core"; echo "tested=$tested"; echo "tree=$tree"; } >> "$GITHUB_OUTPUT"
+          echo "engine=$engine gates_core=$gates_core reverse_proxy=$reverse_proxy tested=$tested tree=$tree"
+          { echo "engine=$engine"; echo "gates_core=$gates_core"; echo "reverse_proxy=$reverse_proxy"; echo "tested=$tested"; echo "tree=$tree"; } >> "$GITHUB_OUTPUT"
       - name: record the tree this pull-request run tests
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v7
@@ -821,6 +823,24 @@ jobs:
           if-no-files-found: ignore
 
 
+  reverse-proxy:
+    needs: changes
+    if: needs.changes.outputs.reverse_proxy == 'true' && needs.changes.outputs.tested != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: build fixture server
+        run: make -j2 runner
+      - name: verify the shipped TLS and API-key Compose recipe
+        run: python3 scripts/ci-run.py --timeout 300 reverse-proxy -- python3 scripts/test-reverse-proxy.py --runner ./runner
+      - name: proxy test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reverse-proxy-report
+          path: .build/ci/
+
   thread-sanitizer:
     needs: changes
     if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
@@ -918,7 +938,7 @@ jobs:
     name: pr-gate
     needs: [changes, make-test, macos, simd-isa-levels, fuzz, windows, conformance,
             conformance-sanitized, consumer-compatibility, template-conformance,
-            thread-sanitizer, t3, windows-suite]
+            thread-sanitizer, t3, windows-suite, reverse-proxy]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

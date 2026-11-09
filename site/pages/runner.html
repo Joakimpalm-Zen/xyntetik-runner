@@ -225,6 +225,10 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
         <p><code>runner cached</code> lists files downloaded by <code>-hf</code> or <code>--pull</code>, with sizes and freshly computed SHA-256 digests, offline. Hashing reads every cached byte; <code>--sizes-only</code> skips that work for a quick list, and <code>--json</code> gives structured output. Incomplete multipart sets are identified. This inventory is separate from <code>runner recommend</code>'s advice and the server's <code>/v1/models</code> list. <a href="{{repo}}/blob/main/MANUAL.md#cli-cached">Reference and hashing cost</a>.</p>
       </div>
       <div class="card">
+        <h3>A TLS front for a proof of concept</h3>
+        <p>The tested <a href="{{repo}}/blob/main/docs/reverse-proxy.md">Caddy and Compose recipe</a> requires a bearer API key over HTTPS while Runner stays bound to loopback. Its fixture test checks rejected unauthenticated requests, successful authenticated completions and the listening socket. TLS and authentication stay in the proxy.</p>
+      </div>
+      <div class="card">
         <h3>Decisions you can gate</h3>
         <p><code>choice_logprobs</code> records each JSON-schema branch as legal alternatives, a posterior renormalized over them, the probed probability mass, and how much of the model's probability the legal branches held, so a choice the schema forced on a model that wanted none of them reads as one. <code>confirm_below</code> turns that into one answer per turn: the lowest posterior a chosen branch had, and whether it fell below your threshold. Served Llama-3.2-3B with three tools picked <code>get_weather</code> at 0.92 for a weather question and at 0.78 when <code>send_email</code> was wanted, and asked for confirmation at 0.9. One versioned contract, <a href="{{repo}}/blob/main/docs/decision-record.md">docs/decision-record.md</a>.</p>
       </div>
