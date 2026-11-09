@@ -145,6 +145,31 @@ def _forge_record(path, record):
                      b"}\n")
 
 
+@pytest.mark.parametrize("route", [
+    {"backend": "metal", "cpu_act": "f32", "backend_detail": "", "micro": "tiles"},
+    {"backend": "metal", "cpu_act": "f32", "backend_detail": "fusion=on micro=tiles"},
+])
+def test_tiled_receipt_without_decode_schedule_is_unverifiable(runner_bin, tmp_path, route):
+    # Public verifier preflight only: no model is loaded or evaluated.
+    rec = tmp_path / "micro.json"
+    model = tmp_path / "model.gguf"
+    model.touch()  # deliberately not a model: route refusal must precede loading
+    _forge_record(rec, {
+        "schema_version": "xyntetik.runner.transcript.v2",
+        "profile": {"device": "test", "gpu": True, "gpu_layers": 1,
+                    "threads": 1, "ctx": 64, "kv": "f16", "batch": 32, "route": route},
+        "model": {"name": "absent.gguf", "sha256": "0" * 64},
+        "adapter": None,
+        "config": {"seed_u64": "7", "temp": 0, "top_k": 0, "top_p": 1,
+                   "min_p": 0, "repeat_penalty": 1, "n_predict": 1},
+        "chain": {"hash": "", "prev": ""},
+    })
+    p = subprocess.run([runner_bin, "-m", str(model), "--verify", str(rec), "--no-tray"], cwd=tmp_path,
+                       capture_output=True, text=True, timeout=10)
+    assert p.returncode == 3, p.stdout + p.stderr
+    assert "tiled microbatch" in p.stderr and "decode schedule" in p.stderr, p.stderr
+
+
 def test_verify_verdicts(runner_bin, base, tmp_path):
     """D2: the three-verdict contract. Same binary verifies at T1; a
     tampered record (stale chain) is UNVERIFIABLE exit 3; a FORGED record

@@ -286,6 +286,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       <div class="card">
         <h3>Records a reviewer can check</h3>
         <p>A served turn is a receipt; receipts chain; <code>runner attest pack</code> gathers them with the model signature and the measured envelope into one evidence pack that <code>runner attest check-pack</code> verifies offline. <a href="/runner/reproducible-lora-training-receipts/">Receipts and the audit demo</a>.</p>
+        <p>Opt-in Metal tiled generations name their arithmetic in the receipt. Without a replayable decode schedule, the verifier reports <code>UNVERIFIABLE</code> instead of attempting solo replay.</p>
       </div>
       <div class="card">
         <h3>Compatibility as a promise</h3>

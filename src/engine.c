@@ -2920,6 +2920,7 @@ done:
 // logic, not a solo one and a batched one that can drift apart.
 
 void engine_gen_begin(engine *e, int max_new) {
+    if (e->m) e->m->route_micro_tiles_seen = false;
     e->hit_stop  = false; e->stop_id = -1;
     e->oom       = false;
     e->lp_count  = 0;

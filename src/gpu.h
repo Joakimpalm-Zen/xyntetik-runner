@@ -429,5 +429,8 @@ void       gpu_batch_free(gpu_batch *b);
 // the next call. false = nothing was evaluated, decode these sequences singly.
 bool       gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                             const int *pos, int n, float **out);
+// Did the last successful decode use non-identity Metal GEMM tiles for any
+// weight product? A policy switch alone is not evidence that a tile ran.
+bool       gpu_batch_tiles_used(const gpu_batch *b);
 
 #endif // RUNNER_GPU_H
