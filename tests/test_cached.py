@@ -177,3 +177,12 @@ def test_platform_default_root_and_64_bit_sizes(runner_bin, tmp_path):
     model, = doc["models"]
     assert model["size_bytes"] == size and model["files"][0]["size_bytes"] == size
     assert model["files"][0]["sha256"] is None
+
+
+def test_existing_recommend_subcommand_releases_its_expansion(runner_bin):
+    # The pointer-vector leak was already present in recommend on main.
+    # This file also runs against runner-debug with LeakSanitizer enabled.
+    result = subprocess.run([str(runner_bin), "recommend", "--memory", "1"],
+                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("recommend:")

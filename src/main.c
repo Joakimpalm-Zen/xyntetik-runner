@@ -7561,10 +7561,14 @@ int main(int argc, char **argv) {
         return instances_sweep_worker();
     // runner derive orchestrates the other modes as sub-runs of this binary
     if (argc >= 2 && !strcmp(argv[1], "derive")) return derive_main(argc - 1, argv + 1);
+    char **original_argv = argv;
     int sub = cli_expand_subcommand(&argc, &argv);
     if (sub >= 0) return sub;
     char *owned_prompt = NULL;
     int rc = cli_main(argc, argv, &owned_prompt);
     free(owned_prompt);
+    // Expanded vectors own only the pointer array; their entries borrow
+    // startup arguments or static flag spellings.
+    if (argv != original_argv) free(argv);
     return rc;
 }
