@@ -159,7 +159,7 @@ def test_server_request_without_hints_decodes_plain(runner_bin, model, tmp_path)
     log = tmp_path / "srv.log"
     with RunnerServer(find_runner(ROOT), model, ctx=1024, parallel=1, log_path=log,
                       extra_args=["-t", "2", *_gpu_args(runner_bin)],
-                      env={"RUNNER_DEBUG_ROUTE": "1"}) as srv:
+                      env={**os.environ, "RUNNER_DEBUG_ROUTE": "1"}) as srv:
         draft = _get(srv, "/v1/capabilities")["draft"]
         assert draft["requested"] is False and draft["active"] is False
         assert ("default" in draft) is cuda, draft
