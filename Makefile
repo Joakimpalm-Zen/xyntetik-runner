@@ -88,6 +88,7 @@ TEST_SCHEMA_OOM = test-schema-oom.exe
 TEST_SAMPLER = test-sampler.exe
 TEST_SHARED = test-shared-weights.exe
 TEST_MLOCK = test-mlock.exe
+TEST_WILLNEED = test-willneed.exe
 TEST_BATCH = test-batch.exe
 DIFFTOK = difftok.exe
 TEST_BIND = test-bind.exe
@@ -120,6 +121,7 @@ TEST_SCHEMA_OOM = test-schema-oom
 TEST_SAMPLER = test-sampler
 TEST_SHARED = test-shared-weights
 TEST_MLOCK = test-mlock
+TEST_WILLNEED = test-willneed
 TEST_BATCH = test-batch
 DIFFTOK = difftok
 TEST_BIND = test-bind
@@ -144,6 +146,7 @@ TEST_SCHEMA_OOM = test-schema-oom
 TEST_SAMPLER = test-sampler
 TEST_SHARED = test-shared-weights
 TEST_MLOCK = test-mlock
+TEST_WILLNEED = test-willneed
 TEST_BATCH = test-batch
 DIFFTOK = difftok
 TEST_BIND = test-bind
@@ -601,6 +604,9 @@ TEST_MLOCK_SRC = tests/test_mlock.c src/gguf.c src/compat.c \
                  $(QUANTS_OBJ) src/model.c src/vramreg.c $(GPU_SRC)
 $(TEST_MLOCK): $(TEST_MLOCK_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_MLOCK_SRC) -o $@ $(LDFLAGS)
+# R3.41: plat_willneed brings a whole unaligned range in on Linux
+$(TEST_WILLNEED): tests/test_willneed.c src/compat.c $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_willneed.c src/compat.c -o $@ $(LDFLAGS)
 test-es-mlock.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --eseries 3,256 test-es-mlock.gguf
 
@@ -3149,7 +3155,7 @@ test-gates:
 test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
-      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
+      $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
@@ -3292,6 +3298,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	$(TEST_MSG_OOM_RUN)
 	./$(TEST_SHARED)
 	./$(TEST_MLOCK) test-es-mlock.gguf
+	./$(TEST_WILLNEED)
 	./$(TEST_FILE_ID)
 	$(METAL_PREFIX_TIGHT) ./$(TEST_PREFIX)
 	$(METAL_PREFIX_TIGHT) ./$(TEST_PREFIX) test.gguf 64
@@ -3744,7 +3751,7 @@ clean:
 	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug runner-no-manifest.exe $(TEST_UTF8_CONSOLE) $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) \
 		$(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
-	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) $(TEST_MLOCK) \
+	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) $(TEST_MLOCK) $(TEST_WILLNEED) \
 	      $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_TRAIN_GPU) test-shared-asan-bin \
 	      $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
