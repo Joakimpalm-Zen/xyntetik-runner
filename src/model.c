@@ -7307,8 +7307,32 @@ void model_route_receipt_json(const model_t *m, char *out, int cap) {
         size_t n = strlen(detail);
         snprintf(detail + n, sizeof detail - n, " micro=tiles");
     }
-    snprintf(out, cap, "{\"backend\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\"%s}",
-             r.backend, r.cpu_act, detail, m->route_micro_tiles_seen ? ",\"micro\":\"tiles\"" : "");
+    // tc_types (R3.39.2): the weight types whose multi-column products this
+    // route takes on the tensor cores, in type order. A policy, not a count:
+    // the dispatch counters are process-wide across slots and a prefix-cache
+    // hit skips prefill, so "what ran" cannot be pinned to one request; the
+    // policy is fixed by the binary, the model and the switches, and it is
+    // what --verify compares, so a later promotion shows up as a route change
+    // and not only in the token replay. CUDA only, where the label lives.
+    char tct[256] = "";
+    if (!strcmp(r.backend, "cuda")) {
+        bool seen[64] = { false };
+        for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
+            const gguf_tensor *t = &m->gf.tensors[i];
+            if (t->n_dims == 2 && t->type < 64) seen[t->type] = true;
+        }
+        size_t n = 0;
+        n += (size_t)snprintf(tct, sizeof tct, ",\"tc_types\":\"");
+        bool first = true;
+        for (int t = 0; t < 64 && n < sizeof tct; t++) {
+            if (!seen[t] || !gpu_tc_takes(m, t)) continue;
+            n += (size_t)snprintf(tct + n, sizeof tct - n, "%s%s", first ? "" : ",", ggml_type_name(t));
+            first = false;
+        }
+        if (n < sizeof tct) snprintf(tct + n, sizeof tct - n, "\"");
+    }
+    snprintf(out, cap, "{\"backend\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\"%s%s}",
+             r.backend, r.cpu_act, detail, m->route_micro_tiles_seen ? ",\"micro\":\"tiles\"" : "", tct);
 }
 
 void model_route_json(const model_t *m, char *out, int cap) {
@@ -15487,7 +15511,8 @@ const char *model_pooling_name(uint32_t pooling_type) {
     }
 }
 
-bool model_embed(model_t *m, const int32_t *toks, int n, float *out) {
+bool model_embed(model_t *m, const int32_t *toks, int n, float *out,
+                 bool (*stop)(void *), void *stop_ud) {
     if (n <= 0 || n > m->n_ctx || !model_pooling_supported(m)) return false;
     bool last = m->pooling_type == MODEL_POOL_LAST;
     void *save_gpu = m->gpu;
@@ -15497,6 +15522,11 @@ bool model_embed(model_t *m, const int32_t *toks, int n, float *out) {
     float *tmp = malloc(sizeof(float) * m->n_embd);
     if (!tmp) { m->gpu = save_gpu; return false; }
     for (int i = 0; i < n; ) {
+        if (stop && stop(stop_ud)) {
+            free(tmp);
+            m->gpu = save_gpu;
+            return false;
+        }
         int chunk = n - i < m->n_batch ? n - i : m->n_batch;
         model_forward_batch(m, toks + i, chunk, i, false);
         // last-token pooling reads only the final position of the final

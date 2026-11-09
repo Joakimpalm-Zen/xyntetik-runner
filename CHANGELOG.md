@@ -5,6 +5,23 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **The route line and records say what the tensor cores ran, and `--verify` holds a replay to it (R3.39.2).**
+  - **The old label:** with `RUNNER_CUDA_TC` unset, the CUDA route detail read `tc=promoted` for every non-MoE
+    architecture. So an unpromoted model's line, and its records, claimed a tensor-core prefill that never ran.
+  - **The new label** is `tc=taken` where the default takes the tensor cores for one of the model's weight matrices,
+    and `tc=off` where it does not. `tc=forced` and `moe-tc` are unchanged.
+  - **Records** list the weight types the route takes on the tensor cores in `profile.route.tc_types`, and `--verify`
+    compares them. A later promotion then reads as a route change, not only in the token replay.
+  - **Records written before this,** which carry the word `promoted` and no `tc_types`, still verify when nothing else
+    in their route differs. The verdict reads "tensor-core types not recorded (a record from before tc_types)".
+  - **Checks:**
+    - `tests/test_tc_route_label.py` (CUDA): the label agrees with the receipt's tensor-core GEMM counts on four
+      fixtures.
+    - `tests/test_verify_tc_compat.py` (CUDA): a record written the pre-fix way verifies with the note, and still fails
+      when another route token differs; recorded `tc_types` hold the replay; `RUNNER_CUDA_TC=0` fails a `taken`
+      record.
+    - Genuine records from main 241e9d7 (a llama and a deepseek2 fixture) verify on this binary the same way.
+
 - **CUDA: tensor-core prefill on spark2_5 for Q4_K and Q6_K, measured (R3.39.2).** XHToken's Spark-X2.5-4B Q4_K_M
   prefills 9.48x faster (203 to 1,927 tok/s at 1,635 tokens, 5 of 5 pairs) and reads the same against
   XHToken/Spark-X2.5-4B in float32 on 2,000 positions: mean KLD ratio 0.9995 (CI [0.9981, 1.0007], Wilcoxon p 0.115),
