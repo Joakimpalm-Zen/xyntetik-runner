@@ -2774,6 +2774,22 @@ static bool bind_meta_qwen35(model_t *m, gguf_file *g, const char *arch) {
         fprintf(stderr, "error: invalid qwen35 Gated DeltaNet geometry\n");
         return false;
     }
+    // R3.44: a Gated DeltaNet layer holds its state in the fold, never in a
+    // KV row, so it gets 0 KV heads (granitehybrid's and lfm2's convention):
+    // the host cache, the device caches, the placement plan, prefix entries
+    // and session state all size from model_kv_dim. Without the table every
+    // layer took the attention layers' rows, about 4x the KV of a 1-in-4
+    // hybrid. The scalar n_head_kv stays the attention layers' (and the
+    // NextN/MTP block's, which is read at index n_layer). The model key
+    // hashes each layer's KV geometry, so a state saved under the old layout
+    // is refused, never misread; RUNNER_KV_RECURRENT_ROWS=1 keeps that
+    // layout, to resume such a state.
+    const char *rows = getenv("RUNNER_KV_RECURRENT_ROWS");
+    if (rows && *rows && strcmp(rows, "0") != 0) return true;
+    m->l_head_kv = calloc((size_t)m->n_layer, sizeof(int));
+    if (!m->l_head_kv) return false;
+    for (int i = 0; i < m->n_layer; i++)
+        m->l_head_kv[i] = (i + 1) % m->full_attn_interval == 0 ? m->n_head_kv : 0;
     return true;
 }
 
@@ -4889,7 +4905,8 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                         : m->mtp_layers != 1 ? "only a single predictor block is consumable"
                         : fused_qkv ? "fused-QKV families are not supported"
                         : ((m->n_expert > 0 && !m->hyper_conn && !m->qwen35) || m->nemotron_h ||
-                           m->granite_hybrid || m->l_head_kv || m->l_head_dim ||
+                           // qwen35's table only zeroes its DeltaNet layers (R3.44)
+                           m->granite_hybrid || (m->l_head_kv && !m->qwen35) || m->l_head_dim ||
                            m->kv_src || m->n_embd_ple > 0)
                             ? "only dense attention, Gated DeltaNet or hyper-connection "
                               "MoE backbones are supported"

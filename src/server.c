@@ -1422,7 +1422,7 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
         why = "the resident model's digest is not available";
     if (!why && strcmp(msha, sm->model_sha256) != 0)
         why = "the resident model is not the model the image was made with";
-    char keywhy[192];
+    char keywhy[320];
     if (!why) why = session_key_mismatch(sm, e, keywhy, sizeof keywhy);
     if (!why && (img.n_vocab != s->m->n_vocab ||
                  img.state_n != prefix_cache_entry_bytes(s->m, sm->n_tokens)))

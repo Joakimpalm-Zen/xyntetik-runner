@@ -18,7 +18,7 @@ enum { CP_PROBE, CP_THINK, CP_AFTER_THINK, CP_OUTPUT };
 
 // everything that decides what this engine's KV bytes mean; see the shared
 // prefix cache below, which is the only thing that consumes it
-static uint64_t model_identity(const model_t *m, const tokenizer *tok);
+static uint64_t model_identity(const model_t *m, const tokenizer *tok, bool prior);
 // the constrained document recorded for engine_constraint_truncate; defined
 // with the rest of the constraint layer
 static void cdoc_release(engine *e);
@@ -80,7 +80,8 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
                  ff && (!strcmp(ff, "1") || !strcmp(ff, "on"));
     e->hist = malloc(sizeof(int32_t) * m->n_ctx);
     if (!e->hist) return false;   // no history buffer: the engine is unusable
-    e->model_key = model_identity(m, tok);
+    e->model_key = model_identity(m, tok, false);
+    e->model_key_prior = m->qwen35 ? model_identity(m, tok, true) : e->model_key;
     return true;
 }
 
@@ -232,7 +233,8 @@ static uint64_t fnv1a_toks(const int32_t *toks, int n) {
 }
 
 void engine_refresh_identity(engine *e) {
-    e->model_key = model_identity(e->m, e->tok);
+    e->model_key = model_identity(e->m, e->tok, false);
+    e->model_key_prior = e->m->qwen35 ? model_identity(e->m, e->tok, true) : e->model_key;
 }
 
 const char *engine_rewind_how_name(int how) {
@@ -403,7 +405,7 @@ static uint64_t h64f(uint64_t h, double v) { return h64(h, &v, sizeof v); }
 // distinguishing a model rebuilt or replaced in place at the same path. The
 // small tensor samples below remain a fallback guard for platforms where stat
 // cannot report a useful identity.
-static uint64_t model_identity(const model_t *m, const tokenizer *tok) {
+static uint64_t model_identity(const model_t *m, const tokenizer *tok, bool prior) {
     uint64_t h = 0xCBF29CE484222325ull;
     // v2: the LoRA adapter id joined the identity — a cached prefix computed
     // under one adapter (or none) must never serve a run under another. The
@@ -444,11 +446,16 @@ static uint64_t model_identity(const model_t *m, const tokenizer *tok) {
     h = h64f(h, m->resid_scale);
     h = h64i(h, m->embd_norm);     h = h64i(h, m->nope_on_full);
     for (int l = 0; l < m->n_layer; l++) {
-        h = h64i(h, model_kv_dim(m, l));
+        // `prior`: the key a runner before R3.44 gave a qwen35-family model,
+        // whose DeltaNet layers then reserved rows of the attention shape
+        int kvd = model_kv_dim(m, l);
+        if (prior && m->qwen35 && kvd == 0) kvd = m->n_head_kv * model_head_dim(m, l);
+        h = h64i(h, kvd);
         h = h64i(h, model_rope_dim(m, l));
         h = h64i(h, model_is_swa(m, l));
-        h = h64i(h, (long long)model_k_row_bytes(m, l));
-        h = h64i(h, (long long)model_v_row_bytes_own(m, l));   // 0: V is K's table
+        h = h64i(h, (long long)model_k_bytes_of(m, (size_t)kvd));
+        h = h64i(h, (long long)(model_kv_v_shared(m) ? 0   // 0: V is K's table
+                                : model_v_bytes_of(m, (size_t)kvd)));
         const gguf_tensor *sample[2] = { m->layers[l].wq, m->layers[l].w_down };
         for (int k = 0; k < 2; k++) {
             if (!sample[k] || !sample[k]->data) { h = h64s(h, NULL); continue; }
@@ -1319,7 +1326,7 @@ int prefix_context_import(const engine *e, const char *name, const char *path,
     // the refusal that matters, as in prefix_cache_load: KV from another
     // model, context length or element type is never adapted
     if (key != e->model_key || bytes != prefix_cache_entry_bytes(e->m, n)) {
-        rc = PFX_CTX_MISMATCH;
+        rc = key != e->model_key && key == e->model_key_prior ? PFX_CTX_PRIOR : PFX_CTX_MISMATCH;
         goto out;
     }
     pfx_entry *ne = calloc(1, sizeof *ne);
