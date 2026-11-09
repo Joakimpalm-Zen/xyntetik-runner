@@ -1119,3 +1119,42 @@ def test_links_in_the_support_doc_resolve_from_docs():
         if target.startswith("http"):
             continue
         assert (ROOT / "docs" / target).resolve().exists(), target
+
+
+# ---- runner recommend's fields (R10.25)
+
+# A `runner --fit` report on the first 16 MiB of NVIDIA's Nemotron-3.5-Bolt-E4B Q4_K_M
+# (2026-11-09), cut to the lines the recorder reads: the hot set is what stays resident.
+GATHERED_REPORT = """fit: Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf
+  weights       5.76 GiB
+  hot set       2.97 GiB  (weights streamed per token)
+  row-gathered  2.79 GiB  (per-layer token embedding; read by row)
+"""
+
+
+def test_the_recorder_reads_the_hot_set_of_a_row_gathered_file():
+    assert mt.resident_from_fit(GATHERED_REPORT) == round(2.97 * (1 << 30))
+    plain = "fit: x.gguf\n  weights       2.33 GiB\n  kv cache      0.1 GiB\n"
+    assert mt.resident_from_fit(plain) is None
+
+
+def test_resident_bytes_is_a_byte_count_within_the_file():
+    for bad in (0, -1, "3", 10 ** 12):
+        row = tier1_row()
+        row["files"][0]["resident_bytes"] = bad
+        assert any("resident_bytes" in e for e in errors(roster(row))), bad
+    row = tier1_row()
+    row["files"][0]["resident_bytes"] = row["files"][0]["bytes"] // 2
+    assert errors(roster(row)) == []
+
+
+def test_the_snapshot_carries_what_recommend_reads():
+    row = tier1_row()
+    row["files"][0]["resident_bytes"] = 5
+    snap = mt.roster_snapshot(roster(row))["rows"][0]
+    assert set(snap) == {"id", "tier", "envelope", "files"}
+    assert set(snap["envelope"]) == {"features", "fp32_reference", "anchor"}
+    assert snap["files"][0]["resident_bytes"] == 5 and "sha256" not in snap["files"][0]
+    # the C literal round-trips: no raw quote, backslash, "?" or non-ASCII byte survives
+    lit = mt._c_literal('a"b\\c??=dé')
+    assert lit == 'a\\"b\\\\c\\077\\077=d\\303\\251'

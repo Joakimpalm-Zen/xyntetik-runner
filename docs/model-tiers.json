@@ -377,7 +377,8 @@
           "repo": "nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB",
           "revision": "1db54d5b12533ff1bcaa8e42cf4c667988a1f1be",
           "sha256": "c8af2b8aea10a690a1d9491db744a9446660173cb38fc489612b556615a69612",
-          "bytes": 6180446208
+          "bytes": 6180446208,
+          "resident_bytes": 3189013217
         }
       ],
       "quantization": "Q4_K_M (publisher)",
@@ -1882,7 +1883,8 @@
           "repo": "Joakimpalm-Zen/gemma-4-E2B-it-Q4_0-GGUF",
           "revision": "37c8fa438245af0fca502529ced1ce71c4194886",
           "sha256": "16ffaa2ea568e7a0c9b5c6ddbd39a376879f9ac007861334974de39f4cc52e3f",
-          "bytes": 2631015904
+          "bytes": 2631015904,
+          "resident_bytes": 1309965025
         }
       ],
       "quantization": "Q4_K_M/Q4_0 mix",
