@@ -12,6 +12,8 @@
 // The negative cases pin the exclusions: logprob/choice-logprob capture and
 // unconstrained requests must never take the speculative walk for grammar's
 // sake.
+// This is an identity gate, not an independent model-accuracy oracle. The
+// fp16 initialization anchor below is IEEE 754's binary16 encoding of 1.0.
 #include "runner.h"
 #include "json.h"
 
@@ -98,6 +100,17 @@ static int gen(slot *s, snode *schema, bool json_mode, bool ff, model_t *dm,
     return engine_generate(&s->e, logits, 64, collect, out, NULL);
 }
 
+static void same_generation(const slot *a, const slot *b, int na, int nb,
+                            const sink *plain, const sink *fast) {
+    ck(na > 0 && na == nb, "both paths generate the same token count");
+    ck(plain->n == fast->n && memcmp(plain->buf, fast->buf, plain->n) == 0,
+       "both paths emit identical bytes");
+    ck(na > 0 && na == nb &&
+       memcmp(a->e.hist + 4, b->e.hist + 4, sizeof(int32_t) * (size_t)na) == 0,
+       "both paths emit identical token IDs");
+    ck(a->smp.rng == b->smp.rng, "both paths consume the same sampler RNG");
+}
+
 static void test_identity_and_engagement(void) {
     snode *schema = compile_schema();
     if (!schema) { ck(0, "schema compiles"); return; }
@@ -106,10 +119,9 @@ static void test_identity_and_engagement(void) {
     if (!slot_open(&a, &p) || !slot_open(&b, &p)) { ck(0, "load model"); return; }
 
     sink plain, fast;
-    ck(gen(&a, schema, false, false, NULL, &plain) > 0, "plain path generates");
-    ck(gen(&b, schema, false, true,  NULL, &fast)  > 0, "fast-forward path generates");
-    ck(plain.n == fast.n && memcmp(plain.buf, fast.buf, plain.n) == 0,
-       "schema output is byte-identical with fast-forward on");
+    int na = gen(&a, schema, false, false, NULL, &plain);
+    int nb = gen(&b, schema, false, true,  NULL, &fast);
+    same_generation(&a, &b, na, nb, &plain, &fast);
     ck(b.e.spec_st.gr_drafted > 0, "the grammar actually drafted");
     ck(b.e.spec_st.gr_accepted > 0, "grammar drafts were accepted");
     fprintf(stderr, "   (schema: %d rounds, grammar %d/%d over %d bytes)\n",
@@ -118,10 +130,9 @@ static void test_identity_and_engagement(void) {
 
     // JSON mode pins less (no property skeleton) but must stay identical too
     sink jp, jf;
-    ck(gen(&a, NULL, true, false, NULL, &jp) > 0, "plain json_mode generates");
-    ck(gen(&b, NULL, true, true,  NULL, &jf) > 0, "ff json_mode generates");
-    ck(jp.n == jf.n && memcmp(jp.buf, jf.buf, jp.n) == 0,
-       "json_mode output is byte-identical with fast-forward on");
+    na = gen(&a, NULL, true, false, NULL, &jp);
+    nb = gen(&b, NULL, true, true,  NULL, &jf);
+    same_generation(&a, &b, na, nb, &jp, &jf);
 
     slot_close(&a);
     slot_close(&b);
@@ -139,15 +150,40 @@ static void test_identity_with_draft_model(void) {
     }
 
     sink plain, fast;
-    ck(gen(&a, schema, false, false, NULL, &plain) > 0, "plain path generates");
-    ck(gen(&b, schema, false, true, &dm,  &fast)  > 0, "ff+draft path generates");
-    ck(plain.n == fast.n && memcmp(plain.buf, fast.buf, plain.n) == 0,
-       "output is byte-identical with fast-forward composed with --draft");
+    int na = gen(&a, schema, false, false, NULL, &plain);
+    int nb = gen(&b, schema, false, true, &dm,  &fast);
+    same_generation(&a, &b, na, nb, &plain, &fast);
     ck(b.e.spec_st.gr_drafted > 0, "grammar drafts engage alongside the draft model");
 
     model_free(&dm);
     slot_close(&a);
     slot_close(&b);
+    schema_free(schema);
+}
+
+static void test_sampled_tokens_and_unconstrained(void) {
+    snode *schema = compile_schema();
+    if (!schema) { ck(0, "schema compiles"); return; }
+    slot a, b;
+    model_params p = base_params();
+    if (!slot_open(&a, &p) || !slot_open(&b, &p)) { ck(0, "load model"); return; }
+    const uint64_t seeds[] = { 1, 42, UINT64_MAX };
+    for (int mode = 0; mode < 3; mode++) {
+        for (size_t i = 0; i < sizeof seeds / sizeof *seeds; i++) {
+            a.smp.temp = b.smp.temp = 0.8f;
+            a.smp.top_p = b.smp.top_p = 0.9f;
+            a.smp.rng = b.smp.rng = seeds[i];
+            sink plain, fast;
+            snode *sc = mode == 0 ? schema : NULL;
+            bool json_mode = mode == 1;
+            int na = gen(&a, sc, json_mode, false, NULL, &plain);
+            int nb = gen(&b, sc, json_mode, true, NULL, &fast);
+            same_generation(&a, &b, na, nb, &plain, &fast);
+            if (mode == 0) ck(b.e.spec_st.gr_drafted > 0, "sampled schema drafts engage");
+            if (mode == 2) ck(!engine_wants_spec(&b.e), "unconstrained prose stays on the plain path");
+        }
+    }
+    slot_close(&a); slot_close(&b);
     schema_free(schema);
 }
 
@@ -174,8 +210,14 @@ static void test_exclusions(void) {
 
 int main(int argc, char **argv) {
     if (argc > 1) g_path = argv[1];
+    f16_init();
+    // IEEE 754 binary16 1.0 is an outside anchor for the table the model's
+    // fp16 KV reads use. Equality of two uninitialized reads proves nothing.
+    ck(f16_to_f32(0x3c00) == 1.0f, "fp16 table contains binary16 1.0");
+    if (g_fail) return 1; // never evaluate a model with an uninitialized table
     test_identity_and_engagement();
     test_identity_with_draft_model();
+    test_sampled_tokens_and_unconstrained();
     test_exclusions();
     if (!g_fail) fprintf(stderr, "all grammar fast-forward tests passed\n");
     return g_fail;

@@ -275,7 +275,7 @@ typedef struct {
     // forwards) and verified by the target exactly like a draft-model
     // proposal, so output stays sampler-identical to plain decoding.
     // Opt-in via RUNNER_GRAMMAR_FF=1 (see engine_init for the measured
-    // reason); needs the batched verify path (not full GPU offload).
+    // reason); needs model_spec_verify_ok, including supported full offload.
     bool     gram_ff;
     struct { int rounds, drafted, accepted,      // all drafts (every source)
                  gr_drafted, gr_accepted,        // grammar-pinned drafts only
