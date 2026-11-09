@@ -367,3 +367,5 @@ int main(int argc, char **argv) {
     if (!g_fail) printf("full-grad: ok\n");
     return g_fail;
 }
+
+/* R6.29 CI selection probe: no test behavior change. */
