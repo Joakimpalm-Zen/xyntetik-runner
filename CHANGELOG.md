@@ -5,6 +5,24 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **CUDA: tensor-core prefill on spark2_5 for Q4_K and Q6_K, measured (R3.39.2).** XHToken's Spark-X2.5-4B Q4_K_M
+  prefills 9.48x faster (203 to 1,927 tok/s at 1,635 tokens, 5 of 5 pairs) and reads the same against
+  XHToken/Spark-X2.5-4B in float32 on 2,000 positions: mean KLD ratio 0.9995 (CI [0.9981, 1.0007], Wilcoxon p 0.115),
+  margin-qualified top-1 95.01% against 94.95%. The promotion covers exactly the two types the file exercised.
+  `RUNNER_CUDA_TC=0` still holds the default route.
+  - **Not promoted, and why:**
+    - **clef** read 1.0001 (CI [0.9991, 1.0011]) at 15.4x. It is held off by the declared rule (a ratio of 1.0 or
+      less) pending a ruling on that rule.
+    - **k2-horizon and stablelm** run on the CPU on a CUDA build (grouped RMSNorm, LayerNorm), so they have no device
+      route to promote.
+  - **A CUDA record of a spark2_5 Q4_K or Q6_K model made by an earlier binary** replays on this one through the
+    tensor cores, as after any promotion. Its route label reads the same, so the token replay is what tells the two
+    apart.
+  - **Checks:** `tests/test_tc_spark_promotion.py` (CUDA), on the receipt's tensor-core GEMM counts:
+    - a wide spark2_5 fixture's Q4_K takes the tensor cores by default and its Q5_0 rows do not;
+    - `RUNNER_CUDA_TC=0` takes none;
+    - a narrow fixture with only Q5_0 takes none.
+
 - **Fix: `runner recommend` lists a file that sits in a folder of its repository (R10.28).** #690 left such files out
   on the belief that `-hf REPO:STEM` names only top-level files. It does not: `-hf` matches the base name and fetches
   the listing's full path (`resolve/main/merged/merged-Q8_0.gguf`). The skip came from Dojo's picker, which built the

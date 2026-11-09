@@ -4530,6 +4530,26 @@ static bool tc_promoted(const model_t *m, int type) {
                                    "apertus", "nemotron_h", "granitehybrid" };
     for (size_t i = 0; i < sizeof(archs) / sizeof(*archs); i++)
         if (strcmp(m->arch, archs[i]) == 0) return true;
+    // R3.39.2 (a): promoted for exactly the types its row's file exercised, on
+    // a float32-reference row (2,000 positions of gold-corpus-2k, chunked
+    // prefill, TC against the default route) and a speed row.
+    //   spark2_5  XHToken Spark-X2.5-4B Q4_K_M (Q4_K, Q6_K), against
+    //             XHToken/Spark-X2.5-4B@0bcb3567 in float32 (transformers 4.57.1,
+    //             the version its code targets): mean KLD ratio 0.9995, CI
+    //             [0.9981, 1.0007], Wilcoxon p 0.115; margin-qualified top-1
+    //             95.01% against 94.95%; prefill 203 -> 1,927 tok/s (9.48x)
+    // clef read 1.0001 (CI [0.9991, 1.0011]) at 15.4x and stays off under the
+    // declared rule (ratio 1.0 or less) until the owner rules on it;
+    // k2-horizon and stablelm run on the CPU on a CUDA build (grouped RMSNorm,
+    // LayerNorm), so they have no device route to promote.
+    static const struct { const char *arch; int types[3]; } scoped[] = {
+        { "spark2_5", { T_Q4_K, T_Q6_K, -1 } },
+    };
+    for (size_t i = 0; i < sizeof(scoped) / sizeof(*scoped); i++) {
+        if (strcmp(m->arch, scoped[i].arch) != 0) continue;
+        for (int k = 0; k < 3 && scoped[i].types[k] >= 0; k++)
+            if (scoped[i].types[k] == type) return true;
+    }
     return false;
 }
 
