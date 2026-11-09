@@ -10496,6 +10496,11 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     else if (m->n_expert > 0 && m->n_expert_groups > 1) r = "group-limited MoE routing";
     else if (m->n_expert > 0 && m->ffn_relu2) r = "gate-less MoE experts";
     else if (m->kv_q8) r = "q8 KV cache (use --kv f16)";
+    // the backward reads K and V rows as f16 (attn_bw_p1 and the recompute):
+    // k8v4 and fp4 caches reached it and their blocks were read as f16, a
+    // non-finite gradient at step 1 (Qwen3-0.6B, main 5dba42b)
+    else if (m->kv_split) r = "k8v4 KV cache (use --kv f16)";
+    else if (m->kv_fp4) r = "fp4 KV cache (use --kv f16)";
     else if (m->ffn_act == ACT_SWIGLU_OAI || m->ffn_act == ACT_XIELU)
         r = "FFN activation not in the backward (gpt-oss/apertus)";
     else if (m->attn_gate_heads)
@@ -11231,7 +11236,7 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         attn_job aj = { m, kc_l, vc_l, qt, ao + (size_t)t * q_dim, t,
                        attn_window_start(swa, t),
                        hd, kv_dim, k_row_b, v_row_b, 0,
-                       0, 0, scale, NULL, false, NULL, l };
+                       model_kv_kind_k(m), model_kv_kind_v(m), scale, NULL, false, NULL, l };
         attn_run(m, &aj, n_head);
         if (gate) {
             // sigmoid gate applied element-wise to the attention output
