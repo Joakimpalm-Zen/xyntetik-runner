@@ -7,8 +7,9 @@ read by row (`resident_bytes` in the roster). The command reads no heads and mak
 request: a listing command stays offline.
 
 Absolute anchor: Dojo's own implementation (tools/runner-start.sh, which fetches each file's first
-16 MiB and asks `runner --fit`) listed these 15 files on an 8 GiB machine at half its RAM, largest
-resident first, on 2026-11-04. The committed roster, read offline, must give the same list.
+16 MiB from the Hub and asks `runner --fit`) listed these 16 files on an 8 GiB machine at half its RAM,
+largest resident first, on 2026-11-09, with R10.28's fix (a file in a repository folder fetched by its
+path). The committed roster, read offline, must give the same list.
 """
 import json
 import pathlib
@@ -18,7 +19,7 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GIB = 1 << 30
-DOJO_8GIB = ["ministral-3-3b-instruct-2512-q8_0", "spark-x2.6-4b-q4_k_m",
+DOJO_8GIB = ["qwen3-4b-runner-tooluse-merged-q8_0", "ministral-3-3b-instruct-2512-q8_0", "spark-x2.6-4b-q4_k_m",
              "nemotron-3.5-bolt-e4b-q4_k_m", "minicpm5-2b-q8_0", "spark-x2.5-4b-q4_k_m",
              "qwen3-4b-q4_k_m-bartowski", "ministral-3-3b-instruct-2512-q4_k_m",
              "minicpm5-2b-q4_k_m", "gemma-4-e2b-it-q4_k_m-q4_0-mix", "lfm2.5-1.2b-instruct-q8_0",
@@ -91,11 +92,11 @@ def test_a_memory_cap_changes_the_list(runner_bin, roster):
     rc, out8, err = _recommend(runner_bin, "--roster", str(roster), "--memory", "8")
     assert rc == 0, err
     # 4 GiB is half of 8: the 7 GiB file is over it; the row-gathered one counts its hot set
-    assert _ids(out8) == ["split", "mid-owed", "gathered", "small-measured"], out8
+    assert _ids(out8) == ["split", "mid-owed", "gathered", "small-measured", "in-a-folder"], out8
     rc, out4, err = _recommend(runner_bin, "--roster", str(roster), "--memory", "4")
     assert rc == 0, err
-    # 2 GiB: only the 1 GiB file is left; the 6 and 7 GiB files are larger than the RAM
-    assert _ids(out4) == ["small-measured"], out4
+    # 2 GiB: only the 1 and 0.5 GiB files are left; the 6 and 7 GiB files are larger than the RAM
+    assert _ids(out4) == ["small-measured", "in-a-folder"], out4
     assert "of 8.00 GiB" in out8 and "of 4.00 GiB" in out4
 
 
@@ -111,9 +112,11 @@ def test_the_share_moves_the_bar(runner_bin, roster):
 def test_what_the_entries_say(runner_bin, roster):
     rc, out, err = _recommend(runner_bin, "--roster", str(roster), "--memory", "8")
     assert rc == 0, err
-    for gone in ("planned", "vision-only", "nested", "in-a-folder", "not-gguf", "no-files", "big"):
+    for gone in ("planned", "vision-only", "nested", "not-gguf", "no-files", "big"):
         assert gone not in _ids(out), (gone, out)
     e = _entries(out)
+    # R10.28: a file in a folder of its repository is listed, by the spelling -hf resolves
+    assert "-hf org/folder:folder" in e["in-a-folder"], e["in-a-folder"]
     owed = e["mid-owed"]
     assert "unmeasured" in owed, owed
     measured = e["small-measured"]

@@ -2846,7 +2846,7 @@ its cgroup memory limit leaves, not the host's.
 `recommend` (`runner recommend`) lists the model files of
 [the support list](docs/model-support.md) that fit this machine, largest resident
 weights first, and makes no network request. A candidate is a listed text model in one
-`.gguf` file at its repository's top level, no larger than the RAM. It fits when its
+`.gguf` file, no larger than the RAM. It fits when its
 resident weights are within a share of the RAM, half by default (`--ram-share F`).
 Resident means the whole file, or, for a file whose per-layer token table is read by
 row (Gemma E-series), the hot set `--info fit` reports. The rule is the one the Dojo
@@ -2860,7 +2860,10 @@ model picker applies, so the two give the same list. Each entry gives:
 
 ```
 $ runner recommend --memory 8
-recommend: 23 listed files are no larger than 8.00 GiB, the --memory figure; 15 keep their resident weights within 4.00 GiB, 0.5 of 8.00 GiB. Largest first:
+recommend: 24 listed files are no larger than 8.00 GiB, the --memory figure; 16 keep their resident weights within 4.00 GiB, 0.5 of 8.00 GiB. Largest first:
+  3.99 GiB  qwen3-4b-runner-tooluse-merged-q8_0  -hf Joakimpalm-Zen/Qwen3-4B-Runner-ToolUse-Q4_K_M:merged-Q8_0
+      measured: Family: Qwen3-4B bf16 against Qwen's float32 reference, 100% margin-qualified top-1 (...)
+      docs/model-support.md#qwen3-4b-runner-tooluse-merged-q8_0
   3.40 GiB  ministral-3-3b-instruct-2512-q8_0  -hf mistralai/Ministral-3-3B-Instruct-2512-GGUF:Ministral-3-3B-Instruct-2512-Q8_0
       measured: Both files against Mistral AI's BF16 weights computed in float32 on the CPU (...)
       docs/model-support.md#ministral-3-3b-instruct-2512-q8_0
