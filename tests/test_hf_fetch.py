@@ -281,3 +281,33 @@ def test_a_multipart_file_in_a_folder_keeps_its_folder(runner_bin, hub):
     assert [c[-1] for c in resolve_calls(hub["log"])] == [
         f"https://huggingface.co/fake/repo/resolve/main/IQ3_S/model-IQ3_S-0000{k}-of-00002.gguf"
         for k in (1, 2)]
+
+
+def test_a_file_in_a_repository_folder_is_fetched_by_its_path(runner_bin, hub):
+    """R10.28: a listed file can sit in a folder of its repository (the Qwen3-4B tool-use repo keeps
+    merged/merged-Q8_0.gguf beside study/ adapters, as its Hub listing showed on 2026-11-09). The
+    tag matches the base name, and the transfer keeps the folder: resolve/main/merged/<file>."""
+    sub = hub["dir"] / "merged"
+    sub.mkdir()
+    model = sub / "merged-Q8_0.gguf"
+    model.write_bytes((hub["dir"] / "model-Q8_0.gguf").read_bytes())
+    (hub["dir"] / "study").mkdir()
+    adapter = hub["dir"] / "study" / "adapter-trained-through-Q8_0.gguf"
+    adapter.write_bytes(b"not fetched")
+    sib = lambda rf, p: {"rfilename": rf, "size": p.stat().st_size,
+                         "lfs": {"sha256": sha256(p), "size": p.stat().st_size}}
+    (hub["dir"] / "files.json").write_text(json.dumps({"siblings": [
+        {"rfilename": "README.md", "size": 10},
+        sib("merged/merged-Q8_0.gguf", model),
+        sib("study/adapter-trained-through-Q8_0.gguf", adapter),
+    ]}))
+    r = run(runner_bin, hub["env"], "-hf", "fake/repo:merged-Q8_0", "-p", "hi", "-n", "2",
+            "--temp", "0")
+    assert r.returncode == 0, r.stderr
+    assert [c[-1] for c in resolve_calls(hub["log"])] == [
+        "https://huggingface.co/fake/repo/resolve/main/merged/merged-Q8_0.gguf"]
+    cached = [p for p in (hub["cache"] / "fake--repo").rglob("*merged-Q8_0.gguf")]
+    assert len(cached) == 1 and sha256(cached[0]) == sha256(model), cached
+    # the folder's other Q8_0 file is a second match for the short tag, so it is named, not guessed
+    r = run(runner_bin, hub["env"], "-hf", "fake/repo:Q8_0", "-p", "hi", "-n", "2")
+    assert r.returncode != 0 and "merged-Q8_0.gguf" in r.stderr, r.stderr

@@ -5,18 +5,27 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: `runner recommend` lists a file that sits in a folder of its repository (R10.28).** #690 left such files out
+  on the belief that `-hf REPO:STEM` names only top-level files. It does not: `-hf` matches the base name and fetches
+  the listing's full path (`resolve/main/merged/merged-Q8_0.gguf`). The skip came from Dojo's picker, which built the
+  URL from the bare name and got a 404; Dojo now fetches by the roster's `path`. The Qwen3-4B tool-use merged Q8_0
+  (3.99 GiB) is listed at 8 GiB again.
+  - **Checks:** `tests/test_hf_fetch.py` fetches a folder file from a fake hub shaped like that repository: the
+    URL keeps the folder, and the short tag that also matches a `study/` adapter is refused with both named.
+    `tests/test_recommend.py`'s anchor is now the 16 files Dojo's fixed picker listed on an 8 GiB machine.
+
 - **`runner recommend` (`--info recommend`): the listed model files that fit this machine (R10.25).** Largest resident
   weights first, each with the `-hf` spelling to run it, its fidelity line (`measured` with the first sentence of its
   numerical anchor, or `unmeasured` with why) and its entry in docs/model-support.md. It makes no network request:
   the list comes from the roster built into the binary (`src/model_roster.h`, rendered from docs/model-tiers.json by
   `scripts/model-tiers.py --write-docs` and held fresh by `--docs-check`). `--roster FILE` reads another copy,
   `--memory GIB` plans for another machine and `--ram-share F` (default 0.5) moves the bar.
-  - The rule is the Dojo model picker's: a listed text model in one top-level `.gguf`, no larger than the RAM, whose
+  - The rule is the Dojo model picker's: a listed text model in one `.gguf`, no larger than the RAM, whose
     resident weights fit within the share. Resident means the whole file, or the `--info fit` hot set for a file
     whose per-layer token table is read by row. That hot set is the new `files[].resident_bytes`, recorded from
     `runner --fit` by `scripts/model-tiers.py --record-resident` (Nemotron-3.5-Bolt-E4B and the gemma-4-E2B mix).
   - **Checks:** `tests/test_recommend.py`: on a fixture roster a memory cap and the share change the list, and the
-    excluded shapes stay out. Absolute anchor: at 8 GiB the committed roster gives the 15 files Dojo's own run listed
+    excluded shapes stay out. Absolute anchor: at 8 GiB the committed roster gives the files Dojo's own run listed (16 since R10.28)
     on an 8 GiB machine. `tests/test_model_tiers.py` covers the recorder, the field's validation and the snapshot.
 - **`runner train --full`: full-weight training of an F32 file into a variant (R8.25.2.2).** Every dense projection
   (attn q/k/v/o, ffn gate/up/down) gets an f32 master with AdamW state, in place of an adapter. `--out` is a variant:

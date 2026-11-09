@@ -1841,8 +1841,9 @@ static int run_fit_check(const char *path, int n_ctx_want,
 // --info recommend (runner recommend, R10.25): the listed model files that fit
 // this machine, by Dojo's rule (tools/runner-start.sh), so the two never
 // disagree. A candidate is a listed text file (the roster's rows other than
-// the planned ones), one .gguf at the repository's top level, no larger than
-// the RAM. It fits when its resident weights are within a share of the RAM
+// the planned ones), one .gguf (in a folder of its repository or not: -hf
+// REPO:STEM matches the base name and keeps the folder), no larger than the
+// RAM. It fits when its resident weights are within a share of the RAM
 // (half by default): the whole file, or the fit report's hot set for a file
 // whose token table is read by row (files[].resident_bytes, recorded from
 // `runner --fit` by scripts/model-tiers.py --record-resident). Largest
@@ -1935,10 +1936,6 @@ static int run_recommend(const char *roster_path, double memory_gib, double shar
         const char *repo = jv_str(jv_get(f0, "repo"), ""), *name = jv_str(jv_get(f0, "name"), "");
         size_t nl = strlen(name);
         if (!*repo || nl < 6 || strchr(name, '/') || strcmp(name + nl - 5, ".gguf")) continue;
-        // a file in a folder of its repository (files[].path) is not at the
-        // top level: Dojo's fetch of resolve/main/NAME finds nothing for it
-        // and skips it, and -hf REPO:STEM names top-level files
-        if (strchr(jv_str(jv_get(f0, "path"), ""), '/')) continue;
         uint64_t total = 0;
         bool ok = true;
         for (int k = 0; k < files->n; k++) {
