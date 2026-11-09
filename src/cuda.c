@@ -4598,6 +4598,31 @@ static bool tc_promoted(const model_t *m, int type) {
                                    "apertus", "nemotron_h", "granitehybrid" };
     for (size_t i = 0; i < sizeof(archs) / sizeof(*archs); i++)
         if (strcmp(m->arch, archs[i]) == 0) return true;
+    // R3.39.2 (a): promoted for exactly the types its row's file exercised, on
+    // a float32-reference row (2,000 positions of gold-corpus-2k, chunked
+    // prefill, TC against the default route) and a speed row.
+    //   spark2_5  XHToken Spark-X2.5-4B Q4_K_M (Q4_K, Q6_K), against
+    //             XHToken/Spark-X2.5-4B@0bcb3567 in float32 (transformers 4.57.1,
+    //             the version its code targets): mean KLD ratio 0.9995, CI
+    //             [0.9981, 1.0007], Wilcoxon p 0.115; margin-qualified top-1
+    //             95.01% against 94.95%; prefill 203 -> 1,927 tok/s (9.48x)
+    //   clef      ggml-org Clef-Flash Q4_K_M (Q8_0, Q4_K), against
+    //             Cloudflare/clef-flash@fb4417d3 in float32: mean KLD ratio
+    //             1.0001, CI [0.9991, 1.0011], Wilcoxon p 0.452; margin-qualified
+    //             top-1 95.13% against 94.99%, McNemar 2 to 0 for the tensor
+    //             cores (p 0.5); prefill 102 -> 1,566 tok/s (15.4x). Within the
+    //             obligation below (mean KL within 1.01x, not worse at p < 0.05).
+    // k2-horizon and stablelm run on the CPU on a CUDA build (grouped RMSNorm,
+    // LayerNorm), so they have no device route to promote.
+    static const struct { const char *arch; int types[3]; } scoped[] = {
+        { "spark2_5", { T_Q4_K, T_Q6_K, -1 } },
+        { "clef",     { T_Q4_K, T_Q8_0, -1 } },
+    };
+    for (size_t i = 0; i < sizeof(scoped) / sizeof(*scoped); i++) {
+        if (strcmp(m->arch, scoped[i].arch) != 0) continue;
+        for (int k = 0; k < 3 && scoped[i].types[k] >= 0; k++)
+            if (scoped[i].types[k] == type) return true;
+    }
     return false;
 }
 
@@ -4636,6 +4661,23 @@ static bool tc_on(const model_t *m, int type) {
     if (st >= 0) return st != 0;
     return tc_promoted(m, type);
 }
+
+// Whether the default (RUNNER_CUDA_TC unset) takes the tensor cores for any
+// weight matrix of this model: the route line's "tc=taken", else "tc=off". It
+// read "tc=promoted" for every non-MoE architecture before, listed or not, so
+// an unpromoted model's line and its records claimed a tensor-core prefill that
+// never ran; --verify reads that older word as "not recorded" (main.c).
+static bool tc_default_takes(const model_t *m) {
+    for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
+        const gguf_tensor *t = &m->gf.tensors[i];
+        if (t->n_dims == 2 && tc_promoted(m, t->type)) return true;
+    }
+    return false;
+}
+
+// The route's tensor-core policy for one weight type, the overrides included:
+// what a record's profile.route.tc_types lists (model_route_receipt_json).
+bool gpu_tc_takes(const model_t *m, int type) { return m && tc_on(m, type); }
 
 // Said once at load (R4.12.28): a codebook i-quant on an architecture whose
 // tensor-core prefill is not promoted has only the scalar batched kernel,
@@ -9705,7 +9747,8 @@ const char *gpu_route_detail(const model_t *m) {
              "window=%d tc_cols=%d%s%s%s",
              g->graph_bad ? "off" : g->gexec[0] || g->gexec[1] ? "replay" : "none",
              g_tc_state < 0 || moe_tc_family(m)
-                 ? (moe_tc_family(m) ? (tc_on(m, T_Q4_K) ? "moe-tc" : "off") : "promoted")
+                 ? (moe_tc_family(m) ? (tc_on(m, T_Q4_K) ? "moe-tc" : "off")
+                                     : tc_default_takes(m) ? "taken" : "off")
                  : g_tc_state ? "forced" : "off",
              g_tc_state >= 0 || tc_nvfp4_env() < 0 ? "" : tc_nvfp4_env() ? "+nvfp4" : "-nvfp4",
              !g->xh ? "off" : g->sw->mod80 ? "on-sm80" : "on",
