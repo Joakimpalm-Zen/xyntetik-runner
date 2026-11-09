@@ -5,6 +5,15 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Fix: LoRA training with `--kv k8v4` or `--kv fp4` is refused, where it failed at step 1.** The training backward reads
+  K and V rows as f16. `--kv q8` was refused, but k8v4 and fp4 reached the backward, and their blocks were read as f16.
+  On Qwen3-0.6B both runs stopped at step 1 with "the loss or a gradient is not finite", caught only because the
+  garbage was not finite. Both are now refused by name, as q8 is: `training does not cover this model yet: k8v4 KV
+  cache (use --kv f16)`, and likewise for fp4.
+  - The layer backward's attention recompute now passes the model's cache kinds instead of a literal f16. These are f16
+    in every case training admits, so the bytes are unchanged.
+  - **Checks:** `tests/test_train_kv_refusal.py`, on a wide-head fixture where each cache type is really taken.
+
 - **`runner derive --target-size` with `--imatrix` plans a whole file (R4.34.2).** llama.cpp's imatrix has no entry for
   `output` or `token_embd` unless it was run with `--process-output`, so those two tensors' errors were unweighted
   beside the weighted rest, and the planner refused the mix. A candidate the matrix does not cover is now held at the
