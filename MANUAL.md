@@ -2652,6 +2652,24 @@ most of a window is accepted). The same holds for `--draft mtp` and `--draft loo
 /v1/capabilities` reports whether the draft is actually `active`, so a harness never
 measures the fallback as speculative decoding.
 
+#### Grammar fast-forward: `RUNNER_GRAMMAR_FF`
+
+`RUNNER_GRAMMAR_FF=1` or `on` proposes tokens from byte runs pinned by an active
+JSON or JSON-Schema constraint. It is **identity-class**: these are drafts,
+not unconditional output. Every token is sampled from the constrained target's
+logits through the exact speculative verification route described above, so
+both token IDs and output bytes match plain constrained decoding, including
+seeded sampling. Unconstrained prose never engages this path; logprob and
+choice-logprob capture exclude it. Other values, including `0`, leave it off.
+
+It remains opt-in. On an Apple M1, SmolLM2-135M-Instruct Q8_0, three alternating
+pairs per case, a two-field object read 1.097x plain throughput on CPU and 0.936x
+on Metal, while a pinned-string schema read 0.557x and 0.316x. A pinned byte run
+can have several tokenizations: rejected proposals still pay for target rows.
+The CPU gains on one schema do not establish a default for the model, and the
+Metal verifier runs rows as solo decode steps. [Class audit and per-run
+evidence](docs/compat-reports/r3.39.5-grammar-ff-2026-11-09/README.md).
+
 <a id="cli-mtp"></a>
 #### `--draft mtp`
 

@@ -5,6 +5,13 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Grammar fast-forward is identity-class and remains opt-in (R3.39.5).**
+  Its constrained target verification preserves token IDs and bytes. A bounded
+  SmolLM2-135M Q8_0 check found a CPU gain on one schema and large regressions
+  on another, so there is no default promotion. The grammar gate now initializes
+  the fp16 lookup table, checks it against IEEE 754 binary16 1.0, and compares
+  token IDs and sampler RNG as well as output bytes on greedy and seeded
+  constrained runs. Unconstrained prose stays on the plain path.
 - **Fix: LoRA training with `--kv k8v4` or `--kv fp4` is refused, where it failed at step 1.** The training backward reads
   K and V rows as f16. `--kv q8` was refused, but k8v4 and fp4 reached the backward, and their blocks were read as f16.
   On Qwen3-0.6B both runs stopped at step 1 with "the loss or a gradient is not finite", caught only because the

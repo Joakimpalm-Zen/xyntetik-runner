@@ -250,6 +250,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       <div class="card">
         <h3>Speculative decoding from four draft sources</h3>
         <p>A draft model, an n-gram lookup, the model's own MTP head where a single-block export carries one (<code>--draft mtp</code>, token-identical, measured 1.31x on code on a Threadripper; the gain depends on the machine, and both measurements are published), and context-grounded drafts that need no weights at all.</p>
+        <p><code>RUNNER_GRAMMAR_FF=1</code> drafts grammar-pinned tokens under JSON constraints with the plain path's token IDs and bytes. It stays opt-in: the measured cost depends on the schema. <a href="https://github.com/Joakimpalm-Zen/xyntetik-runner/blob/main/docs/compat-reports/r3.39.5-grammar-ff-2026-11-09/README.md">Class and measurements</a>.</p>
       </div>
       <div class="card">
         <h3>Structured output as a sampler guarantee</h3>
