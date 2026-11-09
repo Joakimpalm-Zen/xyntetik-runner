@@ -430,6 +430,8 @@ bigger validation runs and on immediate need.
   [Details](MANUAL.md#desktop-tray)
 - **Draft decoding.** `--draft small.gguf`, `--draft mtp`, `--draft mtp:head.gguf`
   (a NextN/MTP head shipped as a companion file) or `--draft lookup`.
+  `RUNNER_GRAMMAR_FF=1` also drafts grammar-pinned tokens under JSON constraints;
+  it preserves the plain path's tokens and stays opt-in because its cost depends on the schema.
   [Details](MANUAL.md#runtime-and-hardware)
 - **Pause and resume a generation.** Session images with `--sessions DIR`.
   [Details](docs/session-images.md)

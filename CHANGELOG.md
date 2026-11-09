@@ -5,6 +5,14 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Grammar fast-forward is identity-class and remains opt-in (R3.39.5).**
+  Its constrained target verification preserves token IDs and bytes. A bounded
+  SmolLM2-135M Q8_0 check found a CPU gain on one schema and large regressions
+  on another, so there is no default promotion. The grammar gate now initializes
+  the fp16 lookup table, checks it against IEEE 754 binary16 1.0, and compares
+  token IDs and sampler RNG as well as output bytes on greedy and seeded
+  constrained runs. Unconstrained prose stays on the plain path.
+
 - **`runner derive --target-size` with `--imatrix` plans a whole file (R4.34.2).** llama.cpp's imatrix has no entry for
   `output` or `token_embd` unless it was run with `--process-output`, so those two tensors' errors were unweighted
   beside the weighted rest, and the planner refused the mix. A candidate the matrix does not cover is now held at the
