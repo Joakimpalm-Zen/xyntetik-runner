@@ -2480,7 +2480,9 @@ Use `--sizes-only` for a fast metadata-only inventory: `sha256` is then
 `null` and `hash_status` is `not_requested`.
 
 Regular `.gguf` files are listed, including projectors (`auxiliary: true`),
-with repository subfolders preserved. `.part` downloads and directory/file
+with repository subfolders preserved. Traversal is limited to 128 nested
+directory levels under each repository; deeper directories produce an error.
+`.part` downloads and directory/file
 symlinks (Windows reparse points) are skipped. Multipart files form one entry
 with the first-part path, the sum of present component sizes, the numeric
 component order, `parts_expected`, and `complete`. Missing first or later parts
@@ -2497,7 +2499,8 @@ Each model has `path`, `repo` (nullable), `cache_dir`, `size_bytes`, `complete`,
 There is no synthetic digest for a multipart model.
 
 Optional `listed_sha256`, `listed_size_bytes`, and `listing_match` compare
-against `.files.json`, the last cached Hub listing. They are nullable; a match
+against `.files.json`, the last cached Hub listing (read only when it is a
+regular file no larger than 8 MiB). They are nullable; a match
 is an **offline comparison**, not a fresh Hub verification. A stale, missing,
 or malformed listing never hides actual files and is never repaired here.
 The directory spelling `owner--repo` is ambiguous when either component
