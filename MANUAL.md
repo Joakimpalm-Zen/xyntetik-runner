@@ -4918,9 +4918,12 @@ counted, and `forced_close` saying whether the cap actually closed a turn.
 `forced_close` is the fact a caller needs to read a short trace correctly, and
 `finish_reason` is untouched: the turn did not end here.
 
-POST /v1/decide (R13.10) scores caller-supplied option strings as verbatim
+### Typed decisions (`/v1/decide`)
+
+POST /v1/decide scores caller-supplied option strings as verbatim
 continuations of a prefilled state with zero tokens sampled: each option's
-log-probability is the product of its in-context token conditionals, and
+probability is the product of its in-context token conditionals, so its
+log-probability is their sum, and
 `probs` is the softmax over the given options only (the exact contract is
 `src/decide.h` and `src/decide.c`, shared by the server route and
 `--decide FILE`). Two renderings, chosen per request and stamped in the
@@ -4931,7 +4934,76 @@ which is the loglikelihood readout a benchmark harness wants (HellaSwag,
 ARC, PIQA, WinoGrande and non-CoT MMLU all score an ending after its
 context; the sum of conditionals is lm-eval's `acc`, and `acc_norm` follows
 from the ending's length client-side). Under `continuation-v1` the question
-is a label only and `answer_prefix` is refused. `scripts/decide-calibrate.py` turns a labeled question
+is a label only and `answer_prefix` is refused.
+
+A successful response has `object: "decide"` and one `decisions` entry per
+question. In each entry, these arrays stay in the caller's option order:
+
+| Field | Meaning |
+|---|---|
+| `id` | The question id, or its zero-based position as a string when omitted. |
+| `options` | The verbatim option strings that were scored. |
+| `logprobs` | Raw natural-log probabilities of the **whole options**, tokenized in context; printed with up to nine significant digits. They are sums of token log probabilities, with no per-token length normalization and no renormalization over the option list. |
+| `probs` | `softmax(logprobs)` over this question's supplied options only; printed with up to six significant digits. These are relative option preferences, not full-vocabulary probabilities or a calibrated probability that an answer is correct. |
+| `argmax` | Zero-based index of the largest option score; an exact tie chooses the first option. |
+| `n_tokens` | Number of scored tokens for each option. A tokenizer merge at the prompt/option boundary is included in that option's scored suffix. |
+
+The response also carries `usage` (`completion_tokens` is zero) and an
+`envelope` naming the rendering and the state/question digests. No token is
+sampled to choose an option.
+
+#### Option mass
+
+The normalization in `probs` hides how much probability the original model
+assigned to the supplied strings. Recover their **option mass** from the raw
+scores:
+
+```text
+mass = sum(exp(lp) for lp in logprobs)
+probs[i] = exp(logprobs[i]) / mass
+```
+
+For example, this decision entry was read from the generated uniform
+259-token CPU fixture, with two single-token options:
+
+```json
+{"id":"q","options":["a","b"],
+ "logprobs":[-5.55682806,-5.55682806],"probs":[0.5,0.5],
+ "argmax":0,"n_tokens":[1,1]}
+```
+
+Its mass is approximately `0.007722`, or `2/259`, although the returned
+`probs` sum to one. A mass of `0.14`, `0.010`, or below `0.001` means that
+these strings receive a summed likelihood of 14%, 1%, or below 0.1% before
+option-list normalization. A high winning `probs` value can therefore coexist
+with little absolute support for the offered wordings. Small mass can expose
+a poor choice of labels or prompt rendering; it is not by itself a calibrated
+uncertainty estimate, nor proof that the underlying task is unanswerable.
+
+This interpretation as probability of any listed option requires disjoint
+option events. If one option extends another (for example `"a"` and `"ab"`),
+their continuation events overlap: the sum still gives the documented score
+mass, but it double-counts the overlap and need not be at most one. No
+implicit end-of-option token makes such strings disjoint. Prefer mutually
+exclusive labels when treating mass as coverage.
+
+No separate `mass` field is emitted; it is derivable from `logprobs`. For
+ordinary values, use `math.fsum(math.exp(lp) for lp in decision["logprobs"])`.
+For very negative scores, retain the stable log mass instead of underflowing:
+
+```python
+import math
+
+scores = decision["logprobs"]
+a = max(scores)
+log_mass = a + math.log(math.fsum(math.exp(lp - a) for lp in scores))
+```
+
+Calculations from returned scores are approximate because of serialization
+rounding; the server computes `probs` from its unrounded scores. The fixture
+illustrates the response contract, not a claim about a real model's calibration.
+
+`scripts/decide-calibrate.py` turns a labeled question
 set (one JSON object per line: `state`, `question`, `options`, `answer` as
 an index or a distribution, `source`, `permutation_group`, `variant`) into
 a calibration report against that endpoint: accuracy, multi-class Brier
