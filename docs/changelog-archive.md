@@ -1,11 +1,11 @@
 # Changelog archive
 
-Releases v1.11.0 and earlier, copied verbatim from the root changelog.
+Releases v1.11.0 and earlier, verbatim except four Apple M1 chip-label clarifications.
 See the [current changelog](../CHANGELOG.md) for Unreleased and v1.12.0 onward.
 
 The historical entries retain their original repository-root-relative link
 spellings. Working links to those documents from this archive are provided
-here so the historical text itself stays unchanged:
+here so the historical link spellings themselves stay unchanged:
 
 - [docs/compat-reports/1.6.1-2026-10-25-macos-arm64-gemma-4-e4b-it-qat-q4_0.json](compat-reports/1.6.1-2026-10-25-macos-arm64-gemma-4-e4b-it-qat-q4_0.json)
 - [docs/decision-record.md](decision-record.md)
