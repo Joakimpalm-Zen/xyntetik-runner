@@ -4,8 +4,9 @@
 // The read copy of an F32 model is the master itself, so perturbing the
 // tensor's bytes perturbs the trained weight. Three directional derivatives:
 // a seeded random direction over every trained matrix, a second seed, and one
-// matrix alone (layer 1's ffn_down). Each must agree with <dL/dW, V> to a
-// relative 1e-3. The dense gradient's DETERMINISM is pinned too (two
+// matrix alone (the last layer's ffn_down). Each must agree with <dL/dW, V> to
+// a relative 1e-3 at the best step of a sweep (see directional() for why one
+// fixed step is not a portable grade). The dense gradient's DETERMINISM is pinned too (two
 // backwards, byte-identical gradients and a bit-equal loss), that the forward
 // reads the master itself after a step (what the variant ships), and that a
 // Q8_0 file is refused (no Q8 read copy: R8.25.2.2's Gate B found it no better
@@ -73,7 +74,26 @@ static model_t load(const char *path) {
 }
 
 // <G, V> and the central difference of the loss along V, for V over the
-// sites `only` selects (-1: all)
+// sites `only` selects (-1: all).
+//
+// A central difference at step eps carries two errors: truncation, which falls
+// as eps^2, and the f32 forward's rounding, which is a roughly fixed absolute
+// error in the loss divided by eps. Measured at eps 1e-3 over each matrix alone
+// (R6.28, 2026-11-09), that rounding term is 3e-4 to 4e-3 in absolute terms
+// whatever the matrix, so the RELATIVE error is that floor over |<G,V>|: an
+// attention matrix (|<G,V>| near 0.07) reads 5e-3, the last ffn_down (0.75)
+// read 3.7e-4 with gcc 13.3 on Linux, 4.6e-4 on macOS and 1.10e-3 with MinGW
+// gcc on Windows, where the reduction order and contraction differ. A fixed
+// eps with a fixed relative bound therefore graded the platform's rounding,
+// not the gradient. The graded directions sweep the step instead, from where
+// truncation shows (1e-2) down into the rounding regime (1e-4), and grade at
+// the step where the central difference is most STABLE: the smallest change to
+// the next step down, where truncation and rounding balance. That choice reads
+// the finite differences only, never <G,V>, so a wrong gradient cannot pick the
+// step that hides it. (The best agreement over the sweep would: a 0.2% bias on
+// the last ffn_down's gradient met the rounding noise at eps 3e-4 and read
+// 1.9e-4.) The stability there is the measured noise floor: it must resolve
+// half of A1's 1e-3, and the agreement at that step must be within 1e-3.
 static void directional(model_t *m, const int32_t *toks, float **g, uint64_t seed,
                         int only_layer, int only_slot, const char *what) {
     float *v[64][NS];
@@ -96,8 +116,11 @@ static void directional(model_t *m, const int32_t *toks, float **g, uint64_t see
             }
         }
     const char *scan = getenv("RUNNER_TEST_FD_SCAN");
+    bool graded = g_kv_f32 && g_grade;
+    // eps_list[0] is the fixed step of the printed reading; a graded direction
+    // (or RUNNER_TEST_FD_SCAN) takes the whole sweep
     float eps_list[] = { 1e-3f, 1e-2f, 3e-3f, 3e-4f, 1e-4f, 3e-5f };
-    int n_eps = scan ? 6 : 1;
+    int n_eps = scan ? 6 : graded ? 5 : 1;
     double fd_at[6] = { 0 };
     for (int e = 0; e < n_eps; e++) {
     const float eps = eps_list[e];
@@ -126,12 +149,31 @@ static void directional(model_t *m, const int32_t *toks, float **g, uint64_t see
             free(v[l][k]);
             free(w0[l][k]);
         }
+    double ad = fabs(d) > 1e-12 ? fabs(d) : 1e-12;
     double fd = fd_at[0];
-    double rel = fabs(fd - d) / (fabs(d) > 1e-12 ? fabs(d) : 1e-12);
-    printf("full-grad: reading, %s: <G,V> %.6g, central difference %.6g, relative %.2e\n", what, d, fd, rel);
+    double rel = fabs(fd - d) / ad;
+    printf("full-grad: reading, %s: <G,V> %.6g, central difference %.6g at eps %.0e, relative %.2e "
+           "(absolute %.2e)\n", what, d, fd, (double)eps_list[0], rel, fabs(fd - d));
     // with an f32 KV cache (--train-kv-f32) there is no f16 staircase, and the
-    // declared A1 (1e-3 at eps 1e-3 along a random direction) is graded
-    if (g_kv_f32 && g_grade) CHECK(rel <= 1e-3, "%s: the directional derivative misses (relative %.2e)", what, rel);
+    // declared A1 (1e-3 along a random direction) is graded at the best step
+    if (graded) {
+        // the sweep from the largest step down: 1e-2, 3e-3, 1e-3, 3e-4, 1e-4
+        static const int order[5] = { 1, 2, 0, 3, 4 };
+        int pick = -1;
+        double stab = 1e30;
+        for (int j = 0; j + 1 < 5; j++) {
+            double a = fd_at[order[j]], b = fd_at[order[j + 1]];
+            double s = fabs(a - b) / (fabs(a) > 1e-12 ? fabs(a) : 1e-12);
+            if (s < stab) { stab = s; pick = order[j]; }
+        }
+        double r = fabs(fd_at[pick] - d) / ad;
+        printf("full-grad: %s: most stable at step %.0e (the next step down moves it %.2e), "
+               "agreement there %.2e\n", what, (double)eps_list[pick], stab, r);
+        CHECK(stab <= 5e-4, "%s: no step of the sweep resolves A1's 1e-3 (most stable %.2e at eps %.0e)",
+              what, stab, (double)eps_list[pick]);
+        CHECK(r <= 1e-3, "%s: the directional derivative misses (relative %.2e at eps %.0e, the sweep's "
+              "most stable step)", what, r, (double)eps_list[pick]);
+    }
 }
 
 // The graded check, the house method of tests/test_lora_grad.c: the f16 KV
@@ -267,8 +309,8 @@ int main(int argc, char **argv) {
             gf[l * NS + k] = malloc(sizeof(float) * (size_t)ni * no);
             memcpy(gf[l * NS + k], gr, sizeof(float) * (size_t)ni * no);
         }
-    // A1 as first declared: two random directions over every matrix and the
-    // last layer's ffn_down alone, eps 1e-3, within 1e-3
+    // A1: two random directions over every matrix and the last layer's
+    // ffn_down alone, within 1e-3 at the best step of the sweep
     g_grade = true;
     directional(&mf, toks, gf, 0x9E3779B97F4A7C15ull, -1, -1, "f32 KV, every matrix, seed 1");
     directional(&mf, toks, gf, 0xD1B54A32D192ED03ull, -1, -1, "f32 KV, every matrix, seed 2");
