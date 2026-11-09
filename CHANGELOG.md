@@ -18,6 +18,40 @@ Current release and unreleased changes. Compatibility follows the
   - **Checks:** `tests/test_recommend.py`: on a fixture roster a memory cap and the share change the list, and the
     excluded shapes stay out. Absolute anchor: at 8 GiB the committed roster gives the 15 files Dojo's own run listed
     on an 8 GiB machine. `tests/test_model_tiers.py` covers the recorder, the field's validation and the snapshot.
+- **`runner train --full`: full-weight training of an F32 file into a variant (R8.25.2.2).** Every dense projection
+  (attn q/k/v/o, ffn gate/up/down) gets an f32 master with AdamW state, in place of an adapter. `--out` is a variant:
+  the -m file with the trained tensors replaced, every other byte unchanged. The parent stays untouched. The same data
+  and seed give a byte-identical variant, and the training record names the base's and the data's sha256, the trained
+  tensors (`full_weight`) and the `variant`.
+  - **Training through a Q8_0 copy was tried and dropped.** The design read a Q8_0 copy of each master in the forward
+    and the backward, so the shipped Q8_0 would be what the last step read. On Qwen3-0.6B, the 10-28 tool-use recipe,
+    316 steps, both routes scored 29/29 held-out exact calls, with 0 discordant prompts:
+    - trained through Q8_0;
+    - trained in float, then `--rewrite --quant q8_0`.
+  - **What that does and does not show.** The held-out set saturated, so this is no measurable gain at Q8 on this
+    task, not a proof that the two are equal.
+    - Beside the gate: the teacher-forced NLL was 0.00003 against 0.00006 nats per token. The KLD to each file's own
+      float model was 0.00419 against 0.00425.
+    - A quantized -m file is refused: `is not f32: full-weight training reads an F32 file (train the float file, then
+      quantize the variant with --rewrite --quant)`.
+  - **`--kv-f32` (`--train-kv-f32`): an f32 KV cache for a training run, on the CPU only.** On the default f16 cache,
+    the full-weight gradient matched PyTorch fp32 autograd only to 2.7e-3 relative L2, against a 1e-3 bar, because K
+    (after RoPE) and V are rounded to f16. With an f32 cache it matches to 6.9e-6 over all 196 matrices of Qwen3-0.6B,
+    and 60 steps' losses agree with PyTorch's. Inference keeps f16, and the record writes `"kv_cache":"f32"`.
+  - **The gradient check on the fixture:**
+    - **On the f16 cache:** directional derivatives at a fixed eps of 1e-3 missed the first declared 1e-3 (1.17e-3
+      and 4.73e-3), because the cache's rounding makes the finite difference a staircase.
+      - `tests/test_full_grad.c` grades the f16 path by tests/test_lora_grad.c's method instead: along sign(G), the
+        best of six steps within 1%.
+      - On the f32 cache it grades the fixed-eps derivatives as first declared.
+    - **Also pinned there:**
+      - the gradient is byte-identical across two backwards;
+      - the forward reads the master after a step;
+      - a Q8_0 file is refused.
+  - **Not covered yet:** `--train-gpu`, DPO, a teacher, checkpoints (`--save-every`, `--train-resume`), kill rules,
+    `--train-eval`, a stop file, `--train-logprobs`, recurrent (DeltaNet) layers and MoE expert banks are refused with
+    `--full`.
+  - **Checks:** `tests/test_full_grad.c` (in `make test-gates-core`) and `tests/test_full_train.py`.
 
 - **Speculative decoding defaults per workload (R3.39.4).** With no `--draft`, two measured cases now draft without a
   flag, both only on CUDA with every layer on the device. The lookup and the NextN head emit plain decoding's tokens,
