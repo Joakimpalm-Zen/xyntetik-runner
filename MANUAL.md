@@ -3621,6 +3621,9 @@ completion surface also cancels at the next complete prefill chunk or decode
 step, so an abandoned long prompt does not keep its slot busy; the probe is
 non-consuming, so an alive quiet client or readable pipelined bytes are not a
 cancellation signal.
+An orderly close also stops `/v1/decide` and `/v1/rerank` between scoring
+forwards, and `/v1/embeddings` between complete forward chunks or inputs.
+The unfinished response is discarded and the slot is released for reuse.
 
 Every generating endpoint also accepts a per-request `"timeout"` in seconds
 (`0`–`86400`), which overrides `RUNNER_REQUEST_TIMEOUT` for that request; `0`
@@ -4887,6 +4890,9 @@ than accuracy, because a decision surface that changes its answer when the
 options are reordered is not usable no matter how sharp its distribution
 looks elsewhere. `--batch-state` (default on) groups a state's questions
 into one request, the same KV reuse the endpoint itself is built around.
+`--timeout SECONDS` sets the instrument's HTTP timeout per attempt, including
+single-question fallback (default 120; finite and positive). A non-default
+value is recorded as `request_timeout_s` in the result's provenance.
 `--rendering raw-v1|continuation-v1` names the rendering in every request
 and records it in the result and the report's header; without it no
 `rendering` field is sent, the server applies `raw-v1`, and the output is

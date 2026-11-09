@@ -651,6 +651,35 @@ def test_rendering_reaches_every_request_of_the_one_question_fallback(tmp_path, 
     assert all(b["rendering"] == "continuation-v1" for b in server.received)
 
 
+def test_timeout_reaches_requests_and_batch_fallback(tmp_path, make_server, monkeypatch):
+    server = make_server(hash_scorer, refuse_batches=True)
+    qfile = tmp_path / "questions.jsonl"
+    write_jsonl(qfile, ROWS)
+    urlopen = dc.urllib.request.urlopen
+    observed = []
+
+    def measured(req, *args, **kwargs):
+        if getattr(req, "full_url", str(req)).endswith("/v1/decide"):
+            observed.append(kwargs.get("timeout"))
+        return urlopen(req, *args, **kwargs)
+
+    monkeypatch.setattr(dc.urllib.request, "urlopen", measured)
+    code, out, _, _ = _run(server, qfile, tmp_path, "timeout", "--timeout", "7.5")
+    assert code == 0
+    assert len(observed) > len(ROWS)  # refused batches and individual fallback
+    assert set(observed) == {7.5}
+    assert json.loads(out.read_text())["provenance"]["request_timeout_s"] == 7.5
+
+
+@pytest.mark.parametrize("timeout", ["0", "-1", "nan", "inf"])
+def test_invalid_timeout_is_refused_before_requests(tmp_path, make_server, timeout):
+    server = make_server(hash_scorer)
+    qfile = tmp_path / "questions.jsonl"
+    write_jsonl(qfile, ROWS)
+    assert _run(server, qfile, tmp_path, "invalid-timeout", "--timeout", timeout)[0] == 2
+    assert server.received == []
+
+
 def test_a_default_run_writes_the_output_it_wrote_before(tmp_path, make_server):
     """Without --rendering the result, report and predictions are the bytes
     the instrument wrote before the flag: an explicit --rendering raw-v1 run

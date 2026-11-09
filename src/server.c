@@ -1761,12 +1761,19 @@ static void sb_emb_b64(sbuf *r, const float *v, int n) {
 // sampled tokens. The scorer runs on this slot's engine under the device
 // turn like embeddings; the KV is left holding a valid prefix, so a
 // following request on the slot rewinds into it like any other.
+static bool readout_should_stop(void *ud) {
+    return sock_peer_closed(*(sock_t *)ud);
+}
+
 static void handle_decide(slot_t *s, sock_t fd, jv *req) {
     sbuf r = {0};
     const char *err = NULL;
+    engine_set_stop(&s->e, readout_should_stop, &fd);
     sched_prefill_begin();
     int st = decide_handle(&s->e, req, SV.model_name, &r, &err);
     sched_prefill_end();
+    engine_set_stop(&s->e, NULL, NULL);
+    if (sock_peer_closed(fd)) { free(r.s); return; }
     if (st != 200) {
         free(r.s);
         send_error(fd, st, err ? err : "decide failed");
@@ -1805,9 +1812,12 @@ static void handle_systemone(slot_t *s, sock_t fd, jv *req) {
 static void handle_rerank(slot_t *s, sock_t fd, jv *req) {
     sbuf r = {0};
     const char *err = NULL;
+    engine_set_stop(&s->e, readout_should_stop, &fd);
     sched_prefill_begin();
     int st = rerank_handle(&s->e, req, SV.model_name, s->tmpl, &r, &err);
     sched_prefill_end();
+    engine_set_stop(&s->e, NULL, NULL);
+    if (sock_peer_closed(fd)) { free(r.s); return; }
     if (st != 200) {
         free(r.s);
         send_error(fd, st, err ? err : "rerank failed");
@@ -1882,6 +1892,7 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
     // always runs — the lock is never left held.
     sched_prefill_begin();
     for (int k = 0; k < n_in && ok; k++) {
+        if (sock_peer_closed(fd)) { ok = false; break; }
         const char *txt = one ? one : jv_str(input->items[k], NULL);
         if (!txt) { err_code = 400; err_msg = "input must be strings"; ok = false; break; }
         // an embedding input has no template: every byte is the caller's
@@ -1898,7 +1909,7 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
         // here too: last-token pooling reads out exactly that position
         if (s->tok->add_eos && s->tok->eos_id >= 0 && n > 0)
             toks[n++] = s->tok->eos_id;
-        if (n == 0 || !model_embed(m, toks, n, emb)) {
+        if (n == 0 || !model_embed(m, toks, n, emb, readout_should_stop, &fd)) {
             free(toks);
             err_code = 400;
             err_msg = n == 0 ? "empty input" : "input exceeds context window";
@@ -1927,7 +1938,9 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
     engine_reset(&s->e);
     s->e.pos = 0;
     sched_prefill_end();
-    if (!ok) {
+    if (sock_peer_closed(fd)) {
+        // The partial vector/response is discarded after releasing the turn.
+    } else if (!ok) {
         // deferred from the loop — sent here, off the device lock (RNS-1)
         send_error(fd, err_code, err_msg);
     } else {
