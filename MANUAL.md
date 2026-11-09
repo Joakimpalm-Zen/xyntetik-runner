@@ -2558,7 +2558,7 @@ instance instead.
 | `--kv-ring auto\|on\|off` | Give sliding-window layers only their window of KV rows, output-identical to the flat cache. `auto` (default) turns it on only when the weights and the flat cache do not fit; `-v` says why it is on or off. [Details](#cli-kv-ring). |
 | `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. A Gemma 4 E-series per-layer token table stays pageable. Runner maps its weights, so a one-shot CLI run of a mapped 4B file on an 8 GB Mac pays about 3 GB of page-in inside its first prompt (Qwen3-4B Q4_K_M: 28 against 85 tok/s of 512-token prefill, 2026-11-04); `--mlock` or a resident server holds the weights. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
-| `--draft SOURCE` | Speculative decoding from one source per run, named by its spelling. `PATH`: a same-vocabulary draft GGUF ([details](#cli-draft)). `mtp`: the model's own NextN/MTP predictor block ([details](#cli-mtp)). `mtp:FILE`: that block from a companion GGUF when the model file was exported without one ([details](#cli-mtp)). `lookup`: n-gram matches in the context itself, no weights and no draft forward ([details](#cli-draft-lookup)). A second source on the line is refused, not ignored. A server given a swap registry (`-m a=...,b=...`) refuses to start with a draft, which needs a single served model. |
+| `--draft SOURCE` | Speculative decoding from one source per run, named by its spelling. `PATH`: a same-vocabulary draft GGUF ([details](#cli-draft)). `mtp`: the model's own NextN/MTP predictor block ([details](#cli-mtp)). `mtp:FILE`: that block from a companion GGUF when the model file was exported without one ([details](#cli-mtp)). `lookup`: n-gram matches in the context itself, no weights and no draft forward ([details](#cli-draft-lookup)). `off`: no source, not even a default ([defaults](#draft-defaults)). A second source on the line is refused, not ignored. A server given a swap registry (`-m a=...,b=...`) refuses to start with a draft, which needs a single served model. |
 | `--draft-k N` | Draft tokens per speculative round, `1` to `15`, for every draft source (a round verifies the drafts plus the correction, at most 16 rows). The default is `4`, except on CUDA with every layer on the device, where it is `7` for `--draft lookup` and `2` for `--draft mtp`. A partial offload keeps `4`, since its CPU layers pay most of a step for each verify row. The startup line prints the width a run takes. Measured on an RTX 3070 (2026-11-03, 256 greedy tokens): lookup on an in-context edit reads 2.86x plain at 7 against 2.43x at 4, since a verify row costs about 0.2 of a step up to eight rows. Qwen3.5-4B's NextN head reads 1.13x on code and on tool calls at 2 (tool reaches 1.20x at 3). On prose the head loses at every width: 0.88x plain at 2, and 0.68x at the old default of 4. Leave it off for prose. A width that follows each turn's acceptance was measured against these fixed widths and lost (0.97x), so there is no automatic width ([report](docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03/README.md)). All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
 | `--draft-required` | Fail instead of falling back to plain decoding when a requested draft model is refused. [Details](#cli-draft-required). |
 
@@ -2695,7 +2695,9 @@ fast-forward still composes, as it does with the others. In serve mode a request
 add `draft_hints`, up to 16 strings the caller expects the model to restate (a file
 about to be quoted, a tool result): they are searched when the context has no match and
 verified the same way, so they change speed and never the output
-([docs/context-drafts.md](docs/context-drafts.md)). Works in one-shot, chat and
+([docs/context-drafts.md](docs/context-drafts.md)). On CUDA with every layer on the
+device, a request with hints takes the lookup without `--draft lookup`
+([defaults](#draft-defaults)); elsewhere it needs the flag and is refused without it. Works in one-shot, chat and
 single-model serve mode (`draft.source` is `lookup` in `GET /v1/capabilities`; ignored
 in swap mode with a `reason`), on every path the verify walk runs on (CPU, and the same
 GPU cases `--draft` accepts). Measured 2026-09-04 on an Apple M1 CPU: 1.47x on a verbatim
@@ -2705,6 +2707,32 @@ rejected draft is a wasted verify column; the literature's 2-4x needs a bandwidt
 decode, which a resident 3B-8B Q8_0 would be and the 8 GB box could not hold that day.
 The tables, the negative rows included, are in
 [docs/context-drafts.md](docs/context-drafts.md).
+
+<a id="draft-defaults"></a>
+#### Draft defaults per workload
+
+With no `--draft`, Runner picks a source where one measured faster for the workload.
+Each draft source here emits plain decoding's tokens, so only speed is at stake. Both
+defaults need CUDA with every layer on the device:
+
+- **A server request with `draft_hints`** takes `lookup` at width 7, measured at 2.86x
+  plain on an in-context edit. The lookup belongs to that request: the next request
+  without hints decodes plain. `GET /v1/capabilities` shows it as
+  `draft.default.draft_hints: "lookup"`.
+- **A one-shot CLI run with `--json` or `--json-schema`** on Qwen3.5-4B Q4_K_M with
+  its NextN block takes `mtp` at width 2, measured at 1.13x plain on a tool call. Other
+  NextN models, other quants and other backends have no row and decode plain. If the
+  head would cost the run its full offload, Runner reloads without it.
+
+Everything else decodes plain, including prose, chat, `--serve` without hints,
+`tool_choice: "auto"` (it may answer in prose), the CPU and Metal. The head reads 0.88x
+on prose. The lookup has no prose row. On Metal, a verify row costs a full step.
+`--draft off` turns the defaults off. The startup line names a default and its scope,
+and the route line (`RUNNER_DEBUG_ROUTE=1`) marks it `draft=lookup:default` or
+`draft=mtp:default`. A record of a defaulted `--json` run replays under `--verify
+--json`; the replay decodes plain and matches token for token. The table of every speed
+switch is in [docs/speed-defaults.md](docs/speed-defaults.md), and the rows are in the
+[report](docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03/README.md).
 
 <a id="cli-draft-required"></a>
 #### `--draft-required`

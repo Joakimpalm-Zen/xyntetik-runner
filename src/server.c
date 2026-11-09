@@ -2322,8 +2322,10 @@ static void send_provenance(sock_t fd) {
         sb_fmt(&r, "\",\"template_forced\":%s,",
                SV.tmpl_override >= 0 ? "true" : "false");
         const engine *e = &s0->e;
+        // a lookup the workload default turned on is that request's, not
+        // the model's (R3.39.4): the draft object below names the default
         const char *dsrc = e->dm ? "model" : e->mtp_on ? "mtp"
-                         : e->lookup_on ? "lookup" : NULL;
+                         : e->lookup_on && !e->draft_default ? "lookup" : NULL;
         if (dsrc) sb_fmt(&r, "\"draft\":\"%s\",", dsrc);
         else      sb_lit(&r, "\"draft\":null,");
     }
@@ -2410,7 +2412,7 @@ static void send_capabilities(sock_t fd) {
     // their drafts directly, so inspect the resident engines for all sources.
     // swap_mu protects reloads; without a registry these fields stay fixed.
     const char *dsrc = NULL;
-    bool mtp_consumed = false;
+    bool mtp_consumed = false, lookup_default = false;
     for (int i = 0; i < SV.n_slots; i++) {
         const slot_t *slot = &SV.slots[i];
         if (!slot->m) continue;
@@ -2418,7 +2420,12 @@ static void send_capabilities(sock_t fd) {
         mtp_consumed |= e->mtp_on;
         if (!dsrc)
             dsrc = e->dm ? "model" : e->mtp_on ? "mtp"
-                 : e->lookup_on ? "lookup" : NULL;
+                 : e->lookup_on && !e->draft_default ? "lookup" : NULL;
+        // R3.39.4: with no source named, a request with draft_hints takes
+        // the lookup where the measured row holds (CUDA, every layer on it)
+        if (!SV.draft_requested && !SV.draft_off && engine_cuda_full(e) &&
+            model_spec_verify_ok(slot->m))
+            lookup_default = true;
     }
     sb_fmt(&r, ",\"slots\":%d,\"draft\":{\"requested\":%s,\"active\":%s",
            SV.n_slots,
@@ -2429,6 +2436,7 @@ static void send_capabilities(sock_t fd) {
         sb_lit(&r, dsrc);
         sb_lit(&r, "\"");
     }
+    if (lookup_default) sb_lit(&r, ",\"default\":{\"draft_hints\":\"lookup\"}");
     if (SV.draft_requested && !dsrc && SV.draft_note) {
         sb_lit(&r, ",\"reason\":\"");
         sb_esc(&r, SV.draft_note, strlen(SV.draft_note));
@@ -3355,6 +3363,10 @@ static struct {
 static bool WM_CFG_ON;
 static wm_key WM_CFG;
 
+static bool DRAFT_OFF_CFG;
+
+void server_set_draft_off(bool off) { DRAFT_OFF_CFG = off; }
+
 void server_set_watermark(const wm_key *key) {
     memcpy(&WM_CFG, key, sizeof WM_CFG);
     WM_CFG_ON = true;
@@ -3529,6 +3541,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     bool swap_mode = strchr(model_path, '=') != NULL;
     if (ttl < 0) ttl = swap_mode ? 300 : 0; // single-model default: never unload
     SV.draft_requested = draft_path != NULL || mp->mtp || draft_lookup;
+    SV.draft_off = DRAFT_OFF_CFG;
     SV.draft_source = NULL;
     if (draft_lookup && swap_mode) {
         fprintf(stderr, "note: --draft-lookup needs a single served model; "

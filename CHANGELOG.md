@@ -5,6 +5,26 @@ Current release and unreleased changes. Compatibility follows the
 
 ## Unreleased
 
+- **Speculative decoding defaults per workload (R3.39.4).** With no `--draft`, two measured cases now draft without a
+  flag, both only on CUDA with every layer on the device. The lookup and the NextN head emit plain decoding's tokens,
+  so only speed changes.
+  - A server request with `draft_hints` takes `lookup` at width 7, measured at 2.86x plain on an in-context edit.
+    Such a request was refused before unless the server ran with `--draft lookup`. The lookup is that request's
+    alone, and `GET /v1/capabilities` reports it as `draft.default`.
+  - A one-shot CLI run with `--json` or `--json-schema` on Qwen3.5-4B Q4_K_M with its NextN block takes `mtp` at
+    width 2, measured at 1.13x plain on a tool call. If binding the head would cost the run its full offload,
+    Runner reloads without it.
+  - Everything else decodes plain: prose (the head reads 0.88x there, and the lookup has no prose row), chat,
+    `tool_choice: "auto"`, other NextN models, CPU and Metal. The server takes no per-request head: a head fed on
+    every request would slow prose, and one fed on demand would have no state under a reused prefix.
+  - `--draft off` turns the defaults off. The startup line names a default and its scope, and the route line marks
+    it `draft=lookup:default` or `draft=mtp:default` (a named source shows as `draft=lookup`).
+  - `docs/speed-defaults.md` lists every speed switch with its class and its default (R3.39.1).
+  - **Checks:** `tests/test_lookup_draft.c` pins the decision table against the measured rows, prose plain on both
+    surfaces among them. `tests/test_draft_defaults.py` checks that a request without the signal decodes plain on
+    the CLI and the server, before and after a hinted request; that `--draft off` refuses hints and a second source;
+    and that a `--json` record replays under `--verify`.
+
 - **`runner derive --target-size` with `--imatrix` plans a whole file (R4.34.2).** llama.cpp's imatrix has no entry for
   `output` or `token_embd` unless it was run with `--process-output`, so those two tensors' errors were unweighted
   beside the weighted rest, and the planner refused the mix. A candidate the matrix does not cover is now held at the

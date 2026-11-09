@@ -429,8 +429,11 @@ bigger validation runs and on immediate need.
   shows which models are loaded and starts or stops them.
   [Details](MANUAL.md#desktop-tray)
 - **Draft decoding.** `--draft small.gguf`, `--draft mtp`, `--draft mtp:head.gguf`
-  (a NextN/MTP head shipped as a companion file) or `--draft lookup`.
-  [Details](MANUAL.md#runtime-and-hardware)
+  (a NextN/MTP head shipped as a companion file) or `--draft lookup`. On CUDA
+  with every layer on the device, two measured cases need no flag: a server
+  request with `draft_hints`, and `--json` output on Qwen3.5-4B. Prose stays
+  plain decoding, and `--draft off` turns the defaults off.
+  [Details](MANUAL.md#draft-defaults)
 - **Pause and resume a generation.** Session images with `--sessions DIR`.
   [Details](docs/session-images.md)
 - **Container image and clients.** `ghcr.io/joakimpalm-zen/xyntetik-runner`,

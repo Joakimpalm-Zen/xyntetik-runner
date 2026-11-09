@@ -155,6 +155,54 @@ int main(void) {
         ck(engine_hint_draft(h, 5, NULL, 0, 8, out) == 0, "hint: none given, none proposed");
     }
 
+    {
+        // R3.39.4: the speculative-decoding default per workload. The
+        // expected values are the measured rows, not this code's opinion
+        // (docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03): the
+        // NextN head reads 0.88x plain on prose, so prose (a request with no
+        // signal) must take plain decoding on both surfaces; the lookup reads
+        // 2.86x on an edit and the head 1.13x on a --json tool call, both
+        // only with every layer on a CUDA device.
+        const draft_workload prose_cli = { .cuda_full = true, .head_measured = true };
+        const draft_workload prose_srv = { .server = true, .cuda_full = true,
+                                           .head_measured = true };
+        ck(engine_draft_default(&prose_cli) == DRAFT_DEFAULT_NONE,
+           "default: CLI prose (no --json) decodes plain");
+        ck(engine_draft_default(&prose_srv) == DRAFT_DEFAULT_NONE,
+           "default: a server request without draft_hints decodes plain");
+        const draft_workload tool_cli = { .cuda_full = true, .json_output = true,
+                                          .head_measured = true };
+        ck(engine_draft_default(&tool_cli) == DRAFT_DEFAULT_MTP,
+           "default: CLI --json with the measured head drafts from it");
+        draft_workload w = tool_cli;
+        w.head_measured = false;
+        ck(engine_draft_default(&w) == DRAFT_DEFAULT_NONE,
+           "default: another NextN head has no row, plain");
+        w = tool_cli;
+        w.cuda_full = false;
+        ck(engine_draft_default(&w) == DRAFT_DEFAULT_NONE,
+           "default: no head default off CUDA full offload");
+        w = tool_cli;
+        w.chosen = true;
+        ck(engine_draft_default(&w) == DRAFT_DEFAULT_NONE,
+           "default: a named source or --draft off wins");
+        const draft_workload edit_srv = { .server = true, .cuda_full = true, .hints = true };
+        ck(engine_draft_default(&edit_srv) == DRAFT_DEFAULT_LOOKUP,
+           "default: draft_hints on the server take the lookup");
+        w = edit_srv;
+        w.cuda_full = false;
+        ck(engine_draft_default(&w) == DRAFT_DEFAULT_NONE,
+           "default: no lookup default off CUDA full offload");
+        w = edit_srv;
+        w.chosen = true;
+        ck(engine_draft_default(&w) == DRAFT_DEFAULT_NONE,
+           "default: hints under a named source or --draft off add no default");
+        const draft_workload tool_srv = { .server = true, .cuda_full = true,
+                                          .json_output = true, .head_measured = true };
+        ck(engine_draft_default(&tool_srv) == DRAFT_DEFAULT_NONE,
+           "default: no per-request head on the server (its KV would lag the prefix)");
+    }
+
     if (g_fail) { fprintf(stderr, "test_lookup_draft: FAIL\n"); return 1; }
     fprintf(stderr, "test_lookup_draft: all ok\n");
     return 0;

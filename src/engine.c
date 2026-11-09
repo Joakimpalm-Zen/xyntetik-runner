@@ -3156,12 +3156,27 @@ bool engine_wants_spec(const engine *e) {
 // measured and lost to these fixed ones (the same report).
 int engine_draft_k(const engine *e) {
     if (e->draft_k > 0) return e->draft_k;
-    const model_t *m = e->m;
-    if (!strcmp(model_backend_name(m), "cuda") && m->gpu_layers >= m->n_layer && !e->dm) {
+    if (engine_cuda_full(e) && !e->dm) {
         if (e->mtp_on) return 2;
         if (e->lookup_on) return 7;
     }
     return 4;
+}
+
+bool engine_cuda_full(const engine *e) {
+    const model_t *m = e->m;
+    return m && !strcmp(model_backend_name(m), "cuda") && m->gpu_layers >= m->n_layer;
+}
+
+void engine_note_draft_route(engine *e) {
+    const char *src = e->dm ? "model" : e->mtp_on ? "mtp" : e->lookup_on ? "lookup" : NULL;
+    if (e->m) model_route_draft(e->m, src, src && e->draft_default);
+}
+
+draft_default engine_draft_default(const draft_workload *w) {
+    if (w->chosen || !w->cuda_full) return DRAFT_DEFAULT_NONE;
+    if (w->server) return w->hints ? DRAFT_DEFAULT_LOOKUP : DRAFT_DEFAULT_NONE;
+    return w->json_output && w->head_measured ? DRAFT_DEFAULT_MTP : DRAFT_DEFAULT_NONE;
 }
 
 int engine_lookup_draft(const int32_t *hist, int len, int k, int32_t *out) {

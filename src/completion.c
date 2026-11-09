@@ -3797,6 +3797,16 @@ static bool creq_stops(const creq_ctx *c, completion_req *q, creq_err *err) {
     return true;
 }
 
+// R3.39.4 (engine_draft_default): a request with draft_hints takes the lookup
+// on this slot when the operator named no source and did not pass --draft
+// off, on CUDA with every layer on the device (the measured edit row).
+static bool hints_take_lookup(const slot_t *s) {
+    const engine *e = &s->e;
+    draft_workload w = { .server = true, .chosen = SV.draft_requested || SV.draft_off,
+                         .cuda_full = engine_cuda_full(e), .hints = true };
+    return engine_draft_default(&w) == DRAFT_DEFAULT_LOOKUP && model_spec_verify_ok(s->m);
+}
+
 static bool creq_hints(const creq_ctx *c, completion_req *q, creq_err *err) {
     slot_t *s = c->s;
     engine *e = &c->s->e;
@@ -3823,10 +3833,12 @@ static bool creq_hints(const creq_ctx *c, completion_req *q, creq_err *err) {
                                 "strings, 256 KiB in total");
             return false;
         }
-        if (!e->lookup_on) {
-            creq_set(err, 400, "draft_hints needs a server started with "
-                                "--draft-lookup: hints are proposed through "
-                                "the lookup draft's verify walk");
+        if (!e->lookup_on && !hints_take_lookup(s)) {
+            creq_set(err, 400, "draft_hints needs the lookup draft: start the "
+                                "server with --draft-lookup (on CUDA with every "
+                                "layer on the device a request with hints takes "
+                                "it by default); hints are proposed through the "
+                                "lookup draft's verify walk");
             return false;
         }
         // one token per byte is the upper bound, plus a separator per hint
@@ -4125,6 +4137,15 @@ static void completion_apply(slot_t *s, const completion_req *q, const char *pro
     engine_set_request_stops(e, q->req_stops, q->n_req_stops);
     e->hint = q->hints ? s->hint_buf : NULL;
     e->hint_len = q->hints ? q->hint_len : 0;
+    // R3.39.4: with no source named, the lookup is this request's alone: on
+    // for a request with hints where the measured row holds, off for the next
+    // request without them (a request without the signal decodes plain)
+    if (!SV.draft_requested && !SV.draft_off) {
+        bool on = q->hints && hints_take_lookup(s);
+        e->lookup_on = on;
+        e->draft_default = on;
+    }
+    engine_note_draft_route(e);
     e->json_mode = q->json_mode;
     // R1.8.1: every sampled turn is marked when the server has a key; the
     // hook reads the context from this slot's history at each pick
