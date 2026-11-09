@@ -296,12 +296,17 @@ def test_nested_repositories_are_all_snapshotted(tmp_path: Path) -> None:
     inner = _repo(outer)
     home = tmp_path / "home"
     (inner / "pkg" / "a.py").write_text("changed inside the nested repo\n", newline="\n")
-    sa = C.snapshot_all(outer, home)
+    # This checks repository coverage, not the hook's wall-clock budget. Wait
+    # for the synchronous snapshot to finish even when Git is slow under I/O.
+    sa = C.snapshot_all(outer, home, deadline_s=float("inf"))
+    assert not sa["truncated"], sa
     assert sa["repo_count"] >= 2
     keys = {Path(k).name for k in sa["repos"]}
     assert "outer" in keys and "repo" in keys
     inner_snap = sa["repos"][str(C_canonical(inner))]
     assert "pkg/a.py" in inner_snap["files"]
+    assert C.get_blob(home, inner_snap["files"]["pkg/a.py"]["sha256"]) == \
+        b"changed inside the nested repo\n"
 
 
 def C_canonical(p: Path) -> Path:
