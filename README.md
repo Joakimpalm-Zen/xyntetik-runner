@@ -184,6 +184,11 @@ curl -r 0-16777215 -L -o head.gguf \
   verdict       FITS — 35 of 40 layers on the GPU, 6.53 GiB of RAM to spare at ctx 16384
 ```
 
+Not sure which file to try? `./runner recommend` lists the
+[supported files](docs/model-support.md) that fit this machine, largest first,
+each with its measured fidelity line or marked unmeasured. It works offline from
+the list built into the binary. [Details](MANUAL.md#cli-recommend)
+
 `./runner --info caps` says what this machine and build can run, and
 `./runner -m model.gguf --info doctor` loads a model, probes it and reports.
 [How the verdict is computed](MANUAL.md#deciding-before-you-download)

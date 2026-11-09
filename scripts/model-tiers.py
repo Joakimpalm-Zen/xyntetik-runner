@@ -35,9 +35,17 @@ docs/model-support.md is rendered from it.
     scripts/model-tiers.py --check
     scripts/model-tiers.py --gate [--today YYYY-MM-DD]
     scripts/model-tiers.py --record ROW --result smoke-result.json
-    scripts/model-tiers.py --write-docs     # re-render docs/model-support.md
-    scripts/model-tiers.py --docs-check     # fail when it differs from the render
+    scripts/model-tiers.py --write-docs     # re-render docs/model-support.md and src/model_roster.h
+    scripts/model-tiers.py --docs-check     # fail when either differs from the render
     scripts/model-tiers.py --check-hub      # every file's resolve URL, against the Hub
+    scripts/model-tiers.py --record-resident ROW --head FILE   # the hot set, from runner --fit
+
+src/model_roster.h is the snapshot of this roster that runner recommend
+(--info recommend) reads when no --roster is given: the fields it reads, for
+every row that names files. A file whose token table is read by row (a Gemma
+E-series file) keeps only its hot set resident; `resident_bytes` records that
+hot set from `runner --fit` on the file or its first 16 MiB. Every other file
+counts its whole size.
 
 A file's `name` is its bare file name, which a local models folder holds it
 under. A file in a folder of its repository also carries `path`, the name with
@@ -72,6 +80,11 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROSTER = os.path.join(ROOT, "docs", "model-tiers.json")
 DEVICE_EVIDENCE = os.path.join(ROOT, "docs", "device-evidence.json")
+# runner recommend's snapshot of this roster (R10.25), embedded in the binary
+ROSTER_HEADER = os.path.join(ROOT, "src", "model_roster.h")
+ROSTER_BEGIN = ("/* model-roster:begin (rendered from docs/model-tiers.json by "
+                "scripts/model-tiers.py --write-docs; do not edit) */")
+ROSTER_END = "/* model-roster:end */"
 SCHEMA = "xyntetik.runner.model-tiers.v1"
 RESULT_SCHEMA = "xyntetik.runner.tier-smoke-result.v1"
 
@@ -254,6 +267,13 @@ def _file_errors(where, files):
             errs.append(f"{where}: files[{i}].bytes")
         if "path" in f and not _path_ok(f):
             errs.append(f"{where}: files[{i}].path must be the name in a folder of the file's repo")
+        # the fit report's hot set, for a file whose token table is read by row
+        # (--record-resident); what runner recommend counts as resident
+        if "resident_bytes" in f and not (
+                isinstance(f["resident_bytes"], int) and isinstance(f.get("bytes"), int)
+                and 0 < f["resident_bytes"] <= f["bytes"]):
+            errs.append(f"{where}: files[{i}].resident_bytes must be a byte count no larger "
+                        f"than the file")
     return errs
 
 
@@ -1080,11 +1100,57 @@ def render_doc(doc, borrowed=None):
     return "\n".join(lines)
 
 
+def roster_snapshot(doc):
+    """The fields runner recommend reads, for every row that names files (R10.25)."""
+    rows = []
+    for r in doc["rows"]:
+        if not r.get("files"):
+            continue
+        row = {"id": r["id"], "tier": r.get("tier")}
+        env = r.get("envelope")
+        if env:
+            row["envelope"] = {k: env[k] for k in ("features", "fp32_reference", "anchor")
+                               if k in env}
+        row["files"] = [{k: f[k] for k in ("repo", "name", "path", "bytes", "resident_bytes")
+                         if k in f} for f in r["files"]]
+        rows.append(row)
+    return {"schema": doc.get("schema"), "rows": rows}
+
+
+def _c_literal(text):
+    # byte-escaped: octal for anything outside printable ASCII (an octal escape
+    # stops after three digits, so the byte after it can never extend it), and
+    # for "?", so no "??x" trigraph can form
+    out = []
+    for b in text.encode("utf-8"):
+        c = chr(b)
+        if c in '"\\':
+            out.append("\\" + c)
+        elif 0x20 <= b < 0x7f and c != "?":
+            out.append(c)
+        else:
+            out.append("\\%03o" % b)
+    return "".join(out)
+
+
+def render_roster_header(doc):
+    """src/model_roster.h's block: the snapshot as C string literals, one row a line."""
+    snap = roster_snapshot(doc)
+    head = json.dumps({"schema": snap["schema"], "rows": []}, separators=(",", ":"))
+    lines = ['"' + _c_literal(head[:-2]) + '"']
+    for i, row in enumerate(snap["rows"]):
+        text = ("," if i else "") + json.dumps(row, separators=(",", ":"), ensure_ascii=False)
+        lines.append('"' + _c_literal(text) + '"')
+    lines.append('"]}"')
+    return "\n" + "\n".join(lines) + "\n"
+
+
 def _blocks(doc, borrowed=None):
     """(path, begin, end, rendered text) for every rendered block."""
     if borrowed is None:
         borrowed = borrowed_classes()
-    return [(DOC, DOC_BEGIN, DOC_END, render_doc(doc, borrowed))]
+    return [(DOC, DOC_BEGIN, DOC_END, render_doc(doc, borrowed)),
+            (ROSTER_HEADER, ROSTER_BEGIN, ROSTER_END, render_roster_header(doc))]
 
 
 def _replace_block(text, begin, end, body, path):
@@ -1117,6 +1183,35 @@ def write_docs(doc, borrowed=None):
                 f.write(new)
 
 
+def resident_from_fit(report):
+    """The hot set in bytes from a `runner --fit` report on a file whose token
+    table is read by row, else None: such a file keeps only its hot set
+    resident, and every other file its whole size (Dojo's rule, R10.25)."""
+    if not re.search(r"^ *row-gathered ", report, re.M):
+        return None
+    m = re.search(r"^ *hot set +([0-9.]+) GiB", report, re.M)
+    return int(round(float(m.group(1)) * (1 << 30))) if m else None
+
+
+def record_resident(doc, row_id, head, runner):
+    """Write the fit report's hot set into ROW's file (its first part)."""
+    import subprocess
+    row = next((r for r in doc["rows"] if r["id"] == row_id), None)
+    if not row or not row.get("files"):
+        raise SystemExit(f"--record-resident: no row {row_id} with files")
+    p = subprocess.run([runner, "--fit", head], stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    if p.returncode != 0:
+        raise SystemExit(f"--record-resident: runner --fit {head} failed:\n"
+                         + p.stderr.decode(errors="replace"))
+    hot = resident_from_fit(p.stdout.decode(errors="replace"))
+    if hot is None:
+        raise SystemExit(f"--record-resident: {head} reads no table by row; the whole "
+                         f"file stays resident and there is nothing to record")
+    row["files"][0]["resident_bytes"] = hot
+    return hot
+
+
 def is_committed_roster(path):
     """Only the repository's own roster drives the repository's docs."""
     return os.path.abspath(path) == os.path.abspath(ROSTER)
@@ -1143,11 +1238,30 @@ def main():
                     help="re-render docs/model-support.md from the roster")
     ap.add_argument("--docs-check", action="store_true",
                     help="fail when docs/model-support.md differs from the render")
+    ap.add_argument("--record-resident", metavar="ROW",
+                    help="write the hot set of `runner --fit HEAD` into ROW's file, for a "
+                         "file whose token table is read by row (runner recommend)")
+    ap.add_argument("--head", help="the file, or its first 16 MiB, for --record-resident")
+    ap.add_argument("--runner", default=os.path.join(ROOT, "runner"),
+                    help="the runner binary --record-resident asks (default ./runner)")
     args = ap.parse_args()
 
     doc = load(args.json)
     with open(args.device_evidence, encoding="utf-8") as f:
         devices = json.load(f)
+    if args.record_resident:
+        if not args.head:
+            raise SystemExit("--record-resident needs --head FILE")
+        hot = record_resident(doc, args.record_resident, args.head, args.runner)
+        errs = validate(doc, devices)
+        if errs:
+            raise SystemExit("refusing to write a roster that does not validate:\n"
+                             + "\n".join(errs))
+        save(doc, args.json)
+        if is_committed_roster(args.json):
+            write_docs(doc, borrowed_classes(devices))
+        print(f"recorded {args.record_resident}: {hot} bytes resident (the hot set)")
+        return 0
     if args.record:
         if not args.result:
             raise SystemExit("--record needs --result FILE")

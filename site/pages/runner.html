@@ -118,6 +118,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
   https://huggingface.co/ORG/REPO/resolve/main/MODEL.gguf
 ./runner -m head.gguf --info fit -c 16384</code></pre>
       <p>On an RTX 3070 it named the same split the loader then used in 70 of 72 cases and was one layer cautious in the other two (six models, two context sizes, four cache formats, 2026-10-03). <code>--info caps</code> says what the machine can run and <code>--info doctor</code> loads a model, probes it and reports. <a href="{{repo}}/blob/main/MANUAL.md#deciding-before-you-download">How the verdict is computed</a></p>
+      <p>Not sure which file to try? <code>./runner recommend</code> lists the supported files that fit this machine, largest first, each with its measured fidelity line or marked unmeasured, offline. <a href="{{repo}}/blob/main/MANUAL.md#cli-recommend">Details</a></p>
     </div>
   </div>
 </section>

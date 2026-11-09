@@ -36,6 +36,7 @@
 #include <limits.h>
 #include <math.h>
 #include "pmath.h"
+#include "model_roster.h"
 
 // Bare-invocation tray launch needs to know whether a human is at the other
 // end: a piped/redirected probe (CI, scripts, `runner | head`) must get usage
@@ -1048,7 +1049,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                                         signatures (runner attest --help)\n"
         "       runner train DATA -m model.gguf   LoRA training (runner train --help)\n"
         "       runner derive -m P.gguf -o OUT.gguf RECIPE   make, measure and card a\n"
-        "                                         file (runner derive --help)\n\n"
+        "                                         file (runner derive --help)\n"
+        "       runner recommend [--memory GIB]   the listed model files that fit\n"
+        "                                         this machine (--info recommend)\n\n"
         "One mode per run: a line that names two (-p beside --serve, --score\n"
         "beside --decide) is refused, never resolved by order.\n\n"
         "model and mode:\n"
@@ -1097,7 +1100,16 @@ static void usage_to(FILE *f, const char *prog) {
         "                 text unless --doctor-include-text is given). fit:\n"
         "                 whether -m fits this machine (RAM, and on a discrete\n"
         "                 GPU the layers the offload budget holds); reads only\n"
-        "                 the header, so a partial download works\n"
+        "                 the header, so a partial download works. recommend\n"
+        "                 (also runner recommend): the listed model files that\n"
+        "                 fit this machine, largest first, each with its\n"
+        "                 measured fidelity line or named unmeasured; offline\n"
+        "  --memory GIB   with --info recommend: plan for this much RAM\n"
+        "                 instead of this machine's\n"
+        "  --ram-share F  with --info recommend: the share of the RAM the\n"
+        "                 resident weights may take, 0.1 to 1 (default 0.5)\n"
+        "  --roster FILE  with --info recommend: read this docs/model-tiers.json\n"
+        "                 instead of the copy built into this runner\n"
         "  --doctor-include-text  with --info doctor: keep the probe's text\n"
         "  --bench-json   run a small decode benchmark and print JSON metrics\n"
         "  --score [N]    teacher-forced scoring: per-token log P(token|prefix)\n"
@@ -1818,6 +1830,161 @@ static int run_fit_check(const char *path, int n_ctx_want,
     return 0;
 }
 
+// --info recommend (runner recommend, R10.25): the listed model files that fit
+// this machine, by Dojo's rule (tools/runner-start.sh), so the two never
+// disagree. A candidate is a listed text file (the roster's rows other than
+// the planned ones), one .gguf at the repository's top level, no larger than
+// the RAM. It fits when its resident weights are within a share of the RAM
+// (half by default): the whole file, or the fit report's hot set for a file
+// whose token table is read by row (files[].resident_bytes, recorded from
+// `runner --fit` by scripts/model-tiers.py --record-resident). Largest
+// resident first. The roster is this build's own snapshot (model_roster.h)
+// unless --roster names another copy. Nothing is downloaded: a listing
+// command stays offline, so no file's header is read here.
+typedef struct {
+    const char *id, *repo, *name, *ref, *anchor;
+    uint64_t total, resident;
+    int parts;
+} rec_entry;
+
+static int rec_cmp(const void *a, const void *b) {
+    const rec_entry *x = a, *y = b;
+    if (x->resident != y->resident) return x->resident < y->resident ? 1 : -1;
+    return strcmp(x->id, y->id);
+}
+
+static bool rec_listed(jv *row) {
+    // the dormant tier field marks what the roster lists: everything but
+    // the planned admissions, as Dojo reads it
+    const char *t = jv_str(jv_get(row, "tier"), "");
+    return !strcmp(t, "tier1") || !strcmp(t, "tier2");
+}
+
+static bool rec_text(jv *row) {
+    jv *feats = jv_get(jv_get(row, "envelope"), "features");
+    for (int i = 0; feats && feats->type == J_ARR && i < feats->n; i++)
+        if (!strcmp(jv_str(feats->items[i], ""), "text")) return true;
+    return false;
+}
+
+// The anchor's first sentence: up to the first ". " (or the end), at most
+// 240 bytes, cut at a space when it runs on.
+static void rec_sentence(const char *a, char *out, size_t cap) {
+    const char *stop = strstr(a, ". ");
+    size_t len = stop ? (size_t)(stop - a) + 1 : strlen(a);
+    bool cut = false;
+    if (len > 240) {
+        len = 240;
+        while (len > 0 && a[len] != ' ') len--;
+        if (len == 0) len = 240;
+        cut = true;
+    }
+    if (len + 5 > cap) { len = cap - 5; cut = true; }
+    memcpy(out, a, len);
+    if (cut) memcpy(out + len, " ...", 4), len += 4;
+    out[len] = 0;
+}
+
+static int run_recommend(const char *roster_path, double memory_gib, double share) {
+    char *owned = NULL;
+    const char *text = MODEL_ROSTER_JSON;
+    size_t len = sizeof MODEL_ROSTER_JSON - 1;
+    if (roster_path) {
+        owned = plat_read_file(roster_path, 64u << 20, &len);
+        if (!owned) {
+            fprintf(stderr, "error: --roster: cannot read %s\n", roster_path);
+            return 1;
+        }
+        text = owned;
+    }
+    jv *doc = json_parse(text, len);
+    free(owned);
+    jv *rows = jv_get(doc, "rows");
+    if (!rows || rows->type != J_ARR) {
+        fprintf(stderr, "error: the model roster%s%s is not a roster (no \"rows\" array)\n",
+                roster_path ? " " : "", roster_path ? roster_path : "");
+        jv_free(doc);
+        return 1;
+    }
+    uint64_t ram = memory_gib > 0 ? (uint64_t)(memory_gib * (double)(1ull << 30))
+                                  : plat_ram_bytes();
+    if (!ram) {
+        fprintf(stderr, "error: this machine's RAM could not be read; give --memory GIB\n");
+        jv_free(doc);
+        return 1;
+    }
+    uint64_t bar = (uint64_t)((double)ram * share);
+    rec_entry *e = calloc((size_t)rows->n + 1, sizeof *e);
+    if (!e) { jv_free(doc); fprintf(stderr, "error: out of memory\n"); return 1; }
+    int n_cand = 0, n_fit = 0;
+    for (int i = 0; i < rows->n; i++) {
+        jv *row = rows->items[i];
+        jv *files = jv_get(row, "files");
+        const char *id = jv_str(jv_get(row, "id"), "");
+        if (!*id || !files || files->type != J_ARR || files->n == 0) continue;
+        if (!rec_listed(row) || !rec_text(row)) continue;
+        jv *f0 = files->items[0];
+        const char *repo = jv_str(jv_get(f0, "repo"), ""), *name = jv_str(jv_get(f0, "name"), "");
+        size_t nl = strlen(name);
+        if (!*repo || nl < 6 || strchr(name, '/') || strcmp(name + nl - 5, ".gguf")) continue;
+        // a file in a folder of its repository (files[].path) is not at the
+        // top level: Dojo's fetch of resolve/main/NAME finds nothing for it
+        // and skips it, and -hf REPO:STEM names top-level files
+        if (strchr(jv_str(jv_get(f0, "path"), ""), '/')) continue;
+        uint64_t total = 0;
+        bool ok = true;
+        for (int k = 0; k < files->n; k++) {
+            double b = jv_num(jv_get(files->items[k], "bytes"), -1);
+            if (b <= 0) { ok = false; break; }
+            total += (uint64_t)b;
+        }
+        if (!ok || total > ram) continue;
+        n_cand++;
+        double rb = jv_num(jv_get(f0, "resident_bytes"), 0);
+        uint64_t resident = rb > 0 && (uint64_t)rb < total ? (uint64_t)rb : total;
+        if (resident > bar) continue;
+        jv *env = jv_get(row, "envelope");
+        e[n_fit++] = (rec_entry){ id, repo, name, jv_str(jv_get(env, "fp32_reference"), ""),
+                                  jv_str(jv_get(env, "anchor"), ""), total, resident, files->n };
+    }
+    qsort(e, (size_t)n_fit, sizeof *e, rec_cmp);
+    double gib = (double)(1ull << 30);
+    printf("recommend: %d listed file%s %s no larger than %.2f GiB, %s; %d keep%s their "
+           "resident weights within %.2f GiB, %g of %.2f GiB. Largest first:\n",
+           n_cand, n_cand == 1 ? "" : "s", n_cand == 1 ? "is" : "are", (double)ram / gib,
+           memory_gib > 0 ? "the --memory figure" : "this machine's RAM",
+           n_fit, n_fit == 1 ? "s" : "", (double)bar / gib, share, (double)ram / gib);
+    for (int i = 0; i < n_fit; i++) {
+        const rec_entry *r = &e[i];
+        char size[64] = "";
+        if (r->resident < r->total)
+            snprintf(size, sizeof size, "  hot set (%.2f GiB file)", (double)r->total / gib);
+        else if (r->parts > 1)
+            snprintf(size, sizeof size, "  in %d parts", r->parts);
+        int stem = (int)strlen(r->name) - 5;
+        printf("  %.2f GiB  %s%s  -hf %s:%.*s\n", (double)r->resident / gib, r->id, size,
+               r->repo, stem, r->name);
+        char first[300];
+        rec_sentence(r->anchor, first, sizeof first);
+        if (!strcmp(r->ref, "measured"))
+            printf("      measured: %s\n", first);
+        else if (!strcmp(r->ref, "self"))
+            printf("      the publisher is this project, its BF16 file the reference: %s\n", first);
+        else
+            printf("      unmeasured: %s\n",
+                   !strcmp(r->ref, "owed") ? "a publisher float32 comparison is feasible and owed"
+                   : !strcmp(r->ref, "infeasible") ? "no publisher float32 reference is feasible"
+                   : "no float32 comparison recorded");
+        printf("      docs/model-support.md#%s\n", r->id);
+    }
+    if (n_fit)
+        printf("Run one with: runner -hf REPO:STEM -p \"...\"; runner --fit FILE -c N says "
+               "which context fits.\n");
+    free(e);
+    jv_free(doc);
+    return 0;
+}
+
 
 // --shadow-mode: exec the Python client's `shadow install`. The client is
 // stdlib-only and lives at <exe dir>/python/src in the source tree and in the
@@ -2107,6 +2274,11 @@ typedef struct {
     // parsed, in cli_resolve_shape(); the fields the modes read stay the
     // ones they always read.
     bool fit_info;                 // --info fit: fit-check -m without loading it
+    // --info recommend (runner recommend, R10.25): its roster, the RAM to plan
+    // for (0 = this machine's) and the share of it the resident weights may take
+    bool recommend;
+    const char *roster_path;
+    double memory_gib, ram_share;
     const char *record_path;       // --record PATH: receipts dir under --serve, else transcript
     const char *rewrite_out;       // --rewrite OUT: the one tensor-rewrite verb
     const char *quant_error_out;   // R4.7.3: --quant-error OUT.jsonl, per-tensor type costs
@@ -2702,7 +2874,8 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             else if (!strcmp(v, "adapter")) o->adapt_info = true;
             else if (!strcmp(v, "doctor")) o->doctor = true;
             else if (!strcmp(v, "fit")) o->fit_info = true;
-            else { fprintf(stderr, "error: --info expects caps, tools, adapter, doctor or fit\n"); *rc = 1; return false; }
+            else if (!strcmp(v, "recommend")) o->recommend = true;
+            else { fprintf(stderr, "error: --info expects caps, tools, adapter, doctor, fit or recommend\n"); *rc = 1; return false; }
         }
         else if (!strcmp(a, "--caps")) o->caps = true;
         // --shadow-mode: hand off to the Python client's `shadow install`
@@ -2717,6 +2890,20 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--tool-info")) o->tool_info = true;
         else if (!strcmp(a, "--adapt-info")) o->adapt_info = true;
         else if (!strcmp(a, "--fit")) o->fit_path = NEXT;
+        else if (!strcmp(a, "--roster")) o->roster_path = NEXT;
+        else if (!strcmp(a, "--memory") || !strcmp(a, "--ram-share")) {
+            const char *v = NEXT;
+            char *end = NULL;
+            double d = strtod(v, &end);
+            bool mem = !strcmp(a, "--memory");
+            if (!end || *end || !(mem ? d > 0 && d <= 1 << 20 : d >= 0.1 && d <= 1)) {
+                fprintf(stderr, "error: %s expects %s, not '%s'\n", a,
+                        mem ? "a size in GiB (8, 15.5)" : "a share of the RAM from 0.1 to 1", v);
+                *rc = 1;
+                return false;
+            }
+            if (mem) o->memory_gib = d; else o->ram_share = d;
+        }
         else if (!strcmp(a, "--version")) {
             printf("runner %s%s\n", RUNNER_VERSION, RUNNER_BUILD_FLAVOR ? " (" RUNNER_BUILD_FLAVOR_STR ")" : "");
             *rc = 0;
@@ -2762,6 +2949,7 @@ static int cli_verbs(const cli_opts *o, const char **names, int cap) {
     VERB(o->adapt_info, "--info adapter");
     VERB(o->caps, "--info caps");
     VERB(o->fit_info || o->fit_path, o->fit_info ? "--info fit" : "--fit");
+    VERB(o->recommend, "--info recommend");
     VERB(o->shadow_mode, "--shadow-mode");
     VERB(o->keygen_path, "--keygen");
     VERB(o->sign_record, "--sign-record");
@@ -2824,6 +3012,12 @@ static bool cli_resolve_shape(cli_opts *o) {
             return false;
         }
         o->fit_path = o->model_path;
+    }
+    // recommend's knobs, refused elsewhere rather than ignored
+    if ((o->roster_path || o->memory_gib > 0 || o->ram_share > 0) && !o->recommend) {
+        fprintf(stderr, "error: %s shapes runner recommend (--info recommend) and needs it\n",
+                o->roster_path ? "--roster" : o->memory_gib > 0 ? "--memory" : "--ram-share");
+        return false;
     }
     // the serve-only knobs, refused elsewhere rather than ignored
     if (o->port_given && !o->serve) {
@@ -2915,6 +3109,21 @@ static void argv_push(char ***out, int *n, int *cap, const char *s) {
 static int cli_expand_subcommand(int *argc, char ***argv) {
     if (*argc < 2) return -1;
     const char *sub = (*argv)[1];
+    // runner recommend [--memory GIB] [--ram-share F] [--roster FILE] is
+    // --info recommend with the same flags (R10.25); nothing to rename
+    if (!strcmp(sub, "recommend")) {
+        static char info[] = "--info", mode[] = "recommend";
+        char **out = malloc(sizeof *out * (size_t)(*argc + 2));
+        if (!out) { fprintf(stderr, "error: out of memory\n"); return 1; }
+        out[0] = (*argv)[0];
+        out[1] = info;
+        out[2] = mode;
+        for (int k = 2; k < *argc; k++) out[k + 1] = (*argv)[k];
+        out[*argc + 1] = NULL;
+        *argc += 1;
+        *argv = out;
+        return -1;
+    }
     bool attest = !strcmp(sub, "attest"), train = !strcmp(sub, "train");
     if (!attest && !train) return -1;
     char **out = NULL;
@@ -7045,6 +7254,9 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
         if (o->n_threads < 1) o->n_threads = 1;
     }
     if (o->fit_path) return run_fit_check(o->fit_path, o->mp.n_ctx, &o->mp, o->parallel);
+    if (o->recommend)
+        return run_recommend(o->roster_path, o->memory_gib,
+                             o->ram_share > 0 ? o->ram_share : 0.5);
 
     if (o->shadow_mode) return run_shadow_mode(o->model_path, o->shadow_yes);
     if (o->caps) return run_caps();

@@ -2305,7 +2305,10 @@ flags into unrelated feature sections.
 | `--ttl N` | Swap-mode idle unload timeout, default `300`; `0` disables it. Refused without `--serve`. |
 | `--force-uncertified` | Load a model even when its measured-envelope sidecar records an `outside-envelope` verdict for this runtime (refused by default). See [Measured-envelope gate](#measured-envelope-gate). |
 | `--json [FILE]` | Constrain output to one valid JSON object, or to the JSON Schema in `FILE`. The two are different constraints and a record names the one it ran under. With `--pull`, print the pull's result as one JSON object instead. |
-| `--info KIND` | Answer one question and exit. `caps`: machine, backend, quant, architecture, placement and sampling capabilities as JSON, no model needed. `tools`: load `-m` and print its tool-call protocol, chat template and sampling preset. `adapter`: whether a LoRA adapter can be served on `-m` and trained on it, with the sentence the real operation would refuse with. `doctor`: load `-m`, run one short probe and print a diagnostic report. `fit`: whether `-m` fits this machine, from its header alone. [Details](#cli-info). |
+| `--info KIND` | Answer one question and exit. `caps`: machine, backend, quant, architecture, placement and sampling capabilities as JSON, no model needed. `tools`: load `-m` and print its tool-call protocol, chat template and sampling preset. `adapter`: whether a LoRA adapter can be served on `-m` and trained on it, with the sentence the real operation would refuse with. `doctor`: load `-m`, run one short probe and print a diagnostic report. `fit`: whether `-m` fits this machine, from its header alone. `recommend` (also `runner recommend`): the listed model files that fit this machine, with each one's fidelity line, offline. [Details](#cli-info). |
+| `--memory GIB` | With `--info recommend`: plan for this much RAM instead of this machine's. [Details](#cli-recommend). |
+| `--ram-share F` | With `--info recommend`: the share of the RAM a file's resident weights may take, `0.1` to `1`, default `0.5`. [Details](#cli-recommend). |
+| `--roster FILE` | With `--info recommend`: read this copy of `docs/model-tiers.json` instead of the one built into the binary. [Details](#cli-recommend). |
 | `--doctor-include-text` | With `--info doctor`: keep the probe's prompt and reply text in the report. Read the report before sharing it. |
 | `--bench-json` | Run the built-in prompt/decode benchmark and print JSON metrics, with a `route` object for the run: every `paths` entry its forwards took (`batch` prefill, `solo` decode, `keep` verify rounds, `mtp`, `micro`) with the forward count and widest rows, the backend facts of `RUNNER_DEBUG_ROUTE`, the process's `kernels` counters (GEMM dispatches by weight type, CUDA split-K, CUDA attention kernels (`cuda_attn_tile` counts every tiled prefill tile, `cuda_attn_tc` the tensor-core ones among them, `cuda_attn_dec_gqa` the grouped decode launches) and KV copy-backs, Metal fast matvec and attention kernels, CPU multi-row dots), the `compiler`, `codegen` flags and `tuning` switches. |
 | `--score [N]` | Return teacher-forced token logprobs, NLL, perplexity and top-1 metrics as JSON over the raw `-p`/`-f` text. With `N` (1 to 256), also report each position's N most likely tokens as `[id, logprob]` pairs, best first, in a `top` array. [Details](#cli-score). |
@@ -2838,6 +2841,39 @@ how many layers the offload budget holds for each KV format. It reads only the
 header, so a partial download answers the question. Honours `--gpu off`, `--gpu N`,
 `--reserve vram=P` and `--parallel N`. Inside a container the available RAM is what
 its cgroup memory limit leaves, not the host's.
+
+<a id="cli-recommend"></a>
+`recommend` (`runner recommend`) lists the model files of
+[the support list](docs/model-support.md) that fit this machine, largest resident
+weights first, and makes no network request. A candidate is a listed text model in one
+`.gguf` file at its repository's top level, no larger than the RAM. It fits when its
+resident weights are within a share of the RAM, half by default (`--ram-share F`).
+Resident means the whole file, or, for a file whose per-layer token table is read by
+row (Gemma E-series), the hot set `--info fit` reports. The rule is the one the Dojo
+model picker applies, so the two give the same list. Each entry gives:
+
+- the resident size and the file's id;
+- the `-hf REPO:STEM` spelling to run it;
+- the fidelity line: `measured`, with the first sentence of its numerical anchor; or
+  `unmeasured`, with why;
+- the link to its entry in docs/model-support.md.
+
+```
+$ runner recommend --memory 8
+recommend: 23 listed files are no larger than 8.00 GiB, the --memory figure; 15 keep their resident weights within 4.00 GiB, 0.5 of 8.00 GiB. Largest first:
+  3.40 GiB  ministral-3-3b-instruct-2512-q8_0  -hf mistralai/Ministral-3-3B-Instruct-2512-GGUF:Ministral-3-3B-Instruct-2512-Q8_0
+      measured: Both files against Mistral AI's BF16 weights computed in float32 on the CPU (...)
+      docs/model-support.md#ministral-3-3b-instruct-2512-q8_0
+  2.97 GiB  nemotron-3.5-bolt-e4b-q4_k_m  hot set (5.76 GiB file)  -hf nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB:Nemotron-3.5-Bolt-E4B-Q4_K_M
+      unmeasured: a publisher float32 comparison is feasible and owed
+      docs/model-support.md#nemotron-3.5-bolt-e4b-q4_k_m
+  ...
+```
+
+The list comes from the roster this binary was built with. `--roster FILE` reads
+another copy, such as a newer `docs/model-tiers.json`. `--memory GIB` plans for
+another machine. Context and KV cache are not chosen here: they depend on the file's
+header, and `runner --fit FILE -c N` answers them per context.
 
 <a id="cli-type-plan"></a>
 #### `--type-plan PLAN.json`
