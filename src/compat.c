@@ -1349,6 +1349,22 @@ struct plat_dir {
     char *name;
 };
 
+int plat_stat_nofollow(const char *path, plat_stat_t *st, bool *link) {
+    wchar_t *wp = utf8_to_wide(path);
+    DWORD a = wp ? GetFileAttributesW(wp) : INVALID_FILE_ATTRIBUTES;
+    DWORD e = GetLastError();
+    free(wp);
+    *link = false;
+    if (a == INVALID_FILE_ATTRIBUTES) {
+        errno = e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? ENOENT
+              : e == ERROR_ACCESS_DENIED ? EACCES : EIO;
+        return -1;
+    }
+    *link = (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+    if (*link) { memset(st, 0, sizeof *st); return 0; }
+    return plat_stat(path, st);
+}
+
 plat_dir *plat_opendir(const char *path) {
     size_t n = strlen(path);
     char *pat = malloc(n + 3);
@@ -1376,10 +1392,14 @@ plat_dir *plat_opendir(const char *path) {
 }
 
 const char *plat_readdir(plat_dir *d) {
-    if (!d->pending && !FindNextFileW(d->h, &d->fd)) return NULL;
+    if (!d->pending && !FindNextFileW(d->h, &d->fd)) {
+        errno = GetLastError() == ERROR_NO_MORE_FILES ? 0 : EIO;
+        return NULL;
+    }
     d->pending = false;
     free(d->name);
     d->name = wide_to_utf8(d->fd.cFileName);
+    if (!d->name) errno = ENOMEM;
     return d->name;
 }
 
@@ -1466,6 +1486,12 @@ bool plat_realpath(const char *path, char *out, size_t cap) {
 
 struct plat_dir { DIR *d; };
 
+int plat_stat_nofollow(const char *path, plat_stat_t *st, bool *link) {
+    int rc = lstat(path, st);
+    *link = rc == 0 && S_ISLNK(st->st_mode);
+    return rc;
+}
+
 plat_dir *plat_opendir(const char *path) {
     DIR *dp = opendir(path);
     if (!dp) return NULL;
@@ -1476,6 +1502,7 @@ plat_dir *plat_opendir(const char *path) {
 }
 
 const char *plat_readdir(plat_dir *d) {
+    errno = 0;
     struct dirent *e = readdir(d->d);
     return e ? e->d_name : NULL;
 }

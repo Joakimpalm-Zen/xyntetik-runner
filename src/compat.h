@@ -286,6 +286,9 @@ bool plat_realpath(const char *path, char *out, size_t cap);
 // A directory's entry names, "." and ".." included, in UTF-8. A name is
 // valid until the next plat_readdir on the same handle.
 typedef struct plat_dir plat_dir;
+// Metadata without following a symlink/reparse point. When *link is true,
+// the caller must skip it; the remaining metadata is not usable on Windows.
+int         plat_stat_nofollow(const char *path, plat_stat_t *st, bool *link);
 plat_dir   *plat_opendir(const char *path);
 const char *plat_readdir(plat_dir *d);
 void        plat_closedir(plat_dir *d);

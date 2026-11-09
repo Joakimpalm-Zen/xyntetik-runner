@@ -393,6 +393,10 @@ jobs:
           make runner-no-manifest.exe
           python3 -m pytest -q tests/test_utf8_io.py --junitxml=.build/ci/utf8-io.xml
           python3 scripts/check-junit.py --no-skips .build/ci/utf8-io.xml
+      - name: offline cache inventory
+        run: |
+          python3 -m pytest -q tests/test_cached.py -k "not symlinks and not read_errors" --junitxml=.build/ci/cached.xml
+          python3 scripts/check-junit.py --no-skips .build/ci/cached.xml
       # the console's output code page: UTF-8 while a console is on stdout or
       # stderr, untouched when both are redirected, restored at exit
       - name: UTF-8 console code page
@@ -616,7 +620,7 @@ jobs:
           .venv/bin/python scripts/ci-run.py --timeout 1800 sanitized-cli -- \
             .venv/bin/python -m pytest -q --junitxml=.build/ci/sanitized-cli.xml \
             tests/test_cli_files.py tests/test_lineage.py tests/test_eval_record.py \
-            tests/test_moe_lora.py tests/test_merge.py
+            tests/test_moe_lora.py tests/test_merge.py tests/test_cached.py
           .venv/bin/python scripts/check-junit.py --no-skips .build/ci/sanitized-cli.xml
       - name: conformance report
         if: always()
