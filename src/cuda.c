@@ -4589,6 +4589,23 @@ static bool tc_on(const model_t *m, int type) {
     return tc_promoted(m, type);
 }
 
+// Whether the default (RUNNER_CUDA_TC unset) takes the tensor cores for any
+// weight matrix of this model: the route line's "tc=taken", else "tc=off". It
+// read "tc=promoted" for every non-MoE architecture before, listed or not, so
+// an unpromoted model's line and its records claimed a tensor-core prefill that
+// never ran; --verify reads that older word as "not recorded" (main.c).
+static bool tc_default_takes(const model_t *m) {
+    for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
+        const gguf_tensor *t = &m->gf.tensors[i];
+        if (t->n_dims == 2 && tc_promoted(m, t->type)) return true;
+    }
+    return false;
+}
+
+// The route's tensor-core policy for one weight type, the overrides included:
+// what a record's profile.route.tc_types lists (model_route_receipt_json).
+bool gpu_tc_takes(const model_t *m, int type) { return m && tc_on(m, type); }
+
 // Said once at load (R4.12.28): a codebook i-quant on an architecture whose
 // tensor-core prefill is not promoted has only the scalar batched kernel,
 // which decodes its codebooks per element and per column. Measured before
@@ -9657,7 +9674,8 @@ const char *gpu_route_detail(const model_t *m) {
              "window=%d tc_cols=%d%s%s%s",
              g->graph_bad ? "off" : g->gexec[0] || g->gexec[1] ? "replay" : "none",
              g_tc_state < 0 || moe_tc_family(m)
-                 ? (moe_tc_family(m) ? (tc_on(m, T_Q4_K) ? "moe-tc" : "off") : "promoted")
+                 ? (moe_tc_family(m) ? (tc_on(m, T_Q4_K) ? "moe-tc" : "off")
+                                     : tc_default_takes(m) ? "taken" : "off")
                  : g_tc_state ? "forced" : "off",
              g_tc_state >= 0 || tc_nvfp4_env() < 0 ? "" : tc_nvfp4_env() ? "+nvfp4" : "-nvfp4",
              !g->xh ? "off" : g->sw->mod80 ? "on-sm80" : "on",

@@ -91,6 +91,9 @@ unsigned long gpu_tc_dispatches(void);
 // format in a model dispatched, not just that something did: a total of a
 // mixed Q4_K/IQ file can be all Q4_K. 0 for a type outside the table.
 unsigned long gpu_tc_dispatches_type(int type);
+// whether the route takes the tensor cores for a weight type of this model
+// (RUNNER_CUDA_TC and the promotions included): a record's tc_types
+bool gpu_tc_takes(const model_t *m, int type);
 // of those, the ones the pipelined TC2 kernels ran (CUDA, RUNNER_CUDA_TC2)
 unsigned long gpu_tc2_dispatches(void);
 unsigned long gpu_tc2_reused(void);   // TC2 GEMMs that reused the previous GEMM's staging
