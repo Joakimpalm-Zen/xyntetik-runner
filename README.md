@@ -482,6 +482,8 @@ that carry an agent turn's tool calls and the tool results it was sent as data a
 evidence packs a reviewer checks offline (`runner attest pack`, `runner attest check-pack`),
 signature checks on the model file itself (`--model-sig`), and a text
 watermark with its detector (`--watermark`, `runner attest detect`).
+An opt-in Metal tiled generation names that arithmetic in its receipt. Without a replayable decode
+schedule, `--verify` reports `UNVERIFIABLE` instead of trying solo arithmetic and calling it divergence.
 
 **Where a model came from.** Each step that makes a model file (quantize,
 train, merge) writes a signed record beside it that names its inputs by

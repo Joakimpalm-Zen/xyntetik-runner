@@ -49,6 +49,14 @@ Current release and unreleased changes. Compatibility follows the
   - Two rungs (`--high`, `--low`) plan exactly as before.
   - `scripts/type-plan-by-sensitivity.py` takes the same `--ladder` and `--mid`, and the test holds the two to the
     same plan.
+
+- **Fix: Metal tiled receipts identify actual arithmetic and refuse unsupported replay (R3.39.3a).**
+  A successful tiled generation step marks `profile.route.micro` as `tiles`;
+  the configured switch alone no longer marks an identity-only receipt.
+  `--verify` refuses a tiled record without a replayable decode schedule as
+  `UNVERIFIABLE` before loading the model. The default is unchanged: tiles
+  remain opt-in, and 2-5 columns keep the identity route.
+
 - **Importance-weighted Q4_K, Q5_K, Q6_K, Q5_1 and IQ4_NL writers (R4.34.3).**
   `--imatrix` now shapes these formats as well as Q3_K and Q4_0, using ggml's
   type-specific weighting and scale searches. All five are byte twins of

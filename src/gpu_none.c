@@ -254,6 +254,8 @@ void gpu_batch_free(gpu_batch *b) {
     (void)b;
 }
 
+bool gpu_batch_tiles_used(const gpu_batch *b) { (void)b; return false; }
+
 bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                       const int *pos, int n, float **out) {
     (void)b; (void)idx; (void)tok; (void)pos; (void)n; (void)out;

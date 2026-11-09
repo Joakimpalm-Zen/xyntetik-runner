@@ -150,7 +150,9 @@ export interface TranscriptRecord {
              ctx: number; kv: string; batch: number; gpu_window?: number;
              gpu_route?: string;
              /** v2: the route the run took; --verify checks it on replay */
-             route?: { backend: string; cpu_act: string; backend_detail: string } };
+             route?: { backend: string; cpu_act: string; backend_detail: string;
+                       /** Actual tiled decode; UNVERIFIABLE without a replayable schedule. */
+                       micro?: "tiles" } };
   /** source: "hf:<owner>/<repo>@<revision>" for a file fetched with -hf */
   model: ReceiptFile & { source?: string };
   adapter: null | (ReceiptFile & { scale: number });

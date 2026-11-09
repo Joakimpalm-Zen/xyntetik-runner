@@ -22,6 +22,8 @@ import pathlib
 import re
 import subprocess
 import sys
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -33,6 +35,10 @@ TEXT = ("The quick brown fox jumps over the lazy dog while the five boxing wizar
 
 @pytest.fixture(scope="module")
 def runner_bin():
+    if sys.platform == "darwin":
+        pressure = int(subprocess.check_output(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"]))
+        if pressure >= 2:
+            pytest.skip("Metal model runs wait for memory pressure below 2")
     exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
     if not exe.exists():
         pytest.skip("runner binary not built")
@@ -113,3 +119,54 @@ def test_a_declined_microbatch_is_refused(runner_bin, model):
     r = _score(runner_bin, model, {"RUNNER_SCORE_MICRO": "8", "RUNNER_SCORE_CHUNKED": "1"})
     assert r.returncode != 0
     assert "set one" in r.stderr
+
+
+@pytest.mark.parametrize("parallel", [1, 8])
+def test_receipt_names_actual_tiles_and_refuses_missing_schedule(runner_bin, model, tmp_path,
+                                                               parallel):
+    sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+    from harness import RunnerServer
+
+    directory = tmp_path / "receipts"
+    env = dict(os.environ, RUNNER_METAL_BATCH_TILES="1", RUNNER_METAL_BATCH="1",
+               RUNNER_METAL_TIMING="0")
+    markers = [f"request_private_{i}" for i in range(parallel)]
+    with RunnerServer(runner_bin, model, ctx=512, parallel=parallel, env=env,
+                      extra_args=["-t", "2", "--receipts", str(directory)]) as srv:
+        def generate(i):
+            data = json.dumps({"prompt": markers[i], "max_tokens": 96,
+                               "temperature": 0, "ignore_eos": True}).encode()
+            req = urllib.request.Request(srv.base_url + "/v1/completions", data=data,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=120) as response:
+                assert response.status == 200
+                return json.load(response)
+        with ThreadPoolExecutor(max_workers=parallel) as pool:
+            list(pool.map(generate, range(parallel)))
+        if parallel > 1:
+            markers.append("solo_after_tiled_requests")
+            generate(len(markers) - 1)
+    records = [(p, json.loads(p.read_bytes())) for p in directory.glob("receipt-*.json")]
+    assert len(records) == len(markers)
+    tiled = []
+    for path, record in records:
+        route = record["profile"]["route"]
+        has_tiles = route.get("micro") == "tiles"
+        assert ("micro=tiles" in route["backend_detail"]) == has_tiles
+        text = json.dumps({"prompt": record["prompt"], "profile": record["profile"]})
+        own = record["prompt"]["text"]
+        assert own in markers
+        assert all(marker == own or marker not in text for marker in markers)
+        if own == "solo_after_tiled_requests":
+            assert not has_tiles, "a previous request's marker leaked into a solo generation"
+        if has_tiles:
+            tiled.append(path)
+    if parallel == 1:
+        assert not tiled, "an enabled switch is not an actual tiled forward"
+    else:
+        assert tiled, "concurrent generation never took a tiled step"
+        replay = subprocess.run([runner_bin, "-m", str(model), "--verify", str(tiled[0]),
+                                 "--ignore-eos", "--no-tray"], capture_output=True,
+                                text=True, timeout=15)
+        assert replay.returncode == 3, replay.stdout + replay.stderr
+        assert "tiled microbatch" in replay.stderr and "decode schedule" in replay.stderr

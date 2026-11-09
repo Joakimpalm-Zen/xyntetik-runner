@@ -431,6 +431,7 @@ typedef struct {
     // micro; how many forwards and the widest row count of each
     uint32_t route_runs[MODEL_ROUTE_PATHS];
     int      route_rows[MODEL_ROUTE_PATHS];
+    bool     route_micro_tiles_seen; // actual tiled decode since generation began
     f16_t *kcache, *vcache;  // [n_layer][n_ctx][kv_dim], fp16 (or q8_0 blocks
                              // when kv_q8 — treated as raw bytes then)
     kv_owner_t kv_owner;     // malloc on CPU/CUDA; backend-owned on Metal

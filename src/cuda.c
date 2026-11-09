@@ -9721,6 +9721,8 @@ fail:
     return NULL;
 }
 
+bool gpu_batch_tiles_used(const gpu_batch *b) { (void)b; return false; }
+
 void gpu_batch_free(gpu_batch *b) {
     if (!b) return;
     if (b->sw && b->sw->ctx) cu.CtxSetCurrent(b->sw->ctx);

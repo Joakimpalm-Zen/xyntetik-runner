@@ -256,6 +256,13 @@ static int32_t *json_token_ids(jv *arr, int *n_out) {
 static bool replay_constraints_ok(jv *rec, bool json_mode,
                                   const char *schema_file, bool ignore_eos,
                                   char *why, size_t cap) {
+    jv *route = jv_get(jv_get(rec, "profile"), "route");
+    jv *micro = jv_get(route, "micro");
+    const char *detail = jv_str(jv_get(route, "backend_detail"), "");
+    if (micro || strstr(detail, " micro=tiles")) {
+        snprintf(why, cap, "tiled microbatch arithmetic requires a recorded decode schedule");
+        return false;
+    }
     jv *cons = jv_get(rec, "constraints");
     jv *serve = jv_get(rec, "serve");
     if (cons && cons->type != J_ARR) {

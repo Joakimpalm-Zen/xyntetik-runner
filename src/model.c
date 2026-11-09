@@ -7284,8 +7284,19 @@ void model_route_draft(model_t *m, const char *src, bool by_default) {
 void model_route_receipt_json(const model_t *m, char *out, int cap) {
     route_facts r;
     route_collect(m, &r);
-    snprintf(out, cap, "{\"backend\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\"}",
-             r.backend, r.cpu_act, r.detail);
+    // The diagnostic detail names policy switches; a receipt must describe
+    // actual arithmetic in this generation, including a later CPU fallback.
+    char detail[384];
+    snprintf(detail, sizeof detail, "%s", r.detail);
+    char *tag = strstr(detail, " micro=tiles");
+    if (tag) memmove(tag, tag + sizeof(" micro=tiles") - 1,
+                     strlen(tag + sizeof(" micro=tiles") - 1) + 1);
+    if (m->route_micro_tiles_seen) {
+        size_t n = strlen(detail);
+        snprintf(detail + n, sizeof detail - n, " micro=tiles");
+    }
+    snprintf(out, cap, "{\"backend\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\"%s}",
+             r.backend, r.cpu_act, detail, m->route_micro_tiles_seen ? ",\"micro\":\"tiles\"" : "");
 }
 
 void model_route_json(const model_t *m, char *out, int cap) {
@@ -15095,6 +15106,7 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
             // step and a solo step cannot drift apart on them.
             for (int i = done; i < done + take; i++) {
                 model_t *m = b->seqs[idx[i]];
+                if (gpu_batch_tiles_used(b->gb)) m->route_micro_tiles_seen = true;
                 apply_head_transforms(m, out[i]);
                 model_kv_ring_note(m, pos[i], 1);
                 route_ran(m, RP_MICRO, take);

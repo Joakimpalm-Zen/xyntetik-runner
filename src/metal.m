@@ -5170,6 +5170,7 @@ struct gpu_batch {
     int           n;
     gpu_t        *lead;    // whose queue/scratch encode the step
     int           n_vocab, n_embd, xdim;
+    bool          last_tiles; // actual dispatches, not the configured policy
     id<MTLBuffer> logits_n;   // [MODEL_BATCH_MAX][n_vocab]
 };
 
@@ -5345,7 +5346,7 @@ void gpu_batch_free(gpu_batch *b) {
 // Q8_0 N=4 54.1 / 39.9, N=6 56.7 / 56.0, N=7 57.3 / 62.9, N=8 58.2 / 69.9.
 enum { MB_TILES_MIN = 6 };
 
-static void enc_mb_mv(gpu_t *g, id<MTLComputeCommandEncoder> e,
+static bool enc_mb_mv(gpu_t *g, id<MTLComputeCommandEncoder> e,
                       gguf_tensor *w, id<MTLBuffer> x, NSUInteger x_off,
                       id<MTLBuffer> y, NSUInteger y_off,
                       int n_in, int n_out, id<MTLBuffer> bias,
@@ -5353,10 +5354,13 @@ static void enc_mb_mv(gpu_t *g, id<MTLComputeCommandEncoder> e,
     if (n_col >= MB_TILES_MIN && metal_batch_tiles_on() &&
         enc_mm_tiles(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
                      n_col, x_stride, y_stride))
-        return;
+        return true;
     enc_mv_cols(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
                 n_col, x_stride, y_stride, true);
+    return false;
 }
+
+bool gpu_batch_tiles_used(const gpu_batch *b) { return b && b->last_tiles; }
 
 // RUNNER_METAL_TIMING=2 (R3.24): the decode microbatch commits and waits at
 // each stage boundary, so every stage's GPU time is its own command buffer's.
@@ -5377,6 +5381,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     model_t *m0 = b->seqs[0];
     int n_embd = b->n_embd;
     int xdim   = b->xdim;
+    bool used_tiles = false;
 
     // gpu_batch_create sized the lead's scratch. Writing column 1 into
     // one-column buffers lands in whichever allocation the heap put next (found
@@ -5427,13 +5432,13 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
 
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->attn_norm[l],
                       n_embd, m0->rms_eps, n, n_embd, xdim);
-        enc_mb_mv(g, e, ly->wq, g->xb, 0, g->q, 0,
+        used_tiles |= enc_mb_mv(g, e, ly->wq, g->xb, 0, g->q, 0,
                   n_embd, q_dim_l, g->bq[l], n, xdim, q_dim);
         if (owns_kv) {
-            enc_mb_mv(g, e, ly->wk, g->xb, 0, g->kt, 0,
+            used_tiles |= enc_mb_mv(g, e, ly->wk, g->xb, 0, g->kt, 0,
                       n_embd, kv_dim_l, g->bk[l], n, xdim, kv_dim);
             if (ly->wv)
-                enc_mb_mv(g, e, ly->wv, g->xb, 0, g->vt, 0,
+                used_tiles |= enc_mb_mv(g, e, ly->wv, g->xb, 0, g->vt, 0,
                           n_embd, kv_dim_l, g->bv[l], n, xdim, kv_dim);
         }
         if (g->qn[l])
@@ -5488,7 +5493,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         }
         MB_CUT(MB_ATTN);
 
-        enc_mb_mv(g, e, ly->wo, g->xb2, 0, g->xb, 0,
+        used_tiles |= enc_mb_mv(g, e, ly->wo, g->xb2, 0, g->xb, 0,
                   q_dim_l, n_embd, g->bo[l], n, xdim, xdim);
         if (g->pan[l])
             enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pan[l],
@@ -5501,13 +5506,13 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         int nff_l = ly->n_ff;
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->ffn_norm[l],
                       n_embd, m0->rms_eps, n, n_embd, xdim);
-        enc_mb_mv(g, e, ly->w_gate, g->xb, 0, g->hb, 0,
+        used_tiles |= enc_mb_mv(g, e, ly->w_gate, g->xb, 0, g->hb, 0,
                   n_embd, nff_l, nil, n, xdim, nff_l);
-        enc_mb_mv(g, e, ly->w_up, g->xb, 0, g->hb2, 0,
+        used_tiles |= enc_mb_mv(g, e, ly->w_up, g->xb, 0, g->hb2, 0,
                   n_embd, nff_l, nil, n, xdim, nff_l);
         enc_elem(g, e, metal_act_pipeline(g, m0), g->hb, 0, g->hb2, 0, n * nff_l);
         MB_CUT(MB_UP);
-        enc_mb_mv(g, e, ly->w_down, g->hb, 0, g->xb, 0,
+        used_tiles |= enc_mb_mv(g, e, ly->w_down, g->hb, 0, g->xb, 0,
                   nff_l, n_embd, nil, n, nff_l, xdim);
         if (g->pfn[l])
             enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->pfn[l],
@@ -5528,7 +5533,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         enc_rmsnorm(g, e, g->x, foff((size_t)c * n_embd),
                     g->xb, foff((size_t)c * xdim), g->out_norm,
                     n_embd, m0->rms_eps);
-    enc_mb_mv(g, e, m0->output, g->xb, 0, b->logits_n, 0,
+    used_tiles |= enc_mb_mv(g, e, m0->output, g->xb, 0, b->logits_n, 0,
               n_embd, b->n_vocab, nil, n, xdim, b->n_vocab);
 
     [e endEncoding];
@@ -5548,6 +5553,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                 "falling back to sequential decode\n");
         return false;
     }
+    b->last_tiles = used_tiles;
     for (int c = 0; c < n; c++)
         out[c] = (float *)b->logits_n.contents + (size_t)c * b->n_vocab;
     return true;
