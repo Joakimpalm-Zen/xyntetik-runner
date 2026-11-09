@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <limits.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -582,4 +583,249 @@ bool hf_fetch_files(const char *spec, const char *flag, hf_files *out, char *err
     if (!first) { hf_files_free(out); return false; }
     free(first);
     return true;
+}
+
+// ------------------------------------------------------ offline inventory
+
+void hf_cache_free(hf_cache *c) {
+    if (!c) return;
+    for (int i = 0; i < c->n; i++) {
+        hf_cached_model *m = &c->models[i];
+        for (int j = 0; j < m->n; j++) {
+            free(m->files[j].path);
+            free(m->files[j].name);
+        }
+        free(m->files); free(m->path); free(m->cache_dir); free(m->repo);
+    }
+    for (int i = 0; i < c->n_errors; i++) {
+        free(c->errors[i].path); free(c->errors[i].message);
+    }
+    free(c->root); free(c->models); free(c->errors);
+    memset(c, 0, sizeof *c);
+}
+
+static char *cache_join(const char *a, const char *b) {
+    size_t n = strlen(a), k = strlen(b);
+    char *p = malloc(n + k + 2);
+    if (p) { memcpy(p, a, n); p[n] = HF_SEP; memcpy(p + n + 1, b, k + 1); }
+    return p;
+}
+
+static bool cache_error(hf_cache *c, const char *path, const char *message) {
+    hf_cache_error e = {strdup(path), strdup(message)};
+    hf_cache_error *p = realloc(c->errors, sizeof *p * (size_t)(c->n_errors + 1));
+    if (p) c->errors = p;
+    if (!p || !e.path || !e.message) { free(e.path); free(e.message); return false; }
+    c->errors[c->n_errors++] = e;
+    return true;
+}
+
+static bool cache_add(hf_cache *c, const char *dir, const char *repo,
+                      const char *name, const char *path, bool sizes_only,
+                      jv *listing, const plat_stat_t *before) {
+    hf_cached_model *p = realloc(c->models, sizeof *p * (size_t)(c->n + 1));
+    if (!p) return false;
+    c->models = p;
+    hf_cached_model *m = &c->models[c->n++];
+    memset(m, 0, sizeof *m);
+    m->path = strdup(path); m->cache_dir = strdup(dir);
+    m->repo = repo ? strdup(repo) : NULL;
+    m->files = calloc(1, sizeof *m->files);
+    m->parts = 1; m->complete = true;
+    m->auxiliary = starts_with_ci(base_name(name), "mmproj");
+    if (!m->path || !m->cache_dir || (repo && !m->repo) || !m->files) return false;
+    m->n = 1;
+    hf_cached_file *f = m->files;
+    f->path = strdup(path); f->name = strdup(name);
+    f->size = (long long)before->st_size; m->size = f->size;
+    f->listed_size = -1; f->listing_match = -1;
+    f->hash_status = sizes_only ? "not_requested" : "computed";
+    if (!f->path || !f->name) return false;
+    if (!sizes_only) {
+        fprintf(stderr, "cached: hashing %s (%lld bytes)\n", path, f->size);
+        bool ok = envelope_file_sha256(path, f->sha256);
+        plat_stat_t after;
+        bool link = false;
+        bool stable = plat_stat_nofollow(path, &after, &link) == 0 && !link &&
+            before->st_size == after.st_size && before->st_mtime == after.st_mtime &&
+            before->st_ctime == after.st_ctime && before->st_ino == after.st_ino &&
+            before->st_dev == after.st_dev;
+#ifndef _WIN32
+#ifdef __APPLE__
+        stable = stable && before->st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec &&
+                           before->st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec;
+#else
+        stable = stable && before->st_mtim.tv_nsec == after.st_mtim.tv_nsec &&
+                           before->st_ctim.tv_nsec == after.st_ctim.tv_nsec;
+#endif
+#endif
+        if (!ok || !stable) {
+            f->sha256[0] = 0;
+            f->hash_status = ok ? "changed" : "unreadable";
+            if (!cache_error(c, path, ok ? "file changed while hashing" : "cannot hash file")) return false;
+        }
+    }
+    jv *siblings = jv_get(listing, "siblings");
+    for (int i = 0; siblings && siblings->type == J_ARR && i < siblings->n; i++) {
+        jv *e = siblings->items[i];
+        if (strcmp(jv_str(jv_get(e, "rfilename"), ""), name)) continue;
+        const char *sha = jv_str(jv_get(jv_get(e, "lfs"), "sha256"), "");
+        bool valid = strlen(sha) == 64;
+        for (int k = 0; valid && k < 64; k++) valid = isxdigit((unsigned char)sha[k]);
+        if (valid) {
+            for (int k = 0; k < 64; k++) f->listed_sha256[k] = (char)tolower((unsigned char)sha[k]);
+            if (*f->sha256) f->listing_match = strcmp(f->sha256, f->listed_sha256) == 0;
+        }
+        jv *sz = jv_get(e, "size");
+        if (sz && sz->type == J_NUM && sz->num >= 0 && sz->num <= 9007199254740992.0 && sz->num == floor(sz->num)) {
+            f->listed_size = (long long)sz->num;
+            if (!valid) f->listing_match = f->size == f->listed_size;
+            else if (f->size != f->listed_size) f->listing_match = 0;
+        }
+        break;
+    }
+    return true;
+}
+
+static bool cache_walk(hf_cache *c, const char *dir, const char *repo,
+                       const char *base, const char *rel, bool sizes_only,
+                       jv *listing, int depth) {
+    char *path = *rel ? cache_join(base, rel) : strdup(base);
+    if (!path) return false;
+    plat_dir *dp = plat_opendir(path);
+    if (!dp) { bool ok = cache_error(c, path, "cannot read directory"); free(path); return ok; }
+    bool ok = true;
+    const char *entry;
+    while (ok && (entry = plat_readdir(dp))) {
+        if (!strcmp(entry, ".") || !strcmp(entry, "..")) continue;
+        char *name = *rel ? cache_join(rel, entry) : strdup(entry);
+        char *child = cache_join(path, entry);
+        if (!name || !child) { free(name); free(child); ok = false; break; }
+        // Repo names in cached listings always use '/', including on Windows.
+        for (char *s = name; *s; s++) if (*s == HF_SEP) *s = '/';
+        plat_stat_t st;
+        bool link;
+        if (plat_stat_nofollow(child, &st, &link) != 0)
+            ok = cache_error(c, child, "cannot read metadata");
+        else if (!link && S_ISDIR(st.st_mode)) {
+            if (depth >= 128) ok = cache_error(c, child, "directory nesting limit reached");
+            else ok = cache_walk(c, dir, repo, base, name, sizes_only, listing, depth + 1);
+        } else if (!link && S_ISREG(st.st_mode) && ends_with_ci(name, ".gguf"))
+            ok = cache_add(c, dir, repo, name, child, sizes_only, listing, &st);
+        free(name); free(child);
+        // The next readdir resets errno; unrelated file operations cannot
+        // manufacture a directory-read error at EOF.
+    }
+    if (ok && errno) ok = cache_error(c, path, "directory enumeration failed");
+    plat_closedir(dp); free(path);
+    return ok;
+}
+
+// Flattening alone cannot recover owner/repo: either component can contain
+// '--'. Accept only an explicit cached listing id that maps back to this dir.
+static const char *cache_repo_id(jv *listing, const char *dir) {
+    const char *id = jv_str(jv_get(listing, "id"), NULL);
+    const char *slash = id ? strchr(id, '/') : NULL;
+    if (!slash || strchr(slash + 1, '/')) return NULL;
+    size_t n = (size_t)(slash - id);
+    if (!safe_repo_segment(id, n) || !safe_repo_segment(slash + 1, strlen(slash + 1))) return NULL;
+    return strlen(dir) == strlen(id) + 1 && !strncmp(dir, id, n) &&
+           dir[n] == '-' && dir[n + 1] == '-' && !strcmp(dir + n + 2, slash + 1) ? id : NULL;
+}
+
+static int cache_model_cmp(const void *a, const void *b) {
+    const hf_cached_model *x = a, *y = b;
+    int c = strcmp(x->cache_dir, y->cache_dir);
+    return c ? c : strcmp(x->files[0].name, y->files[0].name);
+}
+
+// Fixed-width part numbers sort in numeric order. Group present siblings,
+// including an orphan later part whose first part is absent.
+static bool cache_group(hf_cache *c) {
+    for (int i = 0; i < c->n; i++) {
+        hf_cached_model *m = &c->models[i];
+        unsigned part, count;
+        size_t prefix;
+        const char *name = m->files[0].name;
+        if (!part_suffix(name, &part, &count, &prefix)) continue;
+        m->parts = count;
+        size_t offset = strlen(m->path) - strlen(name) + prefix + 1;
+        memcpy(m->path + offset, "00001", 5);
+        for (int j = 0; j < i; j++) {
+            hf_cached_model *g = &c->models[j];
+            if (!g->n || strcmp(g->path, m->path)) continue;
+            if (g->size > LLONG_MAX - m->size) return false;
+            hf_cached_file *files = realloc(g->files, sizeof *files * (size_t)(g->n + 1));
+            if (!files) return false;
+            g->files = files;
+            g->files[g->n++] = m->files[0];
+            g->size += m->size;
+            free(m->files); free(m->path); free(m->cache_dir); free(m->repo);
+            memset(m, 0, sizeof *m);
+            break;
+        }
+    }
+    int n = 0;
+    for (int i = 0; i < c->n; i++) {
+        hf_cached_model *m = &c->models[i];
+        if (!m->n) continue;
+        m->complete = (unsigned)m->n == m->parts;
+        if (n != i) { c->models[n] = *m; memset(m, 0, sizeof *m); }
+        n++;
+    }
+    c->n = n;
+    return true;
+}
+
+bool hf_cache_read(bool sizes_only, hf_cache *c, char *err, size_t cap) {
+    memset(c, 0, sizeof *c); err[0] = 0;
+    char root[1024];
+    if (!cache_root(root, sizeof root)) { snprintf(err, cap, "no cache directory: set RUNNER_HF_CACHE"); return false; }
+    c->root = strdup(root);
+    if (!c->root) goto oom;
+    plat_stat_t st;
+    bool link;
+    int sr = plat_stat_nofollow(root, &st, &link);
+    if (sr != 0 && errno == ENOENT) return true;
+    if (sr != 0 || link || !S_ISDIR(st.st_mode)) {
+        if (!cache_error(c, root, "cache root is not a readable directory (links are not followed)")) goto oom;
+        return true;
+    }
+    plat_dir *dp = plat_opendir(root);
+    if (!dp) {
+        if (!cache_error(c, root, "cannot read cache root")) goto oom;
+        return true;
+    }
+    bool ok = true;
+    const char *entry;
+    while (ok && (entry = plat_readdir(dp))) {
+        if (!strcmp(entry, ".") || !strcmp(entry, "..") || !strstr(entry, "--")) continue;
+        char *dir = strdup(entry), *base = cache_join(root, entry);
+        if (!dir || !base) { free(dir); free(base); ok = false; break; }
+        if (plat_stat_nofollow(base, &st, &link) != 0) ok = cache_error(c, base, "cannot read metadata");
+        else if (!link && S_ISDIR(st.st_mode)) {
+            char *listpath = cache_join(base, ".files.json");
+            size_t n = 0;
+            plat_stat_t lst;
+            bool listing_link = false;
+            char *text = listpath && plat_stat_nofollow(listpath, &lst, &listing_link) == 0 &&
+                         !listing_link && S_ISREG(lst.st_mode) ?
+                         plat_read_file(listpath, 8 * 1024 * 1024, &n) : NULL;
+            jv *listing = text ? json_parse(text, n) : NULL;
+            free(text); free(listpath);
+            // Missing/malformed/stale listing cannot hide actual cached bytes.
+            ok = cache_walk(c, dir, cache_repo_id(listing, dir), base, "", sizes_only, listing, 0);
+            jv_free(listing);
+        }
+        free(dir); free(base);
+    }
+    if (ok && errno) ok = cache_error(c, root, "cache enumeration failed");
+    plat_closedir(dp);
+    if (!ok) goto oom;
+    if (c->n > 1) qsort(c->models, (size_t)c->n, sizeof *c->models, cache_model_cmp);
+    if (!cache_group(c)) goto oom;
+    return true;
+oom:
+    snprintf(err, cap, "cannot allocate or represent cache inventory");
+    return false;
 }

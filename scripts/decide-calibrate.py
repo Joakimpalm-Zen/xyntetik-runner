@@ -75,6 +75,7 @@ DEFAULT_HOLDOUT_FRAC = 0.2
 DEFAULT_BINS = 10
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF = 0.5
+DEFAULT_TIMEOUT = 120.0
 # the renderings POST /v1/decide accepts (src/decide.c); raw-v1 is its default
 RENDERINGS = ("raw-v1", "continuation-v1")
 
@@ -201,7 +202,7 @@ def build_payload(state, model_name, answer_prefix, group_rows, rendering=None):
     return payload
 
 
-def post_decide(endpoint, payload, timeout=120,
+def post_decide(endpoint, payload, timeout=DEFAULT_TIMEOUT,
                  max_retries=DEFAULT_MAX_RETRIES, backoff=DEFAULT_BACKOFF):
     """POST one /v1/decide request. Returns (ok, body_or_None, error_or_None).
 
@@ -269,21 +270,23 @@ def apply_decisions(group_rows, body):
 
 def send_group(endpoint, model_name, answer_prefix, group_rows,
                max_retries=DEFAULT_MAX_RETRIES, backoff=DEFAULT_BACKOFF,
-               rendering=None):
+               rendering=None, timeout=DEFAULT_TIMEOUT):
     """Send one group of rows (sharing one `state`) as a single request.
     A 400 on a multi-question group is isolated by falling back to one
     request per question, so one bad question in a batch does not fail
     every question that shares its state prefill."""
     payload = build_payload(group_rows[0]["state"], model_name, answer_prefix,
                             group_rows, rendering)
-    ok, body, err = post_decide(endpoint, payload, max_retries=max_retries, backoff=backoff)
+    ok, body, err = post_decide(endpoint, payload, timeout=timeout,
+                              max_retries=max_retries, backoff=backoff)
     if ok:
         apply_decisions(group_rows, body)
         return
     if err and err.startswith("HTTP 400") and len(group_rows) > 1:
         for r in group_rows:
             send_group(endpoint, model_name, answer_prefix, [r],
-                       max_retries=max_retries, backoff=backoff, rendering=rendering)
+                       max_retries=max_retries, backoff=backoff,
+                       rendering=rendering, timeout=timeout)
         return
     for r in group_rows:
         r["failed"] = True
@@ -626,6 +629,9 @@ def render_report(result):
 # ----------------------------------------------------------------- main ---
 
 def run(args):
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        print("error: --timeout must be finite and positive", file=sys.stderr)
+        return None, 2
     if args.rendering == "continuation-v1" and args.answer_prefix:
         # the server refuses this pair on every request (src/decide.c), so
         # the run would be one 400 per group and an empty report
@@ -660,7 +666,7 @@ def run(args):
     for group in request_groups:
         send_group(args.endpoint, args.model_name, args.answer_prefix, group,
                    max_retries=DEFAULT_MAX_RETRIES, backoff=DEFAULT_BACKOFF,
-                   rendering=args.rendering)
+                   rendering=args.rendering, timeout=args.timeout)
         done += len(group)
         if done - last_reported >= 50 or done == total:
             print(f"progress: {done}/{total} questions", file=sys.stderr)
@@ -690,6 +696,7 @@ def run(args):
         "model_name": args.model_name,
         "answer_prefix": args.answer_prefix,
         **({"rendering": args.rendering} if args.rendering is not None else {}),
+        **({"request_timeout_s": args.timeout} if args.timeout != DEFAULT_TIMEOUT else {}),
         "seed": args.seed,
         "holdout_frac": args.holdout_frac,
         "bins": args.bins,
@@ -730,6 +737,9 @@ def main(argv=None):
                     help="base URL of the /v1/decide server")
     ap.add_argument("--model-name", required=True,
                     help="model field sent with every request")
+    ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
+                    help="HTTP timeout in seconds per attempt, including batch "
+                         "fallback (default 120; finite and positive)")
     ap.add_argument("--answer-prefix", default="",
                     help="text placed between the question and every option")
     ap.add_argument("--rendering", choices=RENDERINGS, default=None,

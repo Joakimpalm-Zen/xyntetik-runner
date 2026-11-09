@@ -88,6 +88,10 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
                        const char *const *options, int n_opt,
                        decide_result *out, int *prompt_tokens, const char **err,
                        canon_prefix *canon) {
+    if (e->stop && e->stop(e->stop_ud)) {
+        *err = "request stopped";
+        return false;
+    }
     *err = NULL;
     model_t *m = e->m;
     int32_t *ptoks = NULL;
@@ -139,6 +143,9 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
     const int32_t *path = NULL; int path_n = 0;
     for (int i = 0; i < n_opt && ok; i++) {
         opt_seq *s = &seq[i];
+        if (e->stop && e->stop(e->stop_ud)) {
+            *err = "request stopped"; ok = false; break;
+        }
         int shared = 0;
         if (path) {
             int lim = s->n < path_n ? s->n : path_n;
@@ -159,6 +166,11 @@ static bool score_mode(engine *e, const char *prompt, tok_mode mode,
         double total = 0;
         for (int d = s->common; d < start; d++) total += lp_at[d];
         for (int d = start; d < s->n; d++) {
+            // engine_feed polls only between chunks within one call. Option
+            // scoring makes one-token calls, so it must poll between calls.
+            if (e->stop && e->stop(e->stop_ud)) {
+                *err = "request stopped"; ok = false; break;
+            }
             double v = (double)L[s->toks[d]] - lse(L, m->n_vocab);
             lp_at[d] = v; has[d] = 1; total += v;
             L = engine_feed(e, &s->toks[d], 1);   // also keeps hist == the path
