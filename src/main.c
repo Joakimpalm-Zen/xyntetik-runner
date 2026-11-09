@@ -4351,6 +4351,9 @@ static bool cli_mtp_default_wanted(const cli_opts *o, const char *load_path, boo
     if (registry || o->serve || o->interactive || o->draft_off || o->draft_path ||
         o->mtp_on || o->draft_lookup || o->mp.gpu_mode == GPU_OFF)
         return false;
+    // an explicit --gpu N below the measured model's 32 trunk layers is a
+    // partial offload by request: no row, and no reason to bind the head
+    if (o->mp.gpu_layers_override > 0 && o->mp.gpu_layers_override < 32) return false;
     if (!o->json_mode && !o->schema_file) return false;
     if (o->train_path || o->dpo_path || o->verify_path || o->decide_path ||
         o->systemone_path || o->score || o->doctor || o->resume_path ||
