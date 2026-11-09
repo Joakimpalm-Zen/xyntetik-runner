@@ -2423,7 +2423,8 @@ static void send_capabilities(sock_t fd) {
                  : e->lookup_on && !e->draft_default ? "lookup" : NULL;
         // R3.39.4: with no source named, a request with draft_hints takes
         // the lookup where the measured row holds (CUDA, every layer on it)
-        if (!SV.draft_requested && !SV.draft_off && engine_cuda_full(e) &&
+        if (!SV.draft_requested && !SV.draft_off &&
+            (engine_cuda_full(e) || engine_draft_scope_forced()) &&
             model_spec_verify_ok(slot->m))
             lookup_default = true;
     }

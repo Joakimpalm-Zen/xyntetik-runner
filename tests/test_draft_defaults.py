@@ -193,3 +193,99 @@ def test_server_draft_off_refuses_hints(runner_bin, model):
         assert ei.value.code == 400
         t = _post(srv, _req())["runner_telemetry"]
         assert t["speculative"] is False
+
+
+# ------------------------------------------ a defaulted run's record verifies
+#
+# RUNNER_TEST_DRAFT_SCOPE=1 makes the default sites treat this host and any
+# single NextN head as the measured scope, so the defaults fire on fixtures.
+# The replay runs WITHOUT it: a record replays the source it names, never the
+# answer today's default rule would give. On a CUDA host (the CUDA gate) this
+# is the case the measured file exposed: the head's walk takes no decode
+# graph, so a plain replay took another route and the verify refused it.
+
+SCOPE = {"RUNNER_TEST_DRAFT_SCOPE": "1"}
+
+
+def _scope_gpu(runner_bin):
+    # every layer on CUDA where it is; elsewhere the CPU, the head's route
+    return ["--gpu", "99"] if _cuda(runner_bin) else ["--gpu", "off"]
+
+
+def test_a_defaulted_head_records_and_verifies(runner_bin, mtp_model, tmp_path):
+    rec = tmp_path / "r.json"
+    p = subprocess.run(
+        [runner_bin, "-m", str(mtp_model), "-p", REPEAT, "-n", "16", "-c", "512",
+         "--temp", "0", "-t", "2", "--json", "--record", str(rec),
+         *_scope_gpu(runner_bin)],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300,
+        env={**os.environ, **SCOPE, "RUNNER_DEBUG_ROUTE": "1"})
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode == 0, err
+    assert "the default for JSON output" in err, err
+    assert " draft=mtp:default " in err, err
+    spec = json.loads(rec.read_text())["speculation"]
+    assert spec["source"] == "mtp" and spec["default"] is True, spec
+    v = subprocess.run(
+        [runner_bin, "-m", str(mtp_model), "--verify", str(rec), "--json", "-t", "2",
+         *_scope_gpu(runner_bin)],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300,
+        env={**os.environ, "RUNNER_DEBUG_ROUTE": "1"})
+    out = (v.stdout + v.stderr).decode(errors="replace")
+    assert v.returncode == 0 and "VERIFIED" in out, out[-1500:]
+    assert "the record's default source" in out and " draft=mtp:default " in out, out[-1500:]
+
+
+def test_a_named_source_record_verifies_without_the_flag(runner_bin, mtp_model, tmp_path):
+    """--draft mtp named at record time: the replay binds it from the record,
+    with no flag, and the record carries no "default"."""
+    rec = tmp_path / "r.json"
+    p = subprocess.run(
+        [runner_bin, "-m", str(mtp_model), "-p", REPEAT, "-n", "16", "-c", "512",
+         "--temp", "0", "-t", "2", "--draft", "mtp", "--record", str(rec),
+         *_scope_gpu(runner_bin)],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    spec = json.loads(rec.read_text())["speculation"]
+    assert spec["source"] == "mtp" and "default" not in spec, spec
+    v = subprocess.run(
+        [runner_bin, "-m", str(mtp_model), "--verify", str(rec), "-t", "2",
+         *_scope_gpu(runner_bin)],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300,
+        env={**os.environ, "RUNNER_DEBUG_ROUTE": "1"})
+    out = (v.stdout + v.stderr).decode(errors="replace")
+    assert v.returncode == 0 and "VERIFIED" in out, out[-1500:]
+    assert " draft=mtp " in out, out[-1500:]
+
+
+def test_a_defaulted_lookup_receipt_verifies(runner_bin, model, tmp_path):
+    """D1's record: a served request with draft_hints, after a plain request
+    on the same slot, writes a receipt naming lookup by default, and the CLI
+    replay binds the lookup and verifies it."""
+    key = tmp_path / "k.json"
+    subprocess.run([runner_bin, "--keygen", key], check=True,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    pk = json.loads(key.read_text())["public_key"]
+    d = tmp_path / "rc"
+    with RunnerServer(find_runner(ROOT), model, ctx=512, parallel=1, env=SCOPE,
+                      extra_args=["-t", "2", "--receipts", str(d), "--sign-key", str(key),
+                                  *_scope_gpu(runner_bin)]) as srv:
+        assert _get(srv, "/v1/capabilities")["draft"]["default"] == {"draft_hints": "lookup"}
+        plain = _post(srv, _req())["runner_telemetry"]
+        assert plain["speculative"] is False
+        hinted = _post(srv, _req(draft_hints=["the cat sat on the mat"]))["runner_telemetry"]
+        assert hinted["speculation"]["source"] == "lookup"
+    names = sorted(p.name for p in d.iterdir())
+    assert len(names) == 2, names
+    first, second = (json.loads((d / n).read_text()) for n in names)
+    assert "speculation" not in first
+    assert second["speculation"]["source"] == "lookup"
+    assert second["speculation"]["default"] is True
+    for n in names:
+        v = subprocess.run(
+            [runner_bin, "-m", str(model), "--verify", str(d / n), "--trust-key", pk,
+             "-t", "2", "-c", "512", *_scope_gpu(runner_bin)],
+            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+        out = (v.stdout + v.stderr).decode(errors="replace")
+        assert v.returncode == 0 and "VERIFIED" in out, (n, out[-1500:])
+    assert "the record's default source (draft_hints)" in out, out[-1500:]

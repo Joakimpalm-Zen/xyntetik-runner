@@ -572,6 +572,7 @@ bool transcript_write(const transcript_info *ti) {
     if (ti->spec_source) {
         tsb_put(&w, "\"speculation\":{\"source\":", 24);
         tsb_json_str(&w, ti->spec_source, strlen(ti->spec_source));
+        if (ti->spec_default) tsb_put(&w, ",\"default\":true", 15);
         tsb_fmt(&w, ",\"rounds\":%d,\"drafted\":%d,\"accepted\":%d,"
                     "\"lookup_drafted\":%d,\"lookup_accepted\":%d},",
                 ti->spec_rounds, ti->spec_drafted, ti->spec_accepted,

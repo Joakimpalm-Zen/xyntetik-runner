@@ -23,7 +23,14 @@ Current release and unreleased changes. Compatibility follows the
   - **Checks:** `tests/test_lookup_draft.c` pins the decision table against the measured rows, prose plain on both
     surfaces among them. `tests/test_draft_defaults.py` checks that a request without the signal decodes plain on
     the CLI and the server, before and after a hinted request; that `--draft off` refuses hints and a second source;
-    and that a `--json` record replays under `--verify`.
+    and that a `--json` record replays under `--verify`. Under the test-only `RUNNER_TEST_DRAFT_SCOPE=1` both
+    defaults fire on fixtures, and their records (a CLI head run, a served hinted request after a plain one on the
+    same slot) verify with the switch unset.
+  - **A record replays the draft source it ran.** It names the source, with `"default": true` when the default
+    chose it, and `--verify` binds that source instead of decoding plain. The tokens were always the same, but on
+    CUDA the head's walk takes no decode graph, so a plain replay of a head record failed the route check (found on
+    the CUDA gate with the measured file). A record whose route cannot draft from its source replays plain, with a
+    note. A `model` record still needs `--draft PATH`.
 
 - **`runner derive --target-size` with `--imatrix` plans a whole file (R4.34.2).** llama.cpp's imatrix has no entry for
   `output` or `token_embd` unless it was run with `--process-output`, so those two tensors' errors were unweighted

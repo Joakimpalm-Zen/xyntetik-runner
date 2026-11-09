@@ -2729,8 +2729,10 @@ Everything else decodes plain, including prose, chat, `--serve` without hints,
 on prose. The lookup has no prose row. On Metal, a verify row costs a full step.
 `--draft off` turns the defaults off. The startup line names a default and its scope,
 and the route line (`RUNNER_DEBUG_ROUTE=1`) marks it `draft=lookup:default` or
-`draft=mtp:default`. A record of a defaulted `--json` run replays under `--verify
---json`; the replay decodes plain and matches token for token. The table of every speed
+`draft=mtp:default`. A record names the source it ran, with `"default": true` when the
+default chose it, and `--verify` binds that same source, whatever today's default rule
+would choose. The walk's tokens are plain decoding's, but its route is not: on CUDA the
+head's walk takes no decode graph, so a plain replay would fail the route check. The table of every speed
 switch is in [docs/speed-defaults.md](docs/speed-defaults.md), and the rows are in the
 [report](docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03/README.md).
 
@@ -3061,9 +3063,13 @@ installs as it is, so a record written before seeds were mixed, when the
 state was `N` itself, still replays) and sampling config; prompt/output text and token ids; the exact streamed output bytes as
 `output.bytes_hex` (tokenizer pieces need not
 individually be valid UTF-8); a `speculation` object naming the draft source (`model`,
-`mtp` or `lookup`) with its round, drafted and accepted counts when one was configured
-(absent for plain decoding, so those records are unchanged); and a chain hash over the
-serialized record body. `--verify`, `--lineage`, bundles and packs read v1 records too,
+`mtp` or `lookup`) with its round, drafted and accepted counts when one was configured,
+and `"default": true` when the workload default chose it (absent for plain decoding, so
+those records are unchanged); and a chain hash over the serialized record body.
+`--verify` replays an `mtp` or `lookup` record with that same source, the record winning
+over `--draft` as it does over `--gpu-route`. Where the replay's route cannot draft from
+that source, it decodes plain. A `model` record still needs `--draft PATH`.
+`--verify`, `--lineage`, bundles and packs read v1 records too,
 whose `model` and `adapter` held the `path` they were loaded from; a v1 record replays with
 an explicit `-m`.
 

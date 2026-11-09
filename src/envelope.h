@@ -126,9 +126,13 @@ typedef struct {
     // Speculation accounting: spec_source names the draft source the run was
     // configured with ("model" | "mtp" | "lookup") or NULL for plain
     // decoding, in which case no "speculation" object is written and the
-    // record is byte-for-byte what it was. The walk is target-exact, so the
-    // verifier replays plain whatever this says; it is provenance.
+    // record is byte-for-byte what it was. The walk is target-exact, but its
+    // route is not plain decoding's (on CUDA the head's walk takes no decode
+    // graph), so --verify binds the source the record names ("mtp" and
+    // "lookup"; "model" needs --draft PATH). spec_default writes
+    // "default":true when the workload default chose it (R3.39.4).
     const char *spec_source;
+    bool        spec_default;
     int         spec_rounds, spec_drafted, spec_accepted;
     int         spec_lk_drafted, spec_lk_accepted;   // the lookup's share
     // Serve-mode receipts (R1.2.2). Precomputed digests (64 hex) skip the

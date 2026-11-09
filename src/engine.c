@@ -3174,6 +3174,15 @@ void engine_note_draft_route(engine *e) {
     if (e->m) model_route_draft(e->m, src, src && e->draft_default);
 }
 
+bool engine_draft_scope_forced(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("RUNNER_TEST_DRAFT_SCOPE");
+        on = v && *v && strcmp(v, "0") != 0;
+    }
+    return on;
+}
+
 draft_default engine_draft_default(const draft_workload *w) {
     if (w->chosen || !w->cuda_full) return DRAFT_DEFAULT_NONE;
     if (w->server) return w->hints ? DRAFT_DEFAULT_LOOKUP : DRAFT_DEFAULT_NONE;

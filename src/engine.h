@@ -377,6 +377,12 @@ typedef struct {
 } draft_workload;
 draft_default engine_draft_default(const draft_workload *w);
 
+// RUNNER_TEST_DRAFT_SCOPE=1, for tests only: the default sites treat any
+// backend as the measured scope and any single NextN head as the measured
+// model, so a CPU host can drive both defaults and verify their records.
+// It never changes a token: both sources are identity class.
+bool engine_draft_scope_forced(void);
+
 // The prompt-lookup search, the whole of the fourth draft source. `hist` is
 // the context so far, hist[len-1] the token whose successors are wanted.
 // For n from ENGINE_LOOKUP_N_MAX down to ENGINE_LOOKUP_N_MIN, find the MOST

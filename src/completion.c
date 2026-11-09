@@ -3030,6 +3030,7 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
         .hit_stop = e->hit_stop,
         .spec_source = spec_used ? (e->dm ? "model" : e->mtp_on ? "mtp"
                                    : e->lookup_on ? "lookup" : NULL) : NULL,
+        .spec_default = spec_used && e->draft_default,
         .spec_rounds = e->spec_st.rounds, .spec_drafted = e->spec_st.drafted,
         .spec_accepted = e->spec_st.accepted,
         .spec_lk_drafted = e->spec_st.lk_drafted,
@@ -3803,7 +3804,8 @@ static bool creq_stops(const creq_ctx *c, completion_req *q, creq_err *err) {
 static bool hints_take_lookup(const slot_t *s) {
     const engine *e = &s->e;
     draft_workload w = { .server = true, .chosen = SV.draft_requested || SV.draft_off,
-                         .cuda_full = engine_cuda_full(e), .hints = true };
+                         .cuda_full = engine_cuda_full(e) || engine_draft_scope_forced(),
+                         .hints = true };
     return engine_draft_default(&w) == DRAFT_DEFAULT_LOOKUP && model_spec_verify_ok(s->m);
 }
 
