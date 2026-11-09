@@ -1564,12 +1564,20 @@ static void usage_train_to(FILE *f) {
         "  --gpu-budget BYTES  the device memory --train-gpu's weights may\n"
         "                 take (default: the free memory); which weights fit\n"
         "                 decides the adapter's bits, the record names it\n"
+        "  --full         train every dense projection (attn q/k/v/o, ffn\n"
+        "                 gate/up/down) of an F32 file, not an adapter: --out\n"
+        "                 is a variant with the -m file's layout and every other\n"
+        "                 byte unchanged; quantize it afterwards with --rewrite\n"
+        "                 --quant. CPU only\n"
+        "  --kv-f32       an f32 KV cache for this run (CPU only), so the\n"
+        "                 gradient matches fp32 autograd; inference keeps f16\n"
         "  --sign-key F   sign the training record with the key in F\n\n"
         "Every other option (-m, -s, -t, -c, --chat-template, --model-pubkey,\n"
         "...) is the runner's own and passed through as given. The longer\n"
         "spellings --train DATA, --train-dpo DATA, --train-steps, --train-ctx,\n"
         "--train-out, --train-batch, --train-resume, --train-eval,\n"
-        "--train-teacher, --train-logprobs, --train-eot and --train-gpu-budget\n"
+        "--train-teacher, --train-logprobs, --train-eot, --train-gpu-budget,\n"
+        "--train-full and --train-kv-f32\n"
         "are still accepted on the main command line.\n");
 }
 
@@ -2160,6 +2168,8 @@ typedef struct {
     const char *eval_spec[8];
     const char *recipe_flag;   // the first R8.17 flag given, for refusals
     bool train_gpu;            // R8.19 --train-gpu: every product on CUDA
+    bool train_full;           // R8.25.2 --train-full: every dense projection, no adapter
+    bool train_kv_f32;         // R8.25.2 --train-kv-f32: an f32 KV cache for a training run
     uint64_t train_gpu_budget; // --train-gpu-budget BYTES (0: the free memory)
     // records, signing, verification, watermarks, session images
     const char *transcript_path, *transcript_prev, *sign_key, *keygen_path;
@@ -2623,6 +2633,8 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         else if (!strcmp(a, "--weight-decay"))
             o->weight_decay = (float)float_arg(a, NEXT, 0, 1);
         else if (!strcmp(a, "--train-gpu")) o->train_gpu = true;
+        else if (!strcmp(a, "--train-full") && recipe_flag(o, a)) o->train_full = true;
+        else if (!strcmp(a, "--train-kv-f32") && recipe_flag(o, a)) { o->train_kv_f32 = true; o->mp.kv_f32 = true; }
         else if (!strcmp(a, "--train-gpu-budget")) {
             o->train_gpu_budget = u64_arg(a, NEXT);
             if (!o->train_gpu_budget) {
@@ -2934,6 +2946,7 @@ static int cli_expand_subcommand(int *argc, char ***argv) {
         { "--resume", "--train-resume" }, { "--eval", "--train-eval" },
         { "--teacher", "--train-teacher" }, { "--logprobs", "--train-logprobs" },
         { "--eot", "--train-eot" }, { "--gpu-budget", "--train-gpu-budget" },
+        { "--full", "--train-full" }, { "--kv-f32", "--train-kv-f32" },
         { NULL, NULL },
     };
     static const sub_alias attest_aliases[] = {   // --key per verb, below
@@ -4703,6 +4716,14 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
 #define TRAIN_STR(x)  TRAIN_STR_(x)
 
 static bool train_adam_step(cli_opts *o, cli_run *rt, int step, double lr) {
+    if (model_full_on(&rt->m)) {
+        if (model_full_adam_step(&rt->m, (float)lr, (float)TRAIN_ADAM_BETA1,
+                                 (float)TRAIN_ADAM_BETA2, (float)TRAIN_ADAM_EPS,
+                                 o->weight_decay, step))
+            return true;
+        fprintf(stderr, "error: cannot allocate optimizer state\n");
+        return false;
+    }
     if (model_lora_adam_step(&rt->m, (float)lr, (float)TRAIN_ADAM_BETA1,
                              (float)TRAIN_ADAM_BETA2, (float)TRAIN_ADAM_EPS,
                              o->weight_decay, step))
@@ -4713,7 +4734,37 @@ static bool train_adam_step(cli_opts *o, cli_run *rt, int step, double lr) {
 
 // What a run trains: the attached adapter, or a fresh one; refused on a
 // device-resident model.
+// R8.25.2 --train-full: every dense projection of an F32 file, into a variant
+static bool train_full_prepare(cli_opts *o, cli_run *rt) {
+    const char *no = o->train_gpu ? "--train-gpu" : o->dpo_path ? "--train-dpo"
+                   : o->train_teacher ? "--train-teacher" : o->save_every > 0 ? "--save-every"
+                   : o->train_resume ? "--train-resume" : o->kill_at ? "a kill rule"
+                   : o->n_eval ? "--train-eval" : o->stop_file ? "a stop file"
+                   : o->train_lp_path ? "--train-logprobs" : NULL;
+    if (no) {
+        fprintf(stderr, "error: --train-full does not take %s yet\n", no);
+        return false;
+    }
+    char why[512] = "";
+    if (!model_full_train_init(&rt->m, why, sizeof why)) {
+        fprintf(stderr, "error: --train-full: %s\n", why);
+        return false;
+    }
+    uint64_t params = 0;
+    int n = model_full_count(&rt->m, &params);
+    fprintf(stderr, "train: full weights, %d projection matrices (%llu parameters), f32 masters "
+            "from the model file\n", n, (unsigned long long)params);
+    return true;
+}
+
 static bool train_prepare(cli_opts *o, cli_run *rt) {
+    if (o->train_kv_f32 && (o->train_gpu || rt->m.gpu || !rt->m.kv_f32)) {
+        fprintf(stderr, "error: --train-kv-f32 keeps an f32 KV cache on the CPU path only "
+                "(run with --gpu off, without --train-gpu, without --kv, on a model "
+                "without tied V)\n");
+        return false;
+    }
+    if (o->train_full && !rt->m.gpu) return train_full_prepare(o, rt);
     if (rt->m.gpu) {
         // v1 trains on the CPU path only (D8 is CUDA training); refuse
         // loudly rather than train a model whose forward the backward
@@ -5373,7 +5424,8 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
         double loss_sum = 0, wsum = 0;
         long tokens = 0;
         bool ok = true;
-        model_lora_grad_zero(&rt->m);
+        if (model_full_on(&rt->m)) model_full_grad_zero(&rt->m);
+        else model_lora_grad_zero(&rt->m);
         for (int b = 0; ok && b < B; b++) {
             int r = (int)(st->cursor++ % n_ex);
             train_ex *ex = &exs[r];
@@ -5422,11 +5474,24 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
         }
         if (!ok) { rc = 1; break; }
         double ml = wsum > 0 ? loss_sum / wsum : loss_sum;
-        if (mean && wsum > 0) model_lora_grad_scale(&rt->m, (float)(1.0 / wsum));
+        bool full = model_full_on(&rt->m);
+        if (mean && wsum > 0) {
+            if (full) model_full_grad_scale(&rt->m, (float)(1.0 / wsum));
+            else model_lora_grad_scale(&rt->m, (float)(1.0 / wsum));
+        }
         double gmax = 0, gmean = 0;
-        if (!fp_finite_f64(ml) || !model_lora_grad_norms(&rt->m, &gmax, &gmean)) {
+        if (!fp_finite_f64(ml) || !(full ? model_full_grad_norms(&rt->m, &gmax, &gmean)
+                                         : model_lora_grad_norms(&rt->m, &gmax, &gmean))) {
             fprintf(stderr, "error: step %d: the loss or a gradient is not finite; "
                     "the adapter stays as step %d left it\n", step, step - 1);
+            rc = 1;
+            break;
+        }
+        // Gate A2's hook (R8.25.2): the first step's gradient, before the step
+        if (full && step == 1 && getenv("RUNNER_TRAIN_FULL_DUMP") &&
+            !model_full_dump(&rt->m, getenv("RUNNER_TRAIN_FULL_DUMP"),
+                             getenv("RUNNER_TRAIN_FULL_DUMP_TENSORS"))) {
+            fprintf(stderr, "error: cannot write RUNNER_TRAIN_FULL_DUMP\n");
             rc = 1;
             break;
         }
@@ -5594,6 +5659,15 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     }
     sb_lit(&rec, ",\"data\":");
     lineage_put_input(&rec, data_path, dsha);
+    sb_lit(&rec, rt->m.kv_f32 ? ",\"kv_cache\":\"f32\"" : "");
+    if (model_full_on(&rt->m)) {
+        // R8.25.2: what was trained, and through which type (the masters are
+        // the base file's own f32 tensors, named under "base")
+        uint64_t fp = 0;
+        int fn = model_full_count(&rt->m, &fp);
+        sb_fmt(&rec, ",\"full_weight\":{\"tensors\":%d,\"params\":%llu,\"read_type\":\"f32\","
+               "\"slots\":\"attn q k v o, ffn gate up down\"}", fn, (unsigned long long)fp);
+    }
     sb_fmt(&rec,
             ",\"seed\":%llu,\"lora_rank\":%d,\"alpha\":%g,"
             "\"lr\":%g,\"steps\":%d,\"ctx\":%d,"
@@ -5674,7 +5748,7 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
         free(rec.s);
         return false;
     }
-    sb_lit(&rec, "\"adapter\":{\"path\":\"");
+    sb_lit(&rec, model_full_on(&rt->m) ? "\"variant\":{\"path\":\"" : "\"adapter\":{\"path\":\"");
     sb_esc(&rec, plat_path_base(o->train_out), strlen(plat_path_base(o->train_out)));
     sb_lit(&rec, "\",\"sha256\":\""); sb_lit(&rec, asha);
     sb_lit(&rec, "\"}}\n");
@@ -5749,14 +5823,24 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
     // a run that checkpoints leaves its sidecar beside the final adapter too,
     // so it can be continued past --train-steps
     bool sidecar = o->save_every > 0 || o->stop_file || o->kill_at || o->train_resume;
-    if (!rc && !(model_lora_save(&rt->m, o->train_out) &&
+    char fwhy[512] = "";
+    if (!rc && model_full_on(&rt->m)) {
+        // the variant: the -m file with the trained tensors' masters
+        bool w = model_full_write(&rt->m, load_path, o->train_out, fwhy, sizeof fwhy);
+        if (!w) {
+            fprintf(stderr, "error: --train-full: %s\n", fwhy);
+            rc = 1;
+        }
+    }
+    if (!rc && !((model_full_on(&rt->m) || model_lora_save(&rt->m, o->train_out)) &&
                  (!sidecar || train_optim_save(o->train_out, rt, &st, ev, o->n_eval)) &&
                  train_record(o, rt, load_path, from.s, o->train_teacher ? &tt : NULL,
                               ev, resumed_at, wctx, eot_id, first_loss, last_loss)))
         rc = 1;
     if (!rc)
         fprintf(stderr, "train: done — first-step loss %.4f, last-step "
-                "%.4f, adapter -> %s\n", first_loss, last_loss, o->train_out);
+                "%.4f, %s -> %s\n", first_loss, last_loss,
+                model_full_on(&rt->m) ? "variant" : "adapter", o->train_out);
     free(from.s);
     train_evals_free(ev, o->n_eval);
     train_teacher_close(&tt);

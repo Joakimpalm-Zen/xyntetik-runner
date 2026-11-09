@@ -438,6 +438,7 @@ typedef struct {
     bool   kv_q8;            // KV rows stored as q8_0 blocks (CPU and CUDA)
     bool   kv_fp4;           // KV rows stored as fp4 blocks (16 values in 9 bytes)
     bool   kv_split;         // K rows q8_0, V rows fp4 (--kv k8v4): the caches differ
+    bool   kv_f32;           // R8.25.2 --train-kv-f32: K and V rows f32, training only (kind 3)
     float *x, *xb, *xb2, *q, *hb, *hb2;   // [n_batch][dim] activations
     float *k_tmp, *v_tmp;                 // [n_batch][kv_dim]
     float *q_gate;                        // qwen35 full-attention output gate
@@ -481,6 +482,10 @@ typedef struct {
     bool     lora_borrowed;  // lora is a per-request adapter's table (R8.6)
     uint64_t lora_id;
     float    lora_alpha;     // adapter alpha (load or train-init), for saving
+    // R8.25.2 full-weight training: [n_layer][LW_SLOTS] float masters with
+    // AdamW state, one per dense projection, in place of an adapter; the
+    // projection tensors themselves are the read copy (NULL when off)
+    struct full_w *full;
     // D3 activation tape: [n_layer+1][tape_T][n_embd] layer-entry residual
     // streams (+ the final pre-norm hidden), recorded by solo forwards when
     // non-NULL. Owned by model_lora_backward for the duration of one call.
@@ -827,9 +832,11 @@ static inline float model_attn_scale(const model_t *m, int l) {
 // the *_v_* family for V, and the *_sum forms where an account wants both.
 // fp4 packs 16 values into 9 bytes, q8_0 32 into 34, f16 2 each.
 static inline int model_kv_kind_k(const model_t *m) {
+    if (m->kv_f32) return 3;   // R8.25.2, training only
     return m->kv_fp4 ? 2 : (m->kv_q8 || m->kv_split) ? 1 : 0;
 }
 static inline int model_kv_kind_v(const model_t *m) {
+    if (m->kv_f32) return 3;
     return (m->kv_fp4 || m->kv_split) ? 2 : m->kv_q8 ? 1 : 0;
 }
 // deepseek2's absorbed form keeps one [k_pe | latent] row per token and layer
@@ -843,7 +850,8 @@ static inline bool model_kv_v_shared(const model_t *m) {
     return m->mla_absorb && model_kv_kind_k(m) == model_kv_kind_v(m);
 }
 static inline size_t kv_bytes_of_kind(int kind, size_t e) {
-    return kind == 2 ? e / 16 * 9 : kind == 1 ? e / 32 * 34 : e * sizeof(f16_t);
+    return kind == 3 ? e * sizeof(float) : kind == 2 ? e / 16 * 9
+         : kind == 1 ? e / 32 * 34 : e * sizeof(f16_t);
 }
 static inline size_t model_k_bytes_of(const model_t *m, size_t e) {
     return kv_bytes_of_kind(model_kv_kind_k(m), e);
@@ -1068,6 +1076,9 @@ typedef struct {
     // K rows q8_0 and V rows fp4 (--kv k8v4): measured 2026-09-18 as the
     // side that survives 4 bits (K does not); about 41% of the f16 bytes.
     bool  kv_split;
+    // R8.25.2: K and V rows as f32 (kind 3), for a training run only
+    // (--train-kv-f32); the CPU path, no tied V, never asked by inference
+    bool  kv_f32;
     // --kv-ring (docs/kv-ring.md): KV_RING_AUTO (0, the default) gives
     // sliding-window layers only their window when the weights and the flat
     // cache would not fit the device budget (or, on the CPU, available RAM);
@@ -1169,6 +1180,36 @@ bool   model_lora_backward_kd(model_t *m, const int32_t *toks, int n,
 // --- adaptation D4: fresh trainable adapters (A seeded, B zero -> exact
 // no-op start), one AdamW step from the accumulated gradients (byte-
 // deterministic), and the adapter-GGUF writer (the format --lora reads).
+// R8.25.2 full-weight training. Every dense projection (attn q/k/v/o, ffn
+// gate/up/down) of an F32 file gets an f32 master in a private buffer, which
+// the forward and the backward read in place of the mapped bytes, so a saved
+// variant holds exactly what the last step read. A quantized file is refused:
+// a Q8_0 read copy trained through the shipped grid was measured no better
+// than quantizing the float variant afterwards (R8.25.2.2). The dense gradient
+// dW += dy^T x is accumulated at every projection site of the adapter
+// backward, each row over positions in ascending order.
+bool   model_full_train_init(model_t *m, char *why, size_t cap);
+bool   model_full_on(const model_t *m);
+void   model_full_grad_zero(model_t *m);
+void   model_full_grad_scale(model_t *m, float f);
+bool   model_full_grad_norms(model_t *m, double *max_out, double *mean_out);
+bool   model_full_adam_step(model_t *m, float lr, float beta1, float beta2,
+                            float eps, float wd, int step);
+// the trained tensors (count, parameters)
+int    model_full_count(const model_t *m, uint64_t *params);
+// Write a variant: src_path (the file the model was loaded from) with every
+// trained tensor replaced by its master. Offsets and types are unchanged, so
+// every other byte is src_path's.
+bool   model_full_write(model_t *m, const char *src_path, const char *out_path,
+                        char *why, size_t cap);
+// test hook: a site's gradient (n_out rows of n_in floats), or NULL
+const float *model_full_grad(const model_t *m, int layer, int slot, int *n_in, int *n_out);
+const float *model_full_master(const model_t *m, int layer, int slot);
+void   model_full_free(model_t *m);
+// Gate A2's hook (RUNNER_TRAIN_FULL_DUMP): every trained tensor's gradient L2
+// norm to PREFIX.norms.json, and the whole gradient of each tensor named in
+// `full` (comma-separated GGUF names) to PREFIX.NAME.f32
+bool   model_full_dump(const model_t *m, const char *prefix, const char *full);
 bool   model_lora_train_init(model_t *m, int rank, float alpha,
                              uint64_t seed);
 bool   model_lora_adam_step(model_t *m, float lr, float beta1, float beta2,
