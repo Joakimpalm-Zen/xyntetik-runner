@@ -348,7 +348,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
     <div class="section-head">
       <p class="eyebrow">Model list</p>
       <h2>One list of model files, each with when it last passed</h2>
-      <p>Runner keeps loading every model the <a href="{{repo}}/blob/main/MANUAL.md#support-matrix">support matrix</a> admits. The files it validates are one list, at the top of <a href="{{repo}}/blob/main/docs/model-support.md#overview">the support roster</a>: each is one greedy prompt compared byte for byte against a pinned output on the device the file names, with the Runner version and date it last passed, and every file's envelope and record. Nothing is re-tested on a schedule: validation runs happen in the project's larger validation runs and when a change needs one. A mark says the file reproduced a pinned answer on that device and nothing about the quality of its answers.</p>
+      <p>Runner keeps loading every model the <a href="{{repo}}/blob/main/MANUAL.md#support-matrix">support matrix</a> admits. The files it validates are one list, at the top of <a href="{{repo}}/blob/main/docs/model-support.md#overview">the support roster</a>: each is one greedy prompt compared byte for byte against a pinned output on the device the file names, with the Runner version and date it last passed, and every file's envelope and record; the <a href="{{repo}}#validated-models">README's section</a> says what the check is. Nothing is re-tested on a schedule: validation runs happen in the project's larger validation runs and when a change needs one. A mark says the file reproduced a pinned answer on that device and nothing about the quality of its answers.</p>
     </div>
   </div>
 </section>
