@@ -8,6 +8,18 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **CUDA: a Q4_0 prompt carries a lone decode's bits on the scalar route (R6.35).** With the tensor-core GEMM off,
+  a Q4_0 prefill over 8 columns ran `k_mvb_q4_0`, which sums in another order than the decode GEMV `k_gemv_q4_0`.
+  It now runs that GEMV's width-classed twins, 16 columns a pass, so a prompt's rows carry the bits a lone decode
+  gives them. Q4_K, Q5_K and Q6_K's prefill GEMMs still differ from their GEMVs in a few last bits (R6.39).
+  - **Why it mattered:** under `--kv q8` the old difference crossed quantization steps. `test-kv-tol
+    test-q40.gguf` read 10.7x its reassociation floor on an RTX 5070; it now reads 0.03x, and `test-gates-core`
+    runs it.
+  - **Speed on that route:** prefill of a 14B Q4_0 file with `RUNNER_CUDA_TC=0` went from 6.6 to 109.8 tok/s
+    (median of six interleaved runs each).
+  - **Unchanged:** wherever the tensor-core GEMM runs, which is the default for Q4_0 on the promoted
+    architectures; a chunked `--score` there is byte-identical before and after.
+
 - **Docs: gemma-4-26B-A4B now has its publisher float32 comparison (R6.11).** The support entry listed it as owed.
   - **What was run:** two files, scored against the transformers forward of `google/gemma-4-26B-A4B-it` in float32
     on chat text, 2,000 positions ([the record](docs/gemma4-26b-reference-2026-11-10.md)).

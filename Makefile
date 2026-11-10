@@ -3348,6 +3348,9 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# them run, and test-q8.gguf the fused i8 route (its Q4_K and Q4_0 legs are
 	@# the opt-in route's failing bar, docs/speed-defaults.md)
 	./$(TEST_KV_TOL) test-q4k.gguf
+	@# R6.35: Q4_0 weights, whose prefill on the scalar route runs the batch-1
+	@# GEMV's twins; before that its q8 arm read 10.7x the reassociation floor
+	./$(TEST_KV_TOL) test-q40.gguf
 	./$(TEST_KV_FP4)
 	./$(TEST_CUDA_KVFP4)
 	./$(TEST_TC_TOL)
