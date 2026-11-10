@@ -42,6 +42,7 @@
 #   spec-id      make test-cuda-spec-identity (a speculative verify round's rows
 #                == solo decode steps, byte for byte, dense, MoE and hybrid)
 #   cpu-cuda     scripts/cpu_cuda_check.py on one small model (byte identity)
+#   binary-unchanged  the runner's sha256 after every step equals the one before
 # Every make target the steps name is in DEVICE_STEPS below, and every
 # test-cuda-* target in the Makefile has to be there (tests/test_ci_contracts.py):
 # a device target no step runs is a gate nothing runs. A step whose log says
@@ -269,6 +270,12 @@ fi
 add_step caps pass 0
 
 FAIL=0
+# The binary under test must be the one every step ran: a step's make that
+# relinks it (an environment CFLAGS on a release-recipe build lands in another
+# .build/<id>) would test a different runner than the one this gate records.
+# Run the gate on a release build with tools/release-make first on PATH.
+exe_sha() { "$PY" -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$EXE"; }
+SHA0=$(exe_sha)
 DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 kv-f32:test-cuda-kv-f32 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp qwen35moe:test-cuda-qwen35moe q3k:test-cuda-q3k tc-kq:test-cuda-tc-kq i8:test-cuda-i8 moe-legacy:test-cuda-moe-legacy varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin keepn:test-cuda-keepn moe-replay:test-cuda-moe-replay batch-id:test-cuda-batch-identity hybrids:test-cuda-hybrids attn-wide:test-cuda-attn-wide spec-id:test-cuda-spec-identity"
 for pair in $DEVICE_STEPS; do
   name=${pair%%:*}; target=${pair#*:}
@@ -279,6 +286,9 @@ for pair in $DEVICE_STEPS; do
   fi
 done
 run_step cpu-cuda "$PY" scripts/cpu_cuda_check.py "$MODEL" --runner "$EXE" --tokens 64 || FAIL=1
+if [ "$(exe_sha)" = "$SHA0" ]; then add_step binary-unchanged pass 0
+else note "$EXE changed during the gate: a step rebuilt it, so the steps did not all test one binary"
+  add_step binary-unchanged fail 0; FAIL=1; fi
 
 [ "$FAIL" = 0 ] || finish fail 1
 
