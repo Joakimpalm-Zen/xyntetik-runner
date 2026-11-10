@@ -1,5 +1,23 @@
 # Gemma 4 E2B: the per-layer embedding table under quantization, against Google's float32 reference (2026-10-31)
 
+## Measured again (2026-11-10): no verdict changes
+
+**What was wrong:** the reference was gold-logits' `--upcast-at-use`. Until its R6.36 fix, that option built gemma's
+embedding scale (the square root of the hidden size, 1536) in BF16: 39.25, where float32 gives 39.19.
+
+**What was redone:** every row below is measured again against a full float32 load of the same checkpoint revision,
+on the study's own score files.
+
+**The result:**
+- No verdict changes.
+- Three means move in the fourth decimal: p4k-r8 0.0088 to 0.0089, p8-r4k 0.4374 to 0.4373, p4k-r4k 0.4337 to 0.4336.
+- Every margin-qualified top-1 and every paired verdict is unchanged. Unsloth's Q5_K_M still misses the bar narrowly
+  (0.0539, 96.84%).
+- The fixed `--upcast-at-use` gives the same per-position KL as the float32 load, bit for bit, at all 16,000 of them.
+
+**The records:** the four `gold-logits-*-float32.json` files beside the originals. The table below keeps the
+first-published values.
+
 **Unflattering first: a uniform 4-bit E2B fails the fidelity bar by a wide margin, whatever happens to the
 per-layer embedding table.** Runner's own uniform Q4_K of E2B reads a mean KLD of **0.437** against a bar of 0.05
 (81.1% margin-qualified top-1 against 97%), and unsloth's published Q4_K_M reads 0.173. The per-layer embedding
