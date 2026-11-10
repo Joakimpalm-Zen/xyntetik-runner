@@ -52,6 +52,17 @@ struct slot_s {
     // 0 idle, 1 prefill, 2 generating. rq_done counts prompt tokens that are
     // in the KV (reused ones included), rq_gen tokens generated.
     atomic_int rq_phase, rq_prompt, rq_done, rq_gen;
+    // R10.12.3.2: the request a cancel can name, by its response id or the
+    // client's X-Request-Id. rq_id, rq_cid and rq_live are guarded by the
+    // server's request-id lock; cid_next is the header of the request this
+    // slot is reading. rq_cancel is set by a cancel and read by the
+    // request's stop check; rq_seq counts this slot's requests, and
+    // rq_end_seq/rq_end_gen say which one ended last and how many tokens it
+    // had generated, which is how a cancel learns its request stopped.
+    char        rq_id[48], rq_cid[65], cid_next[65];
+    bool        rq_live;
+    atomic_int  rq_cancel, rq_end_gen;
+    atomic_uint rq_seq, rq_end_seq;
 };
 
 // A per-request adapter (R8.6): loaded once at startup, borrowed by a slot's
@@ -236,6 +247,11 @@ typedef struct {
 } work_totals;
 
 void server_record_work(const work_record *w);
+// R10.12.3.2: a completion request takes its ids (false: another active
+// request holds the same X-Request-Id, nothing is registered), and the slot
+// gives them back when the request has ended, whatever way it ended.
+bool server_request_begin(slot_t *s, const char *response_id);
+void server_request_end(slot_t *s);
 void server_work_totals(work_totals *out);
 
 // swap_to results below 0: the name matched no registry entry (a caller

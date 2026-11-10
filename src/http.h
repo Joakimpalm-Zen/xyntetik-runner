@@ -92,6 +92,12 @@ bool parse_request_framing(char *first_header, char *header_end,
 bool parse_request_line(char *hdr, char method[8], char path[256],
                         char **first_header);
 bool validate_request_authority(char *first_header, char *header_end);
+// One header's value as a request id: 1 to 64 bytes of A-Z a-z 0-9 . _ : -.
+// 0 when the header is absent, 1 with the value in out, -1 when it is sent
+// twice or its value is not such an id.
+int request_header_id(char *first_header, char *header_end, const char *name,
+                      char out[65]);
+bool request_id_valid(const char *s, size_t n);
 
 bool send_all(sock_t fd, const char *s, size_t n);
 const char *reason_phrase(int code);
