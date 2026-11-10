@@ -1606,8 +1606,9 @@ silently dropped branch.
 | Provenance | Replay-verifiable transcripts; Ed25519- or ML-DSA-44-signed, chained receipts with a one-exit-code verifier; OpenSSF Model Signing verification of the loaded GGUF (key method, P-256/384/521). |
 
 Not implemented: Vulkan; TLS/auth; remote bind; remote/streamed GGUF parts; the
-`qwen2moe`/`deepseek2`/`kimi` architecture IDs (their shared-expert *layout* is
-implemented, as above - the architectures are not admitted) or MLA attention;
+`qwen2moe`/`kimi` architecture IDs (their shared-expert *layout* is
+implemented, as above - the architectures are not admitted; `deepseek2` and its
+multi-head latent attention are admitted, see its row);
 Prism ML's rotated-basis ternary files (`prism.hadamard.*`, the
 Ternary-Bonsai-2 GGUFs: refused at load, since they would run but answer with
 garbage without the runtime rotation); Mamba/Jamba; MTP/NextN draft-head consumption on Metal, on a partial CUDA
@@ -1886,8 +1887,13 @@ default path and performance. `RUNNER_METAL_TENSOR=0` is the explicit pin.
 `sm_75` PTX. **The embedded PTX is built by the CUDA 13.0 toolchain (PTX ISA
 9.0), so GPU execution requires a driver with CUDA 13.0 support or newer (the
 R580 series)** - see the driver note in the Install section; on an older
-driver the runner reports the JIT failure and falls back to CPU. Full and
-partial layer offload are supported. Sparse MoE can keep expert FFNs in RAM
+driver the runner reports the JIT failure and falls back to CPU. The driver
+compiles the embedded kernels the first time a card and driver meet them
+(measured on an RTX 5070: 33.4 s, then 0.40 s from the driver's cache); a
+load still compiling after 2 s says so once on stderr (`gpu: compiling the GPU
+kernels for this card and driver; ...`), and stdout and receipts are unchanged. Full and
+partial layer offload are supported, on hybrid models too: a split whose device
+layers are all recurrent ones loads and runs on the device. Sparse MoE can keep expert FFNs in RAM
 with `--cpu-moe` while attention and dense tensors remain on the GPU.
 `make ptx` regenerates the embedded header and requires a CUDA toolkit only
 for that development step.
@@ -1923,8 +1929,14 @@ scalar route's mean KL over 2,000 positions of Qwen3.5-4B NVFP4, Wilcoxon
 with the tensor cores closer, no McNemar discordance). qwen3.5-4b NVFP4
 prefills at 1,170 tok/s on an RTX 3070 against 22 on the scalar batched
 kernel. `RUNNER_CUDA_TC_NVFP4=0` holds NVFP4 alone on the scalar kernel
-(the route line reads `tc=promoted-nvfp4`), and `=1` forces its route on an
-architecture outside the promoted list (`tc=promoted+nvfp4`).
+(the route line's `tc=` word ends in `-nvfp4`), and `=1` forces its route on an
+architecture outside the promoted list (the word ends in `+nvfp4`). The word
+itself says what the default does for this model: `tc=taken` where it takes the
+tensor cores for one of the model's weight matrices, `tc=off` where it takes
+none, `tc=moe-tc` on the sparse-MoE families and `tc=forced` under
+`RUNNER_CUDA_TC=1`. (Before 1.16.0 it read `tc=promoted` for every non-MoE
+architecture, taken or not.) A record lists the weight types that took them as
+`profile.route.tc_types`, and `--verify` holds a replay to that list.
 `RUNNER_CUDA_TC=1` forces the tensor-core route for every type that has a
 kernel, NVFP4 among them, including the types not promoted by default.
 `RUNNER_CUDA_I8=1` (opt-in, compute capability 8.0+) takes the tensor-core
@@ -2363,7 +2375,7 @@ flags into unrelated feature sections.
 | `--systemone FILE` | Clef typed decisions: one `/v1/systemone` request (`model`, `state`, `questions`) per line of `FILE`, one response per line on stdout. `-` reads stdin. |
 | `--shadow-mode` | Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
 | `--version` | Print the version and exit. |
-| `-h`, `--help` | Print the option reference to stdout and exit `0`. Help asked for is written to stdout; help printed because something went wrong goes to stderr with a non-zero exit. |
+| `-h`, `--help` | Print the option reference to stdout and exit `0`. Help asked for is written to stdout. A usage error (an unknown option, a flag with no value) prints its error line and `see runner --help` on stderr with a non-zero exit, not the whole reference, so the reason is the last thing a script or a person reads; a bare `runner` still prints the reference and ends with `error: need -m MODEL or -hf REPO[:TAG]`. |
 | `--parent-pid N` | Exit when process `N` dies, whichever of its threads launched the Runner: at once on Linux 5.3 or later and on Windows, within 2 s elsewhere. A process already gone is refused. Intended for supervisor cleanup. |
 | `-v` | Print verbose model and memory details, including allocated versus reachable sliding-window KV. [Details](#cli-v). |
 
@@ -3146,7 +3158,25 @@ test`. One example per step, cycled in file order; before the first step `runner
 warns when the run is likely to memorize (more than three passes over fewer than 200
 examples, one completion shared by more than half of them, `--lr` above twice the
 default, short completions without an end-of-turn token; see
-[Train the GGUF you actually serve](#train-the-gguf-you-actually-serve)). Design, gates and measured results:
+[Train the GGUF you actually serve](#train-the-gguf-you-actually-serve)).
+
+`--full` (`--train-full`) trains the weights themselves in place of an adapter: every
+dense projection (attention q/k/v/o, FFN gate/up/down) of an F32 file gets an f32 master
+with AdamW state, and `--out` is a variant, the `-m` file with the trained tensors
+replaced and every other byte unchanged. The parent is not touched; the same data and
+seed give a byte-identical variant; the record names the base's and the data's sha256,
+the trained tensors (`full_weight`) and the `variant`. A quantized `-m` is refused: train
+the float file, then quantize the variant with `--rewrite --quant`. Not with `--full`
+yet, each refused by name: `--train-gpu`, DPO, a teacher, checkpoints (`--save-every`,
+`--resume`), kill rules, held-out evals, a stop file, `--logprobs`, recurrent (Gated
+DeltaNet) layers and MoE expert banks. `--kv-f32` (`--train-kv-f32`, CPU only) gives a
+training run an f32 KV cache: on the default f16 cache the full-weight gradient matches
+PyTorch fp32 autograd to 2.7e-3 relative L2, because K and V are rounded to f16; with the
+f32 cache it matches to 6.9e-6 over all 196 matrices of Qwen3-0.6B, and the record
+writes `"kv_cache":"f32"`. Training with `--kv q8`, `--kv k8v4` or `--kv fp4` is refused by name
+(`use --kv f16`): the backward reads K and V rows as f16, or f32 with `--kv-f32`.
+
+Design, gates and measured results:
 [docs/adaptation-engine.md](docs/adaptation-engine.md).
 
 <a id="cli-score"></a>
@@ -3253,7 +3283,7 @@ base name and sha256, never by host path (a receipt is evidence you may post), w
 file a step on this machine made, the step's record as `record` (base name and sha256);
 the binary's hash; the effective execution profile, with the route the run took
 (`profile.route`: the backend, the CPU's activation `cpu_act` and the backend's
-`backend_detail` line, the same words as the route line and `--bench-json`) (including fallback KV type, GPU layer
+`backend_detail` line, the same words as the route line and `--bench-json`, and on CUDA `tc_types`, the weight types whose prompt products the tensor cores took) (including fallback KV type, GPU layer
 count and, on CUDA, the prompt window); the exact 64-bit seed (the state the
 sampler started from: `-s N` mixed through splitmix64, which `--verify`
 installs as it is, so a record written before seeds were mixed, when the
@@ -3401,6 +3431,12 @@ Images are CPU-only and use the solo step loop, so no `--draft`, `--draft mtp` o
 `--draft lookup`. They cannot be combined with `--serve`, `-i`, `--verify`,
 `--record` or `--watermark` (an image does not carry the watermark key a marked
 continuation would need). A model whose KV cache is a ring or tied-V cannot be imaged.
+A session image or a KV snapshot of a hybrid model (the Gated DeltaNet and Mamba-2
+families) written by 1.15.0 or earlier does not resume: 1.16.0 stopped storing KV rows
+and recurrent state for the layers that have none, so the layout is smaller. Such a file
+is refused by name, never misread (a session image is told "an earlier runner wrote it",
+a KV snapshot gets 409 `snapshot_kv_layout`); `RUNNER_KV_RECURRENT_ROWS=1` keeps the old
+layout and resumes them.
 
 A server started with `--sessions DIR` does the same over HTTP, on whatever backend it
 serves from:
@@ -3465,7 +3501,11 @@ note says the figure is the flat cache, which a load shrinks with the KV ring wh
 weights and that cache do not fit ([`--kv-ring auto`](#cli-kv-ring)).
 
 The verdict is `FITS`, `FITS WITH --kv q8` (or `k8v4`, or `fp4`), or `PAGES`, always with the
-arithmetic that produced it.
+arithmetic that produced it. For a family the loader never puts on a GPU (lfm2, lfm2moe,
+flint, LayerNorm models, grouped-norm k2-horizon, and deepseek2 off CUDA) the split line
+reports the CPU, with the reason, where it used to predict a device split the load never
+made. On CUDA `--info fit` and the loader charge the same bytes, the small per-layer
+tensors and the f32 tables made from them included.
 
 For Gemma 4 E-series, `weights` remains the whole file size, while `hot set`
 excludes `per_layer_token_embd.weight`. That table is reported as `row-gathered`:
@@ -3994,7 +4034,7 @@ switches:
 | `RUNNER_PREFETCH` | unset/off | Opt-in: on load, hint the whole weight mapping to the OS (`madvise(MADV_WILLNEED)` / `PrefetchVirtualMemory`) when the model fits in available RAM. **Off by default on every platform because the measurements said so.** macOS: on a 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load 60% *slower* than plain demand faulting (18.4 s swept vs 11.5 s, interleaved with eviction between arms); macOS demand paging outruns its own WILLNEED readahead. Linux (2026-11-09, a host capped at 60 read IOPS): time with it on over off 1.229 on the CPU, 1.006 and 0.9995 on CUDA. Windows (2026-11-10, CUDA): 1.159 cold, 1.122 and 1.118 warm on two files, identical output. On a CUDA load the hint is issued after the device upload has already read the weights, so it adds work there and cannot speed the upload. Pages stay fully evictable either way; suppressed under `--mlock` and for oversubscribed models. |
 | `RUNNER_METAL_FUSE` | on | Decode-path kernel fusion, up to the attention-front megakernel: norm + Q/K/V (Q8_0/Q4_0/Q4_K/Q6_K rosters) + qk-norm + rope + KV-store as ONE dispatch, whole heads per threadgroup, the normed row staged in threadgroup memory; plus rope+store, residual-add+rmsnorm and MoE gate+up+activation fusions on the paths the megakernel does not cover. −52% dispatches per token; +5–6% decode on the 120B and 30B, byte-identical. The post-FFN residual add rides the MoE expert sum on layers where it isn't already deferred into the next norm. The megakernel admits MoE models only — it recovers dispatch-chain latency, and a fast dense model is matvec-bound and measured slower under it (`RUNNER_METAL_FRONT=all` lifts that for tests; `RUNNER_METAL_FRONT=0` disables just the megakernel while keeping the other fusions, the isolation lever the q4_0 contraction hunt was run with). Every fused kernel reproduces the unfused arithmetic element for element — **byte-identical**, gated across a six-architecture roster in `make test` (`test-metal-fuse`). q8 KV, NoPE layers, sandwich norms and the gemma dual branch keep the unfused path automatically; `0` restores it everywhere. |
 | `RUNNER_METAL_MOE_MM` | on | Grouped simdgroup-MMA MoE prefill (default): per-expert GEMM tiles over gathered token columns, float-staged operands, +21-31% measured prefill on 30B/120B-class MoE, decode untouched. Judged by the house fidelity bar (`test-moe-mm-ab`), not byte identity — top-k routing flips near-ties under any reassociation, so `0` restores the matvec path and is pinned by every byte-identity gate; `half` selects the half-staged comparison arm. Dense models unaffected. |
-| `RUNNER_MOE_HOT` | unset | Experimental, opt-in, CUDA (R3.30). A file of `layer expert` pairs, one a line (`#` starts a comment), naming the experts of `--cpu-moe` host layers to keep in a device hot bank, sized by the file. A host layer with experts listed runs mixed: the device norms and routes, runs the listed experts' gate, up and down on the bank with the fused path's kernels, and the host runs the rest with the CPU path's own expert function at the same time; the slots are summed on the device in the router's order. **Limits:** v1 covers the plain top-k SiLU expert FFN only (no shared expert, expert biases or scales, dual branch or hyper-connections, at most 256 experts a layer); anything else, a malformed file, or the knob without `--cpu-moe`, is refused at load. The file comes from a routing trace (`RUNNER_MOE_TRACE`): it is fitted to the text the trace saw, and its gain is the measured one for one file on one card, not a property of the knob. Measured: Mellum2.1-12B-A2.5B-Thinking Q8_0 on an RTX 3070 with 768 slots (5.07 GB) from six traced prompts, warm decode in one long-lived process on a prompt the trace never saw at 1.52x `--cpu-moe auto` (40.69 against 26.75 tok/s, medians of three interleaved rounds). The first request in a process reads 26 to 33 tok/s while it pages the mapped file in; the 1.96x published earlier (27.82 against 14.19) was a fresh-process reading ([report](docs/compat-reports/r3.30-moe-hot-placement-2026-11-04/README.md)). With every expert of a layer listed, the scores are `--cpu-moe 0`'s bytes; a mixed layer's sum is neither placement's bytes and is within gpu-identity's tolerance (`tests/test_moe_hot.py`). `RUNNER_MOE_HOT_PROF=1` prints, at exit, each mixed layer's time per call: `route` (router, sync, read-back, remap), `host` (the host experts), `wait` (the sync after both), `fill` (the host terms' upload and the sum), and its hit share. |
+| `RUNNER_MOE_HOT` | unset | Experimental, opt-in, CUDA (R3.30). A file of `layer expert` pairs, one a line (`#` starts a comment), naming the experts of `--cpu-moe` host layers to keep in a device hot bank, sized by the file. A host layer with experts listed runs mixed: the device norms and routes, runs the listed experts' gate, up and down on the bank with the fused path's kernels, and the host runs the rest with the CPU path's own expert function at the same time; the slots are summed on the device in the router's order. **Limits:** v1 covers the plain top-k SiLU expert FFN only (no shared expert, expert biases or scales, dual branch or hyper-connections, at most 256 experts a layer); anything else, a malformed file, or the knob without `--cpu-moe`, is refused at load. The file comes from a routing trace (`RUNNER_MOE_TRACE`): it is fitted to the text the trace saw, and its gain is the measured one for one file on one card, not a property of the knob. Measured: Mellum2.1-12B-A2.5B-Thinking Q8_0 on an RTX 3070 with 768 slots (5.07 GB) from six traced prompts, warm decode in one long-lived process on a prompt the trace never saw at 1.52x `--cpu-moe auto` (40.69 against 26.75 tok/s, medians of three interleaved rounds). The first request in a process reads 26 to 33 tok/s while it pages the mapped file in; the 1.96x published earlier (27.82 against 14.19) was a fresh-process reading ([report](docs/compat-reports/r3.30-moe-hot-placement-2026-11-04/README.md)). With every expert of a layer listed, the scores are `--cpu-moe 0`'s bytes; a mixed layer's sum is neither placement's bytes and is within gpu-identity's tolerance (`tests/test_moe_hot.py`). `RUNNER_MOE_HOT_PROF=1` prints, at exit, each mixed layer's time per call: `route` (router, sync, read-back, remap), `host` (the host experts), `wait` (the sync after both), `fill` (the host terms' upload and the sum), and its hit share. The host copies of the experts held on the device are given back to the OS after the upload (the load prints how many): on Mellum 2.1 Q8_0's 768-slot hot file, one Windows host, the working set after warm decode read 5.39 GB against 10.44 GB. A RAM change, not a speed claim; the load itself still peaks at the full size. |
 | `RUNNER_DEBUG_ROUTE` | unset/off | Print one stderr line describing the route a forward actually took whenever it changes, written after the forward, so a device forward that fell back is reported on the CPU it finished on: `backend` and `device`, the layer `split`, `experts_on_host` under `--cpu-moe`, `moe_hot` (the expert slots `RUNNER_MOE_HOT` holds on the device), the `rows` and `path` (`solo`, `batch`, `keep` for speculative verification, `mtp`, `micro` for a slot microbatch), the `kv` type, the `weights` types by share, the CPU's activation (`cpu_act`: `f32`, or `int8` under `RUNNER_CPU_I8`, with `+int8-prefill` appended under `RUNNER_CPU_I8_PREFILL` and `+int8k-decode` under `RUNNER_CPU_I8K`), the backend's own selections (CUDA `graph`, `tc`, `q8x`, `i8`, `small_batch`, `moe`; Metal `fusion`, `mm`, `mv`, `attn`, `moe_mm`, `tensor`), the reason for a CPU `fallback` when a GPU was asked for, the `build` with its codegen flags, and every `RUNNER_*` variable set (`tuning`; a name containing KEY, TOKEN, SECRET or PASS shows only that it is set). Off, a forward costs two stores and a compare. `--bench-json` reports the run's record as its `route` object. |
 | `RUNNER_DEBUG_TIME` | unset/off | Print the forwards' CPU wall time per block stage at the end of a run, summed over every forward: `ple`, `hc_mix`, `attention` (the mixer through its post-norm, so the Q/K/V and output projections are inside it), `deltanet/ssm`, `moe_route`, `experts`, `shared_expert`, `dense_ffn`, `hc_combine` and `head`, each with its share of the total. Under `attention` an `attn core` line times only the scores, softmax and values pass, the part an attention kernel can change. CUDA and Metal time their phases with their own profilers. Off, a stage costs one cached flag test. |
 | `RUNNER_METAL_TENSOR` | unset/off | On M5+ with macOS 26.2+, opt Q4_K, Q8_0, and Q4_0 prefill into the separately admitted Metal 4 MPP tensor GEMM (per-type self-test; a failing type falls back alone). Experimental and not promoted: every admitted type passes its correctness gate but measured only parity with the simdgroup GEMM on M5, short of the 1.2x default-promotion bar. Ignored on Apple M1 to M4. |
@@ -5231,6 +5271,10 @@ Streaming emits ordered typed lifecycle, text-delta, function-argument-delta,
 done, and terminal events with monotonic `sequence_number` values. The
 terminal event contains usage and runner telemetry.
 
+A response id (`chatcmpl-`, `cmpl-`, `resp_`, `msg_`) is its prefix and 128 random
+bits, 32 hex digits: ids do not repeat across restarts or hosts, and a stored
+response cannot be read or deleted by guessing its id. Tool-call and output-item
+ids (`call_0`, `fc_0`) keep their numbers; they name a place in one response.
 `store:true` keeps the finished response in an in-memory store (never
 written to disk; bounded by `RUNNER_RESPONSES_STORE_MB`, default 64, least
 recently used first, and `RUNNER_RESPONSES_STORE_TTL` seconds, default 3600),

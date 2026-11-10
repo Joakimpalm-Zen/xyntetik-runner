@@ -395,6 +395,8 @@ merge into a 4-bit grid rounds the fine-tune away (1.8% of it survived in
 the measured study, against 99.5% into Q8_0), so that merge is refused.
 Same data, seed and build write the same adapter bytes; a different build
 can change them, which is a stated limit, not a promise broken.
+`runner train --full` trains the weights themselves in place of an adapter:
+a float32 file in, a variant file out, on the CPU, for dense models only.
 [Every adapter feature, explained](docs/lora.md) ·
 [Walkthrough](docs/train-lora-on-quantized-gguf.md) ·
 [What is covered and what is refused](MANUAL.md#adaptation)
@@ -422,7 +424,7 @@ bigger validation runs and on immediate need.
   [Coding-agent setup](MANUAL.md#coding-agent-evidence)
 - <a id="structured-output"></a>**Structured output.** `--json`,
   `--json FILE` or the API's `response_format` guarantee the shape of
-  the answer, and `"confirm_below": 0.8` reports whether the model was sure
+  the answer, a `oneOf` of objects told apart by a `const` included, and `"confirm_below": 0.8` reports whether the model was sure
   enough to skip a human. [Details](MANUAL.md#structured-output)
 - **Rerank without a second model.** `POST /v1/rerank` scores documents
   against a query with the model that is already loaded.
@@ -502,7 +504,8 @@ replays it.
 Around that core: signed and chained receipts (`runner attest keygen`, `--sign-key`)
 that carry an agent turn's tool calls and the tool results it was sent as data a policy can read.
 A served tool turn records its declarations and grammar settings so
-[`--verify` can replay it](MANUAL.md#cli-transcript).
+[`--verify` can replay it](MANUAL.md#cli-transcript), as it replays a turn cut by a
+stop sequence, a reasoning budget, the loop guard or a cancel.
 There are also evidence packs a reviewer checks offline (`runner attest pack`, `runner attest check-pack`),
 signature checks on the model file itself (`--model-sig`), and a text
 watermark with its detector (`--watermark`, `runner attest detect`).
