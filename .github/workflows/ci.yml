@@ -177,9 +177,14 @@ jobs:
   # client tests, the type check) runs in make-test; the hosted Mac is about
   # three times slower per test, so the whole suite runs there only in
   # macos-suite on the merge.
+  #
+  # Not on the push to main (R6.15, owner 2026-11-10): the pull request ran
+  # this job on the merge result, so the run on main repeated it, and a
+  # cancel by the hosted macOS pool left main red with nothing wrong. The
+  # daily and dispatched runs still include it.
   macos:
     needs: changes
-    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
+    if: github.event_name != 'push' && needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
