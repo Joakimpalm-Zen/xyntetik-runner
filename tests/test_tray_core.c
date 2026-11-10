@@ -6,6 +6,8 @@
 #include "compat.h"
 #include "instances.h"
 #include "tray.h"
+// the stub backend's count of trays that reached their run loop (tray_stub.c)
+extern int tray_stub_runs;
 
 #include <math.h>
 #include <stdbool.h>
@@ -22,6 +24,7 @@
 #include <sys/utime.h>
 #define getpid _getpid
 #define setenv_compat(k, v) _putenv_s(k, v)
+#define unsetenv_compat(k) _putenv_s(k, "")
 static void msleep(int ms) { Sleep(ms); }
 #else
 #include <arpa/inet.h>
@@ -34,6 +37,7 @@ static void msleep(int ms) { Sleep(ms); }
 #include <utime.h>
 #include <unistd.h>
 #define setenv_compat(k, v) setenv(k, v, 1)
+#define unsetenv_compat(k) unsetenv(k)
 static void msleep(int ms) {
     struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
     nanosleep(&ts, NULL);
@@ -746,6 +750,48 @@ int main(int argc, char **argv) {
     CHECK(!tray_spawned, "no tray spawned when one is already registered");
     instances_unregister();
     remove(tray_marker);
+
+    // 6. R9.5: a registry that cannot be written must not let trays stack.
+    // Every launch's tray_ensure_running() finds no tray record there, and a
+    // spawned tray could not record itself either, so each launch would leave
+    // one more resident tray. No tray is spawned on such a registry.
+    setenv_compat("RUNNER_TEST_REGISTRY_READONLY", "1");
+    tray_ensure_running();
+    bool spawned_on_readonly = false;
+    for (int w = 0; w < 20 && !spawned_on_readonly; w++) {
+        msleep(50);
+        FILE *tm = fopen(tray_marker, "rb");
+        if (tm) { fclose(tm); spawned_on_readonly = true; }
+    }
+    CHECK(!spawned_on_readonly, "no tray spawned when the registry cannot be written");
+    remove(tray_marker);
+    // and a tray started there anyway does not run: it could not record itself
+    int runs = tray_stub_runs;
+    CHECK(tray_main() != 0, "a tray that cannot record itself exits");
+    CHECK(tray_stub_runs == runs, "and never reaches its run loop");
+    unsetenv_compat("RUNNER_TEST_REGISTRY_READONLY");
+
+    // 7. R9.5: the race. A tray holds its lock from its first moment, before
+    // its record is written, so a launch in that window sees it: no second
+    // tray is spawned, and a second tray started anyway is refused.
+    // A helper this process just forked (the registry's sweep, started by the
+    // refused tray above) holds a copy of the lock until it closes its fds and
+    // execs; wait that out, up to 2 s, before taking it.
+    tray_lock_state ls7 = TRAY_LOCK_BUSY;
+    for (int w = 0; w < 40 && (ls7 = instances_tray_lock()) == TRAY_LOCK_BUSY; w++) msleep(50);
+    CHECK(ls7 == TRAY_LOCK_TAKEN, "this process holds the tray lock, as a starting tray does");
+    tray_ensure_running();
+    bool spawned_while_locked = false;
+    for (int w = 0; w < 20 && !spawned_while_locked; w++) {
+        msleep(50);
+        FILE *tm = fopen(tray_marker, "rb");
+        if (tm) { fclose(tm); spawned_while_locked = true; }
+    }
+    CHECK(!spawned_while_locked, "no tray spawned while another holds the lock, record or not");
+    remove(tray_marker);
+    CHECK(instances_tray_lock_busy(), "a second handle sees the lock held");
+    instances_tray_unlock();
+    CHECK(!instances_tray_lock_busy(), "and free once it is let go");
 
     remove(foreign);
     remove(mp);

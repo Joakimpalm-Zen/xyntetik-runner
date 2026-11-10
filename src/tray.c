@@ -788,6 +788,8 @@ void tray_menu_act(int action, long arg, const char *text) {
 }
 
 void tray_ensure_running(void) {
+    // a tray holds the lock from its first moment, before its record exists
+    if (instances_tray_lock_busy()) return;
     int n = 0;
     instance_rec *r = instances_list(&n);
     bool have_tray = false;
@@ -795,6 +797,15 @@ void tray_ensure_running(void) {
         if (strcmp(r[i].mode, "tray") == 0) have_tray = true;
     instances_list_free(r, n);
     if (have_tray) return;
+    // R9.5: a registry that cannot be written gives no tray. The tray could not
+    // record itself, so every later launch would find none and start another.
+    if (!instances_writable()) {
+        const char *dir = instances_dir();
+        fprintf(stderr, "tray: not started: the instance registry (%s) cannot be written, "
+                        "and without it every launch would start another tray\n",
+                dir ? dir : "no registry directory");
+        return;
+    }
 
     char exe[1200];
     self_exe(exe, sizeof exe);
@@ -1021,8 +1032,14 @@ int tray_main(void) {
         return 0;
     }
 
-    // one tray per machine: a live record with mode "tray" means another
-    // controller owns the icon
+    // one tray per machine (R9.5): a lock held for this tray's whole life, so
+    // two launches inside a tray's start cannot both start one
+    tray_lock_state lock = instances_tray_lock();
+    if (lock == TRAY_LOCK_BUSY) {
+        fprintf(stderr, "error: another tray controller is running\n");
+        return 1;
+    }
+    // and a live record with mode "tray", for a tray from before the lock
     int ng = 0;
     instance_rec *rg = instances_list(&ng);
     for (int i = 0; i < ng; i++)
@@ -1034,7 +1051,16 @@ int tray_main(void) {
         }
     instances_list_free(rg, ng);
 
-    instances_register("tray", 0, NULL, NULL, 0);
+    // A tray that cannot record itself would be invisible to the next launch,
+    // which would start another: one resident tray per launch (R9.5).
+    if (lock == TRAY_LOCK_UNAVAILABLE || !instances_register("tray", 0, NULL, NULL, 0)) {
+        const char *dir = instances_dir();
+        fprintf(stderr, "error: this tray cannot record itself in the instance registry (%s), "
+                        "so every launch would start another; not starting\n",
+                dir ? dir : "no registry directory");
+        instances_tray_unlock();
+        return 1;
+    }
     int rc = tray_platform_run();
     return rc;
 }

@@ -45,6 +45,24 @@ bool instances_register(const char *mode, int port,
 // port only after bind; registration happens at model load).
 bool instances_set_port(int port);
 
+// R9.5: whether this process can record itself in the registry, by writing
+// and removing a probe file there. A launch does not raise a tray where it
+// cannot: the tray could not record itself, the next launch would find no
+// tray, and trays would stack one per launch.
+bool instances_writable(void);
+
+// R9.5: one tray per machine, as a lock held for the tray's whole life
+// (<dir>/tray.lock), so two launches inside a tray's start cannot both start
+// one: the check and the claim are one step. Busy: another process holds it.
+// Unavailable: there is no registry directory to hold it in.
+typedef enum { TRAY_LOCK_TAKEN, TRAY_LOCK_BUSY, TRAY_LOCK_UNAVAILABLE } tray_lock_state;
+tray_lock_state instances_tray_lock(void);
+// Whether another process holds the tray lock now (a tray is running, though
+// its record may not be written yet).
+bool instances_tray_lock_busy(void);
+// Let go of this process's tray lock (a tray that will not run after all).
+void instances_tray_unlock(void);
+
 // Explicitly withdraw this process's record while still running. Safe to
 // call more than once. Do not call at exit: filesystem removal can block.
 void instances_unregister(void);

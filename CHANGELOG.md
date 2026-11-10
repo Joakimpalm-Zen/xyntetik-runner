@@ -71,6 +71,16 @@ file each, until the release folds them in below. Add a new entry there, not her
     (median of six interleaved runs each).
   - **Unchanged:** wherever the tensor-core GEMM runs, which is the default for Q4_0 on the promoted
     architectures; a chunked `--score` there is byte-identical before and after.
+- **Trays no longer stack (R9.5).**
+  - **Before:** with an instance directory that could not be written (an `%APPDATA%` that refused files), a tray
+    could not record itself, every launch found no tray, and each started another. Two launches inside a tray's
+    start could also both start one, even with a working directory.
+  - **Now:** a tray holds a lock in the instance directory (`tray.lock`) for its whole life, so the check and the
+    claim are one step. It exits when it cannot record itself, and a launch starts no tray on a directory it cannot
+    write, saying so on stderr. The lock is opened so no child inherits it, so a server the tray started does not
+    keep it after the tray quits.
+  - **Checks:** `test-tray-core` reproduces the stack on an unwritable registry (it failed before the fix), refuses
+    a tray that cannot record itself before it runs, and shows a launch that sees a held lock starting no tray.
 
 - **Docs: gemma-4-26B-A4B now has its publisher float32 comparison (R6.11).** The support entry listed it as owed.
   - **What was run:** two files, scored against the transformers forward of `google/gemma-4-26B-A4B-it` in float32

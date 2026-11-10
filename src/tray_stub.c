@@ -3,7 +3,12 @@
 #include "tray.h"
 #include <stdio.h>
 
+// how many times a tray reached its run loop: test_tray_core reads it to see a
+// tray refused before it ran (R9.5)
+int tray_stub_runs;
+
 int tray_platform_run(void) {
+    tray_stub_runs++;
     fprintf(stderr, "error: --tray is not available on this platform "
                     "(macOS and Windows only in v1)\n");
     return 1;
