@@ -22,6 +22,13 @@ logits, the header's binary digest aside):
 - a state saved under the prior layout is refused by name, never misread: a
   session image and a KV snapshot each say what wrote them and how to read
   them, and under the knob the image resumes to the straight run's bytes.
+
+And on CUDA (R3.54): a split whose device layers are all stateful has no KV
+rows to hold on the device (Mamba-2 layers never had any, DeltaNet layers
+since R3.44). The device init asked cuMemAlloc for 0 bytes, failed, and the
+run finished on the CPU. Every partial split of every hybrid family here must
+run on the device and score like the CPU. Until R3.54, no gate split a hybrid
+but two make targets.
 """
 import json
 import os
@@ -77,6 +84,10 @@ def fx(tmp_path_factory):
     subprocess.run([sys.executable, ROOT / "scripts/make-test-hybrid.py", str(d / "granitehybrid"), "--dense"],
                    check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
     out["granitehybrid"] = d / "granitehybrid.gguf"
+    # and Nemotron-H's Mamba-2 + attention + MLP layers (make-test-nemotron.py writes <arg>.gguf)
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-nemotron.py", str(d / "nemotron_h")], check=True,
+                   cwd=ROOT, stdout=subprocess.DEVNULL)
+    out["nemotron_h"] = d / "nemotron_h.gguf"
     return out
 
 
@@ -211,3 +222,38 @@ def test_a_prior_layout_snapshot_is_named_and_loads_under_the_knob(runner_bin, f
     with _srv(runner_bin, model, snaps, True) as srv:
         st, ctx = _post(srv, "/v1/runner/contexts", {"id": "y", "snapshot": "mem"})
         assert st == 200, ctx
+
+
+def _cuda(runner_bin):
+    caps = subprocess.run([str(runner_bin), "--caps"], cwd=ROOT, stdout=subprocess.PIPE, timeout=30)
+    return (json.loads(caps.stdout.decode()).get("gpu") or {}).get("backend") == "cuda"
+
+
+PROMPT = "hello world one two three four five six"
+
+
+def _score(runner_bin, path, *args):
+    r = subprocess.run([str(runner_bin), "-b", "1", "-m", str(path), "--score", "-p", PROMPT, "--no-tray",
+                        "-c", "128", *args], cwd=ROOT, capture_output=True, timeout=300,
+                       env={**os.environ, "RUNNER_GPU_FALLBACK": "fail"})
+    assert r.returncode == 0, r.stderr.decode(errors="replace")[-1500:]
+    return json.loads(r.stdout), r.stderr.decode(errors="replace")
+
+
+@pytest.mark.parametrize("fam", [f[0] for f in FAMILIES] + ["granitehybrid", "nemotron_h"])
+def test_every_partial_cuda_split_of_a_hybrid_runs_on_the_device(runner_bin, fx, fam):
+    if not _cuda(runner_bin):
+        pytest.skip("needs a CUDA device")
+    path = fx[fam]
+    info = subprocess.run([str(runner_bin), "-m", str(path), "--gpu", "off", "-p", "hi", "-n", "1", "-v",
+                           "--no-tray"], cwd=ROOT, capture_output=True, timeout=120).stderr.decode(errors="replace")
+    n = int(re.search(r"^layers\s+(\d+)", info, re.M).group(1))
+    cpu, _ = _score(runner_bin, path, "--gpu", "off")
+    for gl in range(1, n):
+        gpu, err = _score(runner_bin, path, "--gpu-layers", str(gl))
+        # the loader's split line names the layers it put on the device, and the score ran there
+        assert f"G={gl}/{n}" in err and gpu["score_route"]["backend"] == "cuda", (fam, gl, err[-1500:])
+        d = max(abs(x - y) for x, y in zip(cpu["logprobs"], gpu["logprobs"]))
+        # test-cuda-qwen4exp's bound: reduction-order residue on these fixtures is about 5e-7
+        assert len(cpu["logprobs"]) == len(gpu["logprobs"]) and d < 2e-5, (fam, gl, d)
+        assert cpu["argmax"] == gpu["argmax"], (fam, gl)
