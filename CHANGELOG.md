@@ -13,6 +13,16 @@ Older releases (v1.11.0 and earlier) are preserved in the
   warm on two files. On Linux, on a host capped at 60 read IOPS, it was 1.229x on the CPU and 1.006x and 0.9995x on
   CUDA. On a CUDA load the hint is issued after the device upload has read the weights, so it cannot speed that
   upload. `docs/speed-defaults.md` and the manual record the rows; a run that does not set it is unchanged.
+- **`--verify` replays a served turn under a reasoning budget or the loop guard (R1.1.3.3).**
+  - **Before:** such a receipt was `UNVERIFIABLE`. The record named the budget's size and that the guard was on,
+    but not the sentence the forced close writes or the guard's settings.
+  - **Now:** the `reasoning_budget` constraint carries `message_tokens`, the token ids of that sentence (`[]` for a
+    bare close). The `loop_guard` constraint carries `span`, `repeats`, `window`, `max_closes` and `everywhere`.
+    The replay installs them as the server does, primes from the prompt text as the server does, and closes or ends
+    the turn where they say. A record whose settings were changed replays `DIVERGED`. A record from before the
+    fields is `UNVERIFIABLE`, naming the one it lacks.
+  - **Still refused:** the reasoning channel's own sampling (`reasoning_temperature` and its siblings).
+
 - **`--verify` replays a served turn cut by a stop sequence (R1.1.3.2).**
   - **Before:** a receipt shaped by `stop`, `stop_sequences` or `stop_token_ids` was `UNVERIFIABLE`, although the
     record already carried the sequences.
