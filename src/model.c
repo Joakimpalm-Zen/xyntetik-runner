@@ -790,9 +790,16 @@ typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; in
 // R3.44: the qwen35 family's Gated DeltaNet layers own no KV rows
 // (bind_meta_qwen35) unless RUNNER_KV_RECURRENT_ROWS=1 keeps the layout that
 // gave them the attention shape. One rule for the loader and the fit.
-static bool qwen35_kv_rows_typed(const char *arch) {
+// RUNNER_KV_RECURRENT_ROWS=1: the 1.15.0 recurrent layout, KV rows of the
+// attention shape on a qwen35-family DeltaNet layer (R3.44) and a fold slot
+// for every layer of any hybrid (R3.47), to read a state saved under it
+static bool recurrent_layout_1150(void) {
     const char *rows = getenv("RUNNER_KV_RECURRENT_ROWS");
-    if (rows && *rows && strcmp(rows, "0") != 0) return false;
+    return rows && *rows && strcmp(rows, "0") != 0;
+}
+
+static bool qwen35_kv_rows_typed(const char *arch) {
+    if (recurrent_layout_1150()) return false;
     return !strcmp(arch, "qwen35") || !strcmp(arch, "qwen35moe") ||
            !strcmp(arch, "qwen4exp") || !strcmp(arch, "clef");
 }
@@ -941,7 +948,35 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
     return true;
 }
 
-uint64_t model_gpu_recurrent_cost(int kind, uint64_t n_layer, uint64_t conv_kernel,
+// The families no GPU backend here serves, by architecture: the loader runs
+// them on the CPU with this line, and --fit reports the CPU for them (R3.47;
+// it used to predict a device split the load never made, lfm2 and lfm2moe).
+const char *model_gpu_cpu_only_why(const char *arch, int norm_groups) {
+    if (!arch) return NULL;
+    if (!strcmp(arch, "stablelm"))
+        return "this model normalises with LayerNorm and the GPU "
+               "backends implement RMSNorm only";
+    if (!strcmp(arch, "lfm2") || !strcmp(arch, "lfm2moe"))
+        return "lfm2 is validated on the CPU only; its GPU path (the "
+               "short-convolution layers and their state) is not "
+               "checked yet";
+    if (norm_groups > 1)
+        return "this model normalises in groups (k2-horizon) and the "
+               "GPU backends implement full-width RMSNorm only";
+    if (!strcmp(arch, "flint"))
+        return "flint is validated on the CPU only; its GPU path "
+               "(sinks with a sliding window, NoPE full layers, "
+               "sigmoid routing with shared experts) is not checked yet";
+#if !defined(RUNNER_GPU_CUDA)
+    // CUDA runs both forms (R4.4.5 c1 naive, c2 absorbed)
+    if (!strcmp(arch, "deepseek2"))
+        return "deepseek2 (multi-head latent attention) is validated on "
+               "the CPU only; its GPU path is not checked yet";
+#endif
+    return NULL;
+}
+
+uint64_t model_gpu_recurrent_cost(int kind, uint64_t n_rec, uint64_t conv_kernel,
                                   uint64_t inner, uint64_t state, uint64_t groups,
                                   uint64_t v_heads, uint64_t q_dim) {
     uint64_t taps = conv_kernel > 0 ? conv_kernel - 1 : 0;
@@ -951,7 +986,7 @@ uint64_t model_gpu_recurrent_cost(int kind, uint64_t n_layer, uint64_t conv_kern
         uint64_t convdim = 2 * state * groups + inner;
         uint64_t mixdim = convdim > 2 * q_dim ? convdim : 2 * q_dim;
         uint64_t scratch = MODEL_GPU_MVB * (mixdim + convdim + inner + 2 * v_heads + q_dim);
-        uint64_t fold = n_layer * taps * convdim + n_layer * v_heads * state * state;
+        uint64_t fold = n_rec * taps * convdim + n_rec * v_heads * state * state;
         return 4 * (scratch + 2 * fold);
     }
     if (kind == MODEL_GPU_REC_MAMBA2) {
@@ -960,7 +995,7 @@ uint64_t model_gpu_recurrent_cost(int kind, uint64_t n_layer, uint64_t conv_kern
         uint64_t cd = inner + 2 * groups * state;
         uint64_t dip = 2 * inner + 2 * groups * state + v_heads;
         uint64_t scratch = MODEL_GPU_MVB * (dip + cd + inner);
-        uint64_t per = n_layer * taps * cd + n_layer * inner * state;
+        uint64_t per = n_rec * taps * cd + n_rec * inner * state;
         return 4 * (scratch + 2 * per);
     }
     return 0;
@@ -1034,6 +1069,22 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     uint64_t ssm_state  = gguf_get_u32(g, FK("ssm.state_size"), 0);
     uint64_t ssm_groups = gguf_get_u32(g, FK("ssm.group_count"), 0);
     uint64_t ssm_heads  = gguf_get_u32(g, FK("ssm.time_step_rank"), 0);
+    // R3.47: the layers that hold recurrent state, as the loader types them
+    // (bind_layer): qwen35's DeltaNet layers off the attention interval,
+    // granitehybrid's head_count_kv 0, nemotron_h's head_count_kv and
+    // feed_forward_length both 0; every trunk layer under the 1.15.0 layout
+    uint64_t rec_n = 0;
+    if (rec != MODEL_GPU_REC_NONE && recurrent_layout_1150()) rec_n = (uint64_t)f->n_layer;
+    else if (rec == MODEL_GPU_REC_DELTANET) {
+        uint32_t every = gguf_get_u32(g, FK("full_attention_interval"), 4);
+        for (int l = 0; l < f->n_layer; l++) if (!every || (l + 1) % every != 0) rec_n++;
+    } else if (rec == MODEL_GPU_REC_MAMBA2) {
+        bool nemo = !strcmp(arch, "nemotron_h");
+        for (int l = 0; l < f->n_layer; l++)
+            if (gguf_get_u32_idx(g, FK("attention.head_count_kv"), (uint64_t)l, 0) == 0 &&
+                (!nemo || gguf_get_u32_idx(g, FK("feed_forward_length"), (uint64_t)l, 0) == 0))
+                rec_n++;
+    }
     #undef FK
     fit_geom geo;
     const int blocks = f->n_layer + f->n_mtp;   // the trunk, then the declared NextN/MTP blocks
@@ -1068,7 +1119,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     // what the split leaves spare and moves no layer, so the counts below
     // are the loader's whatever window it then picks
     uint64_t act = ac.fixed + GPU_WINDOW_MIN * ac.per_col +
-                   model_gpu_recurrent_cost(rec, (uint64_t)f->n_layer, ssm_conv, ssm_inner,
+                   model_gpu_recurrent_cost(rec, rec_n, ssm_conv, ssm_inner,
                                             ssm_state, ssm_groups, ssm_heads, q_dim);
     const uint64_t slots = f->n_seq > 1 ? (uint64_t)f->n_seq : 1;
     f->gpu = true;
@@ -1720,6 +1771,7 @@ static void model_free_weights(model_t *m) {
         free(l->ple_post_norm);
     }
     free(m->l_head_kv); free(m->l_head_dim); free(m->l_rope_dim);
+    free(m->rec_slot); m->rec_slot = NULL;
     free(m->l_is_swa); free(m->suppress); free(m->kv_src);
     free(m->l_no_attn); free(m->l_no_ffn);
     free(m->ple_proj_norm);
@@ -5005,6 +5057,16 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     }
     for (int i = 0; i < m->n_layer + (bind_mtp ? 1 : 0); i++)
         if (!bind_layer(m, g, arch, i, fused_qkv)) return false;
+    // R3.47: a fold slot for each layer that carries recurrent state; an
+    // attention, MLP-only or NextN block holds none
+    if ((m->qwen35 || m->granite_hybrid || m->nemotron_h || m->lfm2) &&
+        !recurrent_layout_1150()) {
+        m->rec_slot = malloc(sizeof(int) * (size_t)m->n_layer);
+        if (!m->rec_slot) return false;
+        m->n_rec = 0;
+        for (int i = 0; i < m->n_layer; i++)
+            m->rec_slot[i] = m->layers[i].recurrent ? m->n_rec++ : -1;
+    }
     if (bind_mtp && !model_mtp_bind(m, g)) return false;
     if (strcmp(arch, "clef") == 0 && !model_clef_bind(m, g, arch)) return false;
 
@@ -5671,17 +5733,15 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         m->ssm_z = malloc(sizeof(float) * (size_t)B * m->ssm.inner);
         m->ssm_aux = malloc(sizeof(float) * (size_t)B *
                             (conv_dim + m->ssm.v_heads));
-        m->ssm_conv_state = calloc((size_t)m->n_layer *
-                                   (m->ssm.conv_kernel - 1) * conv_dim,
+        // one slot per DeltaNet layer (model_rec_count, R3.47)
+        size_t nrec = model_rec_count(m);
+        m->ssm_conv_state = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                    sizeof(float));
-        m->ssm_state_mem = calloc((size_t)m->n_layer * m->ssm.v_heads *
-                                  hv * hv, sizeof(float));
+        m->ssm_state_mem = calloc(nrec * m->ssm.v_heads * hv * hv, sizeof(float));
         // recurrent-state snapshot (tracer 4): same shape as the live buffers
-        m->ssm_conv_snap = calloc((size_t)m->n_layer *
-                                  (m->ssm.conv_kernel - 1) * conv_dim,
+        m->ssm_conv_snap = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                   sizeof(float));
-        m->ssm_state_snap = calloc((size_t)m->n_layer * m->ssm.v_heads *
-                                   hv * hv, sizeof(float));
+        m->ssm_state_snap = calloc(nrec * m->ssm.v_heads * hv * hv, sizeof(float));
         m->ssm_snap_pos = -1;
         m->ssm_mark_pos = -1;
         // one dequantized conv-kernel row, reused every conv step (the forward
@@ -5702,17 +5762,15 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         m->ssm_qkv = malloc(sizeof(float) * (size_t)B * d_in_proj);
         m->ssm_aux = malloc(sizeof(float) * (size_t)B * conv_dim);
         m->ssm_z   = malloc(sizeof(float) * (size_t)B * inner);
-        m->ssm_conv_state = calloc((size_t)m->n_layer *
-                                   (m->ssm.conv_kernel - 1) * conv_dim,
+        // one slot per Mamba-2 layer (model_rec_count, R3.47)
+        size_t nrec = model_rec_count(m);
+        m->ssm_conv_state = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                    sizeof(float));
-        m->ssm_state_mem = calloc((size_t)m->n_layer * nh * hd * ds,
-                                  sizeof(float));
+        m->ssm_state_mem = calloc(nrec * nh * hd * ds, sizeof(float));
         // recurrent-state snapshot (tracer 4): same shape as the live buffers
-        m->ssm_conv_snap = calloc((size_t)m->n_layer *
-                                  (m->ssm.conv_kernel - 1) * conv_dim,
+        m->ssm_conv_snap = calloc(nrec * (m->ssm.conv_kernel - 1) * conv_dim,
                                   sizeof(float));
-        m->ssm_state_snap = calloc((size_t)m->n_layer * nh * hd * ds,
-                                   sizeof(float));
+        m->ssm_state_snap = calloc(nrec * nh * hd * ds, sizeof(float));
         m->ssm_snap_pos = -1;
         m->ssm_mark_pos = -1;
         m->ssm_cw = malloc(sizeof(float) * m->ssm.conv_kernel);
@@ -5729,8 +5787,9 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         int E = m->n_embd, histn = m->ssm.conv_kernel - 1;
         m->ssm_qkv = malloc(sizeof(float) * (size_t)B * 3 * E);
         m->ssm_z   = malloc(sizeof(float) * (size_t)B * E);
-        m->ssm_conv_state = calloc((size_t)m->n_layer * histn * E, sizeof(float));
-        m->ssm_conv_snap  = calloc((size_t)m->n_layer * histn * E, sizeof(float));
+        // one ring per short-convolution layer (model_rec_count, R3.47)
+        m->ssm_conv_state = calloc(model_rec_count(m) * histn * E, sizeof(float));
+        m->ssm_conv_snap  = calloc(model_rec_count(m) * histn * E, sizeof(float));
         m->ssm_state_mem  = calloc(1, sizeof(float));
         m->ssm_state_snap = calloc(1, sizeof(float));
         m->ssm_snap_pos = -1;
@@ -5882,27 +5941,8 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_claim
         if (m->n_removed > 0 && !gpu_removed_sublayers_ok())
             cpu_why = "this backend does not omit removed sublayers "
                       "(--remove-sublayer) yet";
-        else if (m->norm_layernorm)
-            cpu_why = "this model normalises with LayerNorm and the GPU "
-                      "backends implement RMSNorm only";
-        else if (m->lfm2)
-            cpu_why = "lfm2 is validated on the CPU only; its GPU path (the "
-                      "short-convolution layers and their state) is not "
-                      "checked yet";
-        else if (m->norm_groups > 1)
-            cpu_why = "this model normalises in groups (k2-horizon) and the "
-                      "GPU backends implement full-width RMSNorm only";
-        else if (m->flint)
-            cpu_why = "flint is validated on the CPU only; its GPU path "
-                      "(sinks with a sliding window, NoPE full layers, "
-                      "sigmoid routing with shared experts) is not checked yet";
-#if defined(RUNNER_GPU_CUDA)
-        // CUDA runs both forms (R4.4.5 c1 naive, c2 absorbed)
-#else
-        else if (m->deepseek2)
-            cpu_why = "deepseek2 (multi-head latent attention) is validated on "
-                      "the CPU only; its GPU path is not checked yet";
-#endif
+        else
+            cpu_why = model_gpu_cpu_only_why(m->arch, m->norm_groups);
     }
     if (cpu_why) {
         fprintf(stderr, "gpu: %s — using CPU\n", cpu_why);
@@ -5960,6 +6000,9 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_claim
 }
 
 // --verbose: the loaded geometry, the cache and the backend.
+static size_t recurrent_conv_bytes(const model_t *m);
+static size_t recurrent_state_bytes(const model_t *m);
+
 static void runtime_report(const model_t *m, size_t kv_bytes, size_t k_bytes) {
     fprintf(stderr, "%-24s %s\n", "architecture", m->arch);
     fprintf(stderr, "%-24s %d\n", "layers", m->n_layer);
@@ -5985,6 +6028,11 @@ static void runtime_report(const model_t *m, size_t kv_bytes, size_t k_bytes) {
     fprintf(stderr, "%-24s %.1f MB (%s)\n", "kv cache", (kv_bytes + k_bytes) / 1e6,
             m->kv_f32 ? "f32, training only" : m->kv_fp4 ? "fp4" : m->kv_split ? "q8_0 K, fp4 V"
             : m->kv_q8 ? "q8_0" : "fp16");
+    // R3.47: a hybrid's per-sequence recurrent state, one slot per layer that holds it
+    if (model_has_recurrent(m))
+        fprintf(stderr, "%-24s %.1f MB (%zu of %d layers)\n", "recurrent state",
+                (recurrent_conv_bytes(m) + recurrent_state_bytes(m)) / 1e6,
+                model_rec_count(m), m->n_layer);
     if (model_kv_v_shared(m))
         fprintf(stderr, "%-24s one table: V reads the K row (absorbed MLA)\n", "kv layout");
     int n_swa = model_kv_swa_layers(m);
@@ -8140,7 +8188,7 @@ static size_t recurrent_state_bytes(const model_t *m);
 // A keep-forward (the CPU speculative verify: spec_want_all covers every row)
 // files each row's recurrent state, so the walk can restore the state after
 // its last kept row (model_recurrent_restore_row) instead of re-folding the
-// kept rows from the round-start snapshot. Slot (row b, layer l) of the keep
+// kept rows from the round-start snapshot. Slot (row b, fold slot of layer l) of the keep
 // buffers holds layer l's slice after row b. Returns whether this forward
 // files; the row count is recorded either way, so a forward that does not
 // file leaves no rows to restore.
@@ -8171,8 +8219,8 @@ static void mamba2_ssd_core_serial(model_t *m, layer_t *ly, int layer, int n, bo
     int histn = m->ssm.conv_kernel - 1;
 
     float *convstate = m->ssm_conv_state +
-                       (size_t)layer * histn * conv_dim;
-    float *states = m->ssm_state_mem + (size_t)layer * nh * hd * ds;
+                       model_rec_slot(m, layer) * histn * conv_dim;
+    float *states = m->ssm_state_mem + model_rec_slot(m, layer) * nh * hd * ds;
     size_t wrs = ggml_row_size(ly->ssm_conv->type, m->ssm.conv_kernel);
     float *cw = m->ssm_cw;                    // one dequantized conv row, reused
 
@@ -8243,9 +8291,9 @@ static void mamba2_ssd_core_serial(model_t *m, layer_t *ly, int layer, int n, bo
         }
         if (keep) {
             size_t cb = (size_t)histn * conv_dim, sb = (size_t)nh * hd * ds;
-            memcpy(m->ssm_conv_keep + ((size_t)b * m->n_layer + layer) * cb, convstate,
+            memcpy(m->ssm_conv_keep + ((size_t)b * model_rec_count(m) + model_rec_slot(m, layer)) * cb, convstate,
                    sizeof(float) * cb);
-            memcpy(m->ssm_state_keep + ((size_t)b * m->n_layer + layer) * sb, states,
+            memcpy(m->ssm_state_keep + ((size_t)b * model_rec_count(m) + model_rec_slot(m, layer)) * sb, states,
                    sizeof(float) * sb);
         }
     }
@@ -8377,8 +8425,8 @@ static void mamba2_ssd_core_chunked(model_t *m, layer_t *ly, int layer, int n) {
     int conv_dim = inner + 2 * ng * ds;
     int d_in_proj = 2 * inner + 2 * ng * ds + nh;
     int histn = m->ssm.conv_kernel - 1;
-    float *convstate = m->ssm_conv_state + (size_t)layer * histn * conv_dim;
-    float *states = m->ssm_state_mem + (size_t)layer * nh * hd * ds;
+    float *convstate = m->ssm_conv_state + model_rec_slot(m, layer) * histn * conv_dim;
+    float *states = m->ssm_state_mem + model_rec_slot(m, layer) * nh * hd * ds;
 
     // phase 1: conv1d for all tokens (thread over conv rows), reading the
     // initial ring for the first histn taps of the leading tokens.
@@ -8459,7 +8507,7 @@ static void mamba2_ssd_step(model_t *m, layer_t *ly, int layer, int n, int xdim)
 static void lfm2_shortconv(model_t *m, layer_t *ly, int layer, int n, int xdim) {
     const int E = m->n_embd, K = m->ssm.conv_kernel, histn = K - 1;
     matvec_b(m->tp, m->ssm_qkv, 3 * E, ly->ssm_in, m->xb, xdim, E, 3 * E, NULL, n);
-    float *ring = m->ssm_conv_state + (size_t)layer * histn * E;
+    float *ring = m->ssm_conv_state + model_rec_slot(m, layer) * histn * E;
     const float *w = ly->ssm_conv_w;          // [E][K]
     for (int b = 0; b < n; b++) {
         const float *Bv = m->ssm_qkv + (size_t)b * 3 * E;
@@ -8634,8 +8682,8 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
              m->xb, xdim, m->n_embd, nh, NULL, n);
     lora_hook(m, layer, LW_ALPHA, alphas, nh, m->xb, xdim, m->n_embd, nh, n);
 
-    float *hist = m->ssm_conv_state + (size_t)layer * histn * convdim;
-    float *states = m->ssm_state_mem + (size_t)layer * nh * hv * hv;
+    float *hist = m->ssm_conv_state + model_rec_slot(m, layer) * histn * convdim;
+    float *states = m->ssm_state_mem + model_rec_slot(m, layer) * nh * hv * hv;
     // a keep-forward (speculative verify) files per-row checkpoints so the
     // state after any row can be restored (model_recurrent_restore_row)
     bool keep = recurrent_keep_begin(m, n);
@@ -8686,9 +8734,9 @@ static void qwen35_linear(model_t *m, layer_t *ly, int layer, int n, int xdim) {
         if (keep) {
             // checkpoint this layer's window and state after row b
             size_t cb = (size_t)histn * convdim, sb = (size_t)nh * hv * hv;
-            memcpy(m->ssm_conv_keep + ((size_t)b * m->n_layer + layer) * cb, hist,
+            memcpy(m->ssm_conv_keep + ((size_t)b * model_rec_count(m) + model_rec_slot(m, layer)) * cb, hist,
                    sizeof(float) * cb);
-            memcpy(m->ssm_state_keep + ((size_t)b * m->n_layer + layer) * sb, states,
+            memcpy(m->ssm_state_keep + ((size_t)b * model_rec_count(m) + model_rec_slot(m, layer)) * sb, states,
                    sizeof(float) * sb);
         }
     }
@@ -9439,7 +9487,7 @@ bool model_ple4_block_host(model_t *m, int layer, const int32_t *tokens, int n, 
 // the two calloc sites in model_alloc_buffers exactly.
 static size_t recurrent_conv_bytes(const model_t *m) {
     int conv_dim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
-    return sizeof(float) * (size_t)m->n_layer *
+    return sizeof(float) * model_rec_count(m) *
            (size_t)(m->ssm.conv_kernel - 1) * (size_t)conv_dim;
 }
 // qwen4exp: the PLE block's dilated causal conv reads the (K-1)*ngram rows
@@ -9461,7 +9509,7 @@ static size_t recurrent_state_bytes(const model_t *m) {
     int hv = m->ssm.inner / m->ssm.v_heads;
     size_t per_head = m->qwen35 ? (size_t)hv * (size_t)hv
                                 : (size_t)hv * (size_t)m->ssm.state;
-    return sizeof(float) * (size_t)m->n_layer *
+    return sizeof(float) * model_rec_count(m) *
            (size_t)m->ssm.v_heads * per_head;
 }
 

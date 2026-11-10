@@ -67,12 +67,14 @@ of the same tokens: the backends' arithmetic differs in the last bits, and a
 near-tie can go the other way. A resume across machines is measured as its
 own gate before it is claimed.
 
-An image of a Qwen3.5-class hybrid (qwen35, qwen35moe, qwen4exp, clef)
-written before R3.44 carries KV rows for the Gated DeltaNet layers, which
-no longer reserve any. Its model key is that layout's, so it is refused by
-name, never misread; `RUNNER_KV_RECURRENT_ROWS=1` keeps the prior layout
-and resumes it (`tests/test_qwen35_kv_rows.py`, which covers KV snapshots
-too).
+An image of a hybrid written by 1.15.0 or earlier holds that release's
+recurrent layout: a recurrent-state slot for every layer (since R3.47 only
+a layer that holds state has one), and on a Qwen3.5-class model (qwen35,
+qwen35moe, qwen4exp, clef) KV rows for the Gated DeltaNet layers, which
+reserve none since R3.44. Its model key is that layout's, so it is refused
+by name, never misread; `RUNNER_KV_RECURRENT_ROWS=1` keeps the 1.15.0
+layout and resumes it (`tests/test_qwen35_kv_rows.py`, which covers KV
+snapshots and a Mamba-2 hybrid too).
 
 ## With transcripts
 

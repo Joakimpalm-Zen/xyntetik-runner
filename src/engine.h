@@ -314,9 +314,10 @@ typedef struct {
     // the weights, the geometry, the tokenizer and the cache element type.
     // Computed once by engine_init; see engine_prefix_reuse.
     uint64_t model_key;
-    // the key a runner before R3.44 gave this model (its qwen35-family
-    // DeltaNet layers reserved KV rows then); model_key for every other
-    // family. Only names why a saved state is refused, never admits one.
+    // the key 1.15.0 gave this model (a fold slot for every layer of a
+    // hybrid, R3.47; KV rows on a qwen35-family DeltaNet layer, R3.44);
+    // model_key for a model without recurrent layers. Only names why a saved
+    // state is refused, never admits one.
     uint64_t model_key_prior;
 } engine;
 

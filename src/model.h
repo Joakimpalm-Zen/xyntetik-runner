@@ -446,6 +446,12 @@ typedef struct {
     float *ssm_cw;                         // qwen35 dequantized conv-kernel row
     float *ssm_conv_state, *ssm_state_mem; // qwen35 per-sequence recurrent state
     bool   ssm_state_backend;  // the two above point into backend buffers (Metal)
+    // R3.47: the slot of layer l's recurrent state in every per-layer fold
+    // buffer (host, device, snapshots, the blob), -1 for a layer without one;
+    // n_rec slots in all. NULL: the 1.15.0 layout, slot l of n_layer
+    // (RUNNER_KV_RECURRENT_ROWS=1, or a model without recurrent layers).
+    int   *rec_slot;
+    int    n_rec;
     // Recurrent-state cache seam (SSM tracer 4): a fixed-size snapshot of the
     // conv ring + SSD/DeltaNet state, keyed by the position it was taken at.
     // Recurrent state is a fold, not a prefix — the state at pos n cannot
@@ -923,6 +929,14 @@ enum { KV_RING_AUTO = 0, KV_RING_ON = 1, KV_RING_OFF = 2 };
 // layers off the device -- the one case a smaller -c can take back.
 bool      model_kv_trade_note(int gpu_layers, int n_layer, uint64_t kv_dev,
                               uint64_t weights);
+// R3.47: where layer l's recurrent state sits in a per-layer fold buffer,
+// and how many slots such a buffer has (model_t.rec_slot)
+static inline size_t model_rec_slot(const model_t *m, int l) {
+    return m->rec_slot ? (size_t)m->rec_slot[l] : (size_t)l;
+}
+static inline size_t model_rec_count(const model_t *m) {
+    return m->rec_slot ? (size_t)m->n_rec : (size_t)m->n_layer;
+}
 // Which layer physically owns layer l's KV rows. Identity everywhere except
 // gemma4 E-series shared-KV layers, which compute no K/V and read an earlier
 // layer's cache. l == n_layer is the total-size sentinel and never remapped.
@@ -1486,11 +1500,16 @@ gpu_act_cost model_gpu_act_cost(uint64_t n_embd, uint64_t xdim, uint64_t q_dim,
 // the attention activations, as cuda_alloc_recurrent allocates it at the
 // narrowest window: the fold (qwen35's Gated DeltaNet) or the conv window
 // and SSM state (Mamba-2), twice (the live copy and the speculative
-// rollback's), and MODEL_GPU_MVB rows of the mixer scratch. The split plan
+// rollback's) for each of the n_rec layers that hold state (R3.47), and
+// MODEL_GPU_MVB rows of the mixer scratch. The split plan
 // (cuda.c cuda_instance_dims) and --fit both charge this one figure.
 enum { MODEL_GPU_REC_NONE, MODEL_GPU_REC_DELTANET, MODEL_GPU_REC_MAMBA2 };
 #define MODEL_GPU_MVB 64   // cuda.c MVB, the activation rows of a scratch buffer
-uint64_t model_gpu_recurrent_cost(int kind, uint64_t n_layer, uint64_t conv_kernel,
+// Why a family runs on the CPU though a GPU is present (LayerNorm, lfm2,
+// grouped norms, flint, deepseek2 off CUDA), or NULL: the loader's decline
+// and --fit's answer for the same file.
+const char *model_gpu_cpu_only_why(const char *arch, int norm_groups);
+uint64_t model_gpu_recurrent_cost(int kind, uint64_t n_rec, uint64_t conv_kernel,
                                   uint64_t inner, uint64_t state, uint64_t groups,
                                   uint64_t v_heads, uint64_t q_dim);
 // The prompt window, in columns, a device instance is built for: the widest

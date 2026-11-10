@@ -392,8 +392,8 @@ bool kvsnap_load(const engine *e, const char *id, const char *name, sbuf *out,
         }
         if (n == PFX_CTX_PRIOR) {
             fail(err, 409, "snapshot_kv_layout", "snapshot %s was made by an earlier runner, "
-                 "under a KV layout with rows for this model's recurrent layers; import it "
-                 "with RUNNER_KV_RECURRENT_ROWS=1, which keeps that layout", name);
+                 "under the 1.15.0 recurrent layout (state and KV rows for every layer); "
+                 "import it with RUNNER_KV_RECURRENT_ROWS=1, which keeps that layout", name);
             break;
         }
         if (n == PFX_CTX_NOSPACE) {

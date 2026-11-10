@@ -60,9 +60,9 @@ const char *session_key_mismatch(const session_meta *sm, const engine *e,
         snprintf(buf, cap, "KV type %s in the image, %s here: resume with --kv %s",
                  sm->kv_type, kv_type_of(m), sm->kv_type);
     else if (sm->model_key == e->model_key_prior)   // R3.44
-        snprintf(buf, cap, "an earlier runner wrote it, under a KV layout with rows for this "
-                 "model's recurrent layers; resume it with RUNNER_KV_RECURRENT_ROWS=1, "
-                 "which keeps that layout");
+        snprintf(buf, cap, "an earlier runner wrote it, under the 1.15.0 recurrent layout "
+                 "(state and KV rows for every layer); resume it with "
+                 "RUNNER_KV_RECURRENT_ROWS=1, which keeps that layout");
     else
         snprintf(buf, cap, "the model's identity differs: its geometry, tokenizer or "
                  "file (context and KV type agree; an image written before 1.13.0 "
