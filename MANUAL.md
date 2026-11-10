@@ -2644,13 +2644,25 @@ Override only the VRAM budget. The CUDA layer fit spends a budget that starts fr
 driver's free-memory view, is bounded by the OS video-memory budget for this process
 where the OS publishes one (Windows, WDDM: `IDXGIAdapter3::QueryVideoMemoryInfo` on the
 adapter matched by LUID, minus what the process already holds), is capped by this flag,
-and keeps a headroom of the larger of 512 MiB and one sixteenth of the budget for the
+and keeps a headroom of the larger of 512 MiB and one thirty-second of the budget for the
 driver context, PTX JIT, allocator slack and the OS reserve. The 2026-09-14 Windows
 report's 12 GB card was filled to 11.7 GB from the driver's view alone and paged over
 PCIe; the budget and headroom the fit chose are logged at load (`gpu: OS video memory
 budget ...`), and `gpu: VRAM ... free after init` reports the observed remainder. Where
 no OS budget exists (Linux, macOS) the driver's view with that headroom is what the fit
 spends, said so in the log.
+
+WDDM also lowers a process's budget while its own upload fills the card (an RTX 5070
+read 11.72 GB before the weights and 10.96 GB after them), so the figure the fit used is
+not the one the load ends under. On Windows the load reports the budget again once the
+weights are on the device (`gpu: OS video memory budget after the weights ...`);
+nothing is re-sized from it. With `RUNNER_DEBUG_VRAM=1` the load also prints its usage
+against that budget after init, and says when it is over. Over it, Windows may move part
+of the process's video memory to system memory, but that it slows decoding was not
+shown: on that card a load 0.3 GB over the budget decoded at full speed, and one layer
+fewer, which fitted, ran three times slower on a MoE file because that layer's experts
+then ran on the CPU. If decoding is slower than expected, compare with a smaller share
+of the card (this flag) or fewer GPU layers.
 
 <a id="cli-kv"></a>
 #### `--kv f16|f32|q8|k8v4|fp4`

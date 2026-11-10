@@ -3347,6 +3347,15 @@ int gpu_prompt_window(const model_t *m) {
     return g ? g->win : 0;
 }
 
+// R3.51: the OS video memory budget and usage on the weights' device right
+// now; false where the OS publishes none (WDDM only), and then nothing that
+// reads this changes behaviour.
+static bool os_vidmem_now(const gpu_weights *w, uint64_t *budget, uint64_t *usage) {
+    char luid[8]; unsigned mask = 0;
+    return cu.DeviceGetLuid && cu.DeviceGetLuid(luid, &mask, w->dev) == 0 &&
+           plat_gpu_os_budget((const unsigned char *)luid, budget, usage);
+}
+
 static gpu_weights *shared_build(model_t *m, size_t act_bytes, size_t per_col,
                                  size_t tc2_per_col, int max_hd, uint64_t fsize,
                                  uint64_t fino, int64_t fmtime) {
@@ -3392,6 +3401,19 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, size_t per_col,
     if (!uploaded) goto fail;
     w->refs = 1;
     vram_probe("after weights upload");
+    // R3.51: WDDM lowers this process's budget while its upload fills the
+    // card (an RTX 5070 read 11.72 GB at plan time and 10.79 to 10.97 GB
+    // after the weights), so the figure the plan used is not the one the
+    // load ends under. Report the budget as it stands now. Nothing is sized
+    // from it: on that card a load 0.3 GB over this budget decoded at full
+    // speed, and a layer handed back to fit it ran three times slower. No OS
+    // budget (anything but WDDM), no line.
+    {
+        uint64_t ob = 0, ou = 0;
+        if (os_vidmem_now(w, &ob, &ou))
+            fprintf(stderr, "gpu: OS video memory budget after the weights %.2f GB, "
+                            "%.2f GB in use\n", ob / 1e9, ou / 1e9);
+    }
     if (getenv("RUNNER_DEBUG_VRAM")) {
         size_t bb = 0;
         for (int i = 0; i < w->n_bindings; i++) bb += w->bindings[i].nbytes;
@@ -4234,6 +4256,18 @@ bool gpu_init(model_t *m) {
     cuda_report_init(m, g, D.act_bytes);
 
     vram_probe("after instance buffers");
+    {   // R3.51, RUNNER_DEBUG_VRAM only: usage against the OS budget once
+        // everything is allocated. Over it, Windows may move part of the
+        // process's video memory to system memory; whether that slows decode
+        // was not shown (0.3 GB over ran at full speed on an RTX 5070), so it
+        // is a debug fact, not a default warning.
+        uint64_t ob = 0, ou = 0;
+        if (vram_debug_on() && os_vidmem_now(g->sw, &ob, &ou))
+            fprintf(stderr, "vram: after init, OS usage %.3f of %.3f GB budget (%+.3f)%s\n",
+                    ou / 1e9, ob / 1e9, ((double)ou - (double)ob) / 1e9,
+                    ou > ob ? "; over it, Windows may move part of this process's video "
+                              "memory to system memory" : "");
+    }
     m->gpu = g;
     // only now: a load that fails above runs on the CPU, from these pages
     cuda_release_host_weights(m);
