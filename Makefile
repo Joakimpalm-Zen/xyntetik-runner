@@ -299,6 +299,7 @@ TEST_MVT_CHAINS = $(TEST_BATCH:test-batch%=test-mvt-chains%)
 TEST_DN_RECURRENCE = $(TEST_BATCH:test-batch%=test-dn-recurrence%)
 TEST_ATTN_BW = $(TEST_BATCH:test-batch%=test-attn-bw%)
 TEST_THREAD_DEFAULT = $(TEST_BATCH:test-batch%=test-thread-default%)
+TEST_SLOW_NOTE = $(TEST_BATCH:test-batch%=test-slow-note%)
 
 # Every module header, so a change to any of them rebuilds. runner.h was one
 # file until 0.1.5; the split (RNR-018) would otherwise have quietly narrowed
@@ -1533,6 +1534,9 @@ $(TEST_ECDSA): tests/test_ecdsa.c $(OBJDIR)/ecdsa.o $(OBJDIR)/envelope.o $(OBJDI
 # over-large -t is clamped to TP_MAX rather than silently discarded.
 $(TEST_THREAD_DEFAULT): tests/test_thread_default.c $(OBJDIR)/compat.o src/compat.h $(QUANTS_OBJ)
 	$(CC) $(CFLAGS) -I src tests/test_thread_default.c $(OBJDIR)/compat.o $(QUANTS_OBJ) -o $@ $(LDFLAGS)
+# R10.29: the note a silent wait says (the GPU kernels' first JIT), checked without a GPU
+$(TEST_SLOW_NOTE): tests/test_slow_note.c $(OBJDIR)/compat.o src/compat.h $(QUANTS_OBJ)
+	$(CC) $(CFLAGS) -I src tests/test_slow_note.c $(OBJDIR)/compat.o $(QUANTS_OBJ) -o $@ $(LDFLAGS)
 
 TEST_MODEL_LOAD_FAILURE_SRC = tests/test_model_load_failure.c $(OBJDIR)/gguf.o \
                               $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/model.o \
@@ -3184,7 +3188,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
-      $(TEST_THREAD_DEFAULT) \
+      $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
@@ -3471,6 +3475,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_ECDSA)
 	./$(TEST_WATERMARK)
 	./$(TEST_THREAD_DEFAULT)
+	./$(TEST_SLOW_NOTE)
 	./$(TEST_MODEL_LOAD_FAILURE)
 	@# a model load with each of its allocations failed in turn, alone and
 	@# beside an instance holding the shared weights, over one fixture per
@@ -3786,7 +3791,7 @@ clean:
 	      $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
-	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
+	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
 	      $(TEST_FILE_ID) test-file-identity.tmp \
 	      $(TEST_BUDGET) $(TEST_ATTRIB) $(TEST_MSG_OOM) $(TEST_STOP_CONSTRAINT) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) \
 	      $(TMPL_CONF_RENDER) \

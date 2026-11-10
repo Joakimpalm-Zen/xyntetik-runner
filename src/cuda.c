@@ -2457,9 +2457,23 @@ static bool sm80_module_wanted(const gpu_weights *w) {
     return gpu_tc2_on() && gpu_sm80_on() && cu.DeviceGetAttribute &&
            cu.DeviceGetAttribute(&ccmaj, CU_DEV_ATTR_CC_MAJOR, w->dev) == 0 && ccmaj >= 8;
 }
+// R10.29: on the first load after a new card or driver the driver JIT-compiles the embedded PTX
+// (measured: 33.4 s on an RTX 5070 for a 370 KB model, then 0.40 s from the driver's cache of
+// 47.6 MB), and the process sat there without a word. A load still running after 2 s says why on
+// stderr, once per process: a warm load ends first and says nothing. stdout and receipts are untouched.
+static atomic_bool g_jit_noted;
+static CUresult module_load_noted(CUmodule *mod, const void *img) {
+    plat_slow_note *n = atomic_load(&g_jit_noted) ? NULL :
+        plat_slow_note_begin(stderr, "gpu: compiling the GPU kernels for this card and driver; this "
+                             "happens once per card and driver, later loads take them from the "
+                             "driver's cache", 2.0);
+    CUresult r = cu.ModuleLoadData(mod, img);
+    if (plat_slow_note_end(n)) atomic_store(&g_jit_noted, true);
+    return r;
+}
 static bool shared_load_module(gpu_weights *w) {
     vram_probe("before module load");
-    CK(cu.ModuleLoadData(&w->mod, k_ptx_src));
+    CK(module_load_noted(&w->mod, k_ptx_src));
     vram_probe("after module load");
     struct { CUfunction *f; const char *name; } fns[] = {
         { &w->f_rmsnorm,    "k_rmsnorm" },   { &w->f_qknorm, "k_qknorm" },
@@ -2762,7 +2776,7 @@ static bool shared_load_module(gpu_weights *w) {
         // off. Non-fatal: a module that does not load leaves forced TC2 on
         // the compute_75 kernels and auto TC2 off (tc2_fn).
         if (sm80_module_wanted(w) && w->f_x_half && cu.FuncSetAttribute) {
-            if (cu.ModuleLoadData(&w->mod80, k_ptx80_src) != 0) {
+            if (module_load_noted(&w->mod80, k_ptx80_src) != 0) {
                 w->mod80 = NULL;
                 fprintf(stderr, "gpu: the compute_80 kernels did not load; TC2 runs "
                         "only when forced, on its compute_75 kernels\n");
@@ -8998,7 +9012,7 @@ bool gpu_train_init(model_t *m) {
         return false;
     }
     if (cu.CtxSetCurrent(t->ctx) != 0 ||
-        cu.ModuleLoadData(&t->mod, k_ptx_src) != 0 ||
+        module_load_noted(&t->mod, k_ptx_src) != 0 ||
         cu.MemAlloc(&t->dummy, 4) != 0 ||
         cu.MemsetD8(t->dummy, 0, 4) != 0) {
         cu.PrimaryCtxRelease(t->dev);

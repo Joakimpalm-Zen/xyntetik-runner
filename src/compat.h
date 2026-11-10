@@ -384,4 +384,16 @@ bool plat_once(_Atomic bool *flag);
 typedef struct { _Atomic int state; FILE *fp; } plat_env_file;
 FILE *plat_env_file_get(plat_env_file *f, const char *env);
 
+// --- a note for a wait that would otherwise be silent ---------------------
+//
+// R10.29: the first load of the GPU kernels on a new card or driver sits for
+// about 33 s while the driver compiles them, and nothing said why. A note
+// begun before such a call says `line` once on `out`, from a watcher thread,
+// if the call is still running after `after_s` seconds; ended in time, it says
+// nothing. End returns whether the line was said, and frees the note. Begin
+// returns NULL when no watcher could start; end takes NULL and returns false.
+typedef struct plat_slow_note plat_slow_note;
+plat_slow_note *plat_slow_note_begin(FILE *out, const char *line, double after_s);
+bool            plat_slow_note_end(plat_slow_note *n);
+
 #endif
