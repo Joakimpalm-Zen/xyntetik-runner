@@ -1,0 +1,22 @@
+#!/bin/sh
+# make with the release recipe's CFLAGS on the command line (.github/workflows/release.yml, the Linux and Windows
+# x86-64 line), for running scripts/cuda-gate.sh on a release binary:
+#
+#   PATH="$PWD/tools/release-make:$PATH" scripts/cuda-gate.sh . OUT
+#
+# cuda-gate's steps run make. Without the recipe's CFLAGS on make's command line a step relinks a different
+# runner: a CFLAGS from the environment is extended by the Makefile's += lines, and the objects land in another
+# .build/<id> (found running the 1.16.0 gate, 2026-11-10). This directory first on PATH makes every make the gate
+# runs build exactly what the release recipe built. RELEASE_ARCH_FLAGS overrides the arch flags (default
+# -march=x86-64-v3, the recipe's for x86-64).
+self=$(cd "$(dirname "$0")" && pwd)
+real=
+old_ifs=$IFS
+IFS=:
+for d in $PATH; do
+    [ "$d" = "$self" ] && continue
+    if [ -x "$d/make" ]; then real="$d/make"; break; fi
+done
+IFS=$old_ifs
+[ -n "$real" ] || { echo "release-make: no make on PATH besides this wrapper" >&2; exit 127; }
+exec "$real" CFLAGS="-O3 -ffast-math -std=gnu11 -Wall -Wextra -Wno-unused-parameter ${RELEASE_ARCH_FLAGS:--march=x86-64-v3}" "$@"
