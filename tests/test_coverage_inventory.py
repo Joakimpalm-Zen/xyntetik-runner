@@ -30,13 +30,12 @@ def _coverage():
 
 
 def _template_ids():
+    # every family's name, from the one table template_name and template_from_name read (R2.4.8)
     src = (ROOT / "src" / "template.c").read_text(encoding="utf-8")
-    i = src.index("const char *template_name(int t) {")
-    body = src[i:i + 3000]
-    ids = re.findall(r'return "([a-z0-9-]+)"', body.split("\n}\n")[0])
-    ids.append("llama2-fallback")
-    assert "chatml" in ids and "qwen38" in ids, ids
-    return set(ids)
+    i = src.index("TEMPLATE_NAMES[] = {")
+    ids = set(re.findall(r'\{ TMPL_[A-Z0-9_]+, "([a-z0-9-]+)", (?:true|false) \}', src[i:src.index("\n};\n", i)]))
+    assert "chatml" in ids and "qwen38" in ids and "llama2-fallback" in ids, ids
+    return ids
 
 
 def _admitted_architectures():

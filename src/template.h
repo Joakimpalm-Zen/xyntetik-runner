@@ -313,7 +313,9 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // generation prompt's thinking test replaced by a comment, so the
        // prompt is always the closed block, whatever enable_thinking says.
        // Detected by that comment. Appended last.
-       TMPL_MINICPMV_FIXED };
+       TMPL_MINICPMV_FIXED,
+       // Not a family: how many there are, so a test can walk every one (R2.4.8).
+       TMPL_COUNT };
 
 // The reasoning tags a TEMPLATE family writes, for the families whose
 // protocol (not their architecture) defines them: the `<think>` block of
