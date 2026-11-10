@@ -8,6 +8,12 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **`--info fit` predicts the split a load makes with the KV ring (R3.50).** When the weights and the flat KV
+  cache do not fit the GPU budget, a load gives sliding-window layers only their window plus the prompt batch
+  (`--kv-ring auto`) and places more layers; the fit charged the flat cache and predicted fewer
+  (gemma-4-26B-A4B at 4k: 22 of 30 against the load's 23). It now applies the same test, charges the same rows,
+  and marks such a split `with the KV ring`; the `kv cache` line stays the flat figure. For a sparse MoE the
+  split's RAM figure is labelled `hot set`, the figure it always was.
 - **Docs: gemma-4-26B-A4B now has its publisher float32 comparison (R6.11).** The support entry listed it as owed.
   - **What was run:** two files, scored against the transformers forward of `google/gemma-4-26B-A4B-it` in float32
     on chat text, 2,000 positions ([the record](docs/gemma4-26b-reference-2026-11-10.md)).

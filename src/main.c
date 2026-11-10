@@ -1724,13 +1724,23 @@ static int run_fit_check(const char *path, int n_ctx_want,
     const char *farch = gguf_get_str(&g, "general.architecture", "");
     snprintf(akey, sizeof akey, "%s.attention.group_norm_groups", farch);
     const char *cpu_why = model_gpu_cpu_only_why(farch, (int)gguf_get_u32(&g, akey, 1));
+    // R3.50: the KV ring the load would turn on, sized by the batch the load
+    // would take (model.c: a GPU load's default batch follows total RAM)
+    f.kv_ring_mode = mp->kv_ring;
+    f.n_batch = mp->n_batch > 0 ? mp->n_batch
+              : mp->gpu_mode == GPU_AUTO ? model_batch_default_for(plat_ram_bytes()) : 64;
     if (mp->gpu_mode != GPU_OFF && !cpu_why && gpu_available(gname, sizeof gname) &&
         gpu_offload_budget(mp->reserve_vram_pct, &gbudget, &gheadroom))
         model_fit_gpu(&g, &f, gbudget, gheadroom, mp->gpu_layers_override);
     // the loader's own line has the same two figures (cuda.c, gpu-split)
-    if (f.gpu && getenv("RUNNER_DEBUG_VRAM"))
+    if (f.gpu && getenv("RUNNER_DEBUG_VRAM")) {
         fprintf(stderr, "fit: (bytes: fixed %llu, headroom %llu)\n",
                 (unsigned long long)f.gpu_fixed, (unsigned long long)gheadroom);
+        // the split's own figures, beside the loader's gpu-split line
+        fprintf(stderr, "fit: f16 G=%d/%d used=%.3fGB budget=%.3fGB ring=%d (%d rows on %d layers)\n",
+                f.gpu_layers[0], f.n_layer, f.gpu_used[0] / 1e9, f.gpu_budget / 1e9,
+                (int)f.kv_ring[0], f.kv_ring_rows, f.n_swa_layers);
+    }
 
     char w[32], h[32], kf[32], kq[32], av[32];
     const uint64_t slots = (uint64_t)f.n_seq;
@@ -1792,8 +1802,11 @@ static int run_fit_check(const char *path, int n_ctx_want,
             if (f.gpu_layers[k] < 0) continue;
             char hn[32];
             fit_gib(hn, sizeof hn, f.host_need[k]);
-            printf("%s %s: %d of %d layers on the GPU, %s in RAM",
-                   first ? "" : "  |", kvname[k], f.gpu_layers[k], f.n_layer, hn);
+            // a sparse MoE's host figure is its hot set, not the bytes it maps
+            printf("%s %s: %d of %d layers on the GPU%s, %s %sin RAM",
+                   first ? "" : "  |", kvname[k], f.gpu_layers[k], f.n_layer,
+                   f.kv_ring[k] ? " with the KV ring" : "", hn,
+                   f.sparse ? "hot set " : "");
             first = 0;
         }
         printf("\n");
@@ -1861,7 +1874,14 @@ static int run_fit_check(const char *path, int n_ctx_want,
     // The KV line is each layer's own rows (model_fit_report), as the loader
     // allocates them; what a load can still do differently is the opt-in
     // ring, which gives sliding-window layers only their window.
-    if (f.swa)
+    bool ringed = false;
+    for (int k = 0; f.gpu && k < 4; k++) ringed |= f.gpu_layers[k] >= 0 && f.kv_ring[k];
+    if (ringed)
+        printf("  note          KV is the flat cache; a split marked \"with the KV ring\" "
+               "charges the %d sliding-window layers %d rows each, as a load does when "
+               "the weights and the flat cache do not fit (--kv-ring auto)\n",
+               f.n_swa_layers, f.kv_ring_rows);
+    else if (f.swa)
         printf("  note          KV is the flat cache; a load turns on the KV ring "
                "(--kv-ring auto) when the weights and this cache do not fit, "
                "giving sliding-window layers only their window\n");

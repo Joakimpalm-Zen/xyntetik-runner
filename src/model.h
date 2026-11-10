@@ -1467,6 +1467,14 @@ typedef struct {
     int      gpu_layers[4];
     uint64_t host_need[4];            // RAM the CPU side needs with that split
     uint64_t gpu_used[4];             // device bytes that split would hold
+    // R3.50: the KV ring a load turns on (--kv-ring, model.c kv_ring_wanted).
+    // Set by the caller before model_fit_gpu: the mode (KV_RING_*) and the
+    // prompt batch, which sizes a ringed layer's rows (window + batch).
+    // model_fit_gpu sets kv_ring[k] when that format's split was charged the
+    // ring, and kv_ring_rows to the rows a sliding layer gets.
+    int      kv_ring_mode, n_batch;
+    bool     kv_ring[4];
+    int      kv_ring_rows, n_swa_layers;
 } model_fit;
 
 enum { FIT_KV_F16 = 0, FIT_KV_Q8, FIT_KV_K8V4, FIT_KV_FP4 };
