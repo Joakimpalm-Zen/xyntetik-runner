@@ -13,8 +13,8 @@ A canonical build now names those types, in three places:
 The list is empty when every weight type the model multiplies is canonical. A build without the define writes none of
 it.
 
-Anchors outside the runner: the fixtures' declared weight types (test-q4k.gguf is quantized to Q4_K, test-q8.gguf to
-Q8_0, test.gguf is F32), and the receipt read as JSON. On a build that is not T3 the module skips. CI's t3 job runs it.
+Anchors outside the runner: the fixtures' declared weight types (test-bf16.gguf is BF16, test-q4k.gguf is quantized
+to Q4_K, test-q8.gguf to Q8_0, test.gguf is F32), and the receipt read as JSON. On a build that is not T3 the module skips. CI's t3 job runs it.
 """
 import json
 import pathlib
@@ -25,8 +25,9 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# (fixture, the types a canonical build cannot run canonically today)
-CASES = [("test-q4k.gguf", "Q4_K"), ("test-q8.gguf", ""), ("test.gguf", "")]
+# (fixture, the types a canonical build cannot run canonically): Q4_K was a
+# gap until R12.1b's kernels (Q4_0, Q4_K, Q5_K, Q6_K); BF16 still is one
+CASES = [("test-bf16.gguf", "BF16"), ("test-q4k.gguf", ""), ("test-q8.gguf", ""), ("test.gguf", "")]
 
 
 @pytest.fixture(scope="module")

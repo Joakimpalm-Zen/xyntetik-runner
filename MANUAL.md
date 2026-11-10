@@ -1648,16 +1648,18 @@ bits of the logits. `make T3=1` removes the three causes of that
 difference: it compiles without fast-math or fused-multiply-add
 contraction, replaces libm's `expf`, `logf`, `sinf`, `cosf`, `tanhf` and
 `powf` with implementations over IEEE add, multiply and divide only
-(`src/pmath.h`), and dispatches the F32, F16 and Q8_0 dot products to
-kernels that compute one fixed reduction tree on every target
-(`RUNNER_CANON_KERNELS`, gated bit for bit in `tests/test_canon_kernels.c`).
+(`src/pmath.h`), and dispatches the F32, F16, Q8_0, Q4_0, Q4_K, Q5_K and
+Q6_K dot products to kernels that compute one fixed reduction tree on every
+target (`RUNNER_CANON_KERNELS`, gated bit for bit in
+`tests/test_canon_kernels.c`; the k-quants and Q4_0 since R12.1b).
 Measured on a 165-token scoring run of the same Q8_0 model: 0 of 165
 positions bit-identical between an Apple M1 and an x86-64 box in the
 default build, 165 of 165 in the T3 build, and the same on riscv64 under
 qemu. Cost: 7% decode on x86-64, 17% on the Apple M1, all of it the strict-float
 flags. A T3 receipt carries `"flavor":"t3"` in its `build` object. This is
-measured, not yet a claimed tier: the batched prefill tile, the k-quant
-formats, MoE and the GPU backends are not canonical yet. A T3 run names the
+measured, not yet a claimed tier: the batched prefill tile, the other
+weight formats (Q2_K, Q3_K, Q4_1, Q5_0, Q5_1, BF16, the IQ and MXFP4 ones),
+MoE and the GPU backends are not canonical yet. A T3 run names the
 weight types it multiplies without a canonical-order kernel ("canon: Q4_K have
 no canonical-order kernel in this build ..." at load, and `canon_gaps` on the
 route line and in the receipt's `profile.route`), so a model it cannot make

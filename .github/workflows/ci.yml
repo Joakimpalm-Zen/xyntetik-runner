@@ -867,7 +867,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: build actual T3 binary and fixture
         run: |
-          make T3=1 test.gguf runner test-q8.gguf test-q4k.gguf
+          make T3=1 test.gguf runner test-q8.gguf test-q4k.gguf test-bf16.gguf
           ./runner --version | grep -F "(t3)"
       - name: install pytest
         run: |
