@@ -2629,7 +2629,7 @@ instance instead.
 | `--vram-priority N` | Advisory priority tag on this claim, default `0` (also `RUNNER_VRAM_PRIORITY`). See [VRAM registry: priority and cooperative yield](#vram-registry-priority-and-cooperative-yield). |
 | `--yield-on-request [on\|off]` | In `--serve`, release the resident model at the next idle point when another process has asked it to (`vram_request_yield`). A request, never preemption. `on` by default when serving (bare `--yield-on-request` is `on`); `off` keeps the model. See the same section. |
 | `--reserve P` or `--reserve vram=P,ram=P,cpu=P` | One percentage caps this process at `P` percent of total RAM and VRAM; the named form sets each budget on its own: `vram` (the CUDA layer-fit budget, [details](#cli-reserve-vram)), `ram`, and `cpu` (size the default thread count as a percentage of cores). Without `-c` the context is auto-fit to what the reservation leaves after the weights. |
-| `--kv f16\|q8\|k8v4\|fp4` | Choose KV cache storage; precision, memory use and backend support differ by format. [Details](#cli-kv). |
+| `--kv f16\|f32\|q8\|k8v4\|fp4` | Choose KV cache storage; precision, memory use and backend support differ by format. `f32` is a CPU-only measurement instrument. [Details](#cli-kv). |
 | `--kv-ring auto\|on\|off` | Give sliding-window layers only their window of KV rows, output-identical to the flat cache. `auto` (default) turns it on only when the weights and the flat cache do not fit; `-v` says why it is on or off. [Details](#cli-kv-ring). |
 | `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. A Gemma 4 E-series per-layer token table stays pageable. Runner maps its weights, so a one-shot CLI run of a mapped 4B file on an 8 GB Mac pays about 3 GB of page-in inside its first prompt (Qwen3-4B Q4_K_M: 28 against 85 tok/s of 512-token prefill, 2026-11-04); `--mlock` or a resident server holds the weights. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
@@ -2653,7 +2653,7 @@ no OS budget exists (Linux, macOS) the driver's view with that headroom is what 
 spends, said so in the log.
 
 <a id="cli-kv"></a>
-#### `--kv f16|q8|k8v4|fp4`
+#### `--kv f16|f32|q8|k8v4|fp4`
 
 KV cache storage. `q8` stores q8_0 blocks at about 53% of the f16 bytes; `fp4` stores
 E2M1 values with one UE4M3 scale per 16 channels at about 28%, so each roughly doubles
@@ -2661,6 +2661,29 @@ the context that fits; `k8v4` keeps K at q8_0 and stores only V as fp4, about 41
 because K is the side a 4-bit cache hurts (see the measured split under [Long contexts](#long-contexts)). All are
 lossy: output is not token-identical to an f16 cache, and the cost is measured per model
 with `scripts/kld-compare-raw.py` against the same file's f16 cache. f16 is the default.
+
+`f32` keeps K and V unrounded. It is a measurement instrument, not a speed or quality
+default.
+
+- **Cost:** it doubles the KV memory against f16, and every attention read moves twice the
+  bytes.
+- **What it is for:** taking the cache's rounding out of a comparison. One example is a
+  model's distance from its publisher's float32 forward, where the f16 cache is one of the
+  perturbations an engine adds.
+- **Measured on gemma-4-26B-A4B's bf16 conversion:** the CPU path's distance from the
+  publisher's float32 forward, 2,000 positions each, with the f16 cache, then `--kv f32`:
+  - chat text: 0.00068, then 0.00003;
+  - raw text, where this instruction-tuned model is out of format: 0.428, then 0.0055.
+  - [The record](docs/gemma4-26b-reference-2026-11-10.md).
+- **Where it runs:** on the CPU path only, with `--gpu off`. The GPU attention kernels read
+  f16, q8_0 and fp4 rows, so a run that could reach a device is refused with that reason
+  rather than given f16.
+- **Where it is named:** receipts (`profile.kv`), the route, `--info doctor`, KV snapshots
+  and session images all say `f32`, and `--verify` replays such a record. A snapshot or an
+  image carries it, and a run with another KV type refuses either by name.
+- **What it equals:** the training forward's f32 cache (`--train-kv-f32`). Rollouts a
+  `--kv f32 -b 1` server samples score bit for bit the same under
+  `--train ... --lr 0 --train-kv-f32` (`tests/test_kv_f32.py`).
 
 <a id="cli-kv-ring"></a>
 #### `--kv-ring auto|on|off`

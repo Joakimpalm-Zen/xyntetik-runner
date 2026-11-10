@@ -438,7 +438,7 @@ typedef struct {
     bool   kv_q8;            // KV rows stored as q8_0 blocks (CPU and CUDA)
     bool   kv_fp4;           // KV rows stored as fp4 blocks (16 values in 9 bytes)
     bool   kv_split;         // K rows q8_0, V rows fp4 (--kv k8v4): the caches differ
-    bool   kv_f32;           // R8.25.2 --train-kv-f32: K and V rows f32, training only (kind 3)
+    bool   kv_f32;           // --kv f32 / --train-kv-f32: K and V rows f32, CPU only (kind 3)
     float *x, *xb, *xb2, *q, *hb, *hb2;   // [n_batch][dim] activations
     float *k_tmp, *v_tmp;                 // [n_batch][kv_dim]
     float *q_gate;                        // qwen35 full-attention output gate
@@ -838,7 +838,7 @@ static inline float model_attn_scale(const model_t *m, int l) {
 // the *_v_* family for V, and the *_sum forms where an account wants both.
 // fp4 packs 16 values into 9 bytes, q8_0 32 into 34, f16 2 each.
 static inline int model_kv_kind_k(const model_t *m) {
-    if (m->kv_f32) return 3;   // R8.25.2, training only
+    if (m->kv_f32) return 3;   // --kv f32 and --train-kv-f32 (R8.25.2, R6.32), CPU only
     return m->kv_fp4 ? 2 : (m->kv_q8 || m->kv_split) ? 1 : 0;
 }
 static inline int model_kv_kind_v(const model_t *m) {
@@ -854,6 +854,11 @@ static inline int model_kv_kind_v(const model_t *m) {
 // two share a format: under --kv k8v4 (K q8_0, V fp4) V keeps its own table.
 static inline bool model_kv_v_shared(const model_t *m) {
     return m->mla_absorb && model_kv_kind_k(m) == model_kv_kind_v(m);
+}
+// the KV cache type as --kv spells it: receipts, the route, --info, KV
+// snapshots and session images all name it this way
+static inline const char *model_kv_name(const model_t *m) {
+    return m->kv_f32 ? "f32" : m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
 }
 static inline size_t kv_bytes_of_kind(int kind, size_t e) {
     return kind == 3 ? e * sizeof(float) : kind == 2 ? e / 16 * 9

@@ -1004,7 +1004,7 @@ Text path only: Google's quantization-aware Q4_0 release of the MoE model, its m
 - **Quantization:** Q4_0 (Google QAT).
 - **Licence:** `apache-2.0`, as the google/gemma-4-26B-A4B-it model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison exists):** The publisher's float32 model (transformers, google/gemma-4-26B-A4B-it) on chat text, 2,000 positions (2026-11-10): this file reads mean KL 0.2183, margin-qualified top-1 90.59% on CUDA; a fresh bf16 conversion of the checkpoint reads 0.0060 and 99.79% on the CPU, so the engine tracks the reference and the file's distance is its own (QAT retraining and Q4_0 together). Raw text: 1.4900 and 0.3226.
+- **Numerical anchor (a publisher float32 comparison exists):** The publisher's float32 model (transformers, google/gemma-4-26B-A4B-it) on chat text, 2,000 positions (2026-11-10, measured again with the reference's embedding scale fixed: first published against a reference that scaled it by 53.0 where float32 gives 53.066): this file reads mean KL 0.2140, margin-qualified top-1 90.90% on CUDA; a fresh bf16 conversion of the checkpoint reads 0.0007 and 100.00% on the CPU (0.00003 with --kv f32), so the engine tracks the reference and the file's distance is its own (QAT retraining and Q4_0 together). Raw text: 1.4648 and 0.4279 (0.0055 with --kv f32).
 - **Context tested:** not recorded.
 - **Known limitations:** Metal last validated 2026-09-01 on a 128 GB loaner; no Metal device in the lab can re-gate it.
 - **Still missing:** The tool gate on the file; pinned output; Metal re-gate hardware.

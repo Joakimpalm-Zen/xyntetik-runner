@@ -93,6 +93,7 @@ typedef struct {
     bool        kv_q8;
     bool        kv_fp4;
     bool        kv_split;
+    bool        kv_f32;           // --kv f32 (R6.32)
     const char *model_path;        // hashed; written as its base name
     // profile.route (model_route_receipt_json): backend, cpu_act and
     // backend_detail, which --verify checks on replay. NULL writes none.

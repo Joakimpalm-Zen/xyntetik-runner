@@ -150,9 +150,7 @@ static bool chain_ok(const char *buf, size_t n, char hash_out[65]) {
     return ok;
 }
 
-static const char *kv_type_of(const model_t *m) {
-    return m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
-}
+static const char *kv_type_of(const model_t *m) { return model_kv_name(m); }
 
 bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
                  kvsnap_err *err) {
