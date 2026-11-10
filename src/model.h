@@ -131,6 +131,11 @@ typedef struct {
     gguf_tensor *ffn_gate_exps;  // 3D {n_embd, n_ff, n_expert}
     gguf_tensor *ffn_up_exps;    // 3D {n_embd, n_ff, n_expert}
     gguf_tensor *ffn_down_exps;  // 3D {n_ff, n_embd, n_expert}
+    // LatentMoE (Nemotron 3.5): the routed experts run at moe_latent width.
+    // down projects the normed input into it before the experts, up projects
+    // their weighted sum back; the router and the shared expert stay full width.
+    gguf_tensor *ffn_latent_down;  // {n_embd, moe_latent}
+    gguf_tensor *ffn_latent_up;    // {moe_latent, n_embd}
     // legacy split layout: one 2D tensor per expert (older Mixtral GGUFs)
     bool         moe_split;
     gguf_tensor **moe_g, **moe_u, **moe_d;  // [n_expert] each, when moe_split
@@ -281,6 +286,7 @@ typedef struct {
     // all tokens, then run each expert once over ALL its routed tokens as a
     // batched matmul instead of one-at-a-time. Decode (n==1) never uses these.
     float    *moe_out_b;   // [n_batch][n_embd] per-token output accumulator
+    float    *moe_lat;     // [n_batch][moe_latent] the latent experts' input
     float    *moe_dall;    // [n_batch][n_expert_used][n_embd] each token's expert
                            // outputs, summed in the ROUTER's order at the end
     float    *moe_gath;    // [n_batch][n_embd] one expert's gathered inputs
@@ -606,6 +612,7 @@ typedef struct {
     // xIELU parameters, one per layer (Apertus publishes them as arrays).
     float *xielu_an, *xielu_ap, *xielu_b, *xielu_eps;
     int    n_ff_shexp;           // shared-expert FFN width (0 = no shared expert)
+    int    moe_latent;           // LatentMoE expert width (0 = experts at n_embd)
     int    n_expert_groups;      // >1 enables group-limited top-k (DeepSeek V3)
     int    n_group_used;         // groups kept when n_expert_groups > 1
     float  expert_w_scale;       // 0 or 1 = no scaling

@@ -3642,6 +3642,34 @@
           }
         }
       }
+    },
+    "nemotron-3.5-super-vl-120b-a12b-q4_0": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/nemotron-3.5-super-vl-120b-a12b-q4_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "01849dbc15d898cf573916f44f73bbb329dfa8bad4c336271f1633521e7d5233",
+          "bytes": 221,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-10",
+            "runner_version": "1.16.0",
+            "commit": "d6cd7413a56a5832e99760a74f0a85f7a041163a"
+          }
+        }
+      }
     }
   }
 }

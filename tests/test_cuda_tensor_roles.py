@@ -23,6 +23,8 @@ HOST_SIDE = {
     "ple4_key": "the n-gram PLE block runs on the host (fwd_tile, ple4)",
     "ple4_value": "the n-gram PLE block runs on the host (fwd_tile, ple4)",
     "ple4_conv1d": "the n-gram PLE block runs on the host (fwd_tile, ple4)",
+    "ffn_latent_down": "LatentMoE runs on the host: CUDA refuses a latent model by name (cuda_admit)",
+    "ffn_latent_up": "LatentMoE runs on the host: CUDA refuses a latent model by name (cuda_admit)",
 }
 
 

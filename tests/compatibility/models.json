@@ -1922,6 +1922,37 @@
       }
     },
     {
+      "id": "nemotron-3.5-super-vl-120b-a12b-q4_0",
+      "architecture": "nemotron_h_moe",
+      "family": "Nemotron 3.5 Lightning",
+      "file": "models/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Q4_0.gguf",
+      "sha256": "502276c53b8e0173bfdabf3c06071631197eadd8beef44d0e69d1fba36d15e72",
+      "upstream": "ggml-org/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF",
+      "tokenizer_reference": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16",
+      "tokenizer_reference_revision": "fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/nemotron-3.5-super-vl-120b-a12b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "ggml-org's automatic conversion of nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 (revision 99144d1d of ggml-org/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF; NVIDIA publishes no GGUF of this model), architecture nemotron_h_moe with LatentMoE: 88 blocks (40 Mamba-2, 40 MoE, 8 attention), 512 experts top 22 at a latent width of 1,024 between ffn_latent_down and ffn_latent_up, plus a full-width shared expert, a sigmoid router with a selection bias. Text path only: the vision tower is not loaded. Its tokenizer is NVIDIA's at fb0ee0bc: 0 of 721 corpus strings and 0 of 128,635 vocabulary entries differ; its template is the repository's chat_template.jinja byte for byte and renders 24 of 24 conformance cases identical under nemotron35 (R4.27.4.4). CPU only: CUDA and Metal refuse LatentMoE.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[INST]",
+            "<<SYS>>",
+            "<|im_start|>"
+          ]
+        }
+      }
+    },
+    {
       "id": "lfm2.5-1.2b-instruct-q8_0",
       "architecture": "lfm2",
       "family": "LFM2.5",

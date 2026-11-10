@@ -2418,12 +2418,29 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
                         m->n_expert_used, m->n_expert);
                 return false;
             }
+            // LatentMoE: both projections or neither, at the declared width.
+            // A half pair, or a pair the metadata does not declare, would run
+            // the experts at a width no tensor states.
+            int ed = m->moe_latent > 0 ? m->moe_latent : m->n_embd;
+            l->ffn_latent_down = opt_tensor(g, "blk.%d.ffn_latent_down.weight", i);
+            l->ffn_latent_up   = opt_tensor(g, "blk.%d.ffn_latent_up.weight", i);
+            if ((m->moe_latent > 0) != (l->ffn_latent_down != NULL) ||
+                (m->moe_latent > 0) != (l->ffn_latent_up != NULL)) {
+                fprintf(stderr, "error: blk.%d has %s ffn_latent_down and %s "
+                        "ffn_latent_up, but moe_latent_size is %d\n", i,
+                        l->ffn_latent_down ? "an" : "no",
+                        l->ffn_latent_up ? "an" : "no", m->moe_latent);
+                return false;
+            }
+            if (!check_shape(l->ffn_latent_down, m->n_embd, ed, "ffn_latent_down", i) ||
+                !check_shape(l->ffn_latent_up, ed, m->n_embd, "ffn_latent_up", i))
+                return false;
             // Nemotron's routed experts have no gate stack: up/down alone must
             // agree exactly with the layer-local router count. Selection bias
             // has two live GGUF spellings and is indexed by that same count.
-            if (!check_shape3(l->ffn_up_exps, m->n_embd, m->n_ff_exp,
+            if (!check_shape3(l->ffn_up_exps, ed, m->n_ff_exp,
                               l->n_expert, "ffn_up_exps", i) ||
-                !check_shape3(l->ffn_down_exps, m->n_ff_exp, m->n_embd,
+                !check_shape3(l->ffn_down_exps, m->n_ff_exp, ed,
                               l->n_expert, "ffn_down_exps", i))
                 return false;
             gguf_tensor *epb = opt_tensor(g, "blk.%d.exp_probs_b.weight", i);
@@ -3845,8 +3862,22 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
             m->expert_gating = EXPERT_GATE_SIGMOID;
         m->expert_w_scale  = gguf_get_f32(g, AK("expert_weights_scale"), 1.0f);
         m->expert_norm_w   = gguf_get_bool(g, AK("expert_weights_norm"), true);
-        if (m->n_expert <= 0 || m->n_expert > 256 ||
+        // Nemotron 3.5 Super and Bolt (LatentMoE): the routed experts run at
+        // moe_latent_size, between ffn_latent_down and ffn_latent_up. Absent
+        // (Nano, Lightning) it reads 0 and the experts run at n_embd as before.
+        uint32_t lat = gguf_get_u32(g, AK("moe_latent_size"), 0);
+        m->moe_latent = lat <= (uint32_t)m->n_embd ? (int)lat : -1;
+        if (m->moe_latent < 0) {
+            fprintf(stderr, "error: nemotron_h_moe moe_latent_size %u is wider "
+                    "than n_embd %d\n", lat, m->n_embd);
+            return false;
+        }
+        // The expert count only sizes heap scratch (Super routes over 512).
+        // The selected count also fills the per-token selection arrays,
+        // which hold 256.
+        if (m->n_expert <= 0 || m->n_expert > MOE_EXPERTS_MAX ||
             m->n_expert_used <= 0 || m->n_expert_used > m->n_expert ||
+            m->n_expert_used > 256 ||
             m->n_ff_exp <= 0 || m->n_ff_exp > MDL_DIM_MAX ||
             m->n_ff_shexp < 0 || m->n_ff_shexp > MDL_DIM_MAX ||
             m->expert_gating < EXPERT_GATE_NONE ||
@@ -3911,7 +3942,11 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
                 "gate-less squared-ReLU experts + always-on shared expert, "
                 "NoPE attention\n", n_rec, n_attn, n_mlp, m->ssm.groups,
                 m->n_expert_used, m->n_expert);
-    else
+    if (nh_moe && m->moe_latent > 0)
+        fprintf(stderr, "nemotron_h_moe: LatentMoE, the routed experts run at "
+                "width %d (n_embd %d), %d wide\n", m->moe_latent, m->n_embd,
+                m->n_ff_exp);
+    if (!nh_moe)
         fprintf(stderr, "nemotron_h: Mamba-2 hybrid (%d recurrent + %d attention "
                 "+ %d MLP layers, n_group=%d grouped scan): NON-MoE, NoPE "
                 "attention, gate-less squared-ReLU MLP; greedy output validated "
@@ -6145,6 +6180,10 @@ static bool runtime_buffers(model_t *m, int n_ctx, int B, int q_dim, int kv_dim,
         size_t nb = (size_t)m->n_batch, ne = (size_t)m->n_embd;
         size_t nf = (size_t)m->n_ff_exp, nu = (size_t)m->n_expert_used;
         m->moe_out_b  = malloc(sizeof(float) * nb * ne);
+        if (m->moe_latent > 0) {
+            m->moe_lat = malloc(sizeof(float) * nb * (size_t)m->moe_latent);
+            if (!m->moe_lat) return false;
+        }
         m->moe_gath   = malloc(sizeof(float) * nb * ne);
         m->moe_gate_b = malloc(sizeof(float) * nb * nf);
         m->moe_up_b   = malloc(sizeof(float) * nb * nf);
@@ -6440,7 +6479,7 @@ static void runtime_free(model_t *m) {
     free(m->moe_gate); free(m->moe_up);
     free(m->moe_dexp); free(m->moe_out);
     free(m->gemma_scr);
-    free(m->moe_out_b); free(m->moe_dall); free(m->moe_gath); free(m->moe_gate_b);
+    free(m->moe_out_b); free(m->moe_lat); free(m->moe_dall); free(m->moe_gath); free(m->moe_gate_b);
     free(m->moe_up_b); free(m->moe_dexp_b); free(m->moe_sel);
     free(m->moe_selw); free(m->moe_trace_norms); free(m->moe_gidx); free(m->moe_gw);
     free(m->moe_probe_hist);
@@ -9394,11 +9433,18 @@ NUM_STAGE void moe_expert_act_row(const model_t *m, const layer_t *ly, int e,
         g[j] = gated_act(m->ffn_act, g[j], u[j]);
 }
 
-// Every selected expert's gate, up and down for the one token in xin: the
-// down outputs land in moe_dexp's rows in the router's order.
+// The width the routed experts read and write: n_embd, or a LatentMoE
+// layer's latent width (its router and shared expert stay at n_embd).
+static inline int moe_expert_dim(const model_t *m, const layer_t *ly) {
+    return ly->ffn_latent_down ? m->moe_latent : m->n_embd;
+}
+
+// Every selected expert's gate, up and down for the one token in xin (at the
+// experts' width): the down outputs land in moe_dexp's rows in the router's
+// order.
 NUM_STAGE void moe_token_experts(model_t *m, const layer_t *ly, const float *xin,
                                  const int *sel) {
-    int n_embd = m->n_embd, used = m->n_expert_used;
+    int n_embd = moe_expert_dim(m, ly), used = m->n_expert_used;
     int nff = m->n_ff_exp;
     // Every selected expert's projections go out as a few pool dispatches
     // rather than three per expert: with ten experts a layer and 48 layers
@@ -9452,6 +9498,7 @@ NUM_STAGE void moe_token_experts(model_t *m, const layer_t *ly, const float *xin
 
 static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
+    int ed = moe_expert_dim(m, ly);
     bool probe = moe_probe_file() != NULL;
     bool trace = moe_trace_file() != NULL;
     int layer_idx = (int)(ly - m->layers);
@@ -9472,25 +9519,36 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     // occurs until after this block.
     if (probe) moe_probe_replay(m, ly, 0, sel);
     if (probe) moe_probe_push(m, xin, 1, n_embd, n_embd);
-    for (int i = 0; i < n_embd; i++) m->moe_out[i] = 0.0f;
-    moe_token_experts(m, ly, xin, sel);
+    // LatentMoE: the experts read the normed input projected to their width
+    const float *ex = xin;
+    if (ly->ffn_latent_down) {
+        matvec_b(m->tp, m->moe_lat, ed, ly->ffn_latent_down, xin, n_embd,
+                 n_embd, ed, NULL, 1);
+        ex = m->moe_lat;
+    }
+    for (int i = 0; i < ed; i++) m->moe_out[i] = 0.0f;
+    moe_token_experts(m, ly, ex, sel);
     for (int t = 0; t < used; t++) {
         int e = sel[t];
         float w = selw[t];
-        float *d = m->moe_dexp + (size_t)t * n_embd;
+        float *d = m->moe_dexp + (size_t)t * ed;
         if (ly->ffn_down_exps_b)
-            for (int i = 0; i < n_embd; i++)
-                d[i] += ly->ffn_down_exps_b[(size_t)e * n_embd + i];
+            for (int i = 0; i < ed; i++)
+                d[i] += ly->ffn_down_exps_b[(size_t)e * ed + i];
         if (trace) {
             float ss = 0.0f;
-            for (int i = 0; i < n_embd; i++) ss += d[i] * d[i];
+            for (int i = 0; i < ed; i++) ss += d[i] * d[i];
             norms[t] = sqrtf(ss);
         }
-        for (int i = 0; i < n_embd; i++) m->moe_out[i] += w * d[i];
+        for (int i = 0; i < ed; i++) m->moe_out[i] += w * d[i];
     }
     moe_trace_emit(m->fwd_pos, layer_idx, sel, selw, trace ? norms : NULL, used);
     act_trace_route(m->fwd_pos, layer_idx, sel, selw, used);
-    for (int i = 0; i < n_embd; i++) xin[i] = m->moe_out[i];
+    if (ly->ffn_latent_up)   // the weighted sum back to n_embd
+        matvec_b(m->tp, xin, n_embd, ly->ffn_latent_up, m->moe_out, ed,
+                 ed, n_embd, NULL, 1);
+    else
+        for (int i = 0; i < n_embd; i++) xin[i] = m->moe_out[i];
 }
 
 // Every row routed (and, under RUNNER_MOE_PROBE, replayed against the layers
@@ -9507,10 +9565,15 @@ NUM_STAGE void moe_grouped_route(model_t *m, const layer_t *ly, int n, int xdim,
         // RUNNER_MOE_PROBE: replay against 1/2/3 layers back, before m->xb
         // is overwritten with this layer's FFN output further below.
         if (probe) moe_probe_replay(m, ly, b, m->moe_sel + (size_t)b * used);
-        float *out = m->moe_out_b + (size_t)b * n_embd;
-        for (int i = 0; i < n_embd; i++) out[i] = 0.0f;
+        int ed = moe_expert_dim(m, ly);
+        float *out = m->moe_out_b + (size_t)b * ed;
+        for (int i = 0; i < ed; i++) out[i] = 0.0f;
     }
     if (probe) moe_probe_push(m, m->xb, n, n_embd, xdim);
+    // LatentMoE: every row's expert input, projected once for the batch
+    if (ly->ffn_latent_down)
+        matvec_b(m->tp, m->moe_lat, m->moe_latent, ly->ffn_latent_down, m->xb,
+                 xdim, n_embd, m->moe_latent, NULL, n);
 }
 
 // Prefill knows the WHOLE batch's routing before any expert runs, so this
@@ -9540,9 +9603,12 @@ static void moe_grouped_prefetch(model_t *m, const layer_t *ly, int n) {
 // order.
 NUM_STAGE void moe_grouped_expert(model_t *m, const layer_t *ly, int e, int n,
                                   int xdim, bool trace) {
-    int n_embd = m->n_embd, used = m->n_expert_used;
+    int n_embd = moe_expert_dim(m, ly), used = m->n_expert_used;
     int nff = m->n_ff_exp;
     int cnt = 0;
+    // the experts' input rows: the normed input, or its latent projection
+    const float *src = ly->ffn_latent_down ? m->moe_lat : m->xb;
+    int sdim = ly->ffn_latent_down ? n_embd : xdim;
     for (int b = 0; b < n; b++) {
         const int   *sel  = m->moe_sel  + (size_t)b * used;
         const float *selw = m->moe_selw + (size_t)b * used;
@@ -9551,7 +9617,7 @@ NUM_STAGE void moe_grouped_expert(model_t *m, const layer_t *ly, int e, int n,
             m->moe_gidx[cnt] = b;
             m->moe_gw[cnt]   = selw[t];
             memcpy(m->moe_gath + (size_t)cnt * n_embd,
-                   m->xb + (size_t)b * xdim, (size_t)n_embd * sizeof(float));
+                   src + (size_t)b * sdim, (size_t)n_embd * sizeof(float));
             cnt++;
             break;                                   // top-k experts are distinct
         }
@@ -9604,7 +9670,7 @@ NUM_STAGE void moe_grouped_expert(model_t *m, const layer_t *ly, int e, int n,
 
 NUM_STAGE void moe_grouped_sum(model_t *m, const layer_t *ly, int n, int xdim,
                                bool trace) {
-    int n_embd = m->n_embd, used = m->n_expert_used;
+    int n_embd = moe_expert_dim(m, ly), used = m->n_expert_used;
     int layer_idx = (int)(ly - m->layers);
     // per token, the experts in the router's order: the per-token path's sum
     for (int b = 0; b < n; b++) {
@@ -9624,6 +9690,10 @@ NUM_STAGE void moe_grouped_sum(model_t *m, const layer_t *ly, int n, int xdim,
     for (int b = 0; b < n; b++)
         act_trace_route(m->fwd_pos + b, layer_idx, m->moe_sel + (size_t)b * used,
                         m->moe_selw + (size_t)b * used, used);
+    if (ly->ffn_latent_up)   // every row's weighted sum back to n_embd
+        matvec_b(m->tp, m->xb, xdim, ly->ffn_latent_up, m->moe_out_b, n_embd,
+                 n_embd, m->n_embd, NULL, n);
+    else
     for (int b = 0; b < n; b++)
         memcpy(m->xb + (size_t)b * xdim, m->moe_out_b + (size_t)b * n_embd,
                (size_t)n_embd * sizeof(float));

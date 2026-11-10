@@ -676,6 +676,16 @@ FAMILIES = {
              "bf77c317, byte-identical in ggml-org's GGUF at fe801509",
         tool_family=True, hostile_args=True, thinking_var="enable_thinking",
         tokenizer=("NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",)),
+    # NVIDIA Nemotron 3.5 Super-VL 120B-A12B (nemotron_h_moe with LatentMoE,
+    # R4.27.4.4): the template in ggml-org's conversion (99144d1d) is the
+    # publisher's chat_template.jinja at fb0ee0bc byte for byte (12,927 bytes,
+    # sha256 1369e90b), under the renderer Runner picks for it
+    "nemotron35-super": Family(
+        "nemotron35", ("gguf", "models/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Q4_0.gguf"),
+        note="nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16 chat_template.jinja "
+             "at fb0ee0bc, byte-identical in ggml-org's GGUF at 99144d1d",
+        tool_family=True, hostile_args=True, thinking_var="enable_thinking",
+        tokenizer=("NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Q4_0.gguf",)),
     "eurollm": Family(
         "chatml", ("gguf", "models/EuroLLM-9B-Instruct-Q4_K_M.gguf"),
         note="publisher page gated; the file's embedded template",
