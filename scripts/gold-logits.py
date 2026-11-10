@@ -177,6 +177,92 @@ def float32_stragglers(model):
     return cast
 
 
+def _init_float_tensors(model):
+    """{name: (module, attribute, kind, tensor)} for what a model's __init__ computes rather than loads: its
+    non-persistent float buffers and the float tensors held as plain module attributes. Persistent buffers and
+    parameters are the checkpoint's, so they are not here."""
+    import torch
+    out = {}
+    for mname, mod in model.named_modules():
+        npset = getattr(mod, "_non_persistent_buffers_set", set())
+        for bname, b in mod._buffers.items():
+            if b is not None and bname in npset and b.is_floating_point() and b.device.type != "meta":
+                out[f"{mname}.{bname}".lstrip(".")] = (mod, bname, "buffer", b)
+        for aname, v in vars(mod).items():
+            if isinstance(v, torch.Tensor) and v.is_floating_point() and v.device.type != "meta":
+                out[f"{mname}.{aname}".lstrip(".")] = (mod, aname, "attribute", v)
+    return out
+
+
+def _float32_build(model):
+    """The same class built again from the model's own config in float32, every parameter moved to the meta device as
+    it is registered and every buffer left real: what accelerate's init_on_device(include_buffers=False) does, here
+    so the reference path needs no package beyond torch and transformers. A parameter is allocated only for the
+    moment between its creation and its registration."""
+    import contextlib
+    import torch
+
+    @contextlib.contextmanager
+    def params_on_meta():
+        old = torch.nn.Module.register_parameter
+
+        def register(mod, name, param):
+            old(mod, name, param)
+            if param is not None:
+                p = mod._parameters[name]
+                mod._parameters[name] = type(p)(p.to("meta"), requires_grad=p.requires_grad)
+        torch.nn.Module.register_parameter = register
+        try:
+            yield
+        finally:
+            torch.nn.Module.register_parameter = old
+
+    with params_on_meta():
+        return type(model)._from_config(model.config, dtype=torch.float32)
+
+
+def float32_init_check(model, ref=None):
+    """Refuse, naming each, any init-time float tensor (_init_float_tensors) that differs from a float32 build of the
+    same class: a reference whose computed constants are not float32's is not the float32 forward."""
+    want = _init_float_tensors(ref if ref is not None else _float32_build(model))
+    bad = []
+    for name, (_, _, kind, v) in _init_float_tensors(model).items():
+        w = want.get(name)
+        if w is not None and (v.shape != w[3].shape or not bool((v.float() == w[3].float()).all())):
+            bad.append(f"{kind} {name} ({v.dtype}{'' if v.numel() > 1 else f' {float(v):.9g}'}, float32 "
+                       f"{w[3].dtype}{'' if w[3].numel() > 1 else f' {float(w[3]):.9g}'})")
+    if bad:
+        raise SystemExit("float32_init_check: these tensors the model's __init__ computes differ from a float32 "
+                         "build of the same class, so this is not the float32 forward: " + ", ".join(bad))
+
+
+def float32_init_tensors(model):
+    """Give a model loaded at its stored dtype the float32 values of what its __init__ computes.
+
+    A load at the stored dtype (dtype="auto") builds the model in BF16, so a non-persistent buffer __init__ computes
+    from a number is born rounded, and casting it to float32 at use cannot give the digits back: gemma's embedding
+    scale, sqrt(hidden_size), was 53.0 where a float32 load gives 53.066 on gemma-4-26B (R6.34, transformers 5.16.1;
+    gemma-3 and every gemma-4 size build it the same way). Each such tensor is copied from a float32 build of the same
+    class from the same config; then float32_init_check runs against that build. Returns the names copied. A module
+    built outside transformers (no config to build it from) was built in the dtype its caller chose: nothing to do."""
+    if not hasattr(type(model), "_from_config") or getattr(model, "config", None) is None:
+        return []
+    ref = _float32_build(model)
+    want, copied = _init_float_tensors(ref), []
+    for name, (mod, attr, kind, v) in _init_float_tensors(model).items():
+        w = want.get(name)
+        if w is None or (v.shape == w[3].shape and v.dtype == w[3].dtype and bool((v == w[3]).all())):
+            continue
+        val = w[3].clone()
+        if kind == "buffer":
+            mod.register_buffer(attr, val, persistent=False)
+        else:
+            setattr(mod, attr, val)
+        copied.append(name)
+    float32_init_check(model, ref)
+    return copied
+
+
 def upcast_at_use(model):
     """Compute in float32 on weights kept at the dtype they are stored in.
 
@@ -201,8 +287,14 @@ def upcast_at_use(model):
     experts in the blocks' place and leave the real blocks to per-module
     casting. The count must equal the config's num_hidden_layers, or this
     refuses, naming both. Returns (blocks hooked, layers declared, units
-    hooked)."""
+    hooked).
+
+    First, the tensors the model's __init__ computes rather than loads are
+    given their float32 values (float32_init_tensors): a BF16 load builds them
+    rounded (gemma's embedding scale, R6.34), and the cast below cannot undo
+    that."""
     import torch
+    float32_init_tensors(model)
     narrow = (torch.bfloat16, torch.float16)
     saved = {}
 
@@ -631,7 +723,9 @@ def main():
                     help="keep the weights at their stored dtype (BF16) and cast each "
                          "module's to float32 for its own forward: float32 arithmetic "
                          "at the stored footprint, for a parent too large to load in "
-                         "float32 (upcast_at_use)")
+                         "float32 (upcast_at_use). What the model's __init__ computes "
+                         "(gemma's embedding scale) is rebuilt in float32 first and "
+                         "checked against a float32 build")
     ap.add_argument("--offload-dir",
                     help="stream the weights that do not fit --max-memory from disk, "
                          "block by block at use (accelerate's disk offload): float32 "

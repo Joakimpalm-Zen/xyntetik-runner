@@ -272,6 +272,61 @@ def test_upcast_at_use_is_float32_bit_for_bit(tmp_path):
         assert next(stored.parameters()).dtype == torch.bfloat16   # put back after the forward
 
 
+def _tiny_gemma4(torch, transformers):
+    """A random text-only Gemma 4 whose embedding scale, sqrt(80), is not exact in BF16 (8.9375 against 8.9442720):
+    the case a hidden-64 model, whose sqrt(64) = 8 is exact, cannot show (R6.34)."""
+    cfg = transformers.Gemma4TextConfig(
+        vocab_size=97, hidden_size=80, intermediate_size=48, num_hidden_layers=2, num_attention_heads=4,
+        num_key_value_heads=2, head_dim=16, global_head_dim=32, num_global_key_value_heads=1,
+        layer_types=["sliding_attention", "full_attention"], sliding_window=8, max_position_embeddings=128,
+        vocab_size_per_layer_input=97, hidden_size_per_layer_input=0, initializer_range=0.3)
+    torch.manual_seed(0)
+    return cfg, transformers.Gemma4ForCausalLM(cfg)
+
+
+def _gemma4_loads(tmp_path):
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    if not hasattr(transformers, "Gemma4TextConfig"):
+        pytest.skip("this transformers has no Gemma 4")
+    _, model = _tiny_gemma4(torch, transformers)
+    ckpt = tmp_path / "g4"
+    model.to(torch.bfloat16).save_pretrained(ckpt)
+    full = transformers.Gemma4ForCausalLM.from_pretrained(ckpt, dtype=torch.float32).eval()
+    stored = transformers.Gemma4ForCausalLM.from_pretrained(ckpt, dtype="auto").eval()
+    return torch, full, stored
+
+
+def test_upcast_at_use_rebuilds_in_float32_what_init_computes(tmp_path):
+    """A load at the stored dtype builds the model in BF16, so a non-persistent buffer __init__ computes from a number
+    is born rounded, and casting it to float32 at use cannot give the digits back. Gemma's embedding scale,
+    sqrt(hidden_size), came out 53.0 where a float32 load gives 53.066 on gemma-4-26B, which put every row scored with
+    --upcast-at-use on that model against a reference that was not its float32 forward (R6.34). upcast_at_use builds
+    those tensors again in float32 from the model's own config, so on a model whose scale is not exact in BF16 its
+    logits equal a float32 load's bit for bit."""
+    torch, full, stored = _gemma4_loads(tmp_path)
+    assert stored.model.embed_tokens.embed_scale.dtype == torch.bfloat16      # the defect's precondition
+    assert float(stored.model.embed_tokens.embed_scale) != float(full.model.embed_tokens.embed_scale)
+    ids = torch.randint(0, 97, (1, 40), generator=torch.Generator().manual_seed(1))
+    with torch.no_grad():
+        want = full(ids).logits.float()
+    gold.upcast_at_use(stored)
+    assert float(stored.model.embed_tokens.embed_scale) == float(full.model.embed_tokens.embed_scale)
+    with torch.no_grad():
+        got = stored(ids).logits.float()
+    assert torch.equal(got, want), (got - want).abs().max().item()
+
+
+def test_an_init_tensor_that_differs_from_a_float32_build_is_refused_by_name(tmp_path):
+    """The guard: before scoring, every non-persistent float buffer and float tensor attribute is compared with a
+    float32 build of the same class, and one that differs is refused, named, rather than scored around."""
+    pytest = __import__("pytest")
+    _, _, stored = _gemma4_loads(tmp_path)
+    with pytest.raises(SystemExit, match="embed_scale"):
+        gold.float32_init_check(stored)
+
+
 def test_float32_stragglers_upcasts_bf16_left_by_the_loader_exactly():
     """A float32 load can leave the tensors a checkpoint stores in BF16 at
     BF16 (the embedding and norms of an FP8 checkpoint dequantized on the CPU,
