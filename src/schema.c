@@ -190,7 +190,8 @@ static bool check_keywords(jv *s, char *err, int errcap) {
         if (!strcmp(k, "type")) continue;
         if (!strcmp(k, "allOf") && !composed && !literal) continue;
         bool ok;
-        if (composed)     ok = !strcmp(k, "oneOf") || !strcmp(k, "anyOf");
+        if (composed)     ok = !strcmp(k, "oneOf") || !strcmp(k, "anyOf") ||
+                               !strcmp(k, "discriminator");
         else if (literal) ok = !strcmp(k, "enum") || !strcmp(k, "const");
         else ok = (declares_type(s, "string")  && kw_in(k, KW_STRING)) ||
                   (declares_type(s, "array")   && kw_in(k, KW_ARRAY))  ||
@@ -867,6 +868,16 @@ static snode *compile_discriminated_action(jv *alts, char *err, int errcap,
                     cn->type != J_BOOL && cn->type != J_NULL))
             return NULL;
     }
+    // This shape carries one required set for every tool. Branches that
+    // declare different ones go to the general const-discriminated union
+    // instead (R2.8), which keeps each branch's own set; until then they were
+    // refused with "oneOf alternatives declare different required keys".
+    {
+        char scratch[8];
+        if (!same_required_sets(alts, jv_get(alts->items[0], "required"),
+                                scratch, sizeof(scratch)))
+            return NULL;
+    }
 
     // Alternatives on this path are consumed field by field rather than
     // through compile_node, so the keyword gate has to be applied here too —
@@ -1258,8 +1269,165 @@ static int one_of_literals(snode *const *alts, int n_alts, int total, bool *keep
     return kept;
 }
 
+// ------------------------------------------- const-discriminated union (R2.8)
+//
+// A oneOf/anyOf of objects that a required `const` on one shared property
+// tells apart: OpenAPI's and Pydantic's discriminated union, and how a schema
+// says "MAP takes a lambda and one argument, HEAD no lambda" (a flat
+// statement schema in its place admits mostly ill-typed statements). The object
+// alternatives compile as ordinary objects first, so every rule an object
+// has still applies to each, and are then moved into ONE object
+// (schema.h, `discriminated`): the discriminator first, its literal naming
+// the branch, then every other property of any branch as an SN_COND over the
+// branches. Each branch keeps its own properties and its own required set.
+// The discriminator is emitted first even where a branch declares it later:
+// JSON objects are unordered, and the walker can follow only a branch it has
+// read. Distinct consts make oneOf and anyOf the same language here.
+
+static bool is_plain_object(const snode *a) {
+    return a->kind == SN_OBJ && !a->discriminated && a->n_props > 0;
+}
+
+static int obj_key_index(const snode *o, const char *k) {
+    for (int i = 0; i < o->n_props; i++)
+        if (!strcmp(o->keys[i], k)) return i;
+    return -1;
+}
+
+// Is `k` a required single-literal property of every branch, with a
+// different value in each?
+static bool disc_key_ok(snode *const *objs, int nb, const char *k) {
+    for (int b = 0; b < nb; b++) {
+        int i = obj_key_index(objs[b], k);
+        if (i < 0 || !objs[b]->req[i]) return false;
+        const snode *p = objs[b]->props[i];
+        if (p->kind != SN_ENUM || p->n_lits != 1) return false;
+        char mine[LIT_KEY_CAP];
+        const char *km = literal_key(p->lits[0], mine);
+        for (int e = 0; e < b; e++) {
+            char theirs[LIT_KEY_CAP];
+            const snode *q = objs[e]->props[obj_key_index(objs[e], k)];
+            if (!strcmp(km, literal_key(q->lits[0], theirs))) return false;
+        }
+    }
+    return true;
+}
+
+// Moves the branches' properties into one discriminated object. *matched
+// says whether the alternatives ARE a discriminated union: false (no
+// discriminator) leaves them untouched for the caller's own rules; true with
+// NULL is a refusal, with `err` set. On success the branch shells are empty
+// and the caller frees them.
+static snode *merge_discriminated(snode **objs, int nb, const char *disc_name,
+                                  char *err, int errcap, bool *matched) {
+    *matched = false;
+    const char *d = NULL;
+    if (disc_name) {
+        *matched = true;
+        if (!disc_key_ok(objs, nb, disc_name)) {
+            snprintf(err, errcap, "discriminator '%.40s' is not a required const "
+                     "property of every alternative, with a different value in each",
+                     disc_name);
+            return NULL;
+        }
+        d = disc_name;
+    } else {
+        for (int i = 0; i < objs[0]->n_props && !d; i++)
+            if (disc_key_ok(objs, nb, objs[0]->keys[i])) d = objs[0]->keys[i];
+        if (!d) return NULL;
+        *matched = true;
+    }
+    // the key order: the discriminator, then each branch's keys as first seen
+    int cap = 0;
+    for (int b = 0; b < nb; b++) cap += objs[b]->n_props;
+    const char **keys = calloc((size_t)cap, sizeof(*keys));
+    if (!keys) return NULL;
+    int nk = 0;
+    keys[nk++] = d;
+    for (int b = 0; b < nb; b++)
+        for (int i = 0; i < objs[b]->n_props; i++) {
+            const char *k = objs[b]->keys[i];
+            bool seen = false;
+            for (int j = 0; j < nk && !seen; j++) seen = !strcmp(keys[j], k);
+            if (!seen) keys[nk++] = k;
+        }
+    if (nk > 60) {
+        snprintf(err, errcap, "too many properties across the alternatives (max 60)");
+        free(keys);
+        return NULL;
+    }
+    snode *m = sn_new(SN_OBJ);
+    if (!m) { free(keys); return NULL; }
+    m->keys    = calloc((size_t)nk, sizeof(char *));
+    m->key_len = calloc((size_t)nk, sizeof(int));
+    m->props   = calloc((size_t)nk, sizeof(snode *));
+    m->req     = calloc((size_t)nk, sizeof(bool));
+    if (!m->keys || !m->key_len || !m->props || !m->req) goto oom;
+    m->n_props = nk;   // only once the arrays schema_free walks exist
+    m->discriminated = true;
+    for (int i = 0; i < nk; i++) {
+        if (!(m->keys[i] = strdup(keys[i]))) goto oom;
+        m->key_len[i] = (int)strlen(keys[i]);
+    }
+    snode *dn = sn_new(SN_ENUM);
+    if (!dn) goto oom;
+    m->props[0] = dn;
+    m->req[0] = true;
+    if (!(dn->lits = calloc((size_t)nb, sizeof(char *)))) goto oom;
+    for (int b = 0; b < nb; b++) {   // one literal per branch, declared order
+        snode *p = objs[b]->props[obj_key_index(objs[b], d)];
+        dn->lits[dn->n_lits++] = p->lits[0];
+        p->lits[0] = NULL;
+    }
+    if (!enum_index(dn)) goto oom;
+    for (int i = 1; i < nk; i++) {
+        snode *c = sn_new(SN_COND);
+        if (!c) goto oom;
+        m->props[i] = c;
+        c->alts = calloc((size_t)nb, sizeof(snode *));
+        c->req  = calloc((size_t)nb, sizeof(bool));
+        if (!c->alts || !c->req) goto oom;
+        c->n_alts = nb;
+        for (int b = 0; b < nb; b++) {
+            int j = obj_key_index(objs[b], keys[i]);
+            if (j < 0) continue;            // branch b does not have it
+            c->alts[b] = objs[b]->props[j];
+            objs[b]->props[j] = NULL;
+            c->req[b] = objs[b]->req[j];
+        }
+    }
+    free(keys);
+    return m;
+oom:
+    free(keys);
+    schema_free(m);
+    if (!err[0]) snprintf(err, errcap, "out of memory compiling a discriminated union");
+    return NULL;
+}
+
+// `discriminator` beside oneOf/anyOf (OpenAPI, Pydantic): {"propertyName": ...}
+// with an optional `mapping`, which names $refs and adds nothing here.
+static bool discriminator_name(jv *s, const char **out, char *err, int errcap) {
+    *out = NULL;
+    jv *d = jv_get(s, "discriminator");
+    if (!d) return true;
+    jv *pn = d->type == J_OBJ ? jv_get(d, "propertyName") : NULL;
+    if (!pn || pn->type != J_STR) {
+        snprintf(err, errcap, "discriminator must be an object with a string propertyName");
+        return false;
+    }
+    for (int i = 0; i < d->n; i++)
+        if (strcmp(d->keys[i], "propertyName") && strcmp(d->keys[i], "mapping")) {
+            snprintf(err, errcap, "unsupported discriminator keyword '%.40s'", d->keys[i]);
+            return false;
+        }
+    *out = pn->str;
+    return true;
+}
+
 // `exclusive`: oneOf (exactly one alternative) rather than anyOf (at least one)
-static snode *compile_oneof(jv *alts, bool exclusive, char *err, int errcap, int depth) {
+static snode *compile_oneof(jv *alts, bool exclusive, const char *disc_name,
+                            char *err, int errcap, int depth) {
     if (!alts || alts->type != J_ARR || alts->n <= 0) {
         snprintf(err, errcap, "oneOf/anyOf must be a non-empty array");
         return NULL;
@@ -1289,6 +1457,42 @@ static snode *compile_oneof(jv *alts, bool exclusive, char *err, int errcap, int
         n->alts[n->n_alts] = compile_node(alts->items[i], err, errcap, depth + 1);
         if (!n->alts[n->n_alts]) { schema_free(n); return NULL; }
         n->n_alts++;
+    }
+    // R2.8: the object alternatives a discriminator tells apart become one
+    // object, in the place of the first; the rest of the union stays (an
+    // Optional[Union[A, B]] is anyOf [A, B, null])
+    int n_objects = 0, first_object = -1;
+    for (int i = 0; i < n->n_alts; i++)
+        if (is_plain_object(n->alts[i])) {
+            if (first_object < 0) first_object = i;
+            n_objects++;
+        }
+    if (n_objects >= 2) {
+        snode **objs = calloc((size_t)n_objects, sizeof(*objs));
+        if (!objs) { schema_free(n); return NULL; }
+        for (int i = 0, k = 0; i < n->n_alts; i++)
+            if (is_plain_object(n->alts[i])) objs[k++] = n->alts[i];
+        bool is_union = false;
+        snode *m = merge_discriminated(objs, n_objects, disc_name, err, errcap, &is_union);
+        free(objs);
+        if (is_union && !m) { schema_free(n); return NULL; }
+        if (m) {
+            int w = 0;
+            for (int i = 0; i < n->n_alts; i++) {
+                snode *a = n->alts[i];
+                if (!is_plain_object(a)) { n->alts[w++] = a; continue; }
+                if (i == first_object) n->alts[w++] = m;
+                schema_free(a);   // its properties now belong to m
+            }
+            n->n_alts = w;
+            n_objects = 0;
+            if (n->n_alts == 1) {
+                n->alts[0] = NULL;
+                n->n_alts = 0;
+                schema_free(n);
+                return m;
+            }
+        }
     }
     /* JSON-schema generators commonly spell a string enum plus one sentinel
        const as anyOf. They are one literal language, not an ambiguous union:
@@ -1337,6 +1541,13 @@ static snode *compile_oneof(jv *alts, bool exclusive, char *err, int errcap, int
     // the validator dispatches a union on the first byte of the value —
     // alternatives it could never select must fail here, at request time,
     // not silently mis-constrain sampling later
+    if (n_objects >= 2) {
+        snprintf(err, errcap, "%s alternatives are objects with nothing to tell them "
+                 "apart: give each a required const on one shared property (a "
+                 "discriminator)", exclusive ? "oneOf" : "anyOf");
+        schema_free(n);
+        return NULL;
+    }
     if (n->n_alts > 1) {
         bool seen[256] = { false };
         for (int i = 0; i < n->n_alts; i++) {
@@ -1559,7 +1770,11 @@ snode *compile_node(jv *s, char *err, int errcap, int depth) {
                  "declare the type on each alternative");
         return NULL;
     }
-    if (one || any) return compile_oneof(one ? one : any, one != NULL, err, errcap, depth);
+    if (one || any) {
+        const char *disc_name = NULL;
+        if (!discriminator_name(s, &disc_name, err, errcap)) return NULL;
+        return compile_oneof(one ? one : any, one != NULL, disc_name, err, errcap, depth);
+    }
 
     // enum/const return before compile_typed, so validate the type keyword's
     // shape here rather than relying on the typed path to catch it later.
@@ -1640,20 +1855,36 @@ static int frame_choice(const sval *v, int at) {
     return (int)f->disc - 1;
 }
 
+// Whether property i exists, and is required, in `branch` of a discriminated
+// object (schema.h); for any other object, or before the discriminator has
+// named a branch (branch < 0), the object's own req[] answers. Before the
+// branch is known only the discriminator can come, and it is required.
+static bool prop_in(const snode *n, int i, int branch) {
+    if (!n->discriminated || i == 0 || branch < 0) return true;
+    const snode *c = n->props[i];
+    return branch < c->n_alts && c->alts[branch] != NULL;
+}
+
+static bool prop_req(const snode *n, int i, int branch) {
+    if (!n->discriminated || i == 0 || branch < 0) return n->req[i];
+    return prop_in(n, i, branch) && n->props[i]->req[branch];
+}
+
 // key candidates from prop index `from`: every prop until (and including)
 // the first required one may come next
-static uint64_t key_candidates(const snode *n, int from) {
+static uint64_t key_candidates(const snode *n, int from, int branch) {
     uint64_t m = 0;
     for (int i = from; i < n->n_props; i++) {
+        if (!prop_in(n, i, branch)) continue;
         m |= 1ull << i;
-        if (n->req[i]) break;
+        if (prop_req(n, i, branch)) break;
     }
     return m;
 }
 
-static bool close_allowed(const snode *n, int from) {
+static bool close_allowed(const snode *n, int from, int branch) {
     for (int i = from; i < n->n_props; i++)
-        if (n->req[i]) return false;
+        if (prop_req(n, i, branch)) return false;
     return true;
 }
 
@@ -1662,8 +1893,8 @@ static bool close_allowed(const snode *n, int from) {
 // JSON object; already-consumed members lie below `from`, so duplicates and
 // backwards order are unreachable by construction.
 static uint64_t member_candidates(const snode *n, int from) {
-    uint64_t m = key_candidates(n, from);
-    if (close_allowed(n, from)) m |= 1ull << n->n_props;
+    uint64_t m = key_candidates(n, from, -1);
+    if (close_allowed(n, from, -1)) m |= 1ull << n->n_props;
     return m;
 }
 
@@ -1699,7 +1930,8 @@ static void frame_done(sval *v) {
     sframe *f = &v->stack[v->depth - 1];
     if (f->node->kind == SN_OBJ || f->node->kind == SN_MAP) {
         if (f->sub < f->node->n_props && v->last_enum >= 0 &&
-            !strcmp(f->node->keys[f->sub], "tool"))
+            ((f->node->discriminated && f->sub == 0) ||
+             !strcmp(f->node->keys[f->sub], "tool")))
             f->disc = (uint16_t)(v->last_enum + 1);
         f->phase = P_OBJ_NEXT;
     } else if (f->node->kind == SN_SEQ) {
@@ -2018,7 +2250,7 @@ static int feed_byte(sval *v, uint8_t c) {
         switch (n->kind) {
         case SN_COND: {
             int choice = frame_choice(v, v->depth - 1);
-            if (choice < 0 || choice >= n->n_alts) return -1;
+            if (choice < 0 || choice >= n->n_alts || !n->alts[choice]) return -1;
             v->stack[v->depth - 1].node = n->alts[choice];
             return feed_byte(v, c);
         }
@@ -2239,7 +2471,7 @@ static int feed_byte(sval *v, uint8_t c) {
     case P_OBJ_KEY:
         if (json_is_ws(c)) return 0;
         if (c == '}' && f->phase == P_OBJ_KEY1) {
-            if (n->kind == SN_OBJ && !close_allowed(n, f->idx)) return -1;
+            if (n->kind == SN_OBJ && !close_allowed(n, f->idx, (int)f->disc - 1)) return -1;
             frame_done(v);
             return 0;
         }
@@ -2256,7 +2488,7 @@ static int feed_byte(sval *v, uint8_t c) {
             f->phase = P_OBJ_INKEY;
             return 0;
         }
-        f->alive = key_candidates(n, f->idx);
+        f->alive = key_candidates(n, f->idx, (int)f->disc - 1);
         if (!f->alive) return -1;
         f->phase = P_OBJ_INKEY;
         f->lit_pos = 0;
@@ -2351,7 +2583,7 @@ static int feed_byte(sval *v, uint8_t c) {
         if (json_is_ws(c)) return 0;
         if (c == ',') {
             if (n->kind == SN_OBJ &&
-                (f->idx >= n->n_props || !key_candidates(n, f->idx))) return -1;
+                (f->idx >= n->n_props || !key_candidates(n, f->idx, (int)f->disc - 1))) return -1;
             // FAIL CLOSED at guard capacity: a comma the guard could not
             // track would reopen the duplicate hole the guard exists to
             // close, so the map cannot grow past it — but `}` stays legal
@@ -2361,7 +2593,7 @@ static int feed_byte(sval *v, uint8_t c) {
             return 0;
         }
         if (c == '}') {
-            if (n->kind == SN_OBJ && !close_allowed(n, f->idx)) return -1;
+            if (n->kind == SN_OBJ && !close_allowed(n, f->idx, (int)f->disc - 1)) return -1;
             frame_done(v);
             return 0;
         }
@@ -2864,6 +3096,11 @@ static void emit_min_choice(emitq *q, const snode *n, int depth, int choice) {
     if (n->kind == SN_COND) {
         const snode *alt = (choice >= 0 && choice < n->n_alts) ?
                            n->alts[choice] : n->alts[0];
+        // a discriminated object never asks for a property its branch lacks
+        // (close_obj reads prop_req), so a NULL here is a builder's mistake:
+        // fall back to a value rather than dereference it
+        for (int i = 0; !alt && i < n->n_alts; i++) alt = n->alts[i];
+        if (!alt) { eq_put(q, "null"); return; }
         emit_min_choice(q, alt, depth + 1, choice);
         return;
     }
@@ -2909,7 +3146,9 @@ static void emit_min_choice(emitq *q, const snode *n, int depth, int choice) {
             eq_putc(q, '{');
             bool first = true;
             for (int i = 0; i < n->n_props; i++) {
-                if (!n->req[i]) continue;
+                // a fresh discriminated object is branch 0, the branch the
+                // discriminator's lits[0] names
+                if (!prop_req(n, i, n->discriminated ? 0 : -1)) continue;
                 if (!first) eq_putc(q, ',');
                 first = false;
                 eq_putc(q, '"'); eq_put(q, n->keys[i]); eq_put(q, "\":");
@@ -2961,18 +3200,29 @@ static void emit_min_choice(emitq *q, const snode *n, int depth, int choice) {
 // consumed, so a bare '}' would be invalid JSON).
 static void close_obj(emitq *q, const snode *n, int from, bool need_comma,
                       bool force_one, int choice) {
+    // A discriminated object whose discriminator is not complete yet closes
+    // in branch 0: the discriminator itself is emitted as lits[0] (or was
+    // completed by close_literal_frame, which set the frame's choice).
+    if (n->discriminated && choice < 0) choice = 0;
+    int branch = n->discriminated ? choice : -1;
     bool emitted = false;
     for (int i = from; i < n->n_props; i++) {
-        if (!n->req[i]) continue;
+        if (!prop_req(n, i, branch)) continue;
         if (need_comma) eq_putc(q, ',');
         need_comma = true;
         emitted = true;
         eq_putc(q, '"'); eq_put(q, n->keys[i]); eq_put(q, "\":");
         emit_min_choice(q, n->props[i], 0, choice);
     }
-    if (force_one && !emitted && from < n->n_props) {
-        eq_putc(q, '"'); eq_put(q, n->keys[from]); eq_put(q, "\":");
-        emit_min_choice(q, n->props[from], 0, choice);
+    if (force_one && !emitted) {
+        // a ',' was consumed, so some key must follow: the first one this
+        // branch has (the comma was only admitted because one exists)
+        for (int i = from; i < n->n_props; i++) {
+            if (!prop_in(n, i, branch)) continue;
+            eq_putc(q, '"'); eq_put(q, n->keys[i]); eq_put(q, "\":");
+            emit_min_choice(q, n->props[i], 0, choice);
+            break;
+        }
     }
     eq_putc(q, '}');
 }
@@ -3045,7 +3295,8 @@ static void close_literal_frame(sval *v, emitq *q, const snode *n, const sframe 
     if (n->kind == SN_ENUM && v->depth >= 2) {
         sframe *pf = &v->stack[v->depth - 2];
         if (pf->node->kind == SN_OBJ && pf->sub < pf->node->n_props &&
-            !strcmp(pf->node->keys[pf->sub], "tool"))
+            ((pf->node->discriminated && pf->sub == 0) ||
+             !strcmp(pf->node->keys[pf->sub], "tool")))
             pf->disc = (uint16_t)(pick + 1);
         else if (pf->node->kind == SN_SEQ && n->min_items)
             pf->disc = (uint16_t)(pick + 1);

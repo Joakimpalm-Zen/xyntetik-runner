@@ -981,13 +981,26 @@ integers, booleans, null, enums, const, type unions, numeric bounds on both
 `integer` and `number` (`minimum`/`maximum` and their exclusive forms, with a
 forced close completing the value inside the declared range), string
 lengths and supported anchored patterns, array item/count constraints,
-scalar-const `oneOf`/`anyOf`, and the tool-discriminated object union used by
-agent clients. Required properties are present, unknown properties are blocked
+scalar-const `oneOf`/`anyOf`, const-discriminated object unions (below), and
+the tool-discriminated object union used by agent clients. Required
+properties are present, unknown properties are blocked
 for closed objects, and tool arguments are generated against the selected
 tool's schema. Over scalar literal alternatives, `anyOf` admits every value
 an alternative lists and `oneOf` only the values exactly one alternative
 lists, so `oneOf: [{"enum": [1, 2]}, {"enum": [2, 3]}]` admits 1 and 3; a
 `oneOf` that leaves no value is refused.
+
+A `oneOf` or `anyOf` of objects is enforced when a required `const` on one
+shared property tells the objects apart: a discriminated union, the shape
+Pydantic writes for `Field(discriminator=...)` and OpenAPI for
+`discriminator`. Each object keeps its own properties and its own required
+set, so a schema can say that `{"op": "MAP"}` takes a `fn` and one argument
+while `{"op": "HEAD"}` takes no `fn`. The discriminator is the first key
+Runner writes, even where an object declares it later, and everything after
+it follows the object it named. `discriminator.propertyName` picks the
+property when given, and must then be such a const; `mapping` adds nothing.
+Other alternatives may stand beside the objects (`anyOf: [A, B, null]`).
+Objects with no such property are refused by name.
 
 Local references are inlined at compile time, the way Pydantic's
 `model_json_schema()` and MCP tool definitions write them: a `$ref` to
@@ -1026,7 +1039,8 @@ conjunction, every pattern and the tightest bounds together; that is the one
 
 Unsupported or ambiguous constraints fail at compile/request time. In
 particular, general overlapping `oneOf` branches are not tracked in parallel;
-branches must diverge at a supported discriminator. This is a subset of JSON
+branches must diverge at a supported discriminator: a first byte, or for
+objects the const-discriminated property above. This is a subset of JSON
 Schema 2020-12, not full JSON Schema or GBNF.
 
 An enum member that is a token prefix of another member (`"E"` beside

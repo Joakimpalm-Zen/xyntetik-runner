@@ -558,6 +558,18 @@ def validate_against_schema(value, schema, path="$", root=None):
             except SchemaError:
                 pass
         raise SchemaError("no anyOf alternative matches", at=path, got=value)
+    if "oneOf" in schema:
+        matched = 0
+        for alt in schema["oneOf"]:
+            try:
+                validate_against_schema(value, alt, path, root)
+                matched += 1
+            except SchemaError:
+                pass
+        if matched != 1:
+            raise SchemaError("oneOf needs exactly one matching alternative", at=path,
+                              got=value, matched=matched)
+        return value
     t = schema.get("type")
     if t == "object":
         if not isinstance(value, dict):
@@ -599,6 +611,9 @@ def validate_against_schema(value, schema, path="$", root=None):
     elif t == "null":
         if value is not None:
             raise SchemaError("expected null", at=path, got=type(value).__name__)
+    if "const" in schema and value != schema["const"]:
+        raise SchemaError("value is not the const", at=path, got=value,
+                          const=schema["const"])
     if "enum" in schema and value not in schema["enum"]:
         raise SchemaError("value outside enum", at=path, got=value,
                           enum=schema["enum"])
