@@ -38,7 +38,7 @@ Seven pins move to the new version. `scripts/check-release.py` checks all of the
 |---|---|
 | `src/runner.h` | `#define RUNNER_VERSION "X.Y.Z"` |
 | `python/pyproject.toml` | `version = "X.Y.Z"` |
-| `README.md` | `> **Published release: X.Y.Z.** ...` (rewrite the paragraph for this release, limits first) |
+| `README.md` | `> **Published release: X.Y.Z.** ...` (rewrite the paragraph for this release: what it is for first, a limit after its claim) |
 | `README.md` | ``> **Version `X.Y.Z`.** The command line, ...`` |
 | `README.md` | `./runner --version   # -> runner X.Y.Z` |
 | `MANUAL.md` | ``> **Version `X.Y.Z`.** The command line, ...`` (the banner near the top) |
@@ -215,8 +215,10 @@ Commit the reports to the release branch, or to main if they arrive after the cu
 
 - Open the PR from `release/X.Y.Z` to main as non-draft. The body lists the
   commits and the gates, limits first.
-- First comment: the release notes, limits first. The first sentence says what the
-  release is for and what it is not. Scan the text before posting: no em dashes, no
+- First comment: the release notes. The first sentence says what the release is for
+  and what it is not; then What changed, Behaviour changes, Limits and Gates, in that
+  order. Release notes lead with what changed, and every limit is still stated
+  (owner, 2026-11-10; 1.16.0's notes were reordered after publishing). Scan the text before posting: no em dashes, no
   machine or host names, no host paths, and the chip as "Apple M1", never the bare
   model number.
 - Second comment: the gate record (swap figures, the scan proof lines, anything

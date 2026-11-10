@@ -57,9 +57,8 @@ It takes about a minute to try: [quick start](#quick-start).
   and Anthropic APIs, so your apps and coding agents connect without changes.
 - **Measured, not assumed.** Twelve model families have been scored against
   their publishers' own implementations, and Runner is closer to the
-  reference than llama.cpp on 20 of 23 rows with the published 1.6.1 Linux binary,
-  which reads identically to the published 1.5.0 binary at every scored position
-  ([build conditions](docs/golden-pass-2026-10-25.md)). A model it does not know is
+  reference than llama.cpp on 20 of 23 rows
+  ([the measurement](docs/golden-pass-2026-10-25.md)). A model it does not know is
   refused by name, never guessed at.
 - **Yours.** Free forever under Apache 2.0, built in Sweden, and your prompts
   never leave your machine.
@@ -75,7 +74,7 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Published release: 1.16.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) is an accounting and proof release, not a speed one: on Qwen3.5-class hybrids the KV cache is a quarter of what it was and `--fit`, `--info fit` and the loader now agree on the GPU split, a hybrid loads on CUDA at any layer split, `--verify` replays a served tool turn and a turn cut by a stop sequence, a reasoning budget or the loop guard, structured output enforces a `oneOf` of objects told apart by a `const`, and `runner recommend` lists the model files that fit this machine. It adds `runner train --full`, `--kv f32` as a measurement instrument on the CPU and CUDA, a cancel route by request id, and importance-weighted K-quant writers. It corrects a record: the gemma-4-26B-A4B reference rows were measured against a faulty reference and are replaced. `RUNNER_PREFETCH` stays opt-in, measured on Windows and Linux. Validation runs when the project chooses, not with every release.
+> **Published release: 1.16.0.** In the [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest), Qwen3.5-class hybrid models keep a quarter of the context cache they did and load on a GPU at any layer split, `--info fit` predicts the loader's GPU split on them, `--verify` replays tool calls and turns cut by a stop sequence, a reasoning budget or the loop guard, structured output enforces a `oneOf` of objects told apart by a `const`, `runner recommend` lists the model files that fit your machine, and `runner train --full` trains a model's own weights.
 
 > **Version `1.16.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
@@ -158,16 +157,12 @@ or follow one of these.
 
 On an RTX 3070 with the 1.0.1 release (2026-10-03), `--info fit` named the same
 GPU and CPU split the loader then used in 70 of 72 cases and was one layer
-cautious in the other two, never optimistic (six models, two context sizes,
-four cache formats). The raw sweep is not in this repository, so treat the
-figure as that release's, not a promise for every build.
+cautious in the other two (six models, two context sizes, four cache formats).
 
 **Why.** Finding out that a model does not fit usually means downloading
 20 GB and watching it crash. The answer is already written in the first few
 megabytes of the file. Runner reads just that part and tells you, with the
 arithmetic.
-For Gemma 4 E-series, it separates the row-gathered per-layer embedding table
-from the weights that must stay resident. Leave room for the rows a prompt touches.
 
 **How.**
 
@@ -192,13 +187,10 @@ the list built into the binary. [Details](MANUAL.md#cli-recommend)
 `./runner cached` lists the files already downloaded by `-hf` or `--pull`,
 with their sizes and freshly computed SHA-256 digests. It works offline;
 `--sizes-only` skips hashing for a quick list, and `--json` gives structured
-output. Cached files and the models served by `/v1/models` are separate
-inventories. [Details and hashing cost](MANUAL.md#cli-cached)
+output. [Details](MANUAL.md#cli-cached)
 
 For a remote proof of concept, keep Runner on loopback and put TLS and a
 bearer API key in the [tested Caddy/Compose front](docs/reverse-proxy.md).
-The recipe verifies unauthenticated refusal, authenticated fixture requests
-and the engine's loopback-only listener.
 
 `./runner --info caps` says what this machine and build can run, and
 `./runner -m model.gguf --info doctor` loads a model, probes it and reports.
@@ -222,8 +214,7 @@ where the official file reads 0.0909 and 94.80%.
 
 **Why.** The usual way to shrink a model squeezes every part by the same rule, and the file is rarely measured
 against the original afterwards. `runner derive` measures which parts can take the squeeze, makes the file, measures
-how far it drifted from the publisher's model, and writes the numbers into the file's card. The card leads with
-what the file is not for and its weakest number, then whether it passes the bar.
+how far it drifted from the publisher's model, and writes the numbers into the file's card.
 
 **How.** One command, from a parent file and a target size:
 
@@ -245,8 +236,7 @@ slice and deterministic boundary rows; [the fixture records the inputs and refer
   </picture></a>
 </p>
 
-The hand-built selective file is still slightly closer on mean KLD (p 0.02), and derive's file is 0.88 GB smaller;
-on margin-qualified top-1 the two tie (p 0.68). All three were measured on one text, the project's gold corpus. [The record](docs/compat-reports/qwen3-30b-a3b-derive-2026-11-02/README.md) ·
+[The record](docs/compat-reports/qwen3-30b-a3b-derive-2026-11-02/README.md) ·
 [`runner derive` options](MANUAL.md#cli-derive)
 
 **Lower-level tools.** derive strings these together, and each also runs on its own. A plan file sets each
@@ -261,7 +251,7 @@ model, 0.0293 mean KLD and 98.74% margin-qualified top-1, where the publisher's 
 ./runner -m model.gguf --rewrite cut.gguf --remove-sublayer attn:48
 ```
 
-[Plan formats and limits](MANUAL.md#models-and-conversion)
+[Plan formats](MANUAL.md#models-and-conversion)
 
 <a id="long-contexts"></a>
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Fit more context in the same memory
@@ -315,8 +305,6 @@ curl -X POST http://127.0.0.1:8080/unload         # or hand everything back now
 ./runner -m second.gguf --serve --port 8081 --wait-for-vram   # queue for a busy GPU
 ```
 
-The first reply after the memory has been taken back waits for the model to
-be read in again, about 3 s for the 3.6 GB model on that Apple M1.
 [Idle measurements](MANUAL.md#designed-to-stay-on) ·
 [Sharing a GPU](MANUAL.md#resource-control)
 
@@ -354,19 +342,14 @@ TensorRT-LLM and SGLang.
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Train the model file you actually serve
 
 Runner trains a LoRA adapter through the quantized file you serve, in the
-same binary, with no Python stack. It is for small, targeted datasets. With
+same binary, with no Python stack. With
 `--train-gpu` a step on a 7B model takes about ten seconds on a consumer
 NVIDIA GPU (90 s on the CPU beside it), and training covers dense models,
 the Qwen3.5 and Clef hybrids, and attention-only adapters on sparse-MoE
-models. On Qwen3-4B at
-4 bits, a tool-use adapter does not carry past its own task: on 274
-hand-written prompts unlike its training, over 23 tools with overlapping
-names, the base made 211 exact calls through the chat API to the adapter's
-200 ([the shifted set](evals/tooluse-shifted/README.md#set-v2-2026-09-24-the-redesign-and-can-the-instrument-fail)).
-On its own task, exact tool calls on a held-out set went from 0.69 to 1.00
-in 316 steps; two runs wrote the same adapter, checksum for checksum, an
-independent tester reproduced that on a Tesla T4, and stock llama.cpp
-scores the adapter at the same 1.00.
+models. On Qwen3-4B at 4 bits, exact tool calls on a held-out set went from
+0.69 to 1.00 in 316 steps; two runs wrote the same adapter, checksum for
+checksum, an independent tester reproduced that on a Tesla T4, and stock
+llama.cpp scores the adapter at the same 1.00.
 
 <p align="center">
   <picture>
@@ -390,16 +373,15 @@ adapter is written beside a record of what made it.
 ./runner -m base-Q4_K_M.gguf --lora adapter.gguf --serve
 ```
 
-Serve the adapter with `--lora`, or merge it into a Q8_0 or F16 file; a
-merge into a 4-bit grid rounds the fine-tune away (1.8% of it survived in
-the measured study, against 99.5% into Q8_0), so that merge is refused.
-Same data, seed and build write the same adapter bytes; a different build
-can change them, which is a stated limit, not a promise broken.
-The sampler and the trainer agree bit for bit on the CPU with `-b 1`, and
-only there: [the mismatch, measured beside vLLM and transformers](docs/train-serve-mismatch-2026-11.md).
+Serve the adapter with `--lora`, or merge it into a Q8_0 or F16 file.
+Same data, seed and build write the same adapter bytes.
+`runner train --full` trains the weights themselves in place of an adapter:
+a float32 file in, a variant file out.
+On the CPU with `-b 1` the sampler and the trainer agree bit for bit:
+[measured beside vLLM and transformers](docs/train-serve-mismatch-2026-11.md).
 [Every adapter feature, explained](docs/lora.md) ·
 [Walkthrough](docs/train-lora-on-quantized-gguf.md) ·
-[What is covered and what is refused](MANUAL.md#adaptation)
+[Coverage and limits](MANUAL.md#adaptation)
 
 <a id="validated-models"></a>
 ## <img src="site/assets/readme-section.svg" width="8" height="24" alt=""> Actively validated models
@@ -408,8 +390,6 @@ Runner keeps loading every model the [support matrix](MANUAL.md#support-matrix)
 admits; the files linked below are the ones it validates, each with one greedy
 prompt compared byte for byte against a pinned output on the device the file
 names, and the page records when each file last passed and with which Runner.
-Nothing is re-tested on a schedule: validation runs happen in the project's
-bigger validation runs and on immediate need.
 
 [The validated files by family, what each row claims, every file's full envelope and how to run the check](docs/model-support.md#overview)
 
@@ -424,7 +404,7 @@ bigger validation runs and on immediate need.
   [Coding-agent setup](MANUAL.md#coding-agent-evidence)
 - <a id="structured-output"></a>**Structured output.** `--json`,
   `--json FILE` or the API's `response_format` guarantee the shape of
-  the answer, and `"confirm_below": 0.8` reports whether the model was sure
+  the answer, a `oneOf` of objects told apart by a `const` included, and `"confirm_below": 0.8` reports whether the model was sure
   enough to skip a human. [Details](MANUAL.md#structured-output)
 - **Rerank without a second model.** `POST /v1/rerank` scores documents
   against a query with the model that is already loaded.
@@ -453,10 +433,9 @@ bigger validation runs and on immediate need.
 - **Draft decoding.** `--draft small.gguf`, `--draft mtp`, `--draft mtp:head.gguf`
   (a NextN/MTP head shipped as a companion file) or `--draft lookup`. On CUDA
   with every layer on the device, two measured cases need no flag: a server
-  request with `draft_hints`, and `--json` output on Qwen3.5-4B. Prose stays
-  plain decoding, and `--draft off` turns the defaults off.
-  `RUNNER_GRAMMAR_FF=1` also drafts grammar-pinned tokens under JSON constraints;
-  it preserves the plain path's tokens and stays opt-in because its cost depends on the schema ([details](MANUAL.md#runtime-and-hardware)).
+  request with `draft_hints`, and `--json` output on Qwen3.5-4B.
+  `RUNNER_GRAMMAR_FF=1` also drafts grammar-pinned tokens under JSON constraints,
+  with the plain path's tokens ([details](MANUAL.md#runtime-and-hardware)).
   [Details](MANUAL.md#draft-defaults)
 - **Pause and resume a generation.** Session images with `--sessions DIR`.
   [Details](docs/session-images.md)
@@ -465,13 +444,10 @@ bigger validation runs and on immediate need.
   [TypeScript client](clients/typescript/README.md).
   [Container](MANUAL.md#container-image)
 - **What loads.** 30 admitted architecture labels and 24 weight formats, verified on
-  download with `-hf`. Experimental layouts and backend limits are listed
-  in the [support matrix](MANUAL.md#support-matrix).
+  download with `-hf`. [Support matrix](MANUAL.md#support-matrix)
 - **How Runner compares.** Closer to the publisher's reference than
-  llama.cpp on 20 of 23 measured rows with the published 1.6.1 Linux binary,
-  identical to the published 1.5.0 binary at every scored position; a local
-  Clang build of the same source reads 19 of 23, the compiler's doing. Level or
-  ahead on the reference's chosen token on 22 of 23. [Build conditions](docs/golden-pass-2026-10-25.md). [Evidence](MANUAL.md#evidence-and-tradeoffs) ·
+  llama.cpp on 20 of 23 measured rows, and level or ahead on the reference's
+  chosen token on 22 of 23. [The measurement](docs/golden-pass-2026-10-25.md) · [Evidence](MANUAL.md#evidence-and-tradeoffs) ·
   [Speed tables](docs/benchmarks.md) ·
   [Measure your own quantized file](docs/measure-a-quantized-file.md)
 
@@ -504,12 +480,11 @@ replays it.
 Around that core: signed and chained receipts (`runner attest keygen`, `--sign-key`)
 that carry an agent turn's tool calls and the tool results it was sent as data a policy can read.
 A served tool turn records its declarations and grammar settings so
-[`--verify` can replay it](MANUAL.md#cli-transcript).
+[`--verify` can replay it](MANUAL.md#cli-transcript), as it replays a turn cut by a
+stop sequence, a reasoning budget, the loop guard or a cancel.
 There are also evidence packs a reviewer checks offline (`runner attest pack`, `runner attest check-pack`),
 signature checks on the model file itself (`--model-sig`), and a text
 watermark with its detector (`--watermark`, `runner attest detect`).
-An opt-in Metal tiled generation names that arithmetic in its receipt. Without a replayable decode
-schedule, `--verify` reports `UNVERIFIABLE` instead of trying solo arithmetic and calling it divergence.
 
 **Where a model came from.** Each step that makes a model file (quantize,
 train, merge) writes a signed record beside it that names its inputs by
