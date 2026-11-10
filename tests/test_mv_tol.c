@@ -38,7 +38,8 @@
 //     ./test-mv-tol models/granite-4.1-8b-Q4_0.gguf 8   # force 8 GPU layers
 //
 // Default model is test.gguf (F32 toy): the harness runs and self-skips,
-// because F32 has no fast kernel.
+// because F32 has no fast kernel. A NAMED fixture without a suitable tensor
+// is an error, as is a named Metal fixture whose route never dispatches.
 #include "runner.h"
 
 #include <float.h>
@@ -244,6 +245,11 @@ int main(int argc, char **argv) {
     printf("mv-tol: %s | %d tokens, %d teacher-forced positions\n",
            path, n_tok, STEPS);
     if (!has_mv_type) {
+        if (argc > 1) {
+            fprintf(stderr, "FAIL: named fixture %s has no fast-capable tensor "
+                    "(Q4_0/Q8_0/Q4_K)\n", path);
+            return 1;
+        }
         printf("  skipped: no fast-capable tensor in this model (kernels: "
                "Q4_0/Q8_0/Q4_K)\n" "mv-tol: ok (skipped)\n");
         return 0;
@@ -283,12 +289,24 @@ int main(int argc, char **argv) {
     config *ref = &cfgs[0], *ctrl = &cfgs[1], *fast = &cfgs[2];
 
     if (!ref->available || !fast->available) {
+#ifdef RUNNER_GPU_METAL
+        if (argc > 1) {
+            ck(false, "named Metal fixture could not run both configurations");
+            return g_fail;
+        }
+#endif
         printf("  mv tolerance gate  : skipped (config unavailable)\n"
                "mv-tol: %s\n", g_fail ? "FAILED" : "ok (skipped)");
         return g_fail;
     }
 
     if (fired == 0) {
+#ifdef RUNNER_GPU_METAL
+        if (argc > 1) {
+            ck(false, "named Metal fixture dispatched no fast matvecs");
+            return g_fail;
+        }
+#endif
         printf("  mv-fast vs scalar : the fast route never dispatched: it is "
                "Metal's (on CUDA and the CPU it never runs), or no offloaded "
                "tensor of a fast-capable type, or a CPU fallback. Skipping, not "
