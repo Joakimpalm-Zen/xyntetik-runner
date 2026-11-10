@@ -1382,12 +1382,15 @@ static void usage_to(FILE *f, const char *prog) {
         "                 vram, ram, or cpu (size the thread count as P%% of\n"
         "                 cores). Without -c the context is auto-fit to\n"
         "                 whatever the reservation leaves after the weights\n"
-        "  --kv f16|q8|k8v4|fp4  KV cache storage (default f16). q8 roughly\n"
+        "  --kv f16|f32|q8|k8v4|fp4  KV cache storage (default f16). q8 roughly\n"
         "                 halves the cache; k8v4 keeps K at q8 and stores V as\n"
         "                 fp4 (about 41%% of f16); fp4 stores both as fp4 (about\n"
         "                 28%%; E2M1 values, one UE4M3 scale per 16 channels,\n"
         "                 quantised after RoPE). All three are lossy: output\n"
-        "                 differs from an f16 cache, fp4 K costs the most\n"
+        "                 differs from an f16 cache, fp4 K costs the most.\n"
+        "                 f32 keeps K and V unrounded (twice the f16 cache, CPU\n"
+        "                 only: with --gpu off): a measurement instrument, not a\n"
+        "                 speed or quality default\n"
         "  --kv-ring auto|on|off  give sliding-window layers only their window\n"
         "                 of KV rows (output-identical to the flat cache). auto\n"
         "                 (default): on when the weights and the flat cache do\n"
@@ -1598,7 +1601,8 @@ static void usage_train_to(FILE *f) {
         "                 byte unchanged; quantize it afterwards with --rewrite\n"
         "                 --quant. CPU only\n"
         "  --kv-f32       an f32 KV cache for this run (CPU only), so the\n"
-        "                 gradient matches fp32 autograd; inference keeps f16\n"
+        "                 gradient matches fp32 autograd (--kv f32 is the\n"
+        "                 same cache for inference)\n"
         "  --sign-key F   sign the training record with the key in F\n\n"
         "Every other option (-m, -s, -t, -c, --chat-template, --model-pubkey,\n"
         "...) is the runner's own and passed through as given. The longer\n"
@@ -2392,6 +2396,7 @@ typedef struct {
     bool train_gpu;            // R8.19 --train-gpu: every product on CUDA
     bool train_full;           // R8.25.2 --train-full: every dense projection, no adapter
     bool train_kv_f32;         // R8.25.2 --train-kv-f32: an f32 KV cache for a training run
+    bool kv_f32_cli;           // R6.32 --kv f32: the same cache for any run, CPU only
     uint64_t train_gpu_budget; // --train-gpu-budget BYTES (0: the free memory)
     // records, signing, verification, watermarks, session images
     const char *transcript_path, *transcript_prev, *sign_key, *keygen_path;
@@ -2730,10 +2735,13 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             const char *v = NEXT;
             o->kv_given = true;
             o->mp.kv_q8 = o->mp.kv_fp4 = o->mp.kv_split = false;
+            o->kv_f32_cli = false;
+            o->mp.kv_f32 = o->train_kv_f32;
             if (!strcmp(v, "q8")) o->mp.kv_q8 = true;
             else if (!strcmp(v, "fp4")) o->mp.kv_fp4 = true;
             else if (!strcmp(v, "k8v4")) o->mp.kv_split = true;
-            else if (strcmp(v, "f16")) { fprintf(stderr, "error: --kv expects f16, q8, k8v4 or fp4\n"); *rc = 1; return false; }
+            else if (!strcmp(v, "f32")) o->mp.kv_f32 = o->kv_f32_cli = true;
+            else if (strcmp(v, "f16")) { fprintf(stderr, "error: --kv expects f16, f32, q8, k8v4 or fp4\n"); *rc = 1; return false; }
         }
         else if (!strcmp(a, "--kv-ring")) {
             const char *v = NEXT;
@@ -3810,6 +3818,15 @@ static bool cli_prepare_session(cli_opts *o, session_image *simg, int *rc) {
         if (why) { fprintf(stderr, "error: %s\n", why); *rc = 1; return true; }
         o->mp.gpu_mode = GPU_OFF;
     }
+    // --kv f32 (R6.32) keeps the KV cache in f32 for a measurement: the GPU
+    // attention kernels read f16, q8_0 and fp4 rows only, so a run that could
+    // land on a device is refused here rather than quietly given f16
+    if (o->kv_f32_cli && o->mp.gpu_mode != GPU_OFF) {
+        fprintf(stderr, "error: --kv f32 runs on the CPU path only (the GPU attention "
+                "kernels read f16, q8_0 and fp4 rows): add --gpu off\n");
+        *rc = 1;
+        return true;
+    }
     if (o->resume_path) {
         // the image fixes everything that shapes the continuation; a flag
         // that would change it is refused, not silently overridden
@@ -3832,6 +3849,7 @@ static bool cli_prepare_session(cli_opts *o, session_image *simg, int *rc) {
         o->mp.kv_q8 = !strcmp(sm->kv_type, "q8");
         o->mp.kv_fp4 = !strcmp(sm->kv_type, "fp4");
         o->mp.kv_split = !strcmp(sm->kv_type, "k8v4");
+        o->mp.kv_f32 = !strcmp(sm->kv_type, "f32");
         o->ov.temp = sm->temp;                     o->ov.has_temp = true;
         o->ov.top_k = sm->top_k;                   o->ov.has_top_k = true;
         o->ov.top_p = sm->top_p;                   o->ov.has_top_p = true;
@@ -4067,7 +4085,8 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
             (gpu_route_v && gpu_route_m < 0) ||
             (jv_get(prof, "route") && jv_get(prof, "route")->type != J_OBJ) ||
             (strcmp(kv, "f16") != 0 && strcmp(kv, "q8") != 0 &&
-             strcmp(kv, "fp4") != 0 && strcmp(kv, "k8v4") != 0)) {
+             strcmp(kv, "fp4") != 0 && strcmp(kv, "k8v4") != 0 && strcmp(kv, "f32") != 0) ||
+            (strcmp(kv, "f32") == 0 && gpu_v->b)) {   // --kv f32 runs on the CPU only
             fprintf(stderr, "UNVERIFIABLE: malformed execution profile\n");
             jv_free(vr->rec);
             *rc = 3;
@@ -4079,6 +4098,7 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
         o->mp.kv_q8 = strcmp(kv, "q8") == 0;
         o->mp.kv_fp4 = strcmp(kv, "fp4") == 0;
         o->mp.kv_split = strcmp(kv, "k8v4") == 0;
+        o->mp.kv_f32 = strcmp(kv, "f32") == 0;
         o->mp.gpu_mode = gpu_v->b ? GPU_AUTO : GPU_OFF;
         if (gpu_layers_v && gpu_layers_d > 0)
             o->mp.gpu_layers_override = (int)gpu_layers_d;
@@ -5116,7 +5136,7 @@ static bool train_full_prepare(cli_opts *o, cli_run *rt) {
 static bool train_prepare(cli_opts *o, cli_run *rt) {
     if (o->train_kv_f32 && (o->train_gpu || rt->m.gpu || !rt->m.kv_f32)) {
         fprintf(stderr, "error: --train-kv-f32 keeps an f32 KV cache on the CPU path only "
-                "(run with --gpu off, without --train-gpu, without --kv, on a model "
+                "(run with --gpu off, without --train-gpu, without --kv q8, k8v4 or fp4, on a model "
                 "without tied V)\n");
         return false;
     }
@@ -6430,6 +6450,7 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     bool expected_q8 = strcmp(jv_str(jv_get(vprof, "kv"), ""), "q8") == 0;
     bool expected_fp4 = strcmp(jv_str(jv_get(vprof, "kv"), ""), "fp4") == 0;
     bool expected_split = strcmp(jv_str(jv_get(vprof, "kv"), ""), "k8v4") == 0;
+    bool expected_f32 = strcmp(jv_str(jv_get(vprof, "kv"), ""), "f32") == 0;
     jv *expected_layers_v = jv_get(vprof, "gpu_layers");
     int expected_layers = (int)jv_num(expected_layers_v, -1);
     // a CUDA replay must run at the record's prompt window (64 for a record
@@ -6441,6 +6462,7 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     if (rt->m.n_ctx != expected_ctx || rt->m.n_batch != expected_batch ||
         tpool_size(rt->m.tp) != expected_threads || rt->m.kv_q8 != expected_q8 ||
         rt->m.kv_fp4 != expected_fp4 || rt->m.kv_split != expected_split ||
+        rt->m.kv_f32 != expected_f32 ||
         (rt->m.gpu != NULL) != expected_gpu ||
         (expected_layers_v && rt->m.gpu_layers != expected_layers) ||
         (got_window > 0 && got_window != expected_window) ||
@@ -7135,7 +7157,7 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
         sb_fmt(&r, ",\"vram_total_bytes\":%llu,\"vram_free_bytes\":%llu",
                (unsigned long long)vtotal, (unsigned long long)vfree);
     sb_fmt(&r, "},\"context\":{\"tokens\":%d,\"kv\":\"%s\"},", rt->m.n_ctx,
-           rt->m.kv_fp4 ? "fp4" : rt->m.kv_split ? "k8v4" : rt->m.kv_q8 ? "q8" : "f16");
+           model_kv_name(&rt->m));
     sb_fmt(&r, "\"template\":{\"name\":\"%s\",\"recognised\":%s,"
                "\"from_file\":%s,\"tool_family\":\"%s\",\"native_tool_protocol\":%s},",
            template_name(dt), dt == TMPL_LLAMA2_FALLBACK ? "false" : "true",
@@ -7565,7 +7587,7 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
             .gpu_route = gpu_route_record(&rt->m),
             .threads = tpool_size(rt->m.tp), .n_ctx = rt->m.n_ctx,
             .n_batch = rt->m.n_batch, .kv_q8 = rt->m.kv_q8, .kv_fp4 = rt->m.kv_fp4,
-            .kv_split = rt->m.kv_split,
+            .kv_split = rt->m.kv_split, .kv_f32 = rt->m.kv_f32,
             .model_path = load_path,
             .route_json = route_json,
             .adapter_path = o->lora_path, .adapter_scale = o->lora_scale,

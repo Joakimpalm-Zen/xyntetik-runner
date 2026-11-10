@@ -5131,8 +5131,9 @@ static void bind_kv_layout(model_t *m, const model_params *p) {
         else
             m->kv_fp4 = true;
     }
-    // R8.25.2 --train-kv-f32: K and V rows kept f32, so a training run's
-    // forward and backward read the projections unrounded; the CPU path only
+    // --kv f32 (R6.32) and --train-kv-f32 (R8.25.2): K and V rows kept f32, so
+    // the forward (and a training run's backward) reads the projections
+    // unrounded; the CPU path only
     if (p->kv_f32 && !m->kv_q8 && !m->kv_split && !m->kv_fp4 && p->gpu_mode == GPU_OFF)
         m->kv_f32 = true;
 }
@@ -5833,7 +5834,7 @@ static bool runtime_kv_layout(model_t *m, const model_params *p, int n_ctx) {
                 fprintf(stderr, "kv: tied-V refused — a %s cache would "
                         "re-quantize the derived K row rather than read it; "
                         "use the default f16 KV\n",
-                        m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : "q8");
+                        model_kv_name(m));
             } else if (n_tied > 0) {
                 m->kv_off_k = malloc(sizeof(size_t) * (m->n_layer + 1));
                 if (!m->kv_off_k) return false;
@@ -6221,7 +6222,7 @@ static void runtime_report(const model_t *m, size_t kv_bytes, size_t k_bytes) {
     fprintf(stderr, "%-24s %d\n", "vocab", m->n_vocab);
     fprintf(stderr, "%-24s %d (train %d)\n", "context", m->n_ctx, m->n_ctx_train);
     fprintf(stderr, "%-24s %.1f MB (%s)\n", "kv cache", (kv_bytes + k_bytes) / 1e6,
-            m->kv_f32 ? "f32, training only" : m->kv_fp4 ? "fp4" : m->kv_split ? "q8_0 K, fp4 V"
+            m->kv_f32 ? "f32" : m->kv_fp4 ? "fp4" : m->kv_split ? "q8_0 K, fp4 V"
             : m->kv_q8 ? "q8_0" : "fp16");
     // R3.47: a hybrid's per-sequence recurrent state, one slot per layer that holds it
     if (model_has_recurrent(m))
@@ -7516,7 +7517,7 @@ static void route_collect(const model_t *m, route_facts *r) {
         }
     // RUNNER_MOE_HOT: the expert slots the device holds in host layers
     r->moe_hot = m->gpu && m->moe_hot_slot ? m->moe_hot_total : 0;
-    r->kv = m->kv_f32 ? "f32" : m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
+    r->kv = model_kv_name(m);
     r->detail = m->gpu ? gpu_route_detail(m) : "";
     r->build = route_build();
     r->codegen = route_codegen();
