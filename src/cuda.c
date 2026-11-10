@@ -1183,6 +1183,13 @@ static bool moe_any_on_device(const model_t *m) {
 // device, where the shared expert dereferenced its absent gate.
 static bool moe_bank_device_ok(const model_t *m, int l) {
     const layer_t *ly = &m->layers[l];
+    // A bank on the device is routed by k_moe_route: softmax and top-k, with
+    // no selection bias and no weight scale. A bank whose router needs more
+    // (nemotron_h_moe and lfm2moe: a sigmoid with exp_probs_b) stays on the
+    // host, where model_moe_ffn_cpu routes it with the CPU's moe_route
+    // (R3.43a).
+    if (ly->is_moe && (!model_moe_router_is_plain_any_norm(m) || ly->exp_probs_b))
+        return false;
     if (!ly->is_moe || m->n_ff_shexp <= 0) return true;
     if (m->ffn_relu2) return false;
     if (!ly->w_up_shexp) return true;
@@ -3561,17 +3568,26 @@ static bool cuda_admit(model_t *m) {
                 "running on CPU\n", m->moe_latent);
         return false;
     }
-    if (m->n_expert > 0 && !model_moe_router_is_plain_any_norm(m)) {
+    // The router and the selection bias matter only to a bank the device runs:
+    // a layer whose experts are on the host (--cpu-moe) is routed there, by
+    // model_moe_ffn_cpu, while the device runs the trunk (R3.43a). So these
+    // refuse only when a bank is on the device; --cpu-moe, and its auto fit,
+    // which places no bank moe_bank_device_ok refuses, keep these models on
+    // the device.
+    if (m->n_expert > 0 && moe_any_on_device(m) && !model_moe_router_is_plain_any_norm(m)) {
         fprintf(stderr, "gpu: this model's MoE router (gating=%d groups=%d "
-                "norm_w=%d scale=%g) has no device kernel — running on CPU\n",
+                "norm_w=%d scale=%g) has no device kernel — running on CPU "
+                "(--cpu-moe keeps the experts and their routing on the host)\n",
                 m->expert_gating, m->n_expert_groups, (int)m->expert_norm_w,
                 (double)m->expert_w_scale);
         return false;
     }
     for (int l = 0; l < m->n_layer && m->n_expert > 0; l++)
-        if (m->layers[l].exp_probs_b) {
+        if (m->layers[l].exp_probs_b && m->layers[l].is_moe &&
+            (!moe_on_host(m, l) || moe_hot_on(m, l))) {
             fprintf(stderr, "gpu: MoE selection bias (exp_probs_b) has no "
-                    "device kernel — running on CPU\n");
+                    "device kernel — running on CPU (--cpu-moe keeps the "
+                    "experts and their routing on the host)\n");
             return false;
         }
     // A pruned model (--prune-experts) gives a layer fewer experts than the
@@ -8551,7 +8567,13 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
         // device experts, gemma's dual-branch FFN) still runs as it would.
         // The block's KV is not allocated: its per-layer KV width is 0.
         if (m->l_no_attn && m->l_no_attn[l]) goto attention_removed;
-        if (ly->skip_mixer) goto mamba_mlp;   // nemotron_h MLP-only block
+        // nemotron_h MLP-only block: its device FFN, or, for a nemotron_h_moe
+        // block whose experts are on the host (--cpu-moe, R3.43a), the host
+        // branch below that routes and runs them (model_moe_ffn_cpu)
+        if (ly->skip_mixer) {
+            if (ly->is_moe && moe_on_host(m, l) && !moe_hot_on(m, l)) goto attention_removed;
+            goto mamba_mlp;
+        }
         if (m->hyper_conn) {
             size_t hcd = (size_t)m->hc_count * n_embd;
             if (ly->ple4) {
