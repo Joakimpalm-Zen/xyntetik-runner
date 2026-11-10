@@ -314,6 +314,10 @@ typedef struct {
     // the weights, the geometry, the tokenizer and the cache element type.
     // Computed once by engine_init; see engine_prefix_reuse.
     uint64_t model_key;
+    // the key a runner before R3.44 gave this model (its qwen35-family
+    // DeltaNet layers reserved KV rows then); model_key for every other
+    // family. Only names why a saved state is refused, never admits one.
+    uint64_t model_key_prior;
 } engine;
 
 // Called between prefill chunks so a caller holding the device turn can drop
@@ -640,6 +644,7 @@ enum {
     PFX_CTX_BADNAME     = -5,   // 1..64 of [A-Za-z0-9._:-]
     PFX_CTX_CORRUPT     = -6,   // a snapshot file that is not one whole entry
     PFX_CTX_IO          = -7,   // the snapshot file could not be written
+    PFX_CTX_PRIOR       = -8,   // saved under the pre-R3.44 qwen35 KV layout
 };
 bool prefix_context_name_ok(const char *name);
 // Pin the KV the slot holds for toks[0, n) (e->pos must be n, e->hist toks)
@@ -699,8 +704,8 @@ int prefix_cache_load(const char *path, const engine *e);
 // pins the entry under `name`, remembering `origin` (a JSON object naming the
 // snapshot, <= 255 bytes) for the receipts of requests built on it. Returns
 // the token count, PFX_CTX_UNKNOWN (unreadable), PFX_CTX_CORRUPT,
-// PFX_CTX_MISMATCH (another model, context or KV type), PFX_CTX_NOSPACE or
-// PFX_CTX_BADNAME.
+// PFX_CTX_MISMATCH (another model, context or KV type), PFX_CTX_PRIOR (this
+// model under the KV layout before R3.44), PFX_CTX_NOSPACE or PFX_CTX_BADNAME.
 int  prefix_context_export(const char *name, const char *path);
 int  prefix_context_import(const engine *e, const char *name, const char *path,
                            const char *origin);

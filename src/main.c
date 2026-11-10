@@ -7063,7 +7063,7 @@ static int run_resume(cli_opts *o, cli_run *rt, session_image *simg, const char 
     const session_meta *sm = &simg->meta;
     char have[65];
     const char *why = NULL;
-    char keywhy[192];
+    char keywhy[320];
     if (!envelope_file_sha256(load_path, have) || strcmp(have, sm->model_sha256))
         why = "-m is not the model the image was made with (model sha256)";
     if (!why) why = session_key_mismatch(sm, &rt->e, keywhy, sizeof keywhy);

@@ -8,6 +8,48 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **Fix: Qwen3.5-class hybrids reserved KV rows for their Gated DeltaNet layers, 4x the KV they need (R3.44).**
+  - **The bug:** qwen35, qwen35moe, qwen4exp (Qwen3.8-Flash-Next) and clef run three DeltaNet layers to one attention
+    layer. A DeltaNet layer keeps its state in the recurrent fold and never reads or writes a KV row, but every layer
+    was given rows of the attention shape: on the host, on CUDA and Metal, in the placement plan and the reservation
+    auto-fit, in every prefix-cache entry and in every saved state.
+  - **What does not change:** the default prefix cache still stores nothing for a long prompt. On Qwen3.5-4B a
+    7,370-token prompt's entry is 312 MB, against 1,036 MB before, and an entry over half the 512 MB budget is still
+    not stored. The longest prompt it caches rises from about 1,500 to about 6,000 tokens. Sizing that budget is
+    R4.26.13.
+  - **KV now** (f16, main against the fix, on Qwen3.5-4B and Qwen3.6-35B-A3B):
+
+    | Model | ctx 4096 | ctx 32768 |
+    |---|---|---|
+    | Qwen3.5-4B | 537 to 134 MB | 4,295 to 1,074 MB |
+    | Qwen3.6-35B-A3B | 336 to 84 MB | 2,684 to 671 MB |
+
+  - **On a 24 GB CUDA slice:**
+    - Qwen3.5-4B's auto-fit context (`-c 0 --reserve-vram 90`) rises from 151,222 to 262,144, the training context,
+      with 12.4 GB still free.
+    - Qwen3.6-35B-A3B under `--cpu-moe auto`, expert banks and prompt window:
+
+      | Context | Banks | Window (columns) |
+      |---|---|---|
+      | 32,768 | 40 to 40 | 256 to 512 |
+      | 131,072 | 23 to 39 | 64 to 512 |
+      | 262,144 | 0 to 33 | 64 to 256 |
+
+    - Decode at 131,072 goes from 61 to 73 tok/s to 84 to 87 tok/s (2 interleaved pairs on shared CPUs).
+  - **Bytes identical:** greedy text and teacher-forced scores match the previous build's byte for byte, on the CPU
+    and on CUDA (Qwen3.5-4B, and Qwen3.6-35B-A3B on CUDA).
+  - **The fix:** those layers get 0 KV heads, the convention granitehybrid and lfm2 already use. The NextN/MTP block
+    keeps the attention shape.
+  - **Saved state:** a session image or KV snapshot written before this fix holds the old layout.
+    - It is refused by name, never misread. A session image is told "an earlier runner wrote it". A KV snapshot gets
+      409 `snapshot_kv_layout`.
+    - `RUNNER_KV_RECURRENT_ROWS=1` keeps the old layout and resumes them.
+  - **Checks:** `tests/test_qwen35_kv_rows.py` covers the four arches:
+    - text and scores identical under either layout;
+    - the state shrinks by exactly the DeltaNet layers' rows;
+    - an old-layout image and snapshot are refused by name, and resume under the switch to the straight run's
+      bytes.
+
 - **Fix: CUDA `--cpu-moe auto` over-planned the device's weights, leaving expert banks and prompt-window columns on
   the table (R4.26.18).**
   - **What the plan charged:** every tensor as its own allocation rounded to the driver's 2 MiB, plus a nine-granule

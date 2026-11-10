@@ -390,6 +390,12 @@ bool kvsnap_load(const engine *e, const char *id, const char *name, sbuf *out,
                  "another model key or context length than this engine's", name);
             break;
         }
+        if (n == PFX_CTX_PRIOR) {
+            fail(err, 409, "snapshot_kv_layout", "snapshot %s was made by an earlier runner, "
+                 "under a KV layout with rows for this model's recurrent layers; import it "
+                 "with RUNNER_KV_RECURRENT_ROWS=1, which keeps that layout", name);
+            break;
+        }
         if (n == PFX_CTX_NOSPACE) {
             fail(err, 507, "context_budget", "the prefix-cache budget cannot hold "
                  "this context beside the ones already pinned");
