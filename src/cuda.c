@@ -5199,6 +5199,27 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                             weights, x, y, a, b,
                             w->type == T_Q8_0 ? Q8_COLS : MVT, false, 1.0f, false);
     }
+    // Prefill (batch > GPU_SMALL_BATCH) of a Q4_0 tensor on the scalar route.
+    // Q4_0 has no k_gemm_*, and its tile kernel k_mvb_q4_0 sums in another
+    // order than the batch-1 GEMV k_gemv_q4_0. Under a q8_0 KV cache that
+    // difference crossed quantization steps and spread through the layers
+    // (R6.35: test-kv-tol on test-q40.gguf read 10.7x the reassociation
+    // floor). The GEMV's twins reproduce its bits per column; the 16-wide one
+    // runs 16 columns a pass, the width k_mvb_q4_0 tiles at, so a prompt's
+    // rows carry a lone decode's bits. Q4_K, Q5_K and Q6_K's k_gemm_* do not
+    // (their GEMVs' v2 bodies sum in another order; R6.39).
+    if (batch > GPU_SMALL_BATCH && w->type == T_Q4_0 && mv_twin_route(g, w, n_in, n_out) &&
+        g->sw->f_gemvb[BW_16][T_Q4_0]) {
+        for (int c0 = 0; c0 < batch; c0 += 16) {
+            int cn = batch - c0 < 16 ? batch - c0 : 16;
+            CUdeviceptr xc = x + (size_t)c0 * xs * sizeof(float);
+            CUdeviceptr yc = y + (size_t)c0 * ys * sizeof(float);
+            if (!(cn == 1 ? enc_mv(g, m, w, xc, yc, n_in, n_out, bias, 1, xs, ys)
+                          : enc_mv_batch(g, m, w, xc, yc, n_in, n_out, bias, cn, xs, ys)))
+                return false;
+        }
+        return true;
+    }
     // Decode (batch==1), few long BF16 rows (n_out <= 1024, n_in >= 2048):
     // split-K, see k_mv_bf16_splitk. splits is a power of two dividing n_in/32
     // with n_out*splits around 4,096 blocks, bounded by the partials buffer.
