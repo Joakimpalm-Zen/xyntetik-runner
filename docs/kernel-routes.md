@@ -208,12 +208,12 @@ Around the matvec:
   graph path. See [buffer lifetimes](buffer-lifetimes.md)
   for when capture is refused.
 - **Training primitives.** `gpu_mvcanon` (the forward matvec in the canonical
-  order, F32, F16 and Q8_0) is bit-exact to the host. The training context's
-  `k_tmvt_*` (the transposed product, every weight type) is the CPU trainer's
-  chain bit for bit, and its `k_tmm_*` (the forward product behind
-  `--train-gpu`) is batch-invariant: a column's value does not depend on the
-  columns beside it. Gates: `test-mvcanon`, `test-mvt`, `test-train-gpu`, the
-  device-mode `test-lora-grad` runs.
+  order, F32, F16, Q8_0, Q4_0, Q4_K, Q5_K and Q6_K) is bit-exact to the host.
+  The training context's `k_tmvt_*` (the transposed product, every weight
+  type) is the CPU trainer's chain bit for bit, and its `k_tmm_*` (the
+  forward product behind `--train-gpu`) is batch-invariant: a column's value
+  does not depend on the columns beside it. Gates: `test-mvcanon`,
+  `test-mvt`, `test-train-gpu`, the device-mode `test-lora-grad` runs.
 - **KV cache formats.** q8 KV is tolerance-gated (`./test-kv-tol`); fp4 KV is
   held to the host codec (`test-kv-fp4`, `make test-cuda-kv-fp4`).
 

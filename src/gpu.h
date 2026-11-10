@@ -244,9 +244,9 @@ bool   gpu_mvt(model_t *m, const gguf_tensor *w, const float *dy, float *dx,
 // device answer is bit-identical to the host's instead of close to it. The
 // point is the trainer's forward, which is 80% of a training step and stays
 // on the CPU today only because moving it would cost the byte contract.
-// false = no backend, no kernel for the type (F32/F16/Q8_0 have a canonical
-// order; the k-quants do not yet), a scaled tensor, or a tensor that is not
-// device-resident.
+// false = no backend, no kernel for the type (F32, F16, Q8_0, Q4_0, Q4_K, Q5_K
+// and Q6_K have a canonical order; R12.1b gave the last four), a scaled
+// tensor, or a tensor that is not device-resident.
 bool   gpu_mvcanon(model_t *m, const gguf_tensor *w, const float *x, float *y,
                    int n_in, int n_out);
 

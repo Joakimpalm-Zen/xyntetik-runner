@@ -2080,6 +2080,145 @@ extern "C" __global__ void k_mvcanon_f16(const uchar *wb, const float *x,
     }
 }
 
+// R12.1b: Q4_0, Q4_K, Q5_K and Q6_K in the association quants.c's canonical
+// section writes out (each type's AVX2 kernel shape). Lane l takes the
+// elements congruent to l mod 8 of each group; every product that meets an
+// addition outside an explicit fmaf is spelled __fmul_rn / __fadd_rn, so
+// nvcc's default contraction (--fmad=true) cannot fuse what the CPU rounds
+// twice.
+
+// canon_tree8's association on every lane of the eight (an xor butterfly:
+// IEEE addition is commutative, so the partner lanes compute the same sums)
+static __device__ __forceinline__ float canon_tree8_all(float v) {
+    float c = __fadd_rn(v, __shfl_xor_sync(0xffffffffu, v, 4, CANON_LANES));
+    float d = __fadd_rn(c, __shfl_xor_sync(0xffffffffu, c, 2, CANON_LANES));
+    return __fadd_rn(d, __shfl_xor_sync(0xffffffffu, d, 1, CANON_LANES));
+}
+
+// get_scale_min_k4 (quants.c), the 6-bit scale and min pair j of eight
+static __device__ __forceinline__ void canon_scale_min_k4(int j, const uchar *q, int *d, int *m) {
+    if (j < 4) { *d = q[j] & 63; *m = q[j + 4] & 63; }
+    else { *d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4); *m = (q[j + 4] >> 4) | ((q[j] >> 6) << 4); }
+}
+
+// canon_dot_q4_0: Q8_0's tree on the nibbles less 8; element j < 16 is the
+// low nibble of qs[j], j >= 16 the high one of qs[j - 16]
+extern "C" __global__ void k_mvcanon_q4_0(const uchar *wb, const float *x,
+                                          float *y, int n_in, int n_out,
+                                          ulong64 w_off, int row_bytes) {
+    CANON_HEAD(row_bytes);
+    int nb = n_in / 32;
+    float acc = 0.0f;
+    for (int b = 0; b < nb; b++) {
+        const uchar *blk = rw + (ulong64)b * 18;
+        float d = f16f(blk);
+        const uchar *q = blk + 2;
+        const float *xp = x + b * 32;
+        float t = __fmul_rn((float)((q[lane] & 0xF) - 8), xp[lane]);
+        t = fmaf((float)((q[8 + lane] & 0xF) - 8), xp[8 + lane],  t);
+        t = fmaf((float)((q[lane] >> 4) - 8),      xp[16 + lane], t);
+        t = fmaf((float)((q[8 + lane] >> 4) - 8),  xp[24 + lane], t);
+        acc = fmaf(d, t, acc);
+    }
+    float s = canon_tree8_warp(acc);
+    if (lane == 0) y[row] = s;
+}
+
+// canon_dot_q4_K / q5_K: per 64 weights two 32-weight sub-blocks; lane l's
+// sums over l, l+8, l+16, l+24 of each, fused from +0; acc by d*sc; the min
+// term from each sub-block's tree-summed x, kept on every lane, subtracted
+// after the tree. qh_off < 0: Q4_K, no fifth bit.
+static __device__ __forceinline__ float canon_k4_row(const uchar *rw, const float *x, int n_in, int lane,
+                                                     int sblk, int qs_off, int qh_off) {
+    float acc = 0.0f, msum = 0.0f;
+    for (int i = 0; i < n_in / 256; i++) {
+        const uchar *blk = rw + (ulong64)i * (ulong64)sblk;
+        float d = f16f(blk), dmin = f16f(blk + 2);
+        const uchar *sc6 = blk + 4, *q = blk + qs_off, *qh = qh_off >= 0 ? blk + qh_off : 0;
+        const float *xp = x + i * 256;
+        int u1 = 1, u2 = 2;
+        for (int g = 0; g < 4; g++) {
+            int sc, mn;
+            canon_scale_min_k4(2 * g, sc6, &sc, &mn);
+            float d1 = __fmul_rn(d, (float)sc), m1 = __fmul_rn(dmin, (float)mn);
+            canon_scale_min_k4(2 * g + 1, sc6, &sc, &mn);
+            float d2 = __fmul_rn(d, (float)sc), m2 = __fmul_rn(dmin, (float)mn);
+            const uchar *qg = q + 32 * g;
+            const float *x1 = xp + 64 * g, *x2 = xp + 64 * g + 32;
+            float t1 = 0.0f, t2 = 0.0f;
+            for (int k = 0; k < 4; k++) {
+                int p = 8 * k + lane;
+                int lo = qg[p] & 0xF, hi = qg[p] >> 4;
+                if (qh) { lo += (qh[p] & u1) ? 16 : 0; hi += (qh[p] & u2) ? 16 : 0; }
+                t1 = fmaf((float)lo, x1[p], t1);
+                t2 = fmaf((float)hi, x2[p], t2);
+            }
+            float s1 = __fadd_rn(__fadd_rn(0.0f, __fadd_rn(x1[lane], x1[8 + lane])),
+                                 __fadd_rn(x1[16 + lane], x1[24 + lane]));
+            float s2 = __fadd_rn(__fadd_rn(0.0f, __fadd_rn(x2[lane], x2[8 + lane])),
+                                 __fadd_rn(x2[16 + lane], x2[24 + lane]));
+            float sx1 = canon_tree8_all(s1), sx2 = canon_tree8_all(s2);
+            acc = fmaf(d1, t1, acc);
+            acc = fmaf(d2, t2, acc);
+            msum = __fadd_rn(msum, __fadd_rn(__fmul_rn(m1, sx1), __fmul_rn(m2, sx2)));
+            u1 <<= 2; u2 <<= 2;
+        }
+    }
+    float s = canon_tree8_warp(acc);
+    return __fsub_rn(s, msum);
+}
+extern "C" __global__ void k_mvcanon_q4_K(const uchar *wb, const float *x,
+                                          float *y, int n_in, int n_out,
+                                          ulong64 w_off, int row_bytes) {
+    CANON_HEAD(row_bytes);
+    float s = canon_k4_row(rw, x, n_in, lane, 144, 16, -1);
+    if (lane == 0) y[row] = s;
+}
+extern "C" __global__ void k_mvcanon_q5_K(const uchar *wb, const float *x,
+                                          float *y, int n_in, int n_out,
+                                          ulong64 w_off, int row_bytes) {
+    CANON_HEAD(row_bytes);
+    float s = canon_k4_row(rw, x, n_in, lane, 176, 48, 16);
+    if (lane == 0) y[row] = s;
+}
+
+// canon_dot_q6_K: per 16 weights a product then one fmaf; per 128-weight
+// half, two 16-steps of the four 32-apart quarters, scaled in order by d*sc
+extern "C" __global__ void k_mvcanon_q6_K(const uchar *wb, const float *x,
+                                          float *y, int n_in, int n_out,
+                                          ulong64 w_off, int row_bytes) {
+    CANON_HEAD(row_bytes);
+    float acc = 0.0f;
+    for (int i = 0; i < n_in / 256; i++) {
+        const uchar *blk = rw + (ulong64)i * 210;
+        const uchar *ql = blk, *qh = blk + 128;
+        const signed char *sc = (const signed char *)(blk + 192);
+        float d = f16f(blk + 208);
+        const float *xp = x + i * 256;
+        for (int h = 0; h < 2; h++) {
+            for (int base = 0; base < 32; base += 16) {
+                for (int k = 0; k < 4; k++) {
+                    float v[2];
+                    for (int e = 0; e < 2; e++) {
+                        int p = base + 8 * e + lane;
+                        int lq = ql[64 * h + p + ((k & 1) ? 32 : 0)];
+                        int nib = k < 2 ? (lq & 0xF) : (lq >> 4);
+                        int hb = (qh[32 * h + p] >> (2 * k)) & 3;
+                        v[e] = (float)((nib | (hb << 4)) - 32);
+                    }
+                    const float *xk = xp + 128 * h + 32 * k + base;
+                    float a = __fmul_rn(v[0], xk[lane]);
+                    a = fmaf(v[1], xk[8 + lane], a);
+                    float ds = __fmul_rn(d, (float)sc[8 * h + 2 * k + base / 16]);
+                    acc = fmaf(ds, a, acc);
+                }
+            }
+        }
+    }
+    float s = canon_tree8_warp(acc);
+    if (lane == 0) y[row] = s;
+}
+
 // ---------------------------------------------------------------------------
 // LoRA at inference on the device (adaptation D2 on CUDA, R8.7.2):
 // y[b][j] += scale * sum_k B[j][k] * (sum_i A[k][i] * x[b][i]).
