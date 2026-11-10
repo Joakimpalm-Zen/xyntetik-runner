@@ -78,7 +78,7 @@ bare: yes
       <a class="card card-link accent reveal" href="/runner/reproducible-lora-training-receipts/">
         <span class="big">VERIFIED</span>
         <h3>Prove afterwards what the model said.</h3>
-        <p>Every served turn can be a signed record, and records chain. Someone else replays them on the same build and gets one of three verdicts: VERIFIED, DIVERGED or UNVERIFIABLE. Since 1.16.0 that covers tool calls, turns cut by a stop sequence, reasoning budgets and the loop guard, and turns the server cut on a cancel or a timeout; a record from before those fields stays UNVERIFIABLE and says which one it lacks. One command gathers the records, the model's signature and the measured envelope into an evidence pack a reviewer checks offline.</p>
+        <p>Every served turn can be a signed record, and records chain. Someone else replays them on the same build and gets one of three verdicts: VERIFIED, DIVERGED or UNVERIFIABLE. Since 1.16.0 that covers tool calls, turns cut by a stop sequence, reasoning budgets and the loop guard, and turns the server cut on a cancel or a timeout. One command gathers the records, the model's signature and the measured envelope into an evidence pack a reviewer checks offline.</p>
         <p>The same discipline runs through the whole lifecycle: a model it does not know is refused by name, a training run records its seed and config, and a 4-bit merge that would erase the fine-tune is refused instead of written.</p>
         <span class="measured">Replay and pack checks are gated in CI on every release. None of the engines measured claims this.</span>
         <span class="more">Records a reviewer can check &rarr;</span>
