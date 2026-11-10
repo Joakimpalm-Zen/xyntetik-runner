@@ -75,32 +75,31 @@ gate uses; each needs reading before a verdict.
 ### Opt-ins that are already parked
 
 [Speed defaults](speed-defaults.md) keeps two lists of routes that stay off: those with a failing row, which
-"stay off unless a narrower scope gets its own passing row", and those measured with no gain.
+"stay off unless a narrower scope gets its own passing row", and those measured with no gain. Each is reached
+only by asking for it, and some carry code of their own. Checked against the open plan, most are still in use
+by work under way:
 
-| switch | parked because |
-|---|---|
-| `RUNNER_CUDA_ATTN_TC_FULL` | gpt-oss lands farther from the float32 reference than the tile (Wilcoxon p 3e-18) |
-| `RUNNER_CUDA_I8` | Q8_0 reads 1.51x the default route's mean KL |
-| `RUNNER_CPU_I8_PREFILL` | 1.22x the default route's mean KL |
-| `RUNNER_CPU_I8K`, `RUNNER_CPU_I8` (decode) | fail the bar |
-| `RUNNER_TIEDV` | saves memory, not byte-identical |
-| `RUNNER_METAL_TENSOR` | parity, no gain |
-| `RUNNER_METAL_MOE_EM` | 3 to 4% slower |
-| `RUNNER_PREFETCH` | slower or no gain on macOS, Linux and Windows |
+| switch | parked because | open work | verdict |
+|---|---|---|---|
+| `RUNNER_PREFETCH` | the shipped hint was slower or no faster on macOS, Linux and Windows | under rework (R3.39.11): the shipped hint is placed after the GPU upload has read the file; an early, cold-only hint made cold GPU loads 1.35x faster on Windows with warm loads unchanged (R3.39.9, R3.39.10). The Linux rows are pending, and a pass makes it a default | **not a candidate** |
+| `RUNNER_TIEDV` | saves memory, not byte-identical | the tied-V device path (R4.6) | **not a candidate** |
+| `RUNNER_CUDA_I8` | Q8_0 reads 1.51x the default route's mean KL | dense speed work on large files (R4.26.16), the tolerance gates (R6.30) | **not a candidate** |
+| `RUNNER_CPU_I8`, `RUNNER_CPU_I8K`, `RUNNER_CPU_I8_PREFILL` | fail the bar, or 1.22x the default route's mean KL | table-lookup integer kernels for low-bit weights (R3.1.5, deferred) | **keep parked** with it |
+| `RUNNER_CUDA_ATTN_TC_FULL` | gpt-oss lands farther from the float32 reference than the tile (Wilcoxon p 3e-18) | none | **retire** (R18.8.1) |
+| `RUNNER_METAL_TENSOR` | parity, no gain | none | the owner's choice (R18.8.8) |
+| `RUNNER_METAL_MOE_EM` | 3 to 4% slower | none | the owner's choice (R18.8.8) |
 
-Each is reached only by asking for it, and some carry code of their own: the int8 CPU and CUDA paths
-(`kernels_i8.cuh` and the int8 routes in `quants.c`), the Metal tensor kernels (`kernels_tensor.metal`), the
-Metal MoE expert-major path, tied V. Retiring a switch here can retire that code with it. Whether these stay
-parked for a narrower scope or go is a choice, filed below. `RUNNER_CUDA_ATTN_TC_FULL` is the clearest case:
-a selection branch whose only measurement is a loss.
+The code behind the last two is their own: the Metal tensor kernels (`kernels_tensor.metal`) and the
+expert-major MoE kernels, bit-identical to the slot-major default. Retiring the switch retires that code.
 
 ## Superseded kernels
 
 Every kernel defined in the CUDA sources (164) and the Metal sources (103) is named by the dispatch code, so
 no kernel is unreachable in the build. That is not the same as being used: the kernels behind the parked
-opt-ins above run only when asked for. The candidates' own off paths are shape fallbacks (`k_attn`), build
-fallbacks (the non-MLA decode) or selection branches. So the removals this review recommends without a
-further choice are switches and one branch; kernel removals follow the choice on the parked opt-ins.
+opt-ins above run only when asked for, and most of those are in use by open work. The candidates' own off
+paths are shape fallbacks (`k_attn`), build fallbacks (the non-MLA decode) or selection branches. So the
+removals this review recommends without a further choice are switches and one branch; the only kernel
+removals in sight are the two Metal routes in R18.8.8.
 
 ## The two controls
 
@@ -130,6 +129,7 @@ Each is a child of R18.8 in the plan:
 - R18.8.4: review the 7 undocumented switches a test reads;
 - R18.8.5: document the 8 undocumented diagnostics;
 - R18.8.6 and R18.8.7: the owner's two choices, `--reasoning-temp` and the `/shadow` offload;
-- R18.8.8: the choice on the parked opt-ins, retire them with the code only they reach or keep them parked.
+- R18.8.8: the choice on `RUNNER_METAL_TENSOR` and `RUNNER_METAL_MOE_EM`, retire them with their kernels or
+  keep them parked.
 
 Every removal is recorded in the changelog, as the rule for switches requires.
