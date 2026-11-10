@@ -46,6 +46,14 @@ file each, until the release folds them in below. Add a new entry there, not her
   (gemma-4-26B-A4B at 4k: 22 of 30 against the load's 23). It now applies the same test, charges the same rows,
   and marks such a split `with the KV ring`; the `kv cache` line stays the flat figure. For a sparse MoE the
   split's RAM figure is labelled `hot set`, the figure it always was.
+- **`--verify` replays a served tool turn (R1.1.3.1).** A tool receipt used to name only a digest and choice, so
+  replay refused it as `UNVERIFIABLE`. Under the existing receipt opt-in, the `tools` constraint now carries the
+  normalized declarations and effective protocol, parallel and thinking settings. Replay rebuilds the same
+  native or generic grammar used by serving; changed declarations can diverge, and a digest mismatch is refused.
+  Older receipts without the new fields stay `UNVERIFIABLE`, naming what they lack. Replay also binds the served
+  template's thinking tags before resetting its constraint state. Scripted replies and separate reasoning
+  sampling remain unreplayable. README, manual and receipts page now describe tool replay; model-card claims are unchanged.
+
 - **A cancel route keyed by request id: `POST /v1/runner/requests/{id}/cancel` (R10.12.3.2).**
   - **What it is:** a client that wants an answer, rather than polling `/health`, names a running completion request.
     It can use the response id, or the `X-Request-Id` header it sent with the request. The header is how a buffered
@@ -60,6 +68,27 @@ file each, until the release folds them in below. Add a new entry there, not her
   - **Receipts:** a turn the server cut from outside the model (a cancel, the request's `timeout`, the drain) now
     records `serve.cut`, and `--verify` replays the recorded tokens and no further. Before, such a receipt replayed
     `DIVERGED`, because the replay ran on to `max_tokens`.
+- **CUDA: a Q4_0 prompt carries a lone decode's bits on the scalar route (R6.35).** With the tensor-core GEMM off,
+  a Q4_0 prefill over 8 columns ran `k_mvb_q4_0`, which sums in another order than the decode GEMV `k_gemv_q4_0`.
+  It now runs that GEMV's width-classed twins, 16 columns a pass, so a prompt's rows carry the bits a lone decode
+  gives them. Q4_K, Q5_K and Q6_K's prefill GEMMs still differ from their GEMVs in a few last bits (R6.39).
+  - **Why it mattered:** under `--kv q8` the old difference crossed quantization steps. `test-kv-tol
+    test-q40.gguf` read 10.7x its reassociation floor on an RTX 5070; it now reads 0.03x, and `test-gates-core`
+    runs it.
+  - **Speed on that route:** prefill of a 14B Q4_0 file with `RUNNER_CUDA_TC=0` went from 6.6 to 109.8 tok/s
+    (median of six interleaved runs each).
+  - **Unchanged:** wherever the tensor-core GEMM runs, which is the default for Q4_0 on the promoted
+    architectures; a chunked `--score` there is byte-identical before and after.
+- **Trays no longer stack (R9.5).**
+  - **Before:** with an instance directory that could not be written (an `%APPDATA%` that refused files), a tray
+    could not record itself, every launch found no tray, and each started another. Two launches inside a tray's
+    start could also both start one, even with a working directory.
+  - **Now:** a tray holds a lock in the instance directory (`tray.lock`) for its whole life, so the check and the
+    claim are one step. It exits when it cannot record itself, and a launch starts no tray on a directory it cannot
+    write, saying so on stderr. The lock is opened so no child inherits it, so a server the tray started does not
+    keep it after the tray quits.
+  - **Checks:** `test-tray-core` reproduces the stack on an unwritable registry (it failed before the fix), refuses
+    a tray that cannot record itself before it runs, and shows a launch that sees a held lock starting no tray.
 
 - **Docs: gemma-4-26B-A4B now has its publisher float32 comparison (R6.11).** The support entry listed it as owed.
   - **What was run:** two files, scored against the transformers forward of `google/gemma-4-26B-A4B-it` in float32
@@ -68,6 +97,15 @@ file each, until the release folds them in below. Add a new entry there, not her
     MoE forward tracks the reference.
   - **The listed QAT Q4_0 file** reads 0.2183 and 90.59% (CUDA), its own distance.
   - **Raw text, reported first there:** the conversion reads 0.3226, which is not explained.
+
+- **The first CUDA load on a new card or driver says why it waits (R10.29).**
+  - **Before:** the driver JIT-compiles the embedded PTX the first time, and the process sat silent. Measured on
+    an RTX 5070: 33.4 s cold, 0.40 s warm from the driver's cache.
+  - **Now:** a module load still running after 2 s says, once per process, on stderr: `gpu: compiling the GPU
+    kernels for this card and driver; this happens once per card and driver, later loads take them from the
+    driver's cache`. A warm load ends first and says nothing. stdout and receipts are unchanged.
+  - **Checks:** `test-slow-note` checks the note itself on every host: said once while a slow wait runs, never
+    for a quick one.
 
 - **`RUNNER_PREFETCH` stays opt-in on Linux and Windows, now measured there (R3.39.5).** On Windows with CUDA,
   turning it on made every load slower, with identical output: 1.159x the time from a cold file, 1.122x and 1.118x

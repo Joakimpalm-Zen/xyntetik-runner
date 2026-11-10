@@ -289,9 +289,10 @@ int main(int argc, char **argv) {
     }
 
     if (fired == 0) {
-        printf("  mv-fast vs scalar : the fast route never dispatched — no "
-               "GPU, no offloaded tensor of a fast-capable type, or a CPU "
-               "fallback. Skipping, not passing.\nmv-tol: ok (skipped)\n");
+        printf("  mv-fast vs scalar : the fast route never dispatched: it is "
+               "Metal's (on CUDA and the CPU it never runs), or no offloaded "
+               "tensor of a fast-capable type, or a CPU fallback. Skipping, not "
+               "passing.\nmv-tol: ok (skipped)\n");
         return g_fail;
     }
 

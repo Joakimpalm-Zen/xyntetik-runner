@@ -2848,6 +2848,108 @@ static void prefill_yield_turn(void *ud) {
     sched_prefill_begin();
 }
 
+// The serving grammar and the replay grammar must be one compiler. The
+// protocol is the effective one selected before rendering, including a
+// generic fallback when the native syntax cannot enforce the tool schema.
+static snode *tool_schema_compile(const tool_envelope *env, jv *final,
+                                  bool thinking, bool reasoning_open,
+                                  char *err, size_t cap) {
+    snode *schema = NULL;
+    if (env->proto == TP_HARMONY) {
+        const char *only = env->kind == TCH_NAMED ? env->named : NULL;
+        schema = schema_compile_harmony_turn(
+            env->tools, env->kind == TCH_AUTO, only,
+            env->kind == TCH_AUTO ? final : NULL,
+            thinking, err, cap);
+    } else if (env->proto == TP_GEMMA4) {
+        const char *only = env->kind == TCH_NAMED ? env->named : NULL;
+        schema = env->parallel && env->kind != TCH_AUTO
+                   ? schema_compile_gemma4_parallel(env->tools, only,
+                                                    err, cap)
+                   : schema_compile_gemma4_turn(
+                         env->tools, env->kind == TCH_AUTO, only,
+                         env->kind == TCH_AUTO ? final : NULL,
+                         thinking,
+                         reasoning_open, err, cap);
+    } else if (env->proto == TP_QWEN_XML) {
+        schema = schema_compile_qwen_xml_turn(
+            env->tools, env->kind == TCH_AUTO,
+            env->kind == TCH_NAMED ? env->named : NULL,
+            env->kind == TCH_AUTO ? final : NULL,
+            env->parallel, err, cap);
+    } else if (env->proto == TP_QWEN) {
+        const char *only = env->kind == TCH_NAMED ? env->named : NULL;
+        schema = env->parallel && env->kind != TCH_AUTO
+                   ? schema_compile_qwen_parallel(env->tools, only,
+                                                  err, cap)
+                   : schema_compile_qwen_turn(
+                         env->tools, env->kind == TCH_AUTO, only,
+                         env->kind == TCH_AUTO ? final : NULL,
+                         thinking,
+                         env->parallel, err, cap);
+    } else if (env->proto == TP_NEMOTRON) {
+        // an auto turn is parse-only (tool_decl_native), so only a
+        // required or named one reaches here
+        schema = schema_compile_nemotron_turn(
+            env->tools, env->kind == TCH_NAMED ? env->named : NULL,
+            env->parallel, err, cap);
+    } else if (env->proto == TP_MISTRAL) {
+        schema = schema_compile_mistral_turn(
+            env->tools, env->kind == TCH_AUTO,
+            env->kind == TCH_NAMED ? env->named : NULL,
+            env->kind == TCH_AUTO ? final : NULL,
+            env->parallel, err, cap);
+    } else if (env->proto == TP_MISTRAL_SYS) {
+        schema = schema_compile_msys_turn(
+            env->tools, env->kind == TCH_AUTO,
+            env->kind == TCH_NAMED ? env->named : NULL,
+            env->kind == TCH_AUTO ? final : NULL,
+            env->parallel, err, cap);
+    } else if (env->proto == TP_ATEM) {
+        const char *only = env->kind == TCH_NAMED ? env->named : NULL;
+        final = env->kind == TCH_AUTO ? final : NULL;
+        schema = final
+                   ? schema_compile_atem_turn(
+                         env->tools, true, only, final, ATEM_TURN_EITHER,
+                         err, cap)
+                   : reasoning_open
+                   ? schema_compile_atem_turn(
+                         env->tools, env->kind == TCH_AUTO, only, NULL,
+                         ATEM_TURN_AFTER_REASONING,
+                         err, cap)
+                   : env->parallel && env->kind != TCH_AUTO
+                   ? schema_compile_atem_parallel(env->tools, only,
+                                                 err, cap)
+                   : schema_compile_atem_turn(
+                         env->tools, env->kind == TCH_AUTO, only, NULL,
+                         ATEM_TURN_EITHER,
+                         err, cap);
+    } else {
+        jv *ej = json_parse(env->schema_src, strlen(env->schema_src));
+        schema = ej ? (env->proto == TP_MUSE_USER
+                       ? schema_compile_muse_user_payload(ej, err, cap)
+                       : schema_compile(ej, err, cap)) : NULL;
+        jv_free(ej);
+    }
+    return schema;
+}
+
+// Stable receipt names for the constrained protocols. Parse-only protocols
+// never reach this table: their tokens already replay without a grammar.
+static const struct { int proto; const char *name; } tool_grammars[] = {
+    {TP_GENERIC, "generic"}, {TP_MUSE_USER, "muse_user"},
+    {TP_ATEM, "atem"}, {TP_HARMONY, "harmony"}, {TP_GEMMA4, "gemma4"},
+    {TP_QWEN, "qwen_json"}, {TP_QWEN_XML, "qwen3_xml"},
+    {TP_NEMOTRON, "nemotron_json"}, {TP_MISTRAL, "mistral_json"},
+    {TP_MISTRAL_SYS, "mistral_args"},
+};
+
+static const char *tool_grammar_name(int proto) {
+    for (size_t i = 0; i < sizeof tool_grammars / sizeof *tool_grammars; i++)
+        if (tool_grammars[i].proto == proto) return tool_grammars[i].name;
+    return "unknown";
+}
+
 // R1.1.2: what shaped a served turn's output beyond the sampler. Each kind
 // is a member of the receipt's "constraints" array, with what identifies it
 // (a schema or tool list by the sha256 of its compact JSON, the stop
@@ -2872,11 +2974,79 @@ static void json_digest(const jv *v, char hex[65]) {
     free(d.s);
 }
 
+// R1.1.3.1: install exactly the tool constraint a served receipt carries.
+// Older receipts name only a digest and cannot reconstruct a grammar.
+bool completion_replay_tools(engine *e, jv *shape, jv *final,
+                              char *why, size_t cap) {
+    jv *tools = jv_get(shape, "declarations");
+    jv *parallel = jv_get(shape, "parallel"), *thinking = jv_get(shape, "thinking");
+    jv *open = jv_get(shape, "reasoning_open");
+    const char *protocol = jv_str(jv_get(shape, "protocol"), "");
+    if (!tools || !parallel || !thinking || !open || !protocol[0]) {
+        snprintf(why, cap, "tools constraint lacks declarations or grammar settings "
+                 "(declarations, parallel, protocol, thinking, reasoning_open, written since R1.1.3.1)");
+        return false;
+    }
+    if (tools->type != J_ARR || parallel->type != J_BOOL || thinking->type != J_BOOL ||
+        open->type != J_BOOL) {
+        snprintf(why, cap, "malformed tools constraint");
+        return false;
+    }
+    char hash[65];
+    json_digest(tools, hash);
+    if (strcmp(hash, jv_str(jv_get(shape, "sha256"), ""))) {
+        snprintf(why, cap, "tools declarations do not match their sha256");
+        return false;
+    }
+    int proto = -1;
+    for (size_t i = 0; i < sizeof tool_grammars / sizeof *tool_grammars; i++)
+        if (!strcmp(protocol, tool_grammars[i].name)) proto = tool_grammars[i].proto;
+    if (proto < 0) {
+        snprintf(why, cap, "unsupported tools protocol: %s", protocol);
+        return false;
+    }
+    const char *choice = jv_str(jv_get(shape, "choice"), "");
+    const char *name = jv_str(jv_get(shape, "name"), "");
+    sbuf ch = {0};
+    if (!strcmp(choice, "named") && name[0]) {
+        sb_lit(&ch, "{\"type\":\"function\",\"function\":{\"name\":");
+        sb_str(&ch, name);
+        sb_lit(&ch, "}}");
+    } else if (!strcmp(choice, "auto") || !strcmp(choice, "required")) {
+        sb_str(&ch, choice);
+    } else {
+        snprintf(why, cap, "malformed tools choice or name");
+        return false;
+    }
+    jv *tc = ch.failed ? NULL : json_parse(ch.s, ch.n);
+    free(ch.s);
+    tool_envelope env = {0};
+    int built = tc ? tool_envelope_build_ex(tools, tc, final, parallel->b,
+                                          &env, why, (int)cap) : TOOL_ENVELOPE_OOM;
+    jv_free(tc);
+    if (built != TOOL_ENVELOPE_READY) {
+        if (built == TOOL_ENVELOPE_OOM) snprintf(why, cap, "out of memory rebuilding tools");
+        return false;
+    }
+    env.proto = proto;
+    env.tools = tools;
+    snode *schema = tool_schema_compile(&env, final, thinking->b, open->b, why, cap);
+    tool_envelope_free(&env);
+    if (!schema) return false;
+    schema_free((snode *)e->schema);
+    e->schema = schema;
+    sval_init(&e->sv, schema);
+    e->constraint_includes_prelude = proto == TP_HARMONY;
+    e->emit_think_prelude = e->m->think_open && proto != TP_HARMONY;
+    return true;
+}
+
 // A grammar is a constraint only when one was compiled: a parse-only
 // envelope (a native protocol read on the way out) leaves the tokens the
 // sampler's, and a replay reproduces them.
 static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
-                          const tool_envelope *env, bool constrain, jv *sch,
+                          const tool_envelope *env, bool constrain, jv *sch, int think_mode,
+                          bool reasoning_open,
                           const char *const *stops, int n_stops,
                           const int *req_stops, int n_req_stops, bool scripted) {
     char h[65];
@@ -2903,6 +3073,12 @@ static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
             sb_esc(&t->json, env->named, strlen(env->named));
             sb_lit(&t->json, "\"");
         }
+        sb_fmt(&t->json, ",\"parallel\":%s,\"protocol\":\"%s\",\"thinking\":%s,"
+                         "\"reasoning_open\":%s,\"declarations\":",
+               env->parallel ? "true" : "false", tool_grammar_name(env->proto),
+               think_mode != THINK_OFF ? "true" : "false",
+               reasoning_open ? "true" : "false");
+        jv_dump(env->tools, &t->json);
         sb_lit(&t->json, "}");
     }
     if (n_stops || n_req_stops) {
@@ -3971,83 +4147,9 @@ static bool creq_schema(const creq_ctx *c, completion_req *q, creq_err *err) {
     jv *sch = constrain ? NULL : request_schema(req);
     if (constrain) {
         char serr[128] = "envelope did not parse";
-        if (env->proto == TP_HARMONY) {
-            const char *only = env->kind == TCH_NAMED ? env->named : NULL;
-            schema = schema_compile_harmony_turn(
-                env->tools, env->kind == TCH_AUTO, only,
-                env->kind == TCH_AUTO ? request_schema(req) : NULL,
-                think_mode != THINK_OFF, serr, sizeof(serr));
-        } else if (env->proto == TP_GEMMA4) {
-            const char *only = env->kind == TCH_NAMED ? env->named : NULL;
-            schema = env->parallel && env->kind != TCH_AUTO
-                       ? schema_compile_gemma4_parallel(env->tools, only,
-                                                        serr, sizeof(serr))
-                       : schema_compile_gemma4_turn(
-                             env->tools, env->kind == TCH_AUTO, only,
-                             env->kind == TCH_AUTO ? request_schema(req) : NULL,
-                             think_mode != THINK_OFF,
-                             reasoning_open, serr, sizeof(serr));
-        } else if (env->proto == TP_QWEN_XML) {
-            schema = schema_compile_qwen_xml_turn(
-                env->tools, env->kind == TCH_AUTO,
-                env->kind == TCH_NAMED ? env->named : NULL,
-                env->kind == TCH_AUTO ? request_schema(req) : NULL,
-                env->parallel, serr, sizeof(serr));
-        } else if (env->proto == TP_QWEN) {
-            const char *only = env->kind == TCH_NAMED ? env->named : NULL;
-            schema = env->parallel && env->kind != TCH_AUTO
-                       ? schema_compile_qwen_parallel(env->tools, only,
-                                                      serr, sizeof(serr))
-                       : schema_compile_qwen_turn(
-                             env->tools, env->kind == TCH_AUTO, only,
-                             env->kind == TCH_AUTO ? request_schema(req) : NULL,
-                             think_mode != THINK_OFF,
-                             env->parallel, serr, sizeof(serr));
-        } else if (env->proto == TP_NEMOTRON) {
-            // an auto turn is parse-only (tool_decl_native), so only a
-            // required or named one reaches here
-            schema = schema_compile_nemotron_turn(
-                env->tools, env->kind == TCH_NAMED ? env->named : NULL,
-                env->parallel, serr, sizeof(serr));
-        } else if (env->proto == TP_MISTRAL) {
-            schema = schema_compile_mistral_turn(
-                env->tools, env->kind == TCH_AUTO,
-                env->kind == TCH_NAMED ? env->named : NULL,
-                env->kind == TCH_AUTO ? request_schema(req) : NULL,
-                env->parallel, serr, sizeof(serr));
-        } else if (env->proto == TP_MISTRAL_SYS) {
-            schema = schema_compile_msys_turn(
-                env->tools, env->kind == TCH_AUTO,
-                env->kind == TCH_NAMED ? env->named : NULL,
-                env->kind == TCH_AUTO ? request_schema(req) : NULL,
-                env->parallel, serr, sizeof(serr));
-        } else if (env->proto == TP_ATEM) {
-            const char *only = env->kind == TCH_NAMED ? env->named : NULL;
-            jv *final = env->kind == TCH_AUTO ? request_schema(req) : NULL;
-            schema = final
-                       ? schema_compile_atem_turn(
-                             env->tools, true, only, final, ATEM_TURN_EITHER,
-                             serr, sizeof(serr))
-                       : reasoning_open
-                       ? schema_compile_atem_turn(
-                             env->tools, env->kind == TCH_AUTO, only, NULL,
-                             ATEM_TURN_AFTER_REASONING,
-                             serr, sizeof(serr))
-                       : env->parallel && env->kind != TCH_AUTO
-                       ? schema_compile_atem_parallel(env->tools, only,
-                                                     serr, sizeof(serr))
-                       : schema_compile_atem_turn(
-                             env->tools, env->kind == TCH_AUTO, only, NULL,
-                             ATEM_TURN_EITHER,
-                             serr, sizeof(serr));
-        } else {
-            jv *ej = json_parse(env->schema_src, strlen(env->schema_src));
-            schema = ej ? (env->proto == TP_MUSE_USER
-                           ? schema_compile_muse_user_payload(ej, serr,
-                                                              sizeof(serr))
-                           : schema_compile(ej, serr, sizeof(serr))) : NULL;
-            jv_free(ej);
-        }
+        schema = tool_schema_compile(env, request_schema(req),
+                                     think_mode != THINK_OFF, reasoning_open,
+                                     serr, sizeof serr);
         if (!schema) {
             char msg[256];
             // a reference the envelope could not inline is the real reason
@@ -5416,7 +5518,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     char receipt_file[64] = "", receipt_chain[65] = "";
     turn_shape shape = {0};
     if (g.raw_on)
-        turn_shape_of(&shape, req, e, env, q.constrain, q.sch, q.stops, q.n_stops,
+        turn_shape_of(&shape, req, e, env, q.constrain, q.sch,
+                      rs ? rs->think_mode : req_thinking_mode(req), reasoning_open,
+                      q.stops, q.n_stops,
                       q.req_stops, q.n_req_stops, q.script_text != NULL);
 #define WRITE_RECEIPT() do {                                                  \
         if (g.raw_on && !g.dead && !receipt_file[0] && !prep.diag.receipt_error) { \

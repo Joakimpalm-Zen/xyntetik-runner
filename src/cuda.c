@@ -2526,9 +2526,23 @@ static bool sm80_module_wanted(const gpu_weights *w) {
     return gpu_tc2_on() && gpu_sm80_on() && cu.DeviceGetAttribute &&
            cu.DeviceGetAttribute(&ccmaj, CU_DEV_ATTR_CC_MAJOR, w->dev) == 0 && ccmaj >= 8;
 }
+// R10.29: on the first load after a new card or driver the driver JIT-compiles the embedded PTX
+// (measured: 33.4 s on an RTX 5070 for a 370 KB model, then 0.40 s from the driver's cache of
+// 47.6 MB), and the process sat there without a word. A load still running after 2 s says why on
+// stderr, once per process: a warm load ends first and says nothing. stdout and receipts are untouched.
+static atomic_bool g_jit_noted;
+static CUresult module_load_noted(CUmodule *mod, const void *img) {
+    plat_slow_note *n = atomic_load(&g_jit_noted) ? NULL :
+        plat_slow_note_begin(stderr, "gpu: compiling the GPU kernels for this card and driver; this "
+                             "happens once per card and driver, later loads take them from the "
+                             "driver's cache", 2.0);
+    CUresult r = cu.ModuleLoadData(mod, img);
+    if (plat_slow_note_end(n)) atomic_store(&g_jit_noted, true);
+    return r;
+}
 static bool shared_load_module(gpu_weights *w) {
     vram_probe("before module load");
-    CK(cu.ModuleLoadData(&w->mod, k_ptx_src));
+    CK(module_load_noted(&w->mod, k_ptx_src));
     vram_probe("after module load");
     struct { CUfunction *f; const char *name; } fns[] = {
         { &w->f_rmsnorm,    "k_rmsnorm" },   { &w->f_qknorm, "k_qknorm" },
@@ -2831,7 +2845,7 @@ static bool shared_load_module(gpu_weights *w) {
         // off. Non-fatal: a module that does not load leaves forced TC2 on
         // the compute_75 kernels and auto TC2 off (tc2_fn).
         if (sm80_module_wanted(w) && w->f_x_half && cu.FuncSetAttribute) {
-            if (cu.ModuleLoadData(&w->mod80, k_ptx80_src) != 0) {
+            if (module_load_noted(&w->mod80, k_ptx80_src) != 0) {
                 w->mod80 = NULL;
                 fprintf(stderr, "gpu: the compute_80 kernels did not load; TC2 runs "
                         "only when forced, on its compute_75 kernels\n");
@@ -3347,6 +3361,15 @@ int gpu_prompt_window(const model_t *m) {
     return g ? g->win : 0;
 }
 
+// R3.51: the OS video memory budget and usage on the weights' device right
+// now; false where the OS publishes none (WDDM only), and then nothing that
+// reads this changes behaviour.
+static bool os_vidmem_now(const gpu_weights *w, uint64_t *budget, uint64_t *usage) {
+    char luid[8]; unsigned mask = 0;
+    return cu.DeviceGetLuid && cu.DeviceGetLuid(luid, &mask, w->dev) == 0 &&
+           plat_gpu_os_budget((const unsigned char *)luid, budget, usage);
+}
+
 static gpu_weights *shared_build(model_t *m, size_t act_bytes, size_t per_col,
                                  size_t tc2_per_col, int max_hd, uint64_t fsize,
                                  uint64_t fino, int64_t fmtime) {
@@ -3392,6 +3415,19 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, size_t per_col,
     if (!uploaded) goto fail;
     w->refs = 1;
     vram_probe("after weights upload");
+    // R3.51: WDDM lowers this process's budget while its upload fills the
+    // card (an RTX 5070 read 11.72 GB at plan time and 10.79 to 10.97 GB
+    // after the weights), so the figure the plan used is not the one the
+    // load ends under. Report the budget as it stands now. Nothing is sized
+    // from it: on that card a load 0.3 GB over this budget decoded at full
+    // speed, and a layer handed back to fit it ran three times slower. No OS
+    // budget (anything but WDDM), no line.
+    {
+        uint64_t ob = 0, ou = 0;
+        if (os_vidmem_now(w, &ob, &ou))
+            fprintf(stderr, "gpu: OS video memory budget after the weights %.2f GB, "
+                            "%.2f GB in use\n", ob / 1e9, ou / 1e9);
+    }
     if (getenv("RUNNER_DEBUG_VRAM")) {
         size_t bb = 0;
         for (int i = 0; i < w->n_bindings; i++) bb += w->bindings[i].nbytes;
@@ -4234,6 +4270,18 @@ bool gpu_init(model_t *m) {
     cuda_report_init(m, g, D.act_bytes);
 
     vram_probe("after instance buffers");
+    {   // R3.51, RUNNER_DEBUG_VRAM only: usage against the OS budget once
+        // everything is allocated. Over it, Windows may move part of the
+        // process's video memory to system memory; whether that slows decode
+        // was not shown (0.3 GB over ran at full speed on an RTX 5070), so it
+        // is a debug fact, not a default warning.
+        uint64_t ob = 0, ou = 0;
+        if (vram_debug_on() && os_vidmem_now(g->sw, &ob, &ou))
+            fprintf(stderr, "vram: after init, OS usage %.3f of %.3f GB budget (%+.3f)%s\n",
+                    ou / 1e9, ob / 1e9, ((double)ou - (double)ob) / 1e9,
+                    ou > ob ? "; over it, Windows may move part of this process's video "
+                              "memory to system memory" : "");
+    }
     m->gpu = g;
     // only now: a load that fails above runs on the CPU, from these pages
     cuda_release_host_weights(m);
@@ -5198,6 +5246,27 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         return launch_tiled(g, g->sw->f_gemm[w->type], (n_out + 7) / 8, 8 * 32,
                             weights, x, y, a, b,
                             w->type == T_Q8_0 ? Q8_COLS : MVT, false, 1.0f, false);
+    }
+    // Prefill (batch > GPU_SMALL_BATCH) of a Q4_0 tensor on the scalar route.
+    // Q4_0 has no k_gemm_*, and its tile kernel k_mvb_q4_0 sums in another
+    // order than the batch-1 GEMV k_gemv_q4_0. Under a q8_0 KV cache that
+    // difference crossed quantization steps and spread through the layers
+    // (R6.35: test-kv-tol on test-q40.gguf read 10.7x the reassociation
+    // floor). The GEMV's twins reproduce its bits per column; the 16-wide one
+    // runs 16 columns a pass, the width k_mvb_q4_0 tiles at, so a prompt's
+    // rows carry a lone decode's bits. Q4_K, Q5_K and Q6_K's k_gemm_* do not
+    // (their GEMVs' v2 bodies sum in another order; R6.39).
+    if (batch > GPU_SMALL_BATCH && w->type == T_Q4_0 && mv_twin_route(g, w, n_in, n_out) &&
+        g->sw->f_gemvb[BW_16][T_Q4_0]) {
+        for (int c0 = 0; c0 < batch; c0 += 16) {
+            int cn = batch - c0 < 16 ? batch - c0 : 16;
+            CUdeviceptr xc = x + (size_t)c0 * xs * sizeof(float);
+            CUdeviceptr yc = y + (size_t)c0 * ys * sizeof(float);
+            if (!(cn == 1 ? enc_mv(g, m, w, xc, yc, n_in, n_out, bias, 1, xs, ys)
+                          : enc_mv_batch(g, m, w, xc, yc, n_in, n_out, bias, cn, xs, ys)))
+                return false;
+        }
+        return true;
     }
     // Decode (batch==1), few long BF16 rows (n_out <= 1024, n_in >= 2048):
     // split-K, see k_mv_bf16_splitk. splits is a power of two dividing n_in/32
@@ -9075,7 +9144,7 @@ bool gpu_train_init(model_t *m) {
         return false;
     }
     if (cu.CtxSetCurrent(t->ctx) != 0 ||
-        cu.ModuleLoadData(&t->mod, k_ptx_src) != 0 ||
+        module_load_noted(&t->mod, k_ptx_src) != 0 ||
         cu.MemAlloc(&t->dummy, 4) != 0 ||
         cu.MemsetD8(t->dummy, 0, 4) != 0) {
         cu.PrimaryCtxRelease(t->dev);

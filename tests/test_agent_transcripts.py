@@ -12,10 +12,11 @@ record simply did not say. So:
   compact JSON), and a served turn's calls (`tool_calls`, compared with the
   calls the response itself delivered, buffered and streamed, on every
   surface);
-- a served record shaped by what a replay does not rebuild (a tool grammar,
-  the reasoning channel's own sampling, a scripted reply) is UNVERIFIABLE
-  (exit 3), naming it; served stop sequences, a reasoning budget and the loop
-  guard replay (tests/test_stop_replay.py, tests/test_think_replay.py); a CLI
+- a served record shaped by what a replay does not rebuild (the reasoning
+  channel's own sampling or a scripted reply) is UNVERIFIABLE (exit 3), naming
+  it; served tools, stop sequences, a reasoning budget and the loop guard
+  replay (tests/test_tool_replay.py, tests/test_stop_replay.py,
+  tests/test_think_replay.py); a CLI
   record made under --json, --json-schema or --ignore-eos replays
   when the verifier is given the same constraint (the schema matched by
   digest) and is refused otherwise -- and a verifier that adds a constraint
@@ -210,11 +211,13 @@ def test_a_tool_grammar_is_a_recorded_constraint(runner_bin, model, srv):
                                   "arguments": call["function"]["arguments"]}]
     kinds = {c["kind"]: c for c in rec["constraints"]}
     assert kinds["tools"] == {"kind": "tools", "sha256": _compact_sha(CHAT_TOOLS),
-                              "choice": "required"}
+                              "choice": "required", "declarations": CHAT_TOOLS,
+                              "parallel": True, "protocol": "qwen3_xml", "thinking": False,
+                              "reasoning_open": False}
     assert rec["serve"]["shaped_by"] == [c["kind"] for c in rec["constraints"]]
     v = _verify(runner_bin, model, path)
     err = v.stderr.decode(errors="replace")
-    assert v.returncode == 3 and "tools" in err, err[-600:]
+    assert v.returncode == 3 and "scripted" in err, err[-600:]
 
 
 def test_served_schema_and_stop_are_recorded(runner_bin, model, srv):

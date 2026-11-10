@@ -659,9 +659,22 @@ budget with the token ids of the sentence its forced close writes
 (`message_tokens`) and the guard's `span`, `repeats`, `window`, `max_closes`
 and `everywhere`, and the replay closes or ends the turn where they say. A
 record from before those fields is `UNVERIFIABLE`, naming the one it lacks. A
-served tool turn, the reasoning channel's own sampling and a scripted reply are
-not replayed: the record names them and does not carry what would rebuild
-them.
+served tool turn replays from its `tools` constraint: `declarations` holds the
+normalized function declarations, alongside their `sha256`, `choice` (`auto`,
+`required` or `named`, with `name` for the latter), effective `protocol`,
+`parallel`, `thinking` and grammar `reasoning_open` settings. The latter is
+separate from `serve.reasoning_open`: a native channel demultiplexer can
+start cold while the grammar starts after a prompt-supplied reasoning opener.
+Replay rebuilds the serving grammar,
+including a generic fallback, rather than trusting the recorded calls or
+output. An auto turn with a response schema still needs the matching
+`--json FILE`. Older tool receipts without declarations or grammar settings
+remain `UNVERIFIABLE`, naming what they lack. These fields are written only
+under the existing served `--record` / `--receipts` opt-in, beside the prompt,
+stop sequences, output and tool results already held there; they are request
+content on the host's disk. The reasoning channel's own sampling and a
+scripted reply are not replayed: the record names them and does not carry
+what would rebuild them.
 
 <a id="lineage"></a>
 ### Where a file came from: `runner attest lineage`
@@ -981,13 +994,26 @@ integers, booleans, null, enums, const, type unions, numeric bounds on both
 `integer` and `number` (`minimum`/`maximum` and their exclusive forms, with a
 forced close completing the value inside the declared range), string
 lengths and supported anchored patterns, array item/count constraints,
-scalar-const `oneOf`/`anyOf`, and the tool-discriminated object union used by
-agent clients. Required properties are present, unknown properties are blocked
+scalar-const `oneOf`/`anyOf`, const-discriminated object unions (below), and
+the tool-discriminated object union used by agent clients. Required
+properties are present, unknown properties are blocked
 for closed objects, and tool arguments are generated against the selected
 tool's schema. Over scalar literal alternatives, `anyOf` admits every value
 an alternative lists and `oneOf` only the values exactly one alternative
 lists, so `oneOf: [{"enum": [1, 2]}, {"enum": [2, 3]}]` admits 1 and 3; a
 `oneOf` that leaves no value is refused.
+
+A `oneOf` or `anyOf` of objects is enforced when a required `const` on one
+shared property tells the objects apart: a discriminated union, the shape
+Pydantic writes for `Field(discriminator=...)` and OpenAPI for
+`discriminator`. Each object keeps its own properties and its own required
+set, so a schema can say that `{"op": "MAP"}` takes a `fn` and one argument
+while `{"op": "HEAD"}` takes no `fn`. The discriminator is the first key
+Runner writes, even where an object declares it later, and everything after
+it follows the object it named. `discriminator.propertyName` picks the
+property when given, and must then be such a const; `mapping` adds nothing.
+Other alternatives may stand beside the objects (`anyOf: [A, B, null]`).
+Objects with no such property are refused by name.
 
 Local references are inlined at compile time, the way Pydantic's
 `model_json_schema()` and MCP tool definitions write them: a `$ref` to
@@ -1026,7 +1052,8 @@ conjunction, every pattern and the tightest bounds together; that is the one
 
 Unsupported or ambiguous constraints fail at compile/request time. In
 particular, general overlapping `oneOf` branches are not tracked in parallel;
-branches must diverge at a supported discriminator. This is a subset of JSON
+branches must diverge at a supported discriminator: a first byte, or for
+objects the const-discriminated property above. This is a subset of JSON
 Schema 2020-12, not full JSON Schema or GBNF.
 
 An enum member that is a token prefix of another member (`"E"` beside
@@ -2644,13 +2671,25 @@ Override only the VRAM budget. The CUDA layer fit spends a budget that starts fr
 driver's free-memory view, is bounded by the OS video-memory budget for this process
 where the OS publishes one (Windows, WDDM: `IDXGIAdapter3::QueryVideoMemoryInfo` on the
 adapter matched by LUID, minus what the process already holds), is capped by this flag,
-and keeps a headroom of the larger of 512 MiB and one sixteenth of the budget for the
+and keeps a headroom of the larger of 512 MiB and one thirty-second of the budget for the
 driver context, PTX JIT, allocator slack and the OS reserve. The 2026-09-14 Windows
 report's 12 GB card was filled to 11.7 GB from the driver's view alone and paged over
 PCIe; the budget and headroom the fit chose are logged at load (`gpu: OS video memory
 budget ...`), and `gpu: VRAM ... free after init` reports the observed remainder. Where
 no OS budget exists (Linux, macOS) the driver's view with that headroom is what the fit
 spends, said so in the log.
+
+WDDM also lowers a process's budget while its own upload fills the card (an RTX 5070
+read 11.72 GB before the weights and 10.96 GB after them), so the figure the fit used is
+not the one the load ends under. On Windows the load reports the budget again once the
+weights are on the device (`gpu: OS video memory budget after the weights ...`);
+nothing is re-sized from it. With `RUNNER_DEBUG_VRAM=1` the load also prints its usage
+against that budget after init, and says when it is over. Over it, Windows may move part
+of the process's video memory to system memory, but that it slows decoding was not
+shown: on that card a load 0.3 GB over the budget decoded at full speed, and one layer
+fewer, which fitted, ran three times slower on a MoE file because that layer's experts
+then ran on the CPU. If decoding is slower than expected, compare with a smaller share
+of the card (this flag) or fewer GPU layers.
 
 <a id="cli-kv"></a>
 #### `--kv f16|f32|q8|k8v4|fp4`
@@ -2880,7 +2919,7 @@ whether the draft is `active` there.
 | `--remove-sublayer attn:N[,mlp:M,...]` | Physically drop block N's attention (or block M's dense FFN) tensors while rewriting, declaring the absence with a `0` in the per-block `attention.head_count` / `head_count_kv` (or `feed_forward_length`) array, llama.cpp's own convention. The pre-norm stays. The runner omits the branch and reserves no KV rows for it, on the CPU, CUDA and Metal; a removed FFN must be a dense one. Requires `--rewrite`. See [Sublayer removal](#sublayer-removal). |
 | `--lora FILE`, `--lora-scale F` | Serve a LoRA adapter with the frozen base; supports CPU, CUDA and Metal, with explicit architecture restrictions. [Details](#cli-lora). |
 | `--adapter NAME=PATH` | With `--serve`: load an adapter once and select it per request as `"model": "<model>:NAME"`. [Details](#cli-adapter). |
-| `--record PATH` | With `-p`: record the run's hashes, settings, tokens, output bytes and chain hash to the file `PATH` for replay ([details](#cli-transcript)). With `--serve`: `PATH` is a directory, and every finished generation on the chat, completions, Responses and Messages surfaces writes the same record into it as `receipt-<sequence>.json`, so `-m MODEL --verify FILE` replays it; chained in write order (each record's `chain.prev` is the previous one's hash, continued across restarts from the newest record, and a newest record that does not parse refuses the start rather than beginning a second chain), signed with `--sign-key` when given, and with a `serve` object naming the surface, the request id, how the prompt's KV was obtained (`prompt_reuse`, `cached_tokens`), whether the prompt left the turn inside the model's reasoning block (`reasoning_open`), `cut` when the server cut the turn from outside the model (`cancelled`, `timeout` or `shutdown`: `--verify` then replays the recorded tokens and no further), and what shaped the output beyond the sampler (`shaped_by`: `json_schema`, `json_mode`, `tools`, `stop`, `reasoning_budget`, `loop_guard`, ...; `constraints` gives each with what identifies it, `tool_calls` the calls the turn delivered, buffered or streamed, and `tool_results` the tool results the request carried, each as the tool's text and its JSON parse). A turn shaped only by a JSON schema, JSON mode, `ignore_eos`, stop sequences, a reasoning budget or the loop guard replays (the first three under the same flag: `--json FILE` matched by digest, `--json`, `--ignore-eos`; the rest from the record); `--verify` refuses any other shaping as `UNVERIFIABLE` rather than replay it without what shaped it. A tool turn parsed from the model's native syntax without a grammar is not a constraint: its tokens are the sampler's. Each response's `runner_telemetry.receipt` names its `file` and `chain_hash`. The model and binary digests come from the load-time provenance, so the first receipt waits for the background model digest. Receipts hold the prompt and the output and never leave the directory. Replay prefills the prompt in one batch. A record whose prompt was prefilled cold in one batch replays exactly; one whose prefix KV was reused (a cached prefix, or an earlier turn's decoded rows) replayed VERIFIED at T1 on the test fixtures, but CPU prefill is not batch-invariant on every host (measured 2026-10-01 on arm64, granite-4.1-3b Q8_0: 92% of batched prefill dots differ in the last bits from the same dot decoded alone), so such a record can report `DIVERGED` at a near-tie. A reused prefix is bit-identical only when the chunk geometry matches, on any backend (the prefix-reuse note under [Endpoints](#endpoints)). `serve.prompt_reuse` says which kind a record is. |
+| `--record PATH` | With `-p`: record the run's hashes, settings, tokens, output bytes and chain hash to the file `PATH` for replay ([details](#cli-transcript)). With `--serve`: `PATH` is a directory, and every finished generation on the chat, completions, Responses and Messages surfaces writes the same record into it as `receipt-<sequence>.json`, so `-m MODEL --verify FILE` replays it; chained in write order (each record's `chain.prev` is the previous one's hash, continued across restarts from the newest record, and a newest record that does not parse refuses the start rather than beginning a second chain), signed with `--sign-key` when given, and with a `serve` object naming the surface, the request id, how the prompt's KV was obtained (`prompt_reuse`, `cached_tokens`), whether the prompt left the turn inside the model's reasoning block (`reasoning_open`), `cut` when the server cut the turn from outside the model (`cancelled`, `timeout` or `shutdown`: `--verify` then replays the recorded tokens and no further), and what shaped the output beyond the sampler (`shaped_by`: `json_schema`, `json_mode`, `tools`, `stop`, `reasoning_budget`, `loop_guard`, ...; `constraints` gives each with what identifies it, `tool_calls` the calls the turn delivered, buffered or streamed, and `tool_results` the tool results the request carried, each as the tool's text and its JSON parse). A turn shaped only by a JSON schema, JSON mode, `ignore_eos`, stop sequences, a reasoning budget, the loop guard or a tool grammar replays (the first three under the same flag: `--json FILE` matched by digest, `--json`, `--ignore-eos`; the rest from the record); `--verify` refuses any other shaping as `UNVERIFIABLE` rather than replay it without what shaped it. A tool turn parsed from the model's native syntax without a grammar is not a constraint: its tokens are the sampler's. Each response's `runner_telemetry.receipt` names its `file` and `chain_hash`. The model and binary digests come from the load-time provenance, so the first receipt waits for the background model digest. Receipts hold the prompt and the output and never leave the directory. Replay prefills the prompt in one batch. A record whose prompt was prefilled cold in one batch replays exactly; one whose prefix KV was reused (a cached prefix, or an earlier turn's decoded rows) replayed VERIFIED at T1 on the test fixtures, but CPU prefill is not batch-invariant on every host (measured 2026-10-01 on arm64, granite-4.1-3b Q8_0: 92% of batched prefill dots differ in the last bits from the same dot decoded alone), so such a record can report `DIVERGED` at a near-tie. A reused prefix is bit-identical only when the chunk geometry matches, on any backend (the prefix-reuse note under [Endpoints](#endpoints)). `serve.prompt_reuse` says which kind a record is. |
 | `--record-keep N` | With `--serve --record DIR`: keep the newest N receipts (default all). |
 | `--record-prev FILE` | With `--record`: link the new record to FILE (FILE's chain hash becomes this record's `chain.prev`; a chain head carries 64 zeros). With `--verify`: check that link, `UNVERIFIABLE` on a break. |
 | `--verify FILE` | Replay a record against `-m` and report `VERIFIED` (exit 0), `DIVERGED` at a token or output byte (exit 2), or `UNVERIFIABLE` for an invalid record, an artifact mismatch, or output shaped by a constraint the replay would not reproduce (exit 3; `--json`, `--json FILE` and `--ignore-eos` must match the record's `constraints`). Without `-m`, a v2 record's model is the file its `model.name` names in the working directory; either way its sha256 must match the record's before the replay, or the verdict is `UNVERIFIABLE` naming both. The route the record ran (`profile.route`) must be the replay's on the same backend (`UNVERIFIABLE` naming both routes otherwise: replay with the `RUNNER_*` switches the record ran with); on another backend the replay is a token replay and the route is reported, not required. The verdict's `route` is `matched`, `other backend`, or `not recorded` for a record older than the field. The recorded replay settings override conflicting CLI values. See [the exact determinism scope](docs/determinism-scope.md). |
@@ -3995,7 +4034,11 @@ whose `mixer` matched is its FFN), exit 1; bit-exact on hashes between two
 traces of one build, within `--rtol` on values, which a comparison across
 runtimes needs. `scripts/act-trace-hf.py` writes the same records from a
 transformers model in float32, for a comparison against the publisher's
-reference.
+reference. Its `mixer` point is the input of the norm in front of the FFN,
+picked by the block's norm layout: `pre_feedforward_layernorm` on Gemma's
+sandwich-norm blocks (whose `post_attention_layernorm` normalizes the attention
+output before the add), `post_attention_layernorm` on pre-norm blocks, and none
+on a post-norm block, where no norm reads that residual.
 
 `RUNNER_MOE_REPLAY=routes.jsonl` reads a `RUNNER_MOE_TRACE` file from an
 earlier run and makes the CPU routers choose, at each recorded position and
