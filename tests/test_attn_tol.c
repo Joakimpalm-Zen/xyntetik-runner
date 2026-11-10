@@ -118,6 +118,14 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
         return false;
     }
 
+    if (g_kv_q8 && !m.kv_q8) {
+        fprintf(stderr, "FAIL: requested q8 KV was not activated for %s\n", c->name);
+        g_fail = 1;
+        model_free(&m);
+        return false;
+    }
+    if (g_kv_q8) printf("  %s: actual KV q8\n", c->name);
+
     c->logits = malloc(sizeof(float) * (size_t)STEPS * (size_t)n_vocab);
     c->top1   = malloc(sizeof(int32_t) * STEPS);
     if (!c->logits || !c->top1) { model_free(&m); return false; }
@@ -207,9 +215,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "cannot open %s\n", path);
         return 1;
     }
-    // The fast kernels exist for Q4_0 and Q8_0. Without one of those types the
-    // two configurations run the same code and the gate measures nothing.
-    bool has_mv_type = true;   // attention runs for every arch
+    // Cooperative attention is independent of the model's weight type.
+    // An explicit q8 request must actually bind q8 KV in run_config below.
 
     tokenizer tk;
     if (!tokenizer_init(&tk, &gf)) {
@@ -231,12 +238,6 @@ int main(int argc, char **argv) {
 
     printf("attn-tol: %s | %d tokens, %d teacher-forced positions%s\n",
            path, n_tok, STEPS, g_kv_q8 ? " | kv q8" : "");
-    if (!has_mv_type) {
-        printf("  skipped: no fast-capable tensor in this model (kernels: "
-               "Q4_0/Q8_0)\n" "attn-tol: ok (skipped)\n");
-        return 0;
-    }
-
     enum { N_CFG = 3 };
     config cfgs[N_CFG] = {
         { "scalar",       0, false, NULL, NULL },
@@ -271,12 +272,24 @@ int main(int argc, char **argv) {
     config *ref = &cfgs[0], *ctrl = &cfgs[1], *fast = &cfgs[2];
 
     if (!ref->available || !fast->available) {
+#ifdef RUNNER_GPU_METAL
+        if (argc > 1) {
+            ck(false, "named Metal fixture could not run both configurations");
+            return g_fail;
+        }
+#endif
         printf("  mv tolerance gate  : skipped (config unavailable)\n"
                "attn-tol: %s\n", g_fail ? "FAILED" : "ok (skipped)");
         return g_fail;
     }
 
     if (fired == 0) {
+#ifdef RUNNER_GPU_METAL
+        if (argc > 1) {
+            ck(false, "named Metal fixture dispatched no cooperative attention");
+            return g_fail;
+        }
+#endif
         printf("  mv-fast vs scalar : the fast route never dispatched: the "
                "cooperative attention read is Metal's (on CUDA and the CPU it "
                "never runs), or a CPU fallback. Skipping, not passing.\n"

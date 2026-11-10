@@ -3400,8 +3400,15 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	$(MAKE) --no-print-directory test-tc-overflow
 	./$(TEST_I8_TOL)
 	./$(TEST_I8_TOL) test-q8.gguf
-	./$(TEST_MV_TOL)
-	./$(TEST_ATTN_TOL)
+	@# A named float-only fixture must fail instead of quietly skipping.
+	@if ./$(TEST_MV_TOL) test.gguf > test-mv-tol-missing.out 2>&1; then \
+	  cat test-mv-tol-missing.out; echo "FAIL: named unsuitable fixture passed"; exit 1; \
+	else grep -q '^FAIL: named fixture' test-mv-tol-missing.out; fi
+	./$(TEST_MV_TOL) test-q8.gguf
+	./$(TEST_MV_TOL) test-q4k.gguf
+	./$(TEST_MV_TOL) test-q40.gguf
+	./$(TEST_ATTN_TOL) test-q4k.gguf
+	./$(TEST_ATTN_TOL) test-q4k.gguf q8
 	./$(TEST_GPU_ID) --self-test
 	$(GPU_ID_TIGHT) ./$(TEST_GPU_ID)
 	$(PYTHON) scripts/make-test-model.py --noisy-norms --qk-norm test-noisy-norms.gguf > /dev/null
