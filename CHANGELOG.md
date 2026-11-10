@@ -11,6 +11,25 @@ file each, until the release folds them in below. Add a new entry there, not her
 
 ## Unreleased
 
+- **`--kv f32`: an f32 KV cache for any CPU run, a measurement instrument (R6.32).**
+  - **What it is:** K and V are kept unrounded in the CPU inference attention, the cache the training forward already
+    used under `--train-kv-f32`. It doubles the KV memory against f16 and is not a speed or quality default.
+  - **Refusals:** a run that could reach a GPU is refused with the reason (the GPU kernels read f16, q8_0 and fp4
+    rows). Add `--gpu off`.
+  - **Where it is named:** receipts, the route, `--info doctor`, KV snapshots and session images all say `f32`, and
+    `--verify` replays it. A snapshot or image refuses another KV type by name.
+  - **Model keys:** the model key gains a token only when the cache is f32, so every existing f16, q8, k8v4 and fp4 key,
+    prefix cache, snapshot and image is unchanged.
+  - **Checks:** `tests/test_kv_f32.py`, red on the previous binary (9 of 9 failed) and green now.
+    - An f32 and an f16 cache score differently.
+    - Rollouts a `--kv f32 -b 1` server samples equal the `--train-kv-f32` trainer's logprobs bit for bit on four
+      fixture families. The f16 cache's do not.
+    - Session images round-trip byte-identically, and snapshots carry `kv_type` f32.
+    - Fifty `--score` and sampling commands on five fixtures under the default cache and every other `--kv` type give
+      the same bytes before and after the change.
+  - **Also:** the tied-V refusal now names the cache type it refuses, instead of saying "q8" for every quantized or
+    f32 cache.
+
 - **`ignore_eos` on a completion request (R10.31).**
   - **Before:** only `/v1/runner/sessions` read it. Chat, completions, Responses and Messages took only the
     server-wide `--ignore-eos`, so a fixed-length rollout could not be asked for per request.

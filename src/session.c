@@ -43,9 +43,7 @@ static void wput(wbuf *w, const void *p, size_t n) {
     w->n += n;
 }
 
-static const char *kv_type_of(const model_t *m) {
-    return m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
-}
+static const char *kv_type_of(const model_t *m) { return model_kv_name(m); }
 
 const char *session_key_mismatch(const session_meta *sm, const engine *e,
                                  char *buf, size_t cap) {

@@ -439,6 +439,9 @@ static uint64_t model_identity(const model_t *m, const tokenizer *tok, bool prio
         m->n_ctx, m->kv_q8, m->kv_fp4, m->kv_split,
     };
     h = h64(h, geo, sizeof geo);
+    // --kv f32 (R6.32) is one more element type; hashed as a token only when on,
+    // so the f16, q8, k8v4 and fp4 keys stay what they were
+    if (m->kv_f32) h = h64s(h, "runner.kv.f32");
     h = h64f(h, m->rms_eps);       h = h64f(h, m->rope_base);
     h = h64f(h, m->rope_mscale);   h = h64f(h, m->embd_scale);
     h = h64f(h, m->attn_scale);    h = h64f(h, m->logit_softcap);
