@@ -1242,6 +1242,11 @@ def test_release_check_refuses_a_summary_that_disagrees_with_its_row(monkeypatch
 
 @pytest.mark.skipif(shutil.which("make") is None or shutil.which("sh") is None,
                     reason="needs make and sh")
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="the wrapper is a POSIX sh script: Windows process creation resolves "
+                           "`make` to make.exe and never runs it, so this test would call the real "
+                           "make (main went red on the Windows suite, 2026-11-10); the wrapper is "
+                           "for scripts/cuda-gate.sh on the Linux CUDA host")
 def test_release_make_puts_the_recipe_cflags_on_makes_command_line(tmp_path):
     """tools/release-make/make, first on PATH, is how scripts/cuda-gate.sh runs
     on a release binary without a step relinking it (R6.44): its CFLAGS must be
