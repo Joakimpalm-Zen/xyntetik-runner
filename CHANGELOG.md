@@ -19,8 +19,16 @@ file each, until the release folds them in below. Add a new entry there, not her
   table bytes. Tables are reserved once for the complete uploaded table set, including host-side
   layers; auto expert placement conservatively reserves possible expert-bias tables so run-based
   refinement cannot discard their charge. CPU-only fixture arithmetic covers a split moved by those
-  bytes. CUDA runtime validation remains required before release. README impact: no front-page,
-  manual, site or model-card claim changes; this corrects accounting, not the model's arithmetic.
+  bytes. Checked on CUDA: the added charge against the f32 bytes the uploader builds was exact on
+  six files (gpt-oss-20b by default and with `--cpu-moe`, DeepSeek-V2-Lite, MiniCPM5, granite-4.0-h-micro,
+  gemma-4-12B QAT) once the all-ones expert scale table was charged too (before that, 120 bytes short
+  on gpt-oss-20b and 256 on DeepSeek-V2-Lite). A load can place one layer fewer on the device than
+  before at the same budget: on DeepSeek-V2-Lite the earlier plan left about 8.4 MB per host-side
+  layer uncharged and spent the headroom. Limits: under `--cpu-moe` the fit still charges expert-bias
+  tables the loader does not build (conservative), and the 12 GB card's fit 23 against load 24 on
+  gpt-oss-20b was not reproduced on the 24 GB device, whose percent steps are too coarse for it.
+  README impact: no front-page, manual, site or model-card claim changes; this corrects accounting,
+  not the model's arithmetic.
 
 - **test-cuda-qwen4exp's NextN/MTP head check compares runs at the same draft width (R3.56).** Since R3.3.7 the
   default width is per backend: 2 for the NextN head on CUDA, 4 on the CPU. The check left it to the defaults, so it
