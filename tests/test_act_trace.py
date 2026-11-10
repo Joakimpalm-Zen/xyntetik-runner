@@ -151,3 +151,68 @@ def test_a_moe_layer_traces_its_selection(runner_bin, tmp_path):
     _, again = trace(runner_bin, moe, tmp_path / "n.jsonl", pos="1")
     rc, text = diff(tmp_path / "m.jsonl", tmp_path / "n.jsonl")
     assert rc == 0, text
+
+
+# ---------------------------------------------------------------- the reference side's mixer point (R6.38)
+#
+# scripts/act-trace-hf.py hooks the norm in front of a block's FFN: its input is
+# the residual after the mixer branch was added, which is Runner's mixer point.
+# Which norm that is depends on the block's layout. On gemma-family blocks
+# (sandwich norms) post_attention_layernorm normalizes the attention OUTPUT
+# before the residual add, so its input is the branch; the script took it
+# anyway, being the first of its names it found, until 2026-11-10.
+
+def _act_trace_hf():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("act_trace_hf", ROOT / "scripts/act-trace-hf.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _Block:
+    def __init__(self, *names):
+        for n in names:
+            setattr(self, n, n)
+
+
+@pytest.mark.parametrize("names,want", [
+    # Gemma 2, 3 and 4 (transformers' Gemma*DecoderLayer): sandwich norms
+    (("input_layernorm", "post_attention_layernorm", "pre_feedforward_layernorm",
+      "post_feedforward_layernorm"), "pre_feedforward_layernorm"),
+    # Llama, Qwen, Granite: pre-norm, post_attention_layernorm is the FFN's norm
+    (("input_layernorm", "post_attention_layernorm"), "post_attention_layernorm"),
+    (("attention_norm", "ffn_norm"), "ffn_norm"),
+    # OLMo 2: post-norm; no norm takes the residual after the add as its input
+    (("post_attention_layernorm", "post_feedforward_layernorm"), None),
+    (("input_layernorm",), None),
+])
+def test_the_mixer_point_follows_the_block_norm_layout(names, want):
+    assert _act_trace_hf().mixer_norm(_Block(*names)) == want
+
+
+def test_the_mixer_point_on_a_real_gemma_block_is_the_residual_after_attention():
+    """The absolute anchor is transformers' own Gemma 3 forward: the residual after
+    the attention add is the block input plus the normalized attention output, read
+    from the forward's own modules, and the hooked norm's input must equal it."""
+    torch = pytest.importorskip("torch")
+    tr = pytest.importorskip("transformers")
+    cfg = tr.Gemma3TextConfig(vocab_size=64, hidden_size=32, intermediate_size=64,
+                              num_hidden_layers=1, num_attention_heads=2, num_key_value_heads=1,
+                              head_dim=16, max_position_embeddings=32, sliding_window=16)
+    torch.manual_seed(0)
+    model = tr.Gemma3ForCausalLM(cfg).eval()
+    blk = model.model.layers[0]
+    seen = {}
+    blk.register_forward_pre_hook(lambda m, a, k: seen.__setitem__(
+        "x", (a[0] if a else k["hidden_states"]).detach().clone()), with_kwargs=True)
+    blk.post_attention_layernorm.register_forward_hook(
+        lambda m, a, out: seen.__setitem__("branch_in", a[0].detach().clone()) or
+        seen.__setitem__("branch_out", out.detach().clone()))
+    _act_trace_hf().mixer_norm(blk).register_forward_pre_hook(
+        lambda m, a: seen.__setitem__("mixer", a[0].detach().clone()))
+    with torch.no_grad():
+        model(torch.tensor([[1, 5, 9, 2]]))
+    want = seen["x"] + seen["branch_out"]
+    assert torch.allclose(seen["mixer"], want, atol=0, rtol=0)
+    assert not torch.allclose(seen["mixer"], seen["branch_in"])  # the point it used to take
