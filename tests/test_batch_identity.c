@@ -59,13 +59,21 @@ static const int32_t PROMPTS[NSEQ][PROMPT_MAX] = {
 static const int PLEN[NSEQ] = { 3, 5, 7, 2, 4, 6, 1, 8, 3, 5, 4 };
 
 static bool load_all(const char *path, model_t *m, int n) {
+    // BATCH_ID_KV=f32: the same contract over the unrounded cache (R6.33),
+    // whose microbatch store launch sizes its grid in cuda.c's fwd_batch
+    const char *kv = getenv("BATCH_ID_KV");
     for (int i = 0; i < n; i++) {
         model_params p;
         memset(&p, 0, sizeof(p));
         p.gpu_mode = GPU_AUTO;
         p.n_ctx = CTX;
+        p.kv_f32 = kv && !strcmp(kv, "f32");
         if (!model_load(&m[i], path, &p)) {
             fprintf(stderr, "cannot load %s (instance %d)\n", path, i);
+            return false;
+        }
+        if (p.kv_f32 && !m[i].kv_f32) {
+            fprintf(stderr, "FAIL: BATCH_ID_KV=f32, but instance %d came up with another cache\n", i);
             return false;
         }
     }

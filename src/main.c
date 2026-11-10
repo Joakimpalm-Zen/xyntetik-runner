@@ -1390,9 +1390,9 @@ static void usage_to(FILE *f, const char *prog) {
         "                 28%%; E2M1 values, one UE4M3 scale per 16 channels,\n"
         "                 quantised after RoPE). All three are lossy: output\n"
         "                 differs from an f16 cache, fp4 K costs the most.\n"
-        "                 f32 keeps K and V unrounded (twice the f16 cache, CPU\n"
-        "                 only: with --gpu off): a measurement instrument, not a\n"
-        "                 speed or quality default\n"
+        "                 f32 keeps K and V unrounded (twice the f16 cache; on\n"
+        "                 the CPU and CUDA, not Metal): a measurement instrument,\n"
+        "                 not a speed or quality default\n"
         "  --kv-ring auto|on|off  give sliding-window layers only their window\n"
         "                 of KV rows (output-identical to the flat cache). auto\n"
         "                 (default): on when the weights and the flat cache do\n"
@@ -2213,6 +2213,7 @@ static int run_caps(void) {
         printf(",\"eseries\":%s", gpu_eseries_ok() ? "true" : "false");
         printf(",\"kv_q8\":%s", gpu_kv_q8_ok() ? "true" : "false");
         printf(",\"kv_fp4\":%s", gpu_kv_fp4_ok() ? "true" : "false");
+        printf(",\"kv_f32\":%s", gpu_kv_f32_ok() ? "true" : "false");
         // Metal only: a single allocation above this fails even when the
         // file fits in RAM, so ram_available_bytes alone overstates what
         // the GPU path can load. Same argument as moe/kv_q8: don't let a
@@ -3820,12 +3821,15 @@ static bool cli_prepare_session(cli_opts *o, session_image *simg, int *rc) {
         if (why) { fprintf(stderr, "error: %s\n", why); *rc = 1; return true; }
         o->mp.gpu_mode = GPU_OFF;
     }
-    // --kv f32 (R6.32) keeps the KV cache in f32 for a measurement: the GPU
-    // attention kernels read f16, q8_0 and fp4 rows only, so a run that could
-    // land on a device is refused here rather than quietly given f16
-    if (o->kv_f32_cli && o->mp.gpu_mode != GPU_OFF) {
-        fprintf(stderr, "error: --kv f32 runs on the CPU path only (the GPU attention "
-                "kernels read f16, q8_0 and fp4 rows): add --gpu off\n");
+    // --kv f32 (R6.32) keeps the KV cache in f32 for a measurement. CUDA's
+    // attention reads f32 rows (R6.33); a backend whose kernels read f16,
+    // q8_0 and fp4 rows only (Metal) refuses a run that could land on its
+    // device here rather than quietly giving it f16. Until R6.33 this refusal,
+    // and model_alloc's matching gate, were what kept a kind-3 cache away from
+    // the CUDA kernels and cuda.c's row-width sites, which read a 3 as q8_0
+    if (o->kv_f32_cli && o->mp.gpu_mode != GPU_OFF && !gpu_kv_f32_ok()) {
+        fprintf(stderr, "error: --kv f32 runs on the CPU path only with this backend (its GPU "
+                "attention kernels read f16, q8_0 and fp4 rows): add --gpu off\n");
         *rc = 1;
         return true;
     }
@@ -4087,8 +4091,7 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
             (gpu_route_v && gpu_route_m < 0) ||
             (jv_get(prof, "route") && jv_get(prof, "route")->type != J_OBJ) ||
             (strcmp(kv, "f16") != 0 && strcmp(kv, "q8") != 0 &&
-             strcmp(kv, "fp4") != 0 && strcmp(kv, "k8v4") != 0 && strcmp(kv, "f32") != 0) ||
-            (strcmp(kv, "f32") == 0 && gpu_v->b)) {   // --kv f32 runs on the CPU only
+             strcmp(kv, "fp4") != 0 && strcmp(kv, "k8v4") != 0 && strcmp(kv, "f32") != 0)) {
             fprintf(stderr, "UNVERIFIABLE: malformed execution profile\n");
             jv_free(vr->rec);
             *rc = 3;

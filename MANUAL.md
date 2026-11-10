@@ -2656,7 +2656,7 @@ instance instead.
 | `--vram-priority N` | Advisory priority tag on this claim, default `0` (also `RUNNER_VRAM_PRIORITY`). See [VRAM registry: priority and cooperative yield](#vram-registry-priority-and-cooperative-yield). |
 | `--yield-on-request [on\|off]` | In `--serve`, release the resident model at the next idle point when another process has asked it to (`vram_request_yield`). A request, never preemption. `on` by default when serving (bare `--yield-on-request` is `on`); `off` keeps the model. See the same section. |
 | `--reserve P` or `--reserve vram=P,ram=P,cpu=P` | One percentage caps this process at `P` percent of total RAM and VRAM; the named form sets each budget on its own: `vram` (the CUDA layer-fit budget, [details](#cli-reserve-vram)), `ram`, and `cpu` (size the default thread count as a percentage of cores). Without `-c` the context is auto-fit to what the reservation leaves after the weights. |
-| `--kv f16\|f32\|q8\|k8v4\|fp4` | Choose KV cache storage; precision, memory use and backend support differ by format. `f32` is a CPU-only measurement instrument. [Details](#cli-kv). |
+| `--kv f16\|f32\|q8\|k8v4\|fp4` | Choose KV cache storage; precision, memory use and backend support differ by format. `f32` is a measurement instrument, on the CPU and on CUDA. [Details](#cli-kv). |
 | `--kv-ring auto\|on\|off` | Give sliding-window layers only their window of KV rows, output-identical to the flat cache. `auto` (default) turns it on only when the weights and the flat cache do not fit; `-v` says why it is on or off. [Details](#cli-kv-ring). |
 | `--mlock` | Ask the OS to wire mapped weights into RAM; failure is non-fatal. A Gemma 4 E-series per-layer token table stays pageable. Runner maps its weights, so a one-shot CLI run of a mapped 4B file on an 8 GB Mac pays about 3 GB of page-in inside its first prompt (Qwen3-4B Q4_K_M: 28 against 85 tok/s of 512-token prefill, 2026-11-04); `--mlock` or a resident server holds the weights. |
 | `--moe-prefetch on\|off\|auto` | Prefetch routed expert blocks. Auto enables it only for measured oversubscribed Apple Silicon cases. |
@@ -2714,9 +2714,15 @@ default.
   - chat text: 0.00068, then 0.00003;
   - raw text, where this instruction-tuned model is out of format: 0.428, then 0.0055.
   - [The record](docs/gemma4-26b-reference-2026-11-10.md).
-- **Where it runs:** on the CPU path only, with `--gpu off`. The GPU attention kernels read
-  f16, q8_0 and fp4 rows, so a run that could reach a device is refused with that reason
-  rather than given f16.
+- **Where it runs:** on the CPU, and on CUDA, including a partial split, where both halves
+  keep f32 rows. The device's f32 cache stores the projections byte for byte. It agrees
+  with the CPU's f32 cache on top-1 at every teacher-forced position, and it sits closer to
+  it than the device's f16 cache does (`make test-cuda-kv-f32`). The rows are twice as wide,
+  so the grouped decode attention at head_dim 256 (it fits up to 164) and the absorbed MLA
+  decode at deepseek2's 576-wide rows do not fit their shared-memory tiles, and those layers
+  take the generic attention kernels. On Metal the attention reads f16, q8_0 and fp4 rows only, so a
+  run there that could reach the device is refused with that reason rather than given f16.
+  Add `--gpu off`.
 - **Where it is named:** receipts (`profile.kv`), the route, `--info doctor`, KV snapshots
   and session images all say `f32`, and `--verify` replays such a record. A snapshot or an
   image carries it, and a run with another KV type refuses either by name.

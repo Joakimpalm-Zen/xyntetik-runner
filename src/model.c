@@ -5133,9 +5133,14 @@ static void bind_kv_layout(model_t *m, const model_params *p) {
     }
     // --kv f32 (R6.32) and --train-kv-f32 (R8.25.2): K and V rows kept f32, so
     // the forward (and a training run's backward) reads the projections
-    // unrounded; the CPU path only
-    if (p->kv_f32 && !m->kv_q8 && !m->kv_split && !m->kv_fp4 && p->gpu_mode == GPU_OFF)
-        m->kv_f32 = true;
+    // unrounded; on the CPU, and on a GPU backend whose attention reads f32
+    // rows (CUDA since R6.33; Metal does not, and main.c refuses it there)
+    if (p->kv_f32 && !m->kv_q8 && !m->kv_split && !m->kv_fp4) {
+        char gname[128];
+        bool gpu_path = p->gpu_mode == GPU_AUTO && gpu_available(gname, sizeof(gname));
+        if (!gpu_path || gpu_kv_f32_ok())
+            m->kv_f32 = true;
+    }
 }
 
 static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
