@@ -12,8 +12,9 @@ record simply did not say. So:
   compact JSON), and a served turn's calls (`tool_calls`, compared with the
   calls the response itself delivered, buffered and streamed, on every
   surface);
-- a served constrained record is UNVERIFIABLE (exit 3), naming what shaped
-  it; a CLI record made under --json, --json-schema or --ignore-eos replays
+- a served record shaped by what a replay does not rebuild (a tool grammar,
+  a reasoning budget, the loop guard) is UNVERIFIABLE (exit 3), naming it;
+  served stop sequences replay (tests/test_stop_replay.py); a CLI record made under --json, --json-schema or --ignore-eos replays
   when the verifier is given the same constraint (the schema matched by
   digest) and is refused otherwise -- and a verifier that adds a constraint
   the record did not have is refused too.

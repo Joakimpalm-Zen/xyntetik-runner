@@ -250,8 +250,9 @@ static int32_t *json_token_ids(jv *arr, int *n_out) {
 // and a replay without them could only disagree with the record -- which a
 // DIVERGED verdict would blame on the model or the build. A CLI record made
 // under --json, --json-schema or --ignore-eos replays when the verifier is
-// given the same constraint (the schema matched by digest); anything a served
-// turn was shaped by is refused (replaying it is D4b); and a constraint the
+// given the same constraint (the schema matched by digest), as a served one
+// does (D4b), and a served stop sequence replays (R1.1.3.2); anything else a
+// served turn was shaped by is refused; and a constraint the
 // verifier adds that the record does not name is refused too. False with the
 // reason in `why`.
 static bool replay_constraints_ok(jv *rec, bool json_mode,
@@ -278,7 +279,9 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
         // the CLI flag does, over the prompt tokens the record carries. What
         // the replay cannot rebuild is refused by name: a tool envelope
         // (declarations, choice and the native or generic grammar a request
-        // builds), stop sequences, a reasoning budget or the loop guard.
+        // builds), a reasoning budget or the loop guard. Stop sequences
+        // replay (R1.1.3.2): the record carries them, and run_verify_replay
+        // matches them where the server did.
         // Records written before D4a name what shaped them only in shaped_by.
         jv *list = cons ? cons : jv_get(serve, "shaped_by");
         char names[256] = "";
@@ -290,7 +293,8 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
                              : jv_str(jv_get(it, "kind"), "?");
             if (cons && (!strcmp(kind, "json_schema") ||
                          !strcmp(kind, "json_mode") ||
-                         !strcmp(kind, "ignore_eos")))
+                         !strcmp(kind, "ignore_eos") ||
+                         !strcmp(kind, "stop")))
                 rebuilt++;
             int w = snprintf(names + k, sizeof names - k, "%s%s", n ? ", " : "", kind);
             if (w > 0 && (size_t)w < sizeof names - k) k += (size_t)w;
@@ -299,7 +303,8 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
         if (n > rebuilt) {
             snprintf(why, cap, "the served output was shaped beyond the sampler "
                      "by %s, which a replay does not rebuild (a served JSON "
-                     "schema, JSON mode or ignore_eos does replay), so a replay "
+                     "schema, JSON mode, ignore_eos or stop sequence does "
+                     "replay), so a replay "
                      "could only disagree with the record", names);
             return false;
         }
@@ -314,6 +319,7 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
         }
         if (!strcmp(kind, "json_mode")) rj = true;
         else if (!strcmp(kind, "ignore_eos")) re = true;
+        else if (serve && !strcmp(kind, "stop")) continue;  // run_verify_replay
         else if (!strcmp(kind, "json_schema")) {
             rs = jv_str(jv_get(cons->items[i], "sha256"), "");
             if (strlen(rs) != 64) {
@@ -6179,6 +6185,113 @@ static bool route_detail_pre_tc_match(const char *rd, const char *nd) {
 }
 
 // ---- notarized inference D2: the replay
+// R1.1.3.2: a served turn cut by a stop sequence, replayed. The server
+// matches its stop strings on the visible text only: the bytes pass the
+// thinking-tag splitter first, which starts where the prompt left the turn
+// (serve.reasoning_open), and a match aborts generation on the token that
+// completes it (completion.c, stop_feed). The replay runs the same splitter
+// over its own bytes and stops on the same first match, so the cut is
+// re-done, not taken from the record: a record cut anywhere else replays
+// DIVERGED. Ids in token_ids stop the engine itself, as they did served.
+typedef struct {
+    outcap_t   *cap;
+    engine     *e;
+    think_split ts;
+    const char *strs[4];
+    int         n_strs;
+    size_t      max_len;
+    outcap_t    vis;      // the visible text so far
+    bool        stopped;
+} replay_stop;
+
+static int replay_stop_visible(void *ud, int reasoning, const char *bytes, int n) {
+    replay_stop *r = ud;
+    // the tail a constrained document is closed with after the cut is the
+    // server's, not the model's, and is never matched (stop_feed)
+    if (reasoning || n <= 0 || (r->e && r->e->constraint_closing)) return 0;
+    if (r->stopped) return 1;
+    size_t from = r->vis.n >= r->max_len ? r->vis.n - r->max_len + 1 : 0;
+    outcap_cb(&r->vis, bytes, n);
+    if (r->vis.failed) return 1;
+    // the earliest match, as stop_feed finds it: nothing before this call
+    // matched, so a match ends in these bytes and starts no earlier than from
+    for (size_t i = from; i < r->vis.n; i++)
+        for (int k = 0; k < r->n_strs; k++) {
+            size_t len = strlen(r->strs[k]);
+            if (i + len <= r->vis.n && !memcmp(r->vis.buf + i, r->strs[k], len)) {
+                // the constraint validator saw the dropped bytes; it is told,
+                // as served, so the closing tail continues the same document
+                if (r->e) engine_constraint_truncate(r->e, (int)(r->vis.n - i));
+                r->stopped = true;
+                return 1;
+            }
+        }
+    return 0;
+}
+
+static int replay_stop_cb(void *ud, const char *bytes, int n) {
+    replay_stop *r = ud;
+    outcap_cb(r->cap, bytes, n);
+    return think_feed(&r->ts, bytes, n, replay_stop_visible, r);
+}
+
+// The record's stop constraint, read for the replay: false with the reason in
+// why when it is malformed or the record cannot say where the turn began.
+static bool replay_stop_read(jv *rec, const model_t *m, replay_stop *r,
+                             int ids[8], int *n_ids, char *why, size_t cap) {
+    jv *cons = jv_get(rec, "constraints");
+    jv *stop = NULL;
+    for (int i = 0; cons && cons->type == J_ARR && i < cons->n; i++)
+        if (!strcmp(jv_str(jv_get(cons->items[i], "kind"), ""), "stop"))
+            stop = cons->items[i];
+    *n_ids = 0;
+    if (!stop) return true;
+    jv *seq = jv_get(stop, "sequences"), *tid = jv_get(stop, "token_ids");
+    if (!seq || seq->type != J_ARR || seq->n > 4 ||
+        (tid && (tid->type != J_ARR || tid->n > 8))) {
+        snprintf(why, cap, "malformed stop constraint");
+        return false;
+    }
+    for (int i = 0; i < seq->n; i++) {
+        jv *it = seq->items[i];
+        if (!it || it->type != J_STR || !it->str[0]) {
+            snprintf(why, cap, "malformed stop constraint");
+            return false;
+        }
+        r->strs[r->n_strs++] = it->str;
+        size_t len = strlen(it->str);
+        if (len > r->max_len) r->max_len = len;
+    }
+    for (int i = 0; tid && i < tid->n; i++) {
+        int32_t id;
+        if (!record_token(tid->items[i], m->n_vocab, &id)) {
+            snprintf(why, cap, "malformed stop constraint");
+            return false;
+        }
+        ids[(*n_ids)++] = id;
+    }
+    // where the splitter starts: a chat turn on a model with thinking tags
+    // needs the record to say, and records before R1.1.3.2 do not
+    bool chat = strcmp(jv_str(jv_get(jv_get(rec, "config"), "template"), "raw"), "raw") != 0;
+    jv *ro = jv_get(jv_get(rec, "serve"), "reasoning_open");
+    if (ro && ro->type != J_BOOL) {
+        snprintf(why, cap, "malformed serve.reasoning_open");
+        return false;
+    }
+    bool open = ro && ro->b;
+    if (!ro && chat && m->think_open) {
+        snprintf(why, cap, "the output was cut by a stop sequence on a model with "
+                 "thinking tags, and the record does not say whether the turn "
+                 "began in reasoning (serve.reasoning_open, written since R1.1.3.2), "
+                 "so a replay cannot match the stop where the server did");
+        return false;
+    }
+    if (open) think_init_reasoning(&r->ts, m->think_open, m->think_close);
+    else      think_init(&r->ts, chat ? m->think_open : NULL, m->think_close);
+    think_trim_newlines(&r->ts, m->think_trim_nl);
+    return true;
+}
+
 static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const char *load_path) {
     jv *vm = jv_get(vr->rec, "model"), *va = jv_get(vr->rec, "adapter");
     jv *vprof = jv_get(vr->rec, "profile");
@@ -6288,8 +6401,39 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     }
     double gt = 0;
     outcap_t replay_out = {0};
-    int n_gen = engine_generate(&rt->e, logits, o->n_predict, outcap_cb,
-                                &replay_out, &gt);
+    replay_stop rs = { .cap = &replay_out, .e = &rt->e };
+    int stop_ids[8], n_stop_ids = 0;
+    {
+        char why[512];
+        if (!replay_stop_read(vr->rec, &rt->m, &rs, stop_ids, &n_stop_ids,
+                              why, sizeof why)) {
+            fprintf(stderr, "UNVERIFIABLE: %s\n", why);
+            think_free(&rs.ts);
+            jv_free(vr->rec);
+            return 3;
+        }
+    }
+    // A served chat turn on a model with thinking tags starts where run_completion
+    // started it: in the reasoning block when its prompt opened one
+    // (engine_think_started), and, under a JSON constraint, with the reasoning
+    // bytes forwarded to the output beside the document (emit_think_prelude,
+    // completion.c). Without either the replay held the grammar from the first
+    // token, or kept the payload only, and a served schema turn on such a
+    // model replayed DIVERGED at its first token or byte.
+    jv *vserve = jv_get(vr->rec, "serve");
+    bool vchat = strcmp(jv_str(jv_get(jv_get(vr->rec, "config"), "template"), "raw"), "raw") != 0;
+    if (vserve && vchat && rt->m.think_open) rt->e.emit_think_prelude = true;
+    if (jv_bool(jv_get(vserve, "reasoning_open"), false))
+        engine_think_started(&rt->e);
+    bool stop_on = rs.n_strs > 0 || n_stop_ids > 0;
+    engine_set_request_stops(&rt->e, stop_ids, n_stop_ids);
+    int n_gen = stop_on
+              ? engine_generate(&rt->e, logits, o->n_predict, replay_stop_cb, &rs, &gt)
+              : engine_generate(&rt->e, logits, o->n_predict, outcap_cb, &replay_out, &gt);
+    engine_set_request_stops(&rt->e, NULL, 0);
+    think_free(&rs.ts);
+    free(rs.vis.buf);
+    if (rs.vis.failed) replay_out.failed = true;
     if (replay_out.failed) {
         fprintf(stderr, "UNVERIFIABLE: out of memory capturing replay\n");
         free(replay_out.buf); jv_free(vr->rec);
