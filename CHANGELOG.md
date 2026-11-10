@@ -8,6 +8,14 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **Docs: gemma-4-26B-A4B now has its publisher float32 comparison (R6.11).** The support entry listed it as owed.
+  - **What was run:** two files, scored against the transformers forward of `google/gemma-4-26B-A4B-it` in float32
+    on chat text, 2,000 positions ([the record](docs/gemma4-26b-reference-2026-11-10.md)).
+  - **A fresh bf16 conversion** of the checkpoint reads mean KL 0.0060, margin-qualified top-1 99.79% (CPU), so the
+    MoE forward tracks the reference.
+  - **The listed QAT Q4_0 file** reads 0.2183 and 90.59% (CUDA), its own distance.
+  - **Raw text, reported first there:** the conversion reads 0.3226, which is not explained.
+
 - **`RUNNER_PREFETCH` stays opt-in on Linux and Windows, now measured there (R3.39.5).** On Windows with CUDA,
   turning it on made every load slower, with identical output: 1.159x the time from a cold file, 1.122x and 1.118x
   warm on two files. On Linux, on a host capped at 60 read IOPS, it was 1.229x on the CPU and 1.006x and 0.9995x on
