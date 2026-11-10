@@ -65,6 +65,8 @@ These stay off unless a narrower scope gets its own passing row.
 | `RUNNER_METAL_TENSOR` | Parity. |
 | `RUNNER_METAL_MOE_EM` | 3 to 4% slower. |
 | `RUNNER_PREFETCH` on macOS | 60% slower cold load. |
+| `RUNNER_PREFETCH` on Linux | No gain on a host capped at 60 read IOPS: time with it on over off 1.229 on the CPU, 1.006 and 0.9995 on CUDA. |
+| `RUNNER_PREFETCH` on Windows | Slower on every row with CUDA: time with it on over off 1.159 cold, 1.122 and 1.118 warm on two files. On a CUDA load the hint runs after the upload has read the weights. |
 
 ## Candidates, not yet decided
 
@@ -73,7 +75,6 @@ These stay off unless a narrower scope gets its own passing row.
 | `RUNNER_METAL_BATCH_TILES` | Its float32 rows pass (+40% at 8 slots); receipts must carry the route before it turns on. |
 | `RUNNER_CUDA_Q8X` | Rows of its own. |
 | `RUNNER_GRAMMAR_FF` | Its class established (speculation under a grammar). |
-| `RUNNER_PREFETCH` on Linux and Windows | A measurement there. |
 
 ## Never on by default
 
