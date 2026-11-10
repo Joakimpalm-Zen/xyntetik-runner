@@ -1837,6 +1837,43 @@ static void mw_release(model_weights *w) {
 // read every offloaded tensor. Same gates: opt-in RUNNER_PREFETCH, not under
 // --mlock, not when the MoE expert prefetch owns paging, only when it fits.
 static bool moe_prefetch_default(const model_t *m, int flag);
+
+// EXPERIMENT R3.39.10: hint only a file that is not already in the OS file
+// cache. A fresh mapping's pages are never in this process's working set,
+// warm or cold, so a working-set query cannot see the cache. Instead read one
+// byte from each of PROBE_PAGES pages spread evenly over the mapping and time
+// each first touch: a page in the file cache is a soft fault (microseconds),
+// a cold page is a disk read. Cold means at least PROBE_COLD_MIN of the
+// touches took longer than PROBE_SLOW_S. Declared before any run.
+enum { PROBE_PAGES = 128, PROBE_COLD_MIN = 32 };
+#define PROBE_SLOW_S 30e-6
+static bool mapping_looks_cold(const model_t *m, int *slow_out, double *took_out) {
+    uint64_t total = gguf_mapped_size(&m->gf);
+    uint32_t np = gguf_map_count(&m->gf);
+    int slow = 0;
+    volatile unsigned sink = 0;
+    double t0 = plat_now();
+    for (int k = 0; k < PROBE_PAGES && total; k++) {
+        uint64_t at = total / PROBE_PAGES * (uint64_t)k, base = 0;
+        for (uint32_t i = 0; i < np; i++) {
+            size_t sz;
+            const unsigned char *mp = gguf_map_part(&m->gf, i, &sz);
+            if (!mp || !sz) continue;
+            if (at < base + sz) {
+                double a = plat_now();
+                sink += mp[(at - base) & ~(uint64_t)4095];
+                if (plat_now() - a > PROBE_SLOW_S) slow++;
+                break;
+            }
+            base += sz;
+        }
+    }
+    (void)sink;
+    *slow_out = slow;
+    *took_out = plat_now() - t0;
+    return slow >= PROBE_COLD_MIN;
+}
+
 static void prefetch_before_upload(model_t *m, const model_params *p) {
     const char *e = getenv("RUNNER_PREFETCH");
     bool opt_in = e && *e && strcmp(e, "0") && strcmp(e, "off");
@@ -1846,6 +1883,13 @@ static void prefetch_before_upload(model_t *m, const model_params *p) {
     if (!model_load_prefetch_wanted(gguf_mapped_size(&m->gf), plat_ram_available_bytes(),
                                     locked, moe_pf))
         return;
+    int slow = 0;
+    double took = 0;
+    bool cold = mapping_looks_cold(m, &slow, &took);
+    fprintf(stderr, "prefetch: residency probe %d pages in %.2f ms, %d slow (over %.0f us): "
+            "%s\n", PROBE_PAGES, took * 1e3, slow, PROBE_SLOW_S * 1e6,
+            cold ? "cold, hinting" : "warm, no hint");
+    if (!cold) return;
     uint32_t np = gguf_map_count(&m->gf);
     for (uint32_t i = 0; i < np; i++) {
         size_t sz;
@@ -2043,17 +2087,15 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
     if (m->moe_prefetch)
         fprintf(stderr, "moe: prefetching routed experts as whole blocks "
                 "(--moe-prefetch off disables)\n");
-    // Whole-mapping WILLNEED sweep for a model that FITS — OPT-IN
-    // (RUNNER_PREFETCH=1), and the measurement that made it opt-in is the
-    // point: on the 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load
-    // 60% SLOWER (11.5 s demand-faulted vs 18.4 s swept, interleaved,
-    // evicted between arms) — macOS demand paging already outruns its own
-    // WILLNEED readahead, the same shape as the 2026-08-31 mmap-vs-pread
-    // result. Linux batches faults under WILLNEED and Windows has
-    // PrefetchVirtualMemory, so the lever stays for those platforms to
-    // measure on their own boxes; a default is a measurement, not a hope.
-    // EXPERIMENT R3.39.9: the sweep moved to prefetch_before_upload(), called
-    // from model_load_inner() before the device upload.
+    // The whole-mapping WILLNEED sweep (RUNNER_PREFETCH=1) is opt-in on every
+    // platform because each one measured it a loss where it used to run, here,
+    // after model_load_inner() and so after the device upload: macOS 60%
+    // slower cold (18.4 s swept vs 11.5 s demand faulted on a 63 GB file),
+    // Linux 1.229x the time on the CPU and 1.006x and 0.9995x on CUDA,
+    // Windows 1.159x cold and 1.12x warm on CUDA (docs/speed-defaults.md).
+    // EXPERIMENT R3.39.9/R3.39.10: the sweep moved to prefetch_before_upload(),
+    // called from model_load_inner() before the device upload, and fires only
+    // when the residency probe finds the file cold.
     return true;
 }
 
