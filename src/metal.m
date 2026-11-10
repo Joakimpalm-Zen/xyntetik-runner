@@ -718,6 +718,13 @@ bool gpu_available(char *name, int cap) {
 
 bool gpu_unified_memory(void) { return true; }
 
+// No WDDM on macOS: unified memory has no separate video budget to report.
+bool gpu_os_vidmem(const model_t *m, uint64_t *budget, uint64_t *usage,
+                   uint64_t *nonlocal) {
+    (void)m; (void)budget; (void)usage; (void)nonlocal;
+    return false;
+}
+
 // unified memory: --fit's RAM figure is already the device's budget
 bool gpu_offload_budget(int reserve_vram_pct, uint64_t *budget,
                         uint64_t *headroom) {

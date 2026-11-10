@@ -4182,6 +4182,23 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
         o->ov.repeat_penalty = (float)repeat_penalty;
         o->ov.has_repeat_penalty = true;
         o->n_predict = replay_n_predict;
+        // R10.12.3.2: a served turn the server cut from outside the model (a
+        // cancel, its deadline, the drain) stopped at a token boundary the
+        // model did not choose. The tokens before it are the model's, so the
+        // replay generates exactly those and no further.
+        jv *vcut = jv_get(jv_get(vr->rec, "serve"), "cut");
+        if (vcut) {
+            const char *c = jv_str(vcut, "");
+            jv *otok = jv_get(jv_get(vr->rec, "output"), "tokens");
+            if ((strcmp(c, "cancelled") && strcmp(c, "timeout") && strcmp(c, "shutdown")) ||
+                !otok || otok->type != J_ARR || otok->n > replay_n_predict) {
+                fprintf(stderr, "UNVERIFIABLE: malformed serve.cut\n");
+                jv_free(vr->rec);
+                *rc = 3;
+                return true;
+            }
+            o->n_predict = otok->n;
+        }
     }
 
     return false;

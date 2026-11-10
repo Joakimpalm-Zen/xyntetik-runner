@@ -1372,6 +1372,67 @@ bool model_paging_note_wanted(uint64_t faults, int tokens) {
     return faults >= floor;
 }
 
+// cuda.c trims the host pages of every tensor the device holds right after
+// the upload, so on a run whose weights all live in a discrete device's own
+// memory the faults a request takes are not weight pages coming back: on
+// Windows the counter is every fault the process takes, video memory paged
+// between the card and system memory included. A unified-memory backend's
+// device weights are the file mapping itself (Metal), so it never counts.
+bool model_weights_on_device(const model_t *m) {
+    if (!m || !m->gpu || m->gpu_layers < m->n_layer) return false;
+    if (m->cpu_moe && m->moe_host)
+        for (int l = 0; l < m->n_layer; l++)
+            if (m->moe_host[l]) return false;
+    return !gpu_unified_memory();
+}
+
+// R3.49: a fully offloaded gpt-oss logged "[837210 page-ins ... weights not
+// resident]" per request at a fifth of its normal speed, with every weight on
+// the card. The count was real, the explanation was not: say only what is
+// known when the weights cannot be the cause, and give the video memory
+// figures that would show an eviction.
+// Append s to out[0..cap), keeping it terminated; a full buffer truncates.
+static void note_cat(char *out, size_t cap, size_t *n, const char *s) {
+    if (*n + 1 >= cap) return;
+    size_t l = strlen(s), room = cap - 1 - *n;
+    if (l > room) l = room;
+    memcpy(out + *n, s, l);
+    *n += l;
+    out[*n] = '\0';
+}
+
+size_t model_paging_note(char *out, size_t cap, uint64_t faults, int tokens,
+                         bool on_device, const model_vidmem *vm) {
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    if (!model_paging_note_wanted(faults, tokens)) return 0;
+    size_t n = 0;
+    char piece[128];   // each piece's longest form fits, so none is cut here
+    if (on_device)
+        snprintf(piece, sizeof piece, " [%llu page faults during the request",
+                 (unsigned long long)faults);
+    else   // the wording this note always had, byte for byte
+        snprintf(piece, sizeof piece, " [%llu page-ins \u2014 weights not resident",
+                 (unsigned long long)faults);
+    note_cat(out, cap, &n, piece);
+    if (vm && vm->known && vm->budget) {
+        if (vm->usage > vm->budget)
+            snprintf(piece, sizeof piece, "; video memory over budget by %.2f GB",
+                     (double)(vm->usage - vm->budget) / 1e9);
+        else
+            snprintf(piece, sizeof piece, "; video memory %.2f of %.2f GB budget",
+                     (double)vm->usage / 1e9, (double)vm->budget / 1e9);
+        note_cat(out, cap, &n, piece);
+        if (vm->nonlocal >= 1000000ull) {
+            snprintf(piece, sizeof piece, ", %.0f MB in shared memory",
+                     (double)vm->nonlocal / 1e6);
+            note_cat(out, cap, &n, piece);
+        }
+    }
+    note_cat(out, cap, &n, "]");
+    return n;
+}
+
 bool model_residency_warning(uint64_t need, uint64_t hot, uint64_t have,
                              bool locked, char *buf, size_t n) {
     // Wired weights cannot be evicted, so every prediction below is
