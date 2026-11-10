@@ -409,6 +409,7 @@ int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
             pthread_mutex_unlock(&SV.swap_mu);
             return SWAP_LOAD_FAILED;
         }
+        prefix_cache_fit_model(s->m);   // R4.26.13: the swapped-in model's own entry
         s->e.ignore_eos = SV.ignore_eos;
         if (SV.single && SV.mp.mtp) {
             // engine_init resets execution flags. The head is reloaded by

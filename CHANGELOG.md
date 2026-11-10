@@ -8,6 +8,27 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **The shared prefix cache's default budget is sized from the served model (R4.26.13).**
+  - **Before:** `RUNNER_PREFIX_CACHE_MB` was a fixed 512 MB. An entry over half the budget is not stored whole: a
+    recurrent model stores nothing, a dense one a truncated prefix. Even after R3.44, Qwen3.5-4B could not cache a
+    prompt past 6,048 tokens.
+  - **Now, when it is unset:** each model a server loads raises the budget to hold one of its own full-context entries
+    under that rule, twice the entry. It is never below 512 MB and never above an eighth of the RAM the process may
+    use. The server prints the figure at startup; a set value is used as given.
+  - **Qwen3.5-4B Q4_K_M, `-c 16384`:** budget 1,158 MB.
+    - A 7,370-token prompt is now stored, so a later request that extends it forks 7,370 cached tokens.
+    - Prefill 0.14 s on CUDA against 3.46 s cold, and 0.46 s on the CPU against 111.7 s cold.
+    - The text is identical to the cold run's.
+    - Main stored nothing and re-prefilled.
+  - **Qwen3.6-35B-A3B Q4_K_M, `-c 32768`:** budget 1,447 MB. At 7,370 tokens main already stored the entry (it fits
+    under 256 MB), so nothing changes there. Past about 8,860 tokens main stored nothing. At 19,998 tokens main re-prefilled in 107.7 s; the fix forks 19,988 cached tokens in 0.40 s, with identical text.
+  - **CUDA too:** a GPU-backed hybrid slot forks a shared entry through the host (R4.26.7), against what the MANUAL
+    said. It is corrected.
+  - **Checks:**
+    - `tests/test_prefix.c` checks the sizing rule at its bounds: the floor, twice the entry, the RAM cap, saturation.
+    - `tests/test_prefix_budget.py` checks the server's reported budget against a fixture's declared entry cost and
+      the RAM `--caps` reports. It also checks the floor, and that a set value wins.
+
 - **Fix: `--fit` counted a declared NextN/MTP block as a layer of the trunk (R3.45).**
   - **The bug:** a GGUF that declares a predictor block (`nextn_predict_layers`) counts it in `block_count`. The
     loader takes it off the trunk and gives it KV rows and device memory only when `--mtp` (or `--draft mtp`) binds

@@ -625,6 +625,18 @@ void   prefix_cache_stats_get(prefix_cache_stats *out);
 void   prefix_cache_clear(void);
 // host bytes one n-token snapshot of this model would occupy
 size_t prefix_cache_entry_bytes(const model_t *m, int n);
+// R4.26.13: the default budget for a model whose full-context entry costs
+// `entry_bytes`: room for one such entry under the half-budget rule (twice
+// it), never below PFX_BUDGET_FLOOR and never above an eighth of `ram_bytes`
+// (0: no cap known, the floor alone).
+#define PFX_BUDGET_FLOOR ((size_t)512 * 1024 * 1024)
+size_t prefix_cache_budget_for(size_t entry_bytes, uint64_t ram_bytes);
+// With RUNNER_PREFIX_CACHE_MB unset, raise the budget to
+// prefix_cache_budget_for(this model's n_ctx entry, plat_ram_bytes()) and
+// say so on stderr; a set RUNNER_PREFIX_CACHE_MB is used as given. Called
+// once per model a server loads (its slots, a registry swap); it only
+// raises, so a swap to a smaller model keeps the larger budget's ceiling.
+void   prefix_cache_fit_model(const model_t *m);
 
 // ---- named contexts (R10.4) ---------------------------------------------
 //
