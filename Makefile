@@ -1058,11 +1058,13 @@ $(TEST_TRAIN_GPU): $(TEST_TRAIN_GPU_SRC) $(HDR) tests/dn_ref.h tests/attn_ref.h
 # with RUNNER_CANON_KERNELS and the strict float regime -- not taken from the
 # shared object, which is built without it and would answer a different
 # question -- for the same reason test-canon-kernels does it that way.
+# QUANTS_CFLAGS, not CFLAGS: under -ffast-math gcc reassociates the host
+# Q4_K kernel, and the reference stops being the canonical order (R12.1b).
 TEST_MVCANON_SRC = tests/test_mvcanon.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                    $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
                    $(GPU_OBJ)
 $(TEST_MVCANON): $(TEST_MVCANON_SRC) src/quants.c $(HDR) test.gguf test-q8.gguf
-	$(CC) $(CFLAGS) -ffp-contract=off -DRUNNER_CANON_KERNELS -I src \
+	$(CC) $(QUANTS_CFLAGS) -ffp-contract=off -DRUNNER_CANON_KERNELS -I src \
 	    $(TEST_MVCANON_SRC) src/quants.c -o $@ $(LDFLAGS)
 
 test-yarn.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
@@ -1670,6 +1672,18 @@ test-q6k.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
 	$(PYTHON) scripts/make-test-model.py --wide --n-ff 2048 test-q6k-src.gguf > /dev/null
 	./$(RUNNER_EXE) -m test-q6k-src.gguf --quantize test-q6k.gguf --quant q6_k > /dev/null
 	rm -f test-q6k-src.gguf
+
+# Q5_K and Q4_0 at the same shapes, written by the runner's own quantizer:
+# with test-q4k.gguf and test-q6k.gguf they give the device canonical-order
+# matvecs (R12.1b) one fixture per type to match the host on.
+test-q5k.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
+	$(PYTHON) scripts/make-test-model.py --wide --n-ff 2048 test-q5k-src.gguf > /dev/null
+	./$(RUNNER_EXE) -m test-q5k-src.gguf --quantize test-q5k.gguf --quant q5_k > /dev/null
+	rm -f test-q5k-src.gguf
+test-q40.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
+	$(PYTHON) scripts/make-test-model.py --wide --n-ff 2048 test-q40-src.gguf > /dev/null
+	./$(RUNNER_EXE) -m test-q40-src.gguf --quantize test-q40.gguf --quant q4_0 > /dev/null
+	rm -f test-q40-src.gguf
 
 # BF16 reaches its own CUDA decode-microbatch twins. The F32 and Q8_0 runs do
 # not execute k_gemvb_bf16_x4/_x8, so neither can hold their identity contract.
@@ -3164,7 +3178,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
-      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q6k.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf \
+      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf \
       test-qk.gguf test-gemma3.gguf test-gemma4.gguf test-es.gguf test-muse.gguf test-granite.gguf \
       test-gemma3-62.gguf test-gemma3-26.gguf test-qwen4exp.gguf test-lfm2.gguf test-lfm2-moe.gguf
 	./$(TEST_RECURRENT)
@@ -3267,8 +3281,12 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_MVT) test-q8.gguf
 	./$(TEST_MVT) test-bf16.gguf
 	./$(TEST_TRAIN_GPU)
-	./$(TEST_MVCANON)
-	./$(TEST_MVCANON) test-q8.gguf
+	./$(TEST_MVCANON) test.gguf F32
+	./$(TEST_MVCANON) test-q8.gguf Q8_0
+	./$(TEST_MVCANON) test-q4k.gguf Q4_K
+	./$(TEST_MVCANON) test-q5k.gguf Q5_K
+	./$(TEST_MVCANON) test-q6k.gguf Q6_K
+	./$(TEST_MVCANON) test-q40.gguf Q4_0
 	./$(TEST_BIND)
 	./$(TEST_HOST_HEADER)
 	./$(TEST_RESIDENCY)

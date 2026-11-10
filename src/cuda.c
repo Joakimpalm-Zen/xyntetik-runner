@@ -2502,6 +2502,10 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_mvcanon[T_F32],  "k_mvcanon_f32" },
         { &w->f_mvcanon[T_F16],  "k_mvcanon_f16" },
         { &w->f_mvcanon[T_Q8_0], "k_mvcanon_q8_0" },
+        { &w->f_mvcanon[T_Q4_0], "k_mvcanon_q4_0" },
+        { &w->f_mvcanon[T_Q4_K], "k_mvcanon_q4_K" },
+        { &w->f_mvcanon[T_Q5_K], "k_mvcanon_q5_K" },
+        { &w->f_mvcanon[T_Q6_K], "k_mvcanon_q6_K" },
         { &w->f_mvt[T_F32],  "k_mvt_f32" },
         { &w->f_mvt[T_F16],  "k_mvt_f16" },
         { &w->f_mvt[T_BF16], "k_mvt_bf16" },
@@ -8808,8 +8812,9 @@ void gpu_lora_unbind(model_t *m) {
 // throughput primitive, not the integrated training forward, the same way
 // gpu_mvt was before slices 2 to 4 consumed it.
 //
-// false = no backend, no kernel for this type (only F32/F16/Q8_0 have a
-// canonical order defined today), or the tensor is not device-resident.
+// false = no backend, no kernel for this type (F32, F16, Q8_0, and since
+// R12.1b Q4_0, Q4_K, Q5_K and Q6_K have a canonical order), or the tensor is
+// not device-resident.
 bool gpu_mvcanon(model_t *m, const gguf_tensor *w, const float *x, float *y,
                  int n_in, int n_out) {
     gpu_t *g = m->gpu;

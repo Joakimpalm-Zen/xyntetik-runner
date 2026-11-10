@@ -8,6 +8,19 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **CUDA: the canonical-order matvec gains Q4_0, Q4_K, Q5_K and Q6_K, bit-identical to the host (R12.1b).**
+  - **What it is:** `gpu_mvcanon` is the device forward matvec of the training path (R8.7.1). It computes the host's
+    canonical association, so an adapter trained through it keeps the CPU's bytes. It took F32, F16 and Q8_0; every
+    projection of a Q4_K_M model now has a kernel.
+  - **How it holds:** every product that meets an addition outside an explicit `fmaf` is spelled `__fmul_rn` or
+    `__fadd_rn`, so nvcc's default contraction cannot fuse what the CPU rounds twice.
+  - **Checks:** `test-mvcanon` compares every row with memcmp and now walks every layer's projections and the head.
+    It runs one fixture per type: the new `test-q40.gguf` and `test-q5k.gguf`, beside `test-q4k.gguf` and
+    `test-q6k.gguf`. A type a fixture is named for must reach the kernel, or the check fails.
+  - **Fix to the check itself:** its host reference compiled `quants.c` with `-ffast-math`, against its own comment.
+    Under it, gcc reassociates the host Q4_K kernel, so the reference stopped being the canonical order. It now takes
+    the engine's strict flags, as `test-canon-kernels` does.
+
 - **The T3 (canonical) build gains Q4_0, Q4_K, Q5_K and Q6_K, and names the types it cannot run canonically
   (R12.1b).**
   - **The kernels:** each type has one reduction tree on every ISA, the AVX2 kernel's own shape (the reference, as

@@ -18,8 +18,12 @@
 // built without it and would answer a different question.
 //
 // Skips (not passes) without a CUDA device or without a kernel for the type.
-// F32, F16 and Q8_0 have a canonical order; the k-quants do not yet, and
-// gpu_mvcanon refuses them by name rather than guessing one.
+// F32, F16, Q8_0 and, since R12.1b, Q4_0, Q4_K, Q5_K and Q6_K have a
+// canonical order; gpu_mvcanon refuses every other type by name rather than
+// guessing one. Every layer's projections are compared, so a real model
+// reaches all of its weight types. The optional second argument names the
+// types the file must exercise ("Q4_K,Q6_K"): a fixture that no longer holds
+// one fails rather than skipping it unseen.
 #include "runner.h"
 
 #include <math.h>
@@ -47,6 +51,7 @@ static float frnd(void) {
 
 int main(int argc, char **argv) {
     const char *path = argc > 1 ? argv[1] : "test.gguf";
+    const char *want = argc > 2 ? argv[2] : "";
     f16_init();
     model_params p;
     memset(&p, 0, sizeof(p));
@@ -65,11 +70,20 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    int tested = 0;
-    for (int l = 0; l < m.n_layer && l < 2; l++) {
-        gguf_tensor *ws[] = { m.layers[l].wq, m.layers[l].w_down,
-                              m.layers[l].w_up };
-        for (size_t k = 0; k < sizeof(ws) / sizeof(*ws); k++) {
+    int tested = 0, per_type[64] = { 0 };
+    for (int l = 0; l <= m.n_layer; l++) {   // the last pass is the head
+        gguf_tensor *lw[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+        if (l < m.n_layer) {
+            layer_t *L = &m.layers[l];
+            gguf_tensor *t[] = { L->wq, L->wk, L->wv, L->wo, L->w_gate,
+                                 L->w_up, L->w_down, L->wqkv, L->wq_gate,
+                                 L->ssm_out };
+            memcpy(lw, t, sizeof(t));
+        }
+        gguf_tensor *head[] = { m.output };
+        gguf_tensor **ws = l < m.n_layer ? lw : head;
+        size_t nw = l < m.n_layer ? sizeof(lw) / sizeof(*lw) : 1;
+        for (size_t k = 0; k < nw; k++) {
             gguf_tensor *w = ws[k];
             if (!w) continue;
             int n_in = (int)w->ne[0], n_out = (int)w->ne[1];
@@ -83,8 +97,8 @@ int main(int argc, char **argv) {
             memset(y_gpu2, 0x5A, sizeof(float) * (size_t)n_out);
 
             if (!gpu_mvcanon(&m, w, x, y_gpu, n_in, n_out)) {
-                printf("mvcanon: %s — no canonical kernel (type %d), "
-                       "skipping\n", w->name, w->type);
+                printf("mvcanon: %s: no canonical kernel (%s), "
+                       "skipping\n", w->name, ggml_type_name(w->type));
                 free(x); free(y_cpu); free(y_gpu); free(y_gpu2);
                 continue;
             }
@@ -93,21 +107,44 @@ int main(int argc, char **argv) {
                 y_cpu[r] = vec_dot(w->type,
                                    (const uint8_t *)w->data + (size_t)r * rs,
                                    x, n_in);
-            CHECK(memcmp(y_cpu, y_gpu, sizeof(float) * (size_t)n_out) == 0,
-                  "%s [%d x %d]: device result differs from the canonical "
-                  "host dot", w->name, n_in, n_out);
+            int bad = 0, first = -1;
+            for (int r = 0; r < n_out; r++)
+                if (memcmp(&y_cpu[r], &y_gpu[r], sizeof(float))) {
+                    if (first < 0) first = r;
+                    bad++;
+                }
+            CHECK(!bad, "%s [%d x %d]: device result differs from the "
+                  "canonical host dot in %d rows (row %d: host %a, device %a)",
+                  w->name, n_in, n_out, bad, first, first < 0 ? 0 : y_cpu[first],
+                  first < 0 ? 0 : y_gpu[first]);
             CHECK(gpu_mvcanon(&m, w, x, y_gpu2, n_in, n_out) &&
                   memcmp(y_gpu, y_gpu2, sizeof(float) * (size_t)n_out) == 0,
                   "%s: device result not deterministic across runs", w->name);
             tested++;
+            if (w->type < 64) per_type[w->type]++;
             free(x); free(y_cpu); free(y_gpu); free(y_gpu2);
         }
+    }
+    for (int t = 0; t < 64; t++)
+        if (per_type[t])
+            printf("mvcanon: %s %d tensors compared\n", ggml_type_name(t),
+                   per_type[t]);
+    for (const char *p = want; *p; ) {
+        size_t n = strcspn(p, ",");
+        int seen = 0;
+        for (int t = 0; t < 64; t++)
+            if (per_type[t] && strlen(ggml_type_name(t)) == n &&
+                !strncmp(ggml_type_name(t), p, n))
+                seen = 1;
+        CHECK(seen, "%s: no %.*s tensor reached the canonical kernel",
+              path, (int)n, p);
+        p += n + (p[n] == ',');
     }
     if (!tested) {
         printf("mvcanon: no canonical kernels for this model's types — "
                "skipping (not passing)\n");
         model_free(&m);
-        return 0;
+        return g_fail;   // a named type that never ran is still a failure
     }
 
     // throughput on the widest tensor, printed rather than asserted: the
