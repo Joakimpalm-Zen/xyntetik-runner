@@ -377,6 +377,8 @@ Serve the adapter with `--lora`, or merge it into a Q8_0 or F16 file.
 Same data, seed and build write the same adapter bytes.
 `runner train --full` trains the weights themselves in place of an adapter:
 a float32 file in, a variant file out.
+On the CPU with `-b 1` the sampler and the trainer agree bit for bit:
+[measured beside vLLM and transformers](docs/train-serve-mismatch-2026-11.md).
 [Every adapter feature, explained](docs/lora.md) ·
 [Walkthrough](docs/train-lora-on-quantized-gguf.md) ·
 [Coverage and limits](MANUAL.md#adaptation)

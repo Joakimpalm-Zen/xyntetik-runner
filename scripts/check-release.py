@@ -416,8 +416,55 @@ def check(args):
             if proc.returncode != 0:
                 ok &= fail("device evidence is not current:\n" +
                            proc.stdout.rstrip())
+            # R6.44: the full CUDA gate for THIS version, as the compat
+            # report is asked for it. release-cuda-gate.py's smoke and probe
+            # cannot see a device target gone red: R3.56's check was red from
+            # 2026-11-04 to 2026-11-10 and no release gate in between ran it.
+            ok &= full_cuda_gate_recorded(args.device_evidence, version,
+                                          getattr(args, "evidence_root", None) or ROOT)
 
     return ok
+
+
+def full_cuda_gate_recorded(ledger, version, root):
+    """A CUDA class whose last_verified row names this version, was written
+    by scripts/cuda-gate.sh and passed, with the gate's summary committed at
+    its evidence path and agreeing with it (cuda-gate.v2, pass, same commit)."""
+    try:
+        classes = json.loads(Path(ledger).read_text(encoding="utf-8"))["classes"]
+    except (OSError, ValueError, KeyError) as e:
+        return fail(f"device evidence ledger {ledger} is unreadable: {e}")
+    cuda = []
+    for c in classes:
+        lv = c.get("last_verified") or {}
+        caps = lv.get("caps") or {}
+        if caps.get("gpu_backend") != "cuda":
+            continue
+        cuda.append(c.get("id"))
+        if (caps.get("version") != version or lv.get("result") != "pass"
+                or "scripts/cuda-gate.sh" not in (lv.get("ran") or "")):
+            continue
+        ev = lv.get("evidence")
+        if not ev:
+            return fail(f"{c.get('id')}: the full CUDA gate for {version} is recorded "
+                        f"without its summary (last_verified.evidence)")
+        try:
+            summary = json.loads((Path(root) / ev).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return fail(f"{c.get('id')}: the full CUDA gate summary {ev} is missing "
+                        f"or unreadable")
+        if (summary.get("schema") != "xyntetik.runner.cuda-gate.v2"
+                or summary.get("result") != "pass"
+                or summary.get("commit") != lv.get("commit")):
+            return fail(f"{c.get('id')}: the summary {ev} does not record the row's pass "
+                        f"(schema {summary.get('schema')}, result {summary.get('result')}, "
+                        f"commit {summary.get('commit')} against {lv.get('commit')})")
+        return True
+    return fail(
+        f"no full CUDA gate recorded for {version} (CUDA classes in the ledger: "
+        f"{', '.join(map(str, cuda)) or 'none'}): run scripts/cuda-gate.sh on the pin with "
+        f"tools/release-make first on PATH, then commit its summary and the class's "
+        f"last_verified row (docs/release-checklist.md, step 4)")
 
 
 HF_REPO = re.compile(r"https://huggingface\.co/(?:datasets/)?Joakimpalm-Zen/([A-Za-z0-9._-]+)")

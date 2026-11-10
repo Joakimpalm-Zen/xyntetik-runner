@@ -142,18 +142,53 @@ project venv, not the system python3).
 
 ## 4. CUDA gate (CUDA host), on the pin commit
 
-Build the binary at the pin commit with the pinned PTX, then:
+Build the binary at the pin commit with the pinned PTX and the release recipe
+(release.yml's make line), then run the full device gate on that build, and the release
+gate beside it:
 
 ```sh
+sha256sum runner > ../runner.sha256
+PATH="$PWD/tools/release-make:$PATH" GATE_MODEL=qwen3-0.6b-q8_0.gguf \
+  RUNNER_LLAMA_CPP_BIN=<llama.cpp bin> scripts/cuda-gate.sh . <out dir>
+sha256sum -c ../runner.sha256
 python scripts/release-cuda-gate.py --binary ./runner.exe \
   --model qwen3-0.6b-q8_0.gguf --version X.Y.Z [--card rtx3070]
 ```
 
-It runs the smoke (`--expect-version`) and the activation probe and writes
-`docs/compat-reports/cuda-smoke-X.Y.Z-DATE-CARD.json` and
-`cuda-act-probe-X.Y.Z-DATE-CARD.json`, with LF line endings and the home directory
-written as `~/`. Exit 0 only when both pass. 1.13.0: smoke pass, 13 checks, 0
-warnings; probe 16/16 finite and within float rounding.
+- **The full gate** (`scripts/cuda-gate.sh`) runs every device target the Makefile has,
+  and writes the class's `last_verified` row and the run's summary. Commit the summary
+  under `docs/device-runs-DATE/CLASS/`, and the row in `docs/device-evidence.json` with its
+  `evidence` pointing at that summary. `scripts/check-release.py` refuses the tag without a
+  passing row for the version and its committed summary (R6.44).
+  - The smoke and probe alone cannot see a device target gone red. test-cuda-qwen4exp's
+    MTP check was red from 2026-11-04 to 2026-11-10, through 1.14.0 and 1.15.0, and no
+    release gate ran it (R3.56).
+  - 1.16.0: 23 of 23 steps, about 14 minutes on the lab's CUDA MIG slice.
+- **`tools/release-make` first on PATH:** every make a gate step runs gets the release
+  recipe's CFLAGS on its command line.
+  - Without it a step relinks a different runner. A CFLAGS from the environment is
+    extended by the Makefile's `+=` lines and lands in another `.build/<id>`: 54
+    recompiles in the check that found it, 2026-11-10.
+  - The gate fails a run whose binary changed (its `binary-unchanged` step). The two
+    sha256 lines are the operator's own check of the same.
+- **`release-cuda-gate.py`** runs the smoke (`--expect-version`) and the activation probe,
+  and writes `docs/compat-reports/cuda-smoke-X.Y.Z-DATE-CARD.json` and
+  `cuda-act-probe-X.Y.Z-DATE-CARD.json`.
+  - They are written with LF line endings. The model and the binary are named relative
+    to the checkout, or by their file names when outside it, and any other home path is
+    written as `~/` (an absolute `--model` once left `~/<dir>/<file>` in a report).
+  - Exit 0 only when both pass. 1.13.0: smoke pass, 13 checks, 0 warnings; probe 16/16
+    finite and within float rounding.
+
+**Between releases (recommended):** the full gate on main's head once a day, at a quiet
+hour. A session is not a daemon, so something on the box has to start it:
+- **A cron entry on the CUDA host,** for example
+  `30 3 * * * cd <checkout> && git pull -q --ff-only && make runner && GATE_MODEL=<model> RUNNER_LLAMA_CPP_BIN=<dir> scripts/cuda-gate.sh . <out dir>`;
+- **or, where no cron can run,** the coordinator's daily check-in asks for it.
+
+A daily run would have caught R3.56 on 2026-11-05, the day after R3.3.7 changed the
+default draft width. Runs filtered by the files a target reads would not: a default in
+`src/main.c` broke a device target's comparison.
 
 Two reads on the same binary:
 

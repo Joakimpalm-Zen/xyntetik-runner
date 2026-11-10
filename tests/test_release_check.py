@@ -86,6 +86,7 @@ def good_args(tmp_path):
         current_docs=[],
         compat_reports=report_dir(tmp_path, "1.2.0-2026-01-01.json"),
         device_evidence=device_ledger(tmp_path),
+        evidence_root=tmp_path,
         model_tiers=tier_roster(tmp_path),
         tiers_today=TIERS_TODAY,
     )
@@ -128,8 +129,15 @@ def tier_roster(tmp_path, gated_on="2026-10-22", version="1.5.0"):
     return path
 
 
-def device_ledger(tmp_path, days_ago=1, result="pass", ownership=None):
-    """A ledger with one class, verified `days_ago` days ago.
+GATE_SUMMARY = "docs/device-runs-2026-01-01/test-cuda/cuda-gate-20260101T000000Z.json"
+
+
+def device_ledger(tmp_path, days_ago=1, result="pass", ownership=None, cuda_version="1.2.0",
+                  cuda_ran="scripts/cuda-gate.sh: test-cuda-gated", cuda_summary="pass"):
+    """A ledger with one class, verified `days_ago` days ago, and a borrowed
+    CUDA class whose full gate (scripts/cuda-gate.sh) passed for
+    `cuda_version`, its summary written under tmp_path as `cuda_summary`
+    says: "pass", "fail", "other-commit", or None for no file (R6.44).
 
     The real one lives in docs/ and describes real hardware; a test that read
     it would pass or fail on whether somebody had run the lab's Windows box
@@ -148,8 +156,25 @@ def device_ledger(tmp_path, days_ago=1, result="pass", ownership=None):
             **({"ownership": ownership} if ownership else {}),
             "last_verified": {"date": when.isoformat(), "commit": "abc123",
                               "ran": "make test", "result": result},
+        }, {
+            "id": "test-cuda",
+            "max_age_days": 45,
+            "ownership": "borrowed",
+            "last_verified": {"date": datetime.datetime.now(datetime.timezone.utc).date().isoformat(),
+                              "commit": "abc123", "ran": cuda_ran, "result": "pass",
+                              "caps": {"version": cuda_version, "gpu_backend": "cuda"},
+                              "evidence": GATE_SUMMARY},
         }],
     }) + "\n")
+    summary = tmp_path / GATE_SUMMARY
+    summary.parent.mkdir(parents=True, exist_ok=True)
+    if summary.exists():
+        summary.unlink()
+    if cuda_summary is not None:
+        write(summary, json.dumps({
+            "schema": "xyntetik.runner.cuda-gate.v2", "stamp": "20260101T000000Z",
+            "class": "test-cuda", "commit": "def456" if cuda_summary == "other-commit" else "abc123",
+            "result": "fail" if cuda_summary == "fail" else "pass", "steps": []}) + "\n")
     return path
 
 
@@ -201,6 +226,7 @@ def test_release_check_accepts_legacy_alpha_package_spelling(monkeypatch, tmp_pa
     write(args.python_pyproject, '[project]\nversion = "0.1.3a0"\n')
     write(args.release_workflow, "# release workflow\n")
     args.compat_reports = report_dir(tmp_path, "0.1.3-alpha-2026-01-01.json")
+    args.device_evidence = device_ledger(tmp_path, cuda_version="0.1.3-alpha")
     monkeypatch.setattr(check_release, "binary_version", lambda _: "runner 0.1.3-alpha")
     assert check_release.check(args)
 
@@ -358,6 +384,7 @@ def test_release_check_accepts_the_1x_banner(monkeypatch, tmp_path, capsys):
     write(args.python_pyproject, '[project]\nversion = "1.0.0"\n')
     write(args.release_workflow, "# release workflow\n")
     args.compat_reports = report_dir(tmp_path, "1.0.0-2026-01-01.json")
+    args.device_evidence = device_ledger(tmp_path, cuda_version="1.0.0")
     monkeypatch.setattr(check_release, "binary_version", lambda _: "runner 1.0.0")
     assert check_release.check(args)
 
@@ -1176,3 +1203,62 @@ def test_a_train_member_cut_before_the_switch_is_warned_not_failed(repo):
     assert code == 0, out
     assert "warning: train member" in out and "no changelog entry" in out
     assert "its branch was cut before changes/ existed" in out
+
+
+
+@needs_git_checkout
+def test_release_check_requires_the_full_cuda_gate_for_this_release(monkeypatch, tmp_path, capsys):
+    """R6.44: release-cuda-gate.py's smoke and probe pass on a binary whose
+    own device targets are red (R3.56's check was, from 2026-11-04 to
+    2026-11-10). The release needs scripts/cuda-gate.sh's pass for itself."""
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    assert check_release.check(args) is True
+    args.device_evidence = device_ledger(tmp_path, cuda_version="1.1.4")
+    assert check_release.check(args) is False
+    assert "no full CUDA gate recorded for 1.2.0" in capsys.readouterr().err
+    # a row for this version written by anything but the full gate does not count
+    args.device_evidence = device_ledger(tmp_path, cuda_ran="scripts/release-cuda-gate.py")
+    assert check_release.check(args) is False
+
+
+def test_release_check_refuses_a_full_gate_row_without_its_summary(monkeypatch, tmp_path, capsys):
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    args.device_evidence = device_ledger(tmp_path, cuda_summary=None)
+    assert check_release.check(args) is False
+    assert "missing or unreadable" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("summary", ["fail", "other-commit"])
+def test_release_check_refuses_a_summary_that_disagrees_with_its_row(monkeypatch, tmp_path, capsys,
+                                                                     summary):
+    _pinned(monkeypatch)
+    args = good_args(tmp_path)
+    args.device_evidence = device_ledger(tmp_path, cuda_summary=summary)
+    assert check_release.check(args) is False
+    assert "does not record the row's pass" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(shutil.which("make") is None or shutil.which("sh") is None,
+                    reason="needs make and sh")
+def test_release_make_puts_the_recipe_cflags_on_makes_command_line(tmp_path):
+    """tools/release-make/make, first on PATH, is how scripts/cuda-gate.sh runs
+    on a release binary without a step relinking it (R6.44): its CFLAGS must be
+    release.yml's own x86-64 line, on make's command line, and the wrapper must
+    find the real make rather than itself."""
+    import re
+    line = next(l for l in (ROOT / ".github/workflows/release.yml").read_text().splitlines()
+                if 'make CFLAGS="' in l)
+    recipe = re.search(r'make CFLAGS="([^"]*)"', line).group(1)
+    arch = re.search(r"arch_flags: (-march=x86-64-v3)",
+                     (ROOT / ".github/workflows/release.yml").read_text()).group(1)
+    want = recipe.replace("${{ matrix.arch_flags }}", arch)
+    write(tmp_path / "Makefile", 'CFLAGS += -DAPPENDED\nall:\n\t@echo "$(CFLAGS)"\n')
+    env = {**os.environ, "PATH": f"{ROOT / 'tools' / 'release-make'}{os.pathsep}{os.environ['PATH']}"}
+    env.pop("CFLAGS", None)
+    out = subprocess.run(["make", "-s", "-C", str(tmp_path)], env=env, capture_output=True, text=True,
+                         timeout=60)
+    assert out.returncode == 0, out.stderr
+    # a command-line CFLAGS is not extended by the Makefile's +=, so the objects are the recipe's
+    assert out.stdout.strip() == want, (out.stdout, want)

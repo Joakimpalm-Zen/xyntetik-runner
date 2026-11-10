@@ -12,7 +12,9 @@ queue once for both. Writes
     docs/compat-reports/cuda-smoke-VERSION-DATE-CARD.json
     docs/compat-reports/cuda-act-probe-VERSION-DATE-CARD.json
 
-with the home directory written as ~/ in both. Exit 0 only when both pass;
+with the model and the binary named relative to the checkout, or by their
+bare file names when they are outside it, and any other home path as ~/.
+Exit 0 only when both pass;
 the first nonzero exit of the two otherwise, after both have run.
 
 The NVFP4 prefill read is the operator's, on the same binary: it needs its
@@ -37,6 +39,29 @@ def redact_home(path):
     text = open(path, encoding="utf-8").read()
     for form in {home, home.replace("\\", "/"), home.replace("\\", "\\\\")}:
         text = text.replace(form, "~")
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+
+def shown(path):
+    """How a report names a file the gate was given: relative to the checkout
+    when it is inside it, else by its bare name. A model given by an absolute
+    path outside the checkout left ~/<tree>/<file> in the 1.16.0 smoke report
+    (home redaction keeps the tree), which the commit hook refuses."""
+    a = os.path.abspath(path)
+    same_drive = os.path.splitdrive(a)[0].lower() == os.path.splitdrive(ROOT)[0].lower()
+    rel = os.path.relpath(a, ROOT) if same_drive else ""
+    return rel.replace("\\", "/") if rel and not rel.startswith("..") else os.path.basename(a)
+
+
+def redact_paths(path, files):
+    """Each given file's absolute path, in either slash style, as shown()."""
+    text = open(path, encoding="utf-8").read()
+    for f in files:
+        to = shown(f)
+        for a in {os.path.abspath(f), os.path.realpath(f)}:
+            for form in {a, a.replace("\\", "/"), a.replace("\\", "\\\\")}:
+                text = text.replace(form, to)
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
 
@@ -71,6 +96,7 @@ def main():
     for name, argv, out in steps:
         rc = subprocess.run(argv).returncode
         if os.path.exists(out):
+            redact_paths(out, [a.model, a.binary])
             redact_home(out)
         print(f"release-cuda-gate: {name} exit {rc} ({os.path.relpath(out, ROOT)})")
         if rc and not first_bad:
