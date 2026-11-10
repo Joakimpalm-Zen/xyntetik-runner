@@ -8,6 +8,7 @@ cover the tensors it declares. That refusal is a safety property: it is what
 stops a truncated or crafted file from pointing a tensor outside the mapping.
 Both halves are asserted here.
 """
+import os
 import pathlib
 import re
 import struct
@@ -182,3 +183,38 @@ def test_fit_does_not_discount_an_unrecognized_ple_table(runner_bin, tmp_path, a
     assert p.returncode == 0, p.stderr.decode()
     assert "hot set" not in p.stdout.decode()
     assert "row-gathered" not in p.stdout.decode()
+
+
+# R3.48: deepseek2's KV as the loader lays it out. The absorbed form, the default, keeps one row a token and layer,
+# kv_lora_rank + rope wide, which V reads too; RUNNER_MLA_NAIVE=1 keeps the header's head_count_kv x key_length, K and
+# V each. The fit took the header's shape whatever the form: 10.7x the absorbed cache on DeepSeek-V2-Lite's geometry.
+# Anchor: make-test-model.py's declared shapes (layers, heads = head_count_kv, key_length, kv_lora_rank, rope).
+MLA_SHAPES = {
+    "default": ([], 2, 4, 16, 16, 8),
+    "v2-lite-attention": (["--mla-wide"], 2, 16, 192, 512, 64),
+}
+
+
+@pytest.mark.parametrize("naive", [False, True], ids=["absorbed", "naive"])
+@pytest.mark.parametrize("shape", sorted(MLA_SHAPES))
+def test_fit_and_the_loader_charge_deepseek2_kv_alike(runner_bin, tmp_path, shape, naive):
+    args, layers, heads, key, lora, rope = MLA_SHAPES[shape]
+    model = tmp_path / "ds.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--arch", "deepseek2", *args, str(model)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    per_tok = layers * 2 * heads * key * 2 if naive else layers * (lora + rope) * 2
+    env = {k: v for k, v in os.environ.items() if k != "RUNNER_MLA_NAIVE"}
+    if naive:
+        env["RUNNER_MLA_NAIVE"] = "1"
+    big, mid = 1 << 22, 1 << 14   # the fit allocates nothing; the load does
+    fit = subprocess.run([runner_bin, "--fit", str(model), "-c", str(big), "--gpu", "off"], cwd=ROOT,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, env=env)
+    assert fit.returncode == 0, fit.stderr.decode(errors="replace")
+    fit_gib = float(re.search(r"kv cache\s+([\d.]+) GiB", fit.stdout.decode()).group(1))
+    assert abs(fit_gib - per_tok * big / (1 << 30)) <= 0.006, (shape, naive, fit_gib)
+    load = subprocess.run([runner_bin, "-m", str(model), "-v", "-p", "hi", "-n", "1", "-c", str(mid), "--gpu", "off",
+                           "-t", "2"], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, env=env)
+    err = load.stderr.decode(errors="replace")
+    assert load.returncode == 0, err[-800:]
+    load_mb = float(re.search(r"kv cache\s+([\d.]+) MB", err).group(1))
+    assert abs(load_mb - per_tok * mid / 1e6) <= 0.06, (shape, naive, load_mb)

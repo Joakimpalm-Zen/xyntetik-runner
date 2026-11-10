@@ -785,7 +785,9 @@ int model_kv_ring_rows(int window, int batch, int n_ctx) {
 // R3.45: kv_dim covers every block the header declares; `trunk` is the
 // loader's n_layer (block_count less nextn_predict_layers), and a block
 // past it owns rows only when --mtp binds it.
-typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; int trunk; } fit_geom;
+// R3.48: v_shared, deepseek2's absorbed MLA: V reads the K row (in a format
+// K and V share), so a layer's row is K alone.
+typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; int trunk; bool v_shared; } fit_geom;
 
 // R3.44: the qwen35 family's Gated DeltaNet layers own no KV rows
 // (bind_meta_qwen35) unless RUNNER_KV_RECURRENT_ROWS=1 keeps the layout that
@@ -817,6 +819,14 @@ static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, bool mtp, 
     uint32_t head_dim = gguf_get_u32(g, FK("attention.key_length"),
                                      n_head ? n_embd / n_head : 0);
     uint32_t hd_swa = gguf_get_u32(g, FK("attention.key_length_swa"), head_dim);
+    // deepseek2's absorbed MLA, the loader's default (bind_meta_deepseek2):
+    // every head reads one row a token and layer, [k_pe | latent], and Q is
+    // that wide per head; RUNNER_MLA_NAIVE=1 keeps the header's shape
+    const char *naive = getenv("RUNNER_MLA_NAIVE");
+    bool mla_absorb = !strcmp(arch, "deepseek2") && !(naive && *naive && strcmp(naive, "0") != 0);
+    uint32_t mla_row = mla_absorb ? gguf_get_u32(g, FK("attention.kv_lora_rank"), 0) +
+                                    gguf_get_u32(g, FK("rope.dimension_count"), 0) : 0;
+    if (mla_absorb && mla_row > 0) head_dim = hd_swa = mla_row;
     gguf_kv *pat = gguf_get(g, FK("attention.sliding_window_pattern"));
     if (pat && (pat->type != GGUF_T_ARR || !pat->arr_raw ||
                 (pat->arr_type != GGUF_T_BOOL && pat->arr_type != GGUF_T_U8 &&
@@ -845,6 +855,7 @@ static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, bool mtp, 
         uint32_t hc = gguf_get_u32_idx(g, FK("attention.head_count"), (uint64_t)l, n_head);
         uint32_t kvh = hc ? gguf_get_u32_idx(g, FK("attention.head_count_kv"),
                                              (uint64_t)l, n_head) : 0;
+        if (mla_absorb && mla_row > 0 && kvh) kvh = 1;   // one shared row, MQA
         bool swa = pat && (uint64_t)l < pat->arr_n &&
                    ((const uint8_t *)pat->arr_raw)[l] != 0;
         uint64_t hd = swa ? hd_swa : head_dim;
@@ -854,13 +865,23 @@ static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, bool mtp, 
         if (l >= o->trunk && !mtp) o->kv_dim[l] = 0;
         if (o->kv_dim[l] > o->kv_dim_max) o->kv_dim_max = o->kv_dim[l];
     }
+    o->v_shared = mla_absorb && mla_row > 0;
     #undef FK
     return true;
 }
 
 // Bytes of one token's K and V row for one layer of width d, per KV format
 // (0 = f16, 1 = q8, 2 = k8v4, 3 = fp4), as model_k/v_bytes_of lay them out.
-static uint64_t fit_kv_row(uint64_t d, int kind) {
+static uint64_t fit_kv_row(uint64_t d, int kind, bool v_shared) {
+    // absorbed MLA (model_kv_v_shared): V is the K row whenever K and V share
+    // a format, so only k8v4 (q8 K, fp4 V) keeps a V row of its own
+    if (v_shared && kind != 2) {
+        switch (kind) {
+        case 0:  return d * 2;
+        case 1:  return (d / 32) * 34;
+        default: return (d / 16) * 9;
+        }
+    }
     switch (kind) {
     case 0:  return 2 * d * 2;
     case 1:  return 2 * (d / 32) * 34;
@@ -929,10 +950,10 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
         uint64_t d = geo.kv_dim[l];
         if (d % 32) q8_ok = false;
         if (d % 16) fp4_ok = false;
-        out->kv_f16_per_tok  += fit_kv_row(d, 0);
-        out->kv_q8_per_tok   += fit_kv_row(d, 1);
-        out->kv_k8v4_per_tok += fit_kv_row(d, 2);
-        out->kv_fp4_per_tok  += fit_kv_row(d, 3);
+        out->kv_f16_per_tok  += fit_kv_row(d, 0, geo.v_shared);
+        out->kv_q8_per_tok   += fit_kv_row(d, 1, geo.v_shared);
+        out->kv_k8v4_per_tok += fit_kv_row(d, 2, geo.v_shared);
+        out->kv_fp4_per_tok  += fit_kv_row(d, 3, geo.v_shared);
     }
     free(geo.kv_dim);
     if (!q8_ok) out->kv_q8_per_tok = out->kv_k8v4_per_tok = 0;
@@ -1138,12 +1159,12 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
         int G = 0;
         uint64_t mtp_kv = 0;
         for (int l = f->n_layer; f->mtp && l < blocks; l++)
-            mtp_kv += fit_kv_row(geo.kv_dim[l], k) * (uint64_t)f->n_ctx * slots;
+            mtp_kv += fit_kv_row(geo.kv_dim[l], k, geo.v_shared) * (uint64_t)f->n_ctx * slots;
         uint64_t used = f->gpu_fixed + mtp_w + mtp_kv, dev_w = 0;
         if (used <= budget) {
             // each layer pays its own KV rows (fit_geometry), not an average
             for (int l = 0; l < f->n_layer; l++)
-                cost[l] = lb[l] + fit_kv_row(geo.kv_dim[l], k) * (uint64_t)f->n_ctx * slots;
+                cost[l] = lb[l] + fit_kv_row(geo.kv_dim[l], k, geo.v_shared) * (uint64_t)f->n_ctx * slots;
             G = gpu_plan_prefix(cost, f->n_layer, max_layers, budget, &used);
             for (int l = 0; l < G; l++) dev_w += lb[l];
             // The loader's full-split test: the output head, once (a tied

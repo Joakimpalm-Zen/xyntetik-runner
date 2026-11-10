@@ -8,6 +8,23 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **Fix: `--fit` charged deepseek2's KV at the header's shape, up to 10.7x the cache the loader builds (R3.48).**
+  - **What the loader builds:** its default is the absorbed MLA form. That is one cache row a token and layer,
+    `kv_lora_rank + rope` wide, which every head and V read. Q is that wide per head.
+  - **What the fit charged:** `head_count_kv x key_length`, K and V each, which is the naive form
+    (`RUNNER_MLA_NAIVE=1`).
+  - **The cost on DeepSeek-V2-Lite-Chat Q6_K at ctx 131072:** the fit read 40.50 GiB of KV against the loader's 3.80.
+    On a 24 GB slice it predicted 4 to 8 layers on the GPU at `--reserve-vram` 40 to 70, where the loader places 14 to
+    25.
+  - **Now:** the fit takes the loader's MLA geometry, absorbed unless `RUNNER_MLA_NAIVE` is set.
+    - Its KV equals the loader's in f16, q8, k8v4 and fp4 (k8v4 keeps a V row of its own).
+    - Its split equals the loader's at 8 points across ctx 32k and 131k.
+    - Its fixed charge is byte-exact, on V2-Lite and on the fixture in both forms.
+  - **Checks:**
+    - `tests/test_fit_check.py`: the fit and the loader against the fixture's declared absorbed and naive shapes, at
+      the default and V2-Lite attention geometry.
+    - `tests/test_cuda_fit_hybrid.py`: deepseek2's fixed charge in both forms.
+
 - **Fix: a hybrid's recurrent state was held for every layer, including the layers that have none (R3.47).**
   - **The bug:** qwen35's Gated DeltaNet fold, Mamba-2's conv window and SSM state (granitehybrid, nemotron_h) and
     lfm2's conv ring sat in per-layer buffers sized for every layer, attention and MLP-only layers included. That held
