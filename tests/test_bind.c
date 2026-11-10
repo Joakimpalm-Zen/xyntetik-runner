@@ -198,16 +198,17 @@ static void test_windows_socket_handles_are_not_truncated(void) {
 }
 
 // The same check through the shipped binary, so a flag added anywhere at all
-// (a new file, a table, a generated parser) still trips the gate. Skipped with
-// a notice when the binary is absent — `make test` and both CI jobs build it
-// first, so in practice this always runs.
+// (a new file, a table, a generated parser) still trips the gate. A missing
+// binary is a failure, not a skip: `make test` and both CI jobs build it
+// first, and a skip here would let the gate pass with nothing checked.
 static const char *find_runner(void) {
-    // No "./" prefix on Windows: _popen routes through cmd.exe, where a
-    // leading forward slash reads as an option marker rather than a path, so
-    // `./runner.exe --help` captures nothing and the check silently vacuously
-    // failed. Plain "runner.exe" resolves from the working directory there.
+    // _popen routes through cmd.exe. "./runner.exe" is wrong there (a leading
+    // forward slash reads as an option marker), and so is a bare
+    // "runner.exe": with NoDefaultCurrentDirectoryInExePath set, cmd skips
+    // the working directory and runs whatever runner.exe is on PATH, or
+    // nothing (R10.30). ".\" names the binary that fopen found below.
 #ifdef _WIN32
-    static const char *candidates[] = { "runner.exe", "runner" };
+    static const char *candidates[] = { ".\\runner.exe", ".\\runner" };
 #else
     static const char *candidates[] = { "./runner", "./runner.exe" };
 #endif
@@ -238,8 +239,9 @@ static char *run_capture(const char *cmd) {
 static void test_binary_rejects_a_host_option(void) {
     const char *exe = find_runner();
     if (!exe) {
-        puts("test-bind: runner binary not built, skipping the CLI surface check");
-        return;
+        fprintf(stderr, "test-bind: no runner binary in the working directory;\n"
+                        "  build it first (make). The CLI surface check needs it.\n");
+        exit(1);
     }
 
     char cmd[512];
@@ -256,14 +258,20 @@ static void test_binary_rejects_a_host_option(void) {
                          "runner advertises an option that chooses a bind address.");
     free(help);
 
-    // And they must actually be rejected, not merely undocumented.
+    // And they must actually be rejected, not merely undocumented. The
+    // rejection must be runner's own diagnostic naming that option, so a
+    // shell's "not recognized" text or another program cannot satisfy it.
     for (size_t i = 0; i < sizeof opts / sizeof *opts; i++) {
         snprintf(cmd, sizeof cmd, "%s %s 0.0.0.0 --caps 2>&1", exe, opts[i]);
         char *out = run_capture(cmd);
-        if (!strstr(out, "unknown option")) {
+        char want[64];
+        snprintf(want, sizeof want, "error: unknown option %s", opts[i]);
+        if (!strstr(out, want) || !strstr(out, "see runner --help")) {
             fprintf(stderr,
-                    "test-bind: `runner %s 0.0.0.0` was not rejected as an unknown\n"
-                    "  option. Something now accepts a bind address.\n", opts[i]);
+                    "test-bind: `runner %s 0.0.0.0` was not rejected with runner's\n"
+                    "  \"%s\". Either something now accepts a bind address, or\n"
+                    "  this did not run runner at all. Captured:\n%.400s\n",
+                    opts[i], want, out);
             exit(1);
         }
         free(out);
