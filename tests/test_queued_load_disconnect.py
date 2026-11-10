@@ -10,6 +10,7 @@ made-up holder in it. How a queued socket is judged is the point of several
 cases here: only one that closed having sent nothing is gone. Its request is
 unread, so a close behind it cannot be seen, and that counts as live.
 """
+import contextlib
 import json
 import os
 import pathlib
@@ -19,6 +20,68 @@ import time
 import urllib.request
 
 import pytest
+
+if os.name == "nt":
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class _Overlapped(ctypes.Structure):
+        _fields_ = [("Internal", ctypes.c_void_p), ("InternalHigh", ctypes.c_void_p),
+                    ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD), ("hEvent", wintypes.HANDLE)]
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.DWORD, ctypes.POINTER(_Overlapped)]
+    _kernel32.LockFileEx.restype = wintypes.BOOL
+    _kernel32.UnlockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+                                       ctypes.POINTER(_Overlapped)]
+    _kernel32.UnlockFileEx.restype = wintypes.BOOL
+else:
+    import fcntl
+
+
+@contextlib.contextmanager
+def _ledger_lock(f, exclusive):
+    """The lock the runner takes on the ledger (plat_file_rmw), shared to read and exclusive to write.
+
+    R6.48: on Windows a byte-range lock is mandatory, so a plain read that lands while the runner holds
+    LockFileEx over the whole file fails with ERROR_LOCK_VIOLATION, which Python raises as PermissionError
+    (Errno 13). The queued load re-claims the ledger while it waits and the test polls it every 20 ms, so
+    now and then the two met. Taking the same lock waits for the runner's read-modify-write instead. On
+    POSIX the runner's flock is advisory and a plain read never failed; the lock there keeps a test write
+    from landing inside the runner's read-modify-write and being lost.
+    """
+    if os.name == "nt":
+        handle = msvcrt.get_osfhandle(f.fileno())
+        if not _kernel32.LockFileEx(handle, 2 if exclusive else 0, 0, 0xFFFFFFFF, 0xFFFFFFFF,
+                                    ctypes.byref(_Overlapped())):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            yield
+        finally:
+            _kernel32.UnlockFileEx(handle, 0, 0xFFFFFFFF, 0xFFFFFFFF, ctypes.byref(_Overlapped()))
+    else:
+        fcntl.flock(f, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _read_ledger(path):
+    with open(path, "rb") as f, _ledger_lock(f, exclusive=False):
+        return f.read().decode("utf-8")
+
+
+def _edit_ledger(path, edit):
+    """Rewrites the ledger as edit(old text) returns it, under the exclusive lock, in one step."""
+    with open(os.open(path, os.O_RDWR | os.O_CREAT, 0o600), "r+b") as f, _ledger_lock(f, exclusive=True):
+        new = edit(f.read().decode("utf-8")).encode("utf-8")
+        f.seek(0)
+        f.truncate()
+        f.write(new)
+        f.flush()
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests" / "conformance"))
@@ -34,17 +97,18 @@ class Rig:
         self.log = tmp_path / "server.log"
         self.ledger = tmp_path / LEDGER
 
+    # The ledger is the runner's too: every read and write here takes its lock (_ledger_lock).
     def hold(self):
         # 'P': a pending claim is subtracted from the free figure (test_vram_registry.c)
-        self.ledger.write_text(f"{os.getpid()}\t1\t0\t{int(time.time())}\tP\t{HELD_MB << 20}"
-                               "\t/models/holder.gguf\t0\n")
+        _edit_ledger(self.ledger, lambda _: f"{os.getpid()}\t1\t0\t{int(time.time())}\tP\t{HELD_MB << 20}"
+                                            "\t/models/holder.gguf\t0\n")
 
     def release(self):
-        lines = [l for l in self.ledger.read_text().splitlines(True) if "holder.gguf" not in l]
-        self.ledger.write_text("".join(lines))
+        _edit_ledger(self.ledger, lambda text: "".join(
+            l for l in text.splitlines(True) if "holder.gguf" not in l))
 
     def waiting(self):
-        return self.ledger.exists() and "\tW\t" in self.ledger.read_text()
+        return self.ledger.exists() and "\tW\t" in _read_ledger(self.ledger)
 
     def text(self):
         return self.log.read_text(errors="replace") if self.log.exists() else ""
