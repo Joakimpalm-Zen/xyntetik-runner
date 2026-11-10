@@ -2162,3 +2162,122 @@ FILE *plat_env_file_get(plat_env_file *f, const char *env) {
     while (atomic_load_explicit(&f->state, memory_order_acquire) != 2) plat_sleep_ms(1);
     return f->fp;
 }
+
+// ------------------------------------------------- a note for a silent wait
+//
+// See compat.h. The watcher waits on an event (Windows) or a condition
+// variable (POSIX) with a timeout; the operation's end signals it first when
+// it is quick. The line is said under the same lock end takes, so the answer
+// end gives is exact.
+
+#ifdef _WIN32
+struct plat_slow_note {
+    HANDLE thread, done;
+    CRITICAL_SECTION mu;
+    FILE *out;
+    char line[512];
+    DWORD after_ms;
+    bool said;
+};
+static DWORD WINAPI slow_note_watch(LPVOID arg) {
+    plat_slow_note *n = arg;
+    if (WaitForSingleObject(n->done, n->after_ms) == WAIT_TIMEOUT) {
+        EnterCriticalSection(&n->mu);
+        if (WaitForSingleObject(n->done, 0) == WAIT_TIMEOUT) {
+            fprintf(n->out, "%s\n", n->line);
+            fflush(n->out);
+            n->said = true;
+        }
+        LeaveCriticalSection(&n->mu);
+    }
+    return 0;
+}
+plat_slow_note *plat_slow_note_begin(FILE *out, const char *line, double after_s) {
+    plat_slow_note *n = calloc(1, sizeof *n);
+    if (!n) return NULL;
+    n->out = out;
+    snprintf(n->line, sizeof n->line, "%s", line);
+    n->after_ms = after_s > 0 ? (DWORD)(after_s * 1000.0) : 0;
+    InitializeCriticalSection(&n->mu);
+    n->done = CreateEventW(NULL, TRUE, FALSE, NULL);
+    n->thread = n->done ? CreateThread(NULL, 0, slow_note_watch, n, 0, NULL) : NULL;
+    if (!n->thread) {
+        if (n->done) CloseHandle(n->done);
+        DeleteCriticalSection(&n->mu);
+        free(n);
+        return NULL;
+    }
+    return n;
+}
+bool plat_slow_note_end(plat_slow_note *n) {
+    if (!n) return false;
+    EnterCriticalSection(&n->mu);
+    SetEvent(n->done);
+    LeaveCriticalSection(&n->mu);
+    WaitForSingleObject(n->thread, INFINITE);
+    bool said = n->said;
+    CloseHandle(n->thread);
+    CloseHandle(n->done);
+    DeleteCriticalSection(&n->mu);
+    free(n);
+    return said;
+}
+#else
+#include <pthread.h>
+#include <time.h>
+struct plat_slow_note {
+    pthread_t thread;
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    FILE *out;
+    char line[512];
+    struct timespec at;
+    bool done, said;
+};
+static void *slow_note_watch(void *arg) {
+    plat_slow_note *n = arg;
+    pthread_mutex_lock(&n->mu);
+    while (!n->done)
+        if (pthread_cond_timedwait(&n->cv, &n->mu, &n->at) == ETIMEDOUT) break;
+    if (!n->done) {
+        fprintf(n->out, "%s\n", n->line);
+        fflush(n->out);
+        n->said = true;
+    }
+    pthread_mutex_unlock(&n->mu);
+    return NULL;
+}
+plat_slow_note *plat_slow_note_begin(FILE *out, const char *line, double after_s) {
+    plat_slow_note *n = calloc(1, sizeof *n);
+    if (!n) return NULL;
+    n->out = out;
+    snprintf(n->line, sizeof n->line, "%s", line);
+    clock_gettime(CLOCK_REALTIME, &n->at);
+    if (after_s < 0) after_s = 0;
+    long long ns = (long long)n->at.tv_nsec + (long long)((after_s - (long long)after_s) * 1e9);
+    n->at.tv_sec += (time_t)after_s + (time_t)(ns / 1000000000LL);
+    n->at.tv_nsec = (long)(ns % 1000000000LL);
+    if (pthread_mutex_init(&n->mu, NULL) != 0) { free(n); return NULL; }
+    if (pthread_cond_init(&n->cv, NULL) != 0) { pthread_mutex_destroy(&n->mu); free(n); return NULL; }
+    if (pthread_create(&n->thread, NULL, slow_note_watch, n) != 0) {
+        pthread_cond_destroy(&n->cv);
+        pthread_mutex_destroy(&n->mu);
+        free(n);
+        return NULL;
+    }
+    return n;
+}
+bool plat_slow_note_end(plat_slow_note *n) {
+    if (!n) return false;
+    pthread_mutex_lock(&n->mu);
+    n->done = true;
+    pthread_cond_signal(&n->cv);
+    pthread_mutex_unlock(&n->mu);
+    pthread_join(n->thread, NULL);
+    bool said = n->said;
+    pthread_cond_destroy(&n->cv);
+    pthread_mutex_destroy(&n->mu);
+    free(n);
+    return said;
+}
+#endif

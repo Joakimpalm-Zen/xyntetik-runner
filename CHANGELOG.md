@@ -90,6 +90,15 @@ file each, until the release folds them in below. Add a new entry there, not her
   - **The listed QAT Q4_0 file** reads 0.2183 and 90.59% (CUDA), its own distance.
   - **Raw text, reported first there:** the conversion reads 0.3226, which is not explained.
 
+- **The first CUDA load on a new card or driver says why it waits (R10.29).**
+  - **Before:** the driver JIT-compiles the embedded PTX the first time, and the process sat silent. Measured on
+    an RTX 5070: 33.4 s cold, 0.40 s warm from the driver's cache.
+  - **Now:** a module load still running after 2 s says, once per process, on stderr: `gpu: compiling the GPU
+    kernels for this card and driver; this happens once per card and driver, later loads take them from the
+    driver's cache`. A warm load ends first and says nothing. stdout and receipts are unchanged.
+  - **Checks:** `test-slow-note` checks the note itself on every host: said once while a slow wait runs, never
+    for a quick one.
+
 - **`RUNNER_PREFETCH` stays opt-in on Linux and Windows, now measured there (R3.39.5).** On Windows with CUDA,
   turning it on made every load slower, with identical output: 1.159x the time from a cold file, 1.122x and 1.118x
   warm on two files. On Linux, on a host capped at 60 read IOPS, it was 1.229x on the CPU and 1.006x and 0.9995x on
