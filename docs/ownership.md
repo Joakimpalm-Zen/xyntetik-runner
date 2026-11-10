@@ -175,8 +175,10 @@ cut. This page records it and moves nothing.
 6. Advanced operations, in the manual.
 7. Shadow and the desktop tray, as companions, not reasons to choose Runner.
 
-## What comes next
+## The inventory
 
-A generated inventory of every public surface with its owner and a check that none is unowned: every CLI
-flag, HTTP route, `RUNNER_*` switch, record format and Python client name. That is the second half of R18.2.
-The switches already have their classes in the [deprecation review](deprecation-review-2026-11.md).
+The [capability inventory](capability-inventory.md) lists every public surface with its owner: every CLI
+option and subcommand, HTTP route, `RUNNER_*` switch, record format, Python and TypeScript client name, and
+every file under `src/`. `scripts/capability-inventory.py` reads it from the source, and its `--check`
+(run by `tests/test_doc_counts.py`) fails when a surface has no owner or the page is out of date. The
+switches have their classes in the [deprecation review](deprecation-review-2026-11.md).
