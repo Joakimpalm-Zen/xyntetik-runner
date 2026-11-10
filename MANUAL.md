@@ -464,9 +464,10 @@ token ids, it scores them bit for bit as a CPU server sampled them, when the
 server read the prompt the same way: `-b 1`, or `echo`, which scores the
 prompt one token at a time (`tests/test_rollout_identity.py`, every family
 the trainer admits). The default batched prompt pass takes another CPU route
-from 8 rows up, and the logprobs after it then move: up to 3.1e-3 on
-MiniCPM5-1B Q4_K_M after a 60-token prompt, 4.8e-6 on the quantized test
-fixtures. An adapter served on CUDA
+from 8 rows up, and the logprobs after it then move: up to 1.45e-2 over 384
+rollouts of MiniCPM5-1B Q4_K_M after prompts of 49 to 51 tokens
+([measured](docs/train-serve-mismatch-2026-11.md)), 4.8e-6 on the quantized
+test fixtures. An adapter served on CUDA
 agrees within the engine's measured CPU/GPU envelope (1.255e-3 max
 \|Δlogprob\| on Qwen2.5-1.5B Q4_K_M).
 

@@ -1,8 +1,9 @@
 """scripts/cuda-act-probe.py and scripts/release-cuda-gate.py without a device:
 the PTX the probe loads is the one the binary embeds and holds the three
 kernels with the parameter lists the probe passes; its comparison refuses a
-NaN; the gate writes a report's home directory as ~/ and names the NVFP4
-prefill read's prompt with its sha256."""
+NaN; the gate names the model and the binary without their trees, writes any
+other home path in a report as ~/, and names the NVFP4 prefill read's prompt
+with its sha256."""
 import hashlib
 import importlib.util
 import os
@@ -48,6 +49,53 @@ def test_the_gate_writes_the_home_directory_as_tilde(tmp_path, monkeypatch):
     report.write_text('{"binary": "/home/someone/runner/runner", "model": "/home/someone/m.gguf"}\n')
     gate.redact_home(str(report))
     assert report.read_text() == '{"binary": "~/runner/runner", "model": "~/m.gguf"}\n'
+
+
+def test_the_gate_names_the_model_and_binary_without_their_trees(tmp_path):
+    """R6.44: a model given by an absolute path outside the checkout put
+    ~/<dir>/qwen3-0.6b-q8_0.gguf in the 1.16.0 smoke report (home redaction
+    keeps the tree), and the commit hook refused the report. The model is now
+    named by its file name, and a file inside the checkout by its path in it."""
+    gate = load("release-cuda-gate")
+    model = tmp_path / "models" / "m.gguf"
+    model.parent.mkdir()
+    model.write_bytes(b"x")
+    binary = os.path.join(ROOT, "runner")
+    report = tmp_path / "r.json"
+    report.write_text('{"generation_output": "loaded %s | llama", "binary": "%s"}\n' % (model, binary))
+    gate.redact_paths(str(report), [str(model), binary])
+    text = report.read_text()
+    assert text == '{"generation_output": "loaded m.gguf | llama", "binary": "runner"}\n', text
+    assert str(tmp_path) not in text
+
+
+def test_the_gate_redacts_the_reports_it_writes(tmp_path, monkeypatch):
+    """main() runs the redaction on each report the smoke and probe write."""
+    gate = load("release-cuda-gate")
+    model = tmp_path / "far" / "m.gguf"
+    model.parent.mkdir()
+    model.write_bytes(b"x")
+    written = []
+
+    def fake_run(argv):
+        out = argv[argv.index("--out") + 1]
+        with open(out, "w", encoding="utf-8") as f:
+            f.write('{"generation_output": "loaded %s"}\n' % model)
+        written.append(out)
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    repo = tmp_path / "repo"   # a scratch checkout: the reports and the prompt fixture live under it
+    (repo / "docs" / "compat-reports").mkdir(parents=True)
+    (repo / "tests" / "fixtures").mkdir(parents=True)
+    (repo / "tests" / "fixtures" / "nvfp4-prefill-prompt.txt").write_bytes(b"p")
+    monkeypatch.setattr(gate, "ROOT", str(repo))
+    monkeypatch.setattr("sys.argv", ["release-cuda-gate.py", "--binary", "r", "--model", str(model),
+                                     "--version", "0.0.0", "--date", "2000-01-01"])
+    assert gate.main() == 0
+    assert len(written) == 2
+    for out in written:
+        assert open(out, encoding="utf-8").read() == '{"generation_output": "loaded m.gguf"}\n'
 
 
 def test_the_nvfp4_prefill_prompt_is_a_named_fixture(monkeypatch, capsys):
