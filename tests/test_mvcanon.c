@@ -52,6 +52,15 @@ static float frnd(void) {
 int main(int argc, char **argv) {
     const char *path = argc > 1 ? argv[1] : "test.gguf";
     const char *want = argc > 2 ? argv[2] : "";
+#ifdef __APPLE__
+    // Metal has no canonical-order shaders (gpu_mvcanon in metal.m returns
+    // false for every tensor), so a type named on the command line cannot
+    // reach one there. Requiring it failed `make test` on every Mac from
+    // R12.1b slice B until 1.16.0's release gate met it; the requirement
+    // stands on the backends that have the kernels.
+    if (*want) printf("mvcanon: %s named, not required on Metal (no canonical shaders)\n", want);
+    want = "";
+#endif
     f16_init();
     model_params p;
     memset(&p, 0, sizeof(p));
