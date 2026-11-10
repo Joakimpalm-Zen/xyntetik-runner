@@ -35,6 +35,7 @@ product claims.
 - [Current release/device records](compat-reports/) and [coverage inventory](../tests/compatibility/coverage.json)
 - [Compatibility method](compatibility-program.md), [CI/build verification](ci.md), and [Windows remote checks](windows-remote-checks.md)
 - [Contributing](../CONTRIBUTING.md), [security](../SECURITY.md), and [community results](community-results.md)
+- [Who owns what](ownership.md), [the capability inventory](capability-inventory.md), and [the November 2026 deprecation review](deprecation-review-2026-11.md)
 
 A measurement states its original model, configuration, build, hardware,
 and date. Documentation maintenance does not re-certify it for a new build.
