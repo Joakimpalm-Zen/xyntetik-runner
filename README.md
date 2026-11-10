@@ -359,8 +359,12 @@ same binary, with no Python stack. It is for small, targeted datasets. With
 NVIDIA GPU (90 s on the CPU beside it), and training covers dense models,
 the Qwen3.5 and Clef hybrids, and attention-only adapters on sparse-MoE
 models. On Qwen3-4B at
-4 bits, exact tool calls on a held-out set went from 0.69 to 1.00 in 316
-steps; two runs wrote the same adapter, checksum for checksum, an
+4 bits, a tool-use adapter does not carry past its own task: on 274
+hand-written prompts unlike its training, over 23 tools with overlapping
+names, the base made 211 exact calls through the chat API to the adapter's
+200 ([the shifted set](evals/tooluse-shifted/README.md#set-v2-2026-09-24-the-redesign-and-can-the-instrument-fail)).
+On its own task, exact tool calls on a held-out set went from 0.69 to 1.00
+in 316 steps; two runs wrote the same adapter, checksum for checksum, an
 independent tester reproduced that on a Tesla T4, and stock llama.cpp
 scores the adapter at the same 1.00.
 
