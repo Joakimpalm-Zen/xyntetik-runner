@@ -59,8 +59,8 @@ The 10 undocumented diagnostics: `DEBUG_MOE`, `DEBUG_VRAM`, `METAL_MOE_ROUTE_TRA
 `MOE_PROBE`, `MTP_DUMP`, `SAMPLE_STATS`, `TOOL_TRACE`, `TRAIN_FULL_DUMP`, `TRAIN_FULL_DUMP_TENSORS`.
 
 The 8 undocumented switches a test reads: `CUDA_WINDOW`, `CURL`, `METAL_ATTN_CHUNK`, `METAL_MOE_BATCH`,
-`MV_FUSE`, `TRAIN_MM_KERNEL`, `TRAIN_MVT_KERNEL`, `UNVERIFIED_LEASE_TTL`. Some are test seams in all but name, and some are A/B arms a
-gate uses; each needs reading before a verdict.
+`MV_FUSE`, `TRAIN_MM_KERNEL`, `TRAIN_MVT_KERNEL`, `UNVERIFIED_LEASE_TTL`. Some are test seams in all but
+name, and some are A/B arms a gate uses; each needs reading before a verdict.
 
 ## The retire candidates
 
