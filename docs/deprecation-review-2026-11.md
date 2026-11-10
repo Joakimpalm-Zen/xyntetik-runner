@@ -23,8 +23,9 @@ controls are the owner's choice.
 
 Read at main `d0dfb547`:
 
-1. Every `getenv("RUNNER_...")` in `src/`: 130 switches, plus two read through a helper (`RUNNER_METAL_STATS`,
-   `RUNNER_METAL_MOE_ROUTE_TRACE`).
+1. Every `RUNNER_...` name passed to `getenv` or to one of the helpers that read the environment
+   (`env_i64`, `env_f64`, `env_u64`, `plat_env_file_get`, `metal_env_on`, `metal_env_default_on`) in `src/`:
+   146 switches.
 2. For each switch:
    - is it documented in the MANUAL, the README or a page under `docs/` (kernel routes, speed defaults,
      LoRA, session images and the others);
@@ -42,22 +43,23 @@ Read at main `d0dfb547`:
 |---|---:|---|
 | Test seams (`RUNNER_TEST_*`, the injected failures) | 27 | keep: they are how tests reach failure paths |
 | Routes a receipt pins: `CUDA_ATTN_DEC`, `CUDA_ATTN_TC`, `CUDA_ATTN_TILE`, `CUDA_SM80`, `CUDA_TC2`, `MOE_GROUPED` | 6 | keep: `--verify` replays them |
-| Documented controls a test reads | 48 | keep, except the parked opt-ins below |
-| Documented controls no test reads | 15 | each gets a test or is retired (item below) |
-| Documented diagnostics (traces, profiles, stats, dumps) | 18 | keep |
-| Undocumented diagnostics | 8 | keep, and document them (item below) |
-| Undocumented switches a test reads | 7 | per-switch review (item below) |
+| Documented controls a test reads | 55 | keep, except the parked opt-ins below |
+| Documented controls no test reads | 17 | each gets a test or is retired (item below) |
+| Documented diagnostics (traces, profiles, stats, dumps, probes) | 20 | keep |
+| Undocumented diagnostics | 10 | keep, and document them (item below) |
+| Undocumented switches a test reads | 8 | per-switch review (item below) |
 | Undocumented switches no test reads | 3 | retire candidates (below) |
 
-The 15 documented controls with no test: `ATTN_BATCH`, `CUDA_ATTN_MLA`, `CUDA_ATTN_TC_FULL`,
+The 17 documented controls with no test: `ATTN_BATCH`, `CUDA_ATTN_MLA`, `CUDA_ATTN_TC_FULL`,
 `CUDA_ATTN_TILE512`, `CUDA_GRAPH_OFF`, `CUDA_GRAPH_RECUR`, `CUDA_KV_GATHER`, `CUDA_RECUR_SEQ`,
-`FORCE_REQUANT`, `GRAMMAR_FF`, `METAL_MV2`, `METAL_TENSOR`, `REQUANT_ONLY`, `SCHEMA_ALLOW_WS`, `TPOOL_SPIN`.
+`FORCE_REQUANT`, `GRAMMAR_FF`, `METAL_MV2`, `METAL_TENSOR`, `REQUANT_ONLY`, `RESPONSES_STORE_MB`,
+`SCHEMA_ALLOW_WS`, `TPOOL_SPIN`, `VRAM_PRIORITY`.
 
-The 8 undocumented diagnostics: `DEBUG_MOE`, `DEBUG_VRAM`, `METAL_MOE_ROUTE_TRACE`, `METAL_NAN_TRACE`,
-`SAMPLE_STATS`, `TOOL_TRACE`, `TRAIN_FULL_DUMP`, `TRAIN_FULL_DUMP_TENSORS`.
+The 10 undocumented diagnostics: `DEBUG_MOE`, `DEBUG_VRAM`, `METAL_MOE_ROUTE_TRACE`, `METAL_NAN_TRACE`,
+`MOE_PROBE`, `MTP_DUMP`, `SAMPLE_STATS`, `TOOL_TRACE`, `TRAIN_FULL_DUMP`, `TRAIN_FULL_DUMP_TENSORS`.
 
-The 7 undocumented switches a test reads: `CUDA_WINDOW`, `CURL`, `METAL_ATTN_CHUNK`, `METAL_MOE_BATCH`,
-`MV_FUSE`, `TRAIN_MM_KERNEL`, `TRAIN_MVT_KERNEL`. Some are test seams in all but name, and some are A/B arms a
+The 8 undocumented switches a test reads: `CUDA_WINDOW`, `CURL`, `METAL_ATTN_CHUNK`, `METAL_MOE_BATCH`,
+`MV_FUSE`, `TRAIN_MM_KERNEL`, `TRAIN_MVT_KERNEL`, `UNVERIFIED_LEASE_TTL`. Some are test seams in all but name, and some are A/B arms a
 gate uses; each needs reading before a verdict.
 
 ## The retire candidates
@@ -125,9 +127,9 @@ Each is a child of R18.8 in the plan:
 - R18.8.1: retire `RUNNER_CUDA_ATTN_TC_FULL` and its branch;
 - R18.8.2: retire the A/B switches of default-on routes: `ATTN_SPLIT`, `CUDA_ATTN_TILE512`, `METAL_MVFC`
   (reading its off path first), and `CUDA_ATTN_MLA` after a release;
-- R18.8.3: give each of the 15 documented controls with no test a test, or retire it;
-- R18.8.4: review the 7 undocumented switches a test reads;
-- R18.8.5: document the 8 undocumented diagnostics;
+- R18.8.3: give each of the 17 documented controls with no test a test, or retire it;
+- R18.8.4: review the 8 undocumented switches a test reads;
+- R18.8.5: document the 10 undocumented diagnostics;
 - R18.8.6 and R18.8.7: the owner's two choices, `--reasoning-temp` and the `/shadow` offload;
 - R18.8.8: the choice on `RUNNER_METAL_TENSOR` and `RUNNER_METAL_MOE_EM`, retire them with their kernels or
   keep them parked.
