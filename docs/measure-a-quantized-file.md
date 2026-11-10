@@ -93,6 +93,14 @@ model, but at 300 the paired test cannot tell small gaps apart. Add `--upcast-at
 stored in BF16 and float32 would not fit: the weights stay at BF16 and each
 decoder block's are cast to float32 for its arithmetic.
 
+The constants the model's own code computes when it is built (the
+non-persistent buffers, such as gemma's embedding scale, the square root of
+the hidden size) are built again in float32 from the model's config, because
+a BF16 load makes them already rounded. On gemma-4-26B the scale came out
+53.0 where float32 gives 53.066. Then every such tensor is compared with a
+float32 build of the same class, and the run stops, naming it, if any still
+differs. This path needs `accelerate`.
+
 The run stops if a score file's token ids differ from the reference
 tokenizer's ids for the same text. That is a finding about the GGUF's
 tokenizer, not a measurement problem: the file would read text differently

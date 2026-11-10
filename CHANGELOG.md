@@ -11,6 +11,25 @@ file each, until the release folds them in below. Add a new entry there, not her
 
 ## Unreleased
 
+- **Fix (scripts/gold-logits.py): `--upcast-at-use` scored gemma against a reference that was not its float32
+  forward (R6.36).**
+  - **The bug:** a load at the stored dtype builds the model in BF16. So a constant the model's code computes when it
+    is built, gemma's embedding scale (the square root of the hidden size, a non-persistent buffer), was born rounded:
+    53.0 on gemma-4-26B, where a float32 load gives 53.066. The later cast to float32 cannot give the digits back.
+  - **Who it touched:** every gemma-3 and gemma-4 size builds the scale this way (transformers 5.16.1).
+  - **The published rows scored this way:**
+    - [the gemma-4-26B reference](docs/gemma4-26b-reference-2026-11-10.md) and its tier row;
+    - the [gemma-4 E2B PLE study](docs/compat-reports/gemma-4-e2b-ple-quant-2026-10-31/README.md).
+  - **Not touched:** the golden passes loaded in full float32. The other classes scored with the option build no
+    constant differently in BF16.
+  - **The fix:** the option now copies every non-persistent float buffer and float tensor attribute from a float32
+    build of the same class (parameters on the meta device, so no weight is allocated). Then it compares each one and
+    refuses, naming it, if any still differs. scripts/act-trace-hf.py shares the function.
+  - **Checks:** tests/test_gold_logits.py has a text-only Gemma 4 at hidden size 80, where sqrt(80) is not exact in
+    BF16. Before the fix its logits differed from a float32 load's (8.9375 against 8.9442720) and the guard did not
+    exist; now they are bit for bit equal, and an un-rebuilt load is refused by name. The equivalence check that
+    passed before used hidden size 64, whose square root is exact in BF16.
+
 - **`ignore_eos` on a completion request (R10.31).**
   - **Before:** only `/v1/runner/sessions` read it. Chat, completions, Responses and Messages took only the
     server-wide `--ignore-eos`, so a fixed-length rollout could not be asked for per request.
