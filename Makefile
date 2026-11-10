@@ -3544,17 +3544,24 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	$(MAKE) --no-print-directory test-prune-experts PYTHON="$(PYTHON)"
 
 # The microbatch gates: byte identity of the batched forward against the
-# sequential one on the F32, Q8_0 and BF16 fixtures (plus the two declines),
-# the Metal microbatch identity on two fixtures, and the attention split.
+# sequential one on the F32, Q8_0, BF16, Q4_K, Q5_K and Q6_K fixtures (plus
+# the two declines), the Metal microbatch identity on two fixtures, and the
+# attention split.
 # They are the longest gates and share nothing with the rest, so CI runs them
 # as their own job.
-test-gates-batch: runner $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_ATTN_SPLIT) test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q6k.gguf test-muse.gguf
+test-gates-batch: runner $(TEST_BATCH) $(TEST_BATCH_ID) $(TEST_ATTN_SPLIT) test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q5k.gguf test-q6k.gguf test-muse.gguf
 	./$(TEST_BATCH)
 	@# and again on a QUANTIZED fixture: the F32 run above cannot reach a
 	@# quantized matvec at all, so on its own it gates nothing real
 	./$(TEST_BATCH) test-q8.gguf
 	@# BF16 has separate width-classed CUDA twins; cover both x4 and x8.
 	./$(TEST_BATCH) test-bf16.gguf
+	@# R6.39: the K-quant CUDA twins (GEMVB_KQ, GEMVB_Q6_K) the microbatch runs
+	@# carry their batch-1 GEMV's bits. Not covered here: the K-quant prefill
+	@# GEMMs (k_gemm_q4_K/_q5_K/_q6_K, over 8 columns), which do not.
+	./$(TEST_BATCH) test-q4k.gguf
+	./$(TEST_BATCH) test-q5k.gguf
+	./$(TEST_BATCH) test-q6k.gguf
 	@# A rope-enabled dense Mamba-2 hybrid must decline the CUDA microbatch:
 	@# fwd_batch has no recurrent/skip-layer path and would treat its NULL
 	@# attention projections as dense weights. The sequential fallback remains
