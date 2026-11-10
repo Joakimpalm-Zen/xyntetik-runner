@@ -769,7 +769,7 @@ typedef struct {
     bool  parallel;
     int   max_calls;
     int   proto;          // enum tool_proto — the native protocol, or TP_GENERIC
-    struct jv *tools;     // borrowed request declarations for native compiler
+    struct jv *tools;     // borrowed declarations for compilation and receipts
     bool  owns_tools;     // Anthropic translation survives prompt construction
     // Why a tool's (or the final branch's) $refs could not be inlined into
     // schema_src, embedded as sent instead: the reason the compile of that

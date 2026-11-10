@@ -46,6 +46,14 @@ file each, until the release folds them in below. Add a new entry there, not her
   (gemma-4-26B-A4B at 4k: 22 of 30 against the load's 23). It now applies the same test, charges the same rows,
   and marks such a split `with the KV ring`; the `kv cache` line stays the flat figure. For a sparse MoE the
   split's RAM figure is labelled `hot set`, the figure it always was.
+- **`--verify` replays a served tool turn (R1.1.3.1).** A tool receipt used to name only a digest and choice, so
+  replay refused it as `UNVERIFIABLE`. Under the existing receipt opt-in, the `tools` constraint now carries the
+  normalized declarations and effective protocol, parallel and thinking settings. Replay rebuilds the same
+  native or generic grammar used by serving; changed declarations can diverge, and a digest mismatch is refused.
+  Older receipts without the new fields stay `UNVERIFIABLE`, naming what they lack. Replay also binds the served
+  template's thinking tags before resetting its constraint state. Scripted replies and separate reasoning
+  sampling remain unreplayable. README, manual and receipts page now describe tool replay; model-card claims are unchanged.
+
 - **A cancel route keyed by request id: `POST /v1/runner/requests/{id}/cancel` (R10.12.3.2).**
   - **What it is:** a client that wants an answer, rather than polling `/health`, names a running completion request.
     It can use the response id, or the `X-Request-Id` header it sent with the request. The header is how a buffered

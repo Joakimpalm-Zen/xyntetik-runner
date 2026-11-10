@@ -500,8 +500,10 @@ replays it.
 ```
 
 Around that core: signed and chained receipts (`runner attest keygen`, `--sign-key`)
-that carry an agent turn's tool calls and the tool results it was sent as data a policy can read,
-evidence packs a reviewer checks offline (`runner attest pack`, `runner attest check-pack`),
+that carry an agent turn's tool calls and the tool results it was sent as data a policy can read.
+A served tool turn records its declarations and grammar settings so
+[`--verify` can replay it](MANUAL.md#cli-transcript).
+There are also evidence packs a reviewer checks offline (`runner attest pack`, `runner attest check-pack`),
 signature checks on the model file itself (`--model-sig`), and a text
 watermark with its detector (`--watermark`, `runner attest detect`).
 An opt-in Metal tiled generation names that arithmetic in its receipt. Without a replayable decode
