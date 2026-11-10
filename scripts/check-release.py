@@ -312,6 +312,14 @@ def check(args):
     changelog = read(args.changelog)
     if not re.search(rf"^## v?{re.escape(version)}\b", changelog, re.M):
         ok &= fail(f"CHANGELOG has no section for {version}")
+    # R6.21: entries wait in changes/ until the release folds them in; one left
+    # behind would be missing from this release's notes
+    pending = sorted(p.name for p in (Path(args.changelog).parent / "changes").glob("*.md")
+                     if p.name != "README.md")
+    if pending:
+        ok &= fail(f"changes/ still holds {len(pending)} unfolded changelog "
+                   f"entr{'y' if len(pending) == 1 else 'ies'} ({', '.join(pending)}): "
+                   "run python3 scripts/changelog-entries.py fold --write")
     ok &= site_parity(readme + "\n" + manual, getattr(args, "site_pages", None))
 
     build_info = read(args.build_info)

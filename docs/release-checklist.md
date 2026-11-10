@@ -20,8 +20,10 @@ may do all three, but the order holds.
   `676c35070db6dbe52f93e9c864ee0fba4eddea94b9c875d9cb10daff453fbaee`), from
   `https://huggingface.co/google/gemma-4-E4B-it-qat-q4_0-gguf/resolve/main/gemma-4-E4B_q4_0-it.gguf`.
   Check it at prep time, not at gate time.
-- Read the whole `## Unreleased` section of CHANGELOG.md. Merges can keep both sides
-  of a rewritten entry, or leave a stub heading. Fix those in the release branch.
+- Read the whole `## Unreleased` section of CHANGELOG.md, and the entries waiting in
+  `changes/` (`python3 scripts/changelog-entries.py fold` prints them without writing).
+  Merges can keep both sides of a rewritten entry, or leave a stub heading. Fix those
+  in the release branch.
 
 ## 1. Branch and pins (worker)
 
@@ -61,6 +63,11 @@ host straight away, so the CUDA gate runs in parallel with the macOS gates
 
 ## 2. CHANGELOG (worker)
 
+- Fold the waiting entries in first:
+  `python3 scripts/changelog-entries.py fold --write`, then
+  `git add CHANGELOG.md changes/`. It puts every `changes/*.md` entry at the top of
+  `## Unreleased`, newest first, and deletes the files (`changes/README.md` stays).
+  `scripts/check-release.py` refuses a release that leaves an entry behind.
 - Retitle `## Unreleased` to `## vX.Y.Z - YYYY-MM-DD`, with a fresh empty
   `## Unreleased` above it. Every entry merged before the cut goes under the release
   heading.

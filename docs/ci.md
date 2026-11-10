@@ -45,7 +45,7 @@ demonstrate graceful shutdown fail if they escalate to a forced kill.
 The `changes` job runs ahead of everything else and answers two questions.
 
 - **Did the change touch the engine?** A change confined to `site/`,
-  `docs/`, `README.md` and `CHANGELOG.md` skips every engine job in seconds.
+  `docs/`, `changes/`, `README.md` and `CHANGELOG.md` skips every engine job in seconds.
   This is a job-level skip, not a workflow path filter: a workflow that never
   starts leaves its required checks pending and blocks the merge, while a
   skipped job satisfies them. `metadata.yml` still checks the prose.
@@ -66,6 +66,13 @@ skipped matrix job reports under its unexpanded name and its per-group
 checks never appear, which left a docs-only pull request unmergeable. The
 rules apply to administrators, and force pushes are refused. A red pull
 request cannot be merged; a docs-only one is merged on skipped checks.
+
+`commit-hygiene` also holds the changelog rule (R6.21). A pull request adds
+exactly one entry as `changes/<ID>.md`, or says why it has none with a line
+`Changelog: none, <why>` in its description or a commit message
+(`scripts/changelog-entries.py check`). Entries live in files of their own so
+that pull requests stop conflicting with each other on CHANGELOG.md; the
+release folds them in ([changes/README.md](../changes/README.md)).
 
 ## Timing and test execution
 

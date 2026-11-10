@@ -6,6 +6,9 @@ Current release and unreleased changes. Compatibility follows the
 Older releases (v1.11.0 and earlier) are preserved in the
 [changelog archive](docs/changelog-archive.md).
 
+Changes merged since the last release wait in [changes/](changes/README.md), one
+file each, until the release folds them in below. Add a new entry there, not here.
+
 ## Unreleased
 
 - **`ignore_eos` on a completion request (R10.31).**

@@ -47,6 +47,9 @@ The [README](README.md) is the front page; [MANUAL.md](MANUAL.md) is the
 CLI/API/support reference. Record a README impact decision with each
 change. Update the manual and site sources when their account changes;
 keep public claims tied to accessible evidence and actual current behavior.
+Each pull request writes its CHANGELOG entry as `changes/<ID>.md`
+([format](changes/README.md)), not into CHANGELOG.md; the release folds the
+entries in.
 Completed investigations and superseded run output are not current usage
 instructions. Keep useful numerical constraints and regression fixtures.
 
