@@ -15,6 +15,13 @@ may do all three, but the order holds.
   commit of the last one (1.13.0: 3b9c0726, the #623 merge).
 - Main's CI runs for the last merges may still be queued. Start anyway; a red run
   for a real cause stops the release.
+- **No issue labelled `scheduled-ci-red` is open.**
+  - A scheduled run that ends red opens one per workflow, or comments on the one already open. This covers the
+    daily `ci` suite, competitor freshness and the deterministic-CI example
+    (`.github/workflows/scheduled-alert.yml`, `scripts/scheduled-ci-alert.py`).
+  - The issue names each failed job, its failed step and that step's first failing log line. A green run of the
+    same workflow closes it.
+  - An open one is a red scheduled suite: settle it before the cut.
 - The macOS compat gate needs its model file present before you start:
   `models/gemma-4-E4B_q4_0-it.gguf` (5,154,941,280 bytes, sha256
   `676c35070db6dbe52f93e9c864ee0fba4eddea94b9c875d9cb10daff453fbaee`), from

@@ -1,0 +1,51 @@
+name: scheduled-alert
+
+# A scheduled run sits outside pr-gate, so nothing escalated a red one: the
+# daily macOS suite went red on 2026-11-10 at 12:51Z and was noticed four hours
+# later (R6.45.2). When a scheduled run of a watched workflow completes, this
+# job keeps one issue per workflow labelled scheduled-ci-red:
+# - a run ending failed, cancelled, timed out or unable to start opens the
+#   issue, or comments on the one already open, naming each failed job, its
+#   failed step and that step's first failing log line;
+# - a green run closes it.
+# scripts/scheduled-ci-alert.py does the work, and tests/test_scheduled_ci_alert.py
+# holds it to recorded API answers. A workflow_run trigger fires only from the
+# default branch's copy of this file, so the dispatch below is how a branch
+# tests it: give it the id of a finished scheduled run (dry_run prints the
+# writes instead of making them).
+on:
+  workflow_run:
+    workflows: [ci, competitor result freshness, example deterministic CI]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: the id of a finished scheduled run to report on
+        required: true
+      dry_run:
+        description: print the issue writes instead of making them
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  alert:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: report the scheduled run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+          DRY: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '--dry-run' || '' }}
+          ANY: ${{ github.event_name == 'workflow_dispatch' && '--any-event' || '' }}
+        run: python3 scripts/scheduled-ci-alert.py --repo "$REPO" --run-id "$RUN_ID" $DRY $ANY

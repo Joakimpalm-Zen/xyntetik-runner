@@ -1,0 +1,16 @@
+2026-11-10T12:46:01.1000000Z Current runner version: '2.329.0'
+2026-11-10T12:46:02.2000000Z ##[group]Run actions/checkout@v7
+2026-11-10T12:46:03.3000000Z Syncing repository: Joakimpalm-Zen/xyntetik-runner
+2026-11-10T12:46:09.4000000Z ##[endgroup]
+2026-11-10T12:46:10.5000000Z ##[group]Run make
+2026-11-10T12:46:11.6000000Z tests/test_old.c:12: error: this line is in the build step, before the failing step
+2026-11-10T12:49:12.7000000Z ##[endgroup]
+2026-11-10T12:49:13.1000000Z ##[group]Run make test-gates-core
+2026-11-10T12:49:13.2000000Z make test-gates-core
+2026-11-10T12:49:40.3000000Z error: GGUF metadata key contains an embedded NUL
+2026-11-10T12:49:41.4000000Z all gguf getter tests passed
+2026-11-10T12:51:20.5000000Z FAIL: test-mvcanon q4_0 row 3: canonical 0x3f80 != reference 0x3f81
+2026-11-10T12:51:20.6000000Z make[1]: *** [Makefile:2290: test-mvcanon] Error 1
+2026-11-10T12:51:20.7000000Z make: *** [Makefile:3000: test-gates-core] Error 2
+2026-11-10T12:51:26.8000000Z ##[error]Process completed with exit code 2.
+2026-11-10T12:51:27.9000000Z Post job cleanup.
