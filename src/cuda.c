@@ -4634,6 +4634,14 @@ static int tc_nvfp4_env(void) {
 }
 
 static bool tc_on(const model_t *m, int type) {
+    // EXPERIMENT (R6.39, not for merge): RUNNER_EXP_SCALAR_Q4K=1 keeps Q4_K
+    // tensors off the tensor cores and leaves every other type to its default,
+    // so a mixed file's Q4_K prefill can be timed on the scalar route alone
+    {
+        static _Atomic int ex = -1;
+        if (ex < 0) { const char *e = getenv("RUNNER_EXP_SCALAR_Q4K"); ex = e && *e == '1'; }
+        if (ex == 1 && type == T_Q4_K) return false;
+    }
     int st = g_tc_state;   // one read; gpu_tc_force may set it from a test meanwhile
     if (st == TC_ENV_UNSET) {
         const char *e = getenv("RUNNER_CUDA_TC");
