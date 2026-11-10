@@ -3343,11 +3343,18 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_STOP_CONSTRAINT)
 	$(TEST_RESP_SM_RUN)
 	./$(TEST_KV_TOL)
+	@# R6.30: on test.gguf (head_dim 16, F32) the q8 and k8v4 arms and the TC
+	@# GEMM never engage on CUDA; test-q4k.gguf's head_dim and Q4_K weights make
+	@# them run, and test-q8.gguf the fused i8 route (its Q4_K and Q4_0 legs are
+	@# the opt-in route's failing bar, docs/speed-defaults.md)
+	./$(TEST_KV_TOL) test-q4k.gguf
 	./$(TEST_KV_FP4)
 	./$(TEST_CUDA_KVFP4)
 	./$(TEST_TC_TOL)
+	./$(TEST_TC_TOL) test-q4k.gguf
 	$(MAKE) --no-print-directory test-tc-overflow
 	./$(TEST_I8_TOL)
+	./$(TEST_I8_TOL) test-q8.gguf
 	./$(TEST_MV_TOL)
 	./$(TEST_ATTN_TOL)
 	./$(TEST_GPU_ID) --self-test
