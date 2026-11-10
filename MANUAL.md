@@ -3436,9 +3436,14 @@ actually intend to run, and `--parallel N` for that many server slots: the
 weights are counted once, a KV cache (and, on a discrete GPU, the device
 scratch) once per slot, which is how the server's load bills them. On a
 discrete GPU the RAM figure includes the whole KV cache, offloaded layers too,
-because the host keeps the authoritative copy of every layer's cache. For a sparse MoE the verdict uses the **hot set**, not
+because the host keeps the authoritative copy of every layer's cache. When the
+weights and that flat cache do not fit the budget, a load gives sliding-window
+layers only their window plus the prompt batch (`--kv-ring auto`); the split
+then charges those rows and reads `with the KV ring`, while the `kv cache` line
+stays the flat figure. For a sparse MoE the verdict uses the **hot set**, not
 the file size, because only the routed experts a token selects are touched -
-which is why a 3.53 GiB file can be a comfortable fit in 3.25 GiB.
+which is why a 3.53 GiB file can be a comfortable fit in 3.25 GiB. Its split
+marks the RAM figure `hot set` for the same reason.
 
 `--info fit` does not download anything. Fetch a header yourself with a ranged read - 16 MiB covers a large
 vocabulary; smaller models need far less:
