@@ -92,7 +92,8 @@ static void t_free(void *p) {
 // One schema per compile path: plain object with required keys, arrays with
 // bounds, enum and const literals (which run through jv_dump), a scalar-const
 // oneOf, a first-byte-dispatched union, a `type` array union, the discriminated
-// tool/args shape compile_discriminated_action recognises, and deep nesting.
+// tool/args shape compile_discriminated_action recognises, the general
+// const-discriminated union (R2.8), and deep nesting.
 static const char *const schemas[] = {
     "{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"},"
         "\"b\":{\"type\":\"integer\"}},\"required\":[\"a\",\"b\"]}",
@@ -110,6 +111,17 @@ static const char *const schemas[] = {
         "{\"properties\":{\"tool\":{\"const\":\"write\"},"
             "\"args\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},"
          "\"required\":[\"tool\",\"args\"]}]}",
+    // R2.8: the const-discriminated union merge_discriminated builds, with
+    // a property only one branch has and a null beside the objects
+    "{\"anyOf\":["
+        "{\"properties\":{\"op\":{\"const\":\"MAP\"},\"fn\":{\"enum\":[\"INC\",\"DEC\"]},"
+            "\"args\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"string\"}}},"
+         "\"required\":[\"op\",\"fn\",\"args\"]},"
+        "{\"type\":\"null\"},"
+        "{\"properties\":{\"op\":{\"const\":\"HEAD\"},"
+            "\"args\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}},"
+         "\"required\":[\"op\",\"args\"]}],"
+     "\"discriminator\":{\"propertyName\":\"op\"}}",
     "{\"type\":\"object\",\"properties\":{\"deep\":{\"type\":\"object\","
         "\"properties\":{\"deeper\":{\"type\":\"array\",\"items\":"
         "{\"type\":\"object\",\"properties\":{\"leaf\":{\"enum\":[1,2,3]}}}}}}}}",

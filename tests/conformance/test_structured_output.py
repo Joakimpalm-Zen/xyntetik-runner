@@ -170,6 +170,63 @@ def test_json_schema_with_local_refs(client, report):
             raise SchemaError("referenced enum not enforced", got=doc["address"])
 
 
+# A discriminated union the way Pydantic writes one (R2.8): each operation a
+# model under $defs, reached by $ref inside oneOf, told apart by a Literal `op`
+# and named by `discriminator`. MAP carries a lambda and HEAD does not, which a
+# oneOf over objects could not say before: the schema now carries the arity.
+STATEMENT = {
+    "$defs": {
+        "Map": {"properties": {"op": {"const": "MAP", "title": "Op", "type": "string"},
+                               "fn": {"enum": ["INC", "DEC"], "title": "Fn", "type": "string"},
+                               "args": {"items": {"enum": ["a", "b"], "type": "string"},
+                                        "maxItems": 1, "minItems": 1, "title": "Args",
+                                        "type": "array"}},
+                "required": ["op", "fn", "args"], "title": "Map", "type": "object"},
+        "Head": {"properties": {"op": {"const": "HEAD", "title": "Op", "type": "string"},
+                                "args": {"items": {"enum": ["a", "b"], "type": "string"},
+                                         "maxItems": 1, "minItems": 1, "title": "Args",
+                                         "type": "array"}},
+                 "required": ["op", "args"], "title": "Head", "type": "object"}},
+    "properties": {"stmt": {"discriminator": {"mapping": {"HEAD": "#/$defs/Head",
+                                                          "MAP": "#/$defs/Map"},
+                                              "propertyName": "op"},
+                            "oneOf": [{"$ref": "#/$defs/Map"}, {"$ref": "#/$defs/Head"}],
+                            "title": "Stmt"}},
+    "required": ["stmt"], "title": "Program", "type": "object"}
+
+
+def test_json_schema_discriminated_union(client, report):
+    """The union engages, and the operation it names decides the rest."""
+    r = client.chat(dict(BASE, max_tokens=96,
+                         response_format={"type": "json_schema",
+                                          "json_schema": {"name": "program",
+                                                          "schema": STATEMENT}}),
+                    name="json-schema-discriminated").expect_status(200)
+    if r.telemetry.get("schema") is not True:
+        raise ProtocolError("discriminated union accepted but schema not engaged",
+                            telemetry=r.telemetry)
+    doc = _decode_constrained(r, report, "json_schema_discriminated",
+                              "json_schema discriminated union")
+    if doc is not None:
+        validate_against_schema(doc, STATEMENT)
+        stmt = doc["stmt"]
+        if ("fn" in stmt) != (stmt["op"] == "MAP"):
+            raise SchemaError("the operation did not decide its lambda", got=stmt)
+
+
+def test_json_schema_objects_without_a_discriminator_are_refused_by_name(client):
+    """Two object shapes with nothing to tell them apart stay refused, and the
+    message says what would make the schema compile."""
+    schema = {"oneOf": [{"type": "object", "properties": {"a": {"type": "string"}}},
+                        {"type": "object", "properties": {"b": {"type": "string"}}}]}
+    r = client.chat(dict(BASE, max_tokens=8,
+                         response_format={"type": "json_schema",
+                                          "json_schema": {"schema": schema}}),
+                    name="json-schema-no-discriminator")
+    r.expect_status(400)
+    r.expect_error_envelope(contains="nothing to tell them apart")
+
+
 @pytest.mark.parametrize("schema,why", [
     ({"$defs": {"Node": {"type": "object", "properties": {
         "children": {"type": "array", "items": {"$ref": "#/$defs/Node"}}}}},

@@ -2797,7 +2797,10 @@ static void test_schema_union_dispatch_rules(void) {
     jv_free(j);
 }
 
-static void test_schema_discriminated_required_must_match(void) {
+// R2.8: the tool/args action with different required keys per tool used to be
+// refused ("oneOf alternatives declare different required keys"). Each branch
+// now keeps its own required set: `a` must carry args, `b` may leave them out.
+static void test_schema_discriminated_required_may_differ(void) {
     const char *src =
         "{\"oneOf\":["
         "{\"type\":\"object\",\"properties\":{"
@@ -2809,12 +2812,151 @@ static void test_schema_discriminated_required_must_match(void) {
         "\"properties\":{\"y\":{\"type\":\"string\"}}}},"
         "\"required\":[\"tool\"]}"
         "]}";
+    assert(schema_accepts(src, "{\"tool\":\"a\",\"args\":{\"x\":\"1\"}}"));
+    assert(!schema_accepts(src, "{\"tool\":\"a\"}"));
+    assert(schema_accepts(src, "{\"tool\":\"b\"}"));
+    assert(schema_accepts(src, "{\"tool\":\"b\",\"args\":{\"y\":\"1\"}}"));
+    assert(!schema_accepts(src, "{\"tool\":\"b\",\"args\":{\"x\":\"1\"}}"));
+}
+
+// R2.8: a statement of a small program language whose operation decides its
+// arity. MAP takes a lambda and one argument, HEAD no lambda and one argument,
+// TAKE no lambda and two. A flat {op, fn, args} schema admits mostly
+// ill-typed statements; a `const`-discriminated union carries the typing, because the
+// discriminator is the first thing the walker reads and every other property
+// then follows the branch it named.
+static const char *LX_STATEMENT =
+    "{\"oneOf\":["
+    "{\"type\":\"object\",\"properties\":{\"op\":{\"const\":\"MAP\"},"
+    "\"fn\":{\"enum\":[\"INC\",\"DEC\"]},"
+    "\"args\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":1,\"items\":{\"enum\":[\"a\",\"b\"]}}},"
+    "\"required\":[\"op\",\"fn\",\"args\"],\"additionalProperties\":false},"
+    "{\"type\":\"object\",\"properties\":{\"op\":{\"const\":\"HEAD\"},"
+    "\"args\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":1,\"items\":{\"enum\":[\"a\",\"b\"]}}},"
+    "\"required\":[\"op\",\"args\"],\"additionalProperties\":false},"
+    "{\"type\":\"object\",\"properties\":{\"args\":{\"type\":\"array\",\"minItems\":2,\"maxItems\":2,"
+    "\"items\":{\"enum\":[\"a\",\"b\"]}},\"op\":{\"const\":\"TAKE\"}},"
+    "\"required\":[\"args\",\"op\"],\"additionalProperties\":false}"
+    "]}";
+
+// Close a prefix the way a max_tokens cut does and return the whole document.
+static jv *close_prefix(const char *src, const char *prefix, char *doc, int cap) {
     jv *j = json_parse(src, strlen(src));
-    assert(j != NULL);
-    char err[128];
-    assert(schema_compile(j, err, sizeof(err)) == NULL);
-    assert(strstr(err, "required") != NULL);
-    jv_free(j);
+    char err[160];
+    snode *s = schema_compile(j, err, sizeof(err));
+    assert(s != NULL);
+    sval v; sval_init(&v, s);
+    assert(sval_feed(&v, prefix, (int)strlen(prefix)));
+    char tail[256];
+    int n = sval_close(&v, tail, sizeof(tail));
+    assert(n >= 0);
+    snprintf(doc, (size_t)cap, "%s%s", prefix, tail);
+    sval_init(&v, s);
+    bool ok = sval_feed(&v, doc, (int)strlen(doc)) && v.done;
+    assert(ok && "a closed document must satisfy its own schema");
+    schema_free(s); jv_free(j);
+    return json_parse(doc, strlen(doc));
+}
+
+// The walker's verdict on a prefix: accepted so far, finished or not.
+static bool prefix_ok(const char *src, const char *prefix) {
+    jv *j = json_parse(src, strlen(src));
+    char err[160];
+    snode *s = schema_compile(j, err, sizeof(err));
+    assert(s != NULL);
+    sval v; sval_init(&v, s);
+    bool ok = sval_feed(&v, prefix, (int)strlen(prefix));
+    schema_free(s); jv_free(j);
+    return ok;
+}
+
+static void test_schema_const_discriminated_union(void) {
+    const char *s = LX_STATEMENT;
+    // refused at the first byte that leaves the branch, not at a value later:
+    // a key the branch lacks would be a dead end for constrained sampling,
+    // `"fn":` written with no value that can follow
+    assert(!prefix_ok(s, "{\"op\":\"HEAD\",\"f"));
+    assert(!prefix_ok(s, "{\"op\":\"MAP\",\"a"));      // MAP's lambda comes first
+    assert(prefix_ok(s, "{\"op\":\"MAP\",\"f"));
+    assert(!prefix_ok(s, "{\"op\":\"HEAD\",\"args\":[\"a\"],"));  // nothing after HEAD's args
+    assert(!prefix_ok(s, "{\"a"));                     // the discriminator comes first
+    // each operation with its own arity
+    assert(schema_accepts(s, "{\"op\":\"MAP\",\"fn\":\"INC\",\"args\":[\"a\"]}"));
+    assert(schema_accepts(s, "{\"op\":\"HEAD\",\"args\":[\"b\"]}"));
+    assert(schema_accepts(s, "{\"op\":\"TAKE\",\"args\":[\"a\",\"b\"]}"));
+    assert(schema_accepts(s, "{ \"op\" : \"MAP\" , \"fn\" : \"DEC\" , \"args\" : [ \"b\" ] }"));
+    // the ill-typed statements the flat schema admitted
+    assert(!schema_accepts(s, "{\"op\":\"HEAD\",\"fn\":\"INC\",\"args\":[\"a\"]}"));  // a lambda on HEAD
+    assert(!schema_accepts(s, "{\"op\":\"MAP\",\"args\":[\"a\"]}"));                  // MAP without one
+    assert(!schema_accepts(s, "{\"op\":\"TAKE\",\"args\":[\"a\"]}"));                 // TAKE takes two
+    assert(!schema_accepts(s, "{\"op\":\"HEAD\",\"args\":[\"a\",\"b\"]}"));           // HEAD takes one
+    assert(!schema_accepts(s, "{\"op\":\"DROP\",\"args\":[\"a\"]}"));                 // no such operation
+    // the discriminator comes first, though TAKE declares it last
+    assert(!schema_accepts(s, "{\"args\":[\"a\",\"b\"],\"op\":\"TAKE\"}"));
+    // anyOf over the same branches is the same language (the consts are distinct)
+    char any[1024];
+    snprintf(any, sizeof(any), "{\"anyOf\"%s", strchr(s, ':'));
+    assert(schema_accepts(any, "{\"op\":\"HEAD\",\"args\":[\"b\"]}"));
+    assert(!schema_accepts(any, "{\"op\":\"HEAD\",\"fn\":\"INC\",\"args\":[\"a\"]}"));
+
+    // a cut document closes inside the branch it is in
+    char doc[512];
+    jv *d = close_prefix(s, "{\"op\":\"HEAD\"", doc, sizeof(doc));
+    assert(!jv_get(d, "fn") && jv_get(d, "args")); jv_free(d);
+    d = close_prefix(s, "{\"op\":\"TA", doc, sizeof(doc));
+    assert(!strcmp(jv_str(jv_get(d, "op"), ""), "TAKE") && jv_get(d, "args")->n == 2); jv_free(d);
+    d = close_prefix(s, "{\"op\":\"MAP\",", doc, sizeof(doc));
+    assert(jv_get(d, "fn") && jv_get(d, "args")); jv_free(d);
+    d = close_prefix(s, "{", doc, sizeof(doc));       // nothing chosen yet: the first branch
+    assert(!strcmp(jv_str(jv_get(d, "op"), ""), "MAP") && jv_get(d, "fn")); jv_free(d);
+    d = close_prefix(s, "{\"o", doc, sizeof(doc));
+    assert(!strcmp(jv_str(jv_get(d, "op"), ""), "MAP")); jv_free(d);
+    d = close_prefix(s, "{\"op\":\"TAKE\",\"args\":[\"a\"", doc, sizeof(doc));
+    assert(jv_get(d, "args")->n == 2); jv_free(d);
+
+    // Optional[Union[A, B]]: the objects merge, null stays beside them
+    const char *opt =
+        "{\"anyOf\":[{\"properties\":{\"kind\":{\"const\":\"a\"},\"x\":{\"type\":\"integer\"}},"
+        "\"required\":[\"kind\",\"x\"]},{\"type\":\"null\"},"
+        "{\"properties\":{\"kind\":{\"const\":\"b\"}},\"required\":[\"kind\"]}]}";
+    assert(schema_accepts(opt, "null"));
+    assert(schema_accepts(opt, "{\"kind\":\"a\",\"x\":1}"));
+    assert(schema_accepts(opt, "{\"kind\":\"b\"}"));
+    assert(!schema_accepts(opt, "{\"kind\":\"b\",\"x\":1}"));
+    assert(!schema_accepts(opt, "{\"kind\":\"a\"}"));
+
+    // OpenAPI's and Pydantic's `discriminator` names the property; its
+    // `mapping` names $refs and adds nothing
+    const char *named =
+        "{\"oneOf\":[{\"properties\":{\"id\":{\"const\":1},\"t\":{\"const\":\"x\"}},\"required\":[\"id\",\"t\"]},"
+        "{\"properties\":{\"id\":{\"const\":1},\"t\":{\"const\":\"y\"},\"n\":{\"type\":\"integer\"}},"
+        "\"required\":[\"id\",\"t\",\"n\"]}],"
+        "\"discriminator\":{\"propertyName\":\"t\",\"mapping\":{\"x\":\"#/$defs/X\"}}}";
+    assert(schema_accepts(named, "{\"t\":\"y\",\"id\":1,\"n\":2}"));
+    assert(!schema_accepts(named, "{\"t\":\"x\",\"id\":1,\"n\":2}"));
+    assert(schema_refused("{\"oneOf\":[{\"properties\":{\"t\":{\"const\":\"x\"}},\"required\":[\"t\"]},"
+                          "{\"properties\":{\"t\":{\"const\":\"y\"}},\"required\":[\"t\"]}],"
+                          "\"discriminator\":{\"propertyName\":\"kind\"}}"));
+    assert(schema_refused("{\"oneOf\":[{\"properties\":{\"t\":{\"const\":\"x\"}},\"required\":[\"t\"]},"
+                          "{\"properties\":{\"t\":{\"const\":\"y\"}},\"required\":[\"t\"]}],"
+                          "\"discriminator\":{\"propertyName\":\"t\",\"other\":1}}"));
+    {   // a union without one says what would make it compile
+        const char *src = "{\"oneOf\":[{\"properties\":{\"a\":{\"type\":\"string\"}}},"
+                          "{\"properties\":{\"b\":{\"type\":\"string\"}}}]}";
+        jv *j = json_parse(src, strlen(src));
+        char err[200];
+        assert(schema_compile(j, err, sizeof(err)) == NULL);
+        assert(strstr(err, "nothing to tell them apart") && strstr(err, "discriminator"));
+        jv_free(j);
+    }
+
+    // still refused: objects with nothing to tell them apart, or not by a const
+    assert(schema_refused("{\"oneOf\":[{\"properties\":{\"k\":{\"const\":\"x\"}},\"required\":[\"k\"]},"
+                          "{\"properties\":{\"k\":{\"const\":\"x\"},\"v\":{\"type\":\"string\"}},\"required\":[\"k\"]}]}"));
+    assert(schema_refused("{\"oneOf\":[{\"properties\":{\"k\":{\"const\":\"x\"}},\"required\":[\"k\"]},"
+                          "{\"properties\":{\"k\":{\"const\":\"y\"}}}]}"));          // optional in one branch
+    assert(schema_refused("{\"oneOf\":[{\"properties\":{\"k\":{\"type\":\"string\"}},\"required\":[\"k\"]},"
+                          "{\"properties\":{\"k\":{\"type\":\"integer\"}},\"required\":[\"k\"]}]}"));
 }
 
 static void test_schema_long_string_value(void) {
@@ -3363,7 +3505,8 @@ int main(void) {
     test_schema_string_minlength_full_close();
     test_schema_discriminated_action_args();
     test_schema_union_dispatch_rules();
-    test_schema_discriminated_required_must_match();
+    test_schema_discriminated_required_may_differ();
+    test_schema_const_discriminated_union();
     test_schema_long_string_value();
     test_schema_escape_at_maxlength_rejected();
     test_schema_nested_tool_key_keeps_discriminator();

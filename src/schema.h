@@ -41,6 +41,13 @@ struct snode {
     char  **next_keys; int *next_key_len;           // native member prefixes
     snode  *items; int min_items, max_items;        // array items / map values
     snode **alts; int n_alts;                       // type unions
+    // SN_OBJ compiled from a const-discriminated oneOf/anyOf of objects
+    // (R2.8): props[0] is the discriminator, an enum of one literal per
+    // branch in declared order, and every other prop is an SN_COND over the
+    // branches. In that SN_COND, alts[b] is the property's schema in branch b
+    // (NULL: branch b does not have it) and req[b] whether branch b requires
+    // it; the object's own req[] holds only the discriminator's.
+    bool    discriminated;
     bool    whitespace_significant;                 // protocol literals/branches
     int64_t num_min, num_max;                       // enforced integer interval
     bool    has_num_min, has_num_max;
