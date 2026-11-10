@@ -2120,6 +2120,8 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
         if (c.tables > SIZE_MAX - fixed) { fprintf(stderr, "gpu: layer table charge overflow\n"); goto fail; }
         fixed += (size_t)c.tables;
     }
+    // and the once-made all-ones expert scale table (moe_ones, n_expert f32)
+    if (moe_any_on_device(m)) fixed += sizeof(float) * (size_t)m->n_expert;
     fixed += moe_hot_bytes(m);   // RUNNER_MOE_HOT's banks and their routers
     P->vram_budget = vram_budget;
     P->fixed = fixed;

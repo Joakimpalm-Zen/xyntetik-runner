@@ -1289,6 +1289,8 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
         lb[l] = c.file;
         if (l < f->n_layer || f->mtp) cuda_charge_add(&tables, c.tables);
     }
+    // the once-made all-ones expert scale table (cuda.c moe_ones)
+    if (f->n_expert > 0) cuda_charge_add(&tables, 4 * (uint64_t)f->n_expert);
     uint64_t tok = 0, out = 0, n_vocab = 0;
     for (uint64_t i = 0; i < g->n_tensors; i++) {
         const gguf_tensor *t = &g->tensors[i];
