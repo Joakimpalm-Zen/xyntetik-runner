@@ -81,6 +81,34 @@ int main(int argc, char **argv) {
         fprintf(stderr, "FAIL: cannot load adapter %s\n", adapter);
         return 1;
     }
+    // R18.11: a model that only serves an adapter carries no training state. The adapter is loaded as
+    // --lora loads it and forwards run as a request does; nothing a training step allocates may exist
+    // yet. The per-request path (the server's adapter registry installs a set with model_lora_use) is
+    // checked on a second instance. The positive control follows the first backward below.
+    CHECK(!model_has_training_state(&m), "loading an adapter allocated training state");
+    for (int t = 0; t < 6; t++) model_forward(&m, 3 + t, t);
+    CHECK(!model_has_training_state(&m), "serving an adapter allocated training state");
+    {
+        model_t s;
+        memset(&s, 0, sizeof(s));
+        char why[256];
+        if (model_load(&s, base, &p) && !model_lora_serve_supported(&s, why, sizeof why)) {
+            printf("lora-grad: no per-request adapters on this family (%s)\n", why);
+            model_free(&s);
+        } else if (s.n_layer > 0) {
+            lora_set *ls = model_lora_set_load(&s, adapter, 1.0f);
+            CHECK(ls && model_lora_use(&s, ls), "cannot install the adapter per request");
+            for (int t = 0; t < 6; t++) model_forward(&s, 3 + t, t);
+            CHECK(!model_has_training_state(&s), "a per-request adapter allocated training state");
+            model_lora_use(&s, NULL);
+            model_lora_set_free(ls);
+            model_free(&s);
+        } else {
+            CHECK(0, "cannot load %s a second time", base);
+        }
+    }
+    printf("ok: serving an adapter, loaded or per request, allocates no training state\n");
+
     // RUNNER_TEST_TRAIN_DEV=1 (R8.19): every check below in --train-gpu's
     // device mode. Its products are not the CPU's bits, so the central
     // differences of its own loss hold its gradient only if the taped
@@ -122,6 +150,8 @@ int main(int argc, char **argv) {
 
     // ---- determinism: two runs, byte-identical grads and bit-equal loss
     double l1 = run_backward(&m, toks);
+    // the positive control for the serve check above: a training step leaves state the check sees
+    CHECK(model_has_training_state(&m), "a backward left no training state the check can see");
     // snapshot every grad buffer
     enum { MAX_BUF = 128 };
     float *snap[MAX_BUF]; int snap_n[MAX_BUF]; int nsnap = 0;

@@ -13385,6 +13385,16 @@ static const int full_slots[] = { LW_Q, LW_K, LW_V, LW_O, LW_GATE, LW_UP, LW_DOW
 
 bool model_full_on(const model_t *m) { return m->full != NULL; }
 
+bool model_has_training_state(const model_t *m) {
+    if (m->full || m->tape || m->bw_dk_share || m->bw_dv_share || m->bw_ple || m->train_gpu) return true;
+    if (!m->lora) return false;
+    for (size_t k = 0; k < (size_t)m->n_layer * LW_SLOTS; k++) {
+        const struct lora_w *w = &m->lora[k];
+        if (w->ga || w->gb || w->ma || w->va || w->mb || w->vb) return true;
+    }
+    return false;
+}
+
 void model_full_free(model_t *m) {
     if (!m->full) return;
     for (size_t k = 0; k < (size_t)m->n_layer * LW_SLOTS; k++) {
