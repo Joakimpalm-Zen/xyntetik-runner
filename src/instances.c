@@ -163,6 +163,11 @@ static void self_path(char *out, size_t cap) {
 }
 
 static bool write_self(void) {
+#ifdef RUNNER_TEST_TRAY_HTTP
+    // test seam (R9.5): a registry that cannot be written, as an APPDATA that
+    // refuses files does, on every platform
+    if (getenv("RUNNER_TEST_REGISTRY_READONLY")) return false;
+#endif
     char path[1200], tmp[1240];
     self_path(path, sizeof path);
     if (!path[0]) return false;
@@ -238,6 +243,75 @@ int instances_sweep_worker(void) {
     if (held) sweep_stale();
     fclose(lock);   // releases the lock; never unlink the lock file
     return 0;
+}
+
+// Take an exclusive, non-blocking lock on an open file: the same primitive the
+// sweep lock uses, per open file, so a second handle in this same process is
+// refused too.
+static bool lock_file_now(FILE *f) {
+#ifdef _WIN32
+    HANDLE handle = (HANDLE)_get_osfhandle(_fileno(f));
+    OVERLAPPED ov = {0};
+    return LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                      0, 1, 0, &ov) != 0;
+#else
+    return flock(fileno(f), LOCK_EX | LOCK_NB) == 0;
+#endif
+}
+
+bool instances_writable(void) {
+#ifdef RUNNER_TEST_TRAY_HTTP
+    if (getenv("RUNNER_TEST_REGISTRY_READONLY")) return false;
+#endif
+    const char *dir = instances_dir();
+    char name[64], path[1200];
+    snprintf(name, sizeof name, "%ld.probe", (long)getpid());
+    if (!dir || !path_child(path, sizeof path, dir, lease_sep(), name)) return false;
+    FILE *f = plat_fopen(path, "wb");
+    if (!f) return false;
+    bool ok = fputs("probe\n", f) >= 0;
+    ok = fclose(f) == 0 && ok;
+    plat_remove(path);
+    return ok;
+}
+
+static FILE *g_tray_lock;
+
+// Opened so no child inherits it: the lock lives as long as any process holds
+// the open file, so a tray's managed server or the registry's sweep helper
+// would otherwise keep it after the tray is gone, and refuse every next tray.
+static FILE *open_tray_lock(void) {
+    const char *dir = instances_dir();
+    char path[1200];
+    if (!dir || !path_child(path, sizeof path, dir, lease_sep(), "tray.lock")) return NULL;
+#ifdef _WIN32
+    return plat_fopen(path, "a+bN");   // N: not inherited by a child process
+#else
+    FILE *f = plat_fopen(path, "a+b");
+    if (f && fcntl(fileno(f), F_SETFD, FD_CLOEXEC) != 0) { fclose(f); return NULL; }
+    return f;
+#endif
+}
+
+tray_lock_state instances_tray_lock(void) {
+    if (g_tray_lock) return TRAY_LOCK_TAKEN;
+    FILE *f = open_tray_lock();
+    if (!f) return TRAY_LOCK_UNAVAILABLE;
+    if (!lock_file_now(f)) { fclose(f); return TRAY_LOCK_BUSY; }
+    g_tray_lock = f;   // held until this process ends: never unlink the lock file
+    return TRAY_LOCK_TAKEN;
+}
+
+bool instances_tray_lock_busy(void) {
+    FILE *f = open_tray_lock();
+    if (!f) return false;
+    bool busy = !lock_file_now(f);
+    fclose(f);   // releases what it took
+    return busy;
+}
+
+void instances_tray_unlock(void) {
+    if (g_tray_lock) { fclose(g_tray_lock); g_tray_lock = NULL; }
 }
 
 bool instances_register(const char *mode, int port,

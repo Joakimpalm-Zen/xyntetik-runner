@@ -104,8 +104,14 @@ third is read from `active_requests` in `/health`; when it cannot be read the
 icon falls back to "model loaded", since an unreachable-but-live server still
 has a model resident. See the README's Desktop tray section for the table.
 
-Only one tray runs per machine: a second `--tray` exits with an error
-naming the live controller's pid.
+Only one tray runs per machine. A tray holds `tray.lock` in the instance
+directory for its whole life, so the check and the claim are one step: a
+second `--tray` exits with an error even inside the first one's start, and a
+launch that finds the lock held starts no tray. A tray also exits when it
+cannot record itself in the instance directory, and a launch starts none
+there (it says so on stderr): without the record, every later launch would
+find no tray and start another. The lock file is never inherited by a child,
+so a server the tray started does not keep it after the tray quits.
 
 ## Config file
 
