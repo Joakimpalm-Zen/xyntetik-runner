@@ -532,6 +532,24 @@ def test_record_writes_the_cell_and_the_lora_answer():
     assert errors(doc) == []
 
 
+def test_record_keeps_the_build_that_wrote_the_output():
+    build = {"binary_sha256": "e" * 64, "compiler": "13.3.0"}
+    doc = record(smoke_result(build=build))
+    assert doc["rows"][0]["backends"]["metal"]["build"] == build
+    assert errors(doc) == []
+
+
+@pytest.mark.parametrize("build", [
+    {"binary_sha256": None, "compiler": "13.3.0"},
+    {"binary_sha256": "e" * 64, "compiler": ""},
+    "gcc 13.3.0",
+])
+def test_a_build_without_the_binarys_digest_and_compiler_is_refused(build):
+    doc = record(smoke_result())
+    doc["rows"][0]["backends"]["metal"]["build"] = build
+    assert any("build" in e for e in errors(doc))
+
+
 def test_record_refuses_a_run_on_a_different_file():
     with pytest.raises(SystemExit, match="sha256"):
         record(smoke_result(files=[{"sha256": "d" * 64, "bytes": 1234}]))

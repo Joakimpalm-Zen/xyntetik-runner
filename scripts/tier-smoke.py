@@ -67,6 +67,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -214,6 +215,23 @@ def chat(port, body, timeout):
             msg.get("reasoning_content") or "")
 
 
+def build_of(port, timeout):
+    """The serving binary's own statement of its build: its sha256 and the
+    compiler that made it, from GET /v1/runner/provenance. A partial split's
+    CPU layers depend on the compiler's codegen, so a pin says which build
+    wrote it (R6.46). None from a runner that has no such route."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/runner/provenance",
+                                    timeout=timeout) as r:
+            doc = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    b = doc.get("build") or {}
+    return {"binary_sha256": b.get("binary_sha256"), "compiler": b.get("compiler")}
+
+
 def retire(row_id, backend, dc, roster_path, manifest, manifest_path, pins_dir, devices):
     """Remove a pin, its manifest entry and the roster cell whose evidence it
     is. The cell goes because its evidence does; nothing else in the row
@@ -322,6 +340,7 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
             with RunnerServer(runner, model, extra_args=extra, ctx=spec["ctx"],
                               start_timeout=timeout, log_path=log) as srv:
                 out, finish, ctoks, reasoning = chat(srv.port, body, timeout)
+                build = build_of(srv.port, timeout)
         except SystemExit:
             raise
         except Exception as e:  # TransportError, HTTP errors: the gate did not run
@@ -380,6 +399,8 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
                                  .date().isoformat(),
                                  "runner_version": caps["version"],
                                  "commit": git_commit()}}
+        if build:
+            entry[key]["pinned"]["build"] = build
         status = "pinned"
     else:
         if not os.path.exists(pin_path) or key not in entry:
@@ -414,6 +435,7 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
         "commit": git_commit(),
         "ran": ran,
         "caps": caps,
+        "build": build,
         "banner": banner,
         "threads": int(t.group(1)) if t else None,
         "seconds": seconds,

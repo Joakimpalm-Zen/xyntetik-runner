@@ -82,3 +82,15 @@ On a CUDA MIG slice, 1g.24gb, sm_120, the host's CPUs shared with other work.
   found). The CUDA reply differs from the CPU reply from the second planet's sentence on.
 - **compat:** load pass, tokenizer pass, chat pass, cpu_cuda pass_margin_qualified (8 of 9 prompts exact, one near-tie
   flip at margins of 0.012 and 0.004 nats, with routing pinned).
+
+**The CUDA pin, re-pinned 2026-11-10 (R6.46).** The cells above were run with a clang 22.1.8 build at the Makefile's
+default `-march=native`, not the release recipe.
+- The CUDA pin it wrote (sha256 `4ac464a0`, 221 bytes) is reproduced only by builds made that way. Every gcc build at
+  the release recipe gives `f3a25e63` (228 bytes): at the row's commit bae59078, at 1.14.0's pin 522d85ec, on
+  1.15.0's gate binary, on main and on 1.16.0.
+- The pin was re-pinned on main aa752fca (1.16.0) from a release-recipe build: gcc 13.3.0, release.yml's x86-64
+  CFLAGS on make's command line, runner sha256 `abf79ae404a003df20009a74c6012a818861c380ad7a6f475d4129e78b682b5a`.
+  The cell and the pin's manifest entry name that binary and compiler.
+- The fitted split is unchanged at 34 of 40 blocks. On the release-recipe build, the CUDA reply is byte-identical to
+  the CPU reply.
+- The CPU pin was checked the same way. It matches on the release binary, so it was not re-pinned.
