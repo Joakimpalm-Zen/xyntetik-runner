@@ -2670,6 +2670,11 @@ default.
 - **What it is for:** taking the cache's rounding out of a comparison. One example is a
   model's distance from its publisher's float32 forward, where the f16 cache is one of the
   perturbations an engine adds.
+- **Measured on gemma-4-26B-A4B's bf16 conversion:** the CPU path's distance from the
+  publisher's float32 forward, 2,000 positions each, with the f16 cache, then `--kv f32`:
+  - chat text: 0.00068, then 0.00003;
+  - raw text, where this instruction-tuned model is out of format: 0.428, then 0.0055.
+  - [The record](docs/gemma4-26b-reference-2026-11-10.md).
 - **Where it runs:** on the CPU path only, with `--gpu off`. The GPU attention kernels read
   f16, q8_0 and fp4 rows, so a run that could reach a device is refused with that reason
   rather than given f16.
