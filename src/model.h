@@ -1705,6 +1705,9 @@ void model_route_json(const model_t *m, char *out, int cap);
 // The part a receipt carries as profile.route and --verify checks on replay:
 // the backend, the CPU's activation and the backend's detail line.
 void model_route_receipt_json(const model_t *m, char *out, int cap);
+// R12.1b: on a canonical (T3) build, the weight types without a canonical-order
+// kernel, comma-separated; false on any other build
+bool model_canon_gaps(const model_t *m, char *out, size_t cap);
 // The part of that record a --score file carries (score_route): the model
 // file (model_json, the caller's object), the paths its forwards took (solo:
 // one row a forward; keep: the batched rows of a chunked score), each with its

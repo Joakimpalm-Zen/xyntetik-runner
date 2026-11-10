@@ -203,6 +203,13 @@ void   vec_dot_multi(int type, const void *row, const float *const *xs, int nc,
 // for x, vec_dot_xs takes them and is byte-equal to vec_dot. vec_dot_xs_ok
 // says whether a type (on this build) has such a kernel.
 bool   vec_dot_xs_ok(int type);
+// R12.1b: whether this build runs `type`'s vec_dot in the canonical order
+// (RUNNER_CANON_KERNELS, the T3 build: one eight-lane tree on every ISA), and
+// whether it is such a build at all. A canonical build names the types it
+// cannot run canonically (the route's canon_gaps) instead of letting them fall
+// through to the ISA-native kernels unsaid. Both false without the define.
+bool   vec_dot_canonical(int type);
+bool   vec_dot_canon_build(void);
 void   vec_dot_xsums(const float *x, int n, float *xs);
 float  vec_dot_xs(int type, const void *row, const float *x, const float *xs, int n);
 // The int8 prefill tiles (R3.1.5 B, RUNNER_CPU_I8_PREFILL). I8_TILE_ROWS

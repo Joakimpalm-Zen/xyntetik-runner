@@ -1657,7 +1657,11 @@ default build, 165 of 165 in the T3 build, and the same on riscv64 under
 qemu. Cost: 7% decode on x86-64, 17% on the Apple M1, all of it the strict-float
 flags. A T3 receipt carries `"flavor":"t3"` in its `build` object. This is
 measured, not yet a claimed tier: the batched prefill tile, the k-quant
-formats, MoE and the GPU backends are not canonical yet. Details and
+formats, MoE and the GPU backends are not canonical yet. A T3 run names the
+weight types it multiplies without a canonical-order kernel ("canon: Q4_K have
+no canonical-order kernel in this build ..." at load, and `canon_gaps` on the
+route line and in the receipt's `profile.route`), so a model it cannot make
+the same on every ISA is never claimed silently. Details and
 tables in [docs/portable-bitexact-2026-09-05.md](docs/portable-bitexact-2026-09-05.md);
 `make cross-riscv64` builds the same configuration for riscv64 with zig.
 

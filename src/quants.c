@@ -2998,6 +2998,23 @@ static float canon_dot_f32(const float *w, const float *x, int n) {
 // because the same float enters the same expression; only the repeated
 // additions go. Measured on the arm64 kernel as about a quarter of its
 // instructions. The canonical-order build keeps its own kernels.
+bool vec_dot_canon_build(void) {
+#ifdef RUNNER_CANON_KERNELS
+    return true;
+#else
+    return false;
+#endif
+}
+// the types vec_dot sends to a canon_dot_* kernel below, and no others
+bool vec_dot_canonical(int type) {
+#ifdef RUNNER_CANON_KERNELS
+    return type == T_F32 || type == T_F16 || type == T_Q8_0;
+#else
+    (void)type;
+    return false;
+#endif
+}
+
 bool vec_dot_xs_ok(int type) {
 #if !defined(RUNNER_CANON_KERNELS) && (RUNNER_AVX2 || RUNNER_NEON)
     return type == T_Q4_K || type == T_Q5_K;

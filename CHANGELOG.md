@@ -8,6 +8,15 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **A T3 (canonical) build names the weight types it cannot run in the canonical order (R12.1b).**
+  - **The gap:** `make T3=1` dispatches F32, F16 and Q8_0 dot products to one fixed reduction tree on every ISA.
+    Every other type fell through to the ISA-native kernels without a word, so a Q4_K model under a T3 build was not
+    the same on arm64 and x86-64 and nothing said so.
+  - **Now:** the load says "canon: Q4_K have no canonical-order kernel in this build ...", and the route line and the
+    receipt's `profile.route` carry `canon_gaps` (empty when every type is canonical). A default build writes none of
+    it.
+  - **Checks:** `tests/test_canon_gaps.py`, in CI's t3 job.
+
 - **Fix: `--fit` charged deepseek2's KV at the header's shape, up to 10.7x the cache the loader builds (R3.48).**
   - **What the loader builds:** its default is the absorbed MLA form. That is one cache row a token and layer,
     `kv_lora_rank + rope` wide, which every head and V read. Q is that wide per head.

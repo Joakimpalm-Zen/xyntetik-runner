@@ -2993,7 +2993,7 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
                                         : SV.mp.lora_path;
     int env_state = 0;
     bool env_known = provenance_envelope_state(&env_state);
-    char route_json[512];
+    char route_json[768];
     model_route_receipt_json(m, route_json, sizeof route_json);
     transcript_info ti = {
         .runner_version = RUNNER_VERSION,

@@ -7465,6 +7465,34 @@ void model_route_draft(model_t *m, const char *src, bool by_default) {
              src && by_default ? ":default" : "");
 }
 
+// R12.1b: on a canonical build (T3), the weight types this model multiplies
+// whose dot product has no canonical-order kernel and runs the ISA-native one,
+// comma-separated in type order ("Q4_K,Q6_K"; empty when every type is
+// canonical). false on any other build, where nothing is claimed.
+bool model_canon_gaps(const model_t *m, char *out, size_t cap) {
+    if (cap) out[0] = 0;
+    if (!vec_dot_canon_build() || cap < 16) return false;
+    bool seen[64] = { false };
+    for (uint64_t i = 0; i < m->gf.n_tensors; i++) {
+        const gguf_tensor *t = &m->gf.tensors[i];
+        if (t->n_dims == 2 && t->type < 64) seen[t->type] = true;
+    }
+    size_t n = 0;
+    for (int t = 0; t < 64 && n + 12 < cap; t++) {
+        if (!seen[t] || vec_dot_canonical(t)) continue;
+        n += (size_t)snprintf(out + n, cap - n, "%s%s", n ? "," : "", ggml_type_name(t));
+    }
+    return true;
+}
+
+// the route's field for it: `,"canon_gaps":"..."` on a canonical build only
+static void route_canon_gaps(const model_t *m, char *out, size_t cap) {
+    char list[128];
+    out[0] = 0;
+    if (model_canon_gaps(m, list, sizeof list))
+        snprintf(out, cap, ",\"canon_gaps\":\"%s\"", list);
+}
+
 void model_route_receipt_json(const model_t *m, char *out, int cap) {
     route_facts r;
     route_collect(m, &r);
@@ -7503,8 +7531,11 @@ void model_route_receipt_json(const model_t *m, char *out, int cap) {
         }
         if (n < sizeof tct) snprintf(tct + n, sizeof tct - n, "\"");
     }
-    snprintf(out, cap, "{\"backend\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\"%s%s}",
-             r.backend, r.cpu_act, detail, m->route_micro_tiles_seen ? ",\"micro\":\"tiles\"" : "", tct);
+    char gaps[160];
+    route_canon_gaps(m, gaps, sizeof gaps);
+    snprintf(out, cap, "{\"backend\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\"%s%s%s}",
+             r.backend, r.cpu_act, detail, m->route_micro_tiles_seen ? ",\"micro\":\"tiles\"" : "", tct,
+             gaps);
 }
 
 void model_route_json(const model_t *m, char *out, int cap) {
@@ -7518,16 +7549,18 @@ void model_route_json(const model_t *m, char *out, int cap) {
     route_escape(__VERSION__, cc, sizeof cc);
     route_kernels(kern, sizeof kern);
     route_paths_json(m, paths, sizeof paths);
+    char gaps[160];
+    route_canon_gaps(m, gaps, sizeof gaps);
     snprintf(out, cap,
              "{\"backend\":\"%s\",\"device\":\"%s\",\"gpu_layers\":%d,\"layers\":%d,"
              "\"experts_on_host\":%d,\"moe_layers\":%d,\"moe_hot\":%d,\"paths\":%s,"
              "\"kv\":\"%s\",\"weights\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\","
              "\"kernels\":%s,\"fallback\":\"%s\",\"build\":\"%s\",\"codegen\":\"%s\","
-             "\"compiler\":\"%s\",\"tuning\":\"%s\"}",
+             "\"compiler\":\"%s\",\"tuning\":\"%s\"%s}",
              r.backend, dev, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers, r.moe_hot,
              paths,
              r.kv, wts, r.cpu_act, r.detail, kern, why, r.build,
-             r.codegen[0] == '+' ? r.codegen + 1 : r.codegen, cc, tun);
+             r.codegen[0] == '+' ? r.codegen + 1 : r.codegen, cc, tun, gaps);
 }
 
 void model_debug_time_report(void) {

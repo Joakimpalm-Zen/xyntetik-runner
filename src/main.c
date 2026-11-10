@@ -4784,6 +4784,13 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
                 o->serve ? o->n_threads : tpool_size(rt->m.tp),
                 o->serve ? " (divided across slots)" : "",
                 now_s() - t1);
+        {   // R12.1b: a canonical build says which types it cannot run canonically
+            char gaps[128];
+            if (model_canon_gaps(&rt->m, gaps, sizeof gaps) && gaps[0])
+                fprintf(stderr, "canon: %s have no canonical-order kernel in this build: their dot "
+                        "products run the ISA-native order, so this model's bytes are not the "
+                        "same on every ISA\n", gaps);
+        }
         if (o->tool_info) {
             *rc = run_tool_info(o, rt, tmpl_override);
             return true;
@@ -6296,7 +6303,7 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     const char *route_state = "not recorded";
     jv *rroute = jv_get(vprof, "route");
     if (rroute) {
-        char rj[512];
+        char rj[768];
         model_route_receipt_json(&rt->m, rj, sizeof rj);
         jv *now = json_parse(rj, strlen(rj));
         const char *rb = jv_str(jv_get(rroute, "backend"), ""),
@@ -7254,7 +7261,7 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
                      "\"context\":%d,\"marked_tokens\":%d}", WM_SCHEME,
                      wmk->id, WM_LAYERS, WM_CONTEXT, cli_wm->marked);
         char *transcript_exe = plat_executable_path();
-        char route_json[512];
+        char route_json[768];
         model_route_receipt_json(&rt->m, route_json, sizeof route_json);
         transcript_info ti = {
             .out_path = o->transcript_path,
