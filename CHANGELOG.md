@@ -16,6 +16,11 @@ Older releases (v1.11.0 and earlier) are preserved in the
   - **The listed QAT Q4_0 file** reads 0.2183 and 90.59% (CUDA), its own distance.
   - **Raw text, reported first there:** the conversion reads 0.3226, which is not explained.
 
+- **`RUNNER_PREFETCH` stays opt-in on Linux and Windows, now measured there (R3.39.5).** On Windows with CUDA,
+  turning it on made every load slower, with identical output: 1.159x the time from a cold file, 1.122x and 1.118x
+  warm on two files. On Linux, on a host capped at 60 read IOPS, it was 1.229x on the CPU and 1.006x and 0.9995x on
+  CUDA. On a CUDA load the hint is issued after the device upload has read the weights, so it cannot speed that
+  upload. `docs/speed-defaults.md` and the manual record the rows; a run that does not set it is unchanged.
 - **`--verify` replays a served turn under a reasoning budget or the loop guard (R1.1.3.3).**
   - **Before:** such a receipt was `UNVERIFIABLE`. The record named the budget's size and that the guard was on,
     but not the sentence the forced close writes or the guard's settings.
