@@ -16,7 +16,8 @@ logits, the header's binary digest aside):
 - the bytes saved: a session image's state shrinks by exactly
   tokens x recurrent layers x the fixture's K+V row (2 KV heads x 8 wide x
   f16 x 2), the fixture's declared geometry being the anchor; --fit and the
-  loader's KV line are held to that same geometry;
+  loader's KV line are held to that same geometry, a declared NextN/MTP
+  block charged only under --mtp (R3.45);
 - a state saved under the prior layout is refused by name, never misread: a
   session image and a KV snapshot each say what wrote them and how to read
   them, and under the knob the image resumes to the straight run's bytes.
@@ -61,6 +62,12 @@ def fx(tmp_path_factory):
         subprocess.run([sys.executable, ROOT / "scripts" / gen, str(path)], check=True,
                        cwd=ROOT, stdout=subprocess.DEVNULL, env={**os.environ, **env})
         out[name] = path
+    # the 8-layer fixture with its declared NextN/MTP block's tensors, so --mtp binds it
+    path = d / "qwen35-8-mtp.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", str(path)], check=True,
+                   cwd=ROOT, stdout=subprocess.DEVNULL,
+                   env={**os.environ, "ORNITH_TEST_LAYERS": "8", "ORNITH_TEST_MTP": "1"})
+    out["qwen35-8-mtp"] = path
     return out
 
 
@@ -111,24 +118,29 @@ def test_the_rows_were_dead_and_are_gone(runner_bin, fx, fam):
     assert prior - now == nt * recurrent * ROW, (name, nt, prior, now)
 
 
+@pytest.mark.parametrize("mtp", [False, True], ids=["plain", "mtp"])
 @pytest.mark.parametrize("prior", [False, True], ids=["now", "prior-layout"])
-def test_fit_and_the_loader_charge_the_same_rows(runner_bin, fx, prior):
-    """--fit reads the header by the loader's rules, so it drops the DeltaNet
-    rows too. Anchor: the 8-layer fixture's declared geometry, 2 attention
-    layers in the trunk (every 4th) and the declared NextN/MTP block past it,
-    which the fit charges and a load that does not consume it never
-    allocates."""
-    model = fx["qwen35-8"]
-    trunk_rows = 8 if prior else 2
+def test_fit_and_the_loader_charge_the_same_rows(runner_bin, fx, prior, mtp):
+    """--fit reads the header by the loader's rules: the DeltaNet layers own
+    no rows (R3.44), and the declared NextN/MTP block past the trunk is no
+    layer and owns rows only when --mtp binds it (R3.45). Anchor: the
+    fixture's declared geometry, 8 trunk layers of which 2 attend (every
+    4th), and one predictor block of the attention shape."""
+    model = fx["qwen35-8-mtp"]
+    rows = (8 if prior else 2) + (1 if mtp else 0)
+    flag = ["--mtp"] if mtp else []
     big, mid = 1 << 22, 1 << 16
-    rc, out, err = _run(runner_bin, prior, "--fit", model, "-c", big)
+    rc, out, err = _run(runner_bin, prior, "--fit", model, "-c", big, *flag)
     assert rc == 0, err[-600:]
-    fit_gib = float(re.search(r"kv cache\s+([\d.]+) GiB", out.decode()).group(1))
-    assert abs(fit_gib - (trunk_rows + 1) * ROW * big / (1 << 30)) <= 0.006, out
-    rc, _, err = _run(runner_bin, prior, "-m", model, "-v", "-p", "hi", "-n", 1, "-c", mid)
+    text = out.decode()
+    assert re.search(r"model\s+qwen35, 8 layers, 1 NextN/MTP block "
+                     + ("charged" if mtp else "not charged"), text), text
+    fit_gib = float(re.search(r"kv cache\s+([\d.]+) GiB", text).group(1))
+    assert abs(fit_gib - rows * ROW * big / (1 << 30)) <= 0.006, text
+    rc, _, err = _run(runner_bin, prior, "-m", model, "-v", "-p", "hi", "-n", 1, "-c", mid, *flag)
     assert rc == 0, err[-600:]
     load_mb = float(re.search(r"kv cache\s+([\d.]+) MB", err).group(1))
-    assert abs(load_mb - trunk_rows * ROW * mid / 1e6) <= 0.06, err[-600:]
+    assert abs(load_mb - rows * ROW * mid / 1e6) <= 0.06, err[-600:]
 
 
 def test_a_prior_layout_image_is_named_and_resumes_under_the_knob(runner_bin, fx):
