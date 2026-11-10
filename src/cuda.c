@@ -1872,6 +1872,7 @@ static bool binding_find(const gpu_weights *w, const model_t *m,
 typedef struct {
     size_t vram_budget;   // what the upload may spend
     size_t fixed;         // what it spends whatever the split
+    size_t headroom;      // the part of `fixed` that is headroom, once
     size_t instances;     // slots that will share it (m->gpu_instances)
     bool mtp_dev;         // a NextN/MTP block rides along
     int G;                // leading layers on the device
@@ -2034,6 +2035,7 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
     fixed += moe_hot_bytes(m);   // RUNNER_MOE_HOT's banks and their routers
     P->vram_budget = vram_budget;
     P->fixed = fixed;
+    P->headroom = (size_t)headroom;
     P->mtp_dev = mtp_dev;
     return true;
 fail:
@@ -2253,6 +2255,9 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         if (!moe_on_host(m, l)) moe_dev++;
     }
     fprintf(stderr, "gpu-split: budget=%.2fGB fixed=%.2fGB G=%d/%d full=%d used=%.2fGB\n", vram_budget/1e9, fixed/1e9, G, m->n_layer, (int)full, used/1e9);
+    // the figures --fit predicts, exactly (tests/test_cuda_fit_hybrid.py)
+    if (getenv("RUNNER_DEBUG_VRAM"))
+        fprintf(stderr, "gpu-split: (bytes: fixed %zu, headroom %zu)\n", fixed, P->headroom);
     if (P->instances > 1)
         fprintf(stderr, "gpu-split: planned for %zu slots sharing the weights, "
                 "each with its own KV cache and scratch\n", P->instances);

@@ -8,6 +8,31 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **Fix: `--fit`'s GPU split on hybrids now equals the loader's, and the CUDA plan stops charging qwen35's recurrent
+  state twice (R3.46).**
+  - **What the fit left out:** each hybrid's device state, held twice (live, and for the speculative rollback), plus
+    its mixer scratch. That is qwen35's Gated DeltaNet fold, and Mamba-2's conv window and SSM state.
+  - **The FFN scratch width:** it took 4 x n_embd where the loader takes the expert width (Qwen3.6-35B-A3B declares no
+    dense one) or a per-layer array's widest entry.
+  - **The cost:** Qwen3.6-35B-A3B at ctx 131072 read 40/40 layers on the fit against the loader's 39/40, and
+    granite-4.0-h-micro read 3 to 4 layers high.
+  - **Now:** both charge `model_gpu_recurrent_cost`.
+    - The fit equals the loader at every point measured: the 35B at 32k, 131k and 262k, and granite-micro across
+      `--reserve-vram` 5 to 10 at 32k and 131k.
+    - The fixed charge is byte-exact on qwen35, qwen35moe, clef, qwen4exp, granitehybrid and nemotron_h fixtures and on
+      the 35B.
+  - **The loader:** it charged qwen35's fold and scratch once in `cuda_instance_dims` and again in `shared_plan_budget`.
+    That is 4x the fold it allocates: 0.18 GB on the 35B, 0.32 GB on Qwen3.8-Flash-Next. Now charged once.
+    - **On the 35B** no layer or bank moves at 32k to 262k.
+    - **Under `--cpu-moe auto` at 262k** the prompt window widens from 256 to 512 columns. Prefill of a 7,370-token
+      prompt goes from 147 to 175 tok/s on main to 183 to 189 tok/s, with identical text.
+    - **The 14 qwen35-family roster rows with CUDA pins** keep their splits (checked from the headers, and Flash-Next
+      on the loader), so no pin moves.
+  - **`RUNNER_DEBUG_VRAM`** prints both figures in bytes: `fit: (bytes: fixed F, headroom H)` and `gpu-split: (bytes:
+    ...)`.
+  - **Checks:** `tests/test_cuda_fit_hybrid.py` (CUDA) holds the two charges equal on six hybrid fixtures and a dense
+    control.
+
 - **The shared prefix cache's default budget is sized from the served model (R4.26.13).**
   - **Before:** `RUNNER_PREFIX_CACHE_MB` was a fixed 512 MB. An entry over half the budget is not stored whole: a
     recurrent model stores nothing, a dense one a truncated prefix. Even after R3.44, Qwen3.5-4B could not cache a

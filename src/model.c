@@ -1009,7 +1009,20 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     const char *arch = gguf_get_str(g, "general.architecture", "");
     #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
     uint64_t n_embd    = gguf_get_u32(g, FK("embedding_length"), 0);
-    uint64_t n_ff      = gguf_get_u32(g, FK("feed_forward_length"), (uint32_t)(4 * n_embd));
+    // the scratch width the loader sizes by (bind_hparams' n_ff): the scalar,
+    // else an experts-only file's expert width, else the widest entry of a
+    // per-layer array (a hybrid's typed blocks, a removed FFN); 4 x n_embd
+    // only for a header that declares none. Reading the scalar alone took
+    // that default on Qwen3.6-35B-A3B (no dense width) and on per-layer
+    // arrays: 3.9 MB of window scratch over the loader's (R3.46).
+    uint64_t n_ff = gguf_get_u32(g, FK("feed_forward_length"), 0);
+    if (!n_ff) n_ff = gguf_get_u32(g, FK("expert_feed_forward_length"), 0);
+    if (!n_ff)
+        for (int l = 0; l < f->n_layer; l++) {
+            uint64_t w = gguf_get_u32_idx(g, FK("feed_forward_length"), (uint64_t)l, 0);
+            if (w > n_ff) n_ff = w;
+        }
+    if (!n_ff) n_ff = 4 * n_embd;
     // R3.46: a hybrid's recurrent state and scratch, by the plan's own rule
     // (model_gpu_recurrent_cost); the families cuda.c runs on the device
     int rec = (!strcmp(arch, "qwen35") || !strcmp(arch, "qwen35moe") ||
