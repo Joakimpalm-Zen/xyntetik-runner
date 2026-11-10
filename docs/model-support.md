@@ -997,18 +997,18 @@ Text path only: Google's quantization-aware Q4_0 release, its mmproj file not lo
 <a id="gemma-4-26b-a4b-it-qat-q4_0"></a>
 ##### `gemma-4-26B_q4_0-it.gguf`
 
-Text path only: Google's quantization-aware Q4_0 release of the MoE model, its mmproj file not loaded; no float32 reference has been run on the MoE layout.
+Text path only: Google's quantization-aware Q4_0 release of the MoE model, its mmproj file not loaded.
 
 - **File:** `gemma-4-26B_q4_0-it.gguf` (sha256 `3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d`, 14,439,363,584 bytes, from [google/gemma-4-26B-A4B-it-qat-q4_0-gguf](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) at revision `d1c082be9cf3`).
 - **Upstream checkpoint:** google/gemma-4-26B-A4B-it.
 - **Quantization:** Q4_0 (Google QAT).
 - **Licence:** `apache-2.0`, as the google/gemma-4-26B-A4B-it model card states it.
 - **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (a publisher float32 comparison is feasible and owed):** anchor: agreement with another engine, not fidelity. The smallest MoE member is this model (104 GB in float32, feasible on the lab CPU box and owed); llama.cpp agreement sits inside the documented routing-chaos KL floor.
+- **Numerical anchor (a publisher float32 comparison exists):** The publisher's float32 model (transformers, google/gemma-4-26B-A4B-it) on chat text, 2,000 positions (2026-11-10): this file reads mean KL 0.2183, margin-qualified top-1 90.59% on CUDA; a fresh bf16 conversion of the checkpoint reads 0.0060 and 99.79% on the CPU, so the engine tracks the reference and the file's distance is its own (QAT retraining and Q4_0 together). Raw text: 1.4900 and 0.3226.
 - **Context tested:** not recorded.
 - **Known limitations:** Metal last validated 2026-09-01 on a 128 GB loaner; no Metal device in the lab can re-gate it.
-- **Still missing:** A float32 run or keeping the another-engine label; the tool gate on the file; pinned output; Metal re-gate hardware.
-- **Evidence:** [docs/model-evidence.md](model-evidence.md), [tests/compatibility/models.json](../tests/compatibility/models.json).
+- **Still missing:** The tool gate on the file; pinned output; Metal re-gate hardware.
+- **Evidence:** [docs/gemma4-26b-reference-2026-11-10.md](gemma4-26b-reference-2026-11-10.md), [docs/model-evidence.md](model-evidence.md), [tests/compatibility/models.json](../tests/compatibility/models.json).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `c697fa9c64f4a370`, [pin](../tests/compatibility/tier-smoke/gemma-4-26b-a4b-it-qat-q4_0.linux-x86_64-cuda.cuda.txt)
