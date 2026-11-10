@@ -1502,6 +1502,20 @@ void engine_set_stop(engine *e, bool (*stop)(void *), void *ud) {
     e->stop_ud = ud;
 }
 
+// RUNNER_TEST_PREFILL_DELAY_MS=N sleeps N ms between prompt chunks, where the
+// stop check runs: a test hook, RUNNER_TEST_STEP_DELAY_MS's counterpart for
+// prefill, so a test can cancel a request while its prompt is being processed
+// (R10.12.3.2). Read once; 0 when unset.
+static int test_prefill_delay_ms(void) {
+    static _Atomic int ms = -1;
+    if (ms < 0) {
+        const char *v = getenv("RUNNER_TEST_PREFILL_DELAY_MS");
+        int d = v && *v ? atoi(v) : 0;
+        ms = d < 0 ? 0 : d;
+    }
+    return ms;
+}
+
 float *engine_feed(engine *e, const int32_t *toks, int n) {
     float *logits = NULL;
     model_t *m = e->m;
@@ -1533,6 +1547,7 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
         // after the last chunk either -- the caller still owns the turn when
         // engine_feed returns, and releasing it here would leave the pairing
         // to be reasoned about at every call site instead of one.
+        if (!last && test_prefill_delay_ms()) plat_sleep_ms(test_prefill_delay_ms());
         if (!last && e->stop && e->stop(e->stop_ud)) return NULL;
         if (!last && e->prefill_yield) e->prefill_yield(e->prefill_ud);
     }

@@ -168,6 +168,12 @@ uint64_t    plat_major_faults(void);
 // (2026-09-14 Windows report).
 bool        plat_gpu_os_budget(const unsigned char luid[8], uint64_t *budget,
                                uint64_t *usage);
+// The same query read now, plus the non-local segment's current usage: the
+// process's allocations WDDM keeps in system memory (Task Manager's "shared
+// GPU memory"). A usage above the budget, or a large non-local figure, is
+// video memory being paged over PCIe. False exactly where the above is.
+bool        plat_gpu_os_vidmem(const unsigned char luid[8], uint64_t *budget,
+                               uint64_t *usage, uint64_t *nonlocal);
 // The page-fault counter plat_major_faults reads: "major" where the OS
 // separates page-ins from disk (POSIX ru_majflt), "all" where it does not
 // (Windows PageFaultCount counts soft faults too). Reported beside the

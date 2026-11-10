@@ -926,6 +926,15 @@ bool gpu_unified_memory(void) {
     return cu_dev_integrated(dev);
 }
 
+bool gpu_os_vidmem(const model_t *m, uint64_t *budget, uint64_t *usage,
+                   uint64_t *nonlocal) {
+    const gpu_t *g = m ? m->gpu : NULL;
+    if (!g || !g->sw || !cu.DeviceGetLuid) return false;
+    char luid[8]; unsigned mask = 0;
+    if (cu.DeviceGetLuid(luid, &mask, g->sw->dev) != 0) return false;
+    return plat_gpu_os_vidmem((const unsigned char *)luid, budget, usage, nonlocal);
+}
+
 // The device's compute capability, "major.minor": which kernels a default
 // run takes depends on it (TC2 runs its compute_80 kernels from 8.0), so
 // --caps reports it beside the build's minimum
@@ -1729,6 +1738,66 @@ static void vram_probe(const char *stage) {
     size_t f = 0, t = 0;
     if (vram_debug_on() && cu.MemGetInfo && cu.MemGetInfo(&f, &t) == 0)
         fprintf(stderr, "vram: %-28s free %.3f GB\n", stage, f / 1e9);
+}
+
+// RUNNER_DEBUG_VRAM, R3.51: what the weight upload actually takes. On an RTX
+// 5070 under WDDM the device lost 0.8 to 0.9 GB more than the bytes uploaded,
+// past the plan's headroom. For the upload stage only, every cu.MemAlloc goes
+// through va_alloc, which reads the driver's free figure around the call: the
+// count, the bytes asked, the bytes the device gave up for them, the largest
+// single gap, and whatever the stage lost outside any allocation (the copies,
+// the driver's own buffers). Debug only: with the switch off nothing is
+// swapped and nothing is read.
+static struct {
+    bool on;
+    CUresult (*real)(CUdeviceptr *, size_t);
+    size_t free0;
+    int n;
+    uint64_t asked, taken, gap_max, gap_max_asked;
+} g_va;
+
+static CUresult va_alloc(CUdeviceptr *p, size_t n) {
+    size_t f0 = 0, f1 = 0, t = 0;
+    bool known = cu.MemGetInfo(&f0, &t) == 0;
+    CUresult rc = g_va.real(p, n);
+    if (rc == 0 && known && cu.MemGetInfo(&f1, &t) == 0) {
+        uint64_t took = f0 > f1 ? (uint64_t)(f0 - f1) : 0;
+        uint64_t gap = took > n ? took - n : 0;
+        g_va.n++;
+        g_va.asked += n;
+        g_va.taken += took;
+        if (gap > g_va.gap_max) { g_va.gap_max = gap; g_va.gap_max_asked = n; }
+    }
+    return rc;
+}
+
+static void upload_vram_begin(void) {
+    size_t t = 0;
+    memset(&g_va, 0, sizeof g_va);
+    if (!vram_debug_on() || !cu.MemGetInfo || !cu.MemAlloc ||
+        cu.MemGetInfo(&g_va.free0, &t) != 0)
+        return;
+    g_va.real = cu.MemAlloc;
+    cu.MemAlloc = va_alloc;
+    g_va.on = true;
+}
+
+static void upload_vram_end(void) {
+    if (!g_va.on) return;
+    cu.MemAlloc = g_va.real;
+    g_va.on = false;
+    size_t f1 = 0, t = 0;
+    if (cu.MemGetInfo(&f1, &t) != 0) return;
+    int64_t stage = (int64_t)g_va.free0 - (int64_t)f1;
+    int64_t outside = stage - (int64_t)g_va.taken;
+    fprintf(stderr, "vram: upload: %d allocations, %.3f GB asked, %.3f GB taken by "
+                    "them; largest gap %.1f MB (on a %.1f MB allocation); the stage "
+                    "took %.3f GB, %+.3f GB of it outside the allocations "
+                    "(bytes: asked %llu, taken %llu, stage %lld)\n",
+            g_va.n, g_va.asked / 1e9, g_va.taken / 1e9, g_va.gap_max / 1e6,
+            g_va.gap_max_asked / 1e6, stage / 1e9, outside / 1e9,
+            (unsigned long long)g_va.asked, (unsigned long long)g_va.taken,
+            (long long)stage);
 }
 
 
@@ -3322,11 +3391,19 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, size_t per_col,
             (P.vram_budget > P.used ? P.vram_budget - P.used : 0) / 1e9, per_col,
             tc2_charged ? " with TC2's activations" : "");
     shared_plan_upload(w, m, &P);
-    if (!shared_load_module(w) ||
-        !shared_upload_weights(w, m, &P) ||
-        !shared_upload_constants(w, m, max_hd) ||
-        !shared_upload_layer_tables(w, m))
-        goto fail;
+    if (!shared_load_module(w)) goto fail;
+    upload_vram_begin();   // RUNNER_DEBUG_VRAM only; a no-op otherwise
+    bool uploaded = shared_upload_weights(w, m, &P);
+    if (uploaded) {
+        vram_probe("upload: after the weights");
+        uploaded = shared_upload_constants(w, m, max_hd);
+    }
+    if (uploaded) {
+        vram_probe("upload: after the constants");
+        uploaded = shared_upload_layer_tables(w, m);
+    }
+    upload_vram_end();
+    if (!uploaded) goto fail;
     w->refs = 1;
     vram_probe("after weights upload");
     if (getenv("RUNNER_DEBUG_VRAM")) {

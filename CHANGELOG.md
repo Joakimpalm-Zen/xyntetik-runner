@@ -8,6 +8,29 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **A cancel route keyed by request id: `POST /v1/runner/requests/{id}/cancel` (R10.12.3.2).**
+  - **What it is:** a client that wants an answer, rather than polling `/health`, names a running completion request.
+    It can use the response id, or the `X-Request-Id` header it sent with the request. The header is how a buffered
+    client knows the id before its reply arrives.
+  - **How it answers:** the cancel is served from the accept loop, so on a one-slot server it does not queue behind
+    the request it cancels. It replies once that request has stopped, with the phase it was in and how many tokens
+    it had generated. An unknown id gets `404`.
+  - **The cancelled reply:** a cut during generation keeps its partial output (`finish_reason` `length`,
+    `finish_detail` `cancelled`). A cut while the prompt was processed answers `409 cancelled`. The server stays up.
+  - **Ids:** a client id is checked (1 to 64 characters from `A-Z a-z 0-9 . _ : -`), and one that an active request
+    already holds is refused with `409`. Request ids stay out of `/health`, which anything on loopback can read.
+  - **Receipts:** a turn the server cut from outside the model (a cancel, the request's `timeout`, the drain) now
+    records `serve.cut`, and `--verify` replays the recorded tokens and no further. Before, such a receipt replayed
+    `DIVERGED`, because the replay ran on to `max_tokens`.
+
+- **Docs: gemma-4-26B-A4B now has its publisher float32 comparison (R6.11).** The support entry listed it as owed.
+  - **What was run:** two files, scored against the transformers forward of `google/gemma-4-26B-A4B-it` in float32
+    on chat text, 2,000 positions ([the record](docs/gemma4-26b-reference-2026-11-10.md)).
+  - **A fresh bf16 conversion** of the checkpoint reads mean KL 0.0060, margin-qualified top-1 99.79% (CPU), so the
+    MoE forward tracks the reference.
+  - **The listed QAT Q4_0 file** reads 0.2183 and 90.59% (CUDA), its own distance.
+  - **Raw text, reported first there:** the conversion reads 0.3226, which is not explained.
+
 - **The first CUDA load on a new card or driver says why it waits (R10.29).**
   - **Before:** the driver JIT-compiles the embedded PTX the first time, and the process sat silent. Measured on
     an RTX 5070: 33.4 s cold, 0.40 s warm from the driver's cache.

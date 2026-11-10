@@ -126,6 +126,64 @@ int main(int argc, char **argv) {
     ck(!model_paging_note_wanted(64 * 5 - 1, 5), "one below the floor is silent");
     ck(model_paging_note_wanted(64, 0), "a zero-token request is floored at one token");
 
+    // --- the note's wording (R3.49) ---------------------------------------
+    // A fully offloaded gpt-oss logged "[837210 page-ins ... weights not
+    // resident]" per request with every weight on the card. The wording now
+    // depends on where the weights are; the threshold does not.
+    char note[256];
+    ck(model_paging_note(note, sizeof note, 297, 40, false, NULL) == 0 && note[0] == '\0',
+       "below the floor: no note on a partial offload");
+    ck(model_paging_note(note, sizeof note, 297, 40, true, NULL) == 0 && note[0] == '\0',
+       "below the floor: no note on a full offload");
+    model_paging_note(note, sizeof note, 1805121, 96, false, NULL);
+    ck(strcmp(note, " [1805121 page-ins \u2014 weights not resident]") == 0,
+       "partial offload: the wording the note always had, byte for byte");
+    model_paging_note(note, sizeof note, 837210, 82, true, NULL);
+    ck(strcmp(note, " [837210 page faults during the request]") == 0,
+       "full offload: the count, and no claim about the weights");
+    model_vidmem vm = { true, 11720000000ull, 11420000000ull, 252000000ull };
+    model_paging_note(note, sizeof note, 837210, 82, true, &vm);
+    ck(strcmp(note, " [837210 page faults during the request; video memory "
+                    "11.42 of 11.72 GB budget, 252 MB in shared memory]") == 0,
+       "with a budget: usage against it, and the shared-memory figure");
+    vm.usage = 12020000000ull; vm.nonlocal = 0;
+    model_paging_note(note, sizeof note, 837210, 82, true, &vm);
+    ck(strcmp(note, " [837210 page faults during the request; video memory "
+                    "over budget by 0.30 GB]") == 0,
+       "over the budget: says so, and no shared-memory clause at zero");
+    vm.known = false;
+    model_paging_note(note, sizeof note, 837210, 82, false, &vm);
+    ck(strcmp(note, " [837210 page-ins \u2014 weights not resident]") == 0,
+       "no published budget: the figures stay out of the line");
+    char tiny[24];
+    model_paging_note(tiny, sizeof tiny, 837210, 82, true, NULL);
+    ck(strlen(tiny) == sizeof tiny - 1 && strncmp(tiny, " [837210 page", 13) == 0,
+       "a short buffer truncates and stays terminated");
+
+    // Which wording a loaded model gets. No GPU is needed: a CPU load has no
+    // device, and the device fields are set by hand for the other cases (and
+    // put back before model_free, which would otherwise free a fake device).
+    {
+        model_t om;
+        if (!load(&om, dense_path)) return 1;
+        ck(!model_weights_on_device(&om), "a CPU run never has its weights on a device");
+        int dummy_gpu = 0;
+        om.gpu = &dummy_gpu;
+        om.gpu_layers = om.n_layer - 1;
+        ck(!model_weights_on_device(&om), "a partial split keeps host weights");
+        om.gpu_layers = om.n_layer;
+        ck(model_weights_on_device(&om) == !gpu_unified_memory(),
+           "a full split on a discrete device: every weight is on the device");
+        bool host[256] = { false };
+        om.cpu_moe = true; om.moe_host = host;
+        ck(model_weights_on_device(&om) == !gpu_unified_memory(),
+           "--cpu-moe with no layer's bank on the host changes nothing");
+        host[0] = true;
+        ck(!model_weights_on_device(&om), "an expert bank on the host keeps host weights");
+        om.cpu_moe = false; om.moe_host = NULL; om.gpu = NULL; om.gpu_layers = 0;
+        model_free(&om);
+    }
+
     // --- load-time prefetch decision -------------------------------------
     // Cold-start page-in of a big model arrives as ~16 KB synchronous faults
     // (1.1M+ of them for the 120B); a WILLNEED sweep batches them. The
