@@ -156,3 +156,91 @@ def test_step_lines_keep_the_step_window_only():
     assert got[0] == "##[group]Run make test-gates-core"
     assert got[-1] == "##[error]Process completed with exit code 2."
     assert not any("test_old.c" in x for x in got)
+
+
+class _Servers:
+    """Two local HTTP servers in the shape of the job-log download: the "api"
+    answers 302 to a signed URL on the "storage" host (another port, so another
+    netloc), and the storage host refuses a request that carries a bearer token
+    beside its signature, with the storage service's own wording. The shape is
+    emulated, not recorded: without a token the endpoint answers 403, not the
+    redirect."""
+
+    def __init__(self):
+        import http.server
+        import threading
+        seen = self.seen = []
+
+        class Storage(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(("storage", self.headers.get("Authorization")))
+                if self.headers.get("Authorization"):
+                    self.send_response(401, "Server failed to authenticate the request. Please refer to the "
+                                            "information in the www-authenticate header.")
+                    self.end_headers()
+                    return
+                body = LOG.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        self.storage = http.server.HTTPServer(("127.0.0.1", 0), Storage)
+        storage_url = f"http://127.0.0.1:{self.storage.server_address[1]}/blob?sv=2025-01-05&sig=abc"
+
+        class Api(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(("api", self.headers.get("Authorization")))
+                if self.path.endswith("/same-host"):
+                    self.send_response(302)
+                    self.send_header("Location", "/final")
+                    self.end_headers()
+                    return
+                if self.path == "/final":
+                    self.send_response(200)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+                    return
+                self.send_response(302)
+                self.send_header("Location", storage_url)
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        self.api = http.server.HTTPServer(("127.0.0.1", 0), Api)
+        self.api_url = f"http://127.0.0.1:{self.api.server_address[1]}"
+        for s in (self.storage, self.api):
+            threading.Thread(target=s.serve_forever, daemon=True).start()
+
+    def close(self):
+        for s in (self.storage, self.api):
+            s.shutdown()
+            s.server_close()
+
+
+def test_the_log_redirect_reaches_the_storage_host_without_the_token():
+    """R6.45.3: urllib carried the Authorization header onto the signed storage
+    URL, which refused it (HTTP 401 in the dispatched dry run of 2026-11-10)."""
+    srv = _Servers()
+    try:
+        api = alert.Api("o/r", "secret", dry_run=False)
+        log = api.call("GET", f"{srv.api_url}/repos/o/r/actions/jobs/1/logs", raw=True)
+        assert log == LOG
+        assert srv.seen == [("api", "Bearer secret"), ("storage", None)]
+    finally:
+        srv.close()
+
+
+def test_a_redirect_on_the_same_host_keeps_the_token():
+    srv = _Servers()
+    try:
+        api = alert.Api("o/r", "secret", dry_run=False)
+        assert api.call("GET", f"{srv.api_url}/same-host") == {}
+        assert srv.seen == [("api", "Bearer secret"), ("api", "Bearer secret")]
+    finally:
+        srv.close()

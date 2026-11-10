@@ -33,6 +33,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 API = "https://api.github.com"
@@ -83,6 +84,25 @@ def first_failing_line(lines):
     return body[-1].strip()[:300] if body else None
 
 
+class SameHostAuthRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect, keeping the Authorization header only on the host
+    that was asked. urllib copies every header but the content headers onto
+    the redirected request. The job-log endpoint answers with a redirect to a
+    signed storage URL on another host, and that host refuses a signed URL
+    that also carries a bearer token: "HTTP Error 401: Server failed to
+    authenticate the request" (R6.45.3)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and urllib.parse.urlsplit(newurl).netloc != \
+                urllib.parse.urlsplit(req.full_url).netloc:
+            new.remove_header("Authorization")
+        return new
+
+
+OPENER = urllib.request.build_opener(SameHostAuthRedirect)
+
+
 class Api:
     def __init__(self, repo, token, dry_run, out=sys.stdout):
         self.repo, self.token, self.dry_run, self.out = repo, token, dry_run, out
@@ -96,7 +116,7 @@ class Api:
             req.add_header("Authorization", f"Bearer {self.token}")
         if body is not None:
             req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with OPENER.open(req, timeout=60) as r:
             data = r.read()
         return data.decode("utf-8", "replace") if raw else json.loads(data or b"null")
 
