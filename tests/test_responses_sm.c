@@ -48,6 +48,12 @@ static void *t_malloc(size_t n) { return g_starve_malloc ? NULL : malloc(n); }
 // completion.c's request stop predicate asks the server whether its shutdown
 // drain is over (server.c); this test runs no server, so never.
 double server_drain_deadline(void) { return 0; }
+// and, since R10.12.3.2, registers each request's ids for a cancel to find
+// (server.c); with no server here every id is free
+bool server_request_begin(slot_t *s, const char *response_id) {
+    (void)s; (void)response_id;
+    return true;
+}
 
 static int g_fail = 0;
 

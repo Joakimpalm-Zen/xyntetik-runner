@@ -194,6 +194,41 @@ bool validate_request_authority(char *first_header, char *header_end) {
     return hosts == 1;
 }
 
+bool request_id_valid(const char *s, size_t n) {
+    if (n < 1 || n > 64) return false;
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '.' || c == '_' || c == ':' || c == '-'))
+            return false;
+    }
+    return true;
+}
+
+int request_header_id(char *first_header, char *header_end, const char *name,
+                      char out[65]) {
+    size_t want = strlen(name);
+    int found = 0;
+    out[0] = 0;
+    for (char *line = first_header; line < header_end;) {
+        char *end = strstr(line, "\r\n");
+        if (!end || end > header_end) end = header_end;
+        char *colon = memchr(line, ':', (size_t)(end - line));
+        if (colon && (size_t)(colon - line) == want && ci_ncmp(line, name, want) == 0) {
+            const char *v = colon + 1;
+            size_t n = (size_t)(end - v);
+            while (n && (*v == ' ' || *v == '\t')) { v++; n--; }
+            while (n && (v[n - 1] == ' ' || v[n - 1] == '\t')) n--;
+            if (found || !request_id_valid(v, n)) return -1;
+            memcpy(out, v, n);
+            out[n] = 0;
+            found = 1;
+        }
+        line = end + 2;
+    }
+    return found;
+}
+
 // Parse the two HTTP fields that determine request framing. Header names are
 // compared as complete, line-anchored fields: text inside another field's
 // value must never influence framing. Runner does not implement transfer

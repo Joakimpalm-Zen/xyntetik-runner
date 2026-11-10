@@ -1970,6 +1970,144 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
 
 // /health and /v1/models read only startup-immutable strings plus an atomic
 // resident snapshot, so they are safe to answer from the accept thread with no lock
+// R10.12.3.2: cancel a request by id, for a client that wants an answer
+// rather than polling /health. A completion request takes its ids when it
+// starts (run_completion): the response id it will answer with, and the
+// client's X-Request-Id when it sent one, which is the id a buffered client
+// can know before its reply arrives. The ids stay out of /health: the server
+// has no key of its own, so anything on loopback reads /health, and a listed
+// response id would hand out the name of a stored response (R10.15).
+static pthread_mutex_t rq_ids_mu = PTHREAD_MUTEX_INITIALIZER;
+
+bool server_request_begin(slot_t *s, const char *response_id) {
+    bool ok = true;
+    pthread_mutex_lock(&rq_ids_mu);
+    for (int i = 0; s->cid_next[0] && SV.slots && i < SV.n_slots; i++) {
+        slot_t *o = &SV.slots[i];
+        if (o != s && o->rq_live && !strcmp(o->rq_cid, s->cid_next)) ok = false;
+    }
+    if (ok) {
+        snprintf(s->rq_id, sizeof s->rq_id, "%s", response_id);
+        snprintf(s->rq_cid, sizeof s->rq_cid, "%s", s->cid_next);
+        atomic_store(&s->rq_cancel, 0);
+        atomic_store(&s->rq_gen, 0);
+        atomic_fetch_add(&s->rq_seq, 1);
+        s->rq_live = true;
+    }
+    pthread_mutex_unlock(&rq_ids_mu);
+    return ok;
+}
+
+void server_request_end(slot_t *s) {
+    pthread_mutex_lock(&rq_ids_mu);
+    if (s->rq_live) {
+        s->rq_live = false;
+        atomic_store(&s->rq_end_gen, atomic_load(&s->rq_gen));
+        atomic_store(&s->rq_end_seq, atomic_load(&s->rq_seq));
+    }
+    s->rq_id[0] = s->rq_cid[0] = 0;
+    pthread_mutex_unlock(&rq_ids_mu);
+}
+
+#define CANCEL_PREFIX "/v1/runner/requests/"
+#define CANCEL_SUFFIX "/cancel"
+
+// The id a cancel path names, or false when the path is not a cancel.
+static bool cancel_path_id(const char *path, char id[65]) {
+    size_t pn = sizeof CANCEL_PREFIX - 1, sn = sizeof CANCEL_SUFFIX - 1, n = strlen(path);
+    if (n <= pn + sn || strncmp(path, CANCEL_PREFIX, pn) ||
+        strcmp(path + n - sn, CANCEL_SUFFIX))
+        return false;
+    size_t idn = n - pn - sn;
+    if (!request_id_valid(path + pn, idn)) { id[0] = 0; return true; }
+    memcpy(id, path + pn, idn);
+    id[idn] = 0;
+    return true;
+}
+
+typedef struct {
+    sock_t   fd;
+    slot_t  *s;
+    unsigned seq;
+    int      phase;
+    char     id[65], rid[48];
+} cancel_wait;
+
+// How long a cancel waits for its request to stop: the request checks at
+// every decode step and between prefill chunks, so this bounds a stalled
+// step, not an ordinary one.
+#define CANCEL_WAIT_S 30.0
+
+static void cancel_answer(cancel_wait *w) {
+    double until = now_s() + CANCEL_WAIT_S;
+    while (atomic_load(&w->s->rq_end_seq) != w->seq && now_s() < until)
+        plat_sleep_ms(5);
+    if (atomic_load(&w->s->rq_end_seq) != w->seq) {
+        send_error_detail(w->fd, 504, "the request has not stopped yet; it stops "
+                          "at its next step", NULL, "cancel_pending");
+        return;
+    }
+    char b[256];
+    int n = snprintf(b, sizeof b, "{\"id\":\"%s\",\"request_id\":\"%s\","
+                     "\"cancelled\":true,\"phase\":\"%s\",\"generated\":%d}",
+                     w->id, w->rid,
+                     w->phase == 2 ? "generate" : w->phase == 1 ? "prefill" : "starting",
+                     atomic_load(&w->s->rq_end_gen));
+    send_response(w->fd, 200, "application/json", b, (size_t)n);
+}
+
+static void *cancel_waiter(void *arg) {
+    cancel_wait *w = arg;
+    cancel_answer(w);
+    sock_close(w->fd);
+    free(w);
+    return NULL;
+}
+
+// Answer a cancel. True when the reply (or the wait for it) was taken over by
+// a thread that also closes fd; false when it was sent here.
+static bool handle_cancel(sock_t fd, const char *path, bool may_detach) {
+    char id[65];
+    cancel_path_id(path, id);
+    cancel_wait *w = calloc(1, sizeof *w);
+    if (!w) { send_error(fd, 500, "cannot allocate the cancel"); return false; }
+    pthread_mutex_lock(&rq_ids_mu);
+    for (int i = 0; id[0] && SV.slots && i < SV.n_slots; i++) {
+        slot_t *o = &SV.slots[i];
+        if (o->rq_live && (!strcmp(o->rq_id, id) || (o->rq_cid[0] && !strcmp(o->rq_cid, id)))) {
+            atomic_store(&o->rq_cancel, 1);
+            w->s = o;
+            w->seq = atomic_load(&o->rq_seq);
+            w->phase = atomic_load(&o->rq_phase);
+            snprintf(w->rid, sizeof w->rid, "%s", o->rq_id);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&rq_ids_mu);
+    if (!w->s) {
+        free(w);
+        send_error_detail(fd, 404, "no active request has this id (it finished, "
+                          "was never seen, or is still queued for a slot)",
+                          NULL, "request_not_found");
+        return false;
+    }
+    w->fd = fd;
+    snprintf(w->id, sizeof w->id, "%s", id);
+    if (may_detach) {
+        pthread_t th;
+        pthread_attr_t at;
+        if (!pthread_attr_init(&at)) {
+            pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+            int rc = pthread_create(&th, &at, cancel_waiter, w);
+            pthread_attr_destroy(&at);
+            if (!rc) return true;
+        }
+    }
+    cancel_answer(w);
+    free(w);
+    return false;
+}
+
 static void send_health(sock_t fd) {
     char b[2304];
     int n, res = resident_load();
@@ -2712,8 +2850,20 @@ static void handle_conn(slot_t *s, sock_t fd) {
         body[content_length] = 0;
     }
 
+    // R10.12.3.2: the client's own id for this request, which a cancel can
+    // name; a completion request registers it when it starts
+    if (request_header_id(first_header, header_end, "X-Request-Id", s->cid_next) < 0) {
+        free(body);
+        send_error_detail(fd, 400, "X-Request-Id must be sent once, as 1 to 64 "
+                          "characters from A-Z a-z 0-9 . _ : -", "X-Request-Id",
+                          "invalid_request_id");
+        return;
+    }
+    char cancel_id[65];
+    bool cancel_route = !strcmp(method, "POST") && cancel_path_id(path, cancel_id);
     bool bodyless_route = content_length > 0 &&
-        ((!strcmp(method, "POST") &&
+        (cancel_route ||
+         (!strcmp(method, "POST") &&
           (!strcmp(path, "/unload") ||
            !strcmp(path, "/v1/runner/prefix-cache/clear"))) ||
          (!strcmp(method, "DELETE") &&
@@ -2734,6 +2884,10 @@ static void handle_conn(slot_t *s, sock_t fd) {
         // replying; closing from the accept thread with unread bytes resets
         // the TCP connection and can discard the error response itself.
         send_error(fd, 400, "this route takes no request body");
+    } else if (cancel_route) {
+        // normally answered from the accept loop (accept_fastpath); this
+        // path serves one that slipped past it, and waits here
+        handle_cancel(fd, path, false);
     } else if (!strcmp(method, "POST") && !strcmp(path, "/unload")) {
         // Free the resident model's memory. Normally answered straight from
         // the accept loop (see accept_fastpath); this path still serves a
@@ -2972,6 +3126,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
             // whatever way the handler left, this slot is no longer working
             atomic_store(&s->rq_phase, 0);
             s->e.stat_feed = s->e.stat_gen = NULL;
+            server_request_end(s);
             // Drop the request from the count BEFORE the bookkeeping lock:
             // an /unload that saw this request active left pending_unload for
             // us, and the count must already be zero when we honour it.
@@ -3067,6 +3222,9 @@ static bool accept_fastpath(sock_t fd) {
                               sizeof("POST /v1/runner/prefix-cache/clear ") - 1);
     bool prov = !strncmp(hdr, "GET /v1/runner/provenance ",
                          sizeof("GET /v1/runner/provenance ") - 1);
+    // R10.12.3.2: a cancel must not queue behind the request it cancels; the
+    // wait for the stop runs on a thread of its own, never this one
+    bool cancel = !strncmp(hdr, "POST " CANCEL_PREFIX, sizeof("POST " CANCEL_PREFIX) - 1);
     // Deliberately NOT here: GET /metrics, GET /v1/runner/contexts and the
     // stored-response routes (rule 1 above); the slot path serves them.
     // The old spelling still has to reach a handler, or an operator's script
@@ -3074,7 +3232,7 @@ static bool accept_fastpath(sock_t fd) {
     // to the slot path, which replies 405 with the reason.
     if (!strncmp(hdr, "GET /unload ", 12)) return false;
     if (!health && !models && !caps && !unload && !pfx_stats && !pfx_clear &&
-        !prov)
+        !prov && !cancel)
         return false;
     // Keep the request untouched until framing says it is bodyless. A partial
     // header, an oversized header, malformed framing, and every declared body
@@ -3104,7 +3262,17 @@ static bool accept_fastpath(sock_t fd) {
         got += (size_t)r;
     }
     sock_send_timeout(fd, 30.0);   // rule 2: a dead reader cannot hold this thread
-    (void)method; (void)path;
+    (void)method;
+    char cancel_id[65];
+    if (cancel && !cancel_path_id(path, cancel_id)) {
+        send_error(fd, 404, "not found");
+        sock_close(fd);
+        return true;
+    }
+    if (cancel) {
+        if (!handle_cancel(fd, path, true)) sock_close(fd);
+        return true;
+    }
     if (health)          send_health(fd);
     else if (models)     send_models(fd);
     else if (prov)       send_provenance(fd);

@@ -1058,6 +1058,89 @@ int model_gpu_window(uint64_t spare, uint64_t per_col, int instances,
 // With f->n_seq slots each pays its own KV, host and device, and its own
 // activation scratch; the weights and the headroom are paid once, as the
 // loader's split plans it (cuda.c shared_plan_budget).
+static bool swa_pattern_array(gguf_file *g, const char *key, bool *out, int n);
+
+// R3.50: the layers a load types as sliding, and their window, from the
+// header alone, by the binders' own rules in the order the loader applies
+// them: bind_meta_gemma3, _gptoss, _afmoe, _spark25 and _flint set the table;
+// any other family with a window takes bind_swa_default; gemma4 and
+// muse-glimmer rebuild it afterwards. Returns the window, 0 when no layer
+// slides. A change to one of those binders is a change here:
+// tests/test_cuda_fit_ring.py holds the fit and the load to one split.
+static int fit_swa_layers(gguf_file *g, const char *arch, int n_layer,
+                          int train_ctx, bool *is_swa) {
+    char key[128];
+    #define SK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
+    for (int i = 0; i < n_layer; i++) is_swa[i] = false;
+    int sw = 0;
+    if (!strcmp(arch, "gemma3") || !strcmp(arch, "muse-glimmer")) {
+        bool gemma = arch[0] == 'g';
+        sw = (int)gguf_get_u32(g, SK("attention.sliding_window"), gemma ? 0 : 2048);
+        int per = (int)gguf_get_u32(g, SK("attention.sliding_window_pattern"), gemma ? 6 : 4);
+        if (per < 1) per = gemma ? 6 : 4;
+        if (!swa_pattern_array(g, SK("attention.sliding_window_pattern"), is_swa, n_layer))
+            for (int i = 0; i < n_layer; i++) is_swa[i] = sw > 0 && (i + 1) % per != 0;
+        else if (gemma && sw <= 0)
+            for (int i = 0; i < n_layer; i++) is_swa[i] = false;
+    } else if (!strcmp(arch, "gpt-oss") || !strcmp(arch, "afmoe")) {
+        bool oss = arch[0] == 'g';
+        sw = (int)gguf_get_u32(g, SK("attention.sliding_window"), oss ? 0 : 2048);
+        int per = (int)gguf_get_u32(g, SK("attention.sliding_window_pattern"), oss ? 2 : 4);
+        if (per < 1) per = oss ? 2 : 4;
+        for (int i = 0; i < n_layer; i++) is_swa[i] = sw > 0 && (i + 1) % per != 0;
+    } else if (!strcmp(arch, "spark2_5") || !strcmp(arch, "flint")) {
+        // both require a window and the boolean pattern; the loader refuses
+        // the file without them, and so the fit charges it no ring
+        sw = (int)gguf_get_u32(g, SK("attention.sliding_window"), 0);
+        if (sw <= 0 || !swa_pattern_array(g, SK("attention.sliding_window_pattern"), is_swa, n_layer)) {
+            for (int i = 0; i < n_layer; i++) is_swa[i] = false;
+            sw = 0;
+        }
+    } else if (!strcmp(arch, "gemma4")) {
+        // raw pattern bits (bool, u8 or i8), the layer slides only under a window
+        sw = (int)gguf_get_u32(g, SK("attention.sliding_window"), 0);
+        gguf_kv *pat = gguf_get(g, SK("attention.sliding_window_pattern"));
+        if (pat && (pat->type != GGUF_T_ARR || !pat->arr_raw ||
+                    (pat->arr_type != GGUF_T_BOOL && pat->arr_type != GGUF_T_U8 &&
+                     pat->arr_type != GGUF_T_I8)))
+            pat = NULL;
+        for (int i = 0; i < n_layer; i++)
+            is_swa[i] = pat && (uint64_t)i < pat->arr_n && sw > 0 &&
+                        ((const uint8_t *)pat->arr_raw)[i] != 0;
+    } else {   // bind_swa_default
+        sw = (int)gguf_get_u32(g, SK("attention.sliding_window"), 0);
+        bool uniform = !strcmp(arch, "phi3");
+        if (uniform && sw >= train_ctx) sw = 0;
+        if (sw > 0) {
+            int per = (int)gguf_get_u32(g, SK("attention.sliding_window_pattern"), 2);
+            if (per < 1) per = 2;
+            if (uniform)
+                for (int i = 0; i < n_layer; i++) is_swa[i] = true;
+            else if (!swa_pattern_array(g, SK("attention.sliding_window_pattern"), is_swa, n_layer))
+                for (int i = 0; i < n_layer; i++) is_swa[i] = (i + 1) % per != 0;
+        }
+    }
+    #undef SK
+    int n = 0;
+    for (int i = 0; i < n_layer; i++) n += is_swa[i];
+    return n > 0 && sw > 0 ? sw : 0;
+}
+
+// The ring decision a load makes (kv_ring_wanted): --kv-ring or RUNNER_KV_RING
+// force it; auto turns it on when the weights plus the flat cache exceed the
+// device budget less its headroom, and the ring is smaller.
+static bool fit_kv_ring_on(int mode, uint64_t weights, uint64_t flat, uint64_t ring,
+                           uint64_t budget, uint64_t headroom) {
+    const char *e = getenv("RUNNER_KV_RING");
+    if (e && *e)
+        mode = !strcmp(e, "auto") ? KV_RING_AUTO
+             : !strcmp(e, "0") || !strcmp(e, "off") ? KV_RING_OFF : KV_RING_ON;
+    if (mode == KV_RING_ON) return true;
+    if (mode == KV_RING_OFF) return false;
+    uint64_t cap = budget > headroom ? budget - headroom : 0;
+    return cap > 0 && ring < flat && weights + flat > cap;
+}
+
 bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
                    uint64_t headroom, int max_layers) {
     if (f->n_layer <= 0) return false;
@@ -1153,18 +1236,46 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     // no layer and costs the device nothing
     uint64_t mtp_w = 0;
     for (int l = f->n_layer; f->mtp && l < blocks; l++) mtp_w += lb[l];
+    // R3.50: the sliding layers and the rows a ring gives them (window plus
+    // the prompt batch, model_kv_ring_rows), so the split below charges what
+    // a load allocates rather than the flat cache
+    bool *is_swa = calloc((size_t)f->n_layer, sizeof(bool));
+    if (!is_swa) { free(lb); free(cost); free(geo.kv_dim); return false; }
+    int window = fit_swa_layers(g, arch, f->n_layer, f->train_ctx, is_swa);
+    int batch = f->n_batch > 0 ? f->n_batch : 64;
+    if (batch > f->n_ctx) batch = f->n_ctx;
+    int rows = window > 0 ? model_kv_ring_rows(window, batch, f->n_ctx) : f->n_ctx;
+    f->n_swa_layers = 0;
+    for (int l = 0; window > 0 && l < f->n_layer; l++) f->n_swa_layers += is_swa[l];
+    f->kv_ring_rows = rows < f->n_ctx ? rows : 0;
+    // the loader's weight estimate (model_cuda_weight_estimate): the mapped
+    // file less the row-gathered table that never leaves the host
+    const uint64_t weights_est = f->weights > f->gathered ? f->weights - f->gathered : f->weights;
     for (int k = 0; k < 4; k++) {
         f->gpu_layers[k] = -1;
+        f->kv_ring[k] = false;
         if (!per_tok[k]) continue;
+        uint64_t flat_kv = 0, ring_kv = 0;
+        for (int l = 0; l < f->n_layer; l++) {
+            uint64_t row = fit_kv_row(geo.kv_dim[l], k, geo.v_shared);
+            flat_kv += row * (uint64_t)f->n_ctx;
+            ring_kv += row * (uint64_t)(is_swa[l] ? rows : f->n_ctx);
+        }
+        flat_kv *= slots; ring_kv *= slots;
+        bool ring = f->kv_ring_rows > 0 &&
+                    fit_kv_ring_on(f->kv_ring_mode, weights_est, flat_kv, ring_kv, budget, headroom);
+        f->kv_ring[k] = ring;
         int G = 0;
         uint64_t mtp_kv = 0;
         for (int l = f->n_layer; f->mtp && l < blocks; l++)
             mtp_kv += fit_kv_row(geo.kv_dim[l], k, geo.v_shared) * (uint64_t)f->n_ctx * slots;
         uint64_t used = f->gpu_fixed + mtp_w + mtp_kv, dev_w = 0;
         if (used <= budget) {
-            // each layer pays its own KV rows (fit_geometry), not an average
+            // each layer pays its own KV rows (fit_geometry), not an average;
+            // a sliding layer under the ring pays only the ring's rows
             for (int l = 0; l < f->n_layer; l++)
-                cost[l] = lb[l] + fit_kv_row(geo.kv_dim[l], k, geo.v_shared) * (uint64_t)f->n_ctx * slots;
+                cost[l] = lb[l] + fit_kv_row(geo.kv_dim[l], k, geo.v_shared) *
+                                  (uint64_t)(ring && is_swa[l] ? rows : f->n_ctx) * slots;
             G = gpu_plan_prefix(cost, f->n_layer, max_layers, budget, &used);
             for (int l = 0; l < G; l++) dev_w += lb[l];
             // The loader's full-split test: the output head, once (a tied
@@ -1190,8 +1301,10 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
             host_w = (uint64_t)((double)host_w * (double)f->hot / (double)resident);
         f->gpu_layers[k] = G;
         f->gpu_used[k] = used;
-        f->host_need[k] = host_w + per_tok[k] * (uint64_t)f->n_ctx * slots;
+        // the host's cache is the same layout: ringed sliding layers there too
+        f->host_need[k] = host_w + (ring ? ring_kv : per_tok[k] * (uint64_t)f->n_ctx * slots);
     }
+    free(is_swa);
     free(lb);
     free(cost);
     free(geo.kv_dim);
@@ -1257,6 +1370,67 @@ bool model_paging_note_wanted(uint64_t faults, int tokens) {
     if (faults == 0) return false;
     uint64_t floor = 64ull * (uint64_t)(tokens > 0 ? tokens : 1);
     return faults >= floor;
+}
+
+// cuda.c trims the host pages of every tensor the device holds right after
+// the upload, so on a run whose weights all live in a discrete device's own
+// memory the faults a request takes are not weight pages coming back: on
+// Windows the counter is every fault the process takes, video memory paged
+// between the card and system memory included. A unified-memory backend's
+// device weights are the file mapping itself (Metal), so it never counts.
+bool model_weights_on_device(const model_t *m) {
+    if (!m || !m->gpu || m->gpu_layers < m->n_layer) return false;
+    if (m->cpu_moe && m->moe_host)
+        for (int l = 0; l < m->n_layer; l++)
+            if (m->moe_host[l]) return false;
+    return !gpu_unified_memory();
+}
+
+// R3.49: a fully offloaded gpt-oss logged "[837210 page-ins ... weights not
+// resident]" per request at a fifth of its normal speed, with every weight on
+// the card. The count was real, the explanation was not: say only what is
+// known when the weights cannot be the cause, and give the video memory
+// figures that would show an eviction.
+// Append s to out[0..cap), keeping it terminated; a full buffer truncates.
+static void note_cat(char *out, size_t cap, size_t *n, const char *s) {
+    if (*n + 1 >= cap) return;
+    size_t l = strlen(s), room = cap - 1 - *n;
+    if (l > room) l = room;
+    memcpy(out + *n, s, l);
+    *n += l;
+    out[*n] = '\0';
+}
+
+size_t model_paging_note(char *out, size_t cap, uint64_t faults, int tokens,
+                         bool on_device, const model_vidmem *vm) {
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    if (!model_paging_note_wanted(faults, tokens)) return 0;
+    size_t n = 0;
+    char piece[128];   // each piece's longest form fits, so none is cut here
+    if (on_device)
+        snprintf(piece, sizeof piece, " [%llu page faults during the request",
+                 (unsigned long long)faults);
+    else   // the wording this note always had, byte for byte
+        snprintf(piece, sizeof piece, " [%llu page-ins \u2014 weights not resident",
+                 (unsigned long long)faults);
+    note_cat(out, cap, &n, piece);
+    if (vm && vm->known && vm->budget) {
+        if (vm->usage > vm->budget)
+            snprintf(piece, sizeof piece, "; video memory over budget by %.2f GB",
+                     (double)(vm->usage - vm->budget) / 1e9);
+        else
+            snprintf(piece, sizeof piece, "; video memory %.2f of %.2f GB budget",
+                     (double)vm->usage / 1e9, (double)vm->budget / 1e9);
+        note_cat(out, cap, &n, piece);
+        if (vm->nonlocal >= 1000000ull) {
+            snprintf(piece, sizeof piece, ", %.0f MB in shared memory",
+                     (double)vm->nonlocal / 1e6);
+            note_cat(out, cap, &n, piece);
+        }
+    }
+    note_cat(out, cap, &n, "]");
+    return n;
 }
 
 bool model_residency_warning(uint64_t need, uint64_t hot, uint64_t have,

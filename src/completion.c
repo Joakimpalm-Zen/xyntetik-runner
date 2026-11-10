@@ -145,11 +145,19 @@ typedef struct {
     double deadline;
     bool   timed_out; // stopped by the deadline, not by a vanished client
     bool   shut_down; // stopped by the server's drain (server_drain_deadline)
+    atomic_int *cancel; // R10.12.3.2: set by POST /v1/runner/requests/{id}/cancel
+    bool   cancelled;  // stopped by that cancel
 } client_stop;
 
 static bool request_should_stop(void *ud) {
     client_stop *s = ud;
     if (*s->dead) return true;
+    // A cancel is answerable like a deadline: the caller is still there, and
+    // gets what was generated with the reason (R10.12.3.2)
+    if (s->cancel && atomic_load(s->cancel)) {
+        s->cancelled = true;
+        return true;
+    }
     // Deadline before the peer probe: a timed-out request is answerable (the
     // caller is still there and is owed a status), a disconnected one is not,
     // and conflating them would answer a live client's timeout as if nobody
@@ -2957,6 +2965,7 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
                                  uint64_t gen_rng, int max_tokens, int n_prompt,
                                  int n_gen, int cached, const char *reuse,
                                  bool spec_used, bool reasoning_open,
+                                 const char *cut,
                                  const turn_shape *shape,
                                  const char *ctx_id, jv *req, char file[64],
                                  char chain[65]) {
@@ -2979,6 +2988,10 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
     for (int i = 0; i < shape->n && i < 10; i++)
         sb_fmt(&sj, "%s\"%s\"", i ? "," : "", shape->kinds[i]);
     sb_lit(&sj, "]");
+    // R10.12.3.2: a turn the server cut from outside the model (a cancel, the
+    // request's deadline, the drain) ends at a token the model did not
+    // choose; --verify replays the recorded tokens and no further
+    if (cut) sb_fmt(&sj, ",\"cut\":\"%s\"", cut);
     // R1.12.2: the KV snapshot this request's prompt started from
     char origin[256];
     if (ctx_id && prefix_context_origin(ctx_id, origin, sizeof origin))
@@ -5080,6 +5093,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     request_id(req_id, sizeof(req_id),
                api == API_RESPONSES ? "resp_" : api == API_MESSAGES ? "msg_"
                                     : api == API_CHAT ? "chatcmpl-" : "cmpl-");
+    // R10.12.3.2: named before any work, so a cancel can find it from here on
+    if (!server_request_begin(s, req_id)) {
+        send_error_detail(fd, 409, "another active request has this X-Request-Id",
+                          "X-Request-Id", "duplicate_request_id");
+        return;
+    }
 
     completion_req q;
     if (!completion_read(s, fd, api, req, env, chat, chat ? rs : NULL, &q))
@@ -5105,7 +5124,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                   .stop_strs = q.stops, .n_stop = q.n_stops, .eng = e,
                   .created = (long)time(NULL) };
     client_stop stop = { .fd = fd, .dead = &g.dead,
-                         .deadline = q.req_deadline };
+                         .deadline = q.req_deadline, .cancel = &s->rq_cancel };
     snprintf(g.id, sizeof(g.id), "%s", req_id);
     // Prefill is scheduled apart from decode: different kernel shape, and it
     // is this slot's own model_forward_batch, so it must not overlap a
@@ -5213,7 +5232,11 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         // deadline is checked first: it is the only one where the caller is
         // still on the connection AND the prompt was fine, so reporting it as
         // a context overflow would send them shortening a prompt that fits.
-        if (stop.shut_down && !stop.timed_out)
+        if (stop.cancelled)
+            send_error_detail(fd, 409, "request cancelled (POST /v1/runner/requests/"
+                              "{id}/cancel) before its prompt was processed",
+                              NULL, "cancelled");
+        else if (stop.shut_down && !stop.timed_out)
             send_error(fd, 503, "server shutting down: the request was "
                                 "stopped before its prompt was processed");
         else if (stop.timed_out)
@@ -5399,7 +5422,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         if (g.raw_on && !g.dead && !receipt_file[0] && !prep.diag.receipt_error) { \
             prep.diag.receipt_error = serve_receipt(                               \
                 s, e, &g, prompt, api, chat, gen_rng, q.max_tokens, prep.n_prompt,   \
-                n_gen, keep, prep.diag.prompt_reuse, spec_used, primed, &shape,    \
+                n_gen, keep, prep.diag.prompt_reuse, spec_used, primed,            \
+                !g.stopped && !e->hit_stop && !e->oom                              \
+                    ? stop.cancelled ? "cancelled" : stop.timed_out ? "timeout"    \
+                    : stop.shut_down ? "shutdown" : NULL : NULL, &shape,           \
                 prep.diag.context_id, req, receipt_file, receipt_chain);           \
             if (!prep.diag.receipt_error) {                                        \
                 prep.diag.receipt_file = receipt_file;                             \
@@ -5480,6 +5506,9 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     // was cut, the text is usable), and finish_detail says by what
     if (stop.shut_down && !g.stopped && !e->hit_stop && !e->oom)
         cut_detail = "shutdown";
+    // and a cancel (R10.12.3.2): the same cut, named for what made it
+    if (stop.cancelled && !g.stopped && !e->hit_stop && !e->oom)
+        cut_detail = "cancelled";
     // a parse-only qwen3_xml call closed by the next call's opener (R2.10):
     // the calls stand, and the detail says the framing was tolerated
     if (!cut_detail && g.tsx_on && g.tsx.implicit_close)
@@ -5570,14 +5599,20 @@ done: ;
     // A paging note only when there was paging. Silence is the normal case and
     // a per-request "0 page-ins" would be noise, but when the weights have been
     // evicted this line is the only thing that says the time went to the disk
-    // rather than to the model.
+    // rather than to the model. With every weight on a discrete device it
+    // cannot be the weights, so the note says only what it knows, and where
+    // the OS publishes a video memory budget the figures ride along: an
+    // eviction to system memory reads as such in the same line (R3.49). Both
+    // are looked up only once the count is over the floor.
     uint64_t faults = plat_major_faults() - faults_at_start;
-    char paging[80];
+    char paging[192];
     paging[0] = '\0';
-    if (model_paging_note_wanted(faults, prep.n_prompt + n_gen))
-        snprintf(paging, sizeof(paging),
-                 " [%llu page-ins — weights not resident]",
-                 (unsigned long long)faults);
+    if (model_paging_note_wanted(faults, prep.n_prompt + n_gen)) {
+        model_vidmem vm = {0};
+        vm.known = gpu_os_vidmem(m, &vm.budget, &vm.usage, &vm.nonlocal);
+        model_paging_note(paging, sizeof(paging), faults, prep.n_prompt + n_gen,
+                          model_weights_on_device(m), &vm);
+    }
     fprintf(stderr, "[slot %d] %s: %d prompt (%d cached) + %d gen tok (%.1f tok/s)%s%s%s\n",
             s->id, g.id, prep.n_prompt, keep, n_gen,
             n_gen / (gtime > 0 ? gtime : 1e-9),

@@ -17,6 +17,26 @@ Older releases (v1.11.0 and earlier) are preserved in the
   - **Lifetime:** the value is installed per request and put back to the server's default when the request ends.
     The sessions route also restores the server's default after a session, where it used to turn it off.
   - **Receipts:** a served turn under it records `ignore_eos`, and `--verify --ignore-eos` replays it.
+- **`--info fit` predicts the split a load makes with the KV ring (R3.50).** When the weights and the flat KV
+  cache do not fit the GPU budget, a load gives sliding-window layers only their window plus the prompt batch
+  (`--kv-ring auto`) and places more layers; the fit charged the flat cache and predicted fewer
+  (gemma-4-26B-A4B at 4k: 22 of 30 against the load's 23). It now applies the same test, charges the same rows,
+  and marks such a split `with the KV ring`; the `kv cache` line stays the flat figure. For a sparse MoE the
+  split's RAM figure is labelled `hot set`, the figure it always was.
+- **A cancel route keyed by request id: `POST /v1/runner/requests/{id}/cancel` (R10.12.3.2).**
+  - **What it is:** a client that wants an answer, rather than polling `/health`, names a running completion request.
+    It can use the response id, or the `X-Request-Id` header it sent with the request. The header is how a buffered
+    client knows the id before its reply arrives.
+  - **How it answers:** the cancel is served from the accept loop, so on a one-slot server it does not queue behind
+    the request it cancels. It replies once that request has stopped, with the phase it was in and how many tokens
+    it had generated. An unknown id gets `404`.
+  - **The cancelled reply:** a cut during generation keeps its partial output (`finish_reason` `length`,
+    `finish_detail` `cancelled`). A cut while the prompt was processed answers `409 cancelled`. The server stays up.
+  - **Ids:** a client id is checked (1 to 64 characters from `A-Z a-z 0-9 . _ : -`), and one that an active request
+    already holds is refused with `409`. Request ids stay out of `/health`, which anything on loopback can read.
+  - **Receipts:** a turn the server cut from outside the model (a cancel, the request's `timeout`, the drain) now
+    records `serve.cut`, and `--verify` replays the recorded tokens and no further. Before, such a receipt replayed
+    `DIVERGED`, because the replay ran on to `max_tokens`.
 
 - **Docs: gemma-4-26B-A4B now has its publisher float32 comparison (R6.11).** The support entry listed it as owed.
   - **What was run:** two files, scored against the transformers forward of `google/gemma-4-26B-A4B-it` in float32
