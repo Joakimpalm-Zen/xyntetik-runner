@@ -223,11 +223,12 @@ static void test_prefix_cache_fold_restore_matches_cold(void) {
 // reach until n - store_n tokens later, and the fork decodes from it and
 // answers, silently, from a state the prompt never had.
 //
-// The budget is derived from the fixture's own measured per-token snapshot cost
-// so the clamp is what does the truncating, exactly as it does on a long prompt
-// against a real RUNNER_PREFIX_CACHE_MB. N is large because this fixture's fold
-// blob dwarfs its one attention layer's rows, and the clamp only fires once the
-// KV side outgrows it.
+// The budget is derived from the fixture's own measured snapshot cost so the
+// clamp is what does the truncating, exactly as it does on a long prompt
+// against a real RUNNER_PREFIX_CACHE_MB: half of it is a WANT-token entry, the
+// KV rows plus the fold blob. (It was WANT one-token entries, the blob WANT
+// times over, which held only while every layer reserved rows; R3.44 left the
+// fixture's one attention layer with rows its blob dwarfs.)
 static void test_truncated_publish_never_mislabels_the_fold(void) {
     enum { N = 520, TAIL = 3, WANT = 16 };   // WANT == PFX_MIN_TOKENS
     model_params p = base_params();
@@ -239,12 +240,11 @@ static void test_truncated_publish_never_mislabels_the_fold(void) {
     }
     prefix_cache_clear();
 
-    size_t per_tok = prefix_cache_entry_bytes(&warm.m, 1);
+    size_t want = prefix_cache_entry_bytes(&warm.m, WANT);
     // half of this budget buys WANT tokens; the whole N-token prompt does not
     // fit in that half, so the clamp fires and a SHORT entry is what is stored
-    prefix_cache_configure(2 * (size_t)WANT * per_tok, 3600);
-    ck(per_tok > 0 &&
-       prefix_cache_entry_bytes(&warm.m, N) > (size_t)WANT * per_tok,
+    prefix_cache_configure(2 * want, 3600);
+    ck(want > 0 && prefix_cache_entry_bytes(&warm.m, N) > want,
        "the prompt is oversized against half the budget, so the clamp fires");
 
     int32_t *prompt = malloc(sizeof(int32_t) * (N + TAIL));

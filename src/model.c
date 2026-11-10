@@ -784,6 +784,16 @@ int model_kv_ring_rows(int window, int batch, int n_ctx) {
 // tests/test_fit_check.py holds the sum to the loader's allocation.
 typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; } fit_geom;
 
+// R3.44: the qwen35 family's Gated DeltaNet layers own no KV rows
+// (bind_meta_qwen35) unless RUNNER_KV_RECURRENT_ROWS=1 keeps the layout that
+// gave them the attention shape. One rule for the loader and the fit.
+static bool qwen35_kv_rows_typed(const char *arch) {
+    const char *rows = getenv("RUNNER_KV_RECURRENT_ROWS");
+    if (rows && *rows && strcmp(rows, "0") != 0) return false;
+    return !strcmp(arch, "qwen35") || !strcmp(arch, "qwen35moe") ||
+           !strcmp(arch, "qwen4exp") || !strcmp(arch, "clef");
+}
+
 static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, fit_geom *o) {
     char key[128];
     #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
@@ -813,6 +823,11 @@ static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, fit_geom *
     }
     #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
     o->n_head = n_head;
+    // the trunk's DeltaNet layers (R3.44); a declared NextN/MTP block past the
+    // trunk keeps the attention shape, as it is charged in the plain layout
+    uint32_t q35_every = qwen35_kv_rows_typed(arch)
+        ? gguf_get_u32(g, FK("full_attention_interval"), 4) : 0;
+    int64_t q35_trunk = (int64_t)n_layer - gguf_get_u32(g, FK("nextn_predict_layers"), 0);
     for (int l = 0; l < n_layer; l++) {
         uint32_t hc = gguf_get_u32_idx(g, FK("attention.head_count"), (uint64_t)l, n_head);
         uint32_t kvh = hc ? gguf_get_u32_idx(g, FK("attention.head_count_kv"),
@@ -822,6 +837,7 @@ static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, fit_geom *
         uint64_t hd = swa ? hd_swa : head_dim;
         if (hd > o->head_dim_max) o->head_dim_max = hd;
         o->kv_dim[l] = l < owners ? (uint64_t)kvh * hd : 0;
+        if (q35_every && l < q35_trunk && (l + 1) % q35_every != 0) o->kv_dim[l] = 0;
         if (o->kv_dim[l] > o->kv_dim_max) o->kv_dim_max = o->kv_dim[l];
     }
     #undef FK
@@ -2784,8 +2800,7 @@ static bool bind_meta_qwen35(model_t *m, gguf_file *g, const char *arch) {
     // hashes each layer's KV geometry, so a state saved under the old layout
     // is refused, never misread; RUNNER_KV_RECURRENT_ROWS=1 keeps that
     // layout, to resume such a state.
-    const char *rows = getenv("RUNNER_KV_RECURRENT_ROWS");
-    if (rows && *rows && strcmp(rows, "0") != 0) return true;
+    if (!qwen35_kv_rows_typed(arch)) return true;
     m->l_head_kv = calloc((size_t)m->n_layer, sizeof(int));
     if (!m->l_head_kv) return false;
     for (int i = 0; i < m->n_layer; i++)
@@ -11018,6 +11033,10 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     int E = m->n_embd;
     int hd = model_head_dim(m, l), n_head = m->n_head;
     int q_dim = model_q_dim(m, l), kv_dim = model_kv_dim(m, l);
+    // a DeltaNet layer owns no KV heads (R3.44) and its backward reads none
+    // of the K/V buffers below; it keeps the attention shape it had, so the
+    // GQA ratio stays defined and no buffer is a zero-size allocation
+    if (ly->recurrent && kv_dim == 0) kv_dim = m->n_head_kv * hd;
     int n_kv = kv_dim / hd, kv_mul = n_head / n_kv;
     int nff = ly->n_ff;
     // R17.3: a sparse-MoE layer (attention-only adapter) recomputes its

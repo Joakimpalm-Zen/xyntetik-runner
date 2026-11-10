@@ -15,7 +15,8 @@ logits, the header's binary digest aside):
   under either layout;
 - the bytes saved: a session image's state shrinks by exactly
   tokens x recurrent layers x the fixture's K+V row (2 KV heads x 8 wide x
-  f16 x 2), the fixture's declared geometry being the anchor;
+  f16 x 2), the fixture's declared geometry being the anchor; --fit and the
+  loader's KV line are held to that same geometry;
 - a state saved under the prior layout is refused by name, never misread: a
   session image and a KV snapshot each say what wrote them and how to read
   them, and under the knob the image resumes to the straight run's bytes.
@@ -23,6 +24,7 @@ logits, the header's binary digest aside):
 import json
 import os
 import pathlib
+import re
 import struct
 import subprocess
 import sys
@@ -107,6 +109,26 @@ def test_the_rows_were_dead_and_are_gone(runner_bin, fx, fam):
     assert nt == nt_prior
     recurrent = layers - layers // 4
     assert prior - now == nt * recurrent * ROW, (name, nt, prior, now)
+
+
+@pytest.mark.parametrize("prior", [False, True], ids=["now", "prior-layout"])
+def test_fit_and_the_loader_charge_the_same_rows(runner_bin, fx, prior):
+    """--fit reads the header by the loader's rules, so it drops the DeltaNet
+    rows too. Anchor: the 8-layer fixture's declared geometry, 2 attention
+    layers in the trunk (every 4th) and the declared NextN/MTP block past it,
+    which the fit charges and a load that does not consume it never
+    allocates."""
+    model = fx["qwen35-8"]
+    trunk_rows = 8 if prior else 2
+    big, mid = 1 << 22, 1 << 16
+    rc, out, err = _run(runner_bin, prior, "--fit", model, "-c", big)
+    assert rc == 0, err[-600:]
+    fit_gib = float(re.search(r"kv cache\s+([\d.]+) GiB", out.decode()).group(1))
+    assert abs(fit_gib - (trunk_rows + 1) * ROW * big / (1 << 30)) <= 0.006, out
+    rc, _, err = _run(runner_bin, prior, "-m", model, "-v", "-p", "hi", "-n", 1, "-c", mid)
+    assert rc == 0, err[-600:]
+    load_mb = float(re.search(r"kv cache\s+([\d.]+) MB", err).group(1))
+    assert abs(load_mb - trunk_rows * ROW * mid / 1e6) <= 0.06, err[-600:]
 
 
 def test_a_prior_layout_image_is_named_and_resumes_under_the_knob(runner_bin, fx):
