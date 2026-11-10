@@ -1830,6 +1830,33 @@ static void mw_release(model_weights *w) {
     }
 }
 
+// EXPERIMENT R3.39.9 (not for merge unless it passes): the whole-mapping
+// WILLNEED sweep issued BEFORE model_alloc_runtime(), so a GPU load's upload
+// in gpu_init() reads pages the OS was already told to bring in. The shipped
+// sweep runs after model_load_inner() returns, when the upload has already
+// read every offloaded tensor. Same gates: opt-in RUNNER_PREFETCH, not under
+// --mlock, not when the MoE expert prefetch owns paging, only when it fits.
+static bool moe_prefetch_default(const model_t *m, int flag);
+static void prefetch_before_upload(model_t *m, const model_params *p) {
+    const char *e = getenv("RUNNER_PREFETCH");
+    bool opt_in = e && *e && strcmp(e, "0") && strcmp(e, "off");
+    if (!opt_in || !plat_willneed_available()) return;
+    bool locked = p->mlock && gguf_mapped_size(&m->gf);
+    bool moe_pf = m->n_expert > 0 && !locked && moe_prefetch_default(m, p->moe_prefetch);
+    if (!model_load_prefetch_wanted(gguf_mapped_size(&m->gf), plat_ram_available_bytes(),
+                                    locked, moe_pf))
+        return;
+    uint32_t np = gguf_map_count(&m->gf);
+    for (uint32_t i = 0; i < np; i++) {
+        size_t sz;
+        void *mp = gguf_map_part(&m->gf, i, &sz);
+        if (mp && sz) plat_willneed(mp, sz);
+    }
+    fprintf(stderr, "prefetch: hinted %.1f GB of weights to the OS before the "
+            "device upload (RUNNER_PREFETCH opt-in, experiment R3.39.9)\n",
+            (double)gguf_mapped_size(&m->gf) / 1e9);
+}
+
 static bool model_load_inner(model_t *m, const char *path, const model_params *p) {
     uint64_t size = 0, ino = 0;
     int64_t  mtime = 0, ctime = 0;
@@ -1876,6 +1903,7 @@ static bool model_load_inner(model_t *m, const char *path, const model_params *p
         }
     }
     pthread_mutex_unlock(&g_weights_mu);
+    prefetch_before_upload(m, p);
     return model_alloc_runtime(m, p);
 }
 
@@ -2024,24 +2052,8 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
     // result. Linux batches faults under WILLNEED and Windows has
     // PrefetchVirtualMemory, so the lever stays for those platforms to
     // measure on their own boxes; a default is a measurement, not a hope.
-    {
-        const char *e = getenv("RUNNER_PREFETCH");
-        bool opt_in = e && *e && strcmp(e, "0") && strcmp(e, "off");
-        if (opt_in && plat_willneed_available() &&
-            model_load_prefetch_wanted(gguf_mapped_size(&m->gf),
-                                       plat_ram_available_bytes(),
-                                       locked, m->moe_prefetch)) {
-            uint32_t np = gguf_map_count(&m->gf);
-            for (uint32_t i = 0; i < np; i++) {
-                size_t sz;
-                void *mp = gguf_map_part(&m->gf, i, &sz);
-                if (mp && sz) plat_willneed(mp, sz);
-            }
-            fprintf(stderr, "prefetch: hinted %.1f GB of weights to the OS "
-                    "(RUNNER_PREFETCH opt-in)\n",
-                    (double)gguf_mapped_size(&m->gf) / 1e9);
-        }
-    }
+    // EXPERIMENT R3.39.9: the sweep moved to prefetch_before_upload(), called
+    // from model_load_inner() before the device upload.
     return true;
 }
 
