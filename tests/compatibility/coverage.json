@@ -1339,7 +1339,8 @@
    ],
    "artifacts": [
     "nemotron-3.5-lightning-30b-a3b-q4_0",
-    "nemotron-3-nano-30b-a3b-q4_k_m"
+    "nemotron-3-nano-30b-a3b-q4_k_m",
+    "nemotron-3.5-super-vl-120b-a12b-q4_0"
    ],
    "tool_protocol": {
     "status": "NOT RUN",

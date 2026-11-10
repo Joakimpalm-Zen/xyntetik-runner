@@ -27,9 +27,11 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PROMPT = "The capital of France is Paris, and of Italy"
 LATENT = 16                      # the fixture's n_embd is 32
-# f32 rounding of a 16-term regrouped sum, logprob units; the measured
-# disagreement is 4.8e-7
-TOL = 1e-5
+# f32 rounding of a 16-term regrouped sum, in logprob units. Measured on gcc
+# 13.3 builds: 4.8e-7 to 9.6e-7 against the twin, 1.4e-6 batched against the
+# one-token pass. Other compilers vectorize the sums differently, so the bound
+# keeps a wide margin; the zeroed-experts control reads 0.33.
+TOL = 1e-4
 
 
 def make(d, name, brk=None):

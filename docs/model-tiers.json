@@ -4759,22 +4759,106 @@
       "vision_upstream": true
     },
     {
-      "id": "nemotron-3.5-super-vl-120b-a12b",
-      "model": "Nemotron 3.5 Super VL-120B-A12B",
-      "tier": "upcoming",
-      "claim": "Text path only: image input is not implemented in Runner and a VL name never implies vision support. Runner refuses ggml-org's GGUF at load: 512 experts is above its cap, and the LatentMoE layout is not implemented (R4.27.4.3).",
+      "id": "nemotron-3.5-super-vl-120b-a12b-q4_0",
+      "model": "NVIDIA Nemotron 3.5 Super VL-120B-A12B (NVIDIA)",
+      "family": "NVIDIA Nemotron 3.5 Super",
+      "tier": "tier2",
+      "claim": "Text path only (the vision tower is not loaded), ggml-org's automatic conversion (NVIDIA publishes no GGUF of this model) of NVIDIA's Nemotron 3.5 Super VL-120B-A12B at Q4_0, CPU only: Runner agrees with llama.cpp 36a0e2f on the same bytes at 0.0136 mean KLD and 99.67% margin-qualified top-1 (bars 0.05 and 97%, 300 positions). Agreement, not fidelity: the 241.5 GB BF16 parent cannot be held in float32 on the lab host, so no publisher reference was read.",
       "architecture": "nemotron_h_moe",
-      "missing": "Loader support for ggml-org's conversion (NVIDIA publishes no GGUF of this model; ggml-org/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF at 99144d1d, Q4_0 71.9 GB): the 512-expert config (Runner caps nemotron_h_moe at 256) and the LatentMoE projections the experts run behind (ffn_latent_down and ffn_latent_up, 4,096 to 1,024 wide). The 248.9 GB BF16 parent cannot be held for a float32 reference, so the anchor would be another engine on the same bytes. Then the Lightning gate list.",
+      "upstream": {
+        "checkpoint": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16",
+        "revision": "fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe"
+      },
+      "licence": {
+        "id": "openmdw-1.1",
+        "from": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16"
+      },
+      "files": [
+        {
+          "name": "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Q4_0.gguf",
+          "repo": "ggml-org/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF",
+          "revision": "99144d1d7a318f045f1412a85bbb807f3c8a17a0",
+          "sha256": "502276c53b8e0173bfdabf3c06071631197eadd8beef44d0e69d1fba36d15e72",
+          "bytes": 71933775840
+        }
+      ],
+      "quantization": "Q4_0 (ggml-org's automatic conversion)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "infeasible",
+        "anchor": "anchor: agreement with another engine, not fidelity. Runner against llama.cpp 36a0e2f (llama-server, CPU, its default weight repack, flash attention off) on the same held Q4_0 bytes, kld-compare-raw.py over gold-corpus-2k, 300 positions at stride 15, top-20: mean KLD 0.0136 (median 0.0031, p95 0.031, max 1.28) / 96.0% top-1 / 99.67% margin-qualified; one further position failed to score and is outside the 300. No float32 reference: NVIDIA's BF16 parent is 241.5 GB, about 483 GB in float32. The header's layout matches the parent's llm_config at fb0ee0bc; tokenizer 0/721 corpus strings and 0/128,635 vocabulary entries against its tokenizer.json; template conformance 24/24 in text and tokens (the file's template is the repository's chat_template.jinja byte for byte). Record: docs/compat-reports/nemotron-3.5-super-vl-120b-a12b-2026-11-10/README.md.",
+        "context": 4096,
+        "limitations": "71.9 GB of weights, CPU only: LatentMoE and the sigmoid-plus-bias router have no device path, so CUDA and Metal refuse the file by name and it runs on the CPU. The CPU prompt pass is slow in this release: the 8,103-token gold corpus as one prompt took 655.8 s and 717.0 s in two runs at the default -b 64 (about 12 tokens/s), and 321.6 s to 360.4 s at -b 512, where llama.cpp took 60.3 s on the same 40 shared CPUs; the routed experts are 82% of it at -b 64 (R3.57). A third-party conversion (ggml-org's automatic converter). Text only: the vision tower and the MTP head ggml-org ships beside it are not loaded. LoRA: neither training nor serving (Mamba-2 hybrid). Licence: openmdw-1.1.",
+        "evidence": [
+          "docs/compat-reports/nemotron-3.5-super-vl-120b-a12b-2026-11-10/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A float32 reference (the parent does not fit on the lab host); the device paths for LatentMoE and the router; a Mac that holds the file (71.9 GB) for a Metal cell; the tool protocol; task quality on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.16.0",
+          "date": "2026-11-10",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "d6cd7413a56a5832e99760a74f0a85f7a041163a",
+          "caps": {
+            "version": "1.16.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "01849dbc15d898cf573916f44f73bbb329dfa8bad4c336271f1633521e7d5233",
+          "ran": "runner -m NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Q4_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/nemotron-3.5-super-vl-120b-a12b-q4_0.linux-x86_64-cuda.cpu.txt"
+        },
+        "cuda": {
+          "kind": "limit",
+          "reason": "LatentMoE (the routed experts at width 1,024 between ffn_latent_down and ffn_latent_up) has no device path: cuda_admit says \"LatentMoE (experts at width 1024 between ffn_latent_down and ffn_latent_up) has no device path, running on CPU\", and the router (sigmoid gating with a selection bias) has no device kernel either. The file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "metal": {
+          "kind": "limit",
+          "reason": "Not measured: Metal refuses LatentMoE by name, and no Mac that holds the file (71.9 GB) has run it.",
+          "matrix": "MANUAL.md#support-matrix"
+        }
+      },
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-11-10",
+          "reason": "Admitted 2026-11-10 at Tier 2 with the admitting CPU cell from the lab CPU lane (R4.27.4.4), on agreement with llama.cpp on the same bytes: the parent cannot be held in float32. Maintained on report.",
+          "last_validated_release": null
         }
       ],
-      "anchor": "anchor: agreement with another engine, not fidelity.",
-      "vision_upstream": true
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "recurrent architecture (Mamba-2)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover Mamba-2 hybrid architectures yet (nemotron_h_moe)"
+        },
+        "runner_version": "1.16.0",
+        "date": "2026-11-10"
+      }
     },
     {
       "id": "kolibri-1",
