@@ -1,0 +1,23 @@
+# NVFP4 prefill, runner 1.16.0 (release/1.16.0 pin 70a38fb3), a CUDA MIG slice, 1g.24gb, sm_120, driver 610.43.02
+# binary: built at 70a38fb3 with the pinned PTX by the release recipe, gcc 13.3.0 with -O3 -ffast-math -std=gnu11
+#   -march=x86-64-v3, 0 warnings, sha256 abf79ae404a003df..., ./runner --version = runner 1.16.0; CUDA_CACHE_MAXSIZE=4294967296
+# Borrowed, dated evidence: the slice is one MIG instance of a shared GPU, and the host's CPUs carry other work
+#   (load averages below). It is not a speed read.
+# qwen3.5-4b-nvfp4.gguf, FreedomAISVR/Qwen3.5-4B-NVFP4-GGUF at fb9f8b9ec432e38872ec9d9707183642cf885ad6,
+#   sha256 317ef79785a9380ac72d23ab33af9376afd926b4c0781fae246f033daf91a05f; -f tests/fixtures/nvfp4-prefill-prompt.txt,
+#   -n 32 --temp 0 -c 4096, every layer on the device
+# The prompt's sha256, as release-cuda-gate printed it:
+#   a25ab76dfd7ba46f22a8e2c94a7ee0ad91dcf997336bc77786ae23a825136f3d (1,971 tokens), the same prompt as 1.15.0's read.
+start 2026-11-10 17:15:05 UTC, load 3.55 4.88 4.78
+NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition, 610.43.02
+== RUNNER_CUDA_TC_NVFP4=default
+exit 0
+gpu-split: budget=25.13GB fixed=0.93GB G=32/32 full=1 used=3.07GB
+prompt: 1971 tok, 1689.68 tok/s | gen: 32 tok, 64.25 tok/s
+end 17:15:08 UTC, load 3.59 4.86 4.77
+== RUNNER_CUDA_TC_NVFP4=0
+exit 0
+gpu-split: budget=25.13GB fixed=0.93GB G=32/32 full=1 used=3.07GB
+prompt: 1971 tok, 19.43 tok/s | gen: 32 tok, 64.37 tok/s
+end 17:16:51 UTC, load 3.34 4.39 4.61
+output sha256: default b9b8c69d2349fac84ee54e0d09967532b2e0a2c07d459b88afdd20a9c9461c79, =0 b9b8c69d2349fac84ee54e0d09967532b2e0a2c07d459b88afdd20a9c9461c79

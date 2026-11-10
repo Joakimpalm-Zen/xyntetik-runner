@@ -75,9 +75,9 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Published release: 1.15.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) is a fixes release, not a speed one: a client that stops reading no longer freezes the other slots of a GPU server with speculation on (measured on Windows and Metal; Linux already dropped such a client at 30 s), a context released while its request waits for the GPU no longer hangs the server, a stop no longer waits on removing the instance record, Metal gives its memory back on `/unload`, stored response ids can no longer be guessed, and a chat template option Runner cannot honour is refused rather than dropped, a new 400 where the file's template reads it. It adds rows for Sage-A1.5, MiniCPM-V-4.7-35B-A3B and Qwen3.8-35B-A3B-Distill, lists occamy-1.0 as Upcoming because no file passes the bar, and makes the model support page one list. Validation runs when the project chooses, not with every release.
+> **Published release: 1.16.0.** The [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest) is an accounting and proof release, not a speed one: on Qwen3.5-class hybrids the KV cache is a quarter of what it was and `--fit`, `--info fit` and the loader now agree on the GPU split, a hybrid loads on CUDA at any layer split, `--verify` replays a served tool turn and a turn cut by a stop sequence, a reasoning budget or the loop guard, structured output enforces a `oneOf` of objects told apart by a `const`, and `runner recommend` lists the model files that fit this machine. It adds `runner train --full`, `--kv f32` as a measurement instrument on the CPU and CUDA, a cancel route by request id, and importance-weighted K-quant writers. It corrects a record: the gemma-4-26B-A4B reference rows were measured against a faulty reference and are replaced. `RUNNER_PREFETCH` stays opt-in, measured on Windows and Linux. Validation runs when the project chooses, not with every release.
 
-> **Version `1.15.0`.** The command line, the HTTP API, the record formats and
+> **Version `1.16.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
@@ -525,7 +525,7 @@ passing evaluation made for those exact bytes.
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.15.0
+./runner --version   # -> runner 1.16.0
 ```
 
 Linux, macOS and Windows. NVIDIA GPUs need a driver with CUDA 13.0 support

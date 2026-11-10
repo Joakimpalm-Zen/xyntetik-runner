@@ -1715,16 +1715,16 @@ static bool layer_ffn_tensors_each(const layer_t *ly, int n_expert,
     return true;
 }
 
-static size_t layer_weight_bytes(const layer_t *ly, int n_expert,
-                                 bool host_experts, bool bound) {
+static size_t layer_weight_bytes(model_t *m, int l, bool host_experts, bool bound) {
+    const layer_t *ly = &m->layers[l];
+    int n_expert = ly->n_expert;
+    if (!bound && !host_experts)
+        return (size_t)model_cuda_layer_charge(&m->gf, l, false).file;
     size_t wb = 0;
     gguf_tensor *mix[LAYER_MIXER_MAX];
     int nmix = layer_mixer_tensors(ly, mix);
     for (int i = 0; i < nmix; i++)
         wb += plan_bytes(mix[i], bound);
-    // deepseek2's absorbed form also holds attn_kv_b dequantized (mla_kvb)
-    if (ly->mla_kvb && ly->wkv_b)
-        wb += sizeof(float) * (size_t)(ly->wkv_b->ne[0] * ly->wkv_b->ne[1]);
     if (ly->is_moe && host_experts) {
         // The complete expert FFN (router, routed tensors and a coupled
         // Gemma shared branch) executes on the host. Attention remains here.
@@ -2088,8 +2088,7 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
     // --cpu-moe, like any bank the plan leaves there), plus its KV rows
     const bool mtp_dev = m->mtp_ready;
     if (mtp_dev) {
-        const layer_t *ml = &m->layers[m->n_layer];
-        fixed += layer_weight_bytes(ml, ml->n_expert, moe_on_host(m, m->n_layer), m->cpu_moe);
+        fixed += layer_weight_bytes(m, m->n_layer, moe_on_host(m, m->n_layer), m->cpu_moe);
         if (m->mtp_eh_proj) fixed += m->mtp_eh_proj->nbytes;
         if (m->mtp_head && m->mtp_head != m->output) fixed += m->mtp_head->nbytes;
         if (m->mtp_hc_head_down) fixed += m->mtp_hc_head_down->nbytes;
@@ -2111,6 +2110,18 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
     // So each instance is charged here and each layer's KV below.
     P->instances = m->gpu_instances > 1 ? (size_t)m->gpu_instances : 1;
     fixed += inst * P->instances;
+    // Tables are shared by slots, and shared_upload_layer_tables builds
+    // them for the whole backbone, including layers whose mixer stays host.
+    // Auto expert placement can use any bank: reserve its possible bias
+    // tables here so the run-based weight refinement cannot erase them.
+    for (int l = 0; l < m->n_layer + (m->mtp_ready ? 1 : 0); l++) {
+        bool host = moe_on_host(m, l) && m->cpu_moe_layers != CPU_MOE_AUTO;
+        gpu_layer_charge c = model_cuda_layer_charge(&m->gf, l, host);
+        if (c.tables > SIZE_MAX - fixed) { fprintf(stderr, "gpu: layer table charge overflow\n"); goto fail; }
+        fixed += (size_t)c.tables;
+    }
+    // and the once-made all-ones expert scale table (moe_ones, n_expert f32)
+    if (moe_any_on_device(m)) fixed += sizeof(float) * (size_t)m->n_expert;
     fixed += moe_hot_bytes(m);   // RUNNER_MOE_HOT's banks and their routers
     P->vram_budget = vram_budget;
     P->fixed = fixed;
@@ -2152,7 +2163,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
     }
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
-        size_t wb = layer_weight_bytes(ly, ly->n_expert, moe_on_host(m, l), m->cpu_moe);
+        size_t wb = layer_weight_bytes(m, l, moe_on_host(m, l), m->cpu_moe);
         // KV bytes mirror the allocation: model_kv_boundary_bytes is the
         // same cumulative account MemAlloc sizes the device cache from,
         // so a ringed sliding layer costs its ring rows rather than
@@ -3787,14 +3798,23 @@ static bool cuda_alloc_kv(model_t *m, gpu_t *g) {
     const bool mtp_dev = m->mtp_ready && m->gpu_layers == m->n_layer;
     size_t k_bytes = model_k_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
     size_t v_bytes = model_v_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
-    CK(cu.MemAlloc(&g->kc, k_bytes));
-    CK(cu.MemsetD8(g->kc, 0, k_bytes));
+    // A hybrid's stateful layers own no KV rows (Mamba-2 always, qwen35's
+    // DeltaNet since R3.44), so a split whose device layers are all stateful
+    // has 0 bytes to hold, and cuMemAlloc refuses 0 (R3.54: the whole device
+    // init failed and the run finished on the CPU). The pointers still go to
+    // the attention launches, the kv gather and the 0-byte copies, so the
+    // cache is a small allocation rather than none, filled with 0xFF: NaN in
+    // every KV format, so a read of a row that does not exist would show.
+    enum { KV_EMPTY_BYTES = 256 };
+    size_t k_alloc = k_bytes ? k_bytes : KV_EMPTY_BYTES, v_alloc = v_bytes ? v_bytes : KV_EMPTY_BYTES;
+    CK(cu.MemAlloc(&g->kc, k_alloc));
+    CK(cu.MemsetD8(g->kc, k_bytes ? 0 : 0xFF, k_alloc));
     if (model_kv_v_shared(m)) {   // the absorbed MLA form's V is its K row
         g->vc = g->kc;
         return true;
     }
-    CK(cu.MemAlloc(&g->vc, v_bytes));
-    CK(cu.MemsetD8(g->vc, 0, v_bytes));
+    CK(cu.MemAlloc(&g->vc, v_alloc));
+    CK(cu.MemsetD8(g->vc, v_bytes ? 0 : 0xFF, v_alloc));
     return true;
 fail:
     return false;

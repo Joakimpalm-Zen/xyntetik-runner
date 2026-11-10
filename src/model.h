@@ -1493,6 +1493,12 @@ enum { FIT_KV_F16 = 0, FIT_KV_Q8, FIT_KV_K8V4, FIT_KV_FP4 };
 // smaller when a window is shorter than the context. See model.c.
 size_t      model_kv_reachable_bytes(const model_t *m);
 int         model_kv_swa_layers(const model_t *m);
+// CUDA's file representations and separately materialized per-layer f32
+// tables. Header-only: no tensor data is read. host_experts omits only the
+// expert bias tables; norms and Gemma defaults still upload for host layers.
+typedef struct { uint64_t file, tables; } gpu_layer_charge;
+gpu_layer_charge model_cuda_layer_charge(gguf_file *g, int layer, bool host_experts);
+
 bool        model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out);
 const char *model_fit_verdict(const model_fit *f);
 // Fill the discrete-GPU half of a fit from the header's tensor table: the

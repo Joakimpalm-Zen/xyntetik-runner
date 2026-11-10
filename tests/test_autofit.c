@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <limits.h>
 #include <string.h>
+#include <stdlib.h>
 #include "model.h"
 #include "gguf.h"
 
@@ -553,6 +554,50 @@ static void test_gpu_window(void) {
        "window: a forced width never spends budget the split did not leave");
 }
 
+// R3.53: a header-only fixture, never a model load or GPU call. Two F16
+// Q-bias vectors augment the plain fixture. Each of its four 64-element
+// norms and two 64-element biases needs an independent 4-byte f32 table:
+// 6 * 64 * 4 = 1536 bytes, in addition to their file representations.
+static void test_fit_layer_tables(const char *fixture) {
+    gguf_file g;
+    if (!fixture || !gguf_open_header(&g, fixture)) { ck(0, "table fixture opens"); return; }
+    ck(gguf_get_u32(&g, "llama.embedding_length", 0) == 64 &&
+       gguf_get_u32(&g, "llama.block_count", 0) == 2, "table fixture has the known geometry");
+    gguf_tensor *ts = realloc(g.tensors, (size_t)(g.n_tensors + 2) * sizeof(*ts));
+    if (!ts) { gguf_close(&g); ck(0, "table fixture allocation"); return; }
+    g.tensors = ts;
+    for (int l = 0; l < 2; l++) {
+        gguf_tensor *t = &g.tensors[g.n_tensors++];
+        memset(t, 0, sizeof *t);
+        snprintf(t->name, sizeof t->name, "blk.%d.attn_q.bias", l);
+        t->type = 1; t->n_dims = 1; t->ne[0] = 64; t->nbytes = 128;
+        g.data_bytes += 128;
+    }
+    uint64_t raw = 0;
+    for (uint64_t i = 0; i < g.n_tensors; i++)
+        if (!strncmp(g.tensors[i].name, "blk.", 4)) raw += g.tensors[i].nbytes;
+    const gguf_tensor *out = gguf_find_tensor(&g, "output.weight");
+    if (!out) out = gguf_find_tensor(&g, "token_embd.weight");
+    model_fit f;
+    ck(out && model_fit_report(&g, 512, false, &f), "table fixture report");
+    if (!out) { gguf_close(&g); return; }
+    gpu_act_cost ac = model_gpu_act_cost(64, 64, 64, 32, 128, 4, 512,
+                                       gguf_find_tensor(&g, "token_embd.weight")->ne[1]);
+    uint64_t fixed = ac.fixed + GPU_WINDOW_MIN * ac.per_col;
+    uint64_t budget = fixed + raw + f.kv_f16 + out->nbytes + 1536 - 1;
+    ck(model_fit_gpu(&g, &f, budget, 0, 0), "table fixture device fit");
+    ck(f.gpu_layers[FIT_KV_F16] == 1,
+       "norm and bias f32 tables move the full split by one byte");
+    ck(f.gpu_fixed == fixed + 1536, "tables are shared fixed bytes, including host layers");
+    gpu_layer_charge charge = model_cuda_layer_charge(&g, 0, false);
+    ck(charge.file == raw / 2 && charge.tables == 768,
+       "shared layer charge keeps file bytes and expanded tables distinct");
+    f.n_seq = 2;
+    ck(model_fit_gpu(&g, &f, 1ull << 40, 0, 0) && f.gpu_fixed == 2 * fixed + 1536,
+       "two slots share the f32 tables, not two copies");
+    gguf_close(&g);
+}
+
 int main(int argc, char **argv) {
     test_gpu_window();
     test_gpu_budget();
@@ -565,6 +610,7 @@ int main(int argc, char **argv) {
     test_fit_gpu(argc > 1 ? argv[1] : NULL);
     test_fit_gpu_boundaries(argc > 1 ? argv[1] : NULL);
     test_gpu_plan();
+    test_fit_layer_tables(argc > 1 ? argv[1] : NULL);
     if (g_fail) { fprintf(stderr, "test-autofit FAILED\n"); return 1; }
     fprintf(stderr, "test-autofit: all checks passed\n");
     return 0;

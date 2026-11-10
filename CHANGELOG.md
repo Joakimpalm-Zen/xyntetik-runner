@@ -11,6 +11,179 @@ file each, until the release folds them in below. Add a new entry there, not her
 
 ## Unreleased
 
+## v1.16.0 - 2026-11-10
+
+- **Fix CUDA layer placement accounting (R3.53).** The loader's weight estimate omitted per-layer norms,
+  biases, sinks and scales that ride in the file upload, and both placement and `--info fit` omitted
+  the separately expanded f32 layer tables. They now share one header-only charge for file bytes and
+  table bytes. Tables are reserved once for the complete uploaded table set, including host-side
+  layers; auto expert placement conservatively reserves possible expert-bias tables so run-based
+  refinement cannot discard their charge. CPU-only fixture arithmetic covers a split moved by those
+  bytes. Checked on CUDA: the added charge against the f32 bytes the uploader builds was exact on
+  six files (gpt-oss-20b by default and with `--cpu-moe`, DeepSeek-V2-Lite, MiniCPM5, granite-4.0-h-micro,
+  gemma-4-12B QAT) once the all-ones expert scale table was charged too (before that, 120 bytes short
+  on gpt-oss-20b and 256 on DeepSeek-V2-Lite). A load can place one layer fewer on the device than
+  before at the same budget: on DeepSeek-V2-Lite the earlier plan left about 8.4 MB per host-side
+  layer uncharged and spent the headroom. Limits: under `--cpu-moe` the fit still charges expert-bias
+  tables the loader does not build (conservative), and the 12 GB card's fit 23 against load 24 on
+  gpt-oss-20b was not reproduced on the 24 GB device, whose percent steps are too coarse for it.
+  README impact: no front-page, manual, site or model-card claim changes; this corrects accounting,
+  not the model's arithmetic.
+
+- **test-cuda-qwen4exp's NextN/MTP head check compares runs at the same draft width (R3.56).** Since R3.3.7 the
+  default width is per backend: 2 for the NextN head on CUDA, 4 on the CPU. The check left it to the defaults, so it
+  compared a 4-wide CPU run (92 dump lines) with a 2-wide device run (46) and failed on the count.
+  - **Not a device difference:** at an explicit equal width the device head equals the CPU head line for line (kind,
+    position and argmax the same, logit and gap within 1.0e-6, text identical), at width 2 and at width 4.
+  - The check now runs both widths with `--draft-k` set on both sides. Its pairwise comparison also requires the
+    same line kind and position, so a misaligned pair names itself.
+  - It went unseen from 2026-11-04 to 2026-11-10 because no `scripts/cuda-gate.sh` run was recorded on main in that
+    time: the release gate script runs the smoke and the probe, not this target. From R3.44 on, the target also
+    failed earlier, at `--gpu-layers 2` (fixed in R3.54).
+
+- **Hybrids load on CUDA with any layer split (R3.54).** Stateful layers own no KV rows: Mamba-2 layers never had any,
+  and qwen35's DeltaNet layers have had none since R3.44. So a `--gpu-layers` split whose device layers are all
+  stateful had 0 bytes of device KV, and `cuMemAlloc` refuses 0.
+  - **Before:** the device init failed and the run finished on the CPU. 18 of the 30 splits of the seven hybrid test
+    families did this: qwen35, qwen35moe, Clef, qwen4exp, granitehybrid and Nemotron-H at every split below their
+    first attention layer.
+  - **The fix:** the device K and V caches get a 256-byte allocation instead. The pointers still reach the attention
+    launches, the KV gather and the 0-byte copies. The buffer is filled with 0xFF, which is NaN in every KV format,
+    so a read of it would show. All 30 splits now run on the device within 1.43e-6 of the CPU, with no argmax flip
+    and no NaN.
+  - **Gates:**
+    - `tests/test_qwen35_kv_rows.py` gains the partial-split case for every family, and joins `test-cuda-gated`.
+    - Until now, no gate split a hybrid except test-cuda-qwen4exp and test-cuda-qwen35moe, and both had been
+      failing.
+  - **Also, test_cuda_fit_ring's note case on any card (R3.55).** `--reserve-vram` is a share of the card, so 10%
+    forced the KV ring only on a small one. On a 24 GB device it left room for the flat cache. The case now takes
+    the first whole percent at which the fit turns the ring on, and skips with that reason where none does.
+
+- **`--kv f32` on CUDA (R6.33).** The f32 KV cache from R6.32 now runs on the device, including a partial split,
+  where both halves keep f32 rows. Metal still refuses it, with the reason.
+  - **What the refusal had been protecting:** before this change, R6.32's two refusals kept a kind-3 cache away from
+    CUDA. One is at parse time, the other is model_alloc's `--gpu off` gate. Every device KV helper and every row-size
+    site in cuda.c read a 3 as q8_0. The sites are:
+    - the six kernels.cu helpers;
+    - three shared-memory width expressions;
+    - two store-unit counts (the solo forward and the microbatch).
+    Lifting the refusals without the fix gives q8_0 blocks under an f32 label.
+  - **The change:**
+    - Every helper and site takes kind 3 first.
+    - The width sites call `kv_bytes_of_kind`, the CPU's own width function.
+    - f32 rows load as scalars, because a row staged in shared memory sits at an odd 32-bit stride.
+    - The grouped decode attention, past head_dim 164, and the absorbed MLA decode, at deepseek2's 576-wide rows,
+      cannot fit f32 tiles in their shared memory. Their size functions now say the route does not apply, and those
+      layers take the generic kernels.
+    - The shared-weights identity gives f32 its own value.
+  - **Checks:** `make test-cuda-kv-f32`, a cuda-gate step.
+    - The device's f32 store is the source bytes.
+    - The device's f32 cache agrees with the CPU's on top-1 at every teacher-forced position, on five fixtures. Its
+      distance from the CPU's f32 is within 3x the f16 pair's, and it sits closer to the CPU's f32 than the device's
+      f16 cache does. Each fixture names the routes its run must dispatch.
+    - The microbatch stays byte-identical over an f32 cache.
+    - A mutant per site, each run once: lifting the refusals alone, or putting back any one width site, store-unit
+      count or shared-memory guard, turns this gate red.
+  - **Also:**
+    - test_kv_tol now fails a GPU arm that loses the device mid-sweep and finishes on the CPU. Before, such an arm
+      agreed with the CPU perfectly and passed.
+    - `--caps` reports `kv_f32`.
+    - `tests/test_kv_f32.py` gains the CUDA receipt, verify and partial-split cases.
+  - **Unchanged:** CUDA `--score` and seeded sampling under the default cache and f16, q8, k8v4 and fp4 give the same
+    bytes before and after, on six files: 60 command pairs, on the device.
+
+- **Structured output: a `oneOf` or `anyOf` of objects told apart by a `const` is now enforced, each object with its own properties (R2.8).**
+  - **Before:** objects in a union all start with `{`, so Runner refused them as ambiguous. The one exception was
+    the agent `{tool, args}` action, and only when every tool declared the same required keys. So a schema could
+    not say that one operation takes a lambda and another does not, and a flat schema in its place admitted
+    statements of the wrong shape.
+  - **Now:** when one shared property is a required `const` with a different value in each object (a
+    discriminated union, as Pydantic writes for `Field(discriminator=...)` and OpenAPI for `discriminator`), the
+    union compiles. The discriminator is the first key written, and every later key follows the object it named,
+    with that object's own properties and required set. A key the object lacks is refused at its first byte, so
+    constrained sampling never walks into a dead end. A document cut by `max_tokens` closes inside the object it
+    was in.
+  - **Also:** `discriminator.propertyName` names the property, other alternatives may stand beside the objects
+    (`anyOf: [A, B, null]`), and the `{tool, args}` action with different required keys per tool now compiles.
+    Objects with nothing to tell them apart are still refused, with a message saying what would make the schema
+    compile.
+
+- **`scripts/act-trace-hf.py` records the right `mixer` point on gemma-family blocks (R6.38).**
+  - **Before:** it hooked the first of `post_attention_layernorm`, `pre_feedforward_layernorm` and `ffn_norm` that
+    a block had. On Gemma 2, 3 and 4 blocks (sandwich norms) `post_attention_layernorm` normalizes the attention
+    output before the residual add. So the reference trace's `mixer` row was the attention branch, not the
+    residual after it, which is what Runner's `mixer` point is, and `scripts/act-trace-diff.py` would name the
+    mixer as the departing branch on a correct forward.
+  - **Now:** the point follows the block's norm layout: `pre_feedforward_layernorm` on sandwich-norm blocks,
+    `post_attention_layernorm` on pre-norm blocks, `ffn_norm` under that name, and none on a post-norm block
+    (OLMo 2), where no norm reads that residual. A test on a tiny Gemma 3 block checks the hooked input against
+    transformers' own forward: the block input plus the normalized attention output. No committed record
+    compared the mixer point on a gemma model with this script.
+
+- **Docs, correction: the gemma-4-26B-A4B reference rows were measured against a reference whose embedding was
+  scaled by 53.0, where float32 gives 53.066.**
+  - **The cause:** gold-logits' `--upcast-at-use` built gemma's embedding scale in BF16 (fixed, R6.36).
+  - **Measured again, with Runner's side unchanged:**
+    - The bf16 conversion: chat 0.0060 to 0.0007, raw 0.3226 to 0.4279.
+    - The listed QAT Q4_0: chat 0.2183 to 0.2140, raw 1.4900 to 1.4648.
+    - The chat number got better and the raw number got worse.
+  - **The raw gap is the f16 KV cache's rounding, amplified out of format:** with `--kv f32` the conversion reads
+    0.00003 on chat and 0.0055 on raw.
+  - **Updated:** [the record](docs/gemma4-26b-reference-2026-11-10.md) and the tier row's anchor.
+
+- **`--kv f32`: an f32 KV cache for any CPU run, a measurement instrument (R6.32).**
+  - **What it is:** K and V are kept unrounded in the CPU inference attention, the cache the training forward already
+    used under `--train-kv-f32`. It doubles the KV memory against f16 and is not a speed or quality default.
+  - **Refusals:** a run that could reach a GPU is refused with the reason (the GPU kernels read f16, q8_0 and fp4
+    rows). Add `--gpu off`.
+  - **Where it is named:** receipts, the route, `--info doctor`, KV snapshots and session images all say `f32`, and
+    `--verify` replays it. A snapshot or image refuses another KV type by name.
+  - **Model keys:** the model key gains a token only when the cache is f32, so every existing f16, q8, k8v4 and fp4 key,
+    prefix cache, snapshot and image is unchanged.
+  - **First use:** gemma-4-26B-A4B's bf16 conversion against its publisher's float32 forward, 2,000 positions each,
+    the reference with its embedding scale rebuilt in float32 (R6.36).
+    - Chat text: mean KL 0.00068 with the f16 cache, 0.00003 with f32.
+    - Raw text: 0.428 with the f16 cache, 0.0055 with f32. Out of format, that model amplifies the f16 cache's rounding.
+  - **Checks:** `tests/test_kv_f32.py`, red on the previous binary (9 of 9 failed) and green now.
+    - An f32 and an f16 cache score differently.
+    - Rollouts a `--kv f32 -b 1` server samples equal the `--train-kv-f32` trainer's logprobs bit for bit on four
+      fixture families. The f16 cache's do not.
+    - Session images round-trip byte-identically, and snapshots carry `kv_type` f32.
+    - Fifty `--score` and sampling commands on five fixtures under the default cache and every other `--kv` type give
+      the same bytes before and after the change.
+  - **Also:** the tied-V refusal now names the cache type it refuses, instead of saying "q8" for every quantized or
+    f32 cache.
+
+- **Docs: the gemma-4 E2B PLE study measured again against a full float32 reference: no verdict changes (R6.37).**
+  - **Why:** its reference was gold-logits' `--upcast-at-use`, which built gemma's embedding scale in BF16 until
+    R6.36.
+  - **The result:** every row moves by at most 0.0001. Unsloth's Q5_K_M still misses the bar narrowly.
+  - **Also:** the fixed upcast path matched the float32 load bit for bit on all 16,000 positions.
+  - [The record](docs/compat-reports/gemma-4-e2b-ple-quant-2026-10-31/README.md).
+
+- **Docs: the tool-use adapter's off-distribution result now stands first, wherever its 0.69 to 1.00 is quoted (R8.13.1).**
+  - **What changed:** the README's adaptation section and the site's LoRA page quoted only the in-distribution
+    figure (Qwen3-4B at 4 bits, exact tool calls 0.69 to 1.00 on the task's own held-out set). Both now lead with
+    the shifted set: on 274 hand-written prompts unlike its training, over 23 tools with overlapping names, the
+    base made 211 exact calls through the chat API and the adapter 200 ([the record](evals/tooluse-shifted/README.md)).
+  - **The adapter's Hub card:** the same text is prepared in
+    [evals/tooluse-shifted/hub-card-2026-11-10.md](evals/tooluse-shifted/hub-card-2026-11-10.md) for its
+    status bullet, its "What this is, and is not" paragraph, its TL;DR and its first honest limit.
+
+- **CHANGELOG entries are now one file per pull request, in `changes/`, folded in at release (R6.21).**
+  - **Why:** every pull request added its entry to the top of `## Unreleased`, so each merge conflicted with
+    the next open pull request on the same lines. Settling that cost a merge and a full CI run each, about
+    25 minutes per pull request.
+  - **Now:** a pull request adds `changes/<plan ID>.md` with its entry as this file will show it
+    ([the format](changes/README.md)). The release runs `scripts/changelog-entries.py fold --write`, which
+    puts the entries at the top of `## Unreleased`, newest first, and deletes the files.
+    `scripts/check-release.py` refuses a release that leaves any behind.
+  - **The check:** the commit-hygiene job runs `scripts/changelog-entries.py check`. It asks for exactly one
+    new entry file, or a line `Changelog: none, <why>` in the pull request's description or a commit
+    message. A release fold passes. A branch cut before the switch may keep its entry in CHANGELOG.md, with a
+    warning, so pull requests already open merge as they are. A change only to `changes/` skips the engine
+    jobs, as a change to CHANGELOG.md did.
+
 - **Fix (scripts/gold-logits.py): `--upcast-at-use` scored gemma against a reference that was not its float32
   forward (R6.36).**
   - **The bug:** a load at the stored dtype builds the model in BF16. So a constant the model's code computes when it

@@ -59,8 +59,8 @@ def _load(runner_bin, model, extra):
 
 
 @pytest.mark.parametrize("extra", [
-    ["--reserve-vram", "10"],                     # ring on: every layer fits only with it
-    ["--reserve-vram", "8"],                      # ring on, still a partial split
+    ["--reserve-vram", "10"],                     # on an 8 GB card, ring on: every layer fits only with it
+    ["--reserve-vram", "8"],                      # on an 8 GB card, ring on, still a partial split
     ["--reserve-vram", "7"],
     ["--reserve-vram", "10", "--kv-ring", "off"], # flat: the fit's old arithmetic, kept
     ["--reserve-vram", "10", "--kv-ring", "on"],
@@ -73,7 +73,16 @@ def test_the_fit_predicts_the_split_the_ring_makes(runner_bin, model, extra):
 
 
 def test_the_note_names_what_the_ringed_split_charged(runner_bin, model):
-    _, ring, out = _fit(runner_bin, model, ["--reserve-vram", "10"])
+    # --reserve-vram is a share of the card, so the percent that forces the ring depends on its size: 10 does on
+    # an 8 GB card, and leaves a 24 GB device 2.36 GiB, room for the 1.00 GiB flat cache (R3.55). Take the first
+    # whole percent at which the fit turns the ring on.
+    for pct in range(1, 101):
+        g, ring, out = _fit(runner_bin, model, ["--reserve-vram", str(pct)])
+        if ring:
+            break
+        if g == 8:
+            pytest.skip(f"the flat cache already fits every layer at --reserve-vram {pct}: no whole percent "
+                        "forces the KV ring on this card")
     assert ring, out
     # 4 sliding layers, each window (4) plus the prompt batch the load takes
     assert re.search(r"charges the 4 sliding-window layers \d+ rows each", out), out
