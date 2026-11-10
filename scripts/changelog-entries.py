@@ -14,6 +14,15 @@ the files into the Unreleased section and deletes them. changes/README.md has th
       written straight into CHANGELOG.md's Unreleased section counts as the entry, with a
       warning. A pull request opened (--opened) before changes/ reached the base branch is
       only warned, never failed, so the ones in flight at the switch merge as they are.
+
+      A merge train is one pull request that is the base plus the merged heads of several
+      reviewed pull requests. Its text (--text) has a line "Changelog: train", and every commit
+      on its first-parent line is a merge commit. Each such merge commit M is one member, and
+      the change M^1..M must pass the rule above on its own: its own entry file, its own entry
+      in CHANGELOG.md, or a "Changelog: none, <why>" in its own commit messages (the merge
+      commit's message counts). A member whose branch was cut before changes/ reached the base
+      branch (its first commit is older) is only warned. A train with a commit that is not a merge, or with
+      a member that fails, fails and names the member's merge commit.
   fold [--write]
       Puts every entry file at the top of the Unreleased section, newest first (the order they
       reached this branch's first-parent history), and with --write writes CHANGELOG.md and
@@ -32,6 +41,7 @@ CHANGES = "changes"
 README = "README.md"
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.md$")
 REASON = re.compile(r"^\s*Changelog:\s*none\b[\s,:;.-]*(\S.*)$", re.I | re.M)
+TRAIN = re.compile(r"^\s*Changelog:\s*train\s*$", re.I | re.M)
 UNRELEASED = re.compile(r"^## Unreleased[ \t]*$", re.M)
 
 
@@ -42,8 +52,9 @@ def git(*args, cwd=None):
     return p.stdout
 
 
-def annotate(kind, message):
+def annotate(kind, message, prefix=""):
     """A line for the log, and the same as a GitHub annotation inside Actions."""
+    message = prefix + message
     print(f"{kind}: {message}")
     if os.environ.get("GITHUB_ACTIONS") == "true":
         print(f"::{kind}::{message}")
@@ -120,8 +131,17 @@ def opened_before_switch(args):
     return opened < switched
 
 
+def pr_texts(args):
+    return [Path(t).read_text(encoding="utf-8", errors="replace") for t in args.text]
+
+
 def cmd_check(args):
-    code = check_change(args)
+    texts = pr_texts(args)
+    if any(TRAIN.search(t) for t in texts):
+        code = check_train(args)
+    else:
+        base = git("merge-base", args.base, args.head).strip()
+        code = check_range(base, args.head, texts, opened_before_switch(args))
     if code and opened_before_switch(args):
         annotate("warning", "this pull request was opened before changes/ existed, so the rule above "
                             "is a warning for it, not a failure")
@@ -129,9 +149,50 @@ def cmd_check(args):
     return code
 
 
-def check_change(args):
+def check_train(args):
+    """A merge train: every first-parent commit is a member's merge, and each passes on its own."""
     base = git("merge-base", args.base, args.head).strip()
-    status = git("diff", "--name-status", "--no-renames", base, args.head, "--", CHANGES)
+    line = [l.split() for l in git("rev-list", "--first-parent", "--parents", "--reverse",
+                                   f"{base}..{args.head}").splitlines()]
+    if not line:
+        annotate("error", "'Changelog: train', but the pull request has no commits")
+        return 1
+    plain = [c[0] for c in line if len(c) < 3]
+    if plain:
+        for sha in plain:
+            subject = git("log", "-1", "--format=%s", sha).strip()
+            annotate("error", f"'Changelog: train', but {sha[:12]} ({subject}) on the first-parent line "
+                              "is not a merge commit: a train is the base plus members' merges and "
+                              "nothing else")
+        return 1
+    switched = switch_time(args.base)
+    failed = []
+    for sha, first, *_ in line:
+        subject = git("log", "-1", "--format=%s", sha).strip()
+        prefix = f"train member {sha[:12]} ({subject}): "
+        # A member's branch was cut before the switch when its first commit predates it: the
+        # same grace as a pull request opened before the switch. Author dates survive a rebase.
+        dates = [int(t) for t in git("log", "--no-merges", "--format=%at", f"{first}..{sha}").split()]
+        soft = switched is not None and bool(dates) and min(dates) < switched
+        # only the member's own commit messages, the merge's included; never the train's text
+        if check_range(first, sha, [], soft, prefix):
+            if soft:
+                annotate("warning", "its branch was cut before changes/ existed, so the rule above is "
+                                    "a warning for it, not a failure", prefix)
+            else:
+                failed.append(sha)
+    if failed:
+        annotate("error", f"{len(failed)} of {len(line)} train members fail the rule: "
+                          + ", ".join(s[:12] for s in failed))
+        return 1
+    print(f"ok: a train of {len(line)} member{'s' if len(line) != 1 else ''}, each passing on its own")
+    return 0
+
+
+def check_range(base, head, texts, soft, prefix=""):
+    """The pull-request rule over base..head, given the texts beside its commit messages; 0 when
+    it passes. soft makes its failures warnings (the caller still gets 1)."""
+    status = git("diff", "--name-status", "--no-renames", base, head, "--", CHANGES)
     added, deleted = [], []
     for line in status.splitlines():
         code, _, path = line.partition("\t")
@@ -142,43 +203,40 @@ def check_change(args):
         elif code.startswith("D"):
             deleted.append(path)
     if deleted and not added:
-        print(f"ok: a release fold, {len(deleted)} entr{'y' if len(deleted) == 1 else 'ies'} folded into CHANGELOG.md")
+        print(f"{prefix}ok: a release fold, {len(deleted)} entr{'y' if len(deleted) == 1 else 'ies'} folded into CHANGELOG.md")
         return 0
     problems = []
     for path in added:
-        problems += entry_problems(path, git("show", f"{args.head}:{path}"))
-    direct = direct_entries(base, args.head)
+        problems += entry_problems(path, git("show", f"{head}:{path}"))
+    direct = direct_entries(base, head)
     count = len(added) + direct
-    texts = [git("log", "--format=%B", f"{base}..{args.head}")]
-    for t in args.text:
-        texts.append(Path(t).read_text(encoding="utf-8", errors="replace"))
+    texts = [git("log", "--format=%B", f"{base}..{head}"), *texts]
     reason = next((m.group(1).strip() for t in texts for m in [REASON.search(t)] if m), None)
 
-    soft = opened_before_switch(args)
     kind = "warning" if soft else "error"
     for p in problems:
-        annotate(kind, p)
+        annotate(kind, p, prefix)
     if problems:
         return 1
     if count > 1:
         where = added + ([f"{direct} in CHANGELOG.md"] if direct else [])
         annotate(kind, f"{count} changelog entries ({', '.join(where)}): one per pull request; "
-                          "split the pull request or merge the entries into one")
+                          "split the pull request or merge the entries into one", prefix)
         return 1
     if count == 1:
         if direct:
             annotate("warning", "the entry is written straight into CHANGELOG.md; that is accepted for a "
                                 "branch cut before changes/ existed, but it conflicts with every other such "
-                                "branch: move it to changes/<ID>.md (see changes/README.md)")
+                                "branch: move it to changes/<ID>.md (see changes/README.md)", prefix)
         else:
-            print(f"ok: one entry, {added[0]}")
+            print(f"{prefix}ok: one entry, {added[0]}")
         return 0
     if reason:
-        print(f"ok: no entry, because: {reason}")
+        print(f"{prefix}ok: no entry, because: {reason}")
         return 0
     annotate(kind, "no changelog entry: add changes/<plan ID>.md with the entry (see changes/README.md), "
                       "or say why there is none with a line 'Changelog: none, <why>' in the pull "
-                      "request's description or a commit message")
+                      "request's description or a commit message", prefix)
     return 1
 
 
