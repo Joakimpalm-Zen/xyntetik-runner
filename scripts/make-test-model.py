@@ -73,7 +73,7 @@ SPARK_GATE_FLAT = False # zero the per-head gate weights (sigmoid -> 0.5)
 SPARK_ALL_SWA = False   # pattern array all-sliding
 GRANITE = False    # granite: four muP scalars, tied embeddings
 GRANITE_RESID = 0.5  # residual_scale for the fixture (CLI-overridable)
-QUANT = None       # --quant q8_0/bf16: store the 2-D matmul weights converted
+QUANT = None       # --quant q8_0/bf16/f16: store the 2-D matmul weights converted
 YARN_FACTOR = None # optional native YaRN metadata for CLI/rope tests
 YARN_ORIG_CTX = 0
 YARN_BETAS = None  # (fast, slow) declared as rope.scaling.yarn_beta_fast/_slow
@@ -298,10 +298,10 @@ while i < len(args):
         # model the batch gate ran on was F32.
         i += 1
         QUANT = args[i].lower()
-        if QUANT not in ("q8_0", "bf16", "nvfp4", "nvfp4-dequant", "nvfp4-fork40",
+        if QUANT not in ("q8_0", "bf16", "f16", "nvfp4", "nvfp4-dequant", "nvfp4-fork40",
                          *CODEBOOK):
             sys.exit(f"--quant: unsupported type {QUANT!r} "
-                     f"(have: q8_0, bf16, nvfp4, {', '.join(CODEBOOK)})")
+                     f"(have: q8_0, bf16, f16, nvfp4, {', '.join(CODEBOOK)})")
         if QUANT in CODEBOOK:
             WIDE = True
     elif a == "--yarn":
@@ -1003,7 +1003,7 @@ if SUPPRESS_ALL_BUT_EOS:
 meta = b"".join(meta_kvs)
 
 # ---------------------------------------------------------------- quantization
-GGML_F32, GGML_Q8_0, GGML_IQ2_XXS, GGML_BF16 = 0, 8, 16, 30
+GGML_F32, GGML_F16, GGML_Q8_0, GGML_IQ2_XXS, GGML_BF16 = 0, 1, 8, 16, 30
 
 
 def q8_0_row(vals):
@@ -1025,6 +1025,14 @@ def bf16_data(data):
     """F32 bytes -> GGML BF16 (the high 16 bits of each stored float)."""
     words = struct.unpack(f"<{len(data) // 4}I", data)
     return struct.pack(f"<{len(words)}H", *(word >> 16 for word in words))
+
+
+def f16_data(data):
+    """F32 bytes -> IEEE half, at any row width: the runner's quantizer
+    writes no type for a row that is not a whole 32-block, and converters
+    that do write F16 there are what reach a kernel's scalar tail."""
+    vals = struct.unpack(f"<{len(data) // 4}f", data)
+    return struct.pack(f"<{len(vals)}e", *vals)
 
 
 # NVIDIA FP4 is TWO-LEVEL: a UE4M3 scale per 16 elements inside the block AND
@@ -1142,6 +1150,8 @@ def quantize(name, ne, data):
             rng.randbytes(bs - 2) for b in range(0, len(vals), 256))
     if QUANT == "bf16":
         return GGML_BF16, bf16_data(data)
+    if QUANT == "f16":
+        return GGML_F16, f16_data(data)
     if QUANT in ("nvfp4", "nvfp4-dequant", "nvfp4-fork40"):
         if ne[0] % 64:
             return GGML_F32, data

@@ -8,6 +8,16 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **Fix (CUDA): the F32 and F16 canonical-order matvecs finished an odd row fused, against the host (R12.1b).**
+  - **The bug:** `k_mvcanon_f32` and `k_mvcanon_f16` finish a row that is not a whole 32 (F32) or 16 (F16) stride on
+    one lane, with `s += w * x`. nvcc fused it into an `fma` (its default `--fmad=true`). The canonical host rounds the
+    product and the sum apart (`-ffp-contract=off`), so on such rows the device differed from the host it is defined
+    to equal.
+  - **The fix:** the tails are spelled `__fmul_rn` and `__fadd_rn`.
+  - **Checks:** two fixtures with a 200-wide FFN, `test-oddff.gguf` (F32) and `test-oddff-f16.gguf` (F16). Before the
+    fix, 13 to 19 of ffn_down's 64 rows differed; after it, none. `make-test-model.py` gains `--quant f16` for the
+    second fixture, since the runner's quantizer writes no type for a row that is not a whole 32-block.
+
 - **CUDA: the canonical-order matvec gains Q4_0, Q4_K, Q5_K and Q6_K, bit-identical to the host (R12.1b).**
   - **What it is:** `gpu_mvcanon` is the device forward matvec of the training path (R8.7.1). It computes the host's
     canonical association, so an adapter trained through it keeps the CPU's bytes. It took F32, F16 and Q8_0; every

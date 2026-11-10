@@ -1685,6 +1685,16 @@ test-q40.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
 	./$(RUNNER_EXE) -m test-q40-src.gguf --quantize test-q40.gguf --quant q4_0 > /dev/null
 	rm -f test-q40-src.gguf
 
+# A 200-wide FFN, so ffn_down's rows are not a whole 32 (F32) or 16 (F16)
+# stride: they reach the canonical kernels' scalar tail, which nvcc fused
+# into an fma until the tails were spelled __fmul_rn/__fadd_rn (R12.1b).
+# F16 comes from the generator: the runner's quantizer writes no type for a
+# row that is not a whole 32-block.
+test-oddff.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-model.py --n-ff 200 test-oddff.gguf > /dev/null
+test-oddff-f16.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-model.py --n-ff 200 --quant f16 test-oddff-f16.gguf > /dev/null
+
 # BF16 reaches its own CUDA decode-microbatch twins. The F32 and Q8_0 runs do
 # not execute k_gemvb_bf16_x4/_x8, so neither can hold their identity contract.
 test-bf16.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
@@ -3178,7 +3188,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
-      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf \
+      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-oddff.gguf test-oddff-f16.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf \
       test-qk.gguf test-gemma3.gguf test-gemma4.gguf test-es.gguf test-muse.gguf test-granite.gguf \
       test-gemma3-62.gguf test-gemma3-26.gguf test-qwen4exp.gguf test-lfm2.gguf test-lfm2-moe.gguf
 	./$(TEST_RECURRENT)
@@ -3287,6 +3297,8 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_MVCANON) test-q5k.gguf Q5_K
 	./$(TEST_MVCANON) test-q6k.gguf Q6_K
 	./$(TEST_MVCANON) test-q40.gguf Q4_0
+	./$(TEST_MVCANON) test-oddff.gguf F32
+	./$(TEST_MVCANON) test-oddff-f16.gguf F16
 	./$(TEST_BIND)
 	./$(TEST_HOST_HEADER)
 	./$(TEST_RESIDENCY)
