@@ -516,10 +516,14 @@ keeps:
 1. The trainer gets the sampled **token ids** (the id form above), not text.
 2. The rollout server reads the prompt **one token per forward** (`-b 1`), the
    path the trainer's forward runs. A prompt read in batches of 8 or more
-   takes another CPU route, and the logprobs after it move: up to 3.1e-3 on
-   MiniCPM5-1B Q4_K_M after a 60-token prompt.
-3. Sampling and training both run **on the CPU** (`--gpu off`). A GPU sampler
-   agrees with the CPU trainer token for token, not bit for bit.
+   takes another CPU route, and the logprobs after it move: up to 1.45e-2
+   over 384 rollouts of MiniCPM5-1B Q4_K_M after prompts of 49 to 51 tokens.
+3. Sampling and training both run **on the CPU** (`--gpu off`). A CUDA
+   sampler's logprobs differ from the CPU trainer's by up to 2.02e-2 on that
+   model, and its rollouts drift from a CPU sampler's (284 of 384 the same).
+
+[The train/serve mismatch, measured](train-serve-mismatch-2026-11.md) gives
+the per-token figures for each sampler, beside a vLLM and transformers stack.
 
 Every round checks it: the trainer's first step scores example 0 under the
 exact weights that sampled it, and its logprobs must equal the server's, or

@@ -395,6 +395,8 @@ merge into a 4-bit grid rounds the fine-tune away (1.8% of it survived in
 the measured study, against 99.5% into Q8_0), so that merge is refused.
 Same data, seed and build write the same adapter bytes; a different build
 can change them, which is a stated limit, not a promise broken.
+The sampler and the trainer agree bit for bit on the CPU with `-b 1`, and
+only there: [the mismatch, measured beside vLLM and transformers](docs/train-serve-mismatch-2026-11.md).
 [Every adapter feature, explained](docs/lora.md) ·
 [Walkthrough](docs/train-lora-on-quantized-gguf.md) ·
 [What is covered and what is refused](MANUAL.md#adaptation)
