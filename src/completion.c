@@ -438,6 +438,8 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
     e->constraint_includes_prelude = false;
     e->render_special = false;
     e->n_spell = 0;
+    // R10.31: a request's ignore_eos is its own; the slot goes back to the server's default
+    e->ignore_eos = SV.ignore_eos;
     schema_free(schema);
     if (g) {
         tool_stream_free(&g->tsx);
@@ -3126,6 +3128,7 @@ typedef struct {
     float think_temp, think_top_p, think_min_p;
     int think_top_k;
     bool loop_guard, loop_all;
+    bool ignore_eos;              // R10.31: this request's, the server's --ignore-eos when it names none
     int loop_span, loop_repeats, loop_window, loop_max_closes;
     int32_t think_msg[sizeof(((engine *)0)->think_msg) / sizeof(int32_t)];
     int think_msg_n;
@@ -3394,6 +3397,20 @@ static bool creq_reasoning_sampling(const creq_ctx *c, completion_req *q, creq_e
             q->think_top_k = (int)rtop_k;
         }
     }
+    return true;
+}
+
+// R10.31: ignore_eos on a completion request, as vLLM's and llama.cpp's servers take it: the model's
+// end-of-text token no longer ends the turn, so it runs to max_tokens, a fixed-length rollout. The
+// sessions route read it already; this is every completion surface. The server's --ignore-eos is the
+// default, and null reads as absent. A grammar's completed document still ends the turn.
+static bool creq_ignore_eos(const creq_ctx *c, completion_req *q, creq_err *err) {
+    bool v = SV.ignore_eos;
+    if (!request_bool(c->req, "ignore_eos", SV.ignore_eos, &v)) {
+        refuse_field(err, c->req, "ignore_eos", J_BOOL, "ignore_eos must be a boolean");
+        return false;
+    }
+    q->ignore_eos = v;
     return true;
 }
 
@@ -4073,6 +4090,7 @@ static const creq_group CREQ_GROUPS[] = {
     creq_reasoning_budget,
     creq_reasoning_sampling,
     creq_loop_guard,
+    creq_ignore_eos,
     creq_budget_message,
     creq_stream,
     creq_logprobs,
@@ -4142,6 +4160,7 @@ static void completion_apply(slot_t *s, const completion_req *q, const char *pro
         e->think_min_p = q->think_min_p;
         e->think_top_k = q->think_top_k;
     }
+    e->ignore_eos = q->ignore_eos;
     e->loop_guard = q->loop_guard;
     if (q->loop_guard) {
         e->loop_all = q->loop_all;

@@ -8,6 +8,15 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **`ignore_eos` on a completion request (R10.31).**
+  - **Before:** only `/v1/runner/sessions` read it. Chat, completions, Responses and Messages took only the
+    server-wide `--ignore-eos`, so a fixed-length rollout could not be asked for per request.
+  - **Now:** every completion surface takes `ignore_eos` (a boolean; null reads as absent), as vLLM's and
+    llama.cpp's servers do. The server's `--ignore-eos` is the default, and a request may turn it either way for
+    itself. A grammar's completed document still ends the turn.
+  - **Lifetime:** the value is installed per request and put back to the server's default when the request ends.
+    The sessions route also restores the server's default after a session, where it used to turn it off.
+  - **Receipts:** a served turn under it records `ignore_eos`, and `--verify --ignore-eos` replays it.
 - **`--info fit` predicts the split a load makes with the KV ring (R3.50).** When the weights and the flat KV
   cache do not fit the GPU budget, a load gives sliding-window layers only their window plus the prompt batch
   (`--kv-ring auto`) and places more layers; the fit charged the flat cache and predicted fewer
