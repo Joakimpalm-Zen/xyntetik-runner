@@ -15,6 +15,12 @@ folds the files into CHANGELOG.md's `## Unreleased` section and deletes them
   (`scripts/changelog-entries.py check`). A pull request with nothing to record says why: add a
   line `Changelog: none, <why>` to its description or to one of its commit messages. After
   editing the description, re-run the job.
+- **A merge train** is one pull request that is `main` plus the merged heads of several reviewed
+  pull requests, merged in order with nothing of its own. Its description has a line
+  `Changelog: train`, and each member keeps its own entry: the check reads every merge on the
+  train's first-parent line as one member and holds it to the rule above on its own. A member's
+  reason for no entry is read from its own commit messages, the merge commit's included, never
+  from the train's description. A train with any commit that is not a merge fails.
 - **Before the switch:** a branch cut before this folder existed may keep its entry in
   CHANGELOG.md. The check accepts it with a warning. Moving the entry here is how to settle its
   next CHANGELOG conflict.

@@ -1067,3 +1067,112 @@ def test_the_repository_changes_folder_follows_the_rule():
     for p in sorted(folder.glob("*.md")):
         if p.name != "README.md":
             assert mod.entry_problems(f"changes/{p.name}", p.read_text(encoding="utf-8")) == []
+
+
+# A merge train: one pull request that is main plus the merged heads of several reviewed pull
+# requests, its text carrying "Changelog: train". Each first-parent merge is a member and passes
+# the rule on its own.
+CE_TRAIN_TEXT = "Merge train A: #1 and #2\n\nChangelog: train\n"
+
+
+def ce_member(repo, name, files, message, when=None):
+    ce_git(repo, "switch", "-q", "-c", name, "main")
+    for path, text in files.items():
+        (repo / path).write_text(text)
+    ce_commit(repo, message, when=when)
+
+
+def ce_train(repo, *members, messages=None):
+    ce_git(repo, "switch", "-q", "-C", "train", "main")
+    for m in members:
+        msg = (messages or {}).get(m, f"Merge {m} into the train")
+        ce_git(repo, "merge", "-q", "--no-ff", "-m", msg, m)
+    return ce_git(repo, "rev-parse", "train").strip()
+
+
+def ce_check_train(repo, text=CE_TRAIN_TEXT, head="train"):
+    body = repo.parent / "train.txt"
+    body.write_text(text)
+    return ce_check(repo, "--head", head, "--text", str(body))
+
+
+def test_a_two_member_train_passes_where_one_pull_request_would_not(repo):
+    ce_member(repo, "m1", {"changes/R2.1.md": "- **One (R2.1).**\n"}, "R2.1")
+    ce_member(repo, "m2", {"changes/R2.2.md": "- **Two (R2.2).**\n"}, "R2.2")
+    ce_train(repo, "m1", "m2")
+    code, out = ce_check_train(repo)
+    assert code == 0, out
+    assert "(Merge m1 into the train): ok: one entry, changes/R2.1.md" in out
+    assert "(Merge m2 into the train): ok: one entry, changes/R2.2.md" in out
+    assert "ok: a train of 2 members, each passing on its own" in out
+    # the same branch without the line is one pull request with two entries, as before
+    code, out = ce_check_train(repo, text="Merge train A\n")
+    assert code == 1
+    assert "2 changelog entries (changes/R2.1.md, changes/R2.2.md): one per pull request" in out
+
+
+def test_a_train_member_with_two_entries_fails_naming_it(repo):
+    ce_member(repo, "m1", {"changes/R2.1.md": "- **One (R2.1).**\n"}, "R2.1")
+    ce_member(repo, "m2", {"changes/R2.2.md": "- **Two (R2.2).**\n",
+                           "changes/R2.3.md": "- **Three (R2.3).**\n"}, "R2.2 and R2.3")
+    head = ce_train(repo, "m1", "m2")
+    code, out = ce_check_train(repo)
+    assert code == 1, out
+    assert (f"error: train member {head[:12]} (Merge m2 into the train): 2 changelog entries "
+            "(changes/R2.2.md, changes/R2.3.md): one per pull request") in out
+    assert f"1 of 2 train members fail the rule: {head[:12]}" in out
+
+
+def test_a_train_member_entry_still_holds_one_item(repo):
+    ce_member(repo, "m1", {"changes/R2.1.md": "- **One.**\n- **Two.**\n"}, "R2.1")
+    head = ce_train(repo, "m1")
+    code, out = ce_check_train(repo)
+    assert code == 1, out
+    assert f"train member {head[:12]} (Merge m1 into the train): changes/R2.1.md: 2 top-level items" in out
+
+
+def test_a_train_with_a_plain_commit_on_top_fails(repo):
+    ce_member(repo, "m1", {"changes/R2.1.md": "- **One (R2.1).**\n"}, "R2.1")
+    ce_train(repo, "m1")
+    (repo / "src.c").write_text("int x;\n")
+    ce_commit(repo, "a fix-up on the train")
+    top = ce_git(repo, "rev-parse", "train").strip()
+    code, out = ce_check_train(repo)
+    assert code == 1, out
+    assert f"{top[:12]} (a fix-up on the train) on the first-parent line is not a merge commit" in out
+
+
+def test_the_train_line_without_merge_commits_is_refused(repo):
+    ce_entry(repo, "R2.1.md", "- **One (R2.1).**\n")
+    ce_commit(repo, "R2.1")
+    code, out = ce_check_train(repo, head="pr")
+    assert code == 1, out
+    assert "(R2.1) on the first-parent line is not a merge commit" in out
+    ce_git(repo, "switch", "-q", "-c", "empty", "main")
+    code, out = ce_check_train(repo, head="empty")
+    assert code == 1, out
+    assert "'Changelog: train', but the pull request has no commits" in out
+
+
+def test_a_train_member_reason_is_its_own_not_the_trains(repo):
+    ce_member(repo, "m1", {"changes/R2.1.md": "- **One (R2.1).**\n"}, "R2.1")
+    ce_member(repo, "m2", {"src.c": "int x;\n"}, "code only")
+    head = ce_train(repo, "m1", "m2")
+    code, out = ce_check_train(repo, text=CE_TRAIN_TEXT + "Changelog: none, the members carry theirs\n")
+    assert code == 1, out
+    assert f"error: train member {head[:12]} (Merge m2 into the train): no changelog entry" in out
+    # the member's merge commit is one of its own commits, so a reason there counts
+    ce_train(repo, "m1", "m2", messages={"m2": "Merge m2 into the train\n\nChangelog: none, a test-only change"})
+    code, out = ce_check_train(repo)
+    assert code == 0, out
+    assert "(Merge m2 into the train): ok: no entry, because: a test-only change" in out
+
+
+def test_a_train_member_cut_before_the_switch_is_warned_not_failed(repo):
+    # the fixture's base commit, which adds changes/README.md, is the switch: 2026-11-01 10:00 UTC
+    ce_member(repo, "m1", {"src.c": "int x;\n"}, "cut before the switch", when="2026-10-30T08:00:00")
+    ce_train(repo, "m1")
+    code, out = ce_check_train(repo)
+    assert code == 0, out
+    assert "warning: train member" in out and "no changelog entry" in out
+    assert "its branch was cut before changes/ existed" in out

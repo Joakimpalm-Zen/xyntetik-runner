@@ -72,7 +72,10 @@ exactly one entry as `changes/<ID>.md`, or says why it has none with a line
 `Changelog: none, <why>` in its description or a commit message
 (`scripts/changelog-entries.py check`). Entries live in files of their own so
 that pull requests stop conflicting with each other on CHANGELOG.md; the
-release folds them in ([changes/README.md](../changes/README.md)).
+release folds them in ([changes/README.md](../changes/README.md)). A merge
+train (a pull request with a line `Changelog: train` whose first-parent commits
+are all merges of reviewed pull requests) is checked per member instead: each
+merge must pass the rule on its own.
 
 ## Timing and test execution
 
