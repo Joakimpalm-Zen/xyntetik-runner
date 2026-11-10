@@ -2472,8 +2472,11 @@ test-tc-overflow: runner $(TEST_TC_TOL)
 # device must draft the CPU head's logits step for step (same argmax,
 # top logit and top-2 gap within reduction-order residue) and leave the
 # text identical (RUNNER_MTP_DUMP on the fixture's MTP block, an
-# 86-token prompt so the head's queue drains in two tiles); and the BF16
-# split-K decode GEMV, on a fixture widened to reach it (512-wide residual,
+# 86-token prompt so the head's queue drains in two tiles), at draft widths
+# 2 and 4 set on both sides: the default width is per backend since R3.3.7
+# (2 for the NextN head on CUDA, 4 on the CPU), and a width left to the
+# defaults compared a 4-wide CPU run with a 2-wide device one (R3.56); and
+# the BF16 split-K decode GEMV, on a fixture widened to reach it (512-wide residual,
 # BF16 hc mixers: a 2,048-wide mixer input), must launch, stay inside the
 # CPU bound, and give the same bytes on a second device run. Skips itself
 # without a CUDA device. 2e-5 is reduction-order residue on the fixture
@@ -2497,13 +2500,15 @@ test-cuda-qwen4exp: runner $(TEST_GPU_ID) $(TEST_CUDA_TEARDOWN) test.gguf
 		./$(TEST_CUDA_TEARDOWN) test.gguf test-qwen4exp.gguf 3; \
 		QWEN4EXP_TEST_MTP=1 $(PYTHON) scripts/make-test-qwen4exp.py test-q4e-mtp.gguf > /dev/null; \
 		P="hello world one two three four five six seven eight nine ten"; \
+		for k in 2 4; do \
 		rm -f cuda-q4e-mtp-cpu.dump cuda-q4e-mtp-gpu.dump; \
-		RUNNER_MTP_DUMP=cuda-q4e-mtp-cpu.dump ./$(RUNNER_EXE) -m test-q4e-mtp.gguf -p "$$P" -n 24 --temp 0 --gpu off --mtp --no-tray -c 128 > cuda-q4e-mtp-cpu.out 2>/dev/null; \
+		RUNNER_MTP_DUMP=cuda-q4e-mtp-cpu.dump ./$(RUNNER_EXE) -m test-q4e-mtp.gguf -p "$$P" -n 24 --temp 0 --gpu off --mtp --draft-k $$k --no-tray -c 128 > cuda-q4e-mtp-cpu.out 2>/dev/null; \
 		for arm in "" "--cpu-moe"; do \
 		  rm -f cuda-q4e-mtp-gpu.dump; \
-		  RUNNER_MTP_DUMP=cuda-q4e-mtp-gpu.dump ./$(RUNNER_EXE) -m test-q4e-mtp.gguf -p "$$P" -n 24 --temp 0 --mtp $$arm --no-tray -c 128 > cuda-q4e-mtp-gpu.out 2>cuda-q4e-mtp-gpu.err; \
-		  grep -q "CUDA backend" cuda-q4e-mtp-gpu.err || { echo "FAIL: --mtp [$$arm] did not run on the device"; cat cuda-q4e-mtp-gpu.err; exit 1; }; \
-		  $(PYTHON) -c "import sys; a=open('cuda-q4e-mtp-cpu.out','rb').read(); b=open('cuda-q4e-mtp-gpu.out','rb').read(); assert a and a == b, 'generated text differs'; da=[l.split() for l in open('cuda-q4e-mtp-cpu.dump') if l.strip()]; db=[l.split() for l in open('cuda-q4e-mtp-gpu.dump') if l.strip()]; assert len(da) == len(db) > 10, (len(da), len(db)); bad=[(x,y) for x,y in zip(da,db) if x[4] != y[4] or abs(float(x[5])-float(y[5])) > 1e-5 or abs(float(x[7])-float(y[7])) > 1e-5]; assert not bad, 'head logits differ: %s' % bad[:2]; print('mtp head [%s]: %d draft steps, device head == CPU head (argmax, logit and gap within 1e-5), text identical' % (sys.argv[1], len(da)))" "$$arm"; \
+		  RUNNER_MTP_DUMP=cuda-q4e-mtp-gpu.dump ./$(RUNNER_EXE) -m test-q4e-mtp.gguf -p "$$P" -n 24 --temp 0 --mtp --draft-k $$k $$arm --no-tray -c 128 > cuda-q4e-mtp-gpu.out 2>cuda-q4e-mtp-gpu.err; \
+		  grep -q "CUDA backend" cuda-q4e-mtp-gpu.err || { echo "FAIL: --mtp [$$arm --draft-k $$k] did not run on the device"; cat cuda-q4e-mtp-gpu.err; exit 1; }; \
+		  $(PYTHON) -c "import sys; a=open('cuda-q4e-mtp-cpu.out','rb').read(); b=open('cuda-q4e-mtp-gpu.out','rb').read(); assert a and a == b, 'generated text differs'; da=[l.split() for l in open('cuda-q4e-mtp-cpu.dump') if l.strip()]; db=[l.split() for l in open('cuda-q4e-mtp-gpu.dump') if l.strip()]; assert len(da) == len(db) > 10, (len(da), len(db)); bad=[(x,y) for x,y in zip(da,db) if x[:3] != y[:3] or x[4] != y[4] or abs(float(x[5])-float(y[5])) > 1e-5 or abs(float(x[7])-float(y[7])) > 1e-5]; assert not bad, 'head logits differ: %s' % bad[:2]; print('mtp head [%s]: %d draft steps, device head == CPU head (argmax, logit and gap within 1e-5), text identical' % (sys.argv[1], len(da)))" "$$arm --draft-k $$k"; \
+		done; \
 		done; \
 		rm -f test-q4e-mtp.gguf cuda-q4e-mtp-*; \
 		QWEN4EXP_TEST_EMBD=512 QWEN4EXP_TEST_HC_BF16=1 $(PYTHON) scripts/make-test-qwen4exp.py test-q4e-bf16.gguf > /dev/null; \
