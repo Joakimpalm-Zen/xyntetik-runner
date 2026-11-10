@@ -257,7 +257,7 @@ class HostedT3Skips(unittest.TestCase):
         import re
         wf = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         m = re.search(r"(tests/test_transcript\.py tests/test_train\.py "
-                      r"tests/test_session_images\.py) \\\s*\n\s*-k \"([^\"]+)\"", wf)
+                      r"tests/test_session_images\.py(?: tests/test_\w+\.py)*) \\\s*\n\s*-k \"([^\"]+)\"", wf)
         self.assertIsNotNone(m, "t3's pytest line moved: update this test with it")
         terms = re.findall(r"not (\S+)", m.group(2))
         for f in m.group(1).split():

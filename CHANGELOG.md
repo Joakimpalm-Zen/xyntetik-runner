@@ -8,6 +8,28 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **The T3 (canonical) build gains Q4_0, Q4_K, Q5_K and Q6_K, and names the types it cannot run canonically
+  (R12.1b).**
+  - **The kernels:** each type has one reduction tree on every ISA, the AVX2 kernel's own shape (the reference, as
+    for Q8_0). There are NEON and scalar mirrors.
+    - Q4_0 is Q8_0's tree on nibbles.
+    - Q4_K and Q5_K: four-term lane sums per 32-weight sub-block, scaled into eight lane accumulators, with the min
+      term summed apart from per-sub-block tree sums.
+    - Q6_K: two-term lane sums per 16 weights.
+  - **What this covers:** a Q4_K_M model (Q4_K, Q5_K, Q6_K, Q8_0 and F32 on unsloth's Qwen3.5-4B) now runs every dot
+    product in the canonical order.
+  - **The cost on x86-64:** none at the kernel against the same-shape kernel. The canonical build gives up the decode
+    path's reuse of the per-matvec x sums: Q4_K 1.47x and Q5_K 1.34x a matvec. End to end, T3 decodes Qwen3.5-4B
+    Q4_K_M 6 to 14% slower than the default build, its usual strict-float cost.
+  - **Checks:** `tests/test_canon_kernels.c` holds each kernel bit for bit to an independent definition. That is the
+    AVX2 kernel on x86, and the scalar one with RUNNER_NO_SIMD; NEON in macOS CI.
+  - **The gap that was silent:** every type without a canonical kernel fell through to the ISA-native kernels without
+    a word, so a T3 build was not the same on arm64 and x86-64 for that model and nothing said so.
+  - **Now:** the load says "canon: BF16 have no canonical-order kernel in this build ...", and the route line and the
+    receipt's `profile.route` carry `canon_gaps` (empty when every type is canonical). A default build writes none of
+    it.
+  - **Checks:** `tests/test_canon_gaps.py`, in CI's t3 job.
+
 - **Fix: `--fit` charged deepseek2's KV at the header's shape, up to 10.7x the cache the loader builds (R3.48).**
   - **What the loader builds:** its default is the absorbed MLA form. That is one cache row a token and layer,
     `kv_lora_rank + rope` wide, which every head and V read. Q is that wide per head.
