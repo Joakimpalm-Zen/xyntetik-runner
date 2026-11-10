@@ -1,6 +1,6 @@
 <!--meta
 title: Runner
-description: What Xyntetik Runner 1.0 does and how to use it: serve a model in sixty seconds, ask whether a model fits before you download it, make your own model file, fit more context in the same memory, and the promises 1.x keeps.
+description: What Xyntetik Runner does and how to use it: serve a model in sixty seconds, ask whether a model fits before you download it, make your own model file, fit more context in the same memory, and the promises 1.x keeps.
 path: /runner/
 nav: runner
 -->
@@ -62,7 +62,7 @@ nav: runner
       <a href="#contracts">What it promises</a>
       <a href="#versioning">What 1.x keeps</a>
       <a href="#support">Support matrix</a>
-      <a href="#validated">Validated models</a>
+      <a href="#validated">Model list</a>
       <a href="#agents">Coding agents</a>
       <a href="#how">How it is built</a>
     </nav>
@@ -87,7 +87,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
 <pre><code>curl localhost:8080/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Say hello in one sentence."}]}'</code></pre>
       <div class="rows">
-        <div><span>Linux</span><p>The asset is <code>runner-linux-x86_64</code>. The asset is built with a GLIBC 2.38 ceiling (held since 1.6.1) and starts on Ubuntu 24.04. Upgrade from 1.6.0, whose binary requires GLIBC 2.43. The 1.6.1 Golden score remains unmeasured. See the <a href="{{repo}}/blob/main/docs/golden-pass-2026-10-25.md">validation report</a>; check with <code>sha256sum -c --ignore-missing SHA256SUMS</code>.</p></div>
+        <div><span>Linux</span><p>The asset is <code>runner-linux-x86_64</code>, built on Ubuntu 24.04 with a GLIBC 2.38 ceiling that the release workflow checks (since 1.6.1; the 1.6.0 asset required GLIBC 2.43). Check it with <code>sha256sum -c --ignore-missing SHA256SUMS</code>.</p></div>
         <div><span>Windows</span><p><code>runner-windows-x86_64.exe</code>, with a notification-area controller.</p></div>
         <div><span>macOS note</span><p>The binaries are not yet notarized. A <code>curl</code> download runs as shown; a browser download gets quarantined by Gatekeeper. Clear it with <code>xattr -d com.apple.quarantine runner</code> or right-click and Open once.</p></div>
         <div><span>From source</span><p><code>make</code> builds the release binary with no dependencies beyond a C compiler; CUDA and Metal kernels are embedded at build time. <a href="{{repo}}/blob/main/MANUAL.md#build-and-platforms">Build and platforms</a>.</p></div>
@@ -95,7 +95,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       </div>
       <div class="callout mt-2">
         <span class="t">Testing Runner?</span>
-        <p>Runner is at 1.0 and hardware coverage is still limited; that is an invitation, not an apology. An unusual GGUF, a coding agent, an NVIDIA or Apple setup, or a model family not in the support matrix: the result is wanted, success or failure alike. <a href="{{repo}}/issues">Open an issue</a> with <code>runner --version</code>, <code>runner --info caps</code>, the model's exact filename and the load log. Independent reproductions of the determinism claims are credited in the docs, as the first one already is.</p>
+        <p>Runner is at {{version}} and hardware coverage is still limited; that is an invitation, not an apology. An unusual GGUF, a coding agent, an NVIDIA or Apple setup, or a model family not in the support matrix: the result is wanted, success or failure alike. <a href="{{repo}}/issues">Open an issue</a> with <code>runner --version</code>, <code>runner --info caps</code>, the model's exact filename and the load log. Independent reproductions of the determinism claims are credited in the docs, as the first one already is.</p>
       </div>
     </div>
   </div>
@@ -103,7 +103,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
 
 <section class="section tint" id="fit">
   <div class="wrap split rev">
-    <figure class="shot">
+    <figure class="shot term">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-fit-dark.svg">
         <img src="/assets/readme-fit-light.svg" alt="Runner asked whether Granite 4.2 8B fits an RTX 3070: FITS, 35 of 40 layers on the GPU" width="640" height="282" loading="lazy">
@@ -117,7 +117,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
 <pre><code>curl -r 0-16777215 -L -o head.gguf \
   https://huggingface.co/ORG/REPO/resolve/main/MODEL.gguf
 ./runner -m head.gguf --info fit -c 16384</code></pre>
-      <p>On an RTX 3070 it named the same split the loader then used in 70 of 72 cases and was one layer cautious in the other two (six models, two context sizes, four cache formats, 2026-10-03). <code>--info caps</code> says what the machine can run and <code>--info doctor</code> loads a model, probes it and reports. <a href="{{repo}}/blob/main/MANUAL.md#deciding-before-you-download">How the verdict is computed</a></p>
+      <p>On an RTX 3070, with the 1.0.1 release, it named the same split the loader then used in 70 of 72 cases and was one layer cautious in the other two (six models, two context sizes, four cache formats, 2026-10-03). Outside that set it was wrong, and 1.16.0 corrects it: on hybrid models it read up to four layers more than the load placed, on deepseek2 it charged 40.50 GiB of cache where the loader builds 3.80, it counted a declared NextN/MTP block as a layer, and it did not see the KV ring a load turns on. Each now predicts the loader's split. <code>--info caps</code> says what the machine can run and <code>--info doctor</code> loads a model, probes it and reports. <a href="{{repo}}/blob/main/MANUAL.md#deciding-before-you-download">How the verdict is computed</a></p>
       <p>Not sure which file to try? <code>./runner recommend</code> lists the supported files that fit this machine, largest first, each with its measured fidelity line or marked unmeasured, offline. <a href="{{repo}}/blob/main/MANUAL.md#cli-recommend">Details</a></p>
     </div>
   </div>
@@ -129,7 +129,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       <p class="eyebrow">Runner: Derive</p>
       <h2>Make your own file, measured.</h2>
       <p>The usual way to shrink a model squeezes every part by the same rule, and the file is rarely measured against the original afterwards. <code>runner derive</code> measures which parts can take the squeeze, makes the file, measures how far it drifted from the publisher's model, and writes the numbers into the file's card. The card leads with what the file is not for and its weakest number, then whether it passes the bar.</p>
-      <p><code>--imatrix</code> calibrates rounding for q3_k, q4_0, q4_k, q5_k, q6_k, q5_1 and iq4_nl using ggml's type-specific weighted writers. The five added formats match pinned ggml bytes on a real tensor slice and deterministic boundary rows: <a href="{{repo}}/blob/main/tests/fixtures/quant-golden/README.md">inputs and reference build</a>.</p>
+      <p><code>--target-size</code> plans the file from a ladder of types (<code>--high</code> and <code>--low</code>, a <code>--mid</code> rung, or a whole <code>--ladder</code>), demoting one group of tensors at a time where it adds the least error per byte saved. A tensor the importance matrix does not cover, such as <code>output</code> or <code>token_embd</code>, is held at the top rung and named in the record. <code>--imatrix</code> calibrates rounding for q3_k, q4_0, q4_k, q5_k, q6_k, q5_1 and iq4_nl using ggml's type-specific weighted writers. The five added formats match pinned ggml bytes on a real tensor slice and deterministic boundary rows: <a href="{{repo}}/blob/main/tests/fixtures/quant-golden/README.md">inputs and reference build</a>.</p>
       <p>A <a href="{{hf}}/Qwen3-30B-A3B-derive-GGUF">17.1 GB Qwen3-30B-A3B file</a> came from one command. Against Qwen's float32 model over the same 2,000 positions it reads 0.0290 mean KLD and 99.01% margin-qualified top-1; Qwen's official Q4_K_M, 1.45 GB larger, reads 0.0909 and 94.80% and fails the bar. Our hand-built selective file is still slightly closer on mean KLD (p 0.02) and 0.88 GB larger; on margin-qualified top-1 the two tie. All three were measured on one text, the project's gold corpus. <a href="{{repo}}/blob/main/docs/compat-reports/qwen3-30b-a3b-derive-2026-11-02/README.md">The record</a> · <a href="{{repo}}/blob/main/MANUAL.md#cli-derive">Options</a></p>
     </div>
     <div>
@@ -166,6 +166,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
 <pre><code>./runner -m model.gguf --serve -c 32768 --kv k8v4
 ./runner -m model.gguf --serve -c 32768 --kv q8     # the gentler setting, about half</code></pre>
       <p><code>--kv k8v4</code> stores the cache in about 41% of the usual bytes. On Qwen3.5-4B, Muse-Glimmer-30B and Qwen3.8-27B it agreed with the full-size cache on 100% of clear-cut tokens over 500 positions each. <a href="{{repo}}/blob/main/MANUAL.md#long-contexts">What each setting costs, model by model</a></p>
+      <p><code>--kv f32</code> goes the other way: twice the f16 cache's memory, nothing rounded. It is a measurement instrument, not a default, on the CPU and CUDA; Metal refuses it. On gemma-4-26B-A4B's bf16 conversion, raw text read a mean KL of 0.428 against the publisher's float32 model with the f16 cache and 0.0055 with f32: the distance was the cache's rounding, not the weights.</p>
     </div>
   </div>
 </section>
@@ -246,7 +247,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       </div>
       <div class="card">
         <h3>Smaller caches, longer contexts</h3>
-        <p>KV caches in f16, q8, fp4 or the split k8v4 (K at q8_0, V at fp4, about 41% of f16). The 4-bit cost is not symmetric, so it is measured per model against the f16 cache and published: k8v4 reads a mean KLD of 0.002 to 0.004 with 100% margin-qualified top-1 on Qwen3.5-4B, Muse-Glimmer-30B and Qwen3.8-27B, and 0.04 on Qwen2.5-1.5B, where fp4 for both sides reads 2.00. An opt-in ring for sliding-window layers keeps only the rows the window can reach, bit-identical, taking gemma-3-4b at 32k from 4,563 MB to 800 MB of cache.</p>
+        <p>KV caches in f16, q8, fp4 or the split k8v4 (K at q8_0, V at fp4, about 41% of f16), and f32 as an instrument. The 4-bit cost is not symmetric, so it is measured per model against the f16 cache and published: k8v4 reads a mean KLD of 0.002 to 0.004 with 100% margin-qualified top-1 on Qwen3.5-4B, Muse-Glimmer-30B and Qwen3.8-27B, and 0.04 on Qwen2.5-1.5B, where fp4 for both sides reads 2.00. A ring for sliding-window layers keeps only the rows the window can reach, output-identical, taking gemma-3-4b at 32k from 4,563 MB to 800 MB of cache; by default (<code>--kv-ring auto</code>) it turns on when the weights and the flat cache do not fit.</p>
       </div>
       <div class="card">
         <h3>Models fetched and checked</h3>
@@ -263,7 +264,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       </div>
       <div class="card">
         <h3>Structured output as a sampler guarantee</h3>
-        <p><code>--json</code> emits one valid JSON object. JSON-Schema, Responses <code>text.format</code> and tool parameter schemas compile to a streaming conformance validator covering objects, arrays, enums, unions, numeric bounds, string lengths and anchored patterns. Unsupported or ambiguous constraints fail at compile time rather than being silently weakened.</p>
+        <p><code>--json</code> emits one valid JSON object. JSON-Schema, Responses <code>text.format</code> and tool parameter schemas compile to a streaming conformance validator covering objects, arrays, enums, unions, numeric bounds, string lengths and anchored patterns. A <code>oneOf</code> or <code>anyOf</code> of objects told apart by a required <code>const</code>, as Pydantic and OpenAPI write a discriminated union, compiles with each object's own properties. Unsupported or ambiguous constraints fail at compile time rather than being silently weakened.</p>
       </div>
     </div>
   </div>
@@ -296,7 +297,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       <div class="card">
         <h3>Records a reviewer can check</h3>
         <p>A served turn is a receipt; receipts chain; <code>runner attest pack</code> gathers them with the model signature and the measured envelope into one evidence pack that <code>runner attest check-pack</code> verifies offline. <a href="/runner/reproducible-lora-training-receipts/">Receipts and the audit demo</a>.</p>
-        <p>Opt-in Metal tiled generations name their arithmetic in the receipt. Without a replayable decode schedule, the verifier reports <code>UNVERIFIABLE</code> instead of attempting solo replay.</p>
+        <p><code>--verify</code> replays served tool calls, turns cut by a stop sequence, turns under a reasoning budget or the loop guard, and turns the server cut on a cancel or a timeout. A record written before those fields stays <code>UNVERIFIABLE</code> and names the one it lacks; scripted replies and the reasoning channel's own sampling cannot be replayed. Opt-in Metal tiled generations name their arithmetic in the receipt. Without a replayable decode schedule, the verifier reports <code>UNVERIFIABLE</code> instead of attempting solo replay.</p>
       </div>
       <div class="card">
         <h3>Compatibility as a promise</h3>
@@ -331,13 +332,13 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
     </div>
     <div class="rows">
       <div><span>Backends</span><p>CPU (x86 AVX2/FMA, ARM NEON), CUDA (driver API, embedded PTX), Metal (embedded shaders, unified memory). Linux x86_64, macOS arm64, Windows x86_64 release binaries.</p></div>
-      <div><span>Architectures</span><p><code>llama</code>, <code>mistral</code>, <code>smollm</code>, <code>stablelm</code>, <code>qwen2</code>, <code>qwen3</code>, <code>qwen35</code> (Gated DeltaNet hybrid), <code>qwen4exp</code> (experimental; placement/context and reference limits in the manual), <code>qwen3moe</code>, <code>gemma3</code>, <code>gemma4</code> (dense, MoE, E-series, native tool protocol), <code>phi3</code>, <code>gpt-oss</code>, <code>apertus</code>, <code>afmoe</code>, <code>muse-glimmer</code>, <code>granite</code>, <code>granitehybrid</code> and <code>nemotron_h</code> (Mamba-2 hybrids), <code>nemotron_h_moe</code>. Admission is layout-specific: an unsupported tensor arrangement is refused even when the architecture ID is listed.</p></div>
+      <div><span>Architectures</span><p>30 labels: <code>llama</code>, <code>mistral</code>, <code>mistral3</code>, <code>smollm</code>, <code>stablelm</code>, <code>qwen2</code>, <code>qwen3</code>, <code>qwen35</code> and <code>qwen35moe</code> (Gated DeltaNet hybrids), <code>clef</code>, <code>qwen4exp</code> (experimental; placement/context and reference limits in the manual), <code>qwen3moe</code>, <code>deepseek2</code> (multi-head latent attention), <code>gemma3</code>, <code>gemma4</code> (dense, MoE, E-series, native tool protocol), <code>phi3</code>, <code>gpt-oss</code>, <code>apertus</code>, <code>afmoe</code>, <code>muse-glimmer</code>, <code>granite</code>, <code>granitehybrid</code> and <code>nemotron_h</code> (Mamba-2 hybrids), <code>nemotron_h_moe</code>, <code>lfm2</code>, <code>lfm2moe</code>, <code>mellum</code>, <code>spark2_5</code>, <code>k2-horizon</code> and <code>flint</code>. Admission is layout-specific: an unsupported tensor arrangement is refused even when the architecture ID is listed.</p></div>
       <div><span>Formats</span><p>GGUF v2/v3, mmap host weights, standard multi-part sets. k-quants and legacy quants, MXFP4, NVFP4 with its per-tensor scale companion, the IQ1 to IQ4 codebook families. CUDA serves all of them, NVFP4 with the export's per-tensor scale companion applied in the kernel and the IQ1 to IQ3 codebook types with device twins of the CPU decoders; Metal serves the IQ1 to IQ3 families with its own kernels too, and only NVFP4 stays on the CPU there. A backend without the kernel refuses loudly, naming the tensor and type.</p></div>
       <div><span>Serving</span><p>OpenAI Chat Completions, Responses, legacy completions, embeddings and rerank, Anthropic Messages, <code>/v1/decide</code>, SSE streaming, parallel slots, model swap and unload, prefix reuse, reasoning budgets and the loop guard, Prometheus <code>/metrics</code>, native tool protocols for gemma4, granite4, Apertus, Harmony, atem, Muse recipients, Qwen's JSON calls and the function-XML families (Ornith, Granite 4.2, Qwen 3.8, Qwen3-Coder), each rendered from the publisher's template and checked token for token. A GGUF's own sampling defaults are used when it carries them.</p></div>
-      <div><span>Training</span><p>LoRA through the quantized base on the CPU, and with the optional CUDA assist (<code>RUNNER_TRAIN_GPU=1</code>) that is the faster arm on a consumer card: Qwen2.5-7B Q4_K_M at 64.8 s per step against 76.5 on eight CPU threads, RTX 3070, with the adapter bytes gated identical either way. Adapters served with <code>--lora</code> on the CPU, CUDA and Metal; <code>--info adapter</code> says whether a model can take one before you train; <code>runner train --dpo</code> trains from preference pairs against the frozen base.</p></div>
+      <div><span>Training</span><p>LoRA through the quantized base with <code>runner train</code>, for dense models, the Qwen3.5 and Clef hybrids, and attention-only adapters on sparse-MoE models. With <code>--train-gpu</code> a step on a 7B model takes about ten seconds on a consumer NVIDIA GPU, 90 s on the CPU beside it, within rounding of a CPU run rather than its bytes. Adapters served with <code>--lora</code> on the CPU, CUDA and Metal; <code>--info adapter</code> says whether a model can take one before you train; <code>runner train --dpo</code> trains from preference pairs against the frozen base. <code>runner train --full</code> trains every dense projection of an F32 file into a new variant, on the CPU, and refuses what it does not cover yet (the GPU, DPO, checkpoints, recurrent layers, MoE expert banks); trained in float and then quantized to Q8_0, it scored the same on its one saturated task as training through a Q8_0 copy, so that route was dropped.</p></div>
       <div><span>Provenance</span><p>Replay-verifiable transcripts; Ed25519- or ML-DSA-44-signed, chained receipts with a one-exit-code verifier; evidence packs that gather receipts, the model signature and the measured envelope for offline review; OpenSSF Model Signing verification of the loaded GGUF by the key method; session images that suspend, resume and fork a generation.</p></div>
       <div><span>Desktop</span><p>macOS menu bar and Windows notification-area controller. Release binaries for Linux, macOS and Windows with a SHA256SUMS file, and a container image on GHCR.</p></div>
-      <div><span>Not implemented</span><p>Vulkan; TLS, auth and remote bind (loopback only, by design); remote or streamed GGUF parts; <code>qwen2moe</code>, <code>deepseek2</code>, <code>kimi</code> and MLA attention; Mamba and Jamba; MTP on GPU backends; OMS certificate and keyless signature methods; full GBNF; image and document inputs; hosted tools; response persistence; parallel tool calls on the Responses and Messages surfaces.</p></div>
+      <div><span>Not implemented</span><p>Vulkan; TLS, auth and remote bind (loopback only, by design); remote or streamed GGUF parts; <code>qwen2moe</code> and <code>kimi</code>; pure Mamba and Jamba; MTP drafting on Metal, on a partial CUDA split or with more than one predictor block; OMS certificate and keyless signature methods; full GBNF; image and document inputs; hosted tools; a response store that outlives the process; parallel tool calls on the Responses and Messages surfaces.</p></div>
     </div>
   </div>
 </section>
@@ -345,9 +346,9 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
 <section class="section tint" id="validated">
   <div class="wrap">
     <div class="section-head">
-      <p class="eyebrow">Support tiers</p>
-      <h2>Actively validated models</h2>
-      <p>Runner keeps loading every model the <a href="{{repo}}/blob/main/MANUAL.md#support-matrix">support matrix</a> admits. The files it re-checks on a release, with the version and date of each file's last run per backend, are listed once, at the top of <a href="{{repo}}/blob/main/docs/model-support.md#overview">the support roster</a>, which also holds every file's envelope and record; the <a href="{{repo}}#validated-models">README's section</a> says what the check is. A mark there says the file reproduced a pinned answer on that device and nothing about the quality of its answers.</p>
+      <p class="eyebrow">Model list</p>
+      <h2>One list of model files, each with when it last passed</h2>
+      <p>Runner keeps loading every model the <a href="{{repo}}/blob/main/MANUAL.md#support-matrix">support matrix</a> admits. The files it validates are one list, at the top of <a href="{{repo}}/blob/main/docs/model-support.md#overview">the support roster</a>: each is one greedy prompt compared byte for byte against a pinned output on the device the file names, with the Runner version and date it last passed, and every file's envelope and record. Nothing is re-tested on a schedule: validation runs happen in the project's larger validation runs and when a change needs one. A mark says the file reproduced a pinned answer on that device and nothing about the quality of its answers.</p>
     </div>
   </div>
 </section>
@@ -372,7 +373,7 @@ env_key = "RUNNER_API_KEY"</code></pre>
 <pre><code>export RUNNER_API_KEY=none
 ./runner -m model.gguf --serve -c 16384
 codex "list the files here"</code></pre>
-      <p class="small muted">Codex's system prompt and tools consume roughly 10k input tokens before the user request, so use at least a 16k context. Runner does not implement a response store; clients send history each turn.</p>
+      <p class="small muted">Codex's system prompt and tools consume roughly 10k input tokens before the user request, so use at least a 16k context. A Responses request is kept only when it asks with <code>store:true</code>, in memory and gone with the process; Codex sends its history each turn.</p>
     </div>
   </div>
 </section>

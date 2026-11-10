@@ -73,11 +73,11 @@ nav: runner
       <p><code>--merge-lora</code> folds an adapter into the base to produce a standalone GGUF any runtime can serve. Merging into Q8_0 or F16 keeps the 1.00, verified in stock llama.cpp. Merging into the 4-bit base returns the score to 0.69, the base's own number, because 98.55% of the weight bytes round back to the base's quantization grid. Perplexity still looks fine while it happens. A scale sweep shows survival is monotone in delta magnitude: erased through 2x, partial at 4x, full at 8x. Serve adapters with <code>--lora</code>, the exact form, or merge into 8-bit or better.</p>
     </div>
     <div class="grid-2 mt-2">
-      <figure class="fig">
+      <figure class="fig term">
         <img src="/assets/deterministic-training.gif" alt="Terminal recording: two independent training runs print the same adapter sha256" loading="lazy" width="800" height="450">
         <figcaption>Two independent runs, one sha256.</figcaption>
       </figure>
-      <figure class="fig">
+      <figure class="fig term">
         <img src="/assets/merge-erasure.gif" alt="Terminal recording: the 4-bit merge scores 0.69 like the base, the 8-bit merge scores 1.00" loading="lazy" width="800" height="450">
         <figcaption>The 4-bit merge scores like the base; the 8-bit merge keeps the fine-tune.</figcaption>
       </figure>
@@ -103,6 +103,10 @@ nav: runner
       <div class="card">
         <h3>Preferences and rewards</h3>
         <p>DPO from chosen and rejected answers, with the frozen base as the reference and no second model copy. A reinforcement loop that samples, scores and trains in rounds, and checks every round that the trainer scores the rollouts bit for bit as the server sampled them.</p>
+      </div>
+      <div class="card">
+        <h3>Full weights, when an adapter is not enough</h3>
+        <p><code>runner train --full</code> trains every dense projection of an F32 file into a new variant, the parent untouched, the same bytes for the same data and seed. It runs on the CPU and refuses what it does not cover yet: the GPU, DPO, checkpoints, recurrent layers and MoE expert banks. With <code>--train-kv-f32</code> its gradient matches PyTorch's float32 autograd to 6.9e-6 on Qwen3-0.6B. Train in float, then quantize the variant: training through a Q8_0 copy showed no measurable gain on its one task, so it was dropped.</p>
       </div>
       <div class="card">
         <h3>Serve one, or many</h3>
@@ -143,7 +147,7 @@ nav: runner
     <div class="sticky">
       <p class="eyebrow">Run it</p>
       <h2>Three commands, one binary.</h2>
-      <p>Serving an adapter runs on the CPU, on CUDA and on Metal: an offloaded block applies the delta from adapter weights held in device memory, and the CPU-versus-GPU gap with the adapter is no wider than without it. Training is hosted on the CPU. The backward's transposed matvecs run on CUDA behind <code>RUNNER_TRAIN_GPU=1</code>, which since its position grid is the faster arm on a consumer card and writes the same adapter bytes either way: Qwen2.5-7B Q4_K_M at 64.8 s/step against 76.5 on 8 CPU threads, RTX 3070, measured 2026-09-07. The forward pass is still CPU-hosted, so CUDA training end to end is open work. Adapters follow llama.cpp's naming convention in both directions: F16 adapters from <code>convert_lora_to_gguf</code> load, and the adapters Runner writes load in llama.cpp.</p>
+      <p>Serving an adapter runs on the CPU, on CUDA and on Metal: an offloaded block applies the delta from adapter weights held in device memory, and the CPU-versus-GPU gap with the adapter is no wider than without it. Training runs on the CPU, or with <code>--train-gpu</code> every weight product of a step runs on an NVIDIA GPU, and on Qwen3.5 and Clef the Gated DeltaNet recurrence too: a step on a 7B model takes about ten seconds on a consumer card against 90 s on the CPU beside it. A GPU run lands within rounding of a CPU run, not on its bytes, and the record names the device. Adapters follow llama.cpp's naming convention in both directions: F16 adapters from <code>convert_lora_to_gguf</code> load, and the adapters Runner writes load in llama.cpp.</p>
       <p>Where the numbers come from, with design, gates and failure modes: <a href="{{repo}}/blob/main/docs/adaptation-engine.md">docs/adaptation-engine.md</a>. The reproducibility scope, with what is and is not claimed: <a href="/runner/reproducible-lora-training-receipts/">receipts and the determinism scope</a>. The external boundary bank and its lane: <a href="{{repo}}/blob/main/docs/tool-choice-boundary-lane.md">docs/tool-choice-boundary-lane.md</a>.</p>
     </div>
   </div>

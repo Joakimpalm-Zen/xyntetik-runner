@@ -1,6 +1,6 @@
 <!--meta
 title: About
-description: Xyntetik is a Zenova AB program for running capable models on hardware you own. Runner is the released engine; Dojo is the released window for coding agents; Suite is the testing and evidence layer; Shade is the research lab. What each is, how they relate, and what is and is not released.
+description: Xyntetik is a Zenova AB program for running capable models on hardware you own. Runner is the released engine and Dojo the released window for coding agents. Suite, the desktop app around them, Bocka, the plan of record, and Lunta, the writing app, are private; Shade is the research lab. What each is, how they relate, and what is and is not released.
 path: /about/
 nav: about
 -->
@@ -8,7 +8,7 @@ nav: about
   <div class="wrap">
     <p class="eyebrow">About</p>
     <h1>Local models on hardware you own, with the evidence attached.</h1>
-    <p class="lede">Xyntetik is the program under which Zenova AB builds tooling for running capable language models on ordinary laptops, desktops and workstations, and for proving what those models did. Runner is its released engine and Dojo its released desktop app. Two more parts exist and are described here as what they are: one in private development, one a research lab.</p>
+    <p class="lede">Xyntetik is the program under which Zenova AB builds tooling for running capable language models on ordinary laptops, desktops and workstations, and for proving what those models did. Runner is its released engine and Dojo its released desktop app. Four more parts exist and are described here as what they are: three private apps, Suite, Bocka and Lunta, and a research lab, Shade.</p>
   </div>
 </section>
 
@@ -34,11 +34,11 @@ nav: about
       <h2>The engine is the easy half.</h2>
       <p>Serving tokens from a GGUF file is a solved problem. What is not solved is everything between a running model and work you would actually trust: choosing a model that fits the machine instead of one that swaps, giving an agent tools without opening a hole per tool, keeping a human in the loop without making them a bottleneck, proving a change works rather than reporting that it was written, and keeping a record of where every claim came from. Xyntetik is a program for that whole distance, built in the order the evidence allows. Dojo is the first piece of that distance to ship beside the engine: the window the agents and the local model are worked from.</p>
     </div>
-    <div class="triad quad">
+    <div class="triad six">
       <div class="card accent">
         <div class="icon mark-icon">{{mark:runner:44}}</div>
         <h3>Runner</h3>
-        <p><strong>Execution and inference runtime.</strong> A single binary in plain C that serves, verifies, scores, adapts and trains GGUF models on CPU, CUDA and Metal. Receipts, truncation-safe tool calls, LoRA through the served weights.</p>
+        <p><strong>Execution and inference runtime.</strong> A single binary in plain C that serves, verifies, scores, quantizes, adapts and trains GGUF models on CPU, CUDA and Metal. Receipts, truncation-safe tool calls, LoRA through the served weights.</p>
         <p class="status"><span class="pill pass">released, Apache 2.0</span></p>
         <p>{{version}}, {{release_date}}. Public repository, releases with checksums, every claim measured. The one part of Xyntetik whose job is to be understood by a stranger in sixty seconds.</p>
         <a class="more" href="/runner/">Runner &rarr;</a>
@@ -54,10 +54,24 @@ nav: about
       <div class="card">
         <div class="icon mark-icon">{{mark:suite:44}}</div>
         <h3>Suite</h3>
-        <p><strong>Testing, evaluation and evidence tooling.</strong> The layer that decides, gates, records and presents what the engine measures: model selection that respects the machine, tool sandboxing, human-in-the-loop boundaries, and an audit record of every claim.</p>
-        <p class="status"><span class="pill note">private, in development</span></p>
-        <p>Not released. Its product surface is being built as Runner's capabilities land, and it will get its own public section only when it has public artifacts to show.</p>
+        <p><strong>One desktop app around the engine.</strong> A Rust application for Windows, macOS and Linux in place of nine Python packages and seven local services: an agent, a memory vault, tasks, an approval queue, coding workflows and Runner control in one process. Nothing of it listens on the network; only the Runner does, on loopback.</p>
+        <p class="status"><span class="pill note">private, first release 0.1.0</span></p>
+        <p>The first release, 0.1.0, is private, for the owner and named testers, with installers that carry no publisher signature yet. 1.0.0 will be the public one, and Suite gets its own public section then.</p>
         <a class="more" href="/suite/">What Suite is for &rarr;</a>
+      </div>
+      <div class="card" id="bocka">
+        <div class="icon mark-icon">{{mark:bocka:44}}</div>
+        <h3>Bocka</h3>
+        <p><strong>One plan that a person and their coding agents both work from.</strong> A plan of record in a folder you choose, one small file per item, read and written by a macOS window and a <code>bocka</code> command. Agents claim items with a lease, ask the owner with the recommended answer first, and close an item only with its proof.</p>
+        <p class="status"><span class="pill note">private, in use</span></p>
+        <p>Private repository, no download. It holds the plan this program is built from, and gets a public section when it has a public repository.</p>
+      </div>
+      <div class="card" id="lunta">
+        <div class="icon mark-icon">{{mark:lunta:44}}</div>
+        <h3>Lunta</h3>
+        <p><strong>A writing app for long-form fiction.</strong> Novels and screenplays: an outline, chapters and scenes, a lore bible, the story's through-line tracked from scene to scene, and a co-writer.</p>
+        <p class="status"><span class="pill note">private, in development</span></p>
+        <p>Private repository. The design is an interactive mockup, and the app is being built from it: the core library and the project format first, then the command, then the Mac app.</p>
       </div>
       <div class="card">
         <div class="icon mark-icon">{{mark:lab:44}}</div>
@@ -81,7 +95,7 @@ nav: about
       <div class="flow">
         <div><strong>Shade finds a mechanism</strong>A study removes one attention sublayer from a 31B model and measures what it costs against the parent on a held-out split.</div>
         <div><strong>Runner productizes it</strong>The finding becomes <code>--remove-sublayer</code> in Runner, with a bit-identity gate against the study's zeroed form, and the artifact is published with its numbers.</div>
-        <div><strong>Suite will gate it</strong>The evidence layer is where a derivative like that gets admitted or refused for a given machine and workload, with the receipt kept. That layer is in development.</div>
+        <div><strong>Suite puts it in front of a person</strong>The desktop app finds and checks the Runner, offers the release it pins, and keeps an approval queue and an audit journal around what agents do. Admitting or refusing a derivative for one machine and workload, with the receipt kept, is not built yet.</div>
       </div>
       <p class="mt-2">Nothing crosses that pipeline without a measurement, and a measurement that goes the wrong way is published as a negative result rather than dropped. Two consequences follow. The audience arbitrates every ambiguous decision: what makes a local model usable on a modest machine wins over what is architecturally interesting. And correctness is a hard rule rather than a preference, because everything else relies on it; a faster wrong answer is a regression.</p>
     </div>
