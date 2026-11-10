@@ -173,6 +173,15 @@ static float *run(const char *path, int gpu_mode, int *n_vocab_out,
     if (kv && !strcmp(kv, "q8")) p.kv_q8 = true;
     else if (kv && !strcmp(kv, "fp4")) p.kv_fp4 = true;
     else if (kv && !strcmp(kv, "k8v4")) p.kv_split = true;
+    // GPU_ID_CPU_MOE=1: the device arm keeps every expert bank on the host
+    // (--cpu-moe), the shape a router with no device kernel runs in (R3.43a:
+    // nemotron_h_moe routes on the host while the trunk runs on the device).
+    // The CPU arm is unchanged.
+    const char *cm = getenv("GPU_ID_CPU_MOE");
+    if (gpu_mode != GPU_OFF && cm && *cm && strcmp(cm, "0") != 0) {
+        p.cpu_moe = true;
+        p.cpu_moe_layers = CPU_MOE_ALL;
+    }
 
     if (!model_load(&m, path, &p)) {
         fprintf(stderr, "cannot load %s\n", path);
