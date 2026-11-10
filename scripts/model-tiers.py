@@ -229,6 +229,11 @@ def _cell_errors(where, cell, classes):
         errs.append(f"{where}: ran")
     if not _text(cell.get("evidence")) or not _repo_path_exists(cell["evidence"]):
         errs.append(f"{where}: evidence {cell.get('evidence')!r} does not exist")
+    build = cell.get("build")
+    if build is not None and (not isinstance(build, dict)
+                              or not SHA256_RE.match(str(build.get("binary_sha256", "")))
+                              or not _text(build.get("compiler"))):
+        errs.append(f"{where}: build is the binary's sha256 and compiler, not {build!r}")
     return errs
 
 
@@ -647,6 +652,10 @@ def record(doc, row_id, res, devices):
         "ran": res.get("ran"),
         "evidence": (res.get("pin") or {}).get("path"),
     }
+    if res.get("build"):
+        # which binary wrote the output: a pin compared on a partial split
+        # holds only for the compiler that made it (R6.46)
+        row["backends"][backend]["build"] = dict(res["build"])
     info = res.get("adapt_info")
     if not isinstance(info, dict):
         raise SystemExit("the result carries no --info adapter answer")

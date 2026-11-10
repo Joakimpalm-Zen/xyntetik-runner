@@ -3502,7 +3502,7 @@
         "fp32_reference": "measured",
         "anchor": "empero-ai's files against the BF16 parent at bcc2dbe2 computed in float32 on the CPU (transformers 5.16.1, float32 arithmetic cast at use per decoder block, gold-logits.py, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files): Q6_K 0.0336 mean KLD / 91.7% top-1 / 98.6% margin-qualified; Q5_K_M 0.0508 / 89.3% / 95.5%; Q4_K_M 0.1278 / 85.0% / 94.6%. Tokenizer 0/721 corpus strings and 0/247,091 vocabulary entries against the publisher's tokenizer.json, which uses the qwen2 split (R4.27.5); template conformance 23/23 in text and tokens against the file's own template, which is Qwen3.6-35B-A3B's byte for byte. Record: docs/compat-reports/empero-qwen3.8-35b-a3b-distill-2026-11-06/README.md.",
         "context": 4096,
-        "limitations": "CPU and CUDA for this file (29.2 GB: on a CUDA MIG slice, 1g.24gb, sm_120, the fitted split places 34 of 40 blocks on the device); Metal runs qwen35moe on toy models only. Text only: the vision projector empero-ai ships beside it is not loaded. A finetune, not a Qwen release: empero-ai's off-policy distillation (SFT on teacher traces) of Qwen3.6-35B-A3B; the name is the publisher's. Its tokenizer reads with the qwen2 split by R4.27.5's rule, keyed on header fields empero-ai's converter wrote (general.name \"Ours\", the empero-ai tag, the base model's URL); a requant that rewrites them reads the qwen35 split. The publisher's Q4_K_M (0.128) and Q5_K_M (0.051) miss the bar; its Q4_K_M reads 2.7x the base's Q4_K_M by the same method (bartowski's, 0.0475), not examined further. A system message after the conversation has started is refused, as the template refuses it. Licence: apache-2.0.",
+        "limitations": "CPU and CUDA for this file (29.2 GB: on a CUDA MIG slice, 1g.24gb, sm_120, the fitted split places 34 of 40 blocks on the device). A partial split runs some layers on the CPU, where compiler codegen changes the last bits, and that flips a greedy choice only where the prompt meets a near-tie. Metal runs qwen35moe on toy models only. Text only: the vision projector empero-ai ships beside it is not loaded. A finetune, not a Qwen release: empero-ai's off-policy distillation (SFT on teacher traces) of Qwen3.6-35B-A3B; the name is the publisher's. Its tokenizer reads with the qwen2 split by R4.27.5's rule, keyed on header fields empero-ai's converter wrote (general.name \"Ours\", the empero-ai tag, the base model's URL); a requant that rewrites them reads the qwen35 split. The publisher's Q4_K_M (0.128) and Q5_K_M (0.051) miss the bar; its Q4_K_M reads 2.7x the base's Q4_K_M by the same method (bartowski's, 0.0475), not examined further. A system message after the conversation has started is refused, as the template refuses it. Licence: apache-2.0.",
         "evidence": [
           "docs/compat-reports/empero-qwen3.8-35b-a3b-distill-2026-11-06/README.md",
           "tests/compatibility/coverage.json"
@@ -3540,22 +3540,26 @@
         },
         "cuda": {
           "kind": "gate",
-          "runner_version": "1.14.0",
-          "date": "2026-11-06",
+          "runner_version": "1.16.0",
+          "date": "2026-11-10",
           "device_class": "linux-x86_64-cuda",
           "result": "pass",
-          "commit": "bae5907817e428b2c3b1bdc931c3a4ccd4402653",
+          "commit": "aa752fcac5e691b36e96a0c212bc32b634f3cc51",
           "caps": {
-            "version": "1.14.0",
+            "version": "1.16.0",
             "os": "linux",
             "arch": "x86_64",
             "cpu_cores": 40,
             "gpu_backend": "cuda",
             "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
           },
-          "output_sha256": "4ac464a064329c34fd324bd617ff5db8bea657b825fc921320ffce1b6d666f93",
+          "output_sha256": "f3a25e63edc8ebf782ae5bb9ede7de145de7761ed2bcc1cb407cd7c1a9e384e2",
           "ran": "runner -m Qwen3.8-35B-A3B-Q6_K.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cuda.txt"
+          "evidence": "tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "abf79ae404a003df20009a74c6012a818861c380ad7a6f475d4129e78b682b5a",
+            "compiler": "13.3.0"
+          }
         }
       },
       "transitions": [
@@ -3581,8 +3585,8 @@
           "supported": true,
           "reason": null
         },
-        "runner_version": "1.14.0",
-        "date": "2026-11-06"
+        "runner_version": "1.16.0",
+        "date": "2026-11-10"
       }
     },
     {

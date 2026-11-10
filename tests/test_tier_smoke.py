@@ -146,6 +146,28 @@ def test_record_writes_the_cell_and_the_lora_answer(world):
     assert row["backends"]["cpu"] is None
 
 
+def test_a_recorded_cell_names_the_build_that_wrote_it(world):
+    """A partial split's CPU layers move with the compiler, so the cell
+    carries the serving binary's sha256 and compiler (R6.46)."""
+    assert smoke(world, "--backend", "metal", "--pin").returncode == 0
+    r = smoke(world, "--backend", "metal", "--record")
+    assert r.returncode == 0, r.stdout
+    cell = mt.load(world["roster"])["rows"][0]["backends"]["metal"]
+    assert cell["build"] == {"binary_sha256": "ab" * 32, "compiler": "13.3.0"}
+    assert result(world)["build"] == cell["build"]
+
+
+def test_a_runner_without_the_provenance_route_records_no_build(world):
+    env = {"FAKE_RUNNER_NO_PROVENANCE": "1"}
+    assert smoke(world, "--backend", "metal", "--pin", env=env).returncode == 0
+    r = smoke(world, "--backend", "metal", "--record", env=env)
+    assert r.returncode == 0, r.stdout
+    assert result(world)["build"] is None
+    assert "build" not in mt.load(world["roster"])["rows"][0]["backends"]["metal"]
+    man = json.loads(world["manifest"].read_text(encoding="utf-8"))
+    assert "build" not in man["rows"]["toy-q8_0"]["pins"]["macos-arm64-metal/metal"]["pinned"]
+
+
 def test_a_cpu_run_is_pinned_and_recorded_on_its_own(world):
     """A backend's pin is its own: the CPU never inherits the Metal pin."""
     assert smoke(world, "--backend", "metal", "--pin").returncode == 0
@@ -202,6 +224,8 @@ def test_the_pin_manifest_records_what_was_pinned(world):
     assert pin["sha256"] == hashlib.sha256(data).hexdigest()
     assert pin["bytes"] == len(data)
     assert pin["pinned"]["runner_version"] == "9.8.7"
+    # the binary that wrote the pin, as it states itself (R6.46)
+    assert pin["pinned"]["build"] == {"binary_sha256": "ab" * 32, "compiler": "13.3.0"}
 
 
 def manifest_of(world):

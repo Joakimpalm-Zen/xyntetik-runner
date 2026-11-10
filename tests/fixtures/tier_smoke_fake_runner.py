@@ -13,7 +13,8 @@ FAKE_RUNNER_FALLBACK=1 makes a GPU run decline the model and run on the
 CPU, as a Metal build does for a layout it has no kernel for.
 FAKE_RUNNER_REQUEST_LOG names a file each chat request body is appended to.
 FAKE_RUNNER_CAPS names a JSON file answered for --caps instead of the
-default Metal host's document.
+default Metal host's document. GET /v1/runner/provenance answers BUILD, or
+404 with FAKE_RUNNER_NO_PROVENANCE=1, as a runner older than the route does.
 """
 
 import json
@@ -41,6 +42,8 @@ class LoopbackServer(HTTPServer):
 argv = sys.argv[1:]
 DEFAULT = ("Here they are, in order from the Sun:\n\n1. Mercury: the smallest planet "
            "and the closest to the Sun.\n2. Venus: the hottest planet.")
+# the real binary hashes itself and names its compiler (src/provenance.c)
+BUILD = {"binary_sha256": "ab" * 32, "compiler": "13.3.0"}
 
 if "--caps" in argv:
     if os.environ.get("FAKE_RUNNER_CAPS"):
@@ -88,6 +91,9 @@ if "--serve" in argv:
         def do_GET(self):
             if self.path == "/health":
                 self._send(200, {"status": "ok"})
+            elif (self.path == "/v1/runner/provenance"
+                  and os.environ.get("FAKE_RUNNER_NO_PROVENANCE") != "1"):
+                self._send(200, {"object": "runner.provenance", "build": BUILD})
             else:
                 self._send(404, {"error": "not found"})
 
