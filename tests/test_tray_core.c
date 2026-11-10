@@ -3,6 +3,7 @@
 // headless (links the stub backend on every platform). Re-invokes ITSELF as
 // the managed child: spawn_managed launches self_exe with --serve args, and
 // child mode writes a marker file with its pid+argv then idles until killed.
+#include "compat.h"
 #include "instances.h"
 #include "tray.h"
 
@@ -17,6 +18,7 @@
 #include <windows.h>
 #include <direct.h>
 #include <process.h>
+#include <sys/stat.h>
 #include <sys/utime.h>
 #define getpid _getpid
 #define setenv_compat(k, v) _putenv_s(k, v)
@@ -80,6 +82,26 @@ static bool make_big(const char *path) {
     close(fd);
     return ok;
 #endif
+}
+
+// Remove `path` and everything below it, not following links. True when it
+// is gone. Each run's home was left in TEMP before (R10.24).
+static bool remove_tree(const char *path) {
+    plat_stat_t st;
+    bool link = false;
+    if (plat_stat_nofollow(path, &st, &link) != 0) return true;   // already gone
+    if (link || !S_ISDIR(st.st_mode)) return plat_remove(path) == 0;
+    plat_dir *d = plat_opendir(path);
+    if (d) {
+        for (const char *name; (name = plat_readdir(d)) != NULL; ) {
+            if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
+            char child[1024];
+            snprintf(child, sizeof child, "%s/%s", path, name);
+            remove_tree(child);
+        }
+        plat_closedir(d);
+    }
+    return plat_rmdir(path) == 0;
 }
 
 static void marker_path(char *out, size_t cap) {
@@ -260,6 +282,25 @@ int main(int argc, char **argv) {
         for (int i = 1; i < argc; i++) fprintf(f, "%s\n", argv[i]);
         fclose(f);
         msleep(30000);  // idle until the controller stops us
+        return 0;
+    }
+    // ---- tray mode: tray_ensure_running() re-execs self with --tray, and
+    // self is this test, not a tray. Leave a marker for step 5 and stop.
+    // Running the suite here instead reached step 5 again, which spawned the
+    // next --tray: a detached chain that outlived the test (R10.24).
+    if (argc > 1 && strcmp(argv[1], "--tray") == 0) {
+        const char *home = getenv("XYNTETIK_TEST_HOME");
+        if (!home) {
+            fprintf(stderr, "test_tray_core: --tray is the tray re-exec target, "
+                            "not a suite option\n");
+            return 2;
+        }
+        char tp[600];
+        snprintf(tp, sizeof tp, "%s/tray-spawned.txt", home);
+        FILE *f = fopen(tp, "wb");
+        if (!f) return 2;
+        fprintf(f, "%ld\n", (long)getpid());
+        fclose(f);
         return 0;
     }
 
@@ -679,23 +720,42 @@ int main(int argc, char **argv) {
     // licence to spawn.
     //
     // Only the already-registered branch is exercised, deliberately. The spawn
-    // branch re-execs argv[0] with --tray, and argv[0] here is this test — it
-    // would recurse into the suite rather than start a tray. The spawn path is
-    // covered by the manual checks recorded in the commit.
-    instances_register("tray", 0, NULL, NULL, 0);
+    // branch re-execs argv[0] with --tray, and argv[0] here is this test: its
+    // --tray mode (main) only drops a marker and exits, so a spawn is seen
+    // here as a failure instead of a detached copy of the suite that spawns
+    // the next one. The record count alone cannot see a spawn: the copy
+    // registers nothing in this registry. The spawn path is covered by the
+    // manual checks recorded in the commit.
+    char tray_marker[600];
+    snprintf(tray_marker, sizeof tray_marker, "%s/tray-spawned.txt", g_home);
+    remove(tray_marker);
+    CHECK(instances_register("tray", 0, NULL, NULL, 0),
+          "tray record registered for the idempotence check");
     int before = 0;
     instances_list_free(instances_list(&before), before);
     tray_ensure_running();
-    msleep(300);
+    bool tray_spawned = false;
+    for (int w = 0; w < 20 && !tray_spawned; w++) {
+        msleep(50);
+        FILE *tm = fopen(tray_marker, "rb");
+        if (tm) { fclose(tm); tray_spawned = true; }
+    }
     int after = 0;
     instances_list_free(instances_list(&after), after);
-    CHECK(after == before, "no second tray spawned when one is already registered");
+    CHECK(after == before, "no second tray record when one is already registered");
+    CHECK(!tray_spawned, "no tray spawned when one is already registered");
     instances_unregister();
+    remove(tray_marker);
 
     remove(foreign);
     remove(mp);
     remove(cfg);
     remove(mdl);
+
+    // the home itself: a detached sweep helper may hold its lock briefly
+    bool home_gone = false;
+    for (int w = 0; w < 40 && !(home_gone = remove_tree(g_home)); w++) msleep(50);
+    CHECK(home_gone, "test home removed");
 
     if (fails) { fprintf(stderr, "test_tray_core: %d FAILURES\n", fails); return 1; }
     printf("tray core tests ok\n");
