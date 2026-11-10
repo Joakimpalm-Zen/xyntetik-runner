@@ -251,7 +251,8 @@ static int32_t *json_token_ids(jv *arr, int *n_out) {
 // DIVERGED verdict would blame on the model or the build. A CLI record made
 // under --json, --json-schema or --ignore-eos replays when the verifier is
 // given the same constraint (the schema matched by digest), as a served one
-// does (D4b), and a served stop sequence replays (R1.1.3.2); anything else a
+// does (D4b), and a served stop sequence, reasoning budget or loop guard
+// replays (R1.1.3.2, R1.1.3.3); anything else a
 // served turn was shaped by is refused; and a constraint the
 // verifier adds that the record does not name is refused too. False with the
 // reason in `why`.
@@ -279,9 +280,10 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
         // the CLI flag does, over the prompt tokens the record carries. What
         // the replay cannot rebuild is refused by name: a tool envelope
         // (declarations, choice and the native or generic grammar a request
-        // builds), a reasoning budget or the loop guard. Stop sequences
-        // replay (R1.1.3.2): the record carries them, and run_verify_replay
-        // matches them where the server did.
+        // builds), the reasoning channel's own sampling, a scripted reply.
+        // Stop sequences (R1.1.3.2), a reasoning budget and the loop guard
+        // (R1.1.3.3) replay: the record carries them, and run_verify_replay
+        // runs them as the server did.
         // Records written before D4a name what shaped them only in shaped_by.
         jv *list = cons ? cons : jv_get(serve, "shaped_by");
         char names[256] = "";
@@ -294,7 +296,9 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
             if (cons && (!strcmp(kind, "json_schema") ||
                          !strcmp(kind, "json_mode") ||
                          !strcmp(kind, "ignore_eos") ||
-                         !strcmp(kind, "stop")))
+                         !strcmp(kind, "stop") ||
+                         !strcmp(kind, "reasoning_budget") ||
+                         !strcmp(kind, "loop_guard")))
                 rebuilt++;
             int w = snprintf(names + k, sizeof names - k, "%s%s", n ? ", " : "", kind);
             if (w > 0 && (size_t)w < sizeof names - k) k += (size_t)w;
@@ -303,8 +307,8 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
         if (n > rebuilt) {
             snprintf(why, cap, "the served output was shaped beyond the sampler "
                      "by %s, which a replay does not rebuild (a served JSON "
-                     "schema, JSON mode, ignore_eos or stop sequence does "
-                     "replay), so a replay "
+                     "schema, JSON mode, ignore_eos, stop sequence, reasoning "
+                     "budget or loop guard does replay), so a replay "
                      "could only disagree with the record", names);
             return false;
         }
@@ -319,7 +323,9 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
         }
         if (!strcmp(kind, "json_mode")) rj = true;
         else if (!strcmp(kind, "ignore_eos")) re = true;
-        else if (serve && !strcmp(kind, "stop")) continue;  // run_verify_replay
+        else if (serve && (!strcmp(kind, "stop") || !strcmp(kind, "reasoning_budget") ||
+                           !strcmp(kind, "loop_guard")))
+            continue;  // run_verify_replay
         else if (!strcmp(kind, "json_schema")) {
             rs = jv_str(jv_get(cons->items[i], "sha256"), "");
             if (strlen(rs) != 64) {
@@ -6292,6 +6298,91 @@ static bool replay_stop_read(jv *rec, const model_t *m, replay_stop *r,
     return true;
 }
 
+// R1.1.3.3: a served turn under a reasoning budget or the loop guard,
+// replayed. Both end a reasoning turn by a forced close (think_arm_close):
+// the request's sentence as tokens, then the close token, written into the
+// turn without sampling. The record carries the budget, the sentence's ids
+// and the guard's settings; installed on the replay's engine as
+// completion_apply installs them, the engine closes the turn where the
+// server's did, or the replay diverges. False with the reason in why.
+static bool record_whole(jv *v, int lo, int hi, int *out) {
+    double d = jv_num(v, -1);
+    if (!v || v->type != J_NUM || d < lo || d > hi || d != (double)(int)d) return false;
+    *out = (int)d;
+    return true;
+}
+
+static bool replay_think_read(jv *rec, engine *e, char *why, size_t cap) {
+    jv *cons = jv_get(rec, "constraints");
+    jv *budget = NULL, *guard = NULL;
+    for (int i = 0; cons && cons->type == J_ARR && i < cons->n; i++) {
+        const char *kind = jv_str(jv_get(cons->items[i], "kind"), "");
+        if (!strcmp(kind, "reasoning_budget")) budget = cons->items[i];
+        else if (!strcmp(kind, "loop_guard")) guard = cons->items[i];
+    }
+    if (!budget && !guard) return true;
+    const model_t *m = e->m;
+    if (budget) {
+        int tokens;
+        jv *msg = jv_get(budget, "message_tokens");
+        if (!record_whole(jv_get(budget, "tokens"), 1, INT_MAX, &tokens) ||
+            (msg && (msg->type != J_ARR || msg->n > THINK_FORCE_MAX - 1))) {
+            snprintf(why, cap, "malformed reasoning_budget constraint");
+            return false;
+        }
+        if (!msg) {
+            snprintf(why, cap, "the output ran under a reasoning budget, and the "
+                     "record does not carry the sentence its forced close writes "
+                     "(message_tokens, written since R1.1.3.3), so a replay cannot "
+                     "close the turn as the server did");
+            return false;
+        }
+        if (e->think_end_id < 0) {
+            snprintf(why, cap, "the record ran under a reasoning budget, which "
+                     "needs a model whose reasoning turn ends on a single token; "
+                     "this model declares none");
+            return false;
+        }
+        for (int i = 0; i < msg->n; i++)
+            if (!record_token(msg->items[i], m->n_vocab, &e->think_msg[i])) {
+                snprintf(why, cap, "malformed reasoning_budget constraint");
+                return false;
+            }
+        e->think_budget = tokens;
+        e->think_msg_n = msg->n;
+    }
+    if (guard) {
+        int span, reps, win, closes;
+        jv *all = jv_get(guard, "everywhere");
+        if (!jv_get(guard, "span")) {
+            snprintf(why, cap, "the output ran under the loop guard, and the record "
+                     "does not carry its settings (span, repeats, window, max_closes, "
+                     "everywhere, written since R1.1.3.3), so a replay cannot run it");
+            return false;
+        }
+        if (!record_whole(jv_get(guard, "span"), 2, 128, &span) ||
+            !record_whole(jv_get(guard, "repeats"), 2, 16, &reps) ||
+            !record_whole(jv_get(guard, "window"), 16, 4096, &win) ||
+            !record_whole(jv_get(guard, "max_closes"), 1, 16, &closes) ||
+            !all || all->type != J_BOOL || span * reps > win ||
+            (!all->b && (!m->think_open || !m->think_close))) {
+            snprintf(why, cap, "malformed loop_guard constraint");
+            return false;
+        }
+        e->loop_guard = true;
+        e->loop_all = all->b;
+        e->loop_span = span;
+        e->loop_repeats = reps;
+        e->loop_window = win;
+        e->loop_max_closes = closes;
+    }
+    // a raw completion can resume an open reasoning turn; the server primes
+    // the budget and the guard from the prompt text (engine_think_prime)
+    e->think_on = false;
+    engine_think_prime(e, jv_str(jv_get(jv_get(rec, "prompt"), "text"), NULL));
+    return true;
+}
+
 static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const char *load_path) {
     jv *vm = jv_get(vr->rec, "model"), *va = jv_get(vr->rec, "adapter");
     jv *vprof = jv_get(vr->rec, "profile");
@@ -6420,6 +6511,15 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     // completion.c). Without either the replay held the grammar from the first
     // token, or kept the payload only, and a served schema turn on such a
     // model replayed DIVERGED at its first token or byte.
+    {
+        char why[512];
+        if (!replay_think_read(vr->rec, &rt->e, why, sizeof why)) {
+            fprintf(stderr, "UNVERIFIABLE: %s\n", why);
+            think_free(&rs.ts);
+            jv_free(vr->rec);
+            return 3;
+        }
+    }
     jv *vserve = jv_get(vr->rec, "serve");
     bool vchat = strcmp(jv_str(jv_get(jv_get(vr->rec, "config"), "template"), "raw"), "raw") != 0;
     if (vserve && vchat && rt->m.think_open) rt->e.emit_think_prelude = true;
