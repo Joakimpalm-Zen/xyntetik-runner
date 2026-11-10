@@ -4021,7 +4021,11 @@ whose `mixer` matched is its FFN), exit 1; bit-exact on hashes between two
 traces of one build, within `--rtol` on values, which a comparison across
 runtimes needs. `scripts/act-trace-hf.py` writes the same records from a
 transformers model in float32, for a comparison against the publisher's
-reference.
+reference. Its `mixer` point is the input of the norm in front of the FFN,
+picked by the block's norm layout: `pre_feedforward_layernorm` on Gemma's
+sandwich-norm blocks (whose `post_attention_layernorm` normalizes the attention
+output before the add), `post_attention_layernorm` on pre-norm blocks, and none
+on a post-norm block, where no norm reads that residual.
 
 `RUNNER_MOE_REPLAY=routes.jsonl` reads a `RUNNER_MOE_TRACE` file from an
 earlier run and makes the CPU routers choose, at each recorded position and

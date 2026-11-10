@@ -15,15 +15,15 @@ or a BOS difference shows up as an embd mismatch at position 0). Recorded at
 each listed position, with values:
 
   embd    the first decoder block's input;
-  mixer   the input of each block's FFN-side norm (post_attention_layernorm,
-          pre_feedforward_layernorm or ffn_norm): the residual after the
-          mixer branch was added, which is what Runner's mixer point is;
+  mixer   the residual after the mixer branch was added, which is what
+          Runner's mixer point is: the input of the norm in front of the
+          FFN, whose name depends on the block's layout (mixer_norm);
   resid   each block's output;
   logits  the head's output.
 
 MoE selections (Runner's route point) are model-specific in transformers and
 are not written; act-trace-diff compares the points both sides have. A block
-with none of the three norm names gets no mixer point.
+whose layout has no such norm gets no mixer point.
 """
 import argparse
 import importlib.util
@@ -33,7 +33,34 @@ import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FFN_NORMS = ("post_attention_layernorm", "pre_feedforward_layernorm", "ffn_norm")
+
+
+def mixer_norm(block):
+    """The module whose INPUT is Runner's mixer point (the residual after the
+    mixer branch was added), or None. By the block's norm layout, in
+    transformers' names:
+
+      sandwich norms (Gemma 2, 3 and 4): post_attention_layernorm normalizes
+        the attention OUTPUT before the residual add (modeling_gemma4.py), so
+        its input is the branch; the FFN's norm is pre_feedforward_layernorm;
+      pre-norm (Llama, Qwen, Granite and most others): post_attention_layernorm
+        is the FFN's norm;
+      ffn_norm: the FFN's norm under that name;
+      post-norm (OLMo 2: post_feedforward_layernorm and no pre-FFN norm): the
+        FFN reads the residual directly and no norm has it as input, so there
+        is no point to hook (R6.38).
+    """
+    def has(name):
+        return getattr(block, name, None) is not None
+    if has("pre_feedforward_layernorm"):
+        return block.pre_feedforward_layernorm
+    if has("post_feedforward_layernorm"):
+        return None
+    for name in ("post_attention_layernorm", "ffn_norm"):
+        if has(name):
+            return getattr(block, name)
+    return None
+
 
 
 def gold():
@@ -104,7 +131,7 @@ def main():
     blocks[0].register_forward_pre_hook(pre_block, with_kwargs=True)
     for l, blk in enumerate(blocks):
         blk.register_forward_hook(lambda mod, a, out, l=l: keep(l, "resid", first(out)))
-        norm = next((getattr(blk, n) for n in FFN_NORMS if getattr(blk, n, None) is not None), None)
+        norm = mixer_norm(blk)
         if norm is not None:
             norm.register_forward_pre_hook(lambda mod, a, l=l: keep(l, "mixer", a[0]))
     with torch.no_grad():
