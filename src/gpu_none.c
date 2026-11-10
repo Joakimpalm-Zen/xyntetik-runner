@@ -125,6 +125,12 @@ void gpu_disable(model_t *m) {
     m->gpu = NULL;
 }
 
+bool gpu_os_vidmem(const model_t *m, uint64_t *budget, uint64_t *usage,
+                   uint64_t *nonlocal) {
+    (void)m; (void)budget; (void)usage; (void)nonlocal;
+    return false;
+}
+
 bool gpu_recurrent_download(model_t *m) { (void)m; return true; }
 bool gpu_recurrent_upload(model_t *m) { (void)m; return true; }
 bool gpu_recurrent_rollback_mark(model_t *m) { (void)m; return false; }

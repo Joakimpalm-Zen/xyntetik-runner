@@ -5551,14 +5551,20 @@ done: ;
     // A paging note only when there was paging. Silence is the normal case and
     // a per-request "0 page-ins" would be noise, but when the weights have been
     // evicted this line is the only thing that says the time went to the disk
-    // rather than to the model.
+    // rather than to the model. With every weight on a discrete device it
+    // cannot be the weights, so the note says only what it knows, and where
+    // the OS publishes a video memory budget the figures ride along: an
+    // eviction to system memory reads as such in the same line (R3.49). Both
+    // are looked up only once the count is over the floor.
     uint64_t faults = plat_major_faults() - faults_at_start;
-    char paging[80];
+    char paging[192];
     paging[0] = '\0';
-    if (model_paging_note_wanted(faults, prep.n_prompt + n_gen))
-        snprintf(paging, sizeof(paging),
-                 " [%llu page-ins — weights not resident]",
-                 (unsigned long long)faults);
+    if (model_paging_note_wanted(faults, prep.n_prompt + n_gen)) {
+        model_vidmem vm = {0};
+        vm.known = gpu_os_vidmem(m, &vm.budget, &vm.usage, &vm.nonlocal);
+        model_paging_note(paging, sizeof(paging), faults, prep.n_prompt + n_gen,
+                          model_weights_on_device(m), &vm);
+    }
     fprintf(stderr, "[slot %d] %s: %d prompt (%d cached) + %d gen tok (%.1f tok/s)%s%s%s\n",
             s->id, g.id, prep.n_prompt, keep, n_gen,
             n_gen / (gtime > 0 ? gtime : 1e-9),

@@ -926,6 +926,15 @@ bool gpu_unified_memory(void) {
     return cu_dev_integrated(dev);
 }
 
+bool gpu_os_vidmem(const model_t *m, uint64_t *budget, uint64_t *usage,
+                   uint64_t *nonlocal) {
+    const gpu_t *g = m ? m->gpu : NULL;
+    if (!g || !g->sw || !cu.DeviceGetLuid) return false;
+    char luid[8]; unsigned mask = 0;
+    if (cu.DeviceGetLuid(luid, &mask, g->sw->dev) != 0) return false;
+    return plat_gpu_os_vidmem((const unsigned char *)luid, budget, usage, nonlocal);
+}
+
 // The device's compute capability, "major.minor": which kernels a default
 // run takes depends on it (TC2 runs its compute_80 kernels from 8.0), so
 // --caps reports it beside the build's minimum

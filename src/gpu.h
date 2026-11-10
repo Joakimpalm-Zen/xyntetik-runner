@@ -22,6 +22,12 @@ bool   gpu_mem_info(size_t *free_bytes, size_t *total_bytes);
 // integrated CUDA devices like the DGX Spark's GB10). A caller that budgets
 // "RAM plus VRAM" on such a machine counts the same bytes twice.
 bool   gpu_unified_memory(void);
+// This loaded model's device as WDDM sees it now: the process's video memory
+// budget and current usage on the card, and the non-local (shared, system
+// memory) usage. For the per-request paging note, so an eviction names
+// itself. false without a loaded device or where the OS publishes none.
+bool   gpu_os_vidmem(const model_t *m, uint64_t *budget, uint64_t *usage,
+                     uint64_t *nonlocal);
 // The offload budget a load would split against right now, computed the way
 // the CUDA loader computes it (driver free view, bounded by the OS video
 // memory budget and --reserve-vram) with the loader's headroom beside it.
