@@ -44,8 +44,8 @@ nav: runner
   <div class="wrap split">
     <div class="sticky">
       <p class="eyebrow">Measured</p>
-      <h2>No better than the base off its task. 0.69 to 1.00 on it.</h2>
-      <p>Off its training distribution the adapter does not help: on 274 hand-written prompts unlike its training, over 23 tools with overlapping names, the base made 211 exact calls through the chat API and the adapter 200 (<a href="{{repo}}/blob/main/evals/tooluse-shifted/README.md#set-v2-2026-09-24-the-redesign-and-can-the-instrument-fail">the shifted set</a>, 2026-09-24). On its own task it went from 0.69 to 1.00. Measured 2026-08-22 on <a href="{{hf}}/Qwen3-4B-Runner-ToolUse-Q4_K_M">Qwen3-4B-Runner-ToolUse-Q4_K_M</a>, a public artifact whose card carries the sidecar and the training command. The claim scope is one base and one task. The 8B and 14B ladder is open work, and these numbers are not a promise about other families until they are measured.</p>
+      <h2>0.69 to 1.00, on a file you can download.</h2>
+      <p>Measured 2026-08-22 on <a href="{{hf}}/Qwen3-4B-Runner-ToolUse-Q4_K_M">Qwen3-4B-Runner-ToolUse-Q4_K_M</a>, a public artifact whose card carries the sidecar and the training command. The claim scope is one base and one task. The 8B and 14B ladder is open work, and these numbers are not a promise about other families until they are measured. Off its training distribution the adapter does not help: on 274 hand-written prompts unlike its training, over 23 tools with overlapping names, the base made 211 exact calls through the chat API and the adapter 200 (<a href="{{repo}}/blob/main/evals/tooluse-shifted/README.md#set-v2-2026-09-24-the-redesign-and-can-the-instrument-fail">the shifted set</a>, 2026-09-24).</p>
     </div>
     <div>
       <figure class="fig">
@@ -55,8 +55,8 @@ nav: runner
       <div class="rows mt-2">
         <div><span>base</span><p>Qwen3-4B Q4_K_M, the frozen 4-bit serving weights</p></div>
         <div><span>training path</span><p>directly through the quantized inference artifact, CPU or CUDA-assisted</p></div>
-        <div><span>off its training distribution</span><p>274 hand-written prompts over 23 tools: 211 exact calls for the base, 200 with the adapter through the chat API, base favoured; 170 and 176 on the training template, inside noise. The adapter helps only where no tool fits (25 and 30 of 34)</p></div>
         <div><span>held-out tool calling, exact call</span><p>0.69 before, 1.00 after</p></div>
+        <div><span>off its training distribution</span><p>274 hand-written prompts over 23 tools: 211 exact calls for the base, 200 with the adapter through the chat API, base favoured; 170 and 176 on the training template, inside noise. The adapter helps only where no tool fits (25 and 30 of 34)</p></div>
         <div><span>reproducibility</span><p>two independent runs, same sha256 on the adapter file</p></div>
         <div><span>precision study</span><p>adapters trained through BF16 and Q8_0: cosine 0.9998; through Q4_K_M: 0.9926. A measurably different object, capability-equivalent on this task's supervised decisions; on the gold-completion region they coincide to about 0.0003 nat. Not equivalent everywhere: an external 36-prompt boundary bank finds 3 of 36 prompts where the three adapters choose different tools, and the Q4-trained adapter carries the widest margins on that bank</p></div>
         <div><span>neutral-corpus drift</span><p>nll per token 4.063 to 4.026: the adapter leaves unrelated text alone</p></div>

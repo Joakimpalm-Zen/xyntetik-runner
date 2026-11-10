@@ -47,8 +47,8 @@ nav: evidence
       </div>
       <div>
         <div class="value">0.69 to 1.00</div>
-        <div class="label">held-out tool-call score on its own task after <a href="#training">training through the 4-bit file</a> it serves; two runs wrote the same adapter bytes. Off that task the adapter does not help: on 274 unlike prompts the base made 211 exact calls and the adapter 200</div>
-        <span class="measured">Qwen3-4B Q4_K_M, reproduced by an outside tester on a Tesla T4. Own task 2026-08-22; shifted set 2026-09-24.</span>
+        <div class="label">held-out tool-call score after <a href="#training">training through the 4-bit file</a> it serves; two runs wrote the same adapter bytes</div>
+        <span class="measured">Qwen3-4B Q4_K_M, reproduced by an outside tester on a Tesla T4. 2026-08-22.</span>
       </div>
     </div>
   </div>
@@ -200,8 +200,8 @@ nav: evidence
       <div class="rows">
         <div><span>base</span><p>Qwen3-4B Q4_K_M, the frozen 4-bit serving weights</p></div>
         <div><span>training path</span><p>directly through the quantized inference artifact, on the CPU</p></div>
+        <div><span>held-out exact call</span><p>0.69 before, 1.00 after</p></div>
         <div><span>off its training distribution</span><p>274 hand-written prompts over 23 tools: 211 exact calls for the base, 200 with the adapter through the chat API, base favoured (<a href="{{repo}}/blob/main/evals/tooluse-shifted/README.md#set-v2-2026-09-24-the-redesign-and-can-the-instrument-fail">the shifted set</a>, 2026-09-24). The adapter does not carry past its own task</p></div>
-        <div><span>held-out exact call, its own task</span><p>0.69 before, 1.00 after</p></div>
         <div><span>reproducibility</span><p>two independent runs, same sha256 on the adapter file</p></div>
         <div><span>precision study</span><p>adapters trained through BF16 and Q8_0: cosine 0.9998; through Q4_K_M: 0.9926. Measurably different objects, capability-equivalent on this task's supervised decisions. An external 36-prompt boundary bank finds 3 of 36 prompts where the three adapters choose different tools; a property of that bank, not a rate</p></div>
         <div><span>neutral-corpus drift</span><p>nll per token 4.063 to 4.026, unrelated text left alone</p></div>

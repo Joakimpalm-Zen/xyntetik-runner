@@ -39,14 +39,14 @@ bare: yes
       <a class="card card-link accent reveal" href="/runner/train-lora-on-quantized-gguf/">
         <span class="big">Same bytes, twice</span>
         <h3>Train the compressed file you actually serve.</h3>
-        <p>The usual path trains a full-precision copy and ships a different file. Runner trains a small adapter through the 4-bit file you already run, with no Python stack. On Qwen3-4B a tool-use adapter does not carry past its own task: on 274 hand-written prompts unlike its training, the base made 211 exact calls and the adapter 200. On its own task, held-out tool calls went from 0.69 to 1.00, two runs wrote the identical adapter, and an outside tester reproduced it on their own card.</p>
+        <p>The usual path trains a full-precision copy and ships a different file. Runner trains a small adapter through the 4-bit file you already run, with no Python stack. A Qwen3-4B went from 0.69 to 1.00 on held-out tool calls, two runs wrote the identical adapter, and an outside tester reproduced it on their own card.</p>
         <figure class="fig">
           <picture>
             <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-train-dark.svg">
             <img src="/assets/readme-train-light.svg" alt="The usual fine-tuning path trains a full-precision copy and ships a different file; Runner trains an adapter through the quantized file it serves" width="640" height="300" loading="lazy">
           </picture>
         </figure>
-        <span class="measured">Shifted set: 274 prompts over 23 tools, 2026-09-24. Own task: Qwen3-4B Q4_K_M, 316 steps, greedy held-out set of 29 prompts, 2026-10-12.</span>
+        <span class="measured">Qwen3-4B Q4_K_M, 316 steps, greedy held-out set of 29 prompts. Measured 2026-10-12.</span>
         <span class="more">How training on the served file works &rarr;</span>
       </a>
       <a class="card card-link accent reveal" href="/runner/truncation-safe-tool-calling/">
@@ -144,7 +144,7 @@ bare: yes
     <div class="reveal">
       <p class="eyebrow">Before any of that</p>
       <h2>It read 16 MB of a 5 GB model and already knew.</h2>
-      <p>Before you download anything, Runner looks at the first few megabytes of a model file and tells you whether it will run on your machine, how much lands on the graphics card, and what each memory setting would buy you. On the 1.0.1 release it named the right split in 70 of 72 tests on an RTX 3070. It was not right everywhere: on hybrid models it read up to four layers more than the load placed, and on deepseek2 it charged 40.50 GiB of cache where the loader builds 3.80. 1.16.0 makes it predict the loader's split there too. Not sure which file to try? <code>runner recommend</code> lists the model files that fit this machine, largest first, offline.</p>
+      <p>Before you download anything, Runner looks at the first few megabytes of a model file and tells you whether it will run on your machine, how much lands on the graphics card, and what each memory setting would buy you. On the 1.0.1 release it named the right split in 70 of 72 tests on an RTX 3070, and 1.16.0 extends that to hybrid models and DeepSeek-V2's cache, where it now predicts the loader's own split. Not sure which file to try? <code>runner recommend</code> lists the model files that fit this machine, largest first, offline.</p>
       <p>Once it fits, the same file can be shrunk with a one-line plan and the cost shown, and the notes a model keeps while it reads fit in about 41% of the usual memory with full agreement on models from 4B to 30B.</p>
       <a class="more" href="/runner/#fit">Ask before you download &rarr;</a>
       <div class="callout mt-2">
