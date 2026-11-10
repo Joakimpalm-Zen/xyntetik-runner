@@ -6321,6 +6321,7 @@ int tool_envelope_build_ex(jv *tools, jv *choice, jv *final_schema,
     }
     out->schema_src = schema.s;
     out->system_turn = turn.s;
+    out->tools = tools;   // borrowed declarations, including a generic grammar
     return TOOL_ENVELOPE_READY;
 bad:
     free(schema.s);

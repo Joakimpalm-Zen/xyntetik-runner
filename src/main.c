@@ -1,4 +1,5 @@
 // runner — CLI: one-shot completion, interactive chat, and server launcher.
+#include "completion.h"
 #include "decide.h"
 #include "clef.h"
 #include "fpclass.h"
@@ -251,8 +252,8 @@ static int32_t *json_token_ids(jv *arr, int *n_out) {
 // DIVERGED verdict would blame on the model or the build. A CLI record made
 // under --json, --json-schema or --ignore-eos replays when the verifier is
 // given the same constraint (the schema matched by digest), as a served one
-// does (D4b), and a served stop sequence, reasoning budget or loop guard
-// replays (R1.1.3.2, R1.1.3.3); anything else a
+// does (D4b), and served tools, stop sequences, reasoning budgets and the
+// loop guard replay (R1.1.3.1-3); anything else a
 // served turn was shaped by is refused; and a constraint the
 // verifier adds that the record does not name is refused too. False with the
 // reason in `why`.
@@ -278,9 +279,9 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
         // given the schema by --json-schema (matched by digest below): the
         // server compiles a response_format into the same engine constraint
         // the CLI flag does, over the prompt tokens the record carries. What
-        // the replay cannot rebuild is refused by name: a tool envelope
-        // (declarations, choice and the native or generic grammar a request
-        // builds), the reasoning channel's own sampling, a scripted reply.
+        // the replay cannot rebuild is refused by name: the reasoning
+        // channel's own sampling or a scripted reply. Tool receipts carry the
+        // declarations, choice and effective grammar settings (R1.1.3.1).
         // Stop sequences (R1.1.3.2), a reasoning budget and the loop guard
         // (R1.1.3.3) replay: the record carries them, and run_verify_replay
         // runs them as the server did.
@@ -297,6 +298,7 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
                          !strcmp(kind, "json_mode") ||
                          !strcmp(kind, "ignore_eos") ||
                          !strcmp(kind, "stop") ||
+                         !strcmp(kind, "tools") ||
                          !strcmp(kind, "reasoning_budget") ||
                          !strcmp(kind, "loop_guard")))
                 rebuilt++;
@@ -308,7 +310,7 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
             snprintf(why, cap, "the served output was shaped beyond the sampler "
                      "by %s, which a replay does not rebuild (a served JSON "
                      "schema, JSON mode, ignore_eos, stop sequence, reasoning "
-                     "budget or loop guard does replay), so a replay "
+                     "budget, loop guard or tool grammar does replay), so a replay "
                      "could only disagree with the record", names);
             return false;
         }
@@ -324,7 +326,7 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
         if (!strcmp(kind, "json_mode")) rj = true;
         else if (!strcmp(kind, "ignore_eos")) re = true;
         else if (serve && (!strcmp(kind, "stop") || !strcmp(kind, "reasoning_budget") ||
-                           !strcmp(kind, "loop_guard")))
+                           !strcmp(kind, "loop_guard") || !strcmp(kind, "tools")))
             continue;  // run_verify_replay
         else if (!strcmp(kind, "json_schema")) {
             rs = jv_str(jv_get(cons->items[i], "sha256"), "");
@@ -6500,6 +6502,48 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
             return 3;
         }
     }
+    // The serving template can supply thinking tags the model lacks. Bind it
+    // before resetting the constraint phase, just as server slot setup does.
+    if (jv_get(vr->rec, "serve")) {
+        const char *name = jv_str(jv_get(jv_get(vr->rec, "config"), "template"), "");
+        int tmpl = template_from_name(name);
+        if (strcmp(name, "raw") && tmpl < 0) {
+            fprintf(stderr, "UNVERIFIABLE: unknown served template: %s\n", name);
+            jv_free(vr->rec);
+            return 3;
+        }
+        if (tmpl >= 0)
+            template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
+    }
+    jv *vserve = jv_get(vr->rec, "serve");
+    jv *cons = jv_get(vr->rec, "constraints");
+    for (int i = 0; cons && i < cons->n; i++) {
+        jv *shape = cons->items[i];
+        if (strcmp(jv_str(jv_get(shape, "kind"), ""), "tools")) continue;
+        jv *ro = jv_get(vserve, "reasoning_open");
+        if (!ro || ro->type != J_BOOL) {
+            fprintf(stderr, "UNVERIFIABLE: tools constraint needs serve.reasoning_open\n");
+            jv_free(vr->rec);
+            return 3;
+        }
+        char why[512] = "cannot read tool turn's response schema";
+        jv *final = NULL;
+        if (o->schema_file) {
+            size_t len = 0;
+            char *text = plat_read_file(o->schema_file, MAX_INPUT_FILE, &len);
+            if (text) final = json_parse(text, len);
+            free(text);
+        }
+        bool ok = (!o->schema_file || final) && completion_replay_tools(
+            &rt->e, shape, final, why, sizeof why);
+        jv_free(final);
+        if (!ok) {
+            fprintf(stderr, "UNVERIFIABLE: %s\n", why);
+            jv_free(vr->rec);
+            return 3;
+        }
+    }
+    engine_reset(&rt->e);
     double vt0 = now_s();
     float *logits = engine_feed(&rt->e, rt->toks, jp->n);
     if (!logits) {
@@ -6537,9 +6581,9 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
             return 3;
         }
     }
-    jv *vserve = jv_get(vr->rec, "serve");
     bool vchat = strcmp(jv_str(jv_get(jv_get(vr->rec, "config"), "template"), "raw"), "raw") != 0;
-    if (vserve && vchat && rt->m.think_open) rt->e.emit_think_prelude = true;
+    if (vserve && vchat && rt->m.think_open && !rt->e.constraint_includes_prelude)
+        rt->e.emit_think_prelude = true;
     if (jv_bool(jv_get(vserve, "reasoning_open"), false))
         engine_think_started(&rt->e);
     bool stop_on = rs.n_strs > 0 || n_stop_ids > 0;

@@ -851,12 +851,10 @@ static char *messages_prompt(slot_t *s, sock_t fd, jv *req, tool_envelope *env,
     // Teach declared tools in the family's model-native declaration syntax --
     // the SAME helper the chat surface uses -- instead of the generic block, so
     // a gemma4 or muse model offered tools here sees the format it was trained
-    // on. When a native family renders from env->tools, those heap-translated
-    // (anth_tools) declarations must outlive this function, whose cleanup runs
-    // before the caller's run_completion: env->owns_tools hands that lifetime to
-    // tool_envelope_free and the `if (!owns_tools) jv_free` tail then leaves
-    // them alone. gemma4's non-strict declaration path does not set env->tools,
-    // so owns_tools stays false there and the tail frees `tools` as before.
+    // on. An envelope borrows the translated declarations for its compiler
+    // and receipts, even when its protocol is generic. Keep those alive until
+    // run_completion finishes: owns_tools transfers their lifetime to the
+    // envelope, while a non-strict path frees them at this function's tail.
     bool native_decl = false;
     const jv *native_tools = tool_decl_native(s->tmpl, *strict,
                                               /*atem_tool_calling=*/true, tools,

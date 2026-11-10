@@ -42,4 +42,10 @@ bool request_keep_alive(jv *req, bool *present, int *seconds);
 // The response_format / text.format schema, or NULL when unconstrained.
 jv  *request_schema(jv *req);
 
+// Rebuild and install a served tool constraint from its receipt. `final` is
+// the caller's response schema, already matched by digest, or NULL. False
+// means the receipt cannot rebuild the constraint, with the reason in why.
+bool completion_replay_tools(engine *e, jv *shape, jv *final,
+                              char *why, size_t cap);
+
 #endif // RUNNER_COMPLETION_H
