@@ -742,6 +742,7 @@ typedef struct {
 // reading past the shared array.
 #define LORA_R_DEV_MAX 512
 #define MVB 64   // activation buffer columns (keep in sync with kernels.cu)
+_Static_assert(MVB == MODEL_GPU_MVB, "model.h's MODEL_GPU_MVB is the plan's copy of MVB");
 #define MVT 16   // scalar-kernel fixed tile (keep in sync with MVT there)
 // Prefill attention scores are staged per (token, head) over the whole
 // context, so their scratch is sized by a fixed sub-tile of query columns,
@@ -1871,6 +1872,7 @@ static bool binding_find(const gpu_weights *w, const model_t *m,
 typedef struct {
     size_t vram_budget;   // what the upload may spend
     size_t fixed;         // what it spends whatever the split
+    size_t headroom;      // the part of `fixed` that is headroom, once
     size_t instances;     // slots that will share it (m->gpu_instances)
     bool mtp_dev;         // a NextN/MTP block rides along
     int G;                // leading layers on the device
@@ -1995,27 +1997,13 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
     // (stage_x), and the device holds the table only as a tied head, which a
     // full split pays for as its head (plan_full_extra).
     size_t fixed = (size_t)headroom;
+    // act_bytes carries the recurrent state and scratch already
+    // (cuda_instance_dims, model_gpu_recurrent_cost). A second qwen35 charge
+    // here, added after the 2026-10-07 Qwen3.8-Flash-Next IQ2_XS state
+    // allocation failure, counted the fold and its rollback copy twice: 4x
+    // what cuda_alloc_recurrent allocates, about 0.15 GB on Qwen3.6-35B-A3B
+    // at ctx 131072, a bank and the head (R3.46).
     size_t inst = act_bytes;
-    if (m->qwen35) {
-        // the DeltaNet fold lives on the device: window + state, their
-        // pre-forward copies for the speculative rollback, and the
-        // per-token scratch the recurrent layer stages. These were never
-        // in the plan; on Qwen3.8-Flash-Next IQ2_XS the planner filled the
-        // slice to 1.6 GB of headroom with expert layers and the state
-        // allocation then failed (2026-10-07, decode fell to 2 tok/s).
-        int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
-        size_t fold = sizeof(float) * (size_t)m->n_layer *
-            ((size_t)(m->ssm.conv_kernel - 1) * convdim +
-             (size_t)m->ssm.v_heads * m->ssm.state * m->ssm.state);
-        // q35_mix (max(convdim, 2 q_dim)), cv (convdim), z (inner), beta +
-        // alpha (heads each), gate (q_dim): the allocation below, in rows of MVB
-        size_t qd = 0;
-        for (int l = 0; l < m->n_layer; l++) if ((size_t)model_q_dim(m, l) > qd) qd = (size_t)model_q_dim(m, l);
-        size_t mixd = (size_t)convdim > 2 * qd ? (size_t)convdim : 2 * qd;
-        size_t scratch = sizeof(float) * (size_t)MVB *
-            (mixd + (size_t)convdim + (size_t)m->ssm.inner + 2 * (size_t)m->ssm.v_heads + qd);
-        inst += 2 * fold + scratch;
-    }
     // the NextN/MTP block rides along with a full split: its attention,
     // mixers and head projections (its experts stay on the host under
     // --cpu-moe, like any bank the plan leaves there), plus its KV rows
@@ -2047,6 +2035,7 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
     fixed += moe_hot_bytes(m);   // RUNNER_MOE_HOT's banks and their routers
     P->vram_budget = vram_budget;
     P->fixed = fixed;
+    P->headroom = (size_t)headroom;
     P->mtp_dev = mtp_dev;
     return true;
 fail:
@@ -2266,6 +2255,9 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         if (!moe_on_host(m, l)) moe_dev++;
     }
     fprintf(stderr, "gpu-split: budget=%.2fGB fixed=%.2fGB G=%d/%d full=%d used=%.2fGB\n", vram_budget/1e9, fixed/1e9, G, m->n_layer, (int)full, used/1e9);
+    // the figures --fit predicts, exactly (tests/test_cuda_fit_hybrid.py)
+    if (getenv("RUNNER_DEBUG_VRAM"))
+        fprintf(stderr, "gpu-split: (bytes: fixed %zu, headroom %zu)\n", fixed, P->headroom);
     if (P->instances > 1)
         fprintf(stderr, "gpu-split: planned for %zu slots sharing the weights, "
                 "each with its own KV cache and scratch\n", P->instances);
@@ -3630,25 +3622,21 @@ static void cuda_instance_dims(const model_t *m, cuda_dims *D) {
         size_t hcd = (size_t)mtp_streams(m) * m->n_embd;
         per_col += sizeof(float) * (3 * hcd + m->n_embd);
     }
-    if (m->qwen35) {
-        size_t q35_scratch = MVB * ((size_t)q35_mixdim + q35_convdim +
-                             m->ssm.inner + 2 * m->ssm.v_heads + q_dim);
+    // the recurrent state and the mixer scratch at the narrowest window, the
+    // figure --fit charges too (model_gpu_recurrent_cost); a wider window's
+    // scratch columns are per_col's
+    int rec = m->qwen35 ? MODEL_GPU_REC_DELTANET
+            : (m->granite_hybrid || m->nemotron_h) ? MODEL_GPU_REC_MAMBA2 : MODEL_GPU_REC_NONE;
+    act_bytes += (size_t)model_gpu_recurrent_cost(rec, (uint64_t)m->n_layer,
+        (uint64_t)m->ssm.conv_kernel, (uint64_t)m->ssm.inner, (uint64_t)m->ssm.state,
+        (uint64_t)m->ssm.groups, (uint64_t)m->ssm.v_heads, (uint64_t)q_dim);
+    if (m->qwen35)
         per_col += sizeof(float) * ((size_t)q35_mixdim + q35_convdim +
                                     m->ssm.inner + 2 * m->ssm.v_heads + q_dim);
-        size_t q35_persistent = (size_t)m->n_layer *
-                                (m->ssm.conv_kernel - 1) * q35_convdim +
-                                (size_t)m->n_layer * m->ssm.v_heads *
-                                m->ssm.state * m->ssm.state;
-        act_bytes += sizeof(float) * (q35_scratch + 2 * q35_persistent);
-    }
     if (m->granite_hybrid || m->nemotron_h) {
         int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
         int dip = 2 * m->ssm.inner + 2 * m->ssm.groups * m->ssm.state +
                   m->ssm.v_heads;
-        size_t scr = MVB * ((size_t)dip + cd + m->ssm.inner);
-        size_t per = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd +
-                     (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
-        act_bytes += sizeof(float) * (scr + 2 * per);
         per_col += sizeof(float) * ((size_t)dip + cd + m->ssm.inner);
     }
     if (m->attn_out_gate && !m->qwen35) per_col += sizeof(float) * (size_t)q_dim;

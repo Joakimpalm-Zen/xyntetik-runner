@@ -1710,6 +1710,10 @@ static int run_fit_check(const char *path, int n_ctx_want,
     if (mp->gpu_mode != GPU_OFF && gpu_available(gname, sizeof gname) &&
         gpu_offload_budget(mp->reserve_vram_pct, &gbudget, &gheadroom))
         model_fit_gpu(&g, &f, gbudget, gheadroom, mp->gpu_layers_override);
+    // the loader's own line has the same two figures (cuda.c, gpu-split)
+    if (f.gpu && getenv("RUNNER_DEBUG_VRAM"))
+        fprintf(stderr, "fit: (bytes: fixed %llu, headroom %llu)\n",
+                (unsigned long long)f.gpu_fixed, (unsigned long long)gheadroom);
 
     char w[32], h[32], kf[32], kq[32], av[32];
     const uint64_t slots = (uint64_t)f.n_seq;

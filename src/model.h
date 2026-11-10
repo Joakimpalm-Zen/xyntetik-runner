@@ -1482,6 +1482,17 @@ typedef struct { uint64_t per_col, fixed; } gpu_act_cost;
 gpu_act_cost model_gpu_act_cost(uint64_t n_embd, uint64_t xdim, uint64_t q_dim,
                                 uint64_t kv_dim, uint64_t n_ff, uint64_t n_head,
                                 uint64_t n_ctx, uint64_t n_vocab);
+// R3.46: what a hybrid's recurrent layers add to one device instance beyond
+// the attention activations, as cuda_alloc_recurrent allocates it at the
+// narrowest window: the fold (qwen35's Gated DeltaNet) or the conv window
+// and SSM state (Mamba-2), twice (the live copy and the speculative
+// rollback's), and MODEL_GPU_MVB rows of the mixer scratch. The split plan
+// (cuda.c cuda_instance_dims) and --fit both charge this one figure.
+enum { MODEL_GPU_REC_NONE, MODEL_GPU_REC_DELTANET, MODEL_GPU_REC_MAMBA2 };
+#define MODEL_GPU_MVB 64   // cuda.c MVB, the activation rows of a scratch buffer
+uint64_t model_gpu_recurrent_cost(int kind, uint64_t n_layer, uint64_t conv_kernel,
+                                  uint64_t inner, uint64_t state, uint64_t groups,
+                                  uint64_t v_heads, uint64_t q_dim);
 // The prompt window, in columns, a device instance is built for: the widest
 // multiple of 64 up to min(n_batch, GPU_WINDOW_MAX) (and up to `force` when
 // that is positive, RUNNER_CUDA_WINDOW) whose scratch beyond 64 columns,

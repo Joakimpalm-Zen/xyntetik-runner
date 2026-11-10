@@ -941,6 +941,31 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
     return true;
 }
 
+uint64_t model_gpu_recurrent_cost(int kind, uint64_t n_layer, uint64_t conv_kernel,
+                                  uint64_t inner, uint64_t state, uint64_t groups,
+                                  uint64_t v_heads, uint64_t q_dim) {
+    uint64_t taps = conv_kernel > 0 ? conv_kernel - 1 : 0;
+    if (kind == MODEL_GPU_REC_DELTANET) {
+        // q35_mix (max(convdim, 2 q_dim)), cv, z, beta, alpha and gate; the
+        // conv window and the delta state, then their rollback copies
+        uint64_t convdim = 2 * state * groups + inner;
+        uint64_t mixdim = convdim > 2 * q_dim ? convdim : 2 * q_dim;
+        uint64_t scratch = MODEL_GPU_MVB * (mixdim + convdim + inner + 2 * v_heads + q_dim);
+        uint64_t fold = n_layer * taps * convdim + n_layer * v_heads * state * state;
+        return 4 * (scratch + 2 * fold);
+    }
+    if (kind == MODEL_GPU_REC_MAMBA2) {
+        // mamba_proj, xBC and y; the conv window (and its previous copy) and
+        // the double-buffered SSM state
+        uint64_t cd = inner + 2 * groups * state;
+        uint64_t dip = 2 * inner + 2 * groups * state + v_heads;
+        uint64_t scratch = MODEL_GPU_MVB * (dip + cd + inner);
+        uint64_t per = n_layer * taps * cd + n_layer * inner * state;
+        return 4 * (scratch + 2 * per);
+    }
+    return 0;
+}
+
 gpu_act_cost model_gpu_act_cost(uint64_t n_embd, uint64_t xdim, uint64_t q_dim,
                                 uint64_t kv_dim, uint64_t n_ff, uint64_t n_head,
                                 uint64_t n_ctx, uint64_t n_vocab) {
@@ -967,7 +992,7 @@ int model_gpu_window(uint64_t spare, uint64_t per_col, int instances,
 // header alone. Each layer costs its `blk.N.` tensors plus its share of the
 // KV cache; the device first holds the token embedding, the activation
 // scratch (model_gpu_act_cost at the narrowest window, the loader's own
-// charge, without the SSM extras of the hybrid architectures) and the
+// charge, with a hybrid's recurrent state and scratch, R3.46) and the
 // headroom. A full split also owes the output projection, and when it does
 // not fit the last layer goes
 // back to the CPU, as the loader does. What stays on the host is the rest of
@@ -984,7 +1009,31 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     const char *arch = gguf_get_str(g, "general.architecture", "");
     #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
     uint64_t n_embd    = gguf_get_u32(g, FK("embedding_length"), 0);
-    uint64_t n_ff      = gguf_get_u32(g, FK("feed_forward_length"), (uint32_t)(4 * n_embd));
+    // the scratch width the loader sizes by (bind_hparams' n_ff): the scalar,
+    // else an experts-only file's expert width, else the widest entry of a
+    // per-layer array (a hybrid's typed blocks, a removed FFN); 4 x n_embd
+    // only for a header that declares none. Reading the scalar alone took
+    // that default on Qwen3.6-35B-A3B (no dense width) and on per-layer
+    // arrays: 3.9 MB of window scratch over the loader's (R3.46).
+    uint64_t n_ff = gguf_get_u32(g, FK("feed_forward_length"), 0);
+    if (!n_ff) n_ff = gguf_get_u32(g, FK("expert_feed_forward_length"), 0);
+    if (!n_ff)
+        for (int l = 0; l < f->n_layer; l++) {
+            uint64_t w = gguf_get_u32_idx(g, FK("feed_forward_length"), (uint64_t)l, 0);
+            if (w > n_ff) n_ff = w;
+        }
+    if (!n_ff) n_ff = 4 * n_embd;
+    // R3.46: a hybrid's recurrent state and scratch, by the plan's own rule
+    // (model_gpu_recurrent_cost); the families cuda.c runs on the device
+    int rec = (!strcmp(arch, "qwen35") || !strcmp(arch, "qwen35moe") ||
+               !strcmp(arch, "qwen4exp") || !strcmp(arch, "clef")) ? MODEL_GPU_REC_DELTANET
+            : (!strcmp(arch, "granitehybrid") || !strcmp(arch, "nemotron_h")) ? MODEL_GPU_REC_MAMBA2
+            : MODEL_GPU_REC_NONE;
+    uint64_t ssm_conv   = gguf_get_u32(g, FK("ssm.conv_kernel"), 0);
+    uint64_t ssm_inner  = gguf_get_u32(g, FK("ssm.inner_size"), 0);
+    uint64_t ssm_state  = gguf_get_u32(g, FK("ssm.state_size"), 0);
+    uint64_t ssm_groups = gguf_get_u32(g, FK("ssm.group_count"), 0);
+    uint64_t ssm_heads  = gguf_get_u32(g, FK("ssm.time_step_rank"), 0);
     #undef FK
     fit_geom geo;
     const int blocks = f->n_layer + f->n_mtp;   // the trunk, then the declared NextN/MTP blocks
@@ -1018,7 +1067,9 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     // the plan's charge at the narrowest window; a wider one is paid from
     // what the split leaves spare and moves no layer, so the counts below
     // are the loader's whatever window it then picks
-    uint64_t act = ac.fixed + GPU_WINDOW_MIN * ac.per_col;
+    uint64_t act = ac.fixed + GPU_WINDOW_MIN * ac.per_col +
+                   model_gpu_recurrent_cost(rec, (uint64_t)f->n_layer, ssm_conv, ssm_inner,
+                                            ssm_state, ssm_groups, ssm_heads, q_dim);
     const uint64_t slots = f->n_seq > 1 ? (uint64_t)f->n_seq : 1;
     f->gpu = true;
     f->gpu_budget = budget;
