@@ -5120,6 +5120,21 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
             return false;
         return w->scale == 1.0f || enc_scale(g, y, w->scale, n_out, batch, ys);
     }
+    // EXPERIMENT (R6.39, not for merge): a Q4_K prefill over GPU_SMALL_BATCH
+    // on the scalar route through the 16-wide twin of k_gemv_q4_K instead of
+    // k_gemm_q4_K, to price bit-identical K-quant prefill against the GEMM.
+    if (batch > GPU_SMALL_BATCH && w->type == T_Q4_K && mv_twin_route(g, w, n_in, n_out) &&
+        g->sw->f_gemvb[BW_16][T_Q4_K]) {
+        for (int c0 = 0; c0 < batch; c0 += 16) {
+            int cn = batch - c0 < 16 ? batch - c0 : 16;
+            CUdeviceptr xc = x + (size_t)c0 * xs * sizeof(float);
+            CUdeviceptr yc = y + (size_t)c0 * ys * sizeof(float);
+            if (!(cn == 1 ? enc_mv(g, m, w, xc, yc, n_in, n_out, bias, 1, xs, ys)
+                          : enc_mv_batch(g, m, w, xc, yc, n_in, n_out, bias, cn, xs, ys)))
+                return false;
+        }
+        return true;
+    }
     // Prefill (batch>1) uses the tiled-GEMM variant where available (Q8_0/Q4_K):
     // GEMM_WARPS(=8) rows per block, 256 threads, x staged in shared memory.
     if (batch > 1 && w->scale == 1.0f && g->sw->f_gemm[w->type]) {
