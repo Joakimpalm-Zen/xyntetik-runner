@@ -146,8 +146,8 @@ def test_a_served_schema_or_json_mode_turn_replays_under_its_constraint(
         runner_bin, fx, tmp_path):
     """D4b (R1.1.3): a served turn shaped by a JSON schema replays when the
     verifier names that schema (matched by digest), and one shaped by JSON
-    mode replays under --json. A tool turn is still refused by name: its
-    grammar is built from the request, which the record does not carry."""
+    mode replays under --json. A tool turn rebuilds its grammar from the
+    declarations and settings carried by the signed receipt (R1.1.3.1)."""
     d = tmp_path / "r"
     schema = {"type": "object", "properties": {"n": {"type": "integer"}},
               "required": ["n"]}
@@ -197,4 +197,4 @@ def test_a_served_schema_or_json_mode_turn_replays_under_its_constraint(
     rc, out = verify(json_rec, "--json")
     assert rc == 0 and "VERIFIED" in out, out[-600:]
     rc, out = verify(tool_rec)
-    assert rc == 3 and "tools" in out, out[-600:]
+    assert rc == 0 and "VERIFIED" in out, out[-600:]
