@@ -1209,6 +1209,10 @@ bool   model_lora_backward_kd(model_t *m, const int32_t *toks, int n,
 // backward, each row over positions in ascending order.
 bool   model_full_train_init(model_t *m, char *why, size_t cap);
 bool   model_full_on(const model_t *m);
+// R18.11: anything only training allocates is present: the full-weight masters, the activation tape,
+// backward scratch, the device training context, or an adapter slot's gradients or AdamW moments.
+// A model that only serves, with or without an adapter, must answer false.
+bool   model_has_training_state(const model_t *m);
 void   model_full_grad_zero(model_t *m);
 void   model_full_grad_scale(model_t *m, float f);
 bool   model_full_grad_norms(model_t *m, double *max_out, double *mean_out);
