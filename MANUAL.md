@@ -2567,7 +2567,7 @@ the tiles were slower, so the identity route keeps those widths. Against the pub
 | `--system TEXT` | System prompt in interactive chat (`-i`) only; refused in raw one-shot and server modes. |
 | `--chat-template NAME` | Override the chat template. See the complete list and family-specific thinking behavior below. [Details](#cli-chat-template). |
 | `--no-bos` | Do not add the beginning-of-sequence token (the file's `tokenizer.ggml.add_bos_token`, or without that key its family's default: SentencePiece, Llama 3 and Mistral Tekken add one). A raw prompt that already starts with the token gets it twice unless this is set. |
-| `--ignore-eos` | Continue generation past end-of-text tokens. |
+| `--ignore-eos` | Continue generation past end-of-text tokens. With `--serve`, the default for every request; a request's own `ignore_eos` (true or false) wins for that request. |
 | `--reasoning-budget N` | Close a reasoning turn once it has spent N tokens (budget forcing; `0` is off, the default). Per request: `reasoning_max_tokens`. Needs a model whose reasoning turn ends on a single token. |
 | `--reasoning-budget-message S` | The sentence the forced close writes before the close token (default: a short neutral one; `""` for a bare close). Per request: `reasoning_budget_message`. |
 | `--reasoning-temp F` | Temperature for reasoning turns only; calls and answers keep the request's own sampler (off by default). Per request: `reasoning_temperature`, with `reasoning_top_p`, `reasoning_min_p` and `reasoning_top_k`. |
@@ -4041,7 +4041,7 @@ diagnostic can be written, it names the active shutdown stage.
 
 Chat supports buffered and SSE responses, part-array content, assistant
 `tool_calls` history, `role:"tool"` results, `stream_options.include_usage`,
-`logprobs`/`top_logprobs`, `min_p`, `repeat_penalty`, up to four stop strings (one that spells a control token exactly, such as `<|eom|>`, stops on that token) and `stop_token_ids` (up to eight ids),
+`logprobs`/`top_logprobs`, `min_p`, `repeat_penalty`, up to four stop strings (one that spells a control token exactly, such as `<|eom|>`, stops on that token) and `stop_token_ids` (up to eight ids), `ignore_eos` (a boolean, as vLLM's and llama.cpp's servers take it: the end-of-text token does not end the turn, so it runs to `max_tokens`; the server's `--ignore-eos` is the default, and a grammar's completed document still ends the turn),
 and `keep_alive` on a registry-backed server. Tool declarations are rendered into the model
 prompt in the resident model's native tool protocol - identically on
 `/v1/chat/completions`, `/v1/responses`, and `/v1/messages`, down to the

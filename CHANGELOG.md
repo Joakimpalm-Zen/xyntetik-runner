@@ -8,6 +8,16 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **`ignore_eos` on a completion request (R10.31).**
+  - **Before:** only `/v1/runner/sessions` read it. Chat, completions, Responses and Messages took only the
+    server-wide `--ignore-eos`, so a fixed-length rollout could not be asked for per request.
+  - **Now:** every completion surface takes `ignore_eos` (a boolean; null reads as absent), as vLLM's and
+    llama.cpp's servers do. The server's `--ignore-eos` is the default, and a request may turn it either way for
+    itself. A grammar's completed document still ends the turn.
+  - **Lifetime:** the value is installed per request and put back to the server's default when the request ends.
+    The sessions route also restores the server's default after a session, where it used to turn it off.
+  - **Receipts:** a served turn under it records `ignore_eos`, and `--verify --ignore-eos` replays it.
+
 - **Docs: gemma-4-26B-A4B now has its publisher float32 comparison (R6.11).** The support entry listed it as owed.
   - **What was run:** two files, scored against the transformers forward of `google/gemma-4-26B-A4B-it` in float32
     on chat text, 2,000 positions ([the record](docs/gemma4-26b-reference-2026-11-10.md)).

@@ -1367,7 +1367,7 @@ static void handle_session_start(slot_t *s, sock_t fd, jv *req) {
     engine_gen_begin(e, max_new);
     session_reply a = {0};
     session_answer(s, &a, lg, n, max_new, stop_at, ignore_eos, NULL, false);
-    e->ignore_eos = false;
+    e->ignore_eos = SV.ignore_eos;   // the server's default again (R10.31), not off
     sched_prefill_end();
     session_reply_send(fd, &a);
 }
@@ -1467,7 +1467,7 @@ static void handle_session_resume(slot_t *s, sock_t fd, jv *req,
     session_reply a = {0};
     session_answer(s, &a, lg, sm->n_prompt, sm->max_new, stop_at,
                    sm->ignore_eos, id, fork);
-    e->ignore_eos = false;
+    e->ignore_eos = SV.ignore_eos;   // the server's default again (R10.31), not off
     sched_prefill_end();
     session_reply_send(fd, &a);
     free(lg);
