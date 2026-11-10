@@ -2912,9 +2912,16 @@ static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
         }
         sb_lit(&t->json, "}");
     }
+    // R1.1.3.3: the budget and the loop guard with what --verify needs to
+    // run them again: the forced close's sentence as the token ids it writes
+    // (set only with a budget: the guard alone closes bare,
+    // creq_budget_message), and the guard's settings
     if (e->think_budget > 0) {
         shape_open(t, "reasoning_budget");
-        sb_fmt(&t->json, ",\"tokens\":%d}", e->think_budget);
+        sb_fmt(&t->json, ",\"tokens\":%d,\"message_tokens\":[", e->think_budget);
+        for (int i = 0; i < e->think_msg_n; i++)
+            sb_fmt(&t->json, "%s%d", i ? "," : "", (int)e->think_msg[i]);
+        sb_lit(&t->json, "]}");
     }
     const char *flags[4];
     int nf = 0;
@@ -2924,6 +2931,12 @@ static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
     if (scripted)      flags[nf++] = "scripted";
     for (int i = 0; i < nf; i++) {
         shape_open(t, flags[i]);
+        if (!strcmp(flags[i], "loop_guard")) {
+            sb_fmt(&t->json, ",\"span\":%d,\"repeats\":%d,\"window\":%d,"
+                             "\"max_closes\":%d,\"everywhere\":%s",
+                   e->loop_span, e->loop_repeats, e->loop_window,
+                   e->loop_max_closes, e->loop_all ? "true" : "false");
+        }
         sb_lit(&t->json, "}");
     }
 }
