@@ -252,59 +252,69 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
     return TMPL_LLAMA2_FALLBACK;
 }
 
+// Every family and its name, in one place (R2.4.8). --chat-template reads it one way, and receipts,
+// --caps, logs and the conformance scripts the other; two hand-kept lists could drift apart. `flag`:
+// --chat-template accepts the name. The fallback is detection's answer, never a choice.
+static const struct { int tmpl; const char *name; bool flag; } TEMPLATE_NAMES[] = {
+    { TMPL_CHATML, "chatml", true },
+    { TMPL_TRINITY, "trinity", true },
+    { TMPL_CHATML_THINK, "chatml-think", true },
+    { TMPL_MELLUM, "mellum", true },
+    { TMPL_MINICPM5, "minicpm5", true },
+    { TMPL_LFM2, "lfm2", true },
+    { TMPL_LFM2_8B, "lfm2-8b", true },
+    { TMPL_LFM2_24B, "lfm2-24b", true },
+    { TMPL_MIMO, "mimo", true },
+    { TMPL_SPARK, "spark", true },
+    { TMPL_SPARK25, "spark25", true },
+    { TMPL_K2H, "k2-horizon", true },
+    { TMPL_FLINT, "flint", true },
+    { TMPL_HERMES4, "hermes4", true },
+    { TMPL_LLAMA2, "llama2", true },
+    { TMPL_LLAMA3, "llama3", true },
+    { TMPL_ZEPHYR, "zephyr", true },
+    { TMPL_GEMMA, "gemma", true },
+    { TMPL_GEMMA4, "gemma4", true },
+    // The mainline revision, named for what an operator has in hand (a 12B/26B-A4B/31B GGUF). Detection
+    // places it automatically from the template text; this is the explicit override and the
+    // conformance name.
+    { TMPL_GEMMA4_MAINLINE, "gemma4-mainline", true },
+    // `mistral` is the v0.3 form. The two others are named for the checkpoints that carry them rather
+    // than for their spacing, because that is what an operator has in front of them when they reach
+    // for the flag: a GGUF whose card says Nemo-2407, or a v0.1/v0.2 7B. `mistral-nemo` also matches
+    // the sampler preset of the same name in src/sample.c.
+    { TMPL_MISTRAL, "mistral", true },
+    { TMPL_MISTRAL_V1, "mistral-v1", true },
+    { TMPL_MISTRAL_NEMO, "mistral-nemo", true },
+    { TMPL_MISTRAL_SYS, "mistral-sys", true },
+    { TMPL_DEEPSEEK2, "deepseek2", true },
+    { TMPL_PHI3, "phi3", true },
+    { TMPL_PHI4, "phi4", true },
+    { TMPL_NEMOTRON, "nemotron", true },
+    { TMPL_APERTUS, "apertus", true },
+    { TMPL_ORNITH, "ornith", true },
+    { TMPL_QWEN35, "qwen35", true },
+    { TMPL_QWEN35_NOTHINK, "qwen35-nothink", true },
+    { TMPL_QWEN36, "qwen36", true },
+    { TMPL_MINICPMV, "minicpmv", true },
+    { TMPL_MINICPMV_FIXED, "minicpmv-fixed", true },
+    { TMPL_GRANITE42, "granite42", true },
+    { TMPL_NEMOTRON35, "nemotron35", true },
+    { TMPL_QWEN3_CODER, "qwen3-coder", true },
+    { TMPL_QWEN38, "qwen38", true },
+    { TMPL_MUSE, "muse", true },
+    { TMPL_HARMONY, "harmony", true },
+    { TMPL_GRANITE, "granite", true },
+    { TMPL_GRANITE4, "granite4", true },
+    // Detection's answer when nothing matched: Llama-2 markup, named apart from "raw" (no framing) so a
+    // receipt or --caps says which framing the prompt had; --chat-template does not accept it.
+    { TMPL_LLAMA2_FALLBACK, "llama2-fallback", false },
+    { TMPL_RAW, "raw", true },
+};
+
 int template_from_name(const char *name) {
-    if (!strcmp(name, "chatml")) return TMPL_CHATML;
-    if (!strcmp(name, "trinity")) return TMPL_TRINITY;
-    if (!strcmp(name, "chatml-think")) return TMPL_CHATML_THINK;
-    if (!strcmp(name, "mellum")) return TMPL_MELLUM;
-    if (!strcmp(name, "minicpm5")) return TMPL_MINICPM5;
-    if (!strcmp(name, "lfm2")) return TMPL_LFM2;
-    if (!strcmp(name, "lfm2-8b")) return TMPL_LFM2_8B;
-    if (!strcmp(name, "lfm2-24b")) return TMPL_LFM2_24B;
-    if (!strcmp(name, "mimo")) return TMPL_MIMO;
-    if (!strcmp(name, "spark")) return TMPL_SPARK;
-    if (!strcmp(name, "spark25")) return TMPL_SPARK25;
-    if (!strcmp(name, "k2-horizon")) return TMPL_K2H;
-    if (!strcmp(name, "flint")) return TMPL_FLINT;
-    if (!strcmp(name, "hermes4")) return TMPL_HERMES4;
-    if (!strcmp(name, "llama2")) return TMPL_LLAMA2;
-    if (!strcmp(name, "llama3")) return TMPL_LLAMA3;
-    if (!strcmp(name, "zephyr")) return TMPL_ZEPHYR;
-    if (!strcmp(name, "gemma"))  return TMPL_GEMMA;
-    if (!strcmp(name, "gemma4")) return TMPL_GEMMA4;
-    // The mainline revision, named for what an operator has in hand (a
-    // 12B/26B-A4B/31B GGUF). Detection places it automatically from the
-    // template text; this is the explicit override and the conformance name.
-    if (!strcmp(name, "gemma4-mainline")) return TMPL_GEMMA4_MAINLINE;
-    // `mistral` is the v0.3 form. The two others are named for the checkpoints
-    // that carry them rather than for their spacing, because that is what an
-    // operator has in front of them when they reach for the flag: a GGUF whose
-    // card says Nemo-2407, or a v0.1/v0.2 7B. `mistral-nemo` also matches the
-    // sampler preset of the same name in src/sample.c.
-    if (!strcmp(name, "mistral")) return TMPL_MISTRAL;
-    if (!strcmp(name, "mistral-v1")) return TMPL_MISTRAL_V1;
-    if (!strcmp(name, "mistral-nemo")) return TMPL_MISTRAL_NEMO;
-    if (!strcmp(name, "mistral-sys")) return TMPL_MISTRAL_SYS;
-    if (!strcmp(name, "deepseek2")) return TMPL_DEEPSEEK2;
-    if (!strcmp(name, "phi3"))    return TMPL_PHI3;
-    if (!strcmp(name, "phi4"))    return TMPL_PHI4;
-    if (!strcmp(name, "nemotron")) return TMPL_NEMOTRON;
-    if (!strcmp(name, "apertus")) return TMPL_APERTUS;
-    if (!strcmp(name, "ornith")) return TMPL_ORNITH;
-    if (!strcmp(name, "qwen35")) return TMPL_QWEN35;
-    if (!strcmp(name, "qwen35-nothink")) return TMPL_QWEN35_NOTHINK;
-    if (!strcmp(name, "qwen36")) return TMPL_QWEN36;
-    if (!strcmp(name, "minicpmv")) return TMPL_MINICPMV;
-    if (!strcmp(name, "minicpmv-fixed")) return TMPL_MINICPMV_FIXED;
-    if (!strcmp(name, "granite42")) return TMPL_GRANITE42;
-    if (!strcmp(name, "nemotron35")) return TMPL_NEMOTRON35;
-    if (!strcmp(name, "qwen3-coder")) return TMPL_QWEN3_CODER;
-    if (!strcmp(name, "qwen38")) return TMPL_QWEN38;
-    if (!strcmp(name, "muse"))   return TMPL_MUSE;
-    if (!strcmp(name, "harmony")) return TMPL_HARMONY;
-    if (!strcmp(name, "granite")) return TMPL_GRANITE;
-    if (!strcmp(name, "granite4")) return TMPL_GRANITE4;
-    if (!strcmp(name, "raw"))    return TMPL_RAW;
+    for (size_t i = 0; i < sizeof(TEMPLATE_NAMES) / sizeof(*TEMPLATE_NAMES); i++)
+        if (TEMPLATE_NAMES[i].flag && !strcmp(name, TEMPLATE_NAMES[i].name)) return TEMPLATE_NAMES[i].tmpl;
     return -1;
 }
 
@@ -369,55 +379,9 @@ const char *template_default_system(int tmpl, const char *meta_tmpl,
 }
 
 const char *template_name(int t) {
-    switch (t) {
-        case TMPL_CHATML: return "chatml";  case TMPL_LLAMA2: return "llama2";
-        case TMPL_TRINITY: return "trinity";
-        case TMPL_CHATML_THINK: return "chatml-think";
-        case TMPL_MELLUM: return "mellum";
-        case TMPL_MINICPM5: return "minicpm5";
-        case TMPL_LFM2: return "lfm2";
-        case TMPL_LFM2_8B: return "lfm2-8b";
-        case TMPL_LFM2_24B: return "lfm2-24b";
-        case TMPL_MIMO: return "mimo";
-        case TMPL_SPARK: return "spark";
-        case TMPL_SPARK25: return "spark25";
-        case TMPL_K2H: return "k2-horizon";
-        case TMPL_FLINT: return "flint";
-        case TMPL_HERMES4: return "hermes4";
-        case TMPL_LLAMA3: return "llama3";  case TMPL_ZEPHYR: return "zephyr";
-        case TMPL_GEMMA:  return "gemma";
-        case TMPL_GEMMA4: return "gemma4";
-        case TMPL_GEMMA4_MAINLINE: return "gemma4-mainline";
-        case TMPL_MISTRAL: return "mistral";
-        case TMPL_MISTRAL_V1: return "mistral-v1";
-        case TMPL_MISTRAL_NEMO: return "mistral-nemo";
-        case TMPL_MISTRAL_SYS: return "mistral-sys";
-        case TMPL_DEEPSEEK2: return "deepseek2";
-        case TMPL_PHI3:    return "phi3";
-        case TMPL_PHI4:    return "phi4";
-        case TMPL_NEMOTRON: return "nemotron";
-        case TMPL_APERTUS: return "apertus";
-        case TMPL_ORNITH: return "ornith";
-        case TMPL_QWEN35: return "qwen35";
-        case TMPL_QWEN35_NOTHINK: return "qwen35-nothink";
-        case TMPL_QWEN36: return "qwen36";
-        case TMPL_MINICPMV: return "minicpmv";
-        case TMPL_MINICPMV_FIXED: return "minicpmv-fixed";
-        case TMPL_GRANITE42: return "granite42";
-        case TMPL_NEMOTRON35: return "nemotron35";
-        case TMPL_QWEN38: return "qwen38";
-        case TMPL_QWEN3_CODER: return "qwen3-coder";
-        case TMPL_MUSE:   return "muse";
-        case TMPL_HARMONY: return "harmony";
-        case TMPL_GRANITE: return "granite";
-        case TMPL_GRANITE4: return "granite4";
-        // detection's answer when nothing matched: Llama-2 markup, named
-        // apart from "raw" (no framing) so a receipt or --caps says which
-        // framing the prompt had; --chat-template does not accept it
-        case TMPL_LLAMA2_FALLBACK: return "llama2-fallback";
-        case TMPL_RAW: return "raw";
-        default: return "raw";
-    }
+    for (size_t i = 0; i < sizeof(TEMPLATE_NAMES) / sizeof(*TEMPLATE_NAMES); i++)
+        if (TEMPLATE_NAMES[i].tmpl == t) return TEMPLATE_NAMES[i].name;
+    return "raw";
 }
 
 bool template_roles_valid(int tmpl, const char *const *roles, int n,

@@ -28,9 +28,10 @@ TABLE = json.loads((ROOT / "tests" / "family_fixtures.json").read_text(encoding=
 
 
 def _template_ids():
+    # every family's name, from the one table template_name and template_from_name read (R2.4.8)
     src = (ROOT / "src" / "template.c").read_text(encoding="utf-8")
-    i = src.index("const char *template_name(int t) {")
-    return set(re.findall(r'return "([a-z0-9-]+)"', src[i:i + 3000].split("\n}\n")[0]))
+    i = src.index("TEMPLATE_NAMES[] = {")
+    return set(re.findall(r'\{ TMPL_[A-Z0-9_]+, "([a-z0-9-]+)", (?:true|false) \}', src[i:src.index("\n};\n", i)]))
 
 
 def test_every_family_the_runner_reports_has_a_fixture():

@@ -277,6 +277,27 @@ static void test_trinity_blank_lines(void) {
     assert(!strstr(plain, "assistant\n\n"));
 }
 
+// R2.4.8: one table holds every family and its name, read both ways. Every family has a name of its own,
+// the flag gives it back, and the fallback's name is refused (it is detection's answer, not a choice).
+// The anchors are names users type, from the manual's --chat-template list.
+static void test_every_family_name_round_trips(void) {
+    for (int t = 0; t < TMPL_COUNT; t++) {
+        const char *n = template_name(t);
+        assert(n && *n);
+        assert(t == TMPL_RAW || strcmp(n, "raw") != 0);   // a family the table lost would read back as raw
+        if (t == TMPL_LLAMA2_FALLBACK) assert(template_from_name(n) == -1);
+        else assert(template_from_name(n) == t);
+        for (int u = 0; u < t; u++) assert(strcmp(n, template_name(u)) != 0);
+    }
+    assert(!strcmp(template_name(TMPL_LLAMA2_FALLBACK), "llama2-fallback"));
+    assert(!strcmp(template_name(-1), "raw") && !strcmp(template_name(TMPL_COUNT), "raw"));
+    assert(template_from_name("no-such-family") == -1);
+    assert(template_from_name("chatml") == TMPL_CHATML);
+    assert(template_from_name("mistral-nemo") == TMPL_MISTRAL_NEMO);
+    assert(template_from_name("k2-horizon") == TMPL_K2H);
+    assert(template_from_name("gemma4-mainline") == TMPL_GEMMA4_MAINLINE);
+}
+
 static void test_detect_zephyr_vs_phi3(tokenizer *t) {
     const char *zephyr = "{{'<|user|>\n' + message['content'] + '</s>\n'}}";
     const char *phi3   = "{{'<|user|>\n' + message['content'] + '<|end|>\n'}}";
@@ -3483,6 +3504,7 @@ int main(void) {
     test_render_mistral_nemo();
     test_render_mistral_keeps_system_on_a_prefill();
     test_detect_zephyr_vs_phi3(&t);
+    test_every_family_name_round_trips();
     test_trinity_blank_lines();
     test_phi3_without_generation_prompt_ends_with_eos();
     test_detect_by_marker(&t);
