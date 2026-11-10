@@ -582,6 +582,8 @@ def shell(meta: dict, body: str, sha: str) -> str:
       <a href="/about/">About and Zenova AB</a>
       <a href="/dojo/">Dojo</a>
       <a href="/suite/">Suite</a>
+      <a href="/about/#bocka">Bocka</a>
+      <a href="/about/#lunta">Lunta</a>
       <a href="/shade/">Shade</a>
       <a href="/support/">Support the work</a>
       <a href="mailto:hello@xyntetik.com">hello@xyntetik.com</a>
@@ -745,7 +747,9 @@ def main(argv: list[str] | None = None) -> int:
         f"- [Source and install]({DOJO}): Apache-2.0, SwiftPM, three commands\n\n"
         "## Program\n\n"
         f"- [About Xyntetik and Zenova AB]({ORIGIN}/about/)\n"
-        f"- [Suite]({ORIGIN}/suite/): the testing and evidence layer, in private development\n"
+        f"- [Suite]({ORIGIN}/suite/): the desktop app around the engine, first private release 0.1.0\n"
+        f"- [Bocka]({ORIGIN}/about/#bocka): the plan of record a person and their coding agents work from, private\n"
+        f"- [Lunta]({ORIGIN}/about/#lunta): a writing app for long-form fiction, private, in development\n"
         f"- [Shade]({ORIGIN}/shade/): the research lab\n"
         f"- [Support the engine]({ORIGIN}/support/)\n",
         encoding="utf-8")

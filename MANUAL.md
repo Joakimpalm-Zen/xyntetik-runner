@@ -1607,8 +1607,9 @@ silently dropped branch.
 | Provenance | Replay-verifiable transcripts; Ed25519- or ML-DSA-44-signed, chained receipts with a one-exit-code verifier; OpenSSF Model Signing verification of the loaded GGUF (key method, P-256/384/521). |
 
 Not implemented: Vulkan; TLS/auth; remote bind; remote/streamed GGUF parts; the
-`qwen2moe`/`deepseek2`/`kimi` architecture IDs (their shared-expert *layout* is
-implemented, as above - the architectures are not admitted) or MLA attention;
+`qwen2moe`/`kimi` architecture IDs (their shared-expert *layout* is
+implemented, as above - the architectures are not admitted; `deepseek2` and its
+multi-head latent attention are admitted, see its row);
 Prism ML's rotated-basis ternary files (`prism.hadamard.*`, the
 Ternary-Bonsai-2 GGUFs: refused at load, since they would run but answer with
 garbage without the runtime rotation); Mamba/Jamba; MTP/NextN draft-head consumption on Metal, on a partial CUDA

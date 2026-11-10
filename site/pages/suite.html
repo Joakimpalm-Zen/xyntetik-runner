@@ -1,15 +1,15 @@
 <!--meta
 title: Suite
-description: Xyntetik Suite is the testing, evaluation and evidence layer around Runner. It is in private development and not released; this page says what it is for and what it is not yet.
+description: Xyntetik Suite is one desktop application around Runner, for Windows, macOS and Linux. Its first release, 0.1.0, is in private testing; this page says what it is for.
 path: /suite/
 nav: about
 -->
 <section class="page-head">
   <div class="wrap">
     <div class="page-mark">{{mark:suite:64}}</div>
-    <p class="eyebrow">Xyntetik Suite <span class="pill note" style="margin-left:0.6rem">private, in development</span></p>
+    <p class="eyebrow">Xyntetik Suite <span class="pill note" style="margin-left:0.6rem">private, first release 0.1.0</span></p>
     <h1>The layer between a running model and work you would trust.</h1>
-    <p class="lede">Suite is the testing, evaluation and evidence tooling that sits around Runner: the part that decides which model a machine can honestly run, gates what an agent may do, keeps a human in the loop without making them a bottleneck, and records where every claim came from. It is not released. This page exists so the word means something when it appears elsewhere on the site, not to sell it.</p>
+    <p class="lede">Suite is one desktop application around Runner, for Windows, macOS and Linux: a Rust core with an agent, a memory vault, tasks, an approval queue, coding workflows and Runner control in one process, where the earlier Suite was nine Python packages and seven local services. Nothing of it listens on the network; only the Runner does, on loopback. Its first release, 0.1.0, is in private testing with named testers, and 1.0.0 will be the public one.</p>
   </div>
 </section>
 
@@ -33,12 +33,12 @@ nav: about
   <div class="wrap split">
     <div class="sticky">
       <p class="eyebrow">Status, plainly</p>
-      <h2>What Suite is not yet.</h2>
+      <h2>Where Suite is today.</h2>
     </div>
     <div class="rows">
-      <div><span>Released</span><p>No. The repository is private and there is no download.</p></div>
-      <div><span>Public artifacts</span><p>None yet. Suite gets its own public section when it has something a stranger can run or verify, and not before.</p></div>
-      <div><span>Relationship to Runner</span><p>Runner is free forever and complete on its own. Nothing in Runner is held back for the suite. The suite's product surface is being built as Runner's capabilities land, and it consumes Runner through the same loopback API anyone else can use.</p></div>
+      <div><span>Released</span><p>Privately. The first release, 0.1.0, is for the owner and named testers: installers for Windows, macOS and Linux that carry no publisher signature yet, no automatic updates, published only in the private repository. 1.0.0 will be the public release.</p></div>
+      <div><span>Public artifacts</span><p>Coming with 1.0.0: Suite gets its own public section when there is something a stranger can run and verify.</p></div>
+      <div><span>Relationship to Runner</span><p>Runner is free forever and complete on its own. Nothing in Runner is held back for the suite. Suite finds a Runner, checks its version against the ones it works with (Runner 1.15.0 or later), offers to install the verified release it pins when none is found, and reaches it through the same loopback API anyone else can use.</p></div>
       <div><span>Who it is for</span><p>Teams that need to run models on machines they own and show, later, what those models did and why a decision was allowed. The evidence and attestation thesis behind Runner's receipts is the thesis behind the suite.</p></div>
       <div><span>How to follow it</span><p>Runner's <a href="{{repo}}/blob/main/CHANGELOG.md">changelog</a> is where suite-facing engine capabilities land first. Questions: <a href="mailto:hello@xyntetik.com">hello@xyntetik.com</a>.</p></div>
     </div>

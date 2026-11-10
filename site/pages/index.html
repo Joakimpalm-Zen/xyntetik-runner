@@ -78,7 +78,7 @@ bare: yes
       <a class="card card-link accent reveal" href="/runner/reproducible-lora-training-receipts/">
         <span class="big">VERIFIED</span>
         <h3>Prove afterwards what the model said.</h3>
-        <p>Every served turn can be a signed record, and records chain. Someone else replays them on the same build and gets one of three verdicts: VERIFIED, DIVERGED or UNVERIFIABLE. One command gathers the records, the model's signature and the measured envelope into an evidence pack a reviewer checks offline.</p>
+        <p>Every served turn can be a signed record, and records chain. Someone else replays them on the same build and gets one of three verdicts: VERIFIED, DIVERGED or UNVERIFIABLE. Since 1.16.0 that covers tool calls, turns cut by a stop sequence, reasoning budgets and the loop guard, and turns the server cut on a cancel or a timeout. One command gathers the records, the model's signature and the measured envelope into an evidence pack a reviewer checks offline.</p>
         <p>The same discipline runs through the whole lifecycle: a model it does not know is refused by name, a training run records its seed and config, and a 4-bit merge that would erase the fine-tune is refused instead of written.</p>
         <span class="measured">Replay and pack checks are gated in CI on every release. None of the engines measured claims this.</span>
         <span class="more">Records a reviewer can check &rarr;</span>
@@ -134,7 +134,7 @@ bare: yes
 
 <section class="section" id="fit">
   <div class="wrap split rev">
-    <figure class="shot reveal">
+    <figure class="shot term reveal">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="/assets/readme-fit-dark.svg">
         <img src="/assets/readme-fit-light.svg" alt="Runner asked whether Granite 4.2 8B fits an RTX 3070: FITS, 35 of 40 layers on the GPU" width="640" height="282" loading="lazy">
@@ -144,7 +144,7 @@ bare: yes
     <div class="reveal">
       <p class="eyebrow">Before any of that</p>
       <h2>It read 16 MB of a 5 GB model and already knew.</h2>
-      <p>Before you download anything, Runner looks at the first few megabytes of a model file and tells you whether it will run on your machine, how much lands on the graphics card, and what each memory setting would buy you. Checked against what really happened on load, it named the right split in 70 of 72 tests and was never too optimistic.</p>
+      <p>Before you download anything, Runner looks at the first few megabytes of a model file and tells you whether it will run on your machine, how much lands on the graphics card, and what each memory setting would buy you. On the 1.0.1 release it named the right split in 70 of 72 tests on an RTX 3070, and 1.16.0 extends that to hybrid models and DeepSeek-V2's cache, where it now predicts the loader's own split. Not sure which file to try? <code>runner recommend</code> lists the model files that fit this machine, largest first, offline.</p>
       <p>Once it fits, the same file can be shrunk with a one-line plan and the cost shown, and the notes a model keeps while it reads fit in about 41% of the usual memory with full agreement on models from 4B to 30B.</p>
       <a class="more" href="/runner/#fit">Ask before you download &rarr;</a>
       <div class="callout mt-2">
@@ -186,7 +186,7 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       <p class="eyebrow">Xyntetik Dojo, new and free</p>
       <h2>One window for your coding agents, and a bus so they can talk.</h2>
       <p>Running several coding agents at once means a desk full of terminals and you as the messenger between them. Dojo puts Claude Code, Codex and pi (on a local Runner model) in one macOS window, here or over SSH, and gives each of them four small tools to list, read and message the others. You watch, you type, you stay in charge.</p>
-      <p>The bus never answers a prompt, never sends your half-written text, and every message carries its sender from the pane's token. A Runner pane serves the largest roster model whose resident weights fit in half of this Mac's RAM, for the pi panes.</p>
+      <p>The bus never answers a prompt, never sends your half-written text, and every message carries its sender from the pane's token. It keeps a record of its traffic, takes secrets out of what one pane reads of another, and once you mark a coordinator, a worker reads only the panes you let it. A Runner pane serves the largest roster model whose resident weights fit in half of this Mac's RAM, for the pi panes.</p>
       <div class="btn-row">
         <a class="btn btn-primary" href="/dojo/">What Dojo does</a>
         <a class="btn" href="{{dojo}}" rel="noopener">Install from GitHub</a>
@@ -233,13 +233,13 @@ curl -L -o model.gguf https://huggingface.co/ibm-granite/granite-4.1-3b-GGUF/res
       <a class="btn" href="https://huggingface.co/collections/Joakimpalm-Zen/runner-releases-6aa98baaed03bba0e8a561ae" rel="noopener">Xyntetik-Runner releases</a>
       <a class="btn" href="/evidence/#artifacts">The artifact ledger</a>
     </div>
-    <p class="small muted mt-1">Every published file's card links to its row in the Runner support roster, where a recorded mark is a reproduced greedy smoke at that Runner version and date, not a verdict on the answers. The files re-checked on a release are listed in the <a href="{{repo}}#validated-models">README's model list</a>.</p>
+    <p class="small muted mt-1">Every published file's card links to its row in the Runner support roster, where a recorded mark is a reproduced greedy smoke at that Runner version and date, not a verdict on the answers. Nothing is re-tested on a schedule: the <a href="{{repo}}#validated-models">README's model list</a> says when each file last passed, and with which Runner.</p>
   </div>
 </section>
 
 <section class="section" id="about-teaser">
   <div class="wrap rows reveal">
-    <div><span>Who builds it</span><p>Zenova AB, in Sweden. Runner is the released engine, Dojo the released window for coding agents on it, Suite the testing and evidence layer around it, Shade the research lab that feeds both. The engine is free forever under Apache 2.0, and your prompts never leave your machine. <a href="/about/">About Xyntetik</a>.</p></div>
+    <div><span>Who builds it</span><p>Zenova AB, in Sweden. Runner is the released engine and Dojo the released window for coding agents on it. Suite, the desktop app around them, Bocka, the plan of record, and Lunta, a writing app, are private; Shade is the research lab that feeds them. The engine is free forever under Apache 2.0, and your prompts never leave your machine. <a href="/about/">About Xyntetik</a>.</p></div>
     <div><span>Funded in the open</span><p>Contributions pay for measurement time on real hardware, the thing every number on this page cost. <a href="https://buy.stripe.com/9B69AUddpdx9auHgP27N600" rel="noopener">Support this work</a> or read <a href="/support/">what contributions enable</a>.</p></div>
   </div>
 </section>

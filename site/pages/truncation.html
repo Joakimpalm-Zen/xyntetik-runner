@@ -70,7 +70,7 @@ nav: runner
       <p class="eyebrow">The technical detail</p>
       <h2>Forced-truncation recovery is not ordinary constrained decoding.</h2>
       <p>Ordinary JSON-Schema constrained decoding restricts which token may come next, so the output is valid if it finishes. It says nothing about what happens when the output cannot finish. Runner's schema compiler produces a streaming validator that knows, at every byte, what the smallest legal completion of the document is: close the string the pattern still accepts, complete the number inside its declared range, supply the required properties, close the object. When the budget expires, that completion is emitted.</p>
-      <p>The same compiler backs <code>--json</code>, OpenAI <code>response_format</code>, Responses <code>text.format</code> and tool parameter schemas: objects, arrays, enums, const, type unions, numeric bounds, string lengths and anchored patterns, array counts, and the tool-discriminated union agent clients use. Unsupported or ambiguous constraints fail at compile time rather than being silently weakened.</p>
+      <p>The same compiler backs <code>--json</code>, OpenAI <code>response_format</code>, Responses <code>text.format</code> and tool parameter schemas: objects, arrays, enums, const, type unions, numeric bounds, string lengths and anchored patterns, array counts, and a <code>oneOf</code> or <code>anyOf</code> of objects told apart by a required <code>const</code>, each with its own properties, of which the <code>{tool, args}</code> action agent clients use is one. Unsupported or ambiguous constraints fail at compile time rather than being silently weakened.</p>
     </div>
     <div>
 <pre><code>./runner -m model.gguf --serve
