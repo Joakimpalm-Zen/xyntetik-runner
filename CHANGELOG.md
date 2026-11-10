@@ -8,6 +8,20 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **`--verify` replays a served turn cut by a stop sequence (R1.1.3.2).**
+  - **Before:** a receipt shaped by `stop`, `stop_sequences` or `stop_token_ids` was `UNVERIFIABLE`, although the
+    record already carried the sequences.
+  - **Now:** the replay re-does the cut. It matches the stop strings on the visible text only, after the
+    thinking-tag splitter, as the server does, and gives the engine the stop ids. A record cut anywhere else
+    replays `DIVERGED`, because the cut is not taken from the record.
+  - **New receipt field:** `serve.reasoning_open` says whether the prompt left the turn inside the reasoning block,
+    so the splitter starts where the server's did. On a model with thinking tags, a stop-cut chat record from
+    before the field is `UNVERIFIABLE`, naming it.
+  - **Found beside it:** on a model with thinking tags, a served chat turn under a JSON schema or JSON mode
+    replayed `DIVERGED` at its first token or byte. The server forwards the reasoning bytes beside the document
+    and, when the prompt opened the reasoning block, holds the grammar until that block closes; the replay did
+    neither. It now starts where the server started.
+
 - **Fix (CUDA): the F32 and F16 canonical-order matvecs finished an odd row fused, against the host (R12.1b).**
   - **The bug:** `k_mvcanon_f32` and `k_mvcanon_f16` finish a row that is not a whole 32 (F32) or 16 (F16) stride on
     one lane, with `s += w * x`. nvcc fused it into an `fma` (its default `--fmad=true`). The canonical host rounds the

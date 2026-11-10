@@ -2941,7 +2941,8 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
                                  const char *prompt, int api, bool chat,
                                  uint64_t gen_rng, int max_tokens, int n_prompt,
                                  int n_gen, int cached, const char *reuse,
-                                 bool spec_used, const turn_shape *shape,
+                                 bool spec_used, bool reasoning_open,
+                                 const turn_shape *shape,
                                  const char *ctx_id, jv *req, char file[64],
                                  char chain[65]) {
     model_t *m = s->m;
@@ -2951,11 +2952,15 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
                "failed); no receipt can name it";
     if (g->raw.failed) return "out of memory capturing the output";
     sbuf sj = {0};
+    // R1.1.3.2: reasoning_open says the prompt left the turn inside the
+    // model's reasoning block, so the output's first bytes were reasoning. A
+    // replay that matches stop sequences on the visible text, or holds a
+    // grammar back until the reasoning closes, starts from the same place.
     sb_fmt(&sj, "{\"api\":\"%s\",\"request_id\":\"%s\",\"prompt_reuse\":"
-                "\"%s\",\"cached_tokens\":%d,\"shaped_by\":[",
+                "\"%s\",\"cached_tokens\":%d,\"reasoning_open\":%s,\"shaped_by\":[",
            api == API_TEXT ? "completions" : api == API_CHAT ? "chat.completions"
          : api == API_RESPONSES ? "responses" : "messages",
-           g->id, reuse ? reuse : "none", cached);
+           g->id, reuse ? reuse : "none", cached, reasoning_open ? "true" : "false");
     for (int i = 0; i < shape->n && i < 10; i++)
         sb_fmt(&sj, "%s\"%s\"", i ? "," : "", shape->kinds[i]);
     sb_lit(&sj, "]");
@@ -5362,7 +5367,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         if (g.raw_on && !g.dead && !receipt_file[0] && !prep.diag.receipt_error) { \
             prep.diag.receipt_error = serve_receipt(                               \
                 s, e, &g, prompt, api, chat, gen_rng, q.max_tokens, prep.n_prompt,   \
-                n_gen, keep, prep.diag.prompt_reuse, spec_used, &shape,            \
+                n_gen, keep, prep.diag.prompt_reuse, spec_used, primed, &shape,    \
                 prep.diag.context_id, req, receipt_file, receipt_chain);           \
             if (!prep.diag.receipt_error) {                                        \
                 prep.diag.receipt_file = receipt_file;                             \
