@@ -3689,9 +3689,10 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // a bad timeout must not silently become 0 (which disables the deadline)
     SV.req_timeout = env_f64("RUNNER_REQUEST_TIMEOUT", 0.0, 1e9, SV.req_timeout);
     // Shared, forkable prompt prefixes. Sized in host RAM rather than as a
-    // fraction of anything, because it is the one cache whose useful size is
-    // set by the *traffic* (how many distinct system/tool/schema blocks the
-    // agents on this box use) and not by the model.
+    // fraction of anything, because its useful size is set by the *traffic*
+    // (how many distinct system/tool/schema blocks the agents on this box
+    // use); unset, each loaded model then raises it to hold one of its own
+    // full-context entries (prefix_cache_fit_model, R4.26.13).
     {
         uint64_t mb  = env_u64("RUNNER_PREFIX_CACHE_MB", 0, 1u << 20, 512);
         double   ttl = env_f64("RUNNER_PREFIX_CACHE_TTL", 0.0, 1e9, 600.0);
@@ -3796,6 +3797,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 fprintf(stderr, "error: out of memory initializing slot %d engine\n", i);
                 return 1;
             }
+            prefix_cache_fit_model(s->m);   // R4.26.13: once per model; it only raises
             // CLI generation applies this after engine_init; server slots are
             // separate engines and must receive the same process-level flag.
             s->e.ignore_eos = ignore_eos;

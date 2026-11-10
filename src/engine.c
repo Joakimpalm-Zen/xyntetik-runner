@@ -730,6 +730,44 @@ void prefix_cache_configure(size_t budget_bytes, double ttl_s) {
     pthread_mutex_unlock(&PFX.mu);
 }
 
+size_t prefix_cache_budget_for(size_t entry_bytes, uint64_t ram_bytes) {
+    size_t want = entry_bytes > SIZE_MAX / 2 ? SIZE_MAX : 2 * entry_bytes;
+    if (ram_bytes > 0 && (uint64_t)want > ram_bytes / 8) want = (size_t)(ram_bytes / 8);
+    return want > PFX_BUDGET_FLOOR ? want : PFX_BUDGET_FLOOR;
+}
+
+// The fixed 512 MB was sized from the traffic (how many distinct system,
+// tool and schema blocks the agents on a box use) and not from the model,
+// and an entry over half the budget is not stored whole: a recurrent model
+// stores nothing, a dense one a truncated prefix. On Qwen3.5-4B no prompt
+// past 6,048 tokens was cached, while an agent's prompt grows towards the
+// context; on CUDA too, where a hybrid slot forks a shared entry through the
+// host since R4.26.7. The floor keeps the traffic sizing; the model's own
+// full-context entry sets what it must at least hold.
+void prefix_cache_fit_model(const model_t *m) {
+    const char *set = getenv("RUNNER_PREFIX_CACHE_MB");
+    if (!m || m->n_ctx <= 0 || (set && *set)) return;
+    size_t entry = prefix_cache_entry_bytes(m, m->n_ctx);
+    uint64_t ram = plat_ram_bytes();
+    size_t want = prefix_cache_budget_for(entry, ram);
+    pthread_mutex_lock(&PFX.mu);
+    pfx_defaults();
+    bool raised = PFX.budget > 0 && want > PFX.budget;
+    if (raised) PFX.budget = want;
+    size_t budget = PFX.budget;
+    pthread_mutex_unlock(&PFX.mu);
+    if (!raised) return;
+    if (want < 2 * entry)
+        fprintf(stderr, "prefix cache: budget %zu MB, an eighth of RAM; one %d-token entry of "
+                "this model is %zu MB, so a prompt is stored whole up to about half the "
+                "budget (RUNNER_PREFIX_CACHE_MB sets it)\n",
+                budget >> 20, m->n_ctx, entry >> 20);
+    else
+        fprintf(stderr, "prefix cache: budget %zu MB, room for one %d-token entry of this "
+                "model (%zu MB) under the half-budget rule (RUNNER_PREFIX_CACHE_MB sets it)\n",
+                budget >> 20, m->n_ctx, entry >> 20);
+}
+
 void prefix_cache_clear(void) {
     pthread_mutex_lock(&PFX.mu);
     while (PFX.head) pfx_drop(&PFX.head);

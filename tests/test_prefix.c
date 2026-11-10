@@ -468,6 +468,25 @@ static void test_key_ignores_the_path_spelling(void) {
     }
 }
 
+// R4.26.13: the default budget a loaded model raises the cache to. Twice
+// its full-context entry (one such entry under the half-budget rule), never
+// below the traffic-sized floor, never above an eighth of RAM.
+static void test_default_budget_bounds(void) {
+    const size_t MiB = (size_t)1 << 20;
+    const uint64_t GiB = (uint64_t)1 << 30;
+    ck(prefix_cache_budget_for(0, 0) == PFX_BUDGET_FLOOR, "budget: no entry is the floor");
+    ck(prefix_cache_budget_for(100 * MiB, 8 * GiB) == PFX_BUDGET_FLOOR,
+       "budget: a small model's entry keeps the 512 MB floor");
+    ck(prefix_cache_budget_for(1024 * MiB, 64 * GiB) == 2048 * MiB,
+       "budget: twice a full-context entry when RAM allows");
+    ck(prefix_cache_budget_for(10240 * MiB, 16 * GiB) == 2048 * MiB,
+       "budget: capped at an eighth of RAM");
+    ck(prefix_cache_budget_for(1024 * MiB, 2 * GiB) == PFX_BUDGET_FLOOR,
+       "budget: the cap never takes it below the floor");
+    ck(prefix_cache_budget_for(SIZE_MAX / 2 + 1, 0) == SIZE_MAX,
+       "budget: twice a huge entry saturates instead of wrapping");
+}
+
 static void test_key_changes_after_in_place_weight_edit(void) {
     const char *orig = g_path;
     const char *tmp = "prefix-key-replaced.gguf";
@@ -641,6 +660,7 @@ int main(int argc, char **argv) {
     test_fork_is_bit_identical();
     test_key_rejects_incompatible_snapshots();
     test_key_changes_after_in_place_weight_edit();
+    test_default_budget_bounds();
     test_key_ignores_the_path_spelling();
     test_eviction();
     if (g_fail) { fprintf(stderr, "test-prefix FAILED\n"); return 1; }
