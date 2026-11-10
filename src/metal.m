@@ -840,6 +840,11 @@ static bool metal_moe_supported(const model_t *m) {
         fprintf(stderr, "gpu: this MoE geometry is outside the Metal router limit — using CPU\n");
         return false;
     }
+    // LatentMoE: no Metal path at the latent width (see cuda_admit)
+    if (m->moe_latent > 0) {
+        fprintf(stderr, "gpu: LatentMoE has no Metal path, using CPU\n");
+        return false;
+    }
     if (!model_moe_router_is_plain(m)) {
         fprintf(stderr, "gpu: this model's MoE router has no Metal kernel — using CPU\n");
         return false;

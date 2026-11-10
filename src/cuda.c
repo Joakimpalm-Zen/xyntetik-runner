@@ -3550,6 +3550,17 @@ static bool cuda_admit(model_t *m) {
             return false;
         }
     }
+    // LatentMoE (Nemotron 3.5 Super and Bolt): the experts run at the latent
+    // width between ffn_latent_down and ffn_latent_up, which no device path
+    // or host bank here does. Refused by name, ahead of the router checks
+    // that refuse these models today, so a router kernel added later cannot
+    // admit them at the wrong width.
+    if (m->moe_latent > 0) {
+        fprintf(stderr, "gpu: LatentMoE (experts at width %d between "
+                "ffn_latent_down and ffn_latent_up) has no device path, "
+                "running on CPU\n", m->moe_latent);
+        return false;
+    }
     if (m->n_expert > 0 && !model_moe_router_is_plain_any_norm(m)) {
         fprintf(stderr, "gpu: this model's MoE router (gating=%d groups=%d "
                 "norm_w=%d scale=%g) has no device kernel — running on CPU\n",

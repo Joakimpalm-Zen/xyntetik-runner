@@ -39,8 +39,22 @@ granite-4.0-h NoPE layout.
 under both real on-disk spellings. It is the source fixture for the non-uniform
 per-layer expert-count prune gate.
 
+`--latent L` gives `nemotron_h_moe` the LatentMoE layout of Nemotron 3.5 Super
+and Bolt: moe_latent_size L, ffn_latent_down [E, L] and ffn_latent_up [L, E] on
+each MoE block, and routed experts at width L. It also writes
+<out>.composed.gguf, the same model without the latent pair, whose experts are
+the latent ones composed with it (up . down_proj, up_proj . down). The router,
+the shared expert and every other tensor are the same bytes. By linearity the
+two compute the same function, so their logits agree to f32 rounding, and a
+latent pair applied in the wrong place or order shows as a disagreement.
+HYBRID_TEST_LATENT_BREAK breaks the latent file for the loader's refusals:
+`no-up` drops ffn_latent_up, `no-key` drops moe_latent_size, `wide` declares a
+latent width past E, and `short-down` writes ffn_latent_down one row short.
+`zero-experts` zeroes the routed experts, the control that shows they reach
+the logits.
+
 Usage:  make-test-hybrid.py <out-prefix> [--arch granitehybrid] [--dense] [--rope]
-                                      [--prune-fixture]
+                                      [--prune-fixture] [--latent L]
 Writes <out>.gguf (valid) and <out>.missing-ssm_d.gguf (drops one SSM tensor).
 """
 import os
@@ -61,6 +75,10 @@ ROPE = "--rope" in sys.argv
 PRUNE_FIXTURE = "--prune-fixture" in sys.argv
 if PRUNE_FIXTURE and ARCH != "nemotron_h_moe":
     sys.exit("--prune-fixture requires --arch nemotron_h_moe")
+LATENT = int(sys.argv[sys.argv.index("--latent") + 1]) if "--latent" in sys.argv else 0
+BREAK = os.environ.get("HYBRID_TEST_LATENT_BREAK", "")
+if LATENT and (ARCH != "nemotron_h_moe" or PRUNE_FIXTURE or DENSE):
+    sys.exit("--latent requires --arch nemotron_h_moe, without --prune-fixture or --dense")
 
 # tiny geometry (structurally faithful to Mamba-2, not to any real size)
 E = 32                    # embedding_length
@@ -150,6 +168,8 @@ def meta():
         *([ku(f"{p}.expert_gating_func", int(os.environ["HYBRID_TEST_GATING"]))]
           if os.environ.get("HYBRID_TEST_GATING") else []),
         # Mamba-2 SSM block
+        *([ku(f"{p}.moe_latent_size", E + 1 if BREAK == "wide" else LATENT)]
+          if LATENT and not COMPOSED and BREAK != "no-key" else []),
         ku(f"{p}.ssm.conv_kernel", SSM_CONV),
         ku(f"{p}.ssm.inner_size", SSM_INNER),
         ku(f"{p}.ssm.state_size", SSM_STATE),
@@ -175,9 +195,61 @@ def dense_ffn(i):
     ]
 
 
+# --latent: each MoE block's latent tensors, drawn once and kept, so the
+# composed file is built from the same draws
+_latent = {}
+
+
+def matmul(a, b, n, k, m):
+    """a [n][k] times b [k][m], row-major flat lists."""
+    return [sum(a[r * k + j] * b[j * m + c] for j in range(k))
+            for r in range(n) for c in range(m)]
+
+
+def latent_moe(i):
+    L = LATENT
+    if i not in _latent:
+        _latent[i] = {
+            "gate_inp": flist(E * N_EXPERT),
+            "down_proj": flist(L * E),       # rows k of length E: lat = D x
+            "up_proj": flist(E * L),         # rows i of length L: out = U s
+            "up": [flist(FF_EXP * L) for _ in range(N_EXPERT)],    # rows j, length L
+            "down": [flist(L * FF_EXP) for _ in range(N_EXPERT)],  # rows k, length FF
+            "up_shexp": flist(E * FF_SHEXP), "down_shexp": flist(FF_SHEXP * E),
+        }
+    t = _latent[i]
+    if COMPOSED:
+        # up_e . D: [FF, L] x [L, E]; U . down_e: [E, L] x [L, FF]
+        up = sum((matmul(t["up"][e], t["down_proj"], FF_EXP, L, E)
+                  for e in range(N_EXPERT)), [])
+        down = sum((matmul(t["up_proj"], t["down"][e], E, L, FF_EXP)
+                    for e in range(N_EXPERT)), [])
+        ed, extra = E, []
+    else:
+        up, down = sum(t["up"], []), sum(t["down"], [])
+        if BREAK == "zero-experts":
+            up, down = [0.0] * len(up), [0.0] * len(down)
+        ed = L
+        short = 1 if BREAK == "short-down" else 0
+        extra = [(f"blk.{i}.ffn_latent_down.weight", [E, L - short],
+                  pack(t["down_proj"][:(L - short) * E]))]
+        if BREAK != "no-up":
+            extra.append((f"blk.{i}.ffn_latent_up.weight", [L, E], pack(t["up_proj"])))
+    return [
+        (f"blk.{i}.ffn_norm.weight", [E], ones(E)),
+        (f"blk.{i}.ffn_gate_inp.weight", [E, N_EXPERT], pack(t["gate_inp"])),
+        (f"blk.{i}.ffn_up_exps.weight", [ed, FF_EXP, N_EXPERT], pack(up)),
+        (f"blk.{i}.ffn_down_exps.weight", [FF_EXP, ed, N_EXPERT], pack(down)),
+        (f"blk.{i}.ffn_up_shexp.weight", [E, FF_SHEXP], pack(t["up_shexp"])),
+        (f"blk.{i}.ffn_down_shexp.weight", [FF_SHEXP, E], pack(t["down_shexp"])),
+    ] + extra
+
+
 def moe(i):
     if DENSE:
         return dense_ffn(i)
+    if LATENT:
+        return latent_moe(i)
     # routed experts (fused 3D: {E, FF_EXP, N_EXPERT} etc.) + shared expert
     tensors = [
         (f"blk.{i}.ffn_norm.weight", [E], ones(E)),
@@ -253,5 +325,11 @@ def build(drop=None):
     return ts
 
 
+COMPOSED = False
 write_gguf(f"{OUT}.gguf", build(), meta())
 write_gguf(f"{OUT}.missing-ssm_d.gguf", build(drop="ssm_d"), meta())
+if LATENT:
+    # the same draws in the same order: rebuild after resetting the stream
+    _seed, _latent = 0x5510, {}
+    COMPOSED = True
+    write_gguf(f"{OUT}.composed.gguf", build(), meta())
