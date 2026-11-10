@@ -195,15 +195,29 @@ def _init_float_tensors(model):
 
 
 def _float32_build(model):
-    """The same class built again from the model's own config in float32, its parameters on the meta device
-    (accelerate's init_empty_weights with include_buffers=False: no weight is allocated, every buffer is real)."""
+    """The same class built again from the model's own config in float32, every parameter moved to the meta device as
+    it is registered and every buffer left real: what accelerate's init_on_device(include_buffers=False) does, here
+    so the reference path needs no package beyond torch and transformers. A parameter is allocated only for the
+    moment between its creation and its registration."""
+    import contextlib
     import torch
-    try:
-        from accelerate import init_empty_weights
-    except ImportError:
-        raise SystemExit("--upcast-at-use needs accelerate, to build the float32 values of the tensors the model's "
-                         "__init__ computes (pip install accelerate)")
-    with init_empty_weights(include_buffers=False):
+
+    @contextlib.contextmanager
+    def params_on_meta():
+        old = torch.nn.Module.register_parameter
+
+        def register(mod, name, param):
+            old(mod, name, param)
+            if param is not None:
+                p = mod._parameters[name]
+                mod._parameters[name] = type(p)(p.to("meta"), requires_grad=p.requires_grad)
+        torch.nn.Module.register_parameter = register
+        try:
+            yield
+        finally:
+            torch.nn.Module.register_parameter = old
+
+    with params_on_meta():
         return type(model)._from_config(model.config, dtype=torch.float32)
 
 
@@ -711,7 +725,7 @@ def main():
                          "at the stored footprint, for a parent too large to load in "
                          "float32 (upcast_at_use). What the model's __init__ computes "
                          "(gemma's embedding scale) is rebuilt in float32 first and "
-                         "checked against a float32 build; needs accelerate")
+                         "checked against a float32 build")
     ap.add_argument("--offload-dir",
                     help="stream the weights that do not fit --max-memory from disk, "
                          "block by block at use (accelerate's disk offload): float32 "

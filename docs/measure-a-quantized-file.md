@@ -99,7 +99,7 @@ the hidden size) are built again in float32 from the model's config, because
 a BF16 load makes them already rounded. On gemma-4-26B the scale came out
 53.0 where float32 gives 53.066. Then every such tensor is compared with a
 float32 build of the same class, and the run stops, naming it, if any still
-differs. This path needs `accelerate`.
+differs.
 
 The run stops if a score file's token ids differ from the reference
 tokenizer's ids for the same text. That is a finding about the GGUF's

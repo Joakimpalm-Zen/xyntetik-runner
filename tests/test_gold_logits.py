@@ -288,7 +288,6 @@ def _gemma4_loads(tmp_path):
     pytest = __import__("pytest")
     torch = pytest.importorskip("torch")
     transformers = pytest.importorskip("transformers")
-    pytest.importorskip("accelerate")
     if not hasattr(transformers, "Gemma4TextConfig"):
         pytest.skip("this transformers has no Gemma 4")
     _, model = _tiny_gemma4(torch, transformers)
