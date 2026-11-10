@@ -42,6 +42,9 @@ bool gpu_kv_q8_ok(void) {
 bool gpu_kv_fp4_ok(void) {
     return false;
 }
+bool gpu_kv_f32_ok(void) {
+    return false;
+}
 
 bool gpu_quant_ok(int type) {
     (void)type;

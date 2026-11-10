@@ -1408,10 +1408,17 @@ static CUdeviceptr f32_dbuf_ones(const float *src, size_t n, const char *what,
 }
 
 // one integer naming the cache layout for the shared-weights identity: 0 f16,
-// 1 q8_0, 2 fp4, 3 the k8v4 split (K q8_0, V fp4). Two instances with
-// different layouts cannot share a device cache.
+// 1 q8_0, 2 fp4, 3 the k8v4 split (K q8_0, V fp4), 4 f32. Two instances with
+// different layouts cannot share a device cache. Not the kernels' kind
+// numbering (model_kv_kind_k), where 3 is f32.
 static int kv_identity(const model_t *m) {
-    return m->kv_split ? 3 : m->kv_fp4 ? 2 : (int)m->kv_q8;
+    return m->kv_f32 ? 4 : m->kv_split ? 3 : m->kv_fp4 ? 2 : (int)m->kv_q8;
+}
+
+// the units k_store_kv's threads store a row in, for cache kind `kind`
+// (kernels.cu kv_units): an fp4 or q8_0 block, else one element (f16, f32)
+static int kv_store_units(int kind, int kv_dim) {
+    return kind == 3 ? kv_dim : kind == 2 ? kv_dim / 16 : kind ? kv_dim / 32 : kv_dim;
 }
 
 bool gpu_kv_q8_ok(void) {
@@ -1419,6 +1426,9 @@ bool gpu_kv_q8_ok(void) {
 }
 bool gpu_kv_fp4_ok(void) {
     return true;    // k_store_kv / k_attn / k_attn_dec read fp4 blocks (kind 2)
+}
+bool gpu_kv_f32_ok(void) {
+    return true;    // and f32 rows (kind 3, --kv f32, R6.33)
 }
 
 bool gpu_moe_ok(void) {
@@ -7763,8 +7773,7 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
         // one thread per stored unit: per value for fp16, per 32-value
         // q8_0 block or 16-value fp4 block (the block shares one scale);
         // the grid covers the larger of the K and V unit counts
-        int ku = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
-        int vu = vq8 == 2 ? kv_dim / 16 : vq8 ? kv_dim / 32 : kv_dim;
+        int ku = kv_store_units(q8, kv_dim), vu = kv_store_units(vq8, kv_dim);
         int units = ku > vu ? ku : vu;
         int kring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
         // a shared V (the absorbed MLA form) is K's table: its store writes
@@ -7825,8 +7834,8 @@ static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
     if (!f) return false;
     int G = m->n_head / n_kv;
     int hb = G < R ? G : R, qs = R / hb, ngh = (G + hb - 1) / hb;
-    int kw = (model_kv_kind_k(m) == 2 ? hd / 16 * 9 : model_kv_kind_k(m) ? hd / 32 * 34 : 2 * hd);
-    int vw = (model_kv_kind_v(m) == 2 ? hd / 16 * 9 : model_kv_kind_v(m) ? hd / 32 * 34 : 2 * hd);
+    int kw = (int)kv_bytes_of_kind(model_kv_kind_k(m), (size_t)hd);
+    int vw = (int)kv_bytes_of_kind(model_kv_kind_v(m), (size_t)hd);
     kw = ((kw + 3) / 4) | 1;
     vw = ((vw + 3) / 4) | 1;
     unsigned smem = (unsigned)sizeof(float) *
@@ -8033,12 +8042,16 @@ static unsigned attn_dec_gqa_smem(const model_t *m, int hd, int n_kv) {
     if (!attn_dec_on() || hd % 2 || hd > 256 || n_kv < 1 || m->n_head % n_kv ||
         m->n_head / n_kv > GMAX)
         return 0;
-    int kw = (model_kv_kind_k(m) == 2 ? hd / 16 * 9 : model_kv_kind_k(m) ? hd / 32 * 34 : 2 * hd);
-    int vw = (model_kv_kind_v(m) == 2 ? hd / 16 * 9 : model_kv_kind_v(m) ? hd / 32 * 34 : 2 * hd);
+    int kw = (int)kv_bytes_of_kind(model_kv_kind_k(m), (size_t)hd);
+    int vw = (int)kv_bytes_of_kind(model_kv_kind_v(m), (size_t)hd);
     kw = ((kw + 3) / 4) | 1;
     vw = ((vw + 3) / 4) | 1;
-    return (unsigned)sizeof(float) *
-           (unsigned)(GMAX * (hd + 4) + 2 * TK * (kw > vw ? kw : vw) + GMAX * TK + GMAX);
+    unsigned smem = (unsigned)sizeof(float) *
+                    (unsigned)(GMAX * (hd + 4) + 2 * TK * (kw > vw ? kw : vw) + GMAX * TK + GMAX);
+    // the 48 KB a launch gets without opting in: f16 at head_dim 256 needs
+    // 42,400 B; f32 rows (--kv f32) fit up to head_dim 164 and past it take
+    // k_attn_dec
+    return smem <= 48 * 1024 ? smem : 0;
 }
 
 // The grouped decode attention for the single query column, or false
@@ -8079,10 +8092,13 @@ static unsigned attn_dec_mla_smem(const gpu_t *g, const model_t *m, int hd, int 
     if (G > MD_GMAX || hd > 640 || hd % 2 || vlo % 2 || vlo < 0 || vlo >= hd ||
         G * (hd - vlo) / 2 > MD_NJ * MD_THREADS)
         return 0;
-    int kb = model_kv_kind_k(m) == 2 ? hd / 16 * 9 : model_kv_kind_k(m) ? hd / 32 * 34 : 2 * hd;
+    int kb = (int)kv_bytes_of_kind(model_kv_kind_k(m), (size_t)hd);
     int bws = ((kb + 3) / 4) | 1;
-    return (unsigned)sizeof(float) *
-           (unsigned)(MD_GMAX * (hd + 4) + MD_TK * bws + MD_GMAX * MD_TK + MD_GMAX);
+    unsigned smem = (unsigned)sizeof(float) *
+                    (unsigned)(MD_GMAX * (hd + 4) + MD_TK * bws + MD_GMAX * MD_TK + MD_GMAX);
+    // MD_SMEM_MAX is what the kernel opted into, sized for f16 rows up to 640
+    // wide; f32 rows (--kv f32) past it take k_attn_dec
+    return smem <= MD_SMEM_MAX ? smem : 0;
 }
 static _Atomic unsigned long g_attn_dec_mla_dispatches;
 unsigned long gpu_attn_dec_mla_dispatches(void) { return g_attn_dec_mla_dispatches; }
@@ -10026,8 +10042,7 @@ static bool fwd_batch(gpu_batch *B, model_t *m, int tn) {
         {   // each column stores into its own sequence's cache at its own row
             uint64_t l_off = model_k_byte_off(m, l), v_off = model_v_byte_off(m, l);
             int q8 = model_kv_kind_k(m), vq8 = model_kv_kind_v(m);   // cache KINDS
-            int ku = q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
-            int vu = vq8 == 2 ? kv_dim / 16 : vq8 ? kv_dim / 32 : kv_dim;
+            int ku = kv_store_units(q8, kv_dim), vu = kv_store_units(vq8, kv_dim);
             int units = ku > vu ? ku : vu;
             int kring = model_kv_is_ring(m, l) ? m->kv_ring : 0;
             void *ps[] = { &g->kt, &g->vt, &B->kcp_d, &B->vcp_d, &kv_dim,

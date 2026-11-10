@@ -1590,6 +1590,9 @@ bool gpu_kv_q8_ok(void) {
 bool gpu_kv_fp4_ok(void) {
     return true;    // k_store_kv / k_attn* read fp4 blocks (kv_kind 2)
 }
+bool gpu_kv_f32_ok(void) {
+    return false;   // the Metal attention reads f16, q8_0 and fp4 rows; --kv f32 is CPU-only here
+}
 
 // Largest K such that the prologue plus layers [0,K) fit `budget` bytes, and
 // whether a prefix wrap is legal for this file at all.

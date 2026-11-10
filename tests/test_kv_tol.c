@@ -150,11 +150,13 @@ typedef struct {
     bool        kv_q8;
     bool        kv_fp4;
     bool        kv_split;    // --kv k8v4: K q8_0, V fp4
+    bool        kv_f32;      // --kv f32: K and V rows unrounded (R6.33 on the GPU)
     int         gpu_mode;
     int         n_batch;     // prompt batch size; varying it only reassociates
     bool        available;   // config actually ran as requested
     float      *logits;      // [STEPS][n_vocab], owned
     int32_t    *top1;        // [STEPS], owned
+    unsigned long tiled, gqa, mla;   // attention route dispatches during this config's run
 } config;
 
 static model_params params_for(const config *c, int n_ctx) {
@@ -167,6 +169,7 @@ static model_params params_for(const config *c, int n_ctx) {
     p.kv_q8     = c->kv_q8;
     p.kv_fp4    = c->kv_fp4;
     p.kv_split  = c->kv_split;
+    p.kv_f32    = c->kv_f32;
     p.reserve_vram_pct = g_reserve_vram_pct;
     return p;
 }
@@ -212,6 +215,7 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
     bool got_q8  = m.kv_q8;
     bool got_fp4 = m.kv_fp4;
     bool got_split = m.kv_split;
+    bool got_f32 = m.kv_f32;
     bool got_gpu = m.gpu != NULL && m.gpu_layers > 0;
 
     // Cross-platform safety invariant, checked on every platform including
@@ -229,13 +233,19 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
        "a backend without both q8 and fp4 kernels never runs a k8v4 KV cache");
     ck(!(got_split && (got_q8 || got_fp4)),
        "the k8v4 split is its own layout, never combined with q8 or fp4");
+    // the f32 twin: before R6.33 the CUDA kernels and cuda.c's row-width
+    // sites read a kind 3 as q8_0, and only the refusals kept one away
+    ck(!(got_f32 && got_gpu && !gpu_kv_f32_ok()),
+       "a backend without f32 attention kernels never runs an f32 KV cache");
+    ck(!(got_f32 && (got_q8 || got_fp4 || got_split)),
+       "the f32 cache is its own layout, never combined with q8, fp4 or k8v4");
 
     if (c->kv_q8 != got_q8 || c->kv_fp4 != got_fp4 || c->kv_split != got_split ||
-        (c->gpu_mode == GPU_AUTO) != got_gpu) {
-        fprintf(stderr, "  %-12s skipped (asked kv_q8=%d kv_fp4=%d k8v4=%d gpu=%d, got "
-                "kv_q8=%d kv_fp4=%d k8v4=%d gpu=%d/%d layers)\n", c->name, (int)c->kv_q8,
-                (int)c->kv_fp4, (int)c->kv_split, c->gpu_mode == GPU_AUTO,
-                (int)got_q8, (int)got_fp4, (int)got_split,
+        c->kv_f32 != got_f32 || (c->gpu_mode == GPU_AUTO) != got_gpu) {
+        fprintf(stderr, "  %-12s skipped (asked kv_q8=%d kv_fp4=%d k8v4=%d f32=%d gpu=%d, got "
+                "kv_q8=%d kv_fp4=%d k8v4=%d f32=%d gpu=%d/%d layers)\n", c->name, (int)c->kv_q8,
+                (int)c->kv_fp4, (int)c->kv_split, (int)c->kv_f32, c->gpu_mode == GPU_AUTO,
+                (int)got_q8, (int)got_fp4, (int)got_split, (int)got_f32,
                 m.gpu_layers, m.n_layer);
         model_free(&m);
         return false;
@@ -245,6 +255,8 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
     c->top1   = malloc(sizeof(int32_t) * STEPS);
     if (!c->logits || !c->top1) { model_free(&m); return false; }
 
+    unsigned long tiled0 = gpu_attn_tiled_dispatches(), gqa0 = gpu_attn_dec_gqa_dispatches(),
+                  mla0 = gpu_attn_dec_mla_dispatches();
     // Prefill in n_batch-sized chunks: model_forward_batch processes at most
     // n_batch tokens per call, and only the final chunk needs logits.
     int prefill = n_tok - STEPS;
@@ -265,6 +277,21 @@ static bool run_config(config *c, const char *path, const int32_t *toks,
         memcpy(c->logits + (size_t)s * n_vocab, lg,
                sizeof(float) * (size_t)n_vocab);
         c->top1[s] = (int32_t)argmax(lg, n_vocab);
+    }
+    c->tiled = gpu_attn_tiled_dispatches() - tiled0;
+    c->gqa = gpu_attn_dec_gqa_dispatches() - gqa0;
+    c->mla = gpu_attn_dec_mla_dispatches() - mla0;
+    // A device forward that fails releases the backend and the sweep goes on
+    // on the CPU, so a GPU arm can end as a CPU arm and agree with the CPU
+    // perfectly. It came up on the GPU at load; it must still be there.
+    // (R6.33: an f32 cache on deepseek2 launched a zero-block store grid and
+    // passed every check this way.)
+    if (c->gpu_mode == GPU_AUTO && (m.gpu_lost || m.gpu == NULL)) {
+        fprintf(stderr, "FAIL: %s lost the GPU during its sweep and finished on the CPU (%s)\n",
+                c->name, m.route_fallback[0] ? m.route_fallback : "no reason recorded");
+        g_fail = 1;
+        model_free(&m);
+        return false;
     }
     model_free(&m);
 
@@ -386,26 +413,31 @@ int main(int argc, char **argv) {
     printf("kv-tol: %s | %d tokens, %d teacher-forced positions\n",
            path, n_tok, STEPS);
 
-    enum { N_CFG = 11 };
+    enum { N_CFG = 14 };
     config cfgs[N_CFG] = {
-        { "f16-cpu",   false, false, false, GPU_OFF,  N_BATCH, false, NULL, NULL },
-        { "f16-gpu",   false, false, false, GPU_AUTO, N_BATCH, false, NULL, NULL },
-        { "q8-cpu",    true,  false, false, GPU_OFF,  N_BATCH, false, NULL, NULL },
-        { "q8-gpu",    true,  false, false, GPU_AUTO, N_BATCH, false, NULL, NULL },
+        { "f16-cpu",   false, false, false, false, GPU_OFF,  N_BATCH, false, NULL, NULL, 0, 0, 0 },
+        { "f16-gpu",   false, false, false, false, GPU_AUTO, N_BATCH, false, NULL, NULL, 0, 0, 0 },
+        { "q8-cpu",    true,  false, false, false, GPU_OFF,  N_BATCH, false, NULL, NULL, 0, 0, 0 },
+        { "q8-gpu",    true,  false, false, false, GPU_AUTO, N_BATCH, false, NULL, NULL, 0, 0, 0 },
         // the negative control: same code, same device, same cache format,
         // only the prompt batching differs, so every difference it shows is
         // pure reassociation noise amplified by the q8 quantizer
-        { "q8-cpu-b1", true,  false, false, GPU_OFF,  1,       false, NULL, NULL },
+        { "q8-cpu-b1", true,  false, false, false, GPU_OFF,  1,       false, NULL, NULL, 0, 0, 0 },
         // the same three arms for the fp4 cache (2026-09-18)
-        { "fp4-cpu",   false, true,  false, GPU_OFF,  N_BATCH, false, NULL, NULL },
-        { "fp4-gpu",   false, true,  false, GPU_AUTO, N_BATCH, false, NULL, NULL },
-        { "fp4-cpu-b1", false, true, false, GPU_OFF,  1,       false, NULL, NULL },
+        { "fp4-cpu",   false, true,  false, false, GPU_OFF,  N_BATCH, false, NULL, NULL, 0, 0, 0 },
+        { "fp4-gpu",   false, true,  false, false, GPU_AUTO, N_BATCH, false, NULL, NULL, 0, 0, 0 },
+        { "fp4-cpu-b1", false, true, false, false, GPU_OFF,  1,       false, NULL, NULL, 0, 0, 0 },
         // and for the k8v4 split (K q8_0, V fp4): the one layout where the K
         // and V caches have different row geometry, so every offset/stride
         // site that once assumed one row size is exercised here
-        { "k8v4-cpu",   false, false, true, GPU_OFF,  N_BATCH, false, NULL, NULL },
-        { "k8v4-gpu",   false, false, true, GPU_AUTO, N_BATCH, false, NULL, NULL },
-        { "k8v4-cpu-b1", false, false, true, GPU_OFF, 1,       false, NULL, NULL },
+        { "k8v4-cpu",   false, false, true, false, GPU_OFF,  N_BATCH, false, NULL, NULL, 0, 0, 0 },
+        { "k8v4-gpu",   false, false, true, false, GPU_AUTO, N_BATCH, false, NULL, NULL, 0, 0, 0 },
+        { "k8v4-cpu-b1", false, false, true, false, GPU_OFF, 1,       false, NULL, NULL, 0, 0, 0 },
+        // and the unrounded cache (R6.33): the CPU's f32 rows, the device's,
+        // and the CPU's own reassociation floor at prompt batch 1
+        { "f32-cpu",    false, false, false, true, GPU_OFF,  N_BATCH, false, NULL, NULL, 0, 0, 0 },
+        { "f32-gpu",    false, false, false, true, GPU_AUTO, N_BATCH, false, NULL, NULL, 0, 0, 0 },
+        { "f32-cpu-b1", false, false, false, true, GPU_OFF,  1,       false, NULL, NULL, 0, 0, 0 },
     };
 
     // n_vocab is a property of the file; read it from the first load
@@ -428,7 +460,8 @@ int main(int argc, char **argv) {
     config *f16c = &cfgs[0], *f16g = &cfgs[1], *q8c = &cfgs[2],
            *q8g  = &cfgs[3], *q8b1 = &cfgs[4],
            *fp4c = &cfgs[5], *fp4g = &cfgs[6], *fp4b1 = &cfgs[7],
-           *k84c = &cfgs[8], *k84g = &cfgs[9], *k84b1 = &cfgs[10];
+           *k84c = &cfgs[8], *k84g = &cfgs[9], *k84b1 = &cfgs[10],
+           *f32c = &cfgs[11], *f32g = &cfgs[12], *f32b1 = &cfgs[13];
 
     // ---------------------------------------------------------- invariant
     // fp16 GPU is token-identical to fp16 CPU. Strict, and staying strict:
@@ -670,6 +703,63 @@ int main(int argc, char **argv) {
            "standard (or the fixed bar)");
     } else {
         printf("  k8v4 tolerance gate: skipped (k8v4 or GPU unavailable)\n");
+    }
+
+    // ------------------------------------------------------------ f32 arms
+    // The unrounded cache is not lossy, so it answers to f16's contracts, not
+    // the lossy formats' (R6.33): top-1 identity with the CPU, as f16 has; a
+    // distance from the CPU's f32 no larger (x REASSOC_SLACK) than the
+    // device's f16 distance from the CPU's f16, since the projections and the
+    // attention reduce in the same device order under both; and closer to the
+    // CPU's f32 than the device's f16 cache is, which is what the option is
+    // for. A misread kind 3 (q8_0 blocks under an f32 label, or rows sized at
+    // another width) lands at q8's distance or worse and fails the second and
+    // third. The routes are counted, so a pass says which kernels it covered.
+    for (int i = 0; i < N_CFG; i++)
+        if (cfgs[i].available && cfgs[i].gpu_mode == GPU_AUTO)
+            printf("  %-12s routes  : tiled prefill %lu, grouped decode %lu, MLA decode %lu\n",
+                   cfgs[i].name, cfgs[i].tiled, cfgs[i].gqa, cfgs[i].mla);
+    if (f16g->available && gpu_kv_f32_ok())
+        ck(f32g->available, "a backend whose attention reads f32 rows runs an f32 KV cache on the "
+                            "GPU when asked (it came up as something else)");
+    if (f32c->available && f32b1->available) {
+        int nd_b1; double w_b1;
+        top1_stats(f32c, f32b1, n_vocab, &nd_b1, &w_b1);
+        printf("  f32-cpu-b1 vs f32-cpu: mean|dlogit| %.6f, top1 diff %d/%d   (reassociation floor, "
+               "CPU only; reported)\n", mean_abs_diff(f32b1, f32c, n_vocab), nd_b1, STEPS);
+    }
+    if (f32c->available && f32g->available && f16c->available && f16g->available) {
+        double f32_impl = mean_abs_diff(f32g, f32c, n_vocab);
+        double f16_impl = mean_abs_diff(f16g, f16c, n_vocab);
+        double f16_vs_f32 = mean_abs_diff(f16g, f32c, n_vocab);
+        double ratio = f32_impl / (f16_impl > FLOOR_EPS ? f16_impl : FLOOR_EPS);
+        int n_diff; double worst;
+        top1_stats(f32c, f32g, n_vocab, &n_diff, &worst);
+        printf("  f32-gpu   vs f32-cpu : mean|dlogit| %.6f, top1 diff %d/%d, %.2fx the f16 pair's "
+               "%.6f (limit %.1fx)\n", f32_impl, n_diff, STEPS, ratio, f16_impl, REASSOC_SLACK);
+        printf("  f16-gpu   vs f32-cpu : mean|dlogit| %.6f   (the device's f16 cache against the "
+               "CPU's f32; the f32 cache must sit closer)\n", f16_vs_f32);
+        printf("  f32 kld             : gpu vs cpu %.3e, f16-gpu vs f32-cpu %.3e\n",
+               mean_kld(f32c, f32g, n_vocab), mean_kld(f32c, f16g, n_vocab));
+        ck(n_diff == 0, "f32 GPU is token-identical to f32 CPU (teacher-forced), as f16 is");
+        ck(ratio <= REASSOC_SLACK,
+           "f32 GPU differs from f32 CPU no more than f16 GPU differs from f16 CPU");
+        ck(f32_impl < f16_vs_f32,
+           "the device's f32 cache is closer to the CPU's f32 than its f16 cache is");
+        // KV_TOL_F32_ROUTES: the attention routes this fixture's f32 run must
+        // reach (the make target names them per fixture), so a green f32 gate
+        // cannot come from a route that never sized an f32 row
+        const char *want = getenv("KV_TOL_F32_ROUTES");
+        if (want) {
+            if (strstr(want, "tiled"))
+                ck(f32g->tiled > 0, "the f32 GPU run dispatched the tiled prefill attention");
+            if (strstr(want, "gqa"))
+                ck(f32g->gqa > 0, "the f32 GPU run dispatched the grouped decode attention");
+            if (strstr(want, "mla"))
+                ck(f32g->mla > 0, "the f32 GPU run dispatched the absorbed MLA decode attention");
+        }
+    } else {
+        printf("  f32 tolerance gate : skipped (f32 or GPU unavailable)\n");
     }
 
     for (int i = 0; i < N_CFG; i++) { free(cfgs[i].logits); free(cfgs[i].top1); }

@@ -894,6 +894,39 @@ $(TEST_CUDA_KVFP4): tests/test_cuda_kvfp4.c src/kernels_ptx.h $(QUANTS_OBJ) $(HD
 test-cuda-kv-fp4: $(TEST_CUDA_KVFP4)
 	./$(TEST_CUDA_KVFP4)
 
+# --kv f32 on CUDA (R6.33): the device stores the source bytes (test-cuda-kv-fp4's
+# f32 layout), its f32 cache answers to f16's contracts against the CPU's f32 on
+# every route a row width sizes (KV_TOL_F32_ROUTES names the routes each
+# fixture's run must dispatch: tiled prefill, grouped decode, the absorbed MLA
+# decode; the wide MLA rows, and head_dim 256 in the decode, take the generic
+# kernels, past the decode tiles' shared memory), and the microbatch stays
+# byte-identical over it. A run that did not reach the device fails.
+test-cuda-kv-f32: runner $(TEST_KV_TOL) $(TEST_CUDA_KVFP4) $(TEST_BATCH_ID) test.gguf test-q8.gguf
+	@set -e; \
+	$(PYTHON) scripts/make-test-model.py --arch deepseek2 test-deepseek2.gguf > /dev/null; \
+	$(PYTHON) scripts/make-test-model.py --arch deepseek2 --mla-wide test-attn-wide-mla.gguf > /dev/null; \
+	$(PYTHON) scripts/make-test-model.py --wide test-batch-wide.gguf > /dev/null; \
+	$(PYTHON) scripts/make-test-model.py --head-dim 256 --heads 4:2 test-attn-wide-256-4x2.gguf > /dev/null; \
+	./$(TEST_CUDA_KVFP4) > test-cuda-kv-f32.out 2>&1 || { cat test-cuda-kv-f32.out; exit 1; }; \
+	if grep -q 'skipped' test-cuda-kv-f32.out; then cat test-cuda-kv-f32.out; \
+	  echo "test-cuda-kv-f32: skipped (no CUDA device)"; exit 1; fi; \
+	echo "store: $$(tail -1 test-cuda-kv-f32.out)"; \
+	for fr in test.gguf:tiled,gqa test-q8.gguf:tiled,gqa test-deepseek2.gguf:tiled,mla test-attn-wide-mla.gguf: \
+	          test-attn-wide-256-4x2.gguf:tiled; do \
+	  f=$${fr%%:*}; r=$${fr#*:}; \
+	  KV_TOL_F32_ROUTES=$$r ./$(TEST_KV_TOL) $$f > test-cuda-kv-f32.out 2>&1 || { cat test-cuda-kv-f32.out; exit 1; }; \
+	  grep -q 'f32-gpu   vs f32-cpu' test-cuda-kv-f32.out || { cat test-cuda-kv-f32.out; \
+	    echo "test-cuda-kv-f32: $$f: the f32 GPU arm did not run"; exit 1; }; \
+	  echo "$$f: $$(grep 'f32-gpu   vs f32-cpu' test-cuda-kv-f32.out | sed 's/^ *//')"; \
+	done; \
+	for f in test.gguf test-batch-wide.gguf; do \
+	  for dec in 1 0; do \
+	    BATCH_ID_KV=f32 RUNNER_CUDA_ATTN_DEC=$$dec ./$(TEST_BATCH_ID) $$f > test-cuda-kv-f32.out 2>&1 || \
+	      { cat test-cuda-kv-f32.out; echo "test-cuda-kv-f32: $$f attn-dec=$$dec microbatch FAILED"; exit 1; }; \
+	    echo "$$f attn-dec=$$dec: $$(tail -1 test-cuda-kv-f32.out)"; \
+	  done; \
+	done
+
 # SIMD (AVX2/NEON) dot and dequant kernels vs an independent double-precision
 # reference; also pins q8_quant_row byte-identical to its scalar definition
 TEST_QUANTS_SIMD_SRC = tests/test_quants_simd.c $(QUANTS_OBJ)

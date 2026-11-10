@@ -63,10 +63,14 @@ static uint32_t st = 0x9E3779B9u;
 static float rnd(void) { st ^= st << 13; st ^= st >> 17; st ^= st << 5; return (float)(int32_t)st / 2147483648.0f; }
 
 static size_t row_bytes(int kind, int kv_dim) {
-    return kind == 2 ? (size_t)kv_dim / 16 * 9 : kind == 1 ? (size_t)kv_dim / 32 * 34 : (size_t)kv_dim * 2;
+    return kind == 3 ? (size_t)kv_dim * 4 : kind == 2 ? (size_t)kv_dim / 16 * 9
+         : kind == 1 ? (size_t)kv_dim / 32 * 34 : (size_t)kv_dim * 2;
 }
+// kind 3 (--kv f32, R6.33) is the projection itself: the CPU's f32 rows are a
+// copy, so the device's must be the source bytes, which no q8 or f16 row is
 static void ref_row(int kind, const float *src, uint8_t *dst, int kv_dim) {
-    if (kind == 2) fp4_quant_row(src, dst, kv_dim);
+    if (kind == 3) memcpy(dst, src, sizeof(float) * (size_t)kv_dim);
+    else if (kind == 2) fp4_quant_row(src, dst, kv_dim);
     else if (kind == 1) q8_quant_row(src, dst, kv_dim);
     else for (int i = 0; i < kv_dim; i++) ((f16_t *)dst)[i] = f32_to_f16(src[i]);
 }
@@ -83,8 +87,8 @@ static int run_case(CUfunction f, const float *k, const float *v, int kv_dim, in
     CK(cu.MemsetD8(dkc, 0xAB, kb * cols)); CK(cu.MemsetD8(dvc, 0xAB, vb * cols)); CK(cu.MemcpyHtoD(dpos, &pos0, sizeof pos0));
     // k_store_kv(k, v, kc, vc, kv_dim, l_off, posp, q8, ring, v_off, vq8): the
     // cuda.c launch shape, one thread per stored unit over max(units_k, units_v)
-    int ku = kk == 2 ? kv_dim / 16 : kk ? kv_dim / 32 : kv_dim;
-    int vu = vk == 2 ? kv_dim / 16 : vk ? kv_dim / 32 : kv_dim;
+    int ku = kk == 3 ? kv_dim : kk == 2 ? kv_dim / 16 : kk ? kv_dim / 32 : kv_dim;
+    int vu = vk == 3 ? kv_dim : vk == 2 ? kv_dim / 16 : vk ? kv_dim / 32 : kv_dim;
     int units = ku > vu ? ku : vu, ring = 0;
     unsigned long long l_off = 0, v_off = 0;
     void *ps[] = { &dk, &dv, &dkc, &dvc, &kv_dim, &l_off, &dpos, &kk, &ring, &v_off, &vk };
@@ -151,9 +155,10 @@ int main(void) {
     bad += run_case(f, k, v, kv_dim, cols, 1, 1, "q8");
     bad += run_case(f, k, v, kv_dim, cols, 1, 2, "k8v4");
     bad += run_case(f, k, v, kv_dim, cols, 0, 0, "f16");
+    bad += run_case(f, k, v, kv_dim, cols, 3, 3, "f32");
     free(k); free(v);
     if (bad) { fprintf(stderr, "FAIL: %d stored rows differ from the CPU encoders\n", bad); return 1; }
-    printf("cuda kv store: every row byte-identical to the CPU encoders (kv_dim %d, %d rows x 4 layouts, "
+    printf("cuda kv store: every row byte-identical to the CPU encoders (kv_dim %d, %d rows x 5 layouts, "
            "four magnitude bands, zero row, E2M1 ties, Qwen2.5-style K outliers)\n", kv_dim, cols);
     return 0;
 }

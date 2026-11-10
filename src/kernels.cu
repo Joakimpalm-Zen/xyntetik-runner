@@ -3535,14 +3535,18 @@ __device__ __forceinline__ unsigned kv_e2m1_code(float v) {
     return (v < 0.0f && i) ? (i | 8) : i;
 }
 
+// cache kinds: 0 f16, 1 q8_0, 2 fp4, 3 f32 (--kv f32, R6.33). Kind 3 is
+// tested first everywhere: reaching a `q8 ?` test, a 3 would read as q8_0.
 #define KV_ROW_BYTES(kv_dim, q8) \
-    ((q8) == 2 ? (ulong64)((kv_dim) / 16) * 9 : \
+    ((q8) == 3 ? (ulong64)(kv_dim) * 4 : (q8) == 2 ? (ulong64)((kv_dim) / 16) * 9 : \
      (q8) ? (ulong64)((kv_dim) / 32) * 34 : (ulong64)(kv_dim) * 2)
 
 __device__ __forceinline__ void kv_store_row(unsigned char *cache,
                                              const float *src, int kv_dim,
                                              int q8, int i) {
-    if (q8 == 2) {
+    if (q8 == 3) {
+        ((float *)cache)[i] = src[i];   // f32 rows: the projection, unrounded
+    } else if (q8 == 2) {
         unsigned char *blk = cache + (ulong64)i * 9;
         const float *x = src + i * 16;
         float amax = 0;
@@ -3573,7 +3577,14 @@ __device__ __forceinline__ void kv_store_row(unsigned char *cache,
 __device__ __forceinline__ float kv_dot(const unsigned char *row,
                                         const float *qh, int hd, int q8) {
     float s = 0;
-    if (q8 == 2) {
+    if (q8 == 3) {
+        // the f16 path's paired accumulation, over f32 rows. Scalar loads: a
+        // row staged in shared memory sits at an odd 32-bit stride (the
+        // `| 1` bank padding), so it is 4-byte aligned, never 8 for a float2
+        const float *k = (const float *)row;
+        for (int i = 0; i < hd / 2; i++)
+            s += qh[2 * i] * k[2 * i] + qh[2 * i + 1] * k[2 * i + 1];
+    } else if (q8 == 2) {
         for (int b = 0; b < hd / 16; b++) {
             const unsigned char *blk = row + (ulong64)b * 9;
             float d = ue4m3f(blk[0]);
@@ -3609,6 +3620,8 @@ __device__ __forceinline__ float kv_dot(const unsigned char *row,
 // straddle a q8 block (32 is even), so one block lookup serves both.
 __device__ __forceinline__ float2 kv_pair(const unsigned char *row,
                                           int i2, int q8) {
+    if (q8 == 3)   // two scalar loads: a staged row is 4-byte aligned only (kv_dot)
+        return make_float2(((const float *)row)[2 * i2], ((const float *)row)[2 * i2 + 1]);
     if (q8 == 2) {
         const unsigned char *blk = row + (ulong64)(i2 / 8) * 9;
         float d = ue4m3f(blk[0]);
@@ -3642,7 +3655,7 @@ __device__ __forceinline__ ulong64 kv_slot(int t, int ring) {
 // under --kv k8v4 (K q8_0, V fp4), so each side computes its own row and
 // unit count. The grid covers max(units_k, units_v) threads.
 __device__ __forceinline__ int kv_units(int kv_dim, int q8) {
-    return q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
+    return q8 == 3 ? kv_dim : q8 == 2 ? kv_dim / 16 : q8 ? kv_dim / 32 : kv_dim;
 }
 
 extern "C" __global__ void k_store_kv(const float *k, const float *v,
@@ -3667,7 +3680,8 @@ extern "C" __global__ void k_store_kv(const float *k, const float *v,
 
 // byte offset of head kvh's slice within a cache row
 __device__ __forceinline__ ulong64 kv_head_off(int kvh, int hd, int q8) {
-    return q8 == 2 ? (ulong64)(kvh * hd / 16) * 9
+    return q8 == 3 ? (ulong64)(kvh * hd) * 4
+         : q8 == 2 ? (ulong64)(kvh * hd / 16) * 9
          : q8      ? (ulong64)(kvh * hd / 32) * 34 : (ulong64)(kvh * hd) * 2;
 }
 

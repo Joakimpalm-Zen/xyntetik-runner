@@ -16,6 +16,8 @@
 #   cuda-gated   make test-cuda-gated (the pytest cases that skip without CUDA,
 #                none of them allowed to skip here for want of it)
 #   kv-fp4       make test-cuda-kv-fp4 (the device fp4 KV store vs the CPU codec)
+#   kv-f32       make test-cuda-kv-f32 (--kv f32 on the device: the store, the f32
+#                cache against the CPU's on each sized route, the microbatch; R6.33)
 #   nvfp4        make test-cuda-nvfp4 (NVFP4 kernels and their scale companion)
 #   qwen4exp     make test-cuda-qwen4exp (the family's placements, the shared
 #                split GGUF, the MTP head, the BF16 split-K decode route)
@@ -267,7 +269,7 @@ fi
 add_step caps pass 0
 
 FAIL=0
-DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp qwen35moe:test-cuda-qwen35moe q3k:test-cuda-q3k tc-kq:test-cuda-tc-kq i8:test-cuda-i8 moe-legacy:test-cuda-moe-legacy varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin keepn:test-cuda-keepn moe-replay:test-cuda-moe-replay batch-id:test-cuda-batch-identity hybrids:test-cuda-hybrids attn-wide:test-cuda-attn-wide spec-id:test-cuda-spec-identity"
+DEVICE_STEPS="tc-overflow:test-tc-overflow iquants:test-cuda-iquants cuda-gated:test-cuda-gated kv-fp4:test-cuda-kv-fp4 kv-f32:test-cuda-kv-f32 nvfp4:test-cuda-nvfp4 qwen4exp:test-cuda-qwen4exp qwen35moe:test-cuda-qwen35moe q3k:test-cuda-q3k tc-kq:test-cuda-tc-kq i8:test-cuda-i8 moe-legacy:test-cuda-moe-legacy varff:test-cuda-varff tc2-bytes:test-cuda-tc2-bytes moe-twin:test-cuda-moe-twin keepn:test-cuda-keepn moe-replay:test-cuda-moe-replay batch-id:test-cuda-batch-identity hybrids:test-cuda-hybrids attn-wide:test-cuda-attn-wide spec-id:test-cuda-spec-identity"
 for pair in $DEVICE_STEPS; do
   name=${pair%%:*}; target=${pair#*:}
   # shellcheck disable=SC2086
