@@ -2039,7 +2039,9 @@ extern "C" __global__ void k_mvcanon_q8_0(const uchar *wb, const float *x,
 }
 
 // canon_dot_f32: four accumulators over a 32-element stride, combined as
-// (a+b) + (c+d) per lane before the tree, then a scalar tail.
+// (a+b) + (c+d) per lane before the tree, then a scalar tail, rounded twice
+// as the canonical build's host does (-ffp-contract=off): nvcc would fuse a
+// plain s += w * x.
 extern "C" __global__ void k_mvcanon_f32(const uchar *wb, const float *x,
                                          float *y, int n_in, int n_out,
                                          ulong64 w_off, int row_bytes) {
@@ -2056,13 +2058,13 @@ extern "C" __global__ void k_mvcanon_f32(const uchar *wb, const float *x,
     float ab = a + b, cd = c + d;
     float s = canon_tree8_warp(ab + cd);
     if (lane == 0) {
-        for (int j = i; j < n_in; j++) s += w[j] * x[j];
+        for (int j = i; j < n_in; j++) s = __fadd_rn(s, __fmul_rn(w[j], x[j]));
         y[row] = s;
     }
 }
 
 // canon_dot_f16: two accumulators over a 16-element stride, a+b per lane
-// before the tree, then a scalar tail.
+// before the tree, then a scalar tail, rounded twice like canon_dot_f32's.
 extern "C" __global__ void k_mvcanon_f16(const uchar *wb, const float *x,
                                          float *y, int n_in, int n_out,
                                          ulong64 w_off, int row_bytes) {
@@ -2075,7 +2077,8 @@ extern "C" __global__ void k_mvcanon_f16(const uchar *wb, const float *x,
     }
     float s = canon_tree8_warp(a + b);
     if (lane == 0) {
-        for (int j = i; j < n_in; j++) s += f16f(rw + (ulong64)j * 2) * x[j];
+        for (int j = i; j < n_in; j++)
+            s = __fadd_rn(s, __fmul_rn(f16f(rw + (ulong64)j * 2), x[j]));
         y[row] = s;
     }
 }
