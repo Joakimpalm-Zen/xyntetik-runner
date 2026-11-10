@@ -8,6 +8,11 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **`RUNNER_PREFETCH` stays opt-in on Linux and Windows, now measured there (R3.39.5).** On Windows with CUDA,
+  turning it on made every load slower, with identical output: 1.159x the time from a cold file, 1.122x and 1.118x
+  warm on two files. On Linux, on a host capped at 60 read IOPS, it was 1.229x on the CPU and 1.006x and 0.9995x on
+  CUDA. On a CUDA load the hint is issued after the device upload has read the weights, so it cannot speed that
+  upload. `docs/speed-defaults.md` and the manual record the rows; a run that does not set it is unchanged.
 - **`--verify` replays a served turn cut by a stop sequence (R1.1.3.2).**
   - **Before:** a receipt shaped by `stop`, `stop_sequences` or `stop_token_ids` was `UNVERIFIABLE`, although the
     record already carried the sequences.
