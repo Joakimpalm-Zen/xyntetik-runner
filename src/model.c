@@ -1141,6 +1141,92 @@ static bool fit_kv_ring_on(int mode, uint64_t weights, uint64_t flat, uint64_t r
     return cap > 0 && ring < flat && weights + flat > cap;
 }
 
+// R3.53: one charge for the file bytes and the f32 buffers made by
+// cuda.c shared_upload_layer_tables. Keep the roles in sync with that
+// uploader, not with every float the CPU binder materializes (norm biases
+// and MLA q_a_norm, for example, are not CUDA tables).
+static void cuda_charge_add(uint64_t *sum, uint64_t n) {
+    *sum = n > UINT64_MAX - *sum ? UINT64_MAX : *sum + n;
+}
+
+static uint64_t cuda_tensor_f32(const gguf_tensor *t) {
+    uint64_t n = 1;
+    if (!t) return 0;
+    for (uint32_t d = 0; d < t->n_dims; d++) {
+        if (t->ne[d] && n > UINT64_MAX / t->ne[d]) return UINT64_MAX;
+        n *= t->ne[d];
+    }
+    return n > UINT64_MAX / 4 ? UINT64_MAX : 4 * n;
+}
+
+gpu_layer_charge model_cuda_layer_charge(gguf_file *g, int layer, bool host_experts) {
+    gpu_layer_charge c = {0};
+    const char *arch = gguf_get_str(g, "general.architecture", "");
+    char prefix[40], name[128], key[128];
+    snprintf(prefix, sizeof prefix, "blk.%d.", layer);
+    size_t plen = strlen(prefix);
+    for (uint64_t i = 0; i < g->n_tensors; i++)
+        if (!strncmp(g->tensors[i].name, prefix, plen))
+            cuda_charge_add(&c.file, g->tensors[i].nbytes);
+    static const char *const roles[] = {
+        "attn_norm.weight", "ffn_norm.weight", "post_attention_norm.weight",
+        "attn_q.bias", "attn_k.bias", "attn_v.bias", "attn_output.bias",
+        "attn_q_norm.weight", "attn_k_norm.weight", "attn_kv_a_norm.weight",
+        "post_ffw_norm.weight", "post_norm.weight", "hc_attn_norm.weight", "hc_ffn_norm.weight",
+        "ssm_a", "ssm_d", "ssm_conv1d.bias", "ssm_norm.weight", "attn_sinks.weight",
+    };
+    for (size_t i = 0; i < sizeof roles / sizeof *roles; i++) {
+        snprintf(name, sizeof name, "%s%s", prefix, roles[i]);
+        uint64_t bytes = cuda_tensor_f32(gguf_find_tensor(g, name));
+        // The DeltaNet binder keeps fused Q+gate bias on the CPU, but the
+        // CUDA table upload copies only model_q_dim's Q half.
+        if (!strcmp(roles[i], "attn_q.bias") &&
+            (!strcmp(arch, "qwen35") || !strcmp(arch, "qwen35moe") ||
+             !strcmp(arch, "qwen4exp") || !strcmp(arch, "clef"))) bytes /= 2;
+        cuda_charge_add(&c.tables, bytes);
+    }
+    // DeltaNet accepts the old spelling too; the binder prefers .bias.
+    snprintf(name, sizeof name, "%sssm_dt.bias", prefix);
+    const gguf_tensor *dt = gguf_find_tensor(g, name);
+    if (!dt) { snprintf(name, sizeof name, "%sssm_dt", prefix); dt = gguf_find_tensor(g, name); }
+    cuda_charge_add(&c.tables, cuda_tensor_f32(dt));
+    if (!host_experts) {
+        static const char *const biases[] = {
+            "ffn_gate_inp.bias", "ffn_gate_exps.bias", "ffn_up_exps.bias", "ffn_down_exps.bias",
+        };
+        for (size_t i = 0; i < sizeof biases / sizeof *biases; i++) {
+            snprintf(name, sizeof name, "%s%s", prefix, biases[i]);
+            cuda_charge_add(&c.tables, cuda_tensor_f32(gguf_find_tensor(g, name)));
+        }
+    }
+    snprintf(name, sizeof name, "%sffn_gate_inp.weight", prefix);
+    const gguf_tensor *router = gguf_find_tensor(g, name);
+    if (!strcmp(arch, "gemma4") && router) {
+        // Three branch norms, router input scale and per-expert down scale
+        // allocate even when absent: the uploader synthesizes ones.
+        snprintf(key, sizeof key, "%s.embedding_length", arch);
+        uint64_t embd = gguf_get_u32(g, key, 0);
+        cuda_charge_add(&c.tables, 16 * embd);
+        cuda_charge_add(&c.tables, 4 * router->ne[1]);
+    }
+    if (!strcmp(arch, "nemotron_h") || !strcmp(arch, "nemotron_h_moe")) {
+        snprintf(key, sizeof key, "%s.attention.head_count_kv", arch);
+        uint32_t kv = gguf_get_u32_idx(g, key, (uint64_t)layer, 0);
+        snprintf(key, sizeof key, "%s.feed_forward_length", arch);
+        uint32_t ff = gguf_get_u32_idx(g, key, (uint64_t)layer, 0);
+        if (!kv && ff) { // the single pre-norm is uploaded again as ffn_norm
+            snprintf(name, sizeof name, "%sattn_norm.weight", prefix);
+            cuda_charge_add(&c.tables, cuda_tensor_f32(gguf_find_tensor(g, name)));
+        }
+    }
+    const char *naive = getenv("RUNNER_MLA_NAIVE");
+    if (!strcmp(arch, "deepseek2") && !(naive && *naive && strcmp(naive, "0"))) {
+        snprintf(name, sizeof name, "%sattn_kv_b.weight", prefix);
+        cuda_charge_add(&c.tables, cuda_tensor_f32(gguf_find_tensor(g, name)));
+    }
+    return c;
+}
+
 bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
                    uint64_t headroom, int max_layers) {
     if (f->n_layer <= 0) return false;
@@ -1197,14 +1283,18 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     uint64_t *lb = calloc((size_t)blocks, sizeof(uint64_t));
     uint64_t *cost = calloc((size_t)blocks, sizeof(uint64_t));
     if (!lb || !cost) { free(lb); free(cost); free(geo.kv_dim); return false; }
+    uint64_t tables = 0;
+    for (int l = 0; l < blocks; l++) {
+        gpu_layer_charge c = model_cuda_layer_charge(g, l, false);
+        lb[l] = c.file;
+        if (l < f->n_layer || f->mtp) cuda_charge_add(&tables, c.tables);
+    }
+    // the once-made all-ones expert scale table (cuda.c moe_ones)
+    if (f->n_expert > 0) cuda_charge_add(&tables, 4 * (uint64_t)f->n_expert);
     uint64_t tok = 0, out = 0, n_vocab = 0;
     for (uint64_t i = 0; i < g->n_tensors; i++) {
         const gguf_tensor *t = &g->tensors[i];
-        int l = -1, n = 0;
-        if (sscanf(t->name, "blk.%d.%n", &l, &n) == 1 && n > 0 &&
-            l >= 0 && l < blocks)
-            lb[l] += t->nbytes;
-        else if (!strcmp(t->name, "token_embd.weight")) {
+        if (!strcmp(t->name, "token_embd.weight")) {
             tok = t->nbytes;
             n_vocab = t->n_dims > 1 ? t->ne[1] : 0;
         } else if (!strcmp(t->name, "output.weight"))
@@ -1229,6 +1319,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     f->gpu = true;
     f->gpu_budget = budget;
     f->gpu_fixed = act * slots + headroom;
+    cuda_charge_add(&f->gpu_fixed, tables);
     const uint64_t per_tok[4] = { f->kv_f16_per_tok, f->kv_q8_per_tok,
                                   f->kv_k8v4_per_tok, f->kv_fp4_per_tok };
     // R3.45: a block --mtp binds rides with the plan's fixed charge, its
