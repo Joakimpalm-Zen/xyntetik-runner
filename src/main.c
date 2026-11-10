@@ -1693,7 +1693,7 @@ static int run_fit_check(const char *path, int n_ctx_want,
     if (!gguf_open_header(&g, path)) return 1;   // already reported why
 
     model_fit f;
-    if (!model_fit_report(&g, n_ctx_want, &f)) {
+    if (!model_fit_report(&g, n_ctx_want, mp->mtp, &f)) {
         fprintf(stderr, "error: %s does not carry the geometry a fit check "
                         "needs (architecture, block_count, head counts)\n", path);
         gguf_close(&g);
@@ -1726,6 +1726,11 @@ static int run_fit_check(const char *path, int n_ctx_want,
     printf("fit: %s\n", path);
     printf("  model         %s, %d layers", f.arch, f.n_layer);
     if (f.sparse) printf(", MoE %d experts, %d used", f.n_expert, f.n_expert_used);
+    // R3.45: a declared NextN/MTP block is not a layer of the trunk; it holds
+    // rows and device memory only when --mtp binds it, as a load does
+    if (f.n_mtp > 0)
+        printf(", %d NextN/MTP block%s %s", f.n_mtp, f.n_mtp > 1 ? "s" : "",
+               f.mtp ? "charged (--mtp)" : "not charged (pass --mtp to draft from it)");
     printf("\n");
     if (split > 1)
         printf("  NOTE          this is part 1 of a %u-part split; the sizes "

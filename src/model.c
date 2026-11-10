@@ -782,7 +782,10 @@ int model_kv_ring_rows(int window, int batch, int n_ctx) {
 // gemma-4-31B's cache at about four times what a load allocates and refused
 // a removed file outright (no scalar head_count left to read).
 // tests/test_fit_check.py holds the sum to the loader's allocation.
-typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; } fit_geom;
+// R3.45: kv_dim covers every block the header declares; `trunk` is the
+// loader's n_layer (block_count less nextn_predict_layers), and a block
+// past it owns rows only when --mtp binds it.
+typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; int trunk; } fit_geom;
 
 // R3.44: the qwen35 family's Gated DeltaNet layers own no KV rows
 // (bind_meta_qwen35) unless RUNNER_KV_RECURRENT_ROWS=1 keeps the layout that
@@ -794,7 +797,7 @@ static bool qwen35_kv_rows_typed(const char *arch) {
            !strcmp(arch, "qwen4exp") || !strcmp(arch, "clef");
 }
 
-static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, fit_geom *o) {
+static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, bool mtp, fit_geom *o) {
     char key[128];
     #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
     memset(o, 0, sizeof *o);
@@ -823,11 +826,14 @@ static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, fit_geom *
     }
     #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
     o->n_head = n_head;
-    // the trunk's DeltaNet layers (R3.44); a declared NextN/MTP block past the
-    // trunk keeps the attention shape, as it is charged in the plain layout
+    // the loader's trunk (bind_mtp_layers; an out-of-range count, which the
+    // loader refuses, charges every block as before); its DeltaNet layers own
+    // no rows (R3.44), and a declared NextN/MTP block past it has the
+    // attention shape, charged only when --mtp binds it (R3.45)
+    uint32_t nextn = gguf_get_u32(g, FK("nextn_predict_layers"), 0);
+    o->trunk = nextn < (uint32_t)n_layer ? n_layer - (int)nextn : n_layer;
     uint32_t q35_every = qwen35_kv_rows_typed(arch)
         ? gguf_get_u32(g, FK("full_attention_interval"), 4) : 0;
-    int64_t q35_trunk = (int64_t)n_layer - gguf_get_u32(g, FK("nextn_predict_layers"), 0);
     for (int l = 0; l < n_layer; l++) {
         uint32_t hc = gguf_get_u32_idx(g, FK("attention.head_count"), (uint64_t)l, n_head);
         uint32_t kvh = hc ? gguf_get_u32_idx(g, FK("attention.head_count_kv"),
@@ -837,7 +843,8 @@ static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, fit_geom *
         uint64_t hd = swa ? hd_swa : head_dim;
         if (hd > o->head_dim_max) o->head_dim_max = hd;
         o->kv_dim[l] = l < owners ? (uint64_t)kvh * hd : 0;
-        if (q35_every && l < q35_trunk && (l + 1) % q35_every != 0) o->kv_dim[l] = 0;
+        if (q35_every && l < o->trunk && (l + 1) % q35_every != 0) o->kv_dim[l] = 0;
+        if (l >= o->trunk && !mtp) o->kv_dim[l] = 0;
         if (o->kv_dim[l] > o->kv_dim_max) o->kv_dim_max = o->kv_dim[l];
     }
     #undef FK
@@ -855,7 +862,7 @@ static uint64_t fit_kv_row(uint64_t d, int kind) {
     }
 }
 
-bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
+bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
     memset(out, 0, sizeof(*out));
     char key[128];
     const char *arch = gguf_get_str(g, "general.architecture", "");
@@ -871,7 +878,11 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
     out->train_ctx     = train_ctx;
 
     fit_geom geo;
-    if (out->n_layer <= 0 || !fit_geometry(g, arch, out->n_layer, &geo)) return false;
+    if (out->n_layer <= 0 || !fit_geometry(g, arch, out->n_layer, mtp, &geo)) return false;
+    int blocks = out->n_layer;
+    out->n_layer = geo.trunk;
+    out->n_mtp = blocks - geo.trunk;
+    out->mtp = mtp && out->n_mtp > 0;
 
     // Context: what the caller asked for, else the loader's own default.
     out->n_ctx = n_ctx_want > 0 ? n_ctx_want
@@ -907,7 +918,7 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, model_fit *out) {
     // only when every layer's width is a multiple of its block (q8 and k8v4:
     // 32; fp4: 16), or the per-token figure is 0 and the line says why.
     bool q8_ok = true, fp4_ok = true;
-    for (int l = 0; l < out->n_layer; l++) {
+    for (int l = 0; l < blocks; l++) {   // an unbound block's width is 0
         uint64_t d = geo.kv_dim[l];
         if (d % 32) q8_ok = false;
         if (d % 16) fp4_ok = false;
@@ -976,17 +987,18 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     uint64_t n_ff      = gguf_get_u32(g, FK("feed_forward_length"), (uint32_t)(4 * n_embd));
     #undef FK
     fit_geom geo;
-    if (!fit_geometry(g, arch, f->n_layer, &geo)) return false;
+    const int blocks = f->n_layer + f->n_mtp;   // the trunk, then the declared NextN/MTP blocks
+    if (!fit_geometry(g, arch, blocks, f->mtp, &geo)) return false;
     uint64_t n_head = geo.n_head, head_dim = geo.head_dim_max;
-    uint64_t *lb = calloc((size_t)f->n_layer, sizeof(uint64_t));
-    uint64_t *cost = calloc((size_t)f->n_layer, sizeof(uint64_t));
+    uint64_t *lb = calloc((size_t)blocks, sizeof(uint64_t));
+    uint64_t *cost = calloc((size_t)blocks, sizeof(uint64_t));
     if (!lb || !cost) { free(lb); free(cost); free(geo.kv_dim); return false; }
     uint64_t tok = 0, out = 0, n_vocab = 0;
     for (uint64_t i = 0; i < g->n_tensors; i++) {
         const gguf_tensor *t = &g->tensors[i];
         int l = -1, n = 0;
         if (sscanf(t->name, "blk.%d.%n", &l, &n) == 1 && n > 0 &&
-            l >= 0 && l < f->n_layer)
+            l >= 0 && l < blocks)
             lb[l] += t->nbytes;
         else if (!strcmp(t->name, "token_embd.weight")) {
             tok = t->nbytes;
@@ -1013,11 +1025,19 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     f->gpu_fixed = act * slots + headroom;
     const uint64_t per_tok[4] = { f->kv_f16_per_tok, f->kv_q8_per_tok,
                                   f->kv_k8v4_per_tok, f->kv_fp4_per_tok };
+    // R3.45: a block --mtp binds rides with the plan's fixed charge, its
+    // tensors and its KV rows (cuda.c shared_plan_budget); unbound, it is in
+    // no layer and costs the device nothing
+    uint64_t mtp_w = 0;
+    for (int l = f->n_layer; f->mtp && l < blocks; l++) mtp_w += lb[l];
     for (int k = 0; k < 4; k++) {
         f->gpu_layers[k] = -1;
         if (!per_tok[k]) continue;
         int G = 0;
-        uint64_t used = f->gpu_fixed, dev_w = 0;
+        uint64_t mtp_kv = 0;
+        for (int l = f->n_layer; f->mtp && l < blocks; l++)
+            mtp_kv += fit_kv_row(geo.kv_dim[l], k) * (uint64_t)f->n_ctx * slots;
+        uint64_t used = f->gpu_fixed + mtp_w + mtp_kv, dev_w = 0;
         if (used <= budget) {
             // each layer pays its own KV rows (fit_geometry), not an average
             for (int l = 0; l < f->n_layer; l++)
@@ -1032,7 +1052,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
             // the split the loader makes.
             bool gave_back;
             if (gpu_plan_full_split(&G, f->n_layer, used, full_extra, budget, &gave_back)) {
-                used += full_extra; dev_w += full_extra;
+                used += full_extra; dev_w += full_extra + mtp_w;   // the bound block uploads with a full split
             } else if (gave_back) {
                 used -= cost[G]; dev_w -= lb[G];
             }

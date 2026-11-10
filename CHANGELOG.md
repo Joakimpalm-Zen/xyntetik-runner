@@ -8,6 +8,24 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **Fix: `--fit` counted a declared NextN/MTP block as a layer of the trunk (R3.45).**
+  - **The bug:** a GGUF that declares a predictor block (`nextn_predict_layers`) counts it in `block_count`. The
+    loader takes it off the trunk and gives it KV rows and device memory only when `--mtp` (or `--draft mtp`) binds
+    it.
+  - **What `--fit` did instead:** it took `block_count` whole. So the block was a layer in the count, in the KV
+    cache and in the GPU split.
+  - **On Qwen3.6-35B-A3B Q4_K_M at ctx 131072:** 41 layers and 2.75 GiB of KV, against the loader's 40 layers and
+    2.50 GiB (2,684.4 MB). Before R3.44's KV fix it was 10.25 GiB against 10.00.
+  - **Now:** the model line names the block ("1 NextN/MTP block not charged (pass --mtp to draft from it)"). Under
+    `--mtp` its rows are charged, and its tensors and rows join the GPU split's fixed charge, as the CUDA plan charges
+    them.
+  - **What does not change:** a file that declares no block gets the same `--fit` output as before (10 files, with
+    and without a GPU).
+  - **Not covered:** the default MTP drafting of one-shot JSON generations is not modeled (one measured file, CUDA,
+    full offload only).
+  - **Checks:** `tests/test_qwen35_kv_rows.py` holds the fit and the loader to the fixture's declared geometry, with
+    and without `--mtp`.
+
 - **Fix: Qwen3.5-class hybrids reserved KV rows for their Gated DeltaNet layers, 4x the KV they need (R3.44).**
   - **The bug:** qwen35, qwen35moe, qwen4exp (Qwen3.8-Flash-Next) and clef run three DeltaNet layers to one attention
     layer. A DeltaNet layer keeps its state in the recurrent fold and never reads or writes a KV row, but every layer

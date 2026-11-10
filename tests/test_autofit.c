@@ -215,7 +215,7 @@ static void test_fit_gpu(const char *fixture) {
         return;
     }
     model_fit base;
-    ck(model_fit_report(&g, 512, &base), "fit gpu: report from the header");
+    ck(model_fit_report(&g, 512, false, &base), "fit gpu: report from the header");
     int nl = base.n_layer;
 
     // A budget far beyond the file: every layer and the output on the device,
@@ -331,7 +331,7 @@ static void test_fit_gpu_boundaries(const char *fixture) {
         return;
     }
     model_fit base;
-    ck(model_fit_report(&g, 512, &base), "fit gpu boundaries: report");
+    ck(model_fit_report(&g, 512, false, &base), "fit gpu boundaries: report");
     int nl = base.n_layer;
     uint64_t lb[64] = {0}, tok = 0, out = 0;
     ck(nl > 1 && nl <= 64, "fit gpu boundaries: a multi-layer fixture");
