@@ -1530,6 +1530,19 @@ int      model_batch_default_for(uint64_t total_ram);
 bool     model_load_prefetch_wanted(uint64_t mapped, uint64_t available,
                                     bool locked, bool moe_prefetch);
 bool     model_paging_note_wanted(uint64_t faults, int tokens);
+// Whether every weight a forward reads was copied into a discrete device's
+// own memory (all layers and the head on the GPU, no expert bank kept on the
+// host, not a unified-memory backend). Then a request's page faults cannot be
+// host weight pages, whatever their count.
+bool     model_weights_on_device(const model_t *m);
+// The video memory figures the paging note may carry (gpu_os_vidmem).
+typedef struct { bool known; uint64_t budget, usage, nonlocal; } model_vidmem;
+// The per-request paging note, or "" when model_paging_note_wanted says the
+// count is noise. on_device chooses the wording; vm (may be NULL) adds the
+// process's video memory against its budget and its shared-memory usage.
+// Returns the length written.
+size_t   model_paging_note(char *out, size_t cap, uint64_t faults, int tokens,
+                           bool on_device, const model_vidmem *vm);
 bool     model_residency_warning(uint64_t need, uint64_t hot, uint64_t have,
                                  bool locked, char *buf, size_t n);
 // --mlock plan for one mapping of `size` bytes: the hot ranges left after

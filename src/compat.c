@@ -255,8 +255,11 @@ struct win_adapter_vtbl {
     long (__stdcall *QueryVideoMemoryInfo)(win_com *, unsigned, int, win_vmem_info *);
 };
 
-bool plat_gpu_os_budget(const unsigned char luid[8], uint64_t *budget,
-                        uint64_t *usage) {
+// One QueryVideoMemoryInfo pass on the adapter with this LUID: the LOCAL
+// segment group always, the NON_LOCAL one (system memory holding the
+// process's allocations, Task Manager's "shared GPU memory") when asked.
+static bool dxgi_vidmem(const unsigned char luid[8], win_vmem_info *local,
+                        win_vmem_info *nonlocal) {
     typedef long (__stdcall *create_fn)(const win_guid *, void **);
     HMODULE dxgi = LoadLibraryA("dxgi.dll");
     if (!dxgi) return false;
@@ -275,12 +278,12 @@ bool plat_gpu_os_budget(const unsigned char luid[8], uint64_t *budget,
                 memset(&desc, 0, sizeof(desc));
                 if (vt->GetDesc1(a3, &desc) == 0 &&
                     memcmp(desc.AdapterLuid, luid, 8) == 0) {
-                    win_vmem_info info;
-                    memset(&info, 0, sizeof(info));
-                    if (vt->QueryVideoMemoryInfo(a3, 0, /*LOCAL*/ 0, &info) == 0) {
-                        *budget = info.Budget;
-                        *usage  = info.CurrentUsage;
-                        found = true;
+                    memset(local, 0, sizeof(*local));
+                    found = vt->QueryVideoMemoryInfo(a3, 0, /*LOCAL*/ 0, local) == 0;
+                    if (found && nonlocal) {
+                        memset(nonlocal, 0, sizeof(*nonlocal));
+                        found = vt->QueryVideoMemoryInfo(a3, 0, /*NON_LOCAL*/ 1,
+                                                         nonlocal) == 0;
                     }
                 }
                 a3->vt->Release(a3);
@@ -291,6 +294,25 @@ bool plat_gpu_os_budget(const unsigned char luid[8], uint64_t *budget,
     }
     FreeLibrary(dxgi);
     return found;
+}
+
+bool plat_gpu_os_budget(const unsigned char luid[8], uint64_t *budget,
+                        uint64_t *usage) {
+    win_vmem_info local;
+    if (!dxgi_vidmem(luid, &local, NULL)) return false;
+    *budget = local.Budget;
+    *usage  = local.CurrentUsage;
+    return true;
+}
+
+bool plat_gpu_os_vidmem(const unsigned char luid[8], uint64_t *budget,
+                        uint64_t *usage, uint64_t *nonlocal) {
+    win_vmem_info local, shared;
+    if (!dxgi_vidmem(luid, &local, &shared)) return false;
+    *budget   = local.Budget;
+    *usage    = local.CurrentUsage;
+    *nonlocal = shared.CurrentUsage;
+    return true;
 }
 
 uint64_t plat_proc_rss_bytes(void) {
@@ -757,6 +779,12 @@ bool plat_gpu_os_budget(const unsigned char luid[8], uint64_t *budget,
                         uint64_t *usage) {
     (void)luid; (void)budget; (void)usage;
     return false;   // no OS video-memory budget on POSIX
+}
+
+bool plat_gpu_os_vidmem(const unsigned char luid[8], uint64_t *budget,
+                        uint64_t *usage, uint64_t *nonlocal) {
+    (void)luid; (void)budget; (void)usage; (void)nonlocal;
+    return false;   // as plat_gpu_os_budget: WDDM only
 }
 
 // getrusage gives the PEAK on both, and disagrees about units: ru_maxrss is
