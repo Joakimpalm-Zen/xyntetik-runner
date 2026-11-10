@@ -15,7 +15,8 @@ logits, the header's binary digest aside):
   under either layout;
 - the bytes saved: a session image's state shrinks by exactly
   tokens x recurrent layers x the fixture's K+V row (2 KV heads x 8 wide x
-  f16 x 2), the fixture's declared geometry being the anchor; --fit and the
+  f16 x 2), plus one recurrent-state slot per attention layer (R3.47), the
+  fixture's declared geometry being the anchor; --fit and the
   loader's KV line are held to that same geometry, a declared NextN/MTP
   block charged only under --mtp (R3.45);
 - a state saved under the prior layout is refused by name, never misread: a
@@ -41,6 +42,10 @@ from harness import RunnerServer  # noqa: E402
 KNOB = "RUNNER_KV_RECURRENT_ROWS"
 KV_HEADS, HEAD_DIM, F16 = 2, 8, 2      # every fixture below
 ROW = 2 * KV_HEADS * HEAD_DIM * F16     # K + V, one layer, one position
+# one layer's recurrent state (R3.47: only a DeltaNet layer has a slot): the
+# conv window, (conv_kernel 4 - 1) x conv_dim (2 x state 8 x groups 2 + inner
+# 32), and the delta state, v_heads 4 x state 8 x 8; f32
+FOLD = 4 * (3 * (2 * 8 * 2 + 32) + 4 * 8 * 8)
 N, HALF = 40, 20
 
 # (id, generator, its environment, layers); full_attention_interval is 4 in all
@@ -68,6 +73,10 @@ def fx(tmp_path_factory):
                    cwd=ROOT, stdout=subprocess.DEVNULL,
                    env={**os.environ, "ORNITH_TEST_LAYERS": "8", "ORNITH_TEST_MTP": "1"})
     out["qwen35-8-mtp"] = path
+    # a Mamba-2 hybrid: no KV change (R3.44), its recurrent state slots only (R3.47)
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-hybrid.py", str(d / "granitehybrid"), "--dense"],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    out["granitehybrid"] = d / "granitehybrid.gguf"
     return out
 
 
@@ -115,7 +124,8 @@ def test_the_rows_were_dead_and_are_gone(runner_bin, fx, fam):
     (nt, now), (nt_prior, prior) = states
     assert nt == nt_prior
     recurrent = layers - layers // 4
-    assert prior - now == nt * recurrent * ROW, (name, nt, prior, now)
+    attention = layers // 4
+    assert prior - now == nt * recurrent * ROW + attention * FOLD, (name, nt, prior, now)
 
 
 @pytest.mark.parametrize("mtp", [False, True], ids=["plain", "mtp"])
@@ -143,8 +153,9 @@ def test_fit_and_the_loader_charge_the_same_rows(runner_bin, fx, prior, mtp):
     assert abs(load_mb - rows * ROW * mid / 1e6) <= 0.06, err[-600:]
 
 
-def test_a_prior_layout_image_is_named_and_resumes_under_the_knob(runner_bin, fx):
-    model, d = fx["qwen35"], fx["d"] / "prior-image"
+@pytest.mark.parametrize("name", ["qwen35", "granitehybrid"])
+def test_a_prior_layout_image_is_named_and_resumes_under_the_knob(runner_bin, fx, name):
+    model, d = fx[name], fx["d"] / f"prior-image-{name}"
     d.mkdir()
     gen = ["-m", model, "-p", "hello", "-n", N, "-s", "5", "--temp", "0.9", "--ignore-eos"]
     assert _run(runner_bin, True, *gen, "--session-out", d / "straight.img")[0] == 0

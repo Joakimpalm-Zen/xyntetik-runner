@@ -2476,13 +2476,14 @@ static bool metal_place_weights(model_t *m, gpu_t *g, id<MTLDevice> dev,
 
 // The KV cache, the per-column scratch and the decode attention partials.
 // A recurrent model's two state arrays, as model.c allocates them: the conv
-// window [layer][conv_kernel - 1][conv_dim] and the heads' state
-// [layer][heads][head width][qwen35: head width, Mamba-2: d_state].
+// window [slot][conv_kernel - 1][conv_dim] and the heads' state
+// [slot][heads][head width][qwen35: head width, Mamba-2: d_state], one slot
+// per recurrent layer (model_rec_slot, R3.47).
 static void metal_dn_state_bytes(const model_t *m, size_t *conv, size_t *state) {
     int hv = m->ssm.inner / m->ssm.v_heads;
-    *conv = sizeof(float) * (size_t)m->n_layer * (size_t)(m->ssm.conv_kernel - 1) *
+    *conv = sizeof(float) * model_rec_count(m) * (size_t)(m->ssm.conv_kernel - 1) *
             (size_t)(2 * m->ssm.state * m->ssm.groups + m->ssm.inner);
-    *state = sizeof(float) * (size_t)m->n_layer * (size_t)m->ssm.v_heads * hv *
+    *state = sizeof(float) * model_rec_count(m) * (size_t)m->ssm.v_heads * hv *
              (size_t)(m->qwen35 ? hv : m->ssm.state);
 }
 
@@ -4842,8 +4843,8 @@ static bool metal_enc_dn(metal_fwd *F, int l, const metal_layer_plan *P) {
              n_embd, nh, nil, n, xdim, nh);
     dn_args a = { n, convdim, histn, m->ssm.conv_kernel, convdim,
                   sk, ng, nh, hv, keydim, inner, DN_L2_EPS, m->rms_eps };
-    NSUInteger co = sizeof(float) * (NSUInteger)l * histn * convdim;
-    NSUInteger so = sizeof(float) * (NSUInteger)l * nh * hv * hv;
+    NSUInteger co = sizeof(float) * (NSUInteger)model_rec_slot(m, l) * histn * convdim;
+    NSUInteger so = sizeof(float) * (NSUInteger)model_rec_slot(m, l) * nh * hv * hv;
     id<MTLComputeCommandEncoder> e = F->e;
     [e setComputePipelineState:g->p_dn_conv];
     [e setBuffer:g->dn_qkv offset:0 atIndex:0];
@@ -4924,8 +4925,8 @@ static bool metal_enc_m2(metal_fwd *F, int l, const metal_layer_plan *P) {
     // k_dn_ring slides the window from the projection's xBC
     dn_args r = { n, conv_dim, histn, m->ssm.conv_kernel, d_in_proj,
                   0, 0, 0, 0, 0, 0, 0.0f, 0.0f };
-    NSUInteger co = sizeof(float) * (NSUInteger)l * histn * conv_dim;
-    NSUInteger so = sizeof(float) * (NSUInteger)l * nh * (inner / nh) * ds;
+    NSUInteger co = sizeof(float) * (NSUInteger)model_rec_slot(m, l) * histn * conv_dim;
+    NSUInteger so = sizeof(float) * (NSUInteger)model_rec_slot(m, l) * nh * (inner / nh) * ds;
     id<MTLComputeCommandEncoder> e = F->e;
     [e setComputePipelineState:g->p_m2_conv];
     [e setBuffer:g->dn_qkv offset:0 atIndex:0];

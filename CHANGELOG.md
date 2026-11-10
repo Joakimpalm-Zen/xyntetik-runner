@@ -8,6 +8,37 @@ Older releases (v1.11.0 and earlier) are preserved in the
 
 ## Unreleased
 
+- **Fix: a hybrid's recurrent state was held for every layer, including the layers that have none (R3.47).**
+  - **The bug:** qwen35's Gated DeltaNet fold, Mamba-2's conv window and SSM state (granitehybrid, nemotron_h) and
+    lfm2's conv ring sat in per-layer buffers sized for every layer, attention and MLP-only layers included. That held
+    on the host, on CUDA and on Metal, and in every prefix-cache entry, session image and KV snapshot.
+  - **Now:** each layer that holds state has a slot (`model_rec_slot`), and nothing else has one. Greedy text and
+    teacher-forced scores are byte-identical to the previous build on Qwen3.5-4B (CPU, CUDA), granite-4.0-h-micro
+    (CPU, CUDA) and Qwen3.6-35B-A3B (CUDA).
+  - **Per sequence, at a fixed context:**
+
+    | Model | Host state | Device instance |
+    |---|---|---|
+    | Qwen3.5-4B | 70.3 to 52.7 MB (24 of 32 layers) | 35 MB less |
+    | Qwen3.6-35B-A3B | 87.8 to 65.9 MB (30 of 40) | 44 MB less |
+    | granite-4.0-h-micro | 86.0 to 77.4 MB (36 of 40) | 17 MB less |
+
+    Every prefix-cache entry shrinks by the host figure.
+  - **`-v`** prints the state beside the KV cache: "recurrent state 52.7 MB (24 of 32 layers)".
+  - **Saved state:** 1.15.0's layout (a slot for every layer, and R3.44's KV rows) is refused by name, never misread.
+    `RUNNER_KV_RECURRENT_ROWS=1` keeps that whole layout and resumes it. State written by development builds between
+    R3.44 and this fix is refused too.
+  - **The plan and `--fit`** charge the stateful layers only (R3.46's `model_gpu_recurrent_cost`).
+  - **`--fit` reports the CPU for the families the loader never puts on a GPU:** lfm2, lfm2moe, flint, LayerNorm
+    models, grouped-norm k2-horizon, and deepseek2 off CUDA. It used to predict a device split the load never made.
+    `model_gpu_cpu_only_why` now answers for both.
+  - **Checks:**
+    - `tests/test_cuda_rec_slots.py` (CUDA): scoring stays on the device under the new layout and matches the old
+      one's scores, on seven hybrid fixtures.
+    - `tests/test_qwen35_kv_rows.py`: the state shrinks by exactly the stateless layers' slots, and an old-layout image
+      is refused by name on qwen35 and Mamba-2.
+    - The hybrid fixtures run clean under ASan and UBSan in both layouts.
+
 - **Fix: `--fit`'s GPU split on hybrids now equals the loader's, and the CUDA plan stops charging qwen35's recurrent
   state twice (R3.46).**
   - **What the fit left out:** each hybrid's device state, held twice (live, and for the speculative rollback), plus

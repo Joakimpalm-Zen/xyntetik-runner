@@ -1707,7 +1707,12 @@ static int run_fit_check(const char *path, int n_ctx_want,
     // it serves with 35 of 40 layers on the card would page every token.
     char gname[128] = "";
     uint64_t gbudget = 0, gheadroom = 0;
-    if (mp->gpu_mode != GPU_OFF && gpu_available(gname, sizeof gname) &&
+    // a family the loader never puts on a GPU fits from RAM, as it loads
+    char akey[96];
+    const char *farch = gguf_get_str(&g, "general.architecture", "");
+    snprintf(akey, sizeof akey, "%s.attention.group_norm_groups", farch);
+    const char *cpu_why = model_gpu_cpu_only_why(farch, (int)gguf_get_u32(&g, akey, 1));
+    if (mp->gpu_mode != GPU_OFF && !cpu_why && gpu_available(gname, sizeof gname) &&
         gpu_offload_budget(mp->reserve_vram_pct, &gbudget, &gheadroom))
         model_fit_gpu(&g, &f, gbudget, gheadroom, mp->gpu_layers_override);
     // the loader's own line has the same two figures (cuda.c, gpu-split)
@@ -1762,6 +1767,8 @@ static int run_fit_check(const char *path, int n_ctx_want,
     if (f.available) printf("  available RAM %s right now\n", av);
     else             printf("  available RAM unknown on this platform\n");
     static const char *const kvname[4] = { "f16", "--kv q8", "--kv k8v4", "--kv fp4" };
+    if (cpu_why && mp->gpu_mode != GPU_OFF && gpu_available(gname, sizeof gname))
+        printf("  gpu           %s present, but the load runs on the CPU: %s\n", gname, cpu_why);
     if (f.gpu) {
         char gb[32], fx[32];
         fit_gib(gb, sizeof gb, f.gpu_budget);

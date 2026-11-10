@@ -2019,7 +2019,7 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
                 model_kv_boundary_bytes_sum(m, m->n_layer);
         if (m->qwen35) {   // per-row recurrent checkpoints of a verify tile
             int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
-            size_t per_row = sizeof(float) * (size_t)m->n_layer *
+            size_t per_row = sizeof(float) * model_rec_count(m) *
                 ((size_t)(m->ssm.conv_kernel - 1) * convdim + (size_t)m->ssm.v_heads * m->ssm.state * m->ssm.state);
             inst += per_row * (size_t)(m->spec_batch < 8 ? m->spec_batch : 8);
         }
@@ -3627,7 +3627,7 @@ static void cuda_instance_dims(const model_t *m, cuda_dims *D) {
     // scratch columns are per_col's
     int rec = m->qwen35 ? MODEL_GPU_REC_DELTANET
             : (m->granite_hybrid || m->nemotron_h) ? MODEL_GPU_REC_MAMBA2 : MODEL_GPU_REC_NONE;
-    act_bytes += (size_t)model_gpu_recurrent_cost(rec, (uint64_t)m->n_layer,
+    act_bytes += (size_t)model_gpu_recurrent_cost(rec, (uint64_t)model_rec_count(m),
         (uint64_t)m->ssm.conv_kernel, (uint64_t)m->ssm.inner, (uint64_t)m->ssm.state,
         (uint64_t)m->ssm.groups, (uint64_t)m->ssm.v_heads, (uint64_t)q_dim);
     if (m->qwen35)
@@ -3707,8 +3707,8 @@ static bool cuda_alloc_activations(model_t *m, gpu_t *g, const cuda_dims *D) {
         CK(cu.MemsetD8(g->mtp_pending, 0, sizeof(float) * hcd));
         if (m->qwen35 && cu.MemcpyDtoDAsync) {
             int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
-            size_t hist_l = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;
-            size_t state_l = (size_t)m->n_layer * m->ssm.v_heads * m->ssm.state * m->ssm.state;
+            size_t hist_l = model_rec_count(m) * (m->ssm.conv_kernel - 1) * convdim;
+            size_t state_l = model_rec_count(m) * m->ssm.v_heads * m->ssm.state * m->ssm.state;
             g->snap_rows = m->spec_batch < 8 ? m->spec_batch : 8;
             CK(cu.MemAlloc(&g->snap_state, sizeof(float) * state_l * g->snap_rows));
             CK(cu.MemAlloc(&g->snap_hist,  sizeof(float) * (hist_l ? hist_l : 1) * g->snap_rows));
@@ -3789,10 +3789,10 @@ static bool cuda_alloc_recurrent(model_t *m, gpu_t *g, const cuda_dims *D) {
     int q35_convdim = D->q35_convdim;
     int q35_mixdim = D->q35_mixdim;
     if (m->qwen35) {
-        size_t hist_elems = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) *
+        size_t hist_elems = model_rec_count(m) * (m->ssm.conv_kernel - 1) *
                             q35_convdim;
         size_t hist_alloc = hist_elems ? hist_elems : 1;
-        size_t state_elems = (size_t)m->n_layer * m->ssm.v_heads *
+        size_t state_elems = model_rec_count(m) * m->ssm.v_heads *
                              m->ssm.state * m->ssm.state;
         CK(cu.MemAlloc(&g->q35_mix, sizeof(float) * (size_t)g->win * q35_mixdim));
         CK(cu.MemAlloc(&g->q35_cv, sizeof(float) * (size_t)g->win * q35_convdim));
@@ -3813,9 +3813,9 @@ static bool cuda_alloc_recurrent(model_t *m, gpu_t *g, const cuda_dims *D) {
         int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
         int dip = 2 * m->ssm.inner + 2 * m->ssm.groups * m->ssm.state +
                   m->ssm.v_heads;
-        size_t conv_elems = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd;
+        size_t conv_elems = model_rec_count(m) * (m->ssm.conv_kernel - 1) * cd;
         size_t conv_alloc = conv_elems ? conv_elems : 1;
-        size_t state_elems = (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
+        size_t state_elems = model_rec_count(m) * m->ssm.inner * m->ssm.state;
         CK(cu.MemAlloc(&g->mamba_proj,  sizeof(float) * (size_t)g->win * dip));
         CK(cu.MemAlloc(&g->mamba_xBC,   sizeof(float) * (size_t)g->win * cd));
         CK(cu.MemAlloc(&g->mamba_y,     sizeof(float) * (size_t)g->win * m->ssm.inner));
@@ -5435,7 +5435,7 @@ void gpu_free(model_t *m) {
 // The base of half h of the double-buffered Mamba-2 SSD state.
 static CUdeviceptr mamba_half(const gpu_t *g, const model_t *m, int h) {
     return g->mamba_state +
-           (CUdeviceptr)h * sizeof(float) * (size_t)m->n_layer * m->ssm.inner * m->ssm.state;
+           (CUdeviceptr)h * sizeof(float) * model_rec_count(m) * m->ssm.inner * m->ssm.state;
 }
 
 static bool recurrent_xfer(gpu_t *g, model_t *m, bool to_host, bool prev) {
@@ -5458,10 +5458,10 @@ static bool recurrent_xfer(gpu_t *g, model_t *m, bool to_host, bool prev) {
     }
     for (int l = 0; l < m->gpu_layers; l++) {
         if (!m->layers[l].recurrent) continue;
-        float *hconv  = m->ssm_conv_state + (size_t)l * conv_layer;
-        float *hstate = m->ssm_state_mem + (size_t)l * state_layer;
-        CUdeviceptr dc = dconv + (size_t)l * conv_layer * sizeof(float);
-        CUdeviceptr ds = dstate + (size_t)l * state_layer * sizeof(float);
+        float *hconv  = m->ssm_conv_state + model_rec_slot(m, l) * conv_layer;
+        float *hstate = m->ssm_state_mem + model_rec_slot(m, l) * state_layer;
+        CUdeviceptr dc = dconv + model_rec_slot(m, l) * conv_layer * sizeof(float);
+        CUdeviceptr ds = dstate + model_rec_slot(m, l) * state_layer * sizeof(float);
         if (to_host) {
             if (conv_layer && cu.MemcpyDtoH(hconv, dc, conv_layer * sizeof(float)) != 0)
                 return false;
@@ -5663,10 +5663,10 @@ bool gpu_recurrent_restore_row(model_t *m, int r) {
                 int o = g->snap_ord[l];
                 if (o < 0) continue;
                 size_t slot = (size_t)r * g->snap_nrec + o;
-                if (cu.MemcpyDtoDAsync(mamba_half(g, m, g->rec_cur) + l * sl * sizeof(float),
+                if (cu.MemcpyDtoDAsync(mamba_half(g, m, g->rec_cur) + model_rec_slot(m, l) * sl * sizeof(float),
                                        g->snap_state + slot * sl * sizeof(float),
                                        sl * sizeof(float), g->stream) != 0 ||
-                    (hl && cu.MemcpyDtoDAsync(g->mamba_conv + l * hl * sizeof(float),
+                    (hl && cu.MemcpyDtoDAsync(g->mamba_conv + model_rec_slot(m, l) * hl * sizeof(float),
                                               g->snap_hist + slot * hl * sizeof(float),
                                               hl * sizeof(float), g->stream) != 0))
                     return false;
@@ -5678,8 +5678,8 @@ bool gpu_recurrent_restore_row(model_t *m, int r) {
     }
     if (!m->qwen35) return false;
     int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
-    size_t hb = sizeof(float) * (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;
-    size_t sb = sizeof(float) * (size_t)m->n_layer * m->ssm.v_heads * m->ssm.state * m->ssm.state;
+    size_t hb = sizeof(float) * model_rec_count(m) * (m->ssm.conv_kernel - 1) * convdim;
+    size_t sb = sizeof(float) * model_rec_count(m) * m->ssm.v_heads * m->ssm.state * m->ssm.state;
     if (cu.StreamSynchronize(g->stream) != 0) return false;
     if ((hb && cu.MemcpyDtoD(g->q35_hist, g->snap_hist + (size_t)r * hb, hb) != 0) ||
         cu.MemcpyDtoD(g->q35_state, g->snap_state + (size_t)r * sb, sb) != 0)
@@ -5694,14 +5694,14 @@ bool gpu_recurrent_rollback(model_t *m) {
     if (cu.CtxSetCurrent(g->sw->ctx) != 0) return false;
     if (m->qwen35) {
         int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
-        size_t hist_bytes = sizeof(float) * (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;
-        size_t state_bytes = sizeof(float) * (size_t)m->n_layer * m->ssm.v_heads * m->ssm.state * m->ssm.state;
+        size_t hist_bytes = sizeof(float) * model_rec_count(m) * (m->ssm.conv_kernel - 1) * convdim;
+        size_t state_bytes = sizeof(float) * model_rec_count(m) * m->ssm.v_heads * m->ssm.state * m->ssm.state;
         if ((hist_bytes && cu.MemcpyDtoD(g->q35_hist, g->q35_hist_prev, hist_bytes) != 0) ||
             cu.MemcpyDtoD(g->q35_state, g->q35_state_prev, state_bytes) != 0)
             return false;
     } else if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state) {
         int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
-        size_t conv_bytes = sizeof(float) * (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * cd;
+        size_t conv_bytes = sizeof(float) * model_rec_count(m) * (m->ssm.conv_kernel - 1) * cd;
         if (cu.MemcpyDtoD(g->mamba_conv, g->mamba_conv_prev, conv_bytes) != 0)
             return false;
         g->rec_cur = g->rec_prev;   // the forward's input half, untouched by it
@@ -7349,8 +7349,8 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
 
     size_t hist_layer = (size_t)histn * convdim;
     size_t state_layer = (size_t)nh * sk * sk;
-    CUdeviceptr hist = g->q35_hist + (size_t)l * hist_layer * sizeof(float);
-    CUdeviceptr state = g->q35_state + (size_t)l * state_layer * sizeof(float);
+    CUdeviceptr hist = g->q35_hist + model_rec_slot(m, l) * hist_layer * sizeof(float);
+    CUdeviceptr state = g->q35_state + model_rec_slot(m, l) * state_layer * sizeof(float);
     // the whole tile in one launch per kernel, when no row needs its own
     // checkpoint (speculative keep rows take the loop below, a row a pass)
     bool seq = recur_seq_admits(g, m);
@@ -7417,11 +7417,11 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
         }
         if (g->snap_on && t < g->snap_rows) {
             // checkpoint after this row, in stream order behind the kernels
-            size_t hb = sizeof(float) * (size_t)m->n_layer * hist_layer;
-            size_t sb = sizeof(float) * (size_t)m->n_layer * state_layer;
-            if ((hist_layer && cu.MemcpyDtoDAsync(g->snap_hist + (size_t)t * hb + (size_t)l * hist_layer * sizeof(float),
+            size_t hb = sizeof(float) * model_rec_count(m) * hist_layer;
+            size_t sb = sizeof(float) * model_rec_count(m) * state_layer;
+            if ((hist_layer && cu.MemcpyDtoDAsync(g->snap_hist + (size_t)t * hb + model_rec_slot(m, l) * hist_layer * sizeof(float),
                                                    hist, hist_layer * sizeof(float), g->stream) != 0) ||
-                cu.MemcpyDtoDAsync(g->snap_state + (size_t)t * sb + (size_t)l * state_layer * sizeof(float),
+                cu.MemcpyDtoDAsync(g->snap_state + (size_t)t * sb + model_rec_slot(m, l) * state_layer * sizeof(float),
                                    state, state_layer * sizeof(float), g->stream) != 0)
                 return false;
         }
@@ -7455,10 +7455,10 @@ static bool gpu_mamba2_recurrent(gpu_t *g, model_t *m, const layer_t *ly,
                 m->n_embd, d_in_proj, 0, tn, xdim, d_in_proj))
         return false;
     CUdeviceptr ring  = g->mamba_conv +
-                        (size_t)l * histn * conv_dim * sizeof(float);
+                        model_rec_slot(m, l) * histn * conv_dim * sizeof(float);
     // the layer's SSD state: read from the forward's input half on its first
     // tile (later tiles continue in the half it writes), written to rec_cur
-    size_t soff = (size_t)l * nh * hd * ds * sizeof(float);
+    size_t soff = model_rec_slot(m, l) * nh * hd * ds * sizeof(float);
     CUdeviceptr state = mamba_half(g, m, g->rec_cur) + soff;
     CUdeviceptr state_in = mamba_half(g, m, g->rec_tile0 ? g->rec_prev : g->rec_cur) + soff;
     CUdeviceptr Aw = g->sw->ssm_a[l], dtw = g->sw->ssm_dt[l];
@@ -10264,8 +10264,8 @@ static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos) {
     g->xh_src = 0;
     if (m->qwen35 && pos == 0) {
         int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
-        size_t hist_elems = (size_t)m->n_layer * (m->ssm.conv_kernel - 1) * convdim;
-        size_t state_elems = (size_t)m->n_layer * m->ssm.v_heads *
+        size_t hist_elems = model_rec_count(m) * (m->ssm.conv_kernel - 1) * convdim;
+        size_t state_elems = model_rec_count(m) * m->ssm.v_heads *
                              m->ssm.state * m->ssm.state;
         if ((hist_elems && cu.MemsetD8(g->q35_hist, 0,
                                       hist_elems * sizeof(float)) != 0) ||
@@ -10274,9 +10274,9 @@ static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos) {
     }
     if (m->qwen35) {
         int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
-        size_t hist_bytes = sizeof(float) * (size_t)m->n_layer *
+        size_t hist_bytes = sizeof(float) * model_rec_count(m) *
                             (m->ssm.conv_kernel - 1) * convdim;
-        size_t state_bytes = sizeof(float) * (size_t)m->n_layer *
+        size_t state_bytes = sizeof(float) * model_rec_count(m) *
                              m->ssm.v_heads * m->ssm.state * m->ssm.state;
         if ((hist_bytes && cu.MemcpyDtoD(g->q35_hist_prev, g->q35_hist,
                                         hist_bytes) != 0) ||
@@ -10292,9 +10292,9 @@ static bool cuda_fwd_prepare(gpu_t *g, model_t *m, int n, int pos) {
     g->snap_valid = 0;
     if ((m->granite_hybrid || m->nemotron_h) && g->mamba_state) {
         int cd = m->ssm.inner + 2 * m->ssm.groups * m->ssm.state;
-        size_t conv_bytes = sizeof(float) * (size_t)m->n_layer *
+        size_t conv_bytes = sizeof(float) * model_rec_count(m) *
                             (m->ssm.conv_kernel - 1) * cd;
-        size_t state_bytes = sizeof(float) * (size_t)m->n_layer *
+        size_t state_bytes = sizeof(float) * model_rec_count(m) *
                              m->ssm.inner * m->ssm.state;
         int src = g->rec_cur;
         if (pos == 0) {

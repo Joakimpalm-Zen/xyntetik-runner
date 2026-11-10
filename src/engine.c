@@ -81,7 +81,7 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
     e->hist = malloc(sizeof(int32_t) * m->n_ctx);
     if (!e->hist) return false;   // no history buffer: the engine is unusable
     e->model_key = model_identity(m, tok, false);
-    e->model_key_prior = m->qwen35 ? model_identity(m, tok, true) : e->model_key;
+    e->model_key_prior = m->rec_slot ? model_identity(m, tok, true) : e->model_key;
     return true;
 }
 
@@ -234,7 +234,7 @@ static uint64_t fnv1a_toks(const int32_t *toks, int n) {
 
 void engine_refresh_identity(engine *e) {
     e->model_key = model_identity(e->m, e->tok, false);
-    e->model_key_prior = e->m->qwen35 ? model_identity(e->m, e->tok, true) : e->model_key;
+    e->model_key_prior = e->m->rec_slot ? model_identity(e->m, e->tok, true) : e->model_key;
 }
 
 const char *engine_rewind_how_name(int how) {
@@ -445,9 +445,13 @@ static uint64_t model_identity(const model_t *m, const tokenizer *tok, bool prio
     h = h64f(h, m->logit_scale);   h = h64f(h, m->post_norm_eps);
     h = h64f(h, m->resid_scale);
     h = h64i(h, m->embd_norm);     h = h64i(h, m->nope_on_full);
+    // R3.47: the recurrent state has a slot per stateful layer only; a state
+    // saved with a slot for every layer (1.15.0, and the dev builds between)
+    // keys differently, so it is refused, never misread
+    if (m->rec_slot && !prior) h = h64s(h, "runner.fold.v2");
     for (int l = 0; l < m->n_layer; l++) {
-        // `prior`: the key a runner before R3.44 gave a qwen35-family model,
-        // whose DeltaNet layers then reserved rows of the attention shape
+        // `prior`: the key 1.15.0 gave the model: no fold token, and a
+        // qwen35-family DeltaNet layer reserving rows of the attention shape
         int kvd = model_kv_dim(m, l);
         if (prior && m->qwen35 && kvd == 0) kvd = m->n_head_kv * model_head_dim(m, l);
         h = h64i(h, kvd);
