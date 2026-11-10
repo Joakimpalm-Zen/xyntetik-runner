@@ -5,6 +5,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -214,6 +215,23 @@ def test_release_check_rejects_stale_readme(monkeypatch, tmp_path, capsys):
     )
     assert not check_release.check(args)
     assert "stale release string 'v1.1.4'" in capsys.readouterr().err
+
+
+def test_release_check_rejects_unfolded_changelog_entries(monkeypatch, tmp_path, capsys):
+    """R6.21: an entry left in changes/ would be missing from the release notes."""
+    args = good_args(tmp_path)
+    monkeypatch.setattr(
+        check_release, "binary_version", lambda _: "runner 1.2.0"
+    )
+    changes = tmp_path / "changes"
+    changes.mkdir()
+    write(changes / "README.md", "# the format, not an entry\n")
+    assert check_release.check(args)
+    write(changes / "R6.21.md", "- **Left behind (R6.21).**\n")
+    capsys.readouterr()
+    assert not check_release.check(args)
+    assert ("changes/ still holds 1 unfolded changelog entry (R6.21.md): "
+            "run python3 scripts/changelog-entries.py fold --write") in capsys.readouterr().err
 
 
 def test_release_check_rejects_build_commit_drift(monkeypatch, tmp_path, capsys):
@@ -810,3 +828,242 @@ def test_a_failed_tree_scan_stays_failed_while_the_tree_stands(monkeypatch, tmp_
     assert not check_release.check(good_args(tmp_path))
     monkeypatch.setattr(check_release, "private_reference_scan", lambda: True)
     assert not check_release.check(good_args(tmp_path))
+
+
+# ---------------------------------------------------------------- changelog entries (R6.21)
+# scripts/changelog-entries.py: one entry file per pull request in changes/, folded into
+# CHANGELOG.md at release. Each test builds a small git repository of its own: a main branch with
+# a CHANGELOG, and a branch made the way a pull request would make it. They live here, beside
+# check-release's refusal of an unfolded entry, so the change adds no test file to the Makefile's
+# root-pytest line (one long line, which every such addition makes another conflict on).
+CE_TOOL = ROOT / "scripts" / "changelog-entries.py"
+
+CE_CHANGELOG = """# Changelog
+
+Intro text.
+
+## Unreleased
+
+- **An entry already on main (R1.1).**
+  - detail
+
+## v1.0.0 - 2026-01-01
+
+- **Released (R0.1).**
+"""
+
+
+def ce_git(repo, *args, env=None):
+    e = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
+             GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid", **(env or {}))
+    return subprocess.run(["git", *args], cwd=repo, env=e, check=True, capture_output=True, text=True).stdout
+
+
+def ce_commit(repo, message, when=None):
+    ce_git(repo, "add", "-A")
+    env = None if when is None else {"GIT_AUTHOR_DATE": f"{when} +0000", "GIT_COMMITTER_DATE": f"{when} +0000"}
+    ce_git(repo, "commit", "-q", "--allow-empty", "-m", message, env=env)
+
+
+@pytest.fixture
+def repo(tmp_path):
+    r = tmp_path / "repo"
+    r.mkdir()
+    ce_git(r, "init", "-q", "-b", "main")
+    (r / "CHANGELOG.md").write_text(CE_CHANGELOG)
+    (r / "changes").mkdir()
+    (r / "changes" / "README.md").write_text("# Changelog entries\n")
+    ce_commit(r, "base", when="2026-11-01T10:00:00")
+    ce_git(r, "switch", "-q", "-c", "pr")
+    return r
+
+
+def ce_run(repo, *args):
+    p = subprocess.run([sys.executable, str(CE_TOOL), *args], cwd=repo, capture_output=True, text=True,
+                       env=dict(os.environ, GITHUB_ACTIONS=""))
+    return p.returncode, p.stdout + p.stderr
+
+
+def ce_check(repo, *extra):
+    return ce_run(repo, "check", "--base", "main", *extra)
+
+
+def ce_entry(repo, name, text):
+    (repo / "changes" / name).write_text(text)
+
+
+def test_one_entry_file_passes(repo):
+    ce_entry(repo, "R2.1.md", "- **A fix (R2.1).**\n  - detail\n")
+    ce_commit(repo, "R2.1")
+    code, out = ce_check(repo)
+    assert code == 0, out
+    assert "ok: one entry, changes/R2.1.md" in out
+
+
+def test_no_entry_and_no_reason_fails_and_says_what_to_do(repo):
+    (repo / "src.c").write_text("int x;\n")
+    ce_commit(repo, "code only")
+    code, out = ce_check(repo)
+    assert code == 1
+    assert "no changelog entry: add changes/<plan ID>.md" in out
+    assert "Changelog: none, <why>" in out
+
+
+def test_a_reason_in_a_commit_message_or_the_description_passes(repo):
+    (repo / "src.c").write_text("int x;\n")
+    ce_commit(repo, "tidy\n\nChangelog: none, a comment fix with no effect")
+    code, out = ce_check(repo)
+    assert code == 0, out
+    assert "ok: no entry, because: a comment fix with no effect" in out
+
+    ce_git(repo, "commit", "-q", "--amend", "-m", "tidy")
+    code, _ = ce_check(repo)
+    assert code == 1
+    body = repo.parent / "body.txt"
+    body.write_text("## What\n\nchangelog: none - test-only change\n")
+    code, out = ce_check(repo, "--text", str(body))
+    assert code == 0, out
+    assert "because: test-only change" in out
+
+
+def test_a_pull_request_opened_before_the_switch_is_warned_not_failed(repo):
+    # the fixture's base commit, which adds changes/README.md, is the switch: 2026-11-01 10:00 UTC
+    (repo / "src.c").write_text("int x;\n")
+    ce_commit(repo, "code only")
+    code, out = ce_check(repo, "--opened", "2026-10-30T08:00:00Z")
+    assert code == 0, out
+    assert "warning: no changelog entry" in out
+    assert "opened before changes/ existed" in out
+    code, out = ce_check(repo, "--opened", "2026-11-01T10:00:01Z")
+    assert code == 1
+    assert "error: no changelog entry" in out
+
+
+def test_two_entries_fail(repo):
+    ce_entry(repo, "R2.1.md", "- **One (R2.1).**\n")
+    ce_entry(repo, "R2.2.md", "- **Two (R2.2).**\n")
+    ce_commit(repo, "two")
+    code, out = ce_check(repo)
+    assert code == 1
+    assert "2 changelog entries (changes/R2.1.md, changes/R2.2.md): one per pull request" in out
+
+
+def test_an_entry_written_into_changelog_counts_with_a_warning(repo):
+    text = CE_CHANGELOG.replace("## Unreleased\n\n", "## Unreleased\n\n- **Legacy (R3.1).**\n  - detail\n\n")
+    (repo / "CHANGELOG.md").write_text(text)
+    ce_commit(repo, "a branch cut before the switch")
+    code, out = ce_check(repo)
+    assert code == 0, out
+    assert "warning: the entry is written straight into CHANGELOG.md" in out
+
+    ce_entry(repo, "R3.1.md", "- **Also a file (R3.1).**\n")
+    ce_commit(repo, "and a file")
+    code, out = ce_check(repo)
+    assert code == 1
+    assert "2 changelog entries (changes/R3.1.md, 1 in CHANGELOG.md)" in out
+
+
+def test_rewording_an_entry_already_on_main_is_not_an_entry(repo):
+    (repo / "CHANGELOG.md").write_text(CE_CHANGELOG.replace("  - detail\n", "  - better detail\n"))
+    ce_commit(repo, "reword")
+    code, out = ce_check(repo)
+    assert code == 1
+    assert "no changelog entry" in out
+
+
+def test_a_branch_that_merged_main_in_counts_only_its_own_entry(repo):
+    ce_entry(repo, "R2.1.md", "- **Mine (R2.1).**\n")
+    ce_commit(repo, "mine", when="2026-11-02T10:00:00")
+    ce_git(repo, "switch", "-q", "main")
+    ce_entry(repo, "R9.9.md", "- **Theirs, merged first (R9.9).**\n")
+    ce_commit(repo, "theirs", when="2026-11-02T11:00:00")
+    ce_git(repo, "switch", "-q", "pr")
+    ce_git(repo, "merge", "-q", "--no-edit", "main")
+    code, out = ce_check(repo)
+    assert code == 0, out
+    assert "ok: one entry, changes/R2.1.md" in out
+
+
+@pytest.mark.parametrize("name,text,problem", [
+    ("R2.1.md", "A sentence, not a list item.\n", "starts with '- '"),
+    ("R2.1.md", "- **Entry.**\n\n## v9.9.9\n", "no headings in an entry"),
+    ("R2.1.md", "- **One.**\n- **Two.**\n", "2 top-level items"),
+    ("R2.1.md", "\n\n", "empty"),
+    ("bad name!.md", "- **Entry.**\n", "name it changes/<plan ID or short slug>.md"),
+])
+def test_a_malformed_entry_fails(repo, name, text, problem):
+    ce_entry(repo, name, text)
+    ce_commit(repo, "bad entry")
+    code, out = ce_check(repo)
+    assert code == 1
+    assert problem in out
+
+
+def test_the_release_fold_passes_the_check(repo):
+    ce_git(repo, "switch", "-q", "main")
+    ce_entry(repo, "R2.1.md", "- **Waiting (R2.1).**\n")
+    ce_commit(repo, "R2.1 merged")
+    ce_git(repo, "switch", "-q", "-c", "release/1.1.0")
+    code, out = ce_run(repo, "fold", "--write", "--changelog", str(repo / "CHANGELOG.md"))
+    assert code == 0, out
+    ce_commit(repo, "fold")
+    code, out = ce_check(repo)
+    assert code == 0, out
+    assert "ok: a release fold, 1 entry folded" in out
+
+
+def test_fold_puts_entries_on_top_newest_first_and_deletes_them(repo):
+    ce_git(repo, "switch", "-q", "main")
+    ce_entry(repo, "R5.1.md", "- **Older (R5.1).**\n  - its detail\n")
+    ce_commit(repo, "older", when="2026-11-03T10:00:00")
+    ce_entry(repo, "A1.md", "- **Newer (A1).**\n")
+    ce_commit(repo, "newer", when="2026-11-04T10:00:00")
+    changelog = repo / "CHANGELOG.md"
+
+    code, out = ce_run(repo, "fold", "--changelog", str(changelog))
+    assert code == 0, out
+    assert "would put 2 entries at the top of ## Unreleased, newest first (changes/A1.md, changes/R5.1.md)" in out
+    assert changelog.read_text() == CE_CHANGELOG, "a dry run wrote the file"
+
+    code, out = ce_run(repo, "fold", "--write", "--changelog", str(changelog))
+    assert code == 0, out
+    assert changelog.read_text() == CE_CHANGELOG.replace(
+        "## Unreleased\n\n",
+        "## Unreleased\n\n- **Newer (A1).**\n\n- **Older (R5.1).**\n  - its detail\n\n")
+    assert sorted(p.name for p in (repo / "changes").iterdir()) == ["README.md"]
+
+    code, out = ce_run(repo, "fold", "--write", "--changelog", str(changelog))
+    assert (code, out.strip()) == (0, "nothing to fold: changes/ holds no entries")
+
+
+def test_fold_into_an_empty_unreleased_section(repo):
+    changelog = repo / "CHANGELOG.md"
+    changelog.write_text("# Changelog\n\n## Unreleased\n\n## v1.0.0 - 2026-01-01\n\n- **Released.**\n")
+    ce_entry(repo, "R2.1.md", "- **Only (R2.1).**\n")
+    code, out = ce_run(repo, "fold", "--write", "--changelog", str(changelog))
+    assert code == 0, out
+    assert changelog.read_text() == (
+        "# Changelog\n\n## Unreleased\n\n- **Only (R2.1).**\n\n## v1.0.0 - 2026-01-01\n\n- **Released.**\n")
+
+
+def test_fold_refuses_without_an_unreleased_heading_or_with_a_bad_entry(repo):
+    changelog = repo / "CHANGELOG.md"
+    ce_entry(repo, "R2.1.md", "not a list item\n")
+    code, out = ce_run(repo, "fold", "--write", "--changelog", str(changelog))
+    assert code == 1 and "starts with '- '" in out
+    assert (repo / "changes" / "R2.1.md").exists()
+    changelog.write_text("# Changelog\n\n## v1.0.0\n")
+    code, out = ce_run(repo, "fold", "--write", "--changelog", str(changelog))
+    assert code != 0 and "no '## Unreleased' heading" in out
+
+
+def test_the_repository_changes_folder_follows_the_rule():
+    """The format file is not an entry, and every waiting entry is well formed."""
+    folder = ROOT / "changes"
+    assert (folder / "README.md").is_file()
+    spec = importlib.util.spec_from_file_location("changelog_entries", CE_TOOL)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for p in sorted(folder.glob("*.md")):
+        if p.name != "README.md":
+            assert mod.entry_problems(f"changes/{p.name}", p.read_text(encoding="utf-8")) == []

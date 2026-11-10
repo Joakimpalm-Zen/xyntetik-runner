@@ -136,6 +136,10 @@ and `make hooks` installs the same check as a local `commit-msg` hook.
 
 - Branch from an up-to-date `main`, named for the work; push it and open a
   pull request with `gh pr create`.
+- Write the change's CHANGELOG entry as its own file, `changes/<plan ID>.md`
+  ([format](changes/README.md)), never into CHANGELOG.md: one file per pull
+  request keeps pull requests from conflicting. With nothing to record, add a
+  line `Changelog: none, <why>` to the description or a commit message.
 - Merge only with CI green (`gh pr merge <n> --merge --delete-branch`). Tag
   a release only after `main` is green and `make release-check` passes.
 - Never leave finished work unmerged: a branch is merged, or its decline is

@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read   # the changelog check reads the description as it is now
 
 jobs:
   commit-hygiene:
@@ -51,3 +52,18 @@ jobs:
           # or session names (a record PR's JSON carried the lab's paths on
           # 2026-10-31; this read only messages)
           python3 scripts/check-content-hygiene.py --range "$range"
+      - name: one changelog entry in changes/, or a reason for none
+        # R6.21: entries are files of their own so pull requests stop conflicting on
+        # CHANGELOG.md. The description is read through the API, not the event, so a
+        # re-run after editing it sees the edit.
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          OPENED: ${{ github.event.pull_request.created_at }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.title + "\n" + (.body // "")' > /tmp/pr-text.txt
+          python3 scripts/changelog-entries.py check --base "$BASE" --head "$HEAD" \
+            --text /tmp/pr-text.txt --opened "$OPENED"
