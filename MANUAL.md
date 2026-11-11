@@ -1275,8 +1275,9 @@ new expert index space with no runtime remapping. Non-uniform coverage-pruned
 `nemotron_h_moe` layers resolve their expert count from each layer's router.
 CUDA runs a non-uniform prune since 2026-10-31: each layer's router, routing
 and expert tables take that layer's count (`make test-cuda-keepn`). A
-`nemotron_h_moe` file still runs on the CPU there, because its selection bias
-(`exp_probs_b`) has no device kernel.
+`nemotron_h_moe` file still runs on the CPU there by default, because its selection bias
+(`exp_probs_b`) has no device kernel; with `--cpu-moe` its Mamba-2 and attention
+blocks run on the device and its experts and their routing on the host.
 `scripts/moe-prune-plan.py` can build a plan from calibration data.
 
 **A non-uniform prune describes itself with a per-layer key, and an artifact
@@ -1895,7 +1896,10 @@ load still compiling after 2 s says so once on stderr (`gpu: compiling the GPU
 kernels for this card and driver; ...`), and stdout and receipts are unchanged. Full and
 partial layer offload are supported, on hybrid models too: a split whose device
 layers are all recurrent ones loads and runs on the device. Sparse MoE can keep expert FFNs in RAM
-with `--cpu-moe` while attention and dense tensors remain on the GPU.
+with `--cpu-moe` while attention and dense tensors remain on the GPU. A router with no device
+kernel (`nemotron_h_moe`'s sigmoid with a selection bias) runs this way too: CUDA keeps such a
+file on the CPU by default and says so, and `--cpu-moe` routes on the host while the GPU runs
+the rest (1.56x the CPU's decode on Nemotron-3.5-Lightning-30B-A3B Q4_0 on a 24 GB MIG slice).
 `make ptx` regenerates the embedded header and requires a CUDA toolkit only
 for that development step.
 

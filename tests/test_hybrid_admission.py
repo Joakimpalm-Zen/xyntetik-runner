@@ -302,6 +302,61 @@ def test_granitehybrid_cpu_moe_runs_on_the_device(runner_bin, models, cfg):
     assert proc.stdout == cpu.stdout
 
 
+# --cpu-moe on CUDA for nemotron_h_moe (R3.43a): its router (a sigmoid with a
+# selection bias) has no device kernel, so cuda_admit refused the whole model,
+# even with every bank on the host where model_moe_ffn_cpu routes it. Now the
+# refusal applies only to a bank on the device: --cpu-moe runs the Mamba-2 and
+# attention blocks on the device and routes on the host. Two defects stood in
+# the way: the admission refusal, and the forward's jump for an MLP-only block
+# straight to the device FFN, past the host branch (a run read the router from
+# the device and fell back).
+@pytest.mark.parametrize("cfg", [["--cpu-moe"], ["--cpu-moe", "auto"]])
+def test_nemotron_h_moe_cpu_moe_runs_the_trunk_on_the_device(runner_bin, models, cfg):
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True,
+                                     text=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("--cpu-moe placement is CUDA-side")
+    good, _ = models["nemotron_h_moe"]
+    prompt = "the quick brown fox jumps over the lazy dog"
+
+    def score(*extra):
+        env = dict(os.environ, RUNNER_GPU_FALLBACK="fail")
+        p = subprocess.run([runner_bin, "-m", str(good), "--score", "4", "-p", prompt,
+                            "--no-tray", *extra], cwd=ROOT, capture_output=True,
+                           timeout=120, env=env)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        return json.loads(p.stdout), p.stderr.decode(errors="replace")
+
+    cpu, _ = score("--gpu", "off")
+    dev, err = score(*cfg)
+    assert "CUDA backend" in err, err
+    for fallback in ("not resident", "falling back", "continuing on CPU"):
+        assert fallback not in err, err
+    # the router has no device kernel: every bank stays on the host
+    assert re.search(r"experts 0/\d+ layers on GPU", err), err
+    # the experts run the CPU's own code; only the trunk's device arithmetic
+    # differs (measured 9.5e-7 on the fixture)
+    assert max(abs(a - b) for a, b in zip(cpu["logprobs"], dev["logprobs"])) <= 1e-4
+    assert cpu["argmax"] == dev["argmax"]
+
+
+def test_nemotron_h_moe_without_cpu_moe_runs_on_the_cpu_and_names_the_flag(
+        runner_bin, models):
+    caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True,
+                                     text=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("CUDA admission is CUDA-side")
+    good, _ = models["nemotron_h_moe"]
+    proc = subprocess.run([runner_bin, "-m", str(good), "-p", "hi", "-n", "2", "--temp", "0",
+                           "--no-tray"], cwd=ROOT, capture_output=True, timeout=120)
+    err = proc.stderr.decode(errors="replace")
+    assert proc.returncode == 0, err
+    assert "has no device kernel" in err and "--cpu-moe keeps the experts" in err, err
+    assert "CUDA backend" not in err, err
+
+
 def test_nemotron_h_moe_routes_with_a_sigmoid_when_the_file_names_no_gating(
         runner_bin, tmp_path):
     """The publisher's router (NemotronHTopkRouter) is a sigmoid, and the
