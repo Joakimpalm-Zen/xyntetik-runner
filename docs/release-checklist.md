@@ -9,6 +9,59 @@ the macOS gates. The **CUDA host** runs the CUDA gate on the pin commit while th
 macOS gates run. The **coordinator half** merges, tags and publishes. One person
 may do all three, but the order holds.
 
+## Artifact promotion from the lab
+
+Before publishing a file, report, record or card, check the existing rules
+for that artifact. A research record and a validated model file make
+different claims; their evidence and exclusions stay with them.
+
+- **Publisher.** For a Runner release, the worker prepares the branch and
+  runs gates; the coordinator merges, tags and publishes after CI and main
+  are green. Follow the [coordinator half](#6-coordinator-half), including
+  the post-publish verification, rather than treating a local build as a
+  release.
+- **Checksums and destination.** The [release workflow](../.github/workflows/release.yml)
+  writes `SHA256SUMS`; the coordinator checks the downloaded asset against
+  it. For research-record packages, the existing
+  [Cognition package checker](https://github.com/Joakimpalm-Zen/xyntetik-shade/blob/2c7ae59af7ae30460652ac8bf7e4dbab6eece337/research/cognition/cognition-record/tools/make_public_copy.py)
+  refuses missing, extra or mismatched manifest entries, a missing card,
+  and credential/identity patterns. Its
+  [uploader](https://github.com/Joakimpalm-Zen/xyntetik-shade/blob/2c7ae59af7ae30460652ac8bf7e4dbab6eece337/research/cognition/cognition-record/tools/upload_record.py)
+  checks the package before sending anything. Its dry run compares local
+  bytes with the Hub; creation refuses an existing dataset, and a revision
+  requires the expected remote parent. Check the additions,
+  replacements and deletions; a revision is an explicit update, not an
+  unchecked overwrite.
+- **Model evidence.** Use the file's own
+  [admission evidence bar](model-support.md#the-envelope-and-the-evidence-bar):
+  a pinned upstream checkpoint, file sha256 and quantization; the numerical
+  anchor against the publisher's float32 implementation on at least the
+  family's smallest member where feasible; tokenizer/template and relevant
+  tool-protocol checks; a pinned greedy output; and a recorded real-device
+  run. Where no float32 reference is feasible, label the anchor as agreement
+  with another engine, not fidelity. Keep limits beside claims, and do not
+  inherit a pass from another file or backend. The same page separates
+  numerical correctness, protocol correctness and task quality.
+- **Record and card.** Commit Runner device-gate summaries and their
+  evidence pointers as [step 4](#4-cuda-gate-cuda-host-on-the-pin-commit)
+  specifies. Keep the source record distinct from its public copy: the
+  typed-decisions card names shade as the source record and its Hub dataset
+  as the public copy. Published records carry provenance, dates, checksums,
+  exclusions and failures: see the
+  [Cognition record card](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Cognition-record#what-is-in-this-record)
+  and [typed-decisions record card](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Typed-Decisions-record#public-copy).
+  The Cognition card records dated corrections without rewriting closed
+  reports. For a card change, check the README, manual and site impact under
+  [the existing documentation rule](../AGENTS.md#4-readme-manual-site-and-model-cards-move-together).
+- **Excluded material.** Apply the
+  [publication rule](../AGENTS.md#5-never-publish-conversation-content-or-session-identifiers)
+  to private conversation content, session links/IDs, host paths and
+  machine/session identifiers, with the committed message/content hygiene
+  checks. The record package guard above also refuses credentials. Honor
+  the particular record's documented exclusions: the typed-decisions card
+  lists excluded source data and the public-copy changes; it labels the
+  dataset as research evidence with no model weights.
+
 ## 0. Before the cut
 
 - Every PR meant for the release is merged into main. Note the cut SHA: the merge
