@@ -121,3 +121,25 @@ def test_varying_widths_on_cuda_take_no_split_and_name_the_refusal(runner_bin, t
     assert p.returncode == 0, err
     assert "per-layer expert widths (blk.2 is 16 wide, the widest 24)" in err, err
     assert "its experts and their routing stay on the host" not in err, err
+
+
+@pytest.mark.parametrize("latent,why", [
+    (16, "LatentMoE (the routed experts at a latent width between ffn_latent_down and "
+         "ffn_latent_up) has no device path"),
+    (0, "per-layer expert widths have no device path"),
+])
+def test_the_fit_says_such_a_file_loads_on_the_cpu(runner_bin, tmp_path, latent, why):
+    """--info fit sizes what the load does: a LatentMoE file, or one whose
+    widths vary, loads on the CPU (cuda_admit refuses it by name), so the fit
+    says so and sizes no split. Before R4.27.4.4 S2 it reported every layer
+    on the GPU."""
+    caps = json.loads(subprocess.run([str(runner_bin), "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True, text=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("the fit's GPU lines need a device")
+    het, _ = make(tmp_path, "fit", latent)
+    p = subprocess.run([str(runner_bin), "--info", "fit", "-m", str(het)], cwd=ROOT,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, text=True)
+    assert p.returncode == 0, p.stderr
+    assert "present, but the load runs on the CPU: " + why in p.stdout, p.stdout
+    assert "layers on the GPU" not in p.stdout, p.stdout

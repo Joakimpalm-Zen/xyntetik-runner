@@ -1705,6 +1705,28 @@ static void fit_gib(char *buf, size_t n, uint64_t bytes) {
     snprintf(buf, n, "%.2f GiB", (double)bytes / (double)(1ull << 30));
 }
 
+// nemotron_h_moe's LatentMoE (Nemotron 3.5 Super and Bolt) and per-layer
+// expert widths (Bolt) have no device path: cuda_admit refuses them by name
+// and Metal refuses the family, so such a file loads on the CPU. Read from the
+// header, as the fit reads everything (R4.27.4.4 S2).
+static const char *fit_nh_moe_cpu_why(gguf_file *g, const char *arch) {
+    char key[96];
+    snprintf(key, sizeof key, "%s.moe_latent_size", arch);
+    if (gguf_get_u32(g, key, 0) > 0)
+        return "LatentMoE (the routed experts at a latent width between "
+               "ffn_latent_down and ffn_latent_up) has no device path";
+    snprintf(key, sizeof key, "%s.expert_feed_forward_length", arch);
+    gguf_kv *kv = gguf_get(g, key);
+    uint32_t w = 0;
+    for (uint64_t i = 0; kv && kv->type == GGUF_T_ARR && i < kv->arr_n; i++) {
+        uint32_t v = gguf_get_u32_idx(g, key, i, 0);
+        if (v && w && v != w)
+            return "per-layer expert widths have no device path";
+        if (v) w = v;
+    }
+    return NULL;
+}
+
 static int run_fit_check(const char *path, int n_ctx_want,
                          const model_params *mp, int n_seq) {
     gguf_file g;
@@ -1730,6 +1752,7 @@ static int run_fit_check(const char *path, int n_ctx_want,
     const char *farch = gguf_get_str(&g, "general.architecture", "");
     snprintf(akey, sizeof akey, "%s.attention.group_norm_groups", farch);
     const char *cpu_why = model_gpu_cpu_only_why(farch, (int)gguf_get_u32(&g, akey, 1));
+    if (!cpu_why && !strcmp(farch, "nemotron_h_moe")) cpu_why = fit_nh_moe_cpu_why(&g, farch);
     // R3.50: the KV ring the load would turn on, sized by the batch the load
     // would take (model.c: a GPU load's default batch follows total RAM)
     f.kv_ring_mode = mp->kv_ring;
