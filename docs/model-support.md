@@ -513,6 +513,17 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
+<summary><b>NVIDIA Nemotron 3.5 Bolt</b>, 1 model: CPU ✅ · CUDA n/a · Metal n/a · Train n/a</summary>
+<table>
+<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
+<tbody>
+<tr><td colspan="5"><b>NVIDIA Nemotron 3.5 Bolt-74B-A9B (NVIDIA)</b></td></tr>
+<tr><td><a href="#nemotron-3.5-bolt-74b-a9b-24gb"><code>NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf</code></a></td><td nowrap>✅ 1.16.0<sup>b</sup><br>2026-11-11</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: recurrent architecture (Mamba-2)</td></tr>
+</tbody>
+</table>
+</details>
+
+<details>
 <summary><b>NVIDIA Nemotron 3.5 Lightning</b>, 2 models: CPU ✅ · CUDA ✅ · Metal - · Train n/a</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
@@ -711,7 +722,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </table>
 </details>
 
-**Upcoming** (planned, not supported yet): Kolibri-1 (Aleph Alpha, 78B), Nemotron 3.5 Bolt-74B-A9B (text path only), occamy-1.0 (Accio-Lab's finetune of Qwen3.6-35B-A3B).
+**Upcoming** (planned, not supported yet): Kolibri-1 (Aleph Alpha, 78B), occamy-1.0 (Accio-Lab's finetune of Qwen3.6-35B-A3B).
 
 <a id="models"></a><a id="tier1"></a><a id="tier2"></a><a id="tier3"></a>
 ## Models
@@ -1905,6 +1916,32 @@ Text path only: Muse-Glimmer-30B with 6.34% of the decoder removed (the FFN subl
 - **LoRA training:** supported (runner 1.5.1, 2026-10-24).
 - **LoRA adapter serving:** supported (runner 1.5.1, 2026-10-24).
 
+### NVIDIA Nemotron 3.5 Bolt
+
+#### NVIDIA Nemotron 3.5 Bolt-74B-A9B (NVIDIA)
+
+<a id="nemotron-3.5-bolt-74b-a9b-24gb"></a>
+##### `NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf`
+
+Text path only (the vision projector is not loaded), NVIDIA's own 24GB GGUF of Nemotron 3.5 Bolt-74B-A9B (the experts at IQ2_XXS, the Mamba-2 projections at NVFP4), CPU only: Runner agrees with llama.cpp 36a0e2f on the same bytes at 0.0072 mean KLD and 100.00% margin-qualified top-1 (bars 0.05 and 97%, 300 positions). Agreement, not fidelity: the 149.8 GB BF16 parent cannot be held in float32 on the lab host, so no publisher reference was read.
+
+- **File:** `NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf` (sha256 `91d63363e782c8a3d5f4be42816eba8e0d42dd2530bd07a7d0d2dc440599af75`, 22,018,326,528 bytes, from [nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF) at revision `e0fecb69cb3e`).
+- **Upstream checkpoint:** nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16 at revision `e09a4cedb178`.
+- **Quantization:** NVIDIA's 24GB GGUF: routed and shared experts IQ2_XXS, Mamba-2 projections NVFP4 with per-tensor scales, attention, latent projections, embeddings and head Q8_0.
+- **Licence:** `openmdw-1.1`, as the nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16 model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. Runner against llama.cpp 36a0e2f (llama-server, CPU, flash attention off) on the same held bytes, kld-compare-raw.py over gold-corpus-2k, 300 positions at stride 15, top-20: mean KLD 0.0072 (median 0.0026, p99 0.066, max 0.163) / 96.33% top-1 / 100.00% margin-qualified (the 11 picks that differ are inside the 0.5-nat tie band); one further position failed to score and is outside the 300. No float32 reference: NVIDIA's BF16 parent is 149.8 GB, about 300 GB in float32. Tokenizer 0/721 corpus strings and 0/128,635 vocabulary entries against its tokenizer.json at e09a4ced; template conformance 24/24 in text and tokens (the file's template is the repository's chat_template.jinja byte for byte). Record: docs/compat-reports/nemotron-3.5-bolt-74b-a9b-2026-11-11/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** 22.0 GB of weights, CPU only: LatentMoE, the per-layer expert widths and the sigmoid-plus-bias router have no device path, so CUDA and Metal refuse the file by name and it runs on the CPU. NVIDIA names the file for a 24 GB card; that use is not met. The CPU prompt pass is slow in this release: a cold 4,470-word prompt took 494.6 s where llama.cpp took 65.9 s on the same 40 shared CPUs (one request each, the K-agree timing probe; R3.57). Text only: the vision projector NVIDIA ships beside it is not loaded. LoRA: neither training nor serving (Mamba-2 hybrid). Licence: openmdw-1.1.
+- **Still missing:** A float32 reference (the parent does not fit on the lab host); the device paths for LatentMoE, per-layer expert widths and the router; a Metal cell; the tool protocol; task quality on the real checkpoint.
+- **Evidence:** [docs/compat-reports/nemotron-3.5-bolt-74b-a9b-2026-11-11/README.md](compat-reports/nemotron-3.5-bolt-74b-a9b-2026-11-11/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.16.0 on 2026-11-11.
+- **CPU:** ✅ v1.16.0 2026-11-11 on linux-x86_64-cuda (borrowed hardware) at commit `f2e40988b13a`, output sha256 `79e9b26efc84e844`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-bolt-74b-a9b-24gb.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** [n/a](../MANUAL.md#support-matrix): LatentMoE (the routed experts at width 1,024 between ffn_latent_down and ffn_latent_up) has no device path: cuda_admit says "LatentMoE (experts at width 1024 between ffn_latent_down and ffn_latent_up) has no device path, running on CPU". The per-layer expert widths (1,536 to 2,560) and the router (sigmoid gating with a selection bias) have no device path either. The file runs on the CPU.
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Not measured: Metal refuses LatentMoE by name.
+- **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.16.0, 2026-11-11).
+- **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h_moe) (runner 1.16.0, 2026-11-11).
+
 ### NVIDIA Nemotron 3.5 Lightning
 
 #### Nemotron 3.5 Lightning-30B-A3B (NVIDIA)
@@ -2618,16 +2655,6 @@ Not admitted: a new architecture.
 - **Numerical anchor:** anchor: agreement with another engine, not fidelity. A float32 reference is not feasible.
 - **Missing:** Read the model code first, then an admission; 78B at Q4 is about 45 GB, the lab CPU box only.
 
-### Text path only: Nemotron 3.5 Bolt-74B-A9B
-
-<a id="nemotron-3.5-bolt-74b-a9b"></a>
-#### Nemotron 3.5 Bolt-74B-A9B
-
-Text path only: Bolt ships a vision projector that is not loaded. Runner refuses NVIDIA's own GGUF at load: its LatentMoE layout is not implemented (R4.27.4.2).
-
-- **Numerical anchor:** anchor: agreement with another engine, not fidelity.
-- **Missing:** Loader support for NVIDIA's own GGUF (nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF at e0fecb69, 22.0 GB, experts at IQ2_XXS, Mamba-2 projections at NVFP4): the LatentMoE projections the experts run behind (ffn_latent_down and ffn_latent_up, 4,096 to 1,024 wide); the per-layer expert_used_count and expert_feed_forward_length arrays, which Runner reads as scalars (it reports 0 experts used and refuses the expert config); and per-layer expert counts by tensor shape (240 at block 1 against the declared 496). The 149.8 GB BF16 parent cannot be held beside a float32 reference on the lab host, so the anchor would be another engine on the same bytes. Then the Lightning gate list.
-
 ### occamy-1.0 (Accio-Lab's finetune of Qwen3.6-35B-A3B)
 
 <a id="occamy-1.0"></a>
@@ -2703,7 +2730,7 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-10-22 | [Qwen3.6-27B, `Qwen3.6-27B-Q8_0.gguf`](#qwen3.6-27b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Cloudflare Clef Flash (clef, on Qwen3.5-9B), `Clef-Flash-Q4_K_M.gguf`](#cloudflare-clef-flash) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [NVIDIA Nemotron 3 Nano 30B-A3B (NVIDIA), `NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf`](#nemotron-3-nano-30b-a3b-q4_k_m) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
-| 2026-10-22 | [Nemotron 3.5 Bolt-74B-A9B](#nemotron-3.5-bolt-74b-a9b) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
+| 2026-10-22 | [NVIDIA Nemotron 3.5 Bolt-74B-A9B (NVIDIA), `NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf`](#nemotron-3.5-bolt-74b-a9b-24gb) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [NVIDIA Nemotron 3.5 Super VL-120B-A12B (NVIDIA), `NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Q4_0.gguf`](#nemotron-3.5-super-vl-120b-a12b-q4_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Kolibri-1 (Aleph Alpha, 78B)](#kolibri-1) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-Q4_K_M.gguf`](#mellum2.1-12b-a2.5b-thinking-q4_k_m) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
@@ -2795,5 +2822,6 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-11-06 | [Mellum2.1-12B-A2.5B-Thinking (JetBrains), `Mellum2.1-12B-A2.5B-Thinking-selective-q8_0-expq5_k.gguf`](#mellum2.1-12b-a2.5b-thinking-selective-q8_0-expq5_k) | Tier 2, maintained on report | R4.33.4: admitted at Tier 2 on R4.33's float32 measurement of these bytes, the file the project published on 2026-11-05; the Linux CUDA host's cells are recorded as the smoke runs. | none recorded |
 | 2026-11-06 | [occamy-1.0 (Accio-Lab's finetune of Qwen3.6-35B-A3B)](#occamy-1.0) | Upcoming, planned admission | Measured 2026-11-06 (R4.27.7): no publisher file passes the fidelity bar against the publisher's own parent in float32; listed Upcoming with the reason, by the coordinator's ruling. | none recorded |
 | 2026-11-10 | [NVIDIA Nemotron 3.5 Super VL-120B-A12B (NVIDIA), `NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Q4_0.gguf`](#nemotron-3.5-super-vl-120b-a12b-q4_0) | Tier 2, maintained on report | Admitted 2026-11-10 at Tier 2 with the admitting CPU cell from the lab CPU lane (R4.27.4.4), on agreement with llama.cpp on the same bytes: the parent cannot be held in float32. Maintained on report. | none recorded |
+| 2026-11-11 | [NVIDIA Nemotron 3.5 Bolt-74B-A9B (NVIDIA), `NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf`](#nemotron-3.5-bolt-74b-a9b-24gb) | Tier 2, maintained on report | Joins the roster 2026-11-11 with the admitting CPU cell from the lab CPU lane (R4.27.4.4 S2), on agreement with llama.cpp on the same bytes: the parent cannot be held in float32. Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->

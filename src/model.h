@@ -82,6 +82,12 @@ typedef struct {
                                  // model-wide count (model.c's check_shape3
                                  // calls require every one of a layer's expert
                                  // tensors to agree on this exact value)
+    int          n_ff_exp;      // THIS layer's routed-expert width, 0 when the
+                                 // model has one (model_t.n_ff_exp). Nemotron 3.5
+                                 // Bolt publishes it per layer (1536 to 2560) via
+                                 // an ARRAY-typed expert_feed_forward_length;
+                                 // model_t.n_ff_exp then holds the MAX, which
+                                 // sizes scratch (model.c moe_expert_ff)
     gguf_tensor *ffn_gate_inp;   // router: n_embd -> n_expert logits (F32)
     // modern fused 3D expert tensors ({.., n_expert}); NULL when split
     // gpt-oss: per-head learned attention-sink logits [n_head], F32. They

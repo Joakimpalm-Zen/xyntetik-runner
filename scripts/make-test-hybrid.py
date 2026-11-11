@@ -53,8 +53,23 @@ latent width past E, and `short-down` writes ffn_latent_down one row short.
 `zero-experts` zeroes the routed experts, the control that shows they reach
 the logits.
 
+`--hetero` gives `nemotron_h_moe` the per-layer geometry of Nemotron 3.5 Bolt:
+two MoE blocks with different expert counts (4 and 6) and widths (16 and 24),
+expert_used_count and expert_feed_forward_length as per-layer arrays with 0 on
+the blocks without experts. With `--latent L` the experts run at the latent
+width, as Bolt's do. It also writes <out>.padded.gguf, the same model with every
+block's experts zero-padded to the widest width and the two keys as scalars:
+relu(0)^2 is 0 and a zero column of down adds nothing, so the two compute the
+same function, and a layer run at the wrong width shows as a disagreement.
+HYBRID_TEST_HETERO_BREAK breaks the hetero file for the loader's refusals:
+`topk` gives the second block top-k 3, `nonzero` puts a top-k on a block with
+no experts, `short-array` writes the arrays one entry short, and `width`
+writes the wider block's experts at the narrower width. `zero-narrow` zeroes
+the narrower block's experts, the control that shows that block reaches the
+logits.
+
 Usage:  make-test-hybrid.py <out-prefix> [--arch granitehybrid] [--dense] [--rope]
-                                      [--prune-fixture] [--latent L]
+                                      [--prune-fixture] [--latent L] [--hetero]
 Writes <out>.gguf (valid) and <out>.missing-ssm_d.gguf (drops one SSM tensor).
 """
 import os
@@ -79,6 +94,10 @@ LATENT = int(sys.argv[sys.argv.index("--latent") + 1]) if "--latent" in sys.argv
 BREAK = os.environ.get("HYBRID_TEST_LATENT_BREAK", "")
 if LATENT and (ARCH != "nemotron_h_moe" or PRUNE_FIXTURE or DENSE):
     sys.exit("--latent requires --arch nemotron_h_moe, without --prune-fixture or --dense")
+HETERO = "--hetero" in sys.argv
+HBREAK = os.environ.get("HYBRID_TEST_HETERO_BREAK", "")
+if HETERO and (ARCH != "nemotron_h_moe" or PRUNE_FIXTURE or DENSE):
+    sys.exit("--hetero requires --arch nemotron_h_moe, without --prune-fixture or --dense")
 
 # tiny geometry (structurally faithful to Mamba-2, not to any real size)
 E = 32                    # embedding_length
@@ -106,7 +125,13 @@ FF_SHEXP = 16            # shared-expert FFN width
 # each ALSO carrying an MoE FFN. nemotron_h is three-way instead — each block is
 # EXACTLY one of SSM / attention / MoE-MLP, typed off per-layer head_count_kv (0)
 # and feed_forward_length (0), with the FFN on the MLP block only.
-if ARCH == "nemotron_h_moe":
+if ARCH == "nemotron_h_moe" and HETERO:
+    # SSM, attention, MoE (4 experts, 16 wide), SSM, MoE (6 experts, 24 wide)
+    LAYER_KV = [0, KV, 0, 0, 0]
+    LAYER_NE = [0, 0, 4, 0, 6]
+    LAYER_EFF = [0, 0, 16, 0, 24]
+    LAYER_FF = LAYER_EFF
+elif ARCH == "nemotron_h_moe":
     LAYER_KV = [0, KV, 0, 0] if PRUNE_FIXTURE else [0, KV, 0]
     # SSM, attention, then one or two MoE-MLP blocks. The prune fixture needs
     # two MoE layers so its post-prune expert counts can deliberately disagree.
@@ -145,8 +170,9 @@ def meta():
         ks("general.architecture", ARCH),
         ku(f"{p}.block_count", LAYERS), ku(f"{p}.context_length", 256),
         ku(f"{p}.embedding_length", E),
-        (kau(f"{p}.feed_forward_length", LAYER_FF) if LAYER_FF
-         else ku(f"{p}.feed_forward_length", FF_EXP)),
+        (kau(f"{p}.feed_forward_length",
+             [max(LAYER_FF) if f else 0 for f in LAYER_FF] if HETERO and PADDED else LAYER_FF)
+         if LAYER_FF else ku(f"{p}.feed_forward_length", FF_EXP)),
         ku(f"{p}.attention.head_count", HEADS),
         kau(f"{p}.attention.head_count_kv", LAYER_KV),
         kf(f"{p}.attention.layer_norm_rms_epsilon", 1e-5),
@@ -157,11 +183,12 @@ def meta():
         kb(f"{p}.rope.scaling.finetuned", ROPE),
         # sparse-MoE FFN with an always-on shared expert (granite MoE shared);
         # the dense variant (h-micro shape) carries none of these keys
-        *([] if DENSE else [
+        *([] if DENSE or HETERO else [
             ku(f"{p}.expert_count", N_EXPERT),
             ku(f"{p}.expert_used_count", N_USED),
             ku(f"{p}.expert_feed_forward_length", FF_EXP),
             ku(f"{p}.expert_shared_feed_forward_length", FF_SHEXP)]),
+        *(hetero_meta() if HETERO else []),
         # HYBRID_TEST_GATING=N writes expert_gating_func (1 softmax, 2 sigmoid,
         # llama.cpp's numbering); unset writes none, as the published
         # nemotron_h_moe GGUFs do
@@ -245,9 +272,68 @@ def latent_moe(i):
     ] + extra
 
 
+def hetero_meta():
+    p = ARCH
+    if PADDED:
+        return [ku(f"{p}.expert_count", max(LAYER_NE)), ku(f"{p}.expert_used_count", N_USED),
+                ku(f"{p}.expert_feed_forward_length", max(LAYER_EFF)),
+                ku(f"{p}.expert_shared_feed_forward_length", FF_SHEXP)]
+    used = [N_USED if ff else 0 for ff in LAYER_EFF]
+    if HBREAK == "topk":
+        used[4] = N_USED + 1
+    if HBREAK == "nonzero":
+        used[0] = 1
+    eff = list(LAYER_EFF)
+    if HBREAK == "short-array":
+        used, eff = used[:-1], eff[:-1]
+    return [ku(f"{p}.expert_count", max(LAYER_NE)), kau(f"{p}.expert_used_count", used),
+            kau(f"{p}.expert_feed_forward_length", eff),
+            ku(f"{p}.expert_shared_feed_forward_length", FF_SHEXP)]
+
+
+def hetero_moe(i):
+    """One --hetero MoE block: its own expert count and width, drawn in the
+    same order for the file and its padded twin; the twin's experts are
+    zero-padded to the widest width after the draw."""
+    L = LATENT or E                      # the width the experts read and write
+    ne, ff = LAYER_NE[i], LAYER_EFF[i]
+    fw = max(LAYER_EFF) if PADDED else ff
+    gate_inp = flist(E * ne)
+    down_proj, up_proj = (flist(L * E), flist(E * L)) if LATENT else (None, None)
+    up = [flist(ff * L) for _ in range(ne)]          # rows j of length L
+    down = [flist(L * ff) for _ in range(ne)]        # rows k of length ff
+    up_shexp, down_shexp = flist(E * FF_SHEXP), flist(FF_SHEXP * E)
+    if HBREAK == "zero-narrow" and ff < max(LAYER_EFF):
+        up = [[0.0] * len(u) for u in up]
+        down = [[0.0] * len(d) for d in down]
+    if HBREAK == "width" and ff == max(LAYER_EFF):
+        fw = min(f for f in LAYER_EFF if f)          # the wider block, written narrow
+        up = [u[:fw * L] for u in up]
+        down = [sum((d[k * ff:k * ff + fw] for k in range(L)), []) for d in down]
+        ff = fw
+    if fw > ff:
+        up = [u + [0.0] * ((fw - ff) * L) for u in up]
+        down = [sum((d[k * ff:(k + 1) * ff] + [0.0] * (fw - ff) for k in range(L)), [])
+                for d in down]
+    extra = []
+    if LATENT:
+        extra = [(f"blk.{i}.ffn_latent_down.weight", [E, L], pack(down_proj)),
+                 (f"blk.{i}.ffn_latent_up.weight", [L, E], pack(up_proj))]
+    return [
+        (f"blk.{i}.ffn_norm.weight", [E], ones(E)),
+        (f"blk.{i}.ffn_gate_inp.weight", [E, ne], pack(gate_inp)),
+        (f"blk.{i}.ffn_up_exps.weight", [L, fw, ne], pack(sum(up, []))),
+        (f"blk.{i}.ffn_down_exps.weight", [fw, L, ne], pack(sum(down, []))),
+        (f"blk.{i}.ffn_up_shexp.weight", [E, FF_SHEXP], pack(up_shexp)),
+        (f"blk.{i}.ffn_down_shexp.weight", [FF_SHEXP, E], pack(down_shexp)),
+    ] + extra
+
+
 def moe(i):
     if DENSE:
         return dense_ffn(i)
+    if HETERO:
+        return hetero_moe(i)
     if LATENT:
         return latent_moe(i)
     # routed experts (fused 3D: {E, FF_EXP, N_EXPERT} etc.) + shared expert
@@ -326,9 +412,15 @@ def build(drop=None):
 
 
 COMPOSED = False
+PADDED = False
 write_gguf(f"{OUT}.gguf", build(), meta())
 write_gguf(f"{OUT}.missing-ssm_d.gguf", build(drop="ssm_d"), meta())
-if LATENT:
+if HETERO:
+    # the same draws in the same order, padded to the widest width
+    _seed = 0x5510
+    PADDED = True
+    write_gguf(f"{OUT}.padded.gguf", build(), meta())
+elif LATENT:
     # the same draws in the same order: rebuild after resetting the stream
     _seed, _latent = 0x5510, {}
     COMPOSED = True

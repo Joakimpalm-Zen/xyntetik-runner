@@ -3575,6 +3575,18 @@ static bool cuda_admit(model_t *m) {
                 "running on CPU\n", m->moe_latent);
         return false;
     }
+    // Per-layer expert widths (Nemotron 3.5 Bolt, which the rule above already
+    // refuses): every device expert table and kernel here takes the model's
+    // one width. Refused by name, so that no later path admits a narrower
+    // layer's bank at the widest width.
+    for (int l = 0; l < m->n_layer; l++)
+        if (m->layers[l].is_moe && m->layers[l].n_ff_exp > 0 &&
+            m->layers[l].n_ff_exp != m->n_ff_exp) {
+            fprintf(stderr, "gpu: per-layer expert widths (blk.%d is %d wide, the "
+                    "widest %d) have no device path, running on CPU\n", l,
+                    m->layers[l].n_ff_exp, m->n_ff_exp);
+            return false;
+        }
     // The router and the selection bias matter only to a bank the device runs:
     // a layer whose experts are on the host (--cpu-moe) is routed there, by
     // model_moe_ffn_cpu, while the device runs the trunk (R3.43a). So these
@@ -7989,7 +8001,7 @@ static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
 // (Phi-3.5-mini 0.07912 vs 0.07912, p 0.12; Phi-4-mini 0.13998 vs 0.13996,
 // p 0.21), whose published 262144 window over a 131072 context is no window
 // (bind_swa_default). gpt-oss failed its row (0.04275 vs 0.04205, p 0.017;
-// its full-attention layers alone, RUNNER_CUDA_ATTN_TC_FULL, 0.04065 vs
+// with only its full-attention layers on the tensor cores, 0.04065 vs
 // 0.04039, p 3e-18) and the windowed files (gemma, a windowed phi3 or llama
 // file) have none, so they keep the tile; 1 / 0 force it on / off everywhere.
 static bool attn_tc_family(const model_t *m) {
@@ -8008,19 +8020,6 @@ static bool attn_tc_on(const model_t *m) {
     }
     return on == 2 ? attn_tc_family(m) : on == 1;
 }
-// RUNNER_CUDA_ATTN_TC_FULL=1: the tensor cores also take the layers without a
-// window in a family the default leaves out (gpt-oss's full-attention layers;
-// its windowed layers, where attention is short by construction, keep the
-// tile). Opt-in: gpt-oss-20b's long-context row read further from the
-// float32 reference than the tile's (0.04065 vs 0.04039, Wilcoxon p 3e-18).
-static bool attn_tc_full_on(void) {
-    static _Atomic int on = -1;
-    if (on < 0) {
-        const char *e = getenv("RUNNER_CUDA_ATTN_TC_FULL");
-        on = e && *e && strcmp(e, "0") != 0;
-    }
-    return on == 1;
-}
 static _Atomic unsigned long g_attn_tc_dispatches;
 unsigned long gpu_attn_tc_dispatches(void) { return g_attn_tc_dispatches; }
 
@@ -8029,7 +8028,7 @@ unsigned long gpu_attn_tc_dispatches(void) { return g_attn_tc_dispatches; }
 // width that is not a multiple of 16 up to 128. 64 query rows a block.
 static bool tile_attn_tc(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
                          const attn_args *aa, CUdeviceptr sinks, bool *ok) {
-    if (!(attn_tc_on(m) || (attn_tc_full_on() && aa->window == 0)) ||
+    if (!attn_tc_on(m) ||
         !g->sw->f_attn_tc || model_kv_kind_k(m) || model_kv_kind_v(m) ||
         hd % 16 || hd > 128 || n_kv < 1 || m->n_head % n_kv)
         return false;

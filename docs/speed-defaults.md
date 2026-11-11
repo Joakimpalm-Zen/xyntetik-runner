@@ -55,7 +55,6 @@ These stay off unless a narrower scope gets its own passing row.
 | `RUNNER_CUDA_I8` | Q8_0 reads 1.51x the default route's mean KL. |
 | `RUNNER_CPU_I8_PREFILL` | 1.22x the default route's mean KL. |
 | `RUNNER_CPU_I8K`, `RUNNER_CPU_I8` (decode) | Fail the bar. |
-| `RUNNER_CUDA_ATTN_TC_FULL` | gpt-oss lands further from the reference (Wilcoxon p 3e-18). |
 | `RUNNER_TIEDV` | Saves memory, not byte-identical. |
 
 ## Off, measured no gain
