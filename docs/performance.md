@@ -43,8 +43,8 @@ returned probabilities. The execution contract in
 [`src/decide.c`](../src/decide.c) and [`src/decide.h`](../src/decide.h)
 deliberately fixes how the state and the option conditionals are fed:
 
-- R10.3.3 (`5aed98eb`, 2026-10-02) seats the shared state alone from an empty
-  KV. `canon_seat` keeps only the canonical state rows that match a
+- Since commit `5aed98eb` (2026-10-02), the shared state is fed alone from an
+  empty KV. `canon_seat` keeps only the canonical state rows that match a
   question's prompt, then the question feeds its own remainder. The state
   is prefilled once per request while those rows remain reusable. A lost
   canonical prefix can require another fresh state feed; recurrent models,
@@ -67,7 +67,7 @@ The historical TD-000 measurements recorded the cost as request-time totals:
 | Workload | Recorded request time | Comparison |
 |---|---|---|
 | Slice 1 | 1.65 h on Runner 1.1.4 | 0.98 h on the 2026-09-22 build |
-| Slice 2b | 4.0 h on the 4B | 3.3 h for Kvist-14B |
+| Slice 2b | 4.0 h on Qwen3.5-4B Q4_K_M | 3.3 h for Kvist-14B |
 
 These workload totals are not current per-request latency guarantees. The
 slice 2b comparison also changes the model, so it does not isolate the
@@ -84,8 +84,9 @@ The retained policy is to keep this contract and document its cost.
 Batching option conditionals waits for a backend whose batched step is
 gated equal to the solo step for this scorer. Existing decoding gates on
 CUDA or Metal do not establish that equality for decide; there is no such
-evidence for R13.10. Sharing a state within a request is already supported
-and does not require that future conditional-batching change.
+evidence for the typed-decision scorer. Sharing a state within a request
+is already supported and does not require that future conditional-batching
+change.
 
 ## Profiling
 

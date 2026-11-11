@@ -5107,8 +5107,8 @@ sampled to choose an option.
 
 #### Request cost and batching
 
-Zero sampled tokens does not mean zero inference work. Since R10.3.3
-(`5aed98eb`, 2026-10-02), the shared state is fed alone from an empty KV,
+Zero sampled tokens does not mean zero inference work. Since commit
+`5aed98eb` (2026-10-02), the shared state is fed alone from an empty KV,
 once per request while its canonical rows remain reusable. Each question
 takes only the rows its prompt shares with that state and feeds its own
 remainder. Every scored option conditional comes from a solo one-token
@@ -5121,9 +5121,10 @@ Recurrent models score each question cold; a lost canonical prefix can
 require another state feed.
 
 TD-000 recorded **1.65 h of request time on 1.1.4**, against **0.98 h on the
-2026-09-22 build** (slice 1). Slice 2b recorded **4.0 h on the 4B**, against
-**3.3 h for Kvist-14B**. These are historical workload totals, not current
-latency guarantees; the second comparison also changes the model.
+2026-09-22 build** (slice 1). Slice 2b recorded **4.0 h on Qwen3.5-4B
+Q4_K_M**, against **3.3 h for Kvist-14B**. These are historical workload
+totals, not current latency guarantees; the second comparison also changes
+the model.
 
 Put questions sharing a state in one request's `questions` array to amortize
 the state prefill; `scripts/decide-calibrate.py --batch-state` does this by
