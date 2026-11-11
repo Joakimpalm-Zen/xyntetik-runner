@@ -157,11 +157,18 @@ static bool queue_has_live_client(void) {
 static bool load_should_stop(void *ud) {
     (void)ud;
     if (atomic_load(&SV.load_cancel)) return true;
-    if (SV.load_owner == SOCK_INVALID || !sock_peer_closed(SV.load_owner) ||
+    // A cancel by id (R10.12.3.3) counts as the owner leaving, under the same
+    // rule: a live client queued behind keeps the wait and its place.
+    bool cancelled = server_load_owner_cancelled();
+    if (SV.load_owner == SOCK_INVALID ||
+        (!cancelled && !sock_peer_closed(SV.load_owner)) ||
         queue_has_live_client())
         return false;
-    fprintf(stderr, "swap: the client left and nobody is queued behind it; "
-            "giving up the wait for VRAM\n");
+    fprintf(stderr, cancelled
+            ? "swap: the request was cancelled and nobody is queued behind it; "
+              "giving up the wait for VRAM\n"
+            : "swap: the client left and nobody is queued behind it; "
+              "giving up the wait for VRAM\n");
     atomic_store(&SV.load_cancel, 1);
     return true;
 }

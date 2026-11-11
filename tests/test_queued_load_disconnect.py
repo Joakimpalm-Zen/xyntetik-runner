@@ -16,7 +16,9 @@ import os
 import pathlib
 import socket
 import sys
+import threading
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -255,3 +257,143 @@ def test_unload_still_stops_the_wait(rig):
             assert json.load(r)["deferred"] is True
         assert _status(owner) == 503
         assert not rig.waiting()
+
+
+# R10.12.3.3: a cancel by id reaches a request during its model load. The
+# request's X-Request-Id is registered before the swap, so the cancel route
+# finds it while the load waits or runs, and /health lists it as "loading".
+# A cancel in the queued wait stops the wait under the disconnect's rule; one
+# during an admitted load does not stop the load, which finishes and stays.
+
+def _open_id(srv, rid, body=None):
+    s = socket.create_connection(("127.0.0.1", srv.port), timeout=60)
+    b = body if body is not None else _body()
+    s.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+              + f"X-Request-Id: {rid}\r\nContent-Length: {len(b)}\r\n\r\n".encode() + b)
+    return s
+
+
+def _reply(s):
+    data = b""
+    while True:
+        part = s.recv(65536)
+        if not part:
+            break
+        data += part
+    s.close()
+    head, _, body = data.partition(b"\r\n\r\n")
+    try:
+        doc = json.loads(body.decode("utf-8", "replace") or "null")
+    except ValueError:
+        doc = None
+    return int(head.split(b" ", 2)[1]), doc
+
+
+def _cancel(srv, rid, timeout=40):
+    req = urllib.request.Request(f"{srv.base_url}/v1/runner/requests/{rid}/cancel", data=b"", method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        return e.code, json.load(e)
+
+
+def _loading(srv):
+    return [r for r in _health(srv)["requests"] if r["phase"] == "loading"]
+
+
+def _later(fn):
+    out = {}
+    t = threading.Thread(target=lambda: out.setdefault("r", fn()), daemon=True)
+    t.start()
+    return t, out
+
+
+def test_a_cancel_by_id_stops_the_queued_wait(rig):
+    with _serve(rig) as srv:
+        rig.hold()
+        owner = _open_id(srv, "load-1")
+        _until("the load joined the VRAM queue", rig.waiting)
+        _until("/health lists the request as loading", lambda: len(_loading(srv)) == 1)
+        code, ans = _cancel(srv, "load-1")
+        assert code == 200, ans
+        assert ans["cancelled"] is True and ans["phase"] == "loading" and ans["generated"] == 0, ans
+        code, err = _reply(owner)
+        assert code == 409 and err["error"]["code"] == "cancelled", (code, err)
+        assert not rig.waiting(), "the queue marker must go with the wait"
+        assert _health(srv)["status"] == "ok" and _health(srv)["requests"] == []
+        rig.release()
+        assert _status(_open(srv)) == 200
+
+
+def test_a_cancel_with_a_live_client_behind_keeps_the_wait(rig):
+    with _serve(rig) as srv:
+        rig.hold()
+        owner = _open_id(srv, "load-2")
+        _until("the load joined the VRAM queue", rig.waiting)
+        queued = _open(srv)
+        time.sleep(0.4)
+        t, out = _later(lambda: _cancel(srv, "load-2"))
+        _still_waiting_after(rig)
+        rig.release()
+        t.join(40)
+        code, ans = out["r"]
+        assert code == 200 and ans["phase"] == "loading" and ans["generated"] == 0, ans
+        assert _reply(owner)[0] == 409
+        assert _status(queued) == 200
+        assert rig.text().count("swap: loading a") == 1, "the client behind must get the load that went on"
+
+
+def test_a_cancel_during_an_admitted_load_lets_the_load_finish_and_stay(rig):
+    with _serve(rig, delay_ms=1500) as srv:
+        owner = _open_id(srv, "load-3")
+        _until("the load was admitted", lambda: "test: load admitted" in rig.text())
+        assert len(_loading(srv)) == 1
+        code, ans = _cancel(srv, "load-3")
+        assert code == 200 and ans["phase"] == "loading" and ans["generated"] == 0, ans
+        code, err = _reply(owner)
+        assert code == 409 and err["error"]["code"] == "cancelled", (code, err)
+        assert _health(srv)["resident"] is not None, "the load is not stopped by a cancel"
+        assert "discarded" not in rig.text()
+        assert _status(_open(srv)) == 200
+        assert rig.text().count("swap: loading a") == 1, "the next request must not load it again"
+
+
+def _id_is_free(srv, rid):
+    """Free: the cancel route does not know it, and a new request may take it."""
+    code, ans = _cancel(srv, rid)
+    assert code == 404 and ans["error"]["code"] == "request_not_found", (code, ans)
+    code, doc = _reply(_open_id(srv, rid))
+    assert code == 200, doc
+
+
+def test_an_early_id_is_released_on_every_exit_path(rig, tmp_path):
+    broken = tmp_path / "broken.gguf"
+    broken.write_bytes(b"GGUF\x03\x00\x00\x00" + b"\xff" * 64)
+    model = ROOT / "test.gguf"
+    env = dict(os.environ, RUNNER_TEST_VRAM_FREE_MB=str(FREE_MB), RUNNER_VRAM_REGISTRY_DIR=str(rig.dir))
+    with RunnerServer(find_runner(str(ROOT)), f"a={model},b={model},c={broken}", ctx=512, parallel=1,
+                      extra_args=["--wait-for-vram", "60"], log_path=str(rig.log), env=env) as srv:
+        def body(**extra):
+            return json.dumps(dict({"model": "a", "messages": [{"role": "user", "content": "hi"}],
+                                    "max_tokens": 2, "temperature": 0}, **extra)).encode()
+        # unknown model: refused by the swap
+        assert _reply(_open_id(srv, "x-unknown", body(model="zzz")))[0] == 404
+        _id_is_free(srv, "x-unknown")
+        # a load that fails
+        assert _reply(_open_id(srv, "x-failed", body(model="c")))[0] == 500
+        _id_is_free(srv, "x-failed")
+        # a load refused by expect_resident, nothing loaded
+        code, err = _reply(_open_id(srv, "x-refused", body(
+            model="c", expect_resident={"load_generation": 99, "model_sha256": "0" * 64})))
+        assert code == 409, err
+        _id_is_free(srv, "x-refused")
+        # a client that leaves its queued wait (b: the probes above made a resident)
+        rig.hold()
+        owner = _open_id(srv, "x-gone", body(model="b"))
+        _until("the load joined the VRAM queue", rig.waiting)
+        owner.close()
+        _until("the wait stopped", lambda: not rig.waiting())
+        rig.release()
+        _until("nothing is loading", lambda: _loading(srv) == [])
+        _id_is_free(srv, "x-gone")
