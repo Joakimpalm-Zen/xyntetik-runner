@@ -28,10 +28,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PROMPT = "The capital of France is Paris, and of Italy"
 LATENT = 16                      # the fixture's n_embd is 32
 # f32 rounding of a 16-term regrouped sum, in logprob units. Measured on gcc
-# 13.3 builds: 4.8e-7 to 9.6e-7 against the twin, 1.4e-6 batched against the
-# one-token pass. Other compilers vectorize the sums differently, so the bound
-# keeps a wide margin; the zeroed-experts control reads 0.33.
+# 13.3 builds: 4.8e-7 to 9.6e-7 against the twin. Other compilers vectorize
+# the sums differently, so the bound keeps a wide margin; the zeroed-experts
+# control reads 0.33.
 TOL = 1e-4
+# Batched against the one-token pass: a rounding floor that is the host's
+# (9.6e-7 on gcc 13.3 x86-64 Linux; tests/test_nemotron_hetero_moe.py's same
+# comparison read about 1e-4 on the hosted Windows runner, R6.66). The bound is
+# that floor measured in the same run on the composed twin, times
+# FLOOR_FACTOR, plus FLOOR_ABS; on Linux the two are equal to the last bit.
+FLOOR_FACTOR = 2
+FLOOR_ABS = 1e-6
 
 
 def make(d, name, brk=None):
@@ -70,13 +77,18 @@ def test_latent_model_equals_its_composed_twin(runner_bin, pair, chunked):
     a, err = score(runner_bin, lat, chunked)
     b, _ = score(runner_bin, comp, chunked)
     assert "LatentMoE, the routed experts run at width 16 (n_embd 32)" in err
-    assert max_diff(a, b) <= TOL
+    d = max_diff(a, b)
+    assert d <= TOL, f"latent against its composed twin: max |dlogprob| {d:.3e} > {TOL:.0e}"
     assert a["argmax"] == b["argmax"]
 
 
 def test_the_batched_pass_equals_the_token_pass(runner_bin, pair):
-    lat, _ = pair
-    assert max_diff(score(runner_bin, lat)[0], score(runner_bin, lat, True)[0]) <= TOL
+    lat, comp = pair
+    got = max_diff(score(runner_bin, lat)[0], score(runner_bin, lat, True)[0])
+    floor = max_diff(score(runner_bin, comp)[0], score(runner_bin, comp, True)[0])
+    bound = FLOOR_FACTOR * floor + FLOOR_ABS
+    assert got <= bound, (f"latent token against batched: max |dlogprob| {got:.3e}; the composed twin's "
+                          f"floor {floor:.3e}; bound {bound:.3e}")
 
 
 def test_the_twin_is_a_test_the_experts_move_the_logits(runner_bin, pair, tmp_path):
@@ -87,7 +99,8 @@ def test_the_twin_is_a_test_the_experts_move_the_logits(runner_bin, pair, tmp_pa
     zero, _ = make(tmp_path, "zero", "zero-experts")
     a, _ = score(runner_bin, lat)
     z, _ = score(runner_bin, zero)
-    assert max_diff(a, z) > 1000 * TOL
+    d = max_diff(a, z)
+    assert d > 1000 * TOL, f"zeroed experts: max |dlogprob| {d:.3e}, not past {1000 * TOL:.0e}"
 
 
 @pytest.mark.parametrize("brk,needle", [
