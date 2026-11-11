@@ -1,0 +1,62 @@
+# R6.51 TEMPORARY, never merged: the WinError 10055 in the Windows job's
+# conformance harness, read at the failure on the hosted runner. Each matrix
+# entry is a fresh VM that repeats the Windows job's steps up to and through
+# the harness (build, test model, python client tests, harness), with a probe
+# loaded into the harness's pytest. Pushes to this branch only; ci.yml is
+# untouched and never dispatched. max-parallel leaves the Windows pool to PRs.
+name: r651-windows-loop
+
+on:
+  push:
+    branches: [r6.51-windows-10055]
+
+permissions:
+  contents: read
+
+jobs:
+  loop:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        run: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+              16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            make
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-pytest
+      - name: build
+        run: make
+      - name: make test model
+        run: python3 scripts/make-test-model.py test.gguf
+      - name: python client tests
+        run: PYTHONPATH=python/src python3 -m pytest python/tests/
+      - name: agent-protocol conformance harness, with the probe
+        env:
+          PYTHONUTF8: "1"
+          R651_OUT: r651-out
+        run: |
+          PYTHONPATH=.github/r651 PYTHON=python3 ./scripts/conformance.sh -p r651_probe \
+            --junitxml=.build/ci/conformance.xml || echo "R6.51 harness exit $?"
+      - name: summary
+        if: always()
+        run: python3 .github/r651/summary.py r651-out ${{ matrix.run }}
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: r651-run-${{ matrix.run }}
+          path: r651-out/
+          retention-days: 14
