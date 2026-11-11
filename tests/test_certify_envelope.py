@@ -3,6 +3,7 @@ resolves the verdict from the evidence, failing closed without a reference sha."
 import hashlib
 import json
 import os
+import pathlib
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,116 @@ def fixture_report(model_sha, checks):
             "checks": {k: {"status": v} for k, v in checks.items()},
         }],
     }
+
+
+class EvidenceBindingTests(unittest.TestCase):
+    """Real certifier CLI; the runner process boundary only reports fixture caps."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = pathlib.Path(tmp.name)
+        self.model = self.root / "fixture.gguf"
+        self.model.write_bytes(b"current artifact")
+        self.sha = hashlib.sha256(self.model.read_bytes()).hexdigest()
+        self.other = hashlib.sha256(b"another artifact").hexdigest()
+        caps = json.dumps({"version": "fixture", "arch": "fixture",
+                           "cpu_cores": 1, "ram_bytes": 1024})
+        self.runner = self.root / ("runner.cmd" if os.name == "nt" else "runner")
+        self.runner.write_text("@echo off\necho " + caps + "\n" if os.name == "nt"
+                               else "#!/bin/sh\nprintf '%s\\n' '" + caps + "'\n")
+        self.runner.chmod(0o755)
+        self.out = self.root / "out.envelope.json"
+
+    def matrix_entry(self, sha):
+        # These are the fields compat_matrix.py actually writes, not `sha256`.
+        return {"id": "fixture", "architecture": "llama", "file": "fixture.gguf",
+                "resolved_file": "models/fixture.gguf", "expected_sha256": sha,
+                "actual_sha256": sha, "file_status": "pass",
+                "checks": {"load": {"status": "pass"}}}
+
+    def run_report(self, entries):
+        report = self.root / "report.json"
+        report.write_text(json.dumps({"models": entries}))
+        return subprocess.run([sys.executable, SCRIPT, "--model", str(self.model),
+                               "--runner", str(self.runner), "--compat-report", str(report),
+                               "--reference-sha", "f" * 64, "--out", str(self.out)],
+                              text=True, capture_output=True)
+
+    def test_same_name_with_different_matrix_hash_is_refused(self):
+        p = self.run_report([self.matrix_entry(self.other)])
+        self.assertNotEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn(self.sha, p.stderr)
+        self.assertIn(self.other, p.stderr)
+        self.assertFalse(self.out.exists())
+
+    def test_disagreeing_matrix_hashes_are_evidence_for_neither(self):
+        entry = self.matrix_entry(self.sha)
+        entry["actual_sha256"] = self.other
+        entry["file_status"] = "fail"
+        for data in (b"current artifact", b"another artifact"):
+            with self.subTest(data=data):
+                self.model.write_bytes(data)
+                p = self.run_report([entry])
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn(self.sha, p.stderr)
+                self.assertIn(self.other, p.stderr)
+                self.assertFalse(self.out.exists())
+
+    def test_matrix_hash_match_survives_a_path_change(self):
+        entry = self.matrix_entry(self.sha)
+        entry.update(file="original-name.gguf", resolved_file="old/original-name.gguf")
+        p = self.run_report([entry])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        m = json.loads(self.out.read_text())
+        self.assertEqual(m["verdict"], "certified")
+        self.assertEqual(m["quality"]["evidence_match"],
+                         {"method": "sha256", "hash_verified": True})
+
+    def test_legacy_hash_field_is_still_verified(self):
+        entry = {"sha256": self.sha, "checks": {"load": "pass"}}
+        p = self.run_report([entry])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(json.loads(self.out.read_text())["quality"]["evidence_match"]["hash_verified"])
+
+    def test_a_legacy_hash_conflicting_with_matrix_fields_is_refused(self):
+        entry = self.matrix_entry(self.sha)
+        entry["sha256"] = self.other
+        p = self.run_report([entry])
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn(self.sha, p.stderr)
+        self.assertIn(self.other, p.stderr)
+
+    def test_hashless_name_match_is_explicitly_unverified(self):
+        entry = {"file": "fixture.gguf", "checks": {"load": "pass"}}
+        p = self.run_report([entry])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        binding = json.loads(self.out.read_text())["quality"]["evidence_match"]
+        self.assertEqual(binding["method"], "name")
+        self.assertFalse(binding["hash_verified"])
+        self.assertIn("no artifact hash", binding["reason"])
+
+    def test_exact_hash_takes_precedence_over_a_wrong_same_name(self):
+        wrong = self.matrix_entry(self.other)
+        good = self.matrix_entry(self.sha)
+        good.update(file="another-name.gguf", resolved_file="another-name.gguf")
+        p = self.run_report([wrong, good])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(json.loads(self.out.read_text())["quality"]["evidence_match"]["hash_verified"])
+
+    def test_a_hashless_row_does_not_hide_a_same_name_hash_conflict(self):
+        p = self.run_report([{"file": "fixture.gguf"}, self.matrix_entry(self.other)])
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn(self.other, p.stderr)
+
+    def test_an_unrelated_report_has_no_binding(self):
+        entry = self.matrix_entry(self.other)
+        entry.update(file="unrelated.gguf", resolved_file="unrelated.gguf")
+        p = self.run_report([entry])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        m = json.loads(self.out.read_text())
+        self.assertEqual(m["verdict"], "experimental")
+        self.assertIsNone(m["quality"]["evidence_match"])
 
 
 @unittest.skipUnless(os.path.exists(RUNNER) and os.path.exists(MODEL),

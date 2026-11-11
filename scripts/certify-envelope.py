@@ -66,20 +66,37 @@ def kernel_set_identity(caps, gpu_mode):
     return ident
 
 
+def evidence_hashes(entry):
+    """All recorded artifact verifiers, including the matrix's field names."""
+    return {k: entry[k] for k in ("sha256", "expected_sha256", "actual_sha256")
+            if entry.get(k) not in (None, "")}
+
+
 def find_model_evidence(report, sha, model_path):
-    """Return the compat-report entry for this artifact, matched by sha then
-    by filename basename, or None."""
+    """Return (entry, binding); only genuinely hashless rows may match by name."""
     if not report:
-        return None
+        return None, None
     for m in report.get("models", []):
-        if m.get("sha256") == sha:
-            return m
+        hashes = evidence_hashes(m)
+        if hashes and all(h == sha for h in hashes.values()):
+            return m, {"method": "sha256", "hash_verified": True}
     base = Path(model_path).name
+    name_only = None
     for m in report.get("models", []):
-        if Path(m.get("file", "")).name == base or \
-                Path(m.get("resolved_file", "")).name == base:
-            return m
-    return None
+        hashes = evidence_hashes(m)
+        named = (Path(m.get("file", "")).name == base or
+                 Path(m.get("resolved_file", "")).name == base)
+        if named or sha in hashes.values():
+            if hashes:
+                recorded = ", ".join(f"{k}={v}" for k, v in hashes.items())
+                raise SystemExit(f"compat evidence hash mismatch for {base}: "
+                                 f"artifact sha256={sha}; report {recorded}")
+            if name_only is None:
+                name_only = m
+    if name_only is not None:
+        return name_only, {"method": "name", "hash_verified": False,
+                           "reason": "report entry records no artifact hash"}
+    return None, None
 
 
 def summarize_checks(entry):
@@ -304,7 +321,7 @@ def build_manifest(args):
     sha = sha256_file(args.model)
     report = json.loads(Path(args.compat_report).read_text()) \
         if args.compat_report else None
-    entry = find_model_evidence(report, sha, args.model)
+    entry, evidence_match = find_model_evidence(report, sha, args.model)
     gate, checks, detail = summarize_checks(entry)
     guidance = serving_guidance(caps, _tool_info_raw(args.runner, args.model),
                                 args.serving_guidance_family)
@@ -365,6 +382,7 @@ def build_manifest(args):
         "quality": {
             "gate": gate,
             "checks": checks,
+            "evidence_match": evidence_match,
             # Surface a margin-qualified cpu_cuda exception so `certified` never
             # presents a clean identity it did not measure. Absent for a strict
             # 9/9 pass or a non-MoE model.
