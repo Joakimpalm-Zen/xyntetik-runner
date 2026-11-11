@@ -2095,6 +2095,35 @@ static void mw_release(model_weights *w) {
     }
 }
 
+// The placement a load takes when the request names none (R3.43a.2). A
+// nemotron_h_moe file's router (a sigmoid with a selection bias) has no CUDA
+// kernel, so the device cannot run its expert banks; --cpu-moe keeps them and
+// their routing on the host and runs the rest on the device, at 1.56x the
+// CPU's decode on Nemotron-3.5-Lightning-30B-A3B Q4_0. So on a CUDA build a
+// GPU load of such a file takes that split by default, as if --cpu-moe had
+// been given. --gpu off, an explicit --cpu-moe, or RUNNER_CPU_MOE_DEFAULT=0
+// (which runs it on the CPU, the earlier default) take precedence. The copy
+// lives for the call that reads it.
+static const model_params *model_default_placement(const model_t *m, const model_params *p) {
+#ifdef RUNNER_GPU_CUDA
+    static _Thread_local model_params pd;
+    const char *e = getenv("RUNNER_CPU_MOE_DEFAULT");
+    if (p->gpu_mode != GPU_OFF && !p->cpu_moe && m->nemotron_h && m->n_expert > 0 &&
+        !model_moe_router_is_plain_any_norm(m) && !(e && !strcmp(e, "0"))) {
+        pd = *p;
+        pd.cpu_moe = true;
+        pd.cpu_moe_layers = CPU_MOE_ALL;
+        fprintf(stderr, "gpu: nemotron_h_moe's router has no device kernel: its experts "
+                "and their routing stay on the host and the device runs the rest "
+                "(the --cpu-moe split; RUNNER_CPU_MOE_DEFAULT=0 runs it on the CPU)\n");
+        return &pd;
+    }
+#else
+    (void)m;
+#endif
+    return p;
+}
+
 static bool model_load_inner(model_t *m, const char *path, const model_params *p) {
     uint64_t size = 0, ino = 0;
     int64_t  mtime = 0, ctime = 0;
@@ -2141,7 +2170,7 @@ static bool model_load_inner(model_t *m, const char *path, const model_params *p
         }
     }
     pthread_mutex_unlock(&g_weights_mu);
-    return model_alloc_runtime(m, p);
+    return model_alloc_runtime(m, model_default_placement(m, p));
 }
 
 // Say so at load time when the weights cannot fit in what the machine has
