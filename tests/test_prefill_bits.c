@@ -21,13 +21,19 @@
 // last column, the batch-1 kernel), 24 (16 and 8, the 8-wide twin) and 64 (the
 // prompt window's tile), each against batch 1 over the same 128 rows.
 //
-// The route table (R6.57), on the first fixture's device: every weight type
-// whose batch-1 route has a loaded 16-wide twin prefills through it, except
-// F32, F16 and BF16, whose own tile kernel is already the batch-1 kernel's
-// twin (mvb_is_mv_twin in cuda.c). It reaches the types no fixture here can
-// be written for (IQ4_XS). The rows say what the table cannot: a twin that is
-// routed but disagrees, or a defect a fixture's shape hides (MXFP4's rows
-// longer than 1,024 values, test-mxfp4-prefill.gguf).
+// The route table (R6.57, R6.58), on the first fixture's device: a matvec over
+// more than one column on the scalar route has three legal answers, and every
+// weight type the device decodes must give one of them (gpu_prefill_route):
+// its own tile kernel where that kernel is the batch-1 kernel's twin (F32, F16
+// and BF16 only, mvb_is_mv_twin in cuda.c), the batch-1 kernel's 16-wide twin
+// wherever one is loaded, or the batch-1 kernel once per column. A tile kernel
+// that sums in another order is the fourth answer, and fails. Asked at batch 9
+// and 64 unscaled for every type, and for NVFP4, the one type that carries a
+// per-tensor scale companion, scaled at batch 2, 8 and 64 (a scaled tensor
+// skips the small-batch branch). It reaches the types no fixture here can be
+// written for (IQ4_XS, Q2_K, Q4_1, IQ1_S, IQ1_M). The rows say what the table
+// cannot: a twin that is routed but disagrees, or a defect a fixture's shape
+// hides (MXFP4's rows longer than 1,024 values, test-mxfp4-prefill.gguf).
 //
 // Anchor: none of its own. It compares two of runner's own routes; the
 // batch-1 GEMV it holds the prefill to is gated against the CPU by the CUDA
@@ -40,7 +46,8 @@
 //     ./test-prefill-bits test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-q8.gguf
 //         test-q3k-prefill.gguf test-iq2xxs-prefill.gguf test-iq2xs-prefill.gguf
 //         test-iq2s-prefill.gguf test-iq3xxs-prefill.gguf test-iq3s-prefill.gguf
-//         test-mxfp4-prefill.gguf test-bf16.gguf
+//         test-mxfp4-prefill.gguf test-bf16.gguf test-q50-prefill.gguf test-q51-prefill.gguf
+//         test-iq4nl-prefill.gguf test-nvfp4-prefill.gguf
 //
 // Without a CUDA device it says so and passes (nothing to compare).
 #include "runner.h"
@@ -119,25 +126,45 @@ static int route_table(const char *path) {
     p.n_batch = 64;
     if (!model_load(&m, path, &p)) { fprintf(stderr, "FAIL: %s: load failed\n", path); return -1; }
     if (!m.gpu || m.gpu_layers <= 0) { model_free(&m); return 1; }
-    int bad = 0, twins = 0;
+    static const char *ANSWER[] = { "none", "its own tile (the batch-1 twin)", "the twins",
+                                    "the batch-1 kernel per column", "a TILE KERNEL" };
+    static const struct { int batch; bool scaled; } ASKED[] = { { 9, false }, { 64, false } };
+    static const struct { int batch; bool scaled; } ASKED_SCALED[] = { { 2, true }, { 8, true }, { 64, true } };
+    int bad = 0, types = 0;
     for (int t = 0; t < 64; t++) {
-        bool twin = gpu_prefill_twin16(&m, t), takes = gpu_prefill_takes_twins(&m, t);
+        if (gpu_prefill_route(&m, t, 64, false) == GPU_PREFILL_NONE) continue;   // not decoded here
+        types++;
+        bool twin = gpu_prefill_twin16(&m, t);
         bool own = t == T_F32 || t == T_F16 || t == T_BF16;
-        if (!twin && !takes) continue;
-        twins += twin;
-        printf("  route: %-8s 16-wide twin %s, prefill on %s\n", ggml_type_name(t),
-               twin ? "loaded" : "none", takes ? "the twins" : "its own kernel");
-        if (takes != (twin && !own)) {
-            fprintf(stderr, "FAIL: %s has a 16-wide twin of its batch-1 kernel%s, and its prefill %s\n",
-                    ggml_type_name(t), own ? " and a tile kernel that is that kernel's twin" : "",
-                    takes ? "runs the twins" : "runs a tile kernel that sums in another order");
-            bad = 1;
+        int n = t == T_NVFP4 ? 5 : 2;
+        for (int k = 0; k < n; k++) {
+            int batch = k < 2 ? ASKED[k].batch : ASKED_SCALED[k - 2].batch;
+            bool scaled = k < 2 ? ASKED[k].scaled : ASKED_SCALED[k - 2].scaled;
+            int r = gpu_prefill_route(&m, t, batch, scaled);
+            printf("  route: %-8s batch %2d%s: %s\n", ggml_type_name(t), batch, scaled ? " scaled" : "",
+                   r >= 0 && r <= GPU_PREFILL_TILE ? ANSWER[r] : "?");
+            const char *why = NULL;
+            if (r == GPU_PREFILL_TILE || r < 0 || r > GPU_PREFILL_TILE)
+                why = "runs a tile kernel that sums in another order than the batch-1 kernel";
+            else if (r == GPU_PREFILL_TILE_TWIN && !own)
+                why = "runs its own tile kernel, which is not the batch-1 kernel's twin";
+            else if (r == GPU_PREFILL_NONE)
+                why = "has no route although the device decodes the type";
+            else if (!scaled && batch > 8 && twin && !own && r != GPU_PREFILL_TWINS)
+                why = "has a loaded 16-wide twin of its batch-1 kernel and does not run it";
+            if (why) {
+                fprintf(stderr, "FAIL: %s at batch %d%s %s\n", ggml_type_name(t), batch,
+                        scaled ? " (scaled)" : "", why);
+                bad = 1;
+            }
         }
     }
-    // anti-vacuity: a table that sees no twin checks nothing. Q4_0's twins are
-    // the ones R6.35 first routed a prompt through.
-    if (!gpu_prefill_twin16(&m, T_Q4_0)) {
-        fprintf(stderr, "FAIL: the route table sees no Q4_0 16-wide twin (%d twins in all)\n", twins);
+    // anti-vacuity: a table that sees no twin, or no NVFP4 to ask the scaled
+    // question of, checks nothing. Q4_0's twins are the ones R6.35 first routed
+    // a prompt through.
+    if (!gpu_prefill_twin16(&m, T_Q4_0) || gpu_prefill_route(&m, T_NVFP4, 64, true) == GPU_PREFILL_NONE) {
+        fprintf(stderr, "FAIL: the route table sees no Q4_0 16-wide twin or no NVFP4 decode (%d types)\n",
+                types);
         bad = 1;
     }
     model_free(&m);

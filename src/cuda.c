@@ -5155,8 +5155,8 @@ static bool mv_twin_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n_
 }
 static inline bool mvb_is_mv_twin(int type);
 // Whether a prompt's matvec (batch > GPU_SMALL_BATCH) of w on the scalar
-// route runs the batch-1 GEMV's 16-wide twins (enc_mv; gpu_prefill_takes_twins
-// asks the same for test-prefill-bits' route table). Every type whose batch-1
+// route runs the batch-1 GEMV's 16-wide twins (enc_mv; scalar_mv_route
+// answers the same for test-prefill-bits' route table). Every type whose batch-1
 // route has a loaded 16-wide twin takes it, by capability rather than by a
 // list (R6.57; the list was R6.35 Q4_0, R6.41 Q4_K/Q5_K/Q6_K, R6.50 Q8_0,
 // R6.54 Q3_K): the tile kernels of the others (k_gemm_*, and f_mvb's
@@ -5166,9 +5166,25 @@ static bool prefill_takes_twins(const gpu_t *g, const gguf_tensor *w, int n_in, 
     return !mvb_is_mv_twin(w->type) && mv_twin_route(g, w, n_in, n_out) &&
            g->sw->f_gemvb[BW_16][w->type];
 }
-// gpu.h's two questions for the route table, asked of a dense unscaled
-// 4096 x 4096 tensor of the type: is the 16-wide twin of its batch-1 route
-// loaded, and does a prompt's matvec of it run that twin
+// Where a matvec of w over batch (> 1) columns goes on the scalar route, in
+// enc_mv's order below its tensor-core branches: the small-batch branch, the
+// 16-wide twins, the tiled GEMM, the tile kernel f_mvb (gpu.h's
+// GPU_PREFILL_* answers; test-prefill-bits' route table asks it). The
+// experimental int8-activation route (RUNNER_CUDA_Q8X) is not modelled.
+static int scalar_mv_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out, int batch) {
+    const gpu_weights *sw = g->sw;
+    if (batch < 2 || (!sw->f_mv[w->type] && !sw->f_gemv[w->type])) return GPU_PREFILL_NONE;
+    if (batch <= GPU_SMALL_BATCH && w->scale == 1.0f && gpu_small_batch_on())
+        return sw->f_gemvb[batch_width_class(batch)][w->type] ? GPU_PREFILL_TWINS
+                                                              : GPU_PREFILL_PER_COLUMN;
+    if (batch > GPU_SMALL_BATCH && prefill_takes_twins(g, w, n_in, n_out)) return GPU_PREFILL_TWINS;
+    if (w->scale == 1.0f && sw->f_gemm[w->type]) return GPU_PREFILL_TILE;
+    if (!sw->f_mvb[w->type]) return GPU_PREFILL_NONE;
+    return mvb_is_mv_twin(w->type) ? GPU_PREFILL_TILE_TWIN : GPU_PREFILL_TILE;
+}
+// gpu.h's questions for the route table, asked of a dense 4096 x 4096 tensor
+// of the type: is the 16-wide twin of its batch-1 route loaded, and where does
+// a matvec of it over batch columns go (scaled: with a per-tensor companion)
 static bool prefill_probe(const model_t *m, int type, gguf_tensor *w) {
     const gpu_t *g = m->gpu;
     if (!g || !g->sw || type < 0 || type >= KT_N) return false;
@@ -5183,11 +5199,12 @@ bool gpu_prefill_twin16(const model_t *m, int type) {
     const gpu_t *g = m->gpu;
     return mv_twin_route(g, &w, 4096, 4096) && g->sw->f_gemvb[BW_16][type];
 }
-bool gpu_prefill_takes_twins(const model_t *m, int type) {
+int gpu_prefill_route(const model_t *m, int type, int batch, bool scaled) {
     gguf_tensor w;
-    if (!prefill_probe(m, type, &w)) return false;
+    if (!prefill_probe(m, type, &w)) return GPU_PREFILL_NONE;
+    if (scaled) w.scale = 0.5f;
     const gpu_t *g = m->gpu;
-    return prefill_takes_twins(g, &w, 4096, 4096);
+    return scalar_mv_route(g, &w, 4096, 4096, batch);
 }
 static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t);
 
