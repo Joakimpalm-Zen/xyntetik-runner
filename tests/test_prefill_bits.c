@@ -114,7 +114,7 @@ static int prefill_rows0(const char *path, const int32_t *toks, int nb, rows0 *o
 }
 
 // The route table on the device a model of path loads. Returns 0 ok, 1 skipped
-// (no GPU), -1 failure.
+// (no GPU, or a build whose device backend is not CUDA), -1 failure.
 static int route_table(const char *path) {
     model_t m;
     memset(&m, 0, sizeof(m));
@@ -126,6 +126,13 @@ static int route_table(const char *path) {
     p.n_batch = 64;
     if (!model_load(&m, path, &p)) { fprintf(stderr, "FAIL: %s: load failed\n", path); return -1; }
     if (!m.gpu || m.gpu_layers <= 0) { model_free(&m); return 1; }
+#ifndef RUNNER_GPU_CUDA
+    // The table is CUDA's scalar route. Another device backend (Metal) loads
+    // the model on its GPU and answers "none" for every type, which the
+    // anti-vacuity check below would read as a table that checks nothing.
+    model_free(&m);
+    return 1;
+#endif
     static const char *ANSWER[] = { "none", "its own tile (the batch-1 twin)", "the twins",
                                     "the batch-1 kernel per column", "a TILE KERNEL" };
     static const struct { int batch; bool scaled; } ASKED[] = { { 9, false }, { 64, false } };

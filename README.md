@@ -74,9 +74,9 @@ It takes about a minute to try: [quick start](#quick-start).
   <a href="docs/community-results.md">Community results</a>
 </p>
 
-> **Published release: 1.16.0.** In the [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest), Qwen3.5-class hybrid models keep a quarter of the context cache they did and load on a GPU at any layer split, `--info fit` predicts the loader's GPU split on them, `--verify` replays tool calls and turns cut by a stop sequence, a reasoning budget or the loop guard, structured output enforces a `oneOf` of objects told apart by a `const`, `runner recommend` lists the model files that fit your machine, and `runner train --full` trains a model's own weights.
+> **Published release: 1.17.0.** In the [latest release](https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest), a prompt on a CUDA GPU carries the same bits as a lone decode for every weight type on the scalar route, and prefills faster there (1.4x to 1.9x on K-quants and Q8_0, about 9x on an all-MXFP4 file, measured), NVIDIA's Nemotron 3.5 Super and Bolt load from their published GGUFs, nemotron_h_moe models run their trunk on a CUDA GPU by default, a cancel by request id reaches a request while its model loads and `/health` shows it as loading, and `--shadow-mode` is deprecated. Super and Bolt run on the CPU only; the scalar route is the one a type takes where no tensor-core kernel runs it.
 
-> **Version `1.16.0`.** The command line, the HTTP API, the record formats and
+> **Version `1.17.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x
 > ([versioning policy](docs/versioning.md)). This page is the short version;
 > every flag, endpoint, limit and measurement is in the [manual](MANUAL.md).
@@ -503,7 +503,7 @@ passing evaluation made for those exact bytes.
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.16.0
+./runner --version   # -> runner 1.17.0
 ```
 
 Linux, macOS and Windows. NVIDIA GPUs need a driver with CUDA 13.0 support

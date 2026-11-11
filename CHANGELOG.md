@@ -11,6 +11,321 @@ file each, until the release folds them in below. Add a new entry there, not her
 
 ## Unreleased
 
+## v1.17.0 - 2026-11-12
+
+- **CUDA: Q4_K, Q5_K and Q6_K prompts carry a lone decode's bits on the scalar route (R6.41).** A prefill over
+  8 columns of these types, without the tensor-core GEMM, ran `k_gemm_q4_K`, `_q5_K` or `_q6_K`, which sum in another
+  order than the decode GEMVs. It now runs the GEMVs' width-classed twins, 16 columns a pass, as Q4_0 has since R6.35.
+  - **Where that route is the default:** on the architectures without the tensor-core promotion (deepseek2,
+    qwen35moe, mellum, nemotron_h_moe, Q5_K on qwen4exp, Q6_K or Q5_K on clef), so their prefill bits change there.
+  - **Gated:** `test-prefill-bits` holds a prompt's layer-0 KV rows to a batch-1 prefill's, byte for byte, at batch 9,
+    17, 24 and 64. Before, 17 to 24 of 16,384 K values differed on the Q4_K, Q5_K and Q6_K fixtures, and 70 to 72 of
+    65,536 on Mellum2.1-12B-A2.5B Q4_K_M.
+  - **Speed on that route** (Kvist-14B with 104 tensors in each type, the type's share alone on the scalar route, the
+    whole file on an RTX 5070, medians of six interleaved runs): prefill Q4_K 226.6 to 433.1 tok/s, Q5_K 234.5 to
+    440.0, Q6_K 249.4 to 355.2.
+  - **Unchanged:** wherever the tensor-core GEMM runs; a chunked `--score` there is byte-identical before and after.
+
+- **CUDA: Q8_0 prompts carry a lone decode's bits on the scalar route (R6.50).** A Q8_0 prefill over 8 columns
+  without the tensor-core GEMM ran `k_gemm_q8_0`, which sums in another order than the decode GEMV `k_gemv_q8_0`. It
+  now runs that GEMV's width-classed twins, 16 columns a pass, as Q4_0 (R6.35) and the K-quants (R6.41) do.
+  - **Where that route is the default:** Q8_0 tensors on deepseek2, qwen35moe, mellum and nemotron_h_moe, and on
+    spark2_5 (whose tensor-core scope is Q4_K and Q6_K), so their prefill bits change there.
+  - **Gated:** `test-prefill-bits` now runs on `test-q8.gguf` too. Before, 4 K and 1 V of its 4,096 layer-0 values
+    differed from a batch-1 prefill, and 19 K and 38 to 40 V of 32,768 on a Kvist-14B file with Q8_0 attention.
+  - **Speed on that route** (the Q8_0 share alone on the scalar route, the whole file on an RTX 5070, medians of six
+    interleaved runs): prefill 301.9 to 446.1 tok/s on Clef-Flash Q4_K_M (51% of its weights Q8_0), 158.2 to 234.0
+    on Kvist-14B with Q8_0 attention and gates.
+  - **Unchanged:** wherever the tensor-core GEMM runs; a chunked `--score` there is byte-identical before and after.
+
+- **CUDA: Q3_K prompts carry a lone decode's bits on the scalar route (R6.54).** A Q3_K prefill over 8 columns
+  without the tensor-core GEMM ran `k_gemm_q3_K`, which sums in another order than the decode GEMV `k_gemv_q3_K`. It
+  now runs that GEMV's width-classed twins, 16 columns a pass, as Q4_0, the other K-quants and Q8_0 do.
+  - **Where that route is the default:** Q3_K tensors on the architectures without the tensor-core promotion, and on
+    qwen4exp, which holds Q3_K off the tensor cores.
+  - **Gated:** `test-prefill-bits` runs on a new Q3_K fixture, `test-q3k-prefill.gguf`. Before, 8 K and 1 V of its
+    16,384 layer-0 values differed from a batch-1 prefill at every width.
+  - **Speed on that route** (Kvist-14B with 104 tensors in Q3_K, alone on the scalar route, the whole file on an RTX
+    5070, medians of six interleaved runs): prefill 232.5 to 350.0 tok/s.
+  - **Unchanged:** wherever the tensor-core GEMM runs; a chunked `--score` there is byte-identical before and after.
+
+- **CUDA: every type with a width-classed twin prefills through it on the scalar route (R6.57).** A prefill over 8
+  columns without the tensor-core GEMM ran a tile kernel for IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS and
+  MXFP4 (`k_mv_*_b`, which folds the block scale per term), and that kernel sums in another order than the batch-1
+  kernel. Now any type whose batch-1 route has a loaded 16-wide twin prefills through the twins, by capability rather
+  than by a list of types, as Q4_0, the K-quants and Q8_0 already did. F32, F16 and BF16 keep their tile kernel,
+  which already is their batch-1 kernel's twin.
+  - **Where that route is the default:** MXFP4 dense tensors on every architecture (MXFP4 has no tensor-core kernel;
+    gpt-oss's MXFP4 is expert banks, which run the MoE kernels and do not change); the codebook i-quants on the
+    architectures without the tensor-core promotion, such as clef.
+  - **Gated:** `test-prefill-bits` gains a route table (every type with a 16-wide twin prefills through it) and six
+    fixtures. Before, 23 to 36 of 16,384 layer-0 K values of the codebook fixtures differed from a batch-1 prefill at
+    every width. MXFP4 differed only in rows longer than 1,024 values, so its fixture has rows 2,048 long
+    (`make-test-model.py --n-embd`): 27 to 28 K values before. A whole-file MXFP4 rewrite of Kvist-14B read 21 to 23
+    of 32,768.
+  - **Speed on that route** (RTX 5070, prompt tok/s, medians of six interleaved runs): MXFP4, a whole-file MXFP4
+    Kvist-14B on its default route, 6.7 to 63.3 (9.4x). Each codebook type alone on the scalar route (an experiment
+    harness): IQ3_S 31.0 to 204.5 on a Kvist-14B IQ4_NL mix; on Qwen3.8-27B GSQ-RCO (63 of 64 layers on the
+    device), IQ4_XS 16.0 to 157.0, IQ3_XXS 21.5 to 111.4, IQ2_S 71.9 to 192.3, IQ2_XS 96.6 to 210.9, IQ2_XXS 143.3 to
+    235.3.
+  - **Unchanged:** wherever the tensor-core GEMM runs; a chunked `--score` there is byte-identical before and after.
+
+- **CUDA: the types without a width-classed twin prefill one column at a time on the scalar route (R6.58).** A
+  prefill over 8 columns without the tensor-core GEMM ran a tile kernel for Q5_0, Q5_1, IQ4_NL, NVFP4, Q2_K, Q4_1,
+  IQ1_S, IQ1_M and Q2_0 (`k_mv_*_b`), which sums in another order than the batch-1 kernel. It now runs the batch-1
+  kernel once per column, which gives each column a lone decode's bits by construction and is faster: prefill on a
+  Kvist-14B file went 9.3 to 90.5 tok/s in Q5_0, 6.2 to 62.1 in Q5_1 and 9.6 to 68.1 in IQ4_NL (RTX 5070, each type
+  alone on the scalar route). A scaled tensor's 2 to 8 columns (NVFP4's companion), which the small-batch route did
+  not take, run the same way.
+  - **Where that route is the default:** these types on the architectures without the tensor-core promotion (NVFP4
+    and the K-quant family are promoted on the trusted list, IQ4_NL with the codebook types).
+  - **Gated:** `test-prefill-bits`'s route table now fails any type whose prefill reaches a tile kernel that is not
+    its batch-1 kernel's twin, and it runs four new fixtures. Before, 4 to 37 of their layer-0 K values differed from a
+    batch-1 prefill at every width.
+  - **Unchanged:** wherever the tensor-core GEMM runs; F32, F16 and BF16, whose tile kernel is the batch-1 kernel's
+    twin; `RUNNER_CUDA_SMALL_BATCH=0`'s tile for 2 to 8 columns.
+
+- Make compiler warnings fatal in CI or `STRICT=1` test builds, including specialized flags and fuzzers; fix the Windows ULP-distance oracle's undefined shifts/overflow, harden KD and CUDA staging bounds, bound the shadow-client probe path, and correct unused helpers, an explicit f16 job initializer, tray-test I/O/capture bounds and a spliced comment.
+
+- **A cancel by id reaches a request while its model loads (R10.12.3.3).** A completion request's `X-Request-Id` is
+  now taken before its model is swapped in, not after, so `POST /v1/runner/requests/{id}/cancel` finds it during the
+  load; before, it answered `404 request_not_found` until the load was over.
+  - **In the `--wait-for-vram` queue** the cancel stops the wait under the rule a disconnect follows: a live client
+    queued behind keeps the wait and its place.
+  - **During a load past the queue** the load is not stopped: it finishes and stays resident. The request ends before
+    its prompt with `409 cancelled`, and the cancel answers phase `loading`, `generated` 0, `request_id` null.
+  - **`/health`** lists such a request with phase `loading`.
+  - **Tested** on the generated test model with the VRAM-wait test hooks: the cancel stops a queued wait, keeps it
+    for a live client behind, lets an admitted load finish and stay, and an id taken early is released on every exit
+    (unknown model, failed load, refused load, disconnect).
+
+- Correct the Qwen3-30B-A3B selective file's roster and public descriptions to lead with its 2026-11-02 float32-reference measurement, retaining the older Q8_0-relative tuple only as dated history.
+
+- **`scripts/hub-upload-check.py`: the plan of a Hugging Face Hub upload, refused when it would overwrite or delete a
+  file nobody named (R7.1.5).** Until now only the research-record packages had a scripted guard; model files and
+  cards were checked against the remote listing by hand.
+  - **What it does:** for a repo id and the local folder an upload will send, it lists each addition, replacement and
+    deletion against the remote by content (the sha256 the Hub records for an LFS file, the git blob id for a small
+    one) and counts the identical files. It exits 1 on any replacement or deletion whose repo path is not named with
+    `--replace` or `--delete`, and 2 when it cannot check (a missing repository, a name that matches nothing).
+  - **Declarations:** `--partial` for an upload that deletes nothing (a card on its own), `--new` for a repository
+    that does not exist yet, `--path-in-repo` for a folder that lands under a prefix, `--repo-type` for datasets and
+    Spaces.
+  - **Read only:** it uploads nothing. A public repository needs no token; a private one takes `HF_TOKEN` from the
+    environment, which is never printed and goes only to the endpoint's own origin: a redirect or a next-page link
+    to any other origin is refused with exit 2 before a request is made. The plan names the remote commit it
+    compared against, to pass as the upload's `parent_commit`.
+  - **Tested** against a stub Hub on loopback, no network: a silent overwrite is refused, a named one is allowed, an
+    addition passes, identical files are a no-op, a change on a later listing page is still caught, the token is sent
+    and never printed, and the small-file id equals `git hash-object`.
+
+- Envelope certification now verifies all recorded compatibility-report hashes before using an entry, refuses conflicting same-name evidence, and labels legacy hashless name matches as unverified in `quality.evidence_match`.
+
+- **NVIDIA Nemotron 3.5 Bolt-74B-A9B joins the roster on NVIDIA's own 24GB GGUF, text path, CPU only (R4.27.4.4 S2).**
+  Its MoE blocks differ from one another.
+  - **What varies by block:** the expert count (240 to 496, from each block's router), the expert width (1,536 to
+    2,560) and, in the file's format, the top-k (9 on every block). The experts run at a latent width of 1,024, as
+    Super's do.
+  - **The loader:** Runner read `expert_feed_forward_length` and `expert_used_count` as scalars, got 0 from Bolt's
+    per-layer arrays, and refused the file.
+    - Each block now runs its experts at its own width, and the widest sizes the scratch.
+    - The arrays must have one entry per layer and 0 on the blocks without experts.
+    - A top-k that differs between blocks is refused by name: no published file varies it.
+  - **CUDA refuses varying expert widths by name**, and such a file takes no default split. Bolt is refused earlier,
+    by the LatentMoE rule. Metal refuses the family.
+  - **`--info fit` says a LatentMoE or varying-width file loads on the CPU.** Before, it sized a GPU split for Super and
+    Bolt that the load never takes.
+  - **Agreement, not fidelity:** the 149.8 GB BF16 parent cannot be held in float32 on the lab host, so the row is
+    anchored on llama.cpp 36a0e2f on the same bytes:
+    - mean KLD 0.0072 and margin-qualified top-1 100.00% (bars 0.05 and 97%, 300 positions); raw top-1 96.33%, every
+      differing pick inside the tie band;
+    - the tokenizer 0 of 721 and 0 of 128,635;
+    - template conformance 24 of 24 in text and tokens.
+
+    Record: [docs/compat-reports/nemotron-3.5-bolt-74b-a9b-2026-11-11](docs/compat-reports/nemotron-3.5-bolt-74b-a9b-2026-11-11/README.md).
+  - **Limits of this release:**
+    - NVIDIA names the file for a 24 GB card; it runs on the CPU.
+    - The CPU prompt pass is slow: a cold 4,470-word prompt took 494.6 s where llama.cpp took 65.9 s on the same 40
+      shared CPUs (R3.57).
+  - **Gates:**
+    - `tests/test_nemotron_hetero_moe.py` holds a heterogeneous toy (4 experts 16 wide, 6 experts 24 wide) to a twin
+      with every expert zero-padded to 24, on the token and the batched pass, latent and plain. It adds a zeroed
+      narrow-block control, four refusals, and the CUDA refusal.
+    - The Nano-30B-A3B, Lightning-30B-A3B and Super CPU pins, the Nano-30B-A3B and Lightning-30B-A3B CUDA pins, and
+      Nano-9B-v2's CUDA pin are byte-identical.
+
+- **`RUNNER_CUDA_ATTN_TC_FULL` is removed (R18.8.1).** The switch put the CUDA tensor-core prefill attention on
+  the layers without a window in a family the default keeps on the tiled kernel (gpt-oss's full-attention layers).
+  It was opt-in, and on gpt-oss-20b it read further from the publisher's float32 reference than the tile (mean KL
+  0.04065 against 0.04039, Wilcoxon p 3e-18). Setting it now does nothing; the default route is unchanged.
+  `RUNNER_*` switches are outside the compatibility promise ([versioning](docs/versioning.md)).
+
+- Collect the existing artifact-publication checks in the release checklist, with sources for publisher roles, checksums and guarded updates, model admission evidence, record locations, cards and excluded material.
+
+- Document LoRA adapters for typed decisions, with TD-001's historical transfer agreement and request-time cost, and explain that imported q/k LoRA B rows must match the base GGUF's converter order.
+
+- Commit hygiene now refuses agent-named authors or committers with a personal email address; agent identities must use a noreply or `.local` address. Document the worktree identity setup.
+
+- Document the typed-decision execution cost: fresh canonical state feeds, solo option conditionals, historical TD-000 request times, and the equality gate required before batching conditionals.
+
+- **`--shadow-mode` is deprecated (R18.8.10).** It keeps working with a warning for the rest of 1.x and is removed no
+  earlier than 2.0.0, as [the versioning policy](docs/versioning.md) requires for a flag.
+  - **What changes now:** `--help` marks the flag deprecated, and every run of it prints one warning line on stderr
+    before the installer's own output. The install itself, the `/shadow` offload and the Python package
+    `xyntetik_runner.shadow` are unchanged.
+  - **Why:** the shadow research it served closed in September 2026, and the offload is planned to leave Runner for
+    a companion product ([ownership](docs/ownership.md#6-shadow-a-companion)).
+  - **Tested:** the warning prints exactly once, also when the install is refused; the install still writes its
+    files and config; no other mode warns; `--help` carries the policy's terms, read from `docs/versioning.md`.
+
+- **`--info fit` sizes a load whose experts stay on the host as that load is placed (R3.58).**
+  - **The loads covered:** `--cpu-moe`, and nemotron_h_moe's CUDA default.
+  - **How the fit now charges them, as the loader does:**
+    - the mixer tensors and dense FFNs, each rounded as uploaded;
+    - the tables without expert biases;
+    - no expert scale table.
+  - **A second fix:** the fit now charges nemotron_h_moe's Mamba-2 state, which it missed.
+  - **Measured:** on the fixtures and on Nemotron-3.5-Lightning-30B-A3B Q4_0, the fit's fixed charge, the split's
+    weight bytes and its layer count equal the load's, byte for byte (`RUNNER_DEBUG_VRAM`).
+  - **Not covered:** `--cpu-moe N` and `--cpu-moe auto` keep only some banks on the host (the deepest N, or those
+    the budget leaves out). The fit still sizes a full offload for them, and says so in a line.
+
+- **nemotron_h_moe runs its trunk on CUDA by default (R3.43a.2).**
+  - **What happens:** a GPU load that names no `--cpu-moe` keeps the experts and their routing on the host and runs
+    the Mamba-2 and attention blocks on the device. The router has no device kernel.
+    `RUNNER_CPU_MOE_DEFAULT=0` runs such a file on the CPU, the earlier default.
+  - **The quality read (D1),** on Nemotron-3.5-Lightning-30B-A3B Q4_0 against NVIDIA's float32 model, 4,500 positions:
+    - decode: mean KL 1.0003x the CPU's (Wilcoxon p 0.17, McNemar 0 and 0 discordant);
+    - prefill: 0.995x (p 0.39, 3 and 3).
+  - **The rows:** the Lightning and Nemotron-3-Nano-30B-A3B rows gain CUDA cells on this route.
+  - **`--info fit`** still sizes a full offload for such a file (and for any explicit `--cpu-moe`), and now says so in a
+    line.
+
+- **nemotron_h_moe runs its trunk on CUDA with `--cpu-moe` (R3.43a).**
+  - **Why it was refused:** its router (a sigmoid with a selection bias) has no device kernel, so CUDA refused the
+    whole model, although a layer whose experts are on the host is routed there.
+  - **Admission:** the router and selection-bias refusals now apply only when an expert bank runs on the device.
+    `--cpu-moe` runs the Mamba-2 and attention blocks on the device and the experts and their routing on the host.
+    The `--cpu-moe auto` fit never moves such a bank onto the device.
+  - **A second defect, fixed:** an MLP-only block jumped straight to the device FFN, past the host branch.
+  - **Measured on Nemotron-3.5-Lightning-30B-A3B Q4_0** (24 GB MIG slice, medians of 5 interleaved runs): 30.97
+    against 19.88 decode tokens/s and 99.6 against 60.2 prompt tokens/s.
+  - **The default is unchanged:** without the flag the file runs on the CPU, and the message names `--cpu-moe`.
+
+- **NVIDIA Nemotron 3.5 Super VL-120B-A12B joins the roster on ggml-org's Q4_0, text path, CPU only (R4.27.4.4 S1).**
+  Its MoE is LatentMoE.
+  - **What LatentMoE is:** the 512 routed experts (top 22) run at a latent width of 1,024, between
+    `ffn_latent_down` and `ffn_latent_up`. The router and the shared expert read the full 4,096-wide input. Runner
+    refused the file before: the nemotron_h_moe expert cap was 256, and it had no latent pair.
+  - **The loader:**
+    - It reads `moe_latent_size`, which reads 0 when absent, so Nano and Lightning are unchanged.
+    - It refuses by name a width past n_embd, a half pair, or a pair the metadata does not declare.
+    - The expert count is bounded by the general MoE cap (1,024). The selected count stays at most 256.
+  - **CUDA and Metal refuse LatentMoE by name.**
+  - **Agreement, not fidelity:** the 241.5 GB BF16 parent cannot be held in float32 on the lab host, so the row is
+    anchored on llama.cpp 36a0e2f on the same bytes:
+    - mean KLD 0.0136 and margin-qualified top-1 99.67% (bars 0.05 and 97%, 300 positions);
+    - the tokenizer 0 of 721 and 0 of 128,635;
+    - template conformance 24 of 24 in text and tokens.
+
+    Record: [docs/compat-reports/nemotron-3.5-super-vl-120b-a12b-2026-11-10](docs/compat-reports/nemotron-3.5-super-vl-120b-a12b-2026-11-10/README.md).
+  - **A limit of this release: the CPU prompt pass on this file is slow.**
+    - The 8,103-token gold corpus as one prompt took 655.8 s to 717.0 s at the default -b 64, and llama.cpp 60.3 s on
+      the same 40 shared CPUs.
+    - The routed experts are 82% of it (R3.57).
+  - **Gates:**
+    - `tests/test_nemotron_latent_moe.py` holds a latent toy to its composed twin (the experts multiplied through
+      the pair) on the one-token and the batched pass, with a zeroed-experts control and the four refusals.
+    - The Nano-30B-A3B and Lightning-30B-A3B CPU pins and Nano-9B-v2's CUDA pin are byte-identical.
+
+- **The scheduled-run alert reads the failing job's log (R6.45.3).**
+  - The job-log endpoint redirects to a signed storage URL on another host. urllib copied the bearer token onto
+    that request, and the storage host refused it with "HTTP Error 401: Server failed to authenticate the request".
+    So the issue named the job and step, but not the line.
+  - `scripts/scheduled-ci-alert.py` now drops the Authorization header on a redirect to another host, and keeps it
+    on the same host.
+
+- **Run the Metal tolerance gates on eligible fixtures (R6.45.1).** `test-gates-core` now gives
+  `test-mv-tol` Q8_0, Q4_K and Q4_0 fixtures and runs cooperative attention on the wide Q4_K
+  fixture with both normal and q8 KV storage. An explicitly named matvec fixture without a
+  supported tensor fails, named Metal fixtures must dispatch the tested route, and a q8 request
+  must actually activate q8 KV. The existing zero-flip and mean-deviation tolerances are unchanged.
+
+- **A scheduled CI run that ends red now reaches someone (R6.45.2).**
+  - **Why:** scheduled runs sit outside pr-gate, so nothing escalated one. The daily macOS suite went red on 2026-11-10
+    at 12:51Z and was noticed four hours later.
+  - **The new workflow:** `.github/workflows/scheduled-alert.yml` runs when a scheduled run of `ci`, competitor
+    freshness or the deterministic-CI example completes, through `scripts/scheduled-ci-alert.py`.
+    - A run that ends failed, cancelled, timed out or unable to start opens one issue per workflow labelled
+      `scheduled-ci-red`, or comments on the one already open.
+    - The issue names each failed job, its failed step and that step's first failing log line.
+    - A green run of the same workflow closes it.
+  - **Testing on a branch:** a `workflow_dispatch` with a run id (dry run by default) tests the workflow there,
+    since a `workflow_run` trigger fires only from main.
+  - `docs/release-checklist.md` makes no open `scheduled-ci-red` issue a step before the cut.
+
+- **Docs: README and MANUAL checked against every changelog entry of 1.13.0 to 1.16.0 (R7.20).** The version pins
+  were right; these were missing or stale, and are now stated:
+  - **Missing from the manual:** `runner train --full` and `--kv-f32`, and the refusal of training with a
+    `q8`, `k8v4` or `fp4` KV cache; the note a first CUDA load prints while the driver compiles the kernels; the
+    refusal of a hybrid model's session image or KV snapshot written by 1.15.0 or earlier, with
+    `RUNNER_KV_RECURRENT_ROWS=1`; `--info fit` reporting the CPU for the families the loader never puts on a GPU;
+    `profile.route.tc_types` in a record; random response ids; a usage error ending with its error line;
+    `RUNNER_MOE_HOT` giving the host copies back.
+  - **Stale in the manual:** the CUDA route label was documented as `tc=promoted`, which the binary has not
+    written since R3.39.2 (`tc=taken`, `tc=off`, `tc=moe-tc`, `tc=forced`); the not-implemented list still named
+    `deepseek2` and multi-head latent attention, both admitted since 1.13.0.
+  - **README:** it names `runner train --full`, the `oneOf` told apart by a `const` and the turns `--verify` now
+    replays, and it is shorter: the caveats and limits it carried (build conditions, costs, what is refused, what
+    is not covered) are left to the manual and the docs it links, which state them in full.
+  - **Found right:** 1.13.0's and 1.14.0's entries, the tier wording (none left), `runner recommend`, the draft
+    defaults, `RUNNER_PREFETCH`, the prefix cache's default, `--kv f32`, the cancel route and `ignore_eos`.
+
+- **A tier-smoke pin names the build that wrote it, and empero's CUDA pin comes from the release recipe (R6.46).**
+  - A partial split runs some layers on the CPU, where compiler codegen changes the last bits. That flips a greedy
+    choice only where the prompt meets a near-tie.
+    - empero-qwen3.8-35b-a3b-distill-q6_k's CUDA pin (34 of 40 blocks on the device) was written on 2026-11-06 by a
+      clang build at `-march=native`.
+    - Every release-recipe gcc build gives another reply, so the pin had mismatched on every such build since.
+  - **The re-pin:** the pin is now the 1.16.0 release-recipe build's reply, which equals the row's CPU pin. The CPU
+    pin matches as it was and is unchanged.
+  - **The build in the record:** `scripts/tier-smoke.py` reads the serving binary's sha256 and compiler from
+    `GET /v1/runner/provenance`. It writes them into the pin's manifest entry (`pinned.build`) and into the cell it
+    records (`build`).
+    - A runner without the route records none.
+    - `scripts/model-tiers.py` refuses a `build` without both.
+  - **The other CUDA cells recorded on 2026-11-06 match on the release binary:** sage-a1.5-q6_k,
+    minicpm-v-4.7-35b-a3b-q8_0, and the selective mellum row.
+
+- **docs: the train/serve mismatch, measured (R17.5.4).** New page: docs/train-serve-mismatch-2026-11.md. It covers
+  Runner's sampler against its trainer on MiniCPM5-1B, beside vLLM with transformers in bf16 and NF4.
+  - **It leads with what is not claimed:**
+    - exact only on the CPU with `-b 1`;
+    - the batched prompt pass and the CUDA sampler are close but not exact;
+    - the stacks run different weights;
+    - one model and one task;
+    - the sampling-truncation deviation found in the first run, and its repair.
+  - **The batched pass's figure is corrected:** MANUAL.md, docs/lora.md and docs/kernel-routes.md now give 1.45e-2 over
+    384 rollouts on the 2026-11-09 file, where they said 3.1e-3 after one 60-token prompt (measured 2026-10-17).
+  - **docs/lora.md's "a GPU sampler agrees token for token" is replaced by the measured figures:** the CUDA sampler's
+    logprobs differ from the CPU trainer's by up to 2.02e-2, and 284 of 384 of its rollouts are the CPU sampler's.
+  - The README's adaptation section links the page.
+
+- **A release needs the full CUDA gate for its own version (R6.44).** Before, the release gate ran only
+  `scripts/release-cuda-gate.py`'s smoke and probe. Those cannot see a device target gone red: test-cuda-qwen4exp's
+  MTP check was red from 2026-11-04 to 2026-11-10, through 1.14.0 and 1.15.0 (R3.56).
+  - **`scripts/check-release.py`** refuses a tag unless a CUDA class's `last_verified` row in
+    `docs/device-evidence.json` names the version, was written by `scripts/cuda-gate.sh` and passed. Its summary must
+    be committed at the row's `evidence` path, as `cuda-gate.v2`, passing, at the row's commit.
+  - **`tools/release-make/make`,** first on PATH, gives every make a gate step runs the release recipe's CFLAGS on the
+    command line. Without it a step relinked a different runner, because an environment CFLAGS is extended by the
+    Makefile.
+  - **`scripts/cuda-gate.sh`** fails a run whose binary changed under it (`binary-unchanged`).
+  - **`scripts/release-cuda-gate.py`** names the model and the binary relative to the checkout, or by file name. An
+    absolute `--model` had left `~/<dir>/<file>` in a report.
+  - **docs/release-checklist.md** step 4 runs the full gate on the pin beside the release gate. It recommends the full
+    gate on main daily, at a quiet hour, from a cron entry on the CUDA host or the coordinator's check-in.
+
 ## v1.16.0 - 2026-11-10
 
 - **Fix CUDA layer placement accounting (R3.53).** The loader's weight estimate omitted per-layer norms,
