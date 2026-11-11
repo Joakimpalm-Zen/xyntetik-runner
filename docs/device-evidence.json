@@ -48,19 +48,19 @@
         "gpu_backend": "cuda"
       },
       "last_verified": {
-        "date": "2026-11-10",
-        "commit": "70a38fb37856011c59287c5a85195ebc4eed09b7",
-        "ran": "scripts/cuda-gate.sh on the release-recipe build of 70a38fb3, the release/1.16.0 pin (gcc 13.3.0, -O3 -ffast-math -std=gnu11 -march=x86-64-v3, 0 warnings; every make through the same CFLAGS, the runner byte-identical before and after), 23 of 23 steps pass: test-tc-overflow, test-cuda-iquants, test-cuda-gated, test-cuda-kv-fp4, test-cuda-kv-f32, test-cuda-nvfp4, test-cuda-qwen4exp, test-cuda-qwen35moe, test-cuda-q3k, test-cuda-tc-kq, test-cuda-i8, test-cuda-moe-legacy, test-cuda-varff, test-cuda-tc2-bytes, test-cuda-moe-twin, test-cuda-keepn, test-cuda-moe-replay, test-cuda-batch-identity, test-cuda-hybrids, test-cuda-attn-wide, test-cuda-spec-identity, cpu_cuda_check (qwen3-0.6b-q8_0.gguf, 64 tokens)",
+        "date": "2026-11-11",
+        "commit": "781c9b5b7e20f82a9db179dbd86ac4b0958f01fe",
+        "ran": "scripts/cuda-gate.sh on the release-recipe build of 781c9b5b, the release/1.17.0 pin (gcc 13.3.0, -O3 -ffast-math -std=gnu11 -march=x86-64-v3, 0 warnings; every make through tools/release-make, the runner byte-identical before and after), 23 of 23 steps pass: test-tc-overflow, test-cuda-iquants, test-cuda-gated, test-cuda-kv-fp4, test-cuda-kv-f32, test-cuda-nvfp4, test-cuda-qwen4exp, test-cuda-qwen35moe, test-cuda-q3k, test-cuda-tc-kq, test-cuda-i8, test-cuda-moe-legacy, test-cuda-varff, test-cuda-tc2-bytes, test-cuda-moe-twin, test-cuda-keepn, test-cuda-moe-replay, test-cuda-batch-identity, test-cuda-hybrids, test-cuda-attn-wide, test-cuda-spec-identity, cpu_cuda_check (qwen3-0.6b-q8_0.gguf, 64 tokens)",
         "result": "pass",
         "caps": {
-          "version": "1.16.0",
+          "version": "1.17.0",
           "os": "linux",
           "arch": "x86_64",
           "cpu_cores": 40,
           "gpu_backend": "cuda",
           "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
         },
-        "evidence": "docs/device-runs-2026-11-10/linux-x86_64-cuda/cuda-gate-20261110T165653Z.json"
+        "evidence": "docs/device-runs-2026-11-11/linux-x86_64-cuda/cuda-gate-20261111T224018Z.json"
       }
     },
     {
