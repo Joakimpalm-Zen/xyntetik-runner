@@ -2139,14 +2139,27 @@ static void mw_release(model_weights *w) {
 // been given. --gpu off, an explicit --cpu-moe, or RUNNER_CPU_MOE_DEFAULT=0
 // (which runs it on the CPU, the earlier default) take precedence. The copy
 // lives for the call that reads it.
+#ifdef RUNNER_GPU_CUDA
+// Experts whose width varies by layer (layer_t.n_ff_exp, Nemotron 3.5 Bolt)
+static bool moe_widths_vary(const model_t *m) {
+    for (int l = 0; l < m->n_layer; l++)
+        if (m->layers[l].is_moe && m->layers[l].n_ff_exp > 0 &&
+            m->layers[l].n_ff_exp != m->n_ff_exp)
+            return true;
+    return false;
+}
+#endif
+
 static const model_params *model_default_placement(const model_t *m, const model_params *p) {
 #ifdef RUNNER_GPU_CUDA
     static _Thread_local model_params pd;
     const char *e = getenv("RUNNER_CPU_MOE_DEFAULT");
-    // A LatentMoE file (Super, Bolt) is refused by cuda_admit whatever the
-    // placement, so it takes none: the split's line would say what never runs.
+    // A LatentMoE file (Super, Bolt), or one whose expert widths vary by layer,
+    // is refused by cuda_admit whatever the placement, so it takes none: the
+    // split's line would say what never runs.
     if (p->gpu_mode != GPU_OFF && !p->cpu_moe && m->nemotron_h && m->n_expert > 0 &&
-        m->moe_latent == 0 && !model_moe_router_is_plain_any_norm(m) && !(e && !strcmp(e, "0"))) {
+        m->moe_latent == 0 && !moe_widths_vary(m) &&
+        !model_moe_router_is_plain_any_norm(m) && !(e && !strcmp(e, "0"))) {
         pd = *p;
         pd.cpu_moe = true;
         pd.cpu_moe_layers = CPU_MOE_ALL;
@@ -2461,6 +2474,18 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
         if (!ok) return false;
         if (m->n_expert > 0) {
             l->is_moe = true;
+            // this block's expert width: Bolt's per-layer array, or the one
+            // width every block shares (bind_meta_nemotron_h checked both)
+            char efkey[64];
+            snprintf(efkey, sizeof efkey, "%s.expert_feed_forward_length",
+                     gguf_get_str(g, "general.architecture", "nemotron_h"));
+            l->n_ff_exp = (int)gguf_get_u32_idx(g, efkey, (uint64_t)i,
+                                                (uint32_t)m->n_ff_exp);
+            if (l->n_ff_exp <= 0 || l->n_ff_exp > m->n_ff_exp) {
+                fprintf(stderr, "error: blk.%d expert width %d is outside [1, %d]\n",
+                        i, l->n_ff_exp, m->n_ff_exp);
+                return false;
+            }
             l->ffn_gate_inp  = need_tensor(g, "blk.%d.ffn_gate_inp.weight", i, &ok);
             l->ffn_up_exps   = need_tensor(g, "blk.%d.ffn_up_exps.weight", i, &ok);
             l->ffn_down_exps = need_tensor(g, "blk.%d.ffn_down_exps.weight", i, &ok);
@@ -2504,9 +2529,9 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
             // Nemotron's routed experts have no gate stack: up/down alone must
             // agree exactly with the layer-local router count. Selection bias
             // has two live GGUF spellings and is indexed by that same count.
-            if (!check_shape3(l->ffn_up_exps, ed, m->n_ff_exp,
+            if (!check_shape3(l->ffn_up_exps, ed, l->n_ff_exp,
                               l->n_expert, "ffn_up_exps", i) ||
-                !check_shape3(l->ffn_down_exps, m->n_ff_exp, ed,
+                !check_shape3(l->ffn_down_exps, l->n_ff_exp, ed,
                               l->n_expert, "ffn_down_exps", i))
                 return false;
             gguf_tensor *epb = opt_tensor(g, "blk.%d.exp_probs_b.weight", i);
@@ -3849,11 +3874,72 @@ static bool bind_lfm2_mixer(model_t *m, gguf_file *g, layer_t *l, int i, bool *o
     return true;
 }
 
+// Nemotron 3.5 Bolt publishes expert_used_count and expert_feed_forward_length
+// as per-layer arrays, 0 on the blocks without experts; Nano, Lightning and
+// Super publish one value each, which gguf_get_u32_idx reads the same at every
+// index. The expert blocks are the ones feed_forward_length marks, as the block
+// typing below reads them. Out: the top-k, which every expert block must agree
+// on (no published file varies it, and no path here routes a per-layer top-k),
+// and the widest and narrowest expert; the widest sizes scratch, as n_ff does
+// for the dense width, and each block binds its own (layer_t.n_ff_exp). A zero
+// on an expert block comes back as 0, for the expert config check to name.
+static bool nh_moe_expert_arrays(const model_t *m, gguf_file *g, const char *arch,
+                                 int *used, int *ff_max, int *ff_min) {
+    char kff[128], kkv[128], kused[128], kexp[128];
+    snprintf(kff, sizeof kff, "%s.feed_forward_length", arch);
+    snprintf(kkv, sizeof kkv, "%s.attention.head_count_kv", arch);
+    snprintf(kused, sizeof kused, "%s.expert_used_count", arch);
+    snprintf(kexp, sizeof kexp, "%s.expert_feed_forward_length", arch);
+    const char *keys[2] = { kused, kexp };
+    bool arr[2];
+    for (int k = 0; k < 2; k++) {
+        gguf_kv *kv = gguf_get(g, keys[k]);
+        arr[k] = kv && kv->type == GGUF_T_ARR;
+        if (arr[k] && kv->arr_n != (uint64_t)m->n_layer) {
+            fprintf(stderr, "error: nemotron_h_moe %s has %llu entries for %d "
+                    "layers\n", keys[k], (unsigned long long)kv->arr_n, m->n_layer);
+            return false;
+        }
+    }
+    int u_lo = 0, u_hi = 0, f_lo = 0, f_hi = 0, n_moe = 0;
+    for (int i = 0; i < m->n_layer; i++) {
+        bool moe = gguf_get_u32_idx(g, kkv, (uint64_t)i, 0) == 0 &&
+                   gguf_get_u32_idx(g, kff, (uint64_t)i, 0) > 0;
+        uint32_t u = gguf_get_u32_idx(g, kused, (uint64_t)i, 0);
+        uint32_t f = gguf_get_u32_idx(g, kexp, (uint64_t)i, 0);
+        if (!moe) {
+            if ((arr[0] && u != 0) || (arr[1] && f != 0)) {
+                fprintf(stderr, "error: nemotron_h_moe blk.%d has no experts, but "
+                        "expert_used_count %u and expert_feed_forward_length %u\n",
+                        i, u, f);
+                return false;
+            }
+            continue;
+        }
+        int ui = u > INT_MAX ? INT_MAX : (int)u, fi = f > INT_MAX ? INT_MAX : (int)f;
+        if (n_moe++ == 0) { u_lo = u_hi = ui; f_lo = f_hi = fi; continue; }
+        if (ui < u_lo) u_lo = ui;
+        if (ui > u_hi) u_hi = ui;
+        if (fi < f_lo) f_lo = fi;
+        if (fi > f_hi) f_hi = fi;
+    }
+    if (u_lo != u_hi) {
+        fprintf(stderr, "error: nemotron_h_moe expert_used_count differs between "
+                "layers (%d to %d): a per-layer top-k has no path here\n", u_lo, u_hi);
+        return false;
+    }
+    *used = u_lo;
+    *ff_max = f_lo > 0 ? f_hi : 0;
+    *ff_min = f_lo;
+    return true;
+}
+
 // Nemotron-H, dense and MoE: the Mamba-2 geometry, the block types and the
 // expert routing.
 static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
     char key[128];
     bool nh_moe = strcmp(arch, "nemotron_h_moe") == 0;
+    int ff_exp_min = 0;   // nemotron_h_moe: the narrowest expert (Bolt varies it)
     // Nemotron-H (NVIDIA Nemotron-Nano-9B-v2): a Mamba-2 / attention / MLP
     // hybrid. Each block is EXACTLY ONE of three kinds (mutually exclusive,
     // one pre-norm + one residual), typed off two per-layer arrays:
@@ -3917,8 +4003,8 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
     // row). A file that does declare the key keeps it.
     if (nh_moe) {
         m->n_expert        = (int)gguf_get_u32(g, AK("expert_count"), 0);
-        m->n_expert_used   = (int)gguf_get_u32(g, AK("expert_used_count"), 0);
-        m->n_ff_exp        = (int)gguf_get_u32(g, AK("expert_feed_forward_length"), 0);
+        if (!nh_moe_expert_arrays(m, g, arch, &m->n_expert_used, &m->n_ff_exp, &ff_exp_min))
+            return false;
         m->n_ff_shexp      = (int)gguf_get_u32(g, AK("expert_shared_feed_forward_length"), 0);
         m->n_expert_groups = (int)gguf_get_u32(g, AK("expert_group_count"), 1);
         m->n_group_used    = (int)gguf_get_u32(g, AK("expert_group_used_count"), 1);
@@ -4008,10 +4094,18 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
                 "gate-less squared-ReLU experts + always-on shared expert, "
                 "NoPE attention\n", n_rec, n_attn, n_mlp, m->ssm.groups,
                 m->n_expert_used, m->n_expert);
-    if (nh_moe && m->moe_latent > 0)
+    // Bolt's widths vary by layer (ff_exp_min below the widest)
+    if (nh_moe && m->moe_latent > 0 && ff_exp_min == m->n_ff_exp)
         fprintf(stderr, "nemotron_h_moe: LatentMoE, the routed experts run at "
                 "width %d (n_embd %d), %d wide\n", m->moe_latent, m->n_embd,
                 m->n_ff_exp);
+    else if (nh_moe && m->moe_latent > 0)
+        fprintf(stderr, "nemotron_h_moe: LatentMoE, the routed experts run at "
+                "width %d (n_embd %d), %d to %d wide by layer\n", m->moe_latent,
+                m->n_embd, ff_exp_min, m->n_ff_exp);
+    else if (nh_moe && ff_exp_min != m->n_ff_exp)
+        fprintf(stderr, "nemotron_h_moe: the routed experts run %d to %d wide by "
+                "layer\n", ff_exp_min, m->n_ff_exp);
     if (!nh_moe)
         fprintf(stderr, "nemotron_h: Mamba-2 hybrid (%d recurrent + %d attention "
                 "+ %d MLP layers, n_group=%d grouped scan): NON-MoE, NoPE "
@@ -9472,6 +9566,13 @@ static void moe_probe_replay(model_t *m, const layer_t *ly, int b, const int *se
     }
 }
 
+// The routed experts' hidden width: the layer's own where the file gives one
+// per layer (Nemotron 3.5 Bolt), else the model's; scratch is sized by the
+// model's, the widest.
+static inline int moe_expert_ff(const model_t *m, const layer_t *ly) {
+    return ly->n_ff_exp > 0 ? ly->n_ff_exp : m->n_ff_exp;
+}
+
 // One expert row's activation into g (the down projection's input), from its
 // up row u and, when the experts are gated, its gate row g. nemotron_h_moe's
 // experts are gate-less: relu(up)^2, the shape its dense MLP uses. Otherwise
@@ -9481,7 +9582,7 @@ static void moe_probe_replay(model_t *m, const layer_t *ly, int b, const int *se
 // the weights). Shared by the per-token and the grouped path.
 NUM_STAGE void moe_expert_act_row(const model_t *m, const layer_t *ly, int e,
                                   float *g, float *u) {
-    int nff = m->n_ff_exp;
+    int nff = moe_expert_ff(m, ly);
     if (m->ffn_relu2) {
         for (int j = 0; j < nff; j++) {
             float r = u[j] > 0.0f ? u[j] : 0.0f;
@@ -9511,7 +9612,7 @@ static inline int moe_expert_dim(const model_t *m, const layer_t *ly) {
 NUM_STAGE void moe_token_experts(model_t *m, const layer_t *ly, const float *xin,
                                  const int *sel) {
     int n_embd = moe_expert_dim(m, ly), used = m->n_expert_used;
-    int nff = m->n_ff_exp;
+    int nff = moe_expert_ff(m, ly);
     // Every selected expert's projections go out as a few pool dispatches
     // rather than three per expert: with ten experts a layer and 48 layers
     // that was 1,440 fork/join barriers a token on matrices that take
@@ -9670,7 +9771,7 @@ static void moe_grouped_prefetch(model_t *m, const layer_t *ly, int n) {
 NUM_STAGE void moe_grouped_expert(model_t *m, const layer_t *ly, int e, int n,
                                   int xdim, bool trace) {
     int n_embd = moe_expert_dim(m, ly), used = m->n_expert_used;
-    int nff = m->n_ff_exp;
+    int nff = moe_expert_ff(m, ly);
     int cnt = 0;
     // the experts' input rows: the normed input, or its latent projection
     const float *src = ly->ffn_latent_down ? m->moe_lat : m->xb;
