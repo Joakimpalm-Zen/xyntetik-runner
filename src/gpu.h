@@ -101,6 +101,12 @@ unsigned long gpu_tc_dispatches_type(int type);
 // whether the route takes the tensor cores for a weight type of this model
 // (RUNNER_CUDA_TC and the promotions included): a record's tc_types
 bool gpu_tc_takes(const model_t *m, int type);
+// test-prefill-bits' route table (CUDA's scalar route, R6.57), asked for a
+// dense unscaled tensor of a weight type: whether the 16-wide twin of the
+// batch-1 kernel's route is loaded, and whether a prompt's matvec of the type
+// runs it. false for a type outside the table and on other backends.
+bool gpu_prefill_twin16(const model_t *m, int type);
+bool gpu_prefill_takes_twins(const model_t *m, int type);
 // of those, the ones the pipelined TC2 kernels ran (CUDA, RUNNER_CUDA_TC2)
 unsigned long gpu_tc2_dispatches(void);
 unsigned long gpu_tc2_reused(void);   // TC2 GEMMs that reused the previous GEMM's staging

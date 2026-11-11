@@ -1269,6 +1269,8 @@ unsigned long gpu_tc_dispatches_type(int type) {
 }
 // a CUDA notion: Metal's routes name their own GEMMs in its backend_detail
 bool gpu_tc_takes(const model_t *m, int type) { (void)m; (void)type; return false; }
+bool gpu_prefill_twin16(const model_t *m, int type) { (void)m; (void)type; return false; }
+bool gpu_prefill_takes_twins(const model_t *m, int type) { (void)m; (void)type; return false; }
 static void count_tc_dispatch(int type) {
     g_tc_dispatches++;
     if (type >= 0 && type < MM_TYPE_N) g_tc_dispatches_type[type]++;
