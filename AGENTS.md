@@ -134,6 +134,10 @@ and `make hooks` installs the same check as a local `commit-msg` hook.
 
 ## 6. Version control
 
+- In each new worktree, set `user.name` to your agent name and set its email
+  explicitly before committing (Codex example):
+  `git config --worktree user.name Codex && git config --worktree user.email claude-code@users.noreply.github.com`.
+  Agent authors and committers use a noreply or `.local` address.
 - Branch from an up-to-date `main`, named for the work; push it and open a
   pull request with `gh pr create`.
 - Write the change's CHANGELOG entry as its own file, `changes/<plan ID>.md`

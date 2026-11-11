@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Refuse commit messages and PR text that publish session identifiers.
+"""Check commit attribution, messages and PR text.
+
+Agent authors and committers must use noreply or .local email addresses.
 
 The rule is AGENTS.md "Never publish conversation content or session
 identifiers": no session URLs or ids, no tool-default trailers that carry
@@ -51,9 +53,12 @@ FORBIDDEN = [
 TRAILER = re.compile(r"^Co-Authored-By:\s*(.*)$", re.I | re.M)
 AGENT_FORM = re.compile(r"^[A-Za-z][A-Za-z0-9 .+/-]* \([^()]+\) & Joakimpalm-Zen$")
 HUMAN_FORM = re.compile(r"^([^<>]+?)\s*<([^<>@\s]+@[^<>@\s]+)>$")
+AGENT_NAME = re.compile(
+    r"\b(claude|codex|copilot|chatgpt|gpt-?\d|gemini|cursor|devin|aider|xyntetik-lab-agent)\b",
+    re.I)
 TOOL_IDENTITY = re.compile(
     r"anthropic\.com|openai\.com|Copilot@users\.noreply\.github\.com|"
-    r"\b(claude|codex|copilot|chatgpt|gpt-?\d|gemini|cursor|devin|aider)\b", re.I)
+    + AGENT_NAME.pattern, re.I)
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 
 
@@ -94,16 +99,28 @@ def problems(text: str) -> list[str]:
     return uniq
 
 
-def commits(rng: str) -> list[tuple[str, str]]:
-    raw = subprocess.run(["git", "log", "--format=%H%x00%B%x1e", rng],
+def identity_problems(role: str, name: str, email: str) -> list[str]:
+    if not AGENT_NAME.search(name):
+        return []
+    local, at, domain = email.lower().rpartition("@")
+    if at and local and domain and not re.search(r"[\s@]", local + domain):
+        if (local in {"noreply", "no-reply"}
+                or "noreply" in domain.split(".")
+                or domain.endswith(".local")):
+            return []
+    return [f"{role} {name!r}: an agent must use a noreply or .local email address"]
+
+
+def commits(rng: str) -> list[tuple[str, str, str, str, str, str]]:
+    # Raw identities: mailmap aliases must not hide the address in a commit.
+    raw = subprocess.run(["git", "log", "--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x1e", rng],
                          capture_output=True, text=True, check=True).stdout
     out = []
     for rec in raw.split("\x1e"):
         rec = rec.strip("\n")
         if not rec.strip():
             continue
-        sha, _, msg = rec.partition("\x00")
-        out.append((sha.strip(), msg))
+        out.append(tuple(rec.split("\x00", 5)))
     return out
 
 
@@ -160,8 +177,11 @@ def main() -> int:
         return self_test()
     bad = 0
     if a.range:
-        for sha, msg in commits(a.range):
-            for p in problems(msg):
+        for sha, author, author_email, committer, committer_email, msg in commits(a.range):
+            findings = (problems(msg)
+                        + identity_problems("author", author, author_email)
+                        + identity_problems("committer", committer, committer_email))
+            for p in findings:
                 print(f"{sha[:12]}: {p}")
                 bad += 1
     if a.message_file:
@@ -175,11 +195,12 @@ def main() -> int:
                 print(f"{path}: {p}")
                 bad += 1
     if bad:
-        print(f"\n{bad} publication-rule violation(s). See AGENTS.md, "
+        print(f"\n{bad} commit hygiene violation(s). See AGENTS.md, "
               "'Never publish conversation content or session identifiers'. "
               "An agent strips the tool's default trailer and signs "
               "'Co-Authored-By: <Agent> (<Model>) & Joakimpalm-Zen'; a person "
-              "may sign 'Co-Authored-By: Name <email>'.")
+              "may sign 'Co-Authored-By: Name <email>'. Agent authors and "
+              "committers use a noreply or .local email address.")
         return 1
     if a.range or a.message_file or a.text:
         print("commit hygiene ok")
