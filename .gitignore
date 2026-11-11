@@ -112,6 +112,8 @@ test-batch-identity.exe
 test-batch.exe
 test-kv-tol
 test-kv-tol.exe
+test-prefill-bits
+test-prefill-bits.exe
 test-quants-simd
 test-quants-simd.exe
 test-tc-tol

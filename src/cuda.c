@@ -5166,6 +5166,11 @@ static bool mv_twin_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n_
     return w->scale == 1.0f && !mv_route_q8x(g, w, n_in, 1) &&
            !mv_route_splitk(g, w, n_in, n_out);
 }
+// The types whose prefill on the scalar route runs the batch-1 GEMV's twins
+// rather than a tile kernel of its own (R6.35 Q4_0; R6.41 Q4_K, Q5_K, Q6_K)
+static bool prefill_twin_type(int type) {
+    return type == T_Q4_0 || type == T_Q4_K || type == T_Q5_K || type == T_Q6_K;
+}
 static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t);
 
 static bool enc_scale(gpu_t *g, CUdeviceptr x, float s, int n, int batch, int xs);
@@ -5314,27 +5319,18 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
             return false;
         return w->scale == 1.0f || enc_scale(g, y, w->scale, n_out, batch, ys);
     }
-    // Prefill (batch>1) uses the tiled-GEMM variant where available (Q8_0/Q4_K):
-    // GEMM_WARPS(=8) rows per block, 256 threads, x staged in shared memory.
-    if (batch > 1 && w->scale == 1.0f && g->sw->f_gemm[w->type]) {
-        // k_gemm_q8_0 keeps a fixed 8-column tile — a 16-column f32 x-tile
-        // exceeds shared memory, and every narrower restructure measured
-        // slower — so a wider tile runs as two launches of the proven shape.
-        return launch_tiled(g, g->sw->f_gemm[w->type], (n_out + 7) / 8, 8 * 32,
-                            weights, x, y, a, b,
-                            w->type == T_Q8_0 ? Q8_COLS : MVT, false, 1.0f, false);
-    }
-    // Prefill (batch > GPU_SMALL_BATCH) of a Q4_0 tensor on the scalar route.
-    // Q4_0 has no k_gemm_*, and its tile kernel k_mvb_q4_0 sums in another
-    // order than the batch-1 GEMV k_gemv_q4_0. Under a q8_0 KV cache that
-    // difference crossed quantization steps and spread through the layers
-    // (R6.35: test-kv-tol on test-q40.gguf read 10.7x the reassociation
-    // floor). The GEMV's twins reproduce its bits per column; the 16-wide one
-    // runs 16 columns a pass, the width k_mvb_q4_0 tiles at, so a prompt's
-    // rows carry a lone decode's bits. Q4_K, Q5_K and Q6_K's k_gemm_* do not
-    // (their GEMVs' v2 bodies sum in another order; R6.39).
-    if (batch > GPU_SMALL_BATCH && w->type == T_Q4_0 && mv_twin_route(g, w, n_in, n_out) &&
-        g->sw->f_gemvb[BW_16][T_Q4_0]) {
+    // Prefill (batch > GPU_SMALL_BATCH) of a Q4_0, Q4_K, Q5_K or Q6_K tensor on
+    // the scalar route, ahead of the tiled GEMM. Q4_0's tile kernel k_mvb_q4_0
+    // and the K-quants' k_gemm_* sum in another order than the batch-1 GEMVs
+    // (k_gemv_q4_0, and the v2 bodies of k_gemv_q4_K/_q5_K/_q6_K), so a
+    // prompt's rows did not carry a lone decode's bits; under a q8_0 KV cache
+    // that difference crossed quantization steps and spread through the
+    // layers (R6.35: test-kv-tol on test-q40.gguf read 10.7x the reassociation
+    // floor; R6.39, R6.41). The GEMV's width-classed twins reproduce its bits
+    // per column; the 16-wide one runs 16 columns a pass, a lone last column
+    // the batch-1 kernel. test-prefill-bits holds the rows a prompt stores.
+    if (batch > GPU_SMALL_BATCH && prefill_twin_type(w->type) && mv_twin_route(g, w, n_in, n_out) &&
+        g->sw->f_gemvb[BW_16][w->type]) {
         for (int c0 = 0; c0 < batch; c0 += 16) {
             int cn = batch - c0 < 16 ? batch - c0 : 16;
             CUdeviceptr xc = x + (size_t)c0 * xs * sizeof(float);
@@ -5344,6 +5340,17 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                 return false;
         }
         return true;
+    }
+    // Prefill (batch>1) uses the tiled-GEMM variant where available (Q8_0, and
+    // the K-quants the branch above does not take: Q3_K, or a missing twin):
+    // GEMM_WARPS(=8) rows per block, 256 threads, x staged in shared memory.
+    if (batch > 1 && w->scale == 1.0f && g->sw->f_gemm[w->type]) {
+        // k_gemm_q8_0 keeps a fixed 8-column tile — a 16-column f32 x-tile
+        // exceeds shared memory, and every narrower restructure measured
+        // slower — so a wider tile runs as two launches of the proven shape.
+        return launch_tiled(g, g->sw->f_gemm[w->type], (n_out + 7) / 8, 8 * 32,
+                            weights, x, y, a, b,
+                            w->type == T_Q8_0 ? Q8_COLS : MVT, false, 1.0f, false);
     }
     // Decode (batch==1), few long BF16 rows (n_out <= 1024, n_in >= 2048):
     // split-K, see k_mv_bf16_splitk. splits is a power of two dividing n_in/32
