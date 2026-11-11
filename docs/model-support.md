@@ -260,8 +260,8 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>DeepSeek-V2-Lite-Chat (DeepSeek)</b></td></tr>
-<tr><td><a href="#deepseek-v2-lite-chat-q6_k"><code>DeepSeek-V2-Lite-Chat.Q6_K.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td nowrap>✅ 1.13.0<sup>b</sup><br>2026-11-05</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: multi-head latent attention (deepseek2)</td></tr>
-<tr><td><a href="#deepseek-v2-lite-chat-q8_0"><code>DeepSeek-V2-Lite-Chat.Q8_0.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td nowrap>✅ 1.13.0<sup>b</sup><br>2026-11-05</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: multi-head latent attention (deepseek2)</td></tr>
+<tr><td><a href="#deepseek-v2-lite-chat-q6_k"><code>DeepSeek-V2-Lite-Chat.Q6_K.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td nowrap>✅ 1.16.0<sup>b</sup><br>2026-11-11</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: multi-head latent attention (deepseek2)</td></tr>
+<tr><td><a href="#deepseek-v2-lite-chat-q8_0"><code>DeepSeek-V2-Lite-Chat.Q8_0.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-04</td><td nowrap>✅ 1.16.0<sup>b</sup><br>2026-11-11</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: multi-head latent attention (deepseek2)</td></tr>
 </tbody>
 </table>
 </details>
@@ -626,7 +626,7 @@ instead of carrying a copy, so none can drift and nothing watches them:
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B)</b></td></tr>
-<tr><td><a href="#empero-qwen3.8-35b-a3b-distill-q6_k"><code>Qwen3.8-35B-A3B-Q6_K.gguf</code></a></td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td nowrap>✅ 1.16.0<sup>b</sup><br>2026-11-10</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
+<tr><td><a href="#empero-qwen3.8-35b-a3b-distill-q6_k"><code>Qwen3.8-35B-A3B-Q6_K.gguf</code></a></td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td nowrap>✅ 1.16.0<sup>b</sup><br>2026-11-11</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
 <tr><td colspan="5"><b>Sage-A1.5 (InternScience's, built on Qwen3.6-35B-A3B and Agents-A1)</b></td></tr>
 <tr><td><a href="#sage-a1.5-q6_k"><code>Sage-A1.5-Q6_K.gguf</code></a></td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td nowrap>✅ 1.14.0<sup>b</sup><br>2026-11-06</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: MoE on a Gated DeltaNet model</td></tr>
 </tbody>
@@ -877,12 +877,12 @@ A third party's Q6_K (mradermacher, static), the smallest DeepSeek-V2-Lite-Chat 
 - **Known limitations:** A third party's file, not the publisher's: the pin is the sha256 and the repository revision, and the file can leave the Hub without notice. One window over one corpus, no benchmark claim, no speed row. LoRA training and adapter serving are refused for deepseek2. On CUDA the multi-sequence decode microbatch declines MoE models, so concurrent sequences decode one at a time, and the model runs without CUDA graphs. The publisher's chat template has no tool protocol. Past the window's 4,493 positions the context is read only as whole-corpus perplexity (8,719 tokens at -c 9216).
 - **Still missing:** The Metal row (a Metal build runs the model on the CPU) and the Windows CUDA host's cells; the KV cache's size and decode past the window (R4.4.5 step e); a live tool gate (the template has none); task quality.
 - **Evidence:** [docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md](compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.13.0 on 2026-11-05.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.16.0 on 2026-11-11.
 - **CPU:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `0676f2639410`, output sha256 `eae8d81a35486506`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** ✅ v1.13.0 2026-11-05 on linux-x86_64-cuda (borrowed hardware) at commit `6eb09de79343`, output sha256 `eae8d81a35486506`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cuda.txt)
+- **CUDA:** ✅ v1.16.0 2026-11-11 on linux-x86_64-cuda (borrowed hardware) at commit `d30ae1f825af`, output sha256 `70827d501fa8dc01`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): deepseek2's multi-head latent attention is validated on the CPU and CUDA only; a Metal build runs the model on the CPU and says why.
-- **LoRA training:** no: multi-head latent attention (deepseek2) (runner 1.13.0, 2026-11-05).
-- **LoRA adapter serving:** no: --lora does not cover multi-head latent attention yet (deepseek2) (runner 1.13.0, 2026-11-05).
+- **LoRA training:** no: multi-head latent attention (deepseek2) (runner 1.16.0, 2026-11-11).
+- **LoRA adapter serving:** no: --lora does not cover multi-head latent attention yet (deepseek2) (runner 1.16.0, 2026-11-11).
 
 <a id="deepseek-v2-lite-chat-q8_0"></a>
 ##### `DeepSeek-V2-Lite-Chat.Q8_0.gguf`
@@ -899,12 +899,12 @@ A third party's Q8_0 (mradermacher, static), the fidelity file of DeepSeek-V2-Li
 - **Known limitations:** A third party's file, not the publisher's: the pin is the sha256 and the repository revision, and the file can leave the Hub without notice. One window over one corpus, no benchmark claim, no speed row. LoRA training and adapter serving are refused for deepseek2. On CUDA the multi-sequence decode microbatch declines MoE models, so concurrent sequences decode one at a time, and the model runs without CUDA graphs. The publisher's chat template has no tool protocol. Past the window's 4,493 positions the context is read only as whole-corpus perplexity (8,719 tokens at -c 9216). Pin note (R6.23): the tier-smoke reply sits on a near tie. At prompt position 6, layer 7, the sixth routed expert is 39 or 49, with gates within 2e-6, and the two picks part at the eighth generated token (" and closest planet" or " planet in the Solar System"); both texts contain "Mercury". The pins hold for the default build, gcc with -march=native on the AVX-512 host they were made on: CPU eae8d81a, CUDA cedb5bd6. The release build (gcc, -march=x86-64-v3, as v1.14.0's published Linux binary) gives cedb5bd6 on both backends, so its CPU reply differs from the CPU pin, and a clang build gives cedb5bd6 on the CPU and eae8d81a on CUDA. On this row a pin mismatch whose reply still contains "Mercury" is a build difference.
 - **Still missing:** The Metal row (a Metal build runs the model on the CPU) and the Windows CUDA host's cells; the KV cache's size and decode past the window (R4.4.5 step e); a live tool gate (the template has none); task quality.
 - **Evidence:** [docs/compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md](compat-reports/deepseek-v2-lite-chat-2026-11-04/README.md).
-- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.13.0 on 2026-11-05.
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.16.0 on 2026-11-11.
 - **CPU:** ✅ v1.12.0 2026-11-04 on linux-x86_64-cuda (borrowed hardware) at commit `0676f2639410`, output sha256 `eae8d81a35486506`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q8_0.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** ✅ v1.13.0 2026-11-05 on linux-x86_64-cuda (borrowed hardware) at commit `6eb09de79343`, output sha256 `cedb5bd6c51ecd3b`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q8_0.linux-x86_64-cuda.cuda.txt)
+- **CUDA:** ✅ v1.16.0 2026-11-11 on linux-x86_64-cuda (borrowed hardware) at commit `d30ae1f825af`, output sha256 `eae8d81a35486506`, [pin](../tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q8_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): deepseek2's multi-head latent attention is validated on the CPU and CUDA only; a Metal build runs the model on the CPU and says why.
-- **LoRA training:** no: multi-head latent attention (deepseek2) (runner 1.13.0, 2026-11-05).
-- **LoRA adapter serving:** no: --lora does not cover multi-head latent attention yet (deepseek2) (runner 1.13.0, 2026-11-05).
+- **LoRA training:** no: multi-head latent attention (deepseek2) (runner 1.16.0, 2026-11-11).
+- **LoRA adapter serving:** no: --lora does not cover multi-head latent attention yet (deepseek2) (runner 1.16.0, 2026-11-11).
 
 ### Devstral
 
@@ -2258,10 +2258,10 @@ Text path only (the vision projector is not loaded): empero-ai's Q6_K of its Qwe
 - **Evidence:** [docs/compat-reports/empero-qwen3.8-35b-a3b-distill-2026-11-06/README.md](compat-reports/empero-qwen3.8-35b-a3b-distill-2026-11-06/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.14.0 on 2026-11-06.
 - **CPU:** ✅ v1.14.0 2026-11-06 on linux-x86_64-cuda (borrowed hardware) at commit `bae5907817e4`, output sha256 `f3a25e63edc8ebf7`, [pin](../tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** ✅ v1.16.0 2026-11-10 on linux-x86_64-cuda (borrowed hardware) at commit `aa752fcac5e6`, output sha256 `f3a25e63edc8ebf7`, [pin](../tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cuda.txt)
+- **CUDA:** ✅ v1.16.0 2026-11-11 on linux-x86_64-cuda (borrowed hardware) at commit `d30ae1f825af`, output sha256 `4ac464a064329c34`, [pin](../tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): Not measured: Metal runs qwen35moe on toy models (make test-metal-qwen35moe, to the CPU's logits at 1e-5), but this file (29.2 GB) has not been run on a Mac that holds it.
-- **LoRA training:** no: MoE on a Gated DeltaNet model (runner 1.16.0, 2026-11-10).
-- **LoRA adapter serving:** supported (runner 1.16.0, 2026-11-10).
+- **LoRA training:** no: MoE on a Gated DeltaNet model (runner 1.16.0, 2026-11-11).
+- **LoRA adapter serving:** supported (runner 1.16.0, 2026-11-11).
 
 #### Sage-A1.5 (InternScience's, built on Qwen3.6-35B-A3B and Agents-A1)
 

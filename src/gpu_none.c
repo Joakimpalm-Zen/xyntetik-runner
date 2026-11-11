@@ -57,6 +57,10 @@ void gpu_tc_force(int on) { (void)on; }
 unsigned long gpu_tc_dispatches(void) { return 0; }
 unsigned long gpu_tc_dispatches_type(int type) { (void)type; return 0; }
 bool gpu_tc_takes(const model_t *m, int type) { (void)m; (void)type; return false; }
+bool gpu_prefill_twin16(const model_t *m, int type) { (void)m; (void)type; return false; }
+int gpu_prefill_route(const model_t *m, int type, int batch, bool scaled) {
+    (void)m; (void)type; (void)batch; (void)scaled; return GPU_PREFILL_NONE;
+}
 unsigned long gpu_tc2_dispatches(void) { return 0; }
 unsigned long gpu_i8_dispatches(void) { return 0; }
 unsigned long gpu_tc2_reused(void) { return 0; }

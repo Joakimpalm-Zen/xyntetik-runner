@@ -89,6 +89,7 @@ MLA_WIDE = False   # --mla-wide: deepseek2 at DeepSeek-V2-Lite's attention geome
 CODEBOOK = {"iq2_xxs": (16, 66), "iq2_xs": (17, 74), "iq2_s": (22, 82),
             "iq3_xxs": (18, 98), "iq3_s": (21, 110)}
 N_FF_SET = None    # --n-ff N: FFN width (an odd N gives odd ffn_gate/ffn_up row counts)
+N_EMBD_SET = None  # --n-embd N: model width
 GPU_UNSUPPORTED = None  # one named tensor stored as CPU-only IQ2_XXS
 ZERO_BRANCHES = False  # --zero-branches: attn_output/ffn_down all zero
 LICENSE = None         # --license ID: general.license (runner derive copies it)
@@ -323,6 +324,12 @@ while i < len(args):
         # quantizer keeps it in a fallback type)
         i += 1
         N_FF_SET = int(args[i])
+    elif a == "--n-embd":
+        # the model width, so a projection's row can be longer than one
+        # lane's block in a one-lane-per-block matvec (k_mv_mxfp4: 32 lanes of
+        # 32 values, 1,024; R6.57); with --head-dim the heads keep their width
+        i += 1
+        N_EMBD_SET = int(args[i])
     elif a == "--wide":
         WIDE = True
     elif a == "--mla-wide":
@@ -486,6 +493,8 @@ if WIDE:
     N_EMBD, N_FF = 256, 512
 if N_FF_SET is not None:
     N_FF = N_FF_SET
+if N_EMBD_SET is not None:
+    N_EMBD = N_EMBD_SET
 if ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO:
     # enough layers for a sliding/full pattern (with a shared-KV tail for
     # the E-series variants)
