@@ -5,7 +5,8 @@
 // batch-1 GEMV the decode runs, the rows a prompt leaves in the KV cache are
 // not the rows the same tokens leave when decoded one at a time, and a q8_0
 // cache can turn that last-bit difference into whole quantization steps
-// (R6.35: Q4_0's k_mvb_q4_0; R6.39: the K-quants' k_gemm_*).
+// (R6.35: Q4_0's k_mvb_q4_0; R6.39: the K-quants' k_gemm_*; R6.50:
+// k_gemm_q8_0).
 //
 // The claim: on the scalar route (the tensor-core GEMM pinned off, as the
 // kv-tol gate pins it), a prefill at any batch width stores layer 0's K and V
@@ -28,7 +29,7 @@
 // identity to the batch-1 GEMV test-batch gates (test-gates-batch), so this is
 // a routing gate, not a kernel-equivalence gate.
 //
-//     ./test-prefill-bits test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf
+//     ./test-prefill-bits test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-q8.gguf
 //
 // Without a CUDA device it says so and passes (nothing to compare).
 #include "runner.h"
