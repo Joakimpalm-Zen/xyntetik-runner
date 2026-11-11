@@ -3576,7 +3576,7 @@ static bool cuda_admit(model_t *m) {
     // the device.
     if (m->n_expert > 0 && moe_any_on_device(m) && !model_moe_router_is_plain_any_norm(m)) {
         fprintf(stderr, "gpu: this model's MoE router (gating=%d groups=%d "
-                "norm_w=%d scale=%g) has no device kernel — running on CPU "
+                "norm_w=%d scale=%g) has no device kernel, running on CPU "
                 "(--cpu-moe keeps the experts and their routing on the host)\n",
                 m->expert_gating, m->n_expert_groups, (int)m->expert_norm_w,
                 (double)m->expert_w_scale);
@@ -3586,7 +3586,7 @@ static bool cuda_admit(model_t *m) {
         if (m->layers[l].exp_probs_b && m->layers[l].is_moe &&
             (!moe_on_host(m, l) || moe_hot_on(m, l))) {
             fprintf(stderr, "gpu: MoE selection bias (exp_probs_b) has no "
-                    "device kernel — running on CPU (--cpu-moe keeps the "
+                    "device kernel, running on CPU (--cpu-moe keeps the "
                     "experts and their routing on the host)\n");
             return false;
         }
