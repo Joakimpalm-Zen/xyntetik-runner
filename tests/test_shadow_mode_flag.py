@@ -51,6 +51,66 @@ def test_help_names_the_flag():
     assert "--shadow-mode" in proc.stdout + proc.stderr
 
 
+# The deprecation (R18.8.10) follows the versioning policy's path for a flag,
+# so the anchor is the policy's own sentence in docs/versioning.md: its terms
+# are pinned here once and checked against the policy file as well as the
+# help, so a reworded policy fails here before the help drifts from it.
+DEPRECATED = "--shadow-mode is deprecated"
+POLICY_TERMS = ("keeps working with a warning for the rest of 1.x", "removed no earlier than 2.0.0")
+
+
+def _policy_text():
+    return " ".join((ROOT / "docs" / "versioning.md").read_text(encoding="utf-8").split())
+
+
+def test_the_policy_still_says_what_the_deprecation_quotes():
+    policy = _policy_text()
+    assert all(t in policy for t in POLICY_TERMS), POLICY_TERMS
+
+
+def test_help_marks_the_flag_deprecated_in_the_policys_terms():
+    proc = subprocess.run([str(RUNNER), "--help"], capture_output=True, text=True, cwd=ROOT)
+    lines = proc.stdout.splitlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith("  --shadow-mode"))
+    entry = [lines[start]]
+    for l in lines[start + 1:]:
+        if not l.startswith("                 "):
+            break
+        entry.append(l)
+    text = " ".join(" ".join(entry).split())
+    assert text.startswith("--shadow-mode deprecated:"), text
+    assert all(t in text for t in POLICY_TERMS), text
+
+
+def test_use_warns_once_and_the_mode_still_works(tmp_path):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"GGUF")
+    proc = _run(home, "-m", str(model), "--yes")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (home / ".codex" / "prompts" / "shadow.md").is_file()
+    assert proc.stderr.count(DEPRECATED) == 1, proc.stderr
+    assert DEPRECATED not in proc.stdout
+    first = proc.stderr.splitlines()[0]
+    assert first.startswith("warning: " + DEPRECATED), first
+    assert POLICY_TERMS[1] in first, first
+
+
+def test_a_refused_install_still_warns_once(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    proc = _run(home, "--yes")
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert proc.stderr.count(DEPRECATED) == 1, proc.stderr
+
+
+def test_other_modes_do_not_warn():
+    proc = subprocess.run([str(RUNNER), "--version"], capture_output=True, text=True, cwd=ROOT)
+    assert proc.returncode == 0
+    assert DEPRECATED not in proc.stdout + proc.stderr
+
+
 def test_capability_sheet_names_only_flags_the_binary_has():
     """The sheet the harnesses read is curated; every flag it names must be
     in this binary's --help, so it can never promise what runner lacks."""

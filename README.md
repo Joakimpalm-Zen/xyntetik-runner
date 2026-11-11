@@ -426,7 +426,8 @@ names, and the page records when each file last passed and with which Runner.
 - <a id="shadow-mode"></a><a id="shadow-mode-what-could-your-local-model-have-done"></a>**Shadow
   mode.** `runner --shadow-mode -m model.gguf` retries your own finished
   coding tasks with a local model under your own tests and keeps score.
-  [Details](MANUAL.md#shadow-mode-what-could-your-local-model-have-done)
+  Deprecated: it keeps working through 1.x and is removed no earlier than
+  2.0.0. [Details](MANUAL.md#shadow-mode-what-could-your-local-model-have-done)
 - <a id="desktop-tray"></a>**Desktop tray.** On macOS and Windows an icon
   shows which models are loaded and starts or stops them.
   [Details](MANUAL.md#desktop-tray)

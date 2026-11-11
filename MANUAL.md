@@ -761,6 +761,16 @@ so), 2 on an error.
 
 ## Shadow mode: what could your local model have done?
 
+**Deprecated in 1.x.** `runner --shadow-mode` keeps working with a warning
+for the rest of 1.x and is removed no earlier than 2.0.0, as
+[the versioning policy](docs/versioning.md) requires for a flag. The
+shadow research it served closed in September 2026, and the offload is
+planned to leave Runner for a companion product
+([ownership](docs/ownership.md#6-shadow-a-companion)). Until it is removed,
+the flag, the Python package `xyntetik_runner.shadow` and everything below
+work as documented; the warning is one line on stderr, printed once, before
+the installer's own output.
+
 `python -m xyntetik_runner.shadow` is a bench with receipts: it records
 evidence about local coding attempts on your own work, and it does not train
 or learn (the proven set changes only when the model changes).
@@ -2381,7 +2391,7 @@ flags into unrelated feature sections.
 | `--score-tokens N` | With `--score`: score only the text's first N tokens (BOS included), so a window at the head of a long corpus fits a short context. |
 | `--decide FILE` | Typed decisions: one `/v1/decide` request per line of `FILE` (`state`, `questions[{question, options}]`), one response per line on stdout; the options are scored verbatim in context, no sampling. `-` reads stdin. |
 | `--systemone FILE` | Clef typed decisions: one `/v1/systemone` request (`model`, `state`, `questions`) per line of `FILE`, one response per line on stdout. `-` reads stdin. |
-| `--shadow-mode` | Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
+| `--shadow-mode` | Deprecated: keeps working with a warning for the rest of 1.x and is removed no earlier than 2.0.0 ([why](#shadow-mode-what-could-your-local-model-have-done)). Install shadow mode for Claude Code and Codex if present, asking first (`--yes` skips the question); `-m MODEL` names the model the `/shadow` offload serves. Hands off to the stdlib-only Python client beside the binary (`python/src`); see the shadow-mode section. |
 | `--version` | Print the version and exit. |
 | `-h`, `--help` | Print the option reference to stdout and exit `0`. Help asked for is written to stdout. A usage error (an unknown option, a flag with no value) prints its error line and `see runner --help` on stderr with a non-zero exit, not the whole reference, so the reason is the last thing a script or a person reads; a bare `runner` still prints the reference and ends with `error: need -m MODEL or -hf REPO[:TAG]`. |
 | `--parent-pid N` | Exit when process `N` dies, whichever of its threads launched the Runner: at once on Linux 5.3 or later and on Windows, within 2 s elsewhere. A process already gone is refused. Intended for supervisor cleanup. |
