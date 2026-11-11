@@ -22,7 +22,11 @@ different claims; their evidence and exclusions stay with them.
   release. For the Hub, the lab stages a file, record or card and the
   coordinator uploads it after comparing the remote listing, so nothing
   already published is replaced without that being the stated intent.
-  A new model repository, and any file below the admission bar, is
+  That comparison is `scripts/hub-upload-check.py REPO_ID FOLDER`, run
+  before every model, card or record upload: it refuses any replacement or
+  deletion not named with `--replace` or `--delete` (`--partial` for an
+  upload that deletes nothing), and its plan names the remote commit to
+  pass as the upload's `parent_commit`. A new model repository, and any file below the admission bar, is
   published only on the owner's decision; its limit is stated first on its
   card. This is coordinator practice stated on 2026-11-11.
 - **Checksums and destination.** The [release workflow](../.github/workflows/release.yml)
