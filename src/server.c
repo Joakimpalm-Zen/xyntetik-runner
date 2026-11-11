@@ -1991,6 +1991,7 @@ static bool request_take_ids(slot_t *s, const char *response_id) {
     atomic_store(&s->rq_cancel, 0);
     atomic_store(&s->rq_gen, 0);
     atomic_fetch_add(&s->rq_seq, 1);
+    atomic_store(&SV.load_owner_cancelled, 0);
     s->rq_live = true;
     return true;
 }
@@ -2015,17 +2016,12 @@ bool server_request_claim(slot_t *s, bool loading) {
     return ok;
 }
 
-bool server_load_owner_cancelled(void) {
-    for (int i = 0; SV.slots && i < SV.n_slots; i++)
-        if (atomic_load(&SV.slots[i].rq_phase) == 3 && atomic_load(&SV.slots[i].rq_cancel))
-            return true;
-    return false;
-}
 
 void server_request_end(slot_t *s) {
     pthread_mutex_lock(&rq_ids_mu);
     if (s->rq_live) {
         s->rq_live = false;
+        atomic_store(&SV.load_owner_cancelled, 0);
         atomic_store(&s->rq_end_gen, atomic_load(&s->rq_gen));
         atomic_store(&s->rq_end_seq, atomic_load(&s->rq_seq));
     }
@@ -2108,6 +2104,8 @@ static bool handle_cancel(sock_t fd, const char *path, bool may_detach) {
         slot_t *o = &SV.slots[i];
         if (o->rq_live && (!strcmp(o->rq_id, id) || (o->rq_cid[0] && !strcmp(o->rq_cid, id)))) {
             atomic_store(&o->rq_cancel, 1);
+            // a request still loading its model: the registry's wait reads this
+            if (atomic_load(&o->rq_phase) == 3) atomic_store(&SV.load_owner_cancelled, 1);
             w->s = o;
             w->seq = atomic_load(&o->rq_seq);
             w->phase = atomic_load(&o->rq_phase);

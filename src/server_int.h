@@ -166,6 +166,12 @@ typedef struct {
     bool         pending_unload;  // /unload arrived while busy; honoured at the next safe point
     atomic_int   load_cancel;     // aborts a --wait-for-vram queue wait, and discards the load
     sock_t       load_owner;      // the request a load runs for; the loading thread's alone
+    // R10.12.3.3: a cancel by id reached the request while it was loading its
+    // model. Set by the cancel, cleared when a request takes or gives back its
+    // ids (server.c); the registry's wait only reads it, as it reads
+    // load_owner, so the registry never needs the server's code. Registry
+    // mode is single-slot, so one request owns the flag at a time.
+    atomic_int   load_owner_cancelled;
     atomic_bool shutdown;
     pthread_t   reaper_th;
     bool        reaper_started;
@@ -254,10 +260,8 @@ bool server_request_begin(slot_t *s, const char *response_id);
 // R10.12.3.3: the same claim made before the request's model is swapped in,
 // with no response id yet, so a cancel by X-Request-Id reaches it during the
 // load; loading marks it phase 3 until the swap returns. server_request_begin
-// on a claimed slot only adds the response id. server_load_owner_cancelled:
-// the request whose load is running has been cancelled (atomics only, no lock).
+// on a claimed slot only adds the response id.
 bool server_request_claim(slot_t *s, bool loading);
-bool server_load_owner_cancelled(void);
 void server_request_end(slot_t *s);
 void server_work_totals(work_totals *out);
 
