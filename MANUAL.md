@@ -5163,7 +5163,7 @@ through the same loaded model and adapter hooks used for generation. The
 including the import row-order rule above.
 
 The [TD-001 report](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Typed-Decisions-record/blob/main/typed-decisions/report/TD-001.md)
-records a historical transfer check on Runner 1.1.4: Xyntetik-Kvist-14B
+records a historical transfer check on Runner's 1.1.4 release: Xyntetik-Kvist-14B
 Q8_0 plus its rank-16, alpha-32 adapter against torch BF16 plus the same
 adapter. Over 192 scored questions, the mean absolute difference in option
 probabilities was **0.0019**, with a maximum of **0.021**. Argmax agreement
