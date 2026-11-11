@@ -23,9 +23,10 @@ HOST = "windows" + "3070"
 SIGN = "\n\nCo-Authored-By: Claude Code (Opus 5.5) & Joakimpalm-Zen\n"
 
 
-def git(repo, *args):
+def git(repo, *args, identity=None):
     env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+    env.update(identity or {})
     return subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=repo,
                           env=env, check=True, capture_output=True, text=True).stdout.strip()
 
@@ -40,6 +41,54 @@ def commit(repo, name, msg):
 def check(repo, *args):
     return subprocess.run([sys.executable, str(CHECK), *args], cwd=repo,
                           capture_output=True, text=True)
+
+
+@pytest.mark.parametrize("role", ["AUTHOR", "COMMITTER"])
+@pytest.mark.parametrize("name", ["Codex", "Claude Code", "xyntetik-lab-agent", "Copilot",
+                                  "ChatGPT", "GPT-6.1", "Gemini", "Cursor", "Devin",
+                                  "Aider", "cOdEx"])
+def test_an_agent_commit_refuses_a_personal_email(tmp_path, role, name):
+    """Anchor: the attribution rule requires agent email, in either role."""
+    git(tmp_path, "init", "-q", "-b", "main")
+    base = commit(tmp_path, "base", "start" + SIGN)
+    git(tmp_path, "commit", "-q", "--allow-empty", "-m", "fixture" + SIGN,
+        identity={f"GIT_{role}_NAME": name,
+                  f"GIT_{role}_EMAIL": "person@example.com"})
+    sha = git(tmp_path, "rev-parse", "HEAD")
+    p = check(tmp_path, "--range", f"{base}..HEAD")
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert sha[:12] in p.stdout and role.lower() in p.stdout, p.stdout
+    assert "noreply or .local" in p.stdout, p.stdout
+
+
+@pytest.mark.parametrize("role", ["AUTHOR", "COMMITTER"])
+@pytest.mark.parametrize("name,email", [
+    ("Codex", "claude-code@users.noreply.github.com"),
+    ("Claude Code", "noreply@anthropic.com"),
+    ("xyntetik-lab-agent", "agent@build.local"),
+    ("GPT-6.1", "no-reply@example.org"),
+    ("Gemini", "AGENT@BUILD.LOCAL"),
+    ("Taylor Example", "person@example.com"),
+    ("Aiderina Example", "person@example.org"),
+])
+def test_agent_email_forms_and_human_identities_pass(tmp_path, role, name, email):
+    git(tmp_path, "init", "-q", "-b", "main")
+    base = commit(tmp_path, "base", "start" + SIGN)
+    git(tmp_path, "commit", "-q", "--allow-empty", "-m", "fixture" + SIGN,
+        identity={f"GIT_{role}_NAME": name, f"GIT_{role}_EMAIL": email})
+    p = check(tmp_path, "--range", f"{base}..HEAD")
+    assert p.returncode == 0, p.stdout + p.stderr
+
+
+@pytest.mark.parametrize("email", ["agent@noreplyish.example.org",
+                                  "agent@build.local.example.org", "noreplyish@example.org"])
+def test_near_miss_agent_addresses_are_refused(tmp_path, email):
+    git(tmp_path, "init", "-q", "-b", "main")
+    base = commit(tmp_path, "base", "start" + SIGN)
+    git(tmp_path, "commit", "-q", "--allow-empty", "-m", "fixture" + SIGN,
+        identity={"GIT_AUTHOR_NAME": "Codex", "GIT_AUTHOR_EMAIL": email})
+    p = check(tmp_path, "--range", f"{base}..HEAD")
+    assert p.returncode == 1 and "noreply or .local" in p.stdout, p.stdout + p.stderr
 
 
 def test_a_message_naming_a_session_or_a_host_path_is_refused(tmp_path):
