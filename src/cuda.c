@@ -5160,6 +5160,36 @@ static bool prefill_twin_type(int type) {
     return type == T_Q4_0 || type == T_Q4_K || type == T_Q5_K || type == T_Q6_K ||
            type == T_Q8_0 || type == T_Q3_K;
 }
+// Whether a prompt's matvec (batch > GPU_SMALL_BATCH) of w on the scalar
+// route runs the batch-1 GEMV's 16-wide twins (enc_mv; gpu_prefill_takes_twins
+// asks the same for test-prefill-bits' route table)
+static bool prefill_takes_twins(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out) {
+    return prefill_twin_type(w->type) && mv_twin_route(g, w, n_in, n_out) &&
+           g->sw->f_gemvb[BW_16][w->type];
+}
+// gpu.h's two questions for the route table, asked of a dense unscaled
+// 4096 x 4096 tensor of the type: is the 16-wide twin of its batch-1 route
+// loaded, and does a prompt's matvec of it run that twin
+static bool prefill_probe(const model_t *m, int type, gguf_tensor *w) {
+    const gpu_t *g = m->gpu;
+    if (!g || !g->sw || type < 0 || type >= KT_N) return false;
+    memset(w, 0, sizeof(*w));
+    w->type = type;
+    w->scale = 1.0f;
+    return true;
+}
+bool gpu_prefill_twin16(const model_t *m, int type) {
+    gguf_tensor w;
+    if (!prefill_probe(m, type, &w)) return false;
+    const gpu_t *g = m->gpu;
+    return mv_twin_route(g, &w, 4096, 4096) && g->sw->f_gemvb[BW_16][type];
+}
+bool gpu_prefill_takes_twins(const model_t *m, int type) {
+    gguf_tensor w;
+    if (!prefill_probe(m, type, &w)) return false;
+    const gpu_t *g = m->gpu;
+    return prefill_takes_twins(g, &w, 4096, 4096);
+}
 static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t);
 
 static bool enc_scale(gpu_t *g, CUdeviceptr x, float s, int n, int batch, int xs);
@@ -5320,8 +5350,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // twins reproduce its bits per column; the 16-wide one runs 16 columns a
     // pass, a lone last column the batch-1 kernel. test-prefill-bits holds the
     // rows a prompt stores.
-    if (batch > GPU_SMALL_BATCH && prefill_twin_type(w->type) && mv_twin_route(g, w, n_in, n_out) &&
-        g->sw->f_gemvb[BW_16][w->type]) {
+    if (batch > GPU_SMALL_BATCH && prefill_takes_twins(g, w, n_in, n_out)) {
         for (int c0 = 0; c0 < batch; c0 += 16) {
             int cn = batch - c0 < 16 ? batch - c0 : 16;
             CUdeviceptr xc = x + (size_t)c0 * xs * sizeof(float);
