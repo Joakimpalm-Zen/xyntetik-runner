@@ -5105,6 +5105,34 @@ The response also carries `usage` (`completion_tokens` is zero) and an
 `envelope` naming the rendering and the state/question digests. No token is
 sampled to choose an option.
 
+#### Request cost and batching
+
+Zero sampled tokens does not mean zero inference work. Since R10.3.3
+(`5aed98eb`, 2026-10-02), the shared state is fed alone from an empty KV,
+once per request while its canonical rows remain reusable. Each question
+takes only the rows its prompt shares with that state and feeds its own
+remainder. Every scored option conditional comes from a solo one-token
+forward; options with a common token prefix reuse already computed
+conditionals. This makes a score a function of the request on a fixed
+model/backend/configuration, rather than the slot's previous requests or
+the question/option order. CPU prefill is not batch-invariant on every host,
+so changing which rows are reused can otherwise change the last digits.
+Recurrent models score each question cold; a lost canonical prefix can
+require another state feed.
+
+TD-000 recorded **1.65 h of request time on 1.1.4**, against **0.98 h on the
+2026-09-22 build** (slice 1). Slice 2b recorded **4.0 h on the 4B**, against
+**3.3 h for Kvist-14B**. These are historical workload totals, not current
+latency guarantees; the second comparison also changes the model.
+
+Put questions sharing a state in one request's `questions` array to amortize
+the state prefill; `scripts/decide-calibrate.py --batch-state` does this by
+default. Solo conditional forwards and the fresh state feed for each new
+request remain. Batching option conditionals waits for a backend whose
+batched step is gated equal to the solo step for this scorer; a decoding
+gate alone is not evidence for that change. See the
+[execution design and cost](docs/performance.md#typed-decision-cost).
+
 #### Option mass
 
 The normalization in `probs` hides how much probability the original model

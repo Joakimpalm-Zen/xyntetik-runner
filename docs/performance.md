@@ -34,6 +34,59 @@ formats. [Compatibility checks](compatibility-program.md) describe how to
 pin and verify a route. Batch/scalar, MoE routing, attention, SIMD boundary,
 and allocation-failure tests protect the implementation.
 
+## Typed decision cost
+
+`/v1/decide` and `--decide FILE` sample no tokens, but they still run the
+model to score the supplied options. The
+[response contract](../MANUAL.md#typed-decisions-v1decide) describes the
+returned probabilities. The execution contract in
+[`src/decide.c`](../src/decide.c) and [`src/decide.h`](../src/decide.h)
+deliberately fixes how the state and the option conditionals are fed:
+
+- R10.3.3 (`5aed98eb`, 2026-10-02) seats the shared state alone from an empty
+  KV. `canon_seat` keeps only the canonical state rows that match a
+  question's prompt, then the question feeds its own remainder. The state
+  is prefilled once per request while those rows remain reusable. A lost
+  canonical prefix can require another fresh state feed; recurrent models,
+  whose fold cannot be sliced, score each question cold.
+- `score_mode` re-feeds the token before a scored conditional alone and
+  advances through the option with one-token forwards. Sorted option
+  traversal shares already computed conditionals for common token prefixes;
+  it does not batch different option conditionals together.
+
+CPU prefill is not batch-invariant on every host. Reusing whatever rows a
+slot happened to retain used to change the remaining prefill's batch width
+and the last digits of a score. The canonical state feed and solo
+conditional steps make a score a function of the request on a fixed
+model/backend/configuration, independent of the slot's previous requests
+and question/option order. This is not a claim of bit identity between
+different backends.
+
+The historical TD-000 measurements recorded the cost as request-time totals:
+
+| Workload | Recorded request time | Comparison |
+|---|---|---|
+| Slice 1 | 1.65 h on Runner 1.1.4 | 0.98 h on the 2026-09-22 build |
+| Slice 2b | 4.0 h on the 4B | 3.3 h for Kvist-14B |
+
+These workload totals are not current per-request latency guarantees. The
+slice 2b comparison also changes the model, so it does not isolate the
+overhead of this execution contract.
+
+Questions sharing a state belong in one request's `questions` array.
+[`scripts/decide-calibrate.py`](../scripts/decide-calibrate.py) groups equal
+state strings by default (`--batch-state`), amortizing the state prefill
+across questions. It leaves the solo conditional forwards and the
+per-request restart. State rows are not reused across requests merely
+because their state digest matches.
+
+The retained policy is to keep this contract and document its cost.
+Batching option conditionals waits for a backend whose batched step is
+gated equal to the solo step for this scorer. Existing decoding gates on
+CUDA or Metal do not establish that equality for decide; there is no such
+evidence for R13.10. Sharing a state within a request is already supported
+and does not require that future conditional-batching change.
+
 ## Profiling
 
 Use the existing CPU/Metal/CUDA phase profilers and the request's
