@@ -1394,9 +1394,13 @@ reported beside it).
   and the pinned analysis are there. Kvist collection.
 - [Qwen3-30B-A3B selective precision](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF)
   (attention Q8_0 / experts Q4_0, 17.99 GB) **passes the bar** where the
-  official uniform Q4_K_M fails it, from a byte-verified first-party Q8_0
-  source. Built with `--type-plan`; the exact plan is on the card. The
-  artifact class this project now leads with.
+  official Q4_K_M fails it: against Qwen's float32 reference on 2026-11-02
+  over 2,000 positions, mean KLD 0.0279, top-1 93.00% and margin-qualified
+  top-1 98.82% (official Q4_K_M: 0.0909 / 94.80% margin-qualified). The
+  [reference run](docs/compat-reports/qwen3-30b-a3b-derive-2026-11-02/README.md)
+  uses BF16 weights upcast at use in float32, CPU scoring and token-id
+  matching. Built from a byte-verified first-party Q8_0 source with
+  `--type-plan`; the exact plan is on the card.
 - [Qwen3-Coder-30B keep-120](https://huggingface.co/Joakimpalm-Zen/Qwen3-Coder-30B-A3B-Instruct-keep120-Q4_K_M-GGUF)
   (expert-pruned, 17.5 GB) **passes both the original and the current
   bar** - the only published artifact to clear the original bar unaided.

@@ -2123,7 +2123,7 @@ Admitted and maintained on report: existing regression tests keep running and sh
 <a id="qwen3-30b-a3b-expq4_0-attnq8_0"></a>
 ##### `Qwen3-30B-A3B-expq4_0-attnq8_0.gguf`
 
-Qwen3-30B-A3B with attention Q8_0 and experts Q4_0, text path: it passes the fidelity bar against the first-party Q8_0 where the official uniform Q4_K_M fails it.
+Qwen3-30B-A3B with attention Q8_0 and experts Q4_0, text path: against Qwen's float32 reference over 2,000 positions it reads mean KLD 0.0279 and 98.82% margin-qualified top-1, passing the bar where the official Q4_K_M fails.
 
 - **File:** `Qwen3-30B-A3B-expq4_0-attnq8_0.gguf` (sha256 `df02efa815a74e6207f9e01f2d38272c1e2718bb23aec544709a02a2c7d5b206`, 17,988,417,024 bytes, from [Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF](https://huggingface.co/Joakimpalm-Zen/Qwen3-30B-A3B-selective-attnQ8_0-expQ4_0-GGUF) at revision `6cdb710bcd55`).
 - **Upstream checkpoint:** Qwen/Qwen3-30B-A3B.
@@ -2131,10 +2131,10 @@ Qwen3-30B-A3B with attention Q8_0 and experts Q4_0, text path: it passes the fid
 - **Licence:** `apache-2.0`, as the Qwen/Qwen3-30B-A3B model card states it.
 - **Published, with a limit:** Policy decision 2026-10-27: Tier 1 follows pull; 760 downloads in 30 days, under the 1,000 bar.
 - **Features claimed:** text. A feature not listed is not claimed.
-- **Numerical anchor (no publisher float32 reference is feasible):** anchor: agreement with another engine, not fidelity. A float32 reference of the 30B (120 GB) is not run; the bar is against the byte-verified first-party Q8_0 (v2 top-1 99.50%, mean KLD 0.0345).
+- **Numerical anchor (a publisher float32 comparison exists):** Against Qwen/Qwen3-30B-A3B at ad44e777, BF16 weights upcast at use with float32 arithmetic on the CPU (gold-logits.py --upcast-at-use, 2026-11-02, 2,000 positions at stride 2 over gold-corpus-2k, token-id matched; Runner solo CPU --score --score-top 20 at 2c54cf27): this file reads mean KLD 0.0279, 93.00% top-1 and 98.82% margin-qualified top-1. The official Q4_K_M in the same window reads 0.0909 mean KLD and 94.80% margin-qualified top-1. Historical Q8_0-relative comparison, recorded in the 2026-08-15 report (400 positions): 99.50% margin-qualified top-1 and mean KLD 0.0345; a different reference and window, not the current anchor.
 - **Context tested:** not recorded.
 - **Still missing:** Pinned output.
-- **Evidence:** [tests/compatibility/models.json](../tests/compatibility/models.json), [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
+- **Evidence:** [docs/compat-reports/qwen3-30b-a3b-derive-2026-11-02/README.md](compat-reports/qwen3-30b-a3b-derive-2026-11-02/README.md), [tests/compatibility/models.json](../tests/compatibility/models.json), [MANUAL.md#published-artifacts](../MANUAL.md#published-artifacts).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.5.1 on 2026-10-24.
 - **CPU:** ☐ not run
 - **CUDA:** ✅ v1.5.1 2026-10-24 on linux-x86_64-cuda (borrowed hardware) at commit `a3a741236eb0`, output sha256 `9c80990c12a550f6`, [pin](../tests/compatibility/tier-smoke/qwen3-30b-a3b-expq4_0-attnq8_0.linux-x86_64-cuda.cuda.txt)
