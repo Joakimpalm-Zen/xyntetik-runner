@@ -193,7 +193,8 @@ static void test_a_queued_byte_is_not_overtaken(void) {
     sock_close(r);
 }
 
-// a peer that left is known on the next write, not after a timeout
+// A send can be accepted until the kernel reports the peer's reset. Expect
+// a few writes (well under a millisecond locally), bounded here by time.
 static void test_a_closed_peer_is_gone_soon(void) {
     sock_t w, r;
     pair(&w, &r);
@@ -202,7 +203,7 @@ static void test_a_closed_peer_is_gone_soon(void) {
     stream_out_init(&o, 1 << 20);
     int res = STREAM_OUT_OK;
     double t0 = now();
-    for (int i = 0; i < 200 && res == STREAM_OUT_OK; i++)
+    while (res == STREAM_OUT_OK && now() - t0 < 0.5)
         res = stream_out_write(&o, w, "hello", 5);
     CHECK(res == STREAM_OUT_GONE);
     CHECK(now() - t0 < 0.5);
