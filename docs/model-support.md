@@ -84,6 +84,8 @@ The evidence bar for leaving Upcoming:
 External hardware and community contributions count only as reproducible
 records with a realistic path to revalidation.
 
+For numerical scope and negative results, see [the fidelity method](fidelity-method.md).
+
 ## The validation run
 
 **The validation smoke, for every file a run includes**, on the device class its row names. `scripts/tier-smoke.py` hashes the file against its row, records the
