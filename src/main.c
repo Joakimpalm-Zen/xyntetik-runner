@@ -1816,6 +1816,27 @@ static int run_fit_check(const char *path, int n_ctx_want,
             first = 0;
         }
         printf("\n");
+#ifdef RUNNER_GPU_CUDA
+        // R3.43a.2: a load that keeps the experts on the host (an explicit
+        // --cpu-moe, or nemotron_h_moe's default: its router has no device
+        // kernel) places them differently from the split above, which sizes a
+        // full offload. Said in one line until the fit models that placement
+        // (R3.58).
+        char gkey[96], skey[96];
+        snprintf(gkey, sizeof gkey, "%s.expert_gating_func", farch);
+        snprintf(skey, sizeof skey, "%s.expert_weights_scale", farch);
+        uint32_t gating = gguf_get_u32(&g, gkey, 2);   // the loader's default for this family: sigmoid
+        float wscale = gguf_get_f32(&g, skey, 1.0f);
+        const char *dflt = getenv("RUNNER_CPU_MOE_DEFAULT");
+        bool host_default = !strcmp(farch, "nemotron_h_moe") &&
+                            (gating != 1 || (wscale != 0.0f && wscale != 1.0f)) &&
+                            !(dflt && !strcmp(dflt, "0"));
+        if (f.sparse && (mp->cpu_moe || host_default))
+            printf("  NOTE          the split above sizes a full offload; this load keeps the "
+                   "experts and their routing on the host and runs the rest on the GPU (%s), "
+                   "so the GPU holds less and RAM more than shown\n",
+                   mp->cpu_moe ? "--cpu-moe" : "the default for this router");
+#endif
     }
 
     // the RAM-only lines below price every slot's cache, as the verdict does

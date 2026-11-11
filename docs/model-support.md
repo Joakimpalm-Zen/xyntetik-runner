@@ -513,14 +513,14 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>NVIDIA Nemotron 3.5 Lightning</b>, 2 models: CPU ✅ · CUDA n/a · Metal - · Train n/a</summary>
+<summary><b>NVIDIA Nemotron 3.5 Lightning</b>, 2 models: CPU ✅ · CUDA ✅ · Metal - · Train n/a</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>Nemotron 3.5 Lightning-30B-A3B (NVIDIA)</b></td></tr>
-<tr><td><a href="#nemotron-3.5-lightning-30b-a3b-q4_0"><code>NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-03</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td></td><td>no: recurrent architecture (Mamba-2)</td></tr>
+<tr><td><a href="#nemotron-3.5-lightning-30b-a3b-q4_0"><code>NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf</code></a></td><td nowrap>✅ 1.12.0<sup>b</sup><br>2026-11-03</td><td nowrap>✅ 1.16.0<sup>b</sup><br>2026-11-11</td><td></td><td>no: recurrent architecture (Mamba-2)</td></tr>
 <tr><td colspan="5"><b>NVIDIA Nemotron 3 Nano 30B-A3B (NVIDIA)</b></td></tr>
-<tr><td><a href="#nemotron-3-nano-30b-a3b-q4_k_m"><code>NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.13.0<sup>b</sup><br>2026-11-05</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: recurrent architecture (Mamba-2)</td></tr>
+<tr><td><a href="#nemotron-3-nano-30b-a3b-q4_k_m"><code>NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.13.0<sup>b</sup><br>2026-11-05</td><td nowrap>✅ 1.16.0<sup>b</sup><br>2026-11-11</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: recurrent architecture (Mamba-2)</td></tr>
 </tbody>
 </table>
 </details>
@@ -1912,7 +1912,7 @@ Text path only: Muse-Glimmer-30B with 6.34% of the decoder removed (the FFN subl
 <a id="nemotron-3.5-lightning-30b-a3b-q4_0"></a>
 ##### `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf`
 
-Text and tools, the publisher's own Q4_0: against the publisher's BF16 checkpoint in float32 at use (transformers 5.16.1 at the model's declared dt limit) it reads 0.0476 mean KLD and 97.62% margin-qualified top-1 (300 positions, CPU), inside the 0.05 / 97% bar by a narrow margin; the Q8_0 reads 0.0146 / 99.05% and is the fidelity file. Runner computed this architecture wrong until 2026-11-03 (a softmax router where the publisher's is a sigmoid, fixed in runner #575); every number here is from the fixed build. CPU only: CUDA refuses the router.
+Text and tools, the publisher's own Q4_0: against the publisher's BF16 checkpoint in float32 at use (transformers 5.16.1 at the model's declared dt limit) it reads 0.0476 mean KLD and 97.62% margin-qualified top-1 (300 positions, CPU), inside the 0.05 / 97% bar by a narrow margin; the Q8_0 reads 0.0146 / 99.05% and is the fidelity file. Runner computed this architecture wrong until 2026-11-03 (a softmax router where the publisher's is a sigmoid, fixed in runner #575); every number here is from the fixed build. On CUDA the trunk runs on the device and the experts and their routing on the host, by default since R3.43a.2 (the router has no device kernel).
 
 - **File:** `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf` (sha256 `61f87e75974e4b535dcdf9aad056541a9514f1dfa4538b463b081d19b7a00e3c`, 18,898,091,584 bytes, from [ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF](https://huggingface.co/ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF) at revision `8cd082170ed3`).
 - **Upstream checkpoint:** nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 at revision `a9904d24bcc1`.
@@ -1921,22 +1921,22 @@ Text and tools, the publisher's own Q4_0: against the publisher's BF16 checkpoin
 - **Features claimed:** text, tools. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Against NVIDIA's BF16 checkpoint in float32 at use on the CPU (transformers 5.16.1's NemotronH, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, the Runner sides from solo CPU score files), at the model's declared time_step_limit (0, inf): Q4_0 0.0476 mean KLD / 89.33% top-1 / 97.62% margin-qualified; Q8_0 0.0146 / 92.33% / 99.05%; the BF16 GGUF 0.0055 / 96.33% / 100%. A second column records the transformers mixer's dt clamp at time_step_min (0.246 on the BF16 file, 0.252 on the Q8_0), which reads an initialisation range as a limit; the declared limit predicts the corpus better (PPL 17.05 against 18.66). llama.cpp 73a43d1 reads 0.0499 / 99.05% on the Q4_0 and 0.0173 / 100% on the Q8_0; Runner is the closer by per-position KLD on both (p 0.011, 0.006). Record: docs/compat-reports/nemotron-3.5-lightning-30b-a3b-2026-11-03/README.md.
 - **Context tested:** 9216.
-- **Known limitations:** 19 GB (Q4_0) and 34 GB (Q8_0) of weights, CPU by default: the sigmoid-plus-bias router has no device kernel, so CUDA runs the file on the CPU unless --cpu-moe puts its trunk on the device (R3.43a), and Metal is not measured. Tool gate C fails buffered (no prose beside the call). Near-tie expert flips grow with sequence position in this 128-expert router (the R3.25.1 effect), so long-range agreement with any reference is bounded by routing, not arithmetic. LoRA: neither training nor serving (Mamba-2 hybrid).
-- **Still missing:** A CUDA cell on the device (the router and the squared-ReLU experts have no device kernels; --cpu-moe runs the trunk there) and the Metal cell; context past 4,509 tokens; task quality.
+- **Known limitations:** 19 GB (Q4_0) and 34 GB (Q8_0) of weights, On CUDA the trunk (Mamba-2 and attention) runs on the device and the experts and their routing on the host, by default since R3.43a.2: the sigmoid-plus-bias router and the squared-ReLU experts have no device kernels (RUNNER_CPU_MOE_DEFAULT=0 runs the file on the CPU); Metal is not measured. Tool gate C fails buffered (no prose beside the call). Near-tie expert flips grow with sequence position in this 128-expert router (the R3.25.1 effect), so long-range agreement with any reference is bounded by routing, not arithmetic. LoRA: neither training nor serving (Mamba-2 hybrid).
+- **Still missing:** Full CUDA offload (the router and the squared-ReLU expert kernels) and the Metal cell; context past 4,509 tokens; task quality.
 - **Evidence:** [docs/compat-reports/nemotron-3.5-lightning-30b-a3b-2026-11-03/README.md](compat-reports/nemotron-3.5-lightning-30b-a3b-2026-11-03/README.md).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.12.0 on 2026-11-03.
 - **CPU:** ✅ v1.12.0 2026-11-03 on linux-x86_64-cuda (borrowed hardware) at commit `590bab5b9ee6`, output sha256 `4635ac8b266740e8`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-lightning-30b-a3b-q4_0.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** [n/a](../MANUAL.md#support-matrix): By default the file runs on the CPU on a CUDA host: nemotron_h_moe's router (sigmoid gating with a selection bias, weight scale 2.5) and its gate-less squared-ReLU shared expert have no device path, and cuda_admit names --cpu-moe. With --cpu-moe the Mamba-2 and attention blocks run on the device and the experts and their routing on the host (R3.43a): on a CUDA MIG slice, 1g.24gb, sm_120, 30.97 against 19.88 decode tokens/s and 99.6 against 60.2 prompt tokens/s, medians of 5 interleaved runs. This cell records the default.
+- **CUDA:** ✅ v1.16.0 2026-11-11 on linux-x86_64-cuda (borrowed hardware) at commit `2b360e03a56c`, output sha256 `4635ac8b266740e8`, [pin](../tests/compatibility/tier-smoke/nemotron-3.5-lightning-30b-a3b-q4_0.linux-x86_64-cuda.cuda.txt)
 - **Metal:** ☐ not run
-- **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.12.0, 2026-11-03).
-- **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h_moe) (runner 1.12.0, 2026-11-03).
+- **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.16.0, 2026-11-11).
+- **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h_moe) (runner 1.16.0, 2026-11-11).
 
 #### NVIDIA Nemotron 3 Nano 30B-A3B (NVIDIA)
 
 <a id="nemotron-3-nano-30b-a3b-q4_k_m"></a>
 ##### `NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf`
 
-Text path, ggml-org's automatic conversion (NVIDIA publishes no GGUF) of NVIDIA's Nemotron 3 Nano 30B-A3B at Q4_K_M, CPU only: against NVIDIA's BF16 parent computed in float32 at the model's declared dt limit it reads 0.0222 mean KLD and 99.50% margin-qualified top-1 (bars 0.05 and 97%, 300 positions); with the reference's configured clamp it reads 0.137.
+Text path, ggml-org's automatic conversion (NVIDIA publishes no GGUF) of NVIDIA's Nemotron 3 Nano 30B-A3B at Q4_K_M, on the CPU, and on CUDA with its experts on the host: against NVIDIA's BF16 parent computed in float32 at the model's declared dt limit it reads 0.0222 mean KLD and 99.50% margin-qualified top-1 (bars 0.05 and 97%, 300 positions); with the reference's configured clamp it reads 0.137.
 
 - **File:** `NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf` (sha256 `0f111a0d49777a2a0178758b1aee14e5365c495987499401ef3ebe87754322a8`, 22,421,827,488 bytes, from [ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF](https://huggingface.co/ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF) at revision `fe801509a580`).
 - **Upstream checkpoint:** nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 at revision `bf77c3174f68`.
@@ -1945,15 +1945,15 @@ Text path, ggml-org's automatic conversion (NVIDIA publishes no GGUF) of NVIDIA'
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** Against NVIDIA's BF16 checkpoint at bf77c317 in float32 at use on the CPU (transformers 5.16.1's NemotronH, gold-logits.py --upcast-at-use, 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files), at the declared time_step_limit (0, inf): Q4_K_M 0.0222 mean KLD / 93.67% top-1 / 99.50% margin-qualified (median 0.0116); the configured clamp at time_step_min 0.001 reads 0.1366 / 94.53%. llama.cpp 73a43d1 on the same file reads 0.0243 (Runner the closer, Wilcoxon p 8.7e-4). Tokenizer 0/721 corpus strings and 0/128,635 vocabulary entries; template conformance 24/24 in text and tokens (the file's template is the repository's chat_template.jinja). Record: docs/compat-reports/nemotron-3-nano-30b-a3b-2026-11-05/README.md.
 - **Context tested:** 4096.
-- **Known limitations:** 22.4 GB of weights, CPU by default: the sigmoid-plus-bias MoE router has no device kernel, so CUDA runs the file on the CPU unless --cpu-moe puts its trunk on the device (R3.43a), and Metal is not measured. A third-party conversion (ggml-org's automatic converter, revision not declared). Tool gate: case B fails buffered and streamed and case C fails buffered, each on finish_reason length before a parsed call. LoRA: neither training nor serving (Mamba-2 hybrid). Licence: NVIDIA's nemotron open model licence.
-- **Still missing:** A Mac that holds the file (22.4 GB) for a Metal cell; the CUDA router and squared-ReLU expert kernels (--cpu-moe runs the trunk on the device); the tool protocol's B and C cases; task quality on the real checkpoint.
+- **Known limitations:** 22.4 GB of weights, On CUDA the trunk (Mamba-2 and attention) runs on the device and the experts and their routing on the host, by default since R3.43a.2: the sigmoid-plus-bias router and the squared-ReLU experts have no device kernels (RUNNER_CPU_MOE_DEFAULT=0 runs the file on the CPU); Metal is not measured. A third-party conversion (ggml-org's automatic converter, revision not declared). Tool gate: case B fails buffered and streamed and case C fails buffered, each on finish_reason length before a parsed call. LoRA: neither training nor serving (Mamba-2 hybrid). Licence: NVIDIA's nemotron open model licence.
+- **Still missing:** A Mac that holds the file (22.4 GB) for a Metal cell; the CUDA router and squared-ReLU expert kernels, for full offload; the tool protocol's B and C cases; task quality on the real checkpoint.
 - **Evidence:** [docs/compat-reports/nemotron-3-nano-30b-a3b-2026-11-05/README.md](compat-reports/nemotron-3-nano-30b-a3b-2026-11-05/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.13.0 on 2026-11-05.
 - **CPU:** ✅ v1.13.0 2026-11-05 on linux-x86_64-cuda (borrowed hardware) at commit `05c140d8dd59`, output sha256 `3c6bc9926d90f3ce`, [pin](../tests/compatibility/tier-smoke/nemotron-3-nano-30b-a3b-q4_k_m.linux-x86_64-cuda.cpu.txt)
-- **CUDA:** [n/a](../MANUAL.md#support-matrix): By default the file runs on the CPU on a CUDA host: nemotron_h_moe's router (sigmoid gating with a selection bias, weight scale 2.5) and its gate-less squared-ReLU shared expert have no device path, and cuda_admit names --cpu-moe. With --cpu-moe the Mamba-2 and attention blocks run on the device and the experts and their routing on the host (R3.43a; gpu-identity within 1.86e-06 of the mean logit range, routing pinned). This cell records the default.
+- **CUDA:** ✅ v1.16.0 2026-11-11 on linux-x86_64-cuda (borrowed hardware) at commit `2b360e03a56c`, output sha256 `3c6bc9926d90f3ce`, [pin](../tests/compatibility/tier-smoke/nemotron-3-nano-30b-a3b-q4_k_m.linux-x86_64-cuda.cuda.txt)
 - **Metal:** [n/a](../MANUAL.md#support-matrix): Not measured: no Mac that holds the file (22.4 GB) has run it.
-- **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.13.0, 2026-11-05).
-- **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h_moe) (runner 1.13.0, 2026-11-05).
+- **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.16.0, 2026-11-11).
+- **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (nemotron_h_moe) (runner 1.16.0, 2026-11-11).
 
 ### NVIDIA Nemotron 3.5 Super
 

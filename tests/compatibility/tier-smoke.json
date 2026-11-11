@@ -3080,6 +3080,34 @@
             "runner_version": "1.12.0",
             "commit": "590bab5b9ee693263fd5998a8ce133f457a1bb21"
           }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/nemotron-3.5-lightning-30b-a3b-q4_0.linux-x86_64-cuda.cuda.txt",
+          "sha256": "4635ac8b266740e82a0ce4e5c313e65c307570073e6197f0b57e99e5ffa3af87",
+          "bytes": 312,
+          "finish_reason": "stop",
+          "completion_tokens": 64,
+          "spec": {
+            "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+            "n_predict": 80,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-11",
+            "runner_version": "1.16.0",
+            "commit": "2b360e03a56cb8591bf48c35a0376cd7de5c7110",
+            "build": {
+              "binary_sha256": "7f4e4a3e5a9c7e3396be49b7c4f46368bfcca498d5d7c92e32cccfe849bf3612",
+              "compiler": "13.3.0"
+            }
+          }
         }
       }
     },
@@ -3427,6 +3455,34 @@
             "date": "2026-11-05",
             "runner_version": "1.13.0",
             "commit": "05c140d8dd59e1aeafd0adb00b307ace5e3c4062"
+          }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/nemotron-3-nano-30b-a3b-q4_k_m.linux-x86_64-cuda.cuda.txt",
+          "sha256": "3c6bc9926d90f3ce6c725239b36ad157a29adbada230adf8cb27c119deff107f",
+          "bytes": 214,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-11",
+            "runner_version": "1.16.0",
+            "commit": "2b360e03a56cb8591bf48c35a0376cd7de5c7110",
+            "build": {
+              "binary_sha256": "7f4e4a3e5a9c7e3396be49b7c4f46368bfcca498d5d7c92e32cccfe849bf3612",
+              "compiler": "13.3.0"
+            }
           }
         }
       }

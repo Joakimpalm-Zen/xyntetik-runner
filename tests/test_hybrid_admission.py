@@ -341,20 +341,73 @@ def test_nemotron_h_moe_cpu_moe_runs_the_trunk_on_the_device(runner_bin, models,
     assert cpu["argmax"] == dev["argmax"]
 
 
-def test_nemotron_h_moe_without_cpu_moe_runs_on_the_cpu_and_names_the_flag(
-        runner_bin, models):
+def _cuda_or_skip(runner_bin):
     caps = json.loads(subprocess.run([runner_bin, "--caps"], cwd=ROOT,
                                      stdout=subprocess.PIPE, check=True,
                                      text=True).stdout)
     if (caps.get("gpu") or {}).get("backend") != "cuda":
-        pytest.skip("CUDA admission is CUDA-side")
+        pytest.skip("the default placement is CUDA-side")
+
+
+def test_nemotron_h_moe_takes_the_split_by_default_on_cuda(runner_bin, models):
+    """R3.43a.2: with no placement named, a GPU load takes the --cpu-moe split
+    (its router has no device kernel), and says so."""
+    _cuda_or_skip(runner_bin)
+    good, _ = models["nemotron_h_moe"]
+    prompt = "the quick brown fox jumps over the lazy dog"
+
+    def score(*extra, env_extra=None):
+        env = dict(os.environ, RUNNER_GPU_FALLBACK="fail", **(env_extra or {}))
+        p = subprocess.run([runner_bin, "-m", str(good), "--score", "4", "-p", prompt,
+                            "--no-tray", *extra], cwd=ROOT, capture_output=True,
+                           timeout=120, env=env)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        return json.loads(p.stdout), p.stderr.decode(errors="replace")
+
+    cpu, _ = score("--gpu", "off")
+    dev, err = score()
+    assert "its experts and their routing stay on the host" in err, err
+    assert "CUDA backend" in err and re.search(r"experts 0/\d+ layers on GPU", err), err
+    assert max(abs(a - b) for a, b in zip(cpu["logprobs"], dev["logprobs"])) <= 1e-4
+    assert cpu["argmax"] == dev["argmax"]
+
+
+def test_nemotron_h_moe_cpu_moe_default_0_keeps_the_cpu_and_names_the_flag(
+        runner_bin, models):
+    _cuda_or_skip(runner_bin)
     good, _ = models["nemotron_h_moe"]
     proc = subprocess.run([runner_bin, "-m", str(good), "-p", "hi", "-n", "2", "--temp", "0",
-                           "--no-tray"], cwd=ROOT, capture_output=True, timeout=120)
+                           "--no-tray"], cwd=ROOT, capture_output=True, timeout=120,
+                          env=dict(os.environ, RUNNER_CPU_MOE_DEFAULT="0"))
     err = proc.stderr.decode(errors="replace")
     assert proc.returncode == 0, err
     assert "has no device kernel" in err and "--cpu-moe keeps the experts" in err, err
     assert "CUDA backend" not in err, err
+
+
+def test_the_fit_says_when_the_load_keeps_the_experts_on_the_host(runner_bin, models, tmp_path):
+    """R3.43a.2: --info fit sizes a full offload, which a load that keeps the
+    experts on the host (nemotron_h_moe's default, or an explicit --cpu-moe)
+    does not make. Until the fit models that placement (R3.58), it says so."""
+    _cuda_or_skip(runner_bin)
+    note = "the split above sizes a full offload; this load keeps the experts"
+
+    def fit(model, *extra, env_extra=None):
+        p = subprocess.run([runner_bin, "--info", "fit", "-m", str(model), *extra], cwd=ROOT,
+                           capture_output=True, text=True, timeout=120,
+                           env=dict(os.environ, **(env_extra or {})))
+        assert p.returncode == 0, p.stderr
+        return p.stdout
+
+    nemo, _ = models["nemotron_h_moe"]
+    assert note in fit(nemo) and "(the default for this router)" in fit(nemo)
+    assert note not in fit(nemo, env_extra={"RUNNER_CPU_MOE_DEFAULT": "0"})
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py", str(tmp_path / "m")],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    plain = tmp_path / "m.moe4.gguf"
+    assert note not in fit(plain)
+    out = fit(plain, "--cpu-moe")
+    assert note in out and "(--cpu-moe)" in out
 
 
 def test_nemotron_h_moe_routes_with_a_sigmoid_when_the_file_names_no_gating(
