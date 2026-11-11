@@ -104,3 +104,20 @@ def test_a_broken_latent_layout_is_refused_by_name(runner_bin, tmp_path, brk, ne
     err = p.stderr.decode(errors="replace")
     assert p.returncode != 0, err
     assert needle in err, err
+
+
+def test_a_latent_file_on_cuda_takes_no_split_and_names_the_refusal(runner_bin, pair):
+    """R3.43a.2: nemotron_h_moe takes the --cpu-moe split by default on CUDA,
+    but CUDA refuses LatentMoE whatever the placement, so a latent file takes
+    no split and says only the refusal."""
+    caps = json.loads(subprocess.run([str(runner_bin), "--caps"], cwd=ROOT,
+                                     stdout=subprocess.PIPE, check=True, text=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("the default placement is CUDA-side")
+    lat, _ = pair
+    p = subprocess.run([str(runner_bin), "-m", str(lat), "-p", "hi", "-n", "1", "--no-tray"],
+                       cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    err = p.stderr.decode(errors="replace")
+    assert p.returncode == 0, err
+    assert "LatentMoE (experts at width 16" in err, err
+    assert "its experts and their routing stay on the host" not in err, err

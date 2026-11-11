@@ -120,7 +120,7 @@ ENV_NAME_RULES = [
                            r"TEST_STREAM_OUT_CAP$|VRAM_PRIORITY$)")),
     ("substrate", re.compile(r"^(ALLOW_UNKNOWN_ARCH|PREFETCH|TEST_LOAD_DELAY_MS|"
                              r"TEST_NO_FILE_ID|LORA_INSTALL_FAIL)$")),
-    ("execution", re.compile(r"^(ACT_TRACE|ATTN_|DEBUG_(ACT|ROUTE|TIME|VRAM)$|GPU_FALLBACK$|"
+    ("execution", re.compile(r"^(ACT_TRACE|ATTN_|CPU_MOE_DEFAULT$|DEBUG_(ACT|ROUTE|TIME|VRAM)$|GPU_FALLBACK$|"
                              r"KV_|LAYER_SIM$|MLA_|MOE_|MTP_|MV_FUSE$|SPEC_BATCH$|TIEDV|"
                              r"TEST_VRAM_FREE_MB$)")),
 ]

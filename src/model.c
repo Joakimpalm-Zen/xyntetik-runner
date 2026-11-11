@@ -2108,8 +2108,10 @@ static const model_params *model_default_placement(const model_t *m, const model
 #ifdef RUNNER_GPU_CUDA
     static _Thread_local model_params pd;
     const char *e = getenv("RUNNER_CPU_MOE_DEFAULT");
+    // A LatentMoE file (Super, Bolt) is refused by cuda_admit whatever the
+    // placement, so it takes none: the split's line would say what never runs.
     if (p->gpu_mode != GPU_OFF && !p->cpu_moe && m->nemotron_h && m->n_expert > 0 &&
-        !model_moe_router_is_plain_any_norm(m) && !(e && !strcmp(e, "0"))) {
+        m->moe_latent == 0 && !model_moe_router_is_plain_any_norm(m) && !(e && !strcmp(e, "0"))) {
         pd = *p;
         pd.cpu_moe = true;
         pd.cpu_moe_layers = CPU_MOE_ALL;
