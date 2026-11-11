@@ -3093,7 +3093,24 @@ no longer sit on that grid's steps; its effect on behaviour is not measured.
 Load a LoRA adapter GGUF beside the frozen quantized base (llama.cpp adapter naming:
 `blk.N.<proj>.weight.lora_a/_b` + `adapter.lora.alpha`; F32, F16 or BF16 tensors - F16
 is what llama.cpp's `convert_lora_to_gguf` emits, and a community adapter in that format
-loads and serves, measured). Interop runs the other way too: an adapter runner trained
+loads and serves, measured).
+
+**Import row order.** An external adapter must match the base GGUF's
+converter order. If the converter permutes the attention q and k output
+rows, an adapter trained in torch against unpermuted weights must apply the
+same permutation to the output rows of its q and k **LoRA B matrices**
+before export; A is unchanged, since `P(BA) = (PB)A`. Use the query-head
+count for q and the KV-head count for k. For Xyntetik-Kvist-14B these are
+24 and 2 respectively. The
+[TD-001 preregistration, Amendment 1 item 3](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Typed-Decisions-record/blob/main/typed-decisions/prereg/TD-001.md)
+records base-weight checks on blocks 0, 3 and 51: cosine similarity against
+BF16 weights was about 0.02 before matching the permutation and 0.99998
+after it. Runner checks tensor targets, types, ranks and shapes, but does
+not infer or repair row order: both orders can load and run. Adapters
+trained by Runner itself are already in the base file's order and need no
+extra permutation.
+
+Interop runs the other way too: an adapter runner trained
 scores identically (1.000 on its held-out eval) when served by stock llama.cpp. Applied
 as `y += scale·B(Ax)` on the dense projections (attention q/k/v/output, FFN
 gate/up/down), and on a qwen35 or Clef model also on each Gated DeltaNet layer's input
@@ -5128,6 +5145,28 @@ question. In each entry, these arrays stay in the caller's option order:
 The response also carries `usage` (`completion_tokens` is zero) and an
 `envelope` naming the rendering and the state/question digests. No token is
 sampled to choose an option.
+
+#### With a LoRA adapter
+
+`--lora FILE` and `--lora-scale F` apply to `/v1/decide` and `--decide FILE`
+through the same loaded model and adapter hooks used for generation. The
+[adapter format and architecture restrictions](#cli-lora) still apply,
+including the import row-order rule above.
+
+The [TD-001 report](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Typed-Decisions-record/blob/main/typed-decisions/report/TD-001.md)
+records a historical transfer check on Runner 1.1.4: Xyntetik-Kvist-14B
+Q8_0 plus its rank-16, alpha-32 adapter against torch BF16 plus the same
+adapter. Over 192 scored questions, the mean absolute difference in option
+probabilities was **0.0019**, with a maximum of **0.021**. Argmax agreement
+was **100% on the 191 clear questions**, where clear means the BF16
+reference's top-two probability gap was at least 0.02; one question fell
+below that threshold and was excluded from the agreement metric.
+
+Request time with the adapter was **1.061 times** the unadapted base's time
+on dev and **1.085 times** on held-out requests (3,300 s against 3,042 s for
+the same 637 groups). The unadapted timings came from TD-000. These figures
+describe that model, adapter and workload on the recorded build; they are
+not a general adapter-overhead guarantee.
 
 #### Request cost and batching
 
