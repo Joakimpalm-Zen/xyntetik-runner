@@ -1483,6 +1483,7 @@ typedef struct {
     int      gpu_layers[4];
     uint64_t host_need[4];            // RAM the CPU side needs with that split
     uint64_t gpu_used[4];             // device bytes that split would hold
+    uint64_t gpu_weights[4];          // of which the layers' weights and the head (R3.58)
     // R3.50: the KV ring a load turns on (--kv-ring, model.c kv_ring_wanted).
     // Set by the caller before model_fit_gpu: the mode (KV_RING_*) and the
     // prompt batch, which sizes a ringed layer's rows (window + batch).
@@ -1514,7 +1515,7 @@ const char *model_fit_verdict(const model_fit *f);
 // for each KV format. `max_layers` > 0 caps the count like --gpu-layers.
 // Pure arithmetic over the header, so it is gated without a card.
 bool        model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
-                          uint64_t headroom, int max_layers);
+                          uint64_t headroom, int max_layers, bool host_experts);
 // The device activation scratch of one CUDA instance (cuda.c allocates it),
 // split into what each prompt-window column costs and what is paid whatever
 // the window: the prefill score sub-tile (64 query columns over the

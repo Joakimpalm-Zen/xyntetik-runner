@@ -89,3 +89,45 @@ def test_the_fit_charges_the_instance_the_loader_plans(runner_bin, models, name)
     fit_fixed, fit_head = int(f.group(1)), int(f.group(2))
     plan_fixed, plan_head = int(p.group(1)), int(p.group(2))
     assert fit_fixed - fit_head == plan_fixed - plan_head, (name, fit_fixed, fit_head, plan_fixed, plan_head)
+
+
+# R3.58: a load that keeps every expert bank on the host (--cpu-moe, or
+# nemotron_h_moe's CUDA default, R3.43a.2) uploads only the mixer tensors and
+# dense FFNs, each rounded as a bound upload rounds it, with no expert-bias
+# tables and no expert scale table. --fit charged every layer's whole file
+# bytes and those tables, and it charged no Mamba-2 state for nemotron_h_moe.
+# The fit now charges that load as the load does: the fixed charge, the split's
+# weight bytes and its layer count agree byte for byte. (The bytes a split uses
+# in all also count each layer's KV and the window scratch, where fit and load
+# differ by the same few kilobytes on every case, R3.46's included.)
+FIT_W = re.compile(r"fit: \(bytes: used \d+, weights (\d+), layers (\d+)\)")
+PLAN_W = re.compile(r"gpu-split: \(bytes: used \d+, weights (\d+), layers (\d+)\)")
+HOST_EXPERTS = [
+    ("nemotron_h_moe-default", "make-test-hybrid.py", ["--arch", "nemotron_h_moe"], ".gguf", []),
+    ("qwen3moe-cpu-moe", "make-test-moe.py", [], ".moe4.gguf", ["--cpu-moe"]),
+]
+
+
+@pytest.mark.parametrize("name,gen,args,suffix,flags", HOST_EXPERTS, ids=[h[0] for h in HOST_EXPERTS])
+def test_the_fit_charges_a_load_whose_experts_stay_on_the_host(runner_bin, tmp_path, name, gen, args,
+                                                                 suffix, flags):
+    if not _cuda(runner_bin):
+        pytest.skip("needs a CUDA device")
+    stem = tmp_path / "m"
+    subprocess.run([sys.executable, ROOT / "scripts" / gen, str(stem), *args], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    model = pathlib.Path(str(stem) + suffix)
+    fit = subprocess.run([str(runner_bin), "--fit", str(model), "-c", "4096", *flags], cwd=ROOT,
+                         capture_output=True, text=True, errors="replace", timeout=120, env=_env())
+    assert fit.returncode == 0, fit.stderr[-1500:]
+    assert "experts       on the host" in fit.stdout, fit.stdout
+    load = subprocess.run([str(runner_bin), "-m", str(model), "-p", "hi", "-n", "1", "-c", "4096", "--no-tray",
+                           "-t", "2", *flags], cwd=ROOT, capture_output=True, text=True, errors="replace",
+                          timeout=300, env={**_env(), "RUNNER_GPU_FALLBACK": "fail"})
+    assert load.returncode == 0, load.stderr[-1500:]
+    assert re.search(r"experts 0/\d+ layers on GPU", load.stderr), load.stderr[-1500:]
+    f, p = FIT.search(fit.stderr), PLAN.search(load.stderr)
+    fw, pw = FIT_W.search(fit.stderr), PLAN_W.search(load.stderr)
+    assert f and p and fw and pw, (fit.stderr[-1500:], load.stderr[-1500:])
+    assert (int(f.group(1)), int(f.group(2))) == (int(p.group(1)), int(p.group(2))), name
+    assert (int(fw.group(1)), int(fw.group(2))) == (int(pw.group(1)), int(pw.group(2))), name

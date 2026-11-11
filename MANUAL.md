@@ -1900,8 +1900,9 @@ with `--cpu-moe` while attention and dense tensors remain on the GPU. A router w
 kernel (`nemotron_h_moe`'s sigmoid with a selection bias) runs this way by default: the GPU runs
 the rest and the host routes (1.56x the CPU's decode on Nemotron-3.5-Lightning-30B-A3B Q4_0 on a
 24 GB MIG slice, the same agreement with the publisher's float32 model as the CPU's);
-`RUNNER_CPU_MOE_DEFAULT=0` runs such a file on the CPU. `--info fit` still sizes a full offload
-for it, and says so in a line.
+`RUNNER_CPU_MOE_DEFAULT=0` runs such a file on the CPU. `--info fit` sizes that split, as it
+sizes a plain `--cpu-moe` load; `--cpu-moe N` and `auto` keep only some banks on the host, and
+for them it still sizes a full offload and says so in a line.
 `make ptx` regenerates the embedded header and requires a CUDA toolkit only
 for that development step.
 

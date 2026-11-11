@@ -2355,6 +2355,13 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
     // the figures --fit predicts, exactly (tests/test_cuda_fit_hybrid.py)
     if (getenv("RUNNER_DEBUG_VRAM"))
         fprintf(stderr, "gpu-split: (bytes: fixed %zu, headroom %zu)\n", fixed, P->headroom);
+    // and the device bytes the chosen split holds (R3.58), beside --fit's
+    if (getenv("RUNNER_DEBUG_VRAM")) {
+        size_t wsum = full ? m->output->nbytes : 0;
+        for (int l = 0; l < G; l++)
+            wsum += layer_weight_bytes(m, l, moe_on_host(m, l), m->cpu_moe);
+        fprintf(stderr, "gpu-split: (bytes: used %zu, weights %zu, layers %d)\n", used, wsum, G);
+    }
     if (P->instances > 1)
         fprintf(stderr, "gpu-split: planned for %zu slots sharing the weights, "
                 "each with its own KV cache and scratch\n", P->instances);
