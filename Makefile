@@ -1,9 +1,12 @@
 CC      ?= cc
-# Keep compiler warnings fatal at the invocation boundary: specialized tests
-# intentionally replace CFLAGS (strict math, -O0 stubs, sanitizers), and a
-# CFLAGS-only policy missed their warnings. Export it to Python C probes too.
+# Our CI toolchains and explicit STRICT=1 builds reject compiler warnings.
+# Keep this at the invocation boundary so specialized test flags cannot
+# drop it; ordinary source builds retain their existing platform policy.
+STRICT_BUILD := $(if $(strip $(CI)$(filter 1,$(STRICT))),1,)
+ifneq ($(STRICT_BUILD),)
 override CC := $(strip $(CC) $(if $(filter -Werror,$(CC)),,-Werror))
 export CC
+endif
 # Probe by RUNNING the interpreter, not by looking it up: on Windows a
 # python3 "app execution alias" stub exists on PATH but exits non-zero with
 # a Store advert, so `command -v python3` picks an interpreter that cannot run.
@@ -3781,7 +3784,9 @@ FUZZ_INSTRUMENTATION = -fsanitize=fuzzer,address,undefined
 FUZZ_FLAGS = -g -O1 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src \
              -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
              -fno-omit-frame-pointer
+ifneq ($(STRICT_BUILD),)
 override FUZZ_FLAGS += -Werror
+endif
 
 FUZZ_SRC_json_parse     = src/json.c
 FUZZ_SRC_schema_compile = src/json.c $(SCHEMA_SRC) src/jsonmode.c

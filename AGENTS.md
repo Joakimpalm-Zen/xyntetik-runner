@@ -39,10 +39,11 @@ speculative features.
 A gate proves a system agrees with the instrument measuring it, not that the
 system is right.
 
-- **Compiler warnings fail test builds.** The Makefile keeps warnings fatal
-  for C/Objective-C and libFuzzer builds, including specialized test flags.
-  A zero-warning report names the targets and toolchain actually rebuilt;
-  executing an existing binary does not recheck its compilation.
+- **CI and `STRICT=1` reject compiler warnings.** The Makefile applies this
+  to C/Objective-C and libFuzzer builds, including specialized test flags.
+  A handover's zero-warning claim comes from a `STRICT=1` build and names
+  the targets and toolchain actually rebuilt; executing an existing binary
+  does not recheck its compilation.
 - **Every gate needs one absolute anchor:** at least one assertion whose
   expected value comes from outside the system (a published constant, a
   hand-computed result, a specification, a reference implementation, a

@@ -1,5 +1,6 @@
 """The release gate accepts the old ABI and rejects a newer imported version."""
 import pathlib
+import os
 import shutil
 import subprocess
 import sys
@@ -22,9 +23,10 @@ def test_imported_version(tmp_path, version, limit, ok):
     (tmp_path / 'lib.c').write_text('int abi_probe(void) { return 0; }\n')
     (tmp_path / 'main.c').write_text('extern int abi_probe(void); int main(void) { return abi_probe(); }\n')
     (tmp_path / 'versions').write_text(f'GLIBC_{version} {{ global: abi_probe; }};\n')
-    subprocess.run(['gcc', '-Werror', '-shared', '-fPIC', 'lib.c', '-Wl,--version-script=versions',
+    strict = ['-Werror'] if os.environ.get('CI', '').strip() or os.environ.get('STRICT') == '1' else []
+    subprocess.run(['gcc', *strict, '-shared', '-fPIC', 'lib.c', '-Wl,--version-script=versions',
                     '-o', 'libprobe.so'], cwd=tmp_path, check=True)
-    subprocess.run(['gcc', '-Werror', 'main.c', '-L.', '-lprobe', '-o', 'probe'], cwd=tmp_path, check=True)
+    subprocess.run(['gcc', *strict, 'main.c', '-L.', '-lprobe', '-o', 'probe'], cwd=tmp_path, check=True)
     result = subprocess.run([sys.executable, str(ROOT / 'scripts/check-glibc.py'),
                              str(tmp_path / 'probe'), '--max-version', limit], capture_output=True, text=True)
     assert (result.returncode == 0) == ok, result.stdout + result.stderr

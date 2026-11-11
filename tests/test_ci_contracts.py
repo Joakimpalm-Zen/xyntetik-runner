@@ -21,7 +21,15 @@ needs_make = unittest.skipUnless(
 
 @needs_make
 class WarningPolicy(unittest.TestCase):
-    def probe(self, command):
+    def environment(self, mode):
+        env = {k: v for k, v in os.environ.items()
+               if k not in {"CI", "STRICT", "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES",
+                            "GNUMAKEFLAGS"}}
+        if mode == "ci":
+            env["CI"] = "true"
+        return env
+
+    def probe(self, command, mode):
         compiler = next((c for c in ("cc", "gcc", "clang") if shutil.which(c)), None)
         if compiler is None:
             self.skipTest("needs a C compiler")
@@ -35,38 +43,54 @@ class WarningPolicy(unittest.TestCase):
                              + (root / 'warning.o').as_posix() + '"\n')
             p = subprocess.run(["make", "-s", "-f", "Makefile", "-f", str(rules),
                                 "warning-policy-probe", "CC=" + compiler,
-                                "CFLAGS=-O0", "PYTHON=" + sys.executable], cwd=ROOT,
-                               capture_output=True, text=True)
-            self.assertNotEqual(p.returncode, 0, p.stdout + p.stderr)
+                                "CFLAGS=-O0", "PYTHON=" + sys.executable]
+                               + (["STRICT=1"] if mode == "strict" else []), cwd=ROOT,
+                               env=self.environment(mode), capture_output=True, text=True)
+            if mode == "plain":
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertTrue((root / "warning.o").exists())
+            else:
+                self.assertNotEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertFalse((root / "warning.o").exists())
             self.assertIn("R6_56_deliberate_warning", p.stderr)
 
-    def test_hand_written_test_flags_still_refuse_warnings(self):
-        self.probe("$(CC) -O0 -std=gnu11 -Wall")
+    def test_hand_written_test_flags_follow_the_warning_mode(self):
+        for mode in ("plain", "strict", "ci"):
+            with self.subTest(mode=mode):
+                self.probe("$(CC) -O0 -std=gnu11 -Wall", mode)
 
-    def test_command_line_cflags_still_refuse_warnings(self):
-        self.probe("$(CC) $(CFLAGS)")
+    def test_command_line_cflags_follow_the_warning_mode(self):
+        for mode in ("plain", "strict", "ci"):
+            with self.subTest(mode=mode):
+                self.probe("$(CC) $(CFLAGS)", mode)
 
-    def test_fuzzer_flags_still_refuse_warnings(self):
+    def test_fuzzer_flags_follow_the_warning_mode(self):
         if not shutil.which("clang"):
             self.skipTest("libFuzzer compiler is not installed on this toolchain")
-        self.probe("$(FUZZ_CLANG) $(filter-out $(FUZZ_INSTRUMENTATION),$(FUZZ_FLAGS))")
+        for mode in ("plain", "strict", "ci"):
+            with self.subTest(mode=mode):
+                self.probe("$(FUZZ_CLANG) $(filter-out $(FUZZ_INSTRUMENTATION),$(FUZZ_FLAGS))",
+                           mode)
 
-    def test_recursive_make_keeps_the_same_strict_compiler_identity(self):
-        with tempfile.TemporaryDirectory() as td:
-            rules = pathlib.Path(td) / "identity.mk"
-            rules.write_text('.PHONY: warning-identity warning-child\n'
-                             'warning-identity:\n\t@echo "$(CC)"\n'
-                             '\t@$(MAKE) --no-print-directory -s -f Makefile -f "'
-                             + rules.as_posix() + '" warning-child\n'
-                             'warning-child:\n\t@echo "$(CC)"\n')
-            p = subprocess.run(["make", "--no-print-directory", "-s", "-f", "Makefile",
-                                "-f", str(rules), "warning-identity",
-                                "CC=cc", "PYTHON=" + sys.executable], cwd=ROOT,
-                               capture_output=True, text=True, check=True)
-            lines = p.stdout.strip().splitlines()
-            self.assertEqual(len(lines), 2, p.stdout)
-            self.assertEqual(lines[0], lines[1])
-            self.assertEqual(lines[0].split().count("-Werror"), 1)
+    def test_recursive_make_keeps_the_same_compiler_identity(self):
+        for mode in ("plain", "strict", "ci"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as td:
+                rules = pathlib.Path(td) / "identity.mk"
+                rules.write_text('.PHONY: warning-identity warning-child\n'
+                                 'warning-identity:\n\t@echo "$(CC)"\n'
+                                 '\t@$(MAKE) --no-print-directory -s -f Makefile -f "'
+                                 + rules.as_posix() + '" warning-child\n'
+                                 'warning-child:\n\t@echo "$(CC)"\n')
+                p = subprocess.run(["make", "--no-print-directory", "-s", "-f", "Makefile",
+                                    "-f", str(rules), "warning-identity",
+                                    "CC=cc", "PYTHON=" + sys.executable]
+                                   + (["STRICT=1"] if mode == "strict" else []), cwd=ROOT,
+                                   env=self.environment(mode), capture_output=True, text=True,
+                                   check=True)
+                lines = p.stdout.strip().splitlines()
+                self.assertEqual(len(lines), 2, p.stdout)
+                self.assertEqual(lines[0], lines[1])
+                self.assertEqual(lines[0].split().count("-Werror"), 0 if mode == "plain" else 1)
 
 
 @needs_make
