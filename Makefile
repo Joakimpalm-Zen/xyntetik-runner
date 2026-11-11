@@ -3400,9 +3400,9 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# R6.35: Q4_0 weights, whose prefill on the scalar route runs the batch-1
 	@# GEMV's twins; before that its q8 arm read 10.7x the reassociation floor
 	./$(TEST_KV_TOL) test-q40.gguf
-	@# R6.41: on the scalar route a prompt's layer-0 KV rows are a batch-1
-	@# prefill's, byte for byte, at batch 9, 17, 24 and 64 (f16 cache)
-	./$(TEST_PREFILL_BITS) test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf
+	@# R6.41, R6.50: on the scalar route a prompt's layer-0 KV rows are a
+	@# batch-1 prefill's, byte for byte, at batch 9, 17, 24 and 64 (f16 cache)
+	./$(TEST_PREFILL_BITS) test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-q8.gguf
 	./$(TEST_KV_FP4)
 	./$(TEST_CUDA_KVFP4)
 	./$(TEST_TC_TOL)
