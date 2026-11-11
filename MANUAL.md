@@ -2617,7 +2617,7 @@ the tiles were slower, so the identity route keeps those widths. Against the pub
 | `--ignore-eos` | Continue generation past end-of-text tokens. With `--serve`, the default for every request; a request's own `ignore_eos` (true or false) wins for that request. |
 | `--reasoning-budget N` | Close a reasoning turn once it has spent N tokens (budget forcing; `0` is off, the default). Per request: `reasoning_max_tokens`. Needs a model whose reasoning turn ends on a single token. |
 | `--reasoning-budget-message S` | The sentence the forced close writes before the close token (default: a short neutral one; `""` for a bare close). Per request: `reasoning_budget_message`. |
-| `--reasoning-temp F` | Temperature for reasoning turns only; calls and answers keep the request's own sampler (off by default). Per request: `reasoning_temperature`, with `reasoning_top_p`, `reasoning_min_p` and `reasoning_top_k`. |
+| `--reasoning-temp F` | Temperature for reasoning turns only; calls and answers keep the request's own sampler (off by default). Measured on a Kvist-14B checkpoint, 0.6 passed 49 and 47 of 60 agent tasks over two seeds against 51 for greedy, and `--loop-guard` passed 54 (see [Reasoning-channel sampling](#reasoning-channel-sampling)). Per request: `reasoning_temperature`, with `reasoning_top_p`, `reasoning_min_p` and `reasoning_top_k`. |
 | `--loop-guard` | Close a reasoning turn that starts repeating (a span repeated back to back); off by default. Per request: `loop_guard`, `loop_guard_span`, `loop_guard_repeats`, `loop_guard_window`, `loop_guard_everywhere`. |
 | `--bare-recipients` | Muse only: write a bare tool name verbatim in the system turn's valid-recipients line (`read`) instead of the reference's namespace pattern (`read.*`); off by default (the reference rendering). Per request: `bare_recipients`. |
 
@@ -5029,6 +5029,20 @@ needs randomness to escape it, and repetition is worst under greedy decoding,
 while a tool call's arguments must stay deterministic. A flat penalty across
 both is the intervention that garbled every sampled call in R4.12.7, which is
 why this one is scoped to the channel rather than to the request.
+
+Measured, it has not paid. On checkpoint 960 of Kvist-14B's eighth training
+attempt (Q8_0 on CPU, the 60-task agent gate), `--reasoning-temp 0.6` passed
+49 tasks with seed 1 and 47 with seed 2, against 51 for greedy decoding. Seed
+2 recovered no task that greedy failed and broke four that greedy passed,
+three of them as runaways. On the same checkpoint greedy decoding with
+`--loop-guard` passed 54. That is one checkpoint at one temperature over two
+seeds, not a rule for every reasoning model, but it is why the knob stays off
+by default and why `--loop-guard`, not temperature, is the setting to try
+first on a model whose reasoning repeats. The knob is kept because it costs
+nothing while unset and the Xyntetik Suite's Runner client sends
+`reasoning_temperature`. The runs, with their server logs and telemetry, are
+the `diag-a8-rtemp06-*`, `diag-a8-q8` and `diag-a8-guard` files in the
+[Kvist-14B training record](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Kvist-14B-training-record/tree/main/evidence/diagnostics/train-w14b-envelope-a8).
 
 Whichever way it is set, the sampler that produced a trace is visible without
 reading the server's source: `GET /v1/capabilities` reports the server's
