@@ -28,13 +28,21 @@ addition.
 It only reads: nothing is uploaded or changed. A public repository needs no
 token; for a private one the token is read from HF_TOKEN (or
 HUGGING_FACE_HUB_TOKEN) and is never printed. HF_ENDPOINT points it at
-another Hub, as it does for huggingface_hub. The plan ends with the remote
+another Hub, as it does for huggingface_hub. The token goes only to the
+endpoint's own origin (scheme, host and port): a redirect, or a next-page
+link in the listing's Link header, that names any other origin is refused
+with exit 2 before a request is made, token or not, because urllib would
+otherwise carry the Authorization header to whatever host the server
+names, and the plan's listing comes from the endpoint or not at all. A
+redirect within the endpoint (a renamed repository) is followed with the
+token. The plan ends with the remote
 commit it was compared against; passing that commit as the upload's
 parent_commit makes the upload fail if the remote moved after the check.
 
 Exit 0: the plan holds. 1: refused (an unnamed replacement or deletion).
 2: the check could not be made (a missing repository, a name that matches
-nothing on the remote, a network or HTTP error).
+nothing on the remote, a redirect or next page to another origin, a network
+or HTTP error).
 """
 import argparse
 import hashlib
@@ -78,18 +86,52 @@ def local_files(folder, prefix):
     return out
 
 
+class CrossOrigin(Exception):
+    """A URL outside the endpoint's origin, refused before any request reaches it."""
+
+    def __init__(self, url):
+        super().__init__(url)
+        self.url = url
+
+
+def origin(url):
+    u = urllib.parse.urlsplit(url)
+    scheme = u.scheme.lower()
+    return scheme, (u.hostname or "").lower(), u.port or {"http": 80, "https": 443}.get(scheme)
+
+
+class SameOriginRedirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only within the endpoint's origin. urllib copies the
+    request's headers, Authorization included, onto the redirected request
+    whatever host it names, so any other target is refused here, before the
+    new request is built."""
+
+    def __init__(self, allowed):
+        super().__init__()
+        self.allowed = allowed
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if origin(newurl) != self.allowed:
+            raise CrossOrigin(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class HubError(Exception):
     def __init__(self, code, url):
         super().__init__(f"HTTP {code} from {url}")
         self.code = code
 
 
-def get(url, token):
+def get(url, token, allowed):
+    """GET a JSON document from the endpoint's origin, and only from there."""
+    if origin(url) != allowed:
+        raise CrossOrigin(url)
     req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "hub-upload-check"})
     if token:
         req.add_header("Authorization", f"Bearer {token}")
+    opener = urllib.request.build_opener(SameOriginRedirects(allowed))
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with opener.open(req, timeout=60) as r:
             return json.load(r), r.headers.get("Link", "")
     except urllib.error.HTTPError as e:
         raise HubError(e.code, url) from None
@@ -102,13 +144,14 @@ def next_link(link):
 
 def remote_listing(endpoint, repo_type, repo, revision, token):
     """(commit, {path: entry}) for every file at the revision, all pages read."""
+    allowed = origin(endpoint)
     base = f"{endpoint}/api/{repo_type}s/{repo}"
     rev = urllib.parse.quote(revision, safe="")
-    info, _ = get(f"{base}/revision/{rev}", token)
+    info, _ = get(f"{base}/revision/{rev}", token, allowed)
     files = {}
     url = f"{base}/tree/{rev}?recursive=true"
     while url:
-        page, link = get(url, token)
+        page, link = get(url, token, allowed)
         for e in page:
             if e.get("type") == "file":
                 files[e["path"]] = e
@@ -163,6 +206,11 @@ def main(argv=None):
         else:
             print(f"hub-upload-check: could not list {where}: {e}", file=sys.stderr)
             return 2
+    except CrossOrigin as e:
+        o = origin(e.url)
+        print(f"hub-upload-check: refused: a redirect or next page points to another origin, {o[0]}://{o[1]}:{o[2]}, "
+              f"not the endpoint {endpoint}; the token and the listing stay with the endpoint", file=sys.stderr)
+        return 2
     except (urllib.error.URLError, OSError, ValueError) as e:
         print(f"hub-upload-check: could not list {where}: {e}", file=sys.stderr)
         return 2

@@ -42,11 +42,13 @@ def small_entry(path, data):
 class Hub:
     """A stub of the two Hub API routes the script reads."""
 
-    def __init__(self, entries, *, repo_type="model", exists=True, page=None):
+    def __init__(self, entries, *, repo_type="model", exists=True, page=None, redirect=None, next_base=None):
         self.entries = entries
         self.repo_type = repo_type
         self.exists = exists
         self.page = page
+        self.redirect = redirect      # where the revision call is redirected, a full URL
+        self.next_base = next_base    # the origin the Link header's next page names
         self.auth = []
         hub = self
 
@@ -61,7 +63,9 @@ class Hub:
                 base = f"/api/{hub.repo_type}s/{REPO}"
                 if not hub.exists:
                     return self._send(404, {"error": "Repository not found"})
-                if url.path == f"{base}/revision/main":
+                if url.path == f"{base}/revision/main" and hub.redirect:
+                    return self._send(302, {}, {"Location": hub.redirect})
+                if url.path in (f"{base}/revision/main", "/moved/revision"):
                     return self._send(200, {"id": REPO, "sha": COMMIT})
                 if url.path == f"{base}/tree/main" and q.get("recursive") == ["true"]:
                     items = [{"type": "directory", "path": "sub", "oid": "d" * 40, "size": 0}] + hub.entries
@@ -70,7 +74,8 @@ class Hub:
                     chunk = items[start:start + size]
                     headers = {}
                     if start + size < len(items):
-                        nxt = f"http://127.0.0.1:{self.server.server_port}{url.path}?recursive=true&cursor={start + size}"
+                        origin = hub.next_base or f"http://127.0.0.1:{self.server.server_port}"
+                        nxt = f"{origin}{url.path}?recursive=true&cursor={start + size}"
                         headers["Link"] = f'<{nxt}>; rel="next"'
                     return self._send(200, chunk, headers)
                 return self._send(404, {"error": f"no route {url.path}"})
@@ -231,6 +236,75 @@ def test_the_token_is_sent_and_never_printed(tmp_path):
     assert missing.returncode == 2
     assert TOKEN not in missing.stdout + missing.stderr
 
+
+class Elsewhere:
+    """A second loopback server: another origin, which must never see the token."""
+
+    def __init__(self, page=None):
+        self.seen = []
+        rec = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                rec.seen.append((self.path, self.headers.get("Authorization")))
+                body = json.dumps({"id": REPO, "sha": COMMIT} if "/revision/" in self.path else (page or [])).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+
+    @property
+    def origin(self):
+        return f"http://127.0.0.1:{self.server.server_port}"
+
+
+def test_a_redirect_to_another_origin_never_carries_the_token(tmp_path):
+    local = write(tmp_path / "up", {"model.gguf": OLD_GGUF})
+    with Elsewhere() as other:
+        with Hub([lfs_entry("model.gguf", OLD_GGUF)], redirect=f"{other.origin}/api/models/{REPO}/revision/main") as hub:
+            p = check(hub, local, token=TOKEN)
+        seen = list(other.seen)
+    assert not any(a for _, a in seen), seen
+    assert p.returncode == 2, p.stdout + p.stderr
+    assert "another origin" in p.stderr and TOKEN not in p.stdout + p.stderr
+
+
+def test_a_next_page_on_another_origin_never_carries_the_token(tmp_path):
+    remote = [small_entry(f"notes/{i}.md", b"note %d" % i) for i in range(5)]
+    local = write(tmp_path / "up", {f"notes/{i}.md": b"note %d" % i for i in range(5)})
+    with Elsewhere() as other:
+        with Hub(remote, page=2, next_base=other.origin) as hub:
+            p = check(hub, local, token=TOKEN)
+        seen = list(other.seen)
+    assert not any(a for _, a in seen), seen
+    assert p.returncode == 2, p.stdout + p.stderr
+    assert "another origin" in p.stderr and TOKEN not in p.stdout + p.stderr
+
+
+def test_a_redirect_within_the_endpoint_keeps_the_token(tmp_path):
+    """A renamed repository answers with a redirect on the same Hub; it must still work."""
+    local = write(tmp_path / "up", {"model.gguf": OLD_GGUF})
+    with Hub([lfs_entry("model.gguf", OLD_GGUF)]) as hub:
+        hub.redirect = f"{hub.endpoint}/moved/revision"
+        p = check(hub, local, token=TOKEN)
+        auth = list(hub.auth)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert len(auth) >= 3 and all(a == f"Bearer {TOKEN}" for a in auth), auth
 
 def test_no_token_sends_no_authorization(tmp_path):
     local = write(tmp_path / "up", {"model.gguf": OLD_GGUF})
