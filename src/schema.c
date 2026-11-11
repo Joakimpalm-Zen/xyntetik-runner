@@ -3022,9 +3022,11 @@ static void close_integer(emitq *q, const snode *n, const sframe *f) {
             if (target > hi) target = hi;
             uint64_t target_abs = target < 0 ? (uint64_t)(-target) : (uint64_t)target;
             uint64_t suffix = target_abs - low_abs;
-            char fmt[16], b[32];
-            snprintf(fmt, sizeof(fmt), "%%0%dllu", digits);
-            snprintf(b, sizeof(b), fmt, (unsigned long long)suffix);
+            // digits is 1..18 here, so the zero-padded suffix fits b with room
+            // to spare; the width goes through '*' rather than a format string
+            // built at run time, whose length a fortified build cannot bound
+            char b[32];
+            snprintf(b, sizeof(b), "%0*llu", digits, (unsigned long long)suffix);
             eq_put(q, b);
             return;
         }

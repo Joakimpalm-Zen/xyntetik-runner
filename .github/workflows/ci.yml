@@ -376,7 +376,7 @@ jobs:
       # a `make test` prerequisite; the runtime half is in the conformance suite)
       - name: loopback bind invariant
         run: |
-          gcc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src tests/test_bind.c \
+          gcc -Werror -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src tests/test_bind.c \
             -o test-bind.exe
           ./test-bind.exe
       # the tray's popup menu carries UTF-8 labels as UTF-16: read back

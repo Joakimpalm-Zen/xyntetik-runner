@@ -139,9 +139,12 @@ static void dot_tables_init(void) {
 
 // IQ3_S: group g (0..7) of a 32-weight sub-block indexes the grid with qs[g]
 // and bit g of the sub-block's qh byte as its ninth bit (dq_iq3_s's shifts)
+#if (defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)) || \
+    (defined(__aarch64__) && defined(__ARM_NEON))
 static inline const float *iq3s_wf(const uint8_t *qs, unsigned h, int g) {
     return g_iq3s_gridf[qs[g] | (((h >> g) & 1) << 8)];
 }
+#endif
 
 
 static const int8_t kvalues_iq4nl[16] = {
@@ -157,9 +160,12 @@ static const float kvalues_mxfp4[16] = {
 
 // the same E2M1 table doubled to integers so SIMD nibble lookups can run in
 // int8 (pshufb / tbl); the 0.5 factor is folded into the block scale
+#if (defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)) || \
+    (defined(__aarch64__) && defined(__ARM_NEON))
 static const int8_t kvalues_mxfp4_i8[16] = {
     0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12,
 };
+#endif
 
 int ggml_block_size(int type) {
     switch (type) {
@@ -3908,6 +3914,7 @@ static inline __attribute__((always_inline)) void dot_q6_K_avx2_multi(const bloc
 
 // vec_dot's generic route, decode hoisted: dequant_block once, the same
 // dot_f32_row per column, the same per-block accumulation order.
+#ifndef RUNNER_CANON_KERNELS
 static void dot_generic_multi(int type, const void *row, const float *const *xs,
                               int nc, int n, float *out) {
     int bs = ggml_block_size(type);
@@ -3922,8 +3929,9 @@ static void dot_generic_multi(int type, const void *row, const float *const *xs,
     }
     for (int c = 0; c < nc; c++) out[c] = s[c];
 }
+#endif
 
-#if !RUNNER_AVX2 && RUNNER_NEON
+#if !defined(RUNNER_CANON_KERNELS) && !RUNNER_AVX2 && RUNNER_NEON
 // The arm64 multi-column K-quant dots: each weight block widened once, every
 // column then the single dot's exact sequence (dot32f / dot16f, the same
 // accumulator order as dot_q*_K_neon), so vec_dot_multi == vec_dot per column.

@@ -157,8 +157,13 @@ project venv, not the system python3).
 1. **make test**, under a swap guard:
 
    ```sh
-   make test PYTHON=<venv>/bin/python
+   make STRICT=1 test PYTHON=<venv>/bin/python
    ```
+
+   The [compiler-warning rule](../AGENTS.md#3-gates-and-evidence) covers
+   every test binary built here, including specialized compile recipes.
+   A handover's zero-warning claim uses `STRICT=1` and names the targets
+   and toolchain actually rebuilt. GitHub's `CI=true` also enables the policy.
 
    Every 15 s, read `sysctl -n vm.swapusage` and
    `sysctl -n kern.memorystatus_vm_pressure_level`. Stop the run if swap used rises

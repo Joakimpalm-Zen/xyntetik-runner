@@ -28,6 +28,7 @@ extern int tray_stub_runs;
 static void msleep(int ms) { Sleep(ms); }
 #else
 #include <arpa/inet.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <signal.h>
@@ -61,6 +62,31 @@ static int fails = 0;
 } while (0)
 
 static char g_home[512];
+
+static bool append_marker_arg(char *out, size_t cap, size_t *used, const char *arg) {
+    size_t n = strlen(arg);
+    if (*used > cap || cap - *used < 2 || n > cap - *used - 2) return false;
+    memcpy(out + *used, arg, n);
+    *used += n;
+    out[(*used)++] = ' ';
+    out[*used] = 0;
+    return true;
+}
+
+static void check_marker_arg_bounds(void) {
+    char out[8] = "";
+    size_t used = 0;
+    CHECK(append_marker_arg(out, sizeof out, &used, "123456"),
+          "marker capture fits six bytes, a space and NUL exactly");
+    CHECK(used == 7 && memcmp(out, "123456 ", sizeof out) == 0,
+          "marker capture keeps the complete argument and terminator");
+    CHECK(!append_marker_arg(out, sizeof out, &used, "x"),
+          "marker capture rejects another argument instead of underflowing its bound");
+    CHECK(used == 7 && out[7] == 0, "rejected marker append leaves the buffer intact");
+    used = sizeof out;
+    CHECK(!append_marker_arg(out, sizeof out, &used, ""),
+          "marker capture rejects a full buffer before subtracting space for NUL");
+}
 
 // Extend `path` to 5 GB, sparse where the filesystem allows it: past both
 // the signed and the unsigned 32-bit size, so a truncated st_size cannot
@@ -248,7 +274,15 @@ static void check_tray_http_short_write(void) {
         static const char response[] =
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n"
             "Connection: close\r\n\r\n{}";
-        if (complete) write(client, response, sizeof(response) - 1);
+        if (complete) {
+            size_t sent = 0;
+            while (sent < sizeof(response) - 1) {
+                ssize_t n = write(client, response + sent, sizeof(response) - 1 - sent);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) { complete = false; break; }
+                sent += (size_t)n;
+            }
+        }
         if (client >= 0) close(client);
         close(listener);
         _exit(complete ? 0 : 3);
@@ -309,6 +343,7 @@ int main(int argc, char **argv) {
     }
 
     check_glyph_raster();
+    check_marker_arg_bounds();
 #ifndef _WIN32
     check_tray_http_short_write();
 #endif
@@ -617,12 +652,15 @@ int main(int argc, char **argv) {
     for (int t = 0; t < 60; t++) {  // up to 6 s for the child to come up
         FILE *m = fopen(mp, "rb");
         if (m) {
+            size_t args_used = 0;
+            args[0] = 0;
             char line[512];
             if (fgets(line, sizeof line, m)) child = atol(line);
             while (fgets(line, sizeof line, m)) {
                 line[strcspn(line, "\r\n")] = 0;
-                strncat(args, line, sizeof args - strlen(args) - 2);
-                strncat(args, " ", sizeof args - strlen(args) - 1);
+                bool fits = append_marker_arg(args, sizeof args, &args_used, line);
+                CHECK(fits, "managed child argument capture holds the complete marker");
+                if (!fits) break;
             }
             fclose(m);
             if (child > 0) break;

@@ -33,10 +33,12 @@ static bool stop_after(void *ud) {
     return p->polls >= p->fire_after;
 }
 
+#ifndef _WIN32
 static bool stop_on_peer_close(void *ud) {
     sock_t *fd = ud;
     return sock_peer_closed(*fd);
 }
+#endif
 
 typedef struct {
     unsigned char bytes[2048];
