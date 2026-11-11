@@ -1708,6 +1708,13 @@ test-q4k.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
 	./$(RUNNER_EXE) -m test-q4k-src.gguf --quantize test-q4k.gguf --quant q4_k > /dev/null
 	rm -f test-q4k-src.gguf
 
+# R6.54: test-q4k.gguf's shape in Q3_K, for test-prefill-bits. Its own name:
+# test-cuda-q3k builds a --wide test-q3k.gguf inline for its alignment check.
+test-q3k-prefill.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
+	$(PYTHON) scripts/make-test-model.py --wide --n-ff 2048 test-q3k-prefill-src.gguf > /dev/null
+	./$(RUNNER_EXE) -m test-q3k-prefill-src.gguf --quantize test-q3k-prefill.gguf --quant q3_k > /dev/null
+	rm -f test-q3k-prefill-src.gguf
+
 # Q6_K reaches the narrow-slice Q6_K decode matvec (k_mvg_q6_K, R3.28.3) at
 # inputs of at least 1536: the same 256-wide rows and 2048-wide FFN as
 # test-q4k.gguf, so ffn_down takes the new kernel and the projections keep
@@ -3237,7 +3244,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
-      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-oddff.gguf test-oddff-f16.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf \
+      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-q3k-prefill.gguf test-oddff.gguf test-oddff-f16.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf \
       test-qk.gguf test-gemma3.gguf test-gemma4.gguf test-es.gguf test-muse.gguf test-granite.gguf \
       test-gemma3-62.gguf test-gemma3-26.gguf test-qwen4exp.gguf test-lfm2.gguf test-lfm2-moe.gguf
 	./$(TEST_RECURRENT)
@@ -3400,9 +3407,9 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# R6.35: Q4_0 weights, whose prefill on the scalar route runs the batch-1
 	@# GEMV's twins; before that its q8 arm read 10.7x the reassociation floor
 	./$(TEST_KV_TOL) test-q40.gguf
-	@# R6.41, R6.50: on the scalar route a prompt's layer-0 KV rows are a
-	@# batch-1 prefill's, byte for byte, at batch 9, 17, 24 and 64 (f16 cache)
-	./$(TEST_PREFILL_BITS) test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-q8.gguf
+	@# R6.41, R6.50, R6.54: on the scalar route a prompt's layer-0 KV rows are
+	@# a batch-1 prefill's, byte for byte, at batch 9, 17, 24 and 64 (f16 cache)
+	./$(TEST_PREFILL_BITS) test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-q8.gguf test-q3k-prefill.gguf
 	./$(TEST_KV_FP4)
 	./$(TEST_CUDA_KVFP4)
 	./$(TEST_TC_TOL)
