@@ -1227,8 +1227,40 @@ gpu_layer_charge model_cuda_layer_charge(gguf_file *g, int layer, bool host_expe
     return c;
 }
 
+// R3.58: what cuda.c's layer_weight_bytes(bound) uploads for block l of a load
+// that keeps every expert bank on the host (--cpu-moe, or nemotron_h_moe's
+// CUDA default): the mixer tensors (layer_mixer_tensors) and, on a block with
+// no router, its dense FFN, each rounded as a bound upload rounds it. The
+// router, the experts, the shared expert and the latent pair stay on the host.
+static uint64_t fit_layer_host_expert_bytes(gguf_file *g, int l) {
+    static const char *const mixer[] = {
+        "inp_gate.weight", "proj.weight", "attn_q.weight", "attn_q_b.weight", "attn_k.weight",
+        "attn_v.weight", "attn_output.weight", "attn_qkv.weight", "attn_gate.weight",
+        "ssm_in.weight", "shortconv.in_proj.weight", "ssm_conv1d.weight", "shortconv.conv.weight",
+        "ssm_beta.weight", "ssm_alpha.weight", "ssm_out.weight", "shortconv.out_proj.weight",
+        "hc_attn_down.weight", "hc_attn_up.weight", "hc_attn_inject.weight",
+        "hc_ffn_down.weight", "hc_ffn_up.weight", "hc_ffn_inject.weight",
+        "attn_q_a.weight", "attn_kv_a_mqa.weight", "attn_kv_b.weight" };
+    static const char *const dense[] = { "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight" };
+    char name[128];
+    uint64_t wb = 0;
+    for (size_t i = 0; i < sizeof mixer / sizeof *mixer; i++) {
+        snprintf(name, sizeof name, "blk.%d.%s", l, mixer[i]);
+        const gguf_tensor *t = gguf_find_tensor(g, name);
+        if (t) wb += gpu_plan_binding_bytes(t->nbytes, true);
+    }
+    snprintf(name, sizeof name, "blk.%d.ffn_gate_inp.weight", l);
+    if (!gguf_find_tensor(g, name))
+        for (size_t i = 0; i < sizeof dense / sizeof *dense; i++) {
+            snprintf(name, sizeof name, "blk.%d.%s", l, dense[i]);
+            const gguf_tensor *t = gguf_find_tensor(g, name);
+            if (t) wb += gpu_plan_binding_bytes(t->nbytes, true);
+        }
+    return wb;
+}
+
 bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
-                   uint64_t headroom, int max_layers) {
+                   uint64_t headroom, int max_layers, bool host_experts) {
     if (f->n_layer <= 0) return false;
     char key[128];
     const char *arch = gguf_get_str(g, "general.architecture", "");
@@ -1252,7 +1284,8 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     // (model_gpu_recurrent_cost); the families cuda.c runs on the device
     int rec = (!strcmp(arch, "qwen35") || !strcmp(arch, "qwen35moe") ||
                !strcmp(arch, "qwen4exp") || !strcmp(arch, "clef")) ? MODEL_GPU_REC_DELTANET
-            : (!strcmp(arch, "granitehybrid") || !strcmp(arch, "nemotron_h")) ? MODEL_GPU_REC_MAMBA2
+            : (!strcmp(arch, "granitehybrid") || !strcmp(arch, "nemotron_h") ||
+               !strcmp(arch, "nemotron_h_moe")) ? MODEL_GPU_REC_MAMBA2
             : MODEL_GPU_REC_NONE;
     uint64_t ssm_conv   = gguf_get_u32(g, FK("ssm.conv_kernel"), 0);
     uint64_t ssm_inner  = gguf_get_u32(g, FK("ssm.inner_size"), 0);
@@ -1269,7 +1302,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
         uint32_t every = gguf_get_u32(g, FK("full_attention_interval"), 4);
         for (int l = 0; l < f->n_layer; l++) if (!every || (l + 1) % every != 0) rec_n++;
     } else if (rec == MODEL_GPU_REC_MAMBA2) {
-        bool nemo = !strcmp(arch, "nemotron_h");
+        bool nemo = !strcmp(arch, "nemotron_h") || !strcmp(arch, "nemotron_h_moe");
         for (int l = 0; l < f->n_layer; l++)
             if (gguf_get_u32_idx(g, FK("attention.head_count_kv"), (uint64_t)l, 0) == 0 &&
                 (!nemo || gguf_get_u32_idx(g, FK("feed_forward_length"), (uint64_t)l, 0) == 0))
@@ -1285,12 +1318,13 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     if (!lb || !cost) { free(lb); free(cost); free(geo.kv_dim); return false; }
     uint64_t tables = 0;
     for (int l = 0; l < blocks; l++) {
-        gpu_layer_charge c = model_cuda_layer_charge(g, l, false);
-        lb[l] = c.file;
+        gpu_layer_charge c = model_cuda_layer_charge(g, l, host_experts);
+        lb[l] = host_experts ? fit_layer_host_expert_bytes(g, l) : c.file;
         if (l < f->n_layer || f->mtp) cuda_charge_add(&tables, c.tables);
     }
-    // the once-made all-ones expert scale table (cuda.c moe_ones)
-    if (f->n_expert > 0) cuda_charge_add(&tables, 4 * (uint64_t)f->n_expert);
+    // the once-made all-ones expert scale table (cuda.c moe_ones), made only
+    // when a bank runs on the device
+    if (f->n_expert > 0 && !host_experts) cuda_charge_add(&tables, 4 * (uint64_t)f->n_expert);
     uint64_t tok = 0, out = 0, n_vocab = 0;
     for (uint64_t i = 0; i < g->n_tensors; i++) {
         const gguf_tensor *t = &g->tensors[i];
@@ -1392,6 +1426,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
             host_w = (uint64_t)((double)host_w * (double)f->hot / (double)resident);
         f->gpu_layers[k] = G;
         f->gpu_used[k] = used;
+        f->gpu_weights[k] = dev_w;
         // the host's cache is the same layout: ringed sliding layers there too
         f->host_need[k] = host_w + (ring ? ring_kv : per_tok[k] * (uint64_t)f->n_ctx * slots);
     }

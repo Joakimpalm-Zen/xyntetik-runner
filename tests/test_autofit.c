@@ -222,14 +222,14 @@ static void test_fit_gpu(const char *fixture) {
     // A budget far beyond the file: every layer and the output on the device,
     // so the host keeps nothing but what was never a layer.
     model_fit f = base;
-    ck(model_fit_gpu(&g, &f, 1ull << 40, 512ull << 20, 0), "fit gpu: fills");
+    ck(model_fit_gpu(&g, &f, 1ull << 40, 512ull << 20, 0, false), "fit gpu: fills");
     ck(f.gpu && f.gpu_layers[FIT_KV_F16] == nl, "fit gpu: huge budget, all layers");
     ck(f.host_need[FIT_KV_F16] < base.weights, "fit gpu: host keeps less than the file");
 
     // A budget below the fixed charge: nothing offloads, and the host bill is
     // exactly the RAM-only one, so the verdicts cannot disagree.
     f = base;
-    model_fit_gpu(&g, &f, 1, 512ull << 20, 0);
+    model_fit_gpu(&g, &f, 1, 512ull << 20, 0, false);
     ck(f.gpu_layers[FIT_KV_F16] == 0, "fit gpu: tiny budget, no layers");
     ck(f.host_need[FIT_KV_F16] == base.weights + base.kv_f16,
        "fit gpu: tiny budget bills the whole file and cache to RAM");
@@ -240,13 +240,13 @@ static void test_fit_gpu(const char *fixture) {
 
     // --gpu-layers caps the split like the loader's override.
     f = base;
-    model_fit_gpu(&g, &f, 1ull << 40, 512ull << 20, 1);
+    model_fit_gpu(&g, &f, 1ull << 40, 512ull << 20, 1, false);
     ck(f.gpu_layers[FIT_KV_F16] == 1, "fit gpu: max_layers caps the split");
 
     // The bug: RAM too small for file + cache, enough for what stays on the
     // host. RAM-only says PAGES; the GPU-aware verdict must say FITS.
     f = base;
-    model_fit_gpu(&g, &f, 1ull << 40, 512ull << 20, 0);
+    model_fit_gpu(&g, &f, 1ull << 40, 512ull << 20, 0, false);
     f.available = f.host_need[FIT_KV_F16];
     r = base; r.available = f.available;
     ck(f.available < base.hot + base.kv_fp4, "fit gpu: the case is real (RAM-only short)");
@@ -259,7 +259,7 @@ static void test_fit_gpu(const char *fixture) {
     // The device bytes never exceed the budget, for any format and budget.
     for (uint64_t b = 1; b < (64ull << 20); b = b * 3 + 7) {
         f = base;
-        model_fit_gpu(&g, &f, b, 0, 0);
+        model_fit_gpu(&g, &f, b, 0, 0, false);
         for (int k = 0; k < 4; k++)
             if (f.gpu_layers[k] >= 0 && f.gpu_used[k] > b) {
                 ck(0, "fit gpu: device bytes stay inside the budget");
@@ -276,7 +276,7 @@ static void test_fit_gpu(const char *fixture) {
     // and the two host bills differ by the two whole caches (the rule this
     // replaced billed only the CPU layers' rows: zero here, for both).
     f = base;
-    model_fit_gpu(&g, &f, 1ull << 40, 512ull << 20, 0);
+    model_fit_gpu(&g, &f, 1ull << 40, 512ull << 20, 0, false);
     ck(base.kv_q8 && f.gpu_layers[FIT_KV_F16] == nl && f.gpu_layers[FIT_KV_Q8] == nl,
        "fit gpu: the fixture takes a full split in f16 and q8");
     ck(f.host_need[FIT_KV_F16] - f.host_need[FIT_KV_Q8] == base.kv_f16 - base.kv_q8,
@@ -286,8 +286,8 @@ static void test_fit_gpu(const char *fixture) {
     // scratch, the weights once; the split and both verdicts charge N.
     model_fit one = base, two = base;
     two.n_seq = 2;
-    model_fit_gpu(&g, &one, 1ull << 40, 512ull << 20, 0);
-    model_fit_gpu(&g, &two, 1ull << 40, 512ull << 20, 0);
+    model_fit_gpu(&g, &one, 1ull << 40, 512ull << 20, 0, false);
+    model_fit_gpu(&g, &two, 1ull << 40, 512ull << 20, 0, false);
     ck(two.gpu_fixed > one.gpu_fixed, "fit slots: a second slot adds its scratch to the fixed charge");
     ck(two.host_need[FIT_KV_F16] == one.host_need[FIT_KV_F16] + base.kv_f16,
        "fit slots: a second slot adds exactly one more KV cache to RAM");
@@ -306,8 +306,8 @@ static void test_fit_gpu(const char *fixture) {
         model_fit flat = base, gathered = base;
         gathered.gathered = 1024;
         gathered.hot -= 1024;
-        model_fit_gpu(&g, &flat, budget, 512ull << 20, 0);
-        model_fit_gpu(&g, &gathered, budget, 512ull << 20, 0);
+        model_fit_gpu(&g, &flat, budget, 512ull << 20, 0, false);
+        model_fit_gpu(&g, &gathered, budget, 512ull << 20, 0, false);
         ck(flat.host_need[FIT_KV_F16] - gathered.host_need[FIT_KV_F16] == 1024,
            "fit gpu: gathered bytes leave the host bill at full and zero offload");
         ck(flat.gpu_used[FIT_KV_F16] == gathered.gpu_used[FIT_KV_F16],
@@ -349,50 +349,50 @@ static void test_fit_gpu_boundaries(const char *fixture) {
     const uint64_t extra = out;
     const uint64_t kvl = base.kv_f16_per_tok / (uint64_t)nl * (uint64_t)base.n_ctx;
     model_fit f = base;
-    model_fit_gpu(&g, &f, 1ull << 40, 0, 0);
+    model_fit_gpu(&g, &f, 1ull << 40, 0, 0, false);
     const uint64_t fixed = f.gpu_fixed;
     uint64_t all = fixed;
     for (int l = 0; l < nl; l++) all += lb[l] + kvl;
     const int K = FIT_KV_F16;
 
-    f = base; model_fit_gpu(&g, &f, fixed - 1, 0, 0);
+    f = base; model_fit_gpu(&g, &f, fixed - 1, 0, 0, false);
     ck(f.gpu_layers[K] == 0 && f.gpu_used[K] == 0,
        "fit gpu boundaries: below the fixed charge nothing is on the device");
-    f = base; model_fit_gpu(&g, &f, fixed, 0, 0);
+    f = base; model_fit_gpu(&g, &f, fixed, 0, 0, false);
     ck(f.gpu_layers[K] == 0 && f.gpu_used[K] == fixed,
        "fit gpu boundaries: the fixed charge alone holds no layer");
-    f = base; model_fit_gpu(&g, &f, fixed + lb[0] + kvl - 1, 0, 0);
+    f = base; model_fit_gpu(&g, &f, fixed + lb[0] + kvl - 1, 0, 0, false);
     ck(f.gpu_layers[K] == 0, "fit gpu boundaries: a byte short of the first layer");
-    f = base; model_fit_gpu(&g, &f, fixed + lb[0] + kvl, 0, 0);
+    f = base; model_fit_gpu(&g, &f, fixed + lb[0] + kvl, 0, 0, false);
     ck(f.gpu_layers[K] == 1 && f.gpu_used[K] == fixed + lb[0] + kvl,
        "fit gpu boundaries: exactly the first layer");
     // every layer fits but the full split's charge does not: the last layer
     // goes back to the host
-    f = base; model_fit_gpu(&g, &f, all, 0, 0);
+    f = base; model_fit_gpu(&g, &f, all, 0, 0, false);
     ck(f.gpu_layers[K] == nl - 1 && f.gpu_used[K] == all - lb[nl - 1] - kvl,
        "fit gpu boundaries: all layers without the output charge give one back");
-    f = base; model_fit_gpu(&g, &f, all + extra - 1, 0, 0);
+    f = base; model_fit_gpu(&g, &f, all + extra - 1, 0, 0, false);
     ck(f.gpu_layers[K] == nl - 1,
        "fit gpu boundaries: a byte short of the full split (output charged once)");
-    f = base; model_fit_gpu(&g, &f, all + extra, 0, 0);
+    f = base; model_fit_gpu(&g, &f, all + extra, 0, 0, false);
     ck(f.gpu_layers[K] == nl && f.gpu_used[K] == all + extra,
        "fit gpu boundaries: exactly the full split, output included");
     // --gpu-layers below the natural split caps it; at or above, changes nothing
-    f = base; model_fit_gpu(&g, &f, all + extra, 0, nl - 1);
+    f = base; model_fit_gpu(&g, &f, all + extra, 0, nl - 1, false);
     ck(f.gpu_layers[K] == nl - 1, "fit gpu boundaries: max_layers caps a full split");
-    f = base; model_fit_gpu(&g, &f, fixed + lb[0] + kvl, 0, nl);
+    f = base; model_fit_gpu(&g, &f, fixed + lb[0] + kvl, 0, nl, false);
     ck(f.gpu_layers[K] == 1, "fit gpu boundaries: a cap above the split changes nothing");
     // the headroom is part of the fixed charge, byte for byte
-    f = base; model_fit_gpu(&g, &f, 1ull << 40, 4096, 0);
+    f = base; model_fit_gpu(&g, &f, 1ull << 40, 4096, 0, false);
     ck(f.gpu_fixed == fixed + 4096, "fit gpu boundaries: headroom joins the fixed charge");
     // two slots: the first layer costs its weights plus two KV shares, on a
     // fixed charge that holds two scratch sets
     model_fit two = base; two.n_seq = 2;
-    model_fit_gpu(&g, &two, 1ull << 40, 0, 0);
+    model_fit_gpu(&g, &two, 1ull << 40, 0, 0, false);
     const uint64_t fixed2 = two.gpu_fixed;
-    two = base; two.n_seq = 2; model_fit_gpu(&g, &two, fixed2 + lb[0] + 2 * kvl - 1, 0, 0);
+    two = base; two.n_seq = 2; model_fit_gpu(&g, &two, fixed2 + lb[0] + 2 * kvl - 1, 0, 0, false);
     ck(two.gpu_layers[K] == 0, "fit gpu boundaries: two slots, a byte short of the first layer");
-    two = base; two.n_seq = 2; model_fit_gpu(&g, &two, fixed2 + lb[0] + 2 * kvl, 0, 0);
+    two = base; two.n_seq = 2; model_fit_gpu(&g, &two, fixed2 + lb[0] + 2 * kvl, 0, 0, false);
     ck(two.gpu_layers[K] == 1 && two.gpu_used[K] == fixed2 + lb[0] + 2 * kvl,
        "fit gpu boundaries: two slots, exactly the first layer");
     gguf_close(&g);
@@ -585,7 +585,7 @@ static void test_fit_layer_tables(const char *fixture) {
                                        gguf_find_tensor(&g, "token_embd.weight")->ne[1]);
     uint64_t fixed = ac.fixed + GPU_WINDOW_MIN * ac.per_col;
     uint64_t budget = fixed + raw + f.kv_f16 + out->nbytes + 1536 - 1;
-    ck(model_fit_gpu(&g, &f, budget, 0, 0), "table fixture device fit");
+    ck(model_fit_gpu(&g, &f, budget, 0, 0, false), "table fixture device fit");
     ck(f.gpu_layers[FIT_KV_F16] == 1,
        "norm and bias f32 tables move the full split by one byte");
     ck(f.gpu_fixed == fixed + 1536, "tables are shared fixed bytes, including host layers");
@@ -593,7 +593,7 @@ static void test_fit_layer_tables(const char *fixture) {
     ck(charge.file == raw / 2 && charge.tables == 768,
        "shared layer charge keeps file bytes and expanded tables distinct");
     f.n_seq = 2;
-    ck(model_fit_gpu(&g, &f, 1ull << 40, 0, 0) && f.gpu_fixed == 2 * fixed + 1536,
+    ck(model_fit_gpu(&g, &f, 1ull << 40, 0, 0, false) && f.gpu_fixed == 2 * fixed + 1536,
        "two slots share the f32 tables, not two copies");
     gguf_close(&g);
 }

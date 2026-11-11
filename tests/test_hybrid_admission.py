@@ -385,12 +385,15 @@ def test_nemotron_h_moe_cpu_moe_default_0_keeps_the_cpu_and_names_the_flag(
     assert "CUDA backend" not in err, err
 
 
-def test_the_fit_says_when_the_load_keeps_the_experts_on_the_host(runner_bin, models, tmp_path):
-    """R3.43a.2: --info fit sizes a full offload, which a load that keeps the
-    experts on the host (nemotron_h_moe's default, or an explicit --cpu-moe)
-    does not make. Until the fit models that placement (R3.58), it says so."""
+def test_the_fit_says_where_the_experts_go(runner_bin, models, tmp_path):
+    """R3.43a.2 and R3.58: --info fit names a load that keeps every expert bank
+    on the host (nemotron_h_moe's default, or --cpu-moe) and sizes it as that
+    load (tests/test_cuda_fit_hybrid.py holds the bytes); --cpu-moe auto and N
+    keep only some banks on the host, which the fit does not model: it sizes a
+    full offload for them and says so."""
     _cuda_or_skip(runner_bin)
-    note = "the split above sizes a full offload; this load keeps the experts"
+    host = "experts       on the host, with their routing"
+    note = "the split above sizes a full offload"
 
     def fit(model, *extra, env_extra=None):
         p = subprocess.run([runner_bin, "--info", "fit", "-m", str(model), *extra], cwd=ROOT,
@@ -400,14 +403,19 @@ def test_the_fit_says_when_the_load_keeps_the_experts_on_the_host(runner_bin, mo
         return p.stdout
 
     nemo, _ = models["nemotron_h_moe"]
-    assert note in fit(nemo) and "(the default for this router)" in fit(nemo)
-    assert note not in fit(nemo, env_extra={"RUNNER_CPU_MOE_DEFAULT": "0"})
+    assert host in fit(nemo) and "(the default for this router)" in fit(nemo)
+    assert host not in fit(nemo, env_extra={"RUNNER_CPU_MOE_DEFAULT": "0"})
     subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py", str(tmp_path / "m")],
                    check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
     plain = tmp_path / "m.moe4.gguf"
-    assert note not in fit(plain)
+    out = fit(plain)
+    assert host not in out and note not in out
     out = fit(plain, "--cpu-moe")
-    assert note in out and "(--cpu-moe)" in out
+    assert host in out and "(--cpu-moe)" in out and note not in out
+    out = fit(plain, "--cpu-moe", "auto")
+    assert note in out and "the budget leaves out" in out and host not in out
+    out = fit(plain, "--cpu-moe", "1")
+    assert note in out and "the deepest expert banks" in out and host not in out
 
 
 def test_nemotron_h_moe_routes_with_a_sigmoid_when_the_file_names_no_gating(

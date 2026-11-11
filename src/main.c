@@ -1735,14 +1735,38 @@ static int run_fit_check(const char *path, int n_ctx_want,
     f.kv_ring_mode = mp->kv_ring;
     f.n_batch = mp->n_batch > 0 ? mp->n_batch
               : mp->gpu_mode == GPU_AUTO ? model_batch_default_for(plat_ram_bytes()) : 64;
+    // R3.58: a load that keeps every expert bank on the host (--cpu-moe, or
+    // nemotron_h_moe's CUDA default, model.c model_default_placement) is
+    // charged as that load charges it. --cpu-moe N and auto keep only some
+    // banks on the host and are not modelled; the note below says so.
+    bool host_experts = false, host_default = false;
+#ifdef RUNNER_GPU_CUDA
+    {
+        char k1[96], k2[96], k3[96];
+        snprintf(k1, sizeof k1, "%s.expert_gating_func", farch);
+        snprintf(k2, sizeof k2, "%s.expert_weights_scale", farch);
+        snprintf(k3, sizeof k3, "%s.moe_latent_size", farch);
+        uint32_t gating = gguf_get_u32(&g, k1, 2);   // the loader's default for this family: sigmoid
+        float wscale = gguf_get_f32(&g, k2, 1.0f);
+        const char *dflt = getenv("RUNNER_CPU_MOE_DEFAULT");
+        host_default = !mp->cpu_moe && !strcmp(farch, "nemotron_h_moe") &&
+                       gguf_get_u32(&g, k3, 0) == 0 &&
+                       (gating != 1 || (wscale != 0.0f && wscale != 1.0f)) &&
+                       !(dflt && !strcmp(dflt, "0"));
+        host_experts = host_default || (mp->cpu_moe && mp->cpu_moe_layers == CPU_MOE_ALL);
+    }
+#endif
     if (mp->gpu_mode != GPU_OFF && !cpu_why && gpu_available(gname, sizeof gname) &&
         gpu_offload_budget(mp->reserve_vram_pct, &gbudget, &gheadroom))
-        model_fit_gpu(&g, &f, gbudget, gheadroom, mp->gpu_layers_override);
+        model_fit_gpu(&g, &f, gbudget, gheadroom, mp->gpu_layers_override, host_experts);
     // the loader's own line has the same two figures (cuda.c, gpu-split)
     if (f.gpu && getenv("RUNNER_DEBUG_VRAM")) {
         fprintf(stderr, "fit: (bytes: fixed %llu, headroom %llu)\n",
                 (unsigned long long)f.gpu_fixed, (unsigned long long)gheadroom);
         // the split's own figures, beside the loader's gpu-split line
+        fprintf(stderr, "fit: (bytes: used %llu, weights %llu, layers %d)\n",
+                (unsigned long long)f.gpu_used[0], (unsigned long long)f.gpu_weights[0],
+                f.gpu_layers[0]);
         fprintf(stderr, "fit: f16 G=%d/%d used=%.3fGB budget=%.3fGB ring=%d (%d rows on %d layers)\n",
                 f.gpu_layers[0], f.n_layer, f.gpu_used[0] / 1e9, f.gpu_budget / 1e9,
                 (int)f.kv_ring[0], f.kv_ring_rows, f.n_swa_layers);
@@ -1816,27 +1840,17 @@ static int run_fit_check(const char *path, int n_ctx_want,
             first = 0;
         }
         printf("\n");
-#ifdef RUNNER_GPU_CUDA
-        // R3.43a.2: a load that keeps the experts on the host (an explicit
-        // --cpu-moe, or nemotron_h_moe's default: its router has no device
-        // kernel) places them differently from the split above, which sizes a
-        // full offload. Said in one line until the fit models that placement
-        // (R3.58).
-        char gkey[96], skey[96];
-        snprintf(gkey, sizeof gkey, "%s.expert_gating_func", farch);
-        snprintf(skey, sizeof skey, "%s.expert_weights_scale", farch);
-        uint32_t gating = gguf_get_u32(&g, gkey, 2);   // the loader's default for this family: sigmoid
-        float wscale = gguf_get_f32(&g, skey, 1.0f);
-        const char *dflt = getenv("RUNNER_CPU_MOE_DEFAULT");
-        bool host_default = !strcmp(farch, "nemotron_h_moe") &&
-                            (gating != 1 || (wscale != 0.0f && wscale != 1.0f)) &&
-                            !(dflt && !strcmp(dflt, "0"));
-        if (f.sparse && (mp->cpu_moe || host_default))
-            printf("  NOTE          the split above sizes a full offload; this load keeps the "
-                   "experts and their routing on the host and runs the rest on the GPU (%s), "
-                   "so the GPU holds less and RAM more than shown\n",
-                   mp->cpu_moe ? "--cpu-moe" : "the default for this router");
-#endif
+        // a --cpu-moe N or auto load keeps only some banks on the host (the
+        // deepest N, or those the budget leaves out), which the split above
+        // does not model: it sizes a full offload for them, as before R3.58
+        if (f.sparse && mp->cpu_moe && mp->cpu_moe_layers != CPU_MOE_ALL)
+            printf("  NOTE          the split above sizes a full offload; this load keeps %s on "
+                   "the host, so the GPU holds less and RAM more than shown\n",
+                   mp->cpu_moe_layers == CPU_MOE_AUTO ? "the expert banks the budget leaves out"
+                                                      : "the deepest expert banks");
+        else if (f.sparse && host_experts)
+            printf("  experts       on the host, with their routing (%s); the GPU runs the rest\n",
+                   host_default ? "the default for this router" : "--cpu-moe");
     }
 
     // the RAM-only lines below price every slot's cache, as the verdict does
