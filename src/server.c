@@ -1979,29 +1979,49 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
 // response id would hand out the name of a stored response (R10.15).
 static pthread_mutex_t rq_ids_mu = PTHREAD_MUTEX_INITIALIZER;
 
-bool server_request_begin(slot_t *s, const char *response_id) {
-    bool ok = true;
-    pthread_mutex_lock(&rq_ids_mu);
+// Takes the slot's ids for a new request, under rq_ids_mu: false when another
+// active request holds the same X-Request-Id, and then nothing is taken.
+static bool request_take_ids(slot_t *s, const char *response_id) {
     for (int i = 0; s->cid_next[0] && SV.slots && i < SV.n_slots; i++) {
         slot_t *o = &SV.slots[i];
-        if (o != s && o->rq_live && !strcmp(o->rq_cid, s->cid_next)) ok = false;
+        if (o != s && o->rq_live && !strcmp(o->rq_cid, s->cid_next)) return false;
     }
-    if (ok) {
-        snprintf(s->rq_id, sizeof s->rq_id, "%s", response_id);
-        snprintf(s->rq_cid, sizeof s->rq_cid, "%s", s->cid_next);
-        atomic_store(&s->rq_cancel, 0);
-        atomic_store(&s->rq_gen, 0);
-        atomic_fetch_add(&s->rq_seq, 1);
-        s->rq_live = true;
-    }
+    snprintf(s->rq_id, sizeof s->rq_id, "%s", response_id);
+    snprintf(s->rq_cid, sizeof s->rq_cid, "%s", s->cid_next);
+    atomic_store(&s->rq_cancel, 0);
+    atomic_store(&s->rq_gen, 0);
+    atomic_fetch_add(&s->rq_seq, 1);
+    atomic_store(&SV.load_owner_cancelled, 0);
+    s->rq_live = true;
+    return true;
+}
+
+bool server_request_begin(slot_t *s, const char *response_id) {
+    pthread_mutex_lock(&rq_ids_mu);
+    bool ok = true;
+    // Claimed before the swap (R10.12.3.3): the request is the same one, so
+    // only its response id is new. Its cancel flag and sequence stay as they
+    // are: a cancel that came during the load is still owed its answer.
+    if (s->rq_live) snprintf(s->rq_id, sizeof s->rq_id, "%s", response_id);
+    else ok = request_take_ids(s, response_id);
     pthread_mutex_unlock(&rq_ids_mu);
     return ok;
 }
+
+bool server_request_claim(slot_t *s, bool loading) {
+    pthread_mutex_lock(&rq_ids_mu);
+    bool ok = request_take_ids(s, "");
+    if (ok && loading) atomic_store(&s->rq_phase, 3);
+    pthread_mutex_unlock(&rq_ids_mu);
+    return ok;
+}
+
 
 void server_request_end(slot_t *s) {
     pthread_mutex_lock(&rq_ids_mu);
     if (s->rq_live) {
         s->rq_live = false;
+        atomic_store(&SV.load_owner_cancelled, 0);
         atomic_store(&s->rq_end_gen, atomic_load(&s->rq_gen));
         atomic_store(&s->rq_end_seq, atomic_load(&s->rq_seq));
     }
@@ -2043,15 +2063,23 @@ static void cancel_answer(cancel_wait *w) {
     while (atomic_load(&w->s->rq_end_seq) != w->seq && now_s() < until)
         plat_sleep_ms(5);
     if (atomic_load(&w->s->rq_end_seq) != w->seq) {
-        send_error_detail(w->fd, 504, "the request has not stopped yet; it stops "
-                          "at its next step", NULL, "cancel_pending");
+        send_error_detail(w->fd, 504, w->phase == 3
+                          ? "the request's model load is still running; a cancel "
+                            "does not stop a load, and the request ends, before "
+                            "its prompt, when the load is done"
+                          : "the request has not stopped yet; it stops at its "
+                            "next step", NULL, "cancel_pending");
         return;
     }
+    // a request cancelled while its model loaded has no response id yet
+    char rid[52] = "null";
+    if (w->rid[0]) snprintf(rid, sizeof rid, "\"%s\"", w->rid);
     char b[256];
-    int n = snprintf(b, sizeof b, "{\"id\":\"%s\",\"request_id\":\"%s\","
+    int n = snprintf(b, sizeof b, "{\"id\":\"%s\",\"request_id\":%s,"
                      "\"cancelled\":true,\"phase\":\"%s\",\"generated\":%d}",
-                     w->id, w->rid,
-                     w->phase == 2 ? "generate" : w->phase == 1 ? "prefill" : "starting",
+                     w->id, rid,
+                     w->phase == 3 ? "loading" : w->phase == 2 ? "generate"
+                     : w->phase == 1 ? "prefill" : "starting",
                      atomic_load(&w->s->rq_end_gen));
     send_response(w->fd, 200, "application/json", b, (size_t)n);
 }
@@ -2076,6 +2104,8 @@ static bool handle_cancel(sock_t fd, const char *path, bool may_detach) {
         slot_t *o = &SV.slots[i];
         if (o->rq_live && (!strcmp(o->rq_id, id) || (o->rq_cid[0] && !strcmp(o->rq_cid, id)))) {
             atomic_store(&o->rq_cancel, 1);
+            // a request still loading its model: the registry's wait reads this
+            if (atomic_load(&o->rq_phase) == 3) atomic_store(&SV.load_owner_cancelled, 1);
             w->s = o;
             w->seq = atomic_load(&o->rq_seq);
             w->phase = atomic_load(&o->rq_phase);
@@ -2174,7 +2204,8 @@ static void send_health(sock_t fd) {
         int w = snprintf(rq + rn, sizeof rq - (size_t)rn,
                          "%s{\"slot\":%d,\"phase\":\"%s\",\"prompt_tokens\":%d,"
                          "\"prompt_done\":%d,\"generated\":%d}",
-                         first_rq ? "" : ",", i, ph == 1 ? "prefill" : "generate",
+                         first_rq ? "" : ",", i,
+                         ph == 3 ? "loading" : ph == 1 ? "prefill" : "generate",
                          atomic_load(&sl->rq_prompt), atomic_load(&sl->rq_done),
                          atomic_load(&sl->rq_gen));
         // a row that does not fit is left out whole; the count above it
@@ -3022,10 +3053,32 @@ static void handle_conn(slot_t *s, sock_t fd) {
             atomic_fetch_add(&SV.active_requests, 1);
             atomic_fetch_add(&SV.total_requests, 1);
             bool ok = true;
-            int sw = SV.n_reg > 0
+            // R10.12.3.3: a completion request takes its ids before the swap,
+            // so a cancel by its X-Request-Id reaches it while its model
+            // loads, and /health lists it as "loading" meanwhile. The exit
+            // below gives them back whichever way the request ends.
+            bool completion = !strcmp(path, "/v1/chat/completions") ||
+                              !strcmp(path, "/v1/completions") ||
+                              !strcmp(path, "/v1/responses") ||
+                              !strcmp(path, "/v1/messages");
+            bool claimed = !completion || server_request_claim(s, SV.n_reg > 0);
+            int sw = !claimed ? 0
+                : SV.n_reg > 0
                 ? swap_to_expect(jv_str(jv_get(req, "model"), NULL), &expect, fd)
                 : single_model_expect(&expect);
-            if (sw == SWAP_EXPECT_MISMATCH || sw == SWAP_EXPECT_UNKNOWN) {
+            if (completion) atomic_store(&s->rq_phase, 0);   // the swap is over
+            if (!claimed) {
+                send_error_detail(fd, 409, "another active request has this X-Request-Id",
+                                  "X-Request-Id", "duplicate_request_id");
+                ok = false;
+            } else if (completion && atomic_load(&s->rq_cancel)) {
+                // cancelled while its model loaded: a load that went on has
+                // finished and stays resident; the prompt is never processed
+                send_error_detail(fd, 409, "request cancelled (POST /v1/runner/requests/"
+                                  "{id}/cancel) while its model loaded, before its "
+                                  "prompt was processed", NULL, "cancelled");
+                ok = false;
+            } else if (sw == SWAP_EXPECT_MISMATCH || sw == SWAP_EXPECT_UNKNOWN) {
                 // R10.12.2: say what IS resident, so the client can decide
                 // without a second round trip
                 bool res = false;

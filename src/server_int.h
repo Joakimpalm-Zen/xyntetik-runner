@@ -49,7 +49,7 @@ struct slot_s {
     int        hint_cap;
     // R10.12.7: what this slot is doing, for /health. Written by the slot's
     // worker, read by the accept thread, so every field is atomic. rq_phase:
-    // 0 idle, 1 prefill, 2 generating. rq_done counts prompt tokens that are
+    // 0 idle, 1 prefill, 2 generating, 3 loading its model (R10.12.3.3). rq_done counts prompt tokens that are
     // in the KV (reused ones included), rq_gen tokens generated.
     atomic_int rq_phase, rq_prompt, rq_done, rq_gen;
     // R10.12.3.2: the request a cancel can name, by its response id or the
@@ -166,6 +166,12 @@ typedef struct {
     bool         pending_unload;  // /unload arrived while busy; honoured at the next safe point
     atomic_int   load_cancel;     // aborts a --wait-for-vram queue wait, and discards the load
     sock_t       load_owner;      // the request a load runs for; the loading thread's alone
+    // R10.12.3.3: a cancel by id reached the request while it was loading its
+    // model. Set by the cancel, cleared when a request takes or gives back its
+    // ids (server.c); the registry's wait only reads it, as it reads
+    // load_owner, so the registry never needs the server's code. Registry
+    // mode is single-slot, so one request owns the flag at a time.
+    atomic_int   load_owner_cancelled;
     atomic_bool shutdown;
     pthread_t   reaper_th;
     bool        reaper_started;
@@ -251,6 +257,11 @@ void server_record_work(const work_record *w);
 // request holds the same X-Request-Id, nothing is registered), and the slot
 // gives them back when the request has ended, whatever way it ended.
 bool server_request_begin(slot_t *s, const char *response_id);
+// R10.12.3.3: the same claim made before the request's model is swapped in,
+// with no response id yet, so a cancel by X-Request-Id reaches it during the
+// load; loading marks it phase 3 until the swap returns. server_request_begin
+// on a claimed slot only adds the response id.
+bool server_request_claim(slot_t *s, bool loading);
 void server_request_end(slot_t *s);
 void server_work_totals(work_totals *out);
 
