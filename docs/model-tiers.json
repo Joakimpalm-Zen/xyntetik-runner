@@ -4777,22 +4777,110 @@
       }
     },
     {
-      "id": "nemotron-3.5-bolt-74b-a9b",
-      "model": "Nemotron 3.5 Bolt-74B-A9B",
-      "tier": "upcoming",
-      "claim": "Text path only: Bolt ships a vision projector that is not loaded. Runner refuses NVIDIA's own GGUF at load: its LatentMoE layout is not implemented (R4.27.4.2).",
+      "id": "nemotron-3.5-bolt-74b-a9b-24gb",
+      "model": "NVIDIA Nemotron 3.5 Bolt-74B-A9B (NVIDIA)",
+      "family": "NVIDIA Nemotron 3.5 Bolt",
+      "tier": "tier2",
+      "claim": "Text path only (the vision projector is not loaded), NVIDIA's own 24GB GGUF of Nemotron 3.5 Bolt-74B-A9B (the experts at IQ2_XXS, the Mamba-2 projections at NVFP4), CPU only: Runner agrees with llama.cpp 36a0e2f on the same bytes at 0.0072 mean KLD and 100.00% margin-qualified top-1 (bars 0.05 and 97%, 300 positions). Agreement, not fidelity: the 149.8 GB BF16 parent cannot be held in float32 on the lab host, so no publisher reference was read.",
       "architecture": "nemotron_h_moe",
-      "missing": "Loader support for NVIDIA's own GGUF (nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF at e0fecb69, 22.0 GB, experts at IQ2_XXS, Mamba-2 projections at NVFP4): the LatentMoE projections the experts run behind (ffn_latent_down and ffn_latent_up, 4,096 to 1,024 wide); the per-layer expert_used_count and expert_feed_forward_length arrays, which Runner reads as scalars (it reports 0 experts used and refuses the expert config); and per-layer expert counts by tensor shape (240 at block 1 against the declared 496). The 149.8 GB BF16 parent cannot be held beside a float32 reference on the lab host, so the anchor would be another engine on the same bytes. Then the Lightning gate list.",
+      "upstream": {
+        "checkpoint": "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16",
+        "revision": "e09a4cedb1787db1760375ee5539f222cae0c672"
+      },
+      "licence": {
+        "id": "openmdw-1.1",
+        "from": "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16"
+      },
+      "files": [
+        {
+          "name": "NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf",
+          "repo": "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF",
+          "revision": "e0fecb69cb3e5e4c5e8a056fa2aec98c78e91246",
+          "sha256": "91d63363e782c8a3d5f4be42816eba8e0d42dd2530bd07a7d0d2dc440599af75",
+          "bytes": 22018326528
+        }
+      ],
+      "quantization": "NVIDIA's 24GB GGUF: routed and shared experts IQ2_XXS, Mamba-2 projections NVFP4 with per-tensor scales, attention, latent projections, embeddings and head Q8_0",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "infeasible",
+        "anchor": "anchor: agreement with another engine, not fidelity. Runner against llama.cpp 36a0e2f (llama-server, CPU, flash attention off) on the same held bytes, kld-compare-raw.py over gold-corpus-2k, 300 positions at stride 15, top-20: mean KLD 0.0072 (median 0.0026, p99 0.066, max 0.163) / 96.33% top-1 / 100.00% margin-qualified (the 11 picks that differ are inside the 0.5-nat tie band); one further position failed to score and is outside the 300. No float32 reference: NVIDIA's BF16 parent is 149.8 GB, about 300 GB in float32. Tokenizer 0/721 corpus strings and 0/128,635 vocabulary entries against its tokenizer.json at e09a4ced; template conformance 24/24 in text and tokens (the file's template is the repository's chat_template.jinja byte for byte). Record: docs/compat-reports/nemotron-3.5-bolt-74b-a9b-2026-11-11/README.md.",
+        "context": 4096,
+        "limitations": "22.0 GB of weights, CPU only: LatentMoE, the per-layer expert widths and the sigmoid-plus-bias router have no device path, so CUDA and Metal refuse the file by name and it runs on the CPU. NVIDIA names the file for a 24 GB card; that use is not met. The CPU prompt pass is slow in this release: a cold 4,470-word prompt took 494.6 s where llama.cpp took 65.9 s on the same 40 shared CPUs (one request each, the K-agree timing probe; R3.57). Text only: the vision projector NVIDIA ships beside it is not loaded. LoRA: neither training nor serving (Mamba-2 hybrid). Licence: openmdw-1.1.",
+        "evidence": [
+          "docs/compat-reports/nemotron-3.5-bolt-74b-a9b-2026-11-11/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A float32 reference (the parent does not fit on the lab host); the device paths for LatentMoE, per-layer expert widths and the router; a Metal cell; the tool protocol; task quality on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cpu"
+      },
+      "backends": {
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.16.0",
+          "date": "2026-11-11",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "f2e40988b13a294960d659b5dd0fdb983e979740",
+          "caps": {
+            "version": "1.16.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "79e9b26efc84e844716cdaa3ad23dc18f6262ed7ae110e6db0f036d1400ab7bc",
+          "ran": "runner -m NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/nemotron-3.5-bolt-74b-a9b-24gb.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "42639519abec38c9b29b3bf0fbbcd973023c42265b7c68e206bb0542ae029bf3",
+            "compiler": "13.3.0"
+          }
+        },
+        "cuda": {
+          "kind": "limit",
+          "reason": "LatentMoE (the routed experts at width 1,024 between ffn_latent_down and ffn_latent_up) has no device path: cuda_admit says \"LatentMoE (experts at width 1024 between ffn_latent_down and ffn_latent_up) has no device path, running on CPU\". The per-layer expert widths (1,536 to 2,560) and the router (sigmoid gating with a selection bias) have no device path either. The file runs on the CPU.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "metal": {
+          "kind": "limit",
+          "reason": "Not measured: Metal refuses LatentMoE by name.",
+          "matrix": "MANUAL.md#support-matrix"
+        }
+      },
       "transitions": [
         {
           "tier": "upcoming",
           "effective": "2026-10-22",
           "reason": "Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22).",
           "last_validated_release": null
+        },
+        {
+          "tier": "tier2",
+          "effective": "2026-11-11",
+          "reason": "Joins the roster 2026-11-11 with the admitting CPU cell from the lab CPU lane (R4.27.4.4 S2), on agreement with llama.cpp on the same bytes: the parent cannot be held in float32. Maintained on report.",
+          "last_validated_release": null
         }
       ],
-      "anchor": "anchor: agreement with another engine, not fidelity.",
-      "vision_upstream": true
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "recurrent architecture (Mamba-2)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover Mamba-2 hybrid architectures yet (nemotron_h_moe)"
+        },
+        "runner_version": "1.16.0",
+        "date": "2026-11-11"
+      }
     },
     {
       "id": "nemotron-3.5-super-vl-120b-a12b-q4_0",

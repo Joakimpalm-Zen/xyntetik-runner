@@ -1953,6 +1953,37 @@
       }
     },
     {
+      "id": "nemotron-3.5-bolt-74b-a9b-24gb",
+      "architecture": "nemotron_h_moe",
+      "family": "Nemotron 3.5 Lightning",
+      "file": "models/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf",
+      "sha256": "91d63363e782c8a3d5f4be42816eba8e0d42dd2530bd07a7d0d2dc440599af75",
+      "upstream": "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF",
+      "tokenizer_reference": "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16",
+      "tokenizer_reference_revision": "e09a4cedb1787db1760375ee5539f222cae0c672",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/nemotron-3.5-bolt-74b-a9b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "NVIDIA's own 24GB GGUF of nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16 (revision e0fecb69 of nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF), architecture nemotron_h_moe with LatentMoE and per-layer experts: 88 blocks (40 Mamba-2, 40 MoE, 8 attention), 240 to 496 experts by block (each block's router gives its count), top 9, 1,536 to 2,560 wide by block at a latent width of 1,024 between ffn_latent_down and ffn_latent_up, plus a full-width shared expert, a sigmoid router with a selection bias. The experts are IQ2_XXS and the Mamba-2 projections NVFP4. Text path only: the vision projector is not loaded. Its tokenizer is NVIDIA's at e09a4ced: 0 of 721 corpus strings and 0 of 128,635 vocabulary entries differ; its template is the repository's chat_template.jinja byte for byte and renders 24 of 24 conformance cases identical under nemotron35 (R4.27.4.4 S2). CPU only: CUDA and Metal refuse LatentMoE.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[INST]",
+            "<<SYS>>",
+            "<|im_start|>"
+          ]
+        }
+      }
+    },
+    {
       "id": "lfm2.5-1.2b-instruct-q8_0",
       "architecture": "lfm2",
       "family": "LFM2.5",
