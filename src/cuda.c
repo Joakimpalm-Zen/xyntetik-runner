@@ -5155,10 +5155,10 @@ static bool mv_twin_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n_
 }
 // The types whose prefill on the scalar route runs the batch-1 GEMV's twins
 // rather than a tile kernel of its own (R6.35 Q4_0; R6.41 Q4_K, Q5_K, Q6_K;
-// R6.50 Q8_0)
+// R6.50 Q8_0; R6.54 Q3_K)
 static bool prefill_twin_type(int type) {
     return type == T_Q4_0 || type == T_Q4_K || type == T_Q5_K || type == T_Q6_K ||
-           type == T_Q8_0;
+           type == T_Q8_0 || type == T_Q3_K;
 }
 static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t);
 
@@ -5308,14 +5308,15 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
             return false;
         return w->scale == 1.0f || enc_scale(g, y, w->scale, n_out, batch, ys);
     }
-    // Prefill (batch > GPU_SMALL_BATCH) of a Q4_0, Q4_K, Q5_K, Q6_K or Q8_0
-    // tensor on the scalar route, ahead of the tiled GEMM. Q4_0's tile kernel
-    // k_mvb_q4_0 and the k_gemm_* of the others sum in another order than the
-    // batch-1 GEMVs (k_gemv_q4_0, and the v2 bodies of k_gemv_q4_K/_q5_K/_q6_K
-    // and k_gemv_q8_0), so a prompt's rows did not carry a lone decode's bits;
-    // under a q8_0 KV cache that difference crossed quantization steps and
-    // spread through the layers (R6.35: test-kv-tol on test-q40.gguf read 10.7x
-    // the reassociation floor; R6.39, R6.41, R6.50). The GEMV's width-classed
+    // Prefill (batch > GPU_SMALL_BATCH) of a Q4_0, Q3_K, Q4_K, Q5_K, Q6_K or
+    // Q8_0 tensor on the scalar route, ahead of the tiled GEMM. Q4_0's tile
+    // kernel k_mvb_q4_0 and the k_gemm_* of the others sum in another order
+    // than the batch-1 GEMVs (k_gemv_q4_0, k_gemv_q3_K, the v2 bodies of
+    // k_gemv_q4_K/_q5_K/_q6_K and k_gemv_q8_0), so a prompt's rows did not
+    // carry a lone decode's bits; under a q8_0 KV cache that difference crossed
+    // quantization steps and spread through the layers (R6.35: test-kv-tol on
+    // test-q40.gguf read 10.7x the reassociation floor; R6.39, R6.41, R6.50,
+    // R6.54). The GEMV's width-classed
     // twins reproduce its bits per column; the 16-wide one runs 16 columns a
     // pass, a lone last column the batch-1 kernel. test-prefill-bits holds the
     // rows a prompt stores.
@@ -5332,7 +5333,8 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         return true;
     }
     // Prefill (batch>1) uses the tiled-GEMM variant where available and the
-    // branch above does not take the type (Q3_K, or a missing twin):
+    // branch above does not take the type (every f_gemm type is listed there,
+    // so only one whose 16-wide twin did not load):
     // GEMM_WARPS(=8) rows per block, 256 threads, x staged in shared memory.
     if (batch > 1 && w->scale == 1.0f && g->sw->f_gemm[w->type]) {
         // k_gemm_q8_0 keeps a fixed 8-column tile — a 16-column f32 x-tile
