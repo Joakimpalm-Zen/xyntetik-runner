@@ -1143,9 +1143,11 @@ static void usage_to(FILE *f, const char *prog) {
         "  --systemone FILE  Clef typed decisions: one /v1/systemone request\n"
         "                 (model, state, questions) per line of FILE, one\n"
         "                 response per line on stdout (- reads stdin)\n"
-        "  --shadow-mode  install shadow mode for Claude Code and Codex if present\n"
-        "                 (asks first; --yes skips the question); -m MODEL names\n"
-        "                 the model the /shadow offload will serve\n"
+        "  --shadow-mode  deprecated: keeps working with a warning for the rest\n"
+        "                 of 1.x and is removed no earlier than 2.0.0; installs\n"
+        "                 shadow mode for Claude Code and Codex if present (asks\n"
+        "                 first; --yes skips the question); -m MODEL names the\n"
+        "                 model the /shadow offload will serve\n"
         "  --version      print the runner version and exit\n"
         "  -v             verbose model info\n"
         "  -h, --help     print this help to stdout and exit\n\n"
@@ -2093,6 +2095,15 @@ static int run_recommend(const char *roster_path, double memory_gib, double shar
 #include <process.h>
 #endif
 static int run_shadow_mode(const char *model, bool yes) {
+    // Deprecated in 1.x (docs/versioning.md, R18.8.10): the offload leaves
+    // Runner no earlier than 2.0.0. The warning goes out here, once, before
+    // the hand-off: a successful execvp never returns, and both platforms
+    // fall back to a second interpreter name, so a print beside either
+    // attempt would be lost or repeated.
+    fprintf(stderr, "warning: --shadow-mode is deprecated: it keeps working with "
+                    "this warning for the rest of 1.x and is removed no earlier "
+                    "than 2.0.0\n");
+    fflush(stderr);
     char *exe = plat_executable_path();
 #ifndef _WIN32
     // Linux answers "/proc/self/exe": a link, whose directory is /proc/self.

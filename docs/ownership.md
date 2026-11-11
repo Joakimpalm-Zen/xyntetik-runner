@@ -127,8 +127,9 @@ scratch worktree.
 - **Sources:** the Python package `xyntetik_runner.shadow` (22 files) and `--shadow-mode` in `main.c`.
 - **Boundary:** it uses Runner through HTTP, `/v1/capabilities` and receipts, like any client, and owns
   nothing inside the engine.
-- **Disposition:** planned to leave Runner for a companion product. Whether `--shadow-mode` is deprecated
-  during 1.x is an open decision (R18.8.7). Until it is decided, it works as documented.
+- **Disposition:** planned to leave Runner for a companion product. The owner decided to deprecate it
+  during 1.x (R18.8.7): `--shadow-mode` is marked deprecated in `--help`, warns once at use, keeps working
+  for the rest of 1.x and is removed no earlier than 2.0.0 (R18.8.10).
 
 ### 7. Desktop: a companion
 
