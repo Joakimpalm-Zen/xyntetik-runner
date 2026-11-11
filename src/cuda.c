@@ -5166,9 +5166,24 @@ static bool prefill_takes_twins(const gpu_t *g, const gguf_tensor *w, int n_in, 
     return !mvb_is_mv_twin(w->type) && mv_twin_route(g, w, n_in, n_out) &&
            g->sw->f_gemvb[BW_16][w->type];
 }
+// Whether a matvec of w over batch (> 1) columns on the scalar route runs the
+// batch-1 kernel once per column (R6.58): every type with neither a 16-wide
+// twin on its batch-1 route (prefill_takes_twins) nor a tile kernel that is
+// the batch-1 kernel's twin (mvb_is_mv_twin). Their tiles (k_gemm_*, f_mvb's
+// k_mv_*_b) sum in another order; the batch-1 call per column is its bits by
+// construction, and prefilled 7 to 10x faster than the tile on Q5_0, Q5_1 and
+// IQ4_NL files. Over 8 columns, and 2 to 8 of a scaled tensor (NVFP4's
+// companion), which the small-batch branch does not take;
+// RUNNER_CUDA_SMALL_BATCH=0 keeps the tile for 2 to 8 columns, its A/B.
+static bool prefill_per_column(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out, int batch) {
+    if (batch < 2 || mvb_is_mv_twin(w->type)) return false;
+    if (batch <= GPU_SMALL_BATCH) return w->scale != 1.0f && gpu_small_batch_on();
+    return !prefill_takes_twins(g, w, n_in, n_out);
+}
 // Where a matvec of w over batch (> 1) columns goes on the scalar route, in
 // enc_mv's order below its tensor-core branches: the small-batch branch, the
-// 16-wide twins, the tiled GEMM, the tile kernel f_mvb (gpu.h's
+// 16-wide twins, the batch-1 kernel per column, the tiled GEMM, the tile
+// kernel f_mvb (gpu.h's
 // GPU_PREFILL_* answers; test-prefill-bits' route table asks it). The
 // experimental int8-activation route (RUNNER_CUDA_Q8X) is not modelled.
 static int scalar_mv_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out, int batch) {
@@ -5178,6 +5193,7 @@ static int scalar_mv_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n
         return sw->f_gemvb[batch_width_class(batch)][w->type] ? GPU_PREFILL_TWINS
                                                               : GPU_PREFILL_PER_COLUMN;
     if (batch > GPU_SMALL_BATCH && prefill_takes_twins(g, w, n_in, n_out)) return GPU_PREFILL_TWINS;
+    if (prefill_per_column(g, w, n_in, n_out, batch)) return GPU_PREFILL_PER_COLUMN;
     if (w->scale == 1.0f && sw->f_gemm[w->type]) return GPU_PREFILL_TILE;
     if (!sw->f_mvb[w->type]) return GPU_PREFILL_NONE;
     return mvb_is_mv_twin(w->type) ? GPU_PREFILL_TILE_TWIN : GPU_PREFILL_TILE;
@@ -5377,9 +5393,22 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         }
         return true;
     }
+    // Prefill on the scalar route of a type with no twin of its batch-1 kernel
+    // (prefill_per_column: Q5_0, Q5_1, IQ4_NL, NVFP4, Q2_K, Q4_1, IQ1_S, IQ1_M,
+    // Q2_0, and a type whose twin did not load), and a scaled tensor's 2 to 8
+    // columns: the batch-1 kernel once per column, each column its bits. The
+    // tile kernels below sum in another order (R6.58: 4 to 74 of a layer's
+    // K and V values differed from a batch-1 prefill) and ran 7 to 10x slower.
+    if (prefill_per_column(g, w, n_in, n_out, batch)) {
+        for (int c = 0; c < batch; c++)
+            if (!enc_mv(g, m, w, x + (size_t)c * xs * sizeof(float),
+                        y + (size_t)c * ys * sizeof(float), n_in, n_out, bias, 1, xs, ys))
+                return false;
+        return true;
+    }
     // Prefill (batch>1) uses the tiled-GEMM variant where available and the
-    // branch above does not take the type (every f_gemm type has a 16-wide
-    // twin, so only one whose twin did not load):
+    // branches above do not take the type: on the scalar route only the 2 to 8
+    // columns RUNNER_CUDA_SMALL_BATCH=0 sends here for its A/B.
     // GEMM_WARPS(=8) rows per block, 256 threads, x staged in shared memory.
     if (batch > 1 && w->scale == 1.0f && g->sw->f_gemm[w->type]) {
         // k_gemm_q8_0 keeps a fixed 8-column tile — a 16-column f32 x-tile
@@ -5410,7 +5439,10 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     if (batch == 1 && w->scale == 1.0f && g->sw->f_gemv[w->type])
         return launch(g, g->sw->f_gemv[w->type], (n_out + 3) / 4, 1, 1, 128, p);
     // 128 threads = 4 warps = 4 rows per block; the tile variant applies each
-    // decoded weight to all columns, the single variant is faster at batch 1
+    // decoded weight to all columns, the single variant is faster at batch 1.
+    // On the scalar route the tile is reached by F32, F16 and BF16 (their f_mvb
+    // is the batch-1 kernel's twin), and by the 2 to 8 columns of
+    // RUNNER_CUDA_SMALL_BATCH=0.
     CUfunction f = batch > 1 ? g->sw->f_mvb[w->type] : g->sw->f_mv[w->type];
     // the lane-level i-quant batch-1 kernels take IQ_ROWS (2) rows per warp
     unsigned rpb = 4, block = 128;
