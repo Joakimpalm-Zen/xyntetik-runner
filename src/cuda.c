@@ -3575,6 +3575,18 @@ static bool cuda_admit(model_t *m) {
                 "running on CPU\n", m->moe_latent);
         return false;
     }
+    // Per-layer expert widths (Nemotron 3.5 Bolt, which the rule above already
+    // refuses): every device expert table and kernel here takes the model's
+    // one width. Refused by name, so that no later path admits a narrower
+    // layer's bank at the widest width.
+    for (int l = 0; l < m->n_layer; l++)
+        if (m->layers[l].is_moe && m->layers[l].n_ff_exp > 0 &&
+            m->layers[l].n_ff_exp != m->n_ff_exp) {
+            fprintf(stderr, "gpu: per-layer expert widths (blk.%d is %d wide, the "
+                    "widest %d) have no device path, running on CPU\n", l,
+                    m->layers[l].n_ff_exp, m->n_ff_exp);
+            return false;
+        }
     // The router and the selection bias matter only to a bank the device runs:
     // a layer whose experts are on the host (--cpu-moe) is routed there, by
     // model_moe_ffn_cpu, while the device runs the trunk (R3.43a). So these

@@ -3726,6 +3726,38 @@
           }
         }
       }
+    },
+    "nemotron-3.5-bolt-74b-a9b-24gb": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/nemotron-3.5-bolt-74b-a9b-24gb.linux-x86_64-cuda.cpu.txt",
+          "sha256": "79e9b26efc84e844716cdaa3ad23dc18f6262ed7ae110e6db0f036d1400ab7bc",
+          "bytes": 229,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-11",
+            "runner_version": "1.16.0",
+            "commit": "f2e40988b13a294960d659b5dd0fdb983e979740",
+            "build": {
+              "binary_sha256": "42639519abec38c9b29b3bf0fbbcd973023c42265b7c68e206bb0542ae029bf3",
+              "compiler": "13.3.0"
+            }
+          }
+        }
+      }
     }
   }
 }
