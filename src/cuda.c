@@ -2360,7 +2360,8 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         size_t wsum = full ? m->output->nbytes : 0;
         for (int l = 0; l < G; l++)
             wsum += layer_weight_bytes(m, l, moe_on_host(m, l), m->cpu_moe);
-        fprintf(stderr, "gpu-split: (bytes: used %zu, weights %zu, layers %d)\n", used, wsum, G);
+        fprintf(stderr, "gpu-split: (bytes: used %llu, weights %zu, layers %d)\n",
+                (unsigned long long)used, wsum, G);
     }
     if (P->instances > 1)
         fprintf(stderr, "gpu-split: planned for %zu slots sharing the weights, "
@@ -6011,7 +6012,10 @@ static bool kv_gather_rows_ok(const gpu_t *g, int n, bool partial) {
 // (and span) with one position upload, n launches of the decode gather and
 // one copy back; the bytes and the host slots are the per-layer copies'.
 static bool kv_gather_rows_launch(gpu_t *g, model_t *m, int pos, int n) {
-    int hp[KVG_ROWS];
+    // Callers use one row or select through kv_gather_rows_ok; keep the
+    // staging extent explicit here as well, including sanitizer builds.
+    if (n < 1 || n > KVG_ROWS) return false;
+    int hp[KVG_ROWS] = {0};
     for (int r = 0; r < n; r++) hp[r] = pos + r;
     if (cu.MemcpyHtoD(g->kvg_pos, hp, sizeof(int) * (size_t)n) != 0) return false;
     for (int r = 0; r < n; r++) {
