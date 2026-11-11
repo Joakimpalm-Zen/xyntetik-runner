@@ -20,6 +20,56 @@ needs_make = unittest.skipUnless(
 
 
 @needs_make
+class WarningPolicy(unittest.TestCase):
+    def probe(self, command):
+        compiler = next((c for c in ("cc", "gcc", "clang") if shutil.which(c)), None)
+        if compiler is None:
+            self.skipTest("needs a C compiler")
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            source = root / "warning.c"
+            source.write_text('#warning R6_56_deliberate_warning\nint warning_fixture;\n')
+            rules = root / "probe.mk"
+            rules.write_text('.PHONY: warning-policy-probe\nwarning-policy-probe:\n\t'
+                             + command + ' -c "' + source.as_posix() + '" -o "'
+                             + (root / 'warning.o').as_posix() + '"\n')
+            p = subprocess.run(["make", "-s", "-f", "Makefile", "-f", str(rules),
+                                "warning-policy-probe", "CC=" + compiler,
+                                "CFLAGS=-O0", "PYTHON=" + sys.executable], cwd=ROOT,
+                               capture_output=True, text=True)
+            self.assertNotEqual(p.returncode, 0, p.stdout + p.stderr)
+            self.assertIn("R6_56_deliberate_warning", p.stderr)
+
+    def test_hand_written_test_flags_still_refuse_warnings(self):
+        self.probe("$(CC) -O0 -std=gnu11 -Wall")
+
+    def test_command_line_cflags_still_refuse_warnings(self):
+        self.probe("$(CC) $(CFLAGS)")
+
+    def test_fuzzer_flags_still_refuse_warnings(self):
+        if not shutil.which("clang"):
+            self.skipTest("libFuzzer compiler is not installed on this toolchain")
+        self.probe("$(FUZZ_CLANG) $(filter-out $(FUZZ_INSTRUMENTATION),$(FUZZ_FLAGS))")
+
+    def test_recursive_make_keeps_the_same_strict_compiler_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            rules = pathlib.Path(td) / "identity.mk"
+            rules.write_text('.PHONY: warning-identity warning-child\n'
+                             'warning-identity:\n\t@echo "$(CC)"\n'
+                             '\t@$(MAKE) --no-print-directory -s -f Makefile -f "'
+                             + rules.as_posix() + '" warning-child\n'
+                             'warning-child:\n\t@echo "$(CC)"\n')
+            p = subprocess.run(["make", "--no-print-directory", "-s", "-f", "Makefile",
+                                "-f", str(rules), "warning-identity",
+                                "CC=cc", "PYTHON=" + sys.executable], cwd=ROOT,
+                               capture_output=True, text=True, check=True)
+            lines = p.stdout.strip().splitlines()
+            self.assertEqual(len(lines), 2, p.stdout)
+            self.assertEqual(lines[0], lines[1])
+            self.assertEqual(lines[0].split().count("-Werror"), 1)
+
+
+@needs_make
 class SanitizerBuild(unittest.TestCase):
     def test_debug_instruments_transformations_and_aborts_on_ub(self):
         p = subprocess.run(["make", "-Bn", "debug"], cwd=ROOT,

@@ -2146,14 +2146,19 @@ static int run_shadow_mode(const char *model, bool yes) {
         if (!slash || (bslash && bslash > slash)) slash = bslash;
 #endif
         size_t dir_len = slash ? (size_t)(slash - exe) : 0;
-        if (dir_len && dir_len < sizeof client - 32) {
-            memcpy(client, exe, dir_len);
-            client[dir_len] = '\0';
-            strcat(client, "/python/src");
-            char probe[4096];
-            snprintf(probe, sizeof probe, "%s/xyntetik_runner/shadow/cli.py", client);
+        static const char probe_suffix[] = "/python/src/xyntetik_runner/shadow/cli.py";
+        char probe[sizeof client];
+        // Reserve the full probe suffix and its NUL, not just the client
+        // directory suffix: the path checked must be the complete path.
+        if (dir_len && dir_len <= sizeof probe - sizeof probe_suffix) {
+            memcpy(probe, exe, dir_len);
+            memcpy(probe + dir_len, probe_suffix, sizeof probe_suffix);
             plat_stat_t st;
-            if (plat_stat(probe, &st) != 0) client[0] = '\0';
+            if (plat_stat(probe, &st) == 0) {
+                size_t client_len = dir_len + sizeof("/python/src") - 1;
+                memcpy(client, probe, client_len);
+                client[client_len] = '\0';
+            }
         }
     }
     if (client[0]) {

@@ -3908,6 +3908,7 @@ static inline __attribute__((always_inline)) void dot_q6_K_avx2_multi(const bloc
 
 // vec_dot's generic route, decode hoisted: dequant_block once, the same
 // dot_f32_row per column, the same per-block accumulation order.
+#ifndef RUNNER_CANON_KERNELS
 static void dot_generic_multi(int type, const void *row, const float *const *xs,
                               int nc, int n, float *out) {
     int bs = ggml_block_size(type);
@@ -3922,8 +3923,9 @@ static void dot_generic_multi(int type, const void *row, const float *const *xs,
     }
     for (int c = 0; c < nc; c++) out[c] = s[c];
 }
+#endif
 
-#if !RUNNER_AVX2 && RUNNER_NEON
+#if !defined(RUNNER_CANON_KERNELS) && !RUNNER_AVX2 && RUNNER_NEON
 // The arm64 multi-column K-quant dots: each weight block widened once, every
 // column then the single dot's exact sequence (dot32f / dot16f, the same
 // accumulator order as dot_q*_K_neon), so vec_dot_multi == vec_dot per column.

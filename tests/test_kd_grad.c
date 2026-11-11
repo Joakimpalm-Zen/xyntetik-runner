@@ -155,10 +155,19 @@ static double kd_tol(const float *w) {
 // log-ratios, and the student's tail as the masked sum of its probabilities.
 static double reference_kl(model_t *m, const int32_t *toks, const float *w,
                            const lora_teacher *tch) {
-    int V = m->n_vocab;
+    const int V = m->n_vocab;
+    // model_load admits a positive vocabulary; keep that invariant explicit
+    // at the independent oracle's allocation/indexing boundary too.
+    if (V <= 0) { CHECK(0, "reference KL needs a positive vocabulary"); return 0; }
+    const size_t vocab = (size_t)V;
     double total = 0;
-    char *listed = malloc((size_t)V);
-    double *lq = malloc(sizeof(double) * (size_t)V);
+    char *listed = malloc(vocab);
+    double *lq = calloc(vocab, sizeof *lq);
+    if (!listed || !lq) {
+        CHECK(0, "reference KL allocation failed");
+        free(listed); free(lq);
+        return 0;
+    }
     for (int t = 0; t < T; t++) {
         float *lg = model_forward(m, toks[t], t);
         if (!lg) { CHECK(0, "forward failed"); break; }
@@ -168,7 +177,7 @@ static double reference_kl(model_t *m, const int32_t *toks, const float *w,
         for (int j = 0; j < V; j++) s += exp((double)lg[j] - mx);
         double lse = mx + log(s);
         for (int j = 0; j < V; j++) lq[j] = (double)lg[j] - lse;
-        memset(listed, 0, (size_t)V);
+        memset(listed, 0, vocab);
         const int32_t *ids = tch->ids + (size_t)t * tch->k;
         const float *lp = tch->logp + (size_t)t * tch->k;
         double pin = 0, kl = 0;

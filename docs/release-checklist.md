@@ -160,6 +160,10 @@ project venv, not the system python3).
    make test PYTHON=<venv>/bin/python
    ```
 
+   The [compiler-warning rule](../AGENTS.md#3-gates-and-evidence) covers
+   every test binary built here, including specialized compile recipes.
+   Record which targets and toolchain were rebuilt with a zero-warning read.
+
    Every 15 s, read `sysctl -n vm.swapusage` and
    `sysctl -n kern.memorystatus_vm_pressure_level`. Stop the run if swap used rises
    more than 1.5 GB over its value at the start of the run, or if the pressure

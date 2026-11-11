@@ -5,8 +5,8 @@
 // literal the menu must read back, spelled by code point and independent
 // of the conversion under test: GetMenuStringW returns what the user sees.
 //
-//     gcc -I src tests/test_tray_win_menu.c src/tray.c src/instances.c \
-//         src/json.c src/compat.c -o test-tray-win-menu.exe -lgdi32 ...
+// Build on Windows with make test-tray-win-menu.exe, which supplies the
+// platform sources and tray link libraries.
 #ifdef _WIN32
 #include "../src/tray_win.c"
 

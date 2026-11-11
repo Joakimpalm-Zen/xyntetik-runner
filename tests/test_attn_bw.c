@@ -37,8 +37,14 @@ static void run(tpool *tp, int T, int H, int kv_mul, int hd, int swa, uint64_t s
     ab_ref_run(&s, scale, kc, vc, q, dao, ref[0], ref[1], ref[2]);
     bool ok = true;
     for (int r = 0; r < 2; r++) {
-        attn_bw_job aj = { kc, vc, q, dao, o[r][0], o[r][1], o[r][2], T, H, kv_mul,
-                           hd, s.q_dim, s.kv_dim, row, row, scale, swa };
+        attn_bw_job aj = {
+            .kc_l = kc, .vc_l = vc, .q = q, .dao = dao,
+            .dq = o[r][0], .dk = o[r][1], .dv = o[r][2],
+            .T = T, .n_head = H, .kv_mul = kv_mul, .hd = hd,
+            .q_dim = s.q_dim, .kv_dim = s.kv_dim,
+            .k_row_b = row, .v_row_b = row, .scale = scale, .swa = swa,
+            .f32 = false,  // the reference buffers above contain f16 KV
+        };
         ok = attn_bw_run(r ? tp : NULL, &aj) && ok;
     }
     CHECK(ok, "hd %d: attn_bw_run failed", hd);
