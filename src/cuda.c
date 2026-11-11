@@ -5153,18 +5153,17 @@ static bool mv_twin_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n_
     return w->scale == 1.0f && !mv_route_q8x(g, w, n_in, 1) &&
            !mv_route_splitk(g, w, n_in, n_out);
 }
-// The types whose prefill on the scalar route runs the batch-1 GEMV's twins
-// rather than a tile kernel of its own (R6.35 Q4_0; R6.41 Q4_K, Q5_K, Q6_K;
-// R6.50 Q8_0; R6.54 Q3_K)
-static bool prefill_twin_type(int type) {
-    return type == T_Q4_0 || type == T_Q4_K || type == T_Q5_K || type == T_Q6_K ||
-           type == T_Q8_0 || type == T_Q3_K;
-}
+static inline bool mvb_is_mv_twin(int type);
 // Whether a prompt's matvec (batch > GPU_SMALL_BATCH) of w on the scalar
 // route runs the batch-1 GEMV's 16-wide twins (enc_mv; gpu_prefill_takes_twins
-// asks the same for test-prefill-bits' route table)
+// asks the same for test-prefill-bits' route table). Every type whose batch-1
+// route has a loaded 16-wide twin takes it, by capability rather than by a
+// list (R6.57; the list was R6.35 Q4_0, R6.41 Q4_K/Q5_K/Q6_K, R6.50 Q8_0,
+// R6.54 Q3_K): the tile kernels of the others (k_gemm_*, and f_mvb's
+// k_mv_*_b, which fold the block scale per term) sum in another order. Not
+// F32, F16 or BF16, whose f_mvb already is their batch-1 kernel's twin.
 static bool prefill_takes_twins(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out) {
-    return prefill_twin_type(w->type) && mv_twin_route(g, w, n_in, n_out) &&
+    return !mvb_is_mv_twin(w->type) && mv_twin_route(g, w, n_in, n_out) &&
            g->sw->f_gemvb[BW_16][w->type];
 }
 // gpu.h's two questions for the route table, asked of a dense unscaled
@@ -5338,18 +5337,18 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
             return false;
         return w->scale == 1.0f || enc_scale(g, y, w->scale, n_out, batch, ys);
     }
-    // Prefill (batch > GPU_SMALL_BATCH) of a Q4_0, Q3_K, Q4_K, Q5_K, Q6_K or
-    // Q8_0 tensor on the scalar route, ahead of the tiled GEMM. Q4_0's tile
-    // kernel k_mvb_q4_0 and the k_gemm_* of the others sum in another order
-    // than the batch-1 GEMVs (k_gemv_q4_0, k_gemv_q3_K, the v2 bodies of
-    // k_gemv_q4_K/_q5_K/_q6_K and k_gemv_q8_0), so a prompt's rows did not
-    // carry a lone decode's bits; under a q8_0 KV cache that difference crossed
+    // Prefill (batch > GPU_SMALL_BATCH) on the scalar route of a tensor whose
+    // batch-1 route has a loaded 16-wide twin (prefill_takes_twins), ahead of
+    // the tiled GEMM. The tile kernels (k_gemm_* of the K-quants and Q8_0,
+    // f_mvb's k_mv_*_b of Q4_0, the codebook i-quants and MXFP4) sum in another
+    // order than the batch-1 kernels, so a prompt's rows did not carry a lone
+    // decode's bits; under a q8_0 KV cache that difference crossed
     // quantization steps and spread through the layers (R6.35: test-kv-tol on
     // test-q40.gguf read 10.7x the reassociation floor; R6.39, R6.41, R6.50,
-    // R6.54). The GEMV's width-classed
-    // twins reproduce its bits per column; the 16-wide one runs 16 columns a
-    // pass, a lone last column the batch-1 kernel. test-prefill-bits holds the
-    // rows a prompt stores.
+    // R6.54, R6.57). The width-classed twins reproduce the batch-1 kernel's
+    // bits per column; the 16-wide one runs 16 columns a pass, a lone last
+    // column the batch-1 kernel. test-prefill-bits holds the rows a prompt
+    // stores and the route table.
     if (batch > GPU_SMALL_BATCH && prefill_takes_twins(g, w, n_in, n_out)) {
         for (int c0 = 0; c0 < batch; c0 += 16) {
             int cn = batch - c0 < 16 ? batch - c0 : 16;
@@ -5362,8 +5361,8 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         return true;
     }
     // Prefill (batch>1) uses the tiled-GEMM variant where available and the
-    // branch above does not take the type (every f_gemm type is listed there,
-    // so only one whose 16-wide twin did not load):
+    // branch above does not take the type (every f_gemm type has a 16-wide
+    // twin, so only one whose twin did not load):
     // GEMM_WARPS(=8) rows per block, 256 threads, x staged in shared memory.
     if (batch > 1 && w->scale == 1.0f && g->sw->f_gemm[w->type]) {
         // k_gemm_q8_0 keeps a fixed 8-column tile — a 16-column f32 x-tile
