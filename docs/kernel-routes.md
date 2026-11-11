@@ -136,10 +136,7 @@ Around the matvec:
   on an RTX 3070: 53-57 ms against `k_attn_tile8`'s 352 ms; Bolt E4B prefill
   2.0x at 16K and 2.6x at 32K. Gate: `make test-cuda-attn-wide` (with the
   `--mla-wide` fixture at 512 tokens), `tests/test_attn_wide_repeat.py`.
-  One opt-in stays off: `RUNNER_CUDA_ATTN_TC_FULL=1` puts the tensor-core
-  attention on the layers without a window in a family the default keeps on
-  the tile (gpt-oss's full-attention layers), whose gpt-oss-20b row read
-  further from the reference than the tile's. 8,191-token prefill on the
+  8,191-token prefill on the
   datacenter MIG slice: gemma-4-12B +36.5% and gemma-4-E4B +50.6% with the
   512-wide tile, Phi-3.5-mini +124.6%, Phi-4-mini +213.6% and Qwen3-30B-A3B
   +206% (one round) with the tensor-core attention; on an RTX 3070,
