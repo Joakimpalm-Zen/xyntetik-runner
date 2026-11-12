@@ -67,6 +67,25 @@ def test_a_lone_cr_is_content_and_stays(runner_bin, tmp_path):
     assert double == tokens(runner_bin, tmp_path, "crlf-p", prompt="Line one.\\r\\nLine two.")
 
 
+def test_a_crlf_plain_text_data_file_trains_its_lf_twins_adapter(runner_bin, tmp_path):
+    # runner train's plain-text DATA is text too: the same rule, so one data
+    # file trains the same adapter on every platform. The adapter's bytes do
+    # not depend on the data file's name (two LF copies give one adapter), so
+    # its bytes are the observable; training runs on the CPU here.
+    lf = b"The river runs past the old mill.\nThe bridge crosses it at the market.\n" * 4
+    adapters = {}
+    for name, data in (("lf", lf), ("lf-copy", lf), ("crlf", lf.replace(b"\n", b"\r\n"))):
+        src = tmp_path / (name + ".txt")
+        src.write_bytes(data)
+        out = tmp_path / (name + ".gguf")
+        r = subprocess.run([str(runner_bin), "train", str(src), "-m", str(MODEL), "--steps", "3",
+                            "--ctx", "32", "--out", str(out)], capture_output=True, timeout=300)
+        assert r.returncode == 0, r.stderr.decode("utf-8", "replace")[-2000:]
+        adapters[name] = out.read_bytes()
+    assert adapters["lf-copy"] == adapters["lf"]
+    assert adapters["crlf"] == adapters["lf"]
+
+
 def test_p_text_keeps_its_explicit_crlf(runner_bin, tmp_path):
     # -p's escapes are the user's own: a spelled \r\n is not a file's line end
     p_crlf = tokens(runner_bin, tmp_path, "p-crlf", prompt="Line one.\\r\\nLine two.")
