@@ -271,7 +271,7 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
             // an assistant turn, unframed; with no reasoning the renderer
             // writes MiMo's empty pair, Spark's bare `</think>` or nothing
             prompt_lit(&b, "<think>");
-            sb_put(&b, reason, strlen(reason));
+            sb_put(&b, reason, reason_n);
             prompt_lit(&b, "</think>");
         } else if (tmpl == TMPL_K2H && !strcmp(role, "assistant")) {
             // K2-Horizon writes a think block on every assistant turn, from
@@ -300,7 +300,7 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
             // reasoning `</think>` content; the renderer then seeds or
             // truncates the block by the turn's position.
             prompt_lit(&b, "<think>\n");
-            sb_put(&b, reason, strlen(reason));
+            sb_put(&b, reason, reason_n);
             prompt_lit(&b, tmpl == TMPL_NEMOTRON35 ? "</think>" : "\n</think>\n");
         }
         if (tmpl_lfm2(tmpl) && !strcmp(role, "assistant"))
