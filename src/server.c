@@ -2178,16 +2178,22 @@ static void send_health(sock_t fd) {
     // load, reload and swap, so a client that reads it twice and sees the
     // same number with a resident model has been talking to one load. A
     // request can require it (`expect_resident`).
-    char m[448];
+    // R6.68.12: beside the resident set, the footprint where the OS has one
+    // (macOS: it counts Metal's buffers, which the resident set leaves out)
+    uint64_t footprint = 0;
+    char fp[48] = "";
+    if (plat_proc_phys_footprint_bytes(&footprint))
+        snprintf(fp, sizeof fp, ",\"phys_footprint_bytes\":%llu", (unsigned long long)footprint);
+    char m[496];
     snprintf(m, sizeof(m),
              ",\"load_generation\":%llu"
-             ",\"rss_bytes\":%llu,\"peak_rss_bytes\":%llu,"
+             ",\"rss_bytes\":%llu,\"peak_rss_bytes\":%llu%s,"
              "\"tokens_prompt\":%llu,\"tokens_generated\":%llu,"
              "\"generate_seconds\":%.6f,"
              "\"batch_steps\":%llu,\"batch_sequences\":%llu",
              (unsigned long long)provenance_load_generation(NULL),
              (unsigned long long)cur_rss,
-             (unsigned long long)peak_rss,
+             (unsigned long long)peak_rss, fp,
              wt.prompt_tokens, wt.gen_tokens, wt.gen_seconds, bs, bq);
 
     // What each busy slot is doing (R10.12.7): a client waiting on a long
@@ -2431,6 +2437,12 @@ static void send_metrics(sock_t fd) {
     metric_u64(&b, "runner_peak_resident_memory_bytes", "gauge",
                "High-water mark of that resident set.",
                (unsigned long long)peak_rss);
+    uint64_t footprint = 0;
+    if (plat_proc_phys_footprint_bytes(&footprint))
+        metric_u64(&b, "runner_phys_footprint_bytes", "gauge",
+                   "Physical footprint of this process (macOS): the resident set plus "
+                   "the GPU driver's memory for it, Metal buffers included, and its "
+                   "compressed pages.", (unsigned long long)footprint);
     metric_u64(&b, "runner_prefix_cache_bytes", "gauge",
                "Host memory the shared prefix store holds.",
                (unsigned long long)st.bytes);
