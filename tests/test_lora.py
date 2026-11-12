@@ -366,3 +366,36 @@ def test_an_adapter_that_is_not_finite_is_refused_by_name(runner_bin, fx, tmp_pa
     merged = tmp_path / "merged.gguf"
     _refused(run("--lora", adapter, "--merge-lora", str(merged)), needle, what)
     assert not merged.exists() and not (tmp_path / "merged.gguf.merge.json").exists()
+
+
+def test_the_merge_floor_fails_closed_on_a_kept_fraction_that_is_not_a_number(
+        runner_bin, fx, tmp_path):
+    """The erased-delta floor and the record's survival block are guarded by
+    ret_den > 0 and ret < floor, and a NaN fails both: with a weight that is
+    not a number under the adapter, the merge skipped the floor and dropped
+    the block, and wrote the file. The loader now refuses a non-finite
+    adapter, but a base can still hold one; the floor no longer depends on
+    the loader (R6.68.116): a kept fraction that is not a number is not above
+    the floor. Under --merge-allow-erased the file is written, and the block
+    is there with null."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    import struct
+    from test_embeddings_pooling import _embedding_table
+    base = tmp_path / "nanbase.gguf"
+    data, at, _, _ = _embedding_table(fx["base"], "blk.0.attn_q.weight")
+    data = bytearray(data)
+    struct.pack_into("<f", data, at, float("nan"))
+    base.write_bytes(data)
+    merged = tmp_path / "merged.gguf"
+    cmd = [runner_bin, "-m", str(base), "--lora", str(fx["adapter"]),
+           "--merge-lora", str(merged), "-t", "2", "--gpu", "off"]
+    p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=120)
+    assert p.returncode != 0, p.stderr.decode(errors="replace")
+    assert b"not a number" in p.stderr, p.stderr.decode(errors="replace")[-600:]
+    assert not merged.exists() and not (tmp_path / "merged.gguf.merge.json").exists()
+    p = subprocess.run(cmd + ["--merge-allow-erased"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    rec = json.loads((tmp_path / "merged.gguf.merge.json").read_text())
+    assert rec["survival"]["delta_retained"] is None, rec.get("survival")

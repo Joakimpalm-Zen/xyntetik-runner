@@ -4517,9 +4517,10 @@ static int run_merge_lora(const cli_opts *o) {
         sb_lit(&rec, "\"}");
         // what the output grid kept of the delta (quants.h
         // merge_survival); absent when no adapted tensor was rewritten
-        // delta_retained is null when not finite: an adapter holding an
-        // infinity has an infinite delta (R6.68.115)
-        if (sv.ret_den > 0) {
+        // delta_retained is null when not finite (R6.68.115), and the block
+        // is written whenever the merge measured it, a measure that is not a
+        // number included (merge_survival_measured, R6.68.116)
+        if (merge_survival_measured(&sv)) {
             sb_fmt(&rec, ",\"survival\":{\"adapted_bytes\":%llu,"
                    "\"bytes_changed\":%llu,\"delta_retained\":",
                    (unsigned long long)sv.bytes,

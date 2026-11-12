@@ -189,25 +189,3 @@ def test_the_moe_route_trace_writes_null_for_a_gate_that_is_not_finite(exe, tmp_
     rows = _lines(path.read_text())
     assert rows and all(len(r["experts"]) == len(r["gates"]) for r in rows)
     assert all(g is None for r in rows for g in r["gates"]), rows[:2]
-
-
-def test_the_merge_record_writes_null_for_a_delta_that_is_not_finite(exe, tmp_path):
-    """--merge-lora's record measures how much of the adapter's delta the
-    output grid kept, with %.6f; an adapter holding an infinity has an
-    infinite delta, and the record read nan. It is null now. (That the merge
-    takes such an adapter at all is a separate question: R6.68.115's notes.)"""
-    base = tmp_path / "base.gguf"
-    subprocess.run([sys.executable, str(ROOT / "scripts/make-test-model.py"), str(base)],
-                   check=True, stdout=subprocess.DEVNULL)
-    adapter = tmp_path / "a.gguf"
-    p = _run(exe, "-m", base, "--train", _sft_rows(tmp_path / "sft.jsonl"),
-             "--train-steps", "1", "--lr", "3e-3", "--train-out", adapter)
-    assert p.returncode == 0, p.stderr.decode(errors="replace")
-    data, at, _, _ = _embedding_table(adapter, "blk.0.attn_q.weight.lora_b")
-    data = bytearray(data)
-    struct.pack_into("<f", data, at, float("inf"))
-    adapter.write_bytes(data)
-    merged = tmp_path / "merged.gguf"
-    p = _run(exe, "-m", base, "--lora", adapter, "--merge-lora", merged)
-    rec = json.loads((tmp_path / "merged.gguf.merge.json").read_text())
-    assert rec["survival"]["delta_retained"] is None, rec["survival"]
