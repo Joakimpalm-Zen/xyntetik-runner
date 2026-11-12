@@ -2027,6 +2027,61 @@ static void test_unconstrained_arguments_are_json_or_not_a_call(void) {
     }
 }
 
+// R6.68.74: the three XML call readers (function/parameter, MiniCPM5's, the arg-key
+// pairs) type a member and finish a call through one function. A parameter
+// written twice is refused by each: only the function/parameter reader
+// checked, and the other two handed a client the same key twice whenever the
+// tool declared no parameters to validate against.
+static void test_xml_readers_refuse_a_parameter_written_twice(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"note\"}},"
+        "{\"type\":\"function\",\"function\":{\"name\":\"add\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"a\":{\"type\":\"integer\"},\"b\":{\"type\":\"integer\"}},\"required\":[\"a\",\"b\"]}}}]");
+    static const struct { int proto; const char *twice, *once, *ordered; } cases[] = {
+        { TP_QWEN_XML,
+          "<tool_call>\n<function=note>\n<parameter=k>\n1\n</parameter>\n<parameter=k>\n2\n</parameter>\n</function>\n</tool_call>",
+          "<tool_call>\n<function=note>\n<parameter=k>\n1\n</parameter>\n</function>\n</tool_call>",
+          "<tool_call>\n<function=add>\n<parameter=b>\n2\n</parameter>\n<parameter=a>\n1\n</parameter>\n</function>\n</tool_call>" },
+        { TP_MINICPM_XML,
+          "<function name=\"note\"><param name=\"k\">1</param><param name=\"k\">2</param></function>",
+          "<function name=\"note\"><param name=\"k\">1</param></function>",
+          "<function name=\"add\"><param name=\"b\">2</param><param name=\"a\">1</param></function>" },
+        { TP_ARGKV,
+          "<tool_call>note<arg_key>k</arg_key><arg_value>1</arg_value><arg_key>k</arg_key><arg_value>2</arg_value></tool_call>",
+          "<tool_call>note<arg_key>k</arg_key><arg_value>1</arg_value></tool_call>",
+          "<tool_call>add<arg_key>b</arg_key><arg_value>2</arg_value><arg_key>a</arg_key><arg_value>1</arg_value></tool_call>" },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        char err[192];
+        tool_envelope e = {0};
+        assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+        e.proto = cases[i].proto;
+        e.tools = tools;
+        e.parse_only = true;
+        e.max_calls = TOOL_STREAM_MAX_CALLS;
+        sbuf content = {0}, tc = {0};
+        int n = 0;
+        // twice: no call, and the turn says so
+        assert(tool_stream_map(&e, cases[i].twice, strlen(cases[i].twice), false,
+                               &content, &tc, &n) == -1 && n == 0);
+        free(content.s); free(tc.s);
+        content = (sbuf){0}; tc = (sbuf){0};
+        assert(tool_stream_map(&e, cases[i].once, strlen(cases[i].once), false,
+                               &content, &tc, &n) == 0 && n == 1);
+        assert(strstr(tc.s, "\"arguments\":\"{\\\"k\\\":1}\""));
+        free(content.s); free(tc.s);
+        // members come out in the declared order, whatever order they came in
+        content = (sbuf){0}; tc = (sbuf){0};
+        assert(tool_stream_map(&e, cases[i].ordered, strlen(cases[i].ordered), false,
+                               &content, &tc, &n) == 0 && n == 1);
+        assert(strstr(tc.s, "\"arguments\":\"{\\\"a\\\":1,\\\"b\\\":2}\""));
+        free(content.s); free(tc.s);
+        tool_envelope_free(&e);
+    }
+    jv_free(tools);
+}
+
 static void test_muse_schema_payload_stream_hides_recipient_header(void) {
     tool_envelope e = {.proto = TP_MUSE_PLAIN};
     const char *doc = " to=user<|message|>{\"summary\":\"ok\"}";
@@ -4565,6 +4620,7 @@ int main(void) {
     test_a_value_may_spell_its_blocks_closing_tag();
     test_names_and_keys_the_call_syntax_cannot_carry();
     test_unconstrained_arguments_are_json_or_not_a_call();
+    test_xml_readers_refuse_a_parameter_written_twice();
     test_muse_schema_payload_stream_hides_recipient_header();
     test_stream_demux_holds_back_an_undecided_prefix();
     test_malformed_tool_declarations_are_rejected();

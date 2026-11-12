@@ -6589,11 +6589,15 @@ static int envelope_entry_map(const tool_envelope *e, jv *v, int index,
             const char *text = jv_str(jv_get(args, "content"), "");
             sb_put(content, text, strlen(text));
         } else if (args) {
+            // the caller asked for a schema-shaped answer: hand back its own
+            // document verbatim, not a field lifted out of it
             jv_dump(args, content);
         }
         return 0;
     }
 
+    // OpenAI carries arguments as a JSON *string*, so the document is dumped
+    // and then escaped into the field
     sbuf a = { 0 };
     if (args) jv_dump(args, &a);
     else      sb_lit(&a, "{}");
@@ -7120,6 +7124,123 @@ static bool g4_one_call(const char **pp, const char *end, int index, sbuf *tc) {
 }
 
 
+// ---- what the three XML call readers share (R6.68.74: function/parameter XML,
+// MiniCPM5's <function name=...>, the arg-key/arg-value pairs). Each finds
+// its own tags; from there a member is typed and a call finished here, so the
+// three cannot drift in what they take for a value or refuse as a call.
+enum { XML_MAX_PARAMS = 64 };
+typedef struct {
+    struct { const char *key; size_t key_n; sbuf json; int declared; } mem[XML_MAX_PARAMS];
+    int n;
+} xml_members;
+
+static void xml_members_free(xml_members *ms) {
+    for (int i = 0; i < ms->n; i++) free(ms->mem[i].json.s);
+    ms->n = 0;
+}
+
+// The declared function called `name` (n bytes), or NULL.
+static jv *tool_fn_named(const tool_envelope *env, const char *name, size_t n) {
+    for (int i = 0; env->tools && i < env->tools->n; i++) {
+        jv *f = jv_get(env->tools->items[i], "function");
+        if (!f) f = env->tools->items[i];
+        const char *declared = jv_str(jv_get(f, "name"), "");
+        if (strlen(declared) == n && !memcmp(declared, name, n)) return f;
+    }
+    return NULL;
+}
+
+// One member: the value text [v, e) of parameter `key`, typed by the
+// function's declaration. A declared string is the text as it is, never
+// guessed to be JSON; any other declared type must parse (Python's True,
+// False and None included); an undeclared or untyped parameter is JSON when
+// it parses and a string otherwise. False refuses the call.
+static bool xml_member_add(xml_members *ms, jv *fn, const char *key, size_t key_n,
+                           const char *v, const char *e) {
+    if (ms->n == XML_MAX_PARAMS) return false;
+    jv *props = jv_get(jv_get(fn, "parameters"), "properties");
+    jv *spec = NULL;
+    int declared = INT_MAX;
+    for (int i = 0; props && props->type == J_OBJ && i < props->n; i++)
+        if (strlen(props->keys[i]) == key_n && !memcmp(props->keys[i], key, key_n)) {
+            spec = props->items[i];
+            declared = i;
+        }
+    const char *type = jv_str(jv_get(spec, "type"), "");
+    ms->mem[ms->n].key = key;
+    ms->mem[ms->n].key_n = key_n;
+    ms->mem[ms->n].declared = declared;
+    sbuf *val = &ms->mem[ms->n].json;
+    memset(val, 0, sizeof *val);
+    ms->n++;
+    jv *value = NULL;
+    if (strcmp(type, "string")) {
+        const char *b = trim_left(v, e), *z = trim_right(b, e);
+        value = json_parse(b, (size_t)(z - b));
+        if (!value && z - b == 4 && !memcmp(b, "True", 4)) value = json_parse("true", 4);
+        if (!value && z - b == 5 && !memcmp(b, "False", 5)) value = json_parse("false", 5);
+        if (!value && z - b == 4 && !memcmp(b, "None", 4)) value = json_parse("null", 4);
+        if (!value && type[0]) return false;
+    }
+    if (value) { jv_dump(value, val); jv_free(value); }
+    else { sb_lit(val, "\""); sb_esc(val, v, (size_t)(e - v)); sb_lit(val, "\""); }
+    return !val->failed;
+}
+
+// The call: its members as one arguments object, the declared ones in the
+// order of the declaration (the validator takes an object in its schema's
+// property order, and a reader must not lean on the model for that order),
+// then the undeclared in the order they came. A key written twice, arguments
+// the declaration's schema refuses, or a name other than the one a named
+// choice asked for is no call. Appends the tool_calls item to `tc`; frees
+// the members either way.
+static bool xml_call_emit(const tool_envelope *env, jv *fn, const char *name, size_t name_n,
+                          xml_members *ms, int index, sbuf *tc) {
+    sbuf args = {0};
+    sb_lit(&args, "{");
+    bool used[XML_MAX_PARAMS] = {0};
+    for (int k = 0; k < ms->n; k++) {
+        int pick = -1;
+        for (int i = 0; i < ms->n; i++)
+            if (!used[i] && (pick < 0 || ms->mem[i].declared < ms->mem[pick].declared)) pick = i;
+        used[pick] = true;
+        if (k) sb_lit(&args, ",");
+        sb_lit(&args, "\"");
+        sb_esc(&args, ms->mem[pick].key, ms->mem[pick].key_n);
+        sb_lit(&args, "\":");
+        sb_put(&args, ms->mem[pick].json.s ? ms->mem[pick].json.s : "", ms->mem[pick].json.n);
+    }
+    sb_lit(&args, "}");
+    xml_members_free(ms);
+    // json_parse refuses a key written twice
+    jv *obj = args.failed ? NULL : json_parse(args.s, args.n);
+    bool ok = obj != NULL;
+    jv_free(obj);
+    jv *params = ok ? jv_get(fn, "parameters") : NULL;
+    if (params) {
+        // the same required/type/bound checks a constrained turn is held to
+        char err[192];
+        snode *schema = schema_compile(params, err, sizeof err);
+        sval state;
+        if (schema) sval_init(&state, schema);
+        ok = schema && sval_feed(&state, args.s, (int)args.n) && state.done;
+        schema_free(schema);
+    }
+    if (env->kind == TCH_NAMED &&
+        (!env->named || strlen(env->named) != name_n || memcmp(env->named, name, name_n)))
+        ok = false;
+    if (ok) {
+        sb_fmt(tc, "{\"id\":\"call_%d\",\"type\":\"function\",\"function\":{\"name\":\"", index);
+        sb_esc(tc, name, name_n);
+        sb_lit(tc, "\",\"arguments\":\"");
+        sb_esc(tc, args.s, args.n);
+        sb_lit(tc, "\"}}");
+        ok = !tc->failed;
+    }
+    free(args.s);
+    return ok;
+}
+
 // Parse a complete native XML call using the declared types. In particular,
 // raw strings are never guessed to be JSON. Malformed members reject the
 // whole call; a partial argument list must not become an executable call.
@@ -7146,56 +7267,21 @@ static bool coder_one_call(const tool_envelope *env, const char **pp,
     if (end-p < 10 || memcmp(p,"<function=",10)) return false;
     const char *name = p+10, *ne = memchr(name,'>',(size_t)(end-name));
     if (!ne || ne == name) return false;
-    jv *fn = NULL;
-    for (int i=0; env->tools && i<env->tools->n; i++) {
-        jv *f = jv_get(env->tools->items[i],"function");
-        if (!f) f = env->tools->items[i];
-        const char *n = jv_str(jv_get(f,"name"),"");
-        if (strlen(n)==(size_t)(ne-name) && !memcmp(n,name,(size_t)(ne-name))) { fn=f; break; }
-    }
+    jv *fn = tool_fn_named(env, name, (size_t)(ne-name));
     if (!fn) return false;
-    jv *props = jv_get(jv_get(fn,"parameters"),"properties");
-    // One member per parameter, assembled below in the DECLARED order: the
-    // validator accepts an object in its schema's property order, and the
-    // parser must not lean on the grammar to have produced that order.
-    // Undeclared parameters follow the declared ones and fail the schema
-    // check, never the ordering.
-    enum { CODER_MAX_PARAMS = 64 };
-    struct { const char *key; size_t key_n; sbuf json; int declared; } mem[CODER_MAX_PARAMS];
-    int n_mem = 0;
-    sbuf args = {0};
+    xml_members ms = { .n = 0 };
     p=trim_left(ne+1,end);
     while (end-p >= 11 && !memcmp(p,"<parameter=",11)) {
         const char *key=p+11, *ke=memchr(key,'>',(size_t)(end-key));
         const char *ve=ke ? atem_find(ke+1,end,"</parameter>") : NULL;
-        if (!ke || ke==key || !ve || n_mem == CODER_MAX_PARAMS) goto bad;
-        jv *spec=NULL; int declared = INT_MAX;
-        for (int i=0; props && props->type==J_OBJ && i<props->n; i++)
-            if (strlen(props->keys[i])==(size_t)(ke-key) && !memcmp(props->keys[i],key,(size_t)(ke-key))) { spec=props->items[i]; declared = i; }
-        const char *type=jv_str(jv_get(spec,"type"),"");
-        mem[n_mem].key = key; mem[n_mem].key_n = (size_t)(ke-key);
-        mem[n_mem].declared = declared;
-        sbuf *val = &mem[n_mem].json; memset(val, 0, sizeof *val);
-        n_mem++;
+        if (!ke || ke==key || !ve) goto bad;
         const char *v=ke+1, *e=ve;
         // Remove only the template's framing newline, preserving spaces and
         // interior newlines in file contents and shell commands.
         if (v<e && *v=='\r') v++;
         if (v<e && *v=='\n') v++;
         if (e>v && e[-1]=='\n') { e--; if (e>v && e[-1]=='\r') e--; }
-        if (!strcmp(type,"string")) {
-            sb_lit(val,"\""); sb_esc(val,v,(int)(e-v)); sb_lit(val,"\"");
-        } else {
-            const char *b=trim_left(v,e), *z=trim_right(b,e);
-            jv *value=json_parse(b,(size_t)(z-b));
-            if (!value && z-b==4 && !memcmp(b,"True",4)) value=json_parse("true",4);
-            if (!value && z-b==5 && !memcmp(b,"False",5)) value=json_parse("false",5);
-            if (!value && z-b==4 && !memcmp(b,"None",4)) value=json_parse("null",4);
-            if (value) { jv_dump(value,val); jv_free(value); }
-            else if (!type[0]) { sb_lit(val,"\""); sb_esc(val,v,(int)(e-v)); sb_lit(val,"\""); }
-            else goto bad;
-        }
-        if (val->failed) goto bad;
+        if (!xml_member_add(&ms, fn, key, (size_t)(ke-key), v, e)) goto bad;
         p=trim_left(ve+12,end);
     }
     if (end-p<11 || memcmp(p,"</function>",11)) goto bad;
@@ -7207,47 +7293,13 @@ static bool coder_one_call(const tool_envelope *env, const char **pp,
         after = p;   // the next call's opener: left for the caller to read
         closed_by_next = true;
     } else goto bad;
-    // declared members by declaration index, then the undeclared in the
-    // order they came; a stable selection over at most 64 entries
-    sb_lit(&args,"{");
-    bool used[CODER_MAX_PARAMS] = {0};
-    for (int k = 0; k < n_mem; k++) {
-        int pick = -1;
-        for (int i = 0; i < n_mem; i++)
-            if (!used[i] && (pick < 0 || mem[i].declared < mem[pick].declared)) pick = i;
-        used[pick] = true;
-        if (k) sb_lit(&args,",");
-        sb_lit(&args,"\""); sb_esc(&args,mem[pick].key,(int)mem[pick].key_n); sb_lit(&args,"\":");
-        sb_put(&args, mem[pick].json.s ? mem[pick].json.s : "", mem[pick].json.n);
-    }
-    sb_lit(&args,"}");
-    for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
-    n_mem = 0;
-    if (args.failed) goto bad;
-    // json_parse also rejects duplicate keys. The public schema compiler
-    // supplies the same required/type/bound checks as constrained decoding.
-    jv *obj=json_parse(args.s,args.n);
-    if (!obj) goto bad;
-    jv_free(obj);
-    jv *params=jv_get(fn,"parameters");
-    if (params) {
-        char err[192]; snode *schema=schema_compile(params,err,sizeof err);
-        if (!schema) goto bad;
-        sval state; sval_init(&state,schema);
-        bool ok=sval_feed(&state,args.s,(int)args.n) && state.done;
-        schema_free(schema);
-        if (!ok) goto bad;
-    }
-    if (env->kind==TCH_NAMED && (!env->named || strlen(env->named)!=(size_t)(ne-name) || memcmp(env->named,name,(size_t)(ne-name)))) goto bad;
-    sb_fmt(tc,"{\"id\":\"call_%d\",\"type\":\"function\",\"function\":{\"name\":\"",index);
-    sb_esc(tc,name,(int)(ne-name));sb_lit(tc,"\",\"arguments\":\"");
-    sb_esc(tc,args.s,(int)args.n);sb_lit(tc,"\"}}");
-    *pp=after;free(args.s);
+    if (!xml_call_emit(env, fn, name, (size_t)(ne-name), &ms, index, tc)) return false;
+    *pp=after;
     if (closed_by_next) *implicit = true;
-    return !tc->failed;
+    return true;
 bad:
-    for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
-    free(args.s);return false;
+    xml_members_free(&ms);
+    return false;
 }
 
 static bool qwen_call_for(const tool_envelope *e, const char **p,
@@ -7309,23 +7361,13 @@ static bool mcp_one_call(const tool_envelope *env, const char **pp,
     if ((size_t)(end-p) < ol || memcmp(p, MCP_CALL_OPEN, ol)) return false;
     const char *name = p+ol, *ne = memchr(name, '"', (size_t)(end-name));
     if (!ne || ne == name || ne+1 >= end || ne[1] != '>') return false;
-    jv *fn = NULL;
-    for (int i=0; env->tools && i<env->tools->n; i++) {
-        jv *f = jv_get(env->tools->items[i],"function");
-        if (!f) f = env->tools->items[i];
-        const char *n = jv_str(jv_get(f,"name"),"");
-        if (strlen(n)==(size_t)(ne-name) && !memcmp(n,name,(size_t)(ne-name))) { fn=f; break; }
-    }
+    jv *fn = tool_fn_named(env, name, (size_t)(ne-name));
     if (!fn) return false;
-    jv *props = jv_get(jv_get(fn,"parameters"),"properties");
-    enum { MCP_MAX_PARAMS = 64 };
-    struct { const char *key; size_t key_n; sbuf json; int declared; } mem[MCP_MAX_PARAMS];
-    int n_mem = 0;
-    sbuf args = {0};
+    xml_members ms = { .n = 0 };
     p = trim_left(ne+2, end);
     while ((size_t)(end-p) >= 13 && !memcmp(p, "<param name=\"", 13)) {
         const char *key=p+13, *ke=memchr(key,'"',(size_t)(end-key));
-        if (!ke || ke==key || ke+1>=end || ke[1]!='>' || n_mem == MCP_MAX_PARAMS) goto bad;
+        if (!ke || ke==key || ke+1>=end || ke[1]!='>') goto bad;
         const char *v = ke+2, *e, *after;
         if ((size_t)(end-v) >= 9 && !memcmp(v, "<![CDATA[", 9)) {
             v += 9;
@@ -7337,63 +7379,17 @@ static bool mcp_one_call(const tool_envelope *env, const char **pp,
             if (!e) goto bad;
             after = e + 8;
         }
-        jv *spec=NULL; int declared = INT_MAX;
-        for (int i=0; props && props->type==J_OBJ && i<props->n; i++)
-            if (strlen(props->keys[i])==(size_t)(ke-key) && !memcmp(props->keys[i],key,(size_t)(ke-key))) { spec=props->items[i]; declared = i; }
-        const char *type=jv_str(jv_get(spec,"type"),"");
-        mem[n_mem].key = key; mem[n_mem].key_n = (size_t)(ke-key);
-        mem[n_mem].declared = declared;
-        sbuf *val = &mem[n_mem].json; memset(val, 0, sizeof *val);
-        n_mem++;
-        if (!strcmp(type,"string")) {
-            sb_lit(val,"\""); sb_esc(val,v,(int)(e-v)); sb_lit(val,"\"");
-        } else {
-            const char *b=trim_left(v,e), *z=trim_right(b,e);
-            jv *value=json_parse(b,(size_t)(z-b));
-            if (!value && z-b==4 && !memcmp(b,"True",4)) value=json_parse("true",4);
-            if (!value && z-b==5 && !memcmp(b,"False",5)) value=json_parse("false",5);
-            if (!value && z-b==4 && !memcmp(b,"None",4)) value=json_parse("null",4);
-            if (value) { jv_dump(value,val); jv_free(value); }
-            else if (!type[0]) { sb_lit(val,"\""); sb_esc(val,v,(int)(e-v)); sb_lit(val,"\""); }
-            else goto bad;
-        }
-        if (val->failed) goto bad;
+        if (!xml_member_add(&ms, fn, key, (size_t)(ke-key), v, e)) goto bad;
         p = trim_left(after, end);
     }
     if ((size_t)(end-p) < 11 || memcmp(p,"</function>",11)) goto bad;
     p += 11;
-    sb_lit(&args,"{");
-    bool used[MCP_MAX_PARAMS] = {0};
-    for (int k = 0; k < n_mem; k++) {
-        int pick = -1;
-        for (int i = 0; i < n_mem; i++)
-            if (!used[i] && (pick < 0 || mem[i].declared < mem[pick].declared)) pick = i;
-        used[pick] = true;
-        if (k) sb_lit(&args,",");
-        sb_lit(&args,"\""); sb_esc(&args,mem[pick].key,(int)mem[pick].key_n); sb_lit(&args,"\":");
-        sb_put(&args, mem[pick].json.s ? mem[pick].json.s : "", mem[pick].json.n);
-    }
-    sb_lit(&args,"}");
-    for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
-    n_mem = 0;
-    if (args.failed) goto bad;
-    jv *params = jv_get(fn,"parameters");
-    if (params) {
-        char err[192]; snode *schema=schema_compile(params,err,sizeof err);
-        if (!schema) goto bad;
-        sval state; sval_init(&state,schema);
-        bool ok=sval_feed(&state,args.s,(int)args.n) && state.done;
-        schema_free(schema);
-        if (!ok) goto bad;
-    }
-    if (env->kind==TCH_NAMED && (!env->named || strlen(env->named)!=(size_t)(ne-name) || memcmp(env->named,name,(size_t)(ne-name)))) goto bad;
-    sb_fmt(tc,"{\"id\":\"call_%d\",\"type\":\"function\",\"function\":{\"name\":\"",index);
-    sb_esc(tc,name,(int)(ne-name));sb_lit(tc,"\",\"arguments\":\"");
-    sb_esc(tc,args.s,(int)args.n);sb_lit(tc,"\"}}");
-    *pp=p;free(args.s);return !tc->failed;
+    if (!xml_call_emit(env, fn, name, (size_t)(ne-name), &ms, index, tc)) return false;
+    *pp=p;
+    return true;
 bad:
-    for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
-    free(args.s);return false;
+    xml_members_free(&ms);
+    return false;
 }
 
 // Spark's GLM-style call, bare in the content:
@@ -7495,79 +7491,22 @@ static bool argkv_one_call_t(const argkv_tags *t, const tool_envelope *env,
                              const char **pp, const char *end, int index,
                              sbuf *tc) {
     const char *p = *pp, *name, *ne;
-    argkv_member raw[64]; int nraw = 0; size_t blk = 0;
-    if (argkv_scan(t, p, (size_t)(end - p), &blk, &name, &ne, raw, 64, &nraw) != 1)
+    argkv_member raw[XML_MAX_PARAMS]; int nraw = 0; size_t blk = 0;
+    if (argkv_scan(t, p, (size_t)(end - p), &blk, &name, &ne, raw, XML_MAX_PARAMS, &nraw) != 1)
         return false;
-    jv *fn = NULL;
-    for (int i=0; env->tools && i<env->tools->n; i++) {
-        jv *f = jv_get(env->tools->items[i],"function");
-        if (!f) f = env->tools->items[i];
-        const char *nm = jv_str(jv_get(f,"name"),"");
-        if (strlen(nm)==(size_t)(ne-name) && !memcmp(nm,name,(size_t)(ne-name))) { fn=f; break; }
-    }
+    jv *fn = tool_fn_named(env, name, (size_t)(ne-name));
     if (!fn) return false;
-    jv *props = jv_get(jv_get(fn,"parameters"),"properties");
-    struct { const char *key; size_t key_n; sbuf json; int declared; } mem[64];
-    int n_mem = 0;
-    sbuf args = {0};
+    xml_members ms = { .n = 0 };
     for (int m = 0; m < nraw; m++) {
         const char *key = trim_left(raw[m].k, raw[m].ke), *ke = trim_right(key, raw[m].ke);
-        if (ke == key) goto bad;
-        jv *spec=NULL; int declared = INT_MAX;
-        for (int i=0; props && props->type==J_OBJ && i<props->n; i++)
-            if (strlen(props->keys[i])==(size_t)(ke-key) && !memcmp(props->keys[i],key,(size_t)(ke-key))) { spec=props->items[i]; declared = i; }
-        const char *type=jv_str(jv_get(spec,"type"),"");
-        mem[n_mem].key = key; mem[n_mem].key_n = (size_t)(ke-key);
-        mem[n_mem].declared = declared;
-        sbuf *val = &mem[n_mem].json; memset(val, 0, sizeof *val);
-        n_mem++;
-        const char *v = raw[m].v, *e = raw[m].ve;
-        if (!strcmp(type,"string")) {
-            sb_lit(val,"\""); sb_esc(val,v,(int)(e-v)); sb_lit(val,"\"");
-        } else {
-            const char *b=trim_left(v,e), *z=trim_right(b,e);
-            jv *value=json_parse(b,(size_t)(z-b));
-            if (!value && z-b==4 && !memcmp(b,"True",4)) value=json_parse("true",4);
-            if (!value && z-b==5 && !memcmp(b,"False",5)) value=json_parse("false",5);
-            if (!value && z-b==4 && !memcmp(b,"None",4)) value=json_parse("null",4);
-            if (value) { jv_dump(value,val); jv_free(value); }
-            else if (!type[0]) { sb_lit(val,"\""); sb_esc(val,v,(int)(e-v)); sb_lit(val,"\""); }
-            else goto bad;
+        if (ke == key || !xml_member_add(&ms, fn, key, (size_t)(ke-key), raw[m].v, raw[m].ve)) {
+            xml_members_free(&ms);
+            return false;
         }
-        if (val->failed) goto bad;
     }
-    sb_lit(&args,"{");
-    bool used[64] = {0};
-    for (int k = 0; k < n_mem; k++) {
-        int pick = -1;
-        for (int i = 0; i < n_mem; i++)
-            if (!used[i] && (pick < 0 || mem[i].declared < mem[pick].declared)) pick = i;
-        used[pick] = true;
-        if (k) sb_lit(&args,",");
-        sb_lit(&args,"\""); sb_esc(&args,mem[pick].key,(int)mem[pick].key_n); sb_lit(&args,"\":");
-        sb_put(&args, mem[pick].json.s ? mem[pick].json.s : "", mem[pick].json.n);
-    }
-    sb_lit(&args,"}");
-    for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
-    n_mem = 0;
-    if (args.failed) goto bad;
-    jv *params = jv_get(fn,"parameters");
-    if (params) {
-        char err[192]; snode *schema=schema_compile(params,err,sizeof err);
-        if (!schema) goto bad;
-        sval state; sval_init(&state,schema);
-        bool ok=sval_feed(&state,args.s,(int)args.n) && state.done;
-        schema_free(schema);
-        if (!ok) goto bad;
-    }
-    if (env->kind==TCH_NAMED && (!env->named || strlen(env->named)!=(size_t)(ne-name) || memcmp(env->named,name,(size_t)(ne-name)))) goto bad;
-    sb_fmt(tc,"{\"id\":\"call_%d\",\"type\":\"function\",\"function\":{\"name\":\"",index);
-    sb_esc(tc,name,(int)(ne-name));sb_lit(tc,"\",\"arguments\":\"");
-    sb_esc(tc,args.s,(int)args.n);sb_lit(tc,"\"}}");
-    *pp=p+blk;free(args.s);return !tc->failed;
-bad:
-    for (int i = 0; i < n_mem; i++) free(mem[i].json.s);
-    free(args.s);return false;
+    if (!xml_call_emit(env, fn, name, (size_t)(ne-name), &ms, index, tc)) return false;
+    *pp=p+blk;
+    return true;
 }
 static bool argkv_one_call(const tool_envelope *env, const char **pp,
                            const char *end, int index, sbuf *tc) {
@@ -8155,37 +8094,9 @@ int tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
         return emitted;
     }
 
-    const char *tool = jv_str(jv_get(v, "tool"), NULL);
-    jv *args = jv_get(v, "args");
-    if (!tool) { jv_free(v); return -1; }
-
-    if (!strcmp(tool, FINAL_BRANCH)) {
-        if (e->final_is_text) {
-            const char *text = jv_str(jv_get(args, "content"), "");
-            sb_put(content, text, strlen(text));
-        } else if (args) {
-            // the caller asked for a schema-shaped answer: hand back its own
-            // document verbatim, not a field lifted out of it
-            jv_dump(args, content);
-        }
-        jv_free(v);
-        return 0;
-    }
-
-    // OpenAI carries arguments as a JSON *string*, so the document is dumped
-    // and then escaped into the field
-    sbuf a = { 0 };
-    if (args) jv_dump(args, &a);
-    else      sb_lit(&a, "{}");
-    sb_lit(tc, "{\"id\":\"call_0\",\"type\":\"function\",\"function\":{\"name\":\"");
-    sb_esc(tc, tool, strlen(tool));
-    sb_lit(tc, "\",\"arguments\":\"");
-    sb_esc(tc, a.s ? a.s : "{}", a.s ? a.n : 2);
-    sb_lit(tc, "\"}}");
-    if (a.failed) tc->failed = true;
-    free(a.s);
+    int rc = envelope_entry_map(e, v, 0, content, tc);
     jv_free(v);
-    return 1;
+    return rc;
 }
 
 // ------------------------------------- streaming envelope demultiplexer
@@ -8545,6 +8456,36 @@ void tool_stream_init(tool_stream *s, const tool_envelope *e,
              : e && e->proto == TP_MUSE_PLAIN ? TS_MUSE_HEADER : TS_TOOL;
 }
 
+// The calls a reader left in `tc` (OpenAI tool_calls items, comma-separated)
+// go to the sink one at a time: begin, the arguments whole, end. Every
+// native reader's block ends here, so a call is announced the same way
+// whichever family wrote it. False when `tc` does not hold such items; *rc
+// is the sink's own stop.
+static bool ts_emit_calls(tool_stream *s, const sbuf *tc, int *rc) {
+    sbuf wrapped = {0};
+    sb_lit(&wrapped, "[");
+    if (tc->s) sb_put(&wrapped, tc->s, tc->n);
+    sb_lit(&wrapped, "]");
+    jv *arr = wrapped.failed ? NULL : json_parse(wrapped.s, wrapped.n);
+    free(wrapped.s);
+    bool ok = arr && arr->type == J_ARR && arr->n > 0;
+    *rc = 0;
+    for (int i = 0; ok && !*rc && i < arr->n; i++) {
+        jv *fn = jv_get(arr->items[i], "function");
+        const char *name = jv_str(jv_get(fn, "name"), NULL);
+        const char *args = jv_str(jv_get(fn, "arguments"), NULL);
+        if (!name || !args) { ok = false; break; }
+        s->called = s->any_called = true;
+        s->n_calls++;
+        if (s->sink.call_begin) *rc = s->sink.call_begin(s->sink.ud, name);
+        if (!*rc && s->sink.call_args)
+            *rc = s->sink.call_args(s->sink.ud, args, (int)strlen(args));
+        if (!*rc && s->sink.call_end) *rc = s->sink.call_end(s->sink.ud);
+    }
+    jv_free(arr);
+    return ok;
+}
+
 static int ts_muse_header(tool_stream *s, const char *bytes, int n) {
     head_put(s, bytes, (size_t)n);
     if (s->state == TS_DONE) return 0;
@@ -8569,29 +8510,15 @@ static int ts_atem(tool_stream *s, const char *bytes, int n) {
             const char *close = atem_invoke_close(inv, s->head + s->head_n);
             if (!close) return 0;
             size_t upto = (size_t)(close - s->head) + strlen("</atem:invoke>");
-            sbuf content = {0}, tc = {0}, wrapped = {0};
+            sbuf content = {0}, tc = {0};
             int mapped = atem_map(s->env, inv, upto - (size_t)(inv - s->head),
                                   &content, &tc);
-            sb_lit(&wrapped, "["); sb_put(&wrapped, tc.s, tc.n); sb_lit(&wrapped, "]");
-            jv *arr = mapped == 1 ? json_parse(wrapped.s, wrapped.n) : NULL;
-            jv *fn = arr && arr->type == J_ARR && arr->n == 1
-                       ? jv_get(arr->items[0], "function") : NULL;
-            const char *name = jv_str(jv_get(fn, "name"), NULL);
-            const char *args = jv_str(jv_get(fn, "arguments"), NULL);
             int rc = 0;
             // a closed invoke that is not a call: dropped, and the turn
             // reports it as every protocol's reader does (one valid call
             // beside it used to make the turn a clean one)
-            if (!name || !args) s->fault = true;
-            else {
-                s->called = true;
-                s->any_called = true;
-                if (s->sink.call_begin) rc = s->sink.call_begin(s->sink.ud, name);
-                if (!rc && s->sink.call_args)
-                    rc = s->sink.call_args(s->sink.ud, args, (int)strlen(args));
-                if (!rc && s->sink.call_end) rc = s->sink.call_end(s->sink.ud);
-            }
-            jv_free(arr); free(content.s); free(tc.s); free(wrapped.s);
+            if (mapped != 1 || !ts_emit_calls(s, &tc, &rc)) s->fault = true;
+            free(content.s); free(tc.s);
             head_drop(s, upto);
             if (rc) return rc;
             continue;
@@ -8749,7 +8676,7 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
             }
             if (!close && !next) return 0;
             const char *at=s->head;
-            sbuf tc={0}, wrapped={0};
+            sbuf tc={0};
             bool past_bound = lenient && s->n_calls >= s->env->max_calls;
             bool closed_by_next = false;
             if (past_bound || !qwen_call_for(s->env,&at,s->head+s->head_n,0,&tc,&closed_by_next)) {
@@ -8777,22 +8704,10 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
                 s->state=TS_QWEN_TEXT;s->skip_ws=true;
                 continue;
             }
-            sb_lit(&wrapped,"[");sb_put(&wrapped,tc.s,tc.n);sb_lit(&wrapped,"]");
-            jv *arr=json_parse(wrapped.s,wrapped.n);
-            jv *fn=arr && arr->n==1 ? jv_get(arr->items[0],"function") : NULL;
-            const char *name=jv_str(jv_get(fn,"name"),NULL);
-            const char *args=jv_str(jv_get(fn,"arguments"),NULL);
             int rc=0;
-            if (!name || !args) rc=-1;
-            else {
-                s->called=s->any_called=true;
-                s->n_calls++;
-                if (closed_by_next) s->implicit_close = true;
-                if (s->sink.call_begin) rc=s->sink.call_begin(s->sink.ud,name);
-                if (!rc && s->sink.call_args) rc=s->sink.call_args(s->sink.ud,args,(int)strlen(args));
-                if (!rc && s->sink.call_end) rc=s->sink.call_end(s->sink.ud);
-            }
-            jv_free(arr);free(tc.s);free(wrapped.s);
+            if (!ts_emit_calls(s,&tc,&rc)) rc=-1;
+            else if (closed_by_next) s->implicit_close = true;
+            free(tc.s);
             // closed by the next call's opener (R2.10): `at` is that opener,
             // which the text state below hands back to the call state
             head_drop(s,(size_t)(at-s->head));
@@ -8865,7 +8780,7 @@ static int ts_mcp(tool_stream *s, const char *bytes, int n) {
             size_t close=xp->block_end(s->head,s->head_n);
             if (!close) return 0;
             const char *at=s->head;
-            sbuf tc={0}, wrapped={0};
+            sbuf tc={0};
             bool past_bound = s->env && s->n_calls >= s->env->max_calls;
             if (past_bound || !xp->one_call(s->env,&at,s->head+s->head_n,0,&tc)) {
                 free(tc.s);
@@ -8878,21 +8793,9 @@ static int ts_mcp(tool_stream *s, const char *bytes, int n) {
                 s->state=TS_MCP_TEXT;s->skip_ws=true;
                 continue;
             }
-            sb_lit(&wrapped,"[");sb_put(&wrapped,tc.s,tc.n);sb_lit(&wrapped,"]");
-            jv *arr=json_parse(wrapped.s,wrapped.n);
-            jv *fn=arr && arr->n==1 ? jv_get(arr->items[0],"function") : NULL;
-            const char *name=jv_str(jv_get(fn,"name"),NULL);
-            const char *args=jv_str(jv_get(fn,"arguments"),NULL);
             int rc=0;
-            if (!name || !args) rc=-1;
-            else {
-                s->called=s->any_called=true;
-                s->n_calls++;
-                if (s->sink.call_begin) rc=s->sink.call_begin(s->sink.ud,name);
-                if (!rc && s->sink.call_args) rc=s->sink.call_args(s->sink.ud,args,(int)strlen(args));
-                if (!rc && s->sink.call_end) rc=s->sink.call_end(s->sink.ud);
-            }
-            jv_free(arr);free(tc.s);free(wrapped.s);
+            if (!ts_emit_calls(s,&tc,&rc)) rc=-1;
+            free(tc.s);
             head_drop(s,(size_t)(at-s->head));
             s->state=TS_MCP_TEXT;s->skip_ws=true;
             if (rc) return rc;
@@ -9003,22 +8906,9 @@ static int ts_lfm2(tool_stream *s, const char *bytes, int n) {
                     return 0;                          // wait for the close
                 }
                 if (left >= cl && !memcmp(r.p, LFM_CALL_CLOSE, cl)) {
-                    sbuf wrapped = {0};
-                    sb_lit(&wrapped, "["); sb_put(&wrapped, tc.s, tc.n); sb_lit(&wrapped, "]");
-                    jv *arr = wrapped.failed ? NULL : json_parse(wrapped.s, wrapped.n);
-                    int rc = arr ? 0 : -1;
-                    for (int i = 0; !rc && i < arr->n; i++) {
-                        jv *fn = jv_get(arr->items[i], "function");
-                        const char *name = jv_str(jv_get(fn, "name"), NULL);
-                        const char *args = jv_str(jv_get(fn, "arguments"), NULL);
-                        if (!name || !args) { rc = -1; break; }
-                        s->called = s->any_called = true;
-                        s->n_calls++;
-                        if (s->sink.call_begin) rc = s->sink.call_begin(s->sink.ud, name);
-                        if (!rc && s->sink.call_args) rc = s->sink.call_args(s->sink.ud, args, (int)strlen(args));
-                        if (!rc && s->sink.call_end) rc = s->sink.call_end(s->sink.ud);
-                    }
-                    jv_free(arr); free(tc.s); free(wrapped.s);
+                    int rc = 0;
+                    if (!ts_emit_calls(s, &tc, &rc)) rc = -1;
+                    free(tc.s);
                     head_drop(s, (size_t)(r.p + cl - s->head));
                     s->state = TS_LFM_TEXT;
                     if (rc) return rc;
@@ -9077,7 +8967,7 @@ static int ts_nemotron(tool_stream *s, const char *bytes, int n) {
         if (s->state == TS_DONE || !s->head_n) return 0;
         if (s->state == TS_NEMO_BLOCK) {
             const char *at = s->head;
-            sbuf tc = {0}, wrapped = {0};
+            sbuf tc = {0};
             int max = s->env ? s->env->max_calls - s->n_calls : 1;
             int got = nemotron_block_calls(lp, &at, s->head + s->head_n, 0,
                                            max > 0 ? max : 0, &tc);
@@ -9103,21 +8993,9 @@ static int ts_nemotron(tool_stream *s, const char *bytes, int n) {
                 s->state = TS_NEMO_TEXT; s->skip_ws = true;
                 continue;
             }
-            sb_lit(&wrapped, "["); sb_put(&wrapped, tc.s, tc.n); sb_lit(&wrapped, "]");
-            jv *arr = json_parse(wrapped.s, wrapped.n);
-            int rc = arr ? 0 : -1;
-            for (int i = 0; !rc && arr && i < arr->n; i++) {
-                jv *fn = jv_get(arr->items[i], "function");
-                const char *name = jv_str(jv_get(fn, "name"), NULL);
-                const char *args = jv_str(jv_get(fn, "arguments"), NULL);
-                if (!name || !args) { rc = -1; break; }
-                s->called = s->any_called = true;
-                s->n_calls++;
-                if (s->sink.call_begin) rc = s->sink.call_begin(s->sink.ud, name);
-                if (!rc && s->sink.call_args) rc = s->sink.call_args(s->sink.ud, args, (int)strlen(args));
-                if (!rc && s->sink.call_end) rc = s->sink.call_end(s->sink.ud);
-            }
-            jv_free(arr); free(tc.s); free(wrapped.s);
+            int rc = 0;
+            if (!ts_emit_calls(s, &tc, &rc)) rc = -1;
+            free(tc.s);
             head_drop(s, (size_t)(at - s->head));
             s->state = TS_NEMO_TEXT; s->skip_ws = true;
             if (rc) return rc;
@@ -9214,28 +9092,8 @@ static int ts_gemma4(tool_stream *s, const char *bytes, int n) {
             const char *at = s->head;
             int rc = 0;
             if (g4_one_call(&at, s->head + upto, 0, &tc) && !tc.failed) {
-                sbuf wrapped = {0};
-                sb_lit(&wrapped, "["); sb_put(&wrapped, tc.s, tc.n);
-                sb_lit(&wrapped, "]");
-                jv *arr = json_parse(wrapped.s, wrapped.n);
-                jv *fn = arr && arr->type == J_ARR && arr->n == 1
-                           ? jv_get(arr->items[0], "function") : NULL;
-                const char *name = jv_str(jv_get(fn, "name"), NULL);
-                const char *args = jv_str(jv_get(fn, "arguments"), NULL);
-                if (name && args) {
-                    s->called = true;
-                    s->any_called = true;
-                    if (s->sink.call_begin)
-                        rc = s->sink.call_begin(s->sink.ud, name);
-                    if (!rc && s->sink.call_args)
-                        rc = s->sink.call_args(s->sink.ud, args,
-                                               (int)strlen(args));
-                    if (!rc && s->sink.call_end) rc = s->sink.call_end(s->sink.ud);
-                } else {
-                    s->fault = true;   // mapped, but not to a call the client can read
-                }
-                jv_free(arr);
-                free(wrapped.s);
+                // mapped, but not to a call the client can read
+                if (!ts_emit_calls(s, &tc, &rc)) s->fault = true;
             } else {
                 // a closed block that is not a call: dropped, and the turn
                 // reports it, as every other protocol's reader does (it was
@@ -9479,7 +9337,7 @@ int tool_stream_finish_ex(tool_stream *s, bool truncated) {
     }
     if (s->state == TS_DONE && s->fault) return -1;
     if (s->state != TS_HARMONY) return 0;
-    sbuf reasoning = {0}, content = {0}, tc = {0}, wrapped = {0};
+    sbuf reasoning = {0}, content = {0}, tc = {0};
     int mapped = tool_envelope_map_channels(
         s->env, s->head ? s->head : "", s->head_n,
         &reasoning, &content, &tc);
@@ -9489,25 +9347,9 @@ int tool_stream_finish_ex(tool_stream *s, bool truncated) {
         rc = s->sink.reasoning(s->sink.ud, reasoning.s, (int)reasoning.n);
     if (!rc && content.n && s->sink.content)
         rc = s->sink.content(s->sink.ud, content.s, (int)content.n);
-    if (!rc && mapped == 1) {
-        sb_lit(&wrapped, "["); sb_put(&wrapped, tc.s, tc.n); sb_lit(&wrapped, "]");
-        jv *arr = json_parse(wrapped.s, wrapped.n);
-        jv *fn = arr && arr->type == J_ARR && arr->n == 1
-                   ? jv_get(arr->items[0], "function") : NULL;
-        const char *name = jv_str(jv_get(fn, "name"), NULL);
-        const char *args = jv_str(jv_get(fn, "arguments"), NULL);
-        if (!name || !args) rc = -1;
-        else {
-            s->called = s->any_called = true;
-            if (s->sink.call_begin) rc = s->sink.call_begin(s->sink.ud, name);
-            if (!rc && s->sink.call_args)
-                rc = s->sink.call_args(s->sink.ud, args, (int)strlen(args));
-            if (!rc && s->sink.call_end) rc = s->sink.call_end(s->sink.ud);
-        }
-        jv_free(arr);
-    }
+    if (!rc && mapped == 1 && !ts_emit_calls(s, &tc, &rc)) rc = -1;
 done:
-    free(reasoning.s); free(content.s); free(tc.s); free(wrapped.s);
+    free(reasoning.s); free(content.s); free(tc.s);
     s->state = TS_DONE;
     return rc;
 }
