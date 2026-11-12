@@ -1684,6 +1684,30 @@ char *plat_read_file(const char *path, size_t max_bytes, size_t *n_out) {
     return buf;
 }
 
+// The process's physical footprint, where the operating system keeps one: on
+// macOS the kernel's phys_footprint (TASK_VM_INFO), the figure Activity Monitor
+// and footprint(1) show. Unlike the resident size it counts the GPU driver's
+// memory for this process (Metal buffers, IOAccelerator) and compressed pages:
+// a serving process read 13 MB resident at a 638 MB footprint, 598 MB of it
+// Metal, so a device-memory leak there showed nowhere else (R6.68.12). False
+// elsewhere: Linux and Windows have no one figure that adds device memory to
+// RAM, and their GPU memory is reported apart, so the field is left out
+// rather than repeating the resident set.
+bool plat_proc_phys_footprint_bytes(uint64_t *out) {
+#ifdef __APPLE__
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) != KERN_SUCCESS ||
+        count < TASK_VM_INFO_REV1_COUNT)   // phys_footprint arrived in revision 1
+        return false;
+    *out = (uint64_t)info.phys_footprint;
+    return true;
+#else
+    (void)out;
+    return false;
+#endif
+}
+
 bool plat_mkdir_exist_ok(const char *path) {
     if (plat_mkdir(path, 0755) == 0 || errno == EEXIST) return true;
 #ifdef _WIN32

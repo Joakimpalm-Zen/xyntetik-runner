@@ -631,6 +631,22 @@ jobs:
             tests/test_cli_files.py tests/test_lineage.py tests/test_eval_record.py \
             tests/test_moe_lora.py tests/test_merge.py tests/test_cached.py
           .venv/bin/python scripts/check-junit.py --no-skips .build/ci/sanitized-cli.xml
+      - name: hostile geometry and the valid fixtures under sanitizers
+        # tests/test_hostile_geometry.py holds nine cases that need the
+        # sanitized binary and skip without a fresh one. `make test` does not
+        # build it and this job, which does, did not name the file, so they
+        # ran nowhere (R6.68.16). test-g4h.gguf is generated only by the Metal
+        # recipe, so it is made here by hand; no skip is allowed.
+        env:
+          RUNNER_TEST_GPU_OFF: "1"
+        run: |
+          .venv/bin/python scripts/make-test-moe.py test-moe-fixture > /dev/null
+          .venv/bin/python scripts/make-test-model.py --gemma4-hetero test-g4h.gguf
+          make test-es.gguf PYTHON=.venv/bin/python
+          .venv/bin/python scripts/ci-run.py --timeout 900 sanitized-geometry -- \
+            .venv/bin/python -m pytest -q -rs --junitxml=.build/ci/sanitized-geometry.xml \
+            tests/test_hostile_geometry.py
+          .venv/bin/python scripts/check-junit.py --no-skips .build/ci/sanitized-geometry.xml
       - name: conformance report
         if: always()
         run: |
@@ -768,6 +784,52 @@ jobs:
           name: template-oracles
           path: .build/template-oracles/
 
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
+  # The tests whose expected values come from outside this repository: gold
+  # logits against the publisher's float32 forward in torch, the activation
+  # trace against transformers, the DeltaNet backward against autograd, and
+  # the KLD and lookup-draft cases that need a real model file; and beside
+  # them the tokenizer diff against Hugging Face tokenizers, the receipt
+  # signature checked by an independent Ed25519 (cryptography) and the
+  # sigstore model-signing round trip. They skip on "could not import torch",
+  # "not present" or "not installed" wherever those are missing, which until
+  # R6.68.11 was every job here and the release gate too: tests that no
+  # change ever ran. This job provides all of it and allows no skip.
+  # The model is the 145 MB SmolLM2-135M-Instruct Q8_0, fetched by its pinned
+  # sha256 (download-model.sh) behind a cache, so huggingface.co is asked once
+  # per cache lifetime, not once per run.
+  anchors:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: pip download cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-anchors-${{ runner.os }}-${{ runner.arch }}-v1
+      - name: model file cache
+        uses: actions/cache@v4
+        with:
+          path: models/SmolLM2-135M-Instruct-Q8_0.gguf
+          key: model-smollm2-135m-instruct-q8_0-5a1395716f79
+      - name: install torch (CPU), transformers and the other optional packages
+        run: |
+          python3 -m venv .anchor-venv
+          .anchor-venv/bin/python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
+          .anchor-venv/bin/python -m pip install --quiet pytest numpy transformers accelerate safetensors \
+            tokenizers cryptography model-signing pyopenssl
+      - name: anchored tests, no skip allowed
+        run: python3 scripts/ci-run.py --timeout 1800 anchors -- make -j2 test-anchors PYTHON=.anchor-venv/bin/python
       - name: CI timing and test reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -943,7 +1005,7 @@ jobs:
     name: pr-gate
     needs: [changes, make-test, macos, simd-isa-levels, fuzz, windows, conformance,
             conformance-sanitized, consumer-compatibility, template-conformance,
-            thread-sanitizer, t3, windows-suite, reverse-proxy]
+            anchors, thread-sanitizer, t3, windows-suite, reverse-proxy]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
