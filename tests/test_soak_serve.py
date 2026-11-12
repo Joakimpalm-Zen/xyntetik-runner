@@ -95,6 +95,7 @@ def test_device_memory_is_read_from_the_plain_table_when_the_queries_refuse():
 |   0  NVIDIA GPU                     On  |   00000000:01:00.0 Off |                   On |
 |=========================================+========================+======================|
 |  0    3   0   0  |              81MiB / 24192MiB    | 14      0 |  1   0    0    0    0 |
+|                  |              12MiB /  8317MiB    |           |                       |
 | Processes:                                                                              |
 |    0    3    0             4242      C   ./runner                                 118MiB |
 """

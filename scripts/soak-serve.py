@@ -57,7 +57,9 @@ LOG_ALARMS = ("AddressSanitizer", "ThreadSanitizer", "runtime error:",
 def parse_smi_table(text, pid=None):
     """MiB in use from nvidia-smi's plain table: the process row of `pid`
     when it is there (`|  0  N/A  N/A  4242  C  ./runner  118MiB |`), else
-    the device rows' "81MiB / 24192MiB" summed; None when neither parses."""
+    the device rows' "81MiB / 24192MiB" summed; None when neither parses.
+    A device row starts with its index; the row under it, which starts with
+    no number, is the BAR1 mapping and is not memory in use."""
     devices = []
     for line in text.splitlines():
         cells = line.replace("|", " ").split()
@@ -65,9 +67,12 @@ def parse_smi_table(text, pid=None):
             if cells[-1][:-3].isdigit():
                 return int(cells[-1][:-3])
         for i, c in enumerate(cells):
+            if not cells[0].isdigit():
+                break
             if c == "/" and 0 < i < len(cells) - 1 and cells[i - 1].endswith("MiB") \
                     and cells[i + 1].endswith("MiB") and cells[i - 1][:-3].isdigit():
                 devices.append(int(cells[i - 1][:-3]))
+                break
     return sum(devices) if devices else None
 
 
