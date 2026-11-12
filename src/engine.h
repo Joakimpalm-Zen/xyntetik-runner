@@ -414,6 +414,10 @@ int engine_lookup_draft(const int32_t *hist, int len, int k, int32_t *out);
 int engine_hint_draft(const int32_t *hist, int len, const int32_t *hint,
                       int hint_len, int k, int32_t *out);
 
+// Frees what the engine allocated for itself (history, constraint document
+// buffer). Every teardown calls it; safe on a zeroed engine and twice.
+void engine_release(engine *e);
+
 // Returns false if the per-context history buffer could not be allocated;
 // the caller must not use the engine in that case.
 bool   engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp);

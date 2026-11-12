@@ -977,7 +977,7 @@ static void cli_cleanup(engine *e, int32_t *toks, tokenizer *tok, model_t *m) {
     if (e) {
         schema_free((snode *)e->schema);
         if (e->dm) { model_free(e->dm); free(e->dm); }
-        free(e->hist);
+        engine_release(e);
     }
     free(toks);
     tokenizer_free(tok);

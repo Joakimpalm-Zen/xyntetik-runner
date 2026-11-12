@@ -36,9 +36,23 @@ static void constraint_reset(engine *e) {
 _Static_assert(sizeof(((sampler *)0)->no_penalty) / sizeof(int32_t) >= TOK_STOP_MAX,
                "the repeat-penalty exemption holds the whole stop set");
 
-bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
-    free(e->hist); // slot engines are re-inited on model swap; e must be zeroed
+// What an engine allocates for itself: the token history and the constraint
+// document buffer. One release, called by every teardown (the CLI's, the
+// server's slots) and by engine_init on a re-init, so a buffer added to the
+// engine is freed everywhere by adding it here. The teardowns freed the
+// history by hand and not the document buffer, which a run that ended
+// inside or after a constrained document then left allocated (R6.68.38).
+void engine_release(engine *e) {
+    if (!e) return;
+    free(e->hist);
     free(e->cdoc);
+    e->hist = NULL;
+    e->cdoc = NULL;
+    e->cdoc_n = e->cdoc_cap = 0;
+}
+
+bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
+    engine_release(e); // slot engines are re-inited on model swap; e must be zeroed
     memset(e, 0, sizeof(*e));
     e->cdoc_rec = true;
     e->dsnap = -1;
