@@ -218,6 +218,20 @@ static bool model_file_present(void) {
     return plat_stat(g_cfg.last_model, &st) == 0 && S_ISREG(st.st_mode);
 }
 
+#ifndef _WIN32
+// The openers "View log" started: children of the tray, which exit as soon
+// as they have handed the file over. Reaped at each menu build and before
+// the next one starts, so none stays defunct for the tray's lifetime
+// (R6.68.95). One that is still running keeps its slot; with every slot
+// taken a new one goes unrecorded, as they all did.
+static pid_t g_openers[8];
+static void openers_reap(void) {
+    for (size_t i = 0; i < sizeof g_openers / sizeof *g_openers; i++)
+        if (g_openers[i] > 0 && waitpid(g_openers[i], NULL, WNOHANG) != 0)
+            g_openers[i] = 0;   // reaped, or no longer ours to wait for
+}
+#endif
+
 // Managed-instance lifecycle, derived — never stored — so the menu can't
 // show a state the world has moved past. STARTING = the child process is
 // alive but has not yet registered (model still loading); EXITED = it died
@@ -231,6 +245,7 @@ static int managed_state(const instance_rec *recs, int nrecs) {
 #ifndef _WIN32
     // reap a dead child, else the zombie still answers kill(pid, 0)
     if (g_managed_pid > 0) waitpid((pid_t)g_managed_pid, NULL, WNOHANG);
+    openers_reap();
 #endif
     // the Runner the lease was taken for has ended: another launcher may
     // start one now
@@ -313,13 +328,20 @@ static void open_log(void) {
 #else
     char *argv[] = { (char *)"xdg-open", lp, NULL };
 #endif
+#ifdef RUNNER_TEST_TRAY_HTTP
+    // the tray-core gate names a harmless opener: a test opens nothing
+    if (getenv("RUNNER_TEST_TRAY_OPENER")) argv[0] = getenv("RUNNER_TEST_TRAY_OPENER");
+#endif
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
     posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
     posix_spawn_file_actions_adddup2(&fa, 1, 2);
     pid_t pid;
-    posix_spawnp(&pid, argv[0], &fa, NULL, argv, environ);
+    openers_reap();
+    if (posix_spawnp(&pid, argv[0], &fa, NULL, argv, environ) == 0)
+        for (size_t i = 0; i < sizeof g_openers / sizeof *g_openers; i++)
+            if (!g_openers[i]) { g_openers[i] = pid; break; }
     posix_spawn_file_actions_destroy(&fa);
 #endif
 }

@@ -375,6 +375,26 @@ int main(int argc, char **argv) {
               "unconfigured row no longer claims a missing model");
     }
 
+#ifndef _WIN32
+    // R6.68.95: "View log" starts the platform's opener as a child of the tray,
+    // and nothing waited for it: each click left a defunct process for as
+    // long as the tray ran. The next menu build reaps them. The seam names a
+    // harmless opener, so the test opens nothing on the screen; no managed
+    // runner exists yet, so any child left over is an opener.
+    {
+        setenv_compat("RUNNER_TEST_TRAY_OPENER", "true");
+        tray_menu_act(TRAY_ACT_OPEN_LOG, 0, NULL);
+        tray_menu_act(TRAY_ACT_OPEN_LOG, 0, NULL);
+        msleep(300);
+        tray_item rows[128];
+        tray_menu_build(rows, 128);
+        errno = 0;
+        pid_t left = waitpid(-1, NULL, WNOHANG);
+        CHECK(left == -1 && errno == ECHILD, "the log opener's processes are reaped");
+        unsetenv_compat("RUNNER_TEST_TRAY_OPENER");
+    }
+#endif
+
     // The core re-reads config.json whenever it has changed on disk (a file
     // that appears after the first build is picked up: its stamp differs
     // from the never-loaded one). instances_dir() is <root>/instances;
