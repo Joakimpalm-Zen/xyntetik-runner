@@ -1829,9 +1829,13 @@ typedef struct model_weights {
     // out of the previous parse.
     uint64_t fsize, fino;
     int64_t  fmtime, fctime;
-    // The only two parameters the bind phase reads. Everything else the load
-    // takes from `p` is consumed after the seam, by the per-instance half, so
-    // two slots may legitimately differ on it and still share these buffers.
+    // The bind phase's parameters two loads of one file may differ in: the
+    // KV formats bind_kv_layout decides and the GPU mode. It also reads
+    // kv_f32, mtp and mtp_path, unkeyed because every load in one process
+    // passes the same ones (the slots, the registry's swaps, the micro-batch
+    // models; a draft is another file): key them before that stops holding.
+    // Everything else the load takes from `p` is consumed after the seam, by
+    // the per-instance half, so two slots may differ on it and still share.
     bool     want_kv_q8;
     bool     want_kv_fp4;
     bool     want_kv_split;
@@ -2040,8 +2044,6 @@ static int weights_lock(model_t *m, uint64_t *hot, uint64_t *cold) {
     return rc;
 }
 
-// The immutable half. Freed by the last holder, or directly by model_free for
-// a load that failed before it could publish.
 // ---------------------------------------------------- what a model owns
 //
 // R6.68.30: the buffers model.c allocates for a model and frees with a plain
@@ -2130,6 +2132,8 @@ static void free_owned(void *base, const size_t *rows, size_t n) {
     }
 }
 
+// The immutable half. Freed by the last holder, or directly by model_free for
+// a load that failed before it could publish.
 static void model_free_weights(model_t *m) {
     // partial load: n_layer is read from GGUF metadata long before m->layers
     // is allocated, so a load that fails in between (unsupported tensor
@@ -2452,13 +2456,10 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
 
 // ---------------------------------------------------------- hybrid SSM admission
 //
-// The Mamba-2 hybrid families — Granite-4 h-series (`granitehybrid`) and
 // Bind one Nemotron-H block. Each block is EXACTLY ONE of {SSM, attention,
 // MLP} (mutually exclusive), typed off head_count_kv / feed_forward_length,
 // with a single pre-norm (attn_norm) and a single residual add. Fail closed on
-// any missing or mis-dimensioned tensor (the hostile-GGUF discipline). The AK
-// arch-key macro is local to model_bind_weights, so this helper spells the one
-// per-layer array key it needs in full.
+// any missing or mis-dimensioned tensor (the hostile-GGUF discipline).
 static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
     bool ok = true;
     gguf_tensor *an = need_tensor(g, "blk.%d.attn_norm.weight", i, &ok);
@@ -3018,20 +3019,6 @@ static bool bind_meta_afmoe(model_t *m, gguf_file *g, const char *arch) {
     return true;
 }
 
-// RecursiveSI flint (FlintForCausalLM; transformers' models/flint and
-// llama.cpp's src/models/flint.cpp, which agree):
-//   * GQA with qwen3-style per-head QK RMSNorms before rope, and gpt-oss's
-//     learned attention sinks (blk.N.attn_sinks, one logit per head that
-//     joins the softmax denominator);
-//   * a sliding window (513) on the layers the boolean pattern marks; rope
-//     (NeoX, 10k) on exactly those layers, the full-attention layers NoPE.
-//     The file carries the two patterns as separate arrays, and they agree
-//     on every flint checkpoint; a file where they differ is refused rather
-//     than roped by one of them;
-//   * leading_dense_block_count dense SiLU blocks, then 256 routed experts,
-//     top-6 by sigmoid score (an optional selection bias), renormalised,
-//     plus an always-on shared expert -- bind_meta_moe's keys drive all of it;
-//   * untied output, no embedding scale.
 // DeepSeek-V2 (deepseek2: the publisher's modeling_deepseek.py and llama.cpp's
 // src/models/deepseek2.cpp), R4.4.5 step b, the CPU path:
 //   * multi-head latent attention: Q per head [q_nope | q_pe] from attn_q (or
@@ -3094,6 +3081,20 @@ static bool bind_meta_deepseek2(model_t *m, gguf_file *g, const char *arch) {
     return true;
 }
 
+// RecursiveSI flint (FlintForCausalLM; transformers' models/flint and
+// llama.cpp's src/models/flint.cpp, which agree):
+//   * GQA with qwen3-style per-head QK RMSNorms before rope, and gpt-oss's
+//     learned attention sinks (blk.N.attn_sinks, one logit per head that
+//     joins the softmax denominator);
+//   * a sliding window (513) on the layers the boolean pattern marks; rope
+//     (NeoX, 10k) on exactly those layers, the full-attention layers NoPE.
+//     The file carries the two patterns as separate arrays, and they agree
+//     on every flint checkpoint; a file where they differ is refused rather
+//     than roped by one of them;
+//   * leading_dense_block_count dense SiLU blocks, then 256 routed experts,
+//     top-6 by sigmoid score (an optional selection bias), renormalised,
+//     plus an always-on shared expert -- bind_meta_moe's keys drive all of it;
+//   * untied output, no embedding scale.
 static bool bind_meta_flint(model_t *m, gguf_file *g, const char *arch) {
     char key[128];
     m->flint        = true;
@@ -3133,7 +3134,6 @@ static bool bind_meta_flint(model_t *m, gguf_file *g, const char *arch) {
     return true;
 }
 
-// Qwen3, dense and sparse: the think tags its responses wrap reasoning in.
 // XHToken Spark 2.5 / 2.6 (spark2_5). From the publisher's modeling_spark.py
 // (identical in X2.5-4B and X2.6-4B) and llama.cpp's src/models/spark2-5.cpp:
 //   * a dense pre-norm transformer: RMSNorm, GQA, no QK norm, no biases;
@@ -3220,6 +3220,7 @@ static bool bind_meta_k2h(model_t *m, gguf_file *g, const char *arch) {
     return true;
 }
 
+// Qwen3, dense and sparse: the think tags its responses wrap reasoning in.
 static bool bind_meta_qwen3(model_t *m, gguf_file *g, const char *arch) {
     // Thinking-tuned Qwen3 (dense and sparse-MoE) responses wrap hidden
     // reasoning before the visible answer; shared CLI/server output
@@ -3699,8 +3700,8 @@ static bool bind_meta_granite(model_t *m, gguf_file *g, const char *arch) {
     //     runner's knob multiplies, so store the reciprocal.
     // Rope is adjacent-pair (LLAMA_ROPE_TYPE_NORM, like llama), gated by
     // rope.scaling.finetuned which defaults ON; a NoPE granite export is
-    // refused rather than mis-rotated. granitemoe/granitehybrid are
-    // different arch ids and stay unadmitted.
+    // refused rather than mis-rotated. granitemoe is a different arch id and
+    // stays unadmitted; granitehybrid has its own binder below.
     m->rope_neox   = false;
     m->embd_scale  = gguf_get_f32(g, AK("embedding_scale"), 1.0f);
     m->attn_scale  = gguf_get_f32(g, AK("attention.scale"), 0.0f);
@@ -6752,8 +6753,8 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
 // (all_logits, the MTP queue, the recurrent and PLE keep rows, the MoE probe).
 static void runtime_free(model_t *m) {
     // ---- the per-instance half. Everything below belongs to this sequence
-    // alone and is freed unconditionally; the weights are refcounted at the
-    // bottom. The rope tables are per-instance and not shared: YaRN
+    // alone and is freed unconditionally; the shared weights are released by
+    // model_free after this, refcounted. The rope tables are per-instance and not shared: YaRN
     // auto-extension keys off the requested context and phi3 picks its
     // LongRoPE factor set the same way, so two slots of one file with
     // different -c legitimately want different tables.
@@ -10170,7 +10171,7 @@ bool model_ple4_block_host(model_t *m, int layer, const int32_t *tokens, int n, 
 // needs. conv_dim is identical in value across the three arches; the SSD/
 // DeltaNet state per head differs: qwen35 keeps a [hv x hv] DeltaNet matrix,
 // Mamba-2 (granite/nemotron) keeps an [hd x ds] state (hd == hv). These match
-// the two calloc sites in model_alloc_buffers exactly.
+// the two calloc sites in runtime_buffers exactly.
 static size_t recurrent_conv_bytes(const model_t *m) {
     int conv_dim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
     return sizeof(float) * model_rec_count(m) *
@@ -14374,12 +14375,6 @@ bool model_lora_save(model_t *m, const char *path) {
     return true;
 }
 
-// One transformer block over the n rows in m->x (positions pos..pos+n-1).
-// Extracted verbatim from model_forward_batch's layer loop so a block that
-// is not part of the backbone -- the NextN/MTP predictor at index n_layer,
-// which owns the KV region right after the backbone's -- runs exactly the
-// same code path. Per-layer tables are indexed through the model.h helpers,
-// which fall back to the model-wide value past n_layer.
 // ------------------------------------------------ qwen4exp hyper-connections
 // The residual is hc parallel streams per token (m->x_hc, [n][hc*n_embd]).
 // hc_mix produces the single-stream input a sub-layer reads (into `out`,
@@ -15295,6 +15290,12 @@ NUM_STAGE void layer_output(model_t *m, const fwd_layer *c) {
     act_trace_rows(c->pos, n, l, "resid", m->x, (size_t)n_embd, n_embd);
 }
 
+// One transformer block over the n rows in m->x (positions pos..pos+n-1).
+// Extracted verbatim from model_forward_batch's layer loop so a block that
+// is not part of the backbone -- the NextN/MTP predictor at index n_layer,
+// which owns the KV region right after the backbone's -- runs exactly the
+// same code path. Per-layer tables are indexed through the model.h helpers,
+// which fall back to the model-wide value past n_layer.
 static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
     fwd_tape_record(m, l, n, pos);
     fwd_layer c;
