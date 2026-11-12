@@ -20,6 +20,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import struct
 import subprocess
 import sys
@@ -266,3 +267,46 @@ def test_a_non_finite_embedding_is_an_error_not_invalid_json(runner_bin, tmp_pat
         # the server is still there for the next request
         code, body = _embed(srv, "once more")
         assert code == 500, body
+
+
+def _cuda(exe):
+    try:
+        caps = json.loads(subprocess.run([str(exe), "--caps"], stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL, timeout=60).stdout)
+    except Exception:
+        return False
+    return (caps.get("gpu") or {}).get("backend") == "cuda"
+
+
+@pytest.mark.parametrize("pooling", ["1", "3"])
+def test_a_fully_offloaded_model_embeds_on_the_cuda_device(runner_bin, tmp_path, pooling):
+    """The CUDA twin of the test above (R6.68.107). CUDA has no dispatch
+    census, so the forward is seen through RUNNER_CUDA_PROFILE: its summary,
+    printed when the device is freed at shutdown, counts the prompt tiles the
+    device ran. One request on one slot is the profile's single-thread case.
+    Before R6.68.107 a fully offloaded model's embeddings left no tile at all;
+    the server runs no device forward before a request, so the tile's tokens
+    are the request's."""
+    if not _cuda(runner_bin):
+        pytest.skip("no CUDA device: the forward is seen through RUNNER_CUDA_PROFILE")
+    m = tmp_path / "m.gguf"
+    subprocess.run([sys.executable, str(ROOT / "scripts/make-test-model.py"),
+                    "--pooling", pooling, str(m)], check=True, stdout=subprocess.DEVNULL)
+    text = "the quick brown fox jumps over the lazy dog and keeps running"
+    vec = {}
+    for arm, extra in (("cpu", ["--gpu", "off"]), ("device", [])):
+        log = tmp_path / f"{arm}.log"
+        with RunnerServer(runner_bin, m, ctx=256, parallel=1, extra_args=extra,
+                          log_path=str(log),
+                          env=dict(os.environ, RUNNER_CUDA_PROFILE="1")) as srv:
+            code, body = _embed(srv, text)
+            assert code == 200, body
+            vec[arm] = body["data"][0]["embedding"]
+            n = body["usage"]["prompt_tokens"]
+        said = log.read_text(errors="replace")
+        # the PREFILL block's first count line, past the note on graphs
+        ran = re.search(r"RUNNER_CUDA_PROFILE \[PREFILL[^\n]*\n(?:[^\n]*\n)*?"
+                        rf"tiles=\d+ tokens={n} ", said) is not None
+        assert ran == (arm == "device"), said[-2000:]
+    assert _cos(vec["cpu"], vec["device"]) > 1 - 1e-5
+    assert max(abs(a - b) for a, b in zip(vec["cpu"], vec["device"])) < 1e-3
