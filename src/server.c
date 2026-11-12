@@ -3851,6 +3851,7 @@ static void serve_release(model_t *base, tokenizer *tok) {
 // cancel thread start after the last such exit), so it is stopped and joined
 // and the run's state released. Returns rc for the caller to return.
 static int serve_start_end(model_t *base, tokenizer *tok, int rc) {
+    SV.start_refused = true;
     atomic_store(&SV.shutdown, true);
     if (SV.reaper_started) {
         pthread_join(SV.reaper_th, NULL);
