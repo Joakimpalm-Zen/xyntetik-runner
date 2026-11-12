@@ -445,3 +445,47 @@ def test_nemotron_h_moe_routes_with_a_sigmoid_when_the_file_names_no_gating(
         scores[tag] = json.loads(p.stdout)["logprobs"]
     assert scores["absent"] == scores["sigmoid"]
     assert scores["absent"] != scores["softmax"]
+
+
+# R6.68.62: the router's grouping is validated for every MoE family. The
+# nemotron_h binder read expert_group_count and expert_group_used_count and
+# checked neither, so a grouping every other family refuses loaded: groups
+# that do not divide the experts, or no used group at all (moe_route then
+# masks every group and takes expert 0 for each pick). granitehybrid, through
+# the shared MoE binder, refused them all along.
+@pytest.mark.parametrize("arch", ["nemotron_h_moe", "granitehybrid"])
+@pytest.mark.parametrize("groups", ["3,1", "2,0"])
+def test_an_expert_grouping_the_router_cannot_run_is_refused(runner_bin, tmp_path, arch, groups):
+    pfx = tmp_path / "g"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-hybrid.py", str(pfx), "--arch", arch],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, HYBRID_TEST_EXPERT_GROUPS=groups))
+    p = _run(runner_bin, pfx.with_suffix(".gguf"))
+    assert p.returncode != 0, p
+    assert b"invalid MoE expert grouping" in p.stderr, p.stderr
+
+
+def test_the_fit_and_the_load_agree_on_a_group_limited_router(runner_bin, tmp_path):
+    """R6.68.78: nemotron_h_moe's experts stay on the host by default on CUDA when
+    the device's router kernel cannot run its router, and the fit restated that
+    rule from the header. A group limit is such a router: with softmax gating, a
+    weights scale of 1 and two expert groups the load kept the experts home and
+    the fit planned them on the device. Both now ask
+    model_moe_router_host_default."""
+    _cuda_or_skip(runner_bin)
+    pfx = tmp_path / "g"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-hybrid.py", str(pfx),
+                    "--arch", "nemotron_h_moe"], check=True, cwd=ROOT, stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, HYBRID_TEST_GATING="1", HYBRID_TEST_EXPERT_GROUPS="2,1"))
+    model = pfx.with_suffix(".gguf")
+    fit = subprocess.run([runner_bin, "--info", "fit", "-m", str(model)], cwd=ROOT,
+                         capture_output=True, text=True, timeout=120)
+    assert fit.returncode == 0, fit.stderr
+    assert "experts       on the host, with their routing" in fit.stdout, fit.stdout
+    # bytes: the random fixture's generated token may be part of a UTF-8
+    # sequence (b"hi\xb3\n" on a CUDA host), which text=True cannot decode
+    load = subprocess.run([runner_bin, "-m", str(model), "-p", "hi", "-n", "1"], cwd=ROOT,
+                          capture_output=True, timeout=120)
+    err = load.stderr.decode(errors="replace")
+    assert load.returncode == 0, err
+    assert "its experts and their routing stay on the host" in err, err

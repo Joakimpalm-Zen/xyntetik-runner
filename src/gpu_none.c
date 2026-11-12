@@ -107,6 +107,10 @@ bool gpu_moe_ok(void) {
 bool gpu_shared_weights_resident(const model_t *m) { (void)m; return false; }
 
 bool gpu_removed_sublayers_ok(void) { return false; }
+bool gpu_moe_route_caps(int *max_experts, int *max_used) {
+    (void)max_experts; (void)max_used;
+    return false;
+}
 bool gpu_qwen35_ok(void) { return false; }
 
 bool gpu_eseries_ok(void) {

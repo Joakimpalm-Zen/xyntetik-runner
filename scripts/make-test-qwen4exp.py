@@ -165,7 +165,10 @@ if MTP:
 A = "qwen4exp"
 kvs = [
     ks("general.architecture", A), ku(f"{A}.block_count", LAYERS + (1 if MTP else 0)),
-    ku(f"{A}.context_length", 256), ku(f"{A}.embedding_length", E),
+    # QWEN4EXP_TEST_CTX: a trained context past the indexer's top_k, for the
+    # context cap a load holds a default context to (R6.68.55)
+    ku(f"{A}.context_length", int(os.environ.get("QWEN4EXP_TEST_CTX", "256"))),
+    ku(f"{A}.embedding_length", E),
     ku(f"{A}.attention.head_count", HEADS), ku(f"{A}.attention.head_count_kv", KV),
     ku(f"{A}.attention.key_length", HD), ku(f"{A}.attention.value_length", HD),
     ku(f"{A}.rope.dimension_count", HD), # [t, h, w, extra] must give every rotary pair a live section: llama.cpp's

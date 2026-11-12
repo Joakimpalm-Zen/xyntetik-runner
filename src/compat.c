@@ -2375,3 +2375,100 @@ bool plat_slow_note_end(plat_slow_note *n) {
     return said;
 }
 #endif
+
+// ---------------------------------------------------------- file identity
+//
+// A file's identity without reading it (R6.68.30, from model.c): its size, a
+// stable index (the inode; NTFS's file index on Windows) and its modification
+// and creation times (POSIX: the status change) in nanoseconds since the Unix
+// epoch. model_file_identity keys shared weights and the prefix cache by it.
+// False when the file cannot be examined, with errno in *err.
+static int64_t stat_mtime_ns(const plat_stat_t *st) {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+    return (int64_t)st->st_mtimespec.tv_sec * 1000000000ll +
+           (int64_t)st->st_mtimespec.tv_nsec;
+#elif defined(__linux__)
+    return (int64_t)st->st_mtim.tv_sec * 1000000000ll +
+           (int64_t)st->st_mtim.tv_nsec;
+#else
+    return (int64_t)st->st_mtime * 1000000000ll;
+#endif
+}
+
+static int64_t stat_ctime_ns(const plat_stat_t *st) {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+    return (int64_t)st->st_ctimespec.tv_sec * 1000000000ll +
+           (int64_t)st->st_ctimespec.tv_nsec;
+#elif defined(__linux__)
+    return (int64_t)st->st_ctim.tv_sec * 1000000000ll +
+           (int64_t)st->st_ctim.tv_nsec;
+#else
+    return (int64_t)st->st_ctime * 1000000000ll;
+#endif
+}
+
+#ifdef _WIN32
+static int64_t filetime_unix_ns(FILETIME ft) {
+    ULARGE_INTEGER ticks;
+    ticks.LowPart = ft.dwLowDateTime;
+    ticks.HighPart = ft.dwHighDateTime;
+    // FILETIME is 100 ns since 1601; normalize to Unix epoch so the value
+    // remains inside signed 64-bit while retaining NTFS timestamp precision.
+    const uint64_t unix_epoch = 116444736000000000ull;
+    return ticks.QuadPart >= unix_epoch
+        ? (int64_t)((ticks.QuadPart - unix_epoch) * 100ull) : 0;
+}
+#endif
+
+bool plat_file_identity(const char *path, uint64_t *size, uint64_t *ino,
+                        int64_t *mtime, int64_t *ctime, int *err) {
+    *err = 0;
+#ifdef _WIN32
+    // MinGW's stat() is the wrong tool here twice over: st_size is 32-bit, so
+    // every real checkpoint (>2 GB) fails with EOVERFLOW and the identity is
+    // lost — every --parallel slot then loads privately and re-decides its
+    // own CPU/GPU split, which is the 2026-08-04 defect — and its timestamps
+    // are whole seconds, which can alias two GGUF revisions written in the
+    // same second. Native file information gives the stable 64-bit file index
+    // and the filesystem's 100 ns timestamps without hashing multi-GB files.
+    //
+    // The residual, accepted rather than hashed away: Windows stamps the write
+    // time from the cached system time, which advances on the timer tick
+    // (about 15.6 ms), so two writes inside one tick share a timestamp to the
+    // last bit and this identity cannot tell them apart. Reading the file to
+    // distinguish them is the thing this function exists to avoid. Found
+    // 2026-09-07, when the same check passed on one Windows machine and
+    // failed on a faster one.
+    HANDLE h = plat_create_file(path, FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL);
+    BY_HANDLE_FILE_INFORMATION info;
+    if (h != INVALID_HANDLE_VALUE && GetFileInformationByHandle(h, &info)) {
+        *size  = ((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow;
+        *ino   = ((uint64_t)info.nFileIndexHigh << 32) | info.nFileIndexLow;
+        *mtime = filetime_unix_ns(info.ftLastWriteTime);
+        if (ctime) *ctime = filetime_unix_ns(info.ftCreationTime);
+        CloseHandle(h);
+        return true;
+    }
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+#endif
+    plat_stat_t st;
+    if (plat_stat(path, &st) != 0) {
+        *err = errno;
+        return false;
+    }
+    *size  = (uint64_t)st.st_size;
+#ifdef _WIN32
+    // stat succeeded where native file information did not (non-NTFS volume,
+    // exotic redirector). No stable index on this path; the remaining fields
+    // still key, just ino=0 for every such file.
+    *ino   = 0;
+#else
+    *ino   = (uint64_t)st.st_ino;
+#endif
+    *mtime = stat_mtime_ns(&st);
+    if (ctime) *ctime = stat_ctime_ns(&st);
+    return true;
+}

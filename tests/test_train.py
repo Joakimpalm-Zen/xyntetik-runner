@@ -136,6 +136,23 @@ def test_every_trainable_family_is_byte_deterministic(runner_bin, base, tmp_path
     assert a1.read_bytes() == a2.read_bytes(), (family, "adapter files differ")
 
 
+def test_a_head_wider_than_512_trains(runner_bin, tmp_path):
+    """R6.68.91: the q-norm and k-norm adjoint ran each head through a
+    512-float stack buffer, and nothing holds a model's head width to 512
+    (the loader bounds it by 2^20 elements). A 640-wide head trapped
+    (_FORTIFY_SOURCE's memset check) or wrote past the buffer on the first
+    step. The scratch is the layer state's now, sized from the head."""
+    d = tmp_path / "fx"
+    d.mkdir()
+    subprocess.run([sys.executable, ROOT / "scripts" / "make-test-model.py",
+                    "--eseries", "3,8", "--drop-kv", "shared", "--head-dim", "640",
+                    str(d / "base.gguf")],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    (d / "corpus.txt").write_text(CORPUS)
+    losses = _train(runner_bin, d, tmp_path / "a.gguf", steps=1)
+    assert len(losses) == 1 and losses[0] == losses[0] and losses[0] < 1e30, losses
+
+
 # R8.19: the taped forward runs in rounds of 16 positions, every product
 # column a solo decode step's bits; RUNNER_TRAIN_ROWS=N sets the width, 1 a
 # position at a time. Every width must train the same adapter byte for byte

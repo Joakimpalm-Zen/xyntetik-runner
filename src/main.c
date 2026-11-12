@@ -1702,8 +1702,15 @@ static int run_fit_check(const char *path, int n_ctx_want,
 
     model_fit f;
     if (!model_fit_report(&g, n_ctx_want, mp->mtp, &f)) {
-        fprintf(stderr, "error: %s does not carry the geometry a fit check "
-                        "needs (architecture, block_count, head counts)\n", path);
+        // the loader's plan refused the header: that is the answer (R6.68.29),
+        // exit 1 as for any file the fit cannot clear for a load
+        if (f.refused[0]) {
+            printf("fit: %s\n  verdict       WILL NOT LOAD — the loader refuses this file: %s\n",
+                   path, f.refused);
+        } else {
+            fprintf(stderr, "error: %s does not carry the geometry a fit check "
+                            "needs (architecture, block_count, head counts)\n", path);
+        }
         gguf_close(&g);
         return 1;
     }
@@ -1722,6 +1729,9 @@ static int run_fit_check(const char *path, int n_ctx_want,
     const char *cpu_why = model_gpu_cpu_only_why(farch, (int)gguf_get_u32(&g, akey, 1));
     const arch_id fid = arch_find(farch)->id;
     if (!cpu_why && fid == ARCH_NEMOTRON_H_MOE) cpu_why = fit_nh_moe_cpu_why(&g, farch);
+    // a router past the device's caps keeps its experts off the device, in the
+    // load's words (R6.68.67); --cpu-moe keeps them on the host anyway
+    if (!cpu_why && f.route_why[0] && !mp->cpu_moe) cpu_why = f.route_why;
     // R3.50: the KV ring the load would turn on, sized by the batch the load
     // would take (model.c: a GPU load's default batch follows total RAM)
     f.kv_ring_mode = mp->kv_ring;
@@ -1733,20 +1743,10 @@ static int run_fit_check(const char *path, int n_ctx_want,
     // banks on the host and are not modelled; the note below says so.
     bool host_experts = false, host_default = false;
 #ifdef RUNNER_GPU_CUDA
-    {
-        char k1[96], k2[96], k3[96];
-        snprintf(k1, sizeof k1, "%s.expert_gating_func", farch);
-        snprintf(k2, sizeof k2, "%s.expert_weights_scale", farch);
-        snprintf(k3, sizeof k3, "%s.moe_latent_size", farch);
-        uint32_t gating = gguf_get_u32(&g, k1, 2);   // the loader's default for this family: sigmoid
-        float wscale = gguf_get_f32(&g, k2, 1.0f);
-        const char *dflt = getenv("RUNNER_CPU_MOE_DEFAULT");
-        host_default = !mp->cpu_moe && fid == ARCH_NEMOTRON_H_MOE &&
-                       gguf_get_u32(&g, k3, 0) == 0 &&
-                       (gating != 1 || (wscale != 0.0f && wscale != 1.0f)) &&
-                       !(dflt && !strcmp(dflt, "0"));
-        host_experts = host_default || (mp->cpu_moe && mp->cpu_moe_layers == CPU_MOE_ALL);
-    }
+    // the load's own rule over the fit's plan (model_moe_router_host_default,
+    // R6.68.78); it was restated here from the header and missed a group limit
+    host_default = !mp->cpu_moe && f.moe_host_default;
+    host_experts = host_default || (mp->cpu_moe && mp->cpu_moe_layers == CPU_MOE_ALL);
 #endif
     if (mp->gpu_mode != GPU_OFF && !cpu_why && gpu_available(gname, sizeof gname) &&
         gpu_offload_budget(mp->reserve_vram_pct, &gbudget, &gheadroom))
