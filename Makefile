@@ -413,6 +413,25 @@ $(OBJDIR)/%.o: src/%.c $(HDR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I src -c $< -o $@
 
+# R6.67: the commit this build is made from, and whether its tracked files
+# differ from it, stamped into provenance.o alone and stated by GET
+# /v1/runner/provenance, so a record that pins a binary's bytes names the
+# source that made them (scripts/tier-smoke.py) and not the checkout that
+# happens to run the script. Only provenance.o is keyed to it: a new commit
+# recompiles one file, and BUILD_ID (the flags' key) does not move. The stamp
+# is rewritten only when its content changes. A tree without git stamps
+# nothing, and the route says null.
+BUILD_COMMIT := $(shell git rev-parse HEAD 2>/dev/null)
+BUILD_DIRTY  := $(if $(BUILD_COMMIT),$(shell git diff --quiet HEAD -- 2>/dev/null && echo 0 || echo 1),0)
+$(OBJDIR)/build-commit.stamp: FORCE
+	@mkdir -p $(dir $@)
+	@want='$(BUILD_COMMIT) $(BUILD_DIRTY)'; \
+	[ "$$(cat $@ 2>/dev/null)" = "$$want" ] || printf '%s\n' "$$want" > $@
+$(OBJDIR)/provenance.o: src/provenance.c $(HDR) $(OBJDIR)/build-commit.stamp
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I src -DRUNNER_BUILD_COMMIT='"$(BUILD_COMMIT)"' \
+		-DRUNNER_BUILD_DIRTY=$(BUILD_DIRTY) -c $< -o $@
+
 # ML-DSA-44 (FIPS 204) receipt signatures: the wrapper plus the vendored
 # pq-crystals reference under src/mldsa/ (integer-only code, so the float
 # flags of the engine objects do not touch its results)

@@ -259,3 +259,29 @@ def test_an_adapter_is_part_of_the_identity(runner_bin, model, tmp_path):
         assert a["path"] == str(adapter)
         assert a["sha256"] == _sha(adapter)
         assert a["scale"] == 0.5
+
+
+def test_the_build_names_the_commit_it_was_built_from(runner_bin, model):
+    """R6.67: the binary states the source it was built from, so a record
+    that pins its bytes (scripts/tier-smoke.py) names that commit rather
+    than the HEAD of whatever checkout runs the script. The build stamps
+    git's HEAD and whether tracked files differed from it; a tree without
+    git stamps nothing and the route says null."""
+    with RunnerServer(runner_bin, model, ctx=512, parallel=1,
+                      extra_args=["--gpu", "off", "-t", "1"]) as srv:
+        status, body = _get(srv)
+    assert status == 200, body
+    b = body["build"]
+    assert "commit" in b and "dirty" in b, b
+    inside = subprocess.run(["git", "rev-parse", "--git-dir"], cwd=ROOT,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if inside.returncode != 0:
+        assert b["commit"] is None and b["dirty"] is None, b
+        return
+    assert isinstance(b["commit"], str) and len(b["commit"]) == 40, b
+    # a commit of this repository (the binary may predate HEAD; not one
+    # made up or taken from elsewhere)
+    known = subprocess.run(["git", "cat-file", "-e", b["commit"] + "^{commit}"],
+                           cwd=ROOT, stderr=subprocess.DEVNULL)
+    assert known.returncode == 0, b["commit"]
+    assert isinstance(b["dirty"], bool), b
