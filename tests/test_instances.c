@@ -302,6 +302,12 @@ int main(int argc, char **argv) {
             "\"pid\": %ld, \"port\": 8080.5",
             "\"pid\": %ld, \"port\": -1",
             "\"pid\": %ld, \"started\": \"soon\"",
+            // infinite and NaN values: json.c refuses the overflowing literal
+            // and has no NaN spelling, so these die at the parse; pinned so a
+            // parser that ever accepted them still meets a refusal here
+            "\"pid\": 1e999",
+            "\"pid\": %ld, \"port\": -1e999",
+            "\"pid\": NaN",
         };
         for (size_t i = 0; i < sizeof fields / sizeof fields[0]; i++) {
             char path[1300], body[256], rec[512];

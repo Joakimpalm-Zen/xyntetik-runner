@@ -6,6 +6,7 @@
 
 #include <limits.h>
 #include <math.h>
+#include "fpclass.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -389,7 +390,8 @@ static bool rec_whole(jv *v, const char *key, double lo, double hi, double *out)
     jv *x = jv_get(v, key);
     *out = 0;
     if (!x || x->type == J_NULL) return true;
-    if (x->type != J_NUM || !isfinite(x->num) || x->num != floor(x->num) ||
+    // fp_isfinite: this unit builds with -ffast-math, which may fold isfinite() to true
+    if (x->type != J_NUM || !fp_isfinite(x->num) || x->num != floor(x->num) ||
         x->num < lo || x->num > hi)
         return false;
     *out = x->num;
@@ -711,7 +713,7 @@ static bool lease_read(const char *path, lease_rec *r) {
     if (!pv || pv->type == J_NULL) pv = jv_get(v, "clu_pid");
     // the bound is long's on every platform (32 bits on Windows): the old
     // 9e15 let a value past LONG_MAX into the cast there (R6.68.10)
-    if (pv && pv->type == J_NUM && isfinite(pv->num) && pv->num == floor(pv->num) &&
+    if (pv && pv->type == J_NUM && fp_isfinite(pv->num) && pv->num == floor(pv->num) &&
         pv->num > 0 && pv->num <= REC_PID_MAX) {
         r->pid = (long)pv->num;
     } else if (pv && pv->type == J_STR) {
