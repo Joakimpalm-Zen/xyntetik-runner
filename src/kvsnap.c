@@ -215,9 +215,15 @@ bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
         }
         FILE *f = plat_fopen(kvpath, "rb");
         int32_t *toks = malloc(sizeof(int32_t) * (size_t)n);
-        bool tok_ok = f && toks && fseek(f, KS_TOKENS_AT, SEEK_SET) == 0 &&
+        // The size through plat_file_size: ftell's long is 32 bits on Windows,
+        // and the KV of a long context passes 2 GiB (a 14B model's does near
+        // 11,000 tokens), where the manifest's kv_bytes came out wrong.
+        uint64_t kbytes = 0;
+        bool tok_ok = f && toks && plat_file_size(f, &kbytes) &&
+                      fseek(f, KS_TOKENS_AT, SEEK_SET) == 0 &&
                       fread(toks, sizeof(int32_t), (size_t)n, f) == (size_t)n;
-        if (f) { fseek(f, 0, SEEK_END); kn = (size_t)ftell(f); fclose(f); }
+        if (f) fclose(f);
+        kn = (size_t)kbytes;
         if (tok_ok) envelope_data_sha256(toks, sizeof(int32_t) * (size_t)n, thex);
         free(toks);
         if (!tok_ok) {
