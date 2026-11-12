@@ -4080,19 +4080,30 @@ static bool creq_hints(const creq_ctx *c, completion_req *q, creq_err *err) {
                                 "lookup draft's verify walk");
             return false;
         }
-        // one token per byte is the upper bound, plus a separator per hint
-        size_t need = bytes + (size_t)dh->n + 1;
-        if (need > (size_t)s->hint_cap) {
-            int32_t *nb = realloc(s->hint_buf, sizeof(int32_t) * need);
-            if (!nb) { creq_set(err, 500, "out of memory tokenizing draft_hints"); return false; }
-            s->hint_buf = nb;
-            s->hint_cap = (int)need;
-        }
+        // No byte count bounds a token count (tokenizer.h): a vocabulary may
+        // prefix a token to every text and spell a space as three. The buffer
+        // was sized at one token per byte, so short hints used the room of
+        // the ones after them, which were cut or tokenized to nothing, and a
+        // separator was then written past the end (R6.68.51). Each hint is
+        // encoded to its true length and the buffer grows to what it holds.
         int hn = 0;
         for (int i = 0; i < dh->n; i++) {
-            int n = tok_encode(s->tok, dh->items[i]->str, s->hint_buf + hn,
-                               s->hint_cap - hn - 1, false, false);
-            if (n < 0) { creq_set(err, 500, "out of memory tokenizing draft_hints"); return false; }
+            int32_t *enc = NULL;
+            int n = tok_encode_fit(s->tok, dh->items[i]->str, false, TOK_TEXT, 0, &enc);
+            size_t need = (size_t)hn + (size_t)(n > 0 ? n : 0) + 1;
+            if (n >= 0 && need > (size_t)s->hint_cap) {
+                int32_t *nb = need <= INT_MAX / 2
+                    ? realloc(s->hint_buf, sizeof(int32_t) * need * 2) : NULL;
+                if (nb) { s->hint_buf = nb; s->hint_cap = (int)(need * 2); }
+                else n = -1;
+            }
+            if (n < 0) {
+                free(enc);
+                creq_set(err, 500, "out of memory tokenizing draft_hints");
+                return false;
+            }
+            if (n) memcpy(s->hint_buf + hn, enc, sizeof(int32_t) * (size_t)n);
+            free(enc);
             hn += n;
             s->hint_buf[hn++] = -1;
         }
