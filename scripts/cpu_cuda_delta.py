@@ -79,7 +79,7 @@ def main():
         len(d), a.threshold, over, first, d[worst], worst, rec["mean_abs_delta"]))
     print("cpu top1 %s  gpu top1 %s" % (cpu.get("top1"), gpu.get("top1")))
     if a.out:
-        Path(a.out).write_text(json.dumps(rec, indent=1) + "\n")
+        Path(a.out).write_text(json.dumps(rec, indent=1, allow_nan=False) + "\n")
     return 0
 
 

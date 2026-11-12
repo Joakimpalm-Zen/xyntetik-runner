@@ -216,3 +216,39 @@ def test_the_mixer_point_on_a_real_gemma_block_is_the_residual_after_attention()
     want = seen["x"] + seen["branch_out"]
     assert torch.allclose(seen["mixer"], want, atol=0, rtol=0)
     assert not torch.allclose(seen["mixer"], seen["branch_in"])  # the point it used to take
+
+
+def _strict(text):
+    # JSON has no NaN and no infinity; Python's json reads them unless told not to
+    def refuse(c):
+        raise ValueError(f"non-JSON constant {c}")
+    return json.loads(text, parse_constant=refuse)
+
+
+def test_the_diff_reads_null_values_and_writes_json(tmp_path):
+    """The runner writes a traced value that is not finite as null
+    (R6.68.115). The diff took every value as a number (a TypeError on a
+    null), and wrote a width mismatch's distance as math.inf, which
+    json.dump spelled Infinity: not JSON. Now nulls must stand at the same
+    places for two rows to match, the distance is taken over the rest, and a
+    distance that does not exist is null (R6.68.116)."""
+    def rec(point, values, n=None):
+        return json.dumps({"v": 1, "pos": 0, "layer": 0 if point != "embd" else -1,
+                           "point": point, "n": n or len(values), "hash": "0",
+                           "values": values})
+    a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+    a.write_text("\n".join([rec("embd", [1.0, None, 2.0]),
+                            rec("mixer", [1.0, None, 3.0]),
+                            rec("resid", [1.0, 2.0])]) + "\n")
+    b.write_text("\n".join([rec("embd", [1.0, None, 2.0]),
+                            rec("mixer", [1.0, 5.0, 3.0]),
+                            rec("resid", [1.0, 2.0, 3.0])]) + "\n")
+    out = tmp_path / "d.json"
+    rc, text = diff(a, b, "--json", out)
+    assert rc == 1, text
+    rows = {r["point"]: r for r in _strict(out.read_text())["points"]}
+    assert rows["embd"]["match"] and rows["embd"]["distance"] == 0.0
+    assert rows["mixer"] == {**rows["mixer"], "match": False, "by": "nonfinite",
+                             "distance": None}
+    assert rows["resid"] == {**rows["resid"], "match": False, "by": "width",
+                             "distance": None}

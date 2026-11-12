@@ -175,7 +175,7 @@ def ladder_plan(a, rows, ladder, all_rows):
     if a.match:
         rules.append({"match": a.match, "type": ladder[0]})
     plan = {"default": a.default if a.match else ladder[0], "rules": rules}
-    json.dump(plan, sys.stdout, indent=1)
+    json.dump(plan, sys.stdout, indent=1, allow_nan=False)
     sys.stdout.write("\n")
     per = ", ".join(f"{t} {sum(1 for g in order if ladder[g['at']] == t)}" for t in ladder[1:])
     print(f"ladder {','.join(ladder)}: demoted {len(order)} of {len(groups)} groups ({per}), "
@@ -250,7 +250,7 @@ def main():
     # no --match: every tensor the report costs is a candidate, so the ones
     # not demoted take --high, which is then the plan's default
     plan = {"default": a.default if a.match else a.high, "rules": rules}
-    json.dump(plan, sys.stdout, indent=1)
+    json.dump(plan, sys.stdout, indent=1, allow_nan=False)
     sys.stdout.write("\n")
     print(f"demoted {len(demoted)} of {len(groups)} groups to {a.low}, saving {saved} bytes: "
           + ", ".join(g["group"] for g in demoted), file=sys.stderr)

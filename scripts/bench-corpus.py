@@ -77,7 +77,7 @@ class Server:
             self.p.wait(timeout=15)
 
     def post(self, path, body):
-        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=json.dumps(body).encode(),
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=json.dumps(body, allow_nan=False).encode(),
                                      headers={"Content-Type": "application/json"})
         t0 = time.time()
         with urllib.request.urlopen(req, timeout=600) as r:
@@ -255,7 +255,7 @@ def main():
                 rec["cases"].append(row)
                 break
             rec["cases"].append(row)
-    json.dump(rec, open(args.out, "w"), indent=1)
+    json.dump(rec, open(args.out, "w"), indent=1, allow_nan=False)
     print(f"{len(rec['cases'])} results -> {args.out}", file=sys.stderr)
     return 0
 

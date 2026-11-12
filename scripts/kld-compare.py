@@ -65,7 +65,7 @@ def query(endpoint, model_name, prompt):
     }
     req = urllib.request.Request(
         f"{endpoint}/v1/chat/completions",
-        data=json.dumps(payload).encode(),
+        data=json.dumps(payload, allow_nan=False).encode(),
         headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=120) as resp:
         body = json.loads(resp.read())
@@ -194,7 +194,7 @@ def main(argv):
             "top1_agreement_pct": 100.0 * sum(top1_hits) / len(top1_hits),
             "mean_top8_overlap": sum(overlaps) / len(overlaps),
         }
-        text = json.dumps(result, indent=2)
+        text = json.dumps(result, indent=2, allow_nan=False)
         print(text)
         if args.out:
             with open(args.out, "w") as f:

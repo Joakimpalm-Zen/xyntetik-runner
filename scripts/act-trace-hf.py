@@ -77,7 +77,7 @@ def record(f, pos, layer, point, row):
         h = ((h ^ b) * 0x100000001b3) & 0xffffffffffffffff
     l2 = sum(v * v for v in vals) ** 0.5
     f.write(json.dumps({"v": 1, "pass": 1, "pos": pos, "layer": layer, "point": point,
-                        "n": len(vals), "hash": f"{h:016x}", "l2": l2, "values": vals}) + "\n")
+                        "n": len(vals), "hash": f"{h:016x}", "l2": l2, "values": vals}, allow_nan=False) + "\n")
 
 
 def main():

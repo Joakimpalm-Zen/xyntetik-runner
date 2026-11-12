@@ -138,7 +138,7 @@ def main(argv):
 
     out_plan = {f"layer_{l}": plan[l] for l in sorted(plan)}
     with open(args.out, "w") as f:
-        json.dump(out_plan, f, indent=2)
+        json.dump(out_plan, f, indent=2, allow_nan=False)
 
     print(f"wrote {args.out}: {len(out_plan)} layer(s), "
           f"saliency={'gate*norm' if args.use_norms else 'gate mass'}", file=sys.stderr)
@@ -154,7 +154,7 @@ def main(argv):
     if args.precision_out:
         hc = hot_cold(mass, args.hot_fraction)
         with open(args.precision_out, "w") as f:
-            json.dump(hc, f, indent=2)
+            json.dump(hc, f, indent=2, allow_nan=False)
         print(f"wrote {args.precision_out}: {len(hc['hot'])} hot, {len(hc['cold'])} cold",
               file=sys.stderr)
 

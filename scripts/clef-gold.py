@@ -176,7 +176,7 @@ def cmd_reference(a):
             print(f"{r.get('id')}: {len(enc.input_ids)} tokens", file=sys.stderr)
     with open(a.out, "w", encoding="utf-8") as f:
         for row in out:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
 
 
 def cmd_requests(a):
@@ -186,7 +186,7 @@ def cmd_requests(a):
                 continue
             r = dict(r)
             r["runner_logits"] = True
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            f.write(json.dumps(r, ensure_ascii=False, allow_nan=False) + "\n")
 
 
 def softmax(xs):
@@ -254,7 +254,7 @@ def cmd_compare_decisions(a):
         print(f"  unreadable answer: {m}")
     if a.json:
         with open(a.json, "w", encoding="utf-8", newline="\n") as f:
-            json.dump({"reference": head, **summary, "questions_detail": detail}, f, indent=1)
+            json.dump({"reference": head, **summary, "questions_detail": detail}, f, indent=1, allow_nan=False)
             f.write("\n")
     sys.exit(1 if missing else 0)
 

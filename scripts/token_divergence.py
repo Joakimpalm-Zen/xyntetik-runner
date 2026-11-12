@@ -75,7 +75,7 @@ def loads(text):
 
 def post(url, payload, timeout=600):
     request = urllib.request.Request(
-        url, data=json.dumps(payload).encode(),
+        url, data=json.dumps(payload, allow_nan=False).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return loads(response.read())
@@ -277,7 +277,7 @@ def main():
                 (r["max_logprob_delta"] for r in rows), default=0.0),
         },
     }
-    print(json.dumps(report, indent=2))
+    print(json.dumps(report, indent=2, allow_nan=False))
     return 1 if real else 0
 
 

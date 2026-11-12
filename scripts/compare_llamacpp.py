@@ -87,7 +87,7 @@ def git_head(path):
 
 
 def request_json(url, body=None, timeout=60):
-    data = json.dumps(body).encode() if body is not None else None
+    data = json.dumps(body, allow_nan=False).encode() if body is not None else None
     req = urllib.request.Request(url, data=data,
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -271,7 +271,7 @@ def timing_request(prompt, tokens, model=None):
 def stream_ttft(base, prompt, tokens, request_timeout, model=None):
     body = timing_request(prompt, tokens, model)
     req = urllib.request.Request(base + "/v1/completions",
-                                 data=json.dumps(body).encode(),
+                                 data=json.dumps(body, allow_nan=False).encode(),
                                  headers={"Content-Type": "application/json"})
     start = time.perf_counter()
     first = None
@@ -651,7 +651,7 @@ def render_endpoints_markdown(report):
                 t=fmt(m.get("time_to_first_token_s"), 4),
                 g=m.get("generated_tokens"), w=fmt(m.get("request_wall_s"))))
     lines += ["", "## Hardware and driver", "", "```json",
-              json.dumps(report.get("hardware"), indent=2, sort_keys=True),
+              json.dumps(report.get("hardware"), indent=2, sort_keys=True, allow_nan=False),
               "```", ""]
     return "\n".join(lines) + "\n"
 
@@ -696,7 +696,7 @@ def render_markdown(report):
         "## Hardware and driver",
         "",
         "```json",
-        json.dumps(report.get("hardware"), indent=2, sort_keys=True),
+        json.dumps(report.get("hardware"), indent=2, sort_keys=True, allow_nan=False),
         "```",
         "",
         "## Commands",
@@ -753,7 +753,7 @@ def render_markdown(report):
             "llamacpp_load_delta_mib": llama.get("vram_load_delta_mib"),
             "runner_after_start": runner.get("nvidia_smi_after_start"),
             "llamacpp_after_start": llama.get("nvidia_smi_after_start"),
-        }, indent=2, sort_keys=True),
+        }, indent=2, sort_keys=True, allow_nan=False),
         "```",
         "",
         "## Correctness comparison",
@@ -1035,10 +1035,10 @@ def main(argv=None):
         report = real_report(args)
     json_path = args.out_dir / "comparison.json"
     md_path = args.out_dir / "comparison.md"
-    json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    json_path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     md_path.write_text(render_markdown(report), encoding="utf-8")
     print(json.dumps({"json": relativize_path(json_path), "markdown": relativize_path(md_path),
-                      "status": report["status"]}))
+                      "status": report["status"]}, allow_nan=False))
     return 1 if report.get("correctness_gate", {}).get("status") == "fail" else 0
 
 

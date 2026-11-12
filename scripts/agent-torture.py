@@ -577,7 +577,7 @@ def make_report(results, runtime_name, version, model, elapsed_ms, peak_kb):
 
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    path.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n")
 
 
 def read_spec_stats(path):
@@ -701,7 +701,7 @@ def run(target, runtime_name, version, model_label, out, count,
     write_json(out / "report.json", report)
     with (out / "raw.jsonl").open("w") as raw:
         for artifact in artifacts:
-            raw.write(json.dumps(artifact, sort_keys=True) + "\n")
+            raw.write(json.dumps(artifact, sort_keys=True, allow_nan=False) + "\n")
     return report
 
 

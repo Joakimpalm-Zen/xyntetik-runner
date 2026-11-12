@@ -459,7 +459,7 @@ def query(endpoint, model_name, prompt, top_n=20, fresh=False):
     if fresh:
         payload["cache_prompt"] = False
     req = urllib.request.Request(
-        f"{endpoint}/v1/completions", data=json.dumps(payload).encode(),
+        f"{endpoint}/v1/completions", data=json.dumps(payload, allow_nan=False).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as r:
         d = json.loads(r.read(), object_pairs_hook=_Obj)
@@ -977,10 +977,10 @@ def main():
         summary["score_paths"] = route_note
     report = {"schema_version": "xyntetik.runner.gold-logits.v4",
               "summary": summary, "rows": rows}
-    print(json.dumps(summary, indent=2))
+    print(json.dumps(summary, indent=2, allow_nan=False))
     if args.out:
         with open(args.out, "w") as f:
-            json.dump(report, f, indent=2)
+            json.dump(report, f, indent=2, allow_nan=False)
 
 
 if __name__ == "__main__":

@@ -103,7 +103,7 @@ def sample(port, prompt, seed, max_tokens, temperature, prompt_ids):
         body["echo"] = True
     req = urllib.request.Request(
         "http://127.0.0.1:%d/v1/completions" % port,
-        data=json.dumps(body).encode(),
+        data=json.dumps(body, allow_nan=False).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as r:
         d = json.loads(r.read())
@@ -200,17 +200,17 @@ def main():
         history.append({"round": rnd, "valid_rate": rate,
                         "mean_reward": round(mean, 4),
                         "trainable": len(examples)})
-        print(json.dumps(history[-1]), flush=True)
+        print(json.dumps(history[-1], allow_nan=False), flush=True)
         if rnd == args.rounds:
             break
         if not examples:
             print(json.dumps({"round": rnd,
-                              "note": "no advantage signal, skipping step"}),
+                              "note": "no advantage signal, skipping step"}, allow_nan=False),
                   flush=True)
             continue
         # ---- one weighted pass over this round's examples
         data = out / ("round%d.jsonl" % rnd)
-        data.write_text("\n".join(json.dumps(e) for e in examples) + "\n")
+        data.write_text("\n".join(json.dumps(e, allow_nan=False) for e in examples) + "\n")
         next_adapter = out / ("adapter-r%d.gguf" % (rnd + 1))
         lp_out = out / ("round%d.logprobs.jsonl" % rnd)
         cmd = [args.runner, "-m", args.model, "--train", str(data),
@@ -235,13 +235,13 @@ def main():
             "tokens": len(trained), "differ": differ,
             "max_abs": max((abs(a - b) for a, b in
                             zip(sampled_lps[0], trained)), default=0.0)}}
-        print(json.dumps(check), flush=True)
+        print(json.dumps(check, allow_nan=False), flush=True)
         if differ or len(trained) != len(sampled_lps[0]):
             sys.exit("rollout check failed: the trainer's logprobs differ "
                      "from the sampler's (see the docstring's conditions)")
         adapter = next_adapter
 
-    print(json.dumps({"summary": history}), flush=True)
+    print(json.dumps({"summary": history}, allow_nan=False), flush=True)
     if adapter:
         shutil.copy(adapter, out / "adapter-final.gguf")
 
