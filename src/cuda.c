@@ -4236,13 +4236,18 @@ static void cuda_plan_graphs(model_t *m, gpu_t *g) {
     // follow the same argument: a one-token step is three launches on the
     // conv ring and SSD state fixed for the instance, advanced in place, the
     // rollback copy taken before the forward (cuda_fwd_prepare); nemotron_h's
-    // MLP-only blocks run no attention, so no V memset. qwen4exp (host steps
-    // between layers), MoE hybrids and any qwen35 file with routed experts
-    // (none measured) stay eager. RUNNER_CUDA_GRAPH_RECUR=0 keeps every
-    // recurrent family eager.
+    // MLP-only blocks run no attention, so no V memset. A qwen35 file with
+    // routed experts (qwen35moe) replays too since R6.68.25a: its expert
+    // banks hold no recurrent state, so the recurrent rule no longer excludes
+    // them and the MoE rules below decide, as for any other family (fused
+    // device routing with every bank on the device captures; the eager MoE
+    // path or experts on the host are eager by design and say so).
+    // qwen4exp (host steps between layers) stays eager, and so do the Mamba-2
+    // hybrids with experts, which the rule leaves out (granitehybrid's and
+    // nemotron_h_moe's banks stay on the host anyway).
+    // RUNNER_CUDA_GRAPH_RECUR=0 keeps every recurrent family eager.
     bool mamba_dense = (m->granite_hybrid || m->nemotron_h) && m->n_expert == 0;
-    bool recur_graph = (m->qwen35 || mamba_dense) && !m->hyper_conn && m->n_expert == 0 &&
-                       cuda_graph_recur_on();
+    bool recur_graph = (m->qwen35 || mamba_dense) && !m->hyper_conn && cuda_graph_recur_on();
     // each rule names itself (graph_why), so a gate that requires the graph
     // (RUNNER_REQUIRE_GRAPH_CAPTURE) can tell eager by design from a failure
     // The three per-layer rules, the same union as before; which one names the
@@ -4270,7 +4275,7 @@ static void cuda_plan_graphs(model_t *m, gpu_t *g) {
     if (!why && m->n_expert > 0 && moe_any_on_device(m) && getenv("RUNNER_DEBUG_MOE"))
         why = "RUNNER_DEBUG_MOE reads the routing back to the host";
     if (!why && m->qwen35 && !recur_graph)
-        why = "a qwen35 file whose decode is not captured (routed experts or hyper-connections, or RUNNER_CUDA_GRAPH_RECUR=0)";
+        why = "a qwen35 file whose decode is not captured (hyper-connections, or RUNNER_CUDA_GRAPH_RECUR=0)";
     if (!why && moe_any_on_host(m)) why = "experts on the host";
     // RUNNER_MOE_REPLAY / RUNNER_MOE_TRACE: each routing takes its position
     // from the host, and a trace reads it back, so neither is captured
