@@ -1079,7 +1079,8 @@ static void usage_to(FILE *f, const char *prog) {
         "                 its path and size (with --json, one JSON object) and\n"
         "                 exit; nothing is loaded\n"
         "  -p TEXT        prompt (one-shot completion; \\n etc. are unescaped)\n"
-        "  -f FILE        read prompt from file, as written (appended after -p text)\n"
+        "  -f FILE        read prompt from file, as written, CRLF read as LF\n"
+        "                 (appended after -p text)\n"
         "  -i             interactive chat mode\n"
         "  --serve        HTTP server mode (OpenAI-compatible API)\n"
         "  --tray [off|auto]  bare: BE the desktop tray/menu-bar controller\n"
@@ -3497,6 +3498,25 @@ static bool run_record_utility(const cli_opts *o, int *rc) {
 // scores with. --detect-watermark over a transcript record is answered
 // here from the record's own token ids; over plain text it needs the
 // model's tokenizer, so *detect_text keeps the text for after the load.
+// A prompt read from a file is text (R6.68.24): a CR that immediately precedes
+// an LF is dropped as the file is read, so a CRLF file and its LF twin give the
+// same tokens on every platform and whichever editor saved them; a lone CR is
+// content and stays. -f and --detect-watermark's text read through here (a run
+// record's JSON reads the same: a CR between JSON tokens is whitespace). -p is
+// not: its escapes are the user's own. plat_read_file's buffer, shortened in
+// place and still NUL-terminated.
+static char *prompt_text_read(const char *path, size_t *n_out) {
+    size_t n = 0;
+    char *b = plat_read_file(path, MAX_INPUT_FILE, &n);
+    if (!b) return NULL;
+    size_t w = 0;
+    for (size_t r = 0; r < n; r++)
+        if (!(b[r] == '\r' && r + 1 < n && b[r + 1] == '\n')) b[w++] = b[r];
+    b[w] = 0;
+    if (n_out) *n_out = w;
+    return b;
+}
+
 // True when the process exits with *rc.
 static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
                                 char **detect_text, int *rc) {
@@ -3516,7 +3536,7 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
             return true;
         }
         size_t dn = 0;
-        char *dbuf = plat_read_file(o->detect_path, MAX_INPUT_FILE, &dn);
+        char *dbuf = prompt_text_read(o->detect_path, &dn);
         if (!dbuf) {
             fprintf(stderr, "error: --detect-watermark: cannot read %s\n", o->detect_path);
             *rc = 1;
@@ -3798,13 +3818,14 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         return true;
     }
     // The escapes are -p's (a shell argument cannot hold a newline easily);
-    // a file's bytes are the prompt as written. Unescaping after the append
-    // rewrote a file's own backslash sequences, so a scored corpus's
-    // "\times" reached the tokenizer as a tab and "imes".
+    // a file's bytes are the prompt as written, its CRLF line ends read as LF
+    // (prompt_text_read). Unescaping after the append rewrote a file's own
+    // backslash sequences, so a scored corpus's "\times" reached the
+    // tokenizer as a tab and "imes".
     if (o->prompt) o->prompt = *owned_prompt = unescape(o->prompt);
     if (o->prompt_file) {
         size_t flen = 0;
-        char *fdata = plat_read_file(o->prompt_file, MAX_INPUT_FILE, &flen);
+        char *fdata = prompt_text_read(o->prompt_file, &flen);
         if (!fdata) { fprintf(stderr, "error: cannot read %s\n", o->prompt_file); *rc = 1; return true; }
         // The prompt is text up to its first NUL wherever it goes next (the
         // tokenizer call, the run record's JSON, --verify), so a file holding
