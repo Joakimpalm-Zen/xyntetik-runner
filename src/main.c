@@ -6926,9 +6926,11 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
 static int run_detect_text(cli_opts *o, cli_run *rt, const wm_key *wmk, char *detect_text) {
     // R1.8.2 over a text: tokenized without BOS by the model's own
     // tokenizer, scored from the first position with a full context
-    size_t cap = strlen(detect_text) + 16;
-    int32_t *dt = cap <= (size_t)INT_MAX ? malloc(sizeof *dt * cap) : NULL;
-    int nt = dt ? tok_encode(&rt->tok, detect_text, dt, (int)cap, false, false) : -1;
+    // (the buffer is sized to the encoding: one of the text's byte count
+    // plus 16 cut a text of short words at its end and scored the head as
+    // the whole, R6.68.77)
+    int32_t *dt = NULL;
+    int nt = tok_encode_fit(&rt->tok, detect_text, false, TOK_TEXT, 0, &dt);
     int rc = 3;
     if (nt < 0) fprintf(stderr, "error: --detect-watermark: out of memory\n");
     else rc = wm_report(wmk, dt, nt, WM_CONTEXT, "text", NULL);
