@@ -158,6 +158,11 @@ test-lineage-oom.exe
 test-lineage-oom.err
 lineage-oom-receipts/
 lineage-oom-out.txt
+test-derive-oom
+test-derive-oom.exe
+test-derive-oom.err
+derive-oom.gguf.quant-error.jsonl
+derive-oom.gguf.type-plan.json
 test-quantize-oom-*
 test-moe-host-bridge
 test-moe-host-bridge.exe

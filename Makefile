@@ -284,6 +284,7 @@ endif
 TEST_QUANTIZE = $(TEST_BATCH:test-batch%=test-quantize%)
 TEST_QUANTIZE_OOM = $(TEST_BATCH:test-batch%=test-quantize-oom%)
 TEST_LINEAGE_OOM = $(TEST_BATCH:test-batch%=test-lineage-oom%)
+TEST_DERIVE_OOM = $(TEST_BATCH:test-batch%=test-derive-oom%)
 TEST_VRAM_ROLLBACK = $(TEST_BATCH:test-batch%=test-vram-rollback%)
 TEST_GGUF_GETTERS = $(TEST_BATCH:test-batch%=test-gguf-getters%)
 TEST_HFHUB = $(TEST_BATCH:test-batch%=test-hfhub%)
@@ -1534,6 +1535,12 @@ $(TEST_QUANTIZE_OOM): $(TEST_QUANTIZE_OOM_SRC) src/quantize.c $(HDR)
 TEST_LINEAGE_OOM_OBJ = $(filter-out $(OBJDIR)/lineage.o $(OBJDIR)/main.o,$(RUNNER_OBJ))
 $(TEST_LINEAGE_OOM): tests/test_lineage_oom.c src/lineage.c $(TEST_LINEAGE_OOM_OBJ) $(HDR)
 	$(CC) $(CFLAGS) -I src tests/test_lineage_oom.c $(TEST_LINEAGE_OOM_OBJ) -o $@ $(LDFLAGS)
+
+# R6.68.5: every allocation of derive's --target-size planning failed in turn
+# (tests/test_derive_oom.c), built the same way with derive.c compiled in.
+TEST_DERIVE_OOM_OBJ = $(filter-out $(OBJDIR)/derive.o $(OBJDIR)/main.o,$(RUNNER_OBJ))
+$(TEST_DERIVE_OOM): tests/test_derive_oom.c src/derive.c $(TEST_DERIVE_OOM_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_derive_oom.c $(TEST_DERIVE_OOM_OBJ) -o $@ $(LDFLAGS)
 
 # vramreg.c is #included (calloc-hooked) by the test, so it is not linked here
 $(TEST_VRAM_ROLLBACK): tests/test_vram_rollback.c $(OBJDIR)/compat.o $(HDR)
@@ -3296,7 +3303,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
       $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
-      $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) test-lora.full.gguf \
+      $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
@@ -3640,6 +3647,10 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# every allocation of the receipts walk failed in turn (R6.68.5)
 	./$(TEST_LINEAGE_OOM) . 2> test-lineage-oom.err || { tail -40 test-lineage-oom.err; exit 1; }
 	@tail -1 test-lineage-oom.err
+	@# every allocation of derive's --target-size planning failed in turn (R6.68.5)
+	./$(TEST_DERIVE_OOM) . ./$(RUNNER_EXE) test.gguf 2> test-derive-oom.err || \
+	    { tail -40 test-derive-oom.err; exit 1; }
+	@tail -1 test-derive-oom.err
 	@# the host MoE bridge equals the forward's FFN on every MoE layer: the
 	@# routings above, Granite's residual scale, Nemotron-H's gate-less
 	@# shared expert

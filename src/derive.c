@@ -669,6 +669,23 @@ typedef struct {
     long long saved;          // two rungs: bytes at the top minus at the bottom
 } dgroup;
 
+// What sized_plan owns until it returns (R6.68.5): the groups with their names
+// and tensor names (a demoted group's name moves to the result and is NULL here),
+// and the held tensor names until they move to the result.
+static void groups_free(dgroup *gs, int ng) {
+    for (int k = 0; gs && k < ng; k++) {
+        free(gs[k].name);
+        for (int t = 0; t < gs[k].n; t++) free(gs[k].tensors[t]);
+        free(gs[k].tensors);
+    }
+    free(gs);
+}
+
+static void names_free(char **v, int n) {
+    for (int k = 0; v && k < n; k++) free(v[k]);
+    free(v);
+}
+
 static int cmp_group(const void *a, const void *b) {
     const dgroup *x = a, *y = b;
     if (x->cost != y->cost) return x->cost < y->cost ? -1 : 1;
@@ -714,6 +731,10 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     const char *top = o->rungs[0], *bottom = o->rungs[nr - 1];
     res->report = suffixed(o->out, ".quant-error.jsonl");
     res->plan = suffixed(o->out, ".type-plan.json");
+    if (!res->report || !res->plan) {
+        fprintf(stderr, "error: runner derive: out of memory\n");
+        return false;
+    }
     char types[256];
     size_t tl = 0;
     types[0] = 0;
@@ -745,7 +766,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     char **held = NULL;    // candidates the imatrix has no entry for (R4.34.2)
     int nh = 0, hcap = 0;
     long long delta = 0;   // all candidates at the top rung, against the parent
-    bool ok = true;
+    bool ok = true, oom = false;
     for (char *line = text, *next; ok && line && *line; line = next) {
         next = strchr(line, '\n');
         if (next) *next++ = '\0';
@@ -773,11 +794,18 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
                     // leaves out output and token_embd by default): its error
                     // does not compare with the weighted ones, so it stays at
                     // the top rung, out of the ranking, and is named (R4.34.2)
+                    // each growth and copy is checked: an unchecked realloc
+                    // assigned over its own pointer dereferenced NULL and lost
+                    // the old block (R6.68.5)
                     if (nh == hcap) {
-                        hcap = hcap ? hcap * 2 : 8;
-                        held = realloc(held, sizeof *held * (size_t)hcap);
+                        int ncap = hcap ? hcap * 2 : 8;
+                        char **grown = realloc(held, sizeof *held * (size_t)ncap);
+                        if (!grown) { ok = false; oom = true; jv_free(row); break; }
+                        held = grown;
+                        hcap = ncap;
                     }
-                    held[nh++] = strdup(tn);
+                    if (!(held[nh] = strdup(tn))) { ok = false; oom = true; jv_free(row); break; }
+                    nh++;
                     jv_free(row);
                     continue;
                 }
@@ -794,19 +822,26 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
                 for (int k = 0; k < ng; k++) if (!strcmp(gs[k].name, key)) gi = k;
                 if (gi < 0) {
                     if (ng == gcap) {
-                        gcap = gcap ? gcap * 2 : 64;
-                        gs = realloc(gs, sizeof *gs * (size_t)gcap);
+                        int ncap = gcap ? gcap * 2 : 64;
+                        dgroup *grown = realloc(gs, sizeof *gs * (size_t)ncap);
+                        if (!grown) { ok = false; oom = true; jv_free(row); break; }
+                        gs = grown;
+                        gcap = ncap;
                     }
                     memset(&gs[ng], 0, sizeof gs[ng]);
-                    gs[ng].name = strdup(key);
+                    if (!(gs[ng].name = strdup(key))) { ok = false; oom = true; jv_free(row); break; }
                     gi = ng++;
                 }
                 dgroup *d = &gs[gi];
                 if (d->n == d->cap) {
-                    d->cap = d->cap ? d->cap * 2 : 8;
-                    d->tensors = realloc(d->tensors, sizeof *d->tensors * (size_t)d->cap);
+                    int ncap = d->cap ? d->cap * 2 : 8;
+                    char **grown = realloc(d->tensors, sizeof *d->tensors * (size_t)ncap);
+                    if (!grown) { ok = false; oom = true; jv_free(row); break; }
+                    d->tensors = grown;
+                    d->cap = ncap;
                 }
-                d->tensors[d->n++] = strdup(tn);
+                if (!(d->tensors[d->n] = strdup(tn))) { ok = false; oom = true; jv_free(row); break; }
+                d->n++;
                 for (int k = 0; k < nr; k++) {
                     d->bytes[k] += (long long)rb[k];
                     d->err[k] += re[k];
@@ -819,14 +854,16 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     }
     gguf_close(&g);
     free(text);
-    if (!ok) return false;
-    if (!ng && nh) {
-        fprintf(stderr, "error: the imatrix has no entry for any of the %d candidate tensors; give one "
-                "that covers them or narrow --match\n", nh);
-        return false;
-    }
-    if (!ng) {
-        fprintf(stderr, "error: no tensor in the --quant-error report matches '%s'\n", match);
+    if (!ok || !ng) {
+        if (oom)
+            fprintf(stderr, "error: runner derive: out of memory reading %s\n", res->report);
+        else if (ok && nh)
+            fprintf(stderr, "error: the imatrix has no entry for any of the %d candidate tensors; give one "
+                    "that covers them or narrow --match\n", nh);
+        else if (ok)
+            fprintf(stderr, "error: no tensor in the --quant-error report matches '%s'\n", match);
+        groups_free(gs, ng);
+        names_free(held, nh);
         return false;
     }
     if (nh) qsort(held, (size_t)nh, sizeof *held, cmp_str);
@@ -837,12 +874,18 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     if (w && u) {
         fprintf(stderr, "error: some candidates' errors are imatrix-weighted and some are not, "
                 "and the two do not compare; give an imatrix that covers them or narrow --match\n");
+        groups_free(gs, ng);   // held is the result's now
         return false;
     }
     long long at_high = pbytes + delta;
     res->save_bytes = at_high > o->target_size ? at_high - o->target_size : 0;
     long long saved = 0;
     int *order = calloc((size_t)ng, sizeof *order), nd = 0;
+    if (!order) {
+        fprintf(stderr, "error: runner derive: out of memory ranking %d groups\n", ng);
+        groups_free(gs, ng);
+        return false;
+    }
     char skipped[4096];
     size_t sl = 0;
     int n_skipped = 0;
@@ -854,6 +897,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
             if (gs[k].saved <= 0) {
                 fprintf(stderr, "error: demoting %s to %s saves no bytes\n", gs[k].name, bottom);
                 free(order);
+                groups_free(gs, ng);
                 return false;
             }
             gs[k].cost = (gs[k].err[1] - gs[k].err[0]) / (double)gs[k].saved;
@@ -872,6 +916,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
             if (!next_step(&gs[k], nr, &c, &to)) {
                 fprintf(stderr, "error: demoting %s to %s saves no bytes\n", gs[k].name, bottom);
                 free(order);
+                groups_free(gs, ng);
                 return false;
             }
         }
@@ -904,6 +949,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         fprintf(stderr, "error: --target-size %lld is out of reach: every candidate at %s still "
                 "leaves about %lld bytes\n", o->target_size, bottom, at_high - saved);
         free(order);
+        groups_free(gs, ng);
         return false;
     }
     sbuf b = {0};
@@ -912,10 +958,20 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     sb_lit(&b, ",\"rules\":[");
     res->demoted = calloc((size_t)(nd ? nd : 1), sizeof *res->demoted);
     res->demoted_to = calloc((size_t)(nd ? nd : 1), sizeof *res->demoted_to);
+    if (!res->demoted || !res->demoted_to) {
+        fprintf(stderr, "error: runner derive: out of memory writing the plan\n");
+        free(res->demoted); free(res->demoted_to);
+        res->demoted = NULL; res->demoted_to = NULL;
+        free(b.s);
+        free(order);
+        groups_free(gs, ng);
+        return false;
+    }
     bool first = true;
     for (int k = 0; k < nd; k++) {
         dgroup *d = &gs[order[k]];
         res->demoted[res->n_demoted] = d->name;
+        d->name = NULL;   // the result owns it now
         res->demoted_to[res->n_demoted++] = o->rungs[d->at];
         qsort(d->tensors, (size_t)d->n, sizeof *d->tensors, cmp_str);
         for (int t = 0; t < d->n; t++) {
@@ -940,6 +996,12 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     free(order);
     res->n_skipped = n_skipped;
     res->skipped = n_skipped ? strdup(skipped) : NULL;
+    if (n_skipped && !res->skipped) {
+        // the record would say no rung was skipped
+        fprintf(stderr, "error: runner derive: out of memory writing the plan\n");
+        groups_free(gs, ng);
+        return false;
+    }
     if (nr == 2) {
         fprintf(stderr, "derive: demoted %d of %d groups to %s, saving %lld bytes\n",
                 nd, ng, bottom, saved);
@@ -958,6 +1020,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         for (int k = 0; k < nh; k++) fprintf(stderr, "%s %s", k ? "," : "", held[k]);
         fprintf(stderr, "\n");
     }
+    groups_free(gs, ng);
     return wrote;
 }
 
