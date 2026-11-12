@@ -538,6 +538,27 @@ static void test_atem_parallel_turn_constrains_one_to_eight_calls(void) {
     sb_put(&bare, one, strlen(one));
     assert(!feeds(root, bare.s));
     free(bare.s);
+    // R6.68.42: a model that reasons before a required call closes its self
+    // turn with <|eom|> and opens the call as `<|start|>assistant to=NAME`
+    // (both controls decode to no bytes, so the grammar sees `assistant to=`).
+    // The first call took only the direct ` to=` form: after the reasoning
+    // every byte the model wanted was refused, only the byte-less controls
+    // were legal, and the turn ran to max_tokens with no call (measured on a
+    // 14B Muse-family model, tool_choice required). Either form opens the
+    // first call; the calls after it keep the spelled separator.
+    for (int n = 1; n <= NATIVE_PARALLEL_MAX_CALLS; n++) {
+        sbuf doc = {0};
+        sb_lit(&doc, "assistant");
+        for (int k = 0; k < n; k++) {
+            if (k) sb_lit(&doc, "<|eom|><|start|>assistant");
+            sb_put(&doc, one, strlen(one));
+        }
+        sb_lit(&doc, "<|eot|>");
+        assert(accepts(root, doc.s));
+        free(doc.s);
+    }
+    assert(!feeds(root, "assistant to=user"));        // required: no answer branch
+    assert(!feeds(root, "assistantassistant to="));
     schema_free(root); jv_free(tools);
 }
 
