@@ -103,7 +103,7 @@ class Soak:
     def finding(self, phase, what, **detail):
         row = {"phase": phase, "what": what, **detail}
         self.findings.append(row)
-        print(f"FINDING [{phase}] {what} {json.dumps(detail)[:400]}", flush=True)
+        print(f"FINDING [{phase}] {what} {json.dumps(detail, allow_nan=False)[:400]}", flush=True)
 
     def conn(self, timeout=None):
         return http.client.HTTPConnection(self.host, self.port,
@@ -113,7 +113,7 @@ class Soak:
         """One request. Returns (status, parsed JSON or None, raw text)."""
         c = self.conn(timeout)
         try:
-            data = json.dumps(body).encode() if body is not None else None
+            data = json.dumps(body, allow_nan=False).encode() if body is not None else None
             h = {"Content-Type": "application/json"} if data is not None else {}
             h.update(headers or {})
             c.request(method, path, body=data, headers=h)
@@ -297,7 +297,7 @@ class Soak:
         calls = [(c.get("function", {}).get("name"), c.get("function", {}).get("arguments"))
                  for c in (m.get("tool_calls") or [])]
         return json.dumps([m.get("content"), m.get("reasoning_content"), calls,
-                           ch.get("text"), ch.get("finish_reason")], sort_keys=True)
+                           ch.get("text"), ch.get("finish_reason")], sort_keys=True, allow_nan=False)
 
     def ask(self, body, path="/v1/chat/completions", headers=None):
         try:
@@ -313,7 +313,7 @@ class Soak:
         c = self.conn()
         text, n, clean = [], 0, False
         try:
-            c.request("POST", "/v1/chat/completions", body=json.dumps(b).encode(),
+            c.request("POST", "/v1/chat/completions", body=json.dumps(b, allow_nan=False).encode(),
                       headers={"Content-Type": "application/json"})
             r = c.getresponse()
             if r.status != 200:
@@ -424,7 +424,7 @@ class Soak:
                     "temperature": 0, "stream": True}
             c = self.conn()
             try:
-                c.request("POST", "/v1/completions", body=json.dumps(body).encode(),
+                c.request("POST", "/v1/completions", body=json.dumps(body, allow_nan=False).encode(),
                           headers={"Content-Type": "application/json"})
                 if self.wait_phase("prefill"):
                     counts["close_prefill_landed"] += 1
@@ -638,7 +638,7 @@ class Soak:
                             stats["invalid"] += 1
                             if stats["invalid"] <= 3:
                                 self.finding("concurrent", "a JSON-schema reply does not satisfy "
-                                             "its schema", body=json.dumps(j)[:400])
+                                             "its schema", body=json.dumps(j, allow_nan=False)[:400])
                     if kind == "tool" and j:
                         for c in (j["choices"][0].get("message") or {}).get("tool_calls") or []:
                             try:
@@ -646,7 +646,7 @@ class Soak:
                             except (ValueError, KeyError, TypeError):
                                 stats["invalid"] += 1
                                 self.finding("concurrent", "a tool call's arguments are not JSON",
-                                             call=json.dumps(c)[:300])
+                                             call=json.dumps(c, allow_nan=False)[:300])
         warm = self.memory()
         ts = [threading.Thread(target=client, args=(i,)) for i in range(len(kinds))]
         for t in ts:
@@ -775,7 +775,7 @@ def main():
     soak.report["seconds"] = round(time.time() - t0, 1)
     soak.report["argv"] = sys.argv[1:]
     out = Path(a.out) if a.out else Path(a.workdir) / "report.json"
-    out.write_text(json.dumps(soak.report, indent=1) + "\n")
+    out.write_text(json.dumps(soak.report, indent=1, allow_nan=False) + "\n")
     print(f"soak: {len(soak.findings)} finding(s) in {soak.report['seconds']} s; "
           f"device memory {soak.report.get('gpu_memory', 'unmeasured')}; report {out}")
     return rc

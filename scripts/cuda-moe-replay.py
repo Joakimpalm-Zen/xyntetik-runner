@@ -128,7 +128,7 @@ def trace_fields(tag, t_gpu, t_cpu):
 def write_trace(path, recs):
     with open(path, "w", encoding="utf-8") as fh:
         for (pos, layer), ex in sorted(recs.items()):
-            fh.write(json.dumps({"pos": pos, "layer": layer, "experts": ex}) + "\n")
+            fh.write(json.dumps({"pos": pos, "layer": layer, "experts": ex}, allow_nan=False) + "\n")
 
 
 def counts(err):

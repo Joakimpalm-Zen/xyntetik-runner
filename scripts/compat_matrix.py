@@ -303,7 +303,7 @@ def run_tool(runner, model, params, timeout, report_dir=None, model_id=None):
         report_path.write_text(json.dumps(
             {"model": str(model), "scenario_matrix": matrix,
              "returncode": proc.returncode, "totals": totals,
-             "artifacts_dir": str(artifacts_dir)}, indent=2) + "\n")
+             "artifacts_dir": str(artifacts_dir)}, indent=2, allow_nan=False) + "\n")
     return {"status": "pass" if proc.returncode == 0 else "fail",
             "returncode": proc.returncode,
             "elapsed_ms": round((time.time() - started) * 1000, 2),
@@ -410,7 +410,7 @@ def scrub_check_report(path, roots, models):
         doc = json.loads(report.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return
-    report.write_text(json.dumps(scrub_paths(doc, roots, models), indent=1) + "\n", encoding="utf-8")
+    report.write_text(json.dumps(scrub_paths(doc, roots, models), indent=1, allow_nan=False) + "\n", encoding="utf-8")
 
 
 def resolve_model(entry, models_root):
@@ -748,7 +748,7 @@ def main(argv=None):
             if check.get("report"):
                 scrub_check_report(check["report"], roots, resolved)
     report = scrub_paths(report, roots, resolved)
-    rendered = json.dumps(report, indent=2) + "\n"
+    rendered = json.dumps(report, indent=2, allow_nan=False) + "\n"
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(rendered)

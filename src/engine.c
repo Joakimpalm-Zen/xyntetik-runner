@@ -1,6 +1,7 @@
 // Generation engine shared by the CLI and the server: prompt feeding,
 // stop-token handling, optional JSON-constrained sampling.
 #include "engine.h"
+#include "fpclass.h"   // cl_capture: a probed row that is not finite
 #include "compat.h"
 
 
@@ -2345,7 +2346,7 @@ static void lp_capture_pre(engine *e, const float *logits, lp_pre *p) {
 // returned". Runs only inside the constrained payload — the thinking
 // prelude samples freely and has no decision points.
 static void cl_capture(engine *e, const float *logits) {
-    if (!e->cl_cap || e->cl_count >= e->cl_cap) return;
+    if (!e->cl_cap) return;
     if (!e->schema && !e->json_mode) return;
     if (e->constraint_phase != CP_OUTPUT) return;
     int V = e->m->n_vocab;
@@ -2353,6 +2354,18 @@ static void cl_capture(engine *e, const float *logits) {
     int M = e->cl_probe >= 8 && e->cl_probe <= PROBE_CAP ? e->cl_probe : 32;
     if (M > V) M = V;
     float lse = engine_logsumexp(logits, V);
+    // A row that is not finite measures no decision (R6.68.118): a NaN or a
+    // +inf anywhere in it makes lse NaN (engine_logsumexp's sum carries it),
+    // and the probe below would compare NaNs. That probe stays bounded (j in
+    // [0, M-1], lps[filled - 1] read only once filled == M) but its set is
+    // degenerate, and it used to record no decision, so a turn no number
+    // supported answered needs_confirmation false. Noted before the buffer's
+    // limit, so a row past the last recorded decision still counts.
+    if (!fp_finite_f32(lse)) {
+        e->cl_nonfinite = true;
+        return;
+    }
+    if (e->cl_count >= e->cl_cap) return;
     int   ids[PROBE_CAP]; float lps[PROBE_CAP];
     int filled = 0;
     for (int i = 0; i < V; i++) {

@@ -249,7 +249,7 @@ def chat_ttft(port, prompt):
     mid = json.load(urllib.request.urlopen(
         f"http://127.0.0.1:{port}/v1/models"))["data"][0]["id"]
     body = json.dumps({"model": mid, "stream": True, "max_tokens": 64,
-                       "messages": [{"role": "user", "content": prompt}]}).encode()
+                       "messages": [{"role": "user", "content": prompt}]}, allow_nan=False).encode()
     req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions",
                                  data=body, headers={"Content-Type": "application/json"})
     t0 = time.time(); ttft = None
@@ -333,8 +333,8 @@ def main():
         time.sleep(5)
         server_log.close()
         report[key + "_after_kill"] = system_memory()[1]
-        json.dump(report, open(args.out, "w"), indent=1)
-        print(json.dumps(report, indent=1))
+        json.dump(report, open(args.out, "w"), indent=1, allow_nan=False)
+        print(json.dumps(report, indent=1, allow_nan=False))
         print(f"\nreport -> {args.out}", file=sys.stderr)
 
 if __name__ == "__main__":

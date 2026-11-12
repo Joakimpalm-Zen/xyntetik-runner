@@ -108,7 +108,7 @@ def query(endpoint, model_name, prompt, top_n=20):
               "temperature": 0, "logprobs": top_n}
     req = urllib.request.Request(
         f"{endpoint}/v1/completions",
-        data=json.dumps(payload).encode(),
+        data=json.dumps(payload, allow_nan=False).encode(),
         headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=120) as resp:
         body = json.loads(resp.read())
@@ -436,10 +436,10 @@ def main(argv):
         "mean_top8_overlap": sum(overlaps) / len(overlaps) if overlaps else None,
         "positions": positions,
     }
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result, indent=2, allow_nan=False))
     if args.out:
         with open(args.out, "w") as f:
-            json.dump(result, f, indent=2)
+            json.dump(result, f, indent=2, allow_nan=False)
     if not klds:
         # Every field above is null. kld-compare.py refuses this state; the v2
         # that publishes the adopted criterion must too, or a dead endpoint or

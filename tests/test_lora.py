@@ -52,6 +52,7 @@ def fx(tmp_path_factory):
             "badshape": d / "fx.badshape.gguf",
             "extradim": d / "fx.extradim.gguf",
             "halfpair": d / "fx.halfpair.gguf",
+            "inf": d / "fx.inf.gguf", "nan": d / "fx.nan.gguf",
             "f16": d / "fx.f16.gguf"}
 
 
@@ -324,3 +325,77 @@ def test_hostile_adapters_are_refused_by_name(runner_bin, fx, bad, needle):
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
     assert p.returncode != 0
     assert needle in p.stderr
+
+
+# R6.68.116: an adapter that holds a NaN or an infinity is refused where it
+# is read, by name, for every consumer of the loader. A NaN or an infinity in
+# A or B is a NaN or infinite delta on every weight its row touches: served,
+# it made every logit NaN (and --score exit 1, R6.68.115); merged, it wrote a
+# model whose weights are not numbers, and the erased-delta floor let it pass.
+NONFINITE = [("inf", b"lora_b' is not finite", b"infinity"),
+             ("nan", b"lora_a' is not finite", b"NaN")]
+
+
+def _refused(p, needle, what):
+    err = p.stderr
+    assert p.returncode != 0, err.decode(errors="replace")
+    assert needle in err and what in err, err.decode(errors="replace")[-600:]
+
+
+@pytest.mark.parametrize("bad,needle,what", NONFINITE)
+def test_an_adapter_that_is_not_finite_is_refused_by_name(runner_bin, fx, tmp_path,
+                                                          bad, needle, what):
+    base, adapter = str(fx["base"]), str(fx[bad])
+    cpu = ["-t", "2", "--gpu", "off"]
+    run = lambda *a: subprocess.run([runner_bin, "-m", base, *a, *cpu], cwd=ROOT,  # noqa: E731
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=120)
+    # served (--lora)
+    _refused(run("--score", "-p", PROMPT, "--lora", adapter), needle, what)
+    # a per-request adapter, at the server's startup
+    _refused(run("--serve", "--port", "1", "--no-tray", "--adapter", f"t={adapter}"),
+             needle, what)
+    # a training run that continues from it, and one that resumes from it
+    rows = tmp_path / "rows.jsonl"
+    rows.write_text(json.dumps({"prompt": "the runner", "completion": " trains"}) + "\n")
+    _refused(run("--train", str(rows), "--train-steps", "1", "--lora", adapter,
+                 "--train-out", str(tmp_path / "t.gguf")), needle, what)
+    _refused(run("--train", str(rows), "--train-steps", "1", "--train-resume", adapter,
+                 "--train-out", str(tmp_path / "r.gguf")), needle, what)
+    # merged: refused, and neither the file nor its record is written
+    merged = tmp_path / "merged.gguf"
+    _refused(run("--lora", adapter, "--merge-lora", str(merged)), needle, what)
+    assert not merged.exists() and not (tmp_path / "merged.gguf.merge.json").exists()
+
+
+def test_the_merge_floor_fails_closed_on_a_kept_fraction_that_is_not_a_number(
+        runner_bin, fx, tmp_path):
+    """The erased-delta floor and the record's survival block are guarded by
+    ret_den > 0 and ret < floor, and a NaN fails both: with a weight that is
+    not a number under the adapter, the merge skipped the floor and dropped
+    the block, and wrote the file. The loader now refuses a non-finite
+    adapter, but a base can still hold one; the floor no longer depends on
+    the loader (R6.68.116): a kept fraction that is not a number is not above
+    the floor. Under --merge-allow-erased the file is written, and the block
+    is there with null."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    import struct
+    from test_embeddings_pooling import _embedding_table
+    base = tmp_path / "nanbase.gguf"
+    data, at, _, _ = _embedding_table(fx["base"], "blk.0.attn_q.weight")
+    data = bytearray(data)
+    struct.pack_into("<f", data, at, float("nan"))
+    base.write_bytes(data)
+    merged = tmp_path / "merged.gguf"
+    cmd = [runner_bin, "-m", str(base), "--lora", str(fx["adapter"]),
+           "--merge-lora", str(merged), "-t", "2", "--gpu", "off"]
+    p = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=120)
+    assert p.returncode != 0, p.stderr.decode(errors="replace")
+    assert b"not a number" in p.stderr, p.stderr.decode(errors="replace")[-600:]
+    assert not merged.exists() and not (tmp_path / "merged.gguf.merge.json").exists()
+    p = subprocess.run(cmd + ["--merge-allow-erased"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    rec = json.loads((tmp_path / "merged.gguf.merge.json").read_text())
+    assert rec["survival"]["delta_retained"] is None, rec.get("survival")

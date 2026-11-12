@@ -243,7 +243,7 @@ def main():
                           "verdict": {"base_apart": all(apart_any(c) for c in cmps),
                                       "direction": {c["b"]: direction(c) for c in cmps},
                                       "pairs_differ": [f"{c['a']} vs {c['b']}" for c in pair_cmps if apart(c)]}},
-                         indent=2))
+                         indent=2, allow_nan=False))
     else:
         print(render(base, adapters, cmps, pair_cmps))
 

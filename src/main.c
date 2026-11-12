@@ -4517,14 +4517,18 @@ static int run_merge_lora(const cli_opts *o) {
         sb_lit(&rec, "\"}");
         // what the output grid kept of the delta (quants.h
         // merge_survival); absent when no adapted tensor was rewritten
-        if (sv.ret_den > 0)
+        // delta_retained is null when not finite (R6.68.115), and the block
+        // is written whenever the merge measured it, a measure that is not a
+        // number included (merge_survival_measured, R6.68.116)
+        if (merge_survival_measured(&sv)) {
             sb_fmt(&rec, ",\"survival\":{\"adapted_bytes\":%llu,"
-                   "\"bytes_changed\":%llu,\"delta_retained\":%.6f,"
-                   "\"min_retained\":%s}",
+                   "\"bytes_changed\":%llu,\"delta_retained\":",
                    (unsigned long long)sv.bytes,
-                   (unsigned long long)sv.bytes_changed,
-                   sv.ret_num / sv.ret_den,
+                   (unsigned long long)sv.bytes_changed);
+            sb_fix6(&rec, sv.ret_num / sv.ret_den);
+            sb_fmt(&rec, ",\"min_retained\":%s}",
                    o->merge_allow_erased ? "null" : MERGE_MIN_RETAINED_STR);
+        }
         sb_lit(&rec, "}\n");
         if (!write_record(o->merge_out, ".merge.json", "merge", &rec, o->sign_key))
             rc = 1;
@@ -5320,6 +5324,20 @@ static bool train_dpo_steps(cli_opts *o, cli_run *rt, dpo_pair *pairs,
             fprintf(stderr, "error: DPO step failed\n");
             return false;
         }
+        // the --train step's rule (R6.68.115): a step whose numbers or
+        // gradient are not finite stops the run before the optimizer
+        // touches the adapter. A finite loss alone does not show it: an
+        // infinite margin scores 0, its log-probabilities infinite.
+        double gmax = 0, gmean = 0;
+        if (!fp_finite_f64(d.loss) || !fp_finite_f64(d.margin) || !fp_finite_f64(d.coeff) ||
+            !fp_finite_f64(d.logp_w) || !fp_finite_f64(d.logp_l) ||
+            !fp_finite_f64(d.logp_ref_w) || !fp_finite_f64(d.logp_ref_l) ||
+            !model_lora_grad_norms(&rt->m, &gmax, &gmean)) {
+            fprintf(stderr, "error: DPO step %d: the loss, a log-probability or a "
+                    "gradient is not finite; the adapter stays as step %d left it\n",
+                    step, step - 1);
+            return false;
+        }
         if (!train_adam_step(o, rt, step, o->train_lr)) return false;
         if (step == 1) *first_loss = d.loss;
         *last_loss = d.loss;
@@ -5447,8 +5465,11 @@ static bool train_lp_write(FILE *f, int step, int example, const train_ex *ex,
                            const float *lp) {
     fprintf(f, "{\"step\":%d,\"example\":%d,\"first\":%d,\"logprobs\":[",
             step, example, ex->first);
+    // written before the step's finiteness check stops a non-finite run, so a
+    // number here can be NaN: null, and the line still parses
+    char nb[32];
     for (int k = 0; k < ex->n - ex->first; k++)
-        fprintf(f, "%s%.9g", k ? "," : "", (double)lp[k]);
+        fprintf(f, "%s%s", k ? "," : "", json_numg(nb, 9, lp[k]));
     return fprintf(f, "]}\n") > 0;
 }
 
@@ -5718,38 +5739,60 @@ static void fput_json_str(FILE *f, const char *s) {
 
 // Every set once, no update: one JSON line {"step","eval":{LABEL:{...}}} with
 // the mean loss per (weighted) position, as the training loss is, and the two
-// top-1 agreements (model_lora_eval_row).
+// top-1 agreements (model_lora_eval_row). Every set is evaluated before the
+// line is written: a set whose loss is not finite stops the run (exit 1), as
+// a training step's loss does, and no half line or NaN reaches the log or
+// the kill rule's baseline (R6.68.115).
 static bool train_evals_run(cli_opts *o, cli_run *rt, train_eval_set *ev, int step,
                             int32_t *tids, float *tlp) {
-    printf("{\"step\":%d,\"eval\":{", step);
+    lora_eval_acc *accs = calloc((size_t)o->n_eval, sizeof *accs);
+    if (!accs) {
+        fprintf(stderr, "error: out of memory for --train-eval\n");
+        return false;
+    }
     for (int i = 0; i < o->n_eval; i++) {
         train_eval_set *e = &ev[i];
-        lora_eval_acc acc = {0};
+        lora_eval_acc *acc = &accs[i];
         for (int r = 0; r < e->n_ex; r++) {
             lora_teacher tch = { e->has_tt ? e->tt.k : 0, tids, tlp };
             if (e->has_tt && !train_teacher_rows(&e->tt, r, &e->exs[r], tids, tlp)) {
                 fprintf(stderr, "error: --train-eval %s: cannot read row %d's teacher\n",
                         e->label, r + 1);
+                free(accs);
                 return false;
             }
             if (!model_lora_eval_row(&rt->m, e->exs[r].t, e->exs[r].n, e->exs[r].w,
-                                     e->has_tt ? &tch : NULL, &acc)) {
+                                     e->has_tt ? &tch : NULL, acc)) {
                 fprintf(stderr, "error: --train-eval %s: row %d failed\n", e->label, r + 1);
+                free(accs);
                 return false;
             }
         }
-        e->last = acc.weight > 0 ? acc.loss / acc.weight : 0.0;
+        double loss = acc->weight > 0 ? acc->loss / acc->weight : 0.0;
+        if (!fp_finite_f64(loss)) {
+            fprintf(stderr, "error: --train-eval %s: the loss at step %d is not finite; "
+                    "the run stops here, as it does on a training step's\n", e->label, step);
+            free(accs);
+            return false;
+        }
+        e->last = loss;
         if (step == 0) { e->base = e->last; e->has_base = true; }
-        double pos = acc.positions > 0 ? (double)acc.positions : 1.0;
+    }
+    printf("{\"step\":%d,\"eval\":{", step);
+    for (int i = 0; i < o->n_eval; i++) {
+        const train_eval_set *e = &ev[i];
+        const lora_eval_acc *acc = &accs[i];
+        double pos = acc->positions > 0 ? (double)acc->positions : 1.0;
         if (i) printf(",");
         fput_json_str(stdout, e->label);
         printf(":{\"loss\":%.6f,\"top1_topk\":%.6f,\"top1_vocab\":%.6f,"
                "\"rows\":%d,\"positions\":%ld}", e->last,
-               (double)acc.top1_topk / pos, (double)acc.top1_vocab / pos, e->n_ex,
-               acc.positions);
+               (double)acc->top1_topk / pos, (double)acc->top1_vocab / pos, e->n_ex,
+               acc->positions);
     }
     printf("}}\n");
     fflush(stdout);
+    free(accs);
     return true;
 }
 
@@ -7083,6 +7126,11 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     printf("],\"logprobs\":[");
     double total = 0;
     int pos = 0, emitted = 0, fail = 0, top1 = 0;
+    // the first scored transition whose log-probability is not finite, or -1:
+    // a suppressed token sits at -1e30, finite, so only a non-finite forward
+    // gets here, and the document then reads null where the number was
+    int nonfinite = -1;
+    char nb[32];
     int32_t *argmaxes = malloc(sizeof(int32_t) * (size_t)n_prompt);
     if (!argmaxes) return 1;
     // --score-top: each position's distribution head, for a comparison at the
@@ -7119,7 +7167,8 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
                                    top_id + (size_t)emitted * ntop,
                                    top_lp + (size_t)emitted * ntop);
                 argmaxes[emitted] = arg;
-                printf("%s%.9g", emitted++ ? "," : "", (double)lp);
+                if (nonfinite < 0 && !fp_finite_f64(lp)) nonfinite = pos + b + 1;
+                printf("%s%s", emitted++ ? "," : "", json_numg(nb, 9, lp));
                 total += lp;
                 if (arg == rt->toks[pos + b + 1]) top1++;
             }
@@ -7149,7 +7198,8 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
                                top_id + (size_t)emitted * ntop,
                                top_lp + (size_t)emitted * ntop);
             argmaxes[emitted] = arg;
-            printf("%s%.9g", emitted++ ? "," : "", (double)lp);
+            if (nonfinite < 0 && !fp_finite_f64(lp)) nonfinite = pos + 1;
+            printf("%s%s", emitted++ ? "," : "", json_numg(nb, 9, lp));
             total += lp;
             if (arg == rt->toks[pos + 1]) top1++;
             pos += 1;
@@ -7185,8 +7235,8 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
         for (int i = 0; i < emitted; i++) {
             printf("%s[", i ? "," : "");
             for (int j = 0; j < ntop; j++)
-                printf("%s[%d,%.9g]", j ? "," : "", top_id[(size_t)i * ntop + j],
-                       (double)top_lp[(size_t)i * ntop + j]);
+                printf("%s[%d,%s]", j ? "," : "", top_id[(size_t)i * ntop + j],
+                       json_numg(nb, 9, top_lp[(size_t)i * ntop + j]));
             printf("]");
         }
         free(top_id); free(top_lp);
@@ -7209,15 +7259,25 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     // gold-logits.py's own special-prefix rule)
     int n_special = !o->no_bos && rt->tok.add_bos && rt->tok.bos_id >= 0 &&
                     n_prompt > 0 && rt->toks[0] == rt->tok.bos_id;
+    // nll and its mean are null after a non-finite log-probability, and the
+    // perplexity also when it overflows alone (a mean past 709 nats)
+    char nt[32], nm[32], np[32];
     printf("],\"n_vocab\":%d,\"top1\":%d,\"top1_rate\":%.9g,"
-           "\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g,\"n_special\":%d,\"score_route\":%s}\n",
+           "\"nll_total\":%s,\"nll_mean\":%s,\"ppl\":%s,\"n_special\":%d,\"score_route\":%s}\n",
            rt->m.n_vocab, top1, (double)top1 / (n_prompt - 1),
-           nll, mean, exp(mean), n_special, sroute);
+           json_numg(nt, 9, nll), json_numg(nm, 9, mean), json_numg(np, 9, exp(mean)),
+           n_special, sroute);
     // the paths and kernels the forwards took, on stderr: the kernel counters
     // show a route's kernels ran
     char route[4096];
     model_route_json(&rt->m, route, sizeof route);
     fprintf(stderr, "score: route %s\n", route);
+    if (nonfinite >= 0) {
+        fprintf(stderr, "error: --score: the log-probability of token %d is not "
+                "finite, so the forward is not; the document reads null there\n",
+                nonfinite);
+        return 1;
+    }
     return 0;
 }
 

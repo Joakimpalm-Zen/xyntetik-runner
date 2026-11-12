@@ -221,12 +221,14 @@ def cache_probe(path, slice_bytes, parts):
     second = measure_read(path, slice_bytes, 1, 0, 1, parts)
     a = first["total_seconds"]
     b = second["total_seconds"]
-    ratio = a / b if b > 0 else float("inf")
+    # a second pass too fast to time has no ratio: null in the report (JSON
+    # has no infinity), and it is the cached case
+    ratio = a / b if b > 0 else None
     return {
         "first_seconds": a,
         "second_seconds": b,
         "speedup_ratio": ratio,
-        "cached_second_pass_suspected": ratio > 8.0,
+        "cached_second_pass_suspected": ratio is None or ratio > 8.0,
     }
 
 
@@ -269,7 +271,7 @@ def main():
         read = report["read_path"]["p50_bytes_per_second"]
         report["read_over_fault_p50_ratio"] = read / fault if fault else None
 
-    text = json.dumps(report, indent=2, sort_keys=True)
+    text = json.dumps(report, indent=2, sort_keys=True, allow_nan=False)
     if args.out:
         with open(args.out, "w") as handle:
             handle.write(text + "\n")

@@ -472,6 +472,7 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
     free(e->cl_recs);
     e->cl_recs = NULL;
     e->cl_cap = e->cl_count = e->cl_probe = 0;
+    e->cl_nonfinite = false;
 }
 
 // emit one section of split output: reasoning goes to the OpenAI-style
@@ -1064,6 +1065,7 @@ typedef struct req_diag {
     int         decisions;
     double      min_chosen_p, min_margin;
     int         min_at;
+    bool        nonfinite;   // a probed row was not finite (engine cl_nonfinite)
     // R2.2: closure provenance, rendered JSON (owned by the request), or NULL
     // when the closer did not run
     char       *closure_json;
@@ -1338,11 +1340,14 @@ static void diag_json(sbuf *r, const req_diag *d) {
         } else
             sb_lit(r, "\"min_chosen_prob\":null,\"min_margin\":null,"
                       "\"at_token\":null,");
-        // a confidence that is not a number (a forward that went non-finite)
-        // is not above the bar: it needs confirmation
-        sb_fmt(r, "\"needs_confirmation\":%s}",
-               d->decisions > 0 && !(d->min_chosen_p >= d->confirm_below)
-               ? "true" : "false");
+        // a probed row that was not finite, or a confidence that is not a
+        // number, is not above the bar: it needs confirmation (R6.68.118).
+        // Spelled with fpclass.h's test: under fast math !(a >= b) is not a
+        // NaN test (it may be compiled as a < b)
+        bool confirm = d->nonfinite ||
+                       (d->decisions > 0 && (!fp_finite_f64(d->min_chosen_p) ||
+                                             d->min_chosen_p < d->confirm_below));
+        sb_fmt(r, "\"needs_confirmation\":%s}", confirm ? "true" : "false");
     }
     if (d->closure_json) sb_fmt(r, ",\"closure\":%s", d->closure_json);
     if (d->receipt_file)
@@ -4472,6 +4477,7 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
             }
             e->cl_cap   = q->max_tokens;
             e->cl_count = 0;
+            e->cl_nonfinite = false;
             e->cl_probe = (int)q->cl_probe_d;
         }
     }
@@ -5476,6 +5482,7 @@ static void turn_generate(turn_result *t, float *logits) {
         prep->diag.confirm_below = q->confirm_below;
         prep->diag.min_chosen_p = 1.0;
         prep->diag.min_margin = 1.0;
+        prep->diag.nonfinite = e->cl_nonfinite;
         for (int i = 0; i < e->cl_count; i++) {
             const cl_rec *c = &e->cl_recs[i];
             int at = e->gen_start + c->pos;
@@ -5498,7 +5505,7 @@ static void turn_generate(turn_result *t, float *logits) {
             // asks for confirmation rather than guessing it was safe
             if (p < 0) p = 0;
             prep->diag.decisions++;
-            if (p < prep->diag.min_chosen_p) {
+            if (!fp_finite_f64(p) || p < prep->diag.min_chosen_p) {
                 prep->diag.min_chosen_p = p;
                 prep->diag.min_margin = p - best_other;
                 prep->diag.min_at = c->pos;

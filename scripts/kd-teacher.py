@@ -94,7 +94,7 @@ def main():
     with open(out / "train.jsonl", "w", encoding="utf-8") as f:
         for toks, top in scored:
             f.write(json.dumps({"prompt_tokens": toks[:1],
-                                "completion_tokens": toks[1:]}) + "\n")
+                                "completion_tokens": toks[1:]}, allow_nan=False) + "\n")
             for p in range(pos):
                 row = top[p] if p < len(top) else [[0, 0.0]] * a.topk
                 ids += [int(t) for t, _ in row]
@@ -105,7 +105,7 @@ def main():
     mass = [sum(2.718281828459045 ** l for _, l in row) for _, top in scored for row in top]
     print(json.dumps({"documents": len(scored), "positions": pos, "topk": a.topk,
                       "mean_topk_mass": round(sum(mass) / len(mass), 6),
-                      "out": str(out)}))
+                      "out": str(out)}, allow_nan=False))
 
 
 if __name__ == "__main__":

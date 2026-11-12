@@ -738,7 +738,7 @@ def main(argv=None):
 
     if not zero_point["passed"]:
         report = build_report(reference_meta, zero_point, [], configuration)
-        report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        report_path.write_text(json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n")
         (args.out / "report.md").write_text(render_markdown(report))
         print("quant-fidelity: ZERO-POINT FAILED, refusing to measure any "
              f"variant: {'; '.join(zero_point['reasons'])}", file=sys.stderr)
@@ -801,7 +801,7 @@ def main(argv=None):
         })
 
     report = build_report(reference_meta, zero_point, variant_rows, configuration)
-    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n")
     md = render_markdown(report)
     (args.out / "report.md").write_text(md)
     print(md)

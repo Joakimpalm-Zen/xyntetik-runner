@@ -158,7 +158,7 @@ def _get(url, path, timeout=2):
 
 
 def _post(url, path, body, timeout=600):
-    req = urllib.request.Request(url + path, data=json.dumps(body).encode(),
+    req = urllib.request.Request(url + path, data=json.dumps(body, allow_nan=False).encode(),
                                  headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -296,7 +296,7 @@ def cmd_run(args):
                     "decision": dec,
                     "seconds": round(time.time() - t0, 3),
                 }
-                out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                out.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
                 out.flush()
                 n_written += 1
                 if dec:
@@ -503,7 +503,7 @@ def render(s):
 def cmd_summarize(args):
     s = summarize(load_records(args.records))
     if args.json:
-        json.dump(s, sys.stdout, indent=1)
+        json.dump(s, sys.stdout, indent=1, allow_nan=False)
         sys.stdout.write("\n")
     else:
         sys.stdout.write(render(s))
