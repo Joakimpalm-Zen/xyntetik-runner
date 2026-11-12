@@ -16,6 +16,7 @@
 #include "pmath.h"
 #include <float.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,6 +51,36 @@ static const char *meta_key(char *buf, size_t n, const char *arch, const char *k
     return buf;
 }
 #define AK(k) meta_key(key, sizeof key, arch, (k))
+
+// The plan binders' messages (R6.68.29). On a load they go to stderr as they
+// always did. On a plan made for --info fit (m->plan_only) a refusal is kept,
+// the first one, as the reason the fit reports, and the informational lines a
+// load prints about a family are not printed. Only model_fit's own plan sets
+// plan_only; model_bind_weights clears it, so it cannot quiet a load.
+__attribute__((format(printf, 2, 3)))
+static void bind_err(model_t *m, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    if (!m->plan_only) {
+        vfprintf(stderr, fmt, ap);
+    } else if (!m->plan_why[0]) {
+        char buf[sizeof m->plan_why + 8];
+        vsnprintf(buf, sizeof buf, fmt, ap);
+        const char *t = strncmp(buf, "error: ", 7) ? buf : buf + 7;
+        size_t n = strlen(t);
+        while (n && (t[n - 1] == '\n' || t[n - 1] == ' ')) n--;
+        snprintf(m->plan_why, sizeof m->plan_why, "%.*s", (int)n, t);
+    }
+    va_end(ap);
+}
+__attribute__((format(printf, 2, 3)))
+static void bind_note(model_t *m, const char *fmt, ...) {
+    if (m->plan_only) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+}
 
 // A model's architecture row (arch.h): the one admission looked up, or the
 // unknown row for a model_t built without a load.
@@ -825,67 +856,49 @@ static bool qwen35_kv_rows_typed(const arch_desc *ad) {
     return ad->kv_rows_typed;
 }
 
-static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, bool mtp, fit_geom *o) {
-    char key[128];
-    const arch_desc *ad = arch_find(arch);
+static bool model_plan(model_t *m, gguf_file *g, const model_params *p);
+static void model_free_weights(model_t *m);
+
+// The geometry --info fit charges, from the loader's own plan of the file
+// (model_plan, R6.68.29): the trunk and each block's KV width as the binders
+// lay them out, the widest head, the head count, MLA's shared V row and the
+// KV formats the heads take. A header the loader would refuse plans nothing:
+// false, with the loader's reason in `why`. `mtp` charges the declared
+// NextN/MTP blocks past the trunk the attention shape a bound block has.
+static bool fit_geometry(gguf_file *g, int n_layer, bool mtp, fit_geom *o,
+                         char *why, size_t why_n) {
     memset(o, 0, sizeof *o);
-    uint32_t n_embd = gguf_get_u32(g, AK("embedding_length"), 0);
-    uint32_t n_head = 0;   // the widest block: a removed one reads 0
-    for (int l = 0; l < n_layer; l++) {
-        uint32_t v = gguf_get_u32_idx(g, AK("attention.head_count"), (uint64_t)l, 0);
-        if (v > n_head) n_head = v;
+    if (why && why_n) why[0] = 0;
+    model_t pm;
+    memset(&pm, 0, sizeof pm);
+    pm.plan_only = true;
+    model_params pp;
+    memset(&pp, 0, sizeof pp);
+    if (!model_plan(&pm, g, &pp) || n_layer <= 0) {
+        if (why && why_n)
+            snprintf(why, why_n, "%s", pm.plan_why[0] ? pm.plan_why
+                                       : "its header does not describe a model the loader can plan");
+        model_free_weights(&pm);
+        return false;
     }
-    uint32_t head_dim = gguf_get_u32(g, AK("attention.key_length"),
-                                     n_head ? n_embd / n_head : 0);
-    uint32_t hd_swa = gguf_get_u32(g, AK("attention.key_length_swa"), head_dim);
-    // deepseek2's absorbed MLA, the loader's default (bind_meta_deepseek2):
-    // every head reads one row a token and layer, [k_pe | latent], and Q is
-    // that wide per head; RUNNER_MLA_NAIVE=1 keeps the header's shape
-    const char *naive = getenv("RUNNER_MLA_NAIVE");
-    bool mla_absorb = ad->id == ARCH_DEEPSEEK2 && !(naive && *naive && strcmp(naive, "0") != 0);
-    uint32_t mla_row = mla_absorb ? gguf_get_u32(g, AK("attention.kv_lora_rank"), 0) +
-                                    gguf_get_u32(g, AK("rope.dimension_count"), 0) : 0;
-    if (mla_absorb && mla_row > 0) head_dim = hd_swa = mla_row;
-    gguf_kv *pat = gguf_get(g, AK("attention.sliding_window_pattern"));
-    if (pat && (pat->type != GGUF_T_ARR || !pat->arr_raw ||
-                (pat->arr_type != GGUF_T_BOOL && pat->arr_type != GGUF_T_U8 &&
-                 pat->arr_type != GGUF_T_I8)))
-        pat = NULL;
-    int shared = ad->id == ARCH_GEMMA4
-        ? (int)gguf_get_u32(g, AK("attention.shared_kv_layers"), 0) : 0;
-    int owners = shared > 0 && shared < n_layer ? n_layer - shared : n_layer;
-    bool ok = n_layer > 0 && n_head > 0 && head_dim > 0;
-    o->kv_dim = ok ? calloc((size_t)n_layer, sizeof(uint64_t)) : NULL;
-    if (!o->kv_dim) return false;
-    o->n_head = n_head;
-    // the loader's trunk (bind_mtp_layers; an out-of-range count, which the
-    // loader refuses, charges every block as before); its DeltaNet layers own
-    // no rows (R3.44), and a declared NextN/MTP block past it has the
-    // attention shape, charged only when --mtp binds it (R3.45)
-    uint32_t nextn = gguf_get_u32(g, AK("nextn_predict_layers"), 0);
-    o->trunk = nextn < (uint32_t)n_layer ? n_layer - (int)nextn : n_layer;
-    uint32_t q35_every = qwen35_kv_rows_typed(ad)
-        ? gguf_get_u32(g, AK("full_attention_interval"), 4) : 0;
-    int *trunk_hd = malloc(sizeof(int) * (size_t)(o->trunk > 0 ? o->trunk : 1));
-    if (!trunk_hd) { free(o->kv_dim); o->kv_dim = NULL; return false; }
+    o->kv_dim = calloc((size_t)n_layer, sizeof(uint64_t));
+    if (!o->kv_dim) { model_free_weights(&pm); return false; }
+    o->trunk = pm.n_layer;
+    o->n_head = (uint64_t)pm.n_head;
     for (int l = 0; l < n_layer; l++) {
-        uint32_t hc = gguf_get_u32_idx(g, AK("attention.head_count"), (uint64_t)l, n_head);
-        uint32_t kvh = hc ? gguf_get_u32_idx(g, AK("attention.head_count_kv"),
-                                             (uint64_t)l, n_head) : 0;
-        if (mla_absorb && mla_row > 0 && kvh) kvh = 1;   // one shared row, MQA
-        bool swa = pat && (uint64_t)l < pat->arr_n &&
-                   ((const uint8_t *)pat->arr_raw)[l] != 0;
-        uint64_t hd = swa ? hd_swa : head_dim;
-        if (l < o->trunk) trunk_hd[l] = (int)hd;
+        // a trunk layer owns rows unless it reads another's (gemma4 shared
+        // KV) or its binder typed it without (a DeltaNet layer, R3.44); a
+        // block past the trunk owns the attention shape when --mtp binds it
+        uint64_t kv = l < o->trunk ? (model_kv_owner(&pm, l) == l ? (uint64_t)model_kv_dim(&pm, l) : 0)
+                    : mtp ? (uint64_t)model_kv_dim(&pm, l) : 0;
+        uint64_t hd = (uint64_t)model_head_dim(&pm, l);
         if (hd > o->head_dim_max) o->head_dim_max = hd;
-        o->kv_dim[l] = l < owners ? (uint64_t)kvh * hd : 0;
-        if (q35_every && l < o->trunk && (l + 1) % q35_every != 0) o->kv_dim[l] = 0;
-        if (l >= o->trunk && !mtp) o->kv_dim[l] = 0;
-        if (o->kv_dim[l] > o->kv_dim_max) o->kv_dim_max = o->kv_dim[l];
+        o->kv_dim[l] = kv;
+        if (kv > o->kv_dim_max) o->kv_dim_max = kv;
     }
-    o->kv_formats = model_kv_formats(trunk_hd, o->trunk, 0);
-    free(trunk_hd);
-    o->v_shared = mla_absorb && mla_row > 0;
+    o->kv_formats = model_kv_formats(pm.l_head_dim, pm.n_layer, pm.head_dim);
+    o->v_shared = pm.mla_absorb;
+    model_free_weights(&pm);
     return true;
 }
 
@@ -924,7 +937,8 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
     out->train_ctx     = train_ctx;
 
     fit_geom geo;
-    if (out->n_layer <= 0 || !fit_geometry(g, arch, out->n_layer, mtp, &geo)) return false;
+    if (!fit_geometry(g, out->n_layer, mtp, &geo, out->refused, sizeof out->refused))
+        return false;
     int blocks = out->n_layer;
     out->n_layer = geo.trunk;
     out->n_mtp = blocks - geo.trunk;
@@ -1340,7 +1354,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     uint64_t ssm_heads  = gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
     fit_geom geo;
     const int blocks = f->n_layer + f->n_mtp;   // the trunk, then the declared NextN/MTP blocks
-    if (!fit_geometry(g, arch, blocks, f->mtp, &geo)) return false;
+    if (!fit_geometry(g, blocks, f->mtp, &geo, NULL, 0)) return false;
     uint64_t n_head = geo.n_head, head_dim = geo.head_dim_max;
     uint64_t *lb = calloc((size_t)blocks, sizeof(uint64_t));
     uint64_t *cost = calloc((size_t)blocks, sizeof(uint64_t));
@@ -2692,7 +2706,7 @@ static bool bind_admit_architecture(model_t *m, const char *arch) {
     // silently wrong without arch-specific handling (scalar multipliers,
     // logit softcapping): refuse instead of generating plausible gibberish
     if (m->ad->refused) {
-        fprintf(stderr, "error: unsupported architecture '%s' — %s\n", m->arch, m->ad->refused);
+        bind_err(m, "error: unsupported architecture '%s' — %s\n", m->arch, m->ad->refused);
         return false;
     }
     if (m->ad->id == ARCH_UNKNOWN) {
@@ -2704,13 +2718,13 @@ static bool bind_admit_architecture(model_t *m, const char *arch) {
         // llama-style loading stays available behind an explicit opt-in that
         // is never represented as supported.
         if (!getenv("RUNNER_ALLOW_UNKNOWN_ARCH")) {
-            fprintf(stderr, "error: unsupported architecture '%s' — refusing "
+            bind_err(m, "error: unsupported architecture '%s' — refusing "
                     "to run it through llama-style math (set "
                     "RUNNER_ALLOW_UNKNOWN_ARCH=1 to try anyway, EXPERIMENTAL: "
                     "output may be silently wrong)\n", m->arch);
             return false;
         }
-        fprintf(stderr, "warning: architecture '%s' is UNSUPPORTED; "
+        bind_note(m, "warning: architecture '%s' is UNSUPPORTED; "
                 "RUNNER_ALLOW_UNKNOWN_ARCH is set — attempting llama-style "
                 "load, output may be silently wrong\n", m->arch);
     }
@@ -2729,7 +2743,7 @@ static bool bind_admit_architecture(model_t *m, const char *arch) {
 static bool bind_refuse_rotated_basis(model_t *m, gguf_file *g) {
     for (uint64_t i = 0; i < g->n_kv; i++) {
         if (strncmp(g->kv[i].key, "prism.hadamard.", 15) != 0) continue;
-        fprintf(stderr, "error: this '%s' file stores its weights in a "
+        bind_err(m, "error: this '%s' file stores its weights in a "
                 "Hadamard-rotated basis (GGUF key %s, Prism ML's ternary "
                 "Bonsai format) and needs the matching activation rotation at "
                 "run time, which this build does not apply; it would load and "
@@ -2752,7 +2766,7 @@ static bool bind_hparams(model_t *m, gguf_file *g, const char *arch, bool hybrid
     // arrives negative and calloc(negative, ...) asked for ~2^64 bytes — the
     // load then failed with no message at all.
     if (m->n_layer < 1 || m->n_layer > 100000) {
-        fprintf(stderr, "error: '%s' declares an unusable block_count (%u)\n",
+        bind_err(m, "error: '%s' declares an unusable block_count (%u)\n",
                 arch, gguf_get_u32(g, AK("block_count"), 0));
         return false;
     }
@@ -2770,7 +2784,7 @@ static bool bind_hparams(model_t *m, gguf_file *g, const char *arch, bool hybrid
         gguf_kv *hc = gguf_get(g, AK("attention.head_count"));
         if (hc && hc->type == GGUF_T_ARR) {
             if (hc->arr_n != (uint64_t)m->n_layer) {
-                fprintf(stderr, "error: %s.attention.head_count has %llu "
+                bind_err(m, "error: %s.attention.head_count has %llu "
                         "entries for %d blocks\n", arch,
                         (unsigned long long)hc->arr_n, m->n_layer);
                 return false;
@@ -2785,7 +2799,7 @@ static bool bind_hparams(model_t *m, gguf_file *g, const char *arch, bool hybrid
                 uint32_t v = gguf_get_u32_idx(g, AK("attention.head_count"),
                                               (uint64_t)i, 0);
                 if (v != 0 && v != mx) {
-                    fprintf(stderr, "error: %s.attention.head_count varies "
+                    bind_err(m, "error: %s.attention.head_count varies "
                             "per block (%u at blk.%d, %u elsewhere) — "
                             "heterogeneous head counts are not supported\n",
                             arch, v, i, mx);
@@ -3037,7 +3051,7 @@ static bool bind_meta_deepseek2(model_t *m, gguf_file *g, const char *arch) {
     m->mla_v_dim    = (int)gguf_get_u32(g, AK("attention.value_length"), 0);
     if (gguf_find_tensor(g, "blk.0.attn_k_b.weight") ||
         gguf_find_tensor(g, "blk.0.attn_v_b.weight")) {
-        fprintf(stderr, "error: deepseek2: this file splits kv_b into attn_k_b "
+        bind_err(m, "error: deepseek2: this file splits kv_b into attn_k_b "
                 "and attn_v_b; the CPU path reads the unsplit attn_kv_b only\n");
         return false;
     }
@@ -3047,7 +3061,7 @@ static bool bind_meta_deepseek2(model_t *m, gguf_file *g, const char *arch) {
         m->rope_dim <= 0 || m->rope_dim >= m->head_dim || m->rope_dim % 2 ||
         m->n_head_kv != m->n_head ||
         m->n_dense_lead < 0 || m->n_dense_lead > m->n_layer) {
-        fprintf(stderr, "error: deepseek2 geometry not served (kv_lora %d, "
+        bind_err(m, "error: deepseek2 geometry not served (kv_lora %d, "
                 "q_lora %d, key %d, value %d, rope %d, heads %d, kv heads %d, "
                 "dense lead %d)\n", m->mla_kv_lora, m->mla_q_lora, m->head_dim,
                 m->mla_v_dim, m->rope_dim, m->n_head, m->n_head_kv, m->n_dense_lead);
@@ -3079,7 +3093,7 @@ static bool bind_meta_flint(model_t *m, gguf_file *g, const char *arch) {
     m->n_dense_lead = (int)gguf_get_u32(g, AK("leading_dense_block_count"), 0);
     m->swa_window   = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
     if (m->swa_window <= 0 || m->n_dense_lead < 0 || m->n_dense_lead > m->n_layer) {
-        fprintf(stderr, "error: flint requires %s and a leading dense count "
+        bind_err(m, "error: flint requires %s and a leading dense count "
                         "within the block count\n", AK("attention.sliding_window"));
         return false;
     }
@@ -3092,13 +3106,13 @@ static bool bind_meta_flint(model_t *m, gguf_file *g, const char *arch) {
               swa_pattern_array(g, AK("attention.rope_pattern"), ropes, m->n_layer);
     if (!ok) {
         free(ropes);
-        fprintf(stderr, "error: flint requires the boolean %s.attention."
+        bind_err(m, "error: flint requires the boolean %s.attention."
                         "sliding_window_pattern and rope_pattern arrays\n", arch);
         return false;
     }
     for (int i = 0; i < m->n_layer; i++)
         if (ropes[i] != m->l_is_swa[i]) {
-            fprintf(stderr, "error: flint layer %d %s but is a %s layer; only "
+            bind_err(m, "error: flint layer %d %s but is a %s layer; only "
                             "files that rope exactly their sliding layers are "
                             "supported\n", i, ropes[i] ? "ropes" : "does not rope",
                     m->l_is_swa[i] ? "sliding" : "full-attention");
@@ -3134,7 +3148,7 @@ static bool bind_meta_spark25(model_t *m, gguf_file *g, const char *arch) {
     m->rope_dim       = (int)gguf_get_u32(g, AK("rope.dimension_count"), m->head_dim);
     m->rope_dim_local = (int)gguf_get_u32(g, AK("rope.dimension_count_swa"), m->rope_dim);
     if (m->swa_window <= 0) {
-        fprintf(stderr, "error: spark2_5 requires %s\n", AK("attention.sliding_window"));
+        bind_err(m, "error: spark2_5 requires %s\n", AK("attention.sliding_window"));
         return false;
     }
     free(m->l_is_swa);
@@ -3145,7 +3159,7 @@ static bool bind_meta_spark25(model_t *m, gguf_file *g, const char *arch) {
     if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
                            m->l_is_swa, m->n_layer)) {
         // the layer types are the architecture, not a default to guess
-        fprintf(stderr, "error: spark2_5 requires the boolean %s array\n",
+        bind_err(m, "error: spark2_5 requires the boolean %s array\n",
                 AK("attention.sliding_window_pattern"));
         return false;
     }
@@ -3153,7 +3167,7 @@ static bool bind_meta_spark25(model_t *m, gguf_file *g, const char *arch) {
         m->l_rope_dim[i] = m->l_is_swa[i] ? m->rope_dim_local : m->rope_dim;
         if (m->l_rope_dim[i] <= 0 || m->l_rope_dim[i] > m->head_dim ||
             m->l_rope_dim[i] % 2) {
-            fprintf(stderr, "error: spark2_5 layer %d rotates %d of %d dims\n",
+            bind_err(m, "error: spark2_5 layer %d rotates %d of %d dims\n",
                     i, m->l_rope_dim[i], m->head_dim);
             return false;
         }
@@ -3177,7 +3191,7 @@ static bool bind_meta_k2h(model_t *m, gguf_file *g, const char *arch) {
     char key[128];
     int groups = (int)gguf_get_u32(g, AK("attention.group_norm_groups"), 1);
     if (groups < 1 || m->n_embd % groups != 0) {
-        fprintf(stderr, "error: k2-horizon: %d norm groups do not divide "
+        bind_err(m, "error: k2-horizon: %d norm groups do not divide "
                 "n_embd %d\n", groups, m->n_embd);
         return false;
     }
@@ -3189,7 +3203,7 @@ static bool bind_meta_k2h(model_t *m, gguf_file *g, const char *arch) {
     else if (gguf_find_tensor(g, "blk.0.attn_q_norm.weight")) missing = "per-head QK norms";
     else if (gguf_find_tensor(g, "blk.0.attn_gate.weight")) missing = "an attention output gate";
     if (missing) {
-        fprintf(stderr, "error: this k2-horizon file uses %s, which Runner "
+        bind_err(m, "error: this k2-horizon file uses %s, which Runner "
                 "implements for the dense 0.9B, 3.7B and 7B shape only\n", missing);
         return false;
     }
@@ -3227,7 +3241,7 @@ static bool bind_mtp_layers(model_t *m, gguf_file *g, const char *arch, const mo
     // key and behave exactly as before.
     m->mtp_layers = (int)gguf_get_u32(g, AK("nextn_predict_layers"), 0);
     if (m->mtp_layers < 0 || m->mtp_layers >= m->n_layer) {
-        fprintf(stderr, "error: invalid NextN/MTP layer count %d for %d blocks\n",
+        bind_err(m, "error: invalid NextN/MTP layer count %d for %d blocks\n",
                 m->mtp_layers, m->n_layer);
         return false;
     }
@@ -3240,7 +3254,7 @@ static bool bind_mtp_layers(model_t *m, gguf_file *g, const char *arch, const mo
     if (p->mtp_path) {
         gguf_file ex;
         if (!gguf_open(&ex, p->mtp_path)) {
-            fprintf(stderr, "error: --mtp-file: cannot open %s\n", p->mtp_path);
+            bind_err(m, "error: --mtp-file: cannot open %s\n", p->mtp_path);
             return false;
         }
         const char *ex_arch = gguf_get_str(&ex, "general.architecture", "");
@@ -3252,7 +3266,7 @@ static bool bind_mtp_layers(model_t *m, gguf_file *g, const char *arch, const mo
                         : ex_blk - ex_n != m->n_layer ? "the companion's depth differs from the trunk"
                         : NULL;
         if (why || !gguf_attach(g, &ex)) {
-            fprintf(stderr, "error: --mtp-file: %s\n", why ? why : "out of memory");
+            bind_err(m, "error: --mtp-file: %s\n", why ? why : "out of memory");
             gguf_close(&ex);
             return false;
         }
@@ -3334,7 +3348,7 @@ static bool bind_meta_qwen35(model_t *m, gguf_file *g, const char *arch) {
         m->ssm.inner % m->ssm.v_heads != 0 ||
         m->ssm.inner / m->ssm.v_heads != m->ssm.state ||
         m->ssm.v_heads % m->ssm.groups != 0) {
-        fprintf(stderr, "error: invalid qwen35 Gated DeltaNet geometry\n");
+        bind_err(m, "error: invalid qwen35 Gated DeltaNet geometry\n");
         return false;
     }
     // R3.44: a Gated DeltaNet layer holds its state in the fold, never in a
@@ -3364,7 +3378,7 @@ static bool bind_meta_qwen4exp(model_t *m, gguf_file *g, const char *arch) {
     m->hc_low_rank = (int)gguf_get_u32(g, AK("hyper_connection.low_rank"), 0);
     if (m->hc_count < 2 || m->hc_count > 8 || m->hc_low_rank <= 0 ||
         m->hc_low_rank > MDL_DIM_MAX) {
-        fprintf(stderr, "error: invalid qwen4exp hyper-connection geometry "
+        bind_err(m, "error: invalid qwen4exp hyper-connection geometry "
                 "(count %d, low rank %d)\n", m->hc_count, m->hc_low_rank);
         return false;
     }
@@ -3376,7 +3390,7 @@ static bool bind_meta_qwen4exp(model_t *m, gguf_file *g, const char *arch) {
     {
         uint32_t topk = gguf_get_u32(g, AK("attention.indexer.top_k"), 0);
         if (topk > 0 && (uint32_t)m->n_ctx > topk) {
-            fprintf(stderr, "error: qwen4exp sparse attention (indexer top_k "
+            bind_err(m, "error: qwen4exp sparse attention (indexer top_k "
                     "%u) is not implemented; this build runs it dense and "
                     "admits contexts up to %u tokens (asked %d)\n",
                     topk, topk, m->n_ctx);
@@ -3387,7 +3401,7 @@ static bool bind_meta_qwen4exp(model_t *m, gguf_file *g, const char *arch) {
     gguf_kv *pl = gguf_get(g, AK("ple.layers"));
     if (pl) {
         if (pl->type != GGUF_T_ARR || pl->arr_n != 1) {
-            fprintf(stderr, "error: qwen4exp ple.layers must name exactly one block\n");
+            bind_err(m, "error: qwen4exp ple.layers must name exactly one block\n");
             return false;
         }
         int li = (int)gguf_get_u32_idx(g, AK("ple.layers"), 0, 0);
@@ -3401,7 +3415,7 @@ static bool bind_meta_qwen4exp(model_t *m, gguf_file *g, const char *arch) {
             m->ple4_heads_per_gram <= 0 || m->ple4_n_heads > 64 ||
             m->ple4_conv_kernel <= 0 || m->ple4_conv_kernel > 8 ||
             m->ple4_head_dim <= 0 || m->ple4_head_dim > MDL_DIM_MAX) {
-            fprintf(stderr, "error: invalid qwen4exp PLE geometry\n");
+            bind_err(m, "error: invalid qwen4exp PLE geometry\n");
             return false;
         }
         gguf_kv *mu = gguf_get(g, AK("ple.layer_multipliers"));
@@ -3410,7 +3424,7 @@ static bool bind_meta_qwen4exp(model_t *m, gguf_file *g, const char *arch) {
         if (!mu || mu->type != GGUF_T_ARR || mu->arr_n != (uint64_t)m->ple4_ngram ||
             !of || of->type != GGUF_T_ARR || of->arr_n != (uint64_t)m->ple4_n_heads ||
             !vs || vs->type != GGUF_T_ARR || vs->arr_n != (uint64_t)m->ple4_n_heads) {
-            fprintf(stderr, "error: qwen4exp PLE hash arrays are missing or the wrong length\n");
+            bind_err(m, "error: qwen4exp PLE hash arrays are missing or the wrong length\n");
             return false;
         }
         for (int k = 0; k < m->ple4_ngram; k++)
@@ -3419,7 +3433,7 @@ static bool bind_meta_qwen4exp(model_t *m, gguf_file *g, const char *arch) {
             uint64_t o = gguf_get_u64_idx(g, AK("ple.head_offsets"), (uint64_t)h, 0);
             uint64_t v = gguf_get_u64_idx(g, AK("ple.head_vocab_sizes"), (uint64_t)h, 0);
             if (v == 0 || o > INT32_MAX || v > INT32_MAX || o + v > INT32_MAX) {
-                fprintf(stderr, "error: qwen4exp PLE head %d range does not fit\n", h);
+                bind_err(m, "error: qwen4exp PLE head %d range does not fit\n", h);
                 return false;
             }
             m->ple4_off[h] = (uint32_t)o; m->ple4_vocab[h] = (uint32_t)v;
@@ -3435,7 +3449,7 @@ static bool bind_meta_apertus(model_t *m, gguf_file *g, const char *arch) {
     // four parameters are published per layer.
     m->ffn_act = ACT_XIELU;
     if (m->n_layer < 1 || m->n_layer > 100000) {
-        fprintf(stderr, "error: apertus block_count %d out of range\n", m->n_layer);
+        bind_err(m, "error: apertus block_count %d out of range\n", m->n_layer);
         return false;
     }
     size_t nl = (size_t)(unsigned)m->n_layer;
@@ -3505,7 +3519,7 @@ static bool bind_meta_gemma4(model_t *m, gguf_file *g, const char *arch) {
     // The general geometry validation runs after the arch blocks, but this
     // one sizes several per-layer arrays from block_count first.
     if (m->n_layer < 1 || m->n_layer > 100000) {
-        fprintf(stderr, "error: gemma4 block_count %d out of range\n", m->n_layer);
+        bind_err(m, "error: gemma4 block_count %d out of range\n", m->n_layer);
         return false;
     }
     int shared_kv = (int)gguf_get_u32(g, AK("attention.shared_kv_layers"), 0);
@@ -3515,7 +3529,7 @@ static bool bind_meta_gemma4(model_t *m, gguf_file *g, const char *arch) {
     // a different architecture without saying so.
     uint32_t ple_raw = gguf_get_u32(g, AK("embedding_length_per_layer_input"), 0);
     if (ple_raw > MDL_DIM_MAX) {
-        fprintf(stderr, "error: gemma4 per-layer embedding size %u is out "
+        bind_err(m, "error: gemma4 per-layer embedding size %u is out "
                 "of range\n", ple_raw);
         return false;
     }
@@ -3528,7 +3542,7 @@ static bool bind_meta_gemma4(model_t *m, gguf_file *g, const char *arch) {
         // (kv_from_start - 2) for sliding and (kv_from_start - 1) for full.
         m->kv_from_start = m->n_layer - shared_kv;
         if (m->kv_from_start < 2) {
-            fprintf(stderr, "error: gemma4 shared_kv_layers=%d leaves no "
+            bind_err(m, "error: gemma4 shared_kv_layers=%d leaves no "
                     "KV-owning layers\n", shared_kv);
             return false;
         }
@@ -3539,7 +3553,7 @@ static bool bind_meta_gemma4(model_t *m, gguf_file *g, const char *arch) {
         // agreement is at the quantisation noise floor (the same profile a
         // long-verified dense model shows), not exact token identity.
         // CPU and CUDA, byte-identical to each other.
-        fprintf(stderr, "gemma4: E-series (per-layer embeddings%s); validated "
+        bind_note(m, "gemma4: E-series (per-layer embeddings%s); validated "
                 "at the quantization noise floor, not token-identically "
                 "(docs/model-support.md)\n",
                 m->kv_from_start < m->n_layer ? " + shared KV" : "");
@@ -3547,12 +3561,12 @@ static bool bind_meta_gemma4(model_t *m, gguf_file *g, const char *arch) {
         // The MoE variant used to print the dense line below, which read as
         // a llama.cpp token-identity claim this file never earned (lab,
         // 2026-10-17, on gemma-4-26B-A4B-it). Its evidence is its own.
-        fprintf(stderr, "gemma4: MoE variant (dual-branch FFN): CUDA and CPU "
+        bind_note(m, "gemma4: MoE variant (dual-branch FFN): CUDA and CPU "
                 "verified identical on gemma-4-26B-A4B-it; the dense variant's "
                 "token-identity check does not cover it "
                 "(docs/moe-support.md)\n");
     else
-        fprintf(stderr, "gemma4: dense variant verified token-identical in greedy decoding on the official GGUF; unofficial dequant conversions may still produce garbage, prefer official files\n");
+        bind_note(m, "gemma4: dense variant verified token-identical in greedy decoding on the official GGUF; unofficial dequant conversions may still produce garbage, prefer official files\n");
     m->embd_scale    = sqrtf((float)m->n_embd);
     m->ffn_act       = ACT_GELU;
     m->v_rmsnorm     = true;
@@ -3631,7 +3645,7 @@ static bool bind_meta_gemma4(model_t *m, gguf_file *g, const char *arch) {
             m->n_head % m->l_head_kv[i] != 0 ||
             m->l_rope_dim[i] < 0 || m->l_rope_dim[i] > m->l_head_dim[i] ||
             (int64_t)m->n_head * m->l_head_dim[i] > MDL_DIM_MAX)) {
-            fprintf(stderr, "error: invalid gemma4 per-layer geometry at "
+            bind_err(m, "error: invalid gemma4 per-layer geometry at "
                     "blk.%d (head_dim=%d head_count_kv=%d rope_dim=%d, "
                     "n_head=%d)\n",
                     i, m->l_head_dim[i], m->l_head_kv[i], m->l_rope_dim[i],
@@ -3654,7 +3668,7 @@ static bool bind_meta_gemma4(model_t *m, gguf_file *g, const char *arch) {
             m->l_head_kv[src] != m->l_head_kv[i]) {
             // a source whose KV geometry differs would be read with the
             // wrong row stride — refuse rather than reinterpret bytes
-            fprintf(stderr, "error: gemma4 shared-KV layer %d maps to %d "
+            bind_err(m, "error: gemma4 shared-KV layer %d maps to %d "
                     "with mismatched KV geometry\n", i, src);
             return false;
         }
@@ -3687,7 +3701,7 @@ static bool bind_meta_granite(model_t *m, gguf_file *g, const char *arch) {
     float ls = gguf_get_f32(g, AK("logit_scale"), 0.0f);
     if (ls > 0.0f) m->logit_scale = 1.0f / ls;
     if (!gguf_get_bool(g, AK("rope.scaling.finetuned"), true)) {
-        fprintf(stderr, "error: granite export disables rope "
+        bind_err(m, "error: granite export disables rope "
                 "(rope.scaling.finetuned=false) — unsupported layout\n");
         return false;
     }
@@ -3742,7 +3756,7 @@ static bool bind_meta_granitehybrid(model_t *m, gguf_file *g, const char *arch) 
         m->ssm.v_heads % m->ssm.groups != 0 ||
         m->ssm.inner % m->ssm.groups != 0 ||
         m->ssm.inner != 2 * m->n_embd) {
-        fprintf(stderr, "error: invalid granitehybrid Mamba-2 geometry "
+        bind_err(m, "error: invalid granitehybrid Mamba-2 geometry "
                 "(conv_kernel=%d inner=%d state=%d heads=%d groups=%d, "
                 "n_embd=%d)\n", m->ssm.conv_kernel, m->ssm.inner,
                 m->ssm.state, m->ssm.v_heads, m->ssm.groups, m->n_embd);
@@ -3768,13 +3782,13 @@ static bool bind_meta_granitehybrid(model_t *m, gguf_file *g, const char *arch) 
         m->l_rope_dim[i] = m->rope_dim;
         if (kv > 0) {
             if (kv > m->n_head || m->n_head % kv != 0) {
-                fprintf(stderr, "error: granitehybrid blk.%d head_count_kv "
+                bind_err(m, "error: granitehybrid blk.%d head_count_kv "
                         "%d does not divide n_head %d\n", i, kv, m->n_head);
                 return false;
             }
             if (attn_kv == 0) attn_kv = kv;
             else if (kv != attn_kv) {
-                fprintf(stderr, "error: granitehybrid attention layers "
+                bind_err(m, "error: granitehybrid attention layers "
                         "disagree on head_count_kv (%d vs %d)\n",
                         attn_kv, kv);
                 return false;
@@ -3782,14 +3796,14 @@ static bool bind_meta_granitehybrid(model_t *m, gguf_file *g, const char *arch) 
         }
     }
     if (attn_kv == 0) {
-        fprintf(stderr, "error: granitehybrid has no attention layers "
+        bind_err(m, "error: granitehybrid has no attention layers "
                 "(every attention.head_count_kv entry is 0)\n");
         return false;
     }
     m->n_head_kv = attn_kv;
     int n_attn = 0;
     for (int i = 0; i < m->n_layer; i++) if (m->l_head_kv[i] > 0) n_attn++;
-    fprintf(stderr, "granitehybrid: Mamba-2 hybrid (%d recurrent + %d "
+    bind_note(m, "granitehybrid: Mamba-2 hybrid (%d recurrent + %d "
             "attention layers); greedy output validated on "
             "granite-4.0-h-small at Q4_K and Q8_0: token-identical on "
             "high-confidence prompts, diverging only at genuine near-ties "
@@ -3817,7 +3831,7 @@ static bool bind_meta_lfm2(model_t *m, gguf_file *g, const char *arch) {
     m->ssm.inner = m->n_embd;     // the ring is one value per hidden channel
     m->ssm.state = m->ssm.groups = m->ssm.v_heads = 0;
     if (m->ssm.conv_kernel < 2 || m->ssm.conv_kernel > 8) {
-        fprintf(stderr, "error: %s shortconv.l_cache %d outside [2, 8]\n",
+        bind_err(m, "error: %s shortconv.l_cache %d outside [2, 8]\n",
                 arch, m->ssm.conv_kernel);
         return false;
     }
@@ -3836,19 +3850,19 @@ static bool bind_meta_lfm2(model_t *m, gguf_file *g, const char *arch) {
         if (kv == 0) continue;
         n_attn++;
         if (kv > m->n_head || m->n_head % kv != 0) {
-            fprintf(stderr, "error: %s blk.%d head_count_kv %d does not "
+            bind_err(m, "error: %s blk.%d head_count_kv %d does not "
                     "divide n_head %d\n", arch, i, kv, m->n_head);
             return false;
         }
         if (attn_kv == 0) attn_kv = kv;
         else if (kv != attn_kv) {
-            fprintf(stderr, "error: %s attention layers disagree on "
+            bind_err(m, "error: %s attention layers disagree on "
                     "head_count_kv (%d vs %d)\n", arch, attn_kv, kv);
             return false;
         }
     }
     if (n_attn == 0 || n_attn == m->n_layer) {
-        fprintf(stderr, "error: %s needs both attention and short-convolution "
+        bind_err(m, "error: %s needs both attention and short-convolution "
                 "layers (head_count_kv lists %d attention of %d)\n",
                 arch, n_attn, m->n_layer);
         return false;
@@ -3858,11 +3872,11 @@ static bool bind_meta_lfm2(model_t *m, gguf_file *g, const char *arch) {
     // 8B-A1B: two), the rest route over the experts
     m->n_dense_lead = (int)gguf_get_u32(g, AK("leading_dense_block_count"), 0);
     if (m->n_dense_lead < 0 || m->n_dense_lead > m->n_layer) {
-        fprintf(stderr, "error: %s leading_dense_block_count %d outside [0, %d]\n",
+        bind_err(m, "error: %s leading_dense_block_count %d outside [0, %d]\n",
                 arch, m->n_dense_lead, m->n_layer);
         return false;
     }
-    fprintf(stderr, "%s: short-convolution hybrid (%d convolution + %d "
+    bind_note(m, "%s: short-convolution hybrid (%d convolution + %d "
             "attention layers)\n", arch, m->n_layer - n_attn, n_attn);
     return true;
 }
@@ -3993,7 +4007,7 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
     // uses. A finetuned-rope export would rope the attention layers, a
     // layout this tracer has not certified: refuse rather than mis-rotate.
     if (gguf_get_bool(g, AK("rope.scaling.finetuned"), false)) {
-        fprintf(stderr, "error: nemotron_h with rope.scaling.finetuned=true "
+        bind_err(m, "error: nemotron_h with rope.scaling.finetuned=true "
                 "(rope on attention layers) is not certified\n");
         return false;
     }
@@ -4013,7 +4027,7 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
         m->ssm.inner % m->ssm.v_heads != 0 ||
         m->ssm.v_heads % m->ssm.groups != 0 ||
         m->ssm.inner % m->ssm.groups != 0) {
-        fprintf(stderr, "error: invalid nemotron_h Mamba-2 geometry "
+        bind_err(m, "error: invalid nemotron_h Mamba-2 geometry "
                 "(conv_kernel=%d inner=%d state=%d heads=%d groups=%d)\n",
                 m->ssm.conv_kernel, m->ssm.inner, m->ssm.state,
                 m->ssm.v_heads, m->ssm.groups);
@@ -4050,7 +4064,7 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
         uint32_t lat = gguf_get_u32(g, AK("moe_latent_size"), 0);
         m->moe_latent = lat <= (uint32_t)m->n_embd ? (int)lat : -1;
         if (m->moe_latent < 0) {
-            fprintf(stderr, "error: nemotron_h_moe moe_latent_size %u is wider "
+            bind_err(m, "error: nemotron_h_moe moe_latent_size %u is wider "
                     "than n_embd %d\n", lat, m->n_embd);
             return false;
         }
@@ -4064,7 +4078,7 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
             m->n_ff_shexp < 0 || m->n_ff_shexp > MDL_DIM_MAX ||
             m->expert_gating < EXPERT_GATE_NONE ||
             m->expert_gating > EXPERT_GATE_SQRT_SOFTPLUS) {
-            fprintf(stderr, "error: invalid nemotron_h_moe expert config "
+            bind_err(m, "error: invalid nemotron_h_moe expert config "
                     "(count=%d used=%d exp_ff=%d shexp_ff=%d gating=%d)\n",
                     m->n_expert, m->n_expert_used, m->n_ff_exp,
                     m->n_ff_shexp, m->expert_gating);
@@ -4088,13 +4102,13 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
         m->l_rope_dim[i] = m->rope_dim;
         if (kv > 0) {
             if (kv > m->n_head || m->n_head % kv != 0) {
-                fprintf(stderr, "error: nemotron_h blk.%d head_count_kv %d "
+                bind_err(m, "error: nemotron_h blk.%d head_count_kv %d "
                         "does not divide n_head %d\n", i, kv, m->n_head);
                 return false;
             }
             if (attn_kv == 0) attn_kv = kv;
             else if (kv != attn_kv) {
-                fprintf(stderr, "error: nemotron_h attention layers disagree "
+                bind_err(m, "error: nemotron_h attention layers disagree "
                         "on head_count_kv (%d vs %d)\n", attn_kv, kv);
                 return false;
             }
@@ -4109,35 +4123,35 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
     m->n_ff = max_ff;
     m->ffn_var = true;
     if (attn_kv == 0) {
-        fprintf(stderr, "error: nemotron_h has no attention layers\n");
+        bind_err(m, "error: nemotron_h has no attention layers\n");
         return false;
     }
     if (n_rec == 0) {
-        fprintf(stderr, "error: nemotron_h has no recurrent (Mamba-2) "
+        bind_err(m, "error: nemotron_h has no recurrent (Mamba-2) "
                 "layers — not a hybrid\n");
         return false;
     }
     m->n_head_kv = attn_kv;
     if (nh_moe)
-        fprintf(stderr, "nemotron_h_moe: Mamba-2 hybrid (%d recurrent + %d "
+        bind_note(m, "nemotron_h_moe: Mamba-2 hybrid (%d recurrent + %d "
                 "attention + %d MoE layers, n_group=%d grouped scan) — %d/%d "
                 "gate-less squared-ReLU experts + always-on shared expert, "
                 "NoPE attention\n", n_rec, n_attn, n_mlp, m->ssm.groups,
                 m->n_expert_used, m->n_expert);
     // Bolt's widths vary by layer (ff_exp_min below the widest)
     if (nh_moe && m->moe_latent > 0 && ff_exp_min == m->n_ff_exp)
-        fprintf(stderr, "nemotron_h_moe: LatentMoE, the routed experts run at "
+        bind_note(m, "nemotron_h_moe: LatentMoE, the routed experts run at "
                 "width %d (n_embd %d), %d wide\n", m->moe_latent, m->n_embd,
                 m->n_ff_exp);
     else if (nh_moe && m->moe_latent > 0)
-        fprintf(stderr, "nemotron_h_moe: LatentMoE, the routed experts run at "
+        bind_note(m, "nemotron_h_moe: LatentMoE, the routed experts run at "
                 "width %d (n_embd %d), %d to %d wide by layer\n", m->moe_latent,
                 m->n_embd, ff_exp_min, m->n_ff_exp);
     else if (nh_moe && ff_exp_min != m->n_ff_exp)
-        fprintf(stderr, "nemotron_h_moe: the routed experts run %d to %d wide by "
+        bind_note(m, "nemotron_h_moe: the routed experts run %d to %d wide by "
                 "layer\n", ff_exp_min, m->n_ff_exp);
     if (!nh_moe)
-        fprintf(stderr, "nemotron_h: Mamba-2 hybrid (%d recurrent + %d attention "
+        bind_note(m, "nemotron_h: Mamba-2 hybrid (%d recurrent + %d attention "
                 "+ %d MLP layers, n_group=%d grouped scan): NON-MoE, NoPE "
                 "attention, gate-less squared-ReLU MLP; greedy output validated "
                 "on Nemotron-Nano-9B-v2 Q8_0 (docs/model-support.md)\n",
@@ -4174,7 +4188,7 @@ static bool bind_meta_muse(model_t *m, gguf_file *g, const char *arch) {
     if (m->logit_scale <= 0.0f) {
         // llama.cpp reads the key as required; a build that silently
         // defaulted it would emit uncapped-scale logits on every token
-        fprintf(stderr, "error: muse-glimmer requires %s\n",
+        bind_err(m, "error: muse-glimmer requires %s\n",
                 AK("logit_scale"));
         return false;
     }
@@ -4253,7 +4267,7 @@ static bool bind_resolve_defaults(model_t *m, gguf_file *g, const char *arch) {
         if (beta != 0.0f) {
             int orig = (int)gguf_get_u32(g, AK("rope.scaling.original_context_length"), 0);
             if (orig <= 0) {
-                fprintf(stderr, "error: mistral3 attention temperature without "
+                bind_err(m, "error: mistral3 attention temperature without "
                         "rope.scaling.original_context_length\n");
                 return false;
             }
@@ -4264,7 +4278,7 @@ static bool bind_resolve_defaults(model_t *m, gguf_file *g, const char *arch) {
         }
     }
     if (m->no_rope_layer_step < 0) {
-        fprintf(stderr, "error: negative no_rope_layer_step\n");
+        bind_err(m, "error: negative no_rope_layer_step\n");
         return false;
     }
     return true;
@@ -4280,7 +4294,7 @@ static bool bind_meta_moe(model_t *m, gguf_file *g, const char *arch) {
     // at all and the forward pass ran a matvec on a NULL tensor.
     uint32_t n_expert_raw = gguf_get_u32(g, AK("expert_count"), 0);
     if (n_expert_raw > MOE_EXPERTS_MAX) {
-        fprintf(stderr, "error: expert_count %u is out of range (max %d)\n",
+        bind_err(m, "error: expert_count %u is out of range (max %d)\n",
                 n_expert_raw, MOE_EXPERTS_MAX);
         return false;
     }
@@ -4289,7 +4303,7 @@ static bool bind_meta_moe(model_t *m, gguf_file *g, const char *arch) {
         gguf_kv *pl = gguf_get(g, AK("expert_count_per_layer"));
         if (pl && (pl->type != GGUF_T_ARR || pl->arr_type != GGUF_T_U32 ||
                    pl->arr_n != (uint64_t)m->n_layer)) {
-            fprintf(stderr, "error: %s must be a u32 array with one entry per "
+            bind_err(m, "error: %s must be a u32 array with one entry per "
                     "block (%d), got %llu\n", key, m->n_layer,
                     (unsigned long long)(pl->type == GGUF_T_ARR ? pl->arr_n : 0));
             return false;
@@ -4307,7 +4321,7 @@ static bool bind_meta_moe(model_t *m, gguf_file *g, const char *arch) {
         m->n_ff_exp = (int)gguf_get_u32(g, AK("expert_feed_forward_length"), m->n_ff);
         if (m->n_expert_used < 1 || m->n_expert_used > m->n_expert ||
             m->n_ff_exp <= 0 || m->n_ff_exp > MDL_DIM_MAX || m->n_expert > MOE_EXPERTS_MAX) {
-            fprintf(stderr, "error: invalid MoE geometry (experts=%d used=%d ff_exp=%d)\n",
+            bind_err(m, "error: invalid MoE geometry (experts=%d used=%d ff_exp=%d)\n",
                     m->n_expert, m->n_expert_used, m->n_ff_exp);
             return false;
         }
@@ -4324,7 +4338,7 @@ static bool bind_meta_moe(model_t *m, gguf_file *g, const char *arch) {
         m->expert_norm_w   = gguf_get_bool(g, AK("expert_weights_norm"), true);
         if (m->expert_gating < EXPERT_GATE_NONE ||
             m->expert_gating > EXPERT_GATE_SQRT_SOFTPLUS) {
-            fprintf(stderr, "error: unknown expert_gating_func %d\n",
+            bind_err(m, "error: unknown expert_gating_func %d\n",
                     m->expert_gating);
             return false;
         }
@@ -4335,7 +4349,7 @@ static bool bind_meta_moe(model_t *m, gguf_file *g, const char *arch) {
             m->n_expert % m->n_expert_groups != 0 ||
             (long)m->n_group_used * (m->n_expert / m->n_expert_groups)
                 < m->n_expert_used) {
-            fprintf(stderr, "error: invalid MoE expert grouping "
+            bind_err(m, "error: invalid MoE expert grouping "
                     "(experts=%d groups=%d used_groups=%d used=%d)\n",
                     m->n_expert, m->n_expert_groups, m->n_group_used,
                     m->n_expert_used);
@@ -4371,14 +4385,14 @@ static bool bind_meta_moe(model_t *m, gguf_file *g, const char *arch) {
             // gone, the model answering as a different architecture with
             // nothing said. nemotron_h_moe's gate has tested this all along.
             if (m->n_ff_shexp < 0 || m->n_ff_shexp > MDL_DIM_MAX) {
-                fprintf(stderr, "error: shared-expert FFN width %d is out of "
+                bind_err(m, "error: shared-expert FFN width %d is out of "
                         "range (expert_shared_count=%d, expert width=%d)\n",
                         m->n_ff_shexp, nsh, m->n_ff_exp);
                 return false;
             }
         }
         else if (gguf_get_u32(g, AK("expert_shared_count"), 0) > 0) {
-            fprintf(stderr, "error: expert_shared_count is set but the shared "
+            bind_err(m, "error: expert_shared_count is set but the shared "
                     "expert tensors are absent\n");
             return false;
         }
@@ -4391,7 +4405,7 @@ static bool bind_meta_moe(model_t *m, gguf_file *g, const char *arch) {
         // (per-token and grouped prefill), so it is admitted here by name
         // rather than widening the guard to "any non-SiLU".
         if (m->ffn_act != ACT_SILU && !gemma_moe && !m->gptoss) {
-            fprintf(stderr, "error: MoE is only supported with SiLU-gated "
+            bind_err(m, "error: MoE is only supported with SiLU-gated "
                     "experts (this model uses a different activation)\n");
             return false;
         }
@@ -4406,7 +4420,7 @@ static bool bind_validate_geometry(model_t *m, gguf_file *g, const char *arch, b
     char key[128];
     if (!m->qwen35 && !m->granite_hybrid && !m->nemotron_h &&
         gguf_get(g, AK("ssm.conv_kernel"))) {
-        fprintf(stderr, "error: '%s' is a hybrid SSM/attention architecture — "
+        bind_err(m, "error: '%s' is a hybrid SSM/attention architecture — "
                 "only pure-transformer llama-family models are supported\n", m->arch);
         return false;
     }
@@ -4414,13 +4428,13 @@ static bool bind_validate_geometry(model_t *m, gguf_file *g, const char *arch, b
     // reads as a 0 head count or 0 FFN width; name that, not "missing".
     if (m->n_layer > 0 && (m->l_no_attn || m->l_no_ffn) &&
         (m->n_head <= 0 || m->n_ff <= 0)) {
-        fprintf(stderr, "error: every block of this file has its %s removed "
+        bind_err(m, "error: every block of this file has its %s removed "
                 "(--remove-sublayer); there is no model left to run\n",
                 m->n_head <= 0 ? "attention" : "FFN");
         return false;
     }
     if (m->n_layer <= 0 || m->n_embd <= 0 || m->n_head <= 0 || m->n_ff <= 0) {
-        fprintf(stderr, "error: missing model hyperparameters for arch '%s'\n", m->arch);
+        bind_err(m, "error: missing model hyperparameters for arch '%s'\n", m->arch);
         return false;
     }
     // Removed sublayers (--remove-sublayer). Admitted on the plain dense
@@ -4441,13 +4455,13 @@ static bool bind_validate_geometry(model_t *m, gguf_file *g, const char *arch, b
                                               (uint64_t)i, 0);
                 bool gone = m->l_no_attn && m->l_no_attn[i];
                 if (v == 0 && !gone) {
-                    fprintf(stderr, "error: %s.attention.head_count_kv is 0 at "
+                    bind_err(m, "error: %s.attention.head_count_kv is 0 at "
                             "blk.%d but attention.head_count is not — linear "
                             "attention blocks are not supported\n", arch, i);
                     return false;
                 }
                 if (v != 0 && (int)v != m->n_head_kv) {
-                    fprintf(stderr, "error: %s.attention.head_count_kv varies "
+                    bind_err(m, "error: %s.attention.head_count_kv varies "
                             "per block (%u at blk.%d, %d elsewhere) — "
                             "heterogeneous kv heads are not supported\n",
                             arch, v, i, m->n_head_kv);
@@ -4462,7 +4476,7 @@ static bool bind_validate_geometry(model_t *m, gguf_file *g, const char *arch, b
                 ? "gemma-4 E-series per-layer embeddings or shared KV"
                 : NULL;
             if (why) {
-                fprintf(stderr, "error: this file declares removed sublayers, "
+                bind_err(m, "error: this file declares removed sublayers, "
                         "which the %s path does not support (%s)\n", arch, why);
                 return false;
             }
@@ -4480,7 +4494,7 @@ static bool bind_validate_geometry(model_t *m, gguf_file *g, const char *arch, b
                     uint32_t v = gguf_get_u32_idx(g, AK("attention.head_count_kv"),
                                                   (uint64_t)i, 0);
                     if (kv_arr && v != 0) {
-                        fprintf(stderr, "error: blk.%d declares head_count 0 "
+                        bind_err(m, "error: blk.%d declares head_count 0 "
                                 "(attention removed) but head_count_kv %u\n",
                                 i, v);
                         return false;
@@ -4495,7 +4509,7 @@ static bool bind_validate_geometry(model_t *m, gguf_file *g, const char *arch, b
     // seeds the YaRN extension ratio. The load did fail, but with "cannot
     // allocate buffers", which describes the machine rather than the file.
     if (m->n_ctx_train < 1) {
-        fprintf(stderr, "error: '%s' declares an unusable context_length "
+        bind_err(m, "error: '%s' declares an unusable context_length "
                 "(%u)\n", arch, gguf_get_u32(g, AK("context_length"), 0));
         return false;
     }
@@ -4514,7 +4528,7 @@ static bool bind_validate_geometry(model_t *m, gguf_file *g, const char *arch, b
         m->n_head_kv < 1       || m->n_head_kv > m->n_head ||
         m->n_head % m->n_head_kv != 0 ||
         (int64_t)m->n_head * m->head_dim > MDL_DIM_MAX) {
-        fprintf(stderr, "error: invalid model geometry for arch '%s' "
+        bind_err(m, "error: invalid model geometry for arch '%s' "
                 "(head_dim=%d rope_dim=%d n_head=%d n_head_kv=%d "
                 "n_embd=%d n_ff=%d n_layer=%d)\n",
                 arch, m->head_dim, m->rope_dim, m->n_head, m->n_head_kv,
@@ -5567,6 +5581,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     memcpy(m->path, path, plen);
     model_record_file_id(m, path);
 
+    m->plan_only = false;   // a load's plan always speaks (bind_err, bind_note)
     if (!model_plan(m, g, p)) return false;
     const char *arch = gguf_get_str(g, "general.architecture", "?");
     if (!bind_global_tensors(m, g)) return false;

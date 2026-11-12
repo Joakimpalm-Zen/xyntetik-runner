@@ -124,7 +124,7 @@ def test_fit_does_not_fetch(runner_bin):
     assert b"http" not in p.stdout.lower()
 
 
-def _ple_header(path, arch="gemma4", ple_width=512):
+def _ple_header(path, arch="gemma4", ple_width=512, ffn=True):
     """Only descriptors, never weights: 8.5 GiB of Q8_0 PLE rows.
 
     Absolute byte anchor: Q8_0 stores 32 values in 34 bytes. The ordinary
@@ -136,6 +136,11 @@ def _ple_header(path, arch="gemma4", ple_width=512):
           ku(f"{arch}.embedding_length_per_layer_input", ple_width),
           ku(f"{arch}.attention.head_count", 4),
           ku(f"{arch}.attention.head_count_kv", 1),
+          # what a header the loader can plan declares (R6.68.29: the fit is
+          # the loader's plan): the FFN width, and the head width gemma4
+          # would otherwise take as 512, not the 64 these cases price
+          *([ku(f"{arch}.feed_forward_length", 1024)] if ffn else []),
+          ku(f"{arch}.attention.key_length", 64),
           ku(f"{arch}.context_length", 4096)]
     tensors = [("per_layer_token_embd.weight", 32768, 262144, 8, 34 / 32),
                ("token_embd.weight", 256, 262144, 8, 34 / 32),
@@ -218,3 +223,58 @@ def test_fit_and_the_loader_charge_deepseek2_kv_alike(runner_bin, tmp_path, shap
     assert load.returncode == 0, err[-800:]
     load_mb = float(re.search(r"kv cache\s+([\d.]+) MB", err).group(1))
     assert abs(load_mb - per_tok * mid / 1e6) <= 0.06, (shape, naive, load_mb)
+
+
+# R6.68.29: --info fit is the loader's own plan of the file (model_plan), not a
+# second reading of its header. Three consequences, each held here.
+G4_GEOM_FIT = re.compile(r"fit: \(geometry: .*?kv f16 (\d+)")
+G4_GEOM_LOAD = re.compile(r"load: \(geometry: .*?kv (\d+) per token")
+
+
+def _gemma4_without_key_length(tmp_path):
+    model = tmp_path / "g4-nokey.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--arch", "gemma4",
+                    "--head-dim", "512", "--omit-head-keys", str(model)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    return model
+
+
+def test_a_gemma4_header_without_key_length_fits_at_the_loaders_head_width(runner_bin, tmp_path):
+    """gemma4's loader takes a 512-wide head when attention.key_length is absent
+    (bind_meta_gemma4); the fit took n_embd / n_head, 16 here, and priced 256 B of
+    KV a token for a load that lays out 8,192. Anchor: make-test-model.py's shape,
+    2 layers x 2 KV heads x 512 x K and V x 2 bytes."""
+    model = _gemma4_without_key_length(tmp_path)
+    env = dict(os.environ, RUNNER_DEBUG_VRAM="1")
+    fit = subprocess.run([runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off", "-c", "256"],
+                         cwd=ROOT, capture_output=True, timeout=120, env=env)
+    load = subprocess.run([runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "--gpu", "off",
+                           "-t", "1", "-c", "256"], cwd=ROOT, capture_output=True, timeout=120, env=env)
+    assert fit.returncode == 0 and load.returncode == 0, (fit.stderr, load.stderr)
+    fit_kv = int(G4_GEOM_FIT.search(fit.stderr.decode()).group(1))
+    load_kv = int(G4_GEOM_LOAD.search(load.stderr.decode()).group(1))
+    assert fit_kv == load_kv == 2 * 2 * 512 * 2 * 2, (fit_kv, load_kv)
+
+
+def test_a_header_the_loader_refuses_is_the_fits_answer(runner_bin, tmp_path):
+    """A header the loader cannot plan will not load, and the fit says so as its
+    verdict, with the loader's own reason, and exits 1 (as for any file it cannot
+    clear for a load). This one declares no FFN width."""
+    path = tmp_path / "no-ffn.gguf"
+    _ple_header(path, "llama", 512, ffn=False)
+    p = run(runner_bin, "-m", str(path), "--info", "fit", "--gpu", "off")
+    assert p.returncode == 1, p
+    out = p.stdout.decode()
+    assert re.search(r"verdict\s+WILL NOT LOAD .* the loader refuses this file: "
+                     r"missing model hyperparameters for arch 'llama'", out), out
+
+
+def test_the_plans_quiet_lines_stay_quiet_only_for_the_fit(runner_bin, tmp_path):
+    """The fit plans quietly (no family notes on its output); a load of the same
+    file still prints them, because only the fit's plan may be quiet."""
+    model = _gemma4_without_key_length(tmp_path)
+    fit = run(runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off", "-c", "256")
+    load = run(runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "--gpu", "off", "-t", "1",
+               "-c", "256")
+    assert b"gemma4:" not in fit.stdout + fit.stderr
+    assert b"gemma4:" in load.stderr, load.stderr

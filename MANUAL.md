@@ -3552,7 +3552,9 @@ note says the figure is the flat cache, which a load shrinks with the KV ring wh
 weights and that cache do not fit ([`--kv-ring auto`](#cli-kv-ring)).
 
 The verdict is `FITS`, `FITS WITH --kv q8` (or `k8v4`, or `fp4`), or `PAGES`, always with the
-arithmetic that produced it. For a family the loader never puts on a GPU (lfm2, lfm2moe,
+arithmetic that produced it. The geometry behind it is the loader's own: the fit runs the
+binders a load runs, over the header alone, so a header the loader would refuse gets
+`WILL NOT LOAD` with the loader's reason, and `--info fit` exits 1. For a family the loader never puts on a GPU (lfm2, lfm2moe,
 flint, LayerNorm models, grouped-norm k2-horizon, and deepseek2 off CUDA) the split line
 reports the CPU, with the reason, where it used to predict a device split the load never
 made. On CUDA `--info fit` and the loader charge the same bytes, the small per-layer

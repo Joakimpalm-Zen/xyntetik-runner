@@ -1757,8 +1757,15 @@ static int run_fit_check(const char *path, int n_ctx_want,
 
     model_fit f;
     if (!model_fit_report(&g, n_ctx_want, mp->mtp, &f)) {
-        fprintf(stderr, "error: %s does not carry the geometry a fit check "
-                        "needs (architecture, block_count, head counts)\n", path);
+        // the loader's plan refused the header: that is the answer (R6.68.29),
+        // exit 1 as for any file the fit cannot clear for a load
+        if (f.refused[0]) {
+            printf("fit: %s\n  verdict       WILL NOT LOAD — the loader refuses this file: %s\n",
+                   path, f.refused);
+        } else {
+            fprintf(stderr, "error: %s does not carry the geometry a fit check "
+                            "needs (architecture, block_count, head counts)\n", path);
+        }
         gguf_close(&g);
         return 1;
     }
