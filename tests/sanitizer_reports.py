@@ -27,6 +27,9 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
+
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 _DIR = pathlib.Path(os.environ.get("SANITIZER_REPORTS_DIR",
@@ -65,7 +68,23 @@ def _is_worker(config):
     return hasattr(config, "workerinput")
 
 
+def _require_sanitized_runner():
+    # every test runs ./runner; an optimized one there makes a clean run of
+    # this plugin mean nothing (the first proof run of R6.68.21 had the
+    # `runner` prerequisite copy the optimized build back over runner-debug)
+    exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
+    try:
+        sanitized = b"__asan_init" in exe.read_bytes()
+    except OSError as e:
+        raise pytest.UsageError(f"sanitizer_reports: cannot read {exe}: {e}")
+    if not sanitized:
+        raise pytest.UsageError(
+            f"sanitizer_reports: {exe} is not an ASan build; run `make "
+            "test-python-sanitized`, which puts runner-debug there")
+
+
 def pytest_configure(config):
+    _require_sanitized_runner()
     if not _is_worker(config):
         shutil.rmtree(_DIR, ignore_errors=True)
     _DIR.mkdir(parents=True, exist_ok=True)
