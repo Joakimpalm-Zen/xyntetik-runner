@@ -155,8 +155,9 @@ static void test_a_failed_allocation_is_reported_or_changes_nothing(void) {
             fail_at = -1;
             jv *tools = with_tools ? json_parse(TOOLS_SRC, strlen(TOOLS_SRC)) : NULL;
             // the families that take one leading system turn get one
+            char role_err[512];
             bool one_sys = !template_roles_valid(tmpl, (const char *const[]){ "system", "system" },
-                                                 2, false, (char[64]){0}, 64) ||
+                                                 2, false, role_err, sizeof role_err) ||
                            tmpl == TMPL_MISTRAL_SYS;
             const chat_msg *msgs = one_sys ? MSGS : WITH_CALLS;
             int n = one_sys ? N_MSGS : (int)(sizeof WITH_CALLS / sizeof *WITH_CALLS);
