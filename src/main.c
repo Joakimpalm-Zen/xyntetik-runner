@@ -4517,14 +4517,17 @@ static int run_merge_lora(const cli_opts *o) {
         sb_lit(&rec, "\"}");
         // what the output grid kept of the delta (quants.h
         // merge_survival); absent when no adapted tensor was rewritten
-        if (sv.ret_den > 0)
+        // delta_retained is null when not finite: an adapter holding an
+        // infinity has an infinite delta (R6.68.115)
+        if (sv.ret_den > 0) {
             sb_fmt(&rec, ",\"survival\":{\"adapted_bytes\":%llu,"
-                   "\"bytes_changed\":%llu,\"delta_retained\":%.6f,"
-                   "\"min_retained\":%s}",
+                   "\"bytes_changed\":%llu,\"delta_retained\":",
                    (unsigned long long)sv.bytes,
-                   (unsigned long long)sv.bytes_changed,
-                   sv.ret_num / sv.ret_den,
+                   (unsigned long long)sv.bytes_changed);
+            sb_fix6(&rec, sv.ret_num / sv.ret_den);
+            sb_fmt(&rec, ",\"min_retained\":%s}",
                    o->merge_allow_erased ? "null" : MERGE_MIN_RETAINED_STR);
+        }
         sb_lit(&rec, "}\n");
         if (!write_record(o->merge_out, ".merge.json", "merge", &rec, o->sign_key))
             rc = 1;
