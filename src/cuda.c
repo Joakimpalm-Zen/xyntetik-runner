@@ -335,13 +335,17 @@ static CUresult guarded_LaunchKernel(CUfunction f, unsigned gx, unsigned gy, uns
     return r_;
 }
 
-static void cu_guard_syncing(void) {
+// One driver entry of cu_guard_syncing: keep the raw pointer and route calls
+// through the guarded wrapper of the same name. It pastes a symbol name and
+// captures nothing of the function that uses it, so it is defined here, at
+// file scope, not inside that function.
 #define GUARD(fn) do { cu_raw.fn = cu.fn; if (cu.fn) cu.fn = guarded_##fn; } while (0)
+static void cu_guard_syncing(void) {
     GUARD(MemAlloc); GUARD(MemFree); GUARD(MemcpyHtoD); GUARD(MemcpyDtoH);
     GUARD(MemcpyDtoD); GUARD(MemsetD8); GUARD(ModuleLoadData); GUARD(ModuleUnload);
     GUARD(LaunchKernel); GUARD(CtxSynchronize);
-#undef GUARD
 }
+#undef GUARD
 
 // A capture holds g_capture_mu from its first call to its last. capture_end
 // is safe to call twice (the failure paths end a capture "to be sure").
