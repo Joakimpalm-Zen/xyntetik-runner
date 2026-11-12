@@ -1599,12 +1599,22 @@ typedef struct { char *match; int type; } type_rule_t;
 typedef struct { type_rule_t *rules; int n; int dflt; } type_plan_t;
 
 // A plan file (--type-plan, --prune-experts) as its JSON object, or NULL with
-// the reason printed: read whole by plat_read_file (a regular file of at most
-// max_bytes), where each loader spelled its own fseek, ftell and fread.
+// the reason printed: a file of at most max_bytes, read whole, where each
+// loader spelled its own fseek, ftell and fread. The buffer is this file's
+// own allocation, not plat_read_file's: test-quantize-oom counts every block
+// this unit takes and frees, and one taken in compat.c and freed here is a
+// free it never saw taken.
 static jv *plan_read_object(const char *path, const char *flag, size_t max_bytes) {
+    FILE *f = plat_fopen(path, "rb");
+    uint64_t sz = 0;
+    char *buf = NULL;
     size_t n = 0;
-    char *buf = plat_read_file(path, max_bytes, &n);
-    if (!buf) {
+    if (f && plat_file_size(f, &sz) && sz <= max_bytes) buf = malloc((size_t)sz + 1);
+    if (buf) n = fread(buf, 1, (size_t)sz, f);
+    bool whole = buf && n == (size_t)sz && !ferror(f);
+    if (f) fclose(f);
+    if (!whole) {
+        free(buf);
         fprintf(stderr, "error: cannot read %s file %s (a regular file of at most "
                 "%zu MiB)\n", flag, path, max_bytes >> 20);
         return NULL;
