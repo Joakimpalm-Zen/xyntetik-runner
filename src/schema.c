@@ -3522,6 +3522,12 @@ char *sval_close_alloc(sval *v, int *len, int max) {
 // copied as they are, so a "$ref" inside one is not followed.
 
 enum { REFX_DEPTH = 64, REFX_MAX_NODES = 20000 };
+// The inlined schema's size. The node count alone did not bound it: a
+// definition is copied whole at each reference, keywords that are not schemas
+// included, so a 100 KB `enum` referenced 20,000 times was 2 GB from a request
+// of under a megabyte (R6.68.68). Twice the largest request body the server
+// reads: a schema with no shared definitions never comes near it.
+#define REFX_MAX_BYTES ((size_t)64 << 20)
 
 typedef struct {
     jv *root;
@@ -3642,7 +3648,7 @@ static bool refx_ref(refx *x, jv *s, jv *ref, sbuf *o) {
 }
 
 static bool refx_schema(refx *x, jv *s, sbuf *o) {
-    if (++x->nodes > REFX_MAX_NODES) {
+    if (++x->nodes > REFX_MAX_NODES || o->n > REFX_MAX_BYTES) {
         snprintf(x->err, x->errcap, "schema too large once its $refs are inlined");
         return false;
     }
@@ -3687,6 +3693,11 @@ static bool refx_schema(refx *x, jv *s, sbuf *o) {
             if (!refx_schema(x, v, o)) return false;
         } else {
             jv_dump(v, o);
+            // a keyword that is not a schema is copied too, at every reference
+            if (o->n > REFX_MAX_BYTES) {
+                snprintf(x->err, x->errcap, "schema too large once its $refs are inlined");
+                return false;
+            }
         }
     }
     sb_lit(o, "}");

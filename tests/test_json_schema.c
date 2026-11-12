@@ -3430,6 +3430,44 @@ static void test_harmony_empty_tool_name_is_no_name(void) {
     jv_free(tools);
 }
 
+// The $ref inliner bounded the number of schema nodes it writes (20,000) and
+// not their bytes: a definition's `enum` is copied whole at every reference,
+// so a 2 MB request could ask for tens of gigabytes. Here a 100 KB enum
+// referenced 800 times is 80 MB inlined, past the 64 MiB bound; the same
+// definition referenced 8 times is fine.
+static void test_inlined_refs_are_bounded_in_bytes(void) {
+    sbuf b = {0};
+    sb_lit(&b, "{\"$defs\":{\"A\":{\"enum\":[");
+    for (int i = 0; i < 1000; i++) {
+        sb_fmt(&b, "%s\"", i ? "," : "");
+        for (int k = 0; k < 96; k++) sb_lit(&b, "x");
+        sb_fmt(&b, "%04d\"", i);
+    }
+    sb_lit(&b, "]}},\"type\":\"object\",\"properties\":{");
+    size_t head = b.n;
+    for (int refs = 800; refs >= 8; refs /= 100) {
+        b.n = head;
+        for (int i = 0; i < refs; i++)
+            sb_fmt(&b, "%s\"p%d\":{\"$ref\":\"#/$defs/A\"}", i ? "," : "", i);
+        sb_lit(&b, "}}");
+        assert(!b.failed);
+        jv *s = json_parse(b.s, b.n);
+        assert(s);
+        char err[160] = "";
+        jv *own = NULL;
+        jv *r = schema_resolve_refs(s, &own, err, sizeof err);
+        if (refs == 800) {
+            assert(!r && !own);
+            assert(strstr(err, "too large once its $refs are inlined") != NULL);
+        } else {
+            assert(r && r == own);
+            jv_free(own);
+        }
+        jv_free(s);
+    }
+    free(b.s);
+}
+
 int main(void) {
     test_schema_sibling_constraints_are_not_dropped();
     test_strict_bounded_numbers();
@@ -3516,6 +3554,7 @@ int main(void) {
     test_harmony_empty_tool_name_is_no_name();
     test_escape_replaces_ill_formed_utf8();
     test_tojson_dump_matches_jinja();
+    test_inlined_refs_are_bounded_in_bytes();
     puts("json/schema tests ok");
     return 0;
 }
