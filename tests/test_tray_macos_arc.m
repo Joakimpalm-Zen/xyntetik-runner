@@ -27,7 +27,7 @@ static void ck(int cond, const char *what) {
 int main(void) {
     char home[] = "/tmp/test-tray-macos-arc-XXXXXX";
     if (!mkdtemp(home)) { perror("mkdtemp"); return 2; }
-    setenv("HOME", home, 1);
+    setenv("HOME", home, 1);   // portability: ok (macOS only: the file is built and run on Darwin alone)
     @autoreleasepool {
         Class cls = NSClassFromString(@"TrayDelegate");
         ck(cls != nil, "the tray's menu delegate is linked in");
