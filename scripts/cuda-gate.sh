@@ -116,6 +116,12 @@ MAKE_ARGS=${GATE_MAKE_ARGS:-}
 
 MODEL=${GATE_MODEL:-}
 
+# R6.68.15: every step's decode must capture its CUDA graph where the route
+# captures one; a capture or launch that fails ends that step instead of
+# falling back to plain launches (src/cuda.c, graph_capture_required). The
+# make targets set it too; this covers the steps that run the binary directly.
+export RUNNER_REQUIRE_GRAPH_CAPTURE=1
+
 note() { echo "[cuda-gate $(date -u +%H:%M:%S)] $*"; }
 STEPS=""
 add_step() { STEPS="$STEPS${STEPS:+,}{\"step\":\"$1\",\"result\":\"$2\",\"seconds\":$3}"; }

@@ -281,6 +281,15 @@ static struct {
     CUresult (*CtxSynchronize)(void);
 } cu_raw;
 
+// The first synchronous call this thread made while it captured a graph
+// (R6.68.15). A synchronous copy, memset, allocation or legacy-stream launch
+// cannot be recorded into a graph: on the engine's blocking stream it fails
+// the capture (CUDA_ERROR_STREAM_CAPTURE_IMPLICIT), and on a non-blocking one
+// it would run once at capture time and never on a replay. The guarded
+// wrappers note it here, and a failed capture names it.
+static _Thread_local const char *t_capture_sync;
+#define CAPTURE_NOTE(name) do { if (t_capturing && !t_capture_sync) t_capture_sync = (name); } while (0)
+
 #define SYNC_GUARDED(call) do {                                   \
         bool held_ = !t_capturing;                                \
         if (held_) pthread_mutex_lock(&g_capture_mu);             \
@@ -293,34 +302,43 @@ static struct {
 // the two have drifted
 static _Atomic long g_live_bufs;
 static CUresult guarded_MemAlloc(CUdeviceptr *p, size_t n) {
+    CAPTURE_NOTE("cuMemAlloc");
     CUresult r_; SYNC_GUARDED(cu_raw.MemAlloc(p, n));
     if (r_ == 0) g_live_bufs++;
     return r_;
 }
 static CUresult guarded_MemFree(CUdeviceptr p) {
+    CAPTURE_NOTE("cuMemFree");
     CUresult r_; SYNC_GUARDED(cu_raw.MemFree(p));
     if (r_ == 0) g_live_bufs--;
     return r_;
 }
 static CUresult guarded_MemcpyHtoD(CUdeviceptr d, const void *h, size_t n) {
+    CAPTURE_NOTE("cuMemcpyHtoD");
     CUresult r_; SYNC_GUARDED(cu_raw.MemcpyHtoD(d, h, n)); return r_;
 }
 static CUresult guarded_MemcpyDtoH(void *h, CUdeviceptr d, size_t n) {
+    CAPTURE_NOTE("cuMemcpyDtoH");
     CUresult r_; SYNC_GUARDED(cu_raw.MemcpyDtoH(h, d, n)); return r_;
 }
 static CUresult guarded_MemcpyDtoD(CUdeviceptr a, CUdeviceptr b, size_t n) {
+    CAPTURE_NOTE("cuMemcpyDtoD");
     CUresult r_; SYNC_GUARDED(cu_raw.MemcpyDtoD(a, b, n)); return r_;
 }
 static CUresult guarded_MemsetD8(CUdeviceptr d, unsigned char v, size_t n) {
+    CAPTURE_NOTE("cuMemsetD8");
     CUresult r_; SYNC_GUARDED(cu_raw.MemsetD8(d, v, n)); return r_;
 }
 static CUresult guarded_ModuleLoadData(CUmodule *mod, const void *img) {
+    CAPTURE_NOTE("cuModuleLoadData");
     CUresult r_; SYNC_GUARDED(cu_raw.ModuleLoadData(mod, img)); return r_;
 }
 static CUresult guarded_ModuleUnload(CUmodule mod) {
+    CAPTURE_NOTE("cuModuleUnload");
     CUresult r_; SYNC_GUARDED(cu_raw.ModuleUnload(mod)); return r_;
 }
 static CUresult guarded_CtxSynchronize(void) {
+    CAPTURE_NOTE("cuCtxSynchronize");
     CUresult r_; SYNC_GUARDED(cu_raw.CtxSynchronize()); return r_;
 }
 // a launch on the engine's own stream is ordered by that stream alone; one
@@ -330,6 +348,7 @@ static CUresult guarded_LaunchKernel(CUfunction f, unsigned gx, unsigned gy, uns
                                      unsigned shmem, void *stream, void **params,
                                      void **extra) {
     if (stream) return cu_raw.LaunchKernel(f, gx, gy, gz, bx, by, bz, shmem, stream, params, extra);
+    CAPTURE_NOTE("cuLaunchKernel on the legacy stream");
     CUresult r_;
     SYNC_GUARDED(cu_raw.LaunchKernel(f, gx, gy, gz, bx, by, bz, shmem, stream, params, extra));
     return r_;
@@ -348,6 +367,7 @@ static void cu_guard_syncing(void) {
 static CUresult capture_begin(CUstream s) {
     pthread_mutex_lock(&g_capture_mu);
     t_capturing = true;
+    t_capture_sync = NULL;
     CUresult r = cu.StreamBeginCapture(s, 1);   // THREAD_LOCAL; see above for why that is not enough
     if (r != 0) {
         t_capturing = false;
@@ -386,6 +406,46 @@ static const char *cu_err(CUresult r) {
     const char *s = NULL;
     if (cu.GetErrorString) cu.GetErrorString(r, &s);
     return s ? s : "unknown CUDA error";
+}
+
+// RUNNER_REQUIRE_GRAPH_CAPTURE=1 (the CUDA gates, R6.68.15): a decode graph
+// that fails to capture or to launch ends the process with the reason. Without
+// it the decode falls back to plain launches and says so in one stderr line,
+// which no gate read: a shared-expert MoE lost its decode graph that way on
+// every model of the shape. A decode that is eager by design (graph_why) is not
+// a failure: under the switch it says why, once, and runs.
+static bool graph_capture_required(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_REQUIRE_GRAPH_CAPTURE");
+        on = e && *e && strcmp(e, "0") != 0;
+    }
+    return on == 1;
+}
+// what: "decode" or "batch"; stage: where it failed; r: the CUDA result there
+static void graph_capture_failed(const char *what, const char *stage, CUresult r) {
+    const char *op = t_capture_sync;
+    fprintf(stderr, "gpu: %s graph capture failed at %s (%s%s%s) \u2014 plain launches\n",
+            what, stage, cu_err(r), op ? "; a synchronous " : "", op ? op : "");
+    if (graph_capture_required()) {
+        fprintf(stderr, "error: RUNNER_REQUIRE_GRAPH_CAPTURE=1: a %s graph that does not "
+                "capture is a failure here, not a fallback\n", what);
+        exit(3);
+    }
+}
+static void graph_launch_failed(const char *what) {
+    fprintf(stderr, "gpu: %s graph launch failed \u2014 plain launches\n", what);
+    if (graph_capture_required()) {
+        fprintf(stderr, "error: RUNNER_REQUIRE_GRAPH_CAPTURE=1: a %s graph that does not "
+                "launch is a failure here, not a fallback\n", what);
+        exit(3);
+    }
+}
+// Under the switch, a decode that is eager by design says so once.
+static void graph_eager_note(const char *what, const char *why, bool *said) {
+    if (!graph_capture_required() || *said || !why) return;
+    *said = true;
+    fprintf(stderr, "gpu: %s graph off by design: %s\n", what, why);
 }
 
 // ------------------------------------------------------------------ backend
@@ -722,6 +782,8 @@ typedef struct {
     // through the pointer it is handed
     CUdeviceptr  pos_dev;
     bool         graph_bad;
+    const char  *graph_why;             // why graph_bad was set by design (none: a failure set it)
+    bool         graph_why_said;
     int          win;                   // prompt window: columns of every activation buffer
     // X3 (RUNNER_CUDA_KV_GATHER): a decoded token's K and V rows of every
     // offloaded layer gathered on the device (kvg_dev) and brought back in
@@ -4177,17 +4239,25 @@ static void cuda_plan_graphs(model_t *m, gpu_t *g) {
     bool mamba_dense = (m->granite_hybrid || m->nemotron_h) && m->n_expert == 0;
     bool recur_graph = (m->qwen35 || mamba_dense) && !m->hyper_conn && m->n_expert == 0 &&
                        cuda_graph_recur_on();
-    for (int l = 0; l < m->gpu_layers; l++)
-        if ((!m->layers[l].wv && !(m->layers[l].recurrent && recur_graph) &&
-             !(m->layers[l].skip_mixer && recur_graph) &&
-             !v_from_k_capturable(m, l)) ||
-            (m->layers[l].is_moe && !g->moe_fused_ok) ||
-            (m->layers[l].recurrent && !recur_graph)) g->graph_bad = true;
-    if (m->qwen35 && !recur_graph) g->graph_bad = true;
-    if (moe_any_on_host(m)) g->graph_bad = true;
+    // each rule names itself (graph_why), so a gate that requires the graph
+    // (RUNNER_REQUIRE_GRAPH_CAPTURE) can tell eager by design from a failure
+    const char *why = NULL;
+    for (int l = 0; l < m->gpu_layers && !why; l++) {
+        if (!m->layers[l].wv && !(m->layers[l].recurrent && recur_graph) &&
+            !(m->layers[l].skip_mixer && recur_graph) && !v_from_k_capturable(m, l))
+            why = "a layer without a V projection that is not built on the stream (a synchronous memset)";
+        else if (m->layers[l].is_moe && !g->moe_fused_ok)
+            why = "MoE routing read back to the host mid-forward (the eager MoE path)";
+        else if (m->layers[l].recurrent && !recur_graph)
+            why = "a recurrent layer of a family whose decode is not captured (or RUNNER_CUDA_GRAPH_RECUR=0)";
+    }
+    if (!why && m->qwen35 && !recur_graph)
+        why = "a qwen35 file whose decode is not captured (routed experts or hyper-connections, or RUNNER_CUDA_GRAPH_RECUR=0)";
+    if (!why && moe_any_on_host(m)) why = "experts on the host";
     // RUNNER_MOE_REPLAY / RUNNER_MOE_TRACE: each routing takes its position
     // from the host, and a trace reads it back, so neither is captured
-    if (g->replay_tab || g->route_trace) g->graph_bad = true;
+    if (!why && (g->replay_tab || g->route_trace)) why = "RUNNER_MOE_REPLAY or RUNNER_MOE_TRACE";
+    if (why) { g->graph_bad = true; g->graph_why = why; }
 }
 
 // Host staging for the per-layer embeddings, the residual and the logits.
@@ -8887,6 +8957,8 @@ struct gpu_batch {
     CUgraph     graph[MVB + 1];
     CUgraphExec gexec[MVB + 1];
     bool        graph_bad;
+    const char *graph_why;      // why graph_bad was set by design (none: a failure set it)
+    bool        graph_why_said;
 };
 
 // enc_mv_batch reproduces the batch-1 result by launching the multi-column
@@ -9106,6 +9178,7 @@ bool gpu_lora_bind(model_t *m) {
         return false;
     }
     g->graph_bad = true;       // any captured decode graph predates the adapter
+    g->graph_why = "an adapter bound on the device after the decode graph's plan";
     fprintf(stderr, "gpu: adapter on device for %d block%s (%.1f MB VRAM)\n",
             G, G == 1 ? "" : "s", bytes / 1e6);
     return true;
@@ -9117,6 +9190,7 @@ void gpu_lora_unbind(model_t *m) {
     if (g->lora_a || g->lora_b || g->lora_t) cu.CtxSetCurrent(g->sw->ctx);
     lora_dev_release(g);
     g->graph_bad = true;
+    if (!g->graph_why) g->graph_why = "an adapter unbound from the device";
 }
 
 // ------------------- canonical-order forward matvec (R8.7.1 slice 1)
@@ -10130,8 +10204,13 @@ gpu_batch *gpu_batch_create(model_t **seqs, int n) {
     // gemma4's V-copy path (ly->wv == NULL) uses a synchronous MemsetD8 that
     // cannot be captured, same as the solo decode graph refuses it.
     b->graph_bad = lead->stream == NULL || !cu_graphs_ok();
+    if (b->graph_bad) b->graph_why = "no stream to capture on (or the driver has no graph API)";
     for (int l = 0; l < m0->n_layer; l++)
-        if (!m0->layers[l].wv && !v_from_k_capturable(m0, l)) b->graph_bad = true;
+        if (!m0->layers[l].wv && !v_from_k_capturable(m0, l)) {
+            b->graph_bad = true;
+            if (!b->graph_why)
+                b->graph_why = "a layer without a V projection that is not built on the stream (a synchronous memset)";
+        }
     return b;
 
 fail:
@@ -10418,18 +10497,23 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     // is fighting — a solo decode step is already graph-captured, so a batched
     // step issuing ~500 plain launches would hand back much of what it won.
     bool ran = false;
+    if (b->graph_bad) graph_eager_note("batch", b->graph_why, &b->graph_why_said);
     if (!b->graph_bad && !prof.on) {   // see the note on the solo path above
         if (!b->gexec[n]) {
             prof.capturing = 1;
-            if (capture_begin(g->stream) != 0 ||
-                !fwd_batch(b, m0, n) ||
-                capture_end(g->stream, &b->graph[n]) != 0 ||
-                cu.GraphInstantiateWithFlags(&b->gexec[n], b->graph[n], 0) != 0) {
+            CUresult r = 0;
+            const char *stage = NULL;
+            if ((r = capture_begin(g->stream)) != 0) stage = "the start";
+            else if (!fwd_batch(b, m0, n)) stage = "the forward";
+            else if ((r = capture_end(g->stream, &b->graph[n])) != 0) stage = "the end";
+            else if ((r = cu.GraphInstantiateWithFlags(&b->gexec[n], b->graph[n], 0)) != 0)
+                stage = "instantiation";
+            if (stage) {
                 CUgraph junk = NULL;
-                capture_end(g->stream, &junk);
+                CUresult re = capture_end(g->stream, &junk);
                 if (junk && junk != b->graph[n]) cu.GraphDestroy(junk);
-                fprintf(stderr, "gpu: batch graph capture failed — plain launches\n");
                 b->graph_bad = true;
+                graph_capture_failed("batch", stage, r ? r : re);
             }
             prof.capturing = 0;
         }
@@ -10438,7 +10522,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                   cu.StreamSynchronize(g->stream) == 0;
         if (!ran && !b->graph_bad) {
             b->graph_bad = true;
-            fprintf(stderr, "gpu: batch graph launch failed — plain launches\n");
+            graph_launch_failed("batch");
         }
     }
     if (!ran) {
@@ -10671,16 +10755,20 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
         // failed forward and clears m->gpu). THREAD_LOCAL alone still let
         // another engine's synchronous copy invalidate the capture;
         // capture_begin's exclusion is the other half (see above).
-        if (capture_begin(g->stream) != 0 ||
-            !fwd_tile(g, m, tokens, 1, pos, true, 0, m->gpu_layers) ||
-            (g->kvg_dev && !kv_gather_launch(g, m)) ||
-            capture_end(g->stream, &g->graph[gi]) != 0 ||
-            cu.GraphInstantiateWithFlags(&g->gexec[gi], g->graph[gi], 0) != 0) {
+        CUresult r = 0;
+        const char *stage = NULL;
+        if ((r = capture_begin(g->stream)) != 0) stage = "the start";
+        else if (!fwd_tile(g, m, tokens, 1, pos, true, 0, m->gpu_layers)) stage = "the forward";
+        else if (g->kvg_dev && !kv_gather_launch(g, m)) stage = "the KV gather";
+        else if ((r = capture_end(g->stream, &g->graph[gi])) != 0) stage = "the end";
+        else if ((r = cu.GraphInstantiateWithFlags(&g->gexec[gi], g->graph[gi], 0)) != 0)
+            stage = "instantiation";
+        if (stage) {
             CUgraph junk = NULL;
-            capture_end(g->stream, &junk); // ensure capture ended
+            CUresult re = capture_end(g->stream, &junk); // ensure capture ended
             if (junk && junk != g->graph[gi]) cu.GraphDestroy(junk);
-            fprintf(stderr, "gpu: graph capture failed — plain launches\n");
             g->graph_bad = true;
+            graph_capture_failed("decode", stage, r ? r : re);
         }
         prof.capturing = 0;
     }
@@ -10720,8 +10808,7 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
             return 1;
         }
     }
-    if (!g->graph_bad) { g->graph_bad = true;
-        fprintf(stderr, "gpu: graph launch failed — plain launches\n"); }
+    if (!g->graph_bad) { g->graph_bad = true; graph_launch_failed("decode"); }
     return 0;
 }
 
@@ -10897,6 +10984,15 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
         !g->snap_on && !prof.on && !getenv("RUNNER_CUDA_GRAPH_OFF")) {
         int served = cuda_fwd_graph_decode(g, m, tokens, pos, logits, m_, t_fwd0);
         if (served) return served > 0;
+    } else if (n == 1 && want_logits && !partial && graph_capture_required()) {
+        // eager by design: say why once (graph_why); a graph_bad no rule
+        // named was set by a failure, which ended the process under the switch
+        const char *why = g->graph_bad ? g->graph_why
+                        : !g->stream ? "no stream to capture on (or the driver has no graph API)"
+                        : g->snap_on ? "a keep-forward's per-row checkpoints"
+                        : prof.on ? "the profiler runs decode eagerly"
+                        : "RUNNER_CUDA_GRAPH_OFF";
+        graph_eager_note("decode", why, &g->graph_why_said);
     }
 
     if (!cuda_fwd_tiles(g, m, tokens, n, pos, want_logits, partial, m_)) return false;

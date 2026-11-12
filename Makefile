@@ -3281,6 +3281,14 @@ test-gates:
 	$(MAKE) --no-print-directory test-gates-core PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-gates-batch PYTHON="$(PYTHON)"
 
+# R6.68.15: in the gates a CUDA decode graph that does not capture or launch
+# ends the run (RUNNER_REQUIRE_GRAPH_CAPTURE, src/cuda.c) instead of falling
+# back to plain launches with one stderr line no gate reads: a shared-expert
+# MoE decoded without its graph that way. A decode that is eager by design
+# (experts on the host, eager MoE routing, a recurrent family not captured)
+# prints why and runs. No effect on CPU and Metal builds.
+test-gates-core test-gates-batch test-cuda-%: export RUNNER_REQUIRE_GRAPH_CAPTURE = 1
+
 test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \

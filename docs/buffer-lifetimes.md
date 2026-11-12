@@ -107,7 +107,11 @@ boundary activation back through the host `x` buffer.
   profiler on;
   `RUNNER_CUDA_GRAPH_OFF`. A speculative keep-forward, whose per-row
   checkpoints are copies the graph does not hold, runs its step eagerly on
-  an instance that otherwise replays.
+  an instance that otherwise replays. Each refusal names itself
+  (`graph_why`); under `RUNNER_REQUIRE_GRAPH_CAPTURE=1` (the CUDA gates) it
+  is printed once, and a capture that fails for any other reason ends the
+  run, naming the synchronous call inside the capture when there was one
+  (the guarded `cu*` wrappers note it while a thread captures).
 - **When a graph is dropped.** Binding or unbinding an adapter
   (`gpu_lora_bind`, `gpu_lora_unbind`) turns graphs off for that instance,
   because the captured launches predate the adapter.

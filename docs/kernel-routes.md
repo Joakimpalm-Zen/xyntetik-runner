@@ -206,7 +206,9 @@ Around the matvec:
   2026-10-21 (`RUNNER_CUDA_GRAPH_RECUR=0` keeps that family eager).
   `RUNNER_CUDA_GRAPH_OFF=1` runs them eagerly, to separate a kernel from the
   graph path. See [buffer lifetimes](buffer-lifetimes.md)
-  for when capture is refused.
+  for when capture is refused. Gate: the CUDA gates run with
+  `RUNNER_REQUIRE_GRAPH_CAPTURE=1`, under which a capture that fails is an
+  error rather than a fallback to plain launches.
 - **Training primitives.** `gpu_mvcanon` (the forward matvec in the canonical
   order, F32, F16, Q8_0, Q4_0, Q4_K, Q5_K and Q6_K) is bit-exact to the host.
   The training context's `k_tmvt_*` (the transposed product, every weight
