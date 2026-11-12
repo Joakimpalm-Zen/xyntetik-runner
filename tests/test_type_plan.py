@@ -352,6 +352,26 @@ def test_a_fallback_never_grows_a_tensor_or_rewrites_it_as_itself(runner_bin, tm
     assert read_tensors(again)[down][2] == read_tensors(q4k)[down][2]
 
 
+def test_the_error_report_is_json_whatever_a_tensor_is_called(runner_bin, tmp_path):
+    """R6.68.85: --quant-error wrote each tensor's name between quotes as the
+    file spells it. A GGUF name is any string without a NUL, so one holding a
+    quote made its line of the report unreadable to the planner."""
+    wide = tmp_path / "wide.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--wide", str(wide)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    raw, name, odd_name = wide.read_bytes(), b"blk.0.attn_q.weight", b'blk.0.attn"q.weight'
+    assert raw.count(name) == 1
+    odd = tmp_path / "odd.gguf"
+    odd.write_bytes(raw.replace(name, odd_name))
+    report = tmp_path / "qe.jsonl"
+    p = subprocess.run([str(runner_bin), "-m", str(odd), "--quant-error", str(report),
+                        "--quant", "q4_0"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")[-300:]
+    rows = [json.loads(l) for l in report.read_text().splitlines() if l.strip()]
+    assert odd_name.decode() in [r["tensor"] for r in rows]
+
+
 def test_a_type_name_it_cannot_write_lists_the_ones_it_can(runner_bin, tmp_path):
     """`--quant Q4_K_M` (llama.cpp's mix name) or `q4_K` read only "is not a
     writable type" (the pre-1.12.0 sweep). The refusal now lists the names,

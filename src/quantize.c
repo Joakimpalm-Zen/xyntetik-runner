@@ -3465,8 +3465,12 @@ int quantize_error_report(const char *in_path, const int *types, int n_types,
         }
         if (rc) break;
         double sc2 = (double)t->scale * t->scale;
+        // the name is the file's own string: escaped, or a quote in it makes
+        // the line one the planner cannot read (R6.68.85)
+        char tname[sizeof t->name * 6 + 8];
+        json_escape(t->name, strlen(t->name), tname, sizeof tname);
         fprintf(out, "{\"tensor\":\"%s\",\"source_type\":\"%s\",\"rows\":%llu,\"cols\":%d,"
-                "\"weighted\":%s,\"types\":{", t->name, ggml_type_name(t->type),
+                "\"weighted\":%s,\"types\":{", tname, ggml_type_name(t->type),
                 (unsigned long long)rows, n0, weighted ? "true" : "false");
         for (int k = 0; k < n_types; k++) {
             int ek = width_fallback(types[k], n0);
