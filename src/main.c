@@ -5721,38 +5721,60 @@ static void fput_json_str(FILE *f, const char *s) {
 
 // Every set once, no update: one JSON line {"step","eval":{LABEL:{...}}} with
 // the mean loss per (weighted) position, as the training loss is, and the two
-// top-1 agreements (model_lora_eval_row).
+// top-1 agreements (model_lora_eval_row). Every set is evaluated before the
+// line is written: a set whose loss is not finite stops the run (exit 1), as
+// a training step's loss does, and no half line or NaN reaches the log or
+// the kill rule's baseline (R6.68.115).
 static bool train_evals_run(cli_opts *o, cli_run *rt, train_eval_set *ev, int step,
                             int32_t *tids, float *tlp) {
-    printf("{\"step\":%d,\"eval\":{", step);
+    lora_eval_acc *accs = calloc((size_t)o->n_eval, sizeof *accs);
+    if (!accs) {
+        fprintf(stderr, "error: out of memory for --train-eval\n");
+        return false;
+    }
     for (int i = 0; i < o->n_eval; i++) {
         train_eval_set *e = &ev[i];
-        lora_eval_acc acc = {0};
+        lora_eval_acc *acc = &accs[i];
         for (int r = 0; r < e->n_ex; r++) {
             lora_teacher tch = { e->has_tt ? e->tt.k : 0, tids, tlp };
             if (e->has_tt && !train_teacher_rows(&e->tt, r, &e->exs[r], tids, tlp)) {
                 fprintf(stderr, "error: --train-eval %s: cannot read row %d's teacher\n",
                         e->label, r + 1);
+                free(accs);
                 return false;
             }
             if (!model_lora_eval_row(&rt->m, e->exs[r].t, e->exs[r].n, e->exs[r].w,
-                                     e->has_tt ? &tch : NULL, &acc)) {
+                                     e->has_tt ? &tch : NULL, acc)) {
                 fprintf(stderr, "error: --train-eval %s: row %d failed\n", e->label, r + 1);
+                free(accs);
                 return false;
             }
         }
-        e->last = acc.weight > 0 ? acc.loss / acc.weight : 0.0;
+        double loss = acc->weight > 0 ? acc->loss / acc->weight : 0.0;
+        if (!fp_finite_f64(loss)) {
+            fprintf(stderr, "error: --train-eval %s: the loss at step %d is not finite; "
+                    "the run stops here, as it does on a training step's\n", e->label, step);
+            free(accs);
+            return false;
+        }
+        e->last = loss;
         if (step == 0) { e->base = e->last; e->has_base = true; }
-        double pos = acc.positions > 0 ? (double)acc.positions : 1.0;
+    }
+    printf("{\"step\":%d,\"eval\":{", step);
+    for (int i = 0; i < o->n_eval; i++) {
+        const train_eval_set *e = &ev[i];
+        const lora_eval_acc *acc = &accs[i];
+        double pos = acc->positions > 0 ? (double)acc->positions : 1.0;
         if (i) printf(",");
         fput_json_str(stdout, e->label);
         printf(":{\"loss\":%.6f,\"top1_topk\":%.6f,\"top1_vocab\":%.6f,"
                "\"rows\":%d,\"positions\":%ld}", e->last,
-               (double)acc.top1_topk / pos, (double)acc.top1_vocab / pos, e->n_ex,
-               acc.positions);
+               (double)acc->top1_topk / pos, (double)acc->top1_vocab / pos, e->n_ex,
+               acc->positions);
     }
     printf("}}\n");
     fflush(stdout);
+    free(accs);
     return true;
 }
 

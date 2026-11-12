@@ -95,3 +95,20 @@ def test_train_logprobs_writes_null_before_the_step_refuses(exe, nan_model, tmp_
     assert p.returncode == 1, p.stderr.decode(errors="replace")
     rows = _lines(lp.read_text())
     assert rows and all(v is None for v in rows[0]["logprobs"]), rows
+
+
+def test_a_non_finite_eval_loss_stops_the_run_and_every_line_parses(exe, nan_model, tmp_path):
+    """--train-eval wrote a held-out set's loss with %.6f: `nan` on a
+    non-finite forward, and a NaN step-0 loss also decided the kill rule
+    (relative reduction NaN, so the run was killed on a number that is no
+    loss). A non-finite eval loss now stops the run as a training step's
+    does (exit 1, the error naming the set), before any of that step's eval
+    line is written."""
+    rows = _sft_rows(tmp_path / "sft.jsonl")
+    p = _run(exe, "-m", nan_model, "--train", rows, "--train-steps", "2", "--lr", "3e-3",
+             "--train-out", tmp_path / "a.gguf", "--train-eval", f"held={rows}",
+             "--kill-at", "1", "--kill-metric", "held")
+    assert p.returncode == 1, p.stderr.decode(errors="replace")
+    assert b"--train-eval held" in p.stderr and b"not finite" in p.stderr, \
+        p.stderr.decode(errors="replace")
+    assert not [l for l in _lines(p.stdout) if "eval" in l], p.stdout
