@@ -2582,48 +2582,75 @@ static int decode_piece(engine *e, int tok, char *buf, int cap) {
     return n;
 }
 
-// One emitted token's bookkeeping, shared by every row of the walk: decode,
-// push it through the constraint/callback path, count it, close a prelude
-// that ran out. Returns the callback rc (non-zero = abort) and reports
-// whether generation is DONE on this token: the constrained document
-// completed, or the loop guard ended the turn.
-static int spec_emit(engine *e, int tok, gen_cb cb, void *ud, int *n_gen,
-                     bool constrained, bool *constrained_done) {
-    char buf[512];
-    int n = decode_piece(e, tok, buf, sizeof(buf));
-    bool in_prelude = constrained && e->constraint_phase != CP_OUTPUT;
-    int rc = e->schema && n > 0
-               ? constraint_accept(e, true, buf, n, cb, ud)
-           : e->json_mode && n > 0
-               ? constraint_accept(e, false, buf, n, cb, ud)
-           : cb && n > 0 ? cb(ud, buf, n) : 0;
-    if (!rc && constrained)
-        rc = constraint_control_accept(e, tok, e->schema != NULL, cb, ud);
-    if (!rc && e->schema && n == 0 && constraint_spelling_ok(e, tok, true)) {
-        const char *sp = tok_raw(e->tok, tok);
-        rc = constraint_accept(e, true, sp, (int)strlen(sp), cb, ud);
+// ---------------------------------------------- one step, shared by both loops
+//
+// A generation step has three parts that do not depend on which loop runs it:
+// choosing the token, consuming it, and asking whether the turn is over. The
+// speculative walk and engine_gen_step each had their own copy of all three
+// (the walk's consume was spec_emit, a second gen_consume), and the copies had
+// drifted: the walk's let a prelude budget that ran out on the same token as
+// an aborted callback overwrite the abort, so the walk went on after a stop
+// sequence or a client that left (sweep E-1, R6.68.31).
+
+static bool gen_consume(engine *e, int tok, gen_cb cb, void *ud);
+
+// Choose the token for position `pos` from `logits` and take it into the
+// sampler. Returns the token, or -1 when the turn ends here: no valid
+// continuation or an allocation failure (stop_id stays -1, oom says which),
+// or a stop token (stop_id names it). hit_stop is set in each case.
+static int gen_choose(engine *e, float *logits, sample_ok_fn ok, int pos) {
+    int tok = engine_pick(e, logits, e->m->n_vocab, ok, pos);
+    if (tok < 0) {
+        if (tok == -2) e->oom = true;  // error, not a clean stop
+        e->hit_stop = true;
+        return -1;
     }
-    think_track(e, tok, buf, n);
-    loop_guard_check(e);
-    (*n_gen)++;
-    if (in_prelude && (e->constraint_phase == CP_PROBE ||
-                       e->constraint_phase == CP_THINK) &&
-        e->prelude_max > 0 && ++e->prelude_count >= e->prelude_max) {
-        e->prelude_exhausted = true;
-        // mirrors engine_gen_step: close the prelude rather than ending the
-        // turn with nothing. `in_prelude` already required a constraint, so
-        // there is no other case to handle.
-        rc = constraint_finish_think(e, e->schema != NULL, cb, ud);
+    sampler_accept(e->smp, tok);
+    if (e->stat_gen) atomic_fetch_add(e->stat_gen, 1);
+    if (debug_tokens()) fprintf(stderr, " %d", tok);
+    if (is_stop(e, tok) && !e->ignore_eos) {
+        e->hit_stop = true;
+        e->stop_id = tok;
+        return -1;
     }
-    *constrained_done = e->schema ? constraint_done(e, true)
-                                  : e->json_mode && constraint_done(e, false);
-    // The guard's stop decision ends the walk the same way a completed
-    // document does. It was detected here and acted on only by the plain
-    // step: under --draft-lookup a scripted repetition ran to max_tokens
-    // while reporting 82 interventions and ended_turn true (external
-    // review, 2026-09-27).
-    if (e->loop_stop) *constrained_done = true;
-    return rc;
+    return tok;
+}
+
+// True when the token just consumed ended the turn: it completed the
+// constrained document, or the loop guard decided to stop. The guard's
+// decision ends the walk the same way a completed document does; it was once
+// acted on only by the plain step, and under --draft-lookup a scripted
+// repetition ran to max_tokens (external review, 2026-09-27).
+static bool gen_turn_done(engine *e) {
+    if (e->schema ? constraint_done(e, true)
+                  : e->json_mode && constraint_done(e, false)) return true;
+    return e->loop_stop;
+}
+
+// RUNNER_SPEC_PROF=1: per-phase wall time of the walk. Draft = head and
+// draft-model work, verify = the batched keep-forward, logits = lazy per-row
+// heads, sync = a recurrent fold's rollback, tail = the closing forward.
+typedef struct { bool on; double t0, tp, draft, verify, logits, sync, tail; } spec_prof;
+
+// The walk's summary, printed at its one exit: the round counts when a draft
+// source was on (or RUNNER_SPEC_STATS asks), the phase times under
+// RUNNER_SPEC_PROF. It was a macro over fifteen locals "so every exit prints
+// it"; three early returns on a completed constrained document once skipped
+// it (R3.3.10), which is what one exit prevents.
+static void spec_report(const engine *e, const spec_prof *pf) {
+    if (e->dm || e->mtp_on || e->lookup_on || getenv("RUNNER_SPEC_STATS"))
+        fprintf(stderr,
+                "spec: %d rounds, %d drafted, %d accepted (%.2f tok/round)"
+                ", grammar %d/%d, lookup %d/%d, draft catch-up %d\n",
+                e->spec_st.rounds, e->spec_st.drafted, e->spec_st.accepted,
+                e->spec_st.rounds ? (double)e->gen_count / e->spec_st.rounds : 0,
+                e->spec_st.gr_accepted, e->spec_st.gr_drafted,
+                e->spec_st.lk_accepted, e->spec_st.lk_drafted, e->spec_st.draft_fed);
+    if (pf->on)
+        fprintf(stderr, "spec-prof: draft %.0f ms, verify %.0f ms, logits %.0f ms, "
+                        "fold-sync %.0f ms, tail %.0f ms, total %.0f ms\n",
+                pf->draft * 1e3, pf->verify * 1e3, pf->logits * 1e3, pf->sync * 1e3,
+                pf->tail * 1e3, (now_s() - pf->t0) * 1e3);
 }
 
 // The speculative walk. One round: the pending token `cur` (emitted, sitting
@@ -2642,19 +2669,9 @@ static int spec_emit(engine *e, int tok, gen_cb cb, void *ud, int *n_gen,
 // covers hist[0..pos) exactly as the solo path leaves it.
 static int engine_generate_spec(engine *e, float *logits, int max_new,
                                 gen_cb cb, void *ud, double *gen_time) {
-    int n_gen = 0;
-    e->hit_stop = false; e->stop_id = -1;
-    e->oom = false;
-    e->lp_count = 0;
-    e->stop_lp_at = -1; e->stop_lp = 0;
-    e->prelude_count = 0;
-    e->prelude_exhausted = false;
-    e->prelude_max = max_new < 0 ? 0 : (max_new > 1 ? max_new / 2 : max_new);
-    e->think_tokens = 0;
-    e->think_forcing = e->think_forced = false;
-    e->think_force_n = e->think_force_at = 0;
-    e->loop_hits = 0; e->loop_stop = false;
-    e->gen_start = e->pos;
+    // the same per-generation state the step path starts from; the count of
+    // generated tokens is the engine's (gen_count), as there
+    engine_gen_begin(e, max_new);
     double t0 = now_s();
     model_t *m = e->m, *dm = e->dm;
     memset(&e->spec_st, 0, sizeof(e->spec_st));
@@ -2684,76 +2701,30 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
     int GK = m->spec_batch - 1;
     if (GK > SPEC_DRAFT_MAX - 1) GK = SPEC_DRAFT_MAX - 1;
     if (GK > m->n_batch - 1) GK = m->n_batch - 1; // same activation-buffer bound
-    int st_rounds = 0, st_drafted = 0, st_accepted = 0;
-    int st_gr_drafted = 0, st_gr_accepted = 0;
-    int st_lk_drafted = 0, st_lk_accepted = 0;
-    int st_hint_drafted = 0, st_hint_accepted = 0;
-    #define SPEC_STATS() do { \
-        e->spec_st.rounds = st_rounds; e->spec_st.drafted = st_drafted; \
-        e->spec_st.accepted = st_accepted; \
-        e->spec_st.gr_drafted = st_gr_drafted; \
-        e->spec_st.gr_accepted = st_gr_accepted; \
-        e->spec_st.lk_drafted = st_lk_drafted; \
-        e->spec_st.lk_accepted = st_lk_accepted; \
-        e->spec_st.hint_drafted = st_hint_drafted; \
-        e->spec_st.hint_accepted = st_hint_accepted; \
-        if (dm || e->mtp_on || e->lookup_on || getenv("RUNNER_SPEC_STATS")) \
-            fprintf(stderr, \
-            "spec: %d rounds, %d drafted, %d accepted (%.2f tok/round)" \
-            ", grammar %d/%d, lookup %d/%d, draft catch-up %d\n", \
-            st_rounds, st_drafted, st_accepted, \
-            st_rounds ? (double)n_gen / st_rounds : 0, \
-            st_gr_accepted, st_gr_drafted, \
-            st_lk_accepted, st_lk_drafted, e->spec_st.draft_fed); \
-        /* in the macro so every exit prints it: three early returns on a \
-           completed constrained document (--json) used to skip it (R3.3.10) */ \
-        if (prof) fprintf(stderr, "spec-prof: draft %.0f ms, verify %.0f ms, logits %.0f ms, " \
-                        "fold-sync %.0f ms, tail %.0f ms, total %.0f ms\n", \
-                        t_draft * 1e3, t_verify * 1e3, t_logits * 1e3, t_sync * 1e3, \
-                        t_tail * 1e3, (now_s() - t0) * 1e3); } while (0)
-    // RUNNER_SPEC_PROF=1: per-phase wall time of the walk, printed with the
-    // round summary (by SPEC_STATS, at every exit). Draft = head/draft-model work, verify = the batched
-    // keep-forward, logits = lazy per-row heads, tail = the closing forward.
-    const bool prof = getenv("RUNNER_SPEC_PROF") != NULL;
-    double t_draft = 0, t_verify = 0, t_logits = 0, t_tail = 0, t_sync = 0, tp = 0;
+    spec_prof pf = { .on = getenv("RUNNER_SPEC_PROF") != NULL, .t0 = t0 };
     int cur = -1;   // emitted token at hist[pos] awaiting its forward
-    while ((max_new < 0 || n_gen < max_new) && e->pos < m->n_ctx) {
+    while ((max_new < 0 || e->gen_count < max_new) && e->pos < m->n_ctx) {
         if (e->stop && e->stop(e->stop_ud)) break;
         if (cur < 0) {
             // generation start: the first token comes from the live logits
-            int tok = engine_pick(e, logits, m->n_vocab, ok, e->pos);
-            if (tok < 0) {
-                if (tok == -2) e->oom = true;  // error, not a clean stop
-                e->hit_stop = true;
-                goto done;
-            }
-            sampler_accept(e->smp, tok);
-            if (e->stat_gen) atomic_fetch_add(e->stat_gen, 1);
-            if (debug_tokens()) fprintf(stderr, " %d", tok);
-            if (is_stop(e, tok) && !e->ignore_eos) {
-                e->hit_stop = true;
-                e->stop_id = tok;
-                goto done;
-            }
+            int tok = gen_choose(e, logits, ok, e->pos);
+            if (tok < 0) goto done;
             // before the completed-document exit, as in engine_gen_step: the
             // record reads the turn's last token from hist
             if (e->hist) e->hist[e->pos] = tok;
-            bool cdone;
-            int rc = spec_emit(e, tok, cb, ud, &n_gen, constrained, &cdone);
-            if (cdone) {
+            bool gone = gen_consume(e, tok, cb, ud);
+            if (gen_turn_done(e)) {
                 // a completed document ends the turn before this token's
                 // forward, exactly as the walk below does mid-round
                 e->hit_stop = true;
                 dpos_rewind(e, e->pos);
-                if (gen_time) *gen_time = now_s() - t0;
-                SPEC_STATS();
-                return n_gen;
+                goto out;
             }
             cur = tok;
-            if (rc) goto done;   // aborted callback: still forward the token
+            if (gone) goto done;   // aborted callback: still forward the token
             continue;            // re-check the budget with the token pending
         }
-        st_rounds++;
+        e->spec_st.rounds++;
         // the head's pair for the pending token: (hidden of the last consumed
         // token, cur) at position pos. A queue push; it runs with the draft.
         if (e->mtp_on) model_mtp_feed(m, cur);
@@ -2761,34 +2732,34 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         int nd = 0, gr = 0, lk = 0, hk = 0;
         if (e->gram_ff && constrained) {
             int cap = GK;
-            if (max_new >= 0 && cap > max_new - n_gen) cap = max_new - n_gen;
+            if (max_new >= 0 && cap > max_new - e->gen_count) cap = max_new - e->gen_count;
             if (cap > m->n_ctx - e->pos - 1) cap = m->n_ctx - e->pos - 1;
             if (cap > 0) nd = gr = grammar_draft(e, d, cap);
-            st_drafted += nd; st_gr_drafted += nd;
+            e->spec_st.drafted += nd; e->spec_st.gr_drafted += nd;
         }
         // prompt-lookup drafts: the context hist[0..pos] (the pending token
         // included) is the only source; a miss drafts nothing and the round
         // is a one-row verify, i.e. plain decoding plus the search
-        if (prof) tp = now_s();
+        if (pf.on) pf.tp = now_s();
         if (!nd && e->lookup_on && e->hist) {
             int cap = K;
-            if (max_new >= 0 && cap > max_new - n_gen) cap = max_new - n_gen;
+            if (max_new >= 0 && cap > max_new - e->gen_count) cap = max_new - e->gen_count;
             if (cap > m->n_ctx - e->pos - 1) cap = m->n_ctx - e->pos - 1;
             if (cap > 0) nd = lk = engine_lookup_draft(e->hist, e->pos + 1, cap, d);
             // the caller's hints, when the context itself had no match
             if (!nd && cap > 0 && e->hint_len > 0)
                 nd = lk = hk = engine_hint_draft(e->hist, e->pos + 1, e->hint,
                                                  e->hint_len, cap, d);
-            st_drafted += nd; st_lk_drafted += nd; st_hint_drafted += hk;
+            e->spec_st.drafted += nd; e->spec_st.lk_drafted += nd; e->spec_st.hint_drafted += hk;
         }
-        if (prof) t_draft += now_s() - tp;
+        if (pf.on) pf.draft += now_s() - pf.tp;
         // NextN/MTP head drafts (no draft model). The head holds the pair
         // for every token the target consumed plus the pending one; its
         // logits propose x_{pos+1}, then chained rows (the head's own hidden
         // as the next h, the reference driver's convention) propose the
         // following positions. Provisional rows land at pos+1.. and are
         // overwritten by the true pairs once those tokens are known.
-        if (prof) tp = now_s();
+        if (pf.on) pf.tp = now_s();
         if (!nd && !dm && e->mtp_on) {
             if (model_mtp_position(m) != e->pos + 1)
                 model_mtp_reset(m, e->pos + 1); // desynced: no draft this round
@@ -2797,7 +2768,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             while (ml && nd < K && e->pos + nd + 1 < m->n_ctx) {
                 int best = sample_argmax(ml, m->n_vocab);
                 d[nd++] = best;
-                st_drafted++;
+                e->spec_st.drafted++;
                 if (nd >= K) break;
                 ml = model_mtp_step(m, h, best, e->pos + nd);
                 h = model_mtp_hidden(m);
@@ -2824,13 +2795,13 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             int best = sample_argmax(dl, dm->n_vocab);
             if (best >= m->n_vocab) break; // padding id the target can't embed
             d[nd++] = best;
-            st_drafted++;
+            e->spec_st.drafted++;
             dl = model_forward(dm, best, e->dpos++);
         }
         // Tracer 6: the batched verify below advances a recurrent TARGET's fold
         // through every row; snapshot the round-start fold so a partially-
         // accepted round can roll back to the accepted prefix (spec_fold_sync).
-        if (prof) t_draft += now_s() - tp;
+        if (pf.on) pf.draft += now_s() - pf.tp;
         int round_pos = e->pos;
         b[0] = cur;
         int nb = nd + 1;
@@ -2841,7 +2812,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         // cannot serve the keep-forward gets a solo forward of the pending
         // token instead: plain decoding, one row.
         float *row0 = NULL;
-        if (prof) tp = now_s();
+        if (pf.on) pf.tp = now_s();
         // Nothing drafted: the round is one decode step, so it takes the
         // decode path itself, the same bits (test-spec-identity) and on CUDA
         // the captured graph the keep-forward does not use (a one-row verify
@@ -2854,54 +2825,42 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             nd = 0; nb = 1;
             row0 = model_forward(m, cur, e->pos);
         }
-        if (prof) t_verify += now_s() - tp;
+        if (pf.on) pf.verify += now_s() - pf.tp;
         // walk the rows: 0 = the pending token, 1..nd = the drafts. Row i's
         // logits sample the token for position pos+i+1, which must equal
         // draft d[i] (= b[i+1]) for the walk to continue.
         int i = 0;
         for (; i <= nd; i++) {
-            if (max_new >= 0 && n_gen >= max_new) break;
+            if (max_new >= 0 && e->gen_count >= max_new) break;
             // Row i consumes position pos+i and proposes pos+i+1. The
             // final context row has no seat for its bonus token. Leave via
             // the consumed-prefix cleanup below, keeping its KV but emitting
             // nothing beyond hist's allocation (also read by transcripts).
             if (e->pos + i + 1 >= m->n_ctx) break;
             if (e->stop && e->stop(e->stop_ud)) break;
-            if (prof) tp = now_s();
+            if (pf.on) pf.tp = now_s();
             float *ti = (i == 0 && row0) ? row0 : model_spec_row_logits(m, i);
-            if (prof) t_logits += now_s() - tp;
+            if (pf.on) pf.logits += now_s() - pf.tp;
             // b[i] is consumed: its hidden is the head's h for the next pair
             if (e->mtp_on) model_mtp_note_row(m, i);
-            int tok = engine_pick(e, ti, m->n_vocab, ok, e->pos + i + 1);
+            int tok = gen_choose(e, ti, ok, e->pos + i + 1);
             if (tok < 0) {
-                if (tok == -2) e->oom = true;  // error, not a clean stop
-                e->hit_stop = true;
-                e->pos += i + 1; // keep the consumed rows' KV
+                // no continuation, an allocation failure or a stop token:
+                // the turn ends with the consumed rows' KV kept
+                e->pos += i + 1;
                 spec_fold_sync(e, b, i + 1, nb, round_pos);
                 dpos_rewind(e, e->pos);
                 cur = -1;
                 goto done;
             }
-            sampler_accept(e->smp, tok);
-            if (e->stat_gen) atomic_fetch_add(e->stat_gen, 1);
-            if (debug_tokens()) fprintf(stderr, " %d", tok);
-            if (is_stop(e, tok) && !e->ignore_eos) {
-                e->hit_stop = true;
-                e->stop_id = tok;
-                e->pos += i + 1; // keep the consumed rows' KV
-                spec_fold_sync(e, b, i + 1, nb, round_pos);
-                dpos_rewind(e, e->pos);
-                cur = -1;
-                goto done;
-            }
-            bool cdone;
-            int rc = spec_emit(e, tok, cb, ud, &n_gen, constrained, &cdone);
-            if (i < nd && tok == d[i] && rc == 0) {
+            bool gone = gen_consume(e, tok, cb, ud);
+            bool cdone = gen_turn_done(e);
+            if (i < nd && tok == d[i] && !gone) {
                 e->hist[e->pos + i + 1] = tok; // accepted: its KV is already right
-                st_accepted++;
-                if (gr) st_gr_accepted++;
-                if (lk) st_lk_accepted++;
-                if (hk) st_hint_accepted++;
+                e->spec_st.accepted++;
+                if (gr) e->spec_st.gr_accepted++;
+                if (lk) e->spec_st.lk_accepted++;
+                if (hk) e->spec_st.hint_accepted++;
                 if (e->mtp_on) model_mtp_feed(m, tok); // pair (h of row i, tok)
                 if (cdone) {
                     if (gr) gtrace_emit(e, i + 1, -1, -1, -1);
@@ -2909,9 +2868,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
                     e->pos += i + 2;
                     spec_fold_sync(e, b, i + 2, nb, round_pos);
                     dpos_rewind(e, e->pos);
-                    if (gen_time) *gen_time = now_s() - t0;
-                    SPEC_STATS();
-                    return n_gen;
+                    goto out;
                 }
                 continue;
             }
@@ -2924,23 +2881,21 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             e->pos += i + 1;
             // roll a recurrent fold back to the consumed prefix BEFORE the
             // next forward folds on top of it
-            if (prof) tp = now_s();
+            if (pf.on) pf.tp = now_s();
             spec_fold_sync(e, b, i + 1, nb, round_pos);
-            if (prof) t_sync += now_s() - tp;
+            if (pf.on) pf.sync += now_s() - pf.tp;
             if (e->hist && e->pos < m->n_ctx) e->hist[e->pos] = tok;
             if (cdone) {
                 e->hit_stop = true;
                 dpos_rewind(e, e->pos);
-                if (gen_time) *gen_time = now_s() - t0;
-                SPEC_STATS();
-                return n_gen;
+                goto out;
             }
             cur = tok;
             // the draft's KV beyond the consumed prefix was computed from the
             // abandoned drafts; the next catch-up refeeds from here (the
             // pending token included), which also refreshes dl
             dpos_rewind(e, e->pos);
-            if (rc) {
+            if (gone) {
                 // An aborted callback is not only a client that left: a
                 // matched stop sequence arrives here too, and leaving by this
                 // door skipped the close entirely, so the caller was served a
@@ -2967,9 +2922,9 @@ done:
     if (cur >= 0 && e->pos < m->n_ctx) {
         // forward the pending token so the KV covers hist[0..pos) exactly as
         // the solo path leaves it (a continuing chat feeds from here)
-        if (prof) tp = now_s();
+        if (pf.on) pf.tp = now_s();
         model_forward(m, cur, e->pos);
-        if (prof) t_tail += now_s() - tp;
+        if (pf.on) pf.tail += now_s() - pf.tp;
         if (e->mtp_on) {
             model_mtp_feed(m, cur);
             model_mtp_note_row(m, 0);
@@ -2978,10 +2933,12 @@ done:
         dpos_rewind(e, e->pos);
     }
     constraint_close(e, cb, ud);
+out:
+    // the one exit: a completed document or a guard stop arrives here without
+    // the pending-token forward and the close above, every other end through them
     if (gen_time) *gen_time = now_s() - t0;
-    SPEC_STATS();
-    #undef SPEC_STATS
-    return n_gen;
+    spec_report(e, &pf);
+    return e->gen_count;
 }
 
 // ------------------------------------------------- the generation step
@@ -3102,29 +3059,18 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
     bool want_lp = e->lp_cap && e->lp_count < e->lp_cap;
     if (want_lp) lp_capture_pre(e, logits, &pre);
     if (e->cl_cap) cl_capture(e, logits);
-    int tok = engine_pick(e, (float *)logits, e->m->n_vocab,
-                          engine_sample_filter(e), e->pos);
-    if (tok < 0) { // -1: no valid continuation (clean stop); -2: allocation error
-        if (tok == -2) e->oom = true;
-        e->hit_stop = true;
-        return ENGINE_STEP_DONE;
-    }
-    sampler_accept(e->smp, tok);
-    if (e->stat_gen) atomic_fetch_add(e->stat_gen, 1);
-    if (debug_tokens()) fprintf(stderr, " %d", tok);
-    if (is_stop(e, tok) && !e->ignore_eos) {
+    int tok = gen_choose(e, (float *)logits, engine_sample_filter(e), e->pos);
+    if (tok < 0) {
         // The stop's own decision, recorded beside the aligned arrays rather
         // than in them (see engine.h). lp_capture_pre already filled this
         // slot's alternatives; only the chosen value and the index are new.
-        if (want_lp) {
-            float raw = logits[tok];
+        if (e->stop_id >= 0 && want_lp) {
+            float raw = logits[e->stop_id];
             for (int i = 0; i < pre.n_snap; i++)
-                if (pre.snap_ids[i] == tok) { raw = pre.snap[i]; break; }
+                if (pre.snap_ids[i] == e->stop_id) { raw = pre.snap[i]; break; }
             e->stop_lp = raw - pre.lse;
             e->stop_lp_at = e->lp_count;
         }
-        e->hit_stop = true;
-        e->stop_id = tok;
         return ENGINE_STEP_DONE;
     }
     if (want_lp) {
@@ -3142,12 +3088,7 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
     // whatever hist held there instead of the turn's last token.
     if (e->hist && e->pos < e->m->n_ctx) e->hist[e->pos] = tok;
     if (gen_consume(e, tok, cb, ud)) return ENGINE_STEP_DONE;
-    if ((e->schema && constraint_done(e, true)) ||
-        (!e->schema && e->json_mode && constraint_done(e, false))) {
-        e->hit_stop = true;
-        return ENGINE_STEP_DONE;
-    }
-    if (e->loop_stop) { e->hit_stop = true; return ENGINE_STEP_DONE; }
+    if (gen_turn_done(e)) { e->hit_stop = true; return ENGINE_STEP_DONE; }
     *next_tok = (int32_t)tok;
     *next_pos = e->pos++;
     e->pending_pos = *next_pos;
