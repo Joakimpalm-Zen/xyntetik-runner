@@ -1466,11 +1466,23 @@ test-tokenizer-race: $(TEST_TOKENIZER_RACE_SRC) $(HDR) test.gguf
 	    $(TEST_TOKENIZER_RACE_SRC) -o test-tokenizer-race-bin -lm -lpthread
 	TSAN_OPTIONS=halt_on_error=1 ./test-tokenizer-race-bin test.gguf
 
-test-swap-race: $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
+test-swap-race: $(TEST_SWAP_RACE_SRC) tests/test_cancel_race.c $(HDR) test.gguf
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
 	    -fno-fast-math -std=gnu11 -Wall -I src $(TEST_SWAP_RACE_SRC) \
 	    -o test-swap-race-bin $(LDFLAGS)
 	ASAN_OPTIONS=detect_leaks=0 ./test-swap-race-bin test.gguf
+	$(MAKE) test-cancel-race
+
+# Same sanitized server gate, with a compile-time barrier that forces the
+# cancel waiter to resume only after its slot has been reused or stopped
+# (R6.68.8, R6.68.9). The stop case runs on its own port: a waiter that reads
+# its slot after the stop freed it is a heap-use-after-free here.
+test-cancel-race: tests/test_cancel_race.c $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
+	    -fno-fast-math -std=gnu11 -Wall -I src -DRUNNER_TEST_CANCEL_WAIT \
+	    tests/test_cancel_race.c $(filter-out tests/test_swap_race.c,$(TEST_SWAP_RACE_SRC)) \
+	    -o test-cancel-race-bin $(LDFLAGS)
+	ASAN_OPTIONS=detect_leaks=0 ./test-cancel-race-bin test.gguf 18108 stop
 
 # the weight-residency platform layer: mlock, mincore, major faults, available
 # RAM. compat.c only -- these are platform shims, not engine code.
