@@ -626,6 +626,21 @@ static void label_copy(char *out, size_t cap, const char *text) {
     out[n] = 0;
 }
 
+// A label is text. Every row is written into a fixed buffer, and a name too
+// long for it is cut where the buffer ends, which can be inside a UTF-8
+// character: what is left is not a string (AppKit makes no NSString of it,
+// and a menu item with no title raises). The cut is always at the tail, so
+// the tail is where an unfinished character is dropped (R6.68.102).
+static void utf8_trim_tail(char *s) {
+    size_t n = strlen(s), i = n;
+    // back over at most three continuation bytes to the character's first byte
+    while (i > 0 && n - i < 3 && ((unsigned char)s[i - 1] & 0xC0) == 0x80) i--;
+    if (i == 0) return;
+    unsigned char lead = (unsigned char)s[i - 1];
+    size_t want = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+    if (want > 1 && n - (i - 1) < want) s[i - 1] = 0;
+}
+
 // The next row of tray_menu_build: a slot of the caller's array while it has
 // room, else `overflow`, so the text written into the row afterwards always
 // has somewhere to go.
@@ -767,6 +782,7 @@ int tray_menu_build(tray_item *it, int cap) {
     row = tray_put(it, cap, &n, &overflow, (tray_item){.kind = TRAY_K_SEP});
     row = tray_put(it, cap, &n, &overflow, (tray_item){.kind = TRAY_K_ACTION, .action = TRAY_ACT_QUIT});
     snprintf(row->label, sizeof row->label, "Quit controller");
+    for (int i = 0; i < n; i++) utf8_trim_tail(it[i].label);
     return n;
 }
 

@@ -852,6 +852,38 @@ int main(int argc, char **argv) {
     CHECK(!instances_tray_lock_busy(), "and free once it is let go");
 
     remove(foreign);
+
+    // R6.68.102: a label is text. A model name longer than a row holds is cut
+    // to fit, and cut in the middle of a UTF-8 character it was no longer a
+    // string: the macOS menu got a nil title and AppKit raised. The row now
+    // ends on a whole character. The name: two ASCII bytes, then two-byte
+    // characters, so the 511-byte cut lands inside one.
+    {
+        char rec[2048], name[700];
+        size_t k = 0;
+        name[k++] = 'x'; name[k++] = 'x';
+        while (k + 2 < 640) { name[k++] = (char)0xC3; name[k++] = (char)0xA9; }   // U+00E9
+        name[k] = 0;
+        snprintf(rec, sizeof rec, "%s/%ld.json", idir, (long)getpid());
+        f = fopen(rec, "wb");
+        fprintf(f, "{\"pid\": %ld, \"started\": 1, \"mode\": \"serve\", \"port\": 0,"
+                   " \"version\": \"t\", \"models\": [{\"name\": \"%s\", \"path\": \"/m\"}]}\n",
+                (long)getpid(), name);
+        fclose(f);
+        tray_item rows[128];
+        int nr = tray_menu_build(rows, 128);
+        bool found = false, whole = true;
+        for (int i = 0; i < nr; i++) {
+            const unsigned char *t = (const unsigned char *)rows[i].label;
+            if (t[0] != 'x' || t[1] != 'x') continue;
+            found = true;
+            for (size_t j = 2; t[j]; j += 2)
+                if (t[j] != 0xC3 || t[j + 1] != 0xA9) { whole = false; break; }
+        }
+        CHECK(found, "the long model name has a row");
+        CHECK(whole, "a row cut to fit ends on a whole character");
+        remove(rec);
+    }
     remove(mp);
     remove(cfg);
     remove(mdl);
