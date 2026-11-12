@@ -532,8 +532,11 @@ class Soak:
         ctx, rows = self.ctx, []
         cases = [("at the window", ctx, 4, (200, 400)),
                  ("one token over", ctx + 1, 4, (400,)),
-                 ("one under, one token asked", ctx - 1, 1, (200, 400)),
-                 ("generation runs into the window", ctx - 8, 64, (200, 400))]
+                 # a prompt that leaves room is served: one token of room and
+                 # one asked is the edge itself, and a 400 there is a finding
+                 # (the lab read "at the window" as the only edge case, 11-12)
+                 ("one under, one token asked", ctx - 1, 1, (200,)),
+                 ("generation runs into the window", ctx - 8, 64, (200,))]
         for label, n, max_new, allowed in cases:
             s, j, raw = self.ask({"prompt": self.filler(n, 900 + n % 7), "max_tokens": max_new,
                                   "temperature": 0}, "/v1/completions")
