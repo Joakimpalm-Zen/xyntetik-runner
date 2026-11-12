@@ -1598,6 +1598,27 @@ static void prune_plan_free(prune_plan_t *p) {
 typedef struct { char *match; int type; } type_rule_t;
 typedef struct { type_rule_t *rules; int n; int dflt; } type_plan_t;
 
+// A plan file (--type-plan, --prune-experts) as its JSON object, or NULL with
+// the reason printed: read whole by plat_read_file (a regular file of at most
+// max_bytes), where each loader spelled its own fseek, ftell and fread.
+static jv *plan_read_object(const char *path, const char *flag, size_t max_bytes) {
+    size_t n = 0;
+    char *buf = plat_read_file(path, max_bytes, &n);
+    if (!buf) {
+        fprintf(stderr, "error: cannot read %s file %s (a regular file of at most "
+                "%zu MiB)\n", flag, path, max_bytes >> 20);
+        return NULL;
+    }
+    jv *root = json_parse(buf, n);
+    free(buf);
+    if (!root || root->type != J_OBJ) {
+        fprintf(stderr, "error: %s is not a JSON object\n", path);
+        if (root) jv_free(root);
+        return NULL;
+    }
+    return root;
+}
+
 static int type_from_name(const char *s) {
     if (!s) return -2;
     if (!strcmp(s, "keep")) return T_KEEP;
@@ -1624,27 +1645,8 @@ static void type_plan_free(type_plan_t *p) {
 static bool type_plan_load(const char *path, type_plan_t *plan) {
     memset(plan, 0, sizeof(*plan));
     plan->dflt = T_KEEP;
-    FILE *f = plat_fopen(path, "rb");
-    if (!f) { fprintf(stderr, "error: cannot open --type-plan file %s\n", path); return false; }
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
-    long sz = ftell(f);
-    if (sz < 0 || sz > 8 * 1024 * 1024 || fseek(f, 0, SEEK_SET) != 0) {
-        fclose(f);
-        fprintf(stderr, "error: %s is not a readable type plan\n", path);
-        return false;
-    }
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return false; }
-    size_t rd = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    buf[rd] = 0;
-    jv *root = json_parse(buf, rd);
-    free(buf);
-    if (!root || root->type != J_OBJ) {
-        fprintf(stderr, "error: %s is not a JSON object\n", path);
-        if (root) jv_free(root);
-        return false;
-    }
+    jv *root = plan_read_object(path, "--type-plan", (size_t)8 << 20);
+    if (!root) return false;
     bool ok = true;
     // The plan's CONTAINER is validated as strictly as its individual rules
     // already are. Every shape that used to be silently ignored -- a
@@ -1729,30 +1731,12 @@ static int type_plan_pick(const type_plan_t *plan, const char *name) {
     return plan->dflt;
 }
 
+static const prune_layer_t *prune_plan_find(const prune_plan_t *plan, int layer);
+
 static bool prune_plan_load(const char *path, prune_plan_t *plan) {
     memset(plan, 0, sizeof(*plan));
-    FILE *f = plat_fopen(path, "rb");
-    if (!f) { fprintf(stderr, "error: cannot open --prune-experts file %s\n", path); return false; }
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
-    long sz = ftell(f);
-    if (sz < 0 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return false; }
-    if (sz > 64 * 1024 * 1024) {
-        fclose(f);
-        fprintf(stderr, "error: %s is too large to be a prune plan\n", path);
-        return false;
-    }
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return false; }
-    size_t rd = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    buf[rd] = 0;
-    jv *root = json_parse(buf, rd);
-    free(buf);
-    if (!root || root->type != J_OBJ) {
-        fprintf(stderr, "error: %s is not a JSON object\n", path);
-        if (root) jv_free(root);
-        return false;
-    }
+    jv *root = plan_read_object(path, "--prune-experts", (size_t)64 << 20);
+    if (!root) return false;
     plan->layers = root->n > 0 ? calloc((size_t)root->n, sizeof(prune_layer_t)) : NULL;
     if (root->n > 0 && !plan->layers) { jv_free(root); return false; }
     bool ok = true;
@@ -1767,6 +1751,14 @@ static bool prune_plan_load(const char *path, prune_plan_t *plan) {
             break;
         }
         int layer = (int)parsed_layer;
+        // one layer under two spellings (layer_1, layer_01) is two keys to the
+        // JSON parser: every lookup took the first and the second list was
+        // dropped (R6.68.83)
+        if (prune_plan_find(plan, layer)) {
+            fprintf(stderr, "error: prune-plan names layer %d twice (\"%s\")\n", layer, key);
+            ok = false;
+            break;
+        }
         jv *arr = root->items[i];
         if (arr->type != J_ARR || arr->n < 1) {
             fprintf(stderr, "error: prune-plan[\"layer_%d\"] must be a "
