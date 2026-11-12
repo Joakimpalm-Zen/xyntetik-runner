@@ -576,7 +576,12 @@ static void test_fit_layer_tables(const char *fixture) {
         gguf_tensor *t = &g.tensors[g.n_tensors++];
         memset(t, 0, sizeof *t);
         snprintf(t->name, sizeof t->name, "blk.%d.attn_q.bias", l);
-        t->type = 1; t->n_dims = 1; t->ne[0] = 64; t->nbytes = 128;
+        // as the parser writes a 1-D tensor: its other dimensions count 1
+        // (gguf.c refuses a 0 there). Written as 0 the tensor holds no
+        // elements, and since R6.68.45 the fit's plan refuses it as a load
+        // does.
+        t->type = 1; t->n_dims = 1; t->ne[0] = 64; t->ne[1] = t->ne[2] = t->ne[3] = 1;
+        t->nbytes = 128;
         g.data_bytes += 128;
     }
     uint64_t raw = 0;

@@ -129,6 +129,11 @@ def _ple_header(path, arch="gemma4", ple_width=512, ffn=True):
 
     Absolute byte anchor: Q8_0 stores 32 values in 34 bytes. The ordinary
     tied token/output table and BF16 model projection remain in the hot set.
+    Every tensor a load binds is declared (R6.68.45: the fit's plan runs the
+    loader's tensor binders, dry, and refuses a header they would refuse): the
+    output norm, each block's norms, attention and FFN, and for gemma4 with a
+    per-layer input width its projection norm and each block's PLE gate,
+    projection and norm.
     """
     kv = [ks("general.architecture", arch),
           ku(f"{arch}.block_count", 64),
@@ -142,12 +147,31 @@ def _ple_header(path, arch="gemma4", ple_width=512, ffn=True):
           *([ku(f"{arch}.feed_forward_length", 1024)] if ffn else []),
           ku(f"{arch}.attention.key_length", 64),
           ku(f"{arch}.context_length", 4096)]
+    E, H, KV, HD, FF = 256, 4, 1, 64, 1024
+    F32, BF16 = (0, 4), (30, 2)
     tensors = [("per_layer_token_embd.weight", 32768, 262144, 8, 34 / 32),
-               ("token_embd.weight", 256, 262144, 8, 34 / 32),
-               ("per_layer_model_proj.weight", 256, 32768, 30, 2)]
+               ("token_embd.weight", E, 262144, 8, 34 / 32),
+               ("per_layer_model_proj.weight", E, 32768, *BF16),
+               ("output_norm.weight", E, 1, *F32)]
+    ple = arch == "gemma4" and ple_width > 0
+    if ple:
+        tensors.append(("per_layer_proj_norm.weight", ple_width, 1, *F32))
+    for i in range(64):
+        b = f"blk.{i}."
+        tensors += [(b + "attn_norm.weight", E, 1, *F32), (b + "ffn_norm.weight", E, 1, *F32),
+                    (b + "attn_q.weight", E, H * HD, *BF16), (b + "attn_k.weight", E, KV * HD, *BF16),
+                    (b + "attn_v.weight", E, KV * HD, *BF16),
+                    (b + "attn_output.weight", H * HD, E, *BF16),
+                    (b + "ffn_gate.weight", E, FF, *BF16), (b + "ffn_up.weight", E, FF, *BF16),
+                    (b + "ffn_down.weight", FF, E, *BF16)]
+        if ple:
+            tensors += [(b + "inp_gate.weight", E, ple_width, *BF16),
+                        (b + "proj.weight", ple_width, E, *BF16),
+                        (b + "post_norm.weight", E, 1, *F32)]
     directory, offset = b"", 0
     for name, width, rows, kind, bytes_per_value in tensors:
-        directory += s(name) + struct.pack("<IQQIQ", 2, width, rows, kind, offset)
+        dims = struct.pack("<IQ", 1, width) if rows == 1 else struct.pack("<IQQ", 2, width, rows)
+        directory += s(name) + dims + struct.pack("<IQ", kind, offset)
         offset += int(width * rows * bytes_per_value)
     head = struct.pack("<IIQQ", 0x46554747, 3, len(tensors), len(kv))
     head += b"".join(kv) + directory
@@ -163,7 +187,7 @@ def test_eseries_fit_excludes_only_the_row_gathered_table(runner_bin, tmp_path):
     p = run(runner_bin, "-m", str(path), "--info", "fit", "--gpu", "off", "-c", "512")
     assert p.returncode == 0, p.stderr.decode()
     out = p.stdout.decode()
-    assert path.stat().st_size < 1024
+    assert path.stat().st_size < 1 << 16   # descriptors: kilobytes for 8.7 GiB of tensors
     gib = 2 ** 30
     assert re.search(rf"weights\s+{total / gib:.2f} GiB", out), out
     assert re.search(rf"hot set\s+{(total - cold) / gib:.2f} GiB", out), out
@@ -180,7 +204,7 @@ def test_eseries_fit_excludes_only_the_row_gathered_table(runner_bin, tmp_path):
                    - (total - cold + kv) / gib) < 0.011, out
 
 
-@pytest.mark.parametrize("arch,ple_width", [("llama", 512), ("gemma4", 0), ("gemma4", 256)])
+@pytest.mark.parametrize("arch,ple_width", [("llama", 512), ("gemma4", 0)])
 def test_fit_does_not_discount_an_unrecognized_ple_table(runner_bin, tmp_path, arch, ple_width):
     path = tmp_path / "not-ple.gguf"
     _ple_header(path, arch, ple_width)
@@ -188,6 +212,21 @@ def test_fit_does_not_discount_an_unrecognized_ple_table(runner_bin, tmp_path, a
     assert p.returncode == 0, p.stderr.decode()
     assert "hot set" not in p.stdout.decode()
     assert "row-gathered" not in p.stdout.decode()
+
+
+def test_a_ple_table_the_loader_refuses_is_not_priced(runner_bin, tmp_path):
+    """A gemma4 header declaring a per-layer input width (256) its table does
+    not carry (32768 = 64 x 512): the loader refuses the table's shape, so the
+    fit does too (R6.68.45), and prices no row-gathered set for it."""
+    path = tmp_path / "not-ple.gguf"
+    _ple_header(path, "gemma4", 256)
+    p = run(runner_bin, "-m", str(path), "--info", "fit", "--gpu", "off")
+    assert p.returncode == 1, p
+    out = p.stdout.decode()
+    assert re.search(r"verdict\s+WILL NOT LOAD .* the loader refuses this file: tensor "
+                     r"per_layer_token_embd\.weight in blk\.0 has shape \[32768,262144\], "
+                     r"expected \[16384,>=262144\]", out), out
+    assert "row-gathered" not in out
 
 
 # R3.48: deepseek2's KV as the loader lays it out. The absorbed form, the default, keeps one row a token and layer,
@@ -278,3 +317,68 @@ def test_the_plans_quiet_lines_stay_quiet_only_for_the_fit(runner_bin, tmp_path)
                "-c", "256")
     assert b"gemma4:" not in fit.stdout + fit.stderr
     assert b"gemma4:" in load.stderr, load.stderr
+
+
+# R6.68.45: the fit's plan runs the loader's tensor binders too, dry: every
+# tensor the load would find, type and shape-check, none read (the fit opens
+# the header alone, and no tensor has data through that handle).
+def _pair(tmp_path, gen):
+    """A recurrent hybrid fixture and its `.missing-ssm_d` twin."""
+    prefix = tmp_path / "h"
+    subprocess.run([sys.executable, ROOT / "scripts" / gen, str(prefix)], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    return tmp_path / "h.gguf", tmp_path / "h.missing-ssm_d.gguf"
+
+
+@pytest.mark.parametrize("gen", ["make-test-hybrid.py", "make-test-nemotron.py"],
+                         ids=["granitehybrid", "nemotron_h"])
+def test_a_file_the_tensor_binders_refuse_is_the_fits_answer(runner_bin, tmp_path, gen):
+    """The fit said FITS for test-hybrid-batch.missing-ssm_d and
+    test-bridge-nemo.missing-ssm_d while their load refused "missing tensor
+    blk.0.ssm_d": its plan ran the metadata binders and never the tensor ones.
+    The verdict is now the load's refusal, in the load's own words."""
+    whole, broken = _pair(tmp_path, gen)
+    load = run(runner_bin, "-m", str(broken), "-p", "hi", "-n", "1", "--gpu", "off", "-t", "1",
+               "-c", "64")
+    assert load.returncode != 0, load
+    errors = [ln for ln in load.stderr.decode().splitlines() if ln.startswith("error: ")]
+    assert errors and errors[0] == "error: missing tensor blk.0.ssm_d", load.stderr
+    fit = run(runner_bin, "-m", str(broken), "--info", "fit", "--gpu", "off")
+    assert fit.returncode == 1, fit
+    out = fit.stdout.decode()
+    assert re.search(r"verdict\s+WILL NOT LOAD .* the loader refuses this file: "
+                     r"missing tensor blk\.0\.ssm_d", out), out
+    assert run(runner_bin, "-m", str(whole), "--info", "fit", "--gpu", "off").returncode == 0
+
+
+NO_READ = {
+    # bind_layer reads each block's stored output scale (0.91 + 0.02 i here)
+    "gemma4-output-scale": ("make-test-model.py", ["--gemma4-hetero"]),
+    # bind_deltanet_mixer dequantizes the conv taps once
+    "qwen35-conv-taps": ("make-test-ornith.py", []),
+    # model_clef_bind refuses decision.scales by their values
+    "clef-scales": ("make-test-clef.py", []),
+}
+
+
+@pytest.mark.parametrize("case", sorted(NO_READ))
+def test_the_fits_dry_bind_reads_no_tensor(runner_bin, tmp_path, case):
+    """Each file's load reads tensor values while it binds. Through the fit's
+    header-only handle every tensor's data is NULL, so a read in the dry bind
+    faults; the fit answers each one, and plans the same geometry the load
+    lays out."""
+    gen, args = NO_READ[case]
+    model = tmp_path / "m.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts" / gen, *args, str(model)], check=True,
+                   cwd=ROOT, stdout=subprocess.DEVNULL)
+    env = dict(os.environ, RUNNER_DEBUG_VRAM="1")
+    fit = subprocess.run([runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off", "-c", "256"],
+                         cwd=ROOT, capture_output=True, timeout=120, env=env)
+    assert fit.returncode == 0, (fit.returncode, fit.stderr)
+    assert b"WILL NOT LOAD" not in fit.stdout, fit.stdout
+    load = subprocess.run([runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "--gpu", "off",
+                           "-t", "1", "-c", "256"], cwd=ROOT, capture_output=True, timeout=120, env=env)
+    assert load.returncode == 0, load.stderr
+    fit_kv = int(G4_GEOM_FIT.search(fit.stderr.decode()).group(1))
+    load_kv = int(G4_GEOM_LOAD.search(load.stderr.decode()).group(1))
+    assert fit_kv == load_kv, (fit_kv, load_kv)

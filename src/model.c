@@ -53,6 +53,28 @@ static const char *meta_key(char *buf, size_t n, const char *arch, const char *k
 }
 #define AK(k) meta_key(key, sizeof key, arch, (k))
 
+// The plan the fit's dry bind runs over (R6.68.45), NULL at every other
+// moment. --info fit reads a header-only handle (gguf_open_header: no tensor
+// has data) and plans it with the load's own binders, the tensor ones too:
+// while this points at that plan they find, type and shape-check every tensor
+// exactly as for a load and read none, and their refusals become the fit's
+// reason. Only fit_plan sets it, around one bind_tensors call that loads
+// nothing, and model_bind_weights refuses to start while it is set.
+static _Thread_local model_t *t_bind_dry;
+
+// Keeps a plan's first refusal, without its "error: " and line end, as the
+// reason the fit reports.
+__attribute__((format(printf, 2, 0)))
+static void plan_keep(model_t *m, const char *fmt, va_list ap) {
+    if (m->plan_why[0]) return;
+    char buf[sizeof m->plan_why + 8];
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    const char *t = strncmp(buf, "error: ", 7) ? buf : buf + 7;
+    size_t n = strlen(t);
+    while (n && (t[n - 1] == '\n' || t[n - 1] == ' ')) n--;
+    snprintf(m->plan_why, sizeof m->plan_why, "%.*s", (int)n, t);
+}
+
 // The plan binders' messages (R6.68.29). On a load they go to stderr as they
 // always did. On a plan made for --info fit (m->plan_only) a refusal is kept,
 // the first one, as the reason the fit reports, and the informational lines a
@@ -62,16 +84,8 @@ __attribute__((format(printf, 2, 3)))
 static void bind_err(model_t *m, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    if (!m->plan_only) {
-        vfprintf(stderr, fmt, ap);
-    } else if (!m->plan_why[0]) {
-        char buf[sizeof m->plan_why + 8];
-        vsnprintf(buf, sizeof buf, fmt, ap);
-        const char *t = strncmp(buf, "error: ", 7) ? buf : buf + 7;
-        size_t n = strlen(t);
-        while (n && (t[n - 1] == '\n' || t[n - 1] == ' ')) n--;
-        snprintf(m->plan_why, sizeof m->plan_why, "%.*s", (int)n, t);
-    }
+    if (!m->plan_only) vfprintf(stderr, fmt, ap);
+    else plan_keep(m, fmt, ap);
     va_end(ap);
 }
 __attribute__((format(printf, 2, 3)))
@@ -85,12 +99,14 @@ static void bind_note(model_t *m, const char *fmt, ...) {
 
 // The tensor helpers' refusals (need_tensor, the shape and type checks,
 // tensor_to_f32, the expert-count and Clef matrix checks), which have no
-// model to hand: to stderr, as bind_err's are on a load (R6.68.45).
+// model to hand: to stderr, as bind_err's are on a load, and kept as the
+// fit's reason in the dry bind (R6.68.45).
 __attribute__((format(printf, 1, 2)))
 static void tensor_err(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    if (t_bind_dry) plan_keep(t_bind_dry, fmt, ap);
+    else vfprintf(stderr, fmt, ap);
     va_end(ap);
 }
 
@@ -174,6 +190,16 @@ static float *tensor_to_f32(gguf_tensor *t, int64_t need, bool *ok) {
                    "geometry indexes %lld of them\n", t->name,
                    (unsigned long long)n64, (long long)need);
         *ok = false; return NULL;
+    }
+    // The fit's dry bind (t_bind_dry): every check above is the load's, and
+    // the handle holds no data to convert. One value stands in for the vector,
+    // so the bind's answer (absent, present, refused) is the load's; no binder
+    // reads a converted vector, and model_free_weights releases it with the
+    // plan (R6.68.45).
+    if (t_bind_dry) {
+        float *held = calloc(1, sizeof(float));
+        if (!held) *ok = false;
+        return held;
     }
     int64_t n = (int64_t)n64;
     float *out = malloc(sizeof(float) * (size_t)n);
@@ -277,7 +303,8 @@ static gguf_tensor *slice_rows(gguf_tensor *src, gguf_tensor *dst,
     *dst = *src;
     dst->ne[1] = (uint64_t)nrows;
     dst->ne[2] = dst->ne[3] = 1;
-    dst->data  = (uint8_t *)src->data + (size_t)row0 * rs;
+    // a header-only handle (the fit's dry bind) has no data to point into
+    dst->data  = src->data ? (uint8_t *)src->data + (size_t)row0 * rs : NULL;
     dst->nbytes = (uint64_t)nrows * rs;
     return dst;
 }
@@ -832,17 +859,26 @@ static bool qwen35_kv_rows_typed(const arch_desc *ad) {
 }
 
 static bool model_plan(model_t *m, gguf_file *g, const model_params *p);
+static bool bind_tensors(model_t *m, gguf_file *g, const model_params *p);
 static void model_free_weights(model_t *m);
 
-// The loader's plan of the header for --info fit: quiet (plan_only), with the
-// first refusal in pm->plan_why. On false it is already released and zeroed
-// but for plan_why, so releasing it again is harmless.
+// The loader's plan of the header for --info fit: its metadata binders
+// (model_plan), then its tensor binders dry (t_bind_dry, R6.68.45): every
+// tensor a load of the trunk would find, type and shape-check, none read.
+// Quiet (plan_only), with the first refusal in pm->plan_why. On false it is
+// already released and zeroed but for plan_why, so releasing it again is
+// harmless.
 static bool fit_plan(gguf_file *g, model_t *pm) {
     memset(pm, 0, sizeof *pm);
     pm->plan_only = true;
     model_params pp;
     memset(&pp, 0, sizeof pp);
-    if (model_plan(pm, g, &pp)) return true;
+    if (model_plan(pm, g, &pp)) {
+        t_bind_dry = pm;
+        bool bound = bind_tensors(pm, g, &pp);
+        t_bind_dry = NULL;
+        if (bound) return true;
+    }
     char why[sizeof pm->plan_why];
     memcpy(why, pm->plan_why, sizeof why);
     model_free_weights(pm);
@@ -4808,7 +4844,7 @@ static bool bind_deltanet_mixer(model_t *m, gguf_file *g, layer_t *l, int i,
     l->ssm_a      = tensor_to_f32(sa, m->ssm.v_heads, &ok);
     l->ssm_norm_w = tensor_to_f32(sn, m->ssm.inner / m->ssm.v_heads, &ok);
     if (!ok) return false;
-    {
+    if (!t_bind_dry) {   // the fit's dry bind has no taps to read (R6.68.45)
         // the depthwise conv taps, dequantized once: the per-token
         // path used to dequantize every channel's kernel row on
         // every token (10,240 small calls a layer on Qwen3.8)
@@ -5331,7 +5367,8 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
     if (m->n_embd_ple > 0 && !bind_layer_ple(m, g, l, i, &ok)) return false;
     l->out_scale = 1.0f;
     gguf_tensor *osc = opt_tensor(g, "blk.%d.layer_output_scale.weight", i);
-    if (osc && osc->type == T_F32 && osc->ne[0] >= 1)
+    // a stored value: the fit's dry bind has none to read and keeps 1
+    if (osc && osc->type == T_F32 && osc->ne[0] >= 1 && !t_bind_dry)
         l->out_scale = ((const float *)osc->data)[0];
     if (!ok) return false;  // a norm/bias materialization OOMed this layer
     return true;
@@ -5582,6 +5619,14 @@ static bool bind_tensors(model_t *m, gguf_file *g, const model_params *p) {
 }
 
 static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
+    // The fit's dry bind binds placeholders, never a load: fit_plan holds
+    // t_bind_dry around one bind_tensors call and loads nothing, so this is
+    // reached only by a defect, and then refuses rather than bind (R6.68.45).
+    if (t_bind_dry) {
+        fprintf(stderr, "error: a model load was started inside --info fit's "
+                "dry bind; refused\n");
+        return false;
+    }
     if (!gguf_open(&m->gf, path)) return false;
     gguf_file *g = &m->gf;
     if (!bind_agent_profile(m, g)) return false;
@@ -15862,7 +15907,11 @@ static bool model_clef_bind(model_t *m, gguf_file *g, const char *arch) {
     h->scorer_out   = clef_mat(g, "decision.scorer_out.weight", W, 1, &ok);
     h->scorer_out_b = clef_vec(g, "decision.scorer_out.bias", 1, &ok);
     float *sc = clef_vec(g, "decision.scales", 3, &ok);
-    if (sc) {
+    if (sc && t_bind_dry) {
+        // the one refusal a conversion's values decide: the fit's dry bind
+        // has a placeholder, not the values, so it stays the load's
+        free(sc);
+    } else if (sc) {
         h->prior_scale = sc[0]; h->joint_scale = sc[1]; h->gate = sc[2];
         free(sc);
         // what the converter stores: exp(min(x, ln 100)) twice and a sigmoid
