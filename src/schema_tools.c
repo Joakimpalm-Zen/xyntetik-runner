@@ -36,6 +36,38 @@ static snode *atem_lit(const char *s) {
     return n;
 }
 
+// A tool name and a parameter key are the caller's text, written into the
+// family's call syntax (R6.68.72). Inside a JSON string the name goes in
+// escaped, and the family's reader parses it back. Where the syntax has no
+// spelling for a byte (the bare key of gemma4 ends at its colon, an attribute
+// value at its quote), the grammar is refused by name: the model would be
+// made to write a call the family's own reader cannot read, for every call
+// of that tool. The families with a generic fallback then take it.
+static char *name_json_lit(const char *name) {
+    sbuf b = {0};
+    sb_esc(&b, name, strlen(name));
+    if (b.failed) { free(b.s); return NULL; }
+    return b.s ? b.s : strdup("");
+}
+
+// False, with the reason, when `text` (a tool name or a key, `what` says
+// which) holds one of `bytes`, which `family`'s call syntax cannot carry.
+static bool syntax_carries(const char *family, const char *what, const char *text,
+                           const char *bytes, char *err, int errcap) {
+    const char *bad = strpbrk(text, bytes);
+    if (!bad && text[0]) return true;
+    if (!text[0])
+        snprintf(err, errcap, "%s %s is empty, which its native call syntax cannot write",
+                 family, what);
+    else if ((unsigned char)*bad < 0x20)
+        snprintf(err, errcap, "%s %s '%.60s' contains a control character (0x%02x), which "
+                 "its native call syntax cannot carry", family, what, text, (unsigned char)*bad);
+    else
+        snprintf(err, errcap, "%s %s '%.60s' contains '%c', which its native call syntax "
+                 "cannot carry", family, what, text, *bad);
+    return false;
+}
+
 // The opener of a turn's FIRST native call, with the blank line a reasoning
 // model writes after `</think>` (Qwen3's template renders `</think>\n\n` +
 // content): the opener alone, or behind one or two newlines, and nothing
@@ -231,6 +263,14 @@ static snode *atem_tool_tail(jv *tool, char *err, int errcap) {
         snprintf(err, errcap, "atem tool has too many parameters (max 60)");
         return NULL;
     }
+    // both sit inside name="...", which ends at the quote
+    const char *tool_name = jv_str(jv_get(fn, "name"), "");
+    if (tool_name[0] && !syntax_carries("atem", "tool name", tool_name, "\"", err, errcap))
+        return NULL;
+    for (int i = 0; props && i < props->n; i++)
+        if (props->keys[i][0] &&
+            !syntax_carries("atem", "parameter", props->keys[i], "\"", err, errcap))
+            return NULL;
     snode *seq = atem_seq(2);
     if (!seq) goto oom;   // NOT a bare return: the caller prints this message
     if (!atem_seq_add(seq, atem_lit("\">\n"))) goto oom;
@@ -583,7 +623,7 @@ static snode *qwen_call(jv *tools, const char *only_tool, bool lead,
             goto fail;
         }
         if (only_tool && strcmp(name, only_tool)) continue;
-        names->lits[names->n_lits] = strdup(name);
+        names->lits[names->n_lits] = name_json_lit(name);
         if (!names->lits[names->n_lits]) goto fail;
         names->n_lits++;
         choice->alts[choice->n_alts] = qwen_call_tail(
@@ -828,7 +868,7 @@ static snode *nemo_entry(jv *tools, const char *only, const char *fam,
         const char *name = jv_str(jv_get(fn, "name"), NULL);
         if (!name || !name[0]) { snprintf(err, errcap, "%s tool %d has no function name", fam, i); goto fail; }
         if (only && strcmp(name, only)) continue;
-        if (!(names->lits[names->n_lits] = strdup(name))) goto fail;
+        if (!(names->lits[names->n_lits] = name_json_lit(name))) goto fail;
         names->n_lits++;
         if (!(choice->alts[choice->n_alts] = qwen_call_tail(tools->items[i], "}", err, errcap)))
             goto fail;
@@ -1009,6 +1049,9 @@ static snode *msys_call(jv *tools, const char *only, char *err, int errcap) {
         const char *name = jv_str(jv_get(fn, "name"), NULL);
         if (!name || !name[0]) { snprintf(err, errcap, "Mistral tool %d has no function name", i); goto fail; }
         if (only && strcmp(name, only)) continue;
+        // bare between the marker and [ARGS]: a bracket there reads as the
+        // next marker, and the reader takes a line break for a broken call
+        if (!syntax_carries("Mistral", "tool name", name, "[\n\r\t", err, errcap)) goto fail;
         jv *params = jv_get(fn, "parameters");
         if (params && params->type != J_OBJ) {
             snprintf(err, errcap, "Mistral tool %s parameters must be an object", name);
@@ -1150,6 +1193,10 @@ static snode *coder_call_tail(jv *tool, char *err, int errcap) {
     for (int i=0;props && i<props->n;i++) {
         jv *spec=props->items[i];
         const char *type=jv_str(jv_get(spec,"type"),"");
+        // the key sits in <parameter=KEY>, which ends at the bracket
+        if (!syntax_carries("Qwen3-Coder","parameter",props->keys[i],">",err,errcap)) {
+            schema_free(members);schema_free(seq);return NULL;
+        }
         bool raw=false;
         snode *value=NULL;
         if (!strcmp(type,"string")) {
@@ -1651,6 +1698,13 @@ static snode *g4_object(jv *schema, const char *what, int depth, int *budget,
     seq->whitespace_significant = true;
     for (int i = 0; i < props->n; i++) {
         const char *key = props->keys[order[i]];
+        // a bare key ends at its colon, and a `}` where a key begins closes
+        // the object
+        if (!syntax_carries("gemma4", "parameter", key, ":", err, errcap) ||
+            (key[0] == '}' && !syntax_carries("gemma4", "parameter", key, "}", err, errcap))) {
+            free(order); schema_free(members); schema_free(seq);
+            return NULL;
+        }
         sbuf first = {0}, next = {0};
         sb_fmt(&first, "%s:", key);
         sb_fmt(&next, ",%s:", key);
@@ -1884,6 +1938,8 @@ static snode *g4_call(jv *tools, const char *only_tool, bool lead,
             goto fail;
         }
         if (only_tool && strcmp(name, only_tool)) continue;
+        // bare between `call:` and the arguments' brace
+        if (!syntax_carries("gemma4", "tool name", name, "{", err, errcap)) goto fail;
         names->lits[names->n_lits] = strdup(name);
         if (!names->lits[names->n_lits]) goto fail;
         names->n_lits++;

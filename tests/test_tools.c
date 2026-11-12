@@ -1891,6 +1891,109 @@ static void test_a_value_may_spell_its_blocks_closing_tag(void) {
     jv_free(tools);
 }
 
+// R6.68.72: a tool name or a parameter key is the caller's text, written into
+// the family's call syntax. Where the syntax cannot carry it, the grammar
+// made the model write a call its own reader then refused, for every call of
+// that tool. A name inside a JSON string is escaped; a name or key the syntax
+// has no spelling for is refused when the grammar is compiled, which sends
+// the request to the generic envelope where the family has that fallback.
+static int map_calls(int proto, jv *tools, const char *doc, sbuf *tc) {
+    char err[192];
+    tool_envelope e = {0};
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    e.proto = proto;
+    e.tools = tools;
+    sbuf content = {0};
+    int rc = tool_envelope_map(&e, doc, strlen(doc), &content, tc);
+    free(content.s);
+    tool_envelope_free(&e);
+    return rc;
+}
+
+static void test_names_and_keys_the_call_syntax_cannot_carry(void) {
+    char err[256];
+    // a name with a quote, in the JSON families: written escaped, read back
+    jv *quoted = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"say \\\"hi\\\"\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{}}}}]");
+    static const char WANT[] = "\"name\":\"say \\\"hi\\\"\"";
+    snode *root = schema_compile_qwen_turn(quoted, false, NULL, NULL, false, false, err, sizeof err);
+    assert(root);
+    const char *raw = "<tool_call>\n{\"name\": \"say \"hi\"\", \"arguments\": {}}\n</tool_call>";
+    const char *esc = "<tool_call>\n{\"name\": \"say \\\"hi\\\"\", \"arguments\": {}}\n</tool_call>";
+    assert(!feeds(root, raw) && accepts(root, esc));
+    schema_free(root);
+    sbuf tc = {0};
+    assert(map_calls(TP_QWEN, quoted, esc, &tc) == 1 && strstr(tc.s, WANT));
+    free(tc.s);
+
+    root = schema_compile_nemotron_turn(quoted, NULL, false, err, sizeof err);
+    assert(root);
+    esc = "<TOOLCALL>[{\"name\": \"say \\\"hi\\\"\", \"arguments\": {}}]</TOOLCALL>";
+    assert(accepts(root, esc));
+    assert(!feeds(root, "<TOOLCALL>[{\"name\": \"say \"hi\"\", \"arguments\": {}}]</TOOLCALL>"));
+    schema_free(root);
+    tc = (sbuf){0};
+    assert(map_calls(TP_NEMOTRON, quoted, esc, &tc) == 1 && strstr(tc.s, WANT));
+    free(tc.s);
+    jv_free(quoted);
+
+    // the [SYSTEM_PROMPT] form writes the name bare before [ARGS]: a space
+    // in it is read back, a bracket has no spelling and is refused by name
+    jv *spaced = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"get weather\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{}}}}]");
+    root = schema_compile_msys_turn(spaced, false, NULL, NULL, false, err, sizeof err);
+    assert(root);
+    assert(accepts(root, "[TOOL_CALLS]get weather[ARGS]{}"));
+    schema_free(root);
+    tc = (sbuf){0};
+    assert(map_calls(TP_MISTRAL_SYS, spaced, "[TOOL_CALLS]get weather[ARGS]{}", &tc) == 1);
+    assert(strstr(tc.s, "\"name\":\"get weather\""));
+    free(tc.s);
+    jv_free(spaced);
+    jv *bracket = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"a[b\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{}}}}]");
+    assert(!schema_compile_msys_turn(bracket, false, NULL, NULL, false, err, sizeof err));
+    assert(strstr(err, "a[b"));
+    jv_free(bracket);
+
+    // a key the bare-key and attribute syntaxes cannot carry: the native
+    // grammar is refused, naming the key
+    jv *colon = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"card\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"og:image\":{\"type\":\"string\"}}}}}]");
+    assert(!schema_gemma4_constrainable(colon, err, sizeof err) && strstr(err, "og:image"));
+    // the other families carry that key
+    assert(schema_atem_constrainable(colon, err, sizeof err));
+    assert(schema_qwen_xml_constrainable(colon, NULL, false, err, sizeof err));
+    jv_free(colon);
+    jv *brace = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"a{b\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{}}}}]");
+    assert(!schema_gemma4_constrainable(brace, err, sizeof err) && strstr(err, "a{b"));
+    jv_free(brace);
+    jv *attr = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"card\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"a\\\"b\":{\"type\":\"string\"}}}}}]");
+    assert(!schema_atem_constrainable(attr, err, sizeof err) && strstr(err, "a\"b"));
+    jv_free(attr);
+    jv *angle = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"card\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"a>b\":{\"type\":\"string\"}}}}}]");
+    assert(!schema_qwen_xml_constrainable(angle, NULL, false, err, sizeof err) && strstr(err, "a>b"));
+    jv_free(angle);
+    jv *quote_name = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"say \\\"hi\\\"\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{}}}}]");
+    assert(!schema_atem_constrainable(quote_name, err, sizeof err) && strstr(err, "say \"hi\""));
+    jv_free(quote_name);
+}
+
 static void test_muse_schema_payload_stream_hides_recipient_header(void) {
     tool_envelope e = {.proto = TP_MUSE_PLAIN};
     const char *doc = " to=user<|message|>{\"summary\":\"ok\"}";
@@ -4427,6 +4530,7 @@ int main(void) {
     test_stream_demux_is_boundary_independent();
     test_atem_stream_demux_is_boundary_independent();
     test_a_value_may_spell_its_blocks_closing_tag();
+    test_names_and_keys_the_call_syntax_cannot_carry();
     test_muse_schema_payload_stream_hides_recipient_header();
     test_stream_demux_holds_back_an_undecided_prefix();
     test_malformed_tool_declarations_are_rejected();

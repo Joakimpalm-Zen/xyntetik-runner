@@ -7638,8 +7638,10 @@ static int msys_block_call(const char **pp, const char *end, int index, int max,
     const char *name = p + ol;
     const char *args = atem_find(name, end, "[ARGS]");
     if (!args || args == name) return -1;
+    // the bytes a declared name cannot hold (msys_call refuses them): a
+    // bracket here is another marker, a line break a call that broke off
     for (const char *c = name; c < args; c++)
-        if (*c == ' ' || *c == '\n' || *c == '\t' || *c == '\r' || *c == '[') return -1;
+        if (*c == '\n' || *c == '\t' || *c == '\r' || *c == '[') return -1;
     const char *body = args + strlen("[ARGS]");
     jv *obj = NULL;
     const char *close = memchr(body, '}', (size_t)(end - body));
