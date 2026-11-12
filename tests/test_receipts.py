@@ -110,6 +110,30 @@ def test_chain_links_and_verifies_end_to_end(runner_bin, base, key, tmp_path):
     assert p.returncode == 3 and b"chain link broken" in p.stderr
 
 
+
+def test_an_unreadable_previous_record_is_refused_before_the_run(runner_bin, base, tmp_path):
+    """R6.68.82: the previous record's chain hash was read after the load and
+    the generation. When it could not be read the run went on to call the
+    transcript writer with no path, and crashed (SIGSEGV) with the reply
+    already on stdout. It is read first, and the run refuses there."""
+    out = tmp_path / "t.json"
+    for prev in (tmp_path / "missing.json", None):
+        if prev is None:
+            prev = tmp_path / "not-a-record.json"
+            prev.write_text("{}")
+        p = subprocess.run([runner_bin, "-m", str(base), "-p", "the runner trains the", "-n", "4",
+                            "--temp", "0", "--gpu", "off", "-t", "2", "--transcript", str(out),
+                            "--transcript-prev", str(prev)], cwd=ROOT, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=120)
+        assert p.returncode == 1, (p.returncode, p.stderr[-300:])
+        assert b"cannot read the chain hash" in p.stderr and p.stdout == b"", (p.stdout, p.stderr[-300:])
+        assert not out.exists()
+    # and a link with no record to carry it is refused, not dropped
+    p = subprocess.run([runner_bin, "-m", str(base), "-p", "hi", "-n", "2", "--gpu", "off",
+                        "--record-prev", str(prev)], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 1 and b"--record-prev links" in p.stderr, p.stderr[-300:]
+
 def test_forgeries_are_unverifiable_before_replay(runner_bin, base, key, tmp_path):
     kpath, pub = key
     rec = tmp_path / "r.json"

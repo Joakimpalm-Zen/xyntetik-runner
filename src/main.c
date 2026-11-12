@@ -2499,6 +2499,7 @@ typedef struct {
     bool env_known;
     char sampling[256];           // the effective sampler, as the load line says
     double load_s;
+    char prev_hash[65];           // --transcript-prev's chain hash, read before the load
 } cli_run;
 
 static void cli_opts_init(cli_opts *o) {
@@ -7690,13 +7691,7 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
     model_debug_time_report();
     int t_rc = 0;
     if (o->transcript_path) {
-        char prev_hash[65] = "";
-        if (o->transcript_prev && !receipt_chain_hash(o->transcript_prev, prev_hash)) {
-            fprintf(stderr, "error: --transcript-prev: cannot read the chain "
-                            "hash of %s\n", o->transcript_prev);
-            t_rc = 1;
-            o->transcript_path = NULL;   // do not write an unlinked receipt
-        }
+        const char *prev_hash = rt->prev_hash;   // read before the load (cli_main)
         char gname[128] = "";
         if (rt->m.gpu) gpu_available(gname, sizeof gname);
         // R1.1.2: what shaped the output beyond the sampler, so --verify
@@ -7966,6 +7961,21 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
     if (!cli_prompt_fits_verb(o)) return 1;
     if (cli_prepare_session(o, simg, &rc)) return rc;
     if (cli_prepare_verify(o, &wmk, wm_on, &vr, &rc)) return rc;
+    // The record a --transcript run links to is read here, before the load
+    // and the generation the new record would follow (R6.68.82). It was read
+    // after them, and a previous record that could not be read then ended the
+    // run in a crash: the writer was still called, with no path to write.
+    if (o->transcript_prev && !o->verify_path && !o->transcript_path) {
+        fprintf(stderr, "error: --record-prev links the record this run writes, signs or "
+                "verifies to the one before it; this run does none of the three\n");
+        return 1;
+    }
+    if (o->transcript_path && o->transcript_prev && !o->verify_path &&
+        !receipt_chain_hash(o->transcript_prev, rt->prev_hash)) {
+        fprintf(stderr, "error: --transcript-prev: cannot read the chain hash of %s\n",
+                o->transcript_prev);
+        return 1;
+    }
     cli_resolve_threads(o);
 
     f16_init();
