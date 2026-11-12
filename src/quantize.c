@@ -1912,9 +1912,10 @@ static const char *const merge_slot_name[] = {
     "attn_q", "attn_k", "attn_v", "attn_output",
     "ffn_gate", "ffn_up", "ffn_down",
 };
-// the qwen35 DeltaNet projections, hooked only on that backbone (qwen35, or
-// clef on it): afmoe and Qwen-G1 have an attn_gate of their own that
-// serving does not hook, so the merge must not accept the name there
+// the Gated DeltaNet projections, hooked on every DeltaNet family (arch.h's
+// recurrent kind, as serving resolves them in lora_slot_base): afmoe and
+// Qwen-G1 have an attn_gate of their own that serving does not hook, so the
+// merge must not accept the name there
 static const char *const merge_slot_name_q35[] = {
     "attn_qkv", "attn_gate", "ssm_beta", "ssm_alpha", "ssm_out",
 };
@@ -1990,8 +1991,7 @@ static bool merge_set_resolve(merge_set_t *ms, const char *adapter_path,
         for (size_t k = 0; k < sizeof(merge_slot_name) /
                                sizeof(*merge_slot_name); k++)
             if (strcmp(pname, merge_slot_name[k]) == 0) { hooked = true; break; }
-        const arch_id bid = arch_find(barch)->id;
-        bool q35 = bid == ARCH_QWEN35 || bid == ARCH_CLEF;
+        bool q35 = arch_find(barch)->rec == ARCH_REC_DELTANET;
         for (size_t k = 0; q35 && !hooked && k < sizeof(merge_slot_name_q35) /
                                                   sizeof(*merge_slot_name_q35); k++)
             if (strcmp(pname, merge_slot_name_q35[k]) == 0) hooked = true;
