@@ -17,7 +17,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, Sequence
 
 from .server import atomic_write_text
 from .capabilities import SHEET_REL, harness_note, remove_note, upsert_note, write_sheet
@@ -288,34 +288,49 @@ HOOK_EVENTS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def install_claude_hooks(settings: Path, *, python: str, pythonpath: str | None,
-                         home: Path | None = None) -> int:
-    """Merge capture hooks into ``settings`` (created if absent); idempotent.
-    Returns how many hooks were added. A backup sits beside the file."""
-    launcher = write_hook_launcher(home if home is not None else settings.parent.parent, pythonpath)
-    data: dict[str, object] = {}
-    if settings.is_file():
-        try:
-            data = json.loads(settings.read_text(encoding="utf-8") or "{}")
-        except ValueError as error:
-            raise RuntimeError(f"{settings} is not valid JSON ({error}); fix it or move it "
-                               "aside before installing the hooks") from error
-        if not isinstance(data, dict):
-            raise RuntimeError(f"{settings} must hold a JSON object at the top level")
-    # A settings file whose "hooks" is not an object, or whose event list is
-    # not a list, is the user's file and not this installer's to reshape: say
-    # so and leave it as it is. Both used to be bare asserts, which crashed
-    # with a traceback after the backup had already been written (sweep,
-    # 2026-09-27).
+def _read_hooks_file(settings: Path, *, doing: str) -> dict[str, object]:
+    """The user's settings.json or hooks.json as a JSON object ({} when it is
+    absent). Anything else is the user's file and not this installer's to
+    reshape: a RuntimeError that says why, and the file is left as it is."""
+    if not settings.is_file():
+        return {}
+    try:
+        data = json.loads(settings.read_text(encoding="utf-8") or "{}")
+    except ValueError as error:
+        raise RuntimeError(f"{settings} is not valid JSON ({error}); fix it or move it "
+                           f"aside before {doing}") from error
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{settings} must hold a JSON object at the top level; fix it "
+                           f"before {doing}")
+    return data
+
+
+def _hooks_to_merge(settings: Path, data: dict[str, object], names: Iterable[str]) -> dict[str, object]:
+    """data["hooks"] (created when absent), checked before anything is written:
+    an object whose named event lists are lists (sweep, 2026-09-27)."""
     hooks = data.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise RuntimeError(f"{settings}: \"hooks\" must be an object, found "
                            f"{type(hooks).__name__}; fix it before installing the hooks")
-    for _event, name, _matcher in HOOK_EVENTS:
+    for name in names:
         found = hooks.get(name)
         if found is not None and not isinstance(found, list):
             raise RuntimeError(f"{settings}: hooks.{name} must be a list, found "
                                f"{type(found).__name__}; fix it before installing the hooks")
+    return hooks
+
+
+def install_claude_hooks(settings: Path, *, python: str, pythonpath: str | None,
+                         home: Path | None = None) -> int:
+    """Merge capture hooks into ``settings`` (created if absent); idempotent.
+    Returns how many hooks were added. A backup sits beside the file."""
+    data = _read_hooks_file(settings, doing="installing the hooks")
+    # A settings file whose "hooks" is not an object, or whose event list is
+    # not a list, is refused before the backup and before the launcher is
+    # written. Both used to be bare asserts, which crashed with a traceback
+    # after the backup had already been written (sweep, 2026-09-27).
+    hooks = _hooks_to_merge(settings, data, (name for _event, name, _matcher in HOOK_EVENTS))
+    launcher = write_hook_launcher(home if home is not None else settings.parent.parent, pythonpath)
     if settings.is_file():
         shutil.copyfile(settings, settings.with_suffix(".json.bak-shadow"))
     added = 0
@@ -342,14 +357,14 @@ def install_claude_hooks(settings: Path, *, python: str, pythonpath: str | None,
             entries.append(_hook_entry(cmd, matcher))
             added += 1 if not upgraded else 0
     settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(settings, json.dumps(data, indent=2) + "\n")
     return added
 
 
 def uninstall_claude_hooks(settings: Path) -> int:
     if not settings.is_file():
         return 0
-    data = json.loads(settings.read_text(encoding="utf-8") or "{}")
+    data = _read_hooks_file(settings, doing="removing the hooks")
     hooks = data.get("hooks")
     if not isinstance(hooks, dict):
         return 0
@@ -366,7 +381,7 @@ def uninstall_claude_hooks(settings: Path) -> int:
             hooks.pop(name, None)
     if not hooks:
         data.pop("hooks", None)
-    settings.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(settings, json.dumps(data, indent=2) + "\n")
     return removed
 
 
@@ -381,19 +396,19 @@ CODEX_HOOK_EVENTS: tuple[tuple[str, str, str], ...] = (
 def install_codex_hooks(settings: Path, *, python: str, pythonpath: str | None,
                         home: Path | None = None) -> int:
     """Merge local capture hooks into Codex's documented hooks file."""
+    # refused before the backup and the launchers, as the Claude path does
+    data = _read_hooks_file(settings, doing="installing the hooks")
+    hooks = _hooks_to_merge(settings, data, (name for _event, name, _matcher in CODEX_HOOK_EVENTS))
     root = home if home is not None else settings.parent.parent
     capture, verify = write_codex_hook_launchers(root, pythonpath)
-    data: dict[str, object] = {}
     if settings.is_file():
-        data = json.loads(settings.read_text(encoding="utf-8") or "{}")
         shutil.copyfile(settings, settings.with_suffix(".json.bak-shadow"))
     data.setdefault("description", CODEX_DESCRIPTION)
-    hooks = data.setdefault("hooks", {})
-    assert isinstance(hooks, dict)
     added = 0
     for event, name, matcher in CODEX_HOOK_EVENTS:
         entries = hooks.setdefault(name, [])
-        assert isinstance(entries, list)
+        if not isinstance(entries, list):   # checked above; never reshaped here
+            raise RuntimeError(f"{settings}: hooks.{name} must be a list")
         launcher = verify if event == "verify" else capture
         cmd = (f'"{python}" "{launcher}"' if event == "verify"
                else hook_command(event, python, launcher))
@@ -406,7 +421,7 @@ def install_codex_hooks(settings: Path, *, python: str, pythonpath: str | None,
             entries.append(_hook_entry(cmd, matcher))
             added += 0 if owned else 1
     settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(settings, json.dumps(data, indent=2) + "\n")
     _owner_only(settings, 0o600)
     return added
 
@@ -415,7 +430,7 @@ def uninstall_codex_hooks(settings: Path) -> int:
     """Remove only Runner-owned Codex hooks and preserve every foreign entry."""
     if not settings.is_file():
         return 0
-    data = json.loads(settings.read_text(encoding="utf-8") or "{}")
+    data = _read_hooks_file(settings, doing="removing the hooks")
     hooks = data.get("hooks")
     if not isinstance(hooks, dict):
         return 0
@@ -435,7 +450,7 @@ def uninstall_codex_hooks(settings: Path) -> int:
         data.pop("hooks", None)
     if data.get("description") == CODEX_DESCRIPTION:
         data.pop("description", None)
-    settings.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(settings, json.dumps(data, indent=2) + "\n")
     return removed
 
 

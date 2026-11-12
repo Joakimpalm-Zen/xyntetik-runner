@@ -873,9 +873,15 @@ def cmd_install(args: argparse.Namespace) -> int:
         if answer not in ("y", "yes"):
             print("not installed")
             return 1
-    done = install(home, python=args.python, pythonpath=args.pythonpath or None, out=args.out,
-                   claude=claude, codex=codex, model=args.model or picked, runner=args.runner, ctx=args.ctx,
-                   gpu=args.gpu, threads=args.threads)
+    try:
+        done = install(home, python=args.python, pythonpath=args.pythonpath or None, out=args.out,
+                       claude=claude, codex=codex, model=args.model or picked, runner=args.runner,
+                       ctx=args.ctx, gpu=args.gpu, threads=args.threads)
+    except RuntimeError as e:
+        # a settings or hooks file the installer will not reshape: the reason,
+        # not a traceback, and the file as it was (R6.68.5)
+        print(f"shadow install: {e}", file=sys.stderr)
+        return 2
     if done.config:
         if args.no_tandem:
             set_config_key(home, "tandem", False)
@@ -1215,7 +1221,11 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     home = Path(args.home) if args.home else Path.home()
     if stop_server(home):
         print("warm runner stopped")
-    done = uninstall(home)
+    try:
+        done = uninstall(home)
+    except RuntimeError as e:
+        print(f"shadow uninstall: {e}", file=sys.stderr)
+        return 2
     print(f"removed {-done.hooks_added} Claude Code hook(s); "
           f"removed {-done.codex_hooks_added} Codex hook(s), the /shadow skill, the codex prompt, the capability "
           "sheet and the notes in CLAUDE.md and AGENTS.md")
