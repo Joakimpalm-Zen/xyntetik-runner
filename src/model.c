@@ -38,9 +38,12 @@
 // (n_head*head_dim, 2*n_ff_exp, batch*width) far inside their type.
 #define MDL_DIM_MAX 1048576   /* 2^20 elements per axis */
 // Routed-expert count ceiling. Mixtral 8, Qwen3-MoE 128, gpt-oss 128, gemma-4
-// 128, Qwen3.8-Flash-Next 512 per block; the per-token selection arrays are
-// sized by expert_used_count, this bounds the per-expert ones.
+// 128, Qwen3.8-Flash-Next 512 per block; this bounds the per-expert arrays.
 #define MOE_EXPERTS_MAX 1024
+// The experts a token picks (expert_used_count): the per-token selection
+// arrays hold this many, and moe_router_ok refuses a router past it for
+// every MoE binder (R6.68.89). Real routers pick 1 to 16.
+#define MOE_USED_MAX 256
 
 // `{arch}.KEY`: the metadata name an architecture's value is read under,
 // spelled into buf and returned. AK(KEY) is the one spelling of it in this
@@ -4004,6 +4007,11 @@ static bool moe_router_ok(model_t *m) {
         bind_err(m, "error: unknown expert_gating_func %d\n", m->expert_gating);
         return false;
     }
+    if (m->n_expert_used > MOE_USED_MAX) {
+        bind_err(m, "error: the router picks %d experts a token, past the %d "
+                "a token's selection holds\n", m->n_expert_used, MOE_USED_MAX);
+        return false;
+    }
     if (m->n_expert_groups < 1 || m->n_group_used < 1 ||
         m->n_group_used > m->n_expert_groups ||
         m->n_expert % m->n_expert_groups != 0 ||
@@ -4110,10 +4118,9 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
         }
         // The expert count only sizes heap scratch (Super routes over 512).
         // The selected count also fills the per-token selection arrays,
-        // which hold 256.
+        // which moe_router_ok holds it to (MOE_USED_MAX).
         if (m->n_expert <= 0 || m->n_expert > MOE_EXPERTS_MAX ||
             m->n_expert_used <= 0 || m->n_expert_used > m->n_expert ||
-            m->n_expert_used > 256 ||
             m->n_ff_exp <= 0 || m->n_ff_exp > MDL_DIM_MAX ||
             m->n_ff_shexp < 0 || m->n_ff_shexp > MDL_DIM_MAX ||
             m->expert_gating < EXPERT_GATE_NONE ||
@@ -9692,7 +9699,7 @@ static void moe_probe_replay(model_t *m, const layer_t *ly, int b, const int *se
     for (int d = 1; d <= max_d; d++) {
         const float *h_old = m->moe_probe_hist +
                              (size_t)(d - 1) * slotsz + (size_t)b * n_embd;
-        int psel[256]; float pselw[256];
+        int psel[MOE_USED_MAX]; float pselw[MOE_USED_MAX];
         moe_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false, NULL);
         moe_probe_emit(m->fwd_pos + b, layer_idx, d, psel, sel, used);
     }
@@ -9753,7 +9760,7 @@ NUM_STAGE void moe_token_experts(model_t *m, const layer_t *ly, const float *xin
     // dot matvec_b gives it, the per-expert math and the ascending-expert
     // accumulation are unchanged, so the output is byte-identical to the
     // one-dispatch-per-matrix form (RUNNER_MV_FUSE=0 restores it).
-    gguf_tensor gv[256], uv[256], dv[256];
+    gguf_tensor gv[MOE_USED_MAX], uv[MOE_USED_MAX], dv[MOE_USED_MAX];
     for (int t = 0; t < used; t++) {
         int e = sel[t];
         uv[t] = moe_expert_weight(ly, 1, e, n_embd, nff);
@@ -9801,8 +9808,8 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     bool probe = moe_probe_file() != NULL;
     bool trace = moe_trace_file() != NULL;
     int layer_idx = (int)(ly - m->layers);
-    int   sel[256];
-    float selw[256];
+    int   sel[MOE_USED_MAX];
+    float selw[MOE_USED_MAX];
     float norms[MOE_EXPERTS_MAX];
     DT_BEGIN;
     moe_route(m, ly, xin, n_embd, ne, used, sel, selw, true,
@@ -10098,7 +10105,7 @@ static void gemma_moe_ffn(model_t *m, const layer_t *ly, int n, int xdim) {
         //     expert FFN's own input — the router below uses a SEPARATE
         //     weightless norm of attn_out, computed inside gemma_route)
         rmsnorm(xn2, attn, ly->ffn_pre_norm2_w, n_embd, m->rms_eps);
-        int sel[256]; float selw[256], norms[MOE_EXPERTS_MAX];
+        int sel[MOE_USED_MAX]; float selw[MOE_USED_MAX], norms[MOE_EXPERTS_MAX];
         gemma_route(m, ly, attn, n_embd, ne, used, sel, selw, b == n - 1,
                     route_replay_ids(m->fwd_pos + b, layer_idx, used));
         route_pin_note(m->fwd_pos + b, layer_idx, sel, used);
@@ -10114,7 +10121,7 @@ static void gemma_moe_ffn(model_t *m, const layer_t *ly, int n, int xdim) {
             for (int d = 1; d <= max_d; d++) {
                 const float *h_old = m->moe_probe_hist +
                                      (size_t)(d - 1) * slotsz + (size_t)b * n_embd;
-                int psel[256]; float pselw[256];
+                int psel[MOE_USED_MAX]; float pselw[MOE_USED_MAX];
                 gemma_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false, NULL);
                 moe_probe_emit(m->fwd_pos + b, layer_idx, d, psel, sel, used);
             }
@@ -11951,7 +11958,7 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
               (!ly->qnorm_w || qpre) && (!need_kpre || kpre) &&
               (!vnorm || (vpre && dvn)) &&
               (!ple || (xpost && ptt && pga && puu && pdu && pdg && pdx)) &&
-              (!moe || (used <= 256 && msel && mselw && mprob && mg && mu && mh &&
+              (!moe || (used <= MOE_USED_MAX && msel && mselw && mprob && mg && mu && mh &&
                         mdh && mdg && mdu && md && mdr));
     // the per-layer output scale multiplies the whole residual stream after
     // the layer, so every gradient inside the layer carries it
@@ -12404,7 +12411,7 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
             float *dx2 = dxn2 + (size_t)t * E;
             const int *sl = msel + (size_t)t * used;
             const float *sw = mselw + (size_t)t * used;
-            float sk[256];
+            float sk[MOE_USED_MAX];
             for (int k = 0; ok && k < used; k++) {
                 gguf_tensor gv = moe_expert_weight(ly, 0, sl[k], E, nfe);
                 gguf_tensor uv = moe_expert_weight(ly, 1, sl[k], E, nfe);

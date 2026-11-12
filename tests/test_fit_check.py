@@ -502,3 +502,32 @@ def test_a_router_past_the_device_caps_runs_on_the_cpu_and_the_fit_says_so(runne
     reason = lines[0].split(marker, 1)[1]
     assert "routes 2 of 520 experts" in reason, reason
     assert said[0].startswith("gpu: " + reason + ","), (said[0], reason)
+
+
+def _wide_moe(tmp_path, name, experts, used):
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py", str(tmp_path / name)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, MOE_TEST_WIDE=str(experts),
+                            MOE_TEST_WIDE_USED=str(used)))
+    return tmp_path / f"{name}.wide.gguf"
+
+
+def test_a_router_picking_past_the_host_selection_is_refused_not_run(runner_bin, tmp_path):
+    """R6.68.89: the host keeps a token's picked experts in arrays of 256.
+    The MoE binder held expert_used_count to expert_count (up to 1024) only,
+    so a file picking 257 loaded and the first token wrote past those arrays
+    (SIGSEGV). The bind refuses it now, for every MoE binder, and --info fit
+    says the same words. 256 still runs."""
+    model = _wide_moe(tmp_path, "over", 258, 257)
+    load = run(runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "--gpu", "off",
+               "-t", "1", "-c", "64")
+    assert load.returncode == 1, load
+    said = [ln for ln in load.stderr.decode().splitlines()
+            if "picks 257 experts a token" in ln]
+    assert said, load.stderr
+    fit = run(runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off")
+    assert said[0].removeprefix("error: ") in (fit.stdout + fit.stderr).decode(), fit
+    edge = _wide_moe(tmp_path, "edge", 258, 256)
+    ok = run(runner_bin, "-m", str(edge), "-p", "hi", "-n", "1", "--gpu", "off",
+             "-t", "1", "-c", "64")
+    assert ok.returncode == 0, ok

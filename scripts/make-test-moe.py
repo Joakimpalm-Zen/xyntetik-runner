@@ -223,8 +223,11 @@ write_gguf(f"{OUT}.moe4.gguf", moe4,
 # experts from 512 on are 8x wider, so those experts win the top-2 on most
 # tokens: a route clamped at 512 cannot see them and answers differently from
 # the CPU's. Written only when asked (N=520 is about 25 MB).
+# MOE_TEST_WIDE_USED=K picks K of them a token instead (R6.68.89: past what
+# the host's per-token selection holds, the load must refuse the file).
 if os.environ.get("MOE_TEST_WIDE"):
     NW = int(os.environ["MOE_TEST_WIDE"])
+    NW_USED = int(os.environ.get("MOE_TEST_WIDE_USED", "2"))
     wide = list(shared)
     for i in range(LAYERS):
         router = flist(E * NW)
@@ -243,7 +246,7 @@ if os.environ.get("MOE_TEST_WIDE"):
             (f"blk.{i}.ffn_down_exps.weight", [FF, E, NW], pack(down_exps)),
         ]
     write_gguf(f"{OUT}.wide.gguf", wide,
-          base_meta("llama", [ku("llama.expert_count", NW), ku("llama.expert_used_count", 2)]))
+          base_meta("llama", [ku("llama.expert_count", NW), ku("llama.expert_used_count", NW_USED)]))
 
 # afmoe with the router deliberately reduced to the CUDA/Metal device
 # kernel's plain softmax contract.  Shipping Trinity profiles use sigmoid
