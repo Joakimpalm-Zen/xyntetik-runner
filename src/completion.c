@@ -5071,26 +5071,9 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
     if (chat) sb_lit(&r, "},");
     else      sb_lit(&r, ",");
     if (chat && e->lp_count > 0) {
-        char tb[512];
-        sb_lit(&r, "\"logprobs\":{\"content\":[");
-        for (int i = 0; i < e->lp_count; i++) {
-            if (i) sb_lit(&r, ",");
-            int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
-            sb_lit(&r, "{\"token\":\"");
-            sb_esc(&r, tb, tn);
-            sb_fmt(&r, "\",\"logprob\":%.9g,\"top_logprobs\":[", e->lp_chosen[i]);
-            for (int j = 0; j < e->lp_n; j++) {
-                const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
-                if (a->id < 0) break;
-                if (j) sb_lit(&r, ",");
-                tn = lp_piece(s, e, a->id, tb, sizeof(tb));
-                sb_lit(&r, "{\"token\":\"");
-                sb_esc(&r, tb, tn);
-                sb_fmt(&r, "\",\"logprob\":%.9g}", a->lp);
-            }
-            sb_lit(&r, "]}");
-        }
-        sb_lit(&r, "]},");
+        // the body the stream's logprobs chunk carries
+        append_chat_logprobs(&r, s, e);
+        sb_lit(&r, ",");
     } else if (!chat && q->echo && q->want_lp && g->ptoks) {
         // echo: the prompt's teacher-forced entries, then the generated
         append_text_logprobs(&r, s, e, g, q->lp_n);
