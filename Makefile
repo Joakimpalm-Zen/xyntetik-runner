@@ -1482,6 +1482,7 @@ test-cancel-race: tests/test_cancel_race.c $(TEST_SWAP_RACE_SRC) $(HDR) test.ggu
 	    -fno-fast-math -std=gnu11 -Wall -I src -DRUNNER_TEST_CANCEL_WAIT \
 	    tests/test_cancel_race.c $(filter-out tests/test_swap_race.c,$(TEST_SWAP_RACE_SRC)) \
 	    -o test-cancel-race-bin $(LDFLAGS)
+	ASAN_OPTIONS=detect_leaks=0 ./test-cancel-race-bin test.gguf 18107
 	ASAN_OPTIONS=detect_leaks=0 ./test-cancel-race-bin test.gguf 18108 stop
 
 # the weight-residency platform layer: mlock, mincore, major faults, available
@@ -4108,6 +4109,12 @@ test-pool-race:
 test-server-race-tsan: test.gguf
 	$(CC) $(TSAN_FLAGS) $(filter-out $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c -o test-server-race-tsan-bin $(LDFLAGS)
 	TSAN_OPTIONS=halt_on_error=1 ./test-server-race-tsan-bin test.gguf
+	@# the cancel ticket and the waiter count under TSan (R6.68.8, R6.68.9)
+	$(CC) $(TSAN_FLAGS) -DRUNNER_TEST_CANCEL_WAIT tests/test_cancel_race.c \
+	    $(filter-out tests/test_swap_race.c $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c \
+	    -o test-cancel-race-tsan-bin $(LDFLAGS)
+	TSAN_OPTIONS=halt_on_error=1 ./test-cancel-race-tsan-bin test.gguf 18117
+	TSAN_OPTIONS=halt_on_error=1 ./test-cancel-race-tsan-bin test.gguf 18118 stop
 
 # /v1/decide and /v1/rerank number their answers from counters every slot
 # shares; slots answer on their own threads. TSan halting on an unguarded

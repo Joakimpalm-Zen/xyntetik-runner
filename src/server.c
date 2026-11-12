@@ -1979,6 +1979,24 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
 // response id would hand out the name of a stored response (R10.15).
 static pthread_mutex_t rq_ids_mu = PTHREAD_MUTEX_INITIALIZER;
 
+// What a cancel waits on (R6.68.8): one per cancelled request, made by its
+// first cancel and shared by every later one. The slot holds a reference until
+// the request ends and each waiter one until it has answered, all under
+// rq_ids_mu. The end is a fact recorded here with the request's own generated
+// count. It used to be the slot's last-ended sequence and count, which the next
+// request overwrote: a fast request ending on the slot within one poll left the
+// waiter at a sequence that never came back (504 after 30 s, its request long
+// stopped) and with the other request's count.
+typedef struct cancel_ticket {
+    int  refs;
+    bool done;
+    int  generated;
+} cancel_ticket;
+
+static void ticket_drop_locked(cancel_ticket *t) {
+    if (t && --t->refs == 0) free(t);
+}
+
 // Takes the slot's ids for a new request, under rq_ids_mu: false when another
 // active request holds the same X-Request-Id, and then nothing is taken.
 static bool request_take_ids(slot_t *s, const char *response_id) {
@@ -1990,8 +2008,8 @@ static bool request_take_ids(slot_t *s, const char *response_id) {
     snprintf(s->rq_cid, sizeof s->rq_cid, "%s", s->cid_next);
     atomic_store(&s->rq_cancel, 0);
     atomic_store(&s->rq_gen, 0);
-    atomic_fetch_add(&s->rq_seq, 1);
     atomic_store(&SV.load_owner_cancelled, 0);
+    s->rq_ticket = NULL;   // the previous request's end released its own
     s->rq_live = true;
     return true;
 }
@@ -2022,8 +2040,13 @@ void server_request_end(slot_t *s) {
     if (s->rq_live) {
         s->rq_live = false;
         atomic_store(&SV.load_owner_cancelled, 0);
-        atomic_store(&s->rq_end_gen, atomic_load(&s->rq_gen));
-        atomic_store(&s->rq_end_seq, atomic_load(&s->rq_seq));
+        if (s->rq_ticket) {
+            // the end of the cancelled request, as its waiters will report it
+            s->rq_ticket->done = true;
+            s->rq_ticket->generated = atomic_load(&s->rq_gen);
+            ticket_drop_locked(s->rq_ticket);
+            s->rq_ticket = NULL;
+        }
     }
     s->rq_id[0] = s->rq_cid[0] = 0;
     pthread_mutex_unlock(&rq_ids_mu);
@@ -2046,11 +2069,10 @@ static bool cancel_path_id(const char *path, char id[65]) {
 }
 
 typedef struct {
-    sock_t   fd;
-    slot_t  *s;
-    unsigned seq;
-    int      phase;
-    char     id[65], rid[48];
+    sock_t         fd;
+    cancel_ticket *t;   // the waiter's reference; it never reads the slot
+    int            phase;
+    char           id[65], rid[48];
 } cancel_wait;
 
 // How long a cancel waits for its request to stop: the request checks at
@@ -2070,16 +2092,27 @@ static void cancel_answer(cancel_wait *w) {
     runner_test_cancel_wait();
 #endif
     double until = now_s() + CANCEL_WAIT_S;
-    while (atomic_load(&w->s->rq_end_seq) != w->seq && now_s() < until &&
-           !atomic_load(&SV.shutdown))
+    bool done = false;
+    int generated = 0;
+    for (;;) {
+        pthread_mutex_lock(&rq_ids_mu);
+        done = w->t->done;
+        generated = w->t->generated;
+        pthread_mutex_unlock(&rq_ids_mu);
+        if (done || now_s() >= until || atomic_load(&SV.shutdown)) break;
         plat_sleep_ms(5);
-    if (atomic_load(&w->s->rq_end_seq) != w->seq && atomic_load(&SV.shutdown)) {
+    }
+    pthread_mutex_lock(&rq_ids_mu);
+    ticket_drop_locked(w->t);
+    w->t = NULL;
+    pthread_mutex_unlock(&rq_ids_mu);
+    if (!done && atomic_load(&SV.shutdown)) {
         // the slot workers are joined by now: a request that has not ended
         // never will, and the server is going away
         send_error(w->fd, 503, "server shutting down: the cancelled request did not report its end");
         return;
     }
-    if (atomic_load(&w->s->rq_end_seq) != w->seq) {
+    if (!done) {
         send_error_detail(w->fd, 504, w->phase == 3
                           ? "the request's model load is still running; a cancel "
                             "does not stop a load, and the request ends, before "
@@ -2097,7 +2130,7 @@ static void cancel_answer(cancel_wait *w) {
                      w->id, rid,
                      w->phase == 3 ? "loading" : w->phase == 2 ? "generate"
                      : w->phase == 1 ? "prefill" : "starting",
-                     atomic_load(&w->s->rq_end_gen));
+                     generated);
     send_response(w->fd, 200, "application/json", b, (size_t)n);
 }
 
@@ -2120,22 +2153,36 @@ static bool handle_cancel(sock_t fd, const char *path, bool may_detach) {
     cancel_path_id(path, id);
     cancel_wait *w = calloc(1, sizeof *w);
     if (!w) { send_error(fd, 500, "cannot allocate the cancel"); return false; }
+    bool found = false, oom = false;
     pthread_mutex_lock(&rq_ids_mu);
     for (int i = 0; id[0] && SV.slots && i < SV.n_slots; i++) {
         slot_t *o = &SV.slots[i];
         if (o->rq_live && (!strcmp(o->rq_id, id) || (o->rq_cid[0] && !strcmp(o->rq_cid, id)))) {
+            found = true;
+            // the first cancel of a request makes its ticket, with the slot's reference
+            cancel_ticket *t = o->rq_ticket;
+            if (!t && (t = calloc(1, sizeof *t))) {
+                t->refs = 1;
+                o->rq_ticket = t;
+            }
+            if (!t) { oom = true; break; }
+            t->refs++;
+            w->t = t;
             atomic_store(&o->rq_cancel, 1);
             // a request still loading its model: the registry's wait reads this
             if (atomic_load(&o->rq_phase) == 3) atomic_store(&SV.load_owner_cancelled, 1);
-            w->s = o;
-            w->seq = atomic_load(&o->rq_seq);
             w->phase = atomic_load(&o->rq_phase);
             snprintf(w->rid, sizeof w->rid, "%s", o->rq_id);
             break;
         }
     }
     pthread_mutex_unlock(&rq_ids_mu);
-    if (!w->s) {
+    if (oom) {
+        free(w);
+        send_error(fd, 500, "cannot allocate the cancel");
+        return false;
+    }
+    if (!found) {
         free(w);
         send_error_detail(fd, 404, "no active request has this id (it finished, "
                           "was never seen, or is still queued for a slot)",
@@ -4265,10 +4312,10 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     atomic_store(&SV.shutdown, true);
     atomic_store(&drain_stage, "reaper join");
     if (SV.reaper_started) pthread_join(SV.reaper_th, NULL);
-    // R6.68.9: a detached cancel waiter reads its slot; it sees SV.shutdown at
-    // its next poll and answers, and the slots are freed only after the last
-    // one has finished (it used to read them freed: a stop or an in-process
-    // restart during a cancel)
+    // R6.68.9: a detached cancel waiter sees SV.shutdown at its next poll and
+    // answers, and the slots are freed only after the last one has finished
+    // (it used to read them freed: a stop or an in-process restart during a
+    // cancel). A ticket whose request never ended goes with its slot.
     atomic_store(&drain_stage, "cancel waiters");
     for (;;) {
         pthread_mutex_lock(&rq_ids_mu);
@@ -4277,6 +4324,12 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         if (!left) break;
         plat_sleep_ms(2);
     }
+    pthread_mutex_lock(&rq_ids_mu);
+    for (int i = 0; i < parallel; i++) {
+        ticket_drop_locked(SV.slots[i].rq_ticket);
+        SV.slots[i].rq_ticket = NULL;
+    }
+    pthread_mutex_unlock(&rq_ids_mu);
 
     atomic_store(&drain_stage, "model unload");
     for (int i = 0; i < parallel; i++) {

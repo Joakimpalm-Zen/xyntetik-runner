@@ -102,6 +102,8 @@ test-shared-asan-bin
 test-swap-race-bin
 test-cancel-race-bin
 test-cancel-race-bin.dSYM/
+test-cancel-race-tsan-bin
+test-cancel-race-tsan-bin.dSYM/
 test-tokenizer-race-bin
 test-swap-race-bin.dSYM/
 test-tokenizer-race-bin.dSYM/
