@@ -8345,7 +8345,11 @@ static int ts_final_str(tool_stream *s, const char *b, int n) {
             }
             continue;
         }
-        if (c == '"') return ts_entry_close(s, b + i + 1, n - (i + 1), rc);
+        if (c == '"') {
+            // the string closed; the args object that holds it has not
+            s->args_open = true;
+            return ts_entry_close(s, b + i + 1, n - (i + 1), rc);
+        }
         if (c == '\\') { s->pend[0] = c; s->n_pend = 1; continue; }
         int run = i;
         while (i < n && b[i] != '"' && b[i] != '\\') i++;
@@ -8366,14 +8370,17 @@ static int ts_resolve(tool_stream *s) {
             size_t i = (size_t)p;
             while (i < s->head_n && ts_ws(s->head[i])) i++;
             if (i >= s->head_n) return 0;
-            if (s->head[i] != '"') { s->state = TS_DONE; return 0; }
+            if (s->head[i] != '"') { s->fault = true; s->state = TS_DONE; return 0; }
             long e = head_str_end(s, i);
             if (e < 0) return 0;
-            size_t len = (size_t)e - i - 2;
-            s->name = malloc(len + 1);
-            if (!s->name) { s->state = TS_DONE; return 0; }
-            memcpy(s->name, s->head + i + 1, len);
-            s->name[len] = 0;
+            // the name as the JSON parser reads it, escapes decoded: the
+            // buffered mapper compares and reports the decoded name, and a
+            // raw copy handed a client `sav\u0065` for a tool named `save`
+            jv *jn = json_parse(s->head + i, (size_t)e - i);
+            const char *decoded = jn && jn->type == J_STR ? jn->str : NULL;
+            s->name = decoded ? strdup(decoded) : NULL;
+            jv_free(jn);
+            if (!s->name) { s->fault = true; s->state = TS_DONE; return 0; }
             s->called = strcmp(s->name, FINAL_BRANCH) != 0;
             if (s->called) s->any_called = true;
             head_drop(s, (size_t)e);
@@ -8411,7 +8418,7 @@ static int ts_resolve(tool_stream *s) {
             size_t i = (size_t)p;
             while (i < s->head_n && ts_ws(s->head[i])) i++;
             if (i >= s->head_n) return 0;
-            if (s->head[i] != '"') { s->state = TS_DONE; return 0; }
+            if (s->head[i] != '"') { s->fault = true; s->state = TS_DONE; return 0; }
             head_drop(s, i + 1);
             s->state = TS_FINAL_STR;
             break;
@@ -8426,18 +8433,30 @@ static int ts_resolve(tool_stream *s) {
             size_t i = 0;
             while (i < s->head_n && ts_ws(s->head[i])) i++;
             if (i >= s->head_n) return 0;
-            if (s->head[i] != '}') { s->state = TS_DONE; return 0; }
+            if (s->args_open) {
+                // a final branch forwarded only its content string, so its
+                // args object closes before the entry does. Without this the
+                // entry's own '}' was read as the separator, the scan gave
+                // up, and a call after a final branch was never announced.
+                if (s->head[i] != '}') { s->fault = true; s->state = TS_DONE; return 0; }
+                i++;
+                while (i < s->head_n && ts_ws(s->head[i])) i++;
+                if (i >= s->head_n) return 0;
+            }
+            if (s->head[i] != '}') { s->fault = true; s->state = TS_DONE; return 0; }
             i++;
             while (i < s->head_n && ts_ws(s->head[i])) i++;
             if (i >= s->head_n) return 0;
             if (s->head[i] == ']') {
                 head_drop(s, i + 1);
+                s->args_open = false;
                 s->state = TS_DONE;
                 return 0;
             }
-            if (s->head[i] != ',') { s->state = TS_DONE; return 0; }
+            if (s->head[i] != ',') { s->fault = true; s->state = TS_DONE; return 0; }
             i++;
             head_drop(s, i);
+            s->args_open = false;
             s->state = TS_TOOL;
             break;
         }
@@ -9347,6 +9366,18 @@ int tool_stream_finish_ex(tool_stream *s, bool truncated) {
         if (s->fault) rc = -1;
         return rc;
     }
+    if (s->state == TS_TOOL || s->state == TS_ARGS || s->state == TS_FINAL_KEY ||
+        s->state == TS_FINAL_STR || s->state == TS_VALUE ||
+        s->state == TS_ENTRY_SEP) {
+        // The generic envelope ended before its document did: no branch
+        // resolved, or a value left open. The grammar closes a cut turn to a
+        // whole document, so on a turn the model ended this is a document
+        // that is not the envelope, the one the buffered mapper refuses; it
+        // used to end as a clean, empty turn.
+        if (!truncated) s->fault = true;
+        s->state = TS_DONE;
+    }
+    if (s->state == TS_DONE && s->fault) return -1;
     if (s->state != TS_HARMONY) return 0;
     sbuf reasoning = {0}, content = {0}, tc = {0}, wrapped = {0};
     int mapped = tool_envelope_map_channels(

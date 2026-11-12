@@ -1202,6 +1202,20 @@ static void demux(const tool_envelope *e, const char *doc, demux_log *l) {
     demux_step(e, doc, 1, l);
 }
 
+// a turn a budget or deadline cut: fed a byte at a time and finished as cut
+static void demux_cut(const tool_envelope *e, const char *doc, demux_log *l) {
+    memset(l, 0, sizeof(*l));
+    tool_stream_sink sink = { l, log_reasoning, log_content,
+                              log_begin, log_args, log_end };
+    tool_stream s;
+    tool_stream_init(&s, e, &sink);
+    for (size_t i = 0; doc[i]; i++)
+        assert(tool_stream_feed(&s, doc + i, 1) == 0);
+    assert(tool_stream_finish_ex(&s, true) == 0);
+    l->called = tool_stream_called(&s);
+    tool_stream_free(&s);
+}
+
 static void log_free(demux_log *l) {
     free(l->reasoning.s);
     free(l->content.s);
@@ -1795,7 +1809,7 @@ static void test_stream_demux_holds_back_an_undecided_prefix(void) {
         memcpy(prefix, doc, k);
         prefix[k] = 0;
         demux_log l;
-        demux(&e, prefix, &l);
+        demux_cut(&e, prefix, &l);
         // nothing that arrives is ever envelope syntax
         assert(l.content.n == 0);
         if (l.args.n)
@@ -4149,6 +4163,61 @@ static void test_buffered_turn_is_read_by_the_stream_reader(void) {
     jv_free(tools);
 }
 
+// The generic envelope's streamed tool name is the decoded JSON string, as
+// the buffered mapper reports it: an escaped spelling of a declared name is
+// that name, not its escape sequence.
+static void test_generic_stream_decodes_the_tool_name(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    tool_envelope e;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    demux_log l;
+    demux(&e, "{\"tool\":\"ad\\u0064\",\"args\":{\"a\":1,\"b\":2}}", &l);
+    assert(l.begins == 1 && !strcmp(l.name, "add"));
+    log_free(&l);
+
+    // A parallel document: the final branch forwards only its content
+    // string, so its args object closes before the entry does. The entry's
+    // own brace was read as the separator and the scan gave up: the call
+    // after a final branch was never announced.
+    tool_envelope par;
+    assert(tool_envelope_build_ex(tools, NULL, NULL, true, &par, err, sizeof err) == 1);
+    demux(&par, "{\"calls\":[{\"tool\":\"final\",\"args\":{\"content\":\"hi\"}},"
+                "{\"tool\":\"add\",\"args\":{\"a\":1,\"b\":2}}]}", &l);
+    assert(l.begins == 1 && l.ends == 1 && !strcmp(l.name, "add"));
+    assert(l.content.n == 2 && !memcmp(l.content.s, "hi", 2));
+    assert(!strcmp(l.args.s, "{\"a\":1,\"b\":2}"));
+    log_free(&l);
+    tool_envelope_free(&par);
+
+    // A document that is not the envelope, on a turn the model ended: the
+    // buffered mapper refuses it, and the stream reports the same fault
+    // (it ended as a clean, empty turn). A cut turn is not a fault.
+    static const char *const bad[] = {
+        "plain words", "{\"tool\":7,\"args\":{}}", "{\"tool\":\"add\"",
+        "{\"tool\":\"add\",\"args\":{\"a\":1", NULL };
+    for (int i = 0; bad[i]; i++) {
+        sbuf content = {0}, tc = {0};
+        assert(tool_envelope_map(&e, bad[i], strlen(bad[i]), &content, &tc) == -1);
+        free(content.s); free(tc.s);
+        memset(&l, 0, sizeof(l));
+        tool_stream_sink sink = { &l, log_reasoning, log_content,
+                                  log_begin, log_args, log_end };
+        tool_stream s;
+        tool_stream_init(&s, &e, &sink);
+        assert(tool_stream_feed(&s, bad[i], (int)strlen(bad[i])) == 0);
+        assert(tool_stream_finish_ex(&s, false) == -1);
+        tool_stream_free(&s);
+        log_free(&l);
+        if (i >= 2) {            // the two that are a document cut short
+            demux_cut(&e, bad[i], &l);
+            log_free(&l);
+        }
+    }
+    tool_envelope_free(&e);
+    jv_free(tools);
+}
+
 int main(void) {
     test_whitespace_after_a_native_number_is_protocol();
     test_coder_constrained_turn();
@@ -4243,6 +4312,7 @@ int main(void) {
     test_gemma4_nested_arrays_are_bounded_not_expanded();
     test_native_truncation_closes_to_a_legal_turn();
     test_buffered_turn_is_read_by_the_stream_reader();
+    test_generic_stream_decodes_the_tool_name();
     puts("tool envelope tests ok");
     return 0;
 }

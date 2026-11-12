@@ -910,6 +910,8 @@ typedef struct {
     bool  implicit_close; // parse-only qwen3_xml: a call was closed by the
                           // next call's opener, not its own closer (R2.10);
                           // the finish detail names the tolerance
+    bool  args_open;      // generic parallel: a final branch's content string
+                          // closed and its args object's '}' is still unread
     bool  skip_ws;        // qwen: drop the framing whitespace after a call
     int   n_calls;        // calls emitted so far (the parse-only bound)
     int   depth;          // nesting inside the value being forwarded
