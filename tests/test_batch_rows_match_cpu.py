@@ -15,6 +15,7 @@ gates hold the tiles' reassociated sums to their own, tighter bars.
 Skipped where there is no GPU backend.
 """
 import json
+import math
 import os
 import pathlib
 import subprocess
@@ -73,8 +74,9 @@ def _models(tmp_path, family):
     return [pathlib.Path(str(out) + n) for n in names]
 
 
-def _embed(exe, model, extra):
-    with RunnerServer(exe, model, ctx=256, parallel=1, extra_args=extra) as srv:
+def _embed(exe, model, extra, env=None, log_path=None):
+    with RunnerServer(exe, model, ctx=256, parallel=1, extra_args=extra,
+                      env=env, log_path=log_path) as srv:
         req = urllib.request.Request(
             srv.base_url + "/v1/embeddings", data=json.dumps({"input": TEXTS}).encode(),
             headers={"Content-Type": "application/json"})
@@ -91,3 +93,46 @@ def test_a_prompt_batch_on_the_device_leaves_the_cpus_rows(exe, tmp_path, family
         worst = max(abs(a - b) for u, v in zip(cpu, dev) for a, b in zip(u, v))
         # measured on one Apple GPU: at most 1.2e-3 (a half-staged tile's sums)
         assert worst < 1e-2, (model.name, worst)
+
+
+def _worst(cpu, dev):
+    # a NaN or an infinity is as far off as it gets
+    return max(abs(a - b) if math.isfinite(a - b) else math.inf
+               for u, v in zip(cpu, dev) for a, b in zip(u, v))
+
+
+def test_the_half_staged_expert_tile_without_its_scale_buffer_leaves_the_cpus_rows(
+        exe, tmp_path):
+    """RUNNER_METAL_MOE_MM=half: the grouped expert tile stages each activation
+    row scaled by its max|x|, which a pass writes into the tiled GEMMs' scale
+    buffer first. When that buffer could not be made the half-staged tile ran
+    anyway and read its scales from the dummy buffer (R6.68.113). The choice
+    of the half-staged tile and of its scale buffer is now one decision: a
+    tensor whose scale buffer cannot be made takes the f32-staged tile, and
+    the log says so once. RUNNER_METAL_INIT_INJECT_FAILURE=const:xsc fails the
+    buffer; the dense tile already fell back to the matvec on that failure."""
+    caps = json.loads(subprocess.run([exe, "--caps"], stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, timeout=60).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "metal":
+        pytest.skip("the Apple GPU's half-staged expert tile")
+    prefix = tmp_path / "f"
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "make-test-moe.py"), str(prefix)],
+                   check=True, stdout=subprocess.DEVNULL, cwd=tmp_path)
+    model = pathlib.Path(str(prefix) + ".gptoss-mxfp4.gguf")   # MXFP4 experts: a half twin
+    cpu = _embed(exe, model, ["--gpu", "off"])
+    half = dict(os.environ, RUNNER_METAL_MOE_MM="half")
+    for name, env in (("half", half),
+                      ("no-scales", dict(half, RUNNER_METAL_INIT_INJECT_FAILURE="const:xsc"))):
+        log = tmp_path / f"{name}.log"
+        dev = _embed(exe, model, [], env=env, log_path=log)
+        text = log.read_text(errors="replace")
+        assert "Metal backend" in text, (name, text[-2000:])
+        worst = _worst(cpu, dev)
+        assert worst < 1e-2, (name, worst)
+        if name == "half":
+            # the control reaches the tile this test is about
+            assert "grouped-MMA prefill kernels on (half-staged" in text, text[-2000:]
+        else:
+            # said once, and the experts still ran a tile: the f32-staged one
+            assert text.count("scale buffer could not be made") == 1, text[-2000:]
+            assert "grouped-MMA prefill kernels on (f32-staged" in text, text[-2000:]
