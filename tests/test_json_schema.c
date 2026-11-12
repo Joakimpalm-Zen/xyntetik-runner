@@ -190,6 +190,34 @@ static void test_json_close_partial_string(void) {
     jv_free(parsed);
 }
 
+// R6.68.101: a budget that ends right after '[' closes the array empty.
+// The closer wrote "null" first, an element the model never produced, where
+// ']' was a legal next byte: {"a":[ came back as {"a":[null]}.
+static void test_json_close_leaves_an_opened_array_empty(void) {
+    static const struct { const char *head, *want; } cases[] = {
+        { "{\"a\":[",        "]}"  },
+        { "{\"a\":[[",       "]]}" },
+        { "{\"a\":[1,[",     "]]}" },
+        { "{\"a\":[1,",      "null]}" },   // after a comma a value is owed
+        { "{\"a\":",         "null}" },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        jsonv v;
+        jsonv_init(&v);
+        assert(jsonv_feed(&v, cases[i].head, (int)strlen(cases[i].head)));
+        char out[64], full[128];
+        int n = jsonv_close(&v, out, sizeof(out));
+        if (n != (int)strlen(cases[i].want) || strcmp(out, cases[i].want) != 0) {
+            fprintf(stderr, "FAIL: %s closes with %s, want %s\n", cases[i].head, out, cases[i].want);
+            assert(0);
+        }
+        snprintf(full, sizeof(full), "%s%s", cases[i].head, out);
+        jv *parsed = json_parse(full, strlen(full));
+        assert(parsed != NULL);
+        jv_free(parsed);
+    }
+}
+
 static void test_schema_required_close(void) {
     const char *src =
         "{\"type\":\"object\",\"properties\":{"
@@ -3575,6 +3603,7 @@ int main(void) {
     test_json_rejects_duplicate_object_keys();
     test_escapes_are_paired_and_closable();
     test_json_close_partial_string();
+    test_json_close_leaves_an_opened_array_empty();
     test_schema_required_close();
     test_schema_close_fits_a_long_enum_member();
     test_map_refuses_a_duplicate_key_spelling();
