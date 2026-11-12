@@ -269,6 +269,11 @@ typedef struct {
     // the architecture's row (arch.h), looked up once at admission; never
     // NULL on a loaded model (an unknown name gets the unknown row)
     const arch_desc *ad;
+    // R6.68.29: a plan made for --info fit (model_plan): its binders keep the
+    // first refusal here (bind_err) and print no informational line; a load
+    // clears it before its own plan
+    bool      plan_only;
+    char      plan_why[240];
     bool      agent_profile;
     uint32_t  agent_protocol_version, agent_tokenizer_version;
     const char *agent_schema_id, *agent_schema_digest;
@@ -276,6 +281,10 @@ typedef struct {
     uint64_t  n_agent_required_features;
     int       n_layer, n_embd, n_head, n_head_kv, head_dim, n_ff;
     int       n_vocab, n_ctx_train, rope_dim;
+    // the longest context this file's admission covers, 0 for none: a
+    // qwen4exp file's indexer top_k, the sparse attention this build runs
+    // dense (R6.68.55; model_ctx_admit applies it to a load and to the fit)
+    int       ctx_cap;
     // How /v1/embeddings reads a vector out: {arch}.pooling_type, llama.cpp's
     // enum (0 none, 1 mean, 2 cls, 3 last, 4 rank). Absent reads as 0, and
     // 0 or 1 pool the mean; model_embed implements 3 as the last position.
@@ -943,8 +952,9 @@ int       gpu_plan_runs(const uint64_t *off, const uint64_t *len, int n, uint64_
                         uint64_t *lo, uint64_t *hi);
 int       gpu_plan_prefix(const uint64_t *cost, int n, int cap, uint64_t budget,
                           uint64_t *used);
-bool      gpu_plan_full_split(int *layers, int n_layer, uint64_t used,
-                              uint64_t tail, uint64_t budget, bool *gave_back);
+bool      gpu_plan_full_split(int *layers, int n_layer, uint64_t *used,
+                              const uint64_t *cost, uint64_t tail, uint64_t budget,
+                              bool *gave_back);
 int       gpu_plan_expert_banks(const bool *is_moe, const uint64_t *bank,
                                 int layers, uint64_t owed, uint64_t budget,
                                 uint64_t *used, bool *host, int trim,
@@ -1483,6 +1493,10 @@ typedef struct {
     // only when `mtp` (--mtp) would bind them
     int      n_mtp;
     bool     mtp;
+    // a GPU load with no placement named keeps the expert banks and their
+    // routing on the host (model_moe_router_host_default over the plan,
+    // R6.68.78): nemotron_h_moe's CUDA default
+    bool     moe_host_default;
     bool     sparse;             // routed-MoE: hot set is smaller than weights
     uint64_t weights;            // whole file, per the header
     uint64_t gathered;           // E-series token table: only selected rows are read
@@ -1515,6 +1529,13 @@ typedef struct {
     int      kv_ring_mode, n_batch;
     bool     kv_ring[4];
     int      kv_ring_rows, n_swa_layers;
+    // R6.68.29: why the loader would refuse this file, when model_fit_report
+    // returns false because its plan did (the loader's own reason); "" else
+    char     refused[240];
+    // why this build's GPU backend runs the file's routed experts on the CPU,
+    // or "" (model_moe_route_why over the plan's expert counts and the
+    // backend's caps, R6.68.67): the words the load prints
+    char     route_why[200];
 } model_fit;
 
 enum { FIT_KV_F16 = 0, FIT_KV_Q8, FIT_KV_K8V4, FIT_KV_FP4 };
@@ -1564,7 +1585,28 @@ enum { MODEL_GPU_REC_NONE, MODEL_GPU_REC_DELTANET, MODEL_GPU_REC_MAMBA2 };
 // Why a family runs on the CPU though a GPU is present (LayerNorm, lfm2,
 // grouped norms, flint, deepseek2 off CUDA), or NULL: the loader's decline
 // and --fit's answer for the same file.
+// R6.68.67: why a device bank whose router takes at most max_experts experts
+// and max_used picks a token cannot route this model (its words in buf, which
+// is returned), or NULL when it can. The load (cuda_admit, Metal's router
+// check) and --info fit give the same words. Inline, like model_kv_formats:
+// the backends' own tests compile them without model.c.
+static inline const char *model_moe_route_why(int n_expert, int n_used,
+                                              int max_experts, int max_used,
+                                              char *buf, size_t n) {
+    if (n_expert <= max_experts && n_used <= max_used) return NULL;
+    snprintf(buf, n, "this model routes %d of %d experts a token, and a device "
+             "bank routes at most %d of %d", n_used, n_expert, max_used, max_experts);
+    return buf;
+}
 const char *model_gpu_cpu_only_why(const char *arch, int norm_groups);
+// R6.68.78: whether a GPU load that names no placement keeps this model's
+// expert banks and their routing on the host (R3.43a.2): a nemotron_h_moe
+// router the device kernel cannot run (not plain softmax: another gating
+// function, a group limit, a weight scale), unless LatentMoE or per-layer
+// expert widths keep the model off the device anyway, or
+// RUNNER_CPU_MOE_DEFAULT=0. One rule over a loaded model or the fit's plan:
+// model_default_placement asks it for a load, --info fit for its plan.
+bool        model_moe_router_host_default(const model_t *m);
 uint64_t model_gpu_recurrent_cost(int kind, uint64_t n_rec, uint64_t conv_kernel,
                                   uint64_t inner, uint64_t state, uint64_t groups,
                                   uint64_t v_heads, uint64_t q_dim);

@@ -169,6 +169,7 @@ test-tray-macos-arc
 test-derive-oom.exe
 test-derive-oom.err
 derive-oom.gguf.quant-error.jsonl
+test-moe4-replay.jsonl
 derive-oom.gguf.type-plan.json
 test-quantize-oom-*
 test-moe-host-bridge

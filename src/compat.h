@@ -400,6 +400,12 @@ FILE *plat_env_file_get(plat_env_file *f, const char *env);
 // if the call is still running after `after_s` seconds; ended in time, it says
 // nothing. End returns whether the line was said, and frees the note. Begin
 // returns NULL when no watcher could start; end takes NULL and returns false.
+// A file's size, stable index and modification and creation times, without
+// reading it; false with errno in *err (R6.68.30, model_file_identity's
+// platform half)
+bool plat_file_identity(const char *path, uint64_t *size, uint64_t *ino,
+                        int64_t *mtime, int64_t *ctime, int *err);
+
 typedef struct plat_slow_note plat_slow_note;
 plat_slow_note *plat_slow_note_begin(FILE *out, const char *line, double after_s);
 bool            plat_slow_note_end(plat_slow_note *n);

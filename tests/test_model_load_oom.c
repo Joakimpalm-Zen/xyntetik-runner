@@ -25,6 +25,9 @@
 // the pattern of tests/test_instances_oom.c: the system headers come first,
 // so the macros rewrite only model.c's own calls (it allocates through
 // malloc, calloc and free alone). Every other object is the engine's own.
+// The fit's plan of each header (fit_plan, the metadata binders and the dry
+// tensor bind of R6.68.45) is swept the same way, and a load started under
+// the dry bind's flag is shown refused.
 // Fixture paths come from the command line (Makefile).
 #include <errno.h>
 #include <float.h>
@@ -301,6 +304,49 @@ static void sweep_adapter(const char *path, const model_params *p) {
     ck(alloc_live == live0, path, "freeing the model after the adapter sweeps releases every block", -1);
 }
 
+// R6.68.45: the fit's plan of the header (fit_plan: the metadata binders and
+// the dry tensor bind) with each of its allocations failed in turn. It is
+// refused or whole, and releasing it leaves no block, as a load's failures do.
+static void sweep_fit_plan(const char *path) {
+    gguf_file g;
+    if (!gguf_open_header(&g, path)) { ck(0, path, "the header opens", -1); return; }
+    static model_t pm;
+    long live0 = alloc_live;
+    fail_at = -1;
+    alloc_calls = 0;
+    bool ok = fit_plan(&g, &pm);
+    long n = alloc_calls;
+    ck(ok, path, "the fit plans the fixture", -1);
+    ck(ok && pm.layers != NULL, path, "the fit's plan ran the tensor binders", -1);
+    model_free_weights(&pm);
+    ck(alloc_live == live0, path, "a released plan leaves no block", -1);
+    for (long k = 0; k < n; k++) {
+        fail_at = k;
+        alloc_calls = 0;
+        ok = fit_plan(&g, &pm);
+        fail_at = -1;
+        ck(!ok, path, "a failed allocation refuses the plan", k);
+        model_free_weights(&pm);
+        ck(alloc_live == live0, path, "a failed plan leaves no block", k);
+    }
+    gguf_close(&g);
+}
+
+// R6.68.45: a load started under the dry bind's flag is refused before it
+// opens the file, so a load can never bind placeholders.
+static void dry_flag_refuses_a_load(const char *path, const model_params *p) {
+    static model_t m, dry;
+    long live0 = alloc_live;
+    t_bind_dry = &dry;
+    bool ok = model_load(&m, path, p);
+    t_bind_dry = NULL;
+    ck(!ok, path, "a load under the dry bind's flag is refused", -1);
+    if (ok) model_free(&m);
+    ck(alloc_live == live0, path, "the refused load leaves no block", -1);
+    ck(model_load(&m, path, p), path, "the same load after the flag is cleared succeeds", -1);
+    model_free(&m);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: test-model-load-oom FIXTURE.gguf...\n");
@@ -311,10 +357,13 @@ int main(int argc, char **argv) {
         sweep_alone(argv[i], &p);
         sweep_with_holder(argv[i], &p);
         sweep_adapter(argv[i], &p);
+        sweep_fit_plan(argv[i]);
     }
+    dry_flag_refuses_a_load(argv[1], &p);
     if (g_fail) { fprintf(stderr, "test-model-load-oom FAILED\n"); return 1; }
-    fprintf(stderr, "test-model-load-oom: %d fixtures, every allocation of a load and of the "
-            "adapter lifecycle failed in turn, no leaks\n",
+    fprintf(stderr, "test-model-load-oom: %d fixtures, every allocation of a load, of the "
+            "adapter lifecycle and of the fit's plan failed in turn, no leaks; a load "
+            "under the dry bind's flag refused\n",
             argc - 1);
     return 0;
 }

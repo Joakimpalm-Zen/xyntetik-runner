@@ -76,6 +76,19 @@ def parse_smi_table(text, pid=None):
     return sum(devices) if devices else None
 
 
+class Reference:
+    """The reference reply as a fresh prefill gives it and as a turn over
+    reused cache rows gives it (Soak.reference)."""
+    def __init__(self, fresh, reused):
+        self.fresh, self.reused = fresh, reused
+
+    def __contains__(self, key):
+        return key is not None and key in (self.fresh, self.reused)
+
+    def __getitem__(self, sl):          # the text shown in a log line
+        return self.reused[sl]
+
+
 class Soak:
     def __init__(self, a):
         self.a = a
@@ -335,20 +348,39 @@ class Soak:
             c.close()
 
     def reference(self, phase, model=None):
-        s, j, raw = self.ask(self.chat_body(self.a.prompt, model))
-        key = self.reply_key(j) if s == 200 else None
-        if key is None:
-            self.finding(phase, "the reference request failed", status=s, body=raw[:300])
-        return key
+        """The reference reply, taken twice: once on a fresh prefill and once
+        more, when the slot reuses the first turn's cache rows. On some device
+        routes the two paths do not compute the same bits and a near-tie in
+        the reply can fall either way (seen on CUDA with a 4B model: the
+        soak's every later turn then "changed" from a reference only the very
+        first turn could give). Both are the reference; what the soak holds a
+        later turn to is that it equals one of them. Whether they differ is
+        reported, not judged."""
+        keys = []
+        for _ in range(2):
+            s, j, raw = self.ask(self.chat_body(self.a.prompt, model))
+            key = self.reply_key(j) if s == 200 else None
+            if key is None:
+                self.finding(phase, "the reference request failed", status=s, body=raw[:300])
+                return None
+            keys.append(key)
+        ref = Reference(keys[0], keys[1])
+        self.report.setdefault("reference", {})[model or "default"] = {
+            "fresh_equals_reused": keys[0] == keys[1]}
+        if keys[0] != keys[1]:
+            print("soak: note: a fresh prefill and the same turn over reused cache rows "
+                  "reply differently here; either counts as the reference", flush=True)
+        return ref
 
     def same_as(self, phase, ref, what, model=None):
         if ref is None:
             return False
         s, j, raw = self.ask(self.chat_body(self.a.prompt, model))
         key = self.reply_key(j) if s == 200 else None
-        if key != ref:
+        if key not in ref:
             self.finding(phase, f"the reference reply changed {what}", status=s,
-                         expected=ref[:300], got=(key or raw)[:300])
+                         expected=ref.reused[:300], expected_fresh=ref.fresh[:300],
+                         got=(key or raw)[:300])
             return False
         return True
 
@@ -500,8 +532,11 @@ class Soak:
         ctx, rows = self.ctx, []
         cases = [("at the window", ctx, 4, (200, 400)),
                  ("one token over", ctx + 1, 4, (400,)),
-                 ("one under, one token asked", ctx - 1, 1, (200, 400)),
-                 ("generation runs into the window", ctx - 8, 64, (200, 400))]
+                 # a prompt that leaves room is served: one token of room and
+                 # one asked is the edge itself, and a 400 there is a finding
+                 # (the lab read "at the window" as the only edge case, 11-12)
+                 ("one under, one token asked", ctx - 1, 1, (200,)),
+                 ("generation runs into the window", ctx - 8, 64, (200,))]
         for label, n, max_new, allowed in cases:
             s, j, raw = self.ask({"prompt": self.filler(n, 900 + n % 7), "max_tokens": max_new,
                                   "temperature": 0}, "/v1/completions")

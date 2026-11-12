@@ -124,3 +124,61 @@ def test_qwen35_cuda_failure_after_recurrent_state_accumulates(tmp_path):
     assert b"injected CUDA runtime failure at device forward 2" in late.stderr, \
         late.stderr.decode(errors="replace")
     assert late.stdout == cpu.stdout
+
+
+def test_qwen35_cuda_failure_keeps_the_scored_logprobs(tmp_path):
+    """The two tests above compare generated text, and this fixture's text
+    does not see the recurrent state: it prints the same letter whatever the
+    fold holds, so a rollback that lost or doubled a token's update would
+    pass them. --score's log-probabilities do see it. The same text after
+    another prefix moves them by up to about 1e-2 on this fixture, while a
+    device and the host agree to about 1e-6, and --score runs one forward a
+    token, so RUNNER_CUDA_INJECT_FAILURE=N fails token N's forward with the
+    state live. The failure lands after the device changed the state; the
+    host must restore the pre-forward snapshot before it recomputes that
+    token, and then every log-probability stays within 1e-4 of the CPU's."""
+    caps = json.loads(subprocess.run(
+        [RUNNER, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
+        check=True, text=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("CUDA device not available")
+
+    model = tmp_path / "ornith-score-fail.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", model],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    text = "the runner keeps its state"
+
+    def score(prompt, gpu, fail=None):
+        env = dict(os.environ)
+        env.pop("RUNNER_CUDA_INJECT_FAILURE", None)
+        if fail is not None:
+            env["RUNNER_CUDA_INJECT_FAILURE"] = str(fail)
+        p = subprocess.run([RUNNER, "-m", model, "--score", "-p", prompt,
+                            "-c", "128", "-t", "2", "--gpu", gpu],
+                           cwd=ROOT, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=60, env=env)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")
+        return json.loads(p.stdout), p.stderr
+
+    def worst(a, b):
+        assert a["tokens"] == b["tokens"]
+        return max(abs(x - y) for x, y in zip(a["logprobs"], b["logprobs"]))
+
+    cpu, _ = score(text, "off")
+    # the numbers see the fold: the text's last 12 positions after another
+    # prefix (the bound below means something only if this holds)
+    other, _ = score("zq " + text, "off")
+    moved = max(abs(x - y) for x, y in
+                zip(cpu["logprobs"][-12:], other["logprobs"][-12:]))
+    assert moved > 1e-3, moved
+
+    dev, _ = score(text, "auto")
+    assert dev["score_route"]["backend"] == "cuda", dev["score_route"]
+    assert worst(dev, cpu) < 1e-4, worst(dev, cpu)
+
+    n = cpu["n_scored"]
+    for at in (2, n // 2, n - 1):
+        failed, err = score(text, "auto", at)
+        said = f"injected CUDA runtime failure at device forward {at} ".encode()
+        assert said in err, err.decode(errors="replace")
+        assert worst(failed, cpu) < 1e-4, (at, worst(failed, cpu))

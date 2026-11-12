@@ -15,6 +15,7 @@
 #include "runner.h"
 #include "upload_report.h"
 #include "kernel_args.h"   // shared with src/kernels.cu — see the header
+#include "gpu_tables.h"    // the per-layer tables and mixer weights, one list (R6.68.29)
 #include "compat.h"     // plat_ram_available_bytes for the unified-pool budget
 #include <stdatomic.h>
 
@@ -1136,8 +1137,13 @@ bool gpu_quant_ok(int type) { return gpu_type_ok(type); }
 // Expert tensor types the indirect MoE matvecs (k_moe_mv_*) cover. A type
 // outside this set is not an error — that model keeps the eager per-expert
 // path, exactly as before the device-routing work.
-// experts per token the device router (k_moe_route) holds in local memory
-enum { MOE_ROUTE_MAX = 512 };
+// experts per token the device router (k_moe_route) holds in local memory,
+// and the picks a device route selects (the fixed sel[]/selw[] rows and the
+// selection buffers cuda_alloc_moe sizes). A model past either is refused a
+// device bank (cuda_admit, moe_bank_device_ok, R6.68.67): every route clamps
+// to these, and a clamped route answers among a subset of the experts
+// without a word, the 2026-10-07 defect at the old cap of 256.
+enum { MOE_ROUTE_MAX = 512, MOE_MAX_USED = 256 };
 
 static bool moe_indirect_type_ok(int type) {
     switch (type) {
@@ -1255,6 +1261,11 @@ static bool moe_bank_device_ok(const model_t *m, int l) {
     // host, where model_moe_ffn_cpu routes it with the CPU's moe_route
     // (R3.43a).
     if (ly->is_moe && (!model_moe_router_is_plain_any_norm(m) || ly->exp_probs_b))
+        return false;
+    // more experts or picks than a device route takes: it would route among
+    // a clamped set (R6.68.67)
+    if (ly->is_moe && (ly->n_expert > MOE_ROUTE_MAX || m->n_expert > MOE_ROUTE_MAX ||
+                       m->n_expert_used > MOE_MAX_USED))
         return false;
     if (!ly->is_moe || m->n_ff_shexp <= 0) return true;
     if (m->ffn_relu2) return false;
@@ -1514,6 +1525,12 @@ bool gpu_moe_ok(void) {
 // attention weights), so its sequences decode one at a time.
 bool gpu_removed_sublayers_ok(void) { return true; }
 
+bool gpu_moe_route_caps(int *max_experts, int *max_used) {
+    *max_experts = MOE_ROUTE_MAX;
+    *max_used = MOE_MAX_USED;
+    return true;
+}
+
 // the DeltaNet layers run on the device (gpu_q35_recurrent), adapters too
 bool gpu_qwen35_ok(void) { return true; }
 
@@ -1630,48 +1647,80 @@ bool gpu_shared_weights_resident(const model_t *m) {
     return hit;
 }
 
+// A row of gpu_tables.h's table list and the gpu_weights pointer table it
+// lives in. No default case: -Wswitch refuses a row without its line here.
+static CUdeviceptr **cuda_table(gpu_weights *w, gpu_table t) {
+    switch (t) {
+    case GT_ATTN_NORM:       return &w->attn_norm;
+    case GT_HC_ATTN_NORM:    return &w->hc_an;
+    case GT_HC_FFN_NORM:     return &w->hc_fn;
+    case GT_FFN_NORM:        return &w->ffn_norm;
+    case GT_BQ:              return &w->bq;
+    case GT_BK:              return &w->bk;
+    case GT_BV:              return &w->bv;
+    case GT_BO:              return &w->bo;
+    case GT_QNORM:           return &w->qn;
+    case GT_KNORM:           return &w->kn;
+    case GT_MLA_KV_NORM:     return &w->mla_kvn;
+    case GT_MLA_KVB:         return &w->mla_kvb;
+    case GT_POST_ATTN_NORM:  return &w->pan;
+    case GT_POST_FFN_NORM:   return &w->pfn;
+    case GT_PLE_POST_NORM:   return &w->ple_pn;
+    case GT_SINKS:           return &w->sinks;
+    case GT_MOE_ROUTER_B:    return &w->gib;
+    case GT_MOE_GATE_B:      return &w->geb;
+    case GT_MOE_UP_B:        return &w->ueb;
+    case GT_MOE_DOWN_B:      return &w->deb;
+    case GT_SSM_DT:          return &w->ssm_dt;
+    case GT_SSM_A:           return &w->ssm_a;
+    case GT_SSM_NORM:        return &w->ssm_norm;
+    case GT_SSM_GNORM:       return &w->ssm_gnorm;
+    case GT_SSM_D:           return &w->ssm_D;
+    case GT_SSM_CONV_B:      return &w->ssm_conv_b;
+    case GT_G_POST_NORM1:    return &w->g_pn1;
+    case GT_G_PRE_NORM2:     return &w->g_prn2;
+    case GT_G_POST_NORM2:    return &w->g_pn2;
+    case GT_G_ROUTER_SCALE:  return &w->g_gis;
+    case GT_G_DOWN_SCALE:    return &w->g_dsc;
+    case GT_HOT_BANK:        return &w->hot_bank;
+    case GT_COUNT:           break;
+    }
+    return NULL;
+}
+
+// Whether layer l's table of row `d` must exist (the uploader's check): by the
+// row's need, over the layer as the binders and the placement left it.
+static bool cuda_table_needed(const gpu_table_desc *d, const model_t *m, const layer_t *ly,
+                              bool moe_dev) {
+    // read as bytes: the rows name host fields of their own pointer types, and
+    // a load through a void * lvalue would access them through another type
+    // (undefined under the aliasing rules this build optimizes under)
+    const void *host = NULL;
+    if (d->host != GT_NO_HOST) memcpy(&host, (const char *)ly + d->host, sizeof host);
+    switch (d->need) {
+    case GT_NEED_HOST:      return host != NULL;
+    case GT_NEED_HC:        return m->hyper_conn;
+    case GT_NEED_REC:       return ly->recurrent;
+    case GT_NEED_REC_DN:    return ly->recurrent && m->qwen35;
+    case GT_NEED_REC_M2:    return ly->recurrent && !m->qwen35;
+    case GT_NEED_MOE_DEV:   return moe_dev && host != NULL;
+    case GT_NEED_GEMMA_MOE: return ly->moe_gemma;
+    case GT_NEED_NONE:      return false;
+    }
+    return false;
+}
+
 static void shared_destroy(gpu_weights *w) {
     if (!w) return;
     if (w->ctx) cu.CtxSetCurrent(w->ctx);
-    // every table slot, the bound MTP block's (index n_layer) included
-    for (int l = 0; l < w->n_tab; l++) {
-        CUdeviceptr bufs[] = {
-            w->attn_norm ? w->attn_norm[l] : 0,
-            w->ffn_norm  ? w->ffn_norm[l]  : 0,
-            w->hc_an ? w->hc_an[l] : 0, w->hc_fn ? w->hc_fn[l] : 0,
-            w->ssm_D ? w->ssm_D[l] : 0, w->ssm_conv_b ? w->ssm_conv_b[l] : 0,
-            w->ssm_gnorm ? w->ssm_gnorm[l] : 0,
-            w->bq ? w->bq[l] : 0, w->bk ? w->bk[l] : 0,
-            w->bv ? w->bv[l] : 0, w->bo ? w->bo[l] : 0,
-            w->qn ? w->qn[l] : 0, w->kn ? w->kn[l] : 0,
-            w->mla_kvn ? w->mla_kvn[l] : 0, w->mla_kvb ? w->mla_kvb[l] : 0,
-            w->pan ? w->pan[l] : 0, w->pfn ? w->pfn[l] : 0,
-            w->g_pn1 ? w->g_pn1[l] : 0, w->g_prn2 ? w->g_prn2[l] : 0,
-            w->g_pn2 ? w->g_pn2[l] : 0, w->g_gis ? w->g_gis[l] : 0,
-            w->g_dsc ? w->g_dsc[l] : 0,
-            w->ssm_dt ? w->ssm_dt[l] : 0, w->ssm_a ? w->ssm_a[l] : 0,
-            w->ssm_norm ? w->ssm_norm[l] : 0,
-            w->ple_pn ? w->ple_pn[l] : 0,
-            w->sinks ? w->sinks[l] : 0,
-            w->gib ? w->gib[l] : 0, w->geb ? w->geb[l] : 0,
-            w->ueb ? w->ueb[l] : 0, w->deb ? w->deb[l] : 0,
-            w->hot_bank ? w->hot_bank[l] : 0,
-        };
-        for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
-            if (bufs[i]) cu.MemFree(bufs[i]);
+    // every table slot, the bound MTP block's (index n_layer) included, then
+    // the pointer tables: gpu_tables.h's rows, so a table added there is freed
+    for (int t = 0; t < GT_COUNT; t++) {
+        CUdeviceptr *tab = *cuda_table(w, (gpu_table)t);
+        for (int l = 0; tab && l < w->n_tab; l++)
+            if (tab[l]) cu.MemFree(tab[l]);
+        free(tab);
     }
-    free(w->attn_norm); free(w->ffn_norm);
-    free(w->bq); free(w->bk); free(w->bv); free(w->bo);
-    free(w->qn); free(w->kn); free(w->mla_kvn); free(w->mla_kvb);
-    free(w->pan); free(w->pfn); free(w->ple_pn);
-    free(w->g_pn1); free(w->g_prn2); free(w->g_pn2); free(w->g_gis);
-    free(w->g_dsc);
-    free(w->ssm_dt); free(w->ssm_a); free(w->ssm_norm);
-    free(w->hc_an); free(w->hc_fn);
-    free(w->ssm_D); free(w->ssm_conv_b); free(w->ssm_gnorm);
-    free(w->sinks);
-    free(w->gib); free(w->geb); free(w->ueb); free(w->deb);
-    free(w->hot_bank);
     for (int i = 0; i < w->n_bindings; i++)
         if (w->bindings[i].device) cu.MemFree(w->bindings[i].device);
     free(w->bindings);
@@ -1735,25 +1784,20 @@ static size_t expert_plan_bytes(const layer_t *ly, int n_expert, bool bound) {
 // prefix's reach had neither the hyper-connection mixers nor the shared
 // expert. tests/test_cuda_tensor_roles.py holds every tensor field of
 // layer_t to one of the lists or a named host-side role.
-enum { LAYER_MIXER_MAX = 22 };
+enum { LAYER_MIXER_MAX = GT_N_MIXER };
 
 // The mixer side, on the device whatever the FFN does: attention or the
 // recurrent mixer, the hyper-connection stream mixers (four projections and
 // two injects per layer: 1.27 GB on Qwen3.8-Flash-Next), the E-series
 // per-layer embedding projections. Absent tensors are left out.
 static int layer_mixer_tensors(const layer_t *ly, gguf_tensor **out) {
-    gguf_tensor *ts[LAYER_MIXER_MAX] = {
-        ly->ple_gate, ly->ple_proj, ly->wq, ly->wk, ly->wv, ly->wo, ly->wqkv,
-        ly->wq_gate, ly->ssm_in, ly->ssm_conv, ly->ssm_beta, ly->ssm_alpha,
-        ly->ssm_out, ly->hc_attn_down, ly->hc_attn_up, ly->hc_attn_inject,
-        ly->hc_ffn_down, ly->hc_ffn_up, ly->hc_ffn_inject,
-        // deepseek2's multi-head latent attention (R4.4.5): the q-lora down
-        // projection and the latent pair; attn_q/attn_output ride wq/wo.
-        // CUDA refuses the architecture until step (c) runs it on the device
-        ly->wq_a, ly->wkv_a, ly->wkv_b };
+    // gpu_tables.h's mixer rows, in their order: the fit prices the same list
+    const gpu_mixer_desc *rows = gpu_mixer_rows();
     int n = 0;
-    for (int i = 0; i < LAYER_MIXER_MAX; i++)
-        if (ts[i]) out[n++] = ts[i];
+    for (int i = 0; i < LAYER_MIXER_MAX; i++) {
+        gguf_tensor *t = *(gguf_tensor *const *)((const char *)ly + rows[i].field);
+        if (t) out[n++] = t;
+    }
     return n;
 }
 
@@ -2330,7 +2374,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
     // reserve above could not be met, hand the last layer back to the CPU
     // so the split is honestly partial rather than internally inconsistent.
     bool gave_back = false;
-    bool full = gpu_plan_full_split(&G, m->n_layer, used, plan_full_extra(m, P),
+    bool full = gpu_plan_full_split(&G, m->n_layer, &used, cost, plan_full_extra(m, P),
                                     vram_budget, &gave_back);
     if (gave_back) {
         fprintf(stderr, "gpu: output weights do not fit alongside the "
@@ -3204,75 +3248,16 @@ static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
     // one slot past the backbone for the NextN/MTP block when it is bound
     const int n_tab = m->n_layer + (m->mtp_ready ? 1 : 0);
     w->n_tab = n_tab;
-    w->attn_norm = calloc(n_tab, sizeof(CUdeviceptr));
-    w->hc_an = calloc(n_tab, sizeof(CUdeviceptr));
-    w->hc_fn = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ffn_norm  = calloc(n_tab, sizeof(CUdeviceptr));
-    w->bq = calloc(n_tab, sizeof(CUdeviceptr));
-    w->bk = calloc(n_tab, sizeof(CUdeviceptr));
-    w->bv = calloc(n_tab, sizeof(CUdeviceptr));
-    w->bo = calloc(n_tab, sizeof(CUdeviceptr));
-    w->qn = calloc(n_tab, sizeof(CUdeviceptr));
-    w->kn = calloc(n_tab, sizeof(CUdeviceptr));
-    w->mla_kvn = calloc(n_tab, sizeof(CUdeviceptr));
-    w->mla_kvb = calloc(n_tab, sizeof(CUdeviceptr));
-    w->pan = calloc(n_tab, sizeof(CUdeviceptr));
-    w->pfn = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ple_pn = calloc(n_tab, sizeof(CUdeviceptr));
-    w->g_pn1  = calloc(n_tab, sizeof(CUdeviceptr));
-    w->g_prn2 = calloc(n_tab, sizeof(CUdeviceptr));
-    w->g_pn2  = calloc(n_tab, sizeof(CUdeviceptr));
-    w->g_gis  = calloc(n_tab, sizeof(CUdeviceptr));
-    w->g_dsc  = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ssm_dt   = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ssm_a    = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ssm_norm = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ssm_D      = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ssm_conv_b = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ssm_gnorm  = calloc(n_tab, sizeof(CUdeviceptr));
-    w->sinks    = calloc(n_tab, sizeof(CUdeviceptr));
-    w->gib      = calloc(n_tab, sizeof(CUdeviceptr));
-    w->geb      = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ueb      = calloc(n_tab, sizeof(CUdeviceptr));
-    w->deb      = calloc(n_tab, sizeof(CUdeviceptr));
-    w->hot_bank = calloc(n_tab, sizeof(CUdeviceptr));
-#define REQUIRE_PTR_TABLE(ptr, label) do { if (!(ptr)) { \
-        fprintf(stderr, "gpu: CUDA shared per-layer pointer-table " \
-                "allocation failed (%s) — using CPU\n", label); \
-        goto fail; \
-    } } while (0)
-    REQUIRE_PTR_TABLE(w->attn_norm, "attn_norm");
-    REQUIRE_PTR_TABLE(w->hc_an, "hc_attn_norm");
-    REQUIRE_PTR_TABLE(w->hc_fn, "hc_ffn_norm");
-    REQUIRE_PTR_TABLE(w->ffn_norm, "ffn_norm");
-    REQUIRE_PTR_TABLE(w->bq, "attn_q bias");
-    REQUIRE_PTR_TABLE(w->bk, "attn_k bias");
-    REQUIRE_PTR_TABLE(w->bv, "attn_v bias");
-    REQUIRE_PTR_TABLE(w->bo, "attn_output bias");
-    REQUIRE_PTR_TABLE(w->qn, "attn_q_norm");
-    REQUIRE_PTR_TABLE(w->kn, "attn_k_norm");
-    REQUIRE_PTR_TABLE(w->mla_kvn, "attn_kv_a_norm");
-    REQUIRE_PTR_TABLE(w->mla_kvb, "attn_kv_b f32");
-    REQUIRE_PTR_TABLE(w->pan, "post_attention_norm");
-    REQUIRE_PTR_TABLE(w->pfn, "post_ffn_norm");
-    REQUIRE_PTR_TABLE(w->ple_pn, "per-layer embedding post_norm");
-    REQUIRE_PTR_TABLE(w->g_pn1, "Gemma post_ffw_norm_1");
-    REQUIRE_PTR_TABLE(w->g_prn2, "Gemma pre_ffw_norm_2");
-    REQUIRE_PTR_TABLE(w->g_pn2, "Gemma post_ffw_norm_2");
-    REQUIRE_PTR_TABLE(w->g_gis, "Gemma router input scale");
-    REQUIRE_PTR_TABLE(w->g_dsc, "Gemma expert down scale");
-    REQUIRE_PTR_TABLE(w->ssm_dt, "SSM dt");
-    REQUIRE_PTR_TABLE(w->ssm_a, "SSM A");
-    REQUIRE_PTR_TABLE(w->ssm_norm, "SSM norm");
-    REQUIRE_PTR_TABLE(w->ssm_D, "Mamba D");
-    REQUIRE_PTR_TABLE(w->ssm_conv_b, "Mamba conv bias");
-    REQUIRE_PTR_TABLE(w->ssm_gnorm, "Mamba gated norm");
-    REQUIRE_PTR_TABLE(w->sinks, "attention sinks");
-    REQUIRE_PTR_TABLE(w->gib, "MoE router bias");
-    REQUIRE_PTR_TABLE(w->geb, "MoE gate bias");
-    REQUIRE_PTR_TABLE(w->ueb, "MoE up bias");
-    REQUIRE_PTR_TABLE(w->deb, "MoE down bias");
-#undef REQUIRE_PTR_TABLE
+    // one pointer table per gpu_tables.h row, each n_tab slots
+    const gpu_table_desc *rows = gpu_table_rows();
+    for (int t = 0; t < GT_COUNT; t++)
+        *cuda_table(w, (gpu_table)t) = calloc(n_tab, sizeof(CUdeviceptr));
+    for (int t = 0; t < GT_COUNT; t++)
+        if (!*cuda_table(w, (gpu_table)t)) {
+            fprintf(stderr, "gpu: CUDA shared per-layer pointer-table "
+                    "allocation failed (%s) — using CPU\n", rows[t].table_label);
+            goto fail;
+        }
     if (moe_any_on_device(m)) {
         // all-ones per-expert scale table for archs without a down-
         // projection scale — k_moe_actmul multiplies unconditionally
@@ -3384,63 +3369,12 @@ static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
         // nemotron_h SSM or attention block carries none (skip_ffn), and
         // demanding its upload here silently pushed every nemotron_h
         // model to the CPU.
-#define REQUIRE_UPLOAD(cond, label) do { if (cond) { \
-            fprintf(stderr, "gpu: CUDA shared upload is missing %s in " \
-                    "blk.%d — using CPU\n", label, l); \
-            goto fail; \
-        } } while (0)
-        REQUIRE_UPLOAD(ly->attn_norm_w && !w->attn_norm[l], "attention norm");
-        REQUIRE_UPLOAD(m->hyper_conn && !w->hc_an[l], "hc attention mixer norm");
-        REQUIRE_UPLOAD(m->hyper_conn && !w->hc_fn[l], "hc FFN mixer norm");
-        REQUIRE_UPLOAD(ly->ffn_norm_w && !w->ffn_norm[l], "FFN norm");
-        REQUIRE_UPLOAD(ly->bq && !w->bq[l], "Q bias");
-        REQUIRE_UPLOAD(ly->bk && !w->bk[l], "K bias");
-        REQUIRE_UPLOAD(ly->bv && !w->bv[l], "V bias");
-        REQUIRE_UPLOAD(ly->bo && !w->bo[l], "attention output bias");
-        REQUIRE_UPLOAD(ly->qnorm_w && !w->qn[l], "Q norm");
-        REQUIRE_UPLOAD(ly->knorm_w && !w->kn[l], "K norm");
-        REQUIRE_UPLOAD(ly->kv_a_norm_w && !w->mla_kvn[l], "latent norm");
-        REQUIRE_UPLOAD(ly->mla_kvb && !w->mla_kvb[l], "attn_kv_b f32");
-        REQUIRE_UPLOAD(ly->post_attn_norm_w && !w->pan[l],
-                       "post-attention norm");
-        REQUIRE_UPLOAD(ly->post_ffn_norm_w && !w->pfn[l],
-                       "post-FFN norm");
-        REQUIRE_UPLOAD(ly->ple_post_norm && !w->ple_pn[l],
-                       "per-layer embedding post-norm");
-        REQUIRE_UPLOAD(ly->attn_sinks && !w->sinks[l],
-                       "attention sinks");
-        REQUIRE_UPLOAD(moe_dev && ly->ffn_gate_inp_b && !w->gib[l],
-                       "MoE router bias");
-        REQUIRE_UPLOAD(moe_dev && ly->ffn_gate_exps_b && !w->geb[l],
-                       "MoE gate bias");
-        REQUIRE_UPLOAD(moe_dev && ly->ffn_up_exps_b && !w->ueb[l],
-                       "MoE up bias");
-        REQUIRE_UPLOAD(moe_dev && ly->ffn_down_exps_b && !w->deb[l],
-                       "MoE down bias");
-        // Per-family recurrent tables: Qwen3.5 fills ssm_norm; Mamba-2
-        // fills gated norm/D/conv bias instead. Keep each validation beside
-        // the same family predicate that filled it above.
-        REQUIRE_UPLOAD(ly->recurrent && !w->ssm_dt[l], "SSM dt");
-        REQUIRE_UPLOAD(ly->recurrent && !w->ssm_a[l], "SSM A");
-        REQUIRE_UPLOAD(ly->recurrent && m->qwen35 && !w->ssm_norm[l],
-                       "SSM norm");
-        REQUIRE_UPLOAD(ly->recurrent && !m->qwen35 && !w->ssm_gnorm[l],
-                       "Mamba gated norm");
-        REQUIRE_UPLOAD(ly->recurrent && !m->qwen35 && !w->ssm_D[l],
-                       "Mamba D");
-        REQUIRE_UPLOAD(ly->recurrent && !m->qwen35 && !w->ssm_conv_b[l],
-                       "Mamba conv bias");
-        REQUIRE_UPLOAD(ly->moe_gemma && !w->g_pn1[l],
-                       "Gemma post-FFN norm 1");
-        REQUIRE_UPLOAD(ly->moe_gemma && !w->g_prn2[l],
-                       "Gemma pre-FFN norm 2");
-        REQUIRE_UPLOAD(ly->moe_gemma && !w->g_pn2[l],
-                       "Gemma post-FFN norm 2");
-        REQUIRE_UPLOAD(ly->moe_gemma && !w->g_gis[l],
-                       "Gemma router input scale");
-        REQUIRE_UPLOAD(ly->moe_gemma && !w->g_dsc[l],
-                       "Gemma expert down scale");
-#undef REQUIRE_UPLOAD
+        for (int t = 0; t < GT_COUNT; t++)
+            if (cuda_table_needed(&rows[t], m, ly, moe_dev) && !(*cuda_table(w, (gpu_table)t))[l]) {
+                fprintf(stderr, "gpu: CUDA shared upload is missing %s in "
+                        "blk.%d — using CPU\n", rows[t].upload_label, l);
+                goto fail;
+            }
     }
     return true;
 fail:
@@ -3660,6 +3594,17 @@ static bool cuda_admit(model_t *m) {
     // refuse only when a bank is on the device; --cpu-moe, and its auto fit,
     // which places no bank moe_bank_device_ok refuses, keep these models on
     // the device.
+    // Every device route takes at most MOE_ROUTE_MAX experts and MOE_MAX_USED
+    // picks and clamps past them, so such a router would answer among a
+    // subset of its experts on the device alone (R6.68.67).
+    char route_why[200];
+    if (m->n_expert > 0 && moe_any_on_device(m) &&
+        model_moe_route_why(m->n_expert, m->n_expert_used, MOE_ROUTE_MAX, MOE_MAX_USED,
+                            route_why, sizeof route_why)) {
+        fprintf(stderr, "gpu: %s, running on CPU (--cpu-moe keeps the experts and "
+                "their routing on the host)\n", route_why);
+        return false;
+    }
     if (m->n_expert > 0 && moe_any_on_device(m) && !model_moe_router_is_plain_any_norm(m)) {
         fprintf(stderr, "gpu: this model's MoE router (gating=%d groups=%d "
                 "norm_w=%d scale=%g) has no device kernel, running on CPU "
@@ -4104,7 +4049,7 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
         // the eager fallback (which uses column/slot 0 only)
         int used_c = m->n_expert_used;
         if (used_c < 1) used_c = 1;
-        if (used_c > 256) used_c = 256;
+        if (used_c > MOE_MAX_USED) used_c = MOE_MAX_USED;
         int rows = used_c > g->win ? used_c : g->win;
         size_t gw = (size_t)m->n_ff_exp * (m->moe_gemma ? 2 : 1);
         if (gw < 1) gw = 1;
@@ -6646,7 +6591,6 @@ static bool gpu_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     uint64_t gstride = (uint64_t)nff *
@@ -6820,7 +6764,6 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     if (!enc_router(g, m, ly->ffn_gate_inp, g->xb, xdim, g->moe_logits, n_embd, ne,
@@ -6874,7 +6817,6 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
                                       int l, int tn, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
@@ -6961,7 +6903,6 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
     // (512 experts, eager path because of its IQ2_S/IQ3_S/IQ4_XS expert
     // tensors) among its first 256 experts only -- --score vs the CPU path
     // 444/480, vs llama.cpp 446/480 where the CPU path has 472 (2026-10-07).
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     // A small tile (a speculative verify) routes all its rows in one launch
@@ -7177,7 +7118,6 @@ static bool gpu_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly, int tn,
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     // routing as the fused path does it: the router with each column's
@@ -7457,7 +7397,6 @@ static bool gpu_gemma_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
                                     int l, int tn, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;  // dff = dense shared-FFN size
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
@@ -7517,7 +7456,6 @@ static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int
                               int tn, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;  // dff = dense shared-FFN size
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
@@ -7614,7 +7552,6 @@ static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
                                    int l, int tn, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;

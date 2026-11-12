@@ -47,7 +47,7 @@ SOURCE_RULES = [
     ("execution", {"cuda", "metal", "gpu", "gpu_none", "engine", "scheduler", "quants",
                    "quants_iq_grids", "tpool", "act", "dn_eps", "fp16", "fpclass", "fpenv",
                    "iq_decode", "kernel_args", "kq_stage", "metal_admission", "pmath",
-                   "upload_report"}),
+                   "upload_report", "gpu_tables"}),
     ("runtime", {"server", "server_int", "http", "api", "api_anthropic", "api_responses",
                  "schema", "schema_int", "schema_tools", "jsonmode", "sample", "template",
                  "registry", "session", "respstore", "kvsnap", "decide", "clef", "vramreg",

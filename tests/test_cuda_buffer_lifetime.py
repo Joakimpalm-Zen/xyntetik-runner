@@ -61,6 +61,12 @@ def test_every_shared_buffer_is_freed_with_the_upload():
     assert len(fields) > 30, "the gpu_weights field pattern no longer matches"
     k = src.index("static void shared_destroy(gpu_weights *w) {")
     body = src[k:src.index("\n}\n", k)]
-    missing = sorted(f for f in fields if "w->" + f not in body)
+    released = {f for f in fields if "w->" + f in body}
+    # the per-layer tables (R6.68.29): shared_destroy walks gpu_tables.h's
+    # rows through cuda_table(), whose switch names each row's field
+    if "cuda_table(w, (gpu_table)t)" in body:
+        c = src.index("static CUdeviceptr **cuda_table(gpu_weights *w, gpu_table t) {")
+        released |= set(re.findall(r"return &w->(\w+);", src[c:src.index("\n}\n", c)]))
+    missing = sorted(fields - released)
     assert not missing, "declared in gpu_weights but never released by shared_destroy: " + ", ".join(missing)
     assert "l < w->n_tab" in body, "shared_destroy must walk every table slot, the MTP block's included"

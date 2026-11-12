@@ -835,9 +835,12 @@ static bool metal_tensor_type_ok(const gguf_tensor *t, bool moe) {
 
 static bool metal_moe_supported(const model_t *m) {
     if (m->n_expert <= 0) return true;
-    if (m->n_expert > 256 || m->n_expert_used < 1 ||
-        m->n_expert_used > 256) {
-        fprintf(stderr, "gpu: this MoE geometry is outside the Metal router limit — using CPU\n");
+    char why[200];
+    if (m->n_expert_used < 1 ||
+        model_moe_route_why(m->n_expert, m->n_expert_used, 256, 256, why, sizeof why)) {
+        // the words --info fit gives for the same file (R6.68.67)
+        fprintf(stderr, "gpu: %s, using CPU\n", m->n_expert_used < 1
+                ? "this MoE geometry is outside the Metal router limit" : why);
         return false;
     }
     // LatentMoE: no Metal path at the latent width (see cuda_admit)
@@ -1579,6 +1582,12 @@ bool gpu_moe_ok(void) {
 bool gpu_shared_weights_resident(const model_t *m) { (void)m; return false; }
 
 bool gpu_removed_sublayers_ok(void) { return true; }
+// the Metal router's limits (metal_moe_supported refuses past them)
+bool gpu_moe_route_caps(int *max_experts, int *max_used) {
+    *max_experts = 256;
+    *max_used = 256;
+    return true;
+}
 
 // what this answers (main.c's adapter capability) is whether a qwen35
 // adapter runs on the device: on Metal it does not, the model's forward does
