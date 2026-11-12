@@ -12,7 +12,7 @@ import unittest
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SCRIPT = os.path.join(ROOT, "scripts", "certify-envelope.py")
 MODEL = os.environ.get("RUNNER_TEST_MODEL", os.path.join(ROOT, "test.gguf"))
-RUNNER = os.path.join(ROOT, "runner")
+RUNNER = os.path.join(ROOT, "runner.exe" if sys.platform == "win32" else "runner")
 
 
 def sha256_file(path):
