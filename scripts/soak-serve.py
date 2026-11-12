@@ -54,6 +54,23 @@ LOG_ALARMS = ("AddressSanitizer", "ThreadSanitizer", "runtime error:",
               "stack smashing", "double free", "heap-use-after-free")
 
 
+def parse_smi_table(text, pid=None):
+    """MiB in use from nvidia-smi's plain table: the process row of `pid`
+    when it is there (`|  0  N/A  N/A  4242  C  ./runner  118MiB |`), else
+    the device rows' "81MiB / 24192MiB" summed; None when neither parses."""
+    devices = []
+    for line in text.splitlines():
+        cells = line.replace("|", " ").split()
+        if pid and pid in cells and cells and cells[-1].endswith("MiB") and "/" not in cells:
+            if cells[-1][:-3].isdigit():
+                return int(cells[-1][:-3])
+        for i, c in enumerate(cells):
+            if c == "/" and 0 < i < len(cells) - 1 and cells[i - 1].endswith("MiB") \
+                    and cells[i + 1].endswith("MiB") and cells[i - 1][:-3].isdigit():
+                devices.append(int(cells[i - 1][:-3]))
+    return sum(devices) if devices else None
+
+
 class Soak:
     def __init__(self, a):
         self.a = a
@@ -131,27 +148,32 @@ class Soak:
 
     def gpu_mem_mb(self):
         """Device memory of the server process where nvidia-smi can say it,
-        else the device's total in use; None without nvidia-smi."""
+        else the device's total in use; None without nvidia-smi or when it
+        gives no number. A query can answer "[Insufficient Permissions]" (a
+        MIG slice does), so the plain table is read as well: its process row
+        for the server's pid, else its device row."""
         smi = shutil.which("nvidia-smi")
         if not smi:
             return None
-        try:
-            if self.proc is not None:
-                out = subprocess.run(
-                    [smi, "--query-compute-apps=pid,used_memory",
-                     "--format=csv,noheader,nounits"],
-                    capture_output=True, text=True, timeout=20).stdout
-                for line in out.splitlines():
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) == 2 and parts[0] == str(self.proc.pid) and parts[1].isdigit():
-                        return int(parts[1])
-            out = subprocess.run(
-                [smi, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=20).stdout
-            vals = [int(v) for v in out.split() if v.isdigit()]
-            return sum(vals) if vals else None
-        except (OSError, subprocess.SubprocessError):
-            return None
+
+        def out(*args):
+            try:
+                return subprocess.run([smi, *args], capture_output=True, text=True,
+                                      timeout=20).stdout
+            except (OSError, subprocess.SubprocessError):
+                return ""
+        pid = str(self.proc.pid) if self.proc is not None else None
+        if pid:
+            for line in out("--query-compute-apps=pid,used_memory",
+                            "--format=csv,noheader,nounits").splitlines():
+                parts = [x.strip() for x in line.split(",")]
+                if len(parts) == 2 and parts[0] == pid and parts[1].isdigit():
+                    return int(parts[1])
+        vals = [int(v) for v in out("--query-gpu=memory.used",
+                                    "--format=csv,noheader,nounits").split() if v.isdigit()]
+        if vals:
+            return sum(vals)
+        return parse_smi_table(out(), pid)
 
     def memory(self):
         h = self.health() or {}
@@ -615,6 +637,8 @@ class Soak:
         self.ctx = a.ctx or (min(ctxs) if ctxs else 0)
         self.report["context_window"] = self.ctx
         self.report["start"] = self.memory()
+        self.report["gpu_memory"] = ("measured" if self.report["start"]["gpu_mb"] is not None
+                                     else "unmeasured: nvidia-smi is absent or gave no number")
         print(f"soak: reference reply {ref[:160]}", flush=True)
         try:
             if "identity" not in a.skip:
@@ -695,7 +719,8 @@ def main():
     soak.report["argv"] = sys.argv[1:]
     out = Path(a.out) if a.out else Path(a.workdir) / "report.json"
     out.write_text(json.dumps(soak.report, indent=1) + "\n")
-    print(f"soak: {len(soak.findings)} finding(s) in {soak.report['seconds']} s; report {out}")
+    print(f"soak: {len(soak.findings)} finding(s) in {soak.report['seconds']} s; "
+          f"device memory {soak.report.get('gpu_memory', 'unmeasured')}; report {out}")
     return rc
 
 

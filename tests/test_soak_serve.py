@@ -11,6 +11,7 @@ No absolute anchor of its own: the replies of a random-weight fixture are
 compared with themselves. The anchors are the HTTP statuses the manual
 documents (400 context_length_exceeded, 409 for a cancelled request).
 """
+import importlib.util
 import json
 import pathlib
 import socket
@@ -80,3 +81,24 @@ def test_a_cancel_phase_that_lands_nothing_is_a_finding(tmp_path):
     assert p.returncode == 1
     assert r["phases"]["cancel"]["counts"]["id_prefill"] == 0
     assert any("measured nothing" in f["what"] for f in r["findings"])
+
+
+def test_device_memory_is_read_from_the_plain_table_when_the_queries_refuse():
+    """A MIG slice answers both nvidia-smi queries "[Insufficient
+    Permissions]", and the soak then compared no device memory and said
+    nothing (found on a 1g.24gb slice before its first run there). The plain
+    table still carries the numbers; the rows below are its shape."""
+    spec = importlib.util.spec_from_file_location("soak_serve", ROOT / "scripts" / "soak-serve.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    table = """
+|   0  NVIDIA RTX PRO 6000 Blac...    On  |   00000000:01:00.0 Off |                   On |
+|=========================================+========================+======================|
+|  0    3   0   0  |              81MiB / 24192MiB    | 14      0 |  1   0    0    0    0 |
+| Processes:                                                                              |
+|    0    3    0             4242      C   ./runner                                 118MiB |
+"""
+    assert mod.parse_smi_table(table, "4242") == 118      # the server's own row
+    assert mod.parse_smi_table(table, "999") == 81        # else the device row
+    assert mod.parse_smi_table(table) == 81
+    assert mod.parse_smi_table("[Insufficient Permissions], [Insufficient Permissions]") is None
