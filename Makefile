@@ -269,6 +269,7 @@ TEST_MSG_OOM_DEP =
 TEST_MSG_OOM_RUN = @echo "skip: test-prompt-oom (POSIX socketpair; covered by Linux CI)"
 TEST_TRAY_WIN_DEP = $(TEST_TRAY_WIN)
 TEST_TRAY_WIN_RUN = ./$(TEST_TRAY_WIN)
+TEST_INSTANCES_UBSAN_RUN = @echo "skip: test-instances-ubsan (no sanitizer runtime on MinGW; covered by Linux and macOS)"
 TEST_UTF8_CONSOLE_DEP = $(TEST_UTF8_CONSOLE)
 TEST_UTF8_CONSOLE_RUN = ./$(TEST_UTF8_CONSOLE)
 else
@@ -280,6 +281,7 @@ TEST_MSG_OOM_DEP = $(TEST_MSG_OOM)
 TEST_MSG_OOM_RUN = ./$(TEST_MSG_OOM)
 TEST_TRAY_WIN_DEP =
 TEST_TRAY_WIN_RUN = @echo "skip: test-tray-win-menu (Win32 menu readback; covered by the Windows job)"
+TEST_INSTANCES_UBSAN_RUN = $(MAKE) --no-print-directory test-instances-ubsan
 TEST_UTF8_CONSOLE_DEP =
 TEST_UTF8_CONSOLE_RUN = @echo "skip: test-utf8-console (Windows console code page; covered by the Windows job)"
 endif
@@ -1004,6 +1006,14 @@ $(TEST_CANON_KERNELS): tests/test_canon_kernels.c src/quants.c $(HDR)
 TEST_INSTANCES_SRC = tests/test_instances.c $(OBJDIR)/instances.o $(OBJDIR)/json.o $(OBJDIR)/compat.o
 $(TEST_INSTANCES): $(TEST_INSTANCES_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_INSTANCES_SRC) -o $@ -lm
+# R6.68.10: the same test with float-to-integer overflow as a hard error, so a
+# record number cast before its range is checked stops the run (the registry
+# reader converted a pid of 1e300 to long). No sanitizer runtime on MinGW.
+test-instances-ubsan: tests/test_instances.c src/instances.c src/json.c src/compat.c $(HDR)
+	$(CC) -O1 -g -std=gnu11 -Wall -fsanitize=float-cast-overflow,undefined \
+	    -fno-sanitize-recover=all -I src tests/test_instances.c src/instances.c src/json.c \
+	    src/compat.c -o test-instances-ubsan-bin -lm -lpthread
+	./test-instances-ubsan-bin
 
 # the same registry under injected allocation failure. instances.c is compiled
 # INTO the test (macro-substituted allocators), so it is deliberately absent
@@ -1492,11 +1502,24 @@ test-tokenizer-race: $(TEST_TOKENIZER_RACE_SRC) $(HDR) test.gguf
 	    $(TEST_TOKENIZER_RACE_SRC) -o test-tokenizer-race-bin -lm -lpthread
 	TSAN_OPTIONS=halt_on_error=1 ./test-tokenizer-race-bin test.gguf
 
-test-swap-race: $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
+test-swap-race: $(TEST_SWAP_RACE_SRC) tests/test_cancel_race.c $(HDR) test.gguf
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
 	    -fno-fast-math -std=gnu11 -Wall -I src $(TEST_SWAP_RACE_SRC) \
 	    -o test-swap-race-bin $(LDFLAGS)
 	ASAN_OPTIONS=detect_leaks=0 ./test-swap-race-bin test.gguf
+	$(MAKE) test-cancel-race
+
+# Same sanitized server gate, with a compile-time barrier that forces the
+# cancel waiter to resume only after its slot has been reused or stopped
+# (R6.68.8, R6.68.9). The stop case runs on its own port: a waiter that reads
+# its slot after the stop freed it is a heap-use-after-free here.
+test-cancel-race: tests/test_cancel_race.c $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
+	    -fno-fast-math -std=gnu11 -Wall -I src -DRUNNER_TEST_CANCEL_WAIT \
+	    tests/test_cancel_race.c $(filter-out tests/test_swap_race.c,$(TEST_SWAP_RACE_SRC)) \
+	    -o test-cancel-race-bin $(LDFLAGS)
+	ASAN_OPTIONS=detect_leaks=0 ./test-cancel-race-bin test.gguf 18107
+	ASAN_OPTIONS=detect_leaks=0 ./test-cancel-race-bin test.gguf 18108 stop
 
 # the weight-residency platform layer: mlock, mincore, major faults, available
 # RAM. compat.c only -- these are platform shims, not engine code.
@@ -3526,6 +3549,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_IQ_DECODE)
 	./$(TEST_KQ_STAGE)
 	./$(TEST_INSTANCES)
+	$(TEST_INSTANCES_UBSAN_RUN)
 	./$(TEST_INSTANCES_OOM)
 	./$(TEST_METAL_ADMISSION)
 	./$(TEST_TRAY_CORE)
@@ -4144,6 +4168,12 @@ test-pool-race:
 test-server-race-tsan: test.gguf
 	$(CC) $(TSAN_FLAGS) $(filter-out $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c -o test-server-race-tsan-bin $(LDFLAGS)
 	TSAN_OPTIONS=halt_on_error=1 ./test-server-race-tsan-bin test.gguf
+	@# the cancel ticket and the waiter count under TSan (R6.68.8, R6.68.9)
+	$(CC) $(TSAN_FLAGS) -DRUNNER_TEST_CANCEL_WAIT tests/test_cancel_race.c \
+	    $(filter-out tests/test_swap_race.c $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c \
+	    -o test-cancel-race-tsan-bin $(LDFLAGS)
+	TSAN_OPTIONS=halt_on_error=1 ./test-cancel-race-tsan-bin test.gguf 18117
+	TSAN_OPTIONS=halt_on_error=1 ./test-cancel-race-tsan-bin test.gguf 18118 stop
 
 # /v1/decide and /v1/rerank number their answers from counters every slot
 # shares; slots answer on their own threads. TSan halting on an unguarded

@@ -128,7 +128,8 @@ def _find_runner_and_model():
     import sys
     sys.path.insert(0, str(ROOT / "tests" / "conformance"))
     from harness import find_runner  # noqa: E402
-    exe = os.environ.get("RUNNER_EXE") or str(ROOT / "runner")
+    exe = os.environ.get("RUNNER_EXE") or str(
+        ROOT / ("runner.exe" if sys.platform == "win32" else "runner"))
     model = ROOT / "test.gguf"
     if not (Path(exe).exists() and model.is_file()):
         pytest.skip("runner binary or test.gguf not built; run `make test`")
