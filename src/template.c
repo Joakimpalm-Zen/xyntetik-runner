@@ -2982,10 +2982,10 @@ static size_t render_muse(int tmpl, const chat_msg *msgs, int n_msgs,
         const chat_msg *mm = &msgs[i];
         if (!strcmp(mm->role, "system")) {
             char *sys_text = muse_normalise_reasoning(mm->content);
-            const char *st = sys_text ? sys_text : mm->content;
+            const char *sys_body = sys_text ? sys_text : mm->content;
             off = emit(out, cap, off, "<|start|>system<|message|>%s",
-                       st, NULL);
-            if (!muse_has_reasoning_strength(st))
+                       sys_body, NULL);
+            if (!muse_has_reasoning_strength(sys_body))
                 off = emit(out, cap, off, "%s", muse_line.s, NULL);
             free(sys_text);
             off = emit(out, cap, off, "%s", muse_tail.s, NULL);
