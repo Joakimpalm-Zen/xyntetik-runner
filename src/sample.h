@@ -68,6 +68,13 @@ void sampler_accept(sampler *s, int tok);
 // or -2 on an allocation failure (the caller must treat this as an error, not
 // a stop).
 int  sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *ud);
+// The first index holding the greatest value: what the loop
+// `best = 0; for (i = 1..n) if (x[i] > x[best]) best = i;` returns on finite
+// input, in two passes a compiler vectorises (that loop is not: it carries
+// the index). Greedy picks and the speculative drafts share it. With a NaN in
+// x the answer is unspecified, as it was for both loops: this unit is built
+// with fast math, which lets a comparison against NaN go either way.
+int  sample_argmax(const float *x, int n);
 
 // -------------------------------------------------- per-family sampling presets
 //

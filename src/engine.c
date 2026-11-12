@@ -2781,9 +2781,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             float *ml = model_mtp_draft_logits(m);
             const float *h = model_mtp_hidden(m);
             while (ml && nd < K && e->pos + nd + 1 < m->n_ctx) {
-                int best = 0;
-                for (int i = 1; i < m->n_vocab; i++)
-                    if (ml[i] > ml[best]) best = i;
+                int best = sample_argmax(ml, m->n_vocab);
                 d[nd++] = best;
                 st_drafted++;
                 if (nd >= K) break;
@@ -2809,9 +2807,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         // draft up to K tokens greedily (nd == 0 degrades to plain decoding)
         while (!gr && dl && nd < K && e->pos + nd + 1 < m->n_ctx &&
                e->dpos + 1 < dm->n_ctx) {
-            int best = 0;
-            for (int i = 1; i < dm->n_vocab; i++)
-                if (dl[i] > dl[best]) best = i;
+            int best = sample_argmax(dl, dm->n_vocab);
             if (best >= m->n_vocab) break; // padding id the target can't embed
             d[nd++] = best;
             st_drafted++;
