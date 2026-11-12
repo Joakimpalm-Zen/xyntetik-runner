@@ -804,7 +804,10 @@ int model_kv_ring_rows(int window, int batch, int n_ctx) {
 // past it owns rows only when --mtp binds it.
 // R3.48: v_shared, deepseek2's absorbed MLA: V reads the K row (in a format
 // K and V share), so a layer's row is K alone.
-typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; int trunk; bool v_shared; } fit_geom;
+// R6.68.40: kv_formats, the KV formats the trunk's heads take (model_kv_formats,
+// the loader's own rule).
+typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; int trunk; bool v_shared;
+                 unsigned kv_formats; } fit_geom;
 
 // R3.44: the qwen35 family's Gated DeltaNet layers own no KV rows
 // (bind_meta_qwen35) unless RUNNER_KV_RECURRENT_ROWS=1 keeps the layout that
@@ -863,6 +866,8 @@ static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, bool mtp, 
     o->trunk = nextn < (uint32_t)n_layer ? n_layer - (int)nextn : n_layer;
     uint32_t q35_every = qwen35_kv_rows_typed(ad)
         ? gguf_get_u32(g, AK("full_attention_interval"), 4) : 0;
+    int *trunk_hd = malloc(sizeof(int) * (size_t)(o->trunk > 0 ? o->trunk : 1));
+    if (!trunk_hd) { free(o->kv_dim); o->kv_dim = NULL; return false; }
     for (int l = 0; l < n_layer; l++) {
         uint32_t hc = gguf_get_u32_idx(g, AK("attention.head_count"), (uint64_t)l, n_head);
         uint32_t kvh = hc ? gguf_get_u32_idx(g, AK("attention.head_count_kv"),
@@ -871,12 +876,15 @@ static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, bool mtp, 
         bool swa = pat && (uint64_t)l < pat->arr_n &&
                    ((const uint8_t *)pat->arr_raw)[l] != 0;
         uint64_t hd = swa ? hd_swa : head_dim;
+        if (l < o->trunk) trunk_hd[l] = (int)hd;
         if (hd > o->head_dim_max) o->head_dim_max = hd;
         o->kv_dim[l] = l < owners ? (uint64_t)kvh * hd : 0;
         if (q35_every && l < o->trunk && (l + 1) % q35_every != 0) o->kv_dim[l] = 0;
         if (l >= o->trunk && !mtp) o->kv_dim[l] = 0;
         if (o->kv_dim[l] > o->kv_dim_max) o->kv_dim_max = o->kv_dim[l];
     }
+    o->kv_formats = model_kv_formats(trunk_hd, o->trunk, 0);
+    free(trunk_hd);
     o->v_shared = mla_absorb && mla_row > 0;
     return true;
 }
@@ -953,21 +961,21 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
 
     // Same shape as model_kv_row_bytes: K and V, per layer, per token, each
     // layer at its own width (fit_geometry). A quantized KV format is legal
-    // only when every layer's width is a multiple of its block (q8 and k8v4:
-    // 32; fp4: 16), or the per-token figure is 0 and the line says why.
-    bool q8_ok = true, fp4_ok = true;
+    // only where the load takes it, when every head is a whole number of its
+    // blocks (model_kv_formats, R6.68.40: it used to be every row, and the fit
+    // offered q8 to a file whose load kept f16), or the per-token figure is 0
+    // and the line says why.
     for (int l = 0; l < blocks; l++) {   // an unbound block's width is 0
         uint64_t d = geo.kv_dim[l];
-        if (d % 32) q8_ok = false;
-        if (d % 16) fp4_ok = false;
         out->kv_f16_per_tok  += fit_kv_row(d, 0, geo.v_shared);
         out->kv_q8_per_tok   += fit_kv_row(d, 1, geo.v_shared);
         out->kv_k8v4_per_tok += fit_kv_row(d, 2, geo.v_shared);
         out->kv_fp4_per_tok  += fit_kv_row(d, 3, geo.v_shared);
     }
     free(geo.kv_dim);
-    if (!q8_ok) out->kv_q8_per_tok = out->kv_k8v4_per_tok = 0;
-    if (!fp4_ok) out->kv_fp4_per_tok = 0;
+    if (!(geo.kv_formats & MODEL_KV_FMT_Q8)) out->kv_q8_per_tok = 0;
+    if (!(geo.kv_formats & MODEL_KV_FMT_K8V4)) out->kv_k8v4_per_tok = 0;
+    if (!(geo.kv_formats & MODEL_KV_FMT_FP4)) out->kv_fp4_per_tok = 0;
     out->kv_f16 = out->kv_f16_per_tok * (uint64_t)out->n_ctx;
     out->kv_q8  = out->kv_q8_per_tok  * (uint64_t)out->n_ctx;
     out->kv_fp4 = out->kv_fp4_per_tok * (uint64_t)out->n_ctx;
@@ -5398,10 +5406,10 @@ static void bind_kv_layout(model_t *m, const model_params *p) {
     // reservation auto-fit — and the sizing below uses the real per-token cost.
     // Requires per-HEAD block alignment, not just per-row: attention slices the
     // row at kvh*head_dim, which must land on a q8 block boundary.
+    // which formats the heads take: the one rule --info fit asks too
+    const unsigned fmts = model_kv_formats(m->l_head_dim, m->n_layer, m->head_dim);
     if (p->kv_q8) {
-        bool aligned = true;
-        for (int l = 0; l < m->n_layer; l++)
-            if (model_head_dim(m, l) % 32 != 0) aligned = false;
+        bool aligned = fmts & MODEL_KV_FMT_Q8;
         // a GPU backend without q8 attention kernels would read the blocks as
         // fp16, so fall back rather than corrupt
         char gname[128];
@@ -5419,9 +5427,7 @@ static void bind_kv_layout(model_t *m, const model_params *p) {
     // k8v4: q8 rows for K (head_dim % 32) and fp4 rows for V (head_dim % 16),
     // so it needs both formats' kernels on a GPU backend
     if (p->kv_split && !m->kv_q8) {
-        bool aligned = true;
-        for (int l = 0; l < m->n_layer; l++)
-            if (model_head_dim(m, l) % 32 != 0) aligned = false;
+        bool aligned = fmts & MODEL_KV_FMT_K8V4;
         char gname[128];
         bool gpu_path = p->gpu_mode == GPU_AUTO && gpu_available(gname, sizeof(gname));
         if (!aligned)
@@ -5433,9 +5439,7 @@ static void bind_kv_layout(model_t *m, const model_params *p) {
             m->kv_split = true;
     }
     if (p->kv_fp4 && !m->kv_q8 && !m->kv_split) {
-        bool aligned = true;
-        for (int l = 0; l < m->n_layer; l++)
-            if (model_head_dim(m, l) % 16 != 0) aligned = false;
+        bool aligned = fmts & MODEL_KV_FMT_FP4;
         char gname[128];
         bool gpu_path = p->gpu_mode == GPU_AUTO && gpu_available(gname, sizeof(gname));
         if (!aligned)

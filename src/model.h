@@ -877,6 +877,23 @@ static inline bool model_kv_v_shared(const model_t *m) {
 static inline const char *model_kv_name(const model_t *m) {
     return m->kv_f32 ? "f32" : m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
 }
+// The KV formats a geometry can take (R6.68.40). Attention cuts a layer's row
+// at kvh * head_dim, so a quantized format applies only when every head is a
+// whole number of its blocks: q8_0 (and k8v4, whose K rows are q8_0) 32
+// values, fp4 16; f16 and f32 take any width. head_dim[l] for each of the n
+// trunk layers, or NULL when they all share `scalar` (model_t's own
+// l_head_dim / head_dim). bind_kv_layout and --info fit both ask this, so a
+// fit cannot offer a format its load would decline.
+enum { MODEL_KV_FMT_Q8 = 1u << 0, MODEL_KV_FMT_K8V4 = 1u << 1, MODEL_KV_FMT_FP4 = 1u << 2 };
+static inline unsigned model_kv_formats(const int *head_dim, int n, int scalar) {
+    unsigned ok = MODEL_KV_FMT_Q8 | MODEL_KV_FMT_K8V4 | MODEL_KV_FMT_FP4;
+    for (int l = 0; l < n; l++) {
+        int hd = head_dim ? head_dim[l] : scalar;
+        if (hd % 32) ok &= ~(unsigned)(MODEL_KV_FMT_Q8 | MODEL_KV_FMT_K8V4);
+        if (hd % 16) ok &= ~(unsigned)MODEL_KV_FMT_FP4;
+    }
+    return ok;
+}
 static inline size_t kv_bytes_of_kind(int kind, size_t e) {
     return kind == 3 ? e * sizeof(float) : kind == 2 ? e / 16 * 9
          : kind == 1 ? e / 32 * 34 : e * sizeof(f16_t);
