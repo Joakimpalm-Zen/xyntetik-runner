@@ -49,7 +49,11 @@ bool lineage_sign(const char *record_path, const char *sign_key) {
 
 // ------------------------------------------------------------------ walker --
 
+// The walker follows a record's word, so it reads regular files only
+// (envelope.h, record_regular_file): a record that cited /dev/zero was hashed
+// with no end (R6.68.56).
 static jv *read_json(const char *path) {
+    if (!record_regular_file(path)) return NULL;
     FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
     size_t cap = 1 << 16, n = 0, r;
@@ -161,7 +165,7 @@ bool lineage_require_eval(const char *model, const char *kind, const char *trust
     if (strcmp(jv_str(jv_get(ev, "schema_version"), ""), "xyntetik.runner.eval.v1") ||
         strcmp(jv_str(jv_get(ev, "kind"), ""), kind))
         snprintf(why, cap, "%s is not a %s evaluation record", path, kind);
-    else if (!envelope_file_sha256(model, sha))
+    else if (!envelope_cited_sha256(model, sha))
         snprintf(why, cap, "cannot hash %s", model);
     else if (strcmp(jv_str(jv_get(jv_get(ev, "subject"), "sha256"), ""), sha))
         snprintf(why, cap, "%s was made for another file (its subject sha256 differs)", path);
@@ -188,7 +192,7 @@ static const char *relocate(const char *cited, const char *citing, char *buf, si
     const char *name = strrchr(cited, '/');
     const char *bs = strrchr(cited, '\\');
     if (bs && (!name || bs > name)) name = bs;
-    if (name && envelope_file_sha256(cited, probe)) return cited;
+    if (name && envelope_cited_sha256(cited, probe)) return cited;
     name = name ? name + 1 : cited;
     const char *dir_end = strrchr(citing, '/');
     const char *bs2 = strrchr(citing, '\\');
@@ -212,8 +216,8 @@ static void walk_input(const char *key, jv *in, const char *citing, const char *
     short_sha(sha, s);
     char here[4096];
     const char *file = relocate(path, citing, here, sizeof here);
-    if (receipt && !envelope_file_sha256(file, probe) && plat_path_base(path) == path &&
-        envelope_file_sha256(path, probe))
+    if (receipt && !envelope_cited_sha256(file, probe) && plat_path_base(path) == path &&
+        envelope_cited_sha256(path, probe))
         file = path;
     jv *link = jv_get(in, "record");
     indent(depth);
@@ -238,7 +242,7 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     indent(depth);
     if (depth > 32) { printf("BROKEN: chain deeper than 32 links (a loop?)\n"); note(w, 2); return; }
     char rsha[65];
-    if (!envelope_file_sha256(rec_path, rsha)) {
+    if (!envelope_cited_sha256(rec_path, rsha)) {
         printf("BROKEN: record %s is missing\n", rec_path);
         note(w, 2);
         return;
@@ -271,7 +275,7 @@ static void walk_record(const char *rec_path, const char *want_rec_sha,
     bool link_ok = !want_out_sha || (out_sha && !strcmp(want_out_sha, out_sha));
     // and the output file, where it is still on disk, is that file
     char disk[65];
-    bool on_disk = envelope_file_sha256(out_file, disk);
+    bool on_disk = envelope_cited_sha256(out_file, disk);
     bool disk_ok = !on_disk || (out_sha && !strcmp(disk, out_sha));
     const char *verdict;
     if (!link_ok) { verdict = "BROKEN: its output is not the file the next step used"; note(w, 2); }
@@ -426,7 +430,7 @@ int lineage_walk(const char *start, const char *trust_hex) {
         snprintf(rec, sizeof rec, "%s", start);
         printf("lineage of record %s\n", start);
     } else {
-        if (!envelope_file_sha256(start, sha)) {
+        if (!envelope_cited_sha256(start, sha)) {
             printf("BROKEN: cannot read %s\n", start);
             jv_free(probe);
             return 2;

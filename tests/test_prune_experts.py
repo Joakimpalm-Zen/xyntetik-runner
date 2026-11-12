@@ -399,6 +399,23 @@ def test_prune_layer_key_is_parsed_strictly(runner_bin, pruneprobe_model,
     assert not pruned.exists()
 
 
+def test_prune_layer_named_twice_is_refused(runner_bin, pruneprobe_model, tmp_path):
+    """R6.68.83: "layer_1" and "layer_01" are one layer under two spellings
+    (the JSON parser refuses a key written twice, not these). The plan kept
+    both entries and every lookup took the first, so the second list was
+    dropped without a word and the file pruned by half its plan."""
+    plan = tmp_path / "plan.json"
+    plan.write_text('{"layer_1": [0, 1], "layer_01": [2, 3]}')
+    pruned = tmp_path / "pruned.gguf"
+    proc = _prune(runner_bin, pruneprobe_model, pruned, plan)
+    assert proc.returncode != 0, proc.stderr[-300:]
+    assert b"names layer 1 twice" in proc.stderr, proc.stderr[-300:]
+    assert not pruned.exists()
+    # a plan that is not a regular file is refused by name, not read
+    proc = _prune(runner_bin, pruneprobe_model, pruned, tmp_path)
+    assert proc.returncode != 0 and b"cannot read --prune-experts" in proc.stderr, proc.stderr[-300:]
+
+
 def test_prune_rejects_expert_tensor_that_disagrees_with_router(
         runner_bin, pruneprobe_model, tmp_path):
     malformed = tmp_path / "mismatched.gguf"

@@ -44,6 +44,29 @@ int main(void) {
     if (!ed25519_sign(sig, &m, 1, sk)) return fail("sign 2");
     if (memcmp(sig, sig_want, 64)) return fail("vector 2 signature");
     if (!ed25519_verify(sig, &m, 1, pk)) return fail("verify 2");
+    // R6.68.98, RFC 8032 5.1.7: S must be under the group order L. S + L
+    // gives the same point (L * B is the identity), so without the check
+    // anyone holding a signature can write a second one that verifies for
+    // the same message and key, with no secret.
+    {
+        static const uint8_t L[32] = {
+            0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2,
+            0xde, 0xf9, 0xde, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10 };
+        uint8_t twin[64];
+        memcpy(twin, sig, 64);
+        unsigned carry = 0;
+        for (int i = 0; i < 32; i++) {
+            unsigned v = (unsigned)twin[32 + i] + L[i] + carry;
+            twin[32 + i] = (uint8_t)v;
+            carry = v >> 8;
+        }
+        if (carry) return fail("S + L does not fit 32 bytes for this vector");
+        if (memcmp(twin, sig, 64) == 0) return fail("the twin is the signature");
+        if (ed25519_verify(twin, &m, 1, pk)) return fail("S + L accepted as a second signature");
+        // and S == L exactly (the zero scalar's twin) is refused too
+        memcpy(twin + 32, L, 32);
+        if (ed25519_verify(twin, &m, 1, pk)) return fail("S == L accepted");
+    }
     // SHA-512("abc")
     uint8_t h[64], hw[64];
     ed25519_sha512(h, "abc", 3);

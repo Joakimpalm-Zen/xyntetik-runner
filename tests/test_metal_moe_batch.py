@@ -69,6 +69,52 @@ def test_prompt_tile_batches_moe_without_changing_tokens(runner_bin,
     assert int(match.group(1)) == 10
 
 
+@pytest.mark.parametrize("name, per_layer", [
+    # attention's four projections and the router
+    ("moe4", 5),
+    # and the gemma-4 shared branch's gate, up and down
+    ("gemma4-moe", 8),
+])
+def test_a_batch_encodes_each_decode_bit_matvec_once_a_layer(
+        runner_bin, moe_fixture_prefix, name, per_layer):
+    """R6.68.87: the router and the gemma-4 shared branch keep a decode
+    step's bits in a prompt batch, and go out as one dispatch for the
+    batch's columns. They were encoded once a column: 8 columns, 8 times
+    the dispatches, for the same bytes."""
+    model = pathlib.Path(f"{moe_fixture_prefix}.{name}.gguf")
+    cpu = _run(runner_bin, model, "off")
+    gpu = _run(runner_bin, model, "auto", stats=True)
+    assert cpu.stdout == gpu.stdout
+    match = re.search(rb"metal-census n=8 .* mv=(\d+) ", gpu.stderr)
+    assert match, gpu.stderr.decode(errors="replace")
+    # two layers, and the output head
+    assert int(match.group(1)) == 2 * per_layer + 1
+
+
+def test_a_quantized_shared_branch_keeps_its_bytes_in_a_batch(
+        runner_bin, moe_fixture_prefix, tmp_path):
+    """The gemma-4 MoE shared branch at Q8_0: with several columns in one
+    dispatch it runs the column-inner twin (k_mvc_q8_0), where a one-column
+    step runs k_mv_q8_0. The F32 fixtures above only reach the plain column
+    walk; this one reaches a twin on the batch path (R6.68.87's second
+    read), and Metal admits a twin only after comparing it with its
+    one-column kernel on the running device (metal_mvc_self_test)."""
+    src = pathlib.Path(f"{moe_fixture_prefix}.gemma4-moe.gguf")
+    model = tmp_path / "gemma4-moe-q8.gguf"
+    subprocess.run([runner_bin, "-m", src, "--quantize", model, "--quant", "q8_0"],
+                   cwd=ROOT, check=True, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
+    cpu = _run(runner_bin, model, "off")
+    gpu = _run(runner_bin, model, "auto", stats=True)
+    assert cpu.stdout and cpu.stdout == gpu.stdout
+    assert b"Metal backend" in gpu.stderr
+    assert b"not bit-identical on this device" not in gpu.stderr, \
+        "the twin was refused here, so this run did not reach it"
+    match = re.search(rb"metal-census n=8 .* mv=(\d+) ", gpu.stderr)
+    assert match, gpu.stderr.decode(errors="replace")
+    assert int(match.group(1)) == 2 * 8 + 1
+
+
 def test_batched_routes_are_byte_identical_to_serial_routes(
         runner_bin, moe_fixture_prefix):
     model = pathlib.Path(f"{moe_fixture_prefix}.moe4.gguf")

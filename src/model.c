@@ -2107,7 +2107,8 @@ static const size_t MODEL_RUNTIME_OWNED[] = {
     offsetof(model_t, ssm_qkv), offsetof(model_t, ssm_z), offsetof(model_t, ssm_aux),
     offsetof(model_t, mla_scratch), offsetof(model_t, ssm_cw), offsetof(model_t, ssm_conv_snap),
     offsetof(model_t, ssm_state_snap), offsetof(model_t, ssm_conv_mark),
-    offsetof(model_t, ssm_state_mark), offsetof(model_t, hb), offsetof(model_t, hb2),
+    offsetof(model_t, ssm_state_mark), offsetof(model_t, seq),
+    offsetof(model_t, hb), offsetof(model_t, hb2),
     offsetof(model_t, att), offsetof(model_t, logits), offsetof(model_t, all_logits),
     offsetof(model_t, mtp_h), offsetof(model_t, mtp_tok), offsetof(model_t, mtp_pending),
     offsetof(model_t, mtp_cat), offsetof(model_t, mtp_logits), offsetof(model_t, mtp_hid),
@@ -6782,6 +6783,7 @@ static void runtime_free(model_t *m) {
     m->kv_owner = KV_OWNER_MALLOC;
     if (!m->ssm_state_backend) { free(m->ssm_conv_state); free(m->ssm_state_mem); }
     m->ssm_state_backend = false;
+    m->seq_n = 0;   // the fed-token record went with the table above (seq)
     tpool_destroy(m->tp);
 }
 
@@ -10319,13 +10321,24 @@ bool model_recurrent_blob_save(const model_t *m, uint8_t *dst) {
     return true;
 }
 
-bool model_recurrent_blob_load(model_t *m, const uint8_t *src) {
+bool model_recurrent_blob_load(model_t *m, const uint8_t *src,
+                               const int32_t *toks, int n) {
     if (!model_has_recurrent(m)) return false;
     size_t cb = recurrent_conv_bytes(m), sb = recurrent_state_bytes(m);
     memcpy(m->ssm_conv_state, src, cb);
     memcpy(m->ssm_state_mem, src + cb, sb);
     if (recurrent_ple_bytes(m)) memcpy(m->ple4_conv_hist, src + cb + sb, recurrent_ple_bytes(m));
     m->ssm_snap_pos = -1;   // a freshly installed fold has no earlier snapshot
+    // The fold is another sequence's now: the record of the tokens this model
+    // was fed (model.h, seq) becomes that sequence, or nothing when the
+    // caller cannot name it. Left as it was, a later rebuild fed the previous
+    // sequence's tokens under this one's continuation (R6.68.104).
+    m->seq_n = 0;
+    if (toks && n > 0 && n <= m->n_ctx && m->gpu && m->ssm_state_backend &&
+        (m->seq || (m->seq = malloc(sizeof(int32_t) * (size_t)m->n_ctx)))) {
+        memcpy(m->seq, toks, sizeof(int32_t) * (size_t)n);
+        m->seq_n = n;
+    }
     // and pushed back onto the device layers (see blob_save)
     if (m->gpu && !gpu_recurrent_upload(m)) return false;
     return true;
@@ -15554,6 +15567,42 @@ static void gpu_runtime_failure(model_t *m) {
     gpu_disable(m);
 }
 
+// The sequence a device-folded recurrent model was fed (model.h, seq): this
+// forward's tokens at their positions. A forward at or before the recorded
+// end continues or rewinds the record; one past it (a restored session's
+// first forward) leaves a gap the record cannot vouch for, and it stays short.
+static void forward_seq_note(model_t *m, const int32_t *tokens, int n, int pos) {
+    if (!m->gpu || !m->ssm_state_backend) return;
+    if (!m->seq && !(m->seq = malloc(sizeof(int32_t) * (size_t)m->n_ctx))) return;
+    if (pos < 0 || pos > m->seq_n || pos + n > m->n_ctx) return;
+    if (tokens != m->seq + pos) memcpy(m->seq + pos, tokens, sizeof(int32_t) * (size_t)n);
+    m->seq_n = pos + n;
+}
+
+// A device forward failed on a backend that folds the recurrent state in the
+// host's own memory (Metal, ssm_state_backend): the fold already holds this
+// batch, or part of it, and there is no earlier copy. Folding the batch again
+// on the host would continue every later token from a wrong state, so the
+// fold restarts and the tokens before `pos` are fed again on the host, which
+// also rewrites their attention rows (R6.68.90). A backend that keeps its own
+// pre-forward copy (CUDA) has restored it by now and never comes here.
+static void forward_refold_lost(model_t *m, int pos) {
+    model_recurrent_reset(m);
+    if (pos <= 0) return;   // the batch's own forward starts the fold
+    if (!m->seq || m->seq_n < pos) {
+        fprintf(stderr, "gpu: the failed forward left the recurrent state unknown, and the "
+                "tokens before position %d were not fed in this session to rebuild it "
+                "from; it restarts empty\n", pos);
+        return;
+    }
+    fprintf(stderr, "gpu: rebuilding the recurrent state on the CPU from the "
+            "sequence's %d tokens\n", pos);
+    for (int p = 0; p < pos; p += m->n_batch) {
+        int c = pos - p < m->n_batch ? pos - p : m->n_batch;
+        model_forward_batch(m, m->seq + p, c, p, false);
+    }
+}
+
 // NULL with *start at the first layer the host runs.
 static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
                                   int pos, bool want_logits, int *start,
@@ -15626,8 +15675,16 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
     forward_ple_before_split(m, tokens, n);
     int start;
     bool done;
+    forward_seq_note(m, tokens, n, pos);
+    bool fold_shared = m->gpu && m->ssm_state_backend;
     float *lg = forward_gpu_leading(m, tokens, n, pos, want_logits, &start, &done);
     if (done) return lg;
+    if (fold_shared && !m->gpu) {
+        // the device failed with the fold in the host's memory: rebuild it,
+        // then this batch again from the top, on the host
+        forward_refold_lost(m, pos);
+        return forward_batch_run(m, tokens, n, pos, want_logits);
+    }
     if (start == 0) forward_inputs(m, tokens, n, dbg);
     m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
 
@@ -16331,8 +16388,17 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
     while (done < n) {
         int take = n - done;
         if (take > MODEL_BATCH_MAX) take = MODEL_BATCH_MAX;
-        bool ok = b->gb && gpu_batch_decode(b->gb, idx + done, tok + done,
-                                            pos + done, take, out + done);
+        // A sequence whose forward failed at runtime gave up its backend
+        // after this batch was made over every slot (gpu_runtime_failure):
+        // it has no device cache for the batch to store into or attend
+        // over, so a step it is part of is the sequential one (R6.68.93;
+        // the batch read the cache through its NULL backend and the server
+        // died).
+        bool on_device = b->gb != NULL;
+        for (int i = done; on_device && i < done + take; i++)
+            if (!b->seqs[idx[i]]->gpu) on_device = false;
+        bool ok = on_device && gpu_batch_decode(b->gb, idx + done, tok + done,
+                                                pos + done, take, out + done);
         if (ok) {
             // The backend returns raw logits, exactly as gpu_forward_batch
             // does; the head transforms live here for both paths so a batched

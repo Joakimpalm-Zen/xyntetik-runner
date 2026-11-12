@@ -124,6 +124,65 @@ def test_a_string_cut_mid_value_is_completed_not_synthesized(scripted):
     assert doc["units"] == "celsius"
 
 
+def _stream_text(srv, **extra):
+    """The content a streamed request delivers, delta by delta."""
+    body = {"messages": [{"role": "user", "content": "weather in Paris, fahrenheit"}],
+            "temperature": 0, "stream": True,
+            "response_format": {"type": "json_schema",
+                                "json_schema": {"name": "w", "schema": SCHEMA}}}
+    body.update(extra)
+    req = urllib.request.Request(srv.base_url + "/v1/chat/completions",
+                                 data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    text = ""
+    with urllib.request.urlopen(req, timeout=120) as r:
+        for line in r:
+            line = line.decode().strip()
+            if not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+            for c in json.loads(line[6:]).get("choices", []):
+                text += c.get("delta", {}).get("content") or ""
+    return text
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_the_closer_writes_after_the_bytes_held_for_a_stop(scripted, stream):
+    """The stop filter holds back text that may still begin a stop string.
+    When the budget ends there, the held text is the model's and comes
+    first, then the closer's tail. The tail used to go out ahead of it:
+    '{"city":"","units":"celsius"}aaa', a document no parser reads."""
+    full = '{"city":"' + "a" * 40 + '","units":"fahrenheit"}'
+    extra = dict(max_tokens=12, runner_test_reply=full, stop=["a" * 60])
+    if stream:
+        text = _stream_text(scripted, **extra)
+    else:
+        d = _chat(scripted, **extra)
+        text = d["choices"][0]["message"]["content"]
+    doc = json.loads(text)
+    assert doc["city"] and set(doc["city"]) == {"a"}, text
+    assert doc["units"] == "celsius", text
+    if not stream:
+        cl = d["runner_telemetry"]["closure"]
+        assert cl["model_bytes"] + cl["closer_bytes"] == len(text.encode()), (cl, text)
+        assert full.startswith(text[:cl["model_bytes"]]), (cl, text)
+        assert cl["fields"] == {"synthesized": ["/units"], "completed": ["/city"]}, cl
+
+
+def test_a_document_cut_by_a_stop_counts_the_bytes_it_delivered(scripted):
+    """A stop string inside a constrained document drops the match and what
+    follows it, and the closer finishes the delivered part. The closure's
+    byte counts are of that delivered document; they used to include the
+    dropped bytes, so they added up to more than the content."""
+    full = '{"city":"Paris STOP and more","units":"fahrenheit"}'
+    d = _chat(scripted, max_tokens=64, runner_test_reply=full, stop=["STOP"])
+    text = d["choices"][0]["message"]["content"]
+    assert json.loads(text) == {"city": "Paris ", "units": "celsius"}, text
+    cl = d["runner_telemetry"]["closure"]
+    assert cl["model_bytes"] == len('{"city":"Paris '), (cl, text)
+    assert cl["model_bytes"] + cl["closer_bytes"] == len(text.encode()), (cl, text)
+    assert cl["fields"] == {"synthesized": ["/units"], "completed": ["/city"]}, cl
+
+
 @pytest.mark.parametrize("path,body", [
     ("/v1/chat/completions", {"messages": [{"role": "user", "content": "weather"}],
                               "tool_choice": "required", "max_tokens": 6,

@@ -27,6 +27,10 @@ void sched_shutdown(void);
 // A slot takes the device turn around its own prefill with these.
 void sched_prefill_begin(void);
 void sched_prefill_end(void);
+// The turn given up and asked for again, so whoever waited goes first: what
+// keeps a hold to one chunk of work. It has the signature an engine yields a
+// prefill with (engine_set_prefill_yield); `ud` is not read.
+void sched_prefill_yield(void *ud);
 // engine_generate's contract, served out of shared microbatches. The per-token
 // work is the engine's own, so a request's tokens do not depend on how busy
 // the server was; all this changes is where the forward happens.

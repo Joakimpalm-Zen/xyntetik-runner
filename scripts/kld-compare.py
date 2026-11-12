@@ -33,13 +33,12 @@ import math
 import os
 import subprocess
 import sys
-import time
 import urllib.request
 
 # the shared probes live beside this script; a test that loads this file by
 # path has not put the directory on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from server_probe import require_served, server_up  # noqa: E402
+from server_probe import require_served, wait_for_own_server  # noqa: E402
 
 
 def start_server(runner, model, port, threads=0, ctx=0):
@@ -51,14 +50,8 @@ def start_server(runner, model, port, threads=0, ctx=0):
     if ctx > 0:
         cmd += ["-c", str(ctx)]
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(400):
-        if proc.poll() is not None:
-            raise RuntimeError(f"runner exited early loading {model} (code {proc.returncode})")
-        if server_up(port):
-            return proc
-        time.sleep(0.5)
-    proc.kill()
-    raise RuntimeError(f"server for {model} on port {port} did not come up")
+    wait_for_own_server(proc, port, model)
+    return proc
 
 
 def query(endpoint, model_name, prompt):

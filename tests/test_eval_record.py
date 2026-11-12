@@ -112,6 +112,30 @@ def test_require_eval_gates_the_load(runner_bin, work):
     assert p.returncode != 0 and "did not pass" in p.stderr
 
 
+def test_two_evaluations_at_once_each_score_their_own_files(runner_bin, work, tmp_path_factory):
+    """Each evaluation starts its servers on ports of its own. They used to
+    share two fixed ports, so a second evaluation running at the same time
+    failed, or scored the first one's servers (R6.68.60)."""
+    import threading
+    other = tmp_path_factory.mktemp("second")
+    for name in ("base.gguf", "q.gguf", "corpus.txt", "key.json"):
+        shutil.copy(work / name, other / name)
+    res = {}
+
+    def go(d):
+        res[d] = _fidelity(runner_bin, d, "--max-mean-kld", "1")
+
+    ts = [threading.Thread(target=go, args=(d,)) for d in (work, other)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    for d in (work, other):
+        assert res[d].returncode == 0, res[d].stderr[-600:]
+        rec = json.loads((d / "q.gguf.eval.fidelity.json").read_text(encoding="utf-8"))
+        assert rec["metrics"]["positions_scored"] == 16 and rec["pass"] is True, rec["metrics"]
+
+
 def test_an_eval_for_another_file_is_stale(runner_bin, work):
     assert _fidelity(runner_bin, work, "--max-mean-kld", "1").returncode == 0
     # the file changes after its evaluation: the record no longer speaks for it

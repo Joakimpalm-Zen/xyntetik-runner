@@ -164,8 +164,15 @@ bool tray_platform_icon_dump(const char *dir, int px) {
             cur = menu;
             break;
         default: {
+            // a label that is not UTF-8 gives no NSString, and a menu item
+            // with a nil title raises (the core ends every label on a whole
+            // character; this keeps one bad label from ending the tray)
+            NSString *title = [NSString stringWithUTF8String:t->label];
+            if (!title)
+                title = [[NSString alloc] initWithCString:t->label
+                                                 encoding:NSISOLatin1StringEncoding];
             NSMenuItem *mi = [[NSMenuItem alloc]
-                initWithTitle:[NSString stringWithUTF8String:t->label]
+                initWithTitle:title ? title : @""
                        action:(t->kind == TRAY_K_LABEL ? nil : @selector(clicked:))
                 keyEquivalent:@""];
             mi.target = (t->kind == TRAY_K_LABEL) ? nil : self;

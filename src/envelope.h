@@ -50,6 +50,15 @@ enum envelope_state {
 // sha256 of a whole file as lowercase hex (exported for the training
 // provenance record; the envelope gate uses it internally)
 bool envelope_file_sha256(const char *path, char hex[65]);
+// For a verifier that follows someone else's word (a lineage record, a bundle
+// or pack manifest): the files it reads and hashes are named by a file that
+// may be anyone's, and only a regular file is one of them. A record that
+// cited /dev/zero, or a bundle whose listed file was a link to it, was hashed
+// with no end; a FIFO would have held the open (R6.68.56, R6.68.63).
+// record_regular_file says whether `path` is one; envelope_cited_sha256 is
+// envelope_file_sha256 for such a path, false for anything else.
+bool record_regular_file(const char *path);
+bool envelope_cited_sha256(const char *path, char hex[65]);
 // sha256 of an in-memory buffer as lowercase hex (the transcript chain hash)
 void envelope_data_sha256(const void *data, size_t n, char hex[65]);
 // the same digest as raw bytes (signature inputs)

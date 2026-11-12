@@ -717,6 +717,75 @@ static bool next_step(const dgroup *g, int n_rungs, double *cost, int *to) {
     return found;
 }
 
+// A plan's rules match by substring and the first that matches wins, so a
+// rule naming one demoted tensor also takes every tensor whose name holds
+// that name: output.weight takes each attn_output.weight, token_embd.weight
+// takes gemma-4's per_layer_token_embd.weight. Such a tensor gets a rule of
+// its own, ahead of every other: its rung when it is demoted too, the top
+// rung when the ranking left it there. Longest name first, so none of these
+// takes another (a name cannot hold a longer one), and a tensor that holds
+// one of them holds the demoted name too and is itself in the list
+// (R6.68.99; scripts/type-plan-by-sensitivity.py guard_rules is the same).
+typedef struct { char *name; const char *type; } plan_guard;
+
+static int cmp_guard(const void *a, const void *b) {
+    const plan_guard *x = a, *y = b;
+    size_t lx = strlen(x->name), ly = strlen(y->name);
+    if (lx != ly) return lx > ly ? -1 : 1;
+    return strcmp(x->name, y->name);
+}
+
+// The guard rules for the report's tensors, written into b; false on a
+// failed read or allocation. dem/dem_type are the demoted tensors and rungs.
+static bool plan_guards(const char *report, char **dem, const char **dem_type, int n_dem,
+                        const char *top, sbuf *b, bool *first) {
+    size_t len = 0;
+    char *text = plat_read_file(report, 0, &len);
+    if (!text) return false;
+    plan_guard *gd = NULL;
+    int ng = 0, cap = 0;
+    bool ok = true;
+    for (char *line = text, *next; ok && line && *line; line = next) {
+        next = strchr(line, '\n');
+        if (next) *next++ = '\0';
+        if (!*line) continue;
+        jv *row = json_parse(line, strlen(line));
+        const char *tn = jv_str(jv_get(row, "tensor"), NULL);
+        const char *type = NULL;
+        bool held = false;
+        for (int k = 0; tn && k < n_dem; k++) {
+            if (!strcmp(dem[k], tn)) type = dem_type[k];
+            else if (strstr(tn, dem[k])) held = true;
+        }
+        if (held) {
+            if (ng == cap) {
+                int ncap = cap ? cap * 2 : 16;
+                plan_guard *grown = realloc(gd, sizeof *gd * (size_t)ncap);
+                if (!grown) ok = false;
+                else { gd = grown; cap = ncap; }
+            }
+            if (ok && (gd[ng].name = strdup(tn))) gd[ng++].type = type ? type : top;
+            else ok = false;
+        }
+        jv_free(row);
+    }
+    free(text);
+    if (ok && ng) qsort(gd, (size_t)ng, sizeof *gd, cmp_guard);
+    for (int k = 0; k < ng; k++) {
+        if (ok) {
+            sb_lit(b, *first ? "{\"match\":" : ",{\"match\":");
+            sb_str(b, gd[k].name);
+            sb_lit(b, ",\"type\":");
+            sb_str(b, gd[k].type);
+            sb_lit(b, "}");
+            *first = false;
+        }
+        free(gd[k].name);
+    }
+    free(gd);
+    return ok;
+}
+
 // --target-size: run --quant-error over the parent, rank the candidate
 // groups as scripts/type-plan-by-sensitivity.py does (added error per saved
 // byte, cheapest first, ties by name), demote until the predicted file fits,
@@ -968,6 +1037,32 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         return false;
     }
     bool first = true;
+    {
+        // the tensors a demoted tensor's rule would take by their names
+        int n_dem = 0;
+        for (int k = 0; k < nd; k++) n_dem += gs[order[k]].n;
+        char **dem = calloc((size_t)(n_dem ? n_dem : 1), sizeof *dem);
+        const char **dem_type = calloc((size_t)(n_dem ? n_dem : 1), sizeof *dem_type);
+        bool guarded = dem && dem_type;
+        for (int k = 0, i = 0; guarded && k < nd; k++)
+            for (int t = 0; t < gs[order[k]].n; t++, i++) {
+                dem[i] = gs[order[k]].tensors[t];
+                dem_type[i] = o->rungs[gs[order[k]].at];
+            }
+        guarded = guarded && plan_guards(res->report, dem, dem_type, n_dem, top, &b, &first);
+        free(dem);
+        free(dem_type);
+        if (!guarded) {
+            fprintf(stderr, "error: runner derive: cannot read %s again to write the plan\n",
+                    res->report);
+            free(res->demoted); free(res->demoted_to);
+            res->demoted = NULL; res->demoted_to = NULL;
+            free(b.s);
+            free(order);
+            groups_free(gs, ng);
+            return false;
+        }
+    }
     for (int k = 0; k < nd; k++) {
         dgroup *d = &gs[order[k]];
         res->demoted[res->n_demoted] = d->name;

@@ -271,7 +271,7 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
             // an assistant turn, unframed; with no reasoning the renderer
             // writes MiMo's empty pair, Spark's bare `</think>` or nothing
             prompt_lit(&b, "<think>");
-            sb_put(&b, reason, strlen(reason));
+            sb_put(&b, reason, reason_n);
             prompt_lit(&b, "</think>");
         } else if (tmpl == TMPL_K2H && !strcmp(role, "assistant")) {
             // K2-Horizon writes a think block on every assistant turn, from
@@ -300,7 +300,7 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
             // reasoning `</think>` content; the renderer then seeds or
             // truncates the block by the turn's position.
             prompt_lit(&b, "<think>\n");
-            sb_put(&b, reason, strlen(reason));
+            sb_put(&b, reason, reason_n);
             prompt_lit(&b, tmpl == TMPL_NEMOTRON35 ? "</think>" : "\n</think>\n");
         }
         if (tmpl_lfm2(tmpl) && !strcmp(role, "assistant"))
@@ -959,6 +959,23 @@ out:
     tool_envelope_free(&env);
 }
 
+// The device turn for everything that is not a completion: a context being
+// pinned, a session's prompt, embeddings, rerank, decide. The engine gives the
+// turn up between prefill chunks, and a loop over items gives it up between
+// them (sched_prefill_yield), as a completion's prefill always has. These held
+// it from their first item to their last, so a one-token request on another
+// slot waited for a whole batch: 186 s behind 48 embedding inputs on Metal
+// (R6.68.54).
+static void readout_turn_begin(engine *e) {
+    engine_set_prefill_yield(e, sched_prefill_yield, NULL);
+    sched_prefill_begin();
+}
+
+static void readout_turn_end(engine *e) {
+    sched_prefill_end();
+    engine_set_prefill_yield(e, NULL, NULL);
+}
+
 // ---- named contexts (R10.4) ---------------------------------------------
 //
 // POST /v1/runner/contexts {id, prompt} or {id, messages[, tools]} prefills
@@ -988,11 +1005,11 @@ static void context_pin_prompt(slot_t *s, sock_t fd, const char *prompt,
         return;
     }
     double t0 = now_s();
-    sched_prefill_begin();
+    readout_turn_begin(e);
     prefix_reuse r = engine_prefix_reuse(e, toks, n);
     float *lg = engine_feed(e, toks + r.keep, n - r.keep);
     int rc = lg ? prefix_context_pin(e, id, toks, n) : PFX_CTX_NOSPACE;
-    sched_prefill_end();
+    readout_turn_end(e);
     double secs = now_s() - t0;
     free(toks);
     if (!lg) { send_error(fd, 500, "prefill failed (context or memory)"); return; }
@@ -1342,7 +1359,11 @@ static void handle_session_start(slot_t *s, sock_t fd, jv *req) {
     engine_request_defaults(e);   // nothing the previous request set survives
     engine_reset(e);
     e->ignore_eos = ignore_eos;
+    // the prompt gives the turn up between chunks; the generation that
+    // follows holds it, as a speculative request's does
+    engine_set_prefill_yield(e, sched_prefill_yield, NULL);
     float *lg = engine_feed(e, toks, n);
+    engine_set_prefill_yield(e, NULL, NULL);
     free(toks);
     if (!lg) {
         sched_prefill_end();
@@ -1754,9 +1775,9 @@ static void handle_decide(slot_t *s, sock_t fd, jv *req) {
     sbuf r = {0};
     const char *err = NULL;
     engine_set_stop(&s->e, readout_should_stop, &fd);
-    sched_prefill_begin();
+    readout_turn_begin(&s->e);
     int st = decide_handle(&s->e, req, SV.model_name, &r, &err);
-    sched_prefill_end();
+    readout_turn_end(&s->e);
     engine_set_stop(&s->e, NULL, NULL);
     if (sock_peer_closed(fd)) { free(r.s); return; }
     if (st != 200) {
@@ -1778,11 +1799,11 @@ static void handle_decide(slot_t *s, sock_t fd, jv *req) {
 static void handle_systemone(slot_t *s, sock_t fd, jv *req) {
     sbuf r = {0};
     const char *err = NULL;
-    sched_prefill_begin();
+    readout_turn_begin(&s->e);
     int st = clef_systemone_handle(&s->e, req, &r, &err);
     engine_reset(&s->e);
     s->e.pos = 0;
-    sched_prefill_end();
+    readout_turn_end(&s->e);
     if (st != 200) {
         free(r.s);
         send_error(fd, st, err ? err : "systemone failed");
@@ -1798,9 +1819,9 @@ static void handle_rerank(slot_t *s, sock_t fd, jv *req) {
     sbuf r = {0};
     const char *err = NULL;
     engine_set_stop(&s->e, readout_should_stop, &fd);
-    sched_prefill_begin();
+    readout_turn_begin(&s->e);
     int st = rerank_handle(&s->e, req, SV.model_name, s->tmpl, &r, &err);
-    sched_prefill_end();
+    readout_turn_end(&s->e);
     engine_set_stop(&s->e, NULL, NULL);
     if (sock_peer_closed(fd)) { free(r.s); return; }
     if (st != 200) {
@@ -1873,10 +1894,11 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
     // the same device work every other handler serializes under dev_mu. Take the
     // device turn so an embeddings request cannot launch while decode_worker is
     // capturing a CUDA graph (hazard at dev_mu, ~line 596). Every exit from the
-    // loop below is a break, so the single sched_prefill_end() after the loop
+    // loop below is a break, so the single readout_turn_end() after the loop
     // always runs — the lock is never left held.
-    sched_prefill_begin();
+    readout_turn_begin(&s->e);
     for (int k = 0; k < n_in && ok; k++) {
+        if (k) sched_prefill_yield(NULL);   // one input a turn
         if (sock_peer_closed(fd)) { ok = false; break; }
         const char *txt = one ? one : jv_str(input->items[k], NULL);
         if (!txt) { err_code = 400; err_msg = "input must be strings"; ok = false; break; }
@@ -1922,7 +1944,7 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
     // model_embed overwrote this slot's KV cache — invalidate the prefix cache
     engine_reset(&s->e);
     s->e.pos = 0;
-    sched_prefill_end();
+    readout_turn_end(&s->e);
     if (sock_peer_closed(fd)) {
         // The partial vector/response is discarded after releasing the turn.
     } else if (!ok) {
@@ -4067,12 +4089,9 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     if (threads_per_slot < 1) threads_per_slot = 1;
     int shared_pool_threads = n_threads;   // the slots' shared pool (see below), for the banner
 
-    const char *name = strrchr(model_path, '/');
-    const char *bsname = strrchr(model_path, '\\'); // Windows path separator
-    if (bsname && (!name || bsname > name)) name = bsname;
     SV.model_name = SV.n_reg > 0 ? SV.reg[0].name
                   : forced_name  ? forced_name
-                                 : (name ? name + 1 : model_path);
+                                 : plat_path_base(model_path);
     SV.n_predict_cap = 1024;
     SV.reasoning_budget = reasoning_budget;
     SV.reasoning_budget_message = reasoning_budget_message;
@@ -4164,7 +4183,6 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             s->smp = defaults;
             s->smp.rng = defaults.rng ^ (0x9E3779B97F4A7C15ull * (unsigned)(i + 1));
             SV.base_rng = defaults.rng;
-            s->smp_base = s->smp;
             if (i == 0) {
                 s->m = base;
                 // the caller's model is the resident one from here on. With
@@ -4193,12 +4211,15 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                     fprintf(stderr, "error: cannot allocate slot %d model\n", i);
                     return serve_start_end(base, tok, 1);
                 }
-                bool loaded = model_load(s->m, model_path, &slot_mp);
-                if (!loaded || !oms_check_model(model_path, &SV.signing, NULL)) {
+                // the signature before the load (R6.68.79), as for slot 0
+                bool loaded = oms_check_model(model_path, &SV.signing, NULL) &&
+                              model_load(s->m, model_path, &slot_mp);
+                if (!loaded) {
                     fprintf(stderr, "error: failed to load slot %d\n", i);
-                    // a load that failed released its own model; only the
-                    // container is left, and the release must not free it twice
-                    if (!loaded) { free(s->m); s->m = NULL; }
+                    // a load that failed released its own model, and one the
+                    // signature refused never began; only the container is
+                    // left, and the release must not free it twice
+                    free(s->m); s->m = NULL;
                     return serve_start_end(base, tok, 1);
                 }
                 tpool_destroy(s->m->tp);    // the single-thread load pool
@@ -4206,7 +4227,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 s->m->tp = shared_pool;
             }
             template_bind_think_tags(tmpl, &s->m->think_open, &s->m->think_close);
-            if (!engine_init(&s->e, s->m, s->tok, &s->smp)) {
+            if (!slot_engine_init(s)) {
                 fprintf(stderr, "error: out of memory initializing slot %d engine\n", i);
                 return serve_start_end(base, tok, 1);
             }

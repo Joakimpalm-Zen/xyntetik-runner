@@ -199,21 +199,44 @@ static const char *curl_program(void) {
     return c && *c ? c : "curl";
 }
 
-// curl -L --fail [-sS] [-H auth] -o out url ; 0 on success
+// curl -L --fail [-sS] [-K -] -o out url ; 0 on success
+//
+// HF_TOKEN reaches curl as a config line on its standard input (`-K -`), never
+// as an argument: a program's arguments are in the process list, where every
+// user of the machine reads them for as long as a download runs (it was
+// `-H "Authorization: Bearer <token>"` until R6.68.65).
 static int curl_get(const char *url, const char *out, bool quiet, char *err, size_t errcap) {
-    char auth[4096];
+    char cfg[PLAT_SPAWN_STDIN_MAX];
+    size_t cn = 0;
     const char *token = getenv("HF_TOKEN");
-    if (token && *token) snprintf(auth, sizeof auth, "Authorization: Bearer %s", token);
+    bool auth = token && *token;
+    if (auth) {
+        // header = "Authorization: Bearer <token>", the token escaped as a
+        // curl config string; a token that cannot be a header value is refused
+        cn = (size_t)snprintf(cfg, sizeof cfg, "header = \"Authorization: Bearer ");
+        for (const char *p = token; *p; p++) {
+            unsigned char c = (unsigned char)*p;
+            if (c < 0x20 || c == 0x7f || cn + 4 >= sizeof cfg) {
+                snprintf(err, errcap, "HF_TOKEN is not a token (a control character, or too long)");
+                return -1;
+            }
+            if (c == '"' || c == '\\') cfg[cn++] = '\\';
+            cfg[cn++] = (char)c;
+        }
+        cfg[cn++] = '"';
+        cfg[cn++] = '\n';
+    }
     const char *argv[16];
     int n = 0;
     argv[n++] = curl_program();
     argv[n++] = "-L"; argv[n++] = "--fail"; argv[n++] = "--retry"; argv[n++] = "3";
     if (quiet) argv[n++] = "-sS";
-    if (token && *token) { argv[n++] = "-H"; argv[n++] = auth; }
+    if (auth) { argv[n++] = "-K"; argv[n++] = "-"; }
     argv[n++] = "-o"; argv[n++] = out;
     argv[n++] = url;
     argv[n] = NULL;
-    int rc = plat_spawn_wait(argv);
+    int rc = plat_spawn_wait_stdin(argv, auth ? cfg : NULL, cn);
+    memset(cfg, 0, sizeof cfg);
     if (rc == -1) snprintf(err, errcap, "cannot run %s (set RUNNER_CURL, or install curl)", curl_program());
     else if (rc != 0) snprintf(err, errcap, "%s exited %d fetching %s", curl_program(), rc, url);
     return rc;
@@ -279,6 +302,31 @@ static void local_name(const char *rfilename, char *out, size_t cap) {
     out[n] = 0;
 }
 
+// The transfer URL of one repository file. A file name is not a URL: curl
+// refuses one with a space outright (exit 3), and '#' or '?' cut the path
+// short, so every byte outside RFC 3986's unreserved set is percent-encoded;
+// '/' stays the folder separator (R6.68.66). The repository id needs none
+// (safe_repo_segment). False when the URL does not fit.
+static bool resolve_url(char *out, size_t cap, const char *repo, const char *rfilename) {
+    static const char hexd[] = "0123456789ABCDEF";
+    int at = snprintf(out, cap, "https://huggingface.co/%s/resolve/main/", repo);
+    if (at < 0 || (size_t)at >= cap) return false;
+    size_t n = (size_t)at;
+    for (const unsigned char *p = (const unsigned char *)rfilename; *p; p++) {
+        // ASCII by range, not isalnum: a locale may call a high byte a letter
+        bool plain = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                     (*p >= '0' && *p <= '9') || *p == '-' || *p == '.' || *p == '_' ||
+                     *p == '~' || *p == '/';
+        if (n + (plain ? 1 : 3) >= cap) return false;
+        if (plain) { out[n++] = (char)*p; continue; }
+        out[n++] = '%';
+        out[n++] = hexd[*p >> 4];
+        out[n++] = hexd[*p & 15];
+    }
+    out[n] = 0;
+    return true;
+}
+
 // the local digest for a caller that reports it (hex_out non-NULL): the LFS
 // check has computed it already; a file verified by its size alone is hashed
 static bool digest_out(const char *target, bool have_hex, const char hex[65], char *hex_out,
@@ -298,7 +346,7 @@ static bool digest_out(const char *target, bool have_hex, const char hex[65], ch
 static bool ensure_file(const char *repo, const char *rfilename, const char *repodir,
                         long long size, const char *sha, bool quiet, char *hex_out,
                         char *err, size_t errcap) {
-    char rel[1024], target[2048], part[2100], url[2048];
+    char rel[1024], target[2048], part[2100], url[4096];
     local_name(rfilename, rel, sizeof rel);
     if (snprintf(target, sizeof target, "%s%c%s", repodir, HF_SEP, rel) >= (int)sizeof target) {
         snprintf(err, errcap, "cache path too long for %s", rfilename);
@@ -324,7 +372,10 @@ static bool ensure_file(const char *repo, const char *rfilename, const char *rep
     }
     snprintf(part, sizeof part, "%s.part", target);
     plat_remove(part);
-    snprintf(url, sizeof url, "https://huggingface.co/%s/resolve/main/%s", repo, rfilename);
+    if (!resolve_url(url, sizeof url, repo, rfilename)) {
+        snprintf(err, errcap, "transfer URL too long for %s", rfilename);
+        return false;
+    }
     fprintf(stderr, "hf: fetching %s/%s\n", repo, rfilename);
     if (curl_get(url, part, quiet, err, errcap) != 0) { plat_remove(part); return false; }
     if (sha && *sha) {

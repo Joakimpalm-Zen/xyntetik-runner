@@ -595,6 +595,13 @@ typedef struct {
     // inject scratch [n_batch][hc]; the PLE hash geometry and table.
     bool   hyper_conn;
     const int32_t *fwd_tokens;                   // this forward's token ids (PLE hash)
+    // The tokens this model was fed, seq[0, seq_n), kept only where a backend
+    // folds the recurrent state in the host's own memory (ssm_state_backend):
+    // a device forward that fails there has no earlier copy of the fold, and
+    // the host rebuilds it from these (forward_refold_lost). Recorded by the
+    // forward itself, so every caller is covered, a draft model's drafts too.
+    int32_t *seq;
+    int      seq_n;
     int    hc_count, hc_low_rank;
     float       *hc_head_norm;                  // [hc * n_embd]
     gguf_tensor *hc_head_down, *hc_head_up;
@@ -1432,7 +1439,10 @@ bool model_recurrent_restore_row(model_t *m, int r);
 // not sliceable, so a load is only valid at the exact position it was saved.
 size_t model_recurrent_blob_bytes(const model_t *m);
 bool model_recurrent_blob_save(const model_t *m, uint8_t *dst);
-bool model_recurrent_blob_load(model_t *m, const uint8_t *src);
+// `toks[0, n)`: the sequence the blob's fold was taken over (NULL when the
+// caller does not hold it), which a later rebuild of the fold feeds again
+bool model_recurrent_blob_load(model_t *m, const uint8_t *src,
+                               const int32_t *toks, int n);
 // Turn mark (tracer 7). The snapshot above is the rollback slot: spec-decode
 // re-takes it every round, so it never survives to the next request. The mark
 // is a second checkpoint with one owner, the prompt boundary of the request a

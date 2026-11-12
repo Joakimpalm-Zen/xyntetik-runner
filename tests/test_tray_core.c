@@ -375,6 +375,26 @@ int main(int argc, char **argv) {
               "unconfigured row no longer claims a missing model");
     }
 
+#ifndef _WIN32
+    // R6.68.95: "View log" starts the platform's opener as a child of the tray,
+    // and nothing waited for it: each click left a defunct process for as
+    // long as the tray ran. The next menu build reaps them. The seam names a
+    // harmless opener, so the test opens nothing on the screen; no managed
+    // runner exists yet, so any child left over is an opener.
+    {
+        setenv_compat("RUNNER_TEST_TRAY_OPENER", "true");
+        tray_menu_act(TRAY_ACT_OPEN_LOG, 0, NULL);
+        tray_menu_act(TRAY_ACT_OPEN_LOG, 0, NULL);
+        msleep(300);
+        tray_item rows[128];
+        tray_menu_build(rows, 128);
+        errno = 0;
+        pid_t left = waitpid(-1, NULL, WNOHANG);
+        CHECK(left == -1 && errno == ECHILD, "the log opener's processes are reaped");
+        unsetenv_compat("RUNNER_TEST_TRAY_OPENER");
+    }
+#endif
+
     // The core re-reads config.json whenever it has changed on disk (a file
     // that appears after the first build is picked up: its stamp differs
     // from the never-loaded one). instances_dir() is <root>/instances;
@@ -832,6 +852,38 @@ int main(int argc, char **argv) {
     CHECK(!instances_tray_lock_busy(), "and free once it is let go");
 
     remove(foreign);
+
+    // R6.68.102: a label is text. A model name longer than a row holds is cut
+    // to fit, and cut in the middle of a UTF-8 character it was no longer a
+    // string: the macOS menu got a nil title and AppKit raised. The row now
+    // ends on a whole character. The name: two ASCII bytes, then two-byte
+    // characters, so the 511-byte cut lands inside one.
+    {
+        char rec[2048], name[700];
+        size_t k = 0;
+        name[k++] = 'x'; name[k++] = 'x';
+        while (k + 2 < 640) { name[k++] = (char)0xC3; name[k++] = (char)0xA9; }   // U+00E9
+        name[k] = 0;
+        snprintf(rec, sizeof rec, "%s/%ld.json", idir, (long)getpid());
+        f = fopen(rec, "wb");
+        fprintf(f, "{\"pid\": %ld, \"started\": 1, \"mode\": \"serve\", \"port\": 0,"
+                   " \"version\": \"t\", \"models\": [{\"name\": \"%s\", \"path\": \"/m\"}]}\n",
+                (long)getpid(), name);
+        fclose(f);
+        tray_item rows[128];
+        int nr = tray_menu_build(rows, 128);
+        bool found = false, whole = true;
+        for (int i = 0; i < nr; i++) {
+            const unsigned char *t = (const unsigned char *)rows[i].label;
+            if (t[0] != 'x' || t[1] != 'x') continue;
+            found = true;
+            for (size_t j = 2; t[j]; j += 2)
+                if (t[j] != 0xC3 || t[j + 1] != 0xA9) { whole = false; break; }
+        }
+        CHECK(found, "the long model name has a row");
+        CHECK(whole, "a row cut to fit ends on a whole character");
+        remove(rec);
+    }
     remove(mp);
     remove(cfg);
     remove(mdl);

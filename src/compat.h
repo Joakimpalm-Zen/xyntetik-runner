@@ -307,6 +307,12 @@ void        plat_closedir(plat_dir *d);
 // argv with spaces and quote nothing: "C:\Program Files\x" reached the
 // child as two arguments.
 int plat_spawn_wait(const char *const argv[]);
+// The same, with `input` (at most PLAT_SPAWN_STDIN_MAX bytes) as the child's
+// standard input: how a secret reaches a program without sitting in its
+// arguments, which every user of the machine can read in the process list.
+// A NULL input leaves the child the caller's own standard input.
+#define PLAT_SPAWN_STDIN_MAX 4096
+int plat_spawn_wait_stdin(const char *const argv[], const char *input, size_t n);
 
 // Re-exec this image with one argument, no shell, no inherited
 // descriptors, and no caller wait. False if launch could not be scheduled.

@@ -88,6 +88,36 @@ def test_unsupported_tensor_names_itself(runner_bin, tmp_path, flags, tensor):
     assert "using CPU" in err, err
 
 
+def test_metal_refuses_a_layer_constant_it_cannot_make(runner_bin, tmp_path):
+    """R6.68.86: every per-layer constant table is checked where it is made.
+
+    The gemma-4 E-series post-norm table was uploaded and never checked, so
+    a failed allocation left a nil buffer that the first forward bound.
+    """
+    caps = json.loads(subprocess.run(
+        [runner_bin, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
+        check=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "metal":
+        pytest.skip("the Metal backend's init")
+    model = tmp_path / "es.gguf"
+    subprocess.run(
+        [sys.executable, ROOT / "scripts/make-test-model.py", "--eseries",
+         "3,16", str(model)],
+        check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    cpu = _run(runner_bin, model, "off")
+    assert cpu.returncode == 0, cpu.stderr.decode(errors="replace")
+    assert cpu.stdout
+    # tables this fixture carries: a table the model lacks is never made
+    for table in ("ppn", "attn_norm", "ffn_norm", "qn", "pan", "pfn"):
+        env = {**os.environ,
+               "RUNNER_METAL_INIT_INJECT_FAILURE": "const:" + table}
+        auto = _run(runner_bin, model, "auto", env=env)
+        err = auto.stderr.decode(errors="replace")
+        assert auto.returncode == 0, err
+        assert "Metal initialization failed (per-layer buffer allocation)" in err, (table, err)
+        assert auto.stdout == cpu.stdout, table
+
+
 def test_cuda_runtime_absence_is_loud(runner_bin, tmp_path):
     caps = json.loads(subprocess.run(
         [runner_bin, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,

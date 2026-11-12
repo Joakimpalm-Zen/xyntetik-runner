@@ -119,11 +119,9 @@ typedef struct {
     sbuf  calls;
     int   n_calls;
     bool  call_open;   // a streamed call begun and not yet ended
-    // R2.2: the constrained document's content-channel bytes, and the offset
-    // at which the engine's closer took over (-1: the model finished it), so
-    // the turn can say which fields the closer wrote
-    bool  doc_on;
-    sbuf  doc;
+    // R2.2: the offset in `out` at which the engine's closer took over (-1:
+    // the model finished the document), so the turn can say which fields the
+    // closer wrote. `out` is the document: what the content channel delivered.
     long  close_at;
     // R3.36: a stream written under the device turn goes through `wq`, which
     // cannot block; what the client has not taken is written after the turn.
@@ -2301,15 +2299,6 @@ static int emit_channel(gen_ctx *g, int reasoning, const char *bytes, int n) {
 // g->hold so a stop spanning token boundaries still matches, and only the
 // tail that could still begin a stop is withheld from the client
 static int stop_feed(gen_ctx *g, const char *bytes, int n) {
-    // A stop sequence is a rule about the MODEL's visible text. The tail the
-    // engine synthesizes to close a truncated constrained document is not
-    // that — it is the server making the client's copy legal — and filtering
-    // it eats exactly the bytes that do the work: closing `{"a":"xx` yields
-    // `","b":""}`, and `"}"` or `"\n\n"` are ordinary stops that match a
-    // closer even when the model never produced one. It arrives AFTER the
-    // stop matched, so this bypass must precede the guard below.
-    if (g->eng && g->eng->constraint_closing)
-        return emit_channel(g, 0, bytes, n);
     // Nothing else after a matched stop reaches the client: the think
     // splitter's held-back tail is flushed through here at the end of
     // generation, and on a thinking-tag model that tail is the text that
@@ -2356,6 +2345,15 @@ static int stop_feed(gen_ctx *g, const char *bytes, int n) {
         memmove(g->hold.s, g->hold.s + rel, keep);
         g->hold.n = keep;
     }
+    return rc;
+}
+
+// The model's part of the turn is over without a stop match: the tail held
+// back as a possible start of one was ordinary output after all.
+static int stop_release(gen_ctx *g) {
+    if (g->stopped || g->hold.n == 0) return 0;
+    int rc = emit_channel(g, 0, g->hold.s, (int)g->hold.n);
+    g->hold.n = 0;
     return rc;
 }
 
@@ -2448,14 +2446,29 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
 
 static int gen_emit(void *ud, int reasoning, const char *bytes, int n) {
     gen_ctx *g = ud;
-    if (!reasoning && g->doc_on && n > 0) {
-        if (g->close_at < 0 && g->eng && g->eng->constraint_closing)
-            g->close_at = (long)g->doc.n;
-        sb_put(&g->doc, bytes, (size_t)n);
+    if (reasoning) {
+        g->tok_had_reasoning = true;
+        return emit_channel(g, 1, bytes, n);
     }
-    if (!reasoning && g->n_stop) return stop_feed(g, bytes, n);
-    if (reasoning) ((gen_ctx *)ud)->tok_had_reasoning = true;
-    return emit_channel(g, reasoning, bytes, n);
+    // A stop sequence is a rule about the MODEL's visible text. The tail the
+    // engine synthesizes to close a truncated constrained document is not
+    // that — it is the server making the client's copy legal — and filtering
+    // it eats exactly the bytes that do the work: closing `{"a":"xx` yields
+    // `","b":""}`, and `"}"` or `"\n\n"` are ordinary stops that match a
+    // closer even when the model never produced one. It can arrive after a
+    // stop matched, and is still owed then.
+    if (!g->eng || !g->eng->constraint_closing)
+        return g->n_stop ? stop_feed(g, bytes, n) : emit_channel(g, 0, bytes, n);
+    // The closer continues the document the validator holds, which includes
+    // whatever the stop filter is still holding back, so that goes out first.
+    // The tail used to overtake it: `{"city":"","units":"celsius"}aaa`
+    // (R6.68.49). What is out by then is the model's share of the document,
+    // which is where the closure report draws its line; it once drew it in a
+    // copy taken ahead of the stop filter, which counted the bytes a matched
+    // stop had dropped.
+    int rc = stop_release(g);
+    if (g->close_at < 0) g->close_at = (long)g->out.n;
+    return rc ? rc : emit_channel(g, 0, bytes, n);
 }
 
 static int gen_collect(void *ud, const char *bytes, int n) {
@@ -2827,25 +2840,6 @@ static bool request_json_mode(jv *req) {
         return true;
     jv *tf = jv_get(jv_get(req, "text"), "format");
     return tf && strcmp(jv_str(jv_get(tf, "type"), ""), "json_object") == 0;
-}
-
-// run one completion on a slot and write the HTTP response.
-// `env` is the strict tool-call envelope when the request opted into one; it
-// replaces the response_format schema, having already absorbed it as the
-// shape of its `final` branch.
-// Drop the device turn and immediately ask for it back. A waiter that has been
-// blocked gets the mutex ahead of us on any fair-ish implementation, and on an
-// unfair one this still bounds the hold to one chunk rather than one prompt.
-static void prefill_yield_turn(void *ud) {
-    (void)ud;
-    // end() then begin() puts this prefill at the BACK of the device queue,
-    // so a request that arrived mid-prefill runs at the next chunk boundary
-    // instead of after the whole prompt. That only works because the turn is
-    // FIFO (see sched_prefill_begin): with a plain mutex the releasing thread
-    // barges straight back in -- measured, the waiter lost 44 of 45 races and
-    // still waited 25.3 s of a 26.4 s prefill.
-    sched_prefill_end();
-    sched_prefill_begin();
 }
 
 // The serving grammar and the replay grammar must be one compiler. The
@@ -4067,19 +4061,30 @@ static bool creq_hints(const creq_ctx *c, completion_req *q, creq_err *err) {
                                 "lookup draft's verify walk");
             return false;
         }
-        // one token per byte is the upper bound, plus a separator per hint
-        size_t need = bytes + (size_t)dh->n + 1;
-        if (need > (size_t)s->hint_cap) {
-            int32_t *nb = realloc(s->hint_buf, sizeof(int32_t) * need);
-            if (!nb) { creq_set(err, 500, "out of memory tokenizing draft_hints"); return false; }
-            s->hint_buf = nb;
-            s->hint_cap = (int)need;
-        }
+        // No byte count bounds a token count (tokenizer.h): a vocabulary may
+        // prefix a token to every text and spell a space as three. The buffer
+        // was sized at one token per byte, so short hints used the room of
+        // the ones after them, which were cut or tokenized to nothing, and a
+        // separator was then written past the end (R6.68.51). Each hint is
+        // encoded to its true length and the buffer grows to what it holds.
         int hn = 0;
         for (int i = 0; i < dh->n; i++) {
-            int n = tok_encode(s->tok, dh->items[i]->str, s->hint_buf + hn,
-                               s->hint_cap - hn - 1, false, false);
-            if (n < 0) { creq_set(err, 500, "out of memory tokenizing draft_hints"); return false; }
+            int32_t *enc = NULL;
+            int n = tok_encode_fit(s->tok, dh->items[i]->str, false, TOK_TEXT, 0, &enc);
+            size_t need = (size_t)hn + (size_t)(n > 0 ? n : 0) + 1;
+            if (n >= 0 && need > (size_t)s->hint_cap) {
+                int32_t *nb = need <= INT_MAX / 2
+                    ? realloc(s->hint_buf, sizeof(int32_t) * need * 2) : NULL;
+                if (nb) { s->hint_buf = nb; s->hint_cap = (int)(need * 2); }
+                else n = -1;
+            }
+            if (n < 0) {
+                free(enc);
+                creq_set(err, 500, "out of memory tokenizing draft_hints");
+                return false;
+            }
+            if (n) memcpy(s->hint_buf + hn, enc, sizeof(int32_t) * (size_t)n);
+            free(enc);
             hn += n;
             s->hint_buf[hn++] = -1;
         }
@@ -4231,20 +4236,12 @@ static void completion_apply(slot_t *s, const completion_req *q, const char *pro
                              bool chat, const tool_envelope *env) {
     model_t *m = s->m;
     engine *e = &s->e;
-    // smp_base is the request-visible defaults, captured before engine_init
-    // installed the stop-token exemptions into the live sampler; restoring it
-    // wholesale dropped them, so over HTTP a repeat penalty could punish the
-    // model's own turn terminator (prompt </s>, top-k 1, penalty 100: the CLI
-    // stopped at once, the server ran to max_tokens). The RNG and the
-    // exemptions are engine state, not request defaults: both survive.
+    // Every request starts from the slot's base (the server's defaults and
+    // the engine's stop-token exemptions, slot_engine_init); only the rng
+    // STATE carries across, so sampling sequences stay diverse.
     uint64_t rng_state = s->smp.rng;
-    int32_t no_penalty[sizeof(s->smp.no_penalty) / sizeof(*s->smp.no_penalty)];
-    int n_no_penalty = s->smp.n_no_penalty;
-    memcpy(no_penalty, s->smp.no_penalty, sizeof(no_penalty));
     s->smp = s->smp_base;
     s->smp.rng = rng_state;
-    memcpy(s->smp.no_penalty, no_penalty, sizeof(no_penalty));
-    s->smp.n_no_penalty = n_no_penalty;
     s->smp.temp = (float)q->temp;
     s->smp.top_p = (float)q->top_p;
     s->smp.min_p = (float)q->min_p;
@@ -5047,26 +5044,9 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
     if (chat) sb_lit(&r, "},");
     else      sb_lit(&r, ",");
     if (chat && e->lp_count > 0) {
-        char tb[512];
-        sb_lit(&r, "\"logprobs\":{\"content\":[");
-        for (int i = 0; i < e->lp_count; i++) {
-            if (i) sb_lit(&r, ",");
-            int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
-            sb_lit(&r, "{\"token\":\"");
-            sb_esc(&r, tb, tn);
-            sb_fmt(&r, "\",\"logprob\":%.9g,\"top_logprobs\":[", e->lp_chosen[i]);
-            for (int j = 0; j < e->lp_n; j++) {
-                const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
-                if (a->id < 0) break;
-                if (j) sb_lit(&r, ",");
-                tn = lp_piece(s, e, a->id, tb, sizeof(tb));
-                sb_lit(&r, "{\"token\":\"");
-                sb_esc(&r, tb, tn);
-                sb_fmt(&r, "\",\"logprob\":%.9g}", a->lp);
-            }
-            sb_lit(&r, "]}");
-        }
-        sb_lit(&r, "]},");
+        // the body the stream's logprobs chunk carries
+        append_chat_logprobs(&r, s, e);
+        sb_lit(&r, ",");
     } else if (!chat && q->echo && q->want_lp && g->ptoks) {
         // echo: the prompt's teacher-forced entries, then the generated
         append_text_logprobs(&r, s, e, g, q->lp_n);
@@ -5219,7 +5199,7 @@ static float *turn_prefill(turn_result *t) {
     // holds it for the whole prefill and every other slot waits: measured at
     // 26.2 s for a short request arriving during a 2,300-token prefill.
     engine_set_stop(e, request_should_stop, stop);
-    engine_set_prefill_yield(e, prefill_yield_turn, NULL);
+    engine_set_prefill_yield(e, sched_prefill_yield, NULL);
     double device_t0 = now_s();
     sched_prefill_begin();
     prep->diag.device_wait_s = now_s() - device_t0;
@@ -5449,7 +5429,6 @@ static void turn_generate(turn_result *t, float *logits) {
     g->raw_on = receipts_enabled();
     // only a streamed chat-shaped turn with a history can repeat a call
     g->calls_on = q->stream && (api == API_CHAT || api == API_MESSAGES);
-    g->doc_on = e->schema || e->json_mode;
     g->close_at = -1;
     g->out_on = sched_generate_holds_turn(s);
     if (g->out_on) {
@@ -5583,12 +5562,7 @@ static void turn_close(turn_result *t) {
     // frame is owed to a peer already proven gone, and buffered responses must
     // not spend time building a body only to rediscover the failed socket.
     think_finish(&g->ts, gen_emit, g);
-    // generation ended without a stop match: the withheld partial-match
-    // tail was ordinary output after all
-    if (!g->stopped && g->hold.n > 0) {
-        emit_channel(g, 0, g->hold.s, (int)g->hold.n);
-        g->hold.n = 0;
-    }
+    stop_release(g);
     // The closure report reads the turn's document, so it is built once the
     // turn's last byte is in it. It used to be built, and the document freed,
     // before the final think_finish above: a partial tag the splitter still
@@ -5596,8 +5570,7 @@ static void turn_close(turn_result *t) {
     // buffer nothing released (one leak per such turn, found under ASan), and
     // the report was computed without those bytes (R6.68.20). A dead client
     // skips this; `done` frees the document on every path.
-    if (g->doc_on)
-        prep->diag.closure_json = closure_json(g->doc.s, g->doc.n, g->close_at);
+    prep->diag.closure_json = closure_json(g->out.s, g->out.n, g->close_at);
     // the first visible byte, from the moment the slot took the request
     // (a request the accept loop answered itself has no slot clock: 0)
     if (g->first_visible_t > 0 && s->req_t0 > 0)
@@ -5770,7 +5743,6 @@ static void turn_log(turn_result *t) {
     turn_shape *shape = t->shape;
     free(shape->json.s);
     free(prep->diag.closure_json);
-    free(g->doc.s);
     // A paging note only when there was paging. Silence is the normal case and
     // a per-request "0 page-ins" would be noise, but when the weights have been
     // evicted this line is the only thing that says the time went to the disk

@@ -89,6 +89,19 @@ def ladder_groups(rows, match, ladder, by):
     return list(groups.values())
 
 
+def guard_rules(rows, typed, top):
+    """Rules match by substring and the first that matches wins, so a rule
+    naming one demoted tensor also takes every tensor whose name holds that
+    name (output.weight takes each attn_output.weight, token_embd.weight takes
+    per_layer_token_embd.weight). Such a tensor gets its own rule, ahead of
+    every other: its rung when it is demoted too, else the top rung. Longest
+    name first, so none of these takes another. src/derive.c plan_guards is
+    the same. `typed` is {demoted tensor: its type}."""
+    names = [r["tensor"] for r in rows]
+    held = [y for y in names if any(x != y and x in y for x in typed)]
+    return [{"match": y, "type": typed.get(y, top)} for y in sorted(held, key=lambda y: (-len(y), y))]
+
+
 def hold_uncovered(rows, match, allow_mixed):
     """R4.34.2: when the report is imatrix-weighted, a candidate the imatrix has
     no entry for (llama.cpp's leaves out output and token_embd by default) has
@@ -122,7 +135,7 @@ def next_step(g):
     return best
 
 
-def ladder_plan(a, rows, ladder):
+def ladder_plan(a, rows, ladder, all_rows):
     """The ladder's plan: the cheapest next hull step over all groups, until
     the target is met (--groups counts the groups that leave the top rung)."""
     groups = ladder_groups(rows, a.match, ladder, a.group)
@@ -158,6 +171,7 @@ def ladder_plan(a, rows, ladder):
     if a.save_bytes is not None and saved < a.save_bytes:
         sys.exit(f"error: demoting every group saves {saved} bytes, {a.save_bytes} asked")
     rules = [{"match": t, "type": ladder[g["at"]]} for g in order for t in sorted(g["tensors"])]
+    rules = guard_rules(all_rows, {r["match"]: r["type"] for r in rules}, ladder[0]) + rules
     if a.match:
         rules.append({"match": a.match, "type": ladder[0]})
     plan = {"default": a.default if a.match else ladder[0], "rules": rules}
@@ -196,10 +210,11 @@ def main():
         sys.exit("error: give --high T and --low T, or --ladder T1,...,Tn")
     if len(ladder) < 2 or len(set(ladder)) != len(ladder):
         sys.exit("error: a ladder is two or more different types, high to low")
-    rows, held = hold_uncovered(load(a.report), a.match, a.allow_mixed)
+    all_rows = load(a.report)   # the guard rules look at every costed tensor
+    rows, held = hold_uncovered(all_rows, a.match, a.allow_mixed)
     say_held(held, ladder[0])
     if len(ladder) > 2:
-        return ladder_plan(a, rows, ladder)
+        return ladder_plan(a, rows, ladder, all_rows)
     a.high, a.low = ladder
 
     groups = groups_of(rows, a.match, a.high, a.low, a.group)
@@ -229,6 +244,7 @@ def main():
         sys.exit(f"error: demoting every group saves {saved} bytes, {a.save_bytes} asked")
 
     rules = [{"match": t, "type": a.low} for g in demoted for t in sorted(g["tensors"])]
+    rules = guard_rules(all_rows, {r["match"]: r["type"] for r in rules}, a.high) + rules
     if a.match:
         rules.append({"match": a.match, "type": a.high})
     # no --match: every tensor the report costs is a candidate, so the ones

@@ -133,11 +133,21 @@ typedef struct {
     id<MTLBuffer> *ggis, *gdsc;                 // gemma4 router/down scales
     id<MTLBuffer> suppress;                     // gemma never-emit token ids
     int batch_cap;                              // scratch rows allocated
+    int att_cols;                               // columns of scores `att` holds
     bool mv_q4k_default;   // the fast Q4_K matvec is this model's default:
                            // dense models only (metal_mv_fast_for)
 } gpu_t;
 
 static void lora_dev_release(gpu_t *g);
+
+// The per-layer constant tables of gpu_t, each an array of n_layer buffers.
+// One list for the places that walk them all (the allocation with its check,
+// the release), so a table named here is made, checked and freed together.
+#define METAL_LAYER_TABLES(X)                                              \
+    X(attn_norm) X(ffn_norm) X(bq) X(bk) X(bv) X(bo) X(qn) X(kn) X(sinks) \
+    X(gib) X(geb) X(ueb) X(deb) X(ppn) X(pan) X(pfn)                      \
+    X(gpn1) X(gprn2) X(gpn2) X(ggis) X(gdsc)                              \
+    X(dn_cw) X(dn_dt) X(dn_A) X(dn_nw) X(dn_cb) X(dn_D)
 
 // mirrors struct mv_args in kernels.metal — keep the field order in step
 typedef struct { int n_in, n_out; uint64_t w_off; int has_bias;
@@ -287,43 +297,13 @@ static void metal_replay_setup(gpu_t *g, model_t *m) {
 
 static void gpu_release_state(gpu_t *g, int n_layer) {
     if (!g) return;
-    for (int l = 0; l < n_layer; l++) {
-        if (g->dn_cw) [g->dn_cw[l] release];
-        if (g->dn_dt) [g->dn_dt[l] release];
-        if (g->dn_A)  [g->dn_A[l] release];
-        if (g->dn_nw) [g->dn_nw[l] release];
-        if (g->dn_cb) [g->dn_cb[l] release];
-        if (g->dn_D)  [g->dn_D[l] release];
-        if (g->attn_norm) [g->attn_norm[l] release];
-        if (g->ffn_norm)  [g->ffn_norm[l] release];
-        if (g->bq) [g->bq[l] release];
-        if (g->bk) [g->bk[l] release];
-        if (g->bv) [g->bv[l] release];
-        if (g->bo) [g->bo[l] release];
-        if (g->qn) [g->qn[l] release];
-        if (g->kn) [g->kn[l] release];
-        if (g->sinks) [g->sinks[l] release];
-        if (g->gib) [g->gib[l] release];
-        if (g->geb) [g->geb[l] release];
-        if (g->ueb) [g->ueb[l] release];
-        if (g->deb) [g->deb[l] release];
-        if (g->pan) [g->pan[l] release];
-        if (g->ppn) [g->ppn[l] release];
-        if (g->pfn) [g->pfn[l] release];
-        if (g->gpn1) [g->gpn1[l] release];
-        if (g->gprn2) [g->gprn2[l] release];
-        if (g->gpn2) [g->gpn2[l] release];
-        if (g->ggis) [g->ggis[l] release];
-        if (g->gdsc) [g->gdsc[l] release];
+#define X(t)                                                       \
+    if (g->t) {                                                    \
+        for (int l = 0; l < n_layer; l++) [g->t[l] release];       \
+        free(g->t);                                                \
     }
-    free(g->dn_cw); free(g->dn_dt); free(g->dn_A); free(g->dn_nw);
-    free(g->dn_cb); free(g->dn_D);
-    free(g->attn_norm); free(g->ffn_norm);
-    free(g->bq); free(g->bk); free(g->bv); free(g->bo);
-    free(g->qn); free(g->kn);
-    free(g->sinks); free(g->gib); free(g->geb); free(g->ueb); free(g->deb);
-    free(g->ppn); free(g->pan); free(g->pfn);
-    free(g->gpn1); free(g->gprn2); free(g->gpn2); free(g->ggis); free(g->gdsc);
+    METAL_LAYER_TABLES(X)
+#undef X
     [g->p_attn_coop release]; [g->p_attn_chunk_coop release]; [g->p_attn_chunk_gqa release];
     [g->p_attn_tile release];
     [g->p_dn_conv release]; [g->p_dn_ring release]; [g->p_dn_l2norm release];
@@ -389,6 +369,13 @@ static bool metal_init_injected(const char *point) {
     const char *inject = getenv("RUNNER_METAL_INIT_INJECT_FAILURE");
     return inject && *inject && strcmp(inject, "0") &&
            (!strcmp(inject, "always") || !strcmp(inject, point));
+}
+
+// RUNNER_METAL_INIT_INJECT_FAILURE=const:<table>: the named per-layer constant
+// table cannot be made (tests/test_gpu_declines.py).
+static bool metal_const_injected(const char *table) {
+    const char *inj = getenv("RUNNER_METAL_INIT_INJECT_FAILURE");
+    return inj && !strncmp(inj, "const:", 6) && !strcmp(inj + 6, table);
 }
 
 static bool metal_env_on(const char *name) {
@@ -482,15 +469,35 @@ static bool gpu_init_fail(model_t *m, gpu_t *g, id<MTLLibrary> lib,
     return false;
 }
 
+// RUNNER_METAL_ATT_BYTES: the score scratch's bound (METAL_ATT_BYTES), so a
+// test fixture's batch can be made to span several attention dispatches.
+static uint64_t metal_att_bytes(void) {
+    static _Atomic long long v = -1;
+    if (v < 0) {
+        const char *e = getenv("RUNNER_METAL_ATT_BYTES");
+        long long b = e && *e ? atoll(e) : 0;
+        v = b > 0 ? b : (long long)METAL_ATT_BYTES;   // one store
+    }
+    return (uint64_t)v;
+}
+
 static bool metal_buffer_ok(id<MTLBuffer> b) {
     return b != nil && b.contents != NULL;
 }
 
+// RUNNER_METAL_INJECT_FAILURE: "always", or N for the Nth command buffer
+// checked across every slot ("once" and any other word: the first), as
+// RUNNER_CUDA_INJECT_FAILURE=N fails the Nth device forward. N past 1 lands
+// on a forward that follows others, with a recurrent fold live.
 static bool metal_command_failed(id<MTLCommandBuffer> cb) {
     const char *inject = getenv("RUNNER_METAL_INJECT_FAILURE");
-    static _Atomic bool injected_once;   // once across every slot
-    bool injected = inject && *inject && strcmp(inject, "0") &&
-                    (strcmp(inject, "always") == 0 || plat_once(&injected_once));
+    static _Atomic long checked;
+    bool injected = false;
+    if (inject && *inject && strcmp(inject, "0")) {
+        long k = atomic_fetch_add(&checked, 1) + 1;
+        long want = atol(inject);
+        injected = strcmp(inject, "always") == 0 || k == (want > 0 ? want : 1);
+    }
     return injected || cb.status == MTLCommandBufferStatusError;
 }
 
@@ -570,8 +577,15 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
     id<MTLBuffer> vt     = new_f32_scratch(g->dev, nb * (size_t)kv_dim);
     id<MTLBuffer> hb     = new_f32_scratch(g->dev, nb * (size_t)m->n_ff);
     id<MTLBuffer> hb2    = new_f32_scratch(g->dev, nb * (size_t)m->n_ff);
-    id<MTLBuffer> att    = new_f32_scratch(g->dev, nb * (size_t)m->n_head *
+    // the scores of as many columns as the scratch's bound allows: a wider
+    // batch's attention goes out that many columns a dispatch
+    // (metal_enc_attn_core, metal_admission.h)
+    size_t att_cols = (size_t)metal_att_cols(n, m->n_head, m->n_ctx, metal_att_bytes());
+    id<MTLBuffer> att    = new_f32_scratch(g->dev, att_cols * (size_t)m->n_head *
                                                    (size_t)m->n_ctx);
+    if (metal_env_on("RUNNER_METAL_STATS"))
+        fprintf(stderr, "metal-scratch n=%d att=%zu B\n", n,
+                att_cols * (size_t)m->n_head * (size_t)m->n_ctx * sizeof(float));
     id<MTLBuffer> logits = new_f32_scratch(g->dev, nb * (size_t)m->n_vocab);
     int P = m->n_embd_ple;
     id<MTLBuffer> ple = nil, ple_tmp = nil;
@@ -646,6 +660,7 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
     release_buf(g->logits);
     g->x = x; g->xb = xb; g->xb2 = xb2; g->q = q; g->kt = kt; g->vt = vt;
     g->hb = hb; g->hb2 = hb2; g->att = att; g->logits = logits;
+    g->att_cols = (int)att_cols;
     if (P > 0) {
         release_buf(g->ple); release_buf(g->ple_tmp);
         g->ple = ple; g->ple_tmp = ple_tmp;
@@ -1086,11 +1101,18 @@ static bool metal_mvc_self_test(id<MTLDevice> dev, id<MTLComputePipelineState> p
     else if (type == T_Q6_K) { bsz = 210; bel = 256; dpos[0] = 208; nd = 1; }
     else if (type == T_Q4_K) { bsz = 144; bel = 256; dpos[0] = 0; dpos[1] = 2; nd = 2; }
     else return false;
-    enum { NC = 5 };
+    // 13 columns: one full tile of 8 and a partial one of 5, so every column
+    // slot of the twin's tile is compared on this device, and each shape
+    // once without a bias and once with one (R6.68.87 sends every MoE prompt
+    // batch's router and shared-branch matvecs through these twins; five
+    // columns and no bias left slots 5 to 7 and the bias add unproven)
+    enum { NC = 13 };
     static const int shp[][2] = { { 2048, 37 }, { 4096, 21 } };
     bool ok = true;
     id<MTLCommandQueue> q = [dev newCommandQueue];
-    for (size_t si = 0; ok && si < sizeof shp / sizeof *shp; si++) {
+    for (size_t sj = 0; ok && sj < 2 * (sizeof shp / sizeof *shp); sj++) {
+        size_t si = sj / 2;
+        int has_bias = (int)(sj & 1);
         int n_in = shp[si][0], n_out = shp[si][1];
         size_t rb = (size_t)n_in / bel * bsz, wbytes = rb * n_out;
         uint8_t *wh = malloc(wbytes);
@@ -1112,11 +1134,13 @@ static bool metal_mvc_self_test(id<MTLDevice> dev, id<MTLComputePipelineState> p
         free(wh); free(xh);
         if (!wbuf || !xb || !y1 || !y2 || !bb) ok = false;
         if (ok) {
+            float *bh = bb.contents;
+            for (int i = 0; i < n_out; i++) { r ^= r << 13; r ^= r >> 17; r ^= r << 5; bh[i] = (float)(int)(r % 2001 - 1000) / 499.0f; }
             id<MTLCommandBuffer> cb = [q commandBuffer];
             id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
             int tg_rows = 4 * rows;
             for (int c = 0; c < NC; c++) {   // the one-column kernel, a column at a time
-                mv_args a = { n_in, n_out, 0, 0, 1, n_in, n_out, 1 };
+                mv_args a = { n_in, n_out, 0, has_bias, 1, n_in, n_out, 1 };
                 [e setComputePipelineState:p1];
                 [e setBuffer:wbuf offset:0 atIndex:0];
                 [e setBuffer:xb offset:sizeof(float) * (size_t)n_in * c atIndex:1];
@@ -1126,12 +1150,12 @@ static bool metal_mvc_self_test(id<MTLDevice> dev, id<MTLComputePipelineState> p
                 [e dispatchThreadgroups:MTLSizeMake((n_out + tg_rows - 1) / tg_rows, 1, 1)
                   threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
             }
-            mv_args a = { n_in, n_out, 0, 0, NC, n_in, n_out, 8 };
+            mv_args a = { n_in, n_out, 0, has_bias, NC, n_in, n_out, 8 };
             [e setComputePipelineState:pc];
             [e setBuffer:wbuf offset:0 atIndex:0]; [e setBuffer:xb offset:0 atIndex:1];
             [e setBuffer:y2 offset:0 atIndex:2]; [e setBytes:&a length:sizeof a atIndex:3];
             [e setBuffer:bb offset:0 atIndex:4];
-            [e dispatchThreadgroups:MTLSizeMake((n_out + tg_rows - 1) / tg_rows, 1, 1)
+            [e dispatchThreadgroups:MTLSizeMake((n_out + tg_rows - 1) / tg_rows, (NC + 7) / 8, 1)
               threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
             [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
             ok = cb.status == MTLCommandBufferStatusCompleted &&
@@ -1173,6 +1197,24 @@ static id<MTLBuffer> f32_buf_ones(id<MTLDevice> dev, const float *src, size_t n)
                                       options:MTLResourceStorageModeShared];
     free(tmp);
     return b;
+}
+
+// One per-layer constant onto the device, checked where it is made, so a
+// table cannot be uploaded and left out of a check kept beside it (R6.68.86:
+// the E-series post-norm was, and a failed allocation reached the first
+// forward as a nil buffer). `name` is the table's, for the failure injection.
+typedef enum {
+    LC_IF_PRESENT,   // nil where the model has none
+    LC_REQUIRED,     // the layer cannot run without it
+    LC_OR_ONES,      // ones where the file has none
+} layer_const_need;
+static bool layer_const(id<MTLDevice> dev, id<MTLBuffer> *dst, const char *name,
+                        const float *src, size_t n, layer_const_need need) {
+    *dst = nil;
+    if (!src && need == LC_IF_PRESENT) return true;
+    if (metal_const_injected(name)) return false;
+    *dst = need == LC_OR_ONES ? f32_buf_ones(dev, src, n) : f32_buf(dev, src, n);
+    return metal_buffer_ok(*dst);
 }
 
 
@@ -2388,8 +2430,9 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
         // this budget to maxBufferLength preserved the old ceiling in the
         // admission decision even after the multi-buffer implementation had
         // removed it from allocation.
-        uint64_t other = (uint64_t)model_kv_boundary_bytes_sum(m, m->n_layer)
-                       + 512ull * 1024 * 1024;
+        uint64_t other = metal_other_bytes(
+            (uint64_t)model_kv_boundary_bytes_sum(m, m->n_layer),
+            m->n_batch, m->n_head, m->n_ctx);
         metal_weight_limits limits = {
             .working_set = ws_limit,
             .max_buffer = (uint64_t)dev.maxBufferLength,
@@ -2588,51 +2631,22 @@ static bool metal_upload_constants(model_t *m, gpu_t *g, id<MTLDevice> dev) {
         (m->rope_inv_freq_local && !metal_buffer_ok(g->inv_freq_local)) ||
         (m->n_suppress > 0 && !metal_buffer_ok(g->suppress)))
         return gpu_init_fail(m, g, nil, "shared constant allocation");
-    g->attn_norm = calloc(m->n_layer, sizeof(id));
-    g->ffn_norm  = calloc(m->n_layer, sizeof(id));
-    g->bq = calloc(m->n_layer, sizeof(id));
-    g->bk = calloc(m->n_layer, sizeof(id));
-    g->bv = calloc(m->n_layer, sizeof(id));
-    g->bo = calloc(m->n_layer, sizeof(id));
-    g->qn = calloc(m->n_layer, sizeof(id));
-    g->kn = calloc(m->n_layer, sizeof(id));
-    g->sinks = calloc(m->n_layer, sizeof(id));
-    g->gib = calloc(m->n_layer, sizeof(id));
-    g->geb = calloc(m->n_layer, sizeof(id));
-    g->ueb = calloc(m->n_layer, sizeof(id));
-    g->deb = calloc(m->n_layer, sizeof(id));
-    g->ppn = calloc(m->n_layer, sizeof(id));
-    g->pan = calloc(m->n_layer, sizeof(id));
-    g->pfn = calloc(m->n_layer, sizeof(id));
-    g->gpn1 = calloc(m->n_layer, sizeof(id));
-    g->gprn2 = calloc(m->n_layer, sizeof(id));
-    g->gpn2 = calloc(m->n_layer, sizeof(id));
-    g->ggis = calloc(m->n_layer, sizeof(id));
-    g->gdsc = calloc(m->n_layer, sizeof(id));
-    g->dn_cw = calloc(m->n_layer, sizeof(id));
-    g->dn_dt = calloc(m->n_layer, sizeof(id));
-    g->dn_A  = calloc(m->n_layer, sizeof(id));
-    g->dn_nw = calloc(m->n_layer, sizeof(id));
-    g->dn_cb = calloc(m->n_layer, sizeof(id));
-    g->dn_D  = calloc(m->n_layer, sizeof(id));
-    if (!g->attn_norm || !g->ffn_norm || !g->bq || !g->bk || !g->bv ||
-        !g->ppn ||
-        !g->bo || !g->qn || !g->kn || !g->sinks || !g->gib || !g->geb ||
-        !g->ueb || !g->deb || !g->pan || !g->pfn || !g->gpn1 ||
-        !g->gprn2 || !g->gpn2 || !g->ggis || !g->gdsc ||
-        !g->dn_cw || !g->dn_dt || !g->dn_A || !g->dn_nw || !g->dn_cb || !g->dn_D)
-        return gpu_init_fail(m, g, nil, "per-layer table allocation");
+    bool tables = true;
+#define X(t) tables = (g->t = calloc(m->n_layer, sizeof(id))) != NULL && tables;
+    METAL_LAYER_TABLES(X)
+#undef X
+    if (!tables) return gpu_init_fail(m, g, nil, "per-layer table allocation");
+// g->t[l] from `src`, checked where it is made (layer_const)
+#define LC(t, src, n, need) layer_const(dev, &g->t[l], #t, src, n, need)
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
         if (m->qwen35 && ly->recurrent) {
             int nh = m->ssm.v_heads, hv = m->ssm.inner / nh;
             int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
-            g->dn_cw[l] = f32_buf(dev, ly->ssm_conv_w, (size_t)convdim * m->ssm.conv_kernel);
-            g->dn_dt[l] = f32_buf(dev, ly->ssm_dt, nh);
-            g->dn_A[l]  = f32_buf(dev, ly->ssm_a, nh);
-            g->dn_nw[l] = f32_buf(dev, ly->ssm_norm_w, hv);
-            if (!metal_buffer_ok(g->dn_cw[l]) || !metal_buffer_ok(g->dn_dt[l]) ||
-                !metal_buffer_ok(g->dn_A[l]) || !metal_buffer_ok(g->dn_nw[l]))
+            if (!LC(dn_cw, ly->ssm_conv_w, (size_t)convdim * m->ssm.conv_kernel, LC_REQUIRED) ||
+                !LC(dn_dt, ly->ssm_dt, nh, LC_REQUIRED) ||
+                !LC(dn_A, ly->ssm_a, nh, LC_REQUIRED) ||
+                !LC(dn_nw, ly->ssm_norm_w, hv, LC_REQUIRED))
                 return gpu_init_fail(m, g, nil, "Gated DeltaNet constant allocation");
         }
         if ((m->granite_hybrid || m->nemotron_h) && ly->recurrent) {
@@ -2647,75 +2661,56 @@ static bool metal_upload_constants(model_t *m, gpu_t *g, id<MTLDevice> dev) {
                 dequant_row(ly->ssm_conv->type,
                             (const uint8_t *)ly->ssm_conv->data + (size_t)c * wrs,
                             cw + (size_t)c * K, K);
-            g->dn_cw[l] = f32_buf(dev, cw, (size_t)conv_dim * K);
+            bool ok = LC(dn_cw, cw, (size_t)conv_dim * K, LC_REQUIRED);
             free(cw);
-            g->dn_cb[l] = f32_buf(dev, ly->ssm_conv1d_b, conv_dim);
-            g->dn_dt[l] = f32_buf(dev, ly->ssm_dt, nh);
-            g->dn_A[l]  = f32_buf(dev, ly->ssm_a, nh);
-            g->dn_D[l]  = f32_buf(dev, ly->ssm_d, nh);
-            g->dn_nw[l] = f32_buf(dev, ly->ssm_norm_w, m->ssm.inner);
-            if (!metal_buffer_ok(g->dn_cw[l]) || !metal_buffer_ok(g->dn_cb[l]) ||
-                !metal_buffer_ok(g->dn_dt[l]) || !metal_buffer_ok(g->dn_A[l]) ||
-                !metal_buffer_ok(g->dn_D[l]) || !metal_buffer_ok(g->dn_nw[l]))
+            if (!ok ||
+                !LC(dn_cb, ly->ssm_conv1d_b, conv_dim, LC_REQUIRED) ||
+                !LC(dn_dt, ly->ssm_dt, nh, LC_REQUIRED) ||
+                !LC(dn_A, ly->ssm_a, nh, LC_REQUIRED) ||
+                !LC(dn_D, ly->ssm_d, nh, LC_REQUIRED) ||
+                !LC(dn_nw, ly->ssm_norm_w, m->ssm.inner, LC_REQUIRED))
                 return gpu_init_fail(m, g, nil, "Mamba-2 constant allocation");
         }
-        g->attn_norm[l] = f32_buf(dev, ly->attn_norm_w, m->n_embd);
-        g->ffn_norm[l]  = f32_buf(dev, ly->ffn_norm_w, m->n_embd);
         int l_hd = model_head_dim(m, l);
         int l_kv_dim = model_kv_dim(m, l);
-        g->bq[l] = f32_buf(dev, ly->bq, q_dim);
-        g->bk[l] = f32_buf(dev, ly->bk, l_kv_dim);
-        g->bv[l] = f32_buf(dev, ly->bv, l_kv_dim);
-        g->bo[l] = f32_buf(dev, ly->bo, m->n_embd);
-        g->qn[l] = f32_buf(dev, ly->qnorm_w, l_hd);
-        g->kn[l] = f32_buf(dev, ly->knorm_w, l_hd);
-        g->sinks[l] = f32_buf(dev, ly->attn_sinks, m->n_head);
-        g->pan[l] = f32_buf(dev, ly->post_attn_norm_w, m->n_embd);
-        g->ppn[l] = f32_buf(dev, ly->ple_post_norm, m->n_embd);
-        g->pfn[l] = f32_buf(dev, ly->post_ffn_norm_w, m->n_embd);
-        g->gib[l] = f32_buf(dev, ly->ffn_gate_inp_b, m->n_expert);
-        g->geb[l] = f32_buf(dev, ly->ffn_gate_exps_b,
-                            (size_t)m->n_expert * (size_t)m->n_ff_exp);
-        g->ueb[l] = f32_buf(dev, ly->ffn_up_exps_b,
-                            (size_t)m->n_expert * (size_t)m->n_ff_exp);
-        g->deb[l] = f32_buf(dev, ly->ffn_down_exps_b,
-                            (size_t)m->n_expert * (size_t)m->n_embd);
-        if (ly->moe_gemma) {
-            g->gpn1[l] = f32_buf_ones(dev, ly->ffn_post_norm1_w, m->n_embd);
-            g->gprn2[l] = f32_buf_ones(dev, ly->ffn_pre_norm2_w, m->n_embd);
-            g->gpn2[l] = f32_buf_ones(dev, ly->ffn_post_norm2_w, m->n_embd);
+        size_t exp_ff = (size_t)m->n_expert * (size_t)m->n_ff_exp;
+        // a nemotron_h block is one sublayer: its SSM and attention blocks
+        // carry no FFN norm, its MLP blocks no mixer
+        bool ok = LC(attn_norm, ly->attn_norm_w, m->n_embd,
+                     ly->skip_mixer ? LC_IF_PRESENT : LC_REQUIRED) &&
+                  LC(ffn_norm, ly->ffn_norm_w, m->n_embd,
+                     ly->skip_ffn ? LC_IF_PRESENT : LC_REQUIRED) &&
+                  LC(bq, ly->bq, q_dim, LC_IF_PRESENT) &&
+                  LC(bk, ly->bk, l_kv_dim, LC_IF_PRESENT) &&
+                  LC(bv, ly->bv, l_kv_dim, LC_IF_PRESENT) &&
+                  LC(bo, ly->bo, m->n_embd, LC_IF_PRESENT) &&
+                  LC(qn, ly->qnorm_w, l_hd, LC_IF_PRESENT) &&
+                  LC(kn, ly->knorm_w, l_hd, LC_IF_PRESENT) &&
+                  LC(sinks, ly->attn_sinks, m->n_head, LC_IF_PRESENT) &&
+                  LC(pan, ly->post_attn_norm_w, m->n_embd, LC_IF_PRESENT) &&
+                  LC(ppn, ly->ple_post_norm, m->n_embd, LC_IF_PRESENT) &&
+                  LC(pfn, ly->post_ffn_norm_w, m->n_embd, LC_IF_PRESENT) &&
+                  LC(gib, ly->ffn_gate_inp_b, m->n_expert, LC_IF_PRESENT) &&
+                  LC(geb, ly->ffn_gate_exps_b, exp_ff, LC_IF_PRESENT) &&
+                  LC(ueb, ly->ffn_up_exps_b, exp_ff, LC_IF_PRESENT) &&
+                  LC(deb, ly->ffn_down_exps_b,
+                     (size_t)m->n_expert * (size_t)m->n_embd, LC_IF_PRESENT);
+        if (ok && ly->moe_gemma) {
             float *gs = malloc(sizeof(float) * (size_t)m->n_embd);
             if (!gs) return gpu_init_fail(m, g, nil, "Gemma router scale allocation");
             float inv = 1.0f / sqrtf((float)m->n_embd);
             for (int i = 0; i < m->n_embd; i++)
                 gs[i] = (ly->gate_inp_scale ? ly->gate_inp_scale[i] : 1.0f) * inv;
-            g->ggis[l] = f32_buf(dev, gs, m->n_embd);
+            ok = LC(gpn1, ly->ffn_post_norm1_w, m->n_embd, LC_OR_ONES) &&
+                 LC(gprn2, ly->ffn_pre_norm2_w, m->n_embd, LC_OR_ONES) &&
+                 LC(gpn2, ly->ffn_post_norm2_w, m->n_embd, LC_OR_ONES) &&
+                 LC(ggis, gs, m->n_embd, LC_REQUIRED) &&
+                 LC(gdsc, ly->down_exps_scale, m->n_expert, LC_OR_ONES);
             free(gs);
-            g->gdsc[l] = f32_buf_ones(dev, ly->down_exps_scale, m->n_expert);
         }
-        // a nemotron_h block is one sublayer: its SSM and attention blocks
-        // carry no FFN norm, its MLP blocks no mixer
-        if ((!ly->skip_mixer && !metal_buffer_ok(g->attn_norm[l])) ||
-            (!ly->skip_ffn && !metal_buffer_ok(g->ffn_norm[l])) ||
-            (ly->bq && !metal_buffer_ok(g->bq[l])) ||
-            (ly->bk && !metal_buffer_ok(g->bk[l])) ||
-            (ly->bv && !metal_buffer_ok(g->bv[l])) ||
-            (ly->bo && !metal_buffer_ok(g->bo[l])) ||
-            (ly->qnorm_w && !metal_buffer_ok(g->qn[l])) ||
-            (ly->knorm_w && !metal_buffer_ok(g->kn[l])) ||
-            (ly->attn_sinks && !metal_buffer_ok(g->sinks[l])) ||
-            (ly->post_attn_norm_w && !metal_buffer_ok(g->pan[l])) ||
-            (ly->post_ffn_norm_w && !metal_buffer_ok(g->pfn[l])) ||
-            (ly->ffn_gate_inp_b && !metal_buffer_ok(g->gib[l])) ||
-            (ly->ffn_gate_exps_b && !metal_buffer_ok(g->geb[l])) ||
-            (ly->ffn_up_exps_b && !metal_buffer_ok(g->ueb[l])) ||
-            (ly->ffn_down_exps_b && !metal_buffer_ok(g->deb[l])) ||
-            (ly->moe_gemma &&
-             (!metal_buffer_ok(g->gpn1[l]) || !metal_buffer_ok(g->gprn2[l]) ||
-              !metal_buffer_ok(g->gpn2[l]) || !metal_buffer_ok(g->ggis[l]) ||
-              !metal_buffer_ok(g->gdsc[l]))))
-            return gpu_init_fail(m, g, nil, "per-layer buffer allocation");
+        if (!ok) return gpu_init_fail(m, g, nil, "per-layer buffer allocation");
     }
+#undef LC
     return true;
 }
 
@@ -3139,6 +3134,19 @@ static void enc_mv(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                    int n_in, int n_out, id<MTLBuffer> bias) {
     enc_mv_n(g, e, m, w, x, x_off, y, y_off, n_in, n_out, bias,
              1, n_in, n_out);
+}
+
+// A matvec whose every column must be a decode step's bits, over the n
+// columns of a prompt batch: the MoE router and the gemma-4 MoE's shared
+// branch, where a tolerance-class GEMM could flip a route. One dispatch
+// carries the columns (enc_mv_cols under `decode`: the kernel a one-column
+// step takes, or its column-inner twin, admitted only where it gives that
+// kernel's bits), where there was one dispatch a column (R6.68.87).
+static void enc_mv_decode_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                               gguf_tensor *w, id<MTLBuffer> x, id<MTLBuffer> y,
+                               int n_in, int n_out, id<MTLBuffer> bias,
+                               int n_col, int x_stride, int y_stride) {
+    enc_mv_cols(g, e, w, x, 0, y, 0, n_in, n_out, bias, n_col, x_stride, y_stride, true);
 }
 
 // n_col columns in one dispatch (grid.y), stride elements apart. Each
@@ -4027,10 +4035,8 @@ static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // matrix that the split mv grid spreads across the chip. Same lesson as
     // the dense-model front admission, at matvec scale: never trade a
     // parallel weight sweep for a dispatch. Removed; the split pair stays.
-    for (int b = 0; b < n; b++)
-        enc_mv(g, e, m, ly->ffn_gate_inp, g->xb,
-               foff((size_t)b * xdim), g->moe_logits,
-               foff((size_t)b * ne), m->n_embd, ne, g->gib[l]);
+    enc_mv_decode_cols(g, e, ly->ffn_gate_inp, g->xb, g->moe_logits,
+                       m->n_embd, ne, g->gib[l], n, xdim, ne);
     enc_moe_trace_logits(g, e, l, n, ne);
     if (metal_moe_batch_on()) {
         enc_moe_route(g, e, ne, used, n, 0, sel_off, l, 0);
@@ -4060,17 +4066,10 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // independent normalization columns share dispatches in this first slice.
     enc_rmsnorm_n(g, e, g->x, 0, g->xb2, 0, g->ffn_norm[l],
                   n_embd, m->rms_eps, n, n_embd, xdim);
-    for (int b = 0; b < n; b++) {
-        NSUInteger xbo = foff((size_t)b * xdim);
-        NSUInteger hbo = foff((size_t)b * dff);
-        enc_mv(g, e, m, ly->w_gate, g->xb2, xbo, g->hb, hbo,
-               n_embd, dff, nil);
-        enc_mv(g, e, m, ly->w_up, g->xb2, xbo, g->hb2, hbo,
-               n_embd, dff, nil);
-        enc_elem(g, e, g->p_gelu, g->hb, hbo, g->hb2, hbo, dff);
-        enc_mv(g, e, m, ly->w_down, g->hb, hbo, g->xb, xbo,
-               dff, n_embd, nil);
-    }
+    enc_mv_decode_cols(g, e, ly->w_gate, g->xb2, g->hb, n_embd, dff, nil, n, xdim, dff);
+    enc_mv_decode_cols(g, e, ly->w_up, g->xb2, g->hb2, n_embd, dff, nil, n, xdim, dff);
+    enc_elem_n(g, e, g->p_gelu, g->hb, 0, g->hb2, 0, dff, n, dff, dff);
+    enc_mv_decode_cols(g, e, ly->w_down, g->hb, g->xb, dff, n_embd, nil, n, dff, xdim);
     e = metal_scan_point(g, e, cbp, ep, 3, l, g->xb, (size_t)n * xdim, "moe:dense-shared");
     enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->gpn1[l],
                   n_embd, m->rms_eps, n, xdim, xdim);
@@ -4080,10 +4079,8 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                   n_embd, m->rms_eps, n, n_embd, xdim);
     enc_rmsnorm_n(g, e, g->x, 0, g->q, 0, g->ggis[l],
                   n_embd, m->rms_eps, n, n_embd, xdim);
-    for (int b = 0; b < n; b++)
-        enc_mv(g, e, m, ly->ffn_gate_inp, g->q,
-               foff((size_t)b * xdim), g->moe_logits,
-               foff((size_t)b * ne), n_embd, ne, nil);
+    enc_mv_decode_cols(g, e, ly->ffn_gate_inp, g->q, g->moe_logits,
+                       n_embd, ne, nil, n, xdim, ne);
     enc_moe_trace_logits(g, e, l, n, ne);
     NSUInteger sel_off = foff((size_t)l * n * used);
     if (metal_moe_batch_on()) {
@@ -4635,24 +4632,18 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
                 metal_attn_tile_on() && g->p_attn_tile;
     [e setComputePipelineState:tile ? g->p_attn_tile
                           : coop ? g->p_attn_coop : g->p_attn];
-    [e setBuffer:q      offset:q_off atIndex:0];
     [e setBuffer:kc     offset:0 atIndex:1];
     [e setBuffer:vc     offset:0 atIndex:2];
     [e setBuffer:g->att offset:0 atIndex:3];
-    [e setBuffer:out    offset:out_off atIndex:4];
-    [e setBytes:&aa length:sizeof(aa) atIndex:5];
     [e setBuffer:g->sinks[l] ? g->sinks[l] : g->dummy offset:0 atIndex:6];
     // Widest power-of-two threadgroup this pipeline allows, capped
     // at the red[] scratch in the kernel. The reduction halves tpg
     // each step, so a non-power-of-two would drop lanes silently.
-    int32_t tile_cols = n;
-    if (tile) {
-        [e setBytes:&tile_cols length:sizeof(tile_cols) atIndex:7];
+    if (tile)
         // the tile's query staging, two float4 an element of the head;
         // never under the 256 elements it was a fixed array of, so a head
         // up to 256 wide keeps the threadgroup it had (8 KB of queries)
         [e setThreadgroupMemoryLength:(NSUInteger)(hd > 256 ? hd : 256) * 2 * 16 atIndex:0];
-    }
     NSUInteger amax = (tile ? g->p_attn_tile
                             : coop ? g->p_attn_coop : g->p_attn)
                           .maxTotalThreadsPerThreadgroup;
@@ -4668,15 +4659,28 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
                     (unsigned long long)g->p_attn.maxTotalThreadsPerThreadgroup);
         }
     }
-    g_disp.attn++;
-    if (tile) {
-        g_tile_dispatches++;
-        [e dispatchThreadgroups:MTLSizeMake(m->n_head,
-                                         (n + ATTN_TILE - 1) / ATTN_TILE, 1)
-          threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
-    } else {
-        [e dispatchThreadgroups:MTLSizeMake(m->n_head, n, 1)
-          threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+    // As many columns a dispatch as the score scratch holds (usually the
+    // whole batch): a column's position, query and output are the kernel's
+    // pos + col and col * stride, so a later dispatch is the same columns at
+    // a later origin
+    int sub = g->att_cols > 0 ? g->att_cols : 1;
+    for (int c0 = 0; c0 < n; c0 += sub) {
+        int32_t ns = n - c0 < sub ? n - c0 : sub;
+        aa.pos = pos + c0;
+        [e setBuffer:q   offset:q_off + foff((size_t)c0 * q_dim) atIndex:0];
+        [e setBuffer:out offset:out_off + foff((size_t)c0 * xdim) atIndex:4];
+        [e setBytes:&aa length:sizeof(aa) atIndex:5];
+        g_disp.attn++;
+        if (tile) {
+            [e setBytes:&ns length:sizeof(ns) atIndex:7];
+            g_tile_dispatches++;
+            [e dispatchThreadgroups:MTLSizeMake(m->n_head,
+                                             (ns + ATTN_TILE - 1) / ATTN_TILE, 1)
+              threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+        } else {
+            [e dispatchThreadgroups:MTLSizeMake(m->n_head, ns, 1)
+              threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+        }
     }
 }
 
@@ -5429,6 +5433,15 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     bool prof = metal_timing_on() >= 2;
     if (n < 2 && !prof) return false;   // one column is just a solo forward
     gpu_t *g = b->lead;
+    // the lead's queue and scratch encode the step: a lead slot that gave up
+    // its backend (gpu_disable) no longer lends them, and a column's slot
+    // without one has no cache to store into (model_batch_decode holds the
+    // second for every backend; held here too, where the pointer is read)
+    bool lead_live = false;
+    for (int i = 0; i < b->n; i++) lead_live |= b->seqs[i]->gpu == (void *)g;
+    if (!lead_live) return false;
+    for (int c = 0; c < n; c++)
+        if (!b->seqs[idx[c]]->gpu) return false;
     model_t *m0 = b->seqs[0];
     int n_embd = b->n_embd;
     int xdim   = b->xdim;

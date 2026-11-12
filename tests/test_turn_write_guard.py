@@ -15,6 +15,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -181,4 +182,46 @@ def test_other_slots_still_serve_after_all_of_it(server):
         assert server.post("/v1/completions", {"prompt": PROMPT, "max_tokens": 8, "temperature": 0,
                                                "stream": True})[0] == 200
         assert server.post("/v1/completions", {"prompt": "hello", "max_tokens": 4, "logprobs": 1})[0] == 200
+    assert_clean(server)
+
+
+def _timed(server, path, body, out, key):
+    t0 = time.monotonic()
+    code, _ = server.post(path, body, timeout=600)
+    out[key] = (code, time.monotonic() - t0)
+
+
+@pytest.mark.parametrize("path,batch", [
+    ("/v1/embeddings", lambda n: {"input": [PROMPT + str(i) for i in range(n)]}),
+    ("/v1/rerank", lambda n: {"query": "which one counts", "rendering": "raw-v1",
+                              "documents": [PROMPT + str(i) for i in range(n)]}),
+    ("/v1/decide", lambda n: {"state": PROMPT, "questions": [
+        {"question": "pick " + str(i), "options": [" one", " two"]} for i in range(n)]}),
+])
+def test_a_batch_readout_gives_the_turn_between_its_items(server, path, batch):
+    """A request on another slot waits for one item of a batch readout, not
+    for the batch (R6.68.54). The turn is ticketed so that a long prefill gives
+    it up between chunks; embeddings, rerank and decide held it from their
+    first item to their last, and a one-token request sent just after one of
+    them waited for all of it (measured on Metal: 186 s behind 48 inputs)."""
+    n, alone = 16, 0.0
+    while True:
+        t0 = time.monotonic()
+        code, out = server.post(path, batch(n), timeout=600)
+        assert code == 200, out[:300]
+        alone = time.monotonic() - t0
+        if alone >= 1.0 or n >= 2048:
+            break
+        n *= 2
+    if alone < 1.0:
+        pytest.skip("the batch is too fast here to tell a wait from none")
+    res = {}
+    th = threading.Thread(target=_timed, args=(server, path, batch(n), res, "batch"))
+    th.start()
+    time.sleep(alone * 0.1)
+    _timed(server, "/v1/completions", {"prompt": "hello", "max_tokens": 1, "temperature": 0},
+           res, "short")
+    th.join()
+    assert res["batch"][0] == 200 and res["short"][0] == 200, res
+    assert res["short"][1] < alone / 4, (res, alone, n)
     assert_clean(server)

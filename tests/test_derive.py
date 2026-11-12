@@ -709,3 +709,75 @@ def test_a_row_the_low_type_cannot_describe_is_costed_at_the_rewrite_fallback(ru
     rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
     assert rec["file"]["bytes"] <= target
     assert "has no q4_k entry" not in se
+
+
+def _tensor_types(path):
+    """name -> ggml type id, read from the GGUF header (independent of Runner)."""
+    import struct
+    sizes = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+
+    def text(f):
+        (n,) = struct.unpack("<Q", f.read(8))
+        return f.read(n).decode("utf-8", "replace")
+
+    def skip(f, t):
+        if t in sizes:
+            f.read(sizes[t])
+        elif t == 8:
+            text(f)
+        else:
+            et, n = struct.unpack("<IQ", f.read(12))
+            for _ in range(n):
+                skip(f, et)
+
+    out = {}
+    with open(path, "rb") as f:
+        f.read(8)
+        nt, nk = struct.unpack("<QQ", f.read(16))
+        for _ in range(nk):
+            text(f)
+            skip(f, struct.unpack("<I", f.read(4))[0])
+        for _ in range(nt):
+            name = text(f)
+            (nd,) = struct.unpack("<I", f.read(4))
+            f.read(8 * nd)
+            ty, _off = struct.unpack("<IQ", f.read(12))
+            out[name] = ty
+    return out
+
+
+def test_a_demoted_tensor_does_not_take_the_tensors_named_after_it(runner_bin, tmp_path):
+    """R6.68.99: a plan's rules match by substring, the first that matches
+    wins, and --target-size wrote one rule per demoted tensor. A demoted
+    token_embd.weight then also took per_layer_token_embd.weight (gemma-4's
+    E-series), as output.weight takes every attn_output.weight: tensors the
+    ranking left at the high type were written at the low one, and the
+    record named 13 demoted tensors for a file with 14. Every tensor a rule
+    would catch by its name now has its own rule before it."""
+    parent = tmp_path / "es.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--eseries", "3,16",
+                    str(parent)], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    out = tmp_path / "sized.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--target-size", "300000", "--high", "q8_0",
+                       "--low", "q4_0", "--group", "tensor", "--license", "mit")
+    assert rc == 0, se[-1500:]
+    r = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())["recipe"]
+    demoted = set(r["demoted"])
+    # the case under test: the short name demoted, the long one not
+    assert "token_embd.weight" in demoted and "per_layer_token_embd.weight" not in demoted, demoted
+    before, after = _tensor_types(parent), _tensor_types(out)
+    Q4_0, Q8_0 = 2, 8   # ggml type ids
+    low = {n for n, t in after.items() if t == Q4_0}
+    assert low == demoted, (sorted(low - demoted), sorted(demoted - low))
+    assert after["per_layer_token_embd.weight"] == Q8_0
+    assert set(after) == set(before)
+    # and the reference planner writes the same plan from the same report
+    ours = json.loads((out.parent / r["type_plan"]).read_text())
+    p = subprocess.run([sys.executable, ROOT / "scripts/type-plan-by-sensitivity.py",
+                        out.parent / r["quant_error"], "--high", "q8_0", "--low", "q4_0",
+                        "--group", "tensor", "--save-bytes", str(r["save_bytes"])],
+                       capture_output=True, text=True, cwd=ROOT)
+    assert p.returncode == 0, p.stderr
+    assert json.loads(p.stdout) == ours
+    assert ours["rules"][0] == {"match": "per_layer_token_embd.weight", "type": "q8_0"}
+

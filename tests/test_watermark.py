@@ -256,6 +256,25 @@ def test_text_detection(runner_bin, fx):
     assert p.returncode == 1 and b"contains a NUL byte" in p.stderr, p.stderr[-400:]
 
 
+def test_text_detection_scores_the_whole_text(runner_bin, fx):
+    """R6.68.77: the text was tokenized into a buffer of its byte count plus
+    16, and no byte count bounds a token count: the fixture's byte-fallback
+    vocabulary spells a space as three tokens. A text of short words was cut
+    at the buffer's end and its head scored as if it were the whole, with no
+    word about the rest. Twice the text is twice the tokens."""
+    d = fx["d"]
+    counts = []
+    for reps in (60, 120):
+        txt = d / f"words-{reps}.txt"
+        txt.write_bytes(b"a b " * reps)
+        rc, out, err = _detect(runner_bin, txt, fx["key"], "-m", fx["model"])
+        assert out is not None and out["source"] == "text", (rc, err)
+        counts.append(out["tokens"])
+    # a space is three tokens here, so the words alone are fewer than a third
+    assert counts[0] > 60 * 4 + 16, counts
+    assert abs(counts[1] - 2 * counts[0]) <= 4, counts
+
+
 def test_served_generation_is_marked(runner_bin, fx, tmp_path):
     rdir = tmp_path / "r"
     with RunnerServer(runner_bin, fx["model"], ctx=512, extra_args=[

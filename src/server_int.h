@@ -29,7 +29,10 @@ struct slot_s {
     model_t   *m;         // slot 0 borrows the preloaded model
     tokenizer *tok;       // shared (read-only)
     sampler    smp;
-    sampler    smp_base;  // pristine server defaults (per-request resets)
+    // What a request's sampler starts from: the server's defaults for the
+    // model, with the stop-token penalty exemptions its engine installs
+    // (slot_engine_init captures it after them). A request restores it whole.
+    sampler    smp_base;
     engine     e;
     int        id;
     int        tmpl;
@@ -73,7 +76,7 @@ typedef struct {
     char      name[64];
     char      path[1024];
     char      sha256[65];
-    char      sig_json[512];   // load-time OMS verdict, "" = none (R1.2.3)
+    char      sig_json[OMS_RESULT_JSON_CAP];   // load-time OMS verdict, "" = none (R1.2.3)
     lora_set *set;
 } adapter_entry;
 
@@ -331,6 +334,9 @@ bool slot_use_adapter(slot_t *s, int idx, sock_t fd);
 // model's own template reads and Runner cannot render on this surface.
 bool template_kwarg_refused(slot_t *s, sock_t fd, jv *req, int surface);
 bool init_swap_runtime(const model_params *mp, int n_threads, int ttl);
+// The slot's engine over its model, tokenizer and sampler, and smp_base taken
+// from the sampler as the engine leaves it. False: out of memory.
+bool slot_engine_init(slot_t *s);
 // Admission: q_push sheds with 503 when the queue is full, q_pop blocks until
 // a connection arrives or the queue is shut down (SOCK_INVALID then).
 void   q_push(sock_t fd);

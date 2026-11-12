@@ -512,33 +512,41 @@ static void dpo_pairs_free(dpo_pair *ps, int n) {
     free(ps);
 }
 
-// Tokenize prompt+completion into one buffer, growing until it fits. Same
-// discipline as the JSONL branch of train_examples_load and for the same
-// measured reason: tok_encode truncates silently at its capacity, and "one
-// token per byte" is not a bound on a SentencePiece vocabulary with byte
-// fallback.
+// The prompt (BOS unless no_bos, its control tokens read as tokens) and the
+// completion (text) tokenized apart into one buffer, with one slot to spare
+// for an end-of-turn token. tok_encode writes what fits its buffer and says
+// nothing about the rest, and no byte count bounds a token count (a byte-
+// fallback vocabulary spells a space as three tokens), so each part goes
+// through tok_encode_fit, which sizes the buffer to the encoding. Three
+// loaders each grew a buffer of their own for this. False when memory ran
+// out or a text is too large to count.
+static bool pair_tokens(tokenizer *tok, const char *prompt, const char *completion,
+                        bool no_bos, int32_t **out, int *np_out, int *nc_out) {
+    int32_t *p = NULL, *c = NULL;
+    int np = tok_encode_fit(tok, prompt, !no_bos, TOK_RAW, 0, &p);
+    int nc = np >= 0 ? tok_encode_fit(tok, completion, false, TOK_TEXT, 0, &c) : -1;
+    int32_t *t = nc >= 0 && np <= INT_MAX - nc - 1
+               ? malloc(sizeof *t * ((size_t)np + (size_t)nc + 1)) : NULL;
+    if (t) {
+        if (np) memcpy(t, p, sizeof *t * (size_t)np);
+        if (nc) memcpy(t + np, c, sizeof *t * (size_t)nc);
+        *out = t;
+        *np_out = np;
+        *nc_out = nc;
+    }
+    free(p);
+    free(c);
+    return t != NULL;
+}
+
 static bool dpo_tokenize(tokenizer *tok, const char *prompt, const char *completion,
                          bool no_bos, int eot_id, bool eot,
                          int32_t **out, int *out_np, int *out_n) {
-    size_t pn = strlen(prompt), cn = strlen(completion);
-    if (pn > SIZE_MAX - cn - 8 || pn + cn + 8 > INT_MAX) return false;
-    int cap = (int)(2 * (pn + cn) + 32);
-    int32_t *t = NULL;
-    int np = -1, nc = -1;
-    for (int attempt = 0; attempt < 6; attempt++) {
-        free(t);
-        t = malloc(sizeof(*t) * (size_t)cap);
-        if (!t) return false;
-        np = tok_encode(tok, prompt, t, cap, !no_bos, true);
-        nc = np >= 0 ? tok_encode(tok, completion, t + np, cap - np, false, false) : -1;
-        if (np < 0 || nc < 0 || np + nc + 1 < cap) break;
-        if (attempt == 5 || cap > INT_MAX / 2) break;
-        cap *= 2;
-    }
-    if (!t) return false;
-    if (np < 0 || nc < 0 || np + nc + 1 >= cap) { free(t); return false; }
-    if (eot) t[np + nc++] = eot_id;
-    *out = t; *out_np = np; *out_n = np + nc;
+    int np = 0, nc = 0;
+    if (!pair_tokens(tok, prompt, completion, no_bos, out, &np, &nc)) return false;
+    if (eot) (*out)[np + nc++] = eot_id;
+    *out_np = np;
+    *out_n = np + nc;
     return true;
 }
 
@@ -643,50 +651,13 @@ fail:
     return false;
 }
 
-// The text form of a JSONL example: the prompt (BOS unless --no-bos) and the
-// completion tokenized apart, into a buffer with a slot to spare for the
-// end-of-turn token. NULL on success, else why the line is refused.
+// The text form of a JSONL example (pair_tokens). NULL on success, else why
+// the line is refused.
 static const char *train_text_tokens(tokenizer *tok, const char *prompt,
                                      const char *completion, bool no_bos,
-                                     int32_t **out, int *np_out, int *nc_out,
-                                     char *why, size_t why_n) {
-    size_t prompt_n = strlen(prompt), completion_n = strlen(completion);
-    if (prompt_n > SIZE_MAX - completion_n - 8 ||
-        prompt_n + completion_n + 8 > INT_MAX)
-        return "is too large to tokenize";
-    // tok_encode truncates silently at its capacity, and "one token per
-    // byte" is not a bound: a SentencePiece vocabulary with byte fallback and
-    // segment normalization emitted 68 tokens for 52 bytes on the test
-    // fixture, which the old fixed-size buffer cut to 60 without a word. So
-    // the buffer grows until the encoding fits with room to spare (the
-    // end-of-turn slot included), and a line that still fills it is refused
-    // rather than truncated.
-    size_t bytes = prompt_n + completion_n;
-    int cap = (int)(2 * bytes + 32);
-    int32_t *tokens = NULL;
-    int np = -1, nc = -1;
-    for (int attempt = 0; attempt < 6; attempt++) {
-        free(tokens);
-        tokens = malloc(sizeof(*tokens) * (size_t)cap);
-        if (!tokens) break;
-        np = tok_encode(tok, prompt, tokens, cap, !no_bos, true);
-        nc = np >= 0 ? tok_encode(tok, completion, tokens + np, cap - np,
-                                  false, false) : -1;
-        if (np < 0 || nc < 0 || np + nc + 1 < cap) break;   // fits, or failed
-        if (attempt == 5 || cap > INT_MAX / 2) break;      // cap stays the allocation
-        cap *= 2;
-    }
-    if (!tokens) return "ran out of memory while tokenizing";
-    if (np >= 0 && nc >= 0 && np + nc + 1 >= cap) {
-        free(tokens);
-        snprintf(why, why_n, "tokenizes past %d tokens for %zu bytes; "
-                 "refusing to truncate it", cap, bytes);
-        return why;
-    }
-    *out = tokens;
-    *np_out = np;
-    *nc_out = nc;
-    return NULL;
+                                     int32_t **out, int *np_out, int *nc_out) {
+    return pair_tokens(tok, prompt, completion, no_bos, out, np_out, nc_out)
+        ? NULL : "is too large to tokenize, or memory ran out tokenizing it";
 }
 
 // The id form: both arrays used exactly as given (no BOS added, nothing
@@ -844,11 +815,10 @@ static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
 
             int32_t *tokens = NULL;
             int np = -1, nc = -1;
-            char why[160];
             const char *bad = ids
                 ? train_ids_tokens(ptv, ctv, n_vocab, &tokens, &np, &nc)
                 : train_text_tokens(tok, prompt, completion, no_bos, &tokens,
-                                    &np, &nc, why, sizeof why);
+                                    &np, &nc);
             if (bad) {
                 fprintf(stderr, "error: %s line %d %s\n", path, line_no, bad);
                 jv_free(v);
@@ -895,37 +865,12 @@ static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
                     path);
             goto fail;
         }
-        // The same growth discipline as the JSONL branch, for the same
-        // reason: tok_encode stops silently at its capacity, and a vocabulary
-        // with byte fallback spells a space as three tokens, so "one token
-        // per byte" cut a text of short words to half its length without a
-        // word. Grow until the encoding fits with room to spare; refuse a
-        // text that still fills the buffer rather than train on a prefix.
-        if (data_n > (size_t)INT_MAX / 4) {
-            fprintf(stderr, "error: training text %s is too large\n", path);
-            goto fail;
-        }
-        int cap_n = (int)(2 * data_n + 32);
+        // sized to the encoding (tok_encode_fit), never cut at a buffer's end
         int32_t *all = NULL;
-        int ntok = -1;
-        for (int attempt = 0; attempt < 6; attempt++) {
-            free(all);
-            all = malloc(sizeof(*all) * (size_t)cap_n);
-            if (!all) break;
-            ntok = tok_encode(tok, data, all, cap_n, !no_bos, true);
-            if (ntok < 0 || ntok + 1 < cap_n) break;   // fits, or failed
-            if (attempt == 5 || cap_n > INT_MAX / 2) break;
-            cap_n *= 2;
-        }
-        if (!all) {
-            fprintf(stderr, "error: out of memory loading training data\n");
-            goto fail;
-        }
-        if (ntok >= 0 && ntok + 1 >= cap_n) {
-            fprintf(stderr, "error: training text %s tokenizes past %d tokens "
-                    "for %zu bytes; refusing to truncate it\n", path, cap_n,
-                    data_n);
-            free(all);
+        int ntok = tok_encode_fit(tok, data, !no_bos, TOK_RAW, 0, &all);
+        if (ntok < 0) {
+            fprintf(stderr, "error: training text %s is too large, or memory ran "
+                    "out tokenizing it\n", path);
             goto fail;
         }
         if (ntok < 2) {
@@ -2546,14 +2491,15 @@ typedef struct {
     engine e;
     int32_t *toks;
     size_t tok_cap;
-    char model_sig_json[512];     // load-time OMS verdict for the receipt
-    char adapter_sig_json[512];   // and the adapter's (R1.2.3)
+    char model_sig_json[OMS_RESULT_JSON_CAP];     // load-time OMS verdict for the receipt
+    char adapter_sig_json[OMS_RESULT_JSON_CAP];   // and the adapter's (R1.2.3)
     // the measured-envelope verdict the one-shot model loaded under, for its
     // transcript (R1.1.5); unknown on paths that never ran the gate
     int env_state;
     bool env_known;
     char sampling[256];           // the effective sampler, as the load line says
     double load_s;
+    char prev_hash[65];           // --transcript-prev's chain hash, read before the load
 } cli_run;
 
 static void cli_opts_init(cli_opts *o) {
@@ -4974,17 +4920,13 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
     o->mp.lora_scale = o->lora_scale;
     if (!registry) {
         double t1 = now_s();
-        // (a --verify replay set mtp_default from its record, not from here)
-        bool mtp_wanted = cli_mtp_default_wanted(o, load_path, registry);
-        if (mtp_wanted) { o->mtp_default = true; o->mp.mtp = true; }
-        if (!model_load(&rt->m, load_path, &o->mp)) { *rc = 1; return true; }
-        // (a failed settle is a failed reload: model_load released it)
-        if (mtp_wanted && !cli_mtp_default_settle(o, rt, load_path)) {
-            *rc = 1;
-            return true;
-        }
+        // The signatures first (R6.68.79): they decide whether a file is read
+        // as a model at all, so the loader sees no byte of one they refuse.
+        // The load came first, and a file with no signature, or with other
+        // bytes than the signed ones, went through the parser and the binders
+        // on its way to the refusal.
         oms_result osr;
-        if (!oms_check_model(load_path, signing, &osr)) return cli_load_refused(rt, rc);
+        if (!oms_check_model(load_path, signing, &osr)) { *rc = 1; return true; }
         if (osr.status[0])
             oms_result_json(&osr, rt->model_sig_json, sizeof rt->model_sig_json);
         // R1.2.3: an adapter changes what is served, so the same trusted key
@@ -4993,10 +4935,21 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         memset(&aosr, 0, sizeof aosr);
         if (o->lora_path) {
             oms_policy apol = { o->lora_sig, o->model_pubkey, o->require_signed_model };
-            if (!oms_check_artifact(o->lora_path, &apol, "adapter", &aosr))
-                return cli_load_refused(rt, rc);
+            if (!oms_check_artifact(o->lora_path, &apol, "adapter", &aosr)) {
+                *rc = 1;
+                return true;
+            }
             if (aosr.status[0])
                 oms_result_json(&aosr, rt->adapter_sig_json, sizeof rt->adapter_sig_json);
+        }
+        // (a --verify replay set mtp_default from its record, not from here)
+        bool mtp_wanted = cli_mtp_default_wanted(o, load_path, registry);
+        if (mtp_wanted) { o->mtp_default = true; o->mp.mtp = true; }
+        if (!model_load(&rt->m, load_path, &o->mp)) { *rc = 1; return true; }
+        // (a failed settle is a failed reload: model_load released it)
+        if (mtp_wanted && !cli_mtp_default_settle(o, rt, load_path)) {
+            *rc = 1;
+            return true;
         }
         if (!tokenizer_init(&rt->tok, &rt->m.gf)) return cli_load_refused(rt, rc);
         // serve mode: the registry model's own pool is one thread by design
@@ -5065,12 +5018,7 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         // never affects the run. Utility modes (--quantize/--caps/--bench)
         // stay unregistered.
         if (!o->bench_json && !o->quant_out) {
-            const char *bn = strrchr(load_path, '/');
-#ifdef _WIN32
-            const char *bn2 = strrchr(load_path, '\\');
-            if (bn2 && (!bn || bn2 > bn)) bn = bn2;
-#endif
-            bn = bn ? bn + 1 : load_path;
+            const char *bn = plat_path_base(load_path);
             const char *const names[] = { bn };
             const char *const paths[] = { load_path };
             instances_register(o->serve ? "serve" : "cli", o->serve ? o->port : 0,
@@ -5757,6 +5705,17 @@ static bool train_evals_open(cli_opts *o, cli_run *rt, int wctx, int eot_id,
     return true;
 }
 
+// `s` on f as a JSON string. A label or a path is the caller's text: between
+// quotes as it stood, a quote or a backslash in it made the line one no reader
+// parses (the stop file's path, #542; the eval labels, R6.68.80).
+static void fput_json_str(FILE *f, const char *s) {
+    sbuf b = {0};
+    sb_str(&b, s);
+    if (b.s && !b.failed) fwrite(b.s, 1, b.n, f);
+    else fputs("\"\"", f);
+    free(b.s);
+}
+
 // Every set once, no update: one JSON line {"step","eval":{LABEL:{...}}} with
 // the mean loss per (weighted) position, as the training loss is, and the two
 // top-1 agreements (model_lora_eval_row).
@@ -5782,8 +5741,10 @@ static bool train_evals_run(cli_opts *o, cli_run *rt, train_eval_set *ev, int st
         e->last = acc.weight > 0 ? acc.loss / acc.weight : 0.0;
         if (step == 0) { e->base = e->last; e->has_base = true; }
         double pos = acc.positions > 0 ? (double)acc.positions : 1.0;
-        printf("%s\"%s\":{\"loss\":%.6f,\"top1_topk\":%.6f,\"top1_vocab\":%.6f,"
-               "\"rows\":%d,\"positions\":%ld}", i ? "," : "", e->label, e->last,
+        if (i) printf(",");
+        fput_json_str(stdout, e->label);
+        printf(":{\"loss\":%.6f,\"top1_topk\":%.6f,\"top1_vocab\":%.6f,"
+               "\"rows\":%d,\"positions\":%ld}", e->last,
                (double)acc.top1_topk / pos, (double)acc.top1_vocab / pos, e->n_ex,
                acc.positions);
     }
@@ -5900,8 +5861,10 @@ static bool train_kill_record(cli_opts *o, const char *suffix, int step,
         return false;
     FILE *f = plat_fopen(path, "w");
     if (!f) return false;
-    fprintf(f, "{\"step\":%d,\"metric\":\"%s\",\"baseline\":%.6f,\"now\":%.6f,"
-            "\"relative_reduction\":%.6f,\"required\":%.6f}\n", step, o->kill_metric,
+    fprintf(f, "{\"step\":%d,\"metric\":", step);
+    fput_json_str(f, o->kill_metric);
+    fprintf(f, ",\"baseline\":%.6f,\"now\":%.6f,"
+            "\"relative_reduction\":%.6f,\"required\":%.6f}\n",
             base, now, rel, (double)o->kill_min_rel);
     return fclose(f) == 0;
 }
@@ -6073,10 +6036,11 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
             }
             if (!pass) {
                 if (!train_checkpoint(o, rt, st, ev, true)) { rc = 1; break; }
-                printf("{\"killed\":{\"step\":%d,\"metric\":\"%s\",\"baseline\":%.6f,"
+                printf("{\"killed\":{\"step\":%d,\"metric\":", step);
+                fput_json_str(stdout, o->kill_metric);
+                printf(",\"baseline\":%.6f,"
                        "\"now\":%.6f,\"relative_reduction\":%.6f,\"required\":%.6f}}\n",
-                       step, o->kill_metric, k->base, k->last, rel,
-                       (double)o->kill_min_rel);
+                       k->base, k->last, rel, (double)o->kill_min_rel);
                 fflush(stdout);
                 rc = 3;
                 break;
@@ -6084,14 +6048,9 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
         }
         if (o->stop_file && plat_file_readable(o->stop_file)) {
             if (!train_checkpoint(o, rt, st, ev, true)) { rc = 1; break; }
-            // the path is escaped: a Windows path's backslashes, or a quote,
-            // copied raw made the line invalid JSON (#542)
-            size_t n = strlen(o->stop_file), cap = n * 6 + 8;
-            char *esc = malloc(cap);
-            if (!esc) { rc = 1; break; }
-            json_escape(o->stop_file, n, esc, cap);
-            printf("{\"yield\":\"%s\",\"step\":%d}\n", esc, step);
-            free(esc);
+            printf("{\"yield\":");
+            fput_json_str(stdout, o->stop_file);
+            printf(",\"step\":%d}\n", step);
             fflush(stdout);
             rc = 75;
             break;
@@ -6926,9 +6885,11 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
 static int run_detect_text(cli_opts *o, cli_run *rt, const wm_key *wmk, char *detect_text) {
     // R1.8.2 over a text: tokenized without BOS by the model's own
     // tokenizer, scored from the first position with a full context
-    size_t cap = strlen(detect_text) + 16;
-    int32_t *dt = cap <= (size_t)INT_MAX ? malloc(sizeof *dt * cap) : NULL;
-    int nt = dt ? tok_encode(&rt->tok, detect_text, dt, (int)cap, false, false) : -1;
+    // (the buffer is sized to the encoding: one of the text's byte count
+    // plus 16 cut a text of short words at its end and scored the head as
+    // the whole, R6.68.77)
+    int32_t *dt = NULL;
+    int nt = tok_encode_fit(&rt->tok, detect_text, false, TOK_TEXT, 0, &dt);
     int rc = 3;
     if (nt < 0) fprintf(stderr, "error: --detect-watermark: out of memory\n");
     else rc = wm_report(wmk, dt, nt, WM_CONTEXT, "text", NULL);
@@ -6951,7 +6912,10 @@ static int run_jsonl(cli_opts *o, cli_run *rt, const char *path, jsonl_handler h
     size_t cap = 1 << 16, len = 0; char *line = malloc(cap);
     if (!line) { if (df != stdin) fclose(df); return 1; }
     int rc = 0, lineno = 0, c;
-    const char *label = strrchr(o->model_path, '/') ? strrchr(o->model_path, '/') + 1 : o->model_path;
+    // the file's name, as the server names it (plat_path_base: a Windows
+    // path ends its directories with a backslash, and the name taken after
+    // the last '/' was then the whole path, R6.68.81)
+    const char *label = plat_path_base(o->model_path);
     for (;;) {
         c = fgetc(df);
         if (c != EOF && c != '\n') {
@@ -7232,9 +7196,7 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     // detail line. A comparison of two routes of one file reads it, because two
     // solo scores never reach a prefill GEMM and say nothing about one; a byte
     // comparison of two scores leaves it out (scripts/score_record.py)
-    const char *mbase = o->model_path ? o->model_path : "";
-    for (const char *c = mbase; *c; c++)
-        if (*c == '/' || *c == '\\') mbase = c + 1;
+    const char *mbase = plat_path_base(o->model_path ? o->model_path : "");
     char mesc[600], mjson[700];
     json_escape(mbase, strlen(mbase), mesc, sizeof mesc);
     plat_stat_t mst;
@@ -7342,12 +7304,7 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     sbuf r = {0};
     sb_lit(&r, "{\"schema\":\"xyntetik.runner.doctor.v1\",\"runner\":{\"version\":\"" RUNNER_VERSION "\"},");
     // identity: what the file says it is, never where it lives
-    const char *bn = strrchr(o->model_path, '/');
-#ifdef _WIN32
-    const char *bn2 = strrchr(o->model_path, '\\');
-    if (bn2 && (!bn || bn2 > bn)) bn = bn2;
-#endif
-    bn = bn ? bn + 1 : o->model_path;
+    const char *bn = plat_path_base(o->model_path);
     sb_lit(&r, "\"model\":{\"file\":\"");
     sb_esc(&r, bn, strlen(bn));
     sb_fmt(&r, "\",\"bytes\":%llu,\"architecture\":\"", (unsigned long long)rt->m.file_size);
@@ -7734,13 +7691,7 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
     model_debug_time_report();
     int t_rc = 0;
     if (o->transcript_path) {
-        char prev_hash[65] = "";
-        if (o->transcript_prev && !receipt_chain_hash(o->transcript_prev, prev_hash)) {
-            fprintf(stderr, "error: --transcript-prev: cannot read the chain "
-                            "hash of %s\n", o->transcript_prev);
-            t_rc = 1;
-            o->transcript_path = NULL;   // do not write an unlinked receipt
-        }
+        const char *prev_hash = rt->prev_hash;   // read before the load (cli_main)
         char gname[128] = "";
         if (rt->m.gpu) gpu_available(gname, sizeof gname);
         // R1.1.2: what shaped the output beyond the sampler, so --verify
@@ -8010,6 +7961,21 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
     if (!cli_prompt_fits_verb(o)) return 1;
     if (cli_prepare_session(o, simg, &rc)) return rc;
     if (cli_prepare_verify(o, &wmk, wm_on, &vr, &rc)) return rc;
+    // The record a --transcript run links to is read here, before the load
+    // and the generation the new record would follow (R6.68.82). It was read
+    // after them, and a previous record that could not be read then ended the
+    // run in a crash: the writer was still called, with no path to write.
+    if (o->transcript_prev && !o->verify_path && !o->transcript_path) {
+        fprintf(stderr, "error: --record-prev links the record this run writes, signs or "
+                "verifies to the one before it; this run does none of the three\n");
+        return 1;
+    }
+    if (o->transcript_path && o->transcript_prev && !o->verify_path &&
+        !receipt_chain_hash(o->transcript_prev, rt->prev_hash)) {
+        fprintf(stderr, "error: --transcript-prev: cannot read the chain hash of %s\n",
+                o->transcript_prev);
+        return 1;
+    }
     cli_resolve_threads(o);
 
     f16_init();

@@ -45,18 +45,30 @@ static char *sn_literal(const jv *v) {
 // literal index the walker reports stays the declared one, which the
 // discriminated tool action depends on.
 #define SCHEMA_ENUM_MAX 4096
+typedef struct { const char *lit; int idx; } enum_ref;
+
+// by literal, then by position: equal literals keep the order they were
+// declared in, as the insertion sort this replaced kept them
+static int enum_ref_cmp(const void *a, const void *b) {
+    const enum_ref *x = a, *y = b;
+    int c = strcmp(x->lit, y->lit);
+    return c ? c : (x->idx > y->idx) - (x->idx < y->idx);
+}
+
+// The literals' sorted order. It was an insertion sort ("compile-time, small
+// n"), which is n squared comparisons on an enum that may hold 4,096
+// literals: 12 ms of every request that carries one in random order, 390 ms
+// when the literals share a 2,000-byte prefix (R6.68.69).
 bool enum_index(snode *n) {
     free(n->order);
-    n->order = malloc(sizeof(int) * (size_t)(n->n_lits > 0 ? n->n_lits : 1));
-    if (!n->order) return false;
-    for (int i = 0; i < n->n_lits; i++) {   // insertion sort: compile-time, small n
-        int k = i;
-        while (k > 0 && strcmp(n->lits[n->order[k - 1]], n->lits[i]) > 0) {
-            n->order[k] = n->order[k - 1];
-            k--;
-        }
-        n->order[k] = i;
-    }
+    size_t cnt = (size_t)(n->n_lits > 0 ? n->n_lits : 1);
+    n->order = malloc(sizeof(int) * cnt);
+    enum_ref *r = malloc(sizeof *r * cnt);
+    if (!n->order || !r) { free(r); return false; }
+    for (int i = 0; i < n->n_lits; i++) r[i] = (enum_ref){ n->lits[i], i };
+    if (n->n_lits > 1) qsort(r, (size_t)n->n_lits, sizeof *r, enum_ref_cmp);
+    for (int i = 0; i < n->n_lits; i++) n->order[i] = r[i].idx;
+    free(r);
     return true;
 }
 
@@ -605,6 +617,24 @@ static bool compile_ascii_pattern_value(jv *pv, snode *n, char *err, int errcap)
     /* only the last segment may be variable-length: see the note above */
     for (int i = 0; i + 1 < n_segs; i++)
         if (segs[i].has_class && segs[i].max_tail != segs[i].min_tail) goto bad;
+    /* The pattern's shortest and longest strings are sums of its counts,
+       kept in an int (pattern_min_len, pattern_max_len). Two counts of two
+       billion overflowed it, which is undefined; a pattern whose string
+       cannot be counted in an int is refused by name (R6.68.70). */
+    {
+        long long lo = 0, hi = 0;
+        for (int i = 0; i < n_segs; i++) {
+            lo += segs[i].prefix_len + (segs[i].has_class ? segs[i].min_tail : 0);
+            hi += segs[i].prefix_len +
+                  (segs[i].has_class && segs[i].max_tail > 0 ? segs[i].max_tail : 0);
+        }
+        if (lo > INT_MAX || hi > INT_MAX) {
+            for (int i = 0; i < n_segs; i++) free(segs[i].prefix);
+            snprintf(err, errcap, "pattern describes a string longer than %d bytes",
+                     INT_MAX);
+            return false;
+        }
+    }
 
     {
         pattern *grown = realloc(n->pats, sizeof(*n->pats) * (size_t)(n->n_pats + 1));
@@ -643,18 +673,46 @@ static bool patterns_consistent(const snode *n, char *err, int errcap) {
         snprintf(err, errcap, "allOf patterns cannot be satisfied together");
         return false;
     }
-    for (int pos = 0; pos < need; pos++) {
-        pat_at at = pat_at_pos(n, pos);
-        bool ok = at.what == PAT_LIT;
-        if (at.what == PAT_CLASS)
-            for (unsigned c = 0; c < 128 && !ok; c++)
-                ok = at.ascii[c] && pattern_producible(c);
-        if (!ok) {
-            snprintf(err, errcap, "allOf patterns cannot be satisfied together");
-            return false;
+    /* What the patterns allow together only changes where one of them starts
+       a new piece: at each byte of a literal run and at the first byte of a
+       class's span. Inside a span every pattern says what it said one byte
+       before. So those positions are the ones to check. The check used to
+       visit every byte below `need`, which a count sets: two patterns with
+       {200000000} took 28 s to compile (R6.68.70). */
+    size_t cnt = 0;
+    for (int k = 0; k < n->n_pats; k++)
+        for (int i = 0; i < n->pats[k].n; i++)
+            cnt += (size_t)n->pats[k].seg[i].prefix_len + 1;
+    int *at = malloc(sizeof(int) * (cnt ? cnt : 1));
+    if (!at) {
+        snprintf(err, errcap, "out of memory checking allOf patterns");
+        return false;
+    }
+    size_t m = 0;
+    for (int k = 0; k < n->n_pats; k++) {
+        const pattern *p = &n->pats[k];
+        long long pos = 0;
+        for (int i = 0; i < p->n && pos < need; i++) {
+            const pat_seg *g = &p->seg[i];
+            for (int b = 0; b < g->prefix_len && pos < need; b++) at[m++] = (int)pos++;
+            if (!g->has_class || pos >= need) continue;
+            at[m++] = (int)pos;
+            int span = (i + 1 < p->n) ? g->min_tail : g->max_tail;
+            if (span < 0) break;   /* the last class, unbounded: nothing follows it */
+            pos += span;
         }
     }
-    return true;
+    bool ok = true;
+    for (size_t j = 0; j < m && ok; j++) {
+        pat_at a = pat_at_pos(n, at[j]);
+        ok = a.what == PAT_LIT;
+        if (a.what == PAT_CLASS)
+            for (unsigned c = 0; c < 128 && !ok; c++)
+                ok = a.ascii[c] && pattern_producible(c);
+    }
+    free(at);
+    if (!ok) snprintf(err, errcap, "allOf patterns cannot be satisfied together");
+    return ok;
 }
 
 #define JSON_SAFE_INTEGER 9007199254740991LL
@@ -3522,6 +3580,12 @@ char *sval_close_alloc(sval *v, int *len, int max) {
 // copied as they are, so a "$ref" inside one is not followed.
 
 enum { REFX_DEPTH = 64, REFX_MAX_NODES = 20000 };
+// The inlined schema's size. The node count alone did not bound it: a
+// definition is copied whole at each reference, keywords that are not schemas
+// included, so a 100 KB `enum` referenced 20,000 times was 2 GB from a request
+// of under a megabyte (R6.68.68). Twice the largest request body the server
+// reads: a schema with no shared definitions never comes near it.
+#define REFX_MAX_BYTES ((size_t)64 << 20)
 
 typedef struct {
     jv *root;
@@ -3642,7 +3706,7 @@ static bool refx_ref(refx *x, jv *s, jv *ref, sbuf *o) {
 }
 
 static bool refx_schema(refx *x, jv *s, sbuf *o) {
-    if (++x->nodes > REFX_MAX_NODES) {
+    if (++x->nodes > REFX_MAX_NODES || o->n > REFX_MAX_BYTES) {
         snprintf(x->err, x->errcap, "schema too large once its $refs are inlined");
         return false;
     }
@@ -3687,6 +3751,11 @@ static bool refx_schema(refx *x, jv *s, sbuf *o) {
             if (!refx_schema(x, v, o)) return false;
         } else {
             jv_dump(v, o);
+            // a keyword that is not a schema is copied too, at every reference
+            if (o->n > REFX_MAX_BYTES) {
+                snprintf(x->err, x->errcap, "schema too large once its $refs are inlined");
+                return false;
+            }
         }
     }
     sb_lit(o, "}");

@@ -1598,6 +1598,37 @@ static void prune_plan_free(prune_plan_t *p) {
 typedef struct { char *match; int type; } type_rule_t;
 typedef struct { type_rule_t *rules; int n; int dflt; } type_plan_t;
 
+// A plan file (--type-plan, --prune-experts) as its JSON object, or NULL with
+// the reason printed: a file of at most max_bytes, read whole, where each
+// loader spelled its own fseek, ftell and fread. The buffer is this file's
+// own allocation, not plat_read_file's: test-quantize-oom counts every block
+// this unit takes and frees, and one taken in compat.c and freed here is a
+// free it never saw taken.
+static jv *plan_read_object(const char *path, const char *flag, size_t max_bytes) {
+    FILE *f = plat_fopen(path, "rb");
+    uint64_t sz = 0;
+    char *buf = NULL;
+    size_t n = 0;
+    if (f && plat_file_size(f, &sz) && sz <= max_bytes) buf = malloc((size_t)sz + 1);
+    if (buf) n = fread(buf, 1, (size_t)sz, f);
+    bool whole = buf && n == (size_t)sz && !ferror(f);
+    if (f) fclose(f);
+    if (!whole) {
+        free(buf);
+        fprintf(stderr, "error: cannot read %s file %s (a regular file of at most "
+                "%zu MiB)\n", flag, path, max_bytes >> 20);
+        return NULL;
+    }
+    jv *root = json_parse(buf, n);
+    free(buf);
+    if (!root || root->type != J_OBJ) {
+        fprintf(stderr, "error: %s is not a JSON object\n", path);
+        if (root) jv_free(root);
+        return NULL;
+    }
+    return root;
+}
+
 static int type_from_name(const char *s) {
     if (!s) return -2;
     if (!strcmp(s, "keep")) return T_KEEP;
@@ -1624,27 +1655,8 @@ static void type_plan_free(type_plan_t *p) {
 static bool type_plan_load(const char *path, type_plan_t *plan) {
     memset(plan, 0, sizeof(*plan));
     plan->dflt = T_KEEP;
-    FILE *f = plat_fopen(path, "rb");
-    if (!f) { fprintf(stderr, "error: cannot open --type-plan file %s\n", path); return false; }
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
-    long sz = ftell(f);
-    if (sz < 0 || sz > 8 * 1024 * 1024 || fseek(f, 0, SEEK_SET) != 0) {
-        fclose(f);
-        fprintf(stderr, "error: %s is not a readable type plan\n", path);
-        return false;
-    }
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return false; }
-    size_t rd = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    buf[rd] = 0;
-    jv *root = json_parse(buf, rd);
-    free(buf);
-    if (!root || root->type != J_OBJ) {
-        fprintf(stderr, "error: %s is not a JSON object\n", path);
-        if (root) jv_free(root);
-        return false;
-    }
+    jv *root = plan_read_object(path, "--type-plan", (size_t)8 << 20);
+    if (!root) return false;
     bool ok = true;
     // The plan's CONTAINER is validated as strictly as its individual rules
     // already are. Every shape that used to be silently ignored -- a
@@ -1729,30 +1741,12 @@ static int type_plan_pick(const type_plan_t *plan, const char *name) {
     return plan->dflt;
 }
 
+static const prune_layer_t *prune_plan_find(const prune_plan_t *plan, int layer);
+
 static bool prune_plan_load(const char *path, prune_plan_t *plan) {
     memset(plan, 0, sizeof(*plan));
-    FILE *f = plat_fopen(path, "rb");
-    if (!f) { fprintf(stderr, "error: cannot open --prune-experts file %s\n", path); return false; }
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
-    long sz = ftell(f);
-    if (sz < 0 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return false; }
-    if (sz > 64 * 1024 * 1024) {
-        fclose(f);
-        fprintf(stderr, "error: %s is too large to be a prune plan\n", path);
-        return false;
-    }
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return false; }
-    size_t rd = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    buf[rd] = 0;
-    jv *root = json_parse(buf, rd);
-    free(buf);
-    if (!root || root->type != J_OBJ) {
-        fprintf(stderr, "error: %s is not a JSON object\n", path);
-        if (root) jv_free(root);
-        return false;
-    }
+    jv *root = plan_read_object(path, "--prune-experts", (size_t)64 << 20);
+    if (!root) return false;
     plan->layers = root->n > 0 ? calloc((size_t)root->n, sizeof(prune_layer_t)) : NULL;
     if (root->n > 0 && !plan->layers) { jv_free(root); return false; }
     bool ok = true;
@@ -1767,6 +1761,14 @@ static bool prune_plan_load(const char *path, prune_plan_t *plan) {
             break;
         }
         int layer = (int)parsed_layer;
+        // one layer under two spellings (layer_1, layer_01) is two keys to the
+        // JSON parser: every lookup took the first and the second list was
+        // dropped (R6.68.83)
+        if (prune_plan_find(plan, layer)) {
+            fprintf(stderr, "error: prune-plan names layer %d twice (\"%s\")\n", layer, key);
+            ok = false;
+            break;
+        }
         jv *arr = root->items[i];
         if (arr->type != J_ARR || arr->n < 1) {
             fprintf(stderr, "error: prune-plan[\"layer_%d\"] must be a "
@@ -2167,6 +2169,44 @@ static int width_fallback(int want, int64_t n) {
     // a fallback this file cannot write is no fallback: declining leaves the
     // tensor at its source type, as for a type with no 32-block cousin
     return type_fits_row(fb, n) && quantize_row_writable(fb) ? fb : want;
+}
+
+// How a tensor that takes a quantized type answers a request for one.
+typedef enum {
+    DEC_AS_ASKED,     // written as asked, or already that type
+    DEC_FALLBACK,     // written in the 32-block cousin of the type asked for
+    DEC_KEPT_WIDTH,   // kept: no type on offer divides its row
+    DEC_KEPT_SIZE,    // kept: it is already no larger than what would be written
+} type_decision;
+
+// The type a quantizable tensor is written in when `want` is asked of it. A
+// type whose block does not divide the row gives way to its 32-block cousin
+// (width_fallback), or to the tensor's own type when it has none. Then, unless
+// `grow` (a merge, RUNNER_FORCE_REQUANT), a tensor already no larger than the
+// type it WOULD be written in keeps its own. A whole-file target and a plan's
+// rule each spelled this and had drifted (R6.68.84): the whole-file copy
+// compared against the type asked for, so a Q4_0 row of 352 values asked for
+// q4_k was requantized into Q5_0, a larger type, and a file that already
+// carried the fallback was written in it again; both reported the fallback
+// before deciding whether to keep the tensor; the plan's copy never read
+// RUNNER_FORCE_REQUANT, which its refusal tells the reader to set.
+static int decide_type(const gguf_tensor *t, int want, bool grow, type_decision *how) {
+    int64_t n = (int64_t)t->ne[0];
+    int eff = width_fallback(want, n);
+    if (!type_fits_row(eff, n)) {
+        *how = DEC_KEPT_WIDTH;
+        return (int)t->type;
+    }
+    if ((uint32_t)eff == t->type || (uint32_t)want == t->type) {
+        *how = DEC_AS_ASKED;               // nothing to convert, nothing to say
+        return (int)t->type;
+    }
+    if (!grow && ggml_row_size(t->type, n) <= ggml_row_size(eff, n)) {
+        *how = DEC_KEPT_SIZE;
+        return (int)t->type;
+    }
+    *how = eff == want ? DEC_AS_ASKED : DEC_FALLBACK;
+    return eff;
 }
 
 static bool quantize_install_injected(void) {
@@ -2799,99 +2839,50 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
     // said about it. Counted and reported, as declined_width already is.
     uint64_t declined_size = 0;
     bool merge_unwritable = false;
+    // a merge always converts the adapted rows; RUNNER_FORCE_REQUANT builds
+    // same-size conversions (Q4_K -> Q4_0) for diagnosing a quant type
+    const bool grow = ms != NULL || getenv("RUNNER_FORCE_REQUANT") != NULL;
     for (uint64_t i = 0; J->w.ok && i < J->g.n_tensors; i++) {
         gguf_tensor *t = &J->g.tensors[i];
         if (J->drop && J->drop[i]) { J->out_type[i] = t->type; continue; }
+        // What is asked of this tensor: the plan's pick (T_KEEP leaves it
+        // byte for byte), or the whole-file target unless RUNNER_REQUANT_ONLY
+        // names other tensors. The router never changes type.
+        int want = target;
         if (type_plan_path) {
-            // The plan decides per tensor. T_KEEP leaves the tensor byte for
-            // byte; anything else goes through the same should_quantize,
-            // block-width and never-grow guards as a whole-file target, so a
-            // plan cannot make a tensor bigger, quantize something that must
-            // stay f32, or write a row the target type cannot describe.
-            int want = type_plan_pick(&J->tplan, t->name);
-            if (keep_source_type(t) || want == T_KEEP) {
-                // "keep" means exactly that, for every tensor. Falling through
-                // to the whole-file rule below pushed a non-f16 tensor (a bf16
-                // norm) to F32 — a converted, grown tensor in a plan whose
-                // whole instruction was to convert nothing.
-                J->out_type[i] = t->type;
-            } else if (!should_quantize(t)) {
-                J->out_type[i] = t->type == T_F16 ? T_F16 : T_F32;
-            } else if (!type_fits_row(want, t->ne[0]) &&
-                       width_fallback(want, t->ne[0]) == want) {
-                J->out_type[i] = t->type;
+            want = type_plan_pick(&J->tplan, t->name);
+        } else if (target != T_KEEP) {
+            const char *only = ms ? NULL : getenv("RUNNER_REQUANT_ONLY");
+            if (only && *only && !strstr(t->name, only)) want = T_KEEP;
+        }
+        if (want == T_KEEP || keep_source_type(t)) {
+            // "keep" means exactly that, for every tensor: a bf16 norm is not
+            // pushed to F32 by a plan whose whole instruction was to convert
+            // nothing
+            J->out_type[i] = t->type;
+        } else if (!should_quantize(t)) {
+            J->out_type[i] = t->type == T_F16 ? T_F16 : T_F32;
+        } else {
+            type_decision how;
+            J->out_type[i] = decide_type(t, want, grow, &how);
+            if (how == DEC_FALLBACK) {
+                if (n_fb < DECLINE_NAMES) {
+                    fb_name[n_fb] = t->name; fb_want[n_fb] = (uint32_t)want;
+                    fb_got[n_fb++] = (uint32_t)J->out_type[i];
+                }
+                fell_back++;
+            } else if (how == DEC_KEPT_WIDTH) {
                 if (n_decl_w < DECLINE_NAMES) {
                     decl_w_name[n_decl_w] = t->name;
                     decl_w_type[n_decl_w++] = (uint32_t)want;
                 }
                 declined_width++;
-            } else if (!type_fits_row(want, t->ne[0])) {
-                int fb = width_fallback(want, t->ne[0]);
-                if (n_fb < DECLINE_NAMES) {
-                    fb_name[n_fb] = t->name; fb_want[n_fb] = (uint32_t)want;
-                    fb_got[n_fb++] = (uint32_t)fb;
+            } else if (how == DEC_KEPT_SIZE) {
+                if (n_decl_s < DECLINE_NAMES) {
+                    decl_s_name[n_decl_s] = t->name;
+                    decl_s_type[n_decl_s++] = (uint32_t)want;
                 }
-                fell_back++;
-                want = fb;
-                J->out_type[i] = ggml_row_size(t->type, t->ne[0]) <=
-                              ggml_row_size(fb, t->ne[0]) ? (int)t->type : fb;
-            } else if (ggml_row_size(t->type, t->ne[0]) <=
-                       ggml_row_size(want, t->ne[0])) {
-                J->out_type[i] = t->type;   // never grow
-                if ((uint32_t)want != t->type) {
-                    if (n_decl_s < DECLINE_NAMES) {
-                        decl_s_name[n_decl_s] = t->name;
-                        decl_s_type[n_decl_s++] = (uint32_t)want;
-                    }
-                    declined_size++;
-                }
-            } else {
-                J->out_type[i] = want;
-            }
-        } else if (target == T_KEEP) {
-            J->out_type[i] = t->type;
-        } else {
-            const char *only = ms ? NULL : getenv("RUNNER_REQUANT_ONLY");
-            bool filtered = keep_source_type(t) ||
-                            (only && *only && !strstr(t->name, only));
-            if (filtered)
-                J->out_type[i] = t->type;
-            else if (should_quantize(t) && !type_fits_row(target, t->ne[0]) &&
-                     width_fallback(target, t->ne[0]) == target) {
-                J->out_type[i] = t->type;
-                filtered = true;          // and skip the never-grow rule below
-                if (n_decl_w < DECLINE_NAMES) {
-                    decl_w_name[n_decl_w] = t->name;
-                    decl_w_type[n_decl_w++] = (uint32_t)target;
-                }
-                declined_width++;
-            } else if (should_quantize(t) && !type_fits_row(target, t->ne[0])) {
-                int fb = width_fallback(target, t->ne[0]);
-                if (n_fb < DECLINE_NAMES) {
-                    fb_name[n_fb] = t->name; fb_want[n_fb] = (uint32_t)target;
-                    fb_got[n_fb++] = (uint32_t)fb;
-                }
-                fell_back++;
-                J->out_type[i] = fb;         // the never-grow rule below still applies
-            } else
-                J->out_type[i] = should_quantize(t) ? target
-                            : (t->type == T_F16 ? T_F16 : T_F32);
-            // never grow a tensor that is already smaller than the target —
-            // RUNNER_FORCE_REQUANT overrides this to build same-size
-            // conversions (e.g. Q4_K -> Q4_0) for diagnosing per-quant-type
-            // correctness bugs. A merge to a wider type is exempt too: asking
-            // for a merged f16 from a 4-bit base is a preservation request,
-            // not an accident.
-            if (!filtered && !ms && should_quantize(t) && !getenv("RUNNER_FORCE_REQUANT") &&
-                ggml_row_size(t->type, t->ne[0]) <= ggml_row_size(target, t->ne[0])) {
-                if ((uint32_t)target != t->type) {
-                    if (n_decl_s < DECLINE_NAMES) {
-                        decl_s_name[n_decl_s] = t->name;
-                        decl_s_type[n_decl_s++] = (uint32_t)target;
-                    }
-                    declined_size++;
-                }
-                J->out_type[i] = t->type;
+                declined_size++;
             }
         }
         // an adapted tensor cannot keep a type this file has no quantizer
@@ -3484,8 +3475,12 @@ int quantize_error_report(const char *in_path, const int *types, int n_types,
         }
         if (rc) break;
         double sc2 = (double)t->scale * t->scale;
+        // the name is the file's own string: escaped, or a quote in it makes
+        // the line one the planner cannot read (R6.68.85)
+        char tname[sizeof t->name * 6 + 8];
+        json_escape(t->name, strlen(t->name), tname, sizeof tname);
         fprintf(out, "{\"tensor\":\"%s\",\"source_type\":\"%s\",\"rows\":%llu,\"cols\":%d,"
-                "\"weighted\":%s,\"types\":{", t->name, ggml_type_name(t->type),
+                "\"weighted\":%s,\"types\":{", tname, ggml_type_name(t->type),
                 (unsigned long long)rows, n0, weighted ? "true" : "false");
         for (int k = 0; k < n_types; k++) {
             int ek = width_fallback(types[k], n0);

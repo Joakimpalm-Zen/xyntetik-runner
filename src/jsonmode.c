@@ -484,13 +484,16 @@ int jsonv_close(jsonv *v, char *out, int cap) {
         v->st == S_NUM_FRAC || v->st == S_NUM_EXP) {
         value_done(v); // number already complete as-is
     }
-    if (v->st == S_VALUE || v->st == S_ARR_FIRST) {
+    // a value is owed after a colon or a comma; a container that was only
+    // opened owes nothing and closes empty (an array did get a null here,
+    // an element the model never wrote, R6.68.101)
+    if (v->st == S_VALUE) {
         out_put(out, cap - 1, &m, 'n'); out_put(out, cap - 1, &m, 'u'); out_put(out, cap - 1, &m, 'l'); out_put(out, cap - 1, &m, 'l');
         value_done(v);
     }
     // close remaining containers
     while (!v->done && v->depth > 0 &&
-           (v->st == S_AFTER || v->st == S_KEY_OR_END)) {
+           (v->st == S_AFTER || v->st == S_KEY_OR_END || v->st == S_ARR_FIRST)) {
         uint8_t top = v->stack[v->depth - 1];
         out_put(out, cap - 1, &m, top == 'O' ? '}' : ']');
         v->depth--;

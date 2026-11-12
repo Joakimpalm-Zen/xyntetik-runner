@@ -4,6 +4,7 @@
 #include "ed25519.h"
 #include "mldsa.h"
 
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdarg.h>
@@ -12,6 +13,15 @@
 #include <sys/stat.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
 
 static void bytes_to_hex(const uint8_t *b, size_t n, char *out);
 
@@ -253,6 +263,15 @@ bool envelope_file_sha256(const char *path, char hex[65]) {
     }
     hex[64] = 0;
     return true;
+}
+
+bool record_regular_file(const char *path) {
+    plat_stat_t st;
+    return plat_stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+bool envelope_cited_sha256(const char *path, char hex[65]) {
+    return record_regular_file(path) && envelope_file_sha256(path, hex);
 }
 
 void envelope_data_sha256_raw(const void *data, size_t n, uint8_t out[32]) {
@@ -774,13 +793,30 @@ bool signkey_write(const char *path, const char *algo, const uint8_t seed[32],
     char seed_hex[65];
     bytes_to_hex(seed, 32, seed_hex);
     bytes_to_hex(k.pk, k.pk_n, pub_hex);
-    FILE *f = plat_fopen(path, "wb");
-    bool ok = f != NULL;
+    // The file holds the seed, so it is its owner's alone. fopen made it
+    // 0644 under the usual umask, and a key written over an older file kept
+    // that file's mode. It is created as a new file with mode 0600 (which a
+    // umask can only narrow) and then takes the name, so a failed write
+    // leaves the old key whole (R6.68.59).
+    size_t tl = strlen(path) + sizeof ".partial";
+    char *tmp = malloc(tl);
+    bool ok = tmp != NULL;
     if (ok) {
-        ok = fprintf(f, "{\"schema_version\":\"xyntetik.runner.signkey.v1\","
-                     "\"algo\":\"%s\",\"seed\":\"%s\",\"public_key\":\"%s\"}\n",
-                     k.algo, seed_hex, pub_hex) > 0;
-        ok = (fclose(f) == 0) && ok;
+        snprintf(tmp, tl, "%s.partial", path);
+        plat_remove(tmp);   // a stale one from an interrupted run
+        int fd = plat_open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
+        FILE *f = fd >= 0 ? fdopen(fd, "wb") : NULL;
+        if (fd >= 0 && !f) close(fd);
+        ok = f != NULL;
+        if (ok) {
+            ok = fprintf(f, "{\"schema_version\":\"xyntetik.runner.signkey.v1\","
+                         "\"algo\":\"%s\",\"seed\":\"%s\",\"public_key\":\"%s\"}\n",
+                         k.algo, seed_hex, pub_hex) > 0;
+            ok = (fclose(f) == 0) && ok;
+        }
+        ok = ok && plat_replace_file(tmp, path);
+        if (!ok && fd >= 0) plat_remove(tmp);
+        free(tmp);
     }
     memset(&k, 0, sizeof k);
     memset(seed_hex, 0, sizeof seed_hex);
@@ -820,6 +856,27 @@ bool signkey_load(const char *path, signkey *k) {
     return ok;
 }
 
+// A signed record ends with its signature object and the closing brace. Bytes
+// after the signature are covered by nothing, and a JSON key that the signed
+// part does not hold reads as the record's own: `"model_signature"` or
+// `"tool_calls"` appended there came back from --verify as VERIFIED, signed
+// (R6.68.61). The rule lived in --check-record and the lineage walker only;
+// it is part of the check itself now, so every reader of a signed record has
+// it: a record with anything after its signature is RSIG_BAD.
+static bool record_tail_clean(const char *buf, size_t n) {
+    const char *sig = NULL, *p = buf;
+    while ((p = strstr(p, ",\"signature\"")) != NULL) { sig = p; p++; }
+    if (!sig) return false;
+    const char *close = strchr(sig, '}');   // its values are hex and a name, never braces
+    if (!close) return false;
+    const char *q = close + 1;
+    while (*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t') q++;
+    if (*q != '}') return false;
+    for (q++; *q; q++)
+        if (!(*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t')) return false;
+    return (size_t)(q - buf) == n;
+}
+
 receipt_sig_state receipt_signature_check(const char *rec, size_t n, char pub_hex[SIGN_PUBHEX_CAP]) {
     // the signed span ends at the LAST `,"signature"` key (the record's own
     // JSON strings are escaped, so the key cannot appear inside a value)
@@ -846,6 +903,7 @@ receipt_sig_state receipt_signature_check(const char *rec, size_t n, char pub_he
     }
     bool ok = pk_n == 32 ? ed25519_verify(sig, rec, (size_t)(pos - rec), pk)
                          : mldsa44_verify(sig, rec, (size_t)(pos - rec), pk);
+    ok = ok && record_tail_clean(rec, n);
     if (ok && pub_hex) memcpy(pub_hex, pk_hex, pk_n * 2 + 1);
     jv_free(j);
     return ok ? RSIG_OK : RSIG_BAD;
@@ -1217,23 +1275,6 @@ static char *record_read(const char *path, size_t *n_out) {
     return buf;
 }
 
-// a signed record ends with its signature object and the closing brace:
-// bytes after the signature are covered by nothing, so a record that carries
-// any is not "OK", whatever the signature says about the rest
-static bool record_tail_clean(const char *buf, size_t n) {
-    const char *sig = NULL, *p = buf;
-    while ((p = strstr(p, ",\"signature\"")) != NULL) { sig = p; p++; }
-    if (!sig) return false;
-    const char *close = strchr(sig, '}');   // its values are hex and a name, never braces
-    if (!close) return false;
-    const char *q = close + 1;
-    while (*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t') q++;
-    if (*q != '}') return false;
-    for (q++; *q; q++)
-        if (!(*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t')) return false;
-    return (size_t)(q - buf) == n;
-}
-
 // the chain hash of a signed record, or "" when it has none
 bool record_chain_hash(const char *path, char hex[65]) {
     hex[0] = 0;
@@ -1349,10 +1390,9 @@ int record_signature_state(const char *path, const char *trust_hex,
     char *buf = record_read(path, &n);
     if (!buf) return 2;
     receipt_sig_state st = receipt_signature_check(buf, n, pub_out);
-    bool tail_ok = record_tail_clean(buf, n);
     free(buf);
     if (st == RSIG_NONE) return 1;
-    if (st != RSIG_OK || !tail_ok) return 2;
+    if (st != RSIG_OK) return 2;
     if (trust_hex && *trust_hex && strcmp(trust_hex, pub_out) != 0) return 2;
     return 0;
 }
@@ -1373,8 +1413,11 @@ int record_check(const char *path, const char *trust_hex) {
     record_chain_hash(path, chain);
     free(buf);
     if (st == RSIG_NONE) { printf("UNSIGNED: %s\n", path); return 1; }
-    if (st != RSIG_OK) { printf("BAD SIGNATURE: %s\n", path); return 2; }
-    if (!tail_ok) { printf("BAD SIGNATURE: %s carries bytes after its signature\n", path); return 2; }
+    if (st != RSIG_OK) {
+        printf(tail_ok ? "BAD SIGNATURE: %s\n"
+                       : "BAD SIGNATURE: %s carries bytes after its signature\n", path);
+        return 2;
+    }
     if (trust_hex && *trust_hex && strcmp(trust_hex, pub) != 0) {
         printf("UNTRUSTED KEY: %s signed by %s, expected %s\n", path, pub, trust_hex);
         return 2;

@@ -182,3 +182,139 @@ def test_qwen35_cuda_failure_keeps_the_scored_logprobs(tmp_path):
         said = f"injected CUDA runtime failure at device forward {at} ".encode()
         assert said in err, err.decode(errors="replace")
         assert worst(failed, cpu) < 1e-4, (at, worst(failed, cpu))
+
+
+@pytest.mark.parametrize("nth", [1, 3, 20])
+@pytest.mark.parametrize("fixture", ["ornith", "mamba2"])
+def test_metal_failure_rebuilds_the_recurrent_fold(tmp_path, fixture, nth):
+    """R6.68.90: a Metal forward that fails at runtime on a recurrent model.
+
+    The device folds the host's own memory there, so when its command buffer
+    fails the fold already holds the forward's tokens, and the CPU fallback
+    used to fold the same tokens onto it again. The host now restarts the
+    fold and rebuilds it from the tokens the model was fed, then runs the
+    forward. Held by teacher-forced log-probabilities, which depend on the
+    fold at every token: the fixtures' generated text does not (it is one
+    letter whatever the state), so a text comparison passes either way.
+
+    --score feeds one token a forward, so the Nth command buffer is position
+    N - 1: the first forward, the third (a fold carried over two steps), and
+    the twentieth, whose rebuild takes three batches.
+    """
+    caps = json.loads(subprocess.run(
+        [RUNNER, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
+        check=True, text=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "metal":
+        pytest.skip("the Metal backend's runtime fallback")
+    if fixture == "ornith":
+        model = tmp_path / "ornith.gguf"
+        subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", model],
+                       check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    else:   # the script takes a prefix and writes <prefix>.gguf
+        model = tmp_path / "m2.gguf"
+        subprocess.run([sys.executable, ROOT / "scripts/make-test-nemotron.py",
+                        tmp_path / "m2"], check=True, cwd=ROOT,
+                       stdout=subprocess.DEVNULL)
+    text = "the quick brown fox jumps over the lazy dog"
+    base = [RUNNER, "-m", model, "--score", "-p", text, "-b", "8", "-c", "128"]
+
+    def score(gpu, env=None):
+        r = subprocess.run([*base, "--gpu", gpu], cwd=ROOT, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=60,
+                           env={**os.environ, **(env or {})})
+        assert r.returncode == 0, r.stderr.decode(errors="replace")
+        return json.loads(r.stdout)["logprobs"], r.stderr.decode(errors="replace")
+
+    cpu, _ = score("off")
+    gpu, err = score("auto")
+    assert "Metal backend" in err, err
+    assert len(cpu) > 24
+    failed, err = score("auto", {"RUNNER_METAL_INJECT_FAILURE": str(nth)})
+    assert "falling back to CPU" in err, err
+    cut = nth - 1
+    # before the failure the rows are the device's own, bit for bit
+    assert failed[:cut] == gpu[:cut]
+    # from it on they are the CPU's: exactly while the rebuild is one batch
+    # (the arithmetic of the CPU's own steps), and to the last bits past that.
+    # The double fold was off by 4e-4 to 4e-3 on these fixtures.
+    worst = max(abs(a - b) for a, b in zip(failed[cut:], cpu[cut:]))
+    if cut <= 8:
+        assert failed[cut:] == cpu[cut:], worst
+    assert worst < 5e-6, worst
+    if cut:
+        assert "rebuilding the recurrent state" in err, err
+
+
+def test_metal_failure_after_a_forked_prefix_rebuilds_from_that_prefix(tmp_path):
+    """R6.68.104 (found by a second reader of R6.68.90): a state installed from a
+    snapshot is another sequence's.
+
+    A request leaves prefix B in the prefix cache. The slot then serves an
+    unrelated prompt A, and a request forks B and continues it. The fork installs B's recurrent
+    fold; the model's record of the tokens it was fed still held A. If the
+    first device forward after the fork failed, the fold was rebuilt from A's
+    tokens under B's continuation. The fold's installer now names the
+    sequence it belongs to, and the rebuild uses that.
+
+    The failure is injected at the first forward after the fork: its ordinal
+    is counted in a clean run of the same three requests.
+    """
+    import socket
+    import time
+    import urllib.request
+    caps = json.loads(subprocess.run(
+        [RUNNER, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
+        check=True, text=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "metal":
+        pytest.skip("the Metal backend's runtime fallback")
+    model = tmp_path / "ornith.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", model],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    B = "You are a careful assistant for a warehouse inventory team. "
+    A = "quite another text, sharing nothing with it, and running on for longer than it does"
+    Q = "Where is item 42?"
+
+    def session(gpu, inject=None):
+        with socket.socket() as so:
+            so.bind(("127.0.0.1", 0))
+            port = so.getsockname()[1]
+        log = tmp_path / f"server-{gpu}-{inject}.log"
+        env = {**os.environ, "RUNNER_METAL_STATS": "1"}
+        if inject:
+            env["RUNNER_METAL_INJECT_FAILURE"] = inject
+        srv = subprocess.Popen(
+            [str(RUNNER), "-m", str(model), "--serve", "--port", str(port), "--parallel", "1",
+             "-c", "512", "--tray", "off", "--gpu", gpu],
+            stdout=subprocess.DEVNULL, stderr=open(log, "w"), env=env)
+
+        def post(path, payload):
+            req = urllib.request.Request(f"http://127.0.0.1:{port}{path}",
+                                         json.dumps(payload).encode(),
+                                         {"Content-Type": "application/json"})
+            return json.loads(urllib.request.urlopen(req, timeout=120).read())
+        try:
+            for _ in range(100):
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1)
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            post("/v1/completions", {"prompt": B, "max_tokens": 1, "temperature": 0})
+            post("/v1/completions", {"prompt": A, "max_tokens": 2, "temperature": 0})
+            before = log.read_text(errors="replace").count("metal: native prompt batch")
+            r = post("/v1/completions", {"prompt": B + Q, "max_tokens": 6,
+                                         "temperature": 0, "logprobs": 2})
+        finally:
+            srv.terminate()
+            srv.wait(timeout=30)
+        assert r["runner_telemetry"]["prompt_reuse"] == "prefix_cache", r["runner_telemetry"]
+        return r["choices"][0]["logprobs"]["token_logprobs"], before, log.read_text(errors="replace")
+
+    cpu, _, _ = session("off")
+    clean, forwards_before_the_fork, _ = session("auto")
+    assert forwards_before_the_fork > 0
+    assert clean == pytest.approx(cpu, abs=5e-6)
+    failed, _, log = session("auto", inject=str(forwards_before_the_fork + 1))
+    assert "falling back to CPU" in log, log[-1200:]
+    assert "rebuilding the recurrent state" in log, log[-1200:]
+    assert failed == pytest.approx(cpu, abs=5e-6)

@@ -1802,6 +1802,286 @@ static void test_atem_stream_demux_is_boundary_independent(void) {
     log_free(&l);
 }
 
+// R6.68.71: a value may spell the tag that closes its block. The grammar
+// admits it (a raw value ends at its own delimiter, `</atem:parameter>` or
+// `<|"|>`), so the reader must find the block's end by its structure, as the
+// Qwen and Nemotron readers do. Both readers ended the block at the first
+// closing tag, inside the value, and dropped the call with a fault.
+static void test_a_value_may_spell_its_blocks_closing_tag(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"write\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"text\":{\"type\":\"string\"},\"n\":{\"type\":\"integer\"}},"
+        "\"required\":[\"text\"]}}}]");
+    char err[192];
+    tool_envelope e = {0};
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    e.tools = tools;
+
+    e.proto = TP_ATEM;
+    snode *root = schema_compile_atem_turn(tools, false, NULL, NULL,
+                                           ATEM_TURN_DIRECT, err, sizeof err);
+    assert(root);
+    const char *muse =
+        " to=write<|message|><atem:function_calls>\n<atem:invoke name=\"write\">\n"
+        "<atem:parameter name=\"text\">close with </atem:invoke> here</atem:parameter>\n"
+        "<atem:parameter name=\"n\">2</atem:parameter>\n"
+        "</atem:invoke>\n</atem:function_calls>";
+    assert(accepts(root, muse));
+    schema_free(root);
+    for (size_t step = 1; step <= strlen(muse); step++) {
+        demux_log l;
+        demux_step(&e, muse, step, &l);
+        assert(l.begins == 1 && l.ends == 1 && !strcmp(l.name, "write"));
+        assert(!strcmp(l.args.s, "{\"text\":\"close with </atem:invoke> here\",\"n\":2}"));
+        log_free(&l);
+    }
+    // an invoke the model never closed is still half a call, not a call
+    {
+        demux_log l = {0};
+        tool_stream_sink sink = { &l, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream s;
+        tool_stream_init(&s, &e, &sink);
+        const char *open = " to=write<|message|><atem:function_calls>\n<atem:invoke name=\"write\">\n"
+                           "<atem:parameter name=\"text\">a </atem:invoke> b";
+        assert(tool_stream_feed(&s, open, (int)strlen(open)) == 0);
+        assert(tool_stream_finish(&s) == -1 && l.begins == 0);
+        tool_stream_free(&s);
+        log_free(&l);
+    }
+
+    e.proto = TP_GEMMA4;
+    root = schema_compile_gemma4_turn(tools, false, NULL, NULL, false, false, err, sizeof err);
+    assert(root);
+    const char *g4 =
+        "<|tool_call>call:write{n:2,text:<|\"|>the block ends with <tool_call|> always<|\"|>}<tool_call|>"
+        "<|tool_call>call:write{text:<|\"|>second<|\"|>}<tool_call|>";
+    assert(accepts(root, "<|tool_call>call:write{n:2,text:<|\"|>the block ends with <tool_call|> always<|\"|>}<tool_call|>"));
+    schema_free(root);
+    for (size_t step = 1; step <= strlen(g4); step++) {
+        demux_log l;
+        demux_step(&e, g4, step, &l);
+        assert(l.begins == 2 && l.ends == 2);
+        assert(!strcmp(l.args.s, "{\"n\":2,\"text\":\"the block ends with <tool_call|> always\"}"
+                                 "{\"text\":\"second\"}"));
+        log_free(&l);
+    }
+
+    // The function XML of an auto turn is parsed, never constrained, and it
+    // streams: the block went out of the held bytes at the first
+    // `</tool_call>`, which here arrives inside the value, before the
+    // parameter has closed. The buffered turn read the same bytes as a call.
+    e.proto = TP_QWEN_XML;
+    e.parse_only = true;
+    e.max_calls = TOOL_STREAM_MAX_CALLS;
+    const char *xml =
+        "I will write it.\n\n<tool_call>\n<function=write>\n<parameter=text>\n"
+        "a call ends with </tool_call> and\n</function> closes the function\n</parameter>\n"
+        "<parameter=n>\n2\n</parameter>\n</function>\n</tool_call>";
+    for (size_t step = 1; step <= strlen(xml); step++) {
+        demux_log l;
+        demux_step(&e, xml, step, &l);
+        assert(l.begins == 1 && l.ends == 1 && !strcmp(l.name, "write"));
+        assert(!strcmp(l.args.s, "{\"text\":\"a call ends with </tool_call> and\\n"
+                                 "</function> closes the function\",\"n\":2}"));
+        assert(!strcmp(l.content.s, "I will write it.\n\n"));
+        log_free(&l);
+    }
+    tool_envelope_free(&e);
+    jv_free(tools);
+}
+
+// R6.68.72: a tool name or a parameter key is the caller's text, written into
+// the family's call syntax. Where the syntax cannot carry it, the grammar
+// made the model write a call its own reader then refused, for every call of
+// that tool. A name inside a JSON string is escaped; a name or key the syntax
+// has no spelling for is refused when the grammar is compiled, which sends
+// the request to the generic envelope where the family has that fallback.
+static int map_calls(int proto, jv *tools, const char *doc, sbuf *tc) {
+    char err[192];
+    tool_envelope e = {0};
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    e.proto = proto;
+    e.tools = tools;
+    sbuf content = {0};
+    int rc = tool_envelope_map(&e, doc, strlen(doc), &content, tc);
+    free(content.s);
+    tool_envelope_free(&e);
+    return rc;
+}
+
+static void test_names_and_keys_the_call_syntax_cannot_carry(void) {
+    char err[256];
+    // a name with a quote, in the JSON families: written escaped, read back
+    jv *quoted = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"say \\\"hi\\\"\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{}}}}]");
+    static const char WANT[] = "\"name\":\"say \\\"hi\\\"\"";
+    snode *root = schema_compile_qwen_turn(quoted, false, NULL, NULL, false, false, err, sizeof err);
+    assert(root);
+    const char *raw = "<tool_call>\n{\"name\": \"say \"hi\"\", \"arguments\": {}}\n</tool_call>";
+    const char *esc = "<tool_call>\n{\"name\": \"say \\\"hi\\\"\", \"arguments\": {}}\n</tool_call>";
+    assert(!feeds(root, raw) && accepts(root, esc));
+    schema_free(root);
+    sbuf tc = {0};
+    assert(map_calls(TP_QWEN, quoted, esc, &tc) == 1 && strstr(tc.s, WANT));
+    free(tc.s);
+
+    root = schema_compile_nemotron_turn(quoted, NULL, false, err, sizeof err);
+    assert(root);
+    esc = "<TOOLCALL>[{\"name\": \"say \\\"hi\\\"\", \"arguments\": {}}]</TOOLCALL>";
+    assert(accepts(root, esc));
+    assert(!feeds(root, "<TOOLCALL>[{\"name\": \"say \"hi\"\", \"arguments\": {}}]</TOOLCALL>"));
+    schema_free(root);
+    tc = (sbuf){0};
+    assert(map_calls(TP_NEMOTRON, quoted, esc, &tc) == 1 && strstr(tc.s, WANT));
+    free(tc.s);
+    jv_free(quoted);
+
+    // the [SYSTEM_PROMPT] form writes the name bare before [ARGS]: a space
+    // in it is read back, a bracket has no spelling and is refused by name
+    jv *spaced = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"get weather\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{}}}}]");
+    root = schema_compile_msys_turn(spaced, false, NULL, NULL, false, err, sizeof err);
+    assert(root);
+    assert(accepts(root, "[TOOL_CALLS]get weather[ARGS]{}"));
+    schema_free(root);
+    tc = (sbuf){0};
+    assert(map_calls(TP_MISTRAL_SYS, spaced, "[TOOL_CALLS]get weather[ARGS]{}", &tc) == 1);
+    assert(strstr(tc.s, "\"name\":\"get weather\""));
+    free(tc.s);
+    jv_free(spaced);
+    jv *bracket = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"a[b\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{}}}}]");
+    assert(!schema_compile_msys_turn(bracket, false, NULL, NULL, false, err, sizeof err));
+    assert(strstr(err, "a[b"));
+    jv_free(bracket);
+
+    // a key the bare-key and attribute syntaxes cannot carry: the native
+    // grammar is refused, naming the key
+    jv *colon = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"card\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"og:image\":{\"type\":\"string\"}}}}}]");
+    assert(!schema_gemma4_constrainable(colon, err, sizeof err) && strstr(err, "og:image"));
+    // the other families carry that key
+    assert(schema_atem_constrainable(colon, err, sizeof err));
+    assert(schema_qwen_xml_constrainable(colon, NULL, false, err, sizeof err));
+    jv_free(colon);
+    jv *brace = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"a{b\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{}}}}]");
+    assert(!schema_gemma4_constrainable(brace, err, sizeof err) && strstr(err, "a{b"));
+    jv_free(brace);
+    jv *attr = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"card\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"a\\\"b\":{\"type\":\"string\"}}}}}]");
+    assert(!schema_atem_constrainable(attr, err, sizeof err) && strstr(err, "a\"b"));
+    jv_free(attr);
+    jv *angle = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"card\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"a>b\":{\"type\":\"string\"}}}}}]");
+    assert(!schema_qwen_xml_constrainable(angle, NULL, false, err, sizeof err) && strstr(err, "a>b"));
+    jv_free(angle);
+    jv *quote_name = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"say \\\"hi\\\"\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{}}}}]");
+    assert(!schema_atem_constrainable(quote_name, err, sizeof err) && strstr(err, "say \"hi\""));
+    jv_free(quote_name);
+}
+
+// R6.68.73: `arguments` is a JSON document, which a client parses. The two
+// readers of an unconstrained turn handed out what the model wrote: gemma4's
+// copied any run of digits, signs and points as a number, the generic one
+// any brace-matched text. A block whose arguments are not JSON is not a
+// call, and its bytes stay content.
+static void test_unconstrained_arguments_are_json_or_not_a_call(void) {
+    static const struct { int tmpl; const char *doc; const char *args; } cases[] = {
+        { TMPL_GEMMA4, "<|tool_call>call:f{a:0.5,b:-1e3}<tool_call|>", "{\\\"a\\\":0.5,\\\"b\\\":-1e3}" },
+        { TMPL_GEMMA4, "<|tool_call>call:f{a:.5}<tool_call|>", NULL },
+        { TMPL_GEMMA4, "<|tool_call>call:f{a:1.}<tool_call|>", NULL },
+        { TMPL_GEMMA4, "<|tool_call>call:f{a:+1}<tool_call|>", NULL },
+        { TMPL_GEMMA4, "<|tool_call>call:f{a:1-2}<tool_call|>", NULL },
+        { TMPL_GEMMA4, "<|tool_call>call:f{a:1,a:2}<tool_call|>", NULL },
+        { TMPL_LLAMA3, "<|tool_call>call:f{\"a\": 1}<tool_call|>", "{\\\"a\\\": 1}" },
+        { TMPL_LLAMA3, "<|tool_call>call:f{'a': 1}<tool_call|>", NULL },
+        { TMPL_LLAMA3, "<|tool_call>call:f{a: 1}<tool_call|>", NULL },
+        { TMPL_LLAMA3, "<|tool_call>call:f{\"a\": 1,}<tool_call|>", NULL },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        sbuf content = {0}, tc = {0};
+        sb_put(&content, cases[i].doc, strlen(cases[i].doc));
+        int n = tool_calls_parse_for(cases[i].tmpl, &content, &tc);
+        if (cases[i].args) {
+            assert(n == 1 && strstr(tc.s, cases[i].args));
+        } else {
+            assert(n == 0 && tc.n == 0);
+            assert(content.n == strlen(cases[i].doc) &&
+                   !memcmp(content.s, cases[i].doc, content.n));
+        }
+        free(content.s); free(tc.s);
+    }
+}
+
+// R6.68.74: the three XML call readers (function/parameter, MiniCPM5's, the arg-key
+// pairs) type a member and finish a call through one function. A parameter
+// written twice is refused by each: only the function/parameter reader
+// checked, and the other two handed a client the same key twice whenever the
+// tool declared no parameters to validate against.
+static void test_xml_readers_refuse_a_parameter_written_twice(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"note\"}},"
+        "{\"type\":\"function\",\"function\":{\"name\":\"add\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"a\":{\"type\":\"integer\"},\"b\":{\"type\":\"integer\"}},\"required\":[\"a\",\"b\"]}}}]");
+    static const struct { int proto; const char *twice, *once, *ordered; } cases[] = {
+        { TP_QWEN_XML,
+          "<tool_call>\n<function=note>\n<parameter=k>\n1\n</parameter>\n<parameter=k>\n2\n</parameter>\n</function>\n</tool_call>",
+          "<tool_call>\n<function=note>\n<parameter=k>\n1\n</parameter>\n</function>\n</tool_call>",
+          "<tool_call>\n<function=add>\n<parameter=b>\n2\n</parameter>\n<parameter=a>\n1\n</parameter>\n</function>\n</tool_call>" },
+        { TP_MINICPM_XML,
+          "<function name=\"note\"><param name=\"k\">1</param><param name=\"k\">2</param></function>",
+          "<function name=\"note\"><param name=\"k\">1</param></function>",
+          "<function name=\"add\"><param name=\"b\">2</param><param name=\"a\">1</param></function>" },
+        { TP_ARGKV,
+          "<tool_call>note<arg_key>k</arg_key><arg_value>1</arg_value><arg_key>k</arg_key><arg_value>2</arg_value></tool_call>",
+          "<tool_call>note<arg_key>k</arg_key><arg_value>1</arg_value></tool_call>",
+          "<tool_call>add<arg_key>b</arg_key><arg_value>2</arg_value><arg_key>a</arg_key><arg_value>1</arg_value></tool_call>" },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        char err[192];
+        tool_envelope e = {0};
+        assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+        e.proto = cases[i].proto;
+        e.tools = tools;
+        e.parse_only = true;
+        e.max_calls = TOOL_STREAM_MAX_CALLS;
+        sbuf content = {0}, tc = {0};
+        int n = 0;
+        // twice: no call, and the turn says so
+        assert(tool_stream_map(&e, cases[i].twice, strlen(cases[i].twice), false,
+                               &content, &tc, &n) == -1 && n == 0);
+        free(content.s); free(tc.s);
+        content = (sbuf){0}; tc = (sbuf){0};
+        assert(tool_stream_map(&e, cases[i].once, strlen(cases[i].once), false,
+                               &content, &tc, &n) == 0 && n == 1);
+        assert(strstr(tc.s, "\"arguments\":\"{\\\"k\\\":1}\""));
+        free(content.s); free(tc.s);
+        // members come out in the declared order, whatever order they came in
+        content = (sbuf){0}; tc = (sbuf){0};
+        assert(tool_stream_map(&e, cases[i].ordered, strlen(cases[i].ordered), false,
+                               &content, &tc, &n) == 0 && n == 1);
+        assert(strstr(tc.s, "\"arguments\":\"{\\\"a\\\":1,\\\"b\\\":2}\""));
+        free(content.s); free(tc.s);
+        tool_envelope_free(&e);
+    }
+    jv_free(tools);
+}
+
 static void test_muse_schema_payload_stream_hides_recipient_header(void) {
     tool_envelope e = {.proto = TP_MUSE_PLAIN};
     const char *doc = " to=user<|message|>{\"summary\":\"ok\"}";
@@ -4337,6 +4617,10 @@ int main(void) {
     test_empty_turn_finishes_cleanly();
     test_stream_demux_is_boundary_independent();
     test_atem_stream_demux_is_boundary_independent();
+    test_a_value_may_spell_its_blocks_closing_tag();
+    test_names_and_keys_the_call_syntax_cannot_carry();
+    test_unconstrained_arguments_are_json_or_not_a_call();
+    test_xml_readers_refuse_a_parameter_written_twice();
     test_muse_schema_payload_stream_hides_recipient_header();
     test_stream_demux_holds_back_an_undecided_prefix();
     test_malformed_tool_declarations_are_rejected();

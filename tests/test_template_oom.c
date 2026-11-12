@@ -134,8 +134,65 @@ static void test_render_never_formats_a_failed_buffer(void) {
     }
 }
 
+// The contract in full, over every family the build knows: with any one
+// allocation failing, the render either reports the failure (SIZE_MAX) or
+// returns the prompt it returns when nothing fails, byte for byte. A shorter
+// prompt that reads fine (the tool declarations gone, a system text dropped)
+// is a different question put to the model under a 200.
+static void test_a_failed_allocation_is_reported_or_changes_nothing(void) {
+    static char out[32768], want[32768];
+    static const chat_msg WITH_CALLS[] = {
+        { .role = "system",    .content = "You are terse. Reasoning effort: high." },
+        { .role = "system",    .content = "Second system text." },
+        { .role = "user",      .content = "weather in Oslo?" },
+        { .role = "assistant", .content = "<think>\nlook it up\n</think>\n\nchecking" },
+        { .role = "user",      .content = "and tomorrow?" },
+    };
+    int bad = 0;
+    for (size_t f = 0; f < sizeof(TEMPLATE_NAMES) / sizeof(*TEMPLATE_NAMES); f++) {
+        int tmpl = TEMPLATE_NAMES[f].tmpl;
+        for (int with_tools = 0; with_tools < 2; with_tools++) {
+            fail_at = -1;
+            jv *tools = with_tools ? json_parse(TOOLS_SRC, strlen(TOOLS_SRC)) : NULL;
+            // the families that take one leading system turn get one
+            char role_err[512];
+            bool one_sys = !template_roles_valid(tmpl, (const char *const[]){ "system", "system" },
+                                                 2, false, role_err, sizeof role_err) ||
+                           tmpl == TMPL_MISTRAL_SYS;
+            const chat_msg *msgs = one_sys ? MSGS : WITH_CALLS;
+            int n = one_sys ? N_MSGS : (int)(sizeof WITH_CALLS / sizeof *WITH_CALLS);
+            alloc_calls = 0;
+            size_t clean = render_messages_with_tools(tmpl, msgs, n, true, THINK_DEFAULT,
+                                                      tools, want, sizeof want);
+            long total = alloc_calls;
+            assert(clean != SIZE_MAX && clean < sizeof want);
+            for (long k = 0; k < total; k++) {
+                fail_at = k;
+                alloc_calls = 0;
+                alloc_live = 0;
+                memset(out, 0, sizeof out);
+                size_t got = render_messages_with_tools(tmpl, msgs, n, true, THINK_DEFAULT,
+                                                        tools, out, sizeof out);
+                if (got != SIZE_MAX && (got != clean || strcmp(out, want))) {
+                    fprintf(stderr, "template %s%s: failing allocation %ld of %ld returned "
+                            "a different prompt (%zu bytes for %zu)\n",
+                            template_name(tmpl), with_tools ? " with tools" : "", k, total,
+                            got, clean);
+                    bad++;
+                    break;
+                }
+                assert(alloc_live == 0);
+            }
+            fail_at = -1;
+            jv_free(tools);
+        }
+    }
+    assert(bad == 0);
+}
+
 int main(void) {
     test_render_never_formats_a_failed_buffer();
+    test_a_failed_allocation_is_reported_or_changes_nothing();
     fail_at = -1;
     puts("template allocation-failure tests ok");
     return 0;

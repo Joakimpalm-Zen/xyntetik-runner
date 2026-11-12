@@ -57,6 +57,38 @@ int main(void) {
         if (alive) fprintf(stderr, "%d of %d items and submenus outlived the rebuild\n", alive, n);
         ck(alive == 0, "a rebuild gives back every item and submenu the previous one made");
         ck(menu.itemArray.count > 0, "the second rebuild has its own items");
+        // R6.68.102: a model name longer than a row is cut to fit. Cut inside
+        // a UTF-8 character the label was not a string, the item's title was
+        // nil, and AppKit raised: opening the menu ended the tray. The record
+        // is this process's own (alive), under the test's HOME.
+        {
+            NSString *dir = [NSString stringWithFormat:@"%s/.xyntetik/runner/instances", home];
+            [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                      withIntermediateDirectories:YES attributes:nil error:nil];
+            NSMutableString *name = [NSMutableString stringWithString:@"xx"];
+            for (int i = 0; i < 319; i++) [name appendString:@"\u00e9"];   // 2 + 638 bytes
+            NSString *rec = [NSString stringWithFormat:
+                @"{\"pid\": %d, \"started\": 1, \"mode\": \"serve\", \"port\": 0, "
+                 "\"version\": \"t\", \"models\": [{\"name\": \"%@\", \"path\": \"/m\"}]}\n",
+                (int)getpid(), name];
+            NSString *path = [NSString stringWithFormat:@"%@/%d.json", dir, (int)getpid()];
+            [rec writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            BOOL raised = NO, shown = NO;
+            @try {
+                [del menuNeedsUpdate:menu];
+                for (NSMenuItem *mi in menu.itemArray)
+                    for (NSMenuItem *si in mi.submenu.itemArray)
+                        if ([si.title hasPrefix:@"xx\u00e9"]) shown = YES;
+            } @catch (NSException *e) {
+                raised = YES;
+                fprintf(stderr, "menu rebuild raised %s: %s\n", e.name.UTF8String, e.reason.UTF8String);
+            }
+            ck(!raised, "a model name too long for its row does not raise");
+            ck(shown, "and its row is shown, cut on a whole character");
+            [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+            [[NSFileManager defaultManager] removeItemAtPath:
+                [NSString stringWithFormat:@"%s/.xyntetik", home] error:nil];
+        }
         if (!g_fail) fprintf(stderr, "tray macOS ARC ok: %d items and submenus given back\n", n);
     }
     rmdir(home);

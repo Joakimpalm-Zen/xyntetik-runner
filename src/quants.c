@@ -5661,12 +5661,14 @@ tpool *tpool_create(int n_threads) {
     if (pthread_mutex_init(&tp->mu, NULL) != 0) { pthread_mutex_destroy(&tp->run_mu); free(tp); return NULL; }
     if (pthread_cond_init(&tp->cv_work, NULL) != 0) {
         pthread_mutex_destroy(&tp->mu);
+        pthread_mutex_destroy(&tp->run_mu);
         free(tp);
         return NULL;
     }
     if (pthread_cond_init(&tp->cv_done, NULL) != 0) {
         pthread_cond_destroy(&tp->cv_work);
         pthread_mutex_destroy(&tp->mu);
+        pthread_mutex_destroy(&tp->run_mu);
         free(tp);
         return NULL;
     }
@@ -5692,6 +5694,7 @@ fail:
     pthread_cond_destroy(&tp->cv_done);
     pthread_cond_destroy(&tp->cv_work);
     pthread_mutex_destroy(&tp->mu);
+    pthread_mutex_destroy(&tp->run_mu);
     free(tp);
     return NULL;
 }

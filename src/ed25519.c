@@ -559,7 +559,21 @@ bool ed25519_sign(uint8_t sig[64], const void *m, size_t n, const uint8_t sk[64]
     return true;
 }
 
+// S < L, the group order (little-endian, most significant byte first).
+// Public values: no need for constant time.
+static bool scalar_canonical(const u8 *s) {
+    for (int i = 31; i >= 0; i--) {
+        if (s[i] < L[i]) return true;
+        if (s[i] > L[i]) return false;
+    }
+    return false;   // S == L
+}
+
 bool ed25519_verify(const uint8_t sig[64], const void *m, size_t n, const uint8_t pk[32]) {
+    // RFC 8032 5.1.7: S in [0, L). TweetNaCl's open does not check it, and
+    // S + L verifies as S does, so a signature had a second form anyone
+    // could write (R6.68.98).
+    if (!scalar_canonical(sig + 32)) return false;
     u8 *sm = malloc(n + 64), *mm = malloc(n + 64);
     bool ok = false;
     if (sm && mm) {

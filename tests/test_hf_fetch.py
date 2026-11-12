@@ -24,6 +24,9 @@ import json, os, shutil, sys
 args = sys.argv[1:]
 with open(os.environ["FAKE_HUB_LOG"], "a") as log:
     log.write(json.dumps(args) + "\n")
+if "-K" in args and args[args.index("-K") + 1] == "-":
+    with open(os.environ["FAKE_HUB_LOG"] + ".stdin", "a") as log:
+        log.write(json.dumps(sys.stdin.read()) + "\n")
 out = args[args.index("-o") + 1]
 url = args[-1]
 hub = os.environ["FAKE_HUB_DIR"]
@@ -33,7 +36,8 @@ if "/api/models/" in url:
     shutil.copy(os.path.join(hub, "files.json"), out)
     sys.exit(0)
 if "/resolve/main/" in url:
-    name = url.split("/resolve/main/", 1)[1]
+    import urllib.parse
+    name = urllib.parse.unquote(url.split("/resolve/main/", 1)[1])
     src = os.path.join(hub, name)
     if not os.path.exists(src):
         sys.exit(22)
@@ -171,12 +175,38 @@ def test_repo_alone_with_several_files_asks_for_a_tag(runner_bin, hub):
     assert resolve_calls(hub["log"]) == []
 
 
-def test_token_is_sent_as_a_bearer_header(runner_bin, hub):
-    env = dict(hub["env"], HF_TOKEN="hf_test_token")
+def test_token_is_sent_as_a_bearer_header_and_never_as_an_argument(runner_bin, hub):
+    """HF_TOKEN reaches curl as a config line on its standard input (-K -).
+    It was an argument (-H "Authorization: Bearer <token>"), and a program's
+    arguments are in the process list for every user of the machine to read
+    while a download runs."""
+    token = 'hf_test"to\\ken'
+    env = dict(hub["env"], HF_TOKEN=token)
     r = run(runner_bin, env, "-hf", "fake/repo:Q8_0", "-p", "hi", "-n", "2", "--temp", "0")
     assert r.returncode == 0, r.stderr
+    made = calls(hub["log"])
+    assert made
+    for c in made:
+        assert not any("hf_test" in a or "Bearer" in a for a in c), c
+        assert c[c.index("-K") + 1] == "-"
+    fed = [json.loads(line) for line in open(str(hub["log"]) + ".stdin")]
+    assert len(fed) == len(made)
+    # one curl config line; the token escaped as a config string
+    assert set(fed) == {'header = "Authorization: Bearer hf_test\\"to\\\\ken"\n'}, fed
+
+
+def test_a_token_with_a_control_character_is_refused(runner_bin, hub):
+    env = dict(hub["env"], HF_TOKEN="hf_a\nheader = \"X: y\"")
+    r = run(runner_bin, env, "-hf", "fake/repo:Q8_0", "-p", "hi", "-n", "2", "--temp", "0")
+    assert r.returncode != 0 and "HF_TOKEN is not a token" in r.stderr, r.stderr
+    assert not calls(hub["log"])
+
+
+def test_no_token_leaves_curl_its_own_arguments(runner_bin, hub):
+    r = run(runner_bin, hub["env"], "-hf", "fake/repo:Q8_0", "-p", "hi", "-n", "2", "--temp", "0")
+    assert r.returncode == 0, r.stderr
     for c in calls(hub["log"]):
-        assert "-H" in c and c[c.index("-H") + 1] == "Authorization: Bearer hf_test_token"
+        assert "-K" not in c and "-H" not in c, c
 
 
 def test_flag_argument_rules(runner_bin, hub, fixture_model):
@@ -311,3 +341,23 @@ def test_a_file_in_a_repository_folder_is_fetched_by_its_path(runner_bin, hub):
     # the folder's other Q8_0 file is a second match for the short tag, so it is named, not guessed
     r = run(runner_bin, hub["env"], "-hf", "fake/repo:Q8_0", "-p", "hi", "-n", "2")
     assert r.returncode != 0 and "merged-Q8_0.gguf" in r.stderr, r.stderr
+
+
+def test_a_file_name_with_url_characters_is_fetched(runner_bin, hub):
+    """A repository file name is put into the transfer URL, and a name is not
+    a URL: curl refuses one with a space outright (exit 3), and '#' or '?'
+    cut the path short. Each byte outside the unreserved set is percent
+    encoded; '/' stays the folder separator."""
+    sub = hub["dir"] / "my folder"
+    sub.mkdir()
+    name = "my folder/my model #2 (50%)?-Q8_0.gguf"
+    model = hub["dir"] / name
+    model.write_bytes((hub["dir"] / "model-Q8_0.gguf").read_bytes())
+    (hub["dir"] / "files.json").write_text(json.dumps({"siblings": [
+        {"rfilename": name, "size": model.stat().st_size,
+         "lfs": {"sha256": sha256(model), "size": model.stat().st_size}}]}))
+    r = run(runner_bin, hub["env"], "--pull", "fake/repo:Q8_0")
+    assert r.returncode == 0, r.stderr
+    assert [c[-1] for c in resolve_calls(hub["log"])] == [
+        "https://huggingface.co/fake/repo/resolve/main/"
+        "my%20folder/my%20model%20%232%20%2850%25%29%3F-Q8_0.gguf"]

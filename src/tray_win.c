@@ -1,4 +1,4 @@
-// Windows tray backend: Shell_NotifyIcon + a hidden message-only window.
+// Windows tray backend: Shell_NotifyIcon + a hidden window.
 // The runner stays a console-subsystem binary (no -mwindows — that would
 // break every CLI mode); when launched with --tray from Explorer the
 // console is released with FreeConsole so no black window lingers.
@@ -240,7 +240,42 @@ static void pick_model(void) {
     tray_menu_act(TRAY_ACT_PICK_MODEL, 0, ok ? picked : NULL);
 }
 
+// Explorer announces a new taskbar by broadcasting the registered
+// "TaskbarCreated" message: it restarted (a crash, an update, a sign-in that
+// started the shell after the tray), every notification icon is gone, and
+// each program adds its own again. Broadcasts go to top-level windows only,
+// so the tray's window is an ordinary one that is never shown, not a
+// message-only one: with that the icon was gone for good, the tray still
+// running and a new one refused as a second tray (R6.68.96).
+static UINT g_taskbar_created;
+static int g_icon_adds;   // times the icon was handed to the shell
+
+static void add_icon(void) {
+    HICON ic = grid_icon(tray_icon());
+    g_nid.hIcon = ic;
+    Shell_NotifyIconA(NIM_ADD, &g_nid);   // the shell keeps its own copy
+    if (ic) DestroyIcon(ic);
+    g_icon_adds++;
+}
+
+static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l);
+
+// The tray's window: top-level, zero-sized, never shown.
+static HWND tray_window(HINSTANCE inst) {
+    WNDCLASSA wc = { .lpfnWndProc = wndproc,
+                     .hInstance = inst,
+                     .lpszClassName = "XyntetikTrayWnd" };
+    RegisterClassA(&wc);
+    g_taskbar_created = RegisterWindowMessageA("TaskbarCreated");
+    return CreateWindowA(wc.lpszClassName, "xyntetik-tray", 0, 0, 0, 0, 0,
+                         NULL, NULL, inst, NULL);
+}
+
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
+    if (g_taskbar_created && msg == g_taskbar_created) {
+        add_icon();
+        return 0;
+    }
     switch (msg) {
     case WM_TRAY_CALLBACK:
         if (LOWORD(l) == WM_RBUTTONUP || LOWORD(l) == WM_LBUTTONUP) {
@@ -359,12 +394,7 @@ int tray_platform_run(void) {
         ? (set_ctx_fn)(void *)GetProcAddress(user32, "SetProcessDpiAwarenessContext") : NULL;
     if (set_ctx) set_ctx((HANDLE)-4);   // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 
-    WNDCLASSA wc = { .lpfnWndProc = wndproc,
-                     .hInstance = GetModuleHandleA(NULL),
-                     .lpszClassName = "XyntetikTrayWnd" };
-    RegisterClassA(&wc);
-    g_hwnd = CreateWindowA(wc.lpszClassName, "xyntetik-tray", 0, 0, 0, 0, 0,
-                           HWND_MESSAGE, NULL, wc.hInstance, NULL);
+    g_hwnd = tray_window(GetModuleHandleA(NULL));
     if (!g_hwnd) return 1;
 
     memset(&g_nid, 0, sizeof g_nid);
@@ -373,9 +403,8 @@ int tray_platform_run(void) {
     g_nid.uID = TRAY_ICON_ID;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAY_CALLBACK;
-    g_nid.hIcon = grid_icon(tray_icon());
     snprintf(g_nid.szTip, sizeof g_nid.szTip, "xyntetik-runner");
-    Shell_NotifyIconA(NIM_ADD, &g_nid);
+    add_icon();
 
     SetTimer(g_hwnd, 1, 5000, NULL);  // badge refresh while menu is closed
 
