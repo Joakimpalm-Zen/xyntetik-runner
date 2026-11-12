@@ -109,6 +109,24 @@ def test_a_changed_or_missing_file_fails_the_check(runner_bin, signed, victim,
     assert c.returncode == 2 and b"missing" in c.stdout, c.stdout
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="no endless device file to link to")
+@pytest.mark.parametrize("victim", ["model.sig", "receipt.json"])
+def test_a_listed_file_that_is_a_device_does_not_hang_the_check(runner_bin, signed, victim,
+                                                                 tmp_path):
+    """A bundle is a folder someone else hands over, and the check hashes
+    the files its manifest lists. A listed name that was a link to /dev/zero
+    was hashed with no end. The check reads regular files only."""
+    out = tmp_path / "b"
+    assert _run(runner_bin, "--export-bundle", signed["rec"], "--bundle-out", out,
+                "--model-sig", signed["sig"], "--model-pubkey",
+                signed["pub"]).returncode == 0
+    (out / victim).unlink()
+    (out / victim).symlink_to("/dev/zero")
+    c = subprocess.run([str(runner_bin), "--check-bundle", str(out)], cwd=ROOT,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    assert c.returncode == 2 and victim.encode() in c.stdout, c.stdout
+
+
 def test_a_signed_manifest_pins_its_signer(runner_bin, signed, tmp_path):
     out = tmp_path / "b"
     p = _run(runner_bin, "--export-bundle", signed["rec"], "--bundle-out", out,

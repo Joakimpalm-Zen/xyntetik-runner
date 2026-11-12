@@ -265,6 +265,15 @@ bool envelope_file_sha256(const char *path, char hex[65]) {
     return true;
 }
 
+bool record_regular_file(const char *path) {
+    plat_stat_t st;
+    return plat_stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+bool envelope_cited_sha256(const char *path, char hex[65]) {
+    return record_regular_file(path) && envelope_file_sha256(path, hex);
+}
+
 void envelope_data_sha256_raw(const void *data, size_t n, uint8_t out[32]) {
     sha256_ctx c;
     sha256_init(&c);
