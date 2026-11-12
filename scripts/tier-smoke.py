@@ -111,13 +111,31 @@ def rel(path):
     return p if r.startswith("..") else r.replace(os.sep, "/")
 
 
-def git_commit():
-    try:
-        r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
-                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        return r.stdout.strip() or None if r.returncode == 0 else None
-    except OSError:
-        return None
+_WARNED = set()
+
+
+def build_commit(build):
+    """The commit the serving binary was built from, as the binary states it
+    (GET /v1/runner/provenance's build.commit, stamped at build time, R6.67),
+    and None with the reason when it names none: a binary that reports no
+    commit (older than the stamp, or built outside a git tree), or one built
+    from a tree whose tracked files differed from that commit. Never the HEAD
+    of the checkout running this script: a binary built in another worktree
+    or on a branch pinned a commit that never produced its bytes (the
+    mellum2.1 q5_k_s CUDA pin of 2026-11-04). The reason is said once a run."""
+    c = (build or {}).get("commit")
+    why = None
+    if not c:
+        why = "the --runner binary reports no build commit"
+    elif (build or {}).get("dirty"):
+        why = f"the --runner binary was built from {c[:12]} with tracked changes"
+    if why is None:
+        return c
+    if why not in _WARNED:
+        _WARNED.add(why)
+        print(f"warning: {why}; the pin and the record say commit null rather than "
+              f"name a commit that did not produce it", file=sys.stderr)
+    return None
 
 
 def caps_of(runner):
@@ -229,7 +247,11 @@ def build_of(port, timeout):
             return None
         raise
     b = doc.get("build") or {}
-    return {"binary_sha256": b.get("binary_sha256"), "compiler": b.get("compiler")}
+    out = {"binary_sha256": b.get("binary_sha256"), "compiler": b.get("compiler")}
+    # the source it was built from, where the build stamped it (R6.67)
+    if "commit" in b:
+        out["commit"], out["dirty"] = b.get("commit"), b.get("dirty")
+    return out
 
 
 def retire(row_id, backend, dc, roster_path, manifest, manifest_path, pins_dir, devices):
@@ -350,6 +372,7 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
         seconds = round(time.monotonic() - t0, 2)
         with open(log, "rb") as f:
             server_log = f.read().decode("utf-8", "replace")
+    commit = build_commit(build)
 
     # the backend's own statement that it took the model; a fallback line
     # means it did not, whatever printed before it
@@ -398,7 +421,7 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
                       "pinned": {"date": datetime.datetime.now(datetime.timezone.utc)
                                  .date().isoformat(),
                                  "runner_version": caps["version"],
-                                 "commit": git_commit()}}
+                                 "commit": commit}}
         if build:
             entry[key]["pinned"]["build"] = build
         status = "pinned"
@@ -432,7 +455,7 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
         "device_class": dc,
         "generated_utc": datetime.datetime.now(datetime.timezone.utc)
         .strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "commit": git_commit(),
+        "commit": commit,
         "ran": ran,
         "caps": caps,
         "build": build,

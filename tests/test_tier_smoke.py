@@ -554,3 +554,43 @@ def test_every_committed_pin_spec_carries_its_rows_backend_args():
             want = list(rowargs.get(backend) or [])
             got = list(pin["spec"].get("backend_args") or [])
             assert got == want, f"{row} {cell}: pin spec backend_args {got}, row {want}"
+
+
+# R6.67: a pin's commit is the commit the serving binary was built from, as
+# the binary states it, never the HEAD of the checkout that runs the script
+# (a binary built in another worktree or on a branch pinned a commit that
+# never produced its bytes).
+OTHER = "c" * 40
+
+
+def _pinned(world):
+    man = json.loads(world["manifest"].read_text(encoding="utf-8"))
+    return man["rows"]["toy-q8_0"]["pins"]["macos-arm64-metal/metal"]["pinned"]
+
+
+def test_a_pin_records_the_commit_the_binary_was_built_from(world):
+    env = {"FAKE_RUNNER_COMMIT": OTHER}
+    assert smoke(world, "--backend", "metal", "--pin", env=env).returncode == 0
+    assert _pinned(world)["commit"] == OTHER
+    r = smoke(world, "--backend", "metal", "--record", env=env)
+    assert r.returncode == 0, r.stdout
+    assert result(world)["commit"] == OTHER
+    assert mt.load(world["roster"])["rows"][0]["backends"]["metal"]["commit"] == OTHER
+
+
+@pytest.mark.parametrize("env,why", [
+    ({}, "reports no build commit"),
+    ({"FAKE_RUNNER_NO_PROVENANCE": "1"}, "reports no build commit"),
+    ({"FAKE_RUNNER_COMMIT": OTHER, "FAKE_RUNNER_DIRTY": "1"}, "tracked changes"),
+])
+def test_a_binary_without_a_clean_commit_pins_none_and_says_so(world, env, why):
+    """No commit (an older or unstamped binary, or a build from a tree with
+    tracked changes): the pin and the record say null, never the checkout's
+    HEAD, and the run says why, once."""
+    p = smoke(world, "--backend", "metal", "--pin", env=env)
+    assert p.returncode == 0, p.stdout
+    assert _pinned(world)["commit"] is None
+    assert p.stdout.count(why) == 1, p.stdout   # stderr is merged into stdout
+    r = smoke(world, "--backend", "metal", "--record", env=env)
+    assert r.returncode == 0, r.stdout
+    assert result(world)["commit"] is None
