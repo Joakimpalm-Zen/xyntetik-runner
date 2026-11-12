@@ -1137,8 +1137,13 @@ bool gpu_quant_ok(int type) { return gpu_type_ok(type); }
 // Expert tensor types the indirect MoE matvecs (k_moe_mv_*) cover. A type
 // outside this set is not an error — that model keeps the eager per-expert
 // path, exactly as before the device-routing work.
-// experts per token the device router (k_moe_route) holds in local memory
-enum { MOE_ROUTE_MAX = 512 };
+// experts per token the device router (k_moe_route) holds in local memory,
+// and the picks a device route selects (the fixed sel[]/selw[] rows and the
+// selection buffers cuda_alloc_moe sizes). A model past either is refused a
+// device bank (cuda_admit, moe_bank_device_ok, R6.68.67): every route clamps
+// to these, and a clamped route answers among a subset of the experts
+// without a word, the 2026-10-07 defect at the old cap of 256.
+enum { MOE_ROUTE_MAX = 512, MOE_MAX_USED = 256 };
 
 static bool moe_indirect_type_ok(int type) {
     switch (type) {
@@ -1256,6 +1261,11 @@ static bool moe_bank_device_ok(const model_t *m, int l) {
     // host, where model_moe_ffn_cpu routes it with the CPU's moe_route
     // (R3.43a).
     if (ly->is_moe && (!model_moe_router_is_plain_any_norm(m) || ly->exp_probs_b))
+        return false;
+    // more experts or picks than a device route takes: it would route among
+    // a clamped set (R6.68.67)
+    if (ly->is_moe && (ly->n_expert > MOE_ROUTE_MAX || m->n_expert > MOE_ROUTE_MAX ||
+                       m->n_expert_used > MOE_MAX_USED))
         return false;
     if (!ly->is_moe || m->n_ff_shexp <= 0) return true;
     if (m->ffn_relu2) return false;
@@ -1514,6 +1524,12 @@ bool gpu_moe_ok(void) {
 // microbatch declines such a model (batch_eligible wants every layer's
 // attention weights), so its sequences decode one at a time.
 bool gpu_removed_sublayers_ok(void) { return true; }
+
+bool gpu_moe_route_caps(int *max_experts, int *max_used) {
+    *max_experts = MOE_ROUTE_MAX;
+    *max_used = MOE_MAX_USED;
+    return true;
+}
 
 // the DeltaNet layers run on the device (gpu_q35_recurrent), adapters too
 bool gpu_qwen35_ok(void) { return true; }
@@ -2358,7 +2374,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
     // reserve above could not be met, hand the last layer back to the CPU
     // so the split is honestly partial rather than internally inconsistent.
     bool gave_back = false;
-    bool full = gpu_plan_full_split(&G, m->n_layer, used, plan_full_extra(m, P),
+    bool full = gpu_plan_full_split(&G, m->n_layer, &used, cost, plan_full_extra(m, P),
                                     vram_budget, &gave_back);
     if (gave_back) {
         fprintf(stderr, "gpu: output weights do not fit alongside the "
@@ -3578,6 +3594,17 @@ static bool cuda_admit(model_t *m) {
     // refuse only when a bank is on the device; --cpu-moe, and its auto fit,
     // which places no bank moe_bank_device_ok refuses, keep these models on
     // the device.
+    // Every device route takes at most MOE_ROUTE_MAX experts and MOE_MAX_USED
+    // picks and clamps past them, so such a router would answer among a
+    // subset of its experts on the device alone (R6.68.67).
+    char route_why[200];
+    if (m->n_expert > 0 && moe_any_on_device(m) &&
+        model_moe_route_why(m->n_expert, m->n_expert_used, MOE_ROUTE_MAX, MOE_MAX_USED,
+                            route_why, sizeof route_why)) {
+        fprintf(stderr, "gpu: %s, running on CPU (--cpu-moe keeps the experts and "
+                "their routing on the host)\n", route_why);
+        return false;
+    }
     if (m->n_expert > 0 && moe_any_on_device(m) && !model_moe_router_is_plain_any_norm(m)) {
         fprintf(stderr, "gpu: this model's MoE router (gating=%d groups=%d "
                 "norm_w=%d scale=%g) has no device kernel, running on CPU "
@@ -4022,7 +4049,7 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
         // the eager fallback (which uses column/slot 0 only)
         int used_c = m->n_expert_used;
         if (used_c < 1) used_c = 1;
-        if (used_c > 256) used_c = 256;
+        if (used_c > MOE_MAX_USED) used_c = MOE_MAX_USED;
         int rows = used_c > g->win ? used_c : g->win;
         size_t gw = (size_t)m->n_ff_exp * (m->moe_gemma ? 2 : 1);
         if (gw < 1) gw = 1;
@@ -6564,7 +6591,6 @@ static bool gpu_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     uint64_t gstride = (uint64_t)nff *
@@ -6738,7 +6764,6 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     if (!enc_router(g, m, ly->ffn_gate_inp, g->xb, xdim, g->moe_logits, n_embd, ne,
@@ -6792,7 +6817,6 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
                                       int l, int tn, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
@@ -6879,7 +6903,6 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
     // (512 experts, eager path because of its IQ2_S/IQ3_S/IQ4_XS expert
     // tensors) among its first 256 experts only -- --score vs the CPU path
     // 444/480, vs llama.cpp 446/480 where the CPU path has 472 (2026-10-07).
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     // A small tile (a speculative verify) routes all its rows in one launch
@@ -7095,7 +7118,6 @@ static bool gpu_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly, int tn,
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     // routing as the fused path does it: the router with each column's
@@ -7375,7 +7397,6 @@ static bool gpu_gemma_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
                                     int l, int tn, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;  // dff = dense shared-FFN size
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
@@ -7435,7 +7456,6 @@ static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int
                               int tn, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;  // dff = dense shared-FFN size
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
@@ -7532,7 +7552,6 @@ static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
                                    int l, int tn, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;

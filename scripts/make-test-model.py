@@ -22,6 +22,7 @@ EXTRA_TAIL = []     # --extra-tail NAME: a 4-float tensor no loader reads, store
 DROP_V = set()      # --drop-v: layers whose attn_v.weight is omitted (V = raw K)  # --alpha-order: tensors stored in name order, not block order
 AGENT_PROFILE = False
 AGENT_FEATURES = ["dense", "json_schema"]
+AGENT_DIGEST = "a" * 64   # --agent-digest writes another, for the loader's refusal
 MTP_LAYERS = 0   # extra trailing blocks declared as NextN/MTP predictor heads
 # Extra USER_DEFINED tokens appended to the vocabulary, in two length classes.
 # The tokenizer sorts its special list by length; two large equal-length runs
@@ -130,6 +131,10 @@ while i < len(args):
         i += 1
         AGENT_PROFILE = True
         AGENT_FEATURES.append(args[i])
+    elif a == "--agent-digest":
+        i += 1
+        AGENT_PROFILE = True
+        AGENT_DIGEST = args[i]
     elif a == "--apertus":
         # ungated MLP + xIELU. "IDENT" makes xIELU the identity
         # (alpha_p=0, alpha_n=0, beta=1) so the FFN is a plain up->down
@@ -1021,7 +1026,7 @@ if AGENT_PROFILE:
         ku("gridcore.agent.protocol_version", 1),
         ku("gridcore.agent.tokenizer_version", 1),
         ks("gridcore.agent.schema_id", "gridcore.agent.action.v1"),
-        ks("gridcore.agent.schema_digest", "a" * 64),
+        ks("gridcore.agent.schema_digest", AGENT_DIGEST),
         kas("gridcore.agent.required_features", AGENT_FEATURES),
     ]
 if SUPPRESS_ALL_BUT_EOS:

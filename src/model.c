@@ -38,9 +38,12 @@
 // (n_head*head_dim, 2*n_ff_exp, batch*width) far inside their type.
 #define MDL_DIM_MAX 1048576   /* 2^20 elements per axis */
 // Routed-expert count ceiling. Mixtral 8, Qwen3-MoE 128, gpt-oss 128, gemma-4
-// 128, Qwen3.8-Flash-Next 512 per block; the per-token selection arrays are
-// sized by expert_used_count, this bounds the per-expert ones.
+// 128, Qwen3.8-Flash-Next 512 per block; this bounds the per-expert arrays.
 #define MOE_EXPERTS_MAX 1024
+// The experts a token picks (expert_used_count): the per-token selection
+// arrays hold this many, and moe_router_ok refuses a router past it for
+// every MoE binder (R6.68.89). Real routers pick 1 to 16.
+#define MOE_USED_MAX 256
 
 // `{arch}.KEY`: the metadata name an architecture's value is read under,
 // spelled into buf and returned. AK(KEY) is the one spelling of it in this
@@ -53,6 +56,28 @@ static const char *meta_key(char *buf, size_t n, const char *arch, const char *k
 }
 #define AK(k) meta_key(key, sizeof key, arch, (k))
 
+// The plan the fit's dry bind runs over (R6.68.45), NULL at every other
+// moment. --info fit reads a header-only handle (gguf_open_header: no tensor
+// has data) and plans it with the load's own binders, the tensor ones too:
+// while this points at that plan they find, type and shape-check every tensor
+// exactly as for a load and read none, and their refusals become the fit's
+// reason. Only fit_plan sets it, around one bind_tensors call that loads
+// nothing, and model_bind_weights refuses to start while it is set.
+static _Thread_local model_t *t_bind_dry;
+
+// Keeps a plan's first refusal, without its "error: " and line end, as the
+// reason the fit reports.
+__attribute__((format(printf, 2, 0)))
+static void plan_keep(model_t *m, const char *fmt, va_list ap) {
+    if (m->plan_why[0]) return;
+    char buf[sizeof m->plan_why + 8];
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    const char *t = strncmp(buf, "error: ", 7) ? buf : buf + 7;
+    size_t n = strlen(t);
+    while (n && (t[n - 1] == '\n' || t[n - 1] == ' ')) n--;
+    snprintf(m->plan_why, sizeof m->plan_why, "%.*s", (int)n, t);
+}
+
 // The plan binders' messages (R6.68.29). On a load they go to stderr as they
 // always did. On a plan made for --info fit (m->plan_only) a refusal is kept,
 // the first one, as the reason the fit reports, and the informational lines a
@@ -62,16 +87,8 @@ __attribute__((format(printf, 2, 3)))
 static void bind_err(model_t *m, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    if (!m->plan_only) {
-        vfprintf(stderr, fmt, ap);
-    } else if (!m->plan_why[0]) {
-        char buf[sizeof m->plan_why + 8];
-        vsnprintf(buf, sizeof buf, fmt, ap);
-        const char *t = strncmp(buf, "error: ", 7) ? buf : buf + 7;
-        size_t n = strlen(t);
-        while (n && (t[n - 1] == '\n' || t[n - 1] == ' ')) n--;
-        snprintf(m->plan_why, sizeof m->plan_why, "%.*s", (int)n, t);
-    }
+    if (!m->plan_only) vfprintf(stderr, fmt, ap);
+    else plan_keep(m, fmt, ap);
     va_end(ap);
 }
 __attribute__((format(printf, 2, 3)))
@@ -80,6 +97,19 @@ static void bind_note(model_t *m, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
+    va_end(ap);
+}
+
+// The tensor helpers' refusals (need_tensor, the shape and type checks,
+// tensor_to_f32, the expert-count and Clef matrix checks), which have no
+// model to hand: to stderr, as bind_err's are on a load, and kept as the
+// fit's reason in the dry bind (R6.68.45).
+__attribute__((format(printf, 1, 2)))
+static void tensor_err(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    if (t_bind_dry) plan_keep(t_bind_dry, fmt, ap);
+    else vfprintf(stderr, fmt, ap);
     va_end(ap);
 }
 
@@ -159,10 +189,20 @@ static float *tensor_to_f32(gguf_tensor *t, int64_t need, bool *ok) {
     rows = n64 / t->ne[0];
     if (rs == 0 || rows > t->nbytes / rs) { *ok = false; return NULL; }
     if (need > 0 && n64 < (uint64_t)need) {
-        fprintf(stderr, "error: tensor %s holds %llu values but this model "
-                "geometry indexes %lld of them\n", t->name,
-                (unsigned long long)n64, (long long)need);
+        tensor_err("error: tensor %s holds %llu values but this model "
+                   "geometry indexes %lld of them\n", t->name,
+                   (unsigned long long)n64, (long long)need);
         *ok = false; return NULL;
+    }
+    // The fit's dry bind (t_bind_dry): every check above is the load's, and
+    // the handle holds no data to convert. One value stands in for the vector,
+    // so the bind's answer (absent, present, refused) is the load's; no binder
+    // reads a converted vector, and model_free_weights releases it with the
+    // plan (R6.68.45).
+    if (t_bind_dry) {
+        float *held = calloc(1, sizeof(float));
+        if (!held) *ok = false;
+        return held;
     }
     int64_t n = (int64_t)n64;
     float *out = malloc(sizeof(float) * (size_t)n);
@@ -183,10 +223,10 @@ static gguf_tensor *need_tensor(gguf_file *g, const char *fmt, int i, bool *ok) 
     char name[128];
     snprintf(name, sizeof(name), fmt, i);
     gguf_tensor *t = gguf_find_tensor(g, name);
-    if (!t) { fprintf(stderr, "error: missing tensor %s\n", name); *ok = false; return NULL; }
+    if (!t) { tensor_err("error: missing tensor %s\n", name); *ok = false; return NULL; }
     if (!ggml_type_supported(t->type)) {
-        fprintf(stderr, "error: tensor %s has unsupported type %d (%s)\n",
-                name, t->type, ggml_type_name(t->type));
+        tensor_err("error: tensor %s has unsupported type %d (%s)\n",
+                   name, t->type, ggml_type_name(t->type));
         *ok = false;
         return NULL;
     }
@@ -203,8 +243,8 @@ static gguf_tensor *need_tensor(gguf_file *g, const char *fmt, int i, bool *ok) 
 // checks below, so the type check belongs with them.
 static bool check_type(const gguf_tensor *t, const char *what, int layer) {
     if (!t || ggml_type_supported(t->type)) return true;
-    fprintf(stderr, "error: tensor %s in blk.%d has unsupported type %d (%s)\n",
-            what, layer, t->type, ggml_type_name(t->type));
+    tensor_err("error: tensor %s in blk.%d has unsupported type %d (%s)\n",
+               what, layer, t->type, ggml_type_name(t->type));
     return false;
 }
 
@@ -219,10 +259,10 @@ static bool check_shape(gguf_tensor *t, int n_in, int n_out,
     if (!t) return true;
     if (!check_type(t, what, layer)) return false;
     if ((int64_t)t->ne[0] != n_in || (int64_t)t->ne[1] < n_out) {
-        fprintf(stderr, "error: tensor %s in blk.%d has shape [%llu,%llu], "
-                "expected [%d,>=%d] for this model geometry\n",
-                what, layer, (unsigned long long)t->ne[0],
-                (unsigned long long)t->ne[1], n_in, n_out);
+        tensor_err("error: tensor %s in blk.%d has shape [%llu,%llu], "
+                   "expected [%d,>=%d] for this model geometry\n",
+                   what, layer, (unsigned long long)t->ne[0],
+                   (unsigned long long)t->ne[1], n_in, n_out);
         return false;
     }
     return true;
@@ -246,11 +286,11 @@ static bool check_shape3(gguf_tensor *t, int ne0, int ne1, int n_expert,
     if (!check_type(t, what, layer)) return false;
     if ((int64_t)t->ne[0] != ne0 || (int64_t)t->ne[1] != ne1 ||
         (int64_t)t->ne[2] != n_expert) {
-        fprintf(stderr, "error: MoE tensor %s in blk.%d has shape "
-                "[%llu,%llu,%llu], expected [%d,%d,%d]\n",
-                what, layer, (unsigned long long)t->ne[0],
-                (unsigned long long)t->ne[1], (unsigned long long)t->ne[2],
-                ne0, ne1, n_expert);
+        tensor_err("error: MoE tensor %s in blk.%d has shape "
+                   "[%llu,%llu,%llu], expected [%d,%d,%d]\n",
+                   what, layer, (unsigned long long)t->ne[0],
+                   (unsigned long long)t->ne[1], (unsigned long long)t->ne[2],
+                   ne0, ne1, n_expert);
         return false;
     }
     return true;
@@ -266,7 +306,8 @@ static gguf_tensor *slice_rows(gguf_tensor *src, gguf_tensor *dst,
     *dst = *src;
     dst->ne[1] = (uint64_t)nrows;
     dst->ne[2] = dst->ne[3] = 1;
-    dst->data  = (uint8_t *)src->data + (size_t)row0 * rs;
+    // a header-only handle (the fit's dry bind) has no data to point into
+    dst->data  = src->data ? (uint8_t *)src->data + (size_t)row0 * rs : NULL;
     dst->nbytes = (uint64_t)nrows * rs;
     return dst;
 }
@@ -283,20 +324,20 @@ static bool declared_layer_experts_ok(gguf_file *g, int layer, int have) {
     gguf_kv *kv = gguf_get(g, AK("expert_count_per_layer"));
     if (!kv) return true;
     if (kv->type != GGUF_T_ARR || kv->arr_type != GGUF_T_U32 || !kv->arr_raw) {
-        fprintf(stderr, "error: %s must be an array of u32\n", key);
+        tensor_err("error: %s must be an array of u32\n", key);
         return false;
     }
     if ((uint64_t)layer >= kv->arr_n) {
-        fprintf(stderr, "error: %s has %llu entries but blk.%d is a MoE layer\n",
-                key, (unsigned long long)kv->arr_n, layer);
+        tensor_err("error: %s has %llu entries but blk.%d is a MoE layer\n",
+                   key, (unsigned long long)kv->arr_n, layer);
         return false;
     }
     uint32_t declared;
     memcpy(&declared, (const uint8_t *)kv->arr_raw + 4u * (uint64_t)layer, 4);
     if ((int)declared != have) {
-        fprintf(stderr, "error: %s declares %u experts for blk.%d but its "
-                "router tensor carries %d; the header and the tensors "
-                "disagree\n", key, declared, layer, have);
+        tensor_err("error: %s declares %u experts for blk.%d but its "
+                   "router tensor carries %d; the header and the tensors "
+                   "disagree\n", key, declared, layer, have);
         return false;
     }
     return true;
@@ -603,10 +644,6 @@ static uint64_t vram_free_now(void *ud) {
     return gpu_mem_info(&f, &t) ? (uint64_t)f : 0;
 }
 
-// Byte cost of one MoE layer's expert half: router, routed expert tensors in
-// either layout, and gemma-4's coupled dense shared branch. Shared by the VRAM
-// estimate and the CUDA fit so the two cannot disagree about what an expert
-// bank costs.
 // Expert-granular prefetch.
 //
 // On a model larger than RAM the engine's cost is not bandwidth and not
@@ -685,6 +722,20 @@ static uint64_t layer_routed_expert_bytes(const layer_t *ly, int n_expert) {
     return wb;
 }
 
+// The trunk's routed expert banks, in either layout (R6.68.53): what a sparse
+// MoE's hot set discounts. One function over a bound model or the fit's
+// dry-bound plan, so the load's hot set and --info fit's cannot differ (the
+// fit matched `_exps.weight` by name, which the legacy split layout of one
+// tensor per expert never matched: it priced such a file as dense).
+static uint64_t model_routed_expert_bytes(const model_t *m) {
+    uint64_t routed = 0;
+    for (int l = 0; m->layers && l < m->n_layer; l++)
+        routed += layer_routed_expert_bytes(&m->layers[l], m->n_expert);
+    return routed;
+}
+
+// Byte cost of one MoE layer's expert half: router, routed expert tensors in
+// either layout, and gemma-4's coupled dense shared branch.
 uint64_t model_layer_expert_bytes(const layer_t *ly, int n_expert) {
     if (!ly->is_moe) return 0;
     uint64_t wb = layer_routed_expert_bytes(ly, n_expert);
@@ -700,31 +751,16 @@ uint64_t model_layer_expert_bytes(const layer_t *ly, int n_expert) {
 // ------------------------------------------------- pre-download fit check
 //
 // "Will this model run on this machine?" answered from a GGUF HEADER, before
-// the weights exist locally. The arithmetic below deliberately re-derives what
-// model_hot_set_bytes() and model_kv_row_bytes() compute, because those take a
-// BOUND model_t -- they need the layer table, which needs the tensors, which
-// is exactly what a header-only file does not have.
+// the weights exist locally. The header holds every tensor's descriptor, so
+// the fit runs the loader's own plan over it (fit_plan: the metadata binders,
+// then the tensor binders dry, R6.68.29/R6.68.45) and charges what that plan
+// lays out: the KV per layer, the routed expert banks (the load's hot-set
+// rule, R6.68.53), the device's per-layer tables.
 //
 // Deliberately NOT in this file's job: fetching anything. The runner does not
 // speak HTTP, and a fit check is not a reason to teach it. `--fit` reads a
 // local path; the README documents the one-line ranged read that produces a
 // header-only file from a URL.
-static uint64_t fit_routed_expert_bytes(const gguf_file *g) {
-    // Header-only, so this matches on NAME rather than the layer table. The
-    // stacked expert banks are the `..._exps.weight` tensors; the router
-    // (ffn_gate_inp) and any shared expert are excluded for the same reason
-    // layer_routed_expert_bytes() excludes them -- every token touches those.
-    uint64_t wb = 0;
-    for (uint64_t i = 0; i < g->n_tensors; i++) {
-        const char *n = g->tensors[i].name;
-        size_t len = strlen(n);
-        const char *suffix = "_exps.weight";
-        size_t sl = strlen(suffix);
-        if (len >= sl && strcmp(n + len - sl, suffix) == 0)
-            wb += g->tensors[i].nbytes;
-    }
-    return wb;
-}
 
 // A metadata string, made safe to PRINT. Values like general.architecture are
 // attacker-chosen bytes of unbounded length, and the first thing a hostile file
@@ -801,8 +837,12 @@ int model_kv_ring_rows(int window, int batch, int n_ctx) {
 // K and V share), so a layer's row is K alone.
 // R6.68.40: kv_formats, the KV formats the trunk's heads take (model_kv_formats,
 // the loader's own rule).
+// R6.68.53: routed, n_expert and n_expert_used, the plan's routed expert banks
+// and expert counts (model_routed_expert_bytes, the load's hot-set rule).
 typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; int trunk; bool v_shared;
-                 unsigned kv_formats; } fit_geom;
+                 unsigned kv_formats; uint64_t routed; int n_expert, n_expert_used;
+                 int ctx_cap, n_ctx_train;
+                 bool moe_host_default; } fit_geom;
 
 // R3.44: the qwen35 family's Gated DeltaNet layers own no KV rows
 // (bind_meta_qwen35) unless RUNNER_KV_RECURRENT_ROWS=1 keeps the layout that
@@ -821,17 +861,29 @@ static bool qwen35_kv_rows_typed(const arch_desc *ad) {
 }
 
 static bool model_plan(model_t *m, gguf_file *g, const model_params *p);
+static bool bind_tensors(model_t *m, gguf_file *g, const model_params *p);
+static int model_ctx_default(int n_ctx_train);
+static bool model_ctx_admit(int cap, const char *arch, int asked, int *n_ctx,
+                            char *why, size_t why_n);
 static void model_free_weights(model_t *m);
 
-// The loader's plan of the header for --info fit: quiet (plan_only), with the
-// first refusal in pm->plan_why. On false it is already released and zeroed
-// but for plan_why, so releasing it again is harmless.
+// The loader's plan of the header for --info fit: its metadata binders
+// (model_plan), then its tensor binders dry (t_bind_dry, R6.68.45): every
+// tensor a load of the trunk would find, type and shape-check, none read.
+// Quiet (plan_only), with the first refusal in pm->plan_why. On false it is
+// already released and zeroed but for plan_why, so releasing it again is
+// harmless.
 static bool fit_plan(gguf_file *g, model_t *pm) {
     memset(pm, 0, sizeof *pm);
     pm->plan_only = true;
     model_params pp;
     memset(&pp, 0, sizeof pp);
-    if (model_plan(pm, g, &pp)) return true;
+    if (model_plan(pm, g, &pp)) {
+        t_bind_dry = pm;
+        bool bound = bind_tensors(pm, g, &pp);
+        t_bind_dry = NULL;
+        if (bound) return true;
+    }
     char why[sizeof pm->plan_why];
     memcpy(why, pm->plan_why, sizeof why);
     model_free_weights(pm);
@@ -894,6 +946,12 @@ static bool fit_geometry(gguf_file *g, int n_layer, bool mtp, fit_geom *o,
     }
     o->kv_formats = model_kv_formats(pm.l_head_dim, pm.n_layer, pm.head_dim);
     o->v_shared = pm.mla_absorb;
+    o->routed = model_routed_expert_bytes(&pm);
+    o->n_expert = pm.n_expert;
+    o->n_expert_used = pm.n_expert_used;
+    o->ctx_cap = pm.ctx_cap;
+    o->n_ctx_train = pm.n_ctx_train;
+    o->moe_host_default = model_moe_router_host_default(&pm);
     model_free_weights(&pm);
     return true;
 }
@@ -926,11 +984,9 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
 
     meta_printable(out->arch, sizeof(out->arch), arch);
     out->n_layer   = (int)gguf_get_u32(g, AK("block_count"), 0);
-    int train_ctx  = (int)gguf_get_u32(g, AK("context_length"), 0);
     out->swa           = gguf_get_u32(g, AK("attention.sliding_window"), 0) > 0;
     out->n_expert      = (int)gguf_get_u32(g, AK("expert_count"), 0);
     out->n_expert_used = (int)gguf_get_u32(g, AK("expert_used_count"), 0);
-    out->train_ctx     = train_ctx;
 
     fit_geom geo;
     if (!fit_geometry(g, out->n_layer, mtp, &geo, out->refused, sizeof out->refused))
@@ -940,9 +996,25 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
     out->n_mtp = blocks - geo.trunk;
     out->mtp = mtp && out->n_mtp > 0;
 
-    // Context: what the caller asked for, else the loader's own default.
-    out->n_ctx = n_ctx_want > 0 ? n_ctx_want
-               : (train_ctx > 0 && train_ctx < 4096 ? train_ctx : 4096);
+    // Context: what the caller asked for, else the loader's own default, both
+    // held to the file's admitted cap as a load holds them (R6.68.55). The
+    // trained context is the plan's (2048 when the header has none, as a load
+    // reads it; the header's 0 put the fit's default at 4096)
+    out->train_ctx = geo.n_ctx_train;
+    out->moe_host_default = geo.moe_host_default;
+    // the device's router caps, as the load applies them (R6.68.67)
+    {
+        int me = 0, mu = 0;
+        if (geo.n_expert > 0 && gpu_moe_route_caps(&me, &mu))
+            model_moe_route_why(geo.n_expert, geo.n_expert_used, me, mu,
+                                out->route_why, sizeof out->route_why);
+    }
+    out->n_ctx = n_ctx_want > 0 ? n_ctx_want : model_ctx_default(geo.n_ctx_train);
+    if (!model_ctx_admit(geo.ctx_cap, out->arch, n_ctx_want, &out->n_ctx,
+                         out->refused, sizeof out->refused)) {
+        free(geo.kv_dim);
+        return false;
+    }
 
     out->weights = gguf_mapped_size(g);
 
@@ -959,11 +1031,12 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
         out->gathered = ple->nbytes;
     uint64_t resident = out->weights - out->gathered;
 
-    uint64_t routed = fit_routed_expert_bytes(g);
-    if (out->n_expert > 0 && out->n_expert_used > 0 &&
-        out->n_expert_used < out->n_expert && routed && routed <= resident) {
+    // the load's hot-set rule over the plan's bound layers (R6.68.53)
+    uint64_t routed = geo.routed;
+    if (geo.n_expert > 0 && geo.n_expert_used > 0 &&
+        geo.n_expert_used < geo.n_expert && routed && routed <= resident) {
         out->hot = resident - routed +
-                   routed * (uint64_t)out->n_expert_used / (uint64_t)out->n_expert;
+                   routed * (uint64_t)geo.n_expert_used / (uint64_t)geo.n_expert;
         out->sparse = true;
     } else {
         out->hot = resident;
@@ -1379,10 +1452,11 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
             // 16k: 39 of 40); mirrored either way, because this must predict
             // the split the loader makes.
             bool gave_back;
-            if (gpu_plan_full_split(&G, f->n_layer, used, full_extra, budget, &gave_back)) {
+            if (gpu_plan_full_split(&G, f->n_layer, &used, cost, full_extra, budget,
+                                    &gave_back)) {
                 used += full_extra; dev_w += full_extra + mtp_w;   // the bound block uploads with a full split
             } else if (gave_back) {
-                used -= cost[G]; dev_w -= lb[G];
+                dev_w -= lb[G];   // its cost has left `used` already
             }
         } else {
             used = 0; dev_w = 0;   // not even the fixed charge fits: all CPU
@@ -1428,9 +1502,7 @@ const char *model_fit_verdict(const model_fit *f) {
 uint64_t model_hot_set_bytes(const model_t *m) {
     if (m->n_expert <= 0 || m->n_expert_used <= 0 ||
         m->n_expert_used >= m->n_expert) return 0;      // dense, or not sparse
-    uint64_t routed = 0;
-    for (int l = 0; l < m->n_layer; l++)
-        routed += layer_routed_expert_bytes(&m->layers[l], m->n_expert);
+    uint64_t routed = model_routed_expert_bytes(m);
     uint64_t mapped = gguf_mapped_size(&m->gf);
     if (!routed || routed > mapped) return 0;   // nothing to discount
     uint64_t hot = routed * (uint64_t)m->n_expert_used / (uint64_t)m->n_expert;
@@ -1763,9 +1835,13 @@ typedef struct model_weights {
     // out of the previous parse.
     uint64_t fsize, fino;
     int64_t  fmtime, fctime;
-    // The only two parameters the bind phase reads. Everything else the load
-    // takes from `p` is consumed after the seam, by the per-instance half, so
-    // two slots may legitimately differ on it and still share these buffers.
+    // The bind phase's parameters two loads of one file may differ in: the
+    // KV formats bind_kv_layout decides and the GPU mode. It also reads
+    // kv_f32, mtp and mtp_path, unkeyed because every load in one process
+    // passes the same ones (the slots, the registry's swaps, the micro-batch
+    // models; a draft is another file): key them before that stops holding.
+    // Everything else the load takes from `p` is consumed after the seam, by
+    // the per-instance half, so two slots may differ on it and still share.
     bool     want_kv_q8;
     bool     want_kv_fp4;
     bool     want_kv_split;
@@ -1974,8 +2050,6 @@ static int weights_lock(model_t *m, uint64_t *hot, uint64_t *cold) {
     return rc;
 }
 
-// The immutable half. Freed by the last holder, or directly by model_free for
-// a load that failed before it could publish.
 // ---------------------------------------------------- what a model owns
 //
 // R6.68.30: the buffers model.c allocates for a model and frees with a plain
@@ -2064,6 +2138,8 @@ static void free_owned(void *base, const size_t *rows, size_t n) {
     }
 }
 
+// The immutable half. Freed by the last holder, or directly by model_free for
+// a load that failed before it could publish.
 static void model_free_weights(model_t *m) {
     // partial load: n_layer is read from GGUF metadata long before m->layers
     // is allocated, so a load that fails in between (unsupported tensor
@@ -2112,27 +2188,31 @@ static void mw_release(model_weights *w) {
 // been given. --gpu off, an explicit --cpu-moe, or RUNNER_CPU_MOE_DEFAULT=0
 // (which runs it on the CPU, the earlier default) take precedence. The copy
 // lives for the call that reads it.
-#ifdef RUNNER_GPU_CUDA
 // Experts whose width varies by layer (layer_t.n_ff_exp, Nemotron 3.5 Bolt)
 static bool moe_widths_vary(const model_t *m) {
-    for (int l = 0; l < m->n_layer; l++)
+    for (int l = 0; m->layers && l < m->n_layer; l++)
         if (m->layers[l].is_moe && m->layers[l].n_ff_exp > 0 &&
             m->layers[l].n_ff_exp != m->n_ff_exp)
             return true;
     return false;
 }
-#endif
+
+bool model_moe_router_host_default(const model_t *m) {
+    // A LatentMoE file (Super, Bolt), or one whose expert widths vary by
+    // layer, is refused by cuda_admit whatever the placement, so it takes
+    // none: the split's line would say what never runs.
+    if (!m->nemotron_h || m->n_expert <= 0 || m->moe_latent != 0 ||
+        moe_widths_vary(m) || model_moe_router_is_plain_any_norm(m))
+        return false;
+    const char *e = getenv("RUNNER_CPU_MOE_DEFAULT");
+    return !(e && !strcmp(e, "0"));
+}
 
 static const model_params *model_default_placement(const model_t *m, const model_params *p) {
 #ifdef RUNNER_GPU_CUDA
     static _Thread_local model_params pd;
-    const char *e = getenv("RUNNER_CPU_MOE_DEFAULT");
-    // A LatentMoE file (Super, Bolt), or one whose expert widths vary by layer,
-    // is refused by cuda_admit whatever the placement, so it takes none: the
-    // split's line would say what never runs.
-    if (p->gpu_mode != GPU_OFF && !p->cpu_moe && m->nemotron_h && m->n_expert > 0 &&
-        m->moe_latent == 0 && !moe_widths_vary(m) &&
-        !model_moe_router_is_plain_any_norm(m) && !(e && !strcmp(e, "0"))) {
+    // the rule --info fit asks too (model_moe_router_host_default, R6.68.78)
+    if (p->gpu_mode != GPU_OFF && !p->cpu_moe && model_moe_router_host_default(m)) {
         pd = *p;
         pd.cpu_moe = true;
         pd.cpu_moe_layers = CPU_MOE_ALL;
@@ -2386,13 +2466,10 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
 
 // ---------------------------------------------------------- hybrid SSM admission
 //
-// The Mamba-2 hybrid families — Granite-4 h-series (`granitehybrid`) and
 // Bind one Nemotron-H block. Each block is EXACTLY ONE of {SSM, attention,
 // MLP} (mutually exclusive), typed off head_count_kv / feed_forward_length,
 // with a single pre-norm (attn_norm) and a single residual add. Fail closed on
-// any missing or mis-dimensioned tensor (the hostile-GGUF discipline). The AK
-// arch-key macro is local to model_bind_weights, so this helper spells the one
-// per-layer array key it needs in full.
+// any missing or mis-dimensioned tensor (the hostile-GGUF discipline).
 static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
     bool ok = true;
     gguf_tensor *an = need_tensor(g, "blk.%d.attn_norm.weight", i, &ok);
@@ -2477,8 +2554,8 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
             l->n_ff_exp = (int)gguf_get_u32_idx(g, efkey, (uint64_t)i,
                                                 (uint32_t)m->n_ff_exp);
             if (l->n_ff_exp <= 0 || l->n_ff_exp > m->n_ff_exp) {
-                fprintf(stderr, "error: blk.%d expert width %d is outside [1, %d]\n",
-                        i, l->n_ff_exp, m->n_ff_exp);
+                bind_err(m, "error: blk.%d expert width %d is outside [1, %d]\n",
+                         i, l->n_ff_exp, m->n_ff_exp);
                 return false;
             }
             l->ffn_gate_inp  = need_tensor(g, "blk.%d.ffn_gate_inp.weight", i, &ok);
@@ -2490,18 +2567,18 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
             // Model metadata remains the upper bound and sizes shared scratch;
             // CUDA separately names and refuses non-uniform layer counts.
             if ((int64_t)l->ffn_gate_inp->ne[0] != m->n_embd) {
-                fprintf(stderr, "error: blk.%d ffn_gate_inp has ne[0]=%lld, "
-                        "expected %d\n", i,
-                        (long long)l->ffn_gate_inp->ne[0], m->n_embd);
+                bind_err(m, "error: blk.%d ffn_gate_inp has ne[0]=%lld, "
+                         "expected %d\n", i,
+                         (long long)l->ffn_gate_inp->ne[0], m->n_embd);
                 return false;
             }
             l->n_expert = (int)l->ffn_gate_inp->ne[1];
             if (!declared_layer_experts_ok(g, i, l->n_expert)) return false;
             if (l->n_expert < m->n_expert_used || l->n_expert > m->n_expert) {
-                fprintf(stderr, "error: blk.%d declares %d experts via "
-                        "ffn_gate_inp, outside [n_expert_used=%d, "
-                        "expert_count=%d]\n", i, l->n_expert,
-                        m->n_expert_used, m->n_expert);
+                bind_err(m, "error: blk.%d declares %d experts via "
+                         "ffn_gate_inp, outside [n_expert_used=%d, "
+                         "expert_count=%d]\n", i, l->n_expert,
+                         m->n_expert_used, m->n_expert);
                 return false;
             }
             // LatentMoE: both projections or neither, at the declared width.
@@ -2512,10 +2589,10 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
             l->ffn_latent_up   = opt_tensor(g, "blk.%d.ffn_latent_up.weight", i);
             if ((m->moe_latent > 0) != (l->ffn_latent_down != NULL) ||
                 (m->moe_latent > 0) != (l->ffn_latent_up != NULL)) {
-                fprintf(stderr, "error: blk.%d has %s ffn_latent_down and %s "
-                        "ffn_latent_up, but moe_latent_size is %d\n", i,
-                        l->ffn_latent_down ? "an" : "no",
-                        l->ffn_latent_up ? "an" : "no", m->moe_latent);
+                bind_err(m, "error: blk.%d has %s ffn_latent_down and %s "
+                         "ffn_latent_up, but moe_latent_size is %d\n", i,
+                         l->ffn_latent_down ? "an" : "no",
+                         l->ffn_latent_up ? "an" : "no", m->moe_latent);
                 return false;
             }
             if (!check_shape(l->ffn_latent_down, m->n_embd, ed, "ffn_latent_down", i) ||
@@ -2563,7 +2640,9 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
 static bool bind_agent_profile(model_t *m, gguf_file *g) {
     // A profile is opt-in metadata: legacy/dense GGUFs remain admitted exactly
     // as before. Once any profile key is present, however, the contract is
-    // atomic and fail-closed. Validate it before path/state/tensor allocation.
+    // atomic and fail-closed. Validated first in the plan (model_plan), so
+    // --info fit refuses what the load refuses, and before the load allocates
+    // its path, state or tensors.
     static const char *const profile_keys[] = {
         "gridcore.agent.protocol_version", "gridcore.agent.tokenizer_version",
         "gridcore.agent.schema_id", "gridcore.agent.schema_digest",
@@ -2583,23 +2662,23 @@ static bool bind_agent_profile(model_t *m, gguf_file *g) {
         if (!profile_integer(pv) || !profile_integer(tv) ||
             !sid || !*sid || !dig || strlen(dig) != 64 ||
             !rf || rf->type != GGUF_T_ARR || rf->arr_type != GGUF_T_STR) {
-            fprintf(stderr, "error: invalid gridcore agent profile metadata\n");
+            bind_err(m, "error: invalid gridcore agent profile metadata\n");
             return false;
         }
         for (int i = 0; i < 64; i++)
             if (!((dig[i] >= '0' && dig[i] <= '9') ||
                   (dig[i] >= 'a' && dig[i] <= 'f'))) {
-                fprintf(stderr, "error: invalid gridcore agent schema digest\n");
+                bind_err(m, "error: invalid gridcore agent schema digest\n");
                 return false;
             }
         if (protocol != 1) {
-            fprintf(stderr, "error: unsupported gridcore agent protocol version %u\n",
-                    protocol);
+            bind_err(m, "error: unsupported gridcore agent protocol version %u\n",
+                     protocol);
             return false;
         }
         if (tokenizer_id != 1) {
-            fprintf(stderr, "error: unsupported gridcore agent tokenizer version %u\n",
-                    tokenizer_id);
+            bind_err(m, "error: unsupported gridcore agent tokenizer version %u\n",
+                     tokenizer_id);
             return false;
         }
         static const char *const features[] = {
@@ -2616,13 +2695,13 @@ static bool bind_agent_profile(model_t *m, gguf_file *g) {
             // verifier this build does not have, which is different from an
             // unrecognized string and must not read as a typo.
             if (!strcmp(want, "mtp")) {
-                fprintf(stderr, "error: this profile requires MTP consumption, "
-                        "which this build does not implement (MTP tensors are "
-                        "admitted as training-only; see docs)\n");
+                bind_err(m, "error: this profile requires MTP consumption, "
+                         "which this build does not implement (MTP tensors are "
+                         "admitted as training-only; see docs)\n");
                 return false;
             }
             if (!known) {
-                fprintf(stderr, "error: unsupported required agent feature '%s'\n", want);
+                bind_err(m, "error: unsupported required agent feature '%s'\n", want);
                 return false;
             }
         }
@@ -2950,20 +3029,6 @@ static bool bind_meta_afmoe(model_t *m, gguf_file *g, const char *arch) {
     return true;
 }
 
-// RecursiveSI flint (FlintForCausalLM; transformers' models/flint and
-// llama.cpp's src/models/flint.cpp, which agree):
-//   * GQA with qwen3-style per-head QK RMSNorms before rope, and gpt-oss's
-//     learned attention sinks (blk.N.attn_sinks, one logit per head that
-//     joins the softmax denominator);
-//   * a sliding window (513) on the layers the boolean pattern marks; rope
-//     (NeoX, 10k) on exactly those layers, the full-attention layers NoPE.
-//     The file carries the two patterns as separate arrays, and they agree
-//     on every flint checkpoint; a file where they differ is refused rather
-//     than roped by one of them;
-//   * leading_dense_block_count dense SiLU blocks, then 256 routed experts,
-//     top-6 by sigmoid score (an optional selection bias), renormalised,
-//     plus an always-on shared expert -- bind_meta_moe's keys drive all of it;
-//   * untied output, no embedding scale.
 // DeepSeek-V2 (deepseek2: the publisher's modeling_deepseek.py and llama.cpp's
 // src/models/deepseek2.cpp), R4.4.5 step b, the CPU path:
 //   * multi-head latent attention: Q per head [q_nope | q_pe] from attn_q (or
@@ -3026,6 +3091,20 @@ static bool bind_meta_deepseek2(model_t *m, gguf_file *g, const char *arch) {
     return true;
 }
 
+// RecursiveSI flint (FlintForCausalLM; transformers' models/flint and
+// llama.cpp's src/models/flint.cpp, which agree):
+//   * GQA with qwen3-style per-head QK RMSNorms before rope, and gpt-oss's
+//     learned attention sinks (blk.N.attn_sinks, one logit per head that
+//     joins the softmax denominator);
+//   * a sliding window (513) on the layers the boolean pattern marks; rope
+//     (NeoX, 10k) on exactly those layers, the full-attention layers NoPE.
+//     The file carries the two patterns as separate arrays, and they agree
+//     on every flint checkpoint; a file where they differ is refused rather
+//     than roped by one of them;
+//   * leading_dense_block_count dense SiLU blocks, then 256 routed experts,
+//     top-6 by sigmoid score (an optional selection bias), renormalised,
+//     plus an always-on shared expert -- bind_meta_moe's keys drive all of it;
+//   * untied output, no embedding scale.
 static bool bind_meta_flint(model_t *m, gguf_file *g, const char *arch) {
     char key[128];
     m->flint        = true;
@@ -3065,7 +3144,6 @@ static bool bind_meta_flint(model_t *m, gguf_file *g, const char *arch) {
     return true;
 }
 
-// Qwen3, dense and sparse: the think tags its responses wrap reasoning in.
 // XHToken Spark 2.5 / 2.6 (spark2_5). From the publisher's modeling_spark.py
 // (identical in X2.5-4B and X2.6-4B) and llama.cpp's src/models/spark2-5.cpp:
 //   * a dense pre-norm transformer: RMSNorm, GQA, no QK norm, no biases;
@@ -3152,6 +3230,7 @@ static bool bind_meta_k2h(model_t *m, gguf_file *g, const char *arch) {
     return true;
 }
 
+// Qwen3, dense and sparse: the think tags its responses wrap reasoning in.
 static bool bind_meta_qwen3(model_t *m, gguf_file *g, const char *arch) {
     // Thinking-tuned Qwen3 (dense and sparse-MoE) responses wrap hidden
     // reasoning before the visible answer; shared CLI/server output
@@ -3328,16 +3407,13 @@ static bool bind_meta_qwen4exp(model_t *m, gguf_file *g, const char *arch) {
     // cells and attends the top indexer.top_k of them. Below top_k cells
     // every cell is kept, so attention is exactly dense there; this
     // admission runs dense and caps the context at top_k until the
-    // indexer is implemented (R4.26.2). Stated at load, refused above.
+    // indexer is implemented (R4.26.2). The cap is recorded here and applied
+    // where the context is decided (model_ctx_admit, R6.68.55): it was
+    // checked here against m->n_ctx, which no load has set yet at bind time,
+    // so it never fired.
     {
         uint32_t topk = gguf_get_u32(g, AK("attention.indexer.top_k"), 0);
-        if (topk > 0 && (uint32_t)m->n_ctx > topk) {
-            bind_err(m, "error: qwen4exp sparse attention (indexer top_k "
-                    "%u) is not implemented; this build runs it dense and "
-                    "admits contexts up to %u tokens (asked %d)\n",
-                    topk, topk, m->n_ctx);
-            return false;
-        }
+        m->ctx_cap = topk > (uint32_t)INT_MAX ? INT_MAX : (int)topk;
     }
     // PLE n-gram block: optional, at most one, must be a recurrent block
     gguf_kv *pl = gguf_get(g, AK("ple.layers"));
@@ -3634,8 +3710,8 @@ static bool bind_meta_granite(model_t *m, gguf_file *g, const char *arch) {
     //     runner's knob multiplies, so store the reciprocal.
     // Rope is adjacent-pair (LLAMA_ROPE_TYPE_NORM, like llama), gated by
     // rope.scaling.finetuned which defaults ON; a NoPE granite export is
-    // refused rather than mis-rotated. granitemoe/granitehybrid are
-    // different arch ids and stay unadmitted.
+    // refused rather than mis-rotated. granitemoe is a different arch id and
+    // stays unadmitted; granitehybrid has its own binder below.
     m->rope_neox   = false;
     m->embd_scale  = gguf_get_f32(g, AK("embedding_scale"), 1.0f);
     m->attn_scale  = gguf_get_f32(g, AK("attention.scale"), 0.0f);
@@ -3838,8 +3914,8 @@ static bool bind_lfm2_mixer(model_t *m, gguf_file *g, layer_t *l, int i, bool *o
     if (opt_tensor(g, "blk.%d.shortconv.conv.bias", i) ||
         opt_tensor(g, "blk.%d.shortconv.in_proj.bias", i) ||
         opt_tensor(g, "blk.%d.shortconv.out_proj.bias", i)) {
-        fprintf(stderr, "error: lfm2 blk.%d carries a short-convolution bias; "
-                "only conv_bias=false files are supported\n", i);
+        bind_err(m, "error: lfm2 blk.%d carries a short-convolution bias; "
+                 "only conv_bias=false files are supported\n", i);
         return false;
     }
     if (!check_shape(l->ssm_in, E, 3 * E, "shortconv.in_proj", i) ||
@@ -3917,6 +3993,36 @@ static bool nh_moe_expert_arrays(const model_t *m, gguf_file *g, const char *arc
     *used = u_lo;
     *ff_max = f_lo > 0 ? f_hi : 0;
     *ff_min = f_lo;
+    return true;
+}
+
+// The routed-expert router's gating and grouping, for every MoE family
+// (R6.68.62): a gating function this build implements, and group-limited
+// top-k over groups that divide the experts evenly and keep enough groups to
+// hold n_expert_used picks. bind_meta_moe checked these and skipped
+// nemotron_h, whose binder read the same keys and checked neither.
+static bool moe_router_ok(model_t *m) {
+    if (m->expert_gating < EXPERT_GATE_NONE ||
+        m->expert_gating > EXPERT_GATE_SQRT_SOFTPLUS) {
+        bind_err(m, "error: unknown expert_gating_func %d\n", m->expert_gating);
+        return false;
+    }
+    if (m->n_expert_used > MOE_USED_MAX) {
+        bind_err(m, "error: the router picks %d experts a token, past the %d "
+                "a token's selection holds\n", m->n_expert_used, MOE_USED_MAX);
+        return false;
+    }
+    if (m->n_expert_groups < 1 || m->n_group_used < 1 ||
+        m->n_group_used > m->n_expert_groups ||
+        m->n_expert % m->n_expert_groups != 0 ||
+        (long)m->n_group_used * (m->n_expert / m->n_expert_groups)
+            < m->n_expert_used) {
+        bind_err(m, "error: invalid MoE expert grouping "
+                "(experts=%d groups=%d used_groups=%d used=%d)\n",
+                m->n_expert, m->n_expert_groups, m->n_group_used,
+                m->n_expert_used);
+        return false;
+    }
     return true;
 }
 
@@ -4012,10 +4118,9 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
         }
         // The expert count only sizes heap scratch (Super routes over 512).
         // The selected count also fills the per-token selection arrays,
-        // which hold 256.
+        // which moe_router_ok holds it to (MOE_USED_MAX).
         if (m->n_expert <= 0 || m->n_expert > MOE_EXPERTS_MAX ||
             m->n_expert_used <= 0 || m->n_expert_used > m->n_expert ||
-            m->n_expert_used > 256 ||
             m->n_ff_exp <= 0 || m->n_ff_exp > MDL_DIM_MAX ||
             m->n_ff_shexp < 0 || m->n_ff_shexp > MDL_DIM_MAX ||
             m->expert_gating < EXPERT_GATE_NONE ||
@@ -4026,6 +4131,7 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
                     m->n_ff_shexp, m->expert_gating);
             return false;
         }
+        if (!moe_router_ok(m)) return false;
     }
     // Per-layer typing off the head_count_kv ARRAY (0 => not attention).
     size_t nl = (size_t)(unsigned)m->n_layer;
@@ -4278,25 +4384,7 @@ static bool bind_meta_moe(model_t *m, gguf_file *g, const char *arch) {
         m->n_group_used    = (int)gguf_get_u32(g, AK("expert_group_used_count"), 1);
         m->expert_w_scale  = gguf_get_f32(g, AK("expert_weights_scale"), 1.0f);
         m->expert_norm_w   = gguf_get_bool(g, AK("expert_weights_norm"), true);
-        if (m->expert_gating < EXPERT_GATE_NONE ||
-            m->expert_gating > EXPERT_GATE_SQRT_SOFTPLUS) {
-            bind_err(m, "error: unknown expert_gating_func %d\n",
-                    m->expert_gating);
-            return false;
-        }
-        // Group-limited top-k needs the experts to divide evenly into groups
-        // and to keep at least enough groups to hold n_expert_used picks.
-        if (m->n_expert_groups < 1 || m->n_group_used < 1 ||
-            m->n_group_used > m->n_expert_groups ||
-            m->n_expert % m->n_expert_groups != 0 ||
-            (long)m->n_group_used * (m->n_expert / m->n_expert_groups)
-                < m->n_expert_used) {
-            bind_err(m, "error: invalid MoE expert grouping "
-                    "(experts=%d groups=%d used_groups=%d used=%d)\n",
-                    m->n_expert, m->n_expert_groups, m->n_group_used,
-                    m->n_expert_used);
-            return false;
-        }
+        if (!moe_router_ok(m)) return false;
 
         // Shared always-on expert (Qwen2-MoE / DeepSeek): a dense FFN over the
         // same normed input, summed with the routed output. Supported when the
@@ -4493,10 +4581,10 @@ static bool bind_global_tensors(model_t *m, gguf_file *g) {
     m->n_vocab = (int)m->tok_embd->ne[1];
     if ((int64_t)m->tok_embd->ne[0] != m->n_embd ||
         m->n_vocab < 1 || (int64_t)m->tok_embd->ne[1] > INT_MAX) {
-        fprintf(stderr, "error: token_embd.weight shape [%llu,%llu] is "
-                "inconsistent with n_embd=%d / n_vocab\n",
-                (unsigned long long)m->tok_embd->ne[0],
-                (unsigned long long)m->tok_embd->ne[1], m->n_embd);
+        bind_err(m, "error: token_embd.weight shape [%llu,%llu] is "
+                 "inconsistent with n_embd=%d / n_vocab\n",
+                 (unsigned long long)m->tok_embd->ne[0],
+                 (unsigned long long)m->tok_embd->ne[1], m->n_embd);
         return false;
     }
     // Token IDs come from the tokenizer, while the embedding and logits
@@ -4508,9 +4596,9 @@ static bool bind_global_tensors(model_t *m, gguf_file *g) {
     gguf_kv *vocab = gguf_get(g, "tokenizer.ggml.tokens");
     if (vocab && vocab->type == GGUF_T_ARR && vocab->arr_type == GGUF_T_STR &&
         vocab->arr_n > (uint64_t)m->n_vocab) {
-        fprintf(stderr, "error: tokenizer vocabulary has %llu entries but "
-                "token_embd.weight has only %d rows\n",
-                (unsigned long long)vocab->arr_n, m->n_vocab);
+        bind_err(m, "error: tokenizer vocabulary has %llu entries but "
+                 "token_embd.weight has only %d rows\n",
+                 (unsigned long long)vocab->arr_n, m->n_vocab);
         return false;
     }
 
@@ -4541,15 +4629,15 @@ static bool bind_global_tensors(model_t *m, gguf_file *g) {
             m->ple4_table = need_tensor(g, "per_layer_token_embd.weight", 0, &ok);
             if (!ok) return false;
             if ((int64_t)m->ple4_table->ne[0] != m->ple4_head_dim) {
-                fprintf(stderr, "error: per_layer_token_embd row width %llu, "
-                        "expected %d\n", (unsigned long long)m->ple4_table->ne[0],
-                        m->ple4_head_dim);
+                bind_err(m, "error: per_layer_token_embd row width %llu, "
+                         "expected %d\n", (unsigned long long)m->ple4_table->ne[0],
+                         m->ple4_head_dim);
                 return false;
             }
             for (int h = 0; h < m->ple4_n_heads; h++)
                 if ((uint64_t)m->ple4_off[h] + m->ple4_vocab[h] > m->ple4_table->ne[1]) {
-                    fprintf(stderr, "error: PLE head %d range exceeds the table "
-                            "(%llu rows)\n", h, (unsigned long long)m->ple4_table->ne[1]);
+                    bind_err(m, "error: PLE head %d range exceeds the table "
+                             "(%llu rows)\n", h, (unsigned long long)m->ple4_table->ne[1]);
                     return false;
                 }
         }
@@ -4558,7 +4646,7 @@ static bool bind_global_tensors(model_t *m, gguf_file *g) {
     m->output = gguf_find_tensor(g, "output.weight");
     if (!m->output) m->output = m->tok_embd; // tied embeddings
     if (!ggml_type_supported(m->output->type)) {
-        fprintf(stderr, "error: output tensor type %s unsupported\n", ggml_type_name(m->output->type));
+        bind_err(m, "error: output tensor type %s unsupported\n", ggml_type_name(m->output->type));
         return false;
     }
     // The final projection reads n_vocab rows of n_embd from output.weight. A
@@ -4578,8 +4666,8 @@ static bool bind_global_tensors(model_t *m, gguf_file *g) {
         // the time it was tested (UBSan caught the int product).
         if (m->n_embd_ple > MDL_DIM_MAX ||
             m->n_embd_ple > INT_MAX / m->n_layer) {
-            fprintf(stderr, "error: gemma4 per-layer embedding size (%d x %d "
-                    "layers) is out of range\n", m->n_embd_ple, m->n_layer);
+            bind_err(m, "error: gemma4 per-layer embedding size (%d x %d "
+                     "layers) is out of range\n", m->n_embd_ple, m->n_layer);
             return false;
         }
         int per_tok = m->n_layer * m->n_embd_ple;
@@ -4676,9 +4764,9 @@ static bool bind_removed_mixer(model_t *m, gguf_file *g, int i) {
         char nm[128];
         snprintf(nm, sizeof nm, "blk.%d.%s", i, attn_names[k]);
         if (gguf_find_tensor(g, nm)) {
-            fprintf(stderr, "error: blk.%d is declared without attention "
-                    "(attention.head_count 0) but the file carries %s\n",
-                    i, nm);
+            bind_err(m, "error: blk.%d is declared without attention "
+                     "(attention.head_count 0) but the file carries %s\n",
+                     i, nm);
             return false;
         }
     }
@@ -4697,15 +4785,15 @@ static bool bind_removed_ffn(model_t *m, gguf_file *g, int i) {
         char nm[128];
         snprintf(nm, sizeof nm, "blk.%d.%s", i, ffn_names[k]);
         if (gguf_find_tensor(g, nm)) {
-            fprintf(stderr, "error: blk.%d is declared without an FFN "
-                    "(feed_forward_length 0) but the file carries %s\n",
-                    i, nm);
+            bind_err(m, "error: blk.%d is declared without an FFN "
+                     "(feed_forward_length 0) but the file carries %s\n",
+                     i, nm);
             return false;
         }
     }
     if (m->n_expert > 0 && i >= m->n_dense_lead) {
-        fprintf(stderr, "error: blk.%d declares its FFN removed, but "
-                "MoE blocks are not supported for removal\n", i);
+        bind_err(m, "error: blk.%d declares its FFN removed, but "
+                 "MoE blocks are not supported for removal\n", i);
         return false;
     }
     return true;
@@ -4797,7 +4885,7 @@ static bool bind_deltanet_mixer(model_t *m, gguf_file *g, layer_t *l, int i,
     l->ssm_a      = tensor_to_f32(sa, m->ssm.v_heads, &ok);
     l->ssm_norm_w = tensor_to_f32(sn, m->ssm.inner / m->ssm.v_heads, &ok);
     if (!ok) return false;
-    {
+    if (!t_bind_dry) {   // the fit's dry bind has no taps to read (R6.68.45)
         // the depthwise conv taps, dequantized once: the per-token
         // path used to dequantize every channel's kernel row on
         // every token (10,240 small calls a layer on Qwen3.8)
@@ -4838,7 +4926,7 @@ static bool bind_attention(model_t *m, gguf_file *g, layer_t *l, int i,
         if ((int64_t)qkv->ne[0] != m->n_embd || (int64_t)gu->ne[0] != m->n_embd ||
             (int64_t)qkv->ne[1] != q_rows + 2 * kv_rows ||
             (int64_t)gu->ne[1] != 2 * (int64_t)l->n_ff) {
-            fprintf(stderr, "error: unexpected fused tensor shape in blk.%d\n", i);
+            bind_err(m, "error: unexpected fused tensor shape in blk.%d\n", i);
             return false;
         }
         gguf_tensor *sl = &m->fused_splits[i * 5];
@@ -4868,7 +4956,7 @@ static bool bind_attention(model_t *m, gguf_file *g, layer_t *l, int i,
             int64_t kv_rows = (int64_t)m->n_head_kv * m->head_dim;
             if ((int64_t)qkv->ne[0] != m->n_embd ||
                 (int64_t)qkv->ne[1] != q_rows + 2 * kv_rows) {
-                fprintf(stderr, "error: unexpected fused attn_qkv shape in blk.%d\n", i);
+                bind_err(m, "error: unexpected fused attn_qkv shape in blk.%d\n", i);
                 return false;
             }
             gguf_tensor *sl = &m->fused_splits[i * 5];
@@ -4897,8 +4985,8 @@ gate:
             (l->wq_gate->ne[0] != l->wq->ne[0] ||
              l->wq_gate->ne[1] != (m->attn_gate_heads ? (uint64_t)m->n_head
                                                      : l->wq->ne[1]))) {
-            fprintf(stderr, "error: attn_gate shape differs from attn_q "
-                    "in layer %d\n", i);
+            bind_err(m, "error: attn_gate shape differs from attn_q "
+                     "in layer %d\n", i);
             ok = false;
         }
     }
@@ -4965,18 +5053,18 @@ static bool bind_layer_moe(model_t *m, gguf_file *g, layer_t *l, int i, bool *ok
     // (and shorter expert tensors) for a pruned layer — same names,
     // same widths, fewer blocks.
     if ((int64_t)l->ffn_gate_inp->ne[0] != m->n_embd) {
-        fprintf(stderr, "error: ffn_gate_inp in blk.%d has ne[0]=%llu, "
-                "expected %d\n", i,
-                (unsigned long long)l->ffn_gate_inp->ne[0], m->n_embd);
+        bind_err(m, "error: ffn_gate_inp in blk.%d has ne[0]=%llu, "
+                 "expected %d\n", i,
+                 (unsigned long long)l->ffn_gate_inp->ne[0], m->n_embd);
         return false;
     }
     l->n_expert = (int)l->ffn_gate_inp->ne[1];
     if (!declared_layer_experts_ok(g, i, l->n_expert)) return false;
     if (l->n_expert < m->n_expert_used || l->n_expert > m->n_expert) {
-        fprintf(stderr, "error: blk.%d declares %d experts via "
-                "ffn_gate_inp, outside [n_expert_used=%d, "
-                "expert_count=%d]\n", i, l->n_expert,
-                m->n_expert_used, m->n_expert);
+        bind_err(m, "error: blk.%d declares %d experts via "
+                 "ffn_gate_inp, outside [n_expert_used=%d, "
+                 "expert_count=%d]\n", i, l->n_expert,
+                 m->n_expert_used, m->n_expert);
         return false;
     }
     // Optional selection-only bias; absent on every arch certified so
@@ -5034,9 +5122,9 @@ static bool bind_layer_moe(model_t *m, gguf_file *g, layer_t *l, int i, bool *ok
         // This layout has no pruned form: the loop below wires exactly
         // expert_count tensors, so the router must have that many rows.
         if (l->n_expert != m->n_expert) {
-            fprintf(stderr, "error: blk.%d has the split expert layout "
-                    "with a %d-row router, but expert_count is %d\n",
-                    i, l->n_expert, m->n_expert);
+            bind_err(m, "error: blk.%d has the split expert layout "
+                     "with a %d-row router, but expert_count is %d\n",
+                     i, l->n_expert, m->n_expert);
             return false;
         }
         l->moe_g = calloc((size_t)m->n_expert, sizeof(gguf_tensor *));
@@ -5052,9 +5140,9 @@ static bool bind_layer_moe(model_t *m, gguf_file *g, layer_t *l, int i, bool *ok
             snprintf(nm, sizeof(nm), "blk.%d.ffn_down.%d.weight", i, e);
             l->moe_d[e] = gguf_find_tensor(g, nm);
             if (!l->moe_g[e] || !l->moe_u[e] || !l->moe_d[e]) {
-                fprintf(stderr, "error: missing MoE expert tensor "
-                        "(neither fused ffn_gate_exps nor split "
-                        "ffn_gate.%d) in blk.%d\n", e, i);
+                bind_err(m, "error: missing MoE expert tensor "
+                         "(neither fused ffn_gate_exps nor split "
+                         "ffn_gate.%d) in blk.%d\n", e, i);
                 return false;
             }
         }
@@ -5245,8 +5333,8 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
     l->skip_mixer = no_attn;
     l->skip_ffn   = no_ffn;
     if ((no_attn || no_ffn) && fused_qkv) {
-        fprintf(stderr, "error: blk.%d declares a removed sublayer, but "
-                "fused-QKV families are not supported for removal\n", i);
+        bind_err(m, "error: blk.%d declares a removed sublayer, but "
+                 "fused-QKV families are not supported for removal\n", i);
         return false;
     }
     // per-layer FFN width: the ARRAY form answers per index, the scalar
@@ -5255,8 +5343,8 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
             : (int)gguf_get_u32_idx(g, AK("feed_forward_length"),
                                     (uint64_t)i, (uint32_t)m->n_ff);
     if (l->n_ff <= 0 || l->n_ff > m->n_ff) {
-        fprintf(stderr, "error: layer %d FFN width %d outside (0, %d]\n",
-                i, l->n_ff, m->n_ff);
+        bind_err(m, "error: layer %d FFN width %d outside (0, %d]\n",
+                 i, l->n_ff, m->n_ff);
         return false;
     }
     // qwen4exp has no pre-norms: the hyper-connection mixers replace
@@ -5320,7 +5408,8 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
     if (m->n_embd_ple > 0 && !bind_layer_ple(m, g, l, i, &ok)) return false;
     l->out_scale = 1.0f;
     gguf_tensor *osc = opt_tensor(g, "blk.%d.layer_output_scale.weight", i);
-    if (osc && osc->type == T_F32 && osc->ne[0] >= 1)
+    // a stored value: the fit's dry bind has none to read and keeps 1
+    if (osc && osc->type == T_F32 && osc->ne[0] >= 1 && !t_bind_dry)
         l->out_scale = ((const float *)osc->data)[0];
     if (!ok) return false;  // a norm/bias materialization OOMed this layer
     return true;
@@ -5478,6 +5567,10 @@ static bool bind_arch_meta(model_t *m, gguf_file *g, const char *arch, bool late
 // over it, and a plan made for its own sake is released with
 // model_free_weights.
 static bool model_plan(model_t *m, gguf_file *g, const model_params *p) {
+    // the agent profile before anything else, as the load always checked it
+    // (R6.68.50: it sat in model_bind_weights, ahead of the plan, so --info
+    // fit priced a file whose profile the load refuses)
+    if (!bind_agent_profile(m, g)) return false;
     const char *arch = gguf_get_str(g, "general.architecture", "?");
     if (!bind_admit_architecture(m, arch)) return false;
     if (!bind_refuse_rotated_basis(m, g)) return false;
@@ -5507,20 +5600,11 @@ static bool model_plan(model_t *m, gguf_file *g, const model_params *p) {
     return bind_validate_geometry(m, g, arch, hybrid_typed);
 }
 
-static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
-    if (!gguf_open(&m->gf, path)) return false;
-    gguf_file *g = &m->gf;
-    if (!bind_agent_profile(m, g)) return false;
-    // kept for the backend's shared-weight registry: two instances of the same
-    // file are what let `--parallel N` upload the weights once
-    size_t plen = strlen(path) + 1;
-    m->path = malloc(plen);
-    if (!m->path) return false;
-    memcpy(m->path, path, plen);
-    model_record_file_id(m, path);
-
-    m->plan_only = false;   // a load's plan always speaks (bind_err, bind_note)
-    if (!model_plan(m, g, p)) return false;
+// The load's tensor half, after model_plan: every tensor the plan's geometry
+// names, found, typed and shape-checked against it and its f32 vectors
+// converted, block by block (bind_layer), then the NextN/MTP head when p->mtp
+// asks for one, the Clef head and the ids a checkpoint must never emit.
+static bool bind_tensors(model_t *m, gguf_file *g, const model_params *p) {
     const char *arch = gguf_get_str(g, "general.architecture", "?");
     if (!bind_global_tensors(m, g)) return false;
 
@@ -5552,7 +5636,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                               "MoE backbones are supported"
                         : NULL;
         if (why) {
-            fprintf(stderr, "error: mtp: %s\n", why);
+            bind_err(m, "error: mtp: %s\n", why);
             return false;
         }
         bind_mtp = true;
@@ -5576,6 +5660,32 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     // RMSNorm is the standard x_normed * weight, so norm weights are used raw.
 
     if (!bind_suppress_tokens(m, g)) return false;
+    return true;
+}
+
+static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
+    // The fit's dry bind binds placeholders, never a load: fit_plan holds
+    // t_bind_dry around one bind_tensors call and loads nothing, so this is
+    // reached only by a defect, and then refuses rather than bind (R6.68.45).
+    if (t_bind_dry) {
+        fprintf(stderr, "error: a model load was started inside --info fit's "
+                "dry bind; refused\n");
+        return false;
+    }
+    if (!gguf_open(&m->gf, path)) return false;
+    gguf_file *g = &m->gf;
+    m->plan_only = false;   // a load's plan always speaks (bind_err, bind_note)
+    // the plan first, its agent-profile check first of all (R6.68.50): a file
+    // it refuses is refused before the load allocates its path or tensors
+    if (!model_plan(m, g, p)) return false;
+    // kept for the backend's shared-weight registry: two instances of the same
+    // file are what let `--parallel N` upload the weights once
+    size_t plen = strlen(path) + 1;
+    m->path = malloc(plen);
+    if (!m->path) return false;
+    memcpy(m->path, path, plen);
+    model_record_file_id(m, path);
+    if (!bind_tensors(m, g, p)) return false;
 
     bind_kv_layout(m, p);
 
@@ -5678,14 +5788,22 @@ int gpu_plan_prefix(const uint64_t *cost, int n, int cap, uint64_t budget,
 // as the CUDA loader charges it, the token embedding a second time): it is
 // full only if that fits too. Otherwise the last layer goes back to the host,
 // so "the device holds every layer" and "the device holds the output" cannot
-// disagree; a one-layer model keeps its layer. Each caller does its own
-// accounting for the layer handed back.
-bool gpu_plan_full_split(int *layers, int n_layer, uint64_t used, uint64_t tail,
-                         uint64_t budget, bool *gave_back) {
+// disagree; a one-layer model keeps its layer. The layer handed back leaves
+// *used here, by its cost[]: the accounting was each caller's own, and the
+// CUDA loader's never did it, so its plan kept a host layer on the device
+// and sized a narrower prompt window than --info fit predicted (R6.68.64).
+bool gpu_plan_full_split(int *layers, int n_layer, uint64_t *used,
+                         const uint64_t *cost, uint64_t tail, uint64_t budget,
+                         bool *gave_back) {
     *gave_back = false;
     if (*layers != n_layer) return false;
-    if (used <= budget && tail <= budget - used) return true;
-    if (*layers > 1) { (*layers)--; *gave_back = true; }
+    if (*used <= budget && tail <= budget - *used) return true;
+    if (*layers > 1) {
+        (*layers)--;
+        *gave_back = true;
+        uint64_t c = cost[*layers];
+        *used = c < *used ? *used - c : 0;
+    }
     return false;
 }
 
@@ -5941,9 +6059,32 @@ static bool runtime_placement(model_t *m, const model_params *p) {
     return moe_hot_load(m);
 }
 
+// The context a load takes when none is asked for and no reservation sizes
+// one: the trained context, at most 4096. One rule for the load and the fit.
+static int model_ctx_default(int n_ctx_train) {
+    return n_ctx_train < 4096 ? n_ctx_train : 4096;
+}
+
+// The context against the file's admitted cap (model_t.ctx_cap, R6.68.55): a
+// context the caller asked for past it is refused with the reason in `why`,
+// one the load chose (the default, a reservation's auto-fit) is held to it.
+static bool model_ctx_admit(int cap, const char *arch, int asked, int *n_ctx,
+                            char *why, size_t why_n) {
+    if (cap <= 0 || *n_ctx <= cap) return true;
+    if (asked > 0) {
+        snprintf(why, why_n, "%s sparse attention (indexer top_k %d) is not "
+                 "implemented; this build runs it dense and admits contexts up "
+                 "to %d tokens (asked %d)", arch, cap, cap, asked);
+        return false;
+    }
+    *n_ctx = cap;
+    return true;
+}
+
 // The context and the prompt batch: the request's, or the reservation auto-fit
 // over the RAM and VRAM budgets, or the default; the batch never exceeds it.
-static void runtime_context(model_t *m, const model_params *p) {
+// False when the file's admission refuses the context asked for.
+static bool runtime_context(model_t *m, const model_params *p) {
     int n_ctx = p->n_ctx;
     if (n_ctx <= 0 && (p->reserve_vram_pct > 0 || p->reserve_ram_pct > 0)) {
         // Reservation auto-fit: size the context to fill whatever the
@@ -5997,11 +6138,21 @@ static void runtime_context(model_t *m, const model_params *p) {
                         n_ctx, m->n_ctx_train);
         }
     }
-    if (n_ctx <= 0) n_ctx = m->n_ctx_train < 4096 ? m->n_ctx_train : 4096;
+    if (n_ctx <= 0) n_ctx = model_ctx_default(m->n_ctx_train);
+    char why[256];
+    int chosen = n_ctx;
+    if (!model_ctx_admit(m->ctx_cap, m->arch, p->n_ctx, &n_ctx, why, sizeof why)) {
+        fprintf(stderr, "error: %s\n", why);
+        return false;
+    }
+    if (n_ctx < chosen)
+        fprintf(stderr, "%s: context %d, the indexer's top_k (sparse attention runs "
+                "dense, which is exact up to it)\n", m->arch, n_ctx);
     m->n_ctx = n_ctx;
     int batch_default = p->gpu_mode == GPU_AUTO ? model_gpu_batch_default() : 64;
     m->n_batch = p->n_batch > 0 ? p->n_batch : batch_default;
     if (m->n_batch > n_ctx) m->n_batch = n_ctx;
+    return true;
 }
 
 // Bytes of one instance's KV cache with sliding layers owning `swa_rows`
@@ -6573,7 +6724,7 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     const char *arch = m->arch;
     // runtime buffers
     if (!runtime_placement(m, p)) return false;
-    runtime_context(m, p);
+    if (!runtime_context(m, p)) return false;
     int n_ctx = m->n_ctx;
 
     {
@@ -6616,8 +6767,8 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
 // (all_logits, the MTP queue, the recurrent and PLE keep rows, the MoE probe).
 static void runtime_free(model_t *m) {
     // ---- the per-instance half. Everything below belongs to this sequence
-    // alone and is freed unconditionally; the weights are refcounted at the
-    // bottom. The rope tables are per-instance and not shared: YaRN
+    // alone and is freed unconditionally; the shared weights are released by
+    // model_free after this, refcounted. The rope tables are per-instance and not shared: YaRN
     // auto-extension keys off the requested context and phi3 picks its
     // LongRoPE factor set the same way, so two slots of one file with
     // different -c legitimately want different tables.
@@ -9416,6 +9567,18 @@ static void moe_route(model_t *m, const layer_t *ly, const float *xin,
         for (int t = 0; t < used; t++) selw[t] *= m->expert_w_scale;
 }
 
+// A token's routing at sequence position `pos`: moe_route, pinned to
+// RUNNER_MOE_REPLAY's record for (pos, layer) when a trace is loaded. The
+// forward's routers and the training backward's recompute all route here, so
+// a step's gradient runs through the experts its loss ran through (R6.68.92:
+// the recompute routed unpinned while the taped forward was pinned).
+static void moe_route_at(model_t *m, const layer_t *ly, const float *xin,
+                         int pos, int *sel, float *selw, bool dbg_dump) {
+    int used = m->n_expert_used;
+    moe_route(m, ly, xin, m->n_embd, ly->n_expert, used, sel, selw, dbg_dump,
+              route_replay_ids(pos, (int)(ly - m->layers), used));
+}
+
 // Gemma-4 E-series per-layer embeddings, computed once per batch before the
 // layer loop (llama.cpp gemma4.cpp build_inp_per_layer + project_per_layer_inputs).
 // m->ple ends up laid out [token][layer][n_embd_ple], which is exactly the
@@ -9548,7 +9711,7 @@ static void moe_probe_replay(model_t *m, const layer_t *ly, int b, const int *se
     for (int d = 1; d <= max_d; d++) {
         const float *h_old = m->moe_probe_hist +
                              (size_t)(d - 1) * slotsz + (size_t)b * n_embd;
-        int psel[256]; float pselw[256];
+        int psel[MOE_USED_MAX]; float pselw[MOE_USED_MAX];
         moe_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false, NULL);
         moe_probe_emit(m->fwd_pos + b, layer_idx, d, psel, sel, used);
     }
@@ -9609,7 +9772,7 @@ NUM_STAGE void moe_token_experts(model_t *m, const layer_t *ly, const float *xin
     // dot matvec_b gives it, the per-expert math and the ascending-expert
     // accumulation are unchanged, so the output is byte-identical to the
     // one-dispatch-per-matrix form (RUNNER_MV_FUSE=0 restores it).
-    gguf_tensor gv[256], uv[256], dv[256];
+    gguf_tensor gv[MOE_USED_MAX], uv[MOE_USED_MAX], dv[MOE_USED_MAX];
     for (int t = 0; t < used; t++) {
         int e = sel[t];
         uv[t] = moe_expert_weight(ly, 1, e, n_embd, nff);
@@ -9652,17 +9815,16 @@ NUM_STAGE void moe_token_experts(model_t *m, const layer_t *ly, const float *xin
 }
 
 static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
-    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
+    int n_embd = m->n_embd, used = m->n_expert_used;
     int ed = moe_expert_dim(m, ly);
     bool probe = moe_probe_file() != NULL;
     bool trace = moe_trace_file() != NULL;
     int layer_idx = (int)(ly - m->layers);
-    int   sel[256];
-    float selw[256];
+    int   sel[MOE_USED_MAX];
+    float selw[MOE_USED_MAX];
     float norms[MOE_EXPERTS_MAX];
     DT_BEGIN;
-    moe_route(m, ly, xin, n_embd, ne, used, sel, selw, true,
-              route_replay_ids(m->fwd_pos, layer_idx, used));
+    moe_route_at(m, ly, xin, m->fwd_pos, sel, selw, true);
     route_pin_note(m->fwd_pos, layer_idx, sel, used);
     model_moe_prefetch(m, ly, sel, used);
     DT_MARK(DT_ROUTE);
@@ -9710,12 +9872,11 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
 // before), its output row zeroed, and the probe's history pushed.
 NUM_STAGE void moe_grouped_route(model_t *m, const layer_t *ly, int n, int xdim,
                                  bool probe) {
-    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
+    int n_embd = m->n_embd, used = m->n_expert_used;
     for (int b = 0; b < n; b++) {
         float *xin = m->xb + (size_t)b * xdim;
-        moe_route(m, ly, xin, n_embd, ne, used,
-                  m->moe_sel + (size_t)b * used, m->moe_selw + (size_t)b * used, true,
-                  route_replay_ids(m->fwd_pos + b, (int)(ly - m->layers), used));
+        moe_route_at(m, ly, xin, m->fwd_pos + b, m->moe_sel + (size_t)b * used,
+                     m->moe_selw + (size_t)b * used, true);
         route_pin_note(m->fwd_pos + b, (int)(ly - m->layers), m->moe_sel + (size_t)b * used, used);
         // RUNNER_MOE_PROBE: replay against 1/2/3 layers back, before m->xb
         // is overwritten with this layer's FFN output further below.
@@ -9954,7 +10115,7 @@ static void gemma_moe_ffn(model_t *m, const layer_t *ly, int n, int xdim) {
         //     expert FFN's own input — the router below uses a SEPARATE
         //     weightless norm of attn_out, computed inside gemma_route)
         rmsnorm(xn2, attn, ly->ffn_pre_norm2_w, n_embd, m->rms_eps);
-        int sel[256]; float selw[256], norms[MOE_EXPERTS_MAX];
+        int sel[MOE_USED_MAX]; float selw[MOE_USED_MAX], norms[MOE_EXPERTS_MAX];
         gemma_route(m, ly, attn, n_embd, ne, used, sel, selw, b == n - 1,
                     route_replay_ids(m->fwd_pos + b, layer_idx, used));
         route_pin_note(m->fwd_pos + b, layer_idx, sel, used);
@@ -9970,7 +10131,7 @@ static void gemma_moe_ffn(model_t *m, const layer_t *ly, int n, int xdim) {
             for (int d = 1; d <= max_d; d++) {
                 const float *h_old = m->moe_probe_hist +
                                      (size_t)(d - 1) * slotsz + (size_t)b * n_embd;
-                int psel[256]; float pselw[256];
+                int psel[MOE_USED_MAX]; float pselw[MOE_USED_MAX];
                 gemma_route(m, ly, h_old, n_embd, ne, used, psel, pselw, false, NULL);
                 moe_probe_emit(m->fwd_pos + b, layer_idx, d, psel, sel, used);
             }
@@ -10034,7 +10195,7 @@ bool model_ple4_block_host(model_t *m, int layer, const int32_t *tokens, int n, 
 // needs. conv_dim is identical in value across the three arches; the SSD/
 // DeltaNet state per head differs: qwen35 keeps a [hv x hv] DeltaNet matrix,
 // Mamba-2 (granite/nemotron) keeps an [hd x ds] state (hd == hv). These match
-// the two calloc sites in model_alloc_buffers exactly.
+// the two calloc sites in runtime_buffers exactly.
 static size_t recurrent_conv_bytes(const model_t *m) {
     int conv_dim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
     return sizeof(float) * model_rec_count(m) *
@@ -11664,6 +11825,7 @@ typedef struct {
     float *dxn2;
     float *dao;
     float *tmpE;
+    float *tmpH;   // one head's q/k-norm adjoint (hd_l wide, R6.68.91)
     bool gate;
     float rs;
     int swa;
@@ -11770,6 +11932,9 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     float *dxn2 = calloc((size_t)T * E, sizeof(float));
     float *dao  = calloc((size_t)T * q_dim, sizeof(float));
     float *tmpE = malloc(sizeof(float) * (size_t)E);
+    // a head's norm adjoint, as wide as the layer's head: a stack buffer
+    // of 512 was written past by a wider head (R6.68.91)
+    float *tmpH = malloc(sizeof(float) * (size_t)hd_l);
     // R8.9.4 shapes: the attention output gate keeps its pre-activation and
     // the ungated attention output; the sandwich norms keep each branch's
     // pre-norm output; the residual scale and the per-layer output scale are
@@ -11800,14 +11965,14 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     float *dbr   = malloc(szE);   // a branch output's gradient, per window
     float *dyb   = malloc(sizeof(float) * (size_t)E);  // one scaled row
     bool ok = xn1 && xa && xn2 && q && ao && g && u && dxn1 && dxa && dq &&
-              dk && dv && hact && dhact && dgu && dxn2 && dao && tmpE &&
+              dk && dv && hact && dhact && dgu && dxn2 && dao && tmpE && tmpH &&
               dbr && dyb && (!gate || (gpre && aopre && dg && dxg)) &&
               (!q35 || dqg) &&
               (!ly->post_attn_norm_w || opre) && (!ly->post_ffn_norm_w || fpre) &&
               (!ly->qnorm_w || qpre) && (!need_kpre || kpre) &&
               (!vnorm || (vpre && dvn)) &&
               (!ple || (xpost && ptt && pga && puu && pdu && pdg && pdx)) &&
-              (!moe || (used <= 256 && msel && mselw && mprob && mg && mu && mh &&
+              (!moe || (used <= MOE_USED_MAX && msel && mselw && mprob && mg && mu && mh &&
                         mdh && mdg && mdu && md && mdr));
     // the per-layer output scale multiplies the whole residual stream after
     // the layer, so every gradient inside the layer carries it
@@ -11872,6 +12037,7 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     s->dxn2 = dxn2;
     s->dao = dao;
     s->tmpE = tmpE;
+    s->tmpH = tmpH;
     s->gate = gate;
     s->rs = rs;
     s->swa = swa;
@@ -12062,7 +12228,8 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         float *x2 = xn2 + (size_t)t * E;
         int *sl = msel + (size_t)t * used;
         float *sw = mselw + (size_t)t * used;
-        moe_route(m, ly, x2, E, ne_x, used, sl, sw, false, NULL);
+        // row t sat at position t of the taped forward (it starts at 0)
+        moe_route_at(m, ly, x2, t, sl, sw, false);
         float *pr = mprob + (size_t)t * ne_x;
         matvec_b(m->tp, pr, ne_x, ly->ffn_gate_inp, x2, E, E, ne_x, NULL, 1);
         if (m->expert_gating == EXPERT_GATE_SOFTMAX) {
@@ -12260,7 +12427,7 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
             float *dx2 = dxn2 + (size_t)t * E;
             const int *sl = msel + (size_t)t * used;
             const float *sw = mselw + (size_t)t * used;
-            float sk[256];
+            float sk[MOE_USED_MAX];
             for (int k = 0; ok && k < used; k++) {
                 gguf_tensor gv = moe_expert_weight(ly, 0, sl[k], E, nfe);
                 gguf_tensor uv = moe_expert_weight(ly, 1, sl[k], E, nfe);
@@ -12479,7 +12646,7 @@ NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s
             float *dqt = dq + (size_t)t * q_dim;
             const float *qp = qpre + (size_t)t * q_dim;
             for (int h = 0; h < n_head; h++) {
-                float tmp[512];
+                float *tmp = s->tmpH;
                 memset(tmp, 0, sizeof(float) * (size_t)hd_l);
                 rmsnorm_bw(qp + (size_t)h * hd_l, ly->qnorm_w,
                            dqt + (size_t)h * hd_l, tmp, hd_l, m->rms_eps);
@@ -12491,7 +12658,7 @@ NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s
             float *dkt = dk + (size_t)t * kv_dim;
             const float *kp = kpre + (size_t)t * kv_dim;
             for (int h = 0; h < n_kv; h++) {
-                float tmp[512];
+                float *tmp = s->tmpH;
                 memset(tmp, 0, sizeof(float) * (size_t)hd_l);
                 rmsnorm_bw(kp + (size_t)h * hd_l, ly->knorm_w,
                            dkt + (size_t)h * hd_l, tmp, hd_l, m->rms_eps);
@@ -12616,7 +12783,7 @@ static void lbw_state_free(lbw_state *s) {
     free(qpre); free(kpre);
     free(xn1); free(xa); free(xn2); free(q); free(ao); free(g); free(u);
     free(dxn1); free(dxa); free(dq); free(dk); free(dv); free(hact);
-    free(dhact); free(dgu); free(dxn2); free(dao); free(tmpE);
+    free(dhact); free(dgu); free(dxn2); free(dao); free(tmpE); free(s->tmpH);
     free(gpre); free(aopre); free(dg); free(dxg); free(opre); free(fpre);
     free(s->dqg);
     free(dbr); free(dyb);
@@ -14238,12 +14405,6 @@ bool model_lora_save(model_t *m, const char *path) {
     return true;
 }
 
-// One transformer block over the n rows in m->x (positions pos..pos+n-1).
-// Extracted verbatim from model_forward_batch's layer loop so a block that
-// is not part of the backbone -- the NextN/MTP predictor at index n_layer,
-// which owns the KV region right after the backbone's -- runs exactly the
-// same code path. Per-layer tables are indexed through the model.h helpers,
-// which fall back to the model-wide value past n_layer.
 // ------------------------------------------------ qwen4exp hyper-connections
 // The residual is hc parallel streams per token (m->x_hc, [n][hc*n_embd]).
 // hc_mix produces the single-stream input a sub-layer reads (into `out`,
@@ -15159,6 +15320,12 @@ NUM_STAGE void layer_output(model_t *m, const fwd_layer *c) {
     act_trace_rows(c->pos, n, l, "resid", m->x, (size_t)n_embd, n_embd);
 }
 
+// One transformer block over the n rows in m->x (positions pos..pos+n-1).
+// Extracted verbatim from model_forward_batch's layer loop so a block that
+// is not part of the backbone -- the NextN/MTP predictor at index n_layer,
+// which owns the KV region right after the backbone's -- runs exactly the
+// same code path. Per-layer tables are indexed through the model.h helpers,
+// which fall back to the model-wide value past n_layer.
 static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
     fwd_tape_record(m, l, n, pos);
     fwd_layer c;
@@ -15714,21 +15881,21 @@ static gguf_tensor *clef_mat(gguf_file *g, const char *name, int ne0, int ne1, b
     if (!*ok) return NULL;
     gguf_tensor *t = gguf_find_tensor(g, name);
     if (!t) {
-        fprintf(stderr, "error: clef: the decision head is missing %s\n", name);
+        tensor_err("error: clef: the decision head is missing %s\n", name);
         *ok = false;
         return NULL;
     }
     if (!ggml_type_supported(t->type)) {
-        fprintf(stderr, "error: clef: %s has unsupported type %d (%s)\n",
-                name, t->type, ggml_type_name(t->type));
+        tensor_err("error: clef: %s has unsupported type %d (%s)\n",
+                   name, t->type, ggml_type_name(t->type));
         *ok = false;
         return NULL;
     }
     if ((int64_t)t->ne[0] != ne0 || (int64_t)t->ne[1] != ne1 ||
         t->ne[2] != 1 || t->ne[3] != 1) {
-        fprintf(stderr, "error: clef: %s has shape [%llu,%llu], expected [%d,%d]\n",
-                name, (unsigned long long)t->ne[0], (unsigned long long)t->ne[1],
-                ne0, ne1);
+        tensor_err("error: clef: %s has shape [%llu,%llu], expected [%d,%d]\n",
+                   name, (unsigned long long)t->ne[0], (unsigned long long)t->ne[1],
+                   ne0, ne1);
         *ok = false;
         return NULL;
     }
@@ -15771,8 +15938,8 @@ static bool model_clef_bind(model_t *m, gguf_file *g, const char *arch) {
     if (strcmp(type, "clef") != 0) {
         char shown[64];
         meta_printable(shown, sizeof shown, type);
-        fprintf(stderr, "error: clef: decision head type '%s' is not the Clef "
-                "joint schema head\n", shown);
+        bind_err(m, "error: clef: decision head type '%s' is not the Clef "
+                 "joint schema head\n", shown);
         return false;
     }
     struct clef_head *h = calloc(1, sizeof *h);
@@ -15790,9 +15957,9 @@ static bool model_clef_bind(model_t *m, gguf_file *g, const char *arch) {
         h->n_routing + h->n_joint == 0 || h->n_head <= 0 ||
         h->width <= 0 || h->width > MDL_DIM_MAX || h->width % h->n_head != 0 ||
         h->n_ff <= 0 || h->n_ff > MDL_DIM_MAX || !(h->eps > 0 && h->eps < 1)) {
-        fprintf(stderr, "error: clef: invalid decision head geometry (routing %d, "
-                "blocks %d, heads %d, width %d, feedforward %d)\n", h->n_routing,
-                h->n_joint, h->n_head, h->width, h->n_ff);
+        bind_err(m, "error: clef: invalid decision head geometry (routing %d, "
+                 "blocks %d, heads %d, width %d, feedforward %d)\n", h->n_routing,
+                 h->n_joint, h->n_head, h->width, h->n_ff);
         free(h);
         return false;
     }
@@ -15842,16 +16009,20 @@ static bool model_clef_bind(model_t *m, gguf_file *g, const char *arch) {
     h->scorer_out   = clef_mat(g, "decision.scorer_out.weight", W, 1, &ok);
     h->scorer_out_b = clef_vec(g, "decision.scorer_out.bias", 1, &ok);
     float *sc = clef_vec(g, "decision.scales", 3, &ok);
-    if (sc) {
+    if (sc && t_bind_dry) {
+        // the one refusal a conversion's values decide: the fit's dry bind
+        // has a placeholder, not the values, so it stays the load's
+        free(sc);
+    } else if (sc) {
         h->prior_scale = sc[0]; h->joint_scale = sc[1]; h->gate = sc[2];
         free(sc);
         // what the converter stores: exp(min(x, ln 100)) twice and a sigmoid
         if (!(h->prior_scale > 0 && h->prior_scale <= 100.0001f) ||
             !(h->joint_scale > 0 && h->joint_scale <= 100.0001f) ||
             !(h->gate >= 0 && h->gate <= 1)) {
-            fprintf(stderr, "error: clef: decision.scales [%g, %g, %g] are not "
-                    "two clamped exponentials and a sigmoid\n",
-                    (double)h->prior_scale, (double)h->joint_scale, (double)h->gate);
+            bind_err(m, "error: clef: decision.scales [%g, %g, %g] are not "
+                     "two clamped exponentials and a sigmoid\n",
+                     (double)h->prior_scale, (double)h->joint_scale, (double)h->gate);
             ok = false;
         }
     }

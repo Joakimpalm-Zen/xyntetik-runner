@@ -8,6 +8,7 @@ cover the tensors it declares. That refusal is a safety property: it is what
 stops a truncated or crafted file from pointing a tensor outside the mapping.
 Both halves are asserted here.
 """
+import json
 import os
 import pathlib
 import re
@@ -129,6 +130,11 @@ def _ple_header(path, arch="gemma4", ple_width=512, ffn=True):
 
     Absolute byte anchor: Q8_0 stores 32 values in 34 bytes. The ordinary
     tied token/output table and BF16 model projection remain in the hot set.
+    Every tensor a load binds is declared (R6.68.45: the fit's plan runs the
+    loader's tensor binders, dry, and refuses a header they would refuse): the
+    output norm, each block's norms, attention and FFN, and for gemma4 with a
+    per-layer input width its projection norm and each block's PLE gate,
+    projection and norm.
     """
     kv = [ks("general.architecture", arch),
           ku(f"{arch}.block_count", 64),
@@ -142,12 +148,31 @@ def _ple_header(path, arch="gemma4", ple_width=512, ffn=True):
           *([ku(f"{arch}.feed_forward_length", 1024)] if ffn else []),
           ku(f"{arch}.attention.key_length", 64),
           ku(f"{arch}.context_length", 4096)]
+    E, H, KV, HD, FF = 256, 4, 1, 64, 1024
+    F32, BF16 = (0, 4), (30, 2)
     tensors = [("per_layer_token_embd.weight", 32768, 262144, 8, 34 / 32),
-               ("token_embd.weight", 256, 262144, 8, 34 / 32),
-               ("per_layer_model_proj.weight", 256, 32768, 30, 2)]
+               ("token_embd.weight", E, 262144, 8, 34 / 32),
+               ("per_layer_model_proj.weight", E, 32768, *BF16),
+               ("output_norm.weight", E, 1, *F32)]
+    ple = arch == "gemma4" and ple_width > 0
+    if ple:
+        tensors.append(("per_layer_proj_norm.weight", ple_width, 1, *F32))
+    for i in range(64):
+        b = f"blk.{i}."
+        tensors += [(b + "attn_norm.weight", E, 1, *F32), (b + "ffn_norm.weight", E, 1, *F32),
+                    (b + "attn_q.weight", E, H * HD, *BF16), (b + "attn_k.weight", E, KV * HD, *BF16),
+                    (b + "attn_v.weight", E, KV * HD, *BF16),
+                    (b + "attn_output.weight", H * HD, E, *BF16),
+                    (b + "ffn_gate.weight", E, FF, *BF16), (b + "ffn_up.weight", E, FF, *BF16),
+                    (b + "ffn_down.weight", FF, E, *BF16)]
+        if ple:
+            tensors += [(b + "inp_gate.weight", E, ple_width, *BF16),
+                        (b + "proj.weight", ple_width, E, *BF16),
+                        (b + "post_norm.weight", E, 1, *F32)]
     directory, offset = b"", 0
     for name, width, rows, kind, bytes_per_value in tensors:
-        directory += s(name) + struct.pack("<IQQIQ", 2, width, rows, kind, offset)
+        dims = struct.pack("<IQ", 1, width) if rows == 1 else struct.pack("<IQQ", 2, width, rows)
+        directory += s(name) + dims + struct.pack("<IQ", kind, offset)
         offset += int(width * rows * bytes_per_value)
     head = struct.pack("<IIQQ", 0x46554747, 3, len(tensors), len(kv))
     head += b"".join(kv) + directory
@@ -163,7 +188,7 @@ def test_eseries_fit_excludes_only_the_row_gathered_table(runner_bin, tmp_path):
     p = run(runner_bin, "-m", str(path), "--info", "fit", "--gpu", "off", "-c", "512")
     assert p.returncode == 0, p.stderr.decode()
     out = p.stdout.decode()
-    assert path.stat().st_size < 1024
+    assert path.stat().st_size < 1 << 16   # descriptors: kilobytes for 8.7 GiB of tensors
     gib = 2 ** 30
     assert re.search(rf"weights\s+{total / gib:.2f} GiB", out), out
     assert re.search(rf"hot set\s+{(total - cold) / gib:.2f} GiB", out), out
@@ -180,7 +205,7 @@ def test_eseries_fit_excludes_only_the_row_gathered_table(runner_bin, tmp_path):
                    - (total - cold + kv) / gib) < 0.011, out
 
 
-@pytest.mark.parametrize("arch,ple_width", [("llama", 512), ("gemma4", 0), ("gemma4", 256)])
+@pytest.mark.parametrize("arch,ple_width", [("llama", 512), ("gemma4", 0)])
 def test_fit_does_not_discount_an_unrecognized_ple_table(runner_bin, tmp_path, arch, ple_width):
     path = tmp_path / "not-ple.gguf"
     _ple_header(path, arch, ple_width)
@@ -188,6 +213,21 @@ def test_fit_does_not_discount_an_unrecognized_ple_table(runner_bin, tmp_path, a
     assert p.returncode == 0, p.stderr.decode()
     assert "hot set" not in p.stdout.decode()
     assert "row-gathered" not in p.stdout.decode()
+
+
+def test_a_ple_table_the_loader_refuses_is_not_priced(runner_bin, tmp_path):
+    """A gemma4 header declaring a per-layer input width (256) its table does
+    not carry (32768 = 64 x 512): the loader refuses the table's shape, so the
+    fit does too (R6.68.45), and prices no row-gathered set for it."""
+    path = tmp_path / "not-ple.gguf"
+    _ple_header(path, "gemma4", 256)
+    p = run(runner_bin, "-m", str(path), "--info", "fit", "--gpu", "off")
+    assert p.returncode == 1, p
+    out = p.stdout.decode()
+    assert re.search(r"verdict\s+WILL NOT LOAD .* the loader refuses this file: tensor "
+                     r"per_layer_token_embd\.weight in blk\.0 has shape \[32768,262144\], "
+                     r"expected \[16384,>=262144\]", out), out
+    assert "row-gathered" not in out
 
 
 # R3.48: deepseek2's KV as the loader lays it out. The absorbed form, the default, keeps one row a token and layer,
@@ -278,3 +318,216 @@ def test_the_plans_quiet_lines_stay_quiet_only_for_the_fit(runner_bin, tmp_path)
                "-c", "256")
     assert b"gemma4:" not in fit.stdout + fit.stderr
     assert b"gemma4:" in load.stderr, load.stderr
+
+
+# R6.68.45: the fit's plan runs the loader's tensor binders too, dry: every
+# tensor the load would find, type and shape-check, none read (the fit opens
+# the header alone, and no tensor has data through that handle).
+def _pair(tmp_path, gen):
+    """A recurrent hybrid fixture and its `.missing-ssm_d` twin."""
+    prefix = tmp_path / "h"
+    subprocess.run([sys.executable, ROOT / "scripts" / gen, str(prefix)], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    return tmp_path / "h.gguf", tmp_path / "h.missing-ssm_d.gguf"
+
+
+@pytest.mark.parametrize("gen", ["make-test-hybrid.py", "make-test-nemotron.py"],
+                         ids=["granitehybrid", "nemotron_h"])
+def test_a_file_the_tensor_binders_refuse_is_the_fits_answer(runner_bin, tmp_path, gen):
+    """The fit said FITS for test-hybrid-batch.missing-ssm_d and
+    test-bridge-nemo.missing-ssm_d while their load refused "missing tensor
+    blk.0.ssm_d": its plan ran the metadata binders and never the tensor ones.
+    The verdict is now the load's refusal, in the load's own words."""
+    whole, broken = _pair(tmp_path, gen)
+    load = run(runner_bin, "-m", str(broken), "-p", "hi", "-n", "1", "--gpu", "off", "-t", "1",
+               "-c", "64")
+    assert load.returncode != 0, load
+    errors = [ln for ln in load.stderr.decode().splitlines() if ln.startswith("error: ")]
+    assert errors and errors[0] == "error: missing tensor blk.0.ssm_d", load.stderr
+    fit = run(runner_bin, "-m", str(broken), "--info", "fit", "--gpu", "off")
+    assert fit.returncode == 1, fit
+    out = fit.stdout.decode()
+    assert re.search(r"verdict\s+WILL NOT LOAD .* the loader refuses this file: "
+                     r"missing tensor blk\.0\.ssm_d", out), out
+    assert run(runner_bin, "-m", str(whole), "--info", "fit", "--gpu", "off").returncode == 0
+
+
+NO_READ = {
+    # bind_layer reads each block's stored output scale (0.91 + 0.02 i here)
+    "gemma4-output-scale": ("make-test-model.py", ["--gemma4-hetero"]),
+    # bind_deltanet_mixer dequantizes the conv taps once
+    "qwen35-conv-taps": ("make-test-ornith.py", []),
+    # model_clef_bind refuses decision.scales by their values
+    "clef-scales": ("make-test-clef.py", []),
+}
+
+
+@pytest.mark.parametrize("case", sorted(NO_READ))
+def test_the_fits_dry_bind_reads_no_tensor(runner_bin, tmp_path, case):
+    """Each file's load reads tensor values while it binds. Through the fit's
+    header-only handle every tensor's data is NULL, so a read in the dry bind
+    faults; the fit answers each one, and plans the same geometry the load
+    lays out."""
+    gen, args = NO_READ[case]
+    model = tmp_path / "m.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts" / gen, *args, str(model)], check=True,
+                   cwd=ROOT, stdout=subprocess.DEVNULL)
+    env = dict(os.environ, RUNNER_DEBUG_VRAM="1")
+    fit = subprocess.run([runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off", "-c", "256"],
+                         cwd=ROOT, capture_output=True, timeout=120, env=env)
+    assert fit.returncode == 0, (fit.returncode, fit.stderr)
+    assert b"WILL NOT LOAD" not in fit.stdout, fit.stdout
+    load = subprocess.run([runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "--gpu", "off",
+                           "-t", "1", "-c", "256"], cwd=ROOT, capture_output=True, timeout=120, env=env)
+    assert load.returncode == 0, load.stderr
+    fit_kv = int(G4_GEOM_FIT.search(fit.stderr.decode()).group(1))
+    load_kv = int(G4_GEOM_LOAD.search(load.stderr.decode()).group(1))
+    assert fit_kv == load_kv, (fit_kv, load_kv)
+
+
+# R6.68.50: the agent-profile check is the plan's first step. It ran in
+# model_bind_weights ahead of the plan, so the fit priced a file whose profile
+# the load refuses.
+PROFILE_REFUSALS = {
+    "unknown-feature": ["--agent-feature", "future_attention_v99"],
+    "mtp-feature": ["--agent-feature", "mtp"],
+    "bad-digest": ["--agent-digest", "z" * 64],
+}
+
+
+def _profile_model(tmp_path, flags):
+    model = tmp_path / "profile.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", *flags, str(model)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    return model
+
+
+@pytest.mark.parametrize("case", sorted(PROFILE_REFUSALS))
+def test_an_agent_profile_the_load_refuses_is_the_fits_answer(runner_bin, tmp_path, case):
+    """The fit's reason is the load's first error line, word for word."""
+    model = _profile_model(tmp_path, PROFILE_REFUSALS[case])
+    load = run(runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "--gpu", "off", "-t", "1",
+               "-c", "64")
+    assert load.returncode != 0, load
+    errors = [ln for ln in load.stderr.decode().splitlines() if ln.startswith("error: ")]
+    assert errors, load.stderr
+    fit = run(runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off")
+    assert fit.returncode == 1, fit
+    verdict = [ln for ln in fit.stdout.decode().splitlines() if "verdict" in ln]
+    assert verdict and "WILL NOT LOAD" in verdict[0], fit.stdout
+    reason = verdict[0].split("the loader refuses this file: ", 1)[1]
+    assert errors[0] == "error: " + reason, (errors[0], reason)
+
+
+def test_a_valid_agent_profile_still_fits(runner_bin, tmp_path):
+    model = _profile_model(tmp_path, ["--agent-profile"])
+    fit = run(runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off")
+    assert fit.returncode == 0, fit
+    assert b"WILL NOT LOAD" not in fit.stdout
+
+
+def test_a_split_expert_moe_is_priced_as_sparse(runner_bin, tmp_path):
+    """R6.68.53: the legacy layout of one tensor per expert (older Mixtral
+    GGUFs) is a sparse MoE to the load, whose hot set discounts its banks
+    (model_hot_set_bytes). The fit found routed banks by the name
+    `_exps.weight`, which that layout never has, and priced the file as dense:
+    no hot set, the whole file. make-test-moe.py's moe3 routes 1 of 2 experts
+    in that layout."""
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py", str(tmp_path / "m")],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    p = run(runner_bin, "-m", str(tmp_path / "m.moe3.gguf"), "--info", "fit", "--gpu", "off")
+    assert p.returncode == 0, p
+    out = p.stdout.decode()
+    assert "MoE 2 experts, 1 used" in out, out
+    assert "only the routed experts a token actually uses" in out, out
+
+
+# R6.68.55: qwen4exp's context cap. This build runs the sparse-attention
+# indexer dense, which is exact only up to its top_k (2048 in the fixture, as
+# in the real Qwen3.8-Flash-Next file). The check sat in the bind, which runs
+# before any context is set, and never fired: a default load took 4096.
+def _qwen4exp(tmp_path, train_ctx):
+    model = tmp_path / "q.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-qwen4exp.py", str(model)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, QWEN4EXP_TEST_CTX=str(train_ctx)))
+    return model
+
+
+def test_qwen4exp_refuses_a_context_past_its_indexer_top_k(runner_bin, tmp_path):
+    model = _qwen4exp(tmp_path, 8192)
+    load = run(runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "--gpu", "off", "-t", "1",
+               "-c", "4096")
+    assert load.returncode != 0, load
+    assert b"admits contexts up to 2048 tokens (asked 4096)" in load.stderr, load.stderr
+    fit = run(runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off", "-c", "4096")
+    assert fit.returncode == 1, fit
+    assert re.search(r"WILL NOT LOAD .* admits contexts up to 2048 tokens \(asked 4096\)",
+                     fit.stdout.decode()), fit.stdout
+
+
+def test_qwen4exp_holds_a_default_context_to_its_indexer_top_k(runner_bin, tmp_path):
+    model = _qwen4exp(tmp_path, 8192)
+    load = run(runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "--gpu", "off", "-t", "1")
+    assert load.returncode == 0, load
+    assert b"| ctx 2048 |" in load.stdout + load.stderr, load.stderr
+    fit = run(runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off")
+    assert fit.returncode == 0, fit
+    assert b"at ctx 2048" in fit.stdout, fit.stdout
+
+
+def test_a_router_past_the_device_caps_runs_on_the_cpu_and_the_fit_says_so(runner_bin, tmp_path):
+    """R6.68.67: a device bank's router takes at most so many experts and picks
+    a token (CUDA 512 and 256, Metal 256 and 256). Every CUDA route clamped past
+    them and nothing refused, so such a model was routed among a subset of its
+    experts on the device alone (the class of 2026-10-07, when the cap was 256).
+    The load now runs it on the CPU and says why, and --info fit says the same
+    words. make-test-moe.py's wide file routes 2 of 520."""
+    gpu = json.loads(run(runner_bin, "--caps").stdout).get("gpu") or {}
+    if not gpu.get("name"):
+        pytest.skip("no GPU device in this build or on this machine")
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py", str(tmp_path / "m")],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, MOE_TEST_WIDE="520"))
+    model = tmp_path / "m.wide.gguf"
+    load = run(runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "-t", "1", "-c", "64")
+    assert load.returncode == 0, load
+    said = [ln for ln in load.stderr.decode().splitlines() if ln.startswith("gpu: this model routes")]
+    assert said, load.stderr
+    fit = run(runner_bin, "-m", str(model), "--info", "fit")
+    assert fit.returncode == 0, fit
+    marker = "present, but the load runs on the CPU: "
+    lines = [ln for ln in fit.stdout.decode().splitlines() if marker in ln]
+    assert lines, fit.stdout
+    reason = lines[0].split(marker, 1)[1]
+    assert "routes 2 of 520 experts" in reason, reason
+    assert said[0].startswith("gpu: " + reason + ","), (said[0], reason)
+
+
+def _wide_moe(tmp_path, name, experts, used):
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py", str(tmp_path / name)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, MOE_TEST_WIDE=str(experts),
+                            MOE_TEST_WIDE_USED=str(used)))
+    return tmp_path / f"{name}.wide.gguf"
+
+
+def test_a_router_picking_past_the_host_selection_is_refused_not_run(runner_bin, tmp_path):
+    """R6.68.89: the host keeps a token's picked experts in arrays of 256.
+    The MoE binder held expert_used_count to expert_count (up to 1024) only,
+    so a file picking 257 loaded and the first token wrote past those arrays
+    (SIGSEGV). The bind refuses it now, for every MoE binder, and --info fit
+    says the same words. 256 still runs."""
+    model = _wide_moe(tmp_path, "over", 258, 257)
+    load = run(runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "--gpu", "off",
+               "-t", "1", "-c", "64")
+    assert load.returncode == 1, load
+    said = [ln for ln in load.stderr.decode().splitlines()
+            if "picks 257 experts a token" in ln]
+    assert said, load.stderr
+    fit = run(runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off")
+    assert said[0].removeprefix("error: ") in (fit.stdout + fit.stderr).decode(), fit
+    edge = _wide_moe(tmp_path, "edge", 258, 256)
+    ok = run(runner_bin, "-m", str(edge), "-p", "hi", "-n", "1", "--gpu", "off",
+             "-t", "1", "-c", "64")
+    assert ok.returncode == 0, ok
