@@ -5514,18 +5514,18 @@ static bool bind_arch_meta(model_t *m, gguf_file *g, const char *arch, bool late
     return false;
 }
 
-static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
-    if (!gguf_open(&m->gf, path)) return false;
-    gguf_file *g = &m->gf;
-    if (!bind_agent_profile(m, g)) return false;
-    // kept for the backend's shared-weight registry: two instances of the same
-    // file are what let `--parallel N` upload the weights once
-    size_t plen = strlen(path) + 1;
-    m->path = malloc(plen);
-    if (!m->path) return false;
-    memcpy(m->path, path, plen);
-    model_record_file_id(m, path);
-
+// The plan step (R6.68.29): what a load decides about a file's geometry, from
+// its header alone. The loader's own metadata binders in the loader's order:
+// admission, the shared hyperparameters, each family's binders (bind_arch_meta)
+// around the NextN and sliding-window defaults, the resolved defaults, the
+// MoE geometry and the geometry gate. None reads a tensor's data, so a header
+// without its data section (--info fit on a partial download) plans as the
+// file it heads. It sets m->arch and m->ad and every scalar and per-layer
+// table those binders fill (head widths and counts, the sliding pattern, the
+// shared-KV map, the NextN count); model_bind_weights then binds the tensors
+// over it, and a plan made for its own sake is released with
+// model_free_weights.
+static bool model_plan(model_t *m, gguf_file *g, const model_params *p) {
     const char *arch = gguf_get_str(g, "general.architecture", "?");
     if (!bind_admit_architecture(m, arch)) return false;
     if (!bind_refuse_rotated_basis(m, g)) return false;
@@ -5552,8 +5552,23 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
         char key[128];
         m->expert_norm_w = gguf_get_bool(g, AK("expert_weights_norm"), false);
     }
-    if (!bind_validate_geometry(m, g, arch, hybrid_typed)) return false;
+    return bind_validate_geometry(m, g, arch, hybrid_typed);
+}
 
+static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
+    if (!gguf_open(&m->gf, path)) return false;
+    gguf_file *g = &m->gf;
+    if (!bind_agent_profile(m, g)) return false;
+    // kept for the backend's shared-weight registry: two instances of the same
+    // file are what let `--parallel N` upload the weights once
+    size_t plen = strlen(path) + 1;
+    m->path = malloc(plen);
+    if (!m->path) return false;
+    memcpy(m->path, path, plen);
+    model_record_file_id(m, path);
+
+    if (!model_plan(m, g, p)) return false;
+    const char *arch = gguf_get_str(g, "general.architecture", "?");
     if (!bind_global_tensors(m, g)) return false;
 
     // one spare slot: block n_layer is the NextN/MTP head when consumed
