@@ -859,6 +859,42 @@ static bool qwen35_kv_rows_typed(const arch_desc *ad) {
 static bool model_plan(model_t *m, gguf_file *g, const model_params *p);
 static void model_free_weights(model_t *m);
 
+// The loader's plan of the header for --info fit: quiet (plan_only), with the
+// first refusal in pm->plan_why. On false it is already released and zeroed
+// but for plan_why, so releasing it again is harmless.
+static bool fit_plan(gguf_file *g, model_t *pm) {
+    memset(pm, 0, sizeof *pm);
+    pm->plan_only = true;
+    model_params pp;
+    memset(&pp, 0, sizeof pp);
+    if (model_plan(pm, g, &pp)) return true;
+    char why[sizeof pm->plan_why];
+    memcpy(why, pm->plan_why, sizeof why);
+    model_free_weights(pm);
+    memset(pm, 0, sizeof *pm);
+    memcpy(pm->plan_why, why, sizeof why);
+    return false;
+}
+
+// Whether block i carries recurrent state, as its binder types it from the
+// metadata: a qwen35-family layer off the full-attention interval, a
+// granitehybrid or lfm2 layer with no KV heads, a nemotron_h block with
+// neither KV heads nor an FFN. bind_layer, nemotron_bind_layer and --info fit
+// ask this one rule (R6.68.29).
+static bool layer_is_recurrent(const model_t *m, gguf_file *g, int i) {
+    if (i >= m->n_layer) return false;
+    if (m->qwen35) return (i + 1) % m->full_attn_interval != 0;
+    if (m->granite_hybrid || m->lfm2) return m->l_head_kv && m->l_head_kv[i] == 0;
+    if (m->nemotron_h) {
+        char ffkey[64];
+        meta_key(ffkey, sizeof ffkey, gguf_get_str(g, "general.architecture", "nemotron_h"),
+                 "feed_forward_length");
+        return m->l_head_kv && m->l_head_kv[i] == 0 &&
+               gguf_get_u32_idx(g, ffkey, (uint64_t)i, 0) == 0;
+    }
+    return false;
+}
+
 // The geometry --info fit charges, from the loader's own plan of the file
 // (model_plan, R6.68.29): the trunk and each block's KV width as the binders
 // lay them out, the widest head, the head count, MLA's shared V row and the
@@ -870,15 +906,11 @@ static bool fit_geometry(gguf_file *g, int n_layer, bool mtp, fit_geom *o,
     memset(o, 0, sizeof *o);
     if (why && why_n) why[0] = 0;
     model_t pm;
-    memset(&pm, 0, sizeof pm);
-    pm.plan_only = true;
-    model_params pp;
-    memset(&pp, 0, sizeof pp);
-    if (!model_plan(&pm, g, &pp) || n_layer <= 0) {
+    if (!fit_plan(g, &pm) || n_layer <= 0) {
         if (why && why_n)
             snprintf(why, why_n, "%s", pm.plan_why[0] ? pm.plan_why
                                        : "its header does not describe a model the loader can plan");
-        model_free_weights(&pm);
+        if (n_layer <= 0) model_free_weights(&pm);
         return false;
     }
     o->kv_dim = calloc((size_t)n_layer, sizeof(uint64_t));
@@ -1077,71 +1109,24 @@ int model_gpu_window(uint64_t spare, uint64_t per_col, int instances,
 // With f->n_seq slots each pays its own KV, host and device, and its own
 // activation scratch; the weights and the headroom are paid once, as the
 // loader's split plans it (cuda.c shared_plan_budget).
-static bool swa_pattern_array(gguf_file *g, const char *key, bool *out, int n);
 
-// R3.50: the layers a load types as sliding, and their window, from the
-// header alone, by the binders' own rules in the order the loader applies
-// them: bind_meta_gemma3, _gptoss, _afmoe, _spark25 and _flint set the table;
-// any other family with a window takes bind_swa_default; gemma4 and
-// muse-glimmer rebuild it afterwards. Returns the window, 0 when no layer
-// slides. A change to one of those binders is a change here:
-// tests/test_cuda_fit_ring.py holds the fit and the load to one split.
-static int fit_swa_layers(gguf_file *g, const char *arch, int n_layer,
-                          int train_ctx, bool *is_swa) {
-    char key[128];
-    const arch_id id = arch_find(arch)->id;
+// R3.50, R6.68.29: the layers a load types as sliding, and their window, as
+// the loader's plan types them (the binders' own patterns and defaults: gemma3,
+// gpt-oss, afmoe, spark2_5 and flint set the table, any other family with a
+// window takes bind_swa_default, gemma4 and muse-glimmer rebuild it). Returns
+// the window, 0 when no layer slides.
+static int fit_swa_layers(gguf_file *g, int n_layer, bool *is_swa) {
     for (int i = 0; i < n_layer; i++) is_swa[i] = false;
-    int sw = 0;
-    if (id == ARCH_GEMMA3 || id == ARCH_MUSE_GLIMMER) {
-        bool gemma = id == ARCH_GEMMA3;
-        sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), gemma ? 0 : 2048);
-        int per = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), gemma ? 6 : 4);
-        if (per < 1) per = gemma ? 6 : 4;
-        if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"), is_swa, n_layer))
-            for (int i = 0; i < n_layer; i++) is_swa[i] = sw > 0 && (i + 1) % per != 0;
-        else if (gemma && sw <= 0)
-            for (int i = 0; i < n_layer; i++) is_swa[i] = false;
-    } else if (id == ARCH_GPT_OSS || id == ARCH_AFMOE) {
-        bool oss = id == ARCH_GPT_OSS;
-        sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), oss ? 0 : 2048);
-        int per = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), oss ? 2 : 4);
-        if (per < 1) per = oss ? 2 : 4;
-        for (int i = 0; i < n_layer; i++) is_swa[i] = sw > 0 && (i + 1) % per != 0;
-    } else if (id == ARCH_SPARK2_5 || id == ARCH_FLINT) {
-        // both require a window and the boolean pattern; the loader refuses
-        // the file without them, and so the fit charges it no ring
-        sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
-        if (sw <= 0 || !swa_pattern_array(g, AK("attention.sliding_window_pattern"), is_swa, n_layer)) {
-            for (int i = 0; i < n_layer; i++) is_swa[i] = false;
-            sw = 0;
-        }
-    } else if (id == ARCH_GEMMA4) {
-        // raw pattern bits (bool, u8 or i8), the layer slides only under a window
-        sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
-        gguf_kv *pat = gguf_get(g, AK("attention.sliding_window_pattern"));
-        if (pat && (pat->type != GGUF_T_ARR || !pat->arr_raw ||
-                    (pat->arr_type != GGUF_T_BOOL && pat->arr_type != GGUF_T_U8 &&
-                     pat->arr_type != GGUF_T_I8)))
-            pat = NULL;
-        for (int i = 0; i < n_layer; i++)
-            is_swa[i] = pat && (uint64_t)i < pat->arr_n && sw > 0 &&
-                        ((const uint8_t *)pat->arr_raw)[i] != 0;
-    } else {   // bind_swa_default
-        sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
-        bool uniform = id == ARCH_PHI3;
-        if (uniform && sw >= train_ctx) sw = 0;
-        if (sw > 0) {
-            int per = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 2);
-            if (per < 1) per = 2;
-            if (uniform)
-                for (int i = 0; i < n_layer; i++) is_swa[i] = true;
-            else if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"), is_swa, n_layer))
-                for (int i = 0; i < n_layer; i++) is_swa[i] = (i + 1) % per != 0;
-        }
-    }
+    model_t pm;
+    if (!fit_plan(g, &pm)) return 0;
     int n = 0;
-    for (int i = 0; i < n_layer; i++) n += is_swa[i];
-    return n > 0 && sw > 0 ? sw : 0;
+    for (int i = 0; i < n_layer && i < pm.n_layer; i++) {
+        is_swa[i] = pm.swa_window > 0 && pm.l_is_swa && pm.l_is_swa[i];
+        n += is_swa[i];
+    }
+    int window = n > 0 ? pm.swa_window : 0;
+    model_free_weights(&pm);
+    return window;
 }
 
 // The ring decision a load makes (kv_ring_wanted): --kv-ring or RUNNER_KV_RING
@@ -1274,33 +1259,24 @@ static uint64_t fit_layer_host_expert_bytes(gguf_file *g, int l) {
     return wb;
 }
 
-// R3.46: a hybrid's recurrent state and scratch, by the plan's own rule
-// (model_gpu_recurrent_cost); the families cuda.c runs on the device (lfm2's
-// short convolution runs on the CPU only: no device state). *kind is the
-// MODEL_GPU_REC_* the device charges; the count is of the trunk's layers that
-// hold that state (R3.47), as the loader types them (bind_layer): qwen35's
-// DeltaNet layers off the attention interval, granitehybrid's head_count_kv 0,
-// nemotron_h's head_count_kv and feed_forward_length both 0; every trunk layer
-// under the 1.15.0 layout.
+// R3.46, R3.47, R6.68.29: a hybrid's recurrent state, by the plan's own rule
+// (model_gpu_recurrent_cost). *kind is the MODEL_GPU_REC_* a device charges
+// (lfm2's short convolution runs on the CPU only: none); the count is of the
+// trunk's layers that hold that state, as the loader types them
+// (layer_is_recurrent), or every trunk layer under the 1.15.0 layout, as
+// model_rec_count counts them.
 static uint64_t fit_rec_layers(gguf_file *g, int n_layer, int *kind) {
-    char key[128];
-    const char *arch = gguf_get_str(g, "general.architecture", "");
-    const arch_desc *ad = arch_find(arch);
-    int rec = ad->rec == ARCH_REC_DELTANET ? MODEL_GPU_REC_DELTANET
-            : ad->rec == ARCH_REC_MAMBA2 ? MODEL_GPU_REC_MAMBA2
+    *kind = MODEL_GPU_REC_NONE;
+    model_t pm;
+    if (!fit_plan(g, &pm)) return 0;
+    int rec = pm.ad->rec == ARCH_REC_DELTANET ? MODEL_GPU_REC_DELTANET
+            : pm.ad->rec == ARCH_REC_MAMBA2 ? MODEL_GPU_REC_MAMBA2
             : MODEL_GPU_REC_NONE;
     uint64_t rec_n = 0;
     if (rec != MODEL_GPU_REC_NONE && recurrent_layout_1150()) rec_n = (uint64_t)n_layer;
-    else if (rec == MODEL_GPU_REC_DELTANET) {
-        uint32_t every = gguf_get_u32(g, AK("full_attention_interval"), 4);
-        for (int l = 0; l < n_layer; l++) if (!every || (l + 1) % every != 0) rec_n++;
-    } else if (rec == MODEL_GPU_REC_MAMBA2) {
-        bool nemo = arch_family(ad) == ARCH_NEMOTRON_H;
-        for (int l = 0; l < n_layer; l++)
-            if (gguf_get_u32_idx(g, AK("attention.head_count_kv"), (uint64_t)l, 0) == 0 &&
-                (!nemo || gguf_get_u32_idx(g, AK("feed_forward_length"), (uint64_t)l, 0) == 0))
-                rec_n++;
-    }
+    else if (rec != MODEL_GPU_REC_NONE)
+        for (int l = 0; l < n_layer; l++) rec_n += layer_is_recurrent(&pm, g, l);
+    model_free_weights(&pm);
     *kind = rec;
     return rec_n;
 }
@@ -1309,9 +1285,8 @@ static uint64_t fit_rec_layers(gguf_file *g, int n_layer, int *kind) {
 // line a load prints from the model it built (model_debug_geometry), so
 // tests/test_fit_matches_load.py can hold the two equal field by field.
 void model_fit_print_geometry(gguf_file *g, const model_fit *f) {
-    const char *arch = gguf_get_str(g, "general.architecture", "");
     bool *is_swa = calloc((size_t)(f->n_layer > 0 ? f->n_layer : 1), sizeof(bool));
-    int window = is_swa ? fit_swa_layers(g, arch, f->n_layer, f->train_ctx, is_swa) : 0;
+    int window = is_swa ? fit_swa_layers(g, f->n_layer, is_swa) : 0;
     int n_swa = 0;
     for (int l = 0; window > 0 && l < f->n_layer; l++) n_swa += is_swa[l];
     free(is_swa);
@@ -1409,7 +1384,7 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
     // a load allocates rather than the flat cache
     bool *is_swa = calloc((size_t)f->n_layer, sizeof(bool));
     if (!is_swa) { free(lb); free(cost); free(geo.kv_dim); return false; }
-    int window = fit_swa_layers(g, arch, f->n_layer, f->train_ctx, is_swa);
+    int window = fit_swa_layers(g, f->n_layer, is_swa);
     int batch = f->n_batch > 0 ? f->n_batch : 64;
     if (batch > f->n_ctx) batch = f->n_ctx;
     int rows = window > 0 ? model_kv_ring_rows(window, batch, f->n_ctx) : f->n_ctx;
@@ -2463,7 +2438,7 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
     meta_key(ffkey, sizeof ffkey, gguf_get_str(g, "general.architecture", "nemotron_h"),
              "feed_forward_length");
     int ff = (int)gguf_get_u32_idx(g, ffkey, (uint64_t)i, 0);
-    if (kv == 0 && ff == 0) {
+    if (layer_is_recurrent(m, g, i)) {
         // ---- recurrent (Mamba-2) block: mixer only, no FFN ----
         l->recurrent = true;
         l->skip_ffn  = true;
@@ -5333,11 +5308,7 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
         l->attn_sinks = tensor_to_f32(
             need_tensor(g, "blk.%d.attn_sinks.weight", i, &ok),
             m->n_head, &ok);
-    l->recurrent = m->qwen35 ? (i < m->n_layer &&
-                                (i + 1) % m->full_attn_interval != 0)
-                 : (m->granite_hybrid || m->lfm2) ? (m->l_head_kv && i < m->n_layer &&
-                                                     m->l_head_kv[i] == 0)
-                 : false;
+    l->recurrent = layer_is_recurrent(m, g, i);
     if (l->recurrent && m->qwen35) {
         if (!bind_deltanet_mixer(m, g, l, i, an, fn, &ok)) return false;
         l->out_scale = 1.0f;
