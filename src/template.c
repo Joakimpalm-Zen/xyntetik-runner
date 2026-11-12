@@ -7095,6 +7095,13 @@ static bool g4_one_call(const char **pp, const char *end, int index, sbuf *tc) {
         free(args.s);
         return false;
     }
+    // What a client is handed as `arguments` is a JSON document. The reader
+    // above copies a number as the run of digits, signs and points it finds
+    // and a key as often as it is written, which an unconstrained turn can
+    // make `.5`, `1-2` or the same key twice (R6.68.73): not a call then.
+    jv *args_doc = json_parse(args.s, args.n);
+    if (!args_doc) { free(args.s); return false; }
+    jv_free(args_doc);
     // the block close is optional here: a document the constraint closer
     // finished carries it, one cut off by a dropped connection may not, and
     // the arguments are already complete either way
@@ -9654,12 +9661,18 @@ int tool_calls_parse(sbuf *content, sbuf *tc) {
         // publishes a new length only when it found a call, so a document with
         // no call at all came back at its original length with 17 bytes of its
         // own tail repeated on the end.
-        if (brace >= end || *brace != '{' || depth != 0) {
+        // ... or the braces match around text that is not JSON (R6.68.73):
+        // `arguments` is a document a client parses, never the model's bytes
+        // on trust.
+        jv *args_doc = brace < end && *brace == '{' && depth == 0
+                           ? json_parse(brace, (size_t)(q - brace)) : NULL;
+        if (!args_doc) {
             memmove(w, o, (size_t)(name - o));
             w += name - o;
             p = name;
             continue;
         }
+        jv_free(args_doc);
         sb_fmt(tc, "%s{\"id\":\"call_%d\",\"type\":\"function\",\"function\":"
                    "{\"name\":\"", n_calls ? "," : "", n_calls);
         sb_esc(tc, name, (int)(brace - name));

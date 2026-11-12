@@ -1994,6 +1994,39 @@ static void test_names_and_keys_the_call_syntax_cannot_carry(void) {
     jv_free(quote_name);
 }
 
+// R6.68.73: `arguments` is a JSON document, which a client parses. The two
+// readers of an unconstrained turn handed out what the model wrote: gemma4's
+// copied any run of digits, signs and points as a number, the generic one
+// any brace-matched text. A block whose arguments are not JSON is not a
+// call, and its bytes stay content.
+static void test_unconstrained_arguments_are_json_or_not_a_call(void) {
+    static const struct { int tmpl; const char *doc; const char *args; } cases[] = {
+        { TMPL_GEMMA4, "<|tool_call>call:f{a:0.5,b:-1e3}<tool_call|>", "{\\\"a\\\":0.5,\\\"b\\\":-1e3}" },
+        { TMPL_GEMMA4, "<|tool_call>call:f{a:.5}<tool_call|>", NULL },
+        { TMPL_GEMMA4, "<|tool_call>call:f{a:1.}<tool_call|>", NULL },
+        { TMPL_GEMMA4, "<|tool_call>call:f{a:+1}<tool_call|>", NULL },
+        { TMPL_GEMMA4, "<|tool_call>call:f{a:1-2}<tool_call|>", NULL },
+        { TMPL_GEMMA4, "<|tool_call>call:f{a:1,a:2}<tool_call|>", NULL },
+        { TMPL_LLAMA3, "<|tool_call>call:f{\"a\": 1}<tool_call|>", "{\\\"a\\\": 1}" },
+        { TMPL_LLAMA3, "<|tool_call>call:f{'a': 1}<tool_call|>", NULL },
+        { TMPL_LLAMA3, "<|tool_call>call:f{a: 1}<tool_call|>", NULL },
+        { TMPL_LLAMA3, "<|tool_call>call:f{\"a\": 1,}<tool_call|>", NULL },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        sbuf content = {0}, tc = {0};
+        sb_put(&content, cases[i].doc, strlen(cases[i].doc));
+        int n = tool_calls_parse_for(cases[i].tmpl, &content, &tc);
+        if (cases[i].args) {
+            assert(n == 1 && strstr(tc.s, cases[i].args));
+        } else {
+            assert(n == 0 && tc.n == 0);
+            assert(content.n == strlen(cases[i].doc) &&
+                   !memcmp(content.s, cases[i].doc, content.n));
+        }
+        free(content.s); free(tc.s);
+    }
+}
+
 static void test_muse_schema_payload_stream_hides_recipient_header(void) {
     tool_envelope e = {.proto = TP_MUSE_PLAIN};
     const char *doc = " to=user<|message|>{\"summary\":\"ok\"}";
@@ -4531,6 +4564,7 @@ int main(void) {
     test_atem_stream_demux_is_boundary_independent();
     test_a_value_may_spell_its_blocks_closing_tag();
     test_names_and_keys_the_call_syntax_cannot_carry();
+    test_unconstrained_arguments_are_json_or_not_a_call();
     test_muse_schema_payload_stream_hides_recipient_header();
     test_stream_demux_holds_back_an_undecided_prefix();
     test_malformed_tool_declarations_are_rejected();
