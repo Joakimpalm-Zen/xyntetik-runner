@@ -6630,6 +6630,26 @@ static const char *atem_attr(const char *p, const char *end, const char *key,
     return v;
 }
 
+// The `</atem:invoke>` that closes the invoke opening at `inv`, or NULL while
+// it is still open. Its parameters are stepped over in order, each to its own
+// `</atem:parameter>`: the grammar ends a raw value only there, so a value
+// may spell the invoke's closing tag (R6.68.71).
+static const char *atem_invoke_close(const char *inv, const char *end) {
+    static const char PAR[] = "<atem:parameter name=\"";
+    static const char PAR_END[] = "</atem:parameter>";
+    const char *name_end = NULL;
+    if (!atem_attr(inv, end, "name=", &name_end)) return NULL;
+    const char *q = atem_find(name_end, end, ">");
+    while (q) {
+        const char *par = atem_find(q, end, PAR);
+        const char *close = atem_find(q, end, "</atem:invoke>");
+        if (!close || !par || close < par) return close;
+        q = atem_find(par, end, PAR_END);
+        if (q) q += sizeof(PAR_END) - 1;
+    }
+    return NULL;
+}
+
 static jv *atem_param_schema(const tool_envelope *e,
                              const char *tool, size_t tool_n,
                              const char *param, size_t param_n) {
@@ -6700,8 +6720,7 @@ static int atem_map(const tool_envelope *e, const char *doc, size_t n,
         const char *name = atem_attr(inv, end, "name=", &name_end);
         if (!name) return -1;
         const char *open_end = atem_find(name_end, end, ">");
-        const char *inv_end = open_end
-                            ? atem_find(open_end, end, "</atem:invoke>") : NULL;
+        const char *inv_end = open_end ? atem_invoke_close(inv, end) : NULL;
         if (!open_end || !inv_end || inv_end > end) return -1;
 
         sbuf args = {0};
@@ -7039,6 +7058,23 @@ static bool g4_json_value(const char **pp, const char *end, sbuf *out,
     sb_put(out, p, (size_t)(q - p));
     *pp = q;
     return true;
+}
+
+// The `<tool_call|>` that closes the call block at `p`, or NULL while it is
+// still open: the first one outside a <|"|> string. The delimiter is a
+// reserved token no value contains, so a value may spell the closing tag and
+// the strings are told apart by counting delimiters (R6.68.71).
+static const char *g4_block_close(const char *p, const char *end) {
+    bool in_str = false;
+    for (;;) {
+        const char *q = atem_find(p, end, G4_Q);
+        const char *c = atem_find(p, end, "<tool_call|>");
+        if (!c) return NULL;
+        if (!in_str && (!q || c < q)) return c;
+        if (!q) return NULL;               // inside a string still arriving
+        in_str = !in_str;
+        p = q + sizeof(G4_Q) - 1;
+    }
 }
 
 // `<|tool_call>call:NAME{ARGS}<tool_call|>` starting at *pp. Appends one
@@ -8521,7 +8557,7 @@ static int ts_atem(tool_stream *s, const char *bytes, int n) {
     for (;;) {
         const char *inv = s->head ? head_find(s, "<atem:invoke name=\"") : NULL;
         if (inv) {
-            const char *close = atem_find(inv, s->head + s->head_n, "</atem:invoke>");
+            const char *close = atem_invoke_close(inv, s->head + s->head_n);
             if (!close) return 0;
             size_t upto = (size_t)(close - s->head) + strlen("</atem:invoke>");
             sbuf content = {0}, tc = {0}, wrapped = {0};
@@ -8599,6 +8635,38 @@ static bool ts_qwen_block_is_call(const tool_stream *s) {
     return !memcmp(s->head + at, "<function=", k);
 }
 
+// How far the function block held at `p` (`<tool_call>`, `<function=NAME>`,
+// its parameters) has come: *fe is one past the `</function>` that follows
+// the parameters, NULL while a parameter or the function is still open. Each
+// parameter is stepped over to its own `</parameter>`, so a value may spell
+// `</function>` or `</tool_call>` (R6.68.71). False for a block that is not
+// of this shape, which the caller reads by its first closing tag.
+static bool coder_block_scan(const char *p, const char *end, const char **fe) {
+    static const char FN[] = "<function=", PAR[] = "<parameter=";
+    static const char PAR_END[] = "</parameter>", FN_END[] = "</function>";
+    *fe = NULL;
+    p = trim_left(p + strlen(QWEN_CALL_OPEN), end);
+    size_t left = (size_t)(end - p);
+    if (left < sizeof(FN) - 1) return !memcmp(p, FN, left);
+    if (memcmp(p, FN, sizeof(FN) - 1)) return false;
+    const char *q = memchr(p, '>', left);
+    if (!q) return true;
+    for (q = trim_left(q + 1, end);; ) {
+        left = (size_t)(end - q);
+        if (left < sizeof(PAR) - 1 && !memcmp(q, PAR, left)) return true;
+        if (left >= sizeof(PAR) - 1 && !memcmp(q, PAR, sizeof(PAR) - 1)) {
+            const char *pe = atem_find(q, end, PAR_END);
+            if (!pe) return true;
+            q = trim_left(pe + sizeof(PAR_END) - 1, end);
+            continue;
+        }
+        if (left < sizeof(FN_END) - 1) return !memcmp(q, FN_END, left);
+        if (memcmp(q, FN_END, sizeof(FN_END) - 1)) return false;
+        *fe = q + sizeof(FN_END) - 1;
+        return true;
+    }
+}
+
 static int ts_qwen(tool_stream *s, const char *bytes, int n) {
     head_put(s,bytes,(size_t)n);
     bool lenient = s->env && s->env->parse_only;
@@ -8652,9 +8720,18 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
             // arrives and stands even if the turn never writes a closer
             const char *next=NULL;
             if (lenient) {
-                const char *fe=head_find(s, "</function>");
+                // a function block ends where its structure does: the tags a
+                // value spells are not the block's (R6.68.71)
+                const char *fe=NULL, *he=s->head+s->head_n;
+                if (s->env->proto==TP_QWEN_XML && coder_block_scan(s->head,he,&fe)) {
+                    if (!fe) return 0;
+                    close=atem_find(fe,he,QWEN_CALL_END);
+                } else {
+                    fe=head_find(s, "</function>");
+                    if (fe) fe+=strlen("</function>");
+                }
                 if (fe) {
-                    const char *q=fe+strlen("</function>"), *he=s->head+s->head_n;
+                    const char *q=fe;
                     while (q<he && ts_ws(*q)) q++;
                     size_t ol=strlen(QWEN_CALL_OPEN);
                     if ((size_t)(he-q)>=ol && !memcmp(q,QWEN_CALL_OPEN,ol) && (!close || q<close))
@@ -9121,7 +9198,7 @@ static int ts_gemma4(tool_stream *s, const char *bytes, int n) {
                 s->state = TS_G4_TEXT;
                 break;
             }
-            const char *close = s->head ? head_find(s, "<tool_call|>") : NULL;
+            const char *close = g4_block_close(s->head, s->head + s->head_n);
             if (!close) return 0;
             size_t upto = (size_t)(close - s->head) + strlen("<tool_call|>");
             sbuf tc = {0};

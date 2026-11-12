@@ -1802,6 +1802,95 @@ static void test_atem_stream_demux_is_boundary_independent(void) {
     log_free(&l);
 }
 
+// R6.68.71: a value may spell the tag that closes its block. The grammar
+// admits it (a raw value ends at its own delimiter, `</atem:parameter>` or
+// `<|"|>`), so the reader must find the block's end by its structure, as the
+// Qwen and Nemotron readers do. Both readers ended the block at the first
+// closing tag, inside the value, and dropped the call with a fault.
+static void test_a_value_may_spell_its_blocks_closing_tag(void) {
+    jv *tools = parse(
+        "[{\"type\":\"function\",\"function\":{\"name\":\"write\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{"
+        "\"text\":{\"type\":\"string\"},\"n\":{\"type\":\"integer\"}},"
+        "\"required\":[\"text\"]}}}]");
+    char err[192];
+    tool_envelope e = {0};
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    e.tools = tools;
+
+    e.proto = TP_ATEM;
+    snode *root = schema_compile_atem_turn(tools, false, NULL, NULL,
+                                           ATEM_TURN_DIRECT, err, sizeof err);
+    assert(root);
+    const char *muse =
+        " to=write<|message|><atem:function_calls>\n<atem:invoke name=\"write\">\n"
+        "<atem:parameter name=\"text\">close with </atem:invoke> here</atem:parameter>\n"
+        "<atem:parameter name=\"n\">2</atem:parameter>\n"
+        "</atem:invoke>\n</atem:function_calls>";
+    assert(accepts(root, muse));
+    schema_free(root);
+    for (size_t step = 1; step <= strlen(muse); step++) {
+        demux_log l;
+        demux_step(&e, muse, step, &l);
+        assert(l.begins == 1 && l.ends == 1 && !strcmp(l.name, "write"));
+        assert(!strcmp(l.args.s, "{\"text\":\"close with </atem:invoke> here\",\"n\":2}"));
+        log_free(&l);
+    }
+    // an invoke the model never closed is still half a call, not a call
+    {
+        demux_log l = {0};
+        tool_stream_sink sink = { &l, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream s;
+        tool_stream_init(&s, &e, &sink);
+        const char *open = " to=write<|message|><atem:function_calls>\n<atem:invoke name=\"write\">\n"
+                           "<atem:parameter name=\"text\">a </atem:invoke> b";
+        assert(tool_stream_feed(&s, open, (int)strlen(open)) == 0);
+        assert(tool_stream_finish(&s) == -1 && l.begins == 0);
+        tool_stream_free(&s);
+        log_free(&l);
+    }
+
+    e.proto = TP_GEMMA4;
+    root = schema_compile_gemma4_turn(tools, false, NULL, NULL, false, false, err, sizeof err);
+    assert(root);
+    const char *g4 =
+        "<|tool_call>call:write{n:2,text:<|\"|>the block ends with <tool_call|> always<|\"|>}<tool_call|>"
+        "<|tool_call>call:write{text:<|\"|>second<|\"|>}<tool_call|>";
+    assert(accepts(root, "<|tool_call>call:write{n:2,text:<|\"|>the block ends with <tool_call|> always<|\"|>}<tool_call|>"));
+    schema_free(root);
+    for (size_t step = 1; step <= strlen(g4); step++) {
+        demux_log l;
+        demux_step(&e, g4, step, &l);
+        assert(l.begins == 2 && l.ends == 2);
+        assert(!strcmp(l.args.s, "{\"n\":2,\"text\":\"the block ends with <tool_call|> always\"}"
+                                 "{\"text\":\"second\"}"));
+        log_free(&l);
+    }
+
+    // The function XML of an auto turn is parsed, never constrained, and it
+    // streams: the block went out of the held bytes at the first
+    // `</tool_call>`, which here arrives inside the value, before the
+    // parameter has closed. The buffered turn read the same bytes as a call.
+    e.proto = TP_QWEN_XML;
+    e.parse_only = true;
+    e.max_calls = TOOL_STREAM_MAX_CALLS;
+    const char *xml =
+        "I will write it.\n\n<tool_call>\n<function=write>\n<parameter=text>\n"
+        "a call ends with </tool_call> and\n</function> closes the function\n</parameter>\n"
+        "<parameter=n>\n2\n</parameter>\n</function>\n</tool_call>";
+    for (size_t step = 1; step <= strlen(xml); step++) {
+        demux_log l;
+        demux_step(&e, xml, step, &l);
+        assert(l.begins == 1 && l.ends == 1 && !strcmp(l.name, "write"));
+        assert(!strcmp(l.args.s, "{\"text\":\"a call ends with </tool_call> and\\n"
+                                 "</function> closes the function\",\"n\":2}"));
+        assert(!strcmp(l.content.s, "I will write it.\n\n"));
+        log_free(&l);
+    }
+    tool_envelope_free(&e);
+    jv_free(tools);
+}
+
 static void test_muse_schema_payload_stream_hides_recipient_header(void) {
     tool_envelope e = {.proto = TP_MUSE_PLAIN};
     const char *doc = " to=user<|message|>{\"summary\":\"ok\"}";
@@ -4337,6 +4426,7 @@ int main(void) {
     test_empty_turn_finishes_cleanly();
     test_stream_demux_is_boundary_independent();
     test_atem_stream_demux_is_boundary_independent();
+    test_a_value_may_spell_its_blocks_closing_tag();
     test_muse_schema_payload_stream_hides_recipient_header();
     test_stream_demux_holds_back_an_undecided_prefix();
     test_malformed_tool_declarations_are_rejected();
