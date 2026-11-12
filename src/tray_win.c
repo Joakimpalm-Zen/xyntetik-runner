@@ -268,7 +268,7 @@ static HWND tray_window(HINSTANCE inst) {
     RegisterClassA(&wc);
     g_taskbar_created = RegisterWindowMessageA("TaskbarCreated");
     return CreateWindowA(wc.lpszClassName, "xyntetik-tray", 0, 0, 0, 0, 0,
-                         HWND_MESSAGE, NULL, inst, NULL);
+                         NULL, NULL, inst, NULL);
 }
 
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM w, LPARAM l) {
