@@ -103,3 +103,24 @@ def test_device_memory_is_read_from_the_plain_table_when_the_queries_refuse():
     assert mod.parse_smi_table(table, "999") == 81        # else the device row
     assert mod.parse_smi_table(table) == 81
     assert mod.parse_smi_table("[Insufficient Permissions], [Insufficient Permissions]") is None
+
+
+@pytest.mark.skipif(not RUNNER.exists() or not MODEL.exists(),
+                    reason="runner or test.gguf not built")
+def test_the_swap_phase_holds_each_model_to_its_fresh_reply(tmp_path):
+    """Two models alternated: every reply equals the one a fresh process gave
+    for that model, and memory is compared between readings that hold the
+    same model (the first run on a real pair reported the two models' size
+    difference as growth)."""
+    second = tmp_path / "second.gguf"
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "make-test-model.py"), str(second)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    p, r = soak(tmp_path, "--model2", str(second), "--swaps", "12",
+                "--skip", "identity", "--skip", "cancel", "--skip", "limit",
+                "--skip", "concurrent")
+    assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-1000:]
+    mem = r["phases"]["swap"]["memory"]
+    assert set(mem) == {"a", "b"}
+    # each model was resident for half the swaps, and each has its own series
+    assert len(mem["a"]) == 6 and len(mem["b"]) == 6
+    assert not set(mem["a"]) & set(mem["b"])
