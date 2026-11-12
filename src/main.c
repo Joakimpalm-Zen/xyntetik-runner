@@ -5320,6 +5320,20 @@ static bool train_dpo_steps(cli_opts *o, cli_run *rt, dpo_pair *pairs,
             fprintf(stderr, "error: DPO step failed\n");
             return false;
         }
+        // the --train step's rule (R6.68.115): a step whose numbers or
+        // gradient are not finite stops the run before the optimizer
+        // touches the adapter. A finite loss alone does not show it: an
+        // infinite margin scores 0, its log-probabilities infinite.
+        double gmax = 0, gmean = 0;
+        if (!fp_finite_f64(d.loss) || !fp_finite_f64(d.margin) || !fp_finite_f64(d.coeff) ||
+            !fp_finite_f64(d.logp_w) || !fp_finite_f64(d.logp_l) ||
+            !fp_finite_f64(d.logp_ref_w) || !fp_finite_f64(d.logp_ref_l) ||
+            !model_lora_grad_norms(&rt->m, &gmax, &gmean)) {
+            fprintf(stderr, "error: DPO step %d: the loss, a log-probability or a "
+                    "gradient is not finite; the adapter stays as step %d left it\n",
+                    step, step - 1);
+            return false;
+        }
         if (!train_adam_step(o, rt, step, o->train_lr)) return false;
         if (step == 1) *first_loss = d.loss;
         *last_loss = d.loss;

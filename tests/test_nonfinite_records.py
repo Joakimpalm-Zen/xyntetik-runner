@@ -112,3 +112,21 @@ def test_a_non_finite_eval_loss_stops_the_run_and_every_line_parses(exe, nan_mod
     assert b"--train-eval held" in p.stderr and b"not finite" in p.stderr, \
         p.stderr.decode(errors="replace")
     assert not [l for l in _lines(p.stdout) if "eval" in l], p.stdout
+
+
+def test_a_non_finite_dpo_step_stops_before_it_reaches_the_adapter(exe, nan_model, tmp_path):
+    """--train-dpo checked nothing: on a non-finite forward every step's line
+    read nan, the Adam step applied the NaN gradient, and the run exited 0
+    with an adapter and a record. A DPO step now takes the --train step's
+    rule: a step whose numbers or gradient are not finite stops the run
+    before the optimizer touches the adapter (exit 1)."""
+    pairs = tmp_path / "pairs.jsonl"
+    pairs.write_text(json.dumps({"prompt": "the runner trains", "chosen": " the adapter",
+                                 "rejected": " the corpus"}) + "\n")
+    out = tmp_path / "dpo.gguf"
+    p = _run(exe, "-m", nan_model, "--train-dpo", pairs, "--train-steps", "2",
+             "--lr", "3e-3", "--train-out", out)
+    assert p.returncode == 1, p.stderr.decode(errors="replace")
+    assert b"not finite" in p.stderr, p.stderr.decode(errors="replace")
+    assert not _lines(p.stdout), p.stdout
+    assert not out.exists()
