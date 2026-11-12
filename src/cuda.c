@@ -9147,6 +9147,22 @@ static unsigned mvt_grid_y(int batch) {
 //
 // Fails loudly rather than quietly serving an unadapted model, because that
 // failure is invisible in the output and looks exactly like a weak adapter.
+//
+// The decode graph keeps working with an adapter (R6.68.25b): enc_lora's
+// launches capture like any other, with A, B and the scratch at addresses
+// fixed until the unbind. A graph records the forward it captured, adapter
+// launches included or not, so bind and unbind drop any graph captured
+// before them (the unbind also frees what those launches read) and the next
+// decode captures again. Today the bind runs inside model_load before the
+// first forward, so nothing is dropped there; the drop keeps that an order
+// of calls and not a condition of correctness.
+static void lora_graphs_drop(gpu_t *g) {
+    for (int i = 0; i < 2; i++) {
+        if (g->gexec[i]) { cu.GraphExecDestroy(g->gexec[i]); g->gexec[i] = NULL; }
+        if (g->graph[i]) { cu.GraphDestroy(g->graph[i]); g->graph[i] = NULL; }
+    }
+}
+
 bool gpu_lora_bind(model_t *m) {
     gpu_t *g = m->gpu;
     if (!g) return false;
@@ -9210,8 +9226,7 @@ bool gpu_lora_bind(model_t *m) {
         gpu_lora_unbind(m);
         return false;
     }
-    g->graph_bad = true;       // any captured decode graph predates the adapter
-    g->graph_why = "an adapter bound on the device after the decode graph's plan";
+    lora_graphs_drop(g);       // a graph captured before the adapter lacks its launches
     fprintf(stderr, "gpu: adapter on device for %d block%s (%.1f MB VRAM)\n",
             G, G == 1 ? "" : "s", bytes / 1e6);
     return true;
@@ -9220,10 +9235,10 @@ bool gpu_lora_bind(model_t *m) {
 void gpu_lora_unbind(model_t *m) {
     gpu_t *g = m ? m->gpu : NULL;
     if (!g) return;
-    if (g->lora_a || g->lora_b || g->lora_t) cu.CtxSetCurrent(g->sw->ctx);
+    if (g->lora_a || g->lora_b || g->lora_t || g->gexec[0] || g->gexec[1])
+        cu.CtxSetCurrent(g->sw->ctx);
+    lora_graphs_drop(g);       // a graph with the adapter's launches reads what is freed next
     lora_dev_release(g);
-    g->graph_bad = true;
-    if (!g->graph_why) g->graph_why = "an adapter unbound from the device";
 }
 
 // ------------------- canonical-order forward matvec (R8.7.1 slice 1)

@@ -3139,7 +3139,10 @@ memory (36.9 MB at rank 8 on a 1.5B), a partial split lets each half apply its o
 blocks, and the CPU-versus-GPU gap with the adapter is no wider than without it (CUDA:
 max |Δlogprob| 1.110e-3 against 1.255e-3, Qwen2.5-1.5B Q4_K_M, RTX 3070; Metal: mean
 3.0e-4 against 3.1e-4, SmolLM2-135M Q8_0 with a rank-8 adapter on all 210 projections,
-Apple M1). On Metal a block with an adapter decodes on the split path, without the fused
+Apple M1). On CUDA a decode with an adapter replays its graph as one without does (since
+R6.68.25b; before, an adapter turned the graph off): Qwen3-4B Q4_K_M with a rank-8 adapter
+decodes at 128 tok/s, against 90 before and 155 without the adapter, with the same greedy
+bytes (RTX 5070). On Metal a block with an adapter decodes on the split path, without the fused
 front kernel, so decode slows: 117 to 44 tok/s on that 135M (still above the CPU's 37),
 and 9.8 to 8.3 tok/s on Llama-3.2-3B Q4_K_M with a rank-16 adapter on Q and V of every
 block (the CPU decodes it at 5.7). Prefill barely moves in either case. Fails

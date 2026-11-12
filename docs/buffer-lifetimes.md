@@ -112,8 +112,11 @@ boundary activation back through the host `x` buffer.
   run, naming the synchronous call inside the capture when there was one
   (the guarded `cu*` wrappers note it while a thread captures).
 - **When a graph is dropped.** Binding or unbinding an adapter
-  (`gpu_lora_bind`, `gpu_lora_unbind`) turns graphs off for that instance,
-  because the captured launches predate the adapter.
+  (`gpu_lora_bind`, `gpu_lora_unbind`) drops the instance's decode graphs,
+  because their launches are the forward without the adapter or with it, and
+  the next decode captures again (R6.68.25b; before, it turned graphs off for
+  the instance). The adapter's A, B and scratch keep their addresses until
+  the unbind, so a graph captured with them stays valid until then.
 - **Capture mode** is thread-local, so another slot's forward on its own
   thread can make synchronous calls during a capture.
 
