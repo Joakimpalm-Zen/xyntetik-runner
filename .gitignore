@@ -153,6 +153,11 @@ test-model-load-oom.err
 test-quantize-oom
 test-quantize-oom.exe
 test-quantize-oom.err
+test-lineage-oom
+test-lineage-oom.exe
+test-lineage-oom.err
+lineage-oom-receipts/
+lineage-oom-out.txt
 test-quantize-oom-*
 test-moe-host-bridge
 test-moe-host-bridge.exe
