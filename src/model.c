@@ -2587,7 +2587,7 @@ static bool bind_agent_profile(model_t *m, gguf_file *g) {
         const char *sid = gguf_get_str(g, profile_keys[2], NULL);
         const char *dig = gguf_get_str(g, profile_keys[3], NULL);
         uint32_t protocol = gguf_get_u32(g, profile_keys[0], 0);
-        uint32_t tokenizer = gguf_get_u32(g, profile_keys[1], 0);
+        uint32_t tokenizer_id = gguf_get_u32(g, profile_keys[1], 0);
         if (!profile_integer(pv) || !profile_integer(tv) ||
             !sid || !*sid || !dig || strlen(dig) != 64 ||
             !rf || rf->type != GGUF_T_ARR || rf->arr_type != GGUF_T_STR) {
@@ -2605,9 +2605,9 @@ static bool bind_agent_profile(model_t *m, gguf_file *g) {
                     protocol);
             return false;
         }
-        if (tokenizer != 1) {
+        if (tokenizer_id != 1) {
             fprintf(stderr, "error: unsupported gridcore agent tokenizer version %u\n",
-                    tokenizer);
+                    tokenizer_id);
             return false;
         }
         static const char *const features[] = {
@@ -2636,7 +2636,7 @@ static bool bind_agent_profile(model_t *m, gguf_file *g) {
         }
         m->agent_profile = true;
         m->agent_protocol_version = protocol;
-        m->agent_tokenizer_version = tokenizer;
+        m->agent_tokenizer_version = tokenizer_id;
         m->agent_schema_id = sid;
         m->agent_schema_digest = dig;
         m->agent_required_features = rf->arr_str;
@@ -2870,15 +2870,15 @@ static bool bind_meta_gemma3(model_t *m, gguf_file *g, const char *arch) {
     m->rms_eps     = gguf_get_f32(g, AK("attention.layer_norm_rms_epsilon"), 1e-6f);
     // gemma3 ropes global layers at 1M; some exports omit the key
     m->rope_base   = gguf_get_f32(g, AK("rope.freq_base"), 1000000.0f);
-    int pattern    = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 6);
-    if (pattern < 1) pattern = 6;   // it is a divisor below (every other
+    int swa_pattern    = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 6);
+    if (swa_pattern < 1) swa_pattern = 6;   // it is a divisor below (every other
                                     // arch block clamps its own period)
     m->l_is_swa    = calloc(m->n_layer, sizeof(bool));
     if (!m->l_is_swa) return false;
     if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
                            m->l_is_swa, m->n_layer))
         for (int i = 0; i < m->n_layer; i++)
-            m->l_is_swa[i] = m->swa_window > 0 && ((i + 1) % pattern) != 0;
+            m->l_is_swa[i] = m->swa_window > 0 && ((i + 1) % swa_pattern) != 0;
     else if (m->swa_window <= 0)
         for (int i = 0; i < m->n_layer; i++) m->l_is_swa[i] = false;
     // The reference scales attention by query_pre_attn_scalar ** -0.5,
@@ -3247,8 +3247,8 @@ static bool bind_swa_default(model_t *m, gguf_file *g, const char *arch) {
     bool uniform = strcmp(arch, "phi3") == 0;
     if (uniform && sw >= m->n_ctx_train) sw = 0;
     if (sw > 0) {
-        int pattern = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 2);
-        if (pattern < 1) pattern = 2;
+        int swa_pattern = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 2);
+        if (swa_pattern < 1) swa_pattern = 2;
         m->swa_window = sw;
         m->l_is_swa = calloc(m->n_layer, sizeof(bool));
         if (!m->l_is_swa) return false;
@@ -3258,7 +3258,7 @@ static bool bind_swa_default(model_t *m, gguf_file *g, const char *arch) {
         } else if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"),
                                       m->l_is_swa, m->n_layer))
             for (int i = 0; i < m->n_layer; i++)
-                m->l_is_swa[i] = ((i + 1) % pattern) != 0;
+                m->l_is_swa[i] = ((i + 1) % swa_pattern) != 0;
     }
     return true;
 }

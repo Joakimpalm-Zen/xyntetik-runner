@@ -1810,10 +1810,10 @@ static bool constraint_feed(engine *e, bool schema, const char *bytes, int n,
     // the family sweep, 2026-10-02).
     bool payload_ok = !e->constraint_payload_dead;
     sval sv = e->sv;
-    jsonv jv = e->jv;
+    jsonv jstate = e->jv;
     if (payload_ok) {
         if (schema) payload_ok = sval_feed(&sv, bytes, n);
-        else        payload_ok = jsonv_feed(&jv, bytes, n);
+        else        payload_ok = jsonv_feed(&jstate, bytes, n);
     }
 
     int ol = (int)strlen(open);
@@ -1850,7 +1850,7 @@ static bool constraint_feed(engine *e, bool schema, const char *bytes, int n,
     if (!payload_ok && !tag_ok) return false;
     if (payload_ok) {
         if (schema) e->sv = sv;
-        else        e->jv = jv;
+        else        e->jv = jstate;
         // CP_PROBE feeds the payload validator directly rather than through
         // constraint_payload_feed, so the recording has to be made here too --
         // otherwise a document that started without a thinking prelude is
@@ -2397,8 +2397,8 @@ static int grammar_forced_bytes(const engine *e, bool schema,
     *doc_done = false;
     if (e->constraint_phase != CP_OUTPUT) return 0;
     sval  sv = e->sv;
-    jsonv jv = e->jv;
-    if (schema ? sv.done : jv.done) return 0;
+    jsonv jstate = e->jv;
+    if (schema ? sv.done : jstate.done) return 0;
     int n = 0;
     while (n < cap) {
         int legal = -1;
@@ -2409,17 +2409,17 @@ static int grammar_forced_bytes(const engine *e, bool schema,
             // what keeps this affordable: a full sval copy here was 2240
             // bytes against roughly 300.
             if (schema) { sval  t; ok = sval_trial(&sv, &t, &b, 1); }
-            else        { jsonv t; ok = jsonv_trial(&jv, &t, &b, 1); }
+            else        { jsonv t; ok = jsonv_trial(&jstate, &t, &b, 1); }
             if (!ok) continue;
             if (legal >= 0) return n;            // a real choice: stop here
             legal = c;
         }
         if (legal < 0) return n;                 // completion boundary
         char b = (char)legal;
-        if (!(schema ? sval_feed(&sv, &b, 1) : jsonv_feed(&jv, &b, 1)))
+        if (!(schema ? sval_feed(&sv, &b, 1) : jsonv_feed(&jstate, &b, 1)))
             return n;
         out[n++] = b;
-        if (schema ? sv.done : jv.done) { *doc_done = true; return n; }
+        if (schema ? sv.done : jstate.done) { *doc_done = true; return n; }
     }
     return n;
 }
