@@ -611,7 +611,10 @@ jobs:
         run: |
           python3 scripts/make-test-model.py --muse-glimmer test-leak-muse.gguf
           python3 scripts/make-test-model.py --gemma4-hetero test-leak-g4h.gguf
-          for f in test.gguf test-leak-muse.gguf test-leak-g4h.gguf; do
+          # qwen4exp: its recurrent blocks bound two norm buffers twice and
+          # leaked the first pair on every load (R6.68.23)
+          python3 scripts/make-test-qwen4exp.py test-leak-q4x.gguf
+          for f in test.gguf test-leak-muse.gguf test-leak-g4h.gguf test-leak-q4x.gguf; do
             ./runner-debug -m "$f" -p "hello" -n 8 --temp 0 --gpu off
           done
       - name: sanitized server race gate
