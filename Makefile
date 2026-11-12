@@ -1155,6 +1155,11 @@ $(TEST_MVCANON): $(TEST_MVCANON_SRC) src/quants.c $(HDR) test.gguf test-q8.gguf
 test-yarn.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --yarn 32,4096 test-yarn.gguf
 
+# the sliding layers' rope base declared under both spellings, 500 and 20000
+# (test-rope-yarn: rope.local.freq_base is the one read)
+test-rope-local.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-model.py --swa 32,2 --rope-local-base 500 --rope-swa-base 20000 $@ > /dev/null
+
 # qwen4exp (R4.26.1, experimental): hyper-connection streams, the Engram
 # n-gram PLE block, Gated DeltaNet + full-attention blocks, routed + shared
 # experts. Random weights; the gate is "loads, binds every tensor, the CPU
@@ -3367,7 +3372,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
-      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-q3k-prefill.gguf $(PREFILL_IQ_FIXTURES) test-mxfp4-prefill.gguf $(PREFILL_PERCOL_FIXTURES) test-oddff.gguf test-oddff-f16.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf \
+      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-q3k-prefill.gguf $(PREFILL_IQ_FIXTURES) test-mxfp4-prefill.gguf $(PREFILL_PERCOL_FIXTURES) test-oddff.gguf test-oddff-f16.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf test-rope-local.gguf \
       test-qk.gguf test-gemma3.gguf test-gemma4.gguf test-es.gguf test-muse.gguf test-granite.gguf \
       test-gemma3-62.gguf test-gemma3-26.gguf test-qwen4exp.gguf test-lfm2.gguf test-lfm2-moe.gguf
 	./$(TEST_RECURRENT)
@@ -3579,7 +3584,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# zero: the dense-oracle MoE fixtures are 0.5/0.5 either way and can only
 	@# compare a routing path with itself (it self-skips on those, correctly)
 	$(PYTHON) scripts/make-test-moe.py test-moe-fixture
-	./$(TEST_ROPE_YARN) test-moe-fixture.gptoss-yarn.gguf test-yarn.gguf
+	./$(TEST_ROPE_YARN) test-moe-fixture.gptoss-yarn.gguf test-yarn.gguf test-rope-local.gguf
 	./$(TEST_MOE_TOL) test-moe-fixture.moe4.gguf
 	@# CPU/GPU agreement on a router that has a BIAS and routes top-1, so the
 	@# bias decides which expert runs. Every other MoE fixture here either has

@@ -476,9 +476,12 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         // inherits the GLOBAL base for its sliding layers (llama.cpp seeds
         // rope_freq_base_train_swa = rope_freq_base_train), so the 10k
         // default must not apply there.
-        float local_base = gguf_get_f32(g, AK("rope.local.freq_base"),
-                           gguf_get_f32(g, AK("rope.freq_base_swa"),
-                                        m->gptoss ? m->rope_base : 10000.0f));
+        // One read at a time: AK spells into the one `key` buffer, so two
+        // reads in one argument list left the key to the compiler's order of
+        // evaluation (clang read rope.freq_base_swa for both).
+        float swa_base = gguf_get_f32(g, AK("rope.freq_base_swa"),
+                                      m->gptoss ? m->rope_base : 10000.0f);
+        float local_base = gguf_get_f32(g, AK("rope.local.freq_base"), swa_base);
         int lhalf = m->rope_dim_local / 2;
         m->rope_inv_freq_local = malloc(sizeof(float) * lhalf);
         if (!m->rope_inv_freq_local) return false;
