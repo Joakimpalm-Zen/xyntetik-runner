@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include "model.h"
 #include "gguf.h"
+#include "gpu_tables.h"
 
 static int g_fail = 0;
 static void ck(int cond, const char *what) {
@@ -603,7 +604,25 @@ static void test_fit_layer_tables(const char *fixture) {
     gguf_close(&g);
 }
 
+// gpu_tables.h's rows (R6.68.29): the uploader and the fit index them by
+// their id, so a row is at its own id's place, named, and present: a row
+// left out of the designated list would be all zeros, id GT_ATTN_NORM, no
+// labels. And every mixer row names a tensor.
+static void gpu_tables_rows_are_whole(void) {
+    const gpu_table_desc *rows = gpu_table_rows();
+    int bad = 0;
+    for (int t = 0; t < GT_COUNT; t++)
+        if ((int)rows[t].id != t || !rows[t].table_label ||
+            (rows[t].need != GT_NEED_NONE && !rows[t].upload_label)) bad++;
+    ck(bad == 0, "gpu tables: every row sits at its id, with its labels");
+    const gpu_mixer_desc *mix = gpu_mixer_rows();
+    int unnamed = 0;
+    for (int i = 0; i < GT_N_MIXER; i++) unnamed += !mix[i].names[0];
+    ck(unnamed == 0, "gpu tables: every mixer row names its tensor");
+}
+
 int main(int argc, char **argv) {
+    gpu_tables_rows_are_whole();
     test_gpu_window();
     test_gpu_budget();
     test_multislot_is_not_billed_once();

@@ -102,6 +102,7 @@ ADD_EOS = False    # --add-eos: tokenizer.ggml.add_eos_token = true
 BPE_PRE = None     # --bpe-pre NAME: a GPT-2 byte-level BPE vocabulary declaring that split
 LAYERS = None      # --layers N: block count (a family's size tells some rules)
 HEAD_DIM = None    # --head-dim N: decouple head_dim from N_EMBD / N_HEAD
+OMIT_HEAD_KEYS = False  # --omit-head-keys: no attention.key_length / value_length / key_length_swa
 ROPE_DIM = None    # --rope-dim N: rotate only the first N dims of each head
 HEADS = None       # --heads Q:KV: query and KV head counts (with --head-dim)
 SAMPLING = None
@@ -439,6 +440,10 @@ while i < len(args):
         # attention by n_embd / n_head where the smaller sizes use head_dim.
         i += 1
         LAYERS = int(args[i])
+    elif a == "--omit-head-keys":
+        # a header that leaves the head width to the loader's default (gemma4
+        # takes 512; R6.68.29's fit asks the loader's plan, which knows that)
+        OMIT_HEAD_KEYS = True
     elif a == "--head-dim":
         # a head width other than N_EMBD / N_HEAD, published as key_length,
         # value_length and rope.dimension_count (the plain and gemma3 shapes)
@@ -885,7 +890,8 @@ if ESERIES_SHARED_KV or ESERIES_PLE:
         ku(f"{ARCH}.rope.dimension_count", ROPE_DIM or ehd),
         kf(f"{ARCH}.final_logit_softcapping", 30.0),
     ]
-if ARCH == "gemma4" and not (ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO):
+# (--head-dim publishes these keys itself, above)
+if ARCH == "gemma4" and not (ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO or HEAD_DIM):
     # gemma4's loader defaults attention.key_length to 512 when the key is
     # absent, because every official gemma-4 export publishes it. This
     # generator did not, so a plain `--arch gemma4` fixture declared a
@@ -1023,6 +1029,11 @@ if SUPPRESS_ALL_BUT_EOS:
     # immediately, so a completion prints only the echoed prompt
     meta_kvs.append(kai("tokenizer.ggml.suppress_tokens",
                                [i for i in range(N_VOCAB) if i != 2]))
+if OMIT_HEAD_KEYS:
+    # each entry starts with its key: a u64 length, then the bytes
+    def _key(kv): return kv[8:8 + struct.unpack("<Q", kv[:8])[0]].decode()
+    _omit = (".attention.key_length", ".attention.value_length", ".attention.key_length_swa")
+    meta_kvs = [kv for kv in meta_kvs if not _key(kv).endswith(_omit)]
 meta = b"".join(meta_kvs)
 
 # ---------------------------------------------------------------- quantization

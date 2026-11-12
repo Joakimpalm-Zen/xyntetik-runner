@@ -1,6 +1,7 @@
 """Every weight tensor a layer binds has one CUDA role.
 
 src/cuda.c reads a layer's tensors through two lists: layer_mixer_tensors()
+(gpu_tables.h's mixer rows since R6.68.29)
 (attention or the recurrent mixer, the hyper-connection mixers, the E-series
 per-layer embedding projections) and layer_ffn_tensors_each() (the dense FFN
 or the expert bank). The split plan's bytes, the prefix upload's reach, the
@@ -54,6 +55,15 @@ def listed(name):
     return set(re.findall(r"ly->(\w+)", function_body(name)))
 
 
+def mixer_rows():
+    """The mixer weights layer_mixer_tensors walks: gpu_tables.h's rows, one
+    list with the fit's charge (R6.68.29)."""
+    assert "gpu_mixer_rows()" in function_body("layer_mixer_tensors"), \
+        "layer_mixer_tensors no longer reads gpu_tables.h's rows: update this test"
+    src = (ROOT / "src/gpu_tables.h").read_text()
+    return set(re.findall(r"GT_MIXER\((\w+),", src))
+
+
 def test_layer_t_parse_sees_the_known_fields():
     fields = layer_t_tensor_fields()
     for f in ("wq", "ssm_in", "ffn_gate_exps", "moe_g", "hc_ffn_inject", "ple_proj"):
@@ -62,10 +72,10 @@ def test_layer_t_parse_sees_the_known_fields():
 
 def test_every_layer_tensor_has_a_device_role():
     fields = layer_t_tensor_fields()
-    roles = listed("layer_mixer_tensors") | listed("layer_ffn_tensors_each")
+    roles = listed("layer_mixer_tensors") | mixer_rows() | listed("layer_ffn_tensors_each")
     missing = sorted(fields - roles - set(HOST_SIDE))
     assert not missing, (
-        "layer_t tensors with no CUDA role: add each to layer_mixer_tensors() or "
+        "layer_t tensors with no CUDA role: add each to gpu_tables.h's mixer rows or "
         f"layer_ffn_tensors_each() in src/cuda.c, or to HOST_SIDE here: {missing}")
 
 

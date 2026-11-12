@@ -269,6 +269,11 @@ typedef struct {
     // the architecture's row (arch.h), looked up once at admission; never
     // NULL on a loaded model (an unknown name gets the unknown row)
     const arch_desc *ad;
+    // R6.68.29: a plan made for --info fit (model_plan): its binders keep the
+    // first refusal here (bind_err) and print no informational line; a load
+    // clears it before its own plan
+    bool      plan_only;
+    char      plan_why[240];
     bool      agent_profile;
     uint32_t  agent_protocol_version, agent_tokenizer_version;
     const char *agent_schema_id, *agent_schema_digest;
@@ -1515,6 +1520,9 @@ typedef struct {
     int      kv_ring_mode, n_batch;
     bool     kv_ring[4];
     int      kv_ring_rows, n_swa_layers;
+    // R6.68.29: why the loader would refuse this file, when model_fit_report
+    // returns false because its plan did (the loader's own reason); "" else
+    char     refused[240];
 } model_fit;
 
 enum { FIT_KV_F16 = 0, FIT_KV_Q8, FIT_KV_K8V4, FIT_KV_FP4 };
