@@ -101,6 +101,24 @@ int main(void) {
         uint64_t fsz = 0;
         ck(plat_file_size(f, &fsz) && fsz == BIG, "plat_file_size reports the real 64-bit size");
         ck(ftell(f) == 0, "plat_file_size leaves the position at the start");
+#ifndef _WIN32
+        // R6.68.105: a directory has no size to read whole. fopen takes one
+        // on Linux, and on XFS its end offset is 0, so a plan reader was
+        // handed "an empty file" and said "not a JSON object". Asked for a
+        // size, a directory stream is refused; plat_read_file follows.
+        {
+            FILE *d = fopen(".", "rb");
+            if (d) {
+                uint64_t dsz = 7;
+                ck(!plat_file_size(d, &dsz), "plat_file_size refuses a directory");
+                fclose(d);
+            }
+            size_t dn = 0;
+            char *whole = plat_read_file(".", 0, &dn);
+            ck(whole == NULL, "plat_read_file does not read a directory");
+            free(whole);
+        }
+#endif
         fclose(f);
     }
     size_t got = 7;

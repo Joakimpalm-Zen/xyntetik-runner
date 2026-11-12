@@ -1711,6 +1711,15 @@ bool plat_random(uint8_t *out, size_t n) {
 // at the start. ftell() returns long, which is 32 bits on Windows: a file past
 // 2 GiB read there as an error (R6.68.5).
 bool plat_file_size(FILE *f, uint64_t *out) {
+    // A directory has no size to read whole. fopen takes one on Linux, and
+    // where its end offset then is the filesystem's business: 0 on XFS for a
+    // small directory, so it read as an empty file (a plan "is not a JSON
+    // object" where the path "cannot be read"), and nonzero elsewhere, where
+    // the read fails as it should (R6.68.105; Windows refuses the fopen).
+#ifndef _WIN32
+    struct stat dir_st;
+    if (fstat(fileno(f), &dir_st) == 0 && S_ISDIR(dir_st.st_mode)) return false;
+#endif
 #ifdef _WIN32
     if (_fseeki64(f, 0, SEEK_END) != 0) return false;
     __int64 end = _ftelli64(f);
