@@ -382,3 +382,44 @@ def test_the_fits_dry_bind_reads_no_tensor(runner_bin, tmp_path, case):
     fit_kv = int(G4_GEOM_FIT.search(fit.stderr.decode()).group(1))
     load_kv = int(G4_GEOM_LOAD.search(load.stderr.decode()).group(1))
     assert fit_kv == load_kv, (fit_kv, load_kv)
+
+
+# R6.68.50: the agent-profile check is the plan's first step. It ran in
+# model_bind_weights ahead of the plan, so the fit priced a file whose profile
+# the load refuses.
+PROFILE_REFUSALS = {
+    "unknown-feature": ["--agent-feature", "future_attention_v99"],
+    "mtp-feature": ["--agent-feature", "mtp"],
+    "bad-digest": ["--agent-digest", "z" * 64],
+}
+
+
+def _profile_model(tmp_path, flags):
+    model = tmp_path / "profile.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", *flags, str(model)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    return model
+
+
+@pytest.mark.parametrize("case", sorted(PROFILE_REFUSALS))
+def test_an_agent_profile_the_load_refuses_is_the_fits_answer(runner_bin, tmp_path, case):
+    """The fit's reason is the load's first error line, word for word."""
+    model = _profile_model(tmp_path, PROFILE_REFUSALS[case])
+    load = run(runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "--gpu", "off", "-t", "1",
+               "-c", "64")
+    assert load.returncode != 0, load
+    errors = [ln for ln in load.stderr.decode().splitlines() if ln.startswith("error: ")]
+    assert errors, load.stderr
+    fit = run(runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off")
+    assert fit.returncode == 1, fit
+    verdict = [ln for ln in fit.stdout.decode().splitlines() if "verdict" in ln]
+    assert verdict and "WILL NOT LOAD" in verdict[0], fit.stdout
+    reason = verdict[0].split("the loader refuses this file: ", 1)[1]
+    assert errors[0] == "error: " + reason, (errors[0], reason)
+
+
+def test_a_valid_agent_profile_still_fits(runner_bin, tmp_path):
+    model = _profile_model(tmp_path, ["--agent-profile"])
+    fit = run(runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off")
+    assert fit.returncode == 0, fit
+    assert b"WILL NOT LOAD" not in fit.stdout

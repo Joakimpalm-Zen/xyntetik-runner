@@ -2610,7 +2610,9 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
 static bool bind_agent_profile(model_t *m, gguf_file *g) {
     // A profile is opt-in metadata: legacy/dense GGUFs remain admitted exactly
     // as before. Once any profile key is present, however, the contract is
-    // atomic and fail-closed. Validate it before path/state/tensor allocation.
+    // atomic and fail-closed. Validated first in the plan (model_plan), so
+    // --info fit refuses what the load refuses, and before the load allocates
+    // its path, state or tensors.
     static const char *const profile_keys[] = {
         "gridcore.agent.protocol_version", "gridcore.agent.tokenizer_version",
         "gridcore.agent.schema_id", "gridcore.agent.schema_digest",
@@ -2630,23 +2632,23 @@ static bool bind_agent_profile(model_t *m, gguf_file *g) {
         if (!profile_integer(pv) || !profile_integer(tv) ||
             !sid || !*sid || !dig || strlen(dig) != 64 ||
             !rf || rf->type != GGUF_T_ARR || rf->arr_type != GGUF_T_STR) {
-            fprintf(stderr, "error: invalid gridcore agent profile metadata\n");
+            bind_err(m, "error: invalid gridcore agent profile metadata\n");
             return false;
         }
         for (int i = 0; i < 64; i++)
             if (!((dig[i] >= '0' && dig[i] <= '9') ||
                   (dig[i] >= 'a' && dig[i] <= 'f'))) {
-                fprintf(stderr, "error: invalid gridcore agent schema digest\n");
+                bind_err(m, "error: invalid gridcore agent schema digest\n");
                 return false;
             }
         if (protocol != 1) {
-            fprintf(stderr, "error: unsupported gridcore agent protocol version %u\n",
-                    protocol);
+            bind_err(m, "error: unsupported gridcore agent protocol version %u\n",
+                     protocol);
             return false;
         }
         if (tokenizer_id != 1) {
-            fprintf(stderr, "error: unsupported gridcore agent tokenizer version %u\n",
-                    tokenizer_id);
+            bind_err(m, "error: unsupported gridcore agent tokenizer version %u\n",
+                     tokenizer_id);
             return false;
         }
         static const char *const features[] = {
@@ -2663,13 +2665,13 @@ static bool bind_agent_profile(model_t *m, gguf_file *g) {
             // verifier this build does not have, which is different from an
             // unrecognized string and must not read as a typo.
             if (!strcmp(want, "mtp")) {
-                fprintf(stderr, "error: this profile requires MTP consumption, "
-                        "which this build does not implement (MTP tensors are "
-                        "admitted as training-only; see docs)\n");
+                bind_err(m, "error: this profile requires MTP consumption, "
+                         "which this build does not implement (MTP tensors are "
+                         "admitted as training-only; see docs)\n");
                 return false;
             }
             if (!known) {
-                fprintf(stderr, "error: unsupported required agent feature '%s'\n", want);
+                bind_err(m, "error: unsupported required agent feature '%s'\n", want);
                 return false;
             }
         }
@@ -5526,6 +5528,10 @@ static bool bind_arch_meta(model_t *m, gguf_file *g, const char *arch, bool late
 // over it, and a plan made for its own sake is released with
 // model_free_weights.
 static bool model_plan(model_t *m, gguf_file *g, const model_params *p) {
+    // the agent profile before anything else, as the load always checked it
+    // (R6.68.50: it sat in model_bind_weights, ahead of the plan, so --info
+    // fit priced a file whose profile the load refuses)
+    if (!bind_agent_profile(m, g)) return false;
     const char *arch = gguf_get_str(g, "general.architecture", "?");
     if (!bind_admit_architecture(m, arch)) return false;
     if (!bind_refuse_rotated_basis(m, g)) return false;
@@ -5629,7 +5635,10 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     }
     if (!gguf_open(&m->gf, path)) return false;
     gguf_file *g = &m->gf;
-    if (!bind_agent_profile(m, g)) return false;
+    m->plan_only = false;   // a load's plan always speaks (bind_err, bind_note)
+    // the plan first, its agent-profile check first of all (R6.68.50): a file
+    // it refuses is refused before the load allocates its path or tensors
+    if (!model_plan(m, g, p)) return false;
     // kept for the backend's shared-weight registry: two instances of the same
     // file are what let `--parallel N` upload the weights once
     size_t plen = strlen(path) + 1;
@@ -5637,9 +5646,6 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     if (!m->path) return false;
     memcpy(m->path, path, plen);
     model_record_file_id(m, path);
-
-    m->plan_only = false;   // a load's plan always speaks (bind_err, bind_note)
-    if (!model_plan(m, g, p)) return false;
     if (!bind_tensors(m, g, p)) return false;
 
     bind_kv_layout(m, p);
