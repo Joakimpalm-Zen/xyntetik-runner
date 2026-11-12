@@ -6690,6 +6690,9 @@ static void runtime_free(model_t *m) {
     if (!m->ssm_state_backend) { free(m->ssm_conv_state); free(m->ssm_state_mem); }
     m->ssm_state_backend = false;
     free(m->ssm_conv_snap); free(m->ssm_state_snap);
+    free(m->seq);
+    m->seq = NULL;
+    m->seq_n = 0;
     free(m->ssm_conv_mark); free(m->ssm_state_mark);
     free(m->hb); free(m->hb2); free(m->att); free(m->logits); free(m->all_logits);
     free(m->mtp_h); free(m->mtp_tok); free(m->mtp_pending); free(m->mtp_cat);
@@ -15461,6 +15464,42 @@ static void gpu_runtime_failure(model_t *m) {
     gpu_disable(m);
 }
 
+// The sequence a device-folded recurrent model was fed (model.h, seq): this
+// forward's tokens at their positions. A forward at or before the recorded
+// end continues or rewinds the record; one past it (a restored session's
+// first forward) leaves a gap the record cannot vouch for, and it stays short.
+static void forward_seq_note(model_t *m, const int32_t *tokens, int n, int pos) {
+    if (!m->gpu || !m->ssm_state_backend) return;
+    if (!m->seq && !(m->seq = malloc(sizeof(int32_t) * (size_t)m->n_ctx))) return;
+    if (pos < 0 || pos > m->seq_n || pos + n > m->n_ctx) return;
+    if (tokens != m->seq + pos) memcpy(m->seq + pos, tokens, sizeof(int32_t) * (size_t)n);
+    m->seq_n = pos + n;
+}
+
+// A device forward failed on a backend that folds the recurrent state in the
+// host's own memory (Metal, ssm_state_backend): the fold already holds this
+// batch, or part of it, and there is no earlier copy. Folding the batch again
+// on the host would continue every later token from a wrong state, so the
+// fold restarts and the tokens before `pos` are fed again on the host, which
+// also rewrites their attention rows (R6.68.90). A backend that keeps its own
+// pre-forward copy (CUDA) has restored it by now and never comes here.
+static void forward_refold_lost(model_t *m, int pos) {
+    model_recurrent_reset(m);
+    if (pos <= 0) return;   // the batch's own forward starts the fold
+    if (!m->seq || m->seq_n < pos) {
+        fprintf(stderr, "gpu: the failed forward left the recurrent state unknown, and the "
+                "tokens before position %d were not fed in this session to rebuild it "
+                "from; it restarts empty\n", pos);
+        return;
+    }
+    fprintf(stderr, "gpu: rebuilding the recurrent state on the CPU from the "
+            "sequence's %d tokens\n", pos);
+    for (int p = 0; p < pos; p += m->n_batch) {
+        int c = pos - p < m->n_batch ? pos - p : m->n_batch;
+        model_forward_batch(m, m->seq + p, c, p, false);
+    }
+}
+
 // NULL with *start at the first layer the host runs.
 static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
                                   int pos, bool want_logits, int *start,
@@ -15533,8 +15572,16 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
     forward_ple_before_split(m, tokens, n);
     int start;
     bool done;
+    forward_seq_note(m, tokens, n, pos);
+    bool fold_shared = m->gpu && m->ssm_state_backend;
     float *lg = forward_gpu_leading(m, tokens, n, pos, want_logits, &start, &done);
     if (done) return lg;
+    if (fold_shared && !m->gpu) {
+        // the device failed with the fold in the host's memory: rebuild it,
+        // then this batch again from the top, on the host
+        forward_refold_lost(m, pos);
+        return forward_batch_run(m, tokens, n, pos, want_logits);
+    }
     if (start == 0) forward_inputs(m, tokens, n, dbg);
     m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
 

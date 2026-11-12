@@ -485,11 +485,19 @@ static bool metal_buffer_ok(id<MTLBuffer> b) {
     return b != nil && b.contents != NULL;
 }
 
+// RUNNER_METAL_INJECT_FAILURE: "always", or N for the Nth command buffer
+// checked across every slot ("once" and any other word: the first), as
+// RUNNER_CUDA_INJECT_FAILURE=N fails the Nth device forward. N past 1 lands
+// on a forward that follows others, with a recurrent fold live.
 static bool metal_command_failed(id<MTLCommandBuffer> cb) {
     const char *inject = getenv("RUNNER_METAL_INJECT_FAILURE");
-    static _Atomic bool injected_once;   // once across every slot
-    bool injected = inject && *inject && strcmp(inject, "0") &&
-                    (strcmp(inject, "always") == 0 || plat_once(&injected_once));
+    static _Atomic long checked;
+    bool injected = false;
+    if (inject && *inject && strcmp(inject, "0")) {
+        long k = atomic_fetch_add(&checked, 1) + 1;
+        long want = atol(inject);
+        injected = strcmp(inject, "always") == 0 || k == (want > 0 ? want : 1);
+    }
     return injected || cb.status == MTLCommandBufferStatusError;
 }
 

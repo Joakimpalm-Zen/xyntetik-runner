@@ -124,3 +124,64 @@ def test_qwen35_cuda_failure_after_recurrent_state_accumulates(tmp_path):
     assert b"injected CUDA runtime failure at device forward 2" in late.stderr, \
         late.stderr.decode(errors="replace")
     assert late.stdout == cpu.stdout
+
+
+@pytest.mark.parametrize("nth", [1, 3, 20])
+@pytest.mark.parametrize("fixture", ["ornith", "mamba2"])
+def test_metal_failure_rebuilds_the_recurrent_fold(tmp_path, fixture, nth):
+    """R6.68.90: a Metal forward that fails at runtime on a recurrent model.
+
+    The device folds the host's own memory there, so when its command buffer
+    fails the fold already holds the forward's tokens, and the CPU fallback
+    used to fold the same tokens onto it again. The host now restarts the
+    fold and rebuilds it from the tokens the model was fed, then runs the
+    forward. Held by teacher-forced log-probabilities, which depend on the
+    fold at every token: the fixtures' generated text does not (it is one
+    letter whatever the state), so a text comparison passes either way.
+
+    --score feeds one token a forward, so the Nth command buffer is position
+    N - 1: the first forward, the third (a fold carried over two steps), and
+    the twentieth, whose rebuild takes three batches.
+    """
+    caps = json.loads(subprocess.run(
+        [RUNNER, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
+        check=True, text=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "metal":
+        pytest.skip("the Metal backend's runtime fallback")
+    if fixture == "ornith":
+        model = tmp_path / "ornith.gguf"
+        subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", model],
+                       check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    else:   # the script takes a prefix and writes <prefix>.gguf
+        model = tmp_path / "m2.gguf"
+        subprocess.run([sys.executable, ROOT / "scripts/make-test-nemotron.py",
+                        tmp_path / "m2"], check=True, cwd=ROOT,
+                       stdout=subprocess.DEVNULL)
+    text = "the quick brown fox jumps over the lazy dog"
+    base = [RUNNER, "-m", model, "--score", "-p", text, "-b", "8", "-c", "128"]
+
+    def score(gpu, env=None):
+        r = subprocess.run([*base, "--gpu", gpu], cwd=ROOT, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=60,
+                           env={**os.environ, **(env or {})})
+        assert r.returncode == 0, r.stderr.decode(errors="replace")
+        return json.loads(r.stdout)["logprobs"], r.stderr.decode(errors="replace")
+
+    cpu, _ = score("off")
+    gpu, err = score("auto")
+    assert "Metal backend" in err, err
+    assert len(cpu) > 24
+    failed, err = score("auto", {"RUNNER_METAL_INJECT_FAILURE": str(nth)})
+    assert "falling back to CPU" in err, err
+    cut = nth - 1
+    # before the failure the rows are the device's own, bit for bit
+    assert failed[:cut] == gpu[:cut]
+    # from it on they are the CPU's: exactly while the rebuild is one batch
+    # (the arithmetic of the CPU's own steps), and to the last bits past that.
+    # The double fold was off by 4e-4 to 4e-3 on these fixtures.
+    worst = max(abs(a - b) for a, b in zip(failed[cut:], cpu[cut:]))
+    if cut <= 8:
+        assert failed[cut:] == cpu[cut:], worst
+    assert worst < 5e-6, worst
+    if cut:
+        assert "rebuilding the recurrent state" in err, err

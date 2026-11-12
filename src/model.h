@@ -586,6 +586,13 @@ typedef struct {
     // inject scratch [n_batch][hc]; the PLE hash geometry and table.
     bool   hyper_conn;
     const int32_t *fwd_tokens;                   // this forward's token ids (PLE hash)
+    // The tokens this model was fed, seq[0, seq_n), kept only where a backend
+    // folds the recurrent state in the host's own memory (ssm_state_backend):
+    // a device forward that fails there has no earlier copy of the fold, and
+    // the host rebuilds it from these (forward_refold_lost). Recorded by the
+    // forward itself, so every caller is covered, a draft model's drafts too.
+    int32_t *seq;
+    int      seq_n;
     int    hc_count, hc_low_rank;
     float       *hc_head_norm;                  // [hc * n_embd]
     gguf_tensor *hc_head_down, *hc_head_up;
