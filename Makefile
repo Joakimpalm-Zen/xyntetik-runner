@@ -267,6 +267,7 @@ TEST_MSG_OOM_DEP =
 TEST_MSG_OOM_RUN = @echo "skip: test-prompt-oom (POSIX socketpair; covered by Linux CI)"
 TEST_TRAY_WIN_DEP = $(TEST_TRAY_WIN)
 TEST_TRAY_WIN_RUN = ./$(TEST_TRAY_WIN)
+TEST_INSTANCES_UBSAN_RUN = @echo "skip: test-instances-ubsan (no sanitizer runtime on MinGW; covered by Linux and macOS)"
 TEST_UTF8_CONSOLE_DEP = $(TEST_UTF8_CONSOLE)
 TEST_UTF8_CONSOLE_RUN = ./$(TEST_UTF8_CONSOLE)
 else
@@ -278,6 +279,7 @@ TEST_MSG_OOM_DEP = $(TEST_MSG_OOM)
 TEST_MSG_OOM_RUN = ./$(TEST_MSG_OOM)
 TEST_TRAY_WIN_DEP =
 TEST_TRAY_WIN_RUN = @echo "skip: test-tray-win-menu (Win32 menu readback; covered by the Windows job)"
+TEST_INSTANCES_UBSAN_RUN = $(MAKE) --no-print-directory test-instances-ubsan
 TEST_UTF8_CONSOLE_DEP =
 TEST_UTF8_CONSOLE_RUN = @echo "skip: test-utf8-console (Windows console code page; covered by the Windows job)"
 endif
@@ -984,6 +986,14 @@ $(TEST_CANON_KERNELS): tests/test_canon_kernels.c src/quants.c $(HDR)
 TEST_INSTANCES_SRC = tests/test_instances.c $(OBJDIR)/instances.o $(OBJDIR)/json.o $(OBJDIR)/compat.o
 $(TEST_INSTANCES): $(TEST_INSTANCES_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_INSTANCES_SRC) -o $@ -lm
+# R6.68.10: the same test with float-to-integer overflow as a hard error, so a
+# record number cast before its range is checked stops the run (the registry
+# reader converted a pid of 1e300 to long). No sanitizer runtime on MinGW.
+test-instances-ubsan: tests/test_instances.c src/instances.c src/json.c src/compat.c $(HDR)
+	$(CC) -O1 -g -std=gnu11 -Wall -fsanitize=float-cast-overflow,undefined \
+	    -fno-sanitize-recover=all -I src tests/test_instances.c src/instances.c src/json.c \
+	    src/compat.c -o test-instances-ubsan-bin -lm -lpthread
+	./test-instances-ubsan-bin
 
 # the same registry under injected allocation failure. instances.c is compiled
 # INTO the test (macro-substituted allocators), so it is deliberately absent
@@ -3499,6 +3509,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_IQ_DECODE)
 	./$(TEST_KQ_STAGE)
 	./$(TEST_INSTANCES)
+	$(TEST_INSTANCES_UBSAN_RUN)
 	./$(TEST_INSTANCES_OOM)
 	./$(TEST_METAL_ADMISSION)
 	./$(TEST_TRAY_CORE)
