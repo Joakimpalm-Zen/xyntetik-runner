@@ -52,8 +52,12 @@ static void *t_calloc(size_t a, size_t b) {
 
 static void *t_realloc(void *q, size_t n) {
     if (alloc_calls++ == fail_at) return NULL;
+    // The old block is forgotten before the call: q may not be read after it
+    // (gcc's -Wuse-after-free). An injected failure returns above; a real one
+    // would only drop the old block from the table, never count a leak.
+    if (q) untrack(q);
     void *p = realloc(q, n);
-    if (p) { if (q) untrack(q); track(p); }
+    track(p);
     return p;
 }
 
