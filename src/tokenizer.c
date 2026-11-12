@@ -1085,23 +1085,29 @@ static int contraction_len(const uint32_t *cp, int i, int ncp) {
 // applies \p{N}{1,3} as its own first pass), so a digit is the end of the
 // piece this regex sees and `\s+(?!\S)` keeps a whitespace run that ends at
 // one entire instead of leaving its last space to the digit.
+// The two character classes of pre_split_next, with its marks_join rule.
+static inline bool run_letter(uint32_t c, bool marks_join) {
+    return cp_letter(c) || (marks_join && cp_mark(c));
+}
+static inline bool run_other(uint32_t c, bool marks_join) {
+    return !cp_space(c) && !run_letter(c, marks_join) && !cp_digit(c);
+}
+
 static int pre_split_next(const uint32_t *cp, int i, int ncp, int max_digits,
                           bool marks_join, bool digit_ends) {
     int adv = contraction_len(cp, i, ncp);
     if (adv) return i + adv;
-#define RUN_LETTER(c) (cp_letter(c) || (marks_join && cp_mark(c)))
-#define RUN_OTHER(c)  (!cp_space(c) && !RUN_LETTER(c) && !cp_digit(c))
 
     // a single non-letter, non-digit, non-newline character may lead a letter run
     if (!cp_letter(cp[i]) && !cp_digit(cp[i]) && cp[i] != '\r' && cp[i] != '\n' &&
-        i + 1 < ncp && RUN_LETTER(cp[i + 1])) {
+        i + 1 < ncp && run_letter(cp[i + 1], marks_join)) {
         int j = i + 1;
-        while (j < ncp && RUN_LETTER(cp[j])) j++;
+        while (j < ncp && run_letter(cp[j], marks_join)) j++;
         return j;
     }
-    if (RUN_LETTER(cp[i])) {
+    if (run_letter(cp[i], marks_join)) {
         int j = i;
-        while (j < ncp && RUN_LETTER(cp[j])) j++;
+        while (j < ncp && run_letter(cp[j], marks_join)) j++;
         return j;
     }
     if (cp_digit(cp[i])) {
@@ -1110,15 +1116,13 @@ static int pre_split_next(const uint32_t *cp, int i, int ncp, int max_digits,
         return j;
     }
     {   // optional leading space, then a run of symbols/punctuation
-        int j = (cp[i] == ' ' && i + 1 < ncp && RUN_OTHER(cp[i + 1])) ? i + 1 : i;
-        if (j < ncp && RUN_OTHER(cp[j])) {
-            while (j < ncp && RUN_OTHER(cp[j])) j++;
+        int j = (cp[i] == ' ' && i + 1 < ncp && run_other(cp[i + 1], marks_join)) ? i + 1 : i;
+        if (j < ncp && run_other(cp[j], marks_join)) {
+            while (j < ncp && run_other(cp[j], marks_join)) j++;
             while (j < ncp && (cp[j] == '\r' || cp[j] == '\n')) j++;
             return j;
         }
     }
-#undef RUN_LETTER
-#undef RUN_OTHER
     {
         int j = i;
         while (j < ncp && cp_space(cp[j])) j++;
@@ -1669,20 +1673,23 @@ static bool cp_ds_cjk(uint32_t c) {
            (c >= 0xAC00 && c <= 0xD7FF);
 }
 static bool cp_crlf(uint32_t c) { return c == '\r' || c == '\n'; }
+// level 2 of deepseek_llm_split_next: \s?L+ starting at j (no level-1 break
+// inside the piece)
+static inline bool ds_l2_at(const uint32_t *cp, int j, int end) {
+    return cp_ds_letter(cp[j]) ||
+           (cp_space(cp[j]) && !cp_crlf(cp[j]) && j + 1 < end && cp_ds_letter(cp[j + 1]));
+}
+
 static int deepseek_llm_split_next(const uint32_t *cp, int i, int ncp) {
     if (cp_crlf(cp[i])) return i + 1;                                  // level 1
-    // level 2: \s?L+ starting at j (no level-1 break inside the piece)
-    #define DS_L2_AT(j, end) (cp_ds_letter(cp[j]) || \
-        (cp_space(cp[j]) && !cp_crlf(cp[j]) && (j) + 1 < (end) && cp_ds_letter(cp[(j) + 1])))
     int e2;
-    if (DS_L2_AT(i, ncp)) {
+    if (ds_l2_at(cp, i, ncp)) {
         e2 = cp_ds_letter(cp[i]) ? i + 1 : i + 2;
         while (e2 < ncp && cp_ds_letter(cp[e2])) e2++;
     } else {
         e2 = i + 1;
-        while (e2 < ncp && !cp_crlf(cp[e2]) && !DS_L2_AT(e2, ncp)) e2++;
+        while (e2 < ncp && !cp_crlf(cp[e2]) && !ds_l2_at(cp, e2, ncp)) e2++;
     }
-    #undef DS_L2_AT
     // level 3 within [i, e2): \s?P+, the optional space greedy
     int e3;
     bool sp_p = cp_space(cp[i]) && i + 1 < e2 && cp_ds_punct(cp[i + 1]);

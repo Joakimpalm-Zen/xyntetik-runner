@@ -102,13 +102,17 @@ uint8_t json_escape_decode_simple(uint8_t c) {
     }
 }
 
+// One byte into a bounded output: dropped once `limit` bytes are written.
+static inline void out_put(char *out, int limit, int *m, char c) {
+    if (*m < limit) out[(*m)++] = c;
+}
+
 int json_escape_close(uint8_t *sub, uint16_t *esc, uint16_t hi,
                       char *out, int cap, uint32_t *scalar) {
     int m = 0;
     uint32_t completed = 0;
-    #define ESC_PUT(ch) do { if (m < cap) out[m++] = (char)(ch); } while (0)
     if (*sub == 1) {
-        ESC_PUT('n'); *sub = 0;
+        out_put(out, cap, &m, (char)('n')); *sub = 0;
         if (scalar) *scalar = 0x0A;
         return m;
     }
@@ -116,17 +120,17 @@ int json_escape_close(uint8_t *sub, uint16_t *esc, uint16_t hi,
         int nth = *sub - 2;                     // digits already written
         uint16_t cp = (uint16_t)((nth ? *esc : 0) << (4 * (4 - nth)));
         if (cp == 0) {                          // zeros would spell U+0000
-            for (int i = nth; i < 3; i++) ESC_PUT('0');
-            ESC_PUT('1');
+            for (int i = nth; i < 3; i++) out_put(out, cap, &m, (char)('0'));
+            out_put(out, cap, &m, (char)('1'));
             cp = 1;
         } else {
-            for (int i = nth; i < 4; i++) ESC_PUT('0');
+            for (int i = nth; i < 4; i++) out_put(out, cap, &m, (char)('0'));
         }
         if (cp >= 0xD800 && cp <= 0xDBFF) { *sub = 6; hi = cp; }
         else                              { *sub = 0; completed = cp; }
     }
-    if (*sub == 6) { ESC_PUT('\\'); *sub = 7; }
-    if (*sub == 7) { ESC_PUT('u');  *sub = 8; }
+    if (*sub == 6) { out_put(out, cap, &m, (char)('\\')); *sub = 7; }
+    if (*sub == 7) { out_put(out, cap, &m, (char)('u'));  *sub = 8; }
     if (*sub >= 8 && *sub <= 11) {
         // the smallest low surrogate consistent with what is already written;
         // json_escape_hex has pinned digit 1 to D and digit 2 to C..F, so
@@ -135,7 +139,7 @@ int json_escape_close(uint8_t *sub, uint16_t *esc, uint16_t hi,
         int nth = *sub - 8;
         uint32_t lo = nth ? *esc : 0;
         for (int i = nth; i < 4; i++) {
-            ESC_PUT(LOW[i]);
+            out_put(out, cap, &m, (char)(LOW[i]));
             lo = lo * 16 + (LOW[i] <= '9' ? (uint32_t)(LOW[i] - '0')
                                           : (uint32_t)(LOW[i] - 'A' + 10));
         }
@@ -145,7 +149,6 @@ int json_escape_close(uint8_t *sub, uint16_t *esc, uint16_t hi,
                                    + (lo - 0xDC00u)
                         : lo;
     }
-    #undef ESC_PUT
     if (scalar) *scalar = completed;
     return m;
 }
@@ -417,7 +420,6 @@ static bool feed_byte(jsonv *v, uint8_t c, bool *reconsume) {
 int jsonv_close(jsonv *v, char *out, int cap) {
     int m = 0;
     if (v->st == S_START || v->done) return 0;
-    #define EMIT(c) do { if (m < cap - 1) out[m++] = (c); } while (0)
     // unfinished string escapes and truncated raw UTF-8 scalars: both must
     // finish before the quote or the document does not survive json_parse
     if (v->st == S_KEY || v->st == S_STRING) {
@@ -425,14 +427,14 @@ int jsonv_close(jsonv *v, char *out, int cap) {
         char u8[3];
         int un = json_utf8_close(&v->utf8, u8);
         for (int i = 0; i < un; i++) {
-            EMIT(u8[i]);
+            out_put(out, cap - 1, &m, u8[i]);
             if (key) v->khash = json_key_hash_byte(v->khash, (uint8_t)u8[i]);
         }
         char esc[12];
         uint32_t scalar = 0;
         int en = json_escape_close(&v->sub, &v->esc, v->esc_hi, esc,
                                    (int)sizeof(esc), &scalar);
-        for (int i = 0; i < en; i++) EMIT(esc[i]);
+        for (int i = 0; i < en; i++) out_put(out, cap - 1, &m, esc[i]);
         if (key && scalar) v->khash = json_key_hash_scalar(v->khash, scalar);
         if (key) {
             // a force-closed key must not complete into a duplicate the
@@ -444,38 +446,38 @@ int jsonv_close(jsonv *v, char *out, int cap) {
                     if (v->kseen_depth[i] == (uint8_t)v->depth &&
                         v->kseen_hash[i] == v->khash) { dup = true; break; }
                 if (!dup) break;
-                EMIT('_');
+                out_put(out, cap - 1, &m, '_');
                 v->khash = json_key_hash_byte(v->khash, '_');
             }
         }
-        EMIT('"');
+        out_put(out, cap - 1, &m, '"');
         if (key) v->st = S_COLON;
         else value_done(v);
     }
-    if (v->st == S_COLON)      { EMIT(':'); v->st = S_VALUE; }
+    if (v->st == S_COLON)      { out_put(out, cap - 1, &m, ':'); v->st = S_VALUE; }
     if (v->st == S_KEY_EXPECT) {
         // the invented key must dodge the guard too: "_" may exist already
         uint32_t kh = json_key_hash_byte(json_key_hash_init(), '_');
-        EMIT('"'); EMIT('_');
+        out_put(out, cap - 1, &m, '"'); out_put(out, cap - 1, &m, '_');
         for (int guard = 0; guard < 64; guard++) {
             bool dup = false;
             for (int i = 0; i < v->kseen_n; i++)
                 if (v->kseen_depth[i] == (uint8_t)v->depth &&
                     v->kseen_hash[i] == kh) { dup = true; break; }
             if (!dup) break;
-            EMIT('_'); kh = json_key_hash_byte(kh, '_');
+            out_put(out, cap - 1, &m, '_'); kh = json_key_hash_byte(kh, '_');
         }
-        EMIT('"'); EMIT(':');
+        out_put(out, cap - 1, &m, '"'); out_put(out, cap - 1, &m, ':');
         v->st = S_VALUE;
     }
     if (v->st == S_LIT) {
         const char *lit = LITS[v->lit];
-        while (lit[v->sub]) EMIT(lit[v->sub++]);
+        while (lit[v->sub]) out_put(out, cap - 1, &m, lit[v->sub++]);
         value_done(v);
     }
     if (v->st == S_NUM_MINUS || v->st == S_NUM_FRAC0 ||
         v->st == S_NUM_EXP0 || v->st == S_NUM_EXP1) {
-        EMIT('0');
+        out_put(out, cap - 1, &m, '0');
         value_done(v);
     }
     if (v->st == S_NUM_ZERO || v->st == S_NUM_INT ||
@@ -483,18 +485,17 @@ int jsonv_close(jsonv *v, char *out, int cap) {
         value_done(v); // number already complete as-is
     }
     if (v->st == S_VALUE || v->st == S_ARR_FIRST) {
-        EMIT('n'); EMIT('u'); EMIT('l'); EMIT('l');
+        out_put(out, cap - 1, &m, 'n'); out_put(out, cap - 1, &m, 'u'); out_put(out, cap - 1, &m, 'l'); out_put(out, cap - 1, &m, 'l');
         value_done(v);
     }
     // close remaining containers
     while (!v->done && v->depth > 0 &&
            (v->st == S_AFTER || v->st == S_KEY_OR_END)) {
         uint8_t top = v->stack[v->depth - 1];
-        EMIT(top == 'O' ? '}' : ']');
+        out_put(out, cap - 1, &m, top == 'O' ? '}' : ']');
         v->depth--;
         value_done(v);
     }
-    #undef EMIT
     out[m] = 0;
     return m;
 }

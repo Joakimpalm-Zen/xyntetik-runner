@@ -8394,16 +8394,19 @@ static int ts_entry_close(tool_stream *s, const char *rest, int rest_n, int rc) 
 // forward raw JSON text of the selected value, dropping insignificant
 // whitespace so the concatenated deltas are the same document the buffered
 // path re-serializes
+// ts_value's pending run [*run, upto) of its input: forwarded when there is
+// one, then closed. Returns the sink's result, or `rc` when nothing was sent.
+static int ts_flush_run(const tool_stream *s, int (*emit)(void *, const char *, int),
+                        const char *b, int *run, int upto, int rc) {
+    if (*run >= 0 && upto > *run && emit) rc = emit(s->sink.ud, b + *run, upto - *run);
+    *run = -1;
+    return rc;
+}
+
 static int ts_value(tool_stream *s, const char *b, int n) {
     int rc = 0, run = -1;
     int (*emit)(void *, const char *, int) =
         s->called ? s->sink.call_args : s->sink.content;
-    #define TS_FLUSH(upto) do { \
-        if (run >= 0 && (upto) > run && emit) \
-            rc = emit(s->sink.ud, b + run, (upto) - run); \
-        run = -1; \
-    } while (0)
-
     for (int i = 0; i < n && !rc; i++) {
         char c = b[i];
         if (s->in_str) {
@@ -8413,20 +8416,20 @@ static int ts_value(tool_stream *s, const char *b, int n) {
                 s->in_str = false;
                 if (s->depth == 0) { // a bare string value ends here
                     if (run < 0) run = i;
-                    TS_FLUSH(i + 1);
+                    rc = ts_flush_run(s, emit, b, &run, i + 1, rc);
                     return ts_entry_close(s, b + i + 1, n - (i + 1), rc);
                 }
             }
             if (run < 0) run = i;
             continue;
         }
-        if (ts_ws(c)) { TS_FLUSH(i); continue; }
+        if (ts_ws(c)) { rc = ts_flush_run(s, emit, b, &run, i, rc); continue; }
         if (s->depth == 0 && s->started) {
             // a scalar value has begun and this byte closes our parent; it
             // is not consumed here (a bare scalar has no delimiter of its
             // own), so it is still the first byte of what is left over
             if (c == ',' || c == '}' || c == ']') {
-                TS_FLUSH(i);
+                rc = ts_flush_run(s, emit, b, &run, i, rc);
                 return ts_entry_close(s, b + i, n - i, rc);
             }
         }
@@ -8436,14 +8439,13 @@ static int ts_value(tool_stream *s, const char *b, int n) {
         else if (c == '}' || c == ']') {
             if (--s->depth <= 0) {
                 if (run < 0) run = i;
-                TS_FLUSH(i + 1);
+                rc = ts_flush_run(s, emit, b, &run, i + 1, rc);
                 return ts_entry_close(s, b + i + 1, n - (i + 1), rc);
             }
         }
         if (run < 0) run = i;
     }
-    TS_FLUSH(n);
-    #undef TS_FLUSH
+    rc = ts_flush_run(s, emit, b, &run, n, rc);
     return rc;
 }
 

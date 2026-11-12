@@ -1437,6 +1437,15 @@ fail:
     }
 }
 
+// One channel of harmony_channel_select: its name joins the enum and its
+// branch the choice, both stored before the check so the caller's `fail`
+// frees whichever was made. False when either is missing.
+static bool harmony_channel_add(snode *names, snode *choice, const char *name, snode *branch) {
+    choice->alts[choice->n_alts++] = branch;
+    names->lits[names->n_lits++] = strdup(name);
+    return choice->alts[choice->n_alts - 1] && names->lits[names->n_lits - 1];
+}
+
 static snode *harmony_channel_select(jv *tools, const char *only_tool,
                                      bool allow_final, jv *final_schema,
                                      bool allow_reasoning,
@@ -1449,21 +1458,15 @@ static snode *harmony_channel_select(jv *tools, const char *only_tool,
     if (!names->lits || !choice->alts) goto fail;
     names->min_items = 1;
     names->whitespace_significant = choice->whitespace_significant = true;
-#define HARMONY_CHANNEL(NAME, NODE) do {                                      \
-        choice->alts[choice->n_alts++] = (NODE);                              \
-        names->lits[names->n_lits++] = strdup(NAME);                          \
-        if (!choice->alts[choice->n_alts - 1] ||                              \
-            !names->lits[names->n_lits - 1]) goto fail;                       \
-    } while (0)
     if (allow_reasoning) {
         snode *branch = harmony_after_reasoning(
             tools, only_tool, allow_final, final_schema, err, errcap);
-        HARMONY_CHANNEL("analysis", branch);
+        if (!harmony_channel_add(names, choice, "analysis", branch)) goto fail;
     }
     {
         snode *branch = harmony_commentary_tail(
             tools, only_tool, allow_final, err, errcap);
-        HARMONY_CHANNEL("commentary", branch);
+        if (!harmony_channel_add(names, choice, "commentary", branch)) goto fail;
     }
     if (allow_final) {
         snode *branch = atem_seq(2);
@@ -1474,9 +1477,8 @@ static snode *harmony_channel_select(jv *tools, const char *only_tool,
             schema_free(body); schema_free(branch); goto fail;
         }
         branch->whitespace_significant = true;
-        HARMONY_CHANNEL("final", branch);
+        if (!harmony_channel_add(names, choice, "final", branch)) goto fail;
     }
-#undef HARMONY_CHANNEL
     if (!atem_seq_add(root, atem_lit("<|channel|>")) ||
         !atem_seq_add(root, names) || !atem_seq_add(root, choice)) goto fail;
     names = choice = NULL;
