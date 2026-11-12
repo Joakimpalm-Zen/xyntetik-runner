@@ -861,7 +861,11 @@ class PlatformCoreSelection(unittest.TestCase):
         self.assertIn("github.event_name == 'pull_request'", windows)
         self.assertIn("needs.changes.outputs.gates_core == 'true'", windows)
         self.assertIn('fromJSON', windows)
-        self.assertIn('["gates-core"]', windows)
+        # R6.68.47: a pull request that is not prose alone runs the Python
+        # part; one that touches a core path runs gates-core beside it
+        self.assertIn("needs.changes.outputs.engine == 'true'", windows)
+        self.assertIn("""'["gates-core","python"]' || '["python"]'""", windows)
+        self.assertNotIn("""'pull_request' && '["gates-core"]'""", windows)
         gate = workflow.split('\n  pr-gate:\n', 1)[1]
         self.assertIn('windows-suite', gate.split('\n    if:', 1)[0])
 
