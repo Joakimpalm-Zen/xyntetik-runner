@@ -35,6 +35,13 @@ def _env():
     return {**{k: v for k, v in os.environ.items() if k != "RUNNER_MLA_NAIVE"}, "RUNNER_DEBUG_VRAM": "1"}
 
 
+def _text(raw):
+    # Windows writes stderr in text mode: every line ends CRLF, and a pattern
+    # anchored with $ then matches nothing. The anchor row failed there and
+    # every per-fixture case skipped as "the fit has no answer" (R6.68.46).
+    return raw.decode(errors="replace").replace("\r\n", "\n")
+
+
 def _line(text, side):
     found = list((FIT if side == "fit" else LOAD).finditer(text))
     return found[-1] if found else None
@@ -52,14 +59,14 @@ def _fixtures():
 def _fit(runner_bin, name, ctx):
     p = subprocess.run([runner_bin, "-m", name, "--info", "fit", "--gpu", "off", "-c", str(ctx)],
                        cwd=ROOT, capture_output=True, timeout=120, env=_env())
-    return p.returncode, _line(p.stderr.decode(errors="replace"), "fit")
+    return p.returncode, _line(_text(p.stderr), "fit")
 
 
 def _load(runner_bin, name, ctx, kv):
     p = subprocess.run([runner_bin, "-m", name, "-p", "hi", "-n", "1", "--gpu", "off", "-t", "1",
                         "-c", str(ctx), "--kv", kv], cwd=ROOT, capture_output=True, timeout=120,
                        env=_env())
-    err = p.stderr.decode(errors="replace")
+    err = _text(p.stderr)
     return p.returncode, _line(err, "load"), err
 
 
@@ -92,3 +99,16 @@ def test_the_fit_predicts_the_load(runner_bin, name):
         assert got == want, (name, kv, "fit", want, "load", got)
         checked += 1
     assert checked, "no KV format to compare"
+
+
+def test_a_crlf_stderr_is_read_like_an_lf_one():
+    # the Windows form of the two lines this file reads
+    fit = (b"fit: (geometry: layers 2, mtp 0, kv f16 256, q8 0, k8v4 0, fp4 0 per token, "
+           b"sliding 0 at window 0, recurrent 0)\r\nnext line\r\n")
+    load = (b"load: (geometry: layers 2, mtp 0, kv 256 per token as f16, sliding 0 at window 0, "
+            b"recurrent 0)\r\n")
+    assert _line(_text(fit), "fit").group(3) == "256"
+    assert _line(_text(load), "load").group(4) == "f16"
+    # and the raw CRLF text is what the patterns do not match
+    assert _line(fit.decode(), "fit") is None
+
