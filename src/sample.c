@@ -550,6 +550,29 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
                                      &r_pre);
             if (pick != -3) { free(c); free(valid); return pick; }
         }
+        // Top-k on, and a sparse state: fewer than top_k of the entries
+        // ranked so far are valid (an enum member, a key, punctuation), which
+        // is most tokens of a schema-constrained reply. Whatever valid entries
+        // lie below the ranked prefix would join the candidates, but together
+        // they carry at most the mass of everything unexamined, so the same
+        // bound that settles the open-ended case settles this one: when the
+        // cutoff or the draw provably falls inside the prefix, the pick is
+        // made here and the rest of the vocabulary is never asked. It used to
+        // be asked on every such token, 150,000 validity checks at a time
+        // (R3.23 measured 22 of 26 sampled tokens; R6.68.26). Not settled:
+        // the rounds and the scan below go on as before, with the same draw.
+        if (!open_ended && s->temp > 0 && k > 0) {
+            if (!(total > 0)) {   // the vocabulary's mass, once per pick
+                top = c[0].p;
+                for (int i = 0; i < n_vocab; i++)
+                    total += expf(logits[i] / temp - c[0].p);
+            }
+            double seen_k = 0;
+            for (int i = 0; i < m; i++) seen_k += exp((double)c[i].p - top);
+            int pick = prefix_decide(s, valid, k, top, total, seen_k, c[m - 1].p,
+                                     &r_pre);
+            if (pick != -3) { free(c); free(valid); return pick; }
+        }
         // With top-k on, a prefix cannot settle the pick early, so once the
         // first two rounds have not found `need` admitted entries the rest of
         // the vocabulary is scanned (above) rather than sorted at 16,384
