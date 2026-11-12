@@ -20,32 +20,29 @@ KQ_STAGE_256(tc_stage_q5_K, q5k_stage64, 176)
 KQ_STAGE_256(tc_stage_q3_K, q3k_stage64, 110)
 KQ_STAGE_256(tc_stage_q2_K, q2k_stage64, 84)
 
-// 32-element blocks: two a segment, tail-safe past n_in as tc_stage_q4_0
-#define KQ_STAGE_32(NAME, FN, BLKBYTES)                                        \
+// 32-element blocks (two a segment) and NVFP4's 64-element blocks (one): the
+// shared row stager of kq_stage.h, whose one tail rule zeroes a block at or
+// past n_in without reading it (R6.68.111; NVFP4 had no tail and read the next
+// row's first block, past the tensor on the last row, for a row 64 x odd wide)
+#define KQ_STAGE_ROW(NAME, ROW)                                                \
 static __device__ __forceinline__ void NAME(__half *dst, const uchar *rw,     \
                                             int nb, int e0, int n_in) {       \
-    _Pragma("unroll")                                                          \
-    for (int half = 0; half < 2; half++) {                                     \
-        int base = e0 + half * 32;                                             \
-        if (base >= n_in) {                                                    \
-            _Pragma("unroll")                                                  \
-            for (int j = 0; j < 32; j++)                                       \
-                dst[half * 32 + j] = __float2half(0.0f);                       \
-            continue;                                                          \
-        }                                                                      \
-        FN(dst + half * 32, rw + (ulong64)(base / 32) * (BLKBYTES));           \
-    }                                                                          \
+    ROW(dst, rw, e0, n_in);                                                    \
     (void)nb;                                                                  \
 }
-KQ_STAGE_32(tc_stage_q4_1, q41_stage32, 20)
-KQ_STAGE_32(tc_stage_q5_0, q50_stage32, 22)
-KQ_STAGE_32(tc_stage_q5_1, q51_stage32, 24)
+KQ_STAGE_ROW(tc_stage_q4_1, kq_row_q4_1)
+KQ_STAGE_ROW(tc_stage_q5_0, kq_row_q5_0)
+KQ_STAGE_ROW(tc_stage_q5_1, kq_row_q5_1)
+KQ_STAGE_ROW(tc_stage_nvfp4, kq_row_nvfp4)
 
-// NVFP4 (R4.9.5): a 64-element block is one segment; a row is a whole
-// number of blocks, so no segment reaches past n_in
-static __device__ __forceinline__ void tc_stage_nvfp4(__half *dst, const uchar *rw, int nb,
-                                                      int e0, int n_in) {
+// TC2's NVFP4 loader (G2NV4) stages whole blocks only, so it keeps the
+// unchecked stager: TC2 is admitted only for n_in % G2_BK == 0 (cuda.c, the
+// f2 route) and steps nst = n_in / G2_BK segments of G2_BK = 64, one NVFP4
+// block each (gemm2_body, kernels_tc2.cuh), so no segment starts at n_in
+static __device__ __forceinline__ void tc2_stage_nvfp4(__half *dst, const uchar *rw, int nb,
+                                                       int e0, int n_in) {
     nvfp4_stage64(dst, rw + (ulong64)(e0 >> 6) * 36);
     (void)nb; (void)n_in;
 }
+
 #endif // RUNNER_KERNELS_KQ_STAGE_CUH
