@@ -3927,8 +3927,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // full-context entries (prefix_cache_fit_model, R4.26.13).
     {
         uint64_t mb  = env_u64("RUNNER_PREFIX_CACHE_MB", 0, 1u << 20, 512);
-        double   ttl = env_f64("RUNNER_PREFIX_CACHE_TTL", 0.0, 1e9, 600.0);
-        prefix_cache_configure((size_t)mb * 1024 * 1024, ttl);
+        double   cache_ttl = env_f64("RUNNER_PREFIX_CACHE_TTL", 0.0, 1e9, 600.0);
+        prefix_cache_configure((size_t)mb * 1024 * 1024, cache_ttl);
     }
     context_store(base ? base->n_ctx : mp->n_ctx);
     SV.n_slots = parallel;

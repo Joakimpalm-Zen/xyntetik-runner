@@ -246,12 +246,12 @@ static bool nfc_utf8(const char *s, size_t n, char **out, size_t *out_n, bool *o
         }
         size_t count[256] = { 0 }, at[256];
         for (size_t i = a; i < b; i++) count[cls[i]]++;
-        for (size_t k = 0, s = a; k < 256; k++) { at[k] = s; s += count[k]; }
+        for (size_t k = 0, pos = a; k < 256; k++) { at[k] = pos; pos += count[k]; }
         for (size_t i = a; i < b; i++) tmp[at[cls[i]]++] = d[i];
         memcpy(d + a, tmp + a, sizeof(uint32_t) * (b - a));
-        for (size_t k = 1, s = a; k < 256; k++) {
-            memset(cls + s, (int)k, count[k]);
-            s += count[k];
+        for (size_t k = 1, pos = a; k < 256; k++) {
+            memset(cls + pos, (int)k, count[k]);
+            pos += count[k];
         }
     }
     free(tmp);

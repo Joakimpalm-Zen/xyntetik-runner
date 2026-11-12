@@ -6,6 +6,7 @@
 // can never catch that, so this test manufactures a file at real-checkpoint
 // size — 5 GB, sparse where the OS allows it — and demands a usable identity.
 // It skips (exit 0, loudly) only when the disk cannot spare the space.
+#include "compat.h"
 #include "model.h"
 
 #include <stdio.h>
@@ -90,6 +91,21 @@ int main(void) {
            mtime2 == mtime && ctime2 == ctime_,
            "two lookups of one unchanged file agree on every field");
     }
+
+    // plat_read_file's size (R6.68.5): ftell's long is 32 bits on Windows, so
+    // a file past 2 GiB read as an error there. The size must be the real
+    // 64-bit one, and a cap below it must refuse without reading anything.
+    FILE *f = plat_fopen(path, "rb");
+    ck(f != NULL, "the 5 GB file opens");
+    if (f) {
+        uint64_t fsz = 0;
+        ck(plat_file_size(f, &fsz) && fsz == BIG, "plat_file_size reports the real 64-bit size");
+        ck(ftell(f) == 0, "plat_file_size leaves the position at the start");
+        fclose(f);
+    }
+    size_t got = 7;
+    ck(plat_read_file(path, (size_t)1 << 20, &got) == NULL && got == 7,
+       "a cap below the size refuses the read and leaves n_out alone");
 
     remove(path);
     if (!g_fail) printf("file identity ok at real-checkpoint size\n");
