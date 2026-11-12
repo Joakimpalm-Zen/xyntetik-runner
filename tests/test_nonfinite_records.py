@@ -130,3 +130,19 @@ def test_a_non_finite_dpo_step_stops_before_it_reaches_the_adapter(exe, nan_mode
     assert b"not finite" in p.stderr, p.stderr.decode(errors="replace")
     assert not _lines(p.stdout), p.stdout
     assert not out.exists()
+
+
+def test_quant_error_writes_null_for_a_tensor_whose_error_is_not_finite(exe, nan_model, tmp_path):
+    """--quant-error costs each tensor at each asked type; a tensor holding a
+    NaN has a NaN error, written with %.9g as `nan`, so the planner could not
+    read the report at all. It is null now, beside the tensors that cost
+    finitely. The exit is unchanged (0): the report measures the file as it
+    is."""
+    report = tmp_path / "qe.jsonl"
+    p = _run(exe, "-m", nan_model, "--quant-error", report, "--quant", "q8_0,q4_0")
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    rows = {r["tensor"]: r for r in _lines(report.read_text())}
+    assert all(v["error"] is None for v in rows["token_embd.weight"]["types"].values())
+    finite = [v["error"] for t, r in rows.items() if t != "token_embd.weight"
+              for v in r["types"].values() if v]
+    assert finite and all(isinstance(e, float) for e in finite)

@@ -3498,9 +3498,12 @@ int quantize_error_report(const char *in_path, const int *types, int n_types,
                 // falls back the same way); written_as names the type the
                 // bytes and the error belong to when the block does not
                 // divide the row
-                fprintf(out, "{\"bytes\":%llu,\"error\":%.9g",
+                // null when not finite: a tensor holding a NaN or an
+                // overflowing value has no error to cost (R6.68.115)
+                char nb[32];
+                fprintf(out, "{\"bytes\":%llu,\"error\":%s",
                         (unsigned long long)(ggml_row_size(ek, t->ne[0]) * rows),
-                        err[k] * sc2);
+                        json_numg(nb, 9, err[k] * sc2));
                 if (ek != types[k]) fprintf(out, ",\"written_as\":\"%s\"", en);
                 fputc('}', out);
             } else
