@@ -104,6 +104,10 @@ static inline const char *json_numg(char out[32], int digits, double v) {
     else snprintf(out, 32, "null");
     return out;
 }
+// A double at full precision (json_format_number: the shortest spelling that
+// reads back exactly), or null when it is not finite: a measurement that is
+// a double all the way, as derive's reports are.
+void sb_numj(sbuf *b, double v);
 void sb_str(sbuf *b, const char *s);           // appends s as a quoted JSON string; NULL as null
 
 // re-serialize a parsed value (inverse of json_parse, minus formatting).

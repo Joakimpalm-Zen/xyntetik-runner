@@ -584,6 +584,13 @@ void sb_num9(sbuf *b, double v) {
     sb_lit(b, t);
 }
 
+void sb_numj(sbuf *b, double v) {
+    char t[32];
+    if (!fp_isfinite(v)) { sb_lit(b, "null"); return; }
+    json_format_number(v, t);
+    sb_lit(b, t);
+}
+
 void sb_fix6(sbuf *b, double v) {
     if (fp_isfinite(v)) sb_fmt(b, "%.6f", v);
     else sb_lit(b, "null");
