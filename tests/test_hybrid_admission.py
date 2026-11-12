@@ -482,7 +482,10 @@ def test_the_fit_and_the_load_agree_on_a_group_limited_router(runner_bin, tmp_pa
                          capture_output=True, text=True, timeout=120)
     assert fit.returncode == 0, fit.stderr
     assert "experts       on the host, with their routing" in fit.stdout, fit.stdout
+    # bytes: the random fixture's generated token may be part of a UTF-8
+    # sequence (b"hi\xb3\n" on a CUDA host), which text=True cannot decode
     load = subprocess.run([runner_bin, "-m", str(model), "-p", "hi", "-n", "1"], cwd=ROOT,
-                          capture_output=True, text=True, timeout=120)
-    assert load.returncode == 0, load.stderr
-    assert "its experts and their routing stay on the host" in load.stderr, load.stderr
+                          capture_output=True, timeout=120)
+    err = load.stderr.decode(errors="replace")
+    assert load.returncode == 0, err
+    assert "its experts and their routing stay on the host" in err, err
