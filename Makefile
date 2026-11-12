@@ -2594,6 +2594,16 @@ test-cuda-qwen4exp: runner $(TEST_GPU_ID) $(TEST_CUDA_TEARDOWN) test.gguf
 # placements by --score (experts on the host, a two-layer split, both) at
 # 2e-5 in logprob with no argmax flip, and speculative identity. Skips itself
 # without a CUDA device.
+# R6.68.25a: with routed experts fused on the device the decode replays its
+# graph. Under RUNNER_REQUIRE_GRAPH_CAPTURE (exported for test-cuda-%) a
+# capture that fails ends the run and an eager-by-design decode prints why, so
+# a fused or grouped arm whose only note is the pinned arm's route replay
+# compared captured decode steps to the CPU's logits at 1e-5 (the anchor: the
+# CPU forward, itself held to the publisher's reference at admission). The
+# eager arm must name its cause, which also proves the switch is on. Then the
+# CLI decode: the route line says graph=replay, and its 32 greedy tokens are
+# the eager decode's and the CPU's (the toy repeats one token after the
+# prompt, so this is the route's smoke; the logits above are the measurement).
 test-cuda-qwen35moe: runner $(TEST_GPU_ID) $(TEST_SPEC_ID)
 	@set -e; \
 	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)"; then \
@@ -2611,6 +2621,12 @@ test-cuda-qwen35moe: runner $(TEST_GPU_ID) $(TEST_SPEC_ID)
 	        echo "test-cuda-qwen35moe: $$f did not run on the device"; exit 1; fi; \
 	      grep -q 'routing pin:.* 0 of them' test-cuda-qwen35moe.out || { cat test-cuda-qwen35moe.out; \
 	        echo "test-cuda-qwen35moe: $$f [$$E $$a] has no pinned arm, or the pin differed"; exit 1; }; \
+	      if [ "$$E" = RUNNER_MOE_EAGER=1 ]; then \
+	        grep -q 'decode graph off by design: MoE routing read back' test-cuda-qwen35moe.out || { \
+	          grep 'off by design' test-cuda-qwen35moe.out; echo "test-cuda-qwen35moe: $$f [$$E $$a]: the eager MoE decode did not name its cause (is RUNNER_REQUIRE_GRAPH_CAPTURE set?)"; exit 1; }; \
+	      elif grep 'decode graph off by design' test-cuda-qwen35moe.out | grep -qv 'RUNNER_MOE_REPLAY'; then \
+	        grep 'off by design' test-cuda-qwen35moe.out; echo "test-cuda-qwen35moe: $$f [$${E:-fused} $$a]: the free-routing decode did not replay its graph"; exit 1; \
+	      fi; \
 	      echo "$$f [$${E:-fused}$${a:+, one token at a time}]: $$(grep 'routing pin' test-cuda-qwen35moe.out | sed 's/^ *//'); $$(tail -1 test-cuda-qwen35moe.out)"; \
 	    done; \
 	  done; \
@@ -2623,7 +2639,18 @@ test-cuda-qwen35moe: runner $(TEST_GPU_ID) $(TEST_SPEC_ID)
 	  grep -q "CUDA backend" cuda-q35m-gpu.err || { echo "FAIL: [$$arm] did not run on the device"; cat cuda-q35m-gpu.err; exit 1; }; \
 	  $(PYTHON) -c "import json,sys; a=json.load(open('cuda-q35m-cpu.score')); b=json.load(open('cuda-q35m-gpu.score')); d=max(abs(x-y) for x,y in zip(a['logprobs'],b['logprobs'])); am=sum(1 for x,y in zip(a['argmax'],b['argmax']) if x!=y); assert len(a['logprobs'])==len(b['logprobs'])>0 and d < 2e-5 and am == 0, (len(a['logprobs']), len(b['logprobs']), d, am); print('test-ornith-moe-s40.gguf [%s]: cpu/cuda logprob max diff %.2e, argmax flips %d' % (sys.argv[1] or 'all on device', d, am))" "$$arm"; \
 	done; \
-	rm -f cuda-q35m-cpu.score cuda-q35m-gpu.score cuda-q35m-gpu.err; \
+	for f in test-ornith-moe.gguf test-ornith-moe-s40.gguf test-ornith-moe-s72.gguf test-ornith-moe-s128.gguf; do \
+	  ./$(RUNNER_EXE) -m $$f -p "$$P" -n 32 --temp 0 --ignore-eos --gpu off --no-tray -c 128 > cuda-q35m-cpu.out 2>/dev/null; \
+	  RUNNER_CUDA_GRAPH_OFF=1 ./$(RUNNER_EXE) -m $$f -p "$$P" -n 32 --temp 0 --ignore-eos --no-tray -c 128 > cuda-q35m-eager.out 2>/dev/null; \
+	  RUNNER_DEBUG_ROUTE=1 ./$(RUNNER_EXE) -m $$f -p "$$P" -n 32 --temp 0 --ignore-eos --no-tray -c 128 > cuda-q35m-graph.out 2> cuda-q35m-graph.err || { cat cuda-q35m-graph.err; exit 1; }; \
+	  grep -a ' rows=1 ' cuda-q35m-graph.err | grep -q 'graph=replay' || { grep -a 'rows=1 \|off by design' cuda-q35m-graph.err; \
+	    echo "FAIL: $$f: the decode did not replay a captured graph"; exit 1; }; \
+	  $(PYTHON) -c "import sys; a, b, c = (open(p, 'rb').read() for p in sys.argv[1:]); sys.exit(0 if a and a == b == c else 1)" \
+	    cuda-q35m-graph.out cuda-q35m-eager.out cuda-q35m-cpu.out || { \
+	    echo "FAIL: $$f: the replayed decode's tokens differ from the eager decode's or the CPU's"; exit 1; }; \
+	  echo "$$f: decode replays its graph, 32 greedy tokens identical to the eager decode's and the CPU's"; \
+	done; \
+	rm -f cuda-q35m-cpu.score cuda-q35m-gpu.score cuda-q35m-gpu.err cuda-q35m-cpu.out cuda-q35m-eager.out cuda-q35m-graph.out cuda-q35m-graph.err; \
 	echo "test-cuda-qwen35moe: ok"
 
 # CUDA NVFP4 (ModelOpt two-level export): the device kernels and the companion
