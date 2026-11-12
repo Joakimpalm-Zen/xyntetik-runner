@@ -8317,6 +8317,27 @@ enum { TS_TOOL, TS_ARGS, TS_FINAL_KEY, TS_FINAL_STR, TS_VALUE, TS_ATEM,
        TS_ENTRY_SEP,
        TS_DONE };
 
+// Find `needle` in [p, end). The demultiplexers hold a model's output by
+// length, and a model can write a NUL byte (a byte-fallback token): strstr
+// stops there, so a tag behind a NUL stayed invisible until the buffer moved
+// past it, and the same turn parsed differently by how its bytes were chunked
+// (R6.68.19, found by the tool_stream fuzz harness). Every search over model
+// output is bounded by its length instead.
+static const char *mem_find(const char *p, const char *end, const char *needle) {
+    size_t n = strlen(needle);
+    if (!p || !n || end < p || (size_t)(end - p) < n) return NULL;
+    for (const char *q = p, *last = end - n; q <= last; q++) {
+        q = memchr(q, needle[0], (size_t)(last - q) + 1);
+        if (!q) return NULL;
+        if (!memcmp(q, needle, n)) return q;
+    }
+    return NULL;
+}
+
+static const char *head_find(const tool_stream *s, const char *needle) {
+    return s->head ? mem_find(s->head, s->head + s->head_n, needle) : NULL;
+}
+
 static void head_put(tool_stream *s, const char *b, size_t n) {
     if (s->head_n + n + 1 > s->head_cap) {
         size_t cap = s->head_cap ? s->head_cap * 2 : 128;
@@ -8344,7 +8365,7 @@ static bool ts_ws(char c) {
 // index just past `"key" :` within head, or -1 while it has not arrived
 static long head_after_key(const tool_stream *s, const char *quoted_key) {
     if (!s->head) return -1;
-    const char *at = strstr(s->head, quoted_key);
+    const char *at = head_find(s, quoted_key);
     if (!at) return -1;
     size_t i = (size_t)(at - s->head) + strlen(quoted_key);
     while (i < s->head_n && ts_ws(s->head[i])) i++;
@@ -8605,7 +8626,7 @@ void tool_stream_init(tool_stream *s, const tool_envelope *e,
 static int ts_muse_header(tool_stream *s, const char *bytes, int n) {
     head_put(s, bytes, (size_t)n);
     if (s->state == TS_DONE) return 0;
-    const char *message = s->head ? strstr(s->head, "<|message|>") : NULL;
+    const char *message = s->head ? head_find(s, "<|message|>") : NULL;
     if (!message) return 0;
     size_t off = (size_t)(message - s->head) + strlen("<|message|>");
     head_drop(s, off);
@@ -8621,9 +8642,9 @@ static int ts_atem(tool_stream *s, const char *bytes, int n) {
     head_put(s, bytes, (size_t)n);
     if (s->state == TS_DONE) return 0;
     for (;;) {
-        const char *inv = s->head ? strstr(s->head, "<atem:invoke name=\"") : NULL;
+        const char *inv = s->head ? head_find(s, "<atem:invoke name=\"") : NULL;
         if (inv) {
-            const char *close = strstr(inv, "</atem:invoke>");
+            const char *close = mem_find(inv, s->head + s->head_n, "</atem:invoke>");
             if (!close) return 0;
             size_t upto = (size_t)(close - s->head) + strlen("</atem:invoke>");
             sbuf content = {0}, tc = {0}, wrapped = {0};
@@ -8650,8 +8671,8 @@ static int ts_atem(tool_stream *s, const char *bytes, int n) {
             if (rc) return rc;
             continue;
         }
-        const char *user = s->head ? strstr(s->head, " to=user<|message|>") : NULL;
-        const char *eot = user ? strstr(user, "<|eot|>") : NULL;
+        const char *user = s->head ? head_find(s, " to=user<|message|>") : NULL;
+        const char *eot = user ? mem_find(user, s->head + s->head_n, "<|eot|>") : NULL;
         if (user && eot) {
             user += strlen(" to=user<|message|>");
             int rc = s->sink.content
@@ -8744,14 +8765,14 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
             }
             // Hold the whole native call until its arguments are complete.
             // Never emit a callable event for malformed or partial XML.
-            const char *close=strstr(s->head,QWEN_CALL_END);
+            const char *close=head_find(s, QWEN_CALL_END);
             // R2.10, parse-only: a complete function block followed by the
             // next call's opener ends this call too (coder_one_call decides
             // whether it is one), so the call goes out when the opener
             // arrives and stands even if the turn never writes a closer
             const char *next=NULL;
             if (lenient) {
-                const char *fe=strstr(s->head,"</function>");
+                const char *fe=head_find(s, "</function>");
                 if (fe) {
                     const char *q=fe+strlen("</function>"), *he=s->head+s->head_n;
                     while (q<he && ts_ws(*q)) q++;
@@ -8822,8 +8843,8 @@ static int ts_qwen(tool_stream *s, const char *bytes, int n) {
             if (!s->head_n) return 0;
             s->skip_ws=false;
         }
-        const char *open=strstr(s->head,QWEN_CALL_OPEN);
-        const char *stop=strstr(s->head,QWEN_TURN_END);
+        const char *open=head_find(s, QWEN_CALL_OPEN);
+        const char *stop=head_find(s, QWEN_TURN_END);
         if (stop && (!open || stop<open)) {
             int rc=stop>s->head && s->sink.content
                 ? s->sink.content(s->sink.ud,s->head,(int)(stop-s->head)) : 0;
@@ -8918,13 +8939,13 @@ static int ts_mcp(tool_stream *s, const char *bytes, int n) {
             if (!s->head_n) return 0;
             s->skip_ws=false;
         }
-        const char *open=strstr(s->head,xp->open);
-        const char *stop=strstr(s->head,xp->turn_end);
+        const char *open=head_find(s, xp->open);
+        const char *stop=head_find(s, xp->turn_end);
         // K2-Horizon's frame around its calls: the prose in front of it is
         // content less the newline the template writes there, the frame
         // token itself is dropped
-        const char *fo=xp->frame_open ? strstr(s->head,xp->frame_open) : NULL;
-        const char *fc=xp->frame_close ? strstr(s->head,xp->frame_close) : NULL;
+        const char *fo=xp->frame_open ? head_find(s, xp->frame_open) : NULL;
+        const char *fc=xp->frame_close ? head_find(s, xp->frame_close) : NULL;
         const char *frame=fo && (!fc || fo<fc) ? fo : fc;
         if (frame && (!open || frame<open) && (!stop || frame<stop)) {
             size_t prefix=(size_t)(frame-s->head), emitn=prefix;
@@ -9049,7 +9070,7 @@ static int ts_lfm2(tool_stream *s, const char *bytes, int n) {
             if (rc) return rc;
             continue;
         }
-        const char *open = strstr(s->head, LFM_CALL_OPEN);
+        const char *open = head_find(s, LFM_CALL_OPEN);
         if (open) {
             size_t pre = (size_t)(open - s->head);
             int rc = pre && s->sink.content ? s->sink.content(s->sink.ud, s->head, (int)pre) : 0;
@@ -9100,7 +9121,7 @@ static int ts_nemotron(tool_stream *s, const char *bytes, int n) {
                 // finish reports one that never does
                 if (!lenient || !lp->close) return 0;
                 // not closed yet, or closed but not a list of calls
-                const char *close = strstr(s->head, NEMO_CALL_END);
+                const char *close = head_find(s, NEMO_CALL_END);
                 bool parses = false;
                 while (close) {
                     const char *body = trim_left(s->head + strlen(NEMO_CALL_OPEN), close);
@@ -9108,7 +9129,7 @@ static int ts_nemotron(tool_stream *s, const char *bytes, int n) {
                     parses = a != NULL;
                     jv_free(a);
                     if (parses) break;
-                    close = strstr(close + strlen(NEMO_CALL_END), NEMO_CALL_END);
+                    close = mem_find(close + strlen(NEMO_CALL_END), s->head + s->head_n, NEMO_CALL_END);
                 }
                 if (!close) return 0;                 // wait for the close
                 s->fault = true;
@@ -9143,8 +9164,8 @@ static int ts_nemotron(tool_stream *s, const char *bytes, int n) {
             if (!s->head_n) return 0;
             s->skip_ws = false;
         }
-        const char *open = strstr(s->head, lp->open);
-        const char *stop = strstr(s->head, lp->turn_end);
+        const char *open = head_find(s, lp->open);
+        const char *stop = head_find(s, lp->turn_end);
         if (stop && (!open || stop < open)) {
             int rc = stop > s->head && s->sink.content
                 ? s->sink.content(s->sink.ud, s->head, (int)(stop - s->head)) : 0;
@@ -9203,7 +9224,7 @@ static int ts_gemma4(tool_stream *s, const char *bytes, int n) {
             s->state = TS_G4_TEXT;
             break;
         case TS_G4_THOUGHT: {
-            const char *at = s->head ? strstr(s->head, G4_THOUGHT_END) : NULL;
+            const char *at = s->head ? head_find(s, G4_THOUGHT_END) : NULL;
             if (!at) return 0;                  // hold: reasoning is not a
                                                 // stream the client can act on
             size_t upto = (size_t)(at - s->head);
@@ -9220,7 +9241,7 @@ static int ts_gemma4(tool_stream *s, const char *bytes, int n) {
                 s->state = TS_G4_TEXT;
                 break;
             }
-            const char *close = s->head ? strstr(s->head, "<tool_call|>") : NULL;
+            const char *close = s->head ? head_find(s, "<tool_call|>") : NULL;
             if (!close) return 0;
             size_t upto = (size_t)(close - s->head) + strlen("<tool_call|>");
             sbuf tc = {0};
@@ -9254,11 +9275,11 @@ static int ts_gemma4(tool_stream *s, const char *bytes, int n) {
             break;
         }
         case TS_G4_TEXT: {
-            const char *at = s->head ? strstr(s->head, G4_TURN_END) : NULL;
+            const char *at = s->head ? head_find(s, G4_TURN_END) : NULL;
             // a call after prose: the family's format is call-first, but a
             // turn asked for a word before acting writes the prose and then
             // the opener, and that opener is a call, not content
-            const char *call = s->head ? strstr(s->head, G4_CALL_OPEN) : NULL;
+            const char *call = s->head ? head_find(s, G4_CALL_OPEN) : NULL;
             if (call && (!at || call < at)) {
                 size_t prefix = (size_t)(call - s->head);
                 int rc = prefix && s->sink.content
@@ -9549,7 +9570,7 @@ int tool_calls_parse(sbuf *content, sbuf *tc) {
     char *w = content->s; // write cursor for the compacted content
     const char *p = content->s, *end = content->s + content->n;
     while (p < end) {
-        const char *o = strstr(p, OPEN);
+        const char *o = mem_find(p, end, OPEN);
         if (!o) {
             memmove(w, p, end - p);
             w += end - p;
@@ -9628,7 +9649,7 @@ static int qwen_tool_calls_parse(sbuf *content, sbuf *tc) {
     const char *p = content->s, *end = content->s + content->n;
     int n_calls = 0;
     while (p < end) {
-        const char *o = strstr(p, OPEN);
+        const char *o = mem_find(p, end, OPEN);
         if (!o || o >= end) {
             memmove(w, p, (size_t)(end - p));
             w += end - p;
@@ -9668,7 +9689,7 @@ static int ornith_tool_calls_parse(sbuf *content, sbuf *tc) {
     const char *p = content->s, *end = content->s + content->n;
     int n_calls = 0;
     while (p < end) {
-        const char *o = strstr(p, OPEN);
+        const char *o = mem_find(p, end, OPEN);
         if (!o || o >= end) {
             memmove(w, p, (size_t)(end - p));
             w += end - p;
@@ -9684,7 +9705,7 @@ static int ornith_tool_calls_parse(sbuf *content, sbuf *tc) {
         }
         const char *name = f + sizeof(FN) - 1;
         const char *name_end = memchr(name, '>', (size_t)(end - name));
-        const char *fn_end = name_end ? strstr(name_end + 1, FN_END) : NULL;
+        const char *fn_end = name_end ? mem_find(name_end + 1, end, FN_END) : NULL;
         const char *close = fn_end ? trim_left(fn_end + sizeof(FN_END) - 1, end) : NULL;
         if (!name_end || !fn_end || !close ||
             end - close < (int)sizeof(CLOSE) - 1 ||
@@ -9703,11 +9724,11 @@ static int ornith_tool_calls_parse(sbuf *content, sbuf *tc) {
         const char *a = name_end + 1;
         bool first = true;
         while (a < fn_end) {
-            const char *po = strstr(a, PARAM);
+            const char *po = mem_find(a, fn_end, PARAM);
             if (!po || po >= fn_end) break;
             const char *pn = po + sizeof(PARAM) - 1;
             const char *pn_end = memchr(pn, '>', (size_t)(fn_end - pn));
-            const char *pv_end = pn_end ? strstr(pn_end + 1, PARAM_END) : NULL;
+            const char *pv_end = pn_end ? mem_find(pn_end + 1, fn_end, PARAM_END) : NULL;
             if (!pn_end || !pv_end || pv_end > fn_end) break;
             const char *pv = trim_left(pn_end + 1, pv_end);
             const char *pe = trim_right(pv, pv_end);
