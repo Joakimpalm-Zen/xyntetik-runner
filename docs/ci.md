@@ -11,7 +11,9 @@ files (`tests/test_metal_*.py`). The whole suite runs on Windows on every
 engine push to main, and on both platforms on the daily schedule and on
 dispatch, as three parallel jobs per platform (`macos-suite-gates-core`,
 `macos-suite-gates-batch`, `macos-suite-python`, and the `windows-suite-`
-three). The macOS suite left the push trigger on 2026-11-04: GitHub's hosted
+three). Since 2026-11-12 a pull request that is not prose alone also runs
+`windows-suite-python`, so a test's Windows behaviour is seen before its
+merge. The macOS suite left the push trigger on 2026-11-04: GitHub's hosted
 macOS arm64 pool is capacity-limited, and four macOS jobs a push, queued
 behind the pull request's own, were cancelled by the pool often enough to
 keep main red for hours (28 cancellations against 4 real failures on main
