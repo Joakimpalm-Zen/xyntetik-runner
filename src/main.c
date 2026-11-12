@@ -7897,15 +7897,17 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
 // The prompt buffer cli_resolve_inputs builds (-p unescaped, -f appended)
 // is the caller's: main frees it after every exit of the run, the refusals
 // between resolving the inputs and loading the model included.
-static int cli_main(int argc, char **argv, char **owned_prompt) {
+// `simg` is the caller's: a --resume reads the session image into it, and
+// the caller frees it after this returns, on every path. About twenty-five
+// returns follow the read (a schema that does not match, the model's flags,
+// the load), and only the resume itself freed the image (R6.68.41).
+static int cli_main(int argc, char **argv, char **owned_prompt, session_image *simg) {
     // the model, tokenizer and engine the modes run on, and what the load
     // decided about them; cli_cleanup frees them on every exit after the load
     cli_run rt_state;
     memset(&rt_state, 0, sizeof rt_state);
     rt_state.env_state = ENV_UNCLASSIFIED;
     cli_run *rt = &rt_state;
-    session_image simg;
-    memset(&simg, 0, sizeof simg);
     cli_verify vr = { .rec = NULL, .rsig = RSIG_NONE };
     // static: the options own strings that live for the process (a fetched
     // model path, an --adapter spec), and cli_main runs once. On the stack
@@ -7972,7 +7974,7 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     if (cli_resolve_inputs(o, argv[0], detect_text != NULL, owned_prompt, &rc))
         return rc;
     if (!cli_prompt_fits_verb(o)) return 1;
-    if (cli_prepare_session(o, &simg, &rc)) return rc;
+    if (cli_prepare_session(o, simg, &rc)) return rc;
     if (cli_prepare_verify(o, &wmk, wm_on, &vr, &rc)) return rc;
     cli_resolve_threads(o);
 
@@ -8078,7 +8080,7 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     else if (o->score) rc = run_score(o, rt, load_path);
     else if (o->doctor) rc = run_doctor(o, rt, tmpl_override);
     else if (o->bench_json) rc = run_bench(o, rt);
-    else if (o->resume_path) rc = run_resume(o, rt, &simg, load_path);
+    else if (o->resume_path) rc = run_resume(o, rt, simg, load_path);
     else if (!o->interactive) rc = run_oneshot(o, rt, load_path, wm_on, &wmk, &cli_wm);
     else rc = run_chat(o, rt, tmpl_override);
     // Every failure from here on frees what the success paths free. Written
@@ -8103,8 +8105,11 @@ int main(int argc, char **argv) {
     int sub = cli_expand_subcommand(&argc, &argv);
     if (sub >= 0) return sub;
     char *owned_prompt = NULL;
-    int rc = cli_main(argc, argv, &owned_prompt);
+    session_image simg;
+    memset(&simg, 0, sizeof simg);
+    int rc = cli_main(argc, argv, &owned_prompt, &simg);
     free(owned_prompt);
+    session_image_free(&simg);   // a no-op when the resume already released it
     // Expanded vectors own only the pointer array; their entries borrow
     // startup arguments or static flag spellings.
     if (argv != original_argv) free(argv);

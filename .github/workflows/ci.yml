@@ -628,6 +628,13 @@ jobs:
           # freed it (the history beside it was freed by hand)
           ./runner-debug -m test.gguf -p "hello" -n 12 --temp 0.8 -s 3 --json --gpu off \
             --session-out test-leak-session.img
+          # R6.68.41: a resume refused after its image is read (here: the image
+          # was written under a schema and none is given) returned with the
+          # image allocated; exit 1 is the refusal, 23 a leak report
+          ./runner-debug -m test.gguf -p "hello" -n 12 --temp 0 --gpu off \
+            --json-schema tests/fixtures/leak-gate-schema.json --session-out test-leak-schema.img
+          rc=0; ./runner-debug -m test.gguf --resume test-leak-schema.img --gpu off || rc=$?
+          test "$rc" = 1 || { echo "a refused resume exited $rc, not 1 (a leak report exits 23)"; exit 1; }
           # R6.68.39: a server start refused before the serving loop (here the
           # port is taken) returned with the loaded model and tokenizer still
           # allocated, on about twenty refusals. Exit 1 is the refusal; a
