@@ -83,6 +83,17 @@ static void bind_note(model_t *m, const char *fmt, ...) {
     va_end(ap);
 }
 
+// The tensor helpers' refusals (need_tensor, the shape and type checks,
+// tensor_to_f32, the expert-count and Clef matrix checks), which have no
+// model to hand: to stderr, as bind_err's are on a load (R6.68.45).
+__attribute__((format(printf, 1, 2)))
+static void tensor_err(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+}
+
 // A model's architecture row (arch.h): the one admission looked up, or the
 // unknown row for a model_t built without a load.
 static const arch_desc *model_ad(const model_t *m) {
@@ -159,9 +170,9 @@ static float *tensor_to_f32(gguf_tensor *t, int64_t need, bool *ok) {
     rows = n64 / t->ne[0];
     if (rs == 0 || rows > t->nbytes / rs) { *ok = false; return NULL; }
     if (need > 0 && n64 < (uint64_t)need) {
-        fprintf(stderr, "error: tensor %s holds %llu values but this model "
-                "geometry indexes %lld of them\n", t->name,
-                (unsigned long long)n64, (long long)need);
+        tensor_err("error: tensor %s holds %llu values but this model "
+                   "geometry indexes %lld of them\n", t->name,
+                   (unsigned long long)n64, (long long)need);
         *ok = false; return NULL;
     }
     int64_t n = (int64_t)n64;
@@ -183,10 +194,10 @@ static gguf_tensor *need_tensor(gguf_file *g, const char *fmt, int i, bool *ok) 
     char name[128];
     snprintf(name, sizeof(name), fmt, i);
     gguf_tensor *t = gguf_find_tensor(g, name);
-    if (!t) { fprintf(stderr, "error: missing tensor %s\n", name); *ok = false; return NULL; }
+    if (!t) { tensor_err("error: missing tensor %s\n", name); *ok = false; return NULL; }
     if (!ggml_type_supported(t->type)) {
-        fprintf(stderr, "error: tensor %s has unsupported type %d (%s)\n",
-                name, t->type, ggml_type_name(t->type));
+        tensor_err("error: tensor %s has unsupported type %d (%s)\n",
+                   name, t->type, ggml_type_name(t->type));
         *ok = false;
         return NULL;
     }
@@ -203,8 +214,8 @@ static gguf_tensor *need_tensor(gguf_file *g, const char *fmt, int i, bool *ok) 
 // checks below, so the type check belongs with them.
 static bool check_type(const gguf_tensor *t, const char *what, int layer) {
     if (!t || ggml_type_supported(t->type)) return true;
-    fprintf(stderr, "error: tensor %s in blk.%d has unsupported type %d (%s)\n",
-            what, layer, t->type, ggml_type_name(t->type));
+    tensor_err("error: tensor %s in blk.%d has unsupported type %d (%s)\n",
+               what, layer, t->type, ggml_type_name(t->type));
     return false;
 }
 
@@ -219,10 +230,10 @@ static bool check_shape(gguf_tensor *t, int n_in, int n_out,
     if (!t) return true;
     if (!check_type(t, what, layer)) return false;
     if ((int64_t)t->ne[0] != n_in || (int64_t)t->ne[1] < n_out) {
-        fprintf(stderr, "error: tensor %s in blk.%d has shape [%llu,%llu], "
-                "expected [%d,>=%d] for this model geometry\n",
-                what, layer, (unsigned long long)t->ne[0],
-                (unsigned long long)t->ne[1], n_in, n_out);
+        tensor_err("error: tensor %s in blk.%d has shape [%llu,%llu], "
+                   "expected [%d,>=%d] for this model geometry\n",
+                   what, layer, (unsigned long long)t->ne[0],
+                   (unsigned long long)t->ne[1], n_in, n_out);
         return false;
     }
     return true;
@@ -246,11 +257,11 @@ static bool check_shape3(gguf_tensor *t, int ne0, int ne1, int n_expert,
     if (!check_type(t, what, layer)) return false;
     if ((int64_t)t->ne[0] != ne0 || (int64_t)t->ne[1] != ne1 ||
         (int64_t)t->ne[2] != n_expert) {
-        fprintf(stderr, "error: MoE tensor %s in blk.%d has shape "
-                "[%llu,%llu,%llu], expected [%d,%d,%d]\n",
-                what, layer, (unsigned long long)t->ne[0],
-                (unsigned long long)t->ne[1], (unsigned long long)t->ne[2],
-                ne0, ne1, n_expert);
+        tensor_err("error: MoE tensor %s in blk.%d has shape "
+                   "[%llu,%llu,%llu], expected [%d,%d,%d]\n",
+                   what, layer, (unsigned long long)t->ne[0],
+                   (unsigned long long)t->ne[1], (unsigned long long)t->ne[2],
+                   ne0, ne1, n_expert);
         return false;
     }
     return true;
@@ -283,20 +294,20 @@ static bool declared_layer_experts_ok(gguf_file *g, int layer, int have) {
     gguf_kv *kv = gguf_get(g, AK("expert_count_per_layer"));
     if (!kv) return true;
     if (kv->type != GGUF_T_ARR || kv->arr_type != GGUF_T_U32 || !kv->arr_raw) {
-        fprintf(stderr, "error: %s must be an array of u32\n", key);
+        tensor_err("error: %s must be an array of u32\n", key);
         return false;
     }
     if ((uint64_t)layer >= kv->arr_n) {
-        fprintf(stderr, "error: %s has %llu entries but blk.%d is a MoE layer\n",
-                key, (unsigned long long)kv->arr_n, layer);
+        tensor_err("error: %s has %llu entries but blk.%d is a MoE layer\n",
+                   key, (unsigned long long)kv->arr_n, layer);
         return false;
     }
     uint32_t declared;
     memcpy(&declared, (const uint8_t *)kv->arr_raw + 4u * (uint64_t)layer, 4);
     if ((int)declared != have) {
-        fprintf(stderr, "error: %s declares %u experts for blk.%d but its "
-                "router tensor carries %d; the header and the tensors "
-                "disagree\n", key, declared, layer, have);
+        tensor_err("error: %s declares %u experts for blk.%d but its "
+                   "router tensor carries %d; the header and the tensors "
+                   "disagree\n", key, declared, layer, have);
         return false;
     }
     return true;
@@ -2477,8 +2488,8 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
             l->n_ff_exp = (int)gguf_get_u32_idx(g, efkey, (uint64_t)i,
                                                 (uint32_t)m->n_ff_exp);
             if (l->n_ff_exp <= 0 || l->n_ff_exp > m->n_ff_exp) {
-                fprintf(stderr, "error: blk.%d expert width %d is outside [1, %d]\n",
-                        i, l->n_ff_exp, m->n_ff_exp);
+                bind_err(m, "error: blk.%d expert width %d is outside [1, %d]\n",
+                         i, l->n_ff_exp, m->n_ff_exp);
                 return false;
             }
             l->ffn_gate_inp  = need_tensor(g, "blk.%d.ffn_gate_inp.weight", i, &ok);
@@ -2490,18 +2501,18 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
             // Model metadata remains the upper bound and sizes shared scratch;
             // CUDA separately names and refuses non-uniform layer counts.
             if ((int64_t)l->ffn_gate_inp->ne[0] != m->n_embd) {
-                fprintf(stderr, "error: blk.%d ffn_gate_inp has ne[0]=%lld, "
-                        "expected %d\n", i,
-                        (long long)l->ffn_gate_inp->ne[0], m->n_embd);
+                bind_err(m, "error: blk.%d ffn_gate_inp has ne[0]=%lld, "
+                         "expected %d\n", i,
+                         (long long)l->ffn_gate_inp->ne[0], m->n_embd);
                 return false;
             }
             l->n_expert = (int)l->ffn_gate_inp->ne[1];
             if (!declared_layer_experts_ok(g, i, l->n_expert)) return false;
             if (l->n_expert < m->n_expert_used || l->n_expert > m->n_expert) {
-                fprintf(stderr, "error: blk.%d declares %d experts via "
-                        "ffn_gate_inp, outside [n_expert_used=%d, "
-                        "expert_count=%d]\n", i, l->n_expert,
-                        m->n_expert_used, m->n_expert);
+                bind_err(m, "error: blk.%d declares %d experts via "
+                         "ffn_gate_inp, outside [n_expert_used=%d, "
+                         "expert_count=%d]\n", i, l->n_expert,
+                         m->n_expert_used, m->n_expert);
                 return false;
             }
             // LatentMoE: both projections or neither, at the declared width.
@@ -2512,10 +2523,10 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
             l->ffn_latent_up   = opt_tensor(g, "blk.%d.ffn_latent_up.weight", i);
             if ((m->moe_latent > 0) != (l->ffn_latent_down != NULL) ||
                 (m->moe_latent > 0) != (l->ffn_latent_up != NULL)) {
-                fprintf(stderr, "error: blk.%d has %s ffn_latent_down and %s "
-                        "ffn_latent_up, but moe_latent_size is %d\n", i,
-                        l->ffn_latent_down ? "an" : "no",
-                        l->ffn_latent_up ? "an" : "no", m->moe_latent);
+                bind_err(m, "error: blk.%d has %s ffn_latent_down and %s "
+                         "ffn_latent_up, but moe_latent_size is %d\n", i,
+                         l->ffn_latent_down ? "an" : "no",
+                         l->ffn_latent_up ? "an" : "no", m->moe_latent);
                 return false;
             }
             if (!check_shape(l->ffn_latent_down, m->n_embd, ed, "ffn_latent_down", i) ||
@@ -3838,8 +3849,8 @@ static bool bind_lfm2_mixer(model_t *m, gguf_file *g, layer_t *l, int i, bool *o
     if (opt_tensor(g, "blk.%d.shortconv.conv.bias", i) ||
         opt_tensor(g, "blk.%d.shortconv.in_proj.bias", i) ||
         opt_tensor(g, "blk.%d.shortconv.out_proj.bias", i)) {
-        fprintf(stderr, "error: lfm2 blk.%d carries a short-convolution bias; "
-                "only conv_bias=false files are supported\n", i);
+        bind_err(m, "error: lfm2 blk.%d carries a short-convolution bias; "
+                 "only conv_bias=false files are supported\n", i);
         return false;
     }
     if (!check_shape(l->ssm_in, E, 3 * E, "shortconv.in_proj", i) ||
@@ -4493,10 +4504,10 @@ static bool bind_global_tensors(model_t *m, gguf_file *g) {
     m->n_vocab = (int)m->tok_embd->ne[1];
     if ((int64_t)m->tok_embd->ne[0] != m->n_embd ||
         m->n_vocab < 1 || (int64_t)m->tok_embd->ne[1] > INT_MAX) {
-        fprintf(stderr, "error: token_embd.weight shape [%llu,%llu] is "
-                "inconsistent with n_embd=%d / n_vocab\n",
-                (unsigned long long)m->tok_embd->ne[0],
-                (unsigned long long)m->tok_embd->ne[1], m->n_embd);
+        bind_err(m, "error: token_embd.weight shape [%llu,%llu] is "
+                 "inconsistent with n_embd=%d / n_vocab\n",
+                 (unsigned long long)m->tok_embd->ne[0],
+                 (unsigned long long)m->tok_embd->ne[1], m->n_embd);
         return false;
     }
     // Token IDs come from the tokenizer, while the embedding and logits
@@ -4508,9 +4519,9 @@ static bool bind_global_tensors(model_t *m, gguf_file *g) {
     gguf_kv *vocab = gguf_get(g, "tokenizer.ggml.tokens");
     if (vocab && vocab->type == GGUF_T_ARR && vocab->arr_type == GGUF_T_STR &&
         vocab->arr_n > (uint64_t)m->n_vocab) {
-        fprintf(stderr, "error: tokenizer vocabulary has %llu entries but "
-                "token_embd.weight has only %d rows\n",
-                (unsigned long long)vocab->arr_n, m->n_vocab);
+        bind_err(m, "error: tokenizer vocabulary has %llu entries but "
+                 "token_embd.weight has only %d rows\n",
+                 (unsigned long long)vocab->arr_n, m->n_vocab);
         return false;
     }
 
@@ -4541,15 +4552,15 @@ static bool bind_global_tensors(model_t *m, gguf_file *g) {
             m->ple4_table = need_tensor(g, "per_layer_token_embd.weight", 0, &ok);
             if (!ok) return false;
             if ((int64_t)m->ple4_table->ne[0] != m->ple4_head_dim) {
-                fprintf(stderr, "error: per_layer_token_embd row width %llu, "
-                        "expected %d\n", (unsigned long long)m->ple4_table->ne[0],
-                        m->ple4_head_dim);
+                bind_err(m, "error: per_layer_token_embd row width %llu, "
+                         "expected %d\n", (unsigned long long)m->ple4_table->ne[0],
+                         m->ple4_head_dim);
                 return false;
             }
             for (int h = 0; h < m->ple4_n_heads; h++)
                 if ((uint64_t)m->ple4_off[h] + m->ple4_vocab[h] > m->ple4_table->ne[1]) {
-                    fprintf(stderr, "error: PLE head %d range exceeds the table "
-                            "(%llu rows)\n", h, (unsigned long long)m->ple4_table->ne[1]);
+                    bind_err(m, "error: PLE head %d range exceeds the table "
+                             "(%llu rows)\n", h, (unsigned long long)m->ple4_table->ne[1]);
                     return false;
                 }
         }
@@ -4558,7 +4569,7 @@ static bool bind_global_tensors(model_t *m, gguf_file *g) {
     m->output = gguf_find_tensor(g, "output.weight");
     if (!m->output) m->output = m->tok_embd; // tied embeddings
     if (!ggml_type_supported(m->output->type)) {
-        fprintf(stderr, "error: output tensor type %s unsupported\n", ggml_type_name(m->output->type));
+        bind_err(m, "error: output tensor type %s unsupported\n", ggml_type_name(m->output->type));
         return false;
     }
     // The final projection reads n_vocab rows of n_embd from output.weight. A
@@ -4578,8 +4589,8 @@ static bool bind_global_tensors(model_t *m, gguf_file *g) {
         // the time it was tested (UBSan caught the int product).
         if (m->n_embd_ple > MDL_DIM_MAX ||
             m->n_embd_ple > INT_MAX / m->n_layer) {
-            fprintf(stderr, "error: gemma4 per-layer embedding size (%d x %d "
-                    "layers) is out of range\n", m->n_embd_ple, m->n_layer);
+            bind_err(m, "error: gemma4 per-layer embedding size (%d x %d "
+                     "layers) is out of range\n", m->n_embd_ple, m->n_layer);
             return false;
         }
         int per_tok = m->n_layer * m->n_embd_ple;
@@ -4676,9 +4687,9 @@ static bool bind_removed_mixer(model_t *m, gguf_file *g, int i) {
         char nm[128];
         snprintf(nm, sizeof nm, "blk.%d.%s", i, attn_names[k]);
         if (gguf_find_tensor(g, nm)) {
-            fprintf(stderr, "error: blk.%d is declared without attention "
-                    "(attention.head_count 0) but the file carries %s\n",
-                    i, nm);
+            bind_err(m, "error: blk.%d is declared without attention "
+                     "(attention.head_count 0) but the file carries %s\n",
+                     i, nm);
             return false;
         }
     }
@@ -4697,15 +4708,15 @@ static bool bind_removed_ffn(model_t *m, gguf_file *g, int i) {
         char nm[128];
         snprintf(nm, sizeof nm, "blk.%d.%s", i, ffn_names[k]);
         if (gguf_find_tensor(g, nm)) {
-            fprintf(stderr, "error: blk.%d is declared without an FFN "
-                    "(feed_forward_length 0) but the file carries %s\n",
-                    i, nm);
+            bind_err(m, "error: blk.%d is declared without an FFN "
+                     "(feed_forward_length 0) but the file carries %s\n",
+                     i, nm);
             return false;
         }
     }
     if (m->n_expert > 0 && i >= m->n_dense_lead) {
-        fprintf(stderr, "error: blk.%d declares its FFN removed, but "
-                "MoE blocks are not supported for removal\n", i);
+        bind_err(m, "error: blk.%d declares its FFN removed, but "
+                 "MoE blocks are not supported for removal\n", i);
         return false;
     }
     return true;
@@ -4838,7 +4849,7 @@ static bool bind_attention(model_t *m, gguf_file *g, layer_t *l, int i,
         if ((int64_t)qkv->ne[0] != m->n_embd || (int64_t)gu->ne[0] != m->n_embd ||
             (int64_t)qkv->ne[1] != q_rows + 2 * kv_rows ||
             (int64_t)gu->ne[1] != 2 * (int64_t)l->n_ff) {
-            fprintf(stderr, "error: unexpected fused tensor shape in blk.%d\n", i);
+            bind_err(m, "error: unexpected fused tensor shape in blk.%d\n", i);
             return false;
         }
         gguf_tensor *sl = &m->fused_splits[i * 5];
@@ -4868,7 +4879,7 @@ static bool bind_attention(model_t *m, gguf_file *g, layer_t *l, int i,
             int64_t kv_rows = (int64_t)m->n_head_kv * m->head_dim;
             if ((int64_t)qkv->ne[0] != m->n_embd ||
                 (int64_t)qkv->ne[1] != q_rows + 2 * kv_rows) {
-                fprintf(stderr, "error: unexpected fused attn_qkv shape in blk.%d\n", i);
+                bind_err(m, "error: unexpected fused attn_qkv shape in blk.%d\n", i);
                 return false;
             }
             gguf_tensor *sl = &m->fused_splits[i * 5];
@@ -4897,8 +4908,8 @@ gate:
             (l->wq_gate->ne[0] != l->wq->ne[0] ||
              l->wq_gate->ne[1] != (m->attn_gate_heads ? (uint64_t)m->n_head
                                                      : l->wq->ne[1]))) {
-            fprintf(stderr, "error: attn_gate shape differs from attn_q "
-                    "in layer %d\n", i);
+            bind_err(m, "error: attn_gate shape differs from attn_q "
+                     "in layer %d\n", i);
             ok = false;
         }
     }
@@ -4965,18 +4976,18 @@ static bool bind_layer_moe(model_t *m, gguf_file *g, layer_t *l, int i, bool *ok
     // (and shorter expert tensors) for a pruned layer — same names,
     // same widths, fewer blocks.
     if ((int64_t)l->ffn_gate_inp->ne[0] != m->n_embd) {
-        fprintf(stderr, "error: ffn_gate_inp in blk.%d has ne[0]=%llu, "
-                "expected %d\n", i,
-                (unsigned long long)l->ffn_gate_inp->ne[0], m->n_embd);
+        bind_err(m, "error: ffn_gate_inp in blk.%d has ne[0]=%llu, "
+                 "expected %d\n", i,
+                 (unsigned long long)l->ffn_gate_inp->ne[0], m->n_embd);
         return false;
     }
     l->n_expert = (int)l->ffn_gate_inp->ne[1];
     if (!declared_layer_experts_ok(g, i, l->n_expert)) return false;
     if (l->n_expert < m->n_expert_used || l->n_expert > m->n_expert) {
-        fprintf(stderr, "error: blk.%d declares %d experts via "
-                "ffn_gate_inp, outside [n_expert_used=%d, "
-                "expert_count=%d]\n", i, l->n_expert,
-                m->n_expert_used, m->n_expert);
+        bind_err(m, "error: blk.%d declares %d experts via "
+                 "ffn_gate_inp, outside [n_expert_used=%d, "
+                 "expert_count=%d]\n", i, l->n_expert,
+                 m->n_expert_used, m->n_expert);
         return false;
     }
     // Optional selection-only bias; absent on every arch certified so
@@ -5034,9 +5045,9 @@ static bool bind_layer_moe(model_t *m, gguf_file *g, layer_t *l, int i, bool *ok
         // This layout has no pruned form: the loop below wires exactly
         // expert_count tensors, so the router must have that many rows.
         if (l->n_expert != m->n_expert) {
-            fprintf(stderr, "error: blk.%d has the split expert layout "
-                    "with a %d-row router, but expert_count is %d\n",
-                    i, l->n_expert, m->n_expert);
+            bind_err(m, "error: blk.%d has the split expert layout "
+                     "with a %d-row router, but expert_count is %d\n",
+                     i, l->n_expert, m->n_expert);
             return false;
         }
         l->moe_g = calloc((size_t)m->n_expert, sizeof(gguf_tensor *));
@@ -5052,9 +5063,9 @@ static bool bind_layer_moe(model_t *m, gguf_file *g, layer_t *l, int i, bool *ok
             snprintf(nm, sizeof(nm), "blk.%d.ffn_down.%d.weight", i, e);
             l->moe_d[e] = gguf_find_tensor(g, nm);
             if (!l->moe_g[e] || !l->moe_u[e] || !l->moe_d[e]) {
-                fprintf(stderr, "error: missing MoE expert tensor "
-                        "(neither fused ffn_gate_exps nor split "
-                        "ffn_gate.%d) in blk.%d\n", e, i);
+                bind_err(m, "error: missing MoE expert tensor "
+                         "(neither fused ffn_gate_exps nor split "
+                         "ffn_gate.%d) in blk.%d\n", e, i);
                 return false;
             }
         }
@@ -5245,8 +5256,8 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
     l->skip_mixer = no_attn;
     l->skip_ffn   = no_ffn;
     if ((no_attn || no_ffn) && fused_qkv) {
-        fprintf(stderr, "error: blk.%d declares a removed sublayer, but "
-                "fused-QKV families are not supported for removal\n", i);
+        bind_err(m, "error: blk.%d declares a removed sublayer, but "
+                 "fused-QKV families are not supported for removal\n", i);
         return false;
     }
     // per-layer FFN width: the ARRAY form answers per index, the scalar
@@ -5255,8 +5266,8 @@ static bool bind_layer(model_t *m, gguf_file *g, const char *arch, int i,
             : (int)gguf_get_u32_idx(g, AK("feed_forward_length"),
                                     (uint64_t)i, (uint32_t)m->n_ff);
     if (l->n_ff <= 0 || l->n_ff > m->n_ff) {
-        fprintf(stderr, "error: layer %d FFN width %d outside (0, %d]\n",
-                i, l->n_ff, m->n_ff);
+        bind_err(m, "error: layer %d FFN width %d outside (0, %d]\n",
+                 i, l->n_ff, m->n_ff);
         return false;
     }
     // qwen4exp has no pre-norms: the hyper-connection mixers replace
@@ -5507,20 +5518,11 @@ static bool model_plan(model_t *m, gguf_file *g, const model_params *p) {
     return bind_validate_geometry(m, g, arch, hybrid_typed);
 }
 
-static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
-    if (!gguf_open(&m->gf, path)) return false;
-    gguf_file *g = &m->gf;
-    if (!bind_agent_profile(m, g)) return false;
-    // kept for the backend's shared-weight registry: two instances of the same
-    // file are what let `--parallel N` upload the weights once
-    size_t plen = strlen(path) + 1;
-    m->path = malloc(plen);
-    if (!m->path) return false;
-    memcpy(m->path, path, plen);
-    model_record_file_id(m, path);
-
-    m->plan_only = false;   // a load's plan always speaks (bind_err, bind_note)
-    if (!model_plan(m, g, p)) return false;
+// The load's tensor half, after model_plan: every tensor the plan's geometry
+// names, found, typed and shape-checked against it and its f32 vectors
+// converted, block by block (bind_layer), then the NextN/MTP head when p->mtp
+// asks for one, the Clef head and the ids a checkpoint must never emit.
+static bool bind_tensors(model_t *m, gguf_file *g, const model_params *p) {
     const char *arch = gguf_get_str(g, "general.architecture", "?");
     if (!bind_global_tensors(m, g)) return false;
 
@@ -5552,7 +5554,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
                               "MoE backbones are supported"
                         : NULL;
         if (why) {
-            fprintf(stderr, "error: mtp: %s\n", why);
+            bind_err(m, "error: mtp: %s\n", why);
             return false;
         }
         bind_mtp = true;
@@ -5576,6 +5578,24 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     // RMSNorm is the standard x_normed * weight, so norm weights are used raw.
 
     if (!bind_suppress_tokens(m, g)) return false;
+    return true;
+}
+
+static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
+    if (!gguf_open(&m->gf, path)) return false;
+    gguf_file *g = &m->gf;
+    if (!bind_agent_profile(m, g)) return false;
+    // kept for the backend's shared-weight registry: two instances of the same
+    // file are what let `--parallel N` upload the weights once
+    size_t plen = strlen(path) + 1;
+    m->path = malloc(plen);
+    if (!m->path) return false;
+    memcpy(m->path, path, plen);
+    model_record_file_id(m, path);
+
+    m->plan_only = false;   // a load's plan always speaks (bind_err, bind_note)
+    if (!model_plan(m, g, p)) return false;
+    if (!bind_tensors(m, g, p)) return false;
 
     bind_kv_layout(m, p);
 
@@ -15714,21 +15734,21 @@ static gguf_tensor *clef_mat(gguf_file *g, const char *name, int ne0, int ne1, b
     if (!*ok) return NULL;
     gguf_tensor *t = gguf_find_tensor(g, name);
     if (!t) {
-        fprintf(stderr, "error: clef: the decision head is missing %s\n", name);
+        tensor_err("error: clef: the decision head is missing %s\n", name);
         *ok = false;
         return NULL;
     }
     if (!ggml_type_supported(t->type)) {
-        fprintf(stderr, "error: clef: %s has unsupported type %d (%s)\n",
-                name, t->type, ggml_type_name(t->type));
+        tensor_err("error: clef: %s has unsupported type %d (%s)\n",
+                   name, t->type, ggml_type_name(t->type));
         *ok = false;
         return NULL;
     }
     if ((int64_t)t->ne[0] != ne0 || (int64_t)t->ne[1] != ne1 ||
         t->ne[2] != 1 || t->ne[3] != 1) {
-        fprintf(stderr, "error: clef: %s has shape [%llu,%llu], expected [%d,%d]\n",
-                name, (unsigned long long)t->ne[0], (unsigned long long)t->ne[1],
-                ne0, ne1);
+        tensor_err("error: clef: %s has shape [%llu,%llu], expected [%d,%d]\n",
+                   name, (unsigned long long)t->ne[0], (unsigned long long)t->ne[1],
+                   ne0, ne1);
         *ok = false;
         return NULL;
     }
@@ -15771,8 +15791,8 @@ static bool model_clef_bind(model_t *m, gguf_file *g, const char *arch) {
     if (strcmp(type, "clef") != 0) {
         char shown[64];
         meta_printable(shown, sizeof shown, type);
-        fprintf(stderr, "error: clef: decision head type '%s' is not the Clef "
-                "joint schema head\n", shown);
+        bind_err(m, "error: clef: decision head type '%s' is not the Clef "
+                 "joint schema head\n", shown);
         return false;
     }
     struct clef_head *h = calloc(1, sizeof *h);
@@ -15790,9 +15810,9 @@ static bool model_clef_bind(model_t *m, gguf_file *g, const char *arch) {
         h->n_routing + h->n_joint == 0 || h->n_head <= 0 ||
         h->width <= 0 || h->width > MDL_DIM_MAX || h->width % h->n_head != 0 ||
         h->n_ff <= 0 || h->n_ff > MDL_DIM_MAX || !(h->eps > 0 && h->eps < 1)) {
-        fprintf(stderr, "error: clef: invalid decision head geometry (routing %d, "
-                "blocks %d, heads %d, width %d, feedforward %d)\n", h->n_routing,
-                h->n_joint, h->n_head, h->width, h->n_ff);
+        bind_err(m, "error: clef: invalid decision head geometry (routing %d, "
+                 "blocks %d, heads %d, width %d, feedforward %d)\n", h->n_routing,
+                 h->n_joint, h->n_head, h->width, h->n_ff);
         free(h);
         return false;
     }
@@ -15849,9 +15869,9 @@ static bool model_clef_bind(model_t *m, gguf_file *g, const char *arch) {
         if (!(h->prior_scale > 0 && h->prior_scale <= 100.0001f) ||
             !(h->joint_scale > 0 && h->joint_scale <= 100.0001f) ||
             !(h->gate >= 0 && h->gate <= 1)) {
-            fprintf(stderr, "error: clef: decision.scales [%g, %g, %g] are not "
-                    "two clamped exponentials and a sigmoid\n",
-                    (double)h->prior_scale, (double)h->joint_scale, (double)h->gate);
+            bind_err(m, "error: clef: decision.scales [%g, %g, %g] are not "
+                     "two clamped exponentials and a sigmoid\n",
+                     (double)h->prior_scale, (double)h->joint_scale, (double)h->gate);
             ok = false;
         }
     }
