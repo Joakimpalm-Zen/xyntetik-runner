@@ -2879,6 +2879,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             char *eq = spec ? strchr(spec, '=') : NULL;
             if (!eq || eq == spec || !eq[1]) {
                 fprintf(stderr, "error: --adapter wants NAME=PATH\n");
+                free(spec);
                 *rc = 1;
                 return false;
             }
@@ -2891,11 +2892,13 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             if (!name_ok) {
                 fprintf(stderr, "error: --adapter NAME must be 1 to 63 "
                         "characters of [A-Za-z0-9._-]\n");
+                free(spec);
                 *rc = 1;
                 return false;
             }
             if (o->n_adapters >= 16) {
                 fprintf(stderr, "error: at most 16 --adapter\n");
+                free(spec);
                 *rc = 1;
                 return false;
             }
@@ -3249,11 +3252,17 @@ static bool cli_prompt_fits_verb(const cli_opts *o) {
 // else -1.
 typedef struct { const char *from, *to; } sub_alias;
 
+// The rewritten line's pointer array, kept reachable until main frees it: a
+// subcommand that ends in its own help or refusal returns without it, and
+// the array was then unreachable at exit (R6.68.23, a leak check's report).
+static char **cli_argv_owned;
+
 static void argv_push(char ***out, int *n, int *cap, const char *s) {
     if (*n == *cap) {
         *cap = *cap ? *cap * 2 : 32;
         *out = realloc(*out, sizeof **out * (size_t)*cap);
         if (!*out) { fprintf(stderr, "error: out of memory\n"); exit(1); }
+        cli_argv_owned = *out;
     }
     (*out)[(*n)++] = (char *)s;
 }
@@ -4882,6 +4891,18 @@ static bool cli_mtp_default_settle(cli_opts *o, cli_run *rt, const char *load_pa
     return model_load(&rt->m, load_path, &o->mp);
 }
 
+// A refusal after the model loaded: release what the load took, then report.
+// Three refusals in cli_load_model (the model's signature, the adapter's,
+// the tokenizer) used to return with the model's runtime buffers
+// still allocated; the process ends right after, so nothing grew, but every
+// run of such a refusal under a leak sanitizer failed on it (R6.68.23, the
+// whole suite's run under AddressSanitizer: 3.3 MB a process).
+static bool cli_load_refused(cli_run *rt, int *rc) {
+    cli_cleanup(NULL, NULL, &rt->tok, &rt->m);
+    *rc = 1;
+    return true;
+}
+
 // True when the process exits with *rc (a refusal, or one of the two modes).
 static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool registry,
                            int tmpl_override, const oms_policy *signing, int *rc) {
@@ -4901,12 +4922,13 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         bool mtp_wanted = cli_mtp_default_wanted(o, load_path, registry);
         if (mtp_wanted) { o->mtp_default = true; o->mp.mtp = true; }
         if (!model_load(&rt->m, load_path, &o->mp)) { *rc = 1; return true; }
+        // (a failed settle is a failed reload: model_load released it)
         if (mtp_wanted && !cli_mtp_default_settle(o, rt, load_path)) {
             *rc = 1;
             return true;
         }
         oms_result osr;
-        if (!oms_check_model(load_path, signing, &osr)) { *rc = 1; return true; }
+        if (!oms_check_model(load_path, signing, &osr)) return cli_load_refused(rt, rc);
         if (osr.status[0])
             oms_result_json(&osr, rt->model_sig_json, sizeof rt->model_sig_json);
         // R1.2.3: an adapter changes what is served, so the same trusted key
@@ -4915,14 +4937,12 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         memset(&aosr, 0, sizeof aosr);
         if (o->lora_path) {
             oms_policy apol = { o->lora_sig, o->model_pubkey, o->require_signed_model };
-            if (!oms_check_artifact(o->lora_path, &apol, "adapter", &aosr)) {
-                *rc = 1;
-                return true;
-            }
+            if (!oms_check_artifact(o->lora_path, &apol, "adapter", &aosr))
+                return cli_load_refused(rt, rc);
             if (aosr.status[0])
                 oms_result_json(&aosr, rt->adapter_sig_json, sizeof rt->adapter_sig_json);
         }
-        if (!tokenizer_init(&rt->tok, &rt->m.gf)) { *rc = 1; return true; }
+        if (!tokenizer_init(&rt->tok, &rt->m.gf)) return cli_load_refused(rt, rc);
         // serve mode: the registry model's own pool is one thread by design
         // (slots create their pools), so the honest number here is the count
         // the slots divide, not the placeholder pool (the lab read "1 threads"
@@ -7858,7 +7878,11 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     session_image simg;
     memset(&simg, 0, sizeof simg);
     cli_verify vr = { .rec = NULL, .rsig = RSIG_NONE };
-    cli_opts opts;
+    // static: the options own strings that live for the process (a fetched
+    // model path, an --adapter spec), and cli_main runs once. On the stack
+    // they were unreachable by the time the process ended, so a leak check
+    // reported every one of them (R6.68.23).
+    static cli_opts opts;
     cli_opts_init(&opts);
     cli_opts *o = &opts;
     int rc;   // the exit status a step that ends the process hands back
@@ -8055,5 +8079,6 @@ int main(int argc, char **argv) {
     // Expanded vectors own only the pointer array; their entries borrow
     // startup arguments or static flag spellings.
     if (argv != original_argv) free(argv);
+    cli_argv_owned = NULL;
     return rc;
 }
