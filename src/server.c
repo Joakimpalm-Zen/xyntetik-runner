@@ -4164,7 +4164,6 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             s->smp = defaults;
             s->smp.rng = defaults.rng ^ (0x9E3779B97F4A7C15ull * (unsigned)(i + 1));
             SV.base_rng = defaults.rng;
-            s->smp_base = s->smp;
             if (i == 0) {
                 s->m = base;
                 // the caller's model is the resident one from here on. With
@@ -4206,7 +4205,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 s->m->tp = shared_pool;
             }
             template_bind_think_tags(tmpl, &s->m->think_open, &s->m->think_close);
-            if (!engine_init(&s->e, s->m, s->tok, &s->smp)) {
+            if (!slot_engine_init(s)) {
                 fprintf(stderr, "error: out of memory initializing slot %d engine\n", i);
                 return serve_start_end(base, tok, 1);
             }

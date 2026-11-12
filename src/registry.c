@@ -252,6 +252,18 @@ int single_model_expect(const resident_expect *ex) {
     return ex && ex->set ? expect_verdict(ex) : 0;
 }
 
+// engine_init installs the model's stop tokens as repeat-penalty exemptions in
+// the slot's sampler. The base a request restores was captured before that,
+// so a restore dropped them: the completion path carried them across by hand,
+// and the session routes, which restored the base whole, ran without them and
+// left the slot without them for every request after (R6.68.52). The base is
+// taken here, after the engine, so it is what a request starts from.
+bool slot_engine_init(slot_t *s) {
+    if (!engine_init(&s->e, s->m, s->tok, &s->smp)) return false;
+    s->smp_base = s->smp;
+    return true;
+}
+
 int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
     int idx = 0; // default: first entry
     if (want && *want) {
@@ -398,7 +410,6 @@ int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
         const sampler_preset *sp =
             sampler_resolve_file(&s->smp, s->m->arch, ident, preset_tmpl,
                                  &sfile, &SV.ov);
-        s->smp_base = s->smp;
         SV.preset_name = sp->name;
         char sdesc[256];
         sampler_describe(&s->smp, sp, sdesc, sizeof(sdesc));
@@ -408,7 +419,7 @@ int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
             sampler_file_describe(&sfile, fdesc, sizeof fdesc);
             if (fdesc[0]) fprintf(stderr, "sampling: %s\n", fdesc);
         }
-        if (!engine_init(&s->e, s->m, s->tok, &s->smp)) {
+        if (!slot_engine_init(s)) {
             // mirror the failed-load cleanup: leave the slot empty and the
             // resident unchanged rather than committing a half-built engine
             fprintf(stderr, "swap: out of memory initializing engine for %s\n",
