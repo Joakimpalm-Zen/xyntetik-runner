@@ -176,6 +176,53 @@ def test_device_adapter_generates_what_the_cpu_generates(runner_bin, fx_all):
     assert outs[0] == outs[1]
 
 
+def _cuda_or_skip(runner_bin):
+    """The decode graph is CUDA's: Metal applies the adapter on the device too
+    but has no graph to replay."""
+    p = subprocess.run([runner_bin, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=60)
+    caps = json.loads(p.stdout) if p.returncode == 0 else {}
+    if (caps.get("gpu") or {}).get("backend") != "cuda":
+        pytest.skip("no CUDA backend: the decode graph is CUDA's")
+
+
+def test_device_adapter_decode_replays_its_graph(runner_bin, fx_all):
+    """R6.68.25b: binding an adapter turned the CUDA decode graph off for the
+    model's lifetime ("an adapter bound on the device after the decode graph's
+    plan"), although the adapter's launches capture like any other and the
+    bind comes before the first forward. Under RUNNER_REQUIRE_GRAPH_CAPTURE a
+    capture that fails ends the run and an eager-by-design decode says why,
+    so the adapted decode must print no reason and its route line must say
+    graph=replay; its tokens must be the eager decode's (RUNNER_CUDA_GRAPH_OFF)
+    and the CPU's. The anchors are the merged-reference tests above: their
+    device score runs one token at a time through the same decode."""
+    _gpu_or_skip(runner_bin, fx_all)
+    _cuda_or_skip(runner_bin)
+    prompt = "the quick brown fox jumps over the lazy dog and keeps running"
+
+    def gen(gpu="auto", **env_extra):
+        env = dict(os.environ, RUNNER_REQUIRE_GRAPH_CAPTURE="1",
+                   RUNNER_DEBUG_ROUTE="1", **env_extra)
+        p = subprocess.run([runner_bin, "-m", str(fx_all["base"]), "--lora",
+                            str(fx_all["adapter"]), "-p", prompt, "-n", "24",
+                            "-b", "8", "--temp", "0", "-t", "2", "--gpu", gpu,
+                            "--no-tray"], cwd=ROOT, env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           timeout=120)
+        err = p.stderr.decode(errors="replace")
+        assert p.returncode == 0, err[-2000:]
+        return p.stdout, err
+
+    out, err = gen()
+    assert "adapter on device" in err, err[-2000:]
+    notes = [l for l in err.splitlines() if "off by design" in l]
+    assert not notes, notes
+    decode = [l for l in err.splitlines() if l.startswith("route:") and " rows=1 " in l]
+    assert decode and "graph=replay" in decode[-1], decode[-1:] or err[-2000:]
+    assert out == gen(RUNNER_CUDA_GRAPH_OFF="1")[0]
+    assert out == gen(gpu="off")[0]
+
+
 def test_device_adapter_changes_the_score_deterministically(runner_bin, fx):
     _gpu_or_skip(runner_bin, fx)
     base = _score(runner_bin, fx["base"], gpu=True)
