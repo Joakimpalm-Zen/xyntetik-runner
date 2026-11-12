@@ -579,8 +579,9 @@ void sb_fmt(sbuf *b, const char *fmt, ...) {
 }
 
 void sb_num9(sbuf *b, double v) {
-    if (fp_isfinite(v)) sb_fmt(b, "%.9g", v);
-    else sb_lit(b, "null");
+    char t[32];
+    json_numg(t, 9, v);
+    sb_lit(b, t);
 }
 
 void sb_fix6(sbuf *b, double v) {

@@ -7083,6 +7083,11 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     printf("],\"logprobs\":[");
     double total = 0;
     int pos = 0, emitted = 0, fail = 0, top1 = 0;
+    // the first scored transition whose log-probability is not finite, or -1:
+    // a suppressed token sits at -1e30, finite, so only a non-finite forward
+    // gets here, and the document then reads null where the number was
+    int nonfinite = -1;
+    char nb[32];
     int32_t *argmaxes = malloc(sizeof(int32_t) * (size_t)n_prompt);
     if (!argmaxes) return 1;
     // --score-top: each position's distribution head, for a comparison at the
@@ -7119,7 +7124,8 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
                                    top_id + (size_t)emitted * ntop,
                                    top_lp + (size_t)emitted * ntop);
                 argmaxes[emitted] = arg;
-                printf("%s%.9g", emitted++ ? "," : "", (double)lp);
+                if (nonfinite < 0 && !fp_finite_f64(lp)) nonfinite = pos + b + 1;
+                printf("%s%s", emitted++ ? "," : "", json_numg(nb, 9, lp));
                 total += lp;
                 if (arg == rt->toks[pos + b + 1]) top1++;
             }
@@ -7149,7 +7155,8 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
                                top_id + (size_t)emitted * ntop,
                                top_lp + (size_t)emitted * ntop);
             argmaxes[emitted] = arg;
-            printf("%s%.9g", emitted++ ? "," : "", (double)lp);
+            if (nonfinite < 0 && !fp_finite_f64(lp)) nonfinite = pos + 1;
+            printf("%s%s", emitted++ ? "," : "", json_numg(nb, 9, lp));
             total += lp;
             if (arg == rt->toks[pos + 1]) top1++;
             pos += 1;
@@ -7185,8 +7192,8 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
         for (int i = 0; i < emitted; i++) {
             printf("%s[", i ? "," : "");
             for (int j = 0; j < ntop; j++)
-                printf("%s[%d,%.9g]", j ? "," : "", top_id[(size_t)i * ntop + j],
-                       (double)top_lp[(size_t)i * ntop + j]);
+                printf("%s[%d,%s]", j ? "," : "", top_id[(size_t)i * ntop + j],
+                       json_numg(nb, 9, top_lp[(size_t)i * ntop + j]));
             printf("]");
         }
         free(top_id); free(top_lp);
@@ -7209,15 +7216,25 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     // gold-logits.py's own special-prefix rule)
     int n_special = !o->no_bos && rt->tok.add_bos && rt->tok.bos_id >= 0 &&
                     n_prompt > 0 && rt->toks[0] == rt->tok.bos_id;
+    // nll and its mean are null after a non-finite log-probability, and the
+    // perplexity also when it overflows alone (a mean past 709 nats)
+    char nt[32], nm[32], np[32];
     printf("],\"n_vocab\":%d,\"top1\":%d,\"top1_rate\":%.9g,"
-           "\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g,\"n_special\":%d,\"score_route\":%s}\n",
+           "\"nll_total\":%s,\"nll_mean\":%s,\"ppl\":%s,\"n_special\":%d,\"score_route\":%s}\n",
            rt->m.n_vocab, top1, (double)top1 / (n_prompt - 1),
-           nll, mean, exp(mean), n_special, sroute);
+           json_numg(nt, 9, nll), json_numg(nm, 9, mean), json_numg(np, 9, exp(mean)),
+           n_special, sroute);
     // the paths and kernels the forwards took, on stderr: the kernel counters
     // show a route's kernels ran
     char route[4096];
     model_route_json(&rt->m, route, sizeof route);
     fprintf(stderr, "score: route %s\n", route);
+    if (nonfinite >= 0) {
+        fprintf(stderr, "error: --score: the log-probability of token %d is not "
+                "finite, so the forward is not; the document reads null there\n",
+                nonfinite);
+        return 1;
+    }
     return 0;
 }
 
