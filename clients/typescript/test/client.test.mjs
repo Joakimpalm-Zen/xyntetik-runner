@@ -48,6 +48,9 @@ test("provenance is typed and its binary digest is the file's", async () => {
   assert.equal(p.object, "runner.provenance");
   const want = createHash("sha256").update(readFileSync(RUNNER)).digest("hex");
   assert.equal(p.build.binary_sha256, want);
+  // the commit it was built from (R6.67): 40 hex digits, or null outside git
+  assert.ok(p.build.commit === null || /^[0-9a-f]{40}$/.test(p.build.commit), p.build.commit);
+  assert.ok(p.build.dirty === null || typeof p.build.dirty === "boolean");
   assert.equal(p.profile?.slots, 1);
 });
 

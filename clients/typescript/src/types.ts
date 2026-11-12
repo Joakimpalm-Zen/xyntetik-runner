@@ -113,8 +113,11 @@ export interface Provenance {
   object: "runner.provenance";
   version: string;
   build_flavor?: string;
-  build: { binary_sha256: string | null; compiler: string; os: string; arch: string;
-           flavor?: string };
+  build: { binary_sha256: string | null; compiler: string;
+           /** the git commit the binary was built from, and whether its
+            *  tracked files differed from it; null outside git */
+           commit: string | null; dirty: boolean | null;
+           os: string; arch: string; flavor?: string };
   model: null | {
     id: string; path: string; sha256: string | null;
     sha256_state: "hashing" | "done" | "changed_since_load" | "unreadable";
