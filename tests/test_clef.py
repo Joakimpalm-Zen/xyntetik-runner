@@ -433,3 +433,23 @@ def test_clef_gold_scores_any_servers_decisions(tmp_path):
     p = subprocess.run([sys.executable, str(ROOT / "scripts/clef-gold.py"), "compare", "--decisions",
                         "--ref", str(rp), "--runner", str(np_)], capture_output=True, text=True, timeout=60)
     assert p.returncode == 1 and "unreadable answer: r2/s" in p.stdout
+
+
+def test_a_head_score_that_is_not_finite_is_refused(runner_bin, clef_model, tmp_path):
+    """systemone's answers are its head's scores: from a non-finite forward
+    there are none, and the handler refuses (500, here as the CLI's error
+    line and exit 1) rather than answer with a choice no number supports.
+    Pinned beside decide and rerank, which take the same rule (R6.68.119)."""
+    import struct
+    sys.path.insert(0, str(ROOT / "tests"))
+    from test_embeddings_pooling import _embedding_table
+    data, at, width, rows = _embedding_table(clef_model)
+    data = bytearray(data)
+    for r in range(rows):
+        struct.pack_into("<f", data, at + r * width * 4, float("nan"))
+    nan = tmp_path / "clef-nan.gguf"
+    nan.write_bytes(data)
+    p, out = systemone(runner_bin, nan, [records()[0]])
+    assert p.returncode != 0, out
+    assert out and out[0]["error"]["status"] == 500, out
+    assert "non-finite" in out[0]["error"]["message"], out

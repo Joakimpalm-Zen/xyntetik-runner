@@ -213,7 +213,7 @@ def run_result(near_tie, real, total):
 
 def post(url, body, timeout):
     req = urllib.request.Request(
-        url, data=json.dumps(body).encode(),
+        url, data=json.dumps(body, allow_nan=False).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.load(resp)
@@ -436,7 +436,7 @@ def main():
               # legacy shape kept so older readers still parse:
               "identical": exact, "total": total, "rows": rows}
     if args.out:
-        Path(args.out).write_text(json.dumps(report, indent=1))
+        Path(args.out).write_text(json.dumps(report, indent=1, allow_nan=False))
     print(f"\ncpu_cuda: {result} — {exact}/{total} exact, {near_tie} near-tie "
           f"tolerated ({report['routing']} routing)")
     return 0 if result in ("pass", "pass_margin_qualified") else 1

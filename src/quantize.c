@@ -2057,6 +2057,10 @@ static bool merge_set_resolve(merge_set_t *ms, const char *adapter_path,
             dequant_row(t->type,
                         (const uint8_t *)t->data + row * row_size,
                         dat + row * t->ne[0], (int)t->ne[0]);
+        if (!model_lora_values_finite(t->name, dat, (int64_t)n_el)) {
+            free(dat);
+            return false;
+        }
         if (side == 'a' ? mp->a != NULL : mp->b != NULL) {
             fprintf(stderr, "error: adapter declares lora_%c for %s twice\n",
                     side, bname);
@@ -3283,8 +3287,19 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
     // model: refuse it before it replaces anything (the 2026-08-22 study's
     // 4-bit merge scored the base's 0.69 again with 98.55% of the adapted
     // bytes on the base's own codes). --merge-allow-erased writes it anyway.
-    if (ms && ms->surv.ret_den > 0) {
+    // A kept fraction that is not a number is not above the floor: refused
+    // too, so the guard does not rest on the adapter loader alone (R6.68.116)
+    if (ms && merge_survival_measured(&ms->surv)) {
         double ret = ms->surv.ret_num / ms->surv.ret_den;
+        if (ms->min_retained >= 0 && !fp_finite_f64(ret)) {
+            fprintf(stderr, "error: the merge's kept fraction of the adapter's "
+                    "delta is not a number: a weight of the base or of the "
+                    "merged output is not finite, so %s is not base + adapter "
+                    "and is not above the %.0f%% floor. Pass "
+                    "--merge-allow-erased to write it anyway (destination left "
+                    "untouched)\n", out_path, 100.0 * ms->min_retained);
+            return 1;
+        }
         if (ms->min_retained >= 0 && ret < ms->min_retained) {
             fprintf(stderr, "error: the merge kept %.1f%% of the adapter's "
                     "delta (%.2f%% of the adapted bytes differ from the base "
@@ -3341,7 +3356,11 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
                 "weights%s\n", ms->n_pairs - ms->n_zero,
                 ms->n_pairs - ms->n_zero == 1 ? "" : "s",
                 ms->n_zero ? " (zero-delta pairs copied verbatim)" : "");
-    if (ms && ms->surv.ret_den > 0)
+    if (ms && merge_survival_measured(&ms->surv) &&
+        !fp_finite_f64(ms->surv.ret_num / ms->surv.ret_den))
+        fprintf(stderr, "merge: the output's kept fraction of the adapter's delta "
+                "is not a number (--merge-allow-erased wrote it)\n");
+    else if (ms && merge_survival_measured(&ms->surv))
         fprintf(stderr, "merge: the output kept %.1f%% of the adapter's delta; "
                 "%.2f%% of the adapted bytes differ from the base written "
                 "alone\n", 100.0 * ms->surv.ret_num / ms->surv.ret_den,
@@ -3498,9 +3517,12 @@ int quantize_error_report(const char *in_path, const int *types, int n_types,
                 // falls back the same way); written_as names the type the
                 // bytes and the error belong to when the block does not
                 // divide the row
-                fprintf(out, "{\"bytes\":%llu,\"error\":%.9g",
+                // null when not finite: a tensor holding a NaN or an
+                // overflowing value has no error to cost (R6.68.115)
+                char nb[32];
+                fprintf(out, "{\"bytes\":%llu,\"error\":%s",
                         (unsigned long long)(ggml_row_size(ek, t->ne[0]) * rows),
-                        err[k] * sc2);
+                        json_numg(nb, 9, err[k] * sc2));
                 if (ek != types[k]) fprintf(out, ",\"written_as\":\"%s\"", en);
                 fputc('}', out);
             } else

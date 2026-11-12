@@ -44,8 +44,9 @@ def _fixture(tmp_path_factory, name, *flags):
     return m
 
 
-def _embedding_table(path):
-    """The file's bytes, and where token_embd.weight sits in them: offset, width, rows."""
+def _embedding_table(path, tensor="token_embd.weight"):
+    """The file's bytes, and where an F32 tensor (the embedding table unless
+    named) sits in them: offset, width, rows."""
     with open(path, "rb") as f:
         data = f.read()
     at = 0
@@ -86,8 +87,8 @@ def _embedding_table(path):
         ttype, off = take("<I"), take("<Q")
         infos[name] = (dims, ttype, off)
     base = (at + 31) // 32 * 32
-    dims, ttype, off = infos["token_embd.weight"]
-    assert ttype == 0, "the fixture's embedding table is F32"
+    dims, ttype, off = infos[tensor]
+    assert ttype == 0, f"{tensor} is F32"
     width, rows = dims
     return data, base + off, width, rows
 

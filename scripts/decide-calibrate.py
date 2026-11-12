@@ -214,7 +214,7 @@ def post_decide(endpoint, payload, timeout=DEFAULT_TIMEOUT,
     recorded as failed.
     """
     url = endpoint.rstrip("/") + "/v1/decide"
-    data = json.dumps(payload).encode("utf-8")
+    data = json.dumps(payload, allow_nan=False).encode("utf-8")
     last_err = None
     for attempt in range(max_retries):
         req = urllib.request.Request(
@@ -781,17 +781,17 @@ def main(argv=None):
         "holdout_accuracy": result["holdout"]["overall"]["metrics"]["accuracy"],
         "holdout_ece": result["holdout"]["overall"]["metrics"]["ece"],
         "holdout_mean_max_tvd": result["holdout"]["overall"]["invariance"]["mean_max_tvd"],
-    }, indent=2))
+    }, indent=2, allow_nan=False))
 
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
-            json.dump(result, f, indent=2)
+            json.dump(result, f, indent=2, allow_nan=False)
 
     if args.emit_holdout:
         with open(args.emit_holdout, "w", encoding="utf-8") as f:
             for r in rows:
                 if r["split"] == "holdout":
-                    f.write(json.dumps(r["raw"]) + "\n")
+                    f.write(json.dumps(r["raw"], allow_nan=False) + "\n")
 
     if args.report:
         with open(args.report, "w", encoding="utf-8") as f:
@@ -812,7 +812,7 @@ def main(argv=None):
                     "logprobs": r["logprobs"], "argmax": r["argmax"],
                     "n_tokens": r["n_tokens"], "label_dist": r["label_dist"],
                     "failed": r["failed"], "error": r["error"],
-                }) + "\n")
+                }, allow_nan=False) + "\n")
 
     n_scored = sum(1 for r in rows if r.get("probs") is not None)
     if n_scored == 0:

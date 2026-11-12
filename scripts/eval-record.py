@@ -83,7 +83,7 @@ def write_record(model, kind, rec, sign_key, runner):
     out = str(model) + f".eval.{kind}.json"
     tmp = out + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(rec, f, indent=1)
+        json.dump(rec, f, indent=1, allow_nan=False)
         f.write("\n")
     os.replace(tmp, out)
     if sign_key:
@@ -143,7 +143,7 @@ def fidelity(args):
     out = write_record(args.model, "fidelity", rec, args.sign_key, args.runner)
     if not out:
         return 2
-    print(json.dumps({"record": out, "metrics": metrics, "pass": ok}, indent=1))
+    print(json.dumps({"record": out, "metrics": metrics, "pass": ok}, indent=1, allow_nan=False))
     return 1 if ok is False else 0
 
 
@@ -207,7 +207,7 @@ def agent(args):
     out = write_record(args.model, "agent", rec, args.sign_key, args.runner)
     if not out:
         return 2
-    print(json.dumps({"record": out, "metrics": metrics, "pass": ok}, indent=1))
+    print(json.dumps({"record": out, "metrics": metrics, "pass": ok}, indent=1, allow_nan=False))
     return 1 if ok is False else 0
 
 

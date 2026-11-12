@@ -90,7 +90,7 @@ def free_port():
 
 def post(port, body):
     req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/completions",
-                                 data=json.dumps(body).encode(),
+                                 data=json.dumps(body, allow_nan=False).encode(),
                                  headers={"Content-Type": "application/json"})
     t0 = time.time()
     with urllib.request.urlopen(req, timeout=3600) as r:
@@ -151,18 +151,18 @@ def main():
     with open(a.out, "a") as o:
         o.write(json.dumps({"kind": "meta", "model": os.path.basename(a.model),
                             "tokens_per_word": round(tpw, 4), "extra": a.extra,
-                            "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\n")
+                            "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, allow_nan=False) + "\n")
         for rnd in range(a.rounds):
             arms = ["off", "on"] if rnd % 2 == 0 else ["on", "off"]   # interleave A/B
             for ctx in ctxs:
                 for arm in arms:
                     rec = one_run(a, ctx, arm, tpw, rnd)
-                    print(json.dumps(rec), flush=True)
-                    o.write(json.dumps(rec) + "\n"); o.flush()
+                    print(json.dumps(rec, allow_nan=False), flush=True)
+                    o.write(json.dumps(rec, allow_nan=False) + "\n"); o.flush()
             for arm in arms:
                 for rec in prefix_run(a, arm, tpw, rnd):
-                    print(json.dumps(rec), flush=True)
-                    o.write(json.dumps(rec) + "\n"); o.flush()
+                    print(json.dumps(rec, allow_nan=False), flush=True)
+                    o.write(json.dumps(rec, allow_nan=False) + "\n"); o.flush()
 
 
 if __name__ == "__main__":

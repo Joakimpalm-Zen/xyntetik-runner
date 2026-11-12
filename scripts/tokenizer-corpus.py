@@ -332,7 +332,7 @@ def main():
         sys.exit(f"usage: {sys.argv[0]} [OUTPUT]: writes test fixtures to OUTPUT (got {str(dst)!r})")
     with open(dst, "w", encoding="utf-8") as f:
         for s in c:
-            f.write(json.dumps(s, ensure_ascii=False) + "\n")
+            f.write(json.dumps(s, ensure_ascii=False, allow_nan=False) + "\n")
     print(f"wrote {len(c)} strings to {dst}")
     return 0
 

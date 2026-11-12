@@ -84,3 +84,34 @@ def test_a_non_finite_forward_still_answers_json(server, name):
         assert b"null" in raw, raw[:300]
     else:
         assert "error" in parsed, raw[:300]
+
+
+def _message(raw):
+    err = json.loads(raw)["error"]
+    return err["message"] if isinstance(err, dict) else err
+
+
+@pytest.mark.parametrize("name", ["decide", "rerank"])
+def test_decide_and_rerank_refuse_a_score_that_is_not_finite(server, name):
+    """R6.68.119: decide's and rerank's scores are their answer. From a
+    non-finite forward they answered 200: decide an argmax (its comparison
+    skips NaN, so option 0 or a finite one won) with null probabilities, and
+    rerank an order sorted by a comparator a NaN breaks. Both refuse now, as
+    embeddings do, with an error naming the score."""
+    path, body = REQUESTS[name]
+    status, raw = _post(server, path, body)
+    assert status == 500, (status, raw[:300])
+    assert "not finite" in _message(raw), raw[:300]
+
+
+def test_the_cli_decide_refuses_a_score_that_is_not_finite(server, tmp_path):
+    """--decide runs the same handler over JSON lines: an error line naming
+    the score, and exit 1."""
+    lines = tmp_path / "q.jsonl"
+    lines.write_text(json.dumps(REQUESTS["decide"][1]) + "\n")
+    p = subprocess.run([find_runner(ROOT), "-m", server.model, "--decide", str(lines),
+                        "--gpu", "off", "-t", "1"], stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode != 0, p.stdout.decode(errors="replace")
+    out = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
+    assert out and "not finite" in out[0]["error"]["message"], out

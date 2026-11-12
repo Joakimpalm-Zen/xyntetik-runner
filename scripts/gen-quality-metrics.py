@@ -176,7 +176,7 @@ def main():
                                        args.blank_threshold),
     }
 
-    output = json.dumps(results, indent=2)
+    output = json.dumps(results, indent=2, allow_nan=False)
     if args.output:
         Path(args.output).write_text(output)
         print(f"ok: wrote {len(analyses)} samples to {args.output}")

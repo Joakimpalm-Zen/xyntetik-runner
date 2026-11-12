@@ -131,7 +131,7 @@ def main():
 
     summary["model"] = os.path.basename(args.model)
     summary["arm"] = f"grouped-MMA {'half' if args.arm == 'half' else 'f32'}-staged"
-    print(json.dumps(summary, indent=1))
+    print(json.dumps(summary, indent=1, allow_nan=False))
     if flips:
         worst = sorted(flips, key=lambda kf: -kf[1])[:8]
         print("\nwidest-margin flips (pos, layer, off-arm boundary margin):",

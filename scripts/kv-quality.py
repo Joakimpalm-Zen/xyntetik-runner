@@ -422,7 +422,7 @@ class Server:
     def post(self, path, body, timeout=3600):
         req = urllib.request.Request(
             "http://127.0.0.1:%d%s" % (self.port, path),
-            data=json.dumps(body).encode(),
+            data=json.dumps(body, allow_nan=False).encode(),
             headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode())
@@ -788,11 +788,11 @@ def main():
                                                   time.time() - t0),
                   flush=True)
         if args.out:   # checkpoint after every model; these runs are long
-            Path(args.out).write_text(json.dumps(results, indent=1))
+            Path(args.out).write_text(json.dumps(results, indent=1, allow_nan=False))
 
     report(results)
     if args.out:
-        Path(args.out).write_text(json.dumps(results, indent=1))
+        Path(args.out).write_text(json.dumps(results, indent=1, allow_nan=False))
         print("\nraw results -> %s" % args.out)
     return gate(results, args) if args.gate else 0
 

@@ -436,7 +436,7 @@ def main(argv=None):
     if not Path(args.model).exists():
         sys.exit(f"model not found: {args.model}")
     manifest = build_manifest(args)
-    text = json.dumps(manifest, indent=2) + "\n"
+    text = json.dumps(manifest, indent=2, allow_nan=False) + "\n"
     if args.out:
         Path(args.out).write_text(text)
         print(f"wrote {args.out}  (verdict: {manifest['verdict']})")

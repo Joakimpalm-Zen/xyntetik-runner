@@ -218,7 +218,7 @@ class Bench:
         c = http.client.HTTPConnection("127.0.0.1", srv.port,
                                        timeout=timeout or self.timeout)
         body = None if payload is None else (
-            payload if isinstance(payload, bytes) else json.dumps(payload).encode())
+            payload if isinstance(payload, bytes) else json.dumps(payload, allow_nan=False).encode())
         c.request(method, path, body=body,
                   headers={"Content-Type": "application/json"} if body else {})
         r = c.getresponse()
@@ -245,7 +245,7 @@ class Bench:
         st, d = self.req(srv, "POST", "/v1/chat/completions", {
             "messages": [{"role": "user", "content": content}],
             "temperature": 0, "max_tokens": 48, **kw})
-        assert st == 200, f"{st}: {json.dumps(d)[:400]}"
+        assert st == 200, f"{st}: {json.dumps(d, allow_nan=False)[:400]}"
         return d
 
     def s_basic(self, srv):
@@ -294,7 +294,7 @@ class Bench:
             json.loads(txt)   # a legal document, complete or closed at the ceiling
         except (ValueError, TypeError):
             assert False, "json_object content is not a JSON document: " + \
-                json.dumps(d["choices"][0], ensure_ascii=False)[:700]
+                json.dumps(d["choices"][0], ensure_ascii=False, allow_nan=False)[:700]
         d = self.chat(srv, "Describe a person named Ada who is 36.", max_tokens=200,
                       response_format={"type": "json_schema", "json_schema": {
                           "name": "person", "strict": True, "schema": SCHEMA}})
@@ -302,15 +302,15 @@ class Bench:
             v = json.loads(d["choices"][0]["message"]["content"])
         except (ValueError, TypeError):
             assert False, "json_schema content is not a JSON document: " + \
-                json.dumps(d["choices"][0], ensure_ascii=False)[:700]
+                json.dumps(d["choices"][0], ensure_ascii=False, allow_nan=False)[:700]
         assert isinstance(v, dict) and isinstance(v.get("name"), str) and \
             isinstance(v.get("age"), int) and not isinstance(v.get("age"), bool), v
         assert set(v) <= {"name", "age", "tags"}, v
-        return json.dumps(v, ensure_ascii=False)[:120]
+        return json.dumps(v, ensure_ascii=False, allow_nan=False)[:120]
 
     def _tool_args(self, d):
         tc = d["choices"][0]["message"].get("tool_calls")
-        assert tc, f"no tool call: {json.dumps(d['choices'][0])[:300]}"
+        assert tc, f"no tool call: {json.dumps(d['choices'][0], allow_nan=False)[:300]}"
         assert tc[0]["function"]["name"] == "get_weather", tc
         return json.loads(tc[0]["function"]["arguments"])
 
@@ -329,7 +329,7 @@ class Bench:
                        for t in (c["delta"].get("tool_calls") or []))
         sa = json.loads(args)
         assert sa == a, f"streamed arguments {sa} != buffered {a}"
-        if "�" in args and "�" not in json.dumps(a, ensure_ascii=False):
+        if "�" in args and "�" not in json.dumps(a, ensure_ascii=False, allow_nan=False):
             assert False, "U+FFFD only on the stream"
         if "Å" not in a["city"] and "sa" in a["city"]:
             raise Note(f"the model wrote the city as {a['city']!r}")
@@ -339,7 +339,7 @@ class Bench:
                          {"role": "assistant", "content": None, "tool_calls": [
                              {"id": "call_1", "type": "function", "function": {
                                  "name": "get_weather",
-                                 "arguments": json.dumps(a, ensure_ascii=False)}}]},
+                                 "arguments": json.dumps(a, ensure_ascii=False, allow_nan=False)}}]},
                          {"role": "tool", "tool_call_id": "call_1",
                           "content": "{\"temp\": -3, \"unit\": \"C\"}"}],
             "tools": [WEATHER], "temperature": 0, "max_tokens": 64})
@@ -349,7 +349,7 @@ class Bench:
             "tools": [WEATHER], "tool_choice": "auto", "temperature": 0,
             "max_tokens": 64})
         assert st == 200, d3
-        return json.dumps(a, ensure_ascii=False)
+        return json.dumps(a, ensure_ascii=False, allow_nan=False)
 
     def _count(self, srv, text):
         st, d = self.req(srv, "POST", "/v1/completions", {
@@ -363,12 +363,12 @@ class Bench:
         per = max(1, (d["usage"]["prompt_tokens"] - 1) // 50)
         near = int(self.ctx * 0.8 / per)
         st, d = self._count(srv, "The" + word * near)
-        assert st == 200, f"a prompt at 80% of the context: {st} {json.dumps(d)[:300]}"
+        assert st == 200, f"a prompt at 80% of the context: {st} {json.dumps(d, allow_nan=False)[:300]}"
         n_near = d["usage"]["prompt_tokens"]
         assert n_near < self.ctx
         st, d = self._count(srv, "The" + word * int(self.ctx * 1.3 / per + 50))
         assert st == 400, f"a prompt over the context answered {st}, not 400"
-        assert "context" in json.dumps(d).lower(), d
+        assert "context" in json.dumps(d, allow_nan=False).lower(), d
         st, h = self.req(srv, "GET", "/health")
         assert st == 200, "the server did not survive an oversized prompt"
         return f"{n_near} of {self.ctx} tokens prefilled; overflow refused"
@@ -403,7 +403,7 @@ class Bench:
                 "temperature": 0, "max_tokens": 24})
         with cf.ThreadPoolExecutor(4) as ex:
             res = list(ex.map(one, range(4)))
-        bad = [(s, json.dumps(d)[:200]) for s, d in res if s != 200]
+        bad = [(s, json.dumps(d, allow_nan=False)[:200]) for s, d in res if s != 200]
         assert not bad, bad
         again = [one(i) for i in range(4)]
         diff = [i for i in range(4) if
@@ -489,7 +489,7 @@ class Bench:
         st, pin = self.req(srv, "POST", "/v1/runner/contexts",
                            {"id": "sweep", "messages": [sysm]})
         if st in (400, 409):
-            notes = f"named context not pinned ({st}): " + json.dumps(pin)[:200]
+            notes = f"named context not pinned ({st}): " + json.dumps(pin, allow_nan=False)[:200]
         else:
             assert st == 200, pin
             st, d = self.req(srv, "POST", "/v1/chat/completions", {
@@ -497,9 +497,9 @@ class Bench:
                 "max_tokens": 8, "temperature": 0, "context_id": "sweep"})
             if st == 409:
                 notes = "this template does not render the system turn as a " \
-                        "strict prefix: " + json.dumps(d)[:200]
+                        "strict prefix: " + json.dumps(d, allow_nan=False)[:200]
             else:
-                assert st == 200, f"a request on the pinned context: {st} {json.dumps(d)[:300]}"
+                assert st == 200, f"a request on the pinned context: {st} {json.dumps(d, allow_nan=False)[:300]}"
                 tel = d["runner_telemetry"]
                 assert tel.get("context", {}).get("id") == "sweep", f"telemetry: {tel}"
                 assert tel["prompt_cached_tokens"] >= pin["tokens"], \
@@ -515,12 +515,12 @@ class Bench:
                 "A kitten slept on a rug."]
         rr = {"query": "cats resting"}
         st, a = self.req(srv, "POST", "/v1/rerank", {**rr, "documents": docs})
-        if st == 400 and "raw-v1" in json.dumps(a):
+        if st == 400 and "raw-v1" in json.dumps(a, allow_nan=False):
             # a channel protocol (harmony) is not scored through its chat
             # rendering: the refusal names the rendering to use
             rr["rendering"] = "raw-v1"
             st, a = self.req(srv, "POST", "/v1/rerank", {**rr, "documents": docs})
-        assert st == 200 and len(a["results"]) == 3, f"rerank: {st} {json.dumps(a)[:300]}"
+        assert st == 200 and len(a["results"]) == 3, f"rerank: {st} {json.dumps(a, allow_nan=False)[:300]}"
         st, b = self.req(srv, "POST", "/v1/rerank", {**rr, "documents": docs[::-1]})
         sa = {docs[r["index"]]: r["logit"] for r in a["results"]}
         sb = {docs[::-1][r["index"]]: r["logit"] for r in b["results"]}
@@ -529,11 +529,11 @@ class Bench:
             "state": "The sky is clear and it is noon.",
             "questions": [{"question": "Is the sky blue?",
                            "options": ["yes", "no"]}]})
-        assert st == 200, f"decide: {st} {json.dumps(d)[:300]}"
+        assert st == 200, f"decide: {st} {json.dumps(d, allow_nan=False)[:300]}"
         st, e = self.req(srv, "POST", "/v1/embeddings", {"input": "a river"})
         if st != 200:
             notes = ((notes + "; ") if notes else "") + \
-                f"embeddings {st}: {json.dumps(e)[:120]}"
+                f"embeddings {st}: {json.dumps(e, allow_nan=False)[:120]}"
         else:
             v = e["data"][0]["embedding"]
             assert len(v) > 8 and abs(sum(x * x for x in v) - 1) < 1e-3, "not unit length"
@@ -572,7 +572,7 @@ class Bench:
         ]
         for name, body in cases:
             st, d = self.req(srv, "POST", "/v1/chat/completions", body)
-            assert 400 <= st < 500, f"{name}: answered {st} {json.dumps(d)[:600]}"
+            assert 400 <= st < 500, f"{name}: answered {st} {json.dumps(d, allow_nan=False)[:600]}"
         st, d = self.req(srv, "POST", "/v1/chat/completions", {
             "messages": [{"role": "user", "content": ""}], "max_tokens": 4})
         assert st in (200, 400), f"empty content: {st}"
@@ -582,7 +582,7 @@ class Bench:
         s = socket.create_connection(("127.0.0.1", srv.port), timeout=30)
         body = json.dumps({"messages": [{"role": "user", "content":
                                          "Write a very long story."}],
-                           "max_tokens": 400, "stream": True}).encode()
+                           "max_tokens": 400, "stream": True}, allow_nan=False).encode()
         s.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\n"
                   b"Content-Type: application/json\r\nContent-Length: "
                   + str(len(body)).encode() + b"\r\n\r\n" + body)
@@ -695,7 +695,7 @@ def sweep_model(args, runner, entry, out_dir):
         print(f"    {'PASS' if same else 'NOTE'} both cli greedy GPU equals CPU", flush=True)
     rec["verdicts"] = {v: sum(r["verdict"] == v for r in rec["rows"])
                        for v in ("PASS", "FAIL", "NOTE", "SKIP")}
-    out.write_text(json.dumps(rec, indent=1, ensure_ascii=False))
+    out.write_text(json.dumps(rec, indent=1, ensure_ascii=False, allow_nan=False))
     return rec
 
 
@@ -758,7 +758,7 @@ def main():
             if row["verdict"] == "FAIL":
                 print(f"\nFAIL {r.get('family')} [{row['backend']}] {row['check']}:\n"
                       f"  {row['detail']}")
-    (out_dir / "summary.json").write_text(json.dumps(recs, indent=1, ensure_ascii=False))
+    (out_dir / "summary.json").write_text(json.dumps(recs, indent=1, ensure_ascii=False, allow_nan=False))
     missing = sum(r["verdicts"].get("MISSING", 0) for r in recs)
     # 0: every row clean; 1: an engine FAIL; 2: no FAIL, but a model was not
     # on the shelf (a scheduled run that silently tested nothing is the

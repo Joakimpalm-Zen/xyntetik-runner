@@ -1007,7 +1007,7 @@ def matrix(family):
     if family.hostile_args:
         hostile = {"id": "call_1", "type": "function", "function": {"name": "save", "arguments": json.dumps({
             "text": "it's \"quoted\" \\ C:\\new\nline", "items": ["a", "it's", 1, 2.5, True, None],
-            "meta": {"k": "v's", "n": [1]}, "n": 3, "f": 0.5, "ok": False, "none": None})}}
+            "meta": {"k": "v's", "n": [1]}, "n": 3, "f": 0.5, "ok": False, "none": None}, allow_nan=False)}}
         cases.append(("tool-call-args-hostile", [
             {"role": "user", "content": "Save it."},
             {"role": "assistant", "content": "", "tool_calls": [hostile]},
@@ -1167,7 +1167,7 @@ def fetch_oracle(name, fam, oracle_dir):
     meta["fetched_at"] = datetime.datetime.now(
         datetime.timezone.utc).replace(microsecond=0).isoformat()
     with open(os.path.join(oracle_dir, name + ".json"), "w") as f:
-        json.dump(meta, f, indent=1)
+        json.dump(meta, f, indent=1, allow_nan=False)
     return True, None
 
 
@@ -1218,7 +1218,7 @@ def _run_captured(argv, payload=None):
 
 def harmony_render_live(cases):
     """(doc, err). doc is {"library_version":..., "renders": {...}}."""
-    payload = json.dumps({"cases": cases})
+    payload = json.dumps({"cases": cases}, allow_nan=False)
     tried = []
     for py in (os.environ.get("RUNNER_HARMONY_PYTHON"), sys.executable):
         if not py:
@@ -1237,7 +1237,7 @@ def _harmony_meta(doc, how):
     digest of the renders, and when they were made."""
     return {"source": "%s:openai-harmony %s"
                       % (how, doc.get("library_version", "?")),
-            "sha256": sha(json.dumps(doc["renders"], sort_keys=True)),
+            "sha256": sha(json.dumps(doc["renders"], sort_keys=True, allow_nan=False)),
             "fetched_at": doc.get("generated_at", "live")}
 
 
@@ -1326,7 +1326,7 @@ def write_harmony_fixture():
         "renders": doc["renders"],
     }
     with open(HARMONY_FIXTURE, "w") as f:
-        json.dump(doc, f, indent=1, ensure_ascii=False)
+        json.dump(doc, f, indent=1, ensure_ascii=False, allow_nan=False)
         f.write("\n")
     print("wrote %s: %d cases from openai-harmony %s"
           % (os.path.relpath(HARMONY_FIXTURE, ROOT), len(doc["renders"]),
@@ -1348,7 +1348,7 @@ def _jinja_raise_exception(message):
 
 def _jinja_tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
     return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent,
-                      separators=separators, sort_keys=sort_keys)
+                      separators=separators, sort_keys=sort_keys, allow_nan=False)
 
 
 def _jinja_strftime_now(fmt):
@@ -1434,7 +1434,7 @@ def build_renderer():
 
 
 def run_renderer(binary, payload):
-    rc, out, err = _run_captured([binary], json.dumps(payload))
+    rc, out, err = _run_captured([binary], json.dumps(payload, allow_nan=False))
     if rc:
         raise SystemExit("runner renderer failed: %s" % err)
     if not out:
@@ -1969,7 +1969,7 @@ def run(args):
                 # format is a JSON string, which is what runner is handed.
                 # Parsing it for the oracle side compares the two renderers on
                 # the same call rather than on an input the template rejects.
-                omsgs = json.loads(json.dumps(omsgs))
+                omsgs = json.loads(json.dumps(omsgs, allow_nan=False))
                 for m in omsgs:
                     for c in m.get("tool_calls") or []:
                         c["function"]["arguments"] = json.loads(
@@ -2451,7 +2451,7 @@ def write_baseline(args, results, oracle_meta, old, known, ran, tokens):
         "known_differences": entries,
     }
     with open(args.baseline, "w") as f:
-        json.dump(doc, f, indent=2)
+        json.dump(doc, f, indent=2, allow_nan=False)
         f.write("\n")
     print("wrote %s: %d known differences across %d families"
           % (os.path.relpath(args.baseline, ROOT), len(entries),

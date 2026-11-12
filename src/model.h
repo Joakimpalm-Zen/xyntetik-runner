@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "fp16.h"
+#include "fpclass.h"   // model_lora_values_finite, under fast math
 #include "gguf.h"
 #include "arch.h"
 #include "quants.h"
@@ -1312,6 +1313,24 @@ static inline bool model_lora_arch_ok(const char *model_arch, const char *adapte
     if (!model_arch || !adapter_arch) return false;
     return strcmp(model_arch, adapter_arch) == 0 ||
            (strcmp(model_arch, "clef") == 0 && strcmp(adapter_arch, "qwen35") == 0);
+}
+// An adapter tensor's values, converted to f32: true when every one is
+// finite, else false having said which tensor and what it holds (R6.68.116).
+// Both adapter readers ask it (lora_parse_tensor for --lora, --adapter and a
+// training run's adapter; merge_set_resolve for --merge-lora): a NaN or an
+// infinity in A or B is a NaN or infinite delta on every weight its row
+// touches. fpclass.h's tests: fast math folds isfinite(), and LLVM turns a
+// plain exponent-bits test back into it.
+static inline bool model_lora_values_finite(const char *name, const float *v, int64_t n) {
+    for (int64_t i = 0; i < n; i++) {
+        if (!fp_finite_f32(v[i])) {
+            fprintf(stderr, "error: adapter tensor '%s' is not finite: element %lld "
+                    "is %s\n", name, (long long)i,
+                    fp_nan_f32(v[i]) ? "NaN" : v[i] < 0 ? "-infinity" : "infinity");
+            return false;
+        }
+    }
+    return true;
 }
 // What a backend needs to apply the adapter at one projection site: the f32
 // A [r][n_in] and B [n_out][r] host buffers, the rank, and the scale already

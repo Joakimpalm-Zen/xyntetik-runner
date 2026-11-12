@@ -190,7 +190,7 @@ def main(argv=None):
     }
     if args.out:
         with open(args.out, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(report, f, indent=2, sort_keys=True)
+            json.dump(report, f, indent=2, sort_keys=True, allow_nan=False)
 
     for r in c.results:
         mark = "ok  " if r["ok"] else ("WARN" if r["severity"] == "warn"

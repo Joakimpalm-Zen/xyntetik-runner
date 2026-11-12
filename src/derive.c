@@ -583,13 +583,6 @@ static long long file_bytes(const char *path) {
     return plat_stat(path, &st) == 0 ? (long long)st.st_size : -1;
 }
 
-static void sb_num(sbuf *b, double d) {
-    char t[32];
-    if (!fp_isfinite(d)) { sb_lit(b, "null"); return; }
-    json_format_number(d, t);
-    sb_lit(b, t);
-}
-
 // a YAML scalar: plain when it is a simple token, else double-quoted
 static void yaml_scalar(sbuf *b, const char *s) {
     bool plain = *s != '\0';
@@ -1281,14 +1274,14 @@ static bool compare_json(const char *ours_gold, const char *spec, sbuf *out) {
     sb_lit(out, ",\"gold\":"); sb_str(out, plat_path_base(path));
     sb_fmt(out, ",\"side\":\"%s\",\"bytes\":", side);
     if (bytes >= 0) sb_fmt(out, "%lld", bytes); else sb_lit(out, "null");
-    sb_fmt(out, ",\"positions\":%d,\"mean_kld\":", n); sb_num(out, mean);
-    sb_lit(out, ",\"median_kld\":"); sb_num(out, med);
-    sb_lit(out, ",\"top1_agreement_pct\":"); sb_num(out, n ? 100.0 * top_o / n : 0);
-    sb_lit(out, ",\"margin_qualified_top1_pct\":"); sb_num(out, mqp);
-    sb_lit(out, ",\"wilcoxon_z\":"); if (have_w) sb_num(out, z); else sb_lit(out, "null");
-    sb_lit(out, ",\"wilcoxon_p\":"); if (have_w) sb_num(out, pw); else sb_lit(out, "null");
+    sb_fmt(out, ",\"positions\":%d,\"mean_kld\":", n); sb_numj(out, mean);
+    sb_lit(out, ",\"median_kld\":"); sb_numj(out, med);
+    sb_lit(out, ",\"top1_agreement_pct\":"); sb_numj(out, n ? 100.0 * top_o / n : 0);
+    sb_lit(out, ",\"margin_qualified_top1_pct\":"); sb_numj(out, mqp);
+    sb_lit(out, ",\"wilcoxon_z\":"); if (have_w) sb_numj(out, z); else sb_lit(out, "null");
+    sb_lit(out, ",\"wilcoxon_p\":"); if (have_w) sb_numj(out, pw); else sb_lit(out, "null");
     sb_fmt(out, ",\"mcnemar_this_only\":%d,\"mcnemar_other_only\":%d,\"mcnemar_p\":", b, c);
-    sb_num(out, mcnemar_exact(b, c));
+    sb_numj(out, mcnemar_exact(b, c));
     sb_fmt(out, ",\"fails_bar\":%s}", mean > BAR_MEAN_KLD || mqp < BAR_MQ_TOP1 ? "true" : "false");
     free(diffs); free(tk);
     jv_free(og); jv_free(tg);
@@ -1869,13 +1862,13 @@ static bool derive_record(derive_run *d) {
     put_file(&d->r, "corpus", d->o.corpus, false);
     sb_fmt(&d->r, ",\"positions\":%d,\"window\":{\"start\":%d,\"stride\":%d,\"count\":%d}",
            d->m.positions, d->o.start, d->o.stride, d->o.count);
-    sb_lit(&d->r, ",\"mean_kld\":"); sb_num(&d->r, d->m.mean_kld);
-    sb_lit(&d->r, ",\"median_kld\":"); if (d->m.have_median) sb_num(&d->r, d->m.median_kld); else sb_lit(&d->r, "null");
-    sb_lit(&d->r, ",\"max_kld\":"); sb_num(&d->r, d->m.max_kld);
-    sb_lit(&d->r, ",\"top1_agreement_pct\":"); sb_num(&d->r, d->m.top1_pct);
+    sb_lit(&d->r, ",\"mean_kld\":"); sb_numj(&d->r, d->m.mean_kld);
+    sb_lit(&d->r, ",\"median_kld\":"); if (d->m.have_median) sb_numj(&d->r, d->m.median_kld); else sb_lit(&d->r, "null");
+    sb_lit(&d->r, ",\"max_kld\":"); sb_numj(&d->r, d->m.max_kld);
+    sb_lit(&d->r, ",\"top1_agreement_pct\":"); sb_numj(&d->r, d->m.top1_pct);
     sb_lit(&d->r, ",\"margin_qualified_positions\":");
     if (d->m.have_qualified) sb_fmt(&d->r, "%d", d->m.qualified); else sb_lit(&d->r, "null");
-    sb_lit(&d->r, ",\"margin_qualified_top1_pct\":"); sb_num(&d->r, d->m.mq_top1_pct);
+    sb_lit(&d->r, ",\"margin_qualified_top1_pct\":"); sb_numj(&d->r, d->m.mq_top1_pct);
     put_file(&d->r, "reference_score", publisher ? d->gold_out : d->ref_score, true);
     put_file(&d->r, "file_score", d->file_score, true);
     sb_lit(&d->r, ",\"bar\":");

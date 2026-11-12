@@ -147,7 +147,7 @@ def main():
               + "".join(f"\n      x={x:g}: got {g!r}, want {w:.6g}" for x, g, w in wrong))
     if a.out:
         with open(a.out, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(report, f, indent=1)
+            json.dump(report, f, indent=1, allow_nan=False)
             f.write("\n")
     print("cuda-act-probe: " + ("every value finite and exact" if not bad else f"{bad} wrong values"))
     return 1 if bad else 0
