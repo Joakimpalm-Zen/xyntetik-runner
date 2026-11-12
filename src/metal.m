@@ -133,6 +133,7 @@ typedef struct {
     id<MTLBuffer> *ggis, *gdsc;                 // gemma4 router/down scales
     id<MTLBuffer> suppress;                     // gemma never-emit token ids
     int batch_cap;                              // scratch rows allocated
+    int att_cols;                               // columns of scores `att` holds
     bool mv_q4k_default;   // the fast Q4_K matvec is this model's default:
                            // dense models only (metal_mv_fast_for)
 } gpu_t;
@@ -468,6 +469,18 @@ static bool gpu_init_fail(model_t *m, gpu_t *g, id<MTLLibrary> lib,
     return false;
 }
 
+// RUNNER_METAL_ATT_BYTES: the score scratch's bound (METAL_ATT_BYTES), so a
+// test fixture's batch can be made to span several attention dispatches.
+static uint64_t metal_att_bytes(void) {
+    static _Atomic long long v = -1;
+    if (v < 0) {
+        const char *e = getenv("RUNNER_METAL_ATT_BYTES");
+        long long b = e && *e ? atoll(e) : 0;
+        v = b > 0 ? b : (long long)METAL_ATT_BYTES;   // one store
+    }
+    return (uint64_t)v;
+}
+
 static bool metal_buffer_ok(id<MTLBuffer> b) {
     return b != nil && b.contents != NULL;
 }
@@ -556,8 +569,15 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
     id<MTLBuffer> vt     = new_f32_scratch(g->dev, nb * (size_t)kv_dim);
     id<MTLBuffer> hb     = new_f32_scratch(g->dev, nb * (size_t)m->n_ff);
     id<MTLBuffer> hb2    = new_f32_scratch(g->dev, nb * (size_t)m->n_ff);
-    id<MTLBuffer> att    = new_f32_scratch(g->dev, nb * (size_t)m->n_head *
+    // the scores of as many columns as the scratch's bound allows: a wider
+    // batch's attention goes out that many columns a dispatch
+    // (metal_enc_attn_core, metal_admission.h)
+    size_t att_cols = (size_t)metal_att_cols(n, m->n_head, m->n_ctx, metal_att_bytes());
+    id<MTLBuffer> att    = new_f32_scratch(g->dev, att_cols * (size_t)m->n_head *
                                                    (size_t)m->n_ctx);
+    if (metal_env_on("RUNNER_METAL_STATS"))
+        fprintf(stderr, "metal-scratch n=%d att=%zu B\n", n,
+                att_cols * (size_t)m->n_head * (size_t)m->n_ctx * sizeof(float));
     id<MTLBuffer> logits = new_f32_scratch(g->dev, nb * (size_t)m->n_vocab);
     int P = m->n_embd_ple;
     id<MTLBuffer> ple = nil, ple_tmp = nil;
@@ -632,6 +652,7 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
     release_buf(g->logits);
     g->x = x; g->xb = xb; g->xb2 = xb2; g->q = q; g->kt = kt; g->vt = vt;
     g->hb = hb; g->hb2 = hb2; g->att = att; g->logits = logits;
+    g->att_cols = (int)att_cols;
     if (P > 0) {
         release_buf(g->ple); release_buf(g->ple_tmp);
         g->ple = ple; g->ple_tmp = ple_tmp;
@@ -2383,8 +2404,9 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
         // this budget to maxBufferLength preserved the old ceiling in the
         // admission decision even after the multi-buffer implementation had
         // removed it from allocation.
-        uint64_t other = (uint64_t)model_kv_boundary_bytes_sum(m, m->n_layer)
-                       + 512ull * 1024 * 1024;
+        uint64_t other = metal_other_bytes(
+            (uint64_t)model_kv_boundary_bytes_sum(m, m->n_layer),
+            m->n_batch, m->n_head, m->n_ctx);
         metal_weight_limits limits = {
             .working_set = ws_limit,
             .max_buffer = (uint64_t)dev.maxBufferLength,
@@ -4584,24 +4606,18 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
                 metal_attn_tile_on() && g->p_attn_tile;
     [e setComputePipelineState:tile ? g->p_attn_tile
                           : coop ? g->p_attn_coop : g->p_attn];
-    [e setBuffer:q      offset:q_off atIndex:0];
     [e setBuffer:kc     offset:0 atIndex:1];
     [e setBuffer:vc     offset:0 atIndex:2];
     [e setBuffer:g->att offset:0 atIndex:3];
-    [e setBuffer:out    offset:out_off atIndex:4];
-    [e setBytes:&aa length:sizeof(aa) atIndex:5];
     [e setBuffer:g->sinks[l] ? g->sinks[l] : g->dummy offset:0 atIndex:6];
     // Widest power-of-two threadgroup this pipeline allows, capped
     // at the red[] scratch in the kernel. The reduction halves tpg
     // each step, so a non-power-of-two would drop lanes silently.
-    int32_t tile_cols = n;
-    if (tile) {
-        [e setBytes:&tile_cols length:sizeof(tile_cols) atIndex:7];
+    if (tile)
         // the tile's query staging, two float4 an element of the head;
         // never under the 256 elements it was a fixed array of, so a head
         // up to 256 wide keeps the threadgroup it had (8 KB of queries)
         [e setThreadgroupMemoryLength:(NSUInteger)(hd > 256 ? hd : 256) * 2 * 16 atIndex:0];
-    }
     NSUInteger amax = (tile ? g->p_attn_tile
                             : coop ? g->p_attn_coop : g->p_attn)
                           .maxTotalThreadsPerThreadgroup;
@@ -4617,15 +4633,28 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
                     (unsigned long long)g->p_attn.maxTotalThreadsPerThreadgroup);
         }
     }
-    g_disp.attn++;
-    if (tile) {
-        g_tile_dispatches++;
-        [e dispatchThreadgroups:MTLSizeMake(m->n_head,
-                                         (n + ATTN_TILE - 1) / ATTN_TILE, 1)
-          threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
-    } else {
-        [e dispatchThreadgroups:MTLSizeMake(m->n_head, n, 1)
-          threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+    // As many columns a dispatch as the score scratch holds (usually the
+    // whole batch): a column's position, query and output are the kernel's
+    // pos + col and col * stride, so a later dispatch is the same columns at
+    // a later origin
+    int sub = g->att_cols > 0 ? g->att_cols : 1;
+    for (int c0 = 0; c0 < n; c0 += sub) {
+        int32_t ns = n - c0 < sub ? n - c0 : sub;
+        aa.pos = pos + c0;
+        [e setBuffer:q   offset:q_off + foff((size_t)c0 * q_dim) atIndex:0];
+        [e setBuffer:out offset:out_off + foff((size_t)c0 * xdim) atIndex:4];
+        [e setBytes:&aa length:sizeof(aa) atIndex:5];
+        g_disp.attn++;
+        if (tile) {
+            [e setBytes:&ns length:sizeof(ns) atIndex:7];
+            g_tile_dispatches++;
+            [e dispatchThreadgroups:MTLSizeMake(m->n_head,
+                                             (ns + ATTN_TILE - 1) / ATTN_TILE, 1)
+              threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+        } else {
+            [e dispatchThreadgroups:MTLSizeMake(m->n_head, ns, 1)
+              threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+        }
     }
 }
 

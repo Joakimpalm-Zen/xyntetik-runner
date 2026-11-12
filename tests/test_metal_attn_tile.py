@@ -12,6 +12,7 @@ Skipped where there is no Metal device.
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import urllib.request
@@ -148,3 +149,49 @@ def test_a_wide_head_outside_the_family_waits_for_the_switch(exe, tmp_path):
     forced, detail_forced = _tiles(exe, model, RUNNER_METAL_ATTN_TILE_WIDE="1")
     assert dflt == 0 and "attn_wide" not in detail, (dflt, detail)
     assert forced > 0 and "attn_wide=on" in detail_forced, (forced, detail_forced)
+
+
+def test_the_score_scratch_is_bounded_and_a_wide_batch_spans_dispatches(exe, tmp_path):
+    """R6.68.88: the attention score scratch holds a bounded number of
+    columns, and a batch wider than that runs its attention several
+    dispatches a layer, each column at its own position, for the same bytes.
+    The scratch was batch x heads x context floats (2 GiB for a 512-column
+    batch of a 32-head model at a 32K context), which the load's budget never
+    counted. RUNNER_METAL_ATT_BYTES brings the bound down to fixture size."""
+    model = _model(tmp_path)
+    prompt = PROMPT + " " + PROMPT[:40]
+    ident = {"RUNNER_METAL_MM": "0", "RUNNER_METAL_ATTN_COOP": "0", "RUNNER_METAL_MV": "0"}
+
+    def run(gpu, env):
+        return subprocess.run(
+            [exe, "-m", str(model), "-c", "1024", "-b", "150", "-p", prompt,
+             "-n", "8", "--temp", "0", "--gpu", gpu],
+            env={**os.environ, **env}, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=300, check=True)
+
+    def read(r):
+        err = r.stderr.decode(errors="replace")
+        sizes = {int(n): int(b) for n, b in
+                 re.findall(r"metal-scratch n=(\d+) att=(\d+) B", err)}
+        census = re.findall(r"metal-census n=(\d+) .* attn=(\d+)\(tile (\d+)\)", err)
+        return sizes, [(int(n), int(a), int(t)) for n, a, t in census]
+
+    cpu = run("off", {})
+    assert cpu.stdout
+    whole = run("auto", {**ident, "RUNNER_METAL_STATS": "1"})
+    sizes, census = read(whole)
+    one = sizes[1]                              # one column: heads x context floats
+    width = max(sizes)
+    assert width > 128, sizes                   # wide enough for three sub-tiles
+    # the default bound: a fixture's whole batch, one dispatch a layer
+    assert sizes[width] == width * one
+    assert whole.stdout == cpu.stdout
+    layers = [a for n, a, t in census if n == width][0]
+
+    bounded = run("auto", {**ident, "RUNNER_METAL_STATS": "1",
+                           "RUNNER_METAL_ATT_BYTES": str(64 * one)})
+    sizes, census = read(bounded)
+    assert sizes[width] == 64 * one, sizes      # 64 columns, whatever the batch
+    assert bounded.stdout == cpu.stdout
+    # the counters are cumulative: this batch's dispatches, three a layer
+    assert [a for n, a, t in census if n == width][0] == 3 * layers
