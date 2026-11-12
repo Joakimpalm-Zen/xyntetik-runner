@@ -4,6 +4,7 @@
 #include "ed25519.h"
 #include "mldsa.h"
 
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdarg.h>
@@ -12,6 +13,15 @@
 #include <sys/stat.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
 
 static void bytes_to_hex(const uint8_t *b, size_t n, char *out);
 
@@ -774,13 +784,30 @@ bool signkey_write(const char *path, const char *algo, const uint8_t seed[32],
     char seed_hex[65];
     bytes_to_hex(seed, 32, seed_hex);
     bytes_to_hex(k.pk, k.pk_n, pub_hex);
-    FILE *f = plat_fopen(path, "wb");
-    bool ok = f != NULL;
+    // The file holds the seed, so it is its owner's alone. fopen made it
+    // 0644 under the usual umask, and a key written over an older file kept
+    // that file's mode. It is created as a new file with mode 0600 (which a
+    // umask can only narrow) and then takes the name, so a failed write
+    // leaves the old key whole (R6.68.59).
+    size_t tl = strlen(path) + sizeof ".partial";
+    char *tmp = malloc(tl);
+    bool ok = tmp != NULL;
     if (ok) {
-        ok = fprintf(f, "{\"schema_version\":\"xyntetik.runner.signkey.v1\","
-                     "\"algo\":\"%s\",\"seed\":\"%s\",\"public_key\":\"%s\"}\n",
-                     k.algo, seed_hex, pub_hex) > 0;
-        ok = (fclose(f) == 0) && ok;
+        snprintf(tmp, tl, "%s.partial", path);
+        plat_remove(tmp);   // a stale one from an interrupted run
+        int fd = plat_open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
+        FILE *f = fd >= 0 ? fdopen(fd, "wb") : NULL;
+        if (fd >= 0 && !f) close(fd);
+        ok = f != NULL;
+        if (ok) {
+            ok = fprintf(f, "{\"schema_version\":\"xyntetik.runner.signkey.v1\","
+                         "\"algo\":\"%s\",\"seed\":\"%s\",\"public_key\":\"%s\"}\n",
+                         k.algo, seed_hex, pub_hex) > 0;
+            ok = (fclose(f) == 0) && ok;
+        }
+        ok = ok && plat_replace_file(tmp, path);
+        if (!ok && fd >= 0) plat_remove(tmp);
+        free(tmp);
     }
     memset(&k, 0, sizeof k);
     memset(seed_hex, 0, sizeof seed_hex);
