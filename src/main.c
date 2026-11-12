@@ -5183,10 +5183,10 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
     engine_note_draft_route(&rt->e);
     if (o->schema_file) {
         size_t ssz = 0;
-        char *sbuf = plat_read_file(o->schema_file, MAX_INPUT_FILE, &ssz);
-        if (!sbuf) { fprintf(stderr, "error: cannot read %s\n", o->schema_file); return false; }
-        struct jv *sj = json_parse(sbuf, ssz);
-        free(sbuf);
+        char *schema_text = plat_read_file(o->schema_file, MAX_INPUT_FILE, &ssz);
+        if (!schema_text) { fprintf(stderr, "error: cannot read %s\n", o->schema_file); return false; }
+        struct jv *sj = json_parse(schema_text, ssz);
+        free(schema_text);
         if (!sj) { fprintf(stderr, "error: %s is not valid JSON\n", o->schema_file); return false; }
         char serr[128];
         rt->e.schema = schema_compile(sj, serr, sizeof(serr));

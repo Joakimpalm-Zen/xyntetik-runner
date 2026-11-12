@@ -277,10 +277,10 @@ static void check_tray_http_short_write(void) {
         if (complete) {
             size_t sent = 0;
             while (sent < sizeof(response) - 1) {
-                ssize_t n = write(client, response + sent, sizeof(response) - 1 - sent);
-                if (n < 0 && errno == EINTR) continue;
-                if (n <= 0) { complete = false; break; }
-                sent += (size_t)n;
+                ssize_t wrote = write(client, response + sent, sizeof(response) - 1 - sent);
+                if (wrote < 0 && errno == EINTR) continue;
+                if (wrote <= 0) { complete = false; break; }
+                sent += (size_t)wrote;
             }
         }
         if (client >= 0) close(client);

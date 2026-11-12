@@ -8396,11 +8396,11 @@ static int ts_entry_close(tool_stream *s, const char *rest, int rest_n, int rc) 
 // path re-serializes
 static int ts_value(tool_stream *s, const char *b, int n) {
     int rc = 0, run = -1;
-    int (*emit)(void *, const char *, int) =
+    int (*emit_fn)(void *, const char *, int) =
         s->called ? s->sink.call_args : s->sink.content;
     #define TS_FLUSH(upto) do { \
-        if (run >= 0 && (upto) > run && emit) \
-            rc = emit(s->sink.ud, b + run, (upto) - run); \
+        if (run >= 0 && (upto) > run && emit_fn) \
+            rc = emit_fn(s->sink.ud, b + run, (upto) - run); \
         run = -1; \
     } while (0)
 
