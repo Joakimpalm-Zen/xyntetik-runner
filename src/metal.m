@@ -139,6 +139,15 @@ typedef struct {
 
 static void lora_dev_release(gpu_t *g);
 
+// The per-layer constant tables of gpu_t, each an array of n_layer buffers.
+// One list for the places that walk them all (the allocation with its check,
+// the release), so a table named here is made, checked and freed together.
+#define METAL_LAYER_TABLES(X)                                              \
+    X(attn_norm) X(ffn_norm) X(bq) X(bk) X(bv) X(bo) X(qn) X(kn) X(sinks) \
+    X(gib) X(geb) X(ueb) X(deb) X(ppn) X(pan) X(pfn)                      \
+    X(gpn1) X(gprn2) X(gpn2) X(ggis) X(gdsc)                              \
+    X(dn_cw) X(dn_dt) X(dn_A) X(dn_nw) X(dn_cb) X(dn_D)
+
 // mirrors struct mv_args in kernels.metal — keep the field order in step
 typedef struct { int n_in, n_out; uint64_t w_off; int has_bias;
                  int n_col, x_stride, y_stride, col_tile; } mv_args;
@@ -287,43 +296,13 @@ static void metal_replay_setup(gpu_t *g, model_t *m) {
 
 static void gpu_release_state(gpu_t *g, int n_layer) {
     if (!g) return;
-    for (int l = 0; l < n_layer; l++) {
-        if (g->dn_cw) [g->dn_cw[l] release];
-        if (g->dn_dt) [g->dn_dt[l] release];
-        if (g->dn_A)  [g->dn_A[l] release];
-        if (g->dn_nw) [g->dn_nw[l] release];
-        if (g->dn_cb) [g->dn_cb[l] release];
-        if (g->dn_D)  [g->dn_D[l] release];
-        if (g->attn_norm) [g->attn_norm[l] release];
-        if (g->ffn_norm)  [g->ffn_norm[l] release];
-        if (g->bq) [g->bq[l] release];
-        if (g->bk) [g->bk[l] release];
-        if (g->bv) [g->bv[l] release];
-        if (g->bo) [g->bo[l] release];
-        if (g->qn) [g->qn[l] release];
-        if (g->kn) [g->kn[l] release];
-        if (g->sinks) [g->sinks[l] release];
-        if (g->gib) [g->gib[l] release];
-        if (g->geb) [g->geb[l] release];
-        if (g->ueb) [g->ueb[l] release];
-        if (g->deb) [g->deb[l] release];
-        if (g->pan) [g->pan[l] release];
-        if (g->ppn) [g->ppn[l] release];
-        if (g->pfn) [g->pfn[l] release];
-        if (g->gpn1) [g->gpn1[l] release];
-        if (g->gprn2) [g->gprn2[l] release];
-        if (g->gpn2) [g->gpn2[l] release];
-        if (g->ggis) [g->ggis[l] release];
-        if (g->gdsc) [g->gdsc[l] release];
+#define X(t)                                                       \
+    if (g->t) {                                                    \
+        for (int l = 0; l < n_layer; l++) [g->t[l] release];       \
+        free(g->t);                                                \
     }
-    free(g->dn_cw); free(g->dn_dt); free(g->dn_A); free(g->dn_nw);
-    free(g->dn_cb); free(g->dn_D);
-    free(g->attn_norm); free(g->ffn_norm);
-    free(g->bq); free(g->bk); free(g->bv); free(g->bo);
-    free(g->qn); free(g->kn);
-    free(g->sinks); free(g->gib); free(g->geb); free(g->ueb); free(g->deb);
-    free(g->ppn); free(g->pan); free(g->pfn);
-    free(g->gpn1); free(g->gprn2); free(g->gpn2); free(g->ggis); free(g->gdsc);
+    METAL_LAYER_TABLES(X)
+#undef X
     [g->p_attn_coop release]; [g->p_attn_chunk_coop release]; [g->p_attn_chunk_gqa release];
     [g->p_attn_tile release];
     [g->p_dn_conv release]; [g->p_dn_ring release]; [g->p_dn_l2norm release];
@@ -389,6 +368,13 @@ static bool metal_init_injected(const char *point) {
     const char *inject = getenv("RUNNER_METAL_INIT_INJECT_FAILURE");
     return inject && *inject && strcmp(inject, "0") &&
            (!strcmp(inject, "always") || !strcmp(inject, point));
+}
+
+// RUNNER_METAL_INIT_INJECT_FAILURE=const:<table>: the named per-layer constant
+// table cannot be made (tests/test_gpu_declines.py).
+static bool metal_const_injected(const char *table) {
+    const char *inj = getenv("RUNNER_METAL_INIT_INJECT_FAILURE");
+    return inj && !strncmp(inj, "const:", 6) && !strcmp(inj + 6, table);
 }
 
 static bool metal_env_on(const char *name) {
@@ -1170,6 +1156,24 @@ static id<MTLBuffer> f32_buf_ones(id<MTLDevice> dev, const float *src, size_t n)
                                       options:MTLResourceStorageModeShared];
     free(tmp);
     return b;
+}
+
+// One per-layer constant onto the device, checked where it is made, so a
+// table cannot be uploaded and left out of a check kept beside it (R6.68.86:
+// the E-series post-norm was, and a failed allocation reached the first
+// forward as a nil buffer). `name` is the table's, for the failure injection.
+typedef enum {
+    LC_IF_PRESENT,   // nil where the model has none
+    LC_REQUIRED,     // the layer cannot run without it
+    LC_OR_ONES,      // ones where the file has none
+} layer_const_need;
+static bool layer_const(id<MTLDevice> dev, id<MTLBuffer> *dst, const char *name,
+                        const float *src, size_t n, layer_const_need need) {
+    *dst = nil;
+    if (!src && need == LC_IF_PRESENT) return true;
+    if (metal_const_injected(name)) return false;
+    *dst = need == LC_OR_ONES ? f32_buf_ones(dev, src, n) : f32_buf(dev, src, n);
+    return metal_buffer_ok(*dst);
 }
 
 
@@ -2579,51 +2583,22 @@ static bool metal_upload_constants(model_t *m, gpu_t *g, id<MTLDevice> dev) {
         (m->rope_inv_freq_local && !metal_buffer_ok(g->inv_freq_local)) ||
         (m->n_suppress > 0 && !metal_buffer_ok(g->suppress)))
         return gpu_init_fail(m, g, nil, "shared constant allocation");
-    g->attn_norm = calloc(m->n_layer, sizeof(id));
-    g->ffn_norm  = calloc(m->n_layer, sizeof(id));
-    g->bq = calloc(m->n_layer, sizeof(id));
-    g->bk = calloc(m->n_layer, sizeof(id));
-    g->bv = calloc(m->n_layer, sizeof(id));
-    g->bo = calloc(m->n_layer, sizeof(id));
-    g->qn = calloc(m->n_layer, sizeof(id));
-    g->kn = calloc(m->n_layer, sizeof(id));
-    g->sinks = calloc(m->n_layer, sizeof(id));
-    g->gib = calloc(m->n_layer, sizeof(id));
-    g->geb = calloc(m->n_layer, sizeof(id));
-    g->ueb = calloc(m->n_layer, sizeof(id));
-    g->deb = calloc(m->n_layer, sizeof(id));
-    g->ppn = calloc(m->n_layer, sizeof(id));
-    g->pan = calloc(m->n_layer, sizeof(id));
-    g->pfn = calloc(m->n_layer, sizeof(id));
-    g->gpn1 = calloc(m->n_layer, sizeof(id));
-    g->gprn2 = calloc(m->n_layer, sizeof(id));
-    g->gpn2 = calloc(m->n_layer, sizeof(id));
-    g->ggis = calloc(m->n_layer, sizeof(id));
-    g->gdsc = calloc(m->n_layer, sizeof(id));
-    g->dn_cw = calloc(m->n_layer, sizeof(id));
-    g->dn_dt = calloc(m->n_layer, sizeof(id));
-    g->dn_A  = calloc(m->n_layer, sizeof(id));
-    g->dn_nw = calloc(m->n_layer, sizeof(id));
-    g->dn_cb = calloc(m->n_layer, sizeof(id));
-    g->dn_D  = calloc(m->n_layer, sizeof(id));
-    if (!g->attn_norm || !g->ffn_norm || !g->bq || !g->bk || !g->bv ||
-        !g->ppn ||
-        !g->bo || !g->qn || !g->kn || !g->sinks || !g->gib || !g->geb ||
-        !g->ueb || !g->deb || !g->pan || !g->pfn || !g->gpn1 ||
-        !g->gprn2 || !g->gpn2 || !g->ggis || !g->gdsc ||
-        !g->dn_cw || !g->dn_dt || !g->dn_A || !g->dn_nw || !g->dn_cb || !g->dn_D)
-        return gpu_init_fail(m, g, nil, "per-layer table allocation");
+    bool tables = true;
+#define X(t) tables = (g->t = calloc(m->n_layer, sizeof(id))) != NULL && tables;
+    METAL_LAYER_TABLES(X)
+#undef X
+    if (!tables) return gpu_init_fail(m, g, nil, "per-layer table allocation");
+// g->t[l] from `src`, checked where it is made (layer_const)
+#define LC(t, src, n, need) layer_const(dev, &g->t[l], #t, src, n, need)
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
         if (m->qwen35 && ly->recurrent) {
             int nh = m->ssm.v_heads, hv = m->ssm.inner / nh;
             int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
-            g->dn_cw[l] = f32_buf(dev, ly->ssm_conv_w, (size_t)convdim * m->ssm.conv_kernel);
-            g->dn_dt[l] = f32_buf(dev, ly->ssm_dt, nh);
-            g->dn_A[l]  = f32_buf(dev, ly->ssm_a, nh);
-            g->dn_nw[l] = f32_buf(dev, ly->ssm_norm_w, hv);
-            if (!metal_buffer_ok(g->dn_cw[l]) || !metal_buffer_ok(g->dn_dt[l]) ||
-                !metal_buffer_ok(g->dn_A[l]) || !metal_buffer_ok(g->dn_nw[l]))
+            if (!LC(dn_cw, ly->ssm_conv_w, (size_t)convdim * m->ssm.conv_kernel, LC_REQUIRED) ||
+                !LC(dn_dt, ly->ssm_dt, nh, LC_REQUIRED) ||
+                !LC(dn_A, ly->ssm_a, nh, LC_REQUIRED) ||
+                !LC(dn_nw, ly->ssm_norm_w, hv, LC_REQUIRED))
                 return gpu_init_fail(m, g, nil, "Gated DeltaNet constant allocation");
         }
         if ((m->granite_hybrid || m->nemotron_h) && ly->recurrent) {
@@ -2638,75 +2613,56 @@ static bool metal_upload_constants(model_t *m, gpu_t *g, id<MTLDevice> dev) {
                 dequant_row(ly->ssm_conv->type,
                             (const uint8_t *)ly->ssm_conv->data + (size_t)c * wrs,
                             cw + (size_t)c * K, K);
-            g->dn_cw[l] = f32_buf(dev, cw, (size_t)conv_dim * K);
+            bool ok = LC(dn_cw, cw, (size_t)conv_dim * K, LC_REQUIRED);
             free(cw);
-            g->dn_cb[l] = f32_buf(dev, ly->ssm_conv1d_b, conv_dim);
-            g->dn_dt[l] = f32_buf(dev, ly->ssm_dt, nh);
-            g->dn_A[l]  = f32_buf(dev, ly->ssm_a, nh);
-            g->dn_D[l]  = f32_buf(dev, ly->ssm_d, nh);
-            g->dn_nw[l] = f32_buf(dev, ly->ssm_norm_w, m->ssm.inner);
-            if (!metal_buffer_ok(g->dn_cw[l]) || !metal_buffer_ok(g->dn_cb[l]) ||
-                !metal_buffer_ok(g->dn_dt[l]) || !metal_buffer_ok(g->dn_A[l]) ||
-                !metal_buffer_ok(g->dn_D[l]) || !metal_buffer_ok(g->dn_nw[l]))
+            if (!ok ||
+                !LC(dn_cb, ly->ssm_conv1d_b, conv_dim, LC_REQUIRED) ||
+                !LC(dn_dt, ly->ssm_dt, nh, LC_REQUIRED) ||
+                !LC(dn_A, ly->ssm_a, nh, LC_REQUIRED) ||
+                !LC(dn_D, ly->ssm_d, nh, LC_REQUIRED) ||
+                !LC(dn_nw, ly->ssm_norm_w, m->ssm.inner, LC_REQUIRED))
                 return gpu_init_fail(m, g, nil, "Mamba-2 constant allocation");
         }
-        g->attn_norm[l] = f32_buf(dev, ly->attn_norm_w, m->n_embd);
-        g->ffn_norm[l]  = f32_buf(dev, ly->ffn_norm_w, m->n_embd);
         int l_hd = model_head_dim(m, l);
         int l_kv_dim = model_kv_dim(m, l);
-        g->bq[l] = f32_buf(dev, ly->bq, q_dim);
-        g->bk[l] = f32_buf(dev, ly->bk, l_kv_dim);
-        g->bv[l] = f32_buf(dev, ly->bv, l_kv_dim);
-        g->bo[l] = f32_buf(dev, ly->bo, m->n_embd);
-        g->qn[l] = f32_buf(dev, ly->qnorm_w, l_hd);
-        g->kn[l] = f32_buf(dev, ly->knorm_w, l_hd);
-        g->sinks[l] = f32_buf(dev, ly->attn_sinks, m->n_head);
-        g->pan[l] = f32_buf(dev, ly->post_attn_norm_w, m->n_embd);
-        g->ppn[l] = f32_buf(dev, ly->ple_post_norm, m->n_embd);
-        g->pfn[l] = f32_buf(dev, ly->post_ffn_norm_w, m->n_embd);
-        g->gib[l] = f32_buf(dev, ly->ffn_gate_inp_b, m->n_expert);
-        g->geb[l] = f32_buf(dev, ly->ffn_gate_exps_b,
-                            (size_t)m->n_expert * (size_t)m->n_ff_exp);
-        g->ueb[l] = f32_buf(dev, ly->ffn_up_exps_b,
-                            (size_t)m->n_expert * (size_t)m->n_ff_exp);
-        g->deb[l] = f32_buf(dev, ly->ffn_down_exps_b,
-                            (size_t)m->n_expert * (size_t)m->n_embd);
-        if (ly->moe_gemma) {
-            g->gpn1[l] = f32_buf_ones(dev, ly->ffn_post_norm1_w, m->n_embd);
-            g->gprn2[l] = f32_buf_ones(dev, ly->ffn_pre_norm2_w, m->n_embd);
-            g->gpn2[l] = f32_buf_ones(dev, ly->ffn_post_norm2_w, m->n_embd);
+        size_t exp_ff = (size_t)m->n_expert * (size_t)m->n_ff_exp;
+        // a nemotron_h block is one sublayer: its SSM and attention blocks
+        // carry no FFN norm, its MLP blocks no mixer
+        bool ok = LC(attn_norm, ly->attn_norm_w, m->n_embd,
+                     ly->skip_mixer ? LC_IF_PRESENT : LC_REQUIRED) &&
+                  LC(ffn_norm, ly->ffn_norm_w, m->n_embd,
+                     ly->skip_ffn ? LC_IF_PRESENT : LC_REQUIRED) &&
+                  LC(bq, ly->bq, q_dim, LC_IF_PRESENT) &&
+                  LC(bk, ly->bk, l_kv_dim, LC_IF_PRESENT) &&
+                  LC(bv, ly->bv, l_kv_dim, LC_IF_PRESENT) &&
+                  LC(bo, ly->bo, m->n_embd, LC_IF_PRESENT) &&
+                  LC(qn, ly->qnorm_w, l_hd, LC_IF_PRESENT) &&
+                  LC(kn, ly->knorm_w, l_hd, LC_IF_PRESENT) &&
+                  LC(sinks, ly->attn_sinks, m->n_head, LC_IF_PRESENT) &&
+                  LC(pan, ly->post_attn_norm_w, m->n_embd, LC_IF_PRESENT) &&
+                  LC(ppn, ly->ple_post_norm, m->n_embd, LC_IF_PRESENT) &&
+                  LC(pfn, ly->post_ffn_norm_w, m->n_embd, LC_IF_PRESENT) &&
+                  LC(gib, ly->ffn_gate_inp_b, m->n_expert, LC_IF_PRESENT) &&
+                  LC(geb, ly->ffn_gate_exps_b, exp_ff, LC_IF_PRESENT) &&
+                  LC(ueb, ly->ffn_up_exps_b, exp_ff, LC_IF_PRESENT) &&
+                  LC(deb, ly->ffn_down_exps_b,
+                     (size_t)m->n_expert * (size_t)m->n_embd, LC_IF_PRESENT);
+        if (ok && ly->moe_gemma) {
             float *gs = malloc(sizeof(float) * (size_t)m->n_embd);
             if (!gs) return gpu_init_fail(m, g, nil, "Gemma router scale allocation");
             float inv = 1.0f / sqrtf((float)m->n_embd);
             for (int i = 0; i < m->n_embd; i++)
                 gs[i] = (ly->gate_inp_scale ? ly->gate_inp_scale[i] : 1.0f) * inv;
-            g->ggis[l] = f32_buf(dev, gs, m->n_embd);
+            ok = LC(gpn1, ly->ffn_post_norm1_w, m->n_embd, LC_OR_ONES) &&
+                 LC(gprn2, ly->ffn_pre_norm2_w, m->n_embd, LC_OR_ONES) &&
+                 LC(gpn2, ly->ffn_post_norm2_w, m->n_embd, LC_OR_ONES) &&
+                 LC(ggis, gs, m->n_embd, LC_REQUIRED) &&
+                 LC(gdsc, ly->down_exps_scale, m->n_expert, LC_OR_ONES);
             free(gs);
-            g->gdsc[l] = f32_buf_ones(dev, ly->down_exps_scale, m->n_expert);
         }
-        // a nemotron_h block is one sublayer: its SSM and attention blocks
-        // carry no FFN norm, its MLP blocks no mixer
-        if ((!ly->skip_mixer && !metal_buffer_ok(g->attn_norm[l])) ||
-            (!ly->skip_ffn && !metal_buffer_ok(g->ffn_norm[l])) ||
-            (ly->bq && !metal_buffer_ok(g->bq[l])) ||
-            (ly->bk && !metal_buffer_ok(g->bk[l])) ||
-            (ly->bv && !metal_buffer_ok(g->bv[l])) ||
-            (ly->bo && !metal_buffer_ok(g->bo[l])) ||
-            (ly->qnorm_w && !metal_buffer_ok(g->qn[l])) ||
-            (ly->knorm_w && !metal_buffer_ok(g->kn[l])) ||
-            (ly->attn_sinks && !metal_buffer_ok(g->sinks[l])) ||
-            (ly->post_attn_norm_w && !metal_buffer_ok(g->pan[l])) ||
-            (ly->post_ffn_norm_w && !metal_buffer_ok(g->pfn[l])) ||
-            (ly->ffn_gate_inp_b && !metal_buffer_ok(g->gib[l])) ||
-            (ly->ffn_gate_exps_b && !metal_buffer_ok(g->geb[l])) ||
-            (ly->ffn_up_exps_b && !metal_buffer_ok(g->ueb[l])) ||
-            (ly->ffn_down_exps_b && !metal_buffer_ok(g->deb[l])) ||
-            (ly->moe_gemma &&
-             (!metal_buffer_ok(g->gpn1[l]) || !metal_buffer_ok(g->gprn2[l]) ||
-              !metal_buffer_ok(g->gpn2[l]) || !metal_buffer_ok(g->ggis[l]) ||
-              !metal_buffer_ok(g->gdsc[l]))))
-            return gpu_init_fail(m, g, nil, "per-layer buffer allocation");
+        if (!ok) return gpu_init_fail(m, g, nil, "per-layer buffer allocation");
     }
+#undef LC
     return true;
 }
 
