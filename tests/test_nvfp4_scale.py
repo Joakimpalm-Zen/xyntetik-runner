@@ -99,3 +99,27 @@ def test_fork_layout_is_refused_by_name(runner_bin, fixtures):
     assert r.returncode != 0
     assert "40 bytes per 64" in r.stderr and "fp16 sub-block scales" in r.stderr, r.stderr
     assert "blk.0." in r.stderr, "the refusal must name the tensor"
+
+
+@pytest.mark.parametrize("place", ["first", "last"])
+def test_fork_layout_is_refused_wherever_its_tensor_sits(runner_bin, tmp_path, place):
+    """R6.68.48: the refusal measures the span from a tensor's data to the
+    next tensor's, and for the LAST tensor in the file to the file's end. The
+    last case compared an address in the mapping with an offset in the file,
+    so its span came out 0 and a file whose fork-layout tensor was the last
+    one loaded as garbage. The same tensor, first and last, is refused."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import gguf_fixture as gf
+    n = 64 * 16                       # 16 blocks: 576 bytes in ggml's layout
+    fork = bytes(n // 64 * 40)        # the fork's 640
+    tensors = [("blk.0.attn_q.weight", [n, 1], fork, gf.T_NVFP4),
+               ("blk.0.attn_norm.weight", [8], gf.ones(8))]
+    if place == "last":
+        tensors.reverse()
+    path = tmp_path / f"fork40-{place}.gguf"
+    gf.write_gguf(path, tensors, [], announce=False)
+    r = subprocess.run([runner_bin, "-m", path, "-p", "hi", "-n", "1", "--gpu", "off",
+                        "--no-tray"], capture_output=True, text=True, timeout=120)
+    assert r.returncode != 0
+    assert "40 bytes per 64" in r.stderr and "blk.0.attn_q.weight" in r.stderr, r.stderr
+
