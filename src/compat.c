@@ -1664,12 +1664,30 @@ bool plat_random(uint8_t *out, size_t n) {
 #endif
 }
 
+// The size of an open file, 64-bit on every platform, with the position left
+// at the start. ftell() returns long, which is 32 bits on Windows: a file past
+// 2 GiB read there as an error (R6.68.5).
+bool plat_file_size(FILE *f, uint64_t *out) {
+#ifdef _WIN32
+    if (_fseeki64(f, 0, SEEK_END) != 0) return false;
+    __int64 end = _ftelli64(f);
+    if (end < 0 || _fseeki64(f, 0, SEEK_SET) != 0) return false;
+#else
+    if (fseeko(f, 0, SEEK_END) != 0) return false;
+    off_t end = ftello(f);
+    if (end < 0 || fseeko(f, 0, SEEK_SET) != 0) return false;
+#endif
+    *out = (uint64_t)end;
+    return true;
+}
+
 char *plat_read_file(const char *path, size_t max_bytes, size_t *n_out) {
     FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0 || (max_bytes && (unsigned long)sz > max_bytes) || fseek(f, 0, SEEK_SET) != 0) {
+    uint64_t sz = 0;
+    // the size must fit a buffer with its terminator, and the cap when one is set
+    if (!plat_file_size(f, &sz) || sz >= (uint64_t)SIZE_MAX ||
+        (max_bytes && sz > (uint64_t)max_bytes)) {
         fclose(f);
         return NULL;
     }
@@ -1682,6 +1700,30 @@ char *plat_read_file(const char *path, size_t max_bytes, size_t *n_out) {
     buf[got] = 0;
     if (n_out) *n_out = got;
     return buf;
+}
+
+// The process's physical footprint, where the operating system keeps one: on
+// macOS the kernel's phys_footprint (TASK_VM_INFO), the figure Activity Monitor
+// and footprint(1) show. Unlike the resident size it counts the GPU driver's
+// memory for this process (Metal buffers, IOAccelerator) and compressed pages:
+// a serving process read 13 MB resident at a 638 MB footprint, 598 MB of it
+// Metal, so a device-memory leak there showed nowhere else (R6.68.12). False
+// elsewhere: Linux and Windows have no one figure that adds device memory to
+// RAM, and their GPU memory is reported apart, so the field is left out
+// rather than repeating the resident set.
+bool plat_proc_phys_footprint_bytes(uint64_t *out) {
+#ifdef __APPLE__
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) != KERN_SUCCESS ||
+        count < TASK_VM_INFO_REV1_COUNT)   // phys_footprint arrived in revision 1
+        return false;
+    *out = (uint64_t)info.phys_footprint;
+    return true;
+#else
+    (void)out;
+    return false;
+#endif
 }
 
 bool plat_mkdir_exist_ok(const char *path) {

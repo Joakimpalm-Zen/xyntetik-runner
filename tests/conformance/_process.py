@@ -31,6 +31,8 @@ WINDOWS = os.name == "nt"
 # (The same mechanism ended a kld-compare CI run on 2026-10-23.)
 _PORT_LOW, _PORT_HIGH = 20000, 32767
 BIND_ATTEMPTS = 5
+# how much of the log an unclean stop quotes; the file itself is kept whole
+UNCLEAN_TAIL = 16000
 
 
 def free_port():
@@ -221,13 +223,20 @@ class RunnerServer:
             self._log.close()
         self._log = None
         unclean = strict and (self.killed or (not WINDOWS and self.exit_code != 0))
-        log = self._tail() if unclean else None
+        if unclean:
+            # An unclean stop keeps the server's whole log and names it. It
+            # used to delete the file and keep a 2,000-byte tail, which lost
+            # the stack of every sanitizer report raised at exit: three leaks
+            # at shutdown were seen by a whole-suite run and could not be
+            # attributed (R6.68.20).
+            self.kept_log = self.log_path or self._own_log
+            self._own_log = None
+            raise TransportError("runner exited uncleanly on stop",
+                                 returncode=self.exit_code, log=self._tail(UNCLEAN_TAIL),
+                                 log_file=self.kept_log)
         if self._own_log and not keep_log:
             os.unlink(self._own_log)
             self._own_log = None
-        if unclean:
-            raise TransportError("runner exited uncleanly on stop",
-                                 returncode=self.exit_code, log=log)
 
     # ------------------------------------------------------------------
     def _health_ok(self):
@@ -241,7 +250,7 @@ class RunnerServer:
             return False
 
     def _tail(self, n=2000):
-        path = self.log_path or self._own_log
+        path = self.log_path or self._own_log or self.kept_log
         if not path or not os.path.exists(path):
             return "<no log>"
         if self._log is not None:

@@ -669,6 +669,23 @@ typedef struct {
     long long saved;          // two rungs: bytes at the top minus at the bottom
 } dgroup;
 
+// What sized_plan owns until it returns (R6.68.5): the groups with their names
+// and tensor names (a demoted group's name moves to the result and is NULL here),
+// and the held tensor names until they move to the result.
+static void groups_free(dgroup *gs, int ng) {
+    for (int k = 0; gs && k < ng; k++) {
+        free(gs[k].name);
+        for (int t = 0; t < gs[k].n; t++) free(gs[k].tensors[t]);
+        free(gs[k].tensors);
+    }
+    free(gs);
+}
+
+static void names_free(char **v, int n) {
+    for (int k = 0; v && k < n; k++) free(v[k]);
+    free(v);
+}
+
 static int cmp_group(const void *a, const void *b) {
     const dgroup *x = a, *y = b;
     if (x->cost != y->cost) return x->cost < y->cost ? -1 : 1;
@@ -714,6 +731,10 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     const char *top = o->rungs[0], *bottom = o->rungs[nr - 1];
     res->report = suffixed(o->out, ".quant-error.jsonl");
     res->plan = suffixed(o->out, ".type-plan.json");
+    if (!res->report || !res->plan) {
+        fprintf(stderr, "error: runner derive: out of memory\n");
+        return false;
+    }
     char types[256];
     size_t tl = 0;
     types[0] = 0;
@@ -745,7 +766,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     char **held = NULL;    // candidates the imatrix has no entry for (R4.34.2)
     int nh = 0, hcap = 0;
     long long delta = 0;   // all candidates at the top rung, against the parent
-    bool ok = true;
+    bool ok = true, oom = false;
     for (char *line = text, *next; ok && line && *line; line = next) {
         next = strchr(line, '\n');
         if (next) *next++ = '\0';
@@ -773,11 +794,18 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
                     // leaves out output and token_embd by default): its error
                     // does not compare with the weighted ones, so it stays at
                     // the top rung, out of the ranking, and is named (R4.34.2)
+                    // each growth and copy is checked: an unchecked realloc
+                    // assigned over its own pointer dereferenced NULL and lost
+                    // the old block (R6.68.5)
                     if (nh == hcap) {
-                        hcap = hcap ? hcap * 2 : 8;
-                        held = realloc(held, sizeof *held * (size_t)hcap);
+                        int ncap = hcap ? hcap * 2 : 8;
+                        char **grown = realloc(held, sizeof *held * (size_t)ncap);
+                        if (!grown) { ok = false; oom = true; jv_free(row); break; }
+                        held = grown;
+                        hcap = ncap;
                     }
-                    held[nh++] = strdup(tn);
+                    if (!(held[nh] = strdup(tn))) { ok = false; oom = true; jv_free(row); break; }
+                    nh++;
                     jv_free(row);
                     continue;
                 }
@@ -794,19 +822,26 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
                 for (int k = 0; k < ng; k++) if (!strcmp(gs[k].name, key)) gi = k;
                 if (gi < 0) {
                     if (ng == gcap) {
-                        gcap = gcap ? gcap * 2 : 64;
-                        gs = realloc(gs, sizeof *gs * (size_t)gcap);
+                        int ncap = gcap ? gcap * 2 : 64;
+                        dgroup *grown = realloc(gs, sizeof *gs * (size_t)ncap);
+                        if (!grown) { ok = false; oom = true; jv_free(row); break; }
+                        gs = grown;
+                        gcap = ncap;
                     }
                     memset(&gs[ng], 0, sizeof gs[ng]);
-                    gs[ng].name = strdup(key);
+                    if (!(gs[ng].name = strdup(key))) { ok = false; oom = true; jv_free(row); break; }
                     gi = ng++;
                 }
                 dgroup *d = &gs[gi];
                 if (d->n == d->cap) {
-                    d->cap = d->cap ? d->cap * 2 : 8;
-                    d->tensors = realloc(d->tensors, sizeof *d->tensors * (size_t)d->cap);
+                    int ncap = d->cap ? d->cap * 2 : 8;
+                    char **grown = realloc(d->tensors, sizeof *d->tensors * (size_t)ncap);
+                    if (!grown) { ok = false; oom = true; jv_free(row); break; }
+                    d->tensors = grown;
+                    d->cap = ncap;
                 }
-                d->tensors[d->n++] = strdup(tn);
+                if (!(d->tensors[d->n] = strdup(tn))) { ok = false; oom = true; jv_free(row); break; }
+                d->n++;
                 for (int k = 0; k < nr; k++) {
                     d->bytes[k] += (long long)rb[k];
                     d->err[k] += re[k];
@@ -819,14 +854,16 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     }
     gguf_close(&g);
     free(text);
-    if (!ok) return false;
-    if (!ng && nh) {
-        fprintf(stderr, "error: the imatrix has no entry for any of the %d candidate tensors; give one "
-                "that covers them or narrow --match\n", nh);
-        return false;
-    }
-    if (!ng) {
-        fprintf(stderr, "error: no tensor in the --quant-error report matches '%s'\n", match);
+    if (!ok || !ng) {
+        if (oom)
+            fprintf(stderr, "error: runner derive: out of memory reading %s\n", res->report);
+        else if (ok && nh)
+            fprintf(stderr, "error: the imatrix has no entry for any of the %d candidate tensors; give one "
+                    "that covers them or narrow --match\n", nh);
+        else if (ok)
+            fprintf(stderr, "error: no tensor in the --quant-error report matches '%s'\n", match);
+        groups_free(gs, ng);
+        names_free(held, nh);
         return false;
     }
     if (nh) qsort(held, (size_t)nh, sizeof *held, cmp_str);
@@ -837,12 +874,18 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     if (w && u) {
         fprintf(stderr, "error: some candidates' errors are imatrix-weighted and some are not, "
                 "and the two do not compare; give an imatrix that covers them or narrow --match\n");
+        groups_free(gs, ng);   // held is the result's now
         return false;
     }
     long long at_high = pbytes + delta;
     res->save_bytes = at_high > o->target_size ? at_high - o->target_size : 0;
     long long saved = 0;
     int *order = calloc((size_t)ng, sizeof *order), nd = 0;
+    if (!order) {
+        fprintf(stderr, "error: runner derive: out of memory ranking %d groups\n", ng);
+        groups_free(gs, ng);
+        return false;
+    }
     char skipped[4096];
     size_t sl = 0;
     int n_skipped = 0;
@@ -854,6 +897,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
             if (gs[k].saved <= 0) {
                 fprintf(stderr, "error: demoting %s to %s saves no bytes\n", gs[k].name, bottom);
                 free(order);
+                groups_free(gs, ng);
                 return false;
             }
             gs[k].cost = (gs[k].err[1] - gs[k].err[0]) / (double)gs[k].saved;
@@ -872,6 +916,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
             if (!next_step(&gs[k], nr, &c, &to)) {
                 fprintf(stderr, "error: demoting %s to %s saves no bytes\n", gs[k].name, bottom);
                 free(order);
+                groups_free(gs, ng);
                 return false;
             }
         }
@@ -904,6 +949,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         fprintf(stderr, "error: --target-size %lld is out of reach: every candidate at %s still "
                 "leaves about %lld bytes\n", o->target_size, bottom, at_high - saved);
         free(order);
+        groups_free(gs, ng);
         return false;
     }
     sbuf b = {0};
@@ -912,10 +958,20 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     sb_lit(&b, ",\"rules\":[");
     res->demoted = calloc((size_t)(nd ? nd : 1), sizeof *res->demoted);
     res->demoted_to = calloc((size_t)(nd ? nd : 1), sizeof *res->demoted_to);
+    if (!res->demoted || !res->demoted_to) {
+        fprintf(stderr, "error: runner derive: out of memory writing the plan\n");
+        free(res->demoted); free(res->demoted_to);
+        res->demoted = NULL; res->demoted_to = NULL;
+        free(b.s);
+        free(order);
+        groups_free(gs, ng);
+        return false;
+    }
     bool first = true;
     for (int k = 0; k < nd; k++) {
         dgroup *d = &gs[order[k]];
         res->demoted[res->n_demoted] = d->name;
+        d->name = NULL;   // the result owns it now
         res->demoted_to[res->n_demoted++] = o->rungs[d->at];
         qsort(d->tensors, (size_t)d->n, sizeof *d->tensors, cmp_str);
         for (int t = 0; t < d->n; t++) {
@@ -940,6 +996,12 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     free(order);
     res->n_skipped = n_skipped;
     res->skipped = n_skipped ? strdup(skipped) : NULL;
+    if (n_skipped && !res->skipped) {
+        // the record would say no rung was skipped
+        fprintf(stderr, "error: runner derive: out of memory writing the plan\n");
+        groups_free(gs, ng);
+        return false;
+    }
     if (nr == 2) {
         fprintf(stderr, "derive: demoted %d of %d groups to %s, saving %lld bytes\n",
                 nd, ng, bottom, saved);
@@ -958,6 +1020,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         for (int k = 0; k < nh; k++) fprintf(stderr, "%s %s", k ? "," : "", held[k]);
         fprintf(stderr, "\n");
     }
+    groups_free(gs, ng);
     return wrote;
 }
 
@@ -1495,28 +1558,42 @@ int derive_main(int argc, char **argv) {
     derive_opts o;
     int rc = parse_args(argc, argv, &o);
     if (rc >= 0) return rc;
-    char *dir = plat_executable_dir();
-    char *self = plat_executable_path();
-    if (!dir || !self) { fprintf(stderr, "error: cannot find this binary's path\n"); return 1; }
-    char *default_corpus = join(dir, BESIDE_CORPUS);
+    // Everything this run owns, released at the one exit below. The function
+    // has some twenty refusals after its first allocation and used to free
+    // only on success: harmless to a process that is about to end, but every
+    // refused derive failed a leak check (R6.68.23).
+    int ret = 1;
+    char *dir = NULL, *self = NULL, *default_corpus = NULL, *gold_script = NULL;
+    char *quant_rec = NULL, *ref_score = NULL, *file_score = NULL, *gold_out = NULL;
+    char *rec_path = NULL, *card_path = NULL;
+    jv *ref = NULL, *run = NULL;
+    sbuf r = {0}, cmd = {0};
+    sized_result sz;       // what sized_plan decided (--target-size)
+    derive_measure m;      // what the comparison measured
+    memset(&sz, 0, sizeof sz);
+    memset(&m, 0, sizeof m);
+    dir = plat_executable_dir();
+    self = plat_executable_path();
+    if (!dir || !self) { fprintf(stderr, "error: cannot find this binary's path\n"); goto out; }
+    default_corpus = join(dir, BESIDE_CORPUS);
     if (!o.corpus) o.corpus = default_corpus;
     else o.corpus_given = true;
     if (!plat_file_readable(o.corpus)) {
         fprintf(stderr, "error: cannot read the corpus %s; give --corpus FILE\n", o.corpus);
-        return 1;
+        goto out;
     }
     parent_meta pm;
-    if (!read_parent(o.parent, o.license, &pm)) return 1;
+    if (!read_parent(o.parent, o.license, &pm)) goto out;
     const char *gold_env = getenv("RUNNER_GOLD_LOGITS");
-    char *gold_script = gold_env && *gold_env ? strdup(gold_env) : join(dir, BESIDE_GOLD);
-    if (o.reference_hf && !gold_ready(gold_script, !(gold_env && *gold_env))) return 1;
+    gold_script = gold_env && *gold_env ? strdup(gold_env) : join(dir, BESIDE_GOLD);
+    if (o.reference_hf && !gold_ready(gold_script, !(gold_env && *gold_env))) goto out;
 
-    char *quant_rec = suffixed(o.out, ".quant.json");
-    char *ref_score = suffixed(o.out, ".parent.score.json");
-    char *file_score = suffixed(o.out, ".score.json");
-    char *gold_out = suffixed(o.out, ".gold.json");
-    char *rec_path = suffixed(o.out, ".derive.json");
-    char *card_path = suffixed(o.out, ".README.md");
+    quant_rec = suffixed(o.out, ".quant.json");
+    ref_score = suffixed(o.out, ".parent.score.json");
+    file_score = suffixed(o.out, ".score.json");
+    gold_out = suffixed(o.out, ".gold.json");
+    rec_path = suffixed(o.out, ".derive.json");
+    card_path = suffixed(o.out, ".README.md");
     // the window's tokens and a BOS: everything the measurement reads
     // gold-logits.py reads its special prefix then ids[:min_prefix +
     // max_positions * stride + 1] and refuses a score file shorter than that
@@ -1526,21 +1603,18 @@ int derive_main(int argc, char **argv) {
     if (o.ctx && atoi(o.ctx) < n_tokens) {
         fprintf(stderr, "error: the window %d:%d:%d reads %d tokens and -c is %s; raise -c or "
                 "give a smaller --window\n", o.start, o.stride, o.count, n_tokens, o.ctx);
-        return 1;
+        goto out;
     }
 
     // 1. the reference first (default reference): a corpus too short for the
     //    window is refused before anything is made
-    jv *ref = NULL;
     if (!o.reference_hf) {
         if (!score(self, &o, o.parent, ref_score, n_tokens) || !(ref = read_json(ref_score)))
-            return 1;
-        if (!window_fits(&o, ref)) return 1;
+            goto out;
+        if (!window_fits(&o, ref)) goto out;
     }
     // 2. make the file (a --target-size recipe plans its types first)
-    sized_result sz = {0};
-    memset(&sz, 0, sizeof sz);
-    if (o.target_size && !sized_plan(self, &o, file_bytes(o.parent), &sz)) return 1;
+    if (o.target_size && !sized_plan(self, &o, file_bytes(o.parent), &sz)) goto out;
     const char *a[32];
     int n = 0;
     a[n++] = "-m"; a[n++] = o.parent; a[n++] = "--rewrite"; a[n++] = o.out;
@@ -1555,38 +1629,35 @@ int derive_main(int argc, char **argv) {
         // nothing was made, so nothing is left beside OUT: the parent's
         // score was only the measurement's other half
         plat_remove(ref_score);
-        return 1;
+        goto out;
     }
     // 3. measure it
-    jv *run = NULL;
-    if (!score(self, &o, o.out, file_score, n_tokens) || !(run = read_json(file_score))) return 1;
-    derive_measure m;
-    memset(&m, 0, sizeof m);
+    if (!score(self, &o, o.out, file_score, n_tokens) || !(run = read_json(file_score))) goto out;
     if (o.reference_hf) {
         if (!window_fits(&o, run)) {
             plat_remove(o.out);
             plat_remove(quant_rec);
-            return 1;
+            goto out;
         }
         if (!gold_measure(&o, gold_script, file_score, (int)jv_num(jv_get(run, "n_special"), 0),
                           gold_out, &m))
-            return 1;
+            goto out;
     } else if (!compare_scores(&o, ref, run, &m)) {
-        return 1;
+        goto out;
     }
     jv_free(ref);
     jv_free(run);
+    ref = run = NULL;
 
     // 4. the record
     char psha[65], fsha[65];
     if (!envelope_file_sha256(o.parent, psha) || !envelope_file_sha256(o.out, fsha)) {
         fprintf(stderr, "error: cannot hash the parent or the file\n");
-        return 1;
+        goto out;
     }
     long long pbytes = file_bytes(o.parent), fbytes = file_bytes(o.out);
     bool publisher = o.reference_hf != NULL;
     bool passes = m.mean_kld <= BAR_MEAN_KLD && m.mq_top1_pct >= BAR_MQ_TOP1;
-    sbuf r = {0};
     sb_lit(&r, "{\"schema_version\":\"xyntetik.runner.derive.v1\",\"runner_version\":");
     sb_str(&r, RUNNER_VERSION);
     sb_lit(&r, ",\"reference_kind\":");
@@ -1609,7 +1680,7 @@ int derive_main(int argc, char **argv) {
     sb_lit(&r, "},\"comparisons\":[");
     for (int i = 0; i < o.n_compares; i++) {
         if (i) sb_lit(&r, ",");
-        if (!compare_json(gold_out, o.compares[i], &r)) return 1;
+        if (!compare_json(gold_out, o.compares[i], &r)) goto out;
     }
     sb_lit(&r, "],\"credits\":[");
     for (int i = 0; i < o.n_credits; i++) {
@@ -1617,7 +1688,6 @@ int derive_main(int argc, char **argv) {
         sb_str(&r, o.credits[i]);
     }
     sb_lit(&r, "],\"command\":");
-    sbuf cmd = {0};
     put_command(&cmd, &o);
     sb_put(&cmd, "", 1);
     sb_str(&r, cmd.failed ? NULL : cmd.s);
@@ -1708,12 +1778,11 @@ int derive_main(int argc, char **argv) {
         sb_lit(&r, "null");   // no bar verdict against the parent file
     }
     sb_lit(&r, "}}\n");
-    if (!write_text(rec_path, &r)) return 1;
+    if (!write_text(rec_path, &r)) goto out;
 
     // 5. the card, written from the record just written: the record is the
     //    one source, and --card-from rewrites a card from it alone
-    free(cmd.s);
-    if (!card_from_record(rec_path, card_path, NULL, NULL, 0, NULL, 0)) return 1;
+    if (!card_from_record(rec_path, card_path, NULL, NULL, 0, NULL, 0)) goto out;
 
     printf("derive: %s (%lld bytes, %.1f%% of the parent); mean KLD %.4f, top-1 %.2f%% "
            "against the %s%s; record %s, card %s\n",
@@ -1721,9 +1790,21 @@ int derive_main(int argc, char **argv) {
            m.mean_kld, m.top1_pct, publisher ? "publisher's float32 model" : "parent file",
            publisher ? (passes ? " (passes the bar)" : " (fails the bar)") : "",
            rec_path, card_path);
-    free(r.s);
+    ret = 0;
+out:
+    jv_free(ref); jv_free(run);
+    free(r.s); free(cmd.s);
+    // sized_plan's result: its two paths, the demoted groups' names, the
+    // rung list and the held tensors' names are all this run's to free
+    free(sz.report); free(sz.plan);
+    for (int k = 0; k < sz.n_demoted; k++) free(sz.demoted[k]);
+    free(sz.demoted); free((void *)sz.demoted_to); free(sz.skipped);
+    for (int k = 0; k < sz.n_held; k++) free(sz.held[k]);
+    free(sz.held);
+    // gold_measure's two strings (strdup'd; const in the struct for readers)
+    free((void *)m.reference_class); free((void *)m.reference_dtype);
     free(dir); free(self); free(default_corpus); free(gold_script);
     free(quant_rec); free(ref_score); free(file_score); free(gold_out);
     free(rec_path); free(card_path);
-    return 0;
+    return ret;
 }

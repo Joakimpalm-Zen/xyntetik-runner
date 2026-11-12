@@ -2,9 +2,11 @@ CC      ?= cc
 # Our CI toolchains and explicit STRICT=1 builds reject compiler warnings.
 # Keep this at the invocation boundary so specialized test flags cannot
 # drop it; ordinary source builds retain their existing platform policy.
+# -Wshadow joins it (R6.68.17): an inner declaration that hides an outer one
+# of the same name is a trap for the next edit in that scope.
 STRICT_BUILD := $(if $(strip $(CI)$(filter 1,$(STRICT))),1,)
 ifneq ($(STRICT_BUILD),)
-override CC := $(strip $(CC) $(if $(filter -Werror,$(CC)),,-Werror))
+override CC := $(strip $(CC) $(if $(filter -Werror,$(CC)),,-Werror) $(if $(filter -Wshadow,$(CC)),,-Wshadow))
 export CC
 endif
 # Probe by RUNNING the interpreter, not by looking it up: on Windows a
@@ -267,6 +269,7 @@ TEST_MSG_OOM_DEP =
 TEST_MSG_OOM_RUN = @echo "skip: test-prompt-oom (POSIX socketpair; covered by Linux CI)"
 TEST_TRAY_WIN_DEP = $(TEST_TRAY_WIN)
 TEST_TRAY_WIN_RUN = ./$(TEST_TRAY_WIN)
+TEST_INSTANCES_UBSAN_RUN = @echo "skip: test-instances-ubsan (no sanitizer runtime on MinGW; covered by Linux and macOS)"
 TEST_UTF8_CONSOLE_DEP = $(TEST_UTF8_CONSOLE)
 TEST_UTF8_CONSOLE_RUN = ./$(TEST_UTF8_CONSOLE)
 else
@@ -278,11 +281,22 @@ TEST_MSG_OOM_DEP = $(TEST_MSG_OOM)
 TEST_MSG_OOM_RUN = ./$(TEST_MSG_OOM)
 TEST_TRAY_WIN_DEP =
 TEST_TRAY_WIN_RUN = @echo "skip: test-tray-win-menu (Win32 menu readback; covered by the Windows job)"
+TEST_INSTANCES_UBSAN_RUN = $(MAKE) --no-print-directory test-instances-ubsan
 TEST_UTF8_CONSOLE_DEP =
 TEST_UTF8_CONSOLE_RUN = @echo "skip: test-utf8-console (Windows console code page; covered by the Windows job)"
 endif
+ifeq ($(BUILD_OS),Darwin)
+TEST_TRAY_MAC = test-tray-macos-arc
+TEST_TRAY_MAC_DEP = $(TEST_TRAY_MAC)
+TEST_TRAY_MAC_RUN = ./$(TEST_TRAY_MAC)
+else
+TEST_TRAY_MAC_DEP =
+TEST_TRAY_MAC_RUN = @echo "skip: test-tray-macos-arc (AppKit menu ownership; macOS only)"
+endif
 TEST_QUANTIZE = $(TEST_BATCH:test-batch%=test-quantize%)
 TEST_QUANTIZE_OOM = $(TEST_BATCH:test-batch%=test-quantize-oom%)
+TEST_LINEAGE_OOM = $(TEST_BATCH:test-batch%=test-lineage-oom%)
+TEST_DERIVE_OOM = $(TEST_BATCH:test-batch%=test-derive-oom%)
 TEST_VRAM_ROLLBACK = $(TEST_BATCH:test-batch%=test-vram-rollback%)
 TEST_GGUF_GETTERS = $(TEST_BATCH:test-batch%=test-gguf-getters%)
 TEST_HFHUB = $(TEST_BATCH:test-batch%=test-hfhub%)
@@ -476,6 +490,14 @@ endif
 $(OBJDIR)/%.o: src/%.m $(HDR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I src -c $< -o $@
+# R6.68.5: the macOS tray is built with ARC, so AppKit's ownership is the
+# compiler's rather than counted by hand (built without it, every menu open
+# leaked the menu it replaced). OBJC_ARC is its own variable because a release
+# sets CFLAGS on make's command line, which must not drop it.
+OBJC_ARC = -fobjc-arc
+$(OBJDIR)/tray_macos.o: src/tray_macos.m $(HDR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(OBJC_ARC) -I src -c $< -o $@
 # The executable is keyed too: switching back from T3 must not keep a newer
 # T3 runner merely because the default objects are older. Comparison keeps no-op
 # builds cheap while selecting the exact configured executable on every call.
@@ -984,6 +1006,14 @@ $(TEST_CANON_KERNELS): tests/test_canon_kernels.c src/quants.c $(HDR)
 TEST_INSTANCES_SRC = tests/test_instances.c $(OBJDIR)/instances.o $(OBJDIR)/json.o $(OBJDIR)/compat.o
 $(TEST_INSTANCES): $(TEST_INSTANCES_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_INSTANCES_SRC) -o $@ -lm
+# R6.68.10: the same test with float-to-integer overflow as a hard error, so a
+# record number cast before its range is checked stops the run (the registry
+# reader converted a pid of 1e300 to long). No sanitizer runtime on MinGW.
+test-instances-ubsan: tests/test_instances.c src/instances.c src/json.c src/compat.c $(HDR)
+	$(CC) -O1 -g -std=gnu11 -Wall -fsanitize=float-cast-overflow,undefined \
+	    -fno-sanitize-recover=all -I src tests/test_instances.c src/instances.c src/json.c \
+	    src/compat.c -o test-instances-ubsan-bin -lm -lpthread
+	./test-instances-ubsan-bin
 
 # the same registry under injected allocation failure. instances.c is compiled
 # INTO the test (macro-substituted allocators), so it is deliberately absent
@@ -1005,6 +1035,12 @@ TRAY_TEST_LIBS = -lws2_32
 else
 TRAY_TEST_LIBS =
 endif
+# R6.68.5: the macOS tray's menu rebuild gives back what it made
+# (tests/test_tray_macos_arc.m, itself ARC for zeroing weak references)
+TEST_TRAY_MAC_OBJ = $(OBJDIR)/tray_macos.o $(OBJDIR)/tray.o $(OBJDIR)/instances.o \
+                    $(OBJDIR)/json.o $(OBJDIR)/compat.o
+test-tray-macos-arc: tests/test_tray_macos_arc.m $(TEST_TRAY_MAC_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -fobjc-arc -I src tests/test_tray_macos_arc.m $(TEST_TRAY_MAC_OBJ) -o $@ $(LDFLAGS)
 TEST_TRAY_CORE_SRC = tests/test_tray_core.c src/tray.c src/tray_stub.c \
                      src/instances.c src/json.c src/compat.c
 $(TEST_TRAY_CORE): $(TEST_TRAY_CORE_SRC) $(HDR)
@@ -1466,11 +1502,24 @@ test-tokenizer-race: $(TEST_TOKENIZER_RACE_SRC) $(HDR) test.gguf
 	    $(TEST_TOKENIZER_RACE_SRC) -o test-tokenizer-race-bin -lm -lpthread
 	TSAN_OPTIONS=halt_on_error=1 ./test-tokenizer-race-bin test.gguf
 
-test-swap-race: $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
+test-swap-race: $(TEST_SWAP_RACE_SRC) tests/test_cancel_race.c $(HDR) test.gguf
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
 	    -fno-fast-math -std=gnu11 -Wall -I src $(TEST_SWAP_RACE_SRC) \
 	    -o test-swap-race-bin $(LDFLAGS)
 	ASAN_OPTIONS=detect_leaks=0 ./test-swap-race-bin test.gguf
+	$(MAKE) test-cancel-race
+
+# Same sanitized server gate, with a compile-time barrier that forces the
+# cancel waiter to resume only after its slot has been reused or stopped
+# (R6.68.8, R6.68.9). The stop case runs on its own port: a waiter that reads
+# its slot after the stop freed it is a heap-use-after-free here.
+test-cancel-race: tests/test_cancel_race.c $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
+	    -fno-fast-math -std=gnu11 -Wall -I src -DRUNNER_TEST_CANCEL_WAIT \
+	    tests/test_cancel_race.c $(filter-out tests/test_swap_race.c,$(TEST_SWAP_RACE_SRC)) \
+	    -o test-cancel-race-bin $(LDFLAGS)
+	ASAN_OPTIONS=detect_leaks=0 ./test-cancel-race-bin test.gguf 18107
+	ASAN_OPTIONS=detect_leaks=0 ./test-cancel-race-bin test.gguf 18108 stop
 
 # the weight-residency platform layer: mlock, mincore, major faults, available
 # RAM. compat.c only -- these are platform shims, not engine code.
@@ -1525,6 +1574,20 @@ TEST_QUANTIZE_OOM_SRC = tests/test_quantize_oom.c $(OBJDIR)/gguf.o \
                         $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/json.o
 $(TEST_QUANTIZE_OOM): $(TEST_QUANTIZE_OOM_SRC) src/quantize.c $(HDR)
 	$(CC) $(QUANTS_CFLAGS) -I src $(TEST_QUANTIZE_OOM_SRC) -o $@ $(LDFLAGS)
+
+# R6.68.5: every allocation of `runner lineage DIR` failed in turn
+# (tests/test_lineage_oom.c). lineage.c is compiled into the test with its
+# allocators substituted, so the test links every other runner object and
+# not lineage.o (nor main.o: the test has its own main).
+TEST_LINEAGE_OOM_OBJ = $(filter-out $(OBJDIR)/lineage.o $(OBJDIR)/main.o,$(RUNNER_OBJ))
+$(TEST_LINEAGE_OOM): tests/test_lineage_oom.c src/lineage.c $(TEST_LINEAGE_OOM_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_lineage_oom.c $(TEST_LINEAGE_OOM_OBJ) -o $@ $(LDFLAGS)
+
+# R6.68.5: every allocation of derive's --target-size planning failed in turn
+# (tests/test_derive_oom.c), built the same way with derive.c compiled in.
+TEST_DERIVE_OOM_OBJ = $(filter-out $(OBJDIR)/derive.o $(OBJDIR)/main.o,$(RUNNER_OBJ))
+$(TEST_DERIVE_OOM): tests/test_derive_oom.c src/derive.c $(TEST_DERIVE_OOM_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_derive_oom.c $(TEST_DERIVE_OOM_OBJ) -o $@ $(LDFLAGS)
 
 # vramreg.c is #included (calloc-hooked) by the test, so it is not linked here
 $(TEST_VRAM_ROLLBACK): tests/test_vram_rollback.c $(OBJDIR)/compat.o $(HDR)
@@ -2187,8 +2250,11 @@ endif
 # without them (the Windows CUDA box); the llama.cpp comparison leg runs
 # where llama-server is present and is not required here. Part of the
 # release evidence on both CUDA classes since 0.5.3.
-test-cuda-iquants: runner $(TEST_GPU_ID)
-	RUNNER_REQUIRE_IQ_GATES=gpu $(PYTHON) -m pytest -q tests/test_iquants.py
+# Builds both binaries tests/test_iquants.py runs and requires both legs: without
+# test-tc-tol the forced-TC leg skipped its 9 cases while the target read green
+# (R6.65; cuda-gate.sh only ran them because its tc-overflow step builds it first).
+test-cuda-iquants: runner $(TEST_GPU_ID) $(TEST_TC_TOL)
+	RUNNER_REQUIRE_IQ_GATES=gpu,tc $(PYTHON) -m pytest -q tests/test_iquants.py
 
 # CUDA Q3_K decode (k_gemv_q3_K): a fixture quantized to Q3_K, the device
 # against the CPU at logit precision. Q3_K's 110-byte blocks put three of
@@ -3286,8 +3352,8 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
-      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
-      $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
+      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
+      $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
@@ -3486,10 +3552,12 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_IQ_DECODE)
 	./$(TEST_KQ_STAGE)
 	./$(TEST_INSTANCES)
+	$(TEST_INSTANCES_UBSAN_RUN)
 	./$(TEST_INSTANCES_OOM)
 	./$(TEST_METAL_ADMISSION)
 	./$(TEST_TRAY_CORE)
 	$(TEST_TRAY_WIN_RUN)
+	$(TEST_TRAY_MAC_RUN)
 	$(TEST_UTF8_CONSOLE_RUN)
 	@# the CPU-only backend stub, which no platform branch ever builds
 	$(MAKE) --no-print-directory test-gpu-stub
@@ -3628,6 +3696,13 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	    test-lora.full.gguf 2> test-quantize-oom.err || \
 	    { tail -40 test-quantize-oom.err; exit 1; }
 	@tail -1 test-quantize-oom.err
+	@# every allocation of the receipts walk failed in turn (R6.68.5)
+	./$(TEST_LINEAGE_OOM) . 2> test-lineage-oom.err || { tail -40 test-lineage-oom.err; exit 1; }
+	@tail -1 test-lineage-oom.err
+	@# every allocation of derive's --target-size planning failed in turn (R6.68.5)
+	./$(TEST_DERIVE_OOM) . ./$(RUNNER_EXE) test.gguf 2> test-derive-oom.err || \
+	    { tail -40 test-derive-oom.err; exit 1; }
+	@tail -1 test-derive-oom.err
 	@# the host MoE bridge equals the forward's FFN on every MoE layer: the
 	@# routings above, Granite's residual scale, Nemotron-H's gate-less
 	@# shared expert
@@ -3712,7 +3787,7 @@ test-python: test-python-deps runner runner-turn-guard test.gguf $(TMPL_CONF_REN
              test.gguf test-lora.full.gguf test-moe-train.moe4-train.gguf test-es.gguf
 	@[ -f test-moe-fixture.moe4.gguf ] || $(PYTHON) scripts/make-test-moe.py test-moe-fixture > /dev/null
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	RUNNER_REQUIRE_TURN_GUARD=1 $(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest $(PYTEST_XDIST) --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_commit_hygiene.py tests/test_template_kwargs.py tests/test_known_kwargs.py tests/test_attn_dec_repeat.py tests/test_attn_wide_repeat.py tests/test_moe_hot.py tests/test_check_portability.py tests/test_cuda_act_probe.py tests/test_fit_check.py tests/test_recommend.py tests/test_cached.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_nemotron_latent_moe.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_context_full.py tests/test_hf_fetch.py tests/test_pull.py tests/test_hub_upload_check.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_metal_microbatch_profile.py tests/test_metal_batch_tiles.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_scheduled_ci_alert.py tests/test_glibc_release.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_gguf_truncated.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_recurrent_refeed.py tests/test_draft_lookup.py tests/test_draft_k_defaults.py tests/test_cuda_plan_runs.py tests/test_cuda_fit_hybrid.py tests/test_cuda_rec_slots.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_moe_replay.py tests/test_act_trace.py tests/test_mistral3.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_queued_load_disconnect.py tests/test_score.py tests/test_score_route.py tests/test_cpu_i8_prefill.py tests/test_decide.py tests/test_clef.py tests/test_lfm2.py tests/test_qwen35moe.py tests/test_qwen36_preserve_thinking.py tests/test_spark2_5.py tests/test_flint.py tests/test_k2_horizon.py tests/test_yarn_betas.py tests/test_hf_spec_bounds.py tests/test_doc_counts.py tests/test_lora.py tests/test_train_kv_refusal.py tests/test_full_train.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_train_recipe.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_model_tiers.py tests/test_site_tiers.py tests/test_tier_smoke.py tests/test_template_conformance_token_only.py tests/test_difftok.py tests/test_unicode_classes.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_type_plan_by_sensitivity.py tests/test_derive.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_metal_split_layout.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_cuda_upload_report.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_top_logprobs_keys.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_stop_replay.py tests/test_think_replay.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_kv_f32.py tests/test_session_images.py tests/test_canon_gaps.py tests/test_qwen35_kv_rows.py tests/test_prefix_budget.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_schema_refs.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_ignore_eos_request.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_utf8_io.py tests/test_cli_lifecycle.py tests/test_cli_surface.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py tests/test_turn_write_guard.py tests/test_metal_memory.py tests/test_server_log_kept.py tests/test_port_in_use.py tests/test_draft_defaults.py tests/test_tc_spark_promotion.py tests/test_tc_clef_promotion.py tests/test_tc_route_label.py tests/test_verify_tc_compat.py tests/test_cuda_fit_ring.py tests/test_cancel_route.py tests/test_tool_replay.py tests/test_nemotron_hetero_moe.py
+	RUNNER_REQUIRE_TURN_GUARD=1 $(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest $(PYTEST_XDIST) --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_commit_hygiene.py tests/test_template_kwargs.py tests/test_known_kwargs.py tests/test_attn_dec_repeat.py tests/test_attn_wide_repeat.py tests/test_moe_hot.py tests/test_check_portability.py tests/test_cuda_act_probe.py tests/test_fit_check.py tests/test_recommend.py tests/test_cached.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_nemotron_latent_moe.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_context_full.py tests/test_hf_fetch.py tests/test_pull.py tests/test_hub_upload_check.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_metal_microbatch_profile.py tests/test_metal_batch_tiles.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_scheduled_ci_alert.py tests/test_glibc_release.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_gguf_truncated.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_recurrent_refeed.py tests/test_draft_lookup.py tests/test_draft_k_defaults.py tests/test_cuda_plan_runs.py tests/test_cuda_fit_hybrid.py tests/test_cuda_rec_slots.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_moe_replay.py tests/test_act_trace.py tests/test_mistral3.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_queued_load_disconnect.py tests/test_score.py tests/test_score_route.py tests/test_cpu_i8_prefill.py tests/test_decide.py tests/test_clef.py tests/test_lfm2.py tests/test_qwen35moe.py tests/test_qwen36_preserve_thinking.py tests/test_spark2_5.py tests/test_flint.py tests/test_k2_horizon.py tests/test_yarn_betas.py tests/test_hf_spec_bounds.py tests/test_doc_counts.py tests/test_lora.py tests/test_train_kv_refusal.py tests/test_full_train.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_train_recipe.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_model_tiers.py tests/test_site_tiers.py tests/test_tier_smoke.py tests/test_template_conformance_token_only.py tests/test_difftok.py tests/test_unicode_classes.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_type_plan_by_sensitivity.py tests/test_derive.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_metal_split_layout.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_cuda_upload_report.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_top_logprobs_keys.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_stop_replay.py tests/test_think_replay.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_kv_f32.py tests/test_session_images.py tests/test_canon_gaps.py tests/test_qwen35_kv_rows.py tests/test_prefix_budget.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_schema_refs.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_ignore_eos_request.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_utf8_io.py tests/test_cli_lifecycle.py tests/test_cli_surface.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py tests/test_turn_write_guard.py tests/test_metal_memory.py tests/test_server_log_kept.py tests/test_port_in_use.py tests/test_draft_defaults.py tests/test_tc_spark_promotion.py tests/test_tc_clef_promotion.py tests/test_tc_route_label.py tests/test_verify_tc_compat.py tests/test_cuda_fit_ring.py tests/test_cancel_route.py tests/test_soak_serve.py tests/test_phys_footprint.py tests/test_tool_replay.py tests/test_nemotron_hetero_moe.py tests/test_gate_scripts.py tests/test_prompt_file_crlf.py tests/test_cancel_handles.py
 
 # --------------------------------------------------------------------------
 # Template conformance: runner's native C chat renderer vs the model's OWN
@@ -3847,7 +3922,7 @@ FUZZ_FLAGS = -g -O1 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src \
              -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
              -fno-omit-frame-pointer
 ifneq ($(STRICT_BUILD),)
-override FUZZ_FLAGS += -Werror
+override FUZZ_FLAGS += -Werror -Wshadow
 endif
 
 FUZZ_SRC_json_parse     = src/json.c
@@ -4085,6 +4160,25 @@ test-cuda-gated: runner test.gguf
 	$(PYTHON) scripts/check-junit.py --no-skips-matching '(?i)cuda|device|gpu' \
 	    --allow-skip 'CUDA runtime is available' .build/ci/cuda-gated.xml
 
+# The tests anchored outside this repository (R6.68.11): torch's float32
+# forward and autograd, transformers' activations, Hugging Face tokenizers,
+# an independent Ed25519, sigstore's model signing, and one real model file.
+# Each of them skips where its package or the file is missing, so `make test`
+# passes without ever running them; this target provides the file, requires
+# the packages and allows no skip but the one macOS-only refusal.
+ANCHOR_TESTS = tests/test_gold_logits.py tests/test_act_trace.py tests/test_deltanet_autograd.py \
+               tests/test_kld_compare.py tests/test_draft_lookup.py \
+               tests/test_difftok.py tests/test_receipts.py tests/test_sign_model.py
+test-anchors: runner test.gguf $(TEST_LORA_GRAD) $(DIFFTOK)
+	@$(PYTHON) -c "import pytest, torch, transformers, accelerate, tokenizers, cryptography, model_signing" || { \
+		echo "error: make test-anchors needs pytest, torch, transformers, accelerate, tokenizers, cryptography and model-signing for $(PYTHON)"; exit 1; }
+	sh download-model.sh
+	@mkdir -p .build/ci
+	$(PYTHON) -m pytest -q -rs --junitxml=.build/ci/anchors.xml $(ANCHOR_TESTS)
+	$(PYTHON) scripts/check-junit.py --no-skips-matching '.' \
+	    --allow-skip 'this OS refuses a deliberate self-connect' .build/ci/anchors.xml
+
+.PHONY: test-anchors
 .PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
 .PHONY: test-gates test-gates-core test-gates-batch test-python
 .PHONY: test-deepseek2 test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
@@ -4113,6 +4207,12 @@ test-pool-race:
 test-server-race-tsan: test.gguf
 	$(CC) $(TSAN_FLAGS) $(filter-out $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c -o test-server-race-tsan-bin $(LDFLAGS)
 	TSAN_OPTIONS=halt_on_error=1 ./test-server-race-tsan-bin test.gguf
+	@# the cancel ticket and the waiter count under TSan (R6.68.8, R6.68.9)
+	$(CC) $(TSAN_FLAGS) -DRUNNER_TEST_CANCEL_WAIT tests/test_cancel_race.c \
+	    $(filter-out tests/test_swap_race.c $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c \
+	    -o test-cancel-race-tsan-bin $(LDFLAGS)
+	TSAN_OPTIONS=halt_on_error=1 ./test-cancel-race-tsan-bin test.gguf 18117
+	TSAN_OPTIONS=halt_on_error=1 ./test-cancel-race-tsan-bin test.gguf 18118 stop
 
 # /v1/decide and /v1/rerank number their answers from counters every slot
 # shares; slots answer on their own threads. TSan halting on an unguarded

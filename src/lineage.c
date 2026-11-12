@@ -313,9 +313,17 @@ static int walk_receipts_dir(const char *dir, const char *trust_hex) {
     version *v = calloc((size_t)n, sizeof *v);
     int nv = 0, *seq_v = calloc((size_t)n, sizeof *seq_v);
     jv **first_rec = calloc((size_t)n, sizeof *first_rec);   // per version
+    if (!v || !seq_v || !first_rec) {
+        // the walk below reads seq_v[i] for every answer; with any of the
+        // three missing it read through NULL (R6.68.5)
+        fprintf(stderr, "error: out of memory reading %d receipts\n", n);
+        for (int i = 0; i < n; i++) free(paths[i]);
+        free(paths); free(v); free(seq_v); free(first_rec);
+        return 2;
+    }
     int signed_n = 0, unsigned_n = 0, bad_n = 0, breaks = 0;
     char prev_hash[65] = "";
-    for (int i = 0; i < n && v && seq_v && first_rec; i++) {
+    for (int i = 0; i < n; i++) {
         jv *r = read_json(paths[i]);
         if (!r) { bad_n++; seq_v[i] = -1; continue; }
         char pub[SIGN_PUBHEX_CAP];

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import http.client
+import io
 import json
 import os
 import re
@@ -228,6 +230,34 @@ class StartupLeaseTests(unittest.TestCase):
                     os.environ.pop("RUNNER_UNVERIFIED_LEASE_TTL", None)
                 else:
                     os.environ["RUNNER_UNVERIFIED_LEASE_TTL"] = saved
+
+    def test_a_malformed_ttl_falls_back_to_the_default_and_never_escapes_acquire(self):
+        # float() of a non-numeric RUNNER_UNVERIFIED_LEASE_TTL raised
+        # ValueError out of acquire() (sweep, 2026-11-02). It now reads the
+        # value as the C lease does (env_f64: a finite number in [0, 1e12]):
+        # anything else is warned about and the default TTL applies.
+        for bad in ("soon", "", "nan", "inf", "-5", "1e13"):
+            with self.subTest(ttl=bad), tempfile.TemporaryDirectory() as temp_dir:
+                path = Path(temp_dir) / "runner.lease"
+                path.write_text(json.dumps({"owner_pid": os.getpid(), "token": "legacy"}),
+                                encoding="utf-8")
+                saved = os.environ.get("RUNNER_UNVERIFIED_LEASE_TTL")
+                os.environ["RUNNER_UNVERIFIED_LEASE_TTL"] = bad
+                try:
+                    with contextlib.redirect_stderr(io.StringIO()) as err:
+                        self.assertFalse(StartupLease(path).acquire())   # fresh under the default
+                    self.assertIn("RUNNER_UNVERIFIED_LEASE_TTL", err.getvalue())
+                    old = time.time() - 10_000
+                    os.utime(path, (old, old))
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        lease = StartupLease(path)
+                        self.assertTrue(lease.acquire())             # aged out under the default
+                    lease.release()
+                finally:
+                    if saved is None:
+                        os.environ.pop("RUNNER_UNVERIFIED_LEASE_TTL", None)
+                    else:
+                        os.environ["RUNNER_UNVERIFIED_LEASE_TTL"] = saved
 
     def test_refresh_keeps_an_unverifiable_lease_alive(self):
         with tempfile.TemporaryDirectory() as temp_dir:

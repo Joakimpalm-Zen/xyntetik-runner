@@ -21,7 +21,21 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 OPENSSL = shutil.which("openssl")
-MODEL_SIGNING = shutil.which("model_signing")
+
+
+def _console_script(name):
+    """A package's command, on PATH or beside the interpreter running the
+    tests: CI runs `<venv>/bin/python -m pytest` without activating the venv,
+    so its console scripts are not on PATH. The anchors job installed
+    model-signing and this test still skipped as "not installed" (R6.68.11)."""
+    found = shutil.which(name)
+    if found:
+        return found
+    beside = pathlib.Path(sys.executable).parent / (name + (".exe" if sys.platform == "win32" else ""))
+    return str(beside) if beside.exists() else None
+
+
+MODEL_SIGNING = _console_script("model_signing")
 
 CURVES = {  # openssl curve name -> (dgst flag, receipt curve, receipt hash)
     "prime256v1": ("-sha256", "P-256", "sha256"),

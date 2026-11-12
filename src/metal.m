@@ -2506,12 +2506,16 @@ static void metal_dn_state_bytes(const model_t *m, size_t *conv, size_t *state) 
              (size_t)(m->qwen35 ? hv : m->ssm.state);
 }
 
+// A shared-storage buffer of n bytes (the caller owns it).
+static id<MTLBuffer> new_shared_buf(id<MTLDevice> dev, size_t n) {
+    return [dev newBufferWithLength:n options:MTLResourceStorageModeShared];
+}
+
 static bool metal_alloc_state(model_t *m, gpu_t *g, id<MTLDevice> dev) {
     size_t k_bytes = model_k_boundary_bytes(m, m->n_layer);
     size_t v_bytes = model_v_boundary_bytes(m, m->n_layer);
-    #define NEWBUF(n) [dev newBufferWithLength:(n) options:MTLResourceStorageModeShared]
-    g->kc = NEWBUF(k_bytes ? k_bytes : 1);
-    g->vc = NEWBUF(v_bytes);
+    g->kc = new_shared_buf(dev, k_bytes ? k_bytes : 1);
+    g->vc = new_shared_buf(dev, v_bytes);
     if (!metal_buffer_ok(g->kc) || !metal_buffer_ok(g->vc))
         return gpu_init_fail(m, g, nil, "KV buffer allocation");
     memset(g->kc.contents, 0, k_bytes);
@@ -2529,12 +2533,12 @@ static bool metal_alloc_state(model_t *m, gpu_t *g, id<MTLDevice> dev) {
         // the recurrent state, taken over from the host in metal_publish
         size_t cb, sb;
         metal_dn_state_bytes(m, &cb, &sb);
-        g->dn_conv  = NEWBUF(cb ? cb : 4);
-        g->dn_state = NEWBUF(sb ? sb : 4);
+        g->dn_conv  = new_shared_buf(dev, cb ? cb : 4);
+        g->dn_state = new_shared_buf(dev, sb ? sb : 4);
         if (!metal_buffer_ok(g->dn_conv) || !metal_buffer_ok(g->dn_state))
             return gpu_init_fail(m, g, nil, "recurrent state allocation");
     }
-    g->dummy  = NEWBUF(4);
+    g->dummy  = new_shared_buf(dev, 4);
     // Chunked decode attention partials: one (max, sum, hd-vector) per
     // (head, chunk). They carry NO batch dimension -- the split is taken only
     // at n == 1 -- so they are sized once here rather than in
@@ -2544,11 +2548,10 @@ static bool metal_alloc_state(model_t *m, gpu_t *g, id<MTLDevice> dev) {
     // at 1: the chunked kernels then wrote their partials through a nil
     // binding and decode produced garbage past the chunk threshold, silently
     // (`make test-metal-decode-only`).
-    g->att_acc = NEWBUF(sizeof(float) * (size_t)m->n_head *
+    g->att_acc = new_shared_buf(dev, sizeof(float) * (size_t)m->n_head *
                         METAL_ATTN_MAX_CHUNKS * (size_t)model_head_dim(m, 0));
-    g->att_ms  = NEWBUF(sizeof(float) * (size_t)m->n_head *
+    g->att_ms  = new_shared_buf(dev, sizeof(float) * (size_t)m->n_head *
                         METAL_ATTN_MAX_CHUNKS * 2);
-    #undef NEWBUF
     if (!metal_buffer_ok(g->dummy) ||
         !metal_buffer_ok(g->att_acc) || !metal_buffer_ok(g->att_ms))
         return gpu_init_fail(m, g, nil, "scratch buffer allocation");
@@ -3926,6 +3929,23 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
 static int  metal_nan_stage(void);
 static bool metal_scan_bad(const float *p, int n, const char *what, int layer);
 
+// A scan point of the gemma MoE encoders (RUNNER_METAL_NAN_STAGE at `stage`
+// or deeper, and a caller that can restart its command buffer): what was
+// encoded so far is run, `buf` is scanned for a non-finite value, and
+// encoding goes on in a fresh command buffer. Returns the encoder to use.
+static id<MTLComputeCommandEncoder> metal_scan_point(
+        gpu_t *g, id<MTLComputeCommandEncoder> e, id<MTLCommandBuffer> *cbp,
+        id<MTLComputeCommandEncoder> *ep, int stage, int layer,
+        id<MTLBuffer> buf, size_t count, const char *what) {
+    if (!cbp || metal_nan_stage() < stage) return e;
+    [e endEncoding]; [*cbp commit]; [*cbp waitUntilCompleted];
+    metal_scan_bad((const float *)buf.contents, (int)count, what, layer);
+    *cbp = [g->queue commandBuffer];
+    e = [*cbp computeCommandEncoder];
+    *ep = e;
+    return e;
+}
+
 static void enc_gemma_moe_experts_batch(gpu_t *g,
                                         id<MTLComputeCommandEncoder> e,
                                         model_t *m, layer_t *ly, int l,
@@ -3933,11 +3953,6 @@ static void enc_gemma_moe_experts_batch(gpu_t *g,
                                         NSUInteger sel_off,
                                         id<MTLCommandBuffer> *cbp,
                                         id<MTLComputeCommandEncoder> *ep) {
-#define XP(BUF, CNT, WHAT) do { if (cbp && metal_nan_stage() >= 4) { \
-        [e endEncoding]; [*cbp commit]; [*cbp waitUntilCompleted]; \
-        metal_scan_bad((const float *)(BUF).contents, (int)(CNT), (WHAT), l); \
-        *cbp = [g->queue commandBuffer]; e = [*cbp computeCommandEncoder]; *ep = e; \
-    } } while (0)
     int n_embd = m->n_embd;
     int used = m->n_expert_used, slots = n * used;
     int nff = m->n_ff_exp;
@@ -3949,18 +3964,17 @@ static void enc_gemma_moe_experts_batch(gpu_t *g,
     enc_moe_mv(g, e, m, ly->ffn_gate_up_exps, gustride, g->xb2, 0,
                g->moe_hb, 0, n_embd, 2 * nff, slots, xdim, 2 * nff,
                nil, 0, sel_off, used);
-    XP(g->xb2, (size_t)n * xdim, "exp:in-xb2");
-    XP(g->moe_hb, (size_t)slots * 2 * nff, "exp:gate_up");
+    e = metal_scan_point(g, e, cbp, ep, 4, l, g->xb2, (size_t)n * xdim, "exp:in-xb2");
+    e = metal_scan_point(g, e, cbp, ep, 4, l, g->moe_hb, (size_t)slots * 2 * nff, "exp:gate_up");
     enc_moe_actmul(g, e, g->moe_hb, 0, g->moe_hb, foff(nff),
                    nff, slots, 2 * nff, 2 * nff, ACT_GELU);
-    XP(g->moe_hb, (size_t)slots * 2 * nff, "exp:actmul");
+    e = metal_scan_point(g, e, cbp, ep, 4, l, g->moe_hb, (size_t)slots * 2 * nff, "exp:actmul");
     enc_moe_mv(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb, 0,
                g->moe_eout, 0, nff, n_embd, slots, 2 * nff, n_embd,
                nil, 0, sel_off, 0);
-    XP(g->moe_eout, (size_t)slots * n_embd, "exp:down");
+    e = metal_scan_point(g, e, cbp, ep, 4, l, g->moe_eout, (size_t)slots * n_embd, "exp:down");
     enc_moe_sum(g, e, g->q, 0, n_embd, used, n_embd, g->gdsc[l],
                 sel_off, n, xdim, 0);
-#undef XP
 }
 
 // The shared expert of n columns, from the normed input the router read
@@ -4030,11 +4044,6 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                                     int n, int xdim,
                                     id<MTLCommandBuffer> *cbp,
                                     id<MTLComputeCommandEncoder> *ep) {
-#define GP(BUF, CNT, WHAT) do { if (cbp && metal_nan_stage() >= 3) { \
-        [e endEncoding]; [*cbp commit]; [*cbp waitUntilCompleted]; \
-        metal_scan_bad((const float *)(BUF).contents, (int)(CNT), (WHAT), l); \
-        *cbp = [g->queue commandBuffer]; e = [*cbp computeCommandEncoder]; *ep = e; \
-    } } while (0)
     int ne = m->n_expert, used = m->n_expert_used;
     int n_embd = m->n_embd, dff = m->n_ff;
 
@@ -4053,10 +4062,10 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
         enc_mv(g, e, m, ly->w_down, g->hb, hbo, g->xb, xbo,
                dff, n_embd, nil);
     }
-    GP(g->xb, (size_t)n * xdim, "moe:dense-shared");
+    e = metal_scan_point(g, e, cbp, ep, 3, l, g->xb, (size_t)n * xdim, "moe:dense-shared");
     enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->gpn1[l],
                   n_embd, m->rms_eps, n, xdim, xdim);
-    GP(g->xb, (size_t)n * xdim, "moe:dense-gpn1");
+    e = metal_scan_point(g, e, cbp, ep, 3, l, g->xb, (size_t)n * xdim, "moe:dense-gpn1");
 
     enc_rmsnorm_n(g, e, g->x, 0, g->xb2, 0, g->gprn2[l],
                   n_embd, m->rms_eps, n, n_embd, xdim);
@@ -4076,10 +4085,10 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                           foff((size_t)b * ne),
                           sel_off + foff((size_t)b * used), l, b);
     }
-    GP(g->moe_logits, (size_t)n * ne, "moe:router-logits");
+    e = metal_scan_point(g, e, cbp, ep, 3, l, g->moe_logits, (size_t)n * ne, "moe:router-logits");
     enc_gemma_moe_experts_batch(g, e, m, ly, l, n, xdim, sel_off, cbp, ep);
     if (cbp && metal_nan_stage() >= 4) e = *ep;
-    GP(g->q, (size_t)n * xdim, "moe:experts-out");
+    e = metal_scan_point(g, e, cbp, ep, 3, l, g->q, (size_t)n * xdim, "moe:experts-out");
     enc_rmsnorm_n(g, e, g->q, 0, g->q, 0, g->gpn2[l],
                   n_embd, m->rms_eps, n, xdim, xdim);
     enc_elem_n(g, e, g->p_add, g->xb, 0, g->q, 0,
@@ -4089,7 +4098,6 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // otherwise trace levels 3 and 4 continue through an already-ended
     // encoder even though ordinary inference (trace level 0) is unaffected.
     if (ep && metal_nan_stage() >= 3) *ep = e;
-#undef GP
 }
 
 // gemma-4 E-series per-layer embeddings, mirroring the CPU tail in model.c:
@@ -5393,6 +5401,18 @@ enum { MB_QKV, MB_ATTN, MB_O, MB_UP, MB_DOWN, MB_HEAD, MB_STAGES };
 static const char *const mb_stage_name[MB_STAGES] =
     { "qkv", "attn", "o", "gate_up", "down", "head" };
 
+// Close a profiled stage of gpu_batch_decode (timing level 2): run what was
+// encoded, add its command buffer's GPU span to the stage, and go on in a
+// fresh command buffer. Without profiling it does nothing.
+static void metal_prof_cut(gpu_t *g, bool prof, id<MTLCommandBuffer> *cb,
+                           id<MTLComputeCommandEncoder> *e, double *stage_ms, int stage) {
+    if (!prof) return;
+    [*e endEncoding]; [*cb commit]; [*cb waitUntilCompleted];
+    stage_ms[stage] += 1e3 * ([*cb GPUEndTime] - [*cb GPUStartTime]);
+    *cb = [g->queue commandBuffer];
+    *e = [*cb computeCommandEncoder];
+}
+
 bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                       const int *pos, int n, float **out) {
     @autoreleasepool {
@@ -5427,14 +5447,6 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     id<MTLCommandBuffer> cb = [g->queue commandBuffer];
     id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
     double mb_ms[MB_STAGES] = { 0 };
-    // close the stage: its command buffer's GPU span, then a fresh buffer
-#define MB_CUT(stage) do {                                                  \
-        if (prof) {                                                         \
-            [e endEncoding]; [cb commit]; [cb waitUntilCompleted];          \
-            mb_ms[(stage)] += 1e3 * ([cb GPUEndTime] - [cb GPUStartTime]);  \
-            cb = [g->queue commandBuffer]; e = [cb computeCommandEncoder];  \
-        }                                                                   \
-    } while (0)
 
     for (int l = 0; l < m0->n_layer; l++) {
         layer_t *ly = &m0->layers[l];
@@ -5472,7 +5484,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
             if (g->kn[l])
                 enc_qknorm_n(g, e, m0, g->kt, 0, g->kn[l], n_kv, hd, n, kv_dim);
         }
-        MB_CUT(MB_QKV);
+        metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_QKV);
 
         // per column: rope at ITS position, store into ITS slot's cache,
         // attend over ITS span — the solo kernels on the solo data
@@ -5513,7 +5525,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                                 g->q, foff((size_t)c * q_dim), gs->kc, gs->vc,
                                 g->xb2, foff((size_t)c * xdim), false);
         }
-        MB_CUT(MB_ATTN);
+        metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_ATTN);
 
         used_tiles |= enc_mb_mv(g, e, ly->wo, g->xb2, 0, g->xb, 0,
                   q_dim_l, n_embd, g->bo[l], n, xdim, xdim);
@@ -5523,7 +5535,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         if (m0->resid_scale != 1.0f)
             enc_scale_n(g, e, g->xb, 0, n_embd, m0->resid_scale, n, xdim);
         enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
-        MB_CUT(MB_O);
+        metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_O);
 
         int nff_l = ly->n_ff;
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->ffn_norm[l],
@@ -5533,7 +5545,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         used_tiles |= enc_mb_mv(g, e, ly->w_up, g->xb, 0, g->hb2, 0,
                   n_embd, nff_l, nil, n, xdim, nff_l);
         enc_elem(g, e, metal_act_pipeline(g, m0), g->hb, 0, g->hb2, 0, n * nff_l);
-        MB_CUT(MB_UP);
+        metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_UP);
         used_tiles |= enc_mb_mv(g, e, ly->w_down, g->hb, 0, g->xb, 0,
                   nff_l, n_embd, nil, n, nff_l, xdim);
         if (g->pfn[l])
@@ -5544,9 +5556,8 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
         if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
             enc_scale_n(g, e, g->x, 0, n_embd, ly->out_scale, n, n_embd);
-        MB_CUT(MB_DOWN);
+        metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_DOWN);
     }
-#undef MB_CUT
 
     // head: every sequence needs its own logits, the head's weights read
     // once for all of them (a column's bits are its solo head's: the

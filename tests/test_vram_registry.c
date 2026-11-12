@@ -77,10 +77,10 @@ static char scratch_path[512];
 static void scratch_cleanup(void) {
     if ((long)getpid() != scratch_owner_pid || !scratch_path[0]) return;
 #ifdef _WIN32
-    char pattern[600];
+    char find_glob[600];
     struct _finddata_t fd;
-    snprintf(pattern, sizeof(pattern), "%s\\*", scratch_path);
-    intptr_t h = _findfirst(pattern, &fd);
+    snprintf(find_glob, sizeof(find_glob), "%s\\*", scratch_path);
+    intptr_t h = _findfirst(find_glob, &fd);
     if (h != -1) {
         do {
             if (strcmp(fd.name, ".") && strcmp(fd.name, "..")) {

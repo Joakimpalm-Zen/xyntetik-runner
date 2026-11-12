@@ -1979,6 +1979,24 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
 // response id would hand out the name of a stored response (R10.15).
 static pthread_mutex_t rq_ids_mu = PTHREAD_MUTEX_INITIALIZER;
 
+// What a cancel waits on (R6.68.8): one per cancelled request, made by its
+// first cancel and shared by every later one. The slot holds a reference until
+// the request ends and each waiter one until it has answered, all under
+// rq_ids_mu. The end is a fact recorded here with the request's own generated
+// count. It used to be the slot's last-ended sequence and count, which the next
+// request overwrote: a fast request ending on the slot within one poll left the
+// waiter at a sequence that never came back (504 after 30 s, its request long
+// stopped) and with the other request's count.
+typedef struct cancel_ticket {
+    int  refs;
+    bool done;
+    int  generated;
+} cancel_ticket;
+
+static void ticket_drop_locked(cancel_ticket *t) {
+    if (t && --t->refs == 0) free(t);
+}
+
 // Takes the slot's ids for a new request, under rq_ids_mu: false when another
 // active request holds the same X-Request-Id, and then nothing is taken.
 static bool request_take_ids(slot_t *s, const char *response_id) {
@@ -1990,8 +2008,8 @@ static bool request_take_ids(slot_t *s, const char *response_id) {
     snprintf(s->rq_cid, sizeof s->rq_cid, "%s", s->cid_next);
     atomic_store(&s->rq_cancel, 0);
     atomic_store(&s->rq_gen, 0);
-    atomic_fetch_add(&s->rq_seq, 1);
     atomic_store(&SV.load_owner_cancelled, 0);
+    s->rq_ticket = NULL;   // the previous request's end released its own
     s->rq_live = true;
     return true;
 }
@@ -2022,8 +2040,13 @@ void server_request_end(slot_t *s) {
     if (s->rq_live) {
         s->rq_live = false;
         atomic_store(&SV.load_owner_cancelled, 0);
-        atomic_store(&s->rq_end_gen, atomic_load(&s->rq_gen));
-        atomic_store(&s->rq_end_seq, atomic_load(&s->rq_seq));
+        if (s->rq_ticket) {
+            // the end of the cancelled request, as its waiters will report it
+            s->rq_ticket->done = true;
+            s->rq_ticket->generated = atomic_load(&s->rq_gen);
+            ticket_drop_locked(s->rq_ticket);
+            s->rq_ticket = NULL;
+        }
     }
     s->rq_id[0] = s->rq_cid[0] = 0;
     pthread_mutex_unlock(&rq_ids_mu);
@@ -2045,12 +2068,15 @@ static bool cancel_path_id(const char *path, char id[65]) {
     return true;
 }
 
-typedef struct {
-    sock_t   fd;
-    slot_t  *s;
-    unsigned seq;
-    int      phase;
-    char     id[65], rid[48];
+typedef struct cancel_wait {
+    struct cancel_wait *next;      // the answering thread's queue, under rq_ids_mu
+    sock_t         fd;
+    cancel_ticket *t;   // the waiter's reference; it never reads the slot
+    int            phase;
+    double         until;          // when the cancel answers 504
+    bool           done;           // read from the ticket when it is answered
+    int            generated;
+    char           id[65], rid[48];
 } cancel_wait;
 
 // How long a cancel waits for its request to stop: the request checks at
@@ -2058,11 +2084,27 @@ typedef struct {
 // step, not an ordinary one.
 #define CANCEL_WAIT_S 30.0
 
-static void cancel_answer(cancel_wait *w) {
-    double until = now_s() + CANCEL_WAIT_S;
-    while (atomic_load(&w->s->rq_end_seq) != w->seq && now_s() < until)
-        plat_sleep_ms(5);
-    if (atomic_load(&w->s->rq_end_seq) != w->seq) {
+// One long-lived thread answers every cancel that waits (R6.68.22), from a
+// queue under rq_ids_mu. A cancel used to get a detached thread of its own,
+// and under winpthreads a detached thread keeps its Windows HANDLE after it
+// exits: every cancel by id left one handle in the server for good (a soak
+// went from 265 to 456 over 400 cancels). One thread also leaves less state
+// than joinable per-cancel threads would: no table of handles to reap, and a
+// stop is one join. It starts at the first cancel that waits and is joined
+// before the slots are freed (R6.68.9), after it has answered every cancel
+// still queued: 200 when its request ended, 503 when it never did.
+static cancel_wait *cancel_queue;
+static pthread_t    cancel_thread;
+static bool         cancel_thread_on, cancel_thread_stop;
+
+static void cancel_reply(cancel_wait *w, bool stopping) {
+    if (!w->done && stopping) {
+        // the slot workers are joined by now: a request that has not ended
+        // never will, and the server is going away
+        send_error(w->fd, 503, "server shutting down: the cancelled request did not report its end");
+        return;
+    }
+    if (!w->done) {
         send_error_detail(w->fd, 504, w->phase == 3
                           ? "the request's model load is still running; a cancel "
                             "does not stop a load, and the request ends, before "
@@ -2080,16 +2122,74 @@ static void cancel_answer(cancel_wait *w) {
                      w->id, rid,
                      w->phase == 3 ? "loading" : w->phase == 2 ? "generate"
                      : w->phase == 1 ? "prefill" : "starting",
-                     atomic_load(&w->s->rq_end_gen));
+                     w->generated);
     send_response(w->fd, 200, "application/json", b, (size_t)n);
 }
 
-static void *cancel_waiter(void *arg) {
-    cancel_wait *w = arg;
-    cancel_answer(w);
-    sock_close(w->fd);
-    free(w);
-    return NULL;
+// Takes the ticket's outcome into w and gives the ticket back; rq_ids_mu held.
+static void cancel_settle_locked(cancel_wait *w) {
+    w->done = w->t->done;
+    w->generated = w->t->generated;
+    ticket_drop_locked(w->t);
+    w->t = NULL;
+}
+
+// A cancel answered where it arrived (no answering thread): it waits here.
+static void cancel_answer(cancel_wait *w) {
+    double until = now_s() + CANCEL_WAIT_S;
+    for (;;) {
+        pthread_mutex_lock(&rq_ids_mu);
+        bool done = w->t->done;
+        pthread_mutex_unlock(&rq_ids_mu);
+        if (done || now_s() >= until || atomic_load(&SV.shutdown)) break;
+        plat_sleep_ms(5);
+    }
+    pthread_mutex_lock(&rq_ids_mu);
+    cancel_settle_locked(w);
+    pthread_mutex_unlock(&rq_ids_mu);
+    cancel_reply(w, atomic_load(&SV.shutdown));
+}
+
+static void *cancel_thread_main(void *arg) {
+    (void)arg;
+    for (;;) {
+#ifdef RUNNER_TEST_CANCEL_WAIT
+        // the race test holds the answering here while a cancel is queued
+        pthread_mutex_lock(&rq_ids_mu);
+        bool queued = cancel_queue != NULL;
+        pthread_mutex_unlock(&rq_ids_mu);
+        if (queued) {
+            extern void runner_test_cancel_wait(void);
+            runner_test_cancel_wait();
+        }
+#endif
+        cancel_wait *ready = NULL;
+        pthread_mutex_lock(&rq_ids_mu);
+        bool stopping = atomic_load(&SV.shutdown);
+        double now = now_s();
+        for (cancel_wait **pp = &cancel_queue; *pp; ) {
+            cancel_wait *w = *pp;
+            if (w->t->done || now >= w->until || stopping) {
+                *pp = w->next;
+                cancel_settle_locked(w);
+                w->next = ready;
+                ready = w;
+            } else {
+                pp = &w->next;
+            }
+        }
+        bool leave = cancel_thread_stop && !cancel_queue;
+        pthread_mutex_unlock(&rq_ids_mu);
+        while (ready) {
+            cancel_wait *w = ready;
+            ready = w->next;
+            cancel_reply(w, stopping);
+            sock_close(w->fd);
+            free(w);
+        }
+        if (leave) return NULL;
+        plat_sleep_ms(5);
+    }
 }
 
 // Answer a cancel. True when the reply (or the wait for it) was taken over by
@@ -2099,22 +2199,36 @@ static bool handle_cancel(sock_t fd, const char *path, bool may_detach) {
     cancel_path_id(path, id);
     cancel_wait *w = calloc(1, sizeof *w);
     if (!w) { send_error(fd, 500, "cannot allocate the cancel"); return false; }
+    bool found = false, oom = false;
     pthread_mutex_lock(&rq_ids_mu);
     for (int i = 0; id[0] && SV.slots && i < SV.n_slots; i++) {
         slot_t *o = &SV.slots[i];
         if (o->rq_live && (!strcmp(o->rq_id, id) || (o->rq_cid[0] && !strcmp(o->rq_cid, id)))) {
+            found = true;
+            // the first cancel of a request makes its ticket, with the slot's reference
+            cancel_ticket *t = o->rq_ticket;
+            if (!t && (t = calloc(1, sizeof *t))) {
+                t->refs = 1;
+                o->rq_ticket = t;
+            }
+            if (!t) { oom = true; break; }
+            t->refs++;
+            w->t = t;
             atomic_store(&o->rq_cancel, 1);
             // a request still loading its model: the registry's wait reads this
             if (atomic_load(&o->rq_phase) == 3) atomic_store(&SV.load_owner_cancelled, 1);
-            w->s = o;
-            w->seq = atomic_load(&o->rq_seq);
             w->phase = atomic_load(&o->rq_phase);
             snprintf(w->rid, sizeof w->rid, "%s", o->rq_id);
             break;
         }
     }
     pthread_mutex_unlock(&rq_ids_mu);
-    if (!w->s) {
+    if (oom) {
+        free(w);
+        send_error(fd, 500, "cannot allocate the cancel");
+        return false;
+    }
+    if (!found) {
         free(w);
         send_error_detail(fd, 404, "no active request has this id (it finished, "
                           "was never seen, or is still queued for a slot)",
@@ -2124,14 +2238,19 @@ static bool handle_cancel(sock_t fd, const char *path, bool may_detach) {
     w->fd = fd;
     snprintf(w->id, sizeof w->id, "%s", id);
     if (may_detach) {
-        pthread_t th;
-        pthread_attr_t at;
-        if (!pthread_attr_init(&at)) {
-            pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
-            int rc = pthread_create(&th, &at, cancel_waiter, w);
-            pthread_attr_destroy(&at);
-            if (!rc) return true;
+        // queued for the answering thread, started (joinable) by the first
+        // cancel that waits; a stop already under way answers here instead
+        w->until = now_s() + CANCEL_WAIT_S;
+        pthread_mutex_lock(&rq_ids_mu);
+        if (!cancel_thread_on && !cancel_thread_stop)
+            cancel_thread_on = pthread_create(&cancel_thread, NULL, cancel_thread_main, NULL) == 0;
+        bool queued = cancel_thread_on && !cancel_thread_stop;
+        if (queued) {
+            w->next = cancel_queue;
+            cancel_queue = w;
         }
+        pthread_mutex_unlock(&rq_ids_mu);
+        if (queued) return true;
     }
     cancel_answer(w);
     free(w);
@@ -2178,16 +2297,22 @@ static void send_health(sock_t fd) {
     // load, reload and swap, so a client that reads it twice and sees the
     // same number with a resident model has been talking to one load. A
     // request can require it (`expect_resident`).
-    char m[448];
+    // R6.68.12: beside the resident set, the footprint where the OS has one
+    // (macOS: it counts Metal's buffers, which the resident set leaves out)
+    uint64_t footprint = 0;
+    char fp[48] = "";
+    if (plat_proc_phys_footprint_bytes(&footprint))
+        snprintf(fp, sizeof fp, ",\"phys_footprint_bytes\":%llu", (unsigned long long)footprint);
+    char m[496];
     snprintf(m, sizeof(m),
              ",\"load_generation\":%llu"
-             ",\"rss_bytes\":%llu,\"peak_rss_bytes\":%llu,"
+             ",\"rss_bytes\":%llu,\"peak_rss_bytes\":%llu%s,"
              "\"tokens_prompt\":%llu,\"tokens_generated\":%llu,"
              "\"generate_seconds\":%.6f,"
              "\"batch_steps\":%llu,\"batch_sequences\":%llu",
              (unsigned long long)provenance_load_generation(NULL),
              (unsigned long long)cur_rss,
-             (unsigned long long)peak_rss,
+             (unsigned long long)peak_rss, fp,
              wt.prompt_tokens, wt.gen_tokens, wt.gen_seconds, bs, bq);
 
     // What each busy slot is doing (R10.12.7): a client waiting on a long
@@ -2431,6 +2556,12 @@ static void send_metrics(sock_t fd) {
     metric_u64(&b, "runner_peak_resident_memory_bytes", "gauge",
                "High-water mark of that resident set.",
                (unsigned long long)peak_rss);
+    uint64_t footprint = 0;
+    if (plat_proc_phys_footprint_bytes(&footprint))
+        metric_u64(&b, "runner_phys_footprint_bytes", "gauge",
+                   "Physical footprint of this process (macOS): the resident set plus "
+                   "the GPU driver's memory for it, Metal buffers included, and its "
+                   "compressed pages.", (unsigned long long)footprint);
     metric_u64(&b, "runner_prefix_cache_bytes", "gauge",
                "Host memory the shared prefix store holds.",
                (unsigned long long)st.bytes);
@@ -3694,6 +3825,9 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // half is filed; nothing needs it today, and it costs threading a context
     // through six translation units.
     memset(&SV, 0, sizeof(SV));
+    // the answering thread of a previous run in this process is joined (R6.68.22)
+    cancel_queue = NULL;
+    cancel_thread_on = cancel_thread_stop = false;
     if (!plat_random(SV.id_seed, sizeof SV.id_seed)) {
         fprintf(stderr, "error: the OS random generator is unavailable, and a "
                 "response id must not be guessable\n");
@@ -3915,8 +4049,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // full-context entries (prefix_cache_fit_model, R4.26.13).
     {
         uint64_t mb  = env_u64("RUNNER_PREFIX_CACHE_MB", 0, 1u << 20, 512);
-        double   ttl = env_f64("RUNNER_PREFIX_CACHE_TTL", 0.0, 1e9, 600.0);
-        prefix_cache_configure((size_t)mb * 1024 * 1024, ttl);
+        double   cache_ttl = env_f64("RUNNER_PREFIX_CACHE_TTL", 0.0, 1e9, 600.0);
+        prefix_cache_configure((size_t)mb * 1024 * 1024, cache_ttl);
     }
     context_store(base ? base->n_ctx : mp->n_ctx);
     SV.n_slots = parallel;
@@ -4237,6 +4371,26 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     atomic_store(&SV.shutdown, true);
     atomic_store(&drain_stage, "reaper join");
     if (SV.reaper_started) pthread_join(SV.reaper_th, NULL);
+    // R6.68.9, R6.68.22: the answering thread sees SV.shutdown at its next
+    // poll, answers every cancel still queued and leaves; the slots are freed
+    // only after it is joined (a waiter used to read them freed: a stop or an
+    // in-process restart during a cancel). A ticket whose request never ended
+    // goes with its slot.
+    atomic_store(&drain_stage, "cancel waiters");
+    pthread_mutex_lock(&rq_ids_mu);
+    cancel_thread_stop = true;
+    bool cancel_join = cancel_thread_on;
+    pthread_mutex_unlock(&rq_ids_mu);
+    if (cancel_join) pthread_join(cancel_thread, NULL);
+    pthread_mutex_lock(&rq_ids_mu);
+    cancel_thread_on = false;
+    pthread_mutex_unlock(&rq_ids_mu);
+    pthread_mutex_lock(&rq_ids_mu);
+    for (int i = 0; i < parallel; i++) {
+        ticket_drop_locked(SV.slots[i].rq_ticket);
+        SV.slots[i].rq_ticket = NULL;
+    }
+    pthread_mutex_unlock(&rq_ids_mu);
 
     atomic_store(&drain_stage, "model unload");
     for (int i = 0; i < parallel; i++) {

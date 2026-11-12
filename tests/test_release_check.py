@@ -1096,6 +1096,23 @@ def test_the_repository_changes_folder_follows_the_rule():
             assert mod.entry_problems(f"changes/{p.name}", p.read_text(encoding="utf-8")) == []
 
 
+def test_the_fold_names_entries_with_a_slash_on_every_host():
+    """On Windows str(Path) is 'changes\\X.md'. The fold handed that to
+    entry_problems, which splits on '/', and the release fold crashed with an
+    IndexError (found on a Windows host with a native Python; the hosted
+    Windows job runs MSYS2's Python, whose paths have slashes, so it never
+    saw it). PureWindowsPath makes the host's separator a test input."""
+    spec = importlib.util.spec_from_file_location("changelog_entries", CE_TOOL)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    base = pathlib.PureWindowsPath(r"C:\work\repo")
+    files = [base / "changes" / "R6.68.13.md", base / "changes" / "fix-a.md"]
+    rel = mod.entry_paths(files, base)
+    assert rel == ["changes/R6.68.13.md", "changes/fix-a.md"]
+    for r in rel:
+        assert mod.entry_problems(r, "- **A change** (R1.1): what it does.\n") == []
+
+
 # A merge train: one pull request that is main plus the merged heads of several reviewed pull
 # requests, its text carrying "Changelog: train". Each first-parent merge is a member and passes
 # the rule on its own.

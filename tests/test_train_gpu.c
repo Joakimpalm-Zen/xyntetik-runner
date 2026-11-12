@@ -247,9 +247,9 @@ static void dn_check(model_t *m, int nh, int ng, int hv, int T) {
     gpu_train_dn_reset(m);
     for (int t0 = 0; ok && t0 < T; ) {
         int n = T - t0 > 16 ? 16 : T - t0 > 5 ? T - t0 - 5 : T - t0;
-        tdn_args r = a;
-        r.T = n;
-        ok = gpu_train_dn_fw(m, &r, cv + (size_t)t0 * convdim, beta + (size_t)t0 * nh,
+        tdn_args chunk = a;
+        chunk.T = n;
+        ok = gpu_train_dn_fw(m, &chunk, cv + (size_t)t0 * convdim, beta + (size_t)t0 * nh,
                              decay + (size_t)t0 * nh, st, yr + (size_t)t0 * inner);
         t0 += n;
     }

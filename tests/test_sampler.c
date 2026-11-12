@@ -557,6 +557,7 @@ static void test_sparse_filter_is_scanned_once(void) {
     rank_base = base;
     qsort(rank, V, sizeof(int), by_logit_desc);   // rank[r] = id at rank r
     int picks[64] = {0};
+    int settled[2] = {0, 0};   // picks made from the ranked prefix alone, per case
     for (int below = 20; below <= 1000; below += 980) {
         memset(refuse, 1, V);
         for (int j = 0; j < 5; j++) refuse[rank[300 + 337 * j]] = 0;       // inside the prefixes
@@ -573,6 +574,7 @@ static void test_sparse_filter_is_scanned_once(void) {
             int got = sample_pick(&a, x, V, refuse_marked, refuse);
             picks[got % 64]++;
             assert(ok_calls <= V);                    // no entry asked twice
+            if (ok_calls <= 2048) settled[below > 20]++;
             for (int i = 0; i < V; i++) x[i] = refuse[i] ? -1e30f : base[i];
             int want = sample_pick(&b, x, V, NULL, NULL);
             assert(got == want && !refuse[got]);
@@ -582,9 +584,72 @@ static void test_sparse_filter_is_scanned_once(void) {
     int distinct = 0;
     for (int i = 0; i < 64; i++) distinct += picks[i] > 0;
     assert(distinct >= 10);   // the picks spread, so the order is exercised
+    // R6.68.26: where the unexamined entries cannot change the pick, the
+    // vocabulary is not scanned at all. Every pick above still equalled the
+    // masked reference at the same draw, settled or not.
+    // The two cases above hide every valid entry at rank 300 or lower, where a
+    // model that follows its grammar never is: there the prefix carries too
+    // little mass to settle anything, and the scan must run (their picks are
+    // held to the reference either way). The state a schema reply spends most
+    // of its tokens in is the one below: three valid entries among the model's
+    // top ten, a handful far down. That pick must come from the prefix alone.
+    int quick = 0;
+    memset(refuse, 1, V);
+    refuse[rank[0]] = refuse[rank[3]] = refuse[rank[7]] = 0;
+    for (int j = 0; j < 6; j++) refuse[rank[5000 + 911 * j]] = 0;
+    for (unsigned seed = 1; seed <= 60; seed++) {
+        sampler a = { .temp = 0.8f, .top_p = 0.95f, .repeat_penalty = 1.0f,
+                      .top_k = 40, .rng = sampler_seed_state(seed) };
+        sampler b = a;
+        memcpy(x, base, sizeof(float) * V);
+        ok_calls = 0;
+        int got = sample_pick(&a, x, V, refuse_marked, refuse);
+        if (ok_calls <= 256) quick++;
+        for (int i = 0; i < V; i++) x[i] = refuse[i] ? -1e30f : base[i];
+        int want = sample_pick(&b, x, V, NULL, NULL);
+        assert(got == want && !refuse[got]);
+        assert(a.rng == b.rng);
+    }
+    assert(quick >= 57);   // 95%: a draw at the very edge may still need the scan
     free(base); free(x); free(rank); free(refuse);
     printf("ok: a sparse filter's pick is unchanged and each entry is asked once "
-           "(%d distinct pick buckets)\n", distinct);
+           "(%d distinct pick buckets; hidden-valid cases settled %d and %d of 30 "
+           "without a scan; the top-ranked-valid case %d of 60 from 256 checks)\n",
+           distinct, settled[0], settled[1], quick);
+}
+
+// sample_argmax against the index-tracking loop it replaces, on finite input:
+// ties (the first wins), the mask value -1e30 the constrained paths write, one
+// entry, and random vectors with many ties at lengths around a vector width.
+// A NaN is not tested: both loops are built with fast math, under which a
+// comparison against NaN may go either way, so neither has an answer to hold.
+static int tracking_argmax(const float *x, int n) {
+    int best = 0;
+    for (int i = 1; i < n; i++) if (x[i] > x[best]) best = i;
+    return best;
+}
+
+static void test_argmax_is_the_tracking_loop(void) {
+    float a[8] = { 1, 5, 5, 2, 5, -1, 0, 3 };
+    assert(sample_argmax(a, 8) == 1);
+    float e[6] = { -1e30f, -1e30f, 3, 1e30f, 1e30f, -1e30f };
+    assert(sample_argmax(e, 6) == 3);
+    float g[4] = { -1e30f, -1e30f, -1e30f, -1e30f };
+    assert(sample_argmax(g, 4) == 0);
+    float f[1] = { -2 };
+    assert(sample_argmax(f, 1) == 0);
+    unsigned s = 12345;
+    for (int n = 1; n <= 70; n++) {
+        float v[70];
+        for (int rep = 0; rep < 50; rep++) {
+            for (int i = 0; i < n; i++) {
+                s = s * 1103515245u + 12345u;
+                v[i] = (float)((s >> 16) % 17) - 8.0f;    // few values: many ties
+            }
+            assert(sample_argmax(v, n) == tracking_argmax(v, n));
+        }
+    }
+    printf("ok: sample_argmax equals the index-tracking loop on finite input, ties included\n");
 }
 
 // Greedy returns the FIRST index holding the greatest logit, as the single
@@ -716,6 +781,7 @@ int main(void) {
     test_constrained_pick_ranks_a_prefix();
     test_sparse_filter_is_scanned_once();
     test_greedy_takes_the_first_of_equal_maxima();
+    test_argmax_is_the_tracking_loop();
     test_seed_is_mixed_before_it_seeds_the_sampler();
     puts("sampler tests ok");
     return 0;
