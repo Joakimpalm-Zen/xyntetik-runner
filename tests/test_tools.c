@@ -1710,8 +1710,7 @@ static void test_stream_demux_never_leaks_the_envelope(void) {
     assert(l.args.s != NULL);
     // the concatenated deltas are exactly the argument document
     assert(!strcmp(l.args.s, "{\"city\":\"Oslo\",\"units\":\"c\"}"));
-    free(l.content.s);
-    free(l.args.s);
+    log_free(&l);
 
     // the final branch is unescaped assistant text, and no call at all
     demux(&e, "{\"tool\":\"final\",\"args\":{\"content\":\"hi\\nthere\"}}", &l);
