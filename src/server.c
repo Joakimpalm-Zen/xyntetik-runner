@@ -643,7 +643,14 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     // demultiplexed as it is generated (tool_stream) rather than parsed
     // afterward, so both paths reach the same call from the same guarantee.
     jv *tools = jv_get(req, "tools");
+    // What the request owns from here on, released at the one exit below
+    // (each refusal carried its own copy of the release, R6.68.43).
     tool_envelope env = {0};
+    sbuf ts = {0};
+    chat_msg *cm = NULL;
+    char **owned = NULL;
+    int n_own = 0;
+    char *prompt = NULL;
     // parallel_tool_calls is read BEFORE the envelope is built, because it
     // changes the envelope's shape. Silently ignoring a request for several
     // calls would leave the caller expecting calls it never gets.
@@ -655,12 +662,12 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                       tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")),
                       &parallel)) {
         send_error(fd, 400, "parallel_tool_calls must be a boolean");
-        return;
+        goto out;
     }
     bool atem_tool_calling = true;
     if (!request_bool(req, "atem_tool_calling", true, &atem_tool_calling)) {
         send_error(fd, 400, "atem_tool_calling must be a boolean");
-        return;
+        goto out;
     }
     // parallel_tool_calls:true + stream:true used to be refused here: the
     // demultiplexer tracked one call per turn, and downgrading silently
@@ -675,7 +682,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                                     terr, sizeof(terr));
     if (rc < 0) {
         send_error(fd, rc == TOOL_ENVELOPE_OOM ? 500 : 400, terr);
-        return;
+        goto out;
     }
     // The envelope applies whenever tools are declared and callable. Ornith,
     // Granite 4.2 and Qwen 3.8 used to be excluded here to keep their native
@@ -690,9 +697,8 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     {
         char why[480];
         if (!template_tools_check(s->tmpl, tools, why, sizeof why)) {
-            tool_envelope_free(&env);
             send_error(fd, 400, why);
-            return;
+            goto out;
         }
     }
     // When the strict envelope does not apply -- no tools declared, or
@@ -713,7 +719,6 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     const jv *native_tools = tool_decl_native(s->tmpl, strict,
                                               atem_tool_calling, tools, &env,
                                               &native_decl);
-    sbuf ts = {0};
     bool oom = false;
     // The generic teaching turn belongs to the generic envelope only. A
     // family whose envelope carries a native protocol but renders its
@@ -739,10 +744,8 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     // short or empty and the prompt went out without the declarations the
     // caller sent -- the model is then asked to call tools it was never shown.
     if (ts.failed || oom) {
-        free(ts.s);
-        tool_envelope_free(&env);
         send_error(fd, 500, "out of memory building chat prompt");
-        return;
+        goto out;
     }
     size_t cm_cap = (size_t)msgs->n + 2;   // + the tool turn, + a default system turn
     // Every family that replays reasoning_content as its own turn needs a
@@ -760,20 +763,18 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                 cm_cap++;
         }
     }
-    chat_msg *cm = malloc(sizeof(chat_msg) * cm_cap);
+    cm = malloc(sizeof(chat_msg) * cm_cap);
     // one rendered content per message, plus at most one text-extracted tool
     // name per tool result (text_spelled_call_name strdup's into this array)
-    char **owned = malloc(sizeof(char *) * (size_t)msgs->n * 2);
+    owned = malloc(sizeof(char *) * (size_t)msgs->n * 2);
     // client-controlled size (a 32MB body of tiny messages): a NULL here would
     // be indexed below. Fail the request cleanly instead of crashing.
     if (!cm || !owned) {
-        free(cm); free(owned); free(ts.s);
-        tool_envelope_free(&env);
         send_error(fd, 500, "out of memory building chat prompt");
-        return;
+        goto out;
     }
     size_t total = ts.n + 64;
-    int n_cm = 0, n_own = 0;
+    int n_cm = 0;
     if (ts.n)
         cm[n_cm++] = (chat_msg){ .role = "system", .content = ts.s };
     else if (msgs->n > 0 && strcmp(chat_role(msgs->items[0]), "system")) {
@@ -811,9 +812,6 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
             if (!turn_name) {
                 const char *id = jv_str(jv_get(msgs->items[i], "tool_call_id"),
                                         NULL);
-                for (int k = 0; k < n_own; k++) free(owned[k]);
-                free(owned); free(cm); free(ts.s);
-                tool_envelope_free(&env);
                 char e[288];
                 snprintf(e, sizeof(e),
                          "messages[%d] is a tool result that cannot be "
@@ -824,7 +822,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                             : "it carries neither", id ? id : "",
                          id ? "\"" : " `name` nor `tool_call_id`");
                 send_error(fd, 400, e);
-                return;
+                goto out;
             }
         }
         if (s->tmpl == TMPL_MUSE && !strcmp(role, "assistant")) {
@@ -911,14 +909,9 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         total += strlen(role) + strlen(content) + 64;
     }
     if (oom || n_cm == 0) {
-        for (int i = 0; i < n_own; i++) free(owned[i]);
-        free(owned);
-        free(cm);
-        free(ts.s);
-        tool_envelope_free(&env);
         if (oom) send_error(fd, 500, "out of memory building chat prompt");
         else     send_error(fd, 400, "no message content");
-        return;
+        goto out;
     }
     // Native templates render the declarations themselves -- muse's JSON
     // block, Harmony's TypeScript namespace -- so their bytes belong in the
@@ -932,11 +925,8 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     int thinking = req_thinking_mode(req);
     int recipients = req_bare_recipients(req);
     if (recipients < 0) {
-        for (int i = 0; i < n_own; i++) free(owned[i]);
-        free(owned); free(cm); free(ts.s);
-        tool_envelope_free(&env);
         send_error(fd, 400, "bare_recipients must be a boolean");
-        return;
+        goto out;
     }
     thinking |= recipients;
     {
@@ -946,26 +936,21 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         const char *why = NULL;
         int effort = req_template_effort(s->tmpl, req, &why);
         if (effort < 0) {
-            for (int i = 0; i < n_own; i++) free(owned[i]);
-            free(owned); free(cm); free(ts.s);
-            tool_envelope_free(&env);
             send_error(fd, 400, why);
-            return;
+            goto out;
         }
         thinking |= effort;
     }
     render_state rs;
-    char *prompt = render_prompt_state_alloc(s->tmpl, cm, n_cm, add_assistant,
+    prompt = render_prompt_state_alloc(s->tmpl, cm, n_cm, add_assistant,
                                              thinking, native_tools,
                                              total + 256, &rs);
     if (!prompt) {
-        for (int i = 0; i < n_own; i++) free(owned[i]);
-        free(owned); free(cm); free(ts.s);
-        tool_envelope_free(&env);
         send_error(fd, 500, "out of memory building chat prompt");
-        return;
+        goto out;
     }
     run(s, fd, prompt, req, strict ? &env : NULL, &rs);
+out:
     free(prompt);
     for (int i = 0; i < n_own; i++) free(owned[i]);
     free(owned);
