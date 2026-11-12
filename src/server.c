@@ -4214,12 +4214,15 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                     fprintf(stderr, "error: cannot allocate slot %d model\n", i);
                     return serve_start_end(base, tok, 1);
                 }
-                bool loaded = model_load(s->m, model_path, &slot_mp);
-                if (!loaded || !oms_check_model(model_path, &SV.signing, NULL)) {
+                // the signature before the load (R6.68.79), as for slot 0
+                bool loaded = oms_check_model(model_path, &SV.signing, NULL) &&
+                              model_load(s->m, model_path, &slot_mp);
+                if (!loaded) {
                     fprintf(stderr, "error: failed to load slot %d\n", i);
-                    // a load that failed released its own model; only the
-                    // container is left, and the release must not free it twice
-                    if (!loaded) { free(s->m); s->m = NULL; }
+                    // a load that failed released its own model, and one the
+                    // signature refused never began; only the container is
+                    // left, and the release must not free it twice
+                    free(s->m); s->m = NULL;
                     return serve_start_end(base, tok, 1);
                 }
                 tpool_destroy(s->m->tp);    // the single-thread load pool

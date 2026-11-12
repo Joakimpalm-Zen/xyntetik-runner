@@ -4919,17 +4919,13 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
     o->mp.lora_scale = o->lora_scale;
     if (!registry) {
         double t1 = now_s();
-        // (a --verify replay set mtp_default from its record, not from here)
-        bool mtp_wanted = cli_mtp_default_wanted(o, load_path, registry);
-        if (mtp_wanted) { o->mtp_default = true; o->mp.mtp = true; }
-        if (!model_load(&rt->m, load_path, &o->mp)) { *rc = 1; return true; }
-        // (a failed settle is a failed reload: model_load released it)
-        if (mtp_wanted && !cli_mtp_default_settle(o, rt, load_path)) {
-            *rc = 1;
-            return true;
-        }
+        // The signatures first (R6.68.79): they decide whether a file is read
+        // as a model at all, so the loader sees no byte of one they refuse.
+        // The load came first, and a file with no signature, or with other
+        // bytes than the signed ones, went through the parser and the binders
+        // on its way to the refusal.
         oms_result osr;
-        if (!oms_check_model(load_path, signing, &osr)) return cli_load_refused(rt, rc);
+        if (!oms_check_model(load_path, signing, &osr)) { *rc = 1; return true; }
         if (osr.status[0])
             oms_result_json(&osr, rt->model_sig_json, sizeof rt->model_sig_json);
         // R1.2.3: an adapter changes what is served, so the same trusted key
@@ -4938,10 +4934,21 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         memset(&aosr, 0, sizeof aosr);
         if (o->lora_path) {
             oms_policy apol = { o->lora_sig, o->model_pubkey, o->require_signed_model };
-            if (!oms_check_artifact(o->lora_path, &apol, "adapter", &aosr))
-                return cli_load_refused(rt, rc);
+            if (!oms_check_artifact(o->lora_path, &apol, "adapter", &aosr)) {
+                *rc = 1;
+                return true;
+            }
             if (aosr.status[0])
                 oms_result_json(&aosr, rt->adapter_sig_json, sizeof rt->adapter_sig_json);
+        }
+        // (a --verify replay set mtp_default from its record, not from here)
+        bool mtp_wanted = cli_mtp_default_wanted(o, load_path, registry);
+        if (mtp_wanted) { o->mtp_default = true; o->mp.mtp = true; }
+        if (!model_load(&rt->m, load_path, &o->mp)) { *rc = 1; return true; }
+        // (a failed settle is a failed reload: model_load released it)
+        if (mtp_wanted && !cli_mtp_default_settle(o, rt, load_path)) {
+            *rc = 1;
+            return true;
         }
         if (!tokenizer_init(&rt->tok, &rt->m.gf)) return cli_load_refused(rt, rc);
         // serve mode: the registry model's own pool is one thread by design

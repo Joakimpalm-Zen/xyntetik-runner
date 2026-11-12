@@ -308,22 +308,23 @@ int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
                 SV.reg[idx].name, SV.reg[idx].path);
         model_t *m = calloc(1, sizeof(model_t));
         tokenizer *tok = calloc(1, sizeof(tokenizer));
-        bool model_ok = m && model_load(m, SV.reg[idx].path, &SV.mp);
+        // the signatures before the load (R6.68.79): a file they refuse is
+        // never read as a model
         oms_result osr;
         memset(&osr, 0, sizeof osr);
-        bool sig_refused = model_ok &&
-            !oms_check_model(SV.reg[idx].path, &SV.signing, &osr);
+        bool sig_refused = !oms_check_model(SV.reg[idx].path, &SV.signing, &osr);
         // the --lora adapter comes back with every reload, under the same
         // trusted key (R1.2.3)
         oms_result aosr;
         memset(&aosr, 0, sizeof aosr);
-        if (model_ok && !sig_refused && SV.mp.lora_path) {
+        if (!sig_refused && SV.mp.lora_path) {
             oms_policy apol = { SV.mp.lora_sig, SV.signing.pubkey_path,
                                 SV.signing.required };
             sig_refused = !oms_check_artifact(SV.mp.lora_path, &apol,
                                               "adapter", &aosr);
         }
-        bool tok_ok = model_ok && !sig_refused && tok && tokenizer_init(tok, &m->gf);
+        bool model_ok = m && !sig_refused && model_load(m, SV.reg[idx].path, &SV.mp);
+        bool tok_ok = model_ok && tok && tokenizer_init(tok, &m->gf);
         bool mtp_refused = model_ok && SV.single && SV.mp.mtp &&
                            !model_mtp_ready(m);
         if (mtp_refused)
