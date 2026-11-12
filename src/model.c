@@ -10,6 +10,7 @@
 #include "clef.h"       // the joint schema head bound below (struct only)
 #include "fpclass.h"    // the teacher's log-probabilities, under fast math
 #include "kernel_args.h" // DN_L2_EPS, the DeltaNet q/k L2 norm's epsilon
+#include "gpu_tables.h"  // the device's per-layer tables, priced by the fit
 
 #include <math.h>
 #include "act.h"     // sigmoid_f, silu_f: safe under fast math
@@ -1172,35 +1173,27 @@ gpu_layer_charge model_cuda_layer_charge(gguf_file *g, int layer, bool host_expe
     for (uint64_t i = 0; i < g->n_tensors; i++)
         if (!strncmp(g->tensors[i].name, prefix, plen))
             cuda_charge_add(&c.file, g->tensors[i].nbytes);
-    static const char *const roles[] = {
-        "attn_norm.weight", "ffn_norm.weight", "post_attention_norm.weight",
-        "attn_q.bias", "attn_k.bias", "attn_v.bias", "attn_output.bias",
-        "attn_q_norm.weight", "attn_k_norm.weight", "attn_kv_a_norm.weight",
-        "post_ffw_norm.weight", "post_norm.weight", "hc_attn_norm.weight", "hc_ffn_norm.weight",
-        "ssm_a", "ssm_d", "ssm_conv1d.bias", "ssm_norm.weight", "attn_sinks.weight",
-    };
-    for (size_t i = 0; i < sizeof roles / sizeof *roles; i++) {
-        snprintf(name, sizeof name, "%s%s", prefix, roles[i]);
-        uint64_t bytes = cuda_tensor_f32(gguf_find_tensor(g, name));
+    // the tables cuda.c shared_upload_layer_tables makes, by its own rows
+    // (gpu_tables.h): each priced as the f32 copy of the tensor it is made
+    // from. A MoE bank kept on the host makes no bias tables.
+    const gpu_table_desc *rows = gpu_table_rows();
+    for (int t = 0; t < GT_COUNT; t++) {
+        const gpu_table_desc *d = &rows[t];
+        if (!d->tensor) continue;
+        if (d->need == GT_NEED_MOE_DEV && host_experts) continue;
+        if (d->id == GT_MLA_KVB) continue;   // the absorbed form's only, below
+        snprintf(name, sizeof name, "%s%s", prefix, d->tensor);
+        const gguf_tensor *src = gguf_find_tensor(g, name);
+        // DeltaNet accepts the old spelling too; the binder prefers .bias
+        if (!src && d->id == GT_SSM_DT) {
+            snprintf(name, sizeof name, "%sssm_dt", prefix);
+            src = gguf_find_tensor(g, name);
+        }
+        uint64_t bytes = cuda_tensor_f32(src);
         // The DeltaNet binder keeps fused Q+gate bias on the CPU, but the
         // CUDA table upload copies only model_q_dim's Q half.
-        if (!strcmp(roles[i], "attn_q.bias") &&
-            ad->rec == ARCH_REC_DELTANET) bytes /= 2;
+        if (d->id == GT_BQ && ad->rec == ARCH_REC_DELTANET) bytes /= 2;
         cuda_charge_add(&c.tables, bytes);
-    }
-    // DeltaNet accepts the old spelling too; the binder prefers .bias.
-    snprintf(name, sizeof name, "%sssm_dt.bias", prefix);
-    const gguf_tensor *dt = gguf_find_tensor(g, name);
-    if (!dt) { snprintf(name, sizeof name, "%sssm_dt", prefix); dt = gguf_find_tensor(g, name); }
-    cuda_charge_add(&c.tables, cuda_tensor_f32(dt));
-    if (!host_experts) {
-        static const char *const biases[] = {
-            "ffn_gate_inp.bias", "ffn_gate_exps.bias", "ffn_up_exps.bias", "ffn_down_exps.bias",
-        };
-        for (size_t i = 0; i < sizeof biases / sizeof *biases; i++) {
-            snprintf(name, sizeof name, "%s%s", prefix, biases[i]);
-            cuda_charge_add(&c.tables, cuda_tensor_f32(gguf_find_tensor(g, name)));
-        }
     }
     snprintf(name, sizeof name, "%sffn_gate_inp.weight", prefix);
     const gguf_tensor *router = gguf_find_tensor(g, name);
@@ -1233,22 +1226,17 @@ gpu_layer_charge model_cuda_layer_charge(gguf_file *g, int layer, bool host_expe
 // no router, its dense FFN, each rounded as a bound upload rounds it. The
 // router, the experts, the shared expert and the latent pair stay on the host.
 static uint64_t fit_layer_host_expert_bytes(gguf_file *g, int l) {
-    static const char *const mixer[] = {
-        "inp_gate.weight", "proj.weight", "attn_q.weight", "attn_q_b.weight", "attn_k.weight",
-        "attn_v.weight", "attn_output.weight", "attn_qkv.weight", "attn_gate.weight",
-        "ssm_in.weight", "shortconv.in_proj.weight", "ssm_conv1d.weight", "shortconv.conv.weight",
-        "ssm_beta.weight", "ssm_alpha.weight", "ssm_out.weight", "shortconv.out_proj.weight",
-        "hc_attn_down.weight", "hc_attn_up.weight", "hc_attn_inject.weight",
-        "hc_ffn_down.weight", "hc_ffn_up.weight", "hc_ffn_inject.weight",
-        "attn_q_a.weight", "attn_kv_a_mqa.weight", "attn_kv_b.weight" };
     static const char *const dense[] = { "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight" };
     char name[128];
     uint64_t wb = 0;
-    for (size_t i = 0; i < sizeof mixer / sizeof *mixer; i++) {
-        snprintf(name, sizeof name, "blk.%d.%s", l, mixer[i]);
-        const gguf_tensor *t = gguf_find_tensor(g, name);
-        if (t) wb += gpu_plan_binding_bytes(t->nbytes, true);
-    }
+    // the uploader's own mixer rows (gpu_tables.h), every spelling a family binds
+    const gpu_mixer_desc *mix = gpu_mixer_rows();
+    for (int i = 0; i < GT_N_MIXER; i++)
+        for (int k = 0; k < GT_MIXER_NAMES && mix[i].names[k]; k++) {
+            snprintf(name, sizeof name, "blk.%d.%s", l, mix[i].names[k]);
+            const gguf_tensor *t = gguf_find_tensor(g, name);
+            if (t) wb += gpu_plan_binding_bytes(t->nbytes, true);
+        }
     snprintf(name, sizeof name, "blk.%d.ffn_gate_inp.weight", l);
     if (!gguf_find_tensor(g, name))
         for (size_t i = 0; i < sizeof dense / sizeof *dense; i++) {
