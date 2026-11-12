@@ -5457,11 +5457,6 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                     "(%zu MiB behind a stream written under the device turn)\n",
                     s->id, g.id, STREAM_OUT_CAP >> 20);
     }
-    if (g.doc_on) {
-        prep.diag.closure_json = closure_json(g.doc.s, g.doc.n, g.close_at);
-        free(g.doc.s);
-        g.doc = (sbuf){0};
-    }
     prep.diag.wm_on = SV.wm_on;
     prep.diag.wm_marked = s->wm.marked;
     if (q.confirm_below > 0) {
@@ -5549,6 +5544,15 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         emit_channel(&g, 0, g.hold.s, (int)g.hold.n);
         g.hold.n = 0;
     }
+    // The closure report reads the turn's document, so it is built once the
+    // turn's last byte is in it. It used to be built, and the document freed,
+    // before the final think_finish above: a partial tag the splitter still
+    // held was then appended to the freed document, which allocated a new
+    // buffer nothing released (one leak per such turn, found under ASan), and
+    // the report was computed without those bytes (R6.68.20). A dead client
+    // skips this; `done` frees the document on every path.
+    if (g.doc_on)
+        prep.diag.closure_json = closure_json(g.doc.s, g.doc.n, g.close_at);
     // the first visible byte, from the moment the slot took the request
     // (a request the accept loop answered itself has no slot clock: 0)
     if (g.first_visible_t > 0 && s->req_t0 > 0)
@@ -5700,6 +5704,7 @@ done: ;
 #undef WRITE_RECEIPT
     free(shape.json.s);
     free(prep.diag.closure_json);
+    free(g.doc.s);
     // A paging note only when there was paging. Silence is the normal case and
     // a per-request "0 page-ins" would be noise, but when the weights have been
     // evicted this line is the only thing that says the time went to the disk
