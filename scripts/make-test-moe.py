@@ -21,6 +21,7 @@ the greedy output must be byte-identical.
                      and reading BOTH expert slices (offsets 0 and 1).
 """
 import math
+import os
 import struct
 import sys
 
@@ -215,6 +216,34 @@ for i in range(LAYERS):
     moe4 += moe_ffn_routed(i, 4)
 write_gguf(f"{OUT}.moe4.gguf", moe4,
       base_meta("llama", [ku("llama.expert_count", 4), ku("llama.expert_used_count", 2)]))
+
+# MOE_TEST_WIDE=N: <out>.wide.gguf, N experts, top-2 (R6.68.67). Past a device
+# route's caps (CUDA routes at most 512 experts, Metal 256) a bank is refused
+# the device rather than routed among a clamped set. The router rows of the
+# experts from 512 on are 8x wider, so those experts win the top-2 on most
+# tokens: a route clamped at 512 cannot see them and answers differently from
+# the CPU's. Written only when asked (N=520 is about 25 MB).
+if os.environ.get("MOE_TEST_WIDE"):
+    NW = int(os.environ["MOE_TEST_WIDE"])
+    wide = list(shared)
+    for i in range(LAYERS):
+        router = flist(E * NW)
+        for e in range(512, NW):
+            for j in range(E):
+                router[e * E + j] *= 8.0
+        gate_exps, up_exps, down_exps = [], [], []
+        for e in range(NW):
+            gate_exps += [x * (1.0 + 0.002 * e) for x in ffn[i]["gate"]]
+            up_exps += [x * (1.0 - 0.001 * e) for x in ffn[i]["up"]]
+            down_exps += [x * (1.0 + 0.003 * e) for x in ffn[i]["down"]]
+        wide += [
+            (f"blk.{i}.ffn_gate_inp.weight", [E, NW], pack(router)),
+            (f"blk.{i}.ffn_gate_exps.weight", [E, FF, NW], pack(gate_exps)),
+            (f"blk.{i}.ffn_up_exps.weight", [E, FF, NW], pack(up_exps)),
+            (f"blk.{i}.ffn_down_exps.weight", [FF, E, NW], pack(down_exps)),
+        ]
+    write_gguf(f"{OUT}.wide.gguf", wide,
+          base_meta("llama", [ku("llama.expert_count", NW), ku("llama.expert_used_count", 2)]))
 
 # afmoe with the router deliberately reduced to the CUDA/Metal device
 # kernel's plain softmax contract.  Shipping Trinity profiles use sigmoid

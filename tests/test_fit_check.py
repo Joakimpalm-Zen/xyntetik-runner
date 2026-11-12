@@ -8,6 +8,7 @@ cover the tensors it declares. That refusal is a safety property: it is what
 stops a truncated or crafted file from pointing a tensor outside the mapping.
 Both halves are asserted here.
 """
+import json
 import os
 import pathlib
 import re
@@ -473,3 +474,31 @@ def test_qwen4exp_holds_a_default_context_to_its_indexer_top_k(runner_bin, tmp_p
     fit = run(runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off")
     assert fit.returncode == 0, fit
     assert b"at ctx 2048" in fit.stdout, fit.stdout
+
+
+def test_a_router_past_the_device_caps_runs_on_the_cpu_and_the_fit_says_so(runner_bin, tmp_path):
+    """R6.68.67: a device bank's router takes at most so many experts and picks
+    a token (CUDA 512 and 256, Metal 256 and 256). Every CUDA route clamped past
+    them and nothing refused, so such a model was routed among a subset of its
+    experts on the device alone (the class of 2026-10-07, when the cap was 256).
+    The load now runs it on the CPU and says why, and --info fit says the same
+    words. make-test-moe.py's wide file routes 2 of 520."""
+    gpu = json.loads(run(runner_bin, "--caps").stdout).get("gpu") or {}
+    if not gpu.get("name"):
+        pytest.skip("no GPU device in this build or on this machine")
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py", str(tmp_path / "m")],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, MOE_TEST_WIDE="520"))
+    model = tmp_path / "m.wide.gguf"
+    load = run(runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "-t", "1", "-c", "64")
+    assert load.returncode == 0, load
+    said = [ln for ln in load.stderr.decode().splitlines() if ln.startswith("gpu: this model routes")]
+    assert said, load.stderr
+    fit = run(runner_bin, "-m", str(model), "--info", "fit")
+    assert fit.returncode == 0, fit
+    marker = "present, but the load runs on the CPU: "
+    lines = [ln for ln in fit.stdout.decode().splitlines() if marker in ln]
+    assert lines, fit.stdout
+    reason = lines[0].split(marker, 1)[1]
+    assert "routes 2 of 520 experts" in reason, reason
+    assert said[0].startswith("gpu: " + reason + ","), (said[0], reason)

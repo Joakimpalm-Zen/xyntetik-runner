@@ -1528,6 +1528,10 @@ typedef struct {
     // R6.68.29: why the loader would refuse this file, when model_fit_report
     // returns false because its plan did (the loader's own reason); "" else
     char     refused[240];
+    // why this build's GPU backend runs the file's routed experts on the CPU,
+    // or "" (model_moe_route_why over the plan's expert counts and the
+    // backend's caps, R6.68.67): the words the load prints
+    char     route_why[200];
 } model_fit;
 
 enum { FIT_KV_F16 = 0, FIT_KV_Q8, FIT_KV_K8V4, FIT_KV_FP4 };
@@ -1577,6 +1581,19 @@ enum { MODEL_GPU_REC_NONE, MODEL_GPU_REC_DELTANET, MODEL_GPU_REC_MAMBA2 };
 // Why a family runs on the CPU though a GPU is present (LayerNorm, lfm2,
 // grouped norms, flint, deepseek2 off CUDA), or NULL: the loader's decline
 // and --fit's answer for the same file.
+// R6.68.67: why a device bank whose router takes at most max_experts experts
+// and max_used picks a token cannot route this model (its words in buf, which
+// is returned), or NULL when it can. The load (cuda_admit, Metal's router
+// check) and --info fit give the same words. Inline, like model_kv_formats:
+// the backends' own tests compile them without model.c.
+static inline const char *model_moe_route_why(int n_expert, int n_used,
+                                              int max_experts, int max_used,
+                                              char *buf, size_t n) {
+    if (n_expert <= max_experts && n_used <= max_used) return NULL;
+    snprintf(buf, n, "this model routes %d of %d experts a token, and a device "
+             "bank routes at most %d of %d", n_used, n_expert, max_used, max_experts);
+    return buf;
+}
 const char *model_gpu_cpu_only_why(const char *arch, int norm_groups);
 uint64_t model_gpu_recurrent_cost(int kind, uint64_t n_rec, uint64_t conv_kernel,
                                   uint64_t inner, uint64_t state, uint64_t groups,

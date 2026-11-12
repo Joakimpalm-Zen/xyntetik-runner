@@ -996,6 +996,13 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
     // trained context is the plan's (2048 when the header has none, as a load
     // reads it; the header's 0 put the fit's default at 4096)
     out->train_ctx = geo.n_ctx_train;
+    // the device's router caps, as the load applies them (R6.68.67)
+    {
+        int me = 0, mu = 0;
+        if (geo.n_expert > 0 && gpu_moe_route_caps(&me, &mu))
+            model_moe_route_why(geo.n_expert, geo.n_expert_used, me, mu,
+                                out->route_why, sizeof out->route_why);
+    }
     out->n_ctx = n_ctx_want > 0 ? n_ctx_want : model_ctx_default(geo.n_ctx_train);
     if (!model_ctx_admit(geo.ctx_cap, out->arch, n_ctx_want, &out->n_ctx,
                          out->refused, sizeof out->refused)) {
