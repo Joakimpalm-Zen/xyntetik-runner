@@ -641,10 +641,6 @@ static uint64_t vram_free_now(void *ud) {
     return gpu_mem_info(&f, &t) ? (uint64_t)f : 0;
 }
 
-// Byte cost of one MoE layer's expert half: router, routed expert tensors in
-// either layout, and gemma-4's coupled dense shared branch. Shared by the VRAM
-// estimate and the CUDA fit so the two cannot disagree about what an expert
-// bank costs.
 // Expert-granular prefetch.
 //
 // On a model larger than RAM the engine's cost is not bandwidth and not
@@ -723,6 +719,20 @@ static uint64_t layer_routed_expert_bytes(const layer_t *ly, int n_expert) {
     return wb;
 }
 
+// The trunk's routed expert banks, in either layout (R6.68.53): what a sparse
+// MoE's hot set discounts. One function over a bound model or the fit's
+// dry-bound plan, so the load's hot set and --info fit's cannot differ (the
+// fit matched `_exps.weight` by name, which the legacy split layout of one
+// tensor per expert never matched: it priced such a file as dense).
+static uint64_t model_routed_expert_bytes(const model_t *m) {
+    uint64_t routed = 0;
+    for (int l = 0; m->layers && l < m->n_layer; l++)
+        routed += layer_routed_expert_bytes(&m->layers[l], m->n_expert);
+    return routed;
+}
+
+// Byte cost of one MoE layer's expert half: router, routed expert tensors in
+// either layout, and gemma-4's coupled dense shared branch.
 uint64_t model_layer_expert_bytes(const layer_t *ly, int n_expert) {
     if (!ly->is_moe) return 0;
     uint64_t wb = layer_routed_expert_bytes(ly, n_expert);
@@ -738,31 +748,16 @@ uint64_t model_layer_expert_bytes(const layer_t *ly, int n_expert) {
 // ------------------------------------------------- pre-download fit check
 //
 // "Will this model run on this machine?" answered from a GGUF HEADER, before
-// the weights exist locally. The arithmetic below deliberately re-derives what
-// model_hot_set_bytes() and model_kv_row_bytes() compute, because those take a
-// BOUND model_t -- they need the layer table, which needs the tensors, which
-// is exactly what a header-only file does not have.
+// the weights exist locally. The header holds every tensor's descriptor, so
+// the fit runs the loader's own plan over it (fit_plan: the metadata binders,
+// then the tensor binders dry, R6.68.29/R6.68.45) and charges what that plan
+// lays out: the KV per layer, the routed expert banks (the load's hot-set
+// rule, R6.68.53), the device's per-layer tables.
 //
 // Deliberately NOT in this file's job: fetching anything. The runner does not
 // speak HTTP, and a fit check is not a reason to teach it. `--fit` reads a
 // local path; the README documents the one-line ranged read that produces a
 // header-only file from a URL.
-static uint64_t fit_routed_expert_bytes(const gguf_file *g) {
-    // Header-only, so this matches on NAME rather than the layer table. The
-    // stacked expert banks are the `..._exps.weight` tensors; the router
-    // (ffn_gate_inp) and any shared expert are excluded for the same reason
-    // layer_routed_expert_bytes() excludes them -- every token touches those.
-    uint64_t wb = 0;
-    for (uint64_t i = 0; i < g->n_tensors; i++) {
-        const char *n = g->tensors[i].name;
-        size_t len = strlen(n);
-        const char *suffix = "_exps.weight";
-        size_t sl = strlen(suffix);
-        if (len >= sl && strcmp(n + len - sl, suffix) == 0)
-            wb += g->tensors[i].nbytes;
-    }
-    return wb;
-}
 
 // A metadata string, made safe to PRINT. Values like general.architecture are
 // attacker-chosen bytes of unbounded length, and the first thing a hostile file
@@ -839,8 +834,10 @@ int model_kv_ring_rows(int window, int batch, int n_ctx) {
 // K and V share), so a layer's row is K alone.
 // R6.68.40: kv_formats, the KV formats the trunk's heads take (model_kv_formats,
 // the loader's own rule).
+// R6.68.53: routed, n_expert and n_expert_used, the plan's routed expert banks
+// and expert counts (model_routed_expert_bytes, the load's hot-set rule).
 typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; int trunk; bool v_shared;
-                 unsigned kv_formats; } fit_geom;
+                 unsigned kv_formats; uint64_t routed; int n_expert, n_expert_used; } fit_geom;
 
 // R3.44: the qwen35 family's Gated DeltaNet layers own no KV rows
 // (bind_meta_qwen35) unless RUNNER_KV_RECURRENT_ROWS=1 keeps the layout that
@@ -941,6 +938,9 @@ static bool fit_geometry(gguf_file *g, int n_layer, bool mtp, fit_geom *o,
     }
     o->kv_formats = model_kv_formats(pm.l_head_dim, pm.n_layer, pm.head_dim);
     o->v_shared = pm.mla_absorb;
+    o->routed = model_routed_expert_bytes(&pm);
+    o->n_expert = pm.n_expert;
+    o->n_expert_used = pm.n_expert_used;
     model_free_weights(&pm);
     return true;
 }
@@ -1006,11 +1006,12 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
         out->gathered = ple->nbytes;
     uint64_t resident = out->weights - out->gathered;
 
-    uint64_t routed = fit_routed_expert_bytes(g);
-    if (out->n_expert > 0 && out->n_expert_used > 0 &&
-        out->n_expert_used < out->n_expert && routed && routed <= resident) {
+    // the load's hot-set rule over the plan's bound layers (R6.68.53)
+    uint64_t routed = geo.routed;
+    if (geo.n_expert > 0 && geo.n_expert_used > 0 &&
+        geo.n_expert_used < geo.n_expert && routed && routed <= resident) {
         out->hot = resident - routed +
-                   routed * (uint64_t)out->n_expert_used / (uint64_t)out->n_expert;
+                   routed * (uint64_t)geo.n_expert_used / (uint64_t)geo.n_expert;
         out->sparse = true;
     } else {
         out->hot = resident;
@@ -1475,9 +1476,7 @@ const char *model_fit_verdict(const model_fit *f) {
 uint64_t model_hot_set_bytes(const model_t *m) {
     if (m->n_expert <= 0 || m->n_expert_used <= 0 ||
         m->n_expert_used >= m->n_expert) return 0;      // dense, or not sparse
-    uint64_t routed = 0;
-    for (int l = 0; l < m->n_layer; l++)
-        routed += layer_routed_expert_bytes(&m->layers[l], m->n_expert);
+    uint64_t routed = model_routed_expert_bytes(m);
     uint64_t mapped = gguf_mapped_size(&m->gf);
     if (!routed || routed > mapped) return 0;   // nothing to discount
     uint64_t hot = routed * (uint64_t)m->n_expert_used / (uint64_t)m->n_expert;

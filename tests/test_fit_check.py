@@ -423,3 +423,19 @@ def test_a_valid_agent_profile_still_fits(runner_bin, tmp_path):
     fit = run(runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off")
     assert fit.returncode == 0, fit
     assert b"WILL NOT LOAD" not in fit.stdout
+
+
+def test_a_split_expert_moe_is_priced_as_sparse(runner_bin, tmp_path):
+    """R6.68.53: the legacy layout of one tensor per expert (older Mixtral
+    GGUFs) is a sparse MoE to the load, whose hot set discounts its banks
+    (model_hot_set_bytes). The fit found routed banks by the name
+    `_exps.weight`, which that layout never has, and priced the file as dense:
+    no hot set, the whole file. make-test-moe.py's moe3 routes 1 of 2 experts
+    in that layout."""
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-moe.py", str(tmp_path / "m")],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    p = run(runner_bin, "-m", str(tmp_path / "m.moe3.gguf"), "--info", "fit", "--gpu", "off")
+    assert p.returncode == 0, p
+    out = p.stdout.decode()
+    assert "MoE 2 experts, 1 used" in out, out
+    assert "only the routed experts a token actually uses" in out, out
