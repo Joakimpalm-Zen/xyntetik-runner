@@ -3088,6 +3088,19 @@ static void enc_mv(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
              1, n_in, n_out);
 }
 
+// A matvec whose every column must be a decode step's bits, over the n
+// columns of a prompt batch: the MoE router and the gemma-4 MoE's shared
+// branch, where a tolerance-class GEMM could flip a route. One dispatch
+// carries the columns (enc_mv_cols under `decode`: the kernel a one-column
+// step takes, or its column-inner twin, admitted only where it gives that
+// kernel's bits), where there was one dispatch a column (R6.68.87).
+static void enc_mv_decode_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                               gguf_tensor *w, id<MTLBuffer> x, id<MTLBuffer> y,
+                               int n_in, int n_out, id<MTLBuffer> bias,
+                               int n_col, int x_stride, int y_stride) {
+    enc_mv_cols(g, e, w, x, 0, y, 0, n_in, n_out, bias, n_col, x_stride, y_stride, true);
+}
+
 // n_col columns in one dispatch (grid.y), stride elements apart. Each
 // (head, column) pair is an independent reduction, so this is bit-identical to
 // n_col separate enc_qknorm calls -- see the kernel comment. It exists because
@@ -3974,10 +3987,8 @@ static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // matrix that the split mv grid spreads across the chip. Same lesson as
     // the dense-model front admission, at matvec scale: never trade a
     // parallel weight sweep for a dispatch. Removed; the split pair stays.
-    for (int b = 0; b < n; b++)
-        enc_mv(g, e, m, ly->ffn_gate_inp, g->xb,
-               foff((size_t)b * xdim), g->moe_logits,
-               foff((size_t)b * ne), m->n_embd, ne, g->gib[l]);
+    enc_mv_decode_cols(g, e, ly->ffn_gate_inp, g->xb, g->moe_logits,
+                       m->n_embd, ne, g->gib[l], n, xdim, ne);
     enc_moe_trace_logits(g, e, l, n, ne);
     if (metal_moe_batch_on()) {
         enc_moe_route(g, e, ne, used, n, 0, sel_off, l, 0);
@@ -4007,17 +4018,10 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // independent normalization columns share dispatches in this first slice.
     enc_rmsnorm_n(g, e, g->x, 0, g->xb2, 0, g->ffn_norm[l],
                   n_embd, m->rms_eps, n, n_embd, xdim);
-    for (int b = 0; b < n; b++) {
-        NSUInteger xbo = foff((size_t)b * xdim);
-        NSUInteger hbo = foff((size_t)b * dff);
-        enc_mv(g, e, m, ly->w_gate, g->xb2, xbo, g->hb, hbo,
-               n_embd, dff, nil);
-        enc_mv(g, e, m, ly->w_up, g->xb2, xbo, g->hb2, hbo,
-               n_embd, dff, nil);
-        enc_elem(g, e, g->p_gelu, g->hb, hbo, g->hb2, hbo, dff);
-        enc_mv(g, e, m, ly->w_down, g->hb, hbo, g->xb, xbo,
-               dff, n_embd, nil);
-    }
+    enc_mv_decode_cols(g, e, ly->w_gate, g->xb2, g->hb, n_embd, dff, nil, n, xdim, dff);
+    enc_mv_decode_cols(g, e, ly->w_up, g->xb2, g->hb2, n_embd, dff, nil, n, xdim, dff);
+    enc_elem_n(g, e, g->p_gelu, g->hb, 0, g->hb2, 0, dff, n, dff, dff);
+    enc_mv_decode_cols(g, e, ly->w_down, g->hb, g->xb, dff, n_embd, nil, n, dff, xdim);
     e = metal_scan_point(g, e, cbp, ep, 3, l, g->xb, (size_t)n * xdim, "moe:dense-shared");
     enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->gpn1[l],
                   n_embd, m->rms_eps, n, xdim, xdim);
@@ -4027,10 +4031,8 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                   n_embd, m->rms_eps, n, n_embd, xdim);
     enc_rmsnorm_n(g, e, g->x, 0, g->q, 0, g->ggis[l],
                   n_embd, m->rms_eps, n, n_embd, xdim);
-    for (int b = 0; b < n; b++)
-        enc_mv(g, e, m, ly->ffn_gate_inp, g->q,
-               foff((size_t)b * xdim), g->moe_logits,
-               foff((size_t)b * ne), n_embd, ne, nil);
+    enc_mv_decode_cols(g, e, ly->ffn_gate_inp, g->q, g->moe_logits,
+                       n_embd, ne, nil, n, xdim, ne);
     enc_moe_trace_logits(g, e, l, n, ne);
     NSUInteger sel_off = foff((size_t)l * n * used);
     if (metal_moe_batch_on()) {
