@@ -6776,17 +6776,9 @@ static int atem_map(const tool_envelope *e, const char *doc, size_t n,
         calls++;
         p = inv_end + strlen("</atem:invoke>");
     }
-    if (calls) return calls;
-
-    // A native direct answer is addressed to the user. Keep the recipient
-    // header out of content just as the JSON envelope syntax is kept out.
-    const char *u = atem_find(doc, end, " to=user<|message|>");
-    if (!u) return -1;
-    u += strlen(" to=user<|message|>");
-    const char *stop = atem_find(u, end, "<|eot|>");
-    sb_put(content, u, stop && stop <= end ? (size_t)(stop - u)
-                                           : (size_t)(end - u));
-    return 0;
+    // No invoke block: not a call. The direct answer (` to=user<|message|>`)
+    // is the demultiplexer's to forward, the one reader of the turn's framing.
+    return calls ? calls : -1;
 }
 
 bool muse_user_payload_strip(sbuf *payload) {
@@ -7084,45 +7076,6 @@ static bool g4_one_call(const char **pp, const char *end, int index, sbuf *tc) {
     return !tc->failed;
 }
 
-static int gemma4_map(const tool_envelope *e, const char *doc, size_t n,
-                      sbuf *reasoning, sbuf *content, sbuf *tc) {
-    (void)e;
-    const char *p = doc, *end = doc + n;
-    static const char THOUGHT[] = "<|channel>thought\n";
-    static const char THOUGHT_END[] = "<channel|>";
-    if ((size_t)(end - p) >= sizeof(THOUGHT) - 1 &&
-        !memcmp(p, THOUGHT, sizeof(THOUGHT) - 1)) {
-        p += sizeof(THOUGHT) - 1;
-        const char *close = atem_find(p, end, THOUGHT_END);
-        if (reasoning) sb_put(reasoning, p, (size_t)((close ? close : end) - p));
-        p = close ? close + sizeof(THOUGHT_END) - 1 : end;
-    }
-    // Prose before the first call is content (a turn asked for a word before
-    // acting writes it, and the grammar's prose branch hands off to the call
-    // at the opener); the calls follow.
-    const char *first = atem_find(p, end, "<|tool_call>");
-    if (first && first > p) {
-        sb_put(content, p, (size_t)(first - p));
-        p = first;
-    }
-    int calls = 0;
-    while (p < end) {
-        const char *at = p;
-        if (calls) sb_lit(tc, ",");
-        if (!g4_one_call(&at, end, calls, tc)) {
-            if (calls) tc->n -= 1;              // undo the separator
-            break;
-        }
-        calls++;
-        p = at;
-    }
-    if (calls) return tc->failed || content->failed ? -1 : calls;
-    // No call block: the turn is prose, up to the turn close the model does
-    // not otherwise emit.
-    const char *stop = atem_find(p, end, "<turn|>");
-    sb_put(content, p, (size_t)((stop ? stop : end) - p));
-    return content->failed ? -1 : 0;
-}
 
 // Parse a complete native XML call using the declared types. In particular,
 // raw strings are never guessed to be JSON. Malformed members reject the
@@ -7274,37 +7227,6 @@ static bool tool_trace_on(void) {
     return on == 1;
 }
 
-static int qwen_map(const tool_envelope *e, const char *doc, size_t n,
-                    sbuf *content, sbuf *tc) {
-    const char *p=doc, *end=doc+n;
-    int calls=0;
-    if (tool_trace_on())
-        fprintf(stderr, "tool-trace: %s document (%zu bytes):\n%.*s\n",
-                e->proto == TP_QWEN_XML ? "qwen3-coder" : "qwen", n, (int)n, doc);
-    while (p<end) {
-        const char *open=atem_find(p,end,"<tool_call>");
-        const char *stop=atem_find(p,end,"<|im_end|>");
-        if (!open || (stop && stop<open)) {
-            if (!calls) sb_put(content,p,(size_t)((stop?stop:end)-p));
-            break;
-        }
-        if (!calls && trim_left(p,open)<open) sb_put(content,p,(size_t)(open-p));
-        // the envelope's contract: max_calls per turn (1 unless parallel);
-        // the grammar enforces it, and a document past it is not a turn
-        if (calls >= e->max_calls) {
-            if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, call %d past max_calls %d\n", calls + 1, e->max_calls);
-            return -1;
-        }
-        const char *at=open;
-        if (calls) sb_lit(tc,",");
-        if (!qwen_call_for(e,&at,end,calls,tc,NULL)) {
-            if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, call %d does not parse against its declaration\n", calls + 1);
-            return -1;
-        }
-        calls++;p=at;
-    }
-    return tc->failed || content->failed ? -1 : calls;
-}
 
 // MiniCPM5's native call, bare in the content (no <tool_call> framing):
 //   <function name="N"><param name="K">V</param>...</function>
@@ -7645,41 +7567,6 @@ static bool proto_bare_xml(int p) {
 // through the family's reader, the turn ends at its end marker. A call that
 // does not parse against its declaration refuses the document, a call past
 // max_calls too.
-static int bare_xml_map(const tool_envelope *e, const char *doc, size_t n,
-                        sbuf *content, sbuf *tc) {
-    const xml_proto *xp = xml_proto_of(e);
-    const char *p=doc, *end=doc+n;
-    int calls=0;
-    if (tool_trace_on())
-        fprintf(stderr, "tool-trace: %s document (%zu bytes):\n%.*s\n", xp->name, n, (int)n, doc);
-    while (p<end) {
-        const char *open=atem_find(p,end,xp->open);
-        const char *stop=atem_find(p,end,xp->turn_end);
-        if (!open || (stop && stop<open)) {
-            if (!calls) sb_put(content,p,(size_t)((stop?stop:end)-p));
-            break;
-        }
-        if (!calls) {
-            // the content runs to the call, or to the frame opening it
-            const char *cend = open;
-            const char *fo = xp->frame_open ? atem_find(p, open, xp->frame_open) : NULL;
-            if (fo) { cend = fo; if (cend > p && cend[-1] == '\n') cend--; }
-            if (trim_left(p,cend)<cend) sb_put(content,p,(size_t)(cend-p));
-        }
-        if (calls >= e->max_calls) {
-            if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, call %d past max_calls %d\n", calls + 1, e->max_calls);
-            return -1;
-        }
-        const char *at=open;
-        if (calls) sb_lit(tc,",");
-        if (!xp->one_call(e,&at,end,calls,tc)) {
-            if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, call %d does not parse against its declaration\n", calls + 1);
-            return -1;
-        }
-        calls++;p=at;
-    }
-    return tc->failed || content->failed ? -1 : calls;
-}
 
 // Nemotron Nano's native turn: optional text, then ONE block
 // `<TOOLCALL>[{"name": "N", "arguments": {...}}, ...]</TOOLCALL>` holding the
@@ -7793,36 +7680,6 @@ static int nemotron_block_calls(const list_proto *lp, const char **pp,
     return tc->failed ? -1 : n;
 }
 
-static int nemotron_map(const tool_envelope *e, const char *doc, size_t n,
-                        sbuf *content, sbuf *tc) {
-    const list_proto *lp = list_proto_of(e);
-    const char *p = doc, *end = doc + n;
-    int calls = 0;
-    if (tool_trace_on())
-        fprintf(stderr, "tool-trace: %s document (%zu bytes):\n%.*s\n",
-                lp == &NEMO_LP ? "nemotron" : "mistral", n, (int)n, doc);
-    while (p < end) {
-        const char *open = atem_find(p, end, lp->open);
-        const char *stop = atem_find(p, end, lp->turn_end);
-        if (!open || (stop && stop < open)) {
-            if (!calls) sb_put(content, p, (size_t)((stop ? stop : end) - p));
-            break;
-        }
-        // the text before the block, without the blank line the template
-        // writes between them
-        if (!calls && trim_left(p, open) < open)
-            sb_put(content, p, (size_t)(trim_right(p, open) - p));
-        const char *at = open;
-        int got = nemotron_block_calls(lp, &at, end, calls, e->max_calls - calls, tc);
-        if (got < 0) {
-            if (tool_trace_on()) fprintf(stderr, "tool-trace: refused, a %s block that is not a list of at most %d calls\n", lp->open, e->max_calls - calls);
-            return -1;
-        }
-        calls += got;
-        p = at;
-    }
-    return tc->failed || content->failed ? -1 : calls;
-}
 
 // ---- LFM2's pythonic call lists
 //
@@ -8192,37 +8049,39 @@ static int py_call_list(pyrd *r, int index, int max, bool raw, sbuf *calls, int 
     }
 }
 
+static int envelope_map_by_stream(const tool_envelope *e, const char *doc, size_t n,
+                                  bool truncated, sbuf *reasoning, sbuf *content,
+                                  sbuf *tc);
+
+// One finished turn, mapped into the channels a client receives. Every
+// native protocol is read by its stream demultiplexer, run over the whole
+// turn: a buffered response then carries exactly the content and calls a
+// streamed one would have, because there is no second reader to disagree
+// with it (R6.68.34). Harmony is the one protocol whose demultiplexer holds
+// the turn and calls its mapper at the end, so it is called directly; the
+// generic JSON envelope is a JSON document and is read by the JSON parser.
+int tool_envelope_map_turn(const tool_envelope *e, const char *doc, size_t n,
+                           bool truncated, sbuf *reasoning, sbuf *content,
+                           sbuf *tc) {
+    if (!e || !doc || !content || !tc) return -1;
+    if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, reasoning, content, tc);
+    if (e->proto != TP_GENERIC && e->proto != TP_MUSE_USER)
+        return envelope_map_by_stream(e, doc, n, truncated, reasoning, content, tc);
+    return tool_envelope_map(e, doc, n, content, tc);
+}
+
 int tool_envelope_map_channels(const tool_envelope *e, const char *doc,
                                size_t n, sbuf *reasoning, sbuf *content,
                                sbuf *tc) {
-    if (!e || !doc || !content || !tc) return -1;
-    if (proto_lfm2(e->proto)) {   // parse-only: the demultiplexer is the parser
-        int got = 0;
-        return tool_stream_map(e, doc, n, false, content, tc, &got) < 0 ? -1 : got;
-    }
-    if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, reasoning, content, tc);
-    if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, reasoning, content, tc);
-    if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
-    if (proto_bare_xml(e->proto))
-        return bare_xml_map(e, doc, n, content, tc);
-    return tool_envelope_map(e, doc, n, content, tc);
+    return tool_envelope_map_turn(e, doc, n, false, reasoning, content, tc);
 }
 
 int tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
                       sbuf *content, sbuf *tc) {
     if (!e || !doc || !content || !tc) return -1;
-    if (proto_lfm2(e->proto)) {   // parse-only: the demultiplexer is the parser
-        int got = 0;
-        return tool_stream_map(e, doc, n, false, content, tc, &got) < 0 ? -1 : got;
-    }
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, NULL, content, tc);
-    if (e->proto == TP_GEMMA4) return gemma4_map(e, doc, n, NULL, content, tc);
-    if (e->proto == TP_QWEN || e->proto == TP_QWEN_XML) return qwen_map(e, doc, n, content, tc);
-    if (proto_bare_xml(e->proto))
-        return bare_xml_map(e, doc, n, content, tc);
-    if (e->proto == TP_NEMOTRON || e->proto == TP_MISTRAL || e->proto == TP_MISTRAL_SYS)
-        return nemotron_map(e, doc, n, content, tc);
-    if (e->proto == TP_ATEM) return atem_map(e, doc, n, content, tc);
+    if (e->proto != TP_GENERIC && e->proto != TP_MUSE_USER)
+        return envelope_map_by_stream(e, doc, n, false, NULL, content, tc);
     if (e->proto == TP_MUSE_USER) {
         const char *end = doc + n;
         const char *message = atem_find(doc, end, "<|message|>");
@@ -8495,7 +8354,11 @@ static int ts_final_str(tool_stream *s, const char *b, int n) {
             }
             continue;
         }
-        if (c == '"') return ts_entry_close(s, b + i + 1, n - (i + 1), rc);
+        if (c == '"') {
+            // the string closed; the args object that holds it has not
+            s->args_open = true;
+            return ts_entry_close(s, b + i + 1, n - (i + 1), rc);
+        }
         if (c == '\\') { s->pend[0] = c; s->n_pend = 1; continue; }
         int run = i;
         while (i < n && b[i] != '"' && b[i] != '\\') i++;
@@ -8516,14 +8379,17 @@ static int ts_resolve(tool_stream *s) {
             size_t i = (size_t)p;
             while (i < s->head_n && ts_ws(s->head[i])) i++;
             if (i >= s->head_n) return 0;
-            if (s->head[i] != '"') { s->state = TS_DONE; return 0; }
+            if (s->head[i] != '"') { s->fault = true; s->state = TS_DONE; return 0; }
             long e = head_str_end(s, i);
             if (e < 0) return 0;
-            size_t len = (size_t)e - i - 2;
-            s->name = malloc(len + 1);
-            if (!s->name) { s->state = TS_DONE; return 0; }
-            memcpy(s->name, s->head + i + 1, len);
-            s->name[len] = 0;
+            // the name as the JSON parser reads it, escapes decoded: the
+            // buffered mapper compares and reports the decoded name, and a
+            // raw copy handed a client `sav\u0065` for a tool named `save`
+            jv *jn = json_parse(s->head + i, (size_t)e - i);
+            const char *decoded = jn && jn->type == J_STR ? jn->str : NULL;
+            s->name = decoded ? strdup(decoded) : NULL;
+            jv_free(jn);
+            if (!s->name) { s->fault = true; s->state = TS_DONE; return 0; }
             s->called = strcmp(s->name, FINAL_BRANCH) != 0;
             if (s->called) s->any_called = true;
             head_drop(s, (size_t)e);
@@ -8561,7 +8427,7 @@ static int ts_resolve(tool_stream *s) {
             size_t i = (size_t)p;
             while (i < s->head_n && ts_ws(s->head[i])) i++;
             if (i >= s->head_n) return 0;
-            if (s->head[i] != '"') { s->state = TS_DONE; return 0; }
+            if (s->head[i] != '"') { s->fault = true; s->state = TS_DONE; return 0; }
             head_drop(s, i + 1);
             s->state = TS_FINAL_STR;
             break;
@@ -8576,18 +8442,30 @@ static int ts_resolve(tool_stream *s) {
             size_t i = 0;
             while (i < s->head_n && ts_ws(s->head[i])) i++;
             if (i >= s->head_n) return 0;
-            if (s->head[i] != '}') { s->state = TS_DONE; return 0; }
+            if (s->args_open) {
+                // a final branch forwarded only its content string, so its
+                // args object closes before the entry does. Without this the
+                // entry's own '}' was read as the separator, the scan gave
+                // up, and a call after a final branch was never announced.
+                if (s->head[i] != '}') { s->fault = true; s->state = TS_DONE; return 0; }
+                i++;
+                while (i < s->head_n && ts_ws(s->head[i])) i++;
+                if (i >= s->head_n) return 0;
+            }
+            if (s->head[i] != '}') { s->fault = true; s->state = TS_DONE; return 0; }
             i++;
             while (i < s->head_n && ts_ws(s->head[i])) i++;
             if (i >= s->head_n) return 0;
             if (s->head[i] == ']') {
                 head_drop(s, i + 1);
+                s->args_open = false;
                 s->state = TS_DONE;
                 return 0;
             }
-            if (s->head[i] != ',') { s->state = TS_DONE; return 0; }
+            if (s->head[i] != ',') { s->fault = true; s->state = TS_DONE; return 0; }
             i++;
             head_drop(s, i);
+            s->args_open = false;
             s->state = TS_TOOL;
             break;
         }
@@ -8656,7 +8534,10 @@ static int ts_atem(tool_stream *s, const char *bytes, int n) {
             const char *name = jv_str(jv_get(fn, "name"), NULL);
             const char *args = jv_str(jv_get(fn, "arguments"), NULL);
             int rc = 0;
-            if (!name || !args) rc = 0;
+            // a closed invoke that is not a call: dropped, and the turn
+            // reports it as every protocol's reader does (one valid call
+            // beside it used to make the turn a clean one)
+            if (!name || !args) s->fault = true;
             else {
                 s->called = true;
                 s->any_called = true;
@@ -9264,9 +9145,16 @@ static int ts_gemma4(tool_stream *s, const char *bytes, int n) {
                         rc = s->sink.call_args(s->sink.ud, args,
                                                (int)strlen(args));
                     if (!rc && s->sink.call_end) rc = s->sink.call_end(s->sink.ud);
+                } else {
+                    s->fault = true;   // mapped, but not to a call the client can read
                 }
                 jv_free(arr);
                 free(wrapped.s);
+            } else {
+                // a closed block that is not a call: dropped, and the turn
+                // reports it, as every other protocol's reader does (it was
+                // dropped in silence, a clean turn with a call missing)
+                s->fault = true;
             }
             free(tc.s);
             head_drop(s, upto);
@@ -9454,6 +9342,11 @@ int tool_stream_finish_ex(tool_stream *s, bool truncated) {
         bool framing = s->state == TS_G4_CALLS ||
                        (s->state == TS_G4_START &&
                         (ts_partial(s, G4_THOUGHT) || ts_partial(s, G4_CALL_OPEN)));
+        // a call block the model left open is an abandoned call, the fault
+        // every other protocol reports; only a budget or deadline cut makes
+        // it a truncated one, dropped without a fault
+        if (s->state == TS_G4_CALLS && ts_starts(s, G4_CALL_OPEN) && !truncated)
+            s->fault = true;
         if (s->head_n && !framing) {
             if (s->state == TS_G4_THOUGHT)
                 rc = s->sink.reasoning
@@ -9464,8 +9357,41 @@ int tool_stream_finish_ex(tool_stream *s, bool truncated) {
         }
         s->head_n = 0;
         s->state = TS_DONE;
+        if (s->fault) rc = -1;
         return rc;
     }
+    if (s->state == TS_ATEM) {
+        // What the feed left held. An answer whose <|eot|> never arrived is
+        // still the answer, to its last byte (the buffered mapper always read
+        // it so; the stream dropped it). An invoke that never closed is half
+        // a call, and a turn with no call and no answer is not the protocol:
+        // both are a fault unless a budget or deadline cut the turn.
+        int rc = 0;
+        const char *end = s->head ? s->head + s->head_n : NULL;
+        const char *inv = s->head ? head_find(s, "<atem:invoke name=\"") : NULL;
+        const char *user = !inv && s->head ? head_find(s, " to=user<|message|>") : NULL;
+        if (user) {
+            user += strlen(" to=user<|message|>");
+            if (user < end && s->sink.content)
+                rc = s->sink.content(s->sink.ud, user, (int)(end - user));
+        } else if (!truncated && (inv || !s->any_called)) s->fault = true;
+        s->head_n = 0;
+        s->state = TS_DONE;
+        if (s->fault) rc = -1;
+        return rc;
+    }
+    if (s->state == TS_TOOL || s->state == TS_ARGS || s->state == TS_FINAL_KEY ||
+        s->state == TS_FINAL_STR || s->state == TS_VALUE ||
+        s->state == TS_ENTRY_SEP) {
+        // The generic envelope ended before its document did: no branch
+        // resolved, or a value left open. The grammar closes a cut turn to a
+        // whole document, so on a turn the model ended this is a document
+        // that is not the envelope, the one the buffered mapper refuses; it
+        // used to end as a clean, empty turn.
+        if (!truncated) s->fault = true;
+        s->state = TS_DONE;
+    }
+    if (s->state == TS_DONE && s->fault) return -1;
     if (s->state != TS_HARMONY) return 0;
     sbuf reasoning = {0}, content = {0}, tc = {0}, wrapped = {0};
     int mapped = tool_envelope_map_channels(
@@ -9504,18 +9430,29 @@ bool tool_stream_called(const tool_stream *s) { return s->any_called; }
 
 // tool_stream_map's sinks: content appended verbatim, each call rendered as
 // one OpenAI tool_calls[] item in the shape tool_calls_parse produces.
-typedef struct { sbuf *content, *tc; int n; sbuf args; } map_sink;
+typedef struct {
+    sbuf *content, *tc; int n; sbuf args; sbuf *reasoning;
+    bool open;        // a call was begun and not ended
+    size_t open_at;   // tc's length before that call, to take it back out
+} map_sink;
 static int map_content(void *ud, const char *b, int n) {
     map_sink *m = ud; sb_put(m->content, b, (size_t)n); return 0;
 }
+static int map_reasoning(void *ud, const char *b, int n) {
+    map_sink *m = ud;
+    if (m->reasoning) sb_put(m->reasoning, b, (size_t)n);
+    return 0;
+}
 static int map_call_begin(void *ud, const char *name) {
     map_sink *m = ud;
+    m->open_at = m->tc->n;
     if (m->n) sb_lit(m->tc, ",");
     sb_fmt(m->tc, "{\"id\":\"call_%d\",\"type\":\"function\",\"function\":"
                   "{\"name\":\"", m->n);
     sb_esc(m->tc, name, (int)strlen(name));
     sb_lit(m->tc, "\",\"arguments\":\"");
     m->args.n = 0;
+    m->open = true;
     return 0;
 }
 static int map_call_args(void *ud, const char *b, int n) {
@@ -9526,6 +9463,7 @@ static int map_call_end(void *ud) {
     sb_esc(m->tc, m->args.s ? m->args.s : "", (int)m->args.n);
     sb_lit(m->tc, "\"}}");
     m->n++;
+    m->open = false;
     return 0;
 }
 
@@ -9537,7 +9475,7 @@ int tool_stream_map(const tool_envelope *e, const char *doc, size_t n,
 int tool_stream_map_ex(const tool_envelope *e, const char *doc, size_t n,
                        bool truncated, sbuf *content, sbuf *tc, int *n_calls,
                        bool *implicit_close) {
-    map_sink m = { content, tc, 0, {0} };
+    map_sink m = { content, tc, 0, {0}, NULL, false, 0 };
     tool_stream_sink sink = { &m, NULL, map_content, map_call_begin,
                               map_call_args, map_call_end };
     tool_stream s;
@@ -9550,6 +9488,41 @@ int tool_stream_map_ex(const tool_envelope *e, const char *doc, size_t n,
     *n_calls = m.n;
     if (content->failed || tc->failed) return -1;
     return rc || fin ? -1 : 0;
+}
+
+// The buffered mapper for a strict native envelope: the demultiplexer over
+// the whole turn. Strict means the turn IS the protocol, so a turn the
+// demultiplexer faults, or one the model ended inside a call, maps to nothing
+// and returns -1 (the caller reports the fault); the outputs are appended to
+// only on success. `truncated` is the caller's turn_cut, passed to the
+// finish as the streamed path passes it: a call a budget or deadline cut is
+// dropped and the rest of the turn kept, in both paths. (The grammar's closer
+// completes a cut call, so this is the turn whose closer could not.)
+static int envelope_map_by_stream(const tool_envelope *e, const char *doc, size_t n,
+                                  bool truncated, sbuf *reasoning, sbuf *content,
+                                  sbuf *tc) {
+    sbuf r = {0}, c = {0}, t = {0};
+    map_sink m = { &c, &t, 0, {0}, &r, false, 0 };
+    tool_stream_sink sink = { &m, map_reasoning, map_content, map_call_begin,
+                              map_call_args, map_call_end };
+    tool_stream s;
+    tool_stream_init(&s, e, &sink);
+    int rc = n ? tool_stream_feed(&s, doc, (int)n) : 0;
+    int fin = tool_stream_finish_ex(&s, truncated);
+    tool_stream_free(&s);
+    free(m.args.s);
+    // half a call is not a call: a cut one comes back out of the list
+    if (m.open && truncated) { t.n = m.open_at; m.open = false; }
+    int got = m.n;
+    if (rc || fin || m.open || r.failed || c.failed || t.failed) got = -1;
+    else {
+        if (reasoning && r.n) sb_put(reasoning, r.s, r.n);
+        if (c.n) sb_put(content, c.s, c.n);
+        if (t.n) sb_put(tc, t.s, t.n);
+        if ((reasoning && reasoning->failed) || content->failed || tc->failed) got = -1;
+    }
+    free(r.s); free(c.s); free(t.s);
+    return got;
 }
 
 void tool_stream_free(tool_stream *s) {

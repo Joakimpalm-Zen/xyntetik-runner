@@ -494,10 +494,15 @@ oom:
 static snode *schema_compile_atem_parallel_raw(struct jv *tools, const char *only_tool,
                                     char *err, int errcap) {
     // one to NATIVE_PARALLEL_MAX_CALLS calls; it was a fixed PAIR until
-    // 2026-10-09 (see atem_more_calls)
+    // 2026-10-09 (see atem_more_calls). The first call opens in either form,
+    // direct or after a reasoning turn, as the single-call turn does: with
+    // the direct form alone a model that reasoned first had no legal byte
+    // after its reasoning and ran to the token budget (R6.68.42). The calls
+    // after it follow the spelled separator, which ends in `assistant`, so
+    // they stay direct.
     snode *root = atem_seq(2);
     snode *first = root ? schema_compile_atem_turn_raw(
-        tools, false, only_tool, NULL, ATEM_TURN_DIRECT, err, errcap) : NULL;
+        tools, false, only_tool, NULL, ATEM_TURN_EITHER, err, errcap) : NULL;
     snode *rest = first ? atem_more_calls(tools, only_tool,
                                           NATIVE_PARALLEL_MAX_CALLS - 1,
                                           err, errcap) : NULL;

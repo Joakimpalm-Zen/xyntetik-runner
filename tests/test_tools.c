@@ -538,6 +538,27 @@ static void test_atem_parallel_turn_constrains_one_to_eight_calls(void) {
     sb_put(&bare, one, strlen(one));
     assert(!feeds(root, bare.s));
     free(bare.s);
+    // R6.68.42: a model that reasons before a required call closes its self
+    // turn with <|eom|> and opens the call as `<|start|>assistant to=NAME`
+    // (both controls decode to no bytes, so the grammar sees `assistant to=`).
+    // The first call took only the direct ` to=` form: after the reasoning
+    // every byte the model wanted was refused, only the byte-less controls
+    // were legal, and the turn ran to max_tokens with no call (measured on a
+    // 14B Muse-family model, tool_choice required). Either form opens the
+    // first call; the calls after it keep the spelled separator.
+    for (int n = 1; n <= NATIVE_PARALLEL_MAX_CALLS; n++) {
+        sbuf doc = {0};
+        sb_lit(&doc, "assistant");
+        for (int k = 0; k < n; k++) {
+            if (k) sb_lit(&doc, "<|eom|><|start|>assistant");
+            sb_put(&doc, one, strlen(one));
+        }
+        sb_lit(&doc, "<|eot|>");
+        assert(accepts(root, doc.s));
+        free(doc.s);
+    }
+    assert(!feeds(root, "assistant to=user"));        // required: no answer branch
+    assert(!feeds(root, "assistantassistant to="));
     schema_free(root); jv_free(tools);
 }
 
@@ -1202,6 +1223,20 @@ static void demux(const tool_envelope *e, const char *doc, demux_log *l) {
     demux_step(e, doc, 1, l);
 }
 
+// a turn a budget or deadline cut: fed a byte at a time and finished as cut
+static void demux_cut(const tool_envelope *e, const char *doc, demux_log *l) {
+    memset(l, 0, sizeof(*l));
+    tool_stream_sink sink = { l, log_reasoning, log_content,
+                              log_begin, log_args, log_end };
+    tool_stream s;
+    tool_stream_init(&s, e, &sink);
+    for (size_t i = 0; doc[i]; i++)
+        assert(tool_stream_feed(&s, doc + i, 1) == 0);
+    assert(tool_stream_finish_ex(&s, true) == 0);
+    l->called = tool_stream_called(&s);
+    tool_stream_free(&s);
+}
+
 static void log_free(demux_log *l) {
     free(l->reasoning.s);
     free(l->content.s);
@@ -1696,8 +1731,7 @@ static void test_stream_demux_never_leaks_the_envelope(void) {
     assert(l.args.s != NULL);
     // the concatenated deltas are exactly the argument document
     assert(!strcmp(l.args.s, "{\"city\":\"Oslo\",\"units\":\"c\"}"));
-    free(l.content.s);
-    free(l.args.s);
+    log_free(&l);
 
     // the final branch is unescaped assistant text, and no call at all
     demux(&e, "{\"tool\":\"final\",\"args\":{\"content\":\"hi\\nthere\"}}", &l);
@@ -1795,7 +1829,7 @@ static void test_stream_demux_holds_back_an_undecided_prefix(void) {
         memcpy(prefix, doc, k);
         prefix[k] = 0;
         demux_log l;
-        demux(&e, prefix, &l);
+        demux_cut(&e, prefix, &l);
         // nothing that arrives is ever envelope syntax
         assert(l.content.n == 0);
         if (l.args.n)
@@ -3867,6 +3901,7 @@ static void test_xml_parse_only_call_closed_by_the_next_opener(void) {
     sbuf c5 = {0}, tc5 = {0};
     assert(tool_envelope_map(&strict, LIGHTNING_T0, strlen(LIGHTNING_T0), &c5, &tc5) == -1);
     free(c5.s); free(tc5.s);
+    tool_envelope_free(&e);   // `strict` is a shallow copy of it
     jv_free(tools);
 }
 
@@ -4054,6 +4089,190 @@ static void test_coder_raw_string_closes_on_the_tag(void) {
     tool_envelope_free(&e);schema_free(root);jv_free(tools);
 }
 
+// R6.68.34: one reader per native protocol. The buffered mapper is the
+// stream demultiplexer run over the finished turn, so the two cannot answer
+// one turn differently. `want` is the buffered result: the number of calls,
+// or -1 for a turn that is not the protocol.
+static void one_reader(const tool_envelope *e, const char *doc, int want) {
+    demux_log l;
+    memset(&l, 0, sizeof(l));
+    tool_stream_sink sink = { &l, log_reasoning, log_content,
+                              log_begin, log_args, log_end };
+    tool_stream s;
+    tool_stream_init(&s, e, &sink);
+    int rs = tool_stream_feed(&s, doc, (int)strlen(doc));
+    if (!rs) rs = tool_stream_finish(&s);
+    tool_stream_free(&s);
+    sbuf reasoning = {0}, content = {0}, tc = {0};
+    int rb = tool_envelope_map_channels(e, doc, strlen(doc), &reasoning, &content, &tc);
+    assert(rb == want);
+    if (want < 0) {
+        // refused: the stream reports the fault or leaves a call open, and
+        // the buffered turn hands nothing to the client
+        assert(rs != 0 || l.begins != l.ends);
+        assert(!reasoning.n && !content.n && !tc.n);
+    } else {
+        assert(rs == 0 && l.begins == want && l.ends == want);
+        assert(content.n == l.content.n &&
+               (!content.n || !memcmp(content.s, l.content.s, content.n)));
+        assert(reasoning.n == l.reasoning.n &&
+               (!reasoning.n || !memcmp(reasoning.s, l.reasoning.s, reasoning.n)));
+    }
+    free(reasoning.s); free(content.s); free(tc.s);
+    log_free(&l);
+}
+
+// The turns a differential run over mutated turns found the two readers
+// answering differently (2026-11-12), one per kind, now with one answer.
+static void test_buffered_turn_is_read_by_the_stream_reader(void) {
+    jv *tools = parse(TOOLS);
+    jv *required = parse("\"required\"");
+    char err[192];
+    bool skip = false;
+
+    // Qwen: text after the closed call is the model's text (the buffered
+    // reader dropped it); a second call left open refuses the turn
+    tool_envelope q = {0};
+    q.proto = TP_QWEN;
+    q.tools = tools;
+    one_reader(&q, "Adding.<tool_call>\n{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}\n"
+                   "</tool_call> Done.", 1);
+    one_reader(&q, "<tool_call>\n{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}\n</tool_call>"
+                   "<tool_call>\n{\"name\": \"add\", \"arguments\": {\"a\": 1", -1);
+
+    // Gemma 4: a call whose block never closed is not a call (the buffered
+    // reader took it for one), and a tail that could still open a block is
+    // framing in both
+    tool_envelope g;
+    assert(tool_envelope_build_ex(tools, required, NULL, true, &g, err, sizeof err) == 1);
+    tool_decl_native(TMPL_GEMMA4, true, true, tools, &g, &skip);
+    assert(g.proto == TP_GEMMA4 && !g.parse_only);
+    one_reader(&g, "<|tool_call>call:add{a:1,b:2}<tool_call|>", 1);
+    one_reader(&g, "<|tool_call>call:add{a:1,b:2}<tool_cal", -1);
+    one_reader(&g, "<|tool_call>call:add{a:1,b:<tool_call|>", -1);
+    one_reader(&g, "Hello<|too", 0);
+    tool_envelope_free(&g);
+
+    // Mistral: held whitespace and a tail that could still open the block
+    // are framing in both readers; text after the call is kept by both
+    tool_envelope m;
+    skip = false;
+    assert(tool_envelope_build_ex(tools, required, NULL, true, &m, err, sizeof err) == 1);
+    tool_decl_native(TMPL_MISTRAL, true, true, tools, &m, &skip);
+    assert(m.proto == TP_MISTRAL && !m.parse_only);
+    one_reader(&m, "Just \n", 0);
+    one_reader(&m, "Adding.[TOOL_", 0);
+    one_reader(&m, "[TOOL_CALLS][{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}]", 1);
+    tool_envelope_free(&m);
+
+    // Muse: an answer whose <|eot|> never arrived is still the answer in
+    // both (the stream dropped it); a turn with neither a call nor an answer
+    // is a fault in both (the stream reported an empty, clean turn)
+    tool_envelope a = {.proto = TP_ATEM};
+    demux_log l;
+    demux(&a, " to=user<|message|>Hello there", &l);
+    assert(l.content.s && l.content.n == 11 && !memcmp(l.content.s, "Hello there", 11));
+    log_free(&l);
+    one_reader(&a, " to=user<|message|>Hello there", 0);
+    one_reader(&a, " to=user<|message|>Hello there<|eot|>", 0);
+    one_reader(&a, " to=ping<|message|><atem:function_calls>\n<atem:invoke name=\"ping\">\n"
+                   "</atem:invoke>\n</atem:function_calls>", 1);
+    one_reader(&a, " to=ping<|message|><atem:function_calls>\n<atem:invoke name=\"ping\">\n", -1);
+    one_reader(&a, "neither a call nor an answer", -1);
+    // a closed invoke that does not map, beside a valid call: a fault, as
+    // in every other protocol (the valid call used to make the turn clean)
+    one_reader(&a, " to=ping<|message|><atem:function_calls>\n<atem:invoke name=\"ping\">\n"
+                   "</atem:invoke>\n<atem:invoke name=\"ping\">\n"
+                   "<atem:parameter name=\"x\">1\n</atem:invoke>\n</atem:function_calls>", -1);
+
+    // A cut turn (a budget or a deadline; the caller's turn_cut) reaches the
+    // buffered reader as it reaches the stream's finish: where the protocol's
+    // finish drops a call the cut left open (Gemma 4 here), the calls before
+    // it are kept and the list is still well formed. On a turn the model
+    // ended it refuses.
+    {
+        tool_envelope g2;
+        skip = false;
+        assert(tool_envelope_build_ex(tools, required, NULL, true, &g2, err, sizeof err) == 1);
+        tool_decl_native(TMPL_GEMMA4, true, true, tools, &g2, &skip);
+        const char *cut = "<|tool_call>call:add{a:1,b:2}<tool_cal";
+        sbuf rs = {0}, cs = {0}, ts = {0};
+        assert(tool_envelope_map_turn(&g2, cut, strlen(cut), false, &rs, &cs, &ts) == -1);
+        assert(tool_envelope_map_turn(&g2, cut, strlen(cut), true, &rs, &cs, &ts) == 0);
+        assert(!cs.n && !ts.n);
+        // the call before the cut is kept, and the list is well formed
+        const char *two = "<|tool_call>call:add{a:1,b:2}<tool_call|><|tool_call>call:add{a:3";
+        assert(tool_envelope_map_turn(&g2, two, strlen(two), false, &rs, &cs, &ts) == -1);
+        assert(!ts.n);
+        assert(tool_envelope_map_turn(&g2, two, strlen(two), true, &rs, &cs, &ts) == 1);
+        sbuf w = {0};
+        sb_lit(&w, "["); sb_put(&w, ts.s, ts.n); sb_lit(&w, "]");
+        jv *arr = json_parse(w.s, w.n);
+        assert(arr && arr->type == J_ARR && arr->n == 1);
+        jv_free(arr); free(w.s);
+        free(rs.s); free(cs.s); free(ts.s);
+        tool_envelope_free(&g2);
+    }
+
+    jv_free(required);
+    jv_free(tools);
+}
+
+// The generic envelope's streamed tool name is the decoded JSON string, as
+// the buffered mapper reports it: an escaped spelling of a declared name is
+// that name, not its escape sequence.
+static void test_generic_stream_decodes_the_tool_name(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    tool_envelope e;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof err) == 1);
+    demux_log l;
+    demux(&e, "{\"tool\":\"ad\\u0064\",\"args\":{\"a\":1,\"b\":2}}", &l);
+    assert(l.begins == 1 && !strcmp(l.name, "add"));
+    log_free(&l);
+
+    // A parallel document: the final branch forwards only its content
+    // string, so its args object closes before the entry does. The entry's
+    // own brace was read as the separator and the scan gave up: the call
+    // after a final branch was never announced.
+    tool_envelope par;
+    assert(tool_envelope_build_ex(tools, NULL, NULL, true, &par, err, sizeof err) == 1);
+    demux(&par, "{\"calls\":[{\"tool\":\"final\",\"args\":{\"content\":\"hi\"}},"
+                "{\"tool\":\"add\",\"args\":{\"a\":1,\"b\":2}}]}", &l);
+    assert(l.begins == 1 && l.ends == 1 && !strcmp(l.name, "add"));
+    assert(l.content.n == 2 && !memcmp(l.content.s, "hi", 2));
+    assert(!strcmp(l.args.s, "{\"a\":1,\"b\":2}"));
+    log_free(&l);
+    tool_envelope_free(&par);
+
+    // A document that is not the envelope, on a turn the model ended: the
+    // buffered mapper refuses it, and the stream reports the same fault
+    // (it ended as a clean, empty turn). A cut turn is not a fault.
+    static const char *const bad[] = {
+        "plain words", "{\"tool\":7,\"args\":{}}", "{\"tool\":\"add\"",
+        "{\"tool\":\"add\",\"args\":{\"a\":1", NULL };
+    for (int i = 0; bad[i]; i++) {
+        sbuf content = {0}, tc = {0};
+        assert(tool_envelope_map(&e, bad[i], strlen(bad[i]), &content, &tc) == -1);
+        free(content.s); free(tc.s);
+        memset(&l, 0, sizeof(l));
+        tool_stream_sink sink = { &l, log_reasoning, log_content,
+                                  log_begin, log_args, log_end };
+        tool_stream s;
+        tool_stream_init(&s, &e, &sink);
+        assert(tool_stream_feed(&s, bad[i], (int)strlen(bad[i])) == 0);
+        assert(tool_stream_finish_ex(&s, false) == -1);
+        tool_stream_free(&s);
+        log_free(&l);
+        if (i >= 2) {            // the two that are a document cut short
+            demux_cut(&e, bad[i], &l);
+            log_free(&l);
+        }
+    }
+    tool_envelope_free(&e);
+    jv_free(tools);
+}
+
 int main(void) {
     test_whitespace_after_a_native_number_is_protocol();
     test_coder_constrained_turn();
@@ -4147,6 +4366,8 @@ int main(void) {
     test_gemma4_untyped_parameter_is_refused_not_guessed();
     test_gemma4_nested_arrays_are_bounded_not_expanded();
     test_native_truncation_closes_to_a_legal_turn();
+    test_buffered_turn_is_read_by_the_stream_reader();
+    test_generic_stream_decodes_the_tool_name();
     puts("tool envelope tests ok");
     return 0;
 }
