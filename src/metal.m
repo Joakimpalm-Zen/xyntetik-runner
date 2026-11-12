@@ -1098,11 +1098,18 @@ static bool metal_mvc_self_test(id<MTLDevice> dev, id<MTLComputePipelineState> p
     else if (type == T_Q6_K) { bsz = 210; bel = 256; dpos[0] = 208; nd = 1; }
     else if (type == T_Q4_K) { bsz = 144; bel = 256; dpos[0] = 0; dpos[1] = 2; nd = 2; }
     else return false;
-    enum { NC = 5 };
+    // 13 columns: one full tile of 8 and a partial one of 5, so every column
+    // slot of the twin's tile is compared on this device, and each shape
+    // once without a bias and once with one (R6.68.87 sends every MoE prompt
+    // batch's router and shared-branch matvecs through these twins; five
+    // columns and no bias left slots 5 to 7 and the bias add unproven)
+    enum { NC = 13 };
     static const int shp[][2] = { { 2048, 37 }, { 4096, 21 } };
     bool ok = true;
     id<MTLCommandQueue> q = [dev newCommandQueue];
-    for (size_t si = 0; ok && si < sizeof shp / sizeof *shp; si++) {
+    for (size_t sj = 0; ok && sj < 2 * (sizeof shp / sizeof *shp); sj++) {
+        size_t si = sj / 2;
+        int has_bias = (int)(sj & 1);
         int n_in = shp[si][0], n_out = shp[si][1];
         size_t rb = (size_t)n_in / bel * bsz, wbytes = rb * n_out;
         uint8_t *wh = malloc(wbytes);
@@ -1124,11 +1131,13 @@ static bool metal_mvc_self_test(id<MTLDevice> dev, id<MTLComputePipelineState> p
         free(wh); free(xh);
         if (!wbuf || !xb || !y1 || !y2 || !bb) ok = false;
         if (ok) {
+            float *bh = bb.contents;
+            for (int i = 0; i < n_out; i++) { r ^= r << 13; r ^= r >> 17; r ^= r << 5; bh[i] = (float)(int)(r % 2001 - 1000) / 499.0f; }
             id<MTLCommandBuffer> cb = [q commandBuffer];
             id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
             int tg_rows = 4 * rows;
             for (int c = 0; c < NC; c++) {   // the one-column kernel, a column at a time
-                mv_args a = { n_in, n_out, 0, 0, 1, n_in, n_out, 1 };
+                mv_args a = { n_in, n_out, 0, has_bias, 1, n_in, n_out, 1 };
                 [e setComputePipelineState:p1];
                 [e setBuffer:wbuf offset:0 atIndex:0];
                 [e setBuffer:xb offset:sizeof(float) * (size_t)n_in * c atIndex:1];
@@ -1138,12 +1147,12 @@ static bool metal_mvc_self_test(id<MTLDevice> dev, id<MTLComputePipelineState> p
                 [e dispatchThreadgroups:MTLSizeMake((n_out + tg_rows - 1) / tg_rows, 1, 1)
                   threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
             }
-            mv_args a = { n_in, n_out, 0, 0, NC, n_in, n_out, 8 };
+            mv_args a = { n_in, n_out, 0, has_bias, NC, n_in, n_out, 8 };
             [e setComputePipelineState:pc];
             [e setBuffer:wbuf offset:0 atIndex:0]; [e setBuffer:xb offset:0 atIndex:1];
             [e setBuffer:y2 offset:0 atIndex:2]; [e setBytes:&a length:sizeof a atIndex:3];
             [e setBuffer:bb offset:0 atIndex:4];
-            [e dispatchThreadgroups:MTLSizeMake((n_out + tg_rows - 1) / tg_rows, 1, 1)
+            [e dispatchThreadgroups:MTLSizeMake((n_out + tg_rows - 1) / tg_rows, (NC + 7) / 8, 1)
               threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
             [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
             ok = cb.status == MTLCommandBufferStatusCompleted &&
