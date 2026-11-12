@@ -39,7 +39,9 @@ void unload_resident(void) {
     int res = resident_load();
     if (res < 0) return;
     slot_t *s = &SV.slots[0];
-    fprintf(stderr, "swap: unloading %s\n", SV.reg[res].name);
+    // not on a start that was refused: that is a release, not a swap event,
+    // and it would follow the refusal's own error line
+    if (!SV.start_refused) fprintf(stderr, "swap: unloading %s\n", SV.reg[res].name);
     tokenizer_free(s->tok);
     model_free(s->m);
     // single-model serve borrows main()'s stack containers for the first
@@ -586,6 +588,7 @@ bool init_swap_runtime(const model_params *mp, int n_threads, int ttl) {
         pthread_mutex_destroy(&SV.swap_mu);
         return false;
     }
+    SV.swap_ready = true;
     return true;
 }
 

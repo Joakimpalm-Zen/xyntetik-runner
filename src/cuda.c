@@ -4236,13 +4236,18 @@ static void cuda_plan_graphs(model_t *m, gpu_t *g) {
     // follow the same argument: a one-token step is three launches on the
     // conv ring and SSD state fixed for the instance, advanced in place, the
     // rollback copy taken before the forward (cuda_fwd_prepare); nemotron_h's
-    // MLP-only blocks run no attention, so no V memset. qwen4exp (host steps
-    // between layers), MoE hybrids and any qwen35 file with routed experts
-    // (none measured) stay eager. RUNNER_CUDA_GRAPH_RECUR=0 keeps every
-    // recurrent family eager.
+    // MLP-only blocks run no attention, so no V memset. A qwen35 file with
+    // routed experts (qwen35moe) replays too since R6.68.25a: its expert
+    // banks hold no recurrent state, so the recurrent rule no longer excludes
+    // them and the MoE rules below decide, as for any other family (fused
+    // device routing with every bank on the device captures; the eager MoE
+    // path or experts on the host are eager by design and say so).
+    // qwen4exp (host steps between layers) stays eager, and so do the Mamba-2
+    // hybrids with experts, which the rule leaves out (granitehybrid's and
+    // nemotron_h_moe's banks stay on the host anyway).
+    // RUNNER_CUDA_GRAPH_RECUR=0 keeps every recurrent family eager.
     bool mamba_dense = (m->granite_hybrid || m->nemotron_h) && m->n_expert == 0;
-    bool recur_graph = (m->qwen35 || mamba_dense) && !m->hyper_conn && m->n_expert == 0 &&
-                       cuda_graph_recur_on();
+    bool recur_graph = (m->qwen35 || mamba_dense) && !m->hyper_conn && cuda_graph_recur_on();
     // each rule names itself (graph_why), so a gate that requires the graph
     // (RUNNER_REQUIRE_GRAPH_CAPTURE) can tell eager by design from a failure
     // The three per-layer rules, the same union as before; which one names the
@@ -4270,7 +4275,7 @@ static void cuda_plan_graphs(model_t *m, gpu_t *g) {
     if (!why && m->n_expert > 0 && moe_any_on_device(m) && getenv("RUNNER_DEBUG_MOE"))
         why = "RUNNER_DEBUG_MOE reads the routing back to the host";
     if (!why && m->qwen35 && !recur_graph)
-        why = "a qwen35 file whose decode is not captured (routed experts or hyper-connections, or RUNNER_CUDA_GRAPH_RECUR=0)";
+        why = "a qwen35 file whose decode is not captured (hyper-connections, or RUNNER_CUDA_GRAPH_RECUR=0)";
     if (!why && moe_any_on_host(m)) why = "experts on the host";
     // RUNNER_MOE_REPLAY / RUNNER_MOE_TRACE: each routing takes its position
     // from the host, and a trace reads it back, so neither is captured
@@ -9142,6 +9147,22 @@ static unsigned mvt_grid_y(int batch) {
 //
 // Fails loudly rather than quietly serving an unadapted model, because that
 // failure is invisible in the output and looks exactly like a weak adapter.
+//
+// The decode graph keeps working with an adapter (R6.68.25b): enc_lora's
+// launches capture like any other, with A, B and the scratch at addresses
+// fixed until the unbind. A graph records the forward it captured, adapter
+// launches included or not, so bind and unbind drop any graph captured
+// before them (the unbind also frees what those launches read) and the next
+// decode captures again. Today the bind runs inside model_load before the
+// first forward, so nothing is dropped there; the drop keeps that an order
+// of calls and not a condition of correctness.
+static void lora_graphs_drop(gpu_t *g) {
+    for (int i = 0; i < 2; i++) {
+        if (g->gexec[i]) { cu.GraphExecDestroy(g->gexec[i]); g->gexec[i] = NULL; }
+        if (g->graph[i]) { cu.GraphDestroy(g->graph[i]); g->graph[i] = NULL; }
+    }
+}
+
 bool gpu_lora_bind(model_t *m) {
     gpu_t *g = m->gpu;
     if (!g) return false;
@@ -9205,8 +9226,7 @@ bool gpu_lora_bind(model_t *m) {
         gpu_lora_unbind(m);
         return false;
     }
-    g->graph_bad = true;       // any captured decode graph predates the adapter
-    g->graph_why = "an adapter bound on the device after the decode graph's plan";
+    lora_graphs_drop(g);       // a graph captured before the adapter lacks its launches
     fprintf(stderr, "gpu: adapter on device for %d block%s (%.1f MB VRAM)\n",
             G, G == 1 ? "" : "s", bytes / 1e6);
     return true;
@@ -9215,10 +9235,10 @@ bool gpu_lora_bind(model_t *m) {
 void gpu_lora_unbind(model_t *m) {
     gpu_t *g = m ? m->gpu : NULL;
     if (!g) return;
-    if (g->lora_a || g->lora_b || g->lora_t) cu.CtxSetCurrent(g->sw->ctx);
+    if (g->lora_a || g->lora_b || g->lora_t || g->gexec[0] || g->gexec[1])
+        cu.CtxSetCurrent(g->sw->ctx);
+    lora_graphs_drop(g);       // a graph with the adapter's launches reads what is freed next
     lora_dev_release(g);
-    g->graph_bad = true;
-    if (!g->graph_why) g->graph_why = "an adapter unbound from the device";
 }
 
 // ------------------- canonical-order forward matvec (R8.7.1 slice 1)

@@ -2,6 +2,7 @@
 // validity-constrained selection (used for JSON mode), and the per-family
 // defaults that seed all of the above.
 #include "sample.h"
+#include "arch.h"
 #include "fpclass.h"
 #include "template.h"   // TMPL_* — the detected template outranks the name
 
@@ -840,6 +841,7 @@ const sampler_preset *sampler_preset_for(const char *arch, const char *name,
     lname[n] = 0;
 
     if (!arch) arch = "";
+    const arch_id id = arch_find(arch)->id;
     // Gridcore Syntetik declares general.architecture "llama" (it is a
     // llama-shaped decoder) and general.name "gridcore-<size>", so the name
     // is what identifies it. Checked first: a suite-native model should never
@@ -849,15 +851,15 @@ const sampler_preset *sampler_preset_for(const char *arch, const char *name,
         return by_name("gridcore");
 
     // Architectures that name exactly one family.
-    if (!strcmp(arch, "gpt-oss")) return by_name("gpt-oss");
-    if (!strcmp(arch, "qwen3"))  return by_name("qwen3");
-    if (!strcmp(arch, "qwen2"))  return by_name("qwen2.5");
-    if (!strcmp(arch, "phi3"))   return by_name("phi3");
+    if (id == ARCH_GPT_OSS) return by_name("gpt-oss");
+    if (id == ARCH_QWEN3)   return by_name("qwen3");
+    if (id == ARCH_QWEN2)   return by_name("qwen2.5");
+    if (id == ARCH_PHI3)    return by_name("phi3");
     // Families whose preset is the template's: the checkpoint's own
     // template names the family more reliably than its arch (qwen35 serves
     // both Ornith and Qwen 3.8, qwen3moe both Qwen3 and Qwen3-Coder) and
     // than its name.
-    if (is_gemma4(tmpl) || !strcmp(arch, "gemma4")) return by_name("gemma4");
+    if (is_gemma4(tmpl) || id == ARCH_GEMMA4) return by_name("gemma4");
     if (tmpl == TMPL_QWEN38)      return by_name("qwen38");
     if (tmpl == TMPL_QWEN3_CODER) return by_name("qwen3-coder");
     if (tmpl == TMPL_GRANITE42)   return by_name("granite42");
@@ -868,7 +870,7 @@ const sampler_preset *sampler_preset_for(const char *arch, const char *name,
     if (tmpl == TMPL_QWEN36)      return by_name("qwen36");
     if (tmpl == TMPL_NEMOTRON)    return by_name("nemotron");
     if (tmpl == TMPL_APERTUS)     return by_name("apertus");
-    if (!strcmp(arch, "gemma3")) return by_name("gemma3");
+    if (id == ARCH_GEMMA3) return by_name("gemma3");
 
     // The DETECTED TEMPLATE, where there is one, outranks every name test
     // below. Both signals answer "which family is this", but the template is

@@ -78,6 +78,8 @@ YARN_FACTOR = None # optional native YaRN metadata for CLI/rope tests
 YARN_ORIG_CTX = 0
 YARN_BETAS = None  # (fast, slow) declared as rope.scaling.yarn_beta_fast/_slow
 YARN_ATTN = None   # declared rope.scaling.yarn_attn_factor
+ROPE_LOCAL_BASE = None  # --rope-local-base: declared rope.local.freq_base
+ROPE_SWA_BASE = None    # --rope-swa-base: declared rope.freq_base_swa
 QK_NORM = False    # --qk-norm: per-head attn_q_norm/attn_k_norm (qwen3-style)
 # --noisy-norms: the output, attention and FFN norm weights drawn around 1
 # (1 +- 0.5) instead of all ones. With ones, a kernel that ignores the norm
@@ -317,6 +319,14 @@ while i < len(args):
     elif a == "--yarn-attn-factor":
         i += 1
         YARN_ATTN = float(args[i])
+    elif a == "--rope-local-base":
+        # the sliding layers' rope base under its two spellings: a file that
+        # declares both reads rope.local.freq_base first (rope_setup)
+        i += 1
+        ROPE_LOCAL_BASE = float(args[i])
+    elif a == "--rope-swa-base":
+        i += 1
+        ROPE_SWA_BASE = float(args[i])
     elif a == "--n-ff":
         # the FFN width: an odd count gives ffn_gate/ffn_up an odd number of
         # output rows, the tail of the two-rows-per-warp and exact-width GEMV
@@ -987,6 +997,10 @@ if ARCH == "phi3":
         kf(f"{ARCH}.rope.scaling.attn_factor", 1.19),
         ku(f"{ARCH}.rope.dimension_count", N_EMBD // N_HEAD),
     ]
+if ROPE_LOCAL_BASE is not None:
+    meta_kvs.append(kf(f"{ARCH}.rope.local.freq_base", ROPE_LOCAL_BASE))
+if ROPE_SWA_BASE is not None:
+    meta_kvs.append(kf(f"{ARCH}.rope.freq_base_swa", ROPE_SWA_BASE))
 if SWA_WINDOW_ONLY:
     meta_kvs.append(ku(f"{ARCH}.attention.sliding_window", SWA_WINDOW_ONLY))
 if SWA_WINDOW:

@@ -40,6 +40,23 @@
 // sized by expert_used_count, this bounds the per-expert ones.
 #define MOE_EXPERTS_MAX 1024
 
+// `{arch}.KEY`: the metadata name an architecture's value is read under,
+// spelled into buf and returned. AK(KEY) is the one spelling of it in this
+// file, over the caller's `char key[]` and `arch`: the binders, the fit and
+// the rope setup all read through it (R6.68.28; FK, SK and RK were three
+// function-local copies, defined and undefined six times).
+static const char *meta_key(char *buf, size_t n, const char *arch, const char *k) {
+    snprintf(buf, n, "%s.%s", arch, k);
+    return buf;
+}
+#define AK(k) meta_key(key, sizeof key, arch, (k))
+
+// A model's architecture row (arch.h): the one admission looked up, or the
+// unknown row for a model_t built without a load.
+static const arch_desc *model_ad(const model_t *m) {
+    return m->ad ? m->ad : arch_find(NULL);
+}
+
 // ---------------------------------------------------------------- helpers
 
 static int64_t stat_mtime_ns(const plat_stat_t *st) {
@@ -268,8 +285,7 @@ static gguf_tensor *slice_rows(gguf_tensor *src, gguf_tensor *dst,
 static bool declared_layer_experts_ok(gguf_file *g, int layer, int have) {
     const char *arch = gguf_get_str(g, "general.architecture", "");
     char key[128];
-    snprintf(key, sizeof(key), "%s.expert_count_per_layer", arch);
-    gguf_kv *kv = gguf_get(g, key);
+    gguf_kv *kv = gguf_get(g, AK("expert_count_per_layer"));
     if (!kv) return true;
     if (kv->type != GGUF_T_ARR || kv->arr_type != GGUF_T_U32 || !kv->arr_raw) {
         fprintf(stderr, "error: %s must be an array of u32\n", key);
@@ -387,7 +403,6 @@ static bool swa_pattern_array(gguf_file *g, const char *key, bool *out, int n) {
 static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
                        float base_ovr, float scale_ovr, float yarn_ovr) {
     char key[128];
-    #define RK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
     if (base_ovr > 0) m->rope_base = base_ovr;
     m->rope_mscale = 1.0f;
 
@@ -408,8 +423,8 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
     // phi3 LongRoPE ships two factor sets and which applies depends on the
     // context in use, not on the model: short factors are not identity, so
     // ignoring them mis-rotates even well inside the original window
-    if (strcmp(arch, "phi3") == 0) {
-        int orig_ctx = (int)gguf_get_u32(g, RK("rope.scaling.original_context_length"),
+    if (model_ad(m)->id == ARCH_PHI3) {
+        int orig_ctx = (int)gguf_get_u32(g, AK("rope.scaling.original_context_length"),
                                          m->n_ctx_train);
         bool use_long = orig_ctx > 0 && m->n_ctx > orig_ctx;
         gguf_tensor *rf = gguf_find_tensor(g, use_long ? "rope_factors_long.weight"
@@ -417,15 +432,15 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         if (rf && rf->type == T_F32 && (int)rf->ne[0] >= half) {
             const float *f = rf->data;
             for (int j = 0; j < half; j++) m->rope_inv_freq[j] /= f[j];
-            m->rope_mscale = gguf_get_f32(g, RK("rope.scaling.attn_factor"), 1.0f);
+            m->rope_mscale = gguf_get_f32(g, AK("rope.scaling.attn_factor"), 1.0f);
             fprintf(stderr, "rope: phi3 LongRoPE %s factors, mscale %.4f\n",
                     use_long ? "long" : "short", (double)m->rope_mscale);
         }
     }
 
-    const char *sct = gguf_get_str(g, RK("rope.scaling.type"), "");
-    float factor  = gguf_get_f32(g, RK("rope.scaling.factor"), 0.0f);
-    int   orig    = (int)gguf_get_u32(g, RK("rope.scaling.original_context_length"),
+    const char *sct = gguf_get_str(g, AK("rope.scaling.type"), "");
+    float factor  = gguf_get_f32(g, AK("rope.scaling.factor"), 0.0f);
+    int   orig    = (int)gguf_get_u32(g, AK("rope.scaling.original_context_length"),
                                       m->n_ctx_train);
     if (orig <= 0) orig = m->n_ctx_train;
 
@@ -467,9 +482,12 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         // inherits the GLOBAL base for its sliding layers (llama.cpp seeds
         // rope_freq_base_train_swa = rope_freq_base_train), so the 10k
         // default must not apply there.
-        float local_base = gguf_get_f32(g, RK("rope.local.freq_base"),
-                           gguf_get_f32(g, RK("rope.freq_base_swa"),
-                                        m->gptoss ? m->rope_base : 10000.0f));
+        // One read at a time: AK spells into the one `key` buffer, so two
+        // reads in one argument list left the key to the compiler's order of
+        // evaluation (clang read rope.freq_base_swa for both).
+        float swa_base = gguf_get_f32(g, AK("rope.freq_base_swa"),
+                                      m->gptoss ? m->rope_base : 10000.0f);
+        float local_base = gguf_get_f32(g, AK("rope.local.freq_base"), swa_base);
         int lhalf = m->rope_dim_local / 2;
         m->rope_inv_freq_local = malloc(sizeof(float) * lhalf);
         if (!m->rope_inv_freq_local) return false;
@@ -492,8 +510,8 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         // converter writes as rope.scaling.yarn_beta_fast/_slow), 32 and 1
         // otherwise. A hardcoded 32/1 put the ramp in the wrong place for a
         // file that declares others: K2-Horizon-0.9B carries 128 and 4.
-        float beta_fast = gguf_get_f32(g, RK("rope.scaling.yarn_beta_fast"), 32.0f);
-        float beta_slow = gguf_get_f32(g, RK("rope.scaling.yarn_beta_slow"), 1.0f);
+        float beta_fast = gguf_get_f32(g, AK("rope.scaling.yarn_beta_fast"), 32.0f);
+        float beta_slow = gguf_get_f32(g, AK("rope.scaling.yarn_beta_slow"), 1.0f);
         if (!(beta_fast > 0.0f) || !(beta_slow > 0.0f) || beta_slow > beta_fast) {
             fprintf(stderr, "error: YaRN betas fast %g / slow %g are not a ramp\n",
                     (double)beta_fast, (double)beta_slow);
@@ -520,7 +538,7 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         // to the file's own factor: a forced --yarn-factor or an automatic
         // extension takes the default for the factor in use.
         m->rope_mscale = yarn_meta
-            ? gguf_get_f32(g, RK("rope.scaling.yarn_attn_factor"),
+            ? gguf_get_f32(g, AK("rope.scaling.yarn_attn_factor"),
                            1.0f + 0.1f * logf(factor))
             : 1.0f + 0.1f * logf(factor);
         // A file that carries transformers' mscale_all_dim (written as
@@ -529,9 +547,9 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         // get_mscale(factor, mscale) / get_mscale(factor, mscale_all_dim),
         // which llama.cpp computes with mscale = 1 (llama-context.cpp). For
         // Ministral 3 (both 1) that is 1, not the default 1 + 0.1 ln(factor).
-        float log_mul = gguf_get_f32(g, RK("rope.scaling.yarn_log_multiplier"), 0.0f);
+        float log_mul = gguf_get_f32(g, AK("rope.scaling.yarn_log_multiplier"), 0.0f);
         if (yarn_meta && log_mul != 0.0f &&
-            !gguf_get(g, RK("rope.scaling.yarn_attn_factor"))) {
+            !gguf_get(g, AK("rope.scaling.yarn_attn_factor"))) {
             float lf = logf(factor);
             m->rope_mscale = (0.1f * lf + 1.0f) / (0.1f * log_mul * lf + 1.0f);
         }
@@ -561,7 +579,6 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         memcpy(m->rope_inv_freq_local, m->rope_inv_freq,
                sizeof(float) * (size_t)(m->rope_dim / 2));
     }
-    #undef RK
     return true;
 }
 
@@ -787,7 +804,10 @@ int model_kv_ring_rows(int window, int batch, int n_ctx) {
 // past it owns rows only when --mtp binds it.
 // R3.48: v_shared, deepseek2's absorbed MLA: V reads the K row (in a format
 // K and V share), so a layer's row is K alone.
-typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; int trunk; bool v_shared; } fit_geom;
+// R6.68.40: kv_formats, the KV formats the trunk's heads take (model_kv_formats,
+// the loader's own rule).
+typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; int trunk; bool v_shared;
+                 unsigned kv_formats; } fit_geom;
 
 // R3.44: the qwen35 family's Gated DeltaNet layers own no KV rows
 // (bind_meta_qwen35) unless RUNNER_KV_RECURRENT_ROWS=1 keeps the layout that
@@ -800,73 +820,72 @@ static bool recurrent_layout_1150(void) {
     return rows && *rows && strcmp(rows, "0") != 0;
 }
 
-static bool qwen35_kv_rows_typed(const char *arch) {
+static bool qwen35_kv_rows_typed(const arch_desc *ad) {
     if (recurrent_layout_1150()) return false;
-    return !strcmp(arch, "qwen35") || !strcmp(arch, "qwen35moe") ||
-           !strcmp(arch, "qwen4exp") || !strcmp(arch, "clef");
+    return ad->kv_rows_typed;
 }
 
 static bool fit_geometry(gguf_file *g, const char *arch, int n_layer, bool mtp, fit_geom *o) {
     char key[128];
-    #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
+    const arch_desc *ad = arch_find(arch);
     memset(o, 0, sizeof *o);
-    uint32_t n_embd = gguf_get_u32(g, FK("embedding_length"), 0);
+    uint32_t n_embd = gguf_get_u32(g, AK("embedding_length"), 0);
     uint32_t n_head = 0;   // the widest block: a removed one reads 0
     for (int l = 0; l < n_layer; l++) {
-        uint32_t v = gguf_get_u32_idx(g, FK("attention.head_count"), (uint64_t)l, 0);
+        uint32_t v = gguf_get_u32_idx(g, AK("attention.head_count"), (uint64_t)l, 0);
         if (v > n_head) n_head = v;
     }
-    uint32_t head_dim = gguf_get_u32(g, FK("attention.key_length"),
+    uint32_t head_dim = gguf_get_u32(g, AK("attention.key_length"),
                                      n_head ? n_embd / n_head : 0);
-    uint32_t hd_swa = gguf_get_u32(g, FK("attention.key_length_swa"), head_dim);
+    uint32_t hd_swa = gguf_get_u32(g, AK("attention.key_length_swa"), head_dim);
     // deepseek2's absorbed MLA, the loader's default (bind_meta_deepseek2):
     // every head reads one row a token and layer, [k_pe | latent], and Q is
     // that wide per head; RUNNER_MLA_NAIVE=1 keeps the header's shape
     const char *naive = getenv("RUNNER_MLA_NAIVE");
-    bool mla_absorb = !strcmp(arch, "deepseek2") && !(naive && *naive && strcmp(naive, "0") != 0);
-    uint32_t mla_row = mla_absorb ? gguf_get_u32(g, FK("attention.kv_lora_rank"), 0) +
-                                    gguf_get_u32(g, FK("rope.dimension_count"), 0) : 0;
+    bool mla_absorb = ad->id == ARCH_DEEPSEEK2 && !(naive && *naive && strcmp(naive, "0") != 0);
+    uint32_t mla_row = mla_absorb ? gguf_get_u32(g, AK("attention.kv_lora_rank"), 0) +
+                                    gguf_get_u32(g, AK("rope.dimension_count"), 0) : 0;
     if (mla_absorb && mla_row > 0) head_dim = hd_swa = mla_row;
-    gguf_kv *pat = gguf_get(g, FK("attention.sliding_window_pattern"));
+    gguf_kv *pat = gguf_get(g, AK("attention.sliding_window_pattern"));
     if (pat && (pat->type != GGUF_T_ARR || !pat->arr_raw ||
                 (pat->arr_type != GGUF_T_BOOL && pat->arr_type != GGUF_T_U8 &&
                  pat->arr_type != GGUF_T_I8)))
         pat = NULL;
-    int shared = strcmp(arch, "gemma4") == 0
-        ? (int)gguf_get_u32(g, FK("attention.shared_kv_layers"), 0) : 0;
+    int shared = ad->id == ARCH_GEMMA4
+        ? (int)gguf_get_u32(g, AK("attention.shared_kv_layers"), 0) : 0;
     int owners = shared > 0 && shared < n_layer ? n_layer - shared : n_layer;
     bool ok = n_layer > 0 && n_head > 0 && head_dim > 0;
     o->kv_dim = ok ? calloc((size_t)n_layer, sizeof(uint64_t)) : NULL;
-    if (!o->kv_dim) {
-        #undef FK
-        return false;
-    }
-    #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
+    if (!o->kv_dim) return false;
     o->n_head = n_head;
     // the loader's trunk (bind_mtp_layers; an out-of-range count, which the
     // loader refuses, charges every block as before); its DeltaNet layers own
     // no rows (R3.44), and a declared NextN/MTP block past it has the
     // attention shape, charged only when --mtp binds it (R3.45)
-    uint32_t nextn = gguf_get_u32(g, FK("nextn_predict_layers"), 0);
+    uint32_t nextn = gguf_get_u32(g, AK("nextn_predict_layers"), 0);
     o->trunk = nextn < (uint32_t)n_layer ? n_layer - (int)nextn : n_layer;
-    uint32_t q35_every = qwen35_kv_rows_typed(arch)
-        ? gguf_get_u32(g, FK("full_attention_interval"), 4) : 0;
+    uint32_t q35_every = qwen35_kv_rows_typed(ad)
+        ? gguf_get_u32(g, AK("full_attention_interval"), 4) : 0;
+    int *trunk_hd = malloc(sizeof(int) * (size_t)(o->trunk > 0 ? o->trunk : 1));
+    if (!trunk_hd) { free(o->kv_dim); o->kv_dim = NULL; return false; }
     for (int l = 0; l < n_layer; l++) {
-        uint32_t hc = gguf_get_u32_idx(g, FK("attention.head_count"), (uint64_t)l, n_head);
-        uint32_t kvh = hc ? gguf_get_u32_idx(g, FK("attention.head_count_kv"),
+        uint32_t hc = gguf_get_u32_idx(g, AK("attention.head_count"), (uint64_t)l, n_head);
+        uint32_t kvh = hc ? gguf_get_u32_idx(g, AK("attention.head_count_kv"),
                                              (uint64_t)l, n_head) : 0;
         if (mla_absorb && mla_row > 0 && kvh) kvh = 1;   // one shared row, MQA
         bool swa = pat && (uint64_t)l < pat->arr_n &&
                    ((const uint8_t *)pat->arr_raw)[l] != 0;
         uint64_t hd = swa ? hd_swa : head_dim;
+        if (l < o->trunk) trunk_hd[l] = (int)hd;
         if (hd > o->head_dim_max) o->head_dim_max = hd;
         o->kv_dim[l] = l < owners ? (uint64_t)kvh * hd : 0;
         if (q35_every && l < o->trunk && (l + 1) % q35_every != 0) o->kv_dim[l] = 0;
         if (l >= o->trunk && !mtp) o->kv_dim[l] = 0;
         if (o->kv_dim[l] > o->kv_dim_max) o->kv_dim_max = o->kv_dim[l];
     }
+    o->kv_formats = model_kv_formats(trunk_hd, o->trunk, 0);
+    free(trunk_hd);
     o->v_shared = mla_absorb && mla_row > 0;
-    #undef FK
     return true;
 }
 
@@ -895,14 +914,13 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
     char key[128];
     const char *arch = gguf_get_str(g, "general.architecture", "");
     if (!arch || !*arch) return false;
-    #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
 
     meta_printable(out->arch, sizeof(out->arch), arch);
-    out->n_layer   = (int)gguf_get_u32(g, FK("block_count"), 0);
-    int train_ctx  = (int)gguf_get_u32(g, FK("context_length"), 0);
-    out->swa           = gguf_get_u32(g, FK("attention.sliding_window"), 0) > 0;
-    out->n_expert      = (int)gguf_get_u32(g, FK("expert_count"), 0);
-    out->n_expert_used = (int)gguf_get_u32(g, FK("expert_used_count"), 0);
+    out->n_layer   = (int)gguf_get_u32(g, AK("block_count"), 0);
+    int train_ctx  = (int)gguf_get_u32(g, AK("context_length"), 0);
+    out->swa           = gguf_get_u32(g, AK("attention.sliding_window"), 0) > 0;
+    out->n_expert      = (int)gguf_get_u32(g, AK("expert_count"), 0);
+    out->n_expert_used = (int)gguf_get_u32(g, AK("expert_used_count"), 0);
     out->train_ctx     = train_ctx;
 
     fit_geom geo;
@@ -922,9 +940,9 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
     // under full GPU offload. The rest (including the tied output head and
     // PLE model projection) must stay resident. Require the declared shape:
     // --info fit runs before model admission and a name alone is not enough.
-    uint32_t ple_width = gguf_get_u32(g, FK("embedding_length_per_layer_input"), 0);
+    uint32_t ple_width = gguf_get_u32(g, AK("embedding_length_per_layer_input"), 0);
     gguf_tensor *ple = gguf_find_tensor(g, "per_layer_token_embd.weight");
-    if (!strcmp(arch, "gemma4") && ple_width > 0 && ple_width <= MDL_DIM_MAX &&
+    if (arch_find(arch)->id == ARCH_GEMMA4 && ple_width > 0 && ple_width <= MDL_DIM_MAX &&
         ple && ple->n_dims == 2 &&
         ple->ne[0] == (uint64_t)out->n_layer * ple_width &&
         ple->nbytes <= out->weights)
@@ -943,21 +961,21 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
 
     // Same shape as model_kv_row_bytes: K and V, per layer, per token, each
     // layer at its own width (fit_geometry). A quantized KV format is legal
-    // only when every layer's width is a multiple of its block (q8 and k8v4:
-    // 32; fp4: 16), or the per-token figure is 0 and the line says why.
-    bool q8_ok = true, fp4_ok = true;
+    // only where the load takes it, when every head is a whole number of its
+    // blocks (model_kv_formats, R6.68.40: it used to be every row, and the fit
+    // offered q8 to a file whose load kept f16), or the per-token figure is 0
+    // and the line says why.
     for (int l = 0; l < blocks; l++) {   // an unbound block's width is 0
         uint64_t d = geo.kv_dim[l];
-        if (d % 32) q8_ok = false;
-        if (d % 16) fp4_ok = false;
         out->kv_f16_per_tok  += fit_kv_row(d, 0, geo.v_shared);
         out->kv_q8_per_tok   += fit_kv_row(d, 1, geo.v_shared);
         out->kv_k8v4_per_tok += fit_kv_row(d, 2, geo.v_shared);
         out->kv_fp4_per_tok  += fit_kv_row(d, 3, geo.v_shared);
     }
     free(geo.kv_dim);
-    if (!q8_ok) out->kv_q8_per_tok = out->kv_k8v4_per_tok = 0;
-    if (!fp4_ok) out->kv_fp4_per_tok = 0;
+    if (!(geo.kv_formats & MODEL_KV_FMT_Q8)) out->kv_q8_per_tok = 0;
+    if (!(geo.kv_formats & MODEL_KV_FMT_K8V4)) out->kv_k8v4_per_tok = 0;
+    if (!(geo.kv_formats & MODEL_KV_FMT_FP4)) out->kv_fp4_per_tok = 0;
     out->kv_f16 = out->kv_f16_per_tok * (uint64_t)out->n_ctx;
     out->kv_q8  = out->kv_q8_per_tok  * (uint64_t)out->n_ctx;
     out->kv_fp4 = out->kv_fp4_per_tok * (uint64_t)out->n_ctx;
@@ -965,7 +983,6 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
 
     out->available = plat_ram_available_bytes();
     out->n_seq = 1;
-    #undef FK
     return true;
 }
 
@@ -974,26 +991,14 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
 // it used to predict a device split the load never made, lfm2 and lfm2moe).
 const char *model_gpu_cpu_only_why(const char *arch, int norm_groups) {
     if (!arch) return NULL;
-    if (!strcmp(arch, "stablelm"))
-        return "this model normalises with LayerNorm and the GPU "
-               "backends implement RMSNorm only";
-    if (!strcmp(arch, "lfm2") || !strcmp(arch, "lfm2moe"))
-        return "lfm2 is validated on the CPU only; its GPU path (the "
-               "short-convolution layers and their state) is not "
-               "checked yet";
+    const arch_desc *ad = arch_find(arch);
+    if (ad->cpu_only) return ad->cpu_only;
+#if !defined(RUNNER_GPU_CUDA)
+    if (ad->cpu_only_noncuda) return ad->cpu_only_noncuda;
+#endif
     if (norm_groups > 1)
         return "this model normalises in groups (k2-horizon) and the "
                "GPU backends implement full-width RMSNorm only";
-    if (!strcmp(arch, "flint"))
-        return "flint is validated on the CPU only; its GPU path "
-               "(sinks with a sliding window, NoPE full layers, "
-               "sigmoid routing with shared experts) is not checked yet";
-#if !defined(RUNNER_GPU_CUDA)
-    // CUDA runs both forms (R4.4.5 c1 naive, c2 absorbed)
-    if (!strcmp(arch, "deepseek2"))
-        return "deepseek2 (multi-head latent attention) is validated on "
-               "the CPU only; its GPU path is not checked yet";
-#endif
     return NULL;
 }
 
@@ -1070,36 +1075,36 @@ static bool swa_pattern_array(gguf_file *g, const char *key, bool *out, int n);
 static int fit_swa_layers(gguf_file *g, const char *arch, int n_layer,
                           int train_ctx, bool *is_swa) {
     char key[128];
-    #define SK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
+    const arch_id id = arch_find(arch)->id;
     for (int i = 0; i < n_layer; i++) is_swa[i] = false;
     int sw = 0;
-    if (!strcmp(arch, "gemma3") || !strcmp(arch, "muse-glimmer")) {
-        bool gemma = arch[0] == 'g';
-        sw = (int)gguf_get_u32(g, SK("attention.sliding_window"), gemma ? 0 : 2048);
-        int per = (int)gguf_get_u32(g, SK("attention.sliding_window_pattern"), gemma ? 6 : 4);
+    if (id == ARCH_GEMMA3 || id == ARCH_MUSE_GLIMMER) {
+        bool gemma = id == ARCH_GEMMA3;
+        sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), gemma ? 0 : 2048);
+        int per = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), gemma ? 6 : 4);
         if (per < 1) per = gemma ? 6 : 4;
-        if (!swa_pattern_array(g, SK("attention.sliding_window_pattern"), is_swa, n_layer))
+        if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"), is_swa, n_layer))
             for (int i = 0; i < n_layer; i++) is_swa[i] = sw > 0 && (i + 1) % per != 0;
         else if (gemma && sw <= 0)
             for (int i = 0; i < n_layer; i++) is_swa[i] = false;
-    } else if (!strcmp(arch, "gpt-oss") || !strcmp(arch, "afmoe")) {
-        bool oss = arch[0] == 'g';
-        sw = (int)gguf_get_u32(g, SK("attention.sliding_window"), oss ? 0 : 2048);
-        int per = (int)gguf_get_u32(g, SK("attention.sliding_window_pattern"), oss ? 2 : 4);
+    } else if (id == ARCH_GPT_OSS || id == ARCH_AFMOE) {
+        bool oss = id == ARCH_GPT_OSS;
+        sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), oss ? 0 : 2048);
+        int per = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), oss ? 2 : 4);
         if (per < 1) per = oss ? 2 : 4;
         for (int i = 0; i < n_layer; i++) is_swa[i] = sw > 0 && (i + 1) % per != 0;
-    } else if (!strcmp(arch, "spark2_5") || !strcmp(arch, "flint")) {
+    } else if (id == ARCH_SPARK2_5 || id == ARCH_FLINT) {
         // both require a window and the boolean pattern; the loader refuses
         // the file without them, and so the fit charges it no ring
-        sw = (int)gguf_get_u32(g, SK("attention.sliding_window"), 0);
-        if (sw <= 0 || !swa_pattern_array(g, SK("attention.sliding_window_pattern"), is_swa, n_layer)) {
+        sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
+        if (sw <= 0 || !swa_pattern_array(g, AK("attention.sliding_window_pattern"), is_swa, n_layer)) {
             for (int i = 0; i < n_layer; i++) is_swa[i] = false;
             sw = 0;
         }
-    } else if (!strcmp(arch, "gemma4")) {
+    } else if (id == ARCH_GEMMA4) {
         // raw pattern bits (bool, u8 or i8), the layer slides only under a window
-        sw = (int)gguf_get_u32(g, SK("attention.sliding_window"), 0);
-        gguf_kv *pat = gguf_get(g, SK("attention.sliding_window_pattern"));
+        sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
+        gguf_kv *pat = gguf_get(g, AK("attention.sliding_window_pattern"));
         if (pat && (pat->type != GGUF_T_ARR || !pat->arr_raw ||
                     (pat->arr_type != GGUF_T_BOOL && pat->arr_type != GGUF_T_U8 &&
                      pat->arr_type != GGUF_T_I8)))
@@ -1108,19 +1113,18 @@ static int fit_swa_layers(gguf_file *g, const char *arch, int n_layer,
             is_swa[i] = pat && (uint64_t)i < pat->arr_n && sw > 0 &&
                         ((const uint8_t *)pat->arr_raw)[i] != 0;
     } else {   // bind_swa_default
-        sw = (int)gguf_get_u32(g, SK("attention.sliding_window"), 0);
-        bool uniform = !strcmp(arch, "phi3");
+        sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
+        bool uniform = id == ARCH_PHI3;
         if (uniform && sw >= train_ctx) sw = 0;
         if (sw > 0) {
-            int per = (int)gguf_get_u32(g, SK("attention.sliding_window_pattern"), 2);
+            int per = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 2);
             if (per < 1) per = 2;
             if (uniform)
                 for (int i = 0; i < n_layer; i++) is_swa[i] = true;
-            else if (!swa_pattern_array(g, SK("attention.sliding_window_pattern"), is_swa, n_layer))
+            else if (!swa_pattern_array(g, AK("attention.sliding_window_pattern"), is_swa, n_layer))
                 for (int i = 0; i < n_layer; i++) is_swa[i] = (i + 1) % per != 0;
         }
     }
-    #undef SK
     int n = 0;
     for (int i = 0; i < n_layer; i++) n += is_swa[i];
     return n > 0 && sw > 0 ? sw : 0;
@@ -1162,6 +1166,7 @@ static uint64_t cuda_tensor_f32(const gguf_tensor *t) {
 gpu_layer_charge model_cuda_layer_charge(gguf_file *g, int layer, bool host_experts) {
     gpu_layer_charge c = {0};
     const char *arch = gguf_get_str(g, "general.architecture", "");
+    const arch_desc *ad = arch_find(arch);
     char prefix[40], name[128], key[128];
     snprintf(prefix, sizeof prefix, "blk.%d.", layer);
     size_t plen = strlen(prefix);
@@ -1181,8 +1186,7 @@ gpu_layer_charge model_cuda_layer_charge(gguf_file *g, int layer, bool host_expe
         // The DeltaNet binder keeps fused Q+gate bias on the CPU, but the
         // CUDA table upload copies only model_q_dim's Q half.
         if (!strcmp(roles[i], "attn_q.bias") &&
-            (!strcmp(arch, "qwen35") || !strcmp(arch, "qwen35moe") ||
-             !strcmp(arch, "qwen4exp") || !strcmp(arch, "clef"))) bytes /= 2;
+            ad->rec == ARCH_REC_DELTANET) bytes /= 2;
         cuda_charge_add(&c.tables, bytes);
     }
     // DeltaNet accepts the old spelling too; the binder prefers .bias.
@@ -1201,26 +1205,23 @@ gpu_layer_charge model_cuda_layer_charge(gguf_file *g, int layer, bool host_expe
     }
     snprintf(name, sizeof name, "%sffn_gate_inp.weight", prefix);
     const gguf_tensor *router = gguf_find_tensor(g, name);
-    if (!strcmp(arch, "gemma4") && router) {
+    if (ad->id == ARCH_GEMMA4 && router) {
         // Three branch norms, router input scale and per-expert down scale
         // allocate even when absent: the uploader synthesizes ones.
-        snprintf(key, sizeof key, "%s.embedding_length", arch);
-        uint64_t embd = gguf_get_u32(g, key, 0);
+        uint64_t embd = gguf_get_u32(g, AK("embedding_length"), 0);
         cuda_charge_add(&c.tables, 16 * embd);
         cuda_charge_add(&c.tables, 4 * router->ne[1]);
     }
-    if (!strcmp(arch, "nemotron_h") || !strcmp(arch, "nemotron_h_moe")) {
-        snprintf(key, sizeof key, "%s.attention.head_count_kv", arch);
-        uint32_t kv = gguf_get_u32_idx(g, key, (uint64_t)layer, 0);
-        snprintf(key, sizeof key, "%s.feed_forward_length", arch);
-        uint32_t ff = gguf_get_u32_idx(g, key, (uint64_t)layer, 0);
+    if (arch_family(ad) == ARCH_NEMOTRON_H) {
+        uint32_t kv = gguf_get_u32_idx(g, AK("attention.head_count_kv"), (uint64_t)layer, 0);
+        uint32_t ff = gguf_get_u32_idx(g, AK("feed_forward_length"), (uint64_t)layer, 0);
         if (!kv && ff) { // the single pre-norm is uploaded again as ffn_norm
             snprintf(name, sizeof name, "%sattn_norm.weight", prefix);
             cuda_charge_add(&c.tables, cuda_tensor_f32(gguf_find_tensor(g, name)));
         }
     }
     const char *naive = getenv("RUNNER_MLA_NAIVE");
-    if (!strcmp(arch, "deepseek2") && !(naive && *naive && strcmp(naive, "0"))) {
+    if (ad->id == ARCH_DEEPSEEK2 && !(naive && *naive && strcmp(naive, "0"))) {
         snprintf(name, sizeof name, "%sattn_kv_b.weight", prefix);
         cuda_charge_add(&c.tables, cuda_tensor_f32(gguf_find_tensor(g, name)));
     }
@@ -1259,56 +1260,84 @@ static uint64_t fit_layer_host_expert_bytes(gguf_file *g, int l) {
     return wb;
 }
 
+// R3.46: a hybrid's recurrent state and scratch, by the plan's own rule
+// (model_gpu_recurrent_cost); the families cuda.c runs on the device (lfm2's
+// short convolution runs on the CPU only: no device state). *kind is the
+// MODEL_GPU_REC_* the device charges; the count is of the trunk's layers that
+// hold that state (R3.47), as the loader types them (bind_layer): qwen35's
+// DeltaNet layers off the attention interval, granitehybrid's head_count_kv 0,
+// nemotron_h's head_count_kv and feed_forward_length both 0; every trunk layer
+// under the 1.15.0 layout.
+static uint64_t fit_rec_layers(gguf_file *g, int n_layer, int *kind) {
+    char key[128];
+    const char *arch = gguf_get_str(g, "general.architecture", "");
+    const arch_desc *ad = arch_find(arch);
+    int rec = ad->rec == ARCH_REC_DELTANET ? MODEL_GPU_REC_DELTANET
+            : ad->rec == ARCH_REC_MAMBA2 ? MODEL_GPU_REC_MAMBA2
+            : MODEL_GPU_REC_NONE;
+    uint64_t rec_n = 0;
+    if (rec != MODEL_GPU_REC_NONE && recurrent_layout_1150()) rec_n = (uint64_t)n_layer;
+    else if (rec == MODEL_GPU_REC_DELTANET) {
+        uint32_t every = gguf_get_u32(g, AK("full_attention_interval"), 4);
+        for (int l = 0; l < n_layer; l++) if (!every || (l + 1) % every != 0) rec_n++;
+    } else if (rec == MODEL_GPU_REC_MAMBA2) {
+        bool nemo = arch_family(ad) == ARCH_NEMOTRON_H;
+        for (int l = 0; l < n_layer; l++)
+            if (gguf_get_u32_idx(g, AK("attention.head_count_kv"), (uint64_t)l, 0) == 0 &&
+                (!nemo || gguf_get_u32_idx(g, AK("feed_forward_length"), (uint64_t)l, 0) == 0))
+                rec_n++;
+    }
+    *kind = rec;
+    return rec_n;
+}
+
+// RUNNER_DEBUG_VRAM: the geometry this fit predicts, in the shape of the
+// line a load prints from the model it built (model_debug_geometry), so
+// tests/test_fit_matches_load.py can hold the two equal field by field.
+void model_fit_print_geometry(gguf_file *g, const model_fit *f) {
+    const char *arch = gguf_get_str(g, "general.architecture", "");
+    bool *is_swa = calloc((size_t)(f->n_layer > 0 ? f->n_layer : 1), sizeof(bool));
+    int window = is_swa ? fit_swa_layers(g, arch, f->n_layer, f->train_ctx, is_swa) : 0;
+    int n_swa = 0;
+    for (int l = 0; window > 0 && l < f->n_layer; l++) n_swa += is_swa[l];
+    free(is_swa);
+    int rec;
+    uint64_t rec_n = fit_rec_layers(g, f->n_layer, &rec);
+    fprintf(stderr, "fit: (geometry: layers %d, mtp %d, kv f16 %llu, q8 %llu, k8v4 %llu, "
+            "fp4 %llu per token, sliding %d at window %d, recurrent %llu)\n",
+            f->n_layer, f->mtp ? f->n_mtp : 0,
+            (unsigned long long)f->kv_f16_per_tok, (unsigned long long)f->kv_q8_per_tok,
+            (unsigned long long)f->kv_k8v4_per_tok, (unsigned long long)f->kv_fp4_per_tok,
+            n_swa, n_swa ? window : 0, (unsigned long long)rec_n);
+}
+
 bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
                    uint64_t headroom, int max_layers, bool host_experts) {
     if (f->n_layer <= 0) return false;
     char key[128];
     const char *arch = gguf_get_str(g, "general.architecture", "");
-    #define FK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
-    uint64_t n_embd    = gguf_get_u32(g, FK("embedding_length"), 0);
+    uint64_t n_embd    = gguf_get_u32(g, AK("embedding_length"), 0);
     // the scratch width the loader sizes by (bind_hparams' n_ff): the scalar,
     // else an experts-only file's expert width, else the widest entry of a
     // per-layer array (a hybrid's typed blocks, a removed FFN); 4 x n_embd
     // only for a header that declares none. Reading the scalar alone took
     // that default on Qwen3.6-35B-A3B (no dense width) and on per-layer
     // arrays: 3.9 MB of window scratch over the loader's (R3.46).
-    uint64_t n_ff = gguf_get_u32(g, FK("feed_forward_length"), 0);
-    if (!n_ff) n_ff = gguf_get_u32(g, FK("expert_feed_forward_length"), 0);
+    uint64_t n_ff = gguf_get_u32(g, AK("feed_forward_length"), 0);
+    if (!n_ff) n_ff = gguf_get_u32(g, AK("expert_feed_forward_length"), 0);
     if (!n_ff)
         for (int l = 0; l < f->n_layer; l++) {
-            uint64_t w = gguf_get_u32_idx(g, FK("feed_forward_length"), (uint64_t)l, 0);
+            uint64_t w = gguf_get_u32_idx(g, AK("feed_forward_length"), (uint64_t)l, 0);
             if (w > n_ff) n_ff = w;
         }
     if (!n_ff) n_ff = 4 * n_embd;
-    // R3.46: a hybrid's recurrent state and scratch, by the plan's own rule
-    // (model_gpu_recurrent_cost); the families cuda.c runs on the device
-    int rec = (!strcmp(arch, "qwen35") || !strcmp(arch, "qwen35moe") ||
-               !strcmp(arch, "qwen4exp") || !strcmp(arch, "clef")) ? MODEL_GPU_REC_DELTANET
-            : (!strcmp(arch, "granitehybrid") || !strcmp(arch, "nemotron_h") ||
-               !strcmp(arch, "nemotron_h_moe")) ? MODEL_GPU_REC_MAMBA2
-            : MODEL_GPU_REC_NONE;
-    uint64_t ssm_conv   = gguf_get_u32(g, FK("ssm.conv_kernel"), 0);
-    uint64_t ssm_inner  = gguf_get_u32(g, FK("ssm.inner_size"), 0);
-    uint64_t ssm_state  = gguf_get_u32(g, FK("ssm.state_size"), 0);
-    uint64_t ssm_groups = gguf_get_u32(g, FK("ssm.group_count"), 0);
-    uint64_t ssm_heads  = gguf_get_u32(g, FK("ssm.time_step_rank"), 0);
-    // R3.47: the layers that hold recurrent state, as the loader types them
-    // (bind_layer): qwen35's DeltaNet layers off the attention interval,
-    // granitehybrid's head_count_kv 0, nemotron_h's head_count_kv and
-    // feed_forward_length both 0; every trunk layer under the 1.15.0 layout
-    uint64_t rec_n = 0;
-    if (rec != MODEL_GPU_REC_NONE && recurrent_layout_1150()) rec_n = (uint64_t)f->n_layer;
-    else if (rec == MODEL_GPU_REC_DELTANET) {
-        uint32_t every = gguf_get_u32(g, FK("full_attention_interval"), 4);
-        for (int l = 0; l < f->n_layer; l++) if (!every || (l + 1) % every != 0) rec_n++;
-    } else if (rec == MODEL_GPU_REC_MAMBA2) {
-        bool nemo = !strcmp(arch, "nemotron_h") || !strcmp(arch, "nemotron_h_moe");
-        for (int l = 0; l < f->n_layer; l++)
-            if (gguf_get_u32_idx(g, FK("attention.head_count_kv"), (uint64_t)l, 0) == 0 &&
-                (!nemo || gguf_get_u32_idx(g, FK("feed_forward_length"), (uint64_t)l, 0) == 0))
-                rec_n++;
-    }
-    #undef FK
+    int rec;
+    uint64_t rec_n = fit_rec_layers(g, f->n_layer, &rec);
+    uint64_t ssm_conv   = gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
+    uint64_t ssm_inner  = gguf_get_u32(g, AK("ssm.inner_size"), 0);
+    uint64_t ssm_state  = gguf_get_u32(g, AK("ssm.state_size"), 0);
+    uint64_t ssm_groups = gguf_get_u32(g, AK("ssm.group_count"), 0);
+    uint64_t ssm_heads  = gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
     fit_geom geo;
     const int blocks = f->n_layer + f->n_mtp;   // the trunk, then the declared NextN/MTP blocks
     if (!fit_geometry(g, arch, blocks, f->mtp, &geo)) return false;
@@ -1750,21 +1779,6 @@ static void model_vram_commit(model_t *m, size_t before) {
     if (!gpu_mem_info(&vfree, &vtotal)) { vram_commit(m->vram, 0); return; }
     // A load that freed memory nets to zero rather than underflowing.
     vram_commit(m->vram, before > vfree ? (uint64_t)(before - vfree) : 0);
-}
-
-const char *const *model_supported_archs(size_t *count) {
-    // One source of truth for the admission allowlist (see model_load below and
-    // --caps in main.c). Keep in sync with any new per-family handling added
-    // here; unsupported layouts still fail the subsequent shape/admission checks.
-    static const char *const arches[] = {
-        "llama", "qwen2", "qwen3", "qwen35", "qwen35moe", "qwen4exp", "qwen3moe", "mistral",
-        "smollm", "stablelm", "gemma3", "gemma4", "phi3", "gpt-oss",
-        "apertus", "afmoe", "muse-glimmer", "granite", "granitehybrid",
-        "nemotron_h", "nemotron_h_moe", "clef", "mellum", "lfm2", "lfm2moe",
-        "spark2_5", "k2-horizon", "flint", "mistral3", "deepseek2",
-    };
-    if (count) *count = sizeof(arches) / sizeof(arches[0]);
-    return arches;
 }
 
 static bool model_load_inner(model_t *m, const char *path, const model_params *p);
@@ -2315,6 +2329,27 @@ void model_sampling_file(gguf_file *gf, sampler_file *out) {
     }
 }
 
+// RUNNER_DEBUG_VRAM: the geometry this load laid out, from the model it built,
+// in the shape of the fit's line (model_fit_print_geometry): the trunk, the
+// NextN/MTP block bound, the KV bytes a token costs (every layer that owns its
+// rows, and the bound block's), the sliding layers and their window, and the
+// layers whose recurrent state a device charges (cuda.c's own count).
+static void model_debug_geometry(const model_t *m) {
+    if (!getenv("RUNNER_DEBUG_VRAM")) return;
+    size_t kv = 0;
+    for (int l = 0; l < m->n_layer; l++)
+        if (model_kv_owner(m, l) == l) kv += model_kv_row_bytes_sum(m, l);
+    if (m->mtp_ready) kv += model_kv_row_bytes_sum(m, m->n_layer);
+    int n_swa = 0;
+    for (int l = 0; m->swa_window > 0 && m->l_is_swa && l < m->n_layer; l++)
+        n_swa += m->l_is_swa[l];
+    bool device_rec = m->qwen35 || m->granite_hybrid || m->nemotron_h;
+    fprintf(stderr, "load: (geometry: layers %d, mtp %d, kv %zu per token as %s, "
+            "sliding %d at window %d, recurrent %zu)\n",
+            m->n_layer, m->mtp_ready ? 1 : 0, kv, model_kv_name(m),
+            n_swa, n_swa ? m->swa_window : 0, device_rec ? model_rec_count(m) : (size_t)0);
+}
+
 bool model_load(model_t *m, const char *path, const model_params *p) {
     if (!m) return false;
     memset(m, 0, sizeof(*m));
@@ -2324,6 +2359,7 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
         model_free(m);
         return false;
     }
+    model_debug_geometry(m);
     if (p->mlock && gguf_mapped_size(&m->gf)) {
         uint64_t hot = 0, cold = 0;
         int rc = weights_lock(m, &hot, &cold);
@@ -2410,8 +2446,8 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
     l->out_scale = 1.0f;
     int kv = m->l_head_kv[i];
     char ffkey[64];
-    snprintf(ffkey, sizeof ffkey, "%s.feed_forward_length",
-             gguf_get_str(g, "general.architecture", "nemotron_h"));
+    meta_key(ffkey, sizeof ffkey, gguf_get_str(g, "general.architecture", "nemotron_h"),
+             "feed_forward_length");
     int ff = (int)gguf_get_u32_idx(g, ffkey, (uint64_t)i, 0);
     if (kv == 0 && ff == 0) {
         // ---- recurrent (Mamba-2) block: mixer only, no FFN ----
@@ -2480,8 +2516,8 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
             // this block's expert width: Bolt's per-layer array, or the one
             // width every block shares (bind_meta_nemotron_h checked both)
             char efkey[64];
-            snprintf(efkey, sizeof efkey, "%s.expert_feed_forward_length",
-                     gguf_get_str(g, "general.architecture", "nemotron_h"));
+            meta_key(efkey, sizeof efkey, gguf_get_str(g, "general.architecture", "nemotron_h"),
+                     "expert_feed_forward_length");
             l->n_ff_exp = (int)gguf_get_u32_idx(g, efkey, (uint64_t)i,
                                                 (uint32_t)m->n_ff_exp);
             if (l->n_ff_exp <= 0 || l->n_ff_exp > m->n_ff_exp) {
@@ -2565,9 +2601,6 @@ static bool nemotron_bind_layer(model_t *m, gguf_file *g, layer_t *l, int i) {
     return true;
 }
 
-// `{arch}.KEY`, spelled into the caller's `key` buffer: the metadata key
-// every binding stage below reads its architecture's values through.
-#define AK(fmt) (snprintf(key, sizeof(key), "%s." fmt, arch), key)
 
 // The opt-in agent profile: atomic and fail-closed once any of its keys is
 // present.
@@ -2651,23 +2684,18 @@ static bool bind_agent_profile(model_t *m, gguf_file *g) {
 // Admission by architecture: refused families, the allowlist and the
 // experimental override.
 static bool bind_admit_architecture(model_t *m, const char *arch) {
-    // m->arch is what every message below prints; `arch` is what they compare.
+    // m->arch is what every message below prints; m->ad is what the rules
+    // read, the architecture's row, looked up here once (arch.h).
     meta_printable(m->arch, sizeof(m->arch), arch);
+    m->ad = arch_find(arch);
     // architectures whose weights load fine llama-style but whose math is
     // silently wrong without arch-specific handling (scalar multipliers,
     // logit softcapping): refuse instead of generating plausible gibberish
-    if (strcmp(arch, "gemma2") == 0 ||
-        strcmp(arch, "gemma") == 0) {
-        fprintf(stderr, "error: unsupported architecture '%s' — it would load "
-                "but produce incorrect output without its scaling/softcapping\n", m->arch);
+    if (m->ad->refused) {
+        fprintf(stderr, "error: unsupported architecture '%s' — %s\n", m->arch, m->ad->refused);
         return false;
     }
-    size_t n_arch;
-    const char *const *ok_archs = model_supported_archs(&n_arch);
-    bool arch_known = false;
-    for (size_t i = 0; i < n_arch; i++)
-        if (strcmp(arch, ok_archs[i]) == 0) { arch_known = true; break; }
-    if (!arch_known) {
+    if (m->ad->id == ARCH_UNKNOWN) {
         // Admission is an allowlist: tensor-name compatibility is not proof of
         // mathematical compatibility (Q/K layout, norms, rope, activations,
         // softcapping all vary per family). Running an unknown architecture
@@ -2784,7 +2812,7 @@ static bool bind_hparams(model_t *m, gguf_file *g, const char *arch, bool hybrid
         // take the width from the entries instead.
         gguf_kv *hk = gguf_get(g, AK("attention.head_count_kv"));
         if (hk && hk->type == GGUF_T_ARR && !hybrid_typed &&
-            strcmp(arch, "gemma4") != 0) {
+            m->ad->id != ARCH_GEMMA4) {
             uint32_t mx = 0;
             for (int i = 0; i < m->n_layer; i++) {
                 uint32_t v = gguf_get_u32_idx(g, AK("attention.head_count_kv"),
@@ -2846,14 +2874,13 @@ static bool bind_hparams(model_t *m, gguf_file *g, const char *arch, bool hybrid
     // wrong in principle) and applying the wrong norm left the model's output
     // measurably wrong: 0.6099 mean KL against the publisher's implementation
     // where llama.cpp on the same file read 0.0007 (2026-09-07, R4.23).
-    m->norm_layernorm = strcmp(arch, "stablelm") == 0;
+    m->norm_layernorm = m->ad->id == ARCH_STABLELM;
     if (m->norm_layernorm)
         m->rms_eps = gguf_get_f32(g, AK("attention.layer_norm_epsilon"), 1e-5f);
     m->rope_base   = gguf_get_f32(g, AK("rope.freq_base"), 10000.0f);
     // llama-arch GGUFs have Q/K permuted at conversion for adjacent-pair rope;
     // qwen2 (and other HF-layout archs) need NeoX-style half-split rotation
-    m->rope_neox   = strcmp(arch, "llama") != 0 && strcmp(arch, "mistral") != 0 &&
-                     strcmp(arch, "mistral3") != 0;
+    m->rope_neox   = m->ad->rope_neox;
     m->embd_scale  = 1.0f;
     m->logit_scale = 1.0f;
     m->resid_scale = 1.0f;
@@ -3247,7 +3274,7 @@ static bool bind_mtp_layers(model_t *m, gguf_file *g, const char *arch, const mo
 static bool bind_swa_default(model_t *m, gguf_file *g, const char *arch) {
     char key[128];
     int sw = (int)gguf_get_u32(g, AK("attention.sliding_window"), 0);
-    bool uniform = strcmp(arch, "phi3") == 0;
+    bool uniform = m->ad->id == ARCH_PHI3;
     if (uniform && sw >= m->n_ctx_train) sw = 0;
     if (sw > 0) {
         int swa_pattern = (int)gguf_get_u32(g, AK("attention.sliding_window_pattern"), 2);
@@ -3320,7 +3347,7 @@ static bool bind_meta_qwen35(model_t *m, gguf_file *g, const char *arch) {
     // hashes each layer's KV geometry, so a state saved under the old layout
     // is refused, never misread; RUNNER_KV_RECURRENT_ROWS=1 keeps that
     // layout, to resume such a state.
-    if (!qwen35_kv_rows_typed(arch)) return true;
+    if (!qwen35_kv_rows_typed(m->ad)) return true;
     m->l_head_kv = calloc((size_t)m->n_layer, sizeof(int));
     if (!m->l_head_kv) return false;
     for (int i = 0; i < m->n_layer; i++)
@@ -3889,10 +3916,10 @@ static bool bind_lfm2_mixer(model_t *m, gguf_file *g, layer_t *l, int i, bool *o
 static bool nh_moe_expert_arrays(const model_t *m, gguf_file *g, const char *arch,
                                  int *used, int *ff_max, int *ff_min) {
     char kff[128], kkv[128], kused[128], kexp[128];
-    snprintf(kff, sizeof kff, "%s.feed_forward_length", arch);
-    snprintf(kkv, sizeof kkv, "%s.attention.head_count_kv", arch);
-    snprintf(kused, sizeof kused, "%s.expert_used_count", arch);
-    snprintf(kexp, sizeof kexp, "%s.expert_feed_forward_length", arch);
+    meta_key(kff, sizeof kff, arch, "feed_forward_length");
+    meta_key(kkv, sizeof kkv, arch, "attention.head_count_kv");
+    meta_key(kused, sizeof kused, arch, "expert_used_count");
+    meta_key(kexp, sizeof kexp, arch, "expert_feed_forward_length");
     const char *keys[2] = { kused, kexp };
     bool arr[2];
     for (int k = 0; k < 2; k++) {
@@ -3941,7 +3968,7 @@ static bool nh_moe_expert_arrays(const model_t *m, gguf_file *g, const char *arc
 // expert routing.
 static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
     char key[128];
-    bool nh_moe = strcmp(arch, "nemotron_h_moe") == 0;
+    bool nh_moe = m->ad->id == ARCH_NEMOTRON_H_MOE;
     int ff_exp_min = 0;   // nemotron_h_moe: the narrowest expert (Bolt varies it)
     // Nemotron-H (NVIDIA Nemotron-Nano-9B-v2): a Mamba-2 / attention / MLP
     // hybrid. Each block is EXACTLY ONE of three kinds (mutually exclusive,
@@ -4221,7 +4248,7 @@ static bool bind_resolve_defaults(model_t *m, gguf_file *g, const char *arch) {
     // attention.temperature_scale) on every layer's Q after its rope, at
     // 1 + beta * ln(1 + floor(pos / original context)), the same floor as
     // llama.cpp's n_ctx_orig_yarn and offset 0 (llama_model_mistral3)
-    if (strcmp(arch, "mistral3") == 0) {
+    if (m->ad->id == ARCH_MISTRAL3) {
         float beta = gguf_get_f32(g, AK("attention.temperature_scale"), 0.0f);
         if (beta != 0.0f) {
             int orig = (int)gguf_get_u32(g, AK("rope.scaling.original_context_length"), 0);
@@ -4358,7 +4385,7 @@ static bool bind_meta_moe(model_t *m, gguf_file *g, const char *arch) {
         // GELU-gated MoE is implemented only for gemma-4's dual-branch layout
         // (fused gate_up experts + a dense shared FFN per layer). Any other
         // non-SiLU MoE is refused rather than run through SiLU math.
-        bool gemma_moe = strcmp(arch, "gemma4") == 0 &&
+        bool gemma_moe = m->ad->id == ARCH_GEMMA4 &&
                          gguf_find_tensor(g, "blk.0.ffn_gate_up_exps.weight");
         // gpt-oss's ACT_SWIGLU_OAI is implemented in BOTH CPU MoE paths
         // (per-token and grouped prefill), so it is admitted here by name
@@ -4403,7 +4430,7 @@ static bool bind_validate_geometry(model_t *m, gguf_file *g, const char *arch, b
     {
         gguf_kv *hk = gguf_get(g, AK("attention.head_count_kv"));
         bool kv_arr = hk && hk->type == GGUF_T_ARR;
-        bool gemma4 = strcmp(arch, "gemma4") == 0;
+        bool gemma4 = m->ad->id == ARCH_GEMMA4;
         if (kv_arr && !hybrid_typed && !gemma4) {
             // The generic path runs one KV width. A zero entry is a removed
             // attention only when head_count says so as well; alone it is
@@ -5379,10 +5406,10 @@ static void bind_kv_layout(model_t *m, const model_params *p) {
     // reservation auto-fit — and the sizing below uses the real per-token cost.
     // Requires per-HEAD block alignment, not just per-row: attention slices the
     // row at kvh*head_dim, which must land on a q8 block boundary.
+    // which formats the heads take: the one rule --info fit asks too
+    const unsigned fmts = model_kv_formats(m->l_head_dim, m->n_layer, m->head_dim);
     if (p->kv_q8) {
-        bool aligned = true;
-        for (int l = 0; l < m->n_layer; l++)
-            if (model_head_dim(m, l) % 32 != 0) aligned = false;
+        bool aligned = fmts & MODEL_KV_FMT_Q8;
         // a GPU backend without q8 attention kernels would read the blocks as
         // fp16, so fall back rather than corrupt
         char gname[128];
@@ -5400,9 +5427,7 @@ static void bind_kv_layout(model_t *m, const model_params *p) {
     // k8v4: q8 rows for K (head_dim % 32) and fp4 rows for V (head_dim % 16),
     // so it needs both formats' kernels on a GPU backend
     if (p->kv_split && !m->kv_q8) {
-        bool aligned = true;
-        for (int l = 0; l < m->n_layer; l++)
-            if (model_head_dim(m, l) % 32 != 0) aligned = false;
+        bool aligned = fmts & MODEL_KV_FMT_K8V4;
         char gname[128];
         bool gpu_path = p->gpu_mode == GPU_AUTO && gpu_available(gname, sizeof(gname));
         if (!aligned)
@@ -5414,9 +5439,7 @@ static void bind_kv_layout(model_t *m, const model_params *p) {
             m->kv_split = true;
     }
     if (p->kv_fp4 && !m->kv_q8 && !m->kv_split) {
-        bool aligned = true;
-        for (int l = 0; l < m->n_layer; l++)
-            if (model_head_dim(m, l) % 16 != 0) aligned = false;
+        bool aligned = fmts & MODEL_KV_FMT_FP4;
         char gname[128];
         bool gpu_path = p->gpu_mode == GPU_AUTO && gpu_available(gname, sizeof(gname));
         if (!aligned)
@@ -5439,6 +5462,99 @@ static void bind_kv_layout(model_t *m, const model_params *p) {
     }
 }
 
+// Each family's own metadata binders, in one place (R6.68.28). `late` false is
+// the stage before the NextN and sliding-window defaults (bind_mtp_layers,
+// bind_swa_default), which read what these set; true is the stage after them,
+// where a binder may read the trunk's block count. No default case: -Wswitch
+// (on under -Wall, an error under STRICT) refuses a row of arch.h whose
+// family has no line here.
+static bool bind_arch_meta(model_t *m, gguf_file *g, const char *arch, bool late) {
+    switch (m->ad->id) {
+    case ARCH_GEMMA3:       return late || bind_meta_gemma3(m, g, arch);
+    case ARCH_GPT_OSS:      return late || bind_meta_gptoss(m, g, arch);
+    case ARCH_AFMOE:        return late || bind_meta_afmoe(m, g, arch);
+    case ARCH_SPARK2_5:     return late || bind_meta_spark25(m, g, arch);
+    case ARCH_K2_HORIZON:   return late || bind_meta_k2h(m, g, arch);
+    case ARCH_FLINT:        return late || bind_meta_flint(m, g, arch);
+    case ARCH_DEEPSEEK2:    return late || bind_meta_deepseek2(m, g, arch);
+    // mellum (JetBrains Mellum2.x) is qwen3moe's attention and router with a
+    // 3:1 sliding/full layout: bind_swa_default reads its boolean pattern, the
+    // local table ropes at rope.freq_base_swa unscaled, and YaRN with its
+    // magnitude factor applies to the full layers only (model_rope_mscale).
+    case ARCH_QWEN3: case ARCH_QWEN3MOE: case ARCH_MELLUM:
+        return late || bind_meta_qwen3(m, g, arch);
+    // clef is a Qwen3.5/Qwen3.8 backbone under its own key prefix, with a
+    // decision head on top (bound after the layers, model_clef_bind)
+    // qwen35moe (Qwen3.5/3.6-35B-A3B and their derivatives): the Qwen 3.5
+    // token mixer with routed experts and a sigmoid-gated shared expert on
+    // every block, the generic MoE reader's softmax/renormalize routing,
+    // and none of qwen4exp's hyper-connections, PLE or indexer
+    case ARCH_QWEN35: case ARCH_QWEN35MOE: case ARCH_CLEF:
+        return !late || bind_meta_qwen35(m, g, arch);
+    case ARCH_QWEN4EXP:
+        return !late || (bind_meta_qwen35(m, g, arch) && bind_meta_qwen4exp(m, g, arch));
+    case ARCH_APERTUS:      return !late || bind_meta_apertus(m, g, arch);
+    case ARCH_GEMMA4:       return !late || bind_meta_gemma4(m, g, arch);
+    case ARCH_GRANITE:      return !late || bind_meta_granite(m, g, arch);
+    case ARCH_GRANITEHYBRID: return !late || bind_meta_granitehybrid(m, g, arch);
+    case ARCH_NEMOTRON_H: case ARCH_NEMOTRON_H_MOE:
+        return !late || bind_meta_nemotron_h(m, g, arch);
+    case ARCH_MUSE_GLIMMER: return !late || bind_meta_muse(m, g, arch);
+    case ARCH_LFM2: case ARCH_LFM2MOE:
+        return !late || bind_meta_lfm2(m, g, arch);
+    // the shared binders alone (an unknown name runs under
+    // RUNNER_ALLOW_UNKNOWN_ARCH, llama-style)
+    case ARCH_LLAMA: case ARCH_QWEN2: case ARCH_MISTRAL: case ARCH_SMOLLM:
+    case ARCH_STABLELM: case ARCH_PHI3: case ARCH_MISTRAL3: case ARCH_UNKNOWN:
+        return true;
+    // refused at admission, never bound
+    case ARCH_GEMMA: case ARCH_GEMMA2: case ARCH_COUNT:
+        return false;
+    }
+    return false;
+}
+
+// The plan step (R6.68.29): what a load decides about a file's geometry, from
+// its header alone. The loader's own metadata binders in the loader's order:
+// admission, the shared hyperparameters, each family's binders (bind_arch_meta)
+// around the NextN and sliding-window defaults, the resolved defaults, the
+// MoE geometry and the geometry gate. None reads a tensor's data, so a header
+// without its data section (--info fit on a partial download) plans as the
+// file it heads. It sets m->arch and m->ad and every scalar and per-layer
+// table those binders fill (head widths and counts, the sliding pattern, the
+// shared-KV map, the NextN count); model_bind_weights then binds the tensors
+// over it, and a plan made for its own sake is released with
+// model_free_weights.
+static bool model_plan(model_t *m, gguf_file *g, const model_params *p) {
+    const char *arch = gguf_get_str(g, "general.architecture", "?");
+    if (!bind_admit_architecture(m, arch)) return false;
+    if (!bind_refuse_rotated_basis(m, g)) return false;
+    // The hybrid families type their blocks with zeros in the per-layer
+    // arrays (nemotron_h: head_count_kv / feed_forward_length; granitehybrid:
+    // head_count_kv). Their own blocks below read those arrays; the removal
+    // reading of a zero (this block's sublayer was dropped from the file)
+    // applies to every other architecture.
+    const bool hybrid_typed = m->ad->hybrid_typed;
+
+    if (!bind_hparams(m, g, arch, hybrid_typed)) return false;
+    if (!bind_arch_meta(m, g, arch, false)) return false;
+    if (!bind_mtp_layers(m, g, arch, p)) return false;
+    if (!m->l_is_swa && !bind_swa_default(m, g, arch)) return false;
+    // (no qwen35-family binder reads it; qwen4exp's sets it)
+    m->ple4_layer = -1;
+    if (!bind_arch_meta(m, g, arch, true)) return false;
+    if (!bind_resolve_defaults(m, g, arch)) return false;
+    if (!bind_meta_moe(m, g, arch)) return false;
+    if (m->deepseek2) {
+        // the publisher's norm_topk_prob is false and the GGUF says so by
+        // omission (llama.cpp reads expert_weights_norm with default false
+        // for this arch); bind_meta_moe defaults it true for Qwen and Mixtral
+        char key[128];
+        m->expert_norm_w = gguf_get_bool(g, AK("expert_weights_norm"), false);
+    }
+    return bind_validate_geometry(m, g, arch, hybrid_typed);
+}
+
 static bool model_bind_weights(model_t *m, const char *path, const model_params *p) {
     if (!gguf_open(&m->gf, path)) return false;
     gguf_file *g = &m->gf;
@@ -5451,72 +5567,8 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     memcpy(m->path, path, plen);
     model_record_file_id(m, path);
 
+    if (!model_plan(m, g, p)) return false;
     const char *arch = gguf_get_str(g, "general.architecture", "?");
-    if (!bind_admit_architecture(m, arch)) return false;
-    if (!bind_refuse_rotated_basis(m, g)) return false;
-    // The hybrid families type their blocks with zeros in the per-layer
-    // arrays (nemotron_h: head_count_kv / feed_forward_length; granitehybrid:
-    // head_count_kv). Their own blocks below read those arrays; the removal
-    // reading of a zero (this block's sublayer was dropped from the file)
-    // applies to every other architecture.
-    const bool hybrid_typed = strcmp(arch, "nemotron_h") == 0 ||
-                              strcmp(arch, "nemotron_h_moe") == 0 ||
-                              strcmp(arch, "granitehybrid") == 0 ||
-                              strcmp(arch, "lfm2") == 0 ||
-                              strcmp(arch, "lfm2moe") == 0;
-
-    if (!bind_hparams(m, g, arch, hybrid_typed)) return false;
-    if (strcmp(arch, "gemma3") == 0 && !bind_meta_gemma3(m, g, arch)) return false;
-    if (strcmp(arch, "gpt-oss") == 0 && !bind_meta_gptoss(m, g, arch)) return false;
-    if (strcmp(arch, "afmoe") == 0 && !bind_meta_afmoe(m, g, arch)) return false;
-    if (strcmp(arch, "spark2_5") == 0 && !bind_meta_spark25(m, g, arch)) return false;
-    if (strcmp(arch, "k2-horizon") == 0 && !bind_meta_k2h(m, g, arch)) return false;
-    if (strcmp(arch, "flint") == 0 && !bind_meta_flint(m, g, arch)) return false;
-    if (strcmp(arch, "deepseek2") == 0 && !bind_meta_deepseek2(m, g, arch)) return false;
-    // mellum (JetBrains Mellum2.x) is qwen3moe's attention and router with a
-    // 3:1 sliding/full layout: bind_swa_default reads its boolean pattern, the
-    // local table ropes at rope.freq_base_swa unscaled, and YaRN with its
-    // magnitude factor applies to the full layers only (model_rope_mscale).
-    if ((strcmp(arch, "qwen3") == 0 || strcmp(arch, "qwen3moe") == 0 ||
-         strcmp(arch, "mellum") == 0) &&
-        !bind_meta_qwen3(m, g, arch))
-        return false;
-    if (!bind_mtp_layers(m, g, arch, p)) return false;
-    if (!m->l_is_swa && !bind_swa_default(m, g, arch)) return false;
-    // clef is a Qwen3.5/Qwen3.8 backbone under its own key prefix, with a
-    // decision head on top (bound after the layers, model_clef_bind)
-    // qwen35moe (Qwen3.5/3.6-35B-A3B and their derivatives): the Qwen 3.5
-    // token mixer with routed experts and a sigmoid-gated shared expert on
-    // every block, the generic MoE reader's softmax/renormalize routing,
-    // and none of qwen4exp's hyper-connections, PLE or indexer
-    if ((strcmp(arch, "qwen35") == 0 || strcmp(arch, "qwen35moe") == 0 ||
-         strcmp(arch, "qwen4exp") == 0 || strcmp(arch, "clef") == 0) &&
-        !bind_meta_qwen35(m, g, arch))
-        return false;
-    m->ple4_layer = -1;
-    if (strcmp(arch, "qwen4exp") == 0 && !bind_meta_qwen4exp(m, g, arch)) return false;
-    if (strcmp(arch, "apertus") == 0 && !bind_meta_apertus(m, g, arch)) return false;
-    if (strcmp(arch, "gemma4") == 0 && !bind_meta_gemma4(m, g, arch)) return false;
-    if (strcmp(arch, "granite") == 0 && !bind_meta_granite(m, g, arch)) return false;
-    if (strcmp(arch, "granitehybrid") == 0 && !bind_meta_granitehybrid(m, g, arch)) return false;
-    if ((strcmp(arch, "nemotron_h") == 0 || strcmp(arch, "nemotron_h_moe") == 0) &&
-        !bind_meta_nemotron_h(m, g, arch))
-        return false;
-    if (strcmp(arch, "muse-glimmer") == 0 && !bind_meta_muse(m, g, arch)) return false;
-    if ((strcmp(arch, "lfm2") == 0 || strcmp(arch, "lfm2moe") == 0) &&
-        !bind_meta_lfm2(m, g, arch))
-        return false;
-    if (!bind_resolve_defaults(m, g, arch)) return false;
-    if (!bind_meta_moe(m, g, arch)) return false;
-    if (m->deepseek2) {
-        // the publisher's norm_topk_prob is false and the GGUF says so by
-        // omission (llama.cpp reads expert_weights_norm with default false
-        // for this arch); bind_meta_moe defaults it true for Qwen and Mixtral
-        char key[128];
-        m->expert_norm_w = gguf_get_bool(g, AK("expert_weights_norm"), false);
-    }
-    if (!bind_validate_geometry(m, g, arch, hybrid_typed)) return false;
-
     if (!bind_global_tensors(m, g)) return false;
 
     // one spare slot: block n_layer is the NextN/MTP head when consumed
@@ -5524,7 +5576,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
     if (!m->layers) return false;
     // phi3 fuses Q/K/V into attn_qkv and gate/up into ffn_up: five slice
     // descriptors per layer, pointing into the mmapped weights
-    bool fused_qkv = strcmp(arch, "phi3") == 0;
+    bool fused_qkv = m->ad->id == ARCH_PHI3;
     if (fused_qkv || m->attn_qkv_split) {
         m->fused_splits = calloc((size_t)m->n_layer * 5, sizeof(gguf_tensor));
         if (!m->fused_splits) return false;
@@ -5565,7 +5617,7 @@ static bool model_bind_weights(model_t *m, const char *path, const model_params 
             m->rec_slot[i] = m->layers[i].recurrent ? m->n_rec++ : -1;
     }
     if (bind_mtp && !model_mtp_bind(m, g)) return false;
-    if (strcmp(arch, "clef") == 0 && !model_clef_bind(m, g, arch)) return false;
+    if (m->ad->id == ARCH_CLEF && !model_clef_bind(m, g, arch)) return false;
 
     // gemma4 dropped the plus-one norm convention (unlike gemma1-3): its
     // RMSNorm is the standard x_normed * weight, so norm weights are used raw.

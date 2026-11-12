@@ -99,13 +99,12 @@ boundary activation back through the host `x` buffer.
   `attn_v.weight` that is not an attention layer reusing K as V (gemma-4's
   global layers zero V with `cuMemsetD8Async` in stream order, which a graph
   records; a driver without that call keeps them eager); a MoE layer
-  without fused device routing; a Mamba-2 hybrid with experts; qwen4exp; a
-  qwen35 model with routed experts; any recurrent model under
-  `RUNNER_CUDA_GRAPH_RECUR=0` (qwen35's Gated DeltaNet steps replay since
-  2026-10-21, the dense Mamba-2 hybrids' steps and nemotron_h's MLP-only
-  blocks since 2026-10-22); experts on the host; a partial split; the
-  profiler on;
-  `RUNNER_CUDA_GRAPH_OFF`. A speculative keep-forward, whose per-row
+  without fused device routing; a Mamba-2 hybrid with experts; qwen4exp;
+  any recurrent model under `RUNNER_CUDA_GRAPH_RECUR=0` (qwen35's Gated
+  DeltaNet steps replay since 2026-10-21, the dense Mamba-2 hybrids' steps
+  and nemotron_h's MLP-only blocks since 2026-10-22, a qwen35 model with
+  routed experts fused on the device since R6.68.25a); experts on the host;
+  a partial split; the profiler on; `RUNNER_CUDA_GRAPH_OFF`. A speculative keep-forward, whose per-row
   checkpoints are copies the graph does not hold, runs its step eagerly on
   an instance that otherwise replays. Each refusal names itself
   (`graph_why`); under `RUNNER_REQUIRE_GRAPH_CAPTURE=1` (the CUDA gates) it
@@ -113,8 +112,11 @@ boundary activation back through the host `x` buffer.
   run, naming the synchronous call inside the capture when there was one
   (the guarded `cu*` wrappers note it while a thread captures).
 - **When a graph is dropped.** Binding or unbinding an adapter
-  (`gpu_lora_bind`, `gpu_lora_unbind`) turns graphs off for that instance,
-  because the captured launches predate the adapter.
+  (`gpu_lora_bind`, `gpu_lora_unbind`) drops the instance's decode graphs,
+  because their launches are the forward without the adapter or with it, and
+  the next decode captures again (R6.68.25b; before, it turned graphs off for
+  the instance). The adapter's A, B and scratch keep their addresses until
+  the unbind, so a graph captured with them stays valid until then.
 - **Capture mode** is thread-local, so another slot's forward on its own
   thread can make synchronous calls during a capture.
 

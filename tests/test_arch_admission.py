@@ -90,7 +90,7 @@ def test_known_arch_still_loads(runner_bin, tmp_path):
 # corpus tokenized differently. Neither defect was exotic. Both would have
 # been caught on the first day by the checks this repository already runs.
 #
-# They survived because `stablelm` was named in model_supported_archs() and
+# They survived because `stablelm` was named in the admission allowlist and
 # in the README's architecture table while having NO row in
 # tests/compatibility/models.json. No pinned file means no tokenizer
 # differential, no greedy reference, no device identity check: the
@@ -118,12 +118,13 @@ ARCH_GATE_EXEMPTIONS = {
 }
 
 
-def _admitted_architectures():
-    import re
-    src = (ROOT / "src/model.c").read_text()
-    m = re.search(r"static const char \*const arches\[\] = \{(.*?)\};", src, re.S)
-    assert m, "could not find the admitted-architecture list in src/model.c"
-    return re.findall(r'"([^"]+)"', m.group(1))
+def _admitted_architectures(runner_bin):
+    """What model_load admits, as the binary publishes it (--caps lists the
+    admitted rows of src/arch.h)."""
+    import json
+    p = subprocess.run([runner_bin, "--caps"], cwd=ROOT, capture_output=True, timeout=20)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    return json.loads(p.stdout)["architectures"]
 
 
 def _manifest_architectures():
@@ -132,19 +133,19 @@ def _manifest_architectures():
     return {row["architecture"] for row in man["models"]}
 
 
-def test_every_admitted_architecture_is_gated_or_named_as_ungated():
+def test_every_admitted_architecture_is_gated_or_named_as_ungated(runner_bin):
     """No architecture is claimed in silence.
 
     Either a pinned file exercises it, or it appears in ARCH_GATE_EXEMPTIONS
-    with the reason. A new architecture added to model_supported_archs()
+    with the reason. A new architecture added to the admitted rows of src/arch.h
     without either fails here, which is the check `stablelm` never had.
     """
-    admitted = _admitted_architectures()
+    admitted = _admitted_architectures(runner_bin)
     gated = _manifest_architectures()
     unaccounted = [a for a in admitted
                    if a not in gated and a not in ARCH_GATE_EXEMPTIONS]
     assert not unaccounted, (
-        "these architectures are admitted by model_supported_archs() but have "
+        "these architectures are admitted (a row of src/arch.h) but have "
         "no row in tests/compatibility/models.json and no entry in "
         "ARCH_GATE_EXEMPTIONS: " + ", ".join(unaccounted) + ". Pin a file for "
         "each, or add it to the exemption map with the reason it is safe.")

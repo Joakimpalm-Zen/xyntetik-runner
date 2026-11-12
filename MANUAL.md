@@ -1991,7 +1991,8 @@ host libm by 1-2 ulp by construction); every CPU-vs-GPU byte comparison in the
 test suite sets them. `RUNNER_CUDA_GRAPH_OFF=1` disables CUDA graph capture
 for decode steps, which isolates a kernel from the graph launch path when a
 result looks graph-dependent; `RUNNER_CUDA_GRAPH_RECUR=0` does it for the
-qwen35 family alone, whose decode replays a graph since 2026-10-21.
+qwen35 family alone, whose decode replays a graph since 2026-10-21 (qwen35moe,
+with its routed experts fused on the device, since R6.68.25a).
 `RUNNER_REQUIRE_GRAPH_CAPTURE=1`, which the CUDA gates set, makes a decode graph
 that fails to capture or launch end the process with the failing stage, the CUDA
 error and the synchronous call that broke it, instead of falling back to plain
@@ -3125,11 +3126,11 @@ extra permutation.
 Interop runs the other way too: an adapter runner trained
 scores identically (1.000 on its held-out eval) when served by stock llama.cpp. Applied
 as `y += scale·B(Ax)` on the dense projections (attention q/k/v/output, FFN
-gate/up/down), and on a qwen35 or Clef model also on each Gated DeltaNet layer's input
-and output projections (`attn_qkv`, `attn_gate`, `ssm_beta`, `ssm_alpha`, `ssm_out`:
+gate/up/down), and on a Gated DeltaNet model (`qwen35`, `qwen35moe`, `qwen4exp`, `clef`)
+also on each Gated DeltaNet layer's input and output projections (`attn_qkv`, `attn_gate`, `ssm_beta`, `ssm_alpha`, `ssm_out`:
 PEFT's `in_proj_qkv`, `in_proj_z`, `in_proj_b`, `in_proj_a` and `out_proj` as llama.cpp's
 converter names them; a full-attention layer's `attn_q` spans the query and its output
-gate, which share one projection). A `qwen35` adapter, which is what the converter writes
+gate, which share one projection); `--merge-lora` folds the same set. A `qwen35` adapter, which is what the converter writes
 from Clef's backbone, serves on a `clef` file. On Metal a qwen35 model with an adapter runs
 on the CPU, so there the CPU applies it - the base weights and kernels are untouched, so every base identity gate
 still describes the adapted run's substrate. Runs on the CPU and, on CUDA and Metal, on
@@ -3138,7 +3139,10 @@ memory (36.9 MB at rank 8 on a 1.5B), a partial split lets each half apply its o
 blocks, and the CPU-versus-GPU gap with the adapter is no wider than without it (CUDA:
 max |Δlogprob| 1.110e-3 against 1.255e-3, Qwen2.5-1.5B Q4_K_M, RTX 3070; Metal: mean
 3.0e-4 against 3.1e-4, SmolLM2-135M Q8_0 with a rank-8 adapter on all 210 projections,
-Apple M1). On Metal a block with an adapter decodes on the split path, without the fused
+Apple M1). On CUDA a decode with an adapter replays its graph as one without does (since
+R6.68.25b; before, an adapter turned the graph off): Qwen3-4B Q4_K_M with a rank-8 adapter
+decodes at 128 tok/s, against 90 before and 155 without the adapter, with the same greedy
+bytes (RTX 5070). On Metal a block with an adapter decodes on the split path, without the fused
 front kernel, so decode slows: 117 to 44 tok/s on that 135M (still above the CPU's 37),
 and 9.8 to 8.3 tok/s on Llama-3.2-3B Q4_K_M with a rank-16 adapter on Q and V of every
 block (the CPU decodes it at 5.7). Prefill barely moves in either case. Fails

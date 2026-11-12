@@ -22,7 +22,16 @@ inside a `#define` (a compat macro naming the POSIX spelling), in a comment or
 a string, or on a line carrying a `portability: ok` comment for code guarded
 some other way.
 
-    python3 scripts/check-portability.py [FILE ...]     # default: src/ and tests/
+The Makefile gets the same question about its recipes: a command the Windows
+CI shell (MSYS2 UCRT64) lacks. Today that is cmp, which MSYS2 ships only with
+diffutils. Every cmp in the Makefile sits in a test-metal target inside
+`ifeq ($(BUILD_OS),Darwin)`, which only macOS runs, and macOS has cmp; a recipe
+that runs anywhere else compares bytes with $(PYTHON) (test-qwen4exp's form).
+A recipe line that runs cmp outside such a branch is flagged; the false branch
+of `ifeq ($(BUILD_OS),Darwin)` and the true branch of `ifneq` are scanned,
+comment lines are not, and neither is a longer name (filecmp.cmp, cmp_x).
+
+    python3 scripts/check-portability.py [FILE ...]     # default: src/, tests/ and the Makefile
 """
 import re
 import sys
@@ -146,19 +155,70 @@ def scan(path):
     return hits
 
 
+# Makefile recipe commands the Windows CI shell lacks, with what to use instead
+MAKE_MISSING = {
+    "cmp": "a $(PYTHON) byte comparison (test-qwen4exp's form)",
+}
+# the command word: at the start or after a shell separator, followed by a space
+MAKE_CALL = re.compile(r"(?:^|[\s;|&(!{`])(" + "|".join(MAKE_MISSING) + r")(?=\s)")
+MAKE_DIRECTIVE = re.compile(r"\s*(?:(else)\s*)?(ifeq|ifneq|ifdef|ifndef|else|endif)\b(.*)")
+DARWIN = re.compile(r"""^\s*(?:\(\s*\$\(BUILD_OS\)\s*,\s*Darwin\s*\)|(["'])\$\(BUILD_OS\)\1\s+(["'])Darwin\2)\s*(?:#.*)?$""")
+
+
+def make_frame(directive, cond):
+    """[the true branch is Darwin only, the false branch is Darwin only]."""
+    if directive in ("ifeq", "ifneq") and DARWIN.match(cond):
+        return [directive == "ifeq", directive == "ifneq"]
+    return [False, False]
+
+
+def scan_make(path):
+    """(line number, command) for each recipe line outside a Darwin-only
+    branch that runs a command the Windows CI shell lacks."""
+    stack, hits = [], []
+    for no, line in enumerate(Path(path).read_text(encoding="utf-8", errors="replace").split("\n"), 1):
+        if not line.startswith("\t"):
+            m = MAKE_DIRECTIVE.match(line)
+            if not m:
+                continue
+            chained, d, rest = m.group(1), m.group(2), m.group(3)
+            if d in ("ifeq", "ifneq", "ifdef", "ifndef"):
+                if chained and stack:          # else ifeq ...: a new branch of the same frame
+                    stack[-1] = make_frame(d, rest)
+                else:
+                    stack.append(make_frame(d, rest))
+            elif d == "else" and stack:
+                stack[-1] = [stack[-1][1], False]
+            elif d == "endif" and stack:
+                stack.pop()
+            continue
+        body = line.lstrip("\t").lstrip("@-+ ")
+        if body.startswith("#") or any(f[0] for f in stack):
+            continue
+        for c in MAKE_CALL.finditer(line):
+            hits.append((no, c.group(1)))
+    return hits
+
+
 def main(argv):
     files = [Path(a) for a in argv] or sorted(
         p for d in ("src", "tests") for p in (ROOT / d).rglob("*")
-        if p.suffix in (".c", ".h", ".m") and p.is_file())
+        if p.suffix in (".c", ".h", ".m") and p.is_file()) + [ROOT / "Makefile"]
     bad = 0
     for f in files:
+        rel = f.relative_to(ROOT) if f.is_absolute() and ROOT in f.parents else f
+        if f.name == "Makefile" or f.suffix == ".mk":
+            for no, cmd in scan_make(f):
+                print(f"{rel}:{no}: {cmd} runs in a recipe outside ifeq ($(BUILD_OS),Darwin), and the "
+                      f"Windows CI shell has no {cmd}; use {MAKE_MISSING[cmd]}, or keep it in a Darwin-only branch")
+                bad += 1
+            continue
         for no, fn in scan(f):
-            rel = f.relative_to(ROOT) if f.is_absolute() and ROOT in f.parents else f
             print(f"{rel}:{no}: {fn}() is not in the MinGW-w64 CRT; use {MISSING[fn]}, "
                   f"guard it from _WIN32, or mark a guarded line `{ESCAPE}`")
             bad += 1
     if bad:
-        print(f"check-portability: {bad} call(s) the Windows build lacks", file=sys.stderr)
+        print(f"check-portability: {bad} call(s) or command(s) the Windows build lacks", file=sys.stderr)
         return 1
     print(f"check-portability: ok ({len(files)} files)")
     return 0

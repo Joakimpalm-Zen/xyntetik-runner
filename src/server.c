@@ -643,7 +643,14 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     // demultiplexed as it is generated (tool_stream) rather than parsed
     // afterward, so both paths reach the same call from the same guarantee.
     jv *tools = jv_get(req, "tools");
+    // What the request owns from here on, released at the one exit below
+    // (each refusal carried its own copy of the release, R6.68.43).
     tool_envelope env = {0};
+    sbuf ts = {0};
+    chat_msg *cm = NULL;
+    char **owned = NULL;
+    int n_own = 0;
+    char *prompt = NULL;
     // parallel_tool_calls is read BEFORE the envelope is built, because it
     // changes the envelope's shape. Silently ignoring a request for several
     // calls would leave the caller expecting calls it never gets.
@@ -655,12 +662,12 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                       tool_parallel_default(s->tmpl, jv_get(req, "tool_choice")),
                       &parallel)) {
         send_error(fd, 400, "parallel_tool_calls must be a boolean");
-        return;
+        goto out;
     }
     bool atem_tool_calling = true;
     if (!request_bool(req, "atem_tool_calling", true, &atem_tool_calling)) {
         send_error(fd, 400, "atem_tool_calling must be a boolean");
-        return;
+        goto out;
     }
     // parallel_tool_calls:true + stream:true used to be refused here: the
     // demultiplexer tracked one call per turn, and downgrading silently
@@ -675,7 +682,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                                     terr, sizeof(terr));
     if (rc < 0) {
         send_error(fd, rc == TOOL_ENVELOPE_OOM ? 500 : 400, terr);
-        return;
+        goto out;
     }
     // The envelope applies whenever tools are declared and callable. Ornith,
     // Granite 4.2 and Qwen 3.8 used to be excluded here to keep their native
@@ -690,9 +697,8 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     {
         char why[480];
         if (!template_tools_check(s->tmpl, tools, why, sizeof why)) {
-            tool_envelope_free(&env);
             send_error(fd, 400, why);
-            return;
+            goto out;
         }
     }
     // When the strict envelope does not apply -- no tools declared, or
@@ -713,7 +719,6 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     const jv *native_tools = tool_decl_native(s->tmpl, strict,
                                               atem_tool_calling, tools, &env,
                                               &native_decl);
-    sbuf ts = {0};
     bool oom = false;
     // The generic teaching turn belongs to the generic envelope only. A
     // family whose envelope carries a native protocol but renders its
@@ -739,10 +744,8 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     // short or empty and the prompt went out without the declarations the
     // caller sent -- the model is then asked to call tools it was never shown.
     if (ts.failed || oom) {
-        free(ts.s);
-        tool_envelope_free(&env);
         send_error(fd, 500, "out of memory building chat prompt");
-        return;
+        goto out;
     }
     size_t cm_cap = (size_t)msgs->n + 2;   // + the tool turn, + a default system turn
     // Every family that replays reasoning_content as its own turn needs a
@@ -760,20 +763,18 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                 cm_cap++;
         }
     }
-    chat_msg *cm = malloc(sizeof(chat_msg) * cm_cap);
+    cm = malloc(sizeof(chat_msg) * cm_cap);
     // one rendered content per message, plus at most one text-extracted tool
     // name per tool result (text_spelled_call_name strdup's into this array)
-    char **owned = malloc(sizeof(char *) * (size_t)msgs->n * 2);
+    owned = malloc(sizeof(char *) * (size_t)msgs->n * 2);
     // client-controlled size (a 32MB body of tiny messages): a NULL here would
     // be indexed below. Fail the request cleanly instead of crashing.
     if (!cm || !owned) {
-        free(cm); free(owned); free(ts.s);
-        tool_envelope_free(&env);
         send_error(fd, 500, "out of memory building chat prompt");
-        return;
+        goto out;
     }
     size_t total = ts.n + 64;
-    int n_cm = 0, n_own = 0;
+    int n_cm = 0;
     if (ts.n)
         cm[n_cm++] = (chat_msg){ .role = "system", .content = ts.s };
     else if (msgs->n > 0 && strcmp(chat_role(msgs->items[0]), "system")) {
@@ -811,9 +812,6 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
             if (!turn_name) {
                 const char *id = jv_str(jv_get(msgs->items[i], "tool_call_id"),
                                         NULL);
-                for (int k = 0; k < n_own; k++) free(owned[k]);
-                free(owned); free(cm); free(ts.s);
-                tool_envelope_free(&env);
                 char e[288];
                 snprintf(e, sizeof(e),
                          "messages[%d] is a tool result that cannot be "
@@ -824,7 +822,7 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
                             : "it carries neither", id ? id : "",
                          id ? "\"" : " `name` nor `tool_call_id`");
                 send_error(fd, 400, e);
-                return;
+                goto out;
             }
         }
         if (s->tmpl == TMPL_MUSE && !strcmp(role, "assistant")) {
@@ -911,14 +909,9 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         total += strlen(role) + strlen(content) + 64;
     }
     if (oom || n_cm == 0) {
-        for (int i = 0; i < n_own; i++) free(owned[i]);
-        free(owned);
-        free(cm);
-        free(ts.s);
-        tool_envelope_free(&env);
         if (oom) send_error(fd, 500, "out of memory building chat prompt");
         else     send_error(fd, 400, "no message content");
-        return;
+        goto out;
     }
     // Native templates render the declarations themselves -- muse's JSON
     // block, Harmony's TypeScript namespace -- so their bytes belong in the
@@ -932,11 +925,8 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
     int thinking = req_thinking_mode(req);
     int recipients = req_bare_recipients(req);
     if (recipients < 0) {
-        for (int i = 0; i < n_own; i++) free(owned[i]);
-        free(owned); free(cm); free(ts.s);
-        tool_envelope_free(&env);
         send_error(fd, 400, "bare_recipients must be a boolean");
-        return;
+        goto out;
     }
     thinking |= recipients;
     {
@@ -946,26 +936,21 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
         const char *why = NULL;
         int effort = req_template_effort(s->tmpl, req, &why);
         if (effort < 0) {
-            for (int i = 0; i < n_own; i++) free(owned[i]);
-            free(owned); free(cm); free(ts.s);
-            tool_envelope_free(&env);
             send_error(fd, 400, why);
-            return;
+            goto out;
         }
         thinking |= effort;
     }
     render_state rs;
-    char *prompt = render_prompt_state_alloc(s->tmpl, cm, n_cm, add_assistant,
+    prompt = render_prompt_state_alloc(s->tmpl, cm, n_cm, add_assistant,
                                              thinking, native_tools,
                                              total + 256, &rs);
     if (!prompt) {
-        for (int i = 0; i < n_own; i++) free(owned[i]);
-        free(owned); free(cm); free(ts.s);
-        tool_envelope_free(&env);
         send_error(fd, 500, "out of memory building chat prompt");
-        return;
+        goto out;
     }
     run(s, fd, prompt, req, strict ? &env : NULL, &rs);
+out:
     free(prompt);
     for (int i = 0; i < n_own; i++) free(owned[i]);
     free(owned);
@@ -2985,26 +2970,27 @@ static void handle_conn(slot_t *s, sock_t fd) {
         return;
     }
 
+    // The request's body and its parsed form, released at the one exit below
+    // (each of eleven refusals carried its own copy of the release, R6.68.43).
     char *body = NULL;
+    jv *req = NULL;
     if (content_length > 0) {
         body = malloc(content_length + 1);
-        if (!body) { send_error(fd, 500, "cannot allocate request body"); return; }
+        if (!body) { send_error(fd, 500, "cannot allocate request body"); goto out; }
         size_t have = got - (size_t)(body_start - hdr);
         if (have > content_length) have = content_length;
         memcpy(body, body_start, have);
         while (have < content_length) {
             double remaining = deadline - now_s();
             if (remaining <= 0) {
-                free(body);
                 send_error(fd, 408, "request read timed out");
-                return;
+                goto out;
             }
             int r = recv_request(fd, body + have, content_length - have, deadline);
-            if (r == -2) { free(body); return; }
+            if (r == -2) goto out;
             if (r <= 0) {
-                free(body);
                 if (r < 0) send_error(fd, 408, "request read timed out");
-                return;
+                goto out;
             }
             have += (size_t)r;
         }
@@ -3014,11 +3000,10 @@ static void handle_conn(slot_t *s, sock_t fd) {
     // R10.12.3.2: the client's own id for this request, which a cancel can
     // name; a completion request registers it when it starts
     if (request_header_id(first_header, header_end, "X-Request-Id", s->cid_next) < 0) {
-        free(body);
         send_error_detail(fd, 400, "X-Request-Id must be sent once, as 1 to 64 "
                           "characters from A-Z a-z 0-9 . _ : -", "X-Request-Id",
                           "invalid_request_id");
-        return;
+        goto out;
     }
     char cancel_id[65];
     bool cancel_route = !strcmp(method, "POST") && cancel_path_id(path, cancel_id);
@@ -3120,7 +3105,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 (!strncmp(path, "/v1/runner/sessions/",
                           sizeof("/v1/runner/sessions/") - 1) &&
                  strstr(path, "/resume")))) {
-        jv *req = body ? json_parse(body, content_length) : NULL;
+        req = body ? json_parse(body, content_length) : NULL;
         if (!req) {
             send_error(fd, 400, "invalid JSON body");
         } else {
@@ -3131,17 +3116,13 @@ static void handle_conn(slot_t *s, sock_t fd) {
             if (model && model->type != J_NULL && model->type != J_STR) {
                 send_error_detail(fd, 400, "model must be a string", "model",
                                   "invalid_type");
-                jv_free(req);
-                free(body);
-                return;
+                goto out;
             }
             bool has_keep_alive = false;
             int keep_alive = 0;
             if (!request_keep_alive(req, &has_keep_alive, &keep_alive)) {
                 send_error(fd, 400, "keep_alive out of range");
-                jv_free(req);
-                free(body);
-                return;
+                goto out;
             }
             // A server with no registry (SV.n_reg == 0) is exactly one
             // configuration: a single model served with --parallel N>1, whose
@@ -3171,15 +3152,11 @@ static void handle_conn(slot_t *s, sock_t fd) {
                          SV.n_slots);
                 send_error_detail(fd, 400, msg, "keep_alive",
                                   "keep_alive_unsupported");
-                jv_free(req);
-                free(body);
-                return;
+                goto out;
             }
             resident_expect expect;
             if (!request_expect_resident(fd, req, &expect)) {
-                jv_free(req);
-                free(body);
-                return;
+                goto out;
             }
             atomic_fetch_add(&SV.active_requests, 1);
             atomic_fetch_add(&SV.total_requests, 1);
@@ -3329,11 +3306,12 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 pthread_mutex_unlock(&SV.swap_mu);
                 if (unloaded) prefix_cache_clear();
             }
-            jv_free(req);
         }
     } else {
         send_error(fd, 404, "not found");
     }
+out:
+    jv_free(req);
     free(body);
 }
 
@@ -3794,6 +3772,73 @@ static bool load_adapters(const model_t *base) {
     return true;
 }
 
+// Everything a server run holds once its threads are gone: the slots'
+// engines, the models and tokenizer (the caller's, handed over at the call,
+// and any this run loaded), the adapters, the queue's primitives, the slots.
+// One release for the normal shutdown and for every refusal before the
+// serving loop, so it reads the state as it is: slots that do not exist yet,
+// a slot whose model never loaded, a swap runtime that never started. The
+// refusals used to return with all of it allocated, about twenty of them,
+// each leaving the loaded model and tokenizer behind (R6.68.39).
+static void serve_release(model_t *base, tokenizer *tok) {
+    int n = SV.slots ? SV.n_slots : 0;
+    // the caller's model sits in slot 0 once startup placed it there
+    bool base_placed = n > 0 && base && SV.slots[0].m == base;
+    for (int i = 0; i < n; i++) {
+        engine_release(&SV.slots[i].e);
+        free(SV.slots[i].hint_buf);
+        SV.slots[i].hint_buf = NULL;
+    }
+    if (SV.n_reg > 0) {
+        if (SV.swap_ready) pthread_mutex_lock(&SV.swap_mu);
+        unload_draft();
+        unload_resident();
+        if (SV.swap_ready) {
+            pthread_mutex_unlock(&SV.swap_mu);
+            pthread_mutex_destroy(&SV.swap_mu);
+            SV.swap_ready = false;
+        }
+    } else {
+        provenance_note_unload();
+        if (tok) tokenizer_free(tok);
+        for (int i = 0; i < n; i++) {
+            model_t *draft = SV.slots[i].e.dm;
+            if (draft) { model_free(draft); free(draft); SV.slots[i].e.dm = NULL; }
+            if (!SV.slots[i].m) continue;
+            model_free(SV.slots[i].m);
+            if (i > 0) free(SV.slots[i].m);
+            SV.slots[i].m = NULL;
+        }
+        if (base && !base_placed) model_free(base);
+    }
+    prefix_cache_clear();
+    // the slots' models are gone; nothing borrows an adapter any more
+    for (int i = 0; i < SV.n_adapters; i++) model_lora_set_free(SV.adapters[i].set);
+    SV.n_adapters = 0;
+    if (SV.q_ready) {
+        pthread_cond_destroy(&SV.q.cv);
+        pthread_mutex_destroy(&SV.q.mu);
+        SV.q_ready = false;
+    }
+    free(SV.slots);
+    SV.slots = NULL;
+}
+
+// A start that ends before the serving loop, refused or stopped by a signal:
+// only the TTL reaper can be running (slot workers, the scheduler and the
+// cancel thread start after the last such exit), so it is stopped and joined
+// and the run's state released. Returns rc for the caller to return.
+static int serve_start_end(model_t *base, tokenizer *tok, int rc) {
+    SV.start_refused = true;
+    atomic_store(&SV.shutdown, true);
+    if (SV.reaper_started) {
+        pthread_join(SV.reaper_th, NULL);
+        SV.reaper_started = false;
+    }
+    serve_release(base, tok);
+    return rc;
+}
+
 int server_run(model_t *base, tokenizer *tok, const char *model_path,
                const model_params *mp, sampler defaults,
                const sampler_override *ov, int port, int parallel,
@@ -3825,13 +3870,16 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // half is filed; nothing needs it today, and it costs threading a context
     // through six translation units.
     memset(&SV, 0, sizeof(SV));
+    // no model is resident until one is placed: a refusal before that point
+    // must not read the zeroed index as "entry 0 is loaded" (serve_release)
+    resident_store(-1);
     // the answering thread of a previous run in this process is joined (R6.68.22)
     cancel_queue = NULL;
     cancel_thread_on = cancel_thread_stop = false;
     if (!plat_random(SV.id_seed, sizeof SV.id_seed)) {
         fprintf(stderr, "error: the OS random generator is unavailable, and a "
                 "response id must not be guessable\n");
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
 #ifndef _WIN32
     atomic_store(&stop_requested, 0);
@@ -3928,7 +3976,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         fprintf(stderr, "error: --draft needs a single served model, and -m "
                 "names a swap registry; serve one model with --draft, or "
                 "drop --draft\n");
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
 
     // "name=path,name2=path2" enables swap mode: one resident model,
@@ -3943,49 +3991,49 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         if (spec_len >= sizeof(tmp)) {
             fprintf(stderr, "error: -m registry spec is too long (max %zu bytes)\n",
                     sizeof(tmp) - 1);
-            return 1;
+            return serve_start_end(base, tok, 1);
         }
         // strtok() skips empty fields. Reject them before tokenizing so a
         // malformed registry cannot silently turn into a different one.
         if (model_path[0] == ',' || model_path[spec_len - 1] == ',' ||
             strstr(model_path, ",,")) {
             fprintf(stderr, "error: -m registry spec contains an empty entry\n");
-            return 1;
+            return serve_start_end(base, tok, 1);
         }
         snprintf(tmp, sizeof(tmp), "%s", model_path);
         for (char *tk = strtok(tmp, ","); tk; tk = strtok(NULL, ",")) {
             if (SV.n_reg >= max_reg) {
                 fprintf(stderr, "error: too many models in -m (max %d)\n", max_reg);
-                return 1;
+                return serve_start_end(base, tok, 1);
             }
             char *eq = strchr(tk, '=');
-            if (!eq) { fprintf(stderr, "error: bad registry entry '%s' (want name=path)\n", tk); return 1; }
+            if (!eq) { fprintf(stderr, "error: bad registry entry '%s' (want name=path)\n", tk); return serve_start_end(base, tok, 1); }
             *eq = 0;
             const char *nm = tk, *pth = eq + 1;
             if (!*nm || !*pth) {
                 fprintf(stderr, "error: registry entry '%s=%s' has an empty name or path\n", nm, pth);
-                return 1;
+                return serve_start_end(base, tok, 1);
             }
             if (strlen(nm) >= sizeof(SV.reg[0].name)) {
                 fprintf(stderr, "error: model name '%s' is too long (max %zu chars)\n",
                         nm, sizeof(SV.reg[0].name) - 1);
-                return 1;
+                return serve_start_end(base, tok, 1);
             }
             if (strlen(pth) >= sizeof(SV.reg[0].path)) {
                 fprintf(stderr, "error: model path for '%s' is too long (max %zu chars)\n",
                         nm, sizeof(SV.reg[0].path) - 1);
-                return 1;
+                return serve_start_end(base, tok, 1);
             }
             for (int j = 0; j < SV.n_reg; j++)
                 if (!strcmp(SV.reg[j].name, nm)) {
                     fprintf(stderr, "error: duplicate model name '%s' in -m\n", nm);
-                    return 1;
+                    return serve_start_end(base, tok, 1);
                 }
             snprintf(SV.reg[SV.n_reg].name, sizeof(SV.reg[0].name), "%s", nm);
             snprintf(SV.reg[SV.n_reg].path, sizeof(SV.reg[0].path), "%s", pth);
             if (!plat_file_readable(SV.reg[SV.n_reg].path)) {
                 fprintf(stderr, "error: cannot read %s\n", SV.reg[SV.n_reg].path);
-                return 1;
+                return serve_start_end(base, tok, 1);
             }
             SV.n_reg++;
         }
@@ -4005,7 +4053,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                     "the set holds %d models, each detecting its own. Serve "
                     "that model on its own instance to force its template.\n",
                     SV.n_reg);
-            return 1;
+            return serve_start_end(base, tok, 1);
         }
         if (parallel > 1) {
             fprintf(stderr, "note: model swapping uses a single inference slot; "
@@ -4057,17 +4105,18 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     SV.slots = calloc(parallel, sizeof(slot_t));
     if (!SV.slots) {
         fprintf(stderr, "error: cannot allocate server slots\n");
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
     if (pthread_mutex_init(&SV.q.mu, NULL) != 0) {
         fprintf(stderr, "error: cannot initialize server queue mutex\n");
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
     if (pthread_cond_init(&SV.q.cv, NULL) != 0) {
         fprintf(stderr, "error: cannot initialize server queue condition\n");
         pthread_mutex_destroy(&SV.q.mu);
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
+    SV.q_ready = true;
 
     if (SV.n_reg > 0) {
         // swap mode: models are loaded on demand
@@ -4075,7 +4124,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         s->id = 0;
         s->smp = defaults;
         s->smp_base = defaults;
-        if (!init_swap_runtime(mp, n_threads, ttl)) return 1;
+        if (!init_swap_runtime(mp, n_threads, ttl)) return serve_start_end(base, tok, 1);
     } else {
         int tmpl = SV.tmpl_override >= 0
                  ? SV.tmpl_override
@@ -4106,7 +4155,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             // between loads rather than serving with the flag silently set
             if (stop_was_requested()) {
                 fprintf(stderr, "shutdown requested during startup — exiting\n");
-                return 0;
+                return serve_start_end(base, tok, 0);
             }
             slot_t *s = &SV.slots[i];
             s->id = i;
@@ -4118,6 +4167,13 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             s->smp_base = s->smp;
             if (i == 0) {
                 s->m = base;
+                // the caller's model is the resident one from here on. With
+                // several slots there is no registry, and the index stays at
+                // entry 0 as it always was there: /v1/capabilities and the
+                // models list read it to say a model is loaded. (It was 0 from
+                // the state's reset until R6.68.39 made that -1 so a refused
+                // start could not read it as a loaded model.)
+                resident_store(0);
                 // mirror model_load's CPU-forced bump: the shared pool would
                 // otherwise silently undo it
                 int pool_threads = tpool_shared_threads(
@@ -4127,7 +4183,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 shared_pool = tpool_create(pool_threads);
                 if (!shared_pool) {
                     fprintf(stderr, "error: cannot create the slots' thread pool\n");
-                    return 1;
+                    return serve_start_end(base, tok, 1);
                 }
                 tpool_destroy(base->tp); // replace the single-thread load pool
                 base->tp = shared_pool;
@@ -4135,12 +4191,15 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 s->m = calloc(1, sizeof(model_t));
                 if (!s->m) {
                     fprintf(stderr, "error: cannot allocate slot %d model\n", i);
-                    return 1;
+                    return serve_start_end(base, tok, 1);
                 }
-                if (!model_load(s->m, model_path, &slot_mp) ||
-                    !oms_check_model(model_path, &SV.signing, NULL)) {
+                bool loaded = model_load(s->m, model_path, &slot_mp);
+                if (!loaded || !oms_check_model(model_path, &SV.signing, NULL)) {
                     fprintf(stderr, "error: failed to load slot %d\n", i);
-                    return 1;
+                    // a load that failed released its own model; only the
+                    // container is left, and the release must not free it twice
+                    if (!loaded) { free(s->m); s->m = NULL; }
+                    return serve_start_end(base, tok, 1);
                 }
                 tpool_destroy(s->m->tp);    // the single-thread load pool
                 tpool_retain(shared_pool);
@@ -4149,7 +4208,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             template_bind_think_tags(tmpl, &s->m->think_open, &s->m->think_close);
             if (!engine_init(&s->e, s->m, s->tok, &s->smp)) {
                 fprintf(stderr, "error: out of memory initializing slot %d engine\n", i);
-                return 1;
+                return serve_start_end(base, tok, 1);
             }
             prefix_cache_fit_model(s->m);   // R4.26.13: once per model; it only raises
             // CLI generation applies this after engine_init; server slots are
@@ -4165,7 +4224,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 if (!model_mtp_ready(s->m)) {
                     fprintf(stderr, "error: --mtp: slot %d needs the CPU "
                                     "path (rerun with --gpu off)\n", i);
-                    return 1;
+                    return serve_start_end(base, tok, 1);
                 }
                 s->e.mtp_on = true;
                 s->e.draft_k = draft_k;
@@ -4175,7 +4234,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                     fprintf(stderr, "error: --draft-lookup: slot %d needs "
                                     "host-readable hidden work (rerun with "
                                     "--gpu off)\n", i);
-                    return 1;
+                    return serve_start_end(base, tok, 1);
                 }
                 s->e.lookup_on = true;
                 s->e.draft_k = draft_k;
@@ -4212,24 +4271,24 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             // a draft the gates rejected at startup stays rejected: only a
             // draft that actually served is worth reloading after /unload
             if (SV.draft) SV.draft_path = draft_path;
-            if (!init_swap_runtime(mp, threads_per_slot, ttl)) return 1;
+            if (!init_swap_runtime(mp, threads_per_slot, ttl)) return serve_start_end(base, tok, 1);
         }
     }
 
     for (int i = 0; i < SV.n_slots; i++) SV.slots[i].adapter = -1;
-    if (!load_adapters(base)) return 1;
+    if (!load_adapters(base)) return serve_start_end(base, tok, 1);
 
     // last long stop is behind us; a signal from here on is either caught
     // right now or by the published listener below
     if (stop_was_requested()) {
         fprintf(stderr, "shutdown requested during startup — exiting\n");
-        return 0;
+        return serve_start_end(base, tok, 0);
     }
 
     sock_t lfd = socket(AF_INET, SOCK_STREAM, 0);
     if (lfd == SOCK_INVALID) {
         fprintf(stderr, "error: cannot create server socket\n");
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
     int one = 1;
 #ifdef _WIN32
@@ -4249,13 +4308,13 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         fprintf(stderr, "error: cannot bind 127.0.0.1:%d: is another server on this port? "
                 "(%s)\n", port, sock_errstr());
         sock_close(lfd);
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
     if (listen(lfd, 64) != 0) {
         fprintf(stderr, "error: cannot listen on 127.0.0.1:%d (%s)\n", port,
                 sock_errstr());
         sock_close(lfd);
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
 #ifndef _WIN32
     atomic_store(&listener_fd, (int)lfd);
@@ -4393,34 +4452,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     pthread_mutex_unlock(&rq_ids_mu);
 
     atomic_store(&drain_stage, "model unload");
-    for (int i = 0; i < parallel; i++) {
-        free(SV.slots[i].e.hist);
-        free(SV.slots[i].hint_buf);
-    }
-    if (SV.n_reg > 0) {
-        pthread_mutex_lock(&SV.swap_mu);
-        unload_draft();
-        unload_resident();
-        pthread_mutex_unlock(&SV.swap_mu);
-        pthread_mutex_destroy(&SV.swap_mu);
-    } else {
-        provenance_note_unload();
-        tokenizer_free(tok);
-        for (int i = 0; i < parallel; i++) {
-            model_t *draft = SV.slots[i].e.dm;
-            if (draft) { model_free(draft); free(draft); }
-            model_free(SV.slots[i].m);
-            if (i > 0) free(SV.slots[i].m);
-        }
-    }
-    atomic_store(&drain_stage, "cleanup");
-    prefix_cache_clear();
-    // the slots' models are gone; nothing borrows an adapter any more
-    for (int i = 0; i < SV.n_adapters; i++) model_lora_set_free(SV.adapters[i].set);
-    SV.n_adapters = 0;
-    pthread_cond_destroy(&SV.q.cv);
-    pthread_mutex_destroy(&SV.q.mu);
-    free(SV.slots);
+    serve_release(base, tok);
     // The shutdown is complete: release the bound, so its watchdog returns
     // and the process, or the next server_run in it, lives on. If the
     // watchdog claimed the exit a moment ago, it is about to _exit, and

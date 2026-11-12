@@ -1420,7 +1420,7 @@ static bool metal_attn_wide_on(const model_t *m) {
         const char *e = getenv("RUNNER_METAL_ATTN_TILE_WIDE");
         on = !e || !*e ? 2 : strcmp(e, "0") != 0;
     }
-    return on == 2 ? m && strcmp(m->arch, "gemma4") == 0 && m->n_embd_ple > 0 : on == 1;
+    return on == 2 ? m && m->ad && m->ad->id == ARCH_GEMMA4 && m->n_embd_ple > 0 : on == 1;
 }
 
 static void lora_dev_release(gpu_t *g) {
