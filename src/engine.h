@@ -238,6 +238,9 @@ typedef struct {
     // judgment co-processor reads (suite docs/plans/judgment-coprocessor.md).
     cl_rec  *cl_recs;      // caller-owned buffer [cl_cap]
     int      cl_cap, cl_count, cl_probe;
+    // a probed row was not finite (R6.68.118): no decision was measurable
+    // there, and the turn's confirmation answer is yes whatever else it held
+    bool     cl_nonfinite;
     // speculative decoding: a small draft model proposes draft_k tokens per
     // round, the target verifies them in one batched forward
     model_t *dm;           // draft model (NULL = off)
