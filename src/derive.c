@@ -1568,6 +1568,10 @@ int derive_main(int argc, char **argv) {
     char *rec_path = NULL, *card_path = NULL;
     jv *ref = NULL, *run = NULL;
     sbuf r = {0}, cmd = {0};
+    sized_result sz;       // what sized_plan decided (--target-size)
+    derive_measure m;      // what the comparison measured
+    memset(&sz, 0, sizeof sz);
+    memset(&m, 0, sizeof m);
     dir = plat_executable_dir();
     self = plat_executable_path();
     if (!dir || !self) { fprintf(stderr, "error: cannot find this binary's path\n"); goto out; }
@@ -1610,8 +1614,6 @@ int derive_main(int argc, char **argv) {
         if (!window_fits(&o, ref)) goto out;
     }
     // 2. make the file (a --target-size recipe plans its types first)
-    sized_result sz = {0};
-    memset(&sz, 0, sizeof sz);
     if (o.target_size && !sized_plan(self, &o, file_bytes(o.parent), &sz)) goto out;
     const char *a[32];
     int n = 0;
@@ -1631,8 +1633,6 @@ int derive_main(int argc, char **argv) {
     }
     // 3. measure it
     if (!score(self, &o, o.out, file_score, n_tokens) || !(run = read_json(file_score))) goto out;
-    derive_measure m;
-    memset(&m, 0, sizeof m);
     if (o.reference_hf) {
         if (!window_fits(&o, run)) {
             plat_remove(o.out);
@@ -1794,6 +1794,15 @@ int derive_main(int argc, char **argv) {
 out:
     jv_free(ref); jv_free(run);
     free(r.s); free(cmd.s);
+    // sized_plan's result: its two paths, the demoted groups' names, the
+    // rung list and the held tensors' names are all this run's to free
+    free(sz.report); free(sz.plan);
+    for (int k = 0; k < sz.n_demoted; k++) free(sz.demoted[k]);
+    free(sz.demoted); free((void *)sz.demoted_to); free(sz.skipped);
+    for (int k = 0; k < sz.n_held; k++) free(sz.held[k]);
+    free(sz.held);
+    // gold_measure's two strings (strdup'd; const in the struct for readers)
+    free((void *)m.reference_class); free((void *)m.reference_dtype);
     free(dir); free(self); free(default_corpus); free(gold_script);
     free(quant_rec); free(ref_score); free(file_score); free(gold_out);
     free(rec_path); free(card_path);
