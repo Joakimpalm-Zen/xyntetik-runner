@@ -281,7 +281,11 @@ def test_the_build_names_the_commit_it_was_built_from(runner_bin, model):
     assert isinstance(b["commit"], str) and len(b["commit"]) == 40, b
     # a commit of this repository (the binary may predate HEAD; not one
     # made up or taken from elsewhere)
-    known = subprocess.run(["git", "cat-file", "-e", b["commit"] + "^{commit}"],
-                           cwd=ROOT, stderr=subprocess.DEVNULL)
-    assert known.returncode == 0, b["commit"]
+    # asked by type, with no `^{commit}` peel: on Windows a caret in an
+    # argument can be eaten on the way to git (it is cmd's escape character),
+    # which left a name git did not know and failed this on a correct stamp
+    known = subprocess.run(["git", "cat-file", "-t", b["commit"]], cwd=ROOT,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert known.returncode == 0 and known.stdout.strip() == "commit", \
+        (b["commit"], known.stdout, known.stderr)
     assert isinstance(b["dirty"], bool), b
