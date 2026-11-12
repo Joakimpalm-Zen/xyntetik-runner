@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static void test_strict_bounded_numbers(void) {
     // 1e400/-1e400 overflow to inf: isfinite() catches that only when the
@@ -3503,6 +3504,68 @@ static void test_enum_order_is_the_stable_sorted_order(void) {
     free(n.lits); free(n.order); free(want);
 }
 
+// A pattern's fixed counts are summed into an int (its shortest and longest
+// string). Two counts of two billion overflowed it, which is undefined: the
+// sanitizer build stopped at pattern_max_len, the release build compiled a
+// node with a wrapped length. Such a pattern is refused by name.
+static void test_pattern_counts_past_int_are_refused(void) {
+    static const char *const bad[] = {
+        "{\"type\":\"string\",\"pattern\":\"^[a-z]{2000000000}[0-9]{2000000000}$\"}",
+        "{\"type\":\"string\",\"pattern\":\"^[a-z]{2147483647}x$\"}",
+        "{\"type\":\"string\",\"pattern\":\"^[a-z]{1000000000}[0-9]{1000000000}[a-z]{1,2147483647}$\"}",
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
+        jv *j = json_parse(bad[i], strlen(bad[i]));
+        char err[320] = "";
+        assert(j && !schema_compile(j, err, sizeof err));
+        assert(strstr(err, "longer than") != NULL);
+        jv_free(j);
+    }
+    // the largest count alone still compiles
+    const char *ok = "{\"type\":\"string\",\"pattern\":\"^[a-z]{2147483647}$\"}";
+    jv *j = json_parse(ok, strlen(ok));
+    char err[320] = "";
+    snode *n = schema_compile(j, err, sizeof err);
+    assert(n);
+    schema_free(n);
+    jv_free(j);
+}
+
+// Patterns conjoined by allOf are checked for a position where they
+// contradict. The check walked every byte up to the shortest string they
+// jointly require, so two patterns with a count of 200,000,000 took 28 s to
+// compile, from a request of a hundred bytes. What the patterns allow only
+// changes at a segment boundary, so those positions are the ones checked.
+static void test_allof_patterns_are_checked_by_segment_not_by_byte(void) {
+    static const struct { const char *schema; bool ok; } cases[] = {
+        { "{\"type\":\"string\",\"allOf\":[{\"pattern\":\"^[a-z]{200000000}$\"},"
+          "{\"pattern\":\"^[a-m]+$\"}]}", true },
+        // a contradiction far in: bytes 50000000 and 50000001 are a digit to
+        // the first pattern and a letter to the second
+        { "{\"type\":\"string\",\"allOf\":[{\"pattern\":\"^[a-z]{50000000}[0-9]{5}$\"},"
+          "{\"pattern\":\"^[a-z]{50000002}[0-9]{3}$\"}]}", false },
+        // the same lengths, agreeing
+        { "{\"type\":\"string\",\"allOf\":[{\"pattern\":\"^[a-z]{50000000}[0-9]{5}$\"},"
+          "{\"pattern\":\"^[a-z]{50000000}[0-9]{2}[0-9]{3}$\"}]}", true },
+        // a literal against a class that excludes it, past a long run
+        { "{\"type\":\"string\",\"allOf\":[{\"pattern\":\"^[a-z]{90000000}X[a-z]+$\"},"
+          "{\"pattern\":\"^[a-z]+$\"}]}", false },
+        { "{\"type\":\"string\",\"allOf\":[{\"pattern\":\"^[a-z]{90000000}x[a-z]+$\"},"
+          "{\"pattern\":\"^[a-z]+$\"}]}", true },
+    };
+    clock_t t0 = clock();
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        jv *j = json_parse(cases[i].schema, strlen(cases[i].schema));
+        char err[320] = "";
+        snode *n = schema_compile(j, err, sizeof err);
+        if (cases[i].ok) assert(n);
+        else assert(!n && strstr(err, "cannot be satisfied together") != NULL);
+        schema_free(n);
+        jv_free(j);
+    }
+    assert((double)(clock() - t0) / CLOCKS_PER_SEC < 1.0);
+}
+
 int main(void) {
     test_schema_sibling_constraints_are_not_dropped();
     test_strict_bounded_numbers();
@@ -3591,6 +3654,8 @@ int main(void) {
     test_tojson_dump_matches_jinja();
     test_inlined_refs_are_bounded_in_bytes();
     test_enum_order_is_the_stable_sorted_order();
+    test_pattern_counts_past_int_are_refused();
+    test_allof_patterns_are_checked_by_segment_not_by_byte();
     puts("json/schema tests ok");
     return 0;
 }

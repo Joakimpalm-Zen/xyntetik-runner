@@ -617,6 +617,24 @@ static bool compile_ascii_pattern_value(jv *pv, snode *n, char *err, int errcap)
     /* only the last segment may be variable-length: see the note above */
     for (int i = 0; i + 1 < n_segs; i++)
         if (segs[i].has_class && segs[i].max_tail != segs[i].min_tail) goto bad;
+    /* The pattern's shortest and longest strings are sums of its counts,
+       kept in an int (pattern_min_len, pattern_max_len). Two counts of two
+       billion overflowed it, which is undefined; a pattern whose string
+       cannot be counted in an int is refused by name (R6.68.70). */
+    {
+        long long lo = 0, hi = 0;
+        for (int i = 0; i < n_segs; i++) {
+            lo += segs[i].prefix_len + (segs[i].has_class ? segs[i].min_tail : 0);
+            hi += segs[i].prefix_len +
+                  (segs[i].has_class && segs[i].max_tail > 0 ? segs[i].max_tail : 0);
+        }
+        if (lo > INT_MAX || hi > INT_MAX) {
+            for (int i = 0; i < n_segs; i++) free(segs[i].prefix);
+            snprintf(err, errcap, "pattern describes a string longer than %d bytes",
+                     INT_MAX);
+            return false;
+        }
+    }
 
     {
         pattern *grown = realloc(n->pats, sizeof(*n->pats) * (size_t)(n->n_pats + 1));
@@ -655,18 +673,46 @@ static bool patterns_consistent(const snode *n, char *err, int errcap) {
         snprintf(err, errcap, "allOf patterns cannot be satisfied together");
         return false;
     }
-    for (int pos = 0; pos < need; pos++) {
-        pat_at at = pat_at_pos(n, pos);
-        bool ok = at.what == PAT_LIT;
-        if (at.what == PAT_CLASS)
-            for (unsigned c = 0; c < 128 && !ok; c++)
-                ok = at.ascii[c] && pattern_producible(c);
-        if (!ok) {
-            snprintf(err, errcap, "allOf patterns cannot be satisfied together");
-            return false;
+    /* What the patterns allow together only changes where one of them starts
+       a new piece: at each byte of a literal run and at the first byte of a
+       class's span. Inside a span every pattern says what it said one byte
+       before. So those positions are the ones to check. The check used to
+       visit every byte below `need`, which a count sets: two patterns with
+       {200000000} took 28 s to compile (R6.68.70). */
+    size_t cnt = 0;
+    for (int k = 0; k < n->n_pats; k++)
+        for (int i = 0; i < n->pats[k].n; i++)
+            cnt += (size_t)n->pats[k].seg[i].prefix_len + 1;
+    int *at = malloc(sizeof(int) * (cnt ? cnt : 1));
+    if (!at) {
+        snprintf(err, errcap, "out of memory checking allOf patterns");
+        return false;
+    }
+    size_t m = 0;
+    for (int k = 0; k < n->n_pats; k++) {
+        const pattern *p = &n->pats[k];
+        long long pos = 0;
+        for (int i = 0; i < p->n && pos < need; i++) {
+            const pat_seg *g = &p->seg[i];
+            for (int b = 0; b < g->prefix_len && pos < need; b++) at[m++] = (int)pos++;
+            if (!g->has_class || pos >= need) continue;
+            at[m++] = (int)pos;
+            int span = (i + 1 < p->n) ? g->min_tail : g->max_tail;
+            if (span < 0) break;   /* the last class, unbounded: nothing follows it */
+            pos += span;
         }
     }
-    return true;
+    bool ok = true;
+    for (size_t j = 0; j < m && ok; j++) {
+        pat_at a = pat_at_pos(n, at[j]);
+        ok = a.what == PAT_LIT;
+        if (a.what == PAT_CLASS)
+            for (unsigned c = 0; c < 128 && !ok; c++)
+                ok = a.ascii[c] && pattern_producible(c);
+    }
+    free(at);
+    if (!ok) snprintf(err, errcap, "allOf patterns cannot be satisfied together");
+    return ok;
 }
 
 #define JSON_SAFE_INTEGER 9007199254740991LL
