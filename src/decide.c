@@ -315,6 +315,18 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
             break;
         }
         total_prompt += ptoks;
+        // The scores are the answer (R6.68.119): a non-finite forward has
+        // none to give, and an argmax over NaNs (the comparison below skips
+        // them) would choose an option no number supports. Refused, as
+        // embeddings refuse a vector with a hole.
+        bool finite = true;
+        for (int j = 0; j < n_opt; j++) finite = finite && fp_isfinite(res[j].lp);
+        if (!finite) {
+            free(ov); free(res);
+            *err = "a decision score is not finite (the forward is not), so no option is chosen";
+            status = 500;
+            break;
+        }
         double mx = res[0].lp;
         for (int j = 1; j < n_opt; j++) if (res[j].lp > mx) mx = res[j].lp;
         double z = 0;
@@ -363,9 +375,16 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
 
 typedef struct { int idx; double logit, lp_yes, lp_no; } rr_row;
 
+// A total order whatever the logits hold (R6.68.119): a NaN sorts last,
+// the same both ways. NaN against anything compared "after" both ways
+// before, and on some C libraries a comparator that is not a total order is
+// a memory-safety problem inside qsort, not only a wrong order. rerank_handle
+// refuses a non-finite score before the sort; this does not rest on that.
 static int rr_cmp(const void *a, const void *b) {
     const rr_row *x = a, *y = b;
-    if (x->logit != y->logit) return x->logit > y->logit ? -1 : 1;
+    bool xn = fp_isnan(x->logit), yn = fp_isnan(y->logit);
+    if (xn != yn) return xn ? 1 : -1;
+    if (!xn && x->logit != y->logit) return x->logit > y->logit ? -1 : 1;
     return x->idx - y->idx;   // a tie keeps the input order
 }
 
@@ -508,6 +527,13 @@ int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
             break;
         }
         total_prompt += ptoks;
+        // the scores are the answer: refused when not finite (R6.68.119)
+        if (!fp_isfinite(res[0].lp) || !fp_isfinite(res[1].lp) ||
+            !fp_isfinite(res[0].lp - res[1].lp)) {
+            *err = "a relevance score is not finite (the forward is not), so no order is given";
+            status = 500;
+            break;
+        }
         rows[i].idx = i;
         rows[i].lp_yes = res[0].lp;
         rows[i].lp_no = res[1].lp;
