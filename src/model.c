@@ -3977,6 +3977,31 @@ static bool nh_moe_expert_arrays(const model_t *m, gguf_file *g, const char *arc
     return true;
 }
 
+// The routed-expert router's gating and grouping, for every MoE family
+// (R6.68.62): a gating function this build implements, and group-limited
+// top-k over groups that divide the experts evenly and keep enough groups to
+// hold n_expert_used picks. bind_meta_moe checked these and skipped
+// nemotron_h, whose binder read the same keys and checked neither.
+static bool moe_router_ok(model_t *m) {
+    if (m->expert_gating < EXPERT_GATE_NONE ||
+        m->expert_gating > EXPERT_GATE_SQRT_SOFTPLUS) {
+        bind_err(m, "error: unknown expert_gating_func %d\n", m->expert_gating);
+        return false;
+    }
+    if (m->n_expert_groups < 1 || m->n_group_used < 1 ||
+        m->n_group_used > m->n_expert_groups ||
+        m->n_expert % m->n_expert_groups != 0 ||
+        (long)m->n_group_used * (m->n_expert / m->n_expert_groups)
+            < m->n_expert_used) {
+        bind_err(m, "error: invalid MoE expert grouping "
+                "(experts=%d groups=%d used_groups=%d used=%d)\n",
+                m->n_expert, m->n_expert_groups, m->n_group_used,
+                m->n_expert_used);
+        return false;
+    }
+    return true;
+}
+
 // Nemotron-H, dense and MoE: the Mamba-2 geometry, the block types and the
 // expert routing.
 static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
@@ -4083,6 +4108,7 @@ static bool bind_meta_nemotron_h(model_t *m, gguf_file *g, const char *arch) {
                     m->n_ff_shexp, m->expert_gating);
             return false;
         }
+        if (!moe_router_ok(m)) return false;
     }
     // Per-layer typing off the head_count_kv ARRAY (0 => not attention).
     size_t nl = (size_t)(unsigned)m->n_layer;
@@ -4335,25 +4361,7 @@ static bool bind_meta_moe(model_t *m, gguf_file *g, const char *arch) {
         m->n_group_used    = (int)gguf_get_u32(g, AK("expert_group_used_count"), 1);
         m->expert_w_scale  = gguf_get_f32(g, AK("expert_weights_scale"), 1.0f);
         m->expert_norm_w   = gguf_get_bool(g, AK("expert_weights_norm"), true);
-        if (m->expert_gating < EXPERT_GATE_NONE ||
-            m->expert_gating > EXPERT_GATE_SQRT_SOFTPLUS) {
-            bind_err(m, "error: unknown expert_gating_func %d\n",
-                    m->expert_gating);
-            return false;
-        }
-        // Group-limited top-k needs the experts to divide evenly into groups
-        // and to keep at least enough groups to hold n_expert_used picks.
-        if (m->n_expert_groups < 1 || m->n_group_used < 1 ||
-            m->n_group_used > m->n_expert_groups ||
-            m->n_expert % m->n_expert_groups != 0 ||
-            (long)m->n_group_used * (m->n_expert / m->n_expert_groups)
-                < m->n_expert_used) {
-            bind_err(m, "error: invalid MoE expert grouping "
-                    "(experts=%d groups=%d used_groups=%d used=%d)\n",
-                    m->n_expert, m->n_expert_groups, m->n_group_used,
-                    m->n_expert_used);
-            return false;
-        }
+        if (!moe_router_ok(m)) return false;
 
         // Shared always-on expert (Qwen2-MoE / DeepSeek): a dense FFN over the
         // same normed input, summed with the routed output. Supported when the

@@ -194,6 +194,12 @@ def meta():
         # nemotron_h_moe GGUFs do
         *([ku(f"{p}.expert_gating_func", int(os.environ["HYBRID_TEST_GATING"]))]
           if os.environ.get("HYBRID_TEST_GATING") else []),
+        # HYBRID_TEST_EXPERT_GROUPS=G,U writes expert_group_count G and
+        # expert_group_used_count U (the router's grouping, which the loader
+        # validates); unset writes neither
+        *([ku(f"{p}.expert_group_count", int(os.environ["HYBRID_TEST_EXPERT_GROUPS"].split(",")[0])),
+           ku(f"{p}.expert_group_used_count", int(os.environ["HYBRID_TEST_EXPERT_GROUPS"].split(",")[1]))]
+          if os.environ.get("HYBRID_TEST_EXPERT_GROUPS") else []),
         # Mamba-2 SSM block
         *([ku(f"{p}.moe_latent_size", E + 1 if BREAK == "wide" else LATENT)]
           if LATENT and not COMPOSED and BREAK != "no-key" else []),

@@ -445,3 +445,21 @@ def test_nemotron_h_moe_routes_with_a_sigmoid_when_the_file_names_no_gating(
         scores[tag] = json.loads(p.stdout)["logprobs"]
     assert scores["absent"] == scores["sigmoid"]
     assert scores["absent"] != scores["softmax"]
+
+
+# R6.68.62: the router's grouping is validated for every MoE family. The
+# nemotron_h binder read expert_group_count and expert_group_used_count and
+# checked neither, so a grouping every other family refuses loaded: groups
+# that do not divide the experts, or no used group at all (moe_route then
+# masks every group and takes expert 0 for each pick). granitehybrid, through
+# the shared MoE binder, refused them all along.
+@pytest.mark.parametrize("arch", ["nemotron_h_moe", "granitehybrid"])
+@pytest.mark.parametrize("groups", ["3,1", "2,0"])
+def test_an_expert_grouping_the_router_cannot_run_is_refused(runner_bin, tmp_path, arch, groups):
+    pfx = tmp_path / "g"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-hybrid.py", str(pfx), "--arch", arch],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, HYBRID_TEST_EXPERT_GROUPS=groups))
+    p = _run(runner_bin, pfx.with_suffix(".gguf"))
+    assert p.returncode != 0, p
+    assert b"invalid MoE expert grouping" in p.stderr, p.stderr
