@@ -16463,20 +16463,40 @@ const char *model_pooling_name(uint32_t pooling_type) {
     }
 }
 
+// A forward whose caller reads every position's final residual from m->x
+// (model_embed, model_hidden_states). A partial split leaves those rows in x
+// at its boundary; a fully offloaded backend hands them back when asked
+// (want_hidden) if it can (gpu_hidden_rows_ok), and one that cannot is set
+// aside so the forward runs on the CPU. Set aside only for this forward: no
+// device forward runs meanwhile, so nothing can release the backend under
+// the saved pointer.
+static void *hidden_rows_begin(model_t *m) {
+    void *save_gpu = NULL;
+    if (m->gpu && m->gpu_layers >= m->n_layer && !gpu_hidden_rows_ok(m)) {
+        save_gpu = m->gpu;
+        m->gpu = NULL;
+    }
+    m->want_hidden = true;
+    return save_gpu;
+}
+
+static void hidden_rows_end(model_t *m, void *save_gpu) {
+    m->want_hidden = false;
+    if (save_gpu) m->gpu = save_gpu;
+}
+
 bool model_embed(model_t *m, const int32_t *toks, int n, float *out,
                  bool (*stop)(void *), void *stop_ud) {
     if (n <= 0 || n > m->n_ctx || !model_pooling_supported(m)) return false;
     bool last = m->pooling_type == MODEL_POOL_LAST;
-    void *save_gpu = m->gpu;
-    if (m->gpu && m->gpu_layers >= m->n_layer)
-        m->gpu = NULL; // full offload keeps hidden states on-device; go CPU
     memset(out, 0, sizeof(float) * m->n_embd);
     float *tmp = malloc(sizeof(float) * m->n_embd);
-    if (!tmp) { m->gpu = save_gpu; return false; }
+    if (!tmp) return false;
+    void *save_gpu = hidden_rows_begin(m);
     for (int i = 0; i < n; ) {
         if (stop && stop(stop_ud)) {
             free(tmp);
-            m->gpu = save_gpu;
+            hidden_rows_end(m, save_gpu);
             return false;
         }
         int chunk = n - i < m->n_batch ? n - i : m->n_batch;
@@ -16492,7 +16512,7 @@ bool model_embed(model_t *m, const int32_t *toks, int n, float *out,
         i += chunk;
     }
     free(tmp);
-    m->gpu = save_gpu;
+    hidden_rows_end(m, save_gpu);
     float ss = 0;
     int pooled = last ? 1 : n;
     for (int j = 0; j < m->n_embd; j++) { out[j] /= pooled; ss += out[j] * out[j]; }
@@ -16504,19 +16524,11 @@ bool model_embed(model_t *m, const int32_t *toks, int n, float *out,
 }
 
 // The rows model_embed pools, kept: every position's residual after the last
-// layer, through the output norm. A fully offloaded backend that can hand its
-// rows back (gpu_hidden_rows_ok) copies each tile into x as it finishes;
-// one that cannot runs this forward on the CPU, as model_embed always does.
+// layer, through the output norm, from the device or the CPU as
+// hidden_rows_begin decides.
 bool model_hidden_states(model_t *m, const int32_t *toks, int n, float *out) {
     if (n <= 0 || n > m->n_ctx || m->hyper_conn) return false;
-    // set aside only for this forward: no device forward runs meanwhile, so
-    // nothing can release the backend under the saved pointer
-    void *save_gpu = NULL;
-    if (m->gpu && m->gpu_layers >= m->n_layer && !gpu_hidden_rows_ok(m)) {
-        save_gpu = m->gpu;
-        m->gpu = NULL;
-    }
-    m->want_hidden = true;
+    void *save_gpu = hidden_rows_begin(m);
     for (int i = 0; i < n; ) {
         int chunk = n - i < m->n_batch ? n - i : m->n_batch;
         model_forward_batch(m, toks + i, chunk, i, false);
@@ -16526,8 +16538,7 @@ bool model_hidden_states(model_t *m, const int32_t *toks, int n, float *out) {
                   m->n_embd, m->rms_eps);
         i += chunk;
     }
-    m->want_hidden = false;
-    if (save_gpu) m->gpu = save_gpu;
+    hidden_rows_end(m, save_gpu);
     return true;
 }
 

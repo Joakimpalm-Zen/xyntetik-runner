@@ -1924,6 +1924,19 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
             break;
         }
         free(toks);
+        // A forward that went non-finite (an overflowed activation, a failed
+        // kernel, a NaN in the weights) has no embedding to give. JSON has no
+        // nan or inf, which is what %g writes for them, and base64 would hand
+        // the client the bytes with nothing to tell them by: an error, read
+        // by the client, in both encodings.
+        bool finite = true;
+        for (int j = 0; j < m->n_embd && finite; j++) finite = fp_isfinite(emb[j]);
+        if (!finite) {
+            err_code = 500;
+            err_msg = "the model produced a non-finite embedding for this input";
+            ok = false;
+            break;
+        }
         total += n;
         sb_fmt(&r, "%s{\"object\":\"embedding\",\"index\":%d,\"embedding\":",
                k ? "," : "", k);

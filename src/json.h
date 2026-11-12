@@ -87,6 +87,12 @@ void sb_fmt(sbuf *b, const char *fmt, ...) RUNNER_PRINTF(2, 3);
 void sb_fmt(sbuf *b, const char *fmt, ...);
 #endif
 void sb_esc(sbuf *b, const char *s, size_t n); // appends as JSON string content
+// A number the model computed, in a JSON response: nine significant digits
+// (every float32 reads back exactly), or `null` when it is not finite. JSON
+// has no NaN and no infinity, and printf writes them as nan and inf, which no
+// parser takes: one overflowed activation made a whole response unreadable.
+void sb_num9(sbuf *b, double v);
+void sb_fix6(sbuf *b, double v);   // the same rule, six decimals (a probability)
 void sb_str(sbuf *b, const char *s);           // appends s as a quoted JSON string; NULL as null
 
 // re-serialize a parsed value (inverse of json_parse, minus formatting).

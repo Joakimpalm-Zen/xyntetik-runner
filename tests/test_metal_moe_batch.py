@@ -168,3 +168,40 @@ def test_gemma_moe_nan_stage_probes_preserve_output(
     baseline = _run(runner_bin, model, "auto")
     probed = _run(runner_bin, model, "auto", nan_trace=level)
     assert baseline.stdout == probed.stdout
+
+
+def _continuation_logprobs(runner, model, *args):
+    sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+    from harness import RunnerServer
+    import urllib.request
+    prompt = ("the quick brown fox jumps over the lazy dog and keeps running "
+              "past the mill and the river")
+    with RunnerServer(runner, model, ctx=256, parallel=1, extra_args=list(args)) as srv:
+        req = urllib.request.Request(
+            srv.base_url + "/v1/completions",
+            data=json.dumps({"prompt": prompt, "max_tokens": 12, "temperature": 0,
+                             "logprobs": 1}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            lp = json.load(r)["choices"][0]["logprobs"]
+    return lp["tokens"], lp["token_logprobs"]
+
+
+def test_an_expert_layer_narrower_than_a_tile_step_keeps_the_matvec(runner_bin, tmp_path):
+    """The grouped expert tile steps its input 32 wide with no tail step. The
+    dense tile is admitted only for an input that is a whole number of steps;
+    the expert tile had no such rule, so a prompt batch through an expert
+    layer 16 wide read 16 past every weight row and activation row, and the
+    continuation's log-probabilities were off the CPU's by up to 0.7 on this
+    fixture (512 wide, experts 16 wide). One token at a time never took the
+    tile, which is why scoring agreed."""
+    model = tmp_path / "ornith-moe-s128.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", str(model)],
+                   cwd=ROOT, check=True, stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, ORNITH_TEST_MOE="1", ORNITH_TEST_STATE="128"))
+    cpu_tokens, cpu = _continuation_logprobs(runner_bin, model, "--gpu", "off", "-b", "1")
+    for b in ("8", "64"):
+        tokens, dev = _continuation_logprobs(runner_bin, model, "-b", b)
+        assert tokens == cpu_tokens
+        # the tiled gate and up projections reassociate their sums: 2.4e-4 here
+        assert max(abs(x - y) for x, y in zip(cpu, dev)) < 5e-3, (b, cpu, dev)
