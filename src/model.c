@@ -2057,6 +2057,88 @@ static int weights_lock(model_t *m, uint64_t *hot, uint64_t *cold) {
 
 // The immutable half. Freed by the last holder, or directly by model_free for
 // a load that failed before it could publish.
+// ---------------------------------------------------- what a model owns
+//
+// R6.68.30: the buffers model.c allocates for a model and frees with a plain
+// free(), by lifetime, as rows: each layer's (LAYER_OWNED), the shared weights
+// half's (MODEL_WEIGHTS_OWNED, model_free_weights) and the per-instance
+// runtime half's (MODEL_RUNTIME_OWNED, runtime_free). The release walks the
+// rows, so a buffer is freed by adding its row; tests/test_owned_fields.py
+// fails a build whose model.c fills a field from an allocator that no row and
+// no named free releases (two leaked on every load until R6.68.23 for want of
+// exactly that). What is released some other way (a cache the GPU may own, a
+// state a backend may hold, the clef head, the lock spans, the mapping) is
+// written out where it is released.
+static const size_t LAYER_OWNED[] = {
+    offsetof(layer_t, attn_norm_w), offsetof(layer_t, ffn_norm_w),
+    offsetof(layer_t, attn_norm_b), offsetof(layer_t, ffn_norm_b), offsetof(layer_t, bq),
+    offsetof(layer_t, bk), offsetof(layer_t, bv), offsetof(layer_t, bo),
+    offsetof(layer_t, qnorm_w), offsetof(layer_t, knorm_w), offsetof(layer_t, q_a_norm_w),
+    offsetof(layer_t, kv_a_norm_w), offsetof(layer_t, mla_kvb),
+    offsetof(layer_t, post_attn_norm_w), offsetof(layer_t, post_ffn_norm_w),
+    offsetof(layer_t, down_exps_scale), offsetof(layer_t, gate_inp_scale),
+    offsetof(layer_t, attn_sinks), offsetof(layer_t, ffn_gate_inp_b),
+    offsetof(layer_t, ffn_gate_exps_b), offsetof(layer_t, exp_probs_b),
+    offsetof(layer_t, ffn_up_exps_b), offsetof(layer_t, ffn_down_exps_b),
+    offsetof(layer_t, hc_attn_norm), offsetof(layer_t, hc_ffn_norm),
+    offsetof(layer_t, ple4_norm_key), offsetof(layer_t, ple4_norm_query),
+    offsetof(layer_t, ple4_norm_conv), offsetof(layer_t, ple4_conv_w),
+    offsetof(layer_t, ffn_pre_norm2_w), offsetof(layer_t, ffn_post_norm1_w),
+    offsetof(layer_t, ffn_post_norm2_w), offsetof(layer_t, ssm_dt), offsetof(layer_t, ssm_a),
+    offsetof(layer_t, ssm_norm_w), offsetof(layer_t, ssm_conv_w),
+    offsetof(layer_t, ssm_conv1d_b), offsetof(layer_t, ssm_d), offsetof(layer_t, moe_g),
+    offsetof(layer_t, moe_u), offsetof(layer_t, moe_d), offsetof(layer_t, ple_post_norm),
+};
+static const size_t MODEL_WEIGHTS_OWNED[] = {
+    offsetof(model_t, l_head_kv), offsetof(model_t, l_head_dim), offsetof(model_t, l_rope_dim),
+    offsetof(model_t, l_is_swa), offsetof(model_t, suppress), offsetof(model_t, kv_src),
+    offsetof(model_t, l_no_attn), offsetof(model_t, l_no_ffn), offsetof(model_t, ple_proj_norm),
+    offsetof(model_t, xielu_an), offsetof(model_t, xielu_ap), offsetof(model_t, xielu_b),
+    offsetof(model_t, xielu_eps), offsetof(model_t, layers), offsetof(model_t, path),
+    offsetof(model_t, fused_splits), offsetof(model_t, out_norm_w),
+    offsetof(model_t, out_norm_b), offsetof(model_t, hc_head_norm),
+    offsetof(model_t, mtp_enorm_w), offsetof(model_t, mtp_hnorm_w),
+    offsetof(model_t, mtp_head_norm_w),
+};
+static const size_t MODEL_RUNTIME_OWNED[] = {
+    offsetof(model_t, kv_off), offsetof(model_t, kv_off_k), offsetof(model_t, ple),
+    offsetof(model_t, ple_tmp), offsetof(model_t, rope_inv_freq),
+    offsetof(model_t, rope_inv_freq_local), offsetof(model_t, x), offsetof(model_t, xb),
+    offsetof(model_t, xb2), offsetof(model_t, q), offsetof(model_t, x_hc),
+    offsetof(model_t, hc_inject), offsetof(model_t, hc_mix_lo), offsetof(model_t, ple4_emb),
+    offsetof(model_t, ple4_tmp), offsetof(model_t, ple4_conv_hist),
+    offsetof(model_t, ple4_prev), offsetof(model_t, ple4_hist_snap),
+    offsetof(model_t, ple4_hist_mark), offsetof(model_t, ple4_hist_keep),
+    offsetof(model_t, ssm_conv_keep), offsetof(model_t, ssm_state_keep),
+    offsetof(model_t, k_tmp), offsetof(model_t, v_tmp), offsetof(model_t, q_gate),
+    offsetof(model_t, ssm_qkv), offsetof(model_t, ssm_z), offsetof(model_t, ssm_aux),
+    offsetof(model_t, mla_scratch), offsetof(model_t, ssm_cw), offsetof(model_t, ssm_conv_snap),
+    offsetof(model_t, ssm_state_snap), offsetof(model_t, ssm_conv_mark),
+    offsetof(model_t, ssm_state_mark), offsetof(model_t, hb), offsetof(model_t, hb2),
+    offsetof(model_t, att), offsetof(model_t, logits), offsetof(model_t, all_logits),
+    offsetof(model_t, mtp_h), offsetof(model_t, mtp_tok), offsetof(model_t, mtp_pending),
+    offsetof(model_t, mtp_cat), offsetof(model_t, mtp_logits), offsetof(model_t, mtp_hid),
+    offsetof(model_t, mtp_hmix), offsetof(model_t, mtp_res), offsetof(model_t, shexp_in),
+    offsetof(model_t, shexp_o), offsetof(model_t, shexp_g), offsetof(model_t, shexp_u),
+    offsetof(model_t, moe_logits), offsetof(model_t, moe_sel_scores),
+    offsetof(model_t, moe_group_score), offsetof(model_t, moe_gate), offsetof(model_t, moe_up),
+    offsetof(model_t, moe_dexp), offsetof(model_t, moe_out), offsetof(model_t, gemma_scr),
+    offsetof(model_t, moe_out_b), offsetof(model_t, moe_lat), offsetof(model_t, moe_dall),
+    offsetof(model_t, moe_gath), offsetof(model_t, moe_gate_b), offsetof(model_t, moe_up_b),
+    offsetof(model_t, moe_dexp_b), offsetof(model_t, moe_sel), offsetof(model_t, moe_selw),
+    offsetof(model_t, moe_trace_norms), offsetof(model_t, moe_gidx), offsetof(model_t, moe_gw),
+    offsetof(model_t, moe_probe_hist),
+};
+
+// Frees each row's pointer in `base` and clears it.
+static void free_owned(void *base, const size_t *rows, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        void **slot = (void **)((char *)base + rows[i]);
+        free(*slot);
+        *slot = NULL;
+    }
+}
+
 static void model_free_weights(model_t *m) {
     // partial load: n_layer is read from GGUF metadata long before m->layers
     // is allocated, so a load that fails in between (unsupported tensor
@@ -2064,38 +2146,10 @@ static void model_free_weights(model_t *m) {
     // m->layers still NULL — guard against dereferencing it.
     for (int i = 0; m->layers && i < m->n_layer + 1; i++) {
         layer_t *l = &m->layers[i];
-        free(l->attn_norm_w); free(l->ffn_norm_w);
-        // the LayerNorm biases (stablelm): bound beside the weights and, until
-        // R6.68.23, released nowhere, two buffers a layer on every load
-        free(l->attn_norm_b); free(l->ffn_norm_b);
-        free(l->bq); free(l->bk); free(l->bv); free(l->bo);
-        free(l->qnorm_w); free(l->knorm_w);
-        free(l->q_a_norm_w); free(l->kv_a_norm_w); free(l->mla_kvb);
-        free(l->post_attn_norm_w); free(l->post_ffn_norm_w);
-        free(l->down_exps_scale); free(l->gate_inp_scale);
-        free(l->attn_sinks);
-        free(l->ffn_gate_inp_b); free(l->ffn_gate_exps_b); free(l->exp_probs_b);
-        free(l->ffn_up_exps_b);  free(l->ffn_down_exps_b);
-        free(l->hc_attn_norm); free(l->hc_ffn_norm);
-        free(l->ple4_norm_key); free(l->ple4_norm_query); free(l->ple4_norm_conv);
-        free(l->ple4_conv_w);
-        free(l->ffn_pre_norm2_w); free(l->ffn_post_norm1_w); free(l->ffn_post_norm2_w);
-        free(l->ssm_dt); free(l->ssm_a); free(l->ssm_norm_w); free(l->ssm_conv_w);
-        free(l->ssm_conv1d_b); free(l->ssm_d);
-        free(l->moe_g); free(l->moe_u); free(l->moe_d);  // split-MoE pointer arrays
-        free(l->ple_post_norm);
+        free_owned(l, LAYER_OWNED, sizeof LAYER_OWNED / sizeof *LAYER_OWNED);
     }
-    free(m->l_head_kv); free(m->l_head_dim); free(m->l_rope_dim);
+    free_owned(m, MODEL_WEIGHTS_OWNED, sizeof MODEL_WEIGHTS_OWNED / sizeof *MODEL_WEIGHTS_OWNED);
     free(m->rec_slot); m->rec_slot = NULL;
-    free(m->l_is_swa); free(m->suppress); free(m->kv_src);
-    free(m->l_no_attn); free(m->l_no_ffn);
-    free(m->ple_proj_norm);
-    free(m->xielu_an); free(m->xielu_ap); free(m->xielu_b); free(m->xielu_eps);
-    free(m->layers);
-    free(m->path);
-    free(m->fused_splits);
-    free(m->out_norm_w); free(m->out_norm_b); free(m->hc_head_norm);
-    free(m->mtp_enorm_w); free(m->mtp_hnorm_w); free(m->mtp_head_norm_w);
     clef_head_free(m->clef);
     m->clef = NULL;
     // Unlock before unmapping, and only the ranges this mapping's owner
@@ -6642,9 +6696,7 @@ static void runtime_free(model_t *m) {
     // auto-extension keys off the requested context and phi3 picks its
     // LongRoPE factor set the same way, so two slots of one file with
     // different -c legitimately want different tables.
-    free(m->kv_off); free(m->kv_off_k); free(m->ple); free(m->ple_tmp);
-    free(m->rope_inv_freq);
-    free(m->rope_inv_freq_local);
+    free_owned(m, MODEL_RUNTIME_OWNED, sizeof MODEL_RUNTIME_OWNED / sizeof *MODEL_RUNTIME_OWNED);
     if (m->kv_owner == KV_OWNER_MALLOC) {
         if (m->vcache != m->kcache) free(m->vcache);
         free(m->kcache);
@@ -6652,33 +6704,8 @@ static void runtime_free(model_t *m) {
     m->kcache = NULL;
     m->vcache = NULL;
     m->kv_owner = KV_OWNER_MALLOC;
-    free(m->x); free(m->xb); free(m->xb2); free(m->q);
-    free(m->x_hc); free(m->hc_inject); free(m->hc_mix_lo);
-    free(m->ple4_emb); free(m->ple4_tmp); free(m->ple4_conv_hist); free(m->ple4_prev);
-    free(m->ple4_hist_snap); free(m->ple4_hist_mark); free(m->ple4_hist_keep);
-    free(m->ssm_conv_keep); free(m->ssm_state_keep);
-    free(m->k_tmp); free(m->v_tmp);
-    free(m->q_gate); free(m->ssm_qkv); free(m->ssm_z); free(m->ssm_aux);
-    free(m->mla_scratch);
-    free(m->ssm_cw);
     if (!m->ssm_state_backend) { free(m->ssm_conv_state); free(m->ssm_state_mem); }
     m->ssm_state_backend = false;
-    free(m->ssm_conv_snap); free(m->ssm_state_snap);
-    free(m->ssm_conv_mark); free(m->ssm_state_mark);
-    free(m->hb); free(m->hb2); free(m->att); free(m->logits); free(m->all_logits);
-    free(m->mtp_h); free(m->mtp_tok); free(m->mtp_pending); free(m->mtp_cat);
-    free(m->mtp_logits); free(m->mtp_hid); free(m->mtp_hmix); free(m->mtp_res);
-    // the MTP head's norm conversions are bind-phase material and belong to
-    // the shared half below: freeing them here freed them once per slot
-    free(m->shexp_in); free(m->shexp_o); free(m->shexp_g); free(m->shexp_u);
-    free(m->moe_logits); free(m->moe_sel_scores); free(m->moe_group_score);
-    free(m->moe_gate); free(m->moe_up);
-    free(m->moe_dexp); free(m->moe_out);
-    free(m->gemma_scr);
-    free(m->moe_out_b); free(m->moe_lat); free(m->moe_dall); free(m->moe_gath); free(m->moe_gate_b);
-    free(m->moe_up_b); free(m->moe_dexp_b); free(m->moe_sel);
-    free(m->moe_selw); free(m->moe_trace_norms); free(m->moe_gidx); free(m->moe_gw);
-    free(m->moe_probe_hist);
     tpool_destroy(m->tp);
 }
 
