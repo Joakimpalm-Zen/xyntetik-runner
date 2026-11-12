@@ -6623,7 +6623,10 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_claim
     // where the GPU serves this model correctly", so they run on the CPU
     // with a line saying why, as every backend gap reported by gpu_init
     // already does.
-    char gname[128], head_why[200];
+    // head_why is the size of the route record's field it is copied into
+    // below: the reason is about 120 bytes, and a larger buffer here is a
+    // truncation GCC refuses to compile (-Werror=format-truncation)
+    char gname[128], head_why[sizeof m->route_fallback];
     const char *cpu_why = NULL;
     if (gpu_available(gname, sizeof(gname))) {
         if (m->n_removed > 0 && !gpu_removed_sublayers_ok())
