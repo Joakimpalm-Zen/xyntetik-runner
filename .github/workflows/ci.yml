@@ -707,6 +707,41 @@ jobs:
           path: .build/ci/
           if-no-files-found: ignore
 
+  # The whole python half (the root pytest list and the client tests) against
+  # the ASan+UBSan build, with leak detection on (R6.68.21). The job above
+  # gates the API surface and named CLI files; this one runs every test
+  # file, and tests/sanitizer_reports.py fails the run on any report a child
+  # wrote, even when its test passed: most tests never read a child's stderr
+  # for one (the muse g.doc leak passed the suite that way, R6.68.20). Daily
+  # and on dispatch: at -O0 it takes far longer than a pull request should
+  # wait. A scheduled failure opens an issue (scheduled-alert.yml).
+  suite-sanitized:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+      - name: pip download cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/**/requirements*.txt', 'python/pyproject.toml') }}
+      - name: install pytest
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --quiet -r tests/ci/requirements.txt
+      - name: build sanitized runner
+        run: make -j"$(nproc)" debug runner
+      - name: python suite under ASan+UBSan, any report fails
+        run: .venv/bin/python scripts/ci-run.py --timeout 8400 suite-sanitized -- make -j"$(nproc)" test-python-sanitized PYTHON=.venv/bin/python PYTEST_WORKERS=auto
+      - name: sanitizer reports and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
   # Real SDK/gateway/framework parsers catch integration assumptions that raw
   # JSON fixtures cannot. Dependencies are pinned and isolated from Runner.
 

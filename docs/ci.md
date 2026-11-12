@@ -117,6 +117,24 @@ lifecycle tests, the shared-ownership gate and the swap race. TSan runs the
 tokenizer, shared-pool and registry/shutdown races in its own job; it is not
 combined with ASan.
 
+The `suite-sanitized` job (daily and on dispatch) runs the whole python half,
+the root pytest list and the client tests, against that build with leak
+detection on: `make test-python-sanitized` copies `runner-debug` over
+`./runner` for the run and puts the optimized one back afterwards.
+`tests/sanitizer_reports.py` sends each child's ASan and UBSan report to a
+file named after the test that started it (under
+`.build/ci/sanitizer-reports`, uploaded with the job), and fails the run on
+any file, even when every test passed. Most tests never read a child's
+stderr for a report, and a server's log can be deleted along with the report
+in it; a leak in the muse fixture's think path passed the plain suite for
+that reason (R6.68.20). The run is CPU only. Under ASan the CUDA driver's
+init fails unless `ASAN_OPTIONS` has `protect_shadow_gap=0`, and the driver
+keeps process-lifetime allocations, which `tests/lsan.supp` suppresses. The
+-O0 build is several times slower, so absolute waits in timing tests scale
+by `RUNNER_TEST_TIMEOUT_SCALE`, while their pass/fail gates stay relative to
+a control from the same run. A case that needs a kernel this build lacks
+(the AVX2 int8 dot) skips and says so.
+
 The T3 lane builds the actual configured executable, checks its flavor,
 and tests generation records, training and session continuation. The
 CUDA-only training case belongs to device verification, not a hosted CPU
@@ -198,6 +216,19 @@ that quantize fixtures run `llama-quantize` or `llama-quantize.exe` from
 `RUNNER_LLAMA_CPP_BIN` by name, never by glob (a llama.cpp Windows release
 directory's `llama-quantize-impl.dll` sorts first under C collation);
 `make llama-quantize-path` prints the one they run.
+A Linux CUDA gate host runs the gate and `make test` with one python. That
+python is the gate's `GATE_PYTHON` (default `python3`), and the same one is
+first on `PATH`, so make's `PYTHON` resolves to it too. On top of
+`tests/ci/requirements.txt` it carries:
+- torch and transformers, plus accelerate, for the gold-logits cases
+  (transformers loads an FP8 checkpoint only with accelerate);
+- model-signing and pyopenssl, for the reference signer and verifier in
+  `test_oms.py` and `test_sign_model.py`.
+The host also keeps `models/SmolLM2-135M-Instruct-Q8_0.gguf` in the build
+tree, for the real-model cases of `test_kld_compare.py` and
+`test_draft_lookup.py`. Without these the cases skip. A hosted runner skips
+them as well, so on the gate host a skip there is coverage nothing else
+provides.
 `scripts/cuda-nightly.sh` is the entry point a scheduled task on the Windows
 CUDA host runs every night (a copy of it pulls main, builds and runs
 `cuda-gate.sh`). No workflow or document in this repository calls it, so its

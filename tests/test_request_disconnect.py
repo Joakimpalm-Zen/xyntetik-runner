@@ -21,6 +21,11 @@ sys.path.insert(0, os.path.join(HERE, "conformance"))
 
 from _process import RunnerServer, find_runner  # noqa: E402
 
+# Absolute waits stretch for a slow build (the -O0 sanitized run of
+# make test-python-sanitized sets 8); every pass/fail gate here is relative
+# to a control measured in the same run and does not scale.
+SCALE = float(os.environ.get("RUNNER_TEST_TIMEOUT_SCALE", "1"))
+
 
 def _body(prompt, *, max_tokens=1):
     return json.dumps({"prompt": prompt, "max_tokens": max_tokens,
@@ -29,7 +34,7 @@ def _body(prompt, *, max_tokens=1):
 
 
 def _open(port, body, path="/v1/completions"):
-    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    s = socket.create_connection(("127.0.0.1", port), timeout=10 * SCALE)
     s.sendall(("POST %s HTTP/1.1\r\n" % path).encode() +
               b"Host: localhost\r\n"
               b"Content-Type: application/json\r\n" +
@@ -37,7 +42,7 @@ def _open(port, body, path="/v1/completions"):
     return s
 
 
-def _read_response(s, timeout=60):
+def _read_response(s, timeout=60 * SCALE):
     s.settimeout(timeout)
     data = bytearray()
     while True:
@@ -51,11 +56,11 @@ def _read_response(s, timeout=60):
     return json.loads(body)
 
 
-def _request(port, body, timeout=60):
+def _request(port, body, timeout=60 * SCALE):
     return _read_response(_open(port, body), timeout)
 
 
-def _drain_one_request_connection(s, timeout=60):
+def _drain_one_request_connection(s, timeout=60 * SCALE):
     s.settimeout(timeout)
     try:
         while s.recv(65536):
@@ -66,7 +71,7 @@ def _drain_one_request_connection(s, timeout=60):
         s.close()
 
 
-def _wait_for_starts(path, count, timeout=10):
+def _wait_for_starts(path, count, timeout=10 * SCALE):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -85,7 +90,7 @@ def _started_id(path, index):
         return re.findall(rb"\] (\S+): start,", f.read())[index]
 
 
-def _wait_for_log_count(path, marker, count, timeout=60):
+def _wait_for_log_count(path, marker, count, timeout=60 * SCALE):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         with open(path, "rb") as f:
@@ -181,16 +186,16 @@ def test_disconnect_stops_readout_and_releases_slot(tmp_path, path, long_option)
                       log_path=str(tmp_path / "readout.log")) as srv:
         reference = _request(srv.port, short)
         start = time.monotonic()
-        live = _read_response(_open(srv.port, body, path), timeout=120)
+        live = _read_response(_open(srv.port, body, path), timeout=120 * SCALE)
         full_s = time.monotonic() - start
         assert full_s > 1, "readout control was too short to gate cancellation"
         assert live["usage"]["prompt_tokens"] > 0
 
         abandoned = _open(srv.port, body, path)
         try:
-            end = time.monotonic() + 10
+            end = time.monotonic() + 10 * SCALE
             while time.monotonic() < end:
-                with urllib.request.urlopen(srv.base_url + "/health", timeout=5) as r:
+                with urllib.request.urlopen(srv.base_url + "/health", timeout=5 * SCALE) as r:
                     health = json.load(r)
                 if health["active_requests"] == 1:
                     break
