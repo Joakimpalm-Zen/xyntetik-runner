@@ -865,7 +865,7 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
             // for hit->n minus the fixed blob), captured at hit->n == best.
             size_t kvb = prefix_cache_entry_bytes(e->m, hit->n)
                        - model_recurrent_blob_bytes(e->m);
-            model_recurrent_blob_load(e->m, hit->kv + kvb);
+            model_recurrent_blob_load(e->m, hit->kv + kvb, toks, best);
         }
         memcpy(e->hist, toks, sizeof(int32_t) * (size_t)best);
         e->pos = best;
@@ -3132,7 +3132,7 @@ bool engine_state_load(engine *e, const int32_t *hist, int n, const uint8_t *src
     pfx_load(e->m, src, n, n, pfx_ring_first(e->m, n));
     if (model_has_recurrent(e->m)) {
         size_t kvb = prefix_cache_entry_bytes(e->m, n) - model_recurrent_blob_bytes(e->m);
-        if (!model_recurrent_blob_load(e->m, src + kvb)) return false;
+        if (!model_recurrent_blob_load(e->m, src + kvb, hist, n)) return false;
     }
     memcpy(e->hist, hist, sizeof(int32_t) * (size_t)n);
     e->pos = n;

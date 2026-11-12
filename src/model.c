@@ -10235,13 +10235,24 @@ bool model_recurrent_blob_save(const model_t *m, uint8_t *dst) {
     return true;
 }
 
-bool model_recurrent_blob_load(model_t *m, const uint8_t *src) {
+bool model_recurrent_blob_load(model_t *m, const uint8_t *src,
+                               const int32_t *toks, int n) {
     if (!model_has_recurrent(m)) return false;
     size_t cb = recurrent_conv_bytes(m), sb = recurrent_state_bytes(m);
     memcpy(m->ssm_conv_state, src, cb);
     memcpy(m->ssm_state_mem, src + cb, sb);
     if (recurrent_ple_bytes(m)) memcpy(m->ple4_conv_hist, src + cb + sb, recurrent_ple_bytes(m));
     m->ssm_snap_pos = -1;   // a freshly installed fold has no earlier snapshot
+    // The fold is another sequence's now: the record of the tokens this model
+    // was fed (model.h, seq) becomes that sequence, or nothing when the
+    // caller cannot name it. Left as it was, a later rebuild fed the previous
+    // sequence's tokens under this one's continuation (R6.68.104).
+    m->seq_n = 0;
+    if (toks && n > 0 && n <= m->n_ctx && m->gpu && m->ssm_state_backend &&
+        (m->seq || (m->seq = malloc(sizeof(int32_t) * (size_t)m->n_ctx)))) {
+        memcpy(m->seq, toks, sizeof(int32_t) * (size_t)n);
+        m->seq_n = n;
+    }
     // and pushed back onto the device layers (see blob_save)
     if (m->gpu && !gpu_recurrent_upload(m)) return false;
     return true;
