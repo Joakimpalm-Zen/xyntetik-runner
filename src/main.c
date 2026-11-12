@@ -512,33 +512,41 @@ static void dpo_pairs_free(dpo_pair *ps, int n) {
     free(ps);
 }
 
-// Tokenize prompt+completion into one buffer, growing until it fits. Same
-// discipline as the JSONL branch of train_examples_load and for the same
-// measured reason: tok_encode truncates silently at its capacity, and "one
-// token per byte" is not a bound on a SentencePiece vocabulary with byte
-// fallback.
+// The prompt (BOS unless no_bos, its control tokens read as tokens) and the
+// completion (text) tokenized apart into one buffer, with one slot to spare
+// for an end-of-turn token. tok_encode writes what fits its buffer and says
+// nothing about the rest, and no byte count bounds a token count (a byte-
+// fallback vocabulary spells a space as three tokens), so each part goes
+// through tok_encode_fit, which sizes the buffer to the encoding. Three
+// loaders each grew a buffer of their own for this. False when memory ran
+// out or a text is too large to count.
+static bool pair_tokens(tokenizer *tok, const char *prompt, const char *completion,
+                        bool no_bos, int32_t **out, int *np_out, int *nc_out) {
+    int32_t *p = NULL, *c = NULL;
+    int np = tok_encode_fit(tok, prompt, !no_bos, TOK_RAW, 0, &p);
+    int nc = np >= 0 ? tok_encode_fit(tok, completion, false, TOK_TEXT, 0, &c) : -1;
+    int32_t *t = nc >= 0 && np <= INT_MAX - nc - 1
+               ? malloc(sizeof *t * ((size_t)np + (size_t)nc + 1)) : NULL;
+    if (t) {
+        if (np) memcpy(t, p, sizeof *t * (size_t)np);
+        if (nc) memcpy(t + np, c, sizeof *t * (size_t)nc);
+        *out = t;
+        *np_out = np;
+        *nc_out = nc;
+    }
+    free(p);
+    free(c);
+    return t != NULL;
+}
+
 static bool dpo_tokenize(tokenizer *tok, const char *prompt, const char *completion,
                          bool no_bos, int eot_id, bool eot,
                          int32_t **out, int *out_np, int *out_n) {
-    size_t pn = strlen(prompt), cn = strlen(completion);
-    if (pn > SIZE_MAX - cn - 8 || pn + cn + 8 > INT_MAX) return false;
-    int cap = (int)(2 * (pn + cn) + 32);
-    int32_t *t = NULL;
-    int np = -1, nc = -1;
-    for (int attempt = 0; attempt < 6; attempt++) {
-        free(t);
-        t = malloc(sizeof(*t) * (size_t)cap);
-        if (!t) return false;
-        np = tok_encode(tok, prompt, t, cap, !no_bos, true);
-        nc = np >= 0 ? tok_encode(tok, completion, t + np, cap - np, false, false) : -1;
-        if (np < 0 || nc < 0 || np + nc + 1 < cap) break;
-        if (attempt == 5 || cap > INT_MAX / 2) break;
-        cap *= 2;
-    }
-    if (!t) return false;
-    if (np < 0 || nc < 0 || np + nc + 1 >= cap) { free(t); return false; }
-    if (eot) t[np + nc++] = eot_id;
-    *out = t; *out_np = np; *out_n = np + nc;
+    int np = 0, nc = 0;
+    if (!pair_tokens(tok, prompt, completion, no_bos, out, &np, &nc)) return false;
+    if (eot) (*out)[np + nc++] = eot_id;
+    *out_np = np;
+    *out_n = np + nc;
     return true;
 }
 
@@ -643,50 +651,13 @@ fail:
     return false;
 }
 
-// The text form of a JSONL example: the prompt (BOS unless --no-bos) and the
-// completion tokenized apart, into a buffer with a slot to spare for the
-// end-of-turn token. NULL on success, else why the line is refused.
+// The text form of a JSONL example (pair_tokens). NULL on success, else why
+// the line is refused.
 static const char *train_text_tokens(tokenizer *tok, const char *prompt,
                                      const char *completion, bool no_bos,
-                                     int32_t **out, int *np_out, int *nc_out,
-                                     char *why, size_t why_n) {
-    size_t prompt_n = strlen(prompt), completion_n = strlen(completion);
-    if (prompt_n > SIZE_MAX - completion_n - 8 ||
-        prompt_n + completion_n + 8 > INT_MAX)
-        return "is too large to tokenize";
-    // tok_encode truncates silently at its capacity, and "one token per
-    // byte" is not a bound: a SentencePiece vocabulary with byte fallback and
-    // segment normalization emitted 68 tokens for 52 bytes on the test
-    // fixture, which the old fixed-size buffer cut to 60 without a word. So
-    // the buffer grows until the encoding fits with room to spare (the
-    // end-of-turn slot included), and a line that still fills it is refused
-    // rather than truncated.
-    size_t bytes = prompt_n + completion_n;
-    int cap = (int)(2 * bytes + 32);
-    int32_t *tokens = NULL;
-    int np = -1, nc = -1;
-    for (int attempt = 0; attempt < 6; attempt++) {
-        free(tokens);
-        tokens = malloc(sizeof(*tokens) * (size_t)cap);
-        if (!tokens) break;
-        np = tok_encode(tok, prompt, tokens, cap, !no_bos, true);
-        nc = np >= 0 ? tok_encode(tok, completion, tokens + np, cap - np,
-                                  false, false) : -1;
-        if (np < 0 || nc < 0 || np + nc + 1 < cap) break;   // fits, or failed
-        if (attempt == 5 || cap > INT_MAX / 2) break;      // cap stays the allocation
-        cap *= 2;
-    }
-    if (!tokens) return "ran out of memory while tokenizing";
-    if (np >= 0 && nc >= 0 && np + nc + 1 >= cap) {
-        free(tokens);
-        snprintf(why, why_n, "tokenizes past %d tokens for %zu bytes; "
-                 "refusing to truncate it", cap, bytes);
-        return why;
-    }
-    *out = tokens;
-    *np_out = np;
-    *nc_out = nc;
-    return NULL;
+                                     int32_t **out, int *np_out, int *nc_out) {
+    return pair_tokens(tok, prompt, completion, no_bos, out, np_out, nc_out)
+        ? NULL : "is too large to tokenize, or memory ran out tokenizing it";
 }
 
 // The id form: both arrays used exactly as given (no BOS added, nothing
@@ -844,11 +815,10 @@ static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
 
             int32_t *tokens = NULL;
             int np = -1, nc = -1;
-            char why[160];
             const char *bad = ids
                 ? train_ids_tokens(ptv, ctv, n_vocab, &tokens, &np, &nc)
                 : train_text_tokens(tok, prompt, completion, no_bos, &tokens,
-                                    &np, &nc, why, sizeof why);
+                                    &np, &nc);
             if (bad) {
                 fprintf(stderr, "error: %s line %d %s\n", path, line_no, bad);
                 jv_free(v);
@@ -895,37 +865,12 @@ static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
                     path);
             goto fail;
         }
-        // The same growth discipline as the JSONL branch, for the same
-        // reason: tok_encode stops silently at its capacity, and a vocabulary
-        // with byte fallback spells a space as three tokens, so "one token
-        // per byte" cut a text of short words to half its length without a
-        // word. Grow until the encoding fits with room to spare; refuse a
-        // text that still fills the buffer rather than train on a prefix.
-        if (data_n > (size_t)INT_MAX / 4) {
-            fprintf(stderr, "error: training text %s is too large\n", path);
-            goto fail;
-        }
-        int cap_n = (int)(2 * data_n + 32);
+        // sized to the encoding (tok_encode_fit), never cut at a buffer's end
         int32_t *all = NULL;
-        int ntok = -1;
-        for (int attempt = 0; attempt < 6; attempt++) {
-            free(all);
-            all = malloc(sizeof(*all) * (size_t)cap_n);
-            if (!all) break;
-            ntok = tok_encode(tok, data, all, cap_n, !no_bos, true);
-            if (ntok < 0 || ntok + 1 < cap_n) break;   // fits, or failed
-            if (attempt == 5 || cap_n > INT_MAX / 2) break;
-            cap_n *= 2;
-        }
-        if (!all) {
-            fprintf(stderr, "error: out of memory loading training data\n");
-            goto fail;
-        }
-        if (ntok >= 0 && ntok + 1 >= cap_n) {
-            fprintf(stderr, "error: training text %s tokenizes past %d tokens "
-                    "for %zu bytes; refusing to truncate it\n", path, cap_n,
-                    data_n);
-            free(all);
+        int ntok = tok_encode_fit(tok, data, !no_bos, TOK_RAW, 0, &all);
+        if (ntok < 0) {
+            fprintf(stderr, "error: training text %s is too large, or memory ran "
+                    "out tokenizing it\n", path);
             goto fail;
         }
         if (ntok < 2) {
