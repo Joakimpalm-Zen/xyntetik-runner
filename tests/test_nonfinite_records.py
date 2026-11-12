@@ -12,6 +12,7 @@ its embedding table, so every position's hidden state is NaN from the first
 layer on, on the CPU.
 """
 import json
+import os
 import pathlib
 import struct
 import subprocess
@@ -146,3 +147,45 @@ def test_quant_error_writes_null_for_a_tensor_whose_error_is_not_finite(exe, nan
     finite = [v["error"] for t, r in rows.items() if t != "token_embd.weight"
               for v in r["types"].values() if v]
     assert finite and all(isinstance(e, float) for e in finite)
+
+
+def _generate(exe, model, env):
+    return subprocess.run([exe, "-m", str(model), "-p", "hello world", "-n", "2", "--temp", "0",
+                           "--gpu", "off", "-t", "1"], stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, timeout=300,
+                          env={**{k: v for k, v in os.environ.items()
+                                  if not k.startswith(("RUNNER_ACT_TRACE", "RUNNER_MOE_"))},
+                               **env})
+
+
+def test_the_activation_trace_writes_null_where_a_row_is_not_finite(exe, nan_model, tmp_path):
+    """RUNNER_ACT_TRACE (R4.11) is how a non-finite forward is localized, and
+    it wrote each row's l2 and values with %.9g: the trace of a NaN row read
+    nan, so the one file that should show where the NaN starts did not
+    parse. The row's hash is still its bytes, NaN or not."""
+    path = tmp_path / "act.jsonl"
+    _generate(exe, nan_model, {"RUNNER_ACT_TRACE": str(path), "RUNNER_ACT_TRACE_POS": "0,1",
+                               "RUNNER_ACT_TRACE_VALUES": "1"})
+    rows = _lines(path.read_text())
+    assert rows
+    # the fixture's NaN is one element of each embedding row; from the first
+    # layer on it has spread through the row
+    nan_rows = [r for r in rows if r.get("l2", 0) is None]
+    assert nan_rows and all(None in r["values"] for r in nan_rows), rows[:2]
+    assert all(v is None or isinstance(v, float) for r in rows for v in r.get("values", []))
+
+
+def test_the_moe_route_trace_writes_null_for_a_gate_that_is_not_finite(exe, tmp_path):
+    """RUNNER_MOE_TRACE wrote each pick's gate and norm with %.6g; a NaN
+    router read nan. The experts stay as picked: RUNNER_MOE_REPLAY reads
+    those."""
+    prefix = tmp_path / "f"
+    subprocess.run([sys.executable, str(ROOT / "scripts/make-test-moe.py"), str(prefix)],
+                   check=True, stdout=subprocess.DEVNULL, cwd=tmp_path)
+    model = tmp_path / "moe4-nan.gguf"
+    _nan_table(pathlib.Path(str(prefix) + ".moe4.gguf"), model)
+    path = tmp_path / "moe.jsonl"
+    _generate(exe, model, {"RUNNER_MOE_TRACE": str(path)})
+    rows = _lines(path.read_text())
+    assert rows and all(len(r["experts"]) == len(r["gates"]) for r in rows)
+    assert all(g is None for r in rows for g in r["gates"]), rows[:2]

@@ -9,6 +9,7 @@
 #include "build_arch.h" // RUNNER_BUILD_ARCH for the route record
 #include "clef.h"       // the joint schema head bound below (struct only)
 #include "fpclass.h"    // the teacher's log-probabilities, under fast math
+#include "json.h"       // json_numg: a trace's numbers, null when not finite
 #include "kernel_args.h" // DN_L2_EPS, the DeltaNet q/k L2 norm's epsilon
 #include "gpu_tables.h"  // the device's per-layer tables, priced by the fit
 
@@ -8269,11 +8270,15 @@ static void moe_trace_emit(int pos, int layer, const int *sel, const float *selw
     if (!fp) return;
     fprintf(fp, "{\"pos\":%d,\"layer\":%d,\"experts\":[", pos, layer);
     for (int t = 0; t < used; t++) fprintf(fp, "%s%d", t ? "," : "", sel[t]);
+    // a NaN router's gates are null, so the line parses (R6.68.115); the
+    // experts stay as picked, and RUNNER_MOE_REPLAY reads only those
+    char nb[32];
     fprintf(fp, "],\"gates\":[");
-    for (int t = 0; t < used; t++) fprintf(fp, "%s%.6g", t ? "," : "", selw[t]);
+    for (int t = 0; t < used; t++) fprintf(fp, "%s%s", t ? "," : "", json_numg(nb, 6, selw[t]));
     fprintf(fp, "],\"norms\":[");
     if (norms)
-        for (int t = 0; t < used; t++) fprintf(fp, "%s%.6g", t ? "," : "", norms[t]);
+        for (int t = 0; t < used; t++)
+            fprintf(fp, "%s%s", t ? "," : "", json_numg(nb, 6, norms[t]));
     fprintf(fp, "]}\n");
     fflush(fp);   // durable across a killed server: --serve traces run for the
                    // process's whole lifetime, not to a matching fclose
@@ -8382,11 +8387,14 @@ static void act_trace_rows(int pos, int n, int layer, const char *point,
         pthread_mutex_lock(&g_act_mu);
         FILE *fp = act_trace_file();
         act_trace_head(fp, pos + b, layer, point);
-        fprintf(fp, ",\"n\":%d,\"hash\":\"%016llx\",\"l2\":%.9g", dim,
-                (unsigned long long)h, sqrt(ss));
+        // a row that is not finite (what this trace localizes) writes null
+        // for its norm and those values; the hash is still its bytes
+        char nb[32];
+        fprintf(fp, ",\"n\":%d,\"hash\":\"%016llx\",\"l2\":%s", dim,
+                (unsigned long long)h, json_numg(nb, 9, sqrt(ss)));
         if (g_act.values) {
             fputs(",\"values\":[", fp);
-            for (int i = 0; i < dim; i++) fprintf(fp, "%s%.9g", i ? "," : "", v[i]);
+            for (int i = 0; i < dim; i++) fprintf(fp, "%s%s", i ? "," : "", json_numg(nb, 9, v[i]));
             fputc(']', fp);
         }
         fputs("}\n", fp);
@@ -8404,7 +8412,8 @@ static void act_trace_route(int pos, int layer, const int *sel, const float *sel
     fputs(",\"experts\":[", fp);
     for (int t = 0; t < used; t++) fprintf(fp, "%s%d", t ? "," : "", sel[t]);
     fputs("],\"gates\":[", fp);
-    for (int t = 0; t < used; t++) fprintf(fp, "%s%.9g", t ? "," : "", selw[t]);
+    char nb[32];
+    for (int t = 0; t < used; t++) fprintf(fp, "%s%s", t ? "," : "", json_numg(nb, 9, selw[t]));
     fputs("]}\n", fp);
     fflush(fp);
     g_act.written++;
