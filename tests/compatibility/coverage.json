@@ -1211,6 +1211,7 @@
     "apertus"
    ],
    "artifacts": [
+    "apertus-8b-instruct-2509-q8_0",
     "apertus-8b-instruct-2509-q4_k_m"
    ],
    "tool_protocol": {

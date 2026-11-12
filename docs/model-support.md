@@ -227,12 +227,15 @@ instead of carrying a copy, so none can drift and nothing watches them:
 ✅ *version date*: recorded gate · blank: nobody has run it yet · n/a: declared limit, linked to the manual · failed *version date*: recorded failure · Train: the file's own `--info adapter` answer, where ✅ means the LoRA backward admits the file, not that training it gives good results. A family's line sums up every file of its models, per backend and for Train: ✅ all recorded · 🟨 *k of n*: k of its n files recorded, a declared limit beside them counted as not run · a hyphen: none run · n/a: a declared limit on every file · failed: a recorded failure on any file. For Train, recorded means the LoRA backward admits the file, and a refusal counts as a declared limit. A mark with <sup>b</sup> was recorded on borrowed hardware: dated evidence the project may use and does not depend on. Each file name links to its envelope below.
 
 <details>
-<summary><b>Apertus</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>Apertus</b>, 2 models: CPU 🟨 2 of 3 · CUDA 🟨 2 of 3 · Metal - · Train -</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>Apertus (apertus)</b></td></tr>
 <tr><td><a href="#arch-apertus">Apertus (apertus)</a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td colspan="5"><b>Apertus-8B-Instruct-2509 (Swiss AI)</b></td></tr>
+<tr><td><a href="#apertus-8b-instruct-2509-q4_k_m"><code>swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-12</td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-12</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: FFN activation not in the backward (gpt-oss/apertus)</td></tr>
+<tr><td><a href="#apertus-8b-instruct-2509-q8_0"><code>swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf</code></a></td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-12</td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-12</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: FFN activation not in the backward (gpt-oss/apertus)</td></tr>
 </tbody>
 </table>
 </details>
@@ -738,6 +741,52 @@ instead of carrying a copy, so none can drift and nothing watches them:
 
 Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
 
+
+#### Apertus-8B-Instruct-2509 (Swiss AI)
+
+<a id="apertus-8b-instruct-2509-q4_k_m"></a>
+##### `swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf`
+
+Text path, bartowski's Q4_K_M of swiss-ai's Apertus-8B-Instruct-2509, a file that sits on the fidelity bar: against the publisher's BF16 checkpoint computed in float32 it reads 0.0492 ± 0.0024 mean KLD over 600 positions (bootstrap 95% interval 0.0447 to 0.0540) against a bar of 0.05, with 98.1% margin-qualified top-1 (plain top-1 88.7%, CPU); one of its two windows of 300 reads 0.0526, over the bar; a different conversion of the same model read 0.0507 at 2,000 positions in the golden pass. The Q8_0 is the fidelity file.
+
+- **File:** `swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf` (sha256 `5901007f15aec9aabeea401cbe65559671166fc851bbdf8c26f56c2b61e9cd1d`, 5,057,885,568 bytes, from [bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF](https://huggingface.co/bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF) at revision `d2ffbcc459d0`).
+- **Upstream checkpoint:** swiss-ai/Apertus-8B-Instruct-2509 at revision `b946d40447b2`.
+- **Quantization:** Q4_K_M (bartowski, importance matrix).
+- **Licence:** `apache-2.0`, as the swiss-ai/Apertus-8B-Instruct-2509 model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both of bartowski's files (revision d2ffbcc4, with bartowski's importance matrix) against swiss-ai's BF16 checkpoint at b946d404 computed in float32 on the CPU (transformers 5.16.1, ApertusForCausalLM, float32 arithmetic cast at use per decoder block, gold-logits.py, two disjoint windows of 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files from the batched prefill route): Q8_0 pooled 0.0054 ± 0.0003 mean KLD (SE, 600 positions; windows 0.0050 and 0.0057) / 97.0% top-1 / 100% margin-qualified (419/419); Q4_K_M pooled 0.0492 ± 0.0024 (bootstrap 95% interval 0.0447 to 0.0540; windows 0.0459 and 0.0526) / 88.7% / 98.1% (411/419). Tokenizer 0/721 corpus strings and 0/128,635 vocabulary entries against the publisher's tokenizer.json; template conformance 20/20 in text and tokens against the publisher's chat_template.jinja at b946d404 (the apertus renderer; the template inside the GGUF is the publisher's earlier one and Runner does not render it). Record: docs/compat-reports/apertus-8b-instruct-2509-2026-11-12/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU and CUDA for this file (5.06 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 32 layers fit on the device at ctx 4096). Metal: the activation is not on the Metal backend yet, and the load runs on the CPU. Training is refused at load, in the loader's words: "training does not cover this model yet: FFN activation not in the backward (gpt-oss/apertus)"; serving an adapter (--lora) is supported. Several requests at once run one at a time on the CUDA device: the batched multi-slot forward takes gated FFNs only. A system message after the conversation has started is refused, as the publisher's template refuses it. Not the publisher's file: bartowski's conversion, pinned by sha256 and repository revision. Licence: apache-2.0.
+- **Still missing:** A Metal cell (the activation's Metal port), and the Windows CUDA host's cells; task quality and the tool protocol on the real checkpoint.
+- **Evidence:** [docs/compat-reports/1.17.0-2026-11-12-linux-x86_64-apertus-8b-instruct-2509.json](compat-reports/1.17.0-2026-11-12-linux-x86_64-apertus-8b-instruct-2509.json), [docs/compat-reports/apertus-8b-instruct-2509-2026-11-12/README.md](compat-reports/apertus-8b-instruct-2509-2026-11-12/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.17.0 on 2026-11-12.
+- **CPU:** ✅ v1.17.0 2026-11-12 on linux-x86_64-cuda (borrowed hardware) at commit `d431c97848fd`, output sha256 `5fd562b8fbeeac08`, [pin](../tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q4_k_m.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.17.0 2026-11-12 on linux-x86_64-cuda (borrowed hardware) at commit `d431c97848fd`, output sha256 `5fd562b8fbeeac08`, [pin](../tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q4_k_m.linux-x86_64-cuda.cuda.txt)
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Runs on the CPU, not Metal: the load says "gpu: 'apertus' FFN activation is not on the metal backend yet" (measured on an 8 GB Apple Silicon Mac at main ba49206f, the Q4_K_M at d2ffbcc4; there the CPU run paged, 0.11 tokens a second). The Metal port of the xIELU activation is not started.
+- **LoRA training:** no: FFN activation not in the backward (gpt-oss/apertus) (runner 1.17.0, 2026-11-12).
+- **LoRA adapter serving:** supported (runner 1.17.0, 2026-11-12).
+
+<a id="apertus-8b-instruct-2509-q8_0"></a>
+##### `swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf`
+
+Text path, bartowski's Q8_0 of swiss-ai's Apertus-8B-Instruct-2509, the fidelity file of the two: against the publisher's BF16 checkpoint computed in float32 it reads 0.0054 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 600 positions (two windows of 300: 0.0050 and 0.0057; plain top-1 97.0%, CPU), against a bar of 0.05 and 97%.
+
+- **File:** `swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf` (sha256 `68a9d338961e9cc47362649e703fd67b4f4eb616a16d97b9c2c458aea4e3db7a`, 8,565,372,288 bytes, from [bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF](https://huggingface.co/bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF) at revision `d2ffbcc459d0`).
+- **Upstream checkpoint:** swiss-ai/Apertus-8B-Instruct-2509 at revision `b946d40447b2`.
+- **Quantization:** Q8_0 (bartowski, importance matrix).
+- **Licence:** `apache-2.0`, as the swiss-ai/Apertus-8B-Instruct-2509 model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both of bartowski's files (revision d2ffbcc4, with bartowski's importance matrix) against swiss-ai's BF16 checkpoint at b946d404 computed in float32 on the CPU (transformers 5.16.1, ApertusForCausalLM, float32 arithmetic cast at use per decoder block, gold-logits.py, two disjoint windows of 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files from the batched prefill route): Q8_0 pooled 0.0054 ± 0.0003 mean KLD (SE, 600 positions; windows 0.0050 and 0.0057) / 97.0% top-1 / 100% margin-qualified (419/419); Q4_K_M pooled 0.0492 ± 0.0024 (bootstrap 95% interval 0.0447 to 0.0540; windows 0.0459 and 0.0526) / 88.7% / 98.1% (411/419). Tokenizer 0/721 corpus strings and 0/128,635 vocabulary entries against the publisher's tokenizer.json; template conformance 20/20 in text and tokens against the publisher's chat_template.jinja at b946d404 (the apertus renderer; the template inside the GGUF is the publisher's earlier one and Runner does not render it). Record: docs/compat-reports/apertus-8b-instruct-2509-2026-11-12/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU and CUDA for this file (8.57 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 32 layers fit on the device at ctx 4096). Metal: the activation is not on the Metal backend yet, and the load runs on the CPU. Training is refused at load, in the loader's words: "training does not cover this model yet: FFN activation not in the backward (gpt-oss/apertus)"; serving an adapter (--lora) is supported. Several requests at once run one at a time on the CUDA device: the batched multi-slot forward takes gated FFNs only. A system message after the conversation has started is refused, as the publisher's template refuses it. Not the publisher's file: bartowski's conversion, pinned by sha256 and repository revision. Licence: apache-2.0.
+- **Still missing:** A Metal cell (the activation's Metal port), and the Windows CUDA host's cells; task quality and the tool protocol on the real checkpoint.
+- **Evidence:** [docs/compat-reports/1.17.0-2026-11-12-linux-x86_64-apertus-8b-instruct-2509.json](compat-reports/1.17.0-2026-11-12-linux-x86_64-apertus-8b-instruct-2509.json), [docs/compat-reports/apertus-8b-instruct-2509-2026-11-12/README.md](compat-reports/apertus-8b-instruct-2509-2026-11-12/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.17.0 on 2026-11-12.
+- **CPU:** ✅ v1.17.0 2026-11-12 on linux-x86_64-cuda (borrowed hardware) at commit `d431c97848fd`, output sha256 `a519428fcee0cb91`, [pin](../tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.17.0 2026-11-12 on linux-x86_64-cuda (borrowed hardware) at commit `d431c97848fd`, output sha256 `a519428fcee0cb91`, [pin](../tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** [n/a](../MANUAL.md#support-matrix): Runs on the CPU, not Metal: the load says "gpu: 'apertus' FFN activation is not on the metal backend yet" (measured on an 8 GB Apple Silicon Mac at main ba49206f, the Q4_K_M at d2ffbcc4; there the CPU run paged, 0.11 tokens a second). The Metal port of the xIELU activation is not started.
+- **LoRA training:** no: FFN activation not in the backward (gpt-oss/apertus) (runner 1.17.0, 2026-11-12).
+- **LoRA adapter serving:** supported (runner 1.17.0, 2026-11-12).
 
 ### Cloudflare Clef
 
@@ -2825,5 +2874,7 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-11-06 | [occamy-1.0 (Accio-Lab's finetune of Qwen3.6-35B-A3B)](#occamy-1.0) | Upcoming, planned admission | Measured 2026-11-06 (R4.27.7): no publisher file passes the fidelity bar against the publisher's own parent in float32; listed Upcoming with the reason, by the coordinator's ruling. | none recorded |
 | 2026-11-10 | [NVIDIA Nemotron 3.5 Super VL-120B-A12B (NVIDIA), `NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Q4_0.gguf`](#nemotron-3.5-super-vl-120b-a12b-q4_0) | Tier 2, maintained on report | Admitted 2026-11-10 at Tier 2 with the admitting CPU cell from the lab CPU lane (R4.27.4.4), on agreement with llama.cpp on the same bytes: the parent cannot be held in float32. Maintained on report. | none recorded |
 | 2026-11-11 | [NVIDIA Nemotron 3.5 Bolt-74B-A9B (NVIDIA), `NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf`](#nemotron-3.5-bolt-74b-a9b-24gb) | Tier 2, maintained on report | Joins the roster 2026-11-11 with the admitting CPU cell from the lab CPU lane (R4.27.4.4 S2), on agreement with llama.cpp on the same bytes: the parent cannot be held in float32. Maintained on report. | none recorded |
+| 2026-11-12 | [Apertus-8B-Instruct-2509 (Swiss AI), `swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf`](#apertus-8b-instruct-2509-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-12 with the admitting CPU and CUDA cells from the lab lanes (R4.38) and a float32 reference measurement against the publisher's checkpoint; a user asked for Apertus. Maintained on report. | none recorded |
+| 2026-11-12 | [Apertus-8B-Instruct-2509 (Swiss AI), `swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf`](#apertus-8b-instruct-2509-q4_k_m) | Tier 2, maintained on report | Joins the roster 2026-11-12 with the admitting CPU and CUDA cells from the lab lanes (R4.38) and a float32 reference measurement against the publisher's checkpoint; a user asked for Apertus. Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->

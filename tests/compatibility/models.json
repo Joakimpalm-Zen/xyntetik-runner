@@ -735,12 +735,15 @@
       }
     },
     {
-      "id": "apertus-8b-instruct-2509-q4_k_m",
+      "id": "apertus-8b-instruct-2509-q8_0",
       "architecture": "apertus",
       "family": "Apertus (Swiss AI)",
-      "file": "models/Apertus-8B-Instruct-2509-Q4_K_M.gguf",
-      "sha256": "5901007f15aec9aabeea401cbe65559671166fc851bbdf8c26f56c2b61e9cd1d",
+      "file": "models/swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf",
+      "sha256": "68a9d338961e9cc47362649e703fd67b4f4eb616a16d97b9c2c458aea4e3db7a",
+      "upstream": "bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF",
       "tokenizer_reference": "swiss-ai/Apertus-8B-Instruct-2509",
+      "tokenizer_reference_revision": "b946d40447b2b597999b9c86d44bee0b452c919f",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/apertus-8b-instruct-2509.tokenizer-json.json",
       "reference": {
         "implementation": "llama.cpp",
         "revision": "b10076"
@@ -751,7 +754,51 @@
         "cpu_cuda",
         "chat"
       ],
-      "notes": "Source: bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF at a5d1742307bf949e2cd95f253e8776539e19d1fc, published filename swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf. CUDA support is full-graph: 32/32 layers plus output weight on the 8 GB RTX 3070, with 5/5 CPU/CUDA-identical prompts at 128 tokens and RUNNER_CUDA_TC=0. greedy_reference deliberately remains undeclared because the cross-engine delta is below the model's measured self-sensitivity floor.",
+      "notes": "bartowski's Q8_0 (8,565,372,288 bytes, revision d2ffbcc4 of bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF, with bartowski's importance matrix), architecture apertus: 32 layers, GQA 32/8, head_dim 128, QK-norm, an ungated FFN (up, xIELU, down) 21,504 wide with per-layer xIELU parameters, llama3 rope scaling to 65,536, vocabulary 131,072. Tokenizer pre tekken: 0 of 721 corpus strings and 0 of 128,635 vocabulary entries differ from swiss-ai's tokenizer.json at b946d404, and the 1,000 added tokens are equal. Template family apertus, conformance 20/20 in text and tokens against the publisher's chat_template.jinja at b946d404 (the template inside the GGUF is the publisher's earlier one; Runner renders its own). Fidelity: against the BF16 checkpoint computed in float32, pooled 0.0054 ± 0.0003 mean KLD over 600 positions (windows 0.0050 and 0.0057), 100% margin-qualified top-1; the fidelity file of the two. Record docs/compat-reports/apertus-8b-instruct-2509-2026-11-12. CUDA runs the whole model on the device (32 of 32 layers) on a CUDA MIG slice, 1g.24gb, sm_120. greedy_reference remains undeclared.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "apertus-8b-instruct-2509-q4_k_m",
+      "architecture": "apertus",
+      "family": "Apertus (Swiss AI)",
+      "file": "models/swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf",
+      "sha256": "5901007f15aec9aabeea401cbe65559671166fc851bbdf8c26f56c2b61e9cd1d",
+      "upstream": "bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF",
+      "tokenizer_reference": "swiss-ai/Apertus-8B-Instruct-2509",
+      "tokenizer_reference_revision": "b946d40447b2b597999b9c86d44bee0b452c919f",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/apertus-8b-instruct-2509.tokenizer-json.json",
+      "reference": {
+        "implementation": "llama.cpp",
+        "revision": "b10076"
+      },
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "bartowski's Q4_K_M (5,057,885,568 bytes, revision d2ffbcc4 of bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF, with bartowski's importance matrix), architecture apertus: 32 layers, GQA 32/8, head_dim 128, QK-norm, an ungated FFN (up, xIELU, down) 21,504 wide with per-layer xIELU parameters, llama3 rope scaling to 65,536, vocabulary 131,072. Tokenizer pre tekken: 0 of 721 corpus strings and 0 of 128,635 vocabulary entries differ from swiss-ai's tokenizer.json at b946d404, and the 1,000 added tokens are equal. Template family apertus, conformance 20/20 in text and tokens against the publisher's chat_template.jinja at b946d404 (the template inside the GGUF is the publisher's earlier one; Runner renders its own). Fidelity: against the BF16 checkpoint computed in float32, pooled 0.0492 ± 0.0024 mean KLD over 600 positions (windows 0.0459 and 0.0526) against a 0.05 bar, 98.1% margin-qualified top-1; the Q8_0 is the fidelity file. Record docs/compat-reports/apertus-8b-instruct-2509-2026-11-12. CUDA runs the whole model on the device (32 of 32 layers) on a CUDA MIG slice, 1g.24gb, sm_120. greedy_reference remains undeclared.",
       "check_params": {
         "cpu_cuda": {
           "pins": {
