@@ -8873,14 +8873,20 @@ static int ts_mcp(tool_stream *s, const char *bytes, int n) {
             continue;
         }
         size_t keep=0;
-        // a newline that may stand before the frame is held with it
-        char nl_frame[40]="";
+        // a newline that may stand before a frame token is held with it:
+        // the branch above drops that newline for the opening and the closing
+        // token alike, so both are held, or a turn fed a byte at a time kept
+        // the newline before a closing token that a turn fed whole dropped
+        // (the daily fuzz run of 2026-11-12, R6.68.103)
+        char nl_frame[40]="", nl_close[40]="";
         if (xp->frame_open) snprintf(nl_frame,sizeof nl_frame,"\n%s",xp->frame_open);
+        if (xp->frame_close) snprintf(nl_close,sizeof nl_close,"\n%s",xp->frame_close);
         const char *markers[]={xp->open,xp->turn_end,
                                xp->frame_open ? xp->frame_open : xp->open,
                                xp->frame_close ? xp->frame_close : xp->open,
-                               xp->frame_open ? nl_frame : xp->open};
-        for (int m=0;m<5;m++) {
+                               xp->frame_open ? nl_frame : xp->open,
+                               xp->frame_close ? nl_close : xp->open};
+        for (int m=0;m<6;m++) {
             size_t k=strlen(markers[m])-1;
             if (k>s->head_n) k=s->head_n;
             while (k && memcmp(s->head+s->head_n-k,markers[m],k)) k--;
