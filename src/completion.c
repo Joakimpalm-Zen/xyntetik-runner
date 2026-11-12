@@ -267,7 +267,8 @@ static void append_top_map(sbuf *r, slot_t *s, engine *e, const lp_alt *row, int
         first = false;
         sb_lit(r, "\"");
         if (key[j].n) sb_put(r, key[j].s, key[j].n);
-        sb_fmt(r, "\":%.9g", mx + log(sum));
+        sb_lit(r, "\":");
+        sb_num9(r, mx + log(sum));
     }
     sb_lit(r, "}");
     for (int j = 0; j < n; j++) free(key[j].s);
@@ -293,7 +294,9 @@ static void append_stop_token(sbuf *r, slot_t *s, engine *e) {
     // -- and a ONE-SIDED stop, the case worth catching, disappears from both
     // the agreement and the KLD statistics (lab, 2026-09-25).
     if (e->stop_lp_at < 0) return;
-    sb_fmt(r, ",\"stop_logprobs\":{\"logprob\":%.9g,\"top_logprobs\":", e->stop_lp);
+    sb_lit(r, ",\"stop_logprobs\":{\"logprob\":");
+    sb_num9(r, e->stop_lp);
+    sb_lit(r, ",\"top_logprobs\":");
     append_top_map(r, s, e, &e->lp_top[(size_t)e->stop_lp_at * e->lp_n], e->lp_n);
     sb_lit(r, ",\"top_token_ids\":[");
     for (int j = 0; j < e->lp_n; j++) {
@@ -307,7 +310,7 @@ static void append_stop_token(sbuf *r, slot_t *s, engine *e) {
         const lp_alt *a = &e->lp_top[(size_t)e->stop_lp_at * e->lp_n + j];
         if (a->id < 0) break;
         if (j) sb_lit(r, ",");
-        sb_fmt(r, "%.9g", a->lp);
+        sb_num9(r, a->lp);
     }
     sb_lit(r, "]}");
 }
@@ -320,7 +323,9 @@ static void append_chat_logprobs(sbuf *r, slot_t *s, engine *e) {
         int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
         sb_lit(r, "{\"token\":\"");
         sb_esc(r, tb, tn);
-        sb_fmt(r, "\",\"logprob\":%.9g,\"top_logprobs\":[", e->lp_chosen[i]);
+        sb_lit(r, "\",\"logprob\":");
+        sb_num9(r, e->lp_chosen[i]);
+        sb_lit(r, ",\"top_logprobs\":[");
         for (int j = 0; j < e->lp_n; j++) {
             const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
             if (a->id < 0) break;
@@ -328,7 +333,9 @@ static void append_chat_logprobs(sbuf *r, slot_t *s, engine *e) {
             tn = lp_piece(s, e, a->id, tb, sizeof(tb));
             sb_lit(r, "{\"token\":\"");
             sb_esc(r, tb, tn);
-            sb_fmt(r, "\",\"logprob\":%.9g}", a->lp);
+            sb_lit(r, "\",\"logprob\":");
+            sb_num9(r, a->lp);
+            sb_lit(r, "}");
         }
         sb_lit(r, "]}");
     }
@@ -367,7 +374,7 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e,
     for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
         if (i == 0 && np) sb_lit(r, "null");
-        else sb_fmt(r, "%.9g", i < np ? pg->ps.lp[i] : e->lp_chosen[i - np]);
+        else sb_num9(r, i < np ? pg->ps.lp[i] : e->lp_chosen[i - np]);
     }
     sb_lit(r, "],\"top_logprobs\":[");
     for (int i = 0; i < np + e->lp_count; i++) {
@@ -410,7 +417,7 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e,
             const lp_alt *a = &row[j];
             if (a->id < 0) break;
             if (j) sb_lit(r, ",");
-            sb_fmt(r, "%.9g", a->lp);
+            sb_num9(r, a->lp);
         }
         sb_lit(r, "]");
     }
@@ -1322,15 +1329,19 @@ static void diag_json(sbuf *r, const req_diag *d) {
         sb_fmt(r, ",\"decision\":{\"schema\":\"xyntetik.runner.decision.v1\","
                   "\"confirm_below\":%.6f,\"decisions\":%d,",
                d->confirm_below, d->decisions);
-        if (d->decisions > 0)
-            sb_fmt(r, "\"min_chosen_prob\":%.6f,\"min_margin\":%.6f,"
-                      "\"at_token\":%d,", d->min_chosen_p, d->min_margin,
-                   d->min_at);
-        else
+        if (d->decisions > 0) {
+            sb_lit(r, "\"min_chosen_prob\":");
+            sb_fix6(r, d->min_chosen_p);
+            sb_lit(r, ",\"min_margin\":");
+            sb_fix6(r, d->min_margin);
+            sb_fmt(r, ",\"at_token\":%d,", d->min_at);
+        } else
             sb_lit(r, "\"min_chosen_prob\":null,\"min_margin\":null,"
                       "\"at_token\":null,");
+        // a confidence that is not a number (a forward that went non-finite)
+        // is not above the bar: it needs confirmation
         sb_fmt(r, "\"needs_confirmation\":%s}",
-               d->decisions > 0 && d->min_chosen_p < d->confirm_below
+               d->decisions > 0 && !(d->min_chosen_p >= d->confirm_below)
                ? "true" : "false");
     }
     if (d->closure_json) sb_fmt(r, ",\"closure\":%s", d->closure_json);
@@ -5066,9 +5077,9 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
             const lp_alt *row = &ps->top[(size_t)i * ps->top_n];
             int want = g->ptoks[i];
             int tn = lp_piece(s, e, want, tb, sizeof(tb));
-            sb_fmt(&r, ",{\"%d\":{\"logprob\":%.9g,\"rank\":%d,"
-                       "\"decoded_token\":\"", want, (double)ps->lp[i],
-                   ps->rank[i]);
+            sb_fmt(&r, ",{\"%d\":{\"logprob\":", want);
+            sb_num9(&r, (double)ps->lp[i]);
+            sb_fmt(&r, ",\"rank\":%d,\"decoded_token\":\"", ps->rank[i]);
             sb_esc(&r, tb, tn);
             sb_lit(&r, "\"}");
             for (int j = 0; j < q->plp && row && row[j].id >= 0; j++) {
@@ -5078,9 +5089,9 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
                 int rank = 1;
                 for (int k = 0; k < j; k++) rank += row[k].lp > row[j].lp;
                 tn = lp_piece(s, e, row[j].id, tb, sizeof(tb));
-                sb_fmt(&r, ",\"%d\":{\"logprob\":%.9g,\"rank\":%d,"
-                           "\"decoded_token\":\"", row[j].id,
-                       (double)row[j].lp, rank);
+                sb_fmt(&r, ",\"%d\":{\"logprob\":", row[j].id);
+                sb_num9(&r, (double)row[j].lp);
+                sb_fmt(&r, ",\"rank\":%d,\"decoded_token\":\"", rank);
                 sb_esc(&r, tb, tn);
                 sb_lit(&r, "\"}");
             }
@@ -5100,19 +5111,22 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
             // legal_mass at nine significant digits, not coverage's six
             // decimals: it is the number that is small when it matters
             sb_fmt(&r, "{\"index\":%d,\"n_legal\":%d,\"n_probed\":%d,"
-                       "\"coverage\":%.6f,\"legal_mass\":%.9g,"
-                       "\"alternatives\":[",
-                   c->pos, c->n_legal, c->n_probed, c->coverage,
-                   (double)c->legal_mass);
+                       "\"coverage\":", c->pos, c->n_legal, c->n_probed);
+            sb_fix6(&r, c->coverage);
+            sb_lit(&r, ",\"legal_mass\":");
+            sb_num9(&r, (double)c->legal_mass);
+            sb_lit(&r, ",\"alternatives\":[");
             int stored = c->n_legal < CL_MAX_ALT ? c->n_legal : CL_MAX_ALT;
             for (int j = 0; j < stored; j++) {
                 if (j) sb_lit(&r, ",");
                 int tn = lp_piece(s, e, c->ids[j], tb, sizeof(tb));
                 sb_lit(&r, "{\"token\":\"");
                 sb_esc(&r, tb, tn);
-                sb_fmt(&r, "\",\"id\":%d,\"prob\":%.6f,"
-                           "\"logprob\":%.9g}",
-                       c->ids[j], c->prob[j], c->raw_lp[j]);
+                sb_fmt(&r, "\",\"id\":%d,\"prob\":", c->ids[j]);
+                sb_fix6(&r, c->prob[j]);
+                sb_lit(&r, ",\"logprob\":");
+                sb_num9(&r, c->raw_lp[j]);
+                sb_lit(&r, "}");
             }
             sb_lit(&r, "]}");
         }

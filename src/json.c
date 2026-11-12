@@ -1,6 +1,7 @@
 // Minimal recursive-descent JSON parser, string escaper, string builder,
 // and value re-serializer.
 #include "json.h"
+#include "fpclass.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -575,6 +576,16 @@ void sb_fmt(sbuf *b, const char *fmt, ...) {
         free(big);
     }
     va_end(ap2);
+}
+
+void sb_num9(sbuf *b, double v) {
+    if (fp_isfinite(v)) sb_fmt(b, "%.9g", v);
+    else sb_lit(b, "null");
+}
+
+void sb_fix6(sbuf *b, double v) {
+    if (fp_isfinite(v)) sb_fmt(b, "%.6f", v);
+    else sb_lit(b, "null");
 }
 
 void sb_esc(sbuf *b, const char *s, size_t n) {
