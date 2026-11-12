@@ -1552,259 +1552,288 @@ static int card_only(int argc, char **argv) {
     return ok ? 0 : 1;
 }
 
-int derive_main(int argc, char **argv) {
-    for (int i = 1; i < argc; i++)
-        if (!strcmp(argv[i], "--card-from")) return card_only(argc, argv);
+// What one derive run holds from its first allocation to its exit: the
+// options, the paths it builds beside the output, the two score documents,
+// what the size plan decided and what the comparison measured. derive_main
+// was one 255-line function over these as locals; its five numbered steps are
+// functions over this, and derive_release frees it on every path (R6.68.33).
+typedef struct {
     derive_opts o;
-    int rc = parse_args(argc, argv, &o);
-    if (rc >= 0) return rc;
-    // Everything this run owns, released at the one exit below. The function
-    // has some twenty refusals after its first allocation and used to free
-    // only on success: harmless to a process that is about to end, but every
-    // refused derive failed a leak check (R6.68.23).
-    int ret = 1;
-    char *dir = NULL, *self = NULL, *default_corpus = NULL, *gold_script = NULL;
-    char *quant_rec = NULL, *ref_score = NULL, *file_score = NULL, *gold_out = NULL;
-    char *rec_path = NULL, *card_path = NULL;
-    jv *ref = NULL, *run = NULL;
-    sbuf r = {0}, cmd = {0};
+    char *dir, *self, *default_corpus, *gold_script;
+    char *quant_rec, *ref_score, *file_score, *gold_out, *rec_path, *card_path;
+    jv *ref, *run;         // the reference's score and the file's
     sized_result sz;       // what sized_plan decided (--target-size)
     derive_measure m;      // what the comparison measured
-    memset(&sz, 0, sizeof sz);
-    memset(&m, 0, sizeof m);
-    dir = plat_executable_dir();
-    self = plat_executable_path();
-    if (!dir || !self) { fprintf(stderr, "error: cannot find this binary's path\n"); goto out; }
-    default_corpus = join(dir, BESIDE_CORPUS);
-    if (!o.corpus) o.corpus = default_corpus;
-    else o.corpus_given = true;
-    if (!plat_file_readable(o.corpus)) {
-        fprintf(stderr, "error: cannot read the corpus %s; give --corpus FILE\n", o.corpus);
-        goto out;
-    }
     parent_meta pm;
-    if (!read_parent(o.parent, o.license, &pm)) goto out;
-    const char *gold_env = getenv("RUNNER_GOLD_LOGITS");
-    gold_script = gold_env && *gold_env ? strdup(gold_env) : join(dir, BESIDE_GOLD);
-    if (o.reference_hf && !gold_ready(gold_script, !(gold_env && *gold_env))) goto out;
+    int n_tokens;          // the window's tokens and a BOS: what the measurement reads
+    sbuf r, cmd;           // the record being written, and the command it names
+} derive_run;
 
-    quant_rec = suffixed(o.out, ".quant.json");
-    ref_score = suffixed(o.out, ".parent.score.json");
-    file_score = suffixed(o.out, ".score.json");
-    gold_out = suffixed(o.out, ".gold.json");
-    rec_path = suffixed(o.out, ".derive.json");
-    card_path = suffixed(o.out, ".README.md");
+// Before anything is made: this binary's own path, the corpus, the parent's
+// metadata, the paths beside the output, and a window that fits the context.
+static bool derive_setup(derive_run *d) {
+    d->dir = plat_executable_dir();
+    d->self = plat_executable_path();
+    if (!d->dir || !d->self) { fprintf(stderr, "error: cannot find this binary's path\n"); return false; }
+    d->default_corpus = join(d->dir, BESIDE_CORPUS);
+    if (!d->o.corpus) d->o.corpus = d->default_corpus;
+    else d->o.corpus_given = true;
+    if (!plat_file_readable(d->o.corpus)) {
+        fprintf(stderr, "error: cannot read the corpus %s; give --corpus FILE\n", d->o.corpus);
+        return false;
+    }
+    if (!read_parent(d->o.parent, d->o.license, &d->pm)) return false;
+    const char *gold_env = getenv("RUNNER_GOLD_LOGITS");
+    d->gold_script = gold_env && *gold_env ? strdup(gold_env) : join(d->dir, BESIDE_GOLD);
+    if (d->o.reference_hf && !gold_ready(d->gold_script, !(gold_env && *gold_env))) return false;
+
+    d->quant_rec = suffixed(d->o.out, ".quant.json");
+    d->ref_score = suffixed(d->o.out, ".parent.score.json");
+    d->file_score = suffixed(d->o.out, ".score.json");
+    d->gold_out = suffixed(d->o.out, ".gold.json");
+    d->rec_path = suffixed(d->o.out, ".derive.json");
+    d->card_path = suffixed(d->o.out, ".README.md");
     // the window's tokens and a BOS: everything the measurement reads
     // gold-logits.py reads its special prefix then ids[:min_prefix +
     // max_positions * stride + 1] and refuses a score file shorter than that
     // span (after its whole float32 forward), so the score runs cover it: a
     // BOS, then start + count * stride + 1 tokens of text
-    int n_tokens = 1 + o.start + o.count * o.stride + 1;
-    if (o.ctx && atoi(o.ctx) < n_tokens) {
+    d->n_tokens = 1 + d->o.start + d->o.count * d->o.stride + 1;
+    if (d->o.ctx && atoi(d->o.ctx) < d->n_tokens) {
         fprintf(stderr, "error: the window %d:%d:%d reads %d tokens and -c is %s; raise -c or "
-                "give a smaller --window\n", o.start, o.stride, o.count, n_tokens, o.ctx);
-        goto out;
+                "give a smaller --window\n", d->o.start, d->o.stride, d->o.count, d->n_tokens, d->o.ctx);
+        return false;
     }
+    return true;
+}
 
+static bool derive_reference(derive_run *d) {
     // 1. the reference first (default reference): a corpus too short for the
     //    window is refused before anything is made
-    if (!o.reference_hf) {
-        if (!score(self, &o, o.parent, ref_score, n_tokens) || !(ref = read_json(ref_score)))
-            goto out;
-        if (!window_fits(&o, ref)) goto out;
+    if (!d->o.reference_hf) {
+        if (!score(d->self, &d->o, d->o.parent, d->ref_score, d->n_tokens) || !(d->ref = read_json(d->ref_score)))
+            return false;
+        if (!window_fits(&d->o, d->ref)) return false;
     }
+    return true;
+}
+
+static bool derive_make(derive_run *d) {
     // 2. make the file (a --target-size recipe plans its types first)
-    if (o.target_size && !sized_plan(self, &o, file_bytes(o.parent), &sz)) goto out;
+    if (d->o.target_size && !sized_plan(d->self, &d->o, file_bytes(d->o.parent), &d->sz)) return false;
     const char *a[32];
     int n = 0;
-    a[n++] = "-m"; a[n++] = o.parent; a[n++] = "--rewrite"; a[n++] = o.out;
+    a[n++] = "-m"; a[n++] = d->o.parent; a[n++] = "--rewrite"; a[n++] = d->o.out;
     for (int k = 0; k < N_RECIPE; k++)
-        if (o.recipe[k]) { a[n++] = RECIPE[k].flag; a[n++] = o.recipe[k]; }
-    if (o.target_size) { a[n++] = "--type-plan"; a[n++] = sz.plan; }
-    if (o.threads) { a[n++] = "-t"; a[n++] = o.threads; }
+        if (d->o.recipe[k]) { a[n++] = RECIPE[k].flag; a[n++] = d->o.recipe[k]; }
+    if (d->o.target_size) { a[n++] = "--type-plan"; a[n++] = d->sz.plan; }
+    if (d->o.threads) { a[n++] = "-t"; a[n++] = d->o.threads; }
     a[n] = NULL;
-    rc = run_self(self, a);
+    int rc = run_self(d->self, a);
     if (rc != 0) {
         fprintf(stderr, "error: runner derive: the rewrite failed (exit %d)\n", rc);
         // nothing was made, so nothing is left beside OUT: the parent's
         // score was only the measurement's other half
-        plat_remove(ref_score);
-        goto out;
+        plat_remove(d->ref_score);
+        return false;
     }
-    // 3. measure it
-    if (!score(self, &o, o.out, file_score, n_tokens) || !(run = read_json(file_score))) goto out;
-    if (o.reference_hf) {
-        if (!window_fits(&o, run)) {
-            plat_remove(o.out);
-            plat_remove(quant_rec);
-            goto out;
-        }
-        if (!gold_measure(&o, gold_script, file_score, (int)jv_num(jv_get(run, "n_special"), 0),
-                          gold_out, &m))
-            goto out;
-    } else if (!compare_scores(&o, ref, run, &m)) {
-        goto out;
-    }
-    jv_free(ref);
-    jv_free(run);
-    ref = run = NULL;
+    return true;
+}
 
+static bool derive_measure_file(derive_run *d) {
+    // 3. measure it
+    if (!score(d->self, &d->o, d->o.out, d->file_score, d->n_tokens) || !(d->run = read_json(d->file_score))) return false;
+    if (d->o.reference_hf) {
+        if (!window_fits(&d->o, d->run)) {
+            plat_remove(d->o.out);
+            plat_remove(d->quant_rec);
+            return false;
+        }
+        if (!gold_measure(&d->o, d->gold_script, d->file_score, (int)jv_num(jv_get(d->run, "n_special"), 0),
+                          d->gold_out, &d->m))
+            return false;
+    } else if (!compare_scores(&d->o, d->ref, d->run, &d->m)) {
+        return false;
+    }
+    jv_free(d->ref);
+    jv_free(d->run);
+    d->ref = d->run = NULL;
+    return true;
+}
+
+static bool derive_record(derive_run *d) {
     // 4. the record
     char psha[65], fsha[65];
-    if (!envelope_file_sha256(o.parent, psha) || !envelope_file_sha256(o.out, fsha)) {
+    if (!envelope_file_sha256(d->o.parent, psha) || !envelope_file_sha256(d->o.out, fsha)) {
         fprintf(stderr, "error: cannot hash the parent or the file\n");
-        goto out;
+        return false;
     }
-    long long pbytes = file_bytes(o.parent), fbytes = file_bytes(o.out);
-    bool publisher = o.reference_hf != NULL;
-    bool passes = m.mean_kld <= BAR_MEAN_KLD && m.mq_top1_pct >= BAR_MQ_TOP1;
-    sb_lit(&r, "{\"schema_version\":\"xyntetik.runner.derive.v1\",\"runner_version\":");
-    sb_str(&r, RUNNER_VERSION);
-    sb_lit(&r, ",\"reference_kind\":");
-    sb_str(&r, publisher ? "publisher-float32" : "parent-file");
-    sb_lit(&r, ",\"reference\":{");
+    long long pbytes = file_bytes(d->o.parent), fbytes = file_bytes(d->o.out);
+    bool publisher = d->o.reference_hf != NULL;
+    bool passes = d->m.mean_kld <= BAR_MEAN_KLD && d->m.mq_top1_pct >= BAR_MQ_TOP1;
+    sb_lit(&d->r, "{\"schema_version\":\"xyntetik.runner.derive.v1\",\"runner_version\":");
+    sb_str(&d->r, RUNNER_VERSION);
+    sb_lit(&d->r, ",\"reference_kind\":");
+    sb_str(&d->r, publisher ? "publisher-float32" : "parent-file");
+    sb_lit(&d->r, ",\"reference\":{");
     if (publisher) {
-        sb_lit(&r, "\"hf\":"); put_dir_name(&r, o.reference_hf);
-        sb_lit(&r, ",\"class\":"); sb_str(&r, m.reference_class);
-        sb_lit(&r, ",\"dtype\":"); sb_str(&r, m.reference_dtype);
-        sb_lit(&r, ",\"script\":\"scripts/gold-logits.py\",\"args\":[");
-        for (int i = 0; i < o.n_ref_args; i++) {
-            if (i) sb_lit(&r, ",");
-            sb_str(&r, o.ref_args[i]);
+        sb_lit(&d->r, "\"hf\":"); put_dir_name(&d->r, d->o.reference_hf);
+        sb_lit(&d->r, ",\"class\":"); sb_str(&d->r, d->m.reference_class);
+        sb_lit(&d->r, ",\"dtype\":"); sb_str(&d->r, d->m.reference_dtype);
+        sb_lit(&d->r, ",\"script\":\"scripts/gold-logits.py\",\"args\":[");
+        for (int i = 0; i < d->o.n_ref_args; i++) {
+            if (i) sb_lit(&d->r, ",");
+            sb_str(&d->r, d->o.ref_args[i]);
         }
-        sb_lit(&r, "]");
+        sb_lit(&d->r, "]");
     } else {
-        sb_lit(&r, "\"file\":"); sb_str(&r, plat_path_base(o.parent));
-        sb_fmt(&r, ",\"sha256\":\"%s\",\"arithmetic\":\"runner, cpu\"", psha);
+        sb_lit(&d->r, "\"file\":"); sb_str(&d->r, plat_path_base(d->o.parent));
+        sb_fmt(&d->r, ",\"sha256\":\"%s\",\"arithmetic\":\"runner, cpu\"", psha);
     }
-    sb_lit(&r, "},\"comparisons\":[");
-    for (int i = 0; i < o.n_compares; i++) {
-        if (i) sb_lit(&r, ",");
-        if (!compare_json(gold_out, o.compares[i], &r)) goto out;
+    sb_lit(&d->r, "},\"comparisons\":[");
+    for (int i = 0; i < d->o.n_compares; i++) {
+        if (i) sb_lit(&d->r, ",");
+        if (!compare_json(d->gold_out, d->o.compares[i], &d->r)) return false;
     }
-    sb_lit(&r, "],\"credits\":[");
-    for (int i = 0; i < o.n_credits; i++) {
-        if (i) sb_lit(&r, ",");
-        sb_str(&r, o.credits[i]);
+    sb_lit(&d->r, "],\"credits\":[");
+    for (int i = 0; i < d->o.n_credits; i++) {
+        if (i) sb_lit(&d->r, ",");
+        sb_str(&d->r, d->o.credits[i]);
     }
-    sb_lit(&r, "],\"command\":");
-    put_command(&cmd, &o);
-    sb_put(&cmd, "", 1);
-    sb_str(&r, cmd.failed ? NULL : cmd.s);
-    sb_lit(&r, ",\"recipe\":{");
+    sb_lit(&d->r, "],\"command\":");
+    put_command(&d->cmd, &d->o);
+    sb_put(&d->cmd, "", 1);
+    sb_str(&d->r, d->cmd.failed ? NULL : d->cmd.s);
+    sb_lit(&d->r, ",\"recipe\":{");
     bool first = true;
     for (int k = 0; k < N_RECIPE; k++) {
-        if (!o.recipe[k]) continue;
+        if (!d->o.recipe[k]) continue;
         if (RECIPE[k].file) {
-            put_file(&r, RECIPE[k].key, o.recipe[k], !first);
+            put_file(&d->r, RECIPE[k].key, d->o.recipe[k], !first);
         } else {
-            sb_fmt(&r, "%s\"%s\":", first ? "" : ",", RECIPE[k].key);
-            sb_str(&r, o.recipe[k]);
+            sb_fmt(&d->r, "%s\"%s\":", first ? "" : ",", RECIPE[k].key);
+            sb_str(&d->r, d->o.recipe[k]);
         }
         first = false;
     }
-    if (o.target_size) {
-        sb_fmt(&r, "%s\"target_size\":%lld,\"high\":", first ? "" : ",", o.target_size);
-        sb_str(&r, o.high);
-        sb_lit(&r, ",\"low\":"); sb_str(&r, o.low);
-        sb_lit(&r, ",\"match\":"); sb_str(&r, o.match ? o.match : "");
-        sb_lit(&r, ",\"group\":"); sb_str(&r, o.group_tensor ? "tensor" : "block");
-        put_file(&r, "quant_error", sz.report, true);
-        put_file(&r, "type_plan", sz.plan, true);
-        sb_fmt(&r, ",\"save_bytes\":%lld,\"demoted\":[", sz.save_bytes);
-        for (int k = 0; k < sz.n_demoted; k++) {
-            if (k) sb_lit(&r, ",");
-            sb_str(&r, sz.demoted[k]);
+    if (d->o.target_size) {
+        sb_fmt(&d->r, "%s\"target_size\":%lld,\"high\":", first ? "" : ",", d->o.target_size);
+        sb_str(&d->r, d->o.high);
+        sb_lit(&d->r, ",\"low\":"); sb_str(&d->r, d->o.low);
+        sb_lit(&d->r, ",\"match\":"); sb_str(&d->r, d->o.match ? d->o.match : "");
+        sb_lit(&d->r, ",\"group\":"); sb_str(&d->r, d->o.group_tensor ? "tensor" : "block");
+        put_file(&d->r, "quant_error", d->sz.report, true);
+        put_file(&d->r, "type_plan", d->sz.plan, true);
+        sb_fmt(&d->r, ",\"save_bytes\":%lld,\"demoted\":[", d->sz.save_bytes);
+        for (int k = 0; k < d->sz.n_demoted; k++) {
+            if (k) sb_lit(&d->r, ",");
+            sb_str(&d->r, d->sz.demoted[k]);
         }
-        sb_lit(&r, "]");
-        if (o.recipe[2]) {
+        sb_lit(&d->r, "]");
+        if (d->o.recipe[2]) {
             // the candidates the imatrix had no entry for, held at the top rung (R4.34.2)
-            sb_lit(&r, ",\"held\":[");
-            for (int k = 0; k < sz.n_held; k++) {
-                if (k) sb_lit(&r, ",");
-                sb_str(&r, sz.held[k]);
+            sb_lit(&d->r, ",\"held\":[");
+            for (int k = 0; k < d->sz.n_held; k++) {
+                if (k) sb_lit(&d->r, ",");
+                sb_str(&d->r, d->sz.held[k]);
             }
-            sb_lit(&r, "],\"held_at\":");
-            sb_str(&r, o.rungs[0]);
+            sb_lit(&d->r, "],\"held_at\":");
+            sb_str(&d->r, d->o.rungs[0]);
         }
-        if (o.n_rungs > 2) {
+        if (d->o.n_rungs > 2) {
             // the ladder, where each demoted group ended, and the rungs it jumped
-            sb_lit(&r, ",\"ladder\":[");
-            for (int k = 0; k < o.n_rungs; k++) {
-                if (k) sb_lit(&r, ",");
-                sb_str(&r, o.rungs[k]);
+            sb_lit(&d->r, ",\"ladder\":[");
+            for (int k = 0; k < d->o.n_rungs; k++) {
+                if (k) sb_lit(&d->r, ",");
+                sb_str(&d->r, d->o.rungs[k]);
             }
-            sb_lit(&r, "],\"demoted_to\":{");
-            for (int k = 0; k < sz.n_demoted; k++) {
-                if (k) sb_lit(&r, ",");
-                sb_str(&r, sz.demoted[k]);
-                sb_lit(&r, ":");
-                sb_str(&r, sz.demoted_to[k]);
+            sb_lit(&d->r, "],\"demoted_to\":{");
+            for (int k = 0; k < d->sz.n_demoted; k++) {
+                if (k) sb_lit(&d->r, ",");
+                sb_str(&d->r, d->sz.demoted[k]);
+                sb_lit(&d->r, ":");
+                sb_str(&d->r, d->sz.demoted_to[k]);
             }
-            sb_fmt(&r, "},\"skipped_rungs\":%d,\"skipped\":", sz.n_skipped);
-            sb_str(&r, sz.skipped ? sz.skipped : "");
+            sb_fmt(&d->r, "},\"skipped_rungs\":%d,\"skipped\":", d->sz.n_skipped);
+            sb_str(&d->r, d->sz.skipped ? d->sz.skipped : "");
         }
     }
-    sb_lit(&r, "},\"parent\":{\"path\":"); sb_str(&r, plat_path_base(o.parent));
-    sb_fmt(&r, ",\"sha256\":\"%s\",\"bytes\":%lld,\"license\":", psha, pbytes);
-    sb_str(&r, pm.license);
-    sb_lit(&r, ",\"license_source\":");
-    sb_str(&r, pm.license_given ? "--license" : "general.license");
-    sb_lit(&r, ",\"base_model_repo\":");
-    sb_str(&r, o.base_model ? o.base_model : *pm.repo ? pm.repo : NULL);
-    sb_fmt(&r, ",\"file_type\":%d,\"name\":", pm.file_type);
-    sb_str(&r, *pm.name ? pm.name : NULL);
-    sb_lit(&r, "},\"file\":{\"path\":"); sb_str(&r, plat_path_base(o.out));
-    sb_fmt(&r, ",\"sha256\":\"%s\",\"bytes\":%lld", fsha, fbytes);
-    put_file(&r, "record", quant_rec, true);
-    sb_lit(&r, "},\"measurement\":{");
-    put_file(&r, "corpus", o.corpus, false);
-    sb_fmt(&r, ",\"positions\":%d,\"window\":{\"start\":%d,\"stride\":%d,\"count\":%d}",
-           m.positions, o.start, o.stride, o.count);
-    sb_lit(&r, ",\"mean_kld\":"); sb_num(&r, m.mean_kld);
-    sb_lit(&r, ",\"median_kld\":"); if (m.have_median) sb_num(&r, m.median_kld); else sb_lit(&r, "null");
-    sb_lit(&r, ",\"max_kld\":"); sb_num(&r, m.max_kld);
-    sb_lit(&r, ",\"top1_agreement_pct\":"); sb_num(&r, m.top1_pct);
-    sb_lit(&r, ",\"margin_qualified_positions\":");
-    if (m.have_qualified) sb_fmt(&r, "%d", m.qualified); else sb_lit(&r, "null");
-    sb_lit(&r, ",\"margin_qualified_top1_pct\":"); sb_num(&r, m.mq_top1_pct);
-    put_file(&r, "reference_score", publisher ? gold_out : ref_score, true);
-    put_file(&r, "file_score", file_score, true);
-    sb_lit(&r, ",\"bar\":");
+    sb_lit(&d->r, "},\"parent\":{\"path\":"); sb_str(&d->r, plat_path_base(d->o.parent));
+    sb_fmt(&d->r, ",\"sha256\":\"%s\",\"bytes\":%lld,\"license\":", psha, pbytes);
+    sb_str(&d->r, d->pm.license);
+    sb_lit(&d->r, ",\"license_source\":");
+    sb_str(&d->r, d->pm.license_given ? "--license" : "general.license");
+    sb_lit(&d->r, ",\"base_model_repo\":");
+    sb_str(&d->r, d->o.base_model ? d->o.base_model : *d->pm.repo ? d->pm.repo : NULL);
+    sb_fmt(&d->r, ",\"file_type\":%d,\"name\":", d->pm.file_type);
+    sb_str(&d->r, *d->pm.name ? d->pm.name : NULL);
+    sb_lit(&d->r, "},\"file\":{\"path\":"); sb_str(&d->r, plat_path_base(d->o.out));
+    sb_fmt(&d->r, ",\"sha256\":\"%s\",\"bytes\":%lld", fsha, fbytes);
+    put_file(&d->r, "record", d->quant_rec, true);
+    sb_lit(&d->r, "},\"measurement\":{");
+    put_file(&d->r, "corpus", d->o.corpus, false);
+    sb_fmt(&d->r, ",\"positions\":%d,\"window\":{\"start\":%d,\"stride\":%d,\"count\":%d}",
+           d->m.positions, d->o.start, d->o.stride, d->o.count);
+    sb_lit(&d->r, ",\"mean_kld\":"); sb_num(&d->r, d->m.mean_kld);
+    sb_lit(&d->r, ",\"median_kld\":"); if (d->m.have_median) sb_num(&d->r, d->m.median_kld); else sb_lit(&d->r, "null");
+    sb_lit(&d->r, ",\"max_kld\":"); sb_num(&d->r, d->m.max_kld);
+    sb_lit(&d->r, ",\"top1_agreement_pct\":"); sb_num(&d->r, d->m.top1_pct);
+    sb_lit(&d->r, ",\"margin_qualified_positions\":");
+    if (d->m.have_qualified) sb_fmt(&d->r, "%d", d->m.qualified); else sb_lit(&d->r, "null");
+    sb_lit(&d->r, ",\"margin_qualified_top1_pct\":"); sb_num(&d->r, d->m.mq_top1_pct);
+    put_file(&d->r, "reference_score", publisher ? d->gold_out : d->ref_score, true);
+    put_file(&d->r, "file_score", d->file_score, true);
+    sb_lit(&d->r, ",\"bar\":");
     if (publisher) {
-        sb_fmt(&r, "{\"max_mean_kld\":%g,\"min_margin_qualified_top1_pct\":%g,\"passes\":%s}",
+        sb_fmt(&d->r, "{\"max_mean_kld\":%g,\"min_margin_qualified_top1_pct\":%g,\"passes\":%s}",
                BAR_MEAN_KLD, BAR_MQ_TOP1, passes ? "true" : "false");
     } else {
-        sb_lit(&r, "null");   // no bar verdict against the parent file
+        sb_lit(&d->r, "null");   // no bar verdict against the parent file
     }
-    sb_lit(&r, "}}\n");
-    if (!write_text(rec_path, &r)) goto out;
+    sb_lit(&d->r, "}}\n");
+    if (!write_text(d->rec_path, &d->r)) return false;
 
     // 5. the card, written from the record just written: the record is the
     //    one source, and --card-from rewrites a card from it alone
-    if (!card_from_record(rec_path, card_path, NULL, NULL, 0, NULL, 0)) goto out;
+    if (!card_from_record(d->rec_path, d->card_path, NULL, NULL, 0, NULL, 0)) return false;
 
     printf("derive: %s (%lld bytes, %.1f%% of the parent); mean KLD %.4f, top-1 %.2f%% "
            "against the %s%s; record %s, card %s\n",
-           o.out, fbytes, pbytes > 0 ? 100.0 * (double)fbytes / (double)pbytes : 0.0,
-           m.mean_kld, m.top1_pct, publisher ? "publisher's float32 model" : "parent file",
+           d->o.out, fbytes, pbytes > 0 ? 100.0 * (double)fbytes / (double)pbytes : 0.0,
+           d->m.mean_kld, d->m.top1_pct, publisher ? "publisher's float32 model" : "parent file",
            publisher ? (passes ? " (passes the bar)" : " (fails the bar)") : "",
-           rec_path, card_path);
-    ret = 0;
-out:
-    jv_free(ref); jv_free(run);
-    free(r.s); free(cmd.s);
+           d->rec_path, d->card_path);
+    return true;
+}
+
+// Everything the run owns, on every path. A derive has some twenty refusals
+// after its first allocation and used to free only on success (R6.68.23).
+static void derive_release(derive_run *d) {
+    jv_free(d->ref); jv_free(d->run);
+    free(d->r.s); free(d->cmd.s);
     // sized_plan's result: its two paths, the demoted groups' names, the
     // rung list and the held tensors' names are all this run's to free
-    free(sz.report); free(sz.plan);
-    for (int k = 0; k < sz.n_demoted; k++) free(sz.demoted[k]);
-    free(sz.demoted); free((void *)sz.demoted_to); free(sz.skipped);
-    for (int k = 0; k < sz.n_held; k++) free(sz.held[k]);
-    free(sz.held);
+    free(d->sz.report); free(d->sz.plan);
+    for (int k = 0; k < d->sz.n_demoted; k++) free(d->sz.demoted[k]);
+    free(d->sz.demoted); free((void *)d->sz.demoted_to); free(d->sz.skipped);
+    for (int k = 0; k < d->sz.n_held; k++) free(d->sz.held[k]);
+    free(d->sz.held);
     // gold_measure's two strings (strdup'd; const in the struct for readers)
-    free((void *)m.reference_class); free((void *)m.reference_dtype);
-    free(dir); free(self); free(default_corpus); free(gold_script);
-    free(quant_rec); free(ref_score); free(file_score); free(gold_out);
-    free(rec_path); free(card_path);
-    return ret;
+    free((void *)d->m.reference_class); free((void *)d->m.reference_dtype);
+    free(d->dir); free(d->self); free(d->default_corpus); free(d->gold_script);
+    free(d->quant_rec); free(d->ref_score); free(d->file_score); free(d->gold_out);
+    free(d->rec_path); free(d->card_path);
+}
+
+int derive_main(int argc, char **argv) {
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "--card-from")) return card_only(argc, argv);
+    derive_run d;
+    memset(&d, 0, sizeof d);
+    int rc = parse_args(argc, argv, &d.o);
+    if (rc >= 0) return rc;
+    bool ok = derive_setup(&d) && derive_reference(&d) && derive_make(&d) &&
+              derive_measure_file(&d) && derive_record(&d);
+    derive_release(&d);
+    return ok ? 0 : 1;
 }

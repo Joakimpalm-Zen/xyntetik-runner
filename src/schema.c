@@ -2419,13 +2419,11 @@ static int feed_byte(sval *v, uint8_t c) {
             else next |= 1ull << i;
         }
         if (completed >= 0 && next == 0) {
-            if (n->kind == SN_ENUM) v->last_enum = completed;
             frame_done(v);
             return 0;
         }
         if (!next) {
             if (pending_completed >= 0) {
-                if (n->kind == SN_ENUM) v->last_enum = pending_completed;
                 frame_done(v);
                 return 1;
             }
