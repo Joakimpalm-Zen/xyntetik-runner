@@ -31,6 +31,12 @@ typedef struct {
 // under the model that replaced it.
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  hashed = PTHREAD_COND_INITIALIZER;   // hstate left H_HASHING
+#ifndef RUNNER_BUILD_COMMIT
+#define RUNNER_BUILD_COMMIT ""
+#endif
+#ifndef RUNNER_BUILD_DIRTY
+#define RUNNER_BUILD_DIRTY 0
+#endif
 static char     binary_sha[65];
 static bool     binary_ok;
 static bool     resident;
@@ -309,6 +315,17 @@ void provenance_render(sbuf *b, const char *model_id) {
     else           sb_lit(b, "null");
     sb_lit(b, ",\"compiler\":");
     sb_str(b, __VERSION__);
+    // the source it was built from (R6.67): git's HEAD at build time and
+    // whether tracked files differed from it, stamped by the Makefile into
+    // this object alone; null for a build that stamped none (no git tree, or
+    // a build that does not go through that rule)
+    sb_lit(b, ",\"commit\":");
+    if (RUNNER_BUILD_COMMIT[0]) {
+        sb_str(b, RUNNER_BUILD_COMMIT);
+        sb_lit(b, RUNNER_BUILD_DIRTY ? ",\"dirty\":true" : ",\"dirty\":false");
+    } else {
+        sb_lit(b, "null,\"dirty\":null");
+    }
     sb_lit(b, ",\"os\":\"" PROV_OS "\",\"arch\":\"" RUNNER_BUILD_ARCH "\"");
 #ifdef RUNNER_T3_BUILD
     sb_lit(b, ",\"flavor\":\"t3\"");

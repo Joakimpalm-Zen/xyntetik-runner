@@ -93,7 +93,14 @@ if "--serve" in argv:
                 self._send(200, {"status": "ok"})
             elif (self.path == "/v1/runner/provenance"
                   and os.environ.get("FAKE_RUNNER_NO_PROVENANCE") != "1"):
-                self._send(200, {"object": "runner.provenance", "build": BUILD})
+                build = dict(BUILD)
+                # the commit the binary was built from, as a stamped build
+                # reports it (R6.67): FAKE_RUNNER_COMMIT, and FAKE_RUNNER_DIRTY=1
+                # for a build whose tracked files differed from that commit
+                if os.environ.get("FAKE_RUNNER_COMMIT"):
+                    build["commit"] = os.environ["FAKE_RUNNER_COMMIT"]
+                    build["dirty"] = os.environ.get("FAKE_RUNNER_DIRTY") == "1"
+                self._send(200, {"object": "runner.provenance", "build": build})
             else:
                 self._send(404, {"error": "not found"})
 
