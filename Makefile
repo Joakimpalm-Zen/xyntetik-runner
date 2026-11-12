@@ -2187,8 +2187,11 @@ endif
 # without them (the Windows CUDA box); the llama.cpp comparison leg runs
 # where llama-server is present and is not required here. Part of the
 # release evidence on both CUDA classes since 0.5.3.
-test-cuda-iquants: runner $(TEST_GPU_ID)
-	RUNNER_REQUIRE_IQ_GATES=gpu $(PYTHON) -m pytest -q tests/test_iquants.py
+# Builds both binaries tests/test_iquants.py runs and requires both legs: without
+# test-tc-tol the forced-TC leg skipped its 9 cases while the target read green
+# (R6.65; cuda-gate.sh only ran them because its tc-overflow step builds it first).
+test-cuda-iquants: runner $(TEST_GPU_ID) $(TEST_TC_TOL)
+	RUNNER_REQUIRE_IQ_GATES=gpu,tc $(PYTHON) -m pytest -q tests/test_iquants.py
 
 # CUDA Q3_K decode (k_gemv_q3_K): a fixture quantized to Q3_K, the device
 # against the CPU at logit precision. Q3_K's 110-byte blocks put three of
