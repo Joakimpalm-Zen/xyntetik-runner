@@ -2358,7 +2358,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
     // reserve above could not be met, hand the last layer back to the CPU
     // so the split is honestly partial rather than internally inconsistent.
     bool gave_back = false;
-    bool full = gpu_plan_full_split(&G, m->n_layer, used, plan_full_extra(m, P),
+    bool full = gpu_plan_full_split(&G, m->n_layer, &used, cost, plan_full_extra(m, P),
                                     vram_budget, &gave_back);
     if (gave_back) {
         fprintf(stderr, "gpu: output weights do not fit alongside the "

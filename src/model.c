@@ -1439,10 +1439,11 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
             // 16k: 39 of 40); mirrored either way, because this must predict
             // the split the loader makes.
             bool gave_back;
-            if (gpu_plan_full_split(&G, f->n_layer, used, full_extra, budget, &gave_back)) {
+            if (gpu_plan_full_split(&G, f->n_layer, &used, cost, full_extra, budget,
+                                    &gave_back)) {
                 used += full_extra; dev_w += full_extra + mtp_w;   // the bound block uploads with a full split
             } else if (gave_back) {
-                used -= cost[G]; dev_w -= lb[G];
+                dev_w -= lb[G];   // its cost has left `used` already
             }
         } else {
             used = 0; dev_w = 0;   // not even the fixed charge fits: all CPU
@@ -5765,14 +5766,22 @@ int gpu_plan_prefix(const uint64_t *cost, int n, int cap, uint64_t budget,
 // as the CUDA loader charges it, the token embedding a second time): it is
 // full only if that fits too. Otherwise the last layer goes back to the host,
 // so "the device holds every layer" and "the device holds the output" cannot
-// disagree; a one-layer model keeps its layer. Each caller does its own
-// accounting for the layer handed back.
-bool gpu_plan_full_split(int *layers, int n_layer, uint64_t used, uint64_t tail,
-                         uint64_t budget, bool *gave_back) {
+// disagree; a one-layer model keeps its layer. The layer handed back leaves
+// *used here, by its cost[]: the accounting was each caller's own, and the
+// CUDA loader's never did it, so its plan kept a host layer on the device
+// and sized a narrower prompt window than --info fit predicted (R6.68.64).
+bool gpu_plan_full_split(int *layers, int n_layer, uint64_t *used,
+                         const uint64_t *cost, uint64_t tail, uint64_t budget,
+                         bool *gave_back) {
     *gave_back = false;
     if (*layers != n_layer) return false;
-    if (used <= budget && tail <= budget - used) return true;
-    if (*layers > 1) { (*layers)--; *gave_back = true; }
+    if (*used <= budget && tail <= budget - *used) return true;
+    if (*layers > 1) {
+        (*layers)--;
+        *gave_back = true;
+        uint64_t c = cost[*layers];
+        *used = c < *used ? *used - c : 0;
+    }
     return false;
 }
 

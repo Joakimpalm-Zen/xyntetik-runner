@@ -952,8 +952,9 @@ int       gpu_plan_runs(const uint64_t *off, const uint64_t *len, int n, uint64_
                         uint64_t *lo, uint64_t *hi);
 int       gpu_plan_prefix(const uint64_t *cost, int n, int cap, uint64_t budget,
                           uint64_t *used);
-bool      gpu_plan_full_split(int *layers, int n_layer, uint64_t used,
-                              uint64_t tail, uint64_t budget, bool *gave_back);
+bool      gpu_plan_full_split(int *layers, int n_layer, uint64_t *used,
+                              const uint64_t *cost, uint64_t tail, uint64_t budget,
+                              bool *gave_back);
 int       gpu_plan_expert_banks(const bool *is_moe, const uint64_t *bank,
                                 int layers, uint64_t owed, uint64_t budget,
                                 uint64_t *used, bool *host, int trim,

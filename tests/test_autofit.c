@@ -445,19 +445,25 @@ static void test_gpu_plan(void) {
 
     bool back = true;
     int G = 4;
-    ck(gpu_plan_full_split(&G, 4, 90, 10, 100, &back) && G == 4 && !back,
+    const uint64_t lc[4] = { 20, 20, 20, 25 };   // the layers' costs (weights + KV)
+    uint64_t u = 90;
+    ck(gpu_plan_full_split(&G, 4, &u, lc, 10, 100, &back) && G == 4 && !back && u == 90,
        "plan full: the tail fits exactly");
-    G = 4;
-    ck(!gpu_plan_full_split(&G, 4, 90, 11, 100, &back) && G == 3 && back,
+    G = 4; u = 90;
+    ck(!gpu_plan_full_split(&G, 4, &u, lc, 11, 100, &back) && G == 3 && back,
        "plan full: one unit short hands the last layer back");
-    G = 3;
-    ck(!gpu_plan_full_split(&G, 4, 10, 1, 100, &back) && G == 3 && !back,
+    // R6.68.64: the handed-back layer's cost leaves `used`. The CUDA loader
+    // kept it, so its plan (and the prompt window sized from it) counted a
+    // host layer on the device, while the fit subtracted it.
+    ck(u == 65, "plan full: the layer handed back leaves the plan's bytes");
+    G = 3; u = 10;
+    ck(!gpu_plan_full_split(&G, 4, &u, lc, 1, 100, &back) && G == 3 && !back && u == 10,
        "plan full: a partial split is left as it is");
-    G = 1;
-    ck(!gpu_plan_full_split(&G, 1, 99, 2, 100, &back) && G == 1 && !back,
+    G = 1; u = 99;
+    ck(!gpu_plan_full_split(&G, 1, &u, lc, 2, 100, &back) && G == 1 && !back && u == 99,
        "plan full: a one-layer model keeps its layer");
-    G = 2;
-    ck(!gpu_plan_full_split(&G, 2, 101, 0, 100, &back) && G == 1 && back,
+    G = 2; u = 101;
+    ck(!gpu_plan_full_split(&G, 2, &u, lc, 0, 100, &back) && G == 1 && back && u == 81,
        "plan full: an over-budget total is not full, never a wrapped subtraction");
 
     // banks: layers 0 and 2 dense, 1, 3 and 4 routed
