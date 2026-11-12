@@ -56,13 +56,14 @@ struct slot_s {
     // client's X-Request-Id. rq_id, rq_cid and rq_live are guarded by the
     // server's request-id lock; cid_next is the header of the request this
     // slot is reading. rq_cancel is set by a cancel and read by the
-    // request's stop check; rq_seq counts this slot's requests, and
-    // rq_end_seq/rq_end_gen say which one ended last and how many tokens it
-    // had generated, which is how a cancel learns its request stopped.
+    // request's stop check. rq_ticket (R6.68.8), under the same lock, is
+    // what the cancels of the live request wait on: its end is recorded
+    // there, with its own token count, and not on the slot, where the next
+    // request would overwrite it.
     char        rq_id[48], rq_cid[65], cid_next[65];
     bool        rq_live;
-    atomic_int  rq_cancel, rq_end_gen;
-    atomic_uint rq_seq, rq_end_seq;
+    atomic_int  rq_cancel;
+    struct cancel_ticket *rq_ticket;
 };
 
 // A per-request adapter (R8.6): loaded once at startup, borrowed by a slot's
