@@ -248,6 +248,13 @@ def added_order(paths, cwd):
     return sorted(paths, key=lambda p: (-when(p), p))
 
 
+def entry_paths(files, base):
+    """The entries as repository paths, 'changes/<name>', whatever the host's
+    separator: entry_problems and git both take them with a slash, and
+    str(Path) gives a backslash on Windows."""
+    return [p.relative_to(base).as_posix() for p in files]
+
+
 def cmd_fold(args):
     changelog = Path(args.changelog)
     folder = changelog.parent / CHANGES
@@ -259,7 +266,7 @@ def cmd_fold(args):
     if not files:
         print("nothing to fold: changes/ holds no entries")
         return 0
-    rel = [str(p.relative_to(changelog.parent)) for p in files]
+    rel = entry_paths(files, changelog.parent)
     problems = [x for p, r in zip(files, rel) for x in entry_problems(r, p.read_text(encoding="utf-8"))]
     if problems:
         for p in problems:

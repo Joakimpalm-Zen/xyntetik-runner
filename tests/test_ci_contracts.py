@@ -896,5 +896,36 @@ class ReverseProxySelection(unittest.TestCase):
         self.assertNotIn("needs.changes.outputs.engine == 'true'", job)
 
 
+class RunnerBinaryName(unittest.TestCase):
+    """A test that looks for `runner` without `.exe` skips as "not built" on
+    Windows for ever: twelve certify-envelope tests and one truncation test
+    never ran there (R6.68.13), and the skip reason they printed was false.
+    Every test that resolves the built binary names both spellings."""
+
+    # test_cuda_act_probe.py writes the path into a report as text and never
+    # executes it; this file holds the pattern's own examples
+    TEXT_ONLY = {"test_cuda_act_probe.py", "test_ci_contracts.py"}
+    BARE = re.compile(r'''(ROOT\s*/\s*"runner"(?!\s*/)|join\(ROOT,\s*"runner"\))''')
+
+    def test_no_test_resolves_the_binary_without_its_windows_name(self):
+        bad = []
+        for path in sorted((ROOT / "tests").glob("test_*.py")):
+            if path.name in self.TEXT_ONLY:
+                continue
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if self.BARE.search(line) and "runner.exe" not in line:
+                    bad.append(f"{path.name}:{n}: {line.strip()}")
+        self.assertEqual(bad, [], "name runner.exe on win32 as tests/conftest.py does")
+
+    def test_the_pattern_catches_the_three_spellings_it_was_written_for(self):
+        for line in ('RUNNER = os.path.join(ROOT, "runner")',
+                     '    exe = ROOT / "runner"',
+                     'exe = os.environ.get("RUNNER_EXE") or str(ROOT / "runner")'):
+            self.assertTrue(self.BARE.search(line), line)
+        for line in ('exe = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")',
+                     'p = ROOT / "runner" / "python"'):
+            self.assertFalse(self.BARE.search(line) and "runner.exe" not in line, line)
+
+
 if __name__ == "__main__":
     unittest.main()
