@@ -631,6 +631,22 @@ jobs:
             tests/test_cli_files.py tests/test_lineage.py tests/test_eval_record.py \
             tests/test_moe_lora.py tests/test_merge.py tests/test_cached.py
           .venv/bin/python scripts/check-junit.py --no-skips .build/ci/sanitized-cli.xml
+      - name: hostile geometry and the valid fixtures under sanitizers
+        # tests/test_hostile_geometry.py holds nine cases that need the
+        # sanitized binary and skip without a fresh one. `make test` does not
+        # build it and this job, which does, did not name the file, so they
+        # ran nowhere (R6.68.16). test-g4h.gguf is generated only by the Metal
+        # recipe, so it is made here by hand; no skip is allowed.
+        env:
+          RUNNER_TEST_GPU_OFF: "1"
+        run: |
+          .venv/bin/python scripts/make-test-moe.py test-moe-fixture > /dev/null
+          .venv/bin/python scripts/make-test-model.py --gemma4-hetero test-g4h.gguf
+          make test-es.gguf PYTHON=.venv/bin/python
+          .venv/bin/python scripts/ci-run.py --timeout 900 sanitized-geometry -- \
+            .venv/bin/python -m pytest -q -rs --junitxml=.build/ci/sanitized-geometry.xml \
+            tests/test_hostile_geometry.py
+          .venv/bin/python scripts/check-junit.py --no-skips .build/ci/sanitized-geometry.xml
       - name: conformance report
         if: always()
         run: |
