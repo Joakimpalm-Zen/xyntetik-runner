@@ -45,18 +45,30 @@ static char *sn_literal(const jv *v) {
 // literal index the walker reports stays the declared one, which the
 // discriminated tool action depends on.
 #define SCHEMA_ENUM_MAX 4096
+typedef struct { const char *lit; int idx; } enum_ref;
+
+// by literal, then by position: equal literals keep the order they were
+// declared in, as the insertion sort this replaced kept them
+static int enum_ref_cmp(const void *a, const void *b) {
+    const enum_ref *x = a, *y = b;
+    int c = strcmp(x->lit, y->lit);
+    return c ? c : (x->idx > y->idx) - (x->idx < y->idx);
+}
+
+// The literals' sorted order. It was an insertion sort ("compile-time, small
+// n"), which is n squared comparisons on an enum that may hold 4,096
+// literals: 12 ms of every request that carries one in random order, 390 ms
+// when the literals share a 2,000-byte prefix (R6.68.69).
 bool enum_index(snode *n) {
     free(n->order);
-    n->order = malloc(sizeof(int) * (size_t)(n->n_lits > 0 ? n->n_lits : 1));
-    if (!n->order) return false;
-    for (int i = 0; i < n->n_lits; i++) {   // insertion sort: compile-time, small n
-        int k = i;
-        while (k > 0 && strcmp(n->lits[n->order[k - 1]], n->lits[i]) > 0) {
-            n->order[k] = n->order[k - 1];
-            k--;
-        }
-        n->order[k] = i;
-    }
+    size_t cnt = (size_t)(n->n_lits > 0 ? n->n_lits : 1);
+    n->order = malloc(sizeof(int) * cnt);
+    enum_ref *r = malloc(sizeof *r * cnt);
+    if (!n->order || !r) { free(r); return false; }
+    for (int i = 0; i < n->n_lits; i++) r[i] = (enum_ref){ n->lits[i], i };
+    if (n->n_lits > 1) qsort(r, (size_t)n->n_lits, sizeof *r, enum_ref_cmp);
+    for (int i = 0; i < n->n_lits; i++) n->order[i] = r[i].idx;
+    free(r);
     return true;
 }
 

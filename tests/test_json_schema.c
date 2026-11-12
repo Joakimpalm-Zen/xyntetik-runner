@@ -1,5 +1,6 @@
 #include "runner.h"
 #include "json.h"
+#include "schema_int.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -3468,6 +3469,40 @@ static void test_inlined_refs_are_bounded_in_bytes(void) {
     free(b.s);
 }
 
+// The enum's sorted order (the validator's candidate range walks it) is the
+// stable order by literal: equal literals in declared order. It was an
+// insertion sort and is a library sort now; this holds the result to the
+// insertion sort's on random literals with duplicates, at the size limit.
+static void test_enum_order_is_the_stable_sorted_order(void) {
+    enum { N = 4096 };
+    snode n = {0};
+    n.lits = malloc(sizeof(char *) * N);
+    assert(n.lits);
+    unsigned s = 20261112u;
+    for (int i = 0; i < N; i++) {
+        s = s * 1664525u + 1013904223u;
+        char buf[32];
+        snprintf(buf, sizeof buf, "\"k%u\"", (s >> 8) % 700);   // about six of each
+        n.lits[i] = strdup(buf);
+        assert(n.lits[i]);
+    }
+    n.n_lits = N;
+    assert(enum_index(&n));
+    int *want = malloc(sizeof(int) * N);
+    assert(want);
+    for (int i = 0; i < N; i++) {
+        int k = i;
+        while (k > 0 && strcmp(n.lits[want[k - 1]], n.lits[i]) > 0) {
+            want[k] = want[k - 1];
+            k--;
+        }
+        want[k] = i;
+    }
+    assert(memcmp(want, n.order, sizeof(int) * N) == 0);
+    for (int i = 0; i < N; i++) free(n.lits[i]);
+    free(n.lits); free(n.order); free(want);
+}
+
 int main(void) {
     test_schema_sibling_constraints_are_not_dropped();
     test_strict_bounded_numbers();
@@ -3555,6 +3590,7 @@ int main(void) {
     test_escape_replaces_ill_formed_utf8();
     test_tojson_dump_matches_jinja();
     test_inlined_refs_are_bounded_in_bytes();
+    test_enum_order_is_the_stable_sorted_order();
     puts("json/schema tests ok");
     return 0;
 }
