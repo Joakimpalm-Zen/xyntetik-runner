@@ -457,6 +457,16 @@ static int metal_moe_mm_on(void) {
     return strcmp(v, "half") == 0 ? 2 : 1;
 }
 
+// A tiled GEMM steps its input 32 wide (MM_TK) and has no tail step: n_in
+// must be a whole number of k-steps (every real model's is), and a K-quant
+// chunk indexes a 256-superblock, so that too. One rule for the dense tile
+// and the grouped expert tile. The expert tile had none: an expert layer 16
+// wide read 16 past each weight row and each activation row, into the next
+// row and the next slot.
+static bool metal_mm_width_ok(uint32_t type, int n_in) {
+    return n_in % 32 == 0 && !(ggml_block_size(type) == 256 && n_in % 256 != 0);
+}
+
 
 static bool gpu_init_fail(model_t *m, gpu_t *g, id<MTLLibrary> lib,
                           const char *why) {
@@ -3002,12 +3012,9 @@ static bool enc_mm_tiles(gpu_t *g, id<MTLComputeCommandEncoder> e,
           threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
         return true;
     }
-    // Tiled GEMM when this is a real batch and a kernel exists for the weight
-    // type. n_in must be a whole number of k-steps (every real model's is) and
-    // K-quant kernels index a 256-superblock, so require that too.
-    if (metal_mm_on() && g->p_mm[w->type] &&
-        n_in % 32 == 0 &&
-        !(ggml_block_size(w->type) == 256 && n_in % 256 != 0) &&
+    // Tiled GEMM when this is a real batch, a kernel exists for the weight
+    // type and the input is a width the tile steps whole (metal_mm_width_ok).
+    if (metal_mm_on() && g->p_mm[w->type] && metal_mm_width_ok(w->type, n_in) &&
         metal_ensure_xsc(g, n_col)) {
         // Per-column max|x| first (k_colabsmax into g->xsc), then the tile:
         // the GEMM stages its activation tile scaled by it and scales the
@@ -3850,10 +3857,18 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     int mm_mode = n > 1 ? metal_moe_mm_on() : 0;
     id<MTLComputePipelineState> *mmp =
         mm_mode == 2 ? g->p_moe_mmh : g->p_moe_mm;
-    bool mm = mm_mode &&
-              (mmp[ly->ffn_gate_exps->type] ||
-               mmp[ly->ffn_up_exps->type] ||
-               mmp[ly->ffn_down_exps->type]);
+    // per tensor: its type has a kernel and its input is a width the tile
+    // steps whole (gate and up read n_embd, down reads the expert width)
+    id<MTLComputePipelineState> gate_mm = nil, up_mm = nil, down_mm = nil;
+    if (mm_mode) {
+        if (metal_mm_width_ok(ly->ffn_gate_exps->type, n_embd))
+            gate_mm = mmp[ly->ffn_gate_exps->type];
+        if (metal_mm_width_ok(ly->ffn_up_exps->type, n_embd))
+            up_mm = mmp[ly->ffn_up_exps->type];
+        if (metal_mm_width_ok(ly->ffn_down_exps->type, nff))
+            down_mm = mmp[ly->ffn_down_exps->type];
+    }
+    bool mm = gate_mm || up_mm || down_mm;
     if (mm) {
         static _Atomic bool announced;   // any slot may get here first (compat.h)
         if (plat_once(&announced)) {
@@ -3897,16 +3912,16 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
             goto gua_done;
         }
     }
-    if (mm && mmp[ly->ffn_gate_exps->type])
-        enc_moe_mm(g, e, m, mmp[ly->ffn_gate_exps->type],
+    if (gate_mm)
+        enc_moe_mm(g, e, m, gate_mm,
                    ly->ffn_gate_exps, gstride, g->xb, g->moe_hb,
                    n_embd, nff, slots, xdim, nff, g->geb[l], nff, used, mm_mode == 2);
     else
         enc_moe_mv(g, e, m, ly->ffn_gate_exps, gstride, g->xb, 0,
                    g->moe_hb, 0, n_embd, nff, slots, xdim, nff,
                    g->geb[l], nff, sel_off, used);
-    if (mm && mmp[ly->ffn_up_exps->type])
-        enc_moe_mm(g, e, m, mmp[ly->ffn_up_exps->type],
+    if (up_mm)
+        enc_moe_mm(g, e, m, up_mm,
                    ly->ffn_up_exps, ustride, g->xb, g->moe_hb2,
                    n_embd, nff, slots, xdim, nff, g->ueb[l], nff, used, mm_mode == 2);
     else
@@ -3923,8 +3938,8 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // matvec's (n_embd x slots) grid to n_embd rows narrows the heaviest
     // weight sweep of the layer 4x, and that costs more than the one
     // dispatch it saves. The mild corollary of the F4 rule. Removed.
-    if (mm && mmp[ly->ffn_down_exps->type])
-        enc_moe_mm(g, e, m, mmp[ly->ffn_down_exps->type],
+    if (down_mm)
+        enc_moe_mm(g, e, m, down_mm,
                    ly->ffn_down_exps, dstride, g->moe_hb,
                    g->moe_eout, nff, n_embd, slots, nff, n_embd,
                    g->deb[l], n_embd, 0, mm_mode == 2);
