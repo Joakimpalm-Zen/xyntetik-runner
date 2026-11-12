@@ -124,3 +124,32 @@ def test_the_swap_phase_holds_each_model_to_its_fresh_reply(tmp_path):
     # each model was resident for half the swaps, and each has its own series
     assert len(mem["a"]) == 6 and len(mem["b"]) == 6
     assert not set(mem["a"]) & set(mem["b"])
+
+
+def test_a_later_turn_may_equal_the_fresh_or_the_reused_reference():
+    # R6.68.44: on a device route where a fresh prefill and the same turn over
+    # reused cache rows reply differently, every later turn equals the reused
+    # reply and the soak used to report each as a changed reference. A stub
+    # server: the first reply is one text, every later one another.
+    spec = importlib.util.spec_from_file_location("soak_serve", ROOT / "scripts" / "soak-serve.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    class Args:
+        prompt = "x"
+    s = mod.Soak.__new__(mod.Soak)
+    s.a, s.report, s.findings = Args(), {}, []
+    replies = iter(["fresh reply"] + ["reused reply"] * 4 + ["a third reply"])
+    s.chat_body = lambda prompt, model=None: {}
+    s.ask = lambda body: (200, {"text": next(replies)}, "")
+    s.reply_key = lambda j: j["text"]
+    s.finding = lambda phase, what, **d: s.findings.append((phase, what, d))
+    ref = s.reference("start")
+    assert (ref.fresh, ref.reused) == ("fresh reply", "reused reply")
+    assert s.report["reference"]["default"] == {"fresh_equals_reused": False}
+    assert s.same_as("identity", ref, "at cycle 1") and s.same_as("identity", ref, "at cycle 2")
+    assert s.same_as("identity", ref, "at cycle 3") and not s.findings
+    # a reply that is neither is still a finding
+    assert not s.same_as("identity", ref, "at cycle 4")
+    assert len(s.findings) == 1 and "changed" in s.findings[0][1]
+
