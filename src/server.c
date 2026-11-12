@@ -4189,6 +4189,13 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             s->smp_base = s->smp;
             if (i == 0) {
                 s->m = base;
+                // the caller's model is the resident one from here on. With
+                // several slots there is no registry, and the index stays at
+                // entry 0 as it always was there: /v1/capabilities and the
+                // models list read it to say a model is loaded. (It was 0 from
+                // the state's reset until R6.68.39 made that -1 so a refused
+                // start could not read it as a loaded model.)
+                resident_store(0);
                 // mirror model_load's CPU-forced bump: the shared pool would
                 // otherwise silently undo it
                 int pool_threads = tpool_shared_threads(
