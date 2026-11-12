@@ -1991,7 +1991,8 @@ host libm by 1-2 ulp by construction); every CPU-vs-GPU byte comparison in the
 test suite sets them. `RUNNER_CUDA_GRAPH_OFF=1` disables CUDA graph capture
 for decode steps, which isolates a kernel from the graph launch path when a
 result looks graph-dependent; `RUNNER_CUDA_GRAPH_RECUR=0` does it for the
-qwen35 family alone, whose decode replays a graph since 2026-10-21.
+qwen35 family alone, whose decode replays a graph since 2026-10-21 (qwen35moe,
+with its routed experts fused on the device, since R6.68.25a).
 `RUNNER_REQUIRE_GRAPH_CAPTURE=1`, which the CUDA gates set, makes a decode graph
 that fails to capture or launch end the process with the failing stage, the CUDA
 error and the synchronous call that broke it, instead of falling back to plain

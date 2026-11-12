@@ -203,7 +203,8 @@ Around the matvec:
   (launch count required), `make test-cuda-moe-twin`.
 - **Graph replay.** One-token decode with full offload replays a captured
   graph of the same launches, qwen35's Gated DeltaNet steps included since
-  2026-10-21 (`RUNNER_CUDA_GRAPH_RECUR=0` keeps that family eager).
+  2026-10-21 and with routed experts fused on the device (qwen35moe) since
+  R6.68.25a (`RUNNER_CUDA_GRAPH_RECUR=0` keeps that family eager).
   `RUNNER_CUDA_GRAPH_OFF=1` runs them eagerly, to separate a kernel from the
   graph path. See [buffer lifetimes](buffer-lifetimes.md)
   for when capture is refused. Gate: the CUDA gates run with
