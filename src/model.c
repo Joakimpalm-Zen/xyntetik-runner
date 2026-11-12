@@ -16281,8 +16281,17 @@ bool model_batch_decode(model_batch *b, const int *idx, const int32_t *tok,
     while (done < n) {
         int take = n - done;
         if (take > MODEL_BATCH_MAX) take = MODEL_BATCH_MAX;
-        bool ok = b->gb && gpu_batch_decode(b->gb, idx + done, tok + done,
-                                            pos + done, take, out + done);
+        // A sequence whose forward failed at runtime gave up its backend
+        // after this batch was made over every slot (gpu_runtime_failure):
+        // it has no device cache for the batch to store into or attend
+        // over, so a step it is part of is the sequential one (R6.68.93;
+        // the batch read the cache through its NULL backend and the server
+        // died).
+        bool on_device = b->gb != NULL;
+        for (int i = done; on_device && i < done + take; i++)
+            if (!b->seqs[idx[i]]->gpu) on_device = false;
+        bool ok = on_device && gpu_batch_decode(b->gb, idx + done, tok + done,
+                                                pos + done, take, out + done);
         if (ok) {
             // The backend returns raw logits, exactly as gpu_forward_batch
             // does; the head transforms live here for both paths so a batched

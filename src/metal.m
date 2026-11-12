@@ -5424,6 +5424,15 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     bool prof = metal_timing_on() >= 2;
     if (n < 2 && !prof) return false;   // one column is just a solo forward
     gpu_t *g = b->lead;
+    // the lead's queue and scratch encode the step: a lead slot that gave up
+    // its backend (gpu_disable) no longer lends them, and a column's slot
+    // without one has no cache to store into (model_batch_decode holds the
+    // second for every backend; held here too, where the pointer is read)
+    bool lead_live = false;
+    for (int i = 0; i < b->n; i++) lead_live |= b->seqs[i]->gpu == (void *)g;
+    if (!lead_live) return false;
+    for (int c = 0; c < n; c++)
+        if (!b->seqs[idx[c]]->gpu) return false;
     model_t *m0 = b->seqs[0];
     int n_embd = b->n_embd;
     int xdim   = b->xdim;
