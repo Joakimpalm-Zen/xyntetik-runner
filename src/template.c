@@ -8531,6 +8531,21 @@ static int ts_atem(tool_stream *s, const char *bytes, int n) {
     if (s->state == TS_DONE) return 0;
     for (;;) {
         const char *inv = s->head ? head_find(s, "<atem:invoke name=\"") : NULL;
+        const char *user = s->head ? head_find(s, " to=user<|message|>") : NULL;
+        const char *eot = user ? atem_find(user, s->head + s->head_n, "<|eot|>") : NULL;
+        // The turn's order decides, not how its bytes were chunked: an answer
+        // to the user that closed before any invoke opens ended the turn
+        // there. Looking for the invoke first lost that answer whenever its
+        // <|eot|> and a later invoke's opening arrived in one feed: the
+        // reader waited for the invoke to close and finished with a fault,
+        // where the same bytes one at a time gave the answer (R6.68.117).
+        if (user && eot && (!inv || eot < inv)) {
+            user += strlen(" to=user<|message|>");
+            int rc = s->sink.content
+                       ? s->sink.content(s->sink.ud, user, (int)(eot - user)) : 0;
+            s->state = TS_DONE;
+            return rc;
+        }
         if (inv) {
             const char *close = atem_invoke_close(inv, s->head + s->head_n);
             if (!close) return 0;
@@ -8547,15 +8562,6 @@ static int ts_atem(tool_stream *s, const char *bytes, int n) {
             head_drop(s, upto);
             if (rc) return rc;
             continue;
-        }
-        const char *user = s->head ? head_find(s, " to=user<|message|>") : NULL;
-        const char *eot = user ? atem_find(user, s->head + s->head_n, "<|eot|>") : NULL;
-        if (user && eot) {
-            user += strlen(" to=user<|message|>");
-            int rc = s->sink.content
-                       ? s->sink.content(s->sink.ud, user, (int)(eot - user)) : 0;
-            s->state = TS_DONE;
-            return rc;
         }
         return 0;
     }

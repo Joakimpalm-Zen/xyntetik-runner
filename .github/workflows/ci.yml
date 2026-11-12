@@ -918,21 +918,25 @@ jobs:
   # SystemRoot) and nothing could see them, because the only machine that runs
   # this suite on Windows was a desk in the lab.
   #
-  # Relevant PRs run gates-core before merge (R6.29). The other Windows
-  # parts stay on engine pushes, schedule and dispatch, preserving the fast
-  # PR path. No GPU here, so device-only gates self-skip.
+  # Relevant PRs run gates-core before merge (R6.29), and every pull request
+  # that is not prose alone runs the Python part (R6.68.47): it ran on main
+  # only, so a new test's Windows behaviour was first seen after its merge,
+  # and main went red twice on 2026-11-12 (a CRLF-sensitive test, then a file
+  # name with '?'). It takes about 12 minutes beside a macOS job of 16, so
+  # the pull request is no slower. gates-batch stays on engine pushes,
+  # schedule and dispatch. No GPU here, so device-only gates self-skip.
 
   # The full Windows suite, the same three parts as macos-suite.
   windows-suite:
     name: windows-suite-${{ matrix.part }}
     needs: changes
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.changes.outputs.engine == 'true') || (github.event_name == 'pull_request' && needs.changes.outputs.gates_core == 'true')
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && needs.changes.outputs.engine == 'true') || (github.event_name == 'pull_request' && (needs.changes.outputs.gates_core == 'true' || needs.changes.outputs.engine == 'true'))
     runs-on: windows-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        part: ${{ fromJSON(github.event_name == 'pull_request' && '["gates-core"]' || '["gates-core","gates-batch","python"]') }}
+        part: ${{ fromJSON(github.event_name == 'pull_request' && (needs.changes.outputs.gates_core == 'true' && '["gates-core","python"]' || '["python"]') || '["gates-core","gates-batch","python"]') }}
     defaults:
       run:
         shell: msys2 {0}
