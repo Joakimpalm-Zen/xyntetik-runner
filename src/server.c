@@ -4089,12 +4089,9 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     if (threads_per_slot < 1) threads_per_slot = 1;
     int shared_pool_threads = n_threads;   // the slots' shared pool (see below), for the banner
 
-    const char *name = strrchr(model_path, '/');
-    const char *bsname = strrchr(model_path, '\\'); // Windows path separator
-    if (bsname && (!name || bsname > name)) name = bsname;
     SV.model_name = SV.n_reg > 0 ? SV.reg[0].name
                   : forced_name  ? forced_name
-                                 : (name ? name + 1 : model_path);
+                                 : plat_path_base(model_path);
     SV.n_predict_cap = 1024;
     SV.reasoning_budget = reasoning_budget;
     SV.reasoning_budget_message = reasoning_budget_message;

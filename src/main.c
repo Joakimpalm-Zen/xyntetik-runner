@@ -5017,12 +5017,7 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         // never affects the run. Utility modes (--quantize/--caps/--bench)
         // stay unregistered.
         if (!o->bench_json && !o->quant_out) {
-            const char *bn = strrchr(load_path, '/');
-#ifdef _WIN32
-            const char *bn2 = strrchr(load_path, '\\');
-            if (bn2 && (!bn || bn2 > bn)) bn = bn2;
-#endif
-            bn = bn ? bn + 1 : load_path;
+            const char *bn = plat_path_base(load_path);
             const char *const names[] = { bn };
             const char *const paths[] = { load_path };
             instances_register(o->serve ? "serve" : "cli", o->serve ? o->port : 0,
@@ -6916,7 +6911,10 @@ static int run_jsonl(cli_opts *o, cli_run *rt, const char *path, jsonl_handler h
     size_t cap = 1 << 16, len = 0; char *line = malloc(cap);
     if (!line) { if (df != stdin) fclose(df); return 1; }
     int rc = 0, lineno = 0, c;
-    const char *label = strrchr(o->model_path, '/') ? strrchr(o->model_path, '/') + 1 : o->model_path;
+    // the file's name, as the server names it (plat_path_base: a Windows
+    // path ends its directories with a backslash, and the name taken after
+    // the last '/' was then the whole path, R6.68.81)
+    const char *label = plat_path_base(o->model_path);
     for (;;) {
         c = fgetc(df);
         if (c != EOF && c != '\n') {
@@ -7197,9 +7195,7 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     // detail line. A comparison of two routes of one file reads it, because two
     // solo scores never reach a prefill GEMM and say nothing about one; a byte
     // comparison of two scores leaves it out (scripts/score_record.py)
-    const char *mbase = o->model_path ? o->model_path : "";
-    for (const char *c = mbase; *c; c++)
-        if (*c == '/' || *c == '\\') mbase = c + 1;
+    const char *mbase = plat_path_base(o->model_path ? o->model_path : "");
     char mesc[600], mjson[700];
     json_escape(mbase, strlen(mbase), mesc, sizeof mesc);
     plat_stat_t mst;
@@ -7307,12 +7303,7 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     sbuf r = {0};
     sb_lit(&r, "{\"schema\":\"xyntetik.runner.doctor.v1\",\"runner\":{\"version\":\"" RUNNER_VERSION "\"},");
     // identity: what the file says it is, never where it lives
-    const char *bn = strrchr(o->model_path, '/');
-#ifdef _WIN32
-    const char *bn2 = strrchr(o->model_path, '\\');
-    if (bn2 && (!bn || bn2 > bn)) bn = bn2;
-#endif
-    bn = bn ? bn + 1 : o->model_path;
+    const char *bn = plat_path_base(o->model_path);
     sb_lit(&r, "\"model\":{\"file\":\"");
     sb_esc(&r, bn, strlen(bn));
     sb_fmt(&r, "\",\"bytes\":%llu,\"architecture\":\"", (unsigned long long)rt->m.file_size);

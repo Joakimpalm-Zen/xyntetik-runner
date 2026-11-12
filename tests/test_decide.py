@@ -18,6 +18,7 @@ The readout's contract, pinned on the tiny dense fixture:
     silent partial answer.
 """
 import json
+from pathlib import Path
 import pathlib
 import socket
 import subprocess
@@ -168,6 +169,10 @@ def test_cli_matches_server(runner_bin, model, server, tmp_path):
             assert ds["logprobs"] == dc["logprobs"], (ds, dc)
             assert ds["probs"] == dc["probs"]
     assert srv["envelope"]["questions_sha256"] == lines[0]["envelope"]["questions_sha256"]
+    # R6.68.81: the answer names the model by its file name through both doors.
+    # The CLI took the name after the last '/', so on Windows, where a path's
+    # separator is a backslash, it wrote the whole path.
+    assert lines[0]["model"] == srv["model"] == Path(str(model)).name, (lines[0]["model"], srv["model"])
 
 
 def test_refusals(server):
