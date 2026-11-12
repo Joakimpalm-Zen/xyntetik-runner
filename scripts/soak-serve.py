@@ -181,13 +181,23 @@ class Soak:
         return parse_smi_table(out(), pid)
 
     def memory(self):
+        """rss_mb is the process's resident set. On macOS the server also
+        reports its physical footprint, which counts Metal's buffers where
+        the resident set does not (13 MB resident at a 638 MB footprint was
+        measured), so the growth rule reads footprint_mb when it is there."""
         h = self.health() or {}
-        return {"rss_mb": round(h.get("rss_bytes", 0) / 2**20, 1),
-                "gpu_mb": self.gpu_mem_mb(), "t": round(time.time(), 1)}
+        m = {"rss_mb": round(h.get("rss_bytes", 0) / 2**20, 1),
+             "gpu_mb": self.gpu_mem_mb(), "t": round(time.time(), 1)}
+        if "phys_footprint_bytes" in h:
+            m["footprint_mb"] = round(h["phys_footprint_bytes"] / 2**20, 1)
+        return m
 
     def grew(self, phase, warm, end, label):
         """Growth past the warm reading by more than the tolerance."""
-        for key in ("rss_mb", "gpu_mb"):
+        # where the footprint is reported it replaces the resident set, which
+        # there falls as pages are compressed and never sees device memory
+        keys = ("footprint_mb", "gpu_mb") if "footprint_mb" in warm else ("rss_mb", "gpu_mb")
+        for key in keys:
             w, e = warm.get(key), end.get(key)
             if not w or not e:
                 continue
@@ -465,18 +475,25 @@ class Soak:
         self.report["phases"]["cancel"] = {"counts": counts, "warm": warm, "end": end}
 
     def phase_swap(self, refs):
+        # Memory is compared between two readings that hold the SAME model:
+        # the two models differ in size, so a reading with one resident
+        # against a reading with the other is the models' difference, not
+        # growth (the first Windows run reported exactly that as a finding).
         names = list(refs)
-        mem = {}
+        mem = {name: {} for name in names}
         for i in range(1, self.a.swaps + 1):
             name = names[i % 2]
             if not self.same_as("swap", refs[name], f"for model {name} at swap {i}", model=name):
                 break
-            if i in (max(2, self.a.swaps // 4), self.a.swaps):
-                mem[i] = self.memory()
-                print(f"swap {i}/{self.a.swaps} {mem[i]}", flush=True)
-        ks = sorted(mem)
-        if len(ks) == 2:
-            self.grew("swap", mem[ks[0]], mem[ks[1]], f"between swap {ks[0]} and {ks[1]}")
+            mem[name][i] = self.memory()
+            if i % 10 == 0 or i == self.a.swaps:
+                print(f"swap {i}/{self.a.swaps} model {name} {mem[name][i]}", flush=True)
+        for name in names:
+            ks = sorted(mem[name])
+            if len(ks) >= 4:
+                warm = ks[len(ks) // 4]            # past the first loads of each model
+                self.grew("swap", mem[name][warm], mem[name][ks[-1]],
+                          f"with model {name} resident, between swap {warm} and {ks[-1]}")
         self.report["phases"]["swap"] = {"swaps": self.a.swaps, "memory": mem}
 
     def phase_limit(self, ref):

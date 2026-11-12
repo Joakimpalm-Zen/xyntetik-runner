@@ -51,6 +51,14 @@ POS=${BL_POSITIONS:-300}
 PIN=${BL_PIN:-}
 TMO=${BL_STEP_TIMEOUT:-2400}
 SKIP=",${BL_SKIP:-},"
+# Every step is bounded by GNU timeout. macOS has none of its own; coreutils
+# installs it as gtimeout. Without either, say so once instead of failing
+# every step with "command not found" (R6.68.5).
+TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || true)
+if [ -z "$TIMEOUT_BIN" ]; then
+  echo "artifact-baseline: needs GNU timeout to bound each step, and finds neither timeout nor gtimeout on PATH (on macOS: brew install coreutils)" >&2
+  exit 2
+fi
 mkdir -p "$OUT" || exit 2
 STEPLOG=$OUT/steps.tsv
 : > "$STEPLOG"
@@ -62,7 +70,7 @@ step() {  # label logfile command...
   local t0=$SECONDS rc
   note "start $label"
   # shellcheck disable=SC2086
-  $PIN timeout "$TMO" "$@" > "$log" 2>&1; rc=$?
+  $PIN "$TIMEOUT_BIN" "$TMO" "$@" > "$log" 2>&1; rc=$?
   printf '%s\t%s\t%s\n' "$label" "$rc" "$((SECONDS - t0))" >> "$STEPLOG"
   note "end   $label rc=$rc $((SECONDS - t0))s"
   return $rc
