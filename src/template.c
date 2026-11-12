@@ -8347,8 +8347,16 @@ static void head_drop(tool_stream *s, size_t upto) {
     if (s->head) s->head[s->head_n] = 0;
 }
 
+// What counts as framing around a call in the stream: the four whitespace
+// bytes and the prompt builder's two mark bytes, exactly what trim_left and
+// trim_right skip. The stream held back only the whitespace, so a mark byte
+// before a call was forwarded as content when it arrived on its own and
+// trimmed away when it arrived with the opener: one turn, two contents, by
+// chunk size (R6.68.19, the tool_stream fuzz harness's second finding). A
+// mark is not valid UTF-8 and means nothing in a model's output; the point
+// is that both readers treat it the same.
 static bool ts_ws(char c) {
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || is_mark(c);
 }
 
 // index just past `"key" :` within head, or -1 while it has not arrived
