@@ -965,7 +965,7 @@ static jv *muse_tool_fn(const jv *tool) {
 // strength" in exactly the four casings its jinja lists, and the kwarg-driven
 // line is skipped when the (lowercased) text already says "reasoning
 // strength". Returns a fresh copy when a rewrite happened, else NULL.
-static char *muse_normalise_reasoning(const char *s) {
+static char *muse_normalise_reasoning(const char *s, bool *oom) {
     static const char *from[] = {"Reasoning effort", "Reasoning Effort",
                                  "reasoning effort", "REASONING EFFORT"};
     static const char *to[]   = {"Reasoning strength", "Reasoning Strength",
@@ -979,7 +979,7 @@ static char *muse_normalise_reasoning(const char *s) {
         size_t n = 0;
         for (const char *q = src; (q = strstr(q, from[k])); q += fl) n++;
         char *nx = malloc(strlen(src) + n * (tl - fl) + 1);
-        if (!nx) { free(cur); return NULL; }
+        if (!nx) { free(cur); *oom = true; return NULL; }
         char *w = nx;
         const char *q = src;
         for (const char *h; (h = strstr(q, from[k])); q = h + fl) {
@@ -1154,8 +1154,8 @@ static void harmony_comment_once(sbuf *out, const char *indent,
 
 static void harmony_schema_ts(jv *schema, const char *indent, sbuf *out);
 
-// indent widened by `extra` spaces; NULL on allocation failure, which callers
-// degrade to the unwidened indent rather than losing the type entirely.
+// indent widened by `extra` spaces; NULL on allocation failure, which the
+// callers record in the buffer they write (the render then reports it).
 static char *harmony_indent(const char *indent, size_t extra) {
     size_t il = strlen(indent);
     char *w = malloc(il + extra + 1);
@@ -1218,6 +1218,7 @@ static void harmony_schema_ts(jv *schema, const char *indent, sbuf *out) {
         // line. Verified against the reference renderer, which writes the same
         // prefix on the first iteration as on the rest.
         char *vi = harmony_indent(indent, 3);
+        if (!vi) out->failed = true;
         for (int i = 0; i < one->n; i++) {
             jv *v = one->items[i];
             pl_fmt(out, "\n%s | ", indent);
@@ -1251,7 +1252,7 @@ static void harmony_schema_ts(jv *schema, const char *indent, sbuf *out) {
         if (props && props->type == J_OBJ) {
             size_t il = strlen(indent);
             char *child = malloc(il + 5);
-            if (!child) { pl_lit(out, "}"); return; }
+            if (!child) { out->failed = true; return; }
             memcpy(child, indent, il);
             memcpy(child + il, "    ", 5);
             for (int i = 0; i < props->n; i++) {
@@ -1297,6 +1298,7 @@ static void harmony_schema_ts(jv *schema, const char *indent, sbuf *out) {
                     }
                     pl_fmt(out, "%s%s%s:\n", indent, props->keys[i], opt);
                     char *vi = harmony_indent(indent, 3);
+                    if (!vi) out->failed = true;
                     for (int k = 0; k < pone->n; k++) {
                         jv *v = pone->items[k];
                         pl_fmt(out, "%s | ", indent);
@@ -1598,6 +1600,7 @@ static void g4_format_parameters(const jv *props, bool filter_keys, sbuf *o) {
         const char *ts = jv_str(type, "");
         sbuf up = {0};
         g4_upper(&up, ts);
+        if (up.failed) o->failed = true;
         const char *utype = up.s ? up.s : "";
         if (!strcmp(utype, "STRING")) {
             jv *en = jv_get(val, "enum");
@@ -1695,6 +1698,7 @@ static void g4_format_declaration(const jv *tool, sbuf *o) {
         }
         sbuf rup = {0};
         g4_upper(&rup, jv_str(jv_get(resp, "type"), ""));
+        if (rup.failed) o->failed = true;
         if (rup.s && !strcmp(rup.s, "OBJECT"))
             pl_lit(o, "type:<|\"|>OBJECT<|\"|>}");
         free(rup.s);
@@ -2225,6 +2229,7 @@ static size_t render_qwen38(int tmpl, const chat_msg *msgs, int n_msgs,
         if (instr) off = emit_raw(out, cap, off, "%s\n\n", instr, NULL);
         sbuf decl = {0};
         tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); return SIZE_MAX; }
         off = emit(out, cap, off, "%s", decl.s, NULL);
         free(decl.s);
         if (sc_e > sc_b) {
@@ -2356,6 +2361,7 @@ static size_t render_granite42(int tmpl, const chat_msg *msgs, int n_msgs,
             off = emit(out, cap, off, "\n\n", NULL, NULL);
         sbuf decl = {0};
         tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); return SIZE_MAX; }
         off = emit(out, cap, off, "%s", decl.s, NULL);
         free(decl.s);
     }
@@ -2520,6 +2526,7 @@ static size_t render_chatml(int tmpl, const chat_msg *msgs, int n_msgs,
         off = emit(out, cap, off, "<|im_start|>system\n", NULL, NULL);
         sbuf decl = {0};
         tools_render_for(tmpl, tools, &decl);
+        if (decl.failed) { free(decl.s); return SIZE_MAX; }
         // MiniCPM5 lets a system message place the declarations itself: a
         // `<tool_def_sep>` marker in its text is replaced by them (the
         // template's `messages[0].content.replace('<tool_def_sep>', ...)`);
@@ -2705,6 +2712,7 @@ static size_t render_apertus(int tmpl, const chat_msg *msgs, int n_msgs,
     if (tools && tools->type == J_ARR && tools->n) {
         sbuf defs = {0};
         apertus_render_tools(tools, &defs);
+        if (defs.failed) { free(defs.s); return SIZE_MAX; }
         off = emit(out, cap, off, "\n%s", defs.s ? defs.s : "", NULL);
         free(defs.s);
     } else {
@@ -2977,6 +2985,10 @@ static size_t render_muse(int tmpl, const chat_msg *msgs, int n_msgs,
         muse_render_recipients(tools, &muse_tail, bare_mode);
     }
     pl_lit(&muse_tail, ", \"user\".<|eot|>");
+    if (muse_line.failed || muse_tail.failed) {
+        free(muse_line.s); free(muse_tail.s);
+        return SIZE_MAX;
+    }
     bool has_system = false;
     for (int i = 0; i < n_msgs; i++)
         if (!strcmp(msgs[i].role, "system")) has_system = true;
@@ -2990,7 +3002,9 @@ static size_t render_muse(int tmpl, const chat_msg *msgs, int n_msgs,
     for (int i = 0; i < n_msgs; i++) {
         const chat_msg *mm = &msgs[i];
         if (!strcmp(mm->role, "system")) {
-            char *sys_text = muse_normalise_reasoning(mm->content);
+            bool sys_oom = false;
+            char *sys_text = muse_normalise_reasoning(mm->content, &sys_oom);
+            if (sys_oom) { free(muse_line.s); free(muse_tail.s); return SIZE_MAX; }
             const char *sys_body = sys_text ? sys_text : mm->content;
             off = emit(out, cap, off, "<|start|>system<|message|>%s",
                        sys_body, NULL);
@@ -3147,6 +3161,7 @@ static size_t render_gemma4(int tmpl, const chat_msg *msgs, int n_msgs,
         if (g4_tools) {
             sbuf decls = {0};
             g4_render_tool_defs(tools, &decls);
+            if (decls.failed) { free(decls.s); return SIZE_MAX; }
             if (decls.s) off = emit(out, cap, off, "%s", decls.s, NULL);
             free(decls.s);
         }
@@ -3395,6 +3410,7 @@ static size_t render_llama2(int tmpl, const chat_msg *msgs, int n_msgs,
                 sys = NULL;
             }
             sb_put(&c, m->content, strlen(m->content));
+            if (c.failed) { free(c.s); free(l_joined); return SIZE_MAX; }
             const char *b = c.s ? c.s : "";
             const char *e = b + (c.s ? c.n : 0);
             b = trim_left(b, e);
