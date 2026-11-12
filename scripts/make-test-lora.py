@@ -82,8 +82,10 @@ if os.environ.get("LORA_TARGETS") == "qwen35":
     blocks = sorted({int(n.split(".")[1]) for n in present if n.startswith("blk.")})
     dn = next(b for b in blocks if f"blk.{b}.attn_qkv.weight" in present)
     fa = next(b for b in blocks if f"blk.{b}.attn_q.weight" in present)
+    # the block's dense FFN where it has one (a qwen35moe block routes experts)
     targets = {f"blk.{dn}.{n}.weight": None
-               for n in Q35_SLOTS + ("ffn_gate", "ffn_up", "ffn_down")}
+               for n in Q35_SLOTS + ("ffn_gate", "ffn_up", "ffn_down")
+               if n in Q35_SLOTS or f"blk.{dn}.{n}.weight" in present}
     targets.update({f"blk.{fa}.{n}.weight": None
                     for n in ("attn_q", "attn_k", "attn_v", "attn_output")})
 targets_f32 = True

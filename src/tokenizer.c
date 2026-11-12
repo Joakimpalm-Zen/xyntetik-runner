@@ -1,6 +1,7 @@
 // Tokenizers: SentencePiece-style (llama) and byte-level BPE (gpt2).
 #include <math.h>
 #include "tokenizer.h"
+#include "arch.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -435,6 +436,7 @@ static bool gguf_str_arr_has(gguf_file *g, const char *key, const char *want) {
 // qwen35 is told by what its converter wrote into the header.
 static const char *qwen2_trained_rule(gguf_file *g) {
     const char *arch = gguf_get_str(g, "general.architecture", "");
+    const arch_id id = arch_find(arch)->id;
     const char *name = gguf_get_str(g, "general.name", "");
     // Clef (Cloudflare's Qwen3.8 and Qwen3.5 post-trains) was trained with
     // the qwen2 split: its tokenizer.json carries \p{L}+ where Qwen's own
@@ -443,7 +445,7 @@ static const char *qwen2_trained_rule(gguf_file *g) {
     // every mark). llama.cpp's converter still writes "qwen35" into every
     // Clef GGUF, so the declared name is read as the trained-with split here;
     // text with combining marks tokenizes differently from llama.cpp by design.
-    if (strcmp(arch, "clef") == 0)
+    if (id == ARCH_CLEF)
         return "Clef (general.architecture clef)";
     // XiaomiMiMo's Qwen3.5 distill (MiMo-V2.6-Distill-Qwen-9B) is the same
     // case on an ordinary qwen35 file: its tokenizer.json at 1f09ddcc carries
@@ -461,7 +463,7 @@ static const char *qwen2_trained_rule(gguf_file *g) {
     // at cf943fbe, the thinking ones too, names the checkpoint
     // "35a3_hf_v47_0923". Under qwen35, 3 of 721 corpus strings and 5,503
     // vocabulary entries differed from the publisher's tokenizer (R4.27.2).
-    if (strcmp(arch, "qwen35moe") == 0 && strcmp(name, "35a3_hf_v47_0923") == 0)
+    if (id == ARCH_QWEN35MOE && strcmp(name, "35a3_hf_v47_0923") == 0)
         return "openbmb's MiniCPM-V-4.7-35B-A3B (general.name 35a3_hf_v47_0923)";
     // empero-ai's Qwen3.8-35B-A3B-Distill, a finetune of Qwen3.6-35B-A3B:
     // tokenizer.json at bcc2dbe2 is exactly what transformers 5.x writes on
@@ -469,7 +471,7 @@ static const char *qwen2_trained_rule(gguf_file *g) {
     // empero-ai/Qwen3.8-35B-A3B-Distill-GGUF at b1f9d1dc name the model
     // "Ours", tag it empero-ai, and name Qwen3.6-35B-A3B as the base. Under
     // qwen35, 3 of 721 and 5,503 differed, as for MiniCPM-V (R4.27.1).
-    if (strcmp(arch, "qwen35moe") == 0 && strcmp(name, "Ours") == 0 &&
+    if (id == ARCH_QWEN35MOE && strcmp(name, "Ours") == 0 &&
         gguf_str_arr_has(g, "general.tags", "empero-ai") &&
         strcmp(gguf_get_str(g, "general.base_model.0.repo_url", ""),
                "https://huggingface.co/Qwen/Qwen3.6-35B-A3B") == 0)
@@ -482,7 +484,7 @@ static const char *qwen2_trained_rule(gguf_file *g) {
     // qwen2 split), and its recovery adapters were trained on that split's
     // ids. Under qwen35, 3 of 721 corpus strings and 5,503 vocabulary entries
     // differed from the publisher's tokenizer (R4.36).
-    if (strcmp(arch, "qwen35") == 0 && strcmp(name, "Clef Backbone View") == 0)
+    if (id == ARCH_QWEN35 && strcmp(name, "Clef Backbone View") == 0)
         return "the project's Clef backbone (general.name Clef Backbone View)";
     return NULL;
 }
@@ -2153,7 +2155,8 @@ int tok_stop_ids(tokenizer *t, const char *arch, int *out, int cap) {
     // <|return|> is Harmony's own end-of-generation marker and takes its place;
     // <|call|> joins it so an unrendered tool attempt stops instead of running
     // away (Harmony tool calling is deliberately not rendered — see template.c).
-    bool harmony = strcmp(arch, "gpt-oss") == 0;
+    const arch_id id = arch_find(arch)->id;
+    bool harmony = id == ARCH_GPT_OSS;
     // The file's own end-of-generation ids, whatever their type: a declared
     // id is the publisher's statement. Harmony's <|end|> stays out here too.
     for (int i = 0; i < t->n_eog; i++) {
@@ -2177,7 +2180,7 @@ int tok_stop_ids(tokenizer *t, const char *arch, int *out, int cap) {
     // end-of-generation tokens (tokenizer.ggml.eog_token_ids, read above;
     // llama.cpp's vocab adds the first two by name for this pre). Named here
     // too, so a flint file without that key still stops there.
-    if (!strcmp(arch, "flint")) {
+    if (id == ARCH_FLINT) {
         static const char *fstops[] = { "<|user|>", "<|observation|>", "<|developer|>" };
         _Static_assert(sizeof(fstops) / sizeof(*fstops) <= TOK_STOP_ARCH_MAX,
                        "TOK_STOP_ARCH_MAX bounds every per-architecture list");

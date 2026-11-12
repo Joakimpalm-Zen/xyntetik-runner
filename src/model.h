@@ -7,6 +7,7 @@
 #include <string.h>
 #include "fp16.h"
 #include "gguf.h"
+#include "arch.h"
 #include "quants.h"
 #include "tpool.h"
 #include "sample.h"
@@ -265,6 +266,9 @@ typedef struct {
     uint64_t  file_size, file_ino;
     int64_t   file_mtime_ns, file_ctime_ns;
     char      arch[32];
+    // the architecture's row (arch.h), looked up once at admission; never
+    // NULL on a loaded model (an unknown name gets the unknown row)
+    const arch_desc *ad;
     bool      agent_profile;
     uint32_t  agent_protocol_version, agent_tokenizer_version;
     const char *agent_schema_id, *agent_schema_digest;
@@ -873,6 +877,23 @@ static inline bool model_kv_v_shared(const model_t *m) {
 static inline const char *model_kv_name(const model_t *m) {
     return m->kv_f32 ? "f32" : m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
 }
+// The KV formats a geometry can take (R6.68.40). Attention cuts a layer's row
+// at kvh * head_dim, so a quantized format applies only when every head is a
+// whole number of its blocks: q8_0 (and k8v4, whose K rows are q8_0) 32
+// values, fp4 16; f16 and f32 take any width. head_dim[l] for each of the n
+// trunk layers, or NULL when they all share `scalar` (model_t's own
+// l_head_dim / head_dim). bind_kv_layout and --info fit both ask this, so a
+// fit cannot offer a format its load would decline.
+enum { MODEL_KV_FMT_Q8 = 1u << 0, MODEL_KV_FMT_K8V4 = 1u << 1, MODEL_KV_FMT_FP4 = 1u << 2 };
+static inline unsigned model_kv_formats(const int *head_dim, int n, int scalar) {
+    unsigned ok = MODEL_KV_FMT_Q8 | MODEL_KV_FMT_K8V4 | MODEL_KV_FMT_FP4;
+    for (int l = 0; l < n; l++) {
+        int hd = head_dim ? head_dim[l] : scalar;
+        if (hd % 32) ok &= ~(unsigned)(MODEL_KV_FMT_Q8 | MODEL_KV_FMT_K8V4);
+        if (hd % 16) ok &= ~(unsigned)MODEL_KV_FMT_FP4;
+    }
+    return ok;
+}
 static inline size_t kv_bytes_of_kind(int kind, size_t e) {
     return kind == 3 ? e * sizeof(float) : kind == 2 ? e / 16 * 9
          : kind == 1 ? e / 32 * 34 : e * sizeof(f16_t);
@@ -1360,10 +1381,6 @@ bool   model_file_identity(const char *path, const char *registry,
                            uint64_t *size, uint64_t *ino,
                            int64_t *mtime, int64_t *ctime);
 
-// The architecture admission allowlist, exposed so `--caps` publishes exactly
-// what `model_load` accepts (one source of truth). Wrong-math archs
-// (granite/gemma2/gemma) are deliberately absent — they load but miscompute.
-const char *const *model_supported_archs(size_t *count);
 void   model_free(model_t *m); // frees everything incl. GPU context and mmap
 // process n tokens starting at position pos; returns logits of the last
 // token if want_logits, else NULL
@@ -1514,6 +1531,8 @@ typedef struct { uint64_t file, tables; } gpu_layer_charge;
 gpu_layer_charge model_cuda_layer_charge(gguf_file *g, int layer, bool host_experts);
 
 bool        model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out);
+// RUNNER_DEBUG_VRAM: the fit's geometry line, the shape of a load's own
+void        model_fit_print_geometry(gguf_file *g, const model_fit *f);
 const char *model_fit_verdict(const model_fit *f);
 // Fill the discrete-GPU half of a fit from the header's tensor table: the
 // loader's own split (leading layers, each its weights plus its KV, after a

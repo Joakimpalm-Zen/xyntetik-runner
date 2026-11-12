@@ -3126,11 +3126,11 @@ extra permutation.
 Interop runs the other way too: an adapter runner trained
 scores identically (1.000 on its held-out eval) when served by stock llama.cpp. Applied
 as `y += scale·B(Ax)` on the dense projections (attention q/k/v/output, FFN
-gate/up/down), and on a qwen35 or Clef model also on each Gated DeltaNet layer's input
-and output projections (`attn_qkv`, `attn_gate`, `ssm_beta`, `ssm_alpha`, `ssm_out`:
+gate/up/down), and on a Gated DeltaNet model (`qwen35`, `qwen35moe`, `qwen4exp`, `clef`)
+also on each Gated DeltaNet layer's input and output projections (`attn_qkv`, `attn_gate`, `ssm_beta`, `ssm_alpha`, `ssm_out`:
 PEFT's `in_proj_qkv`, `in_proj_z`, `in_proj_b`, `in_proj_a` and `out_proj` as llama.cpp's
 converter names them; a full-attention layer's `attn_q` spans the query and its output
-gate, which share one projection). A `qwen35` adapter, which is what the converter writes
+gate, which share one projection); `--merge-lora` folds the same set. A `qwen35` adapter, which is what the converter writes
 from Clef's backbone, serves on a `clef` file. On Metal a qwen35 model with an adapter runs
 on the CPU, so there the CPU applies it - the base weights and kernels are untouched, so every base identity gate
 still describes the adapted run's substrate. Runs on the CPU and, on CUDA and Metal, on

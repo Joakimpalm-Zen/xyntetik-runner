@@ -53,7 +53,7 @@ SOURCE_RULES = [
                  "registry", "session", "respstore", "kvsnap", "decide", "clef", "vramreg",
                  "hfhub", "model_roster"}),
     ("substrate", {"gguf", "tokenizer", "unicode_classes", "unicode_nfc", "npy", "json",
-                   "compat"}),
+                   "compat", "arch"}),
     ("production", {"quantize", "derive", "dpo", "tdn_args"}),
     ("proof", {"receipts", "bundle", "provenance", "envelope", "lineage", "oms", "ecdsa",
                "ed25519", "mldsa", "watermark", "build_arch"}),

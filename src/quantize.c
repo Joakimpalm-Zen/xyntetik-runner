@@ -1912,9 +1912,10 @@ static const char *const merge_slot_name[] = {
     "attn_q", "attn_k", "attn_v", "attn_output",
     "ffn_gate", "ffn_up", "ffn_down",
 };
-// the qwen35 DeltaNet projections, hooked only on that backbone (qwen35, or
-// clef on it): afmoe and Qwen-G1 have an attn_gate of their own that
-// serving does not hook, so the merge must not accept the name there
+// the Gated DeltaNet projections, hooked on every DeltaNet family (arch.h's
+// recurrent kind, as serving resolves them in lora_slot_base): afmoe and
+// Qwen-G1 have an attn_gate of their own that serving does not hook, so the
+// merge must not accept the name there
 static const char *const merge_slot_name_q35[] = {
     "attn_qkv", "attn_gate", "ssm_beta", "ssm_alpha", "ssm_out",
 };
@@ -1990,8 +1991,7 @@ static bool merge_set_resolve(merge_set_t *ms, const char *adapter_path,
         for (size_t k = 0; k < sizeof(merge_slot_name) /
                                sizeof(*merge_slot_name); k++)
             if (strcmp(pname, merge_slot_name[k]) == 0) { hooked = true; break; }
-        bool q35 = model_lora_arch_ok("qwen35", barch);   // qwen35 itself, or clef
-        if (!q35) q35 = strcmp(barch, "clef") == 0;
+        bool q35 = arch_find(barch)->rec == ARCH_REC_DELTANET;
         for (size_t k = 0; q35 && !hooked && k < sizeof(merge_slot_name_q35) /
                                                   sizeof(*merge_slot_name_q35); k++)
             if (strcmp(pname, merge_slot_name_q35[k]) == 0) hooked = true;
@@ -2391,9 +2391,9 @@ static bool quantize_job_remove_sublayers(quantize_job *J) {
     snprintf(key, sizeof key, "%s.block_count", rarch);
     uint64_t nb = gguf_get_u32(&J->g, key, 0);
     const char *why = NULL;
-    if (!strcmp(rarch, "nemotron_h") || !strcmp(rarch, "nemotron_h_moe") ||
-        !strcmp(rarch, "granitehybrid") || !strcmp(rarch, "qwen35") ||
-        !strcmp(rarch, "lfm2") || !strcmp(rarch, "lfm2moe") ||
+    // the families whose blocks carry recurrent state (arch.h's recurrent
+    // kind), and any other file that declares a convolution kernel
+    if (arch_find(rarch)->rec != ARCH_REC_NONE ||
         (snprintf(key, sizeof key, "%s.ssm.conv_kernel", rarch),
          gguf_get(&J->g, key) != NULL))
         why = "hybrid or recurrent block typing";

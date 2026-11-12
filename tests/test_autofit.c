@@ -274,13 +274,18 @@ static void test_fit_gpu(const char *fixture) {
     // full split still bills every KV row to RAM.
     // Both formats take every layer, so the weights left behind are the same
     // and the two host bills differ by the two whole caches (the rule this
-    // replaced billed only the CPU layers' rows: zero here, for both).
+    // replaced billed only the CPU layers' rows: zero here, for both). The
+    // fixture's heads are 16 wide, so its quantized format is fp4: a q8 row
+    // would cut a head mid-block, and the load keeps f16 (R6.68.40; this
+    // compared q8 until the fit stopped offering it).
     f = base;
     model_fit_gpu(&g, &f, 1ull << 40, 512ull << 20, 0, false);
-    ck(base.kv_q8 && f.gpu_layers[FIT_KV_F16] == nl && f.gpu_layers[FIT_KV_Q8] == nl,
-       "fit gpu: the fixture takes a full split in f16 and q8");
-    ck(f.host_need[FIT_KV_F16] - f.host_need[FIT_KV_Q8] == base.kv_f16 - base.kv_q8,
+    ck(base.kv_fp4 && f.gpu_layers[FIT_KV_F16] == nl && f.gpu_layers[FIT_KV_FP4] == nl,
+       "fit gpu: the fixture takes a full split in f16 and fp4");
+    ck(f.host_need[FIT_KV_F16] - f.host_need[FIT_KV_FP4] == base.kv_f16 - base.kv_fp4,
        "fit gpu: a full split still bills the whole KV cache to RAM");
+    ck(!base.kv_q8 && f.gpu_layers[FIT_KV_Q8] == -1,
+       "fit gpu: 16-wide heads take no q8 cache, as the load takes none");
 
     // --parallel N: each slot pays its own KV (host and device) and device
     // scratch, the weights once; the split and both verdicts charge N.

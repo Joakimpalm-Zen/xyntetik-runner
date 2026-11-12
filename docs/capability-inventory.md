@@ -76,7 +76,7 @@ Every name `clients/typescript/src` exports.
 | Runtime | 18 | `ChoiceLogprob`, `NamedContext`, `RepeatedToolCall`, `RerankResponse`, `RerankResult`, `RunnerAPIError`, `RunnerClient`, `RunnerClientOptions`, `RunnerErrorBody`, `RunnerProtocolError`, `RunnerTelemetry`, `SamplingTelemetry`, `SpeculationTelemetry`, `TimingTelemetry`, `ToolProtocolTelemetry`, `choiceLogprobs`, `finishDetail`, `runnerTelemetry` |
 | Proof | 7 | `ChainCheck`, `EnvelopeState`, `ModelSignature`, `Provenance`, `ReceiptFile`, `TranscriptRecord`, `verifyTranscriptChain` |
 
-## Source files (122)
+## Source files (123)
 
 Every file under `src/` except the generated kernel headers. `Shared` is the files that serve more than one component.
 
@@ -84,7 +84,7 @@ Every file under `src/` except the generated kernel headers. `Shared` is the fil
 |---|---:|---|
 | Runtime | 34 | `src/api.h`, `src/api_anthropic.c`, `src/api_responses.c`, `src/clef.c`, `src/clef.h`, `src/decide.c`, `src/decide.h`, `src/hfhub.c`, `src/hfhub.h`, `src/http.c`, `src/http.h`, `src/jsonmode.c`, `src/jsonmode.h`, `src/kvsnap.c`, `src/kvsnap.h`, `src/model_roster.h`, `src/registry.c`, `src/respstore.c`, `src/respstore.h`, `src/sample.c`, `src/sample.h`, `src/schema.c`, `src/schema.h`, `src/schema_int.h`, `src/schema_tools.c`, `src/server.c`, `src/server.h`, `src/server_int.h`, `src/session.c`, `src/session.h`, `src/template.c`, `src/template.h`, `src/vramreg.c`, `src/vramreg.h` |
 | Execution | 36 | `src/act.h`, `src/cuda.c`, `src/dn_eps.h`, `src/engine.c`, `src/engine.h`, `src/fp16.h`, `src/fpclass.h`, `src/fpenv.h`, `src/gpu.h`, `src/gpu_none.c`, `src/iq_decode.h`, `src/kernel_args.h`, `src/kernels.cu`, `src/kernels.metal`, `src/kernels_i8.cuh`, `src/kernels_iq4_table.cuh`, `src/kernels_iq_grids.cuh`, `src/kernels_iq_stage.cuh`, `src/kernels_kq_stage.cuh`, `src/kernels_sm80.cu`, `src/kernels_tc2.cuh`, `src/kernels_tc2_iq.cuh`, `src/kernels_tc2_kq.cuh`, `src/kernels_tensor.metal`, `src/kernels_train.cuh`, `src/kq_stage.h`, `src/metal.m`, `src/metal_admission.h`, `src/pmath.h`, `src/quants.c`, `src/quants.h`, `src/quants_iq_grids.h`, `src/scheduler.c`, `src/scheduler.h`, `src/tpool.h`, `src/upload_report.h` |
-| Model substrate | 12 | `src/compat.c`, `src/compat.h`, `src/gguf.c`, `src/gguf.h`, `src/json.c`, `src/json.h`, `src/npy.c`, `src/npy.h`, `src/tokenizer.c`, `src/tokenizer.h`, `src/unicode_classes.h`, `src/unicode_nfc.h` |
+| Model substrate | 13 | `src/arch.h`, `src/compat.c`, `src/compat.h`, `src/gguf.c`, `src/gguf.h`, `src/json.c`, `src/json.h`, `src/npy.c`, `src/npy.h`, `src/tokenizer.c`, `src/tokenizer.h`, `src/unicode_classes.h`, `src/unicode_nfc.h` |
 | Model production | 6 | `src/derive.c`, `src/derive.h`, `src/dpo.c`, `src/dpo.h`, `src/quantize.c`, `src/tdn_args.h` |
 | Proof | 21 | `src/build_arch.h`, `src/bundle.c`, `src/bundle.h`, `src/ecdsa.c`, `src/ecdsa.h`, `src/ed25519.c`, `src/ed25519.h`, `src/envelope.c`, `src/envelope.h`, `src/lineage.c`, `src/lineage.h`, `src/mldsa.c`, `src/mldsa.h`, `src/oms.c`, `src/oms.h`, `src/provenance.c`, `src/provenance.h`, `src/receipts.c`, `src/receipts.h`, `src/watermark.c`, `src/watermark.h` |
 | Desktop | 7 | `src/instances.c`, `src/instances.h`, `src/tray.c`, `src/tray.h`, `src/tray_macos.m`, `src/tray_stub.c`, `src/tray_win.c` |
