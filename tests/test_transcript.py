@@ -694,6 +694,10 @@ def test_the_route_is_checked_on_replay(runner_bin, base, tmp_path):
          "--temp", "0", "--gpu", "off", "-t", "2", "--transcript", str(out)],
         cwd=ROOT, env=env, capture_output=True, timeout=120)
     assert p.returncode == 0, p.stderr
+    # a build without the int8 kernel (`make debug` has no -mavx2) says so
+    # and records f32, which is right; the route check needs the kernel
+    if b"no int8 dot kernel on this build" in p.stderr:
+        pytest.skip("this build has no int8 dot kernel (RUNNER_CPU_I8 ignored)")
     assert json.loads(out.read_bytes())["profile"]["route"]["cpu_act"] == "int8"
     plain = {k: v for k, v in os.environ.items() if not k.startswith("RUNNER_CPU_I8")}
     v = _verify_in(runner_bin, out, ROOT, "-m", str(base), env=plain)
