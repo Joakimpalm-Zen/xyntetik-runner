@@ -779,10 +779,13 @@ jobs:
   # The tests whose expected values come from outside this repository: gold
   # logits against the publisher's float32 forward in torch, the activation
   # trace against transformers, the DeltaNet backward against autograd, and
-  # the KLD and lookup-draft cases that need a real model file. They skip on
-  # "could not import torch" and "not present" wherever those are missing,
-  # which until R6.68.11 was every job here and the release gate too: 15 tests
-  # that no change ever ran. This job provides both and allows no skip.
+  # the KLD and lookup-draft cases that need a real model file; and beside
+  # them the tokenizer diff against Hugging Face tokenizers, the receipt
+  # signature checked by an independent Ed25519 (cryptography) and the
+  # sigstore model-signing round trip. They skip on "could not import torch",
+  # "not present" or "not installed" wherever those are missing, which until
+  # R6.68.11 was every job here and the release gate too: tests that no
+  # change ever ran. This job provides all of it and allows no skip.
   # The model is the 145 MB SmolLM2-135M-Instruct Q8_0, fetched by its pinned
   # sha256 (download-model.sh) behind a cache, so huggingface.co is asked once
   # per cache lifetime, not once per run.
@@ -803,11 +806,12 @@ jobs:
         with:
           path: models/SmolLM2-135M-Instruct-Q8_0.gguf
           key: model-smollm2-135m-instruct-q8_0-5a1395716f79
-      - name: install torch (CPU), transformers and accelerate
+      - name: install torch (CPU), transformers and the other optional packages
         run: |
           python3 -m venv .anchor-venv
           .anchor-venv/bin/python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
-          .anchor-venv/bin/python -m pip install --quiet pytest numpy transformers accelerate safetensors
+          .anchor-venv/bin/python -m pip install --quiet pytest numpy transformers accelerate safetensors \
+            tokenizers cryptography model-signing pyopenssl
       - name: anchored tests, no skip allowed
         run: python3 scripts/ci-run.py --timeout 1800 anchors -- make -j2 test-anchors PYTHON=.anchor-venv/bin/python
       - name: CI timing and test reports

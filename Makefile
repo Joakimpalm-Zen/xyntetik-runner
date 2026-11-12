@@ -4069,15 +4069,17 @@ test-cuda-gated: runner test.gguf
 	    --allow-skip 'CUDA runtime is available' .build/ci/cuda-gated.xml
 
 # The tests anchored outside this repository (R6.68.11): torch's float32
-# forward and autograd, transformers' activations, and one real model file.
+# forward and autograd, transformers' activations, Hugging Face tokenizers,
+# an independent Ed25519, sigstore's model signing, and one real model file.
 # Each of them skips where its package or the file is missing, so `make test`
 # passes without ever running them; this target provides the file, requires
 # the packages and allows no skip but the one macOS-only refusal.
 ANCHOR_TESTS = tests/test_gold_logits.py tests/test_act_trace.py tests/test_deltanet_autograd.py \
-               tests/test_kld_compare.py tests/test_draft_lookup.py
-test-anchors: runner test.gguf $(TEST_LORA_GRAD)
-	@$(PYTHON) -c "import pytest, torch, transformers, accelerate" || { \
-		echo "error: make test-anchors needs pytest, torch, transformers and accelerate for $(PYTHON)"; exit 1; }
+               tests/test_kld_compare.py tests/test_draft_lookup.py \
+               tests/test_difftok.py tests/test_receipts.py tests/test_sign_model.py
+test-anchors: runner test.gguf $(TEST_LORA_GRAD) $(DIFFTOK)
+	@$(PYTHON) -c "import pytest, torch, transformers, accelerate, tokenizers, cryptography, model_signing" || { \
+		echo "error: make test-anchors needs pytest, torch, transformers, accelerate, tokenizers, cryptography and model-signing for $(PYTHON)"; exit 1; }
 	sh download-model.sh
 	@mkdir -p .build/ci
 	$(PYTHON) -m pytest -q -rs --junitxml=.build/ci/anchors.xml $(ANCHOR_TESTS)
