@@ -742,8 +742,6 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     const char *match = o->match ? o->match : "";
     dgroup *gs = NULL;
     int ng = 0, gcap = 0;
-    int *order = NULL;     // the groups ranked for demotion
-    bool ret = false;
     char **held = NULL;    // candidates the imatrix has no entry for (R4.34.2)
     int nh = 0, hcap = 0;
     long long delta = 0;   // all candidates at the top rung, against the parent
@@ -821,29 +819,30 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     }
     gguf_close(&g);
     free(text);
-    if (!ok) goto out;
+    if (!ok) return false;
     if (!ng && nh) {
         fprintf(stderr, "error: the imatrix has no entry for any of the %d candidate tensors; give one "
                 "that covers them or narrow --match\n", nh);
-        goto out;
+        return false;
     }
     if (!ng) {
         fprintf(stderr, "error: no tensor in the --quant-error report matches '%s'\n", match);
-        goto out;
+        return false;
     }
     if (nh) qsort(held, (size_t)nh, sizeof *held, cmp_str);
+    res->held = held;
+    res->n_held = nh;
     bool w = false, u = false;
     for (int k = 0; k < ng; k++) { w |= gs[k].weighted; u |= gs[k].unweighted; }
     if (w && u) {
         fprintf(stderr, "error: some candidates' errors are imatrix-weighted and some are not, "
                 "and the two do not compare; give an imatrix that covers them or narrow --match\n");
-        goto out;
+        return false;
     }
     long long at_high = pbytes + delta;
     res->save_bytes = at_high > o->target_size ? at_high - o->target_size : 0;
     long long saved = 0;
-    int nd = 0;
-    order = calloc((size_t)ng, sizeof *order);
+    int *order = calloc((size_t)ng, sizeof *order), nd = 0;
     char skipped[4096];
     size_t sl = 0;
     int n_skipped = 0;
@@ -854,7 +853,8 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
             gs[k].saved = gs[k].bytes[0] - gs[k].bytes[1];
             if (gs[k].saved <= 0) {
                 fprintf(stderr, "error: demoting %s to %s saves no bytes\n", gs[k].name, bottom);
-                goto out;
+                free(order);
+                return false;
             }
             gs[k].cost = (gs[k].err[1] - gs[k].err[0]) / (double)gs[k].saved;
         }
@@ -871,7 +871,8 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
             int to;
             if (!next_step(&gs[k], nr, &c, &to)) {
                 fprintf(stderr, "error: demoting %s to %s saves no bytes\n", gs[k].name, bottom);
-                goto out;
+                free(order);
+                return false;
             }
         }
         // the cheapest next hull step over every group, ties by name, until it fits
@@ -902,7 +903,8 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     if (saved < res->save_bytes) {
         fprintf(stderr, "error: --target-size %lld is out of reach: every candidate at %s still "
                 "leaves about %lld bytes\n", o->target_size, bottom, at_high - saved);
-        goto out;
+        free(order);
+        return false;
     }
     sbuf b = {0};
     sb_lit(&b, "{\"default\":");
@@ -913,7 +915,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     bool first = true;
     for (int k = 0; k < nd; k++) {
         dgroup *d = &gs[order[k]];
-        res->demoted[res->n_demoted] = strdup(d->name);
+        res->demoted[res->n_demoted] = d->name;
         res->demoted_to[res->n_demoted++] = o->rungs[d->at];
         qsort(d->tensors, (size_t)d->n, sizeof *d->tensors, cmp_str);
         for (int t = 0; t < d->n; t++) {
@@ -933,8 +935,9 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         sb_lit(&b, "}");
     }
     sb_lit(&b, "]}\n");
-    ret = write_text(res->plan, &b);
+    bool wrote = write_text(res->plan, &b);
     free(b.s);
+    free(order);
     res->n_skipped = n_skipped;
     res->skipped = n_skipped ? strdup(skipped) : NULL;
     if (nr == 2) {
@@ -955,21 +958,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         for (int k = 0; k < nh; k++) fprintf(stderr, "%s %s", k ? "," : "", held[k]);
         fprintf(stderr, "\n");
     }
-out:
-    // One exit. The groups are this function's own: every name, every
-    // tensor list and its strings (the result holds copies of the demoted
-    // names). The held names pass to the result on every path, so the
-    // caller's one release covers a refusal too.
-    for (int k = 0; k < ng; k++) {
-        for (int t = 0; t < gs[k].n; t++) free(gs[k].tensors[t]);
-        free(gs[k].tensors);
-        free(gs[k].name);
-    }
-    free(gs);
-    free(order);
-    res->held = held;
-    res->n_held = nh;
-    return ret;
+    return wrote;
 }
 
 // A string member as a base name ("" when absent): the card names files, never
