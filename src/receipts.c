@@ -61,6 +61,11 @@ int receipts_list_dir(const char *dir, char ***paths_out) {
     return paths ? k : 0;
 }
 
+static int cmp_seq(const void *a, const void *b) {
+    unsigned long long x = *(const unsigned long long *)a, y = *(const unsigned long long *)b;
+    return (x > y) - (x < y);
+}
+
 static int list_seqs_in(const char *dir, unsigned long long **out) {
     int n = 0, cap = 0;
     unsigned long long *v = NULL;
@@ -77,14 +82,11 @@ static int list_seqs_in(const char *dir, unsigned long long **out) {
         v[n++] = s;
     }
     plat_closedir(d);
-    // insertion sort: the directory holds at most --receipts-keep + 1 once
-    // retention runs, and ordering is all that is asked
-    for (int i = 1; i < n; i++) {
-        unsigned long long x = v[i];
-        int j = i - 1;
-        while (j >= 0 && v[j] > x) { v[j + 1] = v[j]; j--; }
-        v[j + 1] = x;
-    }
+    // A directory hands its names back in no order (measured: half of all
+    // pairs inverted), and the default keeps every record, so this is
+    // qsort: an insertion sort made 1.6e9 moves for 80,000 receipts, at
+    // every server start and at every write under --record-keep.
+    if (n > 1) qsort(v, (size_t)n, sizeof *v, cmp_seq);
     *out = v;
     return n;
 }
