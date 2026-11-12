@@ -3794,6 +3794,72 @@ static bool load_adapters(const model_t *base) {
     return true;
 }
 
+// Everything a server run holds once its threads are gone: the slots'
+// engines, the models and tokenizer (the caller's, handed over at the call,
+// and any this run loaded), the adapters, the queue's primitives, the slots.
+// One release for the normal shutdown and for every refusal before the
+// serving loop, so it reads the state as it is: slots that do not exist yet,
+// a slot whose model never loaded, a swap runtime that never started. The
+// refusals used to return with all of it allocated, about twenty of them,
+// each leaving the loaded model and tokenizer behind (R6.68.39).
+static void serve_release(model_t *base, tokenizer *tok) {
+    int n = SV.slots ? SV.n_slots : 0;
+    // the caller's model sits in slot 0 once startup placed it there
+    bool base_placed = n > 0 && base && SV.slots[0].m == base;
+    for (int i = 0; i < n; i++) {
+        engine_release(&SV.slots[i].e);
+        free(SV.slots[i].hint_buf);
+        SV.slots[i].hint_buf = NULL;
+    }
+    if (SV.n_reg > 0) {
+        if (SV.swap_ready) pthread_mutex_lock(&SV.swap_mu);
+        unload_draft();
+        unload_resident();
+        if (SV.swap_ready) {
+            pthread_mutex_unlock(&SV.swap_mu);
+            pthread_mutex_destroy(&SV.swap_mu);
+            SV.swap_ready = false;
+        }
+    } else {
+        provenance_note_unload();
+        if (tok) tokenizer_free(tok);
+        for (int i = 0; i < n; i++) {
+            model_t *draft = SV.slots[i].e.dm;
+            if (draft) { model_free(draft); free(draft); SV.slots[i].e.dm = NULL; }
+            if (!SV.slots[i].m) continue;
+            model_free(SV.slots[i].m);
+            if (i > 0) free(SV.slots[i].m);
+            SV.slots[i].m = NULL;
+        }
+        if (base && !base_placed) model_free(base);
+    }
+    prefix_cache_clear();
+    // the slots' models are gone; nothing borrows an adapter any more
+    for (int i = 0; i < SV.n_adapters; i++) model_lora_set_free(SV.adapters[i].set);
+    SV.n_adapters = 0;
+    if (SV.q_ready) {
+        pthread_cond_destroy(&SV.q.cv);
+        pthread_mutex_destroy(&SV.q.mu);
+        SV.q_ready = false;
+    }
+    free(SV.slots);
+    SV.slots = NULL;
+}
+
+// A start that ends before the serving loop, refused or stopped by a signal:
+// only the TTL reaper can be running (slot workers, the scheduler and the
+// cancel thread start after the last such exit), so it is stopped and joined
+// and the run's state released. Returns rc for the caller to return.
+static int serve_start_end(model_t *base, tokenizer *tok, int rc) {
+    atomic_store(&SV.shutdown, true);
+    if (SV.reaper_started) {
+        pthread_join(SV.reaper_th, NULL);
+        SV.reaper_started = false;
+    }
+    serve_release(base, tok);
+    return rc;
+}
+
 int server_run(model_t *base, tokenizer *tok, const char *model_path,
                const model_params *mp, sampler defaults,
                const sampler_override *ov, int port, int parallel,
@@ -3825,13 +3891,16 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     // half is filed; nothing needs it today, and it costs threading a context
     // through six translation units.
     memset(&SV, 0, sizeof(SV));
+    // no model is resident until one is placed: a refusal before that point
+    // must not read the zeroed index as "entry 0 is loaded" (serve_release)
+    resident_store(-1);
     // the answering thread of a previous run in this process is joined (R6.68.22)
     cancel_queue = NULL;
     cancel_thread_on = cancel_thread_stop = false;
     if (!plat_random(SV.id_seed, sizeof SV.id_seed)) {
         fprintf(stderr, "error: the OS random generator is unavailable, and a "
                 "response id must not be guessable\n");
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
 #ifndef _WIN32
     atomic_store(&stop_requested, 0);
@@ -3928,7 +3997,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         fprintf(stderr, "error: --draft needs a single served model, and -m "
                 "names a swap registry; serve one model with --draft, or "
                 "drop --draft\n");
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
 
     // "name=path,name2=path2" enables swap mode: one resident model,
@@ -3943,49 +4012,49 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         if (spec_len >= sizeof(tmp)) {
             fprintf(stderr, "error: -m registry spec is too long (max %zu bytes)\n",
                     sizeof(tmp) - 1);
-            return 1;
+            return serve_start_end(base, tok, 1);
         }
         // strtok() skips empty fields. Reject them before tokenizing so a
         // malformed registry cannot silently turn into a different one.
         if (model_path[0] == ',' || model_path[spec_len - 1] == ',' ||
             strstr(model_path, ",,")) {
             fprintf(stderr, "error: -m registry spec contains an empty entry\n");
-            return 1;
+            return serve_start_end(base, tok, 1);
         }
         snprintf(tmp, sizeof(tmp), "%s", model_path);
         for (char *tk = strtok(tmp, ","); tk; tk = strtok(NULL, ",")) {
             if (SV.n_reg >= max_reg) {
                 fprintf(stderr, "error: too many models in -m (max %d)\n", max_reg);
-                return 1;
+                return serve_start_end(base, tok, 1);
             }
             char *eq = strchr(tk, '=');
-            if (!eq) { fprintf(stderr, "error: bad registry entry '%s' (want name=path)\n", tk); return 1; }
+            if (!eq) { fprintf(stderr, "error: bad registry entry '%s' (want name=path)\n", tk); return serve_start_end(base, tok, 1); }
             *eq = 0;
             const char *nm = tk, *pth = eq + 1;
             if (!*nm || !*pth) {
                 fprintf(stderr, "error: registry entry '%s=%s' has an empty name or path\n", nm, pth);
-                return 1;
+                return serve_start_end(base, tok, 1);
             }
             if (strlen(nm) >= sizeof(SV.reg[0].name)) {
                 fprintf(stderr, "error: model name '%s' is too long (max %zu chars)\n",
                         nm, sizeof(SV.reg[0].name) - 1);
-                return 1;
+                return serve_start_end(base, tok, 1);
             }
             if (strlen(pth) >= sizeof(SV.reg[0].path)) {
                 fprintf(stderr, "error: model path for '%s' is too long (max %zu chars)\n",
                         nm, sizeof(SV.reg[0].path) - 1);
-                return 1;
+                return serve_start_end(base, tok, 1);
             }
             for (int j = 0; j < SV.n_reg; j++)
                 if (!strcmp(SV.reg[j].name, nm)) {
                     fprintf(stderr, "error: duplicate model name '%s' in -m\n", nm);
-                    return 1;
+                    return serve_start_end(base, tok, 1);
                 }
             snprintf(SV.reg[SV.n_reg].name, sizeof(SV.reg[0].name), "%s", nm);
             snprintf(SV.reg[SV.n_reg].path, sizeof(SV.reg[0].path), "%s", pth);
             if (!plat_file_readable(SV.reg[SV.n_reg].path)) {
                 fprintf(stderr, "error: cannot read %s\n", SV.reg[SV.n_reg].path);
-                return 1;
+                return serve_start_end(base, tok, 1);
             }
             SV.n_reg++;
         }
@@ -4005,7 +4074,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                     "the set holds %d models, each detecting its own. Serve "
                     "that model on its own instance to force its template.\n",
                     SV.n_reg);
-            return 1;
+            return serve_start_end(base, tok, 1);
         }
         if (parallel > 1) {
             fprintf(stderr, "note: model swapping uses a single inference slot; "
@@ -4057,17 +4126,18 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     SV.slots = calloc(parallel, sizeof(slot_t));
     if (!SV.slots) {
         fprintf(stderr, "error: cannot allocate server slots\n");
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
     if (pthread_mutex_init(&SV.q.mu, NULL) != 0) {
         fprintf(stderr, "error: cannot initialize server queue mutex\n");
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
     if (pthread_cond_init(&SV.q.cv, NULL) != 0) {
         fprintf(stderr, "error: cannot initialize server queue condition\n");
         pthread_mutex_destroy(&SV.q.mu);
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
+    SV.q_ready = true;
 
     if (SV.n_reg > 0) {
         // swap mode: models are loaded on demand
@@ -4075,7 +4145,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         s->id = 0;
         s->smp = defaults;
         s->smp_base = defaults;
-        if (!init_swap_runtime(mp, n_threads, ttl)) return 1;
+        if (!init_swap_runtime(mp, n_threads, ttl)) return serve_start_end(base, tok, 1);
     } else {
         int tmpl = SV.tmpl_override >= 0
                  ? SV.tmpl_override
@@ -4106,7 +4176,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             // between loads rather than serving with the flag silently set
             if (stop_was_requested()) {
                 fprintf(stderr, "shutdown requested during startup — exiting\n");
-                return 0;
+                return serve_start_end(base, tok, 0);
             }
             slot_t *s = &SV.slots[i];
             s->id = i;
@@ -4127,7 +4197,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 shared_pool = tpool_create(pool_threads);
                 if (!shared_pool) {
                     fprintf(stderr, "error: cannot create the slots' thread pool\n");
-                    return 1;
+                    return serve_start_end(base, tok, 1);
                 }
                 tpool_destroy(base->tp); // replace the single-thread load pool
                 base->tp = shared_pool;
@@ -4135,12 +4205,15 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 s->m = calloc(1, sizeof(model_t));
                 if (!s->m) {
                     fprintf(stderr, "error: cannot allocate slot %d model\n", i);
-                    return 1;
+                    return serve_start_end(base, tok, 1);
                 }
-                if (!model_load(s->m, model_path, &slot_mp) ||
-                    !oms_check_model(model_path, &SV.signing, NULL)) {
+                bool loaded = model_load(s->m, model_path, &slot_mp);
+                if (!loaded || !oms_check_model(model_path, &SV.signing, NULL)) {
                     fprintf(stderr, "error: failed to load slot %d\n", i);
-                    return 1;
+                    // a load that failed released its own model; only the
+                    // container is left, and the release must not free it twice
+                    if (!loaded) { free(s->m); s->m = NULL; }
+                    return serve_start_end(base, tok, 1);
                 }
                 tpool_destroy(s->m->tp);    // the single-thread load pool
                 tpool_retain(shared_pool);
@@ -4149,7 +4222,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             template_bind_think_tags(tmpl, &s->m->think_open, &s->m->think_close);
             if (!engine_init(&s->e, s->m, s->tok, &s->smp)) {
                 fprintf(stderr, "error: out of memory initializing slot %d engine\n", i);
-                return 1;
+                return serve_start_end(base, tok, 1);
             }
             prefix_cache_fit_model(s->m);   // R4.26.13: once per model; it only raises
             // CLI generation applies this after engine_init; server slots are
@@ -4165,7 +4238,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 if (!model_mtp_ready(s->m)) {
                     fprintf(stderr, "error: --mtp: slot %d needs the CPU "
                                     "path (rerun with --gpu off)\n", i);
-                    return 1;
+                    return serve_start_end(base, tok, 1);
                 }
                 s->e.mtp_on = true;
                 s->e.draft_k = draft_k;
@@ -4175,7 +4248,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                     fprintf(stderr, "error: --draft-lookup: slot %d needs "
                                     "host-readable hidden work (rerun with "
                                     "--gpu off)\n", i);
-                    return 1;
+                    return serve_start_end(base, tok, 1);
                 }
                 s->e.lookup_on = true;
                 s->e.draft_k = draft_k;
@@ -4212,24 +4285,24 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             // a draft the gates rejected at startup stays rejected: only a
             // draft that actually served is worth reloading after /unload
             if (SV.draft) SV.draft_path = draft_path;
-            if (!init_swap_runtime(mp, threads_per_slot, ttl)) return 1;
+            if (!init_swap_runtime(mp, threads_per_slot, ttl)) return serve_start_end(base, tok, 1);
         }
     }
 
     for (int i = 0; i < SV.n_slots; i++) SV.slots[i].adapter = -1;
-    if (!load_adapters(base)) return 1;
+    if (!load_adapters(base)) return serve_start_end(base, tok, 1);
 
     // last long stop is behind us; a signal from here on is either caught
     // right now or by the published listener below
     if (stop_was_requested()) {
         fprintf(stderr, "shutdown requested during startup — exiting\n");
-        return 0;
+        return serve_start_end(base, tok, 0);
     }
 
     sock_t lfd = socket(AF_INET, SOCK_STREAM, 0);
     if (lfd == SOCK_INVALID) {
         fprintf(stderr, "error: cannot create server socket\n");
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
     int one = 1;
 #ifdef _WIN32
@@ -4249,13 +4322,13 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
         fprintf(stderr, "error: cannot bind 127.0.0.1:%d: is another server on this port? "
                 "(%s)\n", port, sock_errstr());
         sock_close(lfd);
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
     if (listen(lfd, 64) != 0) {
         fprintf(stderr, "error: cannot listen on 127.0.0.1:%d (%s)\n", port,
                 sock_errstr());
         sock_close(lfd);
-        return 1;
+        return serve_start_end(base, tok, 1);
     }
 #ifndef _WIN32
     atomic_store(&listener_fd, (int)lfd);
@@ -4393,34 +4466,7 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     pthread_mutex_unlock(&rq_ids_mu);
 
     atomic_store(&drain_stage, "model unload");
-    for (int i = 0; i < parallel; i++) {
-        free(SV.slots[i].e.hist);
-        free(SV.slots[i].hint_buf);
-    }
-    if (SV.n_reg > 0) {
-        pthread_mutex_lock(&SV.swap_mu);
-        unload_draft();
-        unload_resident();
-        pthread_mutex_unlock(&SV.swap_mu);
-        pthread_mutex_destroy(&SV.swap_mu);
-    } else {
-        provenance_note_unload();
-        tokenizer_free(tok);
-        for (int i = 0; i < parallel; i++) {
-            model_t *draft = SV.slots[i].e.dm;
-            if (draft) { model_free(draft); free(draft); }
-            model_free(SV.slots[i].m);
-            if (i > 0) free(SV.slots[i].m);
-        }
-    }
-    atomic_store(&drain_stage, "cleanup");
-    prefix_cache_clear();
-    // the slots' models are gone; nothing borrows an adapter any more
-    for (int i = 0; i < SV.n_adapters; i++) model_lora_set_free(SV.adapters[i].set);
-    SV.n_adapters = 0;
-    pthread_cond_destroy(&SV.q.cv);
-    pthread_mutex_destroy(&SV.q.mu);
-    free(SV.slots);
+    serve_release(base, tok);
     // The shutdown is complete: release the bound, so its watchdog returns
     // and the process, or the next server_run in it, lives on. If the
     // watchdog claimed the exit a moment ago, it is about to _exit, and

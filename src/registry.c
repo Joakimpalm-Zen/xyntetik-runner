@@ -586,6 +586,7 @@ bool init_swap_runtime(const model_params *mp, int n_threads, int ttl) {
         pthread_mutex_destroy(&SV.swap_mu);
         return false;
     }
+    SV.swap_ready = true;
     return true;
 }
 

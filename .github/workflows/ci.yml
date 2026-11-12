@@ -623,6 +623,27 @@ jobs:
                    test-leak-q4x.gguf test-leak-stablelm.gguf; do
             ./runner-debug -m "$f" -p "hello" -n 8 --temp 0 --gpu off
           done
+          # R6.68.38: a constrained run that writes a session image ends with
+          # the engine's constraint document buffer allocated; no teardown
+          # freed it (the history beside it was freed by hand)
+          ./runner-debug -m test.gguf -p "hello" -n 12 --temp 0.8 -s 3 --json --gpu off \
+            --session-out test-leak-session.img
+          # R6.68.39: a server start refused before the serving loop (here the
+          # port is taken) returned with the loaded model and tokenizer still
+          # allocated, on about twenty refusals. Exit 1 is the refusal; a
+          # LeakSanitizer report would exit 23.
+          python3 - <<'PY'
+          import socket, subprocess, sys
+          s = socket.socket()
+          s.bind(("127.0.0.1", 0))
+          s.listen(1)
+          port = str(s.getsockname()[1])
+          for extra in ([], ["--parallel", "2"]):
+              rc = subprocess.run(["./runner-debug", "-m", "test.gguf", "--serve", "--port", port,
+                                   "--gpu", "off", *extra]).returncode
+              if rc != 1:
+                  sys.exit("a refused server start exited %d, not 1 (a leak report exits 23)" % rc)
+          PY
       - name: sanitized server race gate
         # /v1/capabilities is answered on the accept loop while another client
         # swaps the model out from under it; the conformance suite above never

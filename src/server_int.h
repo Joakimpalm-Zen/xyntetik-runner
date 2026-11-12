@@ -176,6 +176,8 @@ typedef struct {
     atomic_bool shutdown;
     pthread_t   reaper_th;
     bool        reaper_started;
+    bool        q_ready;      // the queue's mutex and condition exist
+    bool        swap_ready;   // swap_mu exists (init_swap_runtime succeeded)
     model_t    *draft;        // per-slot draft would be plural; single-model
     int         draft_k;      // serve has exactly one slot (see swap_to)
     // the --draft argv string, kept only when its startup load succeeded, so
