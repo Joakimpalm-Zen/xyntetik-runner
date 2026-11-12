@@ -4241,16 +4241,30 @@ static void cuda_plan_graphs(model_t *m, gpu_t *g) {
                        cuda_graph_recur_on();
     // each rule names itself (graph_why), so a gate that requires the graph
     // (RUNNER_REQUIRE_GRAPH_CAPTURE) can tell eager by design from a failure
+    // The three per-layer rules, the same union as before; which one names the
+    // layer goes most specific first, so a recurrent layer (no V projection by
+    // nature) is called recurrent and not V-less.
     const char *why = NULL;
     for (int l = 0; l < m->gpu_layers && !why; l++) {
-        if (!m->layers[l].wv && !(m->layers[l].recurrent && recur_graph) &&
-            !(m->layers[l].skip_mixer && recur_graph) && !v_from_k_capturable(m, l))
-            why = "a layer without a V projection that is not built on the stream (a synchronous memset)";
-        else if (m->layers[l].is_moe && !g->moe_fused_ok)
-            why = "MoE routing read back to the host mid-forward (the eager MoE path)";
-        else if (m->layers[l].recurrent && !recur_graph)
+        const layer_t *ly = &m->layers[l];
+        bool vless = !ly->wv && !(ly->recurrent && recur_graph) &&
+                     !(ly->skip_mixer && recur_graph) && !v_from_k_capturable(m, l);
+        if (ly->recurrent && !recur_graph)
             why = "a recurrent layer of a family whose decode is not captured (or RUNNER_CUDA_GRAPH_RECUR=0)";
+        else if (ly->is_moe && !g->moe_fused_ok)
+            why = "MoE routing read back to the host mid-forward (the eager MoE path)";
+        else if (vless && ly->skip_mixer)
+            why = "an MLP-only block of a hybrid whose decode is not captured";
+        else if (vless && m->l_no_attn && m->l_no_attn[l])
+            why = "a block whose attention was removed (--remove-sublayer)";
+        else if (vless)
+            why = "a layer without a V projection that is not built on the stream (a synchronous memset)";
     }
+    // RUNNER_DEBUG_MOE prints the first routings' choices, read back to the
+    // host inside the fused decode forward: a capture cannot record that
+    // (the R6.68.15 audit), so the debug run decodes eagerly
+    if (!why && m->n_expert > 0 && moe_any_on_device(m) && getenv("RUNNER_DEBUG_MOE"))
+        why = "RUNNER_DEBUG_MOE reads the routing back to the host";
     if (!why && m->qwen35 && !recur_graph)
         why = "a qwen35 file whose decode is not captured (routed experts or hyper-connections, or RUNNER_CUDA_GRAPH_RECUR=0)";
     if (!why && moe_any_on_host(m)) why = "experts on the host";
