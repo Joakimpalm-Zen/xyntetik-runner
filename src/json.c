@@ -544,7 +544,10 @@ void sb_put(sbuf *b, const char *s, size_t n) {
         b->s = grown;
         b->cap = cap;
     }
-    memcpy(b->s + b->n, s, n);
+    // an empty append still allocates and terminates (callers read "" from an
+    // sbuf they appended nothing to), but copies nothing: the source of an
+    // empty span may be NULL, and memcpy from NULL is undefined at any length
+    if (n) memcpy(b->s + b->n, s, n);
     b->n += n;
     b->s[b->n] = 0;
 }
