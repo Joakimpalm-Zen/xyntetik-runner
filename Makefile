@@ -3837,7 +3837,8 @@ FUZZ_CLANG   ?= clang
 FUZZ_TIME    ?= 20
 FUZZ_RSS_MB  ?= 2048
 FUZZ_TARGETS = json_parse schema_compile sval_feed sval_trial jsonv_feed \
-               gguf_open http_request tokenizer model_load gguf_split
+               gguf_open http_request tokenizer model_load gguf_split \
+               tool_stream record_check session_read
 # -O1 -g: libFuzzer wants speed but ASan reports want frames.
 # No -march=native and no -ffast-math: the point here is defined behaviour,
 # and UBSan must abort rather than warn or the run cannot gate anything.
@@ -3859,9 +3860,19 @@ FUZZ_SRC_http_request   = src/http.c src/json.c src/compat.c
 FUZZ_SRC_tokenizer      = src/tokenizer.c src/gguf.c src/compat.c src/quants.c
 FUZZ_SRC_model_load     = src/model.c src/gguf.c src/compat.c src/quants.c src/vramreg.c src/gpu_none.c
 FUZZ_SRC_gguf_split     = src/gguf.c src/compat.c src/quants.c
+FUZZ_SRC_tool_stream    = src/template.c src/gguf.c src/tokenizer.c $(SCHEMA_SRC) src/jsonmode.c \
+                          src/json.c src/compat.c src/quants.c
+FUZZ_SRC_record_check   = src/envelope.c src/ed25519.c $(MLDSA_SRC) src/json.c src/compat.c
+# session.c's writer half calls the engine, so its reader links the server's
+# whole source set, as the thread-sanitizer gates do
+FUZZ_SRC_session_read   = $(filter-out tests/test_swap_race.c $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c
 
 fuzz-%: tests/fuzz/fuzz_%.c tests/fuzz/fuzz_files.h $(wildcard src/*.c) $(HDR)
 	$(FUZZ_CLANG) $(FUZZ_FLAGS) $(FUZZ_EXTRA_FLAGS) tests/fuzz/fuzz_$*.c $(FUZZ_SRC_$*) -o $@ -lm -lpthread $(FUZZ_EXTRA_FLAGS)
+
+# the registered targets, one per line, for a job that shards them itself
+fuzz-targets:
+	@printf '%s\n' $(FUZZ_TARGETS)
 
 # build only; useful on its own to check the harnesses still compile
 fuzz-build: $(addprefix fuzz-,$(FUZZ_TARGETS))
@@ -3887,6 +3898,12 @@ FUZZ_ARGS_http_request = -max_len=16384 -dict=tests/fuzz/http.dict
 FUZZ_ARGS_tokenizer = -max_len=8192
 FUZZ_ARGS_model_load = -max_len=1048576 -dict=tests/fuzz/gguf.dict
 FUZZ_ARGS_gguf_split = -max_len=1048576
+# a model's turn is kilobytes; the split-point property is found on short ones
+FUZZ_ARGS_tool_stream = -max_len=4096 -dict=tests/fuzz/tool_stream.dict
+FUZZ_ARGS_record_check = -max_len=16384 -dict=tests/fuzz/record.dict
+FUZZ_ARGS_session_read = -max_len=65536
+FUZZ_ENV_record_check = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/record_check/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/record_check/ubsan
+FUZZ_ENV_session_read = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/session_read/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/session_read/ubsan
 FUZZ_ENV_model_load = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/model_load/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/model_load/ubsan
 FUZZ_ENV_gguf_split = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/gguf_split/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/gguf_split/ubsan
 
