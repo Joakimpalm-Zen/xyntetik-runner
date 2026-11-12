@@ -157,6 +157,11 @@ static bool hex64(const char *s) {
     return true;
 }
 
+// Whether `k` more bytes at `off` lie before the image's 32-byte trailer.
+static inline bool image_holds(size_t off, size_t k, size_t n) {
+    return off + k <= n - 32;
+}
+
 bool session_read(const char *path, session_image *img) {
     memset(img, 0, sizeof *img);
     FILE *f = plat_fopen(path, "rb");
@@ -179,7 +184,6 @@ bool session_read(const char *path, session_image *img) {
     const char *why = NULL;
     jv *h = NULL;
     size_t off = 0;
-#define NEED(k) do { if (off + (k) > n - 32) { why = "truncated"; goto out; } } while (0)
     if (n < 16 + 4 + 32 || memcmp(b, SESS_MAGIC, 16) != 0) { why = "not a session image"; goto out; }
     {
         uint8_t d[32];
@@ -190,8 +194,8 @@ bool session_read(const char *path, session_image *img) {
     off = 16;
     uint32_t hl, nt, nv;
     uint64_t sl;
-    NEED(4); memcpy(&hl, b + off, 4); off += 4;
-    NEED(hl);
+    if (!image_holds(off, 4, n)) { why = "truncated"; goto out; } memcpy(&hl, b + off, 4); off += 4;
+    if (!image_holds(off, hl, n)) { why = "truncated"; goto out; }
     h = json_parse((const char *)b + off, hl);
     off += hl;
     if (!h || strcmp(jv_str(jv_get(h, "schema_version"), ""), SESS_SCHEMA) != 0) {
@@ -229,27 +233,26 @@ bool session_read(const char *path, session_image *img) {
     if (m->n_ctx < 1 || m->n_prompt < 1 || m->n_tokens < m->n_prompt ||
         m->n_tokens > m->n_ctx || m->generated != m->n_tokens - m->n_prompt ||
         m->max_new < m->generated) { why = "its counts are inconsistent"; goto out; }
-    NEED(4); memcpy(&nt, b + off, 4); off += 4;
+    if (!image_holds(off, 4, n)) { why = "truncated"; goto out; } memcpy(&nt, b + off, 4); off += 4;
     if ((int)nt != m->n_tokens) { why = "its token count disagrees with its header"; goto out; }
-    NEED(4 * (size_t)nt);
+    if (!image_holds(off, 4 * (size_t)nt, n)) { why = "truncated"; goto out; }
     img->tokens = malloc(4 * (size_t)nt);
     if (!img->tokens) { why = "out of memory"; goto out; }
     memcpy(img->tokens, b + off, 4 * (size_t)nt); off += 4 * (size_t)nt;
-    NEED(8); memcpy(&sl, b + off, 8); off += 8;
+    if (!image_holds(off, 8, n)) { why = "truncated"; goto out; } memcpy(&sl, b + off, 8); off += 8;
     if (sl > (uint64_t)1 << 40) { why = "its state is implausibly large"; goto out; }
-    NEED((size_t)sl);
+    if (!image_holds(off, (size_t)sl, n)) { why = "truncated"; goto out; }
     img->state = malloc((size_t)sl ? (size_t)sl : 1);
     if (!img->state) { why = "out of memory"; goto out; }
     memcpy(img->state, b + off, (size_t)sl); off += (size_t)sl;
     img->state_n = (size_t)sl;
-    NEED(4); memcpy(&nv, b + off, 4); off += 4;
-    NEED(4 * (size_t)nv);
+    if (!image_holds(off, 4, n)) { why = "truncated"; goto out; } memcpy(&nv, b + off, 4); off += 4;
+    if (!image_holds(off, 4 * (size_t)nv, n)) { why = "truncated"; goto out; }
     img->logits = malloc(nv ? 4 * (size_t)nv : 1);
     if (!img->logits) { why = "out of memory"; goto out; }
     memcpy(img->logits, b + off, 4 * (size_t)nv); off += 4 * (size_t)nv;
     img->n_vocab = (int)nv;
     if (off != n - 32) why = "it has bytes after its last section";
-#undef NEED
 out:
     jv_free(h);
     free(b);

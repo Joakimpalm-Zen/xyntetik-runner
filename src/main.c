@@ -7225,6 +7225,19 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     return 0;
 }
 
+// The findings array of a doctor report: one JSON object per finding, and the
+// worst severity seen (0 ok, 1 degraded, 2 broken; an info finding moves
+// nothing).
+typedef struct { sbuf *out; int n, worst; } doctor_findings;
+
+static void doctor_finding(doctor_findings *f, int sev, const char *code,
+                           const char *detail, const char *next) {
+    sb_fmt(f->out, "%s{\"severity\":\"%s\",\"code\":\"%s\",\"detail\":\"%s\","
+                   "\"next_step\":\"%s\"}", f->n++ ? "," : "",
+           sev == 2 ? "broken" : sev == 1 ? "degraded" : "info", code, detail, next);
+    if (sev > f->worst) f->worst = sev;
+}
+
 static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     double t0;
     int n_prompt;
@@ -7354,14 +7367,9 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
         sb_lit(&r, "\"");
     }
     sb_lit(&r, "},\"findings\":[");
-    int nf = 0, worst = 0;   // 0 ok, 1 degraded, 2 broken; an info finding (0) moves nothing
-#define FINDING(sev, code, detail, next) do { \
-        sb_fmt(&r, "%s{\"severity\":\"%s\",\"code\":\"%s\",\"detail\":\"%s\"," \
-                   "\"next_step\":\"%s\"}", nf++ ? "," : "", \
-               (sev) == 2 ? "broken" : (sev) == 1 ? "degraded" : "info", code, detail, next); \
-        if ((sev) > worst) worst = (sev); } while (0)
+    doctor_findings fd = { &r, 0, 0 };
     if (dt == TMPL_LLAMA2_FALLBACK)
-        FINDING(2, "template_not_recognised",
+        doctor_finding(&fd, 2, "template_not_recognised",
                 "the model's chat template is not one this build renders; llama-2 markup is used, which the model was not trained on",
                 "pass --chat-template NAME for a supported family, or report the model so its template can be added");
     if (rt->tok.pre_unknown[0]) {
@@ -7371,49 +7379,49 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
         snprintf(det, sizeof det, "tokenizer pre '%s' unknown, GPT-2 split assumed: "
                  "text may tokenize differently from the publisher's tokenizer",
                  rt->tok.pre_unknown);
-        FINDING(1, "tokenizer_pre_unknown", det,
+        doctor_finding(&fd, 1, "tokenizer_pre_unknown", det,
                 "compare a few strings against the model's own tokenizer, and report the model so its split rule can be added");
     }
     if (asked_gpu && gpu_there && !rt->m.gpu)
-        FINDING(1, "gpu_not_used",
+        doctor_finding(&fd, 1, "gpu_not_used",
                 "a GPU is present and was not used for this model; the load output above the report names the reason",
                 "read the load lines for the refusal; a quantization or architecture without a device kernel runs on the CPU");
     else if (rt->m.gpu && rt->m.gpu_layers < rt->m.n_layer)
-        FINDING(1, "partial_offload",
+        doctor_finding(&fd, 1, "partial_offload",
                 "only some layers are on the GPU, so every token crosses between device and host",
                 "use a smaller quantization or a shorter -c so the whole model fits, or accept the split");
     if (!asked_gpu && gpu_there)
-        FINDING(1, "gpu_disabled_by_flag",
+        doctor_finding(&fd, 1, "gpu_disabled_by_flag",
                 "the run asked for --gpu off although a GPU is present",
                 "drop --gpu off to let the model use the device");
     if (!probe_ran)
-        FINDING(2, "probe_did_not_run",
+        doctor_finding(&fd, 2, "probe_did_not_run",
                 "the probe prompt could not be rendered, tokenized or fed in this context",
                 "raise -c, and if it still fails report the model with this file");
     else {
         if (probe_leak)
-            FINDING(2, "template_markup_in_reply",
+            doctor_finding(&fd, 2, "template_markup_in_reply",
                     "the reply contains chat-template markers, so turn framing or stop tokens do not match the model",
                     "check the template name above against the model card; try --chat-template");
         if (!probe_stop)
-            FINDING(1, "did_not_stop",
+            doctor_finding(&fd, 1, "did_not_stop",
                     "the model did not end its turn within the probe's 48 tokens",
                     "if replies run on in real use, the stop token or the template is wrong for this model");
         if (probe_empty)
-            FINDING(2, "empty_reply",
+            doctor_finding(&fd, 2, "empty_reply",
                     "the model produced no visible text",
                     "check the template and that the file is an instruct or chat model");
         else if (!probe_has4)
-            FINDING(1, "wrong_answer",
+            doctor_finding(&fd, 1, "wrong_answer",
                     "the reply to a one-step arithmetic question does not contain the answer",
                     "a very small or heavily quantized model can miss it; otherwise suspect the template or the file");
         if (d_gen > 4 && d_gen / (d_gtime > 0 ? d_gtime : 1e-9) < 1.0)
-            FINDING(1, "very_slow_decode",
+            doctor_finding(&fd, 1, "very_slow_decode",
                     "generation is under one token per second",
                     "check available RAM against the model size with --fit; a model larger than RAM pages from disk");
     }
     if (cap.ram_available_bytes && rt->m.file_size > cap.ram_available_bytes && !rt->m.gpu)
-        FINDING(1, "file_larger_than_available_ram",
+        doctor_finding(&fd, 1, "file_larger_than_available_ram",
                 "the model file is larger than the RAM available right now",
                 "close other programs, pick a smaller quantization, or run --fit for the exact numbers");
     if (cap.cpu_cores != cap.host_cpu_cores || cap.ram_bytes != cap.host_ram_bytes) {
@@ -7432,12 +7440,11 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
                      (double)cap.host_ram_bytes / (double)(1ull << 30));
             strncat(lim, part, sizeof lim - strlen(lim) - 1);
         }
-        FINDING(0, "container_limits", lim,
+        doctor_finding(&fd, 0, "container_limits", lim,
                 "threads, the batch and the RAM checks are sized from these limits; raise the container's CPU or memory limit to give Runner more, or set -t");
     }
-#undef FINDING
     sb_fmt(&r, "],\"verdict\":\"%s\",\"shareable\":\"%s\"}\n",
-           worst == 2 ? "broken" : worst == 1 ? "degraded" : "ok",
+           fd.worst == 2 ? "broken" : fd.worst == 1 ? "degraded" : "ok",
            o->doctor_text ? "contains the probe question and the model's reply; read before sharing"
                        : "no prompt or reply text; file name and machine sizes only");
     if (r.failed) {
@@ -7448,7 +7455,7 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     fwrite(r.s, 1, r.n, stdout);
     free(r.s);
     free(dout.buf);
-    return worst == 2 ? 2 : 0;
+    return fd.worst == 2 ? 2 : 0;
 }
 
 static int run_bench(cli_opts *o, cli_run *rt) {
