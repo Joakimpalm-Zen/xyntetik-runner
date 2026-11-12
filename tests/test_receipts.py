@@ -140,6 +140,35 @@ def test_forgeries_are_unverifiable_before_replay(runner_bin, base, key, tmp_pat
     assert p.returncode == 3 and b"signed by a different key" in p.stderr
 
 
+@pytest.mark.parametrize("which", ["key", "pqkey"])
+def test_fields_appended_after_the_signature_are_not_verified(runner_bin, base, which,
+                                                              request, tmp_path):
+    """The signature covers every byte before its own key. Anything after the
+    signature object is covered by nothing, and a key the signed part does
+    not hold reads as the record's own: a `model_signature` verdict or a
+    `tool_calls` list appended there came back VERIFIED, signed. A signed
+    record ends with its signature and the closing brace, for --verify as
+    for --check-record."""
+    kpath, pub = request.getfixturevalue(which)
+    rec = tmp_path / "r.json"
+    raw = _record(runner_bin, base, rec, "--sign-key", str(kpath))
+    assert _verify(runner_bin, base, rec, "--trust-key", pub).returncode == 0
+    assert raw.endswith(b"}}\n") and b'"model_signature"' not in raw
+    for extra in (b',"model_signature":{"status":"verified","subject_digest":"",'
+                  b'"curve":"P-256","hash":"sha256","resource":"."}',
+                  b',"tool_calls":[{"name":"wire_money","arguments":"{}"}]',
+                  b' ,"note":1'):
+        forged = tmp_path / "forged.json"
+        forged.write_bytes(raw[:-2] + extra + b"}\n")
+        json.loads(forged.read_bytes())          # still one JSON object
+        p = _verify(runner_bin, base, forged, "--trust-key", pub)
+        assert p.returncode == 3 and b"signature does not verify" in p.stderr, (extra, p.stderr[-300:])
+    # bytes after the closing brace too
+    forged.write_bytes(raw + b"{}")
+    p = _verify(runner_bin, base, forged, "--trust-key", pub)
+    assert p.returncode == 3, p.stderr[-300:]
+
+
 def test_unsigned_record_under_require_signed(runner_bin, base, tmp_path):
     rec = tmp_path / "plain.json"
     raw = _record(runner_bin, base, rec)
