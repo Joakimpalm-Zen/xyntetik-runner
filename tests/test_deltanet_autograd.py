@@ -212,7 +212,7 @@ def reference(base, adapter):
         slot = SLOT_NAMES.index(name.split(".")[2])
         side = 0 if name.endswith("lora_a") else 1
         grads[(layer, slot, side)] = p.grad.reshape(-1)
-    return float(loss), grads
+    return float(loss.detach()), grads
 
 
 def runner_grads(base, adapter, tmp):

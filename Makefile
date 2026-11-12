@@ -4068,6 +4068,23 @@ test-cuda-gated: runner test.gguf
 	$(PYTHON) scripts/check-junit.py --no-skips-matching '(?i)cuda|device|gpu' \
 	    --allow-skip 'CUDA runtime is available' .build/ci/cuda-gated.xml
 
+# The tests anchored outside this repository (R6.68.11): torch's float32
+# forward and autograd, transformers' activations, and one real model file.
+# Each of them skips where its package or the file is missing, so `make test`
+# passes without ever running them; this target provides the file, requires
+# the packages and allows no skip but the one macOS-only refusal.
+ANCHOR_TESTS = tests/test_gold_logits.py tests/test_act_trace.py tests/test_deltanet_autograd.py \
+               tests/test_kld_compare.py tests/test_draft_lookup.py
+test-anchors: runner test.gguf $(TEST_LORA_GRAD)
+	@$(PYTHON) -c "import pytest, torch, transformers, accelerate" || { \
+		echo "error: make test-anchors needs pytest, torch, transformers and accelerate for $(PYTHON)"; exit 1; }
+	sh download-model.sh
+	@mkdir -p .build/ci
+	$(PYTHON) -m pytest -q -rs --junitxml=.build/ci/anchors.xml $(ANCHOR_TESTS)
+	$(PYTHON) scripts/check-junit.py --no-skips-matching '.' \
+	    --allow-skip 'this OS refuses a deliberate self-connect' .build/ci/anchors.xml
+
+.PHONY: test-anchors
 .PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
 .PHONY: test-gates test-gates-core test-gates-batch test-python
 .PHONY: test-deepseek2 test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race

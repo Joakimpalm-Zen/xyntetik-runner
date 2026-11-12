@@ -776,6 +776,48 @@ jobs:
           path: .build/ci/
           if-no-files-found: ignore
 
+  # The tests whose expected values come from outside this repository: gold
+  # logits against the publisher's float32 forward in torch, the activation
+  # trace against transformers, the DeltaNet backward against autograd, and
+  # the KLD and lookup-draft cases that need a real model file. They skip on
+  # "could not import torch" and "not present" wherever those are missing,
+  # which until R6.68.11 was every job here and the release gate too: 15 tests
+  # that no change ever ran. This job provides both and allows no skip.
+  # The model is the 145 MB SmolLM2-135M-Instruct Q8_0, fetched by its pinned
+  # sha256 (download-model.sh) behind a cache, so huggingface.co is asked once
+  # per cache lifetime, not once per run.
+  anchors:
+    needs: changes
+    if: needs.changes.outputs.engine == 'true' && needs.changes.outputs.tested != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: pip download cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-anchors-${{ runner.os }}-${{ runner.arch }}-v1
+      - name: model file cache
+        uses: actions/cache@v4
+        with:
+          path: models/SmolLM2-135M-Instruct-Q8_0.gguf
+          key: model-smollm2-135m-instruct-q8_0-5a1395716f79
+      - name: install torch (CPU), transformers and accelerate
+        run: |
+          python3 -m venv .anchor-venv
+          .anchor-venv/bin/python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
+          .anchor-venv/bin/python -m pip install --quiet pytest numpy transformers accelerate safetensors
+      - name: anchored tests, no skip allowed
+        run: python3 scripts/ci-run.py --timeout 1800 anchors -- make -j2 test-anchors PYTHON=.anchor-venv/bin/python
+      - name: CI timing and test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-reports-${{ github.job }}-${{ runner.os }}
+          path: .build/ci/
+          if-no-files-found: ignore
+
   # The whole suite on Windows, which the per-pull-request `windows` job above
   # does NOT run: that job is the build, the platform-only steps and the
   # server conformance suite. Five test files the old hand-picked smoke list
@@ -943,7 +985,7 @@ jobs:
     name: pr-gate
     needs: [changes, make-test, macos, simd-isa-levels, fuzz, windows, conformance,
             conformance-sanitized, consumer-compatibility, template-conformance,
-            thread-sanitizer, t3, windows-suite, reverse-proxy]
+            anchors, thread-sanitizer, t3, windows-suite, reverse-proxy]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
