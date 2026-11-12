@@ -212,6 +212,31 @@ def test_a_split_model_is_signed_part_by_part(runner_bin, model, tmp_path):
     assert not (tmp_path / "partial.sig").exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a quote is not a legal file name character")
+def test_a_resource_name_is_written_as_json_wherever_it_is_recorded(runner_bin, model, tmp_path):
+    """The verdict of a signature check is recorded as JSON (a transcript,
+    a receipt, the provenance route), and it names the manifest entry that
+    matched the model file. That name is a file name, which may hold a quote;
+    it was written as it stood, and the record did not parse."""
+    priv, pub = _key(tmp_path, "prime256v1", "pkcs8")
+    d = tmp_path / "split"
+    d.mkdir()
+    subprocess.run([sys.executable, ROOT / "scripts/gguf-split.py", str(model),
+                    str(d / 'm"q'), "2"], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    p1 = d / 'm"q-00001-of-00002.gguf'
+    assert p1.exists(), list(d.iterdir())
+    sig = tmp_path / "split.sig"
+    p = _run(runner_bin, "--sign-model", p1, "--model-key", priv, "--model-sig", sig)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    rec = tmp_path / "r.json"
+    v = _run(runner_bin, "-m", p1, "-p", "hi", "-n", "1", "--gpu", "off", "-t", "2",
+             "--model-sig", sig, "--model-pubkey", pub, "--require-signed-model",
+             "--transcript", rec)
+    assert v.returncode == 0 and b"all 2 split part" in v.stderr, v.stderr[-400:]
+    ms = json.loads(rec.read_text())["model_signature"]
+    assert ms["status"] == "verified" and ms["resource"] == p1.name, ms
+
+
 def test_refusals(runner_bin, model, tmp_path):
     priv, pub = _key(tmp_path, "prime256v1", "sec1")
     m = tmp_path / "m.gguf"

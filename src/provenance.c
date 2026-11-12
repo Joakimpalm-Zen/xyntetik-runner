@@ -40,8 +40,8 @@ static char    *model_path, *adapter_path;
 static float    adapter_scale;
 static char     adapter_sha[65];
 static bool     adapter_ok;
-static char     sig_json[512];      // oms_result_json, "" = no bundle
-static char     asig_json[512];     // the adapter's, likewise
+static char     sig_json[OMS_RESULT_JSON_CAP];      // oms_result_json, "" = no bundle
+static char     asig_json[OMS_RESULT_JSON_CAP];     // the adapter's, likewise
 static int      env_state;
 static char     env_detail[256];
 static char     loaded_utc[32];

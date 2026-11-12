@@ -2546,8 +2546,8 @@ typedef struct {
     engine e;
     int32_t *toks;
     size_t tok_cap;
-    char model_sig_json[512];     // load-time OMS verdict for the receipt
-    char adapter_sig_json[512];   // and the adapter's (R1.2.3)
+    char model_sig_json[OMS_RESULT_JSON_CAP];     // load-time OMS verdict for the receipt
+    char adapter_sig_json[OMS_RESULT_JSON_CAP];   // and the adapter's (R1.2.3)
     // the measured-envelope verdict the one-shot model loaded under, for its
     // transcript (R1.1.5); unknown on paths that never ran the gate
     int env_state;
