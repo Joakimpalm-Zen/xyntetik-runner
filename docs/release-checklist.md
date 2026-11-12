@@ -215,6 +215,21 @@ project venv, not the system python3).
    string). Put both lines in the PR's gate record. Run it again at the branch's
    final head.
 
+5. **serve soak** on one real model on Metal, after release-check:
+
+   ```sh
+   python3 scripts/soak-serve.py --runner ./runner --model models/<file> \
+     --cycles 100 --cancels 20 --concurrent-seconds 120 --workdir <out dir>
+   ```
+
+   It starts its own server on port 18431, repeats one greedy request, cancels
+   requests mid-prefill and mid-decode in four ways, walks the context limit and
+   runs four clients at once, and exits 0 only with no finding. Quote its last
+   line and the cancel counts in the gate record. A finding is fixed or explained
+   before the PR, like a failed test. On an 8 GB Mac under memory pressure the
+   process's resident size is not a measurement; say so if a growth finding is
+   the only one, and rerun on a quiet machine.
+
 ## 4. CUDA gate (CUDA host), on the pin commit
 
 Build the binary at the pin commit with the pinned PTX and the release recipe
