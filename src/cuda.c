@@ -8859,9 +8859,19 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
                                tn, n_embd, xdim);
         prof_mark(g, PH_NORM);
         if (ly->is_moe) {
+            // The shared expert reads the normed input the routed experts
+            // then overwrite, so it is copied first, in stream order on the
+            // instance's stream (R6.68.15): a decode graph records the copy
+            // and an eager forward orders it before the routed kernels as
+            // before. The synchronous cuMemcpyDtoD it replaces could not be
+            // captured (CUDA_ERROR_STREAM_CAPTURE_IMPLICIT), so every
+            // shared-expert MoE with its experts on the device decoded with
+            // plain launches. A driver without the async call keeps it.
             bool shexp = ly->w_up_shexp && g->shexp_in;
-            if (shexp && cu.MemcpyDtoD(g->shexp_in, g->xb,
-                                       sizeof(float) * (size_t)tn * xdim) != 0)
+            size_t shexp_bytes = sizeof(float) * (size_t)tn * xdim;
+            if (shexp && (cu.MemcpyDtoDAsync
+                              ? cu.MemcpyDtoDAsync(g->shexp_in, g->xb, shexp_bytes, g->stream)
+                              : cu.MemcpyDtoD(g->shexp_in, g->xb, shexp_bytes)) != 0)
                 return false;
             ok = ok && gpu_moe_ffn(g, m, ly, tn, xdim);  // writes FFN output into g->xb
             if (ok && shexp) ok = tile_shexp(g, m, ly, tn, xdim);
