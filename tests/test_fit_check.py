@@ -439,3 +439,37 @@ def test_a_split_expert_moe_is_priced_as_sparse(runner_bin, tmp_path):
     out = p.stdout.decode()
     assert "MoE 2 experts, 1 used" in out, out
     assert "only the routed experts a token actually uses" in out, out
+
+
+# R6.68.55: qwen4exp's context cap. This build runs the sparse-attention
+# indexer dense, which is exact only up to its top_k (2048 in the fixture, as
+# in the real Qwen3.8-Flash-Next file). The check sat in the bind, which runs
+# before any context is set, and never fired: a default load took 4096.
+def _qwen4exp(tmp_path, train_ctx):
+    model = tmp_path / "q.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-qwen4exp.py", str(model)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, QWEN4EXP_TEST_CTX=str(train_ctx)))
+    return model
+
+
+def test_qwen4exp_refuses_a_context_past_its_indexer_top_k(runner_bin, tmp_path):
+    model = _qwen4exp(tmp_path, 8192)
+    load = run(runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "--gpu", "off", "-t", "1",
+               "-c", "4096")
+    assert load.returncode != 0, load
+    assert b"admits contexts up to 2048 tokens (asked 4096)" in load.stderr, load.stderr
+    fit = run(runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off", "-c", "4096")
+    assert fit.returncode == 1, fit
+    assert re.search(r"WILL NOT LOAD .* admits contexts up to 2048 tokens \(asked 4096\)",
+                     fit.stdout.decode()), fit.stdout
+
+
+def test_qwen4exp_holds_a_default_context_to_its_indexer_top_k(runner_bin, tmp_path):
+    model = _qwen4exp(tmp_path, 8192)
+    load = run(runner_bin, "-m", str(model), "-p", "hi", "-n", "1", "--gpu", "off", "-t", "1")
+    assert load.returncode == 0, load
+    assert b"| ctx 2048 |" in load.stdout + load.stderr, load.stderr
+    fit = run(runner_bin, "-m", str(model), "--info", "fit", "--gpu", "off")
+    assert fit.returncode == 0, fit
+    assert b"at ctx 2048" in fit.stdout, fit.stdout

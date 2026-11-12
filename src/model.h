@@ -281,6 +281,10 @@ typedef struct {
     uint64_t  n_agent_required_features;
     int       n_layer, n_embd, n_head, n_head_kv, head_dim, n_ff;
     int       n_vocab, n_ctx_train, rope_dim;
+    // the longest context this file's admission covers, 0 for none: a
+    // qwen4exp file's indexer top_k, the sparse attention this build runs
+    // dense (R6.68.55; model_ctx_admit applies it to a load and to the fit)
+    int       ctx_cap;
     // How /v1/embeddings reads a vector out: {arch}.pooling_type, llama.cpp's
     // enum (0 none, 1 mean, 2 cls, 3 last, 4 rank). Absent reads as 0, and
     // 0 or 1 pool the mean; model_embed implements 3 as the last position.

@@ -837,7 +837,8 @@ int model_kv_ring_rows(int window, int batch, int n_ctx) {
 // R6.68.53: routed, n_expert and n_expert_used, the plan's routed expert banks
 // and expert counts (model_routed_expert_bytes, the load's hot-set rule).
 typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; int trunk; bool v_shared;
-                 unsigned kv_formats; uint64_t routed; int n_expert, n_expert_used; } fit_geom;
+                 unsigned kv_formats; uint64_t routed; int n_expert, n_expert_used;
+                 int ctx_cap, n_ctx_train; } fit_geom;
 
 // R3.44: the qwen35 family's Gated DeltaNet layers own no KV rows
 // (bind_meta_qwen35) unless RUNNER_KV_RECURRENT_ROWS=1 keeps the layout that
@@ -857,6 +858,9 @@ static bool qwen35_kv_rows_typed(const arch_desc *ad) {
 
 static bool model_plan(model_t *m, gguf_file *g, const model_params *p);
 static bool bind_tensors(model_t *m, gguf_file *g, const model_params *p);
+static int model_ctx_default(int n_ctx_train);
+static bool model_ctx_admit(int cap, const char *arch, int asked, int *n_ctx,
+                            char *why, size_t why_n);
 static void model_free_weights(model_t *m);
 
 // The loader's plan of the header for --info fit: its metadata binders
@@ -941,6 +945,8 @@ static bool fit_geometry(gguf_file *g, int n_layer, bool mtp, fit_geom *o,
     o->routed = model_routed_expert_bytes(&pm);
     o->n_expert = pm.n_expert;
     o->n_expert_used = pm.n_expert_used;
+    o->ctx_cap = pm.ctx_cap;
+    o->n_ctx_train = pm.n_ctx_train;
     model_free_weights(&pm);
     return true;
 }
@@ -973,11 +979,9 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
 
     meta_printable(out->arch, sizeof(out->arch), arch);
     out->n_layer   = (int)gguf_get_u32(g, AK("block_count"), 0);
-    int train_ctx  = (int)gguf_get_u32(g, AK("context_length"), 0);
     out->swa           = gguf_get_u32(g, AK("attention.sliding_window"), 0) > 0;
     out->n_expert      = (int)gguf_get_u32(g, AK("expert_count"), 0);
     out->n_expert_used = (int)gguf_get_u32(g, AK("expert_used_count"), 0);
-    out->train_ctx     = train_ctx;
 
     fit_geom geo;
     if (!fit_geometry(g, out->n_layer, mtp, &geo, out->refused, sizeof out->refused))
@@ -987,9 +991,17 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
     out->n_mtp = blocks - geo.trunk;
     out->mtp = mtp && out->n_mtp > 0;
 
-    // Context: what the caller asked for, else the loader's own default.
-    out->n_ctx = n_ctx_want > 0 ? n_ctx_want
-               : (train_ctx > 0 && train_ctx < 4096 ? train_ctx : 4096);
+    // Context: what the caller asked for, else the loader's own default, both
+    // held to the file's admitted cap as a load holds them (R6.68.55). The
+    // trained context is the plan's (2048 when the header has none, as a load
+    // reads it; the header's 0 put the fit's default at 4096)
+    out->train_ctx = geo.n_ctx_train;
+    out->n_ctx = n_ctx_want > 0 ? n_ctx_want : model_ctx_default(geo.n_ctx_train);
+    if (!model_ctx_admit(geo.ctx_cap, out->arch, n_ctx_want, &out->n_ctx,
+                         out->refused, sizeof out->refused)) {
+        free(geo.kv_dim);
+        return false;
+    }
 
     out->weights = gguf_mapped_size(g);
 
@@ -3376,16 +3388,13 @@ static bool bind_meta_qwen4exp(model_t *m, gguf_file *g, const char *arch) {
     // cells and attends the top indexer.top_k of them. Below top_k cells
     // every cell is kept, so attention is exactly dense there; this
     // admission runs dense and caps the context at top_k until the
-    // indexer is implemented (R4.26.2). Stated at load, refused above.
+    // indexer is implemented (R4.26.2). The cap is recorded here and applied
+    // where the context is decided (model_ctx_admit, R6.68.55): it was
+    // checked here against m->n_ctx, which no load has set yet at bind time,
+    // so it never fired.
     {
         uint32_t topk = gguf_get_u32(g, AK("attention.indexer.top_k"), 0);
-        if (topk > 0 && (uint32_t)m->n_ctx > topk) {
-            bind_err(m, "error: qwen4exp sparse attention (indexer top_k "
-                    "%u) is not implemented; this build runs it dense and "
-                    "admits contexts up to %u tokens (asked %d)\n",
-                    topk, topk, m->n_ctx);
-            return false;
-        }
+        m->ctx_cap = topk > (uint32_t)INT_MAX ? INT_MAX : (int)topk;
     }
     // PLE n-gram block: optional, at most one, must be a recurrent block
     gguf_kv *pl = gguf_get(g, AK("ple.layers"));
@@ -6011,9 +6020,32 @@ static bool runtime_placement(model_t *m, const model_params *p) {
     return moe_hot_load(m);
 }
 
+// The context a load takes when none is asked for and no reservation sizes
+// one: the trained context, at most 4096. One rule for the load and the fit.
+static int model_ctx_default(int n_ctx_train) {
+    return n_ctx_train < 4096 ? n_ctx_train : 4096;
+}
+
+// The context against the file's admitted cap (model_t.ctx_cap, R6.68.55): a
+// context the caller asked for past it is refused with the reason in `why`,
+// one the load chose (the default, a reservation's auto-fit) is held to it.
+static bool model_ctx_admit(int cap, const char *arch, int asked, int *n_ctx,
+                            char *why, size_t why_n) {
+    if (cap <= 0 || *n_ctx <= cap) return true;
+    if (asked > 0) {
+        snprintf(why, why_n, "%s sparse attention (indexer top_k %d) is not "
+                 "implemented; this build runs it dense and admits contexts up "
+                 "to %d tokens (asked %d)", arch, cap, cap, asked);
+        return false;
+    }
+    *n_ctx = cap;
+    return true;
+}
+
 // The context and the prompt batch: the request's, or the reservation auto-fit
 // over the RAM and VRAM budgets, or the default; the batch never exceeds it.
-static void runtime_context(model_t *m, const model_params *p) {
+// False when the file's admission refuses the context asked for.
+static bool runtime_context(model_t *m, const model_params *p) {
     int n_ctx = p->n_ctx;
     if (n_ctx <= 0 && (p->reserve_vram_pct > 0 || p->reserve_ram_pct > 0)) {
         // Reservation auto-fit: size the context to fill whatever the
@@ -6067,11 +6099,21 @@ static void runtime_context(model_t *m, const model_params *p) {
                         n_ctx, m->n_ctx_train);
         }
     }
-    if (n_ctx <= 0) n_ctx = m->n_ctx_train < 4096 ? m->n_ctx_train : 4096;
+    if (n_ctx <= 0) n_ctx = model_ctx_default(m->n_ctx_train);
+    char why[256];
+    int chosen = n_ctx;
+    if (!model_ctx_admit(m->ctx_cap, m->arch, p->n_ctx, &n_ctx, why, sizeof why)) {
+        fprintf(stderr, "error: %s\n", why);
+        return false;
+    }
+    if (n_ctx < chosen)
+        fprintf(stderr, "%s: context %d, the indexer's top_k (sparse attention runs "
+                "dense, which is exact up to it)\n", m->arch, n_ctx);
     m->n_ctx = n_ctx;
     int batch_default = p->gpu_mode == GPU_AUTO ? model_gpu_batch_default() : 64;
     m->n_batch = p->n_batch > 0 ? p->n_batch : batch_default;
     if (m->n_batch > n_ctx) m->n_batch = n_ctx;
+    return true;
 }
 
 // Bytes of one instance's KV cache with sliding layers owning `swa_rows`
@@ -6643,7 +6685,7 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     const char *arch = m->arch;
     // runtime buffers
     if (!runtime_placement(m, p)) return false;
-    runtime_context(m, p);
+    if (!runtime_context(m, p)) return false;
     int n_ctx = m->n_ctx;
 
     {
