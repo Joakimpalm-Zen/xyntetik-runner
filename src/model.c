@@ -11815,6 +11815,7 @@ typedef struct {
     float *dxn2;
     float *dao;
     float *tmpE;
+    float *tmpH;   // one head's q/k-norm adjoint (hd_l wide, R6.68.91)
     bool gate;
     float rs;
     int swa;
@@ -11921,6 +11922,9 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     float *dxn2 = calloc((size_t)T * E, sizeof(float));
     float *dao  = calloc((size_t)T * q_dim, sizeof(float));
     float *tmpE = malloc(sizeof(float) * (size_t)E);
+    // a head's norm adjoint, as wide as the layer's head: a stack buffer
+    // of 512 was written past by a wider head (R6.68.91)
+    float *tmpH = malloc(sizeof(float) * (size_t)hd_l);
     // R8.9.4 shapes: the attention output gate keeps its pre-activation and
     // the ungated attention output; the sandwich norms keep each branch's
     // pre-norm output; the residual scale and the per-layer output scale are
@@ -11951,7 +11955,7 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     float *dbr   = malloc(szE);   // a branch output's gradient, per window
     float *dyb   = malloc(sizeof(float) * (size_t)E);  // one scaled row
     bool ok = xn1 && xa && xn2 && q && ao && g && u && dxn1 && dxa && dq &&
-              dk && dv && hact && dhact && dgu && dxn2 && dao && tmpE &&
+              dk && dv && hact && dhact && dgu && dxn2 && dao && tmpE && tmpH &&
               dbr && dyb && (!gate || (gpre && aopre && dg && dxg)) &&
               (!q35 || dqg) &&
               (!ly->post_attn_norm_w || opre) && (!ly->post_ffn_norm_w || fpre) &&
@@ -12023,6 +12027,7 @@ NUM_STAGE bool lbw_state_init(model_t *m, int l, int T, float *dx, lbw_state *s)
     s->dxn2 = dxn2;
     s->dao = dao;
     s->tmpE = tmpE;
+    s->tmpH = tmpH;
     s->gate = gate;
     s->rs = rs;
     s->swa = swa;
@@ -12630,7 +12635,7 @@ NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s
             float *dqt = dq + (size_t)t * q_dim;
             const float *qp = qpre + (size_t)t * q_dim;
             for (int h = 0; h < n_head; h++) {
-                float tmp[512];
+                float *tmp = s->tmpH;
                 memset(tmp, 0, sizeof(float) * (size_t)hd_l);
                 rmsnorm_bw(qp + (size_t)h * hd_l, ly->qnorm_w,
                            dqt + (size_t)h * hd_l, tmp, hd_l, m->rms_eps);
@@ -12642,7 +12647,7 @@ NUM_STAGE void lbw_projections(model_t *m, int l, int T, float *dx, lbw_state *s
             float *dkt = dk + (size_t)t * kv_dim;
             const float *kp = kpre + (size_t)t * kv_dim;
             for (int h = 0; h < n_kv; h++) {
-                float tmp[512];
+                float *tmp = s->tmpH;
                 memset(tmp, 0, sizeof(float) * (size_t)hd_l);
                 rmsnorm_bw(kp + (size_t)h * hd_l, ly->knorm_w,
                            dkt + (size_t)h * hd_l, tmp, hd_l, m->rms_eps);
@@ -12767,7 +12772,7 @@ static void lbw_state_free(lbw_state *s) {
     free(qpre); free(kpre);
     free(xn1); free(xa); free(xn2); free(q); free(ao); free(g); free(u);
     free(dxn1); free(dxa); free(dq); free(dk); free(dv); free(hact);
-    free(dhact); free(dgu); free(dxn2); free(dao); free(tmpE);
+    free(dhact); free(dgu); free(dxn2); free(dao); free(tmpE); free(s->tmpH);
     free(gpre); free(aopre); free(dg); free(dxg); free(opre); free(fpre);
     free(s->dqg);
     free(dbr); free(dyb);
