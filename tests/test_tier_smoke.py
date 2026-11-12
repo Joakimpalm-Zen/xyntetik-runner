@@ -28,6 +28,8 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SMOKE = ROOT / "scripts" / "tier-smoke.py"
 FAKE = ROOT / "tests" / "fixtures" / "tier_smoke_fake_runner.py"
+# the build commit the stand-in names by default: a clean build (R6.67)
+CLEAN = "d" * 40
 
 spec = importlib.util.spec_from_file_location("model_tiers", ROOT / "scripts" / "model-tiers.py")
 mt = importlib.util.module_from_spec(spec)
@@ -101,8 +103,11 @@ def smoke(world, *extra, env=None):
            "--manifest", str(world["manifest"]), "--pins", str(world["pins"]),
            "--row", "toy-q8_0", "--model", str(world["model"]),
            "--out", str(world["out"])] + list(extra)
-    # a None value removes the variable from the smoke's environment
-    e = {k: v for k, v in dict(os.environ, **(env or {})).items() if v is not None}
+    # a None value removes the variable from the smoke's environment; the
+    # stand-in names a clean build commit unless the test says otherwise,
+    # since writing a pin needs one (R6.67)
+    e = dict(os.environ, FAKE_RUNNER_COMMIT=CLEAN)
+    e = {k: v for k, v in dict(e, **(env or {})).items() if v is not None}
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           text=True, env=e)
 
@@ -153,13 +158,16 @@ def test_a_recorded_cell_names_the_build_that_wrote_it(world):
     r = smoke(world, "--backend", "metal", "--record")
     assert r.returncode == 0, r.stdout
     cell = mt.load(world["roster"])["rows"][0]["backends"]["metal"]
-    assert cell["build"] == {"binary_sha256": "ab" * 32, "compiler": "13.3.0"}
+    assert cell["build"] == {"binary_sha256": "ab" * 32, "compiler": "13.3.0",
+                             "commit": CLEAN, "dirty": False}
     assert result(world)["build"] == cell["build"]
 
 
 def test_a_runner_without_the_provenance_route_records_no_build(world):
     env = {"FAKE_RUNNER_NO_PROVENANCE": "1"}
-    assert smoke(world, "--backend", "metal", "--pin", env=env).returncode == 0
+    # no route, no commit: a pin needs --allow-unknown-commit (R6.67)
+    assert smoke(world, "--backend", "metal", "--pin", "--allow-unknown-commit",
+                 env=env).returncode == 0
     r = smoke(world, "--backend", "metal", "--record", env=env)
     assert r.returncode == 0, r.stdout
     assert result(world)["build"] is None
@@ -225,7 +233,8 @@ def test_the_pin_manifest_records_what_was_pinned(world):
     assert pin["bytes"] == len(data)
     assert pin["pinned"]["runner_version"] == "9.8.7"
     # the binary that wrote the pin, as it states itself (R6.46)
-    assert pin["pinned"]["build"] == {"binary_sha256": "ab" * 32, "compiler": "13.3.0"}
+    assert pin["pinned"]["build"] == {"binary_sha256": "ab" * 32, "compiler": "13.3.0",
+                                      "commit": CLEAN, "dirty": False}
 
 
 def manifest_of(world):
@@ -415,7 +424,8 @@ def companion_smoke(world, comp, row, *extra, env=None):
            "--row", row, "--model", str(comp), "--with-model", str(world["model"]),
            "--backend", "metal", "--out", str(world["out"])] + list(extra)
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          text=True, env=dict(os.environ, **(env or {})))
+                          text=True,
+                          env=dict(os.environ, FAKE_RUNNER_COMMIT=CLEAN, **(env or {})))
 
 
 def test_a_head_runs_beside_its_trunk_and_pins_under_its_own_row(world):
@@ -559,38 +569,61 @@ def test_every_committed_pin_spec_carries_its_rows_backend_args():
 # R6.67: a pin's commit is the commit the serving binary was built from, as
 # the binary states it, never the HEAD of the checkout that runs the script
 # (a binary built in another worktree or on a branch pinned a commit that
-# never produced its bytes).
+# never produced its bytes). Writing a pin needs that commit; a run that only
+# checks against pins records null without one.
 OTHER = "c" * 40
+UNCLEAN = [({"FAKE_RUNNER_COMMIT": None}, "reports no build commit"),
+           ({"FAKE_RUNNER_NO_PROVENANCE": "1"}, "reports no build commit"),
+           ({"FAKE_RUNNER_DIRTY": "1"}, "tracked changes")]
 
 
-def _pinned(world):
+def _pins(world):
+    if not world["manifest"].exists():
+        return {}
     man = json.loads(world["manifest"].read_text(encoding="utf-8"))
-    return man["rows"]["toy-q8_0"]["pins"]["macos-arm64-metal/metal"]["pinned"]
+    return (man.get("rows", {}).get("toy-q8_0") or {}).get("pins", {})
 
 
 def test_a_pin_records_the_commit_the_binary_was_built_from(world):
     env = {"FAKE_RUNNER_COMMIT": OTHER}
     assert smoke(world, "--backend", "metal", "--pin", env=env).returncode == 0
-    assert _pinned(world)["commit"] == OTHER
+    assert _pins(world)["macos-arm64-metal/metal"]["pinned"]["commit"] == OTHER
     r = smoke(world, "--backend", "metal", "--record", env=env)
     assert r.returncode == 0, r.stdout
     assert result(world)["commit"] == OTHER
     assert mt.load(world["roster"])["rows"][0]["backends"]["metal"]["commit"] == OTHER
 
 
-@pytest.mark.parametrize("env,why", [
-    ({}, "reports no build commit"),
-    ({"FAKE_RUNNER_NO_PROVENANCE": "1"}, "reports no build commit"),
-    ({"FAKE_RUNNER_COMMIT": OTHER, "FAKE_RUNNER_DIRTY": "1"}, "tracked changes"),
-])
-def test_a_binary_without_a_clean_commit_pins_none_and_says_so(world, env, why):
-    """No commit (an older or unstamped binary, or a build from a tree with
-    tracked changes): the pin and the record say null, never the checkout's
-    HEAD, and the run says why, once."""
+@pytest.mark.parametrize("env,why", UNCLEAN)
+def test_no_pin_is_written_without_the_binary_commit(world, env, why):
+    """A pin is what an admission rests on: with no commit named (an older or
+    unstamped binary, a runner without the provenance route) or a build with
+    tracked changes, --pin refuses, says how to fix it, and writes nothing."""
     p = smoke(world, "--backend", "metal", "--pin", env=env)
+    assert p.returncode != 0, p.stdout
+    assert "not pinned" in p.stdout and why in p.stdout, p.stdout
+    assert "clean checkout" in p.stdout and "--allow-unknown-commit" in p.stdout
+    assert "macos-arm64-metal/metal" not in _pins(world)
+    assert not any(f.is_file() for f in world["pins"].glob("**/*"))
+
+
+@pytest.mark.parametrize("env,why", UNCLEAN)
+def test_allow_unknown_commit_writes_the_pin_with_null_and_says_why(world, env, why):
+    p = smoke(world, "--backend", "metal", "--pin", "--allow-unknown-commit", env=env)
     assert p.returncode == 0, p.stdout
-    assert _pinned(world)["commit"] is None
-    assert p.stdout.count(why) == 1, p.stdout   # stderr is merged into stdout
-    r = smoke(world, "--backend", "metal", "--record", env=env)
-    assert r.returncode == 0, r.stdout
-    assert result(world)["commit"] is None
+    pinned = _pins(world)["macos-arm64-metal/metal"]["pinned"]
+    assert pinned["commit"] is None
+    assert why in pinned["commit_unknown"], pinned
+
+
+@pytest.mark.parametrize("env,why", UNCLEAN)
+def test_a_check_against_a_pin_records_null_and_warns_once(world, env, why):
+    """Checking and recording against an existing pin only reads it: the
+    result says commit null, never the checkout's HEAD, and the run warns
+    once; nothing is refused."""
+    assert smoke(world, "--backend", "metal", "--pin").returncode == 0
+    for extra in ((), ("--record",)):
+        r = smoke(world, "--backend", "metal", *extra, env=env)
+        assert r.returncode == 0, r.stdout
+        assert r.stdout.count(why) == 1, r.stdout   # stderr is merged into stdout
+        assert result(world)["commit"] is None

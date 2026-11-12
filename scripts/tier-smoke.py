@@ -115,27 +115,27 @@ _WARNED = set()
 
 
 def build_commit(build):
-    """The commit the serving binary was built from, as the binary states it
-    (GET /v1/runner/provenance's build.commit, stamped at build time, R6.67),
-    and None with the reason when it names none: a binary that reports no
-    commit (older than the stamp, or built outside a git tree), or one built
-    from a tree whose tracked files differed from that commit. Never the HEAD
-    of the checkout running this script: a binary built in another worktree
-    or on a branch pinned a commit that never produced its bytes (the
-    mellum2.1 q5_k_s CUDA pin of 2026-11-04). The reason is said once a run."""
+    """(commit, why): the commit the serving binary was built from, as the
+    binary states it (GET /v1/runner/provenance's build.commit, stamped at
+    build time, R6.67), or None and the reason it names none: a binary that
+    reports no commit (older than the stamp, or built outside a git tree), or
+    one built from a tree whose tracked files differed from that commit.
+    Never the HEAD of the checkout running this script: a binary built in
+    another worktree or on a branch pinned a commit that never produced its
+    bytes (the mellum2.1 q5_k_s CUDA pin of 2026-11-04)."""
     c = (build or {}).get("commit")
-    why = None
     if not c:
-        why = "the --runner binary reports no build commit"
-    elif (build or {}).get("dirty"):
-        why = f"the --runner binary was built from {c[:12]} with tracked changes"
-    if why is None:
-        return c
+        return None, "the --runner binary reports no build commit"
+    if (build or {}).get("dirty"):
+        return None, f"the --runner binary was built from {c[:12]} with tracked changes"
+    return c, None
+
+
+def warn_once(why):
     if why not in _WARNED:
         _WARNED.add(why)
-        print(f"warning: {why}; the pin and the record say commit null rather than "
-              f"name a commit that did not produce it", file=sys.stderr)
-    return None
+        print(f"warning: {why}; the record says commit null rather than name a "
+              f"commit that did not produce it", file=sys.stderr)
 
 
 def caps_of(runner):
@@ -309,7 +309,7 @@ COMPANION_FLAG = {"mtp-file": "--mtp-file", "lora": "--lora"}
 
 
 def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
-              pin, timeout, with_row=None, with_paths=None):
+              pin, timeout, with_row=None, with_paths=None, allow_unknown_commit=False):
     """One gate run; returns the result document (schema tier-smoke-result.v1).
 
     A companion row (runs_with) is run as the model it names plus this file:
@@ -372,7 +372,7 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
         seconds = round(time.monotonic() - t0, 2)
         with open(log, "rb") as f:
             server_log = f.read().decode("utf-8", "replace")
-    commit = build_commit(build)
+    commit, commit_why = build_commit(build)
 
     # the backend's own statement that it took the model; a fallback line
     # means it did not, whatever printed before it
@@ -401,6 +401,14 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
             raise SystemExit(f"{row['id']} {key} is already pinned ({rel(pin_path)}); "
                              f"retire it (--retire), with the reason in the commit, "
                              f"to re-pin")
+        # A pin is the record an admission rests on, so it is not written
+        # without the commit that produced its bytes (R6.67), unless told to
+        if commit_why and not allow_unknown_commit:
+            raise SystemExit(f"{row['id']} {key}: not pinned: {commit_why}, so the pin "
+                             f"would name no commit that produced its bytes. Build the "
+                             f"runner from a clean checkout of a commit (git status "
+                             f"clean, then make) and pin again, or pass "
+                             f"--allow-unknown-commit to write it with commit null")
         shown = out.decode("utf-8", "replace")
         if not found:
             raise SystemExit(f"{row['id']} {key}: the reply does not name {expect!r}, so "
@@ -422,6 +430,10 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
                                  .date().isoformat(),
                                  "runner_version": caps["version"],
                                  "commit": commit}}
+        if commit_why:
+            entry[key]["pinned"]["commit_unknown"] = commit_why
+            print(f"warning: {commit_why}; pinned with commit null "
+                  f"(--allow-unknown-commit)", file=sys.stderr)
         if build:
             entry[key]["pinned"]["build"] = build
         status = "pinned"
@@ -442,6 +454,8 @@ def smoke_one(row, backend, dc, model_paths, runner, caps, manifest, pins_dir,
                              f"minimum of {minimum}: retire it (--retire) and pin "
                              f"again rather than compare against it")
         status = "match" if out == want else "mismatch"
+        if commit_why:
+            warn_once(commit_why)
     shown_args = ["-m", os.path.basename(model)] + \
         [os.path.basename(a) if a in companion[1:] else a for a in companion] + \
         ["--serve", "-c", str(spec["ctx"])] + extra[len(companion):]
@@ -494,6 +508,9 @@ def main():
     ap.add_argument("--device-class", help="default: matched from this machine's --caps")
     ap.add_argument("--pin", action="store_true",
                     help="write the pin (a row and backend with none yet)")
+    ap.add_argument("--allow-unknown-commit", action="store_true",
+                    help="with --pin: write the pin although the binary names no clean "
+                         "build commit (commit null, and the pin says why)")
     ap.add_argument("--record", action="store_true",
                     help="write the result into docs/model-tiers.json")
     ap.add_argument("--retire", action="store_true",
@@ -563,7 +580,8 @@ def main():
             failed += 1
             continue
         res = smoke_one(row, backend, dc, paths, runner, caps, manifest, args.pins,
-                        args.pin, args.timeout, with_row, with_paths)
+                        args.pin, args.timeout, with_row, with_paths,
+                        args.allow_unknown_commit)
         if args.pin:
             write_json(manifest, args.manifest)
         if args.out:
