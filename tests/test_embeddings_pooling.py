@@ -43,8 +43,8 @@ def _fixture(tmp_path_factory, name, *flags):
     return m
 
 
-def _embedding_rows(path):
-    """token_embd.weight as a list of float rows, read straight from the GGUF."""
+def _embedding_table(path):
+    """The file's bytes, and where token_embd.weight sits in them: offset, width, rows."""
     with open(path, "rb") as f:
         data = f.read()
     at = 0
@@ -88,7 +88,13 @@ def _embedding_rows(path):
     dims, ttype, off = infos["token_embd.weight"]
     assert ttype == 0, "the fixture's embedding table is F32"
     width, rows = dims
-    flat = struct.unpack_from(f"<{width * rows}f", data, base + off)
+    return data, base + off, width, rows
+
+
+def _embedding_rows(path):
+    """token_embd.weight as a list of float rows, read straight from the GGUF."""
+    data, at, width, rows = _embedding_table(path)
+    flat = struct.unpack_from(f"<{width * rows}f", data, at)
     return [flat[r * width:(r + 1) * width] for r in range(rows)]
 
 
@@ -228,3 +234,35 @@ def test_a_fully_offloaded_model_embeds_on_the_device(runner_bin, tmp_path, pool
         assert ran == (arm == "device"), said[-2000:]
     assert _cos(vec["cpu"], vec["device"]) > 1 - 1e-5
     assert max(abs(a - b) for a, b in zip(vec["cpu"], vec["device"])) < 1e-3
+
+
+def test_a_non_finite_embedding_is_an_error_not_invalid_json(runner_bin, tmp_path_factory):
+    """JSON has no NaN and no infinity, and printf writes them as `nan` and
+    `inf`: a forward that went non-finite (here a NaN in every row of the
+    embedding table; in the field an overflowed activation or a failed kernel)
+    answered 200 with a body no parser takes, and as base64 it handed the
+    client NaN bytes with nothing to tell them by. It is an error the client
+    can read, in both encodings."""
+    m = _fixture(tmp_path_factory, "nan", "--pooling", "1")
+    data, at, width, rows = _embedding_table(m)
+    data = bytearray(data)
+    for r in range(rows):
+        struct.pack_into("<f", data, at + r * width * 4, float("nan"))
+    m.write_bytes(data)
+    with _serve(runner_bin, m) as srv:
+        for fmt in ("float", "base64"):
+            req = urllib.request.Request(
+                srv.base_url + "/v1/embeddings",
+                data=json.dumps({"input": "hello there", "encoding_format": fmt}).encode(),
+                headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    status, raw = r.status, r.read()
+            except urllib.error.HTTPError as e:
+                status, raw = e.code, e.read()
+            body = json.loads(raw)   # whatever the status, the body parses
+            assert status == 500, (fmt, raw[:200])
+            assert "non-finite" in body["error"]["message"], body
+        # the server is still there for the next request
+        code, body = _embed(srv, "once more")
+        assert code == 500, body

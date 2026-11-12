@@ -1,5 +1,6 @@
 #include "decide.h"
 #include "envelope.h"
+#include "fpclass.h"
 #include "runner.h"
 #include <math.h>
 #include <stdatomic.h>
@@ -327,9 +328,14 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
         sb_lit(out, "],\"logprobs\":[");
         // nine significant digits, the precision --score prints: at six
         // decimals a last-bit difference between two feeds was invisible
-        for (int j = 0; j < n_opt; j++) sb_fmt(out, "%s%.9g", j ? "," : "", res[j].lp);
+        for (int j = 0; j < n_opt; j++) { if (j) sb_lit(out, ","); sb_num9(out, res[j].lp); }
         sb_lit(out, "],\"probs\":[");
-        for (int j = 0; j < n_opt; j++) sb_fmt(out, "%s%.6g", j ? "," : "", exp(res[j].lp - mx) / z);
+        for (int j = 0; j < n_opt; j++) {
+            double pr = exp(res[j].lp - mx) / z;
+            if (j) sb_lit(out, ",");
+            if (fp_isfinite(pr)) sb_fmt(out, "%.6g", pr);
+            else sb_lit(out, "null");
+        }
         sb_fmt(out, "],\"argmax\":%d,\"n_tokens\":[", argmax);
         for (int j = 0; j < n_opt; j++) sb_fmt(out, "%s%d", j ? "," : "", res[j].n_tok);
         sb_lit(out, "]}");
@@ -534,11 +540,18 @@ int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
         // logistic of the logit, written so neither tail overflows
         double p = r->logit >= 0 ? 1.0 / (1.0 + exp(-r->logit))
                                  : exp(r->logit) / (1.0 + exp(r->logit));
-        sb_fmt(out, "%s{\"index\":%d,\"relevance_score\":%.9g,\"logit\":%.9g,"
-                    "\"margin\":", k ? "," : "", r->idx, p, r->logit);
-        if (k + 1 < docs->n) sb_fmt(out, "%.9g", r->logit - rows[k + 1].logit);
+        sb_fmt(out, "%s{\"index\":%d,\"relevance_score\":", k ? "," : "", r->idx);
+        sb_num9(out, p);
+        sb_lit(out, ",\"logit\":");
+        sb_num9(out, r->logit);
+        sb_lit(out, ",\"margin\":");
+        if (k + 1 < docs->n) sb_num9(out, r->logit - rows[k + 1].logit);
         else                 sb_lit(out, "null");
-        sb_fmt(out, ",\"logprobs\":{\"yes\":%.9g,\"no\":%.9g}", r->lp_yes, r->lp_no);
+        sb_lit(out, ",\"logprobs\":{\"yes\":");
+        sb_num9(out, r->lp_yes);
+        sb_lit(out, ",\"no\":");
+        sb_num9(out, r->lp_no);
+        sb_lit(out, "}");
         if (ret_docs) {
             const char *d = rr_doc_text(docs->items[r->idx]);
             sb_lit(out, ",\"document\":{\"text\":\"");
