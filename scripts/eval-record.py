@@ -42,6 +42,7 @@ import sys
 import tempfile
 
 from file_digest import sha256_file
+from server_probe import low_free_port
 
 SCHEMA = "xyntetik.runner.eval.v1"
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -97,9 +98,14 @@ def write_record(model, kind, rec, sign_key, runner):
 def fidelity(args):
     with tempfile.TemporaryDirectory() as td:
         res_path = os.path.join(td, "kld.json")
+        # ports of this evaluation's own: the comparison's two defaults are
+        # fixed, so a second evaluation at the same time collided with the first
+        port_a = low_free_port()
+        port_b = low_free_port(avoid=(port_a,))
         cmd = [sys.executable, str(ROOT / "scripts" / "kld-compare-raw.py"),
                "--model-a", args.model, "--model-b", args.reference,
                "--runner", args.runner, "--corpus", args.corpus,
+               "--port-a", str(port_a), "--port-b", str(port_b),
                "--max-positions", str(args.max_positions), "--out", res_path]
         if args.threads:
             cmd += ["--threads", str(args.threads)]

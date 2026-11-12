@@ -221,6 +221,49 @@ def test_raw_ab_run_records_each_side(runner_bin, corpus):
     assert result["sides"]["b"] == {"gpu": "off", "args": ["-t", "1"], "env": []}
 
 
+@pytest.mark.parametrize("script", ["kld-compare.py", "kld-compare-raw.py"])
+def test_a_server_already_on_the_port_is_not_scored(runner_bin, corpus, tmp_path, script):
+    """A comparison starts a server for each of its files and must score
+    those. Its wait took any server that answered on the port for its own,
+    so with another one already there (a second comparison, an earlier run
+    still up) it scored that server's model under this file's name. It is
+    refused now: the server that answers has to be the process started."""
+    model = ROOT / "test.gguf"
+    if not model.exists():
+        pytest.skip("test.gguf fixture not built")
+    other = subprocess.Popen(
+        [str(runner_bin), "-m", str(model), "--serve", "--no-tray",
+         "--port", "28731", "--gpu", "off"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        import time
+        import urllib.request
+        for _ in range(200):
+            try:
+                urllib.request.urlopen("http://127.0.0.1:28731/v1/models", timeout=1)
+                break
+            except Exception:
+                time.sleep(0.25)
+        else:
+            pytest.fail("the other server did not come up")
+        # another file with the same base name, as two folders of one model have
+        mine = tmp_path / "test.gguf"
+        q = subprocess.run([str(runner_bin), "-m", str(model), "--quantize", str(mine),
+                            "--quant", "q8_0"], cwd=ROOT, capture_output=True, timeout=120)
+        assert q.returncode == 0, q.stderr.decode(errors="replace")
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / script), "--runner", str(runner_bin),
+             "--model-a", str(mine), "--model-b", str(model),
+             "--port-a", "28731", "--port-b", "28732",
+             "--corpus", str(corpus), "--max-positions", "3"],
+            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
+        assert proc.returncode != 0, proc.stdout[-400:]
+        assert "28731" in proc.stderr and "another" in proc.stderr, proc.stderr[-600:]
+    finally:
+        other.kill()
+        other.wait()
+
+
 # CI 2026-10-23: the raw A/B run died polling 127.0.0.1:28722 with
 # BadStatusLine "GET /v1/models HTTP/1.1", its own request read back. A port
 # inside the OS's ephemeral range can be handed to a connecting socket as its
