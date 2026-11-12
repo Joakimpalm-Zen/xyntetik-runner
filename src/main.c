@@ -1806,6 +1806,7 @@ static int run_fit_check(const char *path, int n_ctx_want,
     if (mp->gpu_mode != GPU_OFF && !cpu_why && gpu_available(gname, sizeof gname) &&
         gpu_offload_budget(mp->reserve_vram_pct, &gbudget, &gheadroom))
         model_fit_gpu(&g, &f, gbudget, gheadroom, mp->gpu_layers_override, host_experts);
+    if (getenv("RUNNER_DEBUG_VRAM")) model_fit_print_geometry(&g, &f);
     // the loader's own line has the same two figures (cuda.c, gpu-split)
     if (f.gpu && getenv("RUNNER_DEBUG_VRAM")) {
         fprintf(stderr, "fit: (bytes: fixed %llu, headroom %llu)\n",

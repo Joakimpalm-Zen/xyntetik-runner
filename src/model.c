@@ -1252,6 +1252,57 @@ static uint64_t fit_layer_host_expert_bytes(gguf_file *g, int l) {
     return wb;
 }
 
+// R3.46: a hybrid's recurrent state and scratch, by the plan's own rule
+// (model_gpu_recurrent_cost); the families cuda.c runs on the device (lfm2's
+// short convolution runs on the CPU only: no device state). *kind is the
+// MODEL_GPU_REC_* the device charges; the count is of the trunk's layers that
+// hold that state (R3.47), as the loader types them (bind_layer): qwen35's
+// DeltaNet layers off the attention interval, granitehybrid's head_count_kv 0,
+// nemotron_h's head_count_kv and feed_forward_length both 0; every trunk layer
+// under the 1.15.0 layout.
+static uint64_t fit_rec_layers(gguf_file *g, int n_layer, int *kind) {
+    char key[128];
+    const char *arch = gguf_get_str(g, "general.architecture", "");
+    const arch_desc *ad = arch_find(arch);
+    int rec = ad->rec == ARCH_REC_DELTANET ? MODEL_GPU_REC_DELTANET
+            : ad->rec == ARCH_REC_MAMBA2 ? MODEL_GPU_REC_MAMBA2
+            : MODEL_GPU_REC_NONE;
+    uint64_t rec_n = 0;
+    if (rec != MODEL_GPU_REC_NONE && recurrent_layout_1150()) rec_n = (uint64_t)n_layer;
+    else if (rec == MODEL_GPU_REC_DELTANET) {
+        uint32_t every = gguf_get_u32(g, AK("full_attention_interval"), 4);
+        for (int l = 0; l < n_layer; l++) if (!every || (l + 1) % every != 0) rec_n++;
+    } else if (rec == MODEL_GPU_REC_MAMBA2) {
+        bool nemo = arch_family(ad) == ARCH_NEMOTRON_H;
+        for (int l = 0; l < n_layer; l++)
+            if (gguf_get_u32_idx(g, AK("attention.head_count_kv"), (uint64_t)l, 0) == 0 &&
+                (!nemo || gguf_get_u32_idx(g, AK("feed_forward_length"), (uint64_t)l, 0) == 0))
+                rec_n++;
+    }
+    *kind = rec;
+    return rec_n;
+}
+
+// RUNNER_DEBUG_VRAM: the geometry this fit predicts, in the shape of the
+// line a load prints from the model it built (model_debug_geometry), so
+// tests/test_fit_matches_load.py can hold the two equal field by field.
+void model_fit_print_geometry(gguf_file *g, const model_fit *f) {
+    const char *arch = gguf_get_str(g, "general.architecture", "");
+    bool *is_swa = calloc((size_t)(f->n_layer > 0 ? f->n_layer : 1), sizeof(bool));
+    int window = is_swa ? fit_swa_layers(g, arch, f->n_layer, f->train_ctx, is_swa) : 0;
+    int n_swa = 0;
+    for (int l = 0; window > 0 && l < f->n_layer; l++) n_swa += is_swa[l];
+    free(is_swa);
+    int rec;
+    uint64_t rec_n = fit_rec_layers(g, f->n_layer, &rec);
+    fprintf(stderr, "fit: (geometry: layers %d, mtp %d, kv f16 %llu, q8 %llu, k8v4 %llu, "
+            "fp4 %llu per token, sliding %d at window %d, recurrent %llu)\n",
+            f->n_layer, f->mtp ? f->n_mtp : 0,
+            (unsigned long long)f->kv_f16_per_tok, (unsigned long long)f->kv_q8_per_tok,
+            (unsigned long long)f->kv_k8v4_per_tok, (unsigned long long)f->kv_fp4_per_tok,
+            n_swa, n_swa ? window : 0, (unsigned long long)rec_n);
+}
+
 bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
                    uint64_t headroom, int max_layers, bool host_experts) {
     if (f->n_layer <= 0) return false;
@@ -1272,34 +1323,13 @@ bool model_fit_gpu(gguf_file *g, model_fit *f, uint64_t budget,
             if (w > n_ff) n_ff = w;
         }
     if (!n_ff) n_ff = 4 * n_embd;
-    // R3.46: a hybrid's recurrent state and scratch, by the plan's own rule
-    // (model_gpu_recurrent_cost); the families cuda.c runs on the device
-    // (lfm2's short convolution runs on the CPU only: no device state)
-    const arch_desc *ad = arch_find(arch);
-    int rec = ad->rec == ARCH_REC_DELTANET ? MODEL_GPU_REC_DELTANET
-            : ad->rec == ARCH_REC_MAMBA2 ? MODEL_GPU_REC_MAMBA2
-            : MODEL_GPU_REC_NONE;
+    int rec;
+    uint64_t rec_n = fit_rec_layers(g, f->n_layer, &rec);
     uint64_t ssm_conv   = gguf_get_u32(g, AK("ssm.conv_kernel"), 0);
     uint64_t ssm_inner  = gguf_get_u32(g, AK("ssm.inner_size"), 0);
     uint64_t ssm_state  = gguf_get_u32(g, AK("ssm.state_size"), 0);
     uint64_t ssm_groups = gguf_get_u32(g, AK("ssm.group_count"), 0);
     uint64_t ssm_heads  = gguf_get_u32(g, AK("ssm.time_step_rank"), 0);
-    // R3.47: the layers that hold recurrent state, as the loader types them
-    // (bind_layer): qwen35's DeltaNet layers off the attention interval,
-    // granitehybrid's head_count_kv 0, nemotron_h's head_count_kv and
-    // feed_forward_length both 0; every trunk layer under the 1.15.0 layout
-    uint64_t rec_n = 0;
-    if (rec != MODEL_GPU_REC_NONE && recurrent_layout_1150()) rec_n = (uint64_t)f->n_layer;
-    else if (rec == MODEL_GPU_REC_DELTANET) {
-        uint32_t every = gguf_get_u32(g, AK("full_attention_interval"), 4);
-        for (int l = 0; l < f->n_layer; l++) if (!every || (l + 1) % every != 0) rec_n++;
-    } else if (rec == MODEL_GPU_REC_MAMBA2) {
-        bool nemo = arch_family(ad) == ARCH_NEMOTRON_H;
-        for (int l = 0; l < f->n_layer; l++)
-            if (gguf_get_u32_idx(g, AK("attention.head_count_kv"), (uint64_t)l, 0) == 0 &&
-                (!nemo || gguf_get_u32_idx(g, AK("feed_forward_length"), (uint64_t)l, 0) == 0))
-                rec_n++;
-    }
     fit_geom geo;
     const int blocks = f->n_layer + f->n_mtp;   // the trunk, then the declared NextN/MTP blocks
     if (!fit_geometry(g, arch, blocks, f->mtp, &geo)) return false;
@@ -2291,6 +2321,27 @@ void model_sampling_file(gguf_file *gf, sampler_file *out) {
     }
 }
 
+// RUNNER_DEBUG_VRAM: the geometry this load laid out, from the model it built,
+// in the shape of the fit's line (model_fit_print_geometry): the trunk, the
+// NextN/MTP block bound, the KV bytes a token costs (every layer that owns its
+// rows, and the bound block's), the sliding layers and their window, and the
+// layers whose recurrent state a device charges (cuda.c's own count).
+static void model_debug_geometry(const model_t *m) {
+    if (!getenv("RUNNER_DEBUG_VRAM")) return;
+    size_t kv = 0;
+    for (int l = 0; l < m->n_layer; l++)
+        if (model_kv_owner(m, l) == l) kv += model_kv_row_bytes_sum(m, l);
+    if (m->mtp_ready) kv += model_kv_row_bytes_sum(m, m->n_layer);
+    int n_swa = 0;
+    for (int l = 0; m->swa_window > 0 && m->l_is_swa && l < m->n_layer; l++)
+        n_swa += m->l_is_swa[l];
+    bool device_rec = m->qwen35 || m->granite_hybrid || m->nemotron_h;
+    fprintf(stderr, "load: (geometry: layers %d, mtp %d, kv %zu per token as %s, "
+            "sliding %d at window %d, recurrent %zu)\n",
+            m->n_layer, m->mtp_ready ? 1 : 0, kv, model_kv_name(m),
+            n_swa, n_swa ? m->swa_window : 0, device_rec ? model_rec_count(m) : (size_t)0);
+}
+
 bool model_load(model_t *m, const char *path, const model_params *p) {
     if (!m) return false;
     memset(m, 0, sizeof(*m));
@@ -2300,6 +2351,7 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
         model_free(m);
         return false;
     }
+    model_debug_geometry(m);
     if (p->mlock && gguf_mapped_size(&m->gf)) {
         uint64_t hot = 0, cold = 0;
         int rc = weights_lock(m, &hot, &cold);

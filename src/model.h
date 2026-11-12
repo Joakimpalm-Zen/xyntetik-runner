@@ -1514,6 +1514,8 @@ typedef struct { uint64_t file, tables; } gpu_layer_charge;
 gpu_layer_charge model_cuda_layer_charge(gguf_file *g, int layer, bool host_experts);
 
 bool        model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out);
+// RUNNER_DEBUG_VRAM: the fit's geometry line, the shape of a load's own
+void        model_fit_print_geometry(gguf_file *g, const model_fit *f);
 const char *model_fit_verdict(const model_fit *f);
 // Fill the discrete-GPU half of a fit from the header's tensor table: the
 // loader's own split (leading layers, each its weights plus its KV, after a
