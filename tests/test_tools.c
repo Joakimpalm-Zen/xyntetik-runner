@@ -1802,6 +1802,30 @@ static void test_atem_stream_demux_is_boundary_independent(void) {
     log_free(&l);
 }
 
+// R6.68.117: the turn's order decides, not the chunking. An answer to the
+// user that closed with <|eot|> ended the turn there; bytes after it are past
+// the turn. The reader looked for an invoke first, so when the answer's end
+// and an invoke's opening arrived in one chunk it waited for the invoke to
+// close, never gave the answer, and finished with a fault; byte by byte the
+// same turn gave the answer. Found by the tool_stream fuzz target.
+static void test_atem_an_answer_that_closed_ends_the_turn_in_any_chunking(void) {
+    tool_envelope e = {0};
+    e.proto = TP_ATEM;
+    const char *doc = " to=user<|message|>done<|eot|><atem:invoke name=\"x";
+    for (size_t step = 1; step <= strlen(doc); step++) {
+        demux_log l;
+        demux_step(&e, doc, step, &l);
+        assert(l.begins == 0 && l.args.n == 0);
+        assert(l.content.s && !strcmp(l.content.s, "done"));
+        log_free(&l);
+    }
+    // the buffered reader of the same turn agrees
+    sbuf content = {0}, calls = {0};
+    int mapped = tool_envelope_map(&e, doc, strlen(doc), &content, &calls);
+    assert(mapped == 0 && content.s && !strcmp(content.s, "done") && calls.n == 0);
+    free(content.s); free(calls.s);
+}
+
 // R6.68.71: a value may spell the tag that closes its block. The grammar
 // admits it (a raw value ends at its own delimiter, `</atem:parameter>` or
 // `<|"|>`), so the reader must find the block's end by its structure, as the
@@ -4617,6 +4641,7 @@ int main(void) {
     test_empty_turn_finishes_cleanly();
     test_stream_demux_is_boundary_independent();
     test_atem_stream_demux_is_boundary_independent();
+    test_atem_an_answer_that_closed_ends_the_turn_in_any_chunking();
     test_a_value_may_spell_its_blocks_closing_tag();
     test_names_and_keys_the_call_syntax_cannot_carry();
     test_unconstrained_arguments_are_json_or_not_a_call();
