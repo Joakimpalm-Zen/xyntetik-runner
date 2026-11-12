@@ -2074,6 +2074,9 @@ static void model_free_weights(model_t *m) {
     for (int i = 0; m->layers && i < m->n_layer + 1; i++) {
         layer_t *l = &m->layers[i];
         free(l->attn_norm_w); free(l->ffn_norm_w);
+        // the LayerNorm biases (stablelm): bound beside the weights and, until
+        // R6.68.23, released nowhere, two buffers a layer on every load
+        free(l->attn_norm_b); free(l->ffn_norm_b);
         free(l->bq); free(l->bk); free(l->bv); free(l->bo);
         free(l->qnorm_w); free(l->knorm_w);
         free(l->q_a_norm_w); free(l->kv_a_norm_w); free(l->mla_kvb);
