@@ -8050,7 +8050,8 @@ static int py_call_list(pyrd *r, int index, int max, bool raw, sbuf *calls, int 
 }
 
 static int envelope_map_by_stream(const tool_envelope *e, const char *doc, size_t n,
-                                  sbuf *reasoning, sbuf *content, sbuf *tc);
+                                  bool truncated, sbuf *reasoning, sbuf *content,
+                                  sbuf *tc);
 
 // One finished turn, mapped into the channels a client receives. Every
 // native protocol is read by its stream demultiplexer, run over the whole
@@ -8059,14 +8060,20 @@ static int envelope_map_by_stream(const tool_envelope *e, const char *doc, size_
 // with it (R6.68.34). Harmony is the one protocol whose demultiplexer holds
 // the turn and calls its mapper at the end, so it is called directly; the
 // generic JSON envelope is a JSON document and is read by the JSON parser.
-int tool_envelope_map_channels(const tool_envelope *e, const char *doc,
-                               size_t n, sbuf *reasoning, sbuf *content,
-                               sbuf *tc) {
+int tool_envelope_map_turn(const tool_envelope *e, const char *doc, size_t n,
+                           bool truncated, sbuf *reasoning, sbuf *content,
+                           sbuf *tc) {
     if (!e || !doc || !content || !tc) return -1;
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, reasoning, content, tc);
     if (e->proto != TP_GENERIC && e->proto != TP_MUSE_USER)
-        return envelope_map_by_stream(e, doc, n, reasoning, content, tc);
+        return envelope_map_by_stream(e, doc, n, truncated, reasoning, content, tc);
     return tool_envelope_map(e, doc, n, content, tc);
+}
+
+int tool_envelope_map_channels(const tool_envelope *e, const char *doc,
+                               size_t n, sbuf *reasoning, sbuf *content,
+                               sbuf *tc) {
+    return tool_envelope_map_turn(e, doc, n, false, reasoning, content, tc);
 }
 
 int tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
@@ -8074,7 +8081,7 @@ int tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
     if (!e || !doc || !content || !tc) return -1;
     if (e->proto == TP_HARMONY) return harmony_map(e, doc, n, NULL, content, tc);
     if (e->proto != TP_GENERIC && e->proto != TP_MUSE_USER)
-        return envelope_map_by_stream(e, doc, n, NULL, content, tc);
+        return envelope_map_by_stream(e, doc, n, false, NULL, content, tc);
     if (e->proto == TP_MUSE_USER) {
         const char *end = doc + n;
         const char *message = atem_find(doc, end, "<|message|>");
@@ -8525,7 +8532,10 @@ static int ts_atem(tool_stream *s, const char *bytes, int n) {
             const char *name = jv_str(jv_get(fn, "name"), NULL);
             const char *args = jv_str(jv_get(fn, "arguments"), NULL);
             int rc = 0;
-            if (!name || !args) rc = 0;
+            // a closed invoke that is not a call: dropped, and the turn
+            // reports it as every protocol's reader does (one valid call
+            // beside it used to make the turn a clean one)
+            if (!name || !args) s->fault = true;
             else {
                 s->called = true;
                 s->any_called = true;
@@ -9133,6 +9143,8 @@ static int ts_gemma4(tool_stream *s, const char *bytes, int n) {
                         rc = s->sink.call_args(s->sink.ud, args,
                                                (int)strlen(args));
                     if (!rc && s->sink.call_end) rc = s->sink.call_end(s->sink.ud);
+                } else {
+                    s->fault = true;   // mapped, but not to a call the client can read
                 }
                 jv_free(arr);
                 free(wrapped.s);
@@ -9416,7 +9428,11 @@ bool tool_stream_called(const tool_stream *s) { return s->any_called; }
 
 // tool_stream_map's sinks: content appended verbatim, each call rendered as
 // one OpenAI tool_calls[] item in the shape tool_calls_parse produces.
-typedef struct { sbuf *content, *tc; int n; sbuf args; sbuf *reasoning; bool open; } map_sink;
+typedef struct {
+    sbuf *content, *tc; int n; sbuf args; sbuf *reasoning;
+    bool open;        // a call was begun and not ended
+    size_t open_at;   // tc's length before that call, to take it back out
+} map_sink;
 static int map_content(void *ud, const char *b, int n) {
     map_sink *m = ud; sb_put(m->content, b, (size_t)n); return 0;
 }
@@ -9427,6 +9443,7 @@ static int map_reasoning(void *ud, const char *b, int n) {
 }
 static int map_call_begin(void *ud, const char *name) {
     map_sink *m = ud;
+    m->open_at = m->tc->n;
     if (m->n) sb_lit(m->tc, ",");
     sb_fmt(m->tc, "{\"id\":\"call_%d\",\"type\":\"function\",\"function\":"
                   "{\"name\":\"", m->n);
@@ -9456,7 +9473,7 @@ int tool_stream_map(const tool_envelope *e, const char *doc, size_t n,
 int tool_stream_map_ex(const tool_envelope *e, const char *doc, size_t n,
                        bool truncated, sbuf *content, sbuf *tc, int *n_calls,
                        bool *implicit_close) {
-    map_sink m = { content, tc, 0, {0}, NULL, false };
+    map_sink m = { content, tc, 0, {0}, NULL, false, 0 };
     tool_stream_sink sink = { &m, NULL, map_content, map_call_begin,
                               map_call_args, map_call_end };
     tool_stream s;
@@ -9473,21 +9490,27 @@ int tool_stream_map_ex(const tool_envelope *e, const char *doc, size_t n,
 
 // The buffered mapper for a strict native envelope: the demultiplexer over
 // the whole turn. Strict means the turn IS the protocol, so a turn the
-// demultiplexer faults, or one that ends inside a call, maps to nothing and
-// returns -1 (the caller reports the fault); the outputs are appended to
-// only on success.
+// demultiplexer faults, or one the model ended inside a call, maps to nothing
+// and returns -1 (the caller reports the fault); the outputs are appended to
+// only on success. `truncated` is the caller's turn_cut, passed to the
+// finish as the streamed path passes it: a call a budget or deadline cut is
+// dropped and the rest of the turn kept, in both paths. (The grammar's closer
+// completes a cut call, so this is the turn whose closer could not.)
 static int envelope_map_by_stream(const tool_envelope *e, const char *doc, size_t n,
-                                  sbuf *reasoning, sbuf *content, sbuf *tc) {
+                                  bool truncated, sbuf *reasoning, sbuf *content,
+                                  sbuf *tc) {
     sbuf r = {0}, c = {0}, t = {0};
-    map_sink m = { &c, &t, 0, {0}, &r, false };
+    map_sink m = { &c, &t, 0, {0}, &r, false, 0 };
     tool_stream_sink sink = { &m, map_reasoning, map_content, map_call_begin,
                               map_call_args, map_call_end };
     tool_stream s;
     tool_stream_init(&s, e, &sink);
     int rc = n ? tool_stream_feed(&s, doc, (int)n) : 0;
-    int fin = tool_stream_finish_ex(&s, false);
+    int fin = tool_stream_finish_ex(&s, truncated);
     tool_stream_free(&s);
     free(m.args.s);
+    // half a call is not a call: a cut one comes back out of the list
+    if (m.open && truncated) { t.n = m.open_at; m.open = false; }
     int got = m.n;
     if (rc || fin || m.open || r.failed || c.failed || t.failed) got = -1;
     else {

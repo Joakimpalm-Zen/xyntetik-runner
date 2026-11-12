@@ -2405,8 +2405,8 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
         g->out = mapped;
         return n_calls;
     }
-    int rc = tool_envelope_map_channels(
-        env, doc, doc_n, &mapped_reason, &mapped, tc);
+    int rc = tool_envelope_map_turn(
+        env, doc, doc_n, truncated, &mapped_reason, &mapped, tc);
     free(turn.s);
     if (rc >= 0 && mapped_reason.n) {
         free(g->reason.s);

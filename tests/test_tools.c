@@ -4158,6 +4158,40 @@ static void test_buffered_turn_is_read_by_the_stream_reader(void) {
                    "</atem:invoke>\n</atem:function_calls>", 1);
     one_reader(&a, " to=ping<|message|><atem:function_calls>\n<atem:invoke name=\"ping\">\n", -1);
     one_reader(&a, "neither a call nor an answer", -1);
+    // a closed invoke that does not map, beside a valid call: a fault, as
+    // in every other protocol (the valid call used to make the turn clean)
+    one_reader(&a, " to=ping<|message|><atem:function_calls>\n<atem:invoke name=\"ping\">\n"
+                   "</atem:invoke>\n<atem:invoke name=\"ping\">\n"
+                   "<atem:parameter name=\"x\">1\n</atem:invoke>\n</atem:function_calls>", -1);
+
+    // A cut turn (a budget or a deadline; the caller's turn_cut) reaches the
+    // buffered reader as it reaches the stream's finish: where the protocol's
+    // finish drops a call the cut left open (Gemma 4 here), the calls before
+    // it are kept and the list is still well formed. On a turn the model
+    // ended it refuses.
+    {
+        tool_envelope g2;
+        skip = false;
+        assert(tool_envelope_build_ex(tools, required, NULL, true, &g2, err, sizeof err) == 1);
+        tool_decl_native(TMPL_GEMMA4, true, true, tools, &g2, &skip);
+        const char *cut = "<|tool_call>call:add{a:1,b:2}<tool_cal";
+        sbuf rs = {0}, cs = {0}, ts = {0};
+        assert(tool_envelope_map_turn(&g2, cut, strlen(cut), false, &rs, &cs, &ts) == -1);
+        assert(tool_envelope_map_turn(&g2, cut, strlen(cut), true, &rs, &cs, &ts) == 0);
+        assert(!cs.n && !ts.n);
+        // the call before the cut is kept, and the list is well formed
+        const char *two = "<|tool_call>call:add{a:1,b:2}<tool_call|><|tool_call>call:add{a:3";
+        assert(tool_envelope_map_turn(&g2, two, strlen(two), false, &rs, &cs, &ts) == -1);
+        assert(!ts.n);
+        assert(tool_envelope_map_turn(&g2, two, strlen(two), true, &rs, &cs, &ts) == 1);
+        sbuf w = {0};
+        sb_lit(&w, "["); sb_put(&w, ts.s, ts.n); sb_lit(&w, "]");
+        jv *arr = json_parse(w.s, w.n);
+        assert(arr && arr->type == J_ARR && arr->n == 1);
+        jv_free(arr); free(w.s);
+        free(rs.s); free(cs.s); free(ts.s);
+        tool_envelope_free(&g2);
+    }
 
     jv_free(required);
     jv_free(tools);

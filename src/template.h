@@ -864,6 +864,13 @@ int  tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
 int  tool_envelope_map_channels(const tool_envelope *e, const char *doc,
                                 size_t n, struct sbuf *reasoning,
                                 struct sbuf *content, struct sbuf *tc);
+// The same, told whether a budget or deadline cut the turn (the caller's
+// turn_cut): a native call left open by a cut is a truncated call, dropped
+// without a fault, exactly as the stream's finish reads it; left open by the
+// model it refuses the turn. tool_envelope_map_channels is this with false.
+int  tool_envelope_map_turn(const tool_envelope *e, const char *doc, size_t n,
+                            bool truncated, struct sbuf *reasoning,
+                            struct sbuf *content, struct sbuf *tc);
 bool muse_user_payload_strip(struct sbuf *payload);
 
 // Streaming counterpart of tool_envelope_map.
