@@ -8391,9 +8391,6 @@ static int ts_entry_close(tool_stream *s, const char *rest, int rest_n, int rc) 
     return rest_n > 0 ? tool_stream_feed(s, rest, rest_n) : 0;
 }
 
-// forward raw JSON text of the selected value, dropping insignificant
-// whitespace so the concatenated deltas are the same document the buffered
-// path re-serializes
 // ts_value's pending run [*run, upto) of its input: forwarded when there is
 // one, then closed. Returns the sink's result, or `rc` when nothing was sent.
 static int ts_flush_run(const tool_stream *s, int (*emit)(void *, const char *, int),
@@ -8403,6 +8400,9 @@ static int ts_flush_run(const tool_stream *s, int (*emit)(void *, const char *, 
     return rc;
 }
 
+// forward raw JSON text of the selected value, dropping insignificant
+// whitespace so the concatenated deltas are the same document the buffered
+// path re-serializes
 static int ts_value(tool_stream *s, const char *b, int n) {
     int rc = 0, run = -1;
     int (*emit)(void *, const char *, int) =
