@@ -347,28 +347,37 @@ const char *template_default_system(int tmpl, const char *meta_tmpl,
     // Its {today} and {yesterday} stay as written: the template does not
     // format them either.
     if (tmpl == TMPL_MISTRAL_SYS) {
-        // one per thread: the text is read once per template a thread sees
-        static _Thread_local char *cached;
-        static _Thread_local const char *cached_for;
-        if (cached_for != meta_tmpl) {
-            free(cached); cached = NULL; cached_for = meta_tmpl;
-            const char *p = strstr(meta_tmpl, "set default_system_message = '");
-            if (p) {
-                p += strlen("set default_system_message = '");
-                sbuf b = {0};
-                for (; *p && *p != '\''; p++) {
-                    if (*p == '\\' && p[1]) {
-                        p++;
-                        char c = *p == 'n' ? '\n' : *p == 't' ? '\t' : *p;
-                        sb_put(&b, &c, 1);
-                    } else {
-                        sb_put(&b, p, 1);
-                    }
-                }
-                if (*p == '\'' && !b.failed && b.s) cached = b.s;
-                else free(b.s);
+        // One per thread, kept by the literal's own bytes. It was kept by
+        // the template's address, and a model swap can load the next model's
+        // template where the last one's was: the second model then answered
+        // under the first one's text (R6.68.75).
+        static _Thread_local char *cached, *cached_raw;
+        static _Thread_local size_t cached_raw_n;
+        static const char SET[] = "set default_system_message = '";
+        const char *p = strstr(meta_tmpl, SET);
+        if (!p) return NULL;
+        p += sizeof(SET) - 1;
+        const char *q = p;
+        while (*q && *q != '\'') q += *q == '\\' && q[1] ? 2 : 1;
+        if (*q != '\'') return NULL;
+        size_t raw_n = (size_t)(q - p);
+        if (cached && cached_raw_n == raw_n && !memcmp(cached_raw, p, raw_n)) return cached;
+        sbuf text = {0};
+        for (const char *c = p; c < q; c++) {
+            if (*c == '\\') {
+                c++;
+                char e = *c == 'n' ? '\n' : *c == 't' ? '\t' : *c;
+                sb_put(&text, &e, 1);
+            } else {
+                sb_put(&text, c, 1);
             }
         }
+        char *raw = malloc(raw_n + 1);
+        if (text.failed || !text.s || !raw) { free(text.s); free(raw); return NULL; }
+        memcpy(raw, p, raw_n);
+        raw[raw_n] = 0;
+        free(cached); free(cached_raw);
+        cached = text.s; cached_raw = raw; cached_raw_n = raw_n;
         return cached;
     }
     for (size_t i = 0; i < sizeof known / sizeof *known; i++)

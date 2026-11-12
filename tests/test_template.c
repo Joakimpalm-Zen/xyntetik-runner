@@ -3386,6 +3386,24 @@ static void test_default_system_is_read_from_the_models_own_template(void) {
     assert(template_default_system(TMPL_CHATML_THINK, q25, false) == NULL);
     assert(template_default_system(TMPL_CHATML, g40, false) == NULL);
     assert(template_default_system(TMPL_CHATML, NULL, false) == NULL);
+
+    // R6.68.75: the [SYSTEM_PROMPT] form's default is read out of the file's
+    // template and kept, and it was kept by the template's ADDRESS. A model
+    // swap frees one model's metadata and loads the next, which can put the
+    // new template where the old one was: the second model then answered
+    // under the first one's system text. The same buffer, two templates.
+    char buf[160];
+    snprintf(buf, sizeof buf, "{%%- set default_system_message = 'You are Small 3.1, it\\'s\\n2025.' %%}[SYSTEM_PROMPT]");
+    const char *first = template_default_system(TMPL_MISTRAL_SYS, buf, false);
+    assert(first && !strcmp(first, "You are Small 3.1, it's\n2025."));
+    assert(template_default_system(TMPL_MISTRAL_SYS, buf, true) == first);   // kept, not re-read
+    snprintf(buf, sizeof buf, "{%%- set default_system_message = 'You are Small 3.2.' %%}[SYSTEM_PROMPT]");
+    const char *second = template_default_system(TMPL_MISTRAL_SYS, buf, false);
+    assert(second && !strcmp(second, "You are Small 3.2."));
+    snprintf(buf, sizeof buf, "[SYSTEM_PROMPT] no default here");
+    assert(template_default_system(TMPL_MISTRAL_SYS, buf, false) == NULL);
+    snprintf(buf, sizeof buf, "{%%- set default_system_message = 'never closed");
+    assert(template_default_system(TMPL_MISTRAL_SYS, buf, false) == NULL);
 }
 
 // Hermes 4: always a system turn (the caller's, the standard prompt, or the
