@@ -350,7 +350,10 @@ def test_a_file_name_with_url_characters_is_fetched(runner_bin, hub):
     encoded; '/' stays the folder separator."""
     sub = hub["dir"] / "my folder"
     sub.mkdir()
-    name = "my folder/my model #2 (50%)?-Q8_0.gguf"
+    # a Windows file name cannot hold '?', so this folder standing in for the
+    # Hub has no such file there; the encoder is the same code on every host
+    q = "" if os.name == "nt" else "?"
+    name = f"my folder/my model #2 (50%){q}-Q8_0.gguf"
     model = hub["dir"] / name
     model.write_bytes((hub["dir"] / "model-Q8_0.gguf").read_bytes())
     (hub["dir"] / "files.json").write_text(json.dumps({"siblings": [
@@ -360,4 +363,5 @@ def test_a_file_name_with_url_characters_is_fetched(runner_bin, hub):
     assert r.returncode == 0, r.stderr
     assert [c[-1] for c in resolve_calls(hub["log"])] == [
         "https://huggingface.co/fake/repo/resolve/main/"
-        "my%20folder/my%20model%20%232%20%2850%25%29%3F-Q8_0.gguf"]
+        "my%20folder/my%20model%20%232%20%2850%25%29" + ("%3F" if q else "") +
+        "-Q8_0.gguf"]
