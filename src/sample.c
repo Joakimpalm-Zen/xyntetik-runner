@@ -256,6 +256,20 @@ static int prefix_decide(sampler *s, cand_t *valid, int k, double top,
     return -3;
 }
 
+int sample_argmax(const float *x, int n) {
+    // Finding the value and then its index are two loops a compiler
+    // vectorises; the one loop that tracks the index is not (682 us against
+    // 30 at 152k entries, 901 against 35 at 262k, Apple M1). When no entry
+    // equals the maximum found (a NaN upset the value pass) the tracking loop
+    // answers, so the result is always an index in range.
+    float mx = x[0];
+    for (int i = 1; i < n; i++) if (x[i] > mx) mx = x[i];
+    for (int i = 0; i < n; i++) if (x[i] == mx) return i;
+    int best = 0;
+    for (int i = 1; i < n; i++) if (x[i] > x[best]) best = i;
+    return best;
+}
+
 // RUNNER_SAMPLE_STATS=1 traces why the head fast path was or was not usable.
 // Cached: this sits in the per-token path and getenv is not free.
 static bool sample_stats(void) {
@@ -324,14 +338,7 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
         // that tracks the index is not (445 us against 20 at 128k entries).
         // A NaN can leave the first loop without a value any entry equals;
         // the index-tracking loop then answers, as it always did.
-        float mx = logits[0];
-        for (int i = 1; i < n_vocab; i++) if (logits[i] > mx) mx = logits[i];
-        int best = -1;
-        for (int i = 0; i < n_vocab; i++) if (logits[i] == mx) { best = i; break; }
-        if (best < 0) {
-            best = 0;
-            for (int i = 1; i < n_vocab; i++) if (logits[i] > logits[best]) best = i;
-        }
+        int best = sample_argmax(logits, n_vocab);
         if (!ok || ok(ud, best)) return best;
     } else if (ok) {
         // constrained + sampled: quick check whether the unconstrained flow
@@ -547,6 +554,29 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
         if (k >= need || m == n_vocab) break;
         if (open_ended && k > 0) {
             int pick = prefix_decide(s, valid, k, top, total, seen, c[m - 1].p,
+                                     &r_pre);
+            if (pick != -3) { free(c); free(valid); return pick; }
+        }
+        // Top-k on, and a sparse state: fewer than top_k of the entries
+        // ranked so far are valid (an enum member, a key, punctuation), which
+        // is most tokens of a schema-constrained reply. Whatever valid entries
+        // lie below the ranked prefix would join the candidates, but together
+        // they carry at most the mass of everything unexamined, so the same
+        // bound that settles the open-ended case settles this one: when the
+        // cutoff or the draw provably falls inside the prefix, the pick is
+        // made here and the rest of the vocabulary is never asked. It used to
+        // be asked on every such token, 150,000 validity checks at a time
+        // (R3.23 measured 22 of 26 sampled tokens; R6.68.26). Not settled:
+        // the rounds and the scan below go on as before, with the same draw.
+        if (!open_ended && s->temp > 0 && k > 0) {
+            if (!(total > 0)) {   // the vocabulary's mass, once per pick
+                top = c[0].p;
+                for (int i = 0; i < n_vocab; i++)
+                    total += expf(logits[i] / temp - c[0].p);
+            }
+            double seen_k = 0;
+            for (int i = 0; i < m; i++) seen_k += exp((double)c[i].p - top);
+            int pick = prefix_decide(s, valid, k, top, total, seen_k, c[m - 1].p,
                                      &r_pre);
             if (pick != -3) { free(c); free(valid); return pick; }
         }

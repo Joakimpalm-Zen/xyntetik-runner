@@ -2074,6 +2074,9 @@ static void model_free_weights(model_t *m) {
     for (int i = 0; m->layers && i < m->n_layer + 1; i++) {
         layer_t *l = &m->layers[i];
         free(l->attn_norm_w); free(l->ffn_norm_w);
+        // the LayerNorm biases (stablelm): bound beside the weights and, until
+        // R6.68.23, released nowhere, two buffers a layer on every load
+        free(l->attn_norm_b); free(l->ffn_norm_b);
         free(l->bq); free(l->bk); free(l->bv); free(l->bo);
         free(l->qnorm_w); free(l->knorm_w);
         free(l->q_a_norm_w); free(l->kv_a_norm_w); free(l->mla_kvb);
@@ -5196,8 +5199,15 @@ static bool bind_layer_norms(model_t *m, gguf_file *g, layer_t *l, int i,
     // over the rows of the matvec they ride (qwen35's Q bias covers the
     // fused Q+gate, so 2*q_dim).
     int qd_l = model_q_dim(m, i), kd_l = model_kv_dim(m, i);
-    l->attn_norm_w = tensor_to_f32(an, m->n_embd, &ok);
-    l->ffn_norm_w  = tensor_to_f32(fn, m->n_embd, &ok);
+    // A recurrent qwen35 block bound both norms with its mixer above. A
+    // qwen4exp block of that kind falls through to here, and binding them
+    // again overwrote the mixer's pair: two buffers leaked per such layer on
+    // every load, so on every swap of such a model (R6.68.23, found by a run
+    // of the whole suite under AddressSanitizer).
+    if (!(l->recurrent && m->qwen35)) {
+        l->attn_norm_w = tensor_to_f32(an, m->n_embd, &ok);
+        l->ffn_norm_w  = tensor_to_f32(fn, m->n_embd, &ok);
+    }
     // LayerNorm families (stablelm) carry a bias beside each norm weight.
     // opt_tensor returns NULL for an RMSNorm family, which is exactly what
     // xnorm() wants, so this is unconditional.

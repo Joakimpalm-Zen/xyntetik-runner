@@ -1558,28 +1558,38 @@ int derive_main(int argc, char **argv) {
     derive_opts o;
     int rc = parse_args(argc, argv, &o);
     if (rc >= 0) return rc;
-    char *dir = plat_executable_dir();
-    char *self = plat_executable_path();
-    if (!dir || !self) { fprintf(stderr, "error: cannot find this binary's path\n"); return 1; }
-    char *default_corpus = join(dir, BESIDE_CORPUS);
+    // Everything this run owns, released at the one exit below. The function
+    // has some twenty refusals after its first allocation and used to free
+    // only on success: harmless to a process that is about to end, but every
+    // refused derive failed a leak check (R6.68.23).
+    int ret = 1;
+    char *dir = NULL, *self = NULL, *default_corpus = NULL, *gold_script = NULL;
+    char *quant_rec = NULL, *ref_score = NULL, *file_score = NULL, *gold_out = NULL;
+    char *rec_path = NULL, *card_path = NULL;
+    jv *ref = NULL, *run = NULL;
+    sbuf r = {0}, cmd = {0};
+    dir = plat_executable_dir();
+    self = plat_executable_path();
+    if (!dir || !self) { fprintf(stderr, "error: cannot find this binary's path\n"); goto out; }
+    default_corpus = join(dir, BESIDE_CORPUS);
     if (!o.corpus) o.corpus = default_corpus;
     else o.corpus_given = true;
     if (!plat_file_readable(o.corpus)) {
         fprintf(stderr, "error: cannot read the corpus %s; give --corpus FILE\n", o.corpus);
-        return 1;
+        goto out;
     }
     parent_meta pm;
-    if (!read_parent(o.parent, o.license, &pm)) return 1;
+    if (!read_parent(o.parent, o.license, &pm)) goto out;
     const char *gold_env = getenv("RUNNER_GOLD_LOGITS");
-    char *gold_script = gold_env && *gold_env ? strdup(gold_env) : join(dir, BESIDE_GOLD);
-    if (o.reference_hf && !gold_ready(gold_script, !(gold_env && *gold_env))) return 1;
+    gold_script = gold_env && *gold_env ? strdup(gold_env) : join(dir, BESIDE_GOLD);
+    if (o.reference_hf && !gold_ready(gold_script, !(gold_env && *gold_env))) goto out;
 
-    char *quant_rec = suffixed(o.out, ".quant.json");
-    char *ref_score = suffixed(o.out, ".parent.score.json");
-    char *file_score = suffixed(o.out, ".score.json");
-    char *gold_out = suffixed(o.out, ".gold.json");
-    char *rec_path = suffixed(o.out, ".derive.json");
-    char *card_path = suffixed(o.out, ".README.md");
+    quant_rec = suffixed(o.out, ".quant.json");
+    ref_score = suffixed(o.out, ".parent.score.json");
+    file_score = suffixed(o.out, ".score.json");
+    gold_out = suffixed(o.out, ".gold.json");
+    rec_path = suffixed(o.out, ".derive.json");
+    card_path = suffixed(o.out, ".README.md");
     // the window's tokens and a BOS: everything the measurement reads
     // gold-logits.py reads its special prefix then ids[:min_prefix +
     // max_positions * stride + 1] and refuses a score file shorter than that
@@ -1589,21 +1599,20 @@ int derive_main(int argc, char **argv) {
     if (o.ctx && atoi(o.ctx) < n_tokens) {
         fprintf(stderr, "error: the window %d:%d:%d reads %d tokens and -c is %s; raise -c or "
                 "give a smaller --window\n", o.start, o.stride, o.count, n_tokens, o.ctx);
-        return 1;
+        goto out;
     }
 
     // 1. the reference first (default reference): a corpus too short for the
     //    window is refused before anything is made
-    jv *ref = NULL;
     if (!o.reference_hf) {
         if (!score(self, &o, o.parent, ref_score, n_tokens) || !(ref = read_json(ref_score)))
-            return 1;
-        if (!window_fits(&o, ref)) return 1;
+            goto out;
+        if (!window_fits(&o, ref)) goto out;
     }
     // 2. make the file (a --target-size recipe plans its types first)
     sized_result sz = {0};
     memset(&sz, 0, sizeof sz);
-    if (o.target_size && !sized_plan(self, &o, file_bytes(o.parent), &sz)) return 1;
+    if (o.target_size && !sized_plan(self, &o, file_bytes(o.parent), &sz)) goto out;
     const char *a[32];
     int n = 0;
     a[n++] = "-m"; a[n++] = o.parent; a[n++] = "--rewrite"; a[n++] = o.out;
@@ -1618,38 +1627,37 @@ int derive_main(int argc, char **argv) {
         // nothing was made, so nothing is left beside OUT: the parent's
         // score was only the measurement's other half
         plat_remove(ref_score);
-        return 1;
+        goto out;
     }
     // 3. measure it
-    jv *run = NULL;
-    if (!score(self, &o, o.out, file_score, n_tokens) || !(run = read_json(file_score))) return 1;
+    if (!score(self, &o, o.out, file_score, n_tokens) || !(run = read_json(file_score))) goto out;
     derive_measure m;
     memset(&m, 0, sizeof m);
     if (o.reference_hf) {
         if (!window_fits(&o, run)) {
             plat_remove(o.out);
             plat_remove(quant_rec);
-            return 1;
+            goto out;
         }
         if (!gold_measure(&o, gold_script, file_score, (int)jv_num(jv_get(run, "n_special"), 0),
                           gold_out, &m))
-            return 1;
+            goto out;
     } else if (!compare_scores(&o, ref, run, &m)) {
-        return 1;
+        goto out;
     }
     jv_free(ref);
     jv_free(run);
+    ref = run = NULL;
 
     // 4. the record
     char psha[65], fsha[65];
     if (!envelope_file_sha256(o.parent, psha) || !envelope_file_sha256(o.out, fsha)) {
         fprintf(stderr, "error: cannot hash the parent or the file\n");
-        return 1;
+        goto out;
     }
     long long pbytes = file_bytes(o.parent), fbytes = file_bytes(o.out);
     bool publisher = o.reference_hf != NULL;
     bool passes = m.mean_kld <= BAR_MEAN_KLD && m.mq_top1_pct >= BAR_MQ_TOP1;
-    sbuf r = {0};
     sb_lit(&r, "{\"schema_version\":\"xyntetik.runner.derive.v1\",\"runner_version\":");
     sb_str(&r, RUNNER_VERSION);
     sb_lit(&r, ",\"reference_kind\":");
@@ -1672,7 +1680,7 @@ int derive_main(int argc, char **argv) {
     sb_lit(&r, "},\"comparisons\":[");
     for (int i = 0; i < o.n_compares; i++) {
         if (i) sb_lit(&r, ",");
-        if (!compare_json(gold_out, o.compares[i], &r)) return 1;
+        if (!compare_json(gold_out, o.compares[i], &r)) goto out;
     }
     sb_lit(&r, "],\"credits\":[");
     for (int i = 0; i < o.n_credits; i++) {
@@ -1680,7 +1688,6 @@ int derive_main(int argc, char **argv) {
         sb_str(&r, o.credits[i]);
     }
     sb_lit(&r, "],\"command\":");
-    sbuf cmd = {0};
     put_command(&cmd, &o);
     sb_put(&cmd, "", 1);
     sb_str(&r, cmd.failed ? NULL : cmd.s);
@@ -1771,12 +1778,11 @@ int derive_main(int argc, char **argv) {
         sb_lit(&r, "null");   // no bar verdict against the parent file
     }
     sb_lit(&r, "}}\n");
-    if (!write_text(rec_path, &r)) return 1;
+    if (!write_text(rec_path, &r)) goto out;
 
     // 5. the card, written from the record just written: the record is the
     //    one source, and --card-from rewrites a card from it alone
-    free(cmd.s);
-    if (!card_from_record(rec_path, card_path, NULL, NULL, 0, NULL, 0)) return 1;
+    if (!card_from_record(rec_path, card_path, NULL, NULL, 0, NULL, 0)) goto out;
 
     printf("derive: %s (%lld bytes, %.1f%% of the parent); mean KLD %.4f, top-1 %.2f%% "
            "against the %s%s; record %s, card %s\n",
@@ -1784,9 +1790,12 @@ int derive_main(int argc, char **argv) {
            m.mean_kld, m.top1_pct, publisher ? "publisher's float32 model" : "parent file",
            publisher ? (passes ? " (passes the bar)" : " (fails the bar)") : "",
            rec_path, card_path);
-    free(r.s);
+    ret = 0;
+out:
+    jv_free(ref); jv_free(run);
+    free(r.s); free(cmd.s);
     free(dir); free(self); free(default_corpus); free(gold_script);
     free(quant_rec); free(ref_score); free(file_score); free(gold_out);
     free(rec_path); free(card_path);
-    return 0;
+    return ret;
 }
