@@ -74,3 +74,24 @@ def test_score_writes_null_for_a_non_finite_log_probability_and_fails(exe, nan_m
     assert doc["nll_total"] is None and doc["nll_mean"] is None and doc["ppl"] is None
     assert p.returncode == 1, p.stderr.decode(errors="replace")
     assert b"not finite" in p.stderr, p.stderr.decode(errors="replace")
+
+
+def _sft_rows(path):
+    path.write_text(
+        json.dumps({"prompt": "the runner trains", "completion": " the adapter well"}) + "\n" +
+        json.dumps({"prompt": "the corpus", "completion": " is small"}) + "\n")
+    return path
+
+
+def test_train_logprobs_writes_null_before_the_step_refuses(exe, nan_model, tmp_path):
+    """--train-logprobs writes a step's log-probabilities as the forward makes
+    them, before the step's finiteness check stops the run (exit 1, the
+    adapter as the last good step left it), so the one line written read
+    nan."""
+    lp = tmp_path / "lp.jsonl"
+    p = _run(exe, "-m", nan_model, "--train", _sft_rows(tmp_path / "sft.jsonl"),
+             "--train-steps", "2", "--lr", "3e-3", "--train-out", tmp_path / "a.gguf",
+             "--train-logprobs", lp)
+    assert p.returncode == 1, p.stderr.decode(errors="replace")
+    rows = _lines(lp.read_text())
+    assert rows and all(v is None for v in rows[0]["logprobs"]), rows

@@ -5447,8 +5447,11 @@ static bool train_lp_write(FILE *f, int step, int example, const train_ex *ex,
                            const float *lp) {
     fprintf(f, "{\"step\":%d,\"example\":%d,\"first\":%d,\"logprobs\":[",
             step, example, ex->first);
+    // written before the step's finiteness check stops a non-finite run, so a
+    // number here can be NaN: null, and the line still parses
+    char nb[32];
     for (int k = 0; k < ex->n - ex->first; k++)
-        fprintf(f, "%s%.9g", k ? "," : "", (double)lp[k]);
+        fprintf(f, "%s%s", k ? "," : "", json_numg(nb, 9, lp[k]));
     return fprintf(f, "]}\n") > 0;
 }
 
