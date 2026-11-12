@@ -267,6 +267,9 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
     canon.n = tok_encode_fit(e->tok, state, true, TOK_TEXT, 0, &canon.toks);
     if (canon.n < 0) { free(canon.toks); *err = "out of memory tokenizing the state"; return 500; }
     for (int i = 0; i < qs->n && status == 200; i++) {
+        // one question a device turn, where the server gave the engine a way
+        // to give the turn up (R6.68.54)
+        if (i && e->prefill_yield) e->prefill_yield(e->prefill_ud);
         const jv *q = qs->items[i];
         if (q->type != J_OBJ) { *err = "each question must be an object"; status = 400; break; }
         const char *qt = jstr(q, "question");
@@ -474,6 +477,7 @@ int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
     if (!rows) { *err = "out of memory"; return 500; }
     int total_prompt = 0, status = 200;
     for (int i = 0; i < docs->n && status == 200; i++) {
+        if (i && e->prefill_yield) e->prefill_yield(e->prefill_ud);   // one document a turn
         const char *d = rr_doc_text(docs->items[i]);
         char *prompt = chat ? rr_render_chat(tmpl, instr, query, d)
                             : rr_render_raw(instr, query, d);

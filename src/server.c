@@ -959,6 +959,23 @@ out:
     tool_envelope_free(&env);
 }
 
+// The device turn for everything that is not a completion: a context being
+// pinned, a session's prompt, embeddings, rerank, decide. The engine gives the
+// turn up between prefill chunks, and a loop over items gives it up between
+// them (sched_prefill_yield), as a completion's prefill always has. These held
+// it from their first item to their last, so a one-token request on another
+// slot waited for a whole batch: 186 s behind 48 embedding inputs on Metal
+// (R6.68.54).
+static void readout_turn_begin(engine *e) {
+    engine_set_prefill_yield(e, sched_prefill_yield, NULL);
+    sched_prefill_begin();
+}
+
+static void readout_turn_end(engine *e) {
+    sched_prefill_end();
+    engine_set_prefill_yield(e, NULL, NULL);
+}
+
 // ---- named contexts (R10.4) ---------------------------------------------
 //
 // POST /v1/runner/contexts {id, prompt} or {id, messages[, tools]} prefills
@@ -988,11 +1005,11 @@ static void context_pin_prompt(slot_t *s, sock_t fd, const char *prompt,
         return;
     }
     double t0 = now_s();
-    sched_prefill_begin();
+    readout_turn_begin(e);
     prefix_reuse r = engine_prefix_reuse(e, toks, n);
     float *lg = engine_feed(e, toks + r.keep, n - r.keep);
     int rc = lg ? prefix_context_pin(e, id, toks, n) : PFX_CTX_NOSPACE;
-    sched_prefill_end();
+    readout_turn_end(e);
     double secs = now_s() - t0;
     free(toks);
     if (!lg) { send_error(fd, 500, "prefill failed (context or memory)"); return; }
@@ -1342,7 +1359,11 @@ static void handle_session_start(slot_t *s, sock_t fd, jv *req) {
     engine_request_defaults(e);   // nothing the previous request set survives
     engine_reset(e);
     e->ignore_eos = ignore_eos;
+    // the prompt gives the turn up between chunks; the generation that
+    // follows holds it, as a speculative request's does
+    engine_set_prefill_yield(e, sched_prefill_yield, NULL);
     float *lg = engine_feed(e, toks, n);
+    engine_set_prefill_yield(e, NULL, NULL);
     free(toks);
     if (!lg) {
         sched_prefill_end();
@@ -1754,9 +1775,9 @@ static void handle_decide(slot_t *s, sock_t fd, jv *req) {
     sbuf r = {0};
     const char *err = NULL;
     engine_set_stop(&s->e, readout_should_stop, &fd);
-    sched_prefill_begin();
+    readout_turn_begin(&s->e);
     int st = decide_handle(&s->e, req, SV.model_name, &r, &err);
-    sched_prefill_end();
+    readout_turn_end(&s->e);
     engine_set_stop(&s->e, NULL, NULL);
     if (sock_peer_closed(fd)) { free(r.s); return; }
     if (st != 200) {
@@ -1778,11 +1799,11 @@ static void handle_decide(slot_t *s, sock_t fd, jv *req) {
 static void handle_systemone(slot_t *s, sock_t fd, jv *req) {
     sbuf r = {0};
     const char *err = NULL;
-    sched_prefill_begin();
+    readout_turn_begin(&s->e);
     int st = clef_systemone_handle(&s->e, req, &r, &err);
     engine_reset(&s->e);
     s->e.pos = 0;
-    sched_prefill_end();
+    readout_turn_end(&s->e);
     if (st != 200) {
         free(r.s);
         send_error(fd, st, err ? err : "systemone failed");
@@ -1798,9 +1819,9 @@ static void handle_rerank(slot_t *s, sock_t fd, jv *req) {
     sbuf r = {0};
     const char *err = NULL;
     engine_set_stop(&s->e, readout_should_stop, &fd);
-    sched_prefill_begin();
+    readout_turn_begin(&s->e);
     int st = rerank_handle(&s->e, req, SV.model_name, s->tmpl, &r, &err);
-    sched_prefill_end();
+    readout_turn_end(&s->e);
     engine_set_stop(&s->e, NULL, NULL);
     if (sock_peer_closed(fd)) { free(r.s); return; }
     if (st != 200) {
@@ -1873,10 +1894,11 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
     // the same device work every other handler serializes under dev_mu. Take the
     // device turn so an embeddings request cannot launch while decode_worker is
     // capturing a CUDA graph (hazard at dev_mu, ~line 596). Every exit from the
-    // loop below is a break, so the single sched_prefill_end() after the loop
+    // loop below is a break, so the single readout_turn_end() after the loop
     // always runs — the lock is never left held.
-    sched_prefill_begin();
+    readout_turn_begin(&s->e);
     for (int k = 0; k < n_in && ok; k++) {
+        if (k) sched_prefill_yield(NULL);   // one input a turn
         if (sock_peer_closed(fd)) { ok = false; break; }
         const char *txt = one ? one : jv_str(input->items[k], NULL);
         if (!txt) { err_code = 400; err_msg = "input must be strings"; ok = false; break; }
@@ -1922,7 +1944,7 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
     // model_embed overwrote this slot's KV cache — invalidate the prefix cache
     engine_reset(&s->e);
     s->e.pos = 0;
-    sched_prefill_end();
+    readout_turn_end(&s->e);
     if (sock_peer_closed(fd)) {
         // The partial vector/response is discarded after releasing the turn.
     } else if (!ok) {

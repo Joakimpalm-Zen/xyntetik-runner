@@ -2842,25 +2842,6 @@ static bool request_json_mode(jv *req) {
     return tf && strcmp(jv_str(jv_get(tf, "type"), ""), "json_object") == 0;
 }
 
-// run one completion on a slot and write the HTTP response.
-// `env` is the strict tool-call envelope when the request opted into one; it
-// replaces the response_format schema, having already absorbed it as the
-// shape of its `final` branch.
-// Drop the device turn and immediately ask for it back. A waiter that has been
-// blocked gets the mutex ahead of us on any fair-ish implementation, and on an
-// unfair one this still bounds the hold to one chunk rather than one prompt.
-static void prefill_yield_turn(void *ud) {
-    (void)ud;
-    // end() then begin() puts this prefill at the BACK of the device queue,
-    // so a request that arrived mid-prefill runs at the next chunk boundary
-    // instead of after the whole prompt. That only works because the turn is
-    // FIFO (see sched_prefill_begin): with a plain mutex the releasing thread
-    // barges straight back in -- measured, the waiter lost 44 of 45 races and
-    // still waited 25.3 s of a 26.4 s prefill.
-    sched_prefill_end();
-    sched_prefill_begin();
-}
-
 // The serving grammar and the replay grammar must be one compiler. The
 // protocol is the effective one selected before rendering, including a
 // generic fallback when the native syntax cannot enforce the tool schema.
@@ -5218,7 +5199,7 @@ static float *turn_prefill(turn_result *t) {
     // holds it for the whole prefill and every other slot waits: measured at
     // 26.2 s for a short request arriving during a 2,300-token prefill.
     engine_set_stop(e, request_should_stop, stop);
-    engine_set_prefill_yield(e, prefill_yield_turn, NULL);
+    engine_set_prefill_yield(e, sched_prefill_yield, NULL);
     double device_t0 = now_s();
     sched_prefill_begin();
     prep->diag.device_wait_s = now_s() - device_t0;

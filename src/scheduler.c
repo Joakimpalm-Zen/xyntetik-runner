@@ -330,6 +330,17 @@ void sched_prefill_end(void) {
     if (sched_on() && SCH.device_turn) dev_give();
 }
 
+// end() then begin() puts the caller at the BACK of the device queue, so a
+// request that arrived meanwhile runs at this boundary instead of after the
+// whole job. That only works because the turn is ticketed (dev_take): with a
+// plain mutex the releasing thread barges straight back in -- measured, the
+// waiter lost 44 of 45 races and still waited 25.3 s of a 26.4 s prefill.
+void sched_prefill_yield(void *ud) {
+    (void)ud;
+    sched_prefill_end();
+    sched_prefill_begin();
+}
+
 // Hand one forward to the decode thread and wait for this sequence's logits.
 // Returns NULL if the sequence should stop: the batch failed, the server is
 // shutting down, or this request ran out its deadline while queued.
