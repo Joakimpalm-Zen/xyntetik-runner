@@ -3881,6 +3881,7 @@ static void test_xml_parse_only_call_closed_by_the_next_opener(void) {
     sbuf c5 = {0}, tc5 = {0};
     assert(tool_envelope_map(&strict, LIGHTNING_T0, strlen(LIGHTNING_T0), &c5, &tc5) == -1);
     free(c5.s); free(tc5.s);
+    tool_envelope_free(&e);   // `strict` is a shallow copy of it
     jv_free(tools);
 }
 
