@@ -1460,6 +1460,30 @@ static char *win_quote(const char *arg) {
     return q;
 }
 
+int plat_spawn_wait_stdin(const char *const argv[], const char *input, size_t n) {
+    if (!input) return plat_spawn_wait(argv);
+    // The input goes into a pipe before the child starts (it fits the pipe,
+    // so the write cannot block), the pipe's read end becomes descriptor 0
+    // for the length of the spawn, which the child inherits, and the
+    // caller's own standard input comes back after it.
+    int fds[2];
+    if (n > PLAT_SPAWN_STDIN_MAX || _pipe(fds, 2 * PLAT_SPAWN_STDIN_MAX, _O_BINARY) != 0)
+        return -1;
+    int wrote = n ? _write(fds[1], input, (unsigned)n) : 0;
+    _close(fds[1]);
+    int saved = _dup(0);   // -1 when the process has no standard input
+    if (wrote != (int)n || _dup2(fds[0], 0) != 0) {
+        _close(fds[0]);
+        if (saved >= 0) _close(saved);
+        return -1;
+    }
+    _close(fds[0]);
+    int rc = plat_spawn_wait(argv);
+    if (saved >= 0) { _dup2(saved, 0); _close(saved); }
+    else _close(0);
+    return rc;
+}
+
 int plat_spawn_wait(const char *const argv[]) {
     int n = 0;
     while (argv[n]) n++;
@@ -1541,17 +1565,36 @@ void plat_closedir(plat_dir *d) {
     free(d);
 }
 
-int plat_spawn_wait(const char *const argv[]) {
+int plat_spawn_wait_stdin(const char *const argv[], const char *input, size_t n) {
+    // The input is written into a pipe before the fork: it fits the pipe, so
+    // the write cannot block, and with both ends still open here it cannot
+    // raise SIGPIPE whatever becomes of the child.
+    int p[2] = { -1, -1 };
+    if (input) {
+        if (n > PLAT_SPAWN_STDIN_MAX || pipe(p) != 0) return -1;
+        ssize_t w = n ? write(p[1], input, n) : 0;
+        close(p[1]);
+        if (w != (ssize_t)n) { close(p[0]); return -1; }
+    }
     pid_t pid = fork();
-    if (pid < 0) return -1;
+    if (pid < 0) {
+        if (input) close(p[0]);
+        return -1;
+    }
     if (pid == 0) {
+        if (input && (dup2(p[0], 0) < 0 || close(p[0]) != 0)) _exit(127);
         execvp(argv[0], (char *const *)argv);
         _exit(127);
     }
+    if (input) close(p[0]);
     int status = 0;
     if (waitpid(pid, &status, 0) < 0) return -1;
     if (WIFEXITED(status)) return WEXITSTATUS(status) == 127 ? -1 : WEXITSTATUS(status);
     return -1;
+}
+
+int plat_spawn_wait(const char *const argv[]) {
+    return plat_spawn_wait_stdin(argv, NULL, 0);
 }
 
 static void *reap_detached(void *arg) {

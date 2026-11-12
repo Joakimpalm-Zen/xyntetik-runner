@@ -199,21 +199,44 @@ static const char *curl_program(void) {
     return c && *c ? c : "curl";
 }
 
-// curl -L --fail [-sS] [-H auth] -o out url ; 0 on success
+// curl -L --fail [-sS] [-K -] -o out url ; 0 on success
+//
+// HF_TOKEN reaches curl as a config line on its standard input (`-K -`), never
+// as an argument: a program's arguments are in the process list, where every
+// user of the machine reads them for as long as a download runs (it was
+// `-H "Authorization: Bearer <token>"` until R6.68.65).
 static int curl_get(const char *url, const char *out, bool quiet, char *err, size_t errcap) {
-    char auth[4096];
+    char cfg[PLAT_SPAWN_STDIN_MAX];
+    size_t cn = 0;
     const char *token = getenv("HF_TOKEN");
-    if (token && *token) snprintf(auth, sizeof auth, "Authorization: Bearer %s", token);
+    bool auth = token && *token;
+    if (auth) {
+        // header = "Authorization: Bearer <token>", the token escaped as a
+        // curl config string; a token that cannot be a header value is refused
+        cn = (size_t)snprintf(cfg, sizeof cfg, "header = \"Authorization: Bearer ");
+        for (const char *p = token; *p; p++) {
+            unsigned char c = (unsigned char)*p;
+            if (c < 0x20 || c == 0x7f || cn + 4 >= sizeof cfg) {
+                snprintf(err, errcap, "HF_TOKEN is not a token (a control character, or too long)");
+                return -1;
+            }
+            if (c == '"' || c == '\\') cfg[cn++] = '\\';
+            cfg[cn++] = (char)c;
+        }
+        cfg[cn++] = '"';
+        cfg[cn++] = '\n';
+    }
     const char *argv[16];
     int n = 0;
     argv[n++] = curl_program();
     argv[n++] = "-L"; argv[n++] = "--fail"; argv[n++] = "--retry"; argv[n++] = "3";
     if (quiet) argv[n++] = "-sS";
-    if (token && *token) { argv[n++] = "-H"; argv[n++] = auth; }
+    if (auth) { argv[n++] = "-K"; argv[n++] = "-"; }
     argv[n++] = "-o"; argv[n++] = out;
     argv[n++] = url;
     argv[n] = NULL;
-    int rc = plat_spawn_wait(argv);
+    int rc = plat_spawn_wait_stdin(argv, auth ? cfg : NULL, cn);
+    memset(cfg, 0, sizeof cfg);
     if (rc == -1) snprintf(err, errcap, "cannot run %s (set RUNNER_CURL, or install curl)", curl_program());
     else if (rc != 0) snprintf(err, errcap, "%s exited %d fetching %s", curl_program(), rc, url);
     return rc;

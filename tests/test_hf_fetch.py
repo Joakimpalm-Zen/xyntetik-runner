@@ -24,6 +24,9 @@ import json, os, shutil, sys
 args = sys.argv[1:]
 with open(os.environ["FAKE_HUB_LOG"], "a") as log:
     log.write(json.dumps(args) + "\n")
+if "-K" in args and args[args.index("-K") + 1] == "-":
+    with open(os.environ["FAKE_HUB_LOG"] + ".stdin", "a") as log:
+        log.write(json.dumps(sys.stdin.read()) + "\n")
 out = args[args.index("-o") + 1]
 url = args[-1]
 hub = os.environ["FAKE_HUB_DIR"]
@@ -171,12 +174,38 @@ def test_repo_alone_with_several_files_asks_for_a_tag(runner_bin, hub):
     assert resolve_calls(hub["log"]) == []
 
 
-def test_token_is_sent_as_a_bearer_header(runner_bin, hub):
-    env = dict(hub["env"], HF_TOKEN="hf_test_token")
+def test_token_is_sent_as_a_bearer_header_and_never_as_an_argument(runner_bin, hub):
+    """HF_TOKEN reaches curl as a config line on its standard input (-K -).
+    It was an argument (-H "Authorization: Bearer <token>"), and a program's
+    arguments are in the process list for every user of the machine to read
+    while a download runs."""
+    token = 'hf_test"to\\ken'
+    env = dict(hub["env"], HF_TOKEN=token)
     r = run(runner_bin, env, "-hf", "fake/repo:Q8_0", "-p", "hi", "-n", "2", "--temp", "0")
     assert r.returncode == 0, r.stderr
+    made = calls(hub["log"])
+    assert made
+    for c in made:
+        assert not any("hf_test" in a or "Bearer" in a for a in c), c
+        assert c[c.index("-K") + 1] == "-"
+    fed = [json.loads(line) for line in open(str(hub["log"]) + ".stdin")]
+    assert len(fed) == len(made)
+    # one curl config line; the token escaped as a config string
+    assert set(fed) == {'header = "Authorization: Bearer hf_test\\"to\\\\ken"\n'}, fed
+
+
+def test_a_token_with_a_control_character_is_refused(runner_bin, hub):
+    env = dict(hub["env"], HF_TOKEN="hf_a\nheader = \"X: y\"")
+    r = run(runner_bin, env, "-hf", "fake/repo:Q8_0", "-p", "hi", "-n", "2", "--temp", "0")
+    assert r.returncode != 0 and "HF_TOKEN is not a token" in r.stderr, r.stderr
+    assert not calls(hub["log"])
+
+
+def test_no_token_leaves_curl_its_own_arguments(runner_bin, hub):
+    r = run(runner_bin, hub["env"], "-hf", "fake/repo:Q8_0", "-p", "hi", "-n", "2", "--temp", "0")
+    assert r.returncode == 0, r.stderr
     for c in calls(hub["log"]):
-        assert "-H" in c and c[c.index("-H") + 1] == "Authorization: Bearer hf_test_token"
+        assert "-K" not in c and "-H" not in c, c
 
 
 def test_flag_argument_rules(runner_bin, hub, fixture_model):
