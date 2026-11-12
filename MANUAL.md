@@ -3743,7 +3743,7 @@ engine's listener and security model unchanged.
 | `GET /v1/runner/contexts` | The pinned contexts: `id`, `tokens`, `bytes`, `hits`, `age_seconds`. Takes no request body. |
 | `DELETE /v1/runner/contexts/{id}` | Release one context (`404` when there is none). `POST /v1/runner/prefix-cache/clear` and `/unload` release every context with the rest of the cache. |
 | `POST /v1/runner/contexts/{id}/snapshot` | With `--kv-snapshots DIR`: write context `id` to `DIR/<name>.kv` (the prefix cache's own `runner.prefix.v1` format, one entry) and `DIR/<name>.kv.json`, a `xyntetik.runner.kv_snapshot.v1` manifest naming the KV file's sha256 and size, the token count and the sha256 of the token ids, the served model's sha256 and the engine's model key, the KV type and context length, the binary's sha256, and `producer.receipt` when the body names one (`{"receipt": "receipt-<n>.json"}`, a receipt this server wrote whose chain recomputes). The manifest is chained like any record and signed with `--sign-key` (`runner attest check` verifies it). Body `{}` or `{"name", "receipt"}`; `name` defaults to the id; an existing snapshot is never overwritten (`409 snapshot_exists`). Loading is `POST /v1/runner/contexts` with `{"id": ..., "snapshot": "<name>"}`: the manifest must recompute and verify, the `.kv` bytes must be the ones it names, and the model and KV type must be this server's, else `409` (`snapshot_record_invalid`, `snapshot_digest_mismatch`, `snapshot_model_mismatch`, `snapshot_kv_type_mismatch`). A request built on a loaded context names the snapshot in its receipt (`serve.kv_snapshot`: name, KV sha256, manifest chain hash) and replays from its prompt tokens like any other. |
-| `GET /health` | Server and resident-model health, the build (`version`, and `build_flavor` on a T3 build), plus this process's `rss_bytes`/`peak_rss_bytes` and cumulative `tokens_prompt`, `tokens_generated`, `generate_seconds`, `batch_steps` and `batch_sequences`. |
+| `GET /health` | Server and resident-model health, the build (`version`, and `build_flavor` on a T3 build), plus this process's `rss_bytes`/`peak_rss_bytes` (and on macOS `phys_footprint_bytes`) and cumulative `tokens_prompt`, `tokens_generated`, `generate_seconds`, `batch_steps` and `batch_sequences`. |
 | `GET /metrics` | The same process counters in Prometheus text exposition 0.0.4 (`text/plain; version=0.0.4`), under the `runner_` prefix, with the prefix-cache and speculation counters alongside. Always on with `--serve`, takes no request body, and remains available while inference is active. |
 | `POST /v1/runner/requests/{id}/cancel` | Cancel a running completion request (chat, completions, Responses, Messages) by its response id (`chatcmpl-`, `cmpl-`, `resp_`, `msg_`, from a streamed reply's first chunk) or by the `X-Request-Id` header the client sent with it. A client-chosen id is 1 to 64 characters from `A-Z a-z 0-9 . _ : -`, sent once (`400 invalid_request_id` otherwise); an id that an active request already holds is refused with `409 duplicate_request_id`. Answered from the accept loop, so it never queues behind the request it cancels, and the reply comes once that request has stopped: `200 {"id","request_id","cancelled":true,"phase","generated"}` (`phase` is where the request was when the cancel arrived: `loading`, `starting`, `prefill` or `generate`; `request_id` is `null` for one cancelled while its model loaded, which has no response id yet). The `X-Request-Id` is taken before the request's model is swapped in, so a cancel reaches a request while its load waits or runs: in the `--wait-for-vram` queue it stops the wait unless a live client is queued behind (the rule a disconnect follows); a load already past the queue is not stopped, it finishes and stays resident, and the request ends before its prompt, answering `409` with code `cancelled`. `404 request_not_found` for an id no active request holds, including one still waiting for a slot; `504 cancel_pending` if the request has not stopped within 30 s, which a long load past the queue can cause. The cancelled request's own reply: a cut during generation keeps what was generated, with `finish_reason` `length` and `runner_telemetry.finish_detail: "cancelled"`, and its receipt records `serve.cut: "cancelled"`; a cut while the prompt was processed answers `409` with code `cancelled`. The server stays up. Takes no body. Request ids are not listed in `/health`: the server has no key of its own, so anything on loopback reads `/health`, and a listed response id would name a stored response. |
 | `POST /unload` | Release resident model, draft and prefix-cache memory; the next request reloads on demand. Deferred to the next safe point while a load or generation is in flight (the reply says `"deferred":true`). Needs the registry: a server without one refuses with `409` rather than reporting a success it cannot deliver - see the residency note below. |
@@ -4017,7 +4017,16 @@ the confirmation the closed socket cannot give; with one request in flight,
 one machine. `rss_bytes` is this **process's** resident set - weights, KV
 cache, activations and allocator overhead together - which is the number a
 machine is sized against and which no per-mapping measure accounts for;
-`peak_rss_bytes` is its high-water mark. `tokens_prompt`, `tokens_generated`
+`peak_rss_bytes` is its high-water mark. On macOS `phys_footprint_bytes` stands
+beside them: the kernel's physical footprint for the process, the figure
+Activity Monitor and `footprint` show. It counts what the resident set leaves
+out, the GPU driver's memory for the process (Metal's buffers, the KV cache
+among them) and its compressed pages, and leaves out clean mapped pages the
+resident set counts, such as weights read from the file; neither contains the
+other. On Metal it is the number that shows a device-memory leak: a serving
+process has read 13 MB resident at a 638 MB footprint, 598 MB of it Metal. The
+field is absent on Linux and Windows, which have no one figure that adds device
+memory to RAM; their GPU memory is reported apart. `tokens_prompt`, `tokens_generated`
 and `generate_seconds` are cumulative monotonic totals across every API
 surface. `batch_steps` and `batch_sequences` count the scheduler's microbatch
 steps and the sequences cut into them, so `batch_sequences / batch_steps` is
@@ -4049,7 +4058,8 @@ monitoring stack ingests them without a translator. Every name carries the
 `runner_batch_sequences_total`, the six `runner_prefix_cache_*` counters and
 their three gauges, the three `runner_speculation_*` counters, and the gauges
 `runner_active_requests`, `runner_resident_memory_bytes` and
-`runner_peak_resident_memory_bytes`. It is on whenever `--serve` is, needs no
+`runner_peak_resident_memory_bytes`, and on macOS `runner_phys_footprint_bytes`
+(the footprint above). It is on whenever `--serve` is, needs no
 flag, and computes nothing: there is no hit-rate and no tokens-per-second here
 for the same reason `/health` has none. Like `/health` it does not count its
 own requests, so a scraper on a timer does not measure itself.

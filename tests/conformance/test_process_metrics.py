@@ -16,6 +16,7 @@ business choosing, and would be wrong for every consumer whose window differs.
 """
 
 import json
+import sys
 
 
 def health(client):
@@ -149,6 +150,10 @@ EXPECTED_GAUGES = {
     "runner_prefix_cache_budget_bytes",
     "runner_prefix_cache_entries",
 }
+# The physical footprint is macOS's alone (R6.68.12): required there, and an
+# undeclared gauge anywhere else, where it must not appear.
+if sys.platform == "darwin":
+    EXPECTED_GAUGES.add("runner_phys_footprint_bytes")
 
 
 def parse_exposition(text):
