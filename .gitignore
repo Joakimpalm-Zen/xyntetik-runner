@@ -159,6 +159,7 @@ test-lineage-oom.err
 lineage-oom-receipts/
 lineage-oom-out.txt
 test-derive-oom
+test-tray-macos-arc
 test-derive-oom.exe
 test-derive-oom.err
 derive-oom.gguf.quant-error.jsonl

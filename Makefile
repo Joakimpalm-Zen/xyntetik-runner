@@ -281,6 +281,14 @@ TEST_TRAY_WIN_RUN = @echo "skip: test-tray-win-menu (Win32 menu readback; covere
 TEST_UTF8_CONSOLE_DEP =
 TEST_UTF8_CONSOLE_RUN = @echo "skip: test-utf8-console (Windows console code page; covered by the Windows job)"
 endif
+ifeq ($(BUILD_OS),Darwin)
+TEST_TRAY_MAC = test-tray-macos-arc
+TEST_TRAY_MAC_DEP = $(TEST_TRAY_MAC)
+TEST_TRAY_MAC_RUN = ./$(TEST_TRAY_MAC)
+else
+TEST_TRAY_MAC_DEP =
+TEST_TRAY_MAC_RUN = @echo "skip: test-tray-macos-arc (AppKit menu ownership; macOS only)"
+endif
 TEST_QUANTIZE = $(TEST_BATCH:test-batch%=test-quantize%)
 TEST_QUANTIZE_OOM = $(TEST_BATCH:test-batch%=test-quantize-oom%)
 TEST_LINEAGE_OOM = $(TEST_BATCH:test-batch%=test-lineage-oom%)
@@ -478,6 +486,14 @@ endif
 $(OBJDIR)/%.o: src/%.m $(HDR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I src -c $< -o $@
+# R6.68.5: the macOS tray is built with ARC, so AppKit's ownership is the
+# compiler's rather than counted by hand (built without it, every menu open
+# leaked the menu it replaced). OBJC_ARC is its own variable because a release
+# sets CFLAGS on make's command line, which must not drop it.
+OBJC_ARC = -fobjc-arc
+$(OBJDIR)/tray_macos.o: src/tray_macos.m $(HDR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(OBJC_ARC) -I src -c $< -o $@
 # The executable is keyed too: switching back from T3 must not keep a newer
 # T3 runner merely because the default objects are older. Comparison keeps no-op
 # builds cheap while selecting the exact configured executable on every call.
@@ -1007,6 +1023,12 @@ TRAY_TEST_LIBS = -lws2_32
 else
 TRAY_TEST_LIBS =
 endif
+# R6.68.5: the macOS tray's menu rebuild gives back what it made
+# (tests/test_tray_macos_arc.m, itself ARC for zeroing weak references)
+TEST_TRAY_MAC_OBJ = $(OBJDIR)/tray_macos.o $(OBJDIR)/tray.o $(OBJDIR)/instances.o \
+                    $(OBJDIR)/json.o $(OBJDIR)/compat.o
+test-tray-macos-arc: tests/test_tray_macos_arc.m $(TEST_TRAY_MAC_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -fobjc-arc -I src tests/test_tray_macos_arc.m $(TEST_TRAY_MAC_OBJ) -o $@ $(LDFLAGS)
 TEST_TRAY_CORE_SRC = tests/test_tray_core.c src/tray.c src/tray_stub.c \
                      src/instances.c src/json.c src/compat.c
 $(TEST_TRAY_CORE): $(TEST_TRAY_CORE_SRC) $(HDR)
@@ -3302,7 +3324,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
       $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
-      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
+      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
       $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) \
@@ -3506,6 +3528,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_METAL_ADMISSION)
 	./$(TEST_TRAY_CORE)
 	$(TEST_TRAY_WIN_RUN)
+	$(TEST_TRAY_MAC_RUN)
 	$(TEST_UTF8_CONSOLE_RUN)
 	@# the CPU-only backend stub, which no platform branch ever builds
 	$(MAKE) --no-print-directory test-gpu-stub
