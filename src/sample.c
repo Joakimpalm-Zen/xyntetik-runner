@@ -256,6 +256,20 @@ static int prefix_decide(sampler *s, cand_t *valid, int k, double top,
     return -3;
 }
 
+int sample_argmax(const float *x, int n) {
+    // Finding the value and then its index are two loops a compiler
+    // vectorises; the one loop that tracks the index is not (682 us against
+    // 30 at 152k entries, 901 against 35 at 262k, Apple M1). When no entry
+    // equals the maximum found (a NaN upset the value pass) the tracking loop
+    // answers, so the result is always an index in range.
+    float mx = x[0];
+    for (int i = 1; i < n; i++) if (x[i] > mx) mx = x[i];
+    for (int i = 0; i < n; i++) if (x[i] == mx) return i;
+    int best = 0;
+    for (int i = 1; i < n; i++) if (x[i] > x[best]) best = i;
+    return best;
+}
+
 // RUNNER_SAMPLE_STATS=1 traces why the head fast path was or was not usable.
 // Cached: this sits in the per-token path and getenv is not free.
 static bool sample_stats(void) {
@@ -324,14 +338,7 @@ int sample_pick(sampler *s, float *logits, int n_vocab, sample_ok_fn ok, void *u
         // that tracks the index is not (445 us against 20 at 128k entries).
         // A NaN can leave the first loop without a value any entry equals;
         // the index-tracking loop then answers, as it always did.
-        float mx = logits[0];
-        for (int i = 1; i < n_vocab; i++) if (logits[i] > mx) mx = logits[i];
-        int best = -1;
-        for (int i = 0; i < n_vocab; i++) if (logits[i] == mx) { best = i; break; }
-        if (best < 0) {
-            best = 0;
-            for (int i = 1; i < n_vocab; i++) if (logits[i] > logits[best]) best = i;
-        }
+        int best = sample_argmax(logits, n_vocab);
         if (!ok || ok(ud, best)) return best;
     } else if (ok) {
         // constrained + sampled: quick check whether the unconstrained flow

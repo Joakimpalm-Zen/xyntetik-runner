@@ -618,6 +618,40 @@ static void test_sparse_filter_is_scanned_once(void) {
            distinct, settled[0], settled[1], quick);
 }
 
+// sample_argmax against the index-tracking loop it replaces, on finite input:
+// ties (the first wins), the mask value -1e30 the constrained paths write, one
+// entry, and random vectors with many ties at lengths around a vector width.
+// A NaN is not tested: both loops are built with fast math, under which a
+// comparison against NaN may go either way, so neither has an answer to hold.
+static int tracking_argmax(const float *x, int n) {
+    int best = 0;
+    for (int i = 1; i < n; i++) if (x[i] > x[best]) best = i;
+    return best;
+}
+
+static void test_argmax_is_the_tracking_loop(void) {
+    float a[8] = { 1, 5, 5, 2, 5, -1, 0, 3 };
+    assert(sample_argmax(a, 8) == 1);
+    float e[6] = { -1e30f, -1e30f, 3, 1e30f, 1e30f, -1e30f };
+    assert(sample_argmax(e, 6) == 3);
+    float g[4] = { -1e30f, -1e30f, -1e30f, -1e30f };
+    assert(sample_argmax(g, 4) == 0);
+    float f[1] = { -2 };
+    assert(sample_argmax(f, 1) == 0);
+    unsigned s = 12345;
+    for (int n = 1; n <= 70; n++) {
+        float v[70];
+        for (int rep = 0; rep < 50; rep++) {
+            for (int i = 0; i < n; i++) {
+                s = s * 1103515245u + 12345u;
+                v[i] = (float)((s >> 16) % 17) - 8.0f;    // few values: many ties
+            }
+            assert(sample_argmax(v, n) == tracking_argmax(v, n));
+        }
+    }
+    printf("ok: sample_argmax equals the index-tracking loop on finite input, ties included\n");
+}
+
 // Greedy returns the FIRST index holding the greatest logit, as the single
 // index-tracking loop it replaced did.
 static void test_greedy_takes_the_first_of_equal_maxima(void) {
@@ -747,6 +781,7 @@ int main(void) {
     test_constrained_pick_ranks_a_prefix();
     test_sparse_filter_is_scanned_once();
     test_greedy_takes_the_first_of_equal_maxima();
+    test_argmax_is_the_tracking_loop();
     test_seed_is_mixed_before_it_seeds_the_sampler();
     puts("sampler tests ok");
     return 0;
