@@ -838,7 +838,8 @@ int model_kv_ring_rows(int window, int batch, int n_ctx) {
 // and expert counts (model_routed_expert_bytes, the load's hot-set rule).
 typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; int trunk; bool v_shared;
                  unsigned kv_formats; uint64_t routed; int n_expert, n_expert_used;
-                 int ctx_cap, n_ctx_train; } fit_geom;
+                 int ctx_cap, n_ctx_train;
+                 bool moe_host_default; } fit_geom;
 
 // R3.44: the qwen35 family's Gated DeltaNet layers own no KV rows
 // (bind_meta_qwen35) unless RUNNER_KV_RECURRENT_ROWS=1 keeps the layout that
@@ -947,6 +948,7 @@ static bool fit_geometry(gguf_file *g, int n_layer, bool mtp, fit_geom *o,
     o->n_expert_used = pm.n_expert_used;
     o->ctx_cap = pm.ctx_cap;
     o->n_ctx_train = pm.n_ctx_train;
+    o->moe_host_default = model_moe_router_host_default(&pm);
     model_free_weights(&pm);
     return true;
 }
@@ -996,6 +998,7 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
     // trained context is the plan's (2048 when the header has none, as a load
     // reads it; the header's 0 put the fit's default at 4096)
     out->train_ctx = geo.n_ctx_train;
+    out->moe_host_default = geo.moe_host_default;
     // the device's router caps, as the load applies them (R6.68.67)
     {
         int me = 0, mu = 0;
@@ -2182,27 +2185,31 @@ static void mw_release(model_weights *w) {
 // been given. --gpu off, an explicit --cpu-moe, or RUNNER_CPU_MOE_DEFAULT=0
 // (which runs it on the CPU, the earlier default) take precedence. The copy
 // lives for the call that reads it.
-#ifdef RUNNER_GPU_CUDA
 // Experts whose width varies by layer (layer_t.n_ff_exp, Nemotron 3.5 Bolt)
 static bool moe_widths_vary(const model_t *m) {
-    for (int l = 0; l < m->n_layer; l++)
+    for (int l = 0; m->layers && l < m->n_layer; l++)
         if (m->layers[l].is_moe && m->layers[l].n_ff_exp > 0 &&
             m->layers[l].n_ff_exp != m->n_ff_exp)
             return true;
     return false;
 }
-#endif
+
+bool model_moe_router_host_default(const model_t *m) {
+    // A LatentMoE file (Super, Bolt), or one whose expert widths vary by
+    // layer, is refused by cuda_admit whatever the placement, so it takes
+    // none: the split's line would say what never runs.
+    if (!m->nemotron_h || m->n_expert <= 0 || m->moe_latent != 0 ||
+        moe_widths_vary(m) || model_moe_router_is_plain_any_norm(m))
+        return false;
+    const char *e = getenv("RUNNER_CPU_MOE_DEFAULT");
+    return !(e && !strcmp(e, "0"));
+}
 
 static const model_params *model_default_placement(const model_t *m, const model_params *p) {
 #ifdef RUNNER_GPU_CUDA
     static _Thread_local model_params pd;
-    const char *e = getenv("RUNNER_CPU_MOE_DEFAULT");
-    // A LatentMoE file (Super, Bolt), or one whose expert widths vary by layer,
-    // is refused by cuda_admit whatever the placement, so it takes none: the
-    // split's line would say what never runs.
-    if (p->gpu_mode != GPU_OFF && !p->cpu_moe && m->nemotron_h && m->n_expert > 0 &&
-        m->moe_latent == 0 && !moe_widths_vary(m) &&
-        !model_moe_router_is_plain_any_norm(m) && !(e && !strcmp(e, "0"))) {
+    // the rule --info fit asks too (model_moe_router_host_default, R6.68.78)
+    if (p->gpu_mode != GPU_OFF && !p->cpu_moe && model_moe_router_host_default(m)) {
         pd = *p;
         pd.cpu_moe = true;
         pd.cpu_moe_layers = CPU_MOE_ALL;

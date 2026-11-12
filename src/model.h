@@ -1493,6 +1493,10 @@ typedef struct {
     // only when `mtp` (--mtp) would bind them
     int      n_mtp;
     bool     mtp;
+    // a GPU load with no placement named keeps the expert banks and their
+    // routing on the host (model_moe_router_host_default over the plan,
+    // R6.68.78): nemotron_h_moe's CUDA default
+    bool     moe_host_default;
     bool     sparse;             // routed-MoE: hot set is smaller than weights
     uint64_t weights;            // whole file, per the header
     uint64_t gathered;           // E-series token table: only selected rows are read
@@ -1595,6 +1599,14 @@ static inline const char *model_moe_route_why(int n_expert, int n_used,
     return buf;
 }
 const char *model_gpu_cpu_only_why(const char *arch, int norm_groups);
+// R6.68.78: whether a GPU load that names no placement keeps this model's
+// expert banks and their routing on the host (R3.43a.2): a nemotron_h_moe
+// router the device kernel cannot run (not plain softmax: another gating
+// function, a group limit, a weight scale), unless LatentMoE or per-layer
+// expert widths keep the model off the device anyway, or
+// RUNNER_CPU_MOE_DEFAULT=0. One rule over a loaded model or the fit's plan:
+// model_default_placement asks it for a load, --info fit for its plan.
+bool        model_moe_router_host_default(const model_t *m);
 uint64_t model_gpu_recurrent_cost(int kind, uint64_t n_rec, uint64_t conv_kernel,
                                   uint64_t inner, uint64_t state, uint64_t groups,
                                   uint64_t v_heads, uint64_t q_dim);

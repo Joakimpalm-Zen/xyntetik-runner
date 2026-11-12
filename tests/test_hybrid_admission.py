@@ -463,3 +463,26 @@ def test_an_expert_grouping_the_router_cannot_run_is_refused(runner_bin, tmp_pat
     p = _run(runner_bin, pfx.with_suffix(".gguf"))
     assert p.returncode != 0, p
     assert b"invalid MoE expert grouping" in p.stderr, p.stderr
+
+
+def test_the_fit_and_the_load_agree_on_a_group_limited_router(runner_bin, tmp_path):
+    """R6.68.78: nemotron_h_moe's experts stay on the host by default on CUDA when
+    the device's router kernel cannot run its router, and the fit restated that
+    rule from the header. A group limit is such a router: with softmax gating, a
+    weights scale of 1 and two expert groups the load kept the experts home and
+    the fit planned them on the device. Both now ask
+    model_moe_router_host_default."""
+    _cuda_or_skip(runner_bin)
+    pfx = tmp_path / "g"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-hybrid.py", str(pfx),
+                    "--arch", "nemotron_h_moe"], check=True, cwd=ROOT, stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, HYBRID_TEST_GATING="1", HYBRID_TEST_EXPERT_GROUPS="2,1"))
+    model = pfx.with_suffix(".gguf")
+    fit = subprocess.run([runner_bin, "--info", "fit", "-m", str(model)], cwd=ROOT,
+                         capture_output=True, text=True, timeout=120)
+    assert fit.returncode == 0, fit.stderr
+    assert "experts       on the host, with their routing" in fit.stdout, fit.stdout
+    load = subprocess.run([runner_bin, "-m", str(model), "-p", "hi", "-n", "1"], cwd=ROOT,
+                          capture_output=True, text=True, timeout=120)
+    assert load.returncode == 0, load.stderr
+    assert "its experts and their routing stay on the host" in load.stderr, load.stderr

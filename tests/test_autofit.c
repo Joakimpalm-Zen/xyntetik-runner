@@ -24,6 +24,7 @@
 #include "model.h"
 #include "gguf.h"
 #include "gpu_tables.h"
+#include "compat.h"
 
 static int g_fail = 0;
 static void ck(int cond, const char *what) {
@@ -615,6 +616,46 @@ static void test_fit_layer_tables(const char *fixture) {
     gguf_close(&g);
 }
 
+// R6.68.78: nemotron_h_moe's host-experts default is one rule for a load
+// (model_default_placement) and --info fit (its plan), over a table of
+// routers. The fit restated it from the header and missed the group limit:
+// softmax gating, scale 1 and two groups kept the experts home on a load
+// while the fit planned them on the device.
+static void moe_host_default_table(void) {
+    static model_t m;
+    static layer_t ly[2];
+    #define NH_BASE() do { memset(&m, 0, sizeof m); memset(ly, 0, sizeof ly); \
+        m.nemotron_h = true; m.n_expert = 4; m.n_ff_exp = 16; m.n_layer = 2;    \
+        m.layers = ly; m.expert_gating = EXPERT_GATE_SIGMOID;                  \
+        m.n_expert_groups = 1; m.expert_w_scale = 1.0f;                        \
+        ly[0].is_moe = ly[1].is_moe = true; ly[0].n_ff_exp = ly[1].n_ff_exp = 16; } while (0)
+    NH_BASE();
+    ck(model_moe_router_host_default(&m), "moe host default: a sigmoid router stays home");
+    NH_BASE(); m.expert_gating = EXPERT_GATE_SOFTMAX;
+    ck(!model_moe_router_host_default(&m), "moe host default: a plain softmax router runs on the device");
+    NH_BASE(); m.expert_gating = EXPERT_GATE_SOFTMAX; m.n_expert_groups = 2;
+    ck(model_moe_router_host_default(&m),
+       "moe host default: a group limit stays home (the case the fit's copy missed)");
+    NH_BASE(); m.expert_gating = EXPERT_GATE_SOFTMAX; m.expert_w_scale = 2.5f;
+    ck(model_moe_router_host_default(&m), "moe host default: a weight scale stays home");
+    NH_BASE(); m.expert_gating = EXPERT_GATE_SOFTMAX; m.expert_w_scale = 0.0f;
+    ck(!model_moe_router_host_default(&m), "moe host default: scale 0 is the plain router");
+    NH_BASE(); m.moe_latent = 64;
+    ck(!model_moe_router_host_default(&m), "moe host default: LatentMoE takes no placement");
+    NH_BASE(); m.n_ff_exp = 24; ly[1].n_ff_exp = 24;
+    ck(!model_moe_router_host_default(&m), "moe host default: varying widths take no placement");
+    NH_BASE(); m.nemotron_h = false;
+    ck(!model_moe_router_host_default(&m), "moe host default: only nemotron_h_moe");
+    NH_BASE(); m.n_expert = 0;
+    ck(!model_moe_router_host_default(&m), "moe host default: no experts, no placement");
+    NH_BASE();
+    plat_setenv("RUNNER_CPU_MOE_DEFAULT", "0");
+    ck(!model_moe_router_host_default(&m), "moe host default: RUNNER_CPU_MOE_DEFAULT=0 turns it off");
+    plat_setenv("RUNNER_CPU_MOE_DEFAULT", "1");
+    ck(model_moe_router_host_default(&m), "moe host default: any other value leaves it on");
+    #undef NH_BASE
+}
+
 // gpu_tables.h's rows (R6.68.29): the uploader and the fit index them by
 // their id, so a row is at its own id's place, named, and present: a row
 // left out of the designated list would be all zeros, id GT_ATTN_NORM, no
@@ -634,6 +675,7 @@ static void gpu_tables_rows_are_whole(void) {
 
 int main(int argc, char **argv) {
     gpu_tables_rows_are_whole();
+    moe_host_default_table();
     test_gpu_window();
     test_gpu_budget();
     test_multislot_is_not_billed_once();
