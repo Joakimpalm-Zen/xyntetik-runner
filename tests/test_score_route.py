@@ -129,7 +129,12 @@ def test_guard_refuses_equal_scores(runner_bin, model, tmp_path):
 def test_guard_refuses_a_solo_side_unless_asked(runner_bin, model, tmp_path):
     solo = _score(runner_bin, model)
     keep = _score(runner_bin, model, RUNNER_SCORE_CHUNKED="1")
-    assert not score_record.same_scores(solo, keep)
+    if score_record.same_scores(solo, keep):
+        # the premise of the guard, and it holds on an optimised build. An
+        # unoptimised one (the sanitized binary) sums both routes in one
+        # order and gives identical scores: the premise is absent there, not
+        # broken, so the case has nothing to show
+        pytest.skip("solo and chunked scores are identical on this build")
     a, b = _write(tmp_path / "a.json", solo), _write(tmp_path / "b.json", keep)
     with pytest.raises(SystemExit) as e:
         _guard()(_args(a, b))

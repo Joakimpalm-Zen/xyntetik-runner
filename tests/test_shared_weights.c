@@ -86,9 +86,14 @@ int main(int argc, char **argv) {
     // because unified memory has no separate VRAM pool to leak — but a silent
     // skip makes "ok" read identically whether the check ran or not, which is
     // the failure mode this suite has already been bitten by twice.
-    if (!have_vram)
+    // On Metal there is no VRAM pool, but the GPU driver's memory for this
+    // process is in its physical footprint (R6.68.12): the check runs on that
+    // below, once the reference load says whether the model is on the GPU.
+    uint64_t fp_probe = 0;
+    bool have_fp = !have_vram && !g_gpu_off && plat_proc_phys_footprint_bytes(&fp_probe);
+    if (!have_vram && !have_fp)
         printf("note: device VRAM leak check SKIPPED (no separate VRAM pool "
-               "reported — unified memory, CPU-only, or --gpu off)\n");
+               "and no process footprint reported: CPU-only, --gpu off, or not macOS)\n");
     // Fixture scale governs whether this check CAN fail: it compares free VRAM
     // across windows of 3 load/free cycles against a 16 MB tolerance, so a
     // leak of the whole model must exceed that. At the 370 KB test.gguf that
@@ -296,6 +301,39 @@ int main(int argc, char **argv) {
             printf("vram stable across load/free cycles (%.1f / %.1f MB)\n",
                    d1 / 1e6, d2 / 1e6);
         }
+    }
+
+    // The same two-window rule on Metal, read from the process's physical
+    // footprint instead of free VRAM: a Metal buffer that is not released
+    // grows the footprint in every window (R6.68.12). The footprint is this
+    // process's alone, so another process cannot move it; the windows guard
+    // against the allocator's own caching instead.
+    if (have_fp && ref_on_gpu) {
+        uint64_t g0 = 0, g1 = 0, g2 = 0;
+        (void)plat_proc_phys_footprint_bytes(&g0);
+        cycles(&p, 3);
+        (void)plat_proc_phys_footprint_bytes(&g1);
+        cycles(&p, 3);
+        (void)plat_proc_phys_footprint_bytes(&g2);
+        long long d1 = (long long)g1 - (long long)g0;
+        long long d2 = (long long)g2 - (long long)g1;
+        const long long TOL = 16 * 1024 * 1024, BIG = 512 * 1024 * 1024;
+        if (d1 > BIG || d2 > BIG) {
+            fprintf(stderr, "FAIL: the process footprint grew %.1f MB in a single window "
+                    "(then %.1f MB): a Metal allocation is not being released\n",
+                    (d1 > d2 ? d1 : d2) / 1e6, (d1 > d2 ? d2 : d1) / 1e6);
+            g_fail = 1;
+        } else if (d1 > TOL && d2 > TOL) {
+            fprintf(stderr, "FAIL: the process footprint grows every cycle window (%.1f then "
+                    "%.1f MB over 3 load/free cycles each): a Metal allocation is not "
+                    "being released\n", d1 / 1e6, d2 / 1e6);
+            g_fail = 1;
+        } else {
+            printf("device leak check on the process footprint (unified memory): stable "
+                   "across load/free cycles (%+.1f / %+.1f MB)\n", d1 / 1e6, d2 / 1e6);
+        }
+    } else if (have_fp) {
+        printf("note: device leak check SKIPPED (the model did not load on the GPU)\n");
     }
 
     for (int t = 0; t < SEQ; t++) free(want[t]);
