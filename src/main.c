@@ -5709,6 +5709,17 @@ static bool train_evals_open(cli_opts *o, cli_run *rt, int wctx, int eot_id,
     return true;
 }
 
+// `s` on f as a JSON string. A label or a path is the caller's text: between
+// quotes as it stood, a quote or a backslash in it made the line one no reader
+// parses (the stop file's path, #542; the eval labels, R6.68.80).
+static void fput_json_str(FILE *f, const char *s) {
+    sbuf b = {0};
+    sb_str(&b, s);
+    if (b.s && !b.failed) fwrite(b.s, 1, b.n, f);
+    else fputs("\"\"", f);
+    free(b.s);
+}
+
 // Every set once, no update: one JSON line {"step","eval":{LABEL:{...}}} with
 // the mean loss per (weighted) position, as the training loss is, and the two
 // top-1 agreements (model_lora_eval_row).
@@ -5734,8 +5745,10 @@ static bool train_evals_run(cli_opts *o, cli_run *rt, train_eval_set *ev, int st
         e->last = acc.weight > 0 ? acc.loss / acc.weight : 0.0;
         if (step == 0) { e->base = e->last; e->has_base = true; }
         double pos = acc.positions > 0 ? (double)acc.positions : 1.0;
-        printf("%s\"%s\":{\"loss\":%.6f,\"top1_topk\":%.6f,\"top1_vocab\":%.6f,"
-               "\"rows\":%d,\"positions\":%ld}", i ? "," : "", e->label, e->last,
+        if (i) printf(",");
+        fput_json_str(stdout, e->label);
+        printf(":{\"loss\":%.6f,\"top1_topk\":%.6f,\"top1_vocab\":%.6f,"
+               "\"rows\":%d,\"positions\":%ld}", e->last,
                (double)acc.top1_topk / pos, (double)acc.top1_vocab / pos, e->n_ex,
                acc.positions);
     }
@@ -5852,8 +5865,10 @@ static bool train_kill_record(cli_opts *o, const char *suffix, int step,
         return false;
     FILE *f = plat_fopen(path, "w");
     if (!f) return false;
-    fprintf(f, "{\"step\":%d,\"metric\":\"%s\",\"baseline\":%.6f,\"now\":%.6f,"
-            "\"relative_reduction\":%.6f,\"required\":%.6f}\n", step, o->kill_metric,
+    fprintf(f, "{\"step\":%d,\"metric\":", step);
+    fput_json_str(f, o->kill_metric);
+    fprintf(f, ",\"baseline\":%.6f,\"now\":%.6f,"
+            "\"relative_reduction\":%.6f,\"required\":%.6f}\n",
             base, now, rel, (double)o->kill_min_rel);
     return fclose(f) == 0;
 }
@@ -6025,10 +6040,11 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
             }
             if (!pass) {
                 if (!train_checkpoint(o, rt, st, ev, true)) { rc = 1; break; }
-                printf("{\"killed\":{\"step\":%d,\"metric\":\"%s\",\"baseline\":%.6f,"
+                printf("{\"killed\":{\"step\":%d,\"metric\":", step);
+                fput_json_str(stdout, o->kill_metric);
+                printf(",\"baseline\":%.6f,"
                        "\"now\":%.6f,\"relative_reduction\":%.6f,\"required\":%.6f}}\n",
-                       step, o->kill_metric, k->base, k->last, rel,
-                       (double)o->kill_min_rel);
+                       k->base, k->last, rel, (double)o->kill_min_rel);
                 fflush(stdout);
                 rc = 3;
                 break;
@@ -6036,14 +6052,9 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
         }
         if (o->stop_file && plat_file_readable(o->stop_file)) {
             if (!train_checkpoint(o, rt, st, ev, true)) { rc = 1; break; }
-            // the path is escaped: a Windows path's backslashes, or a quote,
-            // copied raw made the line invalid JSON (#542)
-            size_t n = strlen(o->stop_file), cap = n * 6 + 8;
-            char *esc = malloc(cap);
-            if (!esc) { rc = 1; break; }
-            json_escape(o->stop_file, n, esc, cap);
-            printf("{\"yield\":\"%s\",\"step\":%d}\n", esc, step);
-            free(esc);
+            printf("{\"yield\":");
+            fput_json_str(stdout, o->stop_file);
+            printf(",\"step\":%d}\n", step);
             fflush(stdout);
             rc = 75;
             break;
