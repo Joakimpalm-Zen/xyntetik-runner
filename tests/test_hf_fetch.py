@@ -36,7 +36,8 @@ if "/api/models/" in url:
     shutil.copy(os.path.join(hub, "files.json"), out)
     sys.exit(0)
 if "/resolve/main/" in url:
-    name = url.split("/resolve/main/", 1)[1]
+    import urllib.parse
+    name = urllib.parse.unquote(url.split("/resolve/main/", 1)[1])
     src = os.path.join(hub, name)
     if not os.path.exists(src):
         sys.exit(22)
@@ -340,3 +341,23 @@ def test_a_file_in_a_repository_folder_is_fetched_by_its_path(runner_bin, hub):
     # the folder's other Q8_0 file is a second match for the short tag, so it is named, not guessed
     r = run(runner_bin, hub["env"], "-hf", "fake/repo:Q8_0", "-p", "hi", "-n", "2")
     assert r.returncode != 0 and "merged-Q8_0.gguf" in r.stderr, r.stderr
+
+
+def test_a_file_name_with_url_characters_is_fetched(runner_bin, hub):
+    """A repository file name is put into the transfer URL, and a name is not
+    a URL: curl refuses one with a space outright (exit 3), and '#' or '?'
+    cut the path short. Each byte outside the unreserved set is percent
+    encoded; '/' stays the folder separator."""
+    sub = hub["dir"] / "my folder"
+    sub.mkdir()
+    name = "my folder/my model #2 (50%)?-Q8_0.gguf"
+    model = hub["dir"] / name
+    model.write_bytes((hub["dir"] / "model-Q8_0.gguf").read_bytes())
+    (hub["dir"] / "files.json").write_text(json.dumps({"siblings": [
+        {"rfilename": name, "size": model.stat().st_size,
+         "lfs": {"sha256": sha256(model), "size": model.stat().st_size}}]}))
+    r = run(runner_bin, hub["env"], "--pull", "fake/repo:Q8_0")
+    assert r.returncode == 0, r.stderr
+    assert [c[-1] for c in resolve_calls(hub["log"])] == [
+        "https://huggingface.co/fake/repo/resolve/main/"
+        "my%20folder/my%20model%20%232%20%2850%25%29%3F-Q8_0.gguf"]

@@ -302,6 +302,31 @@ static void local_name(const char *rfilename, char *out, size_t cap) {
     out[n] = 0;
 }
 
+// The transfer URL of one repository file. A file name is not a URL: curl
+// refuses one with a space outright (exit 3), and '#' or '?' cut the path
+// short, so every byte outside RFC 3986's unreserved set is percent-encoded;
+// '/' stays the folder separator (R6.68.66). The repository id needs none
+// (safe_repo_segment). False when the URL does not fit.
+static bool resolve_url(char *out, size_t cap, const char *repo, const char *rfilename) {
+    static const char hexd[] = "0123456789ABCDEF";
+    int at = snprintf(out, cap, "https://huggingface.co/%s/resolve/main/", repo);
+    if (at < 0 || (size_t)at >= cap) return false;
+    size_t n = (size_t)at;
+    for (const unsigned char *p = (const unsigned char *)rfilename; *p; p++) {
+        // ASCII by range, not isalnum: a locale may call a high byte a letter
+        bool plain = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                     (*p >= '0' && *p <= '9') || *p == '-' || *p == '.' || *p == '_' ||
+                     *p == '~' || *p == '/';
+        if (n + (plain ? 1 : 3) >= cap) return false;
+        if (plain) { out[n++] = (char)*p; continue; }
+        out[n++] = '%';
+        out[n++] = hexd[*p >> 4];
+        out[n++] = hexd[*p & 15];
+    }
+    out[n] = 0;
+    return true;
+}
+
 // the local digest for a caller that reports it (hex_out non-NULL): the LFS
 // check has computed it already; a file verified by its size alone is hashed
 static bool digest_out(const char *target, bool have_hex, const char hex[65], char *hex_out,
@@ -321,7 +346,7 @@ static bool digest_out(const char *target, bool have_hex, const char hex[65], ch
 static bool ensure_file(const char *repo, const char *rfilename, const char *repodir,
                         long long size, const char *sha, bool quiet, char *hex_out,
                         char *err, size_t errcap) {
-    char rel[1024], target[2048], part[2100], url[2048];
+    char rel[1024], target[2048], part[2100], url[4096];
     local_name(rfilename, rel, sizeof rel);
     if (snprintf(target, sizeof target, "%s%c%s", repodir, HF_SEP, rel) >= (int)sizeof target) {
         snprintf(err, errcap, "cache path too long for %s", rfilename);
@@ -347,7 +372,10 @@ static bool ensure_file(const char *repo, const char *rfilename, const char *rep
     }
     snprintf(part, sizeof part, "%s.part", target);
     plat_remove(part);
-    snprintf(url, sizeof url, "https://huggingface.co/%s/resolve/main/%s", repo, rfilename);
+    if (!resolve_url(url, sizeof url, repo, rfilename)) {
+        snprintf(err, errcap, "transfer URL too long for %s", rfilename);
+        return false;
+    }
     fprintf(stderr, "hf: fetching %s/%s\n", repo, rfilename);
     if (curl_get(url, part, quiet, err, errcap) != 0) { plat_remove(part); return false; }
     if (sha && *sha) {
