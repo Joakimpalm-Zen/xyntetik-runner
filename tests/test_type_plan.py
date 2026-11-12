@@ -304,6 +304,54 @@ def test_a_q4_k_fallback_row_is_a_real_q5_0(runner_bin, tmp_path):
     assert abs(q - src) < 0.1 * max(1.0, abs(src)), (src, q)
 
 
+def test_a_fallback_never_grows_a_tensor_or_rewrites_it_as_itself(runner_bin, tmp_path):
+    """R6.68.84: a row a 256-wide block cannot describe (352 here) is written
+    in the 32-block cousin, q5_0 for q4_k. The whole-file rule decided "is
+    the tensor already small enough" against the type ASKED for, not the one
+    it would write, and reported the fallback before it decided:
+    - a Q4_0 file asked for q4_k had those rows requantized into Q5_0, a
+      larger type (198 bytes a row became 242), from already-quantized values;
+    - a file that already carried the fallback was "written" in it again;
+    - the log named a type "wrote" for a tensor that kept its own.
+    The plan's copy of the rule had the first two right. One rule now."""
+    wide = tmp_path / "wide.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(wide),
+                    "--wide", "--n-ff", "352"], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    Q4_0, Q5_0, Q4_K = 2, 6, 12
+
+    def requant(src, out, *how):
+        p = subprocess.run([str(runner_bin), "-m", str(src), "--quantize", str(out), *how],
+                           cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        assert p.returncode == 0, p.stderr.decode(errors="replace")[-400:]
+        return p.stderr.decode(errors="replace")
+
+    down = "blk.0.ffn_down.weight"
+    q40 = tmp_path / "q40.gguf"
+    requant(wide, q40, "--quant", "q4_0")
+    src = read_tensors(q40)
+    assert src[down][0] == Q4_0 and src[down][1][0] == 352
+    # a whole-file target, and the same request as a plan: neither may grow it
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"default": "q4_k"}))
+    for how in (("--quant", "q4_k"), ("--type-plan", str(plan))):
+        out = tmp_path / ("out-%s.gguf" % how[0].strip("-"))
+        err = requant(q40, out, *how)
+        got = read_tensors(out)
+        assert got[down][0] == Q4_0 and got[down][2] == src[down][2], (how, got[down][0])
+        assert "wrote Q5_0" not in err and "32-block fallback type" not in err, (how, err[-600:])
+        assert f"{down} wanted Q4_K" in err or "more" in err, (how, err[-600:])
+    # the fallback already in place is kept, not written again
+    q4k = tmp_path / "q4k.gguf"
+    err = requant(wide, q4k, "--quant", "q4_k")
+    assert f"{down} wanted Q4_K, wrote Q5_0" in err
+    again = tmp_path / "again.gguf"
+    err = requant(q4k, again, "--quant", "q4_k")
+    assert read_tensors(again)[down][0] == Q5_0
+    assert "32-block fallback type" not in err and ", wrote " not in err, err[-600:]
+    assert read_tensors(again)[down][2] == read_tensors(q4k)[down][2]
+
+
 def test_a_type_name_it_cannot_write_lists_the_ones_it_can(runner_bin, tmp_path):
     """`--quant Q4_K_M` (llama.cpp's mix name) or `q4_K` read only "is not a
     writable type" (the pre-1.12.0 sweep). The refusal now lists the names,
