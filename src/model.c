@@ -2049,12 +2049,18 @@ static const size_t MODEL_RUNTIME_OWNED[] = {
     offsetof(model_t, moe_probe_hist),
 };
 
-// Frees each row's pointer in `base` and clears it.
+// Frees each row's pointer in `base` and clears it. The rows are fields of
+// several pointer types (float *, int *, layer_t *, ...), so each slot is read
+// and cleared as bytes: a load or store through a void * lvalue would access a
+// float * object through a type it is not compatible with, which the aliasing
+// rules this build optimizes under leave undefined.
 static void free_owned(void *base, const size_t *rows, size_t n) {
     for (size_t i = 0; i < n; i++) {
-        void **slot = (void **)((char *)base + rows[i]);
-        free(*slot);
-        *slot = NULL;
+        char *slot = (char *)base + rows[i];
+        void *p;
+        memcpy(&p, slot, sizeof p);
+        free(p);
+        memset(slot, 0, sizeof p);
     }
 }
 

@@ -1676,8 +1676,11 @@ static CUdeviceptr **cuda_table(gpu_weights *w, gpu_table t) {
 // row's need, over the layer as the binders and the placement left it.
 static bool cuda_table_needed(const gpu_table_desc *d, const model_t *m, const layer_t *ly,
                               bool moe_dev) {
-    const void *host = d->host == GT_NO_HOST ? NULL
-                     : *(void *const *)((const char *)ly + d->host);
+    // read as bytes: the rows name host fields of their own pointer types, and
+    // a load through a void * lvalue would access them through another type
+    // (undefined under the aliasing rules this build optimizes under)
+    const void *host = NULL;
+    if (d->host != GT_NO_HOST) memcpy(&host, (const char *)ly + d->host, sizeof host);
     switch (d->need) {
     case GT_NEED_HOST:      return host != NULL;
     case GT_NEED_HC:        return m->hyper_conn;
