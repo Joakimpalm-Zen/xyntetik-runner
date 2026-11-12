@@ -296,9 +296,9 @@ jobs:
       matrix:
         include:
           - group: parsers
-            targets: json_parse schema_compile sval_feed sval_trial jsonv_feed http_request
+            targets: json_parse schema_compile sval_feed sval_trial jsonv_feed http_request tool_stream
           - group: files
-            targets: gguf_open tokenizer model_load gguf_split
+            targets: gguf_open tokenizer model_load gguf_split record_check session_read
     steps:
       - uses: actions/checkout@v7
       - name: compiler

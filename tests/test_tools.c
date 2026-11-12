@@ -3599,6 +3599,44 @@ static void test_coder_parameters_in_any_order(void) {
 // `</tool_call>` in the bytes is inside the string, and cutting there hands
 // the parser half a document. The tag that closes the call is the first one
 // after which the body parses.
+// R6.68.19: a model can write a NUL byte (a byte-fallback token). The
+// demultiplexers searched their buffer with strstr, so a call behind a NUL
+// was invisible while both sat in the buffer: found when the turn arrived a
+// byte at a time, missed when it arrived in one piece. The turn is held by
+// length; every chunking must give the same call and the same prose.
+static void test_a_nul_in_the_turn_does_not_hide_a_call(void) {
+    jv *tools = parse(TOOLS);
+    char err[192];
+    tool_envelope e;
+    assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof(err)) == 1);
+    e.proto = TP_QWEN;
+    e.tools = tools;
+    static const char doc[] =
+        "a\0b<tool_call>\n{\"name\": \"get_weather\", \"arguments\": "
+        "{\"city\":\"Oslo\"}}\n</tool_call>";
+    size_t len = sizeof doc - 1;
+    for (size_t step = 1; step <= len; step++) {
+        demux_log log;
+        memset(&log, 0, sizeof log);
+        tool_stream_sink sink = { &log, log_reasoning, log_content, log_begin, log_args, log_end };
+        tool_stream s;
+        tool_stream_init(&s, &e, &sink);
+        for (size_t i = 0; i < len; i += step) {
+            size_t k = len - i < step ? len - i : step;
+            assert(tool_stream_feed(&s, doc + i, (int)k) == 0);
+        }
+        assert(tool_stream_finish(&s) == 0);
+        assert(tool_stream_called(&s) && log.begins == 1 && log.ends == 1);
+        assert(!strcmp(log.name, "get_weather"));
+        assert(!strcmp(log.args.s, "{\"city\":\"Oslo\"}"));
+        assert(log.content.n == 3 && !memcmp(log.content.s, "a\0b", 3));
+        tool_stream_free(&s);
+        log_free(&log);
+    }
+    tool_envelope_free(&e);
+    jv_free(tools);
+}
+
 static void test_qwen_json_closing_tag_inside_a_string(void) {
     jv *tools = parse("[{\"type\":\"function\",\"function\":{\"name\":\"save\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}}}]");
     tool_envelope e; char err[192]; bool skip = false;
@@ -4038,6 +4076,7 @@ int main(void) {
     test_xml_parse_only_call_closed_by_the_next_opener();
     test_coder_grammar_has_no_insignificant_whitespace();
     test_qwen_json_closing_tag_inside_a_string();
+    test_a_nul_in_the_turn_does_not_hide_a_call();
     test_buffered_mapper_rejects_invalid_arguments();
     test_atem_structured_tool_automaton();
     test_atem_scalar_is_raw_until_parameter_close();
