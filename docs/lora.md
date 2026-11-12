@@ -110,7 +110,9 @@ the CPU (`--gpu off`). Training is always hosted on the CPU.
 ## 2. Prepare the training data
 
 `runner train` reads three kinds of input. The file extension decides: a `.jsonl`
-file is read line by line, anything else as plain text.
+file is read line by line, anything else as plain text. Either way the file is
+text: its CRLF line ends are read as LF (a lone CR stays), so one data file
+trains the same adapter on every platform.
 
 ### Plain text
 

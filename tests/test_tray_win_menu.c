@@ -57,12 +57,12 @@ int main(void) {
         const int px = 24;
         HICON ic = grid_icon_px((tray_icon_state)st, px);
         if (!ic) { fprintf(stderr, "FAIL: no icon for state %d\n", st); fails++; continue; }
-        ICONINFO info;
-        if (!GetIconInfo(ic, &info) || !info.hbmColor) {
+        ICONINFO icon_info;
+        if (!GetIconInfo(ic, &icon_info) || !icon_info.hbmColor) {
             fprintf(stderr, "FAIL: icon %d carries no colour bitmap\n", st); fails++; DestroyIcon(ic); continue;
         }
         BITMAP bm;
-        GetObject(info.hbmColor, sizeof bm, &bm);
+        GetObject(icon_info.hbmColor, sizeof bm, &bm);
         if (bm.bmBitsPixel != 32 || bm.bmWidth != px || bm.bmHeight != px) {
             fprintf(stderr, "FAIL: icon %d colour bitmap is %d bpp %ldx%ld, want 32 bpp %dx%d\n",
                     st, (int)bm.bmBitsPixel, (long)bm.bmWidth, (long)bm.bmHeight, px, px);
@@ -76,7 +76,7 @@ int main(void) {
         bi.bmiHeader.biCompression = BI_RGB;
         unsigned char *bits = calloc((size_t)px * px * 4, 1);
         HDC dc = GetDC(NULL);
-        int rows = GetDIBits(dc, info.hbmColor, 0, (UINT)px, bits, &bi, DIB_RGB_COLORS);
+        int rows = GetDIBits(dc, icon_info.hbmColor, 0, (UINT)px, bits, &bi, DIB_RGB_COLORS);
         ReleaseDC(NULL, dc);
         if (rows != px) { fprintf(stderr, "FAIL: icon %d bits unreadable (%d rows)\n", st, rows); fails++; }
         int corner = bits[3], solid = 0, partial = 0;
@@ -91,8 +91,8 @@ int main(void) {
             fails++;
         }
         free(bits);
-        DeleteObject(info.hbmColor);
-        if (info.hbmMask) DeleteObject(info.hbmMask);
+        DeleteObject(icon_info.hbmColor);
+        if (icon_info.hbmMask) DeleteObject(icon_info.hbmMask);
         DestroyIcon(ic);
     }
     // the shell's small-icon size is what the tray renders at

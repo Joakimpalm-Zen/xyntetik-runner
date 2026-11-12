@@ -138,16 +138,16 @@ int main(int argc, char **argv) {
         if (per_type[t])
             printf("mvcanon: %s %d tensors compared\n", ggml_type_name(t),
                    per_type[t]);
-    for (const char *p = want; *p; ) {
-        size_t n = strcspn(p, ",");
+    for (const char *name = want; *name; ) {
+        size_t n = strcspn(name, ",");
         int seen = 0;
         for (int t = 0; t < 64; t++)
             if (per_type[t] && strlen(ggml_type_name(t)) == n &&
-                !strncmp(ggml_type_name(t), p, n))
+                !strncmp(ggml_type_name(t), name, n))
                 seen = 1;
         CHECK(seen, "%s: no %.*s tensor reached the canonical kernel",
-              path, (int)n, p);
-        p += n + (p[n] == ',');
+              path, (int)n, name);
+        name += n + (name[n] == ',');
     }
     if (!tested) {
         printf("mvcanon: no canonical kernels for this model's types — "

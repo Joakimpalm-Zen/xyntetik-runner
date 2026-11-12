@@ -1,0 +1,84 @@
+name: fuzz soak
+
+# The fuzz job in ci.yml is a regression gate: 30 seconds a target on a pull
+# request, 300 on the daily run. That finds what the corpus already reaches.
+# A campaign is a different thing, minutes to hours per target, and it has no
+# place on a pull request; this workflow is where it runs: by hand with a
+# budget, and once a week on its own.
+#
+# The targets come from the Makefile (make fuzz-targets), split over three
+# jobs, so a harness added to FUZZ_TARGETS is soaked without touching this
+# file. Each job starts from the corpora the daily run has evolved (restored,
+# never saved back: three jobs saving one cache would keep only the last) and
+# uploads its own corpora, crashes and sanitizer logs. A finding fails the
+# job and its reproducer is in the artifact, under .build/fuzz-findings/.
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: seconds per target (1800 is about two and a half hours a job)
+        default: "1800"
+  schedule:
+    # Sunday 01:17 UTC, clear of the daily run at 04:23
+    - cron: "17 1 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    name: fuzz-soak-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v7
+      - name: compiler
+        run: |
+          command -v clang || { sudo apt-get update && sudo apt-get install -y clang llvm; }
+          clang --version
+      - name: this job's share of the registered targets
+        id: share
+        run: |
+          picked=$(make -s fuzz-targets | awk -v s=${{ matrix.shard }} 'NR % 3 == s' | tr '\n' ' ')
+          test -n "$picked"
+          echo "picked=$picked" >> "$GITHUB_OUTPUT"
+          echo "shard ${{ matrix.shard }}: $picked"
+      - uses: actions/cache/restore@v4
+        with:
+          path: fuzz-corpus/
+          key: fuzz-v3-parsers-soak-${{ github.run_id }}
+          restore-keys: fuzz-v3-parsers-
+      - name: the other group's corpora, beside the first
+        run: mv fuzz-corpus fuzz-corpus-parsers 2>/dev/null || mkdir -p fuzz-corpus-parsers
+      - uses: actions/cache/restore@v4
+        with:
+          path: fuzz-corpus/
+          key: fuzz-v3-files-soak-${{ github.run_id }}
+          restore-keys: fuzz-v3-files-
+      - name: one corpus folder again
+        run: |
+          mkdir -p fuzz-corpus
+          cp -Rn fuzz-corpus-parsers/. fuzz-corpus/ 2>/dev/null || true
+          rm -rf fuzz-corpus-parsers
+      - name: build harnesses
+        run: make -j2 fuzz-build FUZZ_CLANG=clang FUZZ_TARGETS="${{ steps.share.outputs.picked }}"
+      - name: fuzz
+        env:
+          SECONDS_PER_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.seconds || '1800' }}
+        run: |
+          case "$SECONDS_PER_TARGET" in ''|*[!0-9]*) echo "seconds must be a number"; exit 2;; esac
+          python3 scripts/ci-run.py --timeout 20400 fuzz-soak-${{ matrix.shard }} -- \
+            make fuzz FUZZ_CLANG=clang FUZZ_TIME="$SECONDS_PER_TARGET" FUZZ_TARGETS="${{ steps.share.outputs.picked }}"
+      - name: preserve corpora, crashes, sanitizer logs and timing
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-soak-${{ matrix.shard }}
+          path: |
+            fuzz-corpus/
+            .build/fuzz-findings/
+            .build/ci/

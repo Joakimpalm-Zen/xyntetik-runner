@@ -2376,7 +2376,7 @@ flags into unrelated feature sections.
 |---|---|
 | `-m PATH` | GGUF path. In serve mode, `name=path,name2=path2` enables multi-model swap mode. |
 | `-p TEXT` | One-shot prompt; escaped sequences such as `\n` are unescaped. |
-| `-f FILE` | Append the file's contents to the prompt as written; escapes are unescaped only in `-p` text. |
+| `-f FILE` | Append the file's contents to the prompt as written, its CRLF line ends read as LF (a lone CR stays), so one file gives the same tokens on every platform; escapes are unescaped only in `-p` text. |
 | `--pull REPO[:TAG]` | Download and verify what `-hf` would fetch, print the result and exit; no model is loaded. A mode of its own. [Details](#cli-pull). |
 | `-i` | Stateful interactive chat. |
 | `--serve` | Start the HTTP server. |

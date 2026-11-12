@@ -723,6 +723,25 @@ static const char *train_ids_tokens(jv *ptv, jv *ctv, int n_vocab,
     return bad;
 }
 
+// A text file read for its tokens is text (R6.68.24): a CR that immediately
+// precedes an LF is dropped as the file is read, so a CRLF file and its LF twin
+// give the same tokens on every platform and whichever editor saved them; a
+// lone CR is content and stays. -f, --detect-watermark's text and runner
+// train's DATA read through here (JSON and JSONL read the same: a CR between
+// JSON tokens is whitespace). -p is not: its escapes are the user's own.
+// plat_read_file's buffer, shortened in place and still NUL-terminated.
+static char *text_file_read(const char *path, size_t *n_out) {
+    size_t n = 0;
+    char *b = plat_read_file(path, MAX_INPUT_FILE, &n);
+    if (!b) return NULL;
+    size_t w = 0;
+    for (size_t r = 0; r < n; r++)
+        if (!(b[r] == '\r' && r + 1 < n && b[r + 1] == '\n')) b[w++] = b[r];
+    b[w] = 0;
+    if (n_out) *n_out = w;
+    return b;
+}
+
 // ids_only (--train-teacher): every line in the id form and no end-of-turn
 // token appended, since the teacher's positions are the completion tokens as
 // given and it has no row for a token added after them.
@@ -730,7 +749,7 @@ static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
                                 bool no_bos, int wctx, int eot_id, bool eot_all,
                                 bool ids_only, train_ex **out, int *out_n) {
     size_t data_n = 0;
-    char *data = plat_read_file(path, MAX_INPUT_FILE, &data_n);
+    char *data = text_file_read(path, &data_n);
     if (!data) {
         fprintf(stderr, "error: cannot read %s (regular files up to %u MiB "
                 "are supported)\n", path, MAX_INPUT_FILE / (1024u * 1024u));
@@ -1079,7 +1098,8 @@ static void usage_to(FILE *f, const char *prog) {
         "                 its path and size (with --json, one JSON object) and\n"
         "                 exit; nothing is loaded\n"
         "  -p TEXT        prompt (one-shot completion; \\n etc. are unescaped)\n"
-        "  -f FILE        read prompt from file, as written (appended after -p text)\n"
+        "  -f FILE        read prompt from file, as written, CRLF read as LF\n"
+        "                 (appended after -p text)\n"
         "  -i             interactive chat mode\n"
         "  --serve        HTTP server mode (OpenAI-compatible API)\n"
         "  --tray [off|auto]  bare: BE the desktop tray/menu-bar controller\n"
@@ -1549,7 +1569,8 @@ static void usage_attest_verb_to(FILE *f, const char *verb) {
 static void usage_train_to(FILE *f) {
     fprintf(f,
         "usage: runner train DATA -m model.gguf [options]\n\n"
-        "DATA is plain text, or .jsonl lines {\"prompt\",\"completion\",\"weight\"}\n"
+        "DATA is plain text (CRLF read as LF), or .jsonl lines\n"
+        "{\"prompt\",\"completion\",\"weight\"}\n"
         "with the prompt masked from the loss (or \"prompt_tokens\" and\n"
         "\"completion_tokens\" id arrays, used as given). Deterministic by\n"
         "default: same data + seed -> byte-identical adapter, written beside\n"
@@ -2879,6 +2900,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             char *eq = spec ? strchr(spec, '=') : NULL;
             if (!eq || eq == spec || !eq[1]) {
                 fprintf(stderr, "error: --adapter wants NAME=PATH\n");
+                free(spec);
                 *rc = 1;
                 return false;
             }
@@ -2891,11 +2913,13 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             if (!name_ok) {
                 fprintf(stderr, "error: --adapter NAME must be 1 to 63 "
                         "characters of [A-Za-z0-9._-]\n");
+                free(spec);
                 *rc = 1;
                 return false;
             }
             if (o->n_adapters >= 16) {
                 fprintf(stderr, "error: at most 16 --adapter\n");
+                free(spec);
                 *rc = 1;
                 return false;
             }
@@ -3249,11 +3273,17 @@ static bool cli_prompt_fits_verb(const cli_opts *o) {
 // else -1.
 typedef struct { const char *from, *to; } sub_alias;
 
+// The rewritten line's pointer array, kept reachable until main frees it: a
+// subcommand that ends in its own help or refusal returns without it, and
+// the array was then unreachable at exit (R6.68.23, a leak check's report).
+static char **cli_argv_owned;
+
 static void argv_push(char ***out, int *n, int *cap, const char *s) {
     if (*n == *cap) {
         *cap = *cap ? *cap * 2 : 32;
         *out = realloc(*out, sizeof **out * (size_t)*cap);
         if (!*out) { fprintf(stderr, "error: out of memory\n"); exit(1); }
+        cli_argv_owned = *out;
     }
     (*out)[(*n)++] = (char *)s;
 }
@@ -3516,7 +3546,7 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
             return true;
         }
         size_t dn = 0;
-        char *dbuf = plat_read_file(o->detect_path, MAX_INPUT_FILE, &dn);
+        char *dbuf = text_file_read(o->detect_path, &dn);
         if (!dbuf) {
             fprintf(stderr, "error: --detect-watermark: cannot read %s\n", o->detect_path);
             *rc = 1;
@@ -3798,13 +3828,14 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         return true;
     }
     // The escapes are -p's (a shell argument cannot hold a newline easily);
-    // a file's bytes are the prompt as written. Unescaping after the append
-    // rewrote a file's own backslash sequences, so a scored corpus's
-    // "\times" reached the tokenizer as a tab and "imes".
+    // a file's bytes are the prompt as written, its CRLF line ends read as LF
+    // (text_file_read). Unescaping after the append rewrote a file's own
+    // backslash sequences, so a scored corpus's "\times" reached the
+    // tokenizer as a tab and "imes".
     if (o->prompt) o->prompt = *owned_prompt = unescape(o->prompt);
     if (o->prompt_file) {
         size_t flen = 0;
-        char *fdata = plat_read_file(o->prompt_file, MAX_INPUT_FILE, &flen);
+        char *fdata = text_file_read(o->prompt_file, &flen);
         if (!fdata) { fprintf(stderr, "error: cannot read %s\n", o->prompt_file); *rc = 1; return true; }
         // The prompt is text up to its first NUL wherever it goes next (the
         // tokenizer call, the run record's JSON, --verify), so a file holding
@@ -4882,6 +4913,18 @@ static bool cli_mtp_default_settle(cli_opts *o, cli_run *rt, const char *load_pa
     return model_load(&rt->m, load_path, &o->mp);
 }
 
+// A refusal after the model loaded: release what the load took, then report.
+// Three refusals in cli_load_model (the model's signature, the adapter's,
+// the tokenizer) used to return with the model's runtime buffers
+// still allocated; the process ends right after, so nothing grew, but every
+// run of such a refusal under a leak sanitizer failed on it (R6.68.23, the
+// whole suite's run under AddressSanitizer: 3.3 MB a process).
+static bool cli_load_refused(cli_run *rt, int *rc) {
+    cli_cleanup(NULL, NULL, &rt->tok, &rt->m);
+    *rc = 1;
+    return true;
+}
+
 // True when the process exits with *rc (a refusal, or one of the two modes).
 static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool registry,
                            int tmpl_override, const oms_policy *signing, int *rc) {
@@ -4901,12 +4944,13 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         bool mtp_wanted = cli_mtp_default_wanted(o, load_path, registry);
         if (mtp_wanted) { o->mtp_default = true; o->mp.mtp = true; }
         if (!model_load(&rt->m, load_path, &o->mp)) { *rc = 1; return true; }
+        // (a failed settle is a failed reload: model_load released it)
         if (mtp_wanted && !cli_mtp_default_settle(o, rt, load_path)) {
             *rc = 1;
             return true;
         }
         oms_result osr;
-        if (!oms_check_model(load_path, signing, &osr)) { *rc = 1; return true; }
+        if (!oms_check_model(load_path, signing, &osr)) return cli_load_refused(rt, rc);
         if (osr.status[0])
             oms_result_json(&osr, rt->model_sig_json, sizeof rt->model_sig_json);
         // R1.2.3: an adapter changes what is served, so the same trusted key
@@ -4915,14 +4959,12 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         memset(&aosr, 0, sizeof aosr);
         if (o->lora_path) {
             oms_policy apol = { o->lora_sig, o->model_pubkey, o->require_signed_model };
-            if (!oms_check_artifact(o->lora_path, &apol, "adapter", &aosr)) {
-                *rc = 1;
-                return true;
-            }
+            if (!oms_check_artifact(o->lora_path, &apol, "adapter", &aosr))
+                return cli_load_refused(rt, rc);
             if (aosr.status[0])
                 oms_result_json(&aosr, rt->adapter_sig_json, sizeof rt->adapter_sig_json);
         }
-        if (!tokenizer_init(&rt->tok, &rt->m.gf)) { *rc = 1; return true; }
+        if (!tokenizer_init(&rt->tok, &rt->m.gf)) return cli_load_refused(rt, rc);
         // serve mode: the registry model's own pool is one thread by design
         // (slots create their pools), so the honest number here is the count
         // the slots divide, not the placeholder pool (the lab read "1 threads"
@@ -5141,10 +5183,10 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
     engine_note_draft_route(&rt->e);
     if (o->schema_file) {
         size_t ssz = 0;
-        char *sbuf = plat_read_file(o->schema_file, MAX_INPUT_FILE, &ssz);
-        if (!sbuf) { fprintf(stderr, "error: cannot read %s\n", o->schema_file); return false; }
-        struct jv *sj = json_parse(sbuf, ssz);
-        free(sbuf);
+        char *schema_text = plat_read_file(o->schema_file, MAX_INPUT_FILE, &ssz);
+        if (!schema_text) { fprintf(stderr, "error: cannot read %s\n", o->schema_file); return false; }
+        struct jv *sj = json_parse(schema_text, ssz);
+        free(schema_text);
         if (!sj) { fprintf(stderr, "error: %s is not valid JSON\n", o->schema_file); return false; }
         char serr[128];
         rt->e.schema = schema_compile(sj, serr, sizeof(serr));
@@ -7183,6 +7225,19 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     return 0;
 }
 
+// The findings array of a doctor report: one JSON object per finding, and the
+// worst severity seen (0 ok, 1 degraded, 2 broken; an info finding moves
+// nothing).
+typedef struct { sbuf *out; int n, worst; } doctor_findings;
+
+static void doctor_finding(doctor_findings *f, int sev, const char *code,
+                           const char *detail, const char *next) {
+    sb_fmt(f->out, "%s{\"severity\":\"%s\",\"code\":\"%s\",\"detail\":\"%s\","
+                   "\"next_step\":\"%s\"}", f->n++ ? "," : "",
+           sev == 2 ? "broken" : sev == 1 ? "degraded" : "info", code, detail, next);
+    if (sev > f->worst) f->worst = sev;
+}
+
 static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     double t0;
     int n_prompt;
@@ -7312,14 +7367,9 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
         sb_lit(&r, "\"");
     }
     sb_lit(&r, "},\"findings\":[");
-    int nf = 0, worst = 0;   // 0 ok, 1 degraded, 2 broken; an info finding (0) moves nothing
-#define FINDING(sev, code, detail, next) do { \
-        sb_fmt(&r, "%s{\"severity\":\"%s\",\"code\":\"%s\",\"detail\":\"%s\"," \
-                   "\"next_step\":\"%s\"}", nf++ ? "," : "", \
-               (sev) == 2 ? "broken" : (sev) == 1 ? "degraded" : "info", code, detail, next); \
-        if ((sev) > worst) worst = (sev); } while (0)
+    doctor_findings fd = { &r, 0, 0 };
     if (dt == TMPL_LLAMA2_FALLBACK)
-        FINDING(2, "template_not_recognised",
+        doctor_finding(&fd, 2, "template_not_recognised",
                 "the model's chat template is not one this build renders; llama-2 markup is used, which the model was not trained on",
                 "pass --chat-template NAME for a supported family, or report the model so its template can be added");
     if (rt->tok.pre_unknown[0]) {
@@ -7329,49 +7379,49 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
         snprintf(det, sizeof det, "tokenizer pre '%s' unknown, GPT-2 split assumed: "
                  "text may tokenize differently from the publisher's tokenizer",
                  rt->tok.pre_unknown);
-        FINDING(1, "tokenizer_pre_unknown", det,
+        doctor_finding(&fd, 1, "tokenizer_pre_unknown", det,
                 "compare a few strings against the model's own tokenizer, and report the model so its split rule can be added");
     }
     if (asked_gpu && gpu_there && !rt->m.gpu)
-        FINDING(1, "gpu_not_used",
+        doctor_finding(&fd, 1, "gpu_not_used",
                 "a GPU is present and was not used for this model; the load output above the report names the reason",
                 "read the load lines for the refusal; a quantization or architecture without a device kernel runs on the CPU");
     else if (rt->m.gpu && rt->m.gpu_layers < rt->m.n_layer)
-        FINDING(1, "partial_offload",
+        doctor_finding(&fd, 1, "partial_offload",
                 "only some layers are on the GPU, so every token crosses between device and host",
                 "use a smaller quantization or a shorter -c so the whole model fits, or accept the split");
     if (!asked_gpu && gpu_there)
-        FINDING(1, "gpu_disabled_by_flag",
+        doctor_finding(&fd, 1, "gpu_disabled_by_flag",
                 "the run asked for --gpu off although a GPU is present",
                 "drop --gpu off to let the model use the device");
     if (!probe_ran)
-        FINDING(2, "probe_did_not_run",
+        doctor_finding(&fd, 2, "probe_did_not_run",
                 "the probe prompt could not be rendered, tokenized or fed in this context",
                 "raise -c, and if it still fails report the model with this file");
     else {
         if (probe_leak)
-            FINDING(2, "template_markup_in_reply",
+            doctor_finding(&fd, 2, "template_markup_in_reply",
                     "the reply contains chat-template markers, so turn framing or stop tokens do not match the model",
                     "check the template name above against the model card; try --chat-template");
         if (!probe_stop)
-            FINDING(1, "did_not_stop",
+            doctor_finding(&fd, 1, "did_not_stop",
                     "the model did not end its turn within the probe's 48 tokens",
                     "if replies run on in real use, the stop token or the template is wrong for this model");
         if (probe_empty)
-            FINDING(2, "empty_reply",
+            doctor_finding(&fd, 2, "empty_reply",
                     "the model produced no visible text",
                     "check the template and that the file is an instruct or chat model");
         else if (!probe_has4)
-            FINDING(1, "wrong_answer",
+            doctor_finding(&fd, 1, "wrong_answer",
                     "the reply to a one-step arithmetic question does not contain the answer",
                     "a very small or heavily quantized model can miss it; otherwise suspect the template or the file");
         if (d_gen > 4 && d_gen / (d_gtime > 0 ? d_gtime : 1e-9) < 1.0)
-            FINDING(1, "very_slow_decode",
+            doctor_finding(&fd, 1, "very_slow_decode",
                     "generation is under one token per second",
                     "check available RAM against the model size with --fit; a model larger than RAM pages from disk");
     }
     if (cap.ram_available_bytes && rt->m.file_size > cap.ram_available_bytes && !rt->m.gpu)
-        FINDING(1, "file_larger_than_available_ram",
+        doctor_finding(&fd, 1, "file_larger_than_available_ram",
                 "the model file is larger than the RAM available right now",
                 "close other programs, pick a smaller quantization, or run --fit for the exact numbers");
     if (cap.cpu_cores != cap.host_cpu_cores || cap.ram_bytes != cap.host_ram_bytes) {
@@ -7390,12 +7440,11 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
                      (double)cap.host_ram_bytes / (double)(1ull << 30));
             strncat(lim, part, sizeof lim - strlen(lim) - 1);
         }
-        FINDING(0, "container_limits", lim,
+        doctor_finding(&fd, 0, "container_limits", lim,
                 "threads, the batch and the RAM checks are sized from these limits; raise the container's CPU or memory limit to give Runner more, or set -t");
     }
-#undef FINDING
     sb_fmt(&r, "],\"verdict\":\"%s\",\"shareable\":\"%s\"}\n",
-           worst == 2 ? "broken" : worst == 1 ? "degraded" : "ok",
+           fd.worst == 2 ? "broken" : fd.worst == 1 ? "degraded" : "ok",
            o->doctor_text ? "contains the probe question and the model's reply; read before sharing"
                        : "no prompt or reply text; file name and machine sizes only");
     if (r.failed) {
@@ -7406,7 +7455,7 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     fwrite(r.s, 1, r.n, stdout);
     free(r.s);
     free(dout.buf);
-    return worst == 2 ? 2 : 0;
+    return fd.worst == 2 ? 2 : 0;
 }
 
 static int run_bench(cli_opts *o, cli_run *rt) {
@@ -7858,7 +7907,11 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     session_image simg;
     memset(&simg, 0, sizeof simg);
     cli_verify vr = { .rec = NULL, .rsig = RSIG_NONE };
-    cli_opts opts;
+    // static: the options own strings that live for the process (a fetched
+    // model path, an --adapter spec), and cli_main runs once. On the stack
+    // they were unreachable by the time the process ended, so a leak check
+    // reported every one of them (R6.68.23).
+    static cli_opts opts;
     cli_opts_init(&opts);
     cli_opts *o = &opts;
     int rc;   // the exit status a step that ends the process hands back
@@ -8055,5 +8108,6 @@ int main(int argc, char **argv) {
     // Expanded vectors own only the pointer array; their entries borrow
     // startup arguments or static flag spellings.
     if (argv != original_argv) free(argv);
+    cli_argv_owned = NULL;
     return rc;
 }
