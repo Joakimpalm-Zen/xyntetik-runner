@@ -6,6 +6,7 @@
 
 #include <limits.h>
 #include <math.h>
+#include "fpclass.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -376,6 +377,27 @@ static instance_rec *push_rec(instance_rec *arr, int *n, int *cap) {
     return arr;
 }
 
+// A record's number for a field, checked before any cast (R6.68.10): absent or
+// null is 0, as the writer never leaves one out; anything else must be a whole
+// number in [lo, hi], else the record is refused like a corrupt one. The casts
+// used to convert first: a pid, started, procstart or port of 1e300 was
+// undefined behaviour, and a port of 8080.5 or a started of "soon" was taken.
+// The bounds stay inside what a double holds exactly and what each field's
+// type holds on every platform (long is 32 bits on Windows).
+#define REC_PID_MAX   2147483647.0   // a pid as long, 32-bit on Windows
+#define REC_EXACT_MAX 9.0e15         // under 2^53: seconds, start times
+static bool rec_whole(jv *v, const char *key, double lo, double hi, double *out) {
+    jv *x = jv_get(v, key);
+    *out = 0;
+    if (!x || x->type == J_NULL) return true;
+    // fp_isfinite: this unit builds with -ffast-math, which may fold isfinite() to true
+    if (x->type != J_NUM || !fp_isfinite(x->num) || x->num != floor(x->num) ||
+        x->num < lo || x->num > hi)
+        return false;
+    *out = x->num;
+    return true;
+}
+
 static bool parse_rec(const char *path, instance_rec *r) {
     FILE *f = plat_fopen(path, "rb");
     if (!f) return false;
@@ -385,10 +407,19 @@ static bool parse_rec(const char *path, instance_rec *r) {
     buf[n] = 0;
     jv *v = json_parse(buf, n);
     if (!v) return false;
-    r->pid     = (long)jv_num(jv_get(v, "pid"), 0);
-    r->started = (long long)jv_num(jv_get(v, "started"), 0);
-    r->procstart = (uint64_t)jv_num(jv_get(v, "procstart"), 0);
-    r->port    = (int)jv_num(jv_get(v, "port"), 0);
+    double pid, started, procstart, port;
+    if (v->type != J_OBJ ||
+        !rec_whole(v, "pid", 0, REC_PID_MAX, &pid) ||
+        !rec_whole(v, "started", 0, REC_EXACT_MAX, &started) ||
+        !rec_whole(v, "procstart", 0, REC_EXACT_MAX, &procstart) ||
+        !rec_whole(v, "port", 0, 65535, &port)) {
+        jv_free(v);
+        return false;
+    }
+    r->pid     = (long)pid;
+    r->started = (long long)started;
+    r->procstart = (uint64_t)procstart;
+    r->port    = (int)port;
     snprintf(r->mode, sizeof r->mode, "%s", jv_str(jv_get(v, "mode"), "?"));
     snprintf(r->version, sizeof r->version, "%s", jv_str(jv_get(v, "version"), "?"));
     jv *ms = jv_get(v, "models");
@@ -680,8 +711,10 @@ static bool lease_read(const char *path, lease_rec *r) {
     // string of one, as lease.py's int() accepts
     jv *pv = jv_get(v, "owner_pid");
     if (!pv || pv->type == J_NULL) pv = jv_get(v, "clu_pid");
-    if (pv && pv->type == J_NUM && pv->num == floor(pv->num) && pv->num > 0 &&
-        pv->num < 9.0e15) {
+    // the bound is long's on every platform (32 bits on Windows): the old
+    // 9e15 let a value past LONG_MAX into the cast there (R6.68.10)
+    if (pv && pv->type == J_NUM && fp_isfinite(pv->num) && pv->num == floor(pv->num) &&
+        pv->num > 0 && pv->num <= REC_PID_MAX) {
         r->pid = (long)pv->num;
     } else if (pv && pv->type == J_STR) {
         long long q;

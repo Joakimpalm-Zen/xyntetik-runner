@@ -287,6 +287,45 @@ int main(int argc, char **argv) {
         if (f) fclose(f);
     }
 
+    // 6b. a record's numbers are checked before they are cast (R6.68.10): a
+    // pid, started, procstart or port that is not a whole number in its range
+    // is refused like a corrupt record, never converted. With this process's
+    // own pid the record would otherwise be live, so a converted started or
+    // port used to list it; a converted 1e300 was undefined behaviour, which
+    // test-instances-ubsan stops on (float-cast-overflow).
+    {
+        const char *fields[] = {
+            "\"pid\": 1e300",
+            "\"pid\": %ld, \"started\": 1e300",
+            "\"pid\": %ld, \"procstart\": 1e300",
+            "\"pid\": %ld, \"port\": 1e300",
+            "\"pid\": %ld, \"port\": 8080.5",
+            "\"pid\": %ld, \"port\": -1",
+            "\"pid\": %ld, \"started\": \"soon\"",
+            // infinite and NaN values: json.c refuses the overflowing literal
+            // and has no NaN spelling, so these die at the parse; pinned so a
+            // parser that ever accepted them still meets a refusal here
+            "\"pid\": 1e999",
+            "\"pid\": %ld, \"port\": -1e999",
+            "\"pid\": NaN",
+        };
+        for (size_t i = 0; i < sizeof fields / sizeof fields[0]; i++) {
+            char path[1300], body[256], rec[512];
+            snprintf(path, sizeof path, "%s/bad-%zu.json", dir, i);
+            snprintf(body, sizeof body, fields[i], (long)getpid());
+            snprintf(rec, sizeof rec, "{%s, \"mode\": \"serve\", \"version\": \"t\"}", body);
+            FILE *f = fopen(path, "wb");
+            CHECK(f != NULL, "a bad record can be written");
+            if (!f) continue;
+            fputs(rec, f);
+            fclose(f);
+            r = instances_list(&n);
+            CHECK(n == 0, rec);
+            instances_list_free(r, n);
+            remove(path);
+        }
+    }
+
 #ifndef _WIN32
     // 7. a zombie answers kill(pid, 0) but must count as dead: a record
     // pointing at one would otherwise be an unsweepable ghost row that

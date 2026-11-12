@@ -928,15 +928,15 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
                     return;
                 }
             }
-            bool oom = false;
+            bool item_oom = false;
             char *text = responses_item_text(input->items[i], s->tmpl, &role,
-                                             call_name, &oom);
+                                             call_name, &item_oom);
             if (env.proto == TP_HARMONY && is_call && text) {
                 free(text);
                 text = strdup(jv_str(jv_get(input->items[i], "arguments"), "{}"));
-                if (!text) oom = true;
+                if (!text) item_oom = true;
             }
-            if (oom) {
+            if (item_oom) {
                 for (int k = 0; k < n_own; k++) free(owned[k]);
                 free(owned); free(cm); free(ts.s);
                 tool_envelope_free(&env);
