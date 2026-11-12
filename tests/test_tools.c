@@ -4054,6 +4054,101 @@ static void test_coder_raw_string_closes_on_the_tag(void) {
     tool_envelope_free(&e);schema_free(root);jv_free(tools);
 }
 
+// R6.68.34: one reader per native protocol. The buffered mapper is the
+// stream demultiplexer run over the finished turn, so the two cannot answer
+// one turn differently. `want` is the buffered result: the number of calls,
+// or -1 for a turn that is not the protocol.
+static void one_reader(const tool_envelope *e, const char *doc, int want) {
+    demux_log l;
+    memset(&l, 0, sizeof(l));
+    tool_stream_sink sink = { &l, log_reasoning, log_content,
+                              log_begin, log_args, log_end };
+    tool_stream s;
+    tool_stream_init(&s, e, &sink);
+    int rs = tool_stream_feed(&s, doc, (int)strlen(doc));
+    if (!rs) rs = tool_stream_finish(&s);
+    tool_stream_free(&s);
+    sbuf reasoning = {0}, content = {0}, tc = {0};
+    int rb = tool_envelope_map_channels(e, doc, strlen(doc), &reasoning, &content, &tc);
+    assert(rb == want);
+    if (want < 0) {
+        // refused: the stream reports the fault or leaves a call open, and
+        // the buffered turn hands nothing to the client
+        assert(rs != 0 || l.begins != l.ends);
+        assert(!reasoning.n && !content.n && !tc.n);
+    } else {
+        assert(rs == 0 && l.begins == want && l.ends == want);
+        assert(content.n == l.content.n &&
+               (!content.n || !memcmp(content.s, l.content.s, content.n)));
+        assert(reasoning.n == l.reasoning.n &&
+               (!reasoning.n || !memcmp(reasoning.s, l.reasoning.s, reasoning.n)));
+    }
+    free(reasoning.s); free(content.s); free(tc.s);
+    log_free(&l);
+}
+
+// The turns a differential run over mutated turns found the two readers
+// answering differently (2026-11-12), one per kind, now with one answer.
+static void test_buffered_turn_is_read_by_the_stream_reader(void) {
+    jv *tools = parse(TOOLS);
+    jv *required = parse("\"required\"");
+    char err[192];
+    bool skip = false;
+
+    // Qwen: text after the closed call is the model's text (the buffered
+    // reader dropped it); a second call left open refuses the turn
+    tool_envelope q = {0};
+    q.proto = TP_QWEN;
+    q.tools = tools;
+    one_reader(&q, "Adding.<tool_call>\n{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}\n"
+                   "</tool_call> Done.", 1);
+    one_reader(&q, "<tool_call>\n{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}\n</tool_call>"
+                   "<tool_call>\n{\"name\": \"add\", \"arguments\": {\"a\": 1", -1);
+
+    // Gemma 4: a call whose block never closed is not a call (the buffered
+    // reader took it for one), and a tail that could still open a block is
+    // framing in both
+    tool_envelope g;
+    assert(tool_envelope_build_ex(tools, required, NULL, true, &g, err, sizeof err) == 1);
+    tool_decl_native(TMPL_GEMMA4, true, true, tools, &g, &skip);
+    assert(g.proto == TP_GEMMA4 && !g.parse_only);
+    one_reader(&g, "<|tool_call>call:add{a:1,b:2}<tool_call|>", 1);
+    one_reader(&g, "<|tool_call>call:add{a:1,b:2}<tool_cal", -1);
+    one_reader(&g, "<|tool_call>call:add{a:1,b:<tool_call|>", -1);
+    one_reader(&g, "Hello<|too", 0);
+    tool_envelope_free(&g);
+
+    // Mistral: held whitespace and a tail that could still open the block
+    // are framing in both readers; text after the call is kept by both
+    tool_envelope m;
+    skip = false;
+    assert(tool_envelope_build_ex(tools, required, NULL, true, &m, err, sizeof err) == 1);
+    tool_decl_native(TMPL_MISTRAL, true, true, tools, &m, &skip);
+    assert(m.proto == TP_MISTRAL && !m.parse_only);
+    one_reader(&m, "Just \n", 0);
+    one_reader(&m, "Adding.[TOOL_", 0);
+    one_reader(&m, "[TOOL_CALLS][{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}]", 1);
+    tool_envelope_free(&m);
+
+    // Muse: an answer whose <|eot|> never arrived is still the answer in
+    // both (the stream dropped it); a turn with neither a call nor an answer
+    // is a fault in both (the stream reported an empty, clean turn)
+    tool_envelope a = {.proto = TP_ATEM};
+    demux_log l;
+    demux(&a, " to=user<|message|>Hello there", &l);
+    assert(l.content.s && l.content.n == 11 && !memcmp(l.content.s, "Hello there", 11));
+    log_free(&l);
+    one_reader(&a, " to=user<|message|>Hello there", 0);
+    one_reader(&a, " to=user<|message|>Hello there<|eot|>", 0);
+    one_reader(&a, " to=ping<|message|><atem:function_calls>\n<atem:invoke name=\"ping\">\n"
+                   "</atem:invoke>\n</atem:function_calls>", 1);
+    one_reader(&a, " to=ping<|message|><atem:function_calls>\n<atem:invoke name=\"ping\">\n", -1);
+    one_reader(&a, "neither a call nor an answer", -1);
+
+    jv_free(required);
+    jv_free(tools);
+}
+
 int main(void) {
     test_whitespace_after_a_native_number_is_protocol();
     test_coder_constrained_turn();
@@ -4147,6 +4242,7 @@ int main(void) {
     test_gemma4_untyped_parameter_is_refused_not_guessed();
     test_gemma4_nested_arrays_are_bounded_not_expanded();
     test_native_truncation_closes_to_a_legal_turn();
+    test_buffered_turn_is_read_by_the_stream_reader();
     puts("tool envelope tests ok");
     return 0;
 }
