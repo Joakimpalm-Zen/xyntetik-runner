@@ -178,6 +178,15 @@ static int test_signing(void) {
             return fail("der encode (P-521)");
         if (!ecdsa_der_sig_parse(der, k, 66, ro, so) || memcmp(ro, r, 66) || memcmp(so, s, 66))
             return fail("der round trip (P-521)");
+        // R6.68.97: DER has one encoding of a length. The same signature
+        // with its outer length spelled in two bytes (30 82 00 LL, where
+        // 30 81 LL is the minimal form) is a second byte string for one
+        // signature, and the reader took it.
+        uint8_t wide[160];
+        wide[0] = 0x30; wide[1] = 0x82; wide[2] = 0x00; wide[3] = der[2];
+        memcpy(wide + 4, der + 3, k - 3);
+        if (ecdsa_der_sig_parse(wide, k + 1, 66, ro, so))
+            return fail("a two-byte length under 0x100 was accepted");
     }
     // SPKI: the encoder writes what the parser (and openssl) read, per curve
     for (size_t i = 0; i < sizeof VECS / sizeof VECS[0]; i++) {
