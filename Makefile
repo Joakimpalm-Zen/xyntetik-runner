@@ -3471,6 +3471,13 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# plain softmax over all experts), held per coordinate to 0.5%
 	./$(TEST_LORA_GRAD) test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf strict
 	./$(TEST_LORA_GRAD) test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf strict
+	@# R6.68.92: the same two under RUNNER_MOE_REPLAY, the trace forcing
+	@# experts 3 and 0 at each of the window's 14 positions and 2 layers. The
+	@# taped forward routes as pinned, and so must the backward's recompute,
+	@# or the gradient is taken through other experts than the loss
+	$(PYTHON) -c "import json; print('\n'.join(json.dumps({'pos': p, 'layer': l, 'experts': [3, 0]}) for p in range(14) for l in range(2)))" > test-moe4-replay.jsonl
+	RUNNER_MOE_REPLAY=test-moe4-replay.jsonl ./$(TEST_LORA_GRAD) test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf strict
+	RUNNER_MOE_REPLAY=test-moe4-replay.jsonl ./$(TEST_LORA_GRAD) test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf strict
 	./$(TEST_LORA_GRAD) test-g4v.gguf test-lora-g4v.full.gguf
 	./$(TEST_LORA_GRAD) test-es8.gguf test-lora-es8.full.gguf stiff
 	@# and with qwen3-style per-head QK norms in the layer: the norm adjoint

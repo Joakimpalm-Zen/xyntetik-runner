@@ -9567,6 +9567,18 @@ static void moe_route(model_t *m, const layer_t *ly, const float *xin,
         for (int t = 0; t < used; t++) selw[t] *= m->expert_w_scale;
 }
 
+// A token's routing at sequence position `pos`: moe_route, pinned to
+// RUNNER_MOE_REPLAY's record for (pos, layer) when a trace is loaded. The
+// forward's routers and the training backward's recompute all route here, so
+// a step's gradient runs through the experts its loss ran through (R6.68.92:
+// the recompute routed unpinned while the taped forward was pinned).
+static void moe_route_at(model_t *m, const layer_t *ly, const float *xin,
+                         int pos, int *sel, float *selw, bool dbg_dump) {
+    int used = m->n_expert_used;
+    moe_route(m, ly, xin, m->n_embd, ly->n_expert, used, sel, selw, dbg_dump,
+              route_replay_ids(pos, (int)(ly - m->layers), used));
+}
+
 // Gemma-4 E-series per-layer embeddings, computed once per batch before the
 // layer loop (llama.cpp gemma4.cpp build_inp_per_layer + project_per_layer_inputs).
 // m->ple ends up laid out [token][layer][n_embd_ple], which is exactly the
@@ -9803,7 +9815,7 @@ NUM_STAGE void moe_token_experts(model_t *m, const layer_t *ly, const float *xin
 }
 
 static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
-    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
+    int n_embd = m->n_embd, used = m->n_expert_used;
     int ed = moe_expert_dim(m, ly);
     bool probe = moe_probe_file() != NULL;
     bool trace = moe_trace_file() != NULL;
@@ -9812,8 +9824,7 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
     float selw[MOE_USED_MAX];
     float norms[MOE_EXPERTS_MAX];
     DT_BEGIN;
-    moe_route(m, ly, xin, n_embd, ne, used, sel, selw, true,
-              route_replay_ids(m->fwd_pos, layer_idx, used));
+    moe_route_at(m, ly, xin, m->fwd_pos, sel, selw, true);
     route_pin_note(m->fwd_pos, layer_idx, sel, used);
     model_moe_prefetch(m, ly, sel, used);
     DT_MARK(DT_ROUTE);
@@ -9861,12 +9872,11 @@ static void moe_ffn_token(model_t *m, const layer_t *ly, float *xin) {
 // before), its output row zeroed, and the probe's history pushed.
 NUM_STAGE void moe_grouped_route(model_t *m, const layer_t *ly, int n, int xdim,
                                  bool probe) {
-    int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
+    int n_embd = m->n_embd, used = m->n_expert_used;
     for (int b = 0; b < n; b++) {
         float *xin = m->xb + (size_t)b * xdim;
-        moe_route(m, ly, xin, n_embd, ne, used,
-                  m->moe_sel + (size_t)b * used, m->moe_selw + (size_t)b * used, true,
-                  route_replay_ids(m->fwd_pos + b, (int)(ly - m->layers), used));
+        moe_route_at(m, ly, xin, m->fwd_pos + b, m->moe_sel + (size_t)b * used,
+                     m->moe_selw + (size_t)b * used, true);
         route_pin_note(m->fwd_pos + b, (int)(ly - m->layers), m->moe_sel + (size_t)b * used, used);
         // RUNNER_MOE_PROBE: replay against 1/2/3 layers back, before m->xb
         // is overwritten with this layer's FFN output further below.
@@ -12218,7 +12228,8 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
         float *x2 = xn2 + (size_t)t * E;
         int *sl = msel + (size_t)t * used;
         float *sw = mselw + (size_t)t * used;
-        moe_route(m, ly, x2, E, ne_x, used, sl, sw, false, NULL);
+        // row t sat at position t of the taped forward (it starts at 0)
+        moe_route_at(m, ly, x2, t, sl, sw, false);
         float *pr = mprob + (size_t)t * ne_x;
         matvec_b(m->tp, pr, ne_x, ly->ffn_gate_inp, x2, E, E, ne_x, NULL, 1);
         if (m->expert_gating == EXPERT_GATE_SOFTMAX) {
