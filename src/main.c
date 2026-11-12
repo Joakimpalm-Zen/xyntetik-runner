@@ -723,6 +723,25 @@ static const char *train_ids_tokens(jv *ptv, jv *ctv, int n_vocab,
     return bad;
 }
 
+// A text file read for its tokens is text (R6.68.24): a CR that immediately
+// precedes an LF is dropped as the file is read, so a CRLF file and its LF twin
+// give the same tokens on every platform and whichever editor saved them; a
+// lone CR is content and stays. -f, --detect-watermark's text and runner
+// train's DATA read through here (JSON and JSONL read the same: a CR between
+// JSON tokens is whitespace). -p is not: its escapes are the user's own.
+// plat_read_file's buffer, shortened in place and still NUL-terminated.
+static char *text_file_read(const char *path, size_t *n_out) {
+    size_t n = 0;
+    char *b = plat_read_file(path, MAX_INPUT_FILE, &n);
+    if (!b) return NULL;
+    size_t w = 0;
+    for (size_t r = 0; r < n; r++)
+        if (!(b[r] == '\r' && r + 1 < n && b[r + 1] == '\n')) b[w++] = b[r];
+    b[w] = 0;
+    if (n_out) *n_out = w;
+    return b;
+}
+
 // ids_only (--train-teacher): every line in the id form and no end-of-turn
 // token appended, since the teacher's positions are the completion tokens as
 // given and it has no row for a token added after them.
@@ -730,7 +749,7 @@ static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
                                 bool no_bos, int wctx, int eot_id, bool eot_all,
                                 bool ids_only, train_ex **out, int *out_n) {
     size_t data_n = 0;
-    char *data = plat_read_file(path, MAX_INPUT_FILE, &data_n);
+    char *data = text_file_read(path, &data_n);
     if (!data) {
         fprintf(stderr, "error: cannot read %s (regular files up to %u MiB "
                 "are supported)\n", path, MAX_INPUT_FILE / (1024u * 1024u));
@@ -1079,7 +1098,8 @@ static void usage_to(FILE *f, const char *prog) {
         "                 its path and size (with --json, one JSON object) and\n"
         "                 exit; nothing is loaded\n"
         "  -p TEXT        prompt (one-shot completion; \\n etc. are unescaped)\n"
-        "  -f FILE        read prompt from file, as written (appended after -p text)\n"
+        "  -f FILE        read prompt from file, as written, CRLF read as LF\n"
+        "                 (appended after -p text)\n"
         "  -i             interactive chat mode\n"
         "  --serve        HTTP server mode (OpenAI-compatible API)\n"
         "  --tray [off|auto]  bare: BE the desktop tray/menu-bar controller\n"
@@ -1549,7 +1569,8 @@ static void usage_attest_verb_to(FILE *f, const char *verb) {
 static void usage_train_to(FILE *f) {
     fprintf(f,
         "usage: runner train DATA -m model.gguf [options]\n\n"
-        "DATA is plain text, or .jsonl lines {\"prompt\",\"completion\",\"weight\"}\n"
+        "DATA is plain text (CRLF read as LF), or .jsonl lines\n"
+        "{\"prompt\",\"completion\",\"weight\"}\n"
         "with the prompt masked from the loss (or \"prompt_tokens\" and\n"
         "\"completion_tokens\" id arrays, used as given). Deterministic by\n"
         "default: same data + seed -> byte-identical adapter, written beside\n"
@@ -3525,7 +3546,7 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
             return true;
         }
         size_t dn = 0;
-        char *dbuf = plat_read_file(o->detect_path, MAX_INPUT_FILE, &dn);
+        char *dbuf = text_file_read(o->detect_path, &dn);
         if (!dbuf) {
             fprintf(stderr, "error: --detect-watermark: cannot read %s\n", o->detect_path);
             *rc = 1;
@@ -3807,13 +3828,14 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         return true;
     }
     // The escapes are -p's (a shell argument cannot hold a newline easily);
-    // a file's bytes are the prompt as written. Unescaping after the append
-    // rewrote a file's own backslash sequences, so a scored corpus's
-    // "\times" reached the tokenizer as a tab and "imes".
+    // a file's bytes are the prompt as written, its CRLF line ends read as LF
+    // (text_file_read). Unescaping after the append rewrote a file's own
+    // backslash sequences, so a scored corpus's "\times" reached the
+    // tokenizer as a tab and "imes".
     if (o->prompt) o->prompt = *owned_prompt = unescape(o->prompt);
     if (o->prompt_file) {
         size_t flen = 0;
-        char *fdata = plat_read_file(o->prompt_file, MAX_INPUT_FILE, &flen);
+        char *fdata = text_file_read(o->prompt_file, &flen);
         if (!fdata) { fprintf(stderr, "error: cannot read %s\n", o->prompt_file); *rc = 1; return true; }
         // The prompt is text up to its first NUL wherever it goes next (the
         // tokenizer call, the run record's JSON, --verify), so a file holding
