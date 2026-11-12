@@ -2970,26 +2970,27 @@ static void handle_conn(slot_t *s, sock_t fd) {
         return;
     }
 
+    // The request's body and its parsed form, released at the one exit below
+    // (each of eleven refusals carried its own copy of the release, R6.68.43).
     char *body = NULL;
+    jv *req = NULL;
     if (content_length > 0) {
         body = malloc(content_length + 1);
-        if (!body) { send_error(fd, 500, "cannot allocate request body"); return; }
+        if (!body) { send_error(fd, 500, "cannot allocate request body"); goto out; }
         size_t have = got - (size_t)(body_start - hdr);
         if (have > content_length) have = content_length;
         memcpy(body, body_start, have);
         while (have < content_length) {
             double remaining = deadline - now_s();
             if (remaining <= 0) {
-                free(body);
                 send_error(fd, 408, "request read timed out");
-                return;
+                goto out;
             }
             int r = recv_request(fd, body + have, content_length - have, deadline);
-            if (r == -2) { free(body); return; }
+            if (r == -2) goto out;
             if (r <= 0) {
-                free(body);
                 if (r < 0) send_error(fd, 408, "request read timed out");
-                return;
+                goto out;
             }
             have += (size_t)r;
         }
@@ -2999,11 +3000,10 @@ static void handle_conn(slot_t *s, sock_t fd) {
     // R10.12.3.2: the client's own id for this request, which a cancel can
     // name; a completion request registers it when it starts
     if (request_header_id(first_header, header_end, "X-Request-Id", s->cid_next) < 0) {
-        free(body);
         send_error_detail(fd, 400, "X-Request-Id must be sent once, as 1 to 64 "
                           "characters from A-Z a-z 0-9 . _ : -", "X-Request-Id",
                           "invalid_request_id");
-        return;
+        goto out;
     }
     char cancel_id[65];
     bool cancel_route = !strcmp(method, "POST") && cancel_path_id(path, cancel_id);
@@ -3105,7 +3105,7 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 (!strncmp(path, "/v1/runner/sessions/",
                           sizeof("/v1/runner/sessions/") - 1) &&
                  strstr(path, "/resume")))) {
-        jv *req = body ? json_parse(body, content_length) : NULL;
+        req = body ? json_parse(body, content_length) : NULL;
         if (!req) {
             send_error(fd, 400, "invalid JSON body");
         } else {
@@ -3116,17 +3116,13 @@ static void handle_conn(slot_t *s, sock_t fd) {
             if (model && model->type != J_NULL && model->type != J_STR) {
                 send_error_detail(fd, 400, "model must be a string", "model",
                                   "invalid_type");
-                jv_free(req);
-                free(body);
-                return;
+                goto out;
             }
             bool has_keep_alive = false;
             int keep_alive = 0;
             if (!request_keep_alive(req, &has_keep_alive, &keep_alive)) {
                 send_error(fd, 400, "keep_alive out of range");
-                jv_free(req);
-                free(body);
-                return;
+                goto out;
             }
             // A server with no registry (SV.n_reg == 0) is exactly one
             // configuration: a single model served with --parallel N>1, whose
@@ -3156,15 +3152,11 @@ static void handle_conn(slot_t *s, sock_t fd) {
                          SV.n_slots);
                 send_error_detail(fd, 400, msg, "keep_alive",
                                   "keep_alive_unsupported");
-                jv_free(req);
-                free(body);
-                return;
+                goto out;
             }
             resident_expect expect;
             if (!request_expect_resident(fd, req, &expect)) {
-                jv_free(req);
-                free(body);
-                return;
+                goto out;
             }
             atomic_fetch_add(&SV.active_requests, 1);
             atomic_fetch_add(&SV.total_requests, 1);
@@ -3314,11 +3306,12 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 pthread_mutex_unlock(&SV.swap_mu);
                 if (unloaded) prefix_cache_clear();
             }
-            jv_free(req);
         }
     } else {
         send_error(fd, 404, "not found");
     }
+out:
+    jv_free(req);
     free(body);
 }
 
