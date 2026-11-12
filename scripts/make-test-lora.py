@@ -16,6 +16,9 @@ Writes, next to the given output prefix:
   <out>.halfpair.gguf     lora_a without its lora_b (must be refused)
   <out>.dupside.gguf      two tensors naming the same lora_a slot (must be
                           refused: one of them would silently win)
+  <out>.inf.gguf          the adapter with one lora_b value +inf, and
+  <out>.nan.gguf          with one lora_a value NaN: both refused, naming
+                          the tensor (R6.68.116)
   <out>.f16.gguf          the same adapter with F16 tensors — the format
                           llama.cpp's convert_lora_to_gguf emits, which the
                           loader must accept (converted to f32 at load)
@@ -146,6 +149,23 @@ f16 = [(n, d, struct.pack("<%de" % (len(p_) // 4),
                           *struct.unpack("<%df" % (len(p_) // 4), p_)), T_F16)
        for n, d, p_ in adap]
 write_gguf(OUT + ".f16.gguf", f16, meta)
+
+
+# one value that is not finite in the otherwise valid adapter: +inf in a
+# lora_b, NaN in a lora_a (the first tensor of each side the list holds)
+def poisoned(side, value):
+    out, done = [], False
+    for n, d, p_ in adap:
+        if not done and n.endswith(".lora_" + side):
+            vals = list(struct.unpack("<%df" % (len(p_) // 4), p_))
+            vals[len(vals) // 2] = value
+            p_, done = pack_f(vals), True
+        out.append((n, d, p_))
+    return out
+
+
+write_gguf(OUT + ".inf.gguf", poisoned("b", float("inf")), meta)
+write_gguf(OUT + ".nan.gguf", poisoned("a", float("nan")), meta)
 
 # merged reference: base bytes with W += (alpha/r) * B @ A on the targets,
 # using the SAME adapter values (same seed replay)

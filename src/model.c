@@ -10763,6 +10763,10 @@ static bool lora_parse_tensor(model_t *m, struct lora_w *tab, gguf_tensor *t,
                 t->name);
         return false;
     }
+    if (!model_lora_values_finite(t->name, dat, need)) {
+        free(dat);
+        return false;
+    }
     if (side == 'a') { free(lw->a); lw->a = dat; }
     else             { free(lw->b); lw->b = dat; }
     for (int64_t c = 0; c < need; c++) {

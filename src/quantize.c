@@ -2057,6 +2057,10 @@ static bool merge_set_resolve(merge_set_t *ms, const char *adapter_path,
             dequant_row(t->type,
                         (const uint8_t *)t->data + row * row_size,
                         dat + row * t->ne[0], (int)t->ne[0]);
+        if (!model_lora_values_finite(t->name, dat, (int64_t)n_el)) {
+            free(dat);
+            return false;
+        }
         if (side == 'a' ? mp->a != NULL : mp->b != NULL) {
             fprintf(stderr, "error: adapter declares lora_%c for %s twice\n",
                     side, bname);
