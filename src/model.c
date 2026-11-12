@@ -840,10 +840,12 @@ int model_kv_ring_rows(int window, int batch, int n_ctx) {
 // the loader's own rule).
 // R6.68.53: routed, n_expert and n_expert_used, the plan's routed expert banks
 // and expert counts (model_routed_expert_bytes, the load's hot-set rule).
+// R6.68.112: head_why, an odd attention head width's CPU reason on a CUDA
+// build, or "" (model_gpu_odd_head_why, the load's own rule).
 typedef struct { uint64_t *kv_dim; uint64_t n_head, head_dim_max, kv_dim_max; int trunk; bool v_shared;
                  unsigned kv_formats; uint64_t routed; int n_expert, n_expert_used;
                  int ctx_cap, n_ctx_train;
-                 bool moe_host_default; } fit_geom;
+                 bool moe_host_default; char head_why[200]; } fit_geom;
 
 // R3.44: the qwen35 family's Gated DeltaNet layers own no KV rows
 // (bind_meta_qwen35) unless RUNNER_KV_RECURRENT_ROWS=1 keeps the layout that
@@ -953,6 +955,8 @@ static bool fit_geometry(gguf_file *g, int n_layer, bool mtp, fit_geom *o,
     o->ctx_cap = pm.ctx_cap;
     o->n_ctx_train = pm.n_ctx_train;
     o->moe_host_default = model_moe_router_host_default(&pm);
+    o->head_why[0] = 0;
+    model_gpu_odd_head_why(&pm, o->head_why, sizeof o->head_why);
     model_free_weights(&pm);
     return true;
 }
@@ -1003,6 +1007,7 @@ bool model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out) {
     // reads it; the header's 0 put the fit's default at 4096)
     out->train_ctx = geo.n_ctx_train;
     out->moe_host_default = geo.moe_host_default;
+    snprintf(out->head_why, sizeof out->head_why, "%s", geo.head_why);
     // the device's router caps, as the load applies them (R6.68.67)
     {
         int me = 0, mu = 0;
@@ -1083,6 +1088,31 @@ const char *model_gpu_cpu_only_why(const char *arch, int norm_groups) {
     if (norm_groups > 1)
         return "this model normalises in groups (k2-horizon) and the "
                "GPU backends implement full-width RMSNorm only";
+    return NULL;
+}
+
+// R6.68.112: k_attn (the prefill fallback), k_attn_dec with k_attn_merge, and
+// k_attn_dec_seq (the microbatch) walk a head as hd/2 pairs, so at an odd
+// width the last element is never written and the merge reads a partial the
+// decode kernel never wrote; every other CUDA attention kernel tests hd % 2
+// and declines to exactly those three. No published model has an odd head
+// width; the loader admits any, and the CPU (and Metal) are right at one. A
+// layer with attention rows of its own (a DeltaNet or Mamba block has none,
+// R3.44) is held to the rule.
+const char *model_gpu_odd_head_why(const model_t *m, char *buf, size_t n) {
+#if defined(RUNNER_GPU_CUDA)
+    for (int l = 0; l < m->n_layer; l++) {
+        int hd = model_head_dim(m, l);
+        if (model_kv_dim(m, l) > 0 && (hd & 1)) {
+            snprintf(buf, n, "blk.%d's attention heads are %d wide, an odd width "
+                     "the CUDA attention kernels do not take (they walk a head "
+                     "in pairs)", l, hd);
+            return buf;
+        }
+    }
+#else
+    (void)m; (void)buf; (void)n;
+#endif
     return NULL;
 }
 
@@ -6594,7 +6624,10 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_claim
     // where the GPU serves this model correctly", so they run on the CPU
     // with a line saying why, as every backend gap reported by gpu_init
     // already does.
-    char gname[128];
+    // head_why is the size of the route record's field it is copied into
+    // below: the reason is about 120 bytes, and a larger buffer here is a
+    // truncation GCC refuses to compile (-Werror=format-truncation)
+    char gname[128], head_why[sizeof m->route_fallback];
     const char *cpu_why = NULL;
     if (gpu_available(gname, sizeof(gname))) {
         if (m->n_removed > 0 && !gpu_removed_sublayers_ok())
@@ -6602,6 +6635,7 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_claim
                       "(--remove-sublayer) yet";
         else
             cpu_why = model_gpu_cpu_only_why(m->arch, m->norm_groups);
+        if (!cpu_why) cpu_why = model_gpu_odd_head_why(m, head_why, sizeof head_why);
     }
     if (cpu_why) {
         fprintf(stderr, "gpu: %s — using CPU\n", cpu_why);

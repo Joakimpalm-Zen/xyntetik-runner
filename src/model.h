@@ -1565,6 +1565,9 @@ typedef struct {
     // or "" (model_moe_route_why over the plan's expert counts and the
     // backend's caps, R6.68.67): the words the load prints
     char     route_why[200];
+    // why a CUDA load runs the file on the CPU for an odd attention head
+    // width, or "" (model_gpu_odd_head_why over the plan, R6.68.112)
+    char     head_why[200];
 } model_fit;
 
 enum { FIT_KV_F16 = 0, FIT_KV_Q8, FIT_KV_K8V4, FIT_KV_FP4 };
@@ -1628,6 +1631,10 @@ static inline const char *model_moe_route_why(int n_expert, int n_used,
     return buf;
 }
 const char *model_gpu_cpu_only_why(const char *arch, int norm_groups);
+// R6.68.112: why a CUDA load keeps a model whose attention heads are an odd
+// width on the CPU, written to buf; NULL when none is, or the build has no
+// CUDA. The loader, cuda_admit and --info fit ask it alike.
+const char *model_gpu_odd_head_why(const model_t *m, char *buf, size_t n);
 // R6.68.78: whether a GPU load that names no placement keeps this model's
 // expert banks and their routing on the host (R3.43a.2): a nemotron_h_moe
 // router the device kernel cannot run (not plain softmax: another gating

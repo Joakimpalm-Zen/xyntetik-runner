@@ -184,4 +184,38 @@ IQ_FN void nvfp4_stage64(iq_stage_t *dst, const iq_byte *blk) {
     }
 }
 
+// One 64-element tensor-core segment of a row, from blocks of BLKELEMS (32 or
+// 64) elements of BLKBYTES bytes: the stagers' one tail rule (R6.68.111). The
+// GEMM steps K by 128, so a row whose width is not a whole number of steps
+// asks for segments that start at or past n_in; such a block is zeros, and
+// its bytes, the next row's first block or past the end of the tensor on the
+// last row, are not read. The x side is zeroed there too, so a staged block
+// never changed a value; the read is what this rule removes. The 256-element
+// K-quant stagers need no tail: their rows are whole 256-element blocks, and a
+// 128-wide step tiles those exactly. Shared by the device (kernels_kq_stage.cuh)
+// and the host test (tests/test_kq_stage.c).
+#if defined(__CUDACC__)
+#define KQ_UNROLL _Pragma("unroll")   // as the device stagers were written
+#else
+#define KQ_UNROLL
+#endif
+#define KQ_ROW_STAGER(NAME, FN, BLKELEMS, BLKBYTES)                             \
+IQ_FN void NAME(iq_stage_t *dst, const iq_byte *rw, int e0, int n_in) {      \
+    KQ_UNROLL                                                                  \
+    for (int b = 0; b < 64 / (BLKELEMS); b++) {                                \
+        int base = e0 + b * (BLKELEMS);                                        \
+        if (base >= n_in) {                                                    \
+            KQ_UNROLL                                                          \
+            for (int j = 0; j < (BLKELEMS); j++)                               \
+                IQ_STORE(dst, b * (BLKELEMS) + j, 0.0f);                       \
+            continue;                                                          \
+        }                                                                      \
+        FN(dst + b * (BLKELEMS), rw + (unsigned long long)(base / (BLKELEMS)) * (BLKBYTES)); \
+    }                                                                          \
+}
+KQ_ROW_STAGER(kq_row_q4_1, q41_stage32, 32, 20)
+KQ_ROW_STAGER(kq_row_q5_0, q50_stage32, 32, 22)
+KQ_ROW_STAGER(kq_row_q5_1, q51_stage32, 32, 24)
+KQ_ROW_STAGER(kq_row_nvfp4, nvfp4_stage64, 64, 36)
+
 #endif // RUNNER_KQ_STAGE_H

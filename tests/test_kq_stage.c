@@ -50,6 +50,9 @@ typedef struct {
     int type, nbytes, nelems;
     int scale_at[2];               // byte offsets of d (and dmin / m), -1 none
     void (*stage)(float *dst, const iq_byte *blk);
+    // the tensor-core row stager (kq_stage.h KQ_ROW_STAGER), NULL for the
+    // 256-element K-quants, whose rows a 128-wide step tiles exactly
+    void (*row)(float *dst, const iq_byte *rw, int e0, int n_in);
 } kq_format;
 
 static void st_q5k(float *dst, const iq_byte *blk) {
@@ -67,13 +70,13 @@ static void st_q51(float *dst, const iq_byte *blk) { q51_stage32(dst, blk); }
 static void st_nv4(float *dst, const iq_byte *blk) { nvfp4_stage64(dst, blk); }
 
 static const kq_format FORMATS[] = {
-    { "Q5_K", T_Q5_K, 176, 256, { 0, 2 },   st_q5k },
-    { "Q3_K", T_Q3_K, 110, 256, { 108, -1 }, st_q3k },
-    { "Q2_K", T_Q2_K, 84,  256, { 80, 82 },  st_q2k },
-    { "Q4_1", T_Q4_1, 20,  32,  { 0, 2 },   st_q41 },
-    { "Q5_0", T_Q5_0, 22,  32,  { 0, -1 },  st_q50 },
-    { "Q5_1", T_Q5_1, 24,  32,  { 0, 2 },   st_q51 },
-    { "NVFP4", T_NVFP4, 36, 64, { -1, -1 }, st_nv4 },   // UE4M3 scale bytes, no f16
+    { "Q5_K", T_Q5_K, 176, 256, { 0, 2 },   st_q5k, NULL },
+    { "Q3_K", T_Q3_K, 110, 256, { 108, -1 }, st_q3k, NULL },
+    { "Q2_K", T_Q2_K, 84,  256, { 80, 82 },  st_q2k, NULL },
+    { "Q4_1", T_Q4_1, 20,  32,  { 0, 2 },   st_q41, kq_row_q4_1 },
+    { "Q5_0", T_Q5_0, 22,  32,  { 0, -1 },  st_q50, kq_row_q5_0 },
+    { "Q5_1", T_Q5_1, 24,  32,  { 0, 2 },   st_q51, kq_row_q5_1 },
+    { "NVFP4", T_NVFP4, 36, 64, { -1, -1 }, st_nv4, kq_row_nvfp4 },   // UE4M3 scale bytes, no f16
 };
 
 static int block_matches(const kq_format *f, const iq_byte *blk, const char *what) {
@@ -94,6 +97,45 @@ static void fill(const kq_format *f, iq_byte *blk, unsigned d_bits, unsigned m_b
     for (int i = 0; i < f->nbytes; i++) blk[i] = (iq_byte)rnd();
     if (f->scale_at[0] >= 0) put_f16(blk + f->scale_at[0], d_bits);
     if (f->scale_at[1] >= 0) put_f16(blk + f->scale_at[1], m_bits);
+}
+
+// R6.68.111: a row one block wide, then the next row's first block, staged as
+// the tensor-core GEMM asks for it (64-element segments at e0 = 0 and 64 of a
+// 128-wide step). Elements at or past n_in must be zeros, and the next row's
+// block, every value of it nonzero, must not show up in them: NVFP4's stager
+// had no tail and staged that block whole for a row 64 x odd wide (on the
+// last row, 36 bytes past the tensor).
+static int row_tail_ok(const kq_format *f) {
+    iq_byte rows[2 * 176];
+    fill(f, rows, 0x3c00, 0x3800);                       // the row itself
+    iq_byte *next = rows + f->nbytes;                    // the next row's block
+    memset(next, 0x77, (size_t)f->nbytes);               // every code nonzero (and not a zero scale)
+    if (f->scale_at[0] >= 0) put_f16(next + f->scale_at[0], 0x3c00);
+    if (f->scale_at[1] >= 0) put_f16(next + f->scale_at[1], 0x3800);
+    float want[256], probe[256], got[64];
+    dequant_row(f->type, rows, want, f->nelems);
+    dequant_row(f->type, next, probe, f->nelems);
+    for (int i = 0; i < f->nelems; i++)
+        if (probe[i] == 0.0f) {
+            fprintf(stderr, "FAIL: %s row tail: the probe block has a zero at %d\n", f->name, i);
+            g_fail = 1;
+            return 0;
+        }
+    int n_in = f->nelems;
+    for (int e0 = 0; e0 < 128; e0 += 64) {
+        f->row(got, rows, e0, n_in);
+        for (int i = 0; i < 64; i++) {
+            float w = e0 + i < n_in ? want[e0 + i] : 0.0f;
+            if (!f32_bits_equal(w, got[i])) {
+                fprintf(stderr, "FAIL: %s row tail: n_in %d, segment e0 %d element %d: staged %.9g, "
+                        "want %.9g%s\n", f->name, n_in, e0, i, (double)got[i], (double)w,
+                        e0 + i >= n_in ? " (past n_in: the next row's block was read)" : "");
+                g_fail = 1;
+                return 0;
+            }
+        }
+    }
+    return 1;
 }
 
 int main(void) {
@@ -134,12 +176,13 @@ int main(void) {
                 blk[0] = blk[1] = blk[2] = blk[3] = (iq_byte)sb;
                 ok = block_matches(f, blk, "scale byte sweep");
             }
+        if (ok && f->row) ok = row_tail_ok(f);
         checked += ok;
     }
     if (g_fail) {
         fprintf(stderr, "test_kq_stage: FAILED\n");
         return 1;
     }
-    printf("test_kq_stage: OK (%d formats, every element bit-equal to dequant_row)\n", checked);
+    printf("test_kq_stage: OK (%d formats, every element bit-equal to dequant_row; the row stagers zero past n_in)\n", checked);
     return 0;
 }

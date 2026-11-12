@@ -3576,6 +3576,14 @@ static bool cuda_admit(model_t *m) {
                 "running on CPU\n", m->moe_latent);
         return false;
     }
+    // An odd attention head width (R6.68.112, model_gpu_odd_head_why): the
+    // loader asks it first under --gpu auto, and so does --info fit; a forced
+    // --gpu reaches here without that check
+    char head_why[200];
+    if (model_gpu_odd_head_why(m, head_why, sizeof head_why)) {
+        fprintf(stderr, "gpu: %s, running on CPU\n", head_why);
+        return false;
+    }
     // Per-layer expert widths (Nemotron 3.5 Bolt, which the rule above already
     // refuses): every device expert table and kernel here takes the model's
     // one width. Refused by name, so that no later path admits a narrower

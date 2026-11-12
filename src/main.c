@@ -1732,6 +1732,8 @@ static int run_fit_check(const char *path, int n_ctx_want,
     // a router past the device's caps keeps its experts off the device, in the
     // load's words (R6.68.67); --cpu-moe keeps them on the host anyway
     if (!cpu_why && f.route_why[0] && !mp->cpu_moe) cpu_why = f.route_why;
+    // an odd attention head width, in the load's words (R6.68.112)
+    if (!cpu_why && f.head_why[0]) cpu_why = f.head_why;
     // R3.50: the KV ring the load would turn on, sized by the batch the load
     // would take (model.c: a GPU load's default batch follows total RAM)
     f.kv_ring_mode = mp->kv_ring;
