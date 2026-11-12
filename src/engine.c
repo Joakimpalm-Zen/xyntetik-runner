@@ -49,7 +49,7 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
     e->pending_pos = -1;
     e->n_stop = tok_stop_ids(tok, m->arch, e->stop_ids,
                              (int)(sizeof(e->stop_ids) / sizeof(*e->stop_ids)));
-    if (!strcmp(m->arch, "muse-glimmer"))
+    if (m->ad && m->ad->id == ARCH_MUSE_GLIMMER)
         e->think_end_id = tok_find(tok, "<|eom|>");
     // A stop token is not repetition: penalising one the model generated can
     // leave it unable to end its turn at all. (The window holds generated

@@ -1775,7 +1775,8 @@ static int run_fit_check(const char *path, int n_ctx_want,
     const char *farch = gguf_get_str(&g, "general.architecture", "");
     snprintf(akey, sizeof akey, "%s.attention.group_norm_groups", farch);
     const char *cpu_why = model_gpu_cpu_only_why(farch, (int)gguf_get_u32(&g, akey, 1));
-    if (!cpu_why && !strcmp(farch, "nemotron_h_moe")) cpu_why = fit_nh_moe_cpu_why(&g, farch);
+    const arch_id fid = arch_find(farch)->id;
+    if (!cpu_why && fid == ARCH_NEMOTRON_H_MOE) cpu_why = fit_nh_moe_cpu_why(&g, farch);
     // R3.50: the KV ring the load would turn on, sized by the batch the load
     // would take (model.c: a GPU load's default batch follows total RAM)
     f.kv_ring_mode = mp->kv_ring;
@@ -1795,7 +1796,7 @@ static int run_fit_check(const char *path, int n_ctx_want,
         uint32_t gating = gguf_get_u32(&g, k1, 2);   // the loader's default for this family: sigmoid
         float wscale = gguf_get_f32(&g, k2, 1.0f);
         const char *dflt = getenv("RUNNER_CPU_MOE_DEFAULT");
-        host_default = !mp->cpu_moe && !strcmp(farch, "nemotron_h_moe") &&
+        host_default = !mp->cpu_moe && fid == ARCH_NEMOTRON_H_MOE &&
                        gguf_get_u32(&g, k3, 0) == 0 &&
                        (gating != 1 || (wscale != 0.0f && wscale != 1.0f)) &&
                        !(dflt && !strcmp(dflt, "0"));
@@ -2393,12 +2394,12 @@ static int run_caps(void) {
     printf("]");
     // the architectures model_load will admit, so a catalog/advisor can
     // filter unrunnable models by arch without shipping its own copy of the
-    // allowlist (single source of truth: model_supported_archs)
+    // allowlist (single source of truth: the admitted rows of arch.h)
     printf(",\"architectures\":[");
     size_t n_arch;
-    const char *const *arches = model_supported_archs(&n_arch);
-    for (size_t i = 0; i < n_arch; i++)
-        printf("%s\"%s\"", i ? "," : "", arches[i]);
+    const arch_desc *arches = arch_rows(&n_arch);
+    for (size_t i = 0, shown = 0; i < n_arch; i++)
+        if (!arches[i].refused) printf("%s\"%s\"", shown++ ? "," : "", arches[i].name);
     printf("]}\n");
     return 0;
 }
@@ -4855,7 +4856,7 @@ static bool cli_head_measured(const char *path) {
     snprintf(key, sizeof key, "%s.nextn_predict_layers", arch);
     bool ok = gguf_get_u32(&g, key, 0) == 1;
     if (!engine_draft_scope_forced())
-        ok = ok && !strcmp(arch, "qwen35") &&
+        ok = ok && arch_find(arch)->id == ARCH_QWEN35 &&
              gguf_get_u32(&g, "qwen35.block_count", 0) == 33 &&
              gguf_get_u32(&g, "qwen35.embedding_length", 0) == 2560 &&
              gguf_get_u32(&g, "qwen35.expert_count", 0) == 0 &&

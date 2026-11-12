@@ -7,6 +7,7 @@
 #include <string.h>
 #include "fp16.h"
 #include "gguf.h"
+#include "arch.h"
 #include "quants.h"
 #include "tpool.h"
 #include "sample.h"
@@ -265,6 +266,9 @@ typedef struct {
     uint64_t  file_size, file_ino;
     int64_t   file_mtime_ns, file_ctime_ns;
     char      arch[32];
+    // the architecture's row (arch.h), looked up once at admission; never
+    // NULL on a loaded model (an unknown name gets the unknown row)
+    const arch_desc *ad;
     bool      agent_profile;
     uint32_t  agent_protocol_version, agent_tokenizer_version;
     const char *agent_schema_id, *agent_schema_digest;
@@ -1360,10 +1364,6 @@ bool   model_file_identity(const char *path, const char *registry,
                            uint64_t *size, uint64_t *ino,
                            int64_t *mtime, int64_t *ctime);
 
-// The architecture admission allowlist, exposed so `--caps` publishes exactly
-// what `model_load` accepts (one source of truth). Wrong-math archs
-// (granite/gemma2/gemma) are deliberately absent — they load but miscompute.
-const char *const *model_supported_archs(size_t *count);
 void   model_free(model_t *m); // frees everything incl. GPU context and mmap
 // process n tokens starting at position pos; returns logits of the last
 // token if want_logits, else NULL

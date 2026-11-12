@@ -1990,8 +1990,8 @@ static bool merge_set_resolve(merge_set_t *ms, const char *adapter_path,
         for (size_t k = 0; k < sizeof(merge_slot_name) /
                                sizeof(*merge_slot_name); k++)
             if (strcmp(pname, merge_slot_name[k]) == 0) { hooked = true; break; }
-        bool q35 = model_lora_arch_ok("qwen35", barch);   // qwen35 itself, or clef
-        if (!q35) q35 = strcmp(barch, "clef") == 0;
+        const arch_id bid = arch_find(barch)->id;
+        bool q35 = bid == ARCH_QWEN35 || bid == ARCH_CLEF;
         for (size_t k = 0; q35 && !hooked && k < sizeof(merge_slot_name_q35) /
                                                   sizeof(*merge_slot_name_q35); k++)
             if (strcmp(pname, merge_slot_name_q35[k]) == 0) hooked = true;
@@ -2391,9 +2391,9 @@ static bool quantize_job_remove_sublayers(quantize_job *J) {
     snprintf(key, sizeof key, "%s.block_count", rarch);
     uint64_t nb = gguf_get_u32(&J->g, key, 0);
     const char *why = NULL;
-    if (!strcmp(rarch, "nemotron_h") || !strcmp(rarch, "nemotron_h_moe") ||
-        !strcmp(rarch, "granitehybrid") || !strcmp(rarch, "qwen35") ||
-        !strcmp(rarch, "lfm2") || !strcmp(rarch, "lfm2moe") ||
+    // the families whose blocks carry recurrent state (arch.h's recurrent
+    // kind), and any other file that declares a convolution kernel
+    if (arch_find(rarch)->rec != ARCH_REC_NONE ||
         (snprintf(key, sizeof key, "%s.ssm.conv_kernel", rarch),
          gguf_get(&J->g, key) != NULL))
         why = "hybrid or recurrent block typing";
