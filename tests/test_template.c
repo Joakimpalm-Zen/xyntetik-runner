@@ -3169,6 +3169,17 @@ static void test_muse_user_payload_strip_removes_only_recipient_header(void) {
     free(payload.s);
 }
 
+// R6.68.19: the reply is model output held by length; a NUL before the
+// recipient header must not hide it (strstr stopped at the NUL and the
+// payload went out with its header).
+static void test_muse_user_payload_strip_finds_the_header_behind_a_nul(void) {
+    sbuf payload = {0};
+    sb_put(&payload, "a\0b to=user<|message|>ok", 24);
+    assert(muse_user_payload_strip(&payload));
+    assert(payload.n == 2 && !memcmp(payload.s, "ok", 2));
+    free(payload.s);
+}
+
 // Qwen/Qwen3-Coder-30B-A3B-Instruct tokenizer_config.json: function XML,
 // ChatML framing, and no thinking branch. Detection must not use the arch.
 // The three families the golden pass of 2026-09-07 found rendered through a
@@ -3562,6 +3573,7 @@ int main(void) {
     test_muse_parallel_tool_history_has_native_turn_boundaries();
     test_muse_tool_history_skips_bad_calls_without_leading_boundary();
     test_muse_user_payload_strip_removes_only_recipient_header();
+    test_muse_user_payload_strip_finds_the_header_behind_a_nul();
     test_detect_harmony(&t);
     test_harmony_render_golden();
     test_harmony_system_turn_carries_the_knowledge_cutoff();
