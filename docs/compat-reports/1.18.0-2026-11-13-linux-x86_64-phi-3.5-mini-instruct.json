@@ -1,0 +1,190 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-11-13T14:30:46Z",
+  "host": {
+    "os": "Linux",
+    "machine": "x86_64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.18.0"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "phi-3.5-mini-instruct-q4_k_m",
+      "architecture": "phi3",
+      "file": "models/Phi-3.5-mini-instruct-Q4_K_M.gguf",
+      "expected_sha256": "e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1006.2,
+          "stderr_tail": "rope: phi3 LongRoPE short factors, mscale 1.1902\ngpu: no OS video memory budget published for this device; offload budget 24.77 GB from the driver's free view, headroom 0.77 GB\ngpu-split: budget=24.77GB fixed=0.82GB G=32/32 full=1 used=4.69GB\ngpu-split: prompt window 512 columns (batch 512, 20.00 GB spare, 151556 bytes a column)\ngpu: CUDA backend on CUDA MIG slice 1g.24gb (2.3 GB weights in VRAM)\ngpu: VRAM 20.68 GB free of 25.37 GB after init (kv 1.61 GB + scratch 0.04 GB this instance)\nloaded models/Phi-3.5-mini-instruct-Q4_K_M.gguf | phi3 | 32 layers | ctx 4096 | 20 threads | 0.89s\nsampling: phi3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 292.74 tok/s | gen: 1 tok, 109.81 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 3945.2,
+          "stdout_tail": "\n10 more differ on a spelled special marker (the runner reads it as the special token, the SentencePiece library as text); not counted\n\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": "",
+          "vocab": {
+            "gated": false,
+            "expect": null,
+            "differ": 0,
+            "of": 31865,
+            "status": "pass"
+          },
+          "informational": {
+            "reference": "tokenizer.json",
+            "differ": 2,
+            "of": 721
+          }
+        },
+        "cpu_cuda": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 45433.05,
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "min_prompt_tokens": 85,
+          "cpu_cuda_identity": {
+            "result": "pass",
+            "exact": "9/9",
+            "near_tie_tolerated": 0
+          },
+          "identical": "9/9",
+          "failed_prompts": [],
+          "report": "docs/compat-reports/cpu_cuda/phi-3.5-mini-instruct-q4_k_m.json",
+          "output_tail": "'\nok  : 'Q: What is 17 * 23?\\nA:'\nok  : 'The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.'\nok  : 'In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction'\nok  : \"def parse_header(buf, size):\\n    if size < 8:\\n        raise ValueError('short header')\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != GGUF_MAGIC:\\n        raise ValueError('not a gguf file')\\n    return magic, version\\n\\n# The loader above rejects a truncated header before unpacking it, which\"\nok  : 'The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who'\n\ncpu_cuda: pass \u2014 9/9 exact, 0 near-tie tolerated (eager routing)\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1272.38,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "2+2 equals 4. This is a basic arithmetic addition where you combine two units with another two units, resulting in a total of four units.\n"
+        },
+        "tool": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 14451.21,
+          "scenario_matrix": "agent-torture",
+          "totals": null,
+          "report": "docs/compat-reports/tool/phi-3.5-mini-instruct-q4_k_m.json",
+          "output_tail": "report: docs/compat-reports/tool/phi-3.5-mini-instruct-q4_k_m/report.json\nraw: docs/compat-reports/tool/phi-3.5-mini-instruct-q4_k_m/raw.jsonl\nruntime=runner requests=8 scored=8 excused=0 passed=8 failed=0\n"
+        },
+        "greedy_reference": {
+          "status": "not_executed",
+          "reason": "reference_binary_not_provided"
+        },
+        "long_context": {
+          "status": "not_executed",
+          "reason": "check_class_not_executable"
+        }
+      },
+      "resolved_file": "models/Phi-3.5-mini-instruct-Q4_K_M.gguf",
+      "actual_sha256": "e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5",
+      "file_status": "pass",
+      "complete": false
+    },
+    {
+      "id": "phi-3.5-mini-instruct-q8_0",
+      "architecture": "phi3",
+      "file": "models/Phi-3.5-mini-instruct-Q8_0.gguf",
+      "expected_sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1260.5,
+          "stderr_tail": "rope: phi3 LongRoPE short factors, mscale 1.1902\ngpu: no OS video memory budget published for this device; offload budget 24.77 GB from the driver's free view, headroom 0.77 GB\ngpu-split: budget=24.77GB fixed=0.82GB G=32/32 full=1 used=6.28GB\ngpu-split: prompt window 512 columns (batch 512, 18.38 GB spare, 151556 bytes a column)\ngpu: CUDA backend on CUDA MIG slice 1g.24gb (4.0 GB weights in VRAM)\ngpu: VRAM 19.07 GB free of 25.37 GB after init (kv 1.61 GB + scratch 0.04 GB this instance)\nloaded models/Phi-3.5-mini-instruct-Q8_0.gguf | phi3 | 32 layers | ctx 4096 | 20 threads | 1.13s\nsampling: phi3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 192.89 tok/s | gen: 1 tok, 76.86 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 45.2,
+          "stdout_tail": "\n10 more differ on a spelled special marker (the runner reads it as the special token, the SentencePiece library as text); not counted\n\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": "",
+          "vocab": {
+            "gated": false,
+            "expect": null,
+            "differ": 0,
+            "of": 31865,
+            "status": "pass"
+          }
+        },
+        "cpu_cuda": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 70618.05,
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "min_prompt_tokens": 85,
+          "cpu_cuda_identity": {
+            "result": "pass",
+            "exact": "9/9",
+            "near_tie_tolerated": 0
+          },
+          "identical": "9/9",
+          "failed_prompts": [],
+          "report": "docs/compat-reports/cpu_cuda/phi-3.5-mini-instruct-q8_0.json",
+          "output_tail": "'\nok  : 'Q: What is 17 * 23?\\nA:'\nok  : 'The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.'\nok  : 'In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction'\nok  : \"def parse_header(buf, size):\\n    if size < 8:\\n        raise ValueError('short header')\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != GGUF_MAGIC:\\n        raise ValueError('not a gguf file')\\n    return magic, version\\n\\n# The loader above rejects a truncated header before unpacking it, which\"\nok  : 'The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who'\n\ncpu_cuda: pass \u2014 9/9 exact, 0 near-tie tolerated (eager routing)\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1744.84,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "2+2 equals 4. This is a basic arithmetic addition where you combine two units with another two units, resulting in a total of four units.\n"
+        }
+      },
+      "resolved_file": "models/Phi-3.5-mini-instruct-Q8_0.gguf",
+      "actual_sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823",
+      "file_status": "pass",
+      "complete": true
+    }
+  ],
+  "complete": false,
+  "summary": {
+    "models": 2,
+    "files": {
+      "pass": 2
+    },
+    "checks": {
+      "load": {
+        "pass": 2
+      },
+      "tokenizer": {
+        "pass": 2
+      },
+      "cpu_cuda": {
+        "pass": 2
+      },
+      "chat": {
+        "pass": 2
+      },
+      "tool": {
+        "pass": 1
+      },
+      "greedy_reference": {
+        "not_executed": 1
+      },
+      "long_context": {
+        "not_executed": 1
+      }
+    }
+  }
+}

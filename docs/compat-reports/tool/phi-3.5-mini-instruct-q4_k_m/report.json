@@ -1,0 +1,89 @@
+{
+  "cases": [
+    {
+      "category": "nested_arguments",
+      "id": "runner-000-nested_arguments",
+      "latency_ms": 2973.71,
+      "ordinal": 0,
+      "status": "passed"
+    },
+    {
+      "category": "tool_selection",
+      "id": "runner-001-tool_selection",
+      "latency_ms": 1030.2,
+      "ordinal": 1,
+      "status": "passed"
+    },
+    {
+      "category": "forced_truncation",
+      "id": "runner-002-forced_truncation",
+      "latency_ms": 1594.63,
+      "ordinal": 2,
+      "status": "passed"
+    },
+    {
+      "category": "stream_normalization",
+      "id": "runner-003-stream_normalization",
+      "latency_ms": 223.68,
+      "ordinal": 3,
+      "status": "passed"
+    },
+    {
+      "category": "tool_stream_normalization",
+      "id": "runner-004-tool_stream_normalization",
+      "latency_ms": 882.78,
+      "ordinal": 4,
+      "status": "passed"
+    },
+    {
+      "category": "large_enum_selection",
+      "id": "runner-005-large_enum_selection",
+      "latency_ms": 3880.21,
+      "ordinal": 5,
+      "status": "passed"
+    },
+    {
+      "category": "reasoning_then_tool",
+      "id": "runner-006-reasoning_then_tool",
+      "latency_ms": 2462.44,
+      "ordinal": 6,
+      "status": "passed"
+    },
+    {
+      "category": "structured_final",
+      "id": "runner-007-structured_final",
+      "latency_ms": 1187.27,
+      "ordinal": 7,
+      "status": "passed"
+    }
+  ],
+  "configuration": {
+    "model": "models/Phi-3.5-mini-instruct-Q4_K_M.gguf",
+    "temperature": 0
+  },
+  "metrics": {
+    "elapsed_ms": 14400.34,
+    "valid_structured_tasks_per_second": 0.556
+  },
+  "resources": {
+    "peak_rss_kb": 3182600,
+    "peak_rss_kind": "peak"
+  },
+  "runtime": {
+    "name": "runner",
+    "version": "runner 1.18.0"
+  },
+  "schema_version": "xyntetik.agent-torture.v5",
+  "totals": {
+    "attempted": 8,
+    "attempted_pass_rate": 1.0,
+    "call_rate": 1.0,
+    "declined": 0,
+    "excused": 0,
+    "failed": 0,
+    "failures_by_category": {},
+    "passed": 8,
+    "requests": 8,
+    "scored": 8
+  }
+}
