@@ -146,6 +146,24 @@ def test_the_messages_api_accepts_thinking_and_returns_a_thinking_block(server):
         ("thinking", "think it over"), ("text", "the answer")], body["content"]
 
 
+def test_a_turn_ends_at_the_token_that_closes_a_tool_call(server):
+    """The publisher's generation_config ends generation at <|tools_suffix|>
+    (id 72) as well as at <|assistant_end|>; the files declare only the
+    second. Without the first as a stop, a reply that wrote a call on a turn
+    with no tools declared ran on and invented the call's result (measured on
+    the 2509 checkpoint: `["Answers displayed"]` after a display_answers
+    call)."""
+    reply = ('the answer<|tools_prefix|>[{"display_answers": {}}]<|tools_suffix|>'
+             '["Answers displayed"]')
+    code, body = _post(server, "/v1/chat/completions",
+                       _chat(enable_thinking=False, runner_test_reply=reply))
+    assert code == 200, body
+    ch = body["choices"][0]
+    assert "Answers displayed" not in ch["message"]["content"], ch
+    assert ch["finish_reason"] == "stop", ch
+    assert body["usage"]["completion_tokens"] < 64, body["usage"]
+
+
 TOOLS = [{"type": "function", "function": {
     "name": "trip_duration",
     "parameters": {"type": "object",

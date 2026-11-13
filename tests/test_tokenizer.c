@@ -754,9 +754,10 @@ static void test_pre_names_choose_the_split(void) {
 // Harmony's <|end|>, and an id outside the vocabulary refuses the file.
 static const char *STOP_VOCAB[] = { "<unk>", "<s>", "</s>", "<|im_end|>",
                                     "<|tool_response>", "<|user|>", "<|end|>",
-                                    "<|eos|>", "a", "<|return|>" };
-static const int STOP_TYPES[] = { 2, 3, 1, 3, 4, 3, 3, 3, 1, 3 };
-enum { N_STOP_VOCAB = 10, STOP_EOS = 7 };
+                                    "<|eos|>", "a", "<|return|>",
+                                    "<|tools_suffix|>" };
+static const int STOP_TYPES[] = { 2, 3, 1, 3, 4, 3, 3, 3, 1, 3, 3 };
+enum { N_STOP_VOCAB = 11, STOP_EOS = 7 };
 
 static void write_stop_fixture(const char *path, const char *arch, bool types,
                                const int *eog, int n_eog) {
@@ -794,7 +795,7 @@ static void write_stop_fixture(const char *path, const char *arch, bool types,
     free(kv.b); free(w.b);
 }
 
-// The stop set of a fixture as a bitmask over its ten ids; -1 when the
+// The stop set of a fixture as a bitmask over its eleven ids; -1 when the
 // tokenizer refuses the file.
 static int stop_mask(const char *arch, bool types, const int *eog, int n_eog) {
     const char *path = "tok-stops.gguf";
@@ -831,6 +832,10 @@ static void test_stops_follow_type_and_declaration(void) {
     int heog[] = { 6, 9 };
     assert(stop_mask("gpt-oss", true, heog, 2) ==
            (B << STOP_EOS | B << 3 | B << 4 | B << 9));
+    // apertus ends a turn at the token that closes its tool call: the
+    // publisher's generation_config lists it as eos, the files declare only
+    // <|assistant_end|>. No other family stops on it (base has no bit 10).
+    assert(stop_mask("apertus", true, NULL, 0) == (base | B << 10));
     // an eog id outside the vocabulary refuses the file
     int bad[] = { 5, N_STOP_VOCAB };
     assert(stop_mask("llama", true, bad, 2) == -1);
