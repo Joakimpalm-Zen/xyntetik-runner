@@ -1129,7 +1129,8 @@
     "zephyr"
    ],
    "artifacts": [
-    "stablelm-2-zephyr-1_6b-q8_0"
+    "stablelm-2-zephyr-1_6b-q8_0",
+    "stablelm-2-1.6b-chat-q8_0"
    ],
    "tool_protocol": {
     "status": "NOT RUN",
@@ -1197,7 +1198,8 @@
     "phi4"
    ],
    "artifacts": [
-    "phi-3.5-mini-instruct-q4_k_m"
+    "phi-3.5-mini-instruct-q4_k_m",
+    "phi-3.5-mini-instruct-q8_0"
    ],
    "tool_protocol": {
     "status": "NOT RUN"
