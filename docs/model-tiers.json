@@ -3279,21 +3279,242 @@
       ]
     },
     {
-      "id": "arch-apertus",
-      "model": "Apertus (apertus)",
+      "id": "apertus-8b-instruct-2509-q8_0",
+      "model": "Apertus-8B-Instruct-2509 (Swiss AI)",
       "family": "Apertus",
       "tier": "tier2",
-      "scope": "architecture",
-      "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
+      "claim": "Text path, bartowski's Q8_0 of swiss-ai's Apertus-8B-Instruct-2509, the fidelity file of the two: against the publisher's BF16 checkpoint computed in float32 it reads 0.0054 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 600 positions (two windows of 300: 0.0050 and 0.0057; plain top-1 97.0%, CPU), against a bar of 0.05 and 97%.",
       "architecture": "apertus",
+      "upstream": {
+        "checkpoint": "swiss-ai/Apertus-8B-Instruct-2509",
+        "revision": "b946d40447b2b597999b9c86d44bee0b452c919f"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "swiss-ai/Apertus-8B-Instruct-2509"
+      },
+      "files": [
+        {
+          "name": "swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf",
+          "repo": "bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF",
+          "revision": "d2ffbcc459d0a1bccb2097aca8bb825974f7678c",
+          "sha256": "68a9d338961e9cc47362649e703fd67b4f4eb616a16d97b9c2c458aea4e3db7a",
+          "bytes": 8565372288
+        }
+      ],
+      "quantization": "Q8_0 (bartowski, importance matrix)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both of bartowski's files (revision d2ffbcc4, with bartowski's importance matrix) against swiss-ai's BF16 checkpoint at b946d404 computed in float32 on the CPU (transformers 5.16.1, ApertusForCausalLM, float32 arithmetic cast at use per decoder block, gold-logits.py, two disjoint windows of 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files from the batched prefill route): Q8_0 pooled 0.0054 ± 0.0003 mean KLD (SE, 600 positions; windows 0.0050 and 0.0057) / 97.0% top-1 / 100% margin-qualified (419/419); Q4_K_M pooled 0.0492 ± 0.0024 (bootstrap 95% interval 0.0447 to 0.0540; windows 0.0459 and 0.0526) / 88.7% / 98.1% (411/419). Tokenizer 0/721 corpus strings and 0/128,635 vocabulary entries against the publisher's tokenizer.json; template conformance 20/20 in text and tokens against the publisher's chat_template.jinja at b946d404 (the apertus renderer; the template inside the GGUF is the publisher's earlier one and Runner does not render it). Record: docs/compat-reports/apertus-8b-instruct-2509-2026-11-12/README.md.",
+        "context": 4096,
+        "limitations": "CPU and CUDA for this file (8.57 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 32 layers fit on the device at ctx 4096). Metal: the activation is not on the Metal backend yet, and the load runs on the CPU. Training is refused at load, in the loader's words: \"training does not cover this model yet: FFN activation not in the backward (gpt-oss/apertus)\"; serving an adapter (--lora) is supported. Several requests at once run one at a time on the CUDA device: the batched multi-slot forward takes gated FFNs only. A system message after the conversation has started is refused, as the publisher's template refuses it. Not the publisher's file: bartowski's conversion, pinned by sha256 and repository revision. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/1.17.0-2026-11-12-linux-x86_64-apertus-8b-instruct-2509.json",
+          "docs/compat-reports/apertus-8b-instruct-2509-2026-11-12/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal cell (the activation's Metal port), and the Windows CUDA host's cells; task quality and the tool protocol on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "metal": {
+          "kind": "limit",
+          "reason": "Runs on the CPU, not Metal: the load says \"gpu: 'apertus' FFN activation is not on the metal backend yet\" (measured on an 8 GB Apple Silicon Mac at main ba49206f, the Q4_K_M at d2ffbcc4; there the CPU run paged, 0.11 tokens a second). The Metal port of the xIELU activation is not started.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.17.0",
+          "date": "2026-11-12",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "d431c97848fd7877e338ed07eb77508a9c386c88",
+          "caps": {
+            "version": "1.17.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "a519428fcee0cb910d868dec5ff75f1cec4f9b887b3276e198f10994d1dcf0dc",
+          "ran": "runner -m swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q8_0.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "63a9af5d231bedeb3717cd483b563933f651e3634dd966aaf9b51de4915fcfed",
+            "compiler": "13.3.0"
+          }
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.17.0",
+          "date": "2026-11-12",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "d431c97848fd7877e338ed07eb77508a9c386c88",
+          "caps": {
+            "version": "1.17.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "a519428fcee0cb910d868dec5ff75f1cec4f9b887b3276e198f10994d1dcf0dc",
+          "ran": "runner -m swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q8_0.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "63a9af5d231bedeb3717cd483b563933f651e3634dd966aaf9b51de4915fcfed",
+            "compiler": "13.3.0"
+          }
+        }
+      },
       "transitions": [
         {
           "tier": "tier2",
-          "effective": "2026-10-22",
-          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "effective": "2026-11-12",
+          "reason": "Joins the roster 2026-11-12 with the admitting CPU and CUDA cells from the lab lanes (R4.38) and a float32 reference measurement against the publisher's checkpoint; a user asked for Apertus. Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "FFN activation not in the backward (gpt-oss/apertus)"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.17.0",
+        "date": "2026-11-12"
+      }
+    },
+    {
+      "id": "apertus-8b-instruct-2509-q4_k_m",
+      "model": "Apertus-8B-Instruct-2509 (Swiss AI)",
+      "family": "Apertus",
+      "tier": "tier2",
+      "claim": "Text path, bartowski's Q4_K_M of swiss-ai's Apertus-8B-Instruct-2509, a file that sits on the fidelity bar: against the publisher's BF16 checkpoint computed in float32 it reads 0.0492 ± 0.0024 mean KLD over 600 positions (bootstrap 95% interval 0.0447 to 0.0540) against a bar of 0.05, with 98.1% margin-qualified top-1 (plain top-1 88.7%, CPU); one of its two windows of 300 reads 0.0526, over the bar; a different conversion of the same model read 0.0507 at 2,000 positions in the golden pass. The Q8_0 is the fidelity file.",
+      "architecture": "apertus",
+      "upstream": {
+        "checkpoint": "swiss-ai/Apertus-8B-Instruct-2509",
+        "revision": "b946d40447b2b597999b9c86d44bee0b452c919f"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "swiss-ai/Apertus-8B-Instruct-2509"
+      },
+      "files": [
+        {
+          "name": "swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf",
+          "repo": "bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF",
+          "revision": "d2ffbcc459d0a1bccb2097aca8bb825974f7678c",
+          "sha256": "5901007f15aec9aabeea401cbe65559671166fc851bbdf8c26f56c2b61e9cd1d",
+          "bytes": 5057885568
+        }
+      ],
+      "quantization": "Q4_K_M (bartowski, importance matrix)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both of bartowski's files (revision d2ffbcc4, with bartowski's importance matrix) against swiss-ai's BF16 checkpoint at b946d404 computed in float32 on the CPU (transformers 5.16.1, ApertusForCausalLM, float32 arithmetic cast at use per decoder block, gold-logits.py, two disjoint windows of 300 positions at stride 15 over gold-corpus-2k, token-id keyed, Runner CPU score files from the batched prefill route): Q8_0 pooled 0.0054 ± 0.0003 mean KLD (SE, 600 positions; windows 0.0050 and 0.0057) / 97.0% top-1 / 100% margin-qualified (419/419); Q4_K_M pooled 0.0492 ± 0.0024 (bootstrap 95% interval 0.0447 to 0.0540; windows 0.0459 and 0.0526) / 88.7% / 98.1% (411/419). Tokenizer 0/721 corpus strings and 0/128,635 vocabulary entries against the publisher's tokenizer.json; template conformance 20/20 in text and tokens against the publisher's chat_template.jinja at b946d404 (the apertus renderer; the template inside the GGUF is the publisher's earlier one and Runner does not render it). Record: docs/compat-reports/apertus-8b-instruct-2509-2026-11-12/README.md.",
+        "context": 4096,
+        "limitations": "CPU and CUDA for this file (5.06 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 32 layers fit on the device at ctx 4096). Metal: the activation is not on the Metal backend yet, and the load runs on the CPU. Training is refused at load, in the loader's words: \"training does not cover this model yet: FFN activation not in the backward (gpt-oss/apertus)\"; serving an adapter (--lora) is supported. Several requests at once run one at a time on the CUDA device: the batched multi-slot forward takes gated FFNs only. A system message after the conversation has started is refused, as the publisher's template refuses it. Not the publisher's file: bartowski's conversion, pinned by sha256 and repository revision. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/1.17.0-2026-11-12-linux-x86_64-apertus-8b-instruct-2509.json",
+          "docs/compat-reports/apertus-8b-instruct-2509-2026-11-12/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal cell (the activation's Metal port), and the Windows CUDA host's cells; task quality and the tool protocol on the real checkpoint."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "metal": {
+          "kind": "limit",
+          "reason": "Runs on the CPU, not Metal: the load says \"gpu: 'apertus' FFN activation is not on the metal backend yet\" (measured on an 8 GB Apple Silicon Mac at main ba49206f, the Q4_K_M at d2ffbcc4; there the CPU run paged, 0.11 tokens a second). The Metal port of the xIELU activation is not started.",
+          "matrix": "MANUAL.md#support-matrix"
+        },
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.17.0",
+          "date": "2026-11-12",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "d431c97848fd7877e338ed07eb77508a9c386c88",
+          "caps": {
+            "version": "1.17.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "5fd562b8fbeeac085c8a271d3c0a8e44fdcc503338932109f18d70ede5959098",
+          "ran": "runner -m swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "63a9af5d231bedeb3717cd483b563933f651e3634dd966aaf9b51de4915fcfed",
+            "compiler": "13.3.0"
+          }
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.17.0",
+          "date": "2026-11-12",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "d431c97848fd7877e338ed07eb77508a9c386c88",
+          "caps": {
+            "version": "1.17.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "5fd562b8fbeeac085c8a271d3c0a8e44fdcc503338932109f18d70ede5959098",
+          "ran": "runner -m swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q4_k_m.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "63a9af5d231bedeb3717cd483b563933f651e3634dd966aaf9b51de4915fcfed",
+            "compiler": "13.3.0"
+          }
+        }
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-12",
+          "reason": "Joins the roster 2026-11-12 with the admitting CPU and CUDA cells from the lab lanes (R4.38) and a float32 reference measurement against the publisher's checkpoint; a user asked for Apertus. Maintained on report.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "FFN activation not in the backward (gpt-oss/apertus)"
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.17.0",
+        "date": "2026-11-12"
+      }
     },
     {
       "id": "arch-granitehybrid",

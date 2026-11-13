@@ -1,0 +1,90 @@
+{
+ "model": "models/swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "dense_rule": "margin_qualified",
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 32,
+  "layers_total": 32,
+  "output_weight_on_gpu": true,
+  "whole_graph": true
+ },
+ "cpu_cuda_identity": {
+  "result": "pass",
+  "exact": "9/9",
+  "gpu_arm_on_cpu": false,
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 9,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris, which is also the country's largest city. its population is approximately 2.2 million people. Paris is known for its rich history, culture, and landmarks such as the Eiffel Tower and the Louvre Museum.\n\nThe official language of France is French, and it is spoken by the majority of the population. The country has a diverse population, with people from various ethnic backgrounds and cultures.\n\nFrance is a developed country with a high standard of living. It is known for its strong economy, high quality of life, and excellent education system. The country is also a major player in international politics and is a founding member of the",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\r\n    if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n-1) + fibonacci(n-2)\n\n# Test the function\nprint(fibonacci(10))  # Output: 55\n```\n\nThis code defines a recursive function `fibonacci` that calculates the nth Fibonacci number. The function uses recursion to compute the Fibonacci sequence, which can be inefficient for large values of n due to repeated calculations.\n\nTo optimize the function, we can use memoization to store previously computed Fibonacci numbers and",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there lived a young man named Jack. Jack was a hardworking and ambitious young man who had a dream of becoming a great inventor. He spent most of his days in his workshop, tinkering with gadgets and machines, and dreaming up new ideas.\n\nOne day, Jack stumbled upon an old, mysterious-looking book in the attic of his house. The book was filled with strange symbols and diagrams, and Jack was immediately drawn to it. He spent hours poring over the book, trying to decipher its secrets.\n\nAs Jack delved deeper into the book, he began to realize that it was a guide to a magical world.",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 391\n\nExplanation: To find the product of 17 and 23, we multiply these two numbers together. 17 * 23 = 391.\n\n###\nQuestion: What is the product of 17 and 23?\n\nA: 391\n\nExplanation: To find the product of 17 and 23, we multiply these two numbers together. 17 * 23 = 391.\n\n###\nQuestion: What is the product of 17 and 23?\n\nA: 391\n\nExplanation:",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " if the fog lifted at 10:00 am, what was the hour the fog lifted?\n\nThe fog lifted at 10:00 am.\n\nExplanation: The question directly asks for the hour the fog lifted, and the given information is that the fog lifted at 10:00 am. Therefore, the correct answer is 10:00 am. The other options are incorrect because they either don't match the given information or are not relevant to the question being asked. For example, the wind direction and cloud cover are not relevant to the question of what time the fog lifted. Similarly, the",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " of these duplicates was carried out by the Observatory's assistant director, Harold Spencer Jones, and the final list was published in 1931. The revised catalogue was also used as the basis for the first edition of the Smithsonian Astrophysical Observatory's (SAO) star catalogue, which was published in 1936.\n\nThe revised catalogue was also used as the basis for the first edition of the Smithsonian Astrophysical Observatory's (SAO) star catalogue, which was published in 1936.\n\nSee also\nList of astronomical catalogues\nSmithsonian Astrophysical Observatory Star Catalogue\nHarvard",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " is\n# a good thing. However, it's possible to have a truncated header that's\n# still valid (e.g., a file that was truncated after the header but before\n# the data). We can't recover from that, but we can at least report it.\ndef parse_header_try(buf, size):\n    try:\n        return parse_header(buf, size)\n    except ValueError as e:\n        return (None, None, str(e))\n\ndef parse_footer(buf, size):\n    if size < 4:\n        raise ValueError('short footer')\n    checksum = struct.unpack('<I', buf[-4",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " has seen the organic chaos of other old cities.\n\nThe earthquake was a major event in the history of seismology, and it was studied by scientists such as John Michell and Henry Cavendish. The event was also a major event in the history of Lisbon, as it led to the rebuilding of the city and the development of new building codes.\n\nThe earthquake had a significant impact on the city of Lisbon, and it is still remembered today. The earthquake was a major event in the history of seismology, and it was studied by scientists such as John Michell and Henry Cavendish. The event was also a major event in the history of",
+   "gpu": null
+  }
+ ]
+}

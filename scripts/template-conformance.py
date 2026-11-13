@@ -399,7 +399,8 @@ FAMILIES = {
         # list appended to the still-open assistant turn. Declared without
         # tool_family until 2026-08-14, so none of it had been compared.
         tool_family=True, oracle_tool_shape="flat-string",
-        tokenizer=("Apertus-8B-Instruct-2509-Q4_K_M.gguf",),
+        tokenizer=("swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf",
+                   "Apertus-8B-Instruct-2509-Q4_K_M.gguf"),
         cannot={"system-mid-history": NO_MID_SYSTEM_ROLE}),
     "ornith": Family(
         "ornith", ("hf", "ornith-ai/Ornith-1.0-9B"),
