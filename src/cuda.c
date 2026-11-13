@@ -1242,8 +1242,8 @@ static bool moe_grouped_eligible(const model_t *m) {
 // The by-expert prefill (moe_twin) reproduces the fused path bit for bit: an
 // expert's columns go through the width-classed GEMV twins, which carry the
 // batch-1 kernel's bits, the one each k_moe_mv_* body copies. So a type needs
-// both twins, its k_moe_mv kernel and that batch-1 kernel; float types stay
-// fused.
+// both twins, its k_moe_mv kernel and that batch-1 kernel. Float types stay
+// fused: BF16's batch-1 route can be split-K, which k_moe_mv_bf16 does not copy.
 static bool moe_twin_type_ok(const gpu_weights *w, int type) {
     // Admitted only where the kernels a type runs have k_moe_mv_<type>'s
     // per-column arithmetic. Q8_0 and the K-quants: the coalesced GEMV, which
@@ -1647,7 +1647,8 @@ static size_t expert_plan_bytes(const layer_t *ly, int n_expert, bool bound) {
 // A layer's device tensors, listed once: the split plan's bytes, the image's
 // stretch, the per-tensor bindings and admission's type check all walk these
 // two lists, so none can drift from the others.
-// tests/test_cuda_tensor_roles.py holds every tensor field of layer_t to one.
+// tests/test_cuda_tensor_roles.py holds every tensor field of layer_t to one
+// of the lists or a named host-side role.
 enum { LAYER_MIXER_MAX = GT_N_MIXER };
 
 // The mixer side, on the device whatever the FFN does: attention or the
@@ -8386,7 +8387,9 @@ struct gpu_batch {
 // same order: F32, F16 and BF16. Every quantized _b kernel folds the block
 // scale into each term while its batch-1 partner keeps it outside the block
 // sum: the same values in another association, so different bits. Those
-// types batch via f_gemvb or decode one sequence at a time.
+// types batch via f_gemvb or decode one sequence at a time; it is not fixed
+// in the kernel, because k_mv_*_b is also the prefill tile kernel and
+// changing its arithmetic changes certified prefill.
 // Q2_K's and Q3_K's _b tiles are term-exact too but are not admitted: they
 // measured 0.17x to 0.63x of sequential decode. Q3_K batches through its
 // k_gemv twin; Q2_K decodes its sequences one at a time.
