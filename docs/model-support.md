@@ -597,12 +597,13 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Qwen2</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>Qwen2</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train ✅</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td colspan="5"><b>Qwen2 (qwen2)</b></td></tr>
-<tr><td><a href="#arch-qwen2">Qwen2 (qwen2)</a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td colspan="5"><b>Qwen2.5-1.5B-Instruct (Qwen)</b></td></tr>
+<tr><td><a href="#qwen2.5-1.5b-instruct-q8_0"><code>qwen2.5-1.5b-instruct-q8_0.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td></td><td nowrap>✅ 1.18.0<br>2026-11-13</td></tr>
+<tr><td><a href="#qwen2.5-1.5b-instruct-q8_0-bartowski"><code>Qwen2.5-1.5B-Instruct-Q8_0.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td></td><td nowrap>✅ 1.18.0<br>2026-11-13</td></tr>
 </tbody>
 </table>
 </details>
@@ -2175,13 +2176,51 @@ Text path, bartowski's standard Q4_K_M of Qwen's Qwen3.6-35B-A3B, which passes t
 
 ### Qwen2
 
-#### Qwen2 (qwen2)
+#### Qwen2.5-1.5B-Instruct (Qwen)
 
-<a id="arch-qwen2"></a>
-##### Qwen2 (qwen2)
+<a id="qwen2.5-1.5b-instruct-q8_0"></a>
+##### `qwen2.5-1.5b-instruct-q8_0.gguf`
 
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+The publisher's own q8_0 of Qwen2.5-1.5B-Instruct reads 0.030 mean KLD, nine times bartowski's Q8_0 on the same checkpoint: the publisher folded a per-channel rescaling of the layer norms into the projections before quantizing; in exact arithmetic the same model, but the rescaled weights quantize worse. Against the publisher's BF16 checkpoint computed in float32: 0.0297 ± 0.0012 mean KLD and 99.75% margin-qualified top-1 over 600 positions (two windows of 300: 0.0307 and 0.0287; plain top-1 91.7%, CPU), against a bar of 0.05 and 97%. llama.cpp reads the same file at 0.0324 on window 1 against Runner's 0.0307, so it is the file, not the engine. bartowski's Q8_0 is the fidelity file.
 
+- **File:** `qwen2.5-1.5b-instruct-q8_0.gguf` (sha256 `d7efb072e7724d25048a4fda0a3e10b04bdef5d06b1403a1c93bd9f1240a63c8`, 1,894,532,128 bytes, from [Qwen/Qwen2.5-1.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF) at revision `91cad51170dc`).
+- **Upstream checkpoint:** Qwen/Qwen2.5-1.5B-Instruct at revision `989aa7980e4c`.
+- **Quantization:** Q8_0 (the publisher's, no importance matrix).
+- **Licence:** `apache-2.0`, as the Qwen/Qwen2.5-1.5B-Instruct model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** The publisher's q8_0 (Qwen/Qwen2.5-1.5B-Instruct-GGUF at 91cad511) against Qwen's BF16 checkpoint at 989aa798 computed in float32 on the CPU (transformers 5.16.1, float32 arithmetic cast at use per decoder block, gold-logits.py, two windows of 300 positions at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files from the batched prefill route): pooled 0.0297 ± 0.0012 mean KLD (SE, 600 positions; windows 0.0307 and 0.0287) / 91.7% top-1 / 99.75% margin-qualified (393/394); llama.cpp 73a43d1 on window 1: 0.0324 / 100%. The publisher's GGUF differs from the checkpoint it is converted from: each layer norm is the checkpoint's times a per-channel factor (mean 1.54 to 1.74 in layers 0, 10 and 27) and q_proj is divided by it, the product equal to the checkpoint's within 0.4 to 0.6% (Q8_0's error), and the file carries an untied output.weight (339 tensors against 338); consistent with an equalization pass before quantizing. In exact arithmetic the same model, the rescaled weights quantize worse: a Q8_0 converted here from the checkpoint with llama.cpp's converter reads 0.0033 (its BF16 0.00011), and bartowski's Q8_0 is byte-identical to that conversion in all 338 tensors. Measured and not admitted: the publisher's q4_k_m (0.0798 ± 0.0036, 96.95% margin-qualified; llama.cpp 0.0931 on window 1) and bartowski's Q4_K_M with its importance matrix (0.0516 ± 0.0025, 97.97%; 73% of bootstrap resamples over 0.05). Tokenizer pre qwen2: 0 of 721 corpus strings and 0 of 150,186 vocabulary entries differ from Qwen's tokenizer.json at 989aa798 (the same tokenizer files as Qwen2.5-7B-Instruct's); template family chatml, conformance 21/21 in text and tokens against the publisher's chat template, the same template as Qwen2.5-7B-Instruct's. Record: docs/compat-reports/qwen2.5-1.5b-instruct-2026-11-13/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU and CUDA for this file (1.89 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 28 layers on the device). It reads nine times the KLD of bartowski's Q8_0 of the same checkpoint (the first row): the publisher's GGUF carries a rescaling folded into the weights before quantizing. Measured and not admitted: the publisher's q4_k_m (0.0798 ± 0.0036, 96.95% margin-qualified; llama.cpp 0.0931 on window 1) and bartowski's Q4_K_M with its importance matrix (0.0516 ± 0.0025, 97.97%; 73% of bootstrap resamples over 0.05). On load the file resolves to architecture qwen2, tokenizer pre qwen2, template chatml, tool family qwen_json and sampling preset qwen2.5 (temperature 0.7, top_p 0.8, top_k 20, repeat_penalty 1.05). Tool calls use the chatml family's Qwen JSON protocol. Licence: apache-2.0.
+- **Still missing:** A Metal cell, the Windows CUDA host's cells, and task quality.
+- **Evidence:** [docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-qwen2.5-1.5b-instruct.json](compat-reports/1.18.0-2026-11-13-linux-x86_64-qwen2.5-1.5b-instruct.json), [docs/compat-reports/qwen2.5-1.5b-instruct-2026-11-13/README.md](compat-reports/qwen2.5-1.5b-instruct-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.18.0 on 2026-11-13.
+- **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `c00c19c496da`, output sha256 `0308e3d8c0ec344d`, [pin](../tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `c00c19c496da`, output sha256 `0308e3d8c0ec344d`, [pin](../tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.18.0, 2026-11-13).
+- **LoRA adapter serving:** supported (runner 1.18.0, 2026-11-13).
+
+<a id="qwen2.5-1.5b-instruct-q8_0-bartowski"></a>
+##### `Qwen2.5-1.5B-Instruct-Q8_0.gguf`
+
+bartowski's Q8_0 of Qwen's Qwen2.5-1.5B-Instruct, the fidelity file of the model: against the publisher's BF16 checkpoint computed in float32 it reads 0.0033 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 600 positions (two windows of 300: 0.0032 and 0.0034; plain top-1 98.3%, CPU), against a bar of 0.05 and 97%. Its tensors are byte for byte a Q8_0 converted from the checkpoint with llama.cpp's own converter.
+
+- **File:** `Qwen2.5-1.5B-Instruct-Q8_0.gguf` (sha256 `7185d306cf45956c8c017cd0d3b05ecc6bc18b3ea8eb5c240dce40e87563db7f`, 1,646,573,312 bytes, from [bartowski/Qwen2.5-1.5B-Instruct-GGUF](https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF) at revision `9eadc66189c7`).
+- **Upstream checkpoint:** Qwen/Qwen2.5-1.5B-Instruct at revision `989aa7980e4c`.
+- **Quantization:** Q8_0 (bartowski, importance matrix recorded; Q8_0 does not use it).
+- **Licence:** `apache-2.0`, as the Qwen/Qwen2.5-1.5B-Instruct model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** bartowski's Q8_0 (revision 9eadc661) against Qwen's BF16 checkpoint at 989aa798 computed in float32 on the CPU (transformers 5.16.1, float32 arithmetic cast at use per decoder block, gold-logits.py, two windows of 300 positions at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files from the batched prefill route): pooled 0.0033 ± 0.0003 mean KLD (SE, 600 positions; windows 0.0032 and 0.0034) / 98.3% top-1 / 100% margin-qualified (394/394). The publisher's own q8_0 (the second row) reads 0.0297 ± 0.0012. The publisher's GGUF differs from the checkpoint it is converted from: each layer norm is the checkpoint's times a per-channel factor (mean 1.54 to 1.74 in layers 0, 10 and 27) and q_proj is divided by it, the product equal to the checkpoint's within 0.4 to 0.6% (Q8_0's error), and the file carries an untied output.weight (339 tensors against 338); consistent with an equalization pass before quantizing. In exact arithmetic the same model, the rescaled weights quantize worse: a Q8_0 converted here from the checkpoint with llama.cpp's converter reads 0.0033 (its BF16 0.00011), and bartowski's Q8_0 is byte-identical to that conversion in all 338 tensors. Measured and not admitted: the publisher's q4_k_m (0.0798 ± 0.0036, 96.95% margin-qualified; llama.cpp 0.0931 on window 1) and bartowski's Q4_K_M with its importance matrix (0.0516 ± 0.0025, 97.97%; 73% of bootstrap resamples over 0.05). Tokenizer pre qwen2: 0 of 721 corpus strings and 0 of 150,186 vocabulary entries differ from Qwen's tokenizer.json at 989aa798 (the same tokenizer files as Qwen2.5-7B-Instruct's); template family chatml, conformance 21/21 in text and tokens against the publisher's chat template, the same template as Qwen2.5-7B-Instruct's. Record: docs/compat-reports/qwen2.5-1.5b-instruct-2026-11-13/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU and CUDA for this file (1.65 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 28 layers on the device). The publisher's own q8_0 is the second row, at nine times this file's KLD. Measured and not admitted: the publisher's q4_k_m (0.0798 ± 0.0036, 96.95% margin-qualified; llama.cpp 0.0931 on window 1) and bartowski's Q4_K_M with its importance matrix (0.0516 ± 0.0025, 97.97%; 73% of bootstrap resamples over 0.05). On load the file resolves to architecture qwen2, tokenizer pre qwen2, template chatml, tool family qwen_json and sampling preset qwen2.5 (temperature 0.7, top_p 0.8, top_k 20, repeat_penalty 1.05). Tool calls use the chatml family's Qwen JSON protocol. Licence: apache-2.0.
+- **Still missing:** A Metal cell, the Windows CUDA host's cells, and task quality.
+- **Evidence:** [docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-qwen2.5-1.5b-instruct.json](compat-reports/1.18.0-2026-11-13-linux-x86_64-qwen2.5-1.5b-instruct.json), [docs/compat-reports/qwen2.5-1.5b-instruct-2026-11-13/README.md](compat-reports/qwen2.5-1.5b-instruct-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.18.0 on 2026-11-13.
+- **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `c00c19c496da`, output sha256 `c4a53e20abfcc374`, [pin](../tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0-bartowski.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `c00c19c496da`, output sha256 `e82cf0278213cd80`, [pin](../tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0-bartowski.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.18.0, 2026-11-13).
+- **LoRA adapter serving:** supported (runner 1.18.0, 2026-11-13).
 
 ### Qwen3
 
@@ -2782,7 +2821,6 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-10-22 | [Mistral (mistral)](#arch-mistral) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [SmolLM (smollm)](#arch-smollm) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [StableLM (stablelm)](#arch-stablelm) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
-| 2026-10-22 | [Qwen2 (qwen2)](#arch-qwen2) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Gemma 3 (gemma3)](#arch-gemma3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Phi-3 (phi3)](#arch-phi3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Granite 4 h-series hybrid (granitehybrid)](#arch-granitehybrid) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
@@ -2891,6 +2929,8 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-11-11 | [NVIDIA Nemotron 3.5 Bolt-74B-A9B (NVIDIA), `NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf`](#nemotron-3.5-bolt-74b-a9b-24gb) | Tier 2, maintained on report | Joins the roster 2026-11-11 with the admitting CPU cell from the lab CPU lane (R4.27.4.4 S2), on agreement with llama.cpp on the same bytes: the parent cannot be held in float32. Maintained on report. | none recorded |
 | 2026-11-12 | [Apertus-8B-Instruct-2509 (Swiss AI), `swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf`](#apertus-8b-instruct-2509-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-12 with the admitting CPU and CUDA cells from the lab lanes (R4.38) and a float32 reference measurement against the publisher's checkpoint; a user asked for Apertus. Maintained on report. | none recorded |
 | 2026-11-12 | [Apertus-8B-Instruct-2509 (Swiss AI), `swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf`](#apertus-8b-instruct-2509-q4_k_m) | Tier 2, maintained on report | Joins the roster 2026-11-12 with the admitting CPU and CUDA cells from the lab lanes (R4.38) and a float32 reference measurement against the publisher's checkpoint; a user asked for Apertus. Maintained on report. | none recorded |
+| 2026-11-13 | [Qwen2.5-1.5B-Instruct (Qwen), `Qwen2.5-1.5B-Instruct-Q8_0.gguf`](#qwen2.5-1.5b-instruct-q8_0-bartowski) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.2) and a float32 reference measurement against the publisher's checkpoint, so the Qwen2 family has a file with cells. Maintained on report. | none recorded |
+| 2026-11-13 | [Qwen2.5-1.5B-Instruct (Qwen), `qwen2.5-1.5b-instruct-q8_0.gguf`](#qwen2.5-1.5b-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.2) and a float32 reference measurement against the publisher's checkpoint, so the Qwen2 family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Apertus v1.5 8B (Swiss AI), a third party's text-only extraction, `apertus-v1.5-8b-text-q8_0.gguf`](#apertus-v1.5-8b-text-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.38.1) and a float32 reference measurement against the publisher's checkpoint; Apertus v1.5 after 2509, at the owner's request. Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->

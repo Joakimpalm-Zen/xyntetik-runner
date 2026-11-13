@@ -964,7 +964,9 @@
     "chatml"
    ],
    "artifacts": [
-    "qwen2.5-32b-instruct-q3_k_s"
+    "qwen2.5-32b-instruct-q3_k_s",
+    "qwen2.5-1.5b-instruct-q8_0-bartowski",
+    "qwen2.5-1.5b-instruct-q8_0"
    ],
    "tool_protocol": {
     "status": "NOT RUN"
