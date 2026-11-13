@@ -314,6 +314,13 @@ enum { TMPL_CHATML, TMPL_LLAMA2, TMPL_LLAMA3, TMPL_ZEPHYR, TMPL_GEMMA,
        // prompt is always the closed block, whatever enable_thinking says.
        // Detected by that comment. Appended last.
        TMPL_MINICPMV_FIXED,
+       // Apertus v1.5 (swiss-ai/Apertus-v1.5-8B chat_template.jinja at
+       // 1519de0a): 2509's framing with each tool result between
+       // <|tool_output_start|> and <|tool_output_end|>, where 2509 writes the
+       // raw results in one `[`...`]` list. Detected by that token in the
+       // template, or in the vocabulary when there is no template text (2509's
+       // has neither). Appended last.
+       TMPL_APERTUS15,
        // Not a family: how many there are, so a test can walk every one (R2.4.8).
        TMPL_COUNT };
 
@@ -396,6 +403,11 @@ static inline bool is_gemma4(int tmpl) {
 // turn, the system-turn merge and the think tags; the Qwen 3.5 pair differ
 // only in which assistant turns carry a thought block and in the thinking
 // default, both handled where the block is written.
+// Apertus 2509 and v1.5: one renderer, one tool protocol, one think pair; v1.5
+// differs only in how a tool result is wrapped.
+static inline bool tmpl_apertus(int t) {
+    return t == TMPL_APERTUS || t == TMPL_APERTUS15;
+}
 static inline bool tmpl_ornith_like(int t) {
     return t == TMPL_ORNITH || t == TMPL_QWEN35 || t == TMPL_QWEN35_NOTHINK ||
            t == TMPL_QWEN36 || t == TMPL_MINICPMV || t == TMPL_MINICPMV_FIXED;

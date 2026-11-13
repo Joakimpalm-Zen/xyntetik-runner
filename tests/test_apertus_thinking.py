@@ -32,7 +32,13 @@ TURN = ("<|system_start|>,<|system_end|>,<|developer_start|>,<|developer_end|>,"
 # from both vocabularies, 2026-11-13): v1.5 has <|inner_prefix|> and
 # <|inner_suffix|>, the 2509 files have <think> and </think>.
 TAGS = {"v1.5": ("<|inner_prefix|>", "<|inner_suffix|>"),
-        "2509": ("<think>", "</think>")}
+        "2509": ("<think>", "</think>"),
+        # v1.5's vocabulary also holds <|tool_output_start|> and
+        # <|tool_output_end|>, which select the apertus15 renderer when a file
+        # carries no template text (2509's has neither)
+        "v1.5-tool-outputs": ("<|inner_prefix|>", "<|inner_suffix|>")}
+EXTRA = {"v1.5-tool-outputs": ",<|tool_output_start|>,<|tool_output_end|>"}
+TEMPLATE = {"v1.5": "apertus", "2509": "apertus", "v1.5-tool-outputs": "apertus15"}
 REPLY = None   # set per server: the deliberation between that release's tags
 
 
@@ -45,11 +51,12 @@ def server(request, tmp_path_factory):
     opened, closed = TAGS[request.param]
     m = tmp_path_factory.mktemp("apthink") / f"apertus-{request.param}.gguf"
     subprocess.run([sys.executable, str(ROOT / "scripts/make-test-model.py"), "--apertus", "REAL",
-                    "--control", f"{TURN},{opened},{closed}", str(m)],
+                    "--control", f"{TURN},{opened},{closed}{EXTRA.get(request.param, '')}", str(m)],
                    check=True, stdout=subprocess.DEVNULL)
     REPLY = f"{opened}think it over{closed}the answer"
     with RunnerServer(exe, m, ctx=1024, parallel=1, extra_args=["--gpu", "off", "-t", "2"],
                       env=dict(os.environ, RUNNER_TEST_SCRIPTED_REPLY="1")) as srv:
+        srv.release = request.param
         yield srv
 
 
@@ -89,6 +96,7 @@ def test_the_template_is_apertus(server):
     code, body = _post(server, "/v1/chat/completions", _chat(runner_test_reply="plain"))
     assert code == 200, body
     assert body["choices"][0]["message"]["content"] == "plain"
+    assert body["runner_telemetry"]["tool_protocol"]["template"] == TEMPLATE[server.release], body
 
 
 def test_the_deliberation_is_reasoning_and_the_answer_is_the_answer(server):

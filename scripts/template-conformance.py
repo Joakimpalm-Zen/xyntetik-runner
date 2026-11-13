@@ -402,6 +402,19 @@ FAMILIES = {
         tokenizer=("swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf",
                    "Apertus-8B-Instruct-2509-Q4_K_M.gguf"),
         cannot={"system-mid-history": NO_MID_SYSTEM_ROLE}),
+    # Apertus v1.5 8B (R4.38.1): the text-only extraction's GGUFs embed
+    # swiss-ai/Apertus-v1.5-8B's chat_template.jinja at 1519de0a byte for byte
+    # (16,614 bytes, sha256 d23af285): 2509's with its own default system
+    # message, tool outputs between <|tool_output_start|> and
+    # <|tool_output_end|> (the apertus15 renderer), OpenAI-wrapped
+    # declarations and calls, and media content parts.
+    "apertus15": Family(
+        "apertus15", ("gguf", "models/apertus-v1.5-8b-text-q8_0.gguf"),
+        note="the template embedded in andreasmartin/apertus-v1.5-8b-text-Q8_0-GGUF at 2028c318, "
+             "byte-identical to swiss-ai/Apertus-v1.5-8B's chat_template.jinja at 1519de0a",
+        tool_family=True, thinking_var="enable_thinking", reasoning_history=True,
+        tokenizer=("apertus-v1.5-8b-text-q8_0.gguf", "apertus-v1.5-8b-text-q4_k_m.gguf"),
+        cannot={"system-mid-history": NO_MID_SYSTEM_ROLE}),
     "ornith": Family(
         "ornith", ("hf", "ornith-ai/Ornith-1.0-9B"),
         note="docs/ornith-reference.md names the model; the -GGUF repo is the "
