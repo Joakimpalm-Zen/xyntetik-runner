@@ -573,6 +573,80 @@ static void test_apertus_tool_turns(void) {
     jv_free(tools);
 }
 
+// Apertus v1.5 (swiss-ai/Apertus-v1.5-8B chat_template.jinja at 1519de0a):
+// 2509's framing, with each tool result list between <|tool_output_start|>
+// and <|tool_output_end|> where 2509 writes `[` and `]`; results still joined
+// by ", ". The token in the template selects the variant; 2509's has none.
+static void test_apertus15_tool_outputs(tokenizer *t) {
+    const char *v15 =
+        "{%- set assistant_token = '<|assistant_start|>' -%}"
+        "{%- set tool_output_start_token = '<|tool_output_start|>' -%}"
+        "{%- set tool_output_end_token = '<|tool_output_end|>' -%}";
+    const char *v2509 = "{%- set assistant_token = '<|assistant_start|>' -%}";
+    assert(template_detect(v15, t) == TMPL_APERTUS15);
+    assert(template_detect(v2509, t) == TMPL_APERTUS);
+    assert(tmpl_apertus(TMPL_APERTUS) && tmpl_apertus(TMPL_APERTUS15));
+    assert(template_from_name("apertus15") == TMPL_APERTUS15);
+    assert(!strcmp(template_name(TMPL_APERTUS15), "apertus15"));
+
+    const char *call_src =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
+        "\"arguments\":\"{\\\"city\\\": \\\"Oslo\\\"}\"}}]";
+    jv *calls = json_parse(call_src, strlen(call_src));
+    assert(calls != NULL);
+    sbuf call = {0};
+    assistant_calls_render(TMPL_APERTUS15, NULL, calls, &call, NULL);
+    assert(call.s != NULL);
+    assert(strcmp(call.s,
+        "<|tools_prefix|>[{\"get_weather\": {\"city\": \"Oslo\"}}]"
+        "<|tools_suffix|>") == 0);
+
+    char out[4096];
+    const chat_msg result[] = {
+        CHAT_MSG("user", "Weather in Oslo?"),
+        CHAT_MSG("assistant", call.s),
+        CHAT_MSG("tool", "{\"temp_c\": -3}"),
+    };
+    render_messages(TMPL_APERTUS15, result, 3, true, THINK_DEFAULT,
+                    out, sizeof(out));
+    assert(strcmp(out,
+        "<|developer_start|>Deliberation: disabled\n"
+        "Tool Capabilities: disabled<|developer_end|>"
+        "<|user_start|>Weather in Oslo?<|user_end|>"
+        "<|assistant_start|>"
+        "<|tools_prefix|>[{\"get_weather\": {\"city\": \"Oslo\"}}]"
+        "<|tools_suffix|><|tool_output_start|>{\"temp_c\": -3}<|tool_output_end|>"
+        "<|assistant_end|><|assistant_start|>") == 0);
+
+    // two results in one list, then the reply continues the open turn
+    const chat_msg two[] = {
+        CHAT_MSG("user", "Weather in Oslo and Bergen?"),
+        CHAT_MSG("assistant", call.s),
+        CHAT_MSG("tool", "{\"temp_c\": -3}"),
+        CHAT_MSG("tool", "{\"temp_c\": 4}"),
+        CHAT_MSG("assistant", "Cold in Oslo, mild in Bergen."),
+        CHAT_MSG("user", "Coat?"),
+    };
+    render_messages(TMPL_APERTUS15, two, 6, true, THINK_DEFAULT, out, sizeof(out));
+    assert(strcmp(out,
+        "<|developer_start|>Deliberation: disabled\n"
+        "Tool Capabilities: disabled<|developer_end|>"
+        "<|user_start|>Weather in Oslo and Bergen?<|user_end|>"
+        "<|assistant_start|>"
+        "<|tools_prefix|>[{\"get_weather\": {\"city\": \"Oslo\"}}]"
+        "<|tools_suffix|><|tool_output_start|>{\"temp_c\": -3}, {\"temp_c\": 4}"
+        "<|tool_output_end|>Cold in Oslo, mild in Bergen."
+        "<|assistant_end|><|user_start|>Coat?<|user_end|>"
+        "<|assistant_start|>") == 0);
+
+    // the same turns under 2509's renderer keep the bracketed list
+    render_messages(TMPL_APERTUS, result, 3, true, THINK_DEFAULT, out, sizeof(out));
+    assert(strstr(out, "<|tools_suffix|>[{\"temp_c\": -3}]<|assistant_end|>") != NULL);
+
+    free(call.s);
+    jv_free(calls);
+}
+
 static void test_detect_by_marker(tokenizer *t) {
     assert(template_detect("<|im_start|>system", t) == TMPL_CHATML);
     assert(template_detect("<|start_header_id|>system<|end_header_id|>", t) == TMPL_LLAMA3);
@@ -1580,7 +1654,7 @@ static void test_name_roundtrip(void) {
     static const char *const names[] = {
         "chatml", "llama2", "llama3", "zephyr", "gemma", "gemma4", "mistral",
         "mistral-v1", "mistral-nemo",
-        "phi3", "phi4", "apertus", "ornith", "qwen35", "qwen35-nothink",
+        "phi3", "phi4", "apertus", "apertus15", "ornith", "qwen35", "qwen35-nothink",
         "nemotron", "nemotron35", "hermes4", "granite", "granite4", "granite42", "qwen38", "raw",
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(*names); i++) {
@@ -3577,6 +3651,7 @@ int main(void) {
     test_render_apertus_without_system();
     test_apertus_consecutive_assistant();
     test_apertus_tool_turns();
+    test_apertus15_tool_outputs(&t);
     test_render_system_prompt();
     test_render_without_system();
     test_name_roundtrip();

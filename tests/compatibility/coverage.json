@@ -380,6 +380,25 @@
     "metal": "NOT RUN"
    }
   },
+  "apertus15": {
+   "artifact": "apertus-v1.5-8b-text-q8_0",
+   "tool_protocol": {
+    "status": "NOT RUN",
+    "note": "native declarations, generic envelope; tool results between <|tool_output_start|> and <|tool_output_end|>"
+   },
+   "client_loop": {
+    "status": "NOT RUN"
+   },
+   "sampling_anchor": {
+    "status": "NOT RUN",
+    "note": "generic preset; Apertus publishes no sampling values"
+   },
+   "backends": {
+    "cpu": "NOT RUN",
+    "cuda": "NOT RUN",
+    "metal": "NOT RUN"
+   }
+  },
   "granite": {
    "artifact": "granite-4.1-8b-q4_0",
    "tool_protocol": {
