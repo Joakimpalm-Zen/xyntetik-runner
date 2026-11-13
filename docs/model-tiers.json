@@ -3194,21 +3194,361 @@
       ]
     },
     {
-      "id": "arch-smollm",
-      "model": "SmolLM (smollm)",
+      "id": "smollm2-135m-instruct-q8_0",
+      "model": "SmolLM2-135M-Instruct (Hugging Face)",
       "family": "SmolLM",
       "tier": "tier2",
-      "scope": "architecture",
-      "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
-      "architecture": "smollm",
+      "claim": "bartowski's Q8_0 of HuggingFaceTB's SmolLM2-135M-Instruct, the file the CI anchors, the sanitizer default and the demos run: against the publisher's BF16 checkpoint computed in float32 it reads 0.0074 ± 0.0005 mean KLD and 100% margin-qualified top-1 over 595 positions (two windows: 0.0071 and 0.0077; plain top-1 98.5%, CPU), against a bar of 0.05 and 97%.",
+      "architecture": "llama",
+      "upstream": {
+        "checkpoint": "HuggingFaceTB/SmolLM2-135M-Instruct",
+        "revision": "12fd25f77366fa6b3b4b768ec3050bf629380bac"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "HuggingFaceTB/SmolLM2-135M-Instruct"
+      },
+      "files": [
+        {
+          "name": "SmolLM2-135M-Instruct-Q8_0.gguf",
+          "repo": "bartowski/SmolLM2-135M-Instruct-GGUF",
+          "revision": "09816acd5d99df7be770d85ea30822623dab342c",
+          "sha256": "5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83",
+          "bytes": 144811360
+        }
+      ],
+      "quantization": "Q8_0 (bartowski, importance matrix recorded; Q8_0 does not use it)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "bartowski's Q8_0 (revision 09816acd) against HuggingFaceTB's BF16 checkpoint at 12fd25f7 computed in float32 on the CPU (transformers 4.57.1 (5.16.1 reads this tokenizer without its Digits pre-tokenizer, 8,911 corpus tokens against the file's 8,909; 4.57.1 reads it as written), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files from the batched prefill route): pooled 0.0074 ± 0.0005 mean KLD (SE, 595 positions; windows 0.0071 and 0.0077) / 98.5% top-1 / 100% margin-qualified (392/392). The September golden pass read the same file at 0.0080 over 1,983 positions. unsloth's Q8_0 (revision 9e6855bc) carries the same tensor data, 272 of 272 tensors byte-equal; only the metadata differs. bartowski's Q4_K_M of the same repository was measured and not admitted: 0.0623 ± 0.0030, bootstrap 95% wholly over 0.05, 97.96% margin-qualified (384/392). Tokenizer pre smollm (digits one by one): 0 of 721 corpus strings and 0 of 48,821 vocabulary entries differ from HuggingFaceTB's tokenizer.json; template family chatml (smollm2), conformance 16/16 in text and tokens against the publisher's chat template, which the 135M and 1.7B checkpoints carry byte for byte. Record: docs/compat-reports/smollm2-2026-11-13/README.md.",
+        "context": 4096,
+        "limitations": "CPU and CUDA for this file (145 MB: on a CUDA MIG slice, 1g.24gb, sm_120, all 30 layers on the device). bartowski's Q4_K_M of this model (0.062 mean KLD) was measured and not admitted. On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Tool calls use Runner's generic JSON protocol; the publisher's template declares no tool format. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json",
+          "docs/compat-reports/smollm2-2026-11-13/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal cell, the Windows CUDA host's cells, and task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "metal": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.17.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+          "caps": {
+            "version": "1.17.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "5f570ac872a4e4f39958757c4f6a37862ce18e587832ca08a641cd850ca746e2",
+          "ran": "runner -m SmolLM2-135M-Instruct-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/smollm2-135m-instruct-q8_0.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "3eddc1c0c18be4b76dd9d2d4bfbe5b0142c97d833a6ccf634987e3ace06f303f",
+            "compiler": "13.3.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "dirty": false
+          }
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.17.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+          "caps": {
+            "version": "1.17.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "5f570ac872a4e4f39958757c4f6a37862ce18e587832ca08a641cd850ca746e2",
+          "ran": "runner -m SmolLM2-135M-Instruct-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/smollm2-135m-instruct-q8_0.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "3eddc1c0c18be4b76dd9d2d4bfbe5b0142c97d833a6ccf634987e3ace06f303f",
+            "compiler": "13.3.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "dirty": false
+          }
+        }
+      },
       "transitions": [
         {
           "tier": "tier2",
-          "effective": "2026-10-22",
-          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "effective": "2026-11-13",
+          "reason": "Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.17.0",
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "id": "smollm2-1.7b-instruct-q8_0",
+      "model": "SmolLM2-1.7B-Instruct (Hugging Face)",
+      "family": "SmolLM",
+      "tier": "tier2",
+      "claim": "bartowski's Q8_0 of HuggingFaceTB's SmolLM2-1.7B-Instruct, the fidelity file of the 1.7B: against the publisher's BF16 checkpoint computed in float32 it reads 0.0041 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 595 positions (two windows: 0.0038 and 0.0045; plain top-1 97.6%, CPU), against a bar of 0.05 and 97%. The publisher's own GGUF of this model (a q4_k_m) was measured and not admitted: 0.102 mean KLD.",
+      "architecture": "llama",
+      "upstream": {
+        "checkpoint": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+        "revision": "31b70e2e869a7173562077fd711b654946d38674"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+      },
+      "files": [
+        {
+          "name": "SmolLM2-1.7B-Instruct-Q8_0.gguf",
+          "repo": "bartowski/SmolLM2-1.7B-Instruct-GGUF",
+          "revision": "1f03464768bfcc0319fc50da8ff5fb20b6417ba2",
+          "sha256": "0c6e8955788b1253f418c354a4bdc4cf507b8cfe49c48bb10c7c58ae713cfa2a",
+          "bytes": 1820414944
+        }
+      ],
+      "quantization": "Q8_0 (bartowski, importance matrix recorded; Q8_0 does not use it)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "bartowski's Q8_0 (revision 1f034647) against HuggingFaceTB's BF16 checkpoint at 31b70e2e computed in float32 on the CPU (transformers 4.57.1 (5.16.1 reads this tokenizer without its Digits pre-tokenizer, 8,911 corpus tokens against the file's 8,909; 4.57.1 reads it as written), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files from the batched prefill route): pooled 0.0041 ± 0.0003 mean KLD (SE, 595 positions; windows 0.0038 and 0.0045) / 97.6% top-1 / 100% margin-qualified (427/427). The publisher's own GGUF (HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF at 2d4a76a3, a q4_k_m with no importance matrix) was measured and not admitted: 0.1021 ± 0.0047, 94.38% margin-qualified (403/427); llama.cpp 73a43d1 reads the same file at 0.1248 against Runner's 0.1032 on the same 300 positions, so the error is the file's. Tokenizer pre smollm (digits one by one): 0 of 721 corpus strings and 0 of 48,821 vocabulary entries differ from HuggingFaceTB's tokenizer.json; template family chatml (smollm2), conformance 16/16 in text and tokens against the publisher's chat template, which the 135M and 1.7B checkpoints carry byte for byte. Record: docs/compat-reports/smollm2-2026-11-13/README.md.",
+        "context": 4096,
+        "limitations": "CPU and CUDA for this file (1.82 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 24 layers on the device). The publisher's own GGUF of this model, a q4_k_m, was measured and not admitted (0.102 mean KLD, also 0.125 on llama.cpp). On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Tool calls use Runner's generic JSON protocol; the publisher's template declares no tool format. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json",
+          "docs/compat-reports/smollm2-2026-11-13/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal cell, the Windows CUDA host's cells, and task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "metal": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.17.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+          "caps": {
+            "version": "1.17.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "3891fd01d65ae478e0f31a68e89e47ac6732af7d4a13d37d8cfde2f3e0a1ed68",
+          "ran": "runner -m SmolLM2-1.7B-Instruct-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q8_0.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "3eddc1c0c18be4b76dd9d2d4bfbe5b0142c97d833a6ccf634987e3ace06f303f",
+            "compiler": "13.3.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "dirty": false
+          }
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.17.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+          "caps": {
+            "version": "1.17.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "3891fd01d65ae478e0f31a68e89e47ac6732af7d4a13d37d8cfde2f3e0a1ed68",
+          "ran": "runner -m SmolLM2-1.7B-Instruct-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q8_0.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "3eddc1c0c18be4b76dd9d2d4bfbe5b0142c97d833a6ccf634987e3ace06f303f",
+            "compiler": "13.3.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "dirty": false
+          }
+        }
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-13",
+          "reason": "Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.17.0",
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "id": "smollm2-1.7b-instruct-q4_k_m",
+      "model": "SmolLM2-1.7B-Instruct (Hugging Face)",
+      "family": "SmolLM",
+      "tier": "tier2",
+      "claim": "bartowski's Q4_K_M of HuggingFaceTB's SmolLM2-1.7B-Instruct, a file that sits on the fidelity bar: against the publisher's BF16 checkpoint computed in float32 it reads 0.0494 ± 0.0023 mean KLD over 595 positions (bootstrap 95% interval 0.0450 to 0.0542, 39% of resamples over the bar) against a bar of 0.05, with 98.6% margin-qualified top-1 (plain top-1 89.6%, CPU); its two windows read 0.0493 and 0.0495. The publisher's own q4_k_m, with no importance matrix, reads 0.102. The Q8_0 is the fidelity file.",
+      "architecture": "llama",
+      "upstream": {
+        "checkpoint": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+        "revision": "31b70e2e869a7173562077fd711b654946d38674"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+      },
+      "files": [
+        {
+          "name": "SmolLM2-1.7B-Instruct-Q4_K_M.gguf",
+          "repo": "bartowski/SmolLM2-1.7B-Instruct-GGUF",
+          "revision": "1f03464768bfcc0319fc50da8ff5fb20b6417ba2",
+          "sha256": "77665ea4815999596525c636fbeb56ba8b080b46ae85efef4f0d986a139834d7",
+          "bytes": 1055609824
+        }
+      ],
+      "quantization": "Q4_K_M (bartowski, importance matrix)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both of bartowski's files (revision 1f034647, with bartowski's importance matrix) against HuggingFaceTB's BF16 checkpoint at 31b70e2e computed in float32 on the CPU (transformers 4.57.1 (5.16.1 reads this tokenizer without its Digits pre-tokenizer, 8,911 corpus tokens against the file's 8,909; 4.57.1 reads it as written), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files from the batched prefill route): Q8_0 pooled 0.0041 ± 0.0003 mean KLD (SE, 595 positions; windows 0.0038 and 0.0045) / 97.6% top-1 / 100% margin-qualified (427/427); Q4_K_M pooled 0.0494 ± 0.0023 (bootstrap 95% interval 0.0450 to 0.0542; windows 0.0493 and 0.0495) / 89.6% / 98.6% (421/427). The publisher's own q4_k_m (HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF at 2d4a76a3, no importance matrix) was measured and not admitted: 0.1021 ± 0.0047 / 84.7% / 94.38% (403/427); llama.cpp 73a43d1 reads it at 0.1248 against Runner's 0.1032 on the same 300 positions. Tokenizer pre smollm (digits one by one): 0 of 721 corpus strings and 0 of 48,821 vocabulary entries differ from HuggingFaceTB's tokenizer.json; template family chatml (smollm2), conformance 16/16 in text and tokens against the publisher's chat template, which the 135M and 1.7B checkpoints carry byte for byte. Record: docs/compat-reports/smollm2-2026-11-13/README.md.",
+        "context": 4096,
+        "limitations": "CPU and CUDA for this file (1.06 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 24 layers on the device). It sits on the fidelity bar (0.0494 ± 0.0023 against 0.05); the Q8_0 is the fidelity file. The publisher's own q4_k_m of this model was measured and not admitted (0.102 mean KLD). On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Tool calls use Runner's generic JSON protocol; the publisher's template declares no tool format. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json",
+          "docs/compat-reports/smollm2-2026-11-13/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal cell, the Windows CUDA host's cells, and task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "metal": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.17.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+          "caps": {
+            "version": "1.17.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "96763253eb55a9bb751d717265632527ec1ce365ebd20529f491cfb3bade211a",
+          "ran": "runner -m SmolLM2-1.7B-Instruct-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "3eddc1c0c18be4b76dd9d2d4bfbe5b0142c97d833a6ccf634987e3ace06f303f",
+            "compiler": "13.3.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "dirty": false
+          }
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.17.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+          "caps": {
+            "version": "1.17.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "96763253eb55a9bb751d717265632527ec1ce365ebd20529f491cfb3bade211a",
+          "ran": "runner -m SmolLM2-1.7B-Instruct-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q4_k_m.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "3eddc1c0c18be4b76dd9d2d4bfbe5b0142c97d833a6ccf634987e3ace06f303f",
+            "compiler": "13.3.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "dirty": false
+          }
+        }
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-13",
+          "reason": "Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.17.0",
+        "date": "2026-11-13"
+      }
     },
     {
       "id": "arch-stablelm",

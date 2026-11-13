@@ -2727,6 +2727,126 @@
           ]
         }
       }
+    },
+    {
+      "id": "smollm2-135m-instruct-q8_0",
+      "architecture": "llama",
+      "family": "SmolLM (Hugging Face)",
+      "file": "models/SmolLM2-135M-Instruct-Q8_0.gguf",
+      "sha256": "5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83",
+      "upstream": "bartowski/SmolLM2-135M-Instruct-GGUF",
+      "tokenizer_reference": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "tokenizer_reference_revision": "12fd25f77366fa6b3b4b768ec3050bf629380bac",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/smollm2-135m.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "Q8_0 SmolLM2-135M-Instruct-Q8_0.gguf (144,811,360 bytes, revision 09816acd of bartowski/SmolLM2-135M-Instruct-GGUF), architecture llama: 30 layers, hidden 576, GQA 9/3, head_dim 64, FFN 1,536, rope theta 100,000, tied embeddings, vocabulary 49,152, trained context 8,192. Tokenizer pre smollm (digits one by one): 0 of 721 corpus strings and 0 of 48,821 vocabulary entries differ from HuggingFaceTB's tokenizer.json; template family chatml (smollm2), conformance 16/16 in text and tokens against the publisher's chat template, which the 135M and 1.7B checkpoints carry byte for byte. On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Fidelity: against the publisher's BF16 checkpoint computed in float32 it reads 0.0074 ± 0.0005 mean KLD and 100% margin-qualified top-1 over 595 positions (two windows: 0.0071 and 0.0077; plain top-1 98.5%, CPU), against a bar of 0.05 and 97%. Record docs/compat-reports/smollm2-2026-11-13. CUDA runs the whole model on the device (30 of 30 layers) on a CUDA MIG slice, 1g.24gb, sm_120. greedy_reference remains undeclared.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "smollm2-1.7b-instruct-q8_0",
+      "architecture": "llama",
+      "family": "SmolLM (Hugging Face)",
+      "file": "models/SmolLM2-1.7B-Instruct-Q8_0.gguf",
+      "sha256": "0c6e8955788b1253f418c354a4bdc4cf507b8cfe49c48bb10c7c58ae713cfa2a",
+      "upstream": "bartowski/SmolLM2-1.7B-Instruct-GGUF",
+      "tokenizer_reference": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+      "tokenizer_reference_revision": "31b70e2e869a7173562077fd711b654946d38674",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/smollm2-1.7b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "Q8_0 SmolLM2-1.7B-Instruct-Q8_0.gguf (1,820,414,944 bytes, revision 1f034647 of bartowski/SmolLM2-1.7B-Instruct-GGUF), architecture llama: 24 layers, hidden 2,048, 32 heads without grouping, head_dim 64, FFN 8,192, rope theta 130,000, tied embeddings, vocabulary 49,152, trained context 8,192. Tokenizer pre smollm (digits one by one): 0 of 721 corpus strings and 0 of 48,821 vocabulary entries differ from HuggingFaceTB's tokenizer.json; template family chatml (smollm2), conformance 16/16 in text and tokens against the publisher's chat template, which the 135M and 1.7B checkpoints carry byte for byte. On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Fidelity: against the publisher's BF16 checkpoint computed in float32 it reads 0.0041 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 595 positions (two windows: 0.0038 and 0.0045; plain top-1 97.6%, CPU), against a bar of 0.05 and 97%. The publisher's own GGUF of this model (a q4_k_m) was measured and not admitted: 0.102 mean KLD. Record docs/compat-reports/smollm2-2026-11-13. CUDA runs the whole model on the device (24 of 24 layers) on a CUDA MIG slice, 1g.24gb, sm_120. greedy_reference remains undeclared.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "smollm2-1.7b-instruct-q4_k_m",
+      "architecture": "llama",
+      "family": "SmolLM (Hugging Face)",
+      "file": "models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf",
+      "sha256": "77665ea4815999596525c636fbeb56ba8b080b46ae85efef4f0d986a139834d7",
+      "upstream": "bartowski/SmolLM2-1.7B-Instruct-GGUF",
+      "tokenizer_reference": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+      "tokenizer_reference_revision": "31b70e2e869a7173562077fd711b654946d38674",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/smollm2-1.7b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "Q4_K_M SmolLM2-1.7B-Instruct-Q4_K_M.gguf (1,055,609,824 bytes, revision 1f034647 of bartowski/SmolLM2-1.7B-Instruct-GGUF), architecture llama: 24 layers, hidden 2,048, 32 heads without grouping, head_dim 64, FFN 8,192, rope theta 130,000, tied embeddings, vocabulary 49,152, trained context 8,192. Tokenizer pre smollm (digits one by one): 0 of 721 corpus strings and 0 of 48,821 vocabulary entries differ from HuggingFaceTB's tokenizer.json; template family chatml (smollm2), conformance 16/16 in text and tokens against the publisher's chat template, which the 135M and 1.7B checkpoints carry byte for byte. On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Fidelity: against the publisher's BF16 checkpoint computed in float32 it reads 0.0494 ± 0.0023 mean KLD over 595 positions (bootstrap 95% interval 0.0450 to 0.0542, 39% of resamples over the bar) against a bar of 0.05, with 98.6% margin-qualified top-1 (plain top-1 89.6%, CPU); its two windows read 0.0493 and 0.0495. The publisher's own q4_k_m, with no importance matrix, reads 0.102. The Q8_0 is the fidelity file. Record docs/compat-reports/smollm2-2026-11-13. CUDA runs the whole model on the device (24 of 24 layers) on a CUDA MIG slice, 1g.24gb, sm_120. greedy_reference remains undeclared.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
     }
   ]
 }

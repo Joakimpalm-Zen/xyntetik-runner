@@ -24,7 +24,7 @@ fi
 echo "Downloading SmolLM2-135M-Instruct Q8_0 (~138 MB)..."
 # -C -: resume a partial download instead of restarting
 curl -L --progress-bar -C - --retry 3 -o "$FILE" \
-  "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf"
+  "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/09816acd5d99df7be770d85ea30822623dab342c/SmolLM2-135M-Instruct-Q8_0.gguf"
 if ! verify; then
     echo "error: checksum mismatch — removing $FILE (rerun to retry)" >&2
     rm -f "$FILE"
