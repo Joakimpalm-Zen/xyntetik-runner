@@ -329,10 +329,16 @@ bool template_think_tags(int tmpl, const char **open, const char **close);
 // Bind them to a model's pair when the architecture set none: called
 // wherever a template is resolved for serving or chat, a no-op when the
 // architecture owns a pair, so gemma4/Harmony/muse keep theirs.
-static inline void template_bind_think_tags(int tmpl, const char **open,
-                                            const char **close) {
+// tok may be NULL. With a tokenizer, a family whose releases name their
+// think tokens differently gets the pair this file's vocabulary holds
+// (template_think_tags_vocab, R2.15).
+void template_think_tags_vocab(int tmpl, tokenizer *tok,
+                               const char **open, const char **close);
+static inline void template_bind_think_tags(int tmpl, tokenizer *tok,
+                                            const char **open, const char **close) {
     if (*open) return;
-    template_think_tags(tmpl, open, close);
+    if (template_think_tags(tmpl, open, close) && tok)
+        template_think_tags_vocab(tmpl, tok, open, close);
 }
 
 // True for EITHER gemma-4 template family. The mainline and the E-series

@@ -934,7 +934,32 @@ bool template_think_tags(int tmpl, const char **open, const char **close) {
         *close = "</ifm|think>";
         return true;
     }
+    // Apertus deliberates between two CONTROL tokens, which decode to no
+    // bytes: a chat turn spells them for the reasoning split (the engine's
+    // spell_think), under the tokens' own names (R2.15). These are v1.5's;
+    // template_think_tags_vocab takes the pair a file's vocabulary holds.
+    if (tmpl == TMPL_APERTUS) {
+        *open = "<|inner_prefix|>";
+        *close = "<|inner_suffix|>";
+        return true;
+    }
     return false;
+}
+
+// The same two ids are named differently across Apertus releases: v1.5's
+// vocabulary has <|inner_prefix|> and <|inner_suffix|>, the 2509 files have
+// <think> and </think> there (measured on both, 2026-11-13), control tokens
+// in each. The split and the spelling go by name, so the name comes from the
+// file. Any other family keeps its pair.
+void template_think_tags_vocab(int tmpl, tokenizer *tok,
+                               const char **open, const char **close) {
+    if (tmpl != TMPL_APERTUS || !tok) return;
+    if (tok_find(tok, "<|inner_prefix|>") >= 0 && tok_find(tok, "<|inner_suffix|>") >= 0)
+        return;
+    if (tok_find(tok, "<think>") >= 0 && tok_find(tok, "</think>") >= 0) {
+        *open = "<think>";
+        *close = "</think>";
+    }
 }
 
 int req_thinking_mode(struct jv *req) {

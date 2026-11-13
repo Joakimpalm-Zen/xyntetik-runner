@@ -1,0 +1,146 @@
+"""Apertus thinking is split from the answer (R2.15).
+
+Apertus deliberates between two control tokens, <|inner_prefix|> and
+<|inner_suffix|>. A control token decodes to no bytes, and the reasoning
+split reads bytes, so with `enable_thinking` on the whole deliberation came
+back as the answer, unmarked, and `reasoning_content` was empty (measured on
+the real checkpoint: a reply that opened "We need to compute ..." and ended
+with the answer). A chat turn now spells those two tokens for the split.
+
+The fixture is a small apertus-architecture model whose vocabulary carries
+the family's control tokens; the reply is scripted (the server's test hook),
+because a fixture cannot be made to deliberate on purpose.
+"""
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+import pytest
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests" / "conformance"))
+from harness import RunnerServer, find_runner  # noqa: E402
+
+TURN = ("<|system_start|>,<|system_end|>,<|developer_start|>,<|developer_end|>,"
+        "<|user_start|>,<|user_end|>,<|assistant_start|>,<|assistant_end|>,"
+        "<|tools_prefix|>,<|tools_suffix|>")
+# The two releases name the same pair of control tokens differently (read
+# from both vocabularies, 2026-11-13): v1.5 has <|inner_prefix|> and
+# <|inner_suffix|>, the 2509 files have <think> and </think>.
+TAGS = {"v1.5": ("<|inner_prefix|>", "<|inner_suffix|>"),
+        "2509": ("<think>", "</think>")}
+REPLY = None   # set per server: the deliberation between that release's tags
+
+
+@pytest.fixture(scope="module", params=sorted(TAGS))
+def server(request, tmp_path_factory):
+    global REPLY
+    exe = find_runner(ROOT)
+    if not pathlib.Path(exe).exists():
+        pytest.skip("runner not built")
+    opened, closed = TAGS[request.param]
+    m = tmp_path_factory.mktemp("apthink") / f"apertus-{request.param}.gguf"
+    subprocess.run([sys.executable, str(ROOT / "scripts/make-test-model.py"), "--apertus", "REAL",
+                    "--control", f"{TURN},{opened},{closed}", str(m)],
+                   check=True, stdout=subprocess.DEVNULL)
+    REPLY = f"{opened}think it over{closed}the answer"
+    with RunnerServer(exe, m, ctx=1024, parallel=1, extra_args=["--gpu", "off", "-t", "2"],
+                      env=dict(os.environ, RUNNER_TEST_SCRIPTED_REPLY="1")) as srv:
+        yield srv
+
+
+def _post(srv, path, body, stream=False):
+    req = urllib.request.Request(srv.base_url + path, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+    if not stream:
+        return 200, json.loads(raw)
+    events = [json.loads(line[6:]) for line in raw.decode().splitlines()
+              if line.startswith("data: ") and line != "data: [DONE]"]
+    return 200, events
+
+
+def _chat(**extra):
+    body = {"messages": [{"role": "user", "content": "How long is the trip?"}],
+            "max_tokens": 64, "temperature": 0, "enable_thinking": True,
+            "runner_test_reply": REPLY}
+    body.update(extra)
+    return body
+
+
+def test_the_fixture_tags_are_control_tokens(server):
+    """The premise: spelled in a raw completion's reply they decode to nothing."""
+    code, body = _post(server, "/v1/completions",
+                       {"prompt": "x", "max_tokens": 8, "temperature": 0,
+                        "runner_test_reply": REPLY.replace("think it over", "").replace("the answer", "!")})
+    assert code == 200, body
+    assert body["choices"][0]["text"] == "!", body
+
+
+def test_the_template_is_apertus(server):
+    code, body = _post(server, "/v1/chat/completions", _chat(runner_test_reply="plain"))
+    assert code == 200, body
+    assert body["choices"][0]["message"]["content"] == "plain"
+
+
+def test_the_deliberation_is_reasoning_and_the_answer_is_the_answer(server):
+    code, body = _post(server, "/v1/chat/completions", _chat())
+    assert code == 200, body
+    msg = body["choices"][0]["message"]
+    assert msg["content"] == "the answer", msg
+    assert msg.get("reasoning_content") == "think it over", msg
+
+
+def test_a_streamed_turn_splits_the_same_way(server):
+    code, events = _post(server, "/v1/chat/completions", _chat(stream=True), stream=True)
+    assert code == 200, events
+    reasoning = "".join((e["choices"][0]["delta"].get("reasoning_content") or "")
+                        for e in events if e.get("choices"))
+    content = "".join((e["choices"][0]["delta"].get("content") or "")
+                      for e in events if e.get("choices"))
+    assert (reasoning, content) == ("think it over", "the answer"), events
+
+
+def test_a_raw_completion_keeps_the_decoded_text(server):
+    """A raw completion's text is the tokens decoded, and a control token
+    decodes to nothing: the two tags are not spelled into it."""
+    code, body = _post(server, "/v1/completions",
+                       {"prompt": "x", "max_tokens": 64, "temperature": 0,
+                        "runner_test_reply": REPLY})
+    assert code == 200, body
+    assert body["choices"][0]["text"] == "think it overthe answer", body
+
+
+def test_the_responses_api_returns_a_reasoning_item(server):
+    code, body = _post(server, "/v1/responses",
+                       {"input": "How long is the trip?", "max_output_tokens": 64,
+                        "temperature": 0, "reasoning": {"effort": "medium"},
+                        "runner_test_reply": REPLY})
+    assert code == 200, body
+    kinds = [o["type"] for o in body["output"]]
+    assert kinds == ["reasoning", "message"], body["output"]
+    assert body["output"][0]["summary"][0]["text"] == "think it over"
+    assert body["output"][1]["content"][0]["text"] == "the answer"
+
+
+def test_the_messages_api_accepts_thinking_and_returns_a_thinking_block(server):
+    """Before, `thinking: enabled` was refused for this family: "it has no
+    reasoning channel to separate"."""
+    with urllib.request.urlopen(server.base_url + "/v1/models", timeout=30) as r:
+        model = json.load(r)["data"][0]["id"]
+    code, body = _post(server, "/v1/messages",
+                       {"model": model, "max_tokens": 64, "temperature": 0,
+                        "thinking": {"type": "enabled", "budget_tokens": 1024},
+                        "messages": [{"role": "user", "content": "How long is the trip?"}],
+                        "runner_test_reply": REPLY})
+    assert code == 200, body
+    assert [(c["type"], c.get("thinking") or c.get("text")) for c in body["content"]] == [
+        ("thinking", "think it over"), ("text", "the answer")], body["content"]
