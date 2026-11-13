@@ -101,6 +101,14 @@ curl -LO https://github.com/Joakimpalm-Zen/xyntetik-runner/releases/latest/downl
 chmod +x runner-macos-arm64 && mv runner-macos-arm64 runner
 ```
 
+Or with Homebrew (macOS on Apple Silicon, Linux on x86-64), which installs the
+same released binary as `runner` on your PATH; drop the `./` in the commands
+below:
+
+```sh
+brew install joakimpalm-zen/xyntetik/xyntetik-runner
+```
+
 **2. Start a model.** Runner downloads it, checks it against the Hub's
 SHA-256 record and serves it on `http://127.0.0.1:8080`:
 
