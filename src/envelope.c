@@ -4,6 +4,7 @@
 #include "ed25519.h"
 #include "mldsa.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -787,37 +788,30 @@ bool signkey_sign(const signkey *k, uint8_t *sig, const void *m, size_t n) {
 }
 
 bool signkey_write(const char *path, const char *algo, const uint8_t seed[32],
-                   char pub_hex[SIGN_PUBHEX_CAP]) {
+                   char pub_hex[SIGN_PUBHEX_CAP], bool *exists) {
+    if (exists) *exists = false;
     signkey k;
     if (!signkey_derive(&k, algo, seed)) return false;
     char seed_hex[65];
     bytes_to_hex(seed, 32, seed_hex);
     bytes_to_hex(k.pk, k.pk_n, pub_hex);
-    // The file holds the seed, so it is its owner's alone. fopen made it
-    // 0644 under the usual umask, and a key written over an older file kept
-    // that file's mode. It is created as a new file with mode 0600 (which a
-    // umask can only narrow) and then takes the name, so a failed write
-    // leaves the old key whole (R6.68.59).
-    size_t tl = strlen(path) + sizeof ".partial";
-    char *tmp = malloc(tl);
-    bool ok = tmp != NULL;
+    // The file holds the seed, so it is its owner's alone: created with mode
+    // 0600, which a umask can only narrow. And it is created, never replaced:
+    // O_EXCL refuses a path that holds anything, so a second keygen cannot
+    // silently retire the key a record chain was signed with. A failed write
+    // removes only the file this call made.
+    int fd = plat_open(path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
+    if (exists) *exists = fd < 0 && errno == EEXIST;
+    FILE *f = fd >= 0 ? fdopen(fd, "wb") : NULL;
+    if (fd >= 0 && !f) close(fd);
+    bool ok = f != NULL;
     if (ok) {
-        snprintf(tmp, tl, "%s.partial", path);
-        plat_remove(tmp);   // a stale one from an interrupted run
-        int fd = plat_open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
-        FILE *f = fd >= 0 ? fdopen(fd, "wb") : NULL;
-        if (fd >= 0 && !f) close(fd);
-        ok = f != NULL;
-        if (ok) {
-            ok = fprintf(f, "{\"schema_version\":\"xyntetik.runner.signkey.v1\","
-                         "\"algo\":\"%s\",\"seed\":\"%s\",\"public_key\":\"%s\"}\n",
-                         k.algo, seed_hex, pub_hex) > 0;
-            ok = (fclose(f) == 0) && ok;
-        }
-        ok = ok && plat_replace_file(tmp, path);
-        if (!ok && fd >= 0) plat_remove(tmp);
-        free(tmp);
+        ok = fprintf(f, "{\"schema_version\":\"xyntetik.runner.signkey.v1\","
+                     "\"algo\":\"%s\",\"seed\":\"%s\",\"public_key\":\"%s\"}\n",
+                     k.algo, seed_hex, pub_hex) > 0;
+        ok = (fclose(f) == 0) && ok;
     }
+    if (!ok && fd >= 0) plat_remove(path);
     memset(&k, 0, sizeof k);
     memset(seed_hex, 0, sizeof seed_hex);
     return ok;

@@ -1433,7 +1433,8 @@ static const char ATTEST_VERBS[] =
     "        write a receipt-signing key (xyntetik.runner.signkey.v1) to\n"
     "        OUT and print its public key. ed25519 is the default (32-byte\n"
     "        key, 64-byte signature); ml-dsa-44 is FIPS 204 post-quantum\n"
-    "        (1312-byte key, 2420-byte signature, deterministic)\n"
+    "        (1312-byte key, 2420-byte signature, deterministic). OUT must\n"
+    "        not exist: a key is never replaced\n"
     "  sign RECORD --key KEYFILE [--prev PREV]\n"
     "        sign any JSON object file in place: the transcript's chain and\n"
     "        signature objects; --prev links it to record PREV\n"
@@ -3700,8 +3701,15 @@ static int run_keygen(const cli_opts *o) {
         fprintf(stderr, "error: --keygen: the OS random generator is unavailable\n");
         return 1;
     }
-    if (!signkey_write(o->keygen_path, o->keygen_algo, seed, pub)) {
-        fprintf(stderr, "error: --keygen: cannot write %s\n", o->keygen_path);
+    bool exists = false;
+    if (!signkey_write(o->keygen_path, o->keygen_algo, seed, pub, &exists)) {
+        memset(seed, 0, sizeof seed);
+        if (exists)
+            fprintf(stderr, "error: --keygen: %s already exists; a signing key is "
+                    "never replaced. Name another path, or remove the file "
+                    "yourself to retire that key\n", o->keygen_path);
+        else
+            fprintf(stderr, "error: --keygen: cannot write %s\n", o->keygen_path);
         return 1;
     }
     memset(seed, 0, sizeof seed);
