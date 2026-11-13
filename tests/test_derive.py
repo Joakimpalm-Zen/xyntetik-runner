@@ -216,6 +216,25 @@ def test_the_publisher_reference_is_refused_without_its_python(runner_bin, tmp_p
     assert rc != 0 and "torch" in se and "transformers" in se
 
 
+def test_quant_error_uses_its_threads_and_the_report_does_not_change(runner_bin, tmp_path):
+    """--quant-error costed every tensor on one thread whatever -t said: on a
+    27B parent derive's costing step ran about 85 minutes on a 40-thread host
+    (2026-11-13). It now costs a tensor's rows on the pool and sums them in row
+    order, so the report is byte for byte the one-thread report, and it says
+    how far it is while it runs."""
+    parent = make_parent(tmp_path)
+    reports = {}
+    for n in (1, 4):
+        rep = tmp_path / f"t{n}.jsonl"
+        p = subprocess.run([str(runner_bin), "-m", str(parent), "--quant-error", str(rep),
+                            "--quant", "q8_0,q4_0,q3_k", "-t", str(n)], capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
+        assert f"({n} thread" in p.stderr, p.stderr[-400:]
+        reports[n] = rep.read_bytes()
+    assert reports[1] == reports[4]
+    assert reports[1].count(b"\n") >= 2
+
+
 def test_target_size_plans_as_type_plan_by_sensitivity_does(runner_bin, tmp_path):
     """--target-size BYTES --high T --low T: derive costs every tensor with
     --quant-error, demotes the cheapest groups (added error per saved byte)

@@ -4662,7 +4662,8 @@ static int run_quant_error(const cli_opts *o) {
         types[n++] = t;
     }
     if (!quantize_set_imatrix(o->imatrix)) return 1;
-    int rc = quantize_error_report(o->model_path, types, n, o->quant_error_out);
+    int rc = quantize_error_report_threads(o->model_path, types, n, o->quant_error_out,
+                                           o->n_threads > 0 ? o->n_threads : plat_cpu_count());
     quantize_set_imatrix(NULL);
     return rc;
 }
