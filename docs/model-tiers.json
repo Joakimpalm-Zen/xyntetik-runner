@@ -4659,21 +4659,290 @@
       }
     },
     {
-      "id": "arch-granitehybrid",
-      "model": "Granite 4 h-series hybrid (granitehybrid)",
+      "id": "granite-4.0-h-micro-q8_0",
+      "model": "Granite 4.0 H Micro (IBM)",
       "family": "Granite 4",
       "tier": "tier2",
-      "scope": "architecture",
-      "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
+      "claim": "IBM's own Q8_0 of Granite 4.0 H Micro: against the publisher's BF16 checkpoint computed in float32 it reads 0.0025 ± 0.0002 mean KLD and 100% margin-qualified top-1 over 544 positions (two windows of 272: 0.0024 and 0.0026; plain top-1 99.1%, CPU), against a bar of 0.05 and 97%. IBM's Q4_K_M from the same repository is not admitted (0.0854 mean KLD); unsloth's Q4_K_M is the 4-bit row.",
       "architecture": "granitehybrid",
+      "upstream": {
+        "checkpoint": "ibm-granite/granite-4.0-h-micro",
+        "revision": "d5f01a3ea75f088947be3aae039f4ad52837dfde"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "ibm-granite/granite-4.0-h-micro"
+      },
+      "files": [
+        {
+          "name": "granite-4.0-h-micro-Q8_0.gguf",
+          "repo": "ibm-granite/granite-4.0-h-micro-GGUF",
+          "revision": "dc1dd2585fac18a78001c677d33ef8a7bbb7eb68",
+          "sha256": "a009111abf2865b7aad1e66326a6c772cddc29bccd22898f470292068b27bb59",
+          "bytes": 3397676704
+        }
+      ],
+      "quantization": "Q8_0 (IBM)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "IBM's Q8_0 (revision dc1dd258) and unsloth's Q4_K_M (revision 0577b1ba, unsloth's importance matrix) against IBM's BF16 checkpoint at d5f01a3e computed in float32 on the CPU (transformers 5.16.1, the native GraniteMoeHybridForCausalLM (no remote code), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows of 272 positions at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files of 4,096 tokens at -c 4096 from the batched prefill route): Q8_0 pooled 0.0025 ± 0.0002 mean KLD (SE, 544 positions; bootstrap 95% 0.0021 to 0.0029; windows 0.0024 and 0.0026) / 99.1% top-1 / 100% margin-qualified (408/408); unsloth Q4_K_M pooled 0.0490 ± 0.0048 (bootstrap 95% 0.0407 to 0.0596; windows 0.0426 and 0.0553) / 91.9% / 98.28% (401/408). IBM's Q4_K_M from the same IBM revision fails both bars: 0.0854 ± 0.0048 (bootstrap 0.0763 to 0.0953) / 94.85% margin-qualified. Tokenizer: 0 of 721 corpus strings and 0 of 99,474 vocabulary entries differ from IBM's tokenizer.json at d5f01a3e; template family granite40h (the template is byte-equal to granite-4.0-h-small's), conformance 21/21 in text and tokens, the publisher's default system turn included. Record: docs/compat-reports/granite-4.0-h-micro-2026-11-13/README.md.",
+        "context": 4096,
+        "limitations": "IBM's own Q4_K_M, the file most people fetch, reads 0.0854 mean KLD and 94.85% margin-qualified top-1 against the publisher's float32 checkpoint and is not on the list (llama.cpp 73a43d1 reads the same file at 0.0888 and 94.97% on the first window, Runner 0.0805 and 95.48%: the loss is the file's). CPU and CUDA for this file (3.40 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 40 layers on the device). Training and adapter serving are refused for Mamba-2 hybrids (--adapt-info). Fidelity is measured inside 4,096 tokens only. On load the file resolves to architecture granitehybrid (36 Mamba-2 and 4 attention layers), template granite4, the native qwen_json tool protocol, and the generic sampling preset. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-granite-4.0-h-micro.json",
+          "docs/compat-reports/granite-4.0-h-micro-2026-11-13/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal cell, the Windows CUDA host's cells, task quality, and a reference read above 4,096 tokens."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "5732b1c2cbcdc0a0723733d91ff72b0915710a79",
+          "caps": {
+            "version": "1.18.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "e2b4044cbabdc256bf79bd72a709e71b90a9d8f0d819986370ebce00d85d9c4c",
+          "ran": "runner -m granite-4.0-h-micro-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.0-h-micro-q8_0.macos-arm64-metal.metal.txt",
+          "build": {
+            "binary_sha256": "6b49068527a50edfeb901c0bd93b8ccc4b66fa164347182e9691d9f53d6b94cf",
+            "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+            "commit": "5732b1c2cbcdc0a0723733d91ff72b0915710a79",
+            "dirty": false
+          }
+        },
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "c408c9575039ef1d03aa80b6f6eaab4e64f4b094",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "e2b4044cbabdc256bf79bd72a709e71b90a9d8f0d819986370ebce00d85d9c4c",
+          "ran": "runner -m granite-4.0-h-micro-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.0-h-micro-q8_0.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "4a475478000cbbbbf5ccece70232a16c512d2f1b15688099b3e2f034c0497264",
+            "compiler": "13.3.0",
+            "commit": "c408c9575039ef1d03aa80b6f6eaab4e64f4b094",
+            "dirty": false
+          }
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "c408c9575039ef1d03aa80b6f6eaab4e64f4b094",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "e2b4044cbabdc256bf79bd72a709e71b90a9d8f0d819986370ebce00d85d9c4c",
+          "ran": "runner -m granite-4.0-h-micro-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.0-h-micro-q8_0.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "4a475478000cbbbbf5ccece70232a16c512d2f1b15688099b3e2f034c0497264",
+            "compiler": "13.3.0",
+            "commit": "c408c9575039ef1d03aa80b6f6eaab4e64f4b094",
+            "dirty": false
+          }
+        }
+      },
       "transitions": [
         {
           "tier": "tier2",
-          "effective": "2026-10-22",
-          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "effective": "2026-11-13",
+          "reason": "Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.7) and a float32 reference measurement against the publisher's checkpoint, so the Granite 4 h-series has a file with cells. Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "recurrent architecture (Mamba-2)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover Mamba-2 hybrid architectures yet (granitehybrid)"
+        },
+        "runner_version": "1.18.0",
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "id": "granite-4.0-h-micro-q4_k_m-unsloth",
+      "model": "Granite 4.0 H Micro (IBM)",
+      "family": "Granite 4",
+      "tier": "tier2",
+      "claim": "unsloth's Q4_K_M of IBM's Granite 4.0 H Micro, made with unsloth's importance matrix, a file that sits on the fidelity bar: against the publisher's BF16 checkpoint computed in float32 it reads 0.0490 ± 0.0048 mean KLD over 544 positions (bootstrap 95% interval 0.0407 to 0.0596, crossing the bar) against a bar of 0.05, with 98.28% margin-qualified top-1 (plain top-1 91.9%, CPU); one of its two windows of 272 reads 0.0553, over the bar. The Q8_0 is the fidelity file.",
+      "architecture": "granitehybrid",
+      "upstream": {
+        "checkpoint": "ibm-granite/granite-4.0-h-micro",
+        "revision": "d5f01a3ea75f088947be3aae039f4ad52837dfde"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "ibm-granite/granite-4.0-h-micro"
+      },
+      "files": [
+        {
+          "name": "granite-4.0-h-micro-Q4_K_M.gguf",
+          "repo": "unsloth/granite-4.0-h-micro-GGUF",
+          "revision": "0577b1ba05f77dc2b7f554cf427a69dd0c8f18af",
+          "sha256": "1f21ba20ca249f6de1b7fcc436d95bba80a11d40060532bf6eb0c6a9e54e5d28",
+          "bytes": 1942564800
+        }
+      ],
+      "quantization": "Q4_K_M (unsloth, importance matrix)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "IBM's Q8_0 (revision dc1dd258) and unsloth's Q4_K_M (revision 0577b1ba, unsloth's importance matrix) against IBM's BF16 checkpoint at d5f01a3e computed in float32 on the CPU (transformers 5.16.1, the native GraniteMoeHybridForCausalLM (no remote code), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows of 272 positions at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files of 4,096 tokens at -c 4096 from the batched prefill route): Q8_0 pooled 0.0025 ± 0.0002 mean KLD (SE, 544 positions; bootstrap 95% 0.0021 to 0.0029; windows 0.0024 and 0.0026) / 99.1% top-1 / 100% margin-qualified (408/408); unsloth Q4_K_M pooled 0.0490 ± 0.0048 (bootstrap 95% 0.0407 to 0.0596; windows 0.0426 and 0.0553) / 91.9% / 98.28% (401/408). IBM's Q4_K_M from the same IBM revision fails both bars: 0.0854 ± 0.0048 (bootstrap 0.0763 to 0.0953) / 94.85% margin-qualified. Tokenizer: 0 of 721 corpus strings and 0 of 99,474 vocabulary entries differ from IBM's tokenizer.json at d5f01a3e; template family granite40h (the template is byte-equal to granite-4.0-h-small's), conformance 21/21 in text and tokens, the publisher's default system turn included. Record: docs/compat-reports/granite-4.0-h-micro-2026-11-13/README.md.",
+        "context": 4096,
+        "limitations": "IBM's own Q4_K_M, the file most people fetch, reads 0.0854 mean KLD and 94.85% margin-qualified top-1 against the publisher's float32 checkpoint and is not on the list (llama.cpp 73a43d1 reads the same file at 0.0888 and 94.97% on the first window, Runner 0.0805 and 95.48%: the loss is the file's). CPU and CUDA for this file (1.94 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 40 layers on the device). Training and adapter serving are refused for Mamba-2 hybrids (--adapt-info). Fidelity is measured inside 4,096 tokens only. On load the file resolves to architecture granitehybrid (36 Mamba-2 and 4 attention layers), template granite4, the native qwen_json tool protocol, and the generic sampling preset. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-granite-4.0-h-micro.json",
+          "docs/compat-reports/granite-4.0-h-micro-2026-11-13/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal cell, the Windows CUDA host's cells, task quality, and a reference read above 4,096 tokens."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "5732b1c2cbcdc0a0723733d91ff72b0915710a79",
+          "caps": {
+            "version": "1.18.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "3ad3cc773764eba1cbee608f6e5b759c8b864d8111e925cf667d0f058a452f52",
+          "ran": "runner -m granite-4.0-h-micro-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.0-h-micro-q4_k_m-unsloth.macos-arm64-metal.metal.txt",
+          "build": {
+            "binary_sha256": "6b49068527a50edfeb901c0bd93b8ccc4b66fa164347182e9691d9f53d6b94cf",
+            "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+            "commit": "5732b1c2cbcdc0a0723733d91ff72b0915710a79",
+            "dirty": false
+          }
+        },
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "c408c9575039ef1d03aa80b6f6eaab4e64f4b094",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "3ad3cc773764eba1cbee608f6e5b759c8b864d8111e925cf667d0f058a452f52",
+          "ran": "runner -m granite-4.0-h-micro-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.0-h-micro-q4_k_m-unsloth.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "4a475478000cbbbbf5ccece70232a16c512d2f1b15688099b3e2f034c0497264",
+            "compiler": "13.3.0",
+            "commit": "c408c9575039ef1d03aa80b6f6eaab4e64f4b094",
+            "dirty": false
+          }
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "c408c9575039ef1d03aa80b6f6eaab4e64f4b094",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "3ad3cc773764eba1cbee608f6e5b759c8b864d8111e925cf667d0f058a452f52",
+          "ran": "runner -m granite-4.0-h-micro-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/granite-4.0-h-micro-q4_k_m-unsloth.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "4a475478000cbbbbf5ccece70232a16c512d2f1b15688099b3e2f034c0497264",
+            "compiler": "13.3.0",
+            "commit": "c408c9575039ef1d03aa80b6f6eaab4e64f4b094",
+            "dirty": false
+          }
+        }
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-13",
+          "reason": "Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.7) and a float32 reference measurement against the publisher's checkpoint, so the Granite 4 h-series has a file with cells. Maintained on report.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": false,
+          "reason": "recurrent architecture (Mamba-2)"
+        },
+        "adapter_serving": {
+          "supported": false,
+          "reason": "--lora does not cover Mamba-2 hybrid architectures yet (granitehybrid)"
+        },
+        "runner_version": "1.18.0",
+        "date": "2026-11-13"
+      }
     },
     {
       "id": "cloudflare-clef-iq3_s-recovered",
