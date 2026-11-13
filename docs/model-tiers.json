@@ -4012,21 +4012,290 @@
       ]
     },
     {
-      "id": "arch-phi3",
-      "model": "Phi-3 (phi3)",
+      "id": "phi-3.5-mini-instruct-q8_0",
+      "model": "Phi-3.5-mini-instruct (Microsoft)",
       "family": "Phi-3",
       "tier": "tier2",
-      "scope": "architecture",
-      "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
+      "claim": "bartowski's Q8_0 of Microsoft's Phi-3.5-mini-instruct, the fidelity file of the two: against the publisher's BF16 checkpoint computed in float32 it reads 0.0038 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 544 positions inside the original 4,096-token context (two windows of 272: 0.0042 and 0.0033; plain top-1 98.5%, CPU), against a bar of 0.05 and 97%. Above a 4,096-token context it reads markedly worse (0.205 at -c 8192), as on llama.cpp.",
       "architecture": "phi3",
+      "upstream": {
+        "checkpoint": "microsoft/Phi-3.5-mini-instruct",
+        "revision": "2fe192450127e6a83f7441aef6e3ca586c338b77"
+      },
+      "licence": {
+        "id": "mit",
+        "from": "microsoft/Phi-3.5-mini-instruct"
+      },
+      "files": [
+        {
+          "name": "Phi-3.5-mini-instruct-Q8_0.gguf",
+          "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+          "revision": "6d70da17e749a471ccb62ade694486011a75cda3",
+          "sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823",
+          "bytes": 4061222688
+        }
+      ],
+      "quantization": "Q8_0 (bartowski, importance matrix recorded; Q8_0 does not use it)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both of bartowski's files (revision 6d70da17, with bartowski's importance matrix) against Microsoft's BF16 checkpoint at 2fe19245 computed in float32 on the CPU (transformers 5.16.1, the native Phi3ForCausalLM (no remote code), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows of 272 positions at stride 15 over gold-corpus-2k from 8 and from 15, inside the original 4,096-token context so both sides use LongRoPE's short factors, token-id keyed, Runner CPU score files of 4,096 tokens at -c 4096 from the batched prefill route): Q8_0 pooled 0.0038 ± 0.0003 mean KLD (SE, 544 positions; windows 0.0042 and 0.0033) / 98.5% top-1 / 100% margin-qualified (389/389); Q4_K_M pooled 0.0423 ± 0.0025 (bootstrap 95% 0.0375 to 0.0474; windows 0.0424 and 0.0421) / 91.4% / 98.97% (385/389). Above a 4,096-token context the output is markedly worse, on short prompts too: Runner picks LongRoPE's factor set from the requested context and applies it from the first token, as llama.cpp does, while the publisher's reference uses the short factors until the sequence itself passes 4,096. On the same 272 positions of a 4,096-token text the Q8_0 reads 0.0042 mean KLD at -c 4096 (short factors) and 0.2052 at -c 8192 (long factors); llama.cpp 73a43d1 reads 0.0073 and 0.2071. Runner's default context, 4,096, uses the short factors. Tokenizer: 0 of 721 corpus strings differ from Microsoft's tokenizer.json at 2fe19245; template family phi3, conformance 16/16 in text and tokens against the publisher's chat template. Record: docs/compat-reports/phi-3.5-mini-instruct-2026-11-13/README.md.",
+        "context": 4096,
+        "limitations": "With a context over 4,096 this model reads about fifty times further from the publisher's (0.205 against 0.004 mean KLD on the same text): Runner, like llama.cpp, then applies the model's long-context position factors from the first token, where the publisher's code applies them only once a sequence passes 4,096 tokens. Keep -c at 4,096 unless you need more. CPU and CUDA for this file (4.06 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 32 layers on the device). Above a 4,096-token context the output is markedly worse, on short prompts too: Runner picks LongRoPE's factor set from the requested context and applies it from the first token, as llama.cpp does, while the publisher's reference uses the short factors until the sequence itself passes 4,096. On the same 272 positions of a 4,096-token text the Q8_0 reads 0.0042 mean KLD at -c 4096 (short factors) and 0.2052 at -c 8192 (long factors); llama.cpp 73a43d1 reads 0.0073 and 0.2071. Runner's default context, 4,096, uses the short factors. On load the file resolves to architecture phi3, template phi3, sampling preset phi3, and the generic tool protocol (Runner has no native tool format for this model). Licence: mit.",
+        "evidence": [
+          "docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-phi-3.5-mini-instruct.json",
+          "docs/compat-reports/phi-3.5-mini-instruct-2026-11-13/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal cell, the Windows CUDA host's cells, task quality, and a reference read above 4,096 tokens."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "35beab9b6027fc437cbc70a8feef8bcb2f86f1f7",
+          "caps": {
+            "version": "1.18.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "2365a83ecbfb5eb42bc700943e8b83b5d4924f76c1e58bbd9b8ef9c6f2dbc9c1",
+          "ran": "runner -m Phi-3.5-mini-instruct-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q8_0.macos-arm64-metal.metal.txt",
+          "build": {
+            "binary_sha256": "3e3ac6a1e9b3139510c41752f54a3f990fd747374a5c121d34d6a549aef073e3",
+            "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+            "commit": "35beab9b6027fc437cbc70a8feef8bcb2f86f1f7",
+            "dirty": false
+          }
+        },
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "e39220e6c6560fe82ab6a1daeb53516784ad85ec",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "2365a83ecbfb5eb42bc700943e8b83b5d4924f76c1e58bbd9b8ef9c6f2dbc9c1",
+          "ran": "runner -m Phi-3.5-mini-instruct-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q8_0.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "e7fa5f48faf9ee568c081cced2efc3d9992ac9f6cb6b794cca1dd7296f791ec9",
+            "compiler": "13.3.0",
+            "commit": "e39220e6c6560fe82ab6a1daeb53516784ad85ec",
+            "dirty": false
+          }
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "e39220e6c6560fe82ab6a1daeb53516784ad85ec",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "2365a83ecbfb5eb42bc700943e8b83b5d4924f76c1e58bbd9b8ef9c6f2dbc9c1",
+          "ran": "runner -m Phi-3.5-mini-instruct-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q8_0.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "e7fa5f48faf9ee568c081cced2efc3d9992ac9f6cb6b794cca1dd7296f791ec9",
+            "compiler": "13.3.0",
+            "commit": "e39220e6c6560fe82ab6a1daeb53516784ad85ec",
+            "dirty": false
+          }
+        }
+      },
       "transitions": [
         {
           "tier": "tier2",
-          "effective": "2026-10-22",
-          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "effective": "2026-11-13",
+          "reason": "Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.5) and a float32 reference measurement against the publisher's checkpoint, so the Phi-3 family has a file with cells. Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.18.0",
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "id": "phi-3.5-mini-instruct-q4_k_m",
+      "model": "Phi-3.5-mini-instruct (Microsoft)",
+      "family": "Phi-3",
+      "tier": "tier2",
+      "claim": "bartowski's Q4_K_M of Microsoft's Phi-3.5-mini-instruct: against the publisher's BF16 checkpoint computed in float32 it reads 0.0423 ± 0.0025 mean KLD (bootstrap 95% interval 0.0375 to 0.0474) and 98.97% margin-qualified top-1 over 544 positions inside the original 4,096-token context (two windows of 272: 0.0424 and 0.0421; plain top-1 91.4%, CPU), against a bar of 0.05 and 97%. Above a 4,096-token context it reads markedly worse, as on llama.cpp (measured on the Q8_0). The Q8_0 is the fidelity file.",
+      "architecture": "phi3",
+      "upstream": {
+        "checkpoint": "microsoft/Phi-3.5-mini-instruct",
+        "revision": "2fe192450127e6a83f7441aef6e3ca586c338b77"
+      },
+      "licence": {
+        "id": "mit",
+        "from": "microsoft/Phi-3.5-mini-instruct"
+      },
+      "files": [
+        {
+          "name": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+          "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+          "revision": "6d70da17e749a471ccb62ade694486011a75cda3",
+          "sha256": "e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5",
+          "bytes": 2393232672
+        }
+      ],
+      "quantization": "Q4_K_M (bartowski, importance matrix)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both of bartowski's files (revision 6d70da17, with bartowski's importance matrix) against Microsoft's BF16 checkpoint at 2fe19245 computed in float32 on the CPU (transformers 5.16.1, the native Phi3ForCausalLM (no remote code), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows of 272 positions at stride 15 over gold-corpus-2k from 8 and from 15, inside the original 4,096-token context so both sides use LongRoPE's short factors, token-id keyed, Runner CPU score files of 4,096 tokens at -c 4096 from the batched prefill route): Q8_0 pooled 0.0038 ± 0.0003 mean KLD (SE, 544 positions; windows 0.0042 and 0.0033) / 98.5% top-1 / 100% margin-qualified (389/389); Q4_K_M pooled 0.0423 ± 0.0025 (bootstrap 95% 0.0375 to 0.0474; windows 0.0424 and 0.0421) / 91.4% / 98.97% (385/389). Above a 4,096-token context the output is markedly worse, on short prompts too: Runner picks LongRoPE's factor set from the requested context and applies it from the first token, as llama.cpp does, while the publisher's reference uses the short factors until the sequence itself passes 4,096. On the same 272 positions of a 4,096-token text the Q8_0 reads 0.0042 mean KLD at -c 4096 (short factors) and 0.2052 at -c 8192 (long factors); llama.cpp 73a43d1 reads 0.0073 and 0.2071. Runner's default context, 4,096, uses the short factors. Tokenizer: 0 of 721 corpus strings differ from Microsoft's tokenizer.json at 2fe19245; template family phi3, conformance 16/16 in text and tokens against the publisher's chat template. Record: docs/compat-reports/phi-3.5-mini-instruct-2026-11-13/README.md.",
+        "context": 4096,
+        "limitations": "With a context over 4,096 this model reads about fifty times further from the publisher's (0.205 against 0.004 mean KLD on the same text): Runner, like llama.cpp, then applies the model's long-context position factors from the first token, where the publisher's code applies them only once a sequence passes 4,096 tokens. Keep -c at 4,096 unless you need more. CPU and CUDA for this file (2.39 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 32 layers on the device). Above a 4,096-token context the output is markedly worse, on short prompts too: Runner picks LongRoPE's factor set from the requested context and applies it from the first token, as llama.cpp does, while the publisher's reference uses the short factors until the sequence itself passes 4,096. On the same 272 positions of a 4,096-token text the Q8_0 reads 0.0042 mean KLD at -c 4096 (short factors) and 0.2052 at -c 8192 (long factors); llama.cpp 73a43d1 reads 0.0073 and 0.2071. Runner's default context, 4,096, uses the short factors. On load the file resolves to architecture phi3, template phi3, sampling preset phi3, and the generic tool protocol (Runner has no native tool format for this model). Licence: mit.",
+        "evidence": [
+          "docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-phi-3.5-mini-instruct.json",
+          "docs/compat-reports/phi-3.5-mini-instruct-2026-11-13/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal cell, the Windows CUDA host's cells, task quality, and a reference read above 4,096 tokens."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "35beab9b6027fc437cbc70a8feef8bcb2f86f1f7",
+          "caps": {
+            "version": "1.18.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "429ec866a5f47afcb73f316987ccfa68f201fef600346bdd16f8fd6a9eca2b0d",
+          "ran": "runner -m Phi-3.5-mini-instruct-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q4_k_m.macos-arm64-metal.metal.txt",
+          "build": {
+            "binary_sha256": "3e3ac6a1e9b3139510c41752f54a3f990fd747374a5c121d34d6a549aef073e3",
+            "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+            "commit": "35beab9b6027fc437cbc70a8feef8bcb2f86f1f7",
+            "dirty": false
+          }
+        },
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "e39220e6c6560fe82ab6a1daeb53516784ad85ec",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "429ec866a5f47afcb73f316987ccfa68f201fef600346bdd16f8fd6a9eca2b0d",
+          "ran": "runner -m Phi-3.5-mini-instruct-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "e7fa5f48faf9ee568c081cced2efc3d9992ac9f6cb6b794cca1dd7296f791ec9",
+            "compiler": "13.3.0",
+            "commit": "e39220e6c6560fe82ab6a1daeb53516784ad85ec",
+            "dirty": false
+          }
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "e39220e6c6560fe82ab6a1daeb53516784ad85ec",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "429ec866a5f47afcb73f316987ccfa68f201fef600346bdd16f8fd6a9eca2b0d",
+          "ran": "runner -m Phi-3.5-mini-instruct-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q4_k_m.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "e7fa5f48faf9ee568c081cced2efc3d9992ac9f6cb6b794cca1dd7296f791ec9",
+            "compiler": "13.3.0",
+            "commit": "e39220e6c6560fe82ab6a1daeb53516784ad85ec",
+            "dirty": false
+          }
+        }
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-13",
+          "reason": "Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.5) and a float32 reference measurement against the publisher's checkpoint, so the Phi-3 family has a file with cells. Maintained on report.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.18.0",
+        "date": "2026-11-13"
+      }
     },
     {
       "id": "apertus-8b-instruct-2509-q8_0",

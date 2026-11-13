@@ -3037,6 +3037,46 @@
           ]
         }
       }
+    },
+    {
+      "id": "phi-3.5-mini-instruct-q8_0",
+      "architecture": "phi3",
+      "family": "Phi 3",
+      "file": "models/Phi-3.5-mini-instruct-Q8_0.gguf",
+      "sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823",
+      "upstream": "bartowski/Phi-3.5-mini-instruct-GGUF",
+      "tokenizer_reference": "microsoft/Phi-3.5-mini-instruct",
+      "tokenizer_reference_revision": "2fe192450127e6a83f7441aef6e3ca586c338b77",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/phi-3.5-mini-instruct.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "bartowski's Q8_0 Phi-3.5-mini-instruct-Q8_0.gguf (4,061,222,688 bytes, revision 6d70da17 of bartowski/Phi-3.5-mini-instruct-GGUF), architecture phi3: 32 layers, hidden 3,072, 32 heads without grouping, FFN 8,192, LongRoPE (original context 4,096, 131,072 with the long factors), an untied output head, vocabulary 32,064. Tokenizer: 0 of 721 corpus strings differ from Microsoft's tokenizer.json at 2fe19245; template family phi3, conformance 16/16 in text and tokens against the publisher's chat template. On load the file resolves to architecture phi3, template phi3, sampling preset phi3, and the generic tool protocol (Runner has no native tool format for this model). Fidelity: against the publisher's BF16 checkpoint computed in float32 it reads 0.0038 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 544 positions inside the original 4,096-token context (two windows of 272: 0.0042 and 0.0033; plain top-1 98.5%, CPU), against a bar of 0.05 and 97%. Above a 4,096-token context it reads markedly worse (0.205 at -c 8192), as on llama.cpp. Record docs/compat-reports/phi-3.5-mini-instruct-2026-11-13. CUDA runs the whole model on the device (32 of 32 layers) on a CUDA MIG slice, 1g.24gb, sm_120. greedy_reference remains undeclared.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
     }
   ]
 }

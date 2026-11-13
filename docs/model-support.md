@@ -565,12 +565,13 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Phi-3</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>Phi-3</b>, 1 model: CPU ✅ · CUDA ✅ · Metal ✅ · Train ✅</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td colspan="5"><b>Phi-3 (phi3)</b></td></tr>
-<tr><td><a href="#arch-phi3">Phi-3 (phi3)</a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td colspan="5"><b>Phi-3.5-mini-instruct (Microsoft)</b></td></tr>
+<tr><td><a href="#phi-3.5-mini-instruct-q4_k_m"><code>Phi-3.5-mini-instruct-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td></tr>
+<tr><td><a href="#phi-3.5-mini-instruct-q8_0"><code>Phi-3.5-mini-instruct-Q8_0.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td></tr>
 </tbody>
 </table>
 </details>
@@ -2161,13 +2162,51 @@ Text path only (the vision projector is not loaded): ornith-ai's own Q8_0 of Orn
 
 ### Phi-3
 
-#### Phi-3 (phi3)
+#### Phi-3.5-mini-instruct (Microsoft)
 
-<a id="arch-phi3"></a>
-##### Phi-3 (phi3)
+<a id="phi-3.5-mini-instruct-q4_k_m"></a>
+##### `Phi-3.5-mini-instruct-Q4_K_M.gguf`
 
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+bartowski's Q4_K_M of Microsoft's Phi-3.5-mini-instruct: against the publisher's BF16 checkpoint computed in float32 it reads 0.0423 ± 0.0025 mean KLD (bootstrap 95% interval 0.0375 to 0.0474) and 98.97% margin-qualified top-1 over 544 positions inside the original 4,096-token context (two windows of 272: 0.0424 and 0.0421; plain top-1 91.4%, CPU), against a bar of 0.05 and 97%. Above a 4,096-token context it reads markedly worse, as on llama.cpp (measured on the Q8_0). The Q8_0 is the fidelity file.
 
+- **File:** `Phi-3.5-mini-instruct-Q4_K_M.gguf` (sha256 `e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5`, 2,393,232,672 bytes, from [bartowski/Phi-3.5-mini-instruct-GGUF](https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF) at revision `6d70da17e749`).
+- **Upstream checkpoint:** microsoft/Phi-3.5-mini-instruct at revision `2fe192450127`.
+- **Quantization:** Q4_K_M (bartowski, importance matrix).
+- **Licence:** `mit`, as the microsoft/Phi-3.5-mini-instruct model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both of bartowski's files (revision 6d70da17, with bartowski's importance matrix) against Microsoft's BF16 checkpoint at 2fe19245 computed in float32 on the CPU (transformers 5.16.1, the native Phi3ForCausalLM (no remote code), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows of 272 positions at stride 15 over gold-corpus-2k from 8 and from 15, inside the original 4,096-token context so both sides use LongRoPE's short factors, token-id keyed, Runner CPU score files of 4,096 tokens at -c 4096 from the batched prefill route): Q8_0 pooled 0.0038 ± 0.0003 mean KLD (SE, 544 positions; windows 0.0042 and 0.0033) / 98.5% top-1 / 100% margin-qualified (389/389); Q4_K_M pooled 0.0423 ± 0.0025 (bootstrap 95% 0.0375 to 0.0474; windows 0.0424 and 0.0421) / 91.4% / 98.97% (385/389). Above a 4,096-token context the output is markedly worse, on short prompts too: Runner picks LongRoPE's factor set from the requested context and applies it from the first token, as llama.cpp does, while the publisher's reference uses the short factors until the sequence itself passes 4,096. On the same 272 positions of a 4,096-token text the Q8_0 reads 0.0042 mean KLD at -c 4096 (short factors) and 0.2052 at -c 8192 (long factors); llama.cpp 73a43d1 reads 0.0073 and 0.2071. Runner's default context, 4,096, uses the short factors. Tokenizer: 0 of 721 corpus strings differ from Microsoft's tokenizer.json at 2fe19245; template family phi3, conformance 16/16 in text and tokens against the publisher's chat template. Record: docs/compat-reports/phi-3.5-mini-instruct-2026-11-13/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** With a context over 4,096 this model reads about fifty times further from the publisher's (0.205 against 0.004 mean KLD on the same text): Runner, like llama.cpp, then applies the model's long-context position factors from the first token, where the publisher's code applies them only once a sequence passes 4,096 tokens. Keep -c at 4,096 unless you need more. CPU and CUDA for this file (2.39 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 32 layers on the device). Above a 4,096-token context the output is markedly worse, on short prompts too: Runner picks LongRoPE's factor set from the requested context and applies it from the first token, as llama.cpp does, while the publisher's reference uses the short factors until the sequence itself passes 4,096. On the same 272 positions of a 4,096-token text the Q8_0 reads 0.0042 mean KLD at -c 4096 (short factors) and 0.2052 at -c 8192 (long factors); llama.cpp 73a43d1 reads 0.0073 and 0.2071. Runner's default context, 4,096, uses the short factors. On load the file resolves to architecture phi3, template phi3, sampling preset phi3, and the generic tool protocol (Runner has no native tool format for this model). Licence: mit.
+- **Still missing:** A Metal cell, the Windows CUDA host's cells, task quality, and a reference read above 4,096 tokens.
+- **Evidence:** [docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-phi-3.5-mini-instruct.json](compat-reports/1.18.0-2026-11-13-linux-x86_64-phi-3.5-mini-instruct.json), [docs/compat-reports/phi-3.5-mini-instruct-2026-11-13/README.md](compat-reports/phi-3.5-mini-instruct-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.18.0 on 2026-11-13.
+- **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `e39220e6c656`, output sha256 `429ec866a5f47afc`, [pin](../tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q4_k_m.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `e39220e6c656`, output sha256 `429ec866a5f47afc`, [pin](../tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q4_k_m.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ✅ v1.18.0 2026-11-13 on macos-arm64-metal at commit `35beab9b6027`, output sha256 `429ec866a5f47afc`, [pin](../tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q4_k_m.macos-arm64-metal.metal.txt)
+- **LoRA training:** supported (runner 1.18.0, 2026-11-13).
+- **LoRA adapter serving:** supported (runner 1.18.0, 2026-11-13).
+
+<a id="phi-3.5-mini-instruct-q8_0"></a>
+##### `Phi-3.5-mini-instruct-Q8_0.gguf`
+
+bartowski's Q8_0 of Microsoft's Phi-3.5-mini-instruct, the fidelity file of the two: against the publisher's BF16 checkpoint computed in float32 it reads 0.0038 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 544 positions inside the original 4,096-token context (two windows of 272: 0.0042 and 0.0033; plain top-1 98.5%, CPU), against a bar of 0.05 and 97%. Above a 4,096-token context it reads markedly worse (0.205 at -c 8192), as on llama.cpp.
+
+- **File:** `Phi-3.5-mini-instruct-Q8_0.gguf` (sha256 `76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823`, 4,061,222,688 bytes, from [bartowski/Phi-3.5-mini-instruct-GGUF](https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF) at revision `6d70da17e749`).
+- **Upstream checkpoint:** microsoft/Phi-3.5-mini-instruct at revision `2fe192450127`.
+- **Quantization:** Q8_0 (bartowski, importance matrix recorded; Q8_0 does not use it).
+- **Licence:** `mit`, as the microsoft/Phi-3.5-mini-instruct model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both of bartowski's files (revision 6d70da17, with bartowski's importance matrix) against Microsoft's BF16 checkpoint at 2fe19245 computed in float32 on the CPU (transformers 5.16.1, the native Phi3ForCausalLM (no remote code), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows of 272 positions at stride 15 over gold-corpus-2k from 8 and from 15, inside the original 4,096-token context so both sides use LongRoPE's short factors, token-id keyed, Runner CPU score files of 4,096 tokens at -c 4096 from the batched prefill route): Q8_0 pooled 0.0038 ± 0.0003 mean KLD (SE, 544 positions; windows 0.0042 and 0.0033) / 98.5% top-1 / 100% margin-qualified (389/389); Q4_K_M pooled 0.0423 ± 0.0025 (bootstrap 95% 0.0375 to 0.0474; windows 0.0424 and 0.0421) / 91.4% / 98.97% (385/389). Above a 4,096-token context the output is markedly worse, on short prompts too: Runner picks LongRoPE's factor set from the requested context and applies it from the first token, as llama.cpp does, while the publisher's reference uses the short factors until the sequence itself passes 4,096. On the same 272 positions of a 4,096-token text the Q8_0 reads 0.0042 mean KLD at -c 4096 (short factors) and 0.2052 at -c 8192 (long factors); llama.cpp 73a43d1 reads 0.0073 and 0.2071. Runner's default context, 4,096, uses the short factors. Tokenizer: 0 of 721 corpus strings differ from Microsoft's tokenizer.json at 2fe19245; template family phi3, conformance 16/16 in text and tokens against the publisher's chat template. Record: docs/compat-reports/phi-3.5-mini-instruct-2026-11-13/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** With a context over 4,096 this model reads about fifty times further from the publisher's (0.205 against 0.004 mean KLD on the same text): Runner, like llama.cpp, then applies the model's long-context position factors from the first token, where the publisher's code applies them only once a sequence passes 4,096 tokens. Keep -c at 4,096 unless you need more. CPU and CUDA for this file (4.06 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 32 layers on the device). Above a 4,096-token context the output is markedly worse, on short prompts too: Runner picks LongRoPE's factor set from the requested context and applies it from the first token, as llama.cpp does, while the publisher's reference uses the short factors until the sequence itself passes 4,096. On the same 272 positions of a 4,096-token text the Q8_0 reads 0.0042 mean KLD at -c 4096 (short factors) and 0.2052 at -c 8192 (long factors); llama.cpp 73a43d1 reads 0.0073 and 0.2071. Runner's default context, 4,096, uses the short factors. On load the file resolves to architecture phi3, template phi3, sampling preset phi3, and the generic tool protocol (Runner has no native tool format for this model). Licence: mit.
+- **Still missing:** A Metal cell, the Windows CUDA host's cells, task quality, and a reference read above 4,096 tokens.
+- **Evidence:** [docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-phi-3.5-mini-instruct.json](compat-reports/1.18.0-2026-11-13-linux-x86_64-phi-3.5-mini-instruct.json), [docs/compat-reports/phi-3.5-mini-instruct-2026-11-13/README.md](compat-reports/phi-3.5-mini-instruct-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.18.0 on 2026-11-13.
+- **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `e39220e6c656`, output sha256 `2365a83ecbfb5eb4`, [pin](../tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `e39220e6c656`, output sha256 `2365a83ecbfb5eb4`, [pin](../tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ✅ v1.18.0 2026-11-13 on macos-arm64-metal at commit `35beab9b6027`, output sha256 `2365a83ecbfb5eb4`, [pin](../tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q8_0.macos-arm64-metal.metal.txt)
+- **LoRA training:** supported (runner 1.18.0, 2026-11-13).
+- **LoRA adapter serving:** supported (runner 1.18.0, 2026-11-13).
 
 ### Qwen 3.6
 
@@ -2918,7 +2957,6 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-10-22 | [Qwen3.8-Flash-Next, `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`](#qwen3.8-flash-next-gsq-rco-iq3_s) | Tier 2, maintained on report | Migration: the trunk of a Tier 1 MTP head, added 2026-10-23 so the head's smoke can run; not on the owner's Tier 1 roster. | none recorded |
 | 2026-10-22 | [Mistral (mistral)](#arch-mistral) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Gemma 3 (gemma3)](#arch-gemma3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
-| 2026-10-22 | [Phi-3 (phi3)](#arch-phi3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B), `Qwen3.8-35B-A3B-Q6_K.gguf`](#empero-qwen3.8-35b-a3b-distill-q6_k) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Ornith-1.5-35B-A3B (ornith-ai), `Ornith-1.5-35B-Q8_0.gguf`](#ornith-1.5-35b-a3b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [MiniCPM-V-4.7-35B-A3B (openbmb), `MiniCPM-V-4_7-35B-A3B-Q8_0.gguf`](#minicpm-v-4.7-35b-a3b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
@@ -3030,6 +3068,8 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-11-13 | [StableLM 2 1.6B Chat (Stability AI), `stablelm-2-1_6b-chat.Q8_0.gguf`](#stablelm-2-1.6b-chat-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU cell from the lab lanes (R4.39.3) and a float32 reference measurement against the publisher's checkpoint, so the StableLM family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Qwen2.5-1.5B-Instruct (Qwen), `Qwen2.5-1.5B-Instruct-Q8_0.gguf`](#qwen2.5-1.5b-instruct-q8_0-bartowski) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.2) and a float32 reference measurement against the publisher's checkpoint, so the Qwen2 family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Qwen2.5-1.5B-Instruct (Qwen), `qwen2.5-1.5b-instruct-q8_0.gguf`](#qwen2.5-1.5b-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.2) and a float32 reference measurement against the publisher's checkpoint, so the Qwen2 family has a file with cells. Maintained on report. | none recorded |
+| 2026-11-13 | [Phi-3.5-mini-instruct (Microsoft), `Phi-3.5-mini-instruct-Q8_0.gguf`](#phi-3.5-mini-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.5) and a float32 reference measurement against the publisher's checkpoint, so the Phi-3 family has a file with cells. Maintained on report. | none recorded |
+| 2026-11-13 | [Phi-3.5-mini-instruct (Microsoft), `Phi-3.5-mini-instruct-Q4_K_M.gguf`](#phi-3.5-mini-instruct-q4_k_m) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.5) and a float32 reference measurement against the publisher's checkpoint, so the Phi-3 family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Apertus v1.5 8B (Swiss AI), a third party's text-only extraction, `apertus-v1.5-8b-text-q8_0.gguf`](#apertus-v1.5-8b-text-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.38.1) and a float32 reference measurement against the publisher's checkpoint; Apertus v1.5 after 2509, at the owner's request. Maintained on report. | none recorded |
 | 2026-11-13 | [Granite 4.0 H Micro (IBM), `granite-4.0-h-micro-Q8_0.gguf`](#granite-4.0-h-micro-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.7) and a float32 reference measurement against the publisher's checkpoint, so the Granite 4 h-series has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Granite 4.0 H Micro (IBM), `granite-4.0-h-micro-Q4_K_M.gguf`](#granite-4.0-h-micro-q4_k_m-unsloth) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.7) and a float32 reference measurement against the publisher's checkpoint, so the Granite 4 h-series has a file with cells. Maintained on report. | none recorded |

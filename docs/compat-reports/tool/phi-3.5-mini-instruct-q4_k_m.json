@@ -1,0 +1,7 @@
+{
+ "model": "models/Phi-3.5-mini-instruct-Q4_K_M.gguf",
+ "scenario_matrix": "agent-torture",
+ "returncode": 0,
+ "totals": null,
+ "artifacts_dir": "docs/compat-reports/tool/phi-3.5-mini-instruct-q4_k_m"
+}

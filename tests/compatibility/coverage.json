@@ -1198,7 +1198,8 @@
     "phi4"
    ],
    "artifacts": [
-    "phi-3.5-mini-instruct-q4_k_m"
+    "phi-3.5-mini-instruct-q4_k_m",
+    "phi-3.5-mini-instruct-q8_0"
    ],
    "tool_protocol": {
     "status": "NOT RUN"
