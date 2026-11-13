@@ -3511,7 +3511,24 @@ static void test_detect_qwen3_coder(void) {
     assert(!strcmp(template_name(template_detect(native, NULL)), "qwen3-coder"));
 }
 
+// R2.15: the control-token think pair is read by the split, and spelled by
+// the engine, on a chat turn with no constraint, and nowhere else. Under a
+// JSON schema or JSON mode the tokens are not spelled, so an armed split
+// could only match a payload string that contains the tags' spelling and
+// would cut the caller's text out of a document the validator accepted
+// (found in review before the merge). A family with a text pair never takes
+// this path.
+static void test_the_control_token_split_is_for_unconstrained_chat_alone(void) {
+    const char *pair = "<|inner_prefix|>";
+    assert(think_split_is_control(NULL, pair, true, false));
+    assert(!think_split_is_control(NULL, pair, true, true));    // schema or JSON mode
+    assert(!think_split_is_control(NULL, pair, false, false));  // a raw completion
+    assert(!think_split_is_control("<think>", pair, true, false));
+    assert(!think_split_is_control(NULL, NULL, true, false));
+}
+
 int main(void) {
+    test_the_control_token_split_is_for_unconstrained_chat_alone();
     test_detect_qwen3_coder();
     test_leading_system_messages_are_joined();
     test_default_system_is_read_from_the_models_own_template();

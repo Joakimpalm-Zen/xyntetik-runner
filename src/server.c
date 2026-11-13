@@ -4240,6 +4240,8 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                 s->m->tp = shared_pool;
             }
             template_bind_think_tags(tmpl, &s->m->think_open, &s->m->think_close);
+            template_bind_split_tags(tmpl, s->tok, s->m->think_open, &s->m->split_open,
+                                     &s->m->split_close);
             if (!slot_engine_init(s)) {
                 fprintf(stderr, "error: out of memory initializing slot %d engine\n", i);
                 return serve_start_end(base, tok, 1);

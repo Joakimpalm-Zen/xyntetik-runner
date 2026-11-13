@@ -108,6 +108,7 @@ void engine_request_defaults(engine *e) {
     e->ignore_eos = false;
     e->render_special = false;
     e->n_spell = 0;
+    e->spell_think = false;
     e->emit_think_prelude = false;
     e->constraint_includes_prelude = false;
     e->think_budget = 0;
@@ -2585,6 +2586,12 @@ static int decode_piece(engine *e, int tok, char *buf, int cap) {
     int n = tok_decode(e->tok, tok, buf, cap);
     bool spell = e->render_special;
     for (int i = 0; i < e->n_spell && !spell; i++) spell = e->spell_ids[i] == tok;
+    // the model's think tags when they are control tokens (model.h split_open)
+    if (n == 0 && !spell && e->spell_think && tok_is_control(e->tok, tok)) {
+        const char *sp = tok_raw(e->tok, tok);
+        const char *open = e->m->split_open, *close = e->m->split_close;
+        spell = sp && ((open && !strcmp(sp, open)) || (close && !strcmp(sp, close)));
+    }
     if (n == 0 && spell && !e->schema && !e->json_mode &&
         tok_is_control(e->tok, tok)) {
         const char *sp = tok_raw(e->tok, tok);

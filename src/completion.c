@@ -443,6 +443,7 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
     e->constraint_includes_prelude = false;
     e->render_special = false;
     e->n_spell = 0;
+    e->spell_think = false;
     // R10.31: a request's ignore_eos is its own; the slot goes back to the server's default
     e->ignore_eos = SV.ignore_eos;
     schema_free(schema);
@@ -4342,6 +4343,12 @@ static void completion_apply(slot_t *s, const completion_req *q, const char *pro
     // keep the payload-only contract)
     e->emit_think_prelude = chat && m->think_open != NULL &&
                             !(env && env->proto == TP_HARMONY);
+    // a chat turn's reasoning split reads bytes: think tags that are control
+    // tokens are spelled for it (R2.15), and the split is armed with them,
+    // by one rule; never under a constraint, and the constraint layer does
+    // not know this pair
+    e->spell_think = think_split_is_control(m->think_open, m->split_open, chat,
+                                            e->schema || e->json_mode);
 }
 
 // What preparing an accepted request came to: the prompt's tokens (owned
@@ -5377,6 +5384,9 @@ static bool turn_open(turn_result *t) {
         think_init(&g->ts, NULL, NULL);
     else if (t->primed)
         think_init_reasoning(&g->ts, m->think_open, m->think_close);
+    else if (e->spell_think)
+        // a control-token pair, spelled for this turn (model.h split_open)
+        think_init(&g->ts, m->split_open, m->split_close);
     else
         think_init(&g->ts, chat ? m->think_open : NULL, m->think_close);
     think_trim_newlines(&g->ts, m->think_trim_nl);

@@ -686,7 +686,7 @@ static bool anth_reject_unsupported(slot_t *s, sock_t fd, jv *req) {
                        "thinking.display must be \"summarized\" or \"omitted\"");
             return true;
         }
-        if (!strcmp(type, "enabled") && !s->m->think_open) {
+        if (!strcmp(type, "enabled") && !s->m->think_open && !s->m->split_open) {
             send_error(fd, 400,
                        "thinking:enabled is not supported by the resident "
                        "model: it has no reasoning channel to separate, so no "

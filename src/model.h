@@ -416,6 +416,12 @@ typedef struct {
     int       n_suppress;    // (tokenizer.ggml.suppress_tokens)
     const char *think_open, *think_close; // thinking-tag pair (architecture's,
                                           // else the template's), or NULL
+    // A family whose think tags are single CONTROL tokens (Apertus, R2.15)
+    // has no text pair: think_open stays NULL, so no constraint grows a text
+    // prelude it could never satisfy (with think_open set, every tools turn
+    // of the family failed). This pair is the chat turn's alone: the engine
+    // spells the two tokens and the reasoning split reads them. NULL elsewhere.
+    const char *split_open, *split_close;
     bool        think_trim_nl;  // the publisher's template strips newlines at
                                 // the close: trailing off the reasoning,
                                 // leading off the content (think_trim_newlines)

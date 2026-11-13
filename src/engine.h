@@ -80,6 +80,13 @@ typedef struct {
     // Live for one request; engine_request_defaults clears them.
     int  spell_ids[2];
     int  n_spell;
+    // A chat turn of a model whose think tags are single CONTROL tokens
+    // (Apertus's <|inner_prefix|> and <|inner_suffix|>): those two are decoded
+    // to their spelling, so the reasoning split, which reads bytes, sees the
+    // turn open and close. Without it the deliberation came back as the
+    // answer (R2.15). Live for one request, never in a raw completion, whose
+    // text is the decoded one.
+    bool spell_think;
     bool oom;              // generation aborted on an allocation failure — the
                            // finish reason is "error", never a silent "stop"
     bool json_mode;        // constrain output to a single JSON object
