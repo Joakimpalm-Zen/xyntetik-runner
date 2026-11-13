@@ -575,13 +575,13 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Phi-3</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train ✅</summary>
+<summary><b>Phi-3</b>, 1 model: CPU ✅ · CUDA ✅ · Metal ✅ · Train ✅</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>Phi-3.5-mini-instruct (Microsoft)</b></td></tr>
-<tr><td><a href="#phi-3.5-mini-instruct-q4_k_m"><code>Phi-3.5-mini-instruct-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td></td><td nowrap>✅ 1.18.0<br>2026-11-13</td></tr>
-<tr><td><a href="#phi-3.5-mini-instruct-q8_0"><code>Phi-3.5-mini-instruct-Q8_0.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td></td><td nowrap>✅ 1.18.0<br>2026-11-13</td></tr>
+<tr><td><a href="#phi-3.5-mini-instruct-q4_k_m"><code>Phi-3.5-mini-instruct-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td></tr>
+<tr><td><a href="#phi-3.5-mini-instruct-q8_0"><code>Phi-3.5-mini-instruct-Q8_0.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td></tr>
 </tbody>
 </table>
 </details>
@@ -2164,7 +2164,7 @@ bartowski's Q4_K_M of Microsoft's Phi-3.5-mini-instruct: against the publisher's
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.18.0 on 2026-11-13.
 - **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `e39220e6c656`, output sha256 `429ec866a5f47afc`, [pin](../tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q4_k_m.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `e39220e6c656`, output sha256 `429ec866a5f47afc`, [pin](../tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q4_k_m.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
+- **Metal:** ✅ v1.18.0 2026-11-13 on macos-arm64-metal at commit `35beab9b6027`, output sha256 `429ec866a5f47afc`, [pin](../tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q4_k_m.macos-arm64-metal.metal.txt)
 - **LoRA training:** supported (runner 1.18.0, 2026-11-13).
 - **LoRA adapter serving:** supported (runner 1.18.0, 2026-11-13).
 
@@ -2186,7 +2186,7 @@ bartowski's Q8_0 of Microsoft's Phi-3.5-mini-instruct, the fidelity file of the 
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.18.0 on 2026-11-13.
 - **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `e39220e6c656`, output sha256 `2365a83ecbfb5eb4`, [pin](../tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q8_0.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `e39220e6c656`, output sha256 `2365a83ecbfb5eb4`, [pin](../tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q8_0.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
+- **Metal:** ✅ v1.18.0 2026-11-13 on macos-arm64-metal at commit `35beab9b6027`, output sha256 `2365a83ecbfb5eb4`, [pin](../tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q8_0.macos-arm64-metal.metal.txt)
 - **LoRA training:** supported (runner 1.18.0, 2026-11-13).
 - **LoRA adapter serving:** supported (runner 1.18.0, 2026-11-13).
 

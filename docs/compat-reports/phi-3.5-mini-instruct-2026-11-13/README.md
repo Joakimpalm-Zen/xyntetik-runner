@@ -106,6 +106,9 @@ the rows were added (R6.67).
 - **tier-smoke**, `--pin` then `--record`, on the CPU and CUDA cells of both rows: all four pass with the fact found.
   CPU and CUDA give the same reply bytes for each file (Q8_0 `2365a83e`, Q4_K_M `429ec866`). CUDA runs all 32 layers
   on the device.
+- **Metal**, on an Apple M1 with 8 GB, from a clean STRICT build of 35beab9b (the row commit): tier-smoke `--pin` then
+  `--record` on both rows, both pass with the fact found, and each reply is byte for byte the Linux reply (Q8_0
+  `2365a83e`, Q4_K_M `429ec866`).
 - **LoRA smoke** on both files: `--train` on eight lines (two prompt/completion pairs, four times each), 4 steps at rank 8, then serving with
   `--lora`. Both train and serve (224 adapted projections); the adapted model completes "The capital of France is"
   with "Paris."

@@ -4666,6 +4666,36 @@
               "dirty": false
             }
           }
+        },
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q8_0.macos-arm64-metal.metal.txt",
+          "sha256": "2365a83ecbfb5eb42bc700943e8b83b5d4924f76c1e58bbd9b8ef9c6f2dbc9c1",
+          "bytes": 192,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.18.0",
+            "commit": "35beab9b6027fc437cbc70a8feef8bcb2f86f1f7",
+            "build": {
+              "binary_sha256": "3e3ac6a1e9b3139510c41752f54a3f990fd747374a5c121d34d6a549aef073e3",
+              "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+              "commit": "35beab9b6027fc437cbc70a8feef8bcb2f86f1f7",
+              "dirty": false
+            }
+          }
         }
       }
     },
@@ -4727,6 +4757,36 @@
               "binary_sha256": "e7fa5f48faf9ee568c081cced2efc3d9992ac9f6cb6b794cca1dd7296f791ec9",
               "compiler": "13.3.0",
               "commit": "e39220e6c6560fe82ab6a1daeb53516784ad85ec",
+              "dirty": false
+            }
+          }
+        },
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/phi-3.5-mini-instruct-q4_k_m.macos-arm64-metal.metal.txt",
+          "sha256": "429ec866a5f47afcb73f316987ccfa68f201fef600346bdd16f8fd6a9eca2b0d",
+          "bytes": 196,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.18.0",
+            "commit": "35beab9b6027fc437cbc70a8feef8bcb2f86f1f7",
+            "build": {
+              "binary_sha256": "3e3ac6a1e9b3139510c41752f54a3f990fd747374a5c121d34d6a549aef073e3",
+              "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+              "commit": "35beab9b6027fc437cbc70a8feef8bcb2f86f1f7",
               "dirty": false
             }
           }
