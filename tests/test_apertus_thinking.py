@@ -28,9 +28,11 @@ from harness import RunnerServer, find_runner  # noqa: E402
 TURN = ("<|system_start|>,<|system_end|>,<|developer_start|>,<|developer_end|>,"
         "<|user_start|>,<|user_end|>,<|assistant_start|>,<|assistant_end|>,"
         "<|tools_prefix|>,<|tools_suffix|>")
-# The two releases name the same pair of control tokens differently (read
-# from both vocabularies, 2026-11-13): v1.5 has <|inner_prefix|> and
-# <|inner_suffix|>, the 2509 files have <think> and </think>.
+# Both releases name the pair <|inner_prefix|> and <|inner_suffix|> (ids 69
+# and 70 in the 2509 and v1.5 files). <think> and </think> are other control
+# tokens there; a file that carries them and no inner pair binds those, which
+# is the second fixture. Its key is kept from when 2509 was believed to be
+# such a file.
 TAGS = {"v1.5": ("<|inner_prefix|>", "<|inner_suffix|>"),
         "2509": ("<think>", "</think>"),
         # v1.5's vocabulary also holds <|tool_output_start|> and
