@@ -104,7 +104,13 @@ differs.
 The run stops if a score file's token ids differ from the reference
 tokenizer's ids for the same text. That is a finding about the GGUF's
 tokenizer, not a measurement problem: the file would read text differently
-from the model it claims to be.
+from the model it claims to be. Check the reference side first, though: the
+transformers release can be the one that reads the tokenizer differently.
+transformers 5.16.1 loads SmolLM2's tokenizer.json without its Digits
+pre-tokenizer (8,911 tokens over gold-corpus-2k against the file's 8,909), so
+SmolLM2's reference runs on transformers 4.57.1, which reads the file as
+written. Encode the text with the `tokenizers` library from tokenizer.json
+itself and compare that with both sides.
 
 **5. Read the summary.** Per side, `gold-bf16-q4_k_m.json` gives
 `mean_kld_vs_gold`, `max_kld_vs_gold`, `top1_agreement_pct` and

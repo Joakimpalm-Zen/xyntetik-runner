@@ -944,7 +944,10 @@
     "salamandra-7b-instruct-q4_k_m",
     "tildeopen-30b-q4_k_m",
     "minicpm5-2b-q8_0",
-    "minicpm5-2b-q4_k_m"
+    "minicpm5-2b-q4_k_m",
+    "smollm2-135m-instruct-q8_0",
+    "smollm2-1.7b-instruct-q8_0",
+    "smollm2-1.7b-instruct-q4_k_m"
    ],
    "tool_protocol": {
     "status": "NOT RUN",
