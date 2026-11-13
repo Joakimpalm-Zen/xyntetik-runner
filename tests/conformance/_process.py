@@ -87,8 +87,8 @@ NEW_GROUP = subprocess.CREATE_NEW_PROCESS_GROUP if WINDOWS else 0
 # no home every start compiled them again, 34 s against 1.5 s on a CUDA host,
 # and a loaded host ran a test past its health wait. The device selection is
 # the host's, not the test's.
-CARRIED = ("HOME", "CUDA_CACHE_PATH", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER",
-           "LD_LIBRARY_PATH")
+CARRIED = ("HOME", "CUDA_CACHE_PATH", "CUDA_CACHE_MAXSIZE", "CUDA_CACHE_DISABLE",
+           "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "LD_LIBRARY_PATH")
 CARRIED_WINDOWS = ("SystemRoot", "SystemDrive", "windir", "COMSPEC", "PATH", "PATHEXT",
                    "TEMP", "TMP", "NUMBER_OF_PROCESSORS",
                    "USERPROFILE", "APPDATA", "LOCALAPPDATA")
@@ -242,18 +242,11 @@ class RunnerServer:
             try:
                 self.proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                # A Windows server that never took the ask may never have
-                # been sent it: only one that has stopped on an ask before
-                # (in this process) is held to the bound.
-                self.killed = asked and (not WINDOWS or RunnerServer._break_works is True)
-                if WINDOWS and asked and not RunnerServer._break_works:
-                    RunnerServer._break_works = False
-                    asked = False
+                # asked and still running: the bounded shutdown failed. (A
+                # terminated Windows process cannot outlive the wait.)
+                self.killed = True
                 self.proc.kill()
                 self.proc.wait(timeout=10)
-            else:
-                if WINDOWS and asked:
-                    RunnerServer._break_works = True
         self.exit_code = self.proc.returncode
         if self._log is not None:
             self._log.close()
@@ -275,9 +268,11 @@ class RunnerServer:
             self._own_log = None
 
     # ------------------------------------------------------------------
-    # Windows: None until a stop has been tried, then whether CTRL_BREAK
-    # reaches a server started here. A harness with no console cannot send
-    # it, and learns that from the first stop instead of waiting at each.
+    # Windows: False once CTRL_BREAK could not be sent (a harness with no
+    # console has nothing to send it through), so later stops do not try.
+    # Only a failed send says so: a server that was sent it and stayed up is
+    # a hung server, and one hung server must not switch the request off for
+    # every server after it in the process.
     _break_works = None
 
     def _ask_to_stop(self):
@@ -289,6 +284,7 @@ class RunnerServer:
         if RunnerServer._break_works is not False:
             try:
                 self.proc.send_signal(signal.CTRL_BREAK_EVENT)
+                RunnerServer._break_works = True
                 return True
             except OSError:
                 RunnerServer._break_works = False

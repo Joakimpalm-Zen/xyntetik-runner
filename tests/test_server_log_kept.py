@@ -15,7 +15,9 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "tests" / "conformance")]
 from harness import RunnerServer  # noqa: E402
+import _process  # noqa: E402
 from _process import child_env  # noqa: E402
+from _errors import TransportError  # noqa: E402
 
 EXE = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
 
@@ -161,3 +163,61 @@ def test_a_tests_own_value_wins_and_windows_keeps_its_profile():
 def test_no_env_is_the_inherited_one():
     env = child_env(None, inherited=HOST, windows=False)
     assert {k: env[k] for k in HOST} == HOST and env["RUNNER_TTL_POLL_S"] == "0.25"
+
+
+class _Proc:
+    """A server process as stop() sees it: hung (never exits when asked), or
+    one that cannot be sent the request and exits 1 when terminated."""
+
+    def __init__(self, hung=False, cannot_send=False):
+        self.hung, self.cannot_send, self.returncode, self.sent = hung, cannot_send, None, []
+
+    def poll(self):
+        return self.returncode
+
+    def send_signal(self, sig):
+        if self.cannot_send:
+            raise OSError("no console")
+        self.sent.append(sig)
+        if not self.hung:
+            self.returncode = 0
+
+    def terminate(self):
+        self.returncode = 1
+
+    def wait(self, timeout):
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired("server", timeout)
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+
+def _stopped(proc):
+    srv = RunnerServer("unused", "unused")
+    srv.proc, srv.sample_rss = proc, lambda: None
+    srv.stop(strict=True)
+    return srv
+
+
+def test_the_windows_stop_rule(monkeypatch):
+    """Windows, on any host: a server is sent CTRL_BREAK and judged; one that
+    was sent it and stayed up is a failed shutdown and leaves the request on
+    for the servers after it; only a send that fails turns it off, and a
+    terminated server is not judged. (The first version took a first stop
+    that timed out for a console that cannot deliver: one hung stand-in early
+    in a run put all 517 later servers back on the hard kill, seen on the
+    Windows CUDA host.)"""
+    monkeypatch.setattr(_process, "WINDOWS", True)
+    monkeypatch.setattr(_process.signal, "CTRL_BREAK_EVENT", 21, raising=False)
+    monkeypatch.setattr(RunnerServer, "_break_works", None)
+    with pytest.raises(TransportError):
+        _stopped(_Proc(hung=True))
+    assert RunnerServer._break_works is True
+    ok = _stopped(_Proc())
+    assert ok.proc.sent == [21] and ok.exit_code == 0 and not ok.killed
+    off = _stopped(_Proc(cannot_send=True))          # exit 1, and no error
+    assert RunnerServer._break_works is False and off.exit_code == 1 and not off.killed
+    later = _stopped(_Proc())                        # not tried again
+    assert later.proc.sent == [] and later.exit_code == 1
