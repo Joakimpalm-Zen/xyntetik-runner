@@ -326,21 +326,28 @@ const char *template_default_system(int tmpl, const char *meta_tmpl,
     // `with_tools`: the template still writes its default when tools are
     // declared, ahead of its own declaration block. Each publisher decides
     // this differently, so it is read off each template, not assumed.
-    static const struct { int tmpl; bool with_tools; const char *text; }
+    // `match`: what to find in the template, when the text alone is not
+    // enough to name it (NULL: the text itself).
+    static const struct { int tmpl; bool with_tools; const char *text; const char *match; }
     known[] = {
         // HuggingFaceTB/SmolLM2-*-Instruct tokenizer_config.json: written on
         // every system-less conversation (the template has no tools branch)
         { TMPL_CHATML, true,
-          "You are a helpful AI assistant named SmolLM, trained by Hugging Face" },
+          "You are a helpful AI assistant named SmolLM, trained by Hugging Face", NULL },
         // Qwen/Qwen2.5-*-Instruct chat_template: written on both of its
         // branches, before "# Tools" when tools are declared
         { TMPL_CHATML, true,
-          "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." },
+          "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.", NULL },
         // ibm-granite/granite-4.0-h-* chat_template (g4_default_system_message):
         // declared tools REPLACE it (ns.system_message = ns.tools_system_message)
         { TMPL_GRANITE4, false,
           "You are a helpful assistant. Please ensure responses are "
-          "professional, accurate, and safe." },
+          "professional, accurate, and safe.", NULL },
+        // stabilityai/stablelm-2-1_6b-chat chat_template: written on every
+        // system-less conversation (no tools branch). The sentence is common,
+        // so the entry is keyed on the template's own literal, not on it.
+        { TMPL_CHATML, true, "You are a helpful assistant.",
+          "set system_message = 'You are a helpful assistant.'" },
     };
     if (!meta_tmpl) return NULL;
     // The [SYSTEM_PROMPT] form names its own model in a long default (written
@@ -385,7 +392,7 @@ const char *template_default_system(int tmpl, const char *meta_tmpl,
     }
     for (size_t i = 0; i < sizeof known / sizeof *known; i++)
         if (known[i].tmpl == tmpl && (!tools || known[i].with_tools) &&
-            strstr(meta_tmpl, known[i].text))
+            strstr(meta_tmpl, known[i].match ? known[i].match : known[i].text))
             return known[i].text;
     return NULL;
 }

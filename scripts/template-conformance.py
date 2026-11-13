@@ -477,6 +477,10 @@ FAMILIES = {
         "chatml", ("hf", "HuggingFaceTB/SmolLM2-135M-Instruct"),
         note="the smollm pre-tokenizer family; plain ChatML",
         tokenizer=("SmolLM2-135M-Instruct-Q8_0.gguf",)),
+    "stablelm2": Family(
+        "chatml", ("hf", "stabilityai/stablelm-2-1_6b-chat"),
+        note="the stablelm2 pre-tokenizer family; ChatML with a default system turn",
+        tokenizer=("stablelm-2-1_6b-chat.Q8_0.gguf",)),
     "hermes4": Family(
         "hermes4", ("hf", "NousResearch/Hermes-4-14B"),
         note="ChatML with its own system turn and tools preamble; reasoning "
