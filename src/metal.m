@@ -71,18 +71,10 @@ typedef struct {
     id<MTLComputePipelineState> p_moe_mm[METAL_TYPE_SLOTS];  // grouped MMA, f32-staged
     id<MTLComputePipelineState> p_moe_mmh[METAL_TYPE_SLOTS];  // half-staged twins
     id<MTLComputePipelineState> p_moe_group;                 // slot-by-expert sort
-    // The model mmap, wrapped zero-copy. Usually ONE buffer; more when the file
-    // exceeds maxBufferLength, which on an M1 is 4.29 GB against a 5.73 GB
-    // working set (0.75x) and is the ceiling that actually bites for a big
-    // monolithic GGUF.
-    //
-    // The split is at TENSOR boundaries, so no tensor ever straddles two
-    // buffers and no kernel had to learn about this: a dispatch reads exactly
-    // one weight tensor, so binding the containing buffer and passing an
-    // offset within it is all that changes. Adjacent wraps may overlap by one
-    // page, because a no-copy wrap must start page-aligned and tensors are
-    // not; wrapping the same read-only pages twice costs a page of mapping and
-    // keeps every tensor whole.
+    // The model mmap, wrapped zero-copy: one buffer, or several when the file
+    // exceeds maxBufferLength. Cuts fall at TENSOR boundaries, so a dispatch
+    // binds the one buffer holding its tensor plus an offset; adjacent wraps may
+    // overlap by a page because a no-copy wrap starts page-aligned.
     id<MTLBuffer> wbuf[METAL_MAX_WBUF];
     uint64_t      wbuf_base[METAL_MAX_WBUF];   // host address of each wrap's byte 0
     uint64_t      wbuf_end[METAL_MAX_WBUF];    // one past its last byte's address
@@ -188,58 +180,15 @@ typedef struct { int head_dim, n_head, n_head_kv, n_ctx, pos; uint64_t l_off; fl
                  int q8, window, chunk, n_chunks, kv_rows; uint64_t v_off; int vq8; } attn_chunk_args;
 typedef struct { int head_dim, n_head, n_chunks, has_sinks; } attn_comb_args;
 
-// Chunked decode attention. The split is chosen from the HEAD COUNT, not a
-// fixed span: the point of chunking is to fill the GPU, so what matters is
-// n_head * n_chunks (the threadgroup count), and n_head varies per model.
-// Targeting ~64 threadgroups put an 8-head model at 8 chunks, which is where
-// a measured sweep on an M1 landed too -- 3137 tokens of context: single-pass
-// 7.32, chunk 256 -> 7.86, 384 -> 7.94, 512 -> 7.85, 1024 -> 7.51, and 384 is
-// exactly span/8. Fewer, larger chunks starve the GPU; more, smaller ones pay
-// combine cost for parallelism it cannot use.
-// RUNNER_METAL_ATTN_CHUNK sets an explicit chunk size for measurement, and 0
-// disables the path entirely (the single-pass kernel is the A/B baseline).
-// Revised 2026-08-07. The sweep above never tested 128, and 128 wins: at 3259
-// tokens on gemma-3-4b, chunk 128 gives 8.130 tok/s against 8.060 for the
-// span/8 the target above produces (medians of 3 interleaved rounds, arms
-// disjoint: [8.13,8.14] vs [8.06,8.07]). Every point the two sweeps share
-// agrees -- 256 and 512 land at 7.96/7.95 here against 7.86/7.85 there -- so
-// this is a new point on the curve, not a contradiction of the old one.
-//
-// The target stays expressed in threadgroups rather than a flat chunk size,
-// because the right answer does depend on n_head: a 32-head model already gets
-// 32 threadgroups from the single-pass kernel and needs little splitting, while
-// an 8-head model on an 8-core GPU is starved. Raising the target to 256 leaves
-// many-head models where they were and only makes few-head models finer.
-//
-// HONEST SIZE OF THIS TUNE. Against the previous target, interleaved, 3 rounds:
-// GPU time 119.6-119.7 vs 120.7-120.9 ms/tok, disjoint, ~1.0%. End to end the
-// medians differ by +0.87% but the arms OVERLAP, so it is not separable from
-// noise on this machine. Kept because the direct measure of the thing changed
-// is clean and nothing regresses (short-context decode 9.46 tok/s, unmoved).
-// A second A/B meant to settle it was ABANDONED, not reported: macOS began
-// rendering an animated aerial wallpaper on the same GPU partway through and
-// both arms fell ~7%. Watch for that before trusting any GPU number on an idle
-// Mac -- WallpaperAerialsExtension and WindowServer are the processes to check.
-//
-// For scale, the split itself is worth +9.4% over RUNNER_METAL_ATTN_CHUNK=0
-// (7.975 vs 7.290 tok/s at 3259 ctx, arms disjoint). This tunes it, it does
-// not replace it.
-//
-// Provenance note: this change was pushed inside 5d7808b, whose message
-// describes only a Makefile fix -- `git add -A` swept it in. The measurement
-// record lives here rather than in that commit for exactly that reason.
+// Chunked decode attention, split by HEAD COUNT: the point is to fill the GPU,
+// so the target is threadgroups (n_head * n_chunks); few-head models split
+// finer, many-head ones hardly. RUNNER_METAL_ATTN_CHUNK sets a size to measure,
+// 0 disables the split. The sweeps: docs/metal-tuning-evidence.md.
 #define METAL_ATTN_MAX_CHUNKS 64
 #define METAL_ATTN_TARGET_GROUPS 256
-// Below this many positions per chunk the split is all overhead: at 40 tokens
-// of context an 8-head model would otherwise be cut into 8 chunks of 5, and
-// short-context decode measured 9.28 -> 9.20 tok/s doing exactly that.
-//
-// This is a FLOOR on the chunk size, not a veto on chunking. It used to be the
-// latter -- a target implying chunks below this disabled the split entirely --
-// which is why raising the target alone would have turned the path off at
-// exactly the contexts it helps. Short context still falls back to the
-// single-pass kernel, but via the n_chunks < 2 test below, which is the
-// condition that actually means "nothing to split".
+// A FLOOR on positions per chunk, not a veto on chunking: below it the split is
+// overhead (8 chunks of 5 at 40 tokens measured slower). Short context falls
+// back to the single-pass kernel through the n_chunks < 2 test below.
 #define METAL_ATTN_MIN_CHUNK 128
 static int metal_attn_chunk_override(void) {
     static _Atomic int v = -2;
@@ -390,14 +339,10 @@ static bool metal_moe_batch_on(void) {
     return !v || !*v || (strcmp(v, "0") && strcmp(v, "off"));
 }
 
-// RUNNER_METAL_MOE_EM=1: expert-major expert FFN kernels for large batches.
-// The slot-major default re-reads an expert's weight rows once per slot that
-// selected it; expert-major reads them once per threadgroup and walks the
-// expert's token list from threadgroup memory. Outputs are BIT-IDENTICAL to
-// slot-major (one shared dot body, one writer per (slot, row)) — the gate is
-// byte comparison, not tolerance. Opt-in until its measured prefill win
-// clears the promotion bar; it only engages when a dispatch carries at least
-// as many slots as experts, so decode always stays slot-major.
+// RUNNER_METAL_MOE_EM=1: expert-major expert FFNs for large batches, reading an
+// expert's rows once per threadgroup, not once per slot; BIT-IDENTICAL to
+// slot-major (a byte gate). Opt-in until its prefill win clears the bar; it
+// needs as many slots as experts, so decode stays slot-major.
 static bool metal_moe_em_on(void) {
     static _Atomic int on = -1;
     if (on < 0) {
@@ -440,18 +385,10 @@ static void metal_front_announce(id<MTLComputePipelineState> pipe,
     fprintf(stderr, "gpu: attention front on (%s)\n", name);
 }
 
-// Grouped simdgroup-MMA expert FFNs for prefill (RUNNER_METAL_MOE_MM, default
-// on since 2026-09-01): sort the batch's slots by expert on the GPU and run
-// each expert's token group through the dense k_mm tile structure with
-// gathered columns and float-staged operands. The k-sum is reassociated, so
-// the route answers to the house fidelity bar (margin-qualified top-1 and
-// mean KLD, test-moe-mm-ab in make test), never to byte identity: discrete
-// top-k routing turns reassociation-scale differences into near-tie expert
-// flips, which scripts/moe-mm-flips.py shows are staging-invariant. Returns
-// 0 for "0"/"off" (the slot-major matvec every byte gate pins), 2 for
-// "half" (the half-staged comparison twins), else 1. NOT cached: the
-// mv-vs-mm harness toggles it between loads in one process, and one getenv
-// per MoE layer encode is noise.
+// Grouped simdgroup-MMA expert FFNs for prefill (RUNNER_METAL_MOE_MM, on by
+// default). The k-sum is reassociated, so it answers to the fidelity bar
+// (test-moe-mm-ab), not byte identity. 0 for "0"/"off", 2 for "half", else 1;
+// not cached: the mv-vs-mm harness toggles it between loads in one process.
 static int metal_moe_mm_on(void) {
     const char *v = getenv("RUNNER_METAL_MOE_MM");
     if (!v || !*v) return 1;
@@ -554,14 +491,10 @@ static bool metal_dn_scratch(gpu_t *g, model_t *m, size_t nb) {
     return true;
 }
 
-// The ONE place per-column scratch is sized. gpu_init calls it for n = 1 and
-// gpu_forward_batch for every larger batch, so a buffer added here is covered
-// in both directions. It used to be sized twice — a hand-rolled n = 1 block in
-// gpu_init and this — and the two lists drifted: g->att_acc, g->att_ms and
-// g->agate existed only here, so a session whose every forward is a single
-// token (batch_cap starts at 1, this returns early) ran with them nil and the
-// kernels dereferenced a nil binding. That produced garbage decode past the
-// chunk threshold; see `make test-metal-decode-only`.
+// The ONE place per-column scratch is sized: gpu_init calls it for n = 1 and
+// gpu_forward_batch for larger batches, so a buffer added here exists in both
+// (two lists once drifted and single-token sessions ran on nil bindings;
+// `make test-metal-decode-only` holds it).
 static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
     if (!g || n <= g->batch_cap) return true;
     // eligibility keeps heterogeneous models off this path, but size off the
@@ -700,22 +633,13 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
     return true;
 }
 
-// A device that exists is not a backend that works: if the shader library does
-// not compile, gpu_init falls back and every run is CPU-speed. --caps exists so
-// a scheduler can place work BEFORE dispatching, so reporting a usable Metal
-// backend in that state would be a lie that costs a whole run. Compiling the
-// library here is the same work gpu_init does moments later and only happens
-// on the --caps path. tests/test_metal_shaders.m is the build-time gate.
-// Metal's command buffers and encoders are autoreleased, and a command buffer
-// retains what it used. Runner calls in from plain C threads, which have no
-// autorelease pool, so without one they were never drained: every load left
-// about 113 MB in the GPU driver until the process exited, invisible to RSS and
-// to currentAllocatedSize, and POST /unload reported the model gone (R6.17). So
-// every exported function here that reaches Objective-C drains its own pool, and
-// callers stay plain C. Nothing is held across a return that depends on a pool:
-// each command buffer is local or in the stack-local metal_fwd, each is waited
-// for before its function returns, and what gpu_t keeps comes from new* calls,
-// owned and released in gpu_release_state. tests/test_metal_memory.py holds this.
+// A device that exists is not a backend that works: --caps compiles the shader
+// library as gpu_init does, so a failing library reports Metal unusable instead
+// of a run that falls back to the CPU (tests/test_metal_shaders.m gates it).
+// Every exported function that reaches Objective-C drains its own autorelease
+// pool: callers are plain C threads with none, and each load leaked ~113 MB in
+// the driver without it. Nothing pool-dependent outlives a return
+// (tests/test_metal_memory.py).
 bool gpu_available(char *name, int cap) {
     @autoreleasepool {
     id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
@@ -782,20 +706,10 @@ bool gpu_max_working_set(size_t *bytes) {
     }
 }
 
-// UNVERIFIED — written without a macOS machine to run it on. Nobody on this
-// project has executed this function.
-//
-// Returning false disables the VRAM registry on Metal, which is the correct
-// behaviour anyway rather than a placeholder: Apple GPUs share one unified
-// memory pool with the CPU, gpu_mem_info already declines to report a separate
-// VRAM figure, and the registry's whole arithmetic is "device free bytes minus
-// pending claims". With no device-private pool there is no VRAM to account for
-// and the RAM reservation (--reserve-ram) governs instead.
-//
-// If a Metal build ever does want registry accounting, the identity to return
-// is [MTLDevice registryID] rendered as a string, and gpu_mem_info would have
-// to start reporting recommendedMaxWorkingSetSize / currentAllocatedSize. Both
-// need a real Mac to verify before anyone trusts them.
+// Never run on a Mac. Returning false leaves the VRAM registry off on Metal,
+// which is right: unified memory has no device-private pool, so --reserve-ram
+// governs. Registry accounting would return [MTLDevice registryID] and need
+// gpu_mem_info to report the working set, both to verify on a Mac first.
 bool gpu_device_id(char *id, int cap) {
     (void)id; (void)cap;
     return false;
@@ -1230,19 +1144,11 @@ static bool layer_const(id<MTLDevice> dev, id<MTLBuffer> *dst, const char *name,
 }
 
 
-// Static half of the attention-front admission: everything knowable
-// without resolving wrap buffers, answered as the pipeline that will run
-// (nil = not front-capable). Shared by the engage site and by F2b's defer
-// decision (a deferred add would starve the megakernel of a final x).
-// qk-norm models are served (the kernel replays k_qknorm in-dispatch);
-// v_rmsnorm and gated attention are not. The staged row needs n_embd inside
-// the 32 KB threadgroup budget (<= 7936). Admission is MoE-only, from the
-// measurement, not the type roster: the front recovers dispatch-chain
-// latency, which is where MoE decode's milliseconds sit (120B +5.6%%, 30B
-// +6.0%%, both byte-identical), while a fast dense model is matvec-bound
-// and the head-partitioned grid starves the GPU that the split mv grid
-// fills (Qwen3-8B measured -8.4%%). RUNNER_METAL_FRONT=all (test-only)
-// lifts the MoE requirement so fixture-scale gates can pin every kernel.
+// Static half of the attention-front admission (nil = not front-capable),
+// shared with the deferred-add decision. Served: qk-norm; not: v_rmsnorm, gated
+// attention; n_embd <= 7936 for the staged row. MoE only, as measured: it wins
+// back dispatch latency and starves a dense matvec-bound model
+// (docs/metal-tuning-evidence.md). RUNNER_METAL_FRONT=all (test-only) lifts it.
 static bool metal_front_all(void) {
     const char *v = getenv("RUNNER_METAL_FRONT");
     return v && (!strcmp(v, "all") || !strcmp(v, "1"));
@@ -1390,16 +1296,9 @@ static bool metal_tensor_device_ok(id<MTLDevice> dev) {
     return v.majorVersion > 26 || (v.majorVersion == 26 && v.minorVersion >= 2);
 }
 // Fast decode matvec (k_mvf_*): the reassociating twin of the identity matvec,
-// selected at n_col == 1 only. See the kernel-family comment in kernels.metal
-// for what it does that identity forbids, and tests/test_mv_tol.c for the gate.
-//
-// Default: Q4_K only. The owner promoted k_mvf_q4_K on 2026-10-23 on its D1
-// rows (mean KL 0.9993x / 0.9998x against the publisher's float32 model,
-// decode +10.8% / +12.5% on the Q4_K_M Llamas); Q4_0 and Q8_0 measured
-// neutral and stay opt-in. `RUNNER_METAL_MV=0` restores the identity kernel
-// for every type (what every CPU-against-GPU byte comparison sets),
-// `RUNNER_METAL_MV=1` takes the fast kernel for every type that has one.
-// gpu_mv_force: 0 identity, 1 every type, -1 back to the env default.
+// n_col == 1 only (kernels.metal; gated by tests/test_mv_tol.c). Default Q4_K
+// only, promoted on its fidelity rows; RUNNER_METAL_MV=0 restores identity (every
+// byte comparison sets it), =1 takes every fast kernel. gpu_mv_force: 0, 1, -1.
 enum { MV_ENV_UNSET = -2, MV_OFF = 0, MV_ALL = 1, MV_Q4_K = 2 };
 static _Atomic int g_mv_state = MV_ENV_UNSET;
 
@@ -1407,17 +1306,10 @@ void gpu_mv_force(int on) {
     g_mv_state = on < 0 ? MV_ENV_UNSET : on ? MV_ALL : MV_OFF;
 }
 
-// Cooperative KV score read (k_attn_coop / k_attn_chunk_coop). It reassociates
-// the per-row dot into a simd_sum over 32 lane partials, so it cannot live on
-// the identity route -- it answers to tests/test_attn_tol.c the way the tiled
-// prefill GEMM answers to test_tc_tol.c.
-//
-// PROMOTED 2026-08-17, and it is opt-OUT now: `RUNNER_METAL_ATTN_COOP=0` pins
-// the byte-identical kernel back, exactly as `RUNNER_METAL_MM=0` does for
-// prefill. The cert that bought this is in the suite's
-// m1-night-results-2026-08-17.md -- 0/64 teacher-forced flips on every local
-// model that engages the route, both KV cache formats, at a measured
-// +3.0-4.3% decode across 2.3k-8.1k spans.
+// Cooperative KV score read (k_attn_coop / k_attn_chunk_coop): a simd_sum over
+// 32 lane partials, so it is off the identity route and answers to
+// tests/test_attn_tol.c. On by default; RUNNER_METAL_ATTN_COOP=0 pins the
+// byte-identical kernel, as RUNNER_METAL_MM=0 does for prefill.
 enum { COOP_ENV_UNSET = -2 };
 static _Atomic int g_coop_state = COOP_ENV_UNSET;
 static _Atomic unsigned long g_coop_dispatches = 0;
@@ -1563,33 +1455,18 @@ static int metal_mv_state(void) {
     return st;
 }
 
-// whether a matvec over weights of `type` takes the fast kernel (when the
-// type has one): every type under RUNNER_METAL_MV=1, Q4_K on a dense model
-// by default where its input is at least MV_Q4K_FAST_MIN wide.
-//
-// The width floor (R3.28.1): per-width Q4_K decode time on an Apple M1,
-// fast against identity, ms a token (three rounds each): 1536-wide inputs
-// 11.11 / 9.62 (K2-Horizon-1B Q4_K_M: the fast kernel 15% slower), 2048
-// 10.96 / 12.96 (Llama-3.2-1B) and 1.36 / 1.66 (K2-Horizon), 3072 36.48 /
-// 40.21 (Llama-3.2-3B), 5120 1.88 / 2.45, 8192 1.61 / 2.98 and 5.38 / 7.91.
-// Only 1536 lost, so the identity kernel keeps inputs under 2048 (widths
-// between were not measured and take the exact kernel). The rule depends
-// on the type and width alone, so a microbatch column and the solo step
-// pick the same kernel and keep the same bits.
+// whether a matvec over `type` takes the fast kernel (when the type has one):
+// every type under RUNNER_METAL_MV=1; by default Q4_K on a dense model whose
+// input is at least MV_Q4K_FAST_MIN wide (1536 lost; docs/metal-tuning-evidence.md).
+// Type and width alone decide, so a microbatch column and a solo step match bits.
 #define MV_Q4K_FAST_MIN 2048
 // the route detail names the floor from the same constant (mv=fast-q4_K>=2048)
 #define MV_STR_(x) #x
 #define MV_STR(x) MV_STR_(x)
-// The narrow-slice Q4_K kernel (k_mvg_q4_K, R3.28.2) takes the Q4_K decode
-// matvecs the fast route would: inputs at least MV_Q4K_FAST_MIN wide on a
-// dense model by default, every Q4_K matvec under RUNNER_METAL_MV=1, none
-// under =0. Q4_K decode time per input width on an Apple M1, fast /
-// identity / k_mvg, ms a token (three rounds each): 1536 12.28 / 10.28 /
-// 10.35 (a tie with identity, so the exact kernel keeps it), 2048 11.41 /
-// 12.67 / 9.31, 2560 47.88 / 45.88 / 34.56, 3072 38.05 / 42.14 / 27.68,
-// 4096 5.95 / 8.21 / 5.74, 5120 1.20 / 2.63 / 0.91, 8192 4.78 / 7.73 /
-// 4.45, 9728 7.01 / 10.38 / 6.67. RUNNER_METAL_MVG=0 keeps k_mvf_q4_K
-// there instead (the A/B against the kernel it replaced).
+// The narrow-slice Q4_K kernel (k_mvg_q4_K) takes the Q4_K decode matvecs the
+// fast route would (MV_Q4K_FAST_MIN up on a dense model; all under MV=1, none
+// under =0), beating both others there (docs/metal-tuning-evidence.md).
+// RUNNER_METAL_MVG=0 keeps k_mvf_q4_K (the A/B against what it replaced).
 static bool metal_mvg_on(void) {
     static _Atomic int v = -1;
     if (v < 0) {
@@ -1602,16 +1479,10 @@ static bool metal_mv_fast_for(const gpu_t *g, int type, int n_in);
 static bool metal_q4k_mvg_for(const gpu_t *g, int n_in) {
     return metal_mvg_on() && metal_mv_fast_for(g, T_Q4_K, n_in);
 }
-// The narrow-slice Q6_K kernel (k_mvg_q6_K, R3.28.3) takes Q6_K decode
-// matvecs of a dense model whose input is at least MV_Q6K_FAST_MIN wide (every
-// Q6_K matvec under RUNNER_METAL_MV=1, none under =0); RUNNER_METAL_MVG=0
-// keeps k_mv2_q6_K / k_mv_q6_K there. Q6_K decode time per input width on an
-// Apple M1, k_mv2_q6_K / k_mvg_q6_K, ms a step (three rounds): 1536 (K2-Horizon
-// attn_v and head) 4.77 / 2.05, 2048 0.41 / -0.02 (a 6.9 MB bucket), 2560
-// 2.13 / 1.22, 3072 2.18 / 1.08, 5120 3.95 / 1.85, 8192 3.70 / 2.07 and 9.68 /
-// 6.23, 9728 13.31 / 7.14; the LM heads 11.98 / 5.82 (Qwen3-4B), 8.61 / 3.71
-// and 10.70 / 5.83 (Llama-3.2-1B, -3B). Narrower inputs were not measured
-// and keep the exact kernel. Unlike k_mv2_q6_K it is a tolerance route.
+// The narrow-slice Q6_K kernel (k_mvg_q6_K) takes Q6_K decode matvecs of a
+// dense model from MV_Q6K_FAST_MIN wide (all under RUNNER_METAL_MV=1, none
+// under =0); RUNNER_METAL_MVG=0 keeps k_mv2_q6_K / k_mv_q6_K. A tolerance
+// route, unlike k_mv2_q6_K; the timings are in docs/metal-tuning-evidence.md.
 #define MV_Q6K_FAST_MIN 1536
 static bool metal_q6k_mvg_for(const gpu_t *g, int n_in) {
     int st = metal_mv_state();
@@ -1666,23 +1537,9 @@ bool gpu_kv_f32_ok(void) {
     return false;   // the Metal attention reads f16, q8_0 and fp4 rows; --kv f32 is CPU-only here
 }
 
-// Largest K such that the prologue plus layers [0,K) fit `budget` bytes, and
-// whether a prefix wrap is legal for this file at all.
-//
-// A zero-copy wrap must be one contiguous range, and every kernel indexes
-// g->weights by a FILE offset, so the only shape needing no arithmetic change
-// is a prefix: [0, end of blk.K-1). That requires non-layer tensors to sit
-// before blk.0 and blocks to be ordered -- true of gemma-4-26B, gemma-3-4b,
-// e2b, Trinity-Nano and gpt-oss, five architectures, but a property of how
-// converters write files rather than of the format. So it is CHECKED, and a
-// file that violates it gets full offload or CPU, never a truncated wrap
-// pointed at the wrong weights.
-// Would a partial split actually help? Only if the weights the CPU keeps still
-// fit in available RAM. Wiring K layers into the Metal working set makes them
-// non-evictable, which is the whole point -- but it also removes that memory
-// from the page cache the remaining layers stream through, so on a heavily
-// oversubscribed machine it makes the tail page harder than before. Explicit
-// --gpu-layers bypasses this: an operator asking for a specific split gets it.
+// Whether every tensor the device reads sits whole inside one wrap (under a
+// split, only the first `wlen` bytes count): a tensor straddling a buffer
+// boundary refuses the wrap. Defined once the wraps exist.
 static bool metal_wrap_check(gpu_t *g, model_t *m, uint64_t wlen);
 
 // Tensors no Metal kernel ever reads. The gemma-4 E-series per-layer token
@@ -1713,17 +1570,9 @@ static uint64_t metal_wbuf_cap(id<MTLDevice> dev) {
 }
 
 // Wrap [0, wlen) of the model mmap in as few zero-copy buffers as the
-// per-buffer ceiling allows, cutting only at TENSOR boundaries so no tensor is
-// ever split across two of them. That is what lets every kernel stay unchanged:
-// a dispatch reads exactly one weight tensor, so the caller binds the
-// containing buffer and passes an offset within it.
-//
-// Wraps may overlap by up to a page. A no-copy wrap must begin page-aligned
-// and tensors are not page-aligned, so a cut rounds its base DOWN to a page,
-// which re-includes the tail of the previous group. Those bytes are read-only
-// and never addressed through the second wrap; the cost is one page of extra
-// mapping per cut, and the alternative (cutting mid-tensor) is a correctness
-// bug.
+// per-buffer ceiling allows, cut only at TENSOR boundaries so every kernel
+// binds one buffer plus an offset. A cut rounds its base down to a page, so
+// wraps may overlap by a page of read-only bytes never addressed twice.
 static bool metal_wrap_weights(gpu_t *g, model_t *m, id<MTLDevice> dev,
                                uint64_t wlen, size_t page) {
     uint64_t cap = metal_wbuf_cap(dev);
@@ -1850,15 +1699,10 @@ static bool metal_wrap_weights(gpu_t *g, model_t *m, id<MTLDevice> dev,
     return true;
 }
 
-// Which wrap holds [off, off+len), and where inside it. The LENGTH is part of
-// the question: a kernel reads a whole tensor, and a wrap that contains the
-// first byte but not the last would read past its own mapping. Linear over at
-// most METAL_MAX_WBUF entries, and one compare in the single-buffer case.
-//
-// Returns nil only when no single wrap contains the range, which
-// metal_wrap_check() has already ruled out at init -- so a nil here is a
-// programming error, and the callers say so rather than binding something
-// plausible and returning wrong numbers.
+// Which wrap holds [off, off+len), and where inside it: the LENGTH counts, as a
+// kernel reads the whole tensor. nil means no single wrap holds it, which
+// metal_wrap_check() rules out at init, so callers treat nil as a programming
+// error rather than bind something plausible.
 static id<MTLBuffer> metal_wbuf_for(gpu_t *g, uint64_t off, uint64_t len,
                                     uint64_t *within) {
     for (int i = 0; i < g->n_wbuf; i++)
@@ -1884,18 +1728,10 @@ static bool metal_bind_inject(void) {
     return on > 0;
 }
 
-// Bind helper for the three sites that address the weight mmap. Keeps the
-// fallback in ONE place: with a single wrap the resolver always succeeds, so
-// this degrades to exactly the old behaviour and the diagnostic can never fire.
-//
-// When it does fire, the offload ENDS. This used to bind buffer 0 at the
-// unresolvable offset, announce that "results from this model are not
-// trustworthy", and compute — which is what a split GGUF got for as long as
-// that path existed. A range no wrap holds cannot be read, and an internal bug
-// is the last place to keep going: the flag is sticky, gpu_forward_native_batch
-// discards the forward, and the caller finishes on the CPU. The encoder still
-// needs a well-formed binding, so buffer 0 at offset 0 goes in and the result
-// is thrown away rather than an out-of-range offset being handed to a kernel.
+// Bind helper for the three sites that address the weight mmap; with one wrap
+// it always resolves. When it cannot, the offload ENDS (a sticky flag): buffer 0
+// at offset 0 keeps the encoder well formed, the forward still runs, and its
+// result is discarded before anything reads it; the CPU finishes the turn.
 static uint64_t metal_bind_weights(gpu_t *g, id<MTLComputeCommandEncoder> e,
                                    uint64_t off, uint64_t len) {
     uint64_t within = 0;
@@ -1944,27 +1780,10 @@ static bool metal_wrap_check(gpu_t *g, model_t *m, uint64_t wlen) {
 static bool metal_partial_pays(const model_t *m, uint64_t wrapped) {
     uint64_t have = plat_ram_available_bytes();
     if (!have) return false;                 // cannot tell: do not gamble
-    // The WRAPPED part must fit in RAM. This is the condition that matters and
-    // it is not the one this guard originally checked.
-    //
-    // The design behind partial offload argued the win was residency: wiring
-    // weights into the Metal working set makes them non-evictable, so an
-    // oversubscribed model would stop paging. That is wrong, and physics says
-    // why -- you cannot pin more bytes than the machine has. Measured twice on
-    // an 8 GB M1 with ~2.8 GB available:
-    //   gemma-4-26B, 3.8 GB wrapped:  1.5-1.7 -> 0.21 tok/s   (8x slower)
-    //   e4b-q4km,    4.3 GB wrapped:  5.6     -> 0.15 tok/s   (35x slower)
-    // Both passed the old tail-fits check. Neither could hold its wrap
-    // resident, so the pinned pages thrashed against everything else.
-    //
-    // What survives is narrow and honest: partial offload helps only when the
-    // WHOLE model fits in RAM but its weights plus KV/scratch exceed Metal's
-    // aggregate working-set budget. maxBufferLength no longer enters this
-    // decision: the multi-buffer wrapper removes that per-resource ceiling.
-    // In the fits-in-RAM case the split costs nothing in residency and gains
-    // the ordinary compute blend. An oversubscribed model is refused however
-    // the split is drawn, because whatever is pinned is taken from what the
-    // rest must stream through.
+    // The WRAPPED part must fit in RAM: pinning more than the machine has
+    // thrashes (8x and 35x slower on an 8 GB Mac: docs/metal-tuning-evidence.md).
+    // Partial offload helps only when the whole model fits in RAM but its
+    // weights plus KV and scratch exceed Metal's working-set budget.
     // host-only tables (metal_host_only) are row-gathered, not streamed:
     // their size is not what has to stay resident
     uint64_t total = m->gf.map_size - metal_host_only_bytes(m);
@@ -1972,23 +1791,11 @@ static bool metal_partial_pays(const model_t *m, uint64_t wrapped) {
     return total + margin <= have && wrapped <= total;
 }
 
-// A non-layer tensor stored after the layers is outside any prefix wrap. The
-// split may leave it there only when the device never reads it from the
-// wrap under a split: the head (output_norm, output) runs on the device only
-// at a full offload (the whole file wrapped) and the CPU finishes a split,
-// out_norm is copied into its own buffer anyway, token_embd is dequantized
-// on the host, gemma-4 E-series' per-layer projection and its norm are read by
-// the host's prepass, and a row-gathered table (metal_host_only: E-series'
-// per-layer token table) is left out of every wrap. A tensor this list does
-// not name is refused: the device might read it.
-//
-// The layers themselves may be stored in any order: the wrap reaches the
-// farthest tensor of the device's layers (end_of below is a running
-// maximum), and a host layer stored inside that span is wrapped zero-copy and
-// never read, its bytes counted against the budget like any wrapped byte.
-// Qwen's Qwen2.5-1.5B-Instruct Q8_0 is stored in name order (blk.0, blk.1,
-// blk.10 to blk.19, blk.2, ...) with output_norm.weight last, and both the
-// order and the trailing norm refused every split of it until R4.31.
+// A non-layer tensor after the layers is outside a prefix wrap: allowed only if
+// the device never reads it under a split (head, out_norm, token_embd, the
+// E-series projection and norm, host-only tables); anything else is refused.
+// Layers may be in any order: the wrap runs to the farthest device-layer
+// tensor, and a host layer inside that span is wrapped, never read, and counted.
 static bool metal_split_never_reads(const model_t *m, const gguf_tensor *w) {
     return !strcmp(w->name, "output_norm.weight") || !strcmp(w->name, "output.weight") ||
            !strcmp(w->name, "token_embd.weight") ||
@@ -2115,14 +1922,9 @@ static bool metal_admit(model_t *m) {
                     m->arch);
             return false;
         }
-        // EVERY tensor this layer will hand to enc_mv_n, because that indexes
-        // g->p_mv[] / g->p_mm[] by the tensor's type: an unadmitted type is a
-        // nil pipeline at best and an out-of-range read of the table at worst.
-        // ple_gate and ple_proj (the gemma-4 E-series per-layer embedding
-        // projections) were missing, so an E-series file quantizing them
-        // outside this list reached the dispatch instead of the refusal.
-        // Bound off the array, not a literal 8 — that literal is the same kind
-        // of hand-kept second fact the list itself is.
+        // EVERY tensor this layer hands to enc_mv_n: it indexes the pipeline
+        // tables by type, so an unadmitted type is a nil pipeline or an
+        // out-of-range read. Sized off the array, not a hand-kept literal.
         gguf_tensor *ws[] = { ly->wq, ly->wk, ly->wv, ly->wo,
                               ly->w_gate, ly->w_up, ly->w_down, ly->wq_gate,
                               ly->ple_gate, ly->ple_proj,
@@ -2380,19 +2182,10 @@ static bool metal_check_pipelines(model_t *m, gpu_t *g) {
         (!g->p_dn_ring || !g->p_m2_conv || !g->p_m2_scan || !g->p_m2_gnorm ||
          (m->ffn_relu2 && !g->p_relu2)))
         return gpu_init_fail(m, g, nil, "Mamba-2 pipeline allocation");
-    // Admission and the pipeline tables must agree BY CONSTRUCTION rather than
-    // by two hand-kept lists. enc_mv and enc_moe_mv index p_mv[]/p_moe_mv[] by
-    // tensor type with no nil check at the use site, and
-    // -setComputePipelineState:nil raises rather than failing a return value:
-    // a type added to an admission allowlist without its kernel would crash
-    // mid-forward, on whatever model first carried that type. Driving the
-    // check from the same predicates the loader admits with turns that into a
-    // loud refusal at load, and keeps working when a type is added to either
-    // list. (This is what the two literal lists here used to assert by hand,
-    // and they had already fallen behind: the dense list checked 11 of the 16
-    // types gpu_type_ok admits, leaving BF16, Q2_K, Q3_K, IQ4_NL and IQ4_XS
-    // unasserted. All 16 do have kernels today -- the list had drifted, not
-    // the kernels.)
+    // Admission and the pipeline tables agree BY CONSTRUCTION: enc_mv and
+    // enc_moe_mv index them by type with no nil check, and a nil pipeline
+    // state raises mid-forward. Checking from the loader's own predicates
+    // makes a type without a kernel a loud refusal at load.
     for (int t = 0; t < METAL_TYPE_SLOTS; t++) {
         if (gpu_type_ok(t) && !g->p_mv[t]) {
             fprintf(stderr, "gpu: no Metal matvec kernel for admitted type %s\n",
@@ -2423,25 +2216,16 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
     size_t wlen = (m->gf.map_size + page - 1) & ~(page - 1);
     uint64_t wtotal = gguf_mapped_size(&m->gf) - metal_host_only_bytes(m);
 
-    // Choose K. Full offload stays the default and the fast path; a partial
-    // split is only entered when the whole file cannot be wrapped, because a
-    // model that fits should never pay a CPU tail.
-    //
-    // The ceiling covers KV and scratch as well as weights, not weights alone
-    // -- measured: a 5.17 GB wrap was refused under a 5.73 GB limit. So the
-    // budget subtracts what this load will also allocate, and keeps a margin
-    // on top rather than trusting the remainder to be exact.
+    // Choose K. Full offload stays the default; a partial split only when the
+    // whole file cannot be wrapped or --gpu-layers asks for one. The ceiling
+    // covers KV and scratch too (a 5.17 GB wrap was refused under 5.73 GB), so
+    // the budget subtracts what this load allocates and keeps a margin.
     int gpu_K = m->n_layer;
     uint64_t ws_limit = dev.recommendedMaxWorkingSetSize;
     {
-        // recommendedMaxWorkingSetSize is the aggregate residency ceiling.
-        // The budget subtracts KV and scratch and keeps a safety margin.
-        // maxBufferLength is smaller (4.29 GB against 5.73 GB on an M1), but
-        // it is only the size of each individual wrap: metal_wrap_weights()
-        // cuts a larger file into several tensor-boundary buffers. Clamping
-        // this budget to maxBufferLength preserved the old ceiling in the
-        // admission decision even after the multi-buffer implementation had
-        // removed it from allocation.
+        // recommendedMaxWorkingSetSize is the aggregate ceiling; maxBufferLength
+        // only bounds each wrap, which metal_wrap_weights() splits, so it must
+        // not clamp this budget.
         uint64_t other = metal_other_bytes(
             (uint64_t)model_kv_boundary_bytes_sum(m, m->n_layer),
             m->n_batch, m->n_head, m->n_ctx);
@@ -2481,16 +2265,10 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
                     "not even one layer fits the Metal working set");
             } else if (wlen > budget && cap <= 0 &&
                        !metal_partial_pays(m, wrap_end)) {
-                // Auto-selected partial offload that would make things WORSE.
-                // Measured on an 8 GB M1 with gemma-4-26B: wrapping 3.8 GB of
-                // 14.4 left the remaining 10.6 GB of CPU-side weights fighting
-                // an already-starved page cache, and decode went 1.5-1.7 ->
-                // 0.21 tok/s. An 8x regression, enabled by default, on the
-                // exact model this feature was built for.
-                //
-                // Residency only pays if the tail the CPU still owns fits in
-                // RAM. When it does not, pinning part of the model just takes
-                // memory from the part that is streaming.
+                // Auto-selected partial offload that would make things WORSE:
+                // residency pays only if the CPU's tail fits in RAM, else the
+                // pinned part starves the streaming part (gemma-4-26B on 8 GB:
+                // 1.5 to 0.21 tok/s).
                 return gpu_init_fail(m, g, nil,
                     "model is larger than available RAM, so no split can be "
                     "held resident — CPU-only is faster (--gpu-layers forces "
@@ -2603,15 +2381,9 @@ static bool metal_alloc_state(model_t *m, gpu_t *g, id<MTLDevice> dev) {
             return gpu_init_fail(m, g, nil, "recurrent state allocation");
     }
     g->dummy  = new_shared_buf(dev, 4);
-    // Chunked decode attention partials: one (max, sum, hd-vector) per
-    // (head, chunk). They carry NO batch dimension -- the split is taken only
-    // at n == 1 -- so they are sized once here rather than in
-    // metal_ensure_batch(). Sizing them there left them nil for the whole run
-    // of a session whose every forward is a single token, because
-    // metal_ensure_batch returns early at n <= batch_cap and batch_cap starts
-    // at 1: the chunked kernels then wrote their partials through a nil
-    // binding and decode produced garbage past the chunk threshold, silently
-    // (`make test-metal-decode-only`).
+    // Chunked decode attention partials: one (max, sum, hd-vector) per (head,
+    // chunk), no batch dimension (the split runs at n == 1 only), so sized
+    // here: metal_ensure_batch returns early for single-token sessions.
     g->att_acc = new_shared_buf(dev, sizeof(float) * (size_t)m->n_head *
                         METAL_ATTN_MAX_CHUNKS * (size_t)model_head_dim(m, 0));
     g->att_ms  = new_shared_buf(dev, sizeof(float) * (size_t)m->n_head *
@@ -2817,18 +2589,10 @@ bool gpu_init(model_t *m) {
 // ---------------------------------------------------------------- encoding
 
 // ------------------------------------------------------- dispatch census
-// "Where does the batch dimension collapse?" is not answerable from
-// throughput: a kernel that takes the batch in grid.y and a kernel encoded n
-// times cost the same to WRITE and look identical from outside. This counts
-// dispatches by kind, so a prefill census at two batch sizes shows directly
-// which kinds scale with n (collapsed) and which do not (batched).
-//
-// Off unless RUNNER_METAL_STATS is set... except that the counters themselves
-// are unconditional: a branch per dispatch costs more than the increment.
-// They are atomic. A command buffer is encoded on one thread, but parallel
-// slots encode theirs at once, and a plain ++ two slots race on loses counts
-// (and is a data race); an uncontended atomic add is a few cycles against a
-// dispatch's encoding.
+// Counts dispatches by kind, so a prefill census at two batch sizes shows which
+// kinds scale with n (collapsed) and which do not (batched); throughput cannot.
+// Printed under RUNNER_METAL_STATS but always counted (a branch costs more than
+// the add), atomically, since parallel slots encode at once.
 static struct {
     _Atomic unsigned long tensor, mm, mv, mvf, rmsnorm, qknorm, headnorm, rope, store,
                           attn, attn_chunk, elem, moe, ple;
@@ -2888,14 +2652,11 @@ static void enc_rmsnorm(gpu_t *g, id<MTLComputeCommandEncoder> e,
     enc_rmsnorm_n(g, e, x, x_off, y, y_off, w, n, eps, 1, n, n);
 }
 
-// n_col columns in one dispatch (see the MV macros in kernels.metal): the
-// weight row is walked once per column and stays in cache after the first, so
-// a prompt batch stops re-streaming the whole weight matrix per token. Output
-// is bit-identical to n_col separate enc_mv calls.
-// Columns per threadgroup in the batched matmul. Tunable so the tradeoff can
-// be re-measured on other Apple GPUs without a rebuild.
+// n_col columns in one dispatch (the MV macros in kernels.metal): the weight
+// row stays in cache after the first column; bit-identical to n_col enc_mv calls.
+// Columns per threadgroup in the batched matmul, tunable without a rebuild.
 // RUNNER_METAL_MVFC=0 keeps multi-column Q4_K decode on k_mvf_q4_K's column
-// walk (the A/B arm for R3.24 (a)); default on
+// walk (the A/B arm); default on.
 static bool metal_mvfc_on(void) {
     static _Atomic int v = -1;
     if (v < 0) {
@@ -2962,19 +2723,10 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                      id<MTLBuffer> y, NSUInteger y_off,
                      int n_in, int n_out, id<MTLBuffer> bias,
                      int n_col, int x_stride, int y_stride) {
-    // The narrowest batches take the multi-column IDENTITY matvec, not the
-    // GEMM tiles: a 32-wide mm tile carrying 2 real columns is a full weight
-    // sweep through mostly padding. Up to 2026-10-31 this held for 2 to 16
-    // columns, sized for the speculative window when verify rounds came
-    // through here. They no longer do (metal_forward_rows runs a round as its
-    // solo steps, and the decode microbatch calls enc_mv_cols itself), so
-    // only prompt chunks and scoring keep-forwards reach this, and none of
-    // them is held to a solo step's bits. Measured on the Metal test host
-    // (R3.24), GPU ms a forward at n columns, matvec against tiles:
-    // Qwen3.5-0.8B Q8_0 n=4 43 / 57, n=6 61 / 58, n=16 148 / 63;
-    // granite-4.0-h-micro Q4_K_M n=3 251 / 265, n=4 335 / 267, n=16 1332 /
-    // 282 (the matvec reuses nothing on Q4_K there). So the matvec keeps 2
-    // and 3 columns, and the tiles take 4 and up.
+    // The narrowest batches (2 and 3 columns) take the multi-column IDENTITY
+    // matvec, not GEMM tiles that are mostly padding; 4 and up take the tiles.
+    // Only prompt chunks and scoring reach this, none held to a solo step's
+    // bits (measured: docs/metal-tuning-evidence.md).
     if (n_col > 1 && n_col <= 3) {
         enc_mv_cols(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
                     n_col, x_stride, y_stride, false);
@@ -3061,15 +2813,10 @@ static bool enc_mm_tiles(gpu_t *g, id<MTLComputeCommandEncoder> e,
     return false;
 }
 
-// The identity matvec tail of enc_mv_n, callable directly: the microbatch
-// decode path (fwd_micro below) must stay BIT-IDENTICAL to sequential solo
-// decode, so it may never take the mm/tensor branches above — each column
-// here runs the exact k_mv dot the solo path runs, weights served from cache
-// across the columns. This is the same twin discipline CUDA's enc_mv_batch
-// enforces, arrived at from the other side.
-// `decode`: the columns are decode steps (one token, or the microbatch's
-// slots), which is where the fast matvec may run; a prefill batch that lands
-// here keeps the identity kernel.
+// The identity matvec tail of enc_mv_n, callable directly: microbatch decode
+// must stay BIT-IDENTICAL to solo decode, so it never takes the mm/tensor
+// branches (CUDA's enc_mv_batch keeps the same rule). `decode`: the columns are
+// decode steps, where the fast matvec may run; a prefill batch keeps identity.
 static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
                         gguf_tensor *w, id<MTLBuffer> x, NSUInteger x_off,
                         id<MTLBuffer> y, NSUInteger y_off,
@@ -3410,14 +3157,9 @@ static int moe_xrows(int nslots, int slots_per_token) {
 }
 
 // One expert tensor's grouped tile and the scale buffer it reads, chosen
-// together (R6.68.113). The half-staged twin (RUNNER_METAL_MOE_MM=half) reads
-// each activation row's max|x| from g->xsc, so it is taken only once that
-// buffer holds this tensor's rows; when the buffer cannot be made the tensor
-// takes the f32-staged tile, and the log says so once. pso nil: the per-slot
-// matvec (no kernel for the type, an input the tile does not step whole, or
-// half mode for a type with no half twin). enc_moe_mm used to make the
-// buffer after its caller had chosen the half twin, and on a failure bound
-// g->dummy in its place: every row came back NaN.
+// together: the half-staged twin reads max|x| from g->xsc, so it is taken only
+// once that buffer holds this tensor's rows, else the f32 tile (logged once).
+// pso nil: the per-slot matvec (no kernel, a partial tile step, no half twin).
 typedef struct { id<MTLComputePipelineState> pso; bool half; } moe_mm_route;
 
 static moe_mm_route moe_mm_pick(gpu_t *g, int mm_mode, uint32_t type, int n_in,
@@ -3591,14 +3333,11 @@ bool gpu_mvcanon(model_t *mm, const gguf_tensor *w, const float *x, float *y,
     return false;   // no canonical-order shaders yet
 }
 
-// ------------------------------------- adapter residency (R8.8, D2 on Metal)
+// ------------------------------------- adapter residency (LoRA on Metal)
 //
-// Called once, after model_lora_load has parsed the adapter and before any
-// forward. Copies A and B for every GPU-resident (layer, slot) that carries
-// one. A layer the split left on the host is skipped: its host hook already
-// applies the same delta. Fails loudly rather than quietly serving an
-// unadapted model, because that failure is invisible in the output and looks
-// exactly like a weak adapter.
+// Once, after model_lora_load and before any forward: copies A and B for every
+// GPU-resident (layer, slot) that has one; host layers keep their own hook.
+// Fails loudly: an unadapted model looks exactly like a weak adapter.
 bool gpu_lora_bind(model_t *mm) {
     @autoreleasepool {
     gpu_t *g = mm->gpu;
@@ -3805,19 +3544,10 @@ static void metal_handoff_boundary(model_t *m, int n) {
     memcpy(m->x, g->x.contents, sizeof(float) * (size_t)n * m->n_embd);
 }
 
-// A speculative verify round (model_forward_verify): the walk's tokens are
-// the plain path's only if each row is a solo step's bits, and for n > 1 the
-// encoder takes other kernels than a decode step (the fused decode stages,
-// the decode attention variants), so a round's rows differ from its steps
-// in the last bits (measured on the fixtures: from the first 2-row round).
-// So the round runs as its solo steps, in order, each writing its KV row
-// before the next reads it, as decoding would; the rows' logits (or, on a
-// partial split, their boundary activations) are kept for the walk. Running
-// the rows as one decode microbatch instead (its kernels are the steps'
-// twins) measured no faster on an M1 (2026-10-21: Qwen2.5-1.5B lookup 21.3
-// vs 21.8 tok/s, Llama-3.2-3B with a 1B draft 6.4 vs 6.7): the identity
-// matvecs and unfused stages it runs per column cost what the fused decode
-// steps do there, so a round still costs about a decode step a row.
+// A speculative verify round (model_forward_verify): each row must be a solo
+// step's bits, and n > 1 takes other kernels than a decode step, so the round
+// runs as its solo steps in order, each writing its KV row before the next
+// reads it; the rows' logits (or a split's boundary activations) are kept.
 static float *metal_forward_rows(model_t *m, const int32_t *tokens, int n, int pos,
                                  bool partial) {
     gpu_t *g = (gpu_t *)m->gpu;
@@ -4159,14 +3889,10 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     if (ep && metal_nan_stage() >= 3) *ep = e;
 }
 
-// gemma-4 E-series per-layer embeddings, mirroring the CPU tail in model.c:
-// gate(x) -> GELU-gated against this layer's slice of the per-layer embedding
-// table -> project back to n_embd -> own RMS norm -> into the residual. Runs
-// on the post-FFN residual and BEFORE the layer output scale.
-//
-// m->ple is filled on the host by model_ple_prepass before the backend is
-// called, so the slice is copied into a shared buffer once per forward rather
-// than recomputed here.
+// gemma-4 E-series per-layer embeddings, mirroring model.c's CPU tail: gate,
+// GELU-gated against this layer's slice of the table, project to n_embd, own
+// RMS norm, into the residual; after the FFN residual, BEFORE the output scale.
+// m->ple comes from the host prepass and is copied in once per forward.
 static void enc_ple(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                     layer_t *ly, int l, int n, int xdim) {
     int P = m->n_embd_ple, n_embd = m->n_embd;
@@ -5252,15 +4978,10 @@ static bool metal_env_default_on(const char *name) {
 
 // ---------------------------------------------------- Metal microbatch decode
 //
-// N server slots share one weight sweep per decode step. The projections run
-// as multi-column identity matvecs (enc_mv_cols — the exact k_mv dot the solo
-// path runs, per column, so the microbatch is BIT-IDENTICAL to sequential
-// decode; the weight rows are simply served from cache for columns 2..N).
-// Rope, KV store and attention stay one dispatch per column, because each
-// column has its own position and its own slot's KV buffers — those kernels
-// are the solo kernels applied to the solo data, encoder-ordered. Same twin
-// discipline as CUDA's fwd_batch, minus the upload/copyback half that unified
-// memory never needed.
+// N slots share one weight sweep per decode step: projections as multi-column
+// identity matvecs (enc_mv_cols, BIT-IDENTICAL to sequential decode); rope, KV
+// store and attention one dispatch per column (own position, own slot's KV),
+// the solo kernels on the solo data. CUDA's fwd_batch keeps the same twin rule.
 struct gpu_batch {
     model_t     **seqs;    // borrowed
     int           n;
@@ -5431,15 +5152,10 @@ void gpu_batch_free(gpu_batch *b) {
     }
 }
 
-// One weight product of the microbatch: the identity matvec, each column its
-// solo decode's bits, or under RUNNER_METAL_BATCH_TILES the GEMM tiles where
-// they take the weight (the matvec stays the route for any they do not).
-// The tiles cost about the same at any width up to their 32 columns, the
-// matvec grows with every column, so the tiles start at MB_TILES_MIN.
-// Measured on an Apple M1, K2-Horizon-1B, aggregate tok/s of N concurrent
-// 96-token requests, matvec against tiles (2026-11-02): Q4_K_M N=2 34.4 /
-// 19.5, N=4 40.7 / 35.8, N=5 42.2 / 43.0, N=6 43.5 / 50.4, N=8 45.2 / 63.2;
-// Q8_0 N=4 54.1 / 39.9, N=6 56.7 / 56.0, N=7 57.3 / 62.9, N=8 58.2 / 69.9.
+// One weight product of the microbatch: the identity matvec (each column its
+// solo decode's bits), or under RUNNER_METAL_BATCH_TILES the GEMM tiles where
+// they take the weight. Tiles cost about the same up to 32 columns while the
+// matvec grows per column, so they start at MB_TILES_MIN (docs/metal-tuning-evidence.md).
 enum { MB_TILES_MIN = 6 };
 
 static bool enc_mb_mv(gpu_t *g, id<MTLComputeCommandEncoder> e,
