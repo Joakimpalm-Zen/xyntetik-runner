@@ -21,10 +21,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 GIB = 1 << 30
 DOJO_8GIB = ["qwen3-4b-runner-tooluse-merged-q8_0", "ministral-3-3b-instruct-2512-q8_0", "spark-x2.6-4b-q4_k_m",
              "nemotron-3.5-bolt-e4b-q4_k_m", "minicpm5-2b-q8_0", "spark-x2.5-4b-q4_k_m",
-             "qwen3-4b-q4_k_m-bartowski", "ministral-3-3b-instruct-2512-q4_k_m",
+             "qwen3-4b-q4_k_m-bartowski", "ministral-3-3b-instruct-2512-q4_k_m", "smollm2-1.7b-instruct-q8_0",
              "minicpm5-2b-q4_k_m", "gemma-4-e2b-it-q4_k_m-q4_0-mix", "lfm2.5-1.2b-instruct-q8_0",
-             "k2-horizon-0.9b-q8_0", "lfm2.5-1.2b-instruct-q4_k_m", "k2-horizon-0.9b-q4_k_m",
-             "lfm2.5-350m-q8_0", "lfm2.5-350m-q4_k_m"]
+             "k2-horizon-0.9b-q8_0", "smollm2-1.7b-instruct-q4_k_m", "lfm2.5-1.2b-instruct-q4_k_m",
+             "k2-horizon-0.9b-q4_k_m", "lfm2.5-350m-q8_0", "lfm2.5-350m-q4_k_m", "smollm2-135m-instruct-q8_0"]
 
 
 def _file(name, gib, **extra):
@@ -137,8 +137,8 @@ def test_the_subcommand_is_the_mode(runner_bin, roster):
 
 
 def test_the_embedded_roster_gives_dojos_list(runner_bin):
-    """Without --roster the binary reads its own snapshot: at 8 GiB the list Dojo's run gave,
-    and the same entries --roster reads from the committed file."""
+    """Without --roster the binary reads its own snapshot: at 8 GiB the list Dojo's run gave, with
+    the rows admitted since, and the same entries --roster reads from the committed file."""
     rc, out, err = _recommend(runner_bin, "--memory", "8")
     assert rc == 0, err
     assert _ids(out) == DOJO_8GIB, out
