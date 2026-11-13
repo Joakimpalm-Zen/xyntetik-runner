@@ -348,7 +348,11 @@ int main(void) {
             uint8_t seed[32];
             for (int i = 0; i < 32; i++) seed[i] = (uint8_t)(i * 7 + ai);
             char pub[SIGN_PUBHEX_CAP];
-            assert(signkey_write(key_path, algos[ai], seed, pub));
+            remove(key_path);   // a key is never written over one a run left
+            bool held = true;
+            assert(signkey_write(key_path, algos[ai], seed, pub, &held) && !held);
+            // and a second write to the same path is refused, the file whole
+            assert(!signkey_write(key_path, algos[ai], seed, pub, &held) && held);
             assert(strlen(pub) == pk_len[ai] * 2);
             signkey k;
             assert(signkey_load(key_path, &k));

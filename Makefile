@@ -427,10 +427,14 @@ $(OBJDIR)/build-commit.stamp: FORCE
 	@mkdir -p $(dir $@)
 	@want='$(BUILD_COMMIT) $(BUILD_DIRTY)'; \
 	[ "$$(cat $@ 2>/dev/null)" = "$$want" ] || printf '%s\n' "$$want" > $@
+# Every binary that compiles src/provenance.c takes the stamp: the object
+# below, and each binary built from $(SRC) in one command (the sanitized
+# runner-debug and the negative controls), which the stamp file also rebuilds.
+# The sanitized suite's runner said commit null until they did.
+BUILD_STAMP = -DRUNNER_BUILD_COMMIT='"$(BUILD_COMMIT)"' -DRUNNER_BUILD_DIRTY=$(BUILD_DIRTY)
 $(OBJDIR)/provenance.o: src/provenance.c $(HDR) $(OBJDIR)/build-commit.stamp
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -I src -DRUNNER_BUILD_COMMIT='"$(BUILD_COMMIT)"' \
-		-DRUNNER_BUILD_DIRTY=$(BUILD_DIRTY) -c $< -o $@
+	$(CC) $(CFLAGS) -I src $(BUILD_STAMP) -c $< -o $@
 
 # ML-DSA-44 (FIPS 204) receipt signatures: the wrapper plus the vendored
 # pq-crystals reference under src/mldsa/ (integer-only code, so the float
@@ -540,24 +544,24 @@ runner: $(OBJDIR)/$(RUNNER_EXE) FORCE
 
 # Local negative controls for scripts/write-stall.py. These compile from the
 # same sources and embedded kernels as runner; they are not release artifacts.
-runner-no-write-timeout: $(SRC) $(HDR) src/kernels_ptx.h
-	$(CC) $(CFLAGS) -DRUNNER_TEST_NO_WRITE_TIMEOUT $(SRC) -o $@ $(LDFLAGS)
+runner-no-write-timeout: $(SRC) $(HDR) src/kernels_ptx.h $(OBJDIR)/build-commit.stamp
+	$(CC) $(CFLAGS) $(BUILD_STAMP) -DRUNNER_TEST_NO_WRITE_TIMEOUT $(SRC) -o $@ $(LDFLAGS)
 
-runner-sigpipe-default: $(SRC) $(HDR) src/kernels_ptx.h
-	$(CC) $(CFLAGS) -DRUNNER_TEST_SIGPIPE_DEFAULT $(SRC) -o $@ $(LDFLAGS)
+runner-sigpipe-default: $(SRC) $(HDR) src/kernels_ptx.h $(OBJDIR)/build-commit.stamp
+	$(CC) $(CFLAGS) $(BUILD_STAMP) -DRUNNER_TEST_SIGPIPE_DEFAULT $(SRC) -o $@ $(LDFLAGS)
 
 # The rule that no blocking client write happens under the device turn, as a
 # build: send_all ends the process if one does, and the turn runs without a GPU.
-runner-turn-guard: $(SRC) $(HDR) src/kernels_ptx.h
-	$(CC) $(CFLAGS) -DRUNNER_TEST_TURN_GUARD $(SRC) -o $@ $(LDFLAGS)
+runner-turn-guard: $(SRC) $(HDR) src/kernels_ptx.h $(OBJDIR)/build-commit.stamp
+	$(CC) $(CFLAGS) $(BUILD_STAMP) -DRUNNER_TEST_TURN_GUARD $(SRC) -o $@ $(LDFLAGS)
 
 # Every translation unit, including quantization, must carry instrumentation.
 # An optimized object linked into this binary silently loses its sanitizer gate.
 SAN_FLAGS = -O0 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined \
             -fno-omit-frame-pointer -fno-fast-math -std=gnu11 -Wall $(GPU_BACKEND_DEF)
 SAN_SRC = $(filter-out $(QUANTS_OBJ) $(QUANTIZE_OBJ),$(SRC)) src/quants.c src/quantize.c
-debug: $(SAN_SRC) $(HDR)
-	$(CC) $(SAN_FLAGS) $(SAN_SRC) -o runner-debug $(LDFLAGS)
+debug: $(SAN_SRC) $(HDR) $(OBJDIR)/build-commit.stamp
+	$(CC) $(SAN_FLAGS) $(BUILD_STAMP) $(SAN_SRC) -o runner-debug $(LDFLAGS)
 
 # $(CFLAGS), not a hand-rolled flag list: schema bounds compile in the same
 # -ffast-math configuration as the shipped binary. Building this test without

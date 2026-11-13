@@ -213,8 +213,10 @@ typedef struct {
     uint8_t sk[SIGN_SK_MAX];
 } signkey;
 bool sign_algo_known(const char *algo);
+// It never replaces a file: `path` must not exist, and *exists (when given)
+// says that this was why it failed.
 bool signkey_write(const char *path, const char *algo, const uint8_t seed[32],
-                   char pub_hex[SIGN_PUBHEX_CAP]);
+                   char pub_hex[SIGN_PUBHEX_CAP], bool *exists);
 bool signkey_load(const char *path, signkey *k);
 // sig must hold k->sig_n bytes
 bool signkey_sign(const signkey *k, uint8_t *sig, const void *m, size_t n);
