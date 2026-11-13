@@ -422,17 +422,6 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Llama</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
-<table>
-<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
-<tbody>
-<tr><td colspan="5"><b>Llama-style dense families (llama)</b></td></tr>
-<tr><td><a href="#arch-llama">Llama-style dense families (llama)</a></td><td></td><td></td><td></td><td></td></tr>
-</tbody>
-</table>
-</details>
-
-<details>
 <summary><b>Mellum2.1</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train ✅</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
@@ -697,12 +686,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>StableLM</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>StableLM</b>, 1 model: CPU ✅ · CUDA n/a · Metal n/a · Train n/a</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td colspan="5"><b>StableLM (stablelm)</b></td></tr>
-<tr><td><a href="#arch-stablelm">StableLM (stablelm)</a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td colspan="5"><b>StableLM 2 1.6B Chat (Stability AI)</b></td></tr>
+<tr><td><a href="#stablelm-2-1.6b-chat-q8_0"><code>stablelm-2-1_6b-chat.Q8_0.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: LayerNorm (stablelm)</td></tr>
 </tbody>
 </table>
 </details>
@@ -1057,7 +1046,7 @@ Text path, RecursiveSI's own Q4_1 of flint (39.8B, mixture of experts): it loads
 <a id="arch-gemma3"></a>
 ##### Gemma 3 (gemma3)
 
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release. No file of it is validated: the publisher's Gemma 3 checkpoints are licence-gated, so there is no publisher reference to measure a file against.
 
 
 ### Gemma 4
@@ -1654,16 +1643,6 @@ Text path, LiquidAI's own Q4_K_M of LFM2.5-8B-A1B, which fails the fidelity bar 
 - **Metal:** ☐ not run
 - **LoRA training:** no: recurrent architecture (short convolution) (runner 1.7.1, 2026-10-30).
 - **LoRA adapter serving:** no: --lora does not cover the short-convolution hybrid yet (lfm2moe) (runner 1.7.1, 2026-10-30).
-
-### Llama
-
-#### Llama-style dense families (llama)
-
-<a id="arch-llama"></a>
-##### Llama-style dense families (llama)
-
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
-
 
 ### Mellum2.1
 
@@ -2669,7 +2648,7 @@ bartowski's Q8_0 of HuggingFaceTB's SmolLM2-135M-Instruct, the file the CI ancho
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** bartowski's Q8_0 (revision 09816acd) against HuggingFaceTB's BF16 checkpoint at 12fd25f7 computed in float32 on the CPU (transformers 4.57.1 (5.16.1 reads this tokenizer without its Digits pre-tokenizer, 8,911 corpus tokens against the file's 8,909; 4.57.1 reads it as written), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files from the batched prefill route): pooled 0.0074 ± 0.0005 mean KLD (SE, 595 positions; windows 0.0071 and 0.0077) / 98.5% top-1 / 100% margin-qualified (392/392). The September golden pass read the same file at 0.0080 over 1,983 positions. unsloth's Q8_0 (revision 9e6855bc) carries the same tensor data, 272 of 272 tensors byte-equal; only the metadata differs. bartowski's Q4_K_M of the same repository was measured and not admitted: 0.0623 ± 0.0030, bootstrap 95% wholly over 0.05, 97.96% margin-qualified (384/392). Tokenizer pre smollm (digits one by one): 0 of 721 corpus strings and 0 of 48,821 vocabulary entries differ from HuggingFaceTB's tokenizer.json; template family chatml (smollm2), conformance 16/16 in text and tokens against the publisher's chat template, which the 135M and 1.7B checkpoints carry byte for byte. Record: docs/compat-reports/smollm2-2026-11-13/README.md.
 - **Context tested:** 4096.
-- **Known limitations:** CPU, CUDA and Metal for this file (145 MB: on a CUDA MIG slice, 1g.24gb, sm_120, all 30 layers on the device; on Metal, an Apple M1, where the pinned reply is byte for byte the CPU's and CUDA's). bartowski's Q4_K_M of this model (0.062 mean KLD) was measured and not admitted. On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Tool calls use Runner's generic JSON protocol; the publisher's template declares no tool format. Licence: apache-2.0.
+- **Known limitations:** CPU, CUDA and Metal for this file (145 MB: on a CUDA MIG slice, 1g.24gb, sm_120, all 30 layers on the device; on Metal, an Apple M1, where the pinned reply is byte for byte the CPU's and CUDA's). bartowski's Q4_K_M of this model (0.062 mean KLD) was measured and not admitted. On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Tool calls use Runner's generic JSON protocol; the publisher's template declares no tool format. Licence: apache-2.0. The three SmolLM2 rows are the validated files of the llama architecture, which SmolLM2 uses; no Llama-named file is validated, because the publisher's Llama 3.2 checkpoints are licence-gated.
 - **Still missing:** The Windows CUDA host's cells, and task quality.
 - **Evidence:** [docs/compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json](compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json), [docs/compat-reports/smollm2-2026-11-13/README.md](compat-reports/smollm2-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.17.0 on 2026-11-13.
@@ -2731,13 +2710,29 @@ Text path, XHToken's own Q4_K_M of Spark X2.6 4B, which fails the fidelity bar: 
 
 ### StableLM
 
-#### StableLM (stablelm)
+#### StableLM 2 1.6B Chat (Stability AI)
 
-<a id="arch-stablelm"></a>
-##### StableLM (stablelm)
+<a id="stablelm-2-1.6b-chat-q8_0"></a>
+##### `stablelm-2-1_6b-chat.Q8_0.gguf`
 
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+mradermacher's Q8_0 of Stability AI's StableLM 2 1.6B Chat, under the Stability AI Non-Commercial Research Community License (not for commercial use), on the CPU: on every build, a CUDA or Metal one included, Runner serves this model on the CPU, since it normalises with LayerNorm and the GPU backends implement RMSNorm only. Against the publisher's float32 checkpoint it reads 0.0041 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 544 positions inside the model's 4,096-token context (two windows of 272: 0.0043 and 0.0039; plain top-1 98.2%, CPU), against a bar of 0.05 and 97%.
 
+- **File:** `stablelm-2-1_6b-chat.Q8_0.gguf` (sha256 `70fa97127815cffc3e5dd004976c8986fca1011c74bb8fd581c784cdc00b9760`, 1,751,882,848 bytes, from [mradermacher/stablelm-2-1_6b-chat-GGUF](https://huggingface.co/mradermacher/stablelm-2-1_6b-chat-GGUF) at revision `037d59f734d3`).
+- **Upstream checkpoint:** stabilityai/stablelm-2-1_6b-chat at revision `f3fe67057c27`.
+- **Quantization:** Q8_0 (mradermacher).
+- **Licence:** `stability-ai-non-commercial-research-community`, as the stabilityai/stablelm-2-1_6b-chat model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** mradermacher's Q8_0 (revision 037d59f7, the plain repository) against Stability AI's float32 checkpoint at f3fe6705 on the CPU (transformers 5.16.1, gold-logits.py, two windows of 272 positions at stride 15 over gold-corpus-2k from 8 and from 15, inside the model's trained 4,096-token context, token-id keyed, Runner CPU score files of 4,096 tokens from the batched prefill route): pooled 0.0041 ± 0.0003 mean KLD (SE, 544 positions; windows 0.0043 and 0.0039) / 98.2% top-1 / 100% margin-qualified (380/380). Measured and not admitted: mradermacher's Q4_K_M of the same repository (0.1114 ± 0.0077 mean KLD, 93.95% margin-qualified) and mradermacher's i1 Q4_K_M with an importance matrix (0.0662 ± 0.0037, 97.37%; the KLD point estimate is over 0.05). Tokenizer pre stablelm2: 0 of 721 corpus strings and 0 of 99,474 vocabulary entries differ from the publisher's tokenizer.json at f3fe6705; template family chatml (stablelm2), conformance 16/16 in text and tokens against the publisher's chat template, including its default system turn ('You are a helpful assistant.'), which Runner writes since R4.39.3. The publisher's own GGUF exists only for the 12B chat model (stabilityai/stablelm-2-12b-chat-GGUF), not this size. Record: docs/compat-reports/stablelm-2-1.6b-chat-2026-11-13/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU only, on every build: a CUDA or Metal build serves this model on the CPU and says so at load (the model normalises with LayerNorm, the GPU backends implement RMSNorm only), so the support page marks CUDA and Metal n/a: there is no device result for this model on any backend. Training is refused at load, in the loader's words: "LayerNorm (stablelm)"; serving an adapter (--lora) is supported. The model's trained context is 4,096 tokens; a larger -c applies YaRN. Measured and not admitted: mradermacher's Q4_K_M of the same repository (0.1114 ± 0.0077 mean KLD, 93.95% margin-qualified) and mradermacher's i1 Q4_K_M with an importance matrix (0.0662 ± 0.0037, 97.37%; the KLD point estimate is over 0.05). On load the file resolves to architecture stablelm, tokenizer pre stablelm2, template chatml, tool family qwen_json and the generic sampling preset (there is no StableLM preset). Licence: the Stability AI Non-Commercial Research Community License (the model card says 'other' and ships the licence text).
+- **Still missing:** A device route (LayerNorm on the GPU backends), training, the Windows CUDA host's cells, and task quality.
+- **Evidence:** [docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-stablelm-2-1.6b-chat.json](compat-reports/1.18.0-2026-11-13-linux-x86_64-stablelm-2-1.6b-chat.json), [docs/compat-reports/stablelm-2-1.6b-chat-2026-11-13/README.md](compat-reports/stablelm-2-1.6b-chat-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.18.0 on 2026-11-13.
+- **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `dacf399efb1f`, output sha256 `c29a76cd7b0c4413`, [pin](../tests/compatibility/tier-smoke/stablelm-2-1.6b-chat-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** [n/a](../MANUAL.md#support-matrix): stablelm normalises with LayerNorm and the GPU backends implement RMSNorm only, so a CUDA build serves this model on the CPU (the architecture table's cpu_only rule, src/arch.h; the load says so).
+- **Metal:** [n/a](../MANUAL.md#support-matrix): stablelm normalises with LayerNorm and the GPU backends implement RMSNorm only, so a Metal build serves this model on the CPU (the architecture table's cpu_only rule, src/arch.h; the load says so).
+- **LoRA training:** no: LayerNorm (stablelm) (runner 1.18.0, 2026-11-13).
+- **LoRA adapter serving:** supported (runner 1.18.0, 2026-11-13).
 
 ### Trinity Nano
 
@@ -2921,9 +2916,7 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-10-22 | [gpt-oss-20b keep-30, `gpt-oss-20b-keep30-MXFP4.gguf`](#gpt-oss-20b-keep30-mxfp4) | Tier 2, maintained on report | Migration: policy decision 2026-10-22, Tier 2 with its near-miss disclosure; it stays published. | none recorded |
 | 2026-10-22 | [Qwen3-4B, `Qwen_Qwen3-4B-Q4_K_M.gguf`](#qwen3-4b-q4_k_m-bartowski) | Tier 2, maintained on report | Migration: the base of a Tier 1 adapter, added 2026-10-23 so the adapter's smoke can run; not on the owner's Tier 1 roster. | none recorded |
 | 2026-10-22 | [Qwen3.8-Flash-Next, `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`](#qwen3.8-flash-next-gsq-rco-iq3_s) | Tier 2, maintained on report | Migration: the trunk of a Tier 1 MTP head, added 2026-10-23 so the head's smoke can run; not on the owner's Tier 1 roster. | none recorded |
-| 2026-10-22 | [Llama-style dense families (llama)](#arch-llama) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Mistral (mistral)](#arch-mistral) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
-| 2026-10-22 | [StableLM (stablelm)](#arch-stablelm) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Gemma 3 (gemma3)](#arch-gemma3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Granite 4 h-series hybrid (granitehybrid)](#arch-granitehybrid) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B), `Qwen3.8-35B-A3B-Q6_K.gguf`](#empero-qwen3.8-35b-a3b-distill-q6_k) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
@@ -3034,6 +3027,7 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-11-13 | [SmolLM2-135M-Instruct (Hugging Face), `SmolLM2-135M-Instruct-Q8_0.gguf`](#smollm2-135m-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [SmolLM2-1.7B-Instruct (Hugging Face), `SmolLM2-1.7B-Instruct-Q8_0.gguf`](#smollm2-1.7b-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [SmolLM2-1.7B-Instruct (Hugging Face), `SmolLM2-1.7B-Instruct-Q4_K_M.gguf`](#smollm2-1.7b-instruct-q4_k_m) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report. | none recorded |
+| 2026-11-13 | [StableLM 2 1.6B Chat (Stability AI), `stablelm-2-1_6b-chat.Q8_0.gguf`](#stablelm-2-1.6b-chat-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU cell from the lab lanes (R4.39.3) and a float32 reference measurement against the publisher's checkpoint, so the StableLM family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Qwen2.5-1.5B-Instruct (Qwen), `Qwen2.5-1.5B-Instruct-Q8_0.gguf`](#qwen2.5-1.5b-instruct-q8_0-bartowski) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.2) and a float32 reference measurement against the publisher's checkpoint, so the Qwen2 family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Qwen2.5-1.5B-Instruct (Qwen), `qwen2.5-1.5b-instruct-q8_0.gguf`](#qwen2.5-1.5b-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.2) and a float32 reference measurement against the publisher's checkpoint, so the Qwen2 family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Phi-3.5-mini-instruct (Microsoft), `Phi-3.5-mini-instruct-Q8_0.gguf`](#phi-3.5-mini-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.5) and a float32 reference measurement against the publisher's checkpoint, so the Phi-3 family has a file with cells. Maintained on report. | none recorded |

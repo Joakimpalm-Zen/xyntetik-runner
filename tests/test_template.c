@@ -3460,6 +3460,22 @@ static void test_default_system_is_read_from_the_models_own_template(void) {
     assert(template_default_system(TMPL_CHATML_THINK, q25, false) == NULL);
     assert(template_default_system(TMPL_CHATML, g40, false) == NULL);
     assert(template_default_system(TMPL_CHATML, NULL, false) == NULL);
+    // StableLM 2 sets its default as a jinja literal, written on every
+    // system-less conversation (its template has no tools branch). Keyed on
+    // that literal: a ChatML template that only holds the sentence elsewhere
+    // gets nothing.
+    const char *slm2 =
+        "{% else %}{% set loop_messages = messages %}"
+        "{% set system_message = 'You are a helpful assistant.' %}{% endif %}";
+    const char *elsewhere =
+        "{%- if tools %}{{- '<|im_start|>system\\nYou are a helpful assistant. "
+        "Use the tools below.' }}{%- endif %}<|im_start|>{{ message.role }}";
+    const char *d = template_default_system(TMPL_CHATML, slm2, false);
+    assert(d && !strcmp(d, "You are a helpful assistant."));
+    d = template_default_system(TMPL_CHATML, slm2, true);
+    assert(d && !strcmp(d, "You are a helpful assistant."));
+    assert(template_default_system(TMPL_CHATML, elsewhere, false) == NULL);
+    assert(template_default_system(TMPL_CHATML_THINK, slm2, false) == NULL);
 
     // R6.68.75: the [SYSTEM_PROMPT] form's default is read out of the file's
     // template and kept, and it was kept by the template's ADDRESS. A model
