@@ -343,6 +343,13 @@ Commit the reports to the release branch, or to main if they arrive after the cu
    - the site: the pages workflow rebuilds on a CHANGELOG change to main, and
      xyntetik.com reads "vX.Y.Z, released YYYY-MM-DD".
 6. Delete the merged release branch.
+7. Update the Homebrew tap (`Joakimpalm-Zen/homebrew-xyntetik`), after the release
+   is published so its `SHA256SUMS` exists: `tools/update-formula.py X.Y.Z` there
+   writes the formula with the checksums read from the release, then commit and
+   push. Check it as a user would: `brew install joakimpalm-zen/xyntetik/xyntetik-runner`,
+   `runner --version` prints `runner X.Y.Z`, and the installed binary's sha256 is
+   the release asset's. Uninstall with `HOMEBREW_NO_AUTOREMOVE=1` on a machine
+   whose other formulae matter. The tap began with 1.18.0.
 
 1.13.0's coordinator half: tag on d0b0672f, release run green, 9 assets, notes from
 the PR comment, marked latest; container `v1.13.0` and `latest` on one digest; site
