@@ -23,6 +23,35 @@ CORPUS_TEXT = (
 )
 
 
+# Ports for the servers these tests start. They were fixed numbers, so two runs of the suite on one host
+# shared them and one run found the other's server on its port. They stay below every OS's ephemeral
+# range (EPHEMERAL_FLOOR below says why) and start at a place that depends on the process.
+PORT_FLOOR, PORT_CEIL = 20000, 32000
+
+
+def _port_flags():
+    a, b = _ports(2)
+    return ["--port-a", str(a), "--port-b", str(b)]
+
+
+def _ports(n, start=None):
+    import socket
+    span = PORT_CEIL - PORT_FLOOR
+    at = (os.getpid() * 7919 if start is None else start - PORT_FLOOR) % span
+    out = []
+    for step in range(span):
+        port = PORT_FLOOR + (at + step) % span
+        with socket.socket() as probe:
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+        out.append(port)
+        if len(out) == n:
+            return out
+    raise RuntimeError("no free port below the ephemeral ranges")
+
+
 @pytest.fixture(scope="module")
 def small_model():
     m = ROOT / "models" / "SmolLM2-135M-Instruct-Q8_0.gguf"
@@ -58,7 +87,7 @@ def _run(*args):
 def test_self_comparison_is_near_zero_kld_and_full_agreement(runner_bin, small_model, corpus):
     proc = _run("--model-a", str(small_model), "--model-b", str(small_model),
                 "--runner", str(runner_bin), "--corpus", str(corpus),
-                "--max-positions", "12", "--port-a", "28701", "--port-b", "28702")
+                "--max-positions", "12", *_port_flags())
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout)
     assert result["positions_scored"] >= 8, result
@@ -72,7 +101,7 @@ def test_self_comparison_is_near_zero_kld_and_full_agreement(runner_bin, small_m
 def test_different_quants_give_sane_nonzero_divergence(runner_bin, small_model, requant_model, corpus):
     proc = _run("--model-a", str(small_model), "--model-b", str(requant_model),
                 "--runner", str(runner_bin), "--corpus", str(corpus),
-                "--max-positions", "12", "--port-a", "28703", "--port-b", "28704")
+                "--max-positions", "12", *_port_flags())
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout)
     assert result["positions_scored"] >= 8, result
@@ -88,25 +117,26 @@ def test_different_quants_give_sane_nonzero_divergence(runner_bin, small_model, 
 def test_endpoint_mode_reuses_an_already_running_server(runner_bin, small_model, corpus):
     # kld-compare.py must also work against servers it didn't start itself
     # (Task 5a's pruned-vs-unpruned comparison will likely run this way).
+    port = str(_ports(1)[0])
     proc = subprocess.Popen(
         [str(runner_bin), "-m", str(small_model), "--serve", "--no-tray",
-         "--port", "28705", "--gpu", "off"],
+         "--port", port, "--gpu", "off"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         import time
         import urllib.request
         for _ in range(200):
             try:
-                urllib.request.urlopen("http://127.0.0.1:28705/v1/models", timeout=1)
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=1)
                 break
             except Exception:
                 time.sleep(0.25)
         else:
             pytest.fail("test server did not come up")
 
-        proc2 = _run("--endpoint-a", "http://127.0.0.1:28705",
+        proc2 = _run("--endpoint-a", f"http://127.0.0.1:{port}",
                      "--model-name-a", small_model.name,
-                     "--endpoint-b", "http://127.0.0.1:28705",
+                     "--endpoint-b", f"http://127.0.0.1:{port}",
                      "--model-name-b", small_model.name,
                      "--corpus", str(corpus), "--max-positions", "6")
         assert proc2.returncode == 0, proc2.stderr
@@ -145,24 +175,25 @@ def test_kld_compare_raw_refuses_a_run_that_scored_no_positions(corpus):
 def test_endpoint_mode_refuses_an_unserved_model_name(runner_bin, small_model, corpus):
     # a label instead of the served id used to 404 on every position and
     # still write a report; now it is a one-line refusal naming the served ids
+    port = str(_ports(1)[0])
     proc = subprocess.Popen(
         [str(runner_bin), "-m", str(small_model), "--serve", "--no-tray",
-         "--port", "28706", "--gpu", "off"],
+         "--port", port, "--gpu", "off"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         import time
         import urllib.request
         for _ in range(200):
             try:
-                urllib.request.urlopen("http://127.0.0.1:28706/v1/models", timeout=1)
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=1)
                 break
             except Exception:
                 time.sleep(0.25)
         else:
             pytest.fail("test server did not come up")
-        proc2 = _run("--endpoint-a", "http://127.0.0.1:28706",
+        proc2 = _run("--endpoint-a", f"http://127.0.0.1:{port}",
                      "--model-name-a", "not-the-served-id",
-                     "--endpoint-b", "http://127.0.0.1:28706",
+                     "--endpoint-b", f"http://127.0.0.1:{port}",
                      "--model-name-b", small_model.name,
                      "--corpus", str(corpus), "--max-positions", "2")
         assert proc2.returncode != 0
@@ -210,7 +241,7 @@ def test_raw_ab_run_records_each_side(runner_bin, corpus):
     proc = subprocess.run(
         [sys.executable, str(RAW_SCRIPT), "--runner", str(runner_bin),
          "--model-a", str(model), "--model-b", str(model),
-         "--port-a", "28721", "--port-b", "28722",
+         *_port_flags(),
          "--env-a", "RUNNER_SCORE_AB_SIDE=a", "--args-b", "-t 1", "--gpu-b", "off",
          "--corpus", str(corpus), "--max-positions", "3", "--out", str(out)],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
@@ -231,16 +262,17 @@ def test_a_server_already_on_the_port_is_not_scored(runner_bin, corpus, tmp_path
     model = ROOT / "test.gguf"
     if not model.exists():
         pytest.skip("test.gguf fixture not built")
+    taken, spare = (str(p) for p in _ports(2))
     other = subprocess.Popen(
         [str(runner_bin), "-m", str(model), "--serve", "--no-tray",
-         "--port", "28731", "--gpu", "off"],
+         "--port", taken, "--gpu", "off"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         import time
         import urllib.request
         for _ in range(200):
             try:
-                urllib.request.urlopen("http://127.0.0.1:28731/v1/models", timeout=1)
+                urllib.request.urlopen(f"http://127.0.0.1:{taken}/v1/models", timeout=1)
                 break
             except Exception:
                 time.sleep(0.25)
@@ -254,11 +286,11 @@ def test_a_server_already_on_the_port_is_not_scored(runner_bin, corpus, tmp_path
         proc = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / script), "--runner", str(runner_bin),
              "--model-a", str(mine), "--model-b", str(model),
-             "--port-a", "28731", "--port-b", "28732",
+             "--port-a", taken, "--port-b", spare,
              "--corpus", str(corpus), "--max-positions", "3"],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
         assert proc.returncode != 0, proc.stdout[-400:]
-        assert "28731" in proc.stderr and "another" in proc.stderr, proc.stderr[-600:]
+        assert taken in proc.stderr and "another" in proc.stderr, proc.stderr[-600:]
     finally:
         other.kill()
         other.wait()
@@ -288,12 +320,30 @@ def test_every_polled_port_sits_below_the_ephemeral_ranges():
     for name in ("kld-compare.py", "kld-compare-raw.py"):
         text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
         found += [int(p) for p in re.findall(r'"--port-[ab]", type=int, default=(\d+)', text)]
-    text = pathlib.Path(__file__).read_text(encoding="utf-8")
-    found += [int(p) for p in re.findall(r'"--port(?:-[ab])?", "(\d+)"', text)]
-    found += [int(p) for p in re.findall(r"127\.0\.0\.1:(\d+)", text)]
-    assert len(found) >= 10, found
+    assert len(found) >= 4, found
     assert all(p < EPHEMERAL_FLOOR for p in found), sorted(p for p in found
                                                            if p >= EPHEMERAL_FLOOR)
+    # the ports these tests pick themselves
+    assert PORT_CEIL <= EPHEMERAL_FLOOR
+    text = pathlib.Path(__file__).read_text(encoding="utf-8")
+    assert not re.findall(r'"--port(?:-[ab])?", "\d+"', text), "a fixed port is back in this file"
+
+
+def test_the_tests_ports_skip_one_in_use_and_differ_between_processes():
+    import socket
+    first = _ports(1, start=PORT_FLOOR + 4321)[0]
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", first))
+        held.listen(1)
+        a, b = _ports(2, start=first)
+    assert first not in (a, b) and a != b
+    assert all(PORT_FLOOR <= p < PORT_CEIL for p in (first, a, b))
+    # another process starts elsewhere: the start is a function of the pid
+    code = ("import importlib.util, sys; s = importlib.util.spec_from_file_location('t', sys.argv[1]); "
+            "m = importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m._ports(1)[0])")
+    other = subprocess.run([sys.executable, "-c", code, __file__], capture_output=True, text=True, timeout=60)
+    assert other.returncode == 0, other.stderr
+    assert int(other.stdout) != _ports(1)[0]
 
 
 def test_a_self_connected_socket_is_not_taken_for_a_server():
