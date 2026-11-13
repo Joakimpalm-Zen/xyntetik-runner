@@ -422,17 +422,6 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Llama</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
-<table>
-<thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
-<tbody>
-<tr><td colspan="5"><b>Llama-style dense families (llama)</b></td></tr>
-<tr><td><a href="#arch-llama">Llama-style dense families (llama)</a></td><td></td><td></td><td></td><td></td></tr>
-</tbody>
-</table>
-</details>
-
-<details>
 <summary><b>Mellum2.1</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train ✅</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
@@ -1056,7 +1045,7 @@ Text path, RecursiveSI's own Q4_1 of flint (39.8B, mixture of experts): it loads
 <a id="arch-gemma3"></a>
 ##### Gemma 3 (gemma3)
 
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release. No file of it is validated: the publisher's Gemma 3 checkpoints are licence-gated, so there is no publisher reference to measure a file against.
 
 
 ### Gemma 4
@@ -1653,16 +1642,6 @@ Text path, LiquidAI's own Q4_K_M of LFM2.5-8B-A1B, which fails the fidelity bar 
 - **Metal:** ☐ not run
 - **LoRA training:** no: recurrent architecture (short convolution) (runner 1.7.1, 2026-10-30).
 - **LoRA adapter serving:** no: --lora does not cover the short-convolution hybrid yet (lfm2moe) (runner 1.7.1, 2026-10-30).
-
-### Llama
-
-#### Llama-style dense families (llama)
-
-<a id="arch-llama"></a>
-##### Llama-style dense families (llama)
-
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
-
 
 ### Mellum2.1
 
@@ -2630,7 +2609,7 @@ bartowski's Q8_0 of HuggingFaceTB's SmolLM2-135M-Instruct, the file the CI ancho
 - **Features claimed:** text. A feature not listed is not claimed.
 - **Numerical anchor (a publisher float32 comparison exists):** bartowski's Q8_0 (revision 09816acd) against HuggingFaceTB's BF16 checkpoint at 12fd25f7 computed in float32 on the CPU (transformers 4.57.1 (5.16.1 reads this tokenizer without its Digits pre-tokenizer, 8,911 corpus tokens against the file's 8,909; 4.57.1 reads it as written), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files from the batched prefill route): pooled 0.0074 ± 0.0005 mean KLD (SE, 595 positions; windows 0.0071 and 0.0077) / 98.5% top-1 / 100% margin-qualified (392/392). The September golden pass read the same file at 0.0080 over 1,983 positions. unsloth's Q8_0 (revision 9e6855bc) carries the same tensor data, 272 of 272 tensors byte-equal; only the metadata differs. bartowski's Q4_K_M of the same repository was measured and not admitted: 0.0623 ± 0.0030, bootstrap 95% wholly over 0.05, 97.96% margin-qualified (384/392). Tokenizer pre smollm (digits one by one): 0 of 721 corpus strings and 0 of 48,821 vocabulary entries differ from HuggingFaceTB's tokenizer.json; template family chatml (smollm2), conformance 16/16 in text and tokens against the publisher's chat template, which the 135M and 1.7B checkpoints carry byte for byte. Record: docs/compat-reports/smollm2-2026-11-13/README.md.
 - **Context tested:** 4096.
-- **Known limitations:** CPU, CUDA and Metal for this file (145 MB: on a CUDA MIG slice, 1g.24gb, sm_120, all 30 layers on the device; on Metal, an Apple M1, where the pinned reply is byte for byte the CPU's and CUDA's). bartowski's Q4_K_M of this model (0.062 mean KLD) was measured and not admitted. On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Tool calls use Runner's generic JSON protocol; the publisher's template declares no tool format. Licence: apache-2.0.
+- **Known limitations:** CPU, CUDA and Metal for this file (145 MB: on a CUDA MIG slice, 1g.24gb, sm_120, all 30 layers on the device; on Metal, an Apple M1, where the pinned reply is byte for byte the CPU's and CUDA's). bartowski's Q4_K_M of this model (0.062 mean KLD) was measured and not admitted. On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Tool calls use Runner's generic JSON protocol; the publisher's template declares no tool format. Licence: apache-2.0. The three SmolLM2 rows are the validated files of the llama architecture, which SmolLM2 uses; no Llama-named file is validated, because the publisher's Llama 3.2 checkpoints are licence-gated.
 - **Still missing:** The Windows CUDA host's cells, and task quality.
 - **Evidence:** [docs/compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json](compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json), [docs/compat-reports/smollm2-2026-11-13/README.md](compat-reports/smollm2-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.17.0 on 2026-11-13.
@@ -2898,7 +2877,6 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-10-22 | [gpt-oss-20b keep-30, `gpt-oss-20b-keep30-MXFP4.gguf`](#gpt-oss-20b-keep30-mxfp4) | Tier 2, maintained on report | Migration: policy decision 2026-10-22, Tier 2 with its near-miss disclosure; it stays published. | none recorded |
 | 2026-10-22 | [Qwen3-4B, `Qwen_Qwen3-4B-Q4_K_M.gguf`](#qwen3-4b-q4_k_m-bartowski) | Tier 2, maintained on report | Migration: the base of a Tier 1 adapter, added 2026-10-23 so the adapter's smoke can run; not on the owner's Tier 1 roster. | none recorded |
 | 2026-10-22 | [Qwen3.8-Flash-Next, `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`](#qwen3.8-flash-next-gsq-rco-iq3_s) | Tier 2, maintained on report | Migration: the trunk of a Tier 1 MTP head, added 2026-10-23 so the head's smoke can run; not on the owner's Tier 1 roster. | none recorded |
-| 2026-10-22 | [Llama-style dense families (llama)](#arch-llama) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Mistral (mistral)](#arch-mistral) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Gemma 3 (gemma3)](#arch-gemma3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Phi-3 (phi3)](#arch-phi3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
