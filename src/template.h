@@ -340,6 +340,18 @@ static inline void template_bind_think_tags(int tmpl, const char **open,
 // already bound. Called beside template_bind_think_tags.
 void template_bind_split_tags(int tmpl, tokenizer *tok, const char *think_open,
                               const char **open, const char **close);
+// Whether a turn's reasoning split reads the control-token pair, which is
+// also whether the engine spells it (R2.15): a chat turn of a model that has
+// such a pair and no text pair, with no JSON schema and no JSON mode. Under
+// a constraint the two tokens are not spelled (engine.c decode_piece), so a
+// split armed there could only ever match a payload string that happens to
+// contain the tags' spelling, and would cut the caller's own text out of a
+// document the validator accepted. One rule for the server's chat turn, the
+// command line's and the receipt replay.
+static inline bool think_split_is_control(const char *think_open, const char *split_open,
+                                          bool chat, bool constrained) {
+    return chat && !constrained && !think_open && split_open;
+}
 
 // True for EITHER gemma-4 template family. The mainline and the E-series
 // differ at exactly one generation-prompt site (see TMPL_GEMMA4_MAINLINE

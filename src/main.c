@@ -6459,7 +6459,7 @@ static int replay_stop_cb(void *ud, const char *bytes, int n) {
 
 // The record's stop constraint, read for the replay: false with the reason in
 // why when it is malformed or the record cannot say where the turn began.
-static bool replay_stop_read(jv *rec, const model_t *m, replay_stop *r,
+static bool replay_stop_read(jv *rec, const model_t *m, bool constrained, replay_stop *r,
                              int ids[8], int *n_ids, char *why, size_t cap) {
     jv *cons = jv_get(rec, "constraints");
     jv *stop = NULL;
@@ -6509,7 +6509,7 @@ static bool replay_stop_read(jv *rec, const model_t *m, replay_stop *r,
         return false;
     }
     if (open) think_init_reasoning(&r->ts, m->think_open, m->think_close);
-    else if (chat && !m->think_open && m->split_open)
+    else if (think_split_is_control(m->think_open, m->split_open, chat, constrained))
         // the server's chat turn split a control-token pair (R2.15)
         think_init(&r->ts, m->split_open, m->split_close);
     else      think_init(&r->ts, chat ? m->think_open : NULL, m->think_close);
@@ -6762,8 +6762,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     int stop_ids[8], n_stop_ids = 0;
     {
         char why[512];
-        if (!replay_stop_read(vr->rec, &rt->m, &rs, stop_ids, &n_stop_ids,
-                              why, sizeof why)) {
+        if (!replay_stop_read(vr->rec, &rt->m, rt->e.schema || rt->e.json_mode, &rs,
+                              stop_ids, &n_stop_ids, why, sizeof why)) {
             fprintf(stderr, "UNVERIFIABLE: %s\n", why);
             think_free(&rs.ts);
             jv_free(vr->rec);
@@ -6791,7 +6791,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
         rt->e.emit_think_prelude = true;
     // the server's chat turn spelled a control-token think pair (R2.15): the
     // replay decodes the same bytes, or every such turn would read MISMATCH
-    rt->e.spell_think = vserve && vchat && rt->m.split_open != NULL;
+    rt->e.spell_think = vserve && think_split_is_control(rt->m.think_open, rt->m.split_open,
+                                                         vchat, rt->e.schema || rt->e.json_mode);
     if (jv_bool(jv_get(vserve, "reasoning_open"), false))
         engine_think_started(&rt->e);
     bool stop_on = rs.n_strs > 0 || n_stop_ids > 0;
@@ -7940,13 +7941,15 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
         // and print the model's reasoning as the answer.
         if (rs.reasoning_open)
             think_init_reasoning(&co.ts, rt->m.think_open, rt->m.think_close);
-        else if (!rt->m.think_open && rt->m.split_open)
+        else if (think_split_is_control(rt->m.think_open, rt->m.split_open, true,
+                                        rt->e.schema || rt->e.json_mode))
             think_init(&co.ts, rt->m.split_open, rt->m.split_close);
         else
             think_init(&co.ts, rt->m.think_open, rt->m.think_close);
         // as the server's chat turn does: control-token think tags are
-        // spelled for the split (R2.15)
-        rt->e.spell_think = rt->m.split_open != NULL;
+        // spelled for the split, by the same rule (R2.15)
+        rt->e.spell_think = think_split_is_control(rt->m.think_open, rt->m.split_open, true,
+                                                   rt->e.schema || rt->e.json_mode);
         think_trim_newlines(&co.ts, rt->m.think_trim_nl);
         n_gen = engine_generate(&rt->e, logits, o->n_predict, chat_cb, &co, &gtime);
         think_finish(&co.ts, chat_emit, &co);
