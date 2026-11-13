@@ -100,7 +100,8 @@ responsible for authentication, authorization, and the inputs they forward.
 
 Found something? Please use
 [GitHub private vulnerability reporting](https://github.com/Joakimpalm-Zen/xyntetik-runner/security/advisories/new)
-for anything sensitive, or an
+for anything sensitive. If you cannot use GitHub for it, e-mail
+[security@xyntetik.com](mailto:security@xyntetik.com) instead. Use an
 [ordinary issue](https://github.com/Joakimpalm-Zen/xyntetik-runner/issues/new)
 for hardening suggestions that don't need coordinated disclosure. Include
 `runner --version` output and, if you can, a reproducer.
