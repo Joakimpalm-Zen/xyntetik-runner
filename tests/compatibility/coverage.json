@@ -1327,7 +1327,9 @@
     "granite4"
    ],
    "artifacts": [
-    "granite-4.0-h-micro-q4_k_m"
+    "granite-4.0-h-micro-q4_k_m",
+    "granite-4.0-h-micro-q8_0",
+    "granite-4.0-h-micro-q4_k_m-unsloth"
    ],
    "tool_protocol": {
     "status": "NOT RUN",

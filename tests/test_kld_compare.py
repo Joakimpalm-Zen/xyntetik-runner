@@ -34,10 +34,15 @@ def _port_flags():
     return ["--port-a", str(a), "--port-b", str(b)]
 
 
+def _start(pid):
+    # 7919 shares no factor with the span, so any 12,000 consecutive process ids start at 12,000 places.
+    return PORT_FLOOR + (pid * 7919) % (PORT_CEIL - PORT_FLOOR)
+
+
 def _ports(n, start=None):
     import socket
     span = PORT_CEIL - PORT_FLOOR
-    at = (os.getpid() * 7919 if start is None else start - PORT_FLOOR) % span
+    at = ((_start(os.getpid()) if start is None else start) - PORT_FLOOR) % span
     out = []
     for step in range(span):
         port = PORT_FLOOR + (at + step) % span
@@ -329,7 +334,7 @@ def test_every_polled_port_sits_below_the_ephemeral_ranges():
     assert not re.findall(r'"--port(?:-[ab])?", "\d+"', text), "a fixed port is back in this file"
 
 
-def test_the_tests_ports_skip_one_in_use_and_differ_between_processes():
+def test_the_tests_ports_skip_one_in_use_and_start_by_process():
     import socket
     first = _ports(1, start=PORT_FLOOR + 4321)[0]
     with socket.socket() as held:
@@ -338,12 +343,14 @@ def test_the_tests_ports_skip_one_in_use_and_differ_between_processes():
         a, b = _ports(2, start=first)
     assert first not in (a, b) and a != b
     assert all(PORT_FLOOR <= p < PORT_CEIL for p in (first, a, b))
-    # another process starts elsewhere: the start is a function of the pid
-    code = ("import importlib.util, sys; s = importlib.util.spec_from_file_location('t', sys.argv[1]); "
-            "m = importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m._ports(1)[0])")
-    other = subprocess.run([sys.executable, "-c", code, __file__], capture_output=True, text=True, timeout=60)
-    assert other.returncode == 0, other.stderr
-    assert int(other.stdout) != _ports(1)[0]
+    # The start is a function of the process id alone, and nearby ids start apart. What the picker cannot
+    # promise is that two live processes never land on one port: the bind above is what keeps a port that
+    # is served out of the answer. (The first form of this test asked a child process for its port and
+    # compared; it failed once in a full run, 24946 on both sides.)
+    starts = [_start(pid) for pid in range(40000, 40600)]
+    assert len(set(starts)) == len(starts)
+    assert all(PORT_FLOOR <= p < PORT_CEIL for p in starts)
+    assert _start(os.getpid()) == _start(os.getpid())
 
 
 def test_a_self_connected_socket_is_not_taken_for_a_server():

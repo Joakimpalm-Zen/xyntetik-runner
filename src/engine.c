@@ -78,18 +78,11 @@ bool engine_init(engine *e, model_t *m, tokenizer *tok, sampler *smp) {
     }
     jsonv_init(&e->jv);
     constraint_reset(e);
-    // grammar fast-forward is opt-in (RUNNER_GRAMMAR_FF=1/on) and needs the
-    // batched verify path. Measured 2026-07-30 (EuroLLM-9B, Mistral-Nemo,
-    // CPU, contract schema): byte-identical output but 4-12% SLOWER at
-    // 33-38% acceptance — real subword vocabs tokenize pinned runs
-    // differently than the model samples them, and a rejected round's
-    // batched forward costs more than the accepted ones save. The value
-    // parses strictly (=1/on), never by existence — the RUNNER_CUDA_TC=0
-    // bug class. The structural fix is a model-canonical drafter (the
-    // Syntetik half of JC-R2).
-    // Recurrent targets are safe here since the tracer-6 fold checkpoint: a
-    // partially-accepted round restores the round-start fold snapshot and
-    // re-folds the accepted prefix (spec_fold_sync in the speculative walk).
+    // grammar fast-forward is opt-in (RUNNER_GRAMMAR_FF=1/on, parsed strictly)
+    // and needs the batched verify path: byte-identical output, but slower on
+    // real subword vocabularies, where a rejected round's batched forward costs
+    // more than the accepted ones save. Recurrent targets are safe: a partly
+    // accepted round restores the fold snapshot and re-folds the accepted prefix.
     const char *ff = getenv("RUNNER_GRAMMAR_FF");
     e->gram_ff = model_spec_verify_ok(m) &&
                  ff && (!strcmp(ff, "1") || !strcmp(ff, "on"));
@@ -140,18 +133,11 @@ void engine_reset(engine *e) {
 }
 
 // Where a PROMPT leaves the reasoning state, for every consumer of it.
-//
-// A chat request that primes the reasoning turn calls engine_think_started;
-// a RAW completion has no such signal, and the gate harnesses that drive a
-// reasoning model over /v1/completions send exactly the prompt that ends
-// inside the turn (`... to=self<|message|>`). Without this the budget starts
-// counting at the model's NEXT ` to=self`, which never comes: the turn is
-// already open, so a capped raw run reported 0 reasoning tokens and never
-// fired (measured on the muse fixture, 2026-09-24, before this).
-//
-// The rule is the last marker wins: an open after the last close means the
-// prompt ends inside reasoning. Text only -- a control token spells no bytes
-// here, which is why Muse's pair is the text around them.
+// A chat request that primes the reasoning turn calls engine_think_started; a
+// raw completion has no such signal, and a prompt can end inside the turn
+// (`... to=self<|message|>`): without this the budget waits for a next open
+// that never comes. The last marker wins: an open after the last close means
+// the prompt ends inside reasoning. Text only: a control token spells no bytes.
 void engine_think_prime(engine *e, const char *prompt) {
     // Every consumer of think_on primes from the prompt, not just the
     // budget: the reasoning sampler and the loop guard both need to know
@@ -184,17 +170,11 @@ void engine_think_started(engine *e) {
 
 // Rewind the DRAFT model's position. An attention-KV draft takes the cheap
 // clamp: its rows are position-addressable and the catch-up refeeds
-// hist[dpos..pos). A RECURRENT draft's fold sits at the old dpos and is not
-// sliceable back to `target`, so it returns to the snapshot each round takes
-// right after its catch-up (dsnap, the target's own spec_fold_sync pattern):
-// the next catch-up refeeds the accepted drafts and the correction, at most
-// draft_k + 1 tokens. Until R3.3.8 it went to 0 on every rejection, a whole
-// context refeed (SS-000 row 3: 113 rounds at about 526 ms of draft work each
-// from a 350M LFM2.5 draft). Position 0 stays the fallback when the snapshot
-// is past `target` (a new prompt agreeing for less), or the backend cannot
-// restore it (CUDA rolls back one forward only, and a draft runs one a
-// token): its centralized reset (model_forward_batch's pos==0) rebuilds the
-// fold correctly.
+// hist[dpos..pos). A recurrent draft's fold is not sliceable back to `target`,
+// so it returns to the snapshot each round takes right after its catch-up
+// (dsnap): the next catch-up refeeds at most draft_k + 1 tokens. Position 0
+// is the fallback when the snapshot is past `target` or the backend cannot
+// restore it; model_forward_batch's pos==0 reset rebuilds the fold.
 static void dpos_rewind(engine *e, int target) {
     if (e->dpos <= target) return;
     if (!e->dm || !model_has_recurrent(e->dm)) { e->dpos = target; return; }
@@ -206,14 +186,12 @@ static void dpos_rewind(engine *e, int target) {
     }
 }
 
-// Tracer 6 — recurrent-fold rollback for a partially-accepted speculative
-// round. The batched verify advanced the TARGET's fold through all `nd` drafted
-// tokens; only `acc` of them were accepted. The fold is not sliceable, so
-// restore the round-start snapshot and re-fold the accepted prefix — its KV
-// rows are rewritten with identical bytes, and only divergent rounds pay the
-// extra batched forward. If the snapshot is somehow gone, rebuild the fold from
-// position 0 out of e->hist (the accepted drafts were already recorded there):
-// never leave the fold desynced from e->pos.
+// Recurrent-fold rollback for a partly accepted speculative round. The verify
+// advanced the target's fold through all `nd` drafts and only `acc` were
+// accepted; the fold is not sliceable, so restore the round-start snapshot and
+// re-fold the accepted prefix (its KV rows are rewritten with identical
+// bytes). Without a snapshot, rebuild from position 0 out of e->hist: the fold
+// is never left desynced from e->pos.
 static void spec_fold_sync(engine *e, const int32_t *d, int acc, int nd,
                            int round_pos) {
     model_t *m = e->m;
@@ -286,23 +264,16 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
     int how = keep == e->pos ? (keep ? REWIND_EXTENDED : REWIND_NONE)
             : keep ? REWIND_KV : REWIND_MISMATCH;
     int agree = keep, mark_before = model_recurrent_mark_pos(e->m);
-    // Recurrent (SSM) layers hold a FOLD over [0, e->pos), not a per-position
-    // prefix, so keeping KV rows [0, keep) does not by itself put the recurrent
-    // state at `keep` — it is still the fold as-of the old e->pos. Attention's
-    // Fact 1 does not hold here. Only act on an actual rewind (keep < e->pos):
-    //   - an exact snapshot at `keep` (the spec-decode / abandoned-step rollback
-    //     boundary) restores the fold in a memcpy — cheap and bit-identical;
-    //   - otherwise the fold cannot be sliced, so recompute from 0: keep nothing
-    //     and let the re-feed rebuild both the recurrent state (model_forward's
-    //     pos==0 reset) and the reused-anyway attention KV. That is qwen35's
-    //     pre-seam behavior — never wrong, just not reused. Reusing the KV tail
-    //     for keep>0 on the recompute path is tracer 5 (prefix-cache), which
-    //     stores the recurrent blob in the snapshot and drives this same
-    //     restore. keep == e->pos is a pure extension: the fold is already right.
+    // Recurrent layers hold a fold over [0, e->pos), not a per-position prefix,
+    // so keeping KV rows [0, keep) does not put the recurrent state at `keep`.
+    // On an actual rewind (keep < e->pos): an exact snapshot at `keep` restores
+    // the fold in a memcpy; failing that, the turn mark, where the kept run
+    // reaches it, resumes from the mark; otherwise recompute from 0 and let
+    // the refeed rebuild the state and the KV. keep == e->pos is a pure
+    // extension.
     // A ring recycles rows: "keep the first `keep` rows" holds only while the
     // ring still has every row position `keep` reads (model_kv_ring_resumes,
-    // docs/kv-ring.md); a rewind of up to n_batch + 1 tokens does. Otherwise
-    // recompute from 0, the recurrent path's own precedent below.
+    // docs/kv-ring.md); otherwise recompute from 0.
     if (keep < e->pos && !model_kv_ring_resumes(e->m, keep)) { keep = 0; how = REWIND_RING; }
     if (model_has_recurrent(e->m) && keep < e->pos) {
         int mark = model_recurrent_mark_pos(e->m);
@@ -368,30 +339,19 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
 }
 
 // ==================================================== shared KV prefix cache
-//
-// Correctness here rests on two facts and one hazard.
-//
-//   Fact 1 — attention is causal, so KV row i is a function of tokens [0, i]
-//   only. Any prefix of a snapshot is therefore itself a valid snapshot, which
-//   is what lets one stored prompt serve every later prompt that shares any
-//   leading run of tokens with it, rather than only exact repeats.
-//
-//   Fact 2 — on every backend the host kcache/vcache is the authoritative
-//   copy. CUDA keeps a device mirror that knows how many leading rows it
-//   shares with the host and uploads the rest before a forward reads them
-//   (kv_rows, kv_upload in cuda.c); Metal's unified buffer *is* the host
-//   cache. So a snapshot is a plain memcpy in both directions, and the
-//   install tells the mirror its rows changed (model_kv_host_wrote).
-//
-//   Hazard — a fork that does not match the new prompt's true prefix silently
-//   conditions generation on another request's context. It does not fail; it
-//   answers, plausibly, from the wrong premises. Nothing below hashes token
-//   ids into a bucket and trusts the bucket: candidates keep their whole token
-//   vector and it is compared element by element with the prompt, so only the
-//   run that demonstrably matches is ever installed. Hashing is used solely
-//   for the things that are *not* tokens — the weights, the geometry, the
-//   tokenizer, the cache element type — and a hash miss there costs a prefill,
-//   never a wrong answer.
+// Correctness rests on two facts and one hazard.
+//   Fact 1: attention is causal, so KV row i depends on tokens [0, i] only.
+//   Any prefix of a snapshot is itself a valid snapshot, so one stored prompt
+//   serves every later prompt sharing a leading run of tokens with it.
+//   Fact 2: the host kcache/vcache is the authoritative copy on every
+//   backend (CUDA's mirror uploads what it lacks; Metal's buffer is the host
+//   cache), so a snapshot is a memcpy both ways, and the install tells the
+//   mirror its rows changed (model_kv_host_wrote).
+//   Hazard: a fork that does not match the new prompt's true prefix answers
+//   plausibly from another request's context. So candidates keep their whole
+//   token vector and are compared element by element; hashing covers only
+//   what is not tokens (weights, geometry, tokenizer, cache element type),
+//   where a miss costs a prefill, never a wrong answer.
 
 static uint64_t h64(uint64_t h, const void *p, size_t n) {
     const uint8_t *b = (const uint8_t *)p;
@@ -404,36 +364,21 @@ static uint64_t h64s(uint64_t h, const char *s) {
 static uint64_t h64i(uint64_t h, long long v) { return h64(h, &v, sizeof v); }
 static uint64_t h64f(uint64_t h, double v) { return h64(h, &v, sizeof v); }
 
-// The carried-over cache-key hazard, answered.
-//
-// A prefix key must cover everything that changes the tokens or the cache
-// bytes, not just the prompt text. `tokenizer.ggml.pre` selects between
-// distinct BPE split rules and SPM scores may be rebuilt from merge ranks at
-// load, so two models with identical system prompts and different `pre` values
-// must never share a prefix. Rather than enumerate the metadata that has
-// mattered so far, this digests the tokenizer that was actually built —
-// every vocabulary string, every score, every token type, the split rule and
-// the BOS/space flags — so a tokenizer that behaves differently keys
-// differently whatever the metadata said.
-//
-// Weight bytes are represented by the load-time file identity, not by a full
-// digest on every request. That keeps prefix admission O(prompt) while still
-// distinguishing a model rebuilt or replaced in place at the same path. The
-// small tensor samples below remain a fallback guard for platforms where stat
-// cannot report a useful identity.
+// A prefix key covers everything that changes the tokens or the cache bytes,
+// not just the prompt text: it digests the tokenizer that was actually built
+// (every vocabulary string, score and token type, the split rule and the
+// BOS/space flags), so a tokenizer that behaves differently keys differently
+// whatever the metadata said.
+// Weight bytes are represented by the load-time file identity, which keeps
+// admission O(prompt) and still tells a model replaced in place at the same
+// path; the small tensor samples are the fallback where stat gives none.
 static uint64_t model_identity(const model_t *m, const tokenizer *tok, bool prior) {
     uint64_t h = 0xCBF29CE484222325ull;
-    // v2: the LoRA adapter id joined the identity — a cached prefix computed
-    // under one adapter (or none) must never serve a run under another. The
-    // version bump deliberately invalidates every v1 persisted prefix once.
-    // v3 (R1.20): the file, not how its path was spelled. v2 hashed the path
-    // as typed, so the same file loaded as ./m.gguf and as /abs/m.gguf had
-    // two keys: a session image would not resume and two slots would not
-    // share a prefix (the SS-000 tester, 2026-11-03). The stat-backed
-    // identity below already names the file (inode, size, nanosecond
-    // timestamps, beside content samples); without it, the resolved path
-    // stands in. The bump invalidates every v2 persisted prefix and session
-    // image once.
+    // The identity's version. It names the adapter (a prefix computed under one
+    // adapter must never serve another) and the file, not how its path was
+    // spelled: the stat-backed identity (inode, size, timestamps, content
+    // samples), or the resolved path where stat gives none. A bump invalidates
+    // every persisted prefix and session image of the earlier version once.
     h = h64s(h, "runner.prefix.v3");
     if (!m->file_id_ok) {
         char canon[4096];
@@ -713,21 +658,12 @@ static int pfx_count(void) {
     return n;
 }
 
-// Evict until `need` more bytes fit — least-recently-used, but *unproven*
-// entries first.
-//
-// Plain LRU is the wrong policy here and it fails in the exact case this
-// cache exists for. Publishing stores the whole prompt, so every one-shot
-// request leaves a large entry behind, and a run of unrelated traffic is
-// enough to push out the shared system/tool/schema block that a dozen agent
-// requests were about to hit — the newest entry is always the one nobody has
-// used yet. Measured: a 2900-token shared prefix was evicted by two 800-token
-// one-shot prompts between the request that stored it and the request that
-// wanted it, on the 512 MB default.
-//
-// So an entry that has been forked at least once has proved it is shared, and
-// is only evicted once nothing unproven is left. Within each class the order
-// is still least-recently-used.
+// Evict until `need` more bytes fit: least recently used, but unproven
+// entries first. Plain LRU fails in the case this cache exists for:
+// publishing stores the whole prompt, so one-shot requests push out the
+// shared system/tool/schema block the next agent request was about to hit.
+// An entry forked at least once has proved it is shared and is evicted only
+// when nothing unproven is left; within each class the order is LRU.
 static void pfx_trim(size_t need) {
     while (PFX.head && (PFX.bytes + need > PFX.budget ||
                         pfx_count() >= PFX_MAX_ENTRIES)) {
@@ -759,14 +695,11 @@ size_t prefix_cache_budget_for(size_t entry_bytes, uint64_t ram_bytes) {
     return want > PFX_BUDGET_FLOOR ? want : PFX_BUDGET_FLOOR;
 }
 
-// The fixed 512 MB was sized from the traffic (how many distinct system,
-// tool and schema blocks the agents on a box use) and not from the model,
-// and an entry over half the budget is not stored whole: a recurrent model
-// stores nothing, a dense one a truncated prefix. On Qwen3.5-4B no prompt
-// past 6,048 tokens was cached, while an agent's prompt grows towards the
-// context; on CUDA too, where a hybrid slot forks a shared entry through the
-// host since R4.26.7. The floor keeps the traffic sizing; the model's own
-// full-context entry sets what it must at least hold.
+// The 512 MB floor is sized from the traffic (how many distinct system, tool
+// and schema blocks a box's agents use), not from the model, and an entry
+// over half the budget is not stored whole. So the budget also grows to what
+// the model's own full-context entry needs, or an agent's growing prompt
+// stops being cached partway to the context.
 void prefix_cache_fit_model(const model_t *m) {
     const char *set = getenv("RUNNER_PREFIX_CACHE_MB");
     if (!m || m->n_ctx <= 0 || (set && *set)) return;
@@ -820,13 +753,9 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     // prefix's next position reads (pfx_ring_serves, docs/kv-ring.md).
     // Tied-V refuses the mechanism: its K cache is smaller than kv_off
     // describes, so the flat copy would read past kcache.
-    // Refusing the shared tier must not skip the slot's own rewind: this is
-    // the only call between two requests that resets e->pos, and returning
-    // {0} here left the engine at the previous prompt's end, so the next
-    // prompt appended to stale context (identical 59-token prompts answered
-    // differently at c=128 and the third overflowed). keep is what
-    // engine_rewind says it is: a valid prefix under tied-V, where the K/V
-    // rows are still position-addressed.
+    // Refusing the shared tier must not skip the slot's own rewind: this is the
+    // only call between two requests that resets e->pos, and skipping it leaves
+    // the next prompt appended to stale context.
     prefix_reuse r = { 0, 0, 0.0 };
     // the slot's own KV first: it is already in place and costs nothing
     r.keep = engine_rewind(e, toks, n);
@@ -918,20 +847,14 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     double now = now_s();
     pfx_expire(now);
 
-    // A snapshot may not eat more than half the budget on its own, or one
-    // long prompt evicts everything worth keeping. Truncating it is free:
-    // a prefix of a prefix is still a valid prefix (Fact 1).
-    //
-    // Fact 1 is about attention rows and covers nothing else. A recurrent
-    // model's entry also carries the fold blob pfx_save appends, and the only
-    // fold this slot holds is the one after all `n` tokens -- the fold is not
-    // sliceable (model.h), so there is no fold at store_n to store instead.
-    // A shortened recurrent entry would pair store_n rows with state the prompt
-    // does not reach until n - store_n tokens later, and engine_prefix_reuse
-    // restores that blob verbatim on the exact hit that is the ONLY way a
-    // recurrent entry is ever forked -- so every use of it decodes from a state
-    // the prompt never had, and answers. Storing nothing costs a prefill; this
-    // costs the answer. A ring is the same: it holds no state at store_n.
+    // A snapshot may not take more than half the budget, or one long prompt
+    // evicts everything worth keeping. Truncating is free for attention rows: a
+    // prefix of a prefix is a valid prefix (Fact 1).
+    // Fact 1 covers nothing else. A recurrent entry carries the fold blob, and
+    // the only fold this slot holds is the one after all `n` tokens: a shortened
+    // entry would pair store_n rows with a later state, and every use of it
+    // would decode from a state the prompt never had. So a recurrent model, and
+    // a ring, store nothing when truncation would be needed.
     bool recur = model_has_recurrent(e->m);
     size_t per_tok = prefix_cache_entry_bytes(e->m, 1);
     int store_n = n;
@@ -960,30 +883,16 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
         }
     }
 
-    // A DIVERGING SIBLING stores nothing; it refreshes what it shares.
-    //
-    // Two requests in an agent session share a system prompt, a tool list and
-    // a schema, then differ. Storing each one whole means the shared block is
-    // held once per request: measured with four sibling prompts over a
-    // ~2,300-token shared prefix, the cache held four entries totalling
-    // 530 MB of a 512 MB budget for what is one 132 MB block of shared KV, and
-    // the fourth store evicted the first.
-    //
-    // The remedy is NOT to store a truncated copy of the shared block: the
-    // block is already reusable as a leading slice of the entry we diverged
-    // from (a prefix of a prefix is a valid prefix), so a second copy would
-    // be the duplication this branch exists to prevent. What a sibling
-    // contributes is only its tail -- the part already observed NOT to be
-    // shared, the least worth a slot, and the part a repeat of this exact
-    // prompt recovers from its own slot's KV via engine_rewind. So: touch
-    // the covering entry's clock and store nothing. (An earlier version of
-    // this comment described storing a truncated entry; that store was
-    // unreachable by construction -- the scan below always finds the
-    // diverging entry, since it shares exactly these diverge_at tokens and
-    // is longer -- and unreachable is correct, for the reason above.)
-    // Skipped for a recurrent model for the reason given at the half-budget
-    // clamp above: a fold belongs to position n, not to diverge_at, so a
-    // recurrent sibling has nothing shareable to refresh at a shorter length.
+    // A diverging sibling stores nothing; it refreshes what it shares. Two
+    // requests in an agent session share a system prompt, a tool list and a
+    // schema, then differ. Storing each whole holds the shared block once per
+    // request. The block is already reusable as a leading slice of the entry
+    // we diverged from, so a truncated copy would be the duplication this
+    // prevents; the sibling's own tail is the part least worth a slot, and a
+    // repeat of the exact prompt recovers it from its slot's KV. So: touch the
+    // covering entry's clock and store nothing. Skipped for a recurrent model:
+    // a fold belongs to position n, not to diverge_at, so a recurrent sibling
+    // has nothing shareable at a shorter length.
     if (!recur && diverge_at >= PFX_MIN_TOKENS && diverge_at < store_n) {
         for (pfx_entry *p = PFX.head; p; p = p->next) {
             if (p->key != e->model_key || p->n < diverge_at) continue;
@@ -1503,14 +1412,10 @@ static bool is_stop(engine *e, int id) {
 
 // hist, pos and the sampler's penalty window advance together, one batch at a
 // time, because everything downstream reads hist as the answer to "which
-// tokens produced the KV in [0, pos)?".
-//
-// Writing hist up front instead used to break that on exactly one path: a run
-// too long for the remaining context skipped the write altogether (the guard
-// was `pos + n <= n_ctx`) while the loop below still fed and counted every
-// batch that did fit. pos then pointed past rows belonging to this request
-// over hist entries belonging to the *previous* one, and the next request's
-// engine_rewind happily "kept" a prefix that matched nothing in the cache.
+// tokens produced the KV in [0, pos)?". Writing hist up front breaks that
+// when a run is too long for the remaining context: pos would point past
+// this request's rows over the previous request's hist entries, and the next
+// engine_rewind would keep a prefix that matches nothing in the cache.
 void engine_set_prefill_yield(engine *e, void (*yield)(void *), void *ud) {
     e->prefill_yield = yield;
     e->prefill_ud    = ud;
@@ -1657,16 +1562,13 @@ static int tag_advance(const char *tag, int match, char c) {
 }
 
 // A token that is nothing but insignificant whitespace is rejected under a
-// schema. It is always legal JSON, which is exactly the problem: it keeps the
-// token in the candidate set at every position, and an unsure model emits runs
-// of it until -n is exhausted. Whitespace is optional wherever it is legal, so
-// refusing it removes no reachable document; inside a string it is content and
-// sval_ws_is_content() says so, leaving those tokens admissible.
-// Read once per process, not once per sampled token. Both decoders call this
-// from inside their token loop, on every slot thread, and getenv walks the
-// whole environment block each time. Same cached shape as the other switches
-// in this file; NULL vs set is the whole test, so RUNNER_DEBUG_TOKENS=0 still
-// enables the trace exactly as it did before.
+// schema: always legal JSON, it stays in the candidate set at every position
+// and an unsure model emits runs of it until -n is exhausted. Whitespace is
+// optional wherever it is legal, so refusing it removes no reachable
+// document; inside a string it is content (sval_ws_is_content).
+// debug_tokens is read once per process, not once per sampled token: both
+// decoders call it inside their token loop. NULL against set is the whole
+// test, so RUNNER_DEBUG_TOKENS=0 still enables the trace.
 static bool debug_tokens(void) {
     static _Atomic int on = -1;
     if (on < 0) on = getenv("RUNNER_DEBUG_TOKENS") ? 1 : 0;
@@ -1723,15 +1625,11 @@ static void cdoc_release(engine *e) {
     e->cdoc_rec = true;
 }
 
-// The validator is fed through a copy so a token whose LAST byte is illegal
-// does not leave it half-consumed. On a scratch engine that protection is
-// already paid for by the copy the caller made, and paying it twice is what
-// constrained decoding actually costs: sval is 7 KB and the sampler probes
-// this once per candidate token -- with top_k off, once per vocabulary entry.
-// Measured with `sample` (SmolLM2-135M-Instruct-Q8_0, 49k vocab, an array
-// schema, --top-k 0 --gpu off): 1644 of 5985 decode-thread samples were in
-// memmove, against 249 in sval_feed -- the copies cost 6.6x the validation
-// they were protecting, and two thirds of them were these.
+// The validator is fed through a copy so a token whose last byte is illegal
+// does not leave it half-consumed. On a scratch engine the caller's copy
+// already pays for that protection, and paying twice is what constrained
+// decoding costs: the sampler probes this once per candidate token, and the
+// copies measured 6.6x the validation they protected.
 static bool constraint_payload_feed(engine *e, bool schema,
                                     const char *bytes, int n) {
     if (schema) {
@@ -1750,15 +1648,10 @@ static bool constraint_payload_feed(engine *e, bool schema,
     return true;
 }
 
-// Would these bytes survive the payload validator? Same question
-// constraint_payload_feed answers, asked without changing anything.
-//
-// The engine copy above is what a caller needs to feed a THROWAWAY engine;
-// probing a candidate token needs no such thing, only a scratch validator, and
-// the trial APIs carry just the live part of one. Measured on
-// SmolLM2-135M-Instruct-Q8_0 with --top-k 0 (the whole-vocabulary walk, where
-// this runs once per vocabulary entry per token), the engine copy this
-// replaces was 2928 bytes against roughly 300 here.
+// Would these bytes survive the payload validator? The question
+// constraint_payload_feed answers, asked without changing anything. Probing a
+// candidate token needs only a scratch validator, not an engine copy: the
+// trial APIs carry just the live part of one (about 300 bytes against 2,928).
 static bool constraint_payload_trial(const engine *e, bool schema,
                                      const char *bytes, int n) {
     if (schema) {
@@ -1896,16 +1789,13 @@ bool engine_constraint_complete(const engine *e) {
 }
 
 // A protocol token the model was trained on (Muse's <|message|>, <|start|>)
-// decodes to no bytes, so the byte machine can never observe it — yet the
-// atem automata SPELL those markers as literals. Without this, the model is
-// forced to type its own protocol out as text, which is off-distribution;
-// measured on the real model, greedy decoding then loops "<|message|>" to
-// the token limit on some tool_choice:"auto" prompts. Accept a decoded-empty
-// token in constrained output when feeding its raw vocab spelling would
-// advance the machine, and refuse it while the machine is consuming free
-// content (a raw scalar, a JSON string): a protocol marker mid-value is
-// corruption, not syntax. Stop tokens are excluded — they end the turn, and
-// the raw-tail rule in constraint_token_ok owns them.
+// decodes to no bytes, so the byte machine never observes it, yet the atem
+// automata spell those markers as literals. Without this the model must type
+// its protocol out as text, which is off-distribution (greedy decoding loops
+// "<|message|>" to the token limit). Accept a decoded-empty token when
+// feeding its raw vocabulary spelling would advance the machine, and refuse
+// it while the machine consumes free content (a raw scalar, a JSON string).
+// Stop tokens are excluded: constraint_token_ok's raw-tail rule owns them.
 static bool constraint_spelling_ok(engine *e, int id, bool schema) {
     if (!schema || e->constraint_phase != CP_OUTPUT) return false;
     if (is_stop(e, id)) return false;
@@ -1930,27 +1820,16 @@ static bool constraint_spelling_ok(engine *e, int id, bool schema) {
 // inside that prelude or after the constrained payload is complete.
 static bool constraint_token_ok(engine *e, int id, bool schema) {
     // Stop and control tokens are valid only inside a declared thinking
-    // prelude or once the constrained payload is complete.
-    //
-    // Tightening this so a STOP is refused in CP_THINK too was tried on
-    // 2026-08-07 and REVERTED: the defect it was aimed at is on gemma4, which
-    // declares no think tags at all (only qwen3/qwen3moe/qwen35 do), so the
-    // change was a no-op for the case that motivated it and untestable
-    // without a think-tag model to hand. It may still be right; it is not
-    // shipping unmeasured.
-    // After a closed thinking block (CP_AFTER_THINK) the payload is owed:
-    //  - a STOP is refused, whoever closed the block. With prose masked it
-    //    was the likeliest token left, and the turn ended with nothing in
-    //    content: Qwen3.5-0.8B and 4B under json_object after the reasoning
-    //    cap (100 of 200 tokens, all reasoning), and Kvist-14B after closing
-    //    its own self turn (2026-10-02, the family sweep).
-    //  - other control tokens are still the model's where IT closed the
-    //    block: Muse goes on in its protocol's control tokens between its
-    //    self turn and the payload. Where the ENGINE closed it (the cap,
-    //    gen_consume) the model was not told, and granite-4.2-8b spent the
-    //    rest of its budget on tokens that decode to nothing; there the only
-    //    control admitted is the model's own close tag, once (taking it
-    //    moves the phase on, constraint_control_accept).
+    // prelude or once the constrained payload is complete. (Refusing a STOP in
+    // CP_THINK too is unmeasured and not done.) After a closed thinking block
+    // (CP_AFTER_THINK) the payload is owed:
+    //  - a STOP is refused, whoever closed the block: with prose masked it is
+    //    the likeliest token left, and the turn would end with empty content;
+    //  - other control tokens are still the model's where it closed the block
+    //    itself (Muse goes on in its protocol's control tokens before the
+    //    payload). Where the engine closed it (the cap, gen_consume) the only
+    //    control admitted is the model's own close tag, once (taking it moves the
+    //    phase on, constraint_control_accept).
     if (is_stop(e, id) || tok_is_control(e->tok, id))
         return e->constraint_phase == CP_THINK ||
                (e->constraint_phase == CP_AFTER_THINK && !is_stop(e, id) &&
@@ -2412,14 +2291,12 @@ static void cl_capture(engine *e, const float *logits) {
     e->cl_count++;
 }
 
-// JC-R2 grammar fast-forward: byte-level forced-continuation discovery by
-// trial. In the constrained payload phase, when exactly one next byte keeps
-// the validator alive, that byte is pinned by the grammar — no model opinion
-// is involved in emitting it. The pinned run's tokenization is proposed as a
-// free draft (no draft-model forwards) and verified by the target like any
-// other draft, so even a non-canonical tokenization can only cost acceptance,
-// never correctness. Probing is by trial on validator copies — the same
-// validator-by-trial design the sampler filter uses, no materialized mask.
+// Grammar fast-forward: forced-continuation discovery by trial. In the
+// constrained payload phase, when exactly one next byte keeps the validator
+// alive, the grammar pins it. The pinned run's tokenization is proposed as a
+// free draft and verified by the target like any other draft, so a
+// non-canonical tokenization can only cost acceptance, never correctness.
+// Probing is by trial on validator copies, as the sampler filter does.
 static int grammar_forced_bytes(const engine *e, bool schema,
                                 char *out, int cap, bool *doc_done) {
     *doc_done = false;
@@ -2524,15 +2401,12 @@ static int grammar_draft(engine *e, int32_t *d, int max_d) {
         off += tn;
         keep++;
     }
-    // Tail withholding (measured 2026-08-04, gemma-4-E4B over the torture
-    // suite: 100% of draft rejections were the model merging the final
-    // pinned token with the free bytes that follow the pin). Unless the pin
-    // completes the document — nothing follows, so no merge is possible —
-    // don't draft the token that ends exactly at the pin boundary; it is
-    // the one position the target tokenizes unpredictably. Only when at
-    // least one draft survives: a single-token draft keeps the round alive
-    // (a rejected slot costs no more than the plain decode it replaces),
-    // and zeroing rounds would also blind the engagement gate.
+    // Tail withholding: draft rejections are the model merging the final pinned
+    // token with the free bytes that follow the pin. Unless the pin completes
+    // the document, do not draft the token that ends exactly at the pin
+    // boundary. Only when at least one draft survives: a single-token draft
+    // keeps the round alive (a rejected slot costs no more than the plain decode
+    // it replaces), and zeroing rounds would blind the engagement gate.
     if (!doc_done && keep > 1 && off == fn) keep--;
     if (keep > 0 && gtrace_file()) {
         memcpy(e->gtr_pin, fb, fn);
@@ -2603,14 +2477,10 @@ static int decode_piece(engine *e, int tok, char *buf, int cap) {
 }
 
 // ---------------------------------------------- one step, shared by both loops
-//
 // A generation step has three parts that do not depend on which loop runs it:
 // choosing the token, consuming it, and asking whether the turn is over. The
-// speculative walk and engine_gen_step each had their own copy of all three
-// (the walk's consume was spec_emit, a second gen_consume), and the copies had
-// drifted: the walk's let a prelude budget that ran out on the same token as
-// an aborted callback overwrite the abort, so the walk went on after a stop
-// sequence or a client that left (sweep E-1, R6.68.31).
+// speculative walk and engine_gen_step share them, so a stop sequence or a
+// client that left ends the walk as it ends a plain step.
 
 static bool gen_consume(engine *e, int tok, gen_cb cb, void *ud);
 
@@ -2678,12 +2548,8 @@ static void spec_report(const engine *e, const spec_prof *pf) {
 // rows 1..nd are the drafts; the walk samples row by row against the target's
 // own logits and stops at the first disagreement. Sampling from the target
 // keeps the stream token-identical to plain decoding whatever the drafts.
-//
-// The row-0 seat is the point: a round used to pay a batched verify of the
-// drafts AND a solo forward of the real token, two full weight passes per
-// round, which on a memory-bound CPU decode ate the whole speculative gain
-// (NextN drafts at 73% first-token acceptance still decoded slower than
-// plain). Now the real token's forward is one more column of the verify.
+// The row-0 seat is the point: the real token's forward is one more column of
+// the verify, not a second full weight pass per round.
 // The token that ends a round (a bonus or a mismatch) becomes the next
 // round's `cur`; generation end forwards the last pending token so the KV
 // covers hist[0..pos) exactly as the solo path leaves it.
@@ -2962,16 +2828,12 @@ out:
 }
 
 // ------------------------------------------------- the generation step
-//
-// engine_generate used to own both halves of a decode step: the per-sequence
-// work (sample, constrain, stop-check, stream) and the forward that produces
-// the next step's logits. Continuous batching needs to keep the first half and
-// take the second away, because one thread has to issue every batched forward
-// (see model_batch_decode). So the loop is split at exactly that seam.
-//
-// engine_generate below is written on the same three calls the scheduler uses,
-// which is the point: there is one copy of the sampler/schema/stop/stream
-// logic, not a solo one and a batched one that can drift apart.
+// A decode step has two halves: the per-sequence work (sample, constrain,
+// stop-check, stream) and the forward that produces the next step's logits.
+// Continuous batching keeps the first and takes the second away, because one
+// thread issues every batched forward (model_batch_decode). engine_generate
+// below is written on the same three calls the scheduler uses, so there is
+// one copy of the sampler/schema/stop/stream logic.
 
 void engine_gen_begin(engine *e, int max_new) {
     if (e->m) e->m->route_micro_tiles_seen = false;
@@ -3026,25 +2888,14 @@ static bool gen_consume(engine *e, int tok, gen_cb cb, void *ud) {
                        e->constraint_phase == CP_THINK) && e->prelude_max > 0 &&
         ++e->prelude_count >= e->prelude_max) {
         e->prelude_exhausted = true;
-        // A model that opens a thinking block and never closes it used to end
-        // the request here, having produced nothing: the caller asked for a
-        // schema-constrained payload and got an empty document. Measured on
-        // e4b-q4km (gemma4, prelude tags <|channel>thought / <channel|>), two
-        // of four tool prompts did exactly this -- prelude_max is max_new/2,
-        // so -n 200 burned 100 tokens thinking and returned one newline.
-        //
-        // Under an active constraint the prelude is not the deliverable, so
-        // the budget cap now CLOSES the prelude instead of ending the turn:
-        // phase moves to output, the payload validator is reset, and the
-        // remaining half of the budget goes on the JSON that was asked for.
-        // prelude_exhausted still records why, so the server keeps reporting
-        // "reasoning_limit".
-        // No `else`. `in_prelude` above already required a constraint, so an
-        // unconstrained turn never reaches this bound at ALL -- it runs to
-        // max_tokens like any other. There WAS an else here returning
-        // ENGINE_STEP_DONE, and it was unreachable; on 2026-08-15 it was read
-        // as the unconstrained POLICY and presented to the owner as one, which
-        // is the specific harm of dead code that looks like a decision.
+        // A model that opens a thinking block and never closes it must not end
+        // the request with an empty document: under an active constraint the
+        // prelude is not the deliverable, so the budget cap closes the
+        // prelude: the phase moves to output, the payload validator is reset,
+        // and the rest of the budget goes on the payload. prelude_exhausted
+        // still records why, so the server keeps reporting "reasoning_limit".
+        // No `else`: `in_prelude` already required a constraint, so an
+        // unconstrained turn never reaches this bound and runs to max_tokens.
         if (constraint_finish_think(e, e->schema != NULL, cb, ud) != 0)
             return true;
     }
@@ -3183,16 +3034,13 @@ bool engine_wants_spec(const engine *e) {
     return e->gram_ff && (e->schema || e->json_mode);
 }
 
-// R3.3.7, per backend and draft source, from the SS-001 rows on an RTX 3070
-// (docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03): on CUDA a
+// Draft width per backend and draft source
+// (docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03). On CUDA a
 // verify row costs about 0.2 of a step up to eight rows, so a lookup round
-// takes 7 (2.86x plain on an edit trace against 2.43x at 4; the ninth row
-// steps off the exact route); the NextN head pays its own draft step per
-// token and does best at 2 (code and tool pooled; 4 gave back most of it).
-// Everywhere else 4 stands: the CPU's verify row costs 0.45 to 0.78 of a step,
-// so its curve flattens by 4, and a partial offload keeps CPU layers that pay
-// that per row (the CUDA rows were all at full offload). An adaptive width was
-// measured and lost to these fixed ones (the same report).
+// takes 7 (the ninth row steps off the exact route); the NextN head pays its
+// own draft step per token and does best at 2. Everywhere else 4: the CPU's
+// verify row costs 0.45 to 0.78 of a step, and a partial offload keeps CPU
+// layers that pay that per row. An adaptive width was measured and lost.
 int engine_draft_k(const engine *e) {
     if (e->draft_k > 0) return e->draft_k;
     if (engine_cuda_full(e) && !e->dm) {

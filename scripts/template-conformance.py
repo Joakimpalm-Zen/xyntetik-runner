@@ -500,7 +500,8 @@ FAMILIES = {
     "granite40h": Family(
         "granite4", ("hf", "ibm-granite/granite-4.0-h-small"),
         note="granitehybrid; the 4.0 template with its tools section",
-        tool_family=True, tokenizer=("granite-4.0-h-small-Q4_K_M.gguf",)),
+        tool_family=True,
+        tokenizer=("granite-4.0-h-small-Q4_K_M.gguf", "granite-4.0-h-micro-Q4_K_M.gguf")),
     "qwen35-4b": Family(
         "qwen35", ("hf", "Qwen/Qwen3.5-4B"),
         note="ornith's template with the thought block kept only on the "

@@ -231,14 +231,10 @@ static int lp_piece(slot_t *s, engine *e, int id, char *tb, size_t cap) {
     return n;
 }
 
-// One position's alternatives as the OpenAI string->float map. Two ids can
-// share a key: a byte-level vocabulary splits an emoji's UTF-8 across ids, and
-// every lone partial byte escapes to the same "\ufffd". A JSON object must not
-// repeat a key, so candidates whose ESCAPED spelling (what a parser sees) is
-// the same are merged into one entry, at the first one's place, carrying the
-// log of their summed probability. `top_token_ids` keeps every id, so a
-// comparison keyed by id loses nothing (Mellum2.1 parity record, 2026-10-29:
-// five positions repeated a key).
+// One position's alternatives as the OpenAI string->float map. A JSON object
+// must not repeat a key, yet lone partial UTF-8 bytes all escape to "\ufffd":
+// candidates whose ESCAPED spelling matches merge at the first one's place,
+// carrying the log of their summed probability. `top_token_ids` keeps every id.
 static void append_top_map(sbuf *r, slot_t *s, engine *e, const lp_alt *row, int cnt) {
     char tb[512];
     sbuf key[20] = {{0}};
@@ -484,17 +480,10 @@ static int responses_text_delta(gen_ctx *g, int reasoning, const char *bytes,
 static int anth_delta(gen_ctx *g, const char *kind, const char *bytes, int n);
 static int anth_open_block(gen_ctx *g, const char *kind);
 
-// How many trailing bytes of `s` begin a UTF-8 sequence that is not finished
-// yet — i.e. how much must be held back until the next token arrives. 0 when
-// the buffer already ends on a character boundary.
-//
-// This reads the byte SHAPE only; it deliberately does not judge validity.
-// A stray continuation byte returns 0 and goes out immediately, because
-// nothing can complete it. An invalid lead such as 0xC0 has a two-byte shape
-// and IS held for one token — harmless, because whatever it becomes is then
-// rejected by json_escape and rendered U+FFFD, and the flush at end of
-// generation stops it being held forever. Validity belongs in one place, and
-// that place is the escaper.
+// How many trailing bytes of `s` start a UTF-8 sequence not finished yet, to
+// hold for the next token (0 on a boundary or after a stray continuation byte).
+// It reads the shape only: json_escape owns validity (U+FFFD), and the flush at
+// the end of generation stops an invalid lead from being held forever.
 static int u8_incomplete_tail(const char *s, int n) {
     for (int back = 1; back <= 3 && back <= n; back++) {
         unsigned char c = (unsigned char)s[n - back];
@@ -523,14 +512,9 @@ static int send_text_delta(gen_ctx *g, int reasoning, const char *bytes, int n) 
     int total = held + n;
     char *joined = malloc((size_t)total + 1);
     if (!joined) {
-        // An OOM must not REORDER the stream. Sending the new bytes and
-        // leaving the hold in place did not drop the held half — it delivered
-        // it later, prepended to a subsequent delta or flushed at the end, so
-        // the first half of a character arrived after words the model wrote
-        // after it. Emitting the hold first splits one character across two
-        // deltas (each half escapes to U+FFFD), which is exactly what
-        // flush_text_delta already does at end of generation, and is the only
-        // outcome here that keeps the model's own order.
+        // An OOM must not reorder the stream: the held half goes out first. It
+        // escapes to U+FFFD on its own, as at the end of generation, but every
+        // byte keeps the model's order.
         int rc = send_text_delta_raw(g, reasoning, g->u8_pend[ch], held);
         g->u8_pend_n[ch] = 0;
         if (rc) return rc;
@@ -716,26 +700,10 @@ static int sink_call_end(void *ud) {
 
 // ------------------------------------------------- Responses API framing
 //
-// The Responses surface is a second *vocabulary* for the one generation path,
-// not a second engine. Everything below is framing: the same bytes the chat
-// dialect sends as ChatCompletionChunk deltas are sent here as ordered typed
-// events, and the same buffered result is rendered as an `output[]` of items.
-//
-// Two properties are the actual contract, and both are what SDK clients
-// validate:
-//
-//   1. Order. An item is announced (`output_item.added`) before any of its
-//      deltas and closed (`output_item.done`) after them, with a content part
-//      opened and closed inside it; `response.created` opens the stream and
-//      `response.completed` closes it.
-//   2. Naming. Every event names itself twice — in the SSE `event:` field and
-//      in `data.type` — and typed clients dispatch on the first while
-//      validating the second, so the two must always agree. Framing them in
-//      one place is what guarantees that.
-//
-// A monotonic `sequence_number` is stamped on every event by the framer for
-// the same reason: it cannot drift from the send order if nothing else can
-// assign it.
+// The one generation path framed as Responses events. SDKs validate the order
+// (an item and its content part open before their deltas and close after them,
+// between response.created and response.completed) and each event's name in
+// both `event:` and `data.type`; sse_send writes both, and the sequence_number.
 
 // item kinds share one state machine and differ only in these names
 typedef struct {
@@ -765,14 +733,10 @@ static const resp_shape *resp_shape_of(const char *kind) {
     return &RESP_MESSAGE;
 }
 
-// frame one typed SSE event. `fields` holds the event-specific members already
-// written as `,"key":value` pairs; it is consumed (freed) here.
-//
-// Both typed surfaces name every event twice — in the SSE `event:` field and
-// in `data.type` — and both are validated by their SDKs, so the two names are
-// written from one argument here and cannot drift apart on either. The only
-// difference is `sequence_number`, which the Responses vocabulary stamps on
-// every event and the Anthropic one does not have at all.
+// frame one typed SSE event. `fields` holds the event's members already written
+// as `,"key":value` pairs and is freed here. One argument names the event in
+// both the SSE `event:` field and `data.type`, which both SDKs validate; `seq`
+// stamps sequence_number (Responses has it, Anthropic does not).
 static int sse_send(gen_ctx *g, const char *type, sbuf *fields, bool seq) {
     sbuf e = {0};
     sb_fmt(&e, "event: %s\ndata: {\"type\":\"%s\"", type, type);
@@ -1009,16 +973,10 @@ typedef struct {
     const char *repeated_calls;
 } resp_doc;
 
-// What one request was actually served with: the resolved preset, the five
-// effective sampling values and where each came from, and the tool contract
-// the prompt and parser were built on. Reported as
-// runner_telemetry.sampling / runner_telemetry.tool_protocol because the
-// 2026-09-14 Windows report could only INFER, from an A/B against explicit
-// request fields, that a family preset had applied a repeat penalty the
-// vendor never published; the effective values were visible nowhere a client
-// could reach. Each source is "request" when the request set the field,
-// "cli" when a --temp-style flag did, "file" when the GGUF's own
-// general.sampling.* key did (R4.12.6), else "preset".
+// What one request was served with, reported in runner_telemetry so a client
+// need not infer it: the preset, the five effective sampling values and where
+// each came from ("request", "cli" for a flag, "file" for the GGUF's
+// general.sampling.* key, else "preset"), and the tool contract it was built on.
 typedef struct req_diag {
     const char *preset;
     float temp, top_p, min_p, repeat_penalty;
@@ -1072,19 +1030,12 @@ typedef struct req_diag {
     char       *closure_json;
 } req_diag;
 
-// ---- R2.2 closure provenance ---------------------------------------------
+// ---- closure provenance --------------------------------------------------
 //
-// When the token budget ends inside a constrained document, the engine's
-// closer synthesizes the tail that makes it valid (constraint_close): a
-// required enum the model never reached gets the schema's first member, a
-// string is closed where it was cut. The call parses and executes, and until
-// 2026-10-02 nothing said which of its values the model wrote. The scan
-// below walks the delivered JSON with byte offsets and sorts every leaf value
-// (and every empty container) by where it lies against the offset the closer
-// took over at: wholly after it is "synthesized", straddling it is
-// "completed" (the model began it, the closer finished it). Paths are JSON
-// pointers into the constrained document, never inside tool_calls, so strict
-// clients keep parsing (owner decision 2026-10-02).
+// When the budget ends inside a constrained document, constraint_close writes
+// its valid tail; this scan marks each leaf value (and empty container) past
+// the closer's offset "synthesized", across it "completed". Paths are JSON
+// pointers into the document, never inside tool_calls, so strict clients parse.
 typedef struct {
     const char *d;
     size_t n, i;
@@ -1192,17 +1143,10 @@ static size_t cl_find(const char *d, size_t n, size_t from, const char *needle) 
     return n;
 }
 
-// The XML-style native calls, which carry their arguments as tagged
-// parameters rather than JSON: Qwen3-Coder's <function=NAME> with
-// <parameter=KEY>\nVALUE\n</parameter>, and Muse's <atem:invoke name="NAME">
-// with <atem:parameter name="KEY">VALUE</atem:parameter>. Until 2026-10-14 the
-// JSON scan below was the only one, so on these families every closure
-// reported "fields": null and a value the closer invented (a required number
-// filled with 0) read exactly like one the model wrote (outside review of the
-// runner 1.2.0 tool-calling study). The closer only ever finishes a turn's
-// LAST call, so the paths are that call's: "/name" when the closer wrote the
-// tool name, "/arguments/KEY" for each parameter value, sorted against `at`
-// as cl_mark sorts JSON leaves. False when the document holds no such call.
+// The XML-style native calls (Qwen3-Coder's <function=NAME>, Muse's
+// <atem:invoke>), arguments as tagged parameters. The closer only finishes the
+// LAST call, so paths are its "/name" and "/arguments/KEY", sorted against `at`
+// as cl_mark sorts JSON leaves; false when the document holds no such call.
 static const struct {
     const char *call, *call_end, *param, *param_end, *close;
     bool framed;                                // a newline frames each value
@@ -1496,24 +1440,10 @@ static void telemetry_json(sbuf *r, const resp_doc *d) {
     sb_lit(r, "}");
 }
 
-// The OpenAI `usage` object, rendered in one place for every surface that
-// speaks the chat dialect: the buffered chat body, the buffered legacy
-// completion body, and the opt-in `stream_options.include_usage` chunk. Three
-// copies of one token-accounting object is how two of them come to disagree,
-// and a client that flips `stream` on and off must see one shape.
-//
-// `cached` is this request's prefix-cache reuse, reported the way OpenAI
-// reports it: nested under prompt_tokens_details and INCLUDED in
-// prompt_tokens. The inclusion is the load-bearing half -- a caller billing
-// on prompt_tokens must not see its total move because the prompt happened to
-// be cheap to serve -- and it is why this is a breakdown of prompt_tokens
-// rather than a fourth number beside it. The Responses surface spells the
-// same fact `input_tokens_details.cached_tokens` (resp_body, its own
-// vocabulary); the Anthropic surface deliberately spells it nowhere, because
-// `cache_read_input_tokens` describes Anthropic's product with Anthropic's
-// semantics and reporting an unrelated figure there would misstate a client's
-// accounting rather than inform it. Every surface still carries the same
-// number as `runner_telemetry.prompt_cached_tokens`.
+// The OpenAI `usage` object, one renderer for every chat-dialect surface.
+// `cached` (prefix-cache reuse) sits in prompt_tokens_details and is INCLUDED
+// in prompt_tokens, so a bill on prompt_tokens does not move with cache luck;
+// the other surfaces' spellings are in docs/api-surfaces.md.
 static void openai_usage_json(sbuf *r, int n_prompt, int n_gen, int cached) {
     sb_fmt(r, "\"usage\":{\"prompt_tokens\":%d,"
               "\"prompt_tokens_details\":{\"cached_tokens\":%d},"
@@ -1547,14 +1477,12 @@ static jv *tool_calls_array(const sbuf *tc, int n_tc) {
     return v;
 }
 
-// ---- R4.12.19: a call this turn repeats one the conversation already made
+// ---- a call this turn repeats one the conversation already made
 //
-// The loop the lab caught (get_weather(Athens) re-called turn after turn, the
-// answer already in the model's reasoning) exists only ACROSS requests. The
-// chat-shaped surfaces carry the earlier calls as structure, so matching an
-// emitted call against them parses no prose. It is REPORTED, never refused: a
-// legitimate agent re-calls a tool too (polling, a retry after an error), and
-// a flag lets the harness break its own loop with a reason.
+// The chat-shaped surfaces carry the earlier calls as structure, so an emitted
+// call is matched against them without parsing prose. It is REPORTED, never
+// refused: an agent re-calls a tool legitimately (polling, a retry), and the
+// flag lets the harness break its own loop with a reason.
 
 // Two JSON values are the same call argument when they are equal as values:
 // objects compare key by key in any order, so whitespace and key order in a
@@ -1720,19 +1648,10 @@ static void result_text(const jv *c, sbuf *t) {
     }
 }
 
-// R17.7: the tool results a request carries, as data beside the rendered
-// prompt. A policy over the receipt (the action boundary) could read the
-// turn's calls as typed facts but the results only as prompt text, so it
-// could not see that a call retries a reported failure or repeats a write
-// already done. One entry per result, in request order:
-//   {"index": the message or input item, "call_id", "name" and "arguments"
-//    of the call it answers (null when no earlier call carries its id; the
-//    arguments as JSON text, as "tool_calls" spells them), "is_error" (the
-//    Messages flag), "text": what the tool returned, verbatim, and "json":
-//    that text parsed, present only when it is one JSON value}
-// Returns the array, malloc'd; NULL when the request carries no result and
-// declares no tools (the record is then what it always was) or on OOM
-// (*oom set).
+// The tool results a request carries, as data for a policy over the receipt:
+// one entry per result in request order (index; call_id, name, arguments of the
+// call it answers or null; is_error; text verbatim; json when the text parses).
+// malloc'd; NULL with no result and no tools declared, or on OOM (*oom set).
 static char *prior_results_json(jv *req, int api, bool *oom) {
     *oom = false;
     if (api == API_TEXT) return NULL;
@@ -2006,54 +1925,15 @@ static void responses_body(sbuf *r, gen_ctx *g, const resp_doc *d) {
 
 // ----------------------------------------------- Anthropic Messages framing
 //
-// The third vocabulary for the one generation path. Where the Responses
-// surface renders the turn as an `output[]` of items, Anthropic renders it as
-// a `content[]` of *blocks*, and the streaming form is the same state machine
-// one level flatter: a block is opened, filled with deltas, and closed, with no
-// content-part nesting inside it.
-//
-// The six event names and their order are the contract the Anthropic SDKs
-// validate:
-//
-//   message_start
-//     content_block_start / content_block_delta* / content_block_stop   (xN)
-//   message_delta        — the terminal stop_reason and the output token count
-//   message_stop
-//
-// There is no `data: [DONE]` sentinel: message_stop is the terminator.
+// The third vocabulary for the one generation path: a `content[]` of blocks,
+// streamed as message_start, then per block content_block_start, deltas and
+// content_block_stop, then message_delta (stop_reason, output tokens) and
+// message_stop, which is the terminator (no `data: [DONE]`).
 
-// The stop_reason vocabulary, derived from the same `finish` string the chat
-// dialect reports, so the two surfaces cannot disagree about how a turn ended.
-// The OpenAI `finish_reason` vocabulary is a CLOSED set — stop, length,
-// tool_calls, content_filter, function_call. `reasoning_limit` is ours, and
-// emitting it raw on a surface whose whole selling point is drop-in
-// compatibility breaks any typed client whose finish_reason is a closed union.
-// The official OpenAI SDK happens to deserialise it, which is what let this sit
-// unnoticed; a strictly-typed one has no case for it.
-//
-// `length` is not a euphemism here: the turn really did stop because it ran out
-// of token budget. The only thing lost is WHERE the budget went, and that
-// belongs in an extension field rather than smuggled into a standard enum —
-// which is exactly what the Responses (`max_output_tokens`) and Anthropic
-// (`max_tokens`) surfaces already do. Chat was the odd one out.
-//
-// The distinction is preserved as `finish_detail` in runner_telemetry, so no
-// information is lost: a client that cares can still tell a prelude exhaustion
-// from an ordinary truncation.
-//
-// Streamed chat/completions carried no runner_telemetry until RI-4 (owner,
-// 2026-10-02): the finish chunk now carries the full object, finish_detail
-// included, so a STREAMED turn keeps the distinction as a buffered one does.
-//
-// Owner decision 2026-08-08. Field evidence: a reasoning model truncated inside
-// its <think> block returns an EMPTY answer, and a harness that saw the
-// non-standard reason recorded incapability instead of truncation — every
-// agent case scored 0.00 for every model in the Syntetik-MoE baseline.
-//
-// "envelope_error" is widened the same way and for the same reason: it is a
-// generation fault, which this surface already spells "error" (see e->oom), and
-// inventing a second non-standard value would only give typed clients a second
-// case they have never heard of. Which fault it was survives as finish_detail.
+// The chat finish_reason for a `finish`. OpenAI's set is closed (stop, length,
+// tool_calls, content_filter, function_call), so ours widen: "reasoning_limit"
+// is "length" and "envelope_error" is "error", the exact one kept as
+// finish_detail in runner_telemetry. The evidence: docs/api-surfaces.md.
 static const char *openai_finish(const char *finish) {
     if (!strcmp(finish, "reasoning_limit")) return "length";
     // "loop" is ours too, and widened for the same reason. The turn was cut
@@ -2076,21 +1956,10 @@ static const char *finish_detail_of(const char *finish) {
     return NULL;
 }
 
-// A GENERATION FAULT: the turn produced nothing anybody can read, and the
-// reason is the server's rather than the model's or the caller's. Two causes
-// reach this state and both are reported the same way on every surface —
-// e->oom (an allocation failure mid-generation) and "envelope_error" (a
-// constrained document the demultiplexer could not map back).
-//
-// "client_too_slow" ends on the same terminators, and it is the one cause that
-// is the client's: it fell STREAM_OUT_CAP behind a stream written under the
-// device turn. It may have real text behind it, but the turn was cut by the
-// server and nothing in it is complete, so a client must not read it as an
-// answer. Only a stream can reach it.
-//
-// It is deliberately NOT the same class as "length" or "stop": those are
-// completions with a boundary, and a client can use what it got. A fault has
-// no usable turn behind it at all.
+// A GENERATION FAULT: nothing readable was produced, for the server's reason:
+// e->oom, "envelope_error" (a document the demultiplexer could not map), or
+// "client_too_slow" (a stream STREAM_OUT_CAP behind; text, but none complete).
+// Unlike "length" or "stop", no usable turn is behind it.
 static bool generation_faulted(const char *finish) {
     return !strcmp(finish, "error") || !strcmp(finish, "envelope_error") ||
            !strcmp(finish, "client_too_slow");
@@ -2113,16 +1982,9 @@ static const char *responses_incomplete_reason(const char *finish) {
     return NULL;
 }
 
-// Anthropic's vocabulary has no member for a generation fault, and it is not
-// an oversight: the API draws the line the other way round from OpenAI's, in
-// its own words — "Unlike errors, which indicate failures in processing your
-// request, `stop_reason` tells you why Claude completed its response
-// generation." All seven values (end_turn, max_tokens, stop_sequence,
-// tool_use, pause_turn, refusal, model_context_window_exceeded) describe a
-// turn that COMPLETED. A fault is an error object, not a stop_reason, so a
-// faulted turn never reaches this function at all — both callers test
-// generation_faulted() and divert to anth_error_json() first. Nothing here
-// understates a fault any more.
+// Anthropic's stop_reason values all describe a turn that COMPLETED; a fault is
+// an error object instead, so both callers test generation_faulted() and divert
+// to anth_error_json() before this.
 static const char *anth_stop_reason(const char *finish, bool stop_hit) {
     if (!strcmp(finish, "tool_calls")) return "tool_use";
     if (!strcmp(finish, "length") ||
@@ -2133,31 +1995,10 @@ static const char *anth_stop_reason(const char *finish, bool stop_hit) {
     return stop_hit ? "stop_sequence" : "end_turn";
 }
 
-// The error object's members, written once so the buffered body and the
-// streamed `error` event cannot describe the same fault differently — the same
-// reason sse_send names every event from one argument.
-//
-// `api_error` with a 500 is a deliberate pick out of Anthropic's typed set,
-// and each alternative in that set says something false here:
-//
-//   invalid_request_error (400)  blames the caller for a request that was
-//                                accepted and well-formed. Nothing they can
-//                                edit changes the outcome, and a 4xx is the
-//                                one class SDKs do NOT retry.
-//   overloaded_error (529)       means capacity. Clients shed load or fail
-//                                over on it; nothing here is loaded.
-//   timeout_error (504)          nothing timed out.
-//
-// `api_error` is documented as "an unexpected error ... internal to
-// Anthropic's systems. Retry the request with exponential backoff" — which is
-// what both faults are, and what a client should do about them. An unmappable
-// envelope is sampling-dependent, so a retry can genuinely succeed; an
-// allocation failure can clear too. 500 is also the classification under which
-// every official SDK already retries with backoff unprompted.
-//
-// Which fault it was survives in runner_telemetry, exactly as it does on the
-// chat and Responses surfaces, rather than being smuggled into `error.type`
-// where a typed client has no case for it.
+// The error object's members, written once for the buffered body and the
+// streamed `error` event. `api_error` (500): both faults are internal and a
+// retry can clear them, which SDKs do with backoff on a 500; which fault it was
+// stays in runner_telemetry. The other types: docs/api-surfaces.md.
 static void anth_error_json(sbuf *r, const char *finish) {
     const char *msg = !strcmp(finish, "envelope_error")
         ? "the model's constrained tool-call document could not be mapped "
@@ -2262,14 +2103,10 @@ static void anth_body(sbuf *r, gen_ctx *g, const resp_doc *d) {
                 sb_fmt(r, "{\"type\":\"tool_use\",\"id\":\"toolu_%d\","
                           "\"name\":\"", i);
                 sb_esc(r, name, strlen(name));
-                // Anthropic carries the arguments as a JSON *object*, where
-                // OpenAI carries the same document as a string. That difference
-                // is load-bearing: a string can hold anything, an inlined
-                // object cannot. Under the strict envelope the document is
-                // guaranteed to parse, but a call recovered from free text is
-                // only brace-matched, so it can be balanced and still invalid —
-                // inlining that verbatim would emit a body no client can read.
-                // Re-dumping through the parser is what makes this total.
+                // Anthropic carries the arguments as a JSON object, not a
+                // string, and a call recovered from free text is only
+                // brace-matched: re-dumping through the parser keeps an
+                // unparseable document out of the body.
                 sb_lit(r, "\",\"input\":");
                 jv *parsed = json_parse(args, strlen(args));
                 if (parsed && parsed->type == J_OBJ) jv_dump(parsed, r);
@@ -2374,19 +2211,10 @@ static int stop_release(gen_ctx *g) {
     return rc;
 }
 
-// The buffered counterpart of tool_stream_finish: one finished strict-envelope
-// document, demultiplexed into the channels the client actually receives.
-//
-// Strict mode means the whole response IS the envelope, guaranteed by the
-// schema rather than fished out of free text. A truncated call was closed to a
-// legal document by sval_close, so it still PARSES — but only a cleanly
-// finished document reports "tool_calls"; a truncated one keeps "length" so the
-// caller knows the arguments are minimal closures, not the model's intent
-// (finding A, 2026-08-11 evaluation).
-//
-// Consumes g->out and replaces it with whatever the client should see; appends
-// any calls to tc. Returns the number of tool calls (parallel turns map several
-// at once), 0 for a plain answer, or -1 when the document could not be mapped.
+// The buffered counterpart of tool_stream_finish: a finished strict-envelope
+// document demultiplexed into what the client sees (g->out replaced, calls
+// appended to tc). A truncated call parses but keeps "length", its arguments
+// being minimal closures. Returns the call count, 0 for an answer, -1 unmapped.
 static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
                                  bool truncated, const char *opener, bool *fault) {
     sbuf mapped = {0};
@@ -2441,19 +2269,10 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
         free(g->out.s);
         g->out = mapped;         // the final branch's payload is the reply
     } else {
-        // Unparseable. The old fallback here handed g->out back verbatim, on
-        // the reading that a degraded answer beats none — but under a strict
-        // envelope g->out is not an answer at all, it is the protocol. Harmony
-        // control-token spellings reach it verbatim (engine.c forwards tok_raw
-        // for decoded-empty control tokens), so clients were served
-        // `<|channel|>analysis<|message|>...to=functions.unknown...` as
-        // assistant content; the generic envelope leaks its own JSON syntax the
-        // same way, measured as `{tool`. Neither is text anybody asked for, and
-        // a client cannot tell either from a real answer.
-        //
-        // So the document is dropped and the turn reports the fault instead.
-        // An empty answer with an honest finish reason is something a caller
-        // can retry on; protocol framing dressed as content is not.
+        // Unparseable: under a strict envelope g->out is protocol, not an
+        // answer (Harmony control spellings, the envelope's own JSON), so it is
+        // dropped and the turn reports the fault: an empty answer with an
+        // honest finish reason can be retried, protocol dressed as content not.
         free(mapped.s);
         free(g->out.s);
         g->out = (sbuf){0};
@@ -2500,16 +2319,9 @@ static int gen_collect(void *ud, const char *bytes, int n) {
     return r;
 }
 
-// A request field the server cannot use must be an error, never a silent
-// fallback to the default: the caller then gets a response generated with
-// settings it did not ask for and no way to detect it. Stringified numbers
-// are the common shape of the mistake — several HTTP layers produce them
-// from form or env-derived config.
-//
-// `null` is the deliberate exception and reads as absent. Every mainstream
-// OpenAI SDK serialises an unset optional field as null rather than omitting
-// it, so treating null as a wrong type would 400 on ordinary traffic from an
-// unmodified client.
+// A request field the server cannot use is an error, never a silent fallback
+// to the default (stringified numbers are the common case). `null` reads as
+// absent: mainstream OpenAI SDKs send an unset optional field as null.
 bool absent(const jv *v) { return !v || v->type == J_NULL; }
 
 static bool request_number(jv *req, const char *key, double dflt,
@@ -2582,20 +2394,9 @@ static void refuse_field(creq_err *err, jv *req, const char *key, jtype want,
                                                   : "invalid_value");
 }
 
-// RI-5: name the field and the rule it broke.
-//
-// Six sampling settings used to share one "numeric sampling parameter out of
-// range", which identifies neither the offending field nor its bound, so a
-// request carrying several of them could only be debugged by bisection. The
-// error envelope already carries a structured `param`; this puts it to work.
-//
-// Wrong-typed and out-of-range are also separated, because they are different
-// mistakes with different fixes: one is a client serialising a number as a
-// string, the other is a value the engine cannot run.
-//
-// `rule` states the accepted range in the caller's terms rather than echoing
-// the value back, since a caller who sent 1.5 for top_p can see what they
-// sent and needs to be told what is allowed.
+// Name the field and the rule it broke: `param` names the field, and a wrong
+// type (a number sent as a string) is told apart from a value out of range.
+// `rule` states the accepted range, not the value the caller already knows.
 static bool sampling_number(creq_err *err, jv *req, const char *key, double dflt,
                             double min, double max, const char *rule,
                             double *out) {
@@ -2693,19 +2494,10 @@ static const char *unsupported_completion_field(jv *req, int api) {
 }
 
 // RUNNER_TEST_SCRIPTED_REPLY=1 at server start admits `runner_test_reply`, a
-// string the sampler then returns token for token instead of sampling
-// (sample.h). It exists for the protocol suite: a fixture model cannot be
-// made to say `<tool_call>` on purpose, and a test of what the server does
-// with a native call needs the model to have produced one. Without the
-// environment variable the field is refused, not ignored, so nothing served
-// in production can rely on it by accident. Returns the field's text (not
-// owned) or NULL when absent; *bad is set when the field is present and not
-// admissible, with the reason in *err.
-// `runner_test_fault: true`, admitted under the same environment variable and
-// only beside a reply, ends the scripted reply in an allocation failure
-// instead of a clean stop (sample.h): the one way a test reaches the
-// generation-fault framing, which a streamed reply hits after its 200 and
-// headers are already on the wire.
+// string the sampler returns token for token (sample.h), for protocol tests;
+// without it the field is refused, not ignored. `runner_test_fault: true` beside
+// it ends the reply in an allocation failure. Returns the text (not owned) or
+// NULL; *bad and *err when present and not admissible.
 static const char *scripted_reply(creq_err *err, jv *req, bool *bad, bool *fault) {
     *bad = false;
     *fault = false;
@@ -2745,17 +2537,10 @@ static const char *scripted_reply(creq_err *err, jv *req, bool *bad, bool *fault
     return v->str;
 }
 
-// The scripted reply as token ids: the vocabulary's own spelling when that
-// decodes back to the script byte for byte (specials included, TOK_RAW: a
-// scripted `<|im_end|>` is the turn terminator as generated), otherwise one
-// byte token per byte. The fallback exists for the CI fixture, whose
-// byte-fallback vocabulary has no U+2581 piece and so spells a space as
-// three bytes that decode to U+2581, not to the space the script meant. A
-// test therefore chooses its chunking: a script without spaces arrives in
-// the vocabulary's pieces, one with spaces arrives a byte at a time, which
-// is the hardest split a demultiplexer can be handed. Returns the count with
-// *ids the caller's to free, -1 on allocation failure, -2 when neither
-// spelling reproduces the script.
+// The scripted reply as token ids: the vocabulary's spelling when it decodes back
+// byte for byte (specials as TOK_RAW), else one byte token per byte, which is what
+// a script with spaces gets on the CI fixture. Returns the count (*ids to free),
+// -1 on OOM, -2 when neither spelling reproduces the script.
 static int scripted_reply_tokens(tokenizer *tok, const char *text,
                                  int32_t **ids) {
     *ids = NULL;
@@ -3138,15 +2923,10 @@ static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
     }
 }
 
-// R1.2.2: one receipt for a finished generation, in the CLI transcript's
-// format so --verify replays it: the prompt's and the output's token ids,
-// the sampler's settings and its state as generation started, the model's,
-// adapter's and binary's digests. "serve" says which surface and request it
-// was and how the prompt's KV was obtained; "constraints" (R1.1.2) what
-// shaped the output beyond the sampler -- --verify refuses such a record
-// rather than replay it without them -- "tool_calls" the calls the turn
-// delivered and "tool_results" (R17.7) the results the request carried.
-// Returns NULL, or why nothing was written.
+// One receipt per finished generation in the CLI transcript's format, so --verify
+// replays it: ids, sampler settings and start state, digests, and "serve",
+// "constraints" (which --verify refuses to replay without), "tool_calls" and
+// "tool_results". Returns NULL, or why nothing was written.
 static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
                                  const char *prompt, int api, bool chat,
                                  uint64_t gen_rng, int max_tokens, int n_prompt,
@@ -3682,16 +3462,10 @@ static bool creq_loop_guard(const creq_ctx *c, completion_req *q, creq_err *err)
 static bool creq_budget_message(const creq_ctx *c, completion_req *q, creq_err *err) {
     slot_t *s = c->s;
     jv *req = c->req;
-    // The sentence the forced close writes before the close token. A bare
-    // terminator drops the model mid sentence and costs accuracy on the
-    // answer that follows (llama.cpp's budget PR measured HumanEval 93%
-    // uncapped, about 89% capped with a message and 79% with a bare end tag;
-    // s1 2501.19393 and Qwen3's own "Considering the limited time..." line do
-    // the same thing), so the default is a short neutral one. An empty string
-    // asks for the bare close deliberately. Tokenized once, here, so the
-    // generation loop never touches the tokenizer: a sentence that does not
-    // fit the forced-close buffer is refused rather than truncated, because
-    // half a sentence in the model's voice is worse than none of it.
+    // The sentence the forced close writes before the close token: a bare end tag
+    // costs accuracy (HumanEval 79% against 89% with a message, llama.cpp's budget
+    // measurement), so the default is a short neutral one and "" asks for none.
+    // Tokenized here, off the generation loop; too long for the buffer is refused.
     q->think_msg_n = 0;
     if (q->think_budget > 0) {
         const char *msg = REASON_BUDGET_MESSAGE;
@@ -3958,38 +3732,14 @@ static bool creq_stops(const creq_ctx *c, completion_req *q, creq_err *err) {
             return false;
         }
     }
-    // A stop sequence is a rule about the model's VISIBLE text — that is the
-    // only thing the caller can see to write a rule about, and it is why the
-    // filter already excludes the reasoning channel. Under the strict tool
-    // envelope the generated document is not text at all: it is protocol
-    // (Harmony channel markers and recipient headers, Muse's <atem:invoke>,
-    // gemma4's <|tool_call> blocks, or the generic envelope's own JSON
-    // syntax), and the client receives only the
-    // demultiplexed result. Matching their strings against the raw document
-    // fires on framing they never wrote and never see — ["\n\n"], ["}"] and
-    // ["<|"] are ordinary agent defaults and every one of them hits.
-    //
-    // It also corrupts the turn rather than merely cutting it short. stop_feed
-    // drops the matched bytes from the emitted document, but the constraint
-    // validator consumed them before the sink ever ran, so the completion
-    // constraint_close synthesizes continues a state the client's copy never
-    // reached. Measured: the generic envelope with stop `"` returns
-    // `"content":"{tool"` — envelope syntax served as assistant text; the
-    // Harmony envelope fails to map at all.
-    //
-    // Honouring the request properly is not available on this path. The
-    // Harmony demultiplexer cannot tell visible text from framing until the
-    // document is complete, and by then there is nothing left to stop. So the
-    // choice is between refusing and ignoring, and a field this server cannot
-    // use is an error rather than a silent downgrade — the same call
-    // parallel_tool_calls makes in server.c, for the same reason: a caller who
-    // is quietly ignored has no way to detect it.
+    // A stop sequence is a rule about the model's visible text. Under the strict
+    // tool envelope the document is protocol: stop strings would fire on framing
+    // the client never sees and corrupt a turn the validator already consumed,
+    // so the request is refused, not ignored (docs/api-surfaces.md).
     // Stop ids for this request. A stop string that spells a control token
-    // exactly stops on the token: control tokens decode to no bytes, so the
-    // text matcher could never see `<|eom|>`, and a Muse to=self turn ran
-    // straight through `<|eom|><|start|>assistant to=<tool>` with the specials
-    // silently removed (the lab, 2026-09-16). `stop_token_ids` (the vLLM
-    // spelling) names ids directly, up to eight, each within the vocabulary.
+    // exactly stops on the token (control tokens decode to no bytes, so the text
+    // matcher never sees them); `stop_token_ids` (the vLLM spelling) names ids
+    // directly, up to eight, each within the vocabulary.
     int req_stops[8];
     int n_req_stops = 0;
     for (int i = 0; i < n_stops; i++) {
@@ -4286,17 +4036,9 @@ static void completion_apply(slot_t *s, const completion_req *q, const char *pro
         e->loop_max_closes = q->loop_max_closes;
     }
     // A prompt can already be inside the reasoning turn (a raw completion
-    // resuming ` to=self`, which is how a gate harness drives one); the
-    // budget has to count from the first generated token there.
-    //
-    // The reset is not housekeeping. think_on survives engine_gen_begin on
-    // purpose (a chat request primes the turn BEFORE generation starts, via
-    // engine_think_started), so the slot would otherwise carry a still-open
-    // reasoning turn into the NEXT request -- which happens whenever a turn
-    // runs out of max_tokens mid-reasoning. Measured on the muse fixture:
-    // a request whose forced close did not fit left the slot open, and the
-    // next request, whose prompt held no reasoning turn at all, was capped
-    // from its first token.
+    // resuming ` to=self`); the budget then counts from the first token. The
+    // reset matters: think_on survives engine_gen_begin on purpose, so a turn
+    // that ran out mid-reasoning would cap the NEXT request from its first token.
     e->think_on = false;
     engine_think_prime(e, prompt);
     e->think_msg_n = q->think_msg_n;
@@ -4742,24 +4484,10 @@ static void respond_stream_responses(const turn_result *t) {
 static void respond_stream_messages_fault(const turn_result *t) {
     const char *finish = t->finish;
     gen_ctx *g = t->g;
-    // The 200 and the headers went out before a token existed, so there is
-    // no status code left to correct — and Anthropic's SSE protocol has a
-    // terminator for exactly this case, documented alongside
-    // overloaded_error. The stream ends on `error`.
-    //
-    // Deliberately NOT message_delta + message_stop: message_delta must
-    // carry one of the seven stop_reasons, all of which describe a turn
-    // that completed, and message_stop asserts a Message that finished.
-    // Sending either would be the buffered end_turn lie in streamed form.
-    // Terminating at all is not optional though — a stream left hanging is
-    // the failure fixed on the OpenAI surfaces in 6c4dfc2, and this is the
-    // Anthropic spelling of the same terminal chunk.
-    //
-    // Nothing synthesises a closing content_block_stop for a block the
-    // fault interrupted. An error may arrive at any point in this protocol
-    // by construction, an SDK accumulator discards the message on it, and
-    // closing a block would be the one gesture that suggested the content
-    // before it was a usable partial answer.
+    // The 200 and headers are out, so the stream ends on Anthropic's `error`
+    // event, never message_delta + message_stop (they assert a completed turn);
+    // but it must end, since a hanging stream is a fault of its own. No closing
+    // content_block_stop either: that would offer the partial as an answer.
     if (!g->dead) {
         sbuf f = {0};
         sb_lit(&f, ",");
@@ -4905,28 +4633,10 @@ static void respond_buffered_messages(const turn_result *t, sbuf *tc, int n_tc) 
     gen_ctx *g = t->g;
     completion_prep *prep = t->prep;
     const completion_req *q = t->q;
-    // A fault is an error object here, not a Message. Anthropic's
-    // seven stop_reason values all describe a turn that COMPLETED, so
-    // there is no member to report this with — end_turn, which this
-    // used to send, told the caller the model finished normally over
-    // an empty content[].
-    //
-    // The partial content question, answered deliberately: a turn that
-    // faulted midway may already have produced text, and the analogous
-    // truncation case (stop_reason "max_tokens" WITH the partial in
-    // the body) is not available to borrow. Truncation is a completion
-    // with a known boundary — the budget ran out, and every byte before
-    // it is the model's finished intent up to that point. A mapping
-    // failure has no boundary and no intent: under a strict envelope
-    // the buffer is not a partial answer at all, it is protocol
-    // framing, and envelope_map_buffered has already dropped it for
-    // that reason. So there is nothing to preserve on this path even in
-    // principle. For the oom fault there IS real text, and it is still
-    // dropped: shipping it would require a stop_reason, and every one
-    // of the seven would be a false statement about why generation
-    // stopped. It survives where it belongs — the server log, and the
-    // OpenAI surfaces, which have an "error" finish_reason to carry it
-    // honestly alongside the content.
+    // A fault is an error object here, not a Message: every stop_reason claims
+    // a completed turn. Nothing partial is shipped: an unmapped envelope is
+    // protocol, and the oom fault's text would need a false stop_reason; it
+    // stays in the server log and on the OpenAI surfaces' "error" finish.
     if (generation_faulted(finish)) {
         sbuf r = {0};
         sb_lit(&r, "{\"type\":\"error\",");
@@ -5191,22 +4901,11 @@ static void request_id(char *out, size_t cap, const char *prefix) {
 // reads this one. File-scope: the stream keeps the pointer for the turn.
 static const tool_envelope MUSE_PLAIN_ENV = {.proto = TP_MUSE_PLAIN};
 
-// Phase 1 of a turn: the prompt into the model. Reuses what the slot or the
-// shared store already holds of it, feeds the rest inside one device turn,
-// and returns the logits generation starts from. NULL when the request was
-// answered here instead (a context that could not be forked, a cancel, a
-// timeout, a shutdown, an overflow); the caller returns without more work.
-//
-// Reuse the KV for whatever prefix this prompt shares with one already
-// computed: pipeline callers repeat long system/template prefixes verbatim.
-// Two tiers. The slot's own KV is free: it is already in the cache this
-// sequence decodes against. The shared snapshot store is not free (a memcpy,
-// and on CUDA a device resync), but it reaches across slots, across requests
-// and across model swaps, so it is what turns a repeated system/tool/schema
-// block into work nobody does twice. A caller can opt out of the shared tier
-// only: one isolating a pathological prompt still wants its own slot's cache,
-// and one that wants fresh-prompt telemetry wants neither. cache_prompt:false
-// remains the full opt-out.
+// Phase 1 of a turn: the prompt into the model inside one device turn, reusing
+// what the slot or the shared store holds (the slot's KV is free; the store
+// costs a copy but reaches across slots, requests and model swaps; a caller can
+// opt out of the store alone, cache_prompt:false of both). Returns the logits to
+// start from, or NULL when the request was answered here (a refusal or an end).
 static float *turn_prefill(turn_result *t) {
     slot_t *s = t->s;
     engine *e = t->e;
@@ -5216,15 +4915,11 @@ static float *turn_prefill(turn_result *t) {
     const completion_req *q = t->q;
     completion_prep *prep = t->prep;
     client_stop *stop = t->stop;
-    // Prefill is scheduled apart from decode: different kernel shape, and it
-    // is this slot's own model_forward_batch, so it must not overlap a
-    // microbatch containing this sequence. It cannot — the sequence only joins
-    // a batch below, after prefill has returned. Forking a prefix is prefill
-    // work (it rewrites this slot's KV, which a CUDA mirror then uploads), so
-    // it belongs inside the same device turn.
-    // Yield the device turn between prefill chunks. Without it a long prompt
-    // holds it for the whole prefill and every other slot waits: measured at
-    // 26.2 s for a short request arriving during a 2,300-token prefill.
+    // Prefill runs this slot's own model_forward_batch, apart from decode; it
+    // cannot overlap a microbatch with this sequence, which joins one only
+    // after prefill. Forking a prefix is prefill work, inside the same turn.
+    // Yield the device turn between prefill chunks, or every other slot waits
+    // out a long prompt (26.2 s for a short request behind a 2,300-token one).
     engine_set_stop(e, request_should_stop, stop);
     engine_set_prefill_yield(e, sched_prefill_yield, NULL);
     double device_t0 = now_s();
@@ -5268,15 +4963,10 @@ static float *turn_prefill(turn_result *t) {
     e->stat_feed = &s->rq_done;
     e->stat_gen = &s->rq_gen;
     double prefill_t0 = now_s();
-    // Name the request BEFORE any work, and say it started.
-    //
-    // The completion line below is printed on completion only, so a request
-    // that never finishes leaves no trace at all — reported from a Mac where a
-    // 1,200-token prompt returned nothing in 300 s and the server log was
-    // empty for the whole five minutes. A start line costs one stderr write
-    // per request and makes that case visible; it also carries the prompt
-    // length and how much of it the cache covered, which is what says whether
-    // a long silence is a cold prefill or something worse.
+    // Name the request BEFORE any work and say it started: the completion line
+    // comes only at the end, so a request that never finished left no trace.
+    // The start line carries the prompt length and the cache's share of it,
+    // which tells a cold prefill from something worse.
     prep->diag.prompt_reuse = engine_rewind_how_name(e->rewind_how);
     fprintf(stderr, "[slot %d] %s: start, %d prompt (%d cached, %s)\n",
             s->id, g->id, prep->n_prompt, t->keep, prep->diag.prompt_reuse);
@@ -5439,14 +5129,10 @@ static void turn_generate(turn_result *t, float *logits) {
     // The logger reads these on every path, a dead client's included.
     t->unmapped = false;
     t->gtime = 0;
-    // Past the last refusal: the request's seed takes the slot's RNG now.
-    // Nothing above draws from it (prefill and prompt scoring do not sample).
-    // Every request that samples takes the next place in one server-wide
-    // order; an unseeded one draws from the server seed and that place, not
-    // from a stream kept per slot: which idle slot serves a request is the
-    // scheduler's timing, so the same requests under the same -s seed sampled
-    // differently from run to run at --parallel 2 or more. A greedy request
-    // draws nothing and takes no place; a refused one never gets here.
+    // Past the last refusal the request's seed takes the slot's RNG. A sampling
+    // request takes the next place in one server-wide order (greedy takes none),
+    // an unseeded one drawing from the server seed and that place: which slot
+    // serves a request is timing, so a per-slot stream would not repeat under -s.
     if (s->smp.temp > 0.0f || (e->think_smp && e->think_temp > 0.0f)) {
         uint64_t place = atomic_fetch_add(&SV.sampled_requests, 1);
         s->smp.rng = q->seed_given ? sampler_seed_state(q->seed)
@@ -5606,25 +5292,14 @@ static void turn_close(turn_result *t) {
     // (a request the accept loop answered itself has no slot clock: 0)
     if (g->first_visible_t > 0 && s->req_t0 > 0)
         prep->diag.first_visible_s = g->first_visible_t - s->req_t0;
-    // A native-envelope document the demultiplexer cannot map is a GENERATION
-    // fault, not a dead client — and the difference decides whether the stream
-    // is terminated. Recording it as g.dead skipped all three terminal blocks
-    // below, so the client got the opening events and then nothing: no deltas,
-    // no finish_reason, no `data: [DONE]`, a bare FIN, and a server log that
-    // blamed the client for leaving. It is still there, still reading, and owed
-    // a terminal chunk it can stop on.
-    //
-    // tool_stream_finish returns -1 for exactly that failure; any other
-    // non-zero value came from a sink refusing to write, which IS the client
-    // going away.
-    // Did the RUNNER end the turn rather than the model? A budget, a
-    // deadline, or the loop guard: the finisher reads a still-open native
-    // call differently on a cut turn (dropped, "length") and on one the model
-    // ended (a fault). One test, shared with the buffered mapper below: the
-    // buffered path tested finish == "length", which missed a turn whose
-    // reasoning was capped and whose answer then ran out (finish
-    // "reasoning_limit"), and both paths read a loop-guard end as the
-    // model's own (sweep, 2026-09-27).
+    // An envelope the demultiplexer cannot map is a GENERATION fault, not a
+    // dead client: it is still reading and owed a terminal chunk.
+    // tool_stream_finish returns -1 for exactly that; any other non-zero is a
+    // sink refusing to write, which is the client going away.
+    // Did the RUNNER end the turn rather than the model (a budget, a deadline,
+    // the loop guard)? The finisher reads a still-open native call differently
+    // on a cut turn (dropped, "length") and on one the model ended (a fault);
+    // one test for the streamed and buffered paths.
     t->turn_cut = (!g->stopped && !e->hit_stop) || e->loop_stop;
     if (g->tsx_on) {
         int fin = tool_stream_finish_ex(&g->tsx, t->turn_cut);
@@ -5774,14 +5449,10 @@ static void turn_log(turn_result *t) {
     turn_shape *shape = t->shape;
     free(shape->json.s);
     free(prep->diag.closure_json);
-    // A paging note only when there was paging. Silence is the normal case and
-    // a per-request "0 page-ins" would be noise, but when the weights have been
-    // evicted this line is the only thing that says the time went to the disk
-    // rather than to the model. With every weight on a discrete device it
-    // cannot be the weights, so the note says only what it knows, and where
-    // the OS publishes a video memory budget the figures ride along: an
-    // eviction to system memory reads as such in the same line (R3.49). Both
-    // are looked up only once the count is over the floor.
+    // A paging note only when there was paging: a per-request "0 page-ins" is
+    // noise, but after eviction this line alone says the time went to the disk.
+    // With every weight on a discrete device it says only what it knows, and the
+    // OS's video memory budget rides along where it has one.
     uint64_t faults = plat_major_faults() - t->faults_at_start;
     char paging[192];
     paging[0] = '\0';
