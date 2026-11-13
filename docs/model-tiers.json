@@ -3640,21 +3640,290 @@
       ]
     },
     {
-      "id": "arch-qwen2",
-      "model": "Qwen2 (qwen2)",
+      "id": "qwen2.5-1.5b-instruct-q8_0-bartowski",
+      "model": "Qwen2.5-1.5B-Instruct (Qwen)",
       "family": "Qwen2",
       "tier": "tier2",
-      "scope": "architecture",
-      "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
+      "claim": "bartowski's Q8_0 of Qwen's Qwen2.5-1.5B-Instruct, the fidelity file of the model: against the publisher's BF16 checkpoint computed in float32 it reads 0.0033 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 600 positions (two windows of 300: 0.0032 and 0.0034; plain top-1 98.3%, CPU), against a bar of 0.05 and 97%. Its tensors are byte for byte a Q8_0 converted from the checkpoint with llama.cpp's own converter.",
       "architecture": "qwen2",
+      "upstream": {
+        "checkpoint": "Qwen/Qwen2.5-1.5B-Instruct",
+        "revision": "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Qwen/Qwen2.5-1.5B-Instruct"
+      },
+      "files": [
+        {
+          "name": "Qwen2.5-1.5B-Instruct-Q8_0.gguf",
+          "repo": "bartowski/Qwen2.5-1.5B-Instruct-GGUF",
+          "revision": "9eadc66189c7641e1ddd226b8267a9119b2ce2d4",
+          "sha256": "7185d306cf45956c8c017cd0d3b05ecc6bc18b3ea8eb5c240dce40e87563db7f",
+          "bytes": 1646573312
+        }
+      ],
+      "quantization": "Q8_0 (bartowski, importance matrix recorded; Q8_0 does not use it)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "bartowski's Q8_0 (revision 9eadc661) against Qwen's BF16 checkpoint at 989aa798 computed in float32 on the CPU (transformers 5.16.1, float32 arithmetic cast at use per decoder block, gold-logits.py, two windows of 300 positions at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files from the batched prefill route): pooled 0.0033 ± 0.0003 mean KLD (SE, 600 positions; windows 0.0032 and 0.0034) / 98.3% top-1 / 100% margin-qualified (394/394). The publisher's own q8_0 (the second row) reads 0.0297 ± 0.0012. The publisher's GGUF differs from the checkpoint it is converted from: each layer norm is the checkpoint's times a per-channel factor (mean 1.54 to 1.74 in layers 0, 10 and 27) and q_proj is divided by it, the product equal to the checkpoint's within 0.4 to 0.6% (Q8_0's error), and the file carries an untied output.weight (339 tensors against 338); consistent with an equalization pass before quantizing. In exact arithmetic the same model, the rescaled weights quantize worse: a Q8_0 converted here from the checkpoint with llama.cpp's converter reads 0.0033 (its BF16 0.00011), and bartowski's Q8_0 is byte-identical to that conversion in all 338 tensors. Measured and not admitted: the publisher's q4_k_m (0.0798 ± 0.0036, 96.95% margin-qualified; llama.cpp 0.0931 on window 1) and bartowski's Q4_K_M with its importance matrix (0.0516 ± 0.0025, 97.97%; 73% of bootstrap resamples over 0.05). Tokenizer pre qwen2: 0 of 721 corpus strings and 0 of 150,186 vocabulary entries differ from Qwen's tokenizer.json at 989aa798 (the same tokenizer files as Qwen2.5-7B-Instruct's); template family chatml, conformance 21/21 in text and tokens against the publisher's chat template, the same template as Qwen2.5-7B-Instruct's. Record: docs/compat-reports/qwen2.5-1.5b-instruct-2026-11-13/README.md.",
+        "context": 4096,
+        "limitations": "CPU, CUDA and Metal for this file (1.65 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 28 layers on the device; on Metal, an Apple M1, where the pinned reply is byte for byte the CUDA pin's, and the CPU's differs from both after about 30 tokens). The publisher's own q8_0 is the second row, at nine times this file's KLD. Measured and not admitted: the publisher's q4_k_m (0.0798 ± 0.0036, 96.95% margin-qualified; llama.cpp 0.0931 on window 1) and bartowski's Q4_K_M with its importance matrix (0.0516 ± 0.0025, 97.97%; 73% of bootstrap resamples over 0.05). On load the file resolves to architecture qwen2, tokenizer pre qwen2, template chatml, tool family qwen_json and sampling preset qwen2.5 (temperature 0.7, top_p 0.8, top_k 20, repeat_penalty 1.05). Tool calls use the chatml family's Qwen JSON protocol. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-qwen2.5-1.5b-instruct.json",
+          "docs/compat-reports/qwen2.5-1.5b-instruct-2026-11-13/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "The Windows CUDA host's cells, and task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "23ff035bf44ecd6182612c7a73bdb7de159eb206",
+          "caps": {
+            "version": "1.18.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "e82cf0278213cd8036e25a90f814d97fe18e95cf64dce46cc5f0c44fcfc2297b",
+          "ran": "runner -m Qwen2.5-1.5B-Instruct-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0-bartowski.macos-arm64-metal.metal.txt",
+          "build": {
+            "binary_sha256": "65db0eefc3f6ed0bfdb6206a37dd360701e06a7838da02b13506b1d60fce46e4",
+            "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+            "commit": "23ff035bf44ecd6182612c7a73bdb7de159eb206",
+            "dirty": false
+          }
+        },
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "c4a53e20abfcc374fbbc5bba7b71b375d4f361c92465a9839fe3ef4418c4a492",
+          "ran": "runner -m Qwen2.5-1.5B-Instruct-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0-bartowski.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "9600cd1b06513e372d5da6b19a508eb1cb277c29408973fd1b7a2ba4fec31b8e",
+            "compiler": "13.3.0",
+            "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+            "dirty": false
+          }
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "e82cf0278213cd8036e25a90f814d97fe18e95cf64dce46cc5f0c44fcfc2297b",
+          "ran": "runner -m Qwen2.5-1.5B-Instruct-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0-bartowski.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "9600cd1b06513e372d5da6b19a508eb1cb277c29408973fd1b7a2ba4fec31b8e",
+            "compiler": "13.3.0",
+            "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+            "dirty": false
+          }
+        }
+      },
       "transitions": [
         {
           "tier": "tier2",
-          "effective": "2026-10-22",
-          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "effective": "2026-11-13",
+          "reason": "Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.2) and a float32 reference measurement against the publisher's checkpoint, so the Qwen2 family has a file with cells. Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.18.0",
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "id": "qwen2.5-1.5b-instruct-q8_0",
+      "model": "Qwen2.5-1.5B-Instruct (Qwen)",
+      "family": "Qwen2",
+      "tier": "tier2",
+      "claim": "The publisher's own q8_0 of Qwen2.5-1.5B-Instruct reads 0.030 mean KLD, nine times bartowski's Q8_0 on the same checkpoint: the publisher folded a per-channel rescaling of the layer norms into the projections before quantizing; in exact arithmetic the same model, but the rescaled weights quantize worse. Against the publisher's BF16 checkpoint computed in float32: 0.0297 ± 0.0012 mean KLD and 99.75% margin-qualified top-1 over 600 positions (two windows of 300: 0.0307 and 0.0287; plain top-1 91.7%, CPU), against a bar of 0.05 and 97%. llama.cpp reads the same file at 0.0324 on window 1 against Runner's 0.0307, so it is the file, not the engine. bartowski's Q8_0 is the fidelity file.",
+      "architecture": "qwen2",
+      "upstream": {
+        "checkpoint": "Qwen/Qwen2.5-1.5B-Instruct",
+        "revision": "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "Qwen/Qwen2.5-1.5B-Instruct"
+      },
+      "files": [
+        {
+          "name": "qwen2.5-1.5b-instruct-q8_0.gguf",
+          "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+          "revision": "91cad51170dc346986eccefdc2dd33a9da36ead9",
+          "sha256": "d7efb072e7724d25048a4fda0a3e10b04bdef5d06b1403a1c93bd9f1240a63c8",
+          "bytes": 1894532128
+        }
+      ],
+      "quantization": "Q8_0 (the publisher's, no importance matrix)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "The publisher's q8_0 (Qwen/Qwen2.5-1.5B-Instruct-GGUF at 91cad511) against Qwen's BF16 checkpoint at 989aa798 computed in float32 on the CPU (transformers 5.16.1, float32 arithmetic cast at use per decoder block, gold-logits.py, two windows of 300 positions at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files from the batched prefill route): pooled 0.0297 ± 0.0012 mean KLD (SE, 600 positions; windows 0.0307 and 0.0287) / 91.7% top-1 / 99.75% margin-qualified (393/394); llama.cpp 73a43d1 on window 1: 0.0324 / 100%. The publisher's GGUF differs from the checkpoint it is converted from: each layer norm is the checkpoint's times a per-channel factor (mean 1.54 to 1.74 in layers 0, 10 and 27) and q_proj is divided by it, the product equal to the checkpoint's within 0.4 to 0.6% (Q8_0's error), and the file carries an untied output.weight (339 tensors against 338); consistent with an equalization pass before quantizing. In exact arithmetic the same model, the rescaled weights quantize worse: a Q8_0 converted here from the checkpoint with llama.cpp's converter reads 0.0033 (its BF16 0.00011), and bartowski's Q8_0 is byte-identical to that conversion in all 338 tensors. Measured and not admitted: the publisher's q4_k_m (0.0798 ± 0.0036, 96.95% margin-qualified; llama.cpp 0.0931 on window 1) and bartowski's Q4_K_M with its importance matrix (0.0516 ± 0.0025, 97.97%; 73% of bootstrap resamples over 0.05). Tokenizer pre qwen2: 0 of 721 corpus strings and 0 of 150,186 vocabulary entries differ from Qwen's tokenizer.json at 989aa798 (the same tokenizer files as Qwen2.5-7B-Instruct's); template family chatml, conformance 21/21 in text and tokens against the publisher's chat template, the same template as Qwen2.5-7B-Instruct's. Record: docs/compat-reports/qwen2.5-1.5b-instruct-2026-11-13/README.md.",
+        "context": 4096,
+        "limitations": "CPU, CUDA and Metal for this file (1.89 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 28 layers on the device; on Metal, an Apple M1, where the pinned reply is byte for byte the CPU's and CUDA's). It reads nine times the KLD of bartowski's Q8_0 of the same checkpoint (the first row): the publisher's GGUF carries a rescaling folded into the weights before quantizing. Measured and not admitted: the publisher's q4_k_m (0.0798 ± 0.0036, 96.95% margin-qualified; llama.cpp 0.0931 on window 1) and bartowski's Q4_K_M with its importance matrix (0.0516 ± 0.0025, 97.97%; 73% of bootstrap resamples over 0.05). On load the file resolves to architecture qwen2, tokenizer pre qwen2, template chatml, tool family qwen_json and sampling preset qwen2.5 (temperature 0.7, top_p 0.8, top_k 20, repeat_penalty 1.05). Tool calls use the chatml family's Qwen JSON protocol. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-qwen2.5-1.5b-instruct.json",
+          "docs/compat-reports/qwen2.5-1.5b-instruct-2026-11-13/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "The Windows CUDA host's cells, and task quality."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "metal": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "macos-arm64-metal",
+          "result": "pass",
+          "commit": "23ff035bf44ecd6182612c7a73bdb7de159eb206",
+          "caps": {
+            "version": "1.18.0",
+            "os": "macos",
+            "arch": "arm64",
+            "cpu_cores": 8,
+            "gpu_backend": "metal",
+            "gpu_name": "Apple M1"
+          },
+          "output_sha256": "0308e3d8c0ec344dae1de5c35c623014430f9baa890cbf193c37cdbb8c87fa5a",
+          "ran": "runner -m qwen2.5-1.5b-instruct-q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0.macos-arm64-metal.metal.txt",
+          "build": {
+            "binary_sha256": "65db0eefc3f6ed0bfdb6206a37dd360701e06a7838da02b13506b1d60fce46e4",
+            "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+            "commit": "23ff035bf44ecd6182612c7a73bdb7de159eb206",
+            "dirty": false
+          }
+        },
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "0308e3d8c0ec344dae1de5c35c623014430f9baa890cbf193c37cdbb8c87fa5a",
+          "ran": "runner -m qwen2.5-1.5b-instruct-q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "9600cd1b06513e372d5da6b19a508eb1cb277c29408973fd1b7a2ba4fec31b8e",
+            "compiler": "13.3.0",
+            "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+            "dirty": false
+          }
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "0308e3d8c0ec344dae1de5c35c623014430f9baa890cbf193c37cdbb8c87fa5a",
+          "ran": "runner -m qwen2.5-1.5b-instruct-q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=80 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "9600cd1b06513e372d5da6b19a508eb1cb277c29408973fd1b7a2ba4fec31b8e",
+            "compiler": "13.3.0",
+            "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+            "dirty": false
+          }
+        }
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-13",
+          "reason": "Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.2) and a float32 reference measurement against the publisher's checkpoint, so the Qwen2 family has a file with cells. Maintained on report.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.18.0",
+        "date": "2026-11-13"
+      }
     },
     {
       "id": "arch-gemma3",

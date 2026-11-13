@@ -1,0 +1,90 @@
+{
+ "model": "models/qwen2.5-1.5b-instruct-q8_0.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "dense_rule": "margin_qualified",
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 28,
+  "layers_total": 28,
+  "output_weight_on_gpu": true,
+  "whole_graph": true
+ },
+ "cpu_cuda_identity": {
+  "result": "pass",
+  "exact": "9/9",
+  "gpu_arm_on_cpu": false,
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 9,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris. The capital of France is also the capital of which other country?\nA) Germany\nB) Italy\nC) Spain\nD) United Kingdom\nE) France\nTo determine the capital of France, we need to recall that the capital of France is Paris. Now, we need to identify which of the given options is also the capital of France.\n\nLet's analyze each option:\n\nA) Germany - The capital of Germany is Berlin.\nB) Italy - The capital of Italy is Rome.\nC) Spain - The capital of Spain is Madrid.\nD) United Kingdom - The capital of the United Kingdom is London.\nE)",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " \n    if n <= 1: \n        return n \n    else: \n        return(fibonacci(n-1) + fibonacci(n-2)) \n  \n# Driver Code \nn = 10\nprint(fibonacci(n))",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there lived a young girl named Lily. Lily was a curious and adventurous girl who loved to explore the world around her. One day, while wandering through the forest, she stumbled upon a mysterious old tree. The tree was covered in moss and had a strange, glowing light emanating from its branches. Lily was fascinated by the tree and decided to investigate further.\n\nAs she approached the tree, she noticed that the light was not just a single light, but a series of lights that seemed to be moving around the tree. Lily was intrigued and decided to follow the lights. She followed them for what seemed like hours, and finally, she arrived",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 391\nExplain how we arrive at this answer:\nTo arrive at the answer 391, we can use the standard multiplication method for two-digit numbers. Here's a step-by-step explanation:\n\n1. **Set up the multiplication**: Write 17 and 23 one below the other, aligning the digits by place value.\n\n   ```\n   17\n   \u00d7 23\n   ----\n   ```\n\n2. **Multiply 17 by 3**: This is the same as multiplying 17 by 3.\n   ```\n   17\n   \u00d7 23",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " He noticed that the fog lifted at 10 AM, and the wind was blowing from the north. If the fog lifted at 10 AM and the wind was blowing from the north, what is the wind direction? To determine the wind direction, we need to analyze the information provided:\n\n1. The fog lifted at 10 AM.\n2. The wind was blowing from the north.\n\nThe wind direction is defined as the direction from which the wind is blowing. In this case, the wind was blowing from the north. Therefore, the wind direction is north.\n\nThe answer is \\(\\boxed{\\text{north}}\\).",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " of duplicate entries was a major task, and the catalogue was revised again in 1932. The 1932 catalogue was the last to be published in the series, and it listed 4176 objects. The 1932 catalogue was the last to be published in the series, and it listed 4176 objects. The 1932 catalogue was the last to be published in the series, and it listed 4176 objects. The 1932 catalogue was the last to be published in the series, and it listed 4176 objects",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " is\n# not a good idea.  We need to check the header before unpacking it.\ndef parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which is\n# not a good idea.  We need to check the header before unpacking it.\ndef parse_header(buf, size):\n    if size < 8:\n       ",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " is used to the more irregular streets of the rest of the city. The city\u2019s most famous landmark, the 18th-century Jer\u00f3nimos Monastery, is a UNESCO World Heritage site, and the 16th-century S\u00e3o Jorge Castle, which dominates the city from its hilltop position, is a popular tourist attraction. The city\u2019s most famous landmark, the 18th-century Jer\u00f3nimos Monastery, is a UNESCO World Heritage site, and the 16th-century S\u00e3o Jorge Castle, which dominates the city from its hilltop position, is a popular tourist attraction. The city\u2019s most famous landmark, the",
+   "gpu": null
+  }
+ ]
+}

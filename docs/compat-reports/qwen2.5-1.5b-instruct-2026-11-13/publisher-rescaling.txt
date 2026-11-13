@@ -1,0 +1,29 @@
+# Tensor evidence (2026-11-13): the publisher's q8_0 against the checkpoint it names, and against a Q8_0 converted
+# from that checkpoint with llama.cpp 73a43d1's convert_hf_to_gguf.py (--outtype bf16) and llama-quantize Q8_0.
+# Files: publisher = Qwen/Qwen2.5-1.5B-Instruct-GGUF@91cad511 qwen2.5-1.5b-instruct-q8_0.gguf (sha d7efb072...);
+# lab = the conversion (lab instrument, not a row's file); bartowski = bartowski/Qwen2.5-1.5B-Instruct-GGUF@9eadc661
+# Qwen2.5-1.5B-Instruct-Q8_0.gguf (sha 7185d306...); checkpoint = Qwen/Qwen2.5-1.5B-Instruct@989aa798 model.safetensors.
+
+== publisher (A) against lab (B)
+tensors: publisher 339, lab 338; only in publisher: output.weight (the checkpoint ties its output to the embedding)
+tensor types: publisher Q8_0 198, F32 141; lab Q8_0 197, F32 141
+identical 85; same type, data differs 253 (the layer norms and the projections they feed)
+output_norm.weight, blk.0.attn_q.bias and blk.5.attn_k.bias (the ones compared): equal to the lab conversion's, value for value
+
+== layer norm and q_proj against the checkpoint (norm factor = publisher norm / checkpoint norm, per channel)
+1.5B L0: q_proj rel diff 0.428; (q*norm) folded rel diff 0.00437; norm ratio mean 1.741 sd 0.214
+1.5B L10: q_proj rel diff 0.36; (q*norm) folded rel diff 0.00558; norm ratio mean 1.540 sd 0.183
+1.5B L27: q_proj rel diff 0.444; (q*norm) folded rel diff 0.00532; norm ratio mean 1.661 sd 0.434
+1.5B L0 first values: checkpoint [0.5039 0.2695 0.4316 0.5078 0.3301], publisher [0.7754 0.4666 0.6934 0.8076 0.5957], lab equal to the checkpoint
+(q_proj rel diff: the publisher's dequantized q_proj against the checkpoint's; folded: q_proj * norm, per input channel)
+
+== the same check on the publisher's 0.5B q8_0 (Qwen/Qwen2.5-0.5B-Instruct-GGUF@9217f5db, sha ca59ca7f...) against
+== Qwen/Qwen2.5-0.5B-Instruct@7ae55760: 291 tensors, output.weight present
+0.5B L0: norm equal False; norm ratio mean 1.695 sd 0.435; q_proj rel diff 0.435; folded rel diff 0.00486
+0.5B L10: norm equal False; norm ratio mean 1.259 sd 0.325; q_proj rel diff 0.281; folded rel diff 0.00575
+0.5B L23: norm equal False; norm ratio mean 1.879 sd 0.493; q_proj rel diff 0.505; folded rel diff 0.00531
+
+== bartowski (A) against lab (B)
+tensors: A 338, B 338, equal (type, shape, data) 338, differ 0, only A 0, only B 0
+metadata: only A ['general.basename', 'general.finetune', 'quantize.imatrix.chunks_count', 'quantize.imatrix.dataset', 'quantize.imatrix.entries_count', 'quantize.imatrix.file'] only B ['general.sampling.penalty_repeat', 'general.sampling.temp', 'general.sampling.top_k', 'general.sampling.top_p']
+metadata values differ: ['general.name']

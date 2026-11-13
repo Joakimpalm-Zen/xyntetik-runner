@@ -4412,6 +4412,198 @@
           }
         }
       }
+    },
+    "qwen2.5-1.5b-instruct-q8_0-bartowski": {
+      "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+      "n_predict": 80,
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0-bartowski.linux-x86_64-cuda.cpu.txt",
+          "sha256": "c4a53e20abfcc374fbbc5bba7b71b375d4f361c92465a9839fe3ef4418c4a492",
+          "bytes": 369,
+          "finish_reason": "length",
+          "completion_tokens": 80,
+          "spec": {
+            "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+            "n_predict": 80,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.18.0",
+            "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+            "build": {
+              "binary_sha256": "9600cd1b06513e372d5da6b19a508eb1cb277c29408973fd1b7a2ba4fec31b8e",
+              "compiler": "13.3.0",
+              "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+              "dirty": false
+            }
+          }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0-bartowski.linux-x86_64-cuda.cuda.txt",
+          "sha256": "e82cf0278213cd8036e25a90f814d97fe18e95cf64dce46cc5f0c44fcfc2297b",
+          "bytes": 362,
+          "finish_reason": "length",
+          "completion_tokens": 80,
+          "spec": {
+            "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+            "n_predict": 80,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.18.0",
+            "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+            "build": {
+              "binary_sha256": "9600cd1b06513e372d5da6b19a508eb1cb277c29408973fd1b7a2ba4fec31b8e",
+              "compiler": "13.3.0",
+              "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+              "dirty": false
+            }
+          }
+        },
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0-bartowski.macos-arm64-metal.metal.txt",
+          "sha256": "e82cf0278213cd8036e25a90f814d97fe18e95cf64dce46cc5f0c44fcfc2297b",
+          "bytes": 362,
+          "finish_reason": "length",
+          "completion_tokens": 80,
+          "spec": {
+            "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+            "n_predict": 80,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.18.0",
+            "commit": "23ff035bf44ecd6182612c7a73bdb7de159eb206",
+            "build": {
+              "binary_sha256": "65db0eefc3f6ed0bfdb6206a37dd360701e06a7838da02b13506b1d60fce46e4",
+              "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+              "commit": "23ff035bf44ecd6182612c7a73bdb7de159eb206",
+              "dirty": false
+            }
+          }
+        }
+      }
+    },
+    "qwen2.5-1.5b-instruct-q8_0": {
+      "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+      "n_predict": 80,
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "0308e3d8c0ec344dae1de5c35c623014430f9baa890cbf193c37cdbb8c87fa5a",
+          "bytes": 132,
+          "finish_reason": "stop",
+          "completion_tokens": 33,
+          "spec": {
+            "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+            "n_predict": 80,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.18.0",
+            "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+            "build": {
+              "binary_sha256": "9600cd1b06513e372d5da6b19a508eb1cb277c29408973fd1b7a2ba4fec31b8e",
+              "compiler": "13.3.0",
+              "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+              "dirty": false
+            }
+          }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0.linux-x86_64-cuda.cuda.txt",
+          "sha256": "0308e3d8c0ec344dae1de5c35c623014430f9baa890cbf193c37cdbb8c87fa5a",
+          "bytes": 132,
+          "finish_reason": "stop",
+          "completion_tokens": 33,
+          "spec": {
+            "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+            "n_predict": 80,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.18.0",
+            "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+            "build": {
+              "binary_sha256": "9600cd1b06513e372d5da6b19a508eb1cb277c29408973fd1b7a2ba4fec31b8e",
+              "compiler": "13.3.0",
+              "commit": "c00c19c496da99678bd3ea4614300d160569fa23",
+              "dirty": false
+            }
+          }
+        },
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/qwen2.5-1.5b-instruct-q8_0.macos-arm64-metal.metal.txt",
+          "sha256": "0308e3d8c0ec344dae1de5c35c623014430f9baa890cbf193c37cdbb8c87fa5a",
+          "bytes": 132,
+          "finish_reason": "stop",
+          "completion_tokens": 33,
+          "spec": {
+            "prompt": "Write a short paragraph about the eight planets of the Solar System, naming them in order from the Sun.",
+            "n_predict": 80,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.18.0",
+            "commit": "23ff035bf44ecd6182612c7a73bdb7de159eb206",
+            "build": {
+              "binary_sha256": "65db0eefc3f6ed0bfdb6206a37dd360701e06a7838da02b13506b1d60fce46e4",
+              "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+              "commit": "23ff035bf44ecd6182612c7a73bdb7de159eb206",
+              "dirty": false
+            }
+          }
+        }
+      }
     }
   }
 }
