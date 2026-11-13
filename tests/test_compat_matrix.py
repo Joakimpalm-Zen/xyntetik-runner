@@ -961,3 +961,20 @@ def test_the_vocabulary_comparison_gates_only_where_a_row_declares_its_count(mon
         "status": "fail", "returncode": 1, "stdout_tail": "", "stderr_tail": "Repository Not Found"})
     gone = module.run_tokenizer_vocab(tmp_path / "m.gguf", "org/m", None, 60, 0)
     assert gone["status"] == "not_executed" and gone["reason"] == "tokenizer_reference_unavailable"
+
+
+def casefold_collisions(paths):
+    """Groups of distinct paths that name one file on a case-insensitive file system."""
+    groups = {}
+    for p in paths:
+        groups.setdefault(p.casefold(), set()).add(p)
+    return sorted(sorted(g) for g in groups.values() if len(g) > 1)
+
+
+def test_no_two_manifest_paths_are_one_file_on_a_case_insensitive_file_system():
+    """macOS (by default) and Windows fold case in file names, so two entries whose
+    paths differ only in case would share one file there, and the second download
+    would overwrite the first. Qwen's qwen2.5-1.5b-instruct-q8_0.gguf and bartowski's
+    Qwen2.5-1.5B-Instruct-Q8_0.gguf were the first such pair (R4.39.2)."""
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    assert casefold_collisions([m["file"] for m in manifest["models"]]) == []
