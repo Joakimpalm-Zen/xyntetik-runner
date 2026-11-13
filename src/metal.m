@@ -133,11 +133,21 @@ typedef struct {
     id<MTLBuffer> *ggis, *gdsc;                 // gemma4 router/down scales
     id<MTLBuffer> suppress;                     // gemma never-emit token ids
     int batch_cap;                              // scratch rows allocated
+    int att_cols;                               // columns of scores `att` holds
     bool mv_q4k_default;   // the fast Q4_K matvec is this model's default:
                            // dense models only (metal_mv_fast_for)
 } gpu_t;
 
 static void lora_dev_release(gpu_t *g);
+
+// The per-layer constant tables of gpu_t, each an array of n_layer buffers.
+// One list for the places that walk them all (the allocation with its check,
+// the release), so a table named here is made, checked and freed together.
+#define METAL_LAYER_TABLES(X)                                              \
+    X(attn_norm) X(ffn_norm) X(bq) X(bk) X(bv) X(bo) X(qn) X(kn) X(sinks) \
+    X(gib) X(geb) X(ueb) X(deb) X(ppn) X(pan) X(pfn)                      \
+    X(gpn1) X(gprn2) X(gpn2) X(ggis) X(gdsc)                              \
+    X(dn_cw) X(dn_dt) X(dn_A) X(dn_nw) X(dn_cb) X(dn_D)
 
 // mirrors struct mv_args in kernels.metal — keep the field order in step
 typedef struct { int n_in, n_out; uint64_t w_off; int has_bias;
@@ -287,43 +297,13 @@ static void metal_replay_setup(gpu_t *g, model_t *m) {
 
 static void gpu_release_state(gpu_t *g, int n_layer) {
     if (!g) return;
-    for (int l = 0; l < n_layer; l++) {
-        if (g->dn_cw) [g->dn_cw[l] release];
-        if (g->dn_dt) [g->dn_dt[l] release];
-        if (g->dn_A)  [g->dn_A[l] release];
-        if (g->dn_nw) [g->dn_nw[l] release];
-        if (g->dn_cb) [g->dn_cb[l] release];
-        if (g->dn_D)  [g->dn_D[l] release];
-        if (g->attn_norm) [g->attn_norm[l] release];
-        if (g->ffn_norm)  [g->ffn_norm[l] release];
-        if (g->bq) [g->bq[l] release];
-        if (g->bk) [g->bk[l] release];
-        if (g->bv) [g->bv[l] release];
-        if (g->bo) [g->bo[l] release];
-        if (g->qn) [g->qn[l] release];
-        if (g->kn) [g->kn[l] release];
-        if (g->sinks) [g->sinks[l] release];
-        if (g->gib) [g->gib[l] release];
-        if (g->geb) [g->geb[l] release];
-        if (g->ueb) [g->ueb[l] release];
-        if (g->deb) [g->deb[l] release];
-        if (g->pan) [g->pan[l] release];
-        if (g->ppn) [g->ppn[l] release];
-        if (g->pfn) [g->pfn[l] release];
-        if (g->gpn1) [g->gpn1[l] release];
-        if (g->gprn2) [g->gprn2[l] release];
-        if (g->gpn2) [g->gpn2[l] release];
-        if (g->ggis) [g->ggis[l] release];
-        if (g->gdsc) [g->gdsc[l] release];
+#define X(t)                                                       \
+    if (g->t) {                                                    \
+        for (int l = 0; l < n_layer; l++) [g->t[l] release];       \
+        free(g->t);                                                \
     }
-    free(g->dn_cw); free(g->dn_dt); free(g->dn_A); free(g->dn_nw);
-    free(g->dn_cb); free(g->dn_D);
-    free(g->attn_norm); free(g->ffn_norm);
-    free(g->bq); free(g->bk); free(g->bv); free(g->bo);
-    free(g->qn); free(g->kn);
-    free(g->sinks); free(g->gib); free(g->geb); free(g->ueb); free(g->deb);
-    free(g->ppn); free(g->pan); free(g->pfn);
-    free(g->gpn1); free(g->gprn2); free(g->gpn2); free(g->ggis); free(g->gdsc);
+    METAL_LAYER_TABLES(X)
+#undef X
     [g->p_attn_coop release]; [g->p_attn_chunk_coop release]; [g->p_attn_chunk_gqa release];
     [g->p_attn_tile release];
     [g->p_dn_conv release]; [g->p_dn_ring release]; [g->p_dn_l2norm release];
@@ -389,6 +369,15 @@ static bool metal_init_injected(const char *point) {
     const char *inject = getenv("RUNNER_METAL_INIT_INJECT_FAILURE");
     return inject && *inject && strcmp(inject, "0") &&
            (!strcmp(inject, "always") || !strcmp(inject, point));
+}
+
+// RUNNER_METAL_INIT_INJECT_FAILURE=const:<table>: the named per-layer constant
+// table cannot be made (tests/test_gpu_declines.py); const:xsc, the tiled
+// GEMMs' per-column scale buffer (metal_ensure_xsc,
+// tests/test_batch_rows_match_cpu.py).
+static bool metal_const_injected(const char *table) {
+    const char *inj = getenv("RUNNER_METAL_INIT_INJECT_FAILURE");
+    return inj && !strncmp(inj, "const:", 6) && !strcmp(inj + 6, table);
 }
 
 static bool metal_env_on(const char *name) {
@@ -470,6 +459,16 @@ static int metal_moe_mm_on(void) {
     return strcmp(v, "half") == 0 ? 2 : 1;
 }
 
+// A tiled GEMM steps its input 32 wide (MM_TK) and has no tail step: n_in
+// must be a whole number of k-steps (every real model's is), and a K-quant
+// chunk indexes a 256-superblock, so that too. One rule for the dense tile
+// and the grouped expert tile. The expert tile had none: an expert layer 16
+// wide read 16 past each weight row and each activation row, into the next
+// row and the next slot.
+static bool metal_mm_width_ok(uint32_t type, int n_in) {
+    return n_in % 32 == 0 && !(ggml_block_size(type) == 256 && n_in % 256 != 0);
+}
+
 
 static bool gpu_init_fail(model_t *m, gpu_t *g, id<MTLLibrary> lib,
                           const char *why) {
@@ -482,15 +481,35 @@ static bool gpu_init_fail(model_t *m, gpu_t *g, id<MTLLibrary> lib,
     return false;
 }
 
+// RUNNER_METAL_ATT_BYTES: the score scratch's bound (METAL_ATT_BYTES), so a
+// test fixture's batch can be made to span several attention dispatches.
+static uint64_t metal_att_bytes(void) {
+    static _Atomic long long v = -1;
+    if (v < 0) {
+        const char *e = getenv("RUNNER_METAL_ATT_BYTES");
+        long long b = e && *e ? atoll(e) : 0;
+        v = b > 0 ? b : (long long)METAL_ATT_BYTES;   // one store
+    }
+    return (uint64_t)v;
+}
+
 static bool metal_buffer_ok(id<MTLBuffer> b) {
     return b != nil && b.contents != NULL;
 }
 
+// RUNNER_METAL_INJECT_FAILURE: "always", or N for the Nth command buffer
+// checked across every slot ("once" and any other word: the first), as
+// RUNNER_CUDA_INJECT_FAILURE=N fails the Nth device forward. N past 1 lands
+// on a forward that follows others, with a recurrent fold live.
 static bool metal_command_failed(id<MTLCommandBuffer> cb) {
     const char *inject = getenv("RUNNER_METAL_INJECT_FAILURE");
-    static _Atomic bool injected_once;   // once across every slot
-    bool injected = inject && *inject && strcmp(inject, "0") &&
-                    (strcmp(inject, "always") == 0 || plat_once(&injected_once));
+    static _Atomic long checked;
+    bool injected = false;
+    if (inject && *inject && strcmp(inject, "0")) {
+        long k = atomic_fetch_add(&checked, 1) + 1;
+        long want = atol(inject);
+        injected = strcmp(inject, "always") == 0 || k == (want > 0 ? want : 1);
+    }
     return injected || cb.status == MTLCommandBufferStatusError;
 }
 
@@ -570,8 +589,15 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
     id<MTLBuffer> vt     = new_f32_scratch(g->dev, nb * (size_t)kv_dim);
     id<MTLBuffer> hb     = new_f32_scratch(g->dev, nb * (size_t)m->n_ff);
     id<MTLBuffer> hb2    = new_f32_scratch(g->dev, nb * (size_t)m->n_ff);
-    id<MTLBuffer> att    = new_f32_scratch(g->dev, nb * (size_t)m->n_head *
+    // the scores of as many columns as the scratch's bound allows: a wider
+    // batch's attention goes out that many columns a dispatch
+    // (metal_enc_attn_core, metal_admission.h)
+    size_t att_cols = (size_t)metal_att_cols(n, m->n_head, m->n_ctx, metal_att_bytes());
+    id<MTLBuffer> att    = new_f32_scratch(g->dev, att_cols * (size_t)m->n_head *
                                                    (size_t)m->n_ctx);
+    if (metal_env_on("RUNNER_METAL_STATS"))
+        fprintf(stderr, "metal-scratch n=%d att=%zu B\n", n,
+                att_cols * (size_t)m->n_head * (size_t)m->n_ctx * sizeof(float));
     id<MTLBuffer> logits = new_f32_scratch(g->dev, nb * (size_t)m->n_vocab);
     int P = m->n_embd_ple;
     id<MTLBuffer> ple = nil, ple_tmp = nil;
@@ -646,6 +672,7 @@ static bool metal_ensure_batch(gpu_t *g, model_t *m, int n) {
     release_buf(g->logits);
     g->x = x; g->xb = xb; g->xb2 = xb2; g->q = q; g->kt = kt; g->vt = vt;
     g->hb = hb; g->hb2 = hb2; g->att = att; g->logits = logits;
+    g->att_cols = (int)att_cols;
     if (P > 0) {
         release_buf(g->ple); release_buf(g->ple_tmp);
         g->ple = ple; g->ple_tmp = ple_tmp;
@@ -835,9 +862,12 @@ static bool metal_tensor_type_ok(const gguf_tensor *t, bool moe) {
 
 static bool metal_moe_supported(const model_t *m) {
     if (m->n_expert <= 0) return true;
-    if (m->n_expert > 256 || m->n_expert_used < 1 ||
-        m->n_expert_used > 256) {
-        fprintf(stderr, "gpu: this MoE geometry is outside the Metal router limit — using CPU\n");
+    char why[200];
+    if (m->n_expert_used < 1 ||
+        model_moe_route_why(m->n_expert, m->n_expert_used, 256, 256, why, sizeof why)) {
+        // the words --info fit gives for the same file (R6.68.67)
+        fprintf(stderr, "gpu: %s, using CPU\n", m->n_expert_used < 1
+                ? "this MoE geometry is outside the Metal router limit" : why);
         return false;
     }
     // LatentMoE: no Metal path at the latent width (see cuda_admit)
@@ -1083,11 +1113,18 @@ static bool metal_mvc_self_test(id<MTLDevice> dev, id<MTLComputePipelineState> p
     else if (type == T_Q6_K) { bsz = 210; bel = 256; dpos[0] = 208; nd = 1; }
     else if (type == T_Q4_K) { bsz = 144; bel = 256; dpos[0] = 0; dpos[1] = 2; nd = 2; }
     else return false;
-    enum { NC = 5 };
+    // 13 columns: one full tile of 8 and a partial one of 5, so every column
+    // slot of the twin's tile is compared on this device, and each shape
+    // once without a bias and once with one (R6.68.87 sends every MoE prompt
+    // batch's router and shared-branch matvecs through these twins; five
+    // columns and no bias left slots 5 to 7 and the bias add unproven)
+    enum { NC = 13 };
     static const int shp[][2] = { { 2048, 37 }, { 4096, 21 } };
     bool ok = true;
     id<MTLCommandQueue> q = [dev newCommandQueue];
-    for (size_t si = 0; ok && si < sizeof shp / sizeof *shp; si++) {
+    for (size_t sj = 0; ok && sj < 2 * (sizeof shp / sizeof *shp); sj++) {
+        size_t si = sj / 2;
+        int has_bias = (int)(sj & 1);
         int n_in = shp[si][0], n_out = shp[si][1];
         size_t rb = (size_t)n_in / bel * bsz, wbytes = rb * n_out;
         uint8_t *wh = malloc(wbytes);
@@ -1109,11 +1146,13 @@ static bool metal_mvc_self_test(id<MTLDevice> dev, id<MTLComputePipelineState> p
         free(wh); free(xh);
         if (!wbuf || !xb || !y1 || !y2 || !bb) ok = false;
         if (ok) {
+            float *bh = bb.contents;
+            for (int i = 0; i < n_out; i++) { r ^= r << 13; r ^= r >> 17; r ^= r << 5; bh[i] = (float)(int)(r % 2001 - 1000) / 499.0f; }
             id<MTLCommandBuffer> cb = [q commandBuffer];
             id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
             int tg_rows = 4 * rows;
             for (int c = 0; c < NC; c++) {   // the one-column kernel, a column at a time
-                mv_args a = { n_in, n_out, 0, 0, 1, n_in, n_out, 1 };
+                mv_args a = { n_in, n_out, 0, has_bias, 1, n_in, n_out, 1 };
                 [e setComputePipelineState:p1];
                 [e setBuffer:wbuf offset:0 atIndex:0];
                 [e setBuffer:xb offset:sizeof(float) * (size_t)n_in * c atIndex:1];
@@ -1123,12 +1162,12 @@ static bool metal_mvc_self_test(id<MTLDevice> dev, id<MTLComputePipelineState> p
                 [e dispatchThreadgroups:MTLSizeMake((n_out + tg_rows - 1) / tg_rows, 1, 1)
                   threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
             }
-            mv_args a = { n_in, n_out, 0, 0, NC, n_in, n_out, 8 };
+            mv_args a = { n_in, n_out, 0, has_bias, NC, n_in, n_out, 8 };
             [e setComputePipelineState:pc];
             [e setBuffer:wbuf offset:0 atIndex:0]; [e setBuffer:xb offset:0 atIndex:1];
             [e setBuffer:y2 offset:0 atIndex:2]; [e setBytes:&a length:sizeof a atIndex:3];
             [e setBuffer:bb offset:0 atIndex:4];
-            [e dispatchThreadgroups:MTLSizeMake((n_out + tg_rows - 1) / tg_rows, 1, 1)
+            [e dispatchThreadgroups:MTLSizeMake((n_out + tg_rows - 1) / tg_rows, (NC + 7) / 8, 1)
               threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
             [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
             ok = cb.status == MTLCommandBufferStatusCompleted &&
@@ -1170,6 +1209,24 @@ static id<MTLBuffer> f32_buf_ones(id<MTLDevice> dev, const float *src, size_t n)
                                       options:MTLResourceStorageModeShared];
     free(tmp);
     return b;
+}
+
+// One per-layer constant onto the device, checked where it is made, so a
+// table cannot be uploaded and left out of a check kept beside it (R6.68.86:
+// the E-series post-norm was, and a failed allocation reached the first
+// forward as a nil buffer). `name` is the table's, for the failure injection.
+typedef enum {
+    LC_IF_PRESENT,   // nil where the model has none
+    LC_REQUIRED,     // the layer cannot run without it
+    LC_OR_ONES,      // ones where the file has none
+} layer_const_need;
+static bool layer_const(id<MTLDevice> dev, id<MTLBuffer> *dst, const char *name,
+                        const float *src, size_t n, layer_const_need need) {
+    *dst = nil;
+    if (!src && need == LC_IF_PRESENT) return true;
+    if (metal_const_injected(name)) return false;
+    *dst = need == LC_OR_ONES ? f32_buf_ones(dev, src, n) : f32_buf(dev, src, n);
+    return metal_buffer_ok(*dst);
 }
 
 
@@ -1269,6 +1326,10 @@ unsigned long gpu_tc_dispatches_type(int type) {
 }
 // a CUDA notion: Metal's routes name their own GEMMs in its backend_detail
 bool gpu_tc_takes(const model_t *m, int type) { (void)m; (void)type; return false; }
+bool gpu_prefill_twin16(const model_t *m, int type) { (void)m; (void)type; return false; }
+int gpu_prefill_route(const model_t *m, int type, int batch, bool scaled) {
+    (void)m; (void)type; (void)batch; (void)scaled; return GPU_PREFILL_NONE;
+}
 static void count_tc_dispatch(int type) {
     g_tc_dispatches++;
     if (type >= 0 && type < MM_TYPE_N) g_tc_dispatches_type[type]++;
@@ -1416,7 +1477,7 @@ static bool metal_attn_wide_on(const model_t *m) {
         const char *e = getenv("RUNNER_METAL_ATTN_TILE_WIDE");
         on = !e || !*e ? 2 : strcmp(e, "0") != 0;
     }
-    return on == 2 ? m && strcmp(m->arch, "gemma4") == 0 && m->n_embd_ple > 0 : on == 1;
+    return on == 2 ? m && m->ad && m->ad->id == ARCH_GEMMA4 && m->n_embd_ple > 0 : on == 1;
 }
 
 static void lora_dev_release(gpu_t *g) {
@@ -1575,6 +1636,12 @@ bool gpu_moe_ok(void) {
 bool gpu_shared_weights_resident(const model_t *m) { (void)m; return false; }
 
 bool gpu_removed_sublayers_ok(void) { return true; }
+// the Metal router's limits (metal_moe_supported refuses past them)
+bool gpu_moe_route_caps(int *max_experts, int *max_used) {
+    *max_experts = 256;
+    *max_used = 256;
+    return true;
+}
 
 // what this answers (main.c's adapter capability) is whether a qwen35
 // adapter runs on the device: on Metal it does not, the model's forward does
@@ -2375,8 +2442,9 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
         // this budget to maxBufferLength preserved the old ceiling in the
         // admission decision even after the multi-buffer implementation had
         // removed it from allocation.
-        uint64_t other = (uint64_t)model_kv_boundary_bytes_sum(m, m->n_layer)
-                       + 512ull * 1024 * 1024;
+        uint64_t other = metal_other_bytes(
+            (uint64_t)model_kv_boundary_bytes_sum(m, m->n_layer),
+            m->n_batch, m->n_head, m->n_ctx);
         metal_weight_limits limits = {
             .working_set = ws_limit,
             .max_buffer = (uint64_t)dev.maxBufferLength,
@@ -2502,12 +2570,16 @@ static void metal_dn_state_bytes(const model_t *m, size_t *conv, size_t *state) 
              (size_t)(m->qwen35 ? hv : m->ssm.state);
 }
 
+// A shared-storage buffer of n bytes (the caller owns it).
+static id<MTLBuffer> new_shared_buf(id<MTLDevice> dev, size_t n) {
+    return [dev newBufferWithLength:n options:MTLResourceStorageModeShared];
+}
+
 static bool metal_alloc_state(model_t *m, gpu_t *g, id<MTLDevice> dev) {
     size_t k_bytes = model_k_boundary_bytes(m, m->n_layer);
     size_t v_bytes = model_v_boundary_bytes(m, m->n_layer);
-    #define NEWBUF(n) [dev newBufferWithLength:(n) options:MTLResourceStorageModeShared]
-    g->kc = NEWBUF(k_bytes ? k_bytes : 1);
-    g->vc = NEWBUF(v_bytes);
+    g->kc = new_shared_buf(dev, k_bytes ? k_bytes : 1);
+    g->vc = new_shared_buf(dev, v_bytes);
     if (!metal_buffer_ok(g->kc) || !metal_buffer_ok(g->vc))
         return gpu_init_fail(m, g, nil, "KV buffer allocation");
     memset(g->kc.contents, 0, k_bytes);
@@ -2525,12 +2597,12 @@ static bool metal_alloc_state(model_t *m, gpu_t *g, id<MTLDevice> dev) {
         // the recurrent state, taken over from the host in metal_publish
         size_t cb, sb;
         metal_dn_state_bytes(m, &cb, &sb);
-        g->dn_conv  = NEWBUF(cb ? cb : 4);
-        g->dn_state = NEWBUF(sb ? sb : 4);
+        g->dn_conv  = new_shared_buf(dev, cb ? cb : 4);
+        g->dn_state = new_shared_buf(dev, sb ? sb : 4);
         if (!metal_buffer_ok(g->dn_conv) || !metal_buffer_ok(g->dn_state))
             return gpu_init_fail(m, g, nil, "recurrent state allocation");
     }
-    g->dummy  = NEWBUF(4);
+    g->dummy  = new_shared_buf(dev, 4);
     // Chunked decode attention partials: one (max, sum, hd-vector) per
     // (head, chunk). They carry NO batch dimension -- the split is taken only
     // at n == 1 -- so they are sized once here rather than in
@@ -2540,11 +2612,10 @@ static bool metal_alloc_state(model_t *m, gpu_t *g, id<MTLDevice> dev) {
     // at 1: the chunked kernels then wrote their partials through a nil
     // binding and decode produced garbage past the chunk threshold, silently
     // (`make test-metal-decode-only`).
-    g->att_acc = NEWBUF(sizeof(float) * (size_t)m->n_head *
+    g->att_acc = new_shared_buf(dev, sizeof(float) * (size_t)m->n_head *
                         METAL_ATTN_MAX_CHUNKS * (size_t)model_head_dim(m, 0));
-    g->att_ms  = NEWBUF(sizeof(float) * (size_t)m->n_head *
+    g->att_ms  = new_shared_buf(dev, sizeof(float) * (size_t)m->n_head *
                         METAL_ATTN_MAX_CHUNKS * 2);
-    #undef NEWBUF
     if (!metal_buffer_ok(g->dummy) ||
         !metal_buffer_ok(g->att_acc) || !metal_buffer_ok(g->att_ms))
         return gpu_init_fail(m, g, nil, "scratch buffer allocation");
@@ -2572,51 +2643,22 @@ static bool metal_upload_constants(model_t *m, gpu_t *g, id<MTLDevice> dev) {
         (m->rope_inv_freq_local && !metal_buffer_ok(g->inv_freq_local)) ||
         (m->n_suppress > 0 && !metal_buffer_ok(g->suppress)))
         return gpu_init_fail(m, g, nil, "shared constant allocation");
-    g->attn_norm = calloc(m->n_layer, sizeof(id));
-    g->ffn_norm  = calloc(m->n_layer, sizeof(id));
-    g->bq = calloc(m->n_layer, sizeof(id));
-    g->bk = calloc(m->n_layer, sizeof(id));
-    g->bv = calloc(m->n_layer, sizeof(id));
-    g->bo = calloc(m->n_layer, sizeof(id));
-    g->qn = calloc(m->n_layer, sizeof(id));
-    g->kn = calloc(m->n_layer, sizeof(id));
-    g->sinks = calloc(m->n_layer, sizeof(id));
-    g->gib = calloc(m->n_layer, sizeof(id));
-    g->geb = calloc(m->n_layer, sizeof(id));
-    g->ueb = calloc(m->n_layer, sizeof(id));
-    g->deb = calloc(m->n_layer, sizeof(id));
-    g->ppn = calloc(m->n_layer, sizeof(id));
-    g->pan = calloc(m->n_layer, sizeof(id));
-    g->pfn = calloc(m->n_layer, sizeof(id));
-    g->gpn1 = calloc(m->n_layer, sizeof(id));
-    g->gprn2 = calloc(m->n_layer, sizeof(id));
-    g->gpn2 = calloc(m->n_layer, sizeof(id));
-    g->ggis = calloc(m->n_layer, sizeof(id));
-    g->gdsc = calloc(m->n_layer, sizeof(id));
-    g->dn_cw = calloc(m->n_layer, sizeof(id));
-    g->dn_dt = calloc(m->n_layer, sizeof(id));
-    g->dn_A  = calloc(m->n_layer, sizeof(id));
-    g->dn_nw = calloc(m->n_layer, sizeof(id));
-    g->dn_cb = calloc(m->n_layer, sizeof(id));
-    g->dn_D  = calloc(m->n_layer, sizeof(id));
-    if (!g->attn_norm || !g->ffn_norm || !g->bq || !g->bk || !g->bv ||
-        !g->ppn ||
-        !g->bo || !g->qn || !g->kn || !g->sinks || !g->gib || !g->geb ||
-        !g->ueb || !g->deb || !g->pan || !g->pfn || !g->gpn1 ||
-        !g->gprn2 || !g->gpn2 || !g->ggis || !g->gdsc ||
-        !g->dn_cw || !g->dn_dt || !g->dn_A || !g->dn_nw || !g->dn_cb || !g->dn_D)
-        return gpu_init_fail(m, g, nil, "per-layer table allocation");
+    bool tables = true;
+#define X(t) tables = (g->t = calloc(m->n_layer, sizeof(id))) != NULL && tables;
+    METAL_LAYER_TABLES(X)
+#undef X
+    if (!tables) return gpu_init_fail(m, g, nil, "per-layer table allocation");
+// g->t[l] from `src`, checked where it is made (layer_const)
+#define LC(t, src, n, need) layer_const(dev, &g->t[l], #t, src, n, need)
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
         if (m->qwen35 && ly->recurrent) {
             int nh = m->ssm.v_heads, hv = m->ssm.inner / nh;
             int convdim = 2 * m->ssm.state * m->ssm.groups + m->ssm.inner;
-            g->dn_cw[l] = f32_buf(dev, ly->ssm_conv_w, (size_t)convdim * m->ssm.conv_kernel);
-            g->dn_dt[l] = f32_buf(dev, ly->ssm_dt, nh);
-            g->dn_A[l]  = f32_buf(dev, ly->ssm_a, nh);
-            g->dn_nw[l] = f32_buf(dev, ly->ssm_norm_w, hv);
-            if (!metal_buffer_ok(g->dn_cw[l]) || !metal_buffer_ok(g->dn_dt[l]) ||
-                !metal_buffer_ok(g->dn_A[l]) || !metal_buffer_ok(g->dn_nw[l]))
+            if (!LC(dn_cw, ly->ssm_conv_w, (size_t)convdim * m->ssm.conv_kernel, LC_REQUIRED) ||
+                !LC(dn_dt, ly->ssm_dt, nh, LC_REQUIRED) ||
+                !LC(dn_A, ly->ssm_a, nh, LC_REQUIRED) ||
+                !LC(dn_nw, ly->ssm_norm_w, hv, LC_REQUIRED))
                 return gpu_init_fail(m, g, nil, "Gated DeltaNet constant allocation");
         }
         if ((m->granite_hybrid || m->nemotron_h) && ly->recurrent) {
@@ -2631,75 +2673,56 @@ static bool metal_upload_constants(model_t *m, gpu_t *g, id<MTLDevice> dev) {
                 dequant_row(ly->ssm_conv->type,
                             (const uint8_t *)ly->ssm_conv->data + (size_t)c * wrs,
                             cw + (size_t)c * K, K);
-            g->dn_cw[l] = f32_buf(dev, cw, (size_t)conv_dim * K);
+            bool ok = LC(dn_cw, cw, (size_t)conv_dim * K, LC_REQUIRED);
             free(cw);
-            g->dn_cb[l] = f32_buf(dev, ly->ssm_conv1d_b, conv_dim);
-            g->dn_dt[l] = f32_buf(dev, ly->ssm_dt, nh);
-            g->dn_A[l]  = f32_buf(dev, ly->ssm_a, nh);
-            g->dn_D[l]  = f32_buf(dev, ly->ssm_d, nh);
-            g->dn_nw[l] = f32_buf(dev, ly->ssm_norm_w, m->ssm.inner);
-            if (!metal_buffer_ok(g->dn_cw[l]) || !metal_buffer_ok(g->dn_cb[l]) ||
-                !metal_buffer_ok(g->dn_dt[l]) || !metal_buffer_ok(g->dn_A[l]) ||
-                !metal_buffer_ok(g->dn_D[l]) || !metal_buffer_ok(g->dn_nw[l]))
+            if (!ok ||
+                !LC(dn_cb, ly->ssm_conv1d_b, conv_dim, LC_REQUIRED) ||
+                !LC(dn_dt, ly->ssm_dt, nh, LC_REQUIRED) ||
+                !LC(dn_A, ly->ssm_a, nh, LC_REQUIRED) ||
+                !LC(dn_D, ly->ssm_d, nh, LC_REQUIRED) ||
+                !LC(dn_nw, ly->ssm_norm_w, m->ssm.inner, LC_REQUIRED))
                 return gpu_init_fail(m, g, nil, "Mamba-2 constant allocation");
         }
-        g->attn_norm[l] = f32_buf(dev, ly->attn_norm_w, m->n_embd);
-        g->ffn_norm[l]  = f32_buf(dev, ly->ffn_norm_w, m->n_embd);
         int l_hd = model_head_dim(m, l);
         int l_kv_dim = model_kv_dim(m, l);
-        g->bq[l] = f32_buf(dev, ly->bq, q_dim);
-        g->bk[l] = f32_buf(dev, ly->bk, l_kv_dim);
-        g->bv[l] = f32_buf(dev, ly->bv, l_kv_dim);
-        g->bo[l] = f32_buf(dev, ly->bo, m->n_embd);
-        g->qn[l] = f32_buf(dev, ly->qnorm_w, l_hd);
-        g->kn[l] = f32_buf(dev, ly->knorm_w, l_hd);
-        g->sinks[l] = f32_buf(dev, ly->attn_sinks, m->n_head);
-        g->pan[l] = f32_buf(dev, ly->post_attn_norm_w, m->n_embd);
-        g->ppn[l] = f32_buf(dev, ly->ple_post_norm, m->n_embd);
-        g->pfn[l] = f32_buf(dev, ly->post_ffn_norm_w, m->n_embd);
-        g->gib[l] = f32_buf(dev, ly->ffn_gate_inp_b, m->n_expert);
-        g->geb[l] = f32_buf(dev, ly->ffn_gate_exps_b,
-                            (size_t)m->n_expert * (size_t)m->n_ff_exp);
-        g->ueb[l] = f32_buf(dev, ly->ffn_up_exps_b,
-                            (size_t)m->n_expert * (size_t)m->n_ff_exp);
-        g->deb[l] = f32_buf(dev, ly->ffn_down_exps_b,
-                            (size_t)m->n_expert * (size_t)m->n_embd);
-        if (ly->moe_gemma) {
-            g->gpn1[l] = f32_buf_ones(dev, ly->ffn_post_norm1_w, m->n_embd);
-            g->gprn2[l] = f32_buf_ones(dev, ly->ffn_pre_norm2_w, m->n_embd);
-            g->gpn2[l] = f32_buf_ones(dev, ly->ffn_post_norm2_w, m->n_embd);
+        size_t exp_ff = (size_t)m->n_expert * (size_t)m->n_ff_exp;
+        // a nemotron_h block is one sublayer: its SSM and attention blocks
+        // carry no FFN norm, its MLP blocks no mixer
+        bool ok = LC(attn_norm, ly->attn_norm_w, m->n_embd,
+                     ly->skip_mixer ? LC_IF_PRESENT : LC_REQUIRED) &&
+                  LC(ffn_norm, ly->ffn_norm_w, m->n_embd,
+                     ly->skip_ffn ? LC_IF_PRESENT : LC_REQUIRED) &&
+                  LC(bq, ly->bq, q_dim, LC_IF_PRESENT) &&
+                  LC(bk, ly->bk, l_kv_dim, LC_IF_PRESENT) &&
+                  LC(bv, ly->bv, l_kv_dim, LC_IF_PRESENT) &&
+                  LC(bo, ly->bo, m->n_embd, LC_IF_PRESENT) &&
+                  LC(qn, ly->qnorm_w, l_hd, LC_IF_PRESENT) &&
+                  LC(kn, ly->knorm_w, l_hd, LC_IF_PRESENT) &&
+                  LC(sinks, ly->attn_sinks, m->n_head, LC_IF_PRESENT) &&
+                  LC(pan, ly->post_attn_norm_w, m->n_embd, LC_IF_PRESENT) &&
+                  LC(ppn, ly->ple_post_norm, m->n_embd, LC_IF_PRESENT) &&
+                  LC(pfn, ly->post_ffn_norm_w, m->n_embd, LC_IF_PRESENT) &&
+                  LC(gib, ly->ffn_gate_inp_b, m->n_expert, LC_IF_PRESENT) &&
+                  LC(geb, ly->ffn_gate_exps_b, exp_ff, LC_IF_PRESENT) &&
+                  LC(ueb, ly->ffn_up_exps_b, exp_ff, LC_IF_PRESENT) &&
+                  LC(deb, ly->ffn_down_exps_b,
+                     (size_t)m->n_expert * (size_t)m->n_embd, LC_IF_PRESENT);
+        if (ok && ly->moe_gemma) {
             float *gs = malloc(sizeof(float) * (size_t)m->n_embd);
             if (!gs) return gpu_init_fail(m, g, nil, "Gemma router scale allocation");
             float inv = 1.0f / sqrtf((float)m->n_embd);
             for (int i = 0; i < m->n_embd; i++)
                 gs[i] = (ly->gate_inp_scale ? ly->gate_inp_scale[i] : 1.0f) * inv;
-            g->ggis[l] = f32_buf(dev, gs, m->n_embd);
+            ok = LC(gpn1, ly->ffn_post_norm1_w, m->n_embd, LC_OR_ONES) &&
+                 LC(gprn2, ly->ffn_pre_norm2_w, m->n_embd, LC_OR_ONES) &&
+                 LC(gpn2, ly->ffn_post_norm2_w, m->n_embd, LC_OR_ONES) &&
+                 LC(ggis, gs, m->n_embd, LC_REQUIRED) &&
+                 LC(gdsc, ly->down_exps_scale, m->n_expert, LC_OR_ONES);
             free(gs);
-            g->gdsc[l] = f32_buf_ones(dev, ly->down_exps_scale, m->n_expert);
         }
-        // a nemotron_h block is one sublayer: its SSM and attention blocks
-        // carry no FFN norm, its MLP blocks no mixer
-        if ((!ly->skip_mixer && !metal_buffer_ok(g->attn_norm[l])) ||
-            (!ly->skip_ffn && !metal_buffer_ok(g->ffn_norm[l])) ||
-            (ly->bq && !metal_buffer_ok(g->bq[l])) ||
-            (ly->bk && !metal_buffer_ok(g->bk[l])) ||
-            (ly->bv && !metal_buffer_ok(g->bv[l])) ||
-            (ly->bo && !metal_buffer_ok(g->bo[l])) ||
-            (ly->qnorm_w && !metal_buffer_ok(g->qn[l])) ||
-            (ly->knorm_w && !metal_buffer_ok(g->kn[l])) ||
-            (ly->attn_sinks && !metal_buffer_ok(g->sinks[l])) ||
-            (ly->post_attn_norm_w && !metal_buffer_ok(g->pan[l])) ||
-            (ly->post_ffn_norm_w && !metal_buffer_ok(g->pfn[l])) ||
-            (ly->ffn_gate_inp_b && !metal_buffer_ok(g->gib[l])) ||
-            (ly->ffn_gate_exps_b && !metal_buffer_ok(g->geb[l])) ||
-            (ly->ffn_up_exps_b && !metal_buffer_ok(g->ueb[l])) ||
-            (ly->ffn_down_exps_b && !metal_buffer_ok(g->deb[l])) ||
-            (ly->moe_gemma &&
-             (!metal_buffer_ok(g->gpn1[l]) || !metal_buffer_ok(g->gprn2[l]) ||
-              !metal_buffer_ok(g->gpn2[l]) || !metal_buffer_ok(g->ggis[l]) ||
-              !metal_buffer_ok(g->gdsc[l]))))
-            return gpu_init_fail(m, g, nil, "per-layer buffer allocation");
+        if (!ok) return gpu_init_fail(m, g, nil, "per-layer buffer allocation");
     }
+#undef LC
     return true;
 }
 
@@ -2920,8 +2943,11 @@ static bool enc_mm_tiles(gpu_t *g, id<MTLComputeCommandEncoder> e,
 
 // The per-column scale buffer for the tiled GEMMs, grown to the batch on
 // demand (a buffer allocation is not an encoder operation, so growing it
-// mid-encode is fine); false leaves the caller on the matvec path.
+// mid-encode is fine; it only grows). false leaves the dense tile's caller
+// on the matvec path and an expert tensor on the f32-staged tile
+// (moe_mm_pick).
 static bool metal_ensure_xsc(gpu_t *g, int n_col) {
+    if (metal_const_injected("xsc")) return false;
     if (g->xsc && n_col <= g->xsc_cap) return true;
     id<MTLBuffer> nb = new_f32_scratch(g->dev, (size_t)(n_col < 64 ? 64 : n_col));
     if (!nb) return false;
@@ -2991,12 +3017,9 @@ static bool enc_mm_tiles(gpu_t *g, id<MTLComputeCommandEncoder> e,
           threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
         return true;
     }
-    // Tiled GEMM when this is a real batch and a kernel exists for the weight
-    // type. n_in must be a whole number of k-steps (every real model's is) and
-    // K-quant kernels index a 256-superblock, so require that too.
-    if (metal_mm_on() && g->p_mm[w->type] &&
-        n_in % 32 == 0 &&
-        !(ggml_block_size(w->type) == 256 && n_in % 256 != 0) &&
+    // Tiled GEMM when this is a real batch, a kernel exists for the weight
+    // type and the input is a width the tile steps whole (metal_mm_width_ok).
+    if (metal_mm_on() && g->p_mm[w->type] && metal_mm_width_ok(w->type, n_in) &&
         metal_ensure_xsc(g, n_col)) {
         // Per-column max|x| first (k_colabsmax into g->xsc), then the tile:
         // the GEMM stages its activation tile scaled by it and scales the
@@ -3123,6 +3146,19 @@ static void enc_mv(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                    int n_in, int n_out, id<MTLBuffer> bias) {
     enc_mv_n(g, e, m, w, x, x_off, y, y_off, n_in, n_out, bias,
              1, n_in, n_out);
+}
+
+// A matvec whose every column must be a decode step's bits, over the n
+// columns of a prompt batch: the MoE router and the gemma-4 MoE's shared
+// branch, where a tolerance-class GEMM could flip a route. One dispatch
+// carries the columns (enc_mv_cols under `decode`: the kernel a one-column
+// step takes, or its column-inner twin, admitted only where it gives that
+// kernel's bits), where there was one dispatch a column (R6.68.87).
+static void enc_mv_decode_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
+                               gguf_tensor *w, id<MTLBuffer> x, id<MTLBuffer> y,
+                               int n_in, int n_out, id<MTLBuffer> bias,
+                               int n_col, int x_stride, int y_stride) {
+    enc_mv_cols(g, e, w, x, 0, y, 0, n_in, n_out, bias, n_col, x_stride, y_stride, true);
 }
 
 // n_col columns in one dispatch (grid.y), stride elements apart. Each
@@ -3367,26 +3403,63 @@ static void enc_moe_group(gpu_t *g, id<MTLComputeCommandEncoder> e,
       threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 }
 
+// The activation rows an expert tile reads: the tokens for gate and up (each
+// token's row serves its slots_per_token slots), the slots for down (0).
+static int moe_xrows(int nslots, int slots_per_token) {
+    return slots_per_token ? nslots / slots_per_token : nslots;
+}
+
+// One expert tensor's grouped tile and the scale buffer it reads, chosen
+// together (R6.68.113). The half-staged twin (RUNNER_METAL_MOE_MM=half) reads
+// each activation row's max|x| from g->xsc, so it is taken only once that
+// buffer holds this tensor's rows; when the buffer cannot be made the tensor
+// takes the f32-staged tile, and the log says so once. pso nil: the per-slot
+// matvec (no kernel for the type, an input the tile does not step whole, or
+// half mode for a type with no half twin). enc_moe_mm used to make the
+// buffer after its caller had chosen the half twin, and on a failure bound
+// g->dummy in its place: every row came back NaN.
+typedef struct { id<MTLComputePipelineState> pso; bool half; } moe_mm_route;
+
+static moe_mm_route moe_mm_pick(gpu_t *g, int mm_mode, uint32_t type, int n_in,
+                                int nslots, int slots_per_token) {
+    moe_mm_route r = { nil, false };
+    if (!mm_mode || !metal_mm_width_ok(type, n_in)) return r;
+    if (mm_mode == 2) {
+        if (!g->p_moe_mmh[type]) return r;
+        if (metal_ensure_xsc(g, moe_xrows(nslots, slots_per_token))) {
+            r.pso = g->p_moe_mmh[type];
+            r.half = true;
+            return r;
+        }
+        static _Atomic bool told;   // any slot may get here first (compat.h)
+        if (plat_once(&told))
+            fprintf(stderr, "gpu: the half-staged expert tile's scale buffer could not "
+                    "be made, so those experts take the f32-staged tile "
+                    "(RUNNER_METAL_MOE_MM=half)\n");
+    }
+    r.pso = g->p_moe_mm[type];
+    return r;
+}
+
 // Grouped simdgroup-MMA expert matmul: the dense k_mm tile shape over one
 // expert's gathered token columns, grid z spanning experts. Column tiles
 // beyond an expert's count exit on two int reads. Requires enc_moe_group to
-// have run for this layer's sel window.
+// have run for this layer's sel window, and r from moe_mm_pick for these
+// rows (g->xsc only grows, so it still holds them).
 static void enc_moe_mm(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
-                       id<MTLComputePipelineState> pso,
+                       moe_mm_route r,
                        gguf_tensor *base, uint64_t estride,
                        id<MTLBuffer> x, id<MTLBuffer> y,
                        int n_in, int n_out, int nslots, int xs, int ys,
                        id<MTLBuffer> bias, int bias_stride,
-                       int slots_per_token, bool half_staged) {
+                       int slots_per_token) {
     enum { MM_TILE_M = 64, MM_TILE_N = 32 };   // mirrors MM_TM/MM_TN
-    // The half-staged twins (RUNNER_METAL_MOE_MM=half) stage the activation
-    // rows scaled by their max|x|: one k_colabsmax over the x rows (tokens
-    // for gate/up, slots for down) into g->xsc first, before the GEMM's own
-    // bindings (the pass uses buffer 0 for x, the GEMM for the weights).
-    // The float-staged kernels ignore buffer 7 and get the dummy.
-    int xrows = slots_per_token ? nslots / slots_per_token : nslots;
-    bool scaled = half_staged && metal_ensure_xsc(g, xrows);
-    if (scaled) {
+    // The half-staged twins stage the activation rows scaled by their
+    // max|x|: one k_colabsmax over the x rows into g->xsc first, before the
+    // GEMM's own bindings (the pass uses buffer 0 for x, the GEMM for the
+    // weights). The float-staged kernels ignore buffer 7 and get the dummy.
+    int xrows = moe_xrows(nslots, slots_per_token);
+    if (r.half) {
         [e setComputePipelineState:g->p_colabsmax];
         [e setBuffer:x offset:0 atIndex:0];
         [e setBuffer:g->xsc offset:0 atIndex:1];
@@ -3396,7 +3469,7 @@ static void enc_moe_mm(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
         [e dispatchThreadgroups:MTLSizeMake((NSUInteger)xrows, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     }
-    [e setComputePipelineState:pso];
+    [e setComputePipelineState:r.pso];
     struct { int n_in, n_out; uint64_t w_off, estride;
              int xs, ys, has_bias, bias_stride, slots_per_token; } a = {
         n_in, n_out,
@@ -3408,7 +3481,7 @@ static void enc_moe_mm(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
     [e setBuffer:bias ? bias : g->dummy offset:0 atIndex:4];
     [e setBuffer:g->moe_colmap offset:0 atIndex:5];
     [e setBuffer:g->moe_eoff offset:0 atIndex:6];
-    [e setBuffer:scaled ? g->xsc : g->dummy offset:0 atIndex:7];
+    [e setBuffer:r.half ? g->xsc : g->dummy offset:0 atIndex:7];
     g_disp.moe++;
     [e dispatchThreadgroups:MTLSizeMake((n_out + MM_TILE_M - 1) / MM_TILE_M,
                                         (nslots + MM_TILE_N - 1) / MM_TILE_N,
@@ -3824,18 +3897,22 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // then any expert tensor whose type has a k_moe_mm kernel runs as a real
     // GEMM over its token group; the rest stay on the slot-major matvec.
     int mm_mode = n > 1 ? metal_moe_mm_on() : 0;
-    id<MTLComputePipelineState> *mmp =
-        mm_mode == 2 ? g->p_moe_mmh : g->p_moe_mm;
-    bool mm = mm_mode &&
-              (mmp[ly->ffn_gate_exps->type] ||
-               mmp[ly->ffn_up_exps->type] ||
-               mmp[ly->ffn_down_exps->type]);
+    // per tensor (moe_mm_pick): its type has a kernel, its input is a width
+    // the tile steps whole (gate and up read n_embd, down reads the expert
+    // width), and a half-staged tile has its scale buffer
+    moe_mm_route gate_mm = moe_mm_pick(g, mm_mode, ly->ffn_gate_exps->type, n_embd,
+                                       slots, used),
+                 up_mm   = moe_mm_pick(g, mm_mode, ly->ffn_up_exps->type, n_embd,
+                                       slots, used),
+                 down_mm = moe_mm_pick(g, mm_mode, ly->ffn_down_exps->type, nff,
+                                       slots, 0);
+    bool mm = gate_mm.pso || up_mm.pso || down_mm.pso;
     if (mm) {
         static _Atomic bool announced;   // any slot may get here first (compat.h)
         if (plat_once(&announced)) {
             fprintf(stderr, "gpu: MoE grouped-MMA prefill kernels on "
                     "(%s-staged, RUNNER_METAL_MOE_MM)\n",
-                    mm_mode == 2 ? "half" : "f32");
+                    gate_mm.half || up_mm.half || down_mm.half ? "half" : "f32");
         }
         enc_moe_group(g, e, m->n_expert, slots, sel_off);
     }
@@ -3873,18 +3950,18 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
             goto gua_done;
         }
     }
-    if (mm && mmp[ly->ffn_gate_exps->type])
-        enc_moe_mm(g, e, m, mmp[ly->ffn_gate_exps->type],
+    if (gate_mm.pso)
+        enc_moe_mm(g, e, m, gate_mm,
                    ly->ffn_gate_exps, gstride, g->xb, g->moe_hb,
-                   n_embd, nff, slots, xdim, nff, g->geb[l], nff, used, mm_mode == 2);
+                   n_embd, nff, slots, xdim, nff, g->geb[l], nff, used);
     else
         enc_moe_mv(g, e, m, ly->ffn_gate_exps, gstride, g->xb, 0,
                    g->moe_hb, 0, n_embd, nff, slots, xdim, nff,
                    g->geb[l], nff, sel_off, used);
-    if (mm && mmp[ly->ffn_up_exps->type])
-        enc_moe_mm(g, e, m, mmp[ly->ffn_up_exps->type],
+    if (up_mm.pso)
+        enc_moe_mm(g, e, m, up_mm,
                    ly->ffn_up_exps, ustride, g->xb, g->moe_hb2,
-                   n_embd, nff, slots, xdim, nff, g->ueb[l], nff, used, mm_mode == 2);
+                   n_embd, nff, slots, xdim, nff, g->ueb[l], nff, used);
     else
         enc_moe_mv(g, e, m, ly->ffn_up_exps, ustride, g->xb, 0,
                    g->moe_hb2, 0, n_embd, nff, slots, xdim, nff,
@@ -3899,11 +3976,11 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // matvec's (n_embd x slots) grid to n_embd rows narrows the heaviest
     // weight sweep of the layer 4x, and that costs more than the one
     // dispatch it saves. The mild corollary of the F4 rule. Removed.
-    if (mm && mmp[ly->ffn_down_exps->type])
-        enc_moe_mm(g, e, m, mmp[ly->ffn_down_exps->type],
+    if (down_mm.pso)
+        enc_moe_mm(g, e, m, down_mm,
                    ly->ffn_down_exps, dstride, g->moe_hb,
                    g->moe_eout, nff, n_embd, slots, nff, n_embd,
-                   g->deb[l], n_embd, 0, mm_mode == 2);
+                   g->deb[l], n_embd, 0);
     else
         enc_moe_mv(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb, 0,
                    g->moe_eout, 0, nff, n_embd, slots, nff, n_embd,
@@ -3922,6 +3999,23 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
 static int  metal_nan_stage(void);
 static bool metal_scan_bad(const float *p, int n, const char *what, int layer);
 
+// A scan point of the gemma MoE encoders (RUNNER_METAL_NAN_STAGE at `stage`
+// or deeper, and a caller that can restart its command buffer): what was
+// encoded so far is run, `buf` is scanned for a non-finite value, and
+// encoding goes on in a fresh command buffer. Returns the encoder to use.
+static id<MTLComputeCommandEncoder> metal_scan_point(
+        gpu_t *g, id<MTLComputeCommandEncoder> e, id<MTLCommandBuffer> *cbp,
+        id<MTLComputeCommandEncoder> *ep, int stage, int layer,
+        id<MTLBuffer> buf, size_t count, const char *what) {
+    if (!cbp || metal_nan_stage() < stage) return e;
+    [e endEncoding]; [*cbp commit]; [*cbp waitUntilCompleted];
+    metal_scan_bad((const float *)buf.contents, (int)count, what, layer);
+    *cbp = [g->queue commandBuffer];
+    e = [*cbp computeCommandEncoder];
+    *ep = e;
+    return e;
+}
+
 static void enc_gemma_moe_experts_batch(gpu_t *g,
                                         id<MTLComputeCommandEncoder> e,
                                         model_t *m, layer_t *ly, int l,
@@ -3929,11 +4023,6 @@ static void enc_gemma_moe_experts_batch(gpu_t *g,
                                         NSUInteger sel_off,
                                         id<MTLCommandBuffer> *cbp,
                                         id<MTLComputeCommandEncoder> *ep) {
-#define XP(BUF, CNT, WHAT) do { if (cbp && metal_nan_stage() >= 4) { \
-        [e endEncoding]; [*cbp commit]; [*cbp waitUntilCompleted]; \
-        metal_scan_bad((const float *)(BUF).contents, (int)(CNT), (WHAT), l); \
-        *cbp = [g->queue commandBuffer]; e = [*cbp computeCommandEncoder]; *ep = e; \
-    } } while (0)
     int n_embd = m->n_embd;
     int used = m->n_expert_used, slots = n * used;
     int nff = m->n_ff_exp;
@@ -3945,18 +4034,17 @@ static void enc_gemma_moe_experts_batch(gpu_t *g,
     enc_moe_mv(g, e, m, ly->ffn_gate_up_exps, gustride, g->xb2, 0,
                g->moe_hb, 0, n_embd, 2 * nff, slots, xdim, 2 * nff,
                nil, 0, sel_off, used);
-    XP(g->xb2, (size_t)n * xdim, "exp:in-xb2");
-    XP(g->moe_hb, (size_t)slots * 2 * nff, "exp:gate_up");
+    e = metal_scan_point(g, e, cbp, ep, 4, l, g->xb2, (size_t)n * xdim, "exp:in-xb2");
+    e = metal_scan_point(g, e, cbp, ep, 4, l, g->moe_hb, (size_t)slots * 2 * nff, "exp:gate_up");
     enc_moe_actmul(g, e, g->moe_hb, 0, g->moe_hb, foff(nff),
                    nff, slots, 2 * nff, 2 * nff, ACT_GELU);
-    XP(g->moe_hb, (size_t)slots * 2 * nff, "exp:actmul");
+    e = metal_scan_point(g, e, cbp, ep, 4, l, g->moe_hb, (size_t)slots * 2 * nff, "exp:actmul");
     enc_moe_mv(g, e, m, ly->ffn_down_exps, dstride, g->moe_hb, 0,
                g->moe_eout, 0, nff, n_embd, slots, 2 * nff, n_embd,
                nil, 0, sel_off, 0);
-    XP(g->moe_eout, (size_t)slots * n_embd, "exp:down");
+    e = metal_scan_point(g, e, cbp, ep, 4, l, g->moe_eout, (size_t)slots * n_embd, "exp:down");
     enc_moe_sum(g, e, g->q, 0, n_embd, used, n_embd, g->gdsc[l],
                 sel_off, n, xdim, 0);
-#undef XP
 }
 
 // The shared expert of n columns, from the normed input the router read
@@ -4000,10 +4088,8 @@ static void enc_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // matrix that the split mv grid spreads across the chip. Same lesson as
     // the dense-model front admission, at matvec scale: never trade a
     // parallel weight sweep for a dispatch. Removed; the split pair stays.
-    for (int b = 0; b < n; b++)
-        enc_mv(g, e, m, ly->ffn_gate_inp, g->xb,
-               foff((size_t)b * xdim), g->moe_logits,
-               foff((size_t)b * ne), m->n_embd, ne, g->gib[l]);
+    enc_mv_decode_cols(g, e, ly->ffn_gate_inp, g->xb, g->moe_logits,
+                       m->n_embd, ne, g->gib[l], n, xdim, ne);
     enc_moe_trace_logits(g, e, l, n, ne);
     if (metal_moe_batch_on()) {
         enc_moe_route(g, e, ne, used, n, 0, sel_off, l, 0);
@@ -4026,11 +4112,6 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                                     int n, int xdim,
                                     id<MTLCommandBuffer> *cbp,
                                     id<MTLComputeCommandEncoder> *ep) {
-#define GP(BUF, CNT, WHAT) do { if (cbp && metal_nan_stage() >= 3) { \
-        [e endEncoding]; [*cbp commit]; [*cbp waitUntilCompleted]; \
-        metal_scan_bad((const float *)(BUF).contents, (int)(CNT), (WHAT), l); \
-        *cbp = [g->queue commandBuffer]; e = [*cbp computeCommandEncoder]; *ep = e; \
-    } } while (0)
     int ne = m->n_expert, used = m->n_expert_used;
     int n_embd = m->n_embd, dff = m->n_ff;
 
@@ -4038,30 +4119,21 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // independent normalization columns share dispatches in this first slice.
     enc_rmsnorm_n(g, e, g->x, 0, g->xb2, 0, g->ffn_norm[l],
                   n_embd, m->rms_eps, n, n_embd, xdim);
-    for (int b = 0; b < n; b++) {
-        NSUInteger xbo = foff((size_t)b * xdim);
-        NSUInteger hbo = foff((size_t)b * dff);
-        enc_mv(g, e, m, ly->w_gate, g->xb2, xbo, g->hb, hbo,
-               n_embd, dff, nil);
-        enc_mv(g, e, m, ly->w_up, g->xb2, xbo, g->hb2, hbo,
-               n_embd, dff, nil);
-        enc_elem(g, e, g->p_gelu, g->hb, hbo, g->hb2, hbo, dff);
-        enc_mv(g, e, m, ly->w_down, g->hb, hbo, g->xb, xbo,
-               dff, n_embd, nil);
-    }
-    GP(g->xb, (size_t)n * xdim, "moe:dense-shared");
+    enc_mv_decode_cols(g, e, ly->w_gate, g->xb2, g->hb, n_embd, dff, nil, n, xdim, dff);
+    enc_mv_decode_cols(g, e, ly->w_up, g->xb2, g->hb2, n_embd, dff, nil, n, xdim, dff);
+    enc_elem_n(g, e, g->p_gelu, g->hb, 0, g->hb2, 0, dff, n, dff, dff);
+    enc_mv_decode_cols(g, e, ly->w_down, g->hb, g->xb, dff, n_embd, nil, n, dff, xdim);
+    e = metal_scan_point(g, e, cbp, ep, 3, l, g->xb, (size_t)n * xdim, "moe:dense-shared");
     enc_rmsnorm_n(g, e, g->xb, 0, g->xb, 0, g->gpn1[l],
                   n_embd, m->rms_eps, n, xdim, xdim);
-    GP(g->xb, (size_t)n * xdim, "moe:dense-gpn1");
+    e = metal_scan_point(g, e, cbp, ep, 3, l, g->xb, (size_t)n * xdim, "moe:dense-gpn1");
 
     enc_rmsnorm_n(g, e, g->x, 0, g->xb2, 0, g->gprn2[l],
                   n_embd, m->rms_eps, n, n_embd, xdim);
     enc_rmsnorm_n(g, e, g->x, 0, g->q, 0, g->ggis[l],
                   n_embd, m->rms_eps, n, n_embd, xdim);
-    for (int b = 0; b < n; b++)
-        enc_mv(g, e, m, ly->ffn_gate_inp, g->q,
-               foff((size_t)b * xdim), g->moe_logits,
-               foff((size_t)b * ne), n_embd, ne, nil);
+    enc_mv_decode_cols(g, e, ly->ffn_gate_inp, g->q, g->moe_logits,
+                       n_embd, ne, nil, n, xdim, ne);
     enc_moe_trace_logits(g, e, l, n, ne);
     NSUInteger sel_off = foff((size_t)l * n * used);
     if (metal_moe_batch_on()) {
@@ -4072,10 +4144,10 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
                           foff((size_t)b * ne),
                           sel_off + foff((size_t)b * used), l, b);
     }
-    GP(g->moe_logits, (size_t)n * ne, "moe:router-logits");
+    e = metal_scan_point(g, e, cbp, ep, 3, l, g->moe_logits, (size_t)n * ne, "moe:router-logits");
     enc_gemma_moe_experts_batch(g, e, m, ly, l, n, xdim, sel_off, cbp, ep);
     if (cbp && metal_nan_stage() >= 4) e = *ep;
-    GP(g->q, (size_t)n * xdim, "moe:experts-out");
+    e = metal_scan_point(g, e, cbp, ep, 3, l, g->q, (size_t)n * xdim, "moe:experts-out");
     enc_rmsnorm_n(g, e, g->q, 0, g->q, 0, g->gpn2[l],
                   n_embd, m->rms_eps, n, xdim, xdim);
     enc_elem_n(g, e, g->p_add, g->xb, 0, g->q, 0,
@@ -4085,7 +4157,6 @@ static void enc_gemma_moe_ffn_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // otherwise trace levels 3 and 4 continue through an already-ended
     // encoder even though ordinary inference (trace level 0) is unaffected.
     if (ep && metal_nan_stage() >= 3) *ep = e;
-#undef GP
 }
 
 // gemma-4 E-series per-layer embeddings, mirroring the CPU tail in model.c:
@@ -4614,24 +4685,18 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
                 metal_attn_tile_on() && g->p_attn_tile;
     [e setComputePipelineState:tile ? g->p_attn_tile
                           : coop ? g->p_attn_coop : g->p_attn];
-    [e setBuffer:q      offset:q_off atIndex:0];
     [e setBuffer:kc     offset:0 atIndex:1];
     [e setBuffer:vc     offset:0 atIndex:2];
     [e setBuffer:g->att offset:0 atIndex:3];
-    [e setBuffer:out    offset:out_off atIndex:4];
-    [e setBytes:&aa length:sizeof(aa) atIndex:5];
     [e setBuffer:g->sinks[l] ? g->sinks[l] : g->dummy offset:0 atIndex:6];
     // Widest power-of-two threadgroup this pipeline allows, capped
     // at the red[] scratch in the kernel. The reduction halves tpg
     // each step, so a non-power-of-two would drop lanes silently.
-    int32_t tile_cols = n;
-    if (tile) {
-        [e setBytes:&tile_cols length:sizeof(tile_cols) atIndex:7];
+    if (tile)
         // the tile's query staging, two float4 an element of the head;
         // never under the 256 elements it was a fixed array of, so a head
         // up to 256 wide keeps the threadgroup it had (8 KB of queries)
         [e setThreadgroupMemoryLength:(NSUInteger)(hd > 256 ? hd : 256) * 2 * 16 atIndex:0];
-    }
     NSUInteger amax = (tile ? g->p_attn_tile
                             : coop ? g->p_attn_coop : g->p_attn)
                           .maxTotalThreadsPerThreadgroup;
@@ -4647,15 +4712,28 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
                     (unsigned long long)g->p_attn.maxTotalThreadsPerThreadgroup);
         }
     }
-    g_disp.attn++;
-    if (tile) {
-        g_tile_dispatches++;
-        [e dispatchThreadgroups:MTLSizeMake(m->n_head,
-                                         (n + ATTN_TILE - 1) / ATTN_TILE, 1)
-          threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
-    } else {
-        [e dispatchThreadgroups:MTLSizeMake(m->n_head, n, 1)
-          threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+    // As many columns a dispatch as the score scratch holds (usually the
+    // whole batch): a column's position, query and output are the kernel's
+    // pos + col and col * stride, so a later dispatch is the same columns at
+    // a later origin
+    int sub = g->att_cols > 0 ? g->att_cols : 1;
+    for (int c0 = 0; c0 < n; c0 += sub) {
+        int32_t ns = n - c0 < sub ? n - c0 : sub;
+        aa.pos = pos + c0;
+        [e setBuffer:q   offset:q_off + foff((size_t)c0 * q_dim) atIndex:0];
+        [e setBuffer:out offset:out_off + foff((size_t)c0 * xdim) atIndex:4];
+        [e setBytes:&aa length:sizeof(aa) atIndex:5];
+        g_disp.attn++;
+        if (tile) {
+            [e setBytes:&ns length:sizeof(ns) atIndex:7];
+            g_tile_dispatches++;
+            [e dispatchThreadgroups:MTLSizeMake(m->n_head,
+                                             (ns + ATTN_TILE - 1) / ATTN_TILE, 1)
+              threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+        } else {
+            [e dispatchThreadgroups:MTLSizeMake(m->n_head, ns, 1)
+              threadsPerThreadgroup:MTLSizeMake(atpg, 1, 1)];
+        }
     }
 }
 
@@ -5389,6 +5467,18 @@ enum { MB_QKV, MB_ATTN, MB_O, MB_UP, MB_DOWN, MB_HEAD, MB_STAGES };
 static const char *const mb_stage_name[MB_STAGES] =
     { "qkv", "attn", "o", "gate_up", "down", "head" };
 
+// Close a profiled stage of gpu_batch_decode (timing level 2): run what was
+// encoded, add its command buffer's GPU span to the stage, and go on in a
+// fresh command buffer. Without profiling it does nothing.
+static void metal_prof_cut(gpu_t *g, bool prof, id<MTLCommandBuffer> *cb,
+                           id<MTLComputeCommandEncoder> *e, double *stage_ms, int stage) {
+    if (!prof) return;
+    [*e endEncoding]; [*cb commit]; [*cb waitUntilCompleted];
+    stage_ms[stage] += 1e3 * ([*cb GPUEndTime] - [*cb GPUStartTime]);
+    *cb = [g->queue commandBuffer];
+    *e = [*cb computeCommandEncoder];
+}
+
 bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                       const int *pos, int n, float **out) {
     @autoreleasepool {
@@ -5396,6 +5486,15 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     bool prof = metal_timing_on() >= 2;
     if (n < 2 && !prof) return false;   // one column is just a solo forward
     gpu_t *g = b->lead;
+    // the lead's queue and scratch encode the step: a lead slot that gave up
+    // its backend (gpu_disable) no longer lends them, and a column's slot
+    // without one has no cache to store into (model_batch_decode holds the
+    // second for every backend; held here too, where the pointer is read)
+    bool lead_live = false;
+    for (int i = 0; i < b->n; i++) lead_live |= b->seqs[i]->gpu == (void *)g;
+    if (!lead_live) return false;
+    for (int c = 0; c < n; c++)
+        if (!b->seqs[idx[c]]->gpu) return false;
     model_t *m0 = b->seqs[0];
     int n_embd = b->n_embd;
     int xdim   = b->xdim;
@@ -5423,14 +5522,6 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     id<MTLCommandBuffer> cb = [g->queue commandBuffer];
     id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
     double mb_ms[MB_STAGES] = { 0 };
-    // close the stage: its command buffer's GPU span, then a fresh buffer
-#define MB_CUT(stage) do {                                                  \
-        if (prof) {                                                         \
-            [e endEncoding]; [cb commit]; [cb waitUntilCompleted];          \
-            mb_ms[(stage)] += 1e3 * ([cb GPUEndTime] - [cb GPUStartTime]);  \
-            cb = [g->queue commandBuffer]; e = [cb computeCommandEncoder];  \
-        }                                                                   \
-    } while (0)
 
     for (int l = 0; l < m0->n_layer; l++) {
         layer_t *ly = &m0->layers[l];
@@ -5468,7 +5559,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
             if (g->kn[l])
                 enc_qknorm_n(g, e, m0, g->kt, 0, g->kn[l], n_kv, hd, n, kv_dim);
         }
-        MB_CUT(MB_QKV);
+        metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_QKV);
 
         // per column: rope at ITS position, store into ITS slot's cache,
         // attend over ITS span — the solo kernels on the solo data
@@ -5509,7 +5600,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                                 g->q, foff((size_t)c * q_dim), gs->kc, gs->vc,
                                 g->xb2, foff((size_t)c * xdim), false);
         }
-        MB_CUT(MB_ATTN);
+        metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_ATTN);
 
         used_tiles |= enc_mb_mv(g, e, ly->wo, g->xb2, 0, g->xb, 0,
                   q_dim_l, n_embd, g->bo[l], n, xdim, xdim);
@@ -5519,7 +5610,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         if (m0->resid_scale != 1.0f)
             enc_scale_n(g, e, g->xb, 0, n_embd, m0->resid_scale, n, xdim);
         enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
-        MB_CUT(MB_O);
+        metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_O);
 
         int nff_l = ly->n_ff;
         enc_rmsnorm_n(g, e, g->x, 0, g->xb, 0, g->ffn_norm[l],
@@ -5529,7 +5620,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         used_tiles |= enc_mb_mv(g, e, ly->w_up, g->xb, 0, g->hb2, 0,
                   n_embd, nff_l, nil, n, xdim, nff_l);
         enc_elem(g, e, metal_act_pipeline(g, m0), g->hb, 0, g->hb2, 0, n * nff_l);
-        MB_CUT(MB_UP);
+        metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_UP);
         used_tiles |= enc_mb_mv(g, e, ly->w_down, g->hb, 0, g->xb, 0,
                   nff_l, n_embd, nil, n, nff_l, xdim);
         if (g->pfn[l])
@@ -5540,9 +5631,8 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
         enc_elem_n(g, e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
         if (ly->out_scale != 1.0f && ly->out_scale != 0.0f)
             enc_scale_n(g, e, g->x, 0, n_embd, ly->out_scale, n, n_embd);
-        MB_CUT(MB_DOWN);
+        metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_DOWN);
     }
-#undef MB_CUT
 
     // head: every sequence needs its own logits, the head's weights read
     // once for all of them (a column's bits are its solo head's: the

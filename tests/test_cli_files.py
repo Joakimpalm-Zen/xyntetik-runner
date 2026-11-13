@@ -19,6 +19,8 @@ import pytest
 from test_type_plan import read_tensors
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+# the sanitized suite (make test-python-sanitized) runs an -O0 ASan build
+SCALE = float(os.environ.get("RUNNER_TEST_TIMEOUT_SCALE", "1"))
 
 
 @pytest.fixture(scope="module")
@@ -40,7 +42,7 @@ def yarn_model(tmp_path_factory):
 def _run(runner_bin, model, *args):
     return subprocess.run([runner_bin, "-m", model, "--gpu", "off", *args],
                           cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          timeout=20)
+                          timeout=20 * SCALE)
 
 
 def test_missing_prompt_file_is_a_clean_error(runner_bin, model):

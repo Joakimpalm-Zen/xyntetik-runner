@@ -1,11 +1,13 @@
 #include "runner.h"
 #include "json.h"
+#include "schema_int.h"
 
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static void test_strict_bounded_numbers(void) {
     // 1e400/-1e400 overflow to inf: isfinite() catches that only when the
@@ -186,6 +188,34 @@ static void test_json_close_partial_string(void) {
     jv *parsed = json_parse(full, strlen(full));
     assert(parsed != NULL);
     jv_free(parsed);
+}
+
+// R6.68.101: a budget that ends right after '[' closes the array empty.
+// The closer wrote "null" first, an element the model never produced, where
+// ']' was a legal next byte: {"a":[ came back as {"a":[null]}.
+static void test_json_close_leaves_an_opened_array_empty(void) {
+    static const struct { const char *head, *want; } cases[] = {
+        { "{\"a\":[",        "]}"  },
+        { "{\"a\":[[",       "]]}" },
+        { "{\"a\":[1,[",     "]]}" },
+        { "{\"a\":[1,",      "null]}" },   // after a comma a value is owed
+        { "{\"a\":",         "null}" },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        jsonv v;
+        jsonv_init(&v);
+        assert(jsonv_feed(&v, cases[i].head, (int)strlen(cases[i].head)));
+        char out[64], full[128];
+        int n = jsonv_close(&v, out, sizeof(out));
+        if (n != (int)strlen(cases[i].want) || strcmp(out, cases[i].want) != 0) {
+            fprintf(stderr, "FAIL: %s closes with %s, want %s\n", cases[i].head, out, cases[i].want);
+            assert(0);
+        }
+        snprintf(full, sizeof(full), "%s%s", cases[i].head, out);
+        jv *parsed = json_parse(full, strlen(full));
+        assert(parsed != NULL);
+        jv_free(parsed);
+    }
 }
 
 static void test_schema_required_close(void) {
@@ -3430,6 +3460,140 @@ static void test_harmony_empty_tool_name_is_no_name(void) {
     jv_free(tools);
 }
 
+// The $ref inliner bounded the number of schema nodes it writes (20,000) and
+// not their bytes: a definition's `enum` is copied whole at every reference,
+// so a 2 MB request could ask for tens of gigabytes. Here a 100 KB enum
+// referenced 800 times is 80 MB inlined, past the 64 MiB bound; the same
+// definition referenced 8 times is fine.
+static void test_inlined_refs_are_bounded_in_bytes(void) {
+    sbuf b = {0};
+    sb_lit(&b, "{\"$defs\":{\"A\":{\"enum\":[");
+    for (int i = 0; i < 1000; i++) {
+        sb_fmt(&b, "%s\"", i ? "," : "");
+        for (int k = 0; k < 96; k++) sb_lit(&b, "x");
+        sb_fmt(&b, "%04d\"", i);
+    }
+    sb_lit(&b, "]}},\"type\":\"object\",\"properties\":{");
+    size_t head = b.n;
+    for (int refs = 800; refs >= 8; refs /= 100) {
+        b.n = head;
+        for (int i = 0; i < refs; i++)
+            sb_fmt(&b, "%s\"p%d\":{\"$ref\":\"#/$defs/A\"}", i ? "," : "", i);
+        sb_lit(&b, "}}");
+        assert(!b.failed);
+        jv *s = json_parse(b.s, b.n);
+        assert(s);
+        char err[160] = "";
+        jv *own = NULL;
+        jv *r = schema_resolve_refs(s, &own, err, sizeof err);
+        if (refs == 800) {
+            assert(!r && !own);
+            assert(strstr(err, "too large once its $refs are inlined") != NULL);
+        } else {
+            assert(r && r == own);
+            jv_free(own);
+        }
+        jv_free(s);
+    }
+    free(b.s);
+}
+
+// The enum's sorted order (the validator's candidate range walks it) is the
+// stable order by literal: equal literals in declared order. It was an
+// insertion sort and is a library sort now; this holds the result to the
+// insertion sort's on random literals with duplicates, at the size limit.
+static void test_enum_order_is_the_stable_sorted_order(void) {
+    enum { N = 4096 };
+    snode n = {0};
+    n.lits = malloc(sizeof(char *) * N);
+    assert(n.lits);
+    unsigned s = 20261112u;
+    for (int i = 0; i < N; i++) {
+        s = s * 1664525u + 1013904223u;
+        char buf[32];
+        snprintf(buf, sizeof buf, "\"k%u\"", (s >> 8) % 700);   // about six of each
+        n.lits[i] = strdup(buf);
+        assert(n.lits[i]);
+    }
+    n.n_lits = N;
+    assert(enum_index(&n));
+    int *want = malloc(sizeof(int) * N);
+    assert(want);
+    for (int i = 0; i < N; i++) {
+        int k = i;
+        while (k > 0 && strcmp(n.lits[want[k - 1]], n.lits[i]) > 0) {
+            want[k] = want[k - 1];
+            k--;
+        }
+        want[k] = i;
+    }
+    assert(memcmp(want, n.order, sizeof(int) * N) == 0);
+    for (int i = 0; i < N; i++) free(n.lits[i]);
+    free(n.lits); free(n.order); free(want);
+}
+
+// A pattern's fixed counts are summed into an int (its shortest and longest
+// string). Two counts of two billion overflowed it, which is undefined: the
+// sanitizer build stopped at pattern_max_len, the release build compiled a
+// node with a wrapped length. Such a pattern is refused by name.
+static void test_pattern_counts_past_int_are_refused(void) {
+    static const char *const bad[] = {
+        "{\"type\":\"string\",\"pattern\":\"^[a-z]{2000000000}[0-9]{2000000000}$\"}",
+        "{\"type\":\"string\",\"pattern\":\"^[a-z]{2147483647}x$\"}",
+        "{\"type\":\"string\",\"pattern\":\"^[a-z]{1000000000}[0-9]{1000000000}[a-z]{1,2147483647}$\"}",
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
+        jv *j = json_parse(bad[i], strlen(bad[i]));
+        char err[320] = "";
+        assert(j && !schema_compile(j, err, sizeof err));
+        assert(strstr(err, "longer than") != NULL);
+        jv_free(j);
+    }
+    // the largest count alone still compiles
+    const char *ok = "{\"type\":\"string\",\"pattern\":\"^[a-z]{2147483647}$\"}";
+    jv *j = json_parse(ok, strlen(ok));
+    char err[320] = "";
+    snode *n = schema_compile(j, err, sizeof err);
+    assert(n);
+    schema_free(n);
+    jv_free(j);
+}
+
+// Patterns conjoined by allOf are checked for a position where they
+// contradict. The check walked every byte up to the shortest string they
+// jointly require, so two patterns with a count of 200,000,000 took 28 s to
+// compile, from a request of a hundred bytes. What the patterns allow only
+// changes at a segment boundary, so those positions are the ones checked.
+static void test_allof_patterns_are_checked_by_segment_not_by_byte(void) {
+    static const struct { const char *schema; bool ok; } cases[] = {
+        { "{\"type\":\"string\",\"allOf\":[{\"pattern\":\"^[a-z]{200000000}$\"},"
+          "{\"pattern\":\"^[a-m]+$\"}]}", true },
+        // a contradiction far in: bytes 50000000 and 50000001 are a digit to
+        // the first pattern and a letter to the second
+        { "{\"type\":\"string\",\"allOf\":[{\"pattern\":\"^[a-z]{50000000}[0-9]{5}$\"},"
+          "{\"pattern\":\"^[a-z]{50000002}[0-9]{3}$\"}]}", false },
+        // the same lengths, agreeing
+        { "{\"type\":\"string\",\"allOf\":[{\"pattern\":\"^[a-z]{50000000}[0-9]{5}$\"},"
+          "{\"pattern\":\"^[a-z]{50000000}[0-9]{2}[0-9]{3}$\"}]}", true },
+        // a literal against a class that excludes it, past a long run
+        { "{\"type\":\"string\",\"allOf\":[{\"pattern\":\"^[a-z]{90000000}X[a-z]+$\"},"
+          "{\"pattern\":\"^[a-z]+$\"}]}", false },
+        { "{\"type\":\"string\",\"allOf\":[{\"pattern\":\"^[a-z]{90000000}x[a-z]+$\"},"
+          "{\"pattern\":\"^[a-z]+$\"}]}", true },
+    };
+    clock_t t0 = clock();
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        jv *j = json_parse(cases[i].schema, strlen(cases[i].schema));
+        char err[320] = "";
+        snode *n = schema_compile(j, err, sizeof err);
+        if (cases[i].ok) assert(n);
+        else assert(!n && strstr(err, "cannot be satisfied together") != NULL);
+        schema_free(n);
+        jv_free(j);
+    }
+    assert((double)(clock() - t0) / CLOCKS_PER_SEC < 1.0);
+}
+
 int main(void) {
     test_schema_sibling_constraints_are_not_dropped();
     test_strict_bounded_numbers();
@@ -3439,6 +3603,7 @@ int main(void) {
     test_json_rejects_duplicate_object_keys();
     test_escapes_are_paired_and_closable();
     test_json_close_partial_string();
+    test_json_close_leaves_an_opened_array_empty();
     test_schema_required_close();
     test_schema_close_fits_a_long_enum_member();
     test_map_refuses_a_duplicate_key_spelling();
@@ -3516,6 +3681,10 @@ int main(void) {
     test_harmony_empty_tool_name_is_no_name();
     test_escape_replaces_ill_formed_utf8();
     test_tojson_dump_matches_jinja();
+    test_inlined_refs_are_bounded_in_bytes();
+    test_enum_order_is_the_stable_sorted_order();
+    test_pattern_counts_past_int_are_refused();
+    test_allof_patterns_are_checked_by_segment_not_by_byte();
     puts("json/schema tests ok");
     return 0;
 }

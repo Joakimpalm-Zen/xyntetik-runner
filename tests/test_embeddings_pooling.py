@@ -18,7 +18,9 @@ for EVERY input.
 """
 import json
 import math
+import os
 import pathlib
+import re
 import struct
 import subprocess
 import sys
@@ -42,8 +44,9 @@ def _fixture(tmp_path_factory, name, *flags):
     return m
 
 
-def _embedding_rows(path):
-    """token_embd.weight as a list of float rows, read straight from the GGUF."""
+def _embedding_table(path, tensor="token_embd.weight"):
+    """The file's bytes, and where an F32 tensor (the embedding table unless
+    named) sits in them: offset, width, rows."""
     with open(path, "rb") as f:
         data = f.read()
     at = 0
@@ -84,10 +87,16 @@ def _embedding_rows(path):
         ttype, off = take("<I"), take("<Q")
         infos[name] = (dims, ttype, off)
     base = (at + 31) // 32 * 32
-    dims, ttype, off = infos["token_embd.weight"]
-    assert ttype == 0, "the fixture's embedding table is F32"
+    dims, ttype, off = infos[tensor]
+    assert ttype == 0, f"{tensor} is F32"
     width, rows = dims
-    flat = struct.unpack_from(f"<{width * rows}f", data, base + off)
+    return data, base + off, width, rows
+
+
+def _embedding_rows(path):
+    """token_embd.weight as a list of float rows, read straight from the GGUF."""
+    data, at, width, rows = _embedding_table(path)
+    flat = struct.unpack_from(f"<{width * rows}f", data, at)
     return [flat[r * width:(r + 1) * width] for r in range(rows)]
 
 
@@ -188,3 +197,117 @@ def test_float_and_base64_carry_the_same_vector(runner_bin, tmp_path_factory):
     decoded = struct.unpack(f"<{len(raw) // 4}f", raw)
     as_f32 = [struct.unpack("<f", struct.pack("<f", x))[0] for x in vecs["float"]]
     assert list(decoded) == as_f32
+
+
+def _metal(exe):
+    try:
+        caps = json.loads(subprocess.run([str(exe), "--caps"], stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL, timeout=60).stdout)
+    except Exception:
+        return False
+    return (caps.get("gpu") or {}).get("backend") == "metal"
+
+
+@pytest.mark.parametrize("pooling", ["1", "3"])
+def test_a_fully_offloaded_model_embeds_on_the_device(runner_bin, tmp_path, pooling):
+    """A fully offloaded model's embeddings ran their forward on the CPU: the
+    readout set the device aside because a full offload keeps the residual on
+    the device, although the device hands those rows back when asked (the
+    Clef readout has asked since it was admitted). The device now runs the
+    forward, and the vector is the one the CPU gives."""
+    if not _metal(runner_bin):
+        pytest.skip("no Metal device: the forward is seen through its dispatch census")
+    m = tmp_path / "m.gguf"
+    subprocess.run([sys.executable, str(ROOT / "scripts/make-test-model.py"),
+                    "--pooling", pooling, str(m)], check=True, stdout=subprocess.DEVNULL)
+    text = "the quick brown fox jumps over the lazy dog and keeps running"
+    vec = {}
+    for arm, extra in (("cpu", ["--gpu", "off"]), ("device", [])):
+        log = tmp_path / f"{arm}.log"
+        with RunnerServer(runner_bin, m, ctx=256, parallel=1, extra_args=extra,
+                          log_path=str(log),
+                          env=dict(os.environ, RUNNER_METAL_STATS="1")) as srv:
+            code, body = _embed(srv, text)
+            assert code == 200, body
+            vec[arm] = body["data"][0]["embedding"]
+            n = body["usage"]["prompt_tokens"]
+        said = log.read_text(errors="replace")
+        ran = f"metal: native prompt batch n={n} " in said
+        assert ran == (arm == "device"), said[-2000:]
+    assert _cos(vec["cpu"], vec["device"]) > 1 - 1e-5
+    assert max(abs(a - b) for a, b in zip(vec["cpu"], vec["device"])) < 1e-3
+
+
+def test_a_non_finite_embedding_is_an_error_not_invalid_json(runner_bin, tmp_path_factory):
+    """JSON has no NaN and no infinity, and printf writes them as `nan` and
+    `inf`: a forward that went non-finite (here a NaN in every row of the
+    embedding table; in the field an overflowed activation or a failed kernel)
+    answered 200 with a body no parser takes, and as base64 it handed the
+    client NaN bytes with nothing to tell them by. It is an error the client
+    can read, in both encodings."""
+    m = _fixture(tmp_path_factory, "nan", "--pooling", "1")
+    data, at, width, rows = _embedding_table(m)
+    data = bytearray(data)
+    for r in range(rows):
+        struct.pack_into("<f", data, at + r * width * 4, float("nan"))
+    m.write_bytes(data)
+    with _serve(runner_bin, m) as srv:
+        for fmt in ("float", "base64"):
+            req = urllib.request.Request(
+                srv.base_url + "/v1/embeddings",
+                data=json.dumps({"input": "hello there", "encoding_format": fmt}).encode(),
+                headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    status, raw = r.status, r.read()
+            except urllib.error.HTTPError as e:
+                status, raw = e.code, e.read()
+            body = json.loads(raw)   # whatever the status, the body parses
+            assert status == 500, (fmt, raw[:200])
+            assert "non-finite" in body["error"]["message"], body
+        # the server is still there for the next request
+        code, body = _embed(srv, "once more")
+        assert code == 500, body
+
+
+def _cuda(exe):
+    try:
+        caps = json.loads(subprocess.run([str(exe), "--caps"], stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL, timeout=60).stdout)
+    except Exception:
+        return False
+    return (caps.get("gpu") or {}).get("backend") == "cuda"
+
+
+@pytest.mark.parametrize("pooling", ["1", "3"])
+def test_a_fully_offloaded_model_embeds_on_the_cuda_device(runner_bin, tmp_path, pooling):
+    """The CUDA twin of the test above (R6.68.107). CUDA has no dispatch
+    census, so the forward is seen through RUNNER_CUDA_PROFILE: its summary,
+    printed when the device is freed at shutdown, counts the prompt tiles the
+    device ran. One request on one slot is the profile's single-thread case.
+    Before R6.68.107 a fully offloaded model's embeddings left no tile at all;
+    the server runs no device forward before a request, so the tile's tokens
+    are the request's."""
+    if not _cuda(runner_bin):
+        pytest.skip("no CUDA device: the forward is seen through RUNNER_CUDA_PROFILE")
+    m = tmp_path / "m.gguf"
+    subprocess.run([sys.executable, str(ROOT / "scripts/make-test-model.py"),
+                    "--pooling", pooling, str(m)], check=True, stdout=subprocess.DEVNULL)
+    text = "the quick brown fox jumps over the lazy dog and keeps running"
+    vec = {}
+    for arm, extra in (("cpu", ["--gpu", "off"]), ("device", [])):
+        log = tmp_path / f"{arm}.log"
+        with RunnerServer(runner_bin, m, ctx=256, parallel=1, extra_args=extra,
+                          log_path=str(log),
+                          env=dict(os.environ, RUNNER_CUDA_PROFILE="1")) as srv:
+            code, body = _embed(srv, text)
+            assert code == 200, body
+            vec[arm] = body["data"][0]["embedding"]
+            n = body["usage"]["prompt_tokens"]
+        said = log.read_text(errors="replace")
+        # the PREFILL block's first count line, past the note on graphs
+        ran = re.search(r"RUNNER_CUDA_PROFILE \[PREFILL[^\n]*\n(?:[^\n]*\n)*?"
+                        rf"tiles=\d+ tokens={n} ", said) is not None
+        assert ran == (arm == "device"), said[-2000:]
+    assert _cos(vec["cpu"], vec["device"]) > 1 - 1e-5
+    assert max(abs(a - b) for a, b in zip(vec["cpu"], vec["device"])) < 1e-3

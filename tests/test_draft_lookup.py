@@ -294,6 +294,24 @@ def test_draft_hints_are_accepted_and_change_nothing(model):
         assert "hint_drafted" not in ps
 
 
+def test_a_hint_after_short_hints_is_tokenized_whole(model):
+    """No byte count bounds a token count: this fixture spells a space as
+    three tokens and prefixes one more to every text. The hint buffer was
+    sized at one token per byte, so fifteen one-byte hints used the room of
+    the sixteenth, which was then tokenized to nothing and never drafted;
+    its separator was written past the buffer (a heap overflow the address
+    sanitizer reports at creq_hints)."""
+    with RunnerServer(find_runner(ROOT), model, ctx=1024, parallel=1,
+                      extra_args=["--gpu", "off", "--draft-lookup"],
+                      env={"RUNNER_TEST_SCRIPTED_REPLY": "1"}) as srv:
+        plain = _post(srv, "/v1/completions", _hint_request({}))
+        hinted = _post(srv, "/v1/completions",
+                       _hint_request({"draft_hints": [" "] * 15 + [HINT_TEXT]}))
+        assert hinted["choices"][0]["text"] == plain["choices"][0]["text"]
+        sp = hinted["runner_telemetry"]["speculation"]
+        assert sp["hint_drafted"] > 0 and sp["hint_accepted"] > 0, sp
+
+
 def test_draft_hints_are_refused_where_they_cannot_be_honoured(model):
     with RunnerServer(find_runner(ROOT), model, ctx=1024, parallel=1,
                       extra_args=["--gpu", "off"]) as srv:

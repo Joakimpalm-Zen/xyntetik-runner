@@ -75,8 +75,13 @@ typedef struct {
 bool oms_sign_file(const char *model_path, const char *key_pem_path,
                    const char *out_path, oms_sign_info *info);
 
-// Appends the JSON object the transcript records for a model signature
-// ({"status":..,"subject_digest":..,"curve":..}) to `buf`, capped at `cap`.
+// Writes the JSON object a record carries for a signature verdict
+// ({"status":..,"subject_digest":..,"curve":..,"hash":..,"resource":..}) to
+// `buf`. A buffer of OMS_RESULT_JSON_CAP holds every verdict: the resource is
+// a file name out of the manifest, escaped here, and its worst case is six
+// bytes a character. A smaller buffer that cannot hold the object gets "",
+// never a cut one. Returns the length written.
+#define OMS_RESULT_JSON_CAP 1024
 int oms_result_json(const oms_result *r, char *buf, size_t cap);
 
 #endif

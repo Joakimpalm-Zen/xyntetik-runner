@@ -1,5 +1,6 @@
 #include "decide.h"
 #include "envelope.h"
+#include "fpclass.h"
 #include "runner.h"
 #include <math.h>
 #include <stdatomic.h>
@@ -267,6 +268,9 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
     canon.n = tok_encode_fit(e->tok, state, true, TOK_TEXT, 0, &canon.toks);
     if (canon.n < 0) { free(canon.toks); *err = "out of memory tokenizing the state"; return 500; }
     for (int i = 0; i < qs->n && status == 200; i++) {
+        // one question a device turn, where the server gave the engine a way
+        // to give the turn up (R6.68.54)
+        if (i && e->prefill_yield) e->prefill_yield(e->prefill_ud);
         const jv *q = qs->items[i];
         if (q->type != J_OBJ) { *err = "each question must be an object"; status = 400; break; }
         const char *qt = jstr(q, "question");
@@ -311,6 +315,18 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
             break;
         }
         total_prompt += ptoks;
+        // The scores are the answer (R6.68.119): a non-finite forward has
+        // none to give, and an argmax over NaNs (the comparison below skips
+        // them) would choose an option no number supports. Refused, as
+        // embeddings refuse a vector with a hole.
+        bool finite = true;
+        for (int j = 0; j < n_opt; j++) finite = finite && fp_isfinite(res[j].lp);
+        if (!finite) {
+            free(ov); free(res);
+            *err = "a decision score is not finite (the forward is not), so no option is chosen";
+            status = 500;
+            break;
+        }
         double mx = res[0].lp;
         for (int j = 1; j < n_opt; j++) if (res[j].lp > mx) mx = res[j].lp;
         double z = 0;
@@ -324,9 +340,14 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
         sb_lit(out, "],\"logprobs\":[");
         // nine significant digits, the precision --score prints: at six
         // decimals a last-bit difference between two feeds was invisible
-        for (int j = 0; j < n_opt; j++) sb_fmt(out, "%s%.9g", j ? "," : "", res[j].lp);
+        for (int j = 0; j < n_opt; j++) { if (j) sb_lit(out, ","); sb_num9(out, res[j].lp); }
         sb_lit(out, "],\"probs\":[");
-        for (int j = 0; j < n_opt; j++) sb_fmt(out, "%s%.6g", j ? "," : "", exp(res[j].lp - mx) / z);
+        for (int j = 0; j < n_opt; j++) {
+            double pr = exp(res[j].lp - mx) / z;
+            if (j) sb_lit(out, ",");
+            if (fp_isfinite(pr)) sb_fmt(out, "%.6g", pr);
+            else sb_lit(out, "null");
+        }
         sb_fmt(out, "],\"argmax\":%d,\"n_tokens\":[", argmax);
         for (int j = 0; j < n_opt; j++) sb_fmt(out, "%s%d", j ? "," : "", res[j].n_tok);
         sb_lit(out, "]}");
@@ -354,9 +375,16 @@ int decide_handle(engine *e, const jv *req, const char *model_name, sbuf *out, c
 
 typedef struct { int idx; double logit, lp_yes, lp_no; } rr_row;
 
+// A total order whatever the logits hold (R6.68.119): a NaN sorts last,
+// the same both ways. NaN against anything compared "after" both ways
+// before, and on some C libraries a comparator that is not a total order is
+// a memory-safety problem inside qsort, not only a wrong order. rerank_handle
+// refuses a non-finite score before the sort; this does not rest on that.
 static int rr_cmp(const void *a, const void *b) {
     const rr_row *x = a, *y = b;
-    if (x->logit != y->logit) return x->logit > y->logit ? -1 : 1;
+    bool xn = fp_isnan(x->logit), yn = fp_isnan(y->logit);
+    if (xn != yn) return xn ? 1 : -1;
+    if (!xn && x->logit != y->logit) return x->logit > y->logit ? -1 : 1;
     return x->idx - y->idx;   // a tie keeps the input order
 }
 
@@ -474,6 +502,7 @@ int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
     if (!rows) { *err = "out of memory"; return 500; }
     int total_prompt = 0, status = 200;
     for (int i = 0; i < docs->n && status == 200; i++) {
+        if (i && e->prefill_yield) e->prefill_yield(e->prefill_ud);   // one document a turn
         const char *d = rr_doc_text(docs->items[i]);
         char *prompt = chat ? rr_render_chat(tmpl, instr, query, d)
                             : rr_render_raw(instr, query, d);
@@ -498,6 +527,13 @@ int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
             break;
         }
         total_prompt += ptoks;
+        // the scores are the answer: refused when not finite (R6.68.119)
+        if (!fp_isfinite(res[0].lp) || !fp_isfinite(res[1].lp) ||
+            !fp_isfinite(res[0].lp - res[1].lp)) {
+            *err = "a relevance score is not finite (the forward is not), so no order is given";
+            status = 500;
+            break;
+        }
         rows[i].idx = i;
         rows[i].lp_yes = res[0].lp;
         rows[i].lp_no = res[1].lp;
@@ -530,11 +566,18 @@ int rerank_handle(engine *e, const jv *req, const char *model_name, int tmpl,
         // logistic of the logit, written so neither tail overflows
         double p = r->logit >= 0 ? 1.0 / (1.0 + exp(-r->logit))
                                  : exp(r->logit) / (1.0 + exp(r->logit));
-        sb_fmt(out, "%s{\"index\":%d,\"relevance_score\":%.9g,\"logit\":%.9g,"
-                    "\"margin\":", k ? "," : "", r->idx, p, r->logit);
-        if (k + 1 < docs->n) sb_fmt(out, "%.9g", r->logit - rows[k + 1].logit);
+        sb_fmt(out, "%s{\"index\":%d,\"relevance_score\":", k ? "," : "", r->idx);
+        sb_num9(out, p);
+        sb_lit(out, ",\"logit\":");
+        sb_num9(out, r->logit);
+        sb_lit(out, ",\"margin\":");
+        if (k + 1 < docs->n) sb_num9(out, r->logit - rows[k + 1].logit);
         else                 sb_lit(out, "null");
-        sb_fmt(out, ",\"logprobs\":{\"yes\":%.9g,\"no\":%.9g}", r->lp_yes, r->lp_no);
+        sb_lit(out, ",\"logprobs\":{\"yes\":");
+        sb_num9(out, r->lp_yes);
+        sb_lit(out, ",\"no\":");
+        sb_num9(out, r->lp_no);
+        sb_lit(out, "}");
         if (ret_docs) {
             const char *d = rr_doc_text(docs->items[r->idx]);
             sb_lit(out, ",\"document\":{\"text\":\"");

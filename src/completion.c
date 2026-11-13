@@ -119,11 +119,9 @@ typedef struct {
     sbuf  calls;
     int   n_calls;
     bool  call_open;   // a streamed call begun and not yet ended
-    // R2.2: the constrained document's content-channel bytes, and the offset
-    // at which the engine's closer took over (-1: the model finished it), so
-    // the turn can say which fields the closer wrote
-    bool  doc_on;
-    sbuf  doc;
+    // R2.2: the offset in `out` at which the engine's closer took over (-1:
+    // the model finished the document), so the turn can say which fields the
+    // closer wrote. `out` is the document: what the content channel delivered.
     long  close_at;
     // R3.36: a stream written under the device turn goes through `wq`, which
     // cannot block; what the client has not taken is written after the turn.
@@ -269,7 +267,8 @@ static void append_top_map(sbuf *r, slot_t *s, engine *e, const lp_alt *row, int
         first = false;
         sb_lit(r, "\"");
         if (key[j].n) sb_put(r, key[j].s, key[j].n);
-        sb_fmt(r, "\":%.9g", mx + log(sum));
+        sb_lit(r, "\":");
+        sb_num9(r, mx + log(sum));
     }
     sb_lit(r, "}");
     for (int j = 0; j < n; j++) free(key[j].s);
@@ -295,7 +294,9 @@ static void append_stop_token(sbuf *r, slot_t *s, engine *e) {
     // -- and a ONE-SIDED stop, the case worth catching, disappears from both
     // the agreement and the KLD statistics (lab, 2026-09-25).
     if (e->stop_lp_at < 0) return;
-    sb_fmt(r, ",\"stop_logprobs\":{\"logprob\":%.9g,\"top_logprobs\":", e->stop_lp);
+    sb_lit(r, ",\"stop_logprobs\":{\"logprob\":");
+    sb_num9(r, e->stop_lp);
+    sb_lit(r, ",\"top_logprobs\":");
     append_top_map(r, s, e, &e->lp_top[(size_t)e->stop_lp_at * e->lp_n], e->lp_n);
     sb_lit(r, ",\"top_token_ids\":[");
     for (int j = 0; j < e->lp_n; j++) {
@@ -309,7 +310,7 @@ static void append_stop_token(sbuf *r, slot_t *s, engine *e) {
         const lp_alt *a = &e->lp_top[(size_t)e->stop_lp_at * e->lp_n + j];
         if (a->id < 0) break;
         if (j) sb_lit(r, ",");
-        sb_fmt(r, "%.9g", a->lp);
+        sb_num9(r, a->lp);
     }
     sb_lit(r, "]}");
 }
@@ -322,7 +323,9 @@ static void append_chat_logprobs(sbuf *r, slot_t *s, engine *e) {
         int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
         sb_lit(r, "{\"token\":\"");
         sb_esc(r, tb, tn);
-        sb_fmt(r, "\",\"logprob\":%.9g,\"top_logprobs\":[", e->lp_chosen[i]);
+        sb_lit(r, "\",\"logprob\":");
+        sb_num9(r, e->lp_chosen[i]);
+        sb_lit(r, ",\"top_logprobs\":[");
         for (int j = 0; j < e->lp_n; j++) {
             const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
             if (a->id < 0) break;
@@ -330,7 +333,9 @@ static void append_chat_logprobs(sbuf *r, slot_t *s, engine *e) {
             tn = lp_piece(s, e, a->id, tb, sizeof(tb));
             sb_lit(r, "{\"token\":\"");
             sb_esc(r, tb, tn);
-            sb_fmt(r, "\",\"logprob\":%.9g}", a->lp);
+            sb_lit(r, "\",\"logprob\":");
+            sb_num9(r, a->lp);
+            sb_lit(r, "}");
         }
         sb_lit(r, "]}");
     }
@@ -369,7 +374,7 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e,
     for (int i = 0; i < np + e->lp_count; i++) {
         if (i) sb_lit(r, ",");
         if (i == 0 && np) sb_lit(r, "null");
-        else sb_fmt(r, "%.9g", i < np ? pg->ps.lp[i] : e->lp_chosen[i - np]);
+        else sb_num9(r, i < np ? pg->ps.lp[i] : e->lp_chosen[i - np]);
     }
     sb_lit(r, "],\"top_logprobs\":[");
     for (int i = 0; i < np + e->lp_count; i++) {
@@ -412,7 +417,7 @@ static void append_text_logprobs(sbuf *r, slot_t *s, engine *e,
             const lp_alt *a = &row[j];
             if (a->id < 0) break;
             if (j) sb_lit(r, ",");
-            sb_fmt(r, "%.9g", a->lp);
+            sb_num9(r, a->lp);
         }
         sb_lit(r, "]");
     }
@@ -438,6 +443,7 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
     e->constraint_includes_prelude = false;
     e->render_special = false;
     e->n_spell = 0;
+    e->spell_think = false;
     // R10.31: a request's ignore_eos is its own; the slot goes back to the server's default
     e->ignore_eos = SV.ignore_eos;
     schema_free(schema);
@@ -467,6 +473,7 @@ static void completion_cleanup(engine *e, snode *schema, gen_ctx *g) {
     free(e->cl_recs);
     e->cl_recs = NULL;
     e->cl_cap = e->cl_count = e->cl_probe = 0;
+    e->cl_nonfinite = false;
 }
 
 // emit one section of split output: reasoning goes to the OpenAI-style
@@ -1059,6 +1066,7 @@ typedef struct req_diag {
     int         decisions;
     double      min_chosen_p, min_margin;
     int         min_at;
+    bool        nonfinite;   // a probed row was not finite (engine cl_nonfinite)
     // R2.2: closure provenance, rendered JSON (owned by the request), or NULL
     // when the closer did not run
     char       *closure_json;
@@ -1324,16 +1332,23 @@ static void diag_json(sbuf *r, const req_diag *d) {
         sb_fmt(r, ",\"decision\":{\"schema\":\"xyntetik.runner.decision.v1\","
                   "\"confirm_below\":%.6f,\"decisions\":%d,",
                d->confirm_below, d->decisions);
-        if (d->decisions > 0)
-            sb_fmt(r, "\"min_chosen_prob\":%.6f,\"min_margin\":%.6f,"
-                      "\"at_token\":%d,", d->min_chosen_p, d->min_margin,
-                   d->min_at);
-        else
+        if (d->decisions > 0) {
+            sb_lit(r, "\"min_chosen_prob\":");
+            sb_fix6(r, d->min_chosen_p);
+            sb_lit(r, ",\"min_margin\":");
+            sb_fix6(r, d->min_margin);
+            sb_fmt(r, ",\"at_token\":%d,", d->min_at);
+        } else
             sb_lit(r, "\"min_chosen_prob\":null,\"min_margin\":null,"
                       "\"at_token\":null,");
-        sb_fmt(r, "\"needs_confirmation\":%s}",
-               d->decisions > 0 && d->min_chosen_p < d->confirm_below
-               ? "true" : "false");
+        // a probed row that was not finite, or a confidence that is not a
+        // number, is not above the bar: it needs confirmation (R6.68.118).
+        // Spelled with fpclass.h's test: under fast math !(a >= b) is not a
+        // NaN test (it may be compiled as a < b)
+        bool confirm = d->nonfinite ||
+                       (d->decisions > 0 && (!fp_finite_f64(d->min_chosen_p) ||
+                                             d->min_chosen_p < d->confirm_below));
+        sb_fmt(r, "\"needs_confirmation\":%s}", confirm ? "true" : "false");
     }
     if (d->closure_json) sb_fmt(r, ",\"closure\":%s", d->closure_json);
     if (d->receipt_file)
@@ -2301,15 +2316,6 @@ static int emit_channel(gen_ctx *g, int reasoning, const char *bytes, int n) {
 // g->hold so a stop spanning token boundaries still matches, and only the
 // tail that could still begin a stop is withheld from the client
 static int stop_feed(gen_ctx *g, const char *bytes, int n) {
-    // A stop sequence is a rule about the MODEL's visible text. The tail the
-    // engine synthesizes to close a truncated constrained document is not
-    // that — it is the server making the client's copy legal — and filtering
-    // it eats exactly the bytes that do the work: closing `{"a":"xx` yields
-    // `","b":""}`, and `"}"` or `"\n\n"` are ordinary stops that match a
-    // closer even when the model never produced one. It arrives AFTER the
-    // stop matched, so this bypass must precede the guard below.
-    if (g->eng && g->eng->constraint_closing)
-        return emit_channel(g, 0, bytes, n);
     // Nothing else after a matched stop reaches the client: the think
     // splitter's held-back tail is flushed through here at the end of
     // generation, and on a thinking-tag model that tail is the text that
@@ -2359,6 +2365,15 @@ static int stop_feed(gen_ctx *g, const char *bytes, int n) {
     return rc;
 }
 
+// The model's part of the turn is over without a stop match: the tail held
+// back as a possible start of one was ordinary output after all.
+static int stop_release(gen_ctx *g) {
+    if (g->stopped || g->hold.n == 0) return 0;
+    int rc = emit_channel(g, 0, g->hold.s, (int)g->hold.n);
+    g->hold.n = 0;
+    return rc;
+}
+
 // The buffered counterpart of tool_stream_finish: one finished strict-envelope
 // document, demultiplexed into the channels the client actually receives.
 //
@@ -2405,8 +2420,8 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
         g->out = mapped;
         return n_calls;
     }
-    int rc = tool_envelope_map_channels(
-        env, doc, doc_n, &mapped_reason, &mapped, tc);
+    int rc = tool_envelope_map_turn(
+        env, doc, doc_n, truncated, &mapped_reason, &mapped, tc);
     free(turn.s);
     if (rc >= 0 && mapped_reason.n) {
         free(g->reason.s);
@@ -2448,14 +2463,29 @@ static int envelope_map_buffered(const tool_envelope *env, gen_ctx *g, sbuf *tc,
 
 static int gen_emit(void *ud, int reasoning, const char *bytes, int n) {
     gen_ctx *g = ud;
-    if (!reasoning && g->doc_on && n > 0) {
-        if (g->close_at < 0 && g->eng && g->eng->constraint_closing)
-            g->close_at = (long)g->doc.n;
-        sb_put(&g->doc, bytes, (size_t)n);
+    if (reasoning) {
+        g->tok_had_reasoning = true;
+        return emit_channel(g, 1, bytes, n);
     }
-    if (!reasoning && g->n_stop) return stop_feed(g, bytes, n);
-    if (reasoning) ((gen_ctx *)ud)->tok_had_reasoning = true;
-    return emit_channel(g, reasoning, bytes, n);
+    // A stop sequence is a rule about the MODEL's visible text. The tail the
+    // engine synthesizes to close a truncated constrained document is not
+    // that — it is the server making the client's copy legal — and filtering
+    // it eats exactly the bytes that do the work: closing `{"a":"xx` yields
+    // `","b":""}`, and `"}"` or `"\n\n"` are ordinary stops that match a
+    // closer even when the model never produced one. It can arrive after a
+    // stop matched, and is still owed then.
+    if (!g->eng || !g->eng->constraint_closing)
+        return g->n_stop ? stop_feed(g, bytes, n) : emit_channel(g, 0, bytes, n);
+    // The closer continues the document the validator holds, which includes
+    // whatever the stop filter is still holding back, so that goes out first.
+    // The tail used to overtake it: `{"city":"","units":"celsius"}aaa`
+    // (R6.68.49). What is out by then is the model's share of the document,
+    // which is where the closure report draws its line; it once drew it in a
+    // copy taken ahead of the stop filter, which counted the bytes a matched
+    // stop had dropped.
+    int rc = stop_release(g);
+    if (g->close_at < 0) g->close_at = (long)g->out.n;
+    return rc ? rc : emit_channel(g, 0, bytes, n);
 }
 
 static int gen_collect(void *ud, const char *bytes, int n) {
@@ -2827,25 +2857,6 @@ static bool request_json_mode(jv *req) {
         return true;
     jv *tf = jv_get(jv_get(req, "text"), "format");
     return tf && strcmp(jv_str(jv_get(tf, "type"), ""), "json_object") == 0;
-}
-
-// run one completion on a slot and write the HTTP response.
-// `env` is the strict tool-call envelope when the request opted into one; it
-// replaces the response_format schema, having already absorbed it as the
-// shape of its `final` branch.
-// Drop the device turn and immediately ask for it back. A waiter that has been
-// blocked gets the mutex ahead of us on any fair-ish implementation, and on an
-// unfair one this still bounds the hold to one chunk rather than one prompt.
-static void prefill_yield_turn(void *ud) {
-    (void)ud;
-    // end() then begin() puts this prefill at the BACK of the device queue,
-    // so a request that arrived mid-prefill runs at the next chunk boundary
-    // instead of after the whole prompt. That only works because the turn is
-    // FIFO (see sched_prefill_begin): with a plain mutex the releasing thread
-    // barges straight back in -- measured, the waiter lost 44 of 45 races and
-    // still waited 25.3 s of a 26.4 s prefill.
-    sched_prefill_end();
-    sched_prefill_begin();
 }
 
 // The serving grammar and the replay grammar must be one compiler. The
@@ -4067,19 +4078,30 @@ static bool creq_hints(const creq_ctx *c, completion_req *q, creq_err *err) {
                                 "lookup draft's verify walk");
             return false;
         }
-        // one token per byte is the upper bound, plus a separator per hint
-        size_t need = bytes + (size_t)dh->n + 1;
-        if (need > (size_t)s->hint_cap) {
-            int32_t *nb = realloc(s->hint_buf, sizeof(int32_t) * need);
-            if (!nb) { creq_set(err, 500, "out of memory tokenizing draft_hints"); return false; }
-            s->hint_buf = nb;
-            s->hint_cap = (int)need;
-        }
+        // No byte count bounds a token count (tokenizer.h): a vocabulary may
+        // prefix a token to every text and spell a space as three. The buffer
+        // was sized at one token per byte, so short hints used the room of
+        // the ones after them, which were cut or tokenized to nothing, and a
+        // separator was then written past the end (R6.68.51). Each hint is
+        // encoded to its true length and the buffer grows to what it holds.
         int hn = 0;
         for (int i = 0; i < dh->n; i++) {
-            int n = tok_encode(s->tok, dh->items[i]->str, s->hint_buf + hn,
-                               s->hint_cap - hn - 1, false, false);
-            if (n < 0) { creq_set(err, 500, "out of memory tokenizing draft_hints"); return false; }
+            int32_t *enc = NULL;
+            int n = tok_encode_fit(s->tok, dh->items[i]->str, false, TOK_TEXT, 0, &enc);
+            size_t need = (size_t)hn + (size_t)(n > 0 ? n : 0) + 1;
+            if (n >= 0 && need > (size_t)s->hint_cap) {
+                int32_t *nb = need <= INT_MAX / 2
+                    ? realloc(s->hint_buf, sizeof(int32_t) * need * 2) : NULL;
+                if (nb) { s->hint_buf = nb; s->hint_cap = (int)(need * 2); }
+                else n = -1;
+            }
+            if (n < 0) {
+                free(enc);
+                creq_set(err, 500, "out of memory tokenizing draft_hints");
+                return false;
+            }
+            if (n) memcpy(s->hint_buf + hn, enc, sizeof(int32_t) * (size_t)n);
+            free(enc);
             hn += n;
             s->hint_buf[hn++] = -1;
         }
@@ -4231,20 +4253,12 @@ static void completion_apply(slot_t *s, const completion_req *q, const char *pro
                              bool chat, const tool_envelope *env) {
     model_t *m = s->m;
     engine *e = &s->e;
-    // smp_base is the request-visible defaults, captured before engine_init
-    // installed the stop-token exemptions into the live sampler; restoring it
-    // wholesale dropped them, so over HTTP a repeat penalty could punish the
-    // model's own turn terminator (prompt </s>, top-k 1, penalty 100: the CLI
-    // stopped at once, the server ran to max_tokens). The RNG and the
-    // exemptions are engine state, not request defaults: both survive.
+    // Every request starts from the slot's base (the server's defaults and
+    // the engine's stop-token exemptions, slot_engine_init); only the rng
+    // STATE carries across, so sampling sequences stay diverse.
     uint64_t rng_state = s->smp.rng;
-    int32_t no_penalty[sizeof(s->smp.no_penalty) / sizeof(*s->smp.no_penalty)];
-    int n_no_penalty = s->smp.n_no_penalty;
-    memcpy(no_penalty, s->smp.no_penalty, sizeof(no_penalty));
     s->smp = s->smp_base;
     s->smp.rng = rng_state;
-    memcpy(s->smp.no_penalty, no_penalty, sizeof(no_penalty));
-    s->smp.n_no_penalty = n_no_penalty;
     s->smp.temp = (float)q->temp;
     s->smp.top_p = (float)q->top_p;
     s->smp.min_p = (float)q->min_p;
@@ -4329,6 +4343,12 @@ static void completion_apply(slot_t *s, const completion_req *q, const char *pro
     // keep the payload-only contract)
     e->emit_think_prelude = chat && m->think_open != NULL &&
                             !(env && env->proto == TP_HARMONY);
+    // a chat turn's reasoning split reads bytes: think tags that are control
+    // tokens are spelled for it (R2.15), and the split is armed with them,
+    // by one rule; never under a constraint, and the constraint layer does
+    // not know this pair
+    e->spell_think = think_split_is_control(m->think_open, m->split_open, chat,
+                                            e->schema || e->json_mode);
 }
 
 // What preparing an accepted request came to: the prompt's tokens (owned
@@ -4464,6 +4484,7 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
             }
             e->cl_cap   = q->max_tokens;
             e->cl_count = 0;
+            e->cl_nonfinite = false;
             e->cl_probe = (int)q->cl_probe_d;
         }
     }
@@ -4628,6 +4649,17 @@ typedef struct {
     bool spec_used;                // speculative decoding ran
     uint64_t faults_at_start;      // page faults before the turn (telemetry)
     prefix_reuse reuse;            // how the prompt's prefix was reused
+    // The rest is what run_completion's phases hand each other (R6.68.32):
+    const tool_envelope *env;      // the request's tool envelope, if any
+    const render_state *rs;        // the renderer's report of the prompt
+    client_stop *stop;             // why a client or the server stopped the turn
+    bool reasoning_open;           // the prompt left the model inside reasoning
+    bool primed;                   // ...and the splitter starts there
+    const char *demux_opener;      // the opener a native demultiplexer reads first
+    uint64_t gen_rng;              // the sampler's state as generation started
+    bool unmapped;                 // a native envelope the demultiplexer could not map
+    bool turn_cut;                 // the runner ended the turn, not the model
+    char receipt_file[64], receipt_chain[65];   // the receipt, once written
 } turn_result;
 
 // The Responses stream's close: the last item done, then response.completed
@@ -5036,26 +5068,9 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
     if (chat) sb_lit(&r, "},");
     else      sb_lit(&r, ",");
     if (chat && e->lp_count > 0) {
-        char tb[512];
-        sb_lit(&r, "\"logprobs\":{\"content\":[");
-        for (int i = 0; i < e->lp_count; i++) {
-            if (i) sb_lit(&r, ",");
-            int tn = lp_piece(s, e, e->lp_ids[i], tb, sizeof(tb));
-            sb_lit(&r, "{\"token\":\"");
-            sb_esc(&r, tb, tn);
-            sb_fmt(&r, "\",\"logprob\":%.9g,\"top_logprobs\":[", e->lp_chosen[i]);
-            for (int j = 0; j < e->lp_n; j++) {
-                const lp_alt *a = &e->lp_top[(size_t)i * e->lp_n + j];
-                if (a->id < 0) break;
-                if (j) sb_lit(&r, ",");
-                tn = lp_piece(s, e, a->id, tb, sizeof(tb));
-                sb_lit(&r, "{\"token\":\"");
-                sb_esc(&r, tb, tn);
-                sb_fmt(&r, "\",\"logprob\":%.9g}", a->lp);
-            }
-            sb_lit(&r, "]}");
-        }
-        sb_lit(&r, "]},");
+        // the body the stream's logprobs chunk carries
+        append_chat_logprobs(&r, s, e);
+        sb_lit(&r, ",");
     } else if (!chat && q->echo && q->want_lp && g->ptoks) {
         // echo: the prompt's teacher-forced entries, then the generated
         append_text_logprobs(&r, s, e, g, q->lp_n);
@@ -5075,9 +5090,9 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
             const lp_alt *row = &ps->top[(size_t)i * ps->top_n];
             int want = g->ptoks[i];
             int tn = lp_piece(s, e, want, tb, sizeof(tb));
-            sb_fmt(&r, ",{\"%d\":{\"logprob\":%.9g,\"rank\":%d,"
-                       "\"decoded_token\":\"", want, (double)ps->lp[i],
-                   ps->rank[i]);
+            sb_fmt(&r, ",{\"%d\":{\"logprob\":", want);
+            sb_num9(&r, (double)ps->lp[i]);
+            sb_fmt(&r, ",\"rank\":%d,\"decoded_token\":\"", ps->rank[i]);
             sb_esc(&r, tb, tn);
             sb_lit(&r, "\"}");
             for (int j = 0; j < q->plp && row && row[j].id >= 0; j++) {
@@ -5087,9 +5102,9 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
                 int rank = 1;
                 for (int k = 0; k < j; k++) rank += row[k].lp > row[j].lp;
                 tn = lp_piece(s, e, row[j].id, tb, sizeof(tb));
-                sb_fmt(&r, ",\"%d\":{\"logprob\":%.9g,\"rank\":%d,"
-                           "\"decoded_token\":\"", row[j].id,
-                       (double)row[j].lp, rank);
+                sb_fmt(&r, ",\"%d\":{\"logprob\":", row[j].id);
+                sb_num9(&r, (double)row[j].lp);
+                sb_fmt(&r, ",\"rank\":%d,\"decoded_token\":\"", rank);
                 sb_esc(&r, tb, tn);
                 sb_lit(&r, "\"}");
             }
@@ -5109,19 +5124,22 @@ static void respond_buffered_openai(const turn_result *t, sbuf *tc, int n_tc) {
             // legal_mass at nine significant digits, not coverage's six
             // decimals: it is the number that is small when it matters
             sb_fmt(&r, "{\"index\":%d,\"n_legal\":%d,\"n_probed\":%d,"
-                       "\"coverage\":%.6f,\"legal_mass\":%.9g,"
-                       "\"alternatives\":[",
-                   c->pos, c->n_legal, c->n_probed, c->coverage,
-                   (double)c->legal_mass);
+                       "\"coverage\":", c->pos, c->n_legal, c->n_probed);
+            sb_fix6(&r, c->coverage);
+            sb_lit(&r, ",\"legal_mass\":");
+            sb_num9(&r, (double)c->legal_mass);
+            sb_lit(&r, ",\"alternatives\":[");
             int stored = c->n_legal < CL_MAX_ALT ? c->n_legal : CL_MAX_ALT;
             for (int j = 0; j < stored; j++) {
                 if (j) sb_lit(&r, ",");
                 int tn = lp_piece(s, e, c->ids[j], tb, sizeof(tb));
                 sb_lit(&r, "{\"token\":\"");
                 sb_esc(&r, tb, tn);
-                sb_fmt(&r, "\",\"id\":%d,\"prob\":%.6f,"
-                           "\"logprob\":%.9g}",
-                       c->ids[j], c->prob[j], c->raw_lp[j]);
+                sb_fmt(&r, "\",\"id\":%d,\"prob\":", c->ids[j]);
+                sb_fix6(&r, c->prob[j]);
+                sb_lit(&r, ",\"logprob\":");
+                sb_num9(&r, c->raw_lp[j]);
+                sb_lit(&r, "}");
             }
             sb_lit(&r, "]}");
         }
@@ -5169,11 +5187,627 @@ static void request_id(char *out, size_t cap, const char *prefix) {
     for (int i = 0; i < 16; i++) snprintf(out + at + 2 * i, cap - at - 2 * i, "%02x", d[i]);
 }
 
+// The Muse plain-schema stream has no envelope of its own; its demultiplexer
+// reads this one. File-scope: the stream keeps the pointer for the turn.
+static const tool_envelope MUSE_PLAIN_ENV = {.proto = TP_MUSE_PLAIN};
+
+// Phase 1 of a turn: the prompt into the model. Reuses what the slot or the
+// shared store already holds of it, feeds the rest inside one device turn,
+// and returns the logits generation starts from. NULL when the request was
+// answered here instead (a context that could not be forked, a cancel, a
+// timeout, a shutdown, an overflow); the caller returns without more work.
+//
+// Reuse the KV for whatever prefix this prompt shares with one already
+// computed: pipeline callers repeat long system/template prefixes verbatim.
+// Two tiers. The slot's own KV is free: it is already in the cache this
+// sequence decodes against. The shared snapshot store is not free (a memcpy,
+// and on CUDA a device resync), but it reaches across slots, across requests
+// and across model swaps, so it is what turns a repeated system/tool/schema
+// block into work nobody does twice. A caller can opt out of the shared tier
+// only: one isolating a pathological prompt still wants its own slot's cache,
+// and one that wants fresh-prompt telemetry wants neither. cache_prompt:false
+// remains the full opt-out.
+static float *turn_prefill(turn_result *t) {
+    slot_t *s = t->s;
+    engine *e = t->e;
+    sock_t fd = t->fd;
+    int api = t->api;
+    gen_ctx *g = t->g;
+    const completion_req *q = t->q;
+    completion_prep *prep = t->prep;
+    client_stop *stop = t->stop;
+    // Prefill is scheduled apart from decode: different kernel shape, and it
+    // is this slot's own model_forward_batch, so it must not overlap a
+    // microbatch containing this sequence. It cannot — the sequence only joins
+    // a batch below, after prefill has returned. Forking a prefix is prefill
+    // work (it rewrites this slot's KV, which a CUDA mirror then uploads), so
+    // it belongs inside the same device turn.
+    // Yield the device turn between prefill chunks. Without it a long prompt
+    // holds it for the whole prefill and every other slot waits: measured at
+    // 26.2 s for a short request arriving during a 2,300-token prefill.
+    engine_set_stop(e, request_should_stop, stop);
+    engine_set_prefill_yield(e, sched_prefill_yield, NULL);
+    double device_t0 = now_s();
+    sched_prefill_begin();
+    prep->diag.device_wait_s = now_s() - device_t0;
+    prep->diag.queue_s = s->queue_wait_s;
+    prep->diag.tokenize_s = prep->tokenize_s;
+    prep->diag.first_visible_s = -1;
+    // Scoring the prompt reads every position's logits, so no prefix is
+    // reused: the whole prompt is fed, one solo forward per token.
+    bool score_prompt = (q->echo && q->want_lp) || q->plp >= 0;
+    if (score_prompt)
+        engine_reset(e);
+    else if (q->cache_prompt && q->share_prefix)
+        t->reuse = engine_prefix_reuse(e, prep->toks, prep->n_prompt);
+    else if (q->cache_prompt)
+        t->reuse.keep = engine_rewind(e, prep->toks, prep->n_prompt);
+    else
+        engine_reset(e);
+    t->keep = t->reuse.keep;
+    if (q->ctx_id && t->keep < prep->ctx_tokens) {
+        // The context passed the prefix check and still was not what the
+        // prompt was built on (released between the check and here, or a
+        // model that cannot fork one): the request named a warm prefix, so
+        // it is refused rather than served cold under that name.
+        // The turn goes back first, as at the end of this span: an exit that
+        // keeps it stops every other slot, and the write below can block.
+        sched_prefill_end();
+        engine_set_prefill_yield(e, NULL, NULL);
+        free(prep->toks);
+        completion_cleanup(e, q->schema, NULL);
+        send_error_detail(fd, 409, "the named context could not be forked for "
+                          "this request; pin it again or drop context_id",
+                          "context_id", "context_unavailable");
+        return NULL;
+    }
+    atomic_store(&s->rq_prompt, prep->n_prompt);
+    atomic_store(&s->rq_done, t->keep);
+    atomic_store(&s->rq_gen, 0);
+    atomic_store(&s->rq_phase, 1);
+    e->stat_feed = &s->rq_done;
+    e->stat_gen = &s->rq_gen;
+    double prefill_t0 = now_s();
+    // Name the request BEFORE any work, and say it started.
+    //
+    // The completion line below is printed on completion only, so a request
+    // that never finishes leaves no trace at all — reported from a Mac where a
+    // 1,200-token prompt returned nothing in 300 s and the server log was
+    // empty for the whole five minutes. A start line costs one stderr write
+    // per request and makes that case visible; it also carries the prompt
+    // length and how much of it the cache covered, which is what says whether
+    // a long silence is a cold prefill or something worse.
+    prep->diag.prompt_reuse = engine_rewind_how_name(e->rewind_how);
+    fprintf(stderr, "[slot %d] %s: start, %d prompt (%d cached, %s)\n",
+            s->id, g->id, prep->n_prompt, t->keep, prep->diag.prompt_reuse);
+
+    // A recurrent slot marks its fold one token short of the prompt end, so
+    // the next request resumes there whether it replays this prompt verbatim
+    // (engine_rewind keeps at most n - 1: one token is always fed for logits)
+    // or extends it with a re-rendered reply and a new turn. The last prompt
+    // token is then fed on its own, as a kept attention prefix already feeds
+    // it. Inside the device turn: on CUDA the mark reads device-resident
+    // state. Attention-only models mark nothing and take the single feed.
+    float *logits = NULL;
+    int mark_at = prep->n_prompt - 1;
+    if (score_prompt) {
+        g->ptoks = malloc(sizeof(int32_t) * (size_t)prep->n_prompt);
+        int top_n = q->plp > q->lp_n ? q->plp : q->lp_n;
+        if (g->ptoks) {
+            memcpy(g->ptoks, prep->toks, sizeof(int32_t) * (size_t)prep->n_prompt);
+            logits = engine_score_prompt(e, prep->toks, prep->n_prompt, top_n, &g->ps);
+        }
+    } else if (q->cache_prompt && prep->n_prompt > 1 && model_has_recurrent(e->m)) {
+        bool ok = mark_at == t->keep ||   // resumed at the mark: nothing before it to feed
+                  engine_feed(e, prep->toks + t->keep, mark_at - t->keep) != NULL;
+        if (ok) engine_mark_turn(e);
+        if (ok) logits = engine_feed(e, prep->toks + mark_at, 1);
+    } else {
+        logits = engine_feed(e, prep->toks + t->keep, prep->n_prompt - t->keep);
+    }
+    atomic_store(&s->rq_phase, 2);
+    double prefill_s = now_s() - prefill_t0;
+    prep->diag.prefill_s = prefill_s;
+    prep->diag.prefill_tokens = prep->n_prompt - t->keep;
+    sched_prefill_end();
+    engine_set_prefill_yield(e, NULL, NULL);
+    // Publish outside the device turn: it is a host-memory copy, and this
+    // sequence is the only writer of its own KV between prefill and decode.
+    if (logits && q->cache_prompt && q->share_prefix)
+        engine_prefix_publish(e, prep->toks, prep->n_prompt, prep->n_prompt - t->keep, prefill_s);
+    free(prep->toks);
+    if (!logits) {
+        completion_cleanup(e, q->schema, g);
+        // Three ways to get here and they are not the same answer. The
+        // deadline is checked first: it is the only one where the caller is
+        // still on the connection AND the prompt was fine, so reporting it as
+        // a context overflow would send them shortening a prompt that fits.
+        if (stop->cancelled)
+            send_error_detail(fd, 409, "request cancelled (POST /v1/runner/requests/"
+                              "{id}/cancel) before its prompt was processed",
+                              NULL, "cancelled");
+        else if (stop->shut_down && !stop->timed_out)
+            send_error(fd, 503, "server shutting down: the request was "
+                                "stopped before its prompt was processed");
+        else if (stop->timed_out)
+            send_error_detail(fd, 408,
+                              "request timed out while processing the prompt: "
+                              "prefill did not finish inside the request "
+                              "timeout. Send a shorter prompt, raise the "
+                              "timeout, or reuse a cached prefix.",
+                              NULL, "timeout");
+        else if (!g->dead && score_prompt)
+            // the prompt already fit the context (checked at tokenization),
+            // so a scoring failure here is the score tables' allocation
+            send_error(fd, 500, "out of memory scoring the prompt");
+        else if (!g->dead)
+            send_error_detail(fd, 400, "context overflow",
+                              api == API_TEXT ? "prompt" :
+                              api == API_RESPONSES ? "input" : "messages",
+                              "context_length_exceeded");
+        return NULL;
+    }
+    return logits;
+}
+
+// Phase 2: where the turn's bytes go. The reasoning splitter starts where the
+// prompt left the model, a native tool protocol gets its demultiplexer, and
+// a streamed response gets its header and opening events. False when the
+// client was gone before the header could be written.
+static bool turn_open(turn_result *t) {
+    slot_t *s = t->s;
+    engine *e = t->e;
+    model_t *m = t->s->m;
+    sock_t fd = t->fd;
+    int api = t->api;
+    bool chat = t->chat;
+    jv *req = t->req;
+    const tool_envelope *env = t->env;
+    const render_state *rs = t->rs;
+    gen_ctx *g = t->g;
+    const completion_req *q = t->q;
+    completion_prep *prep = t->prep;
+    // A protocol whose own demultiplexer follows the channels (the Harmony
+    // and Gemma 4 envelopes) starts the splitter cold and owns that state;
+    // any other turn starts where its prompt left it.
+    bool demux_channels = env && (env->proto == TP_HARMONY || env->proto == TP_GEMMA4);
+    t->primed = t->reasoning_open && !demux_channels;
+    // ...and that demultiplexer, streamed and buffered, reads the turn from
+    // the opener the prompt wrote, as the model does: a Gemma 4 continuation
+    // whose prompt opened the thought channel is reasoning until it closes.
+    t->demux_opener = demux_channels && t->reasoning_open ? rs->opener : NULL;
+    if (t->primed)
+        engine_think_started(e);
+
+    // split thinking channels out of chat responses; raw completions stay raw
+    if (demux_channels)
+        think_init(&g->ts, NULL, NULL);
+    else if (t->primed)
+        think_init_reasoning(&g->ts, m->think_open, m->think_close);
+    else if (e->spell_think)
+        // a control-token pair, spelled for this turn (model.h split_open)
+        think_init(&g->ts, m->split_open, m->split_close);
+    else
+        think_init(&g->ts, chat ? m->think_open : NULL, m->think_close);
+    think_trim_newlines(&g->ts, m->think_trim_nl);
+    const tool_envelope *stream_env = env ? env
+        : q->stream && chat && s->tmpl == TMPL_MUSE && q->schema
+        ? &MUSE_PLAIN_ENV : NULL;
+    if (q->stream && stream_env) {
+        tool_stream_sink sink = { g, sink_reasoning, sink_content, sink_call_begin,
+                                  sink_call_args, sink_call_end };
+        tool_stream_init(&g->tsx, stream_env, &sink);
+        g->tsx_on = true;
+        if (t->demux_opener && stream_env == env)
+            tool_stream_feed(&g->tsx, t->demux_opener, (int)strlen(t->demux_opener));
+    }
+
+    if (q->stream) {
+        const char *hdr = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                          "Cache-Control: no-cache\r\nConnection: close\r\n\r\n";
+        if (!send_all(fd, hdr, strlen(hdr))) {
+            completion_cleanup(e, q->schema, g);
+            return false;
+        }
+        respond_stream_open(g, api, s, req, prep);
+    }
+
+    return true;
+}
+
+// Phase 3: generation. The request's seed takes the slot's RNG, the tokens
+// are generated under the scheduler, and what the run measured is recorded:
+// the confirmation statistics, the server's work counters, and the receipt's
+// account of what shaped the output (named now, while the request's settings
+// are installed).
+static void turn_generate(turn_result *t, float *logits) {
+    slot_t *s = t->s;
+    engine *e = t->e;
+    sock_t fd = t->fd;
+    int api = t->api;
+    jv *req = t->req;
+    const tool_envelope *env = t->env;
+    const render_state *rs = t->rs;
+    gen_ctx *g = t->g;
+    const completion_req *q = t->q;
+    completion_prep *prep = t->prep;
+    turn_shape *shape = t->shape;
+    // A configured draft is not proof that this request speculated. Logprob
+    // and choice-logprob capture deliberately select the solo walk, so record
+    // the execution decision while those request flags are still installed.
+    t->spec_used = engine_wants_spec(e);
+    // The logger reads these on every path, a dead client's included.
+    t->unmapped = false;
+    t->gtime = 0;
+    // Past the last refusal: the request's seed takes the slot's RNG now.
+    // Nothing above draws from it (prefill and prompt scoring do not sample).
+    // Every request that samples takes the next place in one server-wide
+    // order; an unseeded one draws from the server seed and that place, not
+    // from a stream kept per slot: which idle slot serves a request is the
+    // scheduler's timing, so the same requests under the same -s seed sampled
+    // differently from run to run at --parallel 2 or more. A greedy request
+    // draws nothing and takes no place; a refused one never gets here.
+    if (s->smp.temp > 0.0f || (e->think_smp && e->think_temp > 0.0f)) {
+        uint64_t place = atomic_fetch_add(&SV.sampled_requests, 1);
+        s->smp.rng = q->seed_given ? sampler_seed_state(q->seed)
+                                  : server_request_stream(SV.base_rng, place);
+    } else if (q->seed_given) {
+        s->smp.rng = sampler_seed_state(q->seed);
+    }
+    // R1.2.2: the sampler's state as generation starts is the receipt's seed
+    t->gen_rng = s->smp.rng;
+    g->raw_on = receipts_enabled();
+    // only a streamed chat-shaped turn with a history can repeat a call
+    g->calls_on = q->stream && (api == API_CHAT || api == API_MESSAGES);
+    g->close_at = -1;
+    g->out_on = sched_generate_holds_turn(s);
+    if (g->out_on) {
+        stream_out_init(&g->wq, STREAM_OUT_CAP);
+#ifdef RUNNER_TEST_TURN_GUARD
+        // the cut, reached without filling the kernel's buffers
+        const char *cap = getenv("RUNNER_TEST_STREAM_OUT_CAP");
+        if (cap) {
+            g->wq.cap = (size_t)atol(cap);
+            stream_out_block_for_test(&g->wq, true);
+        }
+#endif
+    }
+    t->n_gen = sched_generate(s, logits, q->max_tokens, gen_collect, g, &t->gtime,
+                               q->req_deadline);
+    if (g->out_on) {
+        // The turn is back: only this slot waits on the client from here. What
+        // it has not taken is written now, however slowly it reads.
+        g->out_on = false;
+        if (!stream_out_drain(&g->wq, fd)) g->dead = true;
+        stream_out_free(&g->wq);
+        if (g->too_slow)
+            fprintf(stderr, "[slot %d] %s: client cut off for being too slow "
+                    "(%zu MiB behind a stream written under the device turn)\n",
+                    s->id, g->id, STREAM_OUT_CAP >> 20);
+    }
+    prep->diag.wm_on = SV.wm_on;
+    prep->diag.wm_marked = s->wm.marked;
+    if (q->confirm_below > 0) {
+        prep->diag.confirm_on = true;
+        prep->diag.confirm_below = q->confirm_below;
+        prep->diag.min_chosen_p = 1.0;
+        prep->diag.min_margin = 1.0;
+        prep->diag.nonfinite = e->cl_nonfinite;
+        for (int i = 0; i < e->cl_count; i++) {
+            const cl_rec *c = &e->cl_recs[i];
+            int at = e->gen_start + c->pos;
+            if (c->pos < 0 || at >= e->pos) continue;   // never emitted
+            // A choice the grammar shaped: some probed candidate was illegal.
+            // Inside free text (a string's content) every probed token is
+            // legal and every step is a "decision"; those are the model's
+            // wording, not a choice between the schema's branches, and a
+            // confirmation that fired on them would fire on every turn.
+            if (c->n_legal >= c->n_probed) continue;
+            int32_t chosen = e->hist[at];
+            int stored = c->n_legal < CL_MAX_ALT ? c->n_legal : CL_MAX_ALT;
+            double p = -1, best_other = 0;
+            for (int j = 0; j < stored; j++) {
+                if (c->ids[j] == chosen) p = c->prob[j];
+                else if (c->prob[j] > best_other) best_other = c->prob[j];
+            }
+            // a chosen token outside the stored alternatives had less than
+            // every stored one, possibly far less: counted as 0, so the turn
+            // asks for confirmation rather than guessing it was safe
+            if (p < 0) p = 0;
+            prep->diag.decisions++;
+            if (!fp_finite_f64(p) || p < prep->diag.min_chosen_p) {
+                prep->diag.min_chosen_p = p;
+                prep->diag.min_margin = p - best_other;
+                prep->diag.min_at = c->pos;
+            }
+        }
+    }
+    // The one place every surface's generation passes through, so /health's
+    // and /metrics' cumulative counters see chat, completions, responses and
+    // messages alike. The speculation counters are read only when this request
+    // actually took the speculative walk (see work_record).
+    work_record work = { .n_prompt = prep->n_prompt, .n_gen = t->n_gen,
+                         .n_cached = t->keep, .gen_seconds = t->gtime };
+    if (t->spec_used) {
+        work.spec_rounds   = e->spec_st.rounds;
+        work.spec_drafted  = e->spec_st.drafted;
+        work.spec_accepted = e->spec_st.accepted;
+    }
+    server_record_work(&work);
+    // R1.2.2: the receipt. What shaped the output is named now, while the
+    // request's settings are installed; the record itself is written once the
+    // turn's calls are known (a streamed turn's after its demultiplexer
+    // finishes, a buffered turn's once they are mapped), and before any body
+    // is built, so the body can name it.
+    if (g->raw_on)
+        turn_shape_of(shape, req, e, env, q->constrain, q->sch,
+                      rs ? rs->think_mode : req_thinking_mode(req), t->reasoning_open,
+                      q->stops, q->n_stops,
+                      q->req_stops, q->n_req_stops, q->script_text != NULL);
+}
+
+// R1.2.2: the receipt. The record is written once the turn's calls are known
+// (a streamed turn's after its demultiplexer finishes, a buffered turn's once
+// they are mapped), and before any body is built, so the body can name it.
+// Written at most once. It was a macro over eighteen of run_completion's
+// locals, expanded at two places.
+static void turn_receipt(turn_result *t) {
+    slot_t *s = t->s;
+    engine *e = t->e;
+    int api = t->api;
+    bool chat = t->chat;
+    jv *req = t->req;
+    const char *prompt = t->prompt;
+    gen_ctx *g = t->g;
+    const completion_req *q = t->q;
+    completion_prep *prep = t->prep;
+    client_stop *stop = t->stop;
+    turn_shape *shape = t->shape;
+    if (g->raw_on && !g->dead && !t->receipt_file[0] && !prep->diag.receipt_error) {
+        prep->diag.receipt_error = serve_receipt(
+            s, e, g, prompt, api, chat, t->gen_rng, q->max_tokens, prep->n_prompt,
+            t->n_gen, t->keep, prep->diag.prompt_reuse, t->spec_used, t->primed,
+            !g->stopped && !e->hit_stop && !e->oom
+                ? stop->cancelled ? "cancelled" : stop->timed_out ? "timeout"
+                : stop->shut_down ? "shutdown" : NULL : NULL, shape,
+            prep->diag.context_id, req, t->receipt_file, t->receipt_chain);
+        if (!prep->diag.receipt_error) {
+            prep->diag.receipt_file = t->receipt_file;
+            prep->diag.receipt_chain = t->receipt_chain;
+        }
+    }
+}
+
+// Phase 4: the turn's last bytes. The splitter and the stop matcher give up
+// what they held, the closure report is built from the finished document,
+// a native protocol's demultiplexer finishes (and says whether the turn
+// mapped), and a streamed turn's receipt is written.
+static void turn_close(turn_result *t) {
+    slot_t *s = t->s;
+    engine *e = t->e;
+    gen_ctx *g = t->g;
+    const completion_req *q = t->q;
+    completion_prep *prep = t->prep;
+    // The socket probe and the streaming write path share g.dead. Whichever
+    // learned the verdict first takes this same cleanup exit: no terminal
+    // frame is owed to a peer already proven gone, and buffered responses must
+    // not spend time building a body only to rediscover the failed socket.
+    think_finish(&g->ts, gen_emit, g);
+    stop_release(g);
+    // The closure report reads the turn's document, so it is built once the
+    // turn's last byte is in it. It used to be built, and the document freed,
+    // before the final think_finish above: a partial tag the splitter still
+    // held was then appended to the freed document, which allocated a new
+    // buffer nothing released (one leak per such turn, found under ASan), and
+    // the report was computed without those bytes (R6.68.20). A dead client
+    // skips this; `done` frees the document on every path.
+    prep->diag.closure_json = closure_json(g->out.s, g->out.n, g->close_at);
+    // the first visible byte, from the moment the slot took the request
+    // (a request the accept loop answered itself has no slot clock: 0)
+    if (g->first_visible_t > 0 && s->req_t0 > 0)
+        prep->diag.first_visible_s = g->first_visible_t - s->req_t0;
+    // A native-envelope document the demultiplexer cannot map is a GENERATION
+    // fault, not a dead client — and the difference decides whether the stream
+    // is terminated. Recording it as g.dead skipped all three terminal blocks
+    // below, so the client got the opening events and then nothing: no deltas,
+    // no finish_reason, no `data: [DONE]`, a bare FIN, and a server log that
+    // blamed the client for leaving. It is still there, still reading, and owed
+    // a terminal chunk it can stop on.
+    //
+    // tool_stream_finish returns -1 for exactly that failure; any other
+    // non-zero value came from a sink refusing to write, which IS the client
+    // going away.
+    // Did the RUNNER end the turn rather than the model? A budget, a
+    // deadline, or the loop guard: the finisher reads a still-open native
+    // call differently on a cut turn (dropped, "length") and on one the model
+    // ended (a fault). One test, shared with the buffered mapper below: the
+    // buffered path tested finish == "length", which missed a turn whose
+    // reasoning was capped and whose answer then ran out (finish
+    // "reasoning_limit"), and both paths read a loop-guard end as the
+    // model's own (sweep, 2026-09-27).
+    t->turn_cut = (!g->stopped && !e->hit_stop) || e->loop_stop;
+    if (g->tsx_on) {
+        int fin = tool_stream_finish_ex(&g->tsx, t->turn_cut);
+        if (fin == -1)     t->unmapped = true;
+        else if (fin != 0) g->dead = true;
+    }
+    if (q->stream) turn_receipt(t);
+    // Anything still held for a multi-byte character the model never finished
+    // goes out now rather than disappearing. It is genuinely truncated, so it
+    // renders as U+FFFD — but silently dropping bytes would make the streamed
+    // turn shorter than the buffered one, which is the invariant that matters.
+    flush_text_delta(g, 0);
+    flush_text_delta(g, 1);
+}
+
+// Phase 5: why the turn ended, as every surface reports it.
+static void turn_reason(turn_result *t) {
+    engine *e = t->e;
+    gen_ctx *g = t->g;
+    client_stop *stop = t->stop;
+    // e->oom: generation hit an allocation failure — report it truthfully as
+    // "error", never let it masquerade as a clean "stop". An unmappable
+    // envelope is the same class of truth: the turn produced no answer anyone
+    // can read, and reporting "stop" over an empty message would tell the
+    // caller the model chose to say nothing.
+    t->finish = e->oom ? "error"
+                       : g->too_slow ? "client_too_slow"
+                       : t->unmapped ? "envelope_error"
+                       // the reasoning cap is the reason only while it left
+                       // the payload unfinished: a document the model went on
+                       // to complete is a finished turn (and a finished tool
+                       // call), not one to discard as truncated
+                       : e->prelude_exhausted && !engine_constraint_complete(e)
+                           ? "reasoning_limit"
+                       : e->loop_stop ? "loop"
+                       : g->stopped || e->hit_stop ? "stop" : "length";
+    // The reasoning cap fired and the model then completed the payload: the
+    // wire says the turn finished, and the cap stays recoverable as
+    // finish_detail, where it has lived since the wire value became "length".
+    t->cut_detail = e->prelude_exhausted && strcmp(t->finish, "reasoning_limit")
+                           ? "reasoning_limit" : NULL;
+    // the server's drain cut the turn: the wire still says "length" (the turn
+    // was cut, the text is usable), and finish_detail says by what
+    if (stop->shut_down && !g->stopped && !e->hit_stop && !e->oom)
+        t->cut_detail = "shutdown";
+    // and a cancel (R10.12.3.2): the same cut, named for what made it
+    if (stop->cancelled && !g->stopped && !e->hit_stop && !e->oom)
+        t->cut_detail = "cancelled";
+    // a parse-only qwen3_xml call closed by the next call's opener (R2.10):
+    // the calls stand, and the detail says the framing was tolerated
+    if (!t->cut_detail && g->tsx_on && g->tsx.implicit_close)
+        t->cut_detail = "tool_call_implicit_close";
+    // a streamed call reports the same terminal reason a buffered one does.
+    // Only a CLEANLY FINISHED document may claim "tool_calls": a budget
+    // truncation still parses (the closer guarantees that) but the envelope
+    // must keep saying "length", or the caller executes a half-generated
+    // call as if it were complete — finding A of the 2026-08-11 external
+    // evaluation, which found the Responses incomplete path dead whenever a
+    // tool call was present.
+    if (g->tsx_on && tool_stream_called(&g->tsx) && !strcmp(t->finish, "stop"))
+        t->finish = "tool_calls";
+
+}
+
+// Phase 6: the response. A streamed turn gets its terminal events; a
+// buffered one has its calls mapped (which may settle the finish), its
+// receipt written, and its body built, one framer per surface.
+static void turn_respond(turn_result *t) {
+    slot_t *s = t->s;
+    int api = t->api;
+    bool chat = t->chat;
+    jv *req = t->req;
+    const tool_envelope *env = t->env;
+    gen_ctx *g = t->g;
+    const completion_req *q = t->q;
+    // The turn as every surface reports it: the generation above produced
+    // it, and one framer per surface renders it in that surface's dialect.
+    if (q->stream && api == API_RESPONSES)
+        respond_stream_responses(t);
+    else if (q->stream && api == API_MESSAGES && generation_faulted(t->finish))
+        respond_stream_messages_fault(t);
+    else if (q->stream && api == API_MESSAGES)
+        respond_stream_messages(t);
+    else if (q->stream)
+        respond_stream_openai(t);
+    else {
+        sbuf tc = {0};
+        int n_tc = 0;
+        if (env) {
+            bool fault = false;
+            n_tc = envelope_map_buffered(env, g, &tc, t->turn_cut,
+                                         t->demux_opener, &fault);
+            if (n_tc >= 1 && !strcmp(t->finish, "stop")) t->finish = "tool_calls";
+            // The document was dropped, so the turn has no answer to report.
+            // Saying "stop" over the resulting empty content would claim the
+            // model chose to say nothing; the streamed path names the same
+            // fault the same way.
+            if (n_tc < 0) { n_tc = 0; t->finish = "envelope_error"; }
+            // a parse-only fault keeps what was valid and says what went wrong
+            if (fault) t->finish = "envelope_error";
+            if (g->tool_implicit && !t->cut_detail) t->cut_detail = "tool_call_implicit_close";
+        } else if (chat) {
+            if (s->tmpl == TMPL_MUSE && q->schema)
+                muse_user_payload_strip(&g->out);
+            n_tc = tool_calls_parse_for(s->tmpl, &g->out, &tc);
+            if (n_tc) {
+                if (!strcmp(t->finish, "stop")) t->finish = "tool_calls";
+                g->out.n = 0; // OpenAI convention: no content alongside
+                             // tool_calls (whatever followed was the model
+                             // faking a result)
+            }
+        }
+        if (chat && n_tc > 0) {
+            // R4.12.19: reported by every body below, from the one mapping
+            jv *em = tool_calls_array(&tc, n_tc);
+            g->repeat_json = repeated_calls_json(req, api, em);
+            // R1.1.2: and recorded in the receipt from the same mapping
+            for (int i = 0; g->raw_on && em && i < em->n; i++) {
+                jv *f = jv_get(em->items[i], "function");
+                const char *nm = jv_str(jv_get(f, "name"), "");
+                const char *args = jv_str(jv_get(f, "arguments"), "");
+                sb_lit(&g->calls, g->n_calls ? ",{\"name\":\"" : "{\"name\":\"");
+                sb_esc(&g->calls, nm, strlen(nm));
+                sb_lit(&g->calls, "\",\"arguments\":\"");
+                sb_esc(&g->calls, args, strlen(args));
+                sb_lit(&g->calls, "\"}");
+                g->n_calls++;
+            }
+            jv_free(em);
+        }
+        turn_receipt(t);
+        if (api == API_MESSAGES) respond_buffered_messages(t, &tc, n_tc);
+        else if (api == API_RESPONSES) respond_buffered_responses(t, &tc, n_tc);
+        else respond_buffered_openai(t, &tc, n_tc);
+    }
+}
+
+// The end of every turn that generated, a dead client's included: what the
+// phases allocated is released, and the slot's log line is written.
+static void turn_log(turn_result *t) {
+    slot_t *s = t->s;
+    engine *e = t->e;
+    model_t *m = t->s->m;
+    gen_ctx *g = t->g;
+    const completion_req *q = t->q;
+    completion_prep *prep = t->prep;
+    turn_shape *shape = t->shape;
+    free(shape->json.s);
+    free(prep->diag.closure_json);
+    // A paging note only when there was paging. Silence is the normal case and
+    // a per-request "0 page-ins" would be noise, but when the weights have been
+    // evicted this line is the only thing that says the time went to the disk
+    // rather than to the model. With every weight on a discrete device it
+    // cannot be the weights, so the note says only what it knows, and where
+    // the OS publishes a video memory budget the figures ride along: an
+    // eviction to system memory reads as such in the same line (R3.49). Both
+    // are looked up only once the count is over the floor.
+    uint64_t faults = plat_major_faults() - t->faults_at_start;
+    char paging[192];
+    paging[0] = '\0';
+    if (model_paging_note_wanted(faults, prep->n_prompt + t->n_gen)) {
+        model_vidmem vm = {0};
+        vm.known = gpu_os_vidmem(m, &vm.budget, &vm.usage, &vm.nonlocal);
+        model_paging_note(paging, sizeof(paging), faults, prep->n_prompt + t->n_gen,
+                          model_weights_on_device(m), &vm);
+    }
+    fprintf(stderr, "[slot %d] %s: %d prompt (%d cached) + %d gen tok (%.1f tok/s)%s%s%s\n",
+            s->id, g->id, prep->n_prompt, t->keep, t->n_gen,
+            t->n_gen / (t->gtime > 0 ? t->gtime : 1e-9),
+            q->schema ? " [schema]" : e->json_mode ? " [json]" : t->spec_used ? " [spec]" : "",
+            // "[client gone]" is an accusation, and it used to be made about a
+            // client that never left: an unmappable envelope set the same flag.
+            // The two are named apart so a log line means what it says.
+            g->dead ? " [client gone]"
+                   : g->too_slow ? " [client too slow]"
+                   : t->unmapped ? " [envelope unmapped]" : "", paging);
+    completion_cleanup(e, q->schema, g);
+}
+
 void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
                            jv *req, const tool_envelope *env,
                            const render_state *rs) {
     bool chat = api != API_TEXT; // chat-shaped: thinking channels, tools
-    model_t *m = s->m;
     engine *e = &s->e;
     // Where generation starts is the renderer's report (template.h,
     // render_state): the prompt it wrote leaves the model inside a reasoning
@@ -5210,17 +5844,6 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     completion_prep prep;
     if (!completion_prepare(s, fd, prompt, api, req, env, chat, &q, &prep)) return;
 
-    // Reuse the KV for whatever prefix this prompt shares with one already
-    // computed — pipeline callers repeat long system/template prefixes
-    // verbatim. Two tiers. The slot's own KV is free — it is already in
-    // the cache this sequence decodes against. The shared snapshot store is
-    // not free (a memcpy, and on CUDA a device resync), but it reaches across
-    // slots, across requests and across model swaps, so it is what turns a
-    // repeated system/tool/schema block into work nobody does twice.
-    // Opt out of the *shared* tier only: a caller isolating a pathological
-    // prompt still wants its own slot's cache, and one that wants fresh-prompt
-    // telemetry wants neither. cache_prompt:false remains the full opt-out.
-    prefix_reuse reuse = { 0, 0, 0.0 };
     gen_ctx g = { .out = {0}, .fd = fd, .stream = q.stream, .api = api,
                   .omit_reasoning = prep.omit_reasoning,
                   .stop_strs = q.stops, .n_stop = q.n_stops, .eng = e,
@@ -5228,504 +5851,26 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     client_stop stop = { .fd = fd, .dead = &g.dead,
                          .deadline = q.req_deadline, .cancel = &s->rq_cancel };
     snprintf(g.id, sizeof(g.id), "%s", req_id);
-    // Prefill is scheduled apart from decode: different kernel shape, and it
-    // is this slot's own model_forward_batch, so it must not overlap a
-    // microbatch containing this sequence. It cannot — the sequence only joins
-    // a batch below, after prefill has returned. Forking a prefix is prefill
-    // work (it rewrites this slot's KV, which a CUDA mirror then uploads), so
-    // it belongs inside the same device turn.
-    // Yield the device turn between prefill chunks. Without it a long prompt
-    // holds it for the whole prefill and every other slot waits: measured at
-    // 26.2 s for a short request arriving during a 2,300-token prefill.
-    engine_set_stop(e, request_should_stop, &stop);
-    engine_set_prefill_yield(e, prefill_yield_turn, NULL);
-    double device_t0 = now_s();
-    sched_prefill_begin();
-    prep.diag.device_wait_s = now_s() - device_t0;
-    prep.diag.queue_s = s->queue_wait_s;
-    prep.diag.tokenize_s = prep.tokenize_s;
-    prep.diag.first_visible_s = -1;
-    // Scoring the prompt reads every position's logits, so no prefix is
-    // reused: the whole prompt is fed, one solo forward per token.
-    bool score_prompt = (q.echo && q.want_lp) || q.plp >= 0;
-    if (score_prompt)
-        engine_reset(e);
-    else if (q.cache_prompt && q.share_prefix)
-        reuse = engine_prefix_reuse(e, prep.toks, prep.n_prompt);
-    else if (q.cache_prompt)
-        reuse.keep = engine_rewind(e, prep.toks, prep.n_prompt);
-    else
-        engine_reset(e);
-    int keep = reuse.keep;
-    if (q.ctx_id && keep < prep.ctx_tokens) {
-        // The context passed the prefix check and still was not what the
-        // prompt was built on (released between the check and here, or a
-        // model that cannot fork one): the request named a warm prefix, so
-        // it is refused rather than served cold under that name.
-        // The turn goes back first, as at the end of this span: an exit that
-        // keeps it stops every other slot, and the write below can block.
-        sched_prefill_end();
-        engine_set_prefill_yield(e, NULL, NULL);
-        free(prep.toks);
-        completion_cleanup(e, q.schema, NULL);
-        send_error_detail(fd, 409, "the named context could not be forked for "
-                          "this request; pin it again or drop context_id",
-                          "context_id", "context_unavailable");
-        return;
-    }
-    atomic_store(&s->rq_prompt, prep.n_prompt);
-    atomic_store(&s->rq_done, keep);
-    atomic_store(&s->rq_gen, 0);
-    atomic_store(&s->rq_phase, 1);
-    e->stat_feed = &s->rq_done;
-    e->stat_gen = &s->rq_gen;
-    double prefill_t0 = now_s();
-    // Name the request BEFORE any work, and say it started.
-    //
-    // The completion line below is printed on completion only, so a request
-    // that never finishes leaves no trace at all — reported from a Mac where a
-    // 1,200-token prompt returned nothing in 300 s and the server log was
-    // empty for the whole five minutes. A start line costs one stderr write
-    // per request and makes that case visible; it also carries the prompt
-    // length and how much of it the cache covered, which is what says whether
-    // a long silence is a cold prefill or something worse.
-    prep.diag.prompt_reuse = engine_rewind_how_name(e->rewind_how);
-    fprintf(stderr, "[slot %d] %s: start, %d prompt (%d cached, %s)\n",
-            s->id, req_id, prep.n_prompt, keep, prep.diag.prompt_reuse);
-
-    // A recurrent slot marks its fold one token short of the prompt end, so
-    // the next request resumes there whether it replays this prompt verbatim
-    // (engine_rewind keeps at most n - 1: one token is always fed for logits)
-    // or extends it with a re-rendered reply and a new turn. The last prompt
-    // token is then fed on its own, as a kept attention prefix already feeds
-    // it. Inside the device turn: on CUDA the mark reads device-resident
-    // state. Attention-only models mark nothing and take the single feed.
-    float *logits = NULL;
-    int mark_at = prep.n_prompt - 1;
-    if (score_prompt) {
-        g.ptoks = malloc(sizeof(int32_t) * (size_t)prep.n_prompt);
-        int top_n = q.plp > q.lp_n ? q.plp : q.lp_n;
-        if (g.ptoks) {
-            memcpy(g.ptoks, prep.toks, sizeof(int32_t) * (size_t)prep.n_prompt);
-            logits = engine_score_prompt(e, prep.toks, prep.n_prompt, top_n, &g.ps);
-        }
-    } else if (q.cache_prompt && prep.n_prompt > 1 && model_has_recurrent(e->m)) {
-        bool ok = mark_at == keep ||   // resumed at the mark: nothing before it to feed
-                  engine_feed(e, prep.toks + keep, mark_at - keep) != NULL;
-        if (ok) engine_mark_turn(e);
-        if (ok) logits = engine_feed(e, prep.toks + mark_at, 1);
-    } else {
-        logits = engine_feed(e, prep.toks + keep, prep.n_prompt - keep);
-    }
-    atomic_store(&s->rq_phase, 2);
-    double prefill_s = now_s() - prefill_t0;
-    prep.diag.prefill_s = prefill_s;
-    prep.diag.prefill_tokens = prep.n_prompt - keep;
-    sched_prefill_end();
-    engine_set_prefill_yield(e, NULL, NULL);
-    // Publish outside the device turn: it is a host-memory copy, and this
-    // sequence is the only writer of its own KV between prefill and decode.
-    if (logits && q.cache_prompt && q.share_prefix)
-        engine_prefix_publish(e, prep.toks, prep.n_prompt, prep.n_prompt - keep, prefill_s);
-    free(prep.toks);
-    if (!logits) {
-        completion_cleanup(e, q.schema, &g);
-        // Three ways to get here and they are not the same answer. The
-        // deadline is checked first: it is the only one where the caller is
-        // still on the connection AND the prompt was fine, so reporting it as
-        // a context overflow would send them shortening a prompt that fits.
-        if (stop.cancelled)
-            send_error_detail(fd, 409, "request cancelled (POST /v1/runner/requests/"
-                              "{id}/cancel) before its prompt was processed",
-                              NULL, "cancelled");
-        else if (stop.shut_down && !stop.timed_out)
-            send_error(fd, 503, "server shutting down: the request was "
-                                "stopped before its prompt was processed");
-        else if (stop.timed_out)
-            send_error_detail(fd, 408,
-                              "request timed out while processing the prompt: "
-                              "prefill did not finish inside the request "
-                              "timeout. Send a shorter prompt, raise the "
-                              "timeout, or reuse a cached prefix.",
-                              NULL, "timeout");
-        else if (!g.dead && score_prompt)
-            // the prompt already fit the context (checked at tokenization),
-            // so a scoring failure here is the score tables' allocation
-            send_error(fd, 500, "out of memory scoring the prompt");
-        else if (!g.dead)
-            send_error_detail(fd, 400, "context overflow",
-                              api == API_TEXT ? "prompt" :
-                              api == API_RESPONSES ? "input" : "messages",
-                              "context_length_exceeded");
-        return;
-    }
-    // A protocol whose own demultiplexer follows the channels (the Harmony
-    // and Gemma 4 envelopes) starts the splitter cold and owns that state;
-    // any other turn starts where its prompt left it.
-    bool demux_channels = env && (env->proto == TP_HARMONY || env->proto == TP_GEMMA4);
-    bool primed = reasoning_open && !demux_channels;
-    // ...and that demultiplexer, streamed and buffered, reads the turn from
-    // the opener the prompt wrote, as the model does: a Gemma 4 continuation
-    // whose prompt opened the thought channel is reasoning until it closes.
-    const char *demux_opener = demux_channels && reasoning_open ? rs->opener : NULL;
-    if (primed)
-        engine_think_started(e);
-
-    tool_envelope muse_plain_env = {.proto = TP_MUSE_PLAIN};
-    // split thinking channels out of chat responses; raw completions stay raw
-    if (demux_channels)
-        think_init(&g.ts, NULL, NULL);
-    else if (primed)
-        think_init_reasoning(&g.ts, m->think_open, m->think_close);
-    else
-        think_init(&g.ts, chat ? m->think_open : NULL, m->think_close);
-    think_trim_newlines(&g.ts, m->think_trim_nl);
-    const tool_envelope *stream_env = env ? env
-        : q.stream && chat && s->tmpl == TMPL_MUSE && q.schema
-        ? &muse_plain_env : NULL;
-    if (q.stream && stream_env) {
-        tool_stream_sink sink = { &g, sink_reasoning, sink_content, sink_call_begin,
-                                  sink_call_args, sink_call_end };
-        tool_stream_init(&g.tsx, stream_env, &sink);
-        g.tsx_on = true;
-        if (demux_opener && stream_env == env)
-            tool_stream_feed(&g.tsx, demux_opener, (int)strlen(demux_opener));
-    }
-
-    if (q.stream) {
-        const char *hdr = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
-                          "Cache-Control: no-cache\r\nConnection: close\r\n\r\n";
-        if (!send_all(fd, hdr, strlen(hdr))) {
-            completion_cleanup(e, q.schema, &g);
-            return;
-        }
-        respond_stream_open(&g, api, s, req, &prep);
-    }
-
-    // A configured draft is not proof that this request speculated. Logprob
-    // and choice-logprob capture deliberately select the solo walk, so record
-    // the execution decision while those request flags are still installed.
-    bool spec_used = engine_wants_spec(e);
-    // The dead-client exit below jumps to the shared logger. Keep every value
-    // that logger reads initialized before that first possible jump.
-    bool unmapped = false;
-    double gtime;
-    // Past the last refusal: the request's seed takes the slot's RNG now.
-    // Nothing above draws from it (prefill and prompt scoring do not sample).
-    // Every request that samples takes the next place in one server-wide
-    // order; an unseeded one draws from the server seed and that place, not
-    // from a stream kept per slot: which idle slot serves a request is the
-    // scheduler's timing, so the same requests under the same -s seed sampled
-    // differently from run to run at --parallel 2 or more. A greedy request
-    // draws nothing and takes no place; a refused one never gets here.
-    if (s->smp.temp > 0.0f || (e->think_smp && e->think_temp > 0.0f)) {
-        uint64_t place = atomic_fetch_add(&SV.sampled_requests, 1);
-        s->smp.rng = q.seed_given ? sampler_seed_state(q.seed)
-                                  : server_request_stream(SV.base_rng, place);
-    } else if (q.seed_given) {
-        s->smp.rng = sampler_seed_state(q.seed);
-    }
-    // R1.2.2: the sampler's state as generation starts is the receipt's seed
-    uint64_t gen_rng = s->smp.rng;
-    g.raw_on = receipts_enabled();
-    // only a streamed chat-shaped turn with a history can repeat a call
-    g.calls_on = q.stream && (api == API_CHAT || api == API_MESSAGES);
-    g.doc_on = e->schema || e->json_mode;
-    g.close_at = -1;
-    g.out_on = sched_generate_holds_turn(s);
-    if (g.out_on) {
-        stream_out_init(&g.wq, STREAM_OUT_CAP);
-#ifdef RUNNER_TEST_TURN_GUARD
-        // the cut, reached without filling the kernel's buffers
-        const char *cap = getenv("RUNNER_TEST_STREAM_OUT_CAP");
-        if (cap) {
-            g.wq.cap = (size_t)atol(cap);
-            stream_out_block_for_test(&g.wq, true);
-        }
-#endif
-    }
-    int n_gen = sched_generate(s, logits, q.max_tokens, gen_collect, &g, &gtime,
-                               q.req_deadline);
-    if (g.out_on) {
-        // The turn is back: only this slot waits on the client from here. What
-        // it has not taken is written now, however slowly it reads.
-        g.out_on = false;
-        if (!stream_out_drain(&g.wq, fd)) g.dead = true;
-        stream_out_free(&g.wq);
-        if (g.too_slow)
-            fprintf(stderr, "[slot %d] %s: client cut off for being too slow "
-                    "(%zu MiB behind a stream written under the device turn)\n",
-                    s->id, g.id, STREAM_OUT_CAP >> 20);
-    }
-    if (g.doc_on) {
-        prep.diag.closure_json = closure_json(g.doc.s, g.doc.n, g.close_at);
-        free(g.doc.s);
-        g.doc = (sbuf){0};
-    }
-    prep.diag.wm_on = SV.wm_on;
-    prep.diag.wm_marked = s->wm.marked;
-    if (q.confirm_below > 0) {
-        prep.diag.confirm_on = true;
-        prep.diag.confirm_below = q.confirm_below;
-        prep.diag.min_chosen_p = 1.0;
-        prep.diag.min_margin = 1.0;
-        for (int i = 0; i < e->cl_count; i++) {
-            const cl_rec *c = &e->cl_recs[i];
-            int at = e->gen_start + c->pos;
-            if (c->pos < 0 || at >= e->pos) continue;   // never emitted
-            // A choice the grammar shaped: some probed candidate was illegal.
-            // Inside free text (a string's content) every probed token is
-            // legal and every step is a "decision"; those are the model's
-            // wording, not a choice between the schema's branches, and a
-            // confirmation that fired on them would fire on every turn.
-            if (c->n_legal >= c->n_probed) continue;
-            int32_t chosen = e->hist[at];
-            int stored = c->n_legal < CL_MAX_ALT ? c->n_legal : CL_MAX_ALT;
-            double p = -1, best_other = 0;
-            for (int j = 0; j < stored; j++) {
-                if (c->ids[j] == chosen) p = c->prob[j];
-                else if (c->prob[j] > best_other) best_other = c->prob[j];
-            }
-            // a chosen token outside the stored alternatives had less than
-            // every stored one, possibly far less: counted as 0, so the turn
-            // asks for confirmation rather than guessing it was safe
-            if (p < 0) p = 0;
-            prep.diag.decisions++;
-            if (p < prep.diag.min_chosen_p) {
-                prep.diag.min_chosen_p = p;
-                prep.diag.min_margin = p - best_other;
-                prep.diag.min_at = c->pos;
-            }
-        }
-    }
-    // The one place every surface's generation passes through, so /health's
-    // and /metrics' cumulative counters see chat, completions, responses and
-    // messages alike. The speculation counters are read only when this request
-    // actually took the speculative walk (see work_record).
-    work_record work = { .n_prompt = prep.n_prompt, .n_gen = n_gen,
-                         .n_cached = keep, .gen_seconds = gtime };
-    if (spec_used) {
-        work.spec_rounds   = e->spec_st.rounds;
-        work.spec_drafted  = e->spec_st.drafted;
-        work.spec_accepted = e->spec_st.accepted;
-    }
-    server_record_work(&work);
-    // R1.2.2: the receipt. What shaped the output is named now, while the
-    // request's settings are installed; the record itself is written once the
-    // turn's calls are known (a streamed turn's after its demultiplexer
-    // finishes, a buffered turn's once they are mapped), and before any body
-    // is built, so the body can name it.
-    char receipt_file[64] = "", receipt_chain[65] = "";
     turn_shape shape = {0};
-    if (g.raw_on)
-        turn_shape_of(&shape, req, e, env, q.constrain, q.sch,
-                      rs ? rs->think_mode : req_thinking_mode(req), reasoning_open,
-                      q.stops, q.n_stops,
-                      q.req_stops, q.n_req_stops, q.script_text != NULL);
-#define WRITE_RECEIPT() do {                                                  \
-        if (g.raw_on && !g.dead && !receipt_file[0] && !prep.diag.receipt_error) { \
-            prep.diag.receipt_error = serve_receipt(                               \
-                s, e, &g, prompt, api, chat, gen_rng, q.max_tokens, prep.n_prompt,   \
-                n_gen, keep, prep.diag.prompt_reuse, spec_used, primed,            \
-                !g.stopped && !e->hit_stop && !e->oom                              \
-                    ? stop.cancelled ? "cancelled" : stop.timed_out ? "timeout"    \
-                    : stop.shut_down ? "shutdown" : NULL : NULL, &shape,           \
-                prep.diag.context_id, req, receipt_file, receipt_chain);           \
-            if (!prep.diag.receipt_error) {                                        \
-                prep.diag.receipt_file = receipt_file;                             \
-                prep.diag.receipt_chain = receipt_chain;                           \
-            }                                                                 \
-        }                                                                     \
-    } while (0)
-    // The socket probe and the streaming write path share g.dead. Whichever
-    // learned the verdict first takes this same cleanup exit: no terminal
-    // frame is owed to a peer already proven gone, and buffered responses must
-    // not spend time building a body only to rediscover the failed socket.
-    if (g.dead) goto done;
-    think_finish(&g.ts, gen_emit, &g);
-    // generation ended without a stop match: the withheld partial-match
-    // tail was ordinary output after all
-    if (!g.stopped && g.hold.n > 0) {
-        emit_channel(&g, 0, g.hold.s, (int)g.hold.n);
-        g.hold.n = 0;
-    }
-    // the first visible byte, from the moment the slot took the request
-    // (a request the accept loop answered itself has no slot clock: 0)
-    if (g.first_visible_t > 0 && s->req_t0 > 0)
-        prep.diag.first_visible_s = g.first_visible_t - s->req_t0;
-    // A native-envelope document the demultiplexer cannot map is a GENERATION
-    // fault, not a dead client — and the difference decides whether the stream
-    // is terminated. Recording it as g.dead skipped all three terminal blocks
-    // below, so the client got the opening events and then nothing: no deltas,
-    // no finish_reason, no `data: [DONE]`, a bare FIN, and a server log that
-    // blamed the client for leaving. It is still there, still reading, and owed
-    // a terminal chunk it can stop on.
-    //
-    // tool_stream_finish returns -1 for exactly that failure; any other
-    // non-zero value came from a sink refusing to write, which IS the client
-    // going away.
-    // Did the RUNNER end the turn rather than the model? A budget, a
-    // deadline, or the loop guard: the finisher reads a still-open native
-    // call differently on a cut turn (dropped, "length") and on one the model
-    // ended (a fault). One test, shared with the buffered mapper below: the
-    // buffered path tested finish == "length", which missed a turn whose
-    // reasoning was capped and whose answer then ran out (finish
-    // "reasoning_limit"), and both paths read a loop-guard end as the
-    // model's own (sweep, 2026-09-27).
-    bool turn_cut = (!g.stopped && !e->hit_stop) || e->loop_stop;
-    if (g.tsx_on) {
-        int fin = tool_stream_finish_ex(&g.tsx, turn_cut);
-        if (fin == -1)     unmapped = true;
-        else if (fin != 0) g.dead = true;
-    }
-    if (q.stream) WRITE_RECEIPT();
-    // Anything still held for a multi-byte character the model never finished
-    // goes out now rather than disappearing. It is genuinely truncated, so it
-    // renders as U+FFFD — but silently dropping bytes would make the streamed
-    // turn shorter than the buffered one, which is the invariant that matters.
-    flush_text_delta(&g, 0);
-    flush_text_delta(&g, 1);
-    // e->oom: generation hit an allocation failure — report it truthfully as
-    // "error", never let it masquerade as a clean "stop". An unmappable
-    // envelope is the same class of truth: the turn produced no answer anyone
-    // can read, and reporting "stop" over an empty message would tell the
-    // caller the model chose to say nothing.
-    const char *finish = e->oom ? "error"
-                       : g.too_slow ? "client_too_slow"
-                       : unmapped ? "envelope_error"
-                       // the reasoning cap is the reason only while it left
-                       // the payload unfinished: a document the model went on
-                       // to complete is a finished turn (and a finished tool
-                       // call), not one to discard as truncated
-                       : e->prelude_exhausted && !engine_constraint_complete(e)
-                           ? "reasoning_limit"
-                       : e->loop_stop ? "loop"
-                       : g.stopped || e->hit_stop ? "stop" : "length";
-    // The reasoning cap fired and the model then completed the payload: the
-    // wire says the turn finished, and the cap stays recoverable as
-    // finish_detail, where it has lived since the wire value became "length".
-    const char *cut_detail = e->prelude_exhausted && strcmp(finish, "reasoning_limit")
-                           ? "reasoning_limit" : NULL;
-    // the server's drain cut the turn: the wire still says "length" (the turn
-    // was cut, the text is usable), and finish_detail says by what
-    if (stop.shut_down && !g.stopped && !e->hit_stop && !e->oom)
-        cut_detail = "shutdown";
-    // and a cancel (R10.12.3.2): the same cut, named for what made it
-    if (stop.cancelled && !g.stopped && !e->hit_stop && !e->oom)
-        cut_detail = "cancelled";
-    // a parse-only qwen3_xml call closed by the next call's opener (R2.10):
-    // the calls stand, and the detail says the framing was tolerated
-    if (!cut_detail && g.tsx_on && g.tsx.implicit_close)
-        cut_detail = "tool_call_implicit_close";
-    // a streamed call reports the same terminal reason a buffered one does.
-    // Only a CLEANLY FINISHED document may claim "tool_calls": a budget
-    // truncation still parses (the closer guarantees that) but the envelope
-    // must keep saying "length", or the caller executes a half-generated
-    // call as if it were complete — finding A of the 2026-08-11 external
-    // evaluation, which found the Responses incomplete path dead whenever a
-    // tool call was present.
-    if (g.tsx_on && tool_stream_called(&g.tsx) && !strcmp(finish, "stop"))
-        finish = "tool_calls";
-
-    // The turn as every surface reports it: the generation above produced
-    // it, and one framer per surface renders it in that surface's dialect.
     turn_result t = {
         .s = s, .e = e, .fd = fd, .api = api, .chat = chat, .req = req,
         .prompt = prompt, .q = &q, .prep = &prep, .g = &g, .shape = &shape,
-        .finish = finish, .cut_detail = cut_detail, .n_gen = n_gen,
-        .keep = keep, .gtime = gtime, .spec_used = spec_used,
-        .faults_at_start = faults_at_start, .reuse = reuse,
+        .env = env, .rs = rs, .stop = &stop, .reasoning_open = reasoning_open,
+        .faults_at_start = faults_at_start,
     };
-    if (q.stream && api == API_RESPONSES)
-        respond_stream_responses(&t);
-    else if (q.stream && api == API_MESSAGES && generation_faulted(finish))
-        respond_stream_messages_fault(&t);
-    else if (q.stream && api == API_MESSAGES)
-        respond_stream_messages(&t);
-    else if (q.stream)
-        respond_stream_openai(&t);
-    else {
-        sbuf tc = {0};
-        int n_tc = 0;
-        if (env) {
-            bool fault = false;
-            n_tc = envelope_map_buffered(env, &g, &tc, turn_cut,
-                                         demux_opener, &fault);
-            if (n_tc >= 1 && !strcmp(finish, "stop")) finish = "tool_calls";
-            // The document was dropped, so the turn has no answer to report.
-            // Saying "stop" over the resulting empty content would claim the
-            // model chose to say nothing; the streamed path names the same
-            // fault the same way.
-            if (n_tc < 0) { n_tc = 0; finish = "envelope_error"; }
-            // a parse-only fault keeps what was valid and says what went wrong
-            if (fault) finish = "envelope_error";
-            if (g.tool_implicit && !t.cut_detail) t.cut_detail = "tool_call_implicit_close";
-        } else if (chat) {
-            if (s->tmpl == TMPL_MUSE && q.schema)
-                muse_user_payload_strip(&g.out);
-            n_tc = tool_calls_parse_for(s->tmpl, &g.out, &tc);
-            if (n_tc) {
-                if (!strcmp(finish, "stop")) finish = "tool_calls";
-                g.out.n = 0; // OpenAI convention: no content alongside
-                             // tool_calls (whatever followed was the model
-                             // faking a result)
-            }
-        }
-        if (chat && n_tc > 0) {
-            // R4.12.19: reported by every body below, from the one mapping
-            jv *em = tool_calls_array(&tc, n_tc);
-            g.repeat_json = repeated_calls_json(req, api, em);
-            // R1.1.2: and recorded in the receipt from the same mapping
-            for (int i = 0; g.raw_on && em && i < em->n; i++) {
-                jv *f = jv_get(em->items[i], "function");
-                const char *nm = jv_str(jv_get(f, "name"), "");
-                const char *args = jv_str(jv_get(f, "arguments"), "");
-                sb_lit(&g.calls, g.n_calls ? ",{\"name\":\"" : "{\"name\":\"");
-                sb_esc(&g.calls, nm, strlen(nm));
-                sb_lit(&g.calls, "\",\"arguments\":\"");
-                sb_esc(&g.calls, args, strlen(args));
-                sb_lit(&g.calls, "\"}");
-                g.n_calls++;
-            }
-            jv_free(em);
-        }
-        WRITE_RECEIPT();
-        // the shared mapping above may have settled the finish as tool_calls
-        t.finish = finish;
-        if (api == API_MESSAGES) respond_buffered_messages(&t, &tc, n_tc);
-        else if (api == API_RESPONSES) respond_buffered_responses(&t, &tc, n_tc);
-        else respond_buffered_openai(&t, &tc, n_tc);
+    // The phases, in order, over that one context. A phase that answered the
+    // request itself (a refusal, a client already gone) ends the turn.
+    float *logits = turn_prefill(&t);
+    if (!logits) return;
+    if (!turn_open(&t)) return;
+    turn_generate(&t, logits);
+    // The socket probe and the streaming write path share g.dead: no
+    // terminal frame is owed to a peer already proven gone, and a buffered
+    // response must not build a body only to rediscover the failed socket.
+    if (!g.dead) {
+        turn_close(&t);
+        turn_reason(&t);
+        turn_respond(&t);
     }
-done: ;
-#undef WRITE_RECEIPT
-    free(shape.json.s);
-    free(prep.diag.closure_json);
-    // A paging note only when there was paging. Silence is the normal case and
-    // a per-request "0 page-ins" would be noise, but when the weights have been
-    // evicted this line is the only thing that says the time went to the disk
-    // rather than to the model. With every weight on a discrete device it
-    // cannot be the weights, so the note says only what it knows, and where
-    // the OS publishes a video memory budget the figures ride along: an
-    // eviction to system memory reads as such in the same line (R3.49). Both
-    // are looked up only once the count is over the floor.
-    uint64_t faults = plat_major_faults() - faults_at_start;
-    char paging[192];
-    paging[0] = '\0';
-    if (model_paging_note_wanted(faults, prep.n_prompt + n_gen)) {
-        model_vidmem vm = {0};
-        vm.known = gpu_os_vidmem(m, &vm.budget, &vm.usage, &vm.nonlocal);
-        model_paging_note(paging, sizeof(paging), faults, prep.n_prompt + n_gen,
-                          model_weights_on_device(m), &vm);
-    }
-    fprintf(stderr, "[slot %d] %s: %d prompt (%d cached) + %d gen tok (%.1f tok/s)%s%s%s\n",
-            s->id, g.id, prep.n_prompt, keep, n_gen,
-            n_gen / (gtime > 0 ? gtime : 1e-9),
-            q.schema ? " [schema]" : e->json_mode ? " [json]" : spec_used ? " [spec]" : "",
-            // "[client gone]" is an accusation, and it used to be made about a
-            // client that never left: an unmappable envelope set the same flag.
-            // The two are named apart so a log line means what it says.
-            g.dead ? " [client gone]"
-                   : g.too_slow ? " [client too slow]"
-                   : unmapped ? " [envelope unmapped]" : "", paging);
-    completion_cleanup(e, q.schema, &g);
+    turn_log(&t);
 }

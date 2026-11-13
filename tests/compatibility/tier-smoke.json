@@ -3303,8 +3303,8 @@
         },
         "linux-x86_64-cuda/cuda": {
           "path": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q6_k.linux-x86_64-cuda.cuda.txt",
-          "sha256": "eae8d81a354865063f6edb2a6e83c627b6c4b6d7f8c8749e5fac353dca7b294b",
-          "bytes": 185,
+          "sha256": "70827d501fa8dc01eb53edd654e02da4829cf3aa439af54f451148fdf32baf12",
+          "bytes": 193,
           "finish_reason": "length",
           "completion_tokens": 48,
           "spec": {
@@ -3320,9 +3320,13 @@
             }
           },
           "pinned": {
-            "date": "2026-11-05",
-            "runner_version": "1.13.0",
-            "commit": "6eb09de793434dab43f474efeb51e15438a16ab8"
+            "date": "2026-11-11",
+            "runner_version": "1.16.0",
+            "commit": "d30ae1f825afc84e77a014fd1d32d2857b58ede2",
+            "build": {
+              "binary_sha256": "34bfcad2833665d9325f7076e8d54a5dd4d75c05adce9146761f7c77a47aba0a",
+              "compiler": "13.3.0"
+            }
           }
         }
       }
@@ -3355,8 +3359,8 @@
         },
         "linux-x86_64-cuda/cuda": {
           "path": "tests/compatibility/tier-smoke/deepseek-v2-lite-chat-q8_0.linux-x86_64-cuda.cuda.txt",
-          "sha256": "cedb5bd6c51ecd3bb00508d0cdd2a3a597daf376df178903db8bd59aec8505a1",
-          "bytes": 194,
+          "sha256": "eae8d81a354865063f6edb2a6e83c627b6c4b6d7f8c8749e5fac353dca7b294b",
+          "bytes": 185,
           "finish_reason": "length",
           "completion_tokens": 48,
           "spec": {
@@ -3372,9 +3376,13 @@
             }
           },
           "pinned": {
-            "date": "2026-11-05",
-            "runner_version": "1.13.0",
-            "commit": "6eb09de793434dab43f474efeb51e15438a16ab8"
+            "date": "2026-11-11",
+            "runner_version": "1.16.0",
+            "commit": "d30ae1f825afc84e77a014fd1d32d2857b58ede2",
+            "build": {
+              "binary_sha256": "34bfcad2833665d9325f7076e8d54a5dd4d75c05adce9146761f7c77a47aba0a",
+              "compiler": "13.3.0"
+            }
           }
         }
       }
@@ -3567,8 +3575,8 @@
         },
         "linux-x86_64-cuda/cuda": {
           "path": "tests/compatibility/tier-smoke/empero-qwen3.8-35b-a3b-distill-q6_k.linux-x86_64-cuda.cuda.txt",
-          "sha256": "f3a25e63edc8ebf782ae5bb9ede7de145de7761ed2bcc1cb407cd7c1a9e384e2",
-          "bytes": 228,
+          "sha256": "4ac464a064329c34fd324bd617ff5db8bea657b825fc921320ffce1b6d666f93",
+          "bytes": 221,
           "finish_reason": "length",
           "completion_tokens": 48,
           "spec": {
@@ -3584,11 +3592,11 @@
             }
           },
           "pinned": {
-            "date": "2026-11-10",
+            "date": "2026-11-11",
             "runner_version": "1.16.0",
-            "commit": "aa752fcac5e691b36e96a0c212bc32b634f3cc51",
+            "commit": "d30ae1f825afc84e77a014fd1d32d2857b58ede2",
             "build": {
-              "binary_sha256": "abf79ae404a003df20009a74c6012a818861c380ad7a6f475d4129e78b682b5a",
+              "binary_sha256": "34bfcad2833665d9325f7076e8d54a5dd4d75c05adce9146761f7c77a47aba0a",
               "compiler": "13.3.0"
             }
           }
@@ -3753,6 +3761,126 @@
             "commit": "f2e40988b13a294960d659b5dd0fdb983e979740",
             "build": {
               "binary_sha256": "42639519abec38c9b29b3bf0fbbcd973023c42265b7c68e206bb0542ae029bf3",
+              "compiler": "13.3.0"
+            }
+          }
+        }
+      }
+    },
+    "apertus-8b-instruct-2509-q8_0": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q8_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "a519428fcee0cb910d868dec5ff75f1cec4f9b887b3276e198f10994d1dcf0dc",
+          "bytes": 205,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-12",
+            "runner_version": "1.17.0",
+            "commit": "d431c97848fd7877e338ed07eb77508a9c386c88",
+            "build": {
+              "binary_sha256": "63a9af5d231bedeb3717cd483b563933f651e3634dd966aaf9b51de4915fcfed",
+              "compiler": "13.3.0"
+            }
+          }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q8_0.linux-x86_64-cuda.cuda.txt",
+          "sha256": "a519428fcee0cb910d868dec5ff75f1cec4f9b887b3276e198f10994d1dcf0dc",
+          "bytes": 205,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-12",
+            "runner_version": "1.17.0",
+            "commit": "d431c97848fd7877e338ed07eb77508a9c386c88",
+            "build": {
+              "binary_sha256": "63a9af5d231bedeb3717cd483b563933f651e3634dd966aaf9b51de4915fcfed",
+              "compiler": "13.3.0"
+            }
+          }
+        }
+      }
+    },
+    "apertus-8b-instruct-2509-q4_k_m": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "sha256": "5fd562b8fbeeac085c8a271d3c0a8e44fdcc503338932109f18d70ede5959098",
+          "bytes": 208,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-12",
+            "runner_version": "1.17.0",
+            "commit": "d431c97848fd7877e338ed07eb77508a9c386c88",
+            "build": {
+              "binary_sha256": "63a9af5d231bedeb3717cd483b563933f651e3634dd966aaf9b51de4915fcfed",
+              "compiler": "13.3.0"
+            }
+          }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q4_k_m.linux-x86_64-cuda.cuda.txt",
+          "sha256": "5fd562b8fbeeac085c8a271d3c0a8e44fdcc503338932109f18d70ede5959098",
+          "bytes": 208,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-12",
+            "runner_version": "1.17.0",
+            "commit": "d431c97848fd7877e338ed07eb77508a9c386c88",
+            "build": {
+              "binary_sha256": "63a9af5d231bedeb3717cd483b563933f651e3634dd966aaf9b51de4915fcfed",
               "compiler": "13.3.0"
             }
           }

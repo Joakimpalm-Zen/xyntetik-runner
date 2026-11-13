@@ -169,3 +169,33 @@ def test_both_shapes_follow_the_published_contract(srv):
     assert turn["decisions"] == len(shaped)
     if shaped:
         assert turn["at_token"] in {p["index"] for p in shaped}
+
+
+def test_a_turn_whose_forward_is_not_finite_needs_confirmation(tmp_path):
+    """R6.68.118: with a NaN in every embedding row the turn's logits are NaN,
+    the decision capture recorded no decision (its probe compared NaNs) and
+    the answer read needs_confirmation false: a turn no number supports was
+    reported as confident. A probed row that is not finite now needs
+    confirmation whatever else the turn held; the response says so with no
+    new field: needs_confirmation true, and the minimum null."""
+    import struct
+    sys.path.insert(0, str(ROOT / "tests"))
+    from test_embeddings_pooling import _embedding_table
+    exe = find_runner(ROOT)
+    if not pathlib.Path(exe).exists():
+        pytest.skip("runner not built")
+    model = tmp_path / "nan.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(model)],
+                   check=True, stdout=subprocess.DEVNULL)
+    data, at, width, rows = _embedding_table(model)
+    data = bytearray(data)
+    for r in range(rows):
+        struct.pack_into("<f", data, at + r * width * 4, float("nan"))
+    model.write_bytes(data)
+    with RunnerServer(exe, model, ctx=8192, extra_args=[
+            "--gpu", "off", "-t", "2", "--chat-template", "chatml"]) as s:
+        code, doc = _chat(s, confirm_below=0.5)
+    assert code == 200, doc
+    d = doc["runner_telemetry"]["decision"]
+    assert d["needs_confirmation"] is True, d
+    assert d["min_chosen_prob"] is None, d

@@ -110,6 +110,30 @@ def test_chain_links_and_verifies_end_to_end(runner_bin, base, key, tmp_path):
     assert p.returncode == 3 and b"chain link broken" in p.stderr
 
 
+
+def test_an_unreadable_previous_record_is_refused_before_the_run(runner_bin, base, tmp_path):
+    """R6.68.82: the previous record's chain hash was read after the load and
+    the generation. When it could not be read the run went on to call the
+    transcript writer with no path, and crashed (SIGSEGV) with the reply
+    already on stdout. It is read first, and the run refuses there."""
+    out = tmp_path / "t.json"
+    for prev in (tmp_path / "missing.json", None):
+        if prev is None:
+            prev = tmp_path / "not-a-record.json"
+            prev.write_text("{}")
+        p = subprocess.run([runner_bin, "-m", str(base), "-p", "the runner trains the", "-n", "4",
+                            "--temp", "0", "--gpu", "off", "-t", "2", "--transcript", str(out),
+                            "--transcript-prev", str(prev)], cwd=ROOT, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=120)
+        assert p.returncode == 1, (p.returncode, p.stderr[-300:])
+        assert b"cannot read the chain hash" in p.stderr and p.stdout == b"", (p.stdout, p.stderr[-300:])
+        assert not out.exists()
+    # and a link with no record to carry it is refused, not dropped
+    p = subprocess.run([runner_bin, "-m", str(base), "-p", "hi", "-n", "2", "--gpu", "off",
+                        "--record-prev", str(prev)], cwd=ROOT, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 1 and b"--record-prev links" in p.stderr, p.stderr[-300:]
+
 def test_forgeries_are_unverifiable_before_replay(runner_bin, base, key, tmp_path):
     kpath, pub = key
     rec = tmp_path / "r.json"
@@ -138,6 +162,35 @@ def test_forgeries_are_unverifiable_before_replay(runner_bin, base, key, tmp_pat
     # a foreign trust key
     p = _verify(runner_bin, base, rec, "--trust-key", "00" * 32)
     assert p.returncode == 3 and b"signed by a different key" in p.stderr
+
+
+@pytest.mark.parametrize("which", ["key", "pqkey"])
+def test_fields_appended_after_the_signature_are_not_verified(runner_bin, base, which,
+                                                              request, tmp_path):
+    """The signature covers every byte before its own key. Anything after the
+    signature object is covered by nothing, and a key the signed part does
+    not hold reads as the record's own: a `model_signature` verdict or a
+    `tool_calls` list appended there came back VERIFIED, signed. A signed
+    record ends with its signature and the closing brace, for --verify as
+    for --check-record."""
+    kpath, pub = request.getfixturevalue(which)
+    rec = tmp_path / "r.json"
+    raw = _record(runner_bin, base, rec, "--sign-key", str(kpath))
+    assert _verify(runner_bin, base, rec, "--trust-key", pub).returncode == 0
+    assert raw.endswith(b"}}\n") and b'"model_signature"' not in raw
+    for extra in (b',"model_signature":{"status":"verified","subject_digest":"",'
+                  b'"curve":"P-256","hash":"sha256","resource":"."}',
+                  b',"tool_calls":[{"name":"wire_money","arguments":"{}"}]',
+                  b' ,"note":1'):
+        forged = tmp_path / "forged.json"
+        forged.write_bytes(raw[:-2] + extra + b"}\n")
+        json.loads(forged.read_bytes())          # still one JSON object
+        p = _verify(runner_bin, base, forged, "--trust-key", pub)
+        assert p.returncode == 3 and b"signature does not verify" in p.stderr, (extra, p.stderr[-300:])
+    # bytes after the closing brace too
+    forged.write_bytes(raw + b"{}")
+    p = _verify(runner_bin, base, forged, "--trust-key", pub)
+    assert p.returncode == 3, p.stderr[-300:]
 
 
 def test_unsigned_record_under_require_signed(runner_bin, base, tmp_path):

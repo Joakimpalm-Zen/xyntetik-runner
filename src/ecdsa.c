@@ -461,7 +461,8 @@ static size_t der_tlv(const uint8_t *d, size_t n, size_t off, uint8_t tag,
         if (nb == 0 || nb > 2 || off + 2 + nb > n) return 0;
         l = 0;
         for (size_t i = 0; i < nb; i++) l = (l << 8) | d[off + 2 + i];
-        if (l < 0x80) return 0;   // non-minimal length
+        // non-minimal: a length that fits fewer length octets
+        if (l < (nb == 1 ? 0x80u : 0x100u)) return 0;
         hdr = 2 + nb;
     }
     if (off + hdr + l > n) return 0;

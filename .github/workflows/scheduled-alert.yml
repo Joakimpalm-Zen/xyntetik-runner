@@ -15,7 +15,7 @@ name: scheduled-alert
 # writes instead of making them).
 on:
   workflow_run:
-    workflows: [ci, competitor result freshness, example deterministic CI]
+    workflows: [ci, competitor result freshness, example deterministic CI, fuzz soak]
     types: [completed]
   workflow_dispatch:
     inputs:

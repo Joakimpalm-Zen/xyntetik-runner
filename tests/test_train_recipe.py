@@ -181,6 +181,23 @@ def test_eval_at_step_zero_is_the_no_update_loss(runner_bin, fx, tmp_path):
     assert rec["evals"][0]["label"] == "dev" and len(rec["evals"][0]["topk_idx"]["sha256"]) == 64
 
 
+def test_an_eval_label_is_written_as_json_whatever_it_holds(runner_bin, fx, tmp_path):
+    """R6.68.80: a --train-eval label is the caller's text and went into the
+    eval lines, the kill line and the kill record between quotes as it stood,
+    so a quote or a backslash in it made each of them a line no reader parses
+    (the stop file's path was escaped for the same reason, #542)."""
+    label = 'de"v\\x'
+    spec = "%s=%s,%s" % (label, fx / "dev.jsonl", fx / "dev-teacher")
+    p, lines, evals = run(runner_bin, fx, tmp_path / "a.gguf", "--train-eval", spec,
+                          "--eval-every", "2", "--kill-at", "2", "--kill-metric", label,
+                          "--kill-min-rel", "0.99", steps=4)   # run() parses every line
+    assert p.returncode == 3, p.stderr.decode(errors="replace")[-300:]
+    assert all(list(e["eval"]) == [label] for e in evals) and evals
+    killed = [json.loads(l) for l in p.stdout.splitlines() if b"killed" in l]
+    assert killed and killed[0]["killed"]["metric"] == label
+    assert json.loads((tmp_path / "a.gguf.killed.json").read_text())["metric"] == label
+
+
 @pytest.mark.parametrize("min_rel,code", [(0.99, 3), (-1.0, 0)])
 def test_kill_rule(runner_bin, fx, tmp_path, min_rel, code):
     spec = "dev=%s,%s" % (fx / "dev.jsonl", fx / "dev-teacher")

@@ -294,7 +294,7 @@ def make_report(records, runtime_name, version, model, elapsed_ms):
 def write_report(out, report):
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n")
+        json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n")
 
 
 def _closer_cell(rec):

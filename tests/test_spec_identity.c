@@ -149,7 +149,7 @@ int main(int argc, char **argv) {
                 }
                 model_forward_refold(&V, b, acc, pos);
             }
-            if (!model_recurrent_blob_load(&R, blob)) {
+            if (!model_recurrent_blob_load(&R, blob, NULL, 0)) {
                 fprintf(stderr, "FAIL: the reference cannot reload its fold at %d\n", pos);
                 return 1;
             }

@@ -149,7 +149,7 @@ def main():
     s = summarize(decisions, args.bins)
     cert = certificate(decisions, args.threshold_target) if args.threshold_target is not None else None
     if args.json:
-        print(json.dumps({"skipped": skipped, **s, "certificate": cert}, indent=2))
+        print(json.dumps({"skipped": skipped, **s, "certificate": cert}, indent=2, allow_nan=False))
     else:
         print(f"decisions {s['n']}  skipped {skipped}")
         print(f"top-1 accuracy {s['accuracy']:.4f}   Brier {s['brier']:.4f}   "

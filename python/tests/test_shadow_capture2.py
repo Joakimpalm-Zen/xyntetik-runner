@@ -798,6 +798,78 @@ def test_post_event_records_a_workspace_state(tmp_path: Path) -> None:
     assert any(p.endswith("a.py") for p in cs["paths"]), cs["paths"]
 
 
+def test_codex_install_refuses_a_hooks_file_it_cannot_merge_into(tmp_path: Path) -> None:
+    """The Codex path still had the bare asserts and the unguarded json.loads
+    the Claude path lost on 2026-09-27, after writing its backup (sweep,
+    2026-11-02). It refuses the same shapes, with the reason, before any
+    backup, and leaves the file exactly as it was."""
+    from xyntetik_runner.shadow import install as I
+    hooks = tmp_path / ".codex" / "hooks.json"
+    hooks.parent.mkdir(parents=True)
+    for bad in ({"hooks": []}, {"hooks": {"Stop": {"type": "command"}}}, ["not", "an", "object"]):
+        original = json.dumps(bad)
+        hooks.write_text(original, encoding="utf-8")
+        with pytest.raises(RuntimeError) as info:
+            I.install_codex_hooks(hooks, python=sys.executable, pythonpath=None, home=tmp_path)
+        assert "fix it" in str(info.value) or "JSON object" in str(info.value)
+        assert hooks.read_text(encoding="utf-8") == original
+        assert not hooks.with_suffix(".json.bak-shadow").exists()
+    hooks.write_text("{not json", encoding="utf-8")
+    with pytest.raises(RuntimeError) as info:
+        I.install_codex_hooks(hooks, python=sys.executable, pythonpath=None, home=tmp_path)
+    assert "not valid JSON" in str(info.value)
+
+
+def test_uninstall_refuses_an_unreadable_hooks_file_and_leaves_it(tmp_path: Path) -> None:
+    """Both uninstall paths parsed unguarded: invalid JSON raised
+    JSONDecodeError and a top-level list raised AttributeError."""
+    from xyntetik_runner.shadow import install as I
+    for fn, rel in ((I.uninstall_claude_hooks, ".claude/settings.json"),
+                    (I.uninstall_codex_hooks, ".codex/hooks.json")):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        for text in ("{not json", '["a", "list"]'):
+            path.write_text(text, encoding="utf-8")
+            with pytest.raises(RuntimeError):
+                fn(path)
+            assert path.read_text(encoding="utf-8") == text
+
+
+def test_hook_files_are_rewritten_atomically(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every rewrite of the user's settings.json and hooks.json goes through
+    atomic_write_text, so a kill mid-write leaves the previous file; three of
+    the four used to be Path.write_text, which truncates first."""
+    from xyntetik_runner.shadow import install as I
+    calls: list[Path] = []
+    real = I.atomic_write_text
+
+    def recording(path: Path, text: str) -> None:
+        calls.append(Path(path))
+        real(path, text)
+
+    monkeypatch.setattr(I, "atomic_write_text", recording)
+    claude = tmp_path / ".claude" / "settings.json"
+    codex = tmp_path / ".codex" / "hooks.json"
+    claude.parent.mkdir(parents=True)
+    codex.parent.mkdir(parents=True)
+    I.install_claude_hooks(claude, python=sys.executable, pythonpath=None, home=tmp_path)
+    I.install_codex_hooks(codex, python=sys.executable, pythonpath=None, home=tmp_path)
+    I.uninstall_claude_hooks(claude)
+    I.uninstall_codex_hooks(codex)
+    assert calls.count(claude) == 2 and calls.count(codex) == 2, calls
+
+
+def test_the_cli_says_why_it_refuses_instead_of_a_traceback(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from xyntetik_runner.shadow import cli
+    hooks = tmp_path / ".codex" / "hooks.json"
+    hooks.parent.mkdir(parents=True)
+    hooks.write_text("{not json", encoding="utf-8")
+    assert cli.main(["uninstall", "--home", str(tmp_path)]) == 2
+    err = capsys.readouterr().err
+    assert "not valid JSON" in err and "Traceback" not in err
+    assert hooks.read_text(encoding="utf-8") == "{not json"
+
+
 def test_install_refuses_a_settings_file_it_cannot_merge_into(tmp_path: Path) -> None:
     """A user's settings.json whose "hooks" is not an object, or whose event
     list is not a list, used to fail on a bare assert after the backup had

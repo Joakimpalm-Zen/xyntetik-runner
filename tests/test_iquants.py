@@ -90,7 +90,7 @@ TOOL = resolve_tools(BIN)
 
 # A missing prerequisite is a skip on a developer machine and a FAILURE on
 # the box whose job it is to run the gate: RUNNER_REQUIRE_IQ_GATES names
-# the legs that must run ("gpu", "llamacpp", or "all"). A required device
+# the legs that must run ("gpu", "tc", "llamacpp", or "all"). A required device
 # run that silently skipped would read as green in the release evidence,
 # which is the failure mode the device ledger exists to stop.
 REQUIRE = {r for r in os.environ.get("RUNNER_REQUIRE_IQ_GATES", "").split(",") if r}

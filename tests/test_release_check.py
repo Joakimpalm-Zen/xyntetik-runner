@@ -1096,6 +1096,23 @@ def test_the_repository_changes_folder_follows_the_rule():
             assert mod.entry_problems(f"changes/{p.name}", p.read_text(encoding="utf-8")) == []
 
 
+def test_the_fold_names_entries_with_a_slash_on_every_host():
+    """On Windows str(Path) is 'changes\\X.md'. The fold handed that to
+    entry_problems, which splits on '/', and the release fold crashed with an
+    IndexError (found on a Windows host with a native Python; the hosted
+    Windows job runs MSYS2's Python, whose paths have slashes, so it never
+    saw it). PureWindowsPath makes the host's separator a test input."""
+    spec = importlib.util.spec_from_file_location("changelog_entries", CE_TOOL)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    base = pathlib.PureWindowsPath(r"C:\work\repo")
+    files = [base / "changes" / "R6.68.13.md", base / "changes" / "fix-a.md"]
+    rel = mod.entry_paths(files, base)
+    assert rel == ["changes/R6.68.13.md", "changes/fix-a.md"]
+    for r in rel:
+        assert mod.entry_problems(r, "- **A change** (R1.1): what it does.\n") == []
+
+
 # A merge train: one pull request that is main plus the merged heads of several reviewed pull
 # requests, its text carrying "Changelog: train". Each first-parent merge is a member and passes
 # the rule on its own.
@@ -1267,3 +1284,26 @@ def test_release_make_puts_the_recipe_cflags_on_makes_command_line(tmp_path):
     assert out.returncode == 0, out.stderr
     # a command-line CFLAGS is not extended by the Makefile's +=, so the objects are the recipe's
     assert out.stdout.strip() == want, (out.stdout, want)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the wrapper is a POSIX sh script (see above)")
+def test_two_copies_of_release_make_on_path_still_reach_the_real_make(tmp_path):
+    """Two worktrees, each with tools/release-make first on PATH (a test
+    prepends its own tree's copy to a PATH that already holds another's):
+    each wrapper skipped only its own directory, took the other copy for the
+    real make and exec'd it, and the two exec'd each other forever
+    (R6.68.121; found on the Linux CUDA host, where the run timed out). A
+    wrapper now passes over every copy of itself, and the recipe's CFLAGS
+    reach the real make once."""
+    import shutil
+    other = tmp_path / "other-tree" / "release-make"
+    shutil.copytree(ROOT / "tools" / "release-make", other)
+    write(tmp_path / "Makefile", 'all:\n\t@echo "$(CFLAGS)"\n')
+    path = os.pathsep.join([str(ROOT / "tools" / "release-make"), str(other), os.environ["PATH"]])
+    env = {**os.environ, "PATH": path}
+    env.pop("CFLAGS", None)
+    out = subprocess.run(["make", "-s", "-C", str(tmp_path)], env=env, capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().startswith("-O3 -ffast-math"), out.stdout
+    assert out.stdout.count("-O3") == 1, out.stdout

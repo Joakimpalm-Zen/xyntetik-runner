@@ -29,7 +29,10 @@ struct slot_s {
     model_t   *m;         // slot 0 borrows the preloaded model
     tokenizer *tok;       // shared (read-only)
     sampler    smp;
-    sampler    smp_base;  // pristine server defaults (per-request resets)
+    // What a request's sampler starts from: the server's defaults for the
+    // model, with the stop-token penalty exemptions its engine installs
+    // (slot_engine_init captures it after them). A request restores it whole.
+    sampler    smp_base;
     engine     e;
     int        id;
     int        tmpl;
@@ -56,13 +59,14 @@ struct slot_s {
     // client's X-Request-Id. rq_id, rq_cid and rq_live are guarded by the
     // server's request-id lock; cid_next is the header of the request this
     // slot is reading. rq_cancel is set by a cancel and read by the
-    // request's stop check; rq_seq counts this slot's requests, and
-    // rq_end_seq/rq_end_gen say which one ended last and how many tokens it
-    // had generated, which is how a cancel learns its request stopped.
+    // request's stop check. rq_ticket (R6.68.8), under the same lock, is
+    // what the cancels of the live request wait on: its end is recorded
+    // there, with its own token count, and not on the slot, where the next
+    // request would overwrite it.
     char        rq_id[48], rq_cid[65], cid_next[65];
     bool        rq_live;
-    atomic_int  rq_cancel, rq_end_gen;
-    atomic_uint rq_seq, rq_end_seq;
+    atomic_int  rq_cancel;
+    struct cancel_ticket *rq_ticket;
 };
 
 // A per-request adapter (R8.6): loaded once at startup, borrowed by a slot's
@@ -72,7 +76,7 @@ typedef struct {
     char      name[64];
     char      path[1024];
     char      sha256[65];
-    char      sig_json[512];   // load-time OMS verdict, "" = none (R1.2.3)
+    char      sig_json[OMS_RESULT_JSON_CAP];   // load-time OMS verdict, "" = none (R1.2.3)
     lora_set *set;
 } adapter_entry;
 
@@ -175,6 +179,9 @@ typedef struct {
     atomic_bool shutdown;
     pthread_t   reaper_th;
     bool        reaper_started;
+    bool        q_ready;      // the queue's mutex and condition exist
+    bool        swap_ready;   // swap_mu exists (init_swap_runtime succeeded)
+    bool        start_refused; // the run ended before its serving loop (serve_start_end)
     model_t    *draft;        // per-slot draft would be plural; single-model
     int         draft_k;      // serve has exactly one slot (see swap_to)
     // the --draft argv string, kept only when its startup load succeeded, so
@@ -327,6 +334,9 @@ bool slot_use_adapter(slot_t *s, int idx, sock_t fd);
 // model's own template reads and Runner cannot render on this surface.
 bool template_kwarg_refused(slot_t *s, sock_t fd, jv *req, int surface);
 bool init_swap_runtime(const model_params *mp, int n_threads, int ttl);
+// The slot's engine over its model, tokenizer and sampler, and smp_base taken
+// from the sampler as the engine leaves it. False: out of memory.
+bool slot_engine_init(slot_t *s);
 // Admission: q_push sheds with 503 when the queue is full, q_pop blocks until
 // a connection arrives or the queue is shut down (SOCK_INVALID then).
 void   q_push(sock_t fd);

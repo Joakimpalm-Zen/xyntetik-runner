@@ -169,6 +169,25 @@ def test_a_file_with_no_record_is_refused(runner_bin, tmp_path):
     assert p.returncode == 2 and "NO RECORD" in p.stdout, p.stdout
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="no endless device file to cite")
+@pytest.mark.parametrize("key", ["base", "output"])
+def test_a_record_that_cites_a_device_file_does_not_hang_the_walk(runner_bin, tmp_path, key):
+    """A record is someone else's file, and the walker hashes what it names.
+    One that cited /dev/zero (an older record's full path is tried as it is
+    written) was hashed with no end: the verifier never answered. The walker
+    reads regular files only, so the citation is a file that is not there."""
+    rec = {"schema_version": "xyntetik.runner.quant.v1", "runner": "x",
+           "output": {"path": "out.gguf", "sha256": "0" * 64},
+           "base": {"path": "base.gguf", "sha256": "1" * 64}}
+    rec[key]["path"] = "/dev/zero"
+    path = tmp_path / "out.gguf.record.json"
+    path.write_text(json.dumps(rec))
+    p = subprocess.run([str(runner_bin), "--lineage", str(path)], cwd=tmp_path,
+                       capture_output=True, text=True, timeout=30)
+    assert "RESULT:" in p.stdout, p.stdout + p.stderr
+    assert p.returncode in (1, 2), p.stdout + p.stderr
+
+
 def test_the_records_alone_verify_after_the_files_are_gone(runner_bin, tmp_path):
     work, audit = tmp_path / "work", tmp_path / "audit"
     work.mkdir(); audit.mkdir()

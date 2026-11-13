@@ -150,6 +150,7 @@ double      plat_resident_fraction(const void *p, size_t size);
 // allocator overhead that no mapping accounts for.
 uint64_t    plat_proc_rss_bytes(void);
 uint64_t    plat_proc_peak_rss_bytes(void);
+bool        plat_proc_phys_footprint_bytes(uint64_t *out);   // macOS only; false elsewhere
 
 // Major faults this process has taken — page-ins that went to disk. The delta
 // across a request is the exact mechanism behind a paging stall, which beats
@@ -192,6 +193,7 @@ bool        plat_file_readable(const char *path);
 // allocated, or does not read back in full: a short or failed read is an
 // error, never a shorter file.
 char       *plat_read_file(const char *path, size_t max_bytes, size_t *n_out);
+bool        plat_file_size(FILE *f, uint64_t *out);   // 64-bit, position left at the start
 // n bytes from the operating system's random generator; false when it has none.
 bool        plat_random(uint8_t *out, size_t n);
 // The last path component: what follows the last '/' or '\\' (both count on
@@ -305,6 +307,12 @@ void        plat_closedir(plat_dir *d);
 // argv with spaces and quote nothing: "C:\Program Files\x" reached the
 // child as two arguments.
 int plat_spawn_wait(const char *const argv[]);
+// The same, with `input` (at most PLAT_SPAWN_STDIN_MAX bytes) as the child's
+// standard input: how a secret reaches a program without sitting in its
+// arguments, which every user of the machine can read in the process list.
+// A NULL input leaves the child the caller's own standard input.
+#define PLAT_SPAWN_STDIN_MAX 4096
+int plat_spawn_wait_stdin(const char *const argv[], const char *input, size_t n);
 
 // Re-exec this image with one argument, no shell, no inherited
 // descriptors, and no caller wait. False if launch could not be scheduled.
@@ -398,6 +406,12 @@ FILE *plat_env_file_get(plat_env_file *f, const char *env);
 // if the call is still running after `after_s` seconds; ended in time, it says
 // nothing. End returns whether the line was said, and frees the note. Begin
 // returns NULL when no watcher could start; end takes NULL and returns false.
+// A file's size, stable index and modification and creation times, without
+// reading it; false with errno in *err (R6.68.30, model_file_identity's
+// platform half)
+bool plat_file_identity(const char *path, uint64_t *size, uint64_t *ino,
+                        int64_t *mtime, int64_t *ctime, int *err);
+
 typedef struct plat_slow_note plat_slow_note;
 plat_slow_note *plat_slow_note_begin(FILE *out, const char *line, double after_s);
 bool            plat_slow_note_end(plat_slow_note *n);

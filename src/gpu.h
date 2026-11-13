@@ -77,6 +77,11 @@ bool   gpu_eseries_ok(void);
 // True when the backend's layer walk omits a removed attention or FFN
 // (--remove-sublayer) per block; false makes the loader refuse the offload.
 bool   gpu_removed_sublayers_ok(void);
+// The most experts and per-token picks a device bank's router takes (CUDA 512
+// and 256, Metal 256 and 256); false where no device routes experts. Past
+// them a bank is refused the device, by the words model_moe_route_why gives
+// the load and the fit alike (R6.68.67).
+bool   gpu_moe_route_caps(int *max_experts, int *max_used);
 // Whether this backend runs a qwen35 (Gated DeltaNet) model on the device at
 // all; where it does not, the whole model, adapters included, runs on the
 // CPU (--adapt-info reports no device kernels for it).
@@ -101,6 +106,20 @@ unsigned long gpu_tc_dispatches_type(int type);
 // whether the route takes the tensor cores for a weight type of this model
 // (RUNNER_CUDA_TC and the promotions included): a record's tc_types
 bool gpu_tc_takes(const model_t *m, int type);
+// test-prefill-bits' route table (CUDA's scalar route, R6.57, R6.58), asked
+// for a dense tensor of a weight type: whether the 16-wide twin of the batch-1
+// kernel's route is loaded (false for a type outside the table and on other
+// backends), and where a matvec of the type over batch (> 1) columns goes,
+// unscaled or carrying a per-tensor scale companion (scaled):
+//   NONE        no CUDA decode of the type, a batch under 2, another backend
+//   TILE_TWIN   the type's tile kernel, itself the batch-1 kernel's twin
+//   TWINS       the batch-1 kernel's width-classed twins
+//   PER_COLUMN  the batch-1 kernel once per column
+//   TILE        a tile kernel that sums in another order than the batch-1 kernel
+enum { GPU_PREFILL_NONE, GPU_PREFILL_TILE_TWIN, GPU_PREFILL_TWINS, GPU_PREFILL_PER_COLUMN,
+       GPU_PREFILL_TILE };
+bool gpu_prefill_twin16(const model_t *m, int type);
+int  gpu_prefill_route(const model_t *m, int type, int batch, bool scaled);
 // of those, the ones the pipelined TC2 kernels ran (CUDA, RUNNER_CUDA_TC2)
 unsigned long gpu_tc2_dispatches(void);
 unsigned long gpu_tc2_reused(void);   // TC2 GEMMs that reused the previous GEMM's staging

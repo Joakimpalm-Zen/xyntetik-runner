@@ -36,7 +36,7 @@ PROMPTS = [
 ]
 
 def post(url, body, timeout=600):
-    req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
+    req = urllib.request.Request(url, json.dumps(body, allow_nan=False).encode(), {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
@@ -116,8 +116,8 @@ def main():
            "design": "ABBA x %d pairs, %d greedy non-thinking requests of max_tokens 64 per block, warm-up block excluded, box not quieted" % (a.pairs, a.requests),
            "warmup": warm, "blocks": blocks,
            "stats": {k: stats(pairs, k) for k in ("wall_s", "decode_tok_s", "prefill_tok_s", "cpu_s")}}
-    json.dump(res, open(a.out, "w"), indent=1)
-    for k, v in res["stats"].items(): print(k, json.dumps(v))
+    json.dump(res, open(a.out, "w"), indent=1, allow_nan=False)
+    for k, v in res["stats"].items(): print(k, json.dumps(v, allow_nan=False))
 
 if __name__ == "__main__":
     main()

@@ -3,9 +3,13 @@ transcript's chain and signature, and is checked by the same code path a
 notarized run is (R14.6). A tampered byte fails, a second signing is refused,
 and the chain links by the previous record's hash."""
 import json
+import os
 import pathlib
+import stat
 import subprocess
 import sys
+
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNNER = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
@@ -13,6 +17,29 @@ RUNNER = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
 
 def run(*args):
     return subprocess.run([str(RUNNER), *args], capture_output=True, text=True, cwd=ROOT, timeout=60)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.parametrize("algo", ["ed25519", "ml-dsa-44"])
+def test_a_signing_key_is_readable_by_its_owner_alone(tmp_path, algo):
+    """The key file holds the seed every signature is made from. It was
+    written through fopen, so under the usual umask anyone on the machine
+    could read it (0644), while the tool said "keep it private". A key
+    written over an older file took that file's permissions; it is made as
+    a new file now, so it is 0600 there too."""
+    key = tmp_path / "key.json"
+    old = os.umask(0o022)
+    try:
+        assert run("--keygen", str(key), "--keygen-algo", algo).returncode == 0
+        assert stat.S_IMODE(key.stat().st_mode) == 0o600, oct(key.stat().st_mode)
+        first = json.loads(key.read_text(encoding="utf-8"))["public_key"]
+        key.chmod(0o644)
+        assert run("--keygen", str(key), "--keygen-algo", algo).returncode == 0
+        assert stat.S_IMODE(key.stat().st_mode) == 0o600, oct(key.stat().st_mode)
+        assert json.loads(key.read_text(encoding="utf-8"))["public_key"] != first
+        assert [p.name for p in tmp_path.iterdir()] == ["key.json"]
+    finally:
+        os.umask(old)
 
 
 def test_sign_check_tamper_and_chain(tmp_path):

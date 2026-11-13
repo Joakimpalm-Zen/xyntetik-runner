@@ -6,6 +6,8 @@
 #include <stdbool.h>
 
 #include "compat.h"   // RUNNER_PRINTF
+#include "fpclass.h"  // json_numg's finiteness test, under fast math
+#include <stdio.h>
 
 typedef enum { J_NULL, J_BOOL, J_NUM, J_STR, J_ARR, J_OBJ } jtype;
 
@@ -87,6 +89,25 @@ void sb_fmt(sbuf *b, const char *fmt, ...) RUNNER_PRINTF(2, 3);
 void sb_fmt(sbuf *b, const char *fmt, ...);
 #endif
 void sb_esc(sbuf *b, const char *s, size_t n); // appends as JSON string content
+// A number the model computed, in a JSON response: nine significant digits
+// (every float32 reads back exactly), or `null` when it is not finite. JSON
+// has no NaN and no infinity, and printf writes them as nan and inf, which no
+// parser takes: one overflowed activation made a whole response unreadable.
+void sb_num9(sbuf *b, double v);
+void sb_fix6(sbuf *b, double v);   // the same rule, six decimals (a probability)
+// The same rule for a line that is not an sbuf (a FILE, a printf): v with
+// `digits` significant digits in out, or "null"; returns out, for a %s.
+// Inline, so a caller that links no json.o (model.c's traces in the test
+// binaries) needs only this header.
+static inline const char *json_numg(char out[32], int digits, double v) {
+    if (fp_finite_f64(v)) snprintf(out, 32, "%.*g", digits, v);
+    else snprintf(out, 32, "null");
+    return out;
+}
+// A double at full precision (json_format_number: the shortest spelling that
+// reads back exactly), or null when it is not finite: a measurement that is
+// a double all the way, as derive's reports are.
+void sb_numj(sbuf *b, double v);
 void sb_str(sbuf *b, const char *s);           // appends s as a quoted JSON string; NULL as null
 
 // re-serialize a parsed value (inverse of json_parse, minus formatting).

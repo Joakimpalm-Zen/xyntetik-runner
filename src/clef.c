@@ -995,7 +995,7 @@ int clef_systemone_handle(engine *e, const jv *req_c, sbuf *out, const char **er
                 sb_fmt(out, "%s[%d,%d]", k ? "," : "", cq->o0[k], cq->o1[k]);
             sb_lit(out, "],\"logits\":[");
             for (int k = 0; k < cq->n_opt; k++)
-                sb_fmt(out, "%s%.9g", k ? "," : "", (double)raw[ob + k]);
+                { if (k) sb_lit(out, ","); sb_num9(out, (double)raw[ob + k]); }
             sb_lit(out, "]}");
             ob += cq->n_opt;
         }

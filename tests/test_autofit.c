@@ -23,6 +23,8 @@
 #include <stdlib.h>
 #include "model.h"
 #include "gguf.h"
+#include "gpu_tables.h"
+#include "compat.h"
 
 static int g_fail = 0;
 static void ck(int cond, const char *what) {
@@ -274,13 +276,18 @@ static void test_fit_gpu(const char *fixture) {
     // full split still bills every KV row to RAM.
     // Both formats take every layer, so the weights left behind are the same
     // and the two host bills differ by the two whole caches (the rule this
-    // replaced billed only the CPU layers' rows: zero here, for both).
+    // replaced billed only the CPU layers' rows: zero here, for both). The
+    // fixture's heads are 16 wide, so its quantized format is fp4: a q8 row
+    // would cut a head mid-block, and the load keeps f16 (R6.68.40; this
+    // compared q8 until the fit stopped offering it).
     f = base;
     model_fit_gpu(&g, &f, 1ull << 40, 512ull << 20, 0, false);
-    ck(base.kv_q8 && f.gpu_layers[FIT_KV_F16] == nl && f.gpu_layers[FIT_KV_Q8] == nl,
-       "fit gpu: the fixture takes a full split in f16 and q8");
-    ck(f.host_need[FIT_KV_F16] - f.host_need[FIT_KV_Q8] == base.kv_f16 - base.kv_q8,
+    ck(base.kv_fp4 && f.gpu_layers[FIT_KV_F16] == nl && f.gpu_layers[FIT_KV_FP4] == nl,
+       "fit gpu: the fixture takes a full split in f16 and fp4");
+    ck(f.host_need[FIT_KV_F16] - f.host_need[FIT_KV_FP4] == base.kv_f16 - base.kv_fp4,
        "fit gpu: a full split still bills the whole KV cache to RAM");
+    ck(!base.kv_q8 && f.gpu_layers[FIT_KV_Q8] == -1,
+       "fit gpu: 16-wide heads take no q8 cache, as the load takes none");
 
     // --parallel N: each slot pays its own KV (host and device) and device
     // scratch, the weights once; the split and both verdicts charge N.
@@ -439,19 +446,25 @@ static void test_gpu_plan(void) {
 
     bool back = true;
     int G = 4;
-    ck(gpu_plan_full_split(&G, 4, 90, 10, 100, &back) && G == 4 && !back,
+    const uint64_t lc[4] = { 20, 20, 20, 25 };   // the layers' costs (weights + KV)
+    uint64_t u = 90;
+    ck(gpu_plan_full_split(&G, 4, &u, lc, 10, 100, &back) && G == 4 && !back && u == 90,
        "plan full: the tail fits exactly");
-    G = 4;
-    ck(!gpu_plan_full_split(&G, 4, 90, 11, 100, &back) && G == 3 && back,
+    G = 4; u = 90;
+    ck(!gpu_plan_full_split(&G, 4, &u, lc, 11, 100, &back) && G == 3 && back,
        "plan full: one unit short hands the last layer back");
-    G = 3;
-    ck(!gpu_plan_full_split(&G, 4, 10, 1, 100, &back) && G == 3 && !back,
+    // R6.68.64: the handed-back layer's cost leaves `used`. The CUDA loader
+    // kept it, so its plan (and the prompt window sized from it) counted a
+    // host layer on the device, while the fit subtracted it.
+    ck(u == 65, "plan full: the layer handed back leaves the plan's bytes");
+    G = 3; u = 10;
+    ck(!gpu_plan_full_split(&G, 4, &u, lc, 1, 100, &back) && G == 3 && !back && u == 10,
        "plan full: a partial split is left as it is");
-    G = 1;
-    ck(!gpu_plan_full_split(&G, 1, 99, 2, 100, &back) && G == 1 && !back,
+    G = 1; u = 99;
+    ck(!gpu_plan_full_split(&G, 1, &u, lc, 2, 100, &back) && G == 1 && !back && u == 99,
        "plan full: a one-layer model keeps its layer");
-    G = 2;
-    ck(!gpu_plan_full_split(&G, 2, 101, 0, 100, &back) && G == 1 && back,
+    G = 2; u = 101;
+    ck(!gpu_plan_full_split(&G, 2, &u, lc, 0, 100, &back) && G == 1 && back && u == 81,
        "plan full: an over-budget total is not full, never a wrapped subtraction");
 
     // banks: layers 0 and 2 dense, 1, 3 and 4 routed
@@ -570,7 +583,12 @@ static void test_fit_layer_tables(const char *fixture) {
         gguf_tensor *t = &g.tensors[g.n_tensors++];
         memset(t, 0, sizeof *t);
         snprintf(t->name, sizeof t->name, "blk.%d.attn_q.bias", l);
-        t->type = 1; t->n_dims = 1; t->ne[0] = 64; t->nbytes = 128;
+        // as the parser writes a 1-D tensor: its other dimensions count 1
+        // (gguf.c refuses a 0 there). Written as 0 the tensor holds no
+        // elements, and since R6.68.45 the fit's plan refuses it as a load
+        // does.
+        t->type = 1; t->n_dims = 1; t->ne[0] = 64; t->ne[1] = t->ne[2] = t->ne[3] = 1;
+        t->nbytes = 128;
         g.data_bytes += 128;
     }
     uint64_t raw = 0;
@@ -598,7 +616,66 @@ static void test_fit_layer_tables(const char *fixture) {
     gguf_close(&g);
 }
 
+// R6.68.78: nemotron_h_moe's host-experts default is one rule for a load
+// (model_default_placement) and --info fit (its plan), over a table of
+// routers. The fit restated it from the header and missed the group limit:
+// softmax gating, scale 1 and two groups kept the experts home on a load
+// while the fit planned them on the device.
+static void moe_host_default_table(void) {
+    static model_t m;
+    static layer_t ly[2];
+    #define NH_BASE() do { memset(&m, 0, sizeof m); memset(ly, 0, sizeof ly); \
+        m.nemotron_h = true; m.n_expert = 4; m.n_ff_exp = 16; m.n_layer = 2;    \
+        m.layers = ly; m.expert_gating = EXPERT_GATE_SIGMOID;                  \
+        m.n_expert_groups = 1; m.expert_w_scale = 1.0f;                        \
+        ly[0].is_moe = ly[1].is_moe = true; ly[0].n_ff_exp = ly[1].n_ff_exp = 16; } while (0)
+    NH_BASE();
+    ck(model_moe_router_host_default(&m), "moe host default: a sigmoid router stays home");
+    NH_BASE(); m.expert_gating = EXPERT_GATE_SOFTMAX;
+    ck(!model_moe_router_host_default(&m), "moe host default: a plain softmax router runs on the device");
+    NH_BASE(); m.expert_gating = EXPERT_GATE_SOFTMAX; m.n_expert_groups = 2;
+    ck(model_moe_router_host_default(&m),
+       "moe host default: a group limit stays home (the case the fit's copy missed)");
+    NH_BASE(); m.expert_gating = EXPERT_GATE_SOFTMAX; m.expert_w_scale = 2.5f;
+    ck(model_moe_router_host_default(&m), "moe host default: a weight scale stays home");
+    NH_BASE(); m.expert_gating = EXPERT_GATE_SOFTMAX; m.expert_w_scale = 0.0f;
+    ck(!model_moe_router_host_default(&m), "moe host default: scale 0 is the plain router");
+    NH_BASE(); m.moe_latent = 64;
+    ck(!model_moe_router_host_default(&m), "moe host default: LatentMoE takes no placement");
+    NH_BASE(); m.n_ff_exp = 24; ly[1].n_ff_exp = 24;
+    ck(!model_moe_router_host_default(&m), "moe host default: varying widths take no placement");
+    NH_BASE(); m.nemotron_h = false;
+    ck(!model_moe_router_host_default(&m), "moe host default: only nemotron_h_moe");
+    NH_BASE(); m.n_expert = 0;
+    ck(!model_moe_router_host_default(&m), "moe host default: no experts, no placement");
+    NH_BASE();
+    plat_setenv("RUNNER_CPU_MOE_DEFAULT", "0");
+    ck(!model_moe_router_host_default(&m), "moe host default: RUNNER_CPU_MOE_DEFAULT=0 turns it off");
+    plat_setenv("RUNNER_CPU_MOE_DEFAULT", "1");
+    ck(model_moe_router_host_default(&m), "moe host default: any other value leaves it on");
+    #undef NH_BASE
+}
+
+// gpu_tables.h's rows (R6.68.29): the uploader and the fit index them by
+// their id, so a row is at its own id's place, named, and present: a row
+// left out of the designated list would be all zeros, id GT_ATTN_NORM, no
+// labels. And every mixer row names a tensor.
+static void gpu_tables_rows_are_whole(void) {
+    const gpu_table_desc *rows = gpu_table_rows();
+    int bad = 0;
+    for (int t = 0; t < GT_COUNT; t++)
+        if ((int)rows[t].id != t || !rows[t].table_label ||
+            (rows[t].need != GT_NEED_NONE && !rows[t].upload_label)) bad++;
+    ck(bad == 0, "gpu tables: every row sits at its id, with its labels");
+    const gpu_mixer_desc *mix = gpu_mixer_rows();
+    int unnamed = 0;
+    for (int i = 0; i < GT_N_MIXER; i++) unnamed += !mix[i].names[0];
+    ck(unnamed == 0, "gpu tables: every mixer row names its tensor");
+}
+
 int main(int argc, char **argv) {
+    gpu_tables_rows_are_whole();
+    moe_host_default_table();
     test_gpu_window();
     test_gpu_budget();
     test_multislot_is_not_billed_once();

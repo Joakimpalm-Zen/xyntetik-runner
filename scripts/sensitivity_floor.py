@@ -66,7 +66,7 @@ PROMPTS = [
 
 def post(url, payload, timeout=900):
     request = urllib.request.Request(
-        url, data=json.dumps(payload).encode(),
+        url, data=json.dumps(payload, allow_nan=False).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
@@ -191,7 +191,7 @@ def main():
     pairs = run_runner(args) if args.mode == "runner" else run_reference(args)
     label = ("runner f16-KV vs runner q8-KV" if args.mode == "runner"
              else "llama.cpp cold-cache vs warm-cache")
-    print(json.dumps(summarise(args.model, label, pairs, args.tokens), indent=2))
+    print(json.dumps(summarise(args.model, label, pairs, args.tokens), indent=2, allow_nan=False))
 
 
 if __name__ == "__main__":

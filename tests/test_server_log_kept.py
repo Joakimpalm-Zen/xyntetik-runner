@@ -94,3 +94,22 @@ def test_a_log_the_caller_named_is_shown_and_stays_where_it_was_put(model, tmp_p
             raises_assertion()
     assert "server listening" in "\n".join(e.value.__notes__)
     assert path.exists() and srv.kept_log == str(path)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows terminates rather than signals: its exit code is not judged")
+def test_an_unclean_stop_keeps_the_whole_log_and_names_it(model):
+    """The block passed, the server did not stop cleanly (here: killed from
+    outside, as a sanitizer abort at exit would look to the harness). The
+    log is the only record of why, so it stays and the error names it."""
+    import signal
+    srv = RunnerServer(EXE, model, extra_args=["--gpu", "off"])
+    with pytest.raises(AssertionError) as e:
+        with srv:
+            own = srv._own_log
+            os.kill(srv.proc.pid, signal.SIGKILL)
+            srv.proc.wait(timeout=10)
+    assert "exited uncleanly" in str(e.value)
+    assert srv.kept_log == own and os.path.exists(own)
+    assert own in str(e.value)
+    assert "server listening" in pathlib.Path(own).read_text(errors="replace")
+    os.unlink(own)

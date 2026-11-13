@@ -1460,6 +1460,30 @@ static char *win_quote(const char *arg) {
     return q;
 }
 
+int plat_spawn_wait_stdin(const char *const argv[], const char *input, size_t n) {
+    if (!input) return plat_spawn_wait(argv);
+    // The input goes into a pipe before the child starts (it fits the pipe,
+    // so the write cannot block), the pipe's read end becomes descriptor 0
+    // for the length of the spawn, which the child inherits, and the
+    // caller's own standard input comes back after it.
+    int fds[2];
+    if (n > PLAT_SPAWN_STDIN_MAX || _pipe(fds, 2 * PLAT_SPAWN_STDIN_MAX, _O_BINARY) != 0)
+        return -1;
+    int wrote = n ? _write(fds[1], input, (unsigned)n) : 0;
+    _close(fds[1]);
+    int saved = _dup(0);   // -1 when the process has no standard input
+    if (wrote != (int)n || _dup2(fds[0], 0) != 0) {
+        _close(fds[0]);
+        if (saved >= 0) _close(saved);
+        return -1;
+    }
+    _close(fds[0]);
+    int rc = plat_spawn_wait(argv);
+    if (saved >= 0) { _dup2(saved, 0); _close(saved); }
+    else _close(0);
+    return rc;
+}
+
 int plat_spawn_wait(const char *const argv[]) {
     int n = 0;
     while (argv[n]) n++;
@@ -1541,17 +1565,36 @@ void plat_closedir(plat_dir *d) {
     free(d);
 }
 
-int plat_spawn_wait(const char *const argv[]) {
+int plat_spawn_wait_stdin(const char *const argv[], const char *input, size_t n) {
+    // The input is written into a pipe before the fork: it fits the pipe, so
+    // the write cannot block, and with both ends still open here it cannot
+    // raise SIGPIPE whatever becomes of the child.
+    int p[2] = { -1, -1 };
+    if (input) {
+        if (n > PLAT_SPAWN_STDIN_MAX || pipe(p) != 0) return -1;
+        ssize_t w = n ? write(p[1], input, n) : 0;
+        close(p[1]);
+        if (w != (ssize_t)n) { close(p[0]); return -1; }
+    }
     pid_t pid = fork();
-    if (pid < 0) return -1;
+    if (pid < 0) {
+        if (input) close(p[0]);
+        return -1;
+    }
     if (pid == 0) {
+        if (input && (dup2(p[0], 0) < 0 || close(p[0]) != 0)) _exit(127);
         execvp(argv[0], (char *const *)argv);
         _exit(127);
     }
+    if (input) close(p[0]);
     int status = 0;
     if (waitpid(pid, &status, 0) < 0) return -1;
     if (WIFEXITED(status)) return WEXITSTATUS(status) == 127 ? -1 : WEXITSTATUS(status);
     return -1;
+}
+
+int plat_spawn_wait(const char *const argv[]) {
+    return plat_spawn_wait_stdin(argv, NULL, 0);
 }
 
 static void *reap_detached(void *arg) {
@@ -1664,12 +1707,39 @@ bool plat_random(uint8_t *out, size_t n) {
 #endif
 }
 
+// The size of an open file, 64-bit on every platform, with the position left
+// at the start. ftell() returns long, which is 32 bits on Windows: a file past
+// 2 GiB read there as an error (R6.68.5).
+bool plat_file_size(FILE *f, uint64_t *out) {
+    // A directory has no size to read whole. fopen takes one on Linux, and
+    // where its end offset then is the filesystem's business: 0 on XFS for a
+    // small directory, so it read as an empty file (a plan "is not a JSON
+    // object" where the path "cannot be read"), and nonzero elsewhere, where
+    // the read fails as it should (R6.68.105; Windows refuses the fopen).
+#ifndef _WIN32
+    struct stat dir_st;
+    if (fstat(fileno(f), &dir_st) == 0 && S_ISDIR(dir_st.st_mode)) return false;
+#endif
+#ifdef _WIN32
+    if (_fseeki64(f, 0, SEEK_END) != 0) return false;
+    __int64 end = _ftelli64(f);
+    if (end < 0 || _fseeki64(f, 0, SEEK_SET) != 0) return false;
+#else
+    if (fseeko(f, 0, SEEK_END) != 0) return false;
+    off_t end = ftello(f);
+    if (end < 0 || fseeko(f, 0, SEEK_SET) != 0) return false;
+#endif
+    *out = (uint64_t)end;
+    return true;
+}
+
 char *plat_read_file(const char *path, size_t max_bytes, size_t *n_out) {
     FILE *f = plat_fopen(path, "rb");
     if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    long sz = ftell(f);
-    if (sz < 0 || (max_bytes && (unsigned long)sz > max_bytes) || fseek(f, 0, SEEK_SET) != 0) {
+    uint64_t sz = 0;
+    // the size must fit a buffer with its terminator, and the cap when one is set
+    if (!plat_file_size(f, &sz) || sz >= (uint64_t)SIZE_MAX ||
+        (max_bytes && sz > (uint64_t)max_bytes)) {
         fclose(f);
         return NULL;
     }
@@ -1682,6 +1752,30 @@ char *plat_read_file(const char *path, size_t max_bytes, size_t *n_out) {
     buf[got] = 0;
     if (n_out) *n_out = got;
     return buf;
+}
+
+// The process's physical footprint, where the operating system keeps one: on
+// macOS the kernel's phys_footprint (TASK_VM_INFO), the figure Activity Monitor
+// and footprint(1) show. Unlike the resident size it counts the GPU driver's
+// memory for this process (Metal buffers, IOAccelerator) and compressed pages:
+// a serving process read 13 MB resident at a 638 MB footprint, 598 MB of it
+// Metal, so a device-memory leak there showed nowhere else (R6.68.12). False
+// elsewhere: Linux and Windows have no one figure that adds device memory to
+// RAM, and their GPU memory is reported apart, so the field is left out
+// rather than repeating the resident set.
+bool plat_proc_phys_footprint_bytes(uint64_t *out) {
+#ifdef __APPLE__
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) != KERN_SUCCESS ||
+        count < TASK_VM_INFO_REV1_COUNT)   // phys_footprint arrived in revision 1
+        return false;
+    *out = (uint64_t)info.phys_footprint;
+    return true;
+#else
+    (void)out;
+    return false;
+#endif
 }
 
 bool plat_mkdir_exist_ok(const char *path) {
@@ -2281,3 +2375,100 @@ bool plat_slow_note_end(plat_slow_note *n) {
     return said;
 }
 #endif
+
+// ---------------------------------------------------------- file identity
+//
+// A file's identity without reading it (R6.68.30, from model.c): its size, a
+// stable index (the inode; NTFS's file index on Windows) and its modification
+// and creation times (POSIX: the status change) in nanoseconds since the Unix
+// epoch. model_file_identity keys shared weights and the prefix cache by it.
+// False when the file cannot be examined, with errno in *err.
+static int64_t stat_mtime_ns(const plat_stat_t *st) {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+    return (int64_t)st->st_mtimespec.tv_sec * 1000000000ll +
+           (int64_t)st->st_mtimespec.tv_nsec;
+#elif defined(__linux__)
+    return (int64_t)st->st_mtim.tv_sec * 1000000000ll +
+           (int64_t)st->st_mtim.tv_nsec;
+#else
+    return (int64_t)st->st_mtime * 1000000000ll;
+#endif
+}
+
+static int64_t stat_ctime_ns(const plat_stat_t *st) {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+    return (int64_t)st->st_ctimespec.tv_sec * 1000000000ll +
+           (int64_t)st->st_ctimespec.tv_nsec;
+#elif defined(__linux__)
+    return (int64_t)st->st_ctim.tv_sec * 1000000000ll +
+           (int64_t)st->st_ctim.tv_nsec;
+#else
+    return (int64_t)st->st_ctime * 1000000000ll;
+#endif
+}
+
+#ifdef _WIN32
+static int64_t filetime_unix_ns(FILETIME ft) {
+    ULARGE_INTEGER ticks;
+    ticks.LowPart = ft.dwLowDateTime;
+    ticks.HighPart = ft.dwHighDateTime;
+    // FILETIME is 100 ns since 1601; normalize to Unix epoch so the value
+    // remains inside signed 64-bit while retaining NTFS timestamp precision.
+    const uint64_t unix_epoch = 116444736000000000ull;
+    return ticks.QuadPart >= unix_epoch
+        ? (int64_t)((ticks.QuadPart - unix_epoch) * 100ull) : 0;
+}
+#endif
+
+bool plat_file_identity(const char *path, uint64_t *size, uint64_t *ino,
+                        int64_t *mtime, int64_t *ctime, int *err) {
+    *err = 0;
+#ifdef _WIN32
+    // MinGW's stat() is the wrong tool here twice over: st_size is 32-bit, so
+    // every real checkpoint (>2 GB) fails with EOVERFLOW and the identity is
+    // lost — every --parallel slot then loads privately and re-decides its
+    // own CPU/GPU split, which is the 2026-08-04 defect — and its timestamps
+    // are whole seconds, which can alias two GGUF revisions written in the
+    // same second. Native file information gives the stable 64-bit file index
+    // and the filesystem's 100 ns timestamps without hashing multi-GB files.
+    //
+    // The residual, accepted rather than hashed away: Windows stamps the write
+    // time from the cached system time, which advances on the timer tick
+    // (about 15.6 ms), so two writes inside one tick share a timestamp to the
+    // last bit and this identity cannot tell them apart. Reading the file to
+    // distinguish them is the thing this function exists to avoid. Found
+    // 2026-09-07, when the same check passed on one Windows machine and
+    // failed on a faster one.
+    HANDLE h = plat_create_file(path, FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL);
+    BY_HANDLE_FILE_INFORMATION info;
+    if (h != INVALID_HANDLE_VALUE && GetFileInformationByHandle(h, &info)) {
+        *size  = ((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow;
+        *ino   = ((uint64_t)info.nFileIndexHigh << 32) | info.nFileIndexLow;
+        *mtime = filetime_unix_ns(info.ftLastWriteTime);
+        if (ctime) *ctime = filetime_unix_ns(info.ftCreationTime);
+        CloseHandle(h);
+        return true;
+    }
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+#endif
+    plat_stat_t st;
+    if (plat_stat(path, &st) != 0) {
+        *err = errno;
+        return false;
+    }
+    *size  = (uint64_t)st.st_size;
+#ifdef _WIN32
+    // stat succeeded where native file information did not (non-NTFS volume,
+    // exotic redirector). No stable index on this path; the remaining fields
+    // still key, just ino=0 for every such file.
+    *ino   = 0;
+#else
+    *ino   = (uint64_t)st.st_ino;
+#endif
+    *mtime = stat_mtime_ns(&st);
+    if (ctime) *ctime = stat_ctime_ns(&st);
+    return true;
+}

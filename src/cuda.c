@@ -15,6 +15,7 @@
 #include "runner.h"
 #include "upload_report.h"
 #include "kernel_args.h"   // shared with src/kernels.cu — see the header
+#include "gpu_tables.h"    // the per-layer tables and mixer weights, one list (R6.68.29)
 #include "compat.h"     // plat_ram_available_bytes for the unified-pool budget
 #include <stdatomic.h>
 
@@ -281,6 +282,15 @@ static struct {
     CUresult (*CtxSynchronize)(void);
 } cu_raw;
 
+// The first synchronous call this thread made while it captured a graph
+// (R6.68.15). A synchronous copy, memset, allocation or legacy-stream launch
+// cannot be recorded into a graph: on the engine's blocking stream it fails
+// the capture (CUDA_ERROR_STREAM_CAPTURE_IMPLICIT), and on a non-blocking one
+// it would run once at capture time and never on a replay. The guarded
+// wrappers note it here, and a failed capture names it.
+static _Thread_local const char *t_capture_sync;
+#define CAPTURE_NOTE(name) do { if (t_capturing && !t_capture_sync) t_capture_sync = (name); } while (0)
+
 #define SYNC_GUARDED(call) do {                                   \
         bool held_ = !t_capturing;                                \
         if (held_) pthread_mutex_lock(&g_capture_mu);             \
@@ -293,34 +303,43 @@ static struct {
 // the two have drifted
 static _Atomic long g_live_bufs;
 static CUresult guarded_MemAlloc(CUdeviceptr *p, size_t n) {
+    CAPTURE_NOTE("cuMemAlloc");
     CUresult r_; SYNC_GUARDED(cu_raw.MemAlloc(p, n));
     if (r_ == 0) g_live_bufs++;
     return r_;
 }
 static CUresult guarded_MemFree(CUdeviceptr p) {
+    CAPTURE_NOTE("cuMemFree");
     CUresult r_; SYNC_GUARDED(cu_raw.MemFree(p));
     if (r_ == 0) g_live_bufs--;
     return r_;
 }
 static CUresult guarded_MemcpyHtoD(CUdeviceptr d, const void *h, size_t n) {
+    CAPTURE_NOTE("cuMemcpyHtoD");
     CUresult r_; SYNC_GUARDED(cu_raw.MemcpyHtoD(d, h, n)); return r_;
 }
 static CUresult guarded_MemcpyDtoH(void *h, CUdeviceptr d, size_t n) {
+    CAPTURE_NOTE("cuMemcpyDtoH");
     CUresult r_; SYNC_GUARDED(cu_raw.MemcpyDtoH(h, d, n)); return r_;
 }
 static CUresult guarded_MemcpyDtoD(CUdeviceptr a, CUdeviceptr b, size_t n) {
+    CAPTURE_NOTE("cuMemcpyDtoD");
     CUresult r_; SYNC_GUARDED(cu_raw.MemcpyDtoD(a, b, n)); return r_;
 }
 static CUresult guarded_MemsetD8(CUdeviceptr d, unsigned char v, size_t n) {
+    CAPTURE_NOTE("cuMemsetD8");
     CUresult r_; SYNC_GUARDED(cu_raw.MemsetD8(d, v, n)); return r_;
 }
 static CUresult guarded_ModuleLoadData(CUmodule *mod, const void *img) {
+    CAPTURE_NOTE("cuModuleLoadData");
     CUresult r_; SYNC_GUARDED(cu_raw.ModuleLoadData(mod, img)); return r_;
 }
 static CUresult guarded_ModuleUnload(CUmodule mod) {
+    CAPTURE_NOTE("cuModuleUnload");
     CUresult r_; SYNC_GUARDED(cu_raw.ModuleUnload(mod)); return r_;
 }
 static CUresult guarded_CtxSynchronize(void) {
+    CAPTURE_NOTE("cuCtxSynchronize");
     CUresult r_; SYNC_GUARDED(cu_raw.CtxSynchronize()); return r_;
 }
 // a launch on the engine's own stream is ordered by that stream alone; one
@@ -330,24 +349,30 @@ static CUresult guarded_LaunchKernel(CUfunction f, unsigned gx, unsigned gy, uns
                                      unsigned shmem, void *stream, void **params,
                                      void **extra) {
     if (stream) return cu_raw.LaunchKernel(f, gx, gy, gz, bx, by, bz, shmem, stream, params, extra);
+    CAPTURE_NOTE("cuLaunchKernel on the legacy stream");
     CUresult r_;
     SYNC_GUARDED(cu_raw.LaunchKernel(f, gx, gy, gz, bx, by, bz, shmem, stream, params, extra));
     return r_;
 }
 
-static void cu_guard_syncing(void) {
+// One driver entry of cu_guard_syncing: keep the raw pointer and route calls
+// through the guarded wrapper of the same name. It pastes a symbol name and
+// captures nothing of the function that uses it, so it is defined here, at
+// file scope, not inside that function.
 #define GUARD(fn) do { cu_raw.fn = cu.fn; if (cu.fn) cu.fn = guarded_##fn; } while (0)
+static void cu_guard_syncing(void) {
     GUARD(MemAlloc); GUARD(MemFree); GUARD(MemcpyHtoD); GUARD(MemcpyDtoH);
     GUARD(MemcpyDtoD); GUARD(MemsetD8); GUARD(ModuleLoadData); GUARD(ModuleUnload);
     GUARD(LaunchKernel); GUARD(CtxSynchronize);
-#undef GUARD
 }
+#undef GUARD
 
 // A capture holds g_capture_mu from its first call to its last. capture_end
 // is safe to call twice (the failure paths end a capture "to be sure").
 static CUresult capture_begin(CUstream s) {
     pthread_mutex_lock(&g_capture_mu);
     t_capturing = true;
+    t_capture_sync = NULL;
     CUresult r = cu.StreamBeginCapture(s, 1);   // THREAD_LOCAL; see above for why that is not enough
     if (r != 0) {
         t_capturing = false;
@@ -386,6 +411,46 @@ static const char *cu_err(CUresult r) {
     const char *s = NULL;
     if (cu.GetErrorString) cu.GetErrorString(r, &s);
     return s ? s : "unknown CUDA error";
+}
+
+// RUNNER_REQUIRE_GRAPH_CAPTURE=1 (the CUDA gates, R6.68.15): a decode graph
+// that fails to capture or to launch ends the process with the reason. Without
+// it the decode falls back to plain launches and says so in one stderr line,
+// which no gate read: a shared-expert MoE lost its decode graph that way on
+// every model of the shape. A decode that is eager by design (graph_why) is not
+// a failure: under the switch it says why, once, and runs.
+static bool graph_capture_required(void) {
+    static _Atomic int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RUNNER_REQUIRE_GRAPH_CAPTURE");
+        on = e && *e && strcmp(e, "0") != 0;
+    }
+    return on == 1;
+}
+// what: "decode" or "batch"; stage: where it failed; r: the CUDA result there
+static void graph_capture_failed(const char *what, const char *stage, CUresult r) {
+    const char *op = t_capture_sync;
+    fprintf(stderr, "gpu: %s graph capture failed at %s (%s%s%s) \u2014 plain launches\n",
+            what, stage, cu_err(r), op ? "; a synchronous " : "", op ? op : "");
+    if (graph_capture_required()) {
+        fprintf(stderr, "error: RUNNER_REQUIRE_GRAPH_CAPTURE=1: a %s graph that does not "
+                "capture is a failure here, not a fallback\n", what);
+        exit(3);
+    }
+}
+static void graph_launch_failed(const char *what) {
+    fprintf(stderr, "gpu: %s graph launch failed \u2014 plain launches\n", what);
+    if (graph_capture_required()) {
+        fprintf(stderr, "error: RUNNER_REQUIRE_GRAPH_CAPTURE=1: a %s graph that does not "
+                "launch is a failure here, not a fallback\n", what);
+        exit(3);
+    }
+}
+// Under the switch, a decode that is eager by design says so once.
+static void graph_eager_note(const char *what, const char *why, bool *said) {
+    if (!graph_capture_required() || *said || !why) return;
+    *said = true;
+    fprintf(stderr, "gpu: %s graph off by design: %s\n", what, why);
 }
 
 // ------------------------------------------------------------------ backend
@@ -722,6 +787,8 @@ typedef struct {
     // through the pointer it is handed
     CUdeviceptr  pos_dev;
     bool         graph_bad;
+    const char  *graph_why;             // why graph_bad was set by design (none: a failure set it)
+    bool         graph_why_said;
     int          win;                   // prompt window: columns of every activation buffer
     // X3 (RUNNER_CUDA_KV_GATHER): a decoded token's K and V rows of every
     // offloaded layer gathered on the device (kvg_dev) and brought back in
@@ -1070,8 +1137,13 @@ bool gpu_quant_ok(int type) { return gpu_type_ok(type); }
 // Expert tensor types the indirect MoE matvecs (k_moe_mv_*) cover. A type
 // outside this set is not an error — that model keeps the eager per-expert
 // path, exactly as before the device-routing work.
-// experts per token the device router (k_moe_route) holds in local memory
-enum { MOE_ROUTE_MAX = 512 };
+// experts per token the device router (k_moe_route) holds in local memory,
+// and the picks a device route selects (the fixed sel[]/selw[] rows and the
+// selection buffers cuda_alloc_moe sizes). A model past either is refused a
+// device bank (cuda_admit, moe_bank_device_ok, R6.68.67): every route clamps
+// to these, and a clamped route answers among a subset of the experts
+// without a word, the 2026-10-07 defect at the old cap of 256.
+enum { MOE_ROUTE_MAX = 512, MOE_MAX_USED = 256 };
 
 static bool moe_indirect_type_ok(int type) {
     switch (type) {
@@ -1189,6 +1261,11 @@ static bool moe_bank_device_ok(const model_t *m, int l) {
     // host, where model_moe_ffn_cpu routes it with the CPU's moe_route
     // (R3.43a).
     if (ly->is_moe && (!model_moe_router_is_plain_any_norm(m) || ly->exp_probs_b))
+        return false;
+    // more experts or picks than a device route takes: it would route among
+    // a clamped set (R6.68.67)
+    if (ly->is_moe && (ly->n_expert > MOE_ROUTE_MAX || m->n_expert > MOE_ROUTE_MAX ||
+                       m->n_expert_used > MOE_MAX_USED))
         return false;
     if (!ly->is_moe || m->n_ff_shexp <= 0) return true;
     if (m->ffn_relu2) return false;
@@ -1448,6 +1525,12 @@ bool gpu_moe_ok(void) {
 // attention weights), so its sequences decode one at a time.
 bool gpu_removed_sublayers_ok(void) { return true; }
 
+bool gpu_moe_route_caps(int *max_experts, int *max_used) {
+    *max_experts = MOE_ROUTE_MAX;
+    *max_used = MOE_MAX_USED;
+    return true;
+}
+
 // the DeltaNet layers run on the device (gpu_q35_recurrent), adapters too
 bool gpu_qwen35_ok(void) { return true; }
 
@@ -1564,48 +1647,80 @@ bool gpu_shared_weights_resident(const model_t *m) {
     return hit;
 }
 
+// A row of gpu_tables.h's table list and the gpu_weights pointer table it
+// lives in. No default case: -Wswitch refuses a row without its line here.
+static CUdeviceptr **cuda_table(gpu_weights *w, gpu_table t) {
+    switch (t) {
+    case GT_ATTN_NORM:       return &w->attn_norm;
+    case GT_HC_ATTN_NORM:    return &w->hc_an;
+    case GT_HC_FFN_NORM:     return &w->hc_fn;
+    case GT_FFN_NORM:        return &w->ffn_norm;
+    case GT_BQ:              return &w->bq;
+    case GT_BK:              return &w->bk;
+    case GT_BV:              return &w->bv;
+    case GT_BO:              return &w->bo;
+    case GT_QNORM:           return &w->qn;
+    case GT_KNORM:           return &w->kn;
+    case GT_MLA_KV_NORM:     return &w->mla_kvn;
+    case GT_MLA_KVB:         return &w->mla_kvb;
+    case GT_POST_ATTN_NORM:  return &w->pan;
+    case GT_POST_FFN_NORM:   return &w->pfn;
+    case GT_PLE_POST_NORM:   return &w->ple_pn;
+    case GT_SINKS:           return &w->sinks;
+    case GT_MOE_ROUTER_B:    return &w->gib;
+    case GT_MOE_GATE_B:      return &w->geb;
+    case GT_MOE_UP_B:        return &w->ueb;
+    case GT_MOE_DOWN_B:      return &w->deb;
+    case GT_SSM_DT:          return &w->ssm_dt;
+    case GT_SSM_A:           return &w->ssm_a;
+    case GT_SSM_NORM:        return &w->ssm_norm;
+    case GT_SSM_GNORM:       return &w->ssm_gnorm;
+    case GT_SSM_D:           return &w->ssm_D;
+    case GT_SSM_CONV_B:      return &w->ssm_conv_b;
+    case GT_G_POST_NORM1:    return &w->g_pn1;
+    case GT_G_PRE_NORM2:     return &w->g_prn2;
+    case GT_G_POST_NORM2:    return &w->g_pn2;
+    case GT_G_ROUTER_SCALE:  return &w->g_gis;
+    case GT_G_DOWN_SCALE:    return &w->g_dsc;
+    case GT_HOT_BANK:        return &w->hot_bank;
+    case GT_COUNT:           break;
+    }
+    return NULL;
+}
+
+// Whether layer l's table of row `d` must exist (the uploader's check): by the
+// row's need, over the layer as the binders and the placement left it.
+static bool cuda_table_needed(const gpu_table_desc *d, const model_t *m, const layer_t *ly,
+                              bool moe_dev) {
+    // read as bytes: the rows name host fields of their own pointer types, and
+    // a load through a void * lvalue would access them through another type
+    // (undefined under the aliasing rules this build optimizes under)
+    const void *host = NULL;
+    if (d->host != GT_NO_HOST) memcpy(&host, (const char *)ly + d->host, sizeof host);
+    switch (d->need) {
+    case GT_NEED_HOST:      return host != NULL;
+    case GT_NEED_HC:        return m->hyper_conn;
+    case GT_NEED_REC:       return ly->recurrent;
+    case GT_NEED_REC_DN:    return ly->recurrent && m->qwen35;
+    case GT_NEED_REC_M2:    return ly->recurrent && !m->qwen35;
+    case GT_NEED_MOE_DEV:   return moe_dev && host != NULL;
+    case GT_NEED_GEMMA_MOE: return ly->moe_gemma;
+    case GT_NEED_NONE:      return false;
+    }
+    return false;
+}
+
 static void shared_destroy(gpu_weights *w) {
     if (!w) return;
     if (w->ctx) cu.CtxSetCurrent(w->ctx);
-    // every table slot, the bound MTP block's (index n_layer) included
-    for (int l = 0; l < w->n_tab; l++) {
-        CUdeviceptr bufs[] = {
-            w->attn_norm ? w->attn_norm[l] : 0,
-            w->ffn_norm  ? w->ffn_norm[l]  : 0,
-            w->hc_an ? w->hc_an[l] : 0, w->hc_fn ? w->hc_fn[l] : 0,
-            w->ssm_D ? w->ssm_D[l] : 0, w->ssm_conv_b ? w->ssm_conv_b[l] : 0,
-            w->ssm_gnorm ? w->ssm_gnorm[l] : 0,
-            w->bq ? w->bq[l] : 0, w->bk ? w->bk[l] : 0,
-            w->bv ? w->bv[l] : 0, w->bo ? w->bo[l] : 0,
-            w->qn ? w->qn[l] : 0, w->kn ? w->kn[l] : 0,
-            w->mla_kvn ? w->mla_kvn[l] : 0, w->mla_kvb ? w->mla_kvb[l] : 0,
-            w->pan ? w->pan[l] : 0, w->pfn ? w->pfn[l] : 0,
-            w->g_pn1 ? w->g_pn1[l] : 0, w->g_prn2 ? w->g_prn2[l] : 0,
-            w->g_pn2 ? w->g_pn2[l] : 0, w->g_gis ? w->g_gis[l] : 0,
-            w->g_dsc ? w->g_dsc[l] : 0,
-            w->ssm_dt ? w->ssm_dt[l] : 0, w->ssm_a ? w->ssm_a[l] : 0,
-            w->ssm_norm ? w->ssm_norm[l] : 0,
-            w->ple_pn ? w->ple_pn[l] : 0,
-            w->sinks ? w->sinks[l] : 0,
-            w->gib ? w->gib[l] : 0, w->geb ? w->geb[l] : 0,
-            w->ueb ? w->ueb[l] : 0, w->deb ? w->deb[l] : 0,
-            w->hot_bank ? w->hot_bank[l] : 0,
-        };
-        for (size_t i = 0; i < sizeof(bufs) / sizeof(*bufs); i++)
-            if (bufs[i]) cu.MemFree(bufs[i]);
+    // every table slot, the bound MTP block's (index n_layer) included, then
+    // the pointer tables: gpu_tables.h's rows, so a table added there is freed
+    for (int t = 0; t < GT_COUNT; t++) {
+        CUdeviceptr *tab = *cuda_table(w, (gpu_table)t);
+        for (int l = 0; tab && l < w->n_tab; l++)
+            if (tab[l]) cu.MemFree(tab[l]);
+        free(tab);
     }
-    free(w->attn_norm); free(w->ffn_norm);
-    free(w->bq); free(w->bk); free(w->bv); free(w->bo);
-    free(w->qn); free(w->kn); free(w->mla_kvn); free(w->mla_kvb);
-    free(w->pan); free(w->pfn); free(w->ple_pn);
-    free(w->g_pn1); free(w->g_prn2); free(w->g_pn2); free(w->g_gis);
-    free(w->g_dsc);
-    free(w->ssm_dt); free(w->ssm_a); free(w->ssm_norm);
-    free(w->hc_an); free(w->hc_fn);
-    free(w->ssm_D); free(w->ssm_conv_b); free(w->ssm_gnorm);
-    free(w->sinks);
-    free(w->gib); free(w->geb); free(w->ueb); free(w->deb);
-    free(w->hot_bank);
     for (int i = 0; i < w->n_bindings; i++)
         if (w->bindings[i].device) cu.MemFree(w->bindings[i].device);
     free(w->bindings);
@@ -1669,25 +1784,20 @@ static size_t expert_plan_bytes(const layer_t *ly, int n_expert, bool bound) {
 // prefix's reach had neither the hyper-connection mixers nor the shared
 // expert. tests/test_cuda_tensor_roles.py holds every tensor field of
 // layer_t to one of the lists or a named host-side role.
-enum { LAYER_MIXER_MAX = 22 };
+enum { LAYER_MIXER_MAX = GT_N_MIXER };
 
 // The mixer side, on the device whatever the FFN does: attention or the
 // recurrent mixer, the hyper-connection stream mixers (four projections and
 // two injects per layer: 1.27 GB on Qwen3.8-Flash-Next), the E-series
 // per-layer embedding projections. Absent tensors are left out.
 static int layer_mixer_tensors(const layer_t *ly, gguf_tensor **out) {
-    gguf_tensor *ts[LAYER_MIXER_MAX] = {
-        ly->ple_gate, ly->ple_proj, ly->wq, ly->wk, ly->wv, ly->wo, ly->wqkv,
-        ly->wq_gate, ly->ssm_in, ly->ssm_conv, ly->ssm_beta, ly->ssm_alpha,
-        ly->ssm_out, ly->hc_attn_down, ly->hc_attn_up, ly->hc_attn_inject,
-        ly->hc_ffn_down, ly->hc_ffn_up, ly->hc_ffn_inject,
-        // deepseek2's multi-head latent attention (R4.4.5): the q-lora down
-        // projection and the latent pair; attn_q/attn_output ride wq/wo.
-        // CUDA refuses the architecture until step (c) runs it on the device
-        ly->wq_a, ly->wkv_a, ly->wkv_b };
+    // gpu_tables.h's mixer rows, in their order: the fit prices the same list
+    const gpu_mixer_desc *rows = gpu_mixer_rows();
     int n = 0;
-    for (int i = 0; i < LAYER_MIXER_MAX; i++)
-        if (ts[i]) out[n++] = ts[i];
+    for (int i = 0; i < LAYER_MIXER_MAX; i++) {
+        gguf_tensor *t = *(gguf_tensor *const *)((const char *)ly + rows[i].field);
+        if (t) out[n++] = t;
+    }
     return n;
 }
 
@@ -2264,7 +2374,7 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
     // reserve above could not be met, hand the last layer back to the CPU
     // so the split is honestly partial rather than internally inconsistent.
     bool gave_back = false;
-    bool full = gpu_plan_full_split(&G, m->n_layer, used, plan_full_extra(m, P),
+    bool full = gpu_plan_full_split(&G, m->n_layer, &used, cost, plan_full_extra(m, P),
                                     vram_budget, &gave_back);
     if (gave_back) {
         fprintf(stderr, "gpu: output weights do not fit alongside the "
@@ -3138,75 +3248,16 @@ static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
     // one slot past the backbone for the NextN/MTP block when it is bound
     const int n_tab = m->n_layer + (m->mtp_ready ? 1 : 0);
     w->n_tab = n_tab;
-    w->attn_norm = calloc(n_tab, sizeof(CUdeviceptr));
-    w->hc_an = calloc(n_tab, sizeof(CUdeviceptr));
-    w->hc_fn = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ffn_norm  = calloc(n_tab, sizeof(CUdeviceptr));
-    w->bq = calloc(n_tab, sizeof(CUdeviceptr));
-    w->bk = calloc(n_tab, sizeof(CUdeviceptr));
-    w->bv = calloc(n_tab, sizeof(CUdeviceptr));
-    w->bo = calloc(n_tab, sizeof(CUdeviceptr));
-    w->qn = calloc(n_tab, sizeof(CUdeviceptr));
-    w->kn = calloc(n_tab, sizeof(CUdeviceptr));
-    w->mla_kvn = calloc(n_tab, sizeof(CUdeviceptr));
-    w->mla_kvb = calloc(n_tab, sizeof(CUdeviceptr));
-    w->pan = calloc(n_tab, sizeof(CUdeviceptr));
-    w->pfn = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ple_pn = calloc(n_tab, sizeof(CUdeviceptr));
-    w->g_pn1  = calloc(n_tab, sizeof(CUdeviceptr));
-    w->g_prn2 = calloc(n_tab, sizeof(CUdeviceptr));
-    w->g_pn2  = calloc(n_tab, sizeof(CUdeviceptr));
-    w->g_gis  = calloc(n_tab, sizeof(CUdeviceptr));
-    w->g_dsc  = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ssm_dt   = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ssm_a    = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ssm_norm = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ssm_D      = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ssm_conv_b = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ssm_gnorm  = calloc(n_tab, sizeof(CUdeviceptr));
-    w->sinks    = calloc(n_tab, sizeof(CUdeviceptr));
-    w->gib      = calloc(n_tab, sizeof(CUdeviceptr));
-    w->geb      = calloc(n_tab, sizeof(CUdeviceptr));
-    w->ueb      = calloc(n_tab, sizeof(CUdeviceptr));
-    w->deb      = calloc(n_tab, sizeof(CUdeviceptr));
-    w->hot_bank = calloc(n_tab, sizeof(CUdeviceptr));
-#define REQUIRE_PTR_TABLE(ptr, label) do { if (!(ptr)) { \
-        fprintf(stderr, "gpu: CUDA shared per-layer pointer-table " \
-                "allocation failed (%s) — using CPU\n", label); \
-        goto fail; \
-    } } while (0)
-    REQUIRE_PTR_TABLE(w->attn_norm, "attn_norm");
-    REQUIRE_PTR_TABLE(w->hc_an, "hc_attn_norm");
-    REQUIRE_PTR_TABLE(w->hc_fn, "hc_ffn_norm");
-    REQUIRE_PTR_TABLE(w->ffn_norm, "ffn_norm");
-    REQUIRE_PTR_TABLE(w->bq, "attn_q bias");
-    REQUIRE_PTR_TABLE(w->bk, "attn_k bias");
-    REQUIRE_PTR_TABLE(w->bv, "attn_v bias");
-    REQUIRE_PTR_TABLE(w->bo, "attn_output bias");
-    REQUIRE_PTR_TABLE(w->qn, "attn_q_norm");
-    REQUIRE_PTR_TABLE(w->kn, "attn_k_norm");
-    REQUIRE_PTR_TABLE(w->mla_kvn, "attn_kv_a_norm");
-    REQUIRE_PTR_TABLE(w->mla_kvb, "attn_kv_b f32");
-    REQUIRE_PTR_TABLE(w->pan, "post_attention_norm");
-    REQUIRE_PTR_TABLE(w->pfn, "post_ffn_norm");
-    REQUIRE_PTR_TABLE(w->ple_pn, "per-layer embedding post_norm");
-    REQUIRE_PTR_TABLE(w->g_pn1, "Gemma post_ffw_norm_1");
-    REQUIRE_PTR_TABLE(w->g_prn2, "Gemma pre_ffw_norm_2");
-    REQUIRE_PTR_TABLE(w->g_pn2, "Gemma post_ffw_norm_2");
-    REQUIRE_PTR_TABLE(w->g_gis, "Gemma router input scale");
-    REQUIRE_PTR_TABLE(w->g_dsc, "Gemma expert down scale");
-    REQUIRE_PTR_TABLE(w->ssm_dt, "SSM dt");
-    REQUIRE_PTR_TABLE(w->ssm_a, "SSM A");
-    REQUIRE_PTR_TABLE(w->ssm_norm, "SSM norm");
-    REQUIRE_PTR_TABLE(w->ssm_D, "Mamba D");
-    REQUIRE_PTR_TABLE(w->ssm_conv_b, "Mamba conv bias");
-    REQUIRE_PTR_TABLE(w->ssm_gnorm, "Mamba gated norm");
-    REQUIRE_PTR_TABLE(w->sinks, "attention sinks");
-    REQUIRE_PTR_TABLE(w->gib, "MoE router bias");
-    REQUIRE_PTR_TABLE(w->geb, "MoE gate bias");
-    REQUIRE_PTR_TABLE(w->ueb, "MoE up bias");
-    REQUIRE_PTR_TABLE(w->deb, "MoE down bias");
-#undef REQUIRE_PTR_TABLE
+    // one pointer table per gpu_tables.h row, each n_tab slots
+    const gpu_table_desc *rows = gpu_table_rows();
+    for (int t = 0; t < GT_COUNT; t++)
+        *cuda_table(w, (gpu_table)t) = calloc(n_tab, sizeof(CUdeviceptr));
+    for (int t = 0; t < GT_COUNT; t++)
+        if (!*cuda_table(w, (gpu_table)t)) {
+            fprintf(stderr, "gpu: CUDA shared per-layer pointer-table "
+                    "allocation failed (%s) — using CPU\n", rows[t].table_label);
+            goto fail;
+        }
     if (moe_any_on_device(m)) {
         // all-ones per-expert scale table for archs without a down-
         // projection scale — k_moe_actmul multiplies unconditionally
@@ -3318,63 +3369,12 @@ static bool shared_upload_layer_tables(gpu_weights *w, model_t *m) {
         // nemotron_h SSM or attention block carries none (skip_ffn), and
         // demanding its upload here silently pushed every nemotron_h
         // model to the CPU.
-#define REQUIRE_UPLOAD(cond, label) do { if (cond) { \
-            fprintf(stderr, "gpu: CUDA shared upload is missing %s in " \
-                    "blk.%d — using CPU\n", label, l); \
-            goto fail; \
-        } } while (0)
-        REQUIRE_UPLOAD(ly->attn_norm_w && !w->attn_norm[l], "attention norm");
-        REQUIRE_UPLOAD(m->hyper_conn && !w->hc_an[l], "hc attention mixer norm");
-        REQUIRE_UPLOAD(m->hyper_conn && !w->hc_fn[l], "hc FFN mixer norm");
-        REQUIRE_UPLOAD(ly->ffn_norm_w && !w->ffn_norm[l], "FFN norm");
-        REQUIRE_UPLOAD(ly->bq && !w->bq[l], "Q bias");
-        REQUIRE_UPLOAD(ly->bk && !w->bk[l], "K bias");
-        REQUIRE_UPLOAD(ly->bv && !w->bv[l], "V bias");
-        REQUIRE_UPLOAD(ly->bo && !w->bo[l], "attention output bias");
-        REQUIRE_UPLOAD(ly->qnorm_w && !w->qn[l], "Q norm");
-        REQUIRE_UPLOAD(ly->knorm_w && !w->kn[l], "K norm");
-        REQUIRE_UPLOAD(ly->kv_a_norm_w && !w->mla_kvn[l], "latent norm");
-        REQUIRE_UPLOAD(ly->mla_kvb && !w->mla_kvb[l], "attn_kv_b f32");
-        REQUIRE_UPLOAD(ly->post_attn_norm_w && !w->pan[l],
-                       "post-attention norm");
-        REQUIRE_UPLOAD(ly->post_ffn_norm_w && !w->pfn[l],
-                       "post-FFN norm");
-        REQUIRE_UPLOAD(ly->ple_post_norm && !w->ple_pn[l],
-                       "per-layer embedding post-norm");
-        REQUIRE_UPLOAD(ly->attn_sinks && !w->sinks[l],
-                       "attention sinks");
-        REQUIRE_UPLOAD(moe_dev && ly->ffn_gate_inp_b && !w->gib[l],
-                       "MoE router bias");
-        REQUIRE_UPLOAD(moe_dev && ly->ffn_gate_exps_b && !w->geb[l],
-                       "MoE gate bias");
-        REQUIRE_UPLOAD(moe_dev && ly->ffn_up_exps_b && !w->ueb[l],
-                       "MoE up bias");
-        REQUIRE_UPLOAD(moe_dev && ly->ffn_down_exps_b && !w->deb[l],
-                       "MoE down bias");
-        // Per-family recurrent tables: Qwen3.5 fills ssm_norm; Mamba-2
-        // fills gated norm/D/conv bias instead. Keep each validation beside
-        // the same family predicate that filled it above.
-        REQUIRE_UPLOAD(ly->recurrent && !w->ssm_dt[l], "SSM dt");
-        REQUIRE_UPLOAD(ly->recurrent && !w->ssm_a[l], "SSM A");
-        REQUIRE_UPLOAD(ly->recurrent && m->qwen35 && !w->ssm_norm[l],
-                       "SSM norm");
-        REQUIRE_UPLOAD(ly->recurrent && !m->qwen35 && !w->ssm_gnorm[l],
-                       "Mamba gated norm");
-        REQUIRE_UPLOAD(ly->recurrent && !m->qwen35 && !w->ssm_D[l],
-                       "Mamba D");
-        REQUIRE_UPLOAD(ly->recurrent && !m->qwen35 && !w->ssm_conv_b[l],
-                       "Mamba conv bias");
-        REQUIRE_UPLOAD(ly->moe_gemma && !w->g_pn1[l],
-                       "Gemma post-FFN norm 1");
-        REQUIRE_UPLOAD(ly->moe_gemma && !w->g_prn2[l],
-                       "Gemma pre-FFN norm 2");
-        REQUIRE_UPLOAD(ly->moe_gemma && !w->g_pn2[l],
-                       "Gemma post-FFN norm 2");
-        REQUIRE_UPLOAD(ly->moe_gemma && !w->g_gis[l],
-                       "Gemma router input scale");
-        REQUIRE_UPLOAD(ly->moe_gemma && !w->g_dsc[l],
-                       "Gemma expert down scale");
-#undef REQUIRE_UPLOAD
+        for (int t = 0; t < GT_COUNT; t++)
+            if (cuda_table_needed(&rows[t], m, ly, moe_dev) && !(*cuda_table(w, (gpu_table)t))[l]) {
+                fprintf(stderr, "gpu: CUDA shared upload is missing %s in "
+                        "blk.%d — using CPU\n", rows[t].upload_label, l);
+                goto fail;
+            }
     }
     return true;
 fail:
@@ -3576,6 +3576,14 @@ static bool cuda_admit(model_t *m) {
                 "running on CPU\n", m->moe_latent);
         return false;
     }
+    // An odd attention head width (R6.68.112, model_gpu_odd_head_why): the
+    // loader asks it first under --gpu auto, and so does --info fit; a forced
+    // --gpu reaches here without that check
+    char head_why[200];
+    if (model_gpu_odd_head_why(m, head_why, sizeof head_why)) {
+        fprintf(stderr, "gpu: %s, running on CPU\n", head_why);
+        return false;
+    }
     // Per-layer expert widths (Nemotron 3.5 Bolt, which the rule above already
     // refuses): every device expert table and kernel here takes the model's
     // one width. Refused by name, so that no later path admits a narrower
@@ -3594,6 +3602,17 @@ static bool cuda_admit(model_t *m) {
     // refuse only when a bank is on the device; --cpu-moe, and its auto fit,
     // which places no bank moe_bank_device_ok refuses, keep these models on
     // the device.
+    // Every device route takes at most MOE_ROUTE_MAX experts and MOE_MAX_USED
+    // picks and clamps past them, so such a router would answer among a
+    // subset of its experts on the device alone (R6.68.67).
+    char route_why[200];
+    if (m->n_expert > 0 && moe_any_on_device(m) &&
+        model_moe_route_why(m->n_expert, m->n_expert_used, MOE_ROUTE_MAX, MOE_MAX_USED,
+                            route_why, sizeof route_why)) {
+        fprintf(stderr, "gpu: %s, running on CPU (--cpu-moe keeps the experts and "
+                "their routing on the host)\n", route_why);
+        return false;
+    }
     if (m->n_expert > 0 && moe_any_on_device(m) && !model_moe_router_is_plain_any_norm(m)) {
         fprintf(stderr, "gpu: this model's MoE router (gating=%d groups=%d "
                 "norm_w=%d scale=%g) has no device kernel, running on CPU "
@@ -4038,7 +4057,7 @@ static bool cuda_alloc_moe(model_t *m, gpu_t *g) {
         // the eager fallback (which uses column/slot 0 only)
         int used_c = m->n_expert_used;
         if (used_c < 1) used_c = 1;
-        if (used_c > 256) used_c = 256;
+        if (used_c > MOE_MAX_USED) used_c = MOE_MAX_USED;
         int rows = used_c > g->win ? used_c : g->win;
         size_t gw = (size_t)m->n_ff_exp * (m->moe_gemma ? 2 : 1);
         if (gw < 1) gw = 1;
@@ -4170,24 +4189,51 @@ static void cuda_plan_graphs(model_t *m, gpu_t *g) {
     // follow the same argument: a one-token step is three launches on the
     // conv ring and SSD state fixed for the instance, advanced in place, the
     // rollback copy taken before the forward (cuda_fwd_prepare); nemotron_h's
-    // MLP-only blocks run no attention, so no V memset. qwen4exp (host steps
-    // between layers), MoE hybrids and any qwen35 file with routed experts
-    // (none measured) stay eager. RUNNER_CUDA_GRAPH_RECUR=0 keeps every
-    // recurrent family eager.
+    // MLP-only blocks run no attention, so no V memset. A qwen35 file with
+    // routed experts (qwen35moe) replays too since R6.68.25a: its expert
+    // banks hold no recurrent state, so the recurrent rule no longer excludes
+    // them and the MoE rules below decide, as for any other family (fused
+    // device routing with every bank on the device captures; the eager MoE
+    // path or experts on the host are eager by design and say so).
+    // qwen4exp (host steps between layers) stays eager, and so do the Mamba-2
+    // hybrids with experts, which the rule leaves out (granitehybrid's and
+    // nemotron_h_moe's banks stay on the host anyway).
+    // RUNNER_CUDA_GRAPH_RECUR=0 keeps every recurrent family eager.
     bool mamba_dense = (m->granite_hybrid || m->nemotron_h) && m->n_expert == 0;
-    bool recur_graph = (m->qwen35 || mamba_dense) && !m->hyper_conn && m->n_expert == 0 &&
-                       cuda_graph_recur_on();
-    for (int l = 0; l < m->gpu_layers; l++)
-        if ((!m->layers[l].wv && !(m->layers[l].recurrent && recur_graph) &&
-             !(m->layers[l].skip_mixer && recur_graph) &&
-             !v_from_k_capturable(m, l)) ||
-            (m->layers[l].is_moe && !g->moe_fused_ok) ||
-            (m->layers[l].recurrent && !recur_graph)) g->graph_bad = true;
-    if (m->qwen35 && !recur_graph) g->graph_bad = true;
-    if (moe_any_on_host(m)) g->graph_bad = true;
+    bool recur_graph = (m->qwen35 || mamba_dense) && !m->hyper_conn && cuda_graph_recur_on();
+    // each rule names itself (graph_why), so a gate that requires the graph
+    // (RUNNER_REQUIRE_GRAPH_CAPTURE) can tell eager by design from a failure
+    // The three per-layer rules, the same union as before; which one names the
+    // layer goes most specific first, so a recurrent layer (no V projection by
+    // nature) is called recurrent and not V-less.
+    const char *why = NULL;
+    for (int l = 0; l < m->gpu_layers && !why; l++) {
+        const layer_t *ly = &m->layers[l];
+        bool vless = !ly->wv && !(ly->recurrent && recur_graph) &&
+                     !(ly->skip_mixer && recur_graph) && !v_from_k_capturable(m, l);
+        if (ly->recurrent && !recur_graph)
+            why = "a recurrent layer of a family whose decode is not captured (or RUNNER_CUDA_GRAPH_RECUR=0)";
+        else if (ly->is_moe && !g->moe_fused_ok)
+            why = "MoE routing read back to the host mid-forward (the eager MoE path)";
+        else if (vless && ly->skip_mixer)
+            why = "an MLP-only block of a hybrid whose decode is not captured";
+        else if (vless && m->l_no_attn && m->l_no_attn[l])
+            why = "a block whose attention was removed (--remove-sublayer)";
+        else if (vless)
+            why = "a layer without a V projection that is not built on the stream (a synchronous memset)";
+    }
+    // RUNNER_DEBUG_MOE prints the first routings' choices, read back to the
+    // host inside the fused decode forward: a capture cannot record that
+    // (the R6.68.15 audit), so the debug run decodes eagerly
+    if (!why && m->n_expert > 0 && moe_any_on_device(m) && getenv("RUNNER_DEBUG_MOE"))
+        why = "RUNNER_DEBUG_MOE reads the routing back to the host";
+    if (!why && m->qwen35 && !recur_graph)
+        why = "a qwen35 file whose decode is not captured (hyper-connections, or RUNNER_CUDA_GRAPH_RECUR=0)";
+    if (!why && moe_any_on_host(m)) why = "experts on the host";
     // RUNNER_MOE_REPLAY / RUNNER_MOE_TRACE: each routing takes its position
     // from the host, and a trace reads it back, so neither is captured
-    if (g->replay_tab || g->route_trace) g->graph_bad = true;
+    if (!why && (g->replay_tab || g->route_trace)) why = "RUNNER_MOE_REPLAY or RUNNER_MOE_TRACE";
+    if (why) { g->graph_bad = true; g->graph_why = why; }
 }
 
 // Host staging for the per-layer embeddings, the residual and the logits.
@@ -5166,6 +5212,75 @@ static bool mv_twin_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n_
     return w->scale == 1.0f && !mv_route_q8x(g, w, n_in, 1) &&
            !mv_route_splitk(g, w, n_in, n_out);
 }
+static inline bool mvb_is_mv_twin(int type);
+// Whether a prompt's matvec (batch > GPU_SMALL_BATCH) of w on the scalar
+// route runs the batch-1 GEMV's 16-wide twins (enc_mv; scalar_mv_route
+// answers the same for test-prefill-bits' route table). Every type whose batch-1
+// route has a loaded 16-wide twin takes it, by capability rather than by a
+// list (R6.57; the list was R6.35 Q4_0, R6.41 Q4_K/Q5_K/Q6_K, R6.50 Q8_0,
+// R6.54 Q3_K): the tile kernels of the others (k_gemm_*, and f_mvb's
+// k_mv_*_b, which fold the block scale per term) sum in another order. Not
+// F32, F16 or BF16, whose f_mvb already is their batch-1 kernel's twin.
+static bool prefill_takes_twins(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out) {
+    return !mvb_is_mv_twin(w->type) && mv_twin_route(g, w, n_in, n_out) &&
+           g->sw->f_gemvb[BW_16][w->type];
+}
+// Whether a matvec of w over batch (> 1) columns on the scalar route runs the
+// batch-1 kernel once per column (R6.58): every type with neither a 16-wide
+// twin on its batch-1 route (prefill_takes_twins) nor a tile kernel that is
+// the batch-1 kernel's twin (mvb_is_mv_twin). Their tiles (k_gemm_*, f_mvb's
+// k_mv_*_b) sum in another order; the batch-1 call per column is its bits by
+// construction, and prefilled 7 to 10x faster than the tile on Q5_0, Q5_1 and
+// IQ4_NL files. Over 8 columns, and 2 to 8 of a scaled tensor (NVFP4's
+// companion), which the small-batch branch does not take;
+// RUNNER_CUDA_SMALL_BATCH=0 keeps the tile for 2 to 8 columns, its A/B.
+static bool prefill_per_column(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out, int batch) {
+    if (batch < 2 || mvb_is_mv_twin(w->type)) return false;
+    if (batch <= GPU_SMALL_BATCH) return w->scale != 1.0f && gpu_small_batch_on();
+    return !prefill_takes_twins(g, w, n_in, n_out);
+}
+// Where a matvec of w over batch (> 1) columns goes on the scalar route, in
+// enc_mv's order below its tensor-core branches: the small-batch branch, the
+// 16-wide twins, the batch-1 kernel per column, the tiled GEMM, the tile
+// kernel f_mvb (gpu.h's
+// GPU_PREFILL_* answers; test-prefill-bits' route table asks it). The
+// experimental int8-activation route (RUNNER_CUDA_Q8X) is not modelled.
+static int scalar_mv_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out, int batch) {
+    const gpu_weights *sw = g->sw;
+    if (batch < 2 || (!sw->f_mv[w->type] && !sw->f_gemv[w->type])) return GPU_PREFILL_NONE;
+    if (batch <= GPU_SMALL_BATCH && w->scale == 1.0f && gpu_small_batch_on())
+        return sw->f_gemvb[batch_width_class(batch)][w->type] ? GPU_PREFILL_TWINS
+                                                              : GPU_PREFILL_PER_COLUMN;
+    if (batch > GPU_SMALL_BATCH && prefill_takes_twins(g, w, n_in, n_out)) return GPU_PREFILL_TWINS;
+    if (prefill_per_column(g, w, n_in, n_out, batch)) return GPU_PREFILL_PER_COLUMN;
+    if (w->scale == 1.0f && sw->f_gemm[w->type]) return GPU_PREFILL_TILE;
+    if (!sw->f_mvb[w->type]) return GPU_PREFILL_NONE;
+    return mvb_is_mv_twin(w->type) ? GPU_PREFILL_TILE_TWIN : GPU_PREFILL_TILE;
+}
+// gpu.h's questions for the route table, asked of a dense 4096 x 4096 tensor
+// of the type: is the 16-wide twin of its batch-1 route loaded, and where does
+// a matvec of it over batch columns go (scaled: with a per-tensor companion)
+static bool prefill_probe(const model_t *m, int type, gguf_tensor *w) {
+    const gpu_t *g = m->gpu;
+    if (!g || !g->sw || type < 0 || type >= KT_N) return false;
+    memset(w, 0, sizeof(*w));
+    w->type = type;
+    w->scale = 1.0f;
+    return true;
+}
+bool gpu_prefill_twin16(const model_t *m, int type) {
+    gguf_tensor w;
+    if (!prefill_probe(m, type, &w)) return false;
+    const gpu_t *g = m->gpu;
+    return mv_twin_route(g, &w, 4096, 4096) && g->sw->f_gemvb[BW_16][type];
+}
+int gpu_prefill_route(const model_t *m, int type, int batch, bool scaled) {
+    gguf_tensor w;
+    if (!prefill_probe(m, type, &w)) return GPU_PREFILL_NONE;
+    if (scaled) w.scale = 0.5f;
+    const gpu_t *g = m->gpu;
+    return scalar_mv_route(g, &w, 4096, 4096, batch);
+}
 static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t);
 
 static bool enc_scale(gpu_t *g, CUdeviceptr x, float s, int n, int batch, int xs);
@@ -5314,27 +5429,19 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
             return false;
         return w->scale == 1.0f || enc_scale(g, y, w->scale, n_out, batch, ys);
     }
-    // Prefill (batch>1) uses the tiled-GEMM variant where available (Q8_0/Q4_K):
-    // GEMM_WARPS(=8) rows per block, 256 threads, x staged in shared memory.
-    if (batch > 1 && w->scale == 1.0f && g->sw->f_gemm[w->type]) {
-        // k_gemm_q8_0 keeps a fixed 8-column tile — a 16-column f32 x-tile
-        // exceeds shared memory, and every narrower restructure measured
-        // slower — so a wider tile runs as two launches of the proven shape.
-        return launch_tiled(g, g->sw->f_gemm[w->type], (n_out + 7) / 8, 8 * 32,
-                            weights, x, y, a, b,
-                            w->type == T_Q8_0 ? Q8_COLS : MVT, false, 1.0f, false);
-    }
-    // Prefill (batch > GPU_SMALL_BATCH) of a Q4_0 tensor on the scalar route.
-    // Q4_0 has no k_gemm_*, and its tile kernel k_mvb_q4_0 sums in another
-    // order than the batch-1 GEMV k_gemv_q4_0. Under a q8_0 KV cache that
-    // difference crossed quantization steps and spread through the layers
-    // (R6.35: test-kv-tol on test-q40.gguf read 10.7x the reassociation
-    // floor). The GEMV's twins reproduce its bits per column; the 16-wide one
-    // runs 16 columns a pass, the width k_mvb_q4_0 tiles at, so a prompt's
-    // rows carry a lone decode's bits. Q4_K, Q5_K and Q6_K's k_gemm_* do not
-    // (their GEMVs' v2 bodies sum in another order; R6.39).
-    if (batch > GPU_SMALL_BATCH && w->type == T_Q4_0 && mv_twin_route(g, w, n_in, n_out) &&
-        g->sw->f_gemvb[BW_16][T_Q4_0]) {
+    // Prefill (batch > GPU_SMALL_BATCH) on the scalar route of a tensor whose
+    // batch-1 route has a loaded 16-wide twin (prefill_takes_twins), ahead of
+    // the tiled GEMM. The tile kernels (k_gemm_* of the K-quants and Q8_0,
+    // f_mvb's k_mv_*_b of Q4_0, the codebook i-quants and MXFP4) sum in another
+    // order than the batch-1 kernels, so a prompt's rows did not carry a lone
+    // decode's bits; under a q8_0 KV cache that difference crossed
+    // quantization steps and spread through the layers (R6.35: test-kv-tol on
+    // test-q40.gguf read 10.7x the reassociation floor; R6.39, R6.41, R6.50,
+    // R6.54, R6.57). The width-classed twins reproduce the batch-1 kernel's
+    // bits per column; the 16-wide one runs 16 columns a pass, a lone last
+    // column the batch-1 kernel. test-prefill-bits holds the rows a prompt
+    // stores and the route table.
+    if (batch > GPU_SMALL_BATCH && prefill_takes_twins(g, w, n_in, n_out)) {
         for (int c0 = 0; c0 < batch; c0 += 16) {
             int cn = batch - c0 < 16 ? batch - c0 : 16;
             CUdeviceptr xc = x + (size_t)c0 * xs * sizeof(float);
@@ -5344,6 +5451,31 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                 return false;
         }
         return true;
+    }
+    // Prefill on the scalar route of a type with no twin of its batch-1 kernel
+    // (prefill_per_column: Q5_0, Q5_1, IQ4_NL, NVFP4, Q2_K, Q4_1, IQ1_S, IQ1_M,
+    // Q2_0, and a type whose twin did not load), and a scaled tensor's 2 to 8
+    // columns: the batch-1 kernel once per column, each column its bits. The
+    // tile kernels below sum in another order (R6.58: 4 to 74 of a layer's
+    // K and V values differed from a batch-1 prefill) and ran 7 to 10x slower.
+    if (prefill_per_column(g, w, n_in, n_out, batch)) {
+        for (int c = 0; c < batch; c++)
+            if (!enc_mv(g, m, w, x + (size_t)c * xs * sizeof(float),
+                        y + (size_t)c * ys * sizeof(float), n_in, n_out, bias, 1, xs, ys))
+                return false;
+        return true;
+    }
+    // Prefill (batch>1) uses the tiled-GEMM variant where available and the
+    // branches above do not take the type: on the scalar route only the 2 to 8
+    // columns RUNNER_CUDA_SMALL_BATCH=0 sends here for its A/B.
+    // GEMM_WARPS(=8) rows per block, 256 threads, x staged in shared memory.
+    if (batch > 1 && w->scale == 1.0f && g->sw->f_gemm[w->type]) {
+        // k_gemm_q8_0 keeps a fixed 8-column tile — a 16-column f32 x-tile
+        // exceeds shared memory, and every narrower restructure measured
+        // slower — so a wider tile runs as two launches of the proven shape.
+        return launch_tiled(g, g->sw->f_gemm[w->type], (n_out + 7) / 8, 8 * 32,
+                            weights, x, y, a, b,
+                            w->type == T_Q8_0 ? Q8_COLS : MVT, false, 1.0f, false);
     }
     // Decode (batch==1), few long BF16 rows (n_out <= 1024, n_in >= 2048):
     // split-K, see k_mv_bf16_splitk. splits is a power of two dividing n_in/32
@@ -5366,7 +5498,10 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     if (batch == 1 && w->scale == 1.0f && g->sw->f_gemv[w->type])
         return launch(g, g->sw->f_gemv[w->type], (n_out + 3) / 4, 1, 1, 128, p);
     // 128 threads = 4 warps = 4 rows per block; the tile variant applies each
-    // decoded weight to all columns, the single variant is faster at batch 1
+    // decoded weight to all columns, the single variant is faster at batch 1.
+    // On the scalar route the tile is reached by F32, F16 and BF16 (their f_mvb
+    // is the batch-1 kernel's twin), and by the 2 to 8 columns of
+    // RUNNER_CUDA_SMALL_BATCH=0.
     CUfunction f = batch > 1 ? g->sw->f_mvb[w->type] : g->sw->f_mv[w->type];
     // the lane-level i-quant batch-1 kernels take IQ_ROWS (2) rows per warp
     unsigned rpb = 4, block = 128;
@@ -6464,7 +6599,6 @@ static bool gpu_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     uint64_t gstride = (uint64_t)nff *
@@ -6638,7 +6772,6 @@ static bool gpu_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     if (!enc_router(g, m, ly->ffn_gate_inp, g->xb, xdim, g->moe_logits, n_embd, ne,
@@ -6692,7 +6825,6 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
                                       int l, int tn, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
@@ -6779,7 +6911,6 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
     // (512 experts, eager path because of its IQ2_S/IQ3_S/IQ4_XS expert
     // tensors) among its first 256 experts only -- --score vs the CPU path
     // 444/480, vs llama.cpp 446/480 where the CPU path has 472 (2026-10-07).
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     // A small tile (a speculative verify) routes all its rows in one launch
@@ -6995,7 +7126,6 @@ static bool gpu_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly, int tn,
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     // routing as the fused path does it: the router with each column's
@@ -7275,7 +7405,6 @@ static bool gpu_gemma_moe_ffn_fused(gpu_t *g, model_t *m, const layer_t *ly,
                                     int l, int tn, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;  // dff = dense shared-FFN size
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
@@ -7335,7 +7464,6 @@ static bool gpu_gemma_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int
                               int tn, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;  // dff = dense shared-FFN size
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
@@ -7432,7 +7560,6 @@ static bool gpu_gemma_moe_ffn_twin(gpu_t *g, model_t *m, const layer_t *ly,
                                    int l, int tn, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used;
     int nff = m->n_ff_exp, dff = ly->n_ff;
-    enum { MOE_MAX_USED = 256 };
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     float eps = m->rms_eps;
@@ -8700,9 +8827,19 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
                                tn, n_embd, xdim);
         prof_mark(g, PH_NORM);
         if (ly->is_moe) {
+            // The shared expert reads the normed input the routed experts
+            // then overwrite, so it is copied first, in stream order on the
+            // instance's stream (R6.68.15): a decode graph records the copy
+            // and an eager forward orders it before the routed kernels as
+            // before. The synchronous cuMemcpyDtoD it replaces could not be
+            // captured (CUDA_ERROR_STREAM_CAPTURE_IMPLICIT), so every
+            // shared-expert MoE with its experts on the device decoded with
+            // plain launches. A driver without the async call keeps it.
             bool shexp = ly->w_up_shexp && g->shexp_in;
-            if (shexp && cu.MemcpyDtoD(g->shexp_in, g->xb,
-                                       sizeof(float) * (size_t)tn * xdim) != 0)
+            size_t shexp_bytes = sizeof(float) * (size_t)tn * xdim;
+            if (shexp && (cu.MemcpyDtoDAsync
+                              ? cu.MemcpyDtoDAsync(g->shexp_in, g->xb, shexp_bytes, g->stream)
+                              : cu.MemcpyDtoD(g->shexp_in, g->xb, shexp_bytes)) != 0)
                 return false;
             ok = ok && gpu_moe_ffn(g, m, ly, tn, xdim);  // writes FFN output into g->xb
             if (ok && shexp) ok = tile_shexp(g, m, ly, tn, xdim);
@@ -8798,6 +8935,8 @@ struct gpu_batch {
     CUgraph     graph[MVB + 1];
     CUgraphExec gexec[MVB + 1];
     bool        graph_bad;
+    const char *graph_why;      // why graph_bad was set by design (none: a failure set it)
+    bool        graph_why_said;
 };
 
 // enc_mv_batch reproduces the batch-1 result by launching the multi-column
@@ -8953,6 +9092,22 @@ static unsigned mvt_grid_y(int batch) {
 //
 // Fails loudly rather than quietly serving an unadapted model, because that
 // failure is invisible in the output and looks exactly like a weak adapter.
+//
+// The decode graph keeps working with an adapter (R6.68.25b): enc_lora's
+// launches capture like any other, with A, B and the scratch at addresses
+// fixed until the unbind. A graph records the forward it captured, adapter
+// launches included or not, so bind and unbind drop any graph captured
+// before them (the unbind also frees what those launches read) and the next
+// decode captures again. Today the bind runs inside model_load before the
+// first forward, so nothing is dropped there; the drop keeps that an order
+// of calls and not a condition of correctness.
+static void lora_graphs_drop(gpu_t *g) {
+    for (int i = 0; i < 2; i++) {
+        if (g->gexec[i]) { cu.GraphExecDestroy(g->gexec[i]); g->gexec[i] = NULL; }
+        if (g->graph[i]) { cu.GraphDestroy(g->graph[i]); g->graph[i] = NULL; }
+    }
+}
+
 bool gpu_lora_bind(model_t *m) {
     gpu_t *g = m->gpu;
     if (!g) return false;
@@ -9016,7 +9171,7 @@ bool gpu_lora_bind(model_t *m) {
         gpu_lora_unbind(m);
         return false;
     }
-    g->graph_bad = true;       // any captured decode graph predates the adapter
+    lora_graphs_drop(g);       // a graph captured before the adapter lacks its launches
     fprintf(stderr, "gpu: adapter on device for %d block%s (%.1f MB VRAM)\n",
             G, G == 1 ? "" : "s", bytes / 1e6);
     return true;
@@ -9025,9 +9180,10 @@ bool gpu_lora_bind(model_t *m) {
 void gpu_lora_unbind(model_t *m) {
     gpu_t *g = m ? m->gpu : NULL;
     if (!g) return;
-    if (g->lora_a || g->lora_b || g->lora_t) cu.CtxSetCurrent(g->sw->ctx);
+    if (g->lora_a || g->lora_b || g->lora_t || g->gexec[0] || g->gexec[1])
+        cu.CtxSetCurrent(g->sw->ctx);
+    lora_graphs_drop(g);       // a graph with the adapter's launches reads what is freed next
     lora_dev_release(g);
-    g->graph_bad = true;
 }
 
 // ------------------- canonical-order forward matvec (R8.7.1 slice 1)
@@ -10041,8 +10197,13 @@ gpu_batch *gpu_batch_create(model_t **seqs, int n) {
     // gemma4's V-copy path (ly->wv == NULL) uses a synchronous MemsetD8 that
     // cannot be captured, same as the solo decode graph refuses it.
     b->graph_bad = lead->stream == NULL || !cu_graphs_ok();
+    if (b->graph_bad) b->graph_why = "no stream to capture on (or the driver has no graph API)";
     for (int l = 0; l < m0->n_layer; l++)
-        if (!m0->layers[l].wv && !v_from_k_capturable(m0, l)) b->graph_bad = true;
+        if (!m0->layers[l].wv && !v_from_k_capturable(m0, l)) {
+            b->graph_bad = true;
+            if (!b->graph_why)
+                b->graph_why = "a layer without a V projection that is not built on the stream (a synchronous memset)";
+        }
     return b;
 
 fail:
@@ -10329,18 +10490,23 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     // is fighting — a solo decode step is already graph-captured, so a batched
     // step issuing ~500 plain launches would hand back much of what it won.
     bool ran = false;
+    if (b->graph_bad) graph_eager_note("batch", b->graph_why, &b->graph_why_said);
     if (!b->graph_bad && !prof.on) {   // see the note on the solo path above
         if (!b->gexec[n]) {
             prof.capturing = 1;
-            if (capture_begin(g->stream) != 0 ||
-                !fwd_batch(b, m0, n) ||
-                capture_end(g->stream, &b->graph[n]) != 0 ||
-                cu.GraphInstantiateWithFlags(&b->gexec[n], b->graph[n], 0) != 0) {
+            CUresult r = 0;
+            const char *stage = NULL;
+            if ((r = capture_begin(g->stream)) != 0) stage = "the start";
+            else if (!fwd_batch(b, m0, n)) stage = "the forward";
+            else if ((r = capture_end(g->stream, &b->graph[n])) != 0) stage = "the end";
+            else if ((r = cu.GraphInstantiateWithFlags(&b->gexec[n], b->graph[n], 0)) != 0)
+                stage = "instantiation";
+            if (stage) {
                 CUgraph junk = NULL;
-                capture_end(g->stream, &junk);
+                CUresult re = capture_end(g->stream, &junk);
                 if (junk && junk != b->graph[n]) cu.GraphDestroy(junk);
-                fprintf(stderr, "gpu: batch graph capture failed — plain launches\n");
                 b->graph_bad = true;
+                graph_capture_failed("batch", stage, r ? r : re);
             }
             prof.capturing = 0;
         }
@@ -10349,7 +10515,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                   cu.StreamSynchronize(g->stream) == 0;
         if (!ran && !b->graph_bad) {
             b->graph_bad = true;
-            fprintf(stderr, "gpu: batch graph launch failed — plain launches\n");
+            graph_launch_failed("batch");
         }
     }
     if (!ran) {
@@ -10582,16 +10748,20 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
         // failed forward and clears m->gpu). THREAD_LOCAL alone still let
         // another engine's synchronous copy invalidate the capture;
         // capture_begin's exclusion is the other half (see above).
-        if (capture_begin(g->stream) != 0 ||
-            !fwd_tile(g, m, tokens, 1, pos, true, 0, m->gpu_layers) ||
-            (g->kvg_dev && !kv_gather_launch(g, m)) ||
-            capture_end(g->stream, &g->graph[gi]) != 0 ||
-            cu.GraphInstantiateWithFlags(&g->gexec[gi], g->graph[gi], 0) != 0) {
+        CUresult r = 0;
+        const char *stage = NULL;
+        if ((r = capture_begin(g->stream)) != 0) stage = "the start";
+        else if (!fwd_tile(g, m, tokens, 1, pos, true, 0, m->gpu_layers)) stage = "the forward";
+        else if (g->kvg_dev && !kv_gather_launch(g, m)) stage = "the KV gather";
+        else if ((r = capture_end(g->stream, &g->graph[gi])) != 0) stage = "the end";
+        else if ((r = cu.GraphInstantiateWithFlags(&g->gexec[gi], g->graph[gi], 0)) != 0)
+            stage = "instantiation";
+        if (stage) {
             CUgraph junk = NULL;
-            capture_end(g->stream, &junk); // ensure capture ended
+            CUresult re = capture_end(g->stream, &junk); // ensure capture ended
             if (junk && junk != g->graph[gi]) cu.GraphDestroy(junk);
-            fprintf(stderr, "gpu: graph capture failed — plain launches\n");
             g->graph_bad = true;
+            graph_capture_failed("decode", stage, r ? r : re);
         }
         prof.capturing = 0;
     }
@@ -10631,8 +10801,7 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
             return 1;
         }
     }
-    if (!g->graph_bad) { g->graph_bad = true;
-        fprintf(stderr, "gpu: graph launch failed — plain launches\n"); }
+    if (!g->graph_bad) { g->graph_bad = true; graph_launch_failed("decode"); }
     return 0;
 }
 
@@ -10808,6 +10977,15 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
         !g->snap_on && !prof.on && !getenv("RUNNER_CUDA_GRAPH_OFF")) {
         int served = cuda_fwd_graph_decode(g, m, tokens, pos, logits, m_, t_fwd0);
         if (served) return served > 0;
+    } else if (n == 1 && want_logits && !partial && graph_capture_required()) {
+        // eager by design: say why once (graph_why); a graph_bad no rule
+        // named was set by a failure, which ended the process under the switch
+        const char *why = g->graph_bad ? g->graph_why
+                        : !g->stream ? "no stream to capture on (or the driver has no graph API)"
+                        : g->snap_on ? "a keep-forward's per-row checkpoints"
+                        : prof.on ? "the profiler runs decode eagerly"
+                        : "RUNNER_CUDA_GRAPH_OFF";
+        graph_eager_note("decode", why, &g->graph_why_said);
     }
 
     if (!cuda_fwd_tiles(g, m, tokens, n, pos, want_logits, partial, m_)) return false;

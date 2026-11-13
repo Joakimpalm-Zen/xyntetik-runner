@@ -2,9 +2,11 @@ CC      ?= cc
 # Our CI toolchains and explicit STRICT=1 builds reject compiler warnings.
 # Keep this at the invocation boundary so specialized test flags cannot
 # drop it; ordinary source builds retain their existing platform policy.
+# -Wshadow joins it (R6.68.17): an inner declaration that hides an outer one
+# of the same name is a trap for the next edit in that scope.
 STRICT_BUILD := $(if $(strip $(CI)$(filter 1,$(STRICT))),1,)
 ifneq ($(STRICT_BUILD),)
-override CC := $(strip $(CC) $(if $(filter -Werror,$(CC)),,-Werror))
+override CC := $(strip $(CC) $(if $(filter -Werror,$(CC)),,-Werror) $(if $(filter -Wshadow,$(CC)),,-Wshadow))
 export CC
 endif
 # Probe by RUNNING the interpreter, not by looking it up: on Windows a
@@ -164,6 +166,11 @@ endif
 # runs pytest in one process, as a local `make test` always has.
 PYTEST_WORKERS ?=
 PYTEST_XDIST = $(if $(PYTEST_WORKERS),-n $(PYTEST_WORKERS) --dist loadfile,)
+# Hooks for a different run of the same root list (test-python-sanitized):
+# environment ahead of the run, extra pytest arguments, and its time limit.
+ROOT_PYTEST_ENV ?=
+ROOT_PYTEST_ARGS ?=
+ROOT_PYTEST_TIMEOUT ?= 2400
 
 # Which GPU backend this build links. It was previously visible only to
 # test-split-guard, so source could not tell CUDA from Metal -- and the two
@@ -212,6 +219,7 @@ TEST_CHOICE_MASS = $(TEST_BATCH:test-batch%=test-choice-mass%)
 TEST_VRAMREG = $(TEST_BATCH:test-batch%=test-vram-registry%)
 TEST_UPLOAD_REPORT = $(TEST_BATCH:test-batch%=test-upload-report%)
 TEST_KV_TOL = $(TEST_BATCH:test-batch%=test-kv-tol%)
+TEST_PREFILL_BITS = $(TEST_BATCH:test-batch%=test-prefill-bits%)
 TEST_KV_FP4 = $(TEST_BATCH:test-batch%=test-kv-fp4%)
 TEST_METAL_KVFP4 = $(TEST_BATCH:test-batch%=test-metal-kvfp4%)
 TEST_QUANTS_SIMD = $(TEST_BATCH:test-batch%=test-quants-simd%)
@@ -266,6 +274,7 @@ TEST_MSG_OOM_DEP =
 TEST_MSG_OOM_RUN = @echo "skip: test-prompt-oom (POSIX socketpair; covered by Linux CI)"
 TEST_TRAY_WIN_DEP = $(TEST_TRAY_WIN)
 TEST_TRAY_WIN_RUN = ./$(TEST_TRAY_WIN)
+TEST_INSTANCES_UBSAN_RUN = @echo "skip: test-instances-ubsan (no sanitizer runtime on MinGW; covered by Linux and macOS)"
 TEST_UTF8_CONSOLE_DEP = $(TEST_UTF8_CONSOLE)
 TEST_UTF8_CONSOLE_RUN = ./$(TEST_UTF8_CONSOLE)
 else
@@ -277,11 +286,22 @@ TEST_MSG_OOM_DEP = $(TEST_MSG_OOM)
 TEST_MSG_OOM_RUN = ./$(TEST_MSG_OOM)
 TEST_TRAY_WIN_DEP =
 TEST_TRAY_WIN_RUN = @echo "skip: test-tray-win-menu (Win32 menu readback; covered by the Windows job)"
+TEST_INSTANCES_UBSAN_RUN = $(MAKE) --no-print-directory test-instances-ubsan
 TEST_UTF8_CONSOLE_DEP =
 TEST_UTF8_CONSOLE_RUN = @echo "skip: test-utf8-console (Windows console code page; covered by the Windows job)"
 endif
+ifeq ($(BUILD_OS),Darwin)
+TEST_TRAY_MAC = test-tray-macos-arc
+TEST_TRAY_MAC_DEP = $(TEST_TRAY_MAC)
+TEST_TRAY_MAC_RUN = ./$(TEST_TRAY_MAC)
+else
+TEST_TRAY_MAC_DEP =
+TEST_TRAY_MAC_RUN = @echo "skip: test-tray-macos-arc (AppKit menu ownership; macOS only)"
+endif
 TEST_QUANTIZE = $(TEST_BATCH:test-batch%=test-quantize%)
 TEST_QUANTIZE_OOM = $(TEST_BATCH:test-batch%=test-quantize-oom%)
+TEST_LINEAGE_OOM = $(TEST_BATCH:test-batch%=test-lineage-oom%)
+TEST_DERIVE_OOM = $(TEST_BATCH:test-batch%=test-derive-oom%)
 TEST_VRAM_ROLLBACK = $(TEST_BATCH:test-batch%=test-vram-rollback%)
 TEST_GGUF_GETTERS = $(TEST_BATCH:test-batch%=test-gguf-getters%)
 TEST_HFHUB = $(TEST_BATCH:test-batch%=test-hfhub%)
@@ -393,6 +413,25 @@ $(OBJDIR)/%.o: src/%.c $(HDR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I src -c $< -o $@
 
+# R6.67: the commit this build is made from, and whether its tracked files
+# differ from it, stamped into provenance.o alone and stated by GET
+# /v1/runner/provenance, so a record that pins a binary's bytes names the
+# source that made them (scripts/tier-smoke.py) and not the checkout that
+# happens to run the script. Only provenance.o is keyed to it: a new commit
+# recompiles one file, and BUILD_ID (the flags' key) does not move. The stamp
+# is rewritten only when its content changes. A tree without git stamps
+# nothing, and the route says null.
+BUILD_COMMIT := $(shell git rev-parse HEAD 2>/dev/null)
+BUILD_DIRTY  := $(if $(BUILD_COMMIT),$(shell git diff --quiet HEAD -- 2>/dev/null && echo 0 || echo 1),0)
+$(OBJDIR)/build-commit.stamp: FORCE
+	@mkdir -p $(dir $@)
+	@want='$(BUILD_COMMIT) $(BUILD_DIRTY)'; \
+	[ "$$(cat $@ 2>/dev/null)" = "$$want" ] || printf '%s\n' "$$want" > $@
+$(OBJDIR)/provenance.o: src/provenance.c $(HDR) $(OBJDIR)/build-commit.stamp
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I src -DRUNNER_BUILD_COMMIT='"$(BUILD_COMMIT)"' \
+		-DRUNNER_BUILD_DIRTY=$(BUILD_DIRTY) -c $< -o $@
+
 # ML-DSA-44 (FIPS 204) receipt signatures: the wrapper plus the vendored
 # pq-crystals reference under src/mldsa/ (integer-only code, so the float
 # flags of the engine objects do not touch its results)
@@ -475,6 +514,14 @@ endif
 $(OBJDIR)/%.o: src/%.m $(HDR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I src -c $< -o $@
+# R6.68.5: the macOS tray is built with ARC, so AppKit's ownership is the
+# compiler's rather than counted by hand (built without it, every menu open
+# leaked the menu it replaced). OBJC_ARC is its own variable because a release
+# sets CFLAGS on make's command line, which must not drop it.
+OBJC_ARC = -fobjc-arc
+$(OBJDIR)/tray_macos.o: src/tray_macos.m $(HDR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(OBJC_ARC) -I src -c $< -o $@
 # The executable is keyed too: switching back from T3 must not keep a newer
 # T3 runner merely because the default objects are older. Comparison keeps no-op
 # builds cheap while selecting the exact configured executable on every call.
@@ -485,8 +532,11 @@ $(OBJDIR)/%.o: src/%.m $(HDR)
 # "runner exited during startup", returncode -9, no log.
 $(OBJDIR)/$(RUNNER_EXE): $(RUNNER_OBJ) $(HDR) src/kernels_ptx.h src/kernels_tensor_metal.h
 	$(CC) $(CFLAGS) $(RUNNER_OBJ) -o $@ $(LDFLAGS)
+# ./runner is a copy of the build-tree binary, refreshed whenever the two
+# differ; test-python-sanitized points it at runner-debug for its run.
+RUNNER_COPY_FROM ?= $(OBJDIR)/$(RUNNER_EXE)
 runner: $(OBJDIR)/$(RUNNER_EXE) FORCE
-	@$(PYTHON) -c "import filecmp,os,shutil; src='$(OBJDIR)/$(RUNNER_EXE)'; dst='$(RUNNER_EXE)'; same=os.path.exists(dst) and filecmp.cmp(src,dst,shallow=False); same or (shutil.copy2(src,dst+'.tmp'), os.replace(dst+'.tmp',dst))"
+	@$(PYTHON) -c "import filecmp,os,shutil; src='$(RUNNER_COPY_FROM)'; dst='$(RUNNER_EXE)'; same=os.path.exists(dst) and filecmp.cmp(src,dst,shallow=False); same or (shutil.copy2(src,dst+'.tmp'), os.replace(dst+'.tmp',dst))"
 
 # Local negative controls for scripts/write-stall.py. These compile from the
 # same sources and embedded kernels as runner; they are not release artifacts.
@@ -888,6 +938,12 @@ TEST_KV_TOL_SRC = tests/test_kv_tol.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUAN
 $(TEST_KV_TOL): $(TEST_KV_TOL_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_KV_TOL_SRC) -o $@ $(LDFLAGS)
 
+# R6.41: a prompt's layer-0 KV rows are a batch-1 prefill's on CUDA's scalar route
+TEST_PREFILL_BITS_SRC = tests/test_prefill_bits.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o $(QUANTS_OBJ) \
+                        $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o $(GPU_OBJ)
+$(TEST_PREFILL_BITS): $(TEST_PREFILL_BITS_SRC) $(HDR)
+	$(CC) $(CFLAGS) -I src $(TEST_PREFILL_BITS_SRC) -o $@ $(LDFLAGS)
+
 # the --kv fp4 cache codec (UE4M3 ceiling scale + E2M1 nibbles) against its
 # inverse and the dequantised dot; the reference every backend's cache bytes
 # are held to
@@ -977,6 +1033,14 @@ $(TEST_CANON_KERNELS): tests/test_canon_kernels.c src/quants.c $(HDR)
 TEST_INSTANCES_SRC = tests/test_instances.c $(OBJDIR)/instances.o $(OBJDIR)/json.o $(OBJDIR)/compat.o
 $(TEST_INSTANCES): $(TEST_INSTANCES_SRC) $(HDR)
 	$(CC) $(CFLAGS) -I src $(TEST_INSTANCES_SRC) -o $@ -lm
+# R6.68.10: the same test with float-to-integer overflow as a hard error, so a
+# record number cast before its range is checked stops the run (the registry
+# reader converted a pid of 1e300 to long). No sanitizer runtime on MinGW.
+test-instances-ubsan: tests/test_instances.c src/instances.c src/json.c src/compat.c $(HDR)
+	$(CC) -O1 -g -std=gnu11 -Wall -fsanitize=float-cast-overflow,undefined \
+	    -fno-sanitize-recover=all -I src tests/test_instances.c src/instances.c src/json.c \
+	    src/compat.c -o test-instances-ubsan-bin -lm -lpthread
+	./test-instances-ubsan-bin
 
 # the same registry under injected allocation failure. instances.c is compiled
 # INTO the test (macro-substituted allocators), so it is deliberately absent
@@ -998,6 +1062,12 @@ TRAY_TEST_LIBS = -lws2_32
 else
 TRAY_TEST_LIBS =
 endif
+# R6.68.5: the macOS tray's menu rebuild gives back what it made
+# (tests/test_tray_macos_arc.m, itself ARC for zeroing weak references)
+TEST_TRAY_MAC_OBJ = $(OBJDIR)/tray_macos.o $(OBJDIR)/tray.o $(OBJDIR)/instances.o \
+                    $(OBJDIR)/json.o $(OBJDIR)/compat.o
+test-tray-macos-arc: tests/test_tray_macos_arc.m $(TEST_TRAY_MAC_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -fobjc-arc -I src tests/test_tray_macos_arc.m $(TEST_TRAY_MAC_OBJ) -o $@ $(LDFLAGS)
 TEST_TRAY_CORE_SRC = tests/test_tray_core.c src/tray.c src/tray_stub.c \
                      src/instances.c src/json.c src/compat.c
 $(TEST_TRAY_CORE): $(TEST_TRAY_CORE_SRC) $(HDR)
@@ -1111,6 +1181,11 @@ $(TEST_MVCANON): $(TEST_MVCANON_SRC) src/quants.c $(HDR) test.gguf test-q8.gguf
 
 test-yarn.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-model.py --yarn 32,4096 test-yarn.gguf
+
+# the sliding layers' rope base declared under both spellings, 500 and 20000
+# (test-rope-yarn: rope.local.freq_base is the one read)
+test-rope-local.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-model.py --swa 32,2 --rope-local-base 500 --rope-swa-base 20000 $@ > /dev/null
 
 # qwen4exp (R4.26.1, experimental): hyper-connection streams, the Engram
 # n-gram PLE block, Gated DeltaNet + full-attention blocks, routed + shared
@@ -1459,11 +1534,24 @@ test-tokenizer-race: $(TEST_TOKENIZER_RACE_SRC) $(HDR) test.gguf
 	    $(TEST_TOKENIZER_RACE_SRC) -o test-tokenizer-race-bin -lm -lpthread
 	TSAN_OPTIONS=halt_on_error=1 ./test-tokenizer-race-bin test.gguf
 
-test-swap-race: $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
+test-swap-race: $(TEST_SWAP_RACE_SRC) tests/test_cancel_race.c $(HDR) test.gguf
 	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
 	    -fno-fast-math -std=gnu11 -Wall -I src $(TEST_SWAP_RACE_SRC) \
 	    -o test-swap-race-bin $(LDFLAGS)
 	ASAN_OPTIONS=detect_leaks=0 ./test-swap-race-bin test.gguf
+	$(MAKE) test-cancel-race
+
+# Same sanitized server gate, with a compile-time barrier that forces the
+# cancel waiter to resume only after its slot has been reused or stopped
+# (R6.68.8, R6.68.9). The stop case runs on its own port: a waiter that reads
+# its slot after the stop freed it is a heap-use-after-free here.
+test-cancel-race: tests/test_cancel_race.c $(TEST_SWAP_RACE_SRC) $(HDR) test.gguf
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer \
+	    -fno-fast-math -std=gnu11 -Wall -I src -DRUNNER_TEST_CANCEL_WAIT \
+	    tests/test_cancel_race.c $(filter-out tests/test_swap_race.c,$(TEST_SWAP_RACE_SRC)) \
+	    -o test-cancel-race-bin $(LDFLAGS)
+	ASAN_OPTIONS=detect_leaks=0 ./test-cancel-race-bin test.gguf 18107
+	ASAN_OPTIONS=detect_leaks=0 ./test-cancel-race-bin test.gguf 18108 stop
 
 # the weight-residency platform layer: mlock, mincore, major faults, available
 # RAM. compat.c only -- these are platform shims, not engine code.
@@ -1518,6 +1606,20 @@ TEST_QUANTIZE_OOM_SRC = tests/test_quantize_oom.c $(OBJDIR)/gguf.o \
                         $(OBJDIR)/compat.o $(QUANTS_OBJ) $(OBJDIR)/json.o
 $(TEST_QUANTIZE_OOM): $(TEST_QUANTIZE_OOM_SRC) src/quantize.c $(HDR)
 	$(CC) $(QUANTS_CFLAGS) -I src $(TEST_QUANTIZE_OOM_SRC) -o $@ $(LDFLAGS)
+
+# R6.68.5: every allocation of `runner lineage DIR` failed in turn
+# (tests/test_lineage_oom.c). lineage.c is compiled into the test with its
+# allocators substituted, so the test links every other runner object and
+# not lineage.o (nor main.o: the test has its own main).
+TEST_LINEAGE_OOM_OBJ = $(filter-out $(OBJDIR)/lineage.o $(OBJDIR)/main.o,$(RUNNER_OBJ))
+$(TEST_LINEAGE_OOM): tests/test_lineage_oom.c src/lineage.c $(TEST_LINEAGE_OOM_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_lineage_oom.c $(TEST_LINEAGE_OOM_OBJ) -o $@ $(LDFLAGS)
+
+# R6.68.5: every allocation of derive's --target-size planning failed in turn
+# (tests/test_derive_oom.c), built the same way with derive.c compiled in.
+TEST_DERIVE_OOM_OBJ = $(filter-out $(OBJDIR)/derive.o $(OBJDIR)/main.o,$(RUNNER_OBJ))
+$(TEST_DERIVE_OOM): tests/test_derive_oom.c src/derive.c $(TEST_DERIVE_OOM_OBJ) $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_derive_oom.c $(TEST_DERIVE_OOM_OBJ) -o $@ $(LDFLAGS)
 
 # vramreg.c is #included (calloc-hooked) by the test, so it is not linked here
 $(TEST_VRAM_ROLLBACK): tests/test_vram_rollback.c $(OBJDIR)/compat.o $(HDR)
@@ -1708,6 +1810,54 @@ test-q4k.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
 	$(PYTHON) scripts/make-test-model.py --wide --n-ff 2048 test-q4k-src.gguf > /dev/null
 	./$(RUNNER_EXE) -m test-q4k-src.gguf --quantize test-q4k.gguf --quant q4_k > /dev/null
 	rm -f test-q4k-src.gguf
+
+# R6.54: test-q4k.gguf's shape in Q3_K, for test-prefill-bits. Its own name:
+# test-cuda-q3k builds a --wide test-q3k.gguf inline for its alignment check.
+test-q3k-prefill.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
+	$(PYTHON) scripts/make-test-model.py --wide --n-ff 2048 test-q3k-prefill-src.gguf > /dev/null
+	./$(RUNNER_EXE) -m test-q3k-prefill-src.gguf --quantize test-q3k-prefill.gguf --quant q3_k > /dev/null
+	rm -f test-q3k-prefill-src.gguf
+
+# R6.57: the codebook i-quants in test-q4k.gguf's shape, for test-prefill-bits.
+# Their k_mv_*_b tiles sum in another order than the batch-1 GEMVs: before the
+# route, 23 to 36 of 16,384 layer-0 K values differed from a batch-1 prefill.
+PREFILL_IQ_FIXTURES = test-iq2xxs-prefill.gguf test-iq2xs-prefill.gguf test-iq2s-prefill.gguf \
+                      test-iq3xxs-prefill.gguf test-iq3s-prefill.gguf
+$(PREFILL_IQ_FIXTURES): test-%-prefill.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-model.py --wide --n-ff 2048 \
+	    --quant $(patsubst iq2%,iq2_%,$(patsubst iq3%,iq3_%,$*)) $@ > /dev/null
+
+# R6.57: MXFP4 for test-prefill-bits, in rows 2,048 values long. k_mv_mxfp4
+# (batch 1) sums each 32-value block before its power-of-two scale (s += d * t)
+# and the tile k_mv_mxfp4_b scales each term into one running sum, so the two
+# agree bit for bit while each of a warp's 32 lanes holds one block: rows of
+# up to 1,024 values. In test-q4k.gguf's 256-wide rows they read 0 before the
+# route; in these, 27 or 28 K and 11 or 12 V values of 16,384 differ.
+test-mxfp4-prefill.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
+	$(PYTHON) scripts/make-test-model.py --wide --n-embd 2048 --head-dim 64 --n-ff 512 \
+	    test-mxfp4-prefill-src.gguf > /dev/null
+	./$(RUNNER_EXE) -m test-mxfp4-prefill-src.gguf --quantize test-mxfp4-prefill.gguf --quant mxfp4 > /dev/null
+	rm -f test-mxfp4-prefill-src.gguf
+
+# R6.58: the types with no 16-wide twin, for test-prefill-bits. Their tile
+# kernels (k_mv_q5_0_b, _q5_1_b, _iq4_nl_b, _nvfp4_b) fold the block scale per
+# term and sum in another order than the batch-1 kernels: before the route, 4
+# to 37 layer-0 K values differed from a batch-1 prefill at every width. Q5_0
+# has no quantizer target: it is q4_k's 32-block fallback on the default
+# shape's 64-wide rows. NVFP4's tensors carry a per-tensor scale companion, so
+# a chunk of 2 to 8 columns (batch 24's last 8) skips the small-batch branch.
+test-q50-prefill.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
+	$(PYTHON) scripts/make-test-model.py --n-ff 2048 test-q50-prefill-src.gguf > /dev/null
+	./$(RUNNER_EXE) -m test-q50-prefill-src.gguf --quantize test-q50-prefill.gguf --quant q4_k > /dev/null
+	rm -f test-q50-prefill-src.gguf
+test-q51-prefill.gguf test-iq4nl-prefill.gguf: test-%-prefill.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB) runner
+	$(PYTHON) scripts/make-test-model.py --wide --n-ff 2048 test-$*-prefill-src.gguf > /dev/null
+	./$(RUNNER_EXE) -m test-$*-prefill-src.gguf --quantize $@ --quant $(if $(filter q51,$*),q5_1,iq4_nl) > /dev/null
+	rm -f test-$*-prefill-src.gguf
+test-nvfp4-prefill.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-model.py --wide --n-ff 2048 --quant nvfp4 $@ > /dev/null
+PREFILL_PERCOL_FIXTURES = test-q50-prefill.gguf test-q51-prefill.gguf test-iq4nl-prefill.gguf \
+                          test-nvfp4-prefill.gguf
 
 # Q6_K reaches the narrow-slice Q6_K decode matvec (k_mvg_q6_K, R3.28.3) at
 # inputs of at least 1536: the same 256-wide rows and 2048-wide FFN as
@@ -2132,8 +2282,11 @@ endif
 # without them (the Windows CUDA box); the llama.cpp comparison leg runs
 # where llama-server is present and is not required here. Part of the
 # release evidence on both CUDA classes since 0.5.3.
-test-cuda-iquants: runner $(TEST_GPU_ID)
-	RUNNER_REQUIRE_IQ_GATES=gpu $(PYTHON) -m pytest -q tests/test_iquants.py
+# Builds both binaries tests/test_iquants.py runs and requires both legs: without
+# test-tc-tol the forced-TC leg skipped its 9 cases while the target read green
+# (R6.65; cuda-gate.sh only ran them because its tc-overflow step builds it first).
+test-cuda-iquants: runner $(TEST_GPU_ID) $(TEST_TC_TOL)
+	RUNNER_REQUIRE_IQ_GATES=gpu,tc $(PYTHON) -m pytest -q tests/test_iquants.py
 
 # CUDA Q3_K decode (k_gemv_q3_K): a fixture quantized to Q3_K, the device
 # against the CPU at logit precision. Q3_K's 110-byte blocks put three of
@@ -2539,6 +2692,16 @@ test-cuda-qwen4exp: runner $(TEST_GPU_ID) $(TEST_CUDA_TEARDOWN) test.gguf
 # placements by --score (experts on the host, a two-layer split, both) at
 # 2e-5 in logprob with no argmax flip, and speculative identity. Skips itself
 # without a CUDA device.
+# R6.68.25a: with routed experts fused on the device the decode replays its
+# graph. Under RUNNER_REQUIRE_GRAPH_CAPTURE (exported for test-cuda-%) a
+# capture that fails ends the run and an eager-by-design decode prints why, so
+# a fused or grouped arm whose only note is the pinned arm's route replay
+# compared captured decode steps to the CPU's logits at 1e-5 (the anchor: the
+# CPU forward, itself held to the publisher's reference at admission). The
+# eager arm must name its cause, which also proves the switch is on. Then the
+# CLI decode: the route line says graph=replay, and its 32 greedy tokens are
+# the eager decode's and the CPU's (the toy repeats one token after the
+# prompt, so this is the route's smoke; the logits above are the measurement).
 test-cuda-qwen35moe: runner $(TEST_GPU_ID) $(TEST_SPEC_ID)
 	@set -e; \
 	if ! ./$(RUNNER_EXE) --caps | $(PYTHON) -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if (d.get('gpu') or {}).get('backend') == 'cuda' else 1)"; then \
@@ -2556,6 +2719,12 @@ test-cuda-qwen35moe: runner $(TEST_GPU_ID) $(TEST_SPEC_ID)
 	        echo "test-cuda-qwen35moe: $$f did not run on the device"; exit 1; fi; \
 	      grep -q 'routing pin:.* 0 of them' test-cuda-qwen35moe.out || { cat test-cuda-qwen35moe.out; \
 	        echo "test-cuda-qwen35moe: $$f [$$E $$a] has no pinned arm, or the pin differed"; exit 1; }; \
+	      if [ "$$E" = RUNNER_MOE_EAGER=1 ]; then \
+	        grep -q 'decode graph off by design: MoE routing read back' test-cuda-qwen35moe.out || { \
+	          grep 'off by design' test-cuda-qwen35moe.out; echo "test-cuda-qwen35moe: $$f [$$E $$a]: the eager MoE decode did not name its cause (is RUNNER_REQUIRE_GRAPH_CAPTURE set?)"; exit 1; }; \
+	      elif grep 'decode graph off by design' test-cuda-qwen35moe.out | grep -qv 'RUNNER_MOE_REPLAY'; then \
+	        grep 'off by design' test-cuda-qwen35moe.out; echo "test-cuda-qwen35moe: $$f [$${E:-fused} $$a]: the free-routing decode did not replay its graph"; exit 1; \
+	      fi; \
 	      echo "$$f [$${E:-fused}$${a:+, one token at a time}]: $$(grep 'routing pin' test-cuda-qwen35moe.out | sed 's/^ *//'); $$(tail -1 test-cuda-qwen35moe.out)"; \
 	    done; \
 	  done; \
@@ -2568,7 +2737,18 @@ test-cuda-qwen35moe: runner $(TEST_GPU_ID) $(TEST_SPEC_ID)
 	  grep -q "CUDA backend" cuda-q35m-gpu.err || { echo "FAIL: [$$arm] did not run on the device"; cat cuda-q35m-gpu.err; exit 1; }; \
 	  $(PYTHON) -c "import json,sys; a=json.load(open('cuda-q35m-cpu.score')); b=json.load(open('cuda-q35m-gpu.score')); d=max(abs(x-y) for x,y in zip(a['logprobs'],b['logprobs'])); am=sum(1 for x,y in zip(a['argmax'],b['argmax']) if x!=y); assert len(a['logprobs'])==len(b['logprobs'])>0 and d < 2e-5 and am == 0, (len(a['logprobs']), len(b['logprobs']), d, am); print('test-ornith-moe-s40.gguf [%s]: cpu/cuda logprob max diff %.2e, argmax flips %d' % (sys.argv[1] or 'all on device', d, am))" "$$arm"; \
 	done; \
-	rm -f cuda-q35m-cpu.score cuda-q35m-gpu.score cuda-q35m-gpu.err; \
+	for f in test-ornith-moe.gguf test-ornith-moe-s40.gguf test-ornith-moe-s72.gguf test-ornith-moe-s128.gguf; do \
+	  ./$(RUNNER_EXE) -m $$f -p "$$P" -n 32 --temp 0 --ignore-eos --gpu off --no-tray -c 128 > cuda-q35m-cpu.out 2>/dev/null; \
+	  RUNNER_CUDA_GRAPH_OFF=1 ./$(RUNNER_EXE) -m $$f -p "$$P" -n 32 --temp 0 --ignore-eos --no-tray -c 128 > cuda-q35m-eager.out 2>/dev/null; \
+	  RUNNER_DEBUG_ROUTE=1 ./$(RUNNER_EXE) -m $$f -p "$$P" -n 32 --temp 0 --ignore-eos --no-tray -c 128 > cuda-q35m-graph.out 2> cuda-q35m-graph.err || { cat cuda-q35m-graph.err; exit 1; }; \
+	  grep -a ' rows=1 ' cuda-q35m-graph.err | grep -q 'graph=replay' || { grep -a 'rows=1 \|off by design' cuda-q35m-graph.err; \
+	    echo "FAIL: $$f: the decode did not replay a captured graph"; exit 1; }; \
+	  $(PYTHON) -c "import sys; a, b, c = (open(p, 'rb').read() for p in sys.argv[1:]); sys.exit(0 if a and a == b == c else 1)" \
+	    cuda-q35m-graph.out cuda-q35m-eager.out cuda-q35m-cpu.out || { \
+	    echo "FAIL: $$f: the replayed decode's tokens differ from the eager decode's or the CPU's"; exit 1; }; \
+	  echo "$$f: decode replays its graph, 32 greedy tokens identical to the eager decode's and the CPU's"; \
+	done; \
+	rm -f cuda-q35m-cpu.score cuda-q35m-gpu.score cuda-q35m-gpu.err cuda-q35m-cpu.out cuda-q35m-eager.out cuda-q35m-graph.out cuda-q35m-graph.err; \
 	echo "test-cuda-qwen35moe: ok"
 
 # CUDA NVFP4 (ModelOpt two-level export): the device kernels and the companion
@@ -3226,19 +3406,27 @@ test-gates:
 	$(MAKE) --no-print-directory test-gates-core PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-gates-batch PYTHON="$(PYTHON)"
 
+# R6.68.15: in the gates a CUDA decode graph that does not capture or launch
+# ends the run (RUNNER_REQUIRE_GRAPH_CAPTURE, src/cuda.c) instead of falling
+# back to plain launches with one stderr line no gate reads: a shared-expert
+# MoE decoded without its graph that way. A decode that is eager by design
+# (experts on the host, eager MoE routing, a recurrent family not captured)
+# prints why and runs. No effect on CPU and Metal builds.
+test-gates-core test-gates-batch test-cuda-%: export RUNNER_REQUIRE_GRAPH_CAPTURE = 1
+
 test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
-      $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
-      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
-      $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) test-lora.full.gguf \
+      $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_LOOKUP_DRAFT) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM_DEP) \
+      $(TEST_QUANTS_SIMD) $(TEST_IQ_DECODE) $(TEST_KQ_STAGE) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) $(TEST_TRAY_WIN_DEP) $(TEST_TRAY_MAC_DEP) $(TEST_UTF8_CONSOLE_DEP) $(RUNNER_NO_MANIFEST) \
+      $(TEST_QUANTIZE) $(TEST_QUANTIZE_OOM) $(TEST_LINEAGE_OOM) $(TEST_DERIVE_OOM) test-lora.full.gguf \
       $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) $(TEST_GGUF_SPLIT) $(TEST_PARSE) $(TEST_ENVELOPE) $(TEST_SHA256) $(TEST_ED25519) $(TEST_MLDSA) $(TEST_PMATH) $(TEST_FPCLASS) $(TEST_ACT) $(TEST_ECDSA) $(TEST_WATERMARK) $(TEST_CANON_KERNELS) \
       $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) \
       $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) $(TEST_MOE_HOST_BRIDGE) $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) $(TEST_RESTART) $(TEST_PFX_PERSIST) \
       $(TEST_SCHED_TURN) $(TEST_STREAM_OUT) $(TEST_RESIDENCY) $(TEST_CAPACITY) $(TEST_BUDGET) $(TEST_ATTRIB_DEP) \
       $(TEST_STOP_CONSTRAINT) $(TEST_MSG_OOM_DEP) $(TEST_RECURRENT) $(TEST_PENALTY_WINDOW) $(TEST_ROPE_YARN) $(TEST_ATTN_SCALE) $(TEST_DOT_ROUTE) $(TEST_REQUEST_STOP) \
-      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-oddff.gguf test-oddff-f16.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf \
+      runner test.gguf test-q8.gguf test-bf16.gguf test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-q3k-prefill.gguf $(PREFILL_IQ_FIXTURES) test-mxfp4-prefill.gguf $(PREFILL_PERCOL_FIXTURES) test-oddff.gguf test-oddff-f16.gguf test-ornith.gguf test-clef.gguf test-ornith-draft.gguf test-yarn.gguf test-rope-local.gguf \
       test-qk.gguf test-gemma3.gguf test-gemma4.gguf test-es.gguf test-muse.gguf test-granite.gguf \
       test-gemma3-62.gguf test-gemma3-26.gguf test-qwen4exp.gguf test-lfm2.gguf test-lfm2-moe.gguf
 	./$(TEST_RECURRENT)
@@ -3310,6 +3498,13 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# plain softmax over all experts), held per coordinate to 0.5%
 	./$(TEST_LORA_GRAD) test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf strict
 	./$(TEST_LORA_GRAD) test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf strict
+	@# R6.68.92: the same two under RUNNER_MOE_REPLAY, the trace forcing
+	@# experts 3 and 0 at each of the window's 14 positions and 2 layers. The
+	@# taped forward routes as pinned, and so must the backward's recompute,
+	@# or the gradient is taken through other experts than the loss
+	$(PYTHON) -c "import json; print('\n'.join(json.dumps({'pos': p, 'layer': l, 'experts': [3, 0]}) for p in range(14) for l in range(2)))" > test-moe4-replay.jsonl
+	RUNNER_MOE_REPLAY=test-moe4-replay.jsonl ./$(TEST_LORA_GRAD) test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf strict
+	RUNNER_MOE_REPLAY=test-moe4-replay.jsonl ./$(TEST_LORA_GRAD) test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf strict
 	./$(TEST_LORA_GRAD) test-g4v.gguf test-lora-g4v.full.gguf
 	./$(TEST_LORA_GRAD) test-es8.gguf test-lora-es8.full.gguf stiff
 	@# and with qwen3-style per-head QK norms in the layer: the norm adjoint
@@ -3401,6 +3596,12 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# R6.35: Q4_0 weights, whose prefill on the scalar route runs the batch-1
 	@# GEMV's twins; before that its q8 arm read 10.7x the reassociation floor
 	./$(TEST_KV_TOL) test-q40.gguf
+	@# R6.41, R6.50, R6.54, R6.57, R6.58: on the scalar route a prompt's layer-0
+	@# KV rows are a batch-1 prefill's, byte for byte, at batch 9, 17, 24 and 64
+	@# (f16 cache), and every type's prefill runs its 16-wide twin, the batch-1
+	@# kernel per column, or (F32, F16, BF16) its own tile, the batch-1 twin
+	./$(TEST_PREFILL_BITS) test-q4k.gguf test-q5k.gguf test-q6k.gguf test-q40.gguf test-q8.gguf test-q3k-prefill.gguf \
+	    $(PREFILL_IQ_FIXTURES) test-mxfp4-prefill.gguf test-bf16.gguf $(PREFILL_PERCOL_FIXTURES)
 	./$(TEST_KV_FP4)
 	./$(TEST_CUDA_KVFP4)
 	./$(TEST_TC_TOL)
@@ -3425,10 +3626,12 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_IQ_DECODE)
 	./$(TEST_KQ_STAGE)
 	./$(TEST_INSTANCES)
+	$(TEST_INSTANCES_UBSAN_RUN)
 	./$(TEST_INSTANCES_OOM)
 	./$(TEST_METAL_ADMISSION)
 	./$(TEST_TRAY_CORE)
 	$(TEST_TRAY_WIN_RUN)
+	$(TEST_TRAY_MAC_RUN)
 	$(TEST_UTF8_CONSOLE_RUN)
 	@# the CPU-only backend stub, which no platform branch ever builds
 	$(MAKE) --no-print-directory test-gpu-stub
@@ -3442,7 +3645,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# zero: the dense-oracle MoE fixtures are 0.5/0.5 either way and can only
 	@# compare a routing path with itself (it self-skips on those, correctly)
 	$(PYTHON) scripts/make-test-moe.py test-moe-fixture
-	./$(TEST_ROPE_YARN) test-moe-fixture.gptoss-yarn.gguf test-yarn.gguf
+	./$(TEST_ROPE_YARN) test-moe-fixture.gptoss-yarn.gguf test-yarn.gguf test-rope-local.gguf
 	./$(TEST_MOE_TOL) test-moe-fixture.moe4.gguf
 	@# CPU/GPU agreement on a router that has a BIAS and routes top-1, so the
 	@# bias decides which expert runs. Every other MoE fixture here either has
@@ -3567,6 +3770,13 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	    test-lora.full.gguf 2> test-quantize-oom.err || \
 	    { tail -40 test-quantize-oom.err; exit 1; }
 	@tail -1 test-quantize-oom.err
+	@# every allocation of the receipts walk failed in turn (R6.68.5)
+	./$(TEST_LINEAGE_OOM) . 2> test-lineage-oom.err || { tail -40 test-lineage-oom.err; exit 1; }
+	@tail -1 test-lineage-oom.err
+	@# every allocation of derive's --target-size planning failed in turn (R6.68.5)
+	./$(TEST_DERIVE_OOM) . ./$(RUNNER_EXE) test.gguf 2> test-derive-oom.err || \
+	    { tail -40 test-derive-oom.err; exit 1; }
+	@tail -1 test-derive-oom.err
 	@# the host MoE bridge equals the forward's FFN on every MoE layer: the
 	@# routings above, Granite's residual scale, Nemotron-H's gate-less
 	@# shared expert
@@ -3651,7 +3861,28 @@ test-python: test-python-deps runner runner-turn-guard test.gguf $(TMPL_CONF_REN
              test.gguf test-lora.full.gguf test-moe-train.moe4-train.gguf test-es.gguf
 	@[ -f test-moe-fixture.moe4.gguf ] || $(PYTHON) scripts/make-test-moe.py test-moe-fixture > /dev/null
 	PYTHONPATH=python/src $(PYTHON) -m pytest python/tests/
-	RUNNER_REQUIRE_TURN_GUARD=1 $(PYTHON) scripts/ci-run.py --timeout 2400 root-pytest -- $(PYTHON) -m pytest $(PYTEST_XDIST) --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_commit_hygiene.py tests/test_template_kwargs.py tests/test_known_kwargs.py tests/test_attn_dec_repeat.py tests/test_attn_wide_repeat.py tests/test_moe_hot.py tests/test_check_portability.py tests/test_cuda_act_probe.py tests/test_fit_check.py tests/test_recommend.py tests/test_cached.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_nemotron_latent_moe.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_context_full.py tests/test_hf_fetch.py tests/test_pull.py tests/test_hub_upload_check.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_metal_microbatch_profile.py tests/test_metal_batch_tiles.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_scheduled_ci_alert.py tests/test_glibc_release.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_gguf_truncated.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_recurrent_refeed.py tests/test_draft_lookup.py tests/test_draft_k_defaults.py tests/test_cuda_plan_runs.py tests/test_cuda_fit_hybrid.py tests/test_cuda_rec_slots.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_moe_replay.py tests/test_act_trace.py tests/test_mistral3.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_queued_load_disconnect.py tests/test_score.py tests/test_score_route.py tests/test_cpu_i8_prefill.py tests/test_decide.py tests/test_clef.py tests/test_lfm2.py tests/test_qwen35moe.py tests/test_qwen36_preserve_thinking.py tests/test_spark2_5.py tests/test_flint.py tests/test_k2_horizon.py tests/test_yarn_betas.py tests/test_hf_spec_bounds.py tests/test_doc_counts.py tests/test_lora.py tests/test_train_kv_refusal.py tests/test_full_train.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_train_recipe.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_model_tiers.py tests/test_site_tiers.py tests/test_tier_smoke.py tests/test_template_conformance_token_only.py tests/test_difftok.py tests/test_unicode_classes.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_type_plan_by_sensitivity.py tests/test_derive.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_metal_split_layout.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_cuda_upload_report.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_top_logprobs_keys.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_stop_replay.py tests/test_think_replay.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_kv_f32.py tests/test_session_images.py tests/test_canon_gaps.py tests/test_qwen35_kv_rows.py tests/test_prefix_budget.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_schema_refs.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_ignore_eos_request.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_utf8_io.py tests/test_cli_lifecycle.py tests/test_cli_surface.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py tests/test_turn_write_guard.py tests/test_metal_memory.py tests/test_server_log_kept.py tests/test_port_in_use.py tests/test_draft_defaults.py tests/test_tc_spark_promotion.py tests/test_tc_clef_promotion.py tests/test_tc_route_label.py tests/test_verify_tc_compat.py tests/test_cuda_fit_ring.py tests/test_cancel_route.py tests/test_tool_replay.py tests/test_nemotron_hetero_moe.py
+	RUNNER_REQUIRE_TURN_GUARD=1 $(ROOT_PYTEST_ENV) $(PYTHON) scripts/ci-run.py --timeout $(ROOT_PYTEST_TIMEOUT) root-pytest -- $(PYTHON) -m pytest $(PYTEST_XDIST) $(ROOT_PYTEST_ARGS) --durations=25 -ra --junitxml=.build/ci/root.xml -q tests/test_ci_contracts.py tests/test_commit_hygiene.py tests/test_template_kwargs.py tests/test_known_kwargs.py tests/test_attn_dec_repeat.py tests/test_attn_wide_repeat.py tests/test_moe_hot.py tests/test_check_portability.py tests/test_cuda_act_probe.py tests/test_fit_check.py tests/test_fit_matches_load.py tests/test_owned_fields.py tests/test_recommend.py tests/test_cached.py tests/test_apertus.py tests/test_ornith_cpu.py tests/test_ornith_reference.py tests/test_compat_matrix.py tests/test_arch_admission.py tests/test_hybrid_admission.py tests/test_nemotron_latent_moe.py tests/test_hostile_geometry.py tests/test_certify_envelope.py tests/test_cpu_cuda_margin.py tests/test_envelope_gate.py tests/test_envelope_swap.py tests/test_cli_files.py tests/test_context_full.py tests/test_hf_fetch.py tests/test_pull.py tests/test_hub_upload_check.py tests/test_stop_specials.py tests/test_muse_auto_toolchoice.py tests/test_chat_template_flag.py tests/test_server_banner.py tests/test_split_gguf.py tests/test_metal_coverage.py tests/test_metal_mv_default.py tests/test_metal_microbatch_profile.py tests/test_metal_batch_tiles.py tests/test_gpu_declines.py tests/test_caps.py tests/test_tool_info.py tests/test_bench_json.py tests/test_mtp_admission.py tests/test_mtp_consume.py tests/test_compare_llamacpp.py tests/test_release_check.py tests/test_scheduled_ci_alert.py tests/test_glibc_release.py tests/test_eseries.py tests/test_stress_models.py tests/test_moe_prune_plan.py tests/test_kld_compare.py tests/test_kld_margin.py tests/test_quant_fidelity.py tests/test_token_divergence.py tests/test_verify_gguf.py tests/test_gguf_truncated.py tests/test_type_plan_size.py tests/test_stress_context.py tests/test_cert_greedy_identity.py tests/test_tokenizer_corpus.py tests/test_batch_bench.py tests/test_spec_telemetry.py tests/test_draft_required.py tests/test_draft_recurrent_refeed.py tests/test_draft_lookup.py tests/test_draft_k_defaults.py tests/test_cuda_plan_runs.py tests/test_cuda_fit_hybrid.py tests/test_cuda_rec_slots.py tests/test_kv_reachable.py tests/test_kv_ring.py tests/test_tiedv.py tests/test_moe_mm_flips.py tests/test_moe_replay.py tests/test_act_trace.py tests/test_mistral3.py tests/test_load_prefetch.py tests/test_spec_gpu.py tests/test_request_disconnect.py tests/test_queued_load_disconnect.py tests/test_score.py tests/test_score_route.py tests/test_cpu_i8_prefill.py tests/test_decide.py tests/test_clef.py tests/test_lfm2.py tests/test_qwen35moe.py tests/test_qwen36_preserve_thinking.py tests/test_spark2_5.py tests/test_flint.py tests/test_k2_horizon.py tests/test_yarn_betas.py tests/test_hf_spec_bounds.py tests/test_doc_counts.py tests/test_lora.py tests/test_train_kv_refusal.py tests/test_full_train.py tests/test_lora_qwen35.py tests/test_train.py tests/test_train_teacher.py tests/test_train_recipe.py tests/test_deltanet_autograd.py tests/test_rollout_identity.py tests/test_merge.py tests/test_lineage.py tests/test_eval_record.py tests/test_moe_lora.py tests/test_transcript.py tests/test_oms.py tests/test_kv_quality.py tests/test_tool_choice_boundary.py tests/test_nvfp4_scale.py tests/test_remove_sublayer.py tests/test_rewind_under_refused_prefix.py tests/test_server_penalty_exemptions.py tests/test_lora_identity_alpha.py tests/test_ttl_releases_draft.py tests/test_depth_slice.py tests/test_device_evidence.py tests/test_model_tiers.py tests/test_site_tiers.py tests/test_tier_smoke.py tests/test_template_conformance_token_only.py tests/test_difftok.py tests/test_unicode_classes.py tests/test_gemma4_untyped_fallback.py tests/test_xml_schema_fallback.py tests/test_gen_quality_metrics.py tests/test_granite.py tests/test_phi3_rope.py tests/test_iquants.py tests/test_metal_moe_batch.py tests/test_muse_glimmer.py tests/test_receipts.py tests/test_truncation_benchmark.py tests/test_type_plan.py tests/test_type_plan_by_sensitivity.py tests/test_derive.py tests/test_unload_honesty.py tests/test_tray_not_raised_on_refusal.py tests/test_tray_not_raised_without_console.py tests/test_shadow_mode_flag.py tests/test_record_sign.py tests/test_qwen3_coder_tools.py tests/test_native_xml_routing.py tests/test_sampling_defaults.py tests/test_coverage_inventory.py tests/test_turn_mark.py tests/test_cuda_iq_grids.py tests/test_metal_iq_kernels.py tests/test_tc_gate_eligibility.py tests/test_decide_calibrate.py tests/test_gpu_split_order.py tests/test_metal_split_layout.py tests/test_cuda_tensor_roles.py tests/test_cuda_buffer_lifetime.py tests/test_cuda_upload_report.py tests/test_tooluse_shifted.py tests/test_reasoning_budget.py tests/test_reasoning_sampling.py tests/test_loop_guard.py tests/test_model_id_long_name.py tests/test_gguf_blockorder.py tests/test_schema_close_api.py tests/test_embeddings_pooling.py tests/test_batch_rows_match_cpu.py tests/test_apertus_thinking.py tests/test_nonfinite_responses.py tests/test_nonfinite_records.py tests/test_provenance.py tests/test_rerank.py tests/test_echo_logprobs.py tests/test_top_logprobs_keys.py tests/test_repeated_tool_calls.py tests/test_named_contexts.py tests/test_responses_store.py tests/test_adapter_routing.py tests/test_bundle.py tests/test_serve_receipts.py tests/test_adapter_signature.py tests/test_sign_model.py tests/test_agent_transcripts.py tests/test_stop_replay.py tests/test_think_replay.py tests/test_watermark.py tests/test_kv_snapshots.py tests/test_kv_f32.py tests/test_session_images.py tests/test_canon_gaps.py tests/test_qwen35_kv_rows.py tests/test_prefix_budget.py tests/test_parent_pid.py tests/test_lease_interop.py tests/test_gold_logits.py tests/test_mv_fuse.py tests/test_stream_utf8.py tests/test_tool_schema_validity.py tests/test_schema_refs.py tests/test_doctor.py tests/test_metal_attn_tile.py tests/test_metal_attn_gqa.py tests/test_server_sessions.py tests/test_confirm_below.py tests/test_evidence_pack.py tests/test_closure_provenance.py tests/test_reasoning_reserve.py tests/test_hermes_json_families.py tests/test_adapt_info.py tests/test_expect_resident.py tests/test_health_requests.py tests/test_ignore_eos_request.py tests/test_server_shared_pool.py tests/test_completion_token_ids.py tests/test_cli_smokes.py tests/test_utf8_io.py tests/test_cli_lifecycle.py tests/test_cli_surface.py tests/test_completion_sequences.py tests/test_reasoning_start.py tests/test_generation_fault_framing.py tests/test_stop_latency.py tests/test_agent_torture.py tests/test_torture_compare.py tests/test_competitor_freshness.py tests/test_write_stall_experiment.py tests/test_idle_coexistence.py tests/test_family_fixtures.py tests/test_bench_corpus.py tests/test_turn_write_guard.py tests/test_metal_memory.py tests/test_server_log_kept.py tests/test_port_in_use.py tests/test_draft_defaults.py tests/test_tc_spark_promotion.py tests/test_tc_clef_promotion.py tests/test_tc_route_label.py tests/test_verify_tc_compat.py tests/test_cuda_fit_ring.py tests/test_cancel_route.py tests/test_soak_serve.py tests/test_phys_footprint.py tests/test_tool_replay.py tests/test_nemotron_hetero_moe.py tests/test_gate_scripts.py tests/test_prompt_file_crlf.py tests/test_cancel_handles.py
+
+# The python half again, against the ASan+UBSan build (R6.68.21): `make
+# debug`, copied over ./runner for the run (RUNNER_COPY_FROM, so the
+# `runner` prerequisite inside test-python keeps it there instead of
+# restoring the optimized copy) and put back after it, pass or fail. tests/sanitizer_reports.py moves every child's report into a file
+# named after its test, and the run fails on any file even when every test
+# passed: most tests never read a child's stderr for a report, and a server's
+# log can be deleted with its report in it (R6.68.20). CPU only: under ASan,
+# cuInit fails unless ASAN_OPTIONS has protect_shadow_gap=0, and the driver
+# keeps process-lifetime allocations (tests/lsan.supp). -O0 is several times
+# slower than the optimized build, hence the scale on absolute test timeouts
+# (RUNNER_TEST_TIMEOUT_SCALE) and the longer limit.
+SAN_PYTEST_ENV = CUDA_VISIBLE_DEVICES= RUNNER_TEST_TIMEOUT_SCALE=8 \
+                 ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 \
+                 LSAN_OPTIONS=suppressions=$(CURDIR)/tests/lsan.supp PYTHONPATH=tests
+test-python-sanitized: debug
+	@rc=0; $(MAKE) --no-print-directory test-python RUNNER_COPY_FROM=runner-debug \
+	    ROOT_PYTEST_ENV="$(SAN_PYTEST_ENV)" ROOT_PYTEST_ARGS="-p sanitizer_reports" \
+	    ROOT_PYTEST_TIMEOUT=$(SAN_PYTEST_TIMEOUT) || rc=$$?; \
+	  $(MAKE) --no-print-directory runner; exit $$rc
+SAN_PYTEST_TIMEOUT ?= 7200
 
 # --------------------------------------------------------------------------
 # Template conformance: runner's native C chat renderer vs the model's OWN
@@ -3776,7 +4007,8 @@ FUZZ_CLANG   ?= clang
 FUZZ_TIME    ?= 20
 FUZZ_RSS_MB  ?= 2048
 FUZZ_TARGETS = json_parse schema_compile sval_feed sval_trial jsonv_feed \
-               gguf_open http_request tokenizer model_load gguf_split
+               gguf_open http_request tokenizer model_load gguf_split \
+               tool_stream record_check session_read
 # -O1 -g: libFuzzer wants speed but ASan reports want frames.
 # No -march=native and no -ffast-math: the point here is defined behaviour,
 # and UBSan must abort rather than warn or the run cannot gate anything.
@@ -3785,7 +4017,7 @@ FUZZ_FLAGS = -g -O1 -std=gnu11 -Wall -Wextra -Wno-unused-parameter -I src \
              -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined \
              -fno-omit-frame-pointer
 ifneq ($(STRICT_BUILD),)
-override FUZZ_FLAGS += -Werror
+override FUZZ_FLAGS += -Werror -Wshadow
 endif
 
 FUZZ_SRC_json_parse     = src/json.c
@@ -3798,9 +4030,19 @@ FUZZ_SRC_http_request   = src/http.c src/json.c src/compat.c
 FUZZ_SRC_tokenizer      = src/tokenizer.c src/gguf.c src/compat.c src/quants.c
 FUZZ_SRC_model_load     = src/model.c src/gguf.c src/compat.c src/quants.c src/vramreg.c src/gpu_none.c
 FUZZ_SRC_gguf_split     = src/gguf.c src/compat.c src/quants.c
+FUZZ_SRC_tool_stream    = src/template.c src/gguf.c src/tokenizer.c $(SCHEMA_SRC) src/jsonmode.c \
+                          src/json.c src/compat.c src/quants.c
+FUZZ_SRC_record_check   = src/envelope.c src/ed25519.c $(MLDSA_SRC) src/json.c src/compat.c
+# session.c's writer half calls the engine, so its reader links the server's
+# whole source set, as the thread-sanitizer gates do
+FUZZ_SRC_session_read   = $(filter-out tests/test_swap_race.c $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c
 
 fuzz-%: tests/fuzz/fuzz_%.c tests/fuzz/fuzz_files.h $(wildcard src/*.c) $(HDR)
 	$(FUZZ_CLANG) $(FUZZ_FLAGS) $(FUZZ_EXTRA_FLAGS) tests/fuzz/fuzz_$*.c $(FUZZ_SRC_$*) -o $@ -lm -lpthread $(FUZZ_EXTRA_FLAGS)
+
+# the registered targets, one per line, for a job that shards them itself
+fuzz-targets:
+	@printf '%s\n' $(FUZZ_TARGETS)
 
 # build only; useful on its own to check the harnesses still compile
 fuzz-build: $(addprefix fuzz-,$(FUZZ_TARGETS))
@@ -3826,6 +4068,12 @@ FUZZ_ARGS_http_request = -max_len=16384 -dict=tests/fuzz/http.dict
 FUZZ_ARGS_tokenizer = -max_len=8192
 FUZZ_ARGS_model_load = -max_len=1048576 -dict=tests/fuzz/gguf.dict
 FUZZ_ARGS_gguf_split = -max_len=1048576
+# a model's turn is kilobytes; the split-point property is found on short ones
+FUZZ_ARGS_tool_stream = -max_len=4096 -dict=tests/fuzz/tool_stream.dict
+FUZZ_ARGS_record_check = -max_len=16384 -dict=tests/fuzz/record.dict
+FUZZ_ARGS_session_read = -max_len=65536
+FUZZ_ENV_record_check = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/record_check/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/record_check/ubsan
+FUZZ_ENV_session_read = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/session_read/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/session_read/ubsan
 FUZZ_ENV_model_load = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/model_load/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/model_load/ubsan
 FUZZ_ENV_gguf_split = ASAN_OPTIONS=$(FUZZ_SAN_OPTS):log_path=.build/fuzz-findings/gguf_split/asan UBSAN_OPTIONS=halt_on_error=1:log_path=.build/fuzz-findings/gguf_split/ubsan
 
@@ -3861,7 +4109,7 @@ clean:
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
 	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) $(TEST_MLOCK) $(TEST_WILLNEED) \
 	      $(TEST_BATCH) $(TEST_BIND) $(TEST_HOST_HEADER) $(TEST_VRAMREG) $(TEST_UPLOAD_REPORT) $(TEST_TRAIN_GPU) test-shared-asan-bin \
-	      $(TEST_KV_TOL) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
+	      $(TEST_KV_TOL) $(TEST_PREFILL_BITS) $(TEST_KV_FP4) $(TEST_CUDA_KVFP4) $(TEST_TC_TOL) $(TEST_I8_TOL) $(TEST_MV_TOL) $(TEST_ATTN_TOL) $(TEST_GPU_ID) $(TEST_MOE_TOL) $(TEST_MOE_ROUTER) $(TEST_PAGING_WARN) $(TEST_AUTOFIT) $(TEST_RESP_SM) $(TEST_PREFIX) $(TEST_GRAMMAR_FF) $(TEST_CHOICE_MASS) $(TEST_TOOLS) $(DIFFTOK) \
 	      $(TEST_QUANTS_SIMD) $(TEST_INSTANCES) $(TEST_INSTANCES_OOM) $(TEST_METAL_ADMISSION) $(TEST_TRAY_CORE) \
 	      $(TEST_QUANTIZE) $(TEST_VRAM_ROLLBACK) $(TEST_GGUF_GETTERS) $(TEST_HFHUB) \
 	      $(TEST_PARSE) $(TEST_THREAD_DEFAULT) $(TEST_SLOW_NOTE) $(TEST_CAPACITY) $(TEST_METAL_OWNERSHIP) $(TEST_METAL_SHADERS) $(TEST_METAL_KQUANTS) $(TEST_MODEL_LOAD_FAILURE) $(TEST_MODEL_LOAD_OOM) test-load-oom-* test-model-load-oom.err $(TEST_QUANTIZE_OOM) test-quantize-oom* $(TEST_MOE_HOST_BRIDGE) test-bridge-nemo* test-moe-host-bridge.err $(TEST_LORA_CHAINS) $(TEST_MVT_CHAINS) $(TEST_DN_RECURRENCE) $(TEST_ATTN_BW) \
@@ -4007,6 +4255,25 @@ test-cuda-gated: runner test.gguf
 	$(PYTHON) scripts/check-junit.py --no-skips-matching '(?i)cuda|device|gpu' \
 	    --allow-skip 'CUDA runtime is available' .build/ci/cuda-gated.xml
 
+# The tests anchored outside this repository (R6.68.11): torch's float32
+# forward and autograd, transformers' activations, Hugging Face tokenizers,
+# an independent Ed25519, sigstore's model signing, and one real model file.
+# Each of them skips where its package or the file is missing, so `make test`
+# passes without ever running them; this target provides the file, requires
+# the packages and allows no skip but the one macOS-only refusal.
+ANCHOR_TESTS = tests/test_gold_logits.py tests/test_act_trace.py tests/test_deltanet_autograd.py \
+               tests/test_kld_compare.py tests/test_draft_lookup.py \
+               tests/test_difftok.py tests/test_receipts.py tests/test_sign_model.py
+test-anchors: runner test.gguf $(TEST_LORA_GRAD) $(DIFFTOK)
+	@$(PYTHON) -c "import pytest, torch, transformers, accelerate, tokenizers, cryptography, model_signing" || { \
+		echo "error: make test-anchors needs pytest, torch, transformers, accelerate, tokenizers, cryptography and model-signing for $(PYTHON)"; exit 1; }
+	sh download-model.sh
+	@mkdir -p .build/ci
+	$(PYTHON) -m pytest -q -rs --junitxml=.build/ci/anchors.xml $(ANCHOR_TESTS)
+	$(PYTHON) scripts/check-junit.py --no-skips-matching '.' \
+	    --allow-skip 'this OS refuses a deliberate self-connect' .build/ci/anchors.xml
+
+.PHONY: test-anchors
 .PHONY: test-gpu-stub test-cuda-nvfp4 test-cuda-hybrids test-cuda-qwen4exp test-cuda-qwen35moe test-ts-client test-cuda-gated test-cuda-batch-identity test-cuda-spec-identity
 .PHONY: test-gates test-gates-core test-gates-batch test-python
 .PHONY: test-deepseek2 test-metal-kv-fp4 FORCE makefile-noop test-python-deps test-makefile-sane test-cuda-iquants test-tc-overflow fixture-scale-note clean debug ptx test test-bare-invocation test-help-interface test-shader-embed test-metal-shader-gate test-apertus test-moe test-prune-experts test-metal-fallback test-metal-prefill test-metal-kquant test-metal-decode-only test-metal-split test-metal-bind-failure test-metal-kv-q8 test-metal-moe test-metal-gptoss-moe test-metal-gemma4-moe test-metal-gemma4-hetero test-metal-bigmodel test-metal-bigmodel-multibuf test-metal-moe-em test-metal-moe-mm test-metal-fuse test-metal-gelu-overflow test-metal-eseries test-metal-swa smoke release-check test-truncation fuzz fuzz-build fuzz-run test-shared-asan test-shared-noid test-split-guard test-swap-race
@@ -4035,6 +4302,12 @@ test-pool-race:
 test-server-race-tsan: test.gguf
 	$(CC) $(TSAN_FLAGS) $(filter-out $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c -o test-server-race-tsan-bin $(LDFLAGS)
 	TSAN_OPTIONS=halt_on_error=1 ./test-server-race-tsan-bin test.gguf
+	@# the cancel ticket and the waiter count under TSan (R6.68.8, R6.68.9)
+	$(CC) $(TSAN_FLAGS) -DRUNNER_TEST_CANCEL_WAIT tests/test_cancel_race.c \
+	    $(filter-out tests/test_swap_race.c $(GPU_SRC),$(TEST_SWAP_RACE_SRC)) src/gpu_none.c \
+	    -o test-cancel-race-tsan-bin $(LDFLAGS)
+	TSAN_OPTIONS=halt_on_error=1 ./test-cancel-race-tsan-bin test.gguf 18117
+	TSAN_OPTIONS=halt_on_error=1 ./test-cancel-race-tsan-bin test.gguf 18118 stop
 
 # /v1/decide and /v1/rerank number their answers from counters every slot
 # shares; slots answer on their own threads. TSan halting on an unguarded

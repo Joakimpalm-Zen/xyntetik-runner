@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "fpclass.h"  // merge_survival_measured, under fast math
 
 // tensor data types (subset of ggml)
 enum ggml_type {
@@ -107,6 +108,16 @@ typedef struct {
     uint64_t bytes, bytes_changed;
     double ret_num, ret_den;
 } merge_survival;
+// Whether the merge measured what it kept, failing closed (R6.68.116): some
+// delta was written (ret_den > 0), or the measure itself is not a number (a
+// weight or the delta not finite: NaN > 0 is false, and these guards read it
+// as nothing to measure, so the floor and the record's block were skipped).
+// fpclass.h's test, which fast math cannot fold (a plain exponent-bits test
+// is turned back into a class test and folded: measured, this guard read a
+// NaN as not measured).
+static inline bool merge_survival_measured(const merge_survival *sv) {
+    return !fp_finite_f64(sv->ret_den) || sv->ret_den > 0;
+}
 // --merge-lora's default floor on delta_retained. Calibrated 2026-10-09 on the
 // merge study's Qwen3-4B Q4_K_M + tool-use adapter: merged back onto Q4_K,
 // 1.8% (scale 1) to 8.9% (scale 8) of the delta survived; into Q8_0 99.5%.

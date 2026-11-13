@@ -31,13 +31,12 @@ import math
 import os
 import subprocess
 import sys
-import time
 import urllib.request
 
 # the shared probes live beside this script; a test that loads this file by
 # path has not put the directory on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from server_probe import require_served, server_up  # noqa: E402
+from server_probe import require_served, wait_for_own_server  # noqa: E402
 
 
 def server_cmd_env(runner, model, port, threads=0, ctx=0, gpu="off",
@@ -74,14 +73,8 @@ def start_server(runner, model, port, threads=0, ctx=0, gpu="off",
     proc = subprocess.Popen(
         cmd, env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(400):
-        if proc.poll() is not None:
-            raise RuntimeError(f"runner exited early loading {model} (code {proc.returncode})")
-        if server_up(port):
-            return proc
-        time.sleep(0.5)
-    proc.kill()
-    raise RuntimeError(f"server for {model} on port {port} did not come up")
+    wait_for_own_server(proc, port, model)
+    return proc
 
 
 # A position whose greedy next token is a STOP used to have no distribution
@@ -115,7 +108,7 @@ def query(endpoint, model_name, prompt, top_n=20):
               "temperature": 0, "logprobs": top_n}
     req = urllib.request.Request(
         f"{endpoint}/v1/completions",
-        data=json.dumps(payload).encode(),
+        data=json.dumps(payload, allow_nan=False).encode(),
         headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=120) as resp:
         body = json.loads(resp.read())
@@ -443,10 +436,10 @@ def main(argv):
         "mean_top8_overlap": sum(overlaps) / len(overlaps) if overlaps else None,
         "positions": positions,
     }
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result, indent=2, allow_nan=False))
     if args.out:
         with open(args.out, "w") as f:
-            json.dump(result, f, indent=2)
+            json.dump(result, f, indent=2, allow_nan=False)
     if not klds:
         # Every field above is null. kld-compare.py refuses this state; the v2
         # that publishes the adopted criterion must too, or a dead endpoint or

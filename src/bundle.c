@@ -245,6 +245,13 @@ out:
 
 // ------------------------------------------------------------------- check
 
+// A bundle or a pack is a folder someone else hands over. Its check reads
+// regular files only (envelope.h): a listed name that was a link to /dev/zero
+// was hashed with no end (R6.68.63).
+static char *read_listed(const char *path, size_t max_bytes, size_t *n_out) {
+    return record_regular_file(path) ? plat_read_file(path, max_bytes, n_out) : NULL;
+}
+
 static int bad(const char *dir, const char *why, const char *what) {
     printf("BAD: bundle %s: %s%s%s\n", dir, why, what ? ": " : "", what ? what : "");
     return 2;
@@ -259,7 +266,7 @@ int bundle_check(const char *dir, const char *trust_hex) {
     char path[4096];
     join(path, sizeof path, dir, "bundle.json");
     size_t mn = 0;
-    char *man = plat_read_file(path, BUNDLE_MAX_FILE, &mn);
+    char *man = read_listed(path, BUNDLE_MAX_FILE, &mn);
     if (!man) {
         printf("UNVERIFIABLE: bundle %s: no readable bundle.json\n", dir);
         return 3;
@@ -305,7 +312,7 @@ int bundle_check(const char *dir, const char *trust_hex) {
         if (!plain_name(name)) { rc = bad(dir, "a listed file name is not a plain name", name); goto out; }
         char fp[4096], have[65];
         join(fp, sizeof fp, dir, name);
-        if (!envelope_file_sha256(fp, have)) { rc = bad(dir, "a listed file is missing", name); goto out; }
+        if (!envelope_cited_sha256(fp, have)) { rc = bad(dir, "a listed file is missing", name); goto out; }
         if (strcmp(have, want)) { rc = bad(dir, "a file differs from its listed sha256", name); goto out; }
     }
     // the receipt: its chain recomputes, its signature is the one named
@@ -314,7 +321,7 @@ int bundle_check(const char *dir, const char *trust_hex) {
     if (!plain_name(rname)) { rc = bad(dir, "no receipt file named", NULL); goto out; }
     join(path, sizeof path, dir, rname);
     size_t rn = 0;
-    if (!(rec = plat_read_file(path, BUNDLE_MAX_FILE, &rn))) { rc = bad(dir, "the receipt is unreadable", rname); goto out; }
+    if (!(rec = read_listed(path, BUNDLE_MAX_FILE, &rn))) { rc = bad(dir, "the receipt is unreadable", rname); goto out; }
     char chain[65];
     const char *mchain = jv_str(jv_get(mr, "chain_hash"), "");
     r = json_parse(rec, rn);
@@ -349,7 +356,7 @@ int bundle_check(const char *dir, const char *trust_hex) {
     if (kf) {
         char kp[4096], kfp[65];
         join(kp, sizeof kp, dir, kf);
-        if (!plain_name(kf) || !oms_pubkey_fingerprint(kp, kfp) ||
+        if (!plain_name(kf) || !record_regular_file(kp) || !oms_pubkey_fingerprint(kp, kfp) ||
             strcmp(kfp, jv_str(jv_get(mm, "key_fingerprint"), ""))) {
             rc = bad(dir, "the model key's fingerprint does not recompute", kf);
             goto out;
@@ -587,8 +594,10 @@ int pack_export(const pack_opts *o) {
         join(p, sizeof p, o->out_dir, r[i].name);
         envelope_data_sha256(r[i].bytes, r[i].n, h);
         wrote_ok = spill(p, r[i].bytes, r[i].n);
-        sb_fmt(&m, "%s{\"name\":\"%s\",\"role\":\"receipt\",\"sha256\":\"%s\","
-                   "\"bytes\":%zu}", first ? "" : ",", r[i].name, h, r[i].n);
+        // a name is a file name, written as a JSON string (it may hold a quote)
+        sb_lit(&m, first ? "{\"name\":" : ",{\"name\":");
+        sb_str(&m, r[i].name);
+        sb_fmt(&m, ",\"role\":\"receipt\",\"sha256\":\"%s\",\"bytes\":%zu}", h, r[i].n);
         first = false;
     }
     struct { const char *name, *role; char *data; size_t n; } extra[3] = {
@@ -623,8 +632,9 @@ int pack_export(const pack_opts *o) {
         jv *j = r[i].j, *sv = jv_get(j, "serve");
         const char *prev = jv_str(jv_get(jv_get(j, "chain"), "prev"), NULL);
         if (i && (!prev || strcmp(prev, r[i - 1].hash))) breaks++;
-        sb_fmt(&m, "%s{\"id\":\"%s\",\"file\":\"%s\",\"chain_prev\":",
-               i ? "," : "", r[i].hash, r[i].name);
+        sb_fmt(&m, "%s{\"id\":\"%s\",\"file\":", i ? "," : "", r[i].hash);
+        sb_str(&m, r[i].name);
+        sb_lit(&m, ",\"chain_prev\":");
         sb_str(&m, prev);
         sb_lit(&m, ",\"api\":");
         sb_str(&m, jv_str(jv_get(sv, "api"), NULL));
@@ -733,7 +743,7 @@ int pack_check(const char *dir, const char *trust_hex) {
     char path[4200];
     join(path, sizeof path, dir, "pack.json");
     size_t mn = 0;
-    char *man = plat_read_file(path, BUNDLE_MAX_FILE, &mn);
+    char *man = read_listed(path, BUNDLE_MAX_FILE, &mn);
     if (!man) {
         printf("UNVERIFIABLE: pack %s: no readable pack.json\n", dir);
         return 3;
@@ -775,7 +785,7 @@ int pack_check(const char *dir, const char *trust_hex) {
         if (!plain_name(name)) { rc = pbad(dir, "a listed file name is not a plain name", name); goto out; }
         char fp[4200], have[65];
         join(fp, sizeof fp, dir, name);
-        if (!envelope_file_sha256(fp, have)) { rc = pbad(dir, "a listed file is missing", name); goto out; }
+        if (!envelope_cited_sha256(fp, have)) { rc = pbad(dir, "a listed file is missing", name); goto out; }
         if (strcmp(have, want)) { rc = pbad(dir, "a file differs from its listed sha256", name); goto out; }
     }
     // a receipt in the directory that the manifest does not list is a
@@ -818,7 +828,7 @@ int pack_check(const char *dir, const char *trust_hex) {
         char fp[4200];
         join(fp, sizeof fp, dir, name);
         size_t rn = 0;
-        char *rec = plat_read_file(fp, BUNDLE_MAX_FILE, &rn);
+        char *rec = read_listed(fp, BUNDLE_MAX_FILE, &rn);
         jv *rj = rec ? json_parse(rec, rn) : NULL;
         char h[65], pk[SIGN_PUBHEX_CAP] = "", kfp[65] = "";
         const char *why = NULL;
@@ -862,7 +872,7 @@ int pack_check(const char *dir, const char *trust_hex) {
     if (kf) {
         char kp[4200], kfp[65];
         join(kp, sizeof kp, dir, kf);
-        if (!plain_name(kf) || !oms_pubkey_fingerprint(kp, kfp) ||
+        if (!plain_name(kf) || !record_regular_file(kp) || !oms_pubkey_fingerprint(kp, kfp) ||
             strcmp(kfp, jv_str(jv_get(mm, "key_fingerprint"), ""))) {
             rc = pbad(dir, "the model key's fingerprint does not recompute", kf);
             goto out;

@@ -22,6 +22,7 @@ EXTRA_TAIL = []     # --extra-tail NAME: a 4-float tensor no loader reads, store
 DROP_V = set()      # --drop-v: layers whose attn_v.weight is omitted (V = raw K)  # --alpha-order: tensors stored in name order, not block order
 AGENT_PROFILE = False
 AGENT_FEATURES = ["dense", "json_schema"]
+AGENT_DIGEST = "a" * 64   # --agent-digest writes another, for the loader's refusal
 MTP_LAYERS = 0   # extra trailing blocks declared as NextN/MTP predictor heads
 # Extra USER_DEFINED tokens appended to the vocabulary, in two length classes.
 # The tokenizer sorts its special list by length; two large equal-length runs
@@ -78,6 +79,8 @@ YARN_FACTOR = None # optional native YaRN metadata for CLI/rope tests
 YARN_ORIG_CTX = 0
 YARN_BETAS = None  # (fast, slow) declared as rope.scaling.yarn_beta_fast/_slow
 YARN_ATTN = None   # declared rope.scaling.yarn_attn_factor
+ROPE_LOCAL_BASE = None  # --rope-local-base: declared rope.local.freq_base
+ROPE_SWA_BASE = None    # --rope-swa-base: declared rope.freq_base_swa
 QK_NORM = False    # --qk-norm: per-head attn_q_norm/attn_k_norm (qwen3-style)
 # --noisy-norms: the output, attention and FFN norm weights drawn around 1
 # (1 +- 0.5) instead of all ones. With ones, a kernel that ignores the norm
@@ -89,6 +92,7 @@ MLA_WIDE = False   # --mla-wide: deepseek2 at DeepSeek-V2-Lite's attention geome
 CODEBOOK = {"iq2_xxs": (16, 66), "iq2_xs": (17, 74), "iq2_s": (22, 82),
             "iq3_xxs": (18, 98), "iq3_s": (21, 110)}
 N_FF_SET = None    # --n-ff N: FFN width (an odd N gives odd ffn_gate/ffn_up row counts)
+N_EMBD_SET = None  # --n-embd N: model width
 GPU_UNSUPPORTED = None  # one named tensor stored as CPU-only IQ2_XXS
 ZERO_BRANCHES = False  # --zero-branches: attn_output/ffn_down all zero
 LICENSE = None         # --license ID: general.license (runner derive copies it)
@@ -99,6 +103,7 @@ ADD_EOS = False    # --add-eos: tokenizer.ggml.add_eos_token = true
 BPE_PRE = None     # --bpe-pre NAME: a GPT-2 byte-level BPE vocabulary declaring that split
 LAYERS = None      # --layers N: block count (a family's size tells some rules)
 HEAD_DIM = None    # --head-dim N: decouple head_dim from N_EMBD / N_HEAD
+OMIT_HEAD_KEYS = False  # --omit-head-keys: no attention.key_length / value_length / key_length_swa
 ROPE_DIM = None    # --rope-dim N: rotate only the first N dims of each head
 HEADS = None       # --heads Q:KV: query and KV head counts (with --head-dim)
 SAMPLING = None
@@ -126,6 +131,10 @@ while i < len(args):
         i += 1
         AGENT_PROFILE = True
         AGENT_FEATURES.append(args[i])
+    elif a == "--agent-digest":
+        i += 1
+        AGENT_PROFILE = True
+        AGENT_DIGEST = args[i]
     elif a == "--apertus":
         # ungated MLP + xIELU. "IDENT" makes xIELU the identity
         # (alpha_p=0, alpha_n=0, beta=1) so the FFN is a plain up->down
@@ -316,6 +325,14 @@ while i < len(args):
     elif a == "--yarn-attn-factor":
         i += 1
         YARN_ATTN = float(args[i])
+    elif a == "--rope-local-base":
+        # the sliding layers' rope base under its two spellings: a file that
+        # declares both reads rope.local.freq_base first (rope_setup)
+        i += 1
+        ROPE_LOCAL_BASE = float(args[i])
+    elif a == "--rope-swa-base":
+        i += 1
+        ROPE_SWA_BASE = float(args[i])
     elif a == "--n-ff":
         # the FFN width: an odd count gives ffn_gate/ffn_up an odd number of
         # output rows, the tail of the two-rows-per-warp and exact-width GEMV
@@ -323,6 +340,12 @@ while i < len(args):
         # quantizer keeps it in a fallback type)
         i += 1
         N_FF_SET = int(args[i])
+    elif a == "--n-embd":
+        # the model width, so a projection's row can be longer than one
+        # lane's block in a one-lane-per-block matvec (k_mv_mxfp4: 32 lanes of
+        # 32 values, 1,024; R6.57); with --head-dim the heads keep their width
+        i += 1
+        N_EMBD_SET = int(args[i])
     elif a == "--wide":
         WIDE = True
     elif a == "--mla-wide":
@@ -422,6 +445,10 @@ while i < len(args):
         # attention by n_embd / n_head where the smaller sizes use head_dim.
         i += 1
         LAYERS = int(args[i])
+    elif a == "--omit-head-keys":
+        # a header that leaves the head width to the loader's default (gemma4
+        # takes 512; R6.68.29's fit asks the loader's plan, which knows that)
+        OMIT_HEAD_KEYS = True
     elif a == "--head-dim":
         # a head width other than N_EMBD / N_HEAD, published as key_length,
         # value_length and rope.dimension_count (the plain and gemma3 shapes)
@@ -486,6 +513,8 @@ if WIDE:
     N_EMBD, N_FF = 256, 512
 if N_FF_SET is not None:
     N_FF = N_FF_SET
+if N_EMBD_SET is not None:
+    N_EMBD = N_EMBD_SET
 if ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO:
     # enough layers for a sliding/full pattern (with a shared-KV tail for
     # the E-series variants)
@@ -866,7 +895,8 @@ if ESERIES_SHARED_KV or ESERIES_PLE:
         ku(f"{ARCH}.rope.dimension_count", ROPE_DIM or ehd),
         kf(f"{ARCH}.final_logit_softcapping", 30.0),
     ]
-if ARCH == "gemma4" and not (ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO):
+# (--head-dim publishes these keys itself, above)
+if ARCH == "gemma4" and not (ESERIES_SHARED_KV or ESERIES_PLE or G4HETERO or HEAD_DIM):
     # gemma4's loader defaults attention.key_length to 512 when the key is
     # absent, because every official gemma-4 export publishes it. This
     # generator did not, so a plain `--arch gemma4` fixture declared a
@@ -978,6 +1008,10 @@ if ARCH == "phi3":
         kf(f"{ARCH}.rope.scaling.attn_factor", 1.19),
         ku(f"{ARCH}.rope.dimension_count", N_EMBD // N_HEAD),
     ]
+if ROPE_LOCAL_BASE is not None:
+    meta_kvs.append(kf(f"{ARCH}.rope.local.freq_base", ROPE_LOCAL_BASE))
+if ROPE_SWA_BASE is not None:
+    meta_kvs.append(kf(f"{ARCH}.rope.freq_base_swa", ROPE_SWA_BASE))
 if SWA_WINDOW_ONLY:
     meta_kvs.append(ku(f"{ARCH}.attention.sliding_window", SWA_WINDOW_ONLY))
 if SWA_WINDOW:
@@ -992,7 +1026,7 @@ if AGENT_PROFILE:
         ku("gridcore.agent.protocol_version", 1),
         ku("gridcore.agent.tokenizer_version", 1),
         ks("gridcore.agent.schema_id", "gridcore.agent.action.v1"),
-        ks("gridcore.agent.schema_digest", "a" * 64),
+        ks("gridcore.agent.schema_digest", AGENT_DIGEST),
         kas("gridcore.agent.required_features", AGENT_FEATURES),
     ]
 if SUPPRESS_ALL_BUT_EOS:
@@ -1000,6 +1034,11 @@ if SUPPRESS_ALL_BUT_EOS:
     # immediately, so a completion prints only the echoed prompt
     meta_kvs.append(kai("tokenizer.ggml.suppress_tokens",
                                [i for i in range(N_VOCAB) if i != 2]))
+if OMIT_HEAD_KEYS:
+    # each entry starts with its key: a u64 length, then the bytes
+    def _key(kv): return kv[8:8 + struct.unpack("<Q", kv[:8])[0]].decode()
+    _omit = (".attention.key_length", ".attention.value_length", ".attention.key_length_swa")
+    meta_kvs = [kv for kv in meta_kvs if not _key(kv).endswith(_omit)]
 meta = b"".join(meta_kvs)
 
 # ---------------------------------------------------------------- quantization

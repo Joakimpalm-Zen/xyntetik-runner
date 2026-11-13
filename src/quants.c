@@ -1175,8 +1175,37 @@ static void dq_q4_K_neon(const block_q4_K *b, float *y) {
 }
 
 // Q2_K / Q3_K pack four 2-bit planes into one byte, so the plane shift is an
-// immediate and the j loop has to be unrolled; the macro takes the already-
-// shifted vectors. Both keep the scalar code's own operand order.
+// immediate and the j loop has to be unrolled; each plane function takes the
+// already-shifted vectors and returns where the next plane writes. Both keep
+// the scalar code's own operand order.
+static inline float *q2k_plane(uint8x16_t v0, uint8x16_t v1, uint8x16_t m3,
+                               const uint8_t *scales, int *is, float d, float dmin,
+                               float *y) {
+    float32x4_t f[4];
+    uint8_t sc = scales[(*is)++];
+    u8_to_f32x4(vandq_u8(v0, m3), f);
+    st16fm(y, f, d * (sc & 0xF), dmin * (sc >> 4));
+    sc = scales[(*is)++];
+    u8_to_f32x4(vandq_u8(v1, m3), f);
+    st16fm(y + 16, f, d * (sc & 0xF), dmin * (sc >> 4));
+    return y + 32;
+}
+
+// `m` is the bit of the high-bit plane this 2-bit plane pairs with.
+static inline float *q3k_plane(uint8x16_t q0, uint8x16_t q1, uint8x16_t m3,
+                               uint8x16_t m4, uint8x16_t h0, uint8x16_t h1, uint8_t m,
+                               const int8_t *scales, int *is, float d_all, float *y) {
+    uint8x16_t mv = vdupq_n_u8(m);
+    float32x4_t f[4];
+    int8x16_t v0 = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(q0, m3)),
+        vreinterpretq_s8_u8(vandq_u8(vmvnq_u8(vtstq_u8(h0, mv)), m4)));
+    int8x16_t v1 = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(q1, m3)),
+        vreinterpretq_s8_u8(vandq_u8(vmvnq_u8(vtstq_u8(h1, mv)), m4)));
+    i8_to_f32x4(v0, f); st16f(y, f, d_all * (scales[(*is)++] - 32));
+    i8_to_f32x4(v1, f); st16f(y + 16, f, d_all * (scales[(*is)++] - 32));
+    return y + 32;
+}
+
 static void dq_q2_K_neon(const block_q2_K *b, float *y) {
     const uint8x16_t m3 = vdupq_n_u8(3);
     float d = f16_to_f32(b->d), dmin = f16_to_f32(b->dmin);
@@ -1184,21 +1213,10 @@ static void dq_q2_K_neon(const block_q2_K *b, float *y) {
     int is = 0;
     for (int n = 0; n < QK_K; n += 128) {
         uint8x16_t q0 = vld1q_u8(q), q1 = vld1q_u8(q + 16);
-#define Q2K_PLANE(V0, V1) do {                                    \
-            float32x4_t f[4];                                     \
-            uint8_t sc = b->scales[is++];                         \
-            u8_to_f32x4(vandq_u8(V0, m3), f);                     \
-            st16fm(y, f, d * (sc & 0xF), dmin * (sc >> 4));       \
-            sc = b->scales[is++];                                 \
-            u8_to_f32x4(vandq_u8(V1, m3), f);                     \
-            st16fm(y + 16, f, d * (sc & 0xF), dmin * (sc >> 4));  \
-            y += 32;                                              \
-        } while (0)
-        Q2K_PLANE(q0, q1);
-        Q2K_PLANE(vshrq_n_u8(q0, 2), vshrq_n_u8(q1, 2));
-        Q2K_PLANE(vshrq_n_u8(q0, 4), vshrq_n_u8(q1, 4));
-        Q2K_PLANE(vshrq_n_u8(q0, 6), vshrq_n_u8(q1, 6));
-#undef Q2K_PLANE
+        y = q2k_plane(q0, q1, m3, b->scales, &is, d, dmin, y);
+        y = q2k_plane(vshrq_n_u8(q0, 2), vshrq_n_u8(q1, 2), m3, b->scales, &is, d, dmin, y);
+        y = q2k_plane(vshrq_n_u8(q0, 4), vshrq_n_u8(q1, 4), m3, b->scales, &is, d, dmin, y);
+        y = q2k_plane(vshrq_n_u8(q0, 6), vshrq_n_u8(q1, 6), m3, b->scales, &is, d, dmin, y);
         q += 32;
     }
 }
@@ -1224,22 +1242,14 @@ static void dq_q3_K_neon(const block_q3_K *b, float *y) {
     int is = 0;
     for (int n = 0; n < QK_K; n += 128) {
         uint8x16_t q0 = vld1q_u8(q), q1 = vld1q_u8(q + 16);
-#define Q3K_PLANE(V0, V1) do {                                                 \
-            uint8x16_t mv = vdupq_n_u8(m);                                     \
-            float32x4_t f[4];                                                  \
-            int8x16_t v0 = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(V0, m3)),     \
-                vreinterpretq_s8_u8(vandq_u8(vmvnq_u8(vtstq_u8(h0, mv)), m4)));\
-            int8x16_t v1 = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(V1, m3)),     \
-                vreinterpretq_s8_u8(vandq_u8(vmvnq_u8(vtstq_u8(h1, mv)), m4)));\
-            i8_to_f32x4(v0, f); st16f(y, f, d_all * (scales[is++] - 32));       \
-            i8_to_f32x4(v1, f); st16f(y + 16, f, d_all * (scales[is++] - 32));  \
-            y += 32; m <<= 1;                                                  \
-        } while (0)
-        Q3K_PLANE(q0, q1);
-        Q3K_PLANE(vshrq_n_u8(q0, 2), vshrq_n_u8(q1, 2));
-        Q3K_PLANE(vshrq_n_u8(q0, 4), vshrq_n_u8(q1, 4));
-        Q3K_PLANE(vshrq_n_u8(q0, 6), vshrq_n_u8(q1, 6));
-#undef Q3K_PLANE
+        y = q3k_plane(q0, q1, m3, m4, h0, h1, m, scales, &is, d_all, y);
+        m <<= 1;
+        y = q3k_plane(vshrq_n_u8(q0, 2), vshrq_n_u8(q1, 2), m3, m4, h0, h1, m, scales, &is, d_all, y);
+        m <<= 1;
+        y = q3k_plane(vshrq_n_u8(q0, 4), vshrq_n_u8(q1, 4), m3, m4, h0, h1, m, scales, &is, d_all, y);
+        m <<= 1;
+        y = q3k_plane(vshrq_n_u8(q0, 6), vshrq_n_u8(q1, 6), m3, m4, h0, h1, m, scales, &is, d_all, y);
+        m <<= 1;
         q += 32;
     }
 }
@@ -5651,12 +5661,14 @@ tpool *tpool_create(int n_threads) {
     if (pthread_mutex_init(&tp->mu, NULL) != 0) { pthread_mutex_destroy(&tp->run_mu); free(tp); return NULL; }
     if (pthread_cond_init(&tp->cv_work, NULL) != 0) {
         pthread_mutex_destroy(&tp->mu);
+        pthread_mutex_destroy(&tp->run_mu);
         free(tp);
         return NULL;
     }
     if (pthread_cond_init(&tp->cv_done, NULL) != 0) {
         pthread_cond_destroy(&tp->cv_work);
         pthread_mutex_destroy(&tp->mu);
+        pthread_mutex_destroy(&tp->run_mu);
         free(tp);
         return NULL;
     }
@@ -5682,6 +5694,7 @@ fail:
     pthread_cond_destroy(&tp->cv_done);
     pthread_cond_destroy(&tp->cv_work);
     pthread_mutex_destroy(&tp->mu);
+    pthread_mutex_destroy(&tp->run_mu);
     free(tp);
     return NULL;
 }

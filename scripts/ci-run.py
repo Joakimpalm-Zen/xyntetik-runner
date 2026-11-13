@@ -48,7 +48,7 @@ def main():
     elapsed = time.monotonic() - start
     record = dict(name=args.name, command=cmd, seconds=elapsed, exit_code=rc,
                   timed_out=timed_out, commit=os.environ.get("GITHUB_SHA"))
-    (out / f"{args.name}.json").write_text(json.dumps(record, indent=2) + "\n")
+    (out / f"{args.name}.json").write_text(json.dumps(record, indent=2, allow_nan=False) + "\n")
     message = f"{args.name}: {elapsed:.2f}s, exit {rc}, timeout={timed_out}"
     print(message, flush=True)
     if os.environ.get("GITHUB_STEP_SUMMARY"):

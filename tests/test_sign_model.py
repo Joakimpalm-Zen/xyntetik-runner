@@ -21,7 +21,21 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 OPENSSL = shutil.which("openssl")
-MODEL_SIGNING = shutil.which("model_signing")
+
+
+def _console_script(name):
+    """A package's command, on PATH or beside the interpreter running the
+    tests: CI runs `<venv>/bin/python -m pytest` without activating the venv,
+    so its console scripts are not on PATH. The anchors job installed
+    model-signing and this test still skipped as "not installed" (R6.68.11)."""
+    found = shutil.which(name)
+    if found:
+        return found
+    beside = pathlib.Path(sys.executable).parent / (name + (".exe" if sys.platform == "win32" else ""))
+    return str(beside) if beside.exists() else None
+
+
+MODEL_SIGNING = _console_script("model_signing")
 
 CURVES = {  # openssl curve name -> (dgst flag, receipt curve, receipt hash)
     "prime256v1": ("-sha256", "P-256", "sha256"),
@@ -196,6 +210,31 @@ def test_a_split_model_is_signed_part_by_part(runner_bin, model, tmp_path):
              tmp_path / "partial.sig")
     assert p.returncode != 0 and b"part 2 of 2" in p.stderr, p.stderr
     assert not (tmp_path / "partial.sig").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a quote is not a legal file name character")
+def test_a_resource_name_is_written_as_json_wherever_it_is_recorded(runner_bin, model, tmp_path):
+    """The verdict of a signature check is recorded as JSON (a transcript,
+    a receipt, the provenance route), and it names the manifest entry that
+    matched the model file. That name is a file name, which may hold a quote;
+    it was written as it stood, and the record did not parse."""
+    priv, pub = _key(tmp_path, "prime256v1", "pkcs8")
+    d = tmp_path / "split"
+    d.mkdir()
+    subprocess.run([sys.executable, ROOT / "scripts/gguf-split.py", str(model),
+                    str(d / 'm"q'), "2"], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    p1 = d / 'm"q-00001-of-00002.gguf'
+    assert p1.exists(), list(d.iterdir())
+    sig = tmp_path / "split.sig"
+    p = _run(runner_bin, "--sign-model", p1, "--model-key", priv, "--model-sig", sig)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    rec = tmp_path / "r.json"
+    v = _run(runner_bin, "-m", p1, "-p", "hi", "-n", "1", "--gpu", "off", "-t", "2",
+             "--model-sig", sig, "--model-pubkey", pub, "--require-signed-model",
+             "--transcript", rec)
+    assert v.returncode == 0 and b"all 2 split part" in v.stderr, v.stderr[-400:]
+    ms = json.loads(rec.read_text())["model_signature"]
+    assert ms["status"] == "verified" and ms["resource"] == p1.name, ms
 
 
 def test_refusals(runner_bin, model, tmp_path):

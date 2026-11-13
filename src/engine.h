@@ -80,6 +80,13 @@ typedef struct {
     // Live for one request; engine_request_defaults clears them.
     int  spell_ids[2];
     int  n_spell;
+    // A chat turn of a model whose think tags are single CONTROL tokens
+    // (Apertus's <|inner_prefix|> and <|inner_suffix|>): those two are decoded
+    // to their spelling, so the reasoning split, which reads bytes, sees the
+    // turn open and close. Without it the deliberation came back as the
+    // answer (R2.15). Live for one request, never in a raw completion, whose
+    // text is the decoded one.
+    bool spell_think;
     bool oom;              // generation aborted on an allocation failure — the
                            // finish reason is "error", never a silent "stop"
     bool json_mode;        // constrain output to a single JSON object
@@ -238,6 +245,9 @@ typedef struct {
     // judgment co-processor reads (suite docs/plans/judgment-coprocessor.md).
     cl_rec  *cl_recs;      // caller-owned buffer [cl_cap]
     int      cl_cap, cl_count, cl_probe;
+    // a probed row was not finite (R6.68.118): no decision was measurable
+    // there, and the turn's confirmation answer is yes whatever else it held
+    bool     cl_nonfinite;
     // speculative decoding: a small draft model proposes draft_k tokens per
     // round, the target verifies them in one batched forward
     model_t *dm;           // draft model (NULL = off)
@@ -413,6 +423,10 @@ int engine_lookup_draft(const int32_t *hist, int len, int k, int32_t *out);
 // never across a separator. Returns the count, 0 on no match. Pure.
 int engine_hint_draft(const int32_t *hist, int len, const int32_t *hint,
                       int hint_len, int k, int32_t *out);
+
+// Frees what the engine allocated for itself (history, constraint document
+// buffer). Every teardown calls it; safe on a zeroed engine and twice.
+void engine_release(engine *e);
 
 // Returns false if the per-context history buffer could not be allocated;
 // the caller must not use the engine in that case.

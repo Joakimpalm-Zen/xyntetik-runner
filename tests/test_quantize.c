@@ -878,14 +878,14 @@ int main(void) {
                 for (int j = 0; j < 32; j++) grid[32 * b + j] = 0.0f;
         }
         for (int i = 0; i < N; i++) ramp_x[i] = ramp((uint64_t)i * 7) * 1.37f;
-        const char *in = "q_mx_in.gguf", *out = "q_mx_out.gguf";
+        const char *mx_in = "q_mx_in.gguf", *mx_out = "q_mx_out.gguf";
         for (int pass = 0; pass < 2; pass++) {
             const float *x = pass ? ramp_x : grid;
             tdesc ts[1] = { { "blk.0.ffn_down_exps.weight", {32, NB}, 2, (float *)x, N, T_F32 } };
-            write_gguf(in, ts, 1, 0);
-            assert(quantize_gguf(in, out, T_MXFP4, NULL) == 0);
+            write_gguf(mx_in, ts, 1, 0);
+            assert(quantize_gguf(mx_in, mx_out, T_MXFP4, NULL) == 0);
             gguf_file g;
-            assert(gguf_open(&g, out));
+            assert(gguf_open(&g, mx_out));
             gguf_tensor *t = gguf_find_tensor(&g, "blk.0.ffn_down_exps.weight");
             assert(t && t->type == T_MXFP4 && t->nbytes == 17u * NB);
             float back[32];
@@ -913,7 +913,7 @@ int main(void) {
             }
             gguf_close(&g);
         }
-        remove(in); remove(out);
+        remove(mx_in); remove(mx_out);
         printf("ok: mxfp4 writer: grid values round-trip exactly, others take the nearest level\n");
     }
 
@@ -932,20 +932,20 @@ int main(void) {
             x[i] = ((float)(st >> 8) / 16777216.0f - 0.5f) * (i % 7 == 0 ? 3.0f : 1.0f);
         }
         for (int c = 0; c < NC; c++) imx[c] = c % 16 < 3 ? 50.0f : 1.0f;
-        const char *in = "q_imx_in.gguf", *ref = "q_imx_ref.gguf", *w1 = "q_imx_w1.gguf",
+        const char *imx_in = "q_imx_in.gguf", *ref = "q_imx_ref.gguf", *w1 = "q_imx_w1.gguf",
                    *w2 = "q_imx_w2.gguf", *w3 = "q_imx_w3.gguf", *z = "q_imx_z.gguf",
                    *dat = "q_imx.dat", *dat7 = "q_imx7.dat", *gg = "q_imx.gguf",
                    *zdat = "q_imx_zero.dat", *bad = "q_imx_bad.dat", *bo = "q_imx_bo.gguf";
         const char *tn = "blk.0.attn_q.weight";
         tdesc ts[1] = { { tn, {NC, NR}, 2, x, NC * NR, T_F32 } };
-        write_gguf(in, ts, 1, 0);
+        write_gguf(imx_in, ts, 1, 0);
         for (int q = 0; q < 2; q++) {
             int type = q ? T_Q4_0 : T_Q3_K;
             assert(quantize_set_imatrix(NULL));
-            assert(quantize_gguf(in, ref, type, NULL) == 0);
+            assert(quantize_gguf(imx_in, ref, type, NULL) == 0);
             write_imatrix_dat(dat, tn, imx, NC, 1.0f);
             assert(quantize_set_imatrix(dat));
-            assert(quantize_gguf(in, w1, type, NULL) == 0);
+            assert(quantize_gguf(imx_in, w1, type, NULL) == 0);
             double er = weighted_err(ref, tn, x, imx, NC, NR);
             double ew = weighted_err(w1, tn, x, imx, NC, NR);
             assert(ew < er);
@@ -955,7 +955,7 @@ int main(void) {
             // a rescaled .dat and a GGUF imatrix (in_sum2 / counts) agree
             write_imatrix_dat(dat7, tn, imx, NC, 7.0f);
             assert(quantize_set_imatrix(dat7));
-            assert(quantize_gguf(in, w2, type, NULL) == 0);
+            assert(quantize_gguf(imx_in, w2, type, NULL) == 0);
             for (int c = 0; c < NC; c++) s2[c] = 3.0f * imx[c];
             cnt[0] = 3.0f;
             tdesc its[2] = {
@@ -964,26 +964,26 @@ int main(void) {
             };
             write_gguf(gg, its, 2, 0);
             assert(quantize_set_imatrix(gg));
-            assert(quantize_gguf(in, w3, type, NULL) == 0);
+            assert(quantize_gguf(imx_in, w3, type, NULL) == 0);
             unsigned char *b2 = slurp_tensor(w2, tn, &n2), *b3 = slurp_tensor(w3, tn, &n3);
             assert(n2 == n1 && n3 == n1 && !memcmp(b1, b2, n1) && !memcmp(b1, b3, n1));
             // no calibration data: the reference bytes
             write_imatrix_dat(zdat, tn, zero, NC, 1.0f);
             assert(quantize_set_imatrix(zdat));
-            assert(quantize_gguf(in, z, type, NULL) == 0);
+            assert(quantize_gguf(imx_in, z, type, NULL) == 0);
             unsigned char *bz = slurp_tensor(z, tn, &n3);
             assert(n3 == nr && !memcmp(bz, br, nr));
             // an entry that does not fit the tensor
             write_imatrix_dat(bad, tn, imx, NC / 2, 1.0f);
             assert(quantize_set_imatrix(bad));
-            assert(quantize_gguf(in, bo, type, NULL) != 0);
+            assert(quantize_gguf(imx_in, bo, type, NULL) != 0);
             free(b1); free(b2); free(b3); free(br); free(bz);
             printf("ok: --imatrix %s: weighted error %.4g -> %.4g, formats and scale "
                    "agree, no-data rows unweighted, misfit refused\n",
                    q ? "q4_0" : "q3_k", er, ew);
         }
         assert(quantize_set_imatrix(NULL));
-        const char *rm[] = { in, ref, w1, w2, w3, z, dat, dat7, gg, zdat, bad, bo };
+        const char *rm[] = { imx_in, ref, w1, w2, w3, z, dat, dat7, gg, zdat, bad, bo };
         for (size_t i = 0; i < sizeof(rm) / sizeof(rm[0]); i++) remove(rm[i]);
     }
 
@@ -1290,11 +1290,11 @@ int main(void) {
             FILE *fp = fopen(q4m, "wb");
             assert(fp && fputs("previous model", fp) >= 0 && fclose(fp) == 0);
             assert(merge_lora_gguf(q4b, ad, 1e-6f, q4m, T_KEEP, 0.5f, &sv) != 0);
-            char got[32] = {0};
+            char got_text[32] = {0};
             fp = fopen(q4m, "rb");
-            assert(fp && fread(got, 1, sizeof(got) - 1, fp) == 14);
+            assert(fp && fread(got_text, 1, sizeof(got_text) - 1, fp) == 14);
             fclose(fp);
-            assert(!strcmp(got, "previous model"));
+            assert(!strcmp(got_text, "previous model"));
             assert(!exists("q_mrg_q4m.gguf.partial"));
             // the override (a negative floor) writes it anyway
             assert(merge_lora_gguf(q4b, ad, 1e-6f, q4m, T_KEEP, -1.0f, NULL) == 0);

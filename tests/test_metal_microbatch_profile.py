@@ -54,10 +54,11 @@ def _port():
         return s.getsockname()[1]
 
 
-def _serve(runner_bin, model, tmp_path, timing, n_req):
+def _serve(runner_bin, model, tmp_path, timing, n_req, extra_env=None):
     port = _port()
-    log = tmp_path / f"server-{timing}-{n_req}.log"
+    log = tmp_path / f"server-{timing}-{n_req}-{len(extra_env or {})}.log"
     env = {"RUNNER_METAL_TIMING": timing} if timing else {}
+    env.update(extra_env or {})
     srv = subprocess.Popen([str(runner_bin), "-m", str(model), "--serve", "--port", str(port),
                             "--parallel", "2", "-c", "512", "--tray", "off"],
                            stdout=subprocess.DEVNULL, stderr=open(log, "w"),
@@ -103,3 +104,19 @@ def test_profile_prints_stages_and_keeps_the_bytes(runner_bin, model, tmp_path, 
         parts = dict(kv.split("=") for kv in rest.split())
         assert tuple(parts) == STAGES
         assert abs(sum(float(v) for v in parts.values()) - float(gpu)) < 1e-2
+
+
+@pytest.mark.parametrize("nth", ["1", "3"])
+def test_a_slot_that_lost_its_gpu_leaves_the_microbatch(runner_bin, model, tmp_path, nth):
+    """R6.68.93: a forward that fails at runtime releases its slot's backend,
+    after the microbatch was made over every slot. The batch went on taking
+    that slot's columns and read its device cache through a NULL backend:
+    the server died (SIGSEGV) under two concurrent requests. A sequence
+    without its backend now takes no part in a device batch; the step is the
+    sequential one, the lost slot on the CPU."""
+    plain, _ = _serve(runner_bin, model, tmp_path, None, 2)
+    out, log = _serve(runner_bin, model, tmp_path, None, 2,
+                      {"RUNNER_METAL_INJECT_FAILURE": nth})
+    assert "forward failed at runtime" in log, log[-800:]
+    assert out == plain
+

@@ -1,6 +1,7 @@
 // Minimal recursive-descent JSON parser, string escaper, string builder,
 // and value re-serializer.
 #include "json.h"
+#include "fpclass.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -544,7 +545,10 @@ void sb_put(sbuf *b, const char *s, size_t n) {
         b->s = grown;
         b->cap = cap;
     }
-    memcpy(b->s + b->n, s, n);
+    // an empty append still allocates and terminates (callers read "" from an
+    // sbuf they appended nothing to), but copies nothing: the source of an
+    // empty span may be NULL, and memcpy from NULL is undefined at any length
+    if (n) memcpy(b->s + b->n, s, n);
     b->n += n;
     b->s[b->n] = 0;
 }
@@ -572,6 +576,24 @@ void sb_fmt(sbuf *b, const char *fmt, ...) {
         free(big);
     }
     va_end(ap2);
+}
+
+void sb_num9(sbuf *b, double v) {
+    char t[32];
+    json_numg(t, 9, v);
+    sb_lit(b, t);
+}
+
+void sb_numj(sbuf *b, double v) {
+    char t[32];
+    if (!fp_isfinite(v)) { sb_lit(b, "null"); return; }
+    json_format_number(v, t);
+    sb_lit(b, t);
+}
+
+void sb_fix6(sbuf *b, double v) {
+    if (fp_isfinite(v)) sb_fmt(b, "%.6f", v);
+    else sb_lit(b, "null");
 }
 
 void sb_esc(sbuf *b, const char *s, size_t n) {

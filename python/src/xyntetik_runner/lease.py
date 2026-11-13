@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -142,6 +144,26 @@ def lease_holder(path: Path) -> int | None:
 UNVERIFIED_LEASE_TTL_SECONDS = 900.0
 
 
+def _unverified_ttl() -> float:
+    """RUNNER_UNVERIFIED_LEASE_TTL read as the C lease reads it (env_f64 in
+    src/compat.c): a finite number of seconds in [0, 1e12], else a warning
+    and the default. A bare float() raised ValueError out of acquire() on a
+    value like "soon", and took "nan" (never fresh) or "inf" (fresh for ever)
+    as given."""
+    raw = os.environ.get("RUNNER_UNVERIFIED_LEASE_TTL")
+    if raw is None:
+        return UNVERIFIED_LEASE_TTL_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not (math.isfinite(value) and 0.0 <= value <= 1e12):
+        print(f"warning: RUNNER_UNVERIFIED_LEASE_TTL='{raw}' is not a finite number in "
+              f"[0, 1e+12]; using {UNVERIFIED_LEASE_TTL_SECONDS:g}", file=sys.stderr)
+        return UNVERIFIED_LEASE_TTL_SECONDS
+    return value
+
+
 def _unverified_still_fresh(record: dict[str, Any]) -> bool:
     """Bounded-age fallback when ownership can be neither proven nor
     disproven. Decided 2026-08-27 (owner): the previous behaviour honoured
@@ -157,8 +179,7 @@ def _unverified_still_fresh(record: dict[str, Any]) -> bool:
         age = time.time() - Path(path).stat().st_mtime
     except OSError:
         return False  # cannot even read the clock: do not honour blindly
-    ttl = float(os.environ.get("RUNNER_UNVERIFIED_LEASE_TTL",
-                               UNVERIFIED_LEASE_TTL_SECONDS))
+    ttl = _unverified_ttl()
     # an mtime ahead of the clock is age 0, not negative (a file can be
     # stamped finer than the clock reads; a negative age stayed under a TTL
     # of 0)

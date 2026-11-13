@@ -208,6 +208,44 @@ def test_auto_detected_bundle_and_missing_key(runner_bin, model, p256, tmp_path)
     assert p.returncode != 0 and b"no signature bundle" in p.stderr
 
 
+def test_a_file_that_must_be_signed_is_not_parsed_first(runner_bin, model, p256, tmp_path):
+    """R6.68.79: the signature decides whether a file is read as a model, so it
+    is checked before the loader sees a byte. The one-shot load, the swap load
+    and the extra slots loaded first and checked after, so a file with no
+    signature, or with bytes other than the signed ones, went through the GGUF
+    parser and the binders on its way to being refused."""
+    junk = tmp_path / "junk.gguf"
+    junk.write_bytes(b"this is not a model file\n")
+    p = _load(runner_bin, junk, "--require-signed-model")
+    assert p.returncode != 0 and b"no signature bundle" in p.stderr, p.stderr[-300:]
+    assert b"is not a GGUF file" not in p.stderr, p.stderr[-300:]
+    # signed, then changed: the refusal is the signature's, with the key given
+    priv, pub = p256
+    m = tmp_path / "changed.gguf"
+    shutil.copy(model, m)
+    _openssl_bundle(priv, m, tmp_path / "changed.gguf.sig")
+    m.write_bytes(b"XXXX" + m.read_bytes()[4:])
+    p = _load(runner_bin, m, "--model-pubkey", str(pub))
+    assert p.returncode != 0 and b"refusing to load" in p.stderr, p.stderr[-300:]
+    assert b"is not a GGUF file" not in p.stderr, p.stderr[-300:]
+    # an adapter is held to the same order
+    a = tmp_path / "junk-adapter.gguf"
+    a.write_bytes(b"not an adapter\n")
+    signed = tmp_path / "signed.gguf"
+    shutil.copy(model, signed)
+    _openssl_bundle(priv, signed, tmp_path / "signed.gguf.sig")
+    p = _load(runner_bin, signed, "--model-pubkey", str(pub), "--require-signed-model",
+              "--lora", str(a))
+    assert p.returncode != 0 and b"adapter signature: refusing to load" in p.stderr, p.stderr[-400:]
+    assert b"is not a GGUF file" not in p.stderr, p.stderr[-400:]
+    # the swap load answers a request for it with the signature's refusal
+    with RunnerServer(runner_bin, f"named={junk}", extra_args=[
+            "--gpu", "off", "-t", "2", "--require-signed-model"]) as srv:
+        status, body = _request(srv, "/v1/completions", {"prompt": "hi", "max_tokens": 2})
+        assert status == 409 and body["error"]["code"] == "model_signature_refused", body
+        srv.assert_alive()
+
+
 def test_unsupported_methods_never_verify(runner_bin, model, p256, tmp_path):
     priv, pub = p256
     sig = _openssl_bundle(priv, model, tmp_path / "model.sig")

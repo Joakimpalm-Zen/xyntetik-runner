@@ -133,6 +133,23 @@ def test_a_changed_file_fails_the_check(runner_bin, served, tmp_path, victim):
     assert c.returncode == 2 and name.encode() in c.stdout, c.stdout
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="no endless device file to link to")
+@pytest.mark.parametrize("victim", ["receipt", "attachment"])
+def test_a_listed_file_that_is_a_device_does_not_hang_the_check(runner_bin, served, tmp_path,
+                                                                 victim):
+    """As for a bundle: the pack check reads regular files only, so a listed
+    name that is a link to /dev/zero is a file that is missing."""
+    out = tmp_path / "p"
+    assert _export(runner_bin, served, out).returncode == 0
+    name = {"receipt": served["files"][0].name,
+            "attachment": served["oversight"].name}[victim]
+    (out / name).unlink()
+    (out / name).symlink_to("/dev/zero")
+    c = subprocess.run([str(runner_bin), "--check-pack", str(out)], cwd=ROOT,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    assert c.returncode == 2 and name.encode() in c.stdout, c.stdout
+
+
 def test_a_receipt_added_to_the_directory_is_caught(runner_bin, served, tmp_path):
     out = tmp_path / "p"
     assert _export(runner_bin, served, out).returncode == 0

@@ -375,9 +375,13 @@ static bool gguf_open_one_x(gguf_file *g, const char *path, bool header_only) {
                 gguf_tensor *t = &g->tensors[order[i]];
                 if (t->type != T_NVFP4 || t->nbytes == 0) continue;
                 uint64_t off = (uint64_t)(uintptr_t)t->data;
+                // the next tensor's data, or for the last one the file's end,
+                // as an address like `off`: it was the data section's SIZE,
+                // which is far below any address, so the span came out 0 and
+                // the last tensor in a file was never measured (R6.68.48)
                 uint64_t next = i + 1 < g->n_tensors
                               ? (uint64_t)(uintptr_t)g->tensors[order[i + 1]].data
-                              : g->map_size - data_start;
+                              : (uint64_t)(uintptr_t)g->map + g->map_size;
                 uint64_t span = next > off ? next - off : 0;
                 // 40 bytes per 64 elements, less the alignment slack a
                 // 36-byte layout could legitimately carry

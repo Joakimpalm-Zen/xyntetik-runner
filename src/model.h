@@ -6,7 +6,9 @@
 #include <stdio.h>
 #include <string.h>
 #include "fp16.h"
+#include "fpclass.h"   // model_lora_values_finite, under fast math
 #include "gguf.h"
+#include "arch.h"
 #include "quants.h"
 #include "tpool.h"
 #include "sample.h"
@@ -265,6 +267,14 @@ typedef struct {
     uint64_t  file_size, file_ino;
     int64_t   file_mtime_ns, file_ctime_ns;
     char      arch[32];
+    // the architecture's row (arch.h), looked up once at admission; never
+    // NULL on a loaded model (an unknown name gets the unknown row)
+    const arch_desc *ad;
+    // R6.68.29: a plan made for --info fit (model_plan): its binders keep the
+    // first refusal here (bind_err) and print no informational line; a load
+    // clears it before its own plan
+    bool      plan_only;
+    char      plan_why[240];
     bool      agent_profile;
     uint32_t  agent_protocol_version, agent_tokenizer_version;
     const char *agent_schema_id, *agent_schema_digest;
@@ -272,6 +282,10 @@ typedef struct {
     uint64_t  n_agent_required_features;
     int       n_layer, n_embd, n_head, n_head_kv, head_dim, n_ff;
     int       n_vocab, n_ctx_train, rope_dim;
+    // the longest context this file's admission covers, 0 for none: a
+    // qwen4exp file's indexer top_k, the sparse attention this build runs
+    // dense (R6.68.55; model_ctx_admit applies it to a load and to the fit)
+    int       ctx_cap;
     // How /v1/embeddings reads a vector out: {arch}.pooling_type, llama.cpp's
     // enum (0 none, 1 mean, 2 cls, 3 last, 4 rank). Absent reads as 0, and
     // 0 or 1 pool the mean; model_embed implements 3 as the last position.
@@ -402,6 +416,12 @@ typedef struct {
     int       n_suppress;    // (tokenizer.ggml.suppress_tokens)
     const char *think_open, *think_close; // thinking-tag pair (architecture's,
                                           // else the template's), or NULL
+    // A family whose think tags are single CONTROL tokens (Apertus, R2.15)
+    // has no text pair: think_open stays NULL, so no constraint grows a text
+    // prelude it could never satisfy (with think_open set, every tools turn
+    // of the family failed). This pair is the chat turn's alone: the engine
+    // spells the two tokens and the reasoning split reads them. NULL elsewhere.
+    const char *split_open, *split_close;
     bool        think_trim_nl;  // the publisher's template strips newlines at
                                 // the close: trailing off the reasoning,
                                 // leading off the content (think_trim_newlines)
@@ -582,6 +602,13 @@ typedef struct {
     // inject scratch [n_batch][hc]; the PLE hash geometry and table.
     bool   hyper_conn;
     const int32_t *fwd_tokens;                   // this forward's token ids (PLE hash)
+    // The tokens this model was fed, seq[0, seq_n), kept only where a backend
+    // folds the recurrent state in the host's own memory (ssm_state_backend):
+    // a device forward that fails there has no earlier copy of the fold, and
+    // the host rebuilds it from these (forward_refold_lost). Recorded by the
+    // forward itself, so every caller is covered, a draft model's drafts too.
+    int32_t *seq;
+    int      seq_n;
     int    hc_count, hc_low_rank;
     float       *hc_head_norm;                  // [hc * n_embd]
     gguf_tensor *hc_head_down, *hc_head_up;
@@ -873,6 +900,23 @@ static inline bool model_kv_v_shared(const model_t *m) {
 static inline const char *model_kv_name(const model_t *m) {
     return m->kv_f32 ? "f32" : m->kv_fp4 ? "fp4" : m->kv_split ? "k8v4" : m->kv_q8 ? "q8" : "f16";
 }
+// The KV formats a geometry can take (R6.68.40). Attention cuts a layer's row
+// at kvh * head_dim, so a quantized format applies only when every head is a
+// whole number of its blocks: q8_0 (and k8v4, whose K rows are q8_0) 32
+// values, fp4 16; f16 and f32 take any width. head_dim[l] for each of the n
+// trunk layers, or NULL when they all share `scalar` (model_t's own
+// l_head_dim / head_dim). bind_kv_layout and --info fit both ask this, so a
+// fit cannot offer a format its load would decline.
+enum { MODEL_KV_FMT_Q8 = 1u << 0, MODEL_KV_FMT_K8V4 = 1u << 1, MODEL_KV_FMT_FP4 = 1u << 2 };
+static inline unsigned model_kv_formats(const int *head_dim, int n, int scalar) {
+    unsigned ok = MODEL_KV_FMT_Q8 | MODEL_KV_FMT_K8V4 | MODEL_KV_FMT_FP4;
+    for (int l = 0; l < n; l++) {
+        int hd = head_dim ? head_dim[l] : scalar;
+        if (hd % 32) ok &= ~(unsigned)(MODEL_KV_FMT_Q8 | MODEL_KV_FMT_K8V4);
+        if (hd % 16) ok &= ~(unsigned)MODEL_KV_FMT_FP4;
+    }
+    return ok;
+}
 static inline size_t kv_bytes_of_kind(int kind, size_t e) {
     return kind == 3 ? e * sizeof(float) : kind == 2 ? e / 16 * 9
          : kind == 1 ? e / 32 * 34 : e * sizeof(f16_t);
@@ -922,8 +966,9 @@ int       gpu_plan_runs(const uint64_t *off, const uint64_t *len, int n, uint64_
                         uint64_t *lo, uint64_t *hi);
 int       gpu_plan_prefix(const uint64_t *cost, int n, int cap, uint64_t budget,
                           uint64_t *used);
-bool      gpu_plan_full_split(int *layers, int n_layer, uint64_t used,
-                              uint64_t tail, uint64_t budget, bool *gave_back);
+bool      gpu_plan_full_split(int *layers, int n_layer, uint64_t *used,
+                              const uint64_t *cost, uint64_t tail, uint64_t budget,
+                              bool *gave_back);
 int       gpu_plan_expert_banks(const bool *is_moe, const uint64_t *bank,
                                 int layers, uint64_t owed, uint64_t budget,
                                 uint64_t *used, bool *host, int trim,
@@ -1275,6 +1320,24 @@ static inline bool model_lora_arch_ok(const char *model_arch, const char *adapte
     return strcmp(model_arch, adapter_arch) == 0 ||
            (strcmp(model_arch, "clef") == 0 && strcmp(adapter_arch, "qwen35") == 0);
 }
+// An adapter tensor's values, converted to f32: true when every one is
+// finite, else false having said which tensor and what it holds (R6.68.116).
+// Both adapter readers ask it (lora_parse_tensor for --lora, --adapter and a
+// training run's adapter; merge_set_resolve for --merge-lora): a NaN or an
+// infinity in A or B is a NaN or infinite delta on every weight its row
+// touches. fpclass.h's tests: fast math folds isfinite(), and LLVM turns a
+// plain exponent-bits test back into it.
+static inline bool model_lora_values_finite(const char *name, const float *v, int64_t n) {
+    for (int64_t i = 0; i < n; i++) {
+        if (!fp_finite_f32(v[i])) {
+            fprintf(stderr, "error: adapter tensor '%s' is not finite: element %lld "
+                    "is %s\n", name, (long long)i,
+                    fp_nan_f32(v[i]) ? "NaN" : v[i] < 0 ? "-infinity" : "infinity");
+            return false;
+        }
+    }
+    return true;
+}
 // What a backend needs to apply the adapter at one projection site: the f32
 // A [r][n_in] and B [n_out][r] host buffers, the rank, and the scale already
 // folded to (alpha/r) * user scale. false = no adapter on that (layer, slot),
@@ -1360,10 +1423,6 @@ bool   model_file_identity(const char *path, const char *registry,
                            uint64_t *size, uint64_t *ino,
                            int64_t *mtime, int64_t *ctime);
 
-// The architecture admission allowlist, exposed so `--caps` publishes exactly
-// what `model_load` accepts (one source of truth). Wrong-math archs
-// (granite/gemma2/gemma) are deliberately absent — they load but miscompute.
-const char *const *model_supported_archs(size_t *count);
 void   model_free(model_t *m); // frees everything incl. GPU context and mmap
 // process n tokens starting at position pos; returns logits of the last
 // token if want_logits, else NULL
@@ -1405,7 +1464,10 @@ bool model_recurrent_restore_row(model_t *m, int r);
 // not sliceable, so a load is only valid at the exact position it was saved.
 size_t model_recurrent_blob_bytes(const model_t *m);
 bool model_recurrent_blob_save(const model_t *m, uint8_t *dst);
-bool model_recurrent_blob_load(model_t *m, const uint8_t *src);
+// `toks[0, n)`: the sequence the blob's fold was taken over (NULL when the
+// caller does not hold it), which a later rebuild of the fold feeds again
+bool model_recurrent_blob_load(model_t *m, const uint8_t *src,
+                               const int32_t *toks, int n);
 // Turn mark (tracer 7). The snapshot above is the rollback slot: spec-decode
 // re-takes it every round, so it never survives to the next request. The mark
 // is a second checkpoint with one owner, the prompt boundary of the request a
@@ -1466,6 +1528,10 @@ typedef struct {
     // only when `mtp` (--mtp) would bind them
     int      n_mtp;
     bool     mtp;
+    // a GPU load with no placement named keeps the expert banks and their
+    // routing on the host (model_moe_router_host_default over the plan,
+    // R6.68.78): nemotron_h_moe's CUDA default
+    bool     moe_host_default;
     bool     sparse;             // routed-MoE: hot set is smaller than weights
     uint64_t weights;            // whole file, per the header
     uint64_t gathered;           // E-series token table: only selected rows are read
@@ -1498,6 +1564,16 @@ typedef struct {
     int      kv_ring_mode, n_batch;
     bool     kv_ring[4];
     int      kv_ring_rows, n_swa_layers;
+    // R6.68.29: why the loader would refuse this file, when model_fit_report
+    // returns false because its plan did (the loader's own reason); "" else
+    char     refused[240];
+    // why this build's GPU backend runs the file's routed experts on the CPU,
+    // or "" (model_moe_route_why over the plan's expert counts and the
+    // backend's caps, R6.68.67): the words the load prints
+    char     route_why[200];
+    // why a CUDA load runs the file on the CPU for an odd attention head
+    // width, or "" (model_gpu_odd_head_why over the plan, R6.68.112)
+    char     head_why[200];
 } model_fit;
 
 enum { FIT_KV_F16 = 0, FIT_KV_Q8, FIT_KV_K8V4, FIT_KV_FP4 };
@@ -1514,6 +1590,8 @@ typedef struct { uint64_t file, tables; } gpu_layer_charge;
 gpu_layer_charge model_cuda_layer_charge(gguf_file *g, int layer, bool host_experts);
 
 bool        model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *out);
+// RUNNER_DEBUG_VRAM: the fit's geometry line, the shape of a load's own
+void        model_fit_print_geometry(gguf_file *g, const model_fit *f);
 const char *model_fit_verdict(const model_fit *f);
 // Fill the discrete-GPU half of a fit from the header's tensor table: the
 // loader's own split (leading layers, each its weights plus its KV, after a
@@ -1545,7 +1623,32 @@ enum { MODEL_GPU_REC_NONE, MODEL_GPU_REC_DELTANET, MODEL_GPU_REC_MAMBA2 };
 // Why a family runs on the CPU though a GPU is present (LayerNorm, lfm2,
 // grouped norms, flint, deepseek2 off CUDA), or NULL: the loader's decline
 // and --fit's answer for the same file.
+// R6.68.67: why a device bank whose router takes at most max_experts experts
+// and max_used picks a token cannot route this model (its words in buf, which
+// is returned), or NULL when it can. The load (cuda_admit, Metal's router
+// check) and --info fit give the same words. Inline, like model_kv_formats:
+// the backends' own tests compile them without model.c.
+static inline const char *model_moe_route_why(int n_expert, int n_used,
+                                              int max_experts, int max_used,
+                                              char *buf, size_t n) {
+    if (n_expert <= max_experts && n_used <= max_used) return NULL;
+    snprintf(buf, n, "this model routes %d of %d experts a token, and a device "
+             "bank routes at most %d of %d", n_used, n_expert, max_used, max_experts);
+    return buf;
+}
 const char *model_gpu_cpu_only_why(const char *arch, int norm_groups);
+// R6.68.112: why a CUDA load keeps a model whose attention heads are an odd
+// width on the CPU, written to buf; NULL when none is, or the build has no
+// CUDA. The loader, cuda_admit and --info fit ask it alike.
+const char *model_gpu_odd_head_why(const model_t *m, char *buf, size_t n);
+// R6.68.78: whether a GPU load that names no placement keeps this model's
+// expert banks and their routing on the host (R3.43a.2): a nemotron_h_moe
+// router the device kernel cannot run (not plain softmax: another gating
+// function, a group limit, a weight scale), unless LatentMoE or per-layer
+// expert widths keep the model off the device anyway, or
+// RUNNER_CPU_MOE_DEFAULT=0. One rule over a loaded model or the fit's plan:
+// model_default_placement asks it for a load, --info fit for its plan.
+bool        model_moe_router_host_default(const model_t *m);
 uint64_t model_gpu_recurrent_cost(int kind, uint64_t n_rec, uint64_t conv_kernel,
                                   uint64_t inner, uint64_t state, uint64_t groups,
                                   uint64_t v_heads, uint64_t q_dim);

@@ -56,7 +56,7 @@ def main():
                             median=statistics.median(values), p95=values[max(0, (95 * len(values) + 99) // 100 - 1)]))
     summary.sort(key=lambda r: r["p95"], reverse=True)
     path = Path(args.out); path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(dict(jobs=records, summary=summary), indent=2) + "\n")
+    path.write_text(json.dumps(dict(jobs=records, summary=summary), indent=2, allow_nan=False) + "\n")
     for row in summary[:30]:
         print(f"{row['event']:15} {row['job']:24} {row['median']:7.1f}s p95 {row['p95']:7.1f}s {row['step']}")
     return 0

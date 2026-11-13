@@ -116,6 +116,12 @@ MAKE_ARGS=${GATE_MAKE_ARGS:-}
 
 MODEL=${GATE_MODEL:-}
 
+# R6.68.15: every step's decode must capture its CUDA graph where the route
+# captures one; a capture or launch that fails ends that step instead of
+# falling back to plain launches (src/cuda.c, graph_capture_required). The
+# make targets set it too; this covers the steps that run the binary directly.
+export RUNNER_REQUIRE_GRAPH_CAPTURE=1
+
 note() { echo "[cuda-gate $(date -u +%H:%M:%S)] $*"; }
 STEPS=""
 add_step() { STEPS="$STEPS${STEPS:+,}{\"step\":\"$1\",\"result\":\"$2\",\"seconds\":$3}"; }
@@ -140,8 +146,14 @@ if [ -n "${GATE_SKIP_IF:-}" ] && bash -c "$GATE_SKIP_IF" > "$DIR/skip-check.log"
   finish skipped 0
 fi
 if [ -n "${GATE_LOCK:-}" ]; then
-  if [ -e "$GATE_LOCK" ]; then note "skipped: $GATE_LOCK exists"; finish skipped 0; fi
-  echo $$ > "$GATE_LOCK" && LOCKED=1
+  # One step, not a test and then a create: with noclobber the redirection is
+  # an O_EXCL open, so of two gates started together exactly one takes the
+  # lock, and an existing lock is never overwritten (R6.68.5).
+  if ( set -o noclobber; echo $$ > "$GATE_LOCK" ) 2> /dev/null; then
+    LOCKED=1
+  else
+    note "skipped: $GATE_LOCK exists"; finish skipped 0
+  fi
 fi
 
 run_step() {  # name command...

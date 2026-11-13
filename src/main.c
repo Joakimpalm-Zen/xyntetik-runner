@@ -512,33 +512,41 @@ static void dpo_pairs_free(dpo_pair *ps, int n) {
     free(ps);
 }
 
-// Tokenize prompt+completion into one buffer, growing until it fits. Same
-// discipline as the JSONL branch of train_examples_load and for the same
-// measured reason: tok_encode truncates silently at its capacity, and "one
-// token per byte" is not a bound on a SentencePiece vocabulary with byte
-// fallback.
+// The prompt (BOS unless no_bos, its control tokens read as tokens) and the
+// completion (text) tokenized apart into one buffer, with one slot to spare
+// for an end-of-turn token. tok_encode writes what fits its buffer and says
+// nothing about the rest, and no byte count bounds a token count (a byte-
+// fallback vocabulary spells a space as three tokens), so each part goes
+// through tok_encode_fit, which sizes the buffer to the encoding. Three
+// loaders each grew a buffer of their own for this. False when memory ran
+// out or a text is too large to count.
+static bool pair_tokens(tokenizer *tok, const char *prompt, const char *completion,
+                        bool no_bos, int32_t **out, int *np_out, int *nc_out) {
+    int32_t *p = NULL, *c = NULL;
+    int np = tok_encode_fit(tok, prompt, !no_bos, TOK_RAW, 0, &p);
+    int nc = np >= 0 ? tok_encode_fit(tok, completion, false, TOK_TEXT, 0, &c) : -1;
+    int32_t *t = nc >= 0 && np <= INT_MAX - nc - 1
+               ? malloc(sizeof *t * ((size_t)np + (size_t)nc + 1)) : NULL;
+    if (t) {
+        if (np) memcpy(t, p, sizeof *t * (size_t)np);
+        if (nc) memcpy(t + np, c, sizeof *t * (size_t)nc);
+        *out = t;
+        *np_out = np;
+        *nc_out = nc;
+    }
+    free(p);
+    free(c);
+    return t != NULL;
+}
+
 static bool dpo_tokenize(tokenizer *tok, const char *prompt, const char *completion,
                          bool no_bos, int eot_id, bool eot,
                          int32_t **out, int *out_np, int *out_n) {
-    size_t pn = strlen(prompt), cn = strlen(completion);
-    if (pn > SIZE_MAX - cn - 8 || pn + cn + 8 > INT_MAX) return false;
-    int cap = (int)(2 * (pn + cn) + 32);
-    int32_t *t = NULL;
-    int np = -1, nc = -1;
-    for (int attempt = 0; attempt < 6; attempt++) {
-        free(t);
-        t = malloc(sizeof(*t) * (size_t)cap);
-        if (!t) return false;
-        np = tok_encode(tok, prompt, t, cap, !no_bos, true);
-        nc = np >= 0 ? tok_encode(tok, completion, t + np, cap - np, false, false) : -1;
-        if (np < 0 || nc < 0 || np + nc + 1 < cap) break;
-        if (attempt == 5 || cap > INT_MAX / 2) break;
-        cap *= 2;
-    }
-    if (!t) return false;
-    if (np < 0 || nc < 0 || np + nc + 1 >= cap) { free(t); return false; }
-    if (eot) t[np + nc++] = eot_id;
-    *out = t; *out_np = np; *out_n = np + nc;
+    int np = 0, nc = 0;
+    if (!pair_tokens(tok, prompt, completion, no_bos, out, &np, &nc)) return false;
+    if (eot) (*out)[np + nc++] = eot_id;
+    *out_np = np;
+    *out_n = np + nc;
     return true;
 }
 
@@ -643,50 +651,13 @@ fail:
     return false;
 }
 
-// The text form of a JSONL example: the prompt (BOS unless --no-bos) and the
-// completion tokenized apart, into a buffer with a slot to spare for the
-// end-of-turn token. NULL on success, else why the line is refused.
+// The text form of a JSONL example (pair_tokens). NULL on success, else why
+// the line is refused.
 static const char *train_text_tokens(tokenizer *tok, const char *prompt,
                                      const char *completion, bool no_bos,
-                                     int32_t **out, int *np_out, int *nc_out,
-                                     char *why, size_t why_n) {
-    size_t prompt_n = strlen(prompt), completion_n = strlen(completion);
-    if (prompt_n > SIZE_MAX - completion_n - 8 ||
-        prompt_n + completion_n + 8 > INT_MAX)
-        return "is too large to tokenize";
-    // tok_encode truncates silently at its capacity, and "one token per
-    // byte" is not a bound: a SentencePiece vocabulary with byte fallback and
-    // segment normalization emitted 68 tokens for 52 bytes on the test
-    // fixture, which the old fixed-size buffer cut to 60 without a word. So
-    // the buffer grows until the encoding fits with room to spare (the
-    // end-of-turn slot included), and a line that still fills it is refused
-    // rather than truncated.
-    size_t bytes = prompt_n + completion_n;
-    int cap = (int)(2 * bytes + 32);
-    int32_t *tokens = NULL;
-    int np = -1, nc = -1;
-    for (int attempt = 0; attempt < 6; attempt++) {
-        free(tokens);
-        tokens = malloc(sizeof(*tokens) * (size_t)cap);
-        if (!tokens) break;
-        np = tok_encode(tok, prompt, tokens, cap, !no_bos, true);
-        nc = np >= 0 ? tok_encode(tok, completion, tokens + np, cap - np,
-                                  false, false) : -1;
-        if (np < 0 || nc < 0 || np + nc + 1 < cap) break;   // fits, or failed
-        if (attempt == 5 || cap > INT_MAX / 2) break;      // cap stays the allocation
-        cap *= 2;
-    }
-    if (!tokens) return "ran out of memory while tokenizing";
-    if (np >= 0 && nc >= 0 && np + nc + 1 >= cap) {
-        free(tokens);
-        snprintf(why, why_n, "tokenizes past %d tokens for %zu bytes; "
-                 "refusing to truncate it", cap, bytes);
-        return why;
-    }
-    *out = tokens;
-    *np_out = np;
-    *nc_out = nc;
-    return NULL;
+                                     int32_t **out, int *np_out, int *nc_out) {
+    return pair_tokens(tok, prompt, completion, no_bos, out, np_out, nc_out)
+        ? NULL : "is too large to tokenize, or memory ran out tokenizing it";
 }
 
 // The id form: both arrays used exactly as given (no BOS added, nothing
@@ -723,6 +694,25 @@ static const char *train_ids_tokens(jv *ptv, jv *ctv, int n_vocab,
     return bad;
 }
 
+// A text file read for its tokens is text (R6.68.24): a CR that immediately
+// precedes an LF is dropped as the file is read, so a CRLF file and its LF twin
+// give the same tokens on every platform and whichever editor saved them; a
+// lone CR is content and stays. -f, --detect-watermark's text and runner
+// train's DATA read through here (JSON and JSONL read the same: a CR between
+// JSON tokens is whitespace). -p is not: its escapes are the user's own.
+// plat_read_file's buffer, shortened in place and still NUL-terminated.
+static char *text_file_read(const char *path, size_t *n_out) {
+    size_t n = 0;
+    char *b = plat_read_file(path, MAX_INPUT_FILE, &n);
+    if (!b) return NULL;
+    size_t w = 0;
+    for (size_t r = 0; r < n; r++)
+        if (!(b[r] == '\r' && r + 1 < n && b[r + 1] == '\n')) b[w++] = b[r];
+    b[w] = 0;
+    if (n_out) *n_out = w;
+    return b;
+}
+
 // ids_only (--train-teacher): every line in the id form and no end-of-turn
 // token appended, since the teacher's positions are the completion tokens as
 // given and it has no row for a token added after them.
@@ -730,7 +720,7 @@ static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
                                 bool no_bos, int wctx, int eot_id, bool eot_all,
                                 bool ids_only, train_ex **out, int *out_n) {
     size_t data_n = 0;
-    char *data = plat_read_file(path, MAX_INPUT_FILE, &data_n);
+    char *data = text_file_read(path, &data_n);
     if (!data) {
         fprintf(stderr, "error: cannot read %s (regular files up to %u MiB "
                 "are supported)\n", path, MAX_INPUT_FILE / (1024u * 1024u));
@@ -825,11 +815,10 @@ static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
 
             int32_t *tokens = NULL;
             int np = -1, nc = -1;
-            char why[160];
             const char *bad = ids
                 ? train_ids_tokens(ptv, ctv, n_vocab, &tokens, &np, &nc)
                 : train_text_tokens(tok, prompt, completion, no_bos, &tokens,
-                                    &np, &nc, why, sizeof why);
+                                    &np, &nc);
             if (bad) {
                 fprintf(stderr, "error: %s line %d %s\n", path, line_no, bad);
                 jv_free(v);
@@ -876,37 +865,12 @@ static bool train_examples_load(tokenizer *tok, int n_vocab, const char *path,
                     path);
             goto fail;
         }
-        // The same growth discipline as the JSONL branch, for the same
-        // reason: tok_encode stops silently at its capacity, and a vocabulary
-        // with byte fallback spells a space as three tokens, so "one token
-        // per byte" cut a text of short words to half its length without a
-        // word. Grow until the encoding fits with room to spare; refuse a
-        // text that still fills the buffer rather than train on a prefix.
-        if (data_n > (size_t)INT_MAX / 4) {
-            fprintf(stderr, "error: training text %s is too large\n", path);
-            goto fail;
-        }
-        int cap_n = (int)(2 * data_n + 32);
+        // sized to the encoding (tok_encode_fit), never cut at a buffer's end
         int32_t *all = NULL;
-        int ntok = -1;
-        for (int attempt = 0; attempt < 6; attempt++) {
-            free(all);
-            all = malloc(sizeof(*all) * (size_t)cap_n);
-            if (!all) break;
-            ntok = tok_encode(tok, data, all, cap_n, !no_bos, true);
-            if (ntok < 0 || ntok + 1 < cap_n) break;   // fits, or failed
-            if (attempt == 5 || cap_n > INT_MAX / 2) break;
-            cap_n *= 2;
-        }
-        if (!all) {
-            fprintf(stderr, "error: out of memory loading training data\n");
-            goto fail;
-        }
-        if (ntok >= 0 && ntok + 1 >= cap_n) {
-            fprintf(stderr, "error: training text %s tokenizes past %d tokens "
-                    "for %zu bytes; refusing to truncate it\n", path, cap_n,
-                    data_n);
-            free(all);
+        int ntok = tok_encode_fit(tok, data, !no_bos, TOK_RAW, 0, &all);
+        if (ntok < 0) {
+            fprintf(stderr, "error: training text %s is too large, or memory ran "
+                    "out tokenizing it\n", path);
             goto fail;
         }
         if (ntok < 2) {
@@ -958,7 +922,7 @@ static void cli_cleanup(engine *e, int32_t *toks, tokenizer *tok, model_t *m) {
     if (e) {
         schema_free((snode *)e->schema);
         if (e->dm) { model_free(e->dm); free(e->dm); }
-        free(e->hist);
+        engine_release(e);
     }
     free(toks);
     tokenizer_free(tok);
@@ -1079,7 +1043,8 @@ static void usage_to(FILE *f, const char *prog) {
         "                 its path and size (with --json, one JSON object) and\n"
         "                 exit; nothing is loaded\n"
         "  -p TEXT        prompt (one-shot completion; \\n etc. are unescaped)\n"
-        "  -f FILE        read prompt from file, as written (appended after -p text)\n"
+        "  -f FILE        read prompt from file, as written, CRLF read as LF\n"
+        "                 (appended after -p text)\n"
         "  -i             interactive chat mode\n"
         "  --serve        HTTP server mode (OpenAI-compatible API)\n"
         "  --tray [off|auto]  bare: BE the desktop tray/menu-bar controller\n"
@@ -1549,7 +1514,8 @@ static void usage_attest_verb_to(FILE *f, const char *verb) {
 static void usage_train_to(FILE *f) {
     fprintf(f,
         "usage: runner train DATA -m model.gguf [options]\n\n"
-        "DATA is plain text, or .jsonl lines {\"prompt\",\"completion\",\"weight\"}\n"
+        "DATA is plain text (CRLF read as LF), or .jsonl lines\n"
+        "{\"prompt\",\"completion\",\"weight\"}\n"
         "with the prompt masked from the loss (or \"prompt_tokens\" and\n"
         "\"completion_tokens\" id arrays, used as given). Deterministic by\n"
         "default: same data + seed -> byte-identical adapter, written beside\n"
@@ -1736,8 +1702,15 @@ static int run_fit_check(const char *path, int n_ctx_want,
 
     model_fit f;
     if (!model_fit_report(&g, n_ctx_want, mp->mtp, &f)) {
-        fprintf(stderr, "error: %s does not carry the geometry a fit check "
-                        "needs (architecture, block_count, head counts)\n", path);
+        // the loader's plan refused the header: that is the answer (R6.68.29),
+        // exit 1 as for any file the fit cannot clear for a load
+        if (f.refused[0]) {
+            printf("fit: %s\n  verdict       WILL NOT LOAD — the loader refuses this file: %s\n",
+                   path, f.refused);
+        } else {
+            fprintf(stderr, "error: %s does not carry the geometry a fit check "
+                            "needs (architecture, block_count, head counts)\n", path);
+        }
         gguf_close(&g);
         return 1;
     }
@@ -1754,7 +1727,13 @@ static int run_fit_check(const char *path, int n_ctx_want,
     const char *farch = gguf_get_str(&g, "general.architecture", "");
     snprintf(akey, sizeof akey, "%s.attention.group_norm_groups", farch);
     const char *cpu_why = model_gpu_cpu_only_why(farch, (int)gguf_get_u32(&g, akey, 1));
-    if (!cpu_why && !strcmp(farch, "nemotron_h_moe")) cpu_why = fit_nh_moe_cpu_why(&g, farch);
+    const arch_id fid = arch_find(farch)->id;
+    if (!cpu_why && fid == ARCH_NEMOTRON_H_MOE) cpu_why = fit_nh_moe_cpu_why(&g, farch);
+    // a router past the device's caps keeps its experts off the device, in the
+    // load's words (R6.68.67); --cpu-moe keeps them on the host anyway
+    if (!cpu_why && f.route_why[0] && !mp->cpu_moe) cpu_why = f.route_why;
+    // an odd attention head width, in the load's words (R6.68.112)
+    if (!cpu_why && f.head_why[0]) cpu_why = f.head_why;
     // R3.50: the KV ring the load would turn on, sized by the batch the load
     // would take (model.c: a GPU load's default batch follows total RAM)
     f.kv_ring_mode = mp->kv_ring;
@@ -1766,24 +1745,15 @@ static int run_fit_check(const char *path, int n_ctx_want,
     // banks on the host and are not modelled; the note below says so.
     bool host_experts = false, host_default = false;
 #ifdef RUNNER_GPU_CUDA
-    {
-        char k1[96], k2[96], k3[96];
-        snprintf(k1, sizeof k1, "%s.expert_gating_func", farch);
-        snprintf(k2, sizeof k2, "%s.expert_weights_scale", farch);
-        snprintf(k3, sizeof k3, "%s.moe_latent_size", farch);
-        uint32_t gating = gguf_get_u32(&g, k1, 2);   // the loader's default for this family: sigmoid
-        float wscale = gguf_get_f32(&g, k2, 1.0f);
-        const char *dflt = getenv("RUNNER_CPU_MOE_DEFAULT");
-        host_default = !mp->cpu_moe && !strcmp(farch, "nemotron_h_moe") &&
-                       gguf_get_u32(&g, k3, 0) == 0 &&
-                       (gating != 1 || (wscale != 0.0f && wscale != 1.0f)) &&
-                       !(dflt && !strcmp(dflt, "0"));
-        host_experts = host_default || (mp->cpu_moe && mp->cpu_moe_layers == CPU_MOE_ALL);
-    }
+    // the load's own rule over the fit's plan (model_moe_router_host_default,
+    // R6.68.78); it was restated here from the header and missed a group limit
+    host_default = !mp->cpu_moe && f.moe_host_default;
+    host_experts = host_default || (mp->cpu_moe && mp->cpu_moe_layers == CPU_MOE_ALL);
 #endif
     if (mp->gpu_mode != GPU_OFF && !cpu_why && gpu_available(gname, sizeof gname) &&
         gpu_offload_budget(mp->reserve_vram_pct, &gbudget, &gheadroom))
         model_fit_gpu(&g, &f, gbudget, gheadroom, mp->gpu_layers_override, host_experts);
+    if (getenv("RUNNER_DEBUG_VRAM")) model_fit_print_geometry(&g, &f);
     // the loader's own line has the same two figures (cuda.c, gpu-split)
     if (f.gpu && getenv("RUNNER_DEBUG_VRAM")) {
         fprintf(stderr, "fit: (bytes: fixed %llu, headroom %llu)\n",
@@ -2372,12 +2342,12 @@ static int run_caps(void) {
     printf("]");
     // the architectures model_load will admit, so a catalog/advisor can
     // filter unrunnable models by arch without shipping its own copy of the
-    // allowlist (single source of truth: model_supported_archs)
+    // allowlist (single source of truth: the admitted rows of arch.h)
     printf(",\"architectures\":[");
     size_t n_arch;
-    const char *const *arches = model_supported_archs(&n_arch);
-    for (size_t i = 0; i < n_arch; i++)
-        printf("%s\"%s\"", i ? "," : "", arches[i]);
+    const arch_desc *arches = arch_rows(&n_arch);
+    for (size_t i = 0, shown = 0; i < n_arch; i++)
+        if (!arches[i].refused) printf("%s\"%s\"", shown++ ? "," : "", arches[i].name);
     printf("]}\n");
     return 0;
 }
@@ -2523,14 +2493,15 @@ typedef struct {
     engine e;
     int32_t *toks;
     size_t tok_cap;
-    char model_sig_json[512];     // load-time OMS verdict for the receipt
-    char adapter_sig_json[512];   // and the adapter's (R1.2.3)
+    char model_sig_json[OMS_RESULT_JSON_CAP];     // load-time OMS verdict for the receipt
+    char adapter_sig_json[OMS_RESULT_JSON_CAP];   // and the adapter's (R1.2.3)
     // the measured-envelope verdict the one-shot model loaded under, for its
     // transcript (R1.1.5); unknown on paths that never ran the gate
     int env_state;
     bool env_known;
     char sampling[256];           // the effective sampler, as the load line says
     double load_s;
+    char prev_hash[65];           // --transcript-prev's chain hash, read before the load
 } cli_run;
 
 static void cli_opts_init(cli_opts *o) {
@@ -2574,6 +2545,202 @@ static bool recipe_flag(cli_opts *o, const char *flag) {
 static const char *opt_operand(int argc, char **argv, int *i) {
     if (*i + 1 < argc && argv[*i + 1][0] != '-') return argv[++*i];
     return NULL;
+}
+
+// The regular options: a string, a flag, or a number in a range, stored at
+// one field of cli_opts (and, for some, a "given" flag beside it). One row
+// each. They were 130 arms of cli_parse's if-chain; what is left in the chain
+// is the options that do more than store a value. OPT_AT fails the build
+// when a row names a field of another type than its kind stores.
+typedef enum { OPT_STR, OPT_FLAG, OPT_INT, OPT_FLOAT, OPT_U64 } cli_opt_kind;
+typedef struct {
+    const char *name, *alias;   // the flag and, for a few, a second spelling
+    cli_opt_kind kind;
+    bool recipe;                // an R8.17 recipe flag (recipe_flag)
+    size_t at, given;           // offsets into cli_opts; given is OPT_NONE or a bool set alongside
+    double lo, hi;              // the accepted range of an OPT_INT or OPT_FLOAT
+} cli_opt;
+#define OPT_NONE ((size_t)-1)
+#define OPT_AT(type, field) \
+    (offsetof(cli_opts, field) + 0 * sizeof(char[_Generic(((cli_opts *)0)->field, type: 1)]))
+static const cli_opt CLI_OPTS[] = {
+    { "-m", NULL, OPT_STR, false, OPT_AT(const char *, model_path), OPT_NONE, 0, 0 },
+    { "--pull", NULL, OPT_STR, false, OPT_AT(const char *, pull_spec), OPT_NONE, 0, 0 },
+    { "--sizes-only", NULL, OPT_FLAG, false, OPT_AT(bool, sizes_only), OPT_NONE, 0, 0 },
+    { "-hf", "--hf", OPT_STR, false, OPT_AT(const char *, hf_spec), OPT_NONE, 0, 0 },
+    { "-p", NULL, OPT_STR, false, OPT_AT(const char *, prompt), OPT_NONE, 0, 0 },
+    { "-f", NULL, OPT_STR, false, OPT_AT(const char *, prompt_file), OPT_NONE, 0, 0 },
+    { "-n", NULL, OPT_INT, false, OPT_AT(int, n_predict), OPT_AT(bool, n_given), -1, INT_MAX },
+    { "-c", NULL, OPT_INT, false, OPT_AT(int, mp.n_ctx), OPT_NONE, 0, INT_MAX },
+    { "-b", NULL, OPT_INT, false, OPT_AT(int, mp.n_batch), OPT_NONE, 0, INT_MAX },
+    { "-t", NULL, OPT_INT, false, OPT_AT(int, n_threads), OPT_NONE, 0, INT_MAX },
+    { "-s", NULL, OPT_U64, false, OPT_AT(uint64_t, smp.rng), OPT_AT(bool, seed_given), 0, 0 },
+    { "-i", NULL, OPT_FLAG, false, OPT_AT(bool, interactive), OPT_NONE, 0, 0 },
+    { "-v", NULL, OPT_FLAG, false, OPT_AT(bool, verbose), OPT_NONE, 0, 0 },
+    { "--serve", NULL, OPT_FLAG, false, OPT_AT(bool, serve), OPT_NONE, 0, 0 },
+    { "--no-tray", NULL, OPT_FLAG, false, OPT_AT(bool, no_tray), OPT_NONE, 0, 0 },
+    { "--force-uncertified", NULL, OPT_FLAG, false, OPT_AT(bool, force_uncertified), OPT_NONE, 0, 0 },
+    { "--port", NULL, OPT_INT, false, OPT_AT(int, port), OPT_AT(bool, port_given), 1, 65535 },
+    { "--parallel", NULL, OPT_INT, false, OPT_AT(int, parallel), OPT_NONE, 1, 16 },
+    { "--ttl", NULL, OPT_INT, false, OPT_AT(int, ttl), OPT_AT(bool, ttl_given), -1, INT_MAX },
+    { "--json-schema", NULL, OPT_STR, false, OPT_AT(const char *, schema_file), OPT_NONE, 0, 0 },
+    // The one rewrite verb and its two triggers. The older verbs took
+    // the output themselves: a trigger followed by a non-flag token is
+    // that older form.
+    { "--rewrite", NULL, OPT_STR, false, OPT_AT(const char *, rewrite_out), OPT_NONE, 0, 0 },
+    { "--quant-error", NULL, OPT_STR, false, OPT_AT(const char *, quant_error_out), OPT_NONE, 0, 0 },
+    { "--quantize", NULL, OPT_STR, false, OPT_AT(const char *, quant_out), OPT_NONE, 0, 0 },
+    { "--merge-allow-erased", NULL, OPT_FLAG, false, OPT_AT(bool, merge_allow_erased), OPT_NONE, 0, 0 },
+    // --record PATH is the transcript file of a one-shot run or the
+    // receipts directory of a server; which one is known once the whole
+    // line is parsed (cli_resolve_shape)
+    { "--record", NULL, OPT_STR, false, OPT_AT(const char *, record_path), OPT_NONE, 0, 0 },
+    { "--transcript", NULL, OPT_STR, false, OPT_AT(const char *, transcript_path), OPT_NONE, 0, 0 },
+    { "--verify", NULL, OPT_STR, false, OPT_AT(const char *, verify_path), OPT_NONE, 0, 0 },
+    { "--sign-key", NULL, OPT_STR, false, OPT_AT(const char *, sign_key), OPT_NONE, 0, 0 },
+    { "--lineage", NULL, OPT_STR, false, OPT_AT(const char *, lineage_path), OPT_NONE, 0, 0 },
+    { "--require-eval", NULL, OPT_STR, false, OPT_AT(const char *, require_eval), OPT_NONE, 0, 0 },
+    { "--keygen", NULL, OPT_STR, false, OPT_AT(const char *, keygen_path), OPT_NONE, 0, 0 },
+    { "--sign-record", NULL, OPT_STR, false, OPT_AT(const char *, sign_record), OPT_NONE, 0, 0 },
+    { "--check-record", NULL, OPT_STR, false, OPT_AT(const char *, check_record), OPT_NONE, 0, 0 },
+    { "--export-bundle", NULL, OPT_STR, false, OPT_AT(const char *, export_bundle), OPT_NONE, 0, 0 },
+    { "--bundle-out", NULL, OPT_STR, false, OPT_AT(const char *, bundle_out), OPT_NONE, 0, 0 },
+    { "--check-bundle", NULL, OPT_STR, false, OPT_AT(const char *, check_bundle), OPT_NONE, 0, 0 },
+    { "--export-pack", NULL, OPT_STR, false, OPT_AT(const char *, export_pack), OPT_NONE, 0, 0 },
+    { "--pack-out", NULL, OPT_STR, false, OPT_AT(const char *, pack_out), OPT_NONE, 0, 0 },
+    { "--pack-envelope", NULL, OPT_STR, false, OPT_AT(const char *, pack_envelope), OPT_NONE, 0, 0 },
+    { "--check-pack", NULL, OPT_STR, false, OPT_AT(const char *, check_pack), OPT_NONE, 0, 0 },
+    { "--receipts", NULL, OPT_STR, false, OPT_AT(const char *, receipts_dir), OPT_NONE, 0, 0 },
+    { "--record-keep", "--receipts-keep", OPT_INT, false, OPT_AT(int, receipts_keep), OPT_NONE, 0, 100000000 },
+    { "--keygen-algo", NULL, OPT_STR, false, OPT_AT(const char *, keygen_algo), OPT_NONE, 0, 0 },
+    { "--require-signed", NULL, OPT_FLAG, false, OPT_AT(bool, require_signed), OPT_NONE, 0, 0 },
+    { "--trust-key", NULL, OPT_STR, false, OPT_AT(const char *, trust_key), OPT_NONE, 0, 0 },
+    { "--model-sig", NULL, OPT_STR, false, OPT_AT(const char *, model_sig), OPT_NONE, 0, 0 },
+    { "--model-pubkey", NULL, OPT_STR, false, OPT_AT(const char *, model_pubkey), OPT_NONE, 0, 0 },
+    { "--sign-model", NULL, OPT_STR, false, OPT_AT(const char *, sign_model), OPT_NONE, 0, 0 },
+    { "--model-key", NULL, OPT_STR, false, OPT_AT(const char *, model_key), OPT_NONE, 0, 0 },
+    { "--watermark", NULL, OPT_STR, false, OPT_AT(const char *, watermark_path), OPT_NONE, 0, 0 },
+    { "--watermark-keygen", NULL, OPT_STR, false, OPT_AT(const char *, watermark_keygen), OPT_NONE, 0, 0 },
+    { "--detect-watermark", NULL, OPT_STR, false, OPT_AT(const char *, detect_path), OPT_NONE, 0, 0 },
+    { "--kv-snapshots", NULL, OPT_STR, false, OPT_AT(const char *, kv_snapshots), OPT_NONE, 0, 0 },
+    { "--sessions", NULL, OPT_STR, false, OPT_AT(const char *, sessions_path), OPT_NONE, 0, 0 },
+    { "--session-out", NULL, OPT_STR, false, OPT_AT(const char *, session_out), OPT_NONE, 0, 0 },
+    { "--resume", NULL, OPT_STR, false, OPT_AT(const char *, resume_path), OPT_NONE, 0, 0 },
+    { "--suspend-after", NULL, OPT_INT, false, OPT_AT(int, suspend_after), OPT_NONE, 1, INT_MAX },
+    { "--fork-seed", NULL, OPT_U64, false, OPT_AT(uint64_t, fork_seed), OPT_AT(bool, fork_seed_given), 0, 0 },
+    { "--require-signed-model", NULL, OPT_FLAG, false, OPT_AT(bool, require_signed_model), OPT_NONE, 0, 0 },
+    { "--quant", NULL, OPT_STR, false, OPT_AT(const char *, quant_type), OPT_NONE, 0, 0 },
+    { "--prune-experts", NULL, OPT_STR, false, OPT_AT(const char *, prune_experts), OPT_NONE, 0, 0 },
+    { "--remove-sublayer", NULL, OPT_STR, false, OPT_AT(const char *, remove_sublayer), OPT_NONE, 0, 0 },
+    { "--type-plan", NULL, OPT_STR, false, OPT_AT(const char *, type_plan), OPT_NONE, 0, 0 },
+    { "--type-plan-strict", NULL, OPT_FLAG, false, OPT_AT(bool, type_plan_strict), OPT_NONE, 0, 0 },
+    { "--imatrix", NULL, OPT_STR, false, OPT_AT(const char *, imatrix), OPT_NONE, 0, 0 },
+    { "--temp", NULL, OPT_FLOAT, false, OPT_AT(float, ov.temp), OPT_AT(bool, ov.has_temp), 0, FLT_MAX },
+    { "--top-k", NULL, OPT_INT, false, OPT_AT(int, ov.top_k), OPT_AT(bool, ov.has_top_k), 0, INT_MAX },
+    { "--top-p", NULL, OPT_FLOAT, false, OPT_AT(float, ov.top_p), OPT_AT(bool, ov.has_top_p), 0, 1 },
+    { "--min-p", NULL, OPT_FLOAT, false, OPT_AT(float, ov.min_p), OPT_AT(bool, ov.has_min_p), 0, 1 },
+    { "--repeat-penalty", NULL, OPT_FLOAT, false, OPT_AT(float, ov.repeat_penalty), OPT_AT(bool, ov.has_repeat_penalty), FLT_MIN, FLT_MAX },
+    { "--rope-scale", NULL, OPT_FLOAT, false, OPT_AT(float, mp.rope_scale), OPT_NONE, 0, FLT_MAX },
+    { "--yarn-factor", NULL, OPT_FLOAT, false, OPT_AT(float, mp.yarn_factor), OPT_NONE, 1, FLT_MAX },
+    { "--rope-base", NULL, OPT_FLOAT, false, OPT_AT(float, mp.rope_base), OPT_NONE, 0, FLT_MAX },
+    { "--system", NULL, OPT_STR, false, OPT_AT(const char *, system_prompt), OPT_NONE, 0, 0 },
+    { "--chat-template", NULL, OPT_STR, false, OPT_AT(const char *, tmpl_arg), OPT_NONE, 0, 0 },
+    { "--no-bos", NULL, OPT_FLAG, false, OPT_AT(bool, no_bos), OPT_NONE, 0, 0 },
+    { "--ignore-eos", NULL, OPT_FLAG, false, OPT_AT(bool, ignore_eos), OPT_NONE, 0, 0 },
+    { "--mlock", NULL, OPT_FLAG, false, OPT_AT(bool, mp.mlock), OPT_NONE, 0, 0 },
+    { "--draft-required", NULL, OPT_FLAG, false, OPT_AT(bool, draft_required), OPT_NONE, 0, 0 },
+    { "--draft-k", NULL, OPT_INT, false, OPT_AT(int, draft_k), OPT_NONE, 1, 15 },
+    { "--draft-lookup", NULL, OPT_FLAG, false, OPT_AT(bool, draft_lookup), OPT_NONE, 0, 0 },
+    { "--reasoning-budget", NULL, OPT_INT, false, OPT_AT(int, reasoning_budget), OPT_NONE, 0, INT_MAX },
+    { "--reasoning-budget-message", NULL, OPT_STR, false, OPT_AT(const char *, reasoning_budget_message), OPT_NONE, 0, 0 },
+    { "--loop-guard", NULL, OPT_FLAG, false, OPT_AT(bool, loop_guard), OPT_NONE, 0, 0 },
+    { "--reasoning-temp", NULL, OPT_FLOAT, false, OPT_AT(float, reasoning_temp), OPT_NONE, 0, 2 },
+    { "--bench-json", NULL, OPT_FLAG, false, OPT_AT(bool, bench_json), OPT_NONE, 0, 0 },
+    { "--doctor", NULL, OPT_FLAG, false, OPT_AT(bool, doctor), OPT_NONE, 0, 0 },
+    { "--score-top", NULL, OPT_INT, false, OPT_AT(int, score_top), OPT_NONE, 1, 256 },
+    { "--score-out", NULL, OPT_STR, false, OPT_AT(const char *, score_out), OPT_NONE, 0, 0 },
+    { "--score-tokens", NULL, OPT_INT, false, OPT_AT(int, score_tokens), OPT_NONE, 2, INT_MAX },
+    { "--decide", NULL, OPT_STR, false, OPT_AT(const char *, decide_path), OPT_NONE, 0, 0 },
+    { "--systemone", NULL, OPT_STR, false, OPT_AT(const char *, systemone_path), OPT_NONE, 0, 0 },
+    { "--lora", NULL, OPT_STR, false, OPT_AT(const char *, lora_path), OPT_NONE, 0, 0 },
+    { "--lora-sig", NULL, OPT_STR, false, OPT_AT(const char *, lora_sig), OPT_NONE, 0, 0 },
+    { "--lora-scale", NULL, OPT_FLOAT, false, OPT_AT(float, lora_scale), OPT_NONE, 0, FLT_MAX },
+    { "--train", NULL, OPT_STR, false, OPT_AT(const char *, train_path), OPT_NONE, 0, 0 },
+    { "--train-dpo", NULL, OPT_STR, false, OPT_AT(const char *, dpo_path), OPT_NONE, 0, 0 },
+    { "--dpo-beta", NULL, OPT_FLOAT, false, OPT_AT(float, dpo_beta), OPT_NONE, 0, FLT_MAX },
+    { "--train-eot", NULL, OPT_FLAG, false, OPT_AT(bool, train_eot), OPT_NONE, 0, 0 },
+    { "--train-steps", NULL, OPT_INT, false, OPT_AT(int, train_steps), OPT_NONE, 1, INT_MAX },
+    { "--train-out", NULL, OPT_STR, false, OPT_AT(const char *, train_out), OPT_NONE, 0, 0 },
+    { "--train-logprobs", NULL, OPT_STR, false, OPT_AT(const char *, train_lp_path), OPT_NONE, 0, 0 },
+    { "--train-teacher", NULL, OPT_STR, false, OPT_AT(const char *, train_teacher), OPT_NONE, 0, 0 },
+    { "--train-ctx", NULL, OPT_INT, false, OPT_AT(int, train_ctx), OPT_NONE, 2, INT_MAX },
+    { "--lr", NULL, OPT_FLOAT, false, OPT_AT(float, train_lr), OPT_NONE, 0, 1 },
+    { "--lora-rank", NULL, OPT_INT, false, OPT_AT(int, lora_rank), OPT_NONE, 1, 512 },
+    { "--save-every", NULL, OPT_INT, false, OPT_AT(int, save_every), OPT_NONE, 0, INT_MAX },
+    { "--lr-warmup", NULL, OPT_INT, true, OPT_AT(int, lr_warmup), OPT_NONE, 0, INT_MAX },
+    { "--lr-floor", NULL, OPT_FLOAT, true, OPT_AT(float, lr_floor), OPT_NONE, 0, 1 },
+    { "--train-batch", NULL, OPT_INT, true, OPT_AT(int, train_batch), OPT_NONE, 1, 65536 },
+    { "--weight-decay", NULL, OPT_FLOAT, false, OPT_AT(float, weight_decay), OPT_NONE, 0, 1 },
+    { "--train-gpu", NULL, OPT_FLAG, false, OPT_AT(bool, train_gpu), OPT_NONE, 0, 0 },
+    { "--train-full", NULL, OPT_FLAG, true, OPT_AT(bool, train_full), OPT_NONE, 0, 0 },
+    { "--train-resume", NULL, OPT_STR, true, OPT_AT(const char *, train_resume), OPT_NONE, 0, 0 },
+    { "--eval-every", NULL, OPT_INT, true, OPT_AT(int, eval_every), OPT_NONE, 1, INT_MAX },
+    { "--stop-file", NULL, OPT_STR, true, OPT_AT(const char *, stop_file), OPT_NONE, 0, 0 },
+    { "--kill-at", NULL, OPT_INT, true, OPT_AT(int, kill_at), OPT_NONE, 1, INT_MAX },
+    { "--kill-metric", NULL, OPT_STR, true, OPT_AT(const char *, kill_metric), OPT_NONE, 0, 0 },
+    { "--kill-min-rel", NULL, OPT_FLOAT, true, OPT_AT(float, kill_min_rel), OPT_NONE, -1, 1 },
+    { "--reserve-vram", NULL, OPT_INT, false, OPT_AT(int, mp.reserve_vram_pct), OPT_NONE, 0, 100 },
+    { "--reserve-ram", NULL, OPT_INT, false, OPT_AT(int, mp.reserve_ram_pct), OPT_NONE, 0, 100 },
+    { "--reserve-cpu", NULL, OPT_INT, false, OPT_AT(int, reserve_cpu_pct), OPT_NONE, 0, 100 },
+    { "--vram-priority", NULL, OPT_INT, false, OPT_AT(int, mp.vram_priority), OPT_NONE, -1000, 1000 },
+    { "--caps", NULL, OPT_FLAG, false, OPT_AT(bool, caps), OPT_NONE, 0, 0 },
+    // --shadow-mode: hand off to the Python client's `shadow install`
+    // (confirmation, hooks, the /shadow skill and prompt, the model to
+    // serve for offloading). The client ships beside the binary in the
+    // release archive and in the source tree; nothing is downloaded.
+    { "--shadow-mode", NULL, OPT_FLAG, false, OPT_AT(bool, shadow_mode), OPT_NONE, 0, 0 },
+    { "--yes", NULL, OPT_FLAG, false, OPT_AT(bool, shadow_yes), OPT_NONE, 0, 0 },
+    // Per-MODEL evidence: the native tool-call protocol resolved from this
+    // model's chat template (a build property --caps cannot carry). Loads
+    // the model, prints one JSON line, exits.
+    { "--tool-info", NULL, OPT_FLAG, false, OPT_AT(bool, tool_info), OPT_NONE, 0, 0 },
+    { "--adapt-info", NULL, OPT_FLAG, false, OPT_AT(bool, adapt_info), OPT_NONE, 0, 0 },
+    { "--fit", NULL, OPT_STR, false, OPT_AT(const char *, fit_path), OPT_NONE, 0, 0 },
+    { "--roster", NULL, OPT_STR, false, OPT_AT(const char *, roster_path), OPT_NONE, 0, 0 },
+};
+#undef OPT_AT
+
+// The value an option needs: the next argument, or the refusal and exit when
+// the line ends first.
+static const char *cli_next(const char *a, int argc, char **argv, int *i) {
+    if (*i + 1 < argc) return argv[++*i];
+    fprintf(stderr, "error: %s needs a value\n", a);
+    usage_pointer();
+    exit(1);
+}
+
+// Stores a regular option (CLI_OPTS). True when `a` was one; its value, if
+// it takes one, is consumed.
+static bool cli_opt_apply(cli_opts *o, const char *a, int argc, char **argv, int *i) {
+    for (size_t k = 0; k < sizeof CLI_OPTS / sizeof CLI_OPTS[0]; k++) {
+        const cli_opt *c = &CLI_OPTS[k];
+        if (strcmp(a, c->name) && !(c->alias && !strcmp(a, c->alias))) continue;
+        if (c->recipe) recipe_flag(o, a);
+        char *base = (char *)o;
+        const char *v = c->kind == OPT_FLAG ? NULL : cli_next(a, argc, argv, i);
+        switch (c->kind) {
+        case OPT_STR:   *(const char **)(base + c->at) = v; break;
+        case OPT_FLAG:  *(bool *)(base + c->at) = true; break;
+        case OPT_INT:
+            *(int *)(base + c->at) = (int)int_arg(a, v, (long long)c->lo, (long long)c->hi);
+            break;
+        case OPT_FLOAT: *(float *)(base + c->at) = (float)float_arg(a, v, c->lo, c->hi); break;
+        case OPT_U64:   *(uint64_t *)(base + c->at) = u64_arg(a, v); break;
+        }
+        if (c->given != OPT_NONE) *(bool *)(base + c->given) = true;
+        return true;
+    }
+    return false;
 }
 
 // --reserve P | vram=P,ram=P,cpu=P: one percentage for VRAM and RAM, or
@@ -2637,28 +2804,13 @@ bad:
 static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
-        #define NEXT (i + 1 < argc ? argv[++i] : (fprintf(stderr, "error: %s needs a value\n", a), \
-                                                   usage_pointer(), exit(1), (char*)0))
         if (!o->cached_other && strcmp(a, "--info") && strcmp(a, "--json") && strcmp(a, "--sizes-only")) o->cached_other = a;
         if (!o->pull_other && strcmp(a, "--pull") && strcmp(a, "--json")) o->pull_other = a;
-        if      (!strcmp(a, "-m")) o->model_path = NEXT;
-        else if (!strcmp(a, "--pull")) o->pull_spec = NEXT;
-        else if (!strcmp(a, "--sizes-only")) o->sizes_only = true;
-        else if (!strcmp(a, "-hf") || !strcmp(a, "--hf")) o->hf_spec = NEXT;
-        else if (!strcmp(a, "-p")) o->prompt = NEXT;
-        else if (!strcmp(a, "-f")) o->prompt_file = NEXT;
-        else if (!strcmp(a, "-n")) { o->n_predict = (int)int_arg(a, NEXT, -1, INT_MAX); o->n_given = true; }
-        else if (!strcmp(a, "-c")) o->mp.n_ctx = (int)int_arg(a, NEXT, 0, INT_MAX);
-        else if (!strcmp(a, "-b")) o->mp.n_batch = (int)int_arg(a, NEXT, 0, INT_MAX);
-        else if (!strcmp(a, "-t")) o->n_threads = (int)int_arg(a, NEXT, 0, INT_MAX);
-        else if (!strcmp(a, "-s")) { o->smp.rng = u64_arg(a, NEXT); o->seed_given = true; }
-        else if (!strcmp(a, "-i")) o->interactive = true;
-        else if (!strcmp(a, "-v")) o->verbose = true;
-        else if (!strcmp(a, "--serve")) o->serve = true;
+        if (cli_opt_apply(o, a, argc, argv, &i)) continue;
         // gemma-4 renders a non-thinking prompt by default, matching its
         // reference template; --think (on) opts into the thinking shape,
         // off into the non-thinking one, auto leaves it to the template
-        else if (!strcmp(a, "--think")) {
+        if (!strcmp(a, "--think")) {
             const char *v = opt_operand(argc, argv, &i);
             if (!v || !strcmp(v, "on")) o->thinking = THINK_ON;
             else if (!strcmp(v, "off")) o->thinking = THINK_OFF;
@@ -2677,11 +2829,6 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             else if (!strcmp(v, "auto")) o->no_tray = false;
             else { fprintf(stderr, "error: --tray expects off or auto, or nothing (be the tray)\n"); *rc = 1; return false; }
         }
-        else if (!strcmp(a, "--no-tray")) o->no_tray = true;
-        else if (!strcmp(a, "--force-uncertified")) o->force_uncertified = true;
-        else if (!strcmp(a, "--port")) { o->port = (int)int_arg(a, NEXT, 1, 65535); o->port_given = true; }
-        else if (!strcmp(a, "--parallel")) o->parallel = (int)int_arg(a, NEXT, 1, 16);
-        else if (!strcmp(a, "--ttl")) { o->ttl = (int)int_arg(a, NEXT, -1, INT_MAX); o->ttl_given = true; }
         // --json alone constrains to one JSON object; --json FILE to the
         // schema in FILE (the two are different constraints, and a record
         // names the one it ran under)
@@ -2689,13 +2836,6 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             const char *v = opt_operand(argc, argv, &i);
             if (v) o->schema_file = v; else o->json_mode = true;
         }
-        else if (!strcmp(a, "--json-schema")) o->schema_file = NEXT;
-        // The one rewrite verb and its two triggers. The older verbs took
-        // the output themselves: a trigger followed by a non-flag token is
-        // that older form.
-        else if (!strcmp(a, "--rewrite")) o->rewrite_out = NEXT;
-        else if (!strcmp(a, "--quant-error")) o->quant_error_out = NEXT;
-        else if (!strcmp(a, "--quantize")) o->quant_out = NEXT;
         else if (!strcmp(a, "--context-surgery")) {
             const char *v = opt_operand(argc, argv, &i);
             if (v) o->context_out = v; else o->rewrite_context = true;
@@ -2704,31 +2844,11 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             const char *v = opt_operand(argc, argv, &i);
             if (v) o->merge_out = v; else o->rewrite_merge = true;
         }
-        else if (!strcmp(a, "--merge-allow-erased")) o->merge_allow_erased = true;
-        // --record PATH is the transcript file of a one-shot run or the
-        // receipts directory of a server; which one is known once the whole
-        // line is parsed (cli_resolve_shape)
-        else if (!strcmp(a, "--record")) o->record_path = NEXT;
-        else if (!strcmp(a, "--transcript")) o->transcript_path = NEXT;
-        else if (!strcmp(a, "--verify")) o->verify_path = NEXT;
         // one previous-record link, whichever record this run writes
         else if (!strcmp(a, "--record-prev") || !strcmp(a, "--transcript-prev"))
-            o->transcript_prev = o->record_prev = NEXT;
-        else if (!strcmp(a, "--sign-key")) o->sign_key = NEXT;
-        else if (!strcmp(a, "--lineage")) o->lineage_path = NEXT;
-        else if (!strcmp(a, "--require-eval")) o->require_eval = NEXT;
-        else if (!strcmp(a, "--keygen")) o->keygen_path = NEXT;
-        else if (!strcmp(a, "--sign-record")) o->sign_record = NEXT;
-        else if (!strcmp(a, "--check-record")) o->check_record = NEXT;
-        else if (!strcmp(a, "--export-bundle")) o->export_bundle = NEXT;
-        else if (!strcmp(a, "--bundle-out")) o->bundle_out = NEXT;
-        else if (!strcmp(a, "--check-bundle")) o->check_bundle = NEXT;
-        else if (!strcmp(a, "--export-pack")) o->export_pack = NEXT;
-        else if (!strcmp(a, "--pack-out")) o->pack_out = NEXT;
-        else if (!strcmp(a, "--pack-envelope")) o->pack_envelope = NEXT;
-        else if (!strcmp(a, "--check-pack")) o->check_pack = NEXT;
+            o->transcript_prev = o->record_prev = cli_next(a, argc, argv, &i);
         else if (!strcmp(a, "--pack-attach")) {
-            const char *f = NEXT;
+            const char *f = cli_next(a, argc, argv, &i);
             if (o->n_pack_attach == PACK_MAX_ATTACH) {
                 fprintf(stderr, "error: --pack-attach: at most %d files\n",
                         PACK_MAX_ATTACH);
@@ -2737,51 +2857,9 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             }
             o->pack_attach[o->n_pack_attach++] = f;
         }
-        else if (!strcmp(a, "--receipts")) o->receipts_dir = NEXT;
-        else if (!strcmp(a, "--record-keep") || !strcmp(a, "--receipts-keep"))
-            o->receipts_keep = (int)int_arg(a, NEXT, 0, 100000000);
-        else if (!strcmp(a, "--keygen-algo")) o->keygen_algo = NEXT;
-        else if (!strcmp(a, "--require-signed")) o->require_signed = true;
-        else if (!strcmp(a, "--trust-key")) o->trust_key = NEXT;
-        else if (!strcmp(a, "--model-sig")) o->model_sig = NEXT;
-        else if (!strcmp(a, "--model-pubkey")) o->model_pubkey = NEXT;
-        else if (!strcmp(a, "--sign-model")) o->sign_model = NEXT;
-        else if (!strcmp(a, "--model-key")) o->model_key = NEXT;
-        else if (!strcmp(a, "--watermark")) o->watermark_path = NEXT;
-        else if (!strcmp(a, "--watermark-keygen")) o->watermark_keygen = NEXT;
-        else if (!strcmp(a, "--detect-watermark")) o->detect_path = NEXT;
-        else if (!strcmp(a, "--kv-snapshots")) o->kv_snapshots = NEXT;
-        else if (!strcmp(a, "--sessions")) o->sessions_path = NEXT;
-        else if (!strcmp(a, "--session-out")) o->session_out = NEXT;
-        else if (!strcmp(a, "--resume")) o->resume_path = NEXT;
-        else if (!strcmp(a, "--suspend-after"))
-            o->suspend_after = (int)int_arg(a, NEXT, 1, INT_MAX);
-        else if (!strcmp(a, "--fork-seed")) {
-            o->fork_seed = u64_arg(a, NEXT);
-            o->fork_seed_given = true;
-        }
-        else if (!strcmp(a, "--require-signed-model")) o->require_signed_model = true;
-        else if (!strcmp(a, "--quant")) o->quant_type = NEXT;
-        else if (!strcmp(a, "--prune-experts")) o->prune_experts = NEXT;
-        else if (!strcmp(a, "--remove-sublayer")) o->remove_sublayer = NEXT;
-        else if (!strcmp(a, "--type-plan")) o->type_plan = NEXT;
-        else if (!strcmp(a, "--type-plan-strict")) o->type_plan_strict = true;
-        else if (!strcmp(a, "--imatrix")) o->imatrix = NEXT;
-        else if (!strcmp(a, "--temp")) { o->ov.temp = (float)float_arg(a, NEXT, 0, FLT_MAX); o->ov.has_temp = true; }
-        else if (!strcmp(a, "--top-k")) { o->ov.top_k = (int)int_arg(a, NEXT, 0, INT_MAX); o->ov.has_top_k = true; }
-        else if (!strcmp(a, "--top-p")) { o->ov.top_p = (float)float_arg(a, NEXT, 0, 1); o->ov.has_top_p = true; }
-        else if (!strcmp(a, "--min-p")) { o->ov.min_p = (float)float_arg(a, NEXT, 0, 1); o->ov.has_min_p = true; }
-        else if (!strcmp(a, "--repeat-penalty")) { o->ov.repeat_penalty = (float)float_arg(a, NEXT, FLT_MIN, FLT_MAX); o->ov.has_repeat_penalty = true; }
-        else if (!strcmp(a, "--rope")) { if (!parse_rope(o, NEXT)) { *rc = 1; return false; } }
-        else if (!strcmp(a, "--rope-scale")) o->mp.rope_scale = (float)float_arg(a, NEXT, 0, FLT_MAX);
-        else if (!strcmp(a, "--yarn-factor")) o->mp.yarn_factor = (float)float_arg(a, NEXT, 1, FLT_MAX);
-        else if (!strcmp(a, "--rope-base")) o->mp.rope_base = (float)float_arg(a, NEXT, 0, FLT_MAX);
-        else if (!strcmp(a, "--system")) o->system_prompt = NEXT;
-        else if (!strcmp(a, "--chat-template")) o->tmpl_arg = NEXT;
-        else if (!strcmp(a, "--no-bos")) o->no_bos = true;
-        else if (!strcmp(a, "--ignore-eos")) o->ignore_eos = true;
+        else if (!strcmp(a, "--rope")) { if (!parse_rope(o, cli_next(a, argc, argv, &i))) { *rc = 1; return false; } }
         else if (!strcmp(a, "--gpu-route")) {
-            const char *v = NEXT;
+            const char *v = cli_next(a, argc, argv, &i);
             int mask = gpu_route_parse(v);
             if (mask < 0) {
                 fprintf(stderr, "error: --gpu-route expects reference or a comma list of "
@@ -2792,7 +2870,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             gpu_route_pin(mask);   // the process's CUDA arithmetic, over RUNNER_CUDA_*
         }
         else if (!strcmp(a, "--gpu")) {
-            const char *v = NEXT;
+            const char *v = cli_next(a, argc, argv, &i);
             if (!strcmp(v, "auto")) o->mp.gpu_mode = GPU_AUTO;
             else if (!strcmp(v, "off")) o->mp.gpu_mode = GPU_OFF;
             else if (v[0] >= '0' && v[0] <= '9') {
@@ -2809,7 +2887,7 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             else { fprintf(stderr, "error: --gpu expects auto, off or a layer count\n"); *rc = 1; return false; }
         }
         else if (!strcmp(a, "--kv")) {
-            const char *v = NEXT;
+            const char *v = cli_next(a, argc, argv, &i);
             o->kv_given = true;
             o->mp.kv_q8 = o->mp.kv_fp4 = o->mp.kv_split = false;
             o->kv_f32_cli = false;
@@ -2821,15 +2899,14 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             else if (strcmp(v, "f16")) { fprintf(stderr, "error: --kv expects f16, f32, q8, k8v4 or fp4\n"); *rc = 1; return false; }
         }
         else if (!strcmp(a, "--kv-ring")) {
-            const char *v = NEXT;
+            const char *v = cli_next(a, argc, argv, &i);
             if (!strcmp(v, "auto")) o->mp.kv_ring = KV_RING_AUTO;
             else if (!strcmp(v, "on")) o->mp.kv_ring = KV_RING_ON;
             else if (!strcmp(v, "off")) o->mp.kv_ring = KV_RING_OFF;
             else { fprintf(stderr, "error: --kv-ring expects auto, on or off\n"); *rc = 1; return false; }
         }
-        else if (!strcmp(a, "--mlock")) o->mp.mlock = true;
         else if (!strcmp(a, "--moe-prefetch")) {
-            const char *v = NEXT;
+            const char *v = cli_next(a, argc, argv, &i);
             if (!strcmp(v, "on")) o->mp.moe_prefetch = 1;
             else if (!strcmp(v, "off")) o->mp.moe_prefetch = -1;
             else if (!strcmp(v, "auto")) o->mp.moe_prefetch = 0;
@@ -2839,46 +2916,28 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
         // model's own MTP head, that head from a companion file, or the
         // context itself
         else if (!strcmp(a, "--draft")) {
-            const char *v = NEXT;
+            const char *v = cli_next(a, argc, argv, &i);
             if (!strcmp(v, "mtp")) { o->mp.mtp = true; o->mtp_on = true; }
             else if (!strncmp(v, "mtp:", 4)) { o->mp.mtp_path = v + 4; o->mp.mtp = true; o->mtp_on = true; }
             else if (!strcmp(v, "lookup")) o->draft_lookup = true;
             else if (!strcmp(v, "off")) o->draft_off = true;
             else o->draft_path = v;
         }
-        else if (!strcmp(a, "--draft-required")) o->draft_required = true;
-        else if (!strcmp(a, "--draft-k")) o->draft_k = (int)int_arg(a, NEXT, 1, 15);
         else if (!strcmp(a, "--mtp"))     { o->mp.mtp = true; o->mtp_on = true; }
-        else if (!strcmp(a, "--mtp-file")) { o->mp.mtp_path = NEXT; o->mp.mtp = true; o->mtp_on = true; }
-        else if (!strcmp(a, "--draft-lookup")) o->draft_lookup = true;
-        else if (!strcmp(a, "--reasoning-budget"))
-            o->reasoning_budget = (int)int_arg(a, NEXT, 0, INT_MAX);
-        else if (!strcmp(a, "--reasoning-budget-message"))
-            o->reasoning_budget_message = NEXT;
-        else if (!strcmp(a, "--loop-guard")) o->loop_guard = true;
+        else if (!strcmp(a, "--mtp-file")) { o->mp.mtp_path = cli_next(a, argc, argv, &i); o->mp.mtp = true; o->mtp_on = true; }
         else if (!strcmp(a, "--bare-recipients")) template_set_bare_recipients(true);
-        else if (!strcmp(a, "--reasoning-temp"))
-            o->reasoning_temp = (float)float_arg(a, NEXT, 0, 2);
-        else if (!strcmp(a, "--bench-json")) o->bench_json = true;
-        else if (!strcmp(a, "--doctor")) o->doctor = true;
         else if (!strcmp(a, "--doctor-include-text")) o->doctor = o->doctor_text = true;
         else if (!strcmp(a, "--score")) {
             o->score = true;
             const char *v = opt_operand(argc, argv, &i);
             if (v) o->score_top = (int)int_arg(a, v, 1, 256);
         }
-        else if (!strcmp(a, "--score-top")) o->score_top = (int)int_arg(a, NEXT, 1, 256);
-        else if (!strcmp(a, "--score-out")) o->score_out = NEXT;
-        else if (!strcmp(a, "--score-tokens")) o->score_tokens = (int)int_arg(a, NEXT, 2, INT_MAX);
-        else if (!strcmp(a, "--decide")) o->decide_path = NEXT;
-        else if (!strcmp(a, "--systemone")) o->systemone_path = NEXT;
-        else if (!strcmp(a, "--lora")) o->lora_path = NEXT;
-        else if (!strcmp(a, "--lora-sig")) o->lora_sig = NEXT;
         else if (!strcmp(a, "--adapter")) {
-            char *spec = strdup(NEXT);
+            char *spec = strdup(cli_next(a, argc, argv, &i));
             char *eq = spec ? strchr(spec, '=') : NULL;
             if (!eq || eq == spec || !eq[1]) {
                 fprintf(stderr, "error: --adapter wants NAME=PATH\n");
+                free(spec);
                 *rc = 1;
                 return false;
             }
@@ -2891,39 +2950,21 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             if (!name_ok) {
                 fprintf(stderr, "error: --adapter NAME must be 1 to 63 "
                         "characters of [A-Za-z0-9._-]\n");
+                free(spec);
                 *rc = 1;
                 return false;
             }
             if (o->n_adapters >= 16) {
                 fprintf(stderr, "error: at most 16 --adapter\n");
+                free(spec);
                 *rc = 1;
                 return false;
             }
             o->adapter_names[o->n_adapters] = spec;   // lives for the process
             o->adapter_paths[o->n_adapters++] = eq + 1;
         }
-        else if (!strcmp(a, "--lora-scale"))
-            o->lora_scale = (float)float_arg(a, NEXT, 0, FLT_MAX);
-        else if (!strcmp(a, "--train")) o->train_path = NEXT;
-        else if (!strcmp(a, "--train-dpo")) o->dpo_path = NEXT;
-        else if (!strcmp(a, "--dpo-beta"))
-            o->dpo_beta = (float)float_arg(a, NEXT, 0, FLT_MAX);
-        else if (!strcmp(a, "--train-eot")) o->train_eot = true;
-        else if (!strcmp(a, "--train-steps"))
-            o->train_steps = (int)int_arg(a, NEXT, 1, INT_MAX);
-        else if (!strcmp(a, "--train-out")) o->train_out = NEXT;
-        else if (!strcmp(a, "--train-logprobs")) o->train_lp_path = NEXT;
-        else if (!strcmp(a, "--train-teacher")) o->train_teacher = NEXT;
-        else if (!strcmp(a, "--train-ctx"))
-            o->train_ctx = (int)int_arg(a, NEXT, 2, INT_MAX);
-        else if (!strcmp(a, "--lr"))
-            o->train_lr = (float)float_arg(a, NEXT, 0, 1);
-        else if (!strcmp(a, "--lora-rank"))
-            o->lora_rank = (int)int_arg(a, NEXT, 1, 512);
-        else if (!strcmp(a, "--save-every"))
-            o->save_every = (int)int_arg(a, NEXT, 0, INT_MAX);
         else if (!strcmp(a, "--lr-schedule") && recipe_flag(o, a)) {
-            const char *v = NEXT;
+            const char *v = cli_next(a, argc, argv, &i);
             if (!strcmp(v, "constant")) o->lr_schedule = 0;
             else if (!strcmp(v, "cosine")) o->lr_schedule = 1;
             else {
@@ -2933,26 +2974,15 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
                 return false;
             }
         }
-        else if (!strcmp(a, "--lr-warmup") && recipe_flag(o, a))
-            o->lr_warmup = (int)int_arg(a, NEXT, 0, INT_MAX);
-        else if (!strcmp(a, "--lr-floor") && recipe_flag(o, a))
-            o->lr_floor = (float)float_arg(a, NEXT, 0, 1);
-        else if (!strcmp(a, "--train-batch") && recipe_flag(o, a))
-            o->train_batch = (int)int_arg(a, NEXT, 1, 65536);
-        else if (!strcmp(a, "--weight-decay"))
-            o->weight_decay = (float)float_arg(a, NEXT, 0, 1);
-        else if (!strcmp(a, "--train-gpu")) o->train_gpu = true;
-        else if (!strcmp(a, "--train-full") && recipe_flag(o, a)) o->train_full = true;
         else if (!strcmp(a, "--train-kv-f32") && recipe_flag(o, a)) { o->train_kv_f32 = true; o->mp.kv_f32 = true; }
         else if (!strcmp(a, "--train-gpu-budget")) {
-            o->train_gpu_budget = u64_arg(a, NEXT);
+            o->train_gpu_budget = u64_arg(a, cli_next(a, argc, argv, &i));
             if (!o->train_gpu_budget) {
                 fprintf(stderr, "error: --train-gpu-budget expects a byte "
                         "count above 0\n");
                 exit(1);
             }
         }
-        else if (!strcmp(a, "--train-resume") && recipe_flag(o, a)) o->train_resume = NEXT;
         else if (!strcmp(a, "--train-eval") && recipe_flag(o, a)) {
             if (o->n_eval == (int)(sizeof o->eval_spec / sizeof o->eval_spec[0])) {
                 fprintf(stderr, "error: at most %d --train-eval sets\n",
@@ -2960,21 +2990,12 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
                 *rc = 1;
                 return false;
             }
-            o->eval_spec[o->n_eval++] = NEXT;
+            o->eval_spec[o->n_eval++] = cli_next(a, argc, argv, &i);
         }
-        else if (!strcmp(a, "--eval-every") && recipe_flag(o, a))
-            o->eval_every = (int)int_arg(a, NEXT, 1, INT_MAX);
-        else if (!strcmp(a, "--stop-file") && recipe_flag(o, a)) o->stop_file = NEXT;
-        else if (!strcmp(a, "--kill-at") && recipe_flag(o, a))
-            o->kill_at = (int)int_arg(a, NEXT, 1, INT_MAX);
-        else if (!strcmp(a, "--kill-metric") && recipe_flag(o, a)) o->kill_metric = NEXT;
-        else if (!strcmp(a, "--kill-min-rel") && recipe_flag(o, a))
-            o->kill_min_rel = (float)float_arg(a, NEXT, -1, 1);
-        else if (!strcmp(a, "--reserve")) { if (!parse_reserve(o, NEXT)) { *rc = 1; return false; } }
-        else if (!strcmp(a, "--reserve-vram")) o->mp.reserve_vram_pct = (int)int_arg(a, NEXT, 0, 100);
+        else if (!strcmp(a, "--reserve")) { if (!parse_reserve(o, cli_next(a, argc, argv, &i))) { *rc = 1; return false; } }
         else if (!strcmp(a, "--gpu-layers")) {
             // the older spelling of --gpu N; the same 0-means-off rule
-            int n = (int)int_arg(a, NEXT, 0, 100000);
+            int n = (int)int_arg(a, cli_next(a, argc, argv, &i), 0, 100000);
             if (n == 0) o->mp.gpu_mode = GPU_OFF;
             else o->mp.gpu_layers_override = n;
         }
@@ -2993,8 +3014,6 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
                 o->mp.cpu_moe_layers = (int)int_arg(a, argv[++i], 0, INT_MAX);
             }
         }
-        else if (!strcmp(a, "--reserve-ram")) o->mp.reserve_ram_pct = (int)int_arg(a, NEXT, 0, 100);
-        else if (!strcmp(a, "--reserve-cpu")) o->reserve_cpu_pct = (int)int_arg(a, NEXT, 0, 100);
         else if (!strcmp(a, "--wait-for-vram")) {
             // optional argument: a bare --wait-for-vram waits the default, 0
             // refuses at once (the non-serve default, spelled out), and
@@ -3005,8 +3024,6 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
                 o->mp.vram_wait_secs = (int)int_arg(a, argv[++i], 0, 86400);
         }
-        else if (!strcmp(a, "--vram-priority"))
-            o->mp.vram_priority = (int)int_arg(a, NEXT, -1000, 1000);
         else if (!strcmp(a, "--yield-on-request")) {
             const char *v = opt_operand(argc, argv, &i);
             o->yield_given = true;
@@ -3014,10 +3031,10 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             else if (!strcmp(v, "off")) o->mp.yield_on_request = false;
             else { fprintf(stderr, "error: --yield-on-request expects on or off\n"); *rc = 1; return false; }
         }
-        else if (!strcmp(a, "--parent-pid")) o->parent_pid = (long)int_arg(a, NEXT, 1, LONG_MAX);
+        else if (!strcmp(a, "--parent-pid")) o->parent_pid = (long)int_arg(a, cli_next(a, argc, argv, &i), 1, LONG_MAX);
         // --info KIND: the questions answered without generating
         else if (!strcmp(a, "--info")) {
-            const char *v = NEXT;
+            const char *v = cli_next(a, argc, argv, &i);
             if (strcmp(v, "cached") && !o->cached_other) o->cached_other = "--info";
             if (!strcmp(v, "caps")) o->caps = true;
             else if (!strcmp(v, "tools")) o->tool_info = true;
@@ -3028,22 +3045,8 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
             else if (!strcmp(v, "cached")) o->cached = true;
             else { fprintf(stderr, "error: --info expects caps, tools, adapter, doctor, fit, recommend or cached\n"); *rc = 1; return false; }
         }
-        else if (!strcmp(a, "--caps")) o->caps = true;
-        // --shadow-mode: hand off to the Python client's `shadow install`
-        // (confirmation, hooks, the /shadow skill and prompt, the model to
-        // serve for offloading). The client ships beside the binary in the
-        // release archive and in the source tree; nothing is downloaded.
-        else if (!strcmp(a, "--shadow-mode")) o->shadow_mode = true;
-        else if (!strcmp(a, "--yes")) o->shadow_yes = true;
-        // Per-MODEL evidence: the native tool-call protocol resolved from this
-        // model's chat template (a build property --caps cannot carry). Loads
-        // the model, prints one JSON line, exits.
-        else if (!strcmp(a, "--tool-info")) o->tool_info = true;
-        else if (!strcmp(a, "--adapt-info")) o->adapt_info = true;
-        else if (!strcmp(a, "--fit")) o->fit_path = NEXT;
-        else if (!strcmp(a, "--roster")) o->roster_path = NEXT;
         else if (!strcmp(a, "--memory") || !strcmp(a, "--ram-share")) {
-            const char *v = NEXT;
+            const char *v = cli_next(a, argc, argv, &i);
             char *end = NULL;
             double d = strtod(v, &end);
             bool mem = !strcmp(a, "--memory");
@@ -3076,44 +3079,47 @@ static bool cli_parse(cli_opts *o, int argc, char **argv, int *rc) {
 // decided and never scored. A prompt counts as the one-shot verb only when
 // no other verb consumes it (--score, --bench-json, --session-out and
 // --record read -p; the rest never do).
+// One verb of the line, when its option was given.
+static void verb_note(const char **names, int *n, int cap, bool given, const char *name) {
+    if (given && *n < cap) names[(*n)++] = name;
+}
+
 static int cli_verbs(const cli_opts *o, const char **names, int cap) {
     int n = 0;
-    #define VERB(cond, name) do { if ((cond) && n < cap) names[n++] = (name); } while (0)
-    VERB(o->interactive, "-i");
-    VERB(o->serve, "--serve");
-    VERB(o->pull_spec, "--pull");
-    VERB(o->rewrite_out || o->quant_out || o->merge_out || o->context_out,
+    verb_note(names, &n, cap, o->interactive, "-i");
+    verb_note(names, &n, cap, o->serve, "--serve");
+    verb_note(names, &n, cap, o->pull_spec, "--pull");
+    verb_note(names, &n, cap, o->rewrite_out || o->quant_out || o->merge_out || o->context_out,
          o->rewrite_out ? "--rewrite" : o->quant_out ? "--quantize"
          : o->merge_out ? "--merge-lora" : "--context-surgery");
-    VERB(o->quant_error_out, "--quant-error");
-    VERB(o->train_path, "--train");
-    VERB(o->dpo_path, "--train-dpo");
-    VERB(o->verify_path, "--verify");
-    VERB(o->detect_path, "--detect-watermark");
-    VERB(o->decide_path, "--decide");
-    VERB(o->systemone_path, "--systemone");
-    VERB(o->score, "--score");
-    VERB(o->doctor, "--info doctor");
-    VERB(o->bench_json, "--bench-json");
-    VERB(o->resume_path, "--resume");
-    VERB(o->tool_info, "--info tools");
-    VERB(o->adapt_info, "--info adapter");
-    VERB(o->caps, "--info caps");
-    VERB(o->fit_info || o->fit_path, o->fit_info ? "--info fit" : "--fit");
-    VERB(o->recommend, "--info recommend");
-    VERB(o->cached, "--info cached");
-    VERB(o->shadow_mode, "--shadow-mode");
-    VERB(o->keygen_path, "--keygen");
-    VERB(o->sign_record, "--sign-record");
-    VERB(o->check_record, "--check-record");
-    VERB(o->lineage_path, "--lineage");
-    VERB(o->export_bundle, "--export-bundle");
-    VERB(o->check_bundle, "--check-bundle");
-    VERB(o->export_pack, "--export-pack");
-    VERB(o->check_pack, "--check-pack");
-    VERB(o->sign_model, "--sign-model");
-    VERB(o->watermark_keygen, "--watermark-keygen");
-    #undef VERB
+    verb_note(names, &n, cap, o->quant_error_out, "--quant-error");
+    verb_note(names, &n, cap, o->train_path, "--train");
+    verb_note(names, &n, cap, o->dpo_path, "--train-dpo");
+    verb_note(names, &n, cap, o->verify_path, "--verify");
+    verb_note(names, &n, cap, o->detect_path, "--detect-watermark");
+    verb_note(names, &n, cap, o->decide_path, "--decide");
+    verb_note(names, &n, cap, o->systemone_path, "--systemone");
+    verb_note(names, &n, cap, o->score, "--score");
+    verb_note(names, &n, cap, o->doctor, "--info doctor");
+    verb_note(names, &n, cap, o->bench_json, "--bench-json");
+    verb_note(names, &n, cap, o->resume_path, "--resume");
+    verb_note(names, &n, cap, o->tool_info, "--info tools");
+    verb_note(names, &n, cap, o->adapt_info, "--info adapter");
+    verb_note(names, &n, cap, o->caps, "--info caps");
+    verb_note(names, &n, cap, o->fit_info || o->fit_path, o->fit_info ? "--info fit" : "--fit");
+    verb_note(names, &n, cap, o->recommend, "--info recommend");
+    verb_note(names, &n, cap, o->cached, "--info cached");
+    verb_note(names, &n, cap, o->shadow_mode, "--shadow-mode");
+    verb_note(names, &n, cap, o->keygen_path, "--keygen");
+    verb_note(names, &n, cap, o->sign_record, "--sign-record");
+    verb_note(names, &n, cap, o->check_record, "--check-record");
+    verb_note(names, &n, cap, o->lineage_path, "--lineage");
+    verb_note(names, &n, cap, o->export_bundle, "--export-bundle");
+    verb_note(names, &n, cap, o->check_bundle, "--check-bundle");
+    verb_note(names, &n, cap, o->export_pack, "--export-pack");
+    verb_note(names, &n, cap, o->check_pack, "--check-pack");
+    verb_note(names, &n, cap, o->sign_model, "--sign-model");
+    verb_note(names, &n, cap, o->watermark_keygen, "--watermark-keygen");
     return n;
 }
 
@@ -3249,11 +3255,17 @@ static bool cli_prompt_fits_verb(const cli_opts *o) {
 // else -1.
 typedef struct { const char *from, *to; } sub_alias;
 
+// The rewritten line's pointer array, kept reachable until main frees it: a
+// subcommand that ends in its own help or refusal returns without it, and
+// the array was then unreachable at exit (R6.68.23, a leak check's report).
+static char **cli_argv_owned;
+
 static void argv_push(char ***out, int *n, int *cap, const char *s) {
     if (*n == *cap) {
         *cap = *cap ? *cap * 2 : 32;
         *out = realloc(*out, sizeof **out * (size_t)*cap);
         if (!*out) { fprintf(stderr, "error: out of memory\n"); exit(1); }
+        cli_argv_owned = *out;
     }
     (*out)[(*n)++] = (char *)s;
 }
@@ -3516,7 +3528,7 @@ static bool cli_watermark_setup(const cli_opts *o, wm_key *wmk, bool *wm_on,
             return true;
         }
         size_t dn = 0;
-        char *dbuf = plat_read_file(o->detect_path, MAX_INPUT_FILE, &dn);
+        char *dbuf = text_file_read(o->detect_path, &dn);
         if (!dbuf) {
             fprintf(stderr, "error: --detect-watermark: cannot read %s\n", o->detect_path);
             *rc = 1;
@@ -3798,13 +3810,14 @@ static bool cli_resolve_inputs(cli_opts *o, const char *prog, bool have_detect_t
         return true;
     }
     // The escapes are -p's (a shell argument cannot hold a newline easily);
-    // a file's bytes are the prompt as written. Unescaping after the append
-    // rewrote a file's own backslash sequences, so a scored corpus's
-    // "\times" reached the tokenizer as a tab and "imes".
+    // a file's bytes are the prompt as written, its CRLF line ends read as LF
+    // (text_file_read). Unescaping after the append rewrote a file's own
+    // backslash sequences, so a scored corpus's "\times" reached the
+    // tokenizer as a tab and "imes".
     if (o->prompt) o->prompt = *owned_prompt = unescape(o->prompt);
     if (o->prompt_file) {
         size_t flen = 0;
-        char *fdata = plat_read_file(o->prompt_file, MAX_INPUT_FILE, &flen);
+        char *fdata = text_file_read(o->prompt_file, &flen);
         if (!fdata) { fprintf(stderr, "error: cannot read %s\n", o->prompt_file); *rc = 1; return true; }
         // The prompt is text up to its first NUL wherever it goes next (the
         // tokenizer call, the run record's JSON, --verify), so a file holding
@@ -4506,14 +4519,18 @@ static int run_merge_lora(const cli_opts *o) {
         sb_lit(&rec, "\"}");
         // what the output grid kept of the delta (quants.h
         // merge_survival); absent when no adapted tensor was rewritten
-        if (sv.ret_den > 0)
+        // delta_retained is null when not finite (R6.68.115), and the block
+        // is written whenever the merge measured it, a measure that is not a
+        // number included (merge_survival_measured, R6.68.116)
+        if (merge_survival_measured(&sv)) {
             sb_fmt(&rec, ",\"survival\":{\"adapted_bytes\":%llu,"
-                   "\"bytes_changed\":%llu,\"delta_retained\":%.6f,"
-                   "\"min_retained\":%s}",
+                   "\"bytes_changed\":%llu,\"delta_retained\":",
                    (unsigned long long)sv.bytes,
-                   (unsigned long long)sv.bytes_changed,
-                   sv.ret_num / sv.ret_den,
+                   (unsigned long long)sv.bytes_changed);
+            sb_fix6(&rec, sv.ret_num / sv.ret_den);
+            sb_fmt(&rec, ",\"min_retained\":%s}",
                    o->merge_allow_erased ? "null" : MERGE_MIN_RETAINED_STR);
+        }
         sb_lit(&rec, "}\n");
         if (!write_record(o->merge_out, ".merge.json", "merge", &rec, o->sign_key))
             rc = 1;
@@ -4824,7 +4841,7 @@ static bool cli_head_measured(const char *path) {
     snprintf(key, sizeof key, "%s.nextn_predict_layers", arch);
     bool ok = gguf_get_u32(&g, key, 0) == 1;
     if (!engine_draft_scope_forced())
-        ok = ok && !strcmp(arch, "qwen35") &&
+        ok = ok && arch_find(arch)->id == ARCH_QWEN35 &&
              gguf_get_u32(&g, "qwen35.block_count", 0) == 33 &&
              gguf_get_u32(&g, "qwen35.embedding_length", 0) == 2560 &&
              gguf_get_u32(&g, "qwen35.expert_count", 0) == 0 &&
@@ -4882,6 +4899,18 @@ static bool cli_mtp_default_settle(cli_opts *o, cli_run *rt, const char *load_pa
     return model_load(&rt->m, load_path, &o->mp);
 }
 
+// A refusal after the model loaded: release what the load took, then report.
+// Three refusals in cli_load_model (the model's signature, the adapter's,
+// the tokenizer) used to return with the model's runtime buffers
+// still allocated; the process ends right after, so nothing grew, but every
+// run of such a refusal under a leak sanitizer failed on it (R6.68.23, the
+// whole suite's run under AddressSanitizer: 3.3 MB a process).
+static bool cli_load_refused(cli_run *rt, int *rc) {
+    cli_cleanup(NULL, NULL, &rt->tok, &rt->m);
+    *rc = 1;
+    return true;
+}
+
 // True when the process exits with *rc (a refusal, or one of the two modes).
 static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool registry,
                            int tmpl_override, const oms_policy *signing, int *rc) {
@@ -4897,14 +4926,11 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
     o->mp.lora_scale = o->lora_scale;
     if (!registry) {
         double t1 = now_s();
-        // (a --verify replay set mtp_default from its record, not from here)
-        bool mtp_wanted = cli_mtp_default_wanted(o, load_path, registry);
-        if (mtp_wanted) { o->mtp_default = true; o->mp.mtp = true; }
-        if (!model_load(&rt->m, load_path, &o->mp)) { *rc = 1; return true; }
-        if (mtp_wanted && !cli_mtp_default_settle(o, rt, load_path)) {
-            *rc = 1;
-            return true;
-        }
+        // The signatures first (R6.68.79): they decide whether a file is read
+        // as a model at all, so the loader sees no byte of one they refuse.
+        // The load came first, and a file with no signature, or with other
+        // bytes than the signed ones, went through the parser and the binders
+        // on its way to the refusal.
         oms_result osr;
         if (!oms_check_model(load_path, signing, &osr)) { *rc = 1; return true; }
         if (osr.status[0])
@@ -4922,7 +4948,16 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
             if (aosr.status[0])
                 oms_result_json(&aosr, rt->adapter_sig_json, sizeof rt->adapter_sig_json);
         }
-        if (!tokenizer_init(&rt->tok, &rt->m.gf)) { *rc = 1; return true; }
+        // (a --verify replay set mtp_default from its record, not from here)
+        bool mtp_wanted = cli_mtp_default_wanted(o, load_path, registry);
+        if (mtp_wanted) { o->mtp_default = true; o->mp.mtp = true; }
+        if (!model_load(&rt->m, load_path, &o->mp)) { *rc = 1; return true; }
+        // (a failed settle is a failed reload: model_load released it)
+        if (mtp_wanted && !cli_mtp_default_settle(o, rt, load_path)) {
+            *rc = 1;
+            return true;
+        }
+        if (!tokenizer_init(&rt->tok, &rt->m.gf)) return cli_load_refused(rt, rc);
         // serve mode: the registry model's own pool is one thread by design
         // (slots create their pools), so the honest number here is the count
         // the slots divide, not the placeholder pool (the lab read "1 threads"
@@ -4989,12 +5024,7 @@ static bool cli_load_model(cli_opts *o, cli_run *rt, const char *load_path, bool
         // never affects the run. Utility modes (--quantize/--caps/--bench)
         // stay unregistered.
         if (!o->bench_json && !o->quant_out) {
-            const char *bn = strrchr(load_path, '/');
-#ifdef _WIN32
-            const char *bn2 = strrchr(load_path, '\\');
-            if (bn2 && (!bn || bn2 > bn)) bn = bn2;
-#endif
-            bn = bn ? bn + 1 : load_path;
+            const char *bn = plat_path_base(load_path);
             const char *const names[] = { bn };
             const char *const paths[] = { load_path };
             instances_register(o->serve ? "serve" : "cli", o->serve ? o->port : 0,
@@ -5141,10 +5171,10 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
     engine_note_draft_route(&rt->e);
     if (o->schema_file) {
         size_t ssz = 0;
-        char *sbuf = plat_read_file(o->schema_file, MAX_INPUT_FILE, &ssz);
-        if (!sbuf) { fprintf(stderr, "error: cannot read %s\n", o->schema_file); return false; }
-        struct jv *sj = json_parse(sbuf, ssz);
-        free(sbuf);
+        char *schema_text = plat_read_file(o->schema_file, MAX_INPUT_FILE, &ssz);
+        if (!schema_text) { fprintf(stderr, "error: cannot read %s\n", o->schema_file); return false; }
+        struct jv *sj = json_parse(schema_text, ssz);
+        free(schema_text);
         if (!sj) { fprintf(stderr, "error: %s is not valid JSON\n", o->schema_file); return false; }
         char serr[128];
         rt->e.schema = schema_compile(sj, serr, sizeof(serr));
@@ -5296,6 +5326,20 @@ static bool train_dpo_steps(cli_opts *o, cli_run *rt, dpo_pair *pairs,
             fprintf(stderr, "error: DPO step failed\n");
             return false;
         }
+        // the --train step's rule (R6.68.115): a step whose numbers or
+        // gradient are not finite stops the run before the optimizer
+        // touches the adapter. A finite loss alone does not show it: an
+        // infinite margin scores 0, its log-probabilities infinite.
+        double gmax = 0, gmean = 0;
+        if (!fp_finite_f64(d.loss) || !fp_finite_f64(d.margin) || !fp_finite_f64(d.coeff) ||
+            !fp_finite_f64(d.logp_w) || !fp_finite_f64(d.logp_l) ||
+            !fp_finite_f64(d.logp_ref_w) || !fp_finite_f64(d.logp_ref_l) ||
+            !model_lora_grad_norms(&rt->m, &gmax, &gmean)) {
+            fprintf(stderr, "error: DPO step %d: the loss, a log-probability or a "
+                    "gradient is not finite; the adapter stays as step %d left it\n",
+                    step, step - 1);
+            return false;
+        }
         if (!train_adam_step(o, rt, step, o->train_lr)) return false;
         if (step == 1) *first_loss = d.loss;
         *last_loss = d.loss;
@@ -5423,8 +5467,11 @@ static bool train_lp_write(FILE *f, int step, int example, const train_ex *ex,
                            const float *lp) {
     fprintf(f, "{\"step\":%d,\"example\":%d,\"first\":%d,\"logprobs\":[",
             step, example, ex->first);
+    // written before the step's finiteness check stops a non-finite run, so a
+    // number here can be NaN: null, and the line still parses
+    char nb[32];
     for (int k = 0; k < ex->n - ex->first; k++)
-        fprintf(f, "%s%.9g", k ? "," : "", (double)lp[k]);
+        fprintf(f, "%s%s", k ? "," : "", json_numg(nb, 9, lp[k]));
     return fprintf(f, "]}\n") > 0;
 }
 
@@ -5681,38 +5728,73 @@ static bool train_evals_open(cli_opts *o, cli_run *rt, int wctx, int eot_id,
     return true;
 }
 
+// `s` on f as a JSON string. A label or a path is the caller's text: between
+// quotes as it stood, a quote or a backslash in it made the line one no reader
+// parses (the stop file's path, #542; the eval labels, R6.68.80).
+static void fput_json_str(FILE *f, const char *s) {
+    sbuf b = {0};
+    sb_str(&b, s);
+    if (b.s && !b.failed) fwrite(b.s, 1, b.n, f);
+    else fputs("\"\"", f);
+    free(b.s);
+}
+
 // Every set once, no update: one JSON line {"step","eval":{LABEL:{...}}} with
 // the mean loss per (weighted) position, as the training loss is, and the two
-// top-1 agreements (model_lora_eval_row).
+// top-1 agreements (model_lora_eval_row). Every set is evaluated before the
+// line is written: a set whose loss is not finite stops the run (exit 1), as
+// a training step's loss does, and no half line or NaN reaches the log or
+// the kill rule's baseline (R6.68.115).
 static bool train_evals_run(cli_opts *o, cli_run *rt, train_eval_set *ev, int step,
                             int32_t *tids, float *tlp) {
-    printf("{\"step\":%d,\"eval\":{", step);
+    lora_eval_acc *accs = calloc((size_t)o->n_eval, sizeof *accs);
+    if (!accs) {
+        fprintf(stderr, "error: out of memory for --train-eval\n");
+        return false;
+    }
     for (int i = 0; i < o->n_eval; i++) {
         train_eval_set *e = &ev[i];
-        lora_eval_acc acc = {0};
+        lora_eval_acc *acc = &accs[i];
         for (int r = 0; r < e->n_ex; r++) {
             lora_teacher tch = { e->has_tt ? e->tt.k : 0, tids, tlp };
             if (e->has_tt && !train_teacher_rows(&e->tt, r, &e->exs[r], tids, tlp)) {
                 fprintf(stderr, "error: --train-eval %s: cannot read row %d's teacher\n",
                         e->label, r + 1);
+                free(accs);
                 return false;
             }
             if (!model_lora_eval_row(&rt->m, e->exs[r].t, e->exs[r].n, e->exs[r].w,
-                                     e->has_tt ? &tch : NULL, &acc)) {
+                                     e->has_tt ? &tch : NULL, acc)) {
                 fprintf(stderr, "error: --train-eval %s: row %d failed\n", e->label, r + 1);
+                free(accs);
                 return false;
             }
         }
-        e->last = acc.weight > 0 ? acc.loss / acc.weight : 0.0;
+        double loss = acc->weight > 0 ? acc->loss / acc->weight : 0.0;
+        if (!fp_finite_f64(loss)) {
+            fprintf(stderr, "error: --train-eval %s: the loss at step %d is not finite; "
+                    "the run stops here, as it does on a training step's\n", e->label, step);
+            free(accs);
+            return false;
+        }
+        e->last = loss;
         if (step == 0) { e->base = e->last; e->has_base = true; }
-        double pos = acc.positions > 0 ? (double)acc.positions : 1.0;
-        printf("%s\"%s\":{\"loss\":%.6f,\"top1_topk\":%.6f,\"top1_vocab\":%.6f,"
-               "\"rows\":%d,\"positions\":%ld}", i ? "," : "", e->label, e->last,
-               (double)acc.top1_topk / pos, (double)acc.top1_vocab / pos, e->n_ex,
-               acc.positions);
+    }
+    printf("{\"step\":%d,\"eval\":{", step);
+    for (int i = 0; i < o->n_eval; i++) {
+        const train_eval_set *e = &ev[i];
+        const lora_eval_acc *acc = &accs[i];
+        double pos = acc->positions > 0 ? (double)acc->positions : 1.0;
+        if (i) printf(",");
+        fput_json_str(stdout, e->label);
+        printf(":{\"loss\":%.6f,\"top1_topk\":%.6f,\"top1_vocab\":%.6f,"
+               "\"rows\":%d,\"positions\":%ld}", e->last,
+               (double)acc->top1_topk / pos, (double)acc->top1_vocab / pos, e->n_ex,
+               acc->positions);
     }
     printf("}}\n");
     fflush(stdout);
+    free(accs);
     return true;
 }
 
@@ -5824,8 +5906,10 @@ static bool train_kill_record(cli_opts *o, const char *suffix, int step,
         return false;
     FILE *f = plat_fopen(path, "w");
     if (!f) return false;
-    fprintf(f, "{\"step\":%d,\"metric\":\"%s\",\"baseline\":%.6f,\"now\":%.6f,"
-            "\"relative_reduction\":%.6f,\"required\":%.6f}\n", step, o->kill_metric,
+    fprintf(f, "{\"step\":%d,\"metric\":", step);
+    fput_json_str(f, o->kill_metric);
+    fprintf(f, ",\"baseline\":%.6f,\"now\":%.6f,"
+            "\"relative_reduction\":%.6f,\"required\":%.6f}\n",
             base, now, rel, (double)o->kill_min_rel);
     return fclose(f) == 0;
 }
@@ -5997,10 +6081,11 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
             }
             if (!pass) {
                 if (!train_checkpoint(o, rt, st, ev, true)) { rc = 1; break; }
-                printf("{\"killed\":{\"step\":%d,\"metric\":\"%s\",\"baseline\":%.6f,"
+                printf("{\"killed\":{\"step\":%d,\"metric\":", step);
+                fput_json_str(stdout, o->kill_metric);
+                printf(",\"baseline\":%.6f,"
                        "\"now\":%.6f,\"relative_reduction\":%.6f,\"required\":%.6f}}\n",
-                       step, o->kill_metric, k->base, k->last, rel,
-                       (double)o->kill_min_rel);
+                       k->base, k->last, rel, (double)o->kill_min_rel);
                 fflush(stdout);
                 rc = 3;
                 break;
@@ -6008,14 +6093,9 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
         }
         if (o->stop_file && plat_file_readable(o->stop_file)) {
             if (!train_checkpoint(o, rt, st, ev, true)) { rc = 1; break; }
-            // the path is escaped: a Windows path's backslashes, or a quote,
-            // copied raw made the line invalid JSON (#542)
-            size_t n = strlen(o->stop_file), cap = n * 6 + 8;
-            char *esc = malloc(cap);
-            if (!esc) { rc = 1; break; }
-            json_escape(o->stop_file, n, esc, cap);
-            printf("{\"yield\":\"%s\",\"step\":%d}\n", esc, step);
-            free(esc);
+            printf("{\"yield\":");
+            fput_json_str(stdout, o->stop_file);
+            printf(",\"step\":%d}\n", step);
             fflush(stdout);
             rc = 75;
             break;
@@ -6379,7 +6459,7 @@ static int replay_stop_cb(void *ud, const char *bytes, int n) {
 
 // The record's stop constraint, read for the replay: false with the reason in
 // why when it is malformed or the record cannot say where the turn began.
-static bool replay_stop_read(jv *rec, const model_t *m, replay_stop *r,
+static bool replay_stop_read(jv *rec, const model_t *m, bool constrained, replay_stop *r,
                              int ids[8], int *n_ids, char *why, size_t cap) {
     jv *cons = jv_get(rec, "constraints");
     jv *stop = NULL;
@@ -6421,7 +6501,7 @@ static bool replay_stop_read(jv *rec, const model_t *m, replay_stop *r,
         return false;
     }
     bool open = ro && ro->b;
-    if (!ro && chat && m->think_open) {
+    if (!ro && chat && (m->think_open || m->split_open)) {
         snprintf(why, cap, "the output was cut by a stop sequence on a model with "
                  "thinking tags, and the record does not say whether the turn "
                  "began in reasoning (serve.reasoning_open, written since R1.1.3.2), "
@@ -6429,6 +6509,9 @@ static bool replay_stop_read(jv *rec, const model_t *m, replay_stop *r,
         return false;
     }
     if (open) think_init_reasoning(&r->ts, m->think_open, m->think_close);
+    else if (think_split_is_control(m->think_open, m->split_open, chat, constrained))
+        // the server's chat turn split a control-token pair (R2.15)
+        think_init(&r->ts, m->split_open, m->split_close);
     else      think_init(&r->ts, chat ? m->think_open : NULL, m->think_close);
     think_trim_newlines(&r->ts, m->think_trim_nl);
     return true;
@@ -6631,8 +6714,11 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
             jv_free(vr->rec);
             return 3;
         }
-        if (tmpl >= 0)
+        if (tmpl >= 0) {
             template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
+            template_bind_split_tags(tmpl, &rt->tok, rt->m.think_open,
+                                     &rt->m.split_open, &rt->m.split_close);
+        }
     }
     jv *vserve = jv_get(vr->rec, "serve");
     jv *cons = jv_get(vr->rec, "constraints");
@@ -6676,8 +6762,8 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     int stop_ids[8], n_stop_ids = 0;
     {
         char why[512];
-        if (!replay_stop_read(vr->rec, &rt->m, &rs, stop_ids, &n_stop_ids,
-                              why, sizeof why)) {
+        if (!replay_stop_read(vr->rec, &rt->m, rt->e.schema || rt->e.json_mode, &rs,
+                              stop_ids, &n_stop_ids, why, sizeof why)) {
             fprintf(stderr, "UNVERIFIABLE: %s\n", why);
             think_free(&rs.ts);
             jv_free(vr->rec);
@@ -6703,6 +6789,10 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     bool vchat = strcmp(jv_str(jv_get(jv_get(vr->rec, "config"), "template"), "raw"), "raw") != 0;
     if (vserve && vchat && rt->m.think_open && !rt->e.constraint_includes_prelude)
         rt->e.emit_think_prelude = true;
+    // the server's chat turn spelled a control-token think pair (R2.15): the
+    // replay decodes the same bytes, or every such turn would read MISMATCH
+    rt->e.spell_think = vserve && think_split_is_control(rt->m.think_open, rt->m.split_open,
+                                                         vchat, rt->e.schema || rt->e.json_mode);
     if (jv_bool(jv_get(vserve, "reasoning_open"), false))
         engine_think_started(&rt->e);
     bool stop_on = rs.n_strs > 0 || n_stop_ids > 0;
@@ -6850,9 +6940,11 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
 static int run_detect_text(cli_opts *o, cli_run *rt, const wm_key *wmk, char *detect_text) {
     // R1.8.2 over a text: tokenized without BOS by the model's own
     // tokenizer, scored from the first position with a full context
-    size_t cap = strlen(detect_text) + 16;
-    int32_t *dt = cap <= (size_t)INT_MAX ? malloc(sizeof *dt * cap) : NULL;
-    int nt = dt ? tok_encode(&rt->tok, detect_text, dt, (int)cap, false, false) : -1;
+    // (the buffer is sized to the encoding: one of the text's byte count
+    // plus 16 cut a text of short words at its end and scored the head as
+    // the whole, R6.68.77)
+    int32_t *dt = NULL;
+    int nt = tok_encode_fit(&rt->tok, detect_text, false, TOK_TEXT, 0, &dt);
     int rc = 3;
     if (nt < 0) fprintf(stderr, "error: --detect-watermark: out of memory\n");
     else rc = wm_report(wmk, dt, nt, WM_CONTEXT, "text", NULL);
@@ -6875,7 +6967,10 @@ static int run_jsonl(cli_opts *o, cli_run *rt, const char *path, jsonl_handler h
     size_t cap = 1 << 16, len = 0; char *line = malloc(cap);
     if (!line) { if (df != stdin) fclose(df); return 1; }
     int rc = 0, lineno = 0, c;
-    const char *label = strrchr(o->model_path, '/') ? strrchr(o->model_path, '/') + 1 : o->model_path;
+    // the file's name, as the server names it (plat_path_base: a Windows
+    // path ends its directories with a backslash, and the name taken after
+    // the last '/' was then the whole path, R6.68.81)
+    const char *label = plat_path_base(o->model_path);
     for (;;) {
         c = fgetc(df);
         if (c != EOF && c != '\n') {
@@ -7043,6 +7138,11 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     printf("],\"logprobs\":[");
     double total = 0;
     int pos = 0, emitted = 0, fail = 0, top1 = 0;
+    // the first scored transition whose log-probability is not finite, or -1:
+    // a suppressed token sits at -1e30, finite, so only a non-finite forward
+    // gets here, and the document then reads null where the number was
+    int nonfinite = -1;
+    char nb[32];
     int32_t *argmaxes = malloc(sizeof(int32_t) * (size_t)n_prompt);
     if (!argmaxes) return 1;
     // --score-top: each position's distribution head, for a comparison at the
@@ -7079,7 +7179,8 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
                                    top_id + (size_t)emitted * ntop,
                                    top_lp + (size_t)emitted * ntop);
                 argmaxes[emitted] = arg;
-                printf("%s%.9g", emitted++ ? "," : "", (double)lp);
+                if (nonfinite < 0 && !fp_finite_f64(lp)) nonfinite = pos + b + 1;
+                printf("%s%s", emitted++ ? "," : "", json_numg(nb, 9, lp));
                 total += lp;
                 if (arg == rt->toks[pos + b + 1]) top1++;
             }
@@ -7109,7 +7210,8 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
                                top_id + (size_t)emitted * ntop,
                                top_lp + (size_t)emitted * ntop);
             argmaxes[emitted] = arg;
-            printf("%s%.9g", emitted++ ? "," : "", (double)lp);
+            if (nonfinite < 0 && !fp_finite_f64(lp)) nonfinite = pos + 1;
+            printf("%s%s", emitted++ ? "," : "", json_numg(nb, 9, lp));
             total += lp;
             if (arg == rt->toks[pos + 1]) top1++;
             pos += 1;
@@ -7145,8 +7247,8 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
         for (int i = 0; i < emitted; i++) {
             printf("%s[", i ? "," : "");
             for (int j = 0; j < ntop; j++)
-                printf("%s[%d,%.9g]", j ? "," : "", top_id[(size_t)i * ntop + j],
-                       (double)top_lp[(size_t)i * ntop + j]);
+                printf("%s[%d,%s]", j ? "," : "", top_id[(size_t)i * ntop + j],
+                       json_numg(nb, 9, top_lp[(size_t)i * ntop + j]));
             printf("]");
         }
         free(top_id); free(top_lp);
@@ -7156,9 +7258,7 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     // detail line. A comparison of two routes of one file reads it, because two
     // solo scores never reach a prefill GEMM and say nothing about one; a byte
     // comparison of two scores leaves it out (scripts/score_record.py)
-    const char *mbase = o->model_path ? o->model_path : "";
-    for (const char *c = mbase; *c; c++)
-        if (*c == '/' || *c == '\\') mbase = c + 1;
+    const char *mbase = plat_path_base(o->model_path ? o->model_path : "");
     char mesc[600], mjson[700];
     json_escape(mbase, strlen(mbase), mesc, sizeof mesc);
     plat_stat_t mst;
@@ -7171,16 +7271,39 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     // gold-logits.py's own special-prefix rule)
     int n_special = !o->no_bos && rt->tok.add_bos && rt->tok.bos_id >= 0 &&
                     n_prompt > 0 && rt->toks[0] == rt->tok.bos_id;
+    // nll and its mean are null after a non-finite log-probability, and the
+    // perplexity also when it overflows alone (a mean past 709 nats)
+    char nt[32], nm[32], np[32];
     printf("],\"n_vocab\":%d,\"top1\":%d,\"top1_rate\":%.9g,"
-           "\"nll_total\":%.9g,\"nll_mean\":%.9g,\"ppl\":%.9g,\"n_special\":%d,\"score_route\":%s}\n",
+           "\"nll_total\":%s,\"nll_mean\":%s,\"ppl\":%s,\"n_special\":%d,\"score_route\":%s}\n",
            rt->m.n_vocab, top1, (double)top1 / (n_prompt - 1),
-           nll, mean, exp(mean), n_special, sroute);
+           json_numg(nt, 9, nll), json_numg(nm, 9, mean), json_numg(np, 9, exp(mean)),
+           n_special, sroute);
     // the paths and kernels the forwards took, on stderr: the kernel counters
     // show a route's kernels ran
     char route[4096];
     model_route_json(&rt->m, route, sizeof route);
     fprintf(stderr, "score: route %s\n", route);
+    if (nonfinite >= 0) {
+        fprintf(stderr, "error: --score: the log-probability of token %d is not "
+                "finite, so the forward is not; the document reads null there\n",
+                nonfinite);
+        return 1;
+    }
     return 0;
+}
+
+// The findings array of a doctor report: one JSON object per finding, and the
+// worst severity seen (0 ok, 1 degraded, 2 broken; an info finding moves
+// nothing).
+typedef struct { sbuf *out; int n, worst; } doctor_findings;
+
+static void doctor_finding(doctor_findings *f, int sev, const char *code,
+                           const char *detail, const char *next) {
+    sb_fmt(f->out, "%s{\"severity\":\"%s\",\"code\":\"%s\",\"detail\":\"%s\","
+                   "\"next_step\":\"%s\"}", f->n++ ? "," : "",
+           sev == 2 ? "broken" : sev == 1 ? "degraded" : "info", code, detail, next);
+    if (sev > f->worst) f->worst = sev;
 }
 
 static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
@@ -7200,6 +7323,8 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     bool native = false;
     const char *fam = tool_family_for(dt, &native);
     template_bind_think_tags(dt, &rt->m.think_open, &rt->m.think_close);
+    template_bind_split_tags(dt, &rt->tok, rt->m.think_open, &rt->m.split_open,
+                             &rt->m.split_close);
     static const char question[] = "What is 2+2? Answer with just the number.";
     chat_msg dmsg[1] = { { .role = "user", .content = question } };
     char *rendered = render_prompt_alloc(dt, dmsg, 1, true, THINK_OFF, NULL,
@@ -7253,12 +7378,7 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     sbuf r = {0};
     sb_lit(&r, "{\"schema\":\"xyntetik.runner.doctor.v1\",\"runner\":{\"version\":\"" RUNNER_VERSION "\"},");
     // identity: what the file says it is, never where it lives
-    const char *bn = strrchr(o->model_path, '/');
-#ifdef _WIN32
-    const char *bn2 = strrchr(o->model_path, '\\');
-    if (bn2 && (!bn || bn2 > bn)) bn = bn2;
-#endif
-    bn = bn ? bn + 1 : o->model_path;
+    const char *bn = plat_path_base(o->model_path);
     sb_lit(&r, "\"model\":{\"file\":\"");
     sb_esc(&r, bn, strlen(bn));
     sb_fmt(&r, "\",\"bytes\":%llu,\"architecture\":\"", (unsigned long long)rt->m.file_size);
@@ -7312,14 +7432,9 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
         sb_lit(&r, "\"");
     }
     sb_lit(&r, "},\"findings\":[");
-    int nf = 0, worst = 0;   // 0 ok, 1 degraded, 2 broken; an info finding (0) moves nothing
-#define FINDING(sev, code, detail, next) do { \
-        sb_fmt(&r, "%s{\"severity\":\"%s\",\"code\":\"%s\",\"detail\":\"%s\"," \
-                   "\"next_step\":\"%s\"}", nf++ ? "," : "", \
-               (sev) == 2 ? "broken" : (sev) == 1 ? "degraded" : "info", code, detail, next); \
-        if ((sev) > worst) worst = (sev); } while (0)
+    doctor_findings fd = { &r, 0, 0 };
     if (dt == TMPL_LLAMA2_FALLBACK)
-        FINDING(2, "template_not_recognised",
+        doctor_finding(&fd, 2, "template_not_recognised",
                 "the model's chat template is not one this build renders; llama-2 markup is used, which the model was not trained on",
                 "pass --chat-template NAME for a supported family, or report the model so its template can be added");
     if (rt->tok.pre_unknown[0]) {
@@ -7329,49 +7444,49 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
         snprintf(det, sizeof det, "tokenizer pre '%s' unknown, GPT-2 split assumed: "
                  "text may tokenize differently from the publisher's tokenizer",
                  rt->tok.pre_unknown);
-        FINDING(1, "tokenizer_pre_unknown", det,
+        doctor_finding(&fd, 1, "tokenizer_pre_unknown", det,
                 "compare a few strings against the model's own tokenizer, and report the model so its split rule can be added");
     }
     if (asked_gpu && gpu_there && !rt->m.gpu)
-        FINDING(1, "gpu_not_used",
+        doctor_finding(&fd, 1, "gpu_not_used",
                 "a GPU is present and was not used for this model; the load output above the report names the reason",
                 "read the load lines for the refusal; a quantization or architecture without a device kernel runs on the CPU");
     else if (rt->m.gpu && rt->m.gpu_layers < rt->m.n_layer)
-        FINDING(1, "partial_offload",
+        doctor_finding(&fd, 1, "partial_offload",
                 "only some layers are on the GPU, so every token crosses between device and host",
                 "use a smaller quantization or a shorter -c so the whole model fits, or accept the split");
     if (!asked_gpu && gpu_there)
-        FINDING(1, "gpu_disabled_by_flag",
+        doctor_finding(&fd, 1, "gpu_disabled_by_flag",
                 "the run asked for --gpu off although a GPU is present",
                 "drop --gpu off to let the model use the device");
     if (!probe_ran)
-        FINDING(2, "probe_did_not_run",
+        doctor_finding(&fd, 2, "probe_did_not_run",
                 "the probe prompt could not be rendered, tokenized or fed in this context",
                 "raise -c, and if it still fails report the model with this file");
     else {
         if (probe_leak)
-            FINDING(2, "template_markup_in_reply",
+            doctor_finding(&fd, 2, "template_markup_in_reply",
                     "the reply contains chat-template markers, so turn framing or stop tokens do not match the model",
                     "check the template name above against the model card; try --chat-template");
         if (!probe_stop)
-            FINDING(1, "did_not_stop",
+            doctor_finding(&fd, 1, "did_not_stop",
                     "the model did not end its turn within the probe's 48 tokens",
                     "if replies run on in real use, the stop token or the template is wrong for this model");
         if (probe_empty)
-            FINDING(2, "empty_reply",
+            doctor_finding(&fd, 2, "empty_reply",
                     "the model produced no visible text",
                     "check the template and that the file is an instruct or chat model");
         else if (!probe_has4)
-            FINDING(1, "wrong_answer",
+            doctor_finding(&fd, 1, "wrong_answer",
                     "the reply to a one-step arithmetic question does not contain the answer",
                     "a very small or heavily quantized model can miss it; otherwise suspect the template or the file");
         if (d_gen > 4 && d_gen / (d_gtime > 0 ? d_gtime : 1e-9) < 1.0)
-            FINDING(1, "very_slow_decode",
+            doctor_finding(&fd, 1, "very_slow_decode",
                     "generation is under one token per second",
                     "check available RAM against the model size with --fit; a model larger than RAM pages from disk");
     }
     if (cap.ram_available_bytes && rt->m.file_size > cap.ram_available_bytes && !rt->m.gpu)
-        FINDING(1, "file_larger_than_available_ram",
+        doctor_finding(&fd, 1, "file_larger_than_available_ram",
                 "the model file is larger than the RAM available right now",
                 "close other programs, pick a smaller quantization, or run --fit for the exact numbers");
     if (cap.cpu_cores != cap.host_cpu_cores || cap.ram_bytes != cap.host_ram_bytes) {
@@ -7390,12 +7505,11 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
                      (double)cap.host_ram_bytes / (double)(1ull << 30));
             strncat(lim, part, sizeof lim - strlen(lim) - 1);
         }
-        FINDING(0, "container_limits", lim,
+        doctor_finding(&fd, 0, "container_limits", lim,
                 "threads, the batch and the RAM checks are sized from these limits; raise the container's CPU or memory limit to give Runner more, or set -t");
     }
-#undef FINDING
     sb_fmt(&r, "],\"verdict\":\"%s\",\"shareable\":\"%s\"}\n",
-           worst == 2 ? "broken" : worst == 1 ? "degraded" : "ok",
+           fd.worst == 2 ? "broken" : fd.worst == 1 ? "degraded" : "ok",
            o->doctor_text ? "contains the probe question and the model's reply; read before sharing"
                        : "no prompt or reply text; file name and machine sizes only");
     if (r.failed) {
@@ -7406,7 +7520,7 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     fwrite(r.s, 1, r.n, stdout);
     free(r.s);
     free(dout.buf);
-    return worst == 2 ? 2 : 0;
+    return fd.worst == 2 ? 2 : 0;
 }
 
 static int run_bench(cli_opts *o, cli_run *rt) {
@@ -7651,13 +7765,7 @@ static int run_oneshot(cli_opts *o, cli_run *rt, const char *load_path, bool wm_
     model_debug_time_report();
     int t_rc = 0;
     if (o->transcript_path) {
-        char prev_hash[65] = "";
-        if (o->transcript_prev && !receipt_chain_hash(o->transcript_prev, prev_hash)) {
-            fprintf(stderr, "error: --transcript-prev: cannot read the chain "
-                            "hash of %s\n", o->transcript_prev);
-            t_rc = 1;
-            o->transcript_path = NULL;   // do not write an unlinked receipt
-        }
+        const char *prev_hash = rt->prev_hash;   // read before the load (cli_main)
         char gname[128] = "";
         if (rt->m.gpu) gpu_available(gname, sizeof gname);
         // R1.1.2: what shaped the output beyond the sampler, so --verify
@@ -7765,6 +7873,8 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
     if (tmpl < 0)
         tmpl = template_detect(gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL), &rt->tok);
     template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
+    template_bind_split_tags(tmpl, &rt->tok, rt->m.think_open, &rt->m.split_open,
+                             &rt->m.split_close);
     if (!o->system_prompt)
         o->system_prompt = template_default_system(
             tmpl, gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL),
@@ -7831,8 +7941,15 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
         // and print the model's reasoning as the answer.
         if (rs.reasoning_open)
             think_init_reasoning(&co.ts, rt->m.think_open, rt->m.think_close);
+        else if (think_split_is_control(rt->m.think_open, rt->m.split_open, true,
+                                        rt->e.schema || rt->e.json_mode))
+            think_init(&co.ts, rt->m.split_open, rt->m.split_close);
         else
             think_init(&co.ts, rt->m.think_open, rt->m.think_close);
+        // as the server's chat turn does: control-token think tags are
+        // spelled for the split, by the same rule (R2.15)
+        rt->e.spell_think = think_split_is_control(rt->m.think_open, rt->m.split_open, true,
+                                                   rt->e.schema || rt->e.json_mode);
         think_trim_newlines(&co.ts, rt->m.think_trim_nl);
         n_gen = engine_generate(&rt->e, logits, o->n_predict, chat_cb, &co, &gtime);
         think_finish(&co.ts, chat_emit, &co);
@@ -7848,17 +7965,23 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
 // The prompt buffer cli_resolve_inputs builds (-p unescaped, -f appended)
 // is the caller's: main frees it after every exit of the run, the refusals
 // between resolving the inputs and loading the model included.
-static int cli_main(int argc, char **argv, char **owned_prompt) {
+// `simg` is the caller's: a --resume reads the session image into it, and
+// the caller frees it after this returns, on every path. About twenty-five
+// returns follow the read (a schema that does not match, the model's flags,
+// the load), and only the resume itself freed the image (R6.68.41).
+static int cli_main(int argc, char **argv, char **owned_prompt, session_image *simg) {
     // the model, tokenizer and engine the modes run on, and what the load
     // decided about them; cli_cleanup frees them on every exit after the load
     cli_run rt_state;
     memset(&rt_state, 0, sizeof rt_state);
     rt_state.env_state = ENV_UNCLASSIFIED;
     cli_run *rt = &rt_state;
-    session_image simg;
-    memset(&simg, 0, sizeof simg);
     cli_verify vr = { .rec = NULL, .rsig = RSIG_NONE };
-    cli_opts opts;
+    // static: the options own strings that live for the process (a fetched
+    // model path, an --adapter spec), and cli_main runs once. On the stack
+    // they were unreachable by the time the process ended, so a leak check
+    // reported every one of them (R6.68.23).
+    static cli_opts opts;
     cli_opts_init(&opts);
     cli_opts *o = &opts;
     int rc;   // the exit status a step that ends the process hands back
@@ -7919,8 +8042,23 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     if (cli_resolve_inputs(o, argv[0], detect_text != NULL, owned_prompt, &rc))
         return rc;
     if (!cli_prompt_fits_verb(o)) return 1;
-    if (cli_prepare_session(o, &simg, &rc)) return rc;
+    if (cli_prepare_session(o, simg, &rc)) return rc;
     if (cli_prepare_verify(o, &wmk, wm_on, &vr, &rc)) return rc;
+    // The record a --transcript run links to is read here, before the load
+    // and the generation the new record would follow (R6.68.82). It was read
+    // after them, and a previous record that could not be read then ended the
+    // run in a crash: the writer was still called, with no path to write.
+    if (o->transcript_prev && !o->verify_path && !o->transcript_path) {
+        fprintf(stderr, "error: --record-prev links the record this run writes, signs or "
+                "verifies to the one before it; this run does none of the three\n");
+        return 1;
+    }
+    if (o->transcript_path && o->transcript_prev && !o->verify_path &&
+        !receipt_chain_hash(o->transcript_prev, rt->prev_hash)) {
+        fprintf(stderr, "error: --transcript-prev: cannot read the chain hash of %s\n",
+                o->transcript_prev);
+        return 1;
+    }
     cli_resolve_threads(o);
 
     f16_init();
@@ -8025,7 +8163,7 @@ static int cli_main(int argc, char **argv, char **owned_prompt) {
     else if (o->score) rc = run_score(o, rt, load_path);
     else if (o->doctor) rc = run_doctor(o, rt, tmpl_override);
     else if (o->bench_json) rc = run_bench(o, rt);
-    else if (o->resume_path) rc = run_resume(o, rt, &simg, load_path);
+    else if (o->resume_path) rc = run_resume(o, rt, simg, load_path);
     else if (!o->interactive) rc = run_oneshot(o, rt, load_path, wm_on, &wmk, &cli_wm);
     else rc = run_chat(o, rt, tmpl_override);
     // Every failure from here on frees what the success paths free. Written
@@ -8050,10 +8188,14 @@ int main(int argc, char **argv) {
     int sub = cli_expand_subcommand(&argc, &argv);
     if (sub >= 0) return sub;
     char *owned_prompt = NULL;
-    int rc = cli_main(argc, argv, &owned_prompt);
+    session_image simg;
+    memset(&simg, 0, sizeof simg);
+    int rc = cli_main(argc, argv, &owned_prompt, &simg);
     free(owned_prompt);
+    session_image_free(&simg);   // a no-op when the resume already released it
     // Expanded vectors own only the pointer array; their entries borrow
     // startup arguments or static flag spellings.
     if (argv != original_argv) free(argv);
+    cli_argv_owned = NULL;
     return rc;
 }

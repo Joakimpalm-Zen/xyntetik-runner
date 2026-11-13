@@ -44,10 +44,13 @@ Prose under `docs/`, the README/changelog, site pages, Python client files
 and Python-only tests do not select this extra job by themselves. Some helper
 or source changes will conservatively select core gates even if only another
 test part directly uses the file. That avoids incomplete dependency lists;
-it does not expand the PR to the batch and Python suite parts.
+it does not expand the PR to the batch part.
 
-On PR events the selected `windows-suite` matrix contains only `gates-core`.
-On push/schedule/dispatch its previous three-part coverage is preserved.
+On PR events the `windows-suite` matrix contains `python` for every diff that
+is not prose alone, and `gates-core` beside it when a core path is touched.
+The Python part ran on main only until 2026-11-12, when two new tests in one
+day were first seen failing on Windows after their merge.
+On push/schedule/dispatch the three-part coverage is preserved.
 `pr-gate` depends on `windows-suite`, so a selected failure or cancellation
 blocks merge. An intentional skip for a prose-only diff remains acceptable.
 No workflow dispatch is needed for this policy or its probe PRs.

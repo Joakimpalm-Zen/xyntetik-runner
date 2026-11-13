@@ -41,6 +41,10 @@ FAMILIES = [
 ]
 # the environment the fit and the load run under, per case
 RUNTIME = {"deepseek2-naive": ("deepseek2", {"RUNNER_MLA_NAIVE": "1"})}
+# the context the fit and the load ask, per family (4096 when absent). qwen4exp admits at most its
+# indexer top_k (2048) until its sparse attention is implemented (R6.68.55), and an asked context past
+# that cap is refused: 2048 here is the cap, not a choice to raise back to 4096 (R6.68.120).
+CTX = {"qwen4exp": "2048"}
 
 
 def _cuda(runner_bin):
@@ -76,10 +80,11 @@ def _env(extra=None):
 def test_the_fit_charges_the_instance_the_loader_plans(runner_bin, models, name):
     base, extra = RUNTIME.get(name, (name, {}))
     model = models[base]
-    fit = subprocess.run([str(runner_bin), "--fit", str(model), "-c", "4096"], cwd=ROOT, capture_output=True,
+    ctx = CTX.get(base, "4096")
+    fit = subprocess.run([str(runner_bin), "--fit", str(model), "-c", ctx], cwd=ROOT, capture_output=True,
                          text=True, errors="replace", timeout=120, env=_env(extra))
     assert fit.returncode == 0, fit.stderr[-1500:]
-    load = subprocess.run([str(runner_bin), "-m", str(model), "-p", "hi", "-n", "1", "-c", "4096", "--gpu", "99",
+    load = subprocess.run([str(runner_bin), "-m", str(model), "-p", "hi", "-n", "1", "-c", ctx, "--gpu", "99",
                            "--no-tray", "-t", "2"], cwd=ROOT, capture_output=True, text=True, errors="replace",
                           timeout=300, env=_env(extra))
     assert load.returncode == 0, load.stderr[-1500:]

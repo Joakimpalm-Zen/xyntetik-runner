@@ -334,6 +334,24 @@ static inline void template_bind_think_tags(int tmpl, const char **open,
     if (*open) return;
     template_think_tags(tmpl, open, close);
 }
+// The chat split's pair for a family whose think tags are single control
+// tokens (model.h split_open; R2.15), named from this file's vocabulary;
+// leaves the pointers alone for any other family, and where a text pair is
+// already bound. Called beside template_bind_think_tags.
+void template_bind_split_tags(int tmpl, tokenizer *tok, const char *think_open,
+                              const char **open, const char **close);
+// Whether a turn's reasoning split reads the control-token pair, which is
+// also whether the engine spells it (R2.15): a chat turn of a model that has
+// such a pair and no text pair, with no JSON schema and no JSON mode. Under
+// a constraint the two tokens are not spelled (engine.c decode_piece), so a
+// split armed there could only ever match a payload string that happens to
+// contain the tags' spelling, and would cut the caller's own text out of a
+// document the validator accepted. One rule for the server's chat turn, the
+// command line's and the receipt replay.
+static inline bool think_split_is_control(const char *think_open, const char *split_open,
+                                          bool chat, bool constrained) {
+    return chat && !constrained && !think_open && split_open;
+}
 
 // True for EITHER gemma-4 template family. The mainline and the E-series
 // differ at exactly one generation-prompt site (see TMPL_GEMMA4_MAINLINE
@@ -864,6 +882,13 @@ int  tool_envelope_map(const tool_envelope *e, const char *doc, size_t n,
 int  tool_envelope_map_channels(const tool_envelope *e, const char *doc,
                                 size_t n, struct sbuf *reasoning,
                                 struct sbuf *content, struct sbuf *tc);
+// The same, told whether a budget or deadline cut the turn (the caller's
+// turn_cut): a native call left open by a cut is a truncated call, dropped
+// without a fault, exactly as the stream's finish reads it; left open by the
+// model it refuses the turn. tool_envelope_map_channels is this with false.
+int  tool_envelope_map_turn(const tool_envelope *e, const char *doc, size_t n,
+                            bool truncated, struct sbuf *reasoning,
+                            struct sbuf *content, struct sbuf *tc);
 bool muse_user_payload_strip(struct sbuf *payload);
 
 // Streaming counterpart of tool_envelope_map.
@@ -910,6 +935,8 @@ typedef struct {
     bool  implicit_close; // parse-only qwen3_xml: a call was closed by the
                           // next call's opener, not its own closer (R2.10);
                           // the finish detail names the tolerance
+    bool  args_open;      // generic parallel: a final branch's content string
+                          // closed and its args object's '}' is still unread
     bool  skip_ws;        // qwen: drop the framing whitespace after a call
     int   n_calls;        // calls emitted so far (the parse-only bound)
     int   depth;          // nesting inside the value being forwarded

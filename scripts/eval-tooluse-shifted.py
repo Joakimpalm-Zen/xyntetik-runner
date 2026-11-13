@@ -93,7 +93,7 @@ def canonical_labels(rows, version):
 
 
 def labels_hash(rows, version):
-    canonical = "\n".join(json.dumps(label, ensure_ascii=False)
+    canonical = "\n".join(json.dumps(label, ensure_ascii=False, allow_nan=False)
                           for label in canonical_labels(rows, version))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -196,7 +196,7 @@ def stop(proc):
 
 def post_json(url, body, timeout=600):
     """POST a JSON body; returns (parsed_response, refusal_string)."""
-    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+    req = urllib.request.Request(url, data=json.dumps(body, allow_nan=False).encode(),
                                  headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -628,7 +628,7 @@ def next_messages(row):
     the assistant's tool call, and a canned result for it."""
     gold = row["gold"]
     call = {"id": "call_0", "type": "function",
-            "function": {"name": gold["tool"], "arguments": json.dumps(gold["args"])}}
+            "function": {"name": gold["tool"], "arguments": json.dumps(gold["args"], allow_nan=False)}}
     return [
         {"role": "user", "content": row["prompt"]},
         {"role": "assistant", "content": "", "tool_calls": [call]},
@@ -802,7 +802,7 @@ def write_decisions(decide_leg, path):
                           key=lambda a: -a["prob"])
             f.write(json.dumps({"id": r["id"], "alternatives": alts,
                                 "correct_id": options.index(r["gold_tool"]),
-                                "acceptable_ids": [options.index(a) for a in r["acceptable"]]}) + "\n")
+                                "acceptable_ids": [options.index(a) for a in r["acceptable"]]}, allow_nan=False) + "\n")
 
 
 # ------------------------------------------------------------------ rescore
@@ -954,7 +954,7 @@ def rescore_files(paths, target=0.9):
             sys.exit(f"{path}: record labels {record.get('labels_sha256')} are not the frozen {version} labels {h}")
         rescore_record(record, rows, catalog, schemas, target)
         with open(path, "w") as f:
-            json.dump(record, f, indent=2)
+            json.dump(record, f, indent=2, allow_nan=False)
         print(f"rescored {path}", file=sys.stderr)
 
 
@@ -1076,7 +1076,7 @@ def main():
     set_suffix = "" if args.set == "v1" else f"-{args.set}"
     out_file = args.out or f"{out_dir}/{model_base}{adapter_suffix}{set_suffix}-{host_suffix}.json"
     with open(out_file, "w") as f:
-        json.dump(record, f, indent=2)
+        json.dump(record, f, indent=2, allow_nan=False)
     print(f"\nResult written to {out_file}", file=sys.stderr)
     if args.decisions_out and "decide_leg" in record_legs:
         write_decisions(record_legs["decide_leg"], args.decisions_out)

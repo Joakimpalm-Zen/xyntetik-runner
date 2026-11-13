@@ -39,7 +39,9 @@ void unload_resident(void) {
     int res = resident_load();
     if (res < 0) return;
     slot_t *s = &SV.slots[0];
-    fprintf(stderr, "swap: unloading %s\n", SV.reg[res].name);
+    // not on a start that was refused: that is a release, not a swap event,
+    // and it would follow the refusal's own error line
+    if (!SV.start_refused) fprintf(stderr, "swap: unloading %s\n", SV.reg[res].name);
     tokenizer_free(s->tok);
     model_free(s->m);
     // single-model serve borrows main()'s stack containers for the first
@@ -250,6 +252,18 @@ int single_model_expect(const resident_expect *ex) {
     return ex && ex->set ? expect_verdict(ex) : 0;
 }
 
+// engine_init installs the model's stop tokens as repeat-penalty exemptions in
+// the slot's sampler. The base a request restores was captured before that,
+// so a restore dropped them: the completion path carried them across by hand,
+// and the session routes, which restored the base whole, ran without them and
+// left the slot without them for every request after (R6.68.52). The base is
+// taken here, after the engine, so it is what a request starts from.
+bool slot_engine_init(slot_t *s) {
+    if (!engine_init(&s->e, s->m, s->tok, &s->smp)) return false;
+    s->smp_base = s->smp;
+    return true;
+}
+
 int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
     int idx = 0; // default: first entry
     if (want && *want) {
@@ -294,22 +308,23 @@ int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
                 SV.reg[idx].name, SV.reg[idx].path);
         model_t *m = calloc(1, sizeof(model_t));
         tokenizer *tok = calloc(1, sizeof(tokenizer));
-        bool model_ok = m && model_load(m, SV.reg[idx].path, &SV.mp);
+        // the signatures before the load (R6.68.79): a file they refuse is
+        // never read as a model
         oms_result osr;
         memset(&osr, 0, sizeof osr);
-        bool sig_refused = model_ok &&
-            !oms_check_model(SV.reg[idx].path, &SV.signing, &osr);
+        bool sig_refused = !oms_check_model(SV.reg[idx].path, &SV.signing, &osr);
         // the --lora adapter comes back with every reload, under the same
         // trusted key (R1.2.3)
         oms_result aosr;
         memset(&aosr, 0, sizeof aosr);
-        if (model_ok && !sig_refused && SV.mp.lora_path) {
+        if (!sig_refused && SV.mp.lora_path) {
             oms_policy apol = { SV.mp.lora_sig, SV.signing.pubkey_path,
                                 SV.signing.required };
             sig_refused = !oms_check_artifact(SV.mp.lora_path, &apol,
                                               "adapter", &aosr);
         }
-        bool tok_ok = model_ok && !sig_refused && tok && tokenizer_init(tok, &m->gf);
+        bool model_ok = m && !sig_refused && model_load(m, SV.reg[idx].path, &SV.mp);
+        bool tok_ok = model_ok && tok && tokenizer_init(tok, &m->gf);
         bool mtp_refused = model_ok && SV.single && SV.mp.mtp &&
                            !model_mtp_ready(m);
         if (mtp_refused)
@@ -379,6 +394,8 @@ int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
                                   s->tok);
         template_bind_think_tags(s->tmpl, &s->m->think_open,
                                  &s->m->think_close);
+        template_bind_split_tags(s->tmpl, s->tok, s->m->think_open, &s->m->split_open,
+                                 &s->m->split_close);
         // sampling defaults follow the model, so they are re-resolved on every
         // swap; rng state and the penalty exemptions carry across untouched
         char ident[256];
@@ -396,7 +413,6 @@ int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
         const sampler_preset *sp =
             sampler_resolve_file(&s->smp, s->m->arch, ident, preset_tmpl,
                                  &sfile, &SV.ov);
-        s->smp_base = s->smp;
         SV.preset_name = sp->name;
         char sdesc[256];
         sampler_describe(&s->smp, sp, sdesc, sizeof(sdesc));
@@ -406,7 +422,7 @@ int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
             sampler_file_describe(&sfile, fdesc, sizeof fdesc);
             if (fdesc[0]) fprintf(stderr, "sampling: %s\n", fdesc);
         }
-        if (!engine_init(&s->e, s->m, s->tok, &s->smp)) {
+        if (!slot_engine_init(s)) {
             // mirror the failed-load cleanup: leave the slot empty and the
             // resident unchanged rather than committing a half-built engine
             fprintf(stderr, "swap: out of memory initializing engine for %s\n",
@@ -586,6 +602,7 @@ bool init_swap_runtime(const model_params *mp, int n_threads, int ttl) {
         pthread_mutex_destroy(&SV.swap_mu);
         return false;
     }
+    SV.swap_ready = true;
     return true;
 }
 

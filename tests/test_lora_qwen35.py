@@ -125,6 +125,33 @@ def test_the_merge_folds_the_deltanet_projections(runner_bin, fx, tmp_path):
     assert _gap(_score(runner_bin, out), _score(runner_bin, fx["merged"])) <= 1e-5
 
 
+@pytest.mark.parametrize("arch", ["qwen35moe", "qwen4exp"])
+def test_the_merge_folds_the_deltanet_projections_on_every_deltanet_family(
+        runner_bin, arch, tmp_path):
+    """R6.68.36: serving resolves the DeltaNet slots on every DeltaNet family
+    (lora_slot_base: a qwen35-family recurrent layer), and the merge accepted
+    them on qwen35 and clef alone, so a qwen35moe or qwen4exp adapter that
+    --lora applied was refused by --merge-lora. The merged file scores as the
+    adapter does at load time, and as the reference the fixture writer folds
+    outside Runner."""
+    import os
+    base = tmp_path / "base.gguf"
+    script, env = (("make-test-ornith.py", {"ORNITH_TEST_MOE": "1"}) if arch == "qwen35moe"
+                   else ("make-test-qwen4exp.py", {}))
+    subprocess.run([sys.executable, ROOT / "scripts" / script, str(base)], check=True,
+                   cwd=ROOT, stdout=subprocess.DEVNULL, env=dict(os.environ, **env))
+    _lora(base, tmp_path / "fx")
+    adapter, out = tmp_path / "fx.adapter.gguf", tmp_path / "merged-by-runner.gguf"
+    p = subprocess.run([runner_bin, "-m", str(base), "--lora", str(adapter),
+                        "--merge-lora", str(out), "--quant", "keep"], cwd=ROOT,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")
+    loaded = _score(runner_bin, base, adapter)
+    assert _gap(loaded, _score(runner_bin, base)) > 1e-3   # the adapter does something
+    assert _gap(_score(runner_bin, out), loaded) <= 1e-5
+    assert _gap(_score(runner_bin, out), _score(runner_bin, tmp_path / "fx.merged.gguf")) <= 1e-5
+
+
 def test_attn_gate_is_hooked_only_on_qwen35(runner_bin, tmp_path):
     """afmoe carries an attn_gate of its own (an attention output gate) that
     no hook covers: serving and the merge both refuse an adapter on it."""

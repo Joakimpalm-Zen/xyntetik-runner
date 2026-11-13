@@ -1,6 +1,7 @@
 // Tokenizers: SentencePiece-style (llama) and byte-level BPE (gpt2).
 #include <math.h>
 #include "tokenizer.h"
+#include "arch.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -246,12 +247,12 @@ static bool nfc_utf8(const char *s, size_t n, char **out, size_t *out_n, bool *o
         }
         size_t count[256] = { 0 }, at[256];
         for (size_t i = a; i < b; i++) count[cls[i]]++;
-        for (size_t k = 0, s = a; k < 256; k++) { at[k] = s; s += count[k]; }
+        for (size_t k = 0, pos = a; k < 256; k++) { at[k] = pos; pos += count[k]; }
         for (size_t i = a; i < b; i++) tmp[at[cls[i]]++] = d[i];
         memcpy(d + a, tmp + a, sizeof(uint32_t) * (b - a));
-        for (size_t k = 1, s = a; k < 256; k++) {
-            memset(cls + s, (int)k, count[k]);
-            s += count[k];
+        for (size_t k = 1, pos = a; k < 256; k++) {
+            memset(cls + pos, (int)k, count[k]);
+            pos += count[k];
         }
     }
     free(tmp);
@@ -435,6 +436,7 @@ static bool gguf_str_arr_has(gguf_file *g, const char *key, const char *want) {
 // qwen35 is told by what its converter wrote into the header.
 static const char *qwen2_trained_rule(gguf_file *g) {
     const char *arch = gguf_get_str(g, "general.architecture", "");
+    const arch_id id = arch_find(arch)->id;
     const char *name = gguf_get_str(g, "general.name", "");
     // Clef (Cloudflare's Qwen3.8 and Qwen3.5 post-trains) was trained with
     // the qwen2 split: its tokenizer.json carries \p{L}+ where Qwen's own
@@ -443,7 +445,7 @@ static const char *qwen2_trained_rule(gguf_file *g) {
     // every mark). llama.cpp's converter still writes "qwen35" into every
     // Clef GGUF, so the declared name is read as the trained-with split here;
     // text with combining marks tokenizes differently from llama.cpp by design.
-    if (strcmp(arch, "clef") == 0)
+    if (id == ARCH_CLEF)
         return "Clef (general.architecture clef)";
     // XiaomiMiMo's Qwen3.5 distill (MiMo-V2.6-Distill-Qwen-9B) is the same
     // case on an ordinary qwen35 file: its tokenizer.json at 1f09ddcc carries
@@ -461,7 +463,7 @@ static const char *qwen2_trained_rule(gguf_file *g) {
     // at cf943fbe, the thinking ones too, names the checkpoint
     // "35a3_hf_v47_0923". Under qwen35, 3 of 721 corpus strings and 5,503
     // vocabulary entries differed from the publisher's tokenizer (R4.27.2).
-    if (strcmp(arch, "qwen35moe") == 0 && strcmp(name, "35a3_hf_v47_0923") == 0)
+    if (id == ARCH_QWEN35MOE && strcmp(name, "35a3_hf_v47_0923") == 0)
         return "openbmb's MiniCPM-V-4.7-35B-A3B (general.name 35a3_hf_v47_0923)";
     // empero-ai's Qwen3.8-35B-A3B-Distill, a finetune of Qwen3.6-35B-A3B:
     // tokenizer.json at bcc2dbe2 is exactly what transformers 5.x writes on
@@ -469,7 +471,7 @@ static const char *qwen2_trained_rule(gguf_file *g) {
     // empero-ai/Qwen3.8-35B-A3B-Distill-GGUF at b1f9d1dc name the model
     // "Ours", tag it empero-ai, and name Qwen3.6-35B-A3B as the base. Under
     // qwen35, 3 of 721 and 5,503 differed, as for MiniCPM-V (R4.27.1).
-    if (strcmp(arch, "qwen35moe") == 0 && strcmp(name, "Ours") == 0 &&
+    if (id == ARCH_QWEN35MOE && strcmp(name, "Ours") == 0 &&
         gguf_str_arr_has(g, "general.tags", "empero-ai") &&
         strcmp(gguf_get_str(g, "general.base_model.0.repo_url", ""),
                "https://huggingface.co/Qwen/Qwen3.6-35B-A3B") == 0)
@@ -482,7 +484,7 @@ static const char *qwen2_trained_rule(gguf_file *g) {
     // qwen2 split), and its recovery adapters were trained on that split's
     // ids. Under qwen35, 3 of 721 corpus strings and 5,503 vocabulary entries
     // differed from the publisher's tokenizer (R4.36).
-    if (strcmp(arch, "qwen35") == 0 && strcmp(name, "Clef Backbone View") == 0)
+    if (id == ARCH_QWEN35 && strcmp(name, "Clef Backbone View") == 0)
         return "the project's Clef backbone (general.name Clef Backbone View)";
     return NULL;
 }
@@ -1085,23 +1087,29 @@ static int contraction_len(const uint32_t *cp, int i, int ncp) {
 // applies \p{N}{1,3} as its own first pass), so a digit is the end of the
 // piece this regex sees and `\s+(?!\S)` keeps a whitespace run that ends at
 // one entire instead of leaving its last space to the digit.
+// The two character classes of pre_split_next, with its marks_join rule.
+static inline bool run_letter(uint32_t c, bool marks_join) {
+    return cp_letter(c) || (marks_join && cp_mark(c));
+}
+static inline bool run_other(uint32_t c, bool marks_join) {
+    return !cp_space(c) && !run_letter(c, marks_join) && !cp_digit(c);
+}
+
 static int pre_split_next(const uint32_t *cp, int i, int ncp, int max_digits,
                           bool marks_join, bool digit_ends) {
     int adv = contraction_len(cp, i, ncp);
     if (adv) return i + adv;
-#define RUN_LETTER(c) (cp_letter(c) || (marks_join && cp_mark(c)))
-#define RUN_OTHER(c)  (!cp_space(c) && !RUN_LETTER(c) && !cp_digit(c))
 
     // a single non-letter, non-digit, non-newline character may lead a letter run
     if (!cp_letter(cp[i]) && !cp_digit(cp[i]) && cp[i] != '\r' && cp[i] != '\n' &&
-        i + 1 < ncp && RUN_LETTER(cp[i + 1])) {
+        i + 1 < ncp && run_letter(cp[i + 1], marks_join)) {
         int j = i + 1;
-        while (j < ncp && RUN_LETTER(cp[j])) j++;
+        while (j < ncp && run_letter(cp[j], marks_join)) j++;
         return j;
     }
-    if (RUN_LETTER(cp[i])) {
+    if (run_letter(cp[i], marks_join)) {
         int j = i;
-        while (j < ncp && RUN_LETTER(cp[j])) j++;
+        while (j < ncp && run_letter(cp[j], marks_join)) j++;
         return j;
     }
     if (cp_digit(cp[i])) {
@@ -1110,15 +1118,13 @@ static int pre_split_next(const uint32_t *cp, int i, int ncp, int max_digits,
         return j;
     }
     {   // optional leading space, then a run of symbols/punctuation
-        int j = (cp[i] == ' ' && i + 1 < ncp && RUN_OTHER(cp[i + 1])) ? i + 1 : i;
-        if (j < ncp && RUN_OTHER(cp[j])) {
-            while (j < ncp && RUN_OTHER(cp[j])) j++;
+        int j = (cp[i] == ' ' && i + 1 < ncp && run_other(cp[i + 1], marks_join)) ? i + 1 : i;
+        if (j < ncp && run_other(cp[j], marks_join)) {
+            while (j < ncp && run_other(cp[j], marks_join)) j++;
             while (j < ncp && (cp[j] == '\r' || cp[j] == '\n')) j++;
             return j;
         }
     }
-#undef RUN_LETTER
-#undef RUN_OTHER
     {
         int j = i;
         while (j < ncp && cp_space(cp[j])) j++;
@@ -1669,20 +1675,23 @@ static bool cp_ds_cjk(uint32_t c) {
            (c >= 0xAC00 && c <= 0xD7FF);
 }
 static bool cp_crlf(uint32_t c) { return c == '\r' || c == '\n'; }
+// level 2 of deepseek_llm_split_next: \s?L+ starting at j (no level-1 break
+// inside the piece)
+static inline bool ds_l2_at(const uint32_t *cp, int j, int end) {
+    return cp_ds_letter(cp[j]) ||
+           (cp_space(cp[j]) && !cp_crlf(cp[j]) && j + 1 < end && cp_ds_letter(cp[j + 1]));
+}
+
 static int deepseek_llm_split_next(const uint32_t *cp, int i, int ncp) {
     if (cp_crlf(cp[i])) return i + 1;                                  // level 1
-    // level 2: \s?L+ starting at j (no level-1 break inside the piece)
-    #define DS_L2_AT(j, end) (cp_ds_letter(cp[j]) || \
-        (cp_space(cp[j]) && !cp_crlf(cp[j]) && (j) + 1 < (end) && cp_ds_letter(cp[(j) + 1])))
     int e2;
-    if (DS_L2_AT(i, ncp)) {
+    if (ds_l2_at(cp, i, ncp)) {
         e2 = cp_ds_letter(cp[i]) ? i + 1 : i + 2;
         while (e2 < ncp && cp_ds_letter(cp[e2])) e2++;
     } else {
         e2 = i + 1;
-        while (e2 < ncp && !cp_crlf(cp[e2]) && !DS_L2_AT(e2, ncp)) e2++;
+        while (e2 < ncp && !cp_crlf(cp[e2]) && !ds_l2_at(cp, e2, ncp)) e2++;
     }
-    #undef DS_L2_AT
     // level 3 within [i, e2): \s?P+, the optional space greedy
     int e3;
     bool sp_p = cp_space(cp[i]) && i + 1 < e2 && cp_ds_punct(cp[i + 1]);
@@ -2146,7 +2155,8 @@ int tok_stop_ids(tokenizer *t, const char *arch, int *out, int cap) {
     // <|return|> is Harmony's own end-of-generation marker and takes its place;
     // <|call|> joins it so an unrendered tool attempt stops instead of running
     // away (Harmony tool calling is deliberately not rendered — see template.c).
-    bool harmony = strcmp(arch, "gpt-oss") == 0;
+    const arch_id id = arch_find(arch)->id;
+    bool harmony = id == ARCH_GPT_OSS;
     // The file's own end-of-generation ids, whatever their type: a declared
     // id is the publisher's statement. Harmony's <|end|> stays out here too.
     for (int i = 0; i < t->n_eog; i++) {
@@ -2170,7 +2180,7 @@ int tok_stop_ids(tokenizer *t, const char *arch, int *out, int cap) {
     // end-of-generation tokens (tokenizer.ggml.eog_token_ids, read above;
     // llama.cpp's vocab adds the first two by name for this pre). Named here
     // too, so a flint file without that key still stops there.
-    if (!strcmp(arch, "flint")) {
+    if (id == ARCH_FLINT) {
         static const char *fstops[] = { "<|user|>", "<|observation|>", "<|developer|>" };
         _Static_assert(sizeof(fstops) / sizeof(*fstops) <= TOK_STOP_ARCH_MAX,
                        "TOK_STOP_ARCH_MAX bounds every per-architecture list");

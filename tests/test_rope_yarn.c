@@ -54,6 +54,7 @@ static void check_table(const char *what, const float *got, const double *want,
 int main(int argc, char **argv) {
     const char *gptoss = argc > 1 ? argv[1] : "test-moe-fixture.gptoss-yarn.gguf";
     const char *llama  = argc > 2 ? argv[2] : "test-yarn.gguf";
+    const char *local  = argc > 3 ? argv[3] : "test-rope-local.gguf";
     const double mscale = 1.3465735902799727;   // 0.1 * ln(32) + 1
 
     // gpt-oss: OpenAI's ramp, correction range 1.3090..2.8142 unrounded.
@@ -79,6 +80,22 @@ int main(int argc, char **argv) {
     ck(m.rope_dim == 16, "llama fixture rotates 16 dims");
     check_table("llama", m.rope_inv_freq, want_llama, 8);
     ck(close_rel(m.rope_mscale, mscale), "llama YaRN magnitude 0.1*ln(32)+1");
+    model_free(&m);
+
+    // A file that declares the sliding layers' base under both spellings:
+    // rope.local.freq_base 500 wins over rope.freq_base_swa 20000. The two
+    // reads used to share one key buffer inside one argument list, so the
+    // order the compiler evaluates arguments in chose the key: clang's left
+    // to right read rope.freq_base_swa twice. Anchor: base^(-2j/d) in double.
+    if (!load(&m, local)) return 1;
+    ck(m.swa_window > 0 && m.rope_inv_freq_local != NULL, "the local fixture slides");
+    if (m.rope_inv_freq_local) {
+        int d = m.rope_dim_local;
+        double want_local[64];
+        for (int j = 0; j < d / 2 && j < 64; j++) want_local[j] = pow(500.0, -2.0 * j / d);
+        check_table("rope.local.freq_base over rope.freq_base_swa", m.rope_inv_freq_local,
+                    want_local, d / 2 < 64 ? d / 2 : 64);
+    }
     model_free(&m);
 
     if (!g_fail) puts("rope yarn tests ok");

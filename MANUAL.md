@@ -140,7 +140,7 @@ $response.choices[0].message.content
 
 </details>
 
-> **Version `1.16.0`.** The command line, the HTTP API, the record formats and
+> **Version `1.17.0`.** The command line, the HTTP API, the record formats and
 > the model files that load stay compatible across 1.x; speed, generated
 > tokens across releases and the support matrix move with the evidence. The
 > [versioning policy](docs/versioning.md) lists exactly what is kept. CI builds
@@ -1649,7 +1649,7 @@ for Linux, macOS, or Windows, or build from source:
 git clone https://github.com/Joakimpalm-Zen/xyntetik-runner
 cd xyntetik-runner
 make
-./runner --version   # -> runner 1.16.0
+./runner --version   # -> runner 1.17.0
 ```
 
 CUDA builds and releases need only an NVIDIA driver at runtime. The CUDA
@@ -1768,7 +1768,7 @@ The independently built container has a separate Debian build baseline.
 
 Each release publishes a CPU image - the same binary on a distroless glibc base,
 nothing else - to `ghcr.io/joakimpalm-zen/xyntetik-runner:v<version>` (the
-tag carries the `v`, e.g. `:v1.16.0`) and `:latest`. Build it yourself with `docker build -t runner .`.
+tag carries the `v`, e.g. `:v1.17.0`) and `:latest`. Build it yourself with `docker build -t runner .`.
 
 The server binds **loopback only** by design (there is no `--host`/`0.0.0.0`
 flag), so it never exposes itself to a network, even in a container - which
@@ -1991,8 +1991,14 @@ host libm by 1-2 ulp by construction); every CPU-vs-GPU byte comparison in the
 test suite sets them. `RUNNER_CUDA_GRAPH_OFF=1` disables CUDA graph capture
 for decode steps, which isolates a kernel from the graph launch path when a
 result looks graph-dependent; `RUNNER_CUDA_GRAPH_RECUR=0` does it for the
-qwen35 family alone, whose decode replays a graph since 2026-10-21. `./test-attn-tol MODEL.gguf` is the
-attention gate.
+qwen35 family alone, whose decode replays a graph since 2026-10-21 (qwen35moe,
+with its routed experts fused on the device, since R6.68.25a).
+`RUNNER_REQUIRE_GRAPH_CAPTURE=1`, which the CUDA gates set, makes a decode graph
+that fails to capture or launch end the process with the failing stage, the CUDA
+error and the synchronous call that broke it, instead of falling back to plain
+launches with one line on stderr; a decode that is eager by design (experts on
+the host, eager MoE routing, a recurrent family not captured) prints why and
+runs. `./test-attn-tol MODEL.gguf` is the attention gate.
 Weights are wrapped zero-copy from the model mmap. A file larger than the
 device's `maxBufferLength` - 4.29 GB on an Apple M1, against a 5.73 GB working set -
 is wrapped in several buffers instead of being copied or forced into a
@@ -2376,7 +2382,7 @@ flags into unrelated feature sections.
 |---|---|
 | `-m PATH` | GGUF path. In serve mode, `name=path,name2=path2` enables multi-model swap mode. |
 | `-p TEXT` | One-shot prompt; escaped sequences such as `\n` are unescaped. |
-| `-f FILE` | Append the file's contents to the prompt as written; escapes are unescaped only in `-p` text. |
+| `-f FILE` | Append the file's contents to the prompt as written, its CRLF line ends read as LF (a lone CR stays), so one file gives the same tokens on every platform; escapes are unescaped only in `-p` text. |
 | `--pull REPO[:TAG]` | Download and verify what `-hf` would fetch, print the result and exit; no model is loaded. A mode of its own. [Details](#cli-pull). |
 | `-i` | Stateful interactive chat. |
 | `--serve` | Start the HTTP server. |
@@ -3120,11 +3126,11 @@ extra permutation.
 Interop runs the other way too: an adapter runner trained
 scores identically (1.000 on its held-out eval) when served by stock llama.cpp. Applied
 as `y += scale·B(Ax)` on the dense projections (attention q/k/v/output, FFN
-gate/up/down), and on a qwen35 or Clef model also on each Gated DeltaNet layer's input
-and output projections (`attn_qkv`, `attn_gate`, `ssm_beta`, `ssm_alpha`, `ssm_out`:
+gate/up/down), and on a Gated DeltaNet model (`qwen35`, `qwen35moe`, `qwen4exp`, `clef`)
+also on each Gated DeltaNet layer's input and output projections (`attn_qkv`, `attn_gate`, `ssm_beta`, `ssm_alpha`, `ssm_out`:
 PEFT's `in_proj_qkv`, `in_proj_z`, `in_proj_b`, `in_proj_a` and `out_proj` as llama.cpp's
 converter names them; a full-attention layer's `attn_q` spans the query and its output
-gate, which share one projection). A `qwen35` adapter, which is what the converter writes
+gate, which share one projection); `--merge-lora` folds the same set. A `qwen35` adapter, which is what the converter writes
 from Clef's backbone, serves on a `clef` file. On Metal a qwen35 model with an adapter runs
 on the CPU, so there the CPU applies it - the base weights and kernels are untouched, so every base identity gate
 still describes the adapted run's substrate. Runs on the CPU and, on CUDA and Metal, on
@@ -3133,7 +3139,10 @@ memory (36.9 MB at rank 8 on a 1.5B), a partial split lets each half apply its o
 blocks, and the CPU-versus-GPU gap with the adapter is no wider than without it (CUDA:
 max |Δlogprob| 1.110e-3 against 1.255e-3, Qwen2.5-1.5B Q4_K_M, RTX 3070; Metal: mean
 3.0e-4 against 3.1e-4, SmolLM2-135M Q8_0 with a rank-8 adapter on all 210 projections,
-Apple M1). On Metal a block with an adapter decodes on the split path, without the fused
+Apple M1). On CUDA a decode with an adapter replays its graph as one without does (since
+R6.68.25b; before, an adapter turned the graph off): Qwen3-4B Q4_K_M with a rank-8 adapter
+decodes at 128 tok/s, against 90 before and 155 without the adapter, with the same greedy
+bytes (RTX 5070). On Metal a block with an adapter decodes on the split path, without the fused
 front kernel, so decode slows: 117 to 44 tok/s on that 135M (still above the CPU's 37),
 and 9.8 to 8.3 tok/s on Llama-3.2-3B Q4_K_M with a rank-16 adapter on Q and V of every
 block (the CPU decodes it at 5.7). Prefill barely moves in either case. Fails
@@ -3543,7 +3552,12 @@ note says the figure is the flat cache, which a load shrinks with the KV ring wh
 weights and that cache do not fit ([`--kv-ring auto`](#cli-kv-ring)).
 
 The verdict is `FITS`, `FITS WITH --kv q8` (or `k8v4`, or `fp4`), or `PAGES`, always with the
-arithmetic that produced it. For a family the loader never puts on a GPU (lfm2, lfm2moe,
+arithmetic that produced it. The geometry behind it is the loader's own: the fit runs the
+binders a load runs, over the header alone, the tensor binders included (every tensor the
+load would find, type and shape-check, none read), so a file the loader would refuse gets
+`WILL NOT LOAD` with the loader's reason, and `--info fit` exits 1. The one refusal it cannot
+give is one a tensor's stored values decide (a Clef head's `decision.scales` out of range),
+since a header carries no values. For a family the loader never puts on a GPU (lfm2, lfm2moe,
 flint, LayerNorm models, grouped-norm k2-horizon, and deepseek2 off CUDA) the split line
 reports the CPU, with the reason, where it used to predict a device split the load never
 made. On CUDA `--info fit` and the loader charge the same bytes, the small per-layer
@@ -3737,13 +3751,13 @@ engine's listener and security model unchanged.
 | `GET /v1/models` | Registered models and current residency. Each entry carries `context_window`, the context the server runs at (the resident model's, else the configured `-c`), so a client plans its prompts from the server's figure rather than a default of its own; the field is absent only on a registry that has loaded nothing yet and was given no `-c`. |
 | `GET /v1/capabilities` | The build (`version`, the `--version` string, plus `build_flavor` on a T3 build), server process ID, active model, sampling preset, optional Xyntetik agent profile, and the EFFECTIVE execution mode: `slots` (the slot count actually running) and `draft` (`requested`/`active`, the `source` when active: `model`, `mtp` or `lookup`, plus a `reason` when a requested draft was refused). `active` reflects a configured draft in at least one resident slot, including multi-slot serving, and becomes false while the target is unloaded. `mtp.consumed` likewise reflects resident engines using the head; per-request telemetry separately reports whether that request speculated. |
 | `GET /v1/runner/prefix-cache` | Prefix-cache size, limits, and counters. Takes no request body and remains available while inference is active. |
-| `GET /v1/runner/provenance` | What the server can vouch for about itself, in the receipt's vocabulary: `build.binary_sha256` (the executable, hashed at start), the resident `model` (`sha256` of the file, hashed in the background when something first needs it: this route, an `expect_resident` digest, or, from the load on, a server with `--record`, `--sessions` or `--kv-snapshots`; a reload of the same unchanged file reuses its digest. `sha256_state` reads `hashing` until it is known, and `changed_since_load` with the digest withheld when the file on disk no longer has the size and timestamps it had at load), the load-time OMS `signature` verdict and `envelope` state, the `adapter` and its digest, the `profile` (device, threads, context, KV type, slots) and the effective `config`. `model` and `profile` are `null` while nothing is resident. Not an attestation: a process can only report on itself. Takes no request body. |
+| `GET /v1/runner/provenance` | What the server can vouch for about itself, in the receipt's vocabulary: `build.binary_sha256` (the executable, hashed at start), `build.commit` and `build.dirty` (the git commit the binary was built from and whether its tracked files differed from it, stamped at build time; both `null` for a build outside git), the resident `model` (`sha256` of the file, hashed in the background when something first needs it: this route, an `expect_resident` digest, or, from the load on, a server with `--record`, `--sessions` or `--kv-snapshots`; a reload of the same unchanged file reuses its digest. `sha256_state` reads `hashing` until it is known, and `changed_since_load` with the digest withheld when the file on disk no longer has the size and timestamps it had at load), the load-time OMS `signature` verdict and `envelope` state, the `adapter` and its digest, the `profile` (device, threads, context, KV type, slots) and the effective `config`. `model` and `profile` are `null` while nothing is resident. Not an attestation: a process can only report on itself. Takes no request body. |
 | `POST /v1/runner/prefix-cache/clear` | Release cached prefixes without unloading the model. Takes no request body and remains available while inference is active. |
 | `POST /v1/runner/contexts` | Pin a named context: `{"id": ..., "prompt": ...}` (raw text) or `{"id": ..., "messages": [...], "tools": [...]}` (rendered by the model's template WITHOUT the assistant generation prompt, so it is exactly what a later request with the same leading messages renders first). The prompt is prefilled once and its KV snapshot pinned: no TTL, never evicted by traffic, counted in `RUNNER_PREFIX_CACHE_MB` (`507` with code `context_budget` when it does not fit beside the other pins). Re-pinning an id replaces it. A request carrying `"context_id": id` must start with the context's tokens: it is refused with `404` (`context_not_found`) or `409` (`context_mismatch`, naming the first differing token) rather than served cold, and `runner_telemetry.context` reports `{id, tokens}` beside the usual `prompt_cached_tokens`. `context_id` needs the prefix cache (`cache_prompt`/`prefix_cache` not false) and is refused with `echo`/`prompt_logprobs`. A model whose template folds the system turn into the first user turn renders nothing for system messages alone and says so. Ids are 1 to 64 characters of `[A-Za-z0-9._:-]`. |
 | `GET /v1/runner/contexts` | The pinned contexts: `id`, `tokens`, `bytes`, `hits`, `age_seconds`. Takes no request body. |
 | `DELETE /v1/runner/contexts/{id}` | Release one context (`404` when there is none). `POST /v1/runner/prefix-cache/clear` and `/unload` release every context with the rest of the cache. |
 | `POST /v1/runner/contexts/{id}/snapshot` | With `--kv-snapshots DIR`: write context `id` to `DIR/<name>.kv` (the prefix cache's own `runner.prefix.v1` format, one entry) and `DIR/<name>.kv.json`, a `xyntetik.runner.kv_snapshot.v1` manifest naming the KV file's sha256 and size, the token count and the sha256 of the token ids, the served model's sha256 and the engine's model key, the KV type and context length, the binary's sha256, and `producer.receipt` when the body names one (`{"receipt": "receipt-<n>.json"}`, a receipt this server wrote whose chain recomputes). The manifest is chained like any record and signed with `--sign-key` (`runner attest check` verifies it). Body `{}` or `{"name", "receipt"}`; `name` defaults to the id; an existing snapshot is never overwritten (`409 snapshot_exists`). Loading is `POST /v1/runner/contexts` with `{"id": ..., "snapshot": "<name>"}`: the manifest must recompute and verify, the `.kv` bytes must be the ones it names, and the model and KV type must be this server's, else `409` (`snapshot_record_invalid`, `snapshot_digest_mismatch`, `snapshot_model_mismatch`, `snapshot_kv_type_mismatch`). A request built on a loaded context names the snapshot in its receipt (`serve.kv_snapshot`: name, KV sha256, manifest chain hash) and replays from its prompt tokens like any other. |
-| `GET /health` | Server and resident-model health, the build (`version`, and `build_flavor` on a T3 build), plus this process's `rss_bytes`/`peak_rss_bytes` and cumulative `tokens_prompt`, `tokens_generated`, `generate_seconds`, `batch_steps` and `batch_sequences`. |
+| `GET /health` | Server and resident-model health, the build (`version`, and `build_flavor` on a T3 build), plus this process's `rss_bytes`/`peak_rss_bytes` (and on macOS `phys_footprint_bytes`) and cumulative `tokens_prompt`, `tokens_generated`, `generate_seconds`, `batch_steps` and `batch_sequences`. |
 | `GET /metrics` | The same process counters in Prometheus text exposition 0.0.4 (`text/plain; version=0.0.4`), under the `runner_` prefix, with the prefix-cache and speculation counters alongside. Always on with `--serve`, takes no request body, and remains available while inference is active. |
 | `POST /v1/runner/requests/{id}/cancel` | Cancel a running completion request (chat, completions, Responses, Messages) by its response id (`chatcmpl-`, `cmpl-`, `resp_`, `msg_`, from a streamed reply's first chunk) or by the `X-Request-Id` header the client sent with it. A client-chosen id is 1 to 64 characters from `A-Z a-z 0-9 . _ : -`, sent once (`400 invalid_request_id` otherwise); an id that an active request already holds is refused with `409 duplicate_request_id`. Answered from the accept loop, so it never queues behind the request it cancels, and the reply comes once that request has stopped: `200 {"id","request_id","cancelled":true,"phase","generated"}` (`phase` is where the request was when the cancel arrived: `loading`, `starting`, `prefill` or `generate`; `request_id` is `null` for one cancelled while its model loaded, which has no response id yet). The `X-Request-Id` is taken before the request's model is swapped in, so a cancel reaches a request while its load waits or runs: in the `--wait-for-vram` queue it stops the wait unless a live client is queued behind (the rule a disconnect follows); a load already past the queue is not stopped, it finishes and stays resident, and the request ends before its prompt, answering `409` with code `cancelled`. `404 request_not_found` for an id no active request holds, including one still waiting for a slot; `504 cancel_pending` if the request has not stopped within 30 s, which a long load past the queue can cause. The cancelled request's own reply: a cut during generation keeps what was generated, with `finish_reason` `length` and `runner_telemetry.finish_detail: "cancelled"`, and its receipt records `serve.cut: "cancelled"`; a cut while the prompt was processed answers `409` with code `cancelled`. The server stays up. Takes no body. Request ids are not listed in `/health`: the server has no key of its own, so anything on loopback reads `/health`, and a listed response id would name a stored response. |
 | `POST /unload` | Release resident model, draft and prefix-cache memory; the next request reloads on demand. Deferred to the next safe point while a load or generation is in flight (the reply says `"deferred":true`). Needs the registry: a server without one refuses with `409` rather than reporting a success it cannot deliver - see the residency note below. |
@@ -4017,7 +4031,16 @@ the confirmation the closed socket cannot give; with one request in flight,
 one machine. `rss_bytes` is this **process's** resident set - weights, KV
 cache, activations and allocator overhead together - which is the number a
 machine is sized against and which no per-mapping measure accounts for;
-`peak_rss_bytes` is its high-water mark. `tokens_prompt`, `tokens_generated`
+`peak_rss_bytes` is its high-water mark. On macOS `phys_footprint_bytes` stands
+beside them: the kernel's physical footprint for the process, the figure
+Activity Monitor and `footprint` show. It counts what the resident set leaves
+out, the GPU driver's memory for the process (Metal's buffers, the KV cache
+among them) and its compressed pages, and leaves out clean mapped pages the
+resident set counts, such as weights read from the file; neither contains the
+other. On Metal it is the number that shows a device-memory leak: a serving
+process has read 13 MB resident at a 638 MB footprint, 598 MB of it Metal. The
+field is absent on Linux and Windows, which have no one figure that adds device
+memory to RAM; their GPU memory is reported apart. `tokens_prompt`, `tokens_generated`
 and `generate_seconds` are cumulative monotonic totals across every API
 surface. `batch_steps` and `batch_sequences` count the scheduler's microbatch
 steps and the sequences cut into them, so `batch_sequences / batch_steps` is
@@ -4049,7 +4072,8 @@ monitoring stack ingests them without a translator. Every name carries the
 `runner_batch_sequences_total`, the six `runner_prefix_cache_*` counters and
 their three gauges, the three `runner_speculation_*` counters, and the gauges
 `runner_active_requests`, `runner_resident_memory_bytes` and
-`runner_peak_resident_memory_bytes`. It is on whenever `--serve` is, needs no
+`runner_peak_resident_memory_bytes`, and on macOS `runner_phys_footprint_bytes`
+(the footprint above). It is on whenever `--serve` is, needs no
 flag, and computes nothing: there is no hit-rate and no tokens-per-second here
 for the same reason `/health` has none. Like `/health` it does not count its
 own requests, so a scraper on a timer does not measure itself.
@@ -5163,7 +5187,7 @@ through the same loaded model and adapter hooks used for generation. The
 including the import row-order rule above.
 
 The [TD-001 report](https://huggingface.co/datasets/Joakimpalm-Zen/Xyntetik-Typed-Decisions-record/blob/main/typed-decisions/report/TD-001.md)
-records a historical transfer check on Runner 1.1.4: Xyntetik-Kvist-14B
+records a historical transfer check on Runner's 1.1.4 release: Xyntetik-Kvist-14B
 Q8_0 plus its rank-16, alpha-32 adapter against torch BF16 plus the same
 adapter. Over 192 scored questions, the mean absolute difference in option
 probabilities was **0.0019**, with a maximum of **0.021**. Argmax agreement

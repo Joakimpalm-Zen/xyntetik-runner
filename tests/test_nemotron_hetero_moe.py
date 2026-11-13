@@ -25,9 +25,21 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PROMPT = "The capital of France is Paris, and of Italy"
-# f32 rounding of a regrouped sum, in logprob units, with the margin
-# tests/test_nemotron_latent_moe.py keeps for other compilers' vectorization
+# The hetero file against its padded twin on the same pass: byte-identical
+# on gcc 13.3 x86-64 Linux (0 on both passes, latent and plain); the bound is
+# f32 rounding of a regrouped sum, with the margin
+# tests/test_nemotron_latent_moe.py keeps for other compilers' vectorization.
 TOL = 1e-4
+# The token pass against the batched pass sum in different orders, so they
+# differ by a rounding floor that is the HOST's, not the fixture's: 9.6e-7
+# (latent) and 2.4e-6 (plain) on gcc 13.3 x86-64 Linux, about 1e-4 on the
+# hosted Windows runner, where a fixed 1e-4 failed on main (R6.66). The bound
+# is that floor measured in the same run on the padded twin, whose widths are
+# uniform (the path the other nemotron_h_moe rows hold), times FLOOR_FACTOR,
+# plus FLOOR_ABS for a host where both passes agree exactly. On Linux the
+# hetero file's difference equals the twin's to the last bit.
+FLOOR_FACTOR = 2
+FLOOR_ABS = 1e-6
 
 
 def make(d, name, latent, brk=None):
@@ -71,13 +83,21 @@ def test_the_hetero_model_equals_its_padded_twin(runner_bin, pair, chunked):
     else:
         assert "the routed experts run 16 to 24 wide by layer" in err, err
     assert "wide by layer" not in perr, perr
-    assert max_diff(a, b) <= TOL
+    d = max_diff(a, b)
+    assert d <= TOL, f"hetero against its padded twin: max |dlogprob| {d:.3e} > {TOL:.0e}"
     assert a["argmax"] == b["argmax"]
 
 
 def test_the_batched_pass_equals_the_token_pass(runner_bin, pair):
-    _, (het, _) = pair
-    assert max_diff(score(runner_bin, het)[0], score(runner_bin, het, True)[0]) <= TOL
+    """The batched pass's experts run grouped by expert, the token pass's one
+    token at a time: the two may differ by the host's rounding floor between
+    those passes (measured on the padded twin) and no more."""
+    _, (het, pad) = pair
+    got = max_diff(score(runner_bin, het)[0], score(runner_bin, het, True)[0])
+    floor = max_diff(score(runner_bin, pad)[0], score(runner_bin, pad, True)[0])
+    bound = FLOOR_FACTOR * floor + FLOOR_ABS
+    assert got <= bound, (f"hetero token against batched: max |dlogprob| {got:.3e}; the padded twin's "
+                          f"floor {floor:.3e}; bound {bound:.3e}")
 
 
 def test_the_twin_is_a_test_the_narrow_block_moves_the_logits(runner_bin, pair, tmp_path):
@@ -86,7 +106,9 @@ def test_the_twin_is_a_test_the_narrow_block_moves_the_logits(runner_bin, pair, 
     must read far outside the tolerance."""
     latent, (het, _) = pair
     zero, _ = make(tmp_path, "zero", latent, "zero-narrow")
-    assert max_diff(score(runner_bin, het)[0], score(runner_bin, zero)[0]) > 1000 * TOL
+    d = max_diff(score(runner_bin, het)[0], score(runner_bin, zero)[0])
+    # 0.645 (latent) and 1.29 (plain) on gcc 13.3 x86-64 Linux
+    assert d > 1000 * TOL, f"zeroed narrow block: max |dlogprob| {d:.3e}, not past {1000 * TOL:.0e}"
 
 
 @pytest.mark.parametrize("brk,needle", [

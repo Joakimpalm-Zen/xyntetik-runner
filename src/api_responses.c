@@ -704,28 +704,36 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     jv *final_schema = responses_schema(req, &bad_fmt, terr, sizeof(terr));
     if (bad_fmt) { send_error(fd, 400, terr); return; }
 
-    jv *tools = responses_tools(jv_get(req, "tools"), terr, sizeof(terr), &oom);
+    // What the request owns from here on, released at the one exit below.
+    // Every refusal used to carry its own copy of the release (fourteen of
+    // them), and one had drifted: "no input content" freed the list of owned
+    // strings and not the strings (R6.68.43).
+    jv *tools = NULL, *choice_owned = NULL;
+    tool_envelope env = {0};
+    sbuf ts = {0};
+    chat_msg *cm = NULL;
+    char **owned = NULL;
+    int n_own = 0;
+    char *prompt = NULL;
+    tools = responses_tools(jv_get(req, "tools"), terr, sizeof(terr), &oom);
     if (jv_get(req, "tools") && jv_get(req, "tools")->type != J_NULL && !tools) {
         send_error(fd, oom ? 500 : 400, terr);
-        return;
+        goto out;
     }
     {
         char why[480];
         if (!template_tools_check(s->tmpl, tools, why, sizeof why)) {
-            jv_free(tools);
             send_error(fd, 400, why);
-            return;
+            goto out;
         }
     }
     jv *choice_raw = jv_get(req, "tool_choice");
-    jv *choice_owned = NULL;
     if (choice_raw && choice_raw->type == J_OBJ) {
         choice_owned = responses_tool_choice(choice_raw, terr, sizeof(terr),
                                              &oom);
         if (!choice_owned) {
-            jv_free(tools);
             send_error(fd, oom ? 500 : 400, terr);
-            return;
+            goto out;
         }
     }
 
@@ -739,19 +747,14 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     if (!request_bool(req, "parallel_tool_calls",
                       tool_parallel_default(s->tmpl, choice_raw),
                       &parallel)) {
-        jv_free(tools);
-        jv_free(choice_owned);
         send_error(fd, 400, "parallel_tool_calls must be a boolean");
-        return;
+        goto out;
     }
-    tool_envelope env = {0};
     int rc = tool_envelope_build_ex(tools, choice_owned ? choice_owned : choice_raw,
                                     final_schema, parallel, &env, terr, sizeof(terr));
     if (rc < 0) {
-        jv_free(tools);
-        jv_free(choice_owned);
         send_error(fd, rc == TOOL_ENVELOPE_OOM ? 500 : 400, terr);
-        return;
+        goto out;
     }
     bool strict = rc == 1;
     // Teach declared tools in the family's model-native declaration syntax --
@@ -766,7 +769,6 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     // assemble the turns: tool system turn, then `instructions` as a system
     // message, then the input items in order
     int n_items = input->type == J_ARR ? input->n : 1;
-    sbuf ts = {0};
     // The family's own declaration block, as on the chat surface: ornith and
     // granite 4.2 carry a native protocol on the envelope but render their
     // declarations here rather than in the template, and the generic block
@@ -778,8 +780,6 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     // The tool turn is content too: a builder that ran out here left `ts` short
     // or empty and the prompt would go out without the declarations the caller
     // sent, asking the model to call tools it was never shown.
-    chat_msg *cm = NULL;
-    char **owned = NULL;
     if (!ts.failed) {
         cm = malloc(sizeof(chat_msg) * (size_t)(n_items + 3));
         // + the trimmed copies of `instructions` and a string input
@@ -787,15 +787,11 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     }
     // client-controlled size: a NULL here would be indexed below. Fail cleanly.
     if (!cm || !owned) {
-        free(cm); free(owned); free(ts.s);
-        tool_envelope_free(&env);
-        jv_free(tools);
-        jv_free(choice_owned);
         send_error(fd, 500, "out of memory building responses prompt");
-        return;
+        goto out;
     }
     size_t total = ts.n + 128;
-    int n_cm = 0, n_own = 0;
+    int n_cm = 0;
     const char *instructions = jv_str(jv_get(req, "instructions"), NULL);
     // the qwen35-family references trim the system text and every message
     // (`|trim`): `instructions` and a string input are borrowed, so trimmed
@@ -806,12 +802,8 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         char *tu = input_str ? py_strip_dup(input_str) : NULL;
         if ((instructions && !ti) || (input_str && !tu)) {
             free(ti); free(tu);
-            free(cm); free(owned); free(ts.s);
-            tool_envelope_free(&env);
-            jv_free(tools);
-            jv_free(choice_owned);
             send_error(fd, 500, "out of memory building responses prompt");
-            return;
+            goto out;
         }
         if (ti) { owned[n_own++] = ti; instructions = ti; }
         if (tu) { owned[n_own++] = tu; input_str = tu; }
@@ -821,13 +813,8 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     // conversation is the same prompt through every door
     if (tools_system_fold(s->tmpl, &ts, instructions)) {
         if (ts.failed) {
-            for (int k = 0; k < n_own; k++) free(owned[k]);
-            free(cm); free(owned); free(ts.s);
-            tool_envelope_free(&env);
-            jv_free(tools);
-            jv_free(choice_owned);
             send_error(fd, 500, "out of memory building responses prompt");
-            return;
+            goto out;
         }
         total = ts.n + 128;
         instructions = NULL;
@@ -881,13 +868,8 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
                 }
                 if (r.failed) {
                     free(r.s);
-                    for (int k = 0; k < n_own; k++) free(owned[k]);
-                    free(owned); free(cm); free(ts.s);
-                    tool_envelope_free(&env);
-                    jv_free(tools);
-                    jv_free(choice_owned);
                     send_error(fd, 500, "out of memory building responses prompt");
-                    return;
+                    goto out;
                 }
                 if (!r.s || !r.n) { free(r.s); continue; }
                 owned[n_own++] = r.s;
@@ -915,35 +897,25 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
                 if (!call_name || !call_name[0])
                     call_name = sole_tool_name(tools);
                 if (!call_name) {
-                    for (int k = 0; k < n_own; k++) free(owned[k]);
-                    free(owned); free(cm); free(ts.s);
-                    tool_envelope_free(&env);
-                    jv_free(tools);
-                    jv_free(choice_owned);
                     send_error(fd, 400,
                                "function_call cannot be attributed to a tool: "
                                "the item carries no `name`, and `tools` does "
                                "not declare exactly one function to deduce it "
                                "from. Send `name` on the function_call item.");
-                    return;
+                    goto out;
                 }
             }
-            bool oom = false;
+            bool item_oom = false;
             char *text = responses_item_text(input->items[i], s->tmpl, &role,
-                                             call_name, &oom);
+                                             call_name, &item_oom);
             if (env.proto == TP_HARMONY && is_call && text) {
                 free(text);
                 text = strdup(jv_str(jv_get(input->items[i], "arguments"), "{}"));
-                if (!text) oom = true;
+                if (!text) item_oom = true;
             }
-            if (oom) {
-                for (int k = 0; k < n_own; k++) free(owned[k]);
-                free(owned); free(cm); free(ts.s);
-                tool_envelope_free(&env);
-                jv_free(tools);
-                jv_free(choice_owned);
+            if (item_oom) {
                 send_error(fd, 500, "out of memory building responses prompt");
-                return;
+                goto out;
             }
             if (!text) continue;
             owned[n_own++] = text;
@@ -977,11 +949,6 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
                 // understood. So it is refused instead, with the one thing the
                 // caller can act on.
                 if (!name) {
-                    for (int k = 0; k < n_own; k++) free(owned[k]);
-                    free(owned); free(cm); free(ts.s);
-                    tool_envelope_free(&env);
-                    jv_free(tools);
-                    jv_free(choice_owned);
                     // its own buffer: `terr` is sized for the envelope
                     // compiler's messages, and this one quotes an id
                     char e[288];
@@ -994,7 +961,7 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
                                    "call_id \"" : "it carries no call_id",
                              cid ? cid : "", cid ? "\"" : "");
                     send_error(fd, 400, e);
-                    return;
+                    goto out;
                 }
             }
             cm[n_cm++] = (chat_msg){ .role = role, .content = text,
@@ -1003,12 +970,8 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         }
     }
     if (n_cm == 0) {
-        free(owned); free(cm); free(ts.s);
-        tool_envelope_free(&env);
-        jv_free(tools);
-        jv_free(choice_owned);
         send_error(fd, 400, "no input content");
-        return;
+        goto out;
     }
     // `total` is the opening guess only -- under Harmony the tool namespace
     // it never counted is rendered into the prompt too. render_prompt_alloc
@@ -1016,13 +979,8 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
     int thinking = req_thinking_mode(req);
     int recipients = req_bare_recipients(req);
     if (recipients < 0) {
-        for (int i = 0; i < n_own; i++) free(owned[i]);
-        free(owned); free(cm); free(ts.s);
-        tool_envelope_free(&env);
-        jv_free(tools);
-        jv_free(choice_owned);
         send_error(fd, 400, "bare_recipients must be a boolean");
-        return;
+        goto out;
     }
     thinking |= recipients;
     {
@@ -1030,30 +988,21 @@ void handle_responses(slot_t *s, sock_t fd, jv *req) {
         const char *why = NULL;
         int effort = req_template_effort(s->tmpl, req, &why);
         if (effort < 0) {
-            for (int i = 0; i < n_own; i++) free(owned[i]);
-            free(owned); free(cm); free(ts.s);
-            tool_envelope_free(&env);
-            jv_free(tools);
-            jv_free(choice_owned);
             send_error(fd, 400, why);
-            return;
+            goto out;
         }
         thinking |= effort;
     }
     render_state rs;
-    char *prompt = render_prompt_state_alloc(s->tmpl, cm, n_cm, true,
+    prompt = render_prompt_state_alloc(s->tmpl, cm, n_cm, true,
                                              thinking,
                                              native_tools, total + 256, &rs);
     if (!prompt) {
-        for (int i = 0; i < n_own; i++) free(owned[i]);
-        free(owned); free(cm); free(ts.s);
-        tool_envelope_free(&env);
-        jv_free(tools);
-        jv_free(choice_owned);
         send_error(fd, 500, "out of memory building responses prompt");
-        return;
+        goto out;
     }
     run_completion(s, fd, prompt, API_RESPONSES, req, strict ? &env : NULL, &rs);
+out:
     free(prompt);
     for (int i = 0; i < n_own; i++) free(owned[i]);
     free(owned);

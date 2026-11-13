@@ -261,8 +261,11 @@ bool oms_verify_file(const char *bundle_path, const char *pubkey_pem_path,
         }
         jv *subj = jv_get(stmt, "subject");
         if (subj && subj->type == J_ARR && subj->n >= 1) {
+            // kept only as the sha256 it is said to be: it is recorded as JSON
             const char *sd = jv_str(jv_get(jv_get(subj->items[0], "digest"), "sha256"), NULL);
-            if (sd) snprintf(out->subject_digest, sizeof out->subject_digest, "%s", sd);
+            bool hex = sd && strlen(sd) == 64;
+            for (int i = 0; hex && i < 64; i++) hex = hex_digit_value(sd[i]) >= 0;
+            if (hex) snprintf(out->subject_digest, sizeof out->subject_digest, "%s", sd);
         }
         jv *pred = jv_get(stmt, "predicate");
         jv *ser = jv_get(pred, "serialization");
@@ -423,12 +426,22 @@ bool oms_check_artifact(const char *model_path, const oms_policy *policy,
     return allowed;
 }
 
+// The resource is the manifest's name for the model file: a file name, which
+// may hold a quote, written as it stood until R6.68.58 (a split model named
+// m"q-00001-of-00002.gguf made a transcript that did not parse). The subject
+// digest is hex by the time it is stored (oms_verify_file).
 int oms_result_json(const oms_result *r, char *buf, size_t cap) {
-    return snprintf(buf, cap,
-                    "{\"status\":\"%s\",\"subject_digest\":\"%s\",\"curve\":\"%s\","
-                    "\"hash\":\"%s\",\"resource\":\"%s\"}",
-                    r->status, r->subject_digest, r->curve, r->hash,
-                    r->resource_name);
+    char res[(sizeof r->resource_name - 1) * 6 + 9];
+    json_escape(r->resource_name, strlen(r->resource_name), res, sizeof res);
+    int n = snprintf(buf, cap,
+                     "{\"status\":\"%s\",\"subject_digest\":\"%s\",\"curve\":\"%s\","
+                     "\"hash\":\"%s\",\"resource\":\"%s\"}",
+                     r->status, r->subject_digest, r->curve, r->hash, res);
+    if (n < 0 || (size_t)n >= cap) {
+        if (cap) buf[0] = 0;
+        return 0;
+    }
+    return n;
 }
 
 // ---- the signer (R1.2.5) ---------------------------------------------------------

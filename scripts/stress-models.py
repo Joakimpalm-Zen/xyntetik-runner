@@ -347,7 +347,7 @@ def main():
         if gpu["refusals"]:
             report["refused"] = gpu["refusals"]
             print(f"  REFUSED (expected contract): {gpu['refusals']}", flush=True)
-            report_path.write_text(json.dumps(report, indent=1))
+            report_path.write_text(json.dumps(report, indent=1, allow_nan=False))
             continue
         for f in gpu["faults"]:
             report["faults"].append({"where": "gpu_run", "what": f})
@@ -411,7 +411,7 @@ def main():
                     "prefill_tok_s": best.get("prompt_tok_s"),
                     "command": best["command"]}
 
-        report_path.write_text(json.dumps(report, indent=1))
+        report_path.write_text(json.dumps(report, indent=1, allow_nan=False))
         print(f"  faults={len(report['faults'])} deviances={len(report['deviances'])}",
               flush=True)
 

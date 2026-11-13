@@ -63,10 +63,16 @@ def compare(a, b, rtol):
         same = a["experts"] == b["experts"]
         return same, 0.0 if same else 1.0, "experts"
     if a.get("n") != b.get("n"):
-        return False, math.inf, "width"
+        return False, None, "width"   # no distance between rows of two widths
     if "values" in a and "values" in b:
-        num = sum((x - y) ** 2 for x, y in zip(a["values"], b["values"]))
-        den = sum(y * y for y in b["values"])
+        # a value the runner could not write as a number is null (R6.68.115):
+        # two rows match only if their nulls stand at the same places, and
+        # the distance is taken over the rest
+        if [x is None for x in a["values"]] != [y is None for y in b["values"]]:
+            return False, None, "nonfinite"
+        pairs = [(x, y) for x, y in zip(a["values"], b["values"]) if x is not None]
+        num = sum((x - y) ** 2 for x, y in pairs)
+        den = sum(y * y for _, y in pairs)
         d = math.sqrt(num) / max(math.sqrt(den), 1e-30)
         return d <= rtol, d, "values"
     if "values" in a or "values" in b:
@@ -134,7 +140,7 @@ def main():
             json.dump({"rtol": args.rtol, "points": rows,
                        "first": None if first is None else
                        {"pos": first[0][0], "layer": first[0][1], "point": first[0][2],
-                        "distance": first[1], "by": first[2]}}, f, indent=1)
+                        "distance": first[1], "by": first[2]}}, f, indent=1, allow_nan=False)
             f.write("\n")
     if first is None:
         print(f"every common point matches (rtol {args.rtol:g} where valued, "
