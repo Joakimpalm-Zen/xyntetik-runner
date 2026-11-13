@@ -1729,9 +1729,9 @@ static bool metal_bind_inject(void) {
 }
 
 // Bind helper for the three sites that address the weight mmap; with one wrap
-// it always resolves. When it cannot, the offload ENDS (a sticky flag: the
-// forward is discarded and the CPU finishes); buffer 0 at offset 0 keeps the
-// encoder well formed, and its result is thrown away, never computed on.
+// it always resolves. When it cannot, the offload ENDS (a sticky flag): buffer 0
+// at offset 0 keeps the encoder well formed, the forward still runs, and its
+// result is discarded before anything reads it; the CPU finishes the turn.
 static uint64_t metal_bind_weights(gpu_t *g, id<MTLComputeCommandEncoder> e,
                                    uint64_t off, uint64_t len) {
     uint64_t within = 0;
@@ -2217,9 +2217,9 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
     uint64_t wtotal = gguf_mapped_size(&m->gf) - metal_host_only_bytes(m);
 
     // Choose K. Full offload stays the default; a partial split only when the
-    // whole file cannot be wrapped. The ceiling covers KV and scratch too (a
-    // 5.17 GB wrap was refused under 5.73 GB), so the budget subtracts what
-    // this load allocates and keeps a margin.
+    // whole file cannot be wrapped or --gpu-layers asks for one. The ceiling
+    // covers KV and scratch too (a 5.17 GB wrap was refused under 5.73 GB), so
+    // the budget subtracts what this load allocates and keeps a margin.
     int gpu_K = m->n_layer;
     uint64_t ws_limit = dev.recommendedMaxWorkingSetSize;
     {

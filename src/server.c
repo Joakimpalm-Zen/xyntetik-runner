@@ -3473,7 +3473,9 @@ static bool stop_was_requested(void) { return win_stop_requested != 0; }
 // could trust), and one step can take minutes; past this the process exits.
 // It watches all of server_run's shutdown (teardown writes too), owes nothing
 // to stdio (drain_note), and ends with the run that armed it (drain_owner): a
-// process may serve again (tests/test_server_restart.c). docs/server-notes.md.
+// process may serve again (tests/test_server_restart.c). Nothing after
+// server_run returns may block on output: the server writes only to unbuffered
+// stderr, so exit() has nothing left to flush. docs/server-notes.md.
 static double drain_grace_s = 2.0, drain_hard_s = 10.0, drain_late_s = 0;
 static _Atomic(const char *) drain_stage;   // static strings, safe for the watchdog to read
 #define DRAIN_FIRING UINT_MAX     // drain_owner once a watchdog has claimed the exit

@@ -234,7 +234,7 @@ static int lp_piece(slot_t *s, engine *e, int id, char *tb, size_t cap) {
 // One position's alternatives as the OpenAI string->float map. A JSON object
 // must not repeat a key, yet lone partial UTF-8 bytes all escape to "\ufffd":
 // candidates whose ESCAPED spelling matches merge at the first one's place,
-// carrying their summed probability. `top_token_ids` keeps every id.
+// carrying the log of their summed probability. `top_token_ids` keeps every id.
 static void append_top_map(sbuf *r, slot_t *s, engine *e, const lp_alt *row, int cnt) {
     char tb[512];
     sbuf key[20] = {{0}};
@@ -4903,8 +4903,8 @@ static const tool_envelope MUSE_PLAIN_ENV = {.proto = TP_MUSE_PLAIN};
 
 // Phase 1 of a turn: the prompt into the model inside one device turn, reusing
 // what the slot or the shared store holds (the slot's KV is free; the store
-// costs a copy but reaches across slots, requests and models; a caller can opt
-// out of the store alone, cache_prompt:false of both). Returns the logits to
+// costs a copy but reaches across slots, requests and model swaps; a caller can
+// opt out of the store alone, cache_prompt:false of both). Returns the logits to
 // start from, or NULL when the request was answered here (a refusal or an end).
 static float *turn_prefill(turn_result *t) {
     slot_t *s = t->s;

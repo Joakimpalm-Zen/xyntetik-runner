@@ -7217,7 +7217,8 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     // One explicitly invoked report a user can attach to a slowness, nonsense or
     // tool-call question: what this process did (backend layers, template,
     // sampler) and one short chat probe through the chat path, as findings with a
-    // next step. No content leaves or is recorded unless --doctor-include-text.
+    // next step. No content leaves the machine, and none is recorded in the
+    // report unless --doctor-include-text asks for it.
     int dt = tmpl_override >= 0 ? tmpl_override
            : template_detect(gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL), &rt->tok);
     bool have_tmpl_text = gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL) != NULL;
