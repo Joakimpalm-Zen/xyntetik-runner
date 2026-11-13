@@ -2849,6 +2849,36 @@
       }
     },
     {
+      "id": "stablelm-2-1.6b-chat-q8_0",
+      "architecture": "stablelm",
+      "family": "StableLM (Stability AI)",
+      "file": "models/stablelm-2-1_6b-chat.Q8_0.gguf",
+      "sha256": "70fa97127815cffc3e5dd004976c8986fca1011c74bb8fd581c784cdc00b9760",
+      "upstream": "mradermacher/stablelm-2-1_6b-chat-GGUF",
+      "tokenizer_reference": "stabilityai/stablelm-2-1_6b-chat",
+      "tokenizer_reference_revision": "f3fe67057c2789ae1bb1fe42b038da99840d4f13",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/stablelm-2-1.6b-chat.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "chat"
+      ],
+      "notes": "mradermacher's Q8_0 stablelm-2-1_6b-chat.Q8_0.gguf (1,751,882,848 bytes, revision 037d59f7 of mradermacher/stablelm-2-1_6b-chat-GGUF), architecture stablelm: 24 layers, hidden 2,048, 32 heads without grouping, partial rotary (a quarter of each head), q/k/v biases, LayerNorm, an untied output head, vocabulary 100,352, trained context 4,096. Tokenizer pre stablelm2: 0 of 721 corpus strings and 0 of 99,474 vocabulary entries differ from the publisher's tokenizer.json at f3fe6705; template family chatml (stablelm2), conformance 16/16 in text and tokens against the publisher's chat template, including its default system turn ('You are a helpful assistant.'), which Runner writes since R4.39.3. On load the file resolves to architecture stablelm, tokenizer pre stablelm2, template chatml, tool family qwen_json and the generic sampling preset (there is no StableLM preset). Fidelity: the publisher's float32 checkpoint it reads 0.0041 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 544 positions inside the model's 4,096-token context (two windows of 272: 0.0043 and 0.0039; plain top-1 98.2%, CPU), against a bar of 0.05 and 97%. Record docs/compat-reports/stablelm-2-1.6b-chat-2026-11-13. cpu_cuda is not declared: a CUDA build serves this model on the CPU (LayerNorm is not on the GPU backends), and compat refuses a comparison of the CPU with itself. The chat check allows 400 tokens: the model answers 'What is 2+2?' with worked examples and ran past 200. greedy_reference remains undeclared.",
+      "check_params": {
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 400,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
       "id": "qwen2.5-1.5b-instruct-q8_0-bartowski",
       "architecture": "qwen2",
       "family": "Qwen2 (Qwen)",

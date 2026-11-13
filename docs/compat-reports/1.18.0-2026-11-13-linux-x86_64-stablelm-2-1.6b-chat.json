@@ -1,0 +1,77 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-11-13T12:57:25Z",
+  "host": {
+    "os": "Linux",
+    "machine": "x86_64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.18.0"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "stablelm-2-1.6b-chat-q8_0",
+      "architecture": "stablelm",
+      "file": "models/stablelm-2-1_6b-chat.Q8_0.gguf",
+      "expected_sha256": "70fa97127815cffc3e5dd004976c8986fca1011c74bb8fd581c784cdc00b9760",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 137.8,
+          "stderr_tail": "gpu: this model normalises with LayerNorm and the GPU backends implement RMSNorm only \u2014 using CPU\nloaded models/stablelm-2-1_6b-chat.Q8_0.gguf | stablelm | 24 layers | ctx 4096 | 20 threads | 0.04s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 102.95 tok/s | gen: 1 tok, 72.45 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 51.7,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": "",
+          "vocab": {
+            "gated": false,
+            "expect": null,
+            "differ": 0,
+            "of": 99474,
+            "status": "pass"
+          }
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 5536.6,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "`4`.\n\n5. **C++**:\n```cpp\n#include <iostream>\n\nint main() {\n    std::cout << 2 + 2 << std::endl;\n    return 0;\n}\n```\nWhen you run this code, it will also output `4`.\n\nThese examples demonstrate how to perform the operation \"2 + 2\" in various programming languages and output the result, which is `4`.\n"
+        }
+      },
+      "resolved_file": "models/stablelm-2-1_6b-chat.Q8_0.gguf",
+      "actual_sha256": "70fa97127815cffc3e5dd004976c8986fca1011c74bb8fd581c784cdc00b9760",
+      "file_status": "pass",
+      "complete": true
+    }
+  ],
+  "complete": true,
+  "summary": {
+    "models": 1,
+    "files": {
+      "pass": 1
+    },
+    "checks": {
+      "load": {
+        "pass": 1
+      },
+      "tokenizer": {
+        "pass": 1
+      },
+      "chat": {
+        "pass": 1
+      }
+    }
+  }
+}
