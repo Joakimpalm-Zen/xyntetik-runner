@@ -1,0 +1,90 @@
+{
+ "model": "models/Mistral-7B-Instruct-v0.3-Q8_0.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "dense_rule": "margin_qualified",
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 32,
+  "layers_total": 32,
+  "output_weight_on_gpu": true,
+  "whole_graph": true
+ },
+ "cpu_cuda_identity": {
+  "result": "pass",
+  "exact": "9/9",
+  "gpu_arm_on_cpu": false,
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 9,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris, but the capital of the French language is Quebec City.\n\nThe French language is the official language of 29 countries, including France, Canada, and Switzerland. However, Quebec City, the capital of the Canadian province of Quebec, is considered the capital of the French language. This is because Quebec City is the largest French-speaking city outside of France and has a rich cultural and linguistic heritage.\n\nQuebec City was founded in 1608 by French explorer Samuel de Champlain, and the city has been predominantly French-speaking ever since. The city's French heritage",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n    if n <= 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n - 1) + fibonacci(n - 2)\n\n\ndef main():\n    n = int(input(\"Enter the number of terms: \"))\n    print(\"Fibonacci sequence:\")\n    for i in range(n):\n        print(fibonacci(i), end=\" \")\n\n\nif __name__ == \"__main__\":\n    main()",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there was a young girl named Elsa. Elsa was the queen of a kingdom called Arendelle, and she had the power to create and control ice and snow. But Elsa was afraid of her powers, and she kept them hidden away.\n\nOne day, Elsa's younger sister, Anna, found out about Elsa's powers and wanted to learn how to use them. Elsa was scared and tried to keep Anna away, but Anna was determined to learn. In a fit of anger, Elsa accidentally unleashed her powers and created a snowstorm that covered the entire kingdom.\n\nAn",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 381",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " He was a meticulous man, and he kept his records in a leather-bound journal.\n\nOne morning, he found the journal on the floor of his living room. He picked it up and opened it to the last page. The ink was smeared, and the words were illegible. He shook his head and closed the book.\n\nHe went to the kitchen and made a pot of coffee. He sat at the table and stared out the window. The sea was calm, and the sun was shining. He took a sip of his coffee and closed his eyes.\n\nWhen he opened them again",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " of this error, and the addition of 1000 new objects discovered since 1929, resulted in the publication of the New General Catalogue in 1953.\n\nThe New General Catalogue (NGC) is a list of over 7,000 celestial objects, including galaxies, star clusters, and nebulae, that was published between 1888 and 1889 by John Louis Emil Dreyer, the first director of the Armagh Observatory in Northern Ireland. The objects were discovered by a number of astronomers, including William H",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " is\n# good, but it's not very useful for debugging.  This function will unpack\n# the header even if it's truncated, and return the unpacked values as a\n# dictionary.\ndef parse_header_partial(buf, size):\n    if size < 8:\n        return {'magic': None, 'version': None}\n    magic, version = struct.unpack('<II', buf[:8])\n    return {'magic': magic, 'version': version}\n\ndef parse_header_and_check_magic(buf, size",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " has just come from the Alfama.\n\nThe Alfama is the oldest part of Lisbon, and it is a labyrinth of narrow, winding streets, with houses built of stone and tile, and the occasional church or chapel. The streets are steep, and the houses are built on top of each other, with the upper floors projecting over the street below. The houses are often decorated with tiles, and the streets are lined with laundry hanging from windows and balconies.\n\nThe Alfama is also home to the city\u2019s Fado singers, who perform in the bars and restaurants that line the",
+   "gpu": null
+  }
+ ]
+}

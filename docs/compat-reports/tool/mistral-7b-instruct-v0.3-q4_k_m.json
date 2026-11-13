@@ -1,0 +1,7 @@
+{
+ "model": "models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+ "scenario_matrix": "agent-torture",
+ "returncode": 0,
+ "totals": null,
+ "artifacts_dir": "docs/compat-reports/tool/mistral-7b-instruct-v0.3-q4_k_m"
+}

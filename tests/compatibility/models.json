@@ -99,6 +99,47 @@
       "tokenizer_reference_ids_informational": "tests/compatibility/tokenizer-references/mistral-7b-instruct-v0.3.tokenizer-json.json"
     },
     {
+      "id": "mistral-7b-instruct-v0.3-q8_0",
+      "architecture": "llama",
+      "family": "Mistral",
+      "file": "models/Mistral-7B-Instruct-v0.3-Q8_0.gguf",
+      "sha256": "404857e776114baada71a08ebd3bba79d721ec7fca99705e7e7b892ae8bc583f",
+      "upstream": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+      "tokenizer_reference": "mistralai/Mistral-7B-Instruct-v0.3",
+      "tokenizer_reference_revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/mistral-7b-instruct-v0.3.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "bartowski's Q8_0 Mistral-7B-Instruct-v0.3-Q8_0.gguf (7,702,565,088 bytes, revision 61fd4167 of bartowski/Mistral-7B-Instruct-v0.3-GGUF; lmstudio-community/Mistral-7B-Instruct-v0.3-GGUF carries byte-identical files (the same LFS sha256), so this measurement covers both repositories), architecture llama: 32 layers, hidden 4,096, 32 query heads over 8 KV heads, FFN 14,336, rope base 1,000,000, vocabulary 32,768, an untied output head, trained context 32,768. Tokenizer: 0 of 721 corpus strings differ from Mistral AI's SentencePiece model at c170c708 (the gated reference); against the repository's tokenizer.json 44 of 721 differ, 40 of them strings that begin with whitespace, where tokenizer.json drops or shifts one leading space (informational, as R6.2.2 found). Template family mistral, conformance 18/18 in text and tokens against the publisher's current template (3 cases not expressible by the family); the file embeds an older v0.1-form template, which Runner does not serve (it detects v0.3 by the vocabulary). On load the file resolves to architecture llama, template mistral, the native mistral_json tool protocol ([AVAILABLE_TOOLS], [TOOL_CALLS]), and the mistral sampling preset. Fidelity: against the publisher's BF16 checkpoint computed in float32 it reads 0.0011 ± 0.0002 mean KLD and 100% margin-qualified top-1 over 543 positions (two windows: 0.0015 and 0.0008; plain top-1 98.5%, CPU), against a bar of 0.05 and 97%. Record docs/compat-reports/mistral-7b-instruct-v0.3-2026-11-13. CUDA runs the whole model on the device (32 of 32 layers) on a CUDA MIG slice, 1g.24gb, sm_120. greedy_reference remains undeclared.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      },
+      "tokenizer_reference_ids_informational": "tests/compatibility/tokenizer-references/mistral-7b-instruct-v0.3.tokenizer-json.json"
+    },
+    {
       "id": "qwen2.5-32b-instruct-q3_k_s",
       "architecture": "qwen2",
       "family": "Qwen 2.5",

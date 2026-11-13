@@ -3160,21 +3160,242 @@
       ]
     },
     {
-      "id": "arch-mistral",
-      "model": "Mistral (mistral)",
+      "id": "mistral-7b-instruct-v0.3-q8_0",
+      "model": "Mistral-7B-Instruct-v0.3 (Mistral AI)",
       "family": "Mistral",
       "tier": "tier2",
-      "scope": "architecture",
-      "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
-      "architecture": "mistral",
+      "claim": "bartowski's Q8_0 of Mistral AI's Mistral-7B-Instruct-v0.3, the fidelity file of the two: against the publisher's BF16 checkpoint computed in float32 it reads 0.0011 ± 0.0002 mean KLD and 100% margin-qualified top-1 over 543 positions (two windows: 0.0015 and 0.0008; plain top-1 98.5%, CPU), against a bar of 0.05 and 97%.",
+      "architecture": "llama",
+      "upstream": {
+        "checkpoint": "mistralai/Mistral-7B-Instruct-v0.3",
+        "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "mistralai/Mistral-7B-Instruct-v0.3"
+      },
+      "files": [
+        {
+          "name": "Mistral-7B-Instruct-v0.3-Q8_0.gguf",
+          "repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+          "revision": "61fd4167fff3ab01ee1cfe0da183fa27a944db48",
+          "sha256": "404857e776114baada71a08ebd3bba79d721ec7fca99705e7e7b892ae8bc583f",
+          "bytes": 7702565088
+        }
+      ],
+      "quantization": "Q8_0 (bartowski, importance matrix recorded; Q8_0 does not use it)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both of bartowski's files (revision 61fd4167, with bartowski's importance matrix) against Mistral AI's BF16 checkpoint at c170c708 computed in float32 on the CPU (transformers 5.16.1, the native MistralForCausalLM on the HF-format shards (no remote code), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows at stride 15 over gold-corpus-2k from 8 (272 positions) and from 15 (271: with the BOS the 4,096-token file ends one short), token-id keyed with 0 mismatches, Runner CPU score files of 4,096 tokens at -c 4096 from the batched prefill route): Q8_0 pooled 0.0011 ± 0.0002 mean KLD (SE, 543 positions; bootstrap 95% 0.0009 to 0.0014; windows 0.0015 and 0.0008) / 98.5% top-1 / 100% margin-qualified (391/391); Q4_K_M pooled 0.0219 ± 0.0013 (bootstrap 95% 0.0193 to 0.0245; windows 0.0222 and 0.0216) / 93.7% / 99.23% (388/391). lmstudio-community/Mistral-7B-Instruct-v0.3-GGUF carries byte-identical files (the same LFS sha256), so this measurement covers both repositories. Tokenizer: 0 of 721 corpus strings differ from Mistral AI's SentencePiece model at c170c708 (the gated reference); against the repository's tokenizer.json 44 of 721 differ, 40 of them strings that begin with whitespace, where tokenizer.json drops or shifts one leading space (informational, as R6.2.2 found). Template family mistral, conformance 18/18 in text and tokens against the publisher's current template (3 cases not expressible by the family); the file embeds an older v0.1-form template, which Runner does not serve (it detects v0.3 by the vocabulary). Record: docs/compat-reports/mistral-7b-instruct-v0.3-2026-11-13/README.md.",
+        "context": 4096,
+        "limitations": "CPU and CUDA for this file (7.70 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 32 layers on the device). The file is 7.70 GB, over an 8 GB machine: there is no Metal cell for it. Fidelity is measured inside 4,096 tokens only (the trained context is 32,768). On load the file resolves to architecture llama, template mistral, the native mistral_json tool protocol ([AVAILABLE_TOOLS], [TOOL_CALLS]), and the mistral sampling preset. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-mistral-7b-instruct-v0.3.json",
+          "docs/compat-reports/mistral-7b-instruct-v0.3-2026-11-13/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "the Windows CUDA host's cells, task quality, and a reference read above 4,096 tokens."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "metal": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "e3c8beb867a2936943d9798d8db336f0cb170c976376dab05651ccd61a3dc719",
+          "ran": "runner -m Mistral-7B-Instruct-v0.3-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q8_0.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "1bcf39863a2a8b57d1950b58f65961942c3238c747e20f18dbde2de73dd7f9f3",
+            "compiler": "13.3.0",
+            "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+            "dirty": false
+          }
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "e3c8beb867a2936943d9798d8db336f0cb170c976376dab05651ccd61a3dc719",
+          "ran": "runner -m Mistral-7B-Instruct-v0.3-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q8_0.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "1bcf39863a2a8b57d1950b58f65961942c3238c747e20f18dbde2de73dd7f9f3",
+            "compiler": "13.3.0",
+            "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+            "dirty": false
+          }
+        }
+      },
       "transitions": [
         {
           "tier": "tier2",
-          "effective": "2026-10-22",
-          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
+          "effective": "2026-11-13",
+          "reason": "Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.8) and a float32 reference measurement against the publisher's checkpoint, so the Mistral family has a file with cells. Maintained on report.",
           "last_validated_release": null
         }
-      ]
+      ],
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.18.0",
+        "date": "2026-11-13"
+      }
+    },
+    {
+      "id": "mistral-7b-instruct-v0.3-q4_k_m",
+      "model": "Mistral-7B-Instruct-v0.3 (Mistral AI)",
+      "family": "Mistral",
+      "tier": "tier2",
+      "claim": "bartowski's Q4_K_M of Mistral AI's Mistral-7B-Instruct-v0.3: against the publisher's BF16 checkpoint computed in float32 it reads 0.0219 ± 0.0013 mean KLD (bootstrap 95% interval 0.0193 to 0.0245) and 99.23% margin-qualified top-1 over 543 positions (two windows: 0.0222 and 0.0216; plain top-1 93.7%, CPU), against a bar of 0.05 and 97%. The Q8_0 is the fidelity file.",
+      "architecture": "llama",
+      "upstream": {
+        "checkpoint": "mistralai/Mistral-7B-Instruct-v0.3",
+        "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71"
+      },
+      "licence": {
+        "id": "apache-2.0",
+        "from": "mistralai/Mistral-7B-Instruct-v0.3"
+      },
+      "files": [
+        {
+          "name": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+          "repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+          "revision": "61fd4167fff3ab01ee1cfe0da183fa27a944db48",
+          "sha256": "1270d22c0fbb3d092fb725d4d96c457b7b687a5f5a715abe1e818da303e562b6",
+          "bytes": 4372812000
+        }
+      ],
+      "quantization": "Q4_K_M (bartowski, importance matrix)",
+      "published": false,
+      "envelope": {
+        "features": [
+          "text"
+        ],
+        "fp32_reference": "measured",
+        "anchor": "Both of bartowski's files (revision 61fd4167, with bartowski's importance matrix) against Mistral AI's BF16 checkpoint at c170c708 computed in float32 on the CPU (transformers 5.16.1, the native MistralForCausalLM on the HF-format shards (no remote code), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows at stride 15 over gold-corpus-2k from 8 (272 positions) and from 15 (271: with the BOS the 4,096-token file ends one short), token-id keyed with 0 mismatches, Runner CPU score files of 4,096 tokens at -c 4096 from the batched prefill route): Q8_0 pooled 0.0011 ± 0.0002 mean KLD (SE, 543 positions; bootstrap 95% 0.0009 to 0.0014; windows 0.0015 and 0.0008) / 98.5% top-1 / 100% margin-qualified (391/391); Q4_K_M pooled 0.0219 ± 0.0013 (bootstrap 95% 0.0193 to 0.0245; windows 0.0222 and 0.0216) / 93.7% / 99.23% (388/391). lmstudio-community/Mistral-7B-Instruct-v0.3-GGUF carries byte-identical files (the same LFS sha256), so this measurement covers both repositories. Tokenizer: 0 of 721 corpus strings differ from Mistral AI's SentencePiece model at c170c708 (the gated reference); against the repository's tokenizer.json 44 of 721 differ, 40 of them strings that begin with whitespace, where tokenizer.json drops or shifts one leading space (informational, as R6.2.2 found). Template family mistral, conformance 18/18 in text and tokens against the publisher's current template (3 cases not expressible by the family); the file embeds an older v0.1-form template, which Runner does not serve (it detects v0.3 by the vocabulary). Record: docs/compat-reports/mistral-7b-instruct-v0.3-2026-11-13/README.md.",
+        "context": 4096,
+        "limitations": "CPU and CUDA for this file (4.37 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 32 layers on the device). Fidelity is measured inside 4,096 tokens only (the trained context is 32,768). On load the file resolves to architecture llama, template mistral, the native mistral_json tool protocol ([AVAILABLE_TOOLS], [TOOL_CALLS]), and the mistral sampling preset. Licence: apache-2.0.",
+        "evidence": [
+          "docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-mistral-7b-instruct-v0.3.json",
+          "docs/compat-reports/mistral-7b-instruct-v0.3-2026-11-13/README.md",
+          "tests/compatibility/coverage.json"
+        ],
+        "missing": "A Metal cell, the Windows CUDA host's cells, task quality, and a reference read above 4,096 tokens."
+      },
+      "smoke": {
+        "device_class": "linux-x86_64-cuda",
+        "backend": "cuda"
+      },
+      "backends": {
+        "metal": null,
+        "cpu": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "23d8e0c094691cbe8eee9d02235e403b0e163e4224c59f6958f4ff4e7e99c52e",
+          "ran": "runner -m Mistral-7B-Instruct-v0.3-Q4_K_M.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "build": {
+            "binary_sha256": "1bcf39863a2a8b57d1950b58f65961942c3238c747e20f18dbde2de73dd7f9f3",
+            "compiler": "13.3.0",
+            "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+            "dirty": false
+          }
+        },
+        "cuda": {
+          "kind": "gate",
+          "runner_version": "1.18.0",
+          "date": "2026-11-13",
+          "device_class": "linux-x86_64-cuda",
+          "result": "pass",
+          "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+          "caps": {
+            "version": "1.18.0",
+            "os": "linux",
+            "arch": "x86_64",
+            "cpu_cores": 40,
+            "gpu_backend": "cuda",
+            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+          },
+          "output_sha256": "23d8e0c094691cbe8eee9d02235e403b0e163e4224c59f6958f4ff4e7e99c52e",
+          "ran": "runner -m Mistral-7B-Instruct-v0.3-Q4_K_M.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
+          "evidence": "tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q4_k_m.linux-x86_64-cuda.cuda.txt",
+          "build": {
+            "binary_sha256": "1bcf39863a2a8b57d1950b58f65961942c3238c747e20f18dbde2de73dd7f9f3",
+            "compiler": "13.3.0",
+            "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+            "dirty": false
+          }
+        }
+      },
+      "transitions": [
+        {
+          "tier": "tier2",
+          "effective": "2026-11-13",
+          "reason": "Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.8) and a float32 reference measurement against the publisher's checkpoint, so the Mistral family has a file with cells. Maintained on report.",
+          "last_validated_release": null
+        }
+      ],
+      "lora": {
+        "training": {
+          "supported": true,
+          "reason": null
+        },
+        "adapter_serving": {
+          "supported": true,
+          "reason": null
+        },
+        "runner_version": "1.18.0",
+        "date": "2026-11-13"
+      }
     },
     {
       "id": "smollm2-135m-instruct-q8_0",

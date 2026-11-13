@@ -481,12 +481,13 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Mistral</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>Mistral</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train ✅</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td colspan="5"><b>Mistral (mistral)</b></td></tr>
-<tr><td><a href="#arch-mistral">Mistral (mistral)</a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td colspan="5"><b>Mistral-7B-Instruct-v0.3 (Mistral AI)</b></td></tr>
+<tr><td><a href="#mistral-7b-instruct-v0.3-q4_k_m"><code>Mistral-7B-Instruct-v0.3-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td></td><td nowrap>✅ 1.18.0<br>2026-11-13</td></tr>
+<tr><td><a href="#mistral-7b-instruct-v0.3-q8_0"><code>Mistral-7B-Instruct-v0.3-Q8_0.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td></td><td nowrap>✅ 1.18.0<br>2026-11-13</td></tr>
 </tbody>
 </table>
 </details>
@@ -1865,13 +1866,51 @@ Text path and native tool calls ([TOOL_CALLS]name[ARGS]{json}), the publisher's 
 
 ### Mistral
 
-#### Mistral (mistral)
+#### Mistral-7B-Instruct-v0.3 (Mistral AI)
 
-<a id="arch-mistral"></a>
-##### Mistral (mistral)
+<a id="mistral-7b-instruct-v0.3-q4_k_m"></a>
+##### `Mistral-7B-Instruct-v0.3-Q4_K_M.gguf`
 
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+bartowski's Q4_K_M of Mistral AI's Mistral-7B-Instruct-v0.3: against the publisher's BF16 checkpoint computed in float32 it reads 0.0219 ± 0.0013 mean KLD (bootstrap 95% interval 0.0193 to 0.0245) and 99.23% margin-qualified top-1 over 543 positions (two windows: 0.0222 and 0.0216; plain top-1 93.7%, CPU), against a bar of 0.05 and 97%. The Q8_0 is the fidelity file.
 
+- **File:** `Mistral-7B-Instruct-v0.3-Q4_K_M.gguf` (sha256 `1270d22c0fbb3d092fb725d4d96c457b7b687a5f5a715abe1e818da303e562b6`, 4,372,812,000 bytes, from [bartowski/Mistral-7B-Instruct-v0.3-GGUF](https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF) at revision `61fd4167fff3`).
+- **Upstream checkpoint:** mistralai/Mistral-7B-Instruct-v0.3 at revision `c170c708c41d`.
+- **Quantization:** Q4_K_M (bartowski, importance matrix).
+- **Licence:** `apache-2.0`, as the mistralai/Mistral-7B-Instruct-v0.3 model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both of bartowski's files (revision 61fd4167, with bartowski's importance matrix) against Mistral AI's BF16 checkpoint at c170c708 computed in float32 on the CPU (transformers 5.16.1, the native MistralForCausalLM on the HF-format shards (no remote code), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows at stride 15 over gold-corpus-2k from 8 (272 positions) and from 15 (271: with the BOS the 4,096-token file ends one short), token-id keyed with 0 mismatches, Runner CPU score files of 4,096 tokens at -c 4096 from the batched prefill route): Q8_0 pooled 0.0011 ± 0.0002 mean KLD (SE, 543 positions; bootstrap 95% 0.0009 to 0.0014; windows 0.0015 and 0.0008) / 98.5% top-1 / 100% margin-qualified (391/391); Q4_K_M pooled 0.0219 ± 0.0013 (bootstrap 95% 0.0193 to 0.0245; windows 0.0222 and 0.0216) / 93.7% / 99.23% (388/391). lmstudio-community/Mistral-7B-Instruct-v0.3-GGUF carries byte-identical files (the same LFS sha256), so this measurement covers both repositories. Tokenizer: 0 of 721 corpus strings differ from Mistral AI's SentencePiece model at c170c708 (the gated reference); against the repository's tokenizer.json 44 of 721 differ, 40 of them strings that begin with whitespace, where tokenizer.json drops or shifts one leading space (informational, as R6.2.2 found). Template family mistral, conformance 18/18 in text and tokens against the publisher's current template (3 cases not expressible by the family); the file embeds an older v0.1-form template, which Runner does not serve (it detects v0.3 by the vocabulary). Record: docs/compat-reports/mistral-7b-instruct-v0.3-2026-11-13/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU and CUDA for this file (4.37 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 32 layers on the device). Fidelity is measured inside 4,096 tokens only (the trained context is 32,768). On load the file resolves to architecture llama, template mistral, the native mistral_json tool protocol ([AVAILABLE_TOOLS], [TOOL_CALLS]), and the mistral sampling preset. Licence: apache-2.0.
+- **Still missing:** A Metal cell, the Windows CUDA host's cells, task quality, and a reference read above 4,096 tokens.
+- **Evidence:** [docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-mistral-7b-instruct-v0.3.json](compat-reports/1.18.0-2026-11-13-linux-x86_64-mistral-7b-instruct-v0.3.json), [docs/compat-reports/mistral-7b-instruct-v0.3-2026-11-13/README.md](compat-reports/mistral-7b-instruct-v0.3-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.18.0 on 2026-11-13.
+- **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `5ac478c6e111`, output sha256 `23d8e0c094691cbe`, [pin](../tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q4_k_m.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `5ac478c6e111`, output sha256 `23d8e0c094691cbe`, [pin](../tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q4_k_m.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.18.0, 2026-11-13).
+- **LoRA adapter serving:** supported (runner 1.18.0, 2026-11-13).
+
+<a id="mistral-7b-instruct-v0.3-q8_0"></a>
+##### `Mistral-7B-Instruct-v0.3-Q8_0.gguf`
+
+bartowski's Q8_0 of Mistral AI's Mistral-7B-Instruct-v0.3, the fidelity file of the two: against the publisher's BF16 checkpoint computed in float32 it reads 0.0011 ± 0.0002 mean KLD and 100% margin-qualified top-1 over 543 positions (two windows: 0.0015 and 0.0008; plain top-1 98.5%, CPU), against a bar of 0.05 and 97%.
+
+- **File:** `Mistral-7B-Instruct-v0.3-Q8_0.gguf` (sha256 `404857e776114baada71a08ebd3bba79d721ec7fca99705e7e7b892ae8bc583f`, 7,702,565,088 bytes, from [bartowski/Mistral-7B-Instruct-v0.3-GGUF](https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF) at revision `61fd4167fff3`).
+- **Upstream checkpoint:** mistralai/Mistral-7B-Instruct-v0.3 at revision `c170c708c41d`.
+- **Quantization:** Q8_0 (bartowski, importance matrix recorded; Q8_0 does not use it).
+- **Licence:** `apache-2.0`, as the mistralai/Mistral-7B-Instruct-v0.3 model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both of bartowski's files (revision 61fd4167, with bartowski's importance matrix) against Mistral AI's BF16 checkpoint at c170c708 computed in float32 on the CPU (transformers 5.16.1, the native MistralForCausalLM on the HF-format shards (no remote code), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows at stride 15 over gold-corpus-2k from 8 (272 positions) and from 15 (271: with the BOS the 4,096-token file ends one short), token-id keyed with 0 mismatches, Runner CPU score files of 4,096 tokens at -c 4096 from the batched prefill route): Q8_0 pooled 0.0011 ± 0.0002 mean KLD (SE, 543 positions; bootstrap 95% 0.0009 to 0.0014; windows 0.0015 and 0.0008) / 98.5% top-1 / 100% margin-qualified (391/391); Q4_K_M pooled 0.0219 ± 0.0013 (bootstrap 95% 0.0193 to 0.0245; windows 0.0222 and 0.0216) / 93.7% / 99.23% (388/391). lmstudio-community/Mistral-7B-Instruct-v0.3-GGUF carries byte-identical files (the same LFS sha256), so this measurement covers both repositories. Tokenizer: 0 of 721 corpus strings differ from Mistral AI's SentencePiece model at c170c708 (the gated reference); against the repository's tokenizer.json 44 of 721 differ, 40 of them strings that begin with whitespace, where tokenizer.json drops or shifts one leading space (informational, as R6.2.2 found). Template family mistral, conformance 18/18 in text and tokens against the publisher's current template (3 cases not expressible by the family); the file embeds an older v0.1-form template, which Runner does not serve (it detects v0.3 by the vocabulary). Record: docs/compat-reports/mistral-7b-instruct-v0.3-2026-11-13/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU and CUDA for this file (7.70 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 32 layers on the device). The file is 7.70 GB, over an 8 GB machine: there is no Metal cell for it. Fidelity is measured inside 4,096 tokens only (the trained context is 32,768). On load the file resolves to architecture llama, template mistral, the native mistral_json tool protocol ([AVAILABLE_TOOLS], [TOOL_CALLS]), and the mistral sampling preset. Licence: apache-2.0.
+- **Still missing:** the Windows CUDA host's cells, task quality, and a reference read above 4,096 tokens.
+- **Evidence:** [docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-mistral-7b-instruct-v0.3.json](compat-reports/1.18.0-2026-11-13-linux-x86_64-mistral-7b-instruct-v0.3.json), [docs/compat-reports/mistral-7b-instruct-v0.3-2026-11-13/README.md](compat-reports/mistral-7b-instruct-v0.3-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.18.0 on 2026-11-13.
+- **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `5ac478c6e111`, output sha256 `e3c8beb867a29369`, [pin](../tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `5ac478c6e111`, output sha256 `e3c8beb867a29369`, [pin](../tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ☐ not run
+- **LoRA training:** supported (runner 1.18.0, 2026-11-13).
+- **LoRA adapter serving:** supported (runner 1.18.0, 2026-11-13).
 
 ### Muse-Glimmer-30B
 
@@ -2916,7 +2955,6 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-10-22 | [gpt-oss-20b keep-30, `gpt-oss-20b-keep30-MXFP4.gguf`](#gpt-oss-20b-keep30-mxfp4) | Tier 2, maintained on report | Migration: policy decision 2026-10-22, Tier 2 with its near-miss disclosure; it stays published. | none recorded |
 | 2026-10-22 | [Qwen3-4B, `Qwen_Qwen3-4B-Q4_K_M.gguf`](#qwen3-4b-q4_k_m-bartowski) | Tier 2, maintained on report | Migration: the base of a Tier 1 adapter, added 2026-10-23 so the adapter's smoke can run; not on the owner's Tier 1 roster. | none recorded |
 | 2026-10-22 | [Qwen3.8-Flash-Next, `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`](#qwen3.8-flash-next-gsq-rco-iq3_s) | Tier 2, maintained on report | Migration: the trunk of a Tier 1 MTP head, added 2026-10-23 so the head's smoke can run; not on the owner's Tier 1 roster. | none recorded |
-| 2026-10-22 | [Mistral (mistral)](#arch-mistral) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Gemma 3 (gemma3)](#arch-gemma3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Granite 4 h-series hybrid (granitehybrid)](#arch-granitehybrid) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B), `Qwen3.8-35B-A3B-Q6_K.gguf`](#empero-qwen3.8-35b-a3b-distill-q6_k) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
@@ -3024,6 +3062,8 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-11-11 | [NVIDIA Nemotron 3.5 Bolt-74B-A9B (NVIDIA), `NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf`](#nemotron-3.5-bolt-74b-a9b-24gb) | Tier 2, maintained on report | Joins the roster 2026-11-11 with the admitting CPU cell from the lab CPU lane (R4.27.4.4 S2), on agreement with llama.cpp on the same bytes: the parent cannot be held in float32. Maintained on report. | none recorded |
 | 2026-11-12 | [Apertus-8B-Instruct-2509 (Swiss AI), `swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf`](#apertus-8b-instruct-2509-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-12 with the admitting CPU and CUDA cells from the lab lanes (R4.38) and a float32 reference measurement against the publisher's checkpoint; a user asked for Apertus. Maintained on report. | none recorded |
 | 2026-11-12 | [Apertus-8B-Instruct-2509 (Swiss AI), `swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf`](#apertus-8b-instruct-2509-q4_k_m) | Tier 2, maintained on report | Joins the roster 2026-11-12 with the admitting CPU and CUDA cells from the lab lanes (R4.38) and a float32 reference measurement against the publisher's checkpoint; a user asked for Apertus. Maintained on report. | none recorded |
+| 2026-11-13 | [Mistral-7B-Instruct-v0.3 (Mistral AI), `Mistral-7B-Instruct-v0.3-Q8_0.gguf`](#mistral-7b-instruct-v0.3-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.8) and a float32 reference measurement against the publisher's checkpoint, so the Mistral family has a file with cells. Maintained on report. | none recorded |
+| 2026-11-13 | [Mistral-7B-Instruct-v0.3 (Mistral AI), `Mistral-7B-Instruct-v0.3-Q4_K_M.gguf`](#mistral-7b-instruct-v0.3-q4_k_m) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.8) and a float32 reference measurement against the publisher's checkpoint, so the Mistral family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [SmolLM2-135M-Instruct (Hugging Face), `SmolLM2-135M-Instruct-Q8_0.gguf`](#smollm2-135m-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [SmolLM2-1.7B-Instruct (Hugging Face), `SmolLM2-1.7B-Instruct-Q8_0.gguf`](#smollm2-1.7b-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [SmolLM2-1.7B-Instruct (Hugging Face), `SmolLM2-1.7B-Instruct-Q4_K_M.gguf`](#smollm2-1.7b-instruct-q4_k_m) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report. | none recorded |
