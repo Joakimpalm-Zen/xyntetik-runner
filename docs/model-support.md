@@ -481,12 +481,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Mistral</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train ✅</summary>
+<summary><b>Mistral</b>, 1 model: CPU ✅ · CUDA ✅ · Metal 🟨 1 of 2 · Train ✅</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>Mistral-7B-Instruct-v0.3 (Mistral AI)</b></td></tr>
-<tr><td><a href="#mistral-7b-instruct-v0.3-q4_k_m"><code>Mistral-7B-Instruct-v0.3-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td></td><td nowrap>✅ 1.18.0<br>2026-11-13</td></tr>
+<tr><td><a href="#mistral-7b-instruct-v0.3-q4_k_m"><code>Mistral-7B-Instruct-v0.3-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td></tr>
 <tr><td><a href="#mistral-7b-instruct-v0.3-q8_0"><code>Mistral-7B-Instruct-v0.3-Q8_0.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td></td><td nowrap>✅ 1.18.0<br>2026-11-13</td></tr>
 </tbody>
 </table>
@@ -1886,7 +1886,7 @@ bartowski's Q4_K_M of Mistral AI's Mistral-7B-Instruct-v0.3: against the publish
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.18.0 on 2026-11-13.
 - **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `5ac478c6e111`, output sha256 `23d8e0c094691cbe`, [pin](../tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q4_k_m.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `5ac478c6e111`, output sha256 `23d8e0c094691cbe`, [pin](../tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q4_k_m.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
+- **Metal:** ✅ v1.18.0 2026-11-13 on macos-arm64-metal at commit `6d4a4d1f9ce2`, output sha256 `23d8e0c094691cbe`, [pin](../tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q4_k_m.macos-arm64-metal.metal.txt)
 - **LoRA training:** supported (runner 1.18.0, 2026-11-13).
 - **LoRA adapter serving:** supported (runner 1.18.0, 2026-11-13).
 

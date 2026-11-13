@@ -105,6 +105,9 @@ of main 5ac478c6, this branch's base (runner sha256 `1bcf3986…`, provenance co
 the rows were added (R6.67).
 - **tier-smoke**, `--pin` then `--record`, on the CPU and CUDA cells of both rows: all four pass with the fact found.
   CPU and CUDA give the same reply bytes for each file (Q8_0 `e3c8beb8`, Q4_K_M `23d8e0c0`).
+- **Metal, the Q4_K_M only**, on an Apple M1 with 8 GB, from a clean STRICT build of 6d4a4d1f (the row commit):
+  tier-smoke `--pin` then `--record` passes with the fact found, and the reply is byte for byte the Linux reply
+  (`23d8e0c0`). The Q8_0 does not fit that machine and has no Metal cell.
 - **LoRA smoke** on both files: `--train` on eight lines (two prompt/completion pairs, four times each), 4 steps at
   rank 8, then serving with `--lora`. Both train and serve (224 adapted projections); the adapted model completes
   "The capital of France is" with "Paris."
