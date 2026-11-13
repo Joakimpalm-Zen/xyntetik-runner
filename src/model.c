@@ -472,6 +472,12 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
             m->rope_mscale = gguf_get_f32(g, AK("rope.scaling.attn_factor"), 1.0f);
             fprintf(stderr, "rope: phi3 LongRoPE %s factors, mscale %.4f\n",
                     use_long ? "long" : "short", (double)m->rope_mscale);
+            // The publisher's code picks the set per sequence; here, as in llama.cpp, the context picks it.
+            if (use_long)
+                fprintf(stderr, "warning: -c %d is over this model's original context of %d, so its LongRoPE "
+                        "long factors apply from the first token; the publisher's code applies them only to a "
+                        "sequence longer than that, and a shorter prompt reads further from the publisher's "
+                        "model than it does at -c %d\n", m->n_ctx, orig_ctx, orig_ctx);
         }
     }
 

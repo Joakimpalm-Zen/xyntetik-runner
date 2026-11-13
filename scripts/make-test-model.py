@@ -46,6 +46,7 @@ ATTN_TEMP_SCALE = 0.0
 ATTN_TEMP_FLOOR = 8192
 SWA_WINDOW = 0
 SWA_WINDOW_ONLY = 0  # --swa-window: a window with no pattern key (phi3 exports)
+LONGROPE_ORIG = 256  # --longrope-orig: phi3's original context, past which the long factors apply
 POST_NORMS = False
 SWA_PATTERN = 0
 ESERIES_SHARED_KV = 0
@@ -172,6 +173,9 @@ while i < len(args):
         # pattern, decides which layers it covers
         i += 1
         SWA_WINDOW_ONLY = int(args[i])
+    elif a == "--longrope-orig":
+        i += 1
+        LONGROPE_ORIG = int(args[i])
     elif a == "--eseries":
         # --eseries SHARED_KV,PLE_DIM  (e.g. "3,16" on the default 6 layers)
         i += 1
@@ -1004,7 +1008,7 @@ if MISTRAL3_ROPE:
     ]
 if ARCH == "phi3":
     meta_kvs += [
-        ku(f"{ARCH}.rope.scaling.original_context_length", 256),
+        ku(f"{ARCH}.rope.scaling.original_context_length", LONGROPE_ORIG),
         kf(f"{ARCH}.rope.scaling.attn_factor", 1.19),
         ku(f"{ARCH}.rope.dimension_count", N_EMBD // N_HEAD),
     ]
