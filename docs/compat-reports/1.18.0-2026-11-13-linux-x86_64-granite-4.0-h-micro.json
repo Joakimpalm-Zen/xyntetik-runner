@@ -1,0 +1,186 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-11-13T15:24:45Z",
+  "host": {
+    "os": "Linux",
+    "machine": "x86_64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.18.0"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "granite-4.0-h-micro-q4_k_m",
+      "architecture": "granitehybrid",
+      "file": "models/granite-4.0-h-micro-Q4_K_M.gguf",
+      "expected_sha256": "bcc78b9b25450101d1ad90d4b9a264e1bac892f534dfb76066f4eec792fdf023",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 911.0,
+          "stderr_tail": "granitehybrid: Mamba-2 hybrid (36 recurrent + 4 attention layers); greedy output validated on granite-4.0-h-small at Q4_K and Q8_0: token-identical on high-confidence prompts, diverging only at genuine near-ties (docs/model-support.md)\ngpu: no OS video memory budget published for this device; offload budget 24.77 GB from the driver's free view, headroom 0.77 GB\ngpu-split: budget=24.77GB fixed=0.98GB G=40/40 full=1 used=2.78GB\ngpu-split: prompt window 512 columns (batch 512, 21.82 GB spare, 178436 bytes a column)\ngpu: CUDA backend on CUDA MIG slice 1g.24gb (1.9 GB weights in VRAM)\ngpu: VRAM 22.49 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.20 GB this instance)\nloaded models/granite-4.0-h-micro-Q4_K_M.gguf | granitehybrid | 40 layers | ctx 4096 | 20 threads | 0.80s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 185.97 tok/s | gen: 1 tok, 102.91 tok/s\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1001.32,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "The answer to the mathematical equation 2+2 is 4.\n"
+        }
+      },
+      "resolved_file": "models/granite-4.0-h-micro-Q4_K_M.gguf",
+      "actual_sha256": "bcc78b9b25450101d1ad90d4b9a264e1bac892f534dfb76066f4eec792fdf023",
+      "file_status": "pass",
+      "complete": true
+    },
+    {
+      "id": "granite-4.0-h-micro-q8_0",
+      "architecture": "granitehybrid",
+      "file": "models/granite-4.0-h-micro-Q8_0.gguf",
+      "expected_sha256": "a009111abf2865b7aad1e66326a6c772cddc29bccd22898f470292068b27bb59",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1062.1,
+          "stderr_tail": "granitehybrid: Mamba-2 hybrid (36 recurrent + 4 attention layers); greedy output validated on granite-4.0-h-small at Q4_K and Q8_0: token-identical on high-confidence prompts, diverging only at genuine near-ties (docs/model-support.md)\ngpu: no OS video memory budget published for this device; offload budget 24.77 GB from the driver's free view, headroom 0.77 GB\ngpu-split: budget=24.77GB fixed=0.98GB G=40/40 full=1 used=4.19GB\ngpu-split: prompt window 512 columns (batch 512, 20.36 GB spare, 178436 bytes a column)\ngpu: CUDA backend on CUDA MIG slice 1g.24gb (3.4 GB weights in VRAM)\ngpu: VRAM 21.03 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.20 GB this instance)\nloaded models/granite-4.0-h-micro-Q8_0.gguf | granitehybrid | 40 layers | ctx 4096 | 20 threads | 0.94s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 145.91 tok/s | gen: 1 tok, 77.15 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 4044.3,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": "",
+          "vocab": {
+            "gated": false,
+            "expect": null,
+            "differ": 0,
+            "of": 99474,
+            "status": "pass"
+          }
+        },
+        "cpu_cuda": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 56024.05,
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "min_prompt_tokens": 85,
+          "cpu_cuda_identity": {
+            "result": "pass",
+            "exact": "9/9",
+            "near_tie_tolerated": 0
+          },
+          "identical": "9/9",
+          "failed_prompts": [],
+          "report": "docs/compat-reports/cpu_cuda/granite-4.0-h-micro-q8_0.json",
+          "output_tail": "'\nok  : 'Q: What is 17 * 23?\\nA:'\nok  : 'The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.'\nok  : 'In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction'\nok  : \"def parse_header(buf, size):\\n    if size < 8:\\n        raise ValueError('short header')\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != GGUF_MAGIC:\\n        raise ValueError('not a gguf file')\\n    return magic, version\\n\\n# The loader above rejects a truncated header before unpacking it, which\"\nok  : 'The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who'\n\ncpu_cuda: pass \u2014 9/9 exact, 0 near-tie tolerated (eager routing)\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1258.45,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "The answer to 2+2 is 4.\n"
+        }
+      },
+      "resolved_file": "models/granite-4.0-h-micro-Q8_0.gguf",
+      "actual_sha256": "a009111abf2865b7aad1e66326a6c772cddc29bccd22898f470292068b27bb59",
+      "file_status": "pass",
+      "complete": true
+    },
+    {
+      "id": "granite-4.0-h-micro-q4_k_m-unsloth",
+      "architecture": "granitehybrid",
+      "file": "models/unsloth/granite-4.0-h-micro-Q4_K_M.gguf",
+      "expected_sha256": "1f21ba20ca249f6de1b7fcc436d95bba80a11d40060532bf6eb0c6a9e54e5d28",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 938.5,
+          "stderr_tail": "tehybrid: Mamba-2 hybrid (36 recurrent + 4 attention layers); greedy output validated on granite-4.0-h-small at Q4_K and Q8_0: token-identical on high-confidence prompts, diverging only at genuine near-ties (docs/model-support.md)\ngpu: no OS video memory budget published for this device; offload budget 24.77 GB from the driver's free view, headroom 0.77 GB\ngpu-split: budget=24.77GB fixed=0.98GB G=40/40 full=1 used=2.78GB\ngpu-split: prompt window 512 columns (batch 512, 21.82 GB spare, 178436 bytes a column)\ngpu: CUDA backend on CUDA MIG slice 1g.24gb (1.9 GB weights in VRAM)\ngpu: VRAM 22.49 GB free of 25.37 GB after init (kv 0.03 GB + scratch 0.20 GB this instance)\nloaded models/granite-4.0-h-micro-Q4_K_M.gguf | granitehybrid | 40 layers | ctx 4096 | 20 threads | 0.83s\nsampling: generic (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 182.48 tok/s | gen: 1 tok, 103.57 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 57.9,
+          "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": "",
+          "vocab": {
+            "gated": false,
+            "expect": null,
+            "differ": 0,
+            "of": 99474,
+            "status": "pass"
+          }
+        },
+        "cpu_cuda": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 40246.8,
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "min_prompt_tokens": 85,
+          "cpu_cuda_identity": {
+            "result": "pass",
+            "exact": "9/9",
+            "near_tie_tolerated": 0
+          },
+          "identical": "9/9",
+          "failed_prompts": [],
+          "report": "docs/compat-reports/cpu_cuda/granite-4.0-h-micro-q4_k_m-unsloth.json",
+          "output_tail": "'\nok  : 'Q: What is 17 * 23?\\nA:'\nok  : 'The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.'\nok  : 'In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction'\nok  : \"def parse_header(buf, size):\\n    if size < 8:\\n        raise ValueError('short header')\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != GGUF_MAGIC:\\n        raise ValueError('not a gguf file')\\n    return magic, version\\n\\n# The loader above rejects a truncated header before unpacking it, which\"\nok  : 'The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who'\n\ncpu_cuda: pass \u2014 9/9 exact, 0 near-tie tolerated (eager routing)\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1013.9,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": "The answer to 2+2 is 4.\n"
+        }
+      },
+      "resolved_file": "models/unsloth/granite-4.0-h-micro-Q4_K_M.gguf",
+      "actual_sha256": "1f21ba20ca249f6de1b7fcc436d95bba80a11d40060532bf6eb0c6a9e54e5d28",
+      "file_status": "pass",
+      "complete": true
+    }
+  ],
+  "complete": true,
+  "summary": {
+    "models": 3,
+    "files": {
+      "pass": 3
+    },
+    "checks": {
+      "load": {
+        "pass": 3
+      },
+      "chat": {
+        "pass": 3
+      },
+      "tokenizer": {
+        "pass": 2
+      },
+      "cpu_cuda": {
+        "pass": 2
+      }
+    }
+  }
+}

@@ -10,9 +10,9 @@
 //   GET  /v1/capabilities       registry + feature discovery
 //   GET  /health                liveness
 //   GET  /metrics               the same counters in Prometheus text format
-//   POST /v1/runner/contexts    pin a named prefix (R10.4); GET lists,
+//   POST /v1/runner/contexts    pin a named prefix; GET lists,
 //                               DELETE /v1/runner/contexts/{id} releases;
-//                               .../{id}/snapshot writes it to disk (R1.12)
+//                               .../{id}/snapshot writes it to disk
 //   GET  /v1/runner/provenance  binary and model digests, the load-time
 //                               signature and envelope verdicts, the effective
 //                               configuration (provenance.h)
@@ -119,25 +119,11 @@ char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
     }
 }
 
-// flatten one OpenAI message to plain text: string content passes through;
-// the AI-SDK part-array form (Cline et al.) concatenates its text parts;
-// assistant tool_calls render in the family's own call syntax so replayed
-// history reads like what the model actually emitted. Returns a heap
-// string, or NULL when the message carries nothing usable.
-//
-// The tool serialization is NOT open-coded here: the assistant-call ordering
-// (gemma4 calls-first, muse's recipient turn, everyone else calls-after) lives
-// in assistant_calls_render, and the tool-result framing in tool_result_wrap,
-// and the typed /v1/responses and /v1/messages surfaces reach the SAME two
-// helpers. That is what makes a tool call replayed through any of the three
-// surfaces render byte-identically -- the contract test_tool_attribution pins.
-//
-// *oom separates the two NULLs this can return. A message that carries nothing
-// renderable is skipped by the caller, which is right; a message whose text
-// could not be ASSEMBLED used to take the same exit, so an allocation failure
-// dropped a turn out of the conversation and the request still answered 200.
-// The model then answers a different question than the one it was asked, and
-// nothing in the response says so.
+// flatten one OpenAI message to plain text: string content passes through, the
+// AI-SDK part array joins its text parts, and tool calls render through the
+// helpers the three surfaces share, so a replayed call is byte-identical on each
+// (test_tool_attribution). NULL with *oom unset: nothing renderable (skipped);
+// with *oom set: an allocation failure, which must fail the request.
 // An LFM2 assistant turn (chat_template.jinja): the thought as
 // `<think>...</think>` when this is a turn that keeps it (TMPL_LFM2: the last
 // assistant turn, and only a non-empty thought; TMPL_LFM2_24B: every turn
@@ -243,18 +229,11 @@ static char *message_text(jv *msg, int tmpl, bool replay_reason, bool *oom) {
                             jv_str(jv_get(msg, "tool_call_id"), NULL), &b);
     } else {
         // Ornith opens every assistant turn with its (possibly empty) thought
-        // block. Qwen3 preserves reasoning only on the final historical
-        // assistant after the last user, which the caller selects explicitly.
-        // Calls and visible text follow the block in the same buffer.
-        // The framing is the runner's, not the caller's: marked (prompt_lit)
-        // so `<think>` reaches the model as the control token its reference
-        // tokenizer produces, not as three text tokens. The reasoning text
-        // between is the caller's and goes in unmarked.
-        // Qwen 3.5 writes the block (empty or not) only on the assistant
-        // turns after the last user query, which the caller selects too.
-        // Mellum writes it only when the reasoning is non-empty. MiniCPM-V
-        // 4.7 writes it on every assistant turn, its reasoning only on the
-        // turns the caller selects and empty on the rest.
+        // block; Qwen3 keeps reasoning only on the last assistant after the last
+        // user, Qwen 3.5 writes the block (empty or not) on the turns after it,
+        // Mellum only a non-empty one, MiniCPM-V 4.7 every turn, with reasoning
+        // where selected; the caller selects the turns. Marked (prompt_lit), so
+        // `<think>` reaches the model as its control token; the reasoning is not.
         if ((tmpl == TMPL_ORNITH || tmpl_minicpmv(tmpl) ||
              ((tmpl == TMPL_CHATML_THINK || tmpl == TMPL_QWEN38 || tmpl_qwen35(tmpl)) &&
               replay_reason) ||
@@ -479,22 +458,12 @@ static const char *chat_role(jv *msg) {
     return !strcmp(role, "developer") ? "system" : role;
 }
 
-// The function a tool turn is reporting for, resolved without inventing one.
-//
-// template.c's tool_result_name() has a last resort this surface cannot use:
-// with no `name` and an unmatched `tool_call_id` it hands back the ID, and
-// Harmony authors the turn by that string -- `<|start|>functions.call_1`,
-// a function name invented from an identifier and declared nowhere. So the
-// lookup is done here without that step, and an unresolved result is treated
-// as unresolved rather than named after its id.
-// The call a client replays may be TEXT, not a tool_calls[] entry: muse and
-// gemma4 assistants spell it `<|tool_call>call:NAME{...}` and a client that
-// keeps its own history sends that content straight back. The spelling names
-// the function precisely, so resolving from it invents nothing. The k-th
-// result after the assistant turn reports for the k-th call spelled in it;
-// past the spelled count the result stays unresolved (fail closed). The
-// extracted name is strdup'ed into the caller's owned[] so it outlives this
-// frame -- cm[] keeps the pointer until the prompt renders.
+// The function a tool turn reports for, resolved without inventing one: unlike
+// template.c's tool_result_name(), an unmatched tool_call_id never becomes a
+// name (Harmony would author `functions.call_1`); unresolved stays unresolved.
+// A replayed call may be TEXT (`<|tool_call>call:NAME{...}` from muse and
+// gemma4): the k-th result after that turn reports for its k-th spelled call,
+// and past the count stays unresolved. The name is strdup'ed into owned[].
 static const char *text_spelled_call_name(const jv *msgs, int message_index,
                                           char **owned, int *n_own) {
     int a = -1;
@@ -701,20 +670,11 @@ static void handle_chat_render(slot_t *s, sock_t fd, jv *req,
             goto out;
         }
     }
-    // When the strict envelope does not apply -- no tools declared, or
-    // tool_choice none -- the flag is vacuous and stays TOLERATED, exactly as
-    // before: ordinary OpenAI-shaped traffic sends parallel_tool_calls
-    // alongside requests that will never call anything, and rejecting those
-    // would break it.
-    //
-    // Families with a native declaration syntax render it themselves, from the
-    // structured `tools` handed to render_prompt_alloc below; everyone else
-    // gets the strict envelope's teaching turn, or the generic declaration
-    // block when the envelope does not apply. tool_decl_native makes that
-    // selection -- setting env's native flags and returning the declarations to
-    // render plus native_decl (skip the generic turn) -- from the SAME helper
-    // the /v1/responses and /v1/messages surfaces now use, so a declared tool
-    // is taught identically on all three.
+    // With no tools declared or tool_choice none the flag is vacuous and stays
+    // tolerated: ordinary OpenAI-shaped traffic sends it anyway.
+    // tool_decl_native picks native declarations or the strict envelope's
+    // teaching turn (or the generic block), the helper /v1/responses and
+    // /v1/messages share, so a declared tool is taught alike on all three.
     bool native_decl = false;
     const jv *native_tools = tool_decl_native(s->tmpl, strict,
                                               atem_tool_calling, tools, &env,
@@ -1118,18 +1078,12 @@ static void handle_context_snapshot(slot_t *s, sock_t fd, jv *req,
     send_kvsnap(fd, ok, &out, &err);
 }
 
-// ---- session images over HTTP (R1.3.5) -----------------------------------
-// POST /v1/runner/sessions starts a raw-prompt generation and, with
-// suspend_after, stops it after that many tokens and writes its image;
-// POST /v1/runner/sessions/{id}/resume continues an image exactly, or forks
-// it under another seed; GET and DELETE /v1/runner/sessions/{id} read and
-// remove one. An id is the image's own sha256, so the same state is the same
-// id. The images live in --sessions DIR and are the CLI's (--session-out /
-// --resume read and write the same files).
-//
-// The generation holds the device turn from prefill to its last token, so
-// a session does not interleave with other slots' batches: it is the solo
-// step loop the CLI runs, which is what makes a resume exact.
+// ---- session images over HTTP -------------------------------------------
+// POST /v1/runner/sessions starts a raw-prompt generation (suspend_after stops
+// it and writes its image); .../{id}/resume continues it exactly or forks it
+// under another seed; GET and DELETE read and remove one. The id is the image's
+// sha256; images live in --sessions DIR, the CLI's own files. A session holds
+// the device turn from prefill to last token: the solo loop, so resume is exact.
 
 static int session_text_cb(void *ud, const char *bytes, int n) {
     sb_put((sbuf *)ud, bytes, (size_t)n);
@@ -1990,23 +1944,16 @@ static void handle_embeddings(slot_t *s, sock_t fd, jv *req) {
 
 // /health and /v1/models read only startup-immutable strings plus an atomic
 // resident snapshot, so they are safe to answer from the accept thread with no lock
-// R10.12.3.2: cancel a request by id, for a client that wants an answer
-// rather than polling /health. A completion request takes its ids when it
-// starts (run_completion): the response id it will answer with, and the
-// client's X-Request-Id when it sent one, which is the id a buffered client
-// can know before its reply arrives. The ids stay out of /health: the server
-// has no key of its own, so anything on loopback reads /health, and a listed
-// response id would hand out the name of a stored response (R10.15).
+// Cancel a request by id: a request takes its ids when it starts (its response
+// id and the client's X-Request-Id, which a buffered client knows first). They
+// stay out of /health: anything on loopback reads it, and a listed response id
+// would name a stored response.
 static pthread_mutex_t rq_ids_mu = PTHREAD_MUTEX_INITIALIZER;
 
-// What a cancel waits on (R6.68.8): one per cancelled request, made by its
-// first cancel and shared by every later one. The slot holds a reference until
-// the request ends and each waiter one until it has answered, all under
-// rq_ids_mu. The end is a fact recorded here with the request's own generated
-// count. It used to be the slot's last-ended sequence and count, which the next
-// request overwrote: a fast request ending on the slot within one poll left the
-// waiter at a sequence that never came back (504 after 30 s, its request long
-// stopped) and with the other request's count.
+// What a cancel waits on: one per cancelled request, made by its first cancel
+// and shared by later ones, held by the slot until the request ends and by each
+// waiter until it answers, all under rq_ids_mu. The end is recorded here with
+// the request's own count, never read back from a slot the next request reuses.
 typedef struct cancel_ticket {
     int  refs;
     bool done;
@@ -2104,15 +2051,10 @@ typedef struct cancel_wait {
 // step, not an ordinary one.
 #define CANCEL_WAIT_S 30.0
 
-// One long-lived thread answers every cancel that waits (R6.68.22), from a
-// queue under rq_ids_mu. A cancel used to get a detached thread of its own,
-// and under winpthreads a detached thread keeps its Windows HANDLE after it
-// exits: every cancel by id left one handle in the server for good (a soak
-// went from 265 to 456 over 400 cancels). One thread also leaves less state
-// than joinable per-cancel threads would: no table of handles to reap, and a
-// stop is one join. It starts at the first cancel that waits and is joined
-// before the slots are freed (R6.68.9), after it has answered every cancel
-// still queued: 200 when its request ended, 503 when it never did.
+// One long-lived thread answers every cancel that waits, from a queue under
+// rq_ids_mu: a detached thread per cancel keeps its HANDLE under winpthreads.
+// Started by the first waiting cancel, joined before the slots are freed once
+// every queued cancel is answered: 200 if its request ended, 503 if it never did.
 static cancel_wait *cancel_queue;
 static pthread_t    cancel_thread;
 static bool         cancel_thread_on, cancel_thread_stop;
@@ -2461,21 +2403,11 @@ static void send_prefix_cache(sock_t fd) {
 
 // ------------------------------------------------------------------ /metrics
 //
-// The same facts /health and /v1/runner/prefix-cache already answer, in the
-// one format a monitoring stack ingests without a translator. Prometheus text
-// exposition 0.0.4: every sample is preceded by its own `# HELP` and `# TYPE`,
-// names carry the `runner_` prefix, and a counter's name ends in `_total`.
-//
-// It reports; it does not compute. There is no hit-RATE and no tokens-per-
-// SECOND here for the same reason /health has none: a rate needs an averaging
-// window, and the scraper owns that window. Every number below is either a
-// monotonic counter to be differenced or an instantaneous gauge.
-//
-// Read-only and lock-free apart from the prefix cache's own mutex, which
-// `GET /v1/runner/prefix-cache` already takes from the accept thread. Nothing
-// here reads the resident model, so unlike /v1/capabilities it needs no
-// swap_mu (see the note there) and is answered on the accept path with
-// atomic loads only.
+// The facts /health and /v1/runner/prefix-cache answer, as Prometheus text
+// exposition 0.0.4 (HELP and TYPE per sample, `runner_` prefix, counters end in
+// `_total`). Counters and gauges only: a rate needs a window the scraper owns.
+// No resident-model reads, so no swap_mu: atomic loads on the accept path, and
+// the prefix cache's own mutex.
 
 typedef struct { char *p; size_t cap, n; bool over; } mbuf;
 
@@ -2707,19 +2639,11 @@ static void send_provenance(sock_t fd) {
 
 static void send_capabilities(sock_t fd) {
     sbuf r = {0};
-    // Unlike /health and /v1/models, this route reports on the RESIDENT MODEL
-    // -- its agent profile, its MTP declaration, the sampling preset resolved
-    // for it -- and every one of those is freed by unload_resident() the moment
-    // a request names a different model, /unload arrives, or --ttl expires.
-    // Answering it from the accept thread with nothing held is a read of freed
-    // memory: ASan catches it inside a second of one client alternating models
-    // while another polls here (tests/test_swap_race.c).
-    //
-    // swap_mu is the lock those three writers already take, and it is by design
-    // never held across a load (swap_to drops it) or across generation, so the
-    // accept loop cannot be parked behind inference here. It exists only once
-    // the registry is joined, which is also the only configuration in which a
-    // model can go away under a request.
+    // Unlike /health, this reports on the RESIDENT MODEL, which unload_resident()
+    // frees on a swap, /unload or --ttl: read unlocked from the accept thread it
+    // is a use after free (tests/test_swap_race.c). swap_mu is never held across
+    // a load or generation, so this cannot park the accept loop; it exists only
+    // with the registry, the one configuration in which a model can go away.
     bool guarded = SV.n_reg > 0;
     if (guarded) pthread_mutex_lock(&SV.swap_mu);
     int res = resident_load();
@@ -2734,12 +2658,9 @@ static void send_capabilities(sock_t fd) {
     } else {
         sb_lit(&r, "null");
     }
-    // RI-2: the EFFECTIVE execution mode, not the requested one. Several
-    // requested configurations legitimately resolve to a different one and say
-    // so only on stderr, which a benchmark harness cannot read -- so it can
-    // measure the fallback and publish it as the mode it asked for. `slots` is
-    // what the scheduler actually runs, and `draft` separates what was asked
-    // for from what is running.
+    // The EFFECTIVE execution mode, not the requested one: a fallback says so
+    // only on stderr, which a benchmark harness cannot read. `slots` is what the
+    // scheduler runs; `draft` separates the asked-for from the running.
     // Registry bookkeeping owns only the single-slot draft. Other slots own
     // their drafts directly, so inspect the resident engines for all sources.
     // swap_mu protects reloads; without a registry these fields stay fixed.
@@ -2934,14 +2855,10 @@ static int test_request_tail_ms(void) {
 }
 
 static void handle_conn(slot_t *s, sock_t fd) {
-    // a stalled or dead client must not pin an inference slot: the whole
-    // request (header + body) has to arrive within this budget. Generation
-    // time stays unbounded — the deadline only covers reading the request.
-    //
-    // The write side needs its own bound. A client that sends a valid request
-    // and then stops reading fills the socket buffer, and an unbounded
-    // blocking write parks the slot forever: the read deadline is already
-    // satisfied and never fires again, so the slot is never returned.
+    // A stalled or dead client must not pin a slot: the whole request must
+    // arrive within this budget (generation itself is unbounded). Writes get
+    // their own bound, since a client that stops reading would park the slot
+    // forever once the read deadline is satisfied.
     sock_send_timeout(fd, 30.0);
     double deadline = now_s() + 10.0;
     char hdr[16384];
@@ -3075,17 +2992,9 @@ static void handle_conn(slot_t *s, sock_t fd) {
         // request that slipped past it.
         handle_unload(fd);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/unload")) {
-        // POST-only since 0.1.5-alpha, and the refusal is explicit rather
-        // than a 404 so an operator with the old call sees what changed.
-        //
-        // It was a GET, which made it reachable from any web page the user
-        // happened to be visiting: <img src="http://127.0.0.1:PORT/unload">
-        // frees the model with no preflight, no CORS, and no rebinding needed,
-        // because loopback binding does not stop a browser. A POST is not a
-        // CORS simple request unless its Content-Type says so, so requiring
-        // one restores the preflight that stands between a drive-by page and
-        // a freed model. Host/Origin validation is the other half and is
-        // tracked separately.
+        // POST-only, refused explicitly rather than 404 so an old caller sees
+        // why: a GET is reachable from any web page (<img src=.../unload>), and
+        // a POST without a simple Content-Type brings back the CORS preflight.
         send_error(fd, 405, "unload is POST-only: GET was reachable from any "
                             "web page via <img src>. Use POST /unload");
     } else if (!strcmp(method, "GET") &&
@@ -3159,22 +3068,10 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 send_error(fd, 400, "keep_alive out of range");
                 goto out;
             }
-            // A server with no registry (SV.n_reg == 0) is exactly one
-            // configuration: a single model served with --parallel N>1, whose
-            // slots hold the model directly (server.c only joins the registry
-            // when parallel == 1). keep_alive drives the swap-mode idle/unload
-            // machinery, which does not exist there -- so the field used to be
-            // range-checked, accepted, and then silently dropped below (the
-            // `SV.n_reg > 0` guard). A client sending keep_alive:0 ("unload
-            // after this request") was answered as if it happened while the
-            // model stayed resident, the same dishonesty POST /unload was
-            // taught to refuse in this configuration. 400, not 409 as /unload
-            // uses: /unload is a management route whose target-resource state
-            // refuses it, this is a per-request field on a completion that is
-            // well-formed but not satisfiable here -- the shape of the
-            // surface's other request-field rejections (timeout out of range,
-            // a field with unsupported semantics). A request with NO keep_alive
-            // is the normal case and is untouched.
+            // Without a registry (one model under --parallel N > 1) there is no
+            // idle or unload machinery, so keep_alive cannot be honoured: refused,
+            // not silently dropped, with a 400 like other request fields that are
+            // well-formed but not satisfiable here. No keep_alive is untouched.
             if (has_keep_alive && SV.n_reg == 0) {
                 char msg[384];
                 snprintf(msg, sizeof(msg),
@@ -3298,19 +3195,9 @@ static void handle_conn(slot_t *s, sock_t fd) {
                 }
                 else handle_completion(s, fd, req);
                 // Ollama-style keep_alive: seconds of idle before the model
-                // unloads (swap mode) — 0 unloads now, negative pins forever.
-                //
-                // 0 records the wish rather than acting on it, so it is
-                // honoured by the ONE piece of code that knows what "unload
-                // now" costs -- the safe-point block below, which is also what
-                // POST /unload defers to. Calling unload_resident() here was a
-                // second, shorter copy of that: it freed the model and left the
-                // draft loaded and every KV prefix snapshot resident (up to
-                // RUNNER_PREFIX_CACHE_MB, 512 MB by default), so the same
-                // operator got different amounts of memory back depending on
-                // which spelling they used. It also ran with this request still
-                // counted active, which is the state the safe point exists to
-                // wait out.
+                // unloads (swap mode); 0 unloads now, negative pins forever. 0
+                // is recorded, not acted on: the safe-point block below, which
+                // POST /unload defers to, also frees the draft and the snapshots.
                 if (has_keep_alive && SV.n_reg > 0) {
                     pthread_mutex_lock(&SV.swap_mu);
                     if (keep_alive == 0) SV.pending_unload = true;
@@ -3369,24 +3256,14 @@ static void *slot_worker(void *arg) {
     }
 }
 
-// answer tiny requests from the accept loop: single-slot serving means one
-// long generation used to block /health until the xyntetik watchdog declared a
-// live runner "unhealthy: timed out". POST /unload is answered here too — it
-// never frees anything a slot is using (handle_unload defers under an active
-// load or generation), and an operator reclaiming memory must not queue behind
-// the very work that holds it. Prefix-cache telemetry and release have their
-// own mutex and likewise need no inference slot. Every other request is handed
-// to a slot untouched.
-//
-// Two rules keep this thread admitting connections (found 2026-10-05: a
-// stored-response GET to a client that stopped reading parked the accept loop
-// and nothing new was served):
-//  1. Only answers that fit a socket buffer are written from here. A stored
-//     Responses body or its input_items can be megabytes, /metrics and the
-//     context listing grow with the server; those take a slot, whose writes
-//     are bounded like every other slot write.
-//  2. Every write from here carries the slot path's 30 s send timeout, so a
-//     reader that stops costs this thread at most 30 s, never forever.
+// answer tiny requests from the accept loop, so one long generation cannot block
+// /health; POST /unload too (it defers under an active load or generation, and
+// must not queue behind the work holding the memory), and prefix-cache telemetry
+// and release, which have their own mutex. Everything else goes to a slot.
+// Two rules keep this thread admitting connections:
+//  1. Only answers that fit a socket buffer are written from here; a stored
+//     Responses body, /metrics and the context listing take a slot.
+//  2. Every write here carries the slot path's 30 s send timeout.
 static bool accept_fastpath(sock_t fd) {
 #ifndef _WIN32
     // POSIX fd_set is a fixed-size bitmask indexed by fd value; FD_SET on an
@@ -3510,18 +3387,9 @@ void server_request_stop(void) {
     // exchange: a handler and a thread racing here close the listener once
     int fd = atomic_exchange(&listener_fd, -1);
     if (fd >= 0) {
-        // shutdown() BEFORE close(), and it is not belt-and-braces.
-        //
-        // A blocked accept() is woken by the signal only in the thread the
-        // signal was delivered to, and a process may deliver SIGTERM to any
-        // thread that has it unblocked — a slot worker, the decode thread, the
-        // TTL reaper. Closing the descriptor from one of those does NOT wake a
-        // thread already parked in accept() on Linux; it stays there until a
-        // connection happens to arrive. Observed directly: with the accept loop
-        // on a non-main thread, /proc showed it in inet_csk_accept long after
-        // the handler had run and closed the fd.
-        //
-        // shutdown() does wake it, and both calls are async-signal-safe.
+        // shutdown() BEFORE close(): SIGTERM may land on any thread, and on Linux
+        // closing the descriptor does not wake a thread already parked in
+        // accept(); shutdown() does, and both calls are async-signal-safe.
         shutdown(fd, SHUT_RDWR);
         close(fd);
     }
@@ -3597,40 +3465,17 @@ static bool stop_was_requested(void) { return win_stop_requested != 0; }
 #endif
 
 // The drain's two bounds, in seconds after the first stop request.
-//
-// GRACE: an active request may still finish on its own. Past it, every
-// request's stop predicate (completion.c request_should_stop) answers true,
-// so it ends at its next prompt chunk or generated token: a turn already
-// generating returns what it has as a cut turn (finish_detail "shutdown"),
-// one still in its prompt gets 503 "server shutting down". Until 2026-10-16
-// there was no bound at all: the drain waited for every active request to
-// run out its own max_tokens or deadline, so one SIGTERM to a busy server
-// looked ignored for minutes (the lab: a 1,200-token generation finished
-// 111.5 s after the signal; a page-fault-bound prefill needed SIGKILL).
-// 2 s keeps a request that is about to finish whole and stays inside the
-// tray's 3 s SIGTERM-then-SIGKILL stop.
-//
-// HARD: a request is only stopped between steps (a forward abandoned midway
-// would leave KV a later reuse could read as complete), and one step can
-// itself take minutes, a prefill paging its weights in from a slow disk.
-// Past this bound the process exits without waiting for it: nothing is left
-// to save, the work was abandoned at GRACE.
-//
-// The bound is the last word on a stop, so it watches the whole of
-// server_run's shutdown, not only the requests: the teardown after the joins
-// writes too (a swap set logs its unload), and an output stream nobody reads
-// blocks it forever. It also owes nothing to stdio itself (drain_note). And
-// it ends with the server_run that armed it, because a process may run the
-// server again (tests/test_server_restart.c): drain_owner names the run whose
-// bound may still exit the process, server_run releases it as its last act,
-// and a watchdog that no longer owns it returns. Nothing after server_run
-// returns can block on output either: the server writes only to stderr,
-// which is unbuffered, so exit() has nothing of it left to flush.
-//
-// 2026-10-16, twice: the bound stopped watching after the joins and printed
-// with fprintf, so a full stderr pipe defeated it; the first fix then let it
-// watch until the process ended, and a cleanly stopped server's watchdog
-// exited the process at its old deadline, during the next server's life.
+// GRACE: an active request may finish on its own; past it every request's stop
+// predicate answers true, so a generating turn returns what it has
+// (finish_detail "shutdown") and one still in its prompt gets 503. 2 s fits
+// the tray's 3 s SIGTERM-then-SIGKILL stop.
+// HARD: requests stop only between steps (a half forward would leave KV a reuse
+// could trust), and one step can take minutes; past this the process exits.
+// It watches all of server_run's shutdown (teardown writes too), owes nothing
+// to stdio (drain_note), and ends with the run that armed it (drain_owner): a
+// process may serve again (tests/test_server_restart.c). Nothing after
+// server_run returns may block on output: the server writes only to unbuffered
+// stderr, so exit() has nothing left to flush. docs/server-notes.md.
 static double drain_grace_s = 2.0, drain_hard_s = 10.0, drain_late_s = 0;
 static _Atomic(const char *) drain_stage;   // static strings, safe for the watchdog to read
 #define DRAIN_FIRING UINT_MAX     // drain_owner once a watchdog has claimed the exit
@@ -3807,14 +3652,10 @@ static bool load_adapters(const model_t *base) {
     return true;
 }
 
-// Everything a server run holds once its threads are gone: the slots'
-// engines, the models and tokenizer (the caller's, handed over at the call,
-// and any this run loaded), the adapters, the queue's primitives, the slots.
-// One release for the normal shutdown and for every refusal before the
-// serving loop, so it reads the state as it is: slots that do not exist yet,
-// a slot whose model never loaded, a swap runtime that never started. The
-// refusals used to return with all of it allocated, about twenty of them,
-// each leaving the loaded model and tokenizer behind (R6.68.39).
+// Everything a server run holds once its threads are gone (engines, models,
+// tokenizer, adapters, queue, slots), released alike for a normal shutdown and
+// every refusal before the serving loop, so it reads the state as it is: slots
+// not made yet, a model never loaded, a swap runtime never started.
 static void serve_release(model_t *base, tokenizer *tok) {
     int n = SV.slots ? SV.n_slots : 0;
     // the caller's model sits in slot 0 once startup placed it there
@@ -3884,26 +3725,11 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
                int tmpl_override,
                bool force_uncertified, const oms_policy *signing) {
     sock_init();
-    // The shared server state gets a lifetime, and it is this call. Everything
-    // below sets fields on SV and the teardown at the bottom releases them, but
-    // until now nothing reset the ones that are only ever *set* — and there are
-    // several: `q.shutdown` and `shutdown` are raised during teardown and never
-    // lowered, `load_cancel` is left at 1, and `reaper_started` stays true
-    // alongside a `reaper_th` whose thread has already been joined.
-    //
-    // A second server_run therefore did not work. Its slot workers saw a
-    // shut-down queue and exited immediately, so the server listened, accepted
-    // connections and answered nothing but `/health` — which is served on the
-    // accept path and needs no worker, and is exactly why a casual check
-    // looked fine. Teardown then joined an already-joined thread handle.
-    //
-    // This is what the RNR-019 finding meant by global state making
-    // initialization and teardown hard: nothing ever asked the state to come
-    // back, so the asymmetry could not be observed. tests/test_server_restart.c
-    // now asks, twice. Note this makes the state's lifetime explicit, NOT
-    // per-instance — two servers in one process would still share it. That
-    // half is filed; nothing needs it today, and it costs threading a context
-    // through six translation units.
+    // The shared server state lives for this call: several fields are only ever
+    // set (q.shutdown, shutdown, load_cancel, reaper_started), so a second
+    // server_run would start shut down. Reset here; tests/test_server_restart.c
+    // serves twice. An explicit lifetime, not per instance: two servers in one
+    // process would still share it.
     memset(&SV, 0, sizeof(SV));
     // no model is resident until one is placed: a refusal before that point
     // must not read the zeroed index as "entry 0 is loaded" (serve_release)
@@ -3954,21 +3780,11 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
     }
     if (parallel < 1) parallel = 1;
     if (parallel > 16) parallel = 16;
-    // One named model is not a swap set, and asking for a name should not
-    // silently cost the caller their slots.
-    //
-    // `-m llama=path` is the documented way to pin the /v1/models id for a
-    // client config, and a Continue user did exactly that and lost
-    // --parallel 2 without ever asking for swapping. Registry mode genuinely
-    // is single-slot — ensure_resident() loads into slots[0] alone — but with
-    // one entry there is nothing to swap *to*, so the honest trade is to give
-    // up the registry rather than the slots. Plain `-m path --parallel 2`
-    // already forgoes the registry for the same reason, so this lands in an
-    // existing configuration rather than a new one.
-    //
-    // Done HERE, ahead of swap_mode, so everything downstream that keys off it
-    // — the --ttl default, the --draft refusal, the registry setup — sees the
-    // truth rather than being unwound afterwards.
+    // One named model is not a swap set: `-m name=path` pins the /v1/models id
+    // and must not cost the caller --parallel slots. With one entry there is
+    // nothing to swap to, so the registry gives way, not the slots; decided
+    // here, ahead of swap_mode, so the --ttl default, the --draft refusal and
+    // the registry setup see it.
     char single_path[sizeof(SV.reg[0].path)];
     const char *forced_name = NULL;
     const char *eq1 = strchr(model_path, '=');
@@ -4072,15 +3888,10 @@ int server_run(model_t *base, tokenizer *tok, const char *model_path,
             }
             SV.n_reg++;
         }
-        // A real swap set is several models, each detecting its own template.
-        // --chat-template names ONE and has no per-model spelling, so applying
-        // it across the set would be right for at most one member and would
-        // silently mis-render the rest. Refused rather than applied to all or
-        // dropped for all: the caller asked for something this shape of
-        // invocation cannot mean. Checked HERE and not in main.c because this
-        // is where the entry count is actually known -- `-m name=path` on its
-        // own is a one-entry registry (it pins the /v1/models id) and takes
-        // the override perfectly well.
+        // --chat-template names ONE template and a real swap set detects one per
+        // model, so several entries refuse it rather than apply it to all or
+        // none; checked here, where the entry count is known (a one-entry
+        // `-m name=path` takes it).
         if (SV.n_reg > 1 && tmpl_override >= 0) {
             fprintf(stderr,
                     "error: --chat-template cannot be used with a swap set "

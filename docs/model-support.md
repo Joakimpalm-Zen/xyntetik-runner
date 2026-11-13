@@ -338,12 +338,13 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Granite 4</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>Granite 4</b>, 1 model: CPU ✅ · CUDA ✅ · Metal ✅ · Train n/a</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td colspan="5"><b>Granite 4 h-series hybrid (granitehybrid)</b></td></tr>
-<tr><td><a href="#arch-granitehybrid">Granite 4 h-series hybrid (granitehybrid)</a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td colspan="5"><b>Granite 4.0 H Micro (IBM)</b></td></tr>
+<tr><td><a href="#granite-4.0-h-micro-q4_k_m-unsloth"><code>granite-4.0-h-micro-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td><td>no: recurrent architecture (Mamba-2)</td></tr>
+<tr><td><a href="#granite-4.0-h-micro-q8_0"><code>granite-4.0-h-micro-Q8_0.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td><td>no: recurrent architecture (Mamba-2)</td></tr>
 </tbody>
 </table>
 </details>
@@ -1212,13 +1213,51 @@ A 32-to-30-expert derivative of gpt-oss-20b that does not pass the current fidel
 
 ### Granite 4
 
-#### Granite 4 h-series hybrid (granitehybrid)
+#### Granite 4.0 H Micro (IBM)
 
-<a id="arch-granitehybrid"></a>
-##### Granite 4 h-series hybrid (granitehybrid)
+<a id="granite-4.0-h-micro-q4_k_m-unsloth"></a>
+##### `granite-4.0-h-micro-Q4_K_M.gguf`
 
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+unsloth's Q4_K_M of IBM's Granite 4.0 H Micro, made with unsloth's importance matrix, a file that sits on the fidelity bar: against the publisher's BF16 checkpoint computed in float32 it reads 0.0490 ± 0.0048 mean KLD over 544 positions (bootstrap 95% interval 0.0407 to 0.0596, crossing the bar) against a bar of 0.05, with 98.28% margin-qualified top-1 (plain top-1 91.9%, CPU); one of its two windows of 272 reads 0.0553, over the bar. The Q8_0 is the fidelity file.
 
+- **File:** `granite-4.0-h-micro-Q4_K_M.gguf` (sha256 `1f21ba20ca249f6de1b7fcc436d95bba80a11d40060532bf6eb0c6a9e54e5d28`, 1,942,564,800 bytes, from [unsloth/granite-4.0-h-micro-GGUF](https://huggingface.co/unsloth/granite-4.0-h-micro-GGUF) at revision `0577b1ba05f7`).
+- **Upstream checkpoint:** ibm-granite/granite-4.0-h-micro at revision `d5f01a3ea75f`.
+- **Quantization:** Q4_K_M (unsloth, importance matrix).
+- **Licence:** `apache-2.0`, as the ibm-granite/granite-4.0-h-micro model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** IBM's Q8_0 (revision dc1dd258) and unsloth's Q4_K_M (revision 0577b1ba, unsloth's importance matrix) against IBM's BF16 checkpoint at d5f01a3e computed in float32 on the CPU (transformers 5.16.1, the native GraniteMoeHybridForCausalLM (no remote code), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows of 272 positions at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files of 4,096 tokens at -c 4096 from the batched prefill route): Q8_0 pooled 0.0025 ± 0.0002 mean KLD (SE, 544 positions; bootstrap 95% 0.0021 to 0.0029; windows 0.0024 and 0.0026) / 99.1% top-1 / 100% margin-qualified (408/408); unsloth Q4_K_M pooled 0.0490 ± 0.0048 (bootstrap 95% 0.0407 to 0.0596; windows 0.0426 and 0.0553) / 91.9% / 98.28% (401/408). IBM's Q4_K_M from the same IBM revision fails both bars: 0.0854 ± 0.0048 (bootstrap 0.0763 to 0.0953) / 94.85% margin-qualified. Tokenizer: 0 of 721 corpus strings and 0 of 99,474 vocabulary entries differ from IBM's tokenizer.json at d5f01a3e; template family granite40h (the template is byte-equal to granite-4.0-h-small's), conformance 21/21 in text and tokens, the publisher's default system turn included. Record: docs/compat-reports/granite-4.0-h-micro-2026-11-13/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** IBM's own Q4_K_M, the file most people fetch, reads 0.0854 mean KLD and 94.85% margin-qualified top-1 against the publisher's float32 checkpoint and is not on the list (llama.cpp 73a43d1 reads the same file at 0.0888 and 94.97% on the first window, Runner 0.0805 and 95.48%: the loss is the file's). CPU and CUDA for this file (1.94 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 40 layers on the device). Training and adapter serving are refused for Mamba-2 hybrids (--adapt-info). Fidelity is measured inside 4,096 tokens only. On load the file resolves to architecture granitehybrid (36 Mamba-2 and 4 attention layers), template granite4, the native qwen_json tool protocol, and the generic sampling preset. Licence: apache-2.0.
+- **Still missing:** A Metal cell, the Windows CUDA host's cells, task quality, and a reference read above 4,096 tokens.
+- **Evidence:** [docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-granite-4.0-h-micro.json](compat-reports/1.18.0-2026-11-13-linux-x86_64-granite-4.0-h-micro.json), [docs/compat-reports/granite-4.0-h-micro-2026-11-13/README.md](compat-reports/granite-4.0-h-micro-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.18.0 on 2026-11-13.
+- **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `c408c9575039`, output sha256 `3ad3cc773764eba1`, [pin](../tests/compatibility/tier-smoke/granite-4.0-h-micro-q4_k_m-unsloth.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `c408c9575039`, output sha256 `3ad3cc773764eba1`, [pin](../tests/compatibility/tier-smoke/granite-4.0-h-micro-q4_k_m-unsloth.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ✅ v1.18.0 2026-11-13 on macos-arm64-metal at commit `5732b1c2cbcd`, output sha256 `3ad3cc773764eba1`, [pin](../tests/compatibility/tier-smoke/granite-4.0-h-micro-q4_k_m-unsloth.macos-arm64-metal.metal.txt)
+- **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.18.0, 2026-11-13).
+- **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (granitehybrid) (runner 1.18.0, 2026-11-13).
+
+<a id="granite-4.0-h-micro-q8_0"></a>
+##### `granite-4.0-h-micro-Q8_0.gguf`
+
+IBM's own Q8_0 of Granite 4.0 H Micro: against the publisher's BF16 checkpoint computed in float32 it reads 0.0025 ± 0.0002 mean KLD and 100% margin-qualified top-1 over 544 positions (two windows of 272: 0.0024 and 0.0026; plain top-1 99.1%, CPU), against a bar of 0.05 and 97%. IBM's Q4_K_M from the same repository is not admitted (0.0854 mean KLD); unsloth's Q4_K_M is the 4-bit row.
+
+- **File:** `granite-4.0-h-micro-Q8_0.gguf` (sha256 `a009111abf2865b7aad1e66326a6c772cddc29bccd22898f470292068b27bb59`, 3,397,676,704 bytes, from [ibm-granite/granite-4.0-h-micro-GGUF](https://huggingface.co/ibm-granite/granite-4.0-h-micro-GGUF) at revision `dc1dd2585fac`).
+- **Upstream checkpoint:** ibm-granite/granite-4.0-h-micro at revision `d5f01a3ea75f`.
+- **Quantization:** Q8_0 (IBM).
+- **Licence:** `apache-2.0`, as the ibm-granite/granite-4.0-h-micro model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** IBM's Q8_0 (revision dc1dd258) and unsloth's Q4_K_M (revision 0577b1ba, unsloth's importance matrix) against IBM's BF16 checkpoint at d5f01a3e computed in float32 on the CPU (transformers 5.16.1, the native GraniteMoeHybridForCausalLM (no remote code), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows of 272 positions at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files of 4,096 tokens at -c 4096 from the batched prefill route): Q8_0 pooled 0.0025 ± 0.0002 mean KLD (SE, 544 positions; bootstrap 95% 0.0021 to 0.0029; windows 0.0024 and 0.0026) / 99.1% top-1 / 100% margin-qualified (408/408); unsloth Q4_K_M pooled 0.0490 ± 0.0048 (bootstrap 95% 0.0407 to 0.0596; windows 0.0426 and 0.0553) / 91.9% / 98.28% (401/408). IBM's Q4_K_M from the same IBM revision fails both bars: 0.0854 ± 0.0048 (bootstrap 0.0763 to 0.0953) / 94.85% margin-qualified. Tokenizer: 0 of 721 corpus strings and 0 of 99,474 vocabulary entries differ from IBM's tokenizer.json at d5f01a3e; template family granite40h (the template is byte-equal to granite-4.0-h-small's), conformance 21/21 in text and tokens, the publisher's default system turn included. Record: docs/compat-reports/granite-4.0-h-micro-2026-11-13/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** IBM's own Q4_K_M, the file most people fetch, reads 0.0854 mean KLD and 94.85% margin-qualified top-1 against the publisher's float32 checkpoint and is not on the list (llama.cpp 73a43d1 reads the same file at 0.0888 and 94.97% on the first window, Runner 0.0805 and 95.48%: the loss is the file's). CPU and CUDA for this file (3.40 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 40 layers on the device). Training and adapter serving are refused for Mamba-2 hybrids (--adapt-info). Fidelity is measured inside 4,096 tokens only. On load the file resolves to architecture granitehybrid (36 Mamba-2 and 4 attention layers), template granite4, the native qwen_json tool protocol, and the generic sampling preset. Licence: apache-2.0.
+- **Still missing:** A Metal cell, the Windows CUDA host's cells, task quality, and a reference read above 4,096 tokens.
+- **Evidence:** [docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-granite-4.0-h-micro.json](compat-reports/1.18.0-2026-11-13-linux-x86_64-granite-4.0-h-micro.json), [docs/compat-reports/granite-4.0-h-micro-2026-11-13/README.md](compat-reports/granite-4.0-h-micro-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.18.0 on 2026-11-13.
+- **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `c408c9575039`, output sha256 `e2b4044cbabdc256`, [pin](../tests/compatibility/tier-smoke/granite-4.0-h-micro-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `c408c9575039`, output sha256 `e2b4044cbabdc256`, [pin](../tests/compatibility/tier-smoke/granite-4.0-h-micro-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ✅ v1.18.0 2026-11-13 on macos-arm64-metal at commit `5732b1c2cbcd`, output sha256 `e2b4044cbabdc256`, [pin](../tests/compatibility/tier-smoke/granite-4.0-h-micro-q8_0.macos-arm64-metal.metal.txt)
+- **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.18.0, 2026-11-13).
+- **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (granitehybrid) (runner 1.18.0, 2026-11-13).
 
 ### Granite-4.2-30B
 
@@ -2918,7 +2957,6 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-10-22 | [Qwen3.8-Flash-Next, `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`](#qwen3.8-flash-next-gsq-rco-iq3_s) | Tier 2, maintained on report | Migration: the trunk of a Tier 1 MTP head, added 2026-10-23 so the head's smoke can run; not on the owner's Tier 1 roster. | none recorded |
 | 2026-10-22 | [Mistral (mistral)](#arch-mistral) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Gemma 3 (gemma3)](#arch-gemma3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
-| 2026-10-22 | [Granite 4 h-series hybrid (granitehybrid)](#arch-granitehybrid) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B), `Qwen3.8-35B-A3B-Q6_K.gguf`](#empero-qwen3.8-35b-a3b-distill-q6_k) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Ornith-1.5-35B-A3B (ornith-ai), `Ornith-1.5-35B-Q8_0.gguf`](#ornith-1.5-35b-a3b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [MiniCPM-V-4.7-35B-A3B (openbmb), `MiniCPM-V-4_7-35B-A3B-Q8_0.gguf`](#minicpm-v-4.7-35b-a3b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
@@ -3033,5 +3071,7 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-11-13 | [Phi-3.5-mini-instruct (Microsoft), `Phi-3.5-mini-instruct-Q8_0.gguf`](#phi-3.5-mini-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.5) and a float32 reference measurement against the publisher's checkpoint, so the Phi-3 family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Phi-3.5-mini-instruct (Microsoft), `Phi-3.5-mini-instruct-Q4_K_M.gguf`](#phi-3.5-mini-instruct-q4_k_m) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.5) and a float32 reference measurement against the publisher's checkpoint, so the Phi-3 family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Apertus v1.5 8B (Swiss AI), a third party's text-only extraction, `apertus-v1.5-8b-text-q8_0.gguf`](#apertus-v1.5-8b-text-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.38.1) and a float32 reference measurement against the publisher's checkpoint; Apertus v1.5 after 2509, at the owner's request. Maintained on report. | none recorded |
+| 2026-11-13 | [Granite 4.0 H Micro (IBM), `granite-4.0-h-micro-Q8_0.gguf`](#granite-4.0-h-micro-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.7) and a float32 reference measurement against the publisher's checkpoint, so the Granite 4 h-series has a file with cells. Maintained on report. | none recorded |
+| 2026-11-13 | [Granite 4.0 H Micro (IBM), `granite-4.0-h-micro-Q4_K_M.gguf`](#granite-4.0-h-micro-q4_k_m-unsloth) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.7) and a float32 reference measurement against the publisher's checkpoint, so the Granite 4 h-series has a file with cells. Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->
