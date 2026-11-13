@@ -6712,7 +6712,9 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
             return 3;
         }
         if (tmpl >= 0)
-            template_bind_think_tags(tmpl, &rt->tok, &rt->m.think_open, &rt->m.think_close);
+            template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
+    template_bind_split_tags(tmpl, &rt->tok, rt->m.think_open, &rt->m.split_open,
+                             &rt->m.split_close);
     }
     jv *vserve = jv_get(vr->rec, "serve");
     jv *cons = jv_get(vr->rec, "constraints");
@@ -7312,7 +7314,9 @@ static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     bool have_tmpl_text = gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL) != NULL;
     bool native = false;
     const char *fam = tool_family_for(dt, &native);
-    template_bind_think_tags(dt, &rt->tok, &rt->m.think_open, &rt->m.think_close);
+    template_bind_think_tags(dt, &rt->m.think_open, &rt->m.think_close);
+    template_bind_split_tags(dt, &rt->tok, rt->m.think_open, &rt->m.split_open,
+                             &rt->m.split_close);
     static const char question[] = "What is 2+2? Answer with just the number.";
     chat_msg dmsg[1] = { { .role = "user", .content = question } };
     char *rendered = render_prompt_alloc(dt, dmsg, 1, true, THINK_OFF, NULL,
@@ -7860,7 +7864,9 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
     if (tmpl_override >= 0) tmpl = tmpl_override;
     if (tmpl < 0)
         tmpl = template_detect(gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL), &rt->tok);
-    template_bind_think_tags(tmpl, &rt->tok, &rt->m.think_open, &rt->m.think_close);
+    template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
+    template_bind_split_tags(tmpl, &rt->tok, rt->m.think_open, &rt->m.split_open,
+                             &rt->m.split_close);
     if (!o->system_prompt)
         o->system_prompt = template_default_system(
             tmpl, gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL),
@@ -7927,11 +7933,13 @@ static int run_chat(cli_opts *o, cli_run *rt, int tmpl_override) {
         // and print the model's reasoning as the answer.
         if (rs.reasoning_open)
             think_init_reasoning(&co.ts, rt->m.think_open, rt->m.think_close);
+        else if (!rt->m.think_open && rt->m.split_open)
+            think_init(&co.ts, rt->m.split_open, rt->m.split_close);
         else
             think_init(&co.ts, rt->m.think_open, rt->m.think_close);
         // as the server's chat turn does: control-token think tags are
         // spelled for the split (R2.15)
-        rt->e.spell_think = rt->m.think_open != NULL;
+        rt->e.spell_think = rt->m.split_open != NULL;
         think_trim_newlines(&co.ts, rt->m.think_trim_nl);
         n_gen = engine_generate(&rt->e, logits, o->n_predict, chat_cb, &co, &gtime);
         think_finish(&co.ts, chat_emit, &co);

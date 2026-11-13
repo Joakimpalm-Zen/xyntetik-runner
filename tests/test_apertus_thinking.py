@@ -144,3 +144,67 @@ def test_the_messages_api_accepts_thinking_and_returns_a_thinking_block(server):
     assert code == 200, body
     assert [(c["type"], c.get("thinking") or c.get("text")) for c in body["content"]] == [
         ("thinking", "think it over"), ("text", "the answer")], body["content"]
+
+
+TOOLS = [{"type": "function", "function": {
+    "name": "trip_duration",
+    "parameters": {"type": "object",
+                   "properties": {"depart": {"type": "string"}, "arrive": {"type": "string"}},
+                   "required": ["depart", "arrive"]}}}]
+ENVELOPE = json.dumps({"calls": [{"tool": "trip_duration",
+                                  "args": {"depart": "14:10", "arrive": "16:45"}}]},
+                      separators=(",", ":"))
+
+
+def _tools_turn(srv, reply, thinking, choice):
+    return _post(srv, "/v1/chat/completions",
+                 {"messages": [{"role": "user", "content": "How long is the trip?"}],
+                  "max_tokens": 96, "temperature": 0, "enable_thinking": thinking,
+                  "tools": TOOLS, "tool_choice": choice, "runner_test_reply": reply})
+
+
+@pytest.mark.parametrize("thinking", [False, True])
+@pytest.mark.parametrize("choice", ["auto", "required"])
+def test_a_tool_call_is_a_tool_call_with_thinking_on_or_off(server, thinking, choice):
+    """The first version of this change gave the family a text think pair, and
+    every constrained turn then probed for it as a prelude: on the real
+    checkpoints every tools request ended in an error with the call inside
+    reasoning_content (found on the Linux CUDA host before the merge). The
+    family has no text pair; its control-token pair is the chat split's alone."""
+    code, body = _tools_turn(server, ENVELOPE, thinking, choice)
+    assert code == 200, body
+    ch = body["choices"][0]
+    assert ch["finish_reason"] == "tool_calls", ch
+    call = ch["message"]["tool_calls"][0]["function"]
+    assert call["name"] == "trip_duration"
+    assert json.loads(call["arguments"]) == {"depart": "14:10", "arrive": "16:45"}
+    assert not ch["message"].get("reasoning_content"), ch["message"]
+
+
+@pytest.fixture(scope="module")
+def no_tag_server(tmp_path_factory):
+    """The family's turn markers only: the think tags are not in the vocabulary,
+    so a reply can spell one as plain characters, as the real model did under
+    the constraint."""
+    exe = find_runner(ROOT)
+    if not pathlib.Path(exe).exists():
+        pytest.skip("runner not built")
+    m = tmp_path_factory.mktemp("apthink") / "apertus-notags.gguf"
+    subprocess.run([sys.executable, str(ROOT / "scripts/make-test-model.py"), "--apertus", "REAL",
+                    "--control", TURN, str(m)], check=True, stdout=subprocess.DEVNULL)
+    with RunnerServer(exe, m, ctx=1024, parallel=1, extra_args=["--gpu", "off", "-t", "2"],
+                      env=dict(os.environ, RUNNER_TEST_SCRIPTED_REPLY="1")) as srv:
+        yield srv
+
+
+@pytest.mark.parametrize("thinking", [False, True])
+def test_a_constrained_turn_has_no_think_prelude_to_spell(no_tag_server, thinking):
+    """Under a tool constraint the family's turn is the envelope from its
+    first byte. A reply that spells the open tag as characters is not a
+    prelude: nothing of it becomes reasoning (with the text pair bound, the
+    spelled tag opened a reasoning block that swallowed the call)."""
+    code, body = _tools_turn(no_tag_server, "<|inner_prefix|>" + ENVELOPE, thinking, "required")
+    assert code == 200, body
+    assert not body["choices"][0]["message"].get("reasoning_content"), body["choices"][0]
+    code, body = _tools_turn(no_tag_server, ENVELOPE, thinking, "required")
+    assert code == 200 and body["choices"][0]["finish_reason"] == "tool_calls", body

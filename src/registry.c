@@ -392,8 +392,10 @@ int swap_to_expect(const char *want, const resident_expect *ex, sock_t owner) {
                 : template_detect(gguf_get_str(&s->m->gf,
                                                "tokenizer.chat_template", NULL),
                                   s->tok);
-        template_bind_think_tags(s->tmpl, s->tok, &s->m->think_open,
+        template_bind_think_tags(s->tmpl, &s->m->think_open,
                                  &s->m->think_close);
+        template_bind_split_tags(s->tmpl, s->tok, s->m->think_open, &s->m->split_open,
+                                 &s->m->split_close);
         // sampling defaults follow the model, so they are re-resolved on every
         // swap; rng state and the penalty exemptions carry across untouched
         char ident[256];

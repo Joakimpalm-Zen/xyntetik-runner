@@ -329,17 +329,17 @@ bool template_think_tags(int tmpl, const char **open, const char **close);
 // Bind them to a model's pair when the architecture set none: called
 // wherever a template is resolved for serving or chat, a no-op when the
 // architecture owns a pair, so gemma4/Harmony/muse keep theirs.
-// tok may be NULL. With a tokenizer, a family whose releases name their
-// think tokens differently gets the pair this file's vocabulary holds
-// (template_think_tags_vocab, R2.15).
-void template_think_tags_vocab(int tmpl, tokenizer *tok,
-                               const char **open, const char **close);
-static inline void template_bind_think_tags(int tmpl, tokenizer *tok,
-                                            const char **open, const char **close) {
+static inline void template_bind_think_tags(int tmpl, const char **open,
+                                            const char **close) {
     if (*open) return;
-    if (template_think_tags(tmpl, open, close) && tok)
-        template_think_tags_vocab(tmpl, tok, open, close);
+    template_think_tags(tmpl, open, close);
 }
+// The chat split's pair for a family whose think tags are single control
+// tokens (model.h split_open; R2.15), named from this file's vocabulary;
+// leaves the pointers alone for any other family, and where a text pair is
+// already bound. Called beside template_bind_think_tags.
+void template_bind_split_tags(int tmpl, tokenizer *tok, const char *think_open,
+                              const char **open, const char **close);
 
 // True for EITHER gemma-4 template family. The mainline and the E-series
 // differ at exactly one generation-prompt site (see TMPL_GEMMA4_MAINLINE

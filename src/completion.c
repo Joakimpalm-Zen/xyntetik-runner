@@ -4344,8 +4344,9 @@ static void completion_apply(slot_t *s, const completion_req *q, const char *pro
     e->emit_think_prelude = chat && m->think_open != NULL &&
                             !(env && env->proto == TP_HARMONY);
     // a chat turn's reasoning split reads bytes: think tags that are control
-    // tokens are spelled for it (R2.15)
-    e->spell_think = chat && m->think_open != NULL;
+    // tokens are spelled for it (R2.15). Never under a constraint
+    // (decode_piece), and the constraint layer does not know this pair.
+    e->spell_think = chat && m->split_open != NULL;
 }
 
 // What preparing an accepted request came to: the prompt's tokens (owned
@@ -5381,6 +5382,9 @@ static bool turn_open(turn_result *t) {
         think_init(&g->ts, NULL, NULL);
     else if (t->primed)
         think_init_reasoning(&g->ts, m->think_open, m->think_close);
+    else if (chat && !m->think_open && m->split_open)
+        // a control-token pair, spelled for this turn (model.h split_open)
+        think_init(&g->ts, m->split_open, m->split_close);
     else
         think_init(&g->ts, chat ? m->think_open : NULL, m->think_close);
     think_trim_newlines(&g->ts, m->think_trim_nl);

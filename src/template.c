@@ -934,31 +934,29 @@ bool template_think_tags(int tmpl, const char **open, const char **close) {
         *close = "</ifm|think>";
         return true;
     }
-    // Apertus deliberates between two CONTROL tokens, which decode to no
-    // bytes: a chat turn spells them for the reasoning split (the engine's
-    // spell_think), under the tokens' own names (R2.15). These are v1.5's;
-    // template_think_tags_vocab takes the pair a file's vocabulary holds.
-    if (tmpl == TMPL_APERTUS) {
-        *open = "<|inner_prefix|>";
-        *close = "<|inner_suffix|>";
-        return true;
-    }
     return false;
 }
 
-// The same two ids are named differently across Apertus releases: v1.5's
-// vocabulary has <|inner_prefix|> and <|inner_suffix|>, the 2509 files have
-// <think> and </think> there (measured on both, 2026-11-13), control tokens
-// in each. The split and the spelling go by name, so the name comes from the
-// file. Any other family keeps its pair.
-void template_think_tags_vocab(int tmpl, tokenizer *tok,
-                               const char **open, const char **close) {
-    if (tmpl != TMPL_APERTUS || !tok) return;
-    if (tok_find(tok, "<|inner_prefix|>") >= 0 && tok_find(tok, "<|inner_suffix|>") >= 0)
-        return;
-    if (tok_find(tok, "<think>") >= 0 && tok_find(tok, "</think>") >= 0) {
-        *open = "<think>";
-        *close = "</think>";
+// Apertus deliberates between two CONTROL tokens, which decode to no bytes.
+// They are not a text pair (template_think_tags gives the family none, so a
+// constrained turn has no prelude to probe for); a chat turn spells them for
+// the reasoning split (the engine's spell_think). The same two ids are named
+// differently across releases: v1.5's vocabulary has <|inner_prefix|> and
+// <|inner_suffix|>, the 2509 files have <think> and </think> there (read from
+// both, 2026-11-13). The split and the spelling go by name, so the name comes
+// from the file, and only a pair that is control tokens in it is bound.
+void template_bind_split_tags(int tmpl, tokenizer *tok, const char *think_open,
+                              const char **open, const char **close) {
+    if (think_open || *open || tmpl != TMPL_APERTUS || !tok) return;
+    static const char *const pairs[][2] = {
+        { "<|inner_prefix|>", "<|inner_suffix|>" }, { "<think>", "</think>" } };
+    for (size_t i = 0; i < sizeof pairs / sizeof *pairs; i++) {
+        int a = tok_find(tok, pairs[i][0]), b = tok_find(tok, pairs[i][1]);
+        if (a >= 0 && b >= 0 && tok_is_control(tok, a) && tok_is_control(tok, b)) {
+            *open = pairs[i][0];
+            *close = pairs[i][1];
+            return;
+        }
     }
 }
 
