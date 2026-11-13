@@ -277,6 +277,29 @@ class CommandGate(unittest.TestCase):
             self.assertEqual(run("openssl not available"), 0)
             self.assertEqual(run("CUDA runtime is available"), 0)
 
+    def test_a_device_lane_reads_the_reason_and_not_the_file_name(self):
+        """pytest writes a skip's location before its reason
+        ("tests/test_gpu_declines.py:101: the Metal backend's init"), and the
+        lane's pattern was searched in all of it: a Metal-only case in a file
+        with "gpu" in its name failed the CUDA gate of a release, though its
+        reason names no device the lane has (1.18.0, the first gate to see
+        that test). The reason is what is matched, whatever the file is called."""
+        with tempfile.TemporaryDirectory() as td:
+            xml = pathlib.Path(td) / "cuda.xml"
+            def run(where, reason):
+                xml.write_text('<testsuite><testcase name="a"/><testcase name="b">'
+                               '<skipped type="pytest.skip" message="%s">%s:101: %s</skipped>'
+                               '</testcase></testsuite>' % (reason, where, reason))
+                return subprocess.run([sys.executable, str(ROOT / "scripts/check-junit.py"),
+                                       "--no-skips-matching", "(?i)cuda|device|gpu",
+                                       "--allow-skip", "CUDA runtime is available",
+                                       str(xml)], capture_output=True).returncode
+            for where in ("/w/tests/test_gpu_declines.py", "C:\\w\\tests\\test_cuda_fit.py"):
+                self.assertEqual(run(where, "the Metal backend&apos;s init"), 0, where)
+                self.assertEqual(run(where, "no CUDA device"), 1, where)
+                self.assertEqual(run(where, "CUDA runtime is available"), 0, where)
+            self.assertEqual(run("/w/tests/test_plain.py", "no CUDA device"), 1)
+
 
 class ShutdownGate(unittest.TestCase):
     def test_forced_kill_is_not_a_clean_shutdown(self):

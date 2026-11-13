@@ -10,13 +10,19 @@ import re
 import xml.etree.ElementTree as ET
 
 
+# pytest writes where a skip was raised before its reason, "FILE:LINE: reason".
+# A lane's pattern is for the reason: with the location left in, a file with
+# "gpu" or "cuda" in its name failed a device lane on any skip at all.
+LOCATION = re.compile(r"^(?:[A-Za-z]:)?[^:\n]*:\d+: ")
+
+
 def skip_reasons(path):
     out = []
     for c in ET.parse(path).iter("testcase"):
         s = c.find("skipped")
         if s is not None:
             out.append((c.get("classname", "") + "::" + c.get("name", ""),
-                        (s.get("message") or "") + " " + (s.text or "")))
+                        (s.get("message") or "") + " " + LOCATION.sub("", s.text or "", count=1)))
     return out
 
 
