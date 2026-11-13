@@ -3317,7 +3317,7 @@
           "docs/compat-reports/apertus-8b-instruct-2509-2026-11-12/README.md",
           "tests/compatibility/coverage.json"
         ],
-        "missing": "A Metal cell (the activation's Metal port), and the Windows CUDA host's cells; task quality and the tool protocol on the real checkpoint."
+        "missing": "A Metal cell (the activation's Metal port); task quality and the tool protocol on the real checkpoint."
       },
       "smoke": {
         "device_class": "linux-x86_64-cuda",
@@ -3332,47 +3332,51 @@
         "cpu": {
           "kind": "gate",
           "runner_version": "1.17.0",
-          "date": "2026-11-12",
-          "device_class": "linux-x86_64-cuda",
+          "date": "2026-11-13",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "d431c97848fd7877e338ed07eb77508a9c386c88",
+          "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
           "caps": {
             "version": "1.17.0",
-            "os": "linux",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 40,
+            "cpu_cores": 16,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 5070"
           },
           "output_sha256": "a519428fcee0cb910d868dec5ff75f1cec4f9b887b3276e198f10994d1dcf0dc",
           "ran": "runner -m swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf --serve -c 512 -b 64 --gpu off; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q8_0.linux-x86_64-cuda.cpu.txt",
+          "evidence": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q8_0.windows-x86_64-cuda.cpu.txt",
           "build": {
-            "binary_sha256": "63a9af5d231bedeb3717cd483b563933f651e3634dd966aaf9b51de4915fcfed",
-            "compiler": "13.3.0"
+            "binary_sha256": "cc8db867d4fdec9925e05ce8faace60af4deee232f34abd71a13e9df023ff879",
+            "compiler": "16.2.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "dirty": false
           }
         },
         "cuda": {
           "kind": "gate",
           "runner_version": "1.17.0",
-          "date": "2026-11-12",
-          "device_class": "linux-x86_64-cuda",
+          "date": "2026-11-13",
+          "device_class": "windows-x86_64-cuda",
           "result": "pass",
-          "commit": "d431c97848fd7877e338ed07eb77508a9c386c88",
+          "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
           "caps": {
             "version": "1.17.0",
-            "os": "linux",
+            "os": "windows",
             "arch": "x86_64",
-            "cpu_cores": 40,
+            "cpu_cores": 16,
             "gpu_backend": "cuda",
-            "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb"
+            "gpu_name": "NVIDIA GeForce RTX 5070"
           },
           "output_sha256": "a519428fcee0cb910d868dec5ff75f1cec4f9b887b3276e198f10994d1dcf0dc",
           "ran": "runner -m swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf --serve -c 512 -b 64; POST /v1/chat/completions temperature=0 max_tokens=48 stream=false enable_thinking=false",
-          "evidence": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q8_0.linux-x86_64-cuda.cuda.txt",
+          "evidence": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q8_0.windows-x86_64-cuda.cuda.txt",
           "build": {
-            "binary_sha256": "63a9af5d231bedeb3717cd483b563933f651e3634dd966aaf9b51de4915fcfed",
-            "compiler": "13.3.0"
+            "binary_sha256": "cc8db867d4fdec9925e05ce8faace60af4deee232f34abd71a13e9df023ff879",
+            "compiler": "16.2.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "dirty": false
           }
         }
       },
@@ -3394,7 +3398,7 @@
           "reason": null
         },
         "runner_version": "1.17.0",
-        "date": "2026-11-12"
+        "date": "2026-11-13"
       }
     },
     {
