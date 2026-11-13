@@ -7,11 +7,13 @@
 #include "compat.h"
 #include "json.h"
 #include "model.h"   // model_lora_arch_ok (static inline)
+#include "tpool.h"
 
 #include <ctype.h>
 #include <float.h>
 #include <limits.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -3428,8 +3430,63 @@ done:
 // writes in its place (width_fallback), named in the entry's written_as, so
 // a plan built from the report predicts the file the rewrite makes; a type
 // with no fallback reads null. Nothing is written but the report.
-int quantize_error_report(const char *in_path, const int *types, int n_types,
-                          const char *out_path) {
+// One tensor's rows, costed on the pool. Each row's cost goes into its own cell and the
+// caller sums the cells in row order, so the report is the one-thread report byte for byte.
+typedef struct {
+    const gguf_tensor *t;
+    const imatrix_entry *ie;
+    const int *types;
+    int n_types, n0;
+    uint64_t per, mats;
+    size_t in_rs, max_row;
+    double *cost;          // rows x n_types
+    unsigned char *wrow;   // per row: an imatrix weight applied
+    atomic_int bad, oom;   // set by any worker, read after the run
+} qerr_job;
+
+static void qerr_rows(void *ctx, int i0, int i1) {
+    qerr_job *j = ctx;
+    float *rowf = malloc(sizeof(float) * j->max_row);
+    float *deq = malloc(sizeof(float) * j->max_row);
+    uint8_t *rowq = malloc(ggml_row_size(T_F32, j->max_row) + 64);
+    if (!rowf || !deq || !rowq) {
+        atomic_store(&j->oom, 1);
+        free(rowf); free(deq); free(rowq);
+        return;
+    }
+    // the denormal mode is per thread, and the costs must not depend on which thread ran a row
+    fp_denormal_state fps = fp_denormals_disable();
+    const gguf_tensor *t = j->t;
+    int n0 = j->n0;
+    for (int r = i0; r < i1; r++) {
+        dequant_row(t->type, (const uint8_t *)t->data + (uint64_t)r * j->in_rs, rowf, n0);
+        bool bad = false;
+        const float *w = j->ie ? imatrix_row(j->ie, n0, (uint64_t)r, j->per, j->mats, &bad) : NULL;
+        if (bad) { atomic_store(&j->bad, 1); break; }
+        j->wrow[r] = w != NULL;
+        double *cell = j->cost + (size_t)r * (size_t)j->n_types;
+        for (int k = 0; k < j->n_types; k++) {
+            // the type the rewrite would write for this row
+            // (width_fallback), so the report costs what the file gets
+            int ek = width_fallback(j->types[k], n0);
+            cell[k] = 0;
+            if (!type_fits_row(ek, n0)) continue;
+            quantize_row_any_w(ek, rowf, rowq, n0, imatrix_weighted_type(ek) ? w : NULL);
+            dequant_row(ek, rowq, deq, n0);
+            double s = 0;
+            for (int c = 0; c < n0; c++) {
+                double d = (double)rowf[c] - deq[c];
+                s += (w ? (double)w[c] : 1.0) * d * d;
+            }
+            cell[k] = s;
+        }
+    }
+    fp_denormals_restore(fps);
+    free(rowf); free(deq); free(rowq);
+}
+
+int quantize_error_report_threads(const char *in_path, const int *types, int n_types,
+                                  const char *out_path, int n_threads) {
     gguf_file g;
     if (!gguf_open(&g, in_path)) return 1;
     FILE *out = plat_fopen(out_path, "w");
@@ -3438,16 +3495,26 @@ int quantize_error_report(const char *in_path, const int *types, int n_types,
         gguf_close(&g);
         return 1;
     }
-    size_t max_row = 0;
-    for (uint64_t i = 0; i < g.n_tensors; i++)
-        if (g.tensors[i].ne[0] > max_row) max_row = g.tensors[i].ne[0];
-    float *rowf = malloc(sizeof(float) * (max_row ? max_row : 1));
-    float *deq = malloc(sizeof(float) * (max_row ? max_row : 1));
-    uint8_t *rowq = malloc(ggml_row_size(T_F32, max_row) + 64);
+    if (n_threads < 1) n_threads = 1;
+    size_t max_row = 1;
+    uint64_t max_rows = 1, eligible = 0;
+    for (uint64_t i = 0; i < g.n_tensors; i++) {
+        gguf_tensor *t = &g.tensors[i];
+        if (t->ne[0] > max_row) max_row = t->ne[0];
+        if (!should_quantize(t) || keep_source_type(t)) continue;
+        uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
+        if (rows > max_rows) max_rows = rows;
+        eligible++;
+    }
     double *err = calloc((size_t)n_types, sizeof(double));
-    int rc = rowf && deq && rowq && err ? 0 : 1;
-    fp_denormal_state fps = fp_denormals_disable();
+    double *cost = max_rows <= INT_MAX ? malloc(sizeof(double) * (size_t)max_rows * (size_t)n_types) : NULL;
+    unsigned char *wrow = max_rows <= INT_MAX ? malloc((size_t)max_rows) : NULL;
+    tpool *tp = n_threads > 1 ? tpool_create(n_threads) : NULL;
+    int rc = err && cost && wrow && (n_threads == 1 || tp) ? 0 : 1;
+    if (rc && max_rows > INT_MAX)
+        fprintf(stderr, "error: a tensor of %s has more rows than this report can cost\n", in_path);
     uint64_t reported = 0;
+    double t_last = plat_now();
     for (uint64_t i = 0; rc == 0 && i < g.n_tensors; i++) {
         gguf_tensor *t = &g.tensors[i];
         if (!should_quantize(t) || keep_source_type(t)) continue;
@@ -3460,39 +3527,30 @@ int quantize_error_report(const char *in_path, const int *types, int n_types,
         int n0 = (int)t->ne[0];
         uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
         uint64_t mats = t->n_dims > 2 && t->ne[2] > 1 ? t->ne[2] : 1;
-        uint64_t per = mats > 1 ? t->ne[1] : rows;
-        size_t in_rs = ggml_row_size(t->type, t->ne[0]);
-        const imatrix_entry *ie = g_imx.n ? imatrix_find(t->name) : NULL;
-        bool weighted = false;
-        memset(err, 0, sizeof(double) * (size_t)n_types);
-        for (uint64_t r = 0; rc == 0 && r < rows; r++) {
-            dequant_row(t->type, (const uint8_t *)t->data + r * in_rs, rowf, n0);
-            bool bad = false;
-            const float *w = ie ? imatrix_row(ie, n0, r, per, mats, &bad) : NULL;
-            if (bad) {
-                fprintf(stderr, "error: the imatrix entry for %s does not fit the tensor\n",
-                        t->name);
-                rc = 1;
-                break;
-            }
-            weighted |= w != NULL;
-            for (int k = 0; k < n_types; k++) {
-                // the type the rewrite would write for this row
-                // (width_fallback), so the report costs what the file gets
-                int ek = width_fallback(types[k], n0);
-                if (!type_fits_row(ek, n0)) continue;
-                quantize_row_any_w(ek, rowf, rowq, n0,
-                                   imatrix_weighted_type(ek) ? w : NULL);
-                dequant_row(ek, rowq, deq, n0);
-                double s = 0;
-                for (int j = 0; j < n0; j++) {
-                    double d = (double)rowf[j] - deq[j];
-                    s += (w ? (double)w[j] : 1.0) * d * d;
-                }
-                err[k] += s;
-            }
+        qerr_job job = { .t = t, .ie = g_imx.n ? imatrix_find(t->name) : NULL, .types = types,
+                         .n_types = n_types, .n0 = n0, .per = mats > 1 ? t->ne[1] : rows, .mats = mats,
+                         .in_rs = ggml_row_size(t->type, t->ne[0]), .max_row = max_row,
+                         .cost = cost, .wrow = wrow };
+        if (tp && rows > 1) {
+            // the first row on this thread first: a table a writer builds on first use exists before
+            // the pool runs (the pool then costs that row again, to the same value)
+            qerr_rows(&job, 0, 1);
+            if (!atomic_load(&job.bad) && !atomic_load(&job.oom)) tpool_run(tp, qerr_rows, &job, (int)rows);
+        } else if (rows > 0) {
+            qerr_rows(&job, 0, (int)rows);
+        }
+        if (atomic_load(&job.oom)) rc = 1;
+        if (atomic_load(&job.bad)) {
+            fprintf(stderr, "error: the imatrix entry for %s does not fit the tensor\n", t->name);
+            rc = 1;
         }
         if (rc) break;
+        bool weighted = false;
+        memset(err, 0, sizeof(double) * (size_t)n_types);
+        for (uint64_t r = 0; r < rows; r++) {
+            weighted |= wrow[r] != 0;
+            for (int k = 0; k < n_types; k++) err[k] += cost[r * (uint64_t)n_types + (uint64_t)k];
+        }
         double sc2 = (double)t->scale * t->scale;
         // the name is the file's own string: escaped, or a quote in it makes
         // the line one the planner cannot read (R6.68.85)
@@ -3530,14 +3588,24 @@ int quantize_error_report(const char *in_path, const int *types, int n_types,
         }
         fprintf(out, "}}\n");
         reported++;
+        if (plat_now() - t_last >= 15.0) {
+            fprintf(stderr, "quantize: costed %llu of %llu tensors\n",
+                    (unsigned long long)reported, (unsigned long long)eligible);
+            t_last = plat_now();
+        }
     }
-    fp_denormals_restore(fps);
+    if (tp) tpool_destroy(tp);
     if (fclose(out) != 0) rc = 1;
-    free(rowf); free(deq); free(rowq); free(err);
+    free(cost); free(wrow); free(err);
     gguf_close(&g);
     if (rc == 0)
-        fprintf(stderr, "quantize: error report of %llu tensors -> %s%s\n",
+        fprintf(stderr, "quantize: error report of %llu tensors -> %s%s (%d thread%s)\n",
                 (unsigned long long)reported, out_path,
-                g_imx.n ? " (imatrix-weighted)" : "");
+                g_imx.n ? " (imatrix-weighted)" : "", n_threads, n_threads == 1 ? "" : "s");
     return rc;
+}
+
+int quantize_error_report(const char *in_path, const int *types, int n_types,
+                          const char *out_path) {
+    return quantize_error_report_threads(in_path, types, n_types, out_path, 1);
 }

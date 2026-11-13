@@ -81,6 +81,9 @@ bool  quantize_set_imatrix(const char *path);
 // nothing else; 0 on success.
 int   quantize_error_report(const char *in_path, const int *types, int n_types,
                             const char *out_path);
+// The same report with a tensor's rows costed on n_threads; the bytes do not depend on the count.
+int   quantize_error_report_threads(const char *in_path, const int *types, int n_types,
+                                    const char *out_path, int n_threads);
 // Compile a longer native-YaRN context contract into a standalone GGUF.
 // Only {arch}.context_length and {arch}.rope.scaling.factor may change; the
 // implementation reopens both files and byte-compares every tensor payload
