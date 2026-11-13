@@ -1284,3 +1284,26 @@ def test_release_make_puts_the_recipe_cflags_on_makes_command_line(tmp_path):
     assert out.returncode == 0, out.stderr
     # a command-line CFLAGS is not extended by the Makefile's +=, so the objects are the recipe's
     assert out.stdout.strip() == want, (out.stdout, want)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the wrapper is a POSIX sh script (see above)")
+def test_two_copies_of_release_make_on_path_still_reach_the_real_make(tmp_path):
+    """Two worktrees, each with tools/release-make first on PATH (a test
+    prepends its own tree's copy to a PATH that already holds another's):
+    each wrapper skipped only its own directory, took the other copy for the
+    real make and exec'd it, and the two exec'd each other forever
+    (R6.68.121; found on the Linux CUDA host, where the run timed out). A
+    wrapper now passes over every copy of itself, and the recipe's CFLAGS
+    reach the real make once."""
+    import shutil
+    other = tmp_path / "other-tree" / "release-make"
+    shutil.copytree(ROOT / "tools" / "release-make", other)
+    write(tmp_path / "Makefile", 'all:\n\t@echo "$(CFLAGS)"\n')
+    path = os.pathsep.join([str(ROOT / "tools" / "release-make"), str(other), os.environ["PATH"]])
+    env = {**os.environ, "PATH": path}
+    env.pop("CFLAGS", None)
+    out = subprocess.run(["make", "-s", "-C", str(tmp_path)], env=env, capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().startswith("-O3 -ffast-math"), out.stdout
+    assert out.stdout.count("-O3") == 1, out.stdout

@@ -9,13 +9,20 @@
 # .build/<id> (found running the 1.16.0 gate, 2026-11-10). This directory first on PATH makes every make the gate
 # runs build exactly what the release recipe built. RELEASE_ARCH_FLAGS overrides the arch flags (default
 # -march=x86-64-v3, the recipe's for x86-64).
-self=$(cd "$(dirname "$0")" && pwd)
+#
+# The real make is the first make on PATH that is not a copy of this wrapper. Skipping only this
+# directory was not enough: with a second tree's tools/release-make also on PATH each wrapper took
+# the other for the real make, and the two exec'd each other forever (R6.68.121). A copy is known
+# by the marker line below, which no make binary holds.
+# release-make-wrapper-marker
 real=
 old_ifs=$IFS
 IFS=:
 for d in $PATH; do
-    [ "$d" = "$self" ] && continue
-    if [ -x "$d/make" ]; then real="$d/make"; break; fi
+    [ -x "$d/make" ] || continue
+    grep -q '^# release-make-wrapper-marker$' "$d/make" 2>/dev/null && continue
+    real="$d/make"
+    break
 done
 IFS=$old_ifs
 [ -n "$real" ] || { echo "release-make: no make on PATH besides this wrapper" >&2; exit 127; }
