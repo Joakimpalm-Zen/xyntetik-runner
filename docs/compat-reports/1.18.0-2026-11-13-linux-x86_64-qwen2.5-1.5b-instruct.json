@@ -1,6 +1,6 @@
 {
   "schema_version": "xyntetik.runner.model-compat-report.v1",
-  "generated_utc": "2026-11-13T11:40:44Z",
+  "generated_utc": "2026-11-13T11:50:42Z",
   "host": {
     "os": "Linux",
     "machine": "x86_64"
@@ -17,19 +17,19 @@
     {
       "id": "qwen2.5-1.5b-instruct-q8_0-bartowski",
       "architecture": "qwen2",
-      "file": "models/Qwen2.5-1.5B-Instruct-Q8_0.gguf",
+      "file": "models/bartowski/Qwen2.5-1.5B-Instruct-Q8_0.gguf",
       "expected_sha256": "7185d306cf45956c8c017cd0d3b05ecc6bc18b3ea8eb5c240dce40e87563db7f",
       "checks": {
         "load": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 941.4,
-          "stderr_tail": "gpu: no OS video memory budget published for this device; offload budget 24.77 GB from the driver's free view, headroom 0.77 GB\ngpu-split: budget=24.77GB fixed=0.79GB G=28/28 full=1 used=2.30GB\ngpu-split: prompt window 512 columns (batch 512, 22.22 GB spare, 104452 bytes a column)\ngpu: CUDA backend on CUDA MIG slice 1g.24gb (1.6 GB weights in VRAM)\ngpu: VRAM 22.91 GB free of 25.37 GB after init (kv 0.12 GB + scratch 0.02 GB this instance)\nloaded models/Qwen2.5-1.5B-Instruct-Q8_0.gguf | qwen2 | 28 layers | ctx 4096 | 20 threads | 0.84s\nsampling: qwen2.5 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 229.97 tok/s | gen: 1 tok, 138.73 tok/s\n"
+          "elapsed_ms": 923.3,
+          "stderr_tail": "gpu: no OS video memory budget published for this device; offload budget 24.77 GB from the driver's free view, headroom 0.77 GB\ngpu-split: budget=24.77GB fixed=0.79GB G=28/28 full=1 used=2.30GB\ngpu-split: prompt window 512 columns (batch 512, 22.22 GB spare, 104452 bytes a column)\ngpu: CUDA backend on CUDA MIG slice 1g.24gb (1.6 GB weights in VRAM)\ngpu: VRAM 22.91 GB free of 25.37 GB after init (kv 0.12 GB + scratch 0.02 GB this instance)\nloaded models/Qwen2.5-1.5B-Instruct-Q8_0.gguf | qwen2 | 28 layers | ctx 4096 | 20 threads | 0.82s\nsampling: qwen2.5 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 235.78 tok/s | gen: 1 tok, 143.69 tok/s\n"
         },
         "tokenizer": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 4230.3,
+          "elapsed_ms": 3729.2,
           "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
           "stderr_tail": "",
           "vocab": {
@@ -43,7 +43,7 @@
         "cpu_cuda": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 27475.69,
+          "elapsed_ms": 26906.31,
           "pins": {
             "RUNNER_CUDA_TC": "0",
             "RUNNER_CUDA_ROUTE": "reference"
@@ -62,14 +62,14 @@
         "chat": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 945.18,
+          "elapsed_ms": 875.41,
           "prompt": "What is 2+2?",
           "gpu": "auto",
           "failure_reasons": [],
           "output_tail": "2 + 2 equals 4.\n"
         }
       },
-      "resolved_file": "models/Qwen2.5-1.5B-Instruct-Q8_0.gguf",
+      "resolved_file": "models/bartowski/Qwen2.5-1.5B-Instruct-Q8_0.gguf",
       "actual_sha256": "7185d306cf45956c8c017cd0d3b05ecc6bc18b3ea8eb5c240dce40e87563db7f",
       "file_status": "pass",
       "complete": true
@@ -83,13 +83,13 @@
         "load": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 914.7,
-          "stderr_tail": "gpu: no OS video memory budget published for this device; offload budget 24.77 GB from the driver's free view, headroom 0.77 GB\ngpu-split: budget=24.77GB fixed=0.79GB G=28/28 full=1 used=2.30GB\ngpu-split: prompt window 512 columns (batch 512, 22.22 GB spare, 104452 bytes a column)\ngpu: the device's tensors (28 layers and the head) lie in 2 stretches of the file; uploading them as runs\ngpu: CUDA backend on CUDA MIG slice 1g.24gb (1.6 GB weights in VRAM)\ngpu: VRAM 22.91 GB free of 25.37 GB after init (kv 0.12 GB + scratch 0.02 GB this instance)\nloaded models/qwen2.5-1.5b-instruct-q8_0.gguf | qwen2 | 28 layers | ctx 4096 | 20 threads | 0.81s\nsampling: qwen2.5 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 231.65 tok/s | gen: 1 tok, 140.35 tok/s\n"
+          "elapsed_ms": 872.1,
+          "stderr_tail": "gpu: no OS video memory budget published for this device; offload budget 24.77 GB from the driver's free view, headroom 0.77 GB\ngpu-split: budget=24.77GB fixed=0.79GB G=28/28 full=1 used=2.30GB\ngpu-split: prompt window 512 columns (batch 512, 22.22 GB spare, 104452 bytes a column)\ngpu: the device's tensors (28 layers and the head) lie in 2 stretches of the file; uploading them as runs\ngpu: CUDA backend on CUDA MIG slice 1g.24gb (1.6 GB weights in VRAM)\ngpu: VRAM 22.91 GB free of 25.37 GB after init (kv 0.12 GB + scratch 0.02 GB this instance)\nloaded models/qwen2.5-1.5b-instruct-q8_0.gguf | qwen2 | 28 layers | ctx 4096 | 20 threads | 0.77s\nsampling: qwen2.5 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 3 tok, 234.85 tok/s | gen: 1 tok, 151.90 tok/s\n"
         },
         "tokenizer": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 63.3,
+          "elapsed_ms": 55.0,
           "stdout_tail": "\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
           "stderr_tail": "",
           "vocab": {
@@ -103,7 +103,7 @@
         "cpu_cuda": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 25697.62,
+          "elapsed_ms": 26826.74,
           "pins": {
             "RUNNER_CUDA_TC": "0",
             "RUNNER_CUDA_ROUTE": "reference"
@@ -122,7 +122,7 @@
         "chat": {
           "status": "pass",
           "returncode": 0,
-          "elapsed_ms": 975.9,
+          "elapsed_ms": 893.32,
           "prompt": "What is 2+2?",
           "gpu": "auto",
           "failure_reasons": [],

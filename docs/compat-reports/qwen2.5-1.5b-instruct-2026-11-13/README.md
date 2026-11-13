@@ -20,12 +20,17 @@ Q4_K_M conversions were measured and not admitted.
 - **Neither Q4_K_M is admitted.** The publisher's q4_k_m fails both bars (0.0798 ± 0.0036, 96.95% margin-qualified;
   llama.cpp 0.0931 on window 1). bartowski's Q4_K_M with its importance matrix reads 0.0516 ± 0.0025 (bootstrap 95%
   0.0470 to 0.0568, 73% of resamples over 0.05), 97.97% margin-qualified: its KLD point estimate is over the bar.
-- **CPU and CUDA give different replies to the tier-smoke prompt on bartowski's file** (they diverge after about
-  thirty tokens, "has its unique" against "has unique"), on the default CUDA route. Each cell is pinned on its own
-  backend and passes. compat's cpu_cuda check, on the reference route, is 9 of 9 identical for both files; the
-  publisher's file gives byte-identical tier-smoke replies on both backends.
-- **Scope:** two windows over one corpus, CPU score files. Task quality is not measured; Metal cells come from the
-  Mac.
+- **The backends give two different replies to the tier-smoke prompt on bartowski's file.** They diverge after about
+  thirty tokens ("has its unique" against "has unique"). The CPU (at prompt batch 1, 64 and 512, and with the chunked
+  prefill alike) and CUDA with its tensor-core route off (`RUNNER_CUDA_TC=0`, with or without
+  `RUNNER_CUDA_ROUTE=reference`) give `c4a53e20`; CUDA's default route and Metal give `e82cf027`. So it is the
+  tensor-core route that takes the other branch at a near tie, not the CPU. Each cell is pinned on its own backend and
+  passes. compat's cpu_cuda check, on the reference route, is 9 of 9 identical for both files. The publisher's file
+  gives one reply on all three backends.
+- **The two rows' files have the same name in different case** (`Qwen2.5-1.5B-Instruct-Q8_0.gguf` and
+  `qwen2.5-1.5b-instruct-q8_0.gguf`), which is one file on a case-insensitive file system (macOS, Windows). The compat
+  manifest keeps bartowski's under `models/bartowski/`; anyone holding both in one folder there loses one.
+- **Scope:** two windows over one corpus, CPU score files. Task quality is not measured.
 
 The kills were declared before each read: the tokenizer, then the template, then the owner's bar (mean KLD at most 0.05
 and margin-qualified top-1 at least 97%), and a failing publisher q4_k_m stops the run for a decision. The second
@@ -117,6 +122,9 @@ rows were added (R6.67).
   The manifest's default prompt drew a 62-byte reply from both files, under the 96-byte minimum; both rows ask the
   paragraph prompt the LFM2.5-350M rows ask (80 tokens). Replies: the publisher's q8_0 `0308e3d8` on both backends;
   bartowski's Q8_0 `c4a53e20` on the CPU and `e82cf027` on CUDA (above).
+- **Metal**, on an 8 GB Apple M1 from a clean STRICT build of the rows' first commit: both rows pinned, compared and
+  recorded. The publisher's q8_0 replies `0308e3d8`, as on the CPU and CUDA; bartowski's Q8_0 replies `e82cf027`, as on
+  CUDA's default route. The two files were kept in separate folders there, since their names differ only in case.
 - **compat** (`scripts/compat_matrix.py --verify-files --load --execute-checks --require-complete`,
   `1.18.0-2026-11-13-linux-x86_64-qwen2.5-1.5b-instruct.json`): both files pass load, tokenizer (0 of 721 against the
   captured reference ids), chat ("What is 2+2?" answered and stopped) and cpu_cuda (9 of 9 prompts identical, none
