@@ -1904,7 +1904,7 @@
         "load",
         "chat"
       ],
-      "notes": "IBM's own Q4_K_M GGUF of the Mamba-2 hybrid, pinned 2026-10-02 (R4.23.3; the architecture had no manifest row). No llama.cpp reference is declared, so greedy_reference and tokenizer are not claimed. Tensor-core prefill was promoted for granitehybrid on a clean test-tc-tol row on 2026-10-02 (0 of 64 flips); the publisher's default system prompt is not sent yet (template-conformance backlog, granite40h).",
+      "notes": "IBM's own Q4_K_M GGUF of the Mamba-2 hybrid, pinned 2026-10-02 (R4.23.3; the architecture had no manifest row). No llama.cpp reference is declared, so greedy_reference and tokenizer are not claimed. Tensor-core prefill was promoted for granitehybrid on a clean test-tc-tol row on 2026-10-02 (0 of 64 flips). The publisher's default system turn is sent: granite40h conformance is 21/21 in text and tokens (R4.39.7). Fidelity: 0.0854 mean KLD and 94.85% margin-qualified top-1 against the publisher's float32 checkpoint, over both bars; not a roster file (record docs/compat-reports/granite-4.0-h-micro-2026-11-13).",
       "check_params": {
         "chat": {
           "prompt": "What is 2+2?",
@@ -1916,6 +1916,86 @@
             "[/INST]",
             "<<SYS>>",
             "<|im_start|>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "granite-4.0-h-micro-q8_0",
+      "architecture": "granitehybrid",
+      "family": "Granite 4.0-H",
+      "file": "models/granite-4.0-h-micro-Q8_0.gguf",
+      "sha256": "a009111abf2865b7aad1e66326a6c772cddc29bccd22898f470292068b27bb59",
+      "upstream": "ibm-granite/granite-4.0-h-micro-GGUF",
+      "tokenizer_reference": "ibm-granite/granite-4.0-h-micro",
+      "tokenizer_reference_revision": "d5f01a3ea75f088947be3aae039f4ad52837dfde",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/granite-4.0-h-micro.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "IBM's own Q8_0 granite-4.0-h-micro-Q8_0.gguf (3,397,676,704 bytes, revision dc1dd258 of ibm-granite/granite-4.0-h-micro-GGUF), architecture granitehybrid: 40 layers (36 Mamba-2, 4 attention without positional encoding), hidden 2,048, no experts, a tied output head, vocabulary 100,352. Tokenizer: 0 of 721 corpus strings and 0 of 99,474 vocabulary entries differ from IBM's tokenizer.json at d5f01a3e; template family granite40h (the template is byte-equal to granite-4.0-h-small's), conformance 21/21 in text and tokens, the publisher's default system turn included. On load the file resolves to architecture granitehybrid (36 Mamba-2 and 4 attention layers), template granite4, the native qwen_json tool protocol, and the generic sampling preset. Fidelity: against the publisher's BF16 checkpoint computed in float32 it reads 0.0025 ± 0.0002 mean KLD and 100% margin-qualified top-1 over 544 positions (two windows of 272: 0.0024 and 0.0026; plain top-1 99.1%, CPU), against a bar of 0.05 and 97%. IBM's Q4_K_M from the same repository is not admitted (0.0854 mean KLD); unsloth's Q4_K_M is the 4-bit row. Record docs/compat-reports/granite-4.0-h-micro-2026-11-13. CUDA runs the whole model on the device (40 of 40 layers) on a CUDA MIG slice, 1g.24gb, sm_120. greedy_reference remains undeclared.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "granite-4.0-h-micro-q4_k_m-unsloth",
+      "architecture": "granitehybrid",
+      "family": "Granite 4.0-H",
+      "file": "models/unsloth/granite-4.0-h-micro-Q4_K_M.gguf",
+      "sha256": "1f21ba20ca249f6de1b7fcc436d95bba80a11d40060532bf6eb0c6a9e54e5d28",
+      "upstream": "unsloth/granite-4.0-h-micro-GGUF",
+      "tokenizer_reference": "ibm-granite/granite-4.0-h-micro",
+      "tokenizer_reference_revision": "d5f01a3ea75f088947be3aae039f4ad52837dfde",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/granite-4.0-h-micro.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "unsloth's Q4_K_M granite-4.0-h-micro-Q4_K_M.gguf (1,942,564,800 bytes, revision 0577b1ba of unsloth/granite-4.0-h-micro-GGUF, unsloth's importance matrix, the chat template byte-equal to IBM's), architecture granitehybrid: 40 layers (36 Mamba-2, 4 attention without positional encoding), hidden 2,048, no experts, a tied output head, vocabulary 100,352. Tokenizer: 0 of 721 corpus strings and 0 of 99,474 vocabulary entries differ from IBM's tokenizer.json at d5f01a3e; template family granite40h (the template is byte-equal to granite-4.0-h-small's), conformance 21/21 in text and tokens, the publisher's default system turn included. On load the file resolves to architecture granitehybrid (36 Mamba-2 and 4 attention layers), template granite4, the native qwen_json tool protocol, and the generic sampling preset. Fidelity: against the publisher's BF16 checkpoint computed in float32 it reads 0.0490 ± 0.0048 mean KLD over 544 positions (bootstrap 95% interval 0.0407 to 0.0596, crossing the bar) against a bar of 0.05, with 98.28% margin-qualified top-1 (plain top-1 91.9%, CPU); one of its two windows of 272 reads 0.0553, over the bar. The Q8_0 is the fidelity file. Record docs/compat-reports/granite-4.0-h-micro-2026-11-13. CUDA runs the whole model on the device (40 of 40 layers) on a CUDA MIG slice, 1g.24gb, sm_120. greedy_reference remains undeclared.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
           ]
         }
       }
