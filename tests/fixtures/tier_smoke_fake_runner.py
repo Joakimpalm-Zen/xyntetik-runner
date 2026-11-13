@@ -133,6 +133,10 @@ if "--serve" in argv:
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, stop)
+    # Windows: the harness asks a server to stop with CTRL_BREAK, which Python
+    # raises as SIGBREAK; unhandled, Windows ends the process with 0xC000013A
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, stop)
     try:
         server.serve_forever(poll_interval=0.05)
     finally:
