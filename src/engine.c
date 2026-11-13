@@ -267,8 +267,10 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
     // Recurrent layers hold a fold over [0, e->pos), not a per-position prefix,
     // so keeping KV rows [0, keep) does not put the recurrent state at `keep`.
     // On an actual rewind (keep < e->pos): an exact snapshot at `keep` restores
-    // the fold in a memcpy; otherwise recompute from 0 and let the refeed
-    // rebuild the state and the KV. keep == e->pos is a pure extension.
+    // the fold in a memcpy; failing that, the turn mark, where the kept run
+    // reaches it, resumes from the mark; otherwise recompute from 0 and let
+    // the refeed rebuild the state and the KV. keep == e->pos is a pure
+    // extension.
     // A ring recycles rows: "keep the first `keep` rows" holds only while the
     // ring still has every row position `keep` reads (model_kv_ring_resumes,
     // docs/kv-ring.md); otherwise recompute from 0.
