@@ -76,6 +76,43 @@ def rss_kind():
     return {"Linux": "peak", "Darwin": "sampled"}.get(platform.system(), "unavailable")
 
 
+NEW_GROUP = subprocess.CREATE_NEW_PROCESS_GROUP if WINDOWS else 0
+
+# What a server keeps of the harness's own environment when a test passes
+# `env`. The test's dictionary replaces the inherited one, so a test pins
+# exactly the RUNNER_* variables it means; these are not the test's subject
+# and a process is not itself without them. Windows cannot initialise Winsock
+# without SystemRoot and exits 1 before printing anything. A GPU driver keeps
+# its compiled kernels under the user's home (HOME; APPDATA on Windows): with
+# no home every start compiled them again, 34 s against 1.5 s on a CUDA host,
+# and a loaded host ran a test past its health wait. The device selection is
+# the host's, not the test's.
+CARRIED = ("HOME", "CUDA_CACHE_PATH", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER",
+           "LD_LIBRARY_PATH")
+CARRIED_WINDOWS = ("SystemRoot", "SystemDrive", "windir", "COMSPEC", "PATH", "PATHEXT",
+                   "TEMP", "TMP", "NUMBER_OF_PROCESSORS",
+                   "USERPROFILE", "APPDATA", "LOCALAPPDATA")
+
+
+def child_env(env, inherited=None, windows=WINDOWS):
+    """The environment a server is started with: the inherited one when the
+    test passes none, else the test's own plus the carried variables it did
+    not set."""
+    inherited = os.environ if inherited is None else inherited
+    if env is None:
+        out = dict(inherited)
+    else:
+        out = dict(env)
+        for key in CARRIED + (CARRIED_WINDOWS if windows else ()):
+            if key not in out and key in inherited:
+                out[key] = inherited[key]
+    # the reaper's 5 s poll is a wall-clock tax on every TTL/reload gate
+    # (32 tests, 3.8 min); a test that needs the shipped cadence passes
+    # env with its own RUNNER_TTL_POLL_S
+    out.setdefault("RUNNER_TTL_POLL_S", "0.25")
+    return out
+
+
 class RunnerServer:
     """A running ``runner --serve``. Use as a context manager."""
 
@@ -152,27 +189,12 @@ class RunnerServer:
         else:
             fd, self._own_log = tempfile.mkstemp(prefix="runner-server-", suffix=".log")
             self._log = os.fdopen(fd, "wb")
-        # the reaper's 5 s poll is a wall-clock tax on every TTL/reload gate
-        # (32 tests, 3.8 min); a test that needs the shipped cadence passes
-        # env with its own RUNNER_TTL_POLL_S
-        # A caller-supplied env REPLACES the inherited one, so a test can pin
-        # exactly the RUNNER_* variables it means. Windows needs a handful of
-        # its own regardless: without SystemRoot the process cannot initialise
-        # Winsock and exits 1 before printing anything, which reads as "the
-        # server is broken here" rather than "the environment was too empty".
-        if self.env is not None:
-            env = dict(self.env)
-            if os.name == "nt":
-                for key in ("SystemRoot", "SystemDrive", "windir", "COMSPEC",
-                            "PATH", "PATHEXT", "TEMP", "TMP",
-                            "NUMBER_OF_PROCESSORS"):
-                    if key not in env and key in os.environ:
-                        env[key] = os.environ[key]
-        else:
-            env = dict(os.environ)
-        env.setdefault("RUNNER_TTL_POLL_S", "0.25")
+        env = child_env(self.env)
+        # Windows: its own process group, so stop() can ask it to shut down
+        # (CTRL_BREAK reaches a group, never one process of the caller's)
         self.proc = subprocess.Popen(argv, stdout=self._log,
-                                     stderr=subprocess.STDOUT, env=env)
+                                     stderr=subprocess.STDOUT, env=env,
+                                     creationflags=NEW_GROUP)
         deadline = time.monotonic() + self.start_timeout
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
@@ -200,29 +222,43 @@ class RunnerServer:
                                  returncode=self.proc.returncode, log=self._tail())
 
     def stop(self, strict=False, keep_log=False):
-        """SIGTERM, wait, and record how the runner went. A server that had
-        become healthy exits 0 on SIGTERM; anything else after a normal stop
-        is a shutdown defect (a double free at exit passed every server test
-        for as long as nothing looked). ``strict`` raises on it; a stop that
-        had to escalate to kill is a failed bounded shutdown contract. Windows terminates rather than signals, so its exit
-        code says nothing and is not judged."""
+        """Ask the runner to shut down, wait, and record how it went. A server
+        that had become healthy exits 0 when asked; anything else after a
+        normal stop is a shutdown defect (a double free at exit passed every
+        server test for as long as nothing looked). ``strict`` raises on it; a
+        stop that had to escalate to kill is a failed bounded shutdown
+        contract. The ask is SIGTERM, and on Windows CTRL_BREAK to the
+        server's own process group, which the runner's console handler takes
+        as SIGTERM. Where Windows cannot deliver it (no console to send it
+        through) the server is terminated as before, and a terminated
+        server's exit code says nothing and is not judged."""
         if not self.proc:
             return
         self.sample_rss()
         self.killed = False
+        asked = not WINDOWS
         if self.proc.poll() is None:
-            self.proc.send_signal(signal.SIGTERM if not WINDOWS else signal.SIGTERM)
+            asked = self._ask_to_stop()
             try:
                 self.proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                self.killed = True
+                # A Windows server that never took the ask may never have
+                # been sent it: only one that has stopped on an ask before
+                # (in this process) is held to the bound.
+                self.killed = asked and (not WINDOWS or RunnerServer._break_works is True)
+                if WINDOWS and asked and not RunnerServer._break_works:
+                    RunnerServer._break_works = False
+                    asked = False
                 self.proc.kill()
                 self.proc.wait(timeout=10)
+            else:
+                if WINDOWS and asked:
+                    RunnerServer._break_works = True
         self.exit_code = self.proc.returncode
         if self._log is not None:
             self._log.close()
         self._log = None
-        unclean = strict and (self.killed or (not WINDOWS and self.exit_code != 0))
+        unclean = strict and (self.killed or (asked and self.exit_code != 0))
         if unclean:
             # An unclean stop keeps the server's whole log and names it. It
             # used to delete the file and keep a 2,000-byte tail, which lost
@@ -239,6 +275,26 @@ class RunnerServer:
             self._own_log = None
 
     # ------------------------------------------------------------------
+    # Windows: None until a stop has been tried, then whether CTRL_BREAK
+    # reaches a server started here. A harness with no console cannot send
+    # it, and learns that from the first stop instead of waiting at each.
+    _break_works = None
+
+    def _ask_to_stop(self):
+        """Sends the shutdown request; False when the server was terminated
+        instead (Windows without a way to deliver CTRL_BREAK)."""
+        if not WINDOWS:
+            self.proc.send_signal(signal.SIGTERM)
+            return True
+        if RunnerServer._break_works is not False:
+            try:
+                self.proc.send_signal(signal.CTRL_BREAK_EVENT)
+                return True
+            except OSError:
+                RunnerServer._break_works = False
+        self.proc.terminate()
+        return False
+
     def _health_ok(self):
         try:
             with contextlib.closing(socket.create_connection(

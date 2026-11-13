@@ -15,6 +15,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "tests" / "conformance")]
 from harness import RunnerServer  # noqa: E402
+from _process import child_env  # noqa: E402
 
 EXE = ROOT / ("runner.exe" if sys.platform == "win32" else "runner")
 
@@ -96,7 +97,7 @@ def test_a_log_the_caller_named_is_shown_and_stays_where_it_was_put(model, tmp_p
     assert path.exists() and srv.kept_log == str(path)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows terminates rather than signals: its exit code is not judged")
+@pytest.mark.skipif(sys.platform == "win32", reason="a server found dead before the stop is judged on POSIX only")
 def test_an_unclean_stop_keeps_the_whole_log_and_names_it(model):
     """The block passed, the server did not stop cleanly (here: killed from
     outside, as a sanitizer abort at exit would look to the harness). The
@@ -113,3 +114,50 @@ def test_an_unclean_stop_keeps_the_whole_log_and_names_it(model):
     assert own in str(e.value)
     assert "server listening" in pathlib.Path(own).read_text(errors="replace")
     os.unlink(own)
+
+
+def test_a_stop_lets_the_server_shut_down(model, tmp_path):
+    """The stop is a request, not a kill: the server runs its shutdown, so
+    what it prints there is in the log and its exit code means something. On
+    Windows the stop was TerminateProcess: a CUDA profile summary, printed
+    when the device is freed, never appeared, and a test that read it failed
+    on the one kind of host that reaches it (R6.68.123)."""
+    log = tmp_path / "stop.log"
+    with RunnerServer(EXE, model, extra_args=["--gpu", "off"], log_path=str(log)) as srv:
+        pass
+    if sys.platform == "win32" and RunnerServer._break_works is False:
+        pytest.skip("no console to send CTRL_BREAK through: the server was terminated")
+    assert not srv.killed and srv.exit_code == 0, (srv.killed, srv.exit_code)
+    # written by the registry's unload, which only the shutdown path reaches
+    assert "swap: unloading" in log.read_text(errors="replace")
+
+
+HOST = {"HOME": "/home/u", "CUDA_VISIBLE_DEVICES": "1", "LD_LIBRARY_PATH": "/opt/cuda/lib64",
+        "APPDATA": "C:\\Users\\u\\AppData\\Roaming", "SystemRoot": "C:\\Windows",
+        "RUNNER_PREFETCH": "1", "EDITOR": "vi"}
+
+
+def test_a_tests_env_keeps_the_home_and_the_device_choice():
+    """A test's env replaces the inherited one so that no RUNNER_* variable
+    of the developer's shell reaches the server. It also dropped HOME, and a
+    CUDA driver keeps its compiled kernels under it: every such server
+    compiled them again (34 s against 1.5 s to load a 2-layer fixture on a
+    Linux CUDA host), and under load a test ran past its health wait."""
+    env = child_env({"RUNNER_TEST_SCRIPTED_REPLY": "1"}, inherited=HOST, windows=False)
+    assert env["HOME"] == "/home/u"
+    assert env["CUDA_VISIBLE_DEVICES"] == "1" and env["LD_LIBRARY_PATH"] == "/opt/cuda/lib64"
+    assert env["RUNNER_TEST_SCRIPTED_REPLY"] == "1"
+    # still the test's own: nothing of the shell's RUNNER_* or anything else
+    assert "RUNNER_PREFETCH" not in env and "EDITOR" not in env and "APPDATA" not in env
+
+
+def test_a_tests_own_value_wins_and_windows_keeps_its_profile():
+    env = child_env({"HOME": "/tmp/h", "RUNNER_TTL_POLL_S": "5"}, inherited=HOST, windows=True)
+    assert env["HOME"] == "/tmp/h" and env["RUNNER_TTL_POLL_S"] == "5"
+    assert env["APPDATA"] == HOST["APPDATA"] and env["SystemRoot"] == HOST["SystemRoot"]
+    assert "RUNNER_PREFETCH" not in env
+
+
+def test_no_env_is_the_inherited_one():
+    env = child_env(None, inherited=HOST, windows=False)
+    assert {k: env[k] for k in HOST} == HOST and env["RUNNER_TTL_POLL_S"] == "0.25"
