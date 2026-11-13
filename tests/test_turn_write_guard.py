@@ -223,5 +223,13 @@ def test_a_batch_readout_gives_the_turn_between_its_items(server, path, batch):
            res, "short")
     th.join()
     assert res["batch"][0] == 200 and res["short"][0] == 200, res
-    assert res["short"][1] < alone / 4, (res, alone, n)
+    # Both times are of this one concurrent run, so a loaded host stretches
+    # them together. The bound used to be a quarter of the batch's time when
+    # it ran alone, measured earlier: a load spike between the two
+    # measurements failed it on a shared CUDA host with nothing wrong
+    # (R6.68.124). A request that waits for the batch takes about nine tenths
+    # of the batch's time, since it is sent a tenth of the way in; one that
+    # waits for an item takes a small part of it.
+    short, whole = res["short"][1], res["batch"][1]
+    assert short < whole / 2, (res, alone, n)
     assert_clean(server)
