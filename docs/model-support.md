@@ -338,13 +338,13 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>Granite 4</b>, 1 model: CPU ✅ · CUDA ✅ · Metal - · Train n/a</summary>
+<summary><b>Granite 4</b>, 1 model: CPU ✅ · CUDA ✅ · Metal ✅ · Train n/a</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
 <tr><td colspan="5"><b>Granite 4.0 H Micro (IBM)</b></td></tr>
-<tr><td><a href="#granite-4.0-h-micro-q4_k_m-unsloth"><code>granite-4.0-h-micro-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td></td><td>no: recurrent architecture (Mamba-2)</td></tr>
-<tr><td><a href="#granite-4.0-h-micro-q8_0"><code>granite-4.0-h-micro-Q8_0.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td></td><td>no: recurrent architecture (Mamba-2)</td></tr>
+<tr><td><a href="#granite-4.0-h-micro-q4_k_m-unsloth"><code>granite-4.0-h-micro-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td><td>no: recurrent architecture (Mamba-2)</td></tr>
+<tr><td><a href="#granite-4.0-h-micro-q8_0"><code>granite-4.0-h-micro-Q8_0.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.18.0<br>2026-11-13</td><td>no: recurrent architecture (Mamba-2)</td></tr>
 </tbody>
 </table>
 </details>
@@ -1232,7 +1232,7 @@ unsloth's Q4_K_M of IBM's Granite 4.0 H Micro, made with unsloth's importance ma
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.18.0 on 2026-11-13.
 - **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `c408c9575039`, output sha256 `3ad3cc773764eba1`, [pin](../tests/compatibility/tier-smoke/granite-4.0-h-micro-q4_k_m-unsloth.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `c408c9575039`, output sha256 `3ad3cc773764eba1`, [pin](../tests/compatibility/tier-smoke/granite-4.0-h-micro-q4_k_m-unsloth.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
+- **Metal:** ✅ v1.18.0 2026-11-13 on macos-arm64-metal at commit `5732b1c2cbcd`, output sha256 `3ad3cc773764eba1`, [pin](../tests/compatibility/tier-smoke/granite-4.0-h-micro-q4_k_m-unsloth.macos-arm64-metal.metal.txt)
 - **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.18.0, 2026-11-13).
 - **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (granitehybrid) (runner 1.18.0, 2026-11-13).
 
@@ -1254,7 +1254,7 @@ IBM's own Q8_0 of Granite 4.0 H Micro: against the publisher's BF16 checkpoint c
 - **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.18.0 on 2026-11-13.
 - **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `c408c9575039`, output sha256 `e2b4044cbabdc256`, [pin](../tests/compatibility/tier-smoke/granite-4.0-h-micro-q8_0.linux-x86_64-cuda.cpu.txt)
 - **CUDA:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `c408c9575039`, output sha256 `e2b4044cbabdc256`, [pin](../tests/compatibility/tier-smoke/granite-4.0-h-micro-q8_0.linux-x86_64-cuda.cuda.txt)
-- **Metal:** ☐ not run
+- **Metal:** ✅ v1.18.0 2026-11-13 on macos-arm64-metal at commit `5732b1c2cbcd`, output sha256 `e2b4044cbabdc256`, [pin](../tests/compatibility/tier-smoke/granite-4.0-h-micro-q8_0.macos-arm64-metal.metal.txt)
 - **LoRA training:** no: recurrent architecture (Mamba-2) (runner 1.18.0, 2026-11-13).
 - **LoRA adapter serving:** no: --lora does not cover Mamba-2 hybrid architectures yet (granitehybrid) (runner 1.18.0, 2026-11-13).
 

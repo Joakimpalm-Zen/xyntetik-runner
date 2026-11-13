@@ -17,7 +17,7 @@ unsloth's Q4_K_M.
   third file whatever the result. The Q8_0 is the fidelity file.
 - **No training and no adapters.** `--adapt-info` refuses both for Mamba-2 hybrids, so the support page marks Train n/a
   and there is no LoRA smoke.
-- **No Metal cell yet.**
+- **Metal cells are from one machine**, an Apple M1 with 8 GB; both files fit it.
 - **Scope:** two windows over one corpus, CPU score files, all inside 4,096 tokens. Task quality is not measured.
 
 The kills were declared before each read: the tokenizer, then the template, then the owner's bar (mean KLD at most 0.05
@@ -100,6 +100,10 @@ of main c408c957, this branch's base (runner sha256 `4a475478…`, provenance co
 the rows were added (R6.67).
 - **tier-smoke**, `--pin` then `--record`, on the CPU and CUDA cells of both rows: all four pass with the fact found.
   CPU and CUDA give the same reply bytes for each file (IBM Q8_0 `e2b4044c`, unsloth Q4_K_M `3ad3cc77`).
+- **Metal**, on an Apple M1 with 8 GB, from a clean STRICT build of 5732b1c2 (the row commit): the load says "Metal
+  backend on Apple M1" for the hybrid, tier-smoke `--pin` then `--record` passes on both rows with the fact found,
+  and each reply is byte for byte the Linux reply (IBM Q8_0 `e2b4044c`, unsloth Q4_K_M `3ad3cc77`). These are the
+  first Metal cells of a granitehybrid file.
 - **compat** (`scripts/compat_matrix.py --verify-files --load --execute-checks`,
   `1.18.0-2026-11-13-linux-x86_64-granite-4.0-h-micro.json`): complete, every declared check passes.
   - IBM Q8_0 and unsloth Q4_K_M (new entries): load, tokenizer (0 of 721 against the captured reference ids; 0 of
