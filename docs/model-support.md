@@ -227,12 +227,10 @@ instead of carrying a copy, so none can drift and nothing watches them:
 ✅ *version date*: recorded gate · blank: nobody has run it yet · n/a: declared limit, linked to the manual · failed *version date*: recorded failure · Train: the file's own `--info adapter` answer, where ✅ means the LoRA backward admits the file, not that training it gives good results. A family's line sums up every file of its models, per backend and for Train: ✅ all recorded · 🟨 *k of n*: k of its n files recorded, a declared limit beside them counted as not run · a hyphen: none run · n/a: a declared limit on every file · failed: a recorded failure on any file. For Train, recorded means the LoRA backward admits the file, and a refusal counts as a declared limit. A mark with <sup>b</sup> was recorded on borrowed hardware: dated evidence the project may use and does not depend on. Each file name links to its envelope below.
 
 <details>
-<summary><b>Apertus</b>, 2 models: CPU 🟨 2 of 3 · CUDA 🟨 2 of 3 · Metal - · Train -</summary>
+<summary><b>Apertus</b>, 1 model: CPU ✅ · CUDA ✅ · Metal n/a · Train n/a</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td colspan="5"><b>Apertus (apertus)</b></td></tr>
-<tr><td><a href="#arch-apertus">Apertus (apertus)</a></td><td></td><td></td><td></td><td></td></tr>
 <tr><td colspan="5"><b>Apertus-8B-Instruct-2509 (Swiss AI)</b></td></tr>
 <tr><td><a href="#apertus-8b-instruct-2509-q4_k_m"><code>swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-12</td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-12</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: FFN activation not in the backward (gpt-oss/apertus)</td></tr>
 <tr><td><a href="#apertus-8b-instruct-2509-q8_0"><code>swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf</code></a></td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-12</td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-12</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: FFN activation not in the backward (gpt-oss/apertus)</td></tr>
@@ -733,14 +731,6 @@ instead of carrying a copy, so none can drift and nothing watches them:
 ## Models
 
 ### Apertus
-
-#### Apertus (apertus)
-
-<a id="arch-apertus"></a>
-##### Apertus (apertus)
-
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
-
 
 #### Apertus-8B-Instruct-2509 (Swiss AI)
 
@@ -2769,7 +2759,6 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-10-22 | [Qwen2 (qwen2)](#arch-qwen2) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Gemma 3 (gemma3)](#arch-gemma3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Phi-3 (phi3)](#arch-phi3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
-| 2026-10-22 | [Apertus (apertus)](#arch-apertus) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Granite 4 h-series hybrid (granitehybrid)](#arch-granitehybrid) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Qwen3.8-35B-A3B-Distill (empero-ai's finetune of Qwen3.6-35B-A3B), `Qwen3.8-35B-A3B-Q6_K.gguf`](#empero-qwen3.8-35b-a3b-distill-q6_k) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |
 | 2026-10-22 | [Ornith-1.5-35B-A3B (ornith-ai), `Ornith-1.5-35B-Q8_0.gguf`](#ornith-1.5-35b-a3b-q8_0) | Upcoming, planned admission | Migration: on the owner's roster; the envelope is not complete (audit 2026-10-22). | none recorded |

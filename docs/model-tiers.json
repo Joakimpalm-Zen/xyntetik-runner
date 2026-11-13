@@ -3279,23 +3279,6 @@
       ]
     },
     {
-      "id": "arch-apertus",
-      "model": "Apertus (apertus)",
-      "family": "Apertus",
-      "tier": "tier2",
-      "scope": "architecture",
-      "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
-      "architecture": "apertus",
-      "transitions": [
-        {
-          "tier": "tier2",
-          "effective": "2026-10-22",
-          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
-          "last_validated_release": null
-        }
-      ]
-    },
-    {
       "id": "apertus-8b-instruct-2509-q8_0",
       "model": "Apertus-8B-Instruct-2509 (Swiss AI)",
       "family": "Apertus",
