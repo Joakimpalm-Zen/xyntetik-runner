@@ -9,6 +9,11 @@ from its float32 reference where another engine on the same file reads
 without them moves the logits: a window at least the trained context must
 give the same bytes as no window at all, and a window shorter than the
 prompt must still mask (the window path is live, not switched off).
+
+A context over the model's original one makes the long factors apply from the
+first token, where the publisher's code switches per sequence. On Phi-3.5-mini
+that reads 0.205 mean KLD against 0.004 on the same 4,096-token text, so the
+load says it.
 """
 import pathlib
 import subprocess
@@ -52,3 +57,28 @@ def test_phi3_window_shorter_than_the_prompt_still_masks(runner_bin, tmp_path):
     plain = _score(runner_bin, _make(tmp_path, "plain"))
     short = _score(runner_bin, _make(tmp_path, "short", "--swa-window", "16"))
     assert plain != short
+
+
+def _load_lines(runner_bin, model, ctx):
+    proc = subprocess.run(
+        [runner_bin, "-m", str(model), "--score", "-p", PROMPT, "--gpu", "off",
+         "--no-tray", "-c", str(ctx)],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+    return proc.stderr.decode(errors="replace")
+
+
+def test_phi3_context_over_the_original_says_what_the_long_factors_cost(runner_bin, tmp_path):
+    model = _make(tmp_path, "orig128", "--longrope-orig", "128")
+    err = _load_lines(runner_bin, model, 256)
+    assert "phi3 LongRoPE long factors" in err
+    warning = [line for line in err.splitlines() if line.startswith("warning: -c 256 is over")]
+    assert len(warning) == 1, err
+    assert "original context of 128" in warning[0] and "-c 128" in warning[0]
+
+
+def test_phi3_context_within_the_original_says_nothing(runner_bin, tmp_path):
+    model = _make(tmp_path, "orig128", "--longrope-orig", "128")
+    err = _load_lines(runner_bin, model, 128)
+    assert "phi3 LongRoPE short factors" in err
+    assert "warning: -c" not in err
