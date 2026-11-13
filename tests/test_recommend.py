@@ -19,9 +19,11 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GIB = 1 << 30
-DOJO_8GIB = ["qwen3-4b-runner-tooluse-merged-q8_0", "ministral-3-3b-instruct-2512-q8_0", "spark-x2.6-4b-q4_k_m",
+DOJO_8GIB = ["qwen3-4b-runner-tooluse-merged-q8_0", "phi-3.5-mini-instruct-q8_0",
+             "ministral-3-3b-instruct-2512-q8_0", "spark-x2.6-4b-q4_k_m",
              "nemotron-3.5-bolt-e4b-q4_k_m", "minicpm5-2b-q8_0", "spark-x2.5-4b-q4_k_m",
-             "qwen3-4b-q4_k_m-bartowski", "ministral-3-3b-instruct-2512-q4_k_m", "qwen2.5-1.5b-instruct-q8_0",
+             "qwen3-4b-q4_k_m-bartowski", "phi-3.5-mini-instruct-q4_k_m",
+             "ministral-3-3b-instruct-2512-q4_k_m", "qwen2.5-1.5b-instruct-q8_0",
              "smollm2-1.7b-instruct-q8_0", "stablelm-2-1.6b-chat-q8_0",
              "qwen2.5-1.5b-instruct-q8_0-bartowski",
              "minicpm5-2b-q4_k_m", "gemma-4-e2b-it-q4_k_m-q4_0-mix", "lfm2.5-1.2b-instruct-q8_0",

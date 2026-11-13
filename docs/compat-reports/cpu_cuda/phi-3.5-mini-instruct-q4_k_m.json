@@ -1,0 +1,90 @@
+{
+ "model": "models/Phi-3.5-mini-instruct-Q4_K_M.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "dense_rule": "margin_qualified",
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 32,
+  "layers_total": 32,
+  "output_weight_on_gpu": true,
+  "whole_graph": true
+ },
+ "cpu_cuda_identity": {
+  "result": "pass",
+  "exact": "9/9",
+  "gpu_arm_on_cpu": false,
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 9,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris.\n\nParis is the capital city of France, which is a country in Europe. Paris is known for its rich history, culture, and landmarks, such as the Eiffel Tower, the Louvre Museum, and the Notre Dame Cathedral. Paris is also a major center of art, fashion, and gastronomy in the world.\n\n\nQuestion: What is the capital of France and what are some of its famous landmarks?\n\n\nAnswer: The capital of France is Paris. Some of its famous landmarks are the Eiffel Tower, the Louvre Museum, and the Notre",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n    if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n-1) + fibonacci(n-2)\n\nprint(fibonacci(10))\n```\n\nIn this example, we define a function called `fibonacci` that takes an integer `n` as input. If `n` is 0, we return 0. If `n` is 1, we return 1. Otherwise, we recursively call the `fibon",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there was a magical kingdom where the inhabitants were known for their exceptional skills in mathematics. In this kingdom, there lived a young mathematician named Alice. Alice had always been fascinated by numbers and their intricate relationships. She spent her days exploring the depths of mathematical concepts, seeking to uncover the secrets hidden within.\n\nOne sunny morning, Alice woke up with a burning desire to solve a complex problem that had been puzzling her for days. She knew that in order to crack the code, she needed to understand the concept of place value. With determination in her eyes, she",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 391\nB: 39\nC: 390\nD: 392\nFirst, let's eliminate two incorrect options:\n\nOption B: 39 is too small to be the product of 17 and 23.\nOption C: 390 is also too small to be the product of 17 and 23.\n\nNow, let's calculate the correct answer:\n\n17 * 23 = 391\n\nSo, the correct answer is A: 391.\n\n",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " On the first day, the wind was from the north, the sky was partly cloudy, and the fog lifted at 6 AM. On the second day, the wind was from the east, the sky was clear, and the fog lifted at 7 AM. On the third day, the wind was from the south, the sky was overcast, and the fog lifted at 5 AM. On the fourth day, the wind was from the west, the sky was partly cloudy, and the fog lifted at 8 AM. On the fifth day, the wind was from the north, the sky was clear, and the",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " was published in the journal ''Astronomische Nachrichten''.\n\nThe observatory's catalogue was used by the International Astronomical Union (IAU) to define the boundaries of the constellations of Gemini, Hydra, and Corvus.\n\nThe observatory's catalogue was also used by the IAU to define the boundaries of the constellations of Cetus, Delphinus, Equuleus, Eridanus, Lacerta, Lepus, Lupus, and Puppis.\n\nThe observatory's catalogue was also used by the I",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n# is a good thing.  But it doesn't check for a truncated payload.\n#\n# Here's a loader that does.\n\ndef load_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    payload_size = struct.unpack('<I', buf[8:12])[0]",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " has never been there.\nThe earthquake also destroyed the city\u2019s water supply, and the new system that replaced it was the first to use gravity to move water from the mountains to the city. The system was so successful that it was copied by other cities, and Lisbon\u2019s water supply is still in use today.\nThe earthquake also destroyed the city\u2019s cathedral, and the new one that replaced it was the first to use a dome. The dome was a new idea in Europe, and it was copied by other cities, and Lisbon\u2019s cathedral is still in use today",
+   "gpu": null
+  }
+ ]
+}
