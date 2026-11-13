@@ -923,6 +923,28 @@ class ReverseProxySelection(unittest.TestCase):
         self.assertNotIn("needs.changes.outputs.engine == 'true'", job)
 
 
+class BuildStamp(unittest.TestCase):
+    """R6.67: a binary states the commit it was built from. The stamp was
+    given to provenance.o alone, so the binaries made from $(SRC) in one
+    command, the sanitized runner-debug among them, said commit null, and the
+    daily sanitized suite went red on the test that reads it (2026-11-13, the
+    first scheduled run after the stamp merged)."""
+
+    def test_every_binary_built_from_the_sources_takes_the_stamp(self):
+        make = (ROOT / "Makefile").read_text(encoding="utf-8")
+        whole = [line for line in make.splitlines()
+                 if line.startswith("\t") and re.search(r"\$\((SAN_)?SRC\) -o ", line)]
+        self.assertGreaterEqual(len(whole), 4, "the whole-source recipes were not found")
+        for line in whole:
+            self.assertIn("$(BUILD_STAMP)", line, line.strip())
+        # and each is rebuilt when the commit moves, as provenance.o is
+        for target in ("runner-no-write-timeout", "runner-sigpipe-default",
+                       "runner-turn-guard", "debug"):
+            rule = re.search(r"^%s:.*$" % re.escape(target), make, re.M)
+            self.assertIsNotNone(rule, target)
+            self.assertIn("$(OBJDIR)/build-commit.stamp", rule.group(0), target)
+
+
 class RunnerBinaryName(unittest.TestCase):
     """A test that looks for `runner` without `.exe` skips as "not built" on
     Windows for ever: twelve certify-envelope tests and one truncation test
