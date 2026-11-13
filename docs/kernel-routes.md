@@ -177,7 +177,7 @@ Around the matvec:
   no route is pinned. Obligation:
   tolerance, no further from the publisher's float32 model than the route
   they replace (2,000 positions, mean KL within 1.01x, paired Wilcoxon and
-  McNemar not worse at p < 0.05; the rows are in `tc_promoted`'s notes),
+  McNemar not worse at p < 0.05; the rows are in [tc-promotion-evidence.md](tc-promotion-evidence.md)),
   scored chunked (`RUNNER_SCORE_CHUNKED=1`, with `RUNNER_SPEC_BATCH=64` as
   the chunk width) so the grouped path's batched expert GEMMs are what the
   rows measure; `RUNNER_SPEC_BATCH` alone scores solo and runs none of them.
