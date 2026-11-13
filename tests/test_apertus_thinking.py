@@ -28,9 +28,11 @@ from harness import RunnerServer, find_runner  # noqa: E402
 TURN = ("<|system_start|>,<|system_end|>,<|developer_start|>,<|developer_end|>,"
         "<|user_start|>,<|user_end|>,<|assistant_start|>,<|assistant_end|>,"
         "<|tools_prefix|>,<|tools_suffix|>")
-# The two releases name the same pair of control tokens differently (read
-# from both vocabularies, 2026-11-13): v1.5 has <|inner_prefix|> and
-# <|inner_suffix|>, the 2509 files have <think> and </think>.
+# Both releases name the pair <|inner_prefix|> and <|inner_suffix|> (ids 69
+# and 70 in the 2509 and v1.5 files). <think> and </think> are other control
+# tokens there; a file that carries them and no inner pair binds those, which
+# is the second fixture. Its key is kept from when 2509 was believed to be
+# such a file.
 TAGS = {"v1.5": ("<|inner_prefix|>", "<|inner_suffix|>"),
         "2509": ("<think>", "</think>"),
         # v1.5's vocabulary also holds <|tool_output_start|> and
@@ -152,6 +154,24 @@ def test_the_messages_api_accepts_thinking_and_returns_a_thinking_block(server):
     assert code == 200, body
     assert [(c["type"], c.get("thinking") or c.get("text")) for c in body["content"]] == [
         ("thinking", "think it over"), ("text", "the answer")], body["content"]
+
+
+def test_a_turn_ends_at_the_token_that_closes_a_tool_call(server):
+    """The publisher's generation_config ends generation at <|tools_suffix|>
+    (id 72) as well as at <|assistant_end|>; the files declare only the
+    second. Without the first as a stop, a reply that wrote a call on a turn
+    with no tools declared ran on and invented the call's result (measured on
+    the 2509 checkpoint: `["Answers displayed"]` after a display_answers
+    call)."""
+    reply = ('the answer<|tools_prefix|>[{"display_answers": {}}]<|tools_suffix|>'
+             '["Answers displayed"]')
+    code, body = _post(server, "/v1/chat/completions",
+                       _chat(enable_thinking=False, runner_test_reply=reply))
+    assert code == 200, body
+    ch = body["choices"][0]
+    assert "Answers displayed" not in ch["message"]["content"], ch
+    assert ch["finish_reason"] == "stop", ch
+    assert body["usage"]["completion_tokens"] < 64, body["usage"]
 
 
 TOOLS = [{"type": "function", "function": {
