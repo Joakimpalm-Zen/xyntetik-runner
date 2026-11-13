@@ -1,0 +1,63 @@
+{
+ "ids": [
+  131072,
+  131272
+ ],
+ "file": "apertus-v1.5-8b-text-q8_0.gguf (andreasmartin @ 2028c318)",
+ "corpus": "tests/fixtures/gold-corpus-2k.txt, 4520 tokens, 4519 predicted positions (teacher-forced)",
+ "runner_score_files": {
+  "method": "m = 1 - exp(lp_asis - lp_suppressed) per position, the suppressed copy being the file with tokenizer.ggml.suppress_tokens = the 200 ids (a lab-only instrument, never a file of the row); float32 logprobs resolve to about 1e-6",
+  "all": {
+   "mean": 3.2269600537986e-07,
+   "median": 0.0,
+   "p99": 1.9099981761115556e-06,
+   "max": 0.0004900598814110741
+  },
+  "excluding_position_0": {
+   "mean": 2.142991073263641e-07,
+   "median": 0.0,
+   "p99": 1.9099981761115556e-06,
+   "max": 5.719983641151104e-06
+  },
+  "window_1": {
+   "mean": 2.4538639712385883e-07,
+   "median": 0.0,
+   "p99": 1.9999980002808887e-06,
+   "max": 4.7699886238884384e-06
+  },
+  "window_2": {
+   "mean": 1.9068114244784712e-07,
+   "median": 0.0,
+   "p99": 1.9099981758939524e-06,
+   "max": 2.8599959105858994e-06
+  }
+ },
+ "reference_hidden_states": {
+  "method": "swiss-ai/Apertus-v1.5-8B @ 1519de0a in float32 (swiss-ai/transformers @ 3797303d): the input to lm_head at every position, times the 200 rows dequantised from the Q8_0; mass = e/(r+e) with r, e the exp-sums over the publisher's 131,072 rows and the 200",
+  "all": {
+   "mean": 3.138584544799338e-07,
+   "median": 6.432374859864379e-08,
+   "p99": 1.8087624787135215e-06,
+   "max": 0.0004851725233869147
+  },
+  "excluding_position_0": {
+   "mean": 2.0656510087682806e-07,
+   "median": 6.428884402290679e-08,
+   "p99": 1.8058360230345145e-06,
+   "max": 4.526044664988767e-06
+  },
+  "window_1": {
+   "mean": 2.0677097046883442e-07,
+   "median": 7.60444464203315e-08,
+   "p99": 1.774975113527586e-06,
+   "max": 4.526044664988767e-06
+  },
+  "window_2": {
+   "mean": 2.300839866533568e-07,
+   "median": 5.470347959113663e-08,
+   "p99": 2.355514463030508e-06,
+   "max": 2.806550771116688e-06
+  }
+ },
+ "greedy": "never the argmax and never in the top 256 at any of the 4519 positions, in either file"
+}

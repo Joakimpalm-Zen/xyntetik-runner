@@ -869,7 +869,7 @@ const sampler_preset *sampler_preset_for(const char *arch, const char *name,
     if (tmpl_minicpmv(tmpl))      return by_name("minicpmv");
     if (tmpl == TMPL_QWEN36)      return by_name("qwen36");
     if (tmpl == TMPL_NEMOTRON)    return by_name("nemotron");
-    if (tmpl == TMPL_APERTUS)     return by_name("apertus");
+    if (tmpl_apertus(tmpl))       return by_name("apertus");
     if (id == ARCH_GEMMA3) return by_name("gemma3");
 
     // The DETECTED TEMPLATE, where there is one, outranks every name test
