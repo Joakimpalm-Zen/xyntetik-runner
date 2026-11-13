@@ -1,0 +1,195 @@
+{
+  "schema_version": "xyntetik.runner.model-compat-report.v1",
+  "generated_utc": "2026-11-13T16:27:01Z",
+  "host": {
+    "os": "Linux",
+    "machine": "x86_64"
+  },
+  "runner": {
+    "path": "runner",
+    "version": "runner 1.18.0"
+  },
+  "reference": {
+    "path": null,
+    "version": null
+  },
+  "models": [
+    {
+      "id": "mistral-7b-instruct-v0.3-q4_k_m",
+      "architecture": "llama",
+      "file": "models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+      "expected_sha256": "1270d22c0fbb3d092fb725d4d96c457b7b687a5f5a715abe1e818da303e562b6",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1253.6,
+          "stderr_tail": "gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB\ngpu-split: budget=25.13GB fixed=0.83GB G=32/32 full=1 used=5.56GB\ngpu-split: prompt window 512 columns (batch 512, 19.46 GB spare, 204804 bytes a column)\ngpu: CUDA backend on CUDA MIG slice 1g.24gb (4.3 GB weights in VRAM)\ngpu: VRAM 20.14 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.05 GB this instance)\nloaded models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf | llama | 32 layers | ctx 4096 | 20 threads | 1.12s\nsampling: mistral (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 201.96 tok/s | gen: 1 tok, 67.97 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 5273.8,
+          "stdout_tail": "\n7 more differ on a spelled special marker (the runner reads it as the special token, the SentencePiece library as text); not counted\n\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": "",
+          "vocab": {
+            "gated": false,
+            "expect": null,
+            "differ": 14,
+            "of": 31866,
+            "status": "pass"
+          },
+          "informational": {
+            "reference": "tokenizer.json",
+            "differ": 44,
+            "of": 721
+          }
+        },
+        "cpu_cuda": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 80898.82,
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "min_prompt_tokens": 85,
+          "cpu_cuda_identity": {
+            "result": "pass",
+            "exact": "9/9",
+            "near_tie_tolerated": 0
+          },
+          "identical": "9/9",
+          "failed_prompts": [],
+          "report": "docs/compat-reports/cpu_cuda/mistral-7b-instruct-v0.3-q4_k_m.json",
+          "output_tail": "'\nok  : 'Q: What is 17 * 23?\\nA:'\nok  : 'The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.'\nok  : 'In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction'\nok  : \"def parse_header(buf, size):\\n    if size < 8:\\n        raise ValueError('short header')\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != GGUF_MAGIC:\\n        raise ValueError('not a gguf file')\\n    return magic, version\\n\\n# The loader above rejects a truncated header before unpacking it, which\"\nok  : 'The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who'\n\ncpu_cuda: pass \u2014 9/9 exact, 0 near-tie tolerated (eager routing)\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1333.85,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": " The sum of 2 and 2 is 4.\n"
+        },
+        "tool": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 28850.98,
+          "scenario_matrix": "agent-torture",
+          "totals": null,
+          "report": "docs/compat-reports/tool/mistral-7b-instruct-v0.3-q4_k_m.json",
+          "output_tail": "report: docs/compat-reports/tool/mistral-7b-instruct-v0.3-q4_k_m/report.json\nraw: docs/compat-reports/tool/mistral-7b-instruct-v0.3-q4_k_m/raw.jsonl\nruntime=runner requests=8 scored=8 excused=0 passed=8 failed=0\n"
+        },
+        "greedy_reference": {
+          "status": "not_executed",
+          "reason": "reference_binary_not_provided"
+        },
+        "long_context": {
+          "status": "not_executed",
+          "reason": "check_class_not_executable"
+        }
+      },
+      "resolved_file": "models/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+      "actual_sha256": "1270d22c0fbb3d092fb725d4d96c457b7b687a5f5a715abe1e818da303e562b6",
+      "file_status": "pass",
+      "complete": false
+    },
+    {
+      "id": "mistral-7b-instruct-v0.3-q8_0",
+      "architecture": "llama",
+      "file": "models/Mistral-7B-Instruct-v0.3-Q8_0.gguf",
+      "expected_sha256": "404857e776114baada71a08ebd3bba79d721ec7fca99705e7e7b892ae8bc583f",
+      "checks": {
+        "load": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1641.1,
+          "stderr_tail": "gpu: no OS video memory budget published for this device; offload budget 25.13 GB from the driver's free view, headroom 0.79 GB\ngpu-split: budget=25.13GB fixed=0.83GB G=32/32 full=1 used=8.79GB\ngpu-split: prompt window 512 columns (batch 512, 16.20 GB spare, 204804 bytes a column)\ngpu: CUDA backend on CUDA MIG slice 1g.24gb (7.6 GB weights in VRAM)\ngpu: VRAM 16.88 GB free of 25.37 GB after init (kv 0.54 GB + scratch 0.05 GB this instance)\nloaded models/Mistral-7B-Instruct-v0.3-Q8_0.gguf | llama | 32 layers | ctx 4096 | 20 threads | 1.47s\nsampling: mistral (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\n\nprompt: 6 tok, 131.39 tok/s | gen: 1 tok, 46.73 tok/s\n"
+        },
+        "tokenizer": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 48.8,
+          "stdout_tail": "\n7 more differ on a spelled special marker (the runner reads it as the special token, the SentencePiece library as text); not counted\n\n0/721 strings differ (0 of them begin with whitespace)\nOK\n",
+          "stderr_tail": "",
+          "vocab": {
+            "gated": false,
+            "expect": null,
+            "differ": 14,
+            "of": 31866,
+            "status": "pass"
+          },
+          "informational": {
+            "reference": "tokenizer.json",
+            "differ": 44,
+            "of": 721
+          }
+        },
+        "cpu_cuda": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 106212.39,
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "min_prompt_tokens": 85,
+          "cpu_cuda_identity": {
+            "result": "pass",
+            "exact": "9/9",
+            "near_tie_tolerated": 0
+          },
+          "identical": "9/9",
+          "failed_prompts": [],
+          "report": "docs/compat-reports/cpu_cuda/mistral-7b-instruct-v0.3-q8_0.json",
+          "output_tail": "'\nok  : 'Q: What is 17 * 23?\\nA:'\nok  : 'The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.'\nok  : 'In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction'\nok  : \"def parse_header(buf, size):\\n    if size < 8:\\n        raise ValueError('short header')\\n    magic, version = struct.unpack('<II', buf[:8])\\n    if magic != GGUF_MAGIC:\\n        raise ValueError('not a gguf file')\\n    return magic, version\\n\\n# The loader above rejects a truncated header before unpacking it, which\"\nok  : 'The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who'\n\ncpu_cuda: pass \u2014 9/9 exact, 0 near-tie tolerated (eager routing)\n"
+        },
+        "chat": {
+          "status": "pass",
+          "returncode": 0,
+          "elapsed_ms": 1823.16,
+          "prompt": "What is 2+2?",
+          "gpu": "auto",
+          "failure_reasons": [],
+          "output_tail": " The sum of 2 and 2 is 4.\n"
+        }
+      },
+      "resolved_file": "models/Mistral-7B-Instruct-v0.3-Q8_0.gguf",
+      "actual_sha256": "404857e776114baada71a08ebd3bba79d721ec7fca99705e7e7b892ae8bc583f",
+      "file_status": "pass",
+      "complete": true
+    }
+  ],
+  "complete": false,
+  "summary": {
+    "models": 2,
+    "files": {
+      "pass": 2
+    },
+    "checks": {
+      "load": {
+        "pass": 2
+      },
+      "tokenizer": {
+        "pass": 2
+      },
+      "cpu_cuda": {
+        "pass": 2
+      },
+      "chat": {
+        "pass": 2
+      },
+      "tool": {
+        "pass": 1
+      },
+      "greedy_reference": {
+        "not_executed": 1
+      },
+      "long_context": {
+        "not_executed": 1
+      }
+    }
+  }
+}

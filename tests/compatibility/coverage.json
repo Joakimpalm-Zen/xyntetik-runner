@@ -947,7 +947,8 @@
     "minicpm5-2b-q4_k_m",
     "smollm2-135m-instruct-q8_0",
     "smollm2-1.7b-instruct-q8_0",
-    "smollm2-1.7b-instruct-q4_k_m"
+    "smollm2-1.7b-instruct-q4_k_m",
+    "mistral-7b-instruct-v0.3-q8_0"
    ],
    "tool_protocol": {
     "status": "NOT RUN",

@@ -5014,6 +5014,164 @@
           }
         }
       }
+    },
+    "mistral-7b-instruct-v0.3-q8_0": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q8_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "e3c8beb867a2936943d9798d8db336f0cb170c976376dab05651ccd61a3dc719",
+          "bytes": 177,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.18.0",
+            "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+            "build": {
+              "binary_sha256": "1bcf39863a2a8b57d1950b58f65961942c3238c747e20f18dbde2de73dd7f9f3",
+              "compiler": "13.3.0",
+              "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+              "dirty": false
+            }
+          }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q8_0.linux-x86_64-cuda.cuda.txt",
+          "sha256": "e3c8beb867a2936943d9798d8db336f0cb170c976376dab05651ccd61a3dc719",
+          "bytes": 177,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.18.0",
+            "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+            "build": {
+              "binary_sha256": "1bcf39863a2a8b57d1950b58f65961942c3238c747e20f18dbde2de73dd7f9f3",
+              "compiler": "13.3.0",
+              "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+              "dirty": false
+            }
+          }
+        }
+      }
+    },
+    "mistral-7b-instruct-v0.3-q4_k_m": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "sha256": "23d8e0c094691cbe8eee9d02235e403b0e163e4224c59f6958f4ff4e7e99c52e",
+          "bytes": 172,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.18.0",
+            "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+            "build": {
+              "binary_sha256": "1bcf39863a2a8b57d1950b58f65961942c3238c747e20f18dbde2de73dd7f9f3",
+              "compiler": "13.3.0",
+              "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+              "dirty": false
+            }
+          }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q4_k_m.linux-x86_64-cuda.cuda.txt",
+          "sha256": "23d8e0c094691cbe8eee9d02235e403b0e163e4224c59f6958f4ff4e7e99c52e",
+          "bytes": 172,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.18.0",
+            "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+            "build": {
+              "binary_sha256": "1bcf39863a2a8b57d1950b58f65961942c3238c747e20f18dbde2de73dd7f9f3",
+              "compiler": "13.3.0",
+              "commit": "5ac478c6e1111bbcca89ee1bd8e4ee55ed34e336",
+              "dirty": false
+            }
+          }
+        },
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/mistral-7b-instruct-v0.3-q4_k_m.macos-arm64-metal.metal.txt",
+          "sha256": "23d8e0c094691cbe8eee9d02235e403b0e163e4224c59f6958f4ff4e7e99c52e",
+          "bytes": 172,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.18.0",
+            "commit": "6d4a4d1f9ce22d6bb0d7dac6d0374ddb500100e0",
+            "build": {
+              "binary_sha256": "133d7408114bb1c5cedb3f20c74f459f8bc7b43e988e7f933c385bf4e0031a21",
+              "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+              "commit": "6d4a4d1f9ce22d6bb0d7dac6d0374ddb500100e0",
+              "dirty": false
+            }
+          }
+        }
+      }
     }
   }
 }
