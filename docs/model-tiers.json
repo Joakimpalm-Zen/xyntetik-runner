@@ -3160,23 +3160,6 @@
       ]
     },
     {
-      "id": "arch-llama",
-      "model": "Llama-style dense families (llama)",
-      "family": "Llama",
-      "tier": "tier2",
-      "scope": "architecture",
-      "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
-      "architecture": "llama",
-      "transitions": [
-        {
-          "tier": "tier2",
-          "effective": "2026-10-22",
-          "reason": "Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C).",
-          "last_validated_release": null
-        }
-      ]
-    },
-    {
       "id": "arch-mistral",
       "model": "Mistral (mistral)",
       "family": "Mistral",
@@ -3226,7 +3209,7 @@
         "fp32_reference": "measured",
         "anchor": "bartowski's Q8_0 (revision 09816acd) against HuggingFaceTB's BF16 checkpoint at 12fd25f7 computed in float32 on the CPU (transformers 4.57.1 (5.16.1 reads this tokenizer without its Digits pre-tokenizer, 8,911 corpus tokens against the file's 8,909; 4.57.1 reads it as written), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files from the batched prefill route): pooled 0.0074 ± 0.0005 mean KLD (SE, 595 positions; windows 0.0071 and 0.0077) / 98.5% top-1 / 100% margin-qualified (392/392). The September golden pass read the same file at 0.0080 over 1,983 positions. unsloth's Q8_0 (revision 9e6855bc) carries the same tensor data, 272 of 272 tensors byte-equal; only the metadata differs. bartowski's Q4_K_M of the same repository was measured and not admitted: 0.0623 ± 0.0030, bootstrap 95% wholly over 0.05, 97.96% margin-qualified (384/392). Tokenizer pre smollm (digits one by one): 0 of 721 corpus strings and 0 of 48,821 vocabulary entries differ from HuggingFaceTB's tokenizer.json; template family chatml (smollm2), conformance 16/16 in text and tokens against the publisher's chat template, which the 135M and 1.7B checkpoints carry byte for byte. Record: docs/compat-reports/smollm2-2026-11-13/README.md.",
         "context": 4096,
-        "limitations": "CPU, CUDA and Metal for this file (145 MB: on a CUDA MIG slice, 1g.24gb, sm_120, all 30 layers on the device; on Metal, an Apple M1, where the pinned reply is byte for byte the CPU's and CUDA's). bartowski's Q4_K_M of this model (0.062 mean KLD) was measured and not admitted. On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Tool calls use Runner's generic JSON protocol; the publisher's template declares no tool format. Licence: apache-2.0.",
+        "limitations": "CPU, CUDA and Metal for this file (145 MB: on a CUDA MIG slice, 1g.24gb, sm_120, all 30 layers on the device; on Metal, an Apple M1, where the pinned reply is byte for byte the CPU's and CUDA's). bartowski's Q4_K_M of this model (0.062 mean KLD) was measured and not admitted. On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Tool calls use Runner's generic JSON protocol; the publisher's template declares no tool format. Licence: apache-2.0. The three SmolLM2 rows are the validated files of the llama architecture, which SmolLM2 uses; no Llama-named file is validated, because the publisher's Llama 3.2 checkpoints are licence-gated.",
         "evidence": [
           "docs/compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json",
           "docs/compat-reports/smollm2-2026-11-13/README.md",
@@ -3662,7 +3645,7 @@
       "family": "Gemma 3",
       "tier": "tier2",
       "scope": "architecture",
-      "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.",
+      "claim": "Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release. No file of it is validated: the publisher's Gemma 3 checkpoints are licence-gated, so there is no publisher reference to measure a file against.",
       "architecture": "gemma3",
       "transitions": [
         {
