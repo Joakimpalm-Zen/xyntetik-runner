@@ -11,6 +11,7 @@ import copy
 import importlib.util
 import json
 import pathlib
+import posixpath
 import re
 import subprocess
 import sys
@@ -1176,3 +1177,27 @@ def test_the_snapshot_carries_what_recommend_reads():
     # the C literal round-trips: no raw quote, backslash, "?" or non-ASCII byte survives
     lit = mt._c_literal('a"b\\c??=dé')
     assert lit == 'a\\"b\\\\c\\077\\077=d\\303\\251'
+
+
+def roster_case_collisions(doc):
+    """File names that share a folder (the same repository and folder in it) and are
+    one name once case is folded: one file on a case-insensitive file system."""
+    groups = {}
+    for row in doc["rows"]:
+        for f in row.get("files") or []:
+            folder = (f.get("repo") or "", posixpath.dirname(f.get("path") or ""))
+            groups.setdefault((folder, f["name"].casefold()), set()).add(f["name"])
+    return sorted(sorted(g) for g in groups.values() if len(g) > 1)
+
+
+def test_no_two_roster_files_in_one_folder_are_one_file_on_a_case_insensitive_file_system():
+    """macOS (by default) and Windows fold case in file names: two files of one
+    repository folder whose names differ only in case download to one file there.
+    Files of different repositories land in different folders, as Qwen's
+    qwen2.5-1.5b-instruct-q8_0.gguf and bartowski's Qwen2.5-1.5B-Instruct-Q8_0.gguf do."""
+    doc = json.loads(ROSTER.read_text(encoding="utf-8"))
+    assert roster_case_collisions(doc) == []
+    pair = {"rows": [{"files": [{"name": "Toy-Q8_0.gguf", "repo": "o/r"}]},
+                     {"files": [{"name": "toy-q8_0.gguf", "repo": "o/r"}]},
+                     {"files": [{"name": "toy-q8_0.gguf", "repo": "o/other"}]}]}
+    assert roster_case_collisions(pair) == [["Toy-Q8_0.gguf", "toy-q8_0.gguf"]]
