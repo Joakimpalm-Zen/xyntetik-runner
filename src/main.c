@@ -245,18 +245,10 @@ static int32_t *json_token_ids(jv *arr, int *n_out) {
     return t;
 }
 
-// Agent transcripts, D4a (R1.1.2): may this record be replayed with the
-// constraints this verifier was given? A replay runs the sampler; a grammar,
-// a stop sequence or a scripted reply shaped the recorded tokens beyond it,
-// and a replay without them could only disagree with the record -- which a
-// DIVERGED verdict would blame on the model or the build. A CLI record made
-// under --json, --json-schema or --ignore-eos replays when the verifier is
-// given the same constraint (the schema matched by digest), as a served one
-// does (D4b), and served tools, stop sequences, reasoning budgets and the
-// loop guard replay (R1.1.3.1-3); anything else a
-// served turn was shaped by is refused; and a constraint the
-// verifier adds that the record does not name is refused too. False with the
-// reason in `why`.
+// May this record replay under the constraints this verifier was given? What
+// shaped its tokens beyond the sampler must be given again (a schema matched by
+// digest), or the replay could only disagree; what a replay cannot rebuild, and a
+// constraint the record does not name, is refused. False with `why` set.
 static bool replay_constraints_ok(jv *rec, bool json_mode,
                                   const char *schema_file, bool ignore_eos,
                                   char *why, size_t cap) {
@@ -274,18 +266,12 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
         return false;
     }
     if (serve) {
-        // D4b (R1.1.3): a served turn shaped by a JSON schema, JSON mode or
-        // ignore_eos replays under the same constraint the CLI records do,
-        // given the schema by --json-schema (matched by digest below): the
-        // server compiles a response_format into the same engine constraint
-        // the CLI flag does, over the prompt tokens the record carries. What
-        // the replay cannot rebuild is refused by name: the reasoning
-        // channel's own sampling or a scripted reply. Tool receipts carry the
-        // declarations, choice and effective grammar settings (R1.1.3.1).
-        // Stop sequences (R1.1.3.2), a reasoning budget and the loop guard
-        // (R1.1.3.3) replay: the record carries them, and run_verify_replay
-        // runs them as the server did.
-        // Records written before D4a name what shaped them only in shaped_by.
+        // A served turn shaped by a JSON schema, JSON mode or ignore_eos replays
+        // as a CLI record does (the server compiles response_format into the
+        // same engine constraint); tool receipts carry declarations, choice and
+        // grammar settings; stop sequences, a reasoning budget and the loop guard
+        // replay as served. Refused by name: the reasoning channel's own sampling
+        // and a scripted reply. Older records name them only in shaped_by.
         jv *list = cons ? cons : jv_get(serve, "shaped_by");
         char names[256] = "";
         size_t k = 0;
@@ -472,15 +458,13 @@ static bool train_example_append(train_ex **exs, int *n_ex,
     return true;
 }
 
-// Parse the two documented training-data forms behind one ownership boundary.
-// A JSONL example is tokenized in full before its length is compared with the
-// requested training context: using the context as tok_encode's output cap
-// would silently turn an over-long completion into a shorter training target.
-// The token that ends an assistant turn in the model's own template, or
-// the declared EOS when the template has no separate terminator (llama2,
-// mistral, zephyr, granite, apertus, ornith, raw). -1 when even that is
-// missing. Mirrors the strings the engine stops on (engine.c) so an adapter
-// taught to end its turn ends it on the token serving stops at.
+// Parse the two documented training-data forms behind one ownership boundary. A
+// JSONL example is tokenized in full before its length is compared with the
+// training context, so an over-long completion is never silently shortened.
+// The token that ends an assistant turn in the model's own template, or the
+// declared EOS when the template has none (llama2, mistral, zephyr, granite,
+// apertus, ornith, raw); -1 when even that is missing. It mirrors engine.c's
+// stop strings, so a trained adapter ends its turn where serving stops.
 static int train_eot_id(tokenizer *tok, int tmpl) {
     const char *s = NULL;
     switch (tmpl) {
@@ -512,14 +496,10 @@ static void dpo_pairs_free(dpo_pair *ps, int n) {
     free(ps);
 }
 
-// The prompt (BOS unless no_bos, its control tokens read as tokens) and the
-// completion (text) tokenized apart into one buffer, with one slot to spare
-// for an end-of-turn token. tok_encode writes what fits its buffer and says
-// nothing about the rest, and no byte count bounds a token count (a byte-
-// fallback vocabulary spells a space as three tokens), so each part goes
-// through tok_encode_fit, which sizes the buffer to the encoding. Three
-// loaders each grew a buffer of their own for this. False when memory ran
-// out or a text is too large to count.
+// The prompt (BOS unless no_bos, control tokens read as tokens) and the
+// completion tokenized apart into one buffer, a slot spare for an end-of-turn
+// token. Each part goes through tok_encode_fit: tok_encode truncates silently and
+// no byte count bounds a token count. False on OOM or a text too large to count.
 static bool pair_tokens(tokenizer *tok, const char *prompt, const char *completion,
                         bool no_bos, int32_t **out, int *np_out, int *nc_out) {
     int32_t *p = NULL, *c = NULL;
@@ -1927,18 +1907,12 @@ static int run_fit_check(const char *path, int n_ctx_want,
     return 0;
 }
 
-// --info recommend (runner recommend, R10.25): the listed model files that fit
-// this machine, by Dojo's rule (tools/runner-start.sh), so the two never
-// disagree. A candidate is a listed text file (the roster's rows other than
-// the planned ones), one .gguf (in a folder of its repository or not: -hf
-// REPO:STEM matches the base name and keeps the folder), no larger than the
-// RAM. It fits when its resident weights are within a share of the RAM
-// (half by default): the whole file, or the fit report's hot set for a file
-// whose token table is read by row (files[].resident_bytes, recorded from
-// `runner --fit` by scripts/model-tiers.py --record-resident). Largest
-// resident first. The roster is this build's own snapshot (model_roster.h)
-// unless --roster names another copy. Nothing is downloaded: a listing
-// command stays offline, so no file's header is read here.
+// --info recommend: the listed model files that fit this machine, by Dojo's rule
+// (tools/runner-start.sh), so the two never disagree. A candidate is one listed
+// (not planned) .gguf no larger than the RAM; it fits when its resident weights
+// (the whole file, or the fit report's hot set for a by-row token table) are
+// within a share of the RAM, half by default. Largest first; the roster is this
+// build's (model_roster.h) unless --roster names one; offline, no header read.
 typedef struct {
     const char *id, *repo, *name, *ref, *anchor;
     uint64_t total, resident;
@@ -2306,15 +2280,10 @@ static int run_caps(void) {
     // the fixed -m swap-registry capacity, so a controller bounds the set of
     // models it launches instead of overflowing it (see RUNNER_MAX_MODELS)
     printf(",\"max_models\":%d", RUNNER_MAX_MODELS);
-    // One table, two consumers: `quants` is every format the engine can
-    // read, and `gpu_quants` is that same table filtered by the active
-    // backend's own admission test (gpu_quant_ok -> gpu_type_ok). These
-    // were two hand-kept literals under an #ifdef, each carrying a comment
-    // asking a human to keep it in step with a switch in another file.
-    // They drifted, and --caps advertised Metal kernels that did not
-    // exist. Sourcing the answer removes the class of bug, not just the
-    // instance: a new format needs one edit, in the backend, and both
-    // lists follow.
+    // One table, two consumers: `quants` is every format the engine reads, and
+    // `gpu_quants` the same table filtered by the backend's own admission
+    // (gpu_quant_ok -> gpu_type_ok), so --caps cannot advertise a kernel that
+    // does not exist; a new format needs one edit, in the backend.
     static const struct { const char *name; int type; } QUANTS[] = {
         { "F32",    T_F32    }, { "F16",    T_F16    },
         { "BF16",   T_BF16   }, { "Q8_0",   T_Q8_0   },
@@ -4329,16 +4298,10 @@ static bool cli_prepare_verify(cli_opts *o, const wm_key *wmk, bool wm_on,
 // follow from it.
 static void cli_resolve_threads(cli_opts *o) {
     if (o->n_threads <= 0) {
-        // Default to a physical-core proxy (nc/2 under the near-universal 2-way
-        // SMT of the many-core x86 boxes this targets), capped so a very large
-        // box does not over-spawn. SMT siblings add nothing to a compute-bound
-        // decode — measured: throughput plateaus at physical cores and SMT gives
-        // no gain. The old min(8,nc) default left big boxes badly underused
-        // (measured 32.2s -> 9.9s, a 3.2x speedup, at -t 64 vs -t 8 on a 3B Q4,
-        // 64-core box; token-identical across thread counts). Scope a shared box
-        // with --reserve-cpu, or pin exactly with -t. On Apple Silicon the
-        // platform layer returns the performance-core count instead of the
-        // logical/2 proxy, because asymmetric cores are not SMT siblings.
+        // Default to a physical-core proxy (nc/2 under the 2-way SMT of the
+        // many-core x86 boxes this targets), capped: SMT siblings add nothing to
+        // compute-bound decode, and min(8, nc) left big boxes idle (3.2x at -t 64
+        // against -t 8 on 64 cores). Apple Silicon returns its P-core count.
         o->n_threads = plat_default_thread_count();
         // If the model turns out to be CPU-forced (recurrent qwen3.5 path),
         // model_load may raise a defaulted count to this cap; a pinned -t
@@ -4388,30 +4351,12 @@ static bool cli_model_flags_ok(const cli_opts *o, int *tmpl_override) {
     return true;
 }
 
-// The tray follows a session a person will sit with — a server or an
-// interactive chat — and is left running afterwards so the next model can
-// be loaded from it. One-shot -p runs and tooling modes (--caps,
-// --quantize, --bench-json) deliberately raise nothing: a two-second
-// process should not leave a menu-bar icon behind it.
-//
-// A terminal on EITHER stdin or stdout counts as "a person launched this".
-// Requiring both, the way the bare-invocation guard above does, would drop
-// the most ordinary case there is — `runner --serve > server.log` — while
-// CI and pipes typically have neither and stay unaffected. --no-tray is the
-// explicit escape for a wrapper that wants the guarantee in writing.
-//
-// main() calls it after every argument check a serve or interactive run can
-// still fail, the serving configuration, the rewrite flags and the eval
-// requirement included, rather than up beside the mode guard where it used to.
-// Raised earlier it outlived the process that raised it: `-s 0`, a
-// yarn-factor conflict and an unknown --chat-template all refuse AFTER
-// that point, and the detached tray they had already spawned held the
-// executable open against the next relink. That is the "two-second
-// process" the paragraph above says must not leave an icon behind, and it
-// was leaving one. The bound stops at argument checks on purpose: a run
-// that fails LATER, when a model or a draft will not load, still raises
-// one, because moving past that would delay the icon by a whole model
-// load for every run that works (suite plan R8.7.6).
+// The tray follows a session a person sits with (a server, an interactive chat)
+// and stays afterwards; one-shot -p runs and tooling modes raise nothing. A
+// terminal on EITHER stdin or stdout means a person (so `runner --serve > log`
+// counts); --no-tray opts out. main() calls this after every argument check a
+// serve or chat run can fail, so a refused run leaves no detached tray holding
+// the executable; a run that fails later, at model load, still raises it.
 static void cli_tray_follow(const cli_opts *o) {
 #if defined(__APPLE__) || defined(_WIN32)
     if (!o->no_tray && (o->serve || o->interactive) &&
@@ -4822,25 +4767,15 @@ static int run_adapt_info(cli_run *rt) {
     return 0;
 }
 
-// The load: the model (with its signature, and the adapter's), its tokenizer,
-// the modes that answer from the loaded file alone (--tool-info,
-// --adapt-info), the measured-envelope gate, the instance registry and
-// the sampler the model's family and file resolve to. A swap-mode server
-// loads nothing here and resolves the sampler per model later.
-//
-// A reservation is a budget for the whole server, so the -c 0 auto-fit has
-// to know how many slots will divide it. Set before the FIRST load, not
-// just for the slots server_run creates: slot 0 is this model, and a slot 0
-// that sized itself alone would both over-commit and — because the CUDA
-// shared-weight registry keys on context — disagree with its peers and
-// force a second upload of the same weights.
-//
-// R3.39.4 (engine_draft_default): the one NextN head with a measured row is
-// Qwen3.5-4B's (qwen35, 32 trunk layers plus one predictor block, width 2560,
-// no experts) as Q4_K_M (general.file_type 15), the file of the r3.3.7 tool
-// row. Read from the header, because whether to bind the head is decided
-// before the load. Another model, or another quant of this one, has no row.
-// Under RUNNER_TEST_DRAFT_SCOPE any file declaring one predictor block counts.
+// The load: the model (with its signature and the adapter's), its tokenizer, the
+// modes that answer from the file alone, the envelope gate, the instance
+// registry and the sampler; a swap-mode server loads nothing here. The slot
+// count is set before the FIRST load: a reservation is divided by slots, and a
+// slot 0 sized alone would over-commit and miss CUDA's shared-weight registry.
+// The one NextN head with a measured row is Qwen3.5-4B's (qwen35, 32 trunk layers
+// plus one predictor block, width 2560, no experts) as Q4_K_M (file_type 15),
+// read from the header since binding the head is decided before the load. Other
+// files have no row; under RUNNER_TEST_DRAFT_SCOPE any one-predictor file counts.
 static bool cli_head_measured(const char *path) {
     gguf_file g;
     if (!gguf_open_header(&g, path)) return false;
@@ -5311,16 +5246,10 @@ static bool train_prepare(cli_opts *o, cli_run *rt) {
 static bool train_dpo_steps(cli_opts *o, cli_run *rt, dpo_pair *pairs,
                             int n_pair, int wctx, double *first_loss,
                             double *last_loss) {
-    // DPO (arXiv 2305.18290 eq. 7). pi_ref is this same model with the
-    // adapter bypassed, so the reference costs no second copy of the
-    // weights; see src/dpo.c for why the gradient is a scalar multiple
-    // of a difference of two weighted-CE gradients and therefore needs
-    // no new kernel. The objective and its gradient are gated against
-    // an independent numerical reference by tests/test_dpo_grad.c
-    // (independent loss formula, the gradient identity, and a
-    // directional derivative against central differences) because an
-    // unchecked loss that merely descends is indistinguishable from a
-    // checked one until the adapter is useless.
+    // DPO (arXiv 2305.18290 eq. 7). pi_ref is this model with the adapter
+    // bypassed, so it costs no second copy of the weights; src/dpo.c shows why no
+    // new kernel is needed. tests/test_dpo_grad.c gates loss and gradient against
+    // an independent reference: a loss that merely descends proves nothing.
     fprintf(stderr, "train-dpo: %d pair%s, %d steps, lr %g, beta %g, ctx %d\n",
             n_pair, n_pair == 1 ? "" : "s", o->train_steps, (double)o->train_lr,
             (double)o->dpo_beta, wctx);
@@ -5377,17 +5306,10 @@ static bool train_dpo_steps(cli_opts *o, cli_run *rt, dpo_pair *pairs,
     return true;
 }
 
-// Before the first step: the combinations that make an adapter memorize its
-// data and then give the memorized answer to unrelated prompts. They come
-// from an external report (4 examples with one shared answer, 60 steps,
-// --lr 5e-4 on a 1B model, the passphrase returned for "what is the capital
-// of Japan") and the study that answered it (2026-10-16): Runner and a
-// reference PEFT run on matched settings behaved the same at every
-// checkpoint, so this is the data and the settings, and the user is the one
-// who can change them. Measured there at the default lr: 2.5 passes over the
-// four examples gave the answer to none of 24 unrelated questions, 5 passes
-// to 42%, 15 passes to 62%. Warnings only, never a refusal; the documented
-// use (hundreds of examples, one to three passes) prints nothing.
+// Before the first step: warnings (never a refusal) for the settings that make
+// an adapter memorize its data and give the memorized answer to unrelated
+// prompts; the study and its numbers are in docs/lora.md. The documented use
+// (hundreds of examples, one to three passes) prints nothing.
 #define TRAIN_LR_DEFAULT 1e-4f
 
 static uint64_t train_tokens_hash(const int32_t *t, int n) {
@@ -6002,15 +5924,8 @@ static int train_ce_steps(cli_opts *o, cli_run *rt, train_ex *exs, int n_ex,
                 ok = false;
             }
             // Per-token mean over the weighted positions, normalized by the
-            // weights' MAGNITUDE. `wsum > 0 ? loss/wsum : loss` silently fell
-            // back to the unnormalized total whenever the weights summed
-            // negative, which is exactly what a GRPO-style negative advantage
-            // produces: a run's reported loss then changed scale between
-            // positive- and negative-weight examples, by a factor of the token
-            // count, and loss_first/loss_last in the provenance record
-            // inherited it. Measured on the fixture: a w=-1 example printed
-            // -66.30 where the per-token mean is -16.58. The sign still
-            // carries the weight's sign, which is the informative part.
+            // weights' MAGNITUDE, so a negative (GRPO-style) weight keeps the
+            // loss's scale; the sign still carries the weight's sign.
             double ws = 0;
             if (ex->w) {
                 for (int i = 0; i < ex->n - 1; i++) ws += ex->w[i];
@@ -6136,15 +6051,10 @@ static bool train_record(cli_opts *o, cli_run *rt, const char *load_path,
     bool hash_ok = envelope_file_sha256(load_path, bsha) &&
                    envelope_file_sha256(data_path, dsha) &&
                    envelope_file_sha256(o->train_out, asha);
-    // The running binary's own hash + build identity, so a
-    // reproduction report can distinguish "same executable" from
-    // "same source" mechanically. The determinism contract is
-    // ARTIFACT-level: same binary + same inputs -> same adapter
-    // bytes. An external rebuild study showed a different ISA
-    // profile changes the bytes (libm expf in SiLU/softmax; the
-    // fmaf chains are pinned, transcendentals are the compiler's)
-    // while behavior stays put — these fields make that boundary
-    // visible in every record.
+    // The running binary's own hash and build identity, so a report tells
+    // "same executable" from "same source": determinism is artifact-level (same
+    // binary and inputs, same adapter bytes); another ISA profile changes the
+    // bytes through libm transcendentals while behaviour stays put.
     char *exe_path = plat_executable_path();
     hash_ok = hash_ok && exe_path &&
               envelope_file_sha256(exe_path, xsha);
@@ -6308,14 +6218,10 @@ static int run_train(cli_opts *o, cli_run *rt, int tmpl_override, const char *lo
                 "objectives; pass one\n");
         return 1;
     }
-    // --train (adaptation D4): AdamW LoRA training in the serving binary,
-    // CPU reference. Two data modes: plain text (tokenize, fixed windows,
-    // cycle) and .jsonl lines {"prompt","completion","weight"} — prompt
-    // transitions masked to weight 0, completion transitions carry the
-    // example weight (the GRPO-style advantage hook). Determinism is the
-    // default: fixed init seed unless -s is given, fixed data order, and
-    // the whole compute path is the byte-deterministic D3 backward — same
-    // data + same seed -> byte-identical adapter file.
+    // --train: AdamW LoRA training in the serving binary, CPU reference. Plain
+    // text (fixed windows, cycled) or .jsonl {"prompt","completion","weight"}
+    // (prompt masked to weight 0, completion at the example weight). Same data
+    // and seed give a byte-identical adapter: fixed init seed unless -s, fixed order.
     if (!train_prepare(o, rt)) return 1;
     train_ex *exs = NULL;
     int n_ex = 0;
@@ -6414,15 +6320,12 @@ static bool route_detail_pre_tc_match(const char *rd, const char *nd) {
     return strcmp(rr, nr) == 0;
 }
 
-// ---- notarized inference D2: the replay
-// R1.1.3.2: a served turn cut by a stop sequence, replayed. The server
-// matches its stop strings on the visible text only: the bytes pass the
-// thinking-tag splitter first, which starts where the prompt left the turn
-// (serve.reasoning_open), and a match aborts generation on the token that
-// completes it (completion.c, stop_feed). The replay runs the same splitter
-// over its own bytes and stops on the same first match, so the cut is
-// re-done, not taken from the record: a record cut anywhere else replays
-// DIVERGED. Ids in token_ids stop the engine itself, as they did served.
+// ---- notarized inference: the replay
+// A served turn cut by a stop sequence, replayed: the server matches stop
+// strings on visible text after the thinking-tag splitter (from
+// serve.reasoning_open) and stops on the completing token; the replay runs the
+// same splitter and stops on the same first match, so a record cut anywhere else
+// replays DIVERGED. Ids in token_ids stop the engine, as served.
 typedef struct {
     outcap_t   *cap;
     engine     *e;
@@ -7059,16 +6962,10 @@ static void score_top_fill(const float *lg, int nv, float lse, int n, int *ids,
 
 static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
     int n_prompt;
-    // Teacher-forced scoring (adaptation D1): per-position
-    // log P(token | prefix) over the RAW prompt bytes — no template, no
-    // sampling, no gradients. DEFAULT IS THE SOLO PATH: one forward per
-    // position, the exact numerics the sampler sees at decode time —
-    // measured 2026-08-21, the CPU batched forward is NOT bit-identical
-    // to solo (max |dlp| ~1e-6 on the fixtures, diverging from batch row
-    // 2), so a chunked scorer would quietly reintroduce the train/infer
-    // mismatch this mode exists to abolish. RUNNER_SCORE_CHUNKED=1 opts
-    // into the ~10x-faster batched path with that measured envelope;
-    // tests/test_score.py pins the delta and the solo determinism.
+    // Teacher-forced scoring: log P(token | prefix) over the RAW prompt bytes,
+    // solo by default (one forward per position, the sampler's numerics), since
+    // the batched CPU forward is not bit-identical (max |dlp| ~1e-6).
+    // RUNNER_SCORE_CHUNKED=1 takes the ~10x faster batched path (tests/test_score.py).
     if (!o->prompt || !*o->prompt) {
         fprintf(stderr, "error: --score needs a prompt (-p or -f)\n");
         return 1;
@@ -7317,14 +7214,10 @@ static void doctor_finding(doctor_findings *f, int sev, const char *code,
 static int run_doctor(cli_opts *o, cli_run *rt, int tmpl_override) {
     double t0;
     int n_prompt;
-    // R16.6.2: one explicitly invoked report a user can attach to a
-    // question about slowness, nonsense or broken tool calls. It states
-    // what this process actually did -- which backend took how many
-    // layers, which template and sampler it resolved -- runs one short
-    // chat probe through the same renderer, tokenizer and engine a chat
-    // request uses, and turns what it saw into findings with a next
-    // step. No content leaves the machine and none is recorded unless
-    // --doctor-include-text asks for it.
+    // One explicitly invoked report a user can attach to a slowness, nonsense or
+    // tool-call question: what this process did (backend layers, template,
+    // sampler) and one short chat probe through the chat path, as findings with a
+    // next step. No content leaves or is recorded unless --doctor-include-text.
     int dt = tmpl_override >= 0 ? tmpl_override
            : template_detect(gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL), &rt->tok);
     bool have_tmpl_text = gguf_get_str(&rt->m.gf, "tokenizer.chat_template", NULL) != NULL;
@@ -7994,14 +7887,9 @@ static int cli_main(int argc, char **argv, char **owned_prompt, session_image *s
     cli_opts *o = &opts;
     int rc;   // the exit status a step that ends the process hands back
 
-    // A bare `runner` — double-clicked, or typed with no arguments — starts
-    // the tray on the platforms that have one. The conditions are deliberately
-    // narrow: literally zero arguments (so no scripted invocation can ever be
-    // affected — scripts always pass something), a real terminal on both
-    // stdin and stdout (so pipes and CI probes still get usage text), and a
-    // platform with a tray backend (Linux keeps printing usage). --no-tray is
-    // the standing opt-out: it suppresses this launch and nothing else, for
-    // wrappers that want bare-invocation behavior guaranteed text-only.
+    // A bare `runner` (no arguments, a terminal on stdin AND stdout, a platform
+    // with a tray) starts the tray; scripts always pass something, and pipes and
+    // CI get usage text. --no-tray suppresses this launch and nothing else.
 #if defined(__APPLE__) || defined(_WIN32)
     if (argc == 1 && RUNNER_TTY(stdin) && RUNNER_TTY(stdout))
         return tray_main();
