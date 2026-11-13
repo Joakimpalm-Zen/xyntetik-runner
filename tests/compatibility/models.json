@@ -823,6 +823,49 @@
       }
     },
     {
+      "id": "apertus-v1.5-8b-text-q8_0",
+      "architecture": "apertus",
+      "family": "Apertus (Swiss AI)",
+      "file": "models/apertus-v1.5-8b-text-q8_0.gguf",
+      "sha256": "dea904ad80cd725ec89962abae464477f5d8114d1f4377514f381f7dc2ed202d",
+      "upstream": "andreasmartin/apertus-v1.5-8b-text-Q8_0-GGUF",
+      "tokenizer_reference": "swiss-ai/Apertus-v1.5-8B",
+      "tokenizer_reference_revision": "1519de0ae7f3d114879291810a58259966f64c99",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/apertus-v1.5-8b.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "andreasmartin's Q8_0 (8,567,121,856 bytes, revision 2028c318 of andreasmartin/apertus-v1.5-8b-text-Q8_0-GGUF) of andreasmartin's text-only extraction of swiss-ai's Apertus-v1.5-8B at 1519de0a, architecture apertus: 32 layers, GQA 32/8, head_dim 128, QK-norm, an ungated FFN (up, xIELU, down) 21,504 wide with per-layer xIELU parameters, llama3 rope scaling (theta 4,000,000) to 262,144, vocabulary 131,272 (the publisher's first 131,272 input rows; 200 output rows past the publisher's 131,072 are the extraction's own). Every trunk tensor equals the publisher's within Q8_0's error. Tokenizer pre tekken: 0 of 721 corpus strings differ from swiss-ai's tokenizer.json at 1519de0a; 2 of 128,637 vocabulary entries do (<think>, </think>: the publisher's normalizer rewrites them). Template family apertus15, conformance 25/25 in text and tokens against the publisher's chat_template.jinja at 1519de0a, which the GGUF carries byte for byte. Fidelity: against the BF16 checkpoint computed in float32, pooled 0.0036 ± 0.0003 mean KLD over 600 positions (windows 0.0035 and 0.0037), 100% margin-qualified top-1. Record docs/compat-reports/apertus-v1.5-8b-text-2026-11-13. CUDA runs the whole model on the device (32 of 32 layers) on a CUDA MIG slice, 1g.24gb, sm_120. greedy_reference remains undeclared.",
+      "check_params": {
+        "tokenizer": {
+          "expect_vocab_divergences": 2
+        },
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
       "id": "eurollm-9b-instruct-q4_k_m",
       "architecture": "llama",
       "family": "EuroLLM (EU consortium)",

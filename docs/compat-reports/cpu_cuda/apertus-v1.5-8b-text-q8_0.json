@@ -1,0 +1,90 @@
+{
+ "model": "models/apertus-v1.5-8b-text-q8_0.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "dense_rule": "margin_qualified",
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 32,
+  "layers_total": 32,
+  "output_weight_on_gpu": true,
+  "whole_graph": true
+ },
+ "cpu_cuda_identity": {
+  "result": "pass",
+  "exact": "9/9",
+  "gpu_arm_on_cpu": false,
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 9,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris. \nThe capital of Italy is Rome. \nThe capital of Spain is Madrid. \nThe capital of Germany is Berlin. \nThe capital of the United Kingdom is London. \nThe capital of Australia is Canberra. \nThe capital of Canada is Ottawa. \nThe capital of Japan is Tokyo. \nThe capital of China is Beijing. \nThe capital of India is New Delhi.",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " if n == 0: enabled\n    return 0\nelif n == 1:\n    return 1\nelse:\n    return fibonacci(n-1) + fibonacci(n-2)\n\n# Example usage:\nprint(fibonacci(10))  # Output: 55\n\n# Explanation:\n# The Fibonacci sequence starts with 0 and 1, and each subsequent number is the sum of the previous two.\n# For n=10, the sequence is: 0, 1, 1, 2, 3, 5, 8, 13, 2",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there was a kingdom ruled by a wise and just king. The kingdom was prosperous, and its people were happy and content. However, one day, a dark force threatened the kingdom, and the king knew that he had to act quickly to protect his people.\n\nThe king called upon his bravest knights and his most skilled warriors to defend the kingdom. They set out on a perilous journey, facing many dangers and obstacles along the way. But they persevered, and with their courage and determination, they were able to defeat the dark force and save the kingdom.\n\nThe people of the kingdom celebrated their victory, and the king was ha",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 17 * 23 = 391",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " The data is as follows:\n\n| Wind Direction | Cloud Cover | Fog Lift Hour |\n|----------------|-------------|---------------|\n| N              | 0%          | 6             |\n| N              | 100%        | 7             |\n| N              | 50%         | 8             |\n| N              | 0%          | 9             |\n| N              | 100%        | 10            |\n| N              | 50%         | 11            |\n| N              | 0%          | 12            |\n|",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " of these errors was a major task, and the catalogue was not published until 1930. The catalogue was the first to be published in the new standard epoch of 1900.0.",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " is\n# fine.  But if the header is truncated, we want to raise an exception\n# immediately, rather than proceeding to unpack a partial header.\ndef load_gguf_file(path):\n    with open(path, 'rb') as f:\n        buf = f.read()\n        size = len(buf)\n        if size < 8:\n            raise ValueError('file truncated')\n        magic, version = parse_header(buf[:8])\n        # ... rest of the loader ...\n\n# The above code is correct, but it's a bit clunky.  We can improve it by\n# moving the header check into the parse",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " has seen other medieval cities. The narrow lanes of Alfama are lined with azulejos\u2014hand-painted ceramic tiles that once protected walls from damp and now narrate the history of saints, kings, and the sea. The tiles are still being made in the same workshops that have been in business since the 16th century, and the smell of cobalt and lime follows you from the factory to the church fa\u00e7ades.\n\nThe view from the castle walls is the best way to see how the city was shaped by both geology and politics. The Tagus widens here into a natural harbor, and the river has always been the",
+   "gpu": null
+  }
+ ]
+}

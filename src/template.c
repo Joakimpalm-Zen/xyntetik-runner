@@ -81,7 +81,8 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
     if (meta_tmpl) {
         // apertus first: its vocabulary inherits Mistral's [INST]/[/INST]
         // tokens, so the [INST] branch below would otherwise claim it
-        if (strstr(meta_tmpl, "<|assistant_start|>")) return TMPL_APERTUS;
+        if (strstr(meta_tmpl, "<|assistant_start|>"))
+            return strstr(meta_tmpl, "<|tool_output_start|>") ? TMPL_APERTUS15 : TMPL_APERTUS;
         // Liquid LFM2 / LFM2.5: ChatML whose tools are one `List of tools: [`
         // line and whose calls are a Python list after a marker token; the
         // revision LFM2.5-8B-A1B's GGUF carries writes a string argument raw,
@@ -209,7 +210,8 @@ int template_detect(const char *meta_tmpl, tokenizer *tok) {
     // defaults -- passes tok=NULL, and tok_find dereferences it, so the whole
     // block is guarded rather than each line.
     if (tok) {
-    if (tok_find(tok, "<|assistant_start|>") >= 0) return TMPL_APERTUS;
+    if (tok_find(tok, "<|assistant_start|>") >= 0)
+        return tok_find(tok, "<|tool_output_start|>") >= 0 ? TMPL_APERTUS15 : TMPL_APERTUS;
     if (tok_find(tok, "<|channel|>") >= 0 && tok_find(tok, "<|return|>") >= 0)
         return TMPL_HARMONY;
     if (tok_find(tok, "<|eot|>") >= 0 && tok_find(tok, "<|message|>") >= 0)
@@ -292,6 +294,7 @@ static const struct { int tmpl; const char *name; bool flag; } TEMPLATE_NAMES[] 
     { TMPL_PHI4, "phi4", true },
     { TMPL_NEMOTRON, "nemotron", true },
     { TMPL_APERTUS, "apertus", true },
+    { TMPL_APERTUS15, "apertus15", true },
     { TMPL_ORNITH, "ornith", true },
     { TMPL_QWEN35, "qwen35", true },
     { TMPL_QWEN35_NOTHINK, "qwen35-nothink", true },
@@ -402,7 +405,7 @@ bool template_roles_valid(int tmpl, const char *const *roles, int n,
                                tmpl == TMPL_MISTRAL_V1 ||
                                tmpl == TMPL_MISTRAL_NEMO ||
                                tmpl == TMPL_MISTRAL_SYS ||
-                               tmpl == TMPL_APERTUS ||
+                               tmpl_apertus(tmpl) ||
                                tmpl_ornith_like(tmpl) ||
                                tmpl == TMPL_QWEN38;
     if (!leading_system_only) return true;
@@ -734,7 +737,7 @@ static bool name_in(const char *name, const char *const *list) {
 // surface replays by preserve_thinking; the Messages surface reads no effort.
 static bool renderer_honours(int tmpl, int surface, const char *key) {
     static const char *const thinking[] = {
-        "apertus", "chatml-think", "gemma4", "gemma4-mainline", "granite42", "harmony",
+        "apertus", "apertus15", "chatml-think", "gemma4", "gemma4-mainline", "granite42", "harmony",
         "hermes4", "k2-horizon", "mellum", "mimo", "minicpm5", "minicpmv", "muse",
         "nemotron", "nemotron35", "ornith", "qwen35", "qwen35-nothink", "qwen36",
         "qwen38", "spark", "spark25", NULL };
@@ -947,7 +950,7 @@ bool template_think_tags(int tmpl, const char **open, const char **close) {
 // from the file, and only a pair that is control tokens in it is bound.
 void template_bind_split_tags(int tmpl, tokenizer *tok, const char *think_open,
                               const char **open, const char **close) {
-    if (think_open || *open || tmpl != TMPL_APERTUS || !tok) return;
+    if (think_open || *open || !tmpl_apertus(tmpl) || !tok) return;
     static const char *const pairs[][2] = {
         { "<|inner_prefix|>", "<|inner_suffix|>" }, { "<think>", "</think>" } };
     for (size_t i = 0; i < sizeof pairs / sizeof *pairs; i++) {
@@ -2699,26 +2702,31 @@ static size_t render_lfm2(int tmpl, const chat_msg *msgs, int n_msgs,
     return off;
 }
 
-// TMPL_APERTUS.
+// TMPL_APERTUS, TMPL_APERTUS15.
 static size_t render_apertus(int tmpl, const chat_msg *msgs, int n_msgs,
                              bool add_assistant, int thinking, const jv *tools,
                              char *out, size_t cap, render_state *st) {
     size_t off = 0;
     // apertus (reference: swiss-ai/Apertus-8B-Instruct-2509
-    // chat_template.jinja): <|role_start|>CONTENT<|role_end|> per turn,
-    // with a native system role that must come first.
+    // chat_template.jinja; v1.5: swiss-ai/Apertus-v1.5-8B's at 1519de0a):
+    // <|role_start|>CONTENT<|role_end|> per turn, with a native system role
+    // that must come first.
     //
     // Between the system turn and the first real turn the reference always
-    // emits a developer block carrying two switches. Runner does not
-    // expose Apertus thinking, but declared tools use the reference's
-    // render_tools TypeScript rather than the generic protocol.
+    // emits a developer block carrying two switches. The deliberation it
+    // enables is split out of a chat turn's answer by its control-token pair
+    // (template_bind_split_tags, R2.15), and declared tools use the
+    // reference's render_tools TypeScript rather than the generic protocol.
     //
     // Two deliberate omissions, both matching decisions already made for
     // other families: when there is no system message the reference
     // substitutes a default one containing strftime_now('%Y-%m-%d'), and
     // runner does not embed a live date in a prompt (as with Llama-3.2's
     // "Cutting Knowledge Date" header); and BOS is added by the tokenizer,
-    // not spelled into the template.
+    // not spelled into the template. v1.5's default carries no date and is
+    // omitted on the scope choice alone: runner does not invent a persona the
+    // caller did not ask for, and that one ("you understand images and
+    // audio") claims senses a text-only file and runner do not have.
     const char *sys = NULL;
     int first = 0;
     if (n_msgs > 0 && !strcmp(msgs[0].role, "system")) {
@@ -2744,17 +2752,22 @@ static size_t render_apertus(int tmpl, const chat_msg *msgs, int n_msgs,
     off = emit(out, cap, off, "<|developer_end|>", NULL, NULL);
     // The reference's ns.in_assistant/ns.in_tool state keeps consecutive
     // assistant messages, their calls, and following tool results in ONE
-    // assistant turn. Results are raw values inside one bracketed list;
-    // no role marker or family-generic wrapper exists. An assistant reply
-    // after those results therefore continues the same turn -- the marked
-    // direct-adjacency limitation is discharged now that the tool turn is
-    // conformant.
+    // assistant turn. 2509's results are raw values inside one bracketed
+    // list; v1.5 writes the same list between <|tool_output_start|> and
+    // <|tool_output_end|> (still ", " between results). No role marker or
+    // family-generic wrapper exists. An assistant reply after those results
+    // therefore continues the same turn -- the marked direct-adjacency
+    // limitation is discharged now that the tool turn is conformant.
+    // template-owned bytes, so the two markers are control tokens: they go in
+    // emit's format, never as an argument (caller text)
+    const char *out_open = tmpl == TMPL_APERTUS15 ? "<|tool_output_start|>" : "[";
+    const char *out_close = tmpl == TMPL_APERTUS15 ? "<|tool_output_end|>" : "]";
     bool in_assistant = false, in_tool = false, waiting_for_outputs = false;
     for (int i = first; i < n_msgs; i++) {
         const char *role = msgs[i].role;
         if (!strcmp(role, "user")) {
             if (in_tool) {
-                off = emit(out, cap, off, "]", NULL, NULL);
+                off = emit(out, cap, off, out_close, NULL, NULL);
                 in_tool = false;
             }
             if (in_assistant) {
@@ -2769,7 +2782,7 @@ static size_t render_apertus(int tmpl, const chat_msg *msgs, int n_msgs,
                 in_assistant = true;
             }
             if (in_tool) {
-                off = emit(out, cap, off, "]", NULL, NULL);
+                off = emit(out, cap, off, out_close, NULL, NULL);
                 in_tool = false;
             }
             off = emit(out, cap, off, "%s", msgs[i].content, NULL);
@@ -2780,7 +2793,7 @@ static size_t render_apertus(int tmpl, const chat_msg *msgs, int n_msgs,
             // has no error channel, so it drops that invalid role rather
             // than inventing a prompt token for it.
             if (!in_assistant) continue;
-            off = emit(out, cap, off, in_tool ? ", " : "[", NULL, NULL);
+            off = emit(out, cap, off, in_tool ? ", " : out_open, NULL, NULL);
             in_tool = true;
             waiting_for_outputs = false;
             off = emit(out, cap, off, "%s", msgs[i].content, NULL);
@@ -2790,7 +2803,7 @@ static size_t render_apertus(int tmpl, const chat_msg *msgs, int n_msgs,
             off = emit_raw(out, cap, off, "<|%s_end|>", role, NULL);
         }
     }
-    if (in_tool) off = emit(out, cap, off, "]", NULL, NULL);
+    if (in_tool) off = emit(out, cap, off, out_close, NULL, NULL);
     if (in_assistant && !waiting_for_outputs)
         off = emit(out, cap, off, "<|assistant_end|>", NULL, NULL);
     if (add_assistant)
@@ -4799,6 +4812,7 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
             off = emit(out, cap, off, "<|endoftext|>", NULL, NULL);
         break;
     case TMPL_APERTUS:
+    case TMPL_APERTUS15:
         return render_apertus(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
     case TMPL_HARMONY:
         return render_harmony(tmpl, msgs, n_msgs, add_assistant, thinking, tools, out, cap, st);
@@ -5739,7 +5753,7 @@ void tool_history_render_for(int tmpl, const jv *calls,
             pl_lit(out, "}\n</tool_call>");
             continue;
         }
-        if (tmpl == TMPL_APERTUS) {
+        if (tmpl_apertus(tmpl)) {
             if (!ap_calls++) pl_lit(out, "<|tools_prefix|>[");
             else pl_lit(out, ", ");
             pl_lit(out, "{\"");
@@ -5829,7 +5843,7 @@ void tool_history_render_for(int tmpl, const jv *calls,
         pl_lit(out, "</function>\n</tool_call>");
         jv_free(obj);
     }
-    if (tmpl == TMPL_APERTUS && ap_calls)
+    if (tmpl_apertus(tmpl) && ap_calls)
         pl_lit(out, "]<|tools_suffix|>");
 }
 
@@ -6563,14 +6577,14 @@ const jv *tool_decl_native(int tmpl, bool strict, bool atem_tool_calling,
                      (!strict || env->proto == TP_ARGKV)) ||
                     (tmpl == TMPL_K2H &&
                      (!strict || env->proto == TP_IFM_ARGKV));
-    *skip_generic = qwen || g4_native || nemo_native || tmpl == TMPL_APERTUS ||
+    *skip_generic = qwen || g4_native || nemo_native || tmpl_apertus(tmpl) ||
                     mcp_decl ||
                     (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
                     tmpl == TMPL_HARMONY || xml_in_template;
     return qwen || xml_in_template || mcp_decl ||
            (tmpl == TMPL_MUSE && env->proto == TP_ATEM) ||
            (tmpl == TMPL_HARMONY && env->proto == TP_HARMONY) ||
-           g4_native || nemo_native || tmpl == TMPL_APERTUS
+           g4_native || nemo_native || tmpl_apertus(tmpl)
                ? tools : NULL;
 }
 
