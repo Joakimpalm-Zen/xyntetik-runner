@@ -1,0 +1,90 @@
+{
+ "model": "models/Qwen2.5-1.5B-Instruct-Q8_0.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "dense_rule": "margin_qualified",
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 28,
+  "layers_total": 28,
+  "output_weight_on_gpu": true,
+  "whole_graph": true
+ },
+ "cpu_cuda_identity": {
+  "result": "pass",
+  "exact": "9/9",
+  "gpu_arm_on_cpu": false,
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 9,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris. The capital of France is also the capital of which country?\nA) Germany\nB) Italy\nC) Spain\nD) Belgium\nE) France\nTo determine the capital of France, we need to understand the concept of a capital city. The capital of a country is the city where the country's government and other important administrative functions are located. In the case of France, the capital is Paris.\n\nLet's analyze each option:\n\nA) Germany - The capital of Germany is Berlin.\nB) Italy - The capital of Italy is Rome.\nC) Spain - The capital of Spain is Madrid.\nD) Belgium - The",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " \n    if n <= 1: \n        return n \n    else: \n        return(fibonacci(n-1) + fibonacci(n-2)) \n  \n# Driver Code \nnterms = 10\n  \n# check if the number of terms is valid \nif nterms <= 0: \n    print(\"Please enter a positive integer\") \nelse: \n    print(\"Fibonacci sequence:\") \n    for i in range(nterms): \n        print(fibonacci(i))",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there lived a young girl named Lily. She was a curious and adventurous child who loved to explore the world around her. One day, while wandering through a dense forest, she stumbled upon a mysterious old tree. As she approached the tree, she noticed that it was covered in a thick layer of moss and vines. She decided to climb up the tree to get a closer look.\n\nAs she climbed higher, she noticed that the tree was not just any ordinary tree. It was covered in a strange, glowing light that seemed to pulse and shift with each passing moment. Lily was fascinated by the tree and decided to spend the rest of the day",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 391\nExplain how we arrive at this answer:\nTo arrive at the answer 391, we can use the standard multiplication method for two-digit numbers. Here's a step-by-step breakdown:\n\n1. **Multiply the ones place of the first number by the ones place of the second number:**\n   - 7 (from 17) * 3 (from 23) = 21\n   - Write down 1 and carry over 2.\n\n2. **Multiply the ones place of the first number by the tens place of the second number:**\n   - 7 * ",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " He noticed that the fog lifted at 10 AM, and the wind was blowing from the north at that time. If the fog lifted at 10 AM and the wind was blowing from the north, what was the weather condition at 10 AM? To determine the weather condition at 10 AM, we need to analyze the information provided:\n\n1. The fog lifted at 10 AM.\n2. The wind was blowing from the north at 10 AM.\n\nFrom the information given, we can conclude that the weather condition at 10 AM was clear because the fog lifted, and the wind was blowing from",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " of duplicate entries was a major task, and the catalogue was revised again in 1932, listing 3989 objects. The 1932 catalogue was the last to be published in the series, and the last catalogue of the series was published in 1952. The 1952 catalogue was the last to be published in the series, and the last catalogue of the series was published in 1952. The 1952 catalogue was the last to be published in the series, and the last catalogue of the series was published in 1952.",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " is\n# not ideal.  This function is a workaround for that.\ndef parse_header_truncated(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version, buf[8:]",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " has grown used to the irregularity of the rest of the city. The city\u2019s most famous landmark, the 18th-century Jer\u00f3nimos Monastery, is a UNESCO World Heritage Site, and the 16th-century Sintra Castle is a World Heritage Site as well. The city is also home to the world\u2019s oldest surviving library, the 12th-century Biblioteca Nacional de Lisboa, and the oldest university, the 12th-century University of Lisbon. The city is also home to the oldest surviving church in Portugal, the 12th-century Igreja de S\u00e3o Francisco, and the oldest",
+   "gpu": null
+  }
+ ]
+}

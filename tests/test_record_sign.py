@@ -24,22 +24,41 @@ def run(*args):
 def test_a_signing_key_is_readable_by_its_owner_alone(tmp_path, algo):
     """The key file holds the seed every signature is made from. It was
     written through fopen, so under the usual umask anyone on the machine
-    could read it (0644), while the tool said "keep it private". A key
-    written over an older file took that file's permissions; it is made as
-    a new file now, so it is 0600 there too."""
+    could read it (0644), while the tool said "keep it private". It is
+    created as a new file with mode 0600."""
     key = tmp_path / "key.json"
     old = os.umask(0o022)
     try:
         assert run("--keygen", str(key), "--keygen-algo", algo).returncode == 0
         assert stat.S_IMODE(key.stat().st_mode) == 0o600, oct(key.stat().st_mode)
-        first = json.loads(key.read_text(encoding="utf-8"))["public_key"]
-        key.chmod(0o644)
-        assert run("--keygen", str(key), "--keygen-algo", algo).returncode == 0
-        assert stat.S_IMODE(key.stat().st_mode) == 0o600, oct(key.stat().st_mode)
-        assert json.loads(key.read_text(encoding="utf-8"))["public_key"] != first
         assert [p.name for p in tmp_path.iterdir()] == ["key.json"]
     finally:
         os.umask(old)
+
+
+@pytest.mark.parametrize("algo", ["ed25519", "ml-dsa-44"])
+def test_keygen_never_replaces_a_key(tmp_path, algo):
+    """A second keygen on a path that holds a key replaced it without a word
+    (exit 0). The old identity could then sign nothing more, and nothing said
+    so. It is refused, the message names the file, and the file is untouched:
+    its bytes and its mode (R6.68.59.1, the owner's pick)."""
+    key = tmp_path / "key.json"
+    assert run("--keygen", str(key), "--keygen-algo", algo).returncode == 0
+    before = key.read_bytes()
+    key.chmod(0o640)
+    again = run("--keygen", str(key), "--keygen-algo", algo)
+    assert again.returncode == 1, again.stderr
+    assert str(key) in again.stderr and "never replaced" in again.stderr, again.stderr
+    assert again.stdout == "", again.stdout
+    assert key.read_bytes() == before
+    if os.name != "nt":
+        assert stat.S_IMODE(key.stat().st_mode) == 0o640
+    assert [p.name for p in tmp_path.iterdir()] == ["key.json"]
+    # another file that is not a key is not replaced either
+    other = tmp_path / "notes.txt"
+    other.write_text("mine")
+    assert run("--keygen", str(other), "--keygen-algo", algo).returncode == 1
+    assert other.read_text() == "mine"
 
 
 def test_sign_check_tamper_and_chain(tmp_path):

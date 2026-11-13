@@ -2877,6 +2877,86 @@
           ]
         }
       }
+    },
+    {
+      "id": "qwen2.5-1.5b-instruct-q8_0-bartowski",
+      "architecture": "qwen2",
+      "family": "Qwen2 (Qwen)",
+      "file": "models/bartowski/Qwen2.5-1.5B-Instruct-Q8_0.gguf",
+      "sha256": "7185d306cf45956c8c017cd0d3b05ecc6bc18b3ea8eb5c240dce40e87563db7f",
+      "upstream": "bartowski/Qwen2.5-1.5B-Instruct-GGUF",
+      "tokenizer_reference": "Qwen/Qwen2.5-1.5B-Instruct",
+      "tokenizer_reference_revision": "989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/qwen2.5-1.5b-instruct.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "Q8_0 Qwen2.5-1.5B-Instruct-Q8_0.gguf (1,646,573,312 bytes, revision 9eadc661 of bartowski/Qwen2.5-1.5B-Instruct-GGUF), architecture qwen2: 28 layers, hidden 1,536, GQA 12/2, head_dim 128, FFN 8,960, q/k/v biases, rope theta 1,000,000, tied embeddings in the checkpoint, vocabulary 151,936, trained context 32,768. Tokenizer pre qwen2: 0 of 721 corpus strings and 0 of 150,186 vocabulary entries differ from Qwen's tokenizer.json at 989aa798 (the same tokenizer files as Qwen2.5-7B-Instruct's); template family chatml, conformance 21/21 in text and tokens against the publisher's chat template, the same template as Qwen2.5-7B-Instruct's. On load the file resolves to architecture qwen2, tokenizer pre qwen2, template chatml, tool family qwen_json and sampling preset qwen2.5 (temperature 0.7, top_p 0.8, top_k 20, repeat_penalty 1.05). bartowski's Q8_0 of Qwen's Qwen2.5-1.5B-Instruct, the fidelity file of the model: against the publisher's BF16 checkpoint computed in float32 it reads 0.0033 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 600 positions (two windows of 300: 0.0032 and 0.0034; plain top-1 98.3%, CPU), against a bar of 0.05 and 97%. Its tensors are byte for byte a Q8_0 converted from the checkpoint with llama.cpp's own converter. Record docs/compat-reports/qwen2.5-1.5b-instruct-2026-11-13. CUDA runs the whole model on the device (28 of 28 layers) on a CUDA MIG slice, 1g.24gb, sm_120. Its local path sits in models/bartowski/: the publisher's file of the same model is qwen2.5-1.5b-instruct-q8_0.gguf, the same name in a different case, which is one file on a case-insensitive file system. greedy_reference remains undeclared.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
+    },
+    {
+      "id": "qwen2.5-1.5b-instruct-q8_0",
+      "architecture": "qwen2",
+      "family": "Qwen2 (Qwen)",
+      "file": "models/qwen2.5-1.5b-instruct-q8_0.gguf",
+      "sha256": "d7efb072e7724d25048a4fda0a3e10b04bdef5d06b1403a1c93bd9f1240a63c8",
+      "upstream": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+      "tokenizer_reference": "Qwen/Qwen2.5-1.5B-Instruct",
+      "tokenizer_reference_revision": "989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
+      "tokenizer_reference_ids": "tests/compatibility/tokenizer-references/qwen2.5-1.5b-instruct.tokenizer-json.json",
+      "checks": [
+        "load",
+        "tokenizer",
+        "cpu_cuda",
+        "chat"
+      ],
+      "notes": "Q8_0 qwen2.5-1.5b-instruct-q8_0.gguf (1,894,532,128 bytes, revision 91cad511 of Qwen/Qwen2.5-1.5B-Instruct-GGUF), architecture qwen2: 28 layers, hidden 1,536, GQA 12/2, head_dim 128, FFN 8,960, q/k/v biases, rope theta 1,000,000, tied embeddings in the checkpoint, vocabulary 151,936, trained context 32,768. Tokenizer pre qwen2: 0 of 721 corpus strings and 0 of 150,186 vocabulary entries differ from Qwen's tokenizer.json at 989aa798 (the same tokenizer files as Qwen2.5-7B-Instruct's); template family chatml, conformance 21/21 in text and tokens against the publisher's chat template, the same template as Qwen2.5-7B-Instruct's. On load the file resolves to architecture qwen2, tokenizer pre qwen2, template chatml, tool family qwen_json and sampling preset qwen2.5 (temperature 0.7, top_p 0.8, top_k 20, repeat_penalty 1.05). The publisher's own q8_0 of Qwen2.5-1.5B-Instruct reads 0.030 mean KLD, nine times bartowski's Q8_0 on the same checkpoint: the publisher folded a per-channel rescaling of the layer norms into the projections before quantizing; in exact arithmetic the same model, but the rescaled weights quantize worse. Against the publisher's BF16 checkpoint computed in float32: 0.0297 ± 0.0012 mean KLD and 99.75% margin-qualified top-1 over 600 positions (two windows of 300: 0.0307 and 0.0287; plain top-1 91.7%, CPU), against a bar of 0.05 and 97%. llama.cpp reads the same file at 0.0324 on window 1 against Runner's 0.0307, so it is the file, not the engine. bartowski's Q8_0 is the fidelity file. Record docs/compat-reports/qwen2.5-1.5b-instruct-2026-11-13. CUDA runs the whole model on the device (28 of 28 layers) on a CUDA MIG slice, 1g.24gb, sm_120. greedy_reference remains undeclared.",
+      "check_params": {
+        "cpu_cuda": {
+          "pins": {
+            "RUNNER_CUDA_TC": "0",
+            "RUNNER_CUDA_ROUTE": "reference"
+          },
+          "prompt_set": "cpu_cuda_check.PROMPTS",
+          "min_prompt_tokens": 85,
+          "tokens": 128
+        },
+        "chat": {
+          "prompt": "What is 2+2?",
+          "max_tokens": 200,
+          "gpu": "auto",
+          "expect_stop": true,
+          "expect_nonempty_content": true,
+          "forbid_substrings": [
+            "[/INST]",
+            "<<SYS>>"
+          ]
+        }
+      }
     }
   ]
 }

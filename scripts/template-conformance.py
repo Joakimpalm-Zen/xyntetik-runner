@@ -198,7 +198,7 @@ FAMILIES = {
              "tests against (models/Qwen2.5-7B-Instruct-Q4_K_M.gguf)",
         tool_family=True,
         tokenizer=("Qwen2.5-7B-Instruct-Q4_K_M.gguf",
-                   "Qwen2.5-7B-Instruct-Q8_0.gguf")),
+                   "Qwen2.5-7B-Instruct-Q8_0.gguf", "qwen2.5-1.5b-instruct-q8_0.gguf")),
     "chatml-think": Family(
         "chatml-think", ("hf", "Qwen/Qwen3-4B"),
         note="src/template.h cites 'Qwen/Qwen3-* tokenizer_config.json'",
