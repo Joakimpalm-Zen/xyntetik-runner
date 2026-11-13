@@ -1,17 +1,7 @@
-// CUDA GPU backend: full single-token forward pass on NVIDIA GPUs.
-//
-// Uses the CUDA *driver API* loaded dynamically (nvcuda.dll / libcuda.so.1),
-// so building and running need no CUDA toolkit — a machine without an NVIDIA
-// driver simply falls back to CPU. Kernels live in kernels.cu, compiled to
-// PTX at development time (make ptx) and embedded via kernels_ptx.h; the
-// driver JIT-compiles them for whatever GPU is present.
-//
-// Unlike Metal there is no unified memory: weights are copied to VRAM once at
-// init, and the fp16 KV cache lives in VRAM with the host copy authoritative.
-// CPU-written rows (batched prompt processing) are uploaded lazily — a
-// non-contiguous position step means host rows [0, pos) may have changed and
-// triggers a resync — and each GPU-written row is copied back to host so the
-// CPU path can always take over mid-run.
+// CUDA backend: the forward pass on NVIDIA GPUs through the driver API, loaded
+// at run time (no toolkit needed; no driver means the CPU). Kernels: kernels.cu,
+// embedded as PTX. Weights are copied to VRAM once; the KV cache lives there with
+// the host copy authoritative (host rows upload lazily, device rows copy back).
 #include "runner.h"
 #include "upload_report.h"
 #include "kernel_args.h"   // shared with src/kernels.cu — see the header
@@ -123,17 +113,9 @@ static struct {
 } cu;
 
 // ---------------------------------------------------- RUNNER_CUDA_PROFILE
-// Coarse GPU phase breakdown behind an env var; OFF by default. Uses CUDA
-// events recorded between kernel-group launches on the plain (non-graph)
-// path, so it perturbs neither correctness nor the default binary. See
-// prof_mark()/prof_flush() and the summary printed from gpu_free().
-//
-// THREAD SAFETY: the `prof` accumulator below is a single unsynchronized
-// global. It is a DEV-ONLY, SINGLE-THREAD instrument — enable it only when
-// driving the runner from one decode thread. Under a multi-threaded server
-// its counters/event pool would race; that is accepted because it is never on
-// in a shipped binary. Do not read prof.* outside that assumption; a lock
-// here would sit on the hot launch path for no production benefit.
+// A coarse phase breakdown, off by default: CUDA events between kernel groups
+// on the plain (non-graph) path, summed in gpu_free(). `prof` is one
+// unsynchronized global: a single-thread development instrument only.
 typedef void *CUevent;
 enum { PH_NORM = 0, PH_MATVEC, PH_ROPE, PH_ATTN, PH_ELEM, PH_LOGITS, PH_HOSTMOE, PH_N };
 static const char *PH_NAME[PH_N] = {
@@ -243,28 +225,11 @@ static bool cu_load_now(void) {
 }
 
 // ----------------------------------------------------- capture exclusion
-// Engines on one device each own a stream, and those streams are created
-// blocking (StreamCreate flags 0), so the legacy default stream
-// synchronizes with every one of them: a synchronous copy, memset,
-// allocation, free, module load or context-wide sync from one engine
-// orders itself after the other engines' streams. CUDA refuses that while
-// one of those streams is being captured into a graph: the call fails and
-// the capture is invalidated. THREAD_LOCAL capture mode does not cover it,
-// because it only lifts the ban on OTHER threads' unsafe calls. So two
-// engines on two threads collided: one engine's graph capture and
-// another's synchronous copy. The copier's forward failed and model.c
-// dropped it to the CPU for good, and the capturer fell back to plain
-// launches (2026-10-16, four engines on an RTX 3070,
-// tests/test_decide_race.c). A --parallel server is not affected, because
-// its scheduler drives the device from one thread.
-//
-// The two are kept apart: g_capture_mu is held for a capture's whole window
-// (capture_begin .. capture_end), and every call that synchronizes with the
-// legacy stream takes it. Those table entries are replaced by guarded
-// wrappers at load (cu_guard_syncing), so no call site can forget. A thread
-// inside its own capture does not take it again (t_capturing), so its calls
-// behave exactly as they did. Uncontended, the lock is a few tens of
-// nanoseconds on a call that waits for the device anyway.
+// Streams are blocking, so a synchronous call (copy, memset, alloc, free,
+// module load, sync) waits on every engine's stream, and CUDA fails it and the
+// capture while any stream is being captured. g_capture_mu keeps the two
+// apart: held for a capture's window and by each such call (cu_guard_syncing's
+// wrappers).
 static pthread_mutex_t g_capture_mu = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local bool t_capturing;
 static struct {
@@ -282,12 +247,9 @@ static struct {
     CUresult (*CtxSynchronize)(void);
 } cu_raw;
 
-// The first synchronous call this thread made while it captured a graph
-// (R6.68.15). A synchronous copy, memset, allocation or legacy-stream launch
-// cannot be recorded into a graph: on the engine's blocking stream it fails
-// the capture (CUDA_ERROR_STREAM_CAPTURE_IMPLICIT), and on a non-blocking one
-// it would run once at capture time and never on a replay. The guarded
-// wrappers note it here, and a failed capture names it.
+// The first synchronous call this thread made while capturing. Such a call
+// cannot be recorded: it fails the capture, or would run once and never on a
+// replay. The guarded wrappers note it and a failed capture names it.
 static _Thread_local const char *t_capture_sync;
 #define CAPTURE_NOTE(name) do { if (t_capturing && !t_capture_sync) t_capture_sync = (name); } while (0)
 
@@ -413,12 +375,10 @@ static const char *cu_err(CUresult r) {
     return s ? s : "unknown CUDA error";
 }
 
-// RUNNER_REQUIRE_GRAPH_CAPTURE=1 (the CUDA gates, R6.68.15): a decode graph
-// that fails to capture or to launch ends the process with the reason. Without
-// it the decode falls back to plain launches and says so in one stderr line,
-// which no gate read: a shared-expert MoE lost its decode graph that way on
-// every model of the shape. A decode that is eager by design (graph_why) is not
-// a failure: under the switch it says why, once, and runs.
+// RUNNER_REQUIRE_GRAPH_CAPTURE=1 (the CUDA gates): a decode graph that fails
+// to capture or launch ends the process with the reason, where the default is
+// a fallback to plain launches. A decode that is eager by design says why and
+// runs.
 static bool graph_capture_required(void) {
     static _Atomic int on = -1;
     if (on < 0) {
@@ -456,37 +416,21 @@ static void graph_eager_note(const char *what, const char *why, bool *said) {
 // ------------------------------------------------------------------ backend
 
 // ---------------------------------------------------- shared model weights
-//
-// Everything a model puts on the device that a forward pass only ever *reads*.
-// It is identical for two model_t values loaded from the same file with the
-// same parameters, and it is the expensive part — gigabytes of quantized
-// weights — so it is uploaded once and refcounted rather than once per slot.
-// Before this, `--parallel 4` on an 8B model spent four times the VRAM on four
-// byte-identical copies of the same weights.
-//
-// The registry is keyed on the identity of the file (path, size, mtime, inode)
-// plus the geometry and the derived rope tables, because those are the only
-// inputs to any of the buffers below. A key mismatch is not an error, just a
-// miss: that instance gets its own upload, exactly as before.
-// Microbatch width classes. The batched matvec kernels unroll their column
-// loop, so each instantiation has a fixed width and a narrower microbatch
-// simply runs the smallest one that covers it. Two classes are enough: the
-// step cost is flat within a class, so the only widths that pay for a column
-// they are not using are 3 (runs 4-wide) and 5..7 (run 8-wide).
-// BW_16 serves only a speculative verify round's 9 to 16 rows (exact_rows);
-// the decode microbatch and the small-batch routing stay within BW_8
+// What a forward only reads, identical for two models loaded from one file
+// with the same parameters: uploaded once and refcounted, not once per slot.
+// Keyed on the file's identity, the geometry and the derived rope tables; a
+// mismatch is a miss, and that instance gets its own upload.
+// Microbatch width classes: the batched matvecs unroll their column loop, so a
+// narrower batch runs the smallest class that covers it. BW_16 serves only a
+// speculative verify round's 9 to 16 rows; decode stays within BW_8.
 enum { BW_4 = 0, BW_8 = 1, BW_16 = 2, BW_N = 3 };
 static inline int batch_width_class(int n) { return n <= 4 ? BW_4 : n <= 8 ? BW_8 : BW_16; }
 enum { GPU_SMALL_BATCH = 8 };   // the widest f_gemvb class (BW_8): small-batch routing in enc_mv
 enum { KVG_ROWS = 16 };         // rows a forward brings back through the KV gather (R3.4.1)
-// The widest microbatch those kernels actually COMPUTE. Every width class
-// stops at its own column count (`t < a.batch && t < NC`), so a call wider
-// than the widest class does not fail — it leaves columns NC.. holding
-// whatever was in the logits buffer, and the sequences owning them get a
-// previous step's answer. The f_mvb fallback is worse: its accumulator is a
-// fixed MVT-element register array indexed by a.batch, so past 16 it is out
-// of bounds. gpu_batch_decode enforces this, and the assertion below keeps
-// model.c's own ceiling from drifting past it.
+// The widest microbatch those kernels compute. A wider call does not fail: the
+// columns past the class keep stale logits, and the f_mvb fallback indexes a
+// fixed register array out of bounds. gpu_batch_decode enforces it and the
+// assertion keeps model.c's ceiling from drifting past it.
 #define BATCH_MAX_COLS 8
 _Static_assert(MODEL_BATCH_MAX <= BATCH_MAX_COLS,
                "MODEL_BATCH_MAX exceeds the widest CUDA microbatch kernel: "
@@ -533,12 +477,9 @@ typedef struct gpu_weights {
     CUfunction  f_attn_tcw;                 // its wide-head twin, head_dim 256 to 512
     CUfunction  f_attn_tcw_mla;             // and the absorbed MLA row's (R3.32)
     CUfunction  f_kv_gather;                // one-copy decode KV write-back (X3)
-    // kernel tables indexed by ggml tensor type; sized past the largest
-    // supported type id (T_MXFP4 = 39), not the count of supported types
-    // Sized past the HIGHEST type the loader can admit (T_NVFP4 = 40), not
-    // the highest CUDA serves: these arrays are indexed by ggml type, and a
-    // CPU-supported type with no CUDA kernel must land on a NULL slot and
-    // decline — never index past the table.
+    // Kernel tables indexed by ggml type id, sized past the highest type the
+    // loader admits: a CPU-only type must land on a NULL slot and decline,
+    // never index past the table.
     #define KT_N (T_Q2_0 + 1)   // ggml type ids are sparse; the highest decoded one bounds the tables
     CUfunction  f_mv[KT_N], f_mvb[KT_N];// indexed by ggml type; _b = tile variant
     CUfunction  f_mvt[KT_N];            // transposed matvec (training backward)
@@ -657,14 +598,10 @@ typedef struct {
     CUdeviceptr xsc;                    // [win] per-column |x| max for the scaled TC GEMMs
     CUdeviceptr xh;                     // TC2: [win][xh_cap] scaled fp16 activations
     int         xh_cap;                 // the widest GEMM input xh holds
-    // The input TC2 staged last into xsc / xh, by address and shape, and the
-    // enc_mv call that did it (mv_seq counts every enc_mv). A call site whose
-    // next GEMM reads the same columns, unwritten since (K and V after Q, up
-    // after gate), sets xh_reuse around that one call; the GEMM skips
-    // restaging only if the staging came from the enc_mv right before it
-    // (another route in between, or an older staging of the same buffer,
-    // restages) -- same bytes: staging is a pure function of the columns.
-    // Any other writer of xsc clears xh_src.
+    // What TC2 staged last into xsc / xh (address, shape, and the enc_mv that
+    // did it). A call whose next GEMM reads the same unwritten columns sets
+    // xh_reuse, and the GEMM skips restaging only if that staging came from the
+    // enc_mv right before it. Any other writer of xsc clears xh_src.
     CUdeviceptr xh_src;
     int         xh_n, xh_xs, xh_batch;
     bool        xh_reuse;
@@ -746,20 +683,16 @@ typedef struct {
     CUdeviceptr mamba_proj, mamba_xBC, mamba_y;         // per-tile scratch
     CUdeviceptr mamba_conv, mamba_state;                // persistent conv ring + SSD state
     CUdeviceptr mamba_conv_prev;                        // pre-forward rollback snapshot (ring)
-    // The SSD state is two halves of mamba_state. Each forward reads the
-    // committed half (rec_prev, set in cuda_fwd_prepare) and writes the other
-    // (rec_cur), so the pre-forward state the rollback and the failure rescue
-    // need is still there afterwards: no per-forward copy of the state.
-    // rec_tile0: the forward's first tile is running (later tiles of the
-    // same forward update rec_cur in place).
+    // The SSD state is two halves of mamba_state: a forward reads the committed
+    // half (rec_prev) and writes the other (rec_cur), so the pre-forward state a
+    // rollback needs survives without a copy. rec_tile0: the forward's first
+    // tile is running (later tiles update rec_cur in place).
     int         rec_cur, rec_prev;
     bool        rec_tile0;
-    // R8.7.2, the loaded adapter on the device: lora_a/lora_b are
-    // [n_layer * LW_SLOTS] device pointers (0 = no adapter on that slot, or
-    // the layer is CPU-resident and the host hook covers it), lora_t the
-    // [MVB][lora_r] inner-projection scratch. Per sequence rather than in the
-    // shared-weights record: two slots can serve the same file with different
-    // adapters, and 45 MB at rank 8 on a 7B is not worth sharing wrong.
+    // The loaded adapter on the device: lora_a/lora_b are [n_layer * LW_SLOTS]
+    // pointers (0 = no adapter there, or the host hook covers a CPU layer),
+    // lora_t the [MVB][lora_r] scratch. Per sequence, not shared: two slots can
+    // serve one file with different adapters.
     CUdeviceptr *lora_a, *lora_b;
     int          lora_n;                // table length (n_layer * LW_SLOTS)
     int         *lora_r_of;             // per-slot rank
@@ -768,12 +701,9 @@ typedef struct {
     int          lora_r;                // widest rank bound, 0 = no adapter
     float       *h_x, *h_logits, *h_moe_logits; // host staging
     float       *h_ple, *h_ple_tmp;             // E-series pre-pass staging
-    // the leading KV rows [0, kv_rows) the device holds as the host does:
-    // every forward leaves [0, pos + n) so (its own rows copied back), a
-    // host write lowers it (gpu_kv_host_wrote), and a forward uploads only
-    // [kv_rows, pos) before it reads them, so a rewind (a speculative round
-    // that kept part of its draft, a slot reusing its own prefix) uploads
-    // nothing
+    // The leading KV rows [0, kv_rows) the device holds as the host does. A
+    // forward leaves [0, pos + n) so, a host write lowers it (gpu_kv_host_wrote),
+    // and a forward uploads only [kv_rows, pos): a rewind uploads nothing.
     int          kv_rows;
     // CUDA graphs for the single-token decode path (Experiment A); a
     // double-buffered recurrent state (mamba_db) needs one per buffer parity,
@@ -801,12 +731,10 @@ typedef struct {
     void        *h_kvg_tab;
 } gpu_t;
 
-// max tokens per matvec tile — must match MVB in kernels.cu; every activation
-// buffer is allocated this many columns wide
-// The adapter rank the device path can stage in k_lora_b's shared vector
-// (LORA_R_MAX_DEV there, LORA_R_MAX in model.c). All three are 512; the
-// runtime check exists so raising one alone is refused rather than silently
-// reading past the shared array.
+// Max tokens per matvec tile; must match MVB in kernels.cu (every activation
+// buffer is this many columns wide). LORA_R_DEV_MAX is the adapter rank
+// k_lora_b's shared vector can stage (LORA_R_MAX in model.c): the runtime
+// check refuses a rank past it instead of reading past the array.
 #define LORA_R_DEV_MAX 512
 #define MVB 64   // activation buffer columns (keep in sync with kernels.cu)
 _Static_assert(MVB == MODEL_GPU_MVB, "model.h's MODEL_GPU_MVB is the plan's copy of MVB");
@@ -957,24 +885,10 @@ bool gpu_offload_budget(int reserve_vram_pct, uint64_t *budget,
     return true;
 }
 
-// Integrated (unified-memory) device probe: CU_DEVICE_ATTRIBUTE_INTEGRATED.
-// On a DGX Spark (GB10) the GPU shares one LPDDR pool with the CPU and the
-// driver reports that pool as VRAM, so "how much VRAM" and "how much RAM"
-// are the same question — the caller that treats them as two budgets
-// over-promises by up to 2x. First seen in the wild in the 2026-08-29
-// Spark field report, where --caps said unified_memory:false on a machine
-// that is nothing but.
-//
-// The value is 18, NOT 17. 17 is CU_DEVICE_ATTRIBUTE_KERNEL_EXEC_TIMEOUT,
-// which is 1 on any GPU driving a display (the WDDM/X watchdog), so an
-// off-by-one here does not fail loudly on the machines that would catch it:
-// it reports every ordinary desktop GPU as unified and then clamps its
-// offload budget to available system RAM. Shipped that way in v0.4.2 and
-// caught on an RTX 3070 (display attached), where the neighbouring
-// attributes read: 16 MULTIPROCESSOR_COUNT=46 (a 3070 has 46 SMs, so the
-// numbering is anchored to a known-correct answer), 17 KERNEL_EXEC_TIMEOUT=1,
-// 18 INTEGRATED=0. A headless datacenter card reports 17 as 0 and would have
-// looked correct, which is why this needed a desktop to find.
+// CU_DEVICE_ATTRIBUTE_INTEGRATED: a unified-memory device (DGX Spark) reports
+// its one memory pool as VRAM, so VRAM and RAM are one budget there.
+// The value is 18, not 17: 17 is KERNEL_EXEC_TIMEOUT, which reads 1 on any GPU
+// driving a display and would mark every desktop card as unified.
 #define CU_DEV_ATTR_INTEGRATED 18
 static bool cu_dev_integrated(CUdevice dev) {
     int v = 0;
@@ -1052,12 +966,9 @@ static bool gpu_scale_companion_ok(int type) {
     return type == T_NVFP4;
 }
 
-// Deterministic tracer for the "no CUDA kernel for this type" diagnostic.
-// Every format the loader reads now has a CUDA kernel, so nothing in the tree
-// can reach that message naturally; CPU-only CI holds its contract (the
-// tensor and type are named, the run falls back to the CPU) by naming a type
-// here, RUNNER_CUDA_INIT_INJECT_FAILURE=no-kernel:IQ2_XXS, the same mechanism
-// as the shared-pointer-tables injection in gpu_init.
+// A tracer for the "no CUDA kernel for this type" diagnostic. Every loader
+// format has a CUDA kernel now, so CPU-only CI reaches the message by naming a
+// type: RUNNER_CUDA_INIT_INJECT_FAILURE=no-kernel:IQ2_XXS.
 static bool inject_no_kernel(int type) {
     const char *inj = getenv("RUNNER_CUDA_INIT_INJECT_FAILURE");
     return inj && !strncmp(inj, "no-kernel:", 10) &&
@@ -1134,15 +1045,12 @@ bool gpu_tc_type_has_kernel(int type) {
 // the advertised list and the loader agree by construction.
 bool gpu_quant_ok(int type) { return gpu_type_ok(type); }
 
-// Expert tensor types the indirect MoE matvecs (k_moe_mv_*) cover. A type
-// outside this set is not an error — that model keeps the eager per-expert
-// path, exactly as before the device-routing work.
-// experts per token the device router (k_moe_route) holds in local memory,
-// and the picks a device route selects (the fixed sel[]/selw[] rows and the
-// selection buffers cuda_alloc_moe sizes). A model past either is refused a
-// device bank (cuda_admit, moe_bank_device_ok, R6.68.67): every route clamps
-// to these, and a clamped route answers among a subset of the experts
-// without a word, the 2026-10-07 defect at the old cap of 256.
+// Expert tensor types the indirect MoE matvecs (k_moe_mv_*) cover; a type
+// outside the set keeps the eager per-expert path.
+// MOE_ROUTE_MAX: the experts per token k_moe_route holds; MOE_MAX_USED: the
+// picks a device route selects. A model past either is refused a device bank
+// (cuda_admit, moe_bank_device_ok): a clamped route would answer among a
+// subset of the experts without a word.
 enum { MOE_ROUTE_MAX = 512, MOE_MAX_USED = 256 };
 
 static bool moe_indirect_type_ok(int type) {
@@ -1166,13 +1074,10 @@ static bool moe_indirect_type_ok(int type) {
     }
 }
 
-// Expert tensor types with WIDTH-CLASSED batched kernels (f_gemvb twins +
-// a real GEMM). The grouped prefill only pays when the expert matmul's
-// work scales with its token count: the fixed-MVB _b/GEMM kernels compute
-// all 16 columns regardless of batch, and at the ~1-2 tokens/expert a
-// 16-token tile routes, that waste more than cancels the weight-streaming
-// win (measured on the 3070: gemma-4 Q4_0 prefill -19% grouped vs fused).
-// Types outside this set keep the per-token fused prefill.
+// Expert tensor types with width-classed batched kernels (f_gemvb twins and a
+// GEMM). Grouped prefill only pays when the expert matmul's work scales with
+// its token count; the fixed-MVB kernels compute every column regardless
+// (gemma-4 Q4_0 prefill: 19% slower grouped). Other types stay fused.
 // defined with the arithmetic routes and the TC promotion below
 static int route_pinned(int bit);
 static bool moe_grouped_family(const model_t *m);
@@ -1242,17 +1147,10 @@ static bool moe_any_on_device(const model_t *m) {
     return false;
 }
 
-// Whether the device can run layer l's expert bank. The routed kernels and
-// the device twin of shexp_add cover a SiLU shared expert with its scalar
-// sigmoid gate (Qwen3.5/3.8) or without one (DeepSeek-style, R4.4.5 c0b); a
-// relu2 or gate-less one has no device path and stays on the host. Granite 4
-// hybrid's ungated shared expert has the device path but keeps its banks on
-// the host by name: its CUDA cells were measured that way
-// (compat-reports/cpu-cuda-hybrid), and moving them is its own measured
-// change. Admission refuses a pinned device bank that fails this, and the
-// --cpu-moe auto fit places only banks that pass it: the fit runs after
-// admission, so a check there alone let auto put Granite's banks on the
-// device, where the shared expert dereferenced its absent gate.
+// Whether the device can run layer l's expert bank. The routed kernels cover a
+// SiLU shared expert with its scalar sigmoid gate or without one; a relu2 or
+// gate-less one stays on the host, and Granite 4 hybrid keeps its banks there
+// by name (its CUDA cells were measured so). Admission and the auto fit ask this.
 static bool moe_bank_device_ok(const model_t *m, int l) {
     const layer_t *ly = &m->layers[l];
     // A bank on the device is routed by k_moe_route: softmax and top-k, with
@@ -1299,17 +1197,9 @@ static bool moe_fused_eligible(const model_t *m) {
 }
 
 static bool moe_grouped_eligible(const model_t *m) {
-    // Default OFF as of 2026-07-29: at MVB=16 tiles (~1-2 tokens/expert) the
-    // grouped path loses to the P1 fused prefill on BOTH boxes — 3070:
-    // 55.4 ms vs 33.5 ms GPU-busy per tile; datacenter MIG full-offload
-    // end-to-end: qwen3-30b prefill 125.4 tok/s grouped vs 194.3 fused
-    // (TC-on-grouped is worse still, 86.5 — the 16-column TC tile wastes
-    // more than it amortizes at these expert token counts). Grouping only
-    // pays with many tokens per expert (large-tile / batched serving);
-    // keep it reachable for those experiments via RUNNER_MOE_GROUPED=1.
-    // 2026-10-20: at the runtime prompt window (up to 512 columns, ~32 tokens
-    // an expert) it is the moe-grouped route, on by default for the families
-    // measured for it (moe_grouped_family); a route pin decides first, then
+    // The moe-grouped route: grouping only pays with many tokens per expert, so
+    // it is on by default at the runtime prompt window for the families measured
+    // for it (moe_grouped_family). A route pin decides first, then
     // RUNNER_MOE_GROUPED (1 on any family, 0 on none).
     int p = route_pinned(GR_MOE_GROUPED);
     bool on, by_default = false;
@@ -1349,26 +1239,17 @@ static bool moe_grouped_eligible(const model_t *m) {
     return true;
 }
 
-// The by-expert prefill (moe_twin) reproduces the fused path bit for bit:
-// an expert's token columns go through the width-classed GEMV twins, which
-// give every column the batch-1 kernel's bits, and the batch-1 kernel is the
-// one each k_moe_mv_* body copies (k_gemv_* where it exists, else k_mv_*).
-// So every expert tensor type needs both twins, its k_moe_mv kernel and that
-// batch-1 kernel; the float types stay on the fused path (BF16's batch-1
-// route can be split-K, which k_moe_mv_bf16 does not copy). gemma-4's
-// dual-branch layout has its own paths.
+// The by-expert prefill (moe_twin) reproduces the fused path bit for bit: an
+// expert's columns go through the width-classed GEMV twins, which carry the
+// batch-1 kernel's bits, the one each k_moe_mv_* body copies. So a type needs
+// both twins, its k_moe_mv kernel and that batch-1 kernel. Float types stay
+// fused: BF16's batch-1 route can be split-K, which k_moe_mv_bf16 does not copy.
 static bool moe_twin_type_ok(const gpu_weights *w, int type) {
-    // The by-expert prefill must give each column the fused path's bytes, so
-    // a type is admitted only where the kernels it runs have the per-column
-    // arithmetic of k_moe_mv_<type>. Q8_0, Q4_K, Q5_K, Q6_K: k_moe_mv is the
-    // coalesced GEMV's body, and the dense dispatch (k_gemv and its k_gemvb /
-    // k_gemvx twins) is that GEMV. MXFP4: no coalesced GEMV exists, so the
-    // dense dispatch is k_mv_mxfp4 and its twins, k_moe_mv_mxfp4's body.
-    // Q4_0: k_moe_mv_q4_0 is k_mv_q4_0's lane-per-block body, not the
-    // coalesced k_gemv_q4_0 the dense dispatch picks, so moe_twin_gemm runs
-    // its columns through k_mv_q4_0 and its own twins (admitted by existence
-    // alone, the dense dispatch gave gemma-4-26B-A4B's Q4_0 experts other
-    // bytes than the fused path).
+    // Admitted only where the kernels a type runs have k_moe_mv_<type>'s
+    // per-column arithmetic. Q8_0 and the K-quants: the coalesced GEMV, which
+    // is also the dense dispatch. MXFP4: k_mv_mxfp4 and its twins. Q4_0:
+    // k_moe_mv_q4_0 is k_mv_q4_0's body, not the coalesced k_gemv_q4_0 the dense
+    // dispatch picks, so moe_twin_gemm runs k_mv_q4_0 and its own twins.
     switch (type) {
     case T_Q8_0: case T_Q4_K: case T_Q5_K: case T_Q6_K: case T_MXFP4:
         return w->f_gemvb[BW_4][type] && w->f_gemvb[BW_8][type] && w->f_moe_mv[type] &&
@@ -1541,11 +1422,9 @@ bool gpu_eseries_ok(void) {
 }
 
 // ------------------------------------------------- shared-weight registry
-//
 // Resident uploads, refcounted and keyed on model identity. The lock is held
-// across the whole build so two instances racing on the same file cannot both
-// pay for the upload — model swap and draft-model loads can run while other
-// slots are serving.
+// across the whole build, so two instances racing on one file cannot both
+// pay for the upload.
 static gpu_weights *g_shared;
 static pthread_mutex_t g_shared_mu = PTHREAD_MUTEX_INITIALIZER;
 
@@ -1559,12 +1438,10 @@ static bool file_id(const char *path, uint64_t *size, uint64_t *ino,
     return model_file_identity(path, "device weights", size, ino, mtime, NULL);
 }
 
-// Everything the shared buffers are derived from, compared rather than assumed
-// from the path. The rope tables in particular are not a property of the file
-// alone: YaRN auto-extension keys off the requested context, phi3 picks its
-// LongRoPE factor set the same way, and --rope-base/--rope-scale override both.
-// Two loads of one file can legitimately want different tables, and a miss here
-// is not an error — that instance just gets its own upload, as before.
+// Everything the shared buffers derive from, compared, not assumed from the
+// path. The rope tables are not a property of the file alone (YaRN and phi3's
+// LongRoPE key off the requested context; --rope-base/--rope-scale override),
+// so two loads of one file can want different tables. A miss is not an error.
 static bool shared_config_matches(const gpu_weights *w, const model_t *m) {
     if (w->n_layer != m->n_layer || w->n_embd != m->n_embd ||
         w->n_head  != m->n_head  || w->n_head_kv != m->n_head_kv ||
@@ -1603,15 +1480,11 @@ static bool shared_matches(const gpu_weights *w, const model_t *m,
     return shared_config_matches(w, m);
 }
 
-// The safety net for the load path shared_matches cannot protect: an instance
-// whose file identity is unavailable builds privately and re-decides its own
-// CPU/GPU split — usually under the VRAM pressure of the instance already
-// resident, so it decides DIFFERENTLY, and two slots of one server then answer
-// the same request with different logits. Detect exactly that: same path, same
-// configuration (so the splits had no legitimate reason to differ), identity
-// missing on either side, different split. Loud stderr rather than refusal:
-// failing this load would fall back to CPU, which diverges from the resident
-// GPU instance just as silently.
+// An instance without a file identity builds privately and re-decides its
+// split under the resident instance's VRAM pressure, so two slots of one
+// server can answer with different logits. Detected (same path and
+// configuration, different split) and said loudly: a refusal would diverge as
+// silently on the CPU.
 static void split_guard(const gpu_weights *w, const model_t *m) {
     for (const gpu_weights *o = g_shared; o; o = o->next) {
         if (o == w) continue;
@@ -1630,11 +1503,9 @@ static void split_guard(const gpu_weights *w, const model_t *m) {
 }
 
 // Would gpu_init for this model reuse a resident upload? The VRAM claim made
-// before gpu_init asks this, so a second slot of a server (or a draft of the
-// same file) claims its own KV cache and scratch instead of a second copy of
-// weights it will never upload: `--parallel 2` on a 14B in a 24 GB slice was
-// refused at startup for 10 GB the second slot did not need (2026-10-02).
-// The same match gpu_init makes, under the same lock; a miss is not an error.
+// before gpu_init asks, so a second slot (or a draft of the same file) claims
+// its own KV cache and scratch, not a second copy of the weights. The same
+// match gpu_init makes, under the same lock; a miss is not an error.
 bool gpu_shared_weights_resident(const model_t *m) {
     uint64_t size = 0, ino = 0;
     int64_t mtime = 0;
@@ -1755,14 +1626,12 @@ static void shared_release(gpu_weights *w) {
 }
 
 // Upload one model's immutable device data and decide the CPU/GPU layer split.
-// act_bytes/max_hd describe the *per-sequence* scratch one instance needs; they
-// only feed the fitting decision, they are not allocated here.
-// Total weight bytes of one layer — attention plus the FFN, handling both a
-// dense FFN and a sparse-MoE layer (router + every expert, fused or split).
-// The dense w_gate/w_up/w_down are NULL on a MoE layer, so accounting only
-// those undercounts a MoE layer by ~all of its weight (the experts).
-// A tensor's device bytes in the plan (gpu_plan_binding_bytes: a per-tensor
-// upload is rounded to the driver's allocation granularity).
+// act_bytes/max_hd describe the per-sequence scratch of one instance; they
+// feed the fitting decision only.
+// A layer's weight bytes cover attention plus the FFN, dense or sparse-MoE
+// (router and every expert): the dense tensors are NULL on a MoE layer.
+// plan_bytes: a tensor's device bytes in the plan (a per-tensor upload is
+// rounded to the driver's allocation granularity).
 static size_t plan_bytes(const gguf_tensor *t, bool bound) {
     if (!t) return 0;
     return (size_t)gpu_plan_binding_bytes(t->nbytes, bound);
@@ -1775,15 +1644,11 @@ static size_t expert_plan_bytes(const layer_t *ly, int n_expert, bool bound) {
     return model_layer_expert_bytes(ly, n_expert) + (bound ? 9 * GPU_PLAN_GRAN : 0);
 }
 
-// A layer's device tensors, listed once. The split plan's bytes
-// (layer_weight_bytes), the image's stretch and the per-tensor bindings
-// (device_tensors_each) and admission's type check (cuda_admit) all walk
-// these two lists. Each used to keep its own, and they
-// had drifted: none had ssm_in, so a Mamba-2 hybrid's input projection was
-// never budgeted or bound and its first layer failed on the device, and the
-// prefix's reach had neither the hyper-connection mixers nor the shared
-// expert. tests/test_cuda_tensor_roles.py holds every tensor field of
-// layer_t to one of the lists or a named host-side role.
+// A layer's device tensors, listed once: the split plan's bytes, the image's
+// stretch, the per-tensor bindings and admission's type check all walk these
+// two lists, so none can drift from the others.
+// tests/test_cuda_tensor_roles.py holds every tensor field of layer_t to one
+// of the lists or a named host-side role.
 enum { LAYER_MIXER_MAX = GT_N_MIXER };
 
 // The mixer side, on the device whatever the FFN does: attention or the
@@ -1867,14 +1732,10 @@ static void vram_probe(const char *stage) {
         fprintf(stderr, "vram: %-28s free %.3f GB\n", stage, f / 1e9);
 }
 
-// RUNNER_DEBUG_VRAM, R3.51: what the weight upload actually takes. On an RTX
-// 5070 under WDDM the device lost 0.8 to 0.9 GB more than the bytes uploaded,
-// past the plan's headroom. For the upload stage only, every cu.MemAlloc goes
-// through va_alloc, which reads the driver's free figure around the call: the
-// count, the bytes asked, the bytes the device gave up for them, the largest
-// single gap, and whatever the stage lost outside any allocation (the copies,
-// the driver's own buffers). Debug only: with the switch off nothing is
-// swapped and nothing is read.
+// RUNNER_DEBUG_VRAM: what the weight upload actually takes (under WDDM a
+// device can lose more than the bytes uploaded). For the upload stage every
+// cu.MemAlloc goes through va_alloc, which reads the driver's free figure
+// around the call. Debug only: off, nothing is swapped or read.
 static struct {
     bool on;
     CUresult (*real)(CUdeviceptr *, size_t);
@@ -1937,14 +1798,12 @@ static uint64_t tensor_file_off(const model_t *m, const gguf_tensor *t) {
 static int mtp_streams(const model_t *m) { return m->hyper_conn ? m->hc_count : 1; }
 
 
-// Tensor-role placement cannot preserve mmap offsets in one compact device
-// allocation: the skipped experts are the holes. Upload each retained tensor
-// as a small binding and resolve matvecs by their stable GGUF file offset.
-// Every copy of weight bytes from the file mapping goes through here, in
-// UPLOAD_CHUNK_BYTES pieces, so a slow source (a cold file on slow storage: the
-// copy faults the pages in at the disk's speed) is reported while it runs
-// rather than looking like a hang. upload_report.h has the policy and the
-// incident; tests/test_cuda_upload_report.py holds every weight copy to this.
+// Tensor-role placement cannot keep mmap offsets in one compact allocation
+// (the skipped experts are holes): each retained tensor is a small binding,
+// and matvecs resolve by GGUF file offset.
+// Every copy of weight bytes from the file mapping goes through here in
+// UPLOAD_CHUNK_BYTES pieces, so a slow source is reported while it runs, not
+// taken for a hang (upload_report.h; tests/test_cuda_upload_report.py).
 static CUresult htod_reported(gpu_weights *w, CUdeviceptr dst, const void *src, size_t len) {
     size_t done = 0;
     char line[192];
@@ -2155,16 +2014,10 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
                 "pool; offload budget capped at available RAM "
                 "(%.1f GiB)\n", (double)vram_budget / (1u << 30));
     }
-    // The OS video-memory budget for this process, where the OS keeps
-    // one: WDDM pages a process that exceeds its budget over PCIe, and
-    // the driver's free-memory count does not know the budget exists.
-    // The card is matched by LUID so a machine with two adapters cannot
-    // be budgeted against the wrong one. model_gpu_budget bounds the
-    // driver's view by it, applies --reserve-vram, and sizes the headroom
-    // (the larger of 512 MiB and a sixteenth of the budget) that used to
-    // be a flat 512 MiB: on a 12 GB card that flat margin let the fit
-    // fill to 11.7 GB and page; on a 16 GB slice it left the last
-    // allocation, the recurrent state, to the allocator's slack.
+    // The OS video-memory budget for this process, where the OS keeps one:
+    // WDDM pages a process past its budget over PCIe, and the driver's free
+    // count does not know it. Matched by LUID (two adapters). model_gpu_budget
+    // bounds the driver's view by it and sizes the headroom.
     uint64_t os_budget = 0, os_usage = 0, headroom = 0;
     bool os_known = false;
     if (cu.DeviceGetLuid) {
@@ -2186,19 +2039,14 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
                         "this device; offload budget %.2f GB from the "
                         "driver's free view, headroom %.2f GB\n",
                 vram_budget / 1e9, headroom / 1e9);
-    // fixed device overhead regardless of split: the headroom covering the
-    // CUDA context + PTX JIT + allocator slack + the OS reserve, once; and per
-    // instance its activation scratch and the state below (`inst`). The token
-    // embedding is not charged: the forward stages its rows from the host
-    // (stage_x), and the device holds the table only as a tied head, which a
-    // full split pays for as its head (plan_full_extra).
+    // Fixed device overhead whatever the split: the headroom (CUDA context,
+    // PTX JIT, allocator slack, the OS reserve) once, and per instance its
+    // activation scratch and state (`inst`). The token embedding is not
+    // charged: rows are staged from the host, and a tied head is the full
+    // split's.
     size_t fixed = (size_t)headroom;
-    // act_bytes carries the recurrent state and scratch already
-    // (cuda_instance_dims, model_gpu_recurrent_cost). A second qwen35 charge
-    // here, added after the 2026-10-07 Qwen3.8-Flash-Next IQ2_XS state
-    // allocation failure, counted the fold and its rollback copy twice: 4x
-    // what cuda_alloc_recurrent allocates, about 0.15 GB on Qwen3.6-35B-A3B
-    // at ctx 131072, a bank and the head (R3.46).
+    // act_bytes already carries the recurrent state and scratch
+    // (cuda_instance_dims, model_gpu_recurrent_cost): no second charge here.
     size_t inst = act_bytes;
     // the NextN/MTP block rides along with a full split: its attention,
     // mixers and head projections (its experts stay on the host under
@@ -2219,12 +2067,10 @@ static bool shared_plan_budget(gpu_weights *w, model_t *m, size_t act_bytes,
             inst += per_row * (size_t)(m->spec_batch < 8 ? m->spec_batch : 8);
         }
     }
-    // --parallel N: the split is decided once, by the first slot, and every
-    // later slot reuses this upload with its own scratch, state and KV. A
-    // plan for one let the first slot fill the card; the next slot was then
-    // refused its VRAM claim at startup, or found no room for its scratch
-    // and served from the CPU with different logits from the slot beside it.
-    // So each instance is charged here and each layer's KV below.
+    // --parallel N: the first slot decides the split and later slots reuse the
+    // upload with their own scratch, state and KV. A plan for one slot let it
+    // fill the card and the next was refused or served from the CPU with
+    // different logits, so each instance is charged here and its KV below.
     P->instances = m->gpu_instances > 1 ? (size_t)m->gpu_instances : 1;
     fixed += inst * P->instances;
     // Tables are shared by slots, and shared_upload_layer_tables builds
@@ -2281,13 +2127,9 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
         size_t wb = layer_weight_bytes(m, l, moe_on_host(m, l), m->cpu_moe);
-        // KV bytes mirror the allocation: model_kv_boundary_bytes is the
-        // same cumulative account MemAlloc sizes the device cache from,
-        // so a ringed sliding layer costs its ring rows rather than
-        // n_ctx, a shared-KV layer costs nothing beyond its owner's
-        // earlier rows, and the q8_0 format discount (~53% of fp16)
-        // still buys more offloaded layers. Charging every layer full
-        // n_ctx rows left most of a 24 GB card idle under RUNNER_KV_RING.
+        // KV bytes mirror the allocation (model_kv_boundary_bytes): a ringed
+        // sliding layer costs its ring rows, a shared-KV layer nothing beyond
+        // its owner's rows, and q8_0 rows about 53% of fp16.
         size_t kv = model_kv_boundary_bytes_sum(m, l + 1) -
                     model_kv_boundary_bytes_sum(m, l);
         cost[l] = wb + kv * P->instances;
@@ -2297,25 +2139,16 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
     }
     uint64_t used = fixed;
     int G = gpu_plan_prefix(cost, m->n_layer, 0, vram_budget, &used);
-    // Partial expert offload: the pass above placed attention (and any
-    // dense FFN) for the layers that fit. Whatever budget survives is
-    // spent on whole expert banks, shallowest first, so a card with room
-    // to spare stops idling it — the all-or-nothing flag left 8.8 of 12 GB
-    // unused on the first outside install. Explicit counts are honoured as
-    // given and were already accounted above.
+    // Partial expert offload: the pass above placed attention (and any dense
+    // FFN) for the layers that fit; what budget survives buys whole expert
+    // banks, shallowest first. Explicit counts are honoured as given and were
+    // accounted above.
     if (m->cpu_moe && m->cpu_moe_layers == CPU_MOE_AUTO) {
-        // Hold back what a full split still owes before spending the rest
-        // on expert banks. `full` below decides whether output.weight is
-        // uploaded, but the forward decides whether to compute logits on
-        // the device from the LAYER COUNT alone (fwd: gpu_layers <
-        // n_layer). Letting a bank eat the last of the budget makes those
-        // two disagree: every layer is on the device, so the forward asks
-        // for logits, and output.weight was never uploaded. That is the
-        // whole of the "--cpu-moe auto dies mid-forward" bug — it was not
-        // a VRAM over-commit, and it reproduced on every MoE model.
-        // Reserving here is also the better trade: the output projection
-        // runs every token over the full vocabulary, an expert bank only
-        // when its layer is routed to.
+        // Hold back what a full split still owes. The forward computes logits
+        // on the device from the layer count alone, so a bank that ate the
+        // last of the budget would leave every layer on the device and
+        // output.weight never uploaded. The head also runs every token, a bank
+        // only when routed.
         size_t owed = G == m->n_layer ? plan_full_extra(m, P) : 0;
         // A retry after an out-of-memory init holds back the deepest
         // banks: the plan is an estimate (on a 24 GB MIG slice it
@@ -2325,15 +2158,11 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         int placed = gpu_plan_expert_banks(is_moe, bank, G, owed, vram_budget,
                                            &used, m->moe_host, m->moe_auto_trim,
                                            m->moe_auto_placed);
-        // R4.26.18: the greedy pass above costs every tensor as its own 2 MiB-
-        // rounded allocation and each bank with a 9-granule allowance, but the
-        // upload joins the device tensors into runs and binds one allocation
-        // a run (shared_plan_upload), so it rounds once a run. On
-        // Qwen3-30B-A3B Q6_K that over-planned the slice by ~0.72 GB, more
-        // than a bank, with 6 runs on the device. Re-cost the weights by the
-        // runs this placement will make, then keep placing the next bank
-        // while that exact figure, and the head a full split owes, fits. A
-        // retry after a failed init (moe_auto_trim) keeps the greedy plan.
+        // The greedy pass costs every tensor as its own rounded allocation, but
+        // the upload joins tensors into runs and rounds once a run. Re-cost the
+        // weights by the runs this placement makes and keep placing banks while
+        // that figure and the head fit. A retry after a failed init keeps the
+        // greedy plan.
         if (m->moe_auto_trim == 0) {
             uint64_t kvsum = 0;
             for (int l = 0; l < G; l++)
@@ -2367,12 +2196,10 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
         }
     }
     free(bank); free(is_moe);
-    // a full split also needs token_embd + output weights resident.
-    // Invariant, belt and braces: "the device owns every layer" and "the
-    // device owns the output projection" must agree, because the forward
-    // reads only the first and the upload honours only the second. If the
-    // reserve above could not be met, hand the last layer back to the CPU
-    // so the split is honestly partial rather than internally inconsistent.
+    // A full split also needs token_embd and the output weights resident. "The
+    // device owns every layer" and "the device owns the output projection"
+    // must agree (the forward reads the first, the upload honours the second):
+    // if the reserve cannot be met the last layer goes back to the CPU.
     bool gave_back = false;
     bool full = gpu_plan_full_split(&G, m->n_layer, &used, cost, plan_full_extra(m, P),
                                     vram_budget, &gave_back);
@@ -2381,27 +2208,19 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
                         "layer split — running the last layer on the CPU "
                         "so the boundary is consistent\n");
     }
-    // an explicit --gpu-layers overrides the budget-based fit (the user
-    // takes responsibility for VRAM; used for testing partial offload and
-    // for manual control): any split, below or above what fits. Above it,
-    // say so: a discrete card cannot hold the excess, so the allocation
-    // fails or, under a Windows driver, is paged to system memory and runs
-    // several times slower without an error (Xyntetik-Kvist-14B at an 8K
-    // context on an 8 GB RTX 3070: 47 of 52 layers fit; all 52 forced put
-    // ~0.5 GB in shared system memory and decoded 2.9-3.6 tok/s against 5.6
-    // at the fitted split).
+    // An explicit --gpu-layers overrides the fit, below or above it. Above it,
+    // say so: a discrete card cannot hold the excess, so the allocation fails
+    // or a Windows driver pages it to system memory and runs several times
+    // slower without an error (2.9 to 3.6 tok/s against 5.6 on one 8 GB card).
     int natural_G = G;
     if (m->gpu_layers_override > 0) {
         G = m->gpu_layers_override;
         if (G > m->n_layer) G = m->n_layer;
         full = (G == m->n_layer);
-        // Past the fitted split, charge the forced layers: the split line
-        // and P->used (which sizes the prompt window) otherwise kept the
-        // fitted plan's bytes. DeepSeek-V2-Lite naive at 32K, all 27 of 26
-        // forced: the line said 24.24 of 25.13 GB, the window took 0.72 GB
-        // of "spare" the 27th layer held, the first launch ran out of memory
-        // and the run finished on the CPU (R3.31). Below the fitted split
-        // the fitted figure stands, as an upper bound.
+        // Past the fitted split, charge the forced layers: otherwise the split
+        // line and P->used (which sizes the prompt window) keep the fitted
+        // plan's bytes and the window takes memory a forced layer holds. Below
+        // the fitted split the fitted figure stands, as an upper bound.
         for (int l = natural_G; l < G; l++) used += cost[l];
         if (G > natural_G)
             fprintf(stderr, "gpu: --gpu-layers %d places %d layers past the %d the "
@@ -2412,14 +2231,10 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
                     (double)vram_budget / 1e9);
     }
     free(cost);
-    // Composition warning (no silent worst-of-both). Under tensor-role
-    // placement the expert banks are what fill VRAM, so capping the
-    // attention split below what already fits moves attention to the CPU
-    // and frees almost nothing: measured 10.3 tok/s for
-    // `--cpu-moe --gpu-layers 26` against 12.7 (all-host) and 14.6
-    // (layer split alone) on a 12 GB card. Say so instead of obeying
-    // quietly — the flags stay legal, since the pair is meaningful once a
-    // partial expert count is what is being reserved for.
+    // Composition warning. Under tensor-role placement the expert banks fill
+    // VRAM, so capping the attention split below what fits moves attention to
+    // the CPU and frees almost nothing (10.3 tok/s against 14.6 for the layer
+    // split alone on a 12 GB card). Said, not refused: the pair stays legal.
     if (m->cpu_moe && m->gpu_layers_override > 0 && G < natural_G)
         fprintf(stderr,
                 "gpu: --gpu-layers %d caps the attention split below the "
@@ -2489,13 +2304,11 @@ static bool shared_plan_split(gpu_weights *w, model_t *m, shared_plan *P) {
 }
 
 // One contiguous prefix of the file, or one binding per tensor.
-// Every tensor the device reads through its weights, for a split of G
-// leading layers (and on a full split the head, the hyper-connection head
-// and the NextN/MTP block): the per-tensor upload binds exactly these, and
-// the contiguous image is the stretch of the file they span. Nothing else
-// is read on the device: norms, biases, rope factors and scales go up as
-// their own buffers, the token embedding is staged from the host, and the
-// per-layer embedding table runs on the host (the E-series pre-pass).
+// Every tensor the device reads through its weights for a split of G leading
+// layers (on a full split also the head, the hyper-connection head and the
+// NextN/MTP block). Nothing else is read there: norms, biases, rope factors
+// and scales are their own buffers, the token embedding is staged from the
+// host, and the per-layer embedding table runs there.
 static bool device_tensors_each(model_t *m, int G, bool full, bool mtp_dev,
                                 bool (*fn)(gguf_tensor *, void *), void *ctx) {
     for (int l = 0; l < G; l++) {
@@ -2633,17 +2446,10 @@ static void shared_plan_upload(gpu_weights *w, model_t *m, const shared_plan *P)
     int G = P->G;
     bool full = P->full;
     bool mtp_dev = P->mtp_dev;
-    // The image: one contiguous stretch of the file, so offsets inside it
-    // stay valid relative to its start (img_off), from the first tensor the
-    // device reads to the end of the last (device_tensors_each). It used to
-    // run from the first tensor in the file, through the end of the file on
-    // a full split: whatever sat in front of the layers or among them rode
-    // along unplanned (gemma-4-E4B's 1.94 GB per-layer embedding table, read
-    // only by the host pre-pass; the token embedding the forward stages from
-    // the host). The planner charges only the device tensors, so where they
-    // do not lie together in the file (a name-ordered file, a table between
-    // the head and the layers) they upload as runs instead (bindings, one
-    // allocation a run: shared_upload_weights), as the MoE split's do.
+    // The image: one contiguous stretch of the file, from the first tensor the
+    // device reads to the end of the last (device_tensors_each), so offsets
+    // inside it stay valid relative to img_off. Where the device tensors do not
+    // lie together in the file they upload as runs (shared_upload_weights).
     tensor_list L = { m, NULL, 0, 0, false };
     device_tensors_each(m, G, full, mtp_dev, list_add, &L);
     int outside = 0;
@@ -2952,12 +2758,10 @@ static bool shared_load_module(gpu_weights *w) {
     };
     for (size_t i = 0; i < sizeof(fns) / sizeof(*fns); i++)
         CK(cu.ModuleGetFunction(fns[i].f, w->mod, fns[i].name));
-    // Tensor-core kernels: resolved non-fatally so an older embedded PTX
-    // (without them) still loads — TC just stays unavailable there. The
-    // table is the one gpu_tc_type_has_kernel() answers from, so the
-    // tolerance gate's idea of "TC-capable" cannot drift from what is
-    // registered here (it did: Q6_K was promoted 2026-08-08 and the
-    // gate's own list never learned it, so a pure Q6_K model skipped).
+    // Tensor-core kernels: resolved non-fatally, so an older embedded PTX
+    // without them still loads with TC unavailable. This table is the one
+    // gpu_tc_type_has_kernel() answers from, so the tolerance gate's idea of
+    // "TC-capable" cannot drift from what is registered here.
     for (size_t i = 0; i < sizeof TC_KERNELS / sizeof *TC_KERNELS; i++)
         cu.ModuleGetFunction(&w->f_gemm_tc[TC_KERNELS[i].type], w->mod,
                              TC_KERNELS[i].name);
@@ -3101,12 +2905,11 @@ static bool shared_upload_weights(gpu_weights *w, model_t *m, const shared_plan 
     int G = P->G;
     bool full = P->full;
     bool mtp_dev = P->mtp_dev;
-    // weights: the file bytes the offloaded layers reference (whole file
-    // for a full split, a prefix for partial) so byte offsets stay valid.
-    // Every instance sharing this upload indexes it with offsets computed
-    // against its own mmap base, which is the same layout by construction.
-    // the whole file image for a full split, the planned prefix otherwise;
-    // the per-tensor fallback below adds up to about the same bytes
+    // weights: the file bytes the offloaded layers reference (the whole file
+    // image for a full split, the planned prefix otherwise), so byte offsets
+    // stay valid: every instance sharing this upload indexes it by offsets
+    // against its own mmap base. The per-tensor fallback adds up to about the
+    // same.
     upload_report_begin(&w->rep, w->weights_len, plat_now());
     if (!w->bound) {
         // One contiguous prefix. When the allocation itself is refused,
@@ -3451,13 +3254,10 @@ static gpu_weights *shared_build(model_t *m, size_t act_bytes, size_t per_col,
     if (!uploaded) goto fail;
     w->refs = 1;
     vram_probe("after weights upload");
-    // R3.51: WDDM lowers this process's budget while its upload fills the
-    // card (an RTX 5070 read 11.72 GB at plan time and 10.79 to 10.97 GB
-    // after the weights), so the figure the plan used is not the one the
-    // load ends under. Report the budget as it stands now. Nothing is sized
-    // from it: on that card a load 0.3 GB over this budget decoded at full
-    // speed, and a layer handed back to fit it ran three times slower. No OS
-    // budget (anything but WDDM), no line.
+    // WDDM lowers this process's budget while its upload fills the card, so
+    // the figure the plan used is not the one the load ends under: report the
+    // budget as it stands now. Nothing is sized from it (a load 0.3 GB over
+    // decoded at full speed; a layer handed back ran three times slower).
     {
         uint64_t ob = 0, ou = 0;
         if (os_vidmem_now(w, &ob, &ou))
@@ -3485,12 +3285,8 @@ static gpu_weights *shared_acquire(model_t *m, size_t act_bytes, size_t per_col,
     uint64_t fsize = 0, fino = 0;
     int64_t  fmtime = 0;
     // Every file gets an identity: part 1's (size, inode, mtime) plus, in
-    // shared_matches, the part count and total mapped bytes. A split GGUF
-    // used to have none, so every server slot built its own device copy;
-    // on a 2-part Qwen3.8-Flash-Next with --cpu-moe auto the first slot
-    // filled the slice and the second fell to the CPU, and the two slots
-    // then answered the same request with different logits (the hazard
-    // split_guard describes; --parallel 2 on the Linux CUDA host, 2026-10-07).
+    // shared_matches, the part count and total mapped bytes, so a split GGUF's
+    // slots share one device copy (the hazard split_guard describes).
     bool have_id = file_id(m->path, &fsize, &fino, &fmtime);
     gpu_weights *w = NULL;
     pthread_mutex_lock(&g_shared_mu);
@@ -3527,31 +3323,17 @@ typedef struct {
     size_t tc2_per_col;            // TC2's fp16 activations per column, where it runs
 } cuda_dims;
 
-// Every refusal that needs no driver: router shapes, per-layer expert
-// counts, shared-expert and gate shapes, FFN widths, tensor types.
-// every weight matmul must have a kernel for its quant type (wv may be
-// absent: gemma4 global layers reuse the raw K projection as V).
-// gpt-oss runs here since the sink-aware attention softmax, the MXFP4
-// kernels, swiglu_oai and the router/expert bias plumbing landed
-// (2026-08-01); the old refusal is gone.
-// Generalized MoE routing has no device kernel: k_moe_route is softmax +
-// top-k, renormalized or not (expert_weights_norm), with no bias input, and
-// regenerating kernels_ptx.h is tools/ptx-toolchain/make-ptx.sh's job. Refuse the backend rather than route
-// with the wrong function and produce confident, wrong output.
-// Mamba-2 hybrids (granitehybrid, nemotron_h) have a device SSD-scan
-// + conv1d kernel (k_mamba2_*), dispatched from gpu_mamba2_recurrent and
-// wired through skip_mixer/skip_ffn below. nemotron_h (dense) and DENSE
-// granitehybrid (h-micro) fully offload — CPU/CUDA token-identity
-// measured 2026-08-21 (compat-reports/cpu-cuda-hybrid). MoE granitehybrid
-// (h-tiny, h-small) runs with every expert bank on the host: its shared
-// expert has no gate, which moe_bank_device_ok() keeps off the device, so
-// --cpu-moe and --cpu-moe auto keep the banks home and anything that would
-// put one on the device trips the shared-expert guard below.
-// qwen35moe (the Gated DeltaNet trunk with routed experts and a gated shared
-// expert, no hyper-connections) runs here since R4.27 A2: the composition of
-// dense qwen35's trunk, the routed MoE kernels and tile_shexp, held by
-// test-cuda-qwen35moe (free and pinned routing at 1e-5 on the toy, the host
-// and split placements) and the real-file cells.
+// Every refusal that needs no driver: router shapes, per-layer expert counts,
+// shared-expert and gate shapes, FFN widths, tensor types. Every weight matmul
+// needs a kernel for its quant type (wv may be absent: gemma4's global layers
+// reuse the raw K projection as V).
+// Generalized MoE routing has no device kernel: k_moe_route is softmax and
+// top-k with no bias input, so the backend is refused, not routed wrongly.
+// Mamba-2 hybrids run the device SSD scan and conv1d (k_mamba2_*). Dense ones
+// offload fully; MoE granitehybrid keeps every bank on the host (its ungated
+// shared expert, moe_bank_device_ok).
+// qwen35moe composes dense qwen35's trunk, the routed MoE kernels and
+// tile_shexp, held by test-cuda-qwen35moe and the real-file cells.
 static bool cuda_admit(model_t *m) {
     // deepseek2 runs here in both forms of the multi-head latent attention
     // (R4.4.5 c1 naive, c2 absorbed). The q-lora pair (attn_q_a -> norm ->
@@ -3597,14 +3379,10 @@ static bool cuda_admit(model_t *m) {
             return false;
         }
     // The router and the selection bias matter only to a bank the device runs:
-    // a layer whose experts are on the host (--cpu-moe) is routed there, by
-    // model_moe_ffn_cpu, while the device runs the trunk (R3.43a). So these
-    // refuse only when a bank is on the device; --cpu-moe, and its auto fit,
-    // which places no bank moe_bank_device_ok refuses, keep these models on
-    // the device.
-    // Every device route takes at most MOE_ROUTE_MAX experts and MOE_MAX_USED
-    // picks and clamps past them, so such a router would answer among a
-    // subset of its experts on the device alone (R6.68.67).
+    // a host bank (--cpu-moe) is routed by model_moe_ffn_cpu while the device
+    // runs the trunk. So these refuse only when a bank is on the device.
+    // Every device route clamps at MOE_ROUTE_MAX experts and MOE_MAX_USED
+    // picks, so a router past them would answer among a subset of its experts.
     char route_why[200];
     if (m->n_expert > 0 && moe_any_on_device(m) &&
         model_moe_route_why(m->n_expert, m->n_expert_used, MOE_ROUTE_MAX, MOE_MAX_USED,
@@ -3629,14 +3407,13 @@ static bool cuda_admit(model_t *m) {
                     "experts and their routing on the host)\n");
             return false;
         }
-    // A pruned model (--prune-experts) gives a layer fewer experts than the
-    // model declares; model.c holds every layer's count inside
-    // [n_expert_used, expert_count]. Each layer's router, routing and expert
-    // tables take that layer's count (R4.7.4); scratch sized by the declared
+    // A pruned model gives a layer fewer experts than the model declares
+    // (model.c holds each count inside [n_expert_used, expert_count]); each
+    // layer's tables take that layer's count, and scratch sized by the declared
     // count covers every layer.
-    // The shared always-on expert runs on the device as tile_shexp, gated by
-    // its scalar sigmoid or not; the shapes moe_bank_device_ok refuses send
-    // the model to the CPU unless --cpu-moe keeps those banks on the host.
+    // The shared always-on expert runs as tile_shexp, gated by its scalar
+    // sigmoid or not; a shape moe_bank_device_ok refuses sends the model to
+    // the CPU unless --cpu-moe keeps those banks on the host.
     if (m->n_ff_shexp > 0 && moe_any_on_device(m)) {
         bool ok_shape = true;
         for (int l = 0; ok_shape && l < m->n_layer; l++)
@@ -3648,18 +3425,12 @@ static bool cuda_admit(model_t *m) {
             return false;
         }
     }
-    // The DENSE attention output gate (muse-glimmer) rides qwen35's
-    // machinery: wq_gate is already in every weight table and k_q35_attn_gate
-    // applies exactly the CPU's x *= 1/(1+expf(-g)); only the projection into
-    // q35_gate is arch-specific, added in the layer loop below. The gate
-    // PLUS sparse MoE (afmoe) stays on the host: that combination has never
-    // been run against the identity gates, and enabling it as a side effect
-    // of the dense port would be an unmeasured support claim.
-    // spark2_5's per-head gate (k_head_attn_gate) and exact GELU
-    // (k_gelu_erf_mul, through enc_actmul) run on the device for the dense
-    // FFN. The MoE kernels take ffn_act as a selector that knows SiLU,
-    // tanh-GELU and swiglu_oai only, so an expert FFN with the exact GELU
-    // must never reach them: no such model exists, and it stays on the host.
+    // The dense attention output gate (muse-glimmer) rides qwen35's machinery:
+    // only the projection into q35_gate is arch-specific. The gate plus sparse
+    // MoE (afmoe) stays on the host: it has never run against the identity gates.
+    // spark2_5's per-head gate and exact GELU run on the device for the dense
+    // FFN. The MoE kernels' ffn_act selector knows SiLU, tanh-GELU and
+    // swiglu_oai only, so an expert FFN with the exact GELU stays on the host.
     if (m->ffn_act == ACT_GELU_ERF && m->n_expert > 0) {
         fprintf(stderr, "gpu: experts with the exact GELU are not on the CUDA "
                 "backend yet — using CPU\n");
@@ -3697,11 +3468,9 @@ static bool cuda_admit(model_t *m) {
         }
     }
     // MoE layers leave the dense gate/up/down NULL, so the loop above never
-    // checks the router or the per-expert weights — yet enc_mv indexes the
-    // KT_N-entry kernel tables (f_mv[]/f_mvb[]) by tensor type on exactly those.
-    // An out-of-range or unsupported type would read past the table (function-
-    // pointer type confusion) or launch a NULL fn at decode. Validate them here
-    // and fall back to CPU, matching how the dense path already rejects.
+    // checks the router or the expert weights, yet enc_mv indexes the KT_N
+    // kernel tables by their types. Validate them here: an unsupported type
+    // would read past the table or launch a NULL function at decode.
     for (int l = 0; l < m->n_layer; l++) {
         layer_t *ly = &m->layers[l];
         // A host-resident bank never reaches a device kernel; an AUTO fit may
@@ -3864,13 +3633,10 @@ static bool cuda_alloc_kv(model_t *m, gpu_t *g) {
     const bool mtp_dev = m->mtp_ready && m->gpu_layers == m->n_layer;
     size_t k_bytes = model_k_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
     size_t v_bytes = model_v_boundary_bytes(m, m->gpu_layers + (mtp_dev ? 1 : 0));
-    // A hybrid's stateful layers own no KV rows (Mamba-2 always, qwen35's
-    // DeltaNet since R3.44), so a split whose device layers are all stateful
-    // has 0 bytes to hold, and cuMemAlloc refuses 0 (R3.54: the whole device
-    // init failed and the run finished on the CPU). The pointers still go to
-    // the attention launches, the kv gather and the 0-byte copies, so the
-    // cache is a small allocation rather than none, filled with 0xFF: NaN in
-    // every KV format, so a read of a row that does not exist would show.
+    // A hybrid's stateful layers own no KV rows, so a split whose device
+    // layers are all stateful has 0 bytes to hold, and cuMemAlloc refuses 0.
+    // The pointers still go to launches and 0-byte copies, so the cache is a
+    // small allocation filled with 0xFF (NaN in every KV format).
     enum { KV_EMPTY_BYTES = 256 };
     size_t k_alloc = k_bytes ? k_bytes : KV_EMPTY_BYTES, v_alloc = v_bytes ? v_bytes : KV_EMPTY_BYTES;
     CK(cu.MemAlloc(&g->kc, k_alloc));
@@ -4158,13 +3924,10 @@ static bool cuda_graph_recur_on(void) {
 }
 
 // An attention layer with no V projection (gemma4's global layers) builds V
-// as zero plus K: enc_zero, then enc_add. On the instance's stream the
-// zeroing is a memset node a decode graph can capture; the synchronous
-// cuMemsetD8 it replaces could not be captured, so such a model decoded
-// eagerly. Same bytes either way: the same zeroing, then the same add. A
-// driver without cuMemsetD8Async keeps the synchronous call and the eager
-// decode. Other layers without wv (no attention at all, a removed attention
-// sublayer, a recurrent layer) keep their own rules.
+// as zero plus K. On the instance's stream the zeroing is a memset node a
+// decode graph can capture, where the synchronous cuMemsetD8 forced an eager
+// decode; same bytes either way. A driver without cuMemsetD8Async keeps the
+// synchronous call. Other layers without wv keep their own rules.
 static bool v_from_k_capturable(const model_t *m, int l) {
     const layer_t *ly = &m->layers[l];
     return cu.MemsetD8Async && !ly->wv && !ly->recurrent && !ly->skip_mixer &&
@@ -4175,29 +3938,14 @@ static bool v_from_k_capturable(const model_t *m, int l) {
 static void cuda_plan_graphs(model_t *m, gpu_t *g) {
     if (cu_graphs_ok() && cu.StreamCreate(&g->stream, 0) != 0)
         g->stream = NULL;
-    // gemma4's V-copy path (ly->wv == NULL on an attention layer) uses a
-    // synchronous MemsetD8 that cannot be captured into a CUDA graph. MoE
-    // with device routing (moe_fused_ok) is fully capture-clean; only the
-    // eager fallback (split layout / uncovered expert type) still reads
-    // router logits back to the host mid-forward and must keep the graph off.
-    // A qwen35 Gated DeltaNet layer's one-token step is two launches on
-    // buffers fixed for the instance (its conv history and state, advanced
-    // in place; the rollback copy is taken before the forward, outside any
-    // capture), so a qwen35 decode replays a graph since 2026-10-21: it had
-    // run eagerly since the family reached CUDA, with no hazard on record.
-    // The dense Mamba-2 hybrids (granitehybrid, nemotron_h without experts)
-    // follow the same argument: a one-token step is three launches on the
-    // conv ring and SSD state fixed for the instance, advanced in place, the
-    // rollback copy taken before the forward (cuda_fwd_prepare); nemotron_h's
-    // MLP-only blocks run no attention, so no V memset. A qwen35 file with
-    // routed experts (qwen35moe) replays too since R6.68.25a: its expert
-    // banks hold no recurrent state, so the recurrent rule no longer excludes
-    // them and the MoE rules below decide, as for any other family (fused
-    // device routing with every bank on the device captures; the eager MoE
-    // path or experts on the host are eager by design and say so).
-    // qwen4exp (host steps between layers) stays eager, and so do the Mamba-2
-    // hybrids with experts, which the rule leaves out (granitehybrid's and
-    // nemotron_h_moe's banks stay on the host anyway).
+    // What keeps a decode graph off. gemma4's V copy without an async memset
+    // is synchronous. MoE with device routing (moe_fused_ok) captures; the
+    // eager fallback reads router logits back mid-forward and cannot.
+    // Recurrent steps capture where they are launches on buffers fixed for the
+    // instance, advanced in place, with the rollback copy taken before the
+    // forward: qwen35 (with routed experts too: its banks hold no recurrent
+    // state) and the dense Mamba-2 hybrids. qwen4exp (host steps between
+    // layers) and the Mamba-2 hybrids with experts stay eager.
     // RUNNER_CUDA_GRAPH_RECUR=0 keeps every recurrent family eager.
     bool mamba_dense = (m->granite_hybrid || m->nemotron_h) && m->n_expert == 0;
     bool recur_graph = (m->qwen35 || mamba_dense) && !m->hyper_conn && cuda_graph_recur_on();
@@ -4297,23 +4045,12 @@ static void cuda_report_init(model_t *m, gpu_t *g, size_t act_bytes) {
                 act_bytes / 1e9);
 }
 
-// The host pages of what the device now holds. Every upload copies its
-// tensors out of the read-only file mapping, and every page that copy
-// touched stayed in this process's resident set for its lifetime: a fully
-// offloaded Qwen2.5-7B Q4_K_M server held ~5 GB of host RSS for a 4.7 GB
-// file, against ~0.8 GB for llama.cpp on the same request (1.2.0 study,
-// R120-028), while --fit and docs/buffer-lifetimes.md bill the host only
-// for what the CPU runs. Same walk as the bound upload: the device layers'
-// mixers, their FFN unless the bank stays home, the output on a full split.
-// The token embedding too: the host reads it one row per token
-// (stage_x), so only the rows a conversation uses come back.
-// Nothing here changes a value. The map is PROT_READ + MAP_PRIVATE, so a
-// page a later CPU read does want (a fallback forward, a training backward)
-// faults back in with the file's bytes. --mlock locks the mapping after
-// the load returns (model_load), which wires every page back in: the
-// operator asked for exactly that. weights_locked is checked anyway, so a
-// lock that ever moves ahead of this cannot be undone by it (on Windows the
-// trim IS an unlock).
+// Release the host pages of what the device now holds. An upload copies its
+// tensors out of the read-only file mapping and every page it touched stayed
+// resident (about 5 GB of host RSS for a 4.7 GB fully offloaded file). Same
+// walk as the bound upload, plus the token embedding (read a row per token).
+// No value changes: the map is PROT_READ + MAP_PRIVATE, so a later CPU read
+// faults the file's bytes back in. weights_locked is checked: --mlock wins.
 static bool release_host_pages(gguf_tensor *t, void *ctx) {
     (void)ctx;
     if (t && t->data) plat_release_pages(t->data, t->nbytes);
@@ -4419,11 +4156,9 @@ fail:
 // ----------------------------------------------------------------- launches
 
 // One-shot diagnostic for the GPU giving up mid-forward. Every enc_* helper
-// returns a bare false, so the caller could only ever say "kernel launch
-// failed" — which is true of a real launch error, a missing kernel for a quant
-// type, and a weight that was never uploaded alike. Those need different
-// fixes, so the first one to happen names itself. Once per process: a failing
-// forward fails for every layer, and the first is the informative one.
+// returns a bare false, which covers a launch error, a missing kernel and a
+// weight never uploaded alike, so the first failure names itself. Once per
+// process: a failing forward fails for every layer.
 static void gpu_first_error(const char *fmt, ...) {
     static _Atomic bool reported;   // any slot may fail first (compat.h)
     if (!plat_once(&reported)) return;
@@ -4514,12 +4249,10 @@ static bool enc_rmsnorm(gpu_t *g, CUdeviceptr x, CUdeviceptr y, CUdeviceptr w,
     return launch(g, g->sw->f_rmsnorm, 1, batch, 1, 256, p);
 }
 
-// Tensor-core GEMM (RUNNER_CUDA_TC). Promoted per (type, arch) by the
-// tolerance gate (tests/test_tc_tol.c; results in the TC spec): combos in
-// tc_promoted() run TC by DEFAULT, everything else stays scalar until gated.
-// RUNNER_CUDA_TC=1 forces the path on everywhere (including unpromoted
-// combos — how a gate candidate is measured); =0/off forces it off
-// everywhere. Parse the VALUE: a bare existence check made =0 mean "on".
+// Tensor-core GEMM (RUNNER_CUDA_TC). Combos in tc_promoted() run TC by
+// default, promoted per (type, arch) by the tolerance gate
+// (tests/test_tc_tol.c); the rest stay scalar. =1 forces it on everywhere
+// (how a candidate is measured), =0/off forces it off: the value is parsed.
 enum { TC_ENV_UNSET = -2 };
 static _Atomic int g_tc_state = TC_ENV_UNSET;   // -2 env unread, -1 per-combo, 0/1 forced
 
@@ -4556,17 +4289,11 @@ long gpu_live_buffers(void) { return cu_ok ? g_live_bufs : -1; }
 // express. -1 restores the env default (RUNNER_MOE_EAGER).
 void gpu_moe_eager_force(int on) { g_moe_eager_force = on < 0 ? -1 : (on != 0); }
 
-// Promoted (type, arch) combos — every row measured by test_tc_tol on real
-// weights (datacenter MIG slice, 2026-07-29; table in the TC spec). Dense archs
-// only, and only those with a gate row: llama 0.003% of range / phi3 0.004%
-// / gemma4 0.012% / qwen3 dense, mistral, gemma3, smollm per the same run —
-// all 0 top-1 flips in 64 teacher-forced positions. qwen3moe PASSED its
-// gate too (0.216%, one near-tie) but stays opt-in by owner decision: MoE
-// routing amplifies fp16 noise ~86x over dense, and the promotion decision
-// deliberately covers the dense family first. Unmeasured archs are absent,
-// not implied; an arch joins with its own row (qwen35 and granite later,
-// muse-glimmer and qwen2 on 2026-10-02: see tc_promoted).
-// The codebook family, promoted 2026-09-14 (see tc_promoted below).
+// Promoted (type, arch) combos: each has its own measured gate row on real
+// weights; an unmeasured arch is absent, not implied. qwen3moe passed its
+// gate but stays opt-in here (MoE routing amplifies fp16 noise) and runs as
+// the moe-tc route below. Evidence: docs/tc-promotion-evidence.md.
+// The codebook family (see tc_promoted below).
 static bool tc_codebook(int type) {
     switch (type) {
         case T_IQ1_S: case T_IQ1_M: case T_IQ2_XXS: case T_IQ2_XS: case T_IQ2_S:
@@ -4592,36 +4319,12 @@ static bool tc_type_promotable(int type) {
            tc_codebook(type) || tc_kq_type(type);
 }
 
-// MoE families measured against the publisher's float32 model (2,000
-// positions, the owner's rule of 2026-10-20: a tolerance route becomes a
-// family's default only when its mean KL is within 1.01x and neither a
-// paired Wilcoxon on per-position KL nor McNemar on margin-qualified top-1
-// finds it worse than the current route at p < 0.05). They run as named
-// routes, so a record names them and --verify pins them, and a record made
-// before them (no field, the reference set) replays without them.
-//   moe-tc       qwen3moe  Qwen3-30B-A3B Q4_K_M: KL 0.09167 vs 0.09157,
-//                          Wilcoxon p 0.36, McNemar p 0.48
-//                gpt-oss   gpt-oss-20b MXFP4: KL 0.08142 vs 0.08312 (closer,
-//                          p 1e-5), McNemar p 0.61
-//   moe-grouped  qwen3moe  with moe-tc, scored chunked
-//                          (RUNNER_SCORE_CHUNKED=1, 64-row chunks by
-//                          RUNNER_SPEC_BATCH=64, so its batched expert
-//                          GEMMs ran; RUNNER_SPEC_BATCH alone scores solo
-//                          and runs none): KL 0.09178 vs 0.09170, Wilcoxon
-//                          p 0.83, McNemar p 1.0; Q4_K / Q6_K experts;
-//                          prefill 2.6-3.9x the fused path's at 512 / 2K
-//                not gemma4: gemma-4-26B-A4B-it, a plain Q4_0 of the
-//                          float32 conversion, chat-formatted text (that
-//                          file's greedy replies, 2,000 positions): KL
-//                          0.30527 vs 0.29527, 1.034x, over the 1.01x bound
-//                          (Wilcoxon p 0.54, McNemar p 0.48); on raw text,
-//                          where it reads ~2.2 nats from its reference,
-//                          2.22047 vs 2.22727. Prefill would have been 4.9x
-//                          / 2.4x at 512 / 8K: RUNNER_MOE_GROUPED=1 or a
-//                          route pin runs it (2026-10-21)
-// (TC alone on qwen3moe was once kept opt-in because its greedy text left
-// the scalar route's at token 20 on a free-running check; measured against
-// the reference instead, it reads no further from it.)
+// MoE families whose tolerance route is their default: each measured against
+// the publisher's float32 model over 2,000 positions (mean KL within 1.01x of
+// the current route, and neither a paired Wilcoxon nor McNemar worse at
+// p < 0.05). They are named routes: a record names them and --verify pins
+// them. gemma4 missed the bound (1.034x) and stays opt-in. Rows:
+// docs/tc-promotion-evidence.md.
 static bool moe_tc_family(const model_t *m) {
     return m && (strcmp(m->arch, "qwen3moe") == 0 || strcmp(m->arch, "gpt-oss") == 0);
 }
@@ -4631,206 +4334,32 @@ static bool moe_grouped_family(const model_t *m) {
 
 static int tc_nvfp4_env(void);
 static bool tc_promoted(const model_t *m, int type) {
-    // Q6_K joined 2026-08-08: the profile showed it was 26% of prefill running
-    // on the SCALAR path, because attn_v/ffn_down are Q6_K in every Q4_K_M.
-    //
-    // Q8_0 joined 2026-08-09, and it is the strongest row in this table:
-    // test_tc_tol on Qwen3-4B-Q8_0 reported logits BIT-IDENTICAL across 504
-    // counted TC dispatches — not "within tolerance", identical. Prefill went
-    // 113.72 -> 475.71 tok/s (4.18x) on the same model and prompt.
-    //
-    // Bit-identity is why this is promoted for the whole trusted arch list on
-    // one model's evidence, where a tolerance-based row would not be. The arch
-    // list exists because architectures differ in how much they AMPLIFY
-    // numerical difference — MoE routing amplifies fp16 noise ~86x over dense,
-    // which is why qwen3moe stays opt-in. With zero difference to amplify, that
-    // sensitivity cannot bite. The kernel is exact here because int8 weights
-    // convert to fp16 without loss and the accumulation order matches the
-    // scalar path; that is a property of the kernel, not of the model.
-    //
-    // RESOLVED 2026-08-13b, and the caveat's own instruction applies: the
-    // sm_120 confirmation was run and Q8_0 is NOT bit-identical there. It is
-    // merely near-identical, so this row is hereby DEMOTED from "exact" to
-    // tolerance-gated like every other row:
-    //
-    //   smollm  SmolLM2-135M-Q8_0        0/64 flips, 8e-5 of logit range
-    //   phi3    Phi-4-mini-Q8_0          0/64,        2e-5
-    //   granite granite-4.1-3b-Q8_0      0/64,        5e-5
-    //
-    // The old sm_86 bit-identity reading is also retired for a second reason:
-    // it was measured 2026-08-09, one day AFTER TC_N widened to 64, on the
-    // kernel that computed 16 of its 64 columns. That kernel reported
-    // bit-identity on phi3 and gemma4 while producing different free-running
-    // text at -b 64 — so "BIT-IDENTICAL" was not evidence of a correct kernel
-    // and cannot carry a promotion on its own. Promotion for the whole arch
-    // list now rests on three tolerance rows across three archs plus the
-    // free-running arm in test_tc_tol, not on an exactness argument.
-    // Q4_0 joined 2026-08-13, and only because the bug above it was fixed
-    // first. Its TC kernel shares TC_GEMM_32B with Q8_0, which until that day
-    // computed 16 of its 64 token columns and published uninitialised shared
-    // memory for the rest; Q4_0 forced on scored 28/64 to 59/64 top-1 flips.
-    // With the macro fixed, six models across four archs gate clean at
-    // N_BATCH=64 — 0/64 flips every row, mean|dlogit| 3e-5 to 8e-5 of range:
-    //
-    //   qwen3   Qwen3-0.6B-q4_0, Qwen3-1.7B-q4_0, dense-control-stage1-q4_0
-    //   phi3    Phi-4-mini-instruct-q4_0
-    //   smollm  SmolLM2-135M requantised to q4_0
-    //   llama   Llama-3.2-3B-Q4_K_M requantised to q4_0 (Q4_K + Q4_0 mix)
-    //
-    // This is the largest prefill row in the table because Q4_0 had no GEMM
-    // at all on the promoted path: pp512 goes 57.8 -> 977.8 tok/s on
-    // Qwen3-1.7B (16.9x) and 21.2 -> 445.4 on Phi-4-mini (21x). gemma4,
-    // mistral and gemma3 have no q4_0 gate row of their own and inherit the
-    // arch list below, as Q6_K and Q8_0 did; they are the rows to measure
-    // next, not rows this evidence covers.
-    // The codebook family joined 2026-09-14 (docs/cuda-iq-tensorcore-2026-09-14.md,
-    // evidence files beside it), each kernel a device twin of the CPU
-    // decoder staged to fp16 with the token columns scaled to fp16's range.
-    // Forced against the scalar path with test_tc_tol (64 teacher-forced
-    // positions, then free-running greedy at batch 64 / ctx 4096), every row
-    // 0 flips unless noted, every free-running arm token-identical:
-    //
-    //   granite-4.2-3b requantized to each of the nine formats, all layers
-    //   on the device, datacenter MIG slice: IQ4_XS 4e-5 of range, IQ4_NL 5e-5,
-    //   IQ3_XXS 6e-5, IQ3_S 9e-5, IQ2_S recipe (IQ2_XS+IQ3_S) 1.1e-4 with one
-    //   near-tie, IQ2_XS 1.2e-4, IQ2_XXS 1.3e-4, IQ1_M 3.4e-4, IQ1_S 9.0e-4
-    //   with two near-ties; IQ3_S, IQ3_XXS, IQ2_XXS and IQ1_M the same on an
-    //   RTX 3070.
-    //   IQ3_S on every other arch of the list, same protocol, the Linux CUDA host:
-    //   llama 9e-5, qwen3 2.4e-4, smollm 3e-5, mistral 4e-5, phi3 2.4e-4
-    //   (two near-ties; this is the model whose activations overflow fp16
-    //   without the column scaling), gemma3 6e-5, gemma4 9e-5; IQ2_XXS on
-    //   llama 4e-5, qwen3 1.0e-4 (one near-tie), smollm 1.0e-4.
-    //   qwen35: the GSQ-RCO Qwen3.8 27B mixed file, 40 of 64 layers on the
-    //   slice, 9 of 9 greedy outputs identical at 64 tokens forced on
-    //   against forced off.
-    //   the llama-quantize fixtures of all nine formats on both device
-    //   families: 3e-5 to 7e-5 of range; compute-sanitizer memcheck,
-    //   racecheck, synccheck and initcheck clean on each (RTX 3070).
-    //
-    // Prefill on the RTX 3070 (5 warmed runs, median, spread under 1.1%):
-    // 25 tok/s on the scalar path to 277-495 tok/s across the formats at
-    // 118 to 1892 tokens; the scalar path was the generic warp-per-row
-    // matvec applied to 64 columns, the family had no batched GEMM at all.
-    // The plan's gate (10% median gain over five runs, no 5% regression on
-    // the path's workloads) is met by an order of magnitude on both device
-    // families.
-    //
-    // The four formats above were re-gated the same day when their kernels
-    // took the same column scaling (Step 6 of the same doc): 25 real-model
-    // rows across every arch of the list and both device families, 1e-5 to
-    // 6e-5 of range, at most one near-tie flip, free-running identical,
-    // and the scaling costs under 2% of prefill on the RTX 3070.
-    // NVFP4 PROMOTED 2026-10-31 (R4.9.5, #508): the float32-reference row on
-    // Qwen3.5-4B NVFP4 (2,000 positions against the publisher's model, chunked
-    // so the GEMMs ran) put the dequantizing tensor-core route at 0.9997x the
-    // scalar route's mean KL, Wilcoxon with TC closer (p 0.040), no McNemar
-    // discordance. RUNNER_CUDA_TC_NVFP4=0 holds it off; =1 forces it on any
+    // Each type below is promoted on tolerance rows from test_tc_tol on real
+    // weights (64 teacher-forced positions and a free-running arm), never on an
+    // exactness argument: a kernel once reported bit-identity while computing
+    // 16 of its 64 columns. The rows, per type and arch, are in
+    // docs/tc-promotion-evidence.md.
+    // NVFP4: RUNNER_CUDA_TC_NVFP4=0 holds it off; =1 forces it on any
     // architecture, the trusted list below deciding otherwise.
     if (type == T_NVFP4) {
         if (tc_nvfp4_env() == 0)
             return false;
     } else if (!tc_type_promotable(type))
         return false;
-    // The tc_kq_type six joined 2026-10-21 on float32-reference rows (owner
-    // rule D1: 2,000 positions against the publisher's model, mean KL within
-    // 1.01x of the scalar route's and neither a paired Wilcoxon nor McNemar
-    // on margin-qualified top-1 worse at p < 0.05; the datacenter MIG slice,
-    // chunked scoring in 64-row chunks, RUNNER_SCORE_CHUNKED=1 with
-    // RUNNER_SPEC_BATCH=64, so the GEMMs ran), Qwen3-4B quantized to each type:
-    //   Q5_K_M  0.02327 vs 0.02329  Wilcoxon p 0.019, TC closer
-    //   Q3_K_M  0.27870 vs 0.27869  p 0.50
-    //   Q2_K    0.91540 vs 0.91524  p 0.81
-    //   Q4_1    0.11899 vs 0.11908  p 0.002, TC closer
-    //   Q5_0    0.03736 vs 0.03731  p 0.997
-    //   Q5_1    0.03338 vs 0.03338  p 0.025, TC closer
-    // and the two types most files carry on a second family, Llama-3.2-3B:
-    //   Q5_K_M  0.02395 vs 0.02398  p 0.14
-    //   Q3_K_M  0.16235 vs 0.16226  p 0.997
-    // Their stagers equal dequant_row bit for bit on the host
-    // (test-kq-stage) and test-cuda-tc-kq holds each on the TC, TC2 and
-    // compute_80 kernels. qwen4exp keeps them on the scalar GEMM: its
-    // admission (below) covers what the TC prefill touched on its release
-    // file, which these types did not, and that file is too large for the
-    // page cache of the one host that holds it, so its row is not measured.
+    // The tc_kq_type six (float32-reference rows, docs/tc-promotion-evidence.md):
+    // their stagers equal dequant_row bit for bit on the host (test-kq-stage)
+    // and test-cuda-tc-kq holds each on the TC, TC2 and compute_80 kernels.
+    // qwen4exp keeps them on the scalar GEMM: its admission covers what the TC
+    // prefill touched on its release file, which these types did not.
     if (tc_kq_type(type) && strcmp(m->arch, "qwen4exp") == 0)
         return false;
-    // granite joined 2026-08-13 with a gate row for EVERY promoted type on
-    // its own weights — the only arch here that has one — because it was
-    // the arch that showed what the missing coverage costs: granite-4.1-8b
-    // Q4_0 ran prefill at 8.0 tok/s on a fully offloaded GPU, slower than
-    // the same model on CPU, purely because no TC combo admitted it.
-    //   Q4_0        granite-4.1-3b-q4_0            0/64, 5e-5 of range
-    //   Q8_0        granite-4.1-3b-Q8_0            0/64, 5e-5
-    //   Q4_K/Q6_K   granite-3.3-8b-instruct-Q4_K_M 0/64, 3e-5
-    // gemma4's 31B QAT Q4_0 row was RE-GATED against the fixed kernel on
-    // 2026-08-13b and holds: 0/64 flips, 6e-5 of range, 60/60 offload. The
-    // pre-fix "820 dispatches bit-identical" reading it was promoted on is
-    // withdrawn — reproduced from a rebuilt pre-fix binary, that verdict is a
-    // false pass (same binary, same model, free-running divergence at -b 64).
-    // The promotion survives; the evidence behind it did not.
-    //
-    // qwen35 PROMOTED 2026-08-21 on four rows across two checkpoints and both
-    // promoted types (Linux CUDA host, N_BATCH=64, all 0/64 flips, free-running
-    // batch-64 greedy token-identical):
-    //
-    //   Qwen3.5-4B    Q4_K_M  mean|dlogit| 0.000518 = 2e-5 of range
-    //   Qwen3.5-4B    Q8_0    mean|dlogit| 0.000366 = 1e-5 of range
-    //   Qwen3.5-0.8B  Q4_K_M  mean|dlogit| 0.000400 = 1e-5 of range
-    //   Qwen3.5-0.8B  Q8_0    mean|dlogit| 0.000516 = 2e-5 of range
-    //
-    // The rows gate the whole model (teacher-forced + free-running), so
-    // whatever subset of qwen35's projections the TC prefill actually
-    // reaches — attention, MLP and the recurrent-layer projections alike —
-    // is inside the measured envelope; the scan kernels themselves have no
-    // GEMM shape and are untouched.
-    // muse-glimmer and qwen2 joined 2026-10-02, each on its own test_tc_tol
-    // rows (the datacenter MIG slice, real weights, 64 teacher-forced positions, 0
-    // top-1 flips and a token-identical free-running arm on every row):
-    //
-    //   muse-glimmer  Muse-Glimmer-30B IQ3_XXS   IQ3_XXS/IQ3_S/Q4_K/Q6_K  0.00005 of range
-    //   muse-glimmer  Muse-Glimmer-30B kquant    Q4_K/Q6_K                0.00005
-    //   muse-glimmer  Kvist-14B a12 Q8_0         Q8_0                     0.00001
-    //   qwen2         Qwen2.5-7B Q4_K_M          Q4_K/Q6_K                0.00007
-    //
-    // What forced the question: unpromoted, a codebook i-quant has only the
-    // scalar batched kernel, and Muse-Glimmer-30B IQ3_XXS prefilled at 2.60
-    // tok/s on the device against 24.0 on the host's 16 threads (slower than
-    // its own decode, 3.67): a 3,300-token prompt took over fifteen minutes
-    // on a GPU. With the tensor-core GEMM it is 85.3 tok/s; the K-quant file
-    // went 34.9 -> 116.9. Neither arch is MoE (muse-glimmer's gates are
-    // per-layer sigmoid gates, not routing), so the amplification that keeps
-    // qwen3moe opt-in does not apply.
-    //
-    // apertus, nemotron_h and granitehybrid joined the same day, on the same
-    // gate (0 flips of 64 and token-identical free-running output on each):
-    //
-    //   apertus        Apertus-8B Q4_K_M            Q4_K/Q6_K   0.00003 of range
-    //   nemotron_h     Nemotron-Nano-9B-v2 Q4_K_M   Q8_0/Q4_K   0.00001
-    //   granitehybrid  granite-4.0-h-micro Q4_K_M   Q4_K/Q6_K   0.00005
-    //
-    // qwen3moe was run for the record and stays opt-in: Qwen3-30B-A3B keep96
-    // passes the teacher-forced bounds (2 flips of 64, 0.00250 of range, some
-    // fifty times the dense rows) and FAILS the free-running arm, diverging
-    // at token 20. That is the MoE amplification the owner's decision was
-    // about, now measured. afmoe has no row: its router has no device kernel
-    // and the model runs on the CPU.
-    // qwen4exp PROMOTED 2026-10-06 (experimental family) on the release
-    // file Qwen3.8-Flash-Next GSQ-RCO IQ3_S with the experts on the host
-    // (--cpu-moe, the only placement whose dense half fits the 24 GB slice):
-    // forced on against forced off, token-identical on the five
-    // kernel-verify prompts at 32 and at 64 tokens, and byte-identical
-    // greedy-32 on the 481-token prompt and greedy-64 on the 3,675-token
-    // prompt (docs/qwen4exp-admission-evidence/). The promotion covers what
-    // the TC prefill touched there: of the dense projections (Q5_K, Q3_K,
-    // IQ4_XS, BF16 mixers) only IQ4_XS took it; Q5_K and Q3_K have
-    // tensor-core kernels since 2026-10-21, promoted elsewhere but held off
-    // here (above) until a row on this file exists, RUNNER_CUDA_TC=1 forcing
-    // them.
-    // With expert layers on the device the codebook
-    // expert GEMMs would join the TC path under the same arch flag; that
-    // placement was measured only through the eager route today, so a
-    // device-expert row is still owed before it is called covered (R4.26.8).
+    // The trusted architectures: each joined on its own test_tc_tol rows, which
+    // gate the whole model (teacher-forced and free-running), so whatever subset
+    // of its projections the TC prefill reaches is inside the measured envelope.
+    // qwen3moe is absent: it fails the free-running arm (MoE amplification).
+    // qwen4exp is covered for what the TC prefill touched on its release file
+    // with the experts on the host; a device-expert row is still owed.
+    // Rows: docs/tc-promotion-evidence.md.
     static const char *archs[] = { "llama", "phi3", "gemma4", "qwen3",
                                    "qwen35", "qwen4exp",
                                    "mistral", "mistral3", "gemma3", "smollm", "granite",
@@ -4838,22 +4367,10 @@ static bool tc_promoted(const model_t *m, int type) {
                                    "apertus", "nemotron_h", "granitehybrid" };
     for (size_t i = 0; i < sizeof(archs) / sizeof(*archs); i++)
         if (strcmp(m->arch, archs[i]) == 0) return true;
-    // R3.39.2 (a): promoted for exactly the types its row's file exercised, on
-    // a float32-reference row (2,000 positions of gold-corpus-2k, chunked
-    // prefill, TC against the default route) and a speed row.
-    //   spark2_5  XHToken Spark-X2.5-4B Q4_K_M (Q4_K, Q6_K), against
-    //             XHToken/Spark-X2.5-4B@0bcb3567 in float32 (transformers 4.57.1,
-    //             the version its code targets): mean KLD ratio 0.9995, CI
-    //             [0.9981, 1.0007], Wilcoxon p 0.115; margin-qualified top-1
-    //             95.01% against 94.95%; prefill 203 -> 1,927 tok/s (9.48x)
-    //   clef      ggml-org Clef-Flash Q4_K_M (Q8_0, Q4_K), against
-    //             Cloudflare/clef-flash@fb4417d3 in float32: mean KLD ratio
-    //             1.0001, CI [0.9991, 1.0011], Wilcoxon p 0.452; margin-qualified
-    //             top-1 95.13% against 94.99%, McNemar 2 to 0 for the tensor
-    //             cores (p 0.5); prefill 102 -> 1,566 tok/s (15.4x). Within the
-    //             obligation below (mean KL within 1.01x, not worse at p < 0.05).
-    // k2-horizon and stablelm run on the CPU on a CUDA build (grouped RMSNorm,
-    // LayerNorm), so they have no device route to promote.
+    // Promoted for exactly the types its row's file exercised, each on a
+    // float32-reference row and a speed row (docs/tc-promotion-evidence.md):
+    // spark2_5 Q4_K/Q6_K, clef Q8_0/Q4_K. k2-horizon and stablelm run on the CPU
+    // on a CUDA build (grouped RMSNorm, LayerNorm), so they have no route here.
     static const struct { const char *arch; int types[3]; } scoped[] = {
         { "spark2_5", { T_Q4_K, T_Q6_K, -1 } },
         { "clef",     { T_Q4_K, T_Q8_0, -1 } },
@@ -4866,12 +4383,10 @@ static bool tc_promoted(const model_t *m, int type) {
     return false;
 }
 
-// NVFP4's tensor-core route (R4.9.5): promoted on the trusted architectures
-// (tc_promoted) since its float32-reference row (#508). RUNNER_CUDA_TC_NVFP4
-// decides for NVFP4 tensors alone: 0 (or off) holds the route off, any other
-// value forces it on whatever the architecture; unset (-1) leaves it to
-// tc_promoted. RUNNER_CUDA_TC, when set, decides for every type, NVFP4
-// included.
+// NVFP4's tensor-core route, promoted on the trusted architectures
+// (tc_promoted). RUNNER_CUDA_TC_NVFP4 decides for NVFP4 tensors alone: 0 or
+// off holds the route off, any other value forces it on, unset (-1) leaves
+// it to tc_promoted. RUNNER_CUDA_TC, when set, decides for every type.
 static int tc_nvfp4_env(void) {
     static _Atomic int on = -2;
     if (on == -2) {
@@ -4919,14 +4434,10 @@ static bool tc_default_takes(const model_t *m) {
 // what a record's profile.route.tc_types lists (model_route_receipt_json).
 bool gpu_tc_takes(const model_t *m, int type) { return m && tc_on(m, type); }
 
-// Said once at load (R4.12.28): a codebook i-quant on an architecture whose
-// tensor-core prefill is not promoted has only the scalar batched kernel,
-// which decodes its codebooks per element and per column. Measured before
-// muse-glimmer was promoted: Muse-Glimmer-30B IQ3_XXS prefilled at 2.6 tok/s
-// on the device against 24.0 on 16 host threads, and 85.3 with the tensor
-// cores. An architecture joins the promoted list on its own test-tc-tol row;
-// until it has one the user is told what they are getting and what the
-// alternatives are, instead of finding out from a prompt that never returns.
+// Said once at load: a codebook i-quant on an architecture whose tensor-core
+// prefill is not promoted has only the scalar batched kernel (2.6 tok/s
+// against 85.3 with the tensor cores on one 30B IQ3_XXS file). The user is
+// told what they are getting and what the alternatives are.
 static void tc_scalar_notice(const model_t *m) {
     if (g_tc_state == TC_ENV_UNSET) (void)tc_on(m, T_Q4_K);   // read the env once
     int n = 0, type = -1;
@@ -5333,15 +4844,11 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         unsigned rpb = batch == 1 ? 8 : 4;
         return launch(g, g->sw->f_q8x[batch][w->type], (n_out + rpb - 1) / rpb, 1, 1, 128, pm);
     }
-    // Small batch (1 < batch <= GPU_SMALL_BATCH): a speculative verify tile,
-    // a short prompt, a few rows of one expert. The tile kernels below are
-    // shaped for 64-row prefill tiles and their cost barely falls with the
-    // row count: a 5-row verify tile spent 414 ms in matvec against 29 ms
-    // for one decoded row (Qwen3.8-Flash-Next on the MIG slice, 2026-10-07).
-    // The width-classed GEMV twins stream each weight once and reproduce the
-    // batch-1 bits per column (the decode microbatch's contract); a type
-    // without a twin takes the batch-1 kernel once per column, the same bits
-    // at batch times the cost, still far under the tile kernel.
+    // Small batch (1 < batch <= GPU_SMALL_BATCH): a speculative verify tile, a
+    // short prompt, a few rows of one expert. The tile kernels are shaped for
+    // 64-row tiles and barely get cheaper with fewer rows. The width-classed
+    // twins stream each weight once and reproduce the batch-1 bits per column; a
+    // type without a twin takes the batch-1 kernel once per column.
     // RUNNER_CUDA_SMALL_BATCH=0 restores the tile path for an A/B.
     if (batch > 1 && batch <= GPU_SMALL_BATCH && w->scale == 1.0f &&
         gpu_small_batch_on()) {
@@ -5431,16 +4938,12 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     }
     // Prefill (batch > GPU_SMALL_BATCH) on the scalar route of a tensor whose
     // batch-1 route has a loaded 16-wide twin (prefill_takes_twins), ahead of
-    // the tiled GEMM. The tile kernels (k_gemm_* of the K-quants and Q8_0,
-    // f_mvb's k_mv_*_b of Q4_0, the codebook i-quants and MXFP4) sum in another
-    // order than the batch-1 kernels, so a prompt's rows did not carry a lone
-    // decode's bits; under a q8_0 KV cache that difference crossed
-    // quantization steps and spread through the layers (R6.35: test-kv-tol on
-    // test-q40.gguf read 10.7x the reassociation floor; R6.39, R6.41, R6.50,
-    // R6.54, R6.57). The width-classed twins reproduce the batch-1 kernel's
-    // bits per column; the 16-wide one runs 16 columns a pass, a lone last
-    // column the batch-1 kernel. test-prefill-bits holds the rows a prompt
-    // stores and the route table.
+    // the tiled GEMM. The tile kernels sum in another order than the batch-1
+    // kernels, so a prompt's rows would not carry a lone decode's bits, and
+    // under a q8_0 KV cache that difference crosses quantization steps. The
+    // 16-wide twin runs 16 columns a pass, a lone last column the batch-1
+    // kernel. test-prefill-bits holds the rows a prompt stores and the route
+    // table.
     if (batch > GPU_SMALL_BATCH && prefill_takes_twins(g, w, n_in, n_out)) {
         for (int c0 = 0; c0 < batch; c0 += 16) {
             int cn = batch - c0 < 16 ? batch - c0 : 16;
@@ -5453,11 +4956,9 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         return true;
     }
     // Prefill on the scalar route of a type with no twin of its batch-1 kernel
-    // (prefill_per_column: Q5_0, Q5_1, IQ4_NL, NVFP4, Q2_K, Q4_1, IQ1_S, IQ1_M,
-    // Q2_0, and a type whose twin did not load), and a scaled tensor's 2 to 8
-    // columns: the batch-1 kernel once per column, each column its bits. The
-    // tile kernels below sum in another order (R6.58: 4 to 74 of a layer's
-    // K and V values differed from a batch-1 prefill) and ran 7 to 10x slower.
+    // (prefill_per_column), and a scaled tensor's 2 to 8 columns: the batch-1
+    // kernel once per column, each column its bits. The tile kernels below sum
+    // in another order and ran 7 to 10x slower.
     if (prefill_per_column(g, w, n_in, n_out, batch)) {
         for (int c = 0; c < batch; c++)
             if (!enc_mv(g, m, w, x + (size_t)c * xs * sizeof(float),
@@ -6182,16 +5683,11 @@ static bool kv_gather_finish(gpu_t *g, model_t *m, int pos, int n) {
     return true;
 }
 
-// The rows positions [lo, hi) of layer l occupy, as at most two spans of
-// its storage. A flat layer's are the rows themselves, at absolute offsets on
-// both sides. A ring layer's rows are not addressed by absolute position
-// (following [lo, hi) would read past the host allocation and write past the
-// device one): they are the slots those positions write, p % kv_ring, which
-// run contiguously unless they wrap, and the whole ring once the span is as
-// long as it. Both sides address the slots the same way, so a span is the
-// same bytes on each. (Until 2026-10-21 a ring layer always mirrored its
-// whole ring: a 16-row verify round or a microbatch member's one row moved
-// every slot of every sliding layer across the bus.)
+// The rows positions [lo, hi) of layer l occupy, as at most two spans of its
+// storage. A flat layer's are the rows themselves. A ring layer's are the
+// slots those positions write, p % kv_ring: contiguous unless they wrap, and
+// the whole ring once the span is as long as it. Both sides address the
+// slots the same way, so a span is the same bytes on each.
 static int kv_spans(const model_t *m, int l, int lo, int hi, int s_lo[2], int s_hi[2]) {
     if (lo >= hi) return 0;
     if (!model_kv_is_ring(m, l)) { s_lo[0] = lo; s_hi[0] = hi; return 1; }
@@ -6905,20 +6401,17 @@ static bool gpu_gemma_moe_ffn_grouped(gpu_t *g, model_t *m, const layer_t *ly,
 static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, int xdim) {
     int n_embd = m->n_embd, ne = ly->n_expert, used = m->n_expert_used, nff = m->n_ff_exp;
     int l = (int)(ly - m->layers);
-    // belt-and-suspenders: sel[]/selw[] below are fixed MOE_MAX_USED wide and
-    // the router logits MOE_ROUTE_MAX wide. The expert COUNT bounds the router,
-    // not the selection: clamping ne to 256 here routed Qwen3.8-Flash-Next
-    // (512 experts, eager path because of its IQ2_S/IQ3_S/IQ4_XS expert
-    // tensors) among its first 256 experts only -- --score vs the CPU path
-    // 444/480, vs llama.cpp 446/480 where the CPU path has 472 (2026-10-07).
+    // sel[]/selw[] below are MOE_MAX_USED wide and the router logits
+    // MOE_ROUTE_MAX wide. The expert count bounds the router, not the
+    // selection: clamping ne to the selection width routes a 512-expert model
+    // among its first 256 experts only.
     if (used > MOE_MAX_USED) used = MOE_MAX_USED;
     if (ne  > MOE_ROUTE_MAX) ne  = MOE_ROUTE_MAX;
     // A small tile (a speculative verify) routes all its rows in one launch
-    // and reads the logits back once: the per-row sync + copy below cost a
-    // 5-row tile 90 round trips over 18 device expert layers. Only with a
-    // width-classed twin of the router's batch-1 kernel, so each row's
-    // logits are the bits the per-row launch would have produced (the eager
-    // path's byte contract); wider tiles keep the per-row route.
+    // and reads the logits back once, not one sync and copy per row. Only with
+    // a width-classed twin of the router's batch-1 kernel, so each row's
+    // logits are the bits the per-row launch produces; wider tiles keep the
+    // per-row route.
     bool batched_router = tn > 1 && tn <= GPU_SMALL_BATCH &&
                           batch_mv_twin_ok(g, ly->ffn_gate_inp) &&
                           g->sw->f_gemvb[batch_width_class(tn)][ly->ffn_gate_inp->type];
@@ -7032,23 +6525,14 @@ static bool gpu_moe_ffn_eager(gpu_t *g, model_t *m, const layer_t *ly, int tn, i
 }
 
 // ------------------------------------- by-expert prefill, fused-identical
-// The fused path reads every token's experts' weights per token: a 512-token
-// tile of Qwen3-30B-A3B streams about 21 MB of expert weights a token a
-// layer, which is what bounds its prefill. This path runs the same arithmetic
-// grouped by expert: the tile's routing is read back once, each active
-// expert's token columns are gathered, and its gate, up and down projections
-// run through the width-classed GEMV twins eight columns at a time (each
-// column the batch-1 kernel's bits, which is what k_moe_mv_* computes per
-// token), so an expert's weights stream once per eight of its tokens. The
-// activation is k_moe_actmul with each column's own expert and routing weight,
-// the down outputs are placed at their (token, slot) rows, and k_moe_sum_tile
-// sums each token's slots in slot order: every value, and every addition's
-// order, is the fused path's. On by default for the families where it
-// measured faster than the fused path (datacenter MIG slice, three rounds,
-// 512 / 2K-token prompts): gemma4 MoE +13 / +11% and gpt-oss +14 / +13%
-// prefill. Not for qwen3moe, where it measured 9 / 8% SLOWER (its fused
-// Q4_K expert kernel already reads well, and 128 small experts make the
-// per-expert launches the cost), nor for families never measured.
+// The fused path streams every token's experts' weights per token, which
+// bounds its prefill. This path runs the same arithmetic grouped by expert:
+// the routing is read back once and each active expert's columns go through
+// the width-classed GEMV twins, eight at a time, each column the batch-1
+// kernel's bits. Activation, placement and the slot-order sum are the fused
+// path's, so every value and every addition's order is too.
+// On by default where it measured faster (gemma4 MoE and gpt-oss, +11 to
+// +14% prefill), not for qwen3moe (8 to 9% slower) or unmeasured families.
 // RUNNER_MOE_TWIN=1 takes it on any family, 0 keeps the fused path on all;
 // gpu_moe_twin_force overrides both for a test (-1 returns to the switch).
 static _Atomic int g_moe_twin_force = -1;
@@ -7741,8 +7225,7 @@ static bool gpu_q35_recurrent(gpu_t *g, model_t *m, const layer_t *ly, int l,
             // each head's columns over several blocks (k_q35_delta1 and its
             // norm, k_q35_delta's arithmetic) where the state width allows,
             // else the whole-tile kernel over one token (GPU_ID_RECUR's
-            // identity). One block a head, as both single-block kernels run,
-            // left an RTX 3070 at about 55 us a call for 2 MB of state.
+            // identity).
             int one = 1;
             void *pc[] = { &mix, &cv, &conv_w, &hist, &convdim, &kernel, &one };
             if (!launch(g, g->sw->f_q35_conv_seq, (convdim + 255) / 256, 1, 1, 256, pc))
@@ -8053,18 +7536,13 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
     return ok;
 }
 
-// RUNNER_CUDA_ATTN_TILE: the tiled prefill attention (k_attn_tile*, C2
-// step 1), on by default since its float32-reference rows (2,000 positions
-// at 4,000-6,000 tokens of context; Qwen3-4B, Mistral-7B, and gpt-oss-20b
-// with its sinks and alternating window) were never further from the
+// RUNNER_CUDA_ATTN_TILE: the tiled prefill attention (k_attn_tile*), on by
+// default since its float32-reference rows were never further from the
 // reference than k_attn's; 0 keeps k_attn. A tolerance route: recorded as
 // attn-tile, and --gpu-route reference runs k_attn.
-// RUNNER_CUDA_ATTN_TILE512: the tiled prefill attention also takes head
-// widths 257-512 (gemma-4's global layers, k_attn_tile8), on by default since
-// its long-context rows passed the owner's rule against k_attn (2026-10-22,
-// the chat corpus at positions 4,000 to 6,000: gemma-4-26B-A4B 0.31995 vs
-// 0.32108, Wilcoxon p 0.72; the dense gemma-4-E2B 0.14722 vs 0.14714, p
-// 0.41); 0 keeps k_attn for those layers.
+// RUNNER_CUDA_ATTN_TILE512: the tiled attention also takes head widths 257
+// to 512 (gemma-4's global layers, k_attn_tile8), on by default on its
+// long-context rows; 0 keeps k_attn for those layers.
 static bool attn_tile512_on(void) {
     static _Atomic int on = -1;
     if (on < 0) {
@@ -8116,25 +7594,13 @@ static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
     return true;
 }
 
-// RUNNER_CUDA_ATTN_TC: the tensor-core prefill attention (k_attn_tc, C2
-// step 2) for fp16 caches, ahead of the tiled kernel. With Q and P as single
-// halves its Mistral-7B float32-reference row read 0.19% further from the
-// reference than k_attn's (Wilcoxon p 0.014); the kernel carries both in two
-// halves (X23b), which reads the same as k_attn there (p 0.60).
-// On by default for the families whose long-context rows (positions 4,000 to
-// 6,000 against the publisher's float32 model) passed the owner's rule
-// against the current route, attn-tile (2026-10-21): llama (Llama-3.2-3B
-// 0.03833 vs 0.03832, Wilcoxon p 0.76; Mistral-7B 0.02069 vs 0.02068, p
-// 0.43), qwen2 (Qwen2.5-3B 0.03644 vs 0.03643, p 0.47), qwen3 (Qwen3-4B
-// 0.11199 vs 0.11197, p 0.14) and granite (granite-4.2-8b 0.01106 vs
-// 0.01126, p 0.87), about 3x the tile's prefill at 8K; and (2026-10-22)
-// qwen3moe (Qwen3-30B-A3B 0.07584 vs 0.07580, p 0.86) and phi3
-// (Phi-3.5-mini 0.07912 vs 0.07912, p 0.12; Phi-4-mini 0.13998 vs 0.13996,
-// p 0.21), whose published 262144 window over a 131072 context is no window
-// (bind_swa_default). gpt-oss failed its row (0.04275 vs 0.04205, p 0.017;
-// with only its full-attention layers on the tensor cores, 0.04065 vs
-// 0.04039, p 3e-18) and the windowed files (gemma, a windowed phi3 or llama
-// file) have none, so they keep the tile; 1 / 0 force it on / off everywhere.
+// RUNNER_CUDA_ATTN_TC: the tensor-core prefill attention (k_attn_tc) for fp16
+// caches, ahead of the tiled kernel; it carries Q and P in two halves, which
+// reads the same as k_attn where single halves read further from the reference.
+// On by default for the families whose long-context float32-reference rows
+// passed against attn-tile (about 3x the tile's prefill at 8K). gpt-oss
+// failed its row and windowed files have none, so they keep the tile; 1 / 0
+// force it on / off everywhere. Rows: docs/tc-promotion-evidence.md.
 static bool attn_tc_family(const model_t *m) {
     static const char *const fam[] = { "llama", "qwen2", "qwen3", "qwen3moe", "granite", "phi3" };
     if (!m || m->swa_window > 0) return false;
@@ -8174,23 +7640,15 @@ static bool tile_attn_tc(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
     return true;
 }
 
-// RUNNER_CUDA_ATTN_TC_WIDE: the tensor-core prefill attention for head
-// widths 256 to 512 (k_attn_tcw, R3.6.3.1), where k_attn_tc does not reach
-// and the tile's 8- and 16-row kernels run on the CUDA cores. On by default
-// for gemma-4's E-series (gemma4 with per-layer embeddings: Nemotron 3.5
-// Bolt E4B, gemma-4-E2B/E4B), whose 512-wide global layers it takes from
-// k_attn_tile8 (owner decision 2026-11-03), and for qwen35 at head width 256
-// (Qwen3.5/3.6/3.8: every fourth layer full attention; 1.82x prefill at 16K
-// on Qwen3.8-27B with the D1 rule passing, R3.6.3.2), and for deepseek2's
-// absorbed row through k_attn_tcw_mla (R3.32: 1.05x / 1.11x the naive form's
-// prefill at 4K / 8K on DeepSeek-V2-Lite-Chat Q6_K, and its D1 read against
-// the publisher's float32 model passing, mean KL 0.986x); 0 keeps the tile
+// RUNNER_CUDA_ATTN_TC_WIDE: the tensor-core prefill attention for head widths
+// 256 to 512 (k_attn_tcw), where k_attn_tc does not reach. On by default for
+// gemma-4's E-series (its 512-wide global layers), qwen35 at head width 256,
+// and deepseek2's absorbed row through k_attn_tcw_mla; 0 keeps the tile
 // there, 1 forces it on every model it admits.
-// The absorbed MLA row k_attn_tcw_mla takes (R3.32), as the column its latent
-// starts at, or -1: one table (V is the K row, model_kv_v_shared), a rope
-// slice of whole 8-wide groups, quarters of the row that are whole k16 steps,
-// and a latent of whole 128-wide quarters up to 512 (DeepSeek-V2-Lite: 576 =
-// 64 + 512), within the shared memory the kernel was granted (AW_SMEM(576)).
+// The absorbed MLA row k_attn_tcw_mla takes, as the column its latent starts
+// at, or -1: one table (V is the K row, model_kv_v_shared), a rope slice of
+// whole 8-wide groups, quarters of the row that are whole k16 steps, and a
+// latent of whole 128-wide quarters up to 512, within AW_SMEM(576).
 static int tcw_mla_vlo(const model_t *m, int hd) {
     int rd = m->rope_dim, dv = hd - rd;
     if (!model_kv_v_shared(m) || rd < 8 || rd % 8 || hd > 576) return -1;
@@ -8441,14 +7899,11 @@ static bool tile_attn_rows(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
     return ok;
 }
 
-// RUNNER_CUDA_ATTN_DUMP=<dir> (a development switch, R1.25) writes, for every
-// prompt tile's attention, the kernel's inputs and output as the device holds
-// them: Q (tn x q_dim float32), this layer's K and V cache rows 0 to the
-// tile's last position (fp16 as stored), the output (tn x q_dim float32), and
-// a JSON line of geometry and which kernel ran (the k_attn_tcw dispatch
-// delta). scripts/attn-dump-compare.py reads it. Unset, a tile pays one
-// cached flag test. It found Qwen3.8-Flash-Next's wide-head attention within
-// 1.7e-6 of float64 on every call, which moved R1.25 to the identity gate.
+// RUNNER_CUDA_ATTN_DUMP=<dir> (a development switch) writes, for every prompt
+// tile's attention, the kernel's inputs and output as the device holds them:
+// Q, this layer's K and V rows up to the tile's last position, the output,
+// and a JSON line of geometry and which kernel ran.
+// scripts/attn-dump-compare.py reads it. Unset, a tile pays one flag test.
 static bool attn_dump(gpu_t *g, model_t *m, int l, int tn, int hd, int n_kv,
                       int q_dim, int xdim, const attn_args *aa, unsigned long tcw0) {
     static const char *_Atomic dir = NULL;
@@ -8829,12 +8284,9 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
         if (ly->is_moe) {
             // The shared expert reads the normed input the routed experts
             // then overwrite, so it is copied first, in stream order on the
-            // instance's stream (R6.68.15): a decode graph records the copy
-            // and an eager forward orders it before the routed kernels as
-            // before. The synchronous cuMemcpyDtoD it replaces could not be
-            // captured (CUDA_ERROR_STREAM_CAPTURE_IMPLICIT), so every
-            // shared-expert MoE with its experts on the device decoded with
-            // plain launches. A driver without the async call keeps it.
+            // instance's stream: a decode graph records the copy, which the
+            // synchronous cuMemcpyDtoD could not be. A driver without the
+            // async call keeps the synchronous one (and the eager decode).
             bool shexp = ly->w_up_shexp && g->shexp_in;
             size_t shexp_bytes = sizeof(float) * (size_t)tn * xdim;
             if (shexp && (cu.MemcpyDtoDAsync
@@ -8893,30 +8345,16 @@ static bool fwd_tile(gpu_t *g, model_t *m, const int32_t *tokens, int tn,
 }
 
 // ==========================================================================
-// Cross-sequence decode microbatch (Phase 6)
+// Cross-sequence decode microbatch
 // ==========================================================================
-//
 // One decode step for N independent sequences in one pass over the weights.
-//
-// What makes this cheap is that almost nothing new is allocated. The weights
-// are already shared (Phase 5), the activation scratch in every gpu_t is
-// already MVB columns wide because prompt tiles needed it, and each sequence
-// already owns its KV cache. The batch adds three small device arrays — the
-// per-column positions and the two per-column KV base pointers — plus room for
-// N rows of logits instead of one. Everything else is borrowed.
-//
-// It borrows the *lead* sequence's scratch, stream and graph slot rather than
-// allocating a second set. That is a deliberate constraint, not an oversight:
-// a microbatch and the lead's own solo forward would fight over the same
-// buffers, so a sequence must not be decoded both ways at once. The scheduler
-// this is built for is a single loop issuing one step at a time, which is
-// exactly that discipline; the constraint is documented on the public API.
-//
-// Sequences are named per call rather than enrolled, so the membership of a
-// batch can change every step at no cost — which is what makes it CONTINUOUS
-// batching rather than static batching. Positions and KV pointers live in
-// device memory precisely so that changing them does not invalidate a captured
-// graph, and a graph is captured per microbatch width.
+// Almost nothing new is allocated: the batch adds the per-column positions,
+// the two per-column KV base pointers and N rows of logits, and borrows the
+// lead sequence's scratch, stream and graph slot. So a sequence must not be
+// decoded both ways at once (the public API says so).
+// Sequences are named per call, so membership can change every step
+// (continuous batching): positions and KV pointers live in device memory, so
+// changing them does not invalidate a graph, captured per microbatch width.
 struct gpu_batch {
     model_t   **seqs;              // borrowed: the caller owns these
     int         n;                 // sequences enrolled at create time
@@ -8940,62 +8378,28 @@ struct gpu_batch {
 };
 
 // enc_mv_batch reproduces the batch-1 result by launching the multi-column
-// TWIN of whatever kernel the batch-1 path would have used. For a type with a
-// decode GEMV but no width-classed twin there IS no such kernel, so refuse the
-// microbatch here, at create time, and let the caller decode those sequences
-// one at a time. enc_mv_batch refuses too, but only a drifted check gets that
-// far; this is where a model is supposed to be turned away.
-//
-// The set is EMPTY today: every type with an f_gemv (Q8_0, Q4_0, Q4_K, Q5_K,
-// Q6_K) has both width classes. It was not empty on 2026-08-18 — Q4_0 had
-// grown a k_gemv_q4_0 on 2026-08-13 with no twin, so enc_mv_batch substituted
-// f_mvb: a different reduction AND no shared-memory x staging, measured on
-// Qwen3-0.6B-q4_0 at 0.11x of sequential decode, nine times SLOWER, and not
-// bit-identical either. 8111c36 refused it; k_gemvb_q4_0_x4/_x8 (2026-08-19)
-// make it batch again at 1.62x, bit-identical. The check stays because the next
-// type to grow a decode GEMV will arrive the same way.
-// Where there is no decode GEMV the batch-1 path runs f_mv, and the question
-// becomes whether f_mvb is ITS twin. It is, but only for the types whose _b
-// kernel applies the same per-element weight in the same order — the MV_FMA
-// family, where the weight is just the loaded element: F32 and F16. Every
-// QUANTIZED _b kernel factors the block scale into each weight (it accumulates
-// Sum (d*q[j])*x[j]) while its batch-1 partner keeps it outside the block sum
-// (d * Sum q[j]*x[j]): the same values in a different association, so different
-// bits. That is cause 2 of the 2026-07-28 break, and unlike cause 1 it cannot
-// be fixed in the kernel — k_mv_*_b is also the prefill tile kernel and prefill
-// is certified as it stands. It is fixed by not reaching for it: a dense model
-// in a quantized type with no decode GEMV (Q4_1, Q5_0, Q5_1, Q3_K, IQ4_NL,
-// IQ4_XS, MXFP4) now decodes its sequences one at a time instead of batching
-// them into different numbers.
-// A type is admitted here only when its k_mv_<type>_b hands MV_FMA exactly the
-// per-term value the batch-1 k_mv_<type> accumulates, in the same iteration
-// order, with the same warp_sum tail — then each microbatch column reproduces
-// the lone-token bits. Verified per body (2026-08-20): F32/F16/BF16 decode one
-// weight per term, so their _b tiles are exact twins (BF16 additionally has
-// fast f_gemvb twins, preferred at dispatch; f_mvb stays its correct fallback).
-//
-// Q2_K and Q3_K's _b tiles are ALSO term-exact twins — but they are NOT
-// admitted, on a measurement: identity passed on a real Q3_K model, and
-// throughput came in at 0.17x (N=2) to 0.63x (N=8) of sequential decode
-// (RTX 3070, Qwen3-4B Q3_K_M) — the scattered global x-loads the Q4_0 comment
-// in kernels.cu warned about. A batched path that loses to sequential is a
-// regression, and a FAST twin for a 256-element superblock type cannot stage x
-// in k_mv's lane order within shared-memory limits — it needs a gemv-geometry
-// batch-1 kernel first. Q3_K got one in #243 (k_gemv_q3_K) and its f_gemvb
-// twin on 2026-10-21; Q2_K still decodes its sequences one at a time.
-// Q8_0/Q4_0/Q4_1/Q5_0/Q5_1/MXFP4 are not twins at all — their mv sums a whole
-// block into t before scaling (s += d*t), while their _b folds the scale per
-// term; those either batch via f_gemvb or refuse.
+// twin of the kernel the batch-1 path uses. A type with a decode GEMV but no
+// width-classed twin has no such kernel: refuse the microbatch at create time
+// and let the caller decode those sequences one at a time. The set is empty
+// today; the check stays for the next type that grows a decode GEMV.
+// Where there is no decode GEMV the batch-1 path runs f_mv, and f_mvb is its
+// twin only where the _b kernel applies the same per-element weight in the
+// same order: F32, F16 and BF16. Every quantized _b kernel folds the block
+// scale into each term while its batch-1 partner keeps it outside the block
+// sum: the same values in another association, so different bits. Those
+// types batch via f_gemvb or decode one sequence at a time; it is not fixed
+// in the kernel, because k_mv_*_b is also the prefill tile kernel and
+// changing its arithmetic changes certified prefill.
+// Q2_K's and Q3_K's _b tiles are term-exact too but are not admitted: they
+// measured 0.17x to 0.63x of sequential decode. Q3_K batches through its
+// k_gemv twin; Q2_K decodes its sequences one at a time.
 static inline bool mvb_is_mv_twin(int type) {
     return type == T_F32 || type == T_F16 || type == T_BF16;
 }
 
 // Every f_gemvb is the twin of the batch-1 kernel enc_mv picks: f_gemv where a
 // type has one (the K-quants, Q8_0, Q4_0, IQ4_XS), f_mv otherwise (BF16, MXFP4
-// and the codebook i-quants' lane kernels). Until 2026-10-21 this asked for
-// f_gemvb only beside an f_gemv, so a file with IQ2/IQ3 codebook or dense
-// MXFP4 tensors decoded its sequences one at a time although the twins the
-// verify rows already ran were there.
+// and the codebook i-quants' lane kernels).
 static bool batch_mv_twin_ok(const gpu_t *g, const gguf_tensor *t) {
     if (!t) return true;
     int type = t->type;
@@ -9083,24 +8487,15 @@ static unsigned mvt_grid_y(int batch) {
     return batch > 65535 ? 65535u : (unsigned)(batch < 1 ? 1 : batch);
 }
 
-// ------------------------------------- adapter residency (D2 on CUDA, R8.7.2)
-//
+// ------------------------------------- adapter residency (D2 on CUDA)
 // Called once, after model_lora_load has parsed the adapter and before any
 // forward. Uploads A and B for every GPU-resident (layer, slot) that carries
-// one and allocates the inner-projection scratch. A layer the split left on
-// the host is skipped: its host hook already applies the same delta.
-//
-// Fails loudly rather than quietly serving an unadapted model, because that
-// failure is invisible in the output and looks exactly like a weak adapter.
-//
-// The decode graph keeps working with an adapter (R6.68.25b): enc_lora's
-// launches capture like any other, with A, B and the scratch at addresses
-// fixed until the unbind. A graph records the forward it captured, adapter
-// launches included or not, so bind and unbind drop any graph captured
-// before them (the unbind also frees what those launches read) and the next
-// decode captures again. Today the bind runs inside model_load before the
-// first forward, so nothing is dropped there; the drop keeps that an order
-// of calls and not a condition of correctness.
+// one and allocates the inner-projection scratch; a host layer is skipped
+// (its host hook applies the same delta). Fails loudly: an unadapted model
+// served quietly looks exactly like a weak adapter.
+// A decode graph records the forward it captured, adapter launches included
+// or not, so bind and unbind drop any graph captured before them and the
+// next decode captures again.
 static void lora_graphs_drop(gpu_t *g) {
     for (int i = 0; i < 2; i++) {
         if (g->gexec[i]) { cu.GraphExecDestroy(g->gexec[i]); g->gexec[i] = NULL; }
@@ -9263,18 +8658,13 @@ bool gpu_mvt(model_t *m, const gguf_tensor *w, const float *dy, float *dx,
     return ok;
 }
 
-// ------------------- training GPU context (adaptation D8 slice 2)
-// --train keeps the model CPU-resident (the LoRA hooks and the taped
-// backward are CPU paths, and model_lora_load refuses m->gpu), but the
-// backward's dominant primitive has a device twin proven bit-identical to
-// the CPU chain (slice 1). Slice 1 also measured why it wasn't integrated:
-// per-call PCIe uploads drown the kernel win (q6_K 0.6x). This context is
-// the fix — its own CUDA state, independent of the serving backend: each
-// weight tensor is uploaded ONCE on first use and cached for the whole
-// run, and the dy/dx scratch is reused across calls. A tensor that cannot
-// go to the device (no kernel for its type, VRAM budget reached) simply
-// stays on the CPU path, which produces the SAME BYTES — mixing per tensor
-// is free because both paths are gated identical.
+// ------------------- training GPU context
+// --train keeps the model CPU-resident, but the backward's dominant
+// primitive has a device twin that is bit-identical to the CPU chain. This
+// context is its own CUDA state, independent of the serving backend: each
+// weight tensor is uploaded once on first use (per-call uploads drowned the
+// kernel win) and the dy/dx scratch is reused. A tensor that cannot go to
+// the device stays on the CPU path, which produces the same bytes.
 
 // A cached upload is known by the bytes it holds, not by the descriptor
 // that pointed at them: a MoE expert reaches the backward as a view of the
@@ -10558,18 +9948,12 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
 
 // Fault-injection hook, debug builds and torture runs only.
 // RUNNER_CUDA_INJECT_FAILURE=N fails the Nth device forward and returns its
-// ordinal; unset or 0 disables it, and any non-numeric value means 1 so the
-// documented `=1` spelling keeps working.
-//
-// N > 1 is the case worth having. The first device forward of any real
-// generation is the prefill tile, so an unconditional hook can only ever test
-// a failure before one token boundary has been crossed. Failing at decode is
-// what exercises the rollback that matters: the qwen35 recurrent snapshot
-// taken at the top of this function, and a device KV the host must resync.
-//
-// Counted across every slot: under --parallel the Nth call process-wide is
-// the one that fails. The counters are atomic, and the budget is taken with a
-// compare-and-swap so two slots never both spend its last failure.
+// ordinal; unset or 0 disables it, and a non-numeric value means 1.
+// N > 1 is the case worth having: the first device forward is the prefill
+// tile, and failing at decode is what exercises the rollback (the recurrent
+// snapshot, a device KV the host must resync).
+// Counted across every slot; the budget is taken with a compare-and-swap so
+// two slots never both spend its last failure.
 static int inject_fail_ordinal(void) {
     static _Atomic int budget = -1;  // -1 unread, then the calls left until the failure
     static _Atomic int seen = 0;
@@ -10600,15 +9984,12 @@ static bool set_pos(gpu_t *g, int pos, int tn) {
     return cu.MemcpyHtoD(g->pos_dev, hp, sizeof(int) * (size_t)n) == 0;
 }
 
-// Whether an n-row keep-forward on a Mamba-2 hybrid files its rows (9.e):
-// rows 0 .. n-2 write their SSD state into per-row slots and the last row
-// the live half, so a partially accepted round restores the state after its
-// last kept row (gpu_recurrent_restore_row) instead of rolling back and
-// re-folding the kept rows with another forward, which took 169 of 1,249 ms
-// of a granite-4.0-h-micro lookup run. The slots, one per recurrent layer
-// and row up to the verify window qwen35's checkpoints use, are allocated by
-// the first verify round, so plain decoding never holds them; a failed
-// allocation leaves the re-fold.
+// Whether an n-row keep-forward on a Mamba-2 hybrid files its rows: rows
+// 0 .. n-2 write their SSD state into per-row slots and the last row the
+// live half, so a partially accepted round restores the state after its last
+// kept row (gpu_recurrent_restore_row), not by rolling back and re-folding.
+// The slots are allocated by the first verify round, so plain decoding never
+// holds them; a failed allocation leaves the re-fold.
 static bool mamba_snap_ready(gpu_t *g, model_t *m, int n) {
     int rows = (m->spec_batch < 8 ? m->spec_batch : 8) - 1;
     if (n < 2 || n - 1 > rows || g->snap_failed || m->gpu_layers < m->n_layer ||
@@ -10719,13 +10100,9 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
     // graph per parity (the half this forward writes)
     int gi = (m->granite_hybrid || m->nemotron_h) && g->mamba_state ? g->rec_cur : 0;
     // The attention temperature is a host value the graph holds:
-    // enc_rope_or_temp computes it from pos and passes it to k_scale (or
-    // skips the launch at 1.0). It steps every floor_scale positions, so a
-    // graph captured before a step replayed the old factor on every token
-    // after it: k_temp_live's logits 8.0e-4 of range off the CPU's, and at
-    // llama 4's floor of 8192 no temperature at all past position 8191 when
-    // the graph was captured below it (R3.25 CUDA half, 2026-11-02).
-    // Capture again when the factor moves.
+    // enc_rope_or_temp computes it from pos and passes it to k_scale. It
+    // steps every floor_scale positions, so a graph captured before a step
+    // would replay the old factor: capture again when the factor moves.
     float temp = model_attn_temp(m, pos);
     if (g->gexec[gi] && g->graph_temp[gi] != temp) {
         cu.GraphExecDestroy(g->gexec[gi]);
@@ -10737,16 +10114,11 @@ static int cuda_fwd_graph_decode(gpu_t *g, model_t *m, const int32_t *tokens,
         g->graph_temp[gi] = temp;
         prof.capturing = 1;
         // capture records the launch sequence without executing it; the
-        // recorded graph is position-invariant because pos lives in
-        // device memory, so one capture serves every decode token
-        //
-        // THREAD_LOCAL (1), not GLOBAL (0): GLOBAL capture forbids
-        // synchronous CUDA calls from every other thread for the whole
-        // capture window, so another slot's plain-path forward or a
-        // second gpu_t warming up on its own thread would fail and
-        // permanently downgrade that slot to CPU (model.c sees the
-        // failed forward and clears m->gpu). THREAD_LOCAL alone still let
-        // another engine's synchronous copy invalidate the capture;
+        // recorded graph is position-invariant because pos lives in device
+        // memory, so one capture serves every decode token.
+        // THREAD_LOCAL (1), not GLOBAL (0): GLOBAL forbids synchronous CUDA
+        // calls from every other thread for the capture window, so another
+        // slot's forward would fail and drop that slot to the CPU.
         // capture_begin's exclusion is the other half (see above).
         CUresult r = 0;
         const char *stage = NULL;
@@ -10876,10 +10248,8 @@ static bool cuda_fwd_tiles_run(gpu_t *g, model_t *m, const int32_t *tokens, int 
         }
         // partial: copy this tile's post-boundary activation to the host
         // buffer so the CPU layer loop can continue from gpu_layers. Under
-        // hyper-connections the residual IS the wide x_hc (hc * n_embd per
-        // row), not x: handing x over left the CPU layers a stale stream
-        // (Qwen3.8-Flash-Next --cpu-moe 24 on the slice: 415/480 argmax vs
-        // the CPU path, 2026-10-07).
+        // hyper-connections the residual is the wide x_hc (hc * n_embd per
+        // row), not x: handing x over leaves the CPU layers a stale stream.
         if (partial) {
             if (m->hyper_conn) {
                 size_t hcd = (size_t)m->hc_count * m->n_embd;
@@ -10964,13 +10334,9 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
 
     bool partial = m->gpu_layers < m->n_layer;
     // !prof.on: a replayed CUDA graph never re-enters the instrumented launch
-    // path, so every per-phase counter stays 0.0 while the wall clock keeps
-    // running — the profiler reported `GPU-TOTAL 0.0 ms` and
-    // `residual = 100% of wall` for decode that was demonstrably happening
-    // (3070, 2026-08-09). Profiling therefore runs decode EAGERLY. The
-    // trade-off is stated in the report header: eager decode carries the
-    // launch overhead graphs exist to remove, so the absolute decode wall is
-    // pessimistic and the phase SPLIT is what the profile is for.
+    // path, so its phase counters stay 0: profiling runs decode eagerly. The
+    // absolute decode wall is then pessimistic; the phase split is what the
+    // profile is for.
     // !snap_on: a keep-forward's per-row checkpoints are copies the decode
     // graph does not hold
     if (n == 1 && want_logits && !partial && !g->graph_bad && g->stream &&

@@ -943,11 +943,11 @@ bool template_think_tags(int tmpl, const char **open, const char **close) {
 // Apertus deliberates between two CONTROL tokens, which decode to no bytes.
 // They are not a text pair (template_think_tags gives the family none, so a
 // constrained turn has no prelude to probe for); a chat turn spells them for
-// the reasoning split (the engine's spell_think). The same two ids are named
-// differently across releases: v1.5's vocabulary has <|inner_prefix|> and
-// <|inner_suffix|>, the 2509 files have <think> and </think> there (read from
-// both, 2026-11-13). The split and the spelling go by name, so the name comes
-// from the file, and only a pair that is control tokens in it is bound.
+// the reasoning split (the engine's spell_think). Both releases name the pair
+// <|inner_prefix|> and <|inner_suffix|> (ids 69 and 70 in the 2509 and v1.5
+// files, as their templates do); <think> and </think> are other ids there and
+// are bound only by a file that has no inner pair. The split and the spelling
+// go by name, and only a pair that is control tokens in the file is bound.
 void template_bind_split_tags(int tmpl, tokenizer *tok, const char *think_open,
                               const char **open, const char **close) {
     if (think_open || *open || !tmpl_apertus(tmpl) || !tok) return;

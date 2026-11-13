@@ -147,7 +147,12 @@ host straight away, so the CUDA gate runs in parallel with the macOS gates
   a home path with a tree under it in a record: a record keeps `~/<file>` or
   `models/<file>`. Commit
   the CHANGELOG and docs fixes as their own commit and push. A docs commit does not
-  change the CUDA gate's binary.
+  change the sources of the CUDA gate's binary, but the binary states the commit it
+  was built from, so a build at any later commit differs from the pin's in that
+  stamp: the gate's binary is the build of the pin commit. A gate step repeated
+  after the pin (1.18.0: one step, after a fix to the gate's skip checker) runs on
+  a rebuild of the pin commit, whose sha256 must be the gate's, and the record names
+  the commit a later script came from.
 
 ## 3. macOS gates (worker), in this order, one at a time
 
