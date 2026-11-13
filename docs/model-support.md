@@ -695,12 +695,12 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>StableLM</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>StableLM</b>, 1 model: CPU ✅ · CUDA n/a · Metal n/a · Train n/a</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td colspan="5"><b>StableLM (stablelm)</b></td></tr>
-<tr><td><a href="#arch-stablelm">StableLM (stablelm)</a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td colspan="5"><b>StableLM 2 1.6B Chat (Stability AI)</b></td></tr>
+<tr><td><a href="#stablelm-2-1.6b-chat-q8_0"><code>stablelm-2-1_6b-chat.Q8_0.gguf</code></a></td><td nowrap>✅ 1.18.0<sup>b</sup><br>2026-11-13</td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td><a href="../MANUAL.md#support-matrix">n/a</a></td><td>no: LayerNorm (stablelm)</td></tr>
 </tbody>
 </table>
 </details>
@@ -2653,13 +2653,29 @@ Text path, XHToken's own Q4_K_M of Spark X2.6 4B, which fails the fidelity bar: 
 
 ### StableLM
 
-#### StableLM (stablelm)
+#### StableLM 2 1.6B Chat (Stability AI)
 
-<a id="arch-stablelm"></a>
-##### StableLM (stablelm)
+<a id="stablelm-2-1.6b-chat-q8_0"></a>
+##### `stablelm-2-1_6b-chat.Q8_0.gguf`
 
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+mradermacher's Q8_0 of Stability AI's StableLM 2 1.6B Chat, on the CPU: on every build, a CUDA or Metal one included, Runner serves this model on the CPU, since it normalises with LayerNorm and the GPU backends implement RMSNorm only. Against the publisher's float32 checkpoint it reads 0.0041 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 544 positions inside the model's 4,096-token context (two windows of 272: 0.0043 and 0.0039; plain top-1 98.2%, CPU), against a bar of 0.05 and 97%.
 
+- **File:** `stablelm-2-1_6b-chat.Q8_0.gguf` (sha256 `70fa97127815cffc3e5dd004976c8986fca1011c74bb8fd581c784cdc00b9760`, 1,751,882,848 bytes, from [mradermacher/stablelm-2-1_6b-chat-GGUF](https://huggingface.co/mradermacher/stablelm-2-1_6b-chat-GGUF) at revision `037d59f734d3`).
+- **Upstream checkpoint:** stabilityai/stablelm-2-1_6b-chat at revision `f3fe67057c27`.
+- **Quantization:** Q8_0 (mradermacher).
+- **Licence:** `stability-ai-non-commercial-research-community`, as the stabilityai/stablelm-2-1_6b-chat model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** mradermacher's Q8_0 (revision 037d59f7, the plain repository) against Stability AI's float32 checkpoint at f3fe6705 on the CPU (transformers 5.16.1, gold-logits.py, two windows of 272 positions at stride 15 over gold-corpus-2k from 8 and from 15, inside the model's trained 4,096-token context, token-id keyed, Runner CPU score files of 4,096 tokens from the batched prefill route): pooled 0.0041 ± 0.0003 mean KLD (SE, 544 positions; windows 0.0043 and 0.0039) / 98.2% top-1 / 100% margin-qualified (380/380). Measured and not admitted: mradermacher's Q4_K_M of the same repository (0.1114 ± 0.0077 mean KLD, 93.95% margin-qualified) and mradermacher's i1 Q4_K_M with an importance matrix (0.0662 ± 0.0037, 97.37%; the KLD point estimate is over 0.05). Tokenizer pre stablelm2: 0 of 721 corpus strings and 0 of 99,474 vocabulary entries differ from the publisher's tokenizer.json at f3fe6705; template family chatml (stablelm2), conformance 16/16 in text and tokens against the publisher's chat template, including its default system turn ('You are a helpful assistant.'), which Runner writes since R4.39.3. The publisher's own GGUF exists only for the 12B chat model (stabilityai/stablelm-2-12b-chat-GGUF), not this size. Record: docs/compat-reports/stablelm-2-1.6b-chat-2026-11-13/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU only, on every build: a CUDA or Metal build serves this model on the CPU and says so at load (the model normalises with LayerNorm, the GPU backends implement RMSNorm only), so the support page marks CUDA and Metal n/a: there is no device result for this model on any backend. Training is refused at load, in the loader's words: "LayerNorm (stablelm)"; serving an adapter (--lora) is supported. The model's trained context is 4,096 tokens; a larger -c applies YaRN. Measured and not admitted: mradermacher's Q4_K_M of the same repository (0.1114 ± 0.0077 mean KLD, 93.95% margin-qualified) and mradermacher's i1 Q4_K_M with an importance matrix (0.0662 ± 0.0037, 97.37%; the KLD point estimate is over 0.05). On load the file resolves to architecture stablelm, tokenizer pre stablelm2, template chatml, tool family qwen_json and the generic sampling preset (there is no StableLM preset). Licence: the Stability AI Non-Commercial Research Community License (the model card says 'other' and ships the licence text).
+- **Still missing:** A device route (LayerNorm on the GPU backends), training, the Windows CUDA host's cells, and task quality.
+- **Evidence:** [docs/compat-reports/1.18.0-2026-11-13-linux-x86_64-stablelm-2-1.6b-chat.json](compat-reports/1.18.0-2026-11-13-linux-x86_64-stablelm-2-1.6b-chat.json), [docs/compat-reports/stablelm-2-1.6b-chat-2026-11-13/README.md](compat-reports/stablelm-2-1.6b-chat-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cpu backend; last run 1.18.0 on 2026-11-13.
+- **CPU:** ✅ v1.18.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `dacf399efb1f`, output sha256 `c29a76cd7b0c4413`, [pin](../tests/compatibility/tier-smoke/stablelm-2-1.6b-chat-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** [n/a](../MANUAL.md#support-matrix): stablelm normalises with LayerNorm and the GPU backends implement RMSNorm only, so a CUDA build serves this model on the CPU (the architecture table's cpu_only rule, src/arch.h; the load says so).
+- **Metal:** [n/a](../MANUAL.md#support-matrix): stablelm normalises with LayerNorm and the GPU backends implement RMSNorm only, so a Metal build serves this model on the CPU (the architecture table's cpu_only rule, src/arch.h; the load says so).
+- **LoRA training:** no: LayerNorm (stablelm) (runner 1.18.0, 2026-11-13).
+- **LoRA adapter serving:** supported (runner 1.18.0, 2026-11-13).
 
 ### Trinity Nano
 
@@ -2845,7 +2861,6 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-10-22 | [Qwen3.8-Flash-Next, `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`](#qwen3.8-flash-next-gsq-rco-iq3_s) | Tier 2, maintained on report | Migration: the trunk of a Tier 1 MTP head, added 2026-10-23 so the head's smoke can run; not on the owner's Tier 1 roster. | none recorded |
 | 2026-10-22 | [Llama-style dense families (llama)](#arch-llama) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Mistral (mistral)](#arch-mistral) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
-| 2026-10-22 | [StableLM (stablelm)](#arch-stablelm) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Qwen2 (qwen2)](#arch-qwen2) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Gemma 3 (gemma3)](#arch-gemma3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Phi-3 (phi3)](#arch-phi3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
@@ -2958,6 +2973,7 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-11-13 | [SmolLM2-135M-Instruct (Hugging Face), `SmolLM2-135M-Instruct-Q8_0.gguf`](#smollm2-135m-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [SmolLM2-1.7B-Instruct (Hugging Face), `SmolLM2-1.7B-Instruct-Q8_0.gguf`](#smollm2-1.7b-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [SmolLM2-1.7B-Instruct (Hugging Face), `SmolLM2-1.7B-Instruct-Q4_K_M.gguf`](#smollm2-1.7b-instruct-q4_k_m) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report. | none recorded |
+| 2026-11-13 | [StableLM 2 1.6B Chat (Stability AI), `stablelm-2-1_6b-chat.Q8_0.gguf`](#stablelm-2-1.6b-chat-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU cell from the lab lanes (R4.39.3) and a float32 reference measurement against the publisher's checkpoint, so the StableLM family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Apertus v1.5 8B (Swiss AI), a third party's text-only extraction, `apertus-v1.5-8b-text-q8_0.gguf`](#apertus-v1.5-8b-text-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.38.1) and a float32 reference measurement against the publisher's checkpoint; Apertus v1.5 after 2509, at the owner's request. Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->

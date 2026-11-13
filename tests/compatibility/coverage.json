@@ -1127,7 +1127,8 @@
     "zephyr"
    ],
    "artifacts": [
-    "stablelm-2-zephyr-1_6b-q8_0"
+    "stablelm-2-zephyr-1_6b-q8_0",
+    "stablelm-2-1.6b-chat-q8_0"
    ],
    "tool_protocol": {
     "status": "NOT RUN",
