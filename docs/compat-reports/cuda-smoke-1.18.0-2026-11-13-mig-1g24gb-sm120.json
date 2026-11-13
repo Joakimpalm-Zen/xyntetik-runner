@@ -1,0 +1,106 @@
+{
+  "checks": [
+    {
+      "check": "cuda_backend_present",
+      "detail": "caps.gpu.backend = 'cuda' (expected 'cuda'; absent means the CUDA driver never initialised)",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "version_matches",
+      "detail": "caps.version = '1.18.0', expected '1.18.0'",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "unified_memory_is_boolean",
+      "detail": "caps.gpu.unified_memory = False",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "unified_memory_agrees_with_pool_sizes",
+      "detail": "unified_memory=False with vram_bytes=25367150592 and ram_bytes=268744679424 (vram/ram = 0.094, one pool expected >= 0.85)",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "unified_flag_not_suspiciously_false",
+      "detail": "unified_memory=False with vram/ram = 0.094",
+      "ok": true,
+      "severity": "warn"
+    },
+    {
+      "check": "vram_reported",
+      "detail": "vram_bytes = 25367150592",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "gpu_quants_present",
+      "detail": "gpu_quants has 24 entries",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "gpu_quants_subset_of_quants",
+      "detail": "every gpu_quant is loadable",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "generation_exit_zero",
+      "detail": "runner exited 0",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "gpu_engaged_for_generation",
+      "detail": "load output carries the CUDA backend line",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "tokens_generated",
+      "detail": "generated 24 tokens",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "layers_offloaded",
+      "detail": "gpu-split G=28/28",
+      "ok": true,
+      "severity": "fail"
+    },
+    {
+      "check": "unified_notice_matches_caps",
+      "detail": "load output omits the unified-memory notice while caps said False",
+      "ok": true,
+      "severity": "fail"
+    }
+  ],
+  "generation_output": "gpu: no OS video memory budget published for this device; offload budget 24.95 GB from the driver's free view, headroom 0.78 GB\ngpu-split: budget=24.95GB fixed=0.80GB G=28/28 full=1 used=1.74GB\ngpu-split: prompt window 512 columns (batch 512, 23.04 GB spare, 77828 bytes a column with TC2's activations)\ngpu: the device's tensors (28 layers and the head) lie in 2 stretches of the file; uploading them as runs\ngpu: CUDA backend on NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb (0.6 GB weights in VRAM)\ngpu: VRAM 23.76 GB free of 25.37 GB after init (kv 0.47 GB + scratch 0.02 GB this instance)\nloaded qwen3-0.6b-q8_0.gguf | qwen3 | 28 layers | ctx 4096 | 32 threads | 0.64s\nsampling: qwen3 (temp 0.00 \u2014 greedy argmax; top_p/top_k/min_p/repeat_penalty inactive)\nsampling: from the file (general.sampling.*): temp 0.60, top_p 0.95, top_k 20\nThe capital of France is Paris. The capital of Italy is Rome. The capital of Spain is Madrid. The capital of China is Beijing. The\nprompt: 5 tok, 447.56 tok/s | gen: 24 tok, 370.31 tok/s\n\n",
+  "gpu": {
+    "backend": "cuda",
+    "compute_capability": "12.0",
+    "eseries": true,
+    "kv_f32": true,
+    "kv_fp4": true,
+    "kv_q8": true,
+    "min_compute_capability": "7.5",
+    "min_gpu": "NVIDIA Turing / compute capability 7.5 or newer",
+    "moe": true,
+    "name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition MIG 1g.24gb",
+    "ptx_target": "sm_75",
+    "unified_memory": false,
+    "vram_bytes": 25367150592,
+    "vram_free_bytes": 24949358592
+  },
+  "host": {
+    "arch": "x86_64",
+    "os": "linux",
+    "ram_bytes": 268744679424
+  },
+  "passed": true,
+  "runner_version": "1.18.0"
+}
