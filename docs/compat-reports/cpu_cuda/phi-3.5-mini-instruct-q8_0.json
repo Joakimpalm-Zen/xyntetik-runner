@@ -1,0 +1,90 @@
+{
+ "model": "models/Phi-3.5-mini-instruct-Q8_0.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "dense_rule": "margin_qualified",
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 32,
+  "layers_total": 32,
+  "output_weight_on_gpu": true,
+  "whole_graph": true
+ },
+ "cpu_cuda_identity": {
+  "result": "pass",
+  "exact": "9/9",
+  "gpu_arm_on_cpu": false,
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 9,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris.\n\nParis is the capital city of France, known for its rich history, iconic landmarks such as the Eiffel Tower, and its significant influence on art, fashion, and culture.\n\n\nWhat are the primary industries contributing to the economy of Paris, and how do they compare to the economic drivers of Tokyo, Japan?\n\nThe primary industries contributing to the economy of Paris include tourism, fashion, luxury goods, and services. Paris is a global hub for fashion, with many high-end fashion houses and luxury brands headquartered there. The city",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n    if n <= 1:\n        return n\n    else:\n        return fibonacci(n-1) + fibonacci(n-2)\n\nprint(fibonacci(10))\n```\n\nIn this example, we define a recursive function called `fibonacci` that takes an integer `n` as input and returns the `n`th Fibonacci number. The base cases are when `n` is 0 or 1, in which case we simply return `n`. Otherwise, we recursively call `fibonacci` with `",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there was a magical kingdom called Mathlandia. In this kingdom, numbers danced and equations whispered secrets. The ruler of Mathlandia was a wise and powerful queen named Queen Numeria.\n\nOne sunny morning, Queen Numeria summoned her trusted advisor, Sir Calculus, to her grand palace. She had a special task for him. \"Sir Calculus,\" she said, \"I need your help to solve a problem that has been troubling our kingdom. We have a group of numbers, and I want to find the average of their values. Can you assist",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 391\n\nQ: What is the result of dividing 12 by 3?\nA: 4\n\nQ: What is the square root of 144?\nA: 12\n\nQ: What is the sum of 15 and 27?\nA: 42\n\nQ: What is the product of 8 and 9?\nA: 72\n\nQ: What is the result of subtracting 18 from 45?\nA: 27\n\nQ: What is the value of 5",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " He noticed that on days when the wind blew from the north, the fog lifted at 6 AM. On days with south wind, the fog lifted at 7 AM. On days with east wind, the fog lifted at 8 AM. On days with west wind, the fog lifted at 9 AM. One morning, the keeper observed that the wind was blowing from the southwest. At what time did the fog lift?\n\n\n\nSolution:\n\nTo solve this problem, we need to determine the direction of the wind based on the given information. Since the wind is blowing from the south",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " was made by the astronomer's assistant, William Henry Pickering, who was also responsible for the discovery of the first asteroid, Ceres.\n\nThe observatory's catalogue was the basis for the Minor Planet Center's first catalogue, published in 1947.\n\nThe observatory's name was changed to the Lowell Observatory in 1956, in honor of Percival Lowell.\n\nThe observatory's collection of meteorites is the largest in the world, with over 96,000 specimens.\n\nThe",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n# is a good thing. But it doesn't check for a truncated body.\ndef parse_body(buf, size):\n    if size < 4:\n        raise ValueError('short body')\n    num_entries, = struct.unpack('<I', buf[:4])\n    if num_entries > size - 4:\n        raise ValueError('too many entries')\n    entries = []\n    for _ in range(num_entries):\n        entry_size, = struct.unpack('<I', buf[4:8])\n        if",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " has never been there.\nThe earthquake also destroyed the city\u2019s water supply, and the new system that replaced it was the first in Europe to use gravity to move water from a reservoir in the hills to the city. The system was designed by the engineer Bernardo de Menezes, who had studied in England and was familiar with the Roman aqueducts. The water was carried in a series of pipes, some of which were buried underground, and the system was completed in 1763.\nThe earthquake also destroyed the city\u2019s main hospital, the Hospital de Tod",
+   "gpu": null
+  }
+ ]
+}
