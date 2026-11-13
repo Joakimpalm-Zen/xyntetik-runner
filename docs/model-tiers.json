@@ -3627,7 +3627,7 @@
       "model": "StableLM 2 1.6B Chat (Stability AI)",
       "family": "StableLM",
       "tier": "tier2",
-      "claim": "mradermacher's Q8_0 of Stability AI's StableLM 2 1.6B Chat, on the CPU: on every build, a CUDA or Metal one included, Runner serves this model on the CPU, since it normalises with LayerNorm and the GPU backends implement RMSNorm only. Against the publisher's float32 checkpoint it reads 0.0041 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 544 positions inside the model's 4,096-token context (two windows of 272: 0.0043 and 0.0039; plain top-1 98.2%, CPU), against a bar of 0.05 and 97%.",
+      "claim": "mradermacher's Q8_0 of Stability AI's StableLM 2 1.6B Chat, under the Stability AI Non-Commercial Research Community License (not for commercial use), on the CPU: on every build, a CUDA or Metal one included, Runner serves this model on the CPU, since it normalises with LayerNorm and the GPU backends implement RMSNorm only. Against the publisher's float32 checkpoint it reads 0.0041 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 544 positions inside the model's 4,096-token context (two windows of 272: 0.0043 and 0.0039; plain top-1 98.2%, CPU), against a bar of 0.05 and 97%.",
       "architecture": "stablelm",
       "upstream": {
         "checkpoint": "stabilityai/stablelm-2-1_6b-chat",

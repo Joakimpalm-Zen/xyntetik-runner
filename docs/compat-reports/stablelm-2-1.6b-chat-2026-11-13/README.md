@@ -17,7 +17,7 @@ Stability AI publishes no GGUF of this size; its own GGUF repository is the 12B 
 - **The first fidelity run was void and was redone.** It scored 4,520-token files with `-c 4520`, past the model's
   trained context of 4,096, so Runner applied YaRN (x1.10) while the reference ran plain rope; those numbers
   (0.0166 for the Q8_0) compared two different position encodings. The numbers below come from 4,096-token files,
-  272 positions per window, all inside the trained context.
+  272 positions per window, all inside the trained context. The rule since: read the file's trained context length before any score run, keep `-c` and the windows inside it, and check every score log for YaRN.
 - **This PR changes Runner's prompt for StableLM 2.** Before it, a chat request without a system message got no system
   turn, 11 tokens short of the publisher's template, which writes `You are a helpful assistant.` on every such
   conversation. The default is now written (template_default_system, keyed on the template's own literal). No other

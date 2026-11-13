@@ -2658,7 +2658,7 @@ Text path, XHToken's own Q4_K_M of Spark X2.6 4B, which fails the fidelity bar: 
 <a id="stablelm-2-1.6b-chat-q8_0"></a>
 ##### `stablelm-2-1_6b-chat.Q8_0.gguf`
 
-mradermacher's Q8_0 of Stability AI's StableLM 2 1.6B Chat, on the CPU: on every build, a CUDA or Metal one included, Runner serves this model on the CPU, since it normalises with LayerNorm and the GPU backends implement RMSNorm only. Against the publisher's float32 checkpoint it reads 0.0041 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 544 positions inside the model's 4,096-token context (two windows of 272: 0.0043 and 0.0039; plain top-1 98.2%, CPU), against a bar of 0.05 and 97%.
+mradermacher's Q8_0 of Stability AI's StableLM 2 1.6B Chat, under the Stability AI Non-Commercial Research Community License (not for commercial use), on the CPU: on every build, a CUDA or Metal one included, Runner serves this model on the CPU, since it normalises with LayerNorm and the GPU backends implement RMSNorm only. Against the publisher's float32 checkpoint it reads 0.0041 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 544 positions inside the model's 4,096-token context (two windows of 272: 0.0043 and 0.0039; plain top-1 98.2%, CPU), against a bar of 0.05 and 97%.
 
 - **File:** `stablelm-2-1_6b-chat.Q8_0.gguf` (sha256 `70fa97127815cffc3e5dd004976c8986fca1011c74bb8fd581c784cdc00b9760`, 1,751,882,848 bytes, from [mradermacher/stablelm-2-1_6b-chat-GGUF](https://huggingface.co/mradermacher/stablelm-2-1_6b-chat-GGUF) at revision `037d59f734d3`).
 - **Upstream checkpoint:** stabilityai/stablelm-2-1_6b-chat at revision `f3fe67057c27`.
