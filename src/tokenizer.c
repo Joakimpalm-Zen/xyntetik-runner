@@ -2187,6 +2187,11 @@ int tok_stop_ids(tokenizer *t, const char *arch, int *out, int cap) {
         for (size_t i = 0; i < sizeof(fstops) / sizeof(*fstops); i++)
             stop_add(t, out, &n, cap, fstops[i]);
     }
+    // apertus ends a turn at the token that closes a tool call as well:
+    // swiss-ai's generation_config lists eos [2, 68, 72], 72 being
+    // <|tools_suffix|>, and the files declare only 68 (<|assistant_end|>).
+    // Without it a reply that wrote a call ran on and invented the result.
+    if (id == ARCH_APERTUS) stop_add(t, out, &n, cap, "<|tools_suffix|>");
     return n;
 }
 

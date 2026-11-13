@@ -3824,6 +3824,66 @@
               "compiler": "13.3.0"
             }
           }
+        },
+        "windows-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q8_0.windows-x86_64-cuda.cuda.txt",
+          "sha256": "a519428fcee0cb910d868dec5ff75f1cec4f9b887b3276e198f10994d1dcf0dc",
+          "bytes": 205,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "build": {
+              "binary_sha256": "cc8db867d4fdec9925e05ce8faace60af4deee232f34abd71a13e9df023ff879",
+              "compiler": "16.2.0",
+              "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+              "dirty": false
+            }
+          }
+        },
+        "windows-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q8_0.windows-x86_64-cuda.cpu.txt",
+          "sha256": "a519428fcee0cb910d868dec5ff75f1cec4f9b887b3276e198f10994d1dcf0dc",
+          "bytes": 205,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "build": {
+              "binary_sha256": "cc8db867d4fdec9925e05ce8faace60af4deee232f34abd71a13e9df023ff879",
+              "compiler": "16.2.0",
+              "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+              "dirty": false
+            }
+          }
         }
       }
     },
@@ -3882,6 +3942,66 @@
             "build": {
               "binary_sha256": "63a9af5d231bedeb3717cd483b563933f651e3634dd966aaf9b51de4915fcfed",
               "compiler": "13.3.0"
+            }
+          }
+        },
+        "windows-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q4_k_m.windows-x86_64-cuda.cuda.txt",
+          "sha256": "5fd562b8fbeeac085c8a271d3c0a8e44fdcc503338932109f18d70ede5959098",
+          "bytes": 208,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "build": {
+              "binary_sha256": "cc8db867d4fdec9925e05ce8faace60af4deee232f34abd71a13e9df023ff879",
+              "compiler": "16.2.0",
+              "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+              "dirty": false
+            }
+          }
+        },
+        "windows-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/apertus-8b-instruct-2509-q4_k_m.windows-x86_64-cuda.cpu.txt",
+          "sha256": "5fd562b8fbeeac085c8a271d3c0a8e44fdcc503338932109f18d70ede5959098",
+          "bytes": 208,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "build": {
+              "binary_sha256": "cc8db867d4fdec9925e05ce8faace60af4deee232f34abd71a13e9df023ff879",
+              "compiler": "16.2.0",
+              "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+              "dirty": false
             }
           }
         }
@@ -3945,6 +4065,66 @@
               "binary_sha256": "a7ba0fe1dd82d636c7fe8fa0cfd27b3fdf28ac159b9321dc8ed5b88d379fb06e",
               "compiler": "13.3.0",
               "commit": "a11f45ee2c67c9b4fee51b6d9a1b2beede5e00d4",
+              "dirty": false
+            }
+          }
+        },
+        "windows-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/apertus-v1.5-8b-text-q8_0.windows-x86_64-cuda.cuda.txt",
+          "sha256": "77abae056f9fdf728981d3655ab21d06650fa7c9c9a31182d5b7165c19f93752",
+          "bytes": 199,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "build": {
+              "binary_sha256": "cc8db867d4fdec9925e05ce8faace60af4deee232f34abd71a13e9df023ff879",
+              "compiler": "16.2.0",
+              "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+              "dirty": false
+            }
+          }
+        },
+        "windows-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/apertus-v1.5-8b-text-q8_0.windows-x86_64-cuda.cpu.txt",
+          "sha256": "77abae056f9fdf728981d3655ab21d06650fa7c9c9a31182d5b7165c19f93752",
+          "bytes": 199,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "build": {
+              "binary_sha256": "cc8db867d4fdec9925e05ce8faace60af4deee232f34abd71a13e9df023ff879",
+              "compiler": "16.2.0",
+              "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
               "dirty": false
             }
           }
