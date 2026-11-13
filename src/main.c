@@ -6501,7 +6501,7 @@ static bool replay_stop_read(jv *rec, const model_t *m, replay_stop *r,
         return false;
     }
     bool open = ro && ro->b;
-    if (!ro && chat && m->think_open) {
+    if (!ro && chat && (m->think_open || m->split_open)) {
         snprintf(why, cap, "the output was cut by a stop sequence on a model with "
                  "thinking tags, and the record does not say whether the turn "
                  "began in reasoning (serve.reasoning_open, written since R1.1.3.2), "
@@ -6509,6 +6509,9 @@ static bool replay_stop_read(jv *rec, const model_t *m, replay_stop *r,
         return false;
     }
     if (open) think_init_reasoning(&r->ts, m->think_open, m->think_close);
+    else if (chat && !m->think_open && m->split_open)
+        // the server's chat turn split a control-token pair (R2.15)
+        think_init(&r->ts, m->split_open, m->split_close);
     else      think_init(&r->ts, chat ? m->think_open : NULL, m->think_close);
     think_trim_newlines(&r->ts, m->think_trim_nl);
     return true;
@@ -6711,10 +6714,11 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
             jv_free(vr->rec);
             return 3;
         }
-        if (tmpl >= 0)
+        if (tmpl >= 0) {
             template_bind_think_tags(tmpl, &rt->m.think_open, &rt->m.think_close);
-    template_bind_split_tags(tmpl, &rt->tok, rt->m.think_open, &rt->m.split_open,
-                             &rt->m.split_close);
+            template_bind_split_tags(tmpl, &rt->tok, rt->m.think_open,
+                                     &rt->m.split_open, &rt->m.split_close);
+        }
     }
     jv *vserve = jv_get(vr->rec, "serve");
     jv *cons = jv_get(vr->rec, "constraints");
@@ -6785,6 +6789,9 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     bool vchat = strcmp(jv_str(jv_get(jv_get(vr->rec, "config"), "template"), "raw"), "raw") != 0;
     if (vserve && vchat && rt->m.think_open && !rt->e.constraint_includes_prelude)
         rt->e.emit_think_prelude = true;
+    // the server's chat turn spelled a control-token think pair (R2.15): the
+    // replay decodes the same bytes, or every such turn would read MISMATCH
+    rt->e.spell_think = vserve && vchat && rt->m.split_open != NULL;
     if (jv_bool(jv_get(vserve, "reasoning_open"), false))
         engine_think_started(&rt->e);
     bool stop_on = rs.n_strs > 0 || n_stop_ids > 0;
