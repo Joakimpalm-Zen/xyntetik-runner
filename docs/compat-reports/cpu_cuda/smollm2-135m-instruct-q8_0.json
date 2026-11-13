@@ -1,0 +1,90 @@
+{
+ "model": "models/SmolLM2-135M-Instruct-Q8_0.gguf",
+ "tokens": 128,
+ "context": 2048,
+ "routing": "eager",
+ "moe": false,
+ "dense_rule": "margin_qualified",
+ "extra_args": [],
+ "gpu_split": {
+  "layers_on_gpu": 30,
+  "layers_total": 30,
+  "output_weight_on_gpu": true,
+  "whole_graph": true
+ },
+ "cpu_cuda_identity": {
+  "result": "pass",
+  "exact": "9/9",
+  "gpu_arm_on_cpu": false,
+  "near_tie_tolerated": 0,
+  "tie_band_nats": 0.5,
+  "over_cap": false
+ },
+ "identical": 9,
+ "total": 9,
+ "rows": [
+  {
+   "prompt": "The capital of France is",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " Paris. Paris is the largest city in France and the capital of the French department of department FRANCE. It is located in the northern part of the country and is known for its historical landmarks, cultural institutions, and cultural attractions.\n\nParis is a major global city with a rich history, culture, and economy. It is the political and economic center of France, and is home to many famous landmarks, museums, and cultural institutions. The city is also a major center for fashion, gastronomy, and art, with many famous restaurants, museums, and art galleries.\n\nParis is a city that is famous for its art,",
+   "gpu": null
+  },
+  {
+   "prompt": "def fibonacci(n):",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n    if n == 0:\n        return 0\n    if n == 1:\n        return 1\n    if n % 2 == 0:\n        return fibonacci(n // 2) + fibonacci(n // 2 - 1)\n    else:\n        return fibonacci(n)\n\nprint(fibonacci(10))\n```\n\nThis program works by recursively calculating the nth Fibonacci number, and then returning the sum of the two preceding Fibonacci numbers. The base cases are when n is 0 or 1, and when n is 1, the function returns",
+   "gpu": null
+  },
+  {
+   "prompt": "1 2 3 4 5 6 7 8",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51",
+   "gpu": null
+  },
+  {
+   "prompt": "Once upon a time, in a land far away,",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " there lived a wise and powerful wizard named Zorvath. Zorvath was known for his magical abilities and was respected by all who knew him.\n\nZorvath was a master of the arcane arts, able to bend the fabric of time and space to his will. He had mastered the art of teleportation, allowing him to move through the air and into the hearts of those he met. His magic was said to be so powerful that it could bend the very fabric of reality itself.\n\nOne day, Zorvath was summoned by a young apprentice, a young woman named Lyra",
+   "gpu": null
+  },
+  {
+   "prompt": "Q: What is 17 * 23?\nA:",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "",
+   "gpu": null
+  },
+  {
+   "prompt": "The lighthouse keeper recorded the weather every morning: wind direction, cloud cover, and the hour the fog lifted.",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " He also noted the time of day, the time of day the fog lifted, and the time of day the fog lifted. He recorded the time of day the fog lifted, the time of day the fog lifted, and the time of day the fog lifted. He also recorded the time of day the fog lifted, the time of day the fog lifted, and the time of day the fog lifted. He also recorded the time of day the fog lifted, the time of day the fog lifted, and the time of day the fog lifted. He also recorded the time of day the fog lifted, the time of day the fog lifted, and",
+   "gpu": null
+  },
+  {
+   "prompt": "In 1929 the observatory published a revised catalogue listing 4218 objects, of which roughly one in nine turned out on later inspection to be a duplicate entry under a second designation. The correction",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " was made in 1930, and the catalogue was published in 1931.\n\nThe catalogue was published in 1931 by the British astronomer Sir William Herschel, who was the first person to discover a planet. The catalogue was published in 1931 by the British astronomer Sir William Herschel, who was the first person to discover a planet. The catalogue was published in 1931 by the British astronomer Sir William Herschel, who was the first person to discover a planet. The catalogue was published in 1931 by the British astronomer Sir William Herschel, who was the",
+   "gpu": null
+  },
+  {
+   "prompt": "def parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which",
+   "kind": "exact",
+   "detail": null,
+   "cpu": "\n# is why we need to unpack the header in the first place.\ndef parse_header(buf, size):\n    if size < 8:\n        raise ValueError('short header')\n    magic, version = struct.unpack('<II', buf[:8])\n    if magic != GGUF_MAGIC:\n        raise ValueError('not a gguf file')\n    return magic, version\n\n# The loader above rejects a truncated header before unpacking it, which\n# is why we need to unpack the header in the first place.\ndef parse_header(buf, size):\n    if size <",
+   "gpu": null
+  },
+  {
+   "prompt": "The city of Lisbon sits on seven hills above the Tagus estuary, and its oldest quarter survived the 1755 earthquake largely intact because the bedrock there is firmer than the reclaimed ground downriver. Rebuilding the lower town took decades, and the grid of streets laid out afterwards was among the first in Europe designed with seismic loads in mind, which is why the district still reads as unusually regular to a visitor who",
+   "kind": "exact",
+   "detail": null,
+   "cpu": " has never been to Lisbon.\n\nThe city's 19th-century architecture is a testament to the city's rich history, which dates back to the 16th century. The city's oldest part, the Alc\u00e1zar Palace, was built in the 16th century and is one of the oldest buildings in Europe. The palace was built by King Henry II of Portugal and is a masterpiece of Portuguese architecture. The palace was also the seat of the Portuguese monarchy from 1415 to 1580.\n\nThe Alc\u00e1zar Palace is a masterpiece of Portuguese architecture, with",
+   "gpu": null
+  }
+ ]
+}

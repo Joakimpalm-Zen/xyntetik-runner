@@ -668,12 +668,15 @@ instead of carrying a copy, so none can drift and nothing watches them:
 </details>
 
 <details>
-<summary><b>SmolLM</b>, 1 model: CPU - · CUDA - · Metal - · Train -</summary>
+<summary><b>SmolLM</b>, 2 models: CPU ✅ · CUDA ✅ · Metal ✅ · Train ✅</summary>
 <table>
 <thead><tr><th>File</th><th>CPU</th><th>CUDA</th><th>Metal</th><th>Train</th></tr></thead>
 <tbody>
-<tr><td colspan="5"><b>SmolLM (smollm)</b></td></tr>
-<tr><td><a href="#arch-smollm">SmolLM (smollm)</a></td><td></td><td></td><td></td><td></td></tr>
+<tr><td colspan="5"><b>SmolLM2-1.7B-Instruct (Hugging Face)</b></td></tr>
+<tr><td><a href="#smollm2-1.7b-instruct-q4_k_m"><code>SmolLM2-1.7B-Instruct-Q4_K_M.gguf</code></a></td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.17.0<br>2026-11-13</td><td nowrap>✅ 1.17.0<br>2026-11-13</td></tr>
+<tr><td><a href="#smollm2-1.7b-instruct-q8_0"><code>SmolLM2-1.7B-Instruct-Q8_0.gguf</code></a></td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.17.0<br>2026-11-13</td><td nowrap>✅ 1.17.0<br>2026-11-13</td></tr>
+<tr><td colspan="5"><b>SmolLM2-135M-Instruct (Hugging Face)</b></td></tr>
+<tr><td><a href="#smollm2-135m-instruct-q8_0"><code>SmolLM2-135M-Instruct-Q8_0.gguf</code></a></td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.17.0<sup>b</sup><br>2026-11-13</td><td nowrap>✅ 1.17.0<br>2026-11-13</td><td nowrap>✅ 1.17.0<br>2026-11-13</td></tr>
 </tbody>
 </table>
 </details>
@@ -2528,13 +2531,75 @@ Experimental: the NextN/MTP head for Qwen3.8-Flash-Next as a companion file for 
 
 ### SmolLM
 
-#### SmolLM (smollm)
+#### SmolLM2-1.7B-Instruct (Hugging Face)
 
-<a id="arch-smollm"></a>
-##### SmolLM (smollm)
+<a id="smollm2-1.7b-instruct-q4_k_m"></a>
+##### `SmolLM2-1.7B-Instruct-Q4_K_M.gguf`
 
-Admitted and maintained on report: existing regression tests keep running and shared-path changes are tested with representative coverage; no file of this architecture is re-validated on every release.
+bartowski's Q4_K_M of HuggingFaceTB's SmolLM2-1.7B-Instruct, a file that sits on the fidelity bar: against the publisher's BF16 checkpoint computed in float32 it reads 0.0494 ± 0.0023 mean KLD over 595 positions (bootstrap 95% interval 0.0450 to 0.0542, 39% of resamples over the bar) against a bar of 0.05, with 98.6% margin-qualified top-1 (plain top-1 89.6%, CPU); its two windows read 0.0493 and 0.0495. The publisher's own q4_k_m, with no importance matrix, reads 0.102. The Q8_0 is the fidelity file.
 
+- **File:** `SmolLM2-1.7B-Instruct-Q4_K_M.gguf` (sha256 `77665ea4815999596525c636fbeb56ba8b080b46ae85efef4f0d986a139834d7`, 1,055,609,824 bytes, from [bartowski/SmolLM2-1.7B-Instruct-GGUF](https://huggingface.co/bartowski/SmolLM2-1.7B-Instruct-GGUF) at revision `1f03464768bf`).
+- **Upstream checkpoint:** HuggingFaceTB/SmolLM2-1.7B-Instruct at revision `31b70e2e869a`.
+- **Quantization:** Q4_K_M (bartowski, importance matrix).
+- **Licence:** `apache-2.0`, as the HuggingFaceTB/SmolLM2-1.7B-Instruct model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** Both of bartowski's files (revision 1f034647, with bartowski's importance matrix) against HuggingFaceTB's BF16 checkpoint at 31b70e2e computed in float32 on the CPU (transformers 4.57.1 (5.16.1 reads this tokenizer without its Digits pre-tokenizer, 8,911 corpus tokens against the file's 8,909; 4.57.1 reads it as written), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files from the batched prefill route): Q8_0 pooled 0.0041 ± 0.0003 mean KLD (SE, 595 positions; windows 0.0038 and 0.0045) / 97.6% top-1 / 100% margin-qualified (427/427); Q4_K_M pooled 0.0494 ± 0.0023 (bootstrap 95% interval 0.0450 to 0.0542; windows 0.0493 and 0.0495) / 89.6% / 98.6% (421/427). The publisher's own q4_k_m (HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF at 2d4a76a3, no importance matrix) was measured and not admitted: 0.1021 ± 0.0047 / 84.7% / 94.38% (403/427); llama.cpp 73a43d1 reads it at 0.1248 against Runner's 0.1032 on the same 300 positions. Tokenizer pre smollm (digits one by one): 0 of 721 corpus strings and 0 of 48,821 vocabulary entries differ from HuggingFaceTB's tokenizer.json; template family chatml (smollm2), conformance 16/16 in text and tokens against the publisher's chat template, which the 135M and 1.7B checkpoints carry byte for byte. Record: docs/compat-reports/smollm2-2026-11-13/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU, CUDA and Metal for this file (1.06 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 24 layers on the device; on Metal, an Apple M1, where the pinned reply is byte for byte the CPU's and CUDA's). It sits on the fidelity bar (0.0494 ± 0.0023 against 0.05); the Q8_0 is the fidelity file. The publisher's own q4_k_m of this model was measured and not admitted (0.102 mean KLD). On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Tool calls use Runner's generic JSON protocol; the publisher's template declares no tool format. Licence: apache-2.0.
+- **Still missing:** The Windows CUDA host's cells, and task quality.
+- **Evidence:** [docs/compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json](compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json), [docs/compat-reports/smollm2-2026-11-13/README.md](compat-reports/smollm2-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.17.0 on 2026-11-13.
+- **CPU:** ✅ v1.17.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `4934c3590189`, output sha256 `96763253eb55a9bb`, [pin](../tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q4_k_m.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.17.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `4934c3590189`, output sha256 `96763253eb55a9bb`, [pin](../tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q4_k_m.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ✅ v1.17.0 2026-11-13 on macos-arm64-metal at commit `4d67402abfd7`, output sha256 `96763253eb55a9bb`, [pin](../tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q4_k_m.macos-arm64-metal.metal.txt)
+- **LoRA training:** supported (runner 1.17.0, 2026-11-13).
+- **LoRA adapter serving:** supported (runner 1.17.0, 2026-11-13).
+
+<a id="smollm2-1.7b-instruct-q8_0"></a>
+##### `SmolLM2-1.7B-Instruct-Q8_0.gguf`
+
+bartowski's Q8_0 of HuggingFaceTB's SmolLM2-1.7B-Instruct, the fidelity file of the 1.7B: against the publisher's BF16 checkpoint computed in float32 it reads 0.0041 ± 0.0003 mean KLD and 100% margin-qualified top-1 over 595 positions (two windows: 0.0038 and 0.0045; plain top-1 97.6%, CPU), against a bar of 0.05 and 97%. The publisher's own GGUF of this model (a q4_k_m) was measured and not admitted: 0.102 mean KLD.
+
+- **File:** `SmolLM2-1.7B-Instruct-Q8_0.gguf` (sha256 `0c6e8955788b1253f418c354a4bdc4cf507b8cfe49c48bb10c7c58ae713cfa2a`, 1,820,414,944 bytes, from [bartowski/SmolLM2-1.7B-Instruct-GGUF](https://huggingface.co/bartowski/SmolLM2-1.7B-Instruct-GGUF) at revision `1f03464768bf`).
+- **Upstream checkpoint:** HuggingFaceTB/SmolLM2-1.7B-Instruct at revision `31b70e2e869a`.
+- **Quantization:** Q8_0 (bartowski, importance matrix recorded; Q8_0 does not use it).
+- **Licence:** `apache-2.0`, as the HuggingFaceTB/SmolLM2-1.7B-Instruct model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** bartowski's Q8_0 (revision 1f034647) against HuggingFaceTB's BF16 checkpoint at 31b70e2e computed in float32 on the CPU (transformers 4.57.1 (5.16.1 reads this tokenizer without its Digits pre-tokenizer, 8,911 corpus tokens against the file's 8,909; 4.57.1 reads it as written), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files from the batched prefill route): pooled 0.0041 ± 0.0003 mean KLD (SE, 595 positions; windows 0.0038 and 0.0045) / 97.6% top-1 / 100% margin-qualified (427/427). The publisher's own GGUF (HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF at 2d4a76a3, a q4_k_m with no importance matrix) was measured and not admitted: 0.1021 ± 0.0047, 94.38% margin-qualified (403/427); llama.cpp 73a43d1 reads the same file at 0.1248 against Runner's 0.1032 on the same 300 positions, so the error is the file's. Tokenizer pre smollm (digits one by one): 0 of 721 corpus strings and 0 of 48,821 vocabulary entries differ from HuggingFaceTB's tokenizer.json; template family chatml (smollm2), conformance 16/16 in text and tokens against the publisher's chat template, which the 135M and 1.7B checkpoints carry byte for byte. Record: docs/compat-reports/smollm2-2026-11-13/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU, CUDA and Metal for this file (1.82 GB: on a CUDA MIG slice, 1g.24gb, sm_120, all 24 layers on the device; on Metal, an Apple M1, where the pinned reply is byte for byte the CPU's and CUDA's). The publisher's own GGUF of this model, a q4_k_m, was measured and not admitted (0.102 mean KLD, also 0.125 on llama.cpp). On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Tool calls use Runner's generic JSON protocol; the publisher's template declares no tool format. Licence: apache-2.0.
+- **Still missing:** The Windows CUDA host's cells, and task quality.
+- **Evidence:** [docs/compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json](compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json), [docs/compat-reports/smollm2-2026-11-13/README.md](compat-reports/smollm2-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.17.0 on 2026-11-13.
+- **CPU:** ✅ v1.17.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `4934c3590189`, output sha256 `3891fd01d65ae478`, [pin](../tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.17.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `4934c3590189`, output sha256 `3891fd01d65ae478`, [pin](../tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ✅ v1.17.0 2026-11-13 on macos-arm64-metal at commit `4d67402abfd7`, output sha256 `3891fd01d65ae478`, [pin](../tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q8_0.macos-arm64-metal.metal.txt)
+- **LoRA training:** supported (runner 1.17.0, 2026-11-13).
+- **LoRA adapter serving:** supported (runner 1.17.0, 2026-11-13).
+
+#### SmolLM2-135M-Instruct (Hugging Face)
+
+<a id="smollm2-135m-instruct-q8_0"></a>
+##### `SmolLM2-135M-Instruct-Q8_0.gguf`
+
+bartowski's Q8_0 of HuggingFaceTB's SmolLM2-135M-Instruct, the file the CI anchors, the sanitizer default and the demos run: against the publisher's BF16 checkpoint computed in float32 it reads 0.0074 ± 0.0005 mean KLD and 100% margin-qualified top-1 over 595 positions (two windows: 0.0071 and 0.0077; plain top-1 98.5%, CPU), against a bar of 0.05 and 97%.
+
+- **File:** `SmolLM2-135M-Instruct-Q8_0.gguf` (sha256 `5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83`, 144,811,360 bytes, from [bartowski/SmolLM2-135M-Instruct-GGUF](https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF) at revision `09816acd5d99`).
+- **Upstream checkpoint:** HuggingFaceTB/SmolLM2-135M-Instruct at revision `12fd25f77366`.
+- **Quantization:** Q8_0 (bartowski, importance matrix recorded; Q8_0 does not use it).
+- **Licence:** `apache-2.0`, as the HuggingFaceTB/SmolLM2-135M-Instruct model card states it.
+- **Features claimed:** text. A feature not listed is not claimed.
+- **Numerical anchor (a publisher float32 comparison exists):** bartowski's Q8_0 (revision 09816acd) against HuggingFaceTB's BF16 checkpoint at 12fd25f7 computed in float32 on the CPU (transformers 4.57.1 (5.16.1 reads this tokenizer without its Digits pre-tokenizer, 8,911 corpus tokens against the file's 8,909; 4.57.1 reads it as written), float32 arithmetic cast at use per decoder block, gold-logits.py, two windows at stride 15 over gold-corpus-2k from 8 and from 15, token-id keyed, Runner CPU score files from the batched prefill route): pooled 0.0074 ± 0.0005 mean KLD (SE, 595 positions; windows 0.0071 and 0.0077) / 98.5% top-1 / 100% margin-qualified (392/392). The September golden pass read the same file at 0.0080 over 1,983 positions. unsloth's Q8_0 (revision 9e6855bc) carries the same tensor data, 272 of 272 tensors byte-equal; only the metadata differs. bartowski's Q4_K_M of the same repository was measured and not admitted: 0.0623 ± 0.0030, bootstrap 95% wholly over 0.05, 97.96% margin-qualified (384/392). Tokenizer pre smollm (digits one by one): 0 of 721 corpus strings and 0 of 48,821 vocabulary entries differ from HuggingFaceTB's tokenizer.json; template family chatml (smollm2), conformance 16/16 in text and tokens against the publisher's chat template, which the 135M and 1.7B checkpoints carry byte for byte. Record: docs/compat-reports/smollm2-2026-11-13/README.md.
+- **Context tested:** 4096.
+- **Known limitations:** CPU, CUDA and Metal for this file (145 MB: on a CUDA MIG slice, 1g.24gb, sm_120, all 30 layers on the device; on Metal, an Apple M1, where the pinned reply is byte for byte the CPU's and CUDA's). bartowski's Q4_K_M of this model (0.062 mean KLD) was measured and not admitted. On load the file resolves to architecture llama, tokenizer pre smollm, template chatml, tool family qwen_json and sampling preset smollm2 (temperature 0.2, top_p 0.9, repeat_penalty 1.1, chosen by general.name). Tool calls use Runner's generic JSON protocol; the publisher's template declares no tool format. Licence: apache-2.0.
+- **Still missing:** The Windows CUDA host's cells, and task quality.
+- **Evidence:** [docs/compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json](compat-reports/1.17.0-2026-11-13-linux-x86_64-smollm2.json), [docs/compat-reports/smollm2-2026-11-13/README.md](compat-reports/smollm2-2026-11-13/README.md), [tests/compatibility/coverage.json](../tests/compatibility/coverage.json).
+- **Validation run:** on linux-x86_64-cuda (borrowed hardware: dated evidence, its absence does not hold a release), cuda backend; last run 1.17.0 on 2026-11-13.
+- **CPU:** ✅ v1.17.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `4934c3590189`, output sha256 `5f570ac872a4e4f3`, [pin](../tests/compatibility/tier-smoke/smollm2-135m-instruct-q8_0.linux-x86_64-cuda.cpu.txt)
+- **CUDA:** ✅ v1.17.0 2026-11-13 on linux-x86_64-cuda (borrowed hardware) at commit `4934c3590189`, output sha256 `5f570ac872a4e4f3`, [pin](../tests/compatibility/tier-smoke/smollm2-135m-instruct-q8_0.linux-x86_64-cuda.cuda.txt)
+- **Metal:** ✅ v1.17.0 2026-11-13 on macos-arm64-metal at commit `4d67402abfd7`, output sha256 `5f570ac872a4e4f3`, [pin](../tests/compatibility/tier-smoke/smollm2-135m-instruct-q8_0.macos-arm64-metal.metal.txt)
+- **LoRA training:** supported (runner 1.17.0, 2026-11-13).
+- **LoRA adapter serving:** supported (runner 1.17.0, 2026-11-13).
 
 ### Spark
 
@@ -2780,7 +2845,6 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-10-22 | [Qwen3.8-Flash-Next, `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`](#qwen3.8-flash-next-gsq-rco-iq3_s) | Tier 2, maintained on report | Migration: the trunk of a Tier 1 MTP head, added 2026-10-23 so the head's smoke can run; not on the owner's Tier 1 roster. | none recorded |
 | 2026-10-22 | [Llama-style dense families (llama)](#arch-llama) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Mistral (mistral)](#arch-mistral) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
-| 2026-10-22 | [SmolLM (smollm)](#arch-smollm) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [StableLM (stablelm)](#arch-stablelm) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Qwen2 (qwen2)](#arch-qwen2) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
 | 2026-10-22 | [Gemma 3 (gemma3)](#arch-gemma3) | Tier 2, maintained on report | Migration: an admitted architecture with no Tier 1 file (audit 2026-10-22, section C). | none recorded |
@@ -2891,6 +2955,9 @@ The record from when tiers applied (retired 2026-11-07), oldest first. Last vali
 | 2026-11-11 | [NVIDIA Nemotron 3.5 Bolt-74B-A9B (NVIDIA), `NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf`](#nemotron-3.5-bolt-74b-a9b-24gb) | Tier 2, maintained on report | Joins the roster 2026-11-11 with the admitting CPU cell from the lab CPU lane (R4.27.4.4 S2), on agreement with llama.cpp on the same bytes: the parent cannot be held in float32. Maintained on report. | none recorded |
 | 2026-11-12 | [Apertus-8B-Instruct-2509 (Swiss AI), `swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf`](#apertus-8b-instruct-2509-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-12 with the admitting CPU and CUDA cells from the lab lanes (R4.38) and a float32 reference measurement against the publisher's checkpoint; a user asked for Apertus. Maintained on report. | none recorded |
 | 2026-11-12 | [Apertus-8B-Instruct-2509 (Swiss AI), `swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf`](#apertus-8b-instruct-2509-q4_k_m) | Tier 2, maintained on report | Joins the roster 2026-11-12 with the admitting CPU and CUDA cells from the lab lanes (R4.38) and a float32 reference measurement against the publisher's checkpoint; a user asked for Apertus. Maintained on report. | none recorded |
+| 2026-11-13 | [SmolLM2-135M-Instruct (Hugging Face), `SmolLM2-135M-Instruct-Q8_0.gguf`](#smollm2-135m-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report. | none recorded |
+| 2026-11-13 | [SmolLM2-1.7B-Instruct (Hugging Face), `SmolLM2-1.7B-Instruct-Q8_0.gguf`](#smollm2-1.7b-instruct-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report. | none recorded |
+| 2026-11-13 | [SmolLM2-1.7B-Instruct (Hugging Face), `SmolLM2-1.7B-Instruct-Q4_K_M.gguf`](#smollm2-1.7b-instruct-q4_k_m) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.39.1) and a float32 reference measurement against the publisher's checkpoint, so the SmolLM family has a file with cells. Maintained on report. | none recorded |
 | 2026-11-13 | [Apertus v1.5 8B (Swiss AI), a third party's text-only extraction, `apertus-v1.5-8b-text-q8_0.gguf`](#apertus-v1.5-8b-text-q8_0) | Tier 2, maintained on report | Joins the roster 2026-11-13 with the admitting CPU and CUDA cells from the lab lanes (R4.38.1) and a float32 reference measurement against the publisher's checkpoint; Apertus v1.5 after 2509, at the owner's request. Maintained on report. | none recorded |
 
 <!-- model-tiers:rows:end -->

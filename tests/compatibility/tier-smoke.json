@@ -4130,6 +4130,288 @@
           }
         }
       }
+    },
+    "smollm2-135m-instruct-q8_0": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/smollm2-135m-instruct-q8_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "5f570ac872a4e4f39958757c4f6a37862ce18e587832ca08a641cd850ca746e2",
+          "bytes": 109,
+          "finish_reason": "stop",
+          "completion_tokens": 26,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "build": {
+              "binary_sha256": "3eddc1c0c18be4b76dd9d2d4bfbe5b0142c97d833a6ccf634987e3ace06f303f",
+              "compiler": "13.3.0",
+              "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+              "dirty": false
+            }
+          }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/smollm2-135m-instruct-q8_0.linux-x86_64-cuda.cuda.txt",
+          "sha256": "5f570ac872a4e4f39958757c4f6a37862ce18e587832ca08a641cd850ca746e2",
+          "bytes": 109,
+          "finish_reason": "stop",
+          "completion_tokens": 26,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "build": {
+              "binary_sha256": "3eddc1c0c18be4b76dd9d2d4bfbe5b0142c97d833a6ccf634987e3ace06f303f",
+              "compiler": "13.3.0",
+              "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+              "dirty": false
+            }
+          }
+        },
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/smollm2-135m-instruct-q8_0.macos-arm64-metal.metal.txt",
+          "sha256": "5f570ac872a4e4f39958757c4f6a37862ce18e587832ca08a641cd850ca746e2",
+          "bytes": 109,
+          "finish_reason": "stop",
+          "completion_tokens": 26,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4d67402abfd733c1e3e4dc8dd701d96336d74140",
+            "build": {
+              "binary_sha256": "e2b6705a111aeb45e47301dccd076d2a6391cc8c07f1a8ecd3a05cc15dafaa99",
+              "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+              "commit": "4d67402abfd733c1e3e4dc8dd701d96336d74140",
+              "dirty": false
+            }
+          }
+        }
+      }
+    },
+    "smollm2-1.7b-instruct-q8_0": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q8_0.linux-x86_64-cuda.cpu.txt",
+          "sha256": "3891fd01d65ae478e0f31a68e89e47ac6732af7d4a13d37d8cfde2f3e0a1ed68",
+          "bytes": 195,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "build": {
+              "binary_sha256": "3eddc1c0c18be4b76dd9d2d4bfbe5b0142c97d833a6ccf634987e3ace06f303f",
+              "compiler": "13.3.0",
+              "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+              "dirty": false
+            }
+          }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q8_0.linux-x86_64-cuda.cuda.txt",
+          "sha256": "3891fd01d65ae478e0f31a68e89e47ac6732af7d4a13d37d8cfde2f3e0a1ed68",
+          "bytes": 195,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "build": {
+              "binary_sha256": "3eddc1c0c18be4b76dd9d2d4bfbe5b0142c97d833a6ccf634987e3ace06f303f",
+              "compiler": "13.3.0",
+              "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+              "dirty": false
+            }
+          }
+        },
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q8_0.macos-arm64-metal.metal.txt",
+          "sha256": "3891fd01d65ae478e0f31a68e89e47ac6732af7d4a13d37d8cfde2f3e0a1ed68",
+          "bytes": 195,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4d67402abfd733c1e3e4dc8dd701d96336d74140",
+            "build": {
+              "binary_sha256": "e2b6705a111aeb45e47301dccd076d2a6391cc8c07f1a8ecd3a05cc15dafaa99",
+              "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+              "commit": "4d67402abfd733c1e3e4dc8dd701d96336d74140",
+              "dirty": false
+            }
+          }
+        }
+      }
+    },
+    "smollm2-1.7b-instruct-q4_k_m": {
+      "pins": {
+        "linux-x86_64-cuda/cpu": {
+          "path": "tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q4_k_m.linux-x86_64-cuda.cpu.txt",
+          "sha256": "96763253eb55a9bb751d717265632527ec1ce365ebd20529f491cfb3bade211a",
+          "bytes": 196,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "build": {
+              "binary_sha256": "3eddc1c0c18be4b76dd9d2d4bfbe5b0142c97d833a6ccf634987e3ace06f303f",
+              "compiler": "13.3.0",
+              "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+              "dirty": false
+            }
+          }
+        },
+        "linux-x86_64-cuda/cuda": {
+          "path": "tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q4_k_m.linux-x86_64-cuda.cuda.txt",
+          "sha256": "96763253eb55a9bb751d717265632527ec1ce365ebd20529f491cfb3bade211a",
+          "bytes": 196,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+            "build": {
+              "binary_sha256": "3eddc1c0c18be4b76dd9d2d4bfbe5b0142c97d833a6ccf634987e3ace06f303f",
+              "compiler": "13.3.0",
+              "commit": "4934c3590189c771c73723a2aac6ff9f5cb2d06e",
+              "dirty": false
+            }
+          }
+        },
+        "macos-arm64-metal/metal": {
+          "path": "tests/compatibility/tier-smoke/smollm2-1.7b-instruct-q4_k_m.macos-arm64-metal.metal.txt",
+          "sha256": "96763253eb55a9bb751d717265632527ec1ce365ebd20529f491cfb3bade211a",
+          "bytes": 196,
+          "finish_reason": "length",
+          "completion_tokens": 48,
+          "spec": {
+            "prompt": "List the eight planets of the Solar System in order from the Sun, one per line, then describe each in one sentence.",
+            "n_predict": 48,
+            "ctx": 512,
+            "server_args": [
+              "-b",
+              "64"
+            ],
+            "request": {
+              "enable_thinking": false
+            }
+          },
+          "pinned": {
+            "date": "2026-11-13",
+            "runner_version": "1.17.0",
+            "commit": "4d67402abfd733c1e3e4dc8dd701d96336d74140",
+            "build": {
+              "binary_sha256": "e2b6705a111aeb45e47301dccd076d2a6391cc8c07f1a8ecd3a05cc15dafaa99",
+              "compiler": "Apple LLVM 21.0.0 (clang-2100.3.34.2)",
+              "commit": "4d67402abfd733c1e3e4dc8dd701d96336d74140",
+              "dirty": false
+            }
+          }
+        }
+      }
     }
   }
 }

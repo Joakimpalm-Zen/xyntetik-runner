@@ -1,0 +1,16 @@
+== Q8_0: bartowski @ 09816acd (A) against unsloth @ 9e6855bc (B)
+tensors: A 272, B 272, equal (type, shape, data) 272, differ 0, only A 0, only B 0
+metadata: only A ['general.languages', 'general.license', 'quantize.imatrix.chunks_count', 'quantize.imatrix.dataset', 'quantize.imatrix.entries_count', 'quantize.imatrix.file'] only B ['llama.attention.key_length', 'llama.attention.value_length']
+metadata values differ: ['general.basename', 'general.finetune', 'general.name', 'tokenizer.ggml.padding_token_id']
+== Q4_K_M: bartowski @ 09816acd (A) against unsloth @ 9e6855bc (B)
+tensors: A 272, B 272, equal (type, shape, data) 66, differ 206, only A 0, only B 0
+  differ: blk.0.ffn_down.weight (14, (1536, 576)) (14, (1536, 576)) data differs
+  differ: blk.0.ffn_gate.weight (6, (576, 1536)) (6, (576, 1536)) data differs
+  differ: blk.0.ffn_up.weight (6, (576, 1536)) (6, (576, 1536)) data differs
+  differ: blk.0.attn_k.weight (6, (576, 192)) (6, (576, 192)) data differs
+  differ: blk.0.attn_output.weight (6, (576, 576)) (6, (576, 576)) data differs
+  differ: blk.0.attn_q.weight (6, (576, 576)) (6, (576, 576)) data differs
+  differ: blk.1.ffn_down.weight (14, (1536, 576)) (14, (1536, 576)) data differs
+  differ: blk.1.ffn_gate.weight (6, (576, 1536)) (6, (576, 1536)) data differs
+metadata: only A ['general.languages', 'general.license', 'quantize.imatrix.chunks_count', 'quantize.imatrix.dataset', 'quantize.imatrix.entries_count', 'quantize.imatrix.file'] only B ['llama.attention.key_length', 'llama.attention.value_length']
+metadata values differ: ['general.basename', 'general.finetune', 'general.name', 'tokenizer.ggml.padding_token_id']
