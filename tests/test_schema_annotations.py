@@ -10,7 +10,8 @@ is a validation rule, and accepting it would let a model break it.
 
 id and $id are annotations only where they change no reference resolution: at the root (a local
 "#/..." pointer resolves against the document either way), or where the subtree under them holds
-no $ref. A nested id over a $ref would move that reference's base, so it is refused.
+no $ref. A nested id over a $ref would move that reference's base, so it is refused, unless it is
+only a fragment ("#a" names a place and moves no base).
 """
 import json
 import pathlib
@@ -52,6 +53,8 @@ ACCEPTED = {
                                          "definitions": {"n": {"type": "string"}},
                                          **_obj(a={"$ref": "#/definitions/n"})},
     "a nested id over no $ref": _obj(a={"id": "#a", "type": "string"}),
+    "a nested fragment-only $id over a $ref": {"definitions": {"n": {"type": "string"}},
+                                              **_obj(a={"$id": "#a", **_obj(b={"$ref": "#/definitions/n"})})},
     "Snowplow's self at the root": {"self": SELF, **_obj(a={"type": "string"})},
 }
 
