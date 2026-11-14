@@ -63,6 +63,13 @@ static inline float xielu_d(float x, float an, float ap, float b, float eps) {
     if (x < eps) return an * expm1f(x) + b;
     return b - an;
 }
+// R8.27: one pre-activation into the backward's piece counts, by the branch
+// xielu() and xielu_d() take (below eps, eps..0 including 0, above 0). The
+// counts are 64-bit: one backward feeds layers times n_ff times tokens, which
+// passes INT_MAX at 64 layers, n_ff 16384 and 2048 tokens.
+static inline void xielu_piece_count(int64_t pc[3], float x, float eps) {
+    pc[x > 0.0f ? 2 : x < eps ? 0 : 1]++;
+}
 
 // Router gating functions, numbered as llama.cpp's llama_expert_gating_func_type
 // so a GGUF's expert_gating_func value maps across without translation.
@@ -740,7 +747,7 @@ typedef struct {
                              // cached on first use. NULL = CPU backward.
                              // Independent of `gpu` — the model itself stays
                              // CPU-resident under --train.
-    int    train_xielu_pieces[3]; // the last backward's xIELU pre-activations
+    int64_t train_xielu_pieces[3]; // the last backward's xIELU pre-activations
                              // by piece (below eps, eps..0, above 0), for the
                              // gradient gate to show every piece was fed
     bool   train_dev;        // R8.19 device mode: every weight product of a

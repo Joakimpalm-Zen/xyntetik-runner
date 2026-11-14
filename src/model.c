@@ -12553,13 +12553,13 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
         // at this layer's effective parameters, then the up site alone
         float an = m->xielu_an[l], ap = m->xielu_ap[l];
         float bb = m->xielu_b[l], ep = m->xielu_eps[l];
-        int *pc = m->train_xielu_pieces;
+        int64_t *pc = m->train_xielu_pieces;
         for (int t = 0; ok && t < T; t++) {
             const float *ut = u + (size_t)t * nff;
             const float *dht = dhact + (size_t)t * nff;
             float *dgt = dgu + (size_t)t * nff;
             for (int i = 0; i < nff; i++) {
-                pc[ut[i] > 0.0f ? 2 : ut[i] < ep ? 0 : 1]++;
+                xielu_piece_count(pc, ut[i], ep);
                 dgt[i] = dht[i] * xielu_d(ut[i], an, ap, bb, ep);
             }
         }

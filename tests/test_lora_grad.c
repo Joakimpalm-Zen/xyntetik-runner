@@ -16,7 +16,9 @@
 //     ./test-lora-grad test.gguf test-lora.full.gguf
 #include "runner.h"
 
+#include <limits.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +29,17 @@ static int g_fail = 0;
     fprintf(stderr, "\n"); g_fail = 1; } } while (0)
 
 enum { T = 14 };
+
+// R8.27: the backward's xIELU piece counts as the gate prints them. One
+// counter takes every pre-activation of a backward, layers times n_ff times
+// tokens: 64 layers at n_ff 16384 and 2048 tokens is 2^31, past INT_MAX, so
+// the counters are 64-bit and the line prints them whole.
+_Static_assert(_Generic(((model_t *)0)->train_xielu_pieces[0], int64_t: 1, default: 0),
+               "train_xielu_pieces must be int64_t: one backward can pass INT_MAX");
+static void xielu_pieces_line(char *buf, size_t n, const int64_t pc[3]) {
+    snprintf(buf, n, "%lld below eps, %lld in eps..0, %lld above 0",
+             (long long)pc[0], (long long)pc[1], (long long)pc[2]);
+}
 
 static double run_backward(model_t *m, const int32_t *toks) {
     double loss = 0;
@@ -148,6 +161,24 @@ int main(int argc, char **argv) {
                worst_act);
     }
 
+    // ---- the xIELU piece counter past INT_MAX (R8.27): the accumulator the
+    // backward calls, started at INT_MAX in each piece, one input each
+    {
+        int64_t pc[3] = { INT_MAX, INT_MAX, INT_MAX };
+        const float eps = -1e-6f;
+        xielu_piece_count(pc, -1.0f, eps);    // below eps
+        xielu_piece_count(pc, -1e-7f, eps);   // eps..0
+        xielu_piece_count(pc, 0.0f, eps);     // 0 is the middle piece too
+        xielu_piece_count(pc, 1.0f, eps);     // above 0
+        char line[128];
+        xielu_pieces_line(line, sizeof line, pc);
+        CHECK(pc[0] == (int64_t)INT_MAX + 1 && pc[1] == (int64_t)INT_MAX + 2 &&
+              pc[2] == (int64_t)INT_MAX + 1, "xielu piece counts wrapped or misfiled: %s", line);
+        CHECK(!strcmp(line, "2147483648 below eps, 2147483649 in eps..0, 2147483648 above 0"),
+              "xielu piece line does not report a count past INT_MAX: %s", line);
+        printf("ok: xielu piece counts pass INT_MAX (%s)\n", line);
+    }
+
     // ---- xIELU's derivative (R8.27) against central differences of the
     // forward's own xielu(), with effective parameters as the loader leaves
     // them: the three pieces (x > 0; x < eps; eps <= x <= 0, where min(x, eps)
@@ -201,13 +232,13 @@ int main(int argc, char **argv) {
         // passes is not passing on one piece alone. At the published eps
         // (-1e-6) the middle piece is too narrow to catch any; a fixture with
         // a wider eps (make-test-model.py --apertus WIDE) must feed it.
-        const int *pc = m.train_xielu_pieces;
+        const int64_t *pc = m.train_xielu_pieces;
         bool wide = false;
         for (int l = 0; l < m.n_layer; l++) wide = wide || m.xielu_eps[l] < -1e-4f;
-        printf("lora-grad: xielu pre-activations by piece: %d below eps, %d in eps..0, %d above 0\n",
-               pc[0], pc[1], pc[2]);
-        CHECK(pc[0] > 0 && pc[2] > 0 && (!wide || pc[1] > 0),
-              "an xielu piece saw no input (%d, %d, %d)", pc[0], pc[1], pc[2]);
+        char line[128];
+        xielu_pieces_line(line, sizeof line, pc);
+        printf("lora-grad: xielu pre-activations by piece: %s\n", line);
+        CHECK(pc[0] > 0 && pc[2] > 0 && (!wide || pc[1] > 0), "an xielu piece saw no input (%s)", line);
     }
     // the positive control for the serve check above: a training step leaves state the check sees
     CHECK(model_has_training_state(&m), "a backward left no training state the check can see");
