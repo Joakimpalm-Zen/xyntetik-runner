@@ -96,6 +96,10 @@ void        *gguf_map_part(const gguf_file *g, uint32_t i, size_t *size);
 // read through it. Split-GGUF continuation is deliberately not followed:
 // callers get this part's header and the split metadata to reason with.
 bool         gguf_open_header(gguf_file *g, const char *path);
+// The path of part i (0-based) of the set `path` belongs to, and the number of parts in *count (1 for a
+// single file, whose only part is itself). False for an index past the end, an unreadable header, or a
+// split file whose name does not follow <prefix>-NNNNN-of-NNNNN.gguf.
+bool         gguf_split_part_path(const char *path, uint32_t i, char *out, size_t cap, uint32_t *count);
 // Attach a second, independently opened GGUF to `g` as one more mapped part:
 // its tensors join g's directory (a name g already has is skipped, g's copy
 // wins) and its mapping is owned and unmapped by g from then on. `extra`'s

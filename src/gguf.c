@@ -473,6 +473,22 @@ static bool split_part_path(char *out, size_t cap, const char *path,
     return wrote > 0 && (size_t)wrote < cap;
 }
 
+bool gguf_split_part_path(const char *path, uint32_t i, char *out, size_t cap, uint32_t *count) {
+    gguf_file probe;
+    if (!gguf_open_header(&probe, path)) return false;
+    uint32_t n = gguf_get_u32(&probe, "split.count", 0);
+    uint32_t current = gguf_get_u32(&probe, "split.no", UINT32_MAX);
+    gguf_close(&probe);
+    if (count) *count = n <= 1 ? 1 : n;
+    if (n <= 1) {
+        if (i != 0) return false;
+        int wrote = snprintf(out, cap, "%s", path);
+        return wrote > 0 && (size_t)wrote < cap;
+    }
+    if (current >= n || i >= n) return false;
+    return split_part_path(out, cap, path, current, n, i);
+}
+
 bool gguf_open(gguf_file *g, const char *path) {
     memset(g, 0, sizeof(*g));
     gguf_file probe;

@@ -583,6 +583,23 @@ static long long file_bytes(const char *path) {
     return plat_stat(path, &st) == 0 ? (long long)st.st_size : -1;
 }
 
+// A parent may be a split set: its size is every part's. Each part after the first repeats the metadata,
+// so a plan made from this size overstates the single file it writes by that much, and the file comes in
+// under the target.
+static long long parent_bytes(const char *path) {
+    uint32_t n = 1;
+    char part[4096];
+    if (!gguf_split_part_path(path, 0, part, sizeof part, &n)) return file_bytes(path);
+    long long total = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        if (!gguf_split_part_path(path, i, part, sizeof part, NULL)) return -1;
+        long long b = file_bytes(part);
+        if (b < 0) return -1;
+        total += b;
+    }
+    return total;
+}
+
 // a YAML scalar: plain when it is a simple token, else double-quoted
 static void yaml_scalar(sbuf *b, const char *s) {
     bool plain = *s != '\0';
@@ -817,7 +834,8 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     size_t len = 0;
     char *text = plat_read_file(res->report, 0, &len);
     gguf_file g;
-    if (!text || !gguf_open_header(&g, o->parent)) {
+    // the whole set, as the costing step read it: a header-only open stops at the named part
+    if (!text || !gguf_open(&g, o->parent)) {
         fprintf(stderr, "error: cannot read %s or the parent\n", res->report);
         free(text);
         return false;
@@ -1708,7 +1726,7 @@ static bool derive_reference(derive_run *d) {
 
 static bool derive_make(derive_run *d) {
     // 2. make the file (a --target-size recipe plans its types first)
-    if (d->o.target_size && !sized_plan(d->self, &d->o, file_bytes(d->o.parent), &d->sz)) return false;
+    if (d->o.target_size && !sized_plan(d->self, &d->o, parent_bytes(d->o.parent), &d->sz)) return false;
     const char *a[32];
     int n = 0;
     a[n++] = "-m"; a[n++] = d->o.parent; a[n++] = "--rewrite"; a[n++] = d->o.out;
@@ -1756,7 +1774,7 @@ static bool derive_record(derive_run *d) {
         fprintf(stderr, "error: cannot hash the parent or the file\n");
         return false;
     }
-    long long pbytes = file_bytes(d->o.parent), fbytes = file_bytes(d->o.out);
+    long long pbytes = parent_bytes(d->o.parent), fbytes = file_bytes(d->o.out);
     bool publisher = d->o.reference_hf != NULL;
     bool passes = d->m.mean_kld <= BAR_MEAN_KLD && d->m.mq_top1_pct >= BAR_MQ_TOP1;
     sb_lit(&d->r, "{\"schema_version\":\"xyntetik.runner.derive.v1\",\"runner_version\":");
@@ -1847,7 +1865,27 @@ static bool derive_record(derive_run *d) {
         }
     }
     sb_lit(&d->r, "},\"parent\":{\"path\":"); sb_str(&d->r, plat_path_base(d->o.parent));
-    sb_fmt(&d->r, ",\"sha256\":\"%s\",\"bytes\":%lld,\"license\":", psha, pbytes);
+    sb_fmt(&d->r, ",\"sha256\":\"%s\",\"bytes\":%lld", psha, pbytes);
+    {
+        // a split parent: every part by name, with its hash and size ("sha256" above is the named part's)
+        uint32_t np = 1;
+        char part[4096], sha[65];
+        if (gguf_split_part_path(d->o.parent, 0, part, sizeof part, &np) && np > 1) {
+            sb_lit(&d->r, ",\"parts\":[");
+            for (uint32_t i = 0; i < np; i++) {
+                if (!gguf_split_part_path(d->o.parent, i, part, sizeof part, NULL) ||
+                    !envelope_file_sha256(part, sha)) {
+                    fprintf(stderr, "error: cannot hash part %u of the parent\n", i + 1);
+                    return false;
+                }
+                sb_fmt(&d->r, "%s{\"path\":", i ? "," : "");
+                sb_str(&d->r, plat_path_base(part));
+                sb_fmt(&d->r, ",\"sha256\":\"%s\",\"bytes\":%lld}", sha, file_bytes(part));
+            }
+            sb_lit(&d->r, "]");
+        }
+    }
+    sb_lit(&d->r, ",\"license\":");
     sb_str(&d->r, d->pm.license);
     sb_lit(&d->r, ",\"license_source\":");
     sb_str(&d->r, d->pm.license_given ? "--license" : "general.license");
