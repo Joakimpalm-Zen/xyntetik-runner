@@ -121,6 +121,7 @@ void engine_reset(engine *e) {
     e->pos = 0;
     e->hit_stop = false; e->stop_id = -1;
     e->rewind_how = REWIND_NONE;
+    model_rope_for_len(e->m, 0);       // R4.40: a fresh sequence starts on the short set
     model_recurrent_mark_drop(e->m);   // a fresh sequence: the mark was over the old one
     sampler_reset(e->smp);
     jsonv_init(&e->jv);
@@ -1472,9 +1473,18 @@ static int test_prefill_delay_ms(void) {
 // from hist under the long one. Once per sequence, at the crossing; a prompt
 // already longer than that was fed under the long set from its first token
 // (engine_rewind). Not interruptible: a stop is seen after it.
+//
+// Only this way, short to long. `upto` is where this feed ends, not where
+// the sequence ends: a long prompt arrives in pieces (a token at a time when
+// it is scored, the messages and then the generation prompt in a chat
+// request), and a piece that ends short of the original context is part of a
+// prompt already on the long set. The way back is a new sequence: a rewind
+// to a shorter prompt, or a reset.
 static void rope_reach(engine *e, int upto) {
     model_t *m = e->m;
-    if (!model_rope_for_len(m, upto) || e->pos == 0 || !e->hist) return;
+    if (m->rope_long || !model_rope_wants_long(m, upto)) return;
+    model_rope_for_len(m, upto);
+    if (e->pos == 0 || !e->hist) return;
     fprintf(stderr, "rope: the sequence passes %d tokens, so its %d positions are computed again "
             "with the long factors\n", m->rope_long_from, e->pos);
     for (int p = 0; p < e->pos; p += m->n_batch) {

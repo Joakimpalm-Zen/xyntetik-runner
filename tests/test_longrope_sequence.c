@@ -210,6 +210,32 @@ int main(int argc, char **argv) {
            "the loss of a 20-token window is the short set's, after a long one");
         free(h_wide); free(h_ref);
     }
+    // ---- gate 7: a long prompt fed in pieces stays on the long set. Only a
+    // sequence that grows past the original context changes set while it is
+    // fed; a piece that ends short of it is part of a longer prompt.
+    {
+        prompt_scores pw, po;
+        float *lw = engine_score_prompt(&wide.e, t, LONG, 0, &pw);
+        float *lo = engine_score_prompt(&one.e, t, LONG, 0, &po);
+        ck(lw && lo && !memcmp(pw.lp, po.lp, sizeof(*pw.lp) * (size_t)LONG),
+           "a 40-token prompt scored token by token is on the long set from its first token");
+        prompt_scores_free(&pw); prompt_scores_free(&po);
+        engine_reset(&wide.e);
+        engine_rewind(&wide.e, t, LONG);
+        wide.e.rope_rebuilds = 0;
+        float *piece = engine_feed(&wide.e, t, 10) ? engine_feed(&wide.e, t + 10, LONG - 10) : NULL;
+        piece = snap(&wide.m, piece);
+        float *cold_l = whole(&cold, t, LONG);
+        ck(wide.e.rope_rebuilds == 0 && differ(&wide.m, piece, cold_l) == 0,
+           "a 40-token prompt fed as 10 and 30 is computed once, on the long set");
+        free(piece); free(cold_l);
+        // and a new sequence after a reset starts on the short set again
+        engine_reset(&wide.e);
+        float *fresh = snap(&wide.m, engine_feed(&wide.e, t, 20));
+        float *ref = whole(&at_orig, t, 20);
+        ck(differ(&wide.m, fresh, ref) == 0, "a reset slot feeds a short sequence on the short set");
+        free(fresh); free(ref);
+    }
     // an image of a one-set load is consistent (a stale flag refused every one)
     {
         free(whole(&one, t, 20));
