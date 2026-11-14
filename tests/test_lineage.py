@@ -353,3 +353,18 @@ def test_a_declined_conversion_reads_as_none_and_a_forced_one_says_so(runner_bin
     n_q4k = sum(1 for t in _types(q4k).values() if t == GGML_Q4_K)
     assert forced["force_requant"] is True, forced
     assert forced["tensors"]["converted"] == n_q4k > 0, (forced, n_q4k)
+
+
+def test_an_in_place_rewrite_records_the_file_it_replaced(runner_bin, tmp_path):
+    """`-m m.gguf --quantize m.gguf`: the rewrite installs over its input, so the
+    input is hashed before anything is installed. Hashed after, the record named
+    the output as its own parent and the original left the lineage."""
+    import hashlib
+    m = tmp_path / "m.gguf"
+    shutil.copy(ROOT / "test.gguf", m)
+    before = hashlib.sha256(m.read_bytes()).hexdigest()
+    rec = _quantize(runner_bin, m, m, "q8_0", tmp_path)
+    after = hashlib.sha256(m.read_bytes()).hexdigest()
+    assert after != before and rec["tensors"]["converted"] > 0
+    assert rec["base"]["sha256"] == before, rec["base"]
+    assert rec["output"]["sha256"] == after, rec["output"]
