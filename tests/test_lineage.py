@@ -391,3 +391,20 @@ def test_a_rewrite_never_overwrites_the_record_it_links(runner_bin, tmp_path):
     rec4 = _quantize(runner_bin, m, out, "q4_0", tmp_path)
     assert rec4["base"]["record"]["path"] == "m.gguf.quant.json"
     assert rec4["base"]["record"]["sha256"] == hashlib.sha256(rec.read_bytes()).hexdigest()
+
+
+def test_an_alias_of_the_input_is_its_own_record_where_files_have_no_inode(runner_bin, tmp_path):
+    """Where the platform reports no inode (Windows' fallback, 0), m.gguf and
+    its absolute path must still read as one file, or a second in-place
+    rewrite written to the absolute path replaces the record it just linked.
+    RUNNER_TEST_NO_INODE takes the no-inode branch on any host."""
+    import os as _os
+    m = tmp_path / "m.gguf"
+    shutil.copy(ROOT / "test.gguf", m)
+    _quantize(runner_bin, "m.gguf", "m.gguf", "q8_0", tmp_path)
+    rec = (tmp_path / "m.gguf.quant.json").read_bytes()
+    env = dict(_os.environ, RUNNER_TEST_NO_INODE="1")
+    p = subprocess.run([str(runner_bin), "-m", "m.gguf", "--quantize", str(m.resolve()), "--quant", "q4_0"],
+                       cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
+    assert p.returncode != 0 and "new file" in p.stderr, p.stderr[-600:]
+    assert (tmp_path / "m.gguf.quant.json").read_bytes() == rec
