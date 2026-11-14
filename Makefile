@@ -3577,6 +3577,17 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	$(TEST_MSG_OOM_RUN)
 	./$(TEST_SHARED)
 	./$(TEST_MLOCK) test-es-mlock.gguf
+	@# R6.73: the OS refusing to wire (EAGAIN under memory pressure) is retried, and named as the
+	@# machine when it persists; RUNNER_TEST_MLOCK_REFUSE=N refuses the next N wire calls
+	@mkdir -p .build; RUNNER_TEST_MLOCK_REFUSE=6 ./$(TEST_MLOCK) test-es-mlock.gguf > .build/test-mlock-transient.out 2>&1; rc=$$?; \
+	if grep -q '^skip:' .build/test-mlock-transient.out; then echo 'test-mlock refusal cases: skipped (no lifecycle here)'; \
+	elif [ $$rc -ne 0 ] || ! grep -q 'retrying' .build/test-mlock-transient.out; then \
+	  echo 'FAIL: a transient refusal to wire was not retried to a pass'; tail -5 .build/test-mlock-transient.out; exit 1; \
+	elif RUNNER_TEST_MLOCK_REFUSE=1000000 ./$(TEST_MLOCK) test-es-mlock.gguf > .build/test-mlock-persistent.out 2>&1; then \
+	  echo 'FAIL: test-mlock passed though the OS refused every lock'; exit 1; \
+	elif ! grep -q 'the machine is short of wireable memory' .build/test-mlock-persistent.out; then \
+	  echo 'FAIL: a persistent refusal to wire was not named as the machine'; tail -5 .build/test-mlock-persistent.out; exit 1; \
+	else echo 'test-mlock refusal cases: a transient refusal retried to a pass, a persistent one named as the machine'; fi
 	./$(TEST_WILLNEED)
 	./$(TEST_FILE_ID)
 	$(METAL_PREFIX_TIGHT) ./$(TEST_PREFIX)
