@@ -47,6 +47,10 @@ enum { JSRE_LEN_MAX = 4096 };
 bool   jsre_lengths(jsre *re, int upto, char *err, size_t errcap);
 bool   jsre_len_ok(const jsre *re, const uint64_t *set, int lo, int hi);
 int    jsre_len_entries(const jsre *re);
+// A closer's filler (see jsre.c): the shortest completion from `set` (NULL:
+// the start) of lo to hi more code points that the pattern accepts, written
+// to `out`; its byte count (cap when it is longer), or -1. Needs jsre_lengths.
+int    jsre_witness(const jsre *re, const uint64_t *set, int lo, int hi, char *out, int cap);
 
 // Byte classes: bytes no transition tells apart (a DFA table has one entry per class).
 int    jsre_classes(const jsre *re);
@@ -74,21 +78,27 @@ typedef uint64_t jsre_st;                   // a state handle: tag << 32 | slot 
 #define JSRE_DEAD ((jsre_st)UINT64_MAX)     // no live state: the byte is refused
 #define JSRE_FAIL ((jsre_st)UINT64_MAX - 1) // the pool refused: its stat names why
 typedef struct {
+    size_t      budget;              // the pool's budget, bytes
     size_t      cache, kept, high;   // bytes: tables and unkept sets, kept sets, the most held
     uint64_t    flushes;
     int         kept_states;
     const char *failed;              // NULL, or why a step returned JSRE_FAIL
+    const char *failed_label;        // the failing DFA's label (jsre_dfa_label), or NULL
+    int         failed_states;       // and the states it held then
 } jsre_pool_stat;
 jsre_pool *jsre_pool_new(size_t budget);
 void       jsre_pool_free(jsre_pool *p);    // after its DFAs
 void       jsre_pool_stats(const jsre_pool *p, jsre_pool_stat *s);
+void       jsre_pool_set_kept_max(jsre_pool *p, int kept_max);  // lowers JSRE_DFA_MAX only (tests)
 jsre_dfa  *jsre_dfa_new(const jsre *re, jsre_pool *pool);
 void       jsre_dfa_free(jsre_dfa *d);
+void       jsre_dfa_label(jsre_dfa *d, const char *label);  // named in a failure (not copied)
 jsre_st    jsre_dfa_start(jsre_dfa *d);
 jsre_st    jsre_dfa_step(jsre_dfa *d, jsre_st st, uint8_t b, bool keep);
 bool       jsre_dfa_accepts(const jsre_dfa *d, jsre_st st);
 int        jsre_dfa_states(const jsre_dfa *d);  // slots holding a state now
 bool       jsre_dfa_kept(const jsre_dfa *d, jsre_st st);  // survives every flush
+const uint64_t *jsre_dfa_set(const jsre_dfa *d, jsre_st st);  // the state's set, or NULL
 // jsre_len_ok for a DFA state (the pattern's jsre_lengths prepared), cached per state.
 bool       jsre_dfa_len_ok(jsre_dfa *d, jsre_st st, int lo, int hi);
 

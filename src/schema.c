@@ -7,7 +7,9 @@
 #include "fpclass.h"
 #include "schema_int.h"
 #include "json.h"
+#include "jsre.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -72,6 +74,11 @@ bool enum_index(snode *n) {
     return true;
 }
 
+// R2.18: whether the pattern automaton's test seams have named themselves
+// (str_dfa); a pool the budget seam lowered also reports, as it goes, what
+// the seam did.
+static _Atomic int said_pool, said_kept;
+
 void schema_free(snode *n) {
     if (!n) return;
     for (int i = 0; i < n->n_lits; i++) free(n->lits[i]);
@@ -82,6 +89,9 @@ void schema_free(snode *n) {
         free(n->pats[k].seg);
     }
     free(n->pats);
+    jsre_dfa_free(n->dfa);    // before any pool: a DFA unlinks itself from its pool
+    jsre_free(n->re);
+    free(n->re_src);
     free(n->sentinel);
     for (int i = 0; i < n->n_props; i++) {
         if (n->keys) free(n->keys[i]);
@@ -94,6 +104,14 @@ void schema_free(snode *n) {
     schema_free(n->items);
     for (int i = 0; i < n->n_alts; i++) schema_free(n->alts[i]);
     free(n->alts);
+    jsre_pool_stat st;
+    if (n->pool && (jsre_pool_stats(n->pool, &st), st.budget < JSRE_POOL_BYTES)) {
+        // the budget seam's evidence that it did something: how often a
+        // pool it lowered flushed (a test of the cache reads this line)
+        fprintf(stderr, "test seam: RUNNER_TEST_JSRE_POOL_BYTES: this request's pattern cache "
+                "flushed %llu times and held at most %zu bytes\n", (unsigned long long)st.flushes, st.high);
+    }
+    jsre_pool_free(n->pool);  // last: every DFA under this node is gone
     free(n);
 }
 
@@ -569,15 +587,41 @@ static const char *class_member(const char *q, const char *rb, bool *ascii,
     return next;
 }
 
-static bool compile_ascii_pattern_value(jv *pv, snode *n, char *err, int errcap);
+static bool compile_segments(jv *pv, snode *n, bool *shape, char *err, int errcap);
+
+/* R2.18: a pattern the segment compiler takes keeps that path (the declared
+   language exactly, and its speed); any other shape goes to the automaton
+   (src/jsre.c), which compiles ECMA-262 itself or refuses by name. The
+   segment compiler's other refusals (a count past INT_MAX) stand. One
+   automaton per string: a second pattern beside one (an allOf of patterns)
+   would need their intersection's lengths and liveness, so it is refused. */
+static bool compile_pattern_value(jv *pv, snode *n, char *err, int errcap) {
+    bool shape = false;
+    char serr[512];
+    if (compile_segments(pv, n, &shape, serr, sizeof serr)) {
+        if (!n->re) return true;
+    } else if (!shape) {
+        snprintf(err, errcap, "%s", serr);
+        return false;
+    } else if (!n->re && !n->n_pats) {
+        n->re = jsre_compile(pv->str, err, (size_t)errcap);
+        if (!n->re) return false;
+        n->re_src = strdup(pv->str);
+        if (!n->re_src) { snprintf(err, errcap, "out of memory compiling a pattern"); return false; }
+        return true;
+    }
+    snprintf(err, errcap, "unsupported: more than one pattern on one string where one of them "
+             "needs the pattern automaton (an allOf of patterns)");
+    return false;
+}
 
 static bool compile_ascii_pattern(jv *s, snode *n, char *err, int errcap) {
     jv *pv = jv_get(s, "pattern");
     if (!pv) return true;
-    return compile_ascii_pattern_value(pv, n, err, errcap);
+    return compile_pattern_value(pv, n, err, errcap);
 }
 
-static bool compile_ascii_pattern_value(jv *pv, snode *n, char *err, int errcap) {
+static bool compile_segments(jv *pv, snode *n, bool *shape, char *err, int errcap) {
     /* declared before the first failure exit: the unwind path frees the
        prefixes owned so far, so the count has to be live from the start */
     pat_seg segs[8];
@@ -697,6 +741,7 @@ oom:
     return false;
 bad:
     for (int i = 0; i < n_segs; i++) free(segs[i].prefix);
+    *shape = pv->type == J_STR;
     snprintf(err, errcap,
              "pattern only supports an anchored sequence of literal runs and "
              "repeated classes ([...], [^...], \\d, \\w, \\s and their "
@@ -1073,7 +1118,7 @@ static snode *compile_string(jv *s, char *err, int errcap) {
     for (int i = 0; all && i < all->n; i++) {
         jv *m = all->items[i];
         jv *pv = jv_get(m, "pattern");
-        if (pv && !compile_ascii_pattern_value(pv, n, err, errcap)) {
+        if (pv && !compile_pattern_value(pv, n, err, errcap)) {
             schema_free(n);
             return NULL;
         }
@@ -1095,6 +1140,22 @@ static snode *compile_string(jv *s, char *err, int errcap) {
     if (n->n_pats > 1 && !patterns_consistent(n, err, errcap)) {
         schema_free(n);
         return NULL;
+    }
+    // the automaton's lengths are exact (jsre_lengths): a prefix is admitted
+    // only when a completion the pattern accepts ends inside the bounds, and
+    // a pattern with none inside them is refused here, not met mid-request
+    if (n->re) {
+        if (!jsre_lengths(n->re, n->max_items, err, (size_t)errcap)) { schema_free(n); return NULL; }
+        uint64_t *start = malloc(jsre_words(n->re) * sizeof *start);
+        if (!start) { snprintf(err, errcap, "out of memory compiling a pattern"); schema_free(n); return NULL; }
+        jsre_start(n->re, start);
+        bool fits = jsre_len_ok(n->re, start, n->min_items, n->max_items);
+        free(start);
+        if (!fits) {
+            snprintf(err, errcap, "pattern allows no string between minLength and maxLength");
+            schema_free(n);
+            return NULL;
+        }
     }
     if (n->n_pats && pat_max_len(n) >= 0 &&
         n->min_items > pat_max_len(n)) {
@@ -1946,6 +2007,7 @@ void sval_init(sval *v, const snode *root) {
     v->stack[0] = (sframe){ .node = root, .phase = P_START };
     v->depth = 1;
     v->last_enum = -1;
+    v->root = root;
 }
 
 // discriminator choice for the frame at stack index `at`: an SN_COND frame
@@ -2294,6 +2356,45 @@ static int leading_ws_ok(const sval *v) {
 }
 
 // feed one byte; returns -1 invalid, 0 consumed, 1 reconsume (frame popped)
+// A test seam's value, when set and below the limit it lowers (it never
+// raises one); 0 otherwise. It names itself on stderr, once a process.
+static unsigned long long lowering_seam(const char *name, unsigned long long limit,
+                                        const char *what, _Atomic int *said) {
+    const char *t = getenv(name);
+    if (!t || !*t) return 0;
+    char *end;
+    unsigned long long v = strtoull(t, &end, 10);
+    if (*end || v == 0 || v >= limit) return 0;
+    if (!atomic_exchange(said, 1))
+        fprintf(stderr, "test seam: %s=%llu lowers %s from %llu\n", name, v, what, limit);
+    return v;
+}
+
+// R2.18: the lazy DFA of a pattern-automaton string, made on its first byte.
+// Its cache goes in the pool of the node this validator started from, one
+// pool per compiled schema. Two test seams lower its limits:
+// RUNNER_TEST_JSRE_POOL_BYTES the cache budget (the answers must not change
+// at any size, even one byte) and RUNNER_TEST_JSRE_KEPT_MAX the kept states
+// (a request reaches the limit's fault in a few bytes).
+static jsre_dfa *str_dfa(const sval *v, const snode *n) {
+    snode *m = (snode *)n;   // the grammar's own, mutable in fact (as enum_index)
+    if (m->dfa) return m->dfa;
+    snode *owner = (snode *)(v->root ? v->root : n);
+    if (!owner->pool) {
+        unsigned long long b = lowering_seam("RUNNER_TEST_JSRE_POOL_BYTES", JSRE_POOL_BYTES,
+                                             "the pattern automaton's cache budget (bytes)", &said_pool);
+        owner->pool = jsre_pool_new(b ? (size_t)b : JSRE_POOL_BYTES);
+        if (!owner->pool) { owner->re_fault = "out of memory making its pattern cache"; return NULL; }
+        unsigned long long k = lowering_seam("RUNNER_TEST_JSRE_KEPT_MAX", JSRE_DFA_MAX,
+                                             "the pattern automaton's kept states", &said_kept);
+        if (k) jsre_pool_set_kept_max(owner->pool, (int)k);
+    }
+    m->dfa = jsre_dfa_new(m->re, owner->pool);
+    if (m->dfa) jsre_dfa_label(m->dfa, m->re_src);
+    else owner->re_fault = "out of memory making its pattern automaton";
+    return m->dfa;
+}
+
 static int feed_byte(sval *v, uint8_t c) {
     if (v->done) return -1; // nothing after the root value
     sframe *f = &v->stack[v->depth - 1];
@@ -2365,6 +2466,13 @@ static int feed_byte(sval *v, uint8_t c) {
         case SN_STR:
             if (c != '"') return -1;
             f->phase = P_STR; f->sub = 0; f->lit_pos = 0;
+            if (n->re) {
+                // the automaton's state rides in `alive`, unused by a string
+                jsre_dfa *d = str_dfa(v, n);
+                jsre_st st = d ? jsre_dfa_start(d) : JSRE_FAIL;
+                if (st == JSRE_FAIL || st == JSRE_DEAD) return -1;
+                f->alive = st;
+            }
             return 0;
         case SN_ENUM:
         case SN_BOOL:
@@ -2430,6 +2538,26 @@ static int feed_byte(sval *v, uint8_t c) {
         }
 
     case P_STR: {
+        if (n->re) {
+            // R2.18: under a pattern a string admits no escape (its value is
+            // its text). Each value byte steps the automaton, keeping the
+            // state when this validator persists; the string must still be
+            // able to finish inside its length bounds, counted in code
+            // points as lit_pos counts them; the closing quote must accept.
+            if (c == '"') {
+                if (!jsre_dfa_accepts(n->dfa, f->alive)) return -1;
+            } else {
+                if (c == '\\') return -1;
+                jsre_st st = jsre_dfa_step(n->dfa, f->alive, c, !v->trial);
+                if (st == JSRE_DEAD || st == JSRE_FAIL) return -1;
+                int after = f->lit_pos + (c < 0x80 || c >= 0xC0);
+                if ((n->min_items > 0 || n->max_items >= 0) &&
+                    !jsre_dfa_len_ok(n->dfa, st, n->min_items - after,
+                                     n->max_items < 0 ? -1 : n->max_items - after))
+                    return -1;
+                f->alive = st;
+            }
+        }
         if (n->n_pats && f->sub == 0 && c != '"') {
             if (c == '\\') return -1;
             // a character starts here: ASCII, or the lead byte of a UTF-8
@@ -2969,7 +3097,27 @@ bool sval_trial(const sval *v, sval *scratch, const char *s, int n) {
            (size_t)ns * sizeof(v->seen_hash[0]));
     memcpy(scratch->seen_depth, v->seen_depth, (size_t)ns);
     jsonv_snapshot(&scratch->any, &v->any);
+    scratch->root = v->root;
+    scratch->trial = true;   // dies with this call: its DFA states are not kept
     return sval_feed(scratch, s, n);
+}
+
+bool sval_pattern_fault(const sval *v, char *msg, int cap) {
+    const snode *r = v->root;
+    if (r && r->re_fault) {
+        snprintf(msg, (size_t)cap, "the pattern automaton stopped: %s", r->re_fault);
+        return true;
+    }
+    if (!r || !r->pool) return false;
+    jsre_pool_stat st;
+    jsre_pool_stats(r->pool, &st);
+    if (!st.failed) return false;
+    snprintf(msg, (size_t)cap, "the pattern automaton for \"%.80s%s\" stopped: %s "
+             "(%d states kept for this request, %d in this pattern's DFA; the limit is %d kept states)",
+             st.failed_label ? st.failed_label : "?",
+             st.failed_label && strlen(st.failed_label) > 80 ? "..." : "",
+             st.failed, st.kept_states, st.failed_states, JSRE_DFA_MAX);
+    return true;
 }
 
 bool sval_feed(sval *v, const char *s, int len) {
@@ -3033,6 +3181,23 @@ static void eq_putc(emitq *q, char c) {
 static bool eq_full(emitq *q) {
     if (q->n + q->reserve >= q->cap - 1) eq_grow(q, q->reserve + 1);
     return q->n + q->reserve >= q->cap - 1;
+}
+
+// R2.18: a pattern-automaton string's filler: the shortest completion the
+// pattern accepts that ends inside the length bounds, from `set` (NULL with
+// `from_start`: the string's start), `lit_pos` code points in. It stops where
+// eq_full keeps room for the closing bytes, as the other fillers do.
+static void eq_witness(emitq *q, const snode *n, const uint64_t *set, bool from_start, int lit_pos) {
+    if (!set && !from_start) return;
+    long need = n->min_items > lit_pos ? (long)n->min_items - lit_pos : 0;
+    if (need > (1L << 20)) need = 1L << 20;
+    int cap = (int)(4 * need + 4 * 4096 + 64);
+    char *buf = malloc((size_t)cap);
+    if (!buf) return;
+    int k = jsre_witness(n->re, set, n->min_items - lit_pos,
+                         n->max_items < 0 ? -1 : n->max_items - lit_pos, buf, cap);
+    for (int i = 0; i < k && !eq_full(q); i++) eq_putc(q, buf[i]);
+    free(buf);
 }
 
 // Finish the string escape generation stopped inside, if any. Shared with
@@ -3219,7 +3384,9 @@ static void emit_min_choice(emitq *q, const snode *n, int depth, int choice) {
         case SN_INT: emit_integer(q, integer_minimal_value(n)); break;
         case SN_STR:
             eq_putc(q, '"');
-            if (n->n_pats) {
+            if (n->re) {
+                eq_witness(q, n, NULL, true, 0);
+            } else if (n->n_pats) {
                 int need = pat_min_len(n);
                 if (n->min_items > need) need = n->min_items;
                 for (int i = 0; i < need && !eq_full(q); i++)
@@ -3352,6 +3519,13 @@ static void close_any_frame(sval *v, emitq *q, const snode *n, const sframe *f) 
 // A string frame: finish a pending escape or UTF-8 scalar, fill to the
 // minimum length, close the quote.
 static void close_string_frame(emitq *q, const snode *n, sframe *f) {
+    if (n->re) {
+        // the automaton holds any code point already begun, and no escape
+        // can be pending under a pattern: the witness finishes both
+        eq_witness(q, n, n->dfa ? jsre_dfa_set(n->dfa, f->alive) : NULL, false, f->lit_pos);
+        eq_putc(q, '"');
+        return;
+    }
     // a dangling backslash or a partial \uXXXX. The character it
     // completes is one lit_pos never saw, and padding as if it were
     // still missing added one filler too many -- straight past

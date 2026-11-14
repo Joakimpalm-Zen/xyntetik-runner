@@ -313,6 +313,8 @@ static node *parse_class(parser *ps) {
 }
 
 static node *parse_alt(parser *ps);
+static bool parse_braces(parser *ps, int *min, int *max);
+static bool malformed_count(const parser *ps);
 
 static node *parse_atom(parser *ps) {
     char c = *ps->p;
@@ -356,6 +358,14 @@ static node *parse_atom(parser *ps) {
         return class_node(ps, &s);
     }
     if (c == '*' || c == '+' || c == '?') return refuse(ps, "a quantifier with nothing to repeat");
+    if (c == '{') {
+        // a count needs an atom before it (both ECMA modes refuse {2} there);
+        // any other brace is text, as legacy mode reads it
+        int lo, hi;
+        parser probe = *ps;
+        if (parse_braces(&probe, &lo, &hi)) return refuse(ps, "a quantifier with nothing to repeat");
+        if (malformed_count(ps)) return refuse(ps, "a malformed count ({}, {,n} or {n,m,k})");
+    }
     if (c == ')') return refuse(ps, "an unbalanced parenthesis");
     int32_t v = take_utf8(ps);
     if (v < 0) return refuse(ps, "invalid UTF-8 in the pattern");
@@ -386,6 +396,15 @@ static bool parse_braces(parser *ps, int *min, int *max) {
     return true;
 }
 
+// A run of digits and commas in braces that is not a count: {}, {,3},
+// {2,3,4}. Legacy ECMA reads it as text, Python 3.11 reads {,3} as {0,3}, the
+// u flag refuses it: engines disagree on what it means, so it is refused.
+static bool malformed_count(const parser *ps) {
+    const char *q = ps->p + 1;
+    while (q < ps->end && ((*q >= '0' && *q <= '9') || *q == ',')) q++;
+    return q < ps->end && *q == '}';   // reached only after parse_braces refused it as a count
+}
+
 static node *parse_term(parser *ps) {
     node *a = parse_atom(ps);
     if (!a) return NULL;
@@ -398,6 +417,8 @@ static node *parse_term(parser *ps) {
         else if (c == '?') { min = 0; max = 1; ps->p++; }
         else if (c == '{' && parse_braces(ps, &min, &max)) {
             if (max >= 0 && max < min) { node_free(a); return refuse(ps, "a count range out of order"); }
+        } else if (c == '{' && malformed_count(ps)) {
+            node_free(a); return refuse(ps, "a malformed count ({}, {,n} or {n,m,k})");
         } else return a;
         // a{2}{3}, a**: ECMA (and Python) refuse a quantifier on a quantifier
         if (quantified) { node_free(a); return refuse(ps, "a quantifier on a quantifier"); }
@@ -904,6 +925,45 @@ bool jsre_len_ok(const jsre *re, const uint64_t *set, int lo, int hi) {
 
 int jsre_len_entries(const jsre *re) { return re->lv_n; }
 
+// The bytes a closer writes to finish a string: the shortest completion from
+// `set` (NULL: the start) that the pattern accepts, of between lo and hi more
+// code points (hi < 0: no upper bound). Built a byte at a time keeping one
+// invariant, that a completion of exactly r more code points exists from
+// here, so it cannot dead-end. Bytes are tried letters and digits first, for
+// a filler a reader can read. -1 when none fits or `cap` is too small.
+int jsre_witness(const jsre *re, const uint64_t *set, int lo, int hi, char *out, int cap) {
+    if (!re->lv) return -1;
+    size_t w = re->words;
+    uint64_t *cur = malloc(w * sizeof *cur), *nx = malloc(w * sizeof *nx);
+    if (!cur || !nx) { free(cur); free(nx); return -1; }
+    if (set) memcpy(cur, set, w * sizeof *cur);
+    else jsre_start(re, cur);
+    int a = lo > 0 ? lo : 0, top = hi >= 0 ? hi : a + re->lv_n + re->lv_period, r = -1;
+    for (int l = a; l <= top && r < 0; l++) if (jsre_len_ok(re, cur, l, l)) r = l;
+    static const char order[] = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-_. ";
+    int n = 0;
+    while (r >= 0) {
+        if (r == 0 && jsre_accepts(re, cur)) { free(cur); free(nx); return n; }
+        int took = -1;
+        for (int k = 0; k < 256 + (int)sizeof order - 1 && took < 0; k++) {
+            int x = k < (int)sizeof order - 1 ? (unsigned char)order[k] : k - ((int)sizeof order - 1);
+            if (x == 0) continue;
+            memcpy(nx, cur, w * sizeof *nx);
+            if (!jsre_step(re, nx, (uint8_t)x)) continue;
+            int c = x < 0x80 || x >= 0xC0;
+            if (r - c < 0 || !jsre_len_ok(re, nx, r - c, r - c)) continue;
+            took = x;
+            r -= c;
+            memcpy(cur, nx, w * sizeof *cur);
+        }
+        if (took < 0) break;
+        if (n >= cap) { free(cur); free(nx); return n; }   // as much as fits: the caller stops short
+        out[n++] = (char)took;
+    }
+    free(cur); free(nx);
+    return -1;
+}
+
 int jsre_states(const jsre *re) { return re->n; }
 size_t jsre_words(const jsre *re) { return re->words; }
 
@@ -985,6 +1045,7 @@ struct jsre_dfa {
     int         nfree, freecap;
     int32_t    *table;   // open addressing over slots, by the set's hash
     size_t      tcap;
+    const char *label;   // the caller's name for it, for a failure's message
     uint8_t     cls[256];
 };
 
@@ -995,9 +1056,11 @@ struct jsre_pool {
     uint64_t    flushes;
     uint32_t    epoch;
     int         kept_states;
+    int         kept_max;        // JSRE_DFA_MAX, or lower (jsre_pool_set_kept_max)
     jsre_dfa  **dfa;
     int         ndfa, dcap;
     const void *owner;           // the filling thread's mark (pool_owner_ok)
+    const jsre_dfa *failed_dfa;  // the DFA whose step failed (failed's subject)
     const char *failed;
 };
 
@@ -1015,8 +1078,8 @@ static uint64_t set_hash(const uint64_t *s, size_t w) {
     return h;
 }
 
-static jsre_st pool_fail(jsre_pool *p, const char *why) {
-    if (!p->failed) p->failed = why;
+static jsre_st pool_fail(jsre_pool *p, const jsre_dfa *d, const char *why) {
+    if (!p->failed) { p->failed = why; p->failed_dfa = d; }
     return JSRE_FAIL;
 }
 
@@ -1026,8 +1089,12 @@ static void note_high(jsre_pool *p) {
 
 jsre_pool *jsre_pool_new(size_t budget) {
     jsre_pool *p = calloc(1, sizeof *p);
-    if (p) { p->budget = budget; p->epoch = 1; }
+    if (p) { p->budget = budget; p->epoch = 1; p->kept_max = JSRE_DFA_MAX; }
     return p;
+}
+
+void jsre_pool_set_kept_max(jsre_pool *p, int kept_max) {
+    if (kept_max > 0 && kept_max < JSRE_DFA_MAX) p->kept_max = kept_max;
 }
 
 void jsre_pool_free(jsre_pool *p) {
@@ -1037,9 +1104,14 @@ void jsre_pool_free(jsre_pool *p) {
 }
 
 void jsre_pool_stats(const jsre_pool *p, jsre_pool_stat *s) {
+    s->budget = p->budget;
     s->cache = p->cache; s->kept = p->kept; s->high = p->high;
     s->flushes = p->flushes; s->kept_states = p->kept_states; s->failed = p->failed;
+    s->failed_label = p->failed_dfa ? p->failed_dfa->label : NULL;
+    s->failed_states = p->failed_dfa ? p->failed_dfa->live : 0;
 }
+
+void jsre_dfa_label(jsre_dfa *d, const char *label) { d->label = label; }
 
 static void hash_insert(jsre_dfa *d, int id) {
     size_t i = set_hash(d->st[id].set, d->re->words) & (d->tcap - 1);
@@ -1097,7 +1169,7 @@ static void pool_flush(jsre_pool *p, jsre_dfa *keep_dfa, int keep_id) {
                 if (d->table[j] >= 0 && !d->st[d->table[j]].set) d->table[j] = -1;
             // linear probing cannot drop entries in place without breaking
             // chains: fail loudly instead of answering from a broken table
-            pool_fail(p, "out of memory in a pattern automaton");
+            pool_fail(p, d, "out of memory in a pattern automaton");
         }
     }
     p->cache = tb;
@@ -1152,12 +1224,18 @@ void jsre_dfa_free(jsre_dfa *d) {
     }
     for (int k = 0; k < p->ndfa; k++)
         if (p->dfa[k] == d) { p->dfa[k] = p->dfa[--p->ndfa]; break; }
+    if (p->failed_dfa == d) p->failed_dfa = NULL;
     free(d->st); free(d->freel); free(d->table); free(d);
 }
 
+// Keep a state: the one place a state becomes kept, so the one place the
+// kept limit is held. A trial usually reached the state first (unkept) and the
+// feed that follows only promotes it; the limit counts promotions too.
 static __attribute__((noinline)) jsre_st keep_handle(jsre_dfa *d, int id) {
     dstate *s = &d->st[id];
     if (!s->kept) {
+        if (d->pool->kept_states >= d->pool->kept_max)
+            return pool_fail(d->pool, d, "more states than one request may keep");
         size_t sbytes = set_cost(d->re);
         s->kept = true;
         d->pool->cache -= sbytes; d->pool->kept += sbytes; d->pool->kept_states++;
@@ -1176,7 +1254,6 @@ static int intern(jsre_dfa *d, const uint64_t *set, bool keep, int cur) {
         if (id < 0) break;
         if (!memcmp(d->st[id].set, set, bytes)) return id;
     }
-    if (keep && p->kept_states >= JSRE_DFA_MAX) { pool_fail(p, "pattern automaton: more kept states than JSRE_DFA_MAX"); return -1; }
     if (!keep) pool_room(p, d, cur, sbytes);
     int id;
     if (d->nfree) id = d->freel[--d->nfree];
@@ -1184,7 +1261,7 @@ static int intern(jsre_dfa *d, const uint64_t *set, bool keep, int cur) {
         if (d->n == d->cap) {
             int cap = d->cap ? d->cap * 2 : 64;
             dstate *g = realloc(d->st, sizeof *g * (size_t)cap);
-            if (!g) { pool_fail(p, "out of memory in a pattern automaton"); return -1; }
+            if (!g) { pool_fail(p, d, "out of memory in a pattern automaton"); return -1; }
             d->st = g; d->cap = cap;
         }
         id = d->n++;
@@ -1192,7 +1269,7 @@ static int intern(jsre_dfa *d, const uint64_t *set, bool keep, int cur) {
     }
     dstate *s = &d->st[id];
     s->set = malloc(bytes);
-    if (!s->set) { pool_fail(p, "out of memory in a pattern automaton"); return -1; }
+    if (!s->set) { pool_fail(p, d, "out of memory in a pattern automaton"); return -1; }
     memcpy(s->set, set, bytes);
     s->next = NULL;
     s->lf = NULL;
@@ -1201,17 +1278,17 @@ static int intern(jsre_dfa *d, const uint64_t *set, bool keep, int cur) {
     p->cache += sbytes;
     d->live++;
     if ((size_t)d->live * 2 > d->tcap) {
-        if (!hash_rebuild(d, d->tcap * 2)) { pool_fail(p, "out of memory in a pattern automaton"); return -1; }
+        if (!hash_rebuild(d, d->tcap * 2)) { pool_fail(p, d, "out of memory in a pattern automaton"); return -1; }
     } else hash_insert(d, id);
     note_high(p);
     return id;
 }
 
 jsre_st jsre_dfa_start(jsre_dfa *d) {
-    if (!pool_owner_ok(d->pool)) return pool_fail(d->pool, "pattern automaton filled from a second thread");
+    if (!pool_owner_ok(d->pool)) return pool_fail(d->pool, d, "pattern automaton filled from a second thread");
     uint64_t set[(JSRE_MAX_STATES + 63) / 64];
     jsre_start(d->re, set);
-    int id = intern(d, set, true, -1);
+    int id = intern(d, set, false, -1);
     return id < 0 ? JSRE_FAIL : keep_handle(d, id);
 }
 
@@ -1222,19 +1299,19 @@ static bool handle_ok(const jsre_dfa *d, jsre_st st) {
 
 static __attribute__((noinline)) jsre_st step_refused(jsre_dfa *d, jsre_st st) {
     if (st == JSRE_DEAD || st == JSRE_FAIL) return st;
-    return pool_fail(d->pool, "pattern automaton: a stale state handle (a trial's state outlived its trial)");
+    return pool_fail(d->pool, d, "pattern automaton: a stale state handle (a trial's state outlived its trial)");
 }
 
 // A fill: the one place the cache changes. Out of line, so the cached step
 // above it needs no stack frame.
 static __attribute__((noinline)) jsre_st step_fill(jsre_dfa *d, uint32_t cur, int c, bool keep) {
     jsre_pool *p = d->pool;
-    if (!pool_owner_ok(p)) return pool_fail(p, "pattern automaton filled from a second thread");
+    if (!pool_owner_ok(p)) return pool_fail(p, d, "pattern automaton filled from a second thread");
     size_t tbytes = table_cost(d->re);
     if (!d->st[cur].next) {
         pool_room(p, d, (int)cur, tbytes);
         int32_t *t = malloc((size_t)d->re->ncls * sizeof(int32_t));
-        if (!t) return pool_fail(p, "out of memory in a pattern automaton");
+        if (!t) return pool_fail(p, d, "out of memory in a pattern automaton");
         for (int k = 0; k < d->re->ncls; k++) t[k] = -2;
         d->st[cur].next = t;
         p->cache += tbytes;
@@ -1266,6 +1343,10 @@ bool jsre_dfa_accepts(const jsre_dfa *d, jsre_st st) {
     return handle_ok(d, st) && d->st[(uint32_t)st].acc;
 }
 
+const uint64_t *jsre_dfa_set(const jsre_dfa *d, jsre_st st) {
+    return handle_ok(d, st) ? d->st[(uint32_t)st].set : NULL;
+}
+
 bool jsre_dfa_kept(const jsre_dfa *d, jsre_st st) {
     return handle_ok(d, st) && d->st[(uint32_t)st].kept;
 }
@@ -1278,7 +1359,7 @@ int jsre_dfa_states(const jsre_dfa *d) { return d->live; }
 static __attribute__((noinline)) bool len_fill(jsre_dfa *d, uint32_t id) {
     jsre_pool *p = d->pool;
     const jsre *re = d->re;
-    if (!pool_owner_ok(p)) { pool_fail(p, "pattern automaton filled from a second thread"); return false; }
+    if (!pool_owner_ok(p)) { pool_fail(p, d, "pattern automaton filled from a second thread"); return false; }
     if (p->cache + lf_cost(re) > p->budget) return false;
     size_t nw = ((size_t)re->lv_n + 63) / 64;
     uint64_t *lf = calloc(nw ? nw : 1, sizeof *lf);

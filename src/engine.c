@@ -1995,6 +1995,8 @@ static bool constraint_token_ok(engine *e, int id, bool schema) {
     engine tmp = *e;
     tmp.cdoc_rec = false;   // shallow copy: it must not touch e's recording
     tmp.constraint_scratch = true;  // ...and may be fed in place, being one
+    tmp.sv.trial = true;            // a trial: it dies here, so its pattern
+                                    // automaton states are not kept (R2.18)
     int visible;
     return constraint_feed(&tmp, schema, buf, n, &visible);
 }
@@ -2261,12 +2263,21 @@ static void schema_trace(const engine *e, bool schema, const char *bytes,
             schema ? e->sv.depth : 0, esc);
 }
 
+// R2.18: a constrained turn that stopped because a pattern automaton hit a
+// limit, not because the model ran out of legal tokens, says so: in the
+// turn's fault (its finish reason) and once in the log.
+static void note_pattern_fault(engine *e) {
+    if (!e->schema || e->constraint_fault[0]) return;
+    if (sval_pattern_fault(&e->sv, e->constraint_fault, (int)sizeof(e->constraint_fault)))
+        fprintf(stderr, "runner: constrained generation stopped: %s\n", e->constraint_fault);
+}
+
 static int constraint_accept(engine *e, bool schema, const char *bytes, int n,
                              gen_cb cb, void *ud) {
     int visible;
     bool fed = constraint_feed(e, schema, bytes, n, &visible);
     schema_trace(e, schema, bytes, n, visible, fed);
-    if (!fed) return 1;
+    if (!fed) { if (schema) note_pattern_fault(e); return 1; }
     // the hidden span is the thinking prelude (tags included); chat serving
     // opts in to receive it so its splitter can surface the reasoning
     int hidden = visible >= 0 ? visible : n;
@@ -2626,6 +2637,7 @@ static int gen_choose(engine *e, float *logits, sample_ok_fn ok, int pos) {
     int tok = engine_pick(e, logits, e->m->n_vocab, ok, pos);
     if (tok < 0) {
         if (tok == -2) e->oom = true;  // error, not a clean stop
+        note_pattern_fault(e);         // a mask a pattern automaton's limit emptied
         e->hit_stop = true;
         return -1;
     }
@@ -2981,6 +2993,7 @@ void engine_gen_begin(engine *e, int max_new) {
     if (e->m) e->m->route_micro_tiles_seen = false;
     e->hit_stop  = false; e->stop_id = -1;
     e->oom       = false;
+    e->constraint_fault[0] = 0;
     e->lp_count  = 0;
     e->stop_lp_at = -1; e->stop_lp = 0;
     e->gen_max   = max_new;

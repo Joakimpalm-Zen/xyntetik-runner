@@ -1006,7 +1006,7 @@ The supported schema subset covers objects, arrays, strings, numbers,
 integers, booleans, null, enums, const, type unions, numeric bounds on both
 `integer` and `number` (`minimum`/`maximum` and their exclusive forms, with a
 forced close completing the value inside the declared range), string
-lengths and supported anchored patterns, array item/count constraints,
+lengths and `pattern`s (below), array item/count constraints,
 scalar-const `oneOf`/`anyOf`, const-discriminated object unions (below), and
 the tool-discriminated object union used by agent clients. Required
 properties are present, unknown properties are blocked
@@ -1048,8 +1048,8 @@ every arbitrary-key value. Mixed fixed properties plus open or schema-valued
 additional properties remain unsupported and are rejected rather than
 silently weakened.
 
-Anchored `pattern`s compile as a sequence of literal runs and repeated
-classes (`[...]`, `[^...]`, `\d`, `\w`, `\s` and their complements, with
+A `pattern` compiles one of two ways. Anchored `pattern`s of a simple shape
+compile as a sequence of literal runs and repeated classes (`[...]`, `[^...]`, `\d`, `\w`, `\s` and their complements, with
 escapes inside a set): `^wf_[a-z0-9-]{6,}$`, `^[A-Z]{3}[0-9]{4}$` and
 `^[^\n\r]*$` all enforce, and a forced close mid-string completes to a
 string the pattern still accepts. A negated or complement class admits every
@@ -1057,11 +1057,63 @@ non-ASCII character whole. The enforced language is the declared one
 restricted to what a JSON string spells unescaped (a control character or a
 quote inside a class was never producible). Every class before the last
 carries a fixed count, so which class a byte belongs to follows from its
-offset; a variable-length class in the middle is refused rather than
-guessed. An `allOf` of string constraints on a string is enforced as their
+offset. An `allOf` of string constraints on a string is enforced as their
 conjunction, every pattern and the tightest bounds together; that is the one
 `allOf` shape accepted (Claude Code 2.1.272 declares
 `SendMessage.to` with two patterns), every other `allOf` is refused by name.
+
+Every other pattern compiles to an automaton, as ECMA-262 reads it with the
+`u` flag, the dialect JSON Schema names:
+
+- **Searched.** An unanchored pattern matches anywhere in the string, so
+  `b(c|d)` accepts `"abce"`; anchor it with `^...$` to describe the whole
+  string. Alternation, groups, counts on groups, lazy quantifiers, `.`, and
+  classes with ranges and escapes all compile.
+- **Code points.** A dot, a class or a count consumes whole code points, so
+  `^.{2}$` accepts `"é😀"`. `\d` and `\w` are ASCII and `\s` is ECMA's white
+  space and line terminators, as ECMA has them (Python's `\d` also matches
+  `٣`; ECMA's does not). A dot is any code point but the four line
+  terminators.
+- **Literal JSON only.** The enforced language is the declared one
+  restricted to what a JSON string spells unescaped. A string under such a
+  pattern admits no escape: its value is its text.
+- **Legacy spellings.** A pattern the `u` flag rejects only for an identity
+  escape (`\-` outside a class, `\_`), a lone brace or a lone bracket is read
+  as without the `u` flag (the escaped character, a literal brace or
+  bracket). Where both readings accept a pattern but differ, as a dot or a
+  negated class meeting a code point above U+FFFF does, the `u` meaning
+  holds.
+- **Refused by name:** backreferences, lookahead and lookbehind, `\b` and
+  `\B`, `\p{...}`, named groups, inline flags, a letter escape ECMA does not
+  define, a count with nothing to repeat, a malformed count (`{}`, `{,3}`,
+  which Python reads as a count and legacy ECMA as text), a `$` before a `^`
+  that only the empty string passes, a pattern that matches no string JSON
+  can spell, and a second pattern beside one of these on the same string.
+- **Exact lengths.** `minLength` and `maxLength` count code points, and a
+  prefix is admitted only while some completion the pattern accepts still
+  ends inside them. `^(ab)+$` between 3 and 5 code points accepts only
+  `"abab"`, refuses `"ababa"` on its fifth character, and between 3 and 3 is
+  refused when the schema compiles. A forced close writes the shortest
+  completion the pattern accepts within the bounds.
+
+Its limits, in one place:
+
+- **4,096 automaton states per pattern**, refused when the schema compiles.
+  A count is built by unrolling it, so a class with many UTF-8 ranges under a
+  large count reaches it: `[^\s@]{1,64}@[^\s@]{1,255}` is refused.
+- **8 MiB of DFA cache per compiled schema**, the transitions the automaton
+  has built so far. Past it the cache is flushed and rebuilt as needed, which
+  costs speed and never changes which tokens are admitted (the same output at
+  one byte of cache is a test).
+- **16,384 kept states per request**: the states a written document passed
+  through, which copies of the validator may still hold, so no flush can drop
+  them. A pattern whose automaton has more distinct states than that, walked
+  by a document that long, ends the request as a fault (below), never as a
+  narrower document.
+- **Lengths that settle within 4,096 code points**: a pattern with length
+  bounds whose possible lengths keep changing past that, such as
+  `^(a{97}|a{101})*$` without a `maxLength`, is refused when the schema
+  compiles.
 
 Unsupported or ambiguous constraints fail at compile/request time. In
 particular, general overlapping `oneOf` branches are not tracked in parallel;
@@ -1133,7 +1185,14 @@ reported the same way on both. Partial text is not returned alongside it:
 unlike a budget truncation, which is a completion and keeps its content under
 `stop_reason: "max_tokens"`, a fault has no `stop_reason` that would not
 misstate why generation stopped. `runner_telemetry.finish_detail` rides on the
-error object so the two faults stay distinguishable.
+error object so the faults stay distinguishable.
+
+A pattern's automaton that reaches its kept-state limit mid-generation (see
+the `pattern` limits above) is the same kind of fault, with
+`finish_detail: "pattern_limit"`. `runner_telemetry.fault` names the
+pattern and the states held, the server log says it once, Responses
+reports `status: "incomplete"` with reason `pattern_limit`, and Messages
+answers the error object with that text as its message.
 
 ### `--top-k 40`: a faster constrained decode with different semantics
 

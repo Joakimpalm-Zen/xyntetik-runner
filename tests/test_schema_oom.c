@@ -82,6 +82,7 @@ static void t_free(void *p) {
 #include "../src/json.c"
 #include "../src/schema.c"
 #include "../src/schema_tools.c"
+#include "../src/jsre.c"     // R2.18: the pattern automaton allocates under the same injection
 #undef malloc
 #undef calloc
 #undef realloc
@@ -125,7 +126,60 @@ static const char *const schemas[] = {
     "{\"type\":\"object\",\"properties\":{\"deep\":{\"type\":\"object\","
         "\"properties\":{\"deeper\":{\"type\":\"array\",\"items\":"
         "{\"type\":\"object\",\"properties\":{\"leaf\":{\"enum\":[1,2,3]}}}}}}}}",
+    // R2.18: patterns the segments cannot take, so the automaton compiles
+    // them (jsre_compile, jsre_lengths, the source copy), with bounds
+    "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\","
+        "\"pattern\":\"^(ab|cd){1,4}-[0-9]{2}$\",\"minLength\":4}},\"required\":[\"id\"]}",
+    "{\"type\":\"string\",\"pattern\":\"[a-z]+@[a-z]+\\\\.(com|org)\",\"maxLength\":40}",
 };
+
+// R2.18: the automaton allocates while it validates too (its DFA states, the
+// tables, the length caches, the pool), so every allocation a constrained
+// feed makes is failed in turn. A failed one refuses the byte and records why
+// (sval_pattern_fault), never crashes, and schema_free leaves nothing behind.
+static void test_pattern_feed_survives_allocation_failure(void) {
+    const char *src = "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\","
+                      "\"pattern\":\"^(ab|cd){1,4}-[0-9]{2}$\",\"minLength\":4}},\"required\":[\"id\"]}";
+    const char *doc = "{\"id\":\"abcd-42\"}";
+    fail_at = -1;
+    alloc_calls = 0;
+    alloc_live = 0;
+    jv *j = json_parse(src, strlen(src));
+    long base_live = alloc_live;
+    char err[256];
+    snode *n = schema_compile(j, err, sizeof(err));
+    assert(n);
+    alloc_calls = 0;
+    sval v; sval_init(&v, n);
+    assert(sval_feed(&v, doc, (int)strlen(doc)) && v.done);
+    long total = alloc_calls;
+    assert(total > 0);                     // the feed did allocate: the sweep is not empty
+    schema_free(n);
+    assert(alloc_live == base_live);
+    int refused = 0;
+    for (long k = 0; k < total; k++) {
+        fail_at = -1;
+        n = schema_compile(j, err, sizeof(err));
+        assert(n);
+        alloc_calls = 0;
+        fail_at = k;
+        sval w; sval_init(&w, n);
+        bool ok = sval_feed(&w, doc, (int)strlen(doc)) && w.done;
+        fail_at = -1;
+        char msg[400];
+        if (!ok) { refused++; assert(sval_pattern_fault(&w, msg, sizeof(msg)) && strstr(msg, "out of memory")); }
+        schema_free(n);
+        if (alloc_live != base_live) {
+            fprintf(stderr, "pattern feed, failing allocation %ld of %ld: %ld block(s) leaked\n",
+                    k, total, alloc_live - base_live);
+            abort();
+        }
+    }
+    assert(refused > 0);
+    jv_free(j);
+    assert(alloc_live == 0);
+    printf("ok: a pattern feed survives each of its %ld allocations failing (%d refused, named)\n", total, refused);
+}
 
 // Every allocation on the compile path is failed in turn. schema_compile may
 // succeed or return NULL, but it must never crash and never strand a block —
@@ -375,6 +429,7 @@ static void test_native_compilers_survive_allocation_failure(void) {
 }
 
 int main(void) {
+    test_pattern_feed_survives_allocation_failure();
     test_compile_survives_allocation_failure();
     test_native_compilers_survive_allocation_failure();
     puts("schema oom tests ok");

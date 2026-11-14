@@ -5192,7 +5192,9 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
         struct jv *sj = json_parse(schema_text, ssz);
         free(schema_text);
         if (!sj) { fprintf(stderr, "error: %s is not valid JSON\n", o->schema_file); return false; }
-        char serr[128];
+        char serr[320];   // a pattern's refusal names its construct (R2.18)
+        // compiled for this one run and freed with it: its pattern caches
+        // belong to this thread (see completion.c's compile site)
         rt->e.schema = schema_compile(sj, serr, sizeof(serr));
         jv_free(sj);
         if (!rt->e.schema) { fprintf(stderr, "error: unsupported schema: %s\n", serr); return false; }

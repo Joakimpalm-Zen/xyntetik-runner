@@ -211,7 +211,7 @@ static snode *atem_string_value(jv *schema, const char *name, bool *raw,
     snode *json = compile_node(schema, err, errcap, 0);
     if (!json) return NULL;
     if (json->kind == SN_STR && json->min_items == 0 &&
-        json->max_items < 0 && json->n_pats == 0) {
+        json->max_items < 0 && json->n_pats == 0 && !json->re) {
         schema_free(json);
         *raw = true;
         return atem_raw("</atem:parameter>");
