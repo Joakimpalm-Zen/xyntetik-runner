@@ -4536,8 +4536,10 @@ static int run_quantize(const cli_opts *o) {
     // the record named the output as its own parent.
     char bsha[65] = "", osha[65] = "", xsha[65] = "";
     if (!envelope_file_sha256(o->model_path, bsha)) {
-        fprintf(stderr, "error: cannot hash %s for the rewrite's provenance record\n",
-                o->model_path);
+        // the first open of the input: a missing file fails here, as the
+        // rewrite's own open would
+        fprintf(stderr, "error: cannot open %s to hash it for the rewrite's "
+                "provenance record\n", o->model_path);
         quantize_set_imatrix(NULL);
         return 1;
     }
