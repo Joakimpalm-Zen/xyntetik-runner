@@ -300,6 +300,38 @@ class CommandGate(unittest.TestCase):
                 self.assertEqual(run(where, "CUDA runtime is available"), 0, where)
             self.assertEqual(run("/w/tests/test_plain.py", "no CUDA device"), 1)
 
+    def test_a_metal_only_skip_in_the_cuda_lane_names_no_device_the_lane_has(self):
+        """test-cuda-gated fails on a skip whose reason matches its pattern,
+        and "Metal device not available" matches on "device": a Metal-only
+        case added to a file of the lane (the Apertus xIELU kernel's, R3.59)
+        failed the CUDA gate though every CUDA case passed. A Mac never takes
+        that skip, so only the lane saw it. Here every skip of the lane's
+        files that a host without Metal takes is read on any host."""
+        import ast
+        make = (ROOT / "Makefile").read_text()
+        files = re.search(r"^CUDA_GATED_TESTS = ((?:.*\\\n)*.*)$", make, re.M).group(1).split()
+        files = [f for f in files if f != "\\"]
+        self.assertIn("tests/test_apertus.py", files)
+        lane = re.search(r"^test-cuda-gated:.*\n(?:\t.*\n)*?\t.*--no-skips-matching '([^']+)'", make, re.M).group(1)
+        bad = []
+        for f in files:
+            for node in ast.walk(ast.parse((ROOT / f).read_text())):
+                if not isinstance(node, ast.If):
+                    continue
+                cond = ast.unparse(node.test).lower()
+                # "!= metal" is the skip a CUDA host takes; "== metal" (a
+                # CUDA-only case stepping aside on a Mac) never runs there.
+                if "metal" not in cond or "cuda" in cond or not ("!=" in cond or "not in" in cond):
+                    continue
+                for st in node.body:
+                    call = getattr(st, "value", None)
+                    if (isinstance(st, ast.Expr) and isinstance(call, ast.Call)
+                            and ast.unparse(call.func) == "pytest.skip" and call.args
+                            and isinstance(call.args[0], ast.Constant)
+                            and re.search(lane, str(call.args[0].value))):
+                        bad.append("%s:%d: %s" % (f, st.lineno, call.args[0].value))
+        self.assertEqual(bad, [], "the CUDA lane reads these Metal-only skips as a skipped device test")
+
 
 class ShutdownGate(unittest.TestCase):
     def test_forced_kill_is_not_a_clean_shutdown(self):

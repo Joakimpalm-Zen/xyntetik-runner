@@ -114,6 +114,19 @@ def test_partial_dimension_rope_trains(fx, arch):
     assert _info(exe, f)["training"] == {"supported": True, "reason": None, "host": "cpu"}
 
 
+def test_apertus_trains_and_gpt_oss_keeps_its_refusal(fx):
+    """R8.27: Apertus's ungated xIELU FFN is in the backward; gpt-oss's OAI
+    SwiGLU is not, and its refusal now names gpt-oss alone."""
+    exe, d = fx
+    f = d / "apertus.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--apertus", "LAYERS",
+                    str(f)], check=True, stdout=subprocess.DEVNULL)
+    assert _info(exe, f)["training"] == {"supported": True, "reason": None, "host": "cpu"}
+    info = _info(exe, d / "moe.gptoss-mxfp4.gguf")
+    assert info["training"]["supported"] is False
+    assert info["training"]["reason"] == "FFN activation not in the backward (gpt-oss)"
+
+
 def test_layernorm_refuses_training_by_name(fx):
     exe, d = fx
     f = d / "stablelm.gguf"

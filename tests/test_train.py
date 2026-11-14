@@ -102,6 +102,8 @@ TRAIN_FAMILIES = {
     "e-series": ("make-test-model.py", ["--eseries", "3,8", "--drop-kv", "shared"], None),
     "muse": ("make-test-model.py", ["--muse-glimmer"], None),
     "granite": ("make-test-model.py", ["--granite"], None),
+    # R8.27: Apertus, ungated up -> xIELU -> down with per-layer parameters
+    "apertus": ("make-test-model.py", ["--apertus", "LAYERS"], None),
     "q8_0": ("make-test-model.py", ["--quant", "q8_0"], None),
     "partial-rope": ("make-test-model.py", ["--arch", "qwen3", "--rope-dim", "8"], None),
     "qwen35": ("make-test-ornith.py", [], None),
@@ -219,7 +221,7 @@ def test_rank_r_partial_blocks_keep_the_chains(runner_bin, tmp_path, rank):
 # within rounding: 4 steps a family against the CPU run, every step's loss
 # within 1e-4 relative, and the record names the device. Skips where no CUDA
 # device is usable (the error it gives there is checked below).
-@pytest.mark.parametrize("family", ["base", "q8_0", "gemma4", "qwen35", "clef", "moe-renorm"])
+@pytest.mark.parametrize("family", ["base", "q8_0", "gemma4", "qwen35", "clef", "moe-renorm", "apertus"])
 def test_train_gpu_matches_cpu_within_rounding(runner_bin, base, tmp_path, family):
     d = base if family == "base" else _family_fixture(tmp_path, family)
     runs = {}

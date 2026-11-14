@@ -16,7 +16,9 @@
 //     ./test-lora-grad test.gguf test-lora.full.gguf
 #include "runner.h"
 
+#include <limits.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +29,17 @@ static int g_fail = 0;
     fprintf(stderr, "\n"); g_fail = 1; } } while (0)
 
 enum { T = 14 };
+
+// R8.27: the backward's xIELU piece counts as the gate prints them. One
+// counter takes every pre-activation of a backward, layers times n_ff times
+// tokens: 64 layers at n_ff 16384 and 2048 tokens is 2^31, past INT_MAX, so
+// the counters are 64-bit and the line prints them whole.
+_Static_assert(_Generic(((model_t *)0)->train_xielu_pieces[0], int64_t: 1, default: 0),
+               "train_xielu_pieces must be int64_t: one backward can pass INT_MAX");
+static void xielu_pieces_line(char *buf, size_t n, const int64_t pc[3]) {
+    snprintf(buf, n, "%lld below eps, %lld in eps..0, %lld above 0",
+             (long long)pc[0], (long long)pc[1], (long long)pc[2]);
+}
 
 static double run_backward(model_t *m, const int32_t *toks) {
     double loss = 0;
@@ -148,8 +161,85 @@ int main(int argc, char **argv) {
                worst_act);
     }
 
+    // ---- the xIELU piece counter past INT_MAX (R8.27): the accumulator the
+    // backward calls, started at INT_MAX in each piece, one input each
+    {
+        int64_t pc[3] = { INT_MAX, INT_MAX, INT_MAX };
+        const float eps = -1e-6f;
+        xielu_piece_count(pc, -1.0f, eps);    // below eps
+        xielu_piece_count(pc, -1e-7f, eps);   // eps..0
+        xielu_piece_count(pc, 0.0f, eps);     // 0 is the middle piece too
+        xielu_piece_count(pc, 1.0f, eps);     // above 0
+        char line[128];
+        xielu_pieces_line(line, sizeof line, pc);
+        CHECK(pc[0] == (int64_t)INT_MAX + 1 && pc[1] == (int64_t)INT_MAX + 2 &&
+              pc[2] == (int64_t)INT_MAX + 1, "xielu piece counts wrapped or misfiled: %s", line);
+        CHECK(!strcmp(line, "2147483648 below eps, 2147483649 in eps..0, 2147483648 above 0"),
+              "xielu piece line does not report a count past INT_MAX: %s", line);
+        printf("ok: xielu piece counts pass INT_MAX (%s)\n", line);
+    }
+
+    // ---- xIELU's derivative (R8.27) against central differences of the
+    // forward's own xielu(), with effective parameters as the loader leaves
+    // them: the three pieces (x > 0; x < eps; eps <= x <= 0, where min(x, eps)
+    // is constant) away from where they meet, the middle piece's interior on
+    // the two wide-eps sets, and the meeting points themselves. x = 0 and
+    // x = eps both take the forward's middle branch (x > 0 is false, x < eps
+    // is false), so the backward must give that piece's b - an there; at 0
+    // the pieces' derivatives differ (b - an against b), and taking the other
+    // one would train against a function serving does not compute.
+    {
+        const float P[3][4] = {   // an, ap, b, eps
+            { 1.19463f, 0.8f, 0.5f, -1e-6f },
+            { 2.85f, 3.05f, 0.35f, -0.02f },
+            { 0.9f, 0.05f, 0.6f, -0.02f },
+        };
+        double worst = 0;
+        int mid_pts = 0;
+        for (int k = 0; k < 3; k++) {
+            float an = P[k][0], ap = P[k][1], b = P[k][2], eps = P[k][3];
+            const double h = 1e-3;
+            for (int j = -600; j <= 600; j++) {
+                double x = j * 0.01;
+                // a central difference across a meeting point is neither piece's derivative
+                if (fabs(x) < 2 * h || fabs(x - eps) < 2 * h) continue;
+                double fd = ((double)model_xielu((float)(x + h), an, ap, b, eps) -
+                             (double)model_xielu((float)(x - h), an, ap, b, eps)) / (2 * h);
+                double d = model_xielu_deriv((float)x, an, ap, b, eps);
+                double err = fabs(fd - d) / fmax(1.0, fabs(fd));
+                if (err > worst) worst = err;
+                if (x < 0 && x > eps) mid_pts++;
+                CHECK(err < 2e-3, "xielu'(%.2f; an %g ap %g b %g eps %g) = %.6f, central difference %.6f",
+                      x, an, ap, b, eps, d, fd);
+            }
+            float at0 = model_xielu_deriv(0.0f, an, ap, b, eps);
+            float ateps = model_xielu_deriv(eps, an, ap, b, eps);
+            CHECK(at0 == b - an, "xielu'(0) = %g, the middle piece's b - an is %g", at0, b - an);
+            CHECK(ateps == b - an, "xielu'(eps) = %g, the middle piece's b - an is %g", ateps, b - an);
+            // and the forward took that branch there: f(0) is the middle piece's expm1(eps) * an
+            CHECK(model_xielu(0.0f, an, ap, b, eps) == expm1f(eps) * an,
+                  "xielu(0) is not the middle branch's value");
+        }
+        CHECK(mid_pts > 0, "no central difference landed inside eps < x < 0");
+        printf("ok: xielu' matches central differences, worst rel err %.2e (%d inside eps..0); "
+               "xielu'(0) and xielu'(eps) are the middle piece's b - an\n", worst, mid_pts);
+    }
+
     // ---- determinism: two runs, byte-identical grads and bit-equal loss
     double l1 = run_backward(&m, toks);
+    if (m.ffn_act == ACT_XIELU) {
+        // R8.27: the backward's xIELU pre-activations, by piece, so a gate that
+        // passes is not passing on one piece alone. At the published eps
+        // (-1e-6) the middle piece is too narrow to catch any; a fixture with
+        // a wider eps (make-test-model.py --apertus WIDE) must feed it.
+        const int64_t *pc = m.train_xielu_pieces;
+        bool wide = false;
+        for (int l = 0; l < m.n_layer; l++) wide = wide || m.xielu_eps[l] < -1e-4f;
+        char line[128];
+        xielu_pieces_line(line, sizeof line, pc);
+        printf("lora-grad: xielu pre-activations by piece: %s\n", line);
+        CHECK(pc[0] > 0 && pc[2] > 0 && (!wide || pc[1] > 0), "an xielu piece saw no input (%s)", line);
+    }
     // the positive control for the serve check above: a training step leaves state the check sees
     CHECK(model_has_training_state(&m), "a backward left no training state the check can see");
     // snapshot every grad buffer
