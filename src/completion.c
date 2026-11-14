@@ -5374,7 +5374,9 @@ static void turn_generate(turn_result *t, float *logits) {
                           q->req_stops, q->n_req_stops, q->script_text != NULL);
             fs = &own;
         }
-        repeat_count_note(s, e, q, prep->toks, prep->n_prompt, fs->json.s, fs->json.n);
+        // the prompt as the receipt reads it (e->hist): prep->toks is freed when
+        // the prefill ends, before this turn generates
+        repeat_count_note(s, e, q, e->hist, prep->n_prompt, fs->json.s, fs->json.n);
         free(own.json.s);
     }
 }
