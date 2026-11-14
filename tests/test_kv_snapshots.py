@@ -474,3 +474,109 @@ def test_a_request_built_on_a_preamble_snapshot_names_it_in_its_receipt(runner_b
                         "off", "-t", "2", "-c", "512", "--chat-template", "chatml"],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
     assert v.returncode == 0 and b"VERIFIED" in v.stderr, v.stderr[-400:]
+
+
+# ---- the second read's four findings (R3.62) ----
+
+def test_a_preamble_whose_rows_took_the_long_factor_set_is_not_written(runner_bin, tmp_path):
+    """A LongRoPE model rotates a sequence longer than its original context
+    with the long factors from the first token (R4.40.1). A preamble within
+    the original context, inside such a sequence, has long-set rows; a file
+    of them would be loaded as short-set rows by a request that stays short.
+    It is written only when the slot's rows are on the set the preamble's own
+    length takes."""
+    model = tmp_path / "phi3.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--arch", "phi3",
+                    "--longrope-orig", "256", str(model)], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    system = SYSTEM[:70]
+    short_snaps, long_snaps = tmp_path / "short", tmp_path / "long"
+    with _auto(runner_bin, model, short_snaps) as a:
+        d = _chat(a, system, "List the files.")
+        assert d["prompt"] + 8 <= 256, d             # the whole turn stays within the original context
+        assert len(_wait_files(short_snaps, 1)) == 1
+    with _auto(runner_bin, model, long_snaps) as b:
+        d = _chat(b, system, "List the files in the repository, then say which of them is the "
+                             "largest and which was changed last, one line for each of them.")
+        assert d["prompt"] > 256, d                  # the sequence is on the long set
+        import time
+        time.sleep(1.5)
+        assert not list(long_snaps.glob("pre-*")), list(long_snaps.iterdir())
+
+
+def test_the_cap_never_removes_a_snapshot_the_user_named(runner_bin, fx, tmp_path):
+    snaps = tmp_path / "snaps"
+    with _auto(runner_bin, fx["model"], snaps, "64:0.1") as a:
+        st, body = _post(a, "/v1/runner/contexts", {"id": "mine", "prompt": MEMORY})
+        assert st == 200, body
+        st, body = _post(a, "/v1/runner/contexts/mine/snapshot", {"name": "pre-manual"})
+        assert st == 200, body
+        os.utime(snaps / "pre-manual.kv", (1, 1))    # the oldest file in the directory
+        for i in range(4):
+            _chat(a, SYSTEM + " Session %d of the day." % i, "List the files.")
+            _wait_files(snaps, 1)
+        # a name of the automatic shape is not the user's to take
+        st, body = _post(a, "/v1/runner/contexts/mine/snapshot", {"name": "pre-" + "0" * 32})
+        assert st == 400 and body["error"]["code"] == "invalid_value", body
+    assert (snaps / "pre-manual.kv").exists() and (snaps / "pre-manual.kv.json").exists()
+
+
+def test_the_cap_gives_up_on_a_file_it_cannot_remove(runner_bin, fx, tmp_path):
+    """An entry of the automatic shape that cannot be removed (here a
+    directory) used to be chosen again for ever, with the snapshot lock
+    held: the request that triggered it never released its slot."""
+    snaps = tmp_path / "snaps"
+    snaps.mkdir()
+    stuck = snaps / ("pre-" + "0" * 32 + ".kv")
+    stuck.mkdir()
+    (stuck / "x").write_bytes(b"0" * 200_000)
+    os.utime(stuck, (1, 1))
+    with _auto(runner_bin, fx["model"], snaps, "64:0.1") as a:
+        for i in range(3):
+            d = _chat(a, SYSTEM + " Session %d of the day." % i, "List the files.")
+            assert d["reuse"] in ("none", "kv"), d
+        kv = [p for p in _wait_files(snaps, 2) if p.is_file()]
+        assert kv, list(snaps.iterdir())
+    assert stuck.is_dir()
+
+
+def test_two_slots_keep_their_own_snapshot_in_their_receipts(runner_bin, fx, tmp_path):
+    """What a turn started from is the slot's own fact: a second slot loading
+    another preamble while the first still generates must not take it away."""
+    import threading
+    snaps, rcpt = tmp_path / "snaps", tmp_path / "r"
+    sys_a, sys_b = SYSTEM + " You work on project A.", SYSTEM + " You work on project B."
+    with _auto(runner_bin, fx["model"], snaps) as w:
+        _chat(w, sys_a, "List the files.")
+        _wait_files(snaps, 1)
+        _chat(w, sys_b, "List the files.")
+        assert len(_wait_files(snaps, 2)) == 2
+
+    def ask(srv, system, n, out):
+        st, body = _post(srv, "/v1/chat/completions", {
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": "Which file is the largest?"}],
+            "max_tokens": n, "temperature": 0, "ignore_eos": True})
+        out.append((st, body))
+
+    env = dict(os.environ, RUNNER_TEST_STEP_DELAY_MS="60")
+    with RunnerServer(runner_bin, fx["model"], ctx=512, parallel=2, env=env, extra_args=[
+            "--gpu", "off", "-t", "2", "--chat-template", "chatml", "--kv-snapshots", str(snaps),
+            "--kv-snapshots-auto", "64", "--receipts", str(rcpt)]) as srv:
+        first, second = [], []
+        t = threading.Thread(target=ask, args=(srv, sys_a, 40, first))
+        t.start()
+        import time
+        time.sleep(0.8)                      # the first turn is generating
+        ask(srv, sys_b, 4, second)           # a second slot loads the other preamble and finishes
+        t.join(timeout=120)
+    recs = {}
+    for st, body in first + second:
+        assert st == 200, body
+        tel = body["runner_telemetry"]
+        assert tel["prompt_reuse"] == "preamble_snapshot", tel
+        rec = json.loads((rcpt / tel["receipt"]["file"]).read_text())
+        recs[tel["context"]["id"]] = rec["serve"].get("kv_snapshot")
+    assert len(recs) == 2, recs
+    for name, snap in recs.items():
+        assert snap and snap["name"] == name, recs
