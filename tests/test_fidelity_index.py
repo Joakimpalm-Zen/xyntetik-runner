@@ -138,3 +138,66 @@ def test_a_roster_name_pinned_twice_identifies_nothing(tmp_path):
     md = (out / "docs" / "fidelity-index.md").read_text()
     assert "rost/er-GGUF" not in md, md
     assert "file not identified (the report calls it Roster-Q6_K.gguf)" in md, md
+
+# R7.21.2: which engine served an HTTP side, as the server says itself.
+
+import contextlib  # noqa: E402
+import http.server  # noqa: E402
+import threading  # noqa: E402
+
+
+def _gold_module():
+    spec = importlib.util.spec_from_file_location("gold_logits", ROOT / "scripts" / "gold-logits.py")
+    gl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gl)
+    return gl
+
+
+@contextlib.contextmanager
+def _stand_in(routes, server_header):
+    class H(http.server.BaseHTTPRequestHandler):
+        def version_string(self):
+            return server_header
+
+        def do_GET(self):
+            body = routes.get(self.path)
+            self.send_response(200 if body is not None else 404)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(body if body is not None else {"error": "no"}).encode())
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_an_endpoint_says_which_engine_it_is():
+    gl = _gold_module()
+    with _stand_in({"/v1/capabilities": {"object": "runner.capabilities", "version": "1.18.0"}}, "x") as ep:
+        assert gl.endpoint_engine(ep) == {"name": "runner", "version": "1.18.0", "from": "/v1/capabilities"}
+    with _stand_in({"/props": {"build_info": "b10353-abcdef0"}}, "llama.cpp") as ep:
+        assert gl.endpoint_engine(ep) == {"name": "llama.cpp", "version": "b10353-abcdef0", "from": "/props"}
+    with _stand_in({}, "SomeServer/2.1") as ep:
+        assert gl.endpoint_engine(ep) == {"name": "SomeServer/2.1", "version": None, "from": "Server header"}
+    assert gl.endpoint_engine("http://127.0.0.1:9") == {"name": "unknown", "version": None, "from": None}
+
+
+def test_the_index_reads_a_sides_engine(tmp_path):
+    reports, join, roster = _fixture(tmp_path)
+    rep = reports / "two" / "gold.json"
+    d = json.loads(rep.read_text())
+    d["summary"]["sides"]["a"]["engine"] = {"name": "llama.cpp", "version": "b10353-abcdef0", "from": "/props"}
+    rep.write_text(json.dumps(d))
+    out = tmp_path / "out"
+    r = _run("--write", "--reports", reports, "--join", join, "--roster", roster, "--out", out)
+    assert r.returncode == 0, r.stderr
+    md = (out / "docs" / "fidelity-index.md").read_text()
+    assert any("Joined-Q8_0.gguf" in l and "| llama.cpp b10353-abcdef0 |" in l for l in md.splitlines()), md
