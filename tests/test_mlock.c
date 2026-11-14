@@ -306,8 +306,14 @@ int main(int argc, char **argv) {
         sleep(1);
     }
 #else
+    // Windows has no locked-memory limit to measure against, so nothing is
+    // wired here. Said in the words the gate reads for a host that cannot run
+    // the lifecycle: a plain "skip" passed the plan and then failed the
+    // gate's refusal cases, which look for a retry that never happens here.
     (void)argc; (void)argv;
-    printf("skip: no locked-memory limit to measure against on Windows\n");
+    printf("test-mlock: NOT RUN: no locked-memory limit to measure against on Windows; "
+           "only the lock plan was checked, nothing was wired\n");
+    return 0;
 #endif
     if (g_fail) return 1;
     printf("test-mlock: all checks passed\n");
