@@ -437,6 +437,25 @@ static bool swa_pattern_array(gguf_file *g, const char *key, bool *out, int n) {
     return true;
 }
 
+// A frequency table over a publisher's per-dimension factors: dst = num / den,
+// each quotient ONE scalar division, so it is the correctly rounded one on
+// every host and for every caller. Left to the loop it stood in, it was not:
+// under -ffast-math gcc vectorizes a float division as a reciprocal estimate
+// with a Newton step, which can land an ulp off, and whether a loop is
+// vectorized depends on its shape. The loop that built a two-set load's short
+// table and the loop that builds a one-set load's were different loops, so on
+// some x86 hosts the same file's short table differed by an ulp between a
+// load past its original context and a load at it, and the logits with it
+// (R6.78). The volatile keeps the division out of a vector; noinline keeps
+// one copy.
+__attribute__((noinline))
+static void rope_div_factors(float *dst, const float *num, const float *den, int n) {
+    for (int j = 0; j < n; j++) {
+        volatile float q = num[j] / den[j];
+        dst[j] = q;
+    }
+}
+
 static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
                        float base_ovr, float scale_ovr, float yarn_ovr) {
     char key[128];
@@ -452,8 +471,7 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
     // per-dimension frequency factors (llama 3.x long-context models)
     gguf_tensor *ff = gguf_find_tensor(g, "rope_freqs.weight");
     if (ff && ff->type == T_F32 && (int)ff->ne[0] >= half) {
-        const float *f = ff->data;
-        for (int j = 0; j < half; j++) m->rope_inv_freq[j] /= f[j];
+        rope_div_factors(m->rope_inv_freq, m->rope_inv_freq, ff->data, half);
         fprintf(stderr, "rope: using model frequency factors (rope_freqs.weight)\n");
     }
 
@@ -478,18 +496,15 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
             fl && fl->type == T_F32 && (int)fl->ne[0] >= half) {
             lng = m->rope_freq_long = malloc(sizeof(float) * half);
             if (!lng) return false;
-            const float *s = fs->data, *l = fl->data;
-            for (int j = 0; j < half; j++) {
-                lng[j] = m->rope_inv_freq[j] / l[j];
-                m->rope_inv_freq[j] /= s[j];
-            }
+            // each set through the call a single table takes
+            rope_div_factors(lng, m->rope_inv_freq, fl->data, half);
+            rope_div_factors(m->rope_inv_freq, m->rope_inv_freq, fs->data, half);
             m->rope_mscale = gguf_get_f32(g, AK("rope.scaling.attn_factor"), 1.0f);
             m->rope_long_from = orig_ctx;
             fprintf(stderr, "rope: phi3 LongRoPE, short factors for a sequence of up to %d tokens and "
                     "long factors for a longer one, mscale %.4f\n", orig_ctx, (double)m->rope_mscale);
         } else if (rf && rf->type == T_F32 && (int)rf->ne[0] >= half) {
-            const float *f = rf->data;
-            for (int j = 0; j < half; j++) m->rope_inv_freq[j] /= f[j];
+            rope_div_factors(m->rope_inv_freq, m->rope_inv_freq, rf->data, half);
             m->rope_mscale = gguf_get_f32(g, AK("rope.scaling.attn_factor"), 1.0f);
             fprintf(stderr, "rope: phi3 LongRoPE %s factors, mscale %.4f\n",
                     use_long ? "long" : "short", (double)m->rope_mscale);

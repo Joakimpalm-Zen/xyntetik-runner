@@ -122,6 +122,20 @@ int main(int argc, char **argv) {
     ck(same < half, "the fixture's two sets differ, so the gates below can tell them apart");
     ck(!memcmp(one.m.rope_inv_freq, wide.m.rope_freq_long, sizeof(float) * (size_t)half),
        "a one-set load rotates with the long table");
+    // Engine against engine, to the bit (R6.78): the short table of a load
+    // past the original context is the table a load at it builds. On some
+    // x86 hosts it was an ulp off, and gate 2 failed there with nothing to
+    // say why.
+    {
+        int off = 0, first = -1;
+        for (int j = 0; j < half; j++)
+            if (wide.m.rope_freq_short[j] != at_orig.m.rope_inv_freq[j]) { off++; if (first < 0) first = j; }
+        if (off)
+            fprintf(stderr, "short table: %d of %d entries differ from the original-context load's, "
+                    "first at %d (%.9g against %.9g)\n", off, half, first,
+                    (double)wide.m.rope_freq_short[first], (double)at_orig.m.rope_inv_freq[first]);
+        ck(off == 0, "the short table of a wide load is the original-context load's, to the bit");
+    }
 
     // ---- gate 2: within the original context
     float *a = whole(&at_orig, t, 20), *b = whole(&wide, t, 20), *o = whole(&one, t, 20);
