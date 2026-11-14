@@ -1229,6 +1229,11 @@ static void usage_to(FILE *f, const char *prog) {
         "                 another model, KV type or changed bytes, and, with\n"
         "                 --trust-key or --sign-key, any manifest not signed\n"
         "                 by that key\n"
+        "  --kv-snapshots-auto TOKENS[:MB]  with --kv-snapshots: write a snapshot\n"
+        "                 of a chat request's preamble (its system message and\n"
+        "                 tools) of TOKENS or more after prefilling it cold, and\n"
+        "                 load it when a later process meets the same preamble;\n"
+        "                 keeps up to MB megabytes of them (8192)\n"
         "  --session-out F  with -p or --resume: write the generation's image\n"
         "                 to F (tokens, KV and recurrent state, sampler and rng,\n"
         "                 constraint, next-token logits; SHA-256 trailer; never\n"
@@ -2376,6 +2381,7 @@ typedef struct {
     const char *receipts_dir;
     int receipts_keep;
     const char *kv_snapshots;
+    const char *kv_snapshots_auto;
     const char *sessions_path;   // --sessions DIR (R1.3.5)
     // R8.6: --adapter NAME=PATH, repeatable; served per request as "<model>:NAME"
     const char *adapter_names[16], *adapter_paths[16];
@@ -2597,6 +2603,7 @@ static const cli_opt CLI_OPTS[] = {
     { "--watermark-keygen", NULL, OPT_STR, false, OPT_AT(const char *, watermark_keygen), OPT_NONE, 0, 0 },
     { "--detect-watermark", NULL, OPT_STR, false, OPT_AT(const char *, detect_path), OPT_NONE, 0, 0 },
     { "--kv-snapshots", NULL, OPT_STR, false, OPT_AT(const char *, kv_snapshots), OPT_NONE, 0, 0 },
+    { "--kv-snapshots-auto", NULL, OPT_STR, false, OPT_AT(const char *, kv_snapshots_auto), OPT_NONE, 0, 0 },
     { "--sessions", NULL, OPT_STR, false, OPT_AT(const char *, sessions_path), OPT_NONE, 0, 0 },
     { "--session-out", NULL, OPT_STR, false, OPT_AT(const char *, session_out), OPT_NONE, 0, 0 },
     { "--resume", NULL, OPT_STR, false, OPT_AT(const char *, resume_path), OPT_NONE, 0, 0 },
@@ -4670,6 +4677,12 @@ static bool cli_configure_serving(const cli_opts *o) {
         return false;
     }
     if (o->kv_snapshots && !kvsnap_configure(o->kv_snapshots, o->sign_key, o->trust_key)) return false;
+    if (o->kv_snapshots_auto && !o->kv_snapshots) {
+        fprintf(stderr, "error: --kv-snapshots-auto keeps its snapshots in the "
+                "--kv-snapshots directory; name one\n");
+        return false;
+    }
+    if (o->kv_snapshots_auto && !kvsnap_auto_configure(o->kv_snapshots_auto)) return false;
     if (o->sessions_path && !o->serve) {
         fprintf(stderr, "error: --sessions keeps the server's session images "
                 "and needs --serve (the CLI uses --session-out / --resume)\n");
