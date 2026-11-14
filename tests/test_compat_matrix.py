@@ -778,7 +778,39 @@ def test_the_group_probe_sees_a_live_group_and_not_a_dead_one():
     assert _live_in_group(p.pid) == []
 
 
-def _check_a_timeout_kills_the_grandchildren(module, run_group, tmp_path, start_delay):
+def test_the_grandchild_check_sees_a_grandchild_that_left_the_group(tmp_path):
+    """codex's third read of PR E: a grandchild that calls setsid() before the
+    group is killed lives outside every recorded group, so an empty group does
+    not show it dead. The stand-in spawner's marked child starts a session of
+    its own; the check must fail."""
+    import os
+    import shlex
+    import signal
+    import sys
+
+    import pytest
+
+    if os.name == "nt":
+        pytest.skip("no process groups on Windows")
+    module = load_module()
+    marker = tmp_path / "grandchild.pid"
+    escapee = (f"{shlex.quote(sys.executable)} -c "
+               "'import os, time; os.setsid(); time.sleep(120)'")
+    try:
+        with pytest.raises(pytest.fail.Exception, match="outlived the timeout"):
+            _check_a_timeout_kills_the_grandchildren(module, module.run_group, tmp_path, 0.0,
+                                                     grandchild=escapee)
+    finally:
+        text = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+        if text:
+            try:
+                os.kill(int(text), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+def _check_a_timeout_kills_the_grandchildren(module, run_group, tmp_path, start_delay,
+                                             grandchild="sleep 120"):
     import os
     import signal
     import subprocess
@@ -793,7 +825,9 @@ def _check_a_timeout_kills_the_grandchildren(module, run_group, tmp_path, start_
     # it once had not written its marker when the timeout killed it
     script.write_text("#!/bin/sh\n"
                       + (f"sleep {start_delay}\n" if start_delay else "") +
-                      "sleep 120 &\n"
+                      # its output away from run_group's pipes: a grandchild
+                      # that escapes the kill must not hold communicate() open
+                      f"{grandchild} </dev/null >/dev/null 2>&1 &\n"
                       f"echo $! > {marker}\n"
                       "sleep 120\n", encoding="utf-8")
     script.chmod(0o755)
