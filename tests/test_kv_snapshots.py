@@ -16,6 +16,7 @@ the same prompt answers from a cold prefill, and its receipt replays VERIFIED.
 import hashlib
 import os
 import json
+import time
 import pathlib
 import struct
 import subprocess
@@ -436,14 +437,32 @@ def test_a_short_preamble_and_a_server_without_the_option_write_nothing(runner_b
 def test_preamble_snapshots_stay_under_their_cap(runner_bin, fx, tmp_path):
     snaps = tmp_path / "snaps"
     with _auto(runner_bin, fx["model"], snaps, "64:0.1") as a:   # 0.1 MB
-        sizes = []
+        sizes, names = [], []
         for i in range(4):
+            before = {p.name for p in snaps.glob("pre-*.kv")}
             _chat(a, SYSTEM + " Session %d of the day." % i, "List the files.")
-            kv = _wait_files(snaps, 1)
-            sizes.append(sum(p.stat().st_size for p in snaps.glob("pre-*.kv")))
+            # The snapshot is written after the response and the cap is applied
+            # after the write: wait for this session's snapshot to be there
+            # whole AND the directory to be back under the cap. Reading earlier
+            # sees the last session's file alone, or both for the time of one
+            # write (a hosted Linux run read 177,416 bytes there).
+            total, now = -1, set()
+            for _ in range(200):
+                kv = [p for p in snaps.glob("pre-*.kv") if p.is_file()]
+                now = {p.name for p in kv}
+                whole = all((snaps / (n + ".json")).exists() for n in now)
+                total = sum(p.stat().st_size for p in kv)
+                if now and now != before and whole and total <= 100_000:
+                    break
+                time.sleep(0.1)
+            sizes.append(total)
+            names.append(sorted(now))
         one = sorted(snaps.glob("pre-*.kv"))[0].stat().st_size
-    assert one < 100_000 < 4 * one, one        # the cap is between one and four of them
-    assert sizes[-1] <= 100_000, sizes
+    assert one < 100_000 < 2 * one, one        # the cap holds one of them, not two
+    assert all(0 < s <= 100_000 for s in sizes), sizes
+    # the control: each session's snapshot replaced the one before it, so the
+    # cap did remove something every time and the newest was the one kept
+    assert all(len(n) == 1 for n in names) and len({n[0] for n in names}) == 4, names
     # every file kept still has its manifest, every manifest its file
     assert ({p.name for p in snaps.glob("pre-*.kv")} ==
             {p.name[:-5] for p in snaps.glob("pre-*.kv.json")})
