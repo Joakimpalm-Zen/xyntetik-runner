@@ -318,6 +318,12 @@ int plat_spawn_wait_stdin(const char *const argv[], const char *input, size_t n)
 // descriptors, and no caller wait. False if launch could not be scheduled.
 bool plat_spawn_self_detached(const char *arg);
 
+// Close every open descriptor above the standard three by listing the open
+// ones (Linux, from /proc): what the detached spawn falls back to where the
+// kernel cannot close them in one call. False on a platform or in a sandbox
+// with no listing, and then nothing is promised about what was closed.
+bool plat_close_listed_descriptors(void);
+
 // Install a completed same-filesystem temporary file at `path`, replacing an
 // existing regular file. POSIX rename() has replacement semantics; Windows
 // needs MoveFileEx(..., REPLACE_EXISTING) for the same operation.
