@@ -315,3 +315,132 @@ def test_context_ids_with_colons_delete_encoded_or_bare(runner_bin, fx, tmp_path
             st, err = _delete(srv, f"/v1/runner/contexts/{bad}")
             assert st == 400, (bad, err)
             assert err["error"]["code"] == "invalid_value"
+
+
+# ---- R3.62: an agent's preamble is not prefilled again after a restart ----
+#
+# An agent sends the same system message and tool list at the start of every
+# session. A new server process prefilled it from scratch (96% of a first
+# turn on a 4B file with a 5,400-token preamble). With
+# `--kv-snapshots-auto TOKENS` the server writes a snapshot of a preamble at
+# least that long after it has prefilled one cold, and a later process loads
+# it when a request starts with those tokens. Nothing is asked of the client.
+
+SYSTEM = ("You are a coding agent working in a repository. Read before you edit, keep "
+          "edits small, run the tests after a change and report what you did. The "
+          "tools are read_file, write_file, edit_file, search and run.")
+
+
+def _chat(srv, system, user, **extra):
+    st, body = _post(srv, "/v1/chat/completions", {
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "max_tokens": 8, "temperature": 0, **extra})
+    assert st == 200, body
+    t = body["runner_telemetry"]
+    return {"answer": body["choices"][0]["message"], "cached": t["prompt_cached_tokens"],
+            "reuse": t["prompt_reuse"], "context": t.get("context_id"),
+            "prompt": body["usage"]["prompt_tokens"]}
+
+
+def _auto(runner_bin, model, snaps, arg="64", *extra):
+    return RunnerServer(runner_bin, model, ctx=512, extra_args=[
+        "--gpu", "off", "-t", "2", "--chat-template", "chatml",
+        "--kv-snapshots", str(snaps), "--kv-snapshots-auto", arg, *extra])
+
+
+def _plain(runner_bin, model, snaps):
+    return RunnerServer(runner_bin, model, ctx=512, extra_args=[
+        "--gpu", "off", "-t", "2", "--chat-template", "chatml", "--kv-snapshots", str(snaps)])
+
+
+def _wait_files(snaps, n, seconds=20):
+    import time
+    for _ in range(seconds * 10):
+        kv = sorted(snaps.glob("pre-*.kv"))
+        if len(kv) >= n and all((snaps / (p.name + ".json")).exists() for p in kv):
+            return kv
+        time.sleep(0.1)
+    return sorted(snaps.glob("pre-*.kv"))
+
+
+def _preamble_tokens(runner_bin, model, snaps, system):
+    """The preamble's length as the server that pins a context counts it: the
+    system message rendered alone."""
+    with _plain(runner_bin, model, snaps) as srv:
+        st, body = _post(srv, "/v1/runner/contexts", {
+            "id": "count", "messages": [{"role": "system", "content": system}]})
+        assert st == 200, body
+        return body["tokens"]
+
+
+def test_a_preamble_snapshot_serves_the_first_request_of_a_new_process(runner_bin, fx, tmp_path):
+    snaps = tmp_path / "snaps"
+    pre = _preamble_tokens(runner_bin, fx["model"], tmp_path / "count", SYSTEM)
+    assert pre >= 64, pre
+    with _auto(runner_bin, fx["model"], snaps) as a:
+        first = _chat(a, SYSTEM, "List the files.")
+        assert (first["cached"], first["reuse"]) == (0, "none"), first
+        kv = _wait_files(snaps, 1)
+        assert len(kv) == 1, list(snaps.iterdir())
+    manifest = json.loads((snaps / (kv[0].name + ".json")).read_text())
+    assert manifest["tokens"] == pre and manifest["kv_sha256"] == _sha(kv[0].read_bytes())
+
+    # a new process, another question after the same preamble
+    with _auto(runner_bin, fx["model"], snaps) as b:
+        warm = _chat(b, SYSTEM, "Which file is the largest?")
+    assert warm["cached"] == pre and warm["reuse"] == "prefix_cache", warm
+    assert warm["context"] == kv[0].name[:-3], warm
+    # and the answer a process without any snapshot gives
+    with _plain(runner_bin, fx["model"], tmp_path / "none") as c:
+        cold = _chat(c, SYSTEM, "Which file is the largest?")
+    assert (cold["cached"], cold["reuse"]) == (0, "none"), cold
+    assert warm["answer"] == cold["answer"]
+    # nothing new is written for a preamble that is already on disk
+    assert sorted(snaps.glob("pre-*.kv")) == kv
+
+
+def test_a_damaged_preamble_snapshot_is_refused_and_written_again(runner_bin, fx, tmp_path):
+    snaps = tmp_path / "snaps"
+    with _auto(runner_bin, fx["model"], snaps) as a:
+        _chat(a, SYSTEM, "List the files.")
+        kv = _wait_files(snaps, 1)
+        assert len(kv) == 1
+    good = kv[0].read_bytes()
+    bad = bytearray(good)
+    bad[len(bad) // 2] ^= 0x40
+    kv[0].write_bytes(bytes(bad))
+    with _auto(runner_bin, fx["model"], snaps) as b:
+        again = _chat(b, SYSTEM, "Which file is the largest?")
+        assert (again["cached"], again["reuse"]) == (0, "none"), again
+        kv2 = _wait_files(snaps, 1)
+        assert len(kv2) == 1 and kv2[0].read_bytes() == good
+    with _plain(runner_bin, fx["model"], tmp_path / "none") as c:
+        cold = _chat(c, SYSTEM, "Which file is the largest?")
+    assert again["answer"] == cold["answer"]
+
+
+def test_a_short_preamble_and_a_server_without_the_option_write_nothing(runner_bin, fx, tmp_path):
+    snaps = tmp_path / "snaps"
+    with _auto(runner_bin, fx["model"], snaps, "400") as a:
+        _chat(a, SYSTEM, "List the files.")           # under 400 tokens
+    with _plain(runner_bin, fx["model"], snaps) as b:
+        _chat(b, SYSTEM, "List the files.")
+    import time
+    time.sleep(1.0)
+    assert not list(snaps.glob("pre-*")), list(snaps.iterdir())
+
+
+def test_preamble_snapshots_stay_under_their_cap(runner_bin, fx, tmp_path):
+    snaps = tmp_path / "snaps"
+    with _auto(runner_bin, fx["model"], snaps, "64:0.1") as a:   # 0.1 MB
+        sizes = []
+        for i in range(4):
+            _chat(a, SYSTEM + " Session %d of the day." % i, "List the files.")
+            kv = _wait_files(snaps, 1)
+            sizes.append(sum(p.stat().st_size for p in snaps.glob("pre-*.kv")))
+        one = sorted(snaps.glob("pre-*.kv"))[0].stat().st_size
+    assert one < 100_000 < 4 * one, one        # the cap is between one and four of them
+    assert sizes[-1] <= 100_000, sizes
+    # every file kept still has its manifest, every manifest its file
+    assert ({p.name for p in snaps.glob("pre-*.kv")} ==
+            {p.name[:-5] for p in snaps.glob("pre-*.kv.json")})
