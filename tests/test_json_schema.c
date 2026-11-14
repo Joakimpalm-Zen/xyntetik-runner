@@ -9,6 +9,13 @@
 #include <string.h>
 #include <time.h>
 
+// setenv is POSIX; MinGW has _putenv_s (R2.18's seam checks below)
+#ifdef _WIN32
+#define setenv_compat(k, v) _putenv_s(k, v)
+#else
+#define setenv_compat(k, v) setenv(k, v, 1)
+#endif
+
 static void test_strict_bounded_numbers(void) {
     // 1e400/-1e400 overflow to inf: isfinite() catches that only when the
     // build is not -ffast-math, which the release build is
@@ -996,17 +1003,25 @@ static void test_schema_multi_segment_pattern(void) {
         schema_free(schema); jv_free(j);
     }
 
-    // a variable-length segment before the last one is ambiguous: refused
-    const char *ambiguous[] = {
-        "{\"type\":\"string\",\"pattern\":\"^[A-Z]{1,3}[0-9]{2}$\"}",
-        "{\"type\":\"string\",\"pattern\":\"^[A-Z]+[0-9]{2}$\"}",
+    // A variable-length segment before the last one is not a segment shape:
+    // the segments would have to guess a split. R2.18: such a pattern goes to
+    // the automaton, which enforces ECMA's language for it rather than refuse.
+    struct { const char *src, *ok, *bad1, *bad2; } ambiguous[] = {
+        { "{\"type\":\"string\",\"pattern\":\"^[A-Z]{1,3}[0-9]{2}$\"}", "\"AB12\"", "\"ABCD12\"", "\"AB1\"" },
+        { "{\"type\":\"string\",\"pattern\":\"^[A-Z]+[0-9]{2}$\"}", "\"ABC12\"", "\"12\"", "\"ABC123\"" },
     };
     for (size_t i = 0; i < sizeof(ambiguous) / sizeof(*ambiguous); i++) {
-        jv *j = json_parse(ambiguous[i], strlen(ambiguous[i]));
-        char err[128];
-        assert(schema_compile(j, err, sizeof(err)) == NULL);
-        assert(strstr(err, "pattern") != NULL);
-        jv_free(j);
+        jv *j = json_parse(ambiguous[i].src, strlen(ambiguous[i].src));
+        char err[256];
+        snode *schema = schema_compile(j, err, sizeof(err));
+        assert(schema != NULL && schema->re != NULL && schema->n_pats == 0);
+        sval v; sval_init(&v, schema);
+        assert(sval_feed(&v, ambiguous[i].ok, (int)strlen(ambiguous[i].ok)) && v.done);
+        sval a; sval_init(&a, schema);
+        assert(!(sval_feed(&a, ambiguous[i].bad1, (int)strlen(ambiguous[i].bad1)) && a.done));
+        sval b; sval_init(&b, schema);
+        assert(!(sval_feed(&b, ambiguous[i].bad2, (int)strlen(ambiguous[i].bad2)) && b.done));
+        schema_free(schema); jv_free(j);
     }
 }
 
@@ -1104,24 +1119,34 @@ static void test_schema_pattern_shorthand_classes(void) {
 }
 
 static void test_schema_pattern_regex_syntax_is_rejected_not_reinterpreted(void) {
-    // the compiler matches prefix and class LITERALLY; regex syntax it would
-    // silently reinterpret (escapes, negation, prefix metacharacters) must be
-    // a compile error — otherwise the enforced language differs from the
-    // declared pattern (e.g. [\d] would accept a literal backslash the
-    // declared regex forbids)
-    const char *bad_patterns[] = {
-        "{\"type\":\"string\",\"pattern\":\"^a.b[a-z]+$\"}",      // prefix metachar
-        "{\"type\":\"string\",\"pattern\":\"^a\\\\.b[a-z]+$\"}",  // prefix escape
-        "{\"type\":\"string\",\"pattern\":\"^x[\\\\q]{2,}$\"}",   // an escape regex has no meaning for
-        "{\"type\":\"string\",\"pattern\":\"^x[^]+$\"}",          // a negated empty set
+    // the segment compiler matches prefix and class LITERALLY, so regex syntax
+    // it would reinterpret (escapes, negation, prefix metacharacters) is not
+    // its shape. R2.18: those patterns go to the automaton, which reads them
+    // as ECMA does (a dot is any code point but a line terminator, [^] is any
+    // code point); an escape ECMA gives no meaning stays refused, by name.
+    struct { const char *src, *ok, *bad; } reread[] = {
+        { "{\"type\":\"string\",\"pattern\":\"^a.b[a-z]+$\"}", "\"a-bc\"", "\"abc\"" },       // a dot
+        { "{\"type\":\"string\",\"pattern\":\"^a\\\\.b[a-z]+$\"}", "\"a.bc\"", "\"a-bc\"" }, // an escaped dot
+        { "{\"type\":\"string\",\"pattern\":\"^x[^]+$\"}", "\"x-y\"", "\"x\"" },              // [^]: any
     };
-    for (size_t i = 0; i < sizeof(bad_patterns) / sizeof(*bad_patterns); i++) {
-        jv *j = json_parse(bad_patterns[i], strlen(bad_patterns[i]));
+    for (size_t i = 0; i < sizeof(reread) / sizeof(*reread); i++) {
+        jv *j = json_parse(reread[i].src, strlen(reread[i].src));
         assert(j != NULL);
-        char err[128];
+        char err[256];
         snode *schema = schema_compile(j, err, sizeof(err));
-        assert(schema == NULL);
-        assert(strstr(err, "pattern") != NULL);
+        assert(schema != NULL && schema->re != NULL);
+        sval v; sval_init(&v, schema);
+        assert(sval_feed(&v, reread[i].ok, (int)strlen(reread[i].ok)) && v.done);
+        sval w; sval_init(&w, schema);
+        assert(!(sval_feed(&w, reread[i].bad, (int)strlen(reread[i].bad)) && w.done));
+        schema_free(schema); jv_free(j);
+    }
+    {
+        const char *src = "{\"type\":\"string\",\"pattern\":\"^x[\\\\q]{2,}$\"}";
+        jv *j = json_parse(src, strlen(src));
+        char err[256];
+        assert(schema_compile(j, err, sizeof(err)) == NULL);
+        assert(strstr(err, "pattern") != NULL && strstr(err, "unknown letter escape") != NULL);
         jv_free(j);
     }
     // literal-safe specials INSIDE the class stay supported (regex treats
@@ -3615,6 +3640,131 @@ static void test_allof_patterns_are_checked_by_segment_not_by_byte(void) {
     assert((double)(clock() - t0) / CLOCKS_PER_SEC < 1.0);
 }
 
+
+// R2.18: a pattern the segment compiler cannot express compiles to the
+// automaton (src/jsre.c) and is enforced as ECMA-262 reads it, its lengths
+// exact; a closed document validates; limits end a request by name.
+static snode *pat_compile(const char *src, char *err, int cap) {
+    jv *j = json_parse(src, strlen(src));
+    assert(j != NULL);
+    snode *n = schema_compile(j, err, cap);
+    jv_free(j);
+    return n;
+}
+static bool pat_whole(const snode *s, const char *doc) {
+    sval v; sval_init(&v, s);
+    return sval_feed(&v, doc, (int)strlen(doc)) && v.done;
+}
+static bool pat_prefix(const snode *s, const char *doc) {
+    sval v; sval_init(&v, s);
+    return sval_feed(&v, doc, (int)strlen(doc));
+}
+// a forced close from `prefix` is a document the same schema accepts
+static void pat_closes(const snode *s, const char *prefix) {
+    sval p; sval_init(&p, s);
+    assert(sval_feed(&p, prefix, (int)strlen(prefix)));
+    char suffix[4096];
+    int k = sval_close(&p, suffix, sizeof(suffix));
+    assert(k > 0);
+    char full[8192];
+    snprintf(full, sizeof(full), "%s%s", prefix, suffix);
+    assert(pat_whole(s, full));
+}
+
+static void test_schema_pattern_automaton(void) {
+    char err[256];
+    // searched, as ECMA searches: an unanchored pattern matches anywhere
+    snode *s = pat_compile("{\"type\":\"string\",\"pattern\":\"b(c|d)\"}", err, sizeof(err));
+    assert(s && s->re && !s->n_pats);
+    assert(pat_whole(s, "\"abce\"") && pat_whole(s, "\"bd\"") && !pat_whole(s, "\"bx\""));
+    // no escape under a pattern: its value is its text (b is a b)
+    assert(!pat_prefix(s, "\"a\\u0062"));
+    pat_closes(s, "\"");
+    pat_closes(s, "\"xb");
+    schema_free(s);
+    // code points, not bytes
+    s = pat_compile("{\"type\":\"string\",\"pattern\":\"^.{2}$\"}", err, sizeof(err));
+    assert(s && s->re);
+    assert(pat_whole(s, "\"\xc3\xa9\xf0\x9f\x98\x80\""));     // two code points
+    assert(!pat_whole(s, "\"\xf0\x9f\x98\x80\""));          // one
+    assert(!pat_whole(s, "\"abc\""));
+    pat_closes(s, "\"\xc3");                                // inside a code point
+    pat_closes(s, "\"a");
+    schema_free(s);
+    // lengths are exact: ^(ab)+$ has strings of 2, 4, 6 ... and none of 3
+    assert(!pat_compile("{\"type\":\"string\",\"pattern\":\"^(ab)+$\",\"minLength\":3,\"maxLength\":3}", err, sizeof(err)));
+    assert(strstr(err, "no string between minLength and maxLength"));
+    s = pat_compile("{\"type\":\"string\",\"pattern\":\"^(ab)+$\",\"minLength\":3,\"maxLength\":5}", err, sizeof(err));
+    assert(s && s->re);
+    assert(pat_whole(s, "\"abab\"") && !pat_whole(s, "\"ab\"") && !pat_whole(s, "\"ababab\""));
+    // the prefix ababa has no completion of 5 or fewer: refused on its byte
+    assert(pat_prefix(s, "\"abab") && !pat_prefix(s, "\"ababa"));
+    pat_closes(s, "\"");
+    pat_closes(s, "\"aba");
+    schema_free(s);
+    // a minLength beyond what a bounded pattern reaches is refused at compile
+    assert(!pat_compile("{\"type\":\"string\",\"pattern\":\"^(a|b){2}$\",\"minLength\":3}", err, sizeof(err)));
+    // refused by name
+    assert(!pat_compile("{\"type\":\"string\",\"pattern\":\"a(?=b)\"}", err, sizeof(err)) && strstr(err, "lookahead"));
+    assert(!pat_compile("{\"type\":\"string\",\"pattern\":\"(a)\\\\1\"}", err, sizeof(err)) && strstr(err, "backreference"));
+    assert(!pat_compile("{\"type\":\"string\",\"pattern\":\"^\\\"$\"}", err, sizeof(err)) && strstr(err, "no string JSON can spell"));
+    // one automaton a string: a second pattern beside it is refused by name
+    assert(!pat_compile("{\"type\":\"string\",\"pattern\":\"^(a|b)+$\",\"allOf\":[{\"pattern\":\"^a\"}]}", err, sizeof(err)));
+    assert(strstr(err, "more than one pattern"));
+    // a pattern the segments take keeps their path
+    s = pat_compile("{\"type\":\"string\",\"pattern\":\"^[a-z]{2,5}$\"}", err, sizeof(err));
+    assert(s && s->n_pats == 1 && !s->re);
+    schema_free(s);
+    // a trial and a feed agree; the trial's copy says it is one, and keeps
+    // nothing; the pool is made on the first byte, on the root
+    s = pat_compile("{\"type\":\"object\",\"properties\":{\"k\":{\"type\":\"string\",\"pattern\":\"^(x|y)+z$\"}},\"required\":[\"k\"]}", err, sizeof(err));
+    assert(s && !s->pool);
+    sval v; sval_init(&v, s);
+    assert(sval_feed(&v, "{\"k\":\"xy", 8) && !v.trial && v.root == s && s->pool);
+    sval t;
+    assert(sval_trial(&v, &t, "yz\"}", 4) && t.trial && t.done);
+    assert(!sval_trial(&v, &t, "\"}", 2));
+    assert(sval_feed(&v, "z\"}", 3) && v.done);
+    schema_free(s);
+    // the answers do not depend on the cache: the same documents under a
+    // one-byte budget (RUNNER_TEST_JSRE_POOL_BYTES, read when a pool is made)
+    {
+        const char *src = "{\"type\":\"string\",\"pattern\":\"^([a-f0-9]{2}:){2}[a-f0-9]{2}$\"}";
+        const char *docs[] = { "\"0a:1b:2c\"", "\"0a:1b:2\"", "\"0a-1b:2c\"", "\"ff:ff:ff\"", "\"0A:1b:2c\"" };
+        bool want[5];
+        s = pat_compile(src, err, sizeof(err));
+        for (int i = 0; i < 5; i++) want[i] = pat_whole(s, docs[i]);
+        schema_free(s);
+        assert(want[0] && !want[1] && !want[2] && want[3] && !want[4]);
+        setenv_compat("RUNNER_TEST_JSRE_POOL_BYTES", "1");
+        s = pat_compile(src, err, sizeof(err));
+        for (int i = 0; i < 5; i++) assert(pat_whole(s, docs[i]) == want[i]);
+        pat_closes(s, "\"0a:");
+        schema_free(s);
+        setenv_compat("RUNNER_TEST_JSRE_POOL_BYTES", "");
+    }
+    // the kept-state limit ends the walk by name: which pattern, how many
+    // states (RUNNER_TEST_JSRE_KEPT_MAX lowers it, so a few bytes reach it)
+    {
+        const char *src = "{\"type\":\"string\",\"pattern\":\"^(a|b){0,30}c?$\"}";
+        s = pat_compile(src, err, sizeof(err));
+        char msg[400];
+        sval f; sval_init(&f, s);
+        assert(sval_feed(&f, "\"ababababab\"", 12) && f.done && !sval_pattern_fault(&f, msg, sizeof(msg)));
+        schema_free(s);
+        setenv_compat("RUNNER_TEST_JSRE_KEPT_MAX", "4");
+        s = pat_compile(src, err, sizeof(err));
+        sval g; sval_init(&g, s);
+        assert(!sval_feed(&g, "\"ababababab", 11));
+        assert(sval_pattern_fault(&g, msg, sizeof(msg)));
+        assert(strstr(msg, "^(a|b){0,30}c?$") && strstr(msg, "more states than one request may keep") &&
+               strstr(msg, "4 states kept"));
+        schema_free(s);
+        setenv_compat("RUNNER_TEST_JSRE_KEPT_MAX", "");
+    }
+    printf("ok: pattern automaton strings (R2.18): searched, code points, exact lengths, closes, limits by name\n");
+}
+
 int main(void) {
     test_schema_sibling_constraints_are_not_dropped();
     test_strict_bounded_numbers();
@@ -3647,6 +3797,7 @@ int main(void) {
     test_schema_agent_id_pattern_is_enforced();
     test_schema_pattern_shorthand_classes();
     test_schema_pattern_regex_syntax_is_rejected_not_reinterpreted();
+    test_schema_pattern_automaton();
     test_schema_allof_of_string_patterns();
     test_schema_negated_and_escaped_classes();
     test_schema_number_bounds_reject_dead_minus_and_close_in_bounds();

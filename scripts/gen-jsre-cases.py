@@ -49,8 +49,8 @@ HAND = [
     (r"^..$", ["😀", "ab", "😀😀", "a😀"]), (r"^[^a]$", ["😀", "b", "a", "\U0010ffff"]),
     (r"^[😀-😂]$", ["😁", "😃", "😀"]), (r"^[\s\S]$", ["😀", " ", "a", "ab"]),
     (r"^a$", ["a", "a\n", "ab", "ba"]), (r"a$", ["ba", "ab"]), (r"^a", ["ba", "ab"]), (r"^$", ["", "a"]),
-    (r"a{,2}", ["a{,2}", "aa", "a", ""]), (r"a{", ["a{", "a"]), (r"a}", ["a}", "a"]), (r"^{a}$", ["{a}", "a"]),
-    (r"^x{1}}$", ["x}", "x"]), (r"^{$", ["{", ""]), (r"^\{\d+\}$", ["{12}", "12"]),
+    (r"a{", ["a{", "a"]), (r"a}", ["a}", "a"]), (r"^{a}$", ["{a}", "a"]),
+    (r"^x{1}}$", ["x}", "x"]), (r"^{$", ["{", ""]), (r"^a{1,b}$", ["a{1,b}", "a"]), (r"^a{ 2}$", ["a{ 2}", "aa"]), (r"^\{\d+\}$", ["{12}", "12"]),
     (r"^\-\d$", ["-1", "1"]), (r"^\_$", ["_"]), (r"^a\@b$", ["a@b", "ab"]), (r"^a\ b$", ["a b", "ab"]),
     (r"^\:$", [":"]), (r"^\#$", ["#"]), (r"^\%\&\,$", ["%&,"]), (r"^\<\>\=$", ["<>="]), (r"^\!\~$", ["!~"]),
     (r"^\'$", ["'"]), (r"^\/$", ["/", "\\/"]), (r"^\.$", [".", "a"]),
@@ -92,6 +92,9 @@ HAND = [
     (r"^[\uD800-\uDFFF]$", None, "no string JSON can spell"), (r"^[]$", None, "no string JSON can spell"),
     (r"^[]a]$", None, "no string JSON can spell"),
     (r"$^", None, "an end assertion before a start assertion"),
+    (r"a{,2}", None, "a malformed count"), (r"^x[a-z]{}$", None, "a malformed count"),
+    (r"^x[a-z]{2,3,4}$", None, "a malformed count"), (r"{2}", None, "a quantifier with nothing to repeat"),
+    (r"a|{3,}", None, "a quantifier with nothing to repeat"),
     (r"(a|$)(^|b)", None, "an end assertion before a start assertion"),
     (r"a|$^", None, "an end assertion before a start assertion"),   # [] is empty in ECMA: the pattern matches nothing
     (r'^"$', None, "no string JSON can spell"), (r"^\\$", None, "no string JSON can spell"),

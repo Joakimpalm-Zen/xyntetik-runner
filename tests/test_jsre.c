@@ -12,6 +12,7 @@
 //   3. Lengths: the backward sequence against a forward search over real bytes.
 //   4. The pool keeps its budget.
 //   5. A long pattern compiles on a small stack.
+//   6. The kept limit fails by name, also when a trial reached the state first.
 #include "jsre.h"
 #include "jsre_cases.h"
 
@@ -357,8 +358,42 @@ static void test_stack(void) {
     printf("stack: a 4,000-character pattern compiled and matched on a 128 KiB stack\n");
 }
 
+// 6 --------------------------------------------------------------- the kept limit
+// Past the kept limit a step fails, by name, rather than refuse a byte. The
+// validator's own order: a mask's trials reach each state first (unkept), and
+// the feed that follows only promotes it; the limit must count that too.
+static void test_kept_limit(void) {
+    char err[256];
+    jsre *re = jsre_compile("^(a|b){0,30}c?$", err, sizeof err);
+    CHECK(re && jsre_lengths(re, -1, err, sizeof err), "^(a|b){0,30}c?$: %s", err);
+    if (!re) return;
+    for (int order = 0; order < 2; order++) {
+        jsre_pool *p = jsre_pool_new(BUDGETS[0]);
+        jsre_pool_set_kept_max(p, 4);
+        jsre_dfa *d = jsre_dfa_new(re, p);
+        jsre_dfa_label(d, "the test's pattern");
+        jsre_st st = jsre_dfa_start(d);
+        int fed = 0;
+        for (const char *c = "abababab"; *c && st != JSRE_FAIL && st != JSRE_DEAD; c++, fed++) {
+            if (order) (void)jsre_dfa_step(d, st, (uint8_t)*c, false);   // the mask's trial first
+            st = jsre_dfa_step(d, st, (uint8_t)*c, true);
+        }
+        jsre_pool_stat s;
+        jsre_pool_stats(p, &s);
+        // the start and three bytes are kept; the fourth byte's state is the fifth
+        CHECK(st == JSRE_FAIL && fed == 4 && s.kept_states == 4 && s.failed && strstr(s.failed, "may keep") &&
+              s.failed_label && !strcmp(s.failed_label, "the test's pattern"),
+              "kept limit (%s): fed %d, kept %d, failed %s", order ? "trial first" : "fed only", fed, s.kept_states,
+              s.failed ? s.failed : "no");
+        jsre_dfa_free(d); jsre_pool_free(p);
+    }
+    jsre_free(re);
+    printf("kept limit: a step past it fails by name, fed alone and after a trial\n");
+}
+
 int main(void) {
     test_stack();
+    test_kept_limit();
     test_cases();
     test_cache();
     test_lengths();

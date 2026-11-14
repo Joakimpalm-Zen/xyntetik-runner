@@ -3,8 +3,8 @@
 // Oracle: node v24.15.0 RegExp (ECMA-262, u flag; legacy-only patterns as legacy
 // mode reads them on BMP strings). Python 3.14.8 re counted where it parts
 // from ECMA; Unicode database 16.0.0 for the generated divergences.
-// 1148 strings: 460 to accept, 688 to refuse (20 JSON cannot spell literally);
-// 927 where Python's re and ECMA disagree; 36 under a legacy-only pattern.
+// 1148 strings: 461 to accept, 687 to refuse (20 JSON cannot spell literally);
+// 924 where Python's re and ECMA disagree; 36 under a legacy-only pattern.
 #ifndef RUNNER_JSRE_CASES_H
 #define RUNNER_JSRE_CASES_H
 typedef struct { const char *pat, *s; int n; int want, ecma; } jsre_case;
@@ -118,10 +118,6 @@ static const jsre_case JSRE_CASES[] = {
     { "^a", "ab", 2, 1, 1 },
     { "^$", "", 0, 1, 1 },
     { "^$", "a", 1, 0, 0 },
-    { "a{,2}", "a{,2}", 5, 1, 1 },
-    { "a{,2}", "aa", 2, 0, 0 },
-    { "a{,2}", "a", 1, 0, 0 },
-    { "a{,2}", "", 0, 0, 0 },
     { "a{", "a{", 2, 1, 1 },
     { "a{", "a", 1, 0, 0 },
     { "a}", "a}", 2, 1, 1 },
@@ -132,6 +128,10 @@ static const jsre_case JSRE_CASES[] = {
     { "^x{1}}$", "x", 1, 0, 0 },
     { "^{$", "{", 1, 1, 1 },
     { "^{$", "", 0, 0, 0 },
+    { "^a{1,b}$", "a{1,b}", 6, 1, 1 },
+    { "^a{1,b}$", "a", 1, 0, 0 },
+    { "^a{ 2}$", "a{ 2}", 5, 1, 1 },
+    { "^a{ 2}$", "aa", 2, 0, 0 },
     { "^\134{\134d+\134}$", "{12}", 4, 1, 1 },
     { "^\134{\134d+\134}$", "12", 2, 0, 0 },
     { "^\134-\134d$", "-1", 2, 1, 1 },
@@ -1192,6 +1192,11 @@ static const jsre_refusal JSRE_REFUSALS[] = {
     { "^[]$", "no string JSON can spell" },
     { "^[]a]$", "no string JSON can spell" },
     { "$^", "an end assertion before a start assertion" },
+    { "a{,2}", "a malformed count" },
+    { "^x[a-z]{}$", "a malformed count" },
+    { "^x[a-z]{2,3,4}$", "a malformed count" },
+    { "{2}", "a quantifier with nothing to repeat" },
+    { "a|{3,}", "a quantifier with nothing to repeat" },
     { "(a|$)(^|b)", "an end assertion before a start assertion" },
     { "a|$^", "an end assertion before a start assertion" },
     { "^\042$", "no string JSON can spell" },
