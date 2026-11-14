@@ -123,6 +123,18 @@ int main(int argc, char **argv) {
     float *a = whole(&at_orig, t, 20), *b = whole(&wide, t, 20), *o = whole(&one, t, 20);
     ck(differ(&wide.m, a, b) == 0,
        "a 20-token sequence at a context of 96 computes what it computes at 32");
+    // what was compared, so a failure of the next check names its cause: the
+    // count, the largest difference, and the table each slot rotated with
+    {
+        float mx = 0;
+        for (int i = 0; o && b && i < V; i++) if (fabsf(o[i] - b[i]) > mx) mx = fabsf(o[i] - b[i]);
+        fprintf(stderr, "20 tokens, long set against short: %d of %d logits differ, largest %.3g; "
+                "inv_freq[%d] one %.9g wide %.9g original %.9g; tables at %p %p %p\n",
+                differ(&wide.m, o, b), V, (double)mx, half - 1,
+                (double)one.m.rope_inv_freq[half - 1], (double)wide.m.rope_inv_freq[half - 1],
+                (double)at_orig.m.rope_inv_freq[half - 1],
+                (void *)one.m.rope_inv_freq, (void *)wide.m.rope_inv_freq, (void *)at_orig.m.rope_inv_freq);
+    }
     ck(differ(&wide.m, o, b) > 0, "and not what the long set gives it");
     ck(!wide.m.rope_long, "the slot is on the short set");
     free(a); free(b); free(o);
