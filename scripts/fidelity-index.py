@@ -20,6 +20,7 @@ import argparse
 import html
 import json
 import pathlib
+import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -66,11 +67,39 @@ def _read_with(v, model):
     return "an HTTP endpoint"
 
 
+def _check_evidence(reports, key, entry):
+    """A join entry is read from its report's own folder: "evidence" names
+    FILE:LINE or FILE:FIRST-LAST there, and those lines hold the entry's
+    repo, file name and sha256 (when it gives one). None, or a mismatch,
+    refuses the join."""
+    m = re.fullmatch(r"([\w.\-]+):(\d+)(?:-(\d+))?", str(entry.get("evidence") or ""))
+    if not m:
+        return "no evidence (FILE:LINE in the report folder)"
+    folder = (reports / key.split("#", 1)[0]).parent
+    f = folder / m.group(1)
+    if not f.is_file():
+        return f"evidence file {m.group(1)} is not in {folder.name}"
+    lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+    lo, hi = int(m.group(2)), int(m.group(3) or m.group(2))
+    text = "\n".join(lines[lo - 1:hi])
+    for field in ("repo", "name", "sha256"):
+        if entry.get(field) and entry[field] not in text:
+            return f"{m.group(0)} does not say its {field} {entry[field]}"
+    return None
+
+
 def collect(reports, join_path, roster):
     join = json.loads(join_path.read_text(encoding="utf-8")) if join_path.exists() else {"sides": {}}
     if join.get("schema_version", JOIN_SCHEMA) != JOIN_SCHEMA:
         raise SystemExit(f"error: {join_path} is not {JOIN_SCHEMA}")
     names = _roster_names(roster)
+    bad = []
+    for key, entry in sorted(join.get("sides", {}).items()):
+        why = _check_evidence(reports, key, entry)
+        if why and (reports / key.split("#", 1)[0]).exists():
+            bad.append(f"{key}: {why}")
+    if bad:
+        raise SystemExit("error: join entries not held by their folder:\n  " + "\n  ".join(bad))
     rows, keys, n_reports = [], set(), 0
     for rel, d in _gold_reports(reports):
         n_reports += 1
