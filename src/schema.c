@@ -3840,7 +3840,13 @@ static bool refx_needed(const jv *v) {
 // structure: a definition or property NAMED "id" is a name, not the keyword.
 // A $ref's target is looked up here, so its base is where it is written, not
 // where it is reached from.
-typedef struct { const jv *node; const char *base; bool seen; } refx_lex;
+// The base in force at a schema node. `key`: the nearest nested id or $id that
+// moves the base (a local $ref under it is refused). `label`: under a root
+// whose $id is an absolute URI and with no such move, the nearest resource a
+// nested path id names ("/p"), whose references are read at the root only when
+// they do not resolve inside it (refx_own_base says why).
+typedef struct { const char *key; const jv *label; const char *label_key; } refx_base;
+typedef struct { const jv *node; refx_base base; bool seen; } refx_lex;
 typedef struct { refx_lex *v; int n, cap; bool oom; bool root_absolute; } refx_lexmap;
 
 // an absolute URI: a scheme (a letter, then letters, digits, + - .) and a colon
@@ -3855,31 +3861,38 @@ static bool refx_uri_absolute(const char *u) {
     return false;
 }
 
-// The id or $id by which a schema itself moves the base, or NULL. A value that
+// The base after schema s, from the base in force above it. An id or $id that
 // is only a fragment ("#a", draft-06's plain-name fragment) or empty names a
 // place and leaves the base URI where it is, so it moves nothing.
 // A deliberate leniency (fable, 2026-11-14): under a root whose $id is an
-// absolute URI, a nested id that is a path ("/properties/a") is read as
-// moving nothing either. Those are the labels older generators wrote, their
-// authors meant the root's definitions, and the strict reading resolves a "#/definitions/..." below
-// them against a document that does not exist. The base always compiled
-// them against the root; this keeps that. A nested absolute id, or a path id
-// with no absolute root, still moves the base.
-static const char *refx_own_base(const refx_lexmap *mp, const jv *s) {
+// absolute URI, a nested id that is a path ("/properties/a") is the label
+// older generators wrote, and their authors meant the root's definitions: the
+// strict reading resolves a "#/definitions/..." below it against a document
+// that does not exist, and the base always compiled it against the root. That
+// is kept only where the pointer does NOT resolve inside the resource the path
+// names (refx_reach): where it does, the specification's answer is that
+// resource's own target, which the inliner cannot reach (it resolves every
+// local pointer against the root), so it is refused, never read at the root
+// (codex's read of PR F). A nested absolute id, a path id with no absolute
+// root, or one under a nested move, still moves the base.
+static refx_base refx_own_base(const refx_lexmap *mp, const jv *s, refx_base b) {
     for (int i = 0; s && s->type == J_OBJ && i < s->n; i++) {
         if (strcmp(s->keys[i], "id") && strcmp(s->keys[i], "$id")) continue;
         const jv *v = s->items[i];
         if (v->type != J_STR || !v->str[0] || v->str[0] == '#') continue;
-        if (mp->root_absolute && v->str[0] == '/' && v->str[1] != '/') continue;
-        return s->keys[i];
+        if (mp->root_absolute && v->str[0] == '/' && v->str[1] != '/') {
+            if (!b.key) { b.label = s; b.label_key = s->keys[i]; }
+        } else {
+            b.key = s->keys[i];
+        }
+        return b;
     }
-    return NULL;
+    return b;
 }
 
-static void refx_lex_walk(refx_lexmap *mp, const jv *s, const char *base, bool root, int depth) {
+static void refx_lex_walk(refx_lexmap *mp, const jv *s, refx_base base, bool root, int depth) {
     if (!s || s->type != J_OBJ || depth > REFX_DEPTH * 4 || mp->oom) return;
-    const char *own = root ? NULL : refx_own_base(mp, s);
-    if (own) base = own;
+    if (!root) base = refx_own_base(mp, s, base);
     if (mp->n == mp->cap) {
         int cap = mp->cap ? mp->cap * 2 : 64;
         refx_lex *g = realloc(mp->v, sizeof *g * (size_t)cap);
@@ -3907,20 +3920,27 @@ static int refx_lex_cmp(const void *a, const void *b) {
 }
 
 static refx_lex *refx_lex_find(refx_lexmap *mp, const jv *node) {
-    refx_lex key = { node, NULL, false };
+    refx_lex key = { node, {0}, false };
     return bsearch(&key, mp->v, (size_t)mp->n, sizeof *mp->v, refx_lex_cmp);
 }
 
 // The walk the inliner makes: subschemas (not definitions maps), and through a
-// local $ref its target, once. `base` is the keyword in force at s.
-static bool refx_reach(jv *root, refx_lexmap *mp, const jv *s, const char *base, int depth,
+// local $ref its target, once. `base` is the base in force at s.
+static bool refx_reach(jv *root, refx_lexmap *mp, const jv *s, refx_base base, int depth,
                        char *err, int errcap) {
     if (!s || s->type != J_OBJ || depth > REFX_DEPTH * 4) return true;
     jv *ref = jv_get((jv *)s, "$ref");
     if (ref && ref->type == J_STR && ref->str[0] == '#') {
-        if (base) {
+        if (base.key) {
             snprintf(err, errcap, "unsupported schema: a nested '%s' over a $ref would move "
-                     "the reference's base; only a root %s is supported", base, base);
+                     "the reference's base; only a root %s is supported", base.key, base.key);
+            return false;
+        }
+        if (base.label && refx_target((jv *)base.label, ref->str)) {
+            snprintf(err, errcap, "unsupported schema: the $ref '%.80s' resolves inside the resource "
+                     "a nested '%s' path names, and Runner resolves a local reference against the "
+                     "document root only; a nested path %s is read as a label only where its "
+                     "references resolve at the root alone", ref->str, base.label_key, base.label_key);
             return false;
         }
         refx_lex *t = refx_lex_find(mp, refx_target(root, ref->str));
@@ -3940,11 +3960,9 @@ static bool refx_reach(jv *root, refx_lexmap *mp, const jv *s, const char *base,
             if (v->type == J_ARR) { kids = (const jv *const *)v->items; n = v->n; }
             else n = 1;
         }
-        for (int j = 0; j < n; j++) {
-            const char *own = refx_own_base(mp, kids[j]);
-            if (!refx_reach(root, mp, kids[j], own ? own : base, depth + 1, err, errcap))
+        for (int j = 0; j < n; j++)
+            if (!refx_reach(root, mp, kids[j], refx_own_base(mp, kids[j], base), depth + 1, err, errcap))
                 return false;
-        }
     }
     return true;
 }
@@ -3955,7 +3973,7 @@ static bool refx_nested_base(jv *root, char *err, int errcap) {
         if ((!strcmp(root->keys[i], "id") || !strcmp(root->keys[i], "$id")) &&
             root->items[i]->type == J_STR && refx_uri_absolute(root->items[i]->str))
             mp.root_absolute = true;
-    refx_lex_walk(&mp, root, NULL, true, 0);
+    refx_lex_walk(&mp, root, (refx_base){0}, true, 0);
     if (mp.oom) {
         free(mp.v);
         snprintf(err, errcap, "out of memory checking the schema's reference bases");
@@ -3964,7 +3982,7 @@ static bool refx_nested_base(jv *root, char *err, int errcap) {
     qsort(mp.v, (size_t)mp.n, sizeof *mp.v, refx_lex_cmp);
     refx_lex *r = refx_lex_find(&mp, root);
     if (r) r->seen = true;
-    bool ok = refx_reach(root, &mp, root, NULL, 0, err, errcap);
+    bool ok = refx_reach(root, &mp, root, (refx_base){0}, 0, err, errcap);
     free(mp.v);
     return ok;
 }
