@@ -820,12 +820,15 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         // what the lowest rung can reach is known from the header: refuse an unreachable target
         // before costing anything (the costing took 80 minutes to say so on a 27B parent)
         int ttop = quantize_type_from_name(top), tbot = quantize_type_from_name(bottom);
-        long long now = 0, fl = 0;
+        long long now = 0, fl = 0, at_top = 0;
         if (o->recipe[2] && !quantize_set_imatrix(o->recipe[2])) return false;
         bool known = ttop >= 0 && tbot >= 0 && pbytes > 0 &&
-                     quantize_floor_bytes(o->parent, ttop, tbot, o->match, &now, &fl);
+                     quantize_floor_bytes(o->parent, ttop, tbot, o->match, &now, &fl) &&
+                     quantize_floor_bytes(o->parent, ttop, ttop, o->match, &now, &at_top);
         quantize_set_imatrix(NULL);
         if (known && pbytes - now + fl > o->target_size) {
+            // as the later refusal leaves it: what would have had to be saved from the top rung
+            res->save_bytes = pbytes - now + at_top - o->target_size;
             fprintf(stderr, "error: --target-size %lld is out of reach: with every candidate at %s the "
                     "file is about %lld bytes. Add a lower rung than %s, or raise the target to at "
                     "least that\n", o->target_size, bottom, pbytes - now + fl, bottom);
