@@ -1483,6 +1483,165 @@ static void test_schema_number_bounds_reject_dead_minus_and_close_in_bounds(void
     schema_free(schema); jv_free(j);
 }
 
+
+// R2.19: a bounded number's prefix is admitted only while some completion of
+// it is a number inside the bounds. The byte that would leave none is refused
+// where it is written (the exponent digit of 1e+36 under maximum 1, the first
+// digit of a mantissa no scale can bring inside), never at the terminator
+// after every token has been masked; and a forced close of any admitted
+// prefix is a value inside the bounds.
+static snode *num_schema(const char *src) {
+    jv *j = json_parse(src, strlen(src));
+    assert(j != NULL);
+    char err[256];
+    snode *n = schema_compile(j, err, sizeof(err));
+    jv_free(j);
+    assert(n != NULL);
+    return n;
+}
+static bool num_admits(const snode *s, const char *prefix) {
+    sval v; sval_init(&v, s);
+    return sval_feed(&v, prefix, (int)strlen(prefix));
+}
+// a whole document: the validator says done, once a top-level number has its
+// terminator (which the finished document then refuses)
+static bool num_valid(const snode *s, const char *doc) {
+    sval v; sval_init(&v, s);
+    if (!sval_feed(&v, doc, (int)strlen(doc))) return false;
+    if (!v.done) (void)sval_feed(&v, " ", 1);
+    return v.done;
+}
+static bool num_closes_valid(const snode *s, const char *prefix) {
+    sval v; sval_init(&v, s);
+    if (!sval_feed(&v, prefix, (int)strlen(prefix))) return false;
+    char suffix[256];
+    int k = sval_close(&v, suffix, sizeof(suffix));
+    if (k < 0) return false;
+    char full[512];
+    snprintf(full, sizeof(full), "%s%.*s", prefix, k, suffix);
+    return num_valid(s, full);
+}
+
+static void test_schema_number_prefix_stays_completable(void) {
+    struct { const char *schema, *prefix; bool admitted; } cases[] = {
+        // R2.19's report: maximum 1 admitted 1e+36, then masked every token
+        { "{\"type\":\"number\",\"maximum\":1}", "1e+36", false },
+        { "{\"type\":\"number\",\"maximum\":1}", "1e+3", false },     // e+3 and longer are all past 1
+        { "{\"type\":\"number\",\"maximum\":1}", "1e+", true },       // e+0 is 1
+        { "{\"type\":\"number\",\"maximum\":1}", "1e+0", true },
+        { "{\"type\":\"number\",\"maximum\":1}", "1e+00", true },
+        { "{\"type\":\"number\",\"maximum\":1}", "1e-36", true },
+        { "{\"type\":\"number\",\"maximum\":1}", "1e", true },
+        // the corpus's shape: 2.74e+57 over a maximum of 10
+        { "{\"type\":\"number\",\"maximum\":10}", "2.74e+5", false },
+        { "{\"type\":\"number\",\"maximum\":10}", "2.74e+1", false },
+        { "{\"type\":\"number\",\"maximum\":10}", "2.74e+0", true },
+        // the lower bound, from below: 4e-50 under minimum 1e-9
+        { "{\"type\":\"number\",\"minimum\":1e-9}", "4e-50", false },
+        { "{\"type\":\"number\",\"minimum\":1e-9}", "4e-10", false },
+        { "{\"type\":\"number\",\"minimum\":1e-9}", "4e-9", true },
+        { "{\"type\":\"number\",\"minimum\":1e-9}", "4e-5", true },
+        // negative numbers, both bounds
+        { "{\"type\":\"number\",\"minimum\":-1}", "-1e+3", false },
+        { "{\"type\":\"number\",\"minimum\":-1}", "-1e-3", true },
+        { "{\"type\":\"number\",\"maximum\":-1}", "-1e-3", false },   // -0.001 is above -1
+        { "{\"type\":\"number\",\"maximum\":-1}", "-1e-0", true },
+        { "{\"type\":\"number\",\"maximum\":-1}", "-1e-", true },
+        { "{\"type\":\"number\",\"maximum\":-1}", "5", false },       // no positive number is at most -1
+        { "{\"type\":\"number\",\"maximum\":-1}", "0", false },
+        { "{\"type\":\"number\",\"maximum\":-1}", "-5", true },
+        // exclusive bounds
+        { "{\"type\":\"number\",\"exclusiveMaximum\":1}", "1e+0", false },
+        { "{\"type\":\"number\",\"exclusiveMaximum\":1}", "1e-", true },
+        { "{\"type\":\"number\",\"exclusiveMaximum\":1}", "1", true },  // 1e-1 is below it
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0}", "0", true },  // 0.5 is above it
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0}", "0e", false },// 0 times any scale is 0
+        { "{\"type\":\"number\",\"exclusiveMaximum\":0}", "0", false },
+        { "{\"type\":\"number\",\"exclusiveMaximum\":0}", "-", true },
+        // a narrow interval: the mantissa's first digits decide, at any scale
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "1", false },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "7", false },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "5", true },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "6", true },  // 6e-1 is 0.6
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "0.59", true },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "0.61", false },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "5e-2", false },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "55e-2", true },
+        // zero
+        { "{\"type\":\"number\",\"maximum\":0}", "0", true },
+        { "{\"type\":\"number\",\"maximum\":0}", "0.0", true },
+        { "{\"type\":\"number\",\"maximum\":0}", "0.1", false },
+        { "{\"type\":\"number\",\"maximum\":0}", "1", false },
+        { "{\"type\":\"number\",\"maximum\":0}", "-1", true },
+        // inside an object, where the terminator is a brace
+        { "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\",\"maximum\":1}},\"required\":[\"x\"]}", "{\"x\":1e+36", false },
+        { "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\",\"maximum\":1}},\"required\":[\"x\"]}", "{\"x\":1e-36", true },
+        // unbounded: only what json_parse cannot read is refused
+        { "{\"type\":\"number\"}", "1e+999", false },
+        { "{\"type\":\"number\"}", "1e+30", true },
+        // an integer admits no exponent in this grammar at all
+        { "{\"type\":\"integer\",\"maximum\":1000}", "1e3", false },
+    };
+    int admitted = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        snode *s = num_schema(cases[i].schema);
+        bool got = num_admits(s, cases[i].prefix);
+        if (got != cases[i].admitted) {
+            fprintf(stderr, "R2.19: %s with prefix %s: admitted %d, want %d\n",
+                    cases[i].schema, cases[i].prefix, got, cases[i].admitted);
+            assert(got == cases[i].admitted);
+        }
+        // an admitted prefix closes to a number inside the bounds
+        if (got) { admitted++; assert(num_closes_valid(s, cases[i].prefix)); }
+        schema_free(s);
+    }
+    assert(admitted > 10);
+
+    // A walk: random number bytes, each one a trial first, then a forced close.
+    // Every prefix the validator admits must close to a valid document; the
+    // walks must reach exponents, or the check says nothing about them.
+    const char *walk_schemas[] = {
+        "{\"type\":\"number\",\"maximum\":1}", "{\"type\":\"number\",\"minimum\":1e-9}",
+        "{\"type\":\"number\",\"minimum\":-1,\"maximum\":-0.5}", "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}",
+        "{\"type\":\"number\",\"exclusiveMinimum\":0,\"exclusiveMaximum\":1e-300}",
+        "{\"type\":\"number\",\"minimum\":1e300}", "{\"type\":\"number\",\"maximum\":-1e300}",
+        "{\"type\":\"number\",\"minimum\":123.456,\"maximum\":123.457}",
+    };
+    const char alphabet[] = "0123456789.eE+-";
+    unsigned long long rs = 0x2545F4914F6CDD1Dull;
+    int walks = 0, closed = 0, in_exp = 0;
+    for (size_t w = 0; w < sizeof(walk_schemas) / sizeof(*walk_schemas); w++) {
+        snode *s = num_schema(walk_schemas[w]);
+        for (int r = 0; r < 300; r++) {
+            sval v; sval_init(&v, s);
+            char doc[96]; int n = 0;
+            int len = 1 + (int)(rs % 12);
+            for (int k = 0; k < len; k++) {
+                bool moved = false;
+                for (int t = 0; t < 40 && !moved; t++) {
+                    rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17;
+                    char c = alphabet[rs % (sizeof(alphabet) - 1)];
+                    sval scratch;
+                    if (sval_trial(&v, &scratch, &c, 1)) {
+                        assert(sval_feed(&v, &c, 1));
+                        doc[n++] = c; moved = true;
+                    }
+                }
+                if (!moved) break;
+            }
+            doc[n] = 0;
+            walks++;
+            if (strchr(doc, 'e') || strchr(doc, 'E')) in_exp++;
+            if (num_closes_valid(s, doc)) closed++;
+            else { fprintf(stderr, "R2.19 walk: %s admitted %s, which closes invalid\n", walk_schemas[w], doc); assert(0); }
+        }
+        schema_free(s);
+    }
+    assert(closed == walks && in_exp > walks / 10);
+    printf("ok: a bounded number's prefix stays completable (%zu cases, %d walks, %d through an exponent)\n",
+           sizeof(cases) / sizeof(*cases), walks, in_exp);
+}
+
 static void test_schema_merges_enum_and_const_anyof(void) {
     const char *src = "{\"anyOf\":["
         "{\"type\":\"string\",\"enum\":[\"pending\",\"completed\"]},"
@@ -4111,6 +4270,7 @@ int main(void) {
     test_schema_negated_and_escaped_classes();
     test_schema_number_bounds_reject_dead_minus_and_close_in_bounds();
     test_schema_exclusive_bounds_survive_flush_to_zero();
+    test_schema_number_prefix_stays_completable();
     test_schema_merges_enum_and_const_anyof();
     test_dump_keeps_integer_literals();
     test_schema_enum_keeps_a_large_integer();
