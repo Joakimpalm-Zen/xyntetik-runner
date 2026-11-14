@@ -3518,6 +3518,33 @@ done:
     return rc;
 }
 
+// What the tensors a rewrite would quantize take now, and what they would take with every one at
+// `bottom`: the least a --target-size plan can reach, known from the header alone. `match` narrows the
+// candidates as the planner does (NULL for all). With an importance matrix set, a tensor it has no
+// entry for is counted at `top`, where the planner holds it; a type that does not fit a tensor's rows
+// leaves that tensor as it is.
+bool quantize_floor_bytes(const char *in_path, int top, int bottom, const char *match,
+                          long long *now, long long *at_floor) {
+    gguf_file g;
+    if (!gguf_open(&g, in_path)) return false;
+    long long n = 0, f = 0;
+    for (uint64_t i = 0; i < g.n_tensors; i++) {
+        gguf_tensor *t = &g.tensors[i];
+        if (!should_quantize(t) || keep_source_type(t)) continue;
+        if (match && *match && !strstr(t->name, match)) continue;
+        uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
+        int want = g_imx.n && !imatrix_find(t->name) ? top : bottom;
+        int ek = width_fallback(want, (int64_t)t->ne[0]);
+        n += (long long)t->nbytes;
+        f += type_fits_row(ek, (int64_t)t->ne[0]) ? (long long)(ggml_row_size(ek, t->ne[0]) * rows)
+                                                  : (long long)t->nbytes;
+    }
+    gguf_close(&g);
+    *now = n;
+    *at_floor = f;
+    return true;
+}
+
 // ---------------------------------------------------------------- error report
 // R4.7.3: what each candidate type would cost each tensor, measured with the
 // writers a rewrite uses (the importance-weighted ones when an imatrix is
