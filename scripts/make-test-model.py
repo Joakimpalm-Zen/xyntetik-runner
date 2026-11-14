@@ -144,7 +144,10 @@ while i < len(args):
         # published files do, each layer different and one with a raw alpha_n
         # small enough that the softplus transform changes it many times
         # over: a backward that reads the wrong layer's values, or the raw
-        # ones, then fails the gradient gate.
+        # ones, then fails the gradient gate. "WIDE" is the same with layer
+        # 1's eps at -0.002, so the piece between eps and 0 catches real
+        # pre-activations; xIELU then jumps by expm1(eps) * alpha_n at 0,
+        # which a finite difference crossing it sees (the gate runs it stiff).
         i += 1
         APERTUS = args[i]
         ARCH = "apertus"
@@ -987,17 +990,17 @@ if ESERIES_SHARED_KV:
 if ESERIES_PLE:
     meta_kvs.append(
         ku(f"{ARCH}.embedding_length_per_layer_input", ESERIES_PLE))
-if APERTUS == "LAYERS":
+if APERTUS in ("LAYERS", "WIDE"):
     # raw values, as the file stores them (the loader applies softplus):
     # layer 0's alpha_n of 0.003 becomes beta + 0.695, layer 1's 2.5 stays
-    # near itself; the betas and alpha_p differ by layer too. Layer 1's eps
-    # is -0.02, not the published -1e-6, so the piece between eps and 0
-    # (where min(x, eps) is constant) catches real pre-activations and its
-    # derivative is checked by the gradient gate, not left vacuous.
-    _an = [0.003, 2.5, 0.4, 1.2]
+    # near itself; the betas and alpha_p differ by layer too. eps is the
+    # published -1e-6, except WIDE's layer 1 (-0.002, with a raw alpha_n of
+    # 0.4 so the jump at 0 stays small against the finite difference's steps)
+    _wide = APERTUS == "WIDE"
+    _an = [0.003, 0.4 if _wide else 2.5, 0.4, 1.2]
     _ap = [0.8, 3.0, 0.2, 1.5]
     _b = [0.5, 0.35, 0.6, 0.45]
-    _eps = [-1e-6, -0.02, -1e-6, -0.02]
+    _eps = [-1e-6, -0.002 if _wide else -1e-6, -1e-6, -1e-6]
     meta_kvs += [
         kaf("xielu.alpha_n", [_an[i % 4] for i in range(N_LAYER)]),
         kaf("xielu.alpha_p", [_ap[i % 4] for i in range(N_LAYER)]),

@@ -11480,6 +11480,8 @@ static float act_d(int act, float g) {
 // tell the SiLU derivative from the GELU one at fixture scale (R8.9.5).
 float model_ffn_act(int act, float g, float u) { return gated_act(act, g, u); }
 float model_ffn_act_deriv(int act, float g) { return act_d(act, g); }
+float model_xielu(float x, float an, float ap, float b, float eps) { return xielu(x, an, ap, b, eps); }
+float model_xielu_deriv(float x, float an, float ap, float b, float eps) { return xielu_d(x, an, ap, b, eps); }
 
 static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     const char *r = NULL;
@@ -11511,8 +11513,10 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
     // non-finite gradient at step 1 (Qwen3-0.6B, main 5dba42b)
     else if (m->kv_split) r = "k8v4 KV cache (use --kv f16)";
     else if (m->kv_fp4) r = "fp4 KV cache (use --kv f16)";
-    else if (m->ffn_act == ACT_SWIGLU_OAI || m->ffn_act == ACT_XIELU)
-        r = "FFN activation not in the backward (gpt-oss/apertus)";
+    // R8.27: Apertus's ungated xIELU FFN is in the backward; gpt-oss's
+    // clamped OAI SwiGLU is not
+    else if (m->ffn_act == ACT_SWIGLU_OAI)
+        r = "FFN activation not in the backward (gpt-oss)";
     else if (m->attn_gate_heads)
         r = "per-head attention output gate (spark2_5) not in the backward";
     else if (m->norm_groups > 1)
@@ -11558,7 +11562,9 @@ static bool lora_bw_supported(model_t *m, char *why, size_t cap) {
         else if (ly->n_expert > 0 && ly->ple_gate) r = "MoE with per-layer embeddings";
         else if (ly->n_expert > 0 && (ly->w_gate_shexp || ly->w_up_shexp || ly->w_down_shexp))
             r = "MoE shared experts";
-        else if (ly->n_expert == 0 && (!ly->w_gate || !ly->w_up)) r = "ungated FFN";
+        // R8.27: gate-less is in the backward for xIELU (Apertus) only
+        else if (ly->n_expert == 0 && (!ly->w_up || (!ly->w_gate && m->ffn_act != ACT_XIELU)))
+            r = "ungated FFN";
         else if (attn && ly->attn_sinks) r = "attention sinks";
     }
     if (r && why) snprintf(why, cap, "%s", r);
@@ -12313,12 +12319,15 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
                      E, E, nfe, NULL, 1);
         }
     }
+    // a gate-less FFN (Apertus) is up -> xIELU -> down, as serving's
+    // layer_dense_ffn takes it; any other gate-less activation is not covered
+    if (ok && !moe && !ly->w_gate && m->ffn_act != ACT_XIELU) ok = false;
     if (ok && !moe) {
         t_mv_exact = true;
-        matvec_b(m->tp, g, nff, ly->w_gate, xn2, E, E, nff, NULL, T);
+        if (ly->w_gate) matvec_b(m->tp, g, nff, ly->w_gate, xn2, E, E, nff, NULL, T);
         matvec_b(m->tp, u, nff, ly->w_up, xn2, E, E, nff, NULL, T);
         t_mv_exact = ex;
-        lora_site_fw(m, l, LW_GATE, g, xn2, E, nff, T);
+        if (ly->w_gate) lora_site_fw(m, l, LW_GATE, g, xn2, E, nff, T);
         lora_site_fw(m, l, LW_UP, u, xn2, E, nff, T);
     }
 
@@ -12326,9 +12335,15 @@ NUM_STAGE void lbw_recompute(model_t *m, int l, int T, float *dx, lbw_state *s, 
     for (int t = 0; ok && !moe && t < T; t++) {
         const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
         float *ht = hact + (size_t)t * nff;
-        // gated_act itself (not a re-transcription of SiLU/GELU here), so
+        // gated_act and xielu themselves (not a re-transcription here), so
         // the tape's recomputed forward is bit-identical to serving's
-        for (int i = 0; i < nff; i++) ht[i] = gated_act(m->ffn_act, gt[i], ut[i]);
+        if (!ly->w_gate) {
+            float an = m->xielu_an[l], ap = m->xielu_ap[l];
+            float bb = m->xielu_b[l], ep = m->xielu_eps[l];
+            for (int i = 0; i < nff; i++) ht[i] = xielu(ut[i], an, ap, bb, ep);
+        } else {
+            for (int i = 0; i < nff; i++) ht[i] = gated_act(m->ffn_act, gt[i], ut[i]);
+        }
     }
     *okp = ok;
     s->lt = lt;
@@ -12533,6 +12548,24 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
     } else {
     ok = ok && lora_site_bw(m, l, LW_DOWN, ly->w_down, hact, dbr, dhact,
                             nff, E, T);
+    if (!ly->w_gate) {
+        // R8.27: a gate-less FFN, hact = xielu(u): d u = dhact * xielu'(u)
+        // at this layer's effective parameters, then the up site alone
+        float an = m->xielu_an[l], ap = m->xielu_ap[l];
+        float bb = m->xielu_b[l], ep = m->xielu_eps[l];
+        int *pc = m->train_xielu_pieces;
+        for (int t = 0; ok && t < T; t++) {
+            const float *ut = u + (size_t)t * nff;
+            const float *dht = dhact + (size_t)t * nff;
+            float *dgt = dgu + (size_t)t * nff;
+            for (int i = 0; i < nff; i++) {
+                pc[ut[i] > 0.0f ? 2 : ut[i] < ep ? 0 : 1]++;
+                dgt[i] = dht[i] * xielu_d(ut[i], an, ap, bb, ep);
+            }
+        }
+        ok = ok && lora_site_bw(m, l, LW_UP, ly->w_up, xn2, dgu, dxn2,
+                                E, nff, T);
+    } else {
     for (int t = 0; ok && t < T; t++) {
         const float *gt = g + (size_t)t * nff, *ut = u + (size_t)t * nff;
         const float *dht = dhact + (size_t)t * nff;
@@ -12549,6 +12582,7 @@ NUM_STAGE void lbw_ffn_and_output(model_t *m, int l, int T, float *dx, lbw_state
     }
     ok = ok && lora_site_bw(m, l, LW_UP, ly->w_up, xn2, dgu, dxn2,
                             E, nff, T);
+    }
     }
     for (int t = 0; ok && t < T; t++) {
         float *dxat = dxa + (size_t)t * E;
@@ -13194,20 +13228,27 @@ NUM_STAGE void lbw_recompute_deltanet(model_t *m, int l, int T, lbw_state *s,
               m->rms_eps);
     }
     free(ob);
+    if (ok && !ly->w_gate && m->ffn_act != ACT_XIELU) ok = false;
     t_mv_exact = true;
     if (ok) {
-        matvec_b(m->tp, s->g, nff, ly->w_gate, s->xn2, E, E, nff, NULL, T);
+        if (ly->w_gate) matvec_b(m->tp, s->g, nff, ly->w_gate, s->xn2, E, E, nff, NULL, T);
         matvec_b(m->tp, s->u, nff, ly->w_up, s->xn2, E, E, nff, NULL, T);
     }
     t_mv_exact = ex;
     if (ok) {
-        lora_site_fw(m, l, LW_GATE, s->g, s->xn2, E, nff, T);
+        if (ly->w_gate) lora_site_fw(m, l, LW_GATE, s->g, s->xn2, E, nff, T);
         lora_site_fw(m, l, LW_UP, s->u, s->xn2, E, nff, T);
     }
     for (int t = 0; ok && t < T; t++) {
         const float *gt = s->g + (size_t)t * nff, *ut = s->u + (size_t)t * nff;
         float *ht = s->hact + (size_t)t * nff;
-        for (int i = 0; i < nff; i++) ht[i] = gated_act(m->ffn_act, gt[i], ut[i]);
+        if (!ly->w_gate) {
+            float an = m->xielu_an[l], ap = m->xielu_ap[l];
+            float bb = m->xielu_b[l], ep = m->xielu_eps[l];
+            for (int i = 0; i < nff; i++) ht[i] = xielu(ut[i], an, ap, bb, ep);
+        } else {
+            for (int i = 0; i < nff; i++) ht[i] = gated_act(m->ffn_act, gt[i], ut[i]);
+        }
     }
     if (s->lprof) lbw_tick(m, LBW_R, &s->lt, &s->dt);
     *okp = ok;
@@ -13724,6 +13765,7 @@ static bool lora_backward(model_t *m, const int32_t *toks, int T,
                           const float *pos_w, const lora_teacher *tch,
                           double *loss_out) {
     if (!lora_backward_admit(m, T)) return false;
+    memset(m->train_xielu_pieces, 0, sizeof m->train_xielu_pieces);
     // RUNNER_TRAIN_PROF=1: per-step phase wall times on stderr — the dev
     // knob the slice-3 optimization ran on (guessing at the profile cost a
     // round of measurement; this line is cheaper than being wrong again).

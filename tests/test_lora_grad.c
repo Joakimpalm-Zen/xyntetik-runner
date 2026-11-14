@@ -198,12 +198,16 @@ int main(int argc, char **argv) {
     double l1 = run_backward(&m, toks);
     if (m.ffn_act == ACT_XIELU) {
         // R8.27: the backward's xIELU pre-activations, by piece, so a gate that
-        // passes is not passing on one piece alone
+        // passes is not passing on one piece alone. At the published eps
+        // (-1e-6) the middle piece is too narrow to catch any; a fixture with
+        // a wider eps (make-test-model.py --apertus WIDE) must feed it.
         const int *pc = m.train_xielu_pieces;
+        bool wide = false;
+        for (int l = 0; l < m.n_layer; l++) wide = wide || m.xielu_eps[l] < -1e-4f;
         printf("lora-grad: xielu pre-activations by piece: %d below eps, %d in eps..0, %d above 0\n",
                pc[0], pc[1], pc[2]);
-        CHECK(pc[0] > 0 && pc[1] > 0 && pc[2] > 0, "an xielu piece saw no input (%d, %d, %d)",
-              pc[0], pc[1], pc[2]);
+        CHECK(pc[0] > 0 && pc[2] > 0 && (!wide || pc[1] > 0),
+              "an xielu piece saw no input (%d, %d, %d)", pc[0], pc[1], pc[2]);
     }
     // the positive control for the serve check above: a training step leaves state the check sees
     CHECK(model_has_training_state(&m), "a backward left no training state the check can see");

@@ -52,6 +52,18 @@ static inline float xielu(float x, float an, float ap, float b, float eps) {
     return (expm1f(mn) - x) * an + b * x;
 }
 
+// d/dx xielu, for the trainer's backward: each piece's own derivative,
+// chosen by the forward's own tests so x = 0 and x = eps (where the pieces
+// meet) take the middle piece, as the forward does there:
+//   x >  0         : 2 * alpha_p * x + beta
+//   x <  eps       : alpha_n * expm1(x) + beta
+//   eps <= x <= 0  : beta - alpha_n   (min(x, eps) is the constant eps)
+static inline float xielu_d(float x, float an, float ap, float b, float eps) {
+    if (x > 0.0f) return 2.0f * ap * x + b;
+    if (x < eps) return an * expm1f(x) + b;
+    return b - an;
+}
+
 // Router gating functions, numbered as llama.cpp's llama_expert_gating_func_type
 // so a GGUF's expert_gating_func value maps across without translation.
 enum {
@@ -728,6 +740,9 @@ typedef struct {
                              // cached on first use. NULL = CPU backward.
                              // Independent of `gpu` — the model itself stays
                              // CPU-resident under --train.
+    int    train_xielu_pieces[3]; // the last backward's xIELU pre-activations
+                             // by piece (below eps, eps..0, above 0), for the
+                             // gradient gate to show every piece was fed
     bool   train_dev;        // R8.19 device mode: every weight product of a
                              // training step and of its evals on train_gpu
                              // (gpu_train_mm), tolerance-equivalent to the
@@ -1229,6 +1244,9 @@ bool      model_lora_use(model_t *m, const lora_set *ls);
 // and the backward's d/dg of act(g), dispatched on the activation kind
 float  model_ffn_act(int act, float g, float u);
 float  model_ffn_act_deriv(int act, float g);
+// test hooks: the serving xIELU and the backward's derivative (R8.27)
+float  model_xielu(float x, float an, float ap, float b, float eps);
+float  model_xielu_deriv(float x, float an, float ap, float b, float eps);
 bool   model_lora_backward(model_t *m, const int32_t *toks, int n,
                            double *loss_out);
 // weighted variant: pos_w[t] scales transition t (predicting toks[t+1]) in
