@@ -580,3 +580,63 @@ def test_two_slots_keep_their_own_snapshot_in_their_receipts(runner_bin, fx, tmp
     assert len(recs) == 2, recs
     for name, snap in recs.items():
         assert snap and snap["name"] == name, recs
+
+
+# ---- the third read's findings (R3.62) ----
+
+def test_the_automatic_shape_is_not_a_context_id_either(runner_bin, fx, saved, tmp_path):
+    """A context pinned under a preamble snapshot's name could take that
+    snapshot's place in a receipt, or lend it a stale one. The shape is the
+    server's: no context can be pinned or loaded under it."""
+    auto = "pre-" + "a" * 32
+    with _srv(runner_bin, fx["model"], saved["snaps"]) as srv:
+        st, body = _post(srv, "/v1/runner/contexts", {"id": auto, "prompt": MEMORY})
+        assert st == 400 and body["error"]["code"] == "invalid_value", body
+        st, body = _post(srv, "/v1/runner/contexts", {"id": auto, "snapshot": "mem"})
+        assert st == 400 and body["error"]["code"] == "invalid_value", body
+        st, body = _post(srv, "/v1/runner/contexts", {"id": "pre-notes", "prompt": MEMORY})
+        assert st == 200, body
+
+
+def test_the_cap_still_holds_behind_many_entries_it_cannot_remove(runner_bin, fx, tmp_path):
+    """Forty old entries of the automatic shape that cannot be removed: the
+    cap is still enforced on the snapshots that can."""
+    snaps = tmp_path / "snaps"
+    snaps.mkdir()
+    for i in range(40):
+        d = snaps / ("pre-%032x.kv" % i)
+        d.mkdir()
+        os.utime(d, (1 + i, 1 + i))
+    with _auto(runner_bin, fx["model"], snaps, "64:0.1") as a:
+        for i in range(4):
+            _chat(a, SYSTEM + " Session %d of the day." % i, "List the files.")
+            _wait_files(snaps, 41)
+        import time
+        time.sleep(0.5)
+        real = [p for p in snaps.glob("pre-*.kv") if p.is_file()]
+        assert real and sum(p.stat().st_size for p in real) <= 100_000, [p.stat().st_size for p in real]
+    assert len([p for p in snaps.glob("pre-*.kv") if p.is_dir()]) == 40
+
+
+@pytest.mark.parametrize("lost", [".kv", ".kv.json"])
+def test_half_a_preamble_snapshot_is_replaced_not_left_for_ever(runner_bin, fx, tmp_path, lost):
+    """One file of the pair gone (a remove that half failed): the name used
+    to be dead, neither loadable nor writable. The half is cleared and the
+    snapshot written again."""
+    snaps = tmp_path / "snaps"
+    with _auto(runner_bin, fx["model"], snaps) as a:
+        _chat(a, SYSTEM, "List the files.")
+        kv = _wait_files(snaps, 1)
+        assert len(kv) == 1
+    stem = kv[0].name[:-3]
+    good = kv[0].read_bytes()
+    (snaps / (stem + lost)).unlink()
+    with _auto(runner_bin, fx["model"], snaps) as b:
+        again = _chat(b, SYSTEM, "Which file is the largest?")
+        assert (again["cached"], again["reuse"]) == (0, "none"), again
+        kv2 = _wait_files(snaps, 1)
+        assert [p.name for p in kv2] == [kv[0].name] and kv2[0].read_bytes() == good
+        assert (snaps / (stem + ".kv.json")).exists()
+    with _auto(runner_bin, fx["model"], snaps) as c:
+        warm = _chat(c, SYSTEM, "Which file is the largest?")
+    assert warm["reuse"] == "preamble_snapshot" and warm["answer"] == again["answer"], warm
