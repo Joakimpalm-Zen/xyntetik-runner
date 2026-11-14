@@ -76,8 +76,9 @@ void kvsnap_auto_name(const engine *e, const int32_t *toks, int n,
 // slot is unchanged or was reset.
 bool kvsnap_auto_load(engine *e, const char *name);
 // What that load started from, as the receipt records it (name, kv sha256,
-// manifest chain hash); false when `name` is not the snapshot last loaded.
-bool kvsnap_auto_origin(const char *name, char *out, size_t cap);
+// manifest chain hash), kept on the slot; false when `name` is not the
+// snapshot this slot last loaded.
+bool kvsnap_auto_origin(const engine *e, const char *name, char *out, size_t cap);
 // Write rows [0, n) of the slot's history as snapshot `name`, unless it is
 // on disk already, then bring the directory under its cap.
 void kvsnap_auto_save(engine *e, const char *name, int n);

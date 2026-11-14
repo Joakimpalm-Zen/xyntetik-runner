@@ -2963,7 +2963,7 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
     // R1.12.2: the KV snapshot this request's prompt started from
     char origin[256];
     if (ctx_id && (prefix_context_origin(ctx_id, origin, sizeof origin) ||
-                   kvsnap_auto_origin(ctx_id, origin, sizeof origin)))
+                   kvsnap_auto_origin(e, ctx_id, origin, sizeof origin)))
         sb_fmt(&sj, ",\"kv_snapshot\":%s", origin);
     sb_lit(&sj, "}");
     sb_put(&sj, "", 1);

@@ -181,6 +181,10 @@ typedef struct {
     int      rewind_how;
     int      rope_rebuilds;   // R4.40: times a sequence was recomputed at the LongRoPE crossing
     uint64_t mark_hash;
+    // R3.62: the preamble snapshot this slot's rows were last loaded from
+    // (its name, and the origin object a receipt records), "" when none
+    char     snap_name[40];
+    char     snap_origin[256];
     bool     mark_anchor;   // the mark was taken at a message boundary
     // optional per-token logprob capture (server "logprobs"): caller points
     // these at buffers sized [lp_cap] / [lp_cap * lp_n] before generating

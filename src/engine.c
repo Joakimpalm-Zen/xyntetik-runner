@@ -1303,6 +1303,12 @@ int prefix_slot_export(const engine *e, int n, const char *path) {
         model_has_recurrent(e->m))
         return PFX_CTX_UNSUPPORTED;
     if (n < 1 || e->pos < n) return PFX_CTX_MISMATCH;
+    // R4.40.1: a file says how many tokens it holds, and its loader takes the
+    // LongRoPE set that length takes. Rows of a preamble inside a sequence
+    // past the original context are on the long set whatever the preamble's
+    // own length, and are not written under a length that says short (the
+    // rule engine_state_save and the truncated publish keep).
+    if (model_rope_wants_long(e->m, n) != e->m->rope_long) return PFX_CTX_UNSUPPORTED;
     size_t need = prefix_cache_entry_bytes(e->m, n);
     uint8_t *kv = malloc(need);
     if (!kv) return PFX_CTX_NOSPACE;

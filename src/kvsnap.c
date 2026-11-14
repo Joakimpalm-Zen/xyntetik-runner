@@ -35,9 +35,6 @@ static struct {
     // R3.62: preamble snapshots, off unless auto_min > 0
     int       auto_min;
     long long auto_cap;   // bytes of "pre-" .kv files kept
-    // the snapshot the last slot load started from, for that turn's receipt
-    char      auto_name[KVSNAP_AUTO_NAME];
-    char      auto_origin[256];
 } KS = { .mu = PTHREAD_MUTEX_INITIALIZER };
 
 static bool hex_eq(const char *a, const char *b) {
@@ -122,6 +119,8 @@ static bool fail(kvsnap_err *err, int status, const char *code, const char *fmt,
     return false;
 }
 
+static bool auto_shape(const char *s, const char *suffix);   // R3.62, below
+
 // a snapshot name is a plain file stem: [A-Za-z0-9._-], 1..64, no leading dot
 static bool name_ok(const char *s) {
     size_t n = s ? strlen(s) : 0;
@@ -169,6 +168,10 @@ static bool save_one(const engine *e, const char *ctx, int slot_n, jv *req, sbuf
     if (!name_ok(name))
         return fail(err, 400, "invalid_value", "a snapshot name is 1 to 64 "
                     "characters of [A-Za-z0-9._-], not starting with a dot");
+    // R3.62: that shape is the server's own, kept under a cap it enforces
+    if (slot_n <= 0 && auto_shape(name, ""))
+        return fail(err, 400, "invalid_value", "\"pre-\" and 32 hex digits is the "
+                    "name of a preamble snapshot the server writes itself; choose another");
     // the producer: a receipt this server wrote, whose chain recomputes
     const char *rfile = jv_str(jv_get(req, "receipt"), NULL);
     char rchain[65] = "";
@@ -416,10 +419,10 @@ static bool load_one(engine *e, const char *id, const char *name, bool slot, sbu
         int n = slot ? prefix_slot_import(e, kvpath)
                      : prefix_context_import(e, id, kvpath, origin);
         if (slot && n > 0) {
-            pthread_mutex_lock(&KS.mu);
-            snprintf(KS.auto_name, sizeof KS.auto_name, "%s", name);
-            snprintf(KS.auto_origin, sizeof KS.auto_origin, "%s", origin);
-            pthread_mutex_unlock(&KS.mu);
+            // on the slot, not here: another slot loading another preamble
+            // must not take this turn's snapshot out of its receipt
+            snprintf(e->snap_name, sizeof e->snap_name, "%s", name);
+            snprintf(e->snap_origin, sizeof e->snap_origin, "%s", origin);
         }
         if (n == PFX_CTX_MISMATCH) {
             fail(err, 409, "snapshot_model_mismatch", "snapshot %s was made for "
@@ -548,26 +551,42 @@ bool kvsnap_auto_load(engine *e, const char *name) {
     return false;
 }
 
-// Bring the "pre-" .kv files under the cap, least recently written first.
-// A file and its manifest go together; `keep` is never removed.
+// The automatic shape: "pre-" and 32 lowercase hex digits, then `suffix`.
+// Only such files are the cap's to remove, and the name is not one a caller
+// may give a snapshot of their own.
+static bool auto_shape(const char *s, const char *suffix) {
+    if (strncmp(s, "pre-", 4)) return false;
+    for (int i = 4; i < 36; i++)
+        if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f'))) return false;
+    return !strcmp(s + 36, suffix);
+}
+
+// Bring the preamble snapshots under the cap, least recently written first.
+// A file and its manifest go together; `keep` is never removed. A candidate
+// that cannot be removed (not a regular file, or the remove fails) is left
+// out of the count from then on, so the pass always ends.
 static void auto_trim(const char *keep) {
-    for (;;) {
+    enum { STUCK_MAX = 32 };
+    char stuck[STUCK_MAX][44];
+    int n_stuck = 0;
+    for (int pass = 0; pass < 100000; pass++) {
         long long total = 0;
-        char oldest[80] = "";
+        char oldest[44] = "";
         long long oldest_t = 0;
         plat_dir *d = plat_opendir(KS.dir);
         if (!d) return;
         const char *nm;
         while ((nm = plat_readdir(d))) {
-            size_t ln = strlen(nm);
-            if (strncmp(nm, "pre-", 4) || ln < 8 || ln >= sizeof oldest ||
-                strcmp(nm + ln - 3, ".kv")) continue;
+            if (!auto_shape(nm, ".kv")) continue;
+            bool is_stuck = false;
+            for (int i = 0; i < n_stuck; i++) is_stuck |= !strcmp(stuck[i], nm);
+            if (is_stuck) continue;
             char path[1200];
             snprintf(path, sizeof path, "%s/%s", KS.dir, nm);
             plat_stat_t st;
             if (plat_stat(path, &st) != 0) continue;
             total += (long long)st.st_size;
-            if (!strncmp(nm, keep, ln - 3) && keep[ln - 3] == 0) continue;
+            if (!strncmp(nm, keep, 36) && keep[36] == 0) continue;
             if (!oldest[0] || (long long)st.st_mtime < oldest_t) {
                 snprintf(oldest, sizeof oldest, "%s", nm);
                 oldest_t = (long long)st.st_mtime;
@@ -577,11 +596,17 @@ static void auto_trim(const char *keep) {
         if (total <= KS.auto_cap || !oldest[0]) return;
         char path[1200];
         snprintf(path, sizeof path, "%s/%s", KS.dir, oldest);
-        plat_remove(path);
+        if (!record_regular_file(path) || plat_remove(path) != 0) {
+            fprintf(stderr, "kv snapshot %.36s: over the cap and cannot be removed; left "
+                    "in place and not counted\n", oldest);
+            if (n_stuck == STUCK_MAX) return;
+            snprintf(stuck[n_stuck++], sizeof stuck[0], "%s", oldest);
+            continue;
+        }
         snprintf(path, sizeof path, "%s/%s.json", KS.dir, oldest);
         plat_remove(path);
-        fprintf(stderr, "kv snapshot %.*s: removed, the preamble snapshots were over "
-                "their cap\n", (int)strlen(oldest) - 3, oldest);
+        fprintf(stderr, "kv snapshot %.36s: removed, the preamble snapshots were over "
+                "their cap\n", oldest);
     }
 }
 
@@ -607,12 +632,9 @@ void kvsnap_auto_save(engine *e, const char *name, int n) {
     pthread_mutex_unlock(&KS.mu);
 }
 
-bool kvsnap_auto_origin(const char *name, char *out, size_t cap) {
+bool kvsnap_auto_origin(const engine *e, const char *name, char *out, size_t cap) {
     if (cap) out[0] = 0;
-    if (!name || !name[0]) return false;
-    pthread_mutex_lock(&KS.mu);
-    bool hit = !strcmp(KS.auto_name, name);
-    if (hit) snprintf(out, cap, "%s", KS.auto_origin);
-    pthread_mutex_unlock(&KS.mu);
-    return hit && out[0];
+    if (!e || !name || !name[0] || strcmp(e->snap_name, name)) return false;
+    snprintf(out, cap, "%s", e->snap_origin);
+    return out[0] != 0;
 }
