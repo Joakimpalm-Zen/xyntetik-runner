@@ -8309,16 +8309,22 @@ void model_route_json(const model_t *m, char *out, int cap) {
     route_paths_json(m, paths, sizeof paths);
     char gaps[160];
     route_canon_gaps(m, gaps, sizeof gaps);
+    // R3.68: the KV rows the device maps, where it grows them with the context
+    char kvr[96] = "";
+    int kv_mapped = 0, kv_step = 0;
+    if (m->gpu && gpu_kv_rows(m, &kv_mapped, &kv_step))
+        snprintf(kvr, sizeof kvr, ",\"kv_rows\":{\"mapped\":%d,\"of\":%d,\"step\":%d}",
+                 kv_mapped, m->n_ctx, kv_step);
     snprintf(out, cap,
              "{\"backend\":\"%s\",\"device\":\"%s\",\"gpu_layers\":%d,\"layers\":%d,"
              "\"experts_on_host\":%d,\"moe_layers\":%d,\"moe_hot\":%d,\"paths\":%s,"
              "\"kv\":\"%s\",\"weights\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\","
              "\"kernels\":%s,\"fallback\":\"%s\",\"build\":\"%s\",\"codegen\":\"%s\","
-             "\"compiler\":\"%s\",\"tuning\":\"%s\"%s}",
+             "\"compiler\":\"%s\",\"tuning\":\"%s\"%s%s}",
              r.backend, dev, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers, r.moe_hot,
              paths,
              r.kv, wts, r.cpu_act, r.detail, kern, why, r.build,
-             r.codegen[0] == '+' ? r.codegen + 1 : r.codegen, cc, tun, gaps);
+             r.codegen[0] == '+' ? r.codegen + 1 : r.codegen, cc, tun, kvr, gaps);
 }
 
 void model_debug_time_report(void) {
@@ -15776,6 +15782,22 @@ static void gpu_runtime_failure(model_t *m) {
     gpu_disable(m);
 }
 
+// R3.68: a grow of the device's KV rows that does not fit. The rows already
+// written live in host memory (Metal maps them, it does not own them), so the
+// CPU continues on them; this is a planned fallback, named, not a failure.
+static void gpu_kv_fallback(model_t *m, const char *why) {
+    if (gpu_fallback_fails()) {
+        fprintf(stderr, "gpu: %s; RUNNER_GPU_FALLBACK=fail ends the process (exit status 3)\n",
+                why);
+        fflush(NULL);
+        _Exit(3);
+    }
+    fprintf(stderr, "gpu: %s: continuing on the CPU, which reads the same rows and pages "
+            "the rest in as it is used\n", why);
+    snprintf(m->route_fallback, sizeof m->route_fallback, "%s", why);
+    gpu_disable(m);
+}
+
 // The sequence a device-folded recurrent model was fed (model.h, seq): this
 // forward's tokens at their positions. A forward at or before the recorded
 // end continues or rewinds the record; one past it (a restored session's
@@ -15818,6 +15840,14 @@ static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
                                   bool *done) {
     *start = 0;
     *done = false;
+    if (m->gpu) {
+        // R3.68: the device's KV rows for this forward, grown first
+        char kv_why[256];
+        if (!gpu_kv_reserve(m, pos + n, kv_why, sizeof kv_why)) {
+            gpu_kv_fallback(m, kv_why);
+            return NULL;
+        }
+    }
     if (m->gpu) {
         if (m->gpu_layers >= m->n_layer) {
             float *lg = NULL;
