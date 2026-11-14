@@ -180,6 +180,7 @@ typedef struct {
     // structural rule (the mark is dropped whenever pos moves below it).
     int      rewind_how;
     uint64_t mark_hash;
+    bool     mark_anchor;   // the mark was taken at a message boundary
     // optional per-token logprob capture (server "logprobs"): caller points
     // these at buffers sized [lp_cap] / [lp_cap * lp_n] before generating
     float   *lp_chosen;    // chosen-token logprob per emitted token
@@ -460,6 +461,7 @@ enum rewind_how {
     REWIND_KV,         // attention rows [0, keep) kept, the tail re-fed
     REWIND_SNAPSHOT,   // recurrent fold restored from the exact snapshot at keep
     REWIND_MARK,       // recurrent fold resumed at the turn mark, tail re-fed
+    REWIND_ANCHOR,     // the same, the mark taken at the last message boundary
     REWIND_RECURRENT,  // recurrent fold not restorable at keep: recomputed from 0
     REWIND_RING,       // KV ring: any rewind recomputes from 0
     REWIND_MISMATCH,   // the prompt differs from history at its first token
@@ -476,6 +478,13 @@ const char *engine_rewind_how_name(int how);
 // engine_rewind resumes from the mark whenever the kept run reaches it.
 // false = not a recurrent model (nothing to mark) or the mark failed.
 bool   engine_mark_turn(engine *e);
+// The same mark, taken where the request's generation prompt begins (R10.27).
+// The generation prompt is the part of a chat prompt the next request need
+// not replay: Qwen3.5's opens a think block its history renders without, so
+// a mark inside it was a token or two past where the next prompt parted and
+// the fold reset on every turn. The engine only remembers that the mark is
+// such an anchor, for the telemetry's word (REWIND_ANCHOR).
+bool   engine_mark_anchor(engine *e);
 // The request's own stop ids (engine.req_stop_ids): up to 8, replaced whole;
 // n = 0 clears them.
 void   engine_set_request_stops(engine *e, const int *ids, int n);
