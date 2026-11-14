@@ -2486,7 +2486,7 @@ modes make and score one. The comparison is `scripts/gold-logits.py`'s: KL
 over the reference's 20 most likely tokens, top-1 agreement, and
 margin-qualified top-1 (the reference's top two more than 0.5 nats apart).
 Outputs: `OUT`, `OUT.quant.json` (the rewrite's record), `OUT.derive.json`
-(`xyntetik.runner.derive.v1`: both files' sha256 and bytes, the recipe, the
+(`xyntetik.runner.derive.v1`: both files' sha256 and bytes, and for a parent in several shards each shard's under `parent.parts`, the recipe, the
 reference, the window, the measurement), `OUT.README.md`, and the score files
 the measurement read. [Design](docs/derive-design.md).
 

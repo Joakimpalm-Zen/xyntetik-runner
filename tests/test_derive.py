@@ -235,6 +235,46 @@ def test_quant_error_uses_its_threads_and_the_report_does_not_change(runner_bin,
     assert reports[1].count(b"\n") >= 2
 
 
+def test_target_size_takes_a_split_parent(runner_bin, tmp_path):
+    """A parent in several shards (<prefix>-00001-of-0000N.gguf): the costing
+    step read every shard, and the planner then opened the first one alone and
+    refused the first tensor that lives in a later shard ("the report names X
+    and the parent has no such tensor", a 55 GB BF16 parent, 2026-11-14). The
+    planner sees the whole set, the parent's size is every shard's, and the
+    record names each shard with its hash."""
+    whole = make_parent(tmp_path)
+    prefix = tmp_path / "shards"
+    subprocess.run([sys.executable, ROOT / "scripts/gguf-split.py", str(whole), str(prefix), "2"],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    parts = sorted(tmp_path.glob("shards-0000?-of-00002.gguf"))
+    assert len(parts) == 2
+    report = tmp_path / "pre.jsonl"
+    subprocess.run([str(runner_bin), "-m", str(parts[0]), "--quant-error", str(report),
+                    "--quant", "q8_0,q4_0"], check=True, capture_output=True)
+    rows = [json.loads(l) for l in report.read_text().splitlines() if l.strip()]
+    hi = sum(r["types"]["q8_0"]["bytes"] for r in rows)
+    lo = sum(r["types"]["q4_0"]["bytes"] for r in rows)
+    total = sum(p.stat().st_size for p in parts)
+    target = total - (hi - lo) // 2 - sum(r["rows"] * r["cols"] * 4 for r in rows) + hi
+    out = tmp_path / "sized.gguf"
+    rc, so, se = derive(runner_bin, parts[0], out, "--target-size", str(target),
+                        "--high", "q8_0", "--low", "q4_0")
+    assert rc == 0, se[-600:]
+    assert out.stat().st_size <= target
+    rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
+    assert rec["parent"]["bytes"] == total
+    assert [p["path"] for p in rec["parent"]["parts"]] == [p.name for p in parts]
+    assert [p["bytes"] for p in rec["parent"]["parts"]] == [p.stat().st_size for p in parts]
+    import hashlib
+    assert [p["sha256"] for p in rec["parent"]["parts"]] == [
+        hashlib.sha256(p.read_bytes()).hexdigest() for p in parts]
+    # a single-file parent's record has no parts list
+    out1 = tmp_path / "one.gguf"
+    rc, so, se = derive(runner_bin, whole, out1, "--quant", "q4_0")
+    assert rc == 0, se[-400:]
+    assert "parts" not in json.loads(pathlib.Path(str(out1) + ".derive.json").read_text())["parent"]
+
+
 def test_target_size_plans_as_type_plan_by_sensitivity_does(runner_bin, tmp_path):
     """--target-size BYTES --high T --low T: derive costs every tensor with
     --quant-error, demotes the cheapest groups (added error per saved byte)
