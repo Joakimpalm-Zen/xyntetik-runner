@@ -76,6 +76,12 @@ REFUSED = {
     "a nested absolute $id under an absolute root, over a $ref": ({
         "$id": "http://example.test/schemas/query.json", "definitions": {"n": {"type": "string"}},
         **_obj(a={"$id": "http://other.example/a.json", **_obj(b={"$ref": "#/definitions/n"})})}, "$id"),
+    # codex's read of PR F: the nested resource holds the pointer's own target, so it resolves there
+    "a path id whose resource holds the $ref's target": ({
+        "id": "https://example.test/root", "type": "object", "definitions": {"T": {"type": "string"}},
+        "properties": {"p": {"id": "/p", "type": "object", "definitions": {"T": {"type": "integer"}},
+                             "properties": {"x": {"$ref": "#/definitions/T"}}, "required": ["x"]}},
+        "required": ["p"]}, "id"),
     "a path $id with no absolute root, over a $ref": ({"definitions": {"n": {"type": "string"}},
         **_obj(a={"$id": "/properties/a", **_obj(b={"$ref": "#/definitions/n"})})}, "$id"),
     "a nested $id reached through a $ref, over a $ref": ({"$defs": {

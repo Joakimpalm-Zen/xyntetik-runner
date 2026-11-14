@@ -3465,6 +3465,27 @@ static void test_harmony_empty_tool_name_is_no_name(void) {
 // so a 2 MB request could ask for tens of gigabytes. Here a 100 KB enum
 // referenced 800 times is 80 MB inlined, past the 64 MiB bound; the same
 // definition referenced 8 times is fine.
+// codex's read of PR F (fable, 2026-11-14): the path-id leniency read a
+// nested resource that carries the pointer's own target against the root.
+// Here the nested resource is https://example.test/p, so "#/definitions/T"
+// under it is its own integer T; the root's string T is another schema. Base
+// 53542f86 refused this schema; the leniency compiled the root's T, accepting
+// {"p":{"x":"a"}} and rejecting {"p":{"x":1}}. Whatever compiles must be the
+// schema the document names: a refusal holds that, the root's T never does.
+static void test_a_path_id_resource_with_its_own_target_is_not_read_at_the_root(void) {
+    const char *s =
+        "{\"id\":\"https://example.test/root\",\"type\":\"object\","
+        "\"definitions\":{\"T\":{\"type\":\"string\"}},"
+        "\"properties\":{\"p\":{\"id\":\"/p\",\"type\":\"object\","
+        "\"definitions\":{\"T\":{\"type\":\"integer\"}},"
+        "\"properties\":{\"x\":{\"$ref\":\"#/definitions/T\"}},\"required\":[\"x\"]}},"
+        "\"required\":[\"p\"]}";
+    if (compiles(s)) {
+        assert(accepts(s, "{\"p\":{\"x\":1}}") && "the nested resource's T is an integer");
+        assert(!accepts(s, "{\"p\":{\"x\":\"a\"}}") && "the root's string T is not this schema's");
+    }
+}
+
 static void test_inlined_refs_are_bounded_in_bytes(void) {
     sbuf b = {0};
     sb_lit(&b, "{\"$defs\":{\"A\":{\"enum\":[");
@@ -3682,6 +3703,7 @@ int main(void) {
     test_escape_replaces_ill_formed_utf8();
     test_tojson_dump_matches_jinja();
     test_inlined_refs_are_bounded_in_bytes();
+    test_a_path_id_resource_with_its_own_target_is_not_read_at_the_root();
     test_enum_order_is_the_stable_sorted_order();
     test_pattern_counts_past_int_are_refused();
     test_allof_patterns_are_checked_by_segment_not_by_byte();
