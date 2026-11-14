@@ -174,9 +174,12 @@ static void cycle(int n) {
     }
 
     step(n, "requesting graceful stop");
+    double stop_t0 = plat_now();
     server_request_stop();
     step(n, "joining");
     pthread_join(th, NULL);
+    // how long the stop took: the figure the bound in main() is set against
+    fprintf(stderr, "[restart] cycle %d: stopped in %.0f ms\n", n, (plat_now() - stop_t0) * 1e3);
     snprintf(msg, sizeof(msg), "cycle %d: server_run returned 0", n);
     ck(c.rc == 0, msg);
 }
@@ -186,20 +189,32 @@ static void cycle(int n) {
 // process ended, so a cleanly stopped server's watchdog outlived it and
 // exited the whole process with 143 at the old deadline, in the middle of
 // the next server's life. This used to finish both cycles inside the
-// shipped 10 s bound and could not see it, so the bound is shortened to
-// 300 ms here and each cycle outlives the previous stop's deadline.
+// shipped 10 s bound and could not see it, so the bound is shortened here
+// and each cycle outlives the previous stop's deadline.
+//
+// How short: a stop takes 86 to 100 ms on an idle machine (50 stops on an
+// Apple M1), because the idle-timer thread it joins sleeps in 100 ms slices. The
+// watchdog gives the drain the bound less its reserve, and at 300 ms that
+// was 150 ms: a hosted macOS runner, where a 10 ms sleep overshoots by up to
+// 90 ms, crossed it and the test process exited 143 by its own watchdog
+// (scheduled run of 2026-11-14, "reaper join still active within the 0.3 s
+// stop budget"). At 1500 ms the drain has 1100 ms, eleven times a stop.
+enum { STOP_BOUND_MS = 1500, PAST_THE_BOUND_MS = 2000 };
+
 static void outlive_the_last_deadline(int n) {
     char msg[96];
     snprintf(msg, sizeof(msg), "cycle %d: alive past the stop's hard bound", n);
     step(n, "waiting past the stop's hard bound");
-    plat_sleep_ms(800);
+    plat_sleep_ms(PAST_THE_BOUND_MS);
     ck(1, msg);   // reached only if the old watchdog did not exit the process
 }
 
 int main(int argc, char **argv) {
     if (argc > 1) g_model = argv[1];
     if (argc > 2) g_port = atoi(argv[2]);
-    env_set("RUNNER_TEST_DRAIN_HARD_MS", "300");
+    char bound[16];
+    snprintf(bound, sizeof bound, "%d", STOP_BOUND_MS);
+    env_set("RUNNER_TEST_DRAIN_HARD_MS", bound);
     f16_init();
     sock_init();
     cycle(1);
