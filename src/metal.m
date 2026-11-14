@@ -1744,8 +1744,28 @@ static uint64_t metal_wbuf_cap(id<MTLDevice> dev) {
 // per-buffer ceiling allows, cut only at TENSOR boundaries so every kernel
 // binds one buffer plus an offset. A cut rounds its base down to a page, so
 // wraps may overlap by a page of read-only bytes never addressed twice.
+static bool metal_wrap_weights_try(gpu_t *g, model_t *m, id<MTLDevice> dev,
+                                   uint64_t wlen, size_t page);
+
+// A wrap that fails releases what it made. The attempt can refuse after some
+// wraps exist (the buffer-count cap, or a later tensor larger than the
+// per-buffer cap), and the caller's fallback then reuses wbuf[0] for the
+// whole-file copy: wraps left behind would leak, unvisited by gpu_free, and
+// the KV grows would charge the copy alone while they stayed alive (codex's
+// third read of PR G).
 static bool metal_wrap_weights(gpu_t *g, model_t *m, id<MTLDevice> dev,
                                uint64_t wlen, size_t page) {
+    if (metal_wrap_weights_try(g, m, dev, wlen, page)) return true;
+    for (int i = 0; i < g->n_wbuf; i++) {
+        [g->wbuf[i] release];
+        g->wbuf[i] = nil;
+    }
+    g->n_wbuf = 0;
+    return false;
+}
+
+static bool metal_wrap_weights_try(gpu_t *g, model_t *m, id<MTLDevice> dev,
+                                   uint64_t wlen, size_t page) {
     uint64_t cap = metal_wbuf_cap(dev);
     g->n_wbuf = 0;
     if (wlen == 0 || cap == 0) return false;
