@@ -4803,8 +4803,11 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
         // (microsoft/Phi-3.5-mini-instruct spells it '<|endoftext|>').
         if (add_assistant)
             off = emit(out, cap, off, "<|assistant|>\n", NULL, NULL);
-        else
+        else {
+            size_t before = off;
             off = emit(out, cap, off, "<|endoftext|>", NULL, NULL);
+            st->close_len = off - before;
+        }
         break;
     case TMPL_PHI4:
         // microsoft/Phi-4-mini-instruct: the same tags with no newline
@@ -4815,8 +4818,11 @@ size_t render_messages_state(int tmpl, const chat_msg *msgs, int n_msgs,
         }
         if (add_assistant)
             off = emit(out, cap, off, "<|assistant|>", NULL, NULL);
-        else
+        else {
+            size_t before = off;
             off = emit(out, cap, off, "<|endoftext|>", NULL, NULL);
+            st->close_len = off - before;
+        }
         break;
     case TMPL_APERTUS:
     case TMPL_APERTUS15:

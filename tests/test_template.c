@@ -3640,18 +3640,27 @@ static void test_the_generation_prompt_is_a_suffix_or_the_family_is_listed(void)
             for (size_t k = 0; k < sizeof modes / sizeof *modes; k++) {
                 static char full[8192], head[8192];
                 size_t fn = render_messages(t, hist[h].m, hist[h].n, true, modes[k], full, sizeof full);
-                size_t hn = render_messages(t, hist[h].m, hist[h].n, false, modes[k], head, sizeof head);
+                // as the server's boundary finder renders it: what a template
+                // writes only because no reply follows is dropped (R6.81)
+                render_state hs;
+                size_t hn = render_messages_state(t, hist[h].m, hist[h].n, false, modes[k], NULL,
+                                                  head, sizeof head, &hs);
                 assert(fn < sizeof full && hn < sizeof head);
+                tok_strip_marks(head);   // as render_messages lifted them from `full`
                 size_t hl = strlen(head);
+                assert(hs.close_len <= hl);
+                hl -= hs.close_len;
                 if (hl && hl < strlen(full) && !memcmp(head, full, hl)) with++;
                 else without++;
             }
-        // No boundary: the [INST] families and Phi, whose last message and
-        // generation prompt are one piece of text, and raw, which has no
-        // turns. None of them is a recurrent family today.
+        // No boundary: the [INST] families, whose last message and generation
+        // prompt are one piece of text, and raw, which has no turns. None of
+        // them is a recurrent family today. Phi-3 and Phi-4 have one: they
+        // close a render without a reply with their end-of-text token, which
+        // the renderer reports and the finder drops.
         bool listed = t == TMPL_LLAMA2 || t == TMPL_LLAMA2_FALLBACK || t == TMPL_MISTRAL ||
                       t == TMPL_MISTRAL_V1 || t == TMPL_MISTRAL_NEMO || t == TMPL_MISTRAL_SYS ||
-                      t == TMPL_PHI3 || t == TMPL_PHI4 || t == TMPL_RAW;
+                      t == TMPL_RAW;
         if ((listed ? with : without) != 0) {
             fprintf(stderr, "%s: the generation prompt is a suffix on %d of %d renders, and the "
                     "family is %s as having no message boundary\n", template_name(t), with,

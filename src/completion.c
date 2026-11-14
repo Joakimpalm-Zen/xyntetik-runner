@@ -4231,8 +4231,8 @@ static void repeat_count_note(const slot_t *s, const engine *e, const completion
 
 static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api,
                                jv *req, const tool_envelope *env, bool chat,
-                               size_t gen_at, size_t pre_at, completion_req *q,
-                               completion_prep *p) {
+                               size_t gen_at, size_t pre_at, bool pre_sys,
+                               completion_req *q, completion_prep *p) {
     model_t *m = s->m;
     engine *e = &s->e;
     int ctx_tokens = 0;
@@ -4282,6 +4282,13 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
     // be the prompt's first tokens. Attention-only models: a recurrent fold
     // belongs to one position and cannot be cut out of a longer sequence.
     int preamble = 0;
+    // R6.81: a request that opens with a system message, under the option,
+    // and can get no snapshot says why, once: the option's line at start
+    // promised one.
+    if (chat && pre_sys && q->cache_prompt && q->share_prefix && kvsnap_auto_on()) {
+        if (model_has_recurrent(m)) kvsnap_auto_declined(KVSNAP_NO_RECURRENT, NULL);
+        else if (!pre_at) kvsnap_auto_declined(KVSNAP_NO_BOUNDARY, template_name(s->tmpl));
+    }
     if (chat && pre_at && n_prompt > 1 && q->cache_prompt && q->share_prefix &&
         kvsnap_auto_on() && !model_has_recurrent(m)) {
         char *head = malloc(pre_at + 1);
@@ -5724,7 +5731,7 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     completion_prep prep;
     if (!completion_prepare(s, fd, prompt, api, req, env, chat,
                             chat && rs ? rs->gen_at : 0, chat && rs ? rs->pre_at : 0,
-                            &q, &prep)) return;
+                            chat && rs && rs->pre_sys, &q, &prep)) return;
 
     gen_ctx g = { .out = {0}, .fd = fd, .stream = q.stream, .api = api,
                   .omit_reasoning = prep.omit_reasoning,
