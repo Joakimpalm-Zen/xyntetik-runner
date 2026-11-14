@@ -669,6 +669,23 @@ def test_a_timeout_kills_the_grandchildren_too(tmp_path, start_delay):
     group leader off TimeoutExpired.process -- an attribute the exception does
     not have, so it always killed nothing."""
     import os
+
+    import pytest
+
+    if os.name == "nt":
+        pytest.skip("no process groups on Windows")
+    module = load_module()
+    _check_a_timeout_kills_the_grandchildren(module, module.run_group, tmp_path, start_delay)
+
+
+def test_the_grandchild_check_sees_an_earlier_attempts_group(tmp_path):
+    """codex's second read of PR E: the check retries a run killed before the
+    spawner wrote its marker, and looked only at the last attempt's grandchild.
+    A grandchild started on an earlier attempt, between the fork and the marker
+    write, could survive unseen. The stand-in leaves attempt 1's grandchild
+    alive with no marker and lets the real run_group handle attempt 2; the
+    check must fail."""
+    import os
     import signal
     import subprocess
     import time
@@ -677,8 +694,45 @@ def test_a_timeout_kills_the_grandchildren_too(tmp_path, start_delay):
 
     if os.name == "nt":
         pytest.skip("no process groups on Windows")
-
     module = load_module()
+    marker = tmp_path / "grandchild.pid"
+    real = module.run_group
+    leaked = []
+
+    def leaky(cmd, timeout, **kw):
+        if leaked:
+            return real(cmd, timeout, **kw)
+        proc = module.subprocess.Popen(cmd, start_new_session=True,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        leaked.append(proc.pid)
+        for _ in range(100):
+            if marker.exists() and marker.read_text(encoding="utf-8").strip():
+                break
+            time.sleep(0.05)
+        marker.unlink()          # as if killed before the marker was written
+        proc.kill()              # the direct child only: its grandchild lives on
+        proc.wait()
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    try:
+        with pytest.raises(pytest.fail.Exception, match="outlived the timeout"):
+            _check_a_timeout_kills_the_grandchildren(module, leaky, tmp_path, 0.0)
+    finally:
+        for g in leaked:
+            try:
+                os.killpg(g, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+def _check_a_timeout_kills_the_grandchildren(module, run_group, tmp_path, start_delay):
+    import os
+    import signal
+    import subprocess
+    import time
+
+    import pytest
+
     marker = tmp_path / "grandchild.pid"
     script = tmp_path / "spawner.sh"
     # start_delay: a script that starts slowly, as on a loaded machine, where
@@ -697,8 +751,7 @@ def test_a_timeout_kills_the_grandchildren_too(tmp_path, start_delay):
     timeout = 1.0
     while True:
         with pytest.raises(subprocess.TimeoutExpired):
-            module.run_group([str(script)], timeout, grace=0.2, capture_output=True,
-                             text=True)
+            run_group([str(script)], timeout, grace=0.2, capture_output=True, text=True)
         if marker.exists() and marker.read_text(encoding="utf-8").strip():
             break
         timeout *= 2
