@@ -1520,7 +1520,7 @@ static bool spawn_detached(const char *executable, const char *arg) {
 }
 
 // CreateProcessW above passes bInheritHandles FALSE: nothing to close.
-void plat_close_inherited(void) {}
+bool plat_close_listed_descriptors(void) { return false; }
 
 #else // POSIX
 
@@ -1645,9 +1645,52 @@ static bool spawn_detached(const char *executable, const char *arg) {
     return true;
 }
 
+bool plat_close_listed_descriptors(void) { return false; }
+
 #else
 
+#ifdef __linux__
+// Close every open descriptor above the standard three by listing them: one
+// call per open descriptor, whatever the limit. Raw system calls only, so the
+// forked child of a threaded process may use it. False where there is no
+// listing to read (no /proc), with nothing promised about what was closed.
+bool plat_close_listed_descriptors(void) {
+    int d = open("/proc/self/fd", O_RDONLY | O_DIRECTORY);
+    if (d < 0) return false;
+    _Alignas(8) char buf[2048];
+    bool ok = true;
+    while (ok) {
+        long n = syscall(SYS_getdents64, d, buf, sizeof buf);
+        if (n < 0) ok = false;
+        if (n <= 0) break;
+        for (long at = 0; at + 19 < n; ) {
+            // struct linux_dirent64: inode (8), offset (8), length (2),
+            // type (1), then the name
+            unsigned short len;
+            memcpy(&len, buf + at + 16, sizeof len);
+            if (len < 20 || at + len > n) { ok = false; break; }
+            int fd = 0;
+            bool number = buf[at + 19] != 0;
+            for (const char *c = buf + at + 19; *c; c++) {
+                if (*c < '0' || *c > '9' || fd > (INT_MAX - 9) / 10) { number = false; break; }
+                fd = fd * 10 + (*c - '0');
+            }
+            if (number && fd > 2 && fd != d) close(fd);
+            at += len;
+        }
+    }
+    close(d);
+    return ok;
+}
+#else
+bool plat_close_listed_descriptors(void) { return false; }
+#endif
+
 static bool spawn_detached(const char *executable, const char *arg) {
+    long last_fd = sysconf(_SC_OPEN_MAX);
+    if (last_fd < 0 || last_fd > INT_MAX) last_fd = 65536;
+    // a gate's way to reach the listing on a kernel that has close_range
+    bool one_call = getenv("RUNNER_TEST_NO_CLOSE_RANGE") == NULL;
     pid_t pid = fork();
     if (pid < 0) return false;
     if (pid == 0) {
@@ -1657,17 +1700,23 @@ static bool spawn_detached(const char *executable, const char *arg) {
         int nullfd = open("/dev/null", O_RDWR);
         if (nullfd < 0) _exit(127);
         for (int i = 0; i < 3; i++) if (dup2(nullfd, i) < 0) _exit(127);
-        if (nullfd > 2) close(nullfd);
-#if defined(__linux__) && defined(SYS_close_range)
-        // One call for all of them. Where the kernel has none (before 5.9)
-        // or a sandbox refuses it, the helper closes what it inherited as
-        // its first act (plat_close_inherited), where it may list them.
-        syscall(SYS_close_range, 3u, ~0u, 0u);
+        bool closed = false;
+#ifdef __linux__
+#ifdef SYS_close_range
+        // one call for all of them, where the kernel has it (5.9) and no
+        // sandbox refuses it
+        if (one_call) closed = syscall(SYS_close_range, 3u, ~0u, 0u) == 0;
 #endif
+        if (!closed) closed = plat_close_listed_descriptors();
+#endif
+        // Nothing to list either: one close per number, the last resort and
+        // the only path that still costs what the limit allows.
+        if (!closed) for (long fd = 3; fd < last_fd; fd++) close((int)fd);
         char *const argv[] = {(char *)executable, (char *)arg, NULL};
         execv(executable, argv);
         _exit(127);   // exec failure is best-effort: the caller never waits
     }
+    (void)one_call;
     pthread_t reaper;
     if (pthread_create(&reaper, NULL, reap_detached, (void *)(intptr_t)pid) == 0)
         pthread_detach(reaper);
@@ -1676,22 +1725,7 @@ static bool spawn_detached(const char *executable, const char *arg) {
     return true;
 }
 
-#endif
-
-void plat_close_inherited(void) {
-    // /dev/fd lists this process's open descriptors on Linux, macOS and the
-    // BSDs, so the work is one call per open descriptor.
-    DIR *d = opendir("/dev/fd");
-    if (!d) return;
-    int self = dirfd(d);
-    for (struct dirent *e; (e = readdir(d)) != NULL; ) {
-        char *end;
-        long fd = strtol(e->d_name, &end, 10);
-        if (end == e->d_name || *end || fd < 3 || fd > INT_MAX || fd == self) continue;
-        close((int)fd);
-    }
-    closedir(d);
-}
+#endif // __APPLE__
 
 #endif
 
