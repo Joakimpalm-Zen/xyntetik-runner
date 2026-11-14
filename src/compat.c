@@ -723,6 +723,19 @@ static uint64_t machine_ram_bytes(void) {
 
 bool plat_mlock(void *p, size_t size) {
     if (!p || !size) return false;
+    // RUNNER_TEST_MLOCK_REFUSE=N (R6.73): the next N calls fail as macOS fails
+    // a lock it cannot make resident under memory pressure (EAGAIN), so the
+    // tests can tell that refusal from a wrong lock
+    static _Atomic long refuse = -1;
+    if (refuse < 0) {
+        const char *e = getenv("RUNNER_TEST_MLOCK_REFUSE");
+        refuse = e && *e ? atol(e) : 0;
+    }
+    if (refuse > 0) {
+        refuse--;
+        errno = EAGAIN;
+        return false;
+    }
     return mlock(p, size) == 0;
 }
 

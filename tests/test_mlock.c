@@ -21,6 +21,8 @@
 #ifndef _WIN32
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 static int g_fail = 0;
@@ -100,7 +102,7 @@ static void test_plan(void) {
 static int can_lock(size_t n) {
     void *p = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
     if (p == MAP_FAILED) return -1;
-    int ok = mlock(p, n) == 0;
+    int ok = plat_mlock(p, n);   // the seam (RUNNER_TEST_MLOCK_REFUSE) reaches the probes too
     if (ok) munlock(p, n);
     munmap(p, n);
     return ok;
@@ -210,8 +212,35 @@ static void test_lifecycle(const char *path) {
 
 int main(int argc, char **argv) {
     test_plan();
+    if (g_fail) return 1;   // the plan is arithmetic: a failure there is never the machine's
 #ifndef _WIN32
-    test_lifecycle(argc > 1 ? argv[1] : "test-es-mlock.gguf");
+    // R6.73: the OS can refuse to wire even this fixture-sized region when the
+    // machine is short of memory it can make resident (EAGAIN on macOS under
+    // pressure), which reads like a wrong lock. A failed lifecycle is run again,
+    // up to three times a second apart: a wrong lock fails every time, and it
+    // still never passes without having locked. When all three fail and the
+    // machine cannot wire the fixture's size under the process's own limit,
+    // the failure says so.
+    const char *path = argc > 1 ? argv[1] : "test-es-mlock.gguf";
+    for (int attempt = 1;; attempt++) {
+        g_fail = 0;
+        test_lifecycle(path);
+        if (!g_fail) break;
+        if (attempt == 3) {
+            plat_stat_t st;
+            size_t page = plat_page_size(), n = 0;
+            if (page && plat_stat(path, &st) == 0)
+                n = ((size_t)st.st_size + page - 1) / page * page;
+            if (n && can_lock(n) != 1)
+                fprintf(stderr, "FAIL: the OS refused to wire the fixture's %zu bytes in three attempts "
+                        "a second apart, under this process's own locked-memory limit: the machine "
+                        "is short of wireable memory, not a wrong lock\n", n);
+            break;
+        }
+        printf("note: attempt %d failed; retrying in 1 s (the OS refuses to wire under memory "
+               "pressure, a wrong lock fails every time)\n", attempt);
+        sleep(1);
+    }
 #else
     (void)argc; (void)argv;
     printf("skip: no locked-memory limit to measure against on Windows\n");
