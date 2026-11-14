@@ -76,6 +76,46 @@ def test_cuda_xielu_matches_cpu(runner_bin, tmp_path):
     assert cuda.stdout == cpu.stdout
 
 
+# The Apple GPU's identity routes, so a byte comparison with the CPU is fair:
+# the reassociating kernels answer to their own tolerance gates.
+METAL_IDENTITY = {"RUNNER_METAL_MM": "0", "RUNNER_METAL_ATTN_COOP": "0",
+                  "RUNNER_METAL_MV": "0", "RUNNER_METAL_MOE_MM": "0"}
+
+
+@pytest.mark.parametrize("flavour, adapter", [("REAL", False), ("LAYERS", False),
+                                              ("WIDE", False), ("LAYERS", True)])
+def test_metal_xielu_matches_cpu(runner_bin, tmp_path, flavour, adapter):
+    """R3.59: Apertus on the Apple GPU. The ungated FFN (up, xIELU at each
+    layer's parameters, down) runs on the device, decode and prompt batch alike,
+    and greedy output is the CPU's. LAYERS reads per-layer parameters, WIDE
+    feeds the piece between eps and 0, and the adapter run holds the up
+    projection's LoRA on the gate-less path."""
+    caps = json.loads(subprocess.run(
+        [runner_bin, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
+        check=True, text=True).stdout)
+    if (caps.get("gpu") or {}).get("backend") != "metal":
+        pytest.skip("the Metal backend's xIELU kernel")
+
+    model = _make(tmp_path, flavour)
+    base = [runner_bin, "-m", str(model), "-p", "hello world and the river below", "-n", "16",
+            "--temp", "0"]
+    if adapter:
+        subprocess.run([sys.executable, ROOT / "scripts/make-test-lora.py", str(model),
+                        str(tmp_path / "ad")], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+        base += ["--lora", str(tmp_path / "ad.full.gguf")]
+    cpu = subprocess.run(
+        [*base, "--gpu", "off"], cwd=ROOT, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=120)
+    metal = subprocess.run(
+        [*base, "--gpu", "auto"], cwd=ROOT, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=120, env={**os.environ, **METAL_IDENTITY})
+    assert cpu.returncode == 0, cpu.stderr.decode(errors="replace")
+    assert metal.returncode == 0, metal.stderr.decode(errors="replace")
+    assert b"not on the metal backend" not in metal.stderr, metal.stderr.decode(errors="replace")
+    assert b"Metal backend" in metal.stderr, "Metal never engaged; the comparison would be the CPU's own"
+    assert metal.stdout == cpu.stdout
+
+
 def test_cuda_failure_falls_back_without_corrupting_output(runner_bin, tmp_path):
     """A device failure mid-generation must cost speed, never correctness.
 

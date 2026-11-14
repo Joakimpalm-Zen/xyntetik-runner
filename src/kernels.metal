@@ -5912,3 +5912,30 @@ kernel void k_relu2(device float *x [[buffer(0)]],
         x[gid] = r * r;
     }
 }
+
+// expm1 for xIELU's negative branch, where Metal has none: exp(x) - 1 cancels
+// near 0 and Apertus's alpha_n can be in the hundreds, so |x| < 1e-2 takes the
+// series (its next term is under 1e-12) and the rest precise::exp.
+static inline float xielu_expm1(float x) {
+    if (fabs(x) < 1e-2f) return x + x * x * (0.5f + x * (1.0f / 6.0f + x * (1.0f / 24.0f)));
+    return precise::exp(x) - 1.0f;
+}
+
+// Apertus's xIELU in place (model.h xielu), with one layer's EFFECTIVE
+// parameters p = (alpha_n, alpha_p, beta, eps), as the loader keeps them:
+//   x >  0 : alpha_p * x^2 + beta * x
+//   x <= 0 : (expm1(min(x, eps)) - x) * alpha_n + beta * x
+kernel void k_xielu(device float *x [[buffer(0)]],
+                    constant int &n [[buffer(1)]],
+                    constant float4 &p [[buffer(2)]],
+                    uint gid [[thread_position_in_grid]]) {
+    if ((int)gid < n) {
+        float v = x[gid];
+        if (v > 0.0f) {
+            x[gid] = p.y * v * v + p.z * v;
+        } else {
+            float mn = v < p.w ? v : p.w;
+            x[gid] = (xielu_expm1(mn) - v) * p.x + p.z * v;
+        }
+    }
+}
