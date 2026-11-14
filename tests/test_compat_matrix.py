@@ -690,9 +690,19 @@ def test_a_timeout_kills_the_grandchildren_too(tmp_path, start_delay):
                       "sleep 120\n", encoding="utf-8")
     script.chmod(0o755)
 
-    with pytest.raises(subprocess.TimeoutExpired):
-        module.run_group([str(script)], 1.0, grace=0.2, capture_output=True,
-                         text=True)
+    # The timeout under test only begins to matter once the grandchild exists:
+    # a run killed before the spawner wrote the marker proves nothing about
+    # grandchildren (a loaded machine can start the script later than any fixed
+    # timeout), so it is run again with the timeout doubled, up to 16 s.
+    timeout = 1.0
+    while True:
+        with pytest.raises(subprocess.TimeoutExpired):
+            module.run_group([str(script)], timeout, grace=0.2, capture_output=True,
+                             text=True)
+        if marker.exists() and marker.read_text(encoding="utf-8").strip():
+            break
+        timeout *= 2
+        assert timeout <= 16, "the spawner never wrote its marker within 16 s"
 
     grandchild = int(marker.read_text(encoding="utf-8"))
     # Not kill(pid, 0): the killed grandchild is reparented to PID 1, and where
