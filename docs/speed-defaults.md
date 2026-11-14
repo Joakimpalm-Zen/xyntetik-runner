@@ -41,7 +41,7 @@ The startup line names a default and its scope, and the route line marks it as
 
 CUDA: the tensor-core GEMM per promoted combination (`RUNNER_CUDA_TC`), NVFP4
 tensor-core prefill on the promoted architectures (`RUNNER_CUDA_TC_NVFP4`), the attention
-routes `RUNNER_CUDA_ATTN_TC`, `RUNNER_CUDA_ATTN_TILE512` and their neighbours, graphs and
+routes `RUNNER_CUDA_ATTN_TC`, `RUNNER_CUDA_ATTN_TILE` and their neighbours, graphs and
 the small-batch route. Metal: the fused, matrix and matvec kernels and the cooperative
 attention routes. CPU: batched and split attention, fused matvec. `RUNNER_MOE_GROUPED`
 per family. `--kv-ring` and `--moe-prefetch` choose for themselves (`auto`).

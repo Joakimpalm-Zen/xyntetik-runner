@@ -452,7 +452,7 @@ names, and the page records when each file last passed and with which Runner.
   a [Python client](python/README.md) and a
   [TypeScript client](clients/typescript/README.md).
   [Container](MANUAL.md#container-image)
-- **What loads.** 30 admitted architecture labels and 24 weight formats, verified on
+- **What loads.** 28 admitted architecture labels and 24 weight formats, verified on
   download with `-hf`. [Support matrix](MANUAL.md#support-matrix)
 - **How Runner compares.** Closer to the publisher's reference than
   llama.cpp on 20 of 23 measured rows, and level or ahead on the reference's

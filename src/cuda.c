@@ -481,11 +481,10 @@ typedef struct gpu_weights {
     // loader admits: a CPU-only type must land on a NULL slot and decline,
     // never index past the table.
     #define KT_N (T_Q2_0 + 1)   // ggml type ids are sparse; the highest decoded one bounds the tables
-    CUfunction  f_mv[KT_N], f_mvb[KT_N];// indexed by ggml type; _b = tile variant
+    CUfunction  f_mv[KT_N], f_mvb[KT_N];// indexed by ggml type; _b = tile twin (F32/F16/BF16)
     CUfunction  f_mvt[KT_N];            // transposed matvec (training backward)
     CUfunction  f_lora_a, f_lora_b;     // adapter at inference (D2 on CUDA)
     CUfunction  f_mvcanon[KT_N];        // canonical-order forward (R8.7.1)
-    CUfunction  f_gemm[KT_N];           // prefill tiled-GEMM variants (Q8_0/Q4_K)
     CUfunction  f_gemm_tc[KT_N];        // tensor-core prefill GEMM (opt-in, Q4_K)
     CUfunction  f_gemm2[KT_N];          // pipelined tensor-core GEMM (TC2), by type
     CUmodule    mod80;                  // the compute_80 module, on a CC >= 8.0 device
@@ -775,7 +774,6 @@ enum { MD_THREADS = 512, MD_GMAX = 16, MD_NJ = 8, MD_TK = 32 };
 #define CU_DEV_ATTR_CC_MAJOR 75       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR
 #define CU_DEV_ATTR_CC_MINOR 76       // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR
 #define TC_N    64   // tensor-core GEMM token tile (keep in sync)
-#define Q8_COLS 8    // k_gemm_q8_0 column tile (keep in sync)
 
 // flash-decoding KV split count — must match ATTN_SPLITS in kernels.cu; fixed
 // (not context-dependent) so the decode CUDA graph stays valid across positions
@@ -2557,28 +2555,11 @@ static bool shared_load_module(gpu_weights *w) {
         { &w->f_mv[T_IQ2_S], "k_mv_iq2_s" },     { &w->f_mv[T_IQ3_XXS], "k_mv_iq3_xxs" },
         { &w->f_mv[T_IQ3_S], "k_mv_iq3_s" },     { &w->f_mv[T_IQ1_S], "k_mv_iq1_s" },
         { &w->f_mv[T_IQ1_M], "k_mv_iq1_m" },
+        // the tile twins of the float batch-1 kernels (mvb_is_mv_twin); a
+        // quantized type's prompt takes its batch-1 kernel's 16-wide twins or
+        // the batch-1 kernel per column (R18.8.11 retired their tiles)
         { &w->f_mvb[T_F32],  "k_mv_f32_b" },  { &w->f_mvb[T_F16],  "k_mv_f16_b" },
-        { &w->f_mvb[T_Q8_0], "k_mv_q8_0_b" }, { &w->f_mvb[T_Q4_0], "k_mv_q4_0_b" },
-        { &w->f_mvb[T_Q2_0], "k_mv_q2_0_b" },
-        { &w->f_mvb[T_Q4_1], "k_mv_q4_1_b" }, { &w->f_mvb[T_Q5_0], "k_mv_q5_0_b" },
-        { &w->f_mvb[T_Q5_1], "k_mv_q5_1_b" }, { &w->f_mvb[T_Q4_K], "k_mv_q4_K_b" },
-        { &w->f_mvb[T_Q5_K], "k_mv_q5_K_b" }, { &w->f_mvb[T_Q6_K], "k_mv_q6_K_b" },
-        { &w->f_mvb[T_Q3_K], "k_mv_q3_K_b" },
-        { &w->f_mvb[T_Q2_K], "k_mv_q2_K_b" },
         { &w->f_mvb[T_BF16], "k_mv_bf16_b" },
-        { &w->f_mvb[T_IQ4_NL], "k_mv_iq4_nl_b" }, { &w->f_mvb[T_IQ4_XS], "k_mv_iq4_xs_b" },
-        { &w->f_mvb[T_MXFP4], "k_mv_mxfp4_b" },
-        { &w->f_mvb[T_NVFP4], "k_mv_nvfp4_b" },
-        { &w->f_mvb[T_IQ2_XXS], "k_mv_iq2_xxs_b" }, { &w->f_mvb[T_IQ2_XS], "k_mv_iq2_xs_b" },
-        { &w->f_mvb[T_IQ2_S], "k_mv_iq2_s_b" },     { &w->f_mvb[T_IQ3_XXS], "k_mv_iq3_xxs_b" },
-        { &w->f_mvb[T_IQ3_S], "k_mv_iq3_s_b" },     { &w->f_mvb[T_IQ1_S], "k_mv_iq1_s_b" },
-        { &w->f_mvb[T_IQ1_M], "k_mv_iq1_m_b" },
-        // prefill tiled-GEMM variants (batch>1 fast path for these formats)
-        { &w->f_gemm[T_Q8_0], "k_gemm_q8_0" },
-        { &w->f_gemm[T_Q3_K], "k_gemm_q3_K" },
-        { &w->f_gemm[T_Q4_K], "k_gemm_q4_K" },
-        { &w->f_gemm[T_Q5_K], "k_gemm_q5_K" },
-        { &w->f_gemm[T_Q6_K], "k_gemm_q6_K" },
         // decode coalesced GEMV variants (batch==1 fast path for these formats)
         { &w->f_gemv[T_Q8_0], "k_gemv_q8_0" },
         { &w->f_gemv[T_Q4_0], "k_gemv_q4_0" },
@@ -4362,7 +4343,7 @@ static bool tc_promoted(const model_t *m, int type) {
     // Rows: docs/tc-promotion-evidence.md.
     static const char *archs[] = { "llama", "phi3", "gemma4", "qwen3",
                                    "qwen35", "qwen4exp",
-                                   "mistral", "mistral3", "gemma3", "smollm", "granite",
+                                   "mistral3", "gemma3", "granite",
                                    "muse-glimmer", "qwen2",
                                    "apertus", "nemotron_h", "granitehybrid" };
     for (size_t i = 0; i < sizeof(archs) / sizeof(*archs); i++)
@@ -4462,7 +4443,8 @@ static void tc_scalar_notice(const model_t *m) {
 
 // A kernel with a fixed compile-time column tile cannot take the full prefill
 // batch, so a wider batch runs as ceil(batch/tile) launches of the proven
-// shape. k_gemm_q8_0 already did exactly this for its 8-column tile; this
+// shape. The scalar Q8_0 prefill GEMM (retired in R18.8.11) did this for its
+// 8-column tile; this
 // generalises it so the buffer width and the tile width can move apart.
 // `scale` is passed as a sixth kernel parameter only when `scaled` is set:
 // the NVFP4 kernels take the per-tensor companion that way, every other
@@ -4693,14 +4675,6 @@ static bool recur_seq_admits(const gpu_t *g, const model_t *m) {
                      : m->ssm.v_heads > 0 && g->sw->f_mamba_conv_seq && g->sw->f_mamba_ssd_seq;
 }
 
-static bool gpu_small_batch_on(void) {
-    static _Atomic int on = -1;
-    if (on < 0) {
-        const char *e = getenv("RUNNER_CUDA_SMALL_BATCH");
-        on = !(e && *e && strcmp(e, "0") == 0);
-    }
-    return on > 0;
-}
 
 // The batch-1 routes with no width-classed twin: the int8-activation GEMV
 // (RUNNER_CUDA_Q8X) and BF16's split-K for a few long rows. enc_mv takes
@@ -4730,8 +4704,9 @@ static inline bool mvb_is_mv_twin(int type);
 // route has a loaded 16-wide twin takes it, by capability rather than by a
 // list (R6.57; the list was R6.35 Q4_0, R6.41 Q4_K/Q5_K/Q6_K, R6.50 Q8_0,
 // R6.54 Q3_K): the tile kernels of the others (k_gemm_*, and f_mvb's
-// k_mv_*_b, which fold the block scale per term) sum in another order. Not
-// F32, F16 or BF16, whose f_mvb already is their batch-1 kernel's twin.
+// k_mv_*_b, which folded the block scale per term, retired in R18.8.11)
+// summed in another order. Not F32, F16 or BF16, whose f_mvb already is
+// their batch-1 kernel's twin.
 static bool prefill_takes_twins(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out) {
     return !mvb_is_mv_twin(w->type) && mv_twin_route(g, w, n_in, n_out) &&
            g->sw->f_gemvb[BW_16][w->type];
@@ -4740,33 +4715,32 @@ static bool prefill_takes_twins(const gpu_t *g, const gguf_tensor *w, int n_in, 
 // batch-1 kernel once per column (R6.58): every type with neither a 16-wide
 // twin on its batch-1 route (prefill_takes_twins) nor a tile kernel that is
 // the batch-1 kernel's twin (mvb_is_mv_twin). Their tiles (k_gemm_*, f_mvb's
-// k_mv_*_b) sum in another order; the batch-1 call per column is its bits by
+// k_mv_*_b, retired in R18.8.11) summed in another order; the batch-1 call
+// per column is its bits by
 // construction, and prefilled 7 to 10x faster than the tile on Q5_0, Q5_1 and
 // IQ4_NL files. Over 8 columns, and 2 to 8 of a scaled tensor (NVFP4's
-// companion), which the small-batch branch does not take;
-// RUNNER_CUDA_SMALL_BATCH=0 keeps the tile for 2 to 8 columns, its A/B.
+// companion), which the small-batch branch does not take.
 static bool prefill_per_column(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out, int batch) {
     if (batch < 2 || mvb_is_mv_twin(w->type)) return false;
-    if (batch <= GPU_SMALL_BATCH) return w->scale != 1.0f && gpu_small_batch_on();
+    if (batch <= GPU_SMALL_BATCH) return w->scale != 1.0f;
     return !prefill_takes_twins(g, w, n_in, n_out);
 }
 // Where a matvec of w over batch (> 1) columns goes on the scalar route, in
 // enc_mv's order below its tensor-core branches: the small-batch branch, the
-// 16-wide twins, the batch-1 kernel per column, the tiled GEMM, the tile
-// kernel f_mvb (gpu.h's
-// GPU_PREFILL_* answers; test-prefill-bits' route table asks it). The
-// experimental int8-activation route (RUNNER_CUDA_Q8X) is not modelled.
+// 16-wide twins, the batch-1 kernel per column, the float tile twin f_mvb
+// (gpu.h's GPU_PREFILL_* answers; test-prefill-bits' route table asks it).
+// No route answers GPU_PREFILL_TILE since R18.8.11 retired the quantized
+// tiles; the table still refuses it. The experimental int8-activation route
+// (RUNNER_CUDA_Q8X) is not modelled.
 static int scalar_mv_route(const gpu_t *g, const gguf_tensor *w, int n_in, int n_out, int batch) {
     const gpu_weights *sw = g->sw;
     if (batch < 2 || (!sw->f_mv[w->type] && !sw->f_gemv[w->type])) return GPU_PREFILL_NONE;
-    if (batch <= GPU_SMALL_BATCH && w->scale == 1.0f && gpu_small_batch_on())
+    if (batch <= GPU_SMALL_BATCH && w->scale == 1.0f)
         return sw->f_gemvb[batch_width_class(batch)][w->type] ? GPU_PREFILL_TWINS
                                                               : GPU_PREFILL_PER_COLUMN;
     if (batch > GPU_SMALL_BATCH && prefill_takes_twins(g, w, n_in, n_out)) return GPU_PREFILL_TWINS;
     if (prefill_per_column(g, w, n_in, n_out, batch)) return GPU_PREFILL_PER_COLUMN;
-    if (w->scale == 1.0f && sw->f_gemm[w->type]) return GPU_PREFILL_TILE;
-    if (!sw->f_mvb[w->type]) return GPU_PREFILL_NONE;
-    return mvb_is_mv_twin(w->type) ? GPU_PREFILL_TILE_TWIN : GPU_PREFILL_TILE;
+    return mvb_is_mv_twin(w->type) && sw->f_mvb[w->type] ? GPU_PREFILL_TILE_TWIN : GPU_PREFILL_NONE;
 }
 // gpu.h's questions for the route table, asked of a dense 4096 x 4096 tensor
 // of the type: is the 16-wide twin of its batch-1 route loaded, and where does
@@ -4849,9 +4823,7 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
     // 64-row tiles and barely get cheaper with fewer rows. The width-classed
     // twins stream each weight once and reproduce the batch-1 bits per column; a
     // type without a twin takes the batch-1 kernel once per column.
-    // RUNNER_CUDA_SMALL_BATCH=0 restores the tile path for an A/B.
-    if (batch > 1 && batch <= GPU_SMALL_BATCH && w->scale == 1.0f &&
-        gpu_small_batch_on()) {
+    if (batch > 1 && batch <= GPU_SMALL_BATCH && w->scale == 1.0f) {
         if (g->sw->f_gemvb[batch_width_class(batch)][w->type])
             return enc_mv_batch(g, m, w, x, y, n_in, n_out, bias, batch, xs, ys);
         for (int c = 0; c < batch; c++)
@@ -4966,18 +4938,6 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
                 return false;
         return true;
     }
-    // Prefill (batch>1) uses the tiled-GEMM variant where available and the
-    // branches above do not take the type: on the scalar route only the 2 to 8
-    // columns RUNNER_CUDA_SMALL_BATCH=0 sends here for its A/B.
-    // GEMM_WARPS(=8) rows per block, 256 threads, x staged in shared memory.
-    if (batch > 1 && w->scale == 1.0f && g->sw->f_gemm[w->type]) {
-        // k_gemm_q8_0 keeps a fixed 8-column tile — a 16-column f32 x-tile
-        // exceeds shared memory, and every narrower restructure measured
-        // slower — so a wider tile runs as two launches of the proven shape.
-        return launch_tiled(g, g->sw->f_gemm[w->type], (n_out + 7) / 8, 8 * 32,
-                            weights, x, y, a, b,
-                            w->type == T_Q8_0 ? Q8_COLS : MVT, false, 1.0f, false);
-    }
     // Decode (batch==1), few long BF16 rows (n_out <= 1024, n_in >= 2048):
     // split-K, see k_mv_bf16_splitk. splits is a power of two dividing n_in/32
     // with n_out*splits around 4,096 blocks, bounded by the partials buffer.
@@ -5000,10 +4960,14 @@ static bool enc_mv(gpu_t *g, model_t *m, gguf_tensor *w, CUdeviceptr x,
         return launch(g, g->sw->f_gemv[w->type], (n_out + 3) / 4, 1, 1, 128, p);
     // 128 threads = 4 warps = 4 rows per block; the tile variant applies each
     // decoded weight to all columns, the single variant is faster at batch 1.
-    // On the scalar route the tile is reached by F32, F16 and BF16 (their f_mvb
-    // is the batch-1 kernel's twin), and by the 2 to 8 columns of
-    // RUNNER_CUDA_SMALL_BATCH=0.
+    // Over one column only F32, F16 and BF16 reach here (their f_mvb is the
+    // batch-1 kernel's twin): every other type took a branch above.
     CUfunction f = batch > 1 ? g->sw->f_mvb[w->type] : g->sw->f_mv[w->type];
+    if (batch > 1 && !f) {
+        gpu_first_error("tensor '%s' has no tile twin for %d columns; its prompt "
+                        "should have taken the per-column route", w->name, batch);
+        return false;
+    }
     // the lane-level i-quant batch-1 kernels take IQ_ROWS (2) rows per warp
     unsigned rpb = 4, block = 128;
     if (batch == 1 && (w->type == T_IQ2_XXS || w->type == T_IQ2_XS || w->type == T_IQ2_S ||
@@ -7539,18 +7503,8 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
 // RUNNER_CUDA_ATTN_TILE: the tiled prefill attention (k_attn_tile*), on by
 // default since its float32-reference rows were never further from the
 // reference than k_attn's; 0 keeps k_attn. A tolerance route: recorded as
-// attn-tile, and --gpu-route reference runs k_attn.
-// RUNNER_CUDA_ATTN_TILE512: the tiled attention also takes head widths 257
-// to 512 (gemma-4's global layers, k_attn_tile8), on by default on its
-// long-context rows; 0 keeps k_attn for those layers.
-static bool attn_tile512_on(void) {
-    static _Atomic int on = -1;
-    if (on < 0) {
-        const char *e = getenv("RUNNER_CUDA_ATTN_TILE512");
-        on = !(e && *e && strcmp(e, "0") == 0);
-    }
-    return on == 1;
-}
+// attn-tile, and --gpu-route reference runs k_attn. Head widths 257 to 512
+// (gemma-4's global layers) take k_attn_tile8.
 
 static bool attn_tile_on(void) {
     if (route_pinned(GR_ATTN_TILE) >= 0) return route_pinned(GR_ATTN_TILE);
@@ -7564,15 +7518,15 @@ static bool attn_tile_on(void) {
 
 // The tiled prefill attention over a whole tile of tn query columns, or
 // false (nothing launched) when it does not apply: switch off, kernel
-// absent from the PTX, a head width past 512 (256 under
-// RUNNER_CUDA_ATTN_TILE512=0), or a GQA ratio that does not divide. Its launch
-// shape and shared footprint are k_attn_tile's (see kernels.cu): 32 query
-// rows of 32-key tiles at head_dim <= 128, 16 of 16 at <= 256, 8 of 8 at
-// <= 512, the rows a block's heads times its strip of tokens.
+// absent from the PTX, a head width past 512, an odd head width, or a GQA
+// ratio that does not divide. Its launch shape and shared footprint are
+// k_attn_tile's (see kernels.cu): 32 query rows of 32-key tiles at head_dim
+// <= 128, 16 of 16 at <= 256, 8 of 8 at <= 512, the rows a block's heads
+// times its strip of tokens.
 static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
                             const attn_args *aa, CUdeviceptr sinks, bool *ok) {
     if (!attn_tile_on() || hd % 2 || n_kv < 1 || m->n_head % n_kv) return false;
-    int R = hd <= 128 ? 32 : hd <= 256 ? 16 : hd <= 512 && attn_tile512_on() ? 8 : 0;
+    int R = hd <= 128 ? 32 : hd <= 256 ? 16 : hd <= 512 ? 8 : 0;
     CUfunction f = R == 32 ? g->sw->f_attn_tile32 : R == 16 ? g->sw->f_attn_tile16 :
                    R == 8 ? g->sw->f_attn_tile8 : NULL;
     if (!f) return false;
@@ -7783,20 +7737,13 @@ static bool tile_attn_dec_gqa(gpu_t *g, model_t *m, int hd, int n_kv,
 }
 
 // The absorbed MLA decode (k_attn_dec_mla, R3.31): its dynamic shared memory
-// for a layer's geometry, or 0 when it does not apply (off, not the shared
-// one-table layout, or a shape it does not take: k_attn_dec then). One answer
-// for the solo decode and the verify rows, so a row runs its solo arithmetic.
-// MD_* (above) mirror kernels.cu.
-static bool attn_mla_on(void) {
-    static _Atomic int on = -1;
-    if (on < 0) {
-        const char *e = getenv("RUNNER_CUDA_ATTN_MLA");
-        on = !(e && *e && strcmp(e, "0") == 0);
-    }
-    return on == 1;
-}
+// for a layer's geometry, or 0 when it does not apply (decode attention off,
+// the kernel absent from the PTX, not the shared one-table layout, or a shape
+// it does not take: k_attn_dec then). One answer for the solo decode and the
+// verify rows, so a row runs its solo arithmetic. MD_* (above) mirror
+// kernels.cu.
 static unsigned attn_dec_mla_smem(const gpu_t *g, const model_t *m, int hd, int n_kv) {
-    if (!attn_dec_on() || !attn_mla_on() || !g->sw->f_attn_dec_mla || !g->sw->f_attn_merge32 ||
+    if (!attn_dec_on() || !g->sw->f_attn_dec_mla || !g->sw->f_attn_merge32 ||
         !model_kv_v_shared(m) || n_kv < 1 || m->n_head % n_kv)
         return 0;
     int G = m->n_head / n_kv, vlo = m->rope_dim;
@@ -9517,7 +9464,7 @@ const char *gpu_route_detail(const model_t *m) {
              g_tc_state >= 0 || tc_nvfp4_env() < 0 ? "" : tc_nvfp4_env() ? "+nvfp4" : "-nvfp4",
              !g->xh ? "off" : g->sw->mod80 ? "on-sm80" : "on",
              gpu_q8x_on() ? "on" : "off", g->i8_xq && g->sw->f_quant_i8 ? "on" : "off",
-             gpu_small_batch_on() ? "on" : "off",
+             "on",   // small_batch: always since R18.8.11; the token stays for receipts
              attn_tc_on(m) ? (attn_dec_on() ? "tc+dec" : "tc")
              : attn_tile_on() ? (attn_dec_on() ? "on+dec" : "on") : (attn_dec_on() ? "dec" : "off"),
              wide ? " attn_wide=on" : "",

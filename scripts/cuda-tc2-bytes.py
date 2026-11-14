@@ -36,7 +36,7 @@ PROMPT = ("The runner reads a prompt in windows of up to five hundred and "
 
 
 ROUTE_SWITCHES = ("RUNNER_CUDA_ROUTE", "RUNNER_CUDA_TC", "RUNNER_CUDA_TC2", "RUNNER_CUDA_SM80",
-                  "RUNNER_CUDA_TC2_WIDE", "RUNNER_CUDA_Q8X", "RUNNER_CUDA_SMALL_BATCH",
+                  "RUNNER_CUDA_TC2_WIDE", "RUNNER_CUDA_Q8X",
                   "RUNNER_CUDA_XH_REUSE")
 
 

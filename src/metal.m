@@ -2658,20 +2658,6 @@ static void enc_rmsnorm(gpu_t *g, id<MTLComputeCommandEncoder> e,
     enc_rmsnorm_n(g, e, x, x_off, y, y_off, w, n, eps, 1, n, n);
 }
 
-// n_col columns in one dispatch (the MV macros in kernels.metal): the weight
-// row stays in cache after the first column; bit-identical to n_col enc_mv calls.
-// Columns per threadgroup in the batched matmul, tunable without a rebuild.
-// RUNNER_METAL_MVFC=0 keeps multi-column Q4_K decode on k_mvf_q4_K's column
-// walk (the A/B arm); default on.
-static bool metal_mvfc_on(void) {
-    static _Atomic int v = -1;
-    if (v < 0) {
-        const char *s = getenv("RUNNER_METAL_MVFC");
-        v = !(s && *s && !strcmp(s, "0"));
-    }
-    return v;
-}
-
 // RUNNER_METAL_BATCH_TILES=1 (R3.24 (b), opt-in by owner decision
 // 2026-11-01): the decode microbatch's weight products take the prefill GEMM
 // tiles instead of the multi-column identity matvec. The tiles sum in another
@@ -2687,6 +2673,11 @@ static bool metal_batch_tiles_on(void) {
     return v;
 }
 
+// n_col columns in one dispatch (the MV macros in kernels.metal): the weight
+// row stays in cache after the first column; bit-identical to n_col enc_mv calls.
+// A multi-column twin (k_mvfc_q4_K, p_mvc) takes the columns when it built and
+// passed metal_mvc_self_test; without one, the one-column kernel walks them.
+// Columns per threadgroup in the batched matmul, tunable without a rebuild.
 static int metal_col_tile(void) {
     static _Atomic int v = -1;
     if (v < 0) {
@@ -2855,7 +2846,7 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
         // several decode columns of Q4_K: the twin that reads each block
         // once for the whole tile, each column still the one-column bits
         // (R3.24 (a); kernels.metal caps a tile at MVFC_COLS = 8)
-        if (w->type == T_Q4_K && n_col > 1 && g->p_mvfc_q4k && metal_mvfc_on()) {
+        if (w->type == T_Q4_K && n_col > 1 && g->p_mvfc_q4k) {
             mv = g->p_mvfc_q4k;
             if (a.col_tile > 8) a.col_tile = col_tile = 8;
         }
@@ -2871,7 +2862,7 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
         // several columns of an identity matvec: the twin that reads each
         // block once for the tile, each column its one-column bits (R3.24
         // (a), admitted by metal_mvc_self_test; MVFC_COLS = 8 a tile)
-        if (n_col > 1 && g->p_mvc[w->type] && metal_mvfc_on()) {
+        if (n_col > 1 && g->p_mvc[w->type]) {
             mv = g->p_mvc[w->type];
             if (a.col_tile > 8) a.col_tile = col_tile = 8;
         }

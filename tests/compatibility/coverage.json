@@ -1086,44 +1086,6 @@
     "metal": "NOT RUN"
    }
   },
-  "mistral": {
-   "templates": [
-    "mistral",
-    "mistral-v1",
-    "mistral-nemo"
-   ],
-   "artifacts": [],
-   "tool_protocol": {
-    "status": "NOT RUN",
-    "note": "Mistral files in the manifest declare `llama`; no file with the `mistral` label is pinned"
-   },
-   "client_loop": {
-    "status": "NOT RUN"
-   },
-   "backends": {
-    "cpu": "NOT RUN",
-    "cuda": "NOT RUN",
-    "metal": "NOT RUN"
-   }
-  },
-  "smollm": {
-   "templates": [
-    "chatml"
-   ],
-   "artifacts": [],
-   "tool_protocol": {
-    "status": "NOT RUN",
-    "note": "no pinned artifact"
-   },
-   "client_loop": {
-    "status": "NOT RUN"
-   },
-   "backends": {
-    "cpu": "NOT RUN",
-    "cuda": "NOT RUN",
-    "metal": "NOT RUN"
-   }
-  },
   "stablelm": {
    "templates": [
     "chatml",

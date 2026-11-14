@@ -5583,8 +5583,8 @@ static bool bind_arch_meta(model_t *m, gguf_file *g, const char *arch, bool late
         return !late || bind_meta_lfm2(m, g, arch);
     // the shared binders alone (an unknown name runs under
     // RUNNER_ALLOW_UNKNOWN_ARCH, llama-style)
-    case ARCH_LLAMA: case ARCH_QWEN2: case ARCH_MISTRAL: case ARCH_SMOLLM:
-    case ARCH_STABLELM: case ARCH_PHI3: case ARCH_MISTRAL3: case ARCH_UNKNOWN:
+    case ARCH_LLAMA: case ARCH_QWEN2: case ARCH_STABLELM: case ARCH_PHI3:
+    case ARCH_MISTRAL3: case ARCH_UNKNOWN:
         return true;
     // refused at admission, never bound
     case ARCH_GEMMA: case ARCH_GEMMA2: case ARCH_COUNT:
@@ -6770,9 +6770,8 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     int n_ctx = m->n_ctx;
 
     {
-        const char *e = getenv("RUNNER_ATTN_SPLIT");
-        m->attn_split = e && !strcmp(e, "0") ? -1 : 0;
-        e = getenv("RUNNER_ATTN_BATCH");
+        m->attn_split = 0;   // attn_split_wanted decides per call
+        const char *e = getenv("RUNNER_ATTN_BATCH");
         m->attn_batch = e && (!strcmp(e, "0") || !strcmp(e, "off")) ? -1 : 0;
     }
     if (!runtime_kv_layout(m, p, n_ctx)) return false;

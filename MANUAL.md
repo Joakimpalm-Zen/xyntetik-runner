@@ -236,7 +236,7 @@ A map of what the binary does, with the section that documents each part.
 - **Training and adapters.** LoRA training through quantized GGUF weights on
   CPU and CUDA, `--lora` serving on CPU, CUDA and Metal, `--merge-lora`,
   `--info adapter`. [Adaptation](#adaptation)
-- **Models and formats.** 30 admitted architectures, refused by name when
+- **Models and formats.** 28 admitted architectures, refused by name when
   unknown; 24 weight formats including the K-quants, all seven codebook
   i-quants, MXFP4 and NVFP4; KV caches in f16, q8, fp4 and split k8v4, with a
   ring for sliding-window layers; speculative decoding from a draft model, the
@@ -1574,7 +1574,7 @@ merely dense matvec/matmul support.
 
 | GGUF `general.architecture` | Notes |
 |---|---|
-| `llama`, `mistral`, `smollm`, `stablelm` | Llama-style dense families with family tokenizers/templates. |
+| `llama`, `stablelm` | Llama-style dense families with family tokenizers/templates. Mistral v0.1 to v0.3 and SmolLM2 files declare `llama`. |
 | `qwen2`, `qwen3` | QKV-bias and per-head-QK-norm variants. |
 | `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU, CUDA and Metal. On Metal the whole model runs on the device (its logits within reduction-order rounding of the CPU's, `make test-metal-qwen35`, and Qwen3.5-0.8B Q8_0's greedy text identical); a model that does not fit whole, carries an adapter, drafts with `--mtp` or is a `clef` file runs on the CPU there. Qwen3.8-27B (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--draft mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. A recurrent instance forks an exact shared-prefix hit on the CPU and on CUDA, where the device fold moves through the host (R4.26.7; checked live on Qwen3.5-4B, the forked answer identical to a cold one); its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike; a CUDA-resident recurrent layer runs speculative decode (per-row recurrent checkpoints restore a partially accepted round) and declines grammar fast-forward; a Metal-resident one runs speculative decode by rolling back to the round's start and re-folding the kept rows (`--draft lookup`; its rows byte-identical to plain decoding, `make test-metal-qwen35`). |
 | `qwen35moe` | Qwen3.5 and Qwen3.6-35B-A3B and the models built on them (Ornith-1.5-35B-A3B, Sage-A1.5, occamy-1.0, MiniCPM-V-4.7-35B-A3B's language model): `qwen35`'s Gated DeltaNet and gated attention with 256 routed experts (softmax, top-8, renormalized) and a sigmoid-gated shared expert on every block. CPU, CUDA and Metal. CUDA since R4.27 A2: `make test-cuda-qwen35moe` holds it to the CPU's logits at 1e-5 on toy models, and Qwen3.6-35B-A3B's file runs with every block on the device ([the record](docs/compat-reports/qwen35moe-cuda-2026-11-05/README.md)). Metal is held to the CPU's logits on toy models only (`make test-metal-qwen35moe`): no file has run on a Mac that holds one (the 35B files are 21-22 GB). Its NextN block (an attention block with the trunk's MoE FFN) feeds `--mtp`. Checked against transformers' float32 `Qwen3_5MoeForCausalLM` on a converted random model ([the record](docs/compat-reports/qwen35moe-toy-2026-10-30/README.md)); file rows follow. |
@@ -4128,6 +4128,32 @@ or dump internals for the tools under `scripts/` (`moe-prune-plan.py` consumes
 `RUNNER_GRAMMAR_TRACE`) and are read at first use. They are instrumentation,
 not interface: names, formats and defaults change without notice, and nothing
 outside this repository should depend on them.
+
+Kernel knobs and A/B arms, and two environment controls:
+
+| Switch | What it does |
+|---|---|
+| `RUNNER_CUDA_WINDOW=N` | Caps the CUDA prompt window at `N` columns: a multiple of 64, never wider than the plan allows, as `-b` caps it. A diagnostic and A/B control; `--verify` restores a record's window itself. |
+| `RUNNER_METAL_MOE_BATCH=0` | Routes a Metal MoE prompt batch one token per routing dispatch instead of the whole batch in one. The same bytes either way. |
+| `RUNNER_MV_FUSE=0` | Sends CPU projections that read the same input (Q, K and V; gate and up) as one pool dispatch each instead of one together. The same bytes either way. |
+| `RUNNER_METAL_COL_TILE=N` | Columns per threadgroup in Metal's batched matmul (default 8), tunable without a rebuild. |
+| `RUNNER_METAL_ATT_BYTES=N` | Bounds Metal's attention score scratch at `N` bytes, so a test fixture's batch spans several attention dispatches. |
+| `RUNNER_TRAIN_MM_KERNEL=warp`, `RUNNER_TRAIN_MVT_KERNEL=chain` | `--train-gpu`'s kernel families, for comparison: `warp` takes the per-warp training matmuls instead of the register-blocked ones (the arithmetic before R8.20), and `chain` the CPU chain's transpose matvec in device mode. Within a family every column gets the same bits; across families they differ, so one family serves a whole run. Read per call, so the training gate can compare them. |
+| `RUNNER_CURL=PATH` | The curl program Hub downloads run (default `curl` on `PATH`). The tests point it at a stand-in. |
+| `RUNNER_UNVERIFIED_LEASE_TTL=SECONDS` | How long a lease record whose owner can be neither proven alive nor dead is honoured (default 900). An older one ages out, so a crashed owner does not hold its instance for ever. The engine and the Python client both read it. |
+
+The diagnostics, each on stderr unless it names a file:
+
+| Switch | What it prints or writes |
+|---|---|
+| `RUNNER_CUDA_PROFILE` | A table of where a CUDA run's time went, at exit: GPU time per stage, the host-side copies, and the rest as launch and host overhead. |
+| `RUNNER_DEBUG_MOE` | The first routings' expert choices and weights, in hex. On CUDA the decode then runs eagerly, since a captured graph cannot read them back. |
+| `RUNNER_METAL_MOE_ROUTE_TRACE=1` | Each Metal MoE layer's routing, per token (`metal-moe-route` lines). |
+| `RUNNER_METAL_NAN_TRACE=1` | The first layer whose residual carries a NaN or Inf on Metal; `2` also probes inside the layer, to name the stage. One command buffer per probe, so a slow run. |
+| `RUNNER_METAL_STATS=1` | Each Metal pipeline's threadgroup memory and thread limit, and the scratch sizes a batch takes (`metal-pipeline`, `metal-scratch` lines). |
+| `RUNNER_SAMPLE_STATS=1` | Why the sampler's fast path over the head of the distribution was or was not usable, per sampled token (`[smp ...]` markers). |
+| `RUNNER_TOOL_TRACE=1` | The document a native tool-call mapper was handed, and its verdict: the bytes a client never sees when the call is refused. |
+| `RUNNER_TRAIN_FULL_DUMP=PREFIX` | A full fine-tune's first-step gradient: `PREFIX.norms.json` with each tensor's gradient norm, and `PREFIX.NAME.f32` for each tensor `RUNNER_TRAIN_FULL_DUMP_TENSORS` lists (comma-separated names). |
 
 `RUNNER_ACT_TRACE=trace.jsonl` with `RUNNER_ACT_TRACE_POS=0,7,31` (a
 comma-separated list of 1 to 64 token positions, required) records, at those

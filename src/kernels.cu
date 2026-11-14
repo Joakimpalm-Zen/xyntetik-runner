@@ -231,90 +231,13 @@ extern "C" __global__ void k_mv_q8_0(MV_PARAMS) {
     MV_TAIL;
 }
 
-extern "C" __global__ void k_mv_q8_0_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 34;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 34;
-        float d = f16f(blk);
-        const signed char *q = (const signed char *)(blk + 2);
-        ulong64 base = (ulong64)b * 32;
-        for (int j = 0; j < 32; j++) MV_FMA(d * (float)q[j], base + j);
-    }
-    MV_TAIL_B;
-}
-
-// -------------------------------------------------------------- prefill GEMM
-// Real tiled GEMM replacements for the two prefill formats that matter on this
-// machine (Q8_0, Q4_K). The batch _b kernels are compute/latency bound: each
-// decoded weight issues MVB scattered global x-loads. These variants stage the
-// x-tile columns into shared memory once per block, so every decoded weight
-// FMAs against smem instead of global memory, and multiple warps (rows) reuse
-// the same staged x.
-//
-// Correctness: the reduction is kept BIT-IDENTICAL to the _b kernels — lane b
-// still owns k-blocks b, b+32, ...; the inner j-order is 0..31; the per-weight
-// term is the same d*(float)q[j]; the final warp_sum tree is unchanged. Only
-// the *source* of x changes (smem vs global), so results match the _b kernels
-// exactly and greedy tokens are identical.
-
+// -------------------------------------------------------------- staging constants
+// Rows a block, 32-element blocks staged a k step, and the padding that
+// keeps per-lane shared-memory reads conflict-free. The tiled prefill GEMMs
+// they were written for were retired in R18.8.11; the kernels below use them.
 #define GEMM_WARPS 8            // output rows per block (warps)
 #define Q8_CHUNK   32           // q8 blocks staged per k-iteration (== warp lanes)
 #define SMPAD      33           // 32 + 1: makes per-lane smem reads conflict-free
-
-// MVB=16 note: a 16-column f32 x-tile of 32 q8 blocks does not fit shared
-// memory (16*1024*4 = 64 KB), and every narrower restructure measured slower
-// than this proven 8-column shape (the kernel is smem-FMA bound, so per-weight
-// work scales with columns and wider tiles buy nothing on this path). The
-// kernel therefore keeps its 8-column tile and cuda.c splits a 16-token tile
-// into two launches — identical arithmetic to the MVB=8 build.
-#define Q8_COLS 8               // fixed column width of this kernel's tile
-
-// xsm[t][blk_in_chunk*SMPAD + j] holds x column t, element (chunk*1024)+blk*32+j
-extern "C" __global__ void k_gemm_q8_0(MV_PARAMS) {
-    __shared__ float xsm[Q8_COLS][Q8_CHUNK * SMPAD];
-    unsigned warp = threadIdx.x >> 5;
-    unsigned lane = threadIdx.x & 31;
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;
-    int nb = a.n_in / 32;
-    float s[Q8_COLS] = {0};
-    const uchar *rw = wb + a.w_off + (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 34;
-
-    for (int cs = 0; cs < nb; cs += Q8_CHUNK) {
-        int cblocks = nb - cs < Q8_CHUNK ? nb - cs : Q8_CHUNK;
-        int celems  = cblocks * 32;
-        int base_e  = cs * 32;
-        // coalesced cooperative load of this chunk's x into padded smem
-        #pragma unroll
-        for (int t = 0; t < Q8_COLS; t++) {
-            const float *xg = x + (ulong64)t * a.xs + base_e;
-            for (int e = threadIdx.x; e < celems; e += blockDim.x)
-                xsm[t][(e >> 5) * SMPAD + (e & 31)] = xg[e];
-        }
-        __syncthreads();
-        if (row < (unsigned)a.n_out && lane < (unsigned)cblocks) {
-            const uchar *blk = rw + (ulong64)(cs + lane) * 34;
-            float d = f16f(blk);
-            const signed char *q = (const signed char *)(blk + 2);
-            int soff = (int)lane * SMPAD;
-            #pragma unroll
-            for (int j = 0; j < 32; j++) {
-                float w = d * (float)q[j];
-                #pragma unroll
-                for (int t = 0; t < Q8_COLS; t++) s[t] += w * xsm[t][soff + j];
-            }
-        }
-        __syncthreads();
-    }
-    if (row < (unsigned)a.n_out) {
-        int cols = a.batch < Q8_COLS ? a.batch : Q8_COLS;
-        for (int t = 0; t < cols; t++) {
-            float r = warp_sum(s[t]);
-            if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r;
-        }
-    }
-}
 
 // -------------------------------------------------------------- decode GEMV
 // Batch-1 (decode) matvec replacements for the two formats that matter here
@@ -457,26 +380,6 @@ extern "C" __global__ void k_mv_q2_0(MV_PARAMS) {
     }
 }
 
-extern "C" __global__ void k_mv_q2_0_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 64;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 18;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        ulong64 base = (ulong64)b * 64;
-        for (int j = 0; j < 16; j++) {
-            uchar c = q[j];
-            MV_FMA(d * (float)((int)(c & 3) - 1),        base + 4 * j);
-            MV_FMA(d * (float)((int)((c >> 2) & 3) - 1), base + 4 * j + 1);
-            MV_FMA(d * (float)((int)((c >> 4) & 3) - 1), base + 4 * j + 2);
-            MV_FMA(d * (float)((int)(c >> 6) - 1),       base + 4 * j + 3);
-        }
-    }
-    MV_TAIL_B;
-}
-
 // One lane per 32-element block (k_mv_q4_0 and k_mv_mxfp4, their MoE copies
 // and their by-expert twins), with the activations staged. Read straight from
 // global memory, lane l walks its own block's 32 floats of x, 128 bytes from
@@ -524,23 +427,6 @@ extern "C" __global__ void k_mv_q4_0(MV_PARAMS) {
     }
 }
 
-extern "C" __global__ void k_mv_q4_0_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 18;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        ulong64 base = (ulong64)b * 32;
-        for (int j = 0; j < 16; j++) {
-            MV_FMA(d * (float)((int)(q[j] & 0xF) - 8), base + j);
-            MV_FMA(d * (float)((int)(q[j] >> 4)  - 8), base + j + 16);
-        }
-    }
-    MV_TAIL_B;
-}
-
 extern "C" __global__ void k_mv_q4_1(MV_PARAMS) {
     LANE_DENSE_HEAD(32)
     int nb = a.n_in / 32;
@@ -571,24 +457,6 @@ extern "C" __global__ void k_mv_q4_1(MV_PARAMS) {
         s = warp_sum(s);
         if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
     }
-}
-
-extern "C" __global__ void k_mv_q4_1_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 20;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 20;
-        float d  = f16f(blk);
-        float mm = f16f(blk + 2);
-        const uchar *q = blk + 4;
-        ulong64 base = (ulong64)b * 32;
-        for (int j = 0; j < 16; j++) {
-            MV_FMA(d * (float)(q[j] & 0xF) + mm, base + j);
-            MV_FMA(d * (float)(q[j] >> 4)  + mm, base + j + 16);
-        }
-    }
-    MV_TAIL_B;
 }
 
 extern "C" __global__ void k_mv_q5_0(MV_PARAMS) {
@@ -625,27 +493,6 @@ extern "C" __global__ void k_mv_q5_0(MV_PARAMS) {
     }
 }
 
-extern "C" __global__ void k_mv_q5_0_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 22;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 22;
-        float d = f16f(blk);
-        uint qh = (uint)blk[2] | ((uint)blk[3] << 8) |
-                  ((uint)blk[4] << 16) | ((uint)blk[5] << 24);
-        const uchar *q = blk + 6;
-        ulong64 base = (ulong64)b * 32;
-        for (int j = 0; j < 16; j++) {
-            int x0 = (int)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) - 16;
-            int x1 = (int)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) - 16;
-            MV_FMA(d * (float)x0, base + j);
-            MV_FMA(d * (float)x1, base + j + 16);
-        }
-    }
-    MV_TAIL_B;
-}
-
 extern "C" __global__ void k_mv_q5_1(MV_PARAMS) {
     LANE_DENSE_HEAD(32)
     int nb = a.n_in / 32;
@@ -679,26 +526,6 @@ extern "C" __global__ void k_mv_q5_1(MV_PARAMS) {
         s = warp_sum(s);
         if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
     }
-}
-
-extern "C" __global__ void k_mv_q5_1_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 24;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 24;
-        float d  = f16f(blk);
-        float mm = f16f(blk + 2);
-        uint qh = (uint)blk[4] | ((uint)blk[5] << 8) |
-                  ((uint)blk[6] << 16) | ((uint)blk[7] << 24);
-        const uchar *q = blk + 8;
-        ulong64 base = (ulong64)b * 32;
-        for (int j = 0; j < 16; j++) {
-            MV_FMA(d * (float)((q[j] & 0xF) | (((qh >> j) & 1u) << 4)) + mm, base + j);
-            MV_FMA(d * (float)((q[j] >> 4)  | (((qh >> (j + 16)) & 1u) << 4)) + mm, base + j + 16);
-        }
-    }
-    MV_TAIL_B;
 }
 
 static __device__ __forceinline__ void get_scale_min_k4(int j, const uchar *q,
@@ -819,34 +646,6 @@ extern "C" __global__ void k_mv_q2_K(MV_PARAMS) {
     }
 }
 
-extern "C" __global__ void k_mv_q2_K_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 84;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 84;
-        Q2K_SETUP;
-        ulong64 base = (ulong64)b * 256;
-        int pos = 0, is = 0; const uchar *q = qbase;
-        for (int n = 0; n < 256; n += 128) {
-            int shift = 0;
-            for (int j = 0; j < 4; j++) {
-                uchar scb = q2scales[is++];
-                float dl = d * (scb & 0xF), ml = dmin * (scb >> 4);
-                for (int l = 0; l < 16; l++)
-                    MV_FMA(dl * (float)((q[l] >> shift) & 3) - ml, base + pos++);
-                scb = q2scales[is++];
-                dl = d * (scb & 0xF); ml = dmin * (scb >> 4);
-                for (int l = 0; l < 16; l++)
-                    MV_FMA(dl * (float)((q[l+16] >> shift) & 3) - ml, base + pos++);
-                shift += 2;
-            }
-            q += 32;
-        }
-    }
-    MV_TAIL_B;
-}
-
 // Q3_K: 110-byte block, 256 elements. Layout: hmask[32] (one high bit per
 // weight), qs[64] (2-bit low bits), scales[12] (packed 16x 6-bit, bias -32),
 // d (f16 super-scale). Weight = d*(scale-32)*((2bit) - (highbit?0:4)). This
@@ -895,32 +694,6 @@ extern "C" __global__ void k_mv_q3_K(MV_PARAMS) {
     MV_TAIL;
 }
 
-extern "C" __global__ void k_mv_q3_K_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 110;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 110;
-        Q3K_UNPACK_SCALES;
-        ulong64 base = (ulong64)b * 256;
-        int pos = 0, is = 0; uchar mbit = 1; const uchar *q = qbase;
-        for (int n = 0; n < 256; n += 128) {
-            int shift = 0;
-            for (int j = 0; j < 4; j++) {
-                float dl = d_all * (q3scales[is++] - 32);
-                for (int l = 0; l < 16; l++)
-                    MV_FMA(dl * (float)(((q[l] >> shift) & 3) - ((hm[l] & mbit) ? 0 : 4)), base + pos++);
-                dl = d_all * (q3scales[is++] - 32);
-                for (int l = 0; l < 16; l++)
-                    MV_FMA(dl * (float)(((q[l+16] >> shift) & 3) - ((hm[l+16] & mbit) ? 0 : 4)), base + pos++);
-                shift += 2; mbit <<= 1;
-            }
-            q += 32;
-        }
-    }
-    MV_TAIL_B;
-}
-
 extern "C" __global__ void k_mv_q4_K(MV_PARAMS) {
     MV_HEAD;
     int nb = a.n_in / 256;
@@ -963,105 +736,6 @@ extern "C" __global__ void k_mv_q4_K(MV_PARAMS) {
     MV_TAIL;
 }
 
-extern "C" __global__ void k_mv_q4_K_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 144;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 144;
-        float d    = f16f(blk);
-        float dmin = f16f(blk + 2);
-        const uchar *sc = blk + 4;
-        const uchar *q  = blk + 16;
-        ulong64 base = (ulong64)b * 256;
-        int is = 0;
-        for (int j = 0; j < 256; j += 64) {
-            uchar s1, m1, s2, m2;
-            get_scale_min_k4(is + 0, sc, &s1, &m1);
-            get_scale_min_k4(is + 1, sc, &s2, &m2);
-            float d1 = d * s1, mm1 = dmin * m1;
-            float d2 = d * s2, mm2 = dmin * m2;
-            const uint4 *q16 = (const uint4 *)q;   // blk+16 is 16B-aligned
-            for (int v = 0; v < 2; v++) {
-                uint4 w = q16[v];
-                uint ws[4] = { w.x, w.y, w.z, w.w };
-                #pragma unroll
-                for (int c = 0; c < 4; c++) {
-                    #pragma unroll
-                    for (int k = 0; k < 4; k++) {
-                        int l = v * 16 + c * 4 + k;
-                        uint b8 = (ws[c] >> (8 * k)) & 0xFFu;
-                        MV_FMA(d1 * (float)(b8 & 0xF) - mm1, base + j + l);
-                        MV_FMA(d2 * (float)(b8 >> 4)  - mm2, base + j + l + 32);
-                    }
-                }
-            }
-            q += 32; is += 2;
-        }
-    }
-    MV_TAIL_B;
-}
-
-// Q4_K prefill GEMM. Unlike Q8_0 the 256-element block is too wide to keep
-// lane==k-block (32 blocks -> 8192 x elements won't fit in smem), so the warp
-// instead walks k-blocks sequentially and its 32 lanes cooperatively reduce the
-// 256 elements of each block (8 elements/lane). x for the current block is
-// staged into smem (small, 256*MVB floats) so decoded weights FMA against smem.
-// This REORDERS the k-reduction relative to k_mv_q4_K_b, so it is not bitwise
-// identical — token-identity is verified empirically by kernel-verify on the
-// real Q4_K model. Lane l owns elements [l*8, l*8+8): all in scale group l/4,
-// quant segment l/8, byte offset (l&3)*8, lower nibble iff group even.
-extern "C" __global__ void k_gemm_q4_K(MV_PARAMS) {
-    __shared__ float xsm[MVT][256];
-    unsigned warp = threadIdx.x >> 5;
-    unsigned lane = threadIdx.x & 31;
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off +
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 144;
-    float s[MVT] = {0};
-    int g     = (int)(lane >> 2);         // scale/min group 0..7
-    int ji    = (int)(lane >> 3);         // 32-byte quant segment 0..3
-    int lo    = (((int)lane >> 2) & 1) == 0;
-    int bbase = ((int)lane & 3) * 8;      // byte offset within the segment
-
-    for (int b = 0; b < nb; b++) {
-        const uchar *blk = rw + (ulong64)b * 144;
-        int base_e = b * 256;
-        #pragma unroll
-        for (int t = 0; t < MVT; t++) {
-            const float *xg = x + (ulong64)t * a.xs + base_e;
-            for (int e = threadIdx.x; e < 256; e += blockDim.x) xsm[t][e] = xg[e];
-        }
-        __syncthreads();
-        if (row < (unsigned)a.n_out) {
-            float dd   = f16f(blk);
-            float dmin = f16f(blk + 2);
-            const uchar *sc = blk + 4;
-            const uchar *q  = blk + 16 + ji * 32;
-            uchar sg, mg;
-            get_scale_min_k4(g, sc, &sg, &mg);
-            float dg = dd * (float)sg, mmg = dmin * (float)mg;
-            int el = (int)lane * 8;
-            #pragma unroll
-            for (int k = 0; k < 8; k++) {
-                uchar byte = q[bbase + k];
-                int nib = lo ? (byte & 0xF) : (byte >> 4);
-                float w = dg * (float)nib - mmg;
-                #pragma unroll
-                for (int t = 0; t < MVT; t++) s[t] += w * xsm[t][el + k];
-            }
-        }
-        __syncthreads();
-    }
-    if (row < (unsigned)a.n_out) {
-        for (int t = 0; t < a.batch; t++) {
-            float r = warp_sum(s[t]);
-            if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r;
-        }
-    }
-}
-
 // ---------------------------------------------------- tensor-core Q4_K GEMM
 // v2, MMQ-style (suite plan P1-prefill lever b; supersedes the per-warp v1,
 // which re-dequantized per 16-element K-step through a scalar index helper and
@@ -1077,7 +751,8 @@ extern "C" __global__ void k_gemm_q4_K(MV_PARAMS) {
 //   - each warp owns a 16-row m16n16k16 fragment strip: 4 warps x 16 = 64
 //     rows per block, accumulated in fp32 across the full K without ever
 //     leaving registers (the "register-accumulate" of the plan item).
-// Numerics: identical per-element weight values to k_gemm_q4_K, rounded to
+// Numerics: identical per-element weight values to the scalar Q4_K prefill
+// GEMM (retired in R18.8.11), rounded to
 // fp16 operands with fp32 accumulation — same numeric class as v1, still
 // behind the RUNNER_CUDA_TC opt-in + tolerance gate, never the default path.
 // Compiles to compute_75 PTX (fp16 WMMA is Turing+; no bf16 in sm_75).
@@ -1443,7 +1118,8 @@ TC_GEMM_32B(k_gemm_q4_0_tc, tc_stage_q4_0, 18)
 
 // Q4_K decode GEMV: lane-per-element coalesced variant of k_mv_q4_K. Lane l
 // owns the 8 elements [l*8, l*8+8), reusing the exact per-element weight
-// geometry of k_gemm_q4_K (which passed identity empirically) -> group l/4,
+// geometry of the scalar Q4_K prefill GEMM (which passed identity
+// empirically; retired in R18.8.11) -> group l/4,
 // quant segment l/8, byte offset (l&3)*8, lower nibble iff group even. x is
 // read from global (single decode column, small + L1-cached); the 128-byte
 // quant region of each block is read coalesced across the warp. Reduction is
@@ -1518,36 +1194,6 @@ extern "C" __global__ void k_mv_q5_K(MV_PARAMS) {
         }
     }
     MV_TAIL;
-}
-
-extern "C" __global__ void k_mv_q5_K_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 176;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 176;
-        float d    = f16f(blk);
-        float dmin = f16f(blk + 2);
-        const uchar *sc = blk + 4;
-        const uchar *qh = blk + 16;
-        const uchar *q  = blk + 48;
-        ulong64 base = (ulong64)b * 256;
-        int is = 0;
-        uchar u1 = 1, u2 = 2;
-        for (int j = 0; j < 256; j += 64) {
-            uchar s1, m1, s2, m2;
-            get_scale_min_k4(is + 0, sc, &s1, &m1);
-            get_scale_min_k4(is + 1, sc, &s2, &m2);
-            float d1 = d * s1, mm1 = dmin * m1;
-            float d2 = d * s2, mm2 = dmin * m2;
-            for (int l = 0; l < 32; l++) {
-                MV_FMA(d1 * (float)((q[l] & 0xF) + ((qh[l] & u1) ? 16 : 0)) - mm1, base + j + l);
-                MV_FMA(d2 * (float)((q[l] >> 4)  + ((qh[l] & u2) ? 16 : 0)) - mm2, base + j + l + 32);
-            }
-            q += 32; is += 2; u1 <<= 2; u2 <<= 2;
-        }
-    }
-    MV_TAIL_B;
 }
 
 // Q5_K decode GEMV: Q4_K's lane-per-element geometry with Q5_K's extra high
@@ -1650,63 +1296,6 @@ extern "C" __global__ void k_gemv_q5_K(MV_PARAMS) {
     MV_TAIL;
 }
 
-// Q5_K prefill GEMM: the decode geometry above with the current x block staged
-// in shared memory. Eight warps reuse that tile for eight output rows; each
-// warp reduces one 256-element weight block cooperatively.
-extern "C" __global__ void k_gemm_q5_K(MV_PARAMS) {
-    __shared__ float xsm[MVT][256];
-    unsigned warp = threadIdx.x >> 5;
-    unsigned lane = threadIdx.x & 31;
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off +
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 176;
-    int g     = (int)(lane >> 2);         // scale/min group 0..7
-    int ji    = (int)(lane >> 3);         // 32-byte quant segment 0..3
-    int lo    = (((int)lane >> 2) & 1) == 0;
-    int bbase = ((int)lane & 3) * 8;      // byte offset within segment/qh
-    int hmask = 1 << g;
-    float s[MVT] = {0};
-
-    for (int b = 0; b < nb; b++) {
-        const uchar *blk = rw + (ulong64)b * 176;
-        int base_e = b * 256;
-        #pragma unroll
-        for (int t = 0; t < MVT; t++) {
-            const float *xg = x + (ulong64)t * a.xs + base_e;
-            for (int e = threadIdx.x; e < 256; e += blockDim.x) xsm[t][e] = xg[e];
-        }
-        __syncthreads();
-        if (row < (unsigned)a.n_out) {
-            float dd   = f16f(blk);
-            float dmin = f16f(blk + 2);
-            const uchar *sc = blk + 4;
-            const uchar *qh = blk + 16;
-            const uchar *q  = blk + 48 + ji * 32;
-            uchar sg, mg;
-            get_scale_min_k4(g, sc, &sg, &mg);
-            float dg = dd * (float)sg, mmg = dmin * (float)mg;
-            int el = (int)lane * 8;
-            #pragma unroll
-            for (int k = 0; k < 8; k++) {
-                uchar byte = q[bbase + k];
-                int qv = (lo ? (byte & 0xF) : (byte >> 4)) +
-                         ((qh[bbase + k] & hmask) ? 16 : 0);
-                float w = dg * (float)qv - mmg;
-                #pragma unroll
-                for (int t = 0; t < MVT; t++) s[t] += w * xsm[t][el + k];
-            }
-        }
-        __syncthreads();
-    }
-    if (row < (unsigned)a.n_out) {
-        for (int t = 0; t < a.batch; t++) {
-            float r = warp_sum(s[t]);
-            if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r;
-        }
-    }
-}
-
 extern "C" __global__ void k_mv_q6_K(MV_PARAMS) {
     MV_HEAD;
     int nb = a.n_in / 256;
@@ -1738,35 +1327,6 @@ extern "C" __global__ void k_mv_q6_K(MV_PARAMS) {
         }
     }
     MV_TAIL;
-}
-
-extern "C" __global__ void k_mv_q6_K_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 210;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 210;
-        const uchar *ql = blk;
-        const uchar *qh = blk + 128;
-        const signed char *sc = (const signed char *)(blk + 192);
-        float d = f16f(blk + 208);
-        ulong64 base = (ulong64)b * 256;
-        for (int half_i = 0; half_i < 2; half_i++) {
-            for (int l = 0; l < 32; l++) {
-                int is = (l / 16) & 1;
-                int q1 = (int)((ql[l]      & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
-                int q2 = (int)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
-                int q3 = (int)((ql[l]      >> 4)  | (((qh[l] >> 4) & 3) << 4)) - 32;
-                int q4 = (int)((ql[l + 32] >> 4)  | (((qh[l] >> 6) & 3) << 4)) - 32;
-                MV_FMA(d * (float)(sc[is] * q1),     base + l);
-                MV_FMA(d * (float)(sc[2 + is] * q2), base + l + 32);
-                MV_FMA(d * (float)(sc[4 + is] * q3), base + l + 64);
-                MV_FMA(d * (float)(sc[6 + is] * q4), base + l + 96);
-            }
-            ql += 64; qh += 32; sc += 8; base += 128;
-        }
-    }
-    MV_TAIL_B;
 }
 
 // Q6_K decode GEMV: lane-per-element coalesced variant of k_mv_q6_K. The
@@ -1824,124 +1384,6 @@ extern "C" __global__ void k_gemv_q6_K(MV_PARAMS) {
                             (int)lane, is);
     float s = s0 + s1;
     MV_TAIL;
-}
-
-// Q6_K prefill GEMM: same shared-memory x staging as k_gemm_q4_K, with the
-// lane-per-element geometry of k_gemv_q6_K. Warp walks blocks sequentially;
-// its 32 lanes cooperatively reduce the 256 elements of each block (8/lane,
-// positions {l,l+32,l+64,l+96} per half). x for the current block is staged in
-// smem so decoded weights FMA against smem. Reordered k-reduction vs
-// k_mv_q6_K_b -> token identity verified empirically.
-extern "C" __global__ void k_gemm_q6_K(MV_PARAMS) {
-    __shared__ float xsm[MVT][256];
-    unsigned warp = threadIdx.x >> 5;
-    unsigned lane = threadIdx.x & 31;
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off +
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 210;
-    int is = (int)(lane >> 4);
-    float s[MVT] = {0};
-
-    for (int b = 0; b < nb; b++) {
-        const uchar *blk = rw + (ulong64)b * 210;
-        int base_e = b * 256;
-        #pragma unroll
-        for (int t = 0; t < MVT; t++) {
-            const float *xg = x + (ulong64)t * a.xs + base_e;
-            for (int e = threadIdx.x; e < 256; e += blockDim.x) xsm[t][e] = xg[e];
-        }
-        __syncthreads();
-        if (row < (unsigned)a.n_out) {
-            float d = f16f(blk + 208);
-            #pragma unroll
-            for (int half = 0; half < 2; half++) {
-                const uchar *ql = blk + half * 64;
-                const uchar *qh = blk + 128 + half * 32;
-                const signed char *sc = (const signed char *)(blk + 192) + half * 8;
-                int q1 = (int)((ql[lane]      & 0xF) | (((qh[lane] >> 0) & 3) << 4)) - 32;
-                int q2 = (int)((ql[lane + 32] & 0xF) | (((qh[lane] >> 2) & 3) << 4)) - 32;
-                int q3 = (int)((ql[lane]      >> 4)  | (((qh[lane] >> 4) & 3) << 4)) - 32;
-                int q4 = (int)((ql[lane + 32] >> 4)  | (((qh[lane] >> 6) & 3) << 4)) - 32;
-                float w1 = d * (float)(sc[0 + is] * q1);
-                float w2 = d * (float)(sc[2 + is] * q2);
-                float w3 = d * (float)(sc[4 + is] * q3);
-                float w4 = d * (float)(sc[6 + is] * q4);
-                int e0 = half * 128;
-                #pragma unroll
-                for (int t = 0; t < MVT; t++) {
-                    const float *xs = xsm[t];
-                    s[t] += w1 * xs[e0 + lane]      + w2 * xs[e0 + lane + 32] +
-                            w3 * xs[e0 + lane + 64] + w4 * xs[e0 + lane + 96];
-                }
-            }
-        }
-        __syncthreads();
-    }
-    if (row < (unsigned)a.n_out) {
-        for (int t = 0; t < a.batch; t++) {
-            float r = warp_sum(s[t]);
-            if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r;
-        }
-    }
-}
-
-// Q3_K prefill GEMM: same shared-memory x staging as k_gemm_q4_K, with 8
-// CONTIGUOUS elements per lane. That split keeps every per-element input
-// constant across the lane's strip: elements el..el+7 share one 16-element
-// scale group (el is a multiple of 8), one 2-bit shift (el's 32-quarter),
-// one hmask bit and one qs quarter — so the inner loop is one scale mul and
-// eight mask/shift ops. Reordered k-reduction vs k_mv_q3_K_b -> token
-// identity verified empirically, the k_gemm_q6_K precedent. This kernel is
-// what retires the measured Q3_K prefill pathology (6.7-15.5x slower than
-// Q4_K on the full card): batch>1 previously fell back to per-token matvec
-// because f_gemm[T_Q3_K] did not exist.
-extern "C" __global__ void k_gemm_q3_K(MV_PARAMS) {
-    __shared__ float xsm[MVT][256];
-    unsigned warp = threadIdx.x >> 5;
-    unsigned lane = threadIdx.x & 31;
-    unsigned row  = blockIdx.x * GEMM_WARPS + warp;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off +
-                      (ulong64)(row < (unsigned)a.n_out ? row : 0) * nb * 110;
-    float s[MVT] = {0};
-    int el    = (int)lane * 8;          // this lane's 8 contiguous elements
-    int half  = el >> 7;                // the mv loop's n = 0 / n = 128 halves
-    int shift = ((el & 127) >> 5) * 2;  // 2-bit group within the half
-    int idx   = el & 31;                // byte index within the quarter
-    uchar mbit = (uchar)(1 << (half * 4 + (shift >> 1)));
-    int sidx  = el >> 4;                // 16-element scale group
-
-    for (int b = 0; b < nb; b++) {
-        const uchar *blk = rw + (ulong64)b * 110;
-        int base_e = b * 256;
-        #pragma unroll
-        for (int t = 0; t < MVT; t++) {
-            const float *xg = x + (ulong64)t * a.xs + base_e;
-            for (int e = threadIdx.x; e < 256; e += blockDim.x) xsm[t][e] = xg[e];
-        }
-        __syncthreads();
-        if (row < (unsigned)a.n_out) {
-            Q3K_UNPACK_SCALES;
-            float dl = d_all * (q3scales[sidx] - 32);
-            const uchar *q = qbase + half * 32;
-            #pragma unroll
-            for (int k = 0; k < 8; k++) {
-                int i = idx + k;
-                float w = dl * (float)(((q[i] >> shift) & 3) -
-                                       ((hm[i] & mbit) ? 0 : 4));
-                #pragma unroll
-                for (int t = 0; t < MVT; t++) s[t] += w * xsm[t][el + k];
-            }
-        }
-        __syncthreads();
-    }
-    if (row < (unsigned)a.n_out) {
-        for (int t = 0; t < a.batch; t++) {
-            float r = warp_sum(s[t]);
-            if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r;
-        }
-    }
 }
 
 
@@ -2459,23 +1901,6 @@ extern "C" __global__ void k_mv_iq4_nl(MV_PARAMS) {
     }
 }
 
-extern "C" __global__ void k_mv_iq4_nl_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 18;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 18;
-        float d = f16f(blk);
-        const uchar *q = blk + 2;
-        ulong64 base = (ulong64)b * 32;
-        for (int j = 0; j < 16; j++) {
-            MV_FMA(d * (float)kv_iq4[q[j] & 0xF], base + j);
-            MV_FMA(d * (float)kv_iq4[q[j] >> 4],  base + j + 16);
-        }
-    }
-    MV_TAIL_B;
-}
-
 // IQ4_XS decode GEMV, same geometry. Block 136 bytes: d f16, scales_h u16,
 // scales_l[4], qs[128]. Sub-block ib (32 values) reads qs[16*ib + j]: low
 // nibble -> value j, high nibble -> value j+16, through the IQ4_NL table;
@@ -2516,30 +1941,6 @@ extern "C" __global__ void k_gemv_iq4_xs(MV_PARAMS) {
 }
 
 // k_mv_iq4_xs: lane-level since 2026-10-08, defined after the lane dots below
-
-extern "C" __global__ void k_mv_iq4_xs_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 136;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 136;
-        float d = f16f(blk);
-        unsigned sh = (unsigned)blk[2] | ((unsigned)blk[3] << 8);
-        const uchar *sl = blk + 4;
-        const uchar *q  = blk + 8;
-        ulong64 base = (ulong64)b * 256;
-        for (int ib = 0; ib < 8; ib++) {
-            int ls = ((sl[ib / 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4);
-            float dl = d * (ls - 32);
-            for (int j = 0; j < 16; j++) {
-                MV_FMA(dl * (float)kv_iq4[q[j] & 0xF], base + ib * 32 + j);
-                MV_FMA(dl * (float)kv_iq4[q[j] >> 4],  base + ib * 32 + j + 16);
-            }
-            q += 16;
-        }
-    }
-    MV_TAIL_B;
-}
 
 #include "kernels_iq_grids.cuh"
 
@@ -2905,57 +2306,11 @@ extern "C" __global__ void k_mv_iq2_xxs(MV_PARAMS) {
     IQ_LANE_MV1(iq2xxs_lane_n, 66)
 }
 
-extern "C" __global__ void k_mv_iq2_xxs_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 66;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 66;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2;
-        ulong64 base = (ulong64)b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 8) {
-            unsigned aux = iq_ld32a2(qs + 4);
-            float db = d * (0.5f + (float)(aux >> 28)) * 0.25f;
-            for (int l = 0; l < 4; l++, base += 8) {
-                ulong64 g = kiq2xxs_grid[qs[l]];
-                unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
-                for (int j = 0; j < 8; j++) MV_FMA(db * iq_w8(g, j, signs), base + j);
-            }
-        }
-    }
-    MV_TAIL_B;
-}
-
 // IQ2_XS: 74-byte block, d (fp16) + 32 16-bit words (9-bit grid index, 7-bit
 // sign index) + 8 scale bytes (two 4-bit scales per sub-block of 32, one per
 // 16 weights) decoded as (0.5 + scale) / 4.
 extern "C" __global__ void k_mv_iq2_xs(MV_PARAMS) {
     IQ_LANE_MV1(iq2xs_lane_n, 74)
-}
-
-extern "C" __global__ void k_mv_iq2_xs_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 74;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 74;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *sc = blk + 66;
-        ulong64 base = (ulong64)b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 8) {
-            float db0 = d * (0.5f + (float)(sc[ib] & 0xF)) * 0.25f;
-            float db1 = d * (0.5f + (float)(sc[ib] >> 4)) * 0.25f;
-            for (int l = 0; l < 4; l++, base += 8) {
-                unsigned q = iq_ld16(qs + 2 * l);
-                ulong64 g = kiq2xs_grid[q & 511];
-                unsigned signs = iq_signs7(q >> 9);
-                float db = l < 2 ? db0 : db1;
-                for (int j = 0; j < 8; j++) MV_FMA(db * iq_w8(g, j, signs), base + j);
-            }
-        }
-    }
-    MV_TAIL_B;
 }
 
 // IQ2_S: 82-byte block, d (fp16) + 32 low index bytes + 32 sign bytes (one
@@ -2965,61 +2320,11 @@ extern "C" __global__ void k_mv_iq2_s(MV_PARAMS) {
     IQ_LANE_MV1(iq2s_lane_n, 82)
 }
 
-extern "C" __global__ void k_mv_iq2_s_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 82;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 82;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *sg = blk + 34, *qh = blk + 66, *sc = blk + 74;
-        ulong64 base = (ulong64)b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 4, sg += 4) {
-            float db0 = d * (0.5f + (float)(sc[ib] & 0xF)) * 0.25f;
-            float db1 = d * (0.5f + (float)(sc[ib] >> 4)) * 0.25f;
-            unsigned hb = qh[ib];
-            for (int l = 0; l < 4; l++, base += 8) {
-                ulong64 g = kiq2s_grid[qs[l] | ((hb << (8 - 2 * l)) & 0x300)];
-                unsigned signs = sg[l];
-                float db = l < 2 ? db0 : db1;
-                for (int j = 0; j < 8; j++) MV_FMA(db * iq_w8(g, j, signs), base + j);
-            }
-        }
-    }
-    MV_TAIL_B;
-}
-
 // IQ3_XXS: 98-byte block, d (fp16) + 64 grid indices (four magnitudes each)
 // + 8 words of four 7-bit sign indices (bits 0-27) and a 4-bit scale (bits
 // 28-31) decoded as (0.5 + scale) / 2.
 extern "C" __global__ void k_mv_iq3_xxs(MV_PARAMS) {
     IQ_LANE_MV1(iq3xxs_lane_n, 98)
-}
-
-extern "C" __global__ void k_mv_iq3_xxs_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 98;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 98;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *ss = blk + 66;
-        ulong64 base = (ulong64)b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 8) {
-            unsigned aux = iq_ld32a2(ss + 4 * ib);
-            float db = d * (0.5f + (float)(aux >> 28)) * 0.5f;
-            for (int l = 0; l < 4; l++, base += 8) {
-                unsigned g1 = kiq3xxs_grid[qs[2 * l + 0]];
-                unsigned g2 = kiq3xxs_grid[qs[2 * l + 1]];
-                unsigned signs = iq_signs7((aux >> (7 * l)) & 127);
-                for (int j = 0; j < 4; j++) {
-                    MV_FMA(db * iq_w4(g1, j, signs), base + j);
-                    MV_FMA(db * iq_w4(g2, j, signs >> 4), base + j + 4);
-                }
-            }
-        }
-    }
-    MV_TAIL_B;
 }
 
 // IQ3_S: 110-byte block, d (fp16) + 64 grid indices (low 8 bits) + 8 bytes
@@ -3028,34 +2333,6 @@ extern "C" __global__ void k_mv_iq3_xxs_b(MV_PARAMS) {
 // sub-block of 32, decoded as 1 + 2*scale).
 extern "C" __global__ void k_mv_iq3_s(MV_PARAMS) {
     IQ_LANE_MV1(iq3s_lane_n, 110)
-}
-
-extern "C" __global__ void k_mv_iq3_s_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 110;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 110;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *qh = blk + 66, *sg = blk + 74, *sc = blk + 106;
-        ulong64 base = (ulong64)b * 256;
-        for (int pair = 0; pair < 4; pair++, qh += 2) {
-            for (int h = 0; h < 2; h++, qs += 8, sg += 4) {
-                float db = d * (float)(1 + 2 * (h ? (sc[pair] >> 4) : (sc[pair] & 0xF)));
-                unsigned hb = qh[h];
-                for (int l = 0; l < 4; l++, base += 8) {
-                    unsigned g1 = kiq3s_grid[qs[2 * l + 0] | ((hb << (8 - 2 * l)) & 256)];
-                    unsigned g2 = kiq3s_grid[qs[2 * l + 1] | ((hb << (7 - 2 * l)) & 256)];
-                    unsigned signs = sg[l];
-                    for (int j = 0; j < 4; j++) {
-                        MV_FMA(db * iq_w4(g1, j, signs), base + j);
-                        MV_FMA(db * iq_w4(g2, j, signs >> 4), base + j + 4);
-                    }
-                }
-            }
-        }
-    }
-    MV_TAIL_B;
 }
 
 // IQ1_S: 50-byte block, d (fp16) + 32 low index bytes + 8 16-bit words per
@@ -3096,28 +2373,6 @@ extern "C" __global__ void k_mv_iq1_s(MV_PARAMS) {
         s = warp_sum(s);
         if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
     }
-}
-
-extern "C" __global__ void k_mv_iq1_s_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 50;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 50;
-        float d = f16f(blk);
-        const uchar *qs = blk + 2, *qh = blk + 34;
-        ulong64 base = (ulong64)b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 4) {
-            unsigned h = iq_ld16(qh + 2 * ib);
-            float dl = d * (float)(2 * ((h >> 12) & 7) + 1);
-            float delta = h & 0x8000 ? -IQ1_DELTA : IQ1_DELTA;
-            for (int l = 0; l < 4; l++, base += 8) {
-                ulong64 g = kiq1s_grid[qs[l] | (((h >> (3 * l)) & 7) << 8)];
-                for (int j = 0; j < 8; j++) MV_FMA(dl * iq1_w(g, j, delta), base + j);
-            }
-        }
-    }
-    MV_TAIL_B;
 }
 
 // IQ1_M: 56-byte block with no leading fp16: 32 low index bytes + 16 bytes
@@ -3165,35 +2420,6 @@ extern "C" __global__ void k_mv_iq1_m(MV_PARAMS) {
         s = warp_sum(s);
         if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
     }
-}
-
-extern "C" __global__ void k_mv_iq1_m_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 256;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 56;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 56;
-        const uchar *qs = blk, *qh = blk + 32, *scb = blk + 48;
-        unsigned sc0 = iq_ld16(scb), sc1 = iq_ld16(scb + 2), sc2 = iq_ld16(scb + 4), sc3 = iq_ld16(scb + 6);
-        unsigned short sd = (sc0 >> 12) | ((sc1 >> 8) & 0x00f0) |
-                            ((sc2 >> 4) & 0x0f00) | (sc3 & 0xf000);
-        float d = __half2float(__ushort_as_half(sd));
-        ulong64 base = (ulong64)b * 256;
-        for (int ib = 0; ib < 8; ib++, qs += 4, qh += 2) {
-            unsigned sw = iq_ld16(scb + 2 * (ib >> 1)) >> (6 * (ib & 1));
-            float dl0 = d * (float)(2 * (sw & 7) + 1);
-            float dl1 = d * (float)(2 * ((sw >> 3) & 7) + 1);
-            for (int l = 0; l < 4; l++, base += 8) {
-                unsigned hb = qh[l >> 1];
-                unsigned idx = qs[l] | ((hb << ((l & 1) ? 4 : 8)) & 0x700);
-                float delta = hb & ((l & 1) ? 0x80 : 0x08) ? -IQ1_DELTA : IQ1_DELTA;
-                ulong64 g = kiq1s_grid[idx];
-                float dl = l < 2 ? dl0 : dl1;
-                for (int j = 0; j < 8; j++) MV_FMA(dl * iq1_w(g, j, delta), base + j);
-            }
-        }
-    }
-    MV_TAIL_B;
 }
 
 // ------------------------------------ tensor-core GEMMs for the codebook types
@@ -3277,23 +2503,6 @@ extern "C" __global__ void k_mv_mxfp4(MV_PARAMS) {
     }
 }
 
-extern "C" __global__ void k_mv_mxfp4_b(MV_PARAMS) {
-    MV_HEAD_B;
-    int nb = a.n_in / 32;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 17;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 17;
-        float d = ldexpf(1.0f, (int)blk[0] - 127);
-        const uchar *q = blk + 1;
-        ulong64 base = (ulong64)b * 32;
-        for (int j = 0; j < 16; j++) {
-            MV_FMA(d * kv_mxfp4[q[j] & 0xF], base + j);
-            MV_FMA(d * kv_mxfp4[q[j] >> 4],  base + j + 16);
-        }
-    }
-    MV_TAIL_B;
-}
-
 // NVFP4 (NVIDIA ModelOpt / llama.cpp type 40): a 36-byte super-block of four
 // 16-element sub-blocks, one UE4M3 scale byte each (d[4]), then 32 packed
 // E2M1 nibbles over the same signed codebook as MXFP4. Within sub-block s,
@@ -3348,28 +2557,6 @@ extern "C" __global__ void k_mv_nvfp4(MV_PARAMS, float scale) {
     if (live) {
         s = warp_sum(s) * scale;
         if (lane == 0) y[row] = a.has_bias ? s + bias[row] : s;
-    }
-}
-
-extern "C" __global__ void k_mv_nvfp4_b(MV_PARAMS, float scale) {
-    MV_HEAD_B;
-    int nb = a.n_in / 64;
-    const uchar *rw = wb + a.w_off + (ulong64)row * nb * 36;
-    for (int b = lane; b < nb; b += 32) {
-        const uchar *blk = rw + (ulong64)b * 36;
-        for (int sub = 0; sub < 4; sub++) {
-            float d = ue4m3f(blk[sub]);
-            const uchar *q = blk + 4 + sub * 8;
-            ulong64 base = (ulong64)b * 64 + sub * 16;
-            for (int j = 0; j < 8; j++) {
-                MV_FMA(d * kv_mxfp4[q[j] & 0xF], base + j);
-                MV_FMA(d * kv_mxfp4[q[j] >> 4],  base + j + 8);
-            }
-        }
-    }
-    for (int t = 0; t < a.batch; t++) {
-        float r = warp_sum(s[t]) * scale;
-        if (lane == 0) y[(ulong64)t * a.ys + row] = a.has_bias ? r + bias[row] : r;
     }
 }
 
@@ -4331,9 +3518,9 @@ extern "C" __global__ void k_attn_dec_seq(const float *q, const ulong64 *kcp,
 // NC is the compile-time column count, always <= MVB, and the buffers stay
 // MVB columns wide so the strides are unchanged.
 //
-// Q4_K and Q5_K also have a width-8 twin already in the tree — k_gemm_q4_K and
-// k_gemm_q5_K were built on this same lane geometry for prefill — but they are
-// left alone and re-derived here so the prefill path keeps the kernels it was
+// Q4_K and Q5_K had a width-8 kernel on this same lane geometry, the scalar
+// prefill GEMMs (retired in R18.8.11), but they were left alone and
+// re-derived here so the prefill path kept the kernels it was
 // verified with, and so every width comes from one source.
 //
 // DERIVE EACH BODY FROM THE CURRENT k_gemv_* SOURCE, NEVER FROM THE COMMENT
@@ -4354,7 +3541,8 @@ extern "C" __global__ void k_attn_dec_seq(const float *q, const ulong64 *kcp,
 
 // ---- Q8_0: k_gemv_q8_0 v2 — lane l takes elements [(l&7)*4, +4) of block
 // b0+(l>>3), four blocks per trip, then v1's element-per-lane tail. x staged.
-// (k_gemm_q8_0 maps a lane to a whole block instead, so it is not a twin.)
+// (The retired scalar Q8_0 prefill GEMM mapped a lane to a whole block
+// instead, so it was not a twin.)
 // Blocks are staged SMPAD floats apart, not 32: with a 32-float stride the
 // four block-groups of a warp land on the same eight banks (4-way conflict);
 // the odd stride spreads them across all 32.
@@ -4909,8 +4097,9 @@ extern "C" __global__ void NAME(MV_PARAMS) {                                   \
 // TWO running accumulators (even blocks into s0, odd into s1, s0 + s1 at the
 // end) because v2 keeps two blocks in flight. Folding both into one running
 // sum, as this macro used to, is a different reduction tree.
-// (k_gemm_q6_K premultiplies d into each weight instead, which agrees in exact
-// arithmetic but not necessarily in floating point, so it is not a twin.)
+// (The retired scalar Q6_K prefill GEMM premultiplied d into each weight
+// instead, which agrees in exact arithmetic but not necessarily in floating
+// point, so it was not a twin.)
 // KQ_DBR rows a warp and KQ_DBW warps a block, as the Q4_K twins above
 // (2026-10-31, R3.3.4): x double-buffered in shared memory (a plain layout:
 // a lane's reads of each half stride 32 floats, so a warp's are conflict-free),
@@ -6792,7 +5981,8 @@ extern "C" __global__ void k_xielu(float *x, int n, float an, float ap,
 // --------------------------------------------- tensor-core Q6_K prefill GEMM
 //
 // The 2026-08-08 profile said prefill is 42.7% k_gemm_q4_K_tc, 30.2% k_attn
-// and 26.0% k_gemm_q6_K -- and q6_K had NO tensor-core variant at all, so
+// and 26.0% the scalar Q6_K prefill GEMM -- and q6_K had NO tensor-core
+// variant at all, so
 // `attn_v` and `ffn_down` in every Q4_K_M file (40% of GEMM calls) ran the
 // scalar path.
 //
@@ -6800,7 +5990,8 @@ extern "C" __global__ void k_xielu(float *x, int n, float an, float ap,
 // fp16 weight tile once, its four warps' MMAs share it, and the epilogue tile
 // aliases the weight tile to stay under the 48 KB shared cap.
 //
-// Only the unpacking differs, and it is taken verbatim from k_gemm_q6_K so the
+// Only the unpacking differs, and it is taken verbatim from the scalar Q6_K
+// prefill GEMM (retired in R18.8.11) so the
 // arithmetic matches the scalar path element for element -- including the
 // INTEGER `sc * q` before the float multiply:
 //
@@ -6815,7 +6006,8 @@ extern "C" __global__ void k_xielu(float *x, int n, float an, float ap,
 // A thread stages 64 consecutive K of one row, so sseg 0 covers the first two
 // quarters of the 128-K half and sseg 1 the last two.
 //
-// Not bit-identical to k_gemm_q6_K by construction (the weight is dequantized
+// Not bit-identical to the scalar Q6_K prefill GEMM by construction (the
+// weight is dequantized
 // before the multiply and the sum is reassociated into 8-element matrix
 // steps), exactly like the q4_K tensor-core path, so it answers to the same
 // tolerance gate.
