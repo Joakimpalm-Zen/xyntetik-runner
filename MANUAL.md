@@ -2709,6 +2709,24 @@ instance instead.
 | `--draft-k N` | Draft tokens per speculative round, `1` to `15`, for every draft source (a round verifies the drafts plus the correction, at most 16 rows). The default is `4`, except on CUDA with every layer on the device, where it is `7` for `--draft lookup` and `2` for `--draft mtp`. A partial offload keeps `4`, since its CPU layers pay most of a step for each verify row. The startup line prints the width a run takes. Measured on an RTX 3070 (2026-11-03, 256 greedy tokens): lookup on an in-context edit reads 2.86x plain at 7 against 2.43x at 4, since a verify row costs about 0.2 of a step up to eight rows. Qwen3.5-4B's NextN head reads 1.13x on code and on tool calls at 2 (tool reaches 1.20x at 3). On prose the head loses at every width: 0.88x plain at 2, and 0.68x at the old default of 4. Leave it off for prose. A width that follows each turn's acceptance was measured against these fixed widths and lost (0.97x), so there is no automatic width ([report](docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03/README.md)). All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
 | `--draft-required` | Fail instead of falling back to plain decoding when a requested draft model is refused. [Details](#cli-draft-required). |
 
+<a id="metal-kv-grows"></a>
+#### The KV cache on the Apple GPU grows with the context
+
+On the Apple GPU the KV cache is not held whole from load. It lives in host memory, and the GPU maps
+the rows a context has used, 256 at a time, as the context fills. A short prompt at `-c 8192` holds
+one step of rows, not 8,192, so a model whose whole-context cache would not fit beside its weights
+still runs on the GPU: Phi-3.5-mini Q4_K_M at `-c 8192` on an 8 GB Mac decodes at 17 tokens a second
+on the GPU, where it used to be refused and run on the CPU at 7.6. The load line says so:
+`gpu: the KV cache grows with the context, 256 rows at a time (256 of 8192 mapped); a grow that does
+not fit in RAM continues on the CPU`, and `--bench-json` gives the rows mapped (`route.kv_rows`).
+
+Each step pauses the next token while the new rows are mapped: about 8 ms at 2,048 rows and 23 to
+41 ms at 8,192 rows for Qwen3-4B Q4_K_M, against a decode token of about 182 ms at that context
+(measured on one 8 GB Apple silicon Mac). Each step also checks the RAM available and the Metal
+working set. A step that would not fit does not fail the request: the run continues on the CPU for
+the rest of the run, on the same rows, which stay in host memory, and stderr and the route's
+`fallback` say why. A partial split is admitted on its weights plus the first step of rows.
+
 <a id="cli-reserve-vram"></a>
 #### `--reserve vram=P`
 
