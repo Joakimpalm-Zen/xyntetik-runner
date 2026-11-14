@@ -3302,6 +3302,7 @@ test-metal:
 	$(MAKE) --no-print-directory test-metal-kquant
 	$(MAKE) --no-print-directory test-metal-decode-only
 	$(MAKE) --no-print-directory test-metal-split
+	$(MAKE) --no-print-directory test-metal-kv-grow PYTHON="$(PYTHON)"
 	$(MAKE) --no-print-directory test-metal-bind-failure
 	$(MAKE) --no-print-directory test-metal-multibuf
 	$(MAKE) --no-print-directory test-metal-moe-em
@@ -3446,7 +3447,8 @@ test-gates-core test-gates-batch test-cuda-%: export RUNNER_REQUIRE_GRAPH_CAPTUR
 # named contexts, sessions, and the snapshot of an agent's preamble) run again
 # with the Metal KV cache growing 16 rows at a time, so they cross many grows,
 # beside the grow tests themselves. RUNNER_TEST_METAL_KV_STEP is the gate arm;
-# on a host without Metal it changes nothing, so the target says NOT RUN there.
+# the Metal lane (test-metal) runs it, and on a host without Metal it changes
+# nothing, so the target says NOT RUN there.
 .PHONY: test-metal-kv-grow
 test-metal-kv-grow: runner test.gguf test-python-deps
 ifeq ($(UNAME_S),Darwin)
@@ -3457,7 +3459,7 @@ else
 	@echo "test-metal-kv-grow: NOT RUN, the Metal backend's growing KV cache (this host has no Metal)"
 endif
 
-test-gates-core: test-python-deps test-metal-kv-grow $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
+test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \

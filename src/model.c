@@ -15767,35 +15767,34 @@ static bool gpu_fallback_fails(void) {
 // produces correct output at a fraction of the speed and no gate can see it
 // (the fallback IS the CPU oracle) — the 69b8085 MoE slice-nbytes defect hid
 // exactly here.
-static void gpu_runtime_failure(model_t *m) {
+// The one place a run hands the model from the GPU to the CPU, so that
+// RUNNER_GPU_FALLBACK=fail sees every release (tests/test_ci_contracts.py holds
+// one gpu_disable here): a runtime failure, or (R3.68) a KV grow that does not
+// fit, which is planned and so not marked as a lost device.
+static void gpu_release_to_cpu(model_t *m, const char *why, const char *then, bool lost) {
     if (gpu_fallback_fails()) {
-        fprintf(stderr, "gpu: forward failed at runtime; RUNNER_GPU_FALLBACK=fail "
-                "ends the process (exit status 3)\n");
+        fprintf(stderr, "gpu: %s; RUNNER_GPU_FALLBACK=fail "
+                "ends the process (exit status 3)\n", why);
         fflush(NULL);
         _Exit(3);
     }
-    fprintf(stderr, "gpu: forward failed at runtime — releasing the "
-            "backend, continuing on CPU\n");
-    snprintf(m->route_fallback, sizeof m->route_fallback,
-             "forward failed at runtime");
-    m->gpu_lost = true;
+    fprintf(stderr, "gpu: %s%s\n", why, then);
+    snprintf(m->route_fallback, sizeof m->route_fallback, "%s", why);
+    if (lost) m->gpu_lost = true;
     gpu_disable(m);
+}
+
+static void gpu_runtime_failure(model_t *m) {
+    gpu_release_to_cpu(m, "forward failed at runtime",
+                       " — releasing the backend, continuing on CPU", true);
 }
 
 // R3.68: a grow of the device's KV rows that does not fit. The rows already
 // written live in host memory (Metal maps them, it does not own them), so the
 // CPU continues on them; this is a planned fallback, named, not a failure.
 static void gpu_kv_fallback(model_t *m, const char *why) {
-    if (gpu_fallback_fails()) {
-        fprintf(stderr, "gpu: %s; RUNNER_GPU_FALLBACK=fail ends the process (exit status 3)\n",
-                why);
-        fflush(NULL);
-        _Exit(3);
-    }
-    fprintf(stderr, "gpu: %s: continuing on the CPU, which reads the same rows and pages "
-            "the rest in as it is used\n", why);
-    snprintf(m->route_fallback, sizeof m->route_fallback, "%s", why);
-    gpu_disable(m);
+    gpu_release_to_cpu(m, why, ": continuing on the CPU, which reads the same rows and pages "
+                       "the rest in as it is used", false);
 }
 
 // The sequence a device-folded recurrent model was fed (model.h, seq): this
