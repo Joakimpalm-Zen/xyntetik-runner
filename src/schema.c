@@ -3835,28 +3835,50 @@ static bool refx_needed(const jv *v) {
 // here either (codex's read of PR F: an unused $defs entry with an $id over a
 // $ref compiled before this check and must still compile).
 
-// the id or $id by which a schema itself moves the base, or NULL. A value that
-// is only a fragment ("#a", draft-06's plain-name fragment) or empty names a
-// place and leaves the base URI where it is, so it moves nothing.
-static const char *refx_own_base(const jv *s) {
-    for (int i = 0; s && s->type == J_OBJ && i < s->n; i++)
-        if ((!strcmp(s->keys[i], "id") || !strcmp(s->keys[i], "$id")) &&
-            s->items[i]->type == J_STR && s->items[i]->str[0] && s->items[i]->str[0] != '#')
-            return s->keys[i];
-    return NULL;
-}
-
 // Every schema node of the document with the base keyword in force at it (its
 // own, or its nearest non-root ancestor's), read from the document's own
 // structure: a definition or property NAMED "id" is a name, not the keyword.
 // A $ref's target is looked up here, so its base is where it is written, not
 // where it is reached from.
 typedef struct { const jv *node; const char *base; bool seen; } refx_lex;
-typedef struct { refx_lex *v; int n, cap; bool oom; } refx_lexmap;
+typedef struct { refx_lex *v; int n, cap; bool oom; bool root_absolute; } refx_lexmap;
+
+// an absolute URI: a scheme (a letter, then letters, digits, + - .) and a colon
+static bool refx_uri_absolute(const char *u) {
+    if (!((*u >= 'a' && *u <= 'z') || (*u >= 'A' && *u <= 'Z'))) return false;
+    for (const char *q = u + 1; *q; q++) {
+        if (*q == ':') return true;
+        if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+              (*q >= '0' && *q <= '9') || *q == '+' || *q == '-' || *q == '.'))
+            return false;
+    }
+    return false;
+}
+
+// The id or $id by which a schema itself moves the base, or NULL. A value that
+// is only a fragment ("#a", draft-06's plain-name fragment) or empty names a
+// place and leaves the base URI where it is, so it moves nothing.
+// A deliberate leniency (fable, 2026-11-14): under a root whose $id is an
+// absolute URI, a nested id that is a path ("/properties/a") is read as
+// moving nothing either. Those are the labels older generators wrote, their
+// authors meant the root's definitions, and the strict reading resolves a "#/definitions/..." below
+// them against a document that does not exist. The base always compiled
+// them against the root; this keeps that. A nested absolute id, or a path id
+// with no absolute root, still moves the base.
+static const char *refx_own_base(const refx_lexmap *mp, const jv *s) {
+    for (int i = 0; s && s->type == J_OBJ && i < s->n; i++) {
+        if (strcmp(s->keys[i], "id") && strcmp(s->keys[i], "$id")) continue;
+        const jv *v = s->items[i];
+        if (v->type != J_STR || !v->str[0] || v->str[0] == '#') continue;
+        if (mp->root_absolute && v->str[0] == '/' && v->str[1] != '/') continue;
+        return s->keys[i];
+    }
+    return NULL;
+}
 
 static void refx_lex_walk(refx_lexmap *mp, const jv *s, const char *base, bool root, int depth) {
     if (!s || s->type != J_OBJ || depth > REFX_DEPTH * 4 || mp->oom) return;
-    const char *own = root ? NULL : refx_own_base(s);
+    const char *own = root ? NULL : refx_own_base(mp, s);
     if (own) base = own;
     if (mp->n == mp->cap) {
         int cap = mp->cap ? mp->cap * 2 : 64;
@@ -3919,7 +3941,7 @@ static bool refx_reach(jv *root, refx_lexmap *mp, const jv *s, const char *base,
             else n = 1;
         }
         for (int j = 0; j < n; j++) {
-            const char *own = refx_own_base(kids[j]);
+            const char *own = refx_own_base(mp, kids[j]);
             if (!refx_reach(root, mp, kids[j], own ? own : base, depth + 1, err, errcap))
                 return false;
         }
@@ -3929,6 +3951,10 @@ static bool refx_reach(jv *root, refx_lexmap *mp, const jv *s, const char *base,
 
 static bool refx_nested_base(jv *root, char *err, int errcap) {
     refx_lexmap mp = {0};
+    for (int i = 0; root && root->type == J_OBJ && i < root->n; i++)
+        if ((!strcmp(root->keys[i], "id") || !strcmp(root->keys[i], "$id")) &&
+            root->items[i]->type == J_STR && refx_uri_absolute(root->items[i]->str))
+            mp.root_absolute = true;
     refx_lex_walk(&mp, root, NULL, true, 0);
     if (mp.oom) {
         free(mp.v);
