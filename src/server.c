@@ -2482,6 +2482,17 @@ static void send_metrics(sock_t fd) {
     char buf[8192];
     mbuf b = { buf, sizeof(buf), 0, false };
 
+    unsigned long long rp_h, rp_x, rp_c;
+    if (completion_repeat_stats(&rp_h, &rp_x, &rp_c)) {
+        metric_u64(&b, "runner_repeat_requests_hashed_total", "counter",
+                   "Requests fingerprinted by RUNNER_REPEAT_COUNT (model, rendered prompt, "
+                   "sampling settings, seed, token cap; no content kept).", rp_h);
+        metric_u64(&b, "runner_repeat_requests_exact_total", "counter",
+                   "Fingerprinted requests the server had seen before, exactly.", rp_x);
+        metric_u64(&b, "runner_repeat_requests_cacheable_total", "counter",
+                   "Exact repeats that were greedy or seeded, the ones an answer cache could serve.",
+                   rp_c);
+    }
     metric_u64(&b, "runner_requests_total", "counter",
                "Inference requests admitted since start. Management and "
                "telemetry routes are not counted.",

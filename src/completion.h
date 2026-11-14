@@ -48,4 +48,9 @@ jv  *request_schema(jv *req);
 bool completion_replay_tools(engine *e, jv *shape, jv *final,
                               char *why, size_t cap);
 
+// R3.66: the opt-in exact-repeat counts (RUNNER_REPEAT_COUNT=1); false, and
+// the counts zero, while the switch is off.
+bool completion_repeat_stats(unsigned long long *hashed, unsigned long long *repeats,
+                             unsigned long long *cacheable);
+
 #endif // RUNNER_COMPLETION_H
