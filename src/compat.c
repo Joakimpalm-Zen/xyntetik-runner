@@ -730,6 +730,11 @@ bool plat_mlock(void *p, size_t size) {
     if (refuse < 0) {
         const char *e = getenv("RUNNER_TEST_MLOCK_REFUSE");
         refuse = e && *e ? atol(e) : 0;
+        // a refusal takes the real one's path (false, errno EAGAIN, the
+        // caller's own warning) and never reports a lock; this note says why
+        if (refuse > 0)
+            fprintf(stderr, "note: RUNNER_TEST_MLOCK_REFUSE is set (a test seam): the next %ld "
+                    "memory locks are refused as the OS refuses one under pressure\n", (long)refuse);
     }
     if (refuse > 0) {
         refuse--;

@@ -119,17 +119,64 @@ static model_params mlock_params(bool lock) {
     return p;
 }
 
-static void test_lifecycle(const char *path) {
+// R6.73: what one lifecycle attempt found. A check that a lock or a probe
+// must pass is a REFUSAL when the machine itself cannot wire that size under
+// this process's own limit right now (the OS short of memory it can make
+// resident), and the attempt stops there, since what follows would only
+// repeat it. Any other failed check is a DEFECT: the engine locked the
+// wrong pages, lost a shared lock or unlocked early.
+enum { LC_RAN, LC_NOT_RUN };
+static int g_refused, g_defect;
+static char g_not_run[160];
+static struct rlimit g_old, g_lim;
+
+// Whether the OS refuses `n` bytes under the process's own (original) limit.
+static int refused_now(size_t n) {
+    setrlimit(RLIMIT_MEMLOCK, &g_old);
+    int refused = can_lock(n) != 1;
+    setrlimit(RLIMIT_MEMLOCK, &g_lim);
+    return refused;
+}
+
+// A check whose failure is a refusal when the machine cannot wire `n` now.
+static int ck_wire(int cond, size_t n, const char *what) {
+    if (cond) { printf("ok: %s\n", what); return 1; }
+    g_fail = 1;
+    if (refused_now(n)) {
+        g_refused = 1;
+        fprintf(stderr, "FAIL: %s: the OS refused to wire %zu bytes under this process's own "
+                "limit (it is short of wireable memory)\n", what, n);
+    } else {
+        g_defect = 1;
+        fprintf(stderr, "FAIL: %s\n", what);
+    }
+    return 0;
+}
+
+// A check no refusal can explain.
+static void ck_defect(int cond, const char *what) {
+    ck(cond, what);
+    if (!cond) g_defect = 1;
+}
+
+static int test_lifecycle(const char *path) {
+    static int attempts;
+    g_refused = g_defect = 0;
+    g_not_run[0] = 0;
+    // TEST_MLOCK_DEFECT_ONCE (this binary's own, for the gate): a defect in the
+    // first attempt only, which must fail the run, never be retried away
+    if (++attempts == 1 && getenv("TEST_MLOCK_DEFECT_ONCE"))
+        ck_defect(0, "injected defect (TEST_MLOCK_DEFECT_ONCE)");
     size_t page = plat_page_size();
     gguf_file g;
-    if (!page || !gguf_open(&g, path)) { ck(0, "open the E-series fixture"); return; }
+    if (!page || !gguf_open(&g, path)) { ck_defect(0, "open the E-series fixture"); return LC_RAN; }
     gguf_tensor *t = gguf_find_tensor(&g, "per_layer_token_embd.weight");
     size_t size;
     const uint8_t *map = gguf_map_part(&g, 0, &size);
     if (!t || !map || gguf_map_count(&g) != 1) {
-        ck(0, "fixture has a per-layer token table in one mapping");
+        ck_defect(0, "fixture has a per-layer token table in one mapping");
         gguf_close(&g);
-        return;
+        return LC_RAN;
     }
     // The hot pages by hand: up to the table's first whole page, and from
     // its last whole page to the end of the mapping.
@@ -140,73 +187,85 @@ static void test_lifecycle(const char *path) {
     gguf_close(&g);
     printf("note: page %zu, hot %zu of %zu bytes (head %zu, tail %zu)\n",
            page, hot, whole, head, tail);
-    ck(tail > page && whole - hot > 4 * page,
-       "fixture: hot pages on both sides of a table of several pages");
+    ck_defect(tail > page && whole - hot > 4 * page,
+              "fixture: hot pages on both sides of a table of several pages");
 
-    struct rlimit old;
-    if (getrlimit(RLIMIT_MEMLOCK, &old) != 0) { ck(0, "getrlimit"); return; }
+    if (getrlimit(RLIMIT_MEMLOCK, &g_old) != 0) { ck_defect(0, "getrlimit"); return LC_RAN; }
     const size_t slack = 4 * page;
-    if (old.rlim_max != RLIM_INFINITY && old.rlim_max < hot + slack) {
-        printf("skip: RLIMIT_MEMLOCK hard limit %llu is below the fixture's hot set\n",
-               (unsigned long long)old.rlim_max);
-        return;
+    if (g_old.rlim_max != RLIM_INFINITY && g_old.rlim_max < hot + slack) {
+        snprintf(g_not_run, sizeof g_not_run, "RLIMIT_MEMLOCK hard limit %llu is below the "
+                 "fixture's hot set", (unsigned long long)g_old.rlim_max);
+        return LC_NOT_RUN;
     }
-    struct rlimit lim = old;
+    g_lim = g_old;
 
     // ---- a lock that fails halfway leaves nothing wired. The head range
     // fits under this limit and the tail does not, so a missing rollback
     // would leave the head counted and the probe below refused.
-    lim.rlim_cur = head + page;
-    if (setrlimit(RLIMIT_MEMLOCK, &lim) != 0) { ck(0, "setrlimit"); return; }
+    g_lim.rlim_cur = head + page;
+    if (setrlimit(RLIMIT_MEMLOCK, &g_lim) != 0) { ck_defect(0, "setrlimit"); return LC_RAN; }
     if (can_lock(head + 2 * page)) {
-        printf("skip: RLIMIT_MEMLOCK is not enforced for this process (privileged?)\n");
-        setrlimit(RLIMIT_MEMLOCK, &old);
-        return;
+        snprintf(g_not_run, sizeof g_not_run, "RLIMIT_MEMLOCK is not enforced for this process "
+                 "(privileged?)");
+        setrlimit(RLIMIT_MEMLOCK, &g_old);
+        return LC_NOT_RUN;
     }
-    model_t a;
-    model_params p = mlock_params(true);
-    ck(model_load(&a, path, &p), "a refused lock does not fail the load");
-    ck(!a.weights_locked, "a refused lock is not reported as locked");
-    ck(can_lock(head + page) == 1, "a lock refused halfway is rolled back in full");
+    model_t a, x, y, z, w;
+    model_params p = mlock_params(true), plain = mlock_params(false);
+    ck_defect(model_load(&a, path, &p), "a refused lock does not fail the load");
+    ck_defect(!a.weights_locked, "a refused lock is not reported as locked");
+    int ok = ck_wire(can_lock(head + page) == 1, head + page, "a lock refused halfway is rolled back in full");
     model_free(&a);
+    if (!ok && g_refused) goto out;
 
     // ---- the hot set, and only the hot set, is wired.
-    lim.rlim_cur = hot + slack;
-    setrlimit(RLIMIT_MEMLOCK, &lim);
-    model_t x, y, z;
-    ck(model_load(&x, path, &p) && x.weights_locked, "x locks the hot set");
-    ck(can_lock(slack) == 1 && can_lock(slack + page) == 0,
-       "exactly the hand-computed hot pages are wired");
+    g_lim.rlim_cur = hot + slack;
+    setrlimit(RLIMIT_MEMLOCK, &g_lim);
+    int xl = model_load(&x, path, &p);
+    if (!ck_wire(xl && x.weights_locked, hot + slack, "x locks the hot set")) {
+        if (xl) model_free(&x);
+        goto out;
+    }
+    if (!ck_wire(can_lock(slack) == 1, slack, "the slack beside the hot set can be wired") &&
+        g_refused) { model_free(&x); goto out; }
+    ck_defect(can_lock(slack + page) == 0, "exactly the hand-computed hot pages are wired");
 
     // ---- a second instance shares the lock rather than taking another.
-    ck(model_load(&y, path, &p) && y.weights_locked, "y shares x's lock");
-    ck(x.layers == y.layers, "x and y share one set of weights");
-    ck(can_lock(slack) == 1 && can_lock(slack + page) == 0,
-       "the shared lock is counted once");
+    ck_defect(model_load(&y, path, &p) && y.weights_locked, "y shares x's lock");
+    ck_defect(x.layers == y.layers, "x and y share one set of weights");
+    if (!ck_wire(can_lock(slack) == 1, slack, "the slack is still free with y loaded") &&
+        g_refused) { model_free(&x); model_free(&y); goto out; }
+    ck_defect(can_lock(slack + page) == 0, "the shared lock is counted once");
     // An instance that joins locked weights without --mlock must still see
     // them as locked: the flag is what stops its GPU load handing the host
     // pages back, which on Windows is the call that unlocks them.
-    model_params plain = mlock_params(false);
-    model_t w;
-    ck(model_load(&w, path, &plain) && w.weights_locked,
-       "an instance joining locked weights knows they are locked");
+    ck_defect(model_load(&w, path, &plain) && w.weights_locked,
+              "an instance joining locked weights knows they are locked");
     model_free(&w);
     model_free(&x);
-    ck(can_lock(slack + page) == 0,
-       "freeing the instance that locked keeps the lock while y holds the weights");
+    ck_defect(can_lock(slack + page) == 0,
+              "freeing the instance that locked keeps the lock while y holds the weights");
     model_free(&y);
-    ck(can_lock(hot + slack) == 1, "the last holder's free unlocks");
+    if (!ck_wire(can_lock(hot + slack) == 1, hot + slack, "the last holder's free unlocks") && g_refused)
+        goto out;
 
     // ---- an instance loaded without --mlock keeps a later lock alive too.
-    ck(model_load(&z, path, &plain) && !z.weights_locked, "z loads unlocked");
-    ck(can_lock(hot + slack) == 1, "nothing is wired without --mlock");
-    ck(model_load(&x, path, &p) && x.weights_locked, "x locks z's shared weights");
+    ck_defect(model_load(&z, path, &plain) && !z.weights_locked, "z loads unlocked");
+    if (!ck_wire(can_lock(hot + slack) == 1, hot + slack, "nothing is wired without --mlock") &&
+        g_refused) { model_free(&z); goto out; }
+    xl = model_load(&x, path, &p);
+    if (!ck_wire(xl && x.weights_locked, hot + slack, "x locks z's shared weights")) {
+        if (xl) model_free(&x);
+        model_free(&z);
+        goto out;
+    }
     model_free(&x);
-    ck(can_lock(slack + page) == 0, "z keeps the lock x took");
+    ck_defect(can_lock(slack + page) == 0, "z keeps the lock x took");
     model_free(&z);
-    ck(can_lock(hot + slack) == 1, "and its free releases it");
-
-    setrlimit(RLIMIT_MEMLOCK, &old);
+    ck_wire(can_lock(hot + slack) == 1, hot + slack, "and its free releases it");
+out:
+    setrlimit(RLIMIT_MEMLOCK, &g_old);
+    return LC_RAN;
 }
 #endif
 
@@ -224,21 +283,26 @@ int main(int argc, char **argv) {
     const char *path = argc > 1 ? argv[1] : "test-es-mlock.gguf";
     for (int attempt = 1;; attempt++) {
         g_fail = 0;
-        test_lifecycle(path);
+        if (test_lifecycle(path) == LC_NOT_RUN) {
+            // locked nothing, so it proved nothing about locking: named, never passed
+            printf("test-mlock: NOT RUN: %s; only the lock plan was checked, nothing was wired\n",
+                   g_not_run);
+            return 0;
+        }
         if (!g_fail) break;
-        if (attempt == 3) {
-            plat_stat_t st;
-            size_t page = plat_page_size(), n = 0;
-            if (page && plat_stat(path, &st) == 0)
-                n = ((size_t)st.st_size + page - 1) / page * page;
-            if (n && can_lock(n) != 1)
-                fprintf(stderr, "FAIL: the OS refused to wire the fixture's %zu bytes in three attempts "
-                        "a second apart, under this process's own locked-memory limit: the machine "
-                        "is short of wireable memory, not a wrong lock\n", n);
+        if (g_defect) {
+            fprintf(stderr, "test-mlock: a wrong lock (attempt %d), not retried\n", attempt);
             break;
         }
-        printf("note: attempt %d failed; retrying in 1 s (the OS refuses to wire under memory "
-               "pressure, a wrong lock fails every time)\n", attempt);
+        // every failure of this attempt was the OS refusing to wire
+        if (attempt == 3) {
+            fprintf(stderr, "FAIL: the OS refused to wire the fixture in three attempts a second apart, "
+                    "under this process's own locked-memory limit: the machine is short of wireable "
+                    "memory, not a wrong lock\n");
+            break;
+        }
+        printf("note: attempt %d was refused by the OS; retrying in 1 s (a wrong lock is never "
+               "retried)\n", attempt);
         sleep(1);
     }
 #else
