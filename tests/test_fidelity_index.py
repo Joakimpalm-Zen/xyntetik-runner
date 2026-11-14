@@ -45,9 +45,12 @@ def _fixture(tmp_path):
         "b": _side("Roster-Q6_K.gguf", 0.05, 97.0)})             # the roster; on the bar: passes
     _report(reports / "three" / "other.json", "Pub/Model@1234abcd", {"a": _side("x", 0.0, 100.0)})
     (reports / "three" / "other.json").write_text(json.dumps({"schema_version": "something.else"}))
+    (reports / "two" / "README.md").write_text(
+        "# two\n\n- `third/joined-GGUF`:\n  - Q8_0 `Joined-Q8_0.gguf`, sha256\n    `" + "cc" * 32 + "`\n")
     join = tmp_path / "join.json"
     join.write_text(json.dumps({"schema_version": "xyntetik.runner.fidelity-join.v1", "sides": {
-        "two/gold.json#a": {"repo": "third/joined-GGUF", "name": "Joined-Q8_0.gguf"}}}))
+        "two/gold.json#a": {"repo": "third/joined-GGUF", "name": "Joined-Q8_0.gguf",
+                            "sha256": "cc" * 32, "evidence": "README.md:3-5"}}}))
     roster = tmp_path / "roster.json"
     roster.write_text(json.dumps({"rows": [{"id": "r", "files": [
         {"name": "Roster-Q6_K.gguf", "repo": "rost/er-GGUF", "sha256": "bb" * 32}]}]}))
@@ -201,3 +204,34 @@ def test_the_index_reads_a_sides_engine(tmp_path):
     assert r.returncode == 0, r.stderr
     md = (out / "docs" / "fidelity-index.md").read_text()
     assert any("Joined-Q8_0.gguf" in l and "| llama.cpp b10353-abcdef0 |" in l for l in md.splitlines()), md
+
+
+
+# R7.21.1: a join entry cites the lines of its own report folder that say which
+# file the side scored, and the script holds the entry to them.
+
+def _join_with(tmp_path, **entry):
+    reports, join, roster = _fixture(tmp_path)
+    j = json.loads(join.read_text())
+    j["sides"]["two/gold.json#a"].update(entry)
+    join.write_text(json.dumps(j))
+    return _run("--write", "--reports", reports, "--join", join, "--roster", roster, "--out", tmp_path / "o")
+
+
+def test_a_join_entry_must_cite_its_folder(tmp_path):
+    r = _join_with(tmp_path, evidence=None)
+    assert r.returncode != 0 and "two/gold.json#a" in r.stderr and "evidence" in r.stderr
+
+
+def test_a_join_entry_must_match_the_lines_it_cites(tmp_path):
+    for bad in ({"name": "Other-Q8_0.gguf"}, {"sha256": "dd" * 32}, {"repo": "else/where-GGUF"},
+                {"evidence": "README.md:1-2"}, {"evidence": "MISSING.md:3"}):
+        r = _join_with(tmp_path, **bad)
+        assert r.returncode != 0 and "two/gold.json#a" in r.stderr, (bad, r.stderr)
+
+
+def test_the_committed_join_is_held_to_its_evidence():
+    # the committed join passes the same checks: --check runs them
+    j = json.loads((ROOT / "docs" / "fidelity-index.json").read_text())
+    assert all(e.get("evidence") for e in j["sides"].values())
+    assert _run("--check").returncode == 0
