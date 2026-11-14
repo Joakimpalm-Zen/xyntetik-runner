@@ -125,6 +125,25 @@ static const char *const KW_ANNOTATION[] = {
     "default", "deprecated", "readOnly", "readonly", "writeOnly", "format", NULL
 };
 
+// Vendor extensions accepted by exact name, each one its vendor defines as
+// constraining nothing about the value (R2.17; codex's read of PR F). Any other
+// x-* key is refused like an unknown keyword: several constrain
+// (x-kubernetes-validations is a CEL validation rule; int-or-string widens the
+// type; list-type "set" and list-map-keys demand unique entries), and a prefix
+// says nothing about which.
+//   x-kubernetes-patch-strategy, x-kubernetes-patch-merge-key: how a strategic
+//     merge patch merges a list (replace or merge, and the field that keys its
+//     entries), kubernetes.io "Update API Objects in Place Using kubectl patch".
+//   x-kubernetes-group-version-kind: the API group, version and kind a
+//     definition belongs to, Kubernetes api/openapi-spec/README.md.
+//   x-prompt: the question Angular's CLI asks for an option; "the prompt
+//     runtime automatically validates the provided response against the
+//     constraints provided in the JSON schema", angular.dev schematics authoring.
+static const char *const KW_VENDOR_ANNOTATION[] = {
+    "x-kubernetes-patch-strategy", "x-kubernetes-patch-merge-key",
+    "x-kubernetes-group-version-kind", "x-prompt", NULL
+};
+
 // Snowplow's self-describing header at a schema's root: the schema's own
 // vendor, name, format and version, all strings, constraining nothing.
 static bool snowplow_self(const jv *v) {
@@ -222,7 +241,7 @@ static bool check_keywords(jv *s, bool root, char *err, int errcap) {
             return false;
         }
         if (kw_in(k, KW_ANNOTATION)) continue;
-        if (!strncmp(k, "x-", 2)) continue;   // a vendor extension annotates, never constrains
+        if (kw_in(k, KW_VENDOR_ANNOTATION)) continue;
         if (!strcmp(k, "self") && root && snowplow_self(s->items[i])) continue;
         if (!strcmp(k, "type")) continue;
         if (!strcmp(k, "allOf") && !composed && !literal) continue;
@@ -3805,67 +3824,127 @@ static bool refx_needed(const jv *v) {
     return false;
 }
 
-// R2.17: a nested id or $id sets a new base for the references below it
-// (draft-04's id, 2019-09's $id), and the inliner resolves every local pointer
-// against the document root. Over a $ref that would compile a schema other
-// than the one the document names, so it is refused; at the root, or over no
-// $ref, the keyword moves nothing and is an annotation (check_keywords).
-static bool refx_walk_has_ref(const jv *s, int depth);
-static bool refx_children_have_ref(const jv *s, int depth) {
+// R2.17: a nested id or $id sets a new base for the references lexically
+// below it (draft-04's id, 2019-09's $id), and the inliner resolves every
+// local pointer against the document root. A $ref under one would compile a
+// schema other than the one the document names, so it is refused; at the
+// root, or over no $ref, the keyword moves nothing and is an annotation
+// (check_keywords). Only what the inliner reaches is checked: the root's
+// subschemas and, through each local $ref, its target. A definition nothing
+// references is dropped unvisited by the inliner, so it is not looked at
+// here either (codex's read of PR F: an unused $defs entry with an $id over a
+// $ref compiled before this check and must still compile).
+
+// the id or $id a schema itself sets, or NULL
+static const char *refx_own_base(const jv *s) {
+    for (int i = 0; s && s->type == J_OBJ && i < s->n; i++)
+        if ((!strcmp(s->keys[i], "id") || !strcmp(s->keys[i], "$id")) &&
+            s->items[i]->type == J_STR)
+            return s->keys[i];
+    return NULL;
+}
+
+// Every schema node of the document with the base keyword in force at it (its
+// own, or its nearest non-root ancestor's), read from the document's own
+// structure: a definition or property NAMED "id" is a name, not the keyword.
+// A $ref's target is looked up here, so its base is where it is written, not
+// where it is reached from.
+typedef struct { const jv *node; const char *base; bool seen; } refx_lex;
+typedef struct { refx_lex *v; int n, cap; bool oom; } refx_lexmap;
+
+static void refx_lex_walk(refx_lexmap *mp, const jv *s, const char *base, bool root, int depth) {
+    if (!s || s->type != J_OBJ || depth > REFX_DEPTH * 4 || mp->oom) return;
+    const char *own = root ? NULL : refx_own_base(s);
+    if (own) base = own;
+    if (mp->n == mp->cap) {
+        int cap = mp->cap ? mp->cap * 2 : 64;
+        refx_lex *g = realloc(mp->v, sizeof *g * (size_t)cap);
+        if (!g) { mp->oom = true; return; }
+        mp->v = g; mp->cap = cap;
+    }
+    mp->v[mp->n++] = (refx_lex){ s, base, false };
     for (int i = 0; i < s->n; i++) {
         const char *k = s->keys[i];
         const jv *v = s->items[i];
         if (kw_in(k, REFX_MAPS) || !strcmp(k, "definitions") || !strcmp(k, "$defs")) {
             if (v->type == J_OBJ)
-                for (int j = 0; j < v->n; j++)
-                    if (refx_walk_has_ref(v->items[j], depth + 1)) return true;
+                for (int j = 0; j < v->n; j++) refx_lex_walk(mp, v->items[j], base, false, depth + 1);
         } else if (kw_in(k, REFX_ONE) || kw_in(k, REFX_LIST)) {
-            if (v->type == J_ARR) {
-                for (int j = 0; j < v->n; j++)
-                    if (refx_walk_has_ref(v->items[j], depth + 1)) return true;
-            } else if (refx_walk_has_ref(v, depth + 1)) return true;
+            if (v->type == J_ARR)
+                for (int j = 0; j < v->n; j++) refx_lex_walk(mp, v->items[j], base, false, depth + 1);
+            else refx_lex_walk(mp, v, base, false, depth + 1);
         }
     }
-    return false;
 }
-static bool refx_walk_has_ref(const jv *s, int depth) {
-    if (!s || s->type != J_OBJ || depth > REFX_DEPTH * 4) return false;
-    if (jv_get((jv *)s, "$ref")) return true;
-    return refx_children_have_ref(s, depth);
+
+static int refx_lex_cmp(const void *a, const void *b) {
+    uintptr_t x = (uintptr_t)((const refx_lex *)a)->node, y = (uintptr_t)((const refx_lex *)b)->node;
+    return x < y ? -1 : x > y;
 }
-static bool refx_nested_base(const jv *s, bool root, int depth, char *err, int errcap) {
+
+static refx_lex *refx_lex_find(refx_lexmap *mp, const jv *node) {
+    refx_lex key = { node, NULL, false };
+    return bsearch(&key, mp->v, (size_t)mp->n, sizeof *mp->v, refx_lex_cmp);
+}
+
+// The walk the inliner makes: subschemas (not definitions maps), and through a
+// local $ref its target, once. `base` is the keyword in force at s.
+static bool refx_reach(jv *root, refx_lexmap *mp, const jv *s, const char *base, int depth,
+                       char *err, int errcap) {
     if (!s || s->type != J_OBJ || depth > REFX_DEPTH * 4) return true;
-    if (!root)
-        for (int i = 0; i < s->n; i++) {
-            const char *k = s->keys[i];
-            if ((!strcmp(k, "id") || !strcmp(k, "$id")) && s->items[i]->type == J_STR &&
-                refx_children_have_ref(s, depth)) {
-                snprintf(err, errcap, "unsupported schema: a nested '%s' over a $ref would move "
-                         "the reference's base; only a root %s is supported", k, k);
-                return false;
-            }
+    jv *ref = jv_get((jv *)s, "$ref");
+    if (ref && ref->type == J_STR && ref->str[0] == '#') {
+        if (base) {
+            snprintf(err, errcap, "unsupported schema: a nested '%s' over a $ref would move "
+                     "the reference's base; only a root %s is supported", base, base);
+            return false;
         }
+        refx_lex *t = refx_lex_find(mp, refx_target(root, ref->str));
+        if (t && !t->seen) {
+            t->seen = true;
+            if (!refx_reach(root, mp, t->node, t->base, depth + 1, err, errcap)) return false;
+        }
+    }
     for (int i = 0; i < s->n; i++) {
         const char *k = s->keys[i];
         const jv *v = s->items[i];
-        if (kw_in(k, REFX_MAPS) || !strcmp(k, "definitions") || !strcmp(k, "$defs")) {
-            if (v->type == J_OBJ)
-                for (int j = 0; j < v->n; j++)
-                    if (!refx_nested_base(v->items[j], false, depth + 1, err, errcap)) return false;
+        const jv *const *kids = &v;
+        int n = 0;
+        if (kw_in(k, REFX_MAPS)) {
+            if (v->type == J_OBJ) { kids = (const jv *const *)v->items; n = v->n; }
         } else if (kw_in(k, REFX_ONE) || kw_in(k, REFX_LIST)) {
-            if (v->type == J_ARR) {
-                for (int j = 0; j < v->n; j++)
-                    if (!refx_nested_base(v->items[j], false, depth + 1, err, errcap)) return false;
-            } else if (!refx_nested_base(v, false, depth + 1, err, errcap)) return false;
+            if (v->type == J_ARR) { kids = (const jv *const *)v->items; n = v->n; }
+            else n = 1;
+        }
+        for (int j = 0; j < n; j++) {
+            const char *own = refx_own_base(kids[j]);
+            if (!refx_reach(root, mp, kids[j], own ? own : base, depth + 1, err, errcap))
+                return false;
         }
     }
     return true;
 }
 
+static bool refx_nested_base(jv *root, char *err, int errcap) {
+    refx_lexmap mp = {0};
+    refx_lex_walk(&mp, root, NULL, true, 0);
+    if (mp.oom) {
+        free(mp.v);
+        snprintf(err, errcap, "out of memory checking the schema's reference bases");
+        return false;
+    }
+    qsort(mp.v, (size_t)mp.n, sizeof *mp.v, refx_lex_cmp);
+    refx_lex *r = refx_lex_find(&mp, root);
+    if (r) r->seen = true;
+    bool ok = refx_reach(root, &mp, root, NULL, 0, err, errcap);
+    free(mp.v);
+    return ok;
+}
+
 jv *schema_resolve_refs(jv *s, jv **owned, char *err, int errcap) {
     *owned = NULL;
     if (!refx_needed(s)) return s;
-    if (!refx_nested_base(s, true, 0, err, errcap)) return NULL;
+    if (!refx_nested_base(s, err, errcap)) return NULL;
     refx x = { .root = s, .err = err, .errcap = errcap };
     x.stack[x.depth++] = "#";   // the root itself: a "#" inside it recurses
     sbuf o = { 0 };
