@@ -132,6 +132,17 @@ def test_unknown_and_deleted_responses(runner_bin, model):
             assert st == 400, (bad, b)
 
 
+def test_the_store_budget_is_read(runner_bin, model):
+    """RUNNER_RESPONSES_STORE_MB bounds the store (default 64; R18.8.3). At 0 no entry fits, so a
+    store:true response is still answered but cannot be retrieved: the default-budget arm is
+    test_a_stored_response_is_retrievable above."""
+    with _serve(runner_bin, model, {"RUNNER_RESPONSES_STORE_MB": "0"}) as srv:
+        st, a = _resp(srv, input="Name a colour.", store=True)
+        assert st == 200, a
+        assert _text(a)
+        assert _req(srv, "GET", f"/v1/responses/{a['id']}")[0] == 404
+
+
 def test_the_store_forgets_after_its_ttl(runner_bin, model):
     with _serve(runner_bin, model, {"RUNNER_RESPONSES_STORE_TTL": "0.3"}) as srv:
         st, a = _resp(srv, input="Name a colour.", store=True)

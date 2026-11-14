@@ -171,6 +171,56 @@ static int check(const char *arg) {
     return bad;
 }
 
+// RUNNER_ATTN_BATCH as the engine reads it at load (R18.8.3): the cases
+// above set model_t.attn_batch directly, so this is the one place the switch
+// itself is read. Unset or "1" leaves the batched pass on, "0" and "off" set
+// -1 at load; with it off a batched prefill takes no batched pass and gives
+// the same last logits as with it on (each row and head computes in the same
+// order either way).
+static int batch_switch(const char *path) {
+    static const struct { const char *v; int want; } C[] = {
+        { NULL, 0 }, { "1", 0 }, { "0", -1 }, { "off", -1 },
+    };
+    opts o = {0};
+    int bad = 0, nv = 0;
+    float *on = NULL;
+    for (size_t i = 0; i < sizeof C / sizeof *C; i++) {
+        if (C[i].v) env_set("RUNNER_ATTN_BATCH", C[i].v); else env_unset("RUNNER_ATTN_BATCH");
+        model_t m;
+        if (!load(&m, path, &o, 4)) { printf("attn-split: cannot load %s\n", path); bad = 1; break; }
+        nv = m.n_vocab;
+        int32_t toks[N_BATCH_CHUNK];
+        for (int t = 0; t < N_BATCH_CHUNK; t++) toks[t] = tok_at(t, nv);
+        float *lg = m.attn_batch == C[i].want ? model_forward_batch(&m, toks, N_BATCH_CHUNK, 0, true) : NULL;
+        const char *shown = C[i].v ? C[i].v : "unset";
+        if (m.attn_batch != C[i].want) {
+            printf("attn-split: FAIL RUNNER_ATTN_BATCH=%s set attn_batch %d, want %d\n",
+                   shown, m.attn_batch, C[i].want);
+            bad = 1;
+        } else if (!lg) {
+            printf("attn-split: FAIL RUNNER_ATTN_BATCH=%s: batch forward failed\n", shown);
+            bad = 1;
+        } else if ((m.attn_batch_runs > 0) != (C[i].want == 0)) {
+            printf("attn-split: FAIL RUNNER_ATTN_BATCH=%s: %ld batched passes\n", shown, m.attn_batch_runs);
+            bad = 1;
+        } else if (!on) {
+            on = malloc(sizeof(float) * (size_t)nv);
+            if (on) memcpy(on, lg, sizeof(float) * (size_t)nv);
+        } else if (memcmp(on, lg, sizeof(float) * (size_t)nv)) {
+            printf("attn-split: FAIL RUNNER_ATTN_BATCH=%s: last logits differ from the batched pass\n", shown);
+            bad = 1;
+        }
+        if (!bad)
+            printf("attn-split: RUNNER_ATTN_BATCH=%s: attn_batch %d, %ld batched passes\n",
+                   shown, m.attn_batch, m.attn_batch_runs);
+        model_free(&m);
+        if (bad) break;
+    }
+    env_unset("RUNNER_ATTN_BATCH");
+    free(on);
+    return bad;
+}
+
 // The cases one per line of a list file, for `@FILE`: blank lines and lines
 // starting with # are skipped. make test passes its cases this way, not as
 // twenty arguments: on Windows, Defender's behaviour monitoring reads a
@@ -194,7 +244,7 @@ static int check_list(const char *path) {
 }
 
 int main(int argc, char **argv) {
-    int rc = 0;
+    int rc = batch_switch("test.gguf");
     if (argc < 2) rc |= check("test.gguf");
     for (int i = 1; i < argc; i++)
         rc |= argv[i][0] == '@' ? check_list(argv[i] + 1) : check(argv[i]);
