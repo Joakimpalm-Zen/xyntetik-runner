@@ -117,9 +117,14 @@ def _chat(runner_bin, model, system, n_ctx, stdin=b"hello\n/exit\n"):
             "-c", str(n_ctx), "-n", "1", "--temp", "0"]
     if system is not None:
         argv += ["--system", system]
+    # Scaled like every other child here. A fixed 300 s was 2x the 143 s the
+    # 10,000-character paste takes under the sanitizers on a hosted runner,
+    # and a runner that ran the whole suite 2.1x slower than that timed it
+    # out (2026-11-14; the same command takes the same 38 s on the build
+    # before and after that day's merges).
     return subprocess.run(argv, input=stdin, cwd=ROOT,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          timeout=300)
+                          timeout=120 * SCALE)
 
 
 @pytest.mark.parametrize("mode,flag_args", [
