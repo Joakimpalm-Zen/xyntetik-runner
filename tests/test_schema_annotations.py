@@ -55,6 +55,14 @@ ACCEPTED = {
     "a nested id over no $ref": _obj(a={"id": "#a", "type": "string"}),
     "a nested fragment-only $id over a $ref": {"definitions": {"n": {"type": "string"}},
                                               **_obj(a={"$id": "#a", **_obj(b={"$ref": "#/definitions/n"})})},
+    # The shape of the one JSONSchemaBench schema the base compiled and the base check refused
+    # (written here from its shape; the benchmark's schemas are not redistributed): an absolute root
+    # $id, and nested $ids that are paths, the labels older generators wrote, over "#/definitions"
+    # references. Resolved against the root, as before: a deliberate leniency (fable, 2026-11-14).
+    "a path $id under an absolute root, over a $ref": {
+        "$id": "http://example.test/schemas/query.json",
+        "definitions": {"n": {"type": "string"}},
+        **_obj(a={"$id": "/properties/a", **_obj(b={"$ref": "#/definitions/n"})})},
     "Snowplow's self at the root": {"self": SELF, **_obj(a={"type": "string"})},
 }
 
@@ -65,6 +73,11 @@ REFUSED = {
     "a nested $id over a $ref": ({"$defs": {"n": {"type": "string"}},
                                   **_obj(a={"$id": "http://other.example/", **_obj(b={"$ref": "#/$defs/n"})})},
                                  "$id"),
+    "a nested absolute $id under an absolute root, over a $ref": ({
+        "$id": "http://example.test/schemas/query.json", "definitions": {"n": {"type": "string"}},
+        **_obj(a={"$id": "http://other.example/a.json", **_obj(b={"$ref": "#/definitions/n"})})}, "$id"),
+    "a path $id with no absolute root, over a $ref": ({"definitions": {"n": {"type": "string"}},
+        **_obj(a={"$id": "/properties/a", **_obj(b={"$ref": "#/definitions/n"})})}, "$id"),
     "a nested $id reached through a $ref, over a $ref": ({"$defs": {
         "A": {"$id": "http://other.example/", **_obj(b={"$ref": "#/$defs/T"})}, "T": {"type": "integer"}},
         **_obj(a={"$ref": "#/$defs/A"})}, "$id"),
