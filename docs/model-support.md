@@ -174,8 +174,7 @@ it, and the row is pinned again, with the reason in the commit. A pin is never
 overwritten in place.
 
 The checks: `scripts/model-tiers.py --check` (the roster's structure),
-`--gate` (the release gate's question; `--today` fixes the day the printed
-ages count from), `--docs-check` (this page against the roster) and
+`--docs-check` (this page against the roster) and
 `--check-hub` (every file's resolve URL, built from its record, must answer 200
 with the recorded sha256 and size; it needs the network, so it is run by hand).
 
