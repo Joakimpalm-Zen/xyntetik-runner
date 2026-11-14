@@ -121,3 +121,20 @@ def test_gold_logits_records_the_file_it_measured(tmp_path):
     rec = gl.side_file(str(f), "owner/Some-GGUF")
     assert rec == {"repo": "owner/Some-GGUF", "name": "Some-Q4_K_M.gguf",
                    "sha256": hashlib.sha256(f.read_bytes()).hexdigest()}
+
+
+def test_a_roster_name_pinned_twice_identifies_nothing(tmp_path):
+    """Two roster entries of one repo and file name with different sha256 pins:
+    a side identified only by that name could have measured either, so it stays
+    "file not identified" rather than taking the first pin."""
+    reports, join, roster = _fixture(tmp_path)
+    r = json.loads(roster.read_text())
+    r["rows"].append({"id": "r2", "files": [
+        {"name": "Roster-Q6_K.gguf", "repo": "rost/er-GGUF", "sha256": "ee" * 32}]})
+    roster.write_text(json.dumps(r))
+    out = tmp_path / "out"
+    res = _run("--write", "--reports", reports, "--join", join, "--roster", roster, "--out", out)
+    assert res.returncode == 0, res.stderr
+    md = (out / "docs" / "fidelity-index.md").read_text()
+    assert "rost/er-GGUF" not in md, md
+    assert "file not identified (the report calls it Roster-Q6_K.gguf)" in md, md
