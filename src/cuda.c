@@ -1405,6 +1405,10 @@ bool gpu_moe_ok(void) {
 // microbatch declines such a model (batch_eligible wants every layer's
 // attention weights), so its sequences decode one at a time.
 bool gpu_removed_sublayers_ok(void) { return true; }
+// The rope tables are part of the shared weight set (shared_weights), one
+// copy for every sequence on the device, so a sequence cannot change its own.
+bool gpu_rope_sets_ok(void) { return false; }
+void gpu_rope_changed(model_t *m) { (void)m; }
 
 bool gpu_moe_route_caps(int *max_experts, int *max_used) {
     *max_experts = MOE_ROUTE_MAX;

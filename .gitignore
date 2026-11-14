@@ -1,4 +1,7 @@
 runner
+# winget-pkgs fixes this folder's name (Xyntetik.Runner); on a case-blind
+# checkout the line above would match it
+!packaging/winget/manifests/x/Xyntetik/Runner/
 runner.exe
 runner-no-write-timeout
 runner-turn-guard
@@ -140,6 +143,8 @@ test-hfhub
 test-penalty-window
 test-rope-yarn
 test-rope-yarn.exe
+test-longrope-sequence
+test-longrope-sequence.exe
 test-attn-scale
 test-attn-scale.exe
 test-hfhub.exe

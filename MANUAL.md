@@ -687,7 +687,9 @@ beside it: `--rewrite` (with `--prune-experts`, `--remove-sublayer` or
 `.context.json`. Each record names its input and output files by sha256,
 the options that shaped the bytes and the runner that ran it, and for each
 input that was itself made by a step it links that step's record by name
-and sha256. A record names every file by its base name, never by where it
+and sha256. A rewrite's record also says what it did: `tensors` counts the
+tensors converted and kept, and `requant_only` and `force_requant` name the
+development switches when they scoped or forced the conversion. A record names every file by its base name, never by where it
 sat on the machine that made it, so it can be published beside the file.
 With `--sign-key` the record is signed in place, the same chain
 and signature objects a receipt carries.
@@ -1587,7 +1589,7 @@ merely dense matvec/matmul support.
 | `deepseek2` | DeepSeek-V2 (measured: DeepSeek-V2-Lite-Chat, 15.7B, 64 experts, top 6): multi-head latent attention, absorbed by default. Q comes from `attn_q` (or `attn_q_a` -> norm -> `attn_q_b`); one latent and one rope key per token come from `attn_kv_a_mqa`, the latent is RMS-normed and decompressed per head by the unsplit `attn_kv_b`, and the cache holds one 576-wide head per token: [k_pe \| normed latent], read by every query head as K and V. Q per head is [q_pe \| k_bᵀ q_nope] (kv_b's k-rows weighted by q_nope), and each head's output latent goes through kv_b's v-rows, dequantized at load, to `attn_output`. `RUNNER_MLA_NAIVE=1` keeps the publisher's naive form: heads `key_length` wide (Q, K as [pe \| nope], V as [v \| 0], the value width packed before `attn_output`). The softmax scale is the publisher's mscale² / sqrt(`key_length`), YaRN on every position, then a leading dense block, softmax routing without renormalisation and gated shared experts. Tokenizer pre `deepseek-llm` is the publisher's sequence of isolated splits (0 of 721 corpus segments and 0 of 99,442 vocabulary entries differ from its tokenizer); chat template `deepseek2` (conformant, 16 of 16 token-identical). Against the publisher's float32 `modeling_deepseek.py` the Q8_0 reads mean KLD 0.0100, margin-qualified top-1 100% (llama.cpp 0.0155 / 99.54%). That read is the naive form; the absorbed form is not distinguishable from it at positions 4000-5999 (mean KLD 0.01286 against 0.01285, Wilcoxon p 0.095, McNemar p 1.0). Refused by name: the split `attn_k_b`/`attn_v_b` layout, LoRA serving and training. CUDA runs both forms on the device, the absorbed one by default. Against the CPU on the Q8_0, gpu-identity's pinned-routing arm reads 1.9e-5 of the logit range in each form (limit 1e-3). The q-lora pair and Metal run it on the CPU with a reason. Certified (R4.4.5 step d) on two of mradermacher's static files in the default form: the Q8_0, the fidelity file (0.0094 / 100% on the CPU, 0.0096 / 100% on CUDA), and the Q6_K, the smallest to pass the bar (0.0293 / 98.61%, 0.0296 / 98.61%); the Q5_K_M (0.0704 / 96.76%) and the Q4_K_M (0.188 / 90.28%) miss it. |
 | `gemma3` | Regular and QAT layouts, sliding-window attention, sandwich norms. The 27B (62 blocks) scales attention by its config's `query_pre_attn_scalar`, which is n_embd / n_head (168), not its 128-wide heads; every other size uses the head width (`tests/test_attn_scale.c`). |
 | `gemma4` | Heterogeneous attention, thinking channels, E-series, supported dense/MoE layouts, and the family's native tool protocol. Both E-series export shapes load. A layer at or past `block_count - attention.shared_kv_layers` computes no K and no V (it attends over the cache an earlier layer filled), so the current quantized exports - the ggml-org Q4_0, Google's own QAT Q4_0 and the community QAT F16 - omit `attn_k.weight`, `attn_v.weight` and `attn_k_norm.weight` on exactly those layers: 666 tensors on E4B where the BF16 export has 720. Those three are optional on the shared-KV tail and still required on every KV-owning layer, where a missing one is refused by name. |
-| `phi3` | Fused QKV and gate/up tensors, LongRoPE factors. The short factor set applies up to the model's original context (4,096 on Phi-3.5) and the long set above it, chosen by `-c` and applied from the first token, as in llama.cpp; the publisher's code switches per sequence, so with `-c` over the original context a short prompt reads further from the publisher's model, and the load prints a warning that names the context that avoids it. |
+| `phi3` | Fused QKV and gate/up tensors, LongRoPE factors, chosen per sequence as the publisher's code chooses them: a sequence of up to the model's original context (4,096 tokens on Phi-3.5) rotates with the short factor set, a longer one with the long set from its first token. A prompt longer than that is fed on the long set; a sequence that grows past it during generation has its positions computed again under the long set, once (one prefill of the original context's length, not interruptible), and a later shorter prompt keeps none of those rows (`prompt_reuse` `rope_set`). On the CPU and the Apple GPU. CUDA shares its rope tables between the sequences of a model, so with `-c` over the original context it keeps the long set for every sequence, as llama.cpp does: a short prompt then reads further from the publisher's model, and the load prints a warning that names the context that avoids it. A draft model keeps one set too. Slots of such a model decode one by one, not in a device microbatch. |
 | `gpt-oss` | Attention sinks, alpha-sigmoid GLU, expert biases, MXFP4 experts. The YaRN ramp follows OpenAI's reference, whose correction range is not rounded (`"truncate": false` in the model's config; transformers' default and llama.cpp round it; `tests/test_rope_yarn.c`, anchored on tables computed from the reference formula). The cross-engine figures in this row predate the ramp correction. Tokenizer exact (0/721 differential) and chat renders the real Harmony format (analysis channel as `reasoning_content`); cross-engine greedy identity remains inside the model's own measured KV-precision sensitivity envelope rather than certified. |
 | `apertus` | xIELU FFN; CPU, CUDA and Metal; LoRA training on the CPU. |
 | `afmoe` | Arcee Trinity sparse MoE; CPU only. CUDA and Metal refuse it loudly as gated attention plus sparse MoE, rather than misreporting a quantization problem. Against Arcee's float32 reference (the golden pass of 2026-09-07 ([`docs/golden-pass-2026-09-07.md`](docs/golden-pass-2026-09-07.md)), Trinity Nano, 2,000 positions) the runner and llama.cpp BOTH sit about 0.045 of mean KL from the publisher at bf16, where every other measured family reads 0.0001 to 0.003: a shared reproduction gap, not yet explained. Margin-qualified top-1 there is 98.53% for the runner and 98.60% for llama.cpp, not a significant difference, so the 1-in-6 greedy identity against llama.cpp that failed this family's 2026-08-05 certification measured the distance between two engines equally far from the publisher, not a runner defect. |
@@ -3826,10 +3828,14 @@ a reasoning-only or empty turn). Tool execution is the client's time, not
 the server's, and is not reported. `prompt_reuse` says HOW the slot arrived at
 `prompt_cached_tokens`: `extended` (the prompt continues the slot's history
 verbatim), `kv` (attention rows kept up to the first differing token),
-`turn_mark` (a recurrent fold resumed at the previous prompt boundary, see
-below), `snapshot`, `prefix_cache` (forked from the shared tier),
+`turn_anchor` (a recurrent fold resumed where the previous chat request's
+generation prompt began, see below), `turn_mark` (the same for a request
+with no such boundary, resumed one token short of the previous prompt's
+end), `snapshot`, `prefix_cache` (forked from the shared tier),
 `recurrent_reset` (the fold could not be restored where the history
-diverged, so the whole prompt was folded again), `ring_reset`, `mismatch`
+diverged, so the whole prompt was folded again), `ring_reset`, `rope_set`
+(a LongRoPE model whose prompt takes the other factor set than the slot's
+rows were made with: nothing is kept), `mismatch`
 (the prompt differs at its first token) or `none` (`cache_prompt:false` or
 a fresh slot); the server's start line carries the same word, and
 `RUNNER_REWIND_TRACE=1` prints the token at which the prompt left the
@@ -3886,11 +3892,23 @@ hit would be. Expiry during PREFILL has no tokens to truncate and answers
 A recurrent or hybrid model (Qwen 3.5/3.8, Ornith, Granite-4 h-series,
 Nemotron-H) keeps a fold over its whole prefix rather than per-position
 rows, so a slot's own rewind can only resume where a checkpoint of that fold
-exists. Every prefill leaves one at the prompt boundary (one
-token short of the end, so a verbatim replay resumes there too): an agent
-client's next request, which replays the prompt, the reply as the template
-re-renders it and a new turn, resumes at the mark and folds only what
-follows. Before the mark such a slot re-folded its entire prompt on every
+exists. Every prefill leaves one, the turn mark. A chat, Responses or
+Messages request leaves it at the last message boundary, where the
+generation prompt begins: an agent client's next request, which replays the
+messages, the reply as the template re-renders it and a new turn, resumes
+at the mark and folds only what follows, the few tokens of the generation
+prompt included. The generation prompt itself is not behind the mark
+because the next request need not replay it: Qwen 3.5's opens a think block
+that its history renders without, and with the mark inside it such a slot
+re-folded the whole conversation on every turn, on every backend (the
+2026-11-09 agent loop on Qwen3.5-4B: 70% of a CUDA turn's time was
+re-prefill). The boundary is found per request by rendering the messages
+without the generation prompt and requiring those tokens to be the prompt's
+first; a family whose template gives none (the `[INST]` families, Phi) and
+a raw `/v1/completions` prompt mark one token short of the prompt end, so a
+verbatim replay resumes there. A history rewritten before the last message
+boundary (a compacted tool result, an edited earlier turn) still resets the
+fold. Before the mark such a slot re-folded its entire prompt on every
 turn on CUDA, where the shared tier does not apply to a device-resident
 fold (the 2026-09-15 OpenCode loop on Qwen 3.8 27B: 7.5K prompt, "0 cached"
 every turn). The mark lives on the slot (one fold-sized copy of host RAM,

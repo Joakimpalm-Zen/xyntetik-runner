@@ -54,9 +54,18 @@ static float f16_decode(uint16_t h) {
 
 static void dot_tables_init(void);
 
-void f16_init(void) {
+static void f16_build(void) {
     for (uint32_t i = 0; i < 65536; i++) g_f16_table[i] = f16_decode((uint16_t)i);
     dot_tables_init();
+}
+
+// Once per process, from any thread. model_load calls it, so a program that
+// loads a model needs no call of its own: the table used to be filled only
+// by a caller that remembered to, and one that forgot read every f16 value
+// (the KV cache, a block's scale) as zero without an error.
+void f16_init(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, f16_build);
 }
 
 // MXFP4's E8M0 block scale, 2^(e-127), and the half of it the SIMD kernels

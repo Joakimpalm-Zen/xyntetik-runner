@@ -193,8 +193,55 @@ static int check_list(const char *path) {
     return rc;
 }
 
+// The premise of every check above, and of every gate that drives an engine
+// from a program of its own: attention reads the context. A program that
+// loads a model gets a working one from model_load alone. The f16 KV cache
+// is read back through a table that f16_init fills, and 18 test programs
+// loaded a model without calling it: on x86 every cached key and value then
+// decoded to zero, attention contributed nothing, and identities like the one
+// above held between two runs that both ignored the context (aarch64
+// converts natively and never showed it). Found 2026-11-14 when a check that
+// two rotary tables give different logits failed on Linux and Windows only.
+// Here: two prompts that end in the same token must not give the same
+// logits, and neither may equal the logits of that token alone.
+static int context_reaches_the_logits(const char *path) {
+    enum { N = 12 };
+    opts o = {0};
+    model_t m;
+    if (!load(&m, path, &o, 1)) { printf("context: cannot load %s\n", path); return 1; }
+    int nv = m.n_vocab;
+    float *one = malloc(sizeof(float) * (size_t)nv * 3);
+    if (!one) return 1;
+    for (int v = 0; v < 3; v++) {
+        float *lg = NULL;
+        int n = v == 2 ? 1 : N;
+        for (int t = 0; t < n; t++) {
+            // v 0: one prompt; v 1: another with the same last token; v 2: that token alone
+            int32_t tok = t == n - 1 ? tok_at(N - 1, nv) : tok_at(v == 0 ? t : t + 40, nv);
+            lg = model_forward(&m, tok, t);
+        }
+        if (!lg) { printf("context: no logits from %s\n", path); free(one); model_free(&m); return 1; }
+        memcpy(one + (size_t)v * nv, lg, sizeof(float) * (size_t)nv);
+    }
+    int d01 = 0, d02 = 0;
+    for (int i = 0; i < nv; i++) {
+        d01 += one[i] != one[nv + i];
+        d02 += one[i] != one[2 * (size_t)nv + i];
+    }
+    free(one);
+    model_free(&m);
+    if (!d01 || !d02) {
+        printf("context: FAIL: on %s the logits after %d tokens %s; attention reads nothing "
+               "(is the f16 table initialised?)\n", path, N,
+               !d02 ? "equal the last token's alone" : "do not depend on the tokens before the last");
+        return 1;
+    }
+    printf("context: ok, %d and %d of %d logits follow the context on %s\n", d01, d02, nv, path);
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    int rc = 0;
+    int rc = context_reaches_the_logits("test.gguf");
     if (argc < 2) rc |= check("test.gguf");
     for (int i = 1; i < argc; i++)
         rc |= argv[i][0] == '@' ? check_list(argv[i] + 1) : check(argv[i]);

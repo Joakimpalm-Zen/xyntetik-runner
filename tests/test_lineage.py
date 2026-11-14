@@ -286,3 +286,127 @@ def test_a_servers_receipts_show_versions_timeline_and_lineage(runner_bin, tmp_p
     receipts[1].unlink()
     w2 = _run(runner_bin, ["--lineage", "rc"], tmp_path)
     assert w2.returncode == 2 and "chain BROKEN" in w2.stdout, w2.stdout
+
+
+# A quantize record states what the rewrite did, not only what it was asked:
+# a RUNNER_REQUANT_ONLY run read "target q8_0" with 2 of 20 tensors in its
+# scope, and a conversion the size check declined read the same as one that
+# converted everything. The record carries the tensors converted and kept,
+# and the switches that scoped or forced the conversion when they were set.
+
+GGML_Q4_0, GGML_Q8_0, GGML_Q4_K = 2, 8, 12
+
+
+def _types(path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from gguf_fixture import read_header
+    with open(path, "rb") as f:
+        _kv, tensors, _end = read_header(f)
+    return {name: t for name, _dims, t, _off in tensors}
+
+
+def _quantize(exe, src, out, quant, cwd, **env):
+    p = subprocess.run([str(exe), "-m", str(src), "--quantize", str(out), "--quant", quant],
+                       cwd=cwd, env={**{k: v for k, v in __import__("os").environ.items()
+                                       if k not in ("RUNNER_REQUANT_ONLY", "RUNNER_FORCE_REQUANT")},
+                                    **env},
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")[-800:]
+    return json.loads(pathlib.Path(str(out) + ".quant.json").read_text())
+
+
+def _changed(src, out):
+    a, b = _types(src), _types(out)
+    return sum(1 for n in b if b[n] != a[n]), sum(1 for n in b if b[n] == a[n])
+
+
+def test_a_quant_record_counts_the_tensors_it_converted(runner_bin, tmp_path):
+    out = tmp_path / "q8.gguf"
+    rec = _quantize(runner_bin, ROOT / "test.gguf", out, "q8_0", tmp_path)
+    converted, kept = _changed(ROOT / "test.gguf", out)
+    assert converted > 0 and kept > 0
+    assert rec["tensors"] == {"converted": converted, "kept": kept}, rec
+    assert "requant_only" not in rec and "force_requant" not in rec, rec
+
+
+def test_a_scoped_requant_says_its_scope(runner_bin, tmp_path):
+    out = tmp_path / "scoped.gguf"
+    rec = _quantize(runner_bin, ROOT / "test.gguf", out, "q8_0", tmp_path,
+                    RUNNER_REQUANT_ONLY="attn_q")
+    converted, kept = _changed(ROOT / "test.gguf", out)
+    assert rec["requant_only"] == "attn_q", rec
+    assert rec["tensors"] == {"converted": converted, "kept": kept}, rec
+    assert 0 < converted < kept, (converted, kept)
+
+
+def test_a_declined_conversion_reads_as_none_and_a_forced_one_says_so(runner_bin, tmp_path):
+    src = tmp_path / "wide-src.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts" / "make-test-model.py", "--wide", "--n-ff", "2048",
+                    str(src)], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    q4k = tmp_path / "q4k.gguf"
+    _quantize(runner_bin, src, q4k, "q4_k", tmp_path)
+    declined = _quantize(runner_bin, q4k, tmp_path / "kept.gguf", "q4_0", tmp_path)
+    assert declined["tensors"]["converted"] == 0, declined
+    assert "force_requant" not in declined, declined
+    forced = _quantize(runner_bin, q4k, tmp_path / "forced.gguf", "q4_0", tmp_path,
+                       RUNNER_FORCE_REQUANT="1")
+    n_q4k = sum(1 for t in _types(q4k).values() if t == GGML_Q4_K)
+    assert forced["force_requant"] is True, forced
+    assert forced["tensors"]["converted"] == n_q4k > 0, (forced, n_q4k)
+
+
+def test_an_in_place_rewrite_records_the_file_it_replaced(runner_bin, tmp_path):
+    """`-m m.gguf --quantize m.gguf`: the rewrite installs over its input, so the
+    input is hashed before anything is installed. Hashed after, the record named
+    the output as its own parent and the original left the lineage."""
+    import hashlib
+    m = tmp_path / "m.gguf"
+    shutil.copy(ROOT / "test.gguf", m)
+    before = hashlib.sha256(m.read_bytes()).hexdigest()
+    rec = _quantize(runner_bin, m, m, "q8_0", tmp_path)
+    after = hashlib.sha256(m.read_bytes()).hexdigest()
+    assert after != before and rec["tensors"]["converted"] > 0
+    assert rec["base"]["sha256"] == before, rec["base"]
+    assert rec["output"]["sha256"] == after, rec["output"]
+
+
+def test_a_rewrite_never_overwrites_the_record_it_links(runner_bin, tmp_path):
+    """A rewrite's record links the record its input came with. A second
+    in-place rewrite of m.gguf would write m.gguf.quant.json over that very
+    record, leaving the link pointing at itself; it is refused before anything
+    is written. A first in-place rewrite links nothing and is allowed."""
+    import hashlib
+    m = tmp_path / "m.gguf"
+    shutil.copy(ROOT / "test.gguf", m)
+    _quantize(runner_bin, m, m, "q8_0", tmp_path)
+    rec = tmp_path / "m.gguf.quant.json"
+    keep = (hashlib.sha256(m.read_bytes()).hexdigest(), rec.read_bytes())
+    p = subprocess.run([str(runner_bin), "-m", str(m), "--quantize", str(m), "--quant", "q4_0"],
+                       cwd=tmp_path, capture_output=True, text=True, timeout=300)
+    assert p.returncode != 0, p.stderr[-600:]
+    assert "m.gguf.quant.json" in p.stderr and "new file" in p.stderr, p.stderr[-600:]
+    assert (hashlib.sha256(m.read_bytes()).hexdigest(), rec.read_bytes()) == keep
+    # to a new file the same input rewrites fine, and links the record intact
+    out = tmp_path / "m4.gguf"
+    rec4 = _quantize(runner_bin, m, out, "q4_0", tmp_path)
+    assert rec4["base"]["record"]["path"] == "m.gguf.quant.json"
+    assert rec4["base"]["record"]["sha256"] == hashlib.sha256(rec.read_bytes()).hexdigest()
+
+
+def test_an_alias_of_the_input_is_its_own_record_where_files_have_no_inode(runner_bin, tmp_path):
+    """Where the platform reports no inode (Windows' fallback, 0), m.gguf and
+    its absolute path must still read as one file, or a second in-place
+    rewrite written to the absolute path replaces the record it just linked.
+    RUNNER_TEST_NO_INODE takes the no-inode branch on any host."""
+    import os as _os
+    m = tmp_path / "m.gguf"
+    shutil.copy(ROOT / "test.gguf", m)
+    env = dict(_os.environ, RUNNER_TEST_NO_INODE="1")
+    first = subprocess.run([str(runner_bin), "-m", "m.gguf", "--quantize", "m.gguf", "--quant", "q8_0"],
+                           cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
+    assert first.returncode == 0, first.stderr[-600:]   # links nothing: allowed
+    rec = (tmp_path / "m.gguf.quant.json").read_bytes()
+    p = subprocess.run([str(runner_bin), "-m", "m.gguf", "--quantize", str(m.resolve()), "--quant", "q4_0"],
+                       cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
+    assert p.returncode != 0 and "new file" in p.stderr, p.stderr[-600:]
+    assert (tmp_path / "m.gguf.quant.json").read_bytes() == rec

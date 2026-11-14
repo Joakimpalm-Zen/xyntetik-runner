@@ -1509,6 +1509,21 @@ bool gpu_moe_ok(void) {
 bool gpu_shared_weights_resident(const model_t *m) { (void)m; return false; }
 
 bool gpu_removed_sublayers_ok(void) { return true; }
+// Each instance uploads its own rope tables (metal_upload_constants), in
+// shared storage, and every forward waits for its commands: between two
+// forwards the table is this instance's alone to rewrite.
+bool gpu_rope_sets_ok(void) { return true; }
+void gpu_rope_changed(model_t *m) {
+    @autoreleasepool {
+    gpu_t *g = m->gpu;
+    if (!g) return;
+    if (g->inv_freq)
+        memcpy([g->inv_freq contents], m->rope_inv_freq, sizeof(float) * (size_t)(m->rope_dim / 2));
+    if (g->inv_freq_local && m->rope_inv_freq_local)
+        memcpy([g->inv_freq_local contents], m->rope_inv_freq_local,
+               sizeof(float) * (size_t)(m->rope_dim_local / 2));
+    }
+}
 // the Metal router's limits (metal_moe_supported refuses past them)
 bool gpu_moe_route_caps(int *max_experts, int *max_used) {
     *max_experts = 256;
