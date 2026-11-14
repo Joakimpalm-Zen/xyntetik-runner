@@ -75,16 +75,23 @@ def side_file(path, repo):
 def endpoint_engine(endpoint, timeout=30):
     """Which engine served an HTTP side, as the server says itself (R7.21.2):
     Runner answers /v1/capabilities with runner.capabilities and its version,
-    llama.cpp's server answers /props with its build_info, and anything else
-    is named by its Server header. An endpoint that answers none of these is
-    unknown; nothing is inferred from a port or a model name."""
+    llama.cpp's server answers /props with its build_info. Anything else is
+    unknown: a Server header names whatever answered (a reverse proxy in front
+    of an engine, say), not the engine, so it is kept as a note only. The
+    probe runs after the measurement, so any failure of it is unknown, never
+    an exception that costs the report; nothing is inferred from a port or a
+    model name."""
     def get(path):
         try:
             with urllib.request.urlopen(f"{endpoint}{path}", timeout=timeout) as r:
-                return r.headers.get("Server"), json.loads(r.read())
+                server = r.headers.get("Server")
+                try:
+                    return server, json.loads(r.read())
+                except Exception:   # a short or broken body (IncompleteRead), not JSON
+                    return server, None
         except urllib.error.HTTPError as e:
             return e.headers.get("Server"), None
-        except (OSError, ValueError):
+        except Exception:           # refused, reset, timed out, malformed: unknown
             return None, None
     hdr, caps = get("/v1/capabilities")
     if isinstance(caps, dict) and caps.get("object") == "runner.capabilities":
@@ -92,11 +99,10 @@ def endpoint_engine(endpoint, timeout=30):
     hdr2, props = get("/props")
     if isinstance(props, dict) and props.get("build_info"):
         return {"name": "llama.cpp", "version": props["build_info"], "from": "/props"}
-    server = hdr or hdr2
-    if server:
-        return {"name": server, "version": None, "from": "Server header"}
-    return {"name": "unknown", "version": None, "from": None}
-
+    out = {"name": "unknown", "version": None, "from": None}
+    if hdr or hdr2:
+        out["server_header"] = hdr or hdr2
+    return out
 
 class _Obj(dict):
     """A JSON object that also keeps its members in order, duplicates
