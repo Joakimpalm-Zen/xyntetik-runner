@@ -96,3 +96,27 @@ def test_reasoning_sampling_without_a_seed_is_never_cacheable(tmp_path):
         m = _metrics(srv)
     assert m["runner_repeat_requests_exact_total"] == 1, m
     assert m["runner_repeat_requests_cacheable_total"] == 0, m
+
+
+def _complete(srv, **body):
+    req = urllib.request.Request(srv.base_url + "/v1/completions",
+                                 json.dumps({"prompt": "hi", "max_tokens": 4, "temperature": 0, **body}).encode(),
+                                 {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.load(r)
+
+
+def test_special_tokens_and_a_scripted_reply_are_part_of_the_request():
+    """codex's second read of PR E: special_tokens spells a generated control token (and a stop can
+    match inside that spelling), and a scripted reply is the answer itself, so a request that differs
+    only there is another request. Replies A and B are two requests; B again is the one repeat."""
+    env = dict(os.environ, RUNNER_REPEAT_COUNT="1", RUNNER_TEST_SCRIPTED_REPLY="1")
+    with RunnerServer(find_runner(str(ROOT)), str(MODEL), ctx=512, env=env) as srv:
+        _complete(srv)
+        _complete(srv, special_tokens=True)
+        _complete(srv, runner_test_reply="A")
+        _complete(srv, runner_test_reply="B")
+        _complete(srv, runner_test_reply="B")
+        m = _metrics(srv)
+    assert m["runner_repeat_requests_hashed_total"] == 5, m
+    assert m["runner_repeat_requests_exact_total"] == 1, m

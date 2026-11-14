@@ -198,3 +198,40 @@ def test_a_served_schema_or_json_mode_turn_replays_under_its_constraint(
     assert rc == 0 and "VERIFIED" in out, out[-600:]
     rc, out = verify(tool_rec)
     assert rc == 0 and "VERIFIED" in out, out[-600:]
+
+
+def test_a_special_tokens_turn_is_recorded_and_replays_spelled(runner_bin, tmp_path):
+    """codex's second read of PR E: `special_tokens` renders a generated control token as its
+    spelling, so it shapes the recorded text, and a receipt that did not name it could not tell the
+    turn from a plain one (its replay decoded the control token to nothing and read MISMATCH). The
+    fixture generates only eos, a control token, which ignore_eos keeps generating. The control: the
+    same record with special_tokens taken out does not verify, so the replay spells only because the
+    record says to."""
+    model = tmp_path / "eos.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--suppress-all-but-eos",
+                    str(model)], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    d = tmp_path / "r"
+    with RunnerServer(runner_bin, model, ctx=256, extra_args=["--gpu", "off", "-t", "2",
+                                                              "--receipts", str(d)]) as srv:
+        out = _post(srv, "/v1/completions", {"prompt": "x", "max_tokens": 3, "temperature": 0,
+                                              "ignore_eos": True, "special_tokens": True})
+    text = out["choices"][0]["text"]
+    assert text and text.count(text[:len(text) // 3]) == 3, out      # eos spelled three times
+    rec_path = next(d.iterdir())
+    rec = json.loads(rec_path.read_text())
+    assert "special_tokens" in rec["serve"]["shaped_by"], rec["serve"]
+    assert rec["output"]["text"] == text, rec["output"]
+
+    def verify(p):
+        return subprocess.run([runner_bin, "-m", model, "--verify", p, "--ignore-eos", "--gpu", "off",
+                               "-t", "2", "-c", "256"], capture_output=True, text=True, timeout=120)
+    v = verify(rec_path)
+    assert v.returncode == 0 and "VERIFIED" in v.stdout + v.stderr, v.stdout + v.stderr
+    plain = dict(rec)
+    plain["constraints"] = [c for c in rec["constraints"] if c["kind"] != "special_tokens"]
+    plain["serve"] = dict(rec["serve"], shaped_by=[k for k in rec["serve"]["shaped_by"]
+                                                   if k != "special_tokens"])
+    pp = tmp_path / "plain.json"
+    pp.write_text(json.dumps(plain))
+    w = verify(pp)
+    assert w.returncode != 0 and "VERIFIED" not in w.stdout, w.stdout + w.stderr
