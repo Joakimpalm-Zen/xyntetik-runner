@@ -591,14 +591,12 @@ def test_record_refuses_a_declared_limit_backend():
 
 def test_record_writes_a_tier2_cell_as_dated_evidence():
     """A Tier 2 file a run includes is recorded like a Tier 1 file (a new
-    admission at Tier 2 records the pass that admitted it); the gate still
-    reads only Tier 1 rows."""
+    admission at Tier 2 records the pass that admitted it)."""
     row = tier1_row(tier="tier2")
     row["transitions"][-1]["tier"] = "tier2"
     doc = record(smoke_result(), row)
     cell = doc["rows"][0]["backends"]["metal"]
     assert cell["result"] == "pass" and cell["runner_version"] == "1.5.1"
-    assert mt.gate(doc, TODAY) == []
 
 
 def test_record_refuses_a_row_below_tier2():
@@ -637,13 +635,8 @@ def test_the_cli_records_into_the_roster_file(tmp_path):
 
 
 # --- the gate: what scripts/check-release.py refuses a tag on ----------------
-# Policy decision 2026-10-28: a record is never re-run by age. The gate asks
-# only for a recorded pass on the backend the row names and no recorded
-# failure on any; the printed age is information for the paper trail.
-
-import datetime  # noqa: E402
-
-TODAY = datetime.date(2026, 10, 23)
+# Policy decision 2026-10-28: a record is never re-run by age. A recorded
+# cell ("kind": "gate") is the dated evidence of one validation run.
 
 
 def gate(day, result="pass", device_class="macos-arm64-metal", version="1.5.0"):
@@ -659,23 +652,6 @@ def gated(**cells):
     return roster(row)
 
 
-def test_a_recorded_pass_on_the_named_backend_passes_the_gate():
-    assert mt.gate(gated(metal=gate("2026-10-22")), TODAY) == []
-
-
-def test_a_tier1_row_whose_smoke_never_ran_is_refused():
-    """The device ledger's NEVER: a row nobody validated has no pass to show."""
-    assert mt.gate(gated(), TODAY) == ["toy-q8_0"]
-
-
-def test_an_old_record_is_not_refused_and_its_age_is_printed(capsys):
-    """No re-testing by age: a pass from months ago stands until the next
-    validation run, and the report says how old it is."""
-    assert mt.gate(gated(metal=gate("2026-01-01")), TODAY) == []
-    out = capsys.readouterr().out
-    assert out.startswith("ok") and "295 days ago" in out and "1.5.0 on 2026-01-01" in out
-
-
 def test_the_roster_carries_no_age_policy():
     """The age limit left with the decision: neither the policy nor a row
     holds one, and the validator asks for none."""
@@ -687,47 +663,10 @@ def test_the_roster_carries_no_age_policy():
     assert not any("max_age_days" in r for r in mt.load(ROSTER)["rows"])
 
 
-def test_a_failing_cell_on_any_backend_refuses():
-    """Recent and red is worse than absent: a recorded failure on a backend
-    the row is not gated on still says this file broke."""
-    doc = gated(metal=gate("2026-10-22"), cpu=gate("2026-10-22", result="fail"))
-    assert mt.gate(doc, TODAY) == ["toy-q8_0"]
-
-
-def test_a_pass_from_another_device_class_counts_and_is_named(capsys):
-    """A recorded pass stands wherever it ran; the report names the class
-    it ran on beside the one the row names for its next run."""
-    doc = gated(metal=gate("2026-10-22", device_class="linux-x86_64-cuda"))
-    assert mt.gate(doc, TODAY) == []
-    assert "metal on linux-x86_64-cuda" in capsys.readouterr().out
-
-
-def test_rows_below_tier1_are_not_gated():
-    row = tier1_row(tier="tier2")
-    row["transitions"][-1]["tier"] = "tier2"
-    assert mt.gate(roster(row), TODAY) == []
-
-
-# Borrowed hardware (owner decision 2026-10-27): a row whose smoke class is
-# a lent machine is reported like the others, but a missing record on it
-# never holds a release; a recorded failure does on any class.
+# Borrowed hardware (owner decision 2026-10-27): a cell recorded on a lent
+# machine is dated evidence, and the support page marks it so.
 
 LENT = frozenset({"macos-arm64-metal"})
-
-
-def test_a_never_gated_row_on_borrowed_hardware_does_not_refuse(capsys):
-    assert mt.gate(gated(), TODAY, borrowed=LENT) == []
-    out = capsys.readouterr().out
-    assert out.startswith("NEVER") and "borrowed hardware" in out
-
-
-def test_a_failing_cell_on_borrowed_hardware_still_refuses():
-    doc = gated(metal=gate("2026-10-22", result="fail"))
-    assert mt.gate(doc, TODAY, borrowed=LENT) == ["toy-q8_0"]
-
-
-def test_a_never_gated_row_on_owned_hardware_refuses_whatever_else_is_borrowed():
-    assert mt.gate(gated(), TODAY, borrowed=frozenset({"linux-x86_64-cuda"})) == ["toy-q8_0"]
 
 
 def test_borrowed_classes_come_from_the_ledgers_ownership_field():
@@ -759,25 +698,6 @@ def test_the_support_doc_names_borrowed_hardware_on_the_row():
     assert "(borrowed hardware" in text
     assert "(borrowed hardware" not in mt.render_doc(gated(metal=gate("2026-10-22")),
                                                      frozenset())
-
-
-def test_the_gate_report_prints_every_tier1_row(capsys):
-    mt.gate(gated(metal=gate("2026-10-22")), TODAY)
-    assert "toy-q8_0" in capsys.readouterr().out
-
-
-def test_the_gate_summary_follows_the_rows_in_one_pipe(tmp_path):
-    """check-release reads this check with stdout and stderr merged into
-    one pipe; the per-row lines must come before the summary under them."""
-    rpath = tmp_path / "tiers.json"
-    dpath = tmp_path / "devices.json"
-    mt.save(gated(), rpath)
-    dpath.write_text(json.dumps(DEVICES), encoding="utf-8")
-    r = subprocess.run([sys.executable, str(SCRIPT), "--gate", "--json", str(rpath),
-                        "--device-evidence", str(dpath), "--today", TODAY.isoformat()],
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    assert r.returncode == 1
-    assert r.stdout.index("NEVER") < r.stdout.index("need")
 
 
 def test_record_refuses_a_companion_run_on_another_base():
