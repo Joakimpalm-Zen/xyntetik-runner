@@ -4494,6 +4494,20 @@ static int run_merge_lora(const cli_opts *o) {
 
 // --quantize, with --quant, --type-plan, --prune-experts or
 // --remove-sublayer: rewrite the file and write its provenance record.
+// Whether two paths name one file: the same string, or the same identity
+// (size, inode, and both times). A platform that reports no inode (0) is
+// held to the string, so two different files never read as one.
+static bool same_file(const char *a, const char *b) {
+    if (!strcmp(a, b)) return true;
+    uint64_t sa, sb, ia, ib;
+    int64_t ma, mb, ca, cb;
+    int ea, eb;
+    if (!plat_file_identity(a, &sa, &ia, &ma, &ca, &ea) ||
+        !plat_file_identity(b, &sb, &ib, &mb, &cb, &eb))
+        return false;
+    return ia != 0 && ia == ib && sa == sb && ma == mb && ca == cb;
+}
+
 static int run_quantize(const cli_opts *o) {
     int tt;
     // --type-plan decides the type PER TENSOR, so a whole-file --quant
@@ -4540,6 +4554,19 @@ static int run_quantize(const cli_opts *o) {
         // rewrite's own open would
         fprintf(stderr, "error: cannot open %s to hash it for the rewrite's "
                 "provenance record\n", o->model_path);
+        quantize_set_imatrix(NULL);
+        return 1;
+    }
+    // The record links the record the input came with (lineage_put_input).
+    // A second in-place rewrite would write its own record over that very
+    // file, and the link would name a record that no longer exists: refuse
+    // it before anything is written.
+    char linked[4096], own_rec[4096];
+    snprintf(own_rec, sizeof own_rec, "%s.quant.json", o->quant_out);
+    if (lineage_sidecar(o->model_path, linked, sizeof linked) && same_file(linked, own_rec)) {
+        fprintf(stderr, "error: this rewrite's record would overwrite %s, the record of how %s "
+                "was made, which it links; write the rewrite to a new file\n",
+                plat_path_base(linked), plat_path_base(o->model_path));
         quantize_set_imatrix(NULL);
         return 1;
     }
