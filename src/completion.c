@@ -4102,6 +4102,9 @@ typedef struct {
     int n_prompt;
     double tokenize_s;
     int ctx_tokens;
+    // The first token of the generation prompt, where a recurrent slot marks
+    // its fold (R10.27); -1 when the request has no such boundary.
+    int anchor;
     bool omit_reasoning;
     req_diag diag;
 } completion_prep;
@@ -4114,7 +4117,7 @@ typedef struct {
 // and answers; false then.
 static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api,
                                jv *req, const tool_envelope *env, bool chat,
-                               completion_req *q, completion_prep *p) {
+                               size_t gen_at, completion_req *q, completion_prep *p) {
     model_t *m = s->m;
     engine *e = &s->e;
     int ctx_tokens = 0;
@@ -4138,6 +4141,27 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
     } else {
         n_prompt = tok_encode_fit(s->tok, prompt, true,
                                   chat ? TOK_PROMPT : TOK_RAW, 0, &toks);
+    }
+    // R10.27: the message boundary in tokens. The prompt's first gen_at bytes
+    // are the messages without the generation prompt (server.c); they are a
+    // boundary for the fold only if their tokens are the prompt's first
+    // tokens, which a merge across the seam would break. So they are
+    // tokenized and compared, not assumed: no anchor where they differ.
+    // Only a slot that will mark pays the second pass.
+    int anchor = -1;
+    if (chat && gen_at && n_prompt > 1 && q->cache_prompt && model_has_recurrent(m)) {
+        char *head = malloc(gen_at + 1);
+        int32_t *ht = NULL;
+        if (head) {
+            memcpy(head, prompt, gen_at);
+            head[gen_at] = 0;
+            int hn = tok_encode_fit(s->tok, head, true, TOK_PROMPT, 0, &ht);
+            if (hn > 0 && hn < n_prompt && toks &&
+                !memcmp(ht, toks, sizeof(*toks) * (size_t)hn))
+                anchor = hn;
+        }
+        free(ht);
+        free(head);
     }
     double tokenize_s = now_s() - tokenize_t0;
     if (n_prompt < 0) {
@@ -4321,6 +4345,7 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
     p->n_prompt = n_prompt;
     p->tokenize_s = tokenize_s;
     p->ctx_tokens = ctx_tokens;
+    p->anchor = anchor;
     p->omit_reasoning = omit_reasoning;
     p->diag = diag;
     return true;
@@ -4971,15 +4996,22 @@ static float *turn_prefill(turn_result *t) {
     fprintf(stderr, "[slot %d] %s: start, %d prompt (%d cached, %s)\n",
             s->id, g->id, prep->n_prompt, t->keep, prep->diag.prompt_reuse);
 
-    // A recurrent slot marks its fold one token short of the prompt end, so
-    // the next request resumes there whether it replays this prompt verbatim
-    // (engine_rewind keeps at most n - 1: one token is always fed for logits)
-    // or extends it with a re-rendered reply and a new turn. The last prompt
-    // token is then fed on its own, as a kept attention prefix already feeds
-    // it. Inside the device turn: on CUDA the mark reads device-resident
-    // state. Attention-only models mark nothing and take the single feed.
+    // A recurrent slot marks its fold so the next request can resume there.
+    // A chat request marks where its generation prompt begins (R10.27): the
+    // messages before it are what the next request replays, while the
+    // generation prompt itself need not be (Qwen3.5's opens a think block
+    // that its history renders without). Without that boundary, or when the
+    // slot already sits past it (the kept run is the fold's own position),
+    // the mark is one token short of the prompt end: the next request
+    // resumes there if it replays this prompt verbatim (engine_rewind keeps
+    // at most n - 1: one token is always fed for logits). The last prompt
+    // token is fed on its own, as a kept attention prefix already feeds it.
+    // Inside the device turn: on CUDA the mark reads device-resident state.
+    // Attention-only models mark nothing and take the single feed.
     float *logits = NULL;
-    int mark_at = prep->n_prompt - 1;
+    int last = prep->n_prompt - 1;
+    bool at_anchor = prep->anchor >= t->keep && prep->anchor < last;
+    int mark_at = at_anchor ? prep->anchor : last;
     if (score_prompt) {
         g->ptoks = malloc(sizeof(int32_t) * (size_t)prep->n_prompt);
         int top_n = q->plp > q->lp_n ? q->plp : q->lp_n;
@@ -4990,8 +5022,12 @@ static float *turn_prefill(turn_result *t) {
     } else if (q->cache_prompt && prep->n_prompt > 1 && model_has_recurrent(e->m)) {
         bool ok = mark_at == t->keep ||   // resumed at the mark: nothing before it to feed
                   engine_feed(e, prep->toks + t->keep, mark_at - t->keep) != NULL;
-        if (ok) engine_mark_turn(e);
-        if (ok) logits = engine_feed(e, prep->toks + mark_at, 1);
+        if (ok && at_anchor) engine_mark_anchor(e);
+        else if (ok) engine_mark_turn(e);
+        // the generation prompt, up to its last token
+        if (ok && mark_at < last)
+            ok = engine_feed(e, prep->toks + mark_at, last - mark_at) != NULL;
+        if (ok) logits = engine_feed(e, prep->toks + last, 1);
     } else {
         logits = engine_feed(e, prep->toks + t->keep, prep->n_prompt - t->keep);
     }
@@ -5513,7 +5549,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
     completion_apply(s, &q, prompt, chat, env);
 
     completion_prep prep;
-    if (!completion_prepare(s, fd, prompt, api, req, env, chat, &q, &prep)) return;
+    if (!completion_prepare(s, fd, prompt, api, req, env, chat,
+                            chat && rs ? rs->gen_at : 0, &q, &prep)) return;
 
     gen_ctx g = { .out = {0}, .fd = fd, .stream = q.stream, .api = api,
                   .omit_reasoning = prep.omit_reasoning,

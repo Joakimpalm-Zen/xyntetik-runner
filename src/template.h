@@ -606,6 +606,13 @@ typedef struct {
     // The thinking mode the prompt was rendered under: THINK_DEFAULT,
     // THINK_ON or THINK_OFF, whichever spelling the request used for it.
     int think_mode;
+    // Where the generation prompt begins, in bytes: the same messages
+    // rendered without it are exactly the prompt's first gen_at bytes. 0 when
+    // that was not asked or does not hold (a template that writes the last
+    // message differently when a reply is to follow). render_messages_state
+    // leaves it 0; render_prompt_state_alloc, which renders both ways, sets
+    // it (server.c, R10.27).
+    size_t gen_at;
 } render_state;
 
 // render_messages_with_tools() that also reports the render's state. `st`

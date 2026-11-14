@@ -3617,7 +3617,52 @@ static void test_the_control_token_split_is_for_unconstrained_chat_alone(void) {
     assert(!think_split_is_control(NULL, NULL, true, false));
 }
 
+// R10.27: a recurrent slot marks its fold where the generation prompt
+// begins, and that boundary is found by rendering the messages without the
+// generation prompt and requiring those bytes to be what the prompt starts
+// with (server.c, generation_prompt_at). This holds the property per family:
+// each one either has the boundary on every history and thinking mode tried,
+// or is listed below as having none, where a slot keeps the mark one token
+// short of its prompt end. A family that moves from one group to the other
+// changes what an agent loop on it re-feeds, and fails here.
+static void test_the_generation_prompt_is_a_suffix_or_the_family_is_listed(void) {
+    static const chat_msg one[] = { { .role = "user", .content = "List the files." } };
+    static const chat_msg sys[] = { { .role = "system", .content = "Be brief." },
+                                    { .role = "user", .content = "List the files." } };
+    static const chat_msg turn[] = { { .role = "user", .content = "List the files." },
+                                     { .role = "assistant", .content = "a.txt and b.txt" },
+                                     { .role = "user", .content = "Which is bigger?" } };
+    static const struct { const chat_msg *m; int n; } hist[] = { { one, 1 }, { sys, 2 }, { turn, 3 } };
+    static const int modes[] = { THINK_DEFAULT, THINK_ON, THINK_OFF };
+    for (int t = 0; t < TMPL_COUNT; t++) {
+        int with = 0, without = 0;
+        for (size_t h = 0; h < sizeof hist / sizeof *hist; h++)
+            for (size_t k = 0; k < sizeof modes / sizeof *modes; k++) {
+                static char full[8192], head[8192];
+                size_t fn = render_messages(t, hist[h].m, hist[h].n, true, modes[k], full, sizeof full);
+                size_t hn = render_messages(t, hist[h].m, hist[h].n, false, modes[k], head, sizeof head);
+                assert(fn < sizeof full && hn < sizeof head);
+                size_t hl = strlen(head);
+                if (hl && hl < strlen(full) && !memcmp(head, full, hl)) with++;
+                else without++;
+            }
+        // No boundary: the [INST] families and Phi, whose last message and
+        // generation prompt are one piece of text, and raw, which has no
+        // turns. None of them is a recurrent family today.
+        bool listed = t == TMPL_LLAMA2 || t == TMPL_LLAMA2_FALLBACK || t == TMPL_MISTRAL ||
+                      t == TMPL_MISTRAL_V1 || t == TMPL_MISTRAL_NEMO || t == TMPL_MISTRAL_SYS ||
+                      t == TMPL_PHI3 || t == TMPL_PHI4 || t == TMPL_RAW;
+        if ((listed ? with : without) != 0) {
+            fprintf(stderr, "%s: the generation prompt is a suffix on %d of %d renders, and the "
+                    "family is %s as having no message boundary\n", template_name(t), with,
+                    with + without, listed ? "listed" : "not listed");
+            assert(0);
+        }
+    }
+}
+
 int main(void) {
+    test_the_generation_prompt_is_a_suffix_or_the_family_is_listed();
     test_the_control_token_split_is_for_unconstrained_chat_alone();
     test_detect_qwen3_coder();
     test_leading_system_messages_are_joined();

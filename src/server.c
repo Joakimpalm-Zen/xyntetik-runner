@@ -91,6 +91,27 @@ char *render_prompt_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
                                      thinking, tools, hint, NULL);
 }
 
+// R10.27: where `prompt`'s generation prompt begins, for a recurrent slot's
+// mark (render_state.gen_at). Found by rendering, not by knowing the family:
+// the same messages without the generation prompt, and only if those bytes
+// are what the prompt starts with. A template that writes its last message
+// another way when a reply is to follow gives no boundary (0), and the slot
+// marks one token short of the prompt end as it always has. One more render
+// of the prompt, on every chat surface alike.
+static size_t generation_prompt_at(int tmpl, const chat_msg *msgs, int n_msgs,
+                                   int thinking, const jv *tools, const char *prompt) {
+    size_t plen = strlen(prompt), at = 0;
+    // A head that does not fit in the prompt's own length is not its prefix.
+    char *head = malloc(plen + 1);
+    if (!head) return 0;
+    size_t n = render_messages_state(tmpl, msgs, n_msgs, false, thinking, tools,
+                                     head, plen + 1, NULL);
+    size_t hn = n == SIZE_MAX ? 0 : strlen(head);
+    if (hn && hn < plen && n < plen + 1 && !memcmp(head, prompt, hn)) at = hn;
+    free(head);
+    return at;
+}
+
 char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
                                 bool add_assistant, int thinking, const jv *tools,
                                 size_t hint, render_state *st) {
@@ -111,7 +132,11 @@ char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
         // prompt that happens to end one byte short of `cap` is grown once
         // unnecessarily, which costs a render; the reverse mistake costs the
         // user's question.
-        if (n < cap && strlen(p) + 1 < cap) return p;
+        if (n < cap && strlen(p) + 1 < cap) {
+            if (st && add_assistant)
+                st->gen_at = generation_prompt_at(tmpl, msgs, n_msgs, thinking, tools, p);
+            return p;
+        }
         free(p);
         if (cap > SIZE_MAX / 2) return NULL;  // no size can hold it
         size_t want = (n > cap ? n : cap) + 1;

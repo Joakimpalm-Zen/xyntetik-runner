@@ -14,7 +14,8 @@ and whether the answer is the one a fresh slot gives:
      re-rendering does to reasoning and tool calls), a tool-result or user
      turn -> must keep all of P1 but a few boundary tokens, and must answer
      exactly as the same request on a fresh slot (cache_prompt:false);
-  3. request 2 again, verbatim -> must keep all but one token.
+  3. request 2 again, verbatim -> must keep everything but its generation
+     prompt (a chat request's mark sits where that begins), a few tokens.
 
 Every turn's prefill seconds and reason are recorded; the model file, the
 binary and the served preset are hashed into the record so a PASS names
@@ -35,7 +36,7 @@ import urllib.request
 
 from file_digest import sha256_file
 
-BOUNDARY_SLACK = 8   # tokens a template may re-tokenize at the reply boundary
+BOUNDARY_SLACK = 8   # tokens of a generation prompt, fed again past the mark
 FILLER = ("You are a coding agent working in a repository. The project has "
           "a Makefile, a src directory with C files, a tests directory with "
           "Python and C tests, a README and a CHANGELOG. ")
@@ -138,8 +139,10 @@ def main():
         "pass": (t2["cached_tokens"] or 0) >= n1 - BOUNDARY_SLACK,
         "cached_tokens": t2["cached_tokens"], "first_prompt_tokens": n1,
         "cache": t2["cache"]}
-    checks["verbatim_replay_keeps_all_but_one"] = {
-        "pass": t3["cached_tokens"] == t2["prompt_tokens"] - 1,
+    # The mark of a chat request sits where its generation prompt begins
+    # (R10.27), so a replay feeds that again: a few tokens, not one.
+    checks["verbatim_replay_keeps_the_messages"] = {
+        "pass": t2["prompt_tokens"] - BOUNDARY_SLACK <= (t3["cached_tokens"] or 0) < t2["prompt_tokens"],
         "cached_tokens": t3["cached_tokens"], "prompt_tokens": t2["prompt_tokens"],
         "cache": t3["cache"]}
     checks["kept_turn_answers_like_a_fresh_slot"] = {
