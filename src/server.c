@@ -1536,6 +1536,14 @@ static void handle_context_create(slot_t *s, sock_t fd, jv *req) {
                           "[A-Za-z0-9._:-]", "id", "invalid_value");
         return;
     }
+    // R3.62: a context under a preamble snapshot's name could stand in for
+    // that snapshot in a receipt
+    if (kvsnap_auto_shape(id)) {
+        send_error_detail(fd, 400, "\"pre-\" and 32 hex digits names a preamble "
+                          "snapshot the server writes itself; choose another id",
+                          "id", "invalid_value");
+        return;
+    }
     jv *prompt = jv_get(req, "prompt");
     jv *msgs = jv_get(req, "messages");
     jv *snap = jv_get(req, "snapshot");

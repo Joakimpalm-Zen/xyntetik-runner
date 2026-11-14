@@ -120,6 +120,7 @@ static bool fail(kvsnap_err *err, int status, const char *code, const char *fmt,
 }
 
 static bool auto_shape(const char *s, const char *suffix);   // R3.62, below
+static bool auto_remove_pair(const char *name);               // R3.62, below
 
 // a snapshot name is a plain file stem: [A-Za-z0-9._-], 1..64, no leading dot
 static bool name_ok(const char *s) {
@@ -544,8 +545,7 @@ bool kvsnap_auto_load(engine *e, const char *name) {
             damaged ? "; removed, it is written again after this prefill" : "");
     if (damaged) {
         pthread_mutex_lock(&KS.mu);
-        plat_remove(kvpath);
-        plat_remove(manpath);
+        auto_remove_pair(name);
         pthread_mutex_unlock(&KS.mu);
     }
     return false;
@@ -561,60 +561,101 @@ static bool auto_shape(const char *s, const char *suffix) {
     return !strcmp(s + 36, suffix);
 }
 
-// Bring the preamble snapshots under the cap, least recently written first.
-// A file and its manifest go together; `keep` is never removed. A candidate
-// that cannot be removed (not a regular file, or the remove fails) is left
-// out of the count from then on, so the pass always ends.
+bool kvsnap_auto_shape(const char *name) { return name && auto_shape(name, ""); }
+
+// Remove a preamble snapshot, manifest first: without its manifest a .kv is
+// never loaded, so a failure between the two leaves nothing that is used,
+// and a failure of the first leaves the pair whole. True when both are gone.
+// Only regular files: a directory or a link of that name is left alone.
+static bool auto_remove_pair(const char *name) {
+    char kv[1200], man[1200];
+    auto_paths(name, kv, man, sizeof kv);
+    if (exists(man) && (!record_regular_file(man) || plat_remove(man) != 0)) return false;
+    if (exists(kv) && (!record_regular_file(kv) || plat_remove(kv) != 0)) return false;
+    return true;
+}
+
+// Bring the preamble snapshots under the cap, least recently written first,
+// in one pass over the directory as it stood. `keep` is never removed. An
+// entry that cannot be removed stays counted (it is on the disk) and the pass
+// goes on to the next: the cap is then held by the ones that can go.
+typedef struct { char name[44]; long long size, mtime; } auto_ent;
+
+static int auto_ent_older(const void *a, const void *b) {
+    const auto_ent *x = a, *y = b;
+    if (x->mtime != y->mtime) return x->mtime < y->mtime ? -1 : 1;
+    return strcmp(x->name, y->name);
+}
+
 static void auto_trim(const char *keep) {
-    enum { STUCK_MAX = 32 };
-    char stuck[STUCK_MAX][44];
-    int n_stuck = 0;
-    for (int pass = 0; pass < 100000; pass++) {
-        long long total = 0;
-        char oldest[44] = "";
-        long long oldest_t = 0;
-        plat_dir *d = plat_opendir(KS.dir);
-        if (!d) return;
-        const char *nm;
-        while ((nm = plat_readdir(d))) {
-            if (!auto_shape(nm, ".kv")) continue;
-            bool is_stuck = false;
-            for (int i = 0; i < n_stuck; i++) is_stuck |= !strcmp(stuck[i], nm);
-            if (is_stuck) continue;
-            char path[1200];
-            snprintf(path, sizeof path, "%s/%s", KS.dir, nm);
-            plat_stat_t st;
-            if (plat_stat(path, &st) != 0) continue;
-            total += (long long)st.st_size;
-            if (!strncmp(nm, keep, 36) && keep[36] == 0) continue;
-            if (!oldest[0] || (long long)st.st_mtime < oldest_t) {
-                snprintf(oldest, sizeof oldest, "%s", nm);
-                oldest_t = (long long)st.st_mtime;
-            }
-        }
-        plat_closedir(d);
-        if (total <= KS.auto_cap || !oldest[0]) return;
+    auto_ent *v = NULL;
+    int n = 0, cap = 0;
+    long long total = 0;
+    plat_dir *d = plat_opendir(KS.dir);
+    if (!d) return;
+    const char *nm;
+    while ((nm = plat_readdir(d))) {
         char path[1200];
-        snprintf(path, sizeof path, "%s/%s", KS.dir, oldest);
-        if (!record_regular_file(path) || plat_remove(path) != 0) {
-            fprintf(stderr, "kv snapshot %.36s: over the cap and cannot be removed; left "
-                    "in place and not counted\n", oldest);
-            if (n_stuck == STUCK_MAX) return;
-            snprintf(stuck[n_stuck++], sizeof stuck[0], "%s", oldest);
+        snprintf(path, sizeof path, "%s/%s", KS.dir, nm);
+        // a manifest whose .kv is gone is half a pair: nothing can load it
+        if (auto_shape(nm, ".kv.json")) {
+            char kv[1200];
+            snprintf(kv, sizeof kv, "%s/%.36s.kv", KS.dir, nm);
+            if (!exists(kv)) plat_remove(path);
             continue;
         }
-        snprintf(path, sizeof path, "%s/%s.json", KS.dir, oldest);
-        plat_remove(path);
-        fprintf(stderr, "kv snapshot %.36s: removed, the preamble snapshots were over "
-                "their cap\n", oldest);
+        if (!auto_shape(nm, ".kv")) continue;
+        plat_stat_t st;
+        if (plat_stat(path, &st) != 0) continue;
+        total += (long long)st.st_size;
+        if (!strncmp(nm, keep, 36) && keep[36] == 0) continue;
+        if (n == cap) {
+            int grown = cap ? cap * 2 : 64;
+            auto_ent *g = realloc(v, sizeof(*v) * (size_t)grown);
+            if (!g) break;   // out of memory: trim what is listed so far
+            v = g; cap = grown;
+        }
+        snprintf(v[n].name, sizeof v[n].name, "%.36s", nm);
+        v[n].size = (long long)st.st_size;
+        v[n].mtime = (long long)st.st_mtime;
+        n++;
     }
+    plat_closedir(d);
+    if (n > 1) qsort(v, (size_t)n, sizeof *v, auto_ent_older);
+    int stuck = 0;
+    for (int i = 0; i < n && total > KS.auto_cap; i++) {
+        if (auto_remove_pair(v[i].name)) {
+            total -= v[i].size;
+            fprintf(stderr, "kv snapshot %s: removed, the preamble snapshots were over "
+                    "their cap\n", v[i].name);
+        } else if (stuck++ == 0) {
+            fprintf(stderr, "kv snapshot %s: over the cap and cannot be removed; it stays "
+                    "and counts against the cap\n", v[i].name);
+        }
+    }
+    if (stuck > 1)
+        fprintf(stderr, "kv snapshots: %d preamble snapshots over the cap cannot be removed\n", stuck);
+    free(v);
 }
 
 void kvsnap_auto_save(engine *e, const char *name, int n) {
     if (!kvsnap_auto_on() || !name[0] || n < KS.auto_min) return;
     char kvpath[1200], manpath[1200];
     auto_paths(name, kvpath, manpath, sizeof kvpath);
-    if (exists(kvpath) && exists(manpath)) return;
+    bool has_kv = exists(kvpath), has_man = exists(manpath);
+    if (has_kv && has_man) return;
+    if (has_kv || has_man) {
+        // half a pair (a removal that failed between the two): nothing loads
+        // it and the writer refuses beside it, so it goes first
+        pthread_mutex_lock(&KS.mu);
+        bool cleared = auto_remove_pair(name);
+        pthread_mutex_unlock(&KS.mu);
+        if (!cleared) {
+            fprintf(stderr, "kv snapshot %s: not written (half of an earlier one is in "
+                    "the way and cannot be removed)\n", name);
+            return;
+        }
+    }
     jv *req = json_parse("{}", 2);
     sbuf out = {0};
     kvsnap_err err = {0};

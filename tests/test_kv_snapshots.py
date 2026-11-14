@@ -354,13 +354,15 @@ def _plain(runner_bin, model, snaps):
 
 
 def _wait_files(snaps, n, seconds=20):
+    """The preamble snapshots written so far, once there are n whole ones (a
+    regular .kv with its manifest); entries that are not files do not count."""
     import time
     for _ in range(seconds * 10):
-        kv = sorted(snaps.glob("pre-*.kv"))
+        kv = sorted(p for p in snaps.glob("pre-*.kv") if p.is_file())
         if len(kv) >= n and all((snaps / (p.name + ".json")).exists() for p in kv):
             return kv
         time.sleep(0.1)
-    return sorted(snaps.glob("pre-*.kv"))
+    return sorted(p for p in snaps.glob("pre-*.kv") if p.is_file())
 
 
 def _preamble_tokens(runner_bin, model, snaps, system):
@@ -535,7 +537,7 @@ def test_the_cap_gives_up_on_a_file_it_cannot_remove(runner_bin, fx, tmp_path):
         for i in range(3):
             d = _chat(a, SYSTEM + " Session %d of the day." % i, "List the files.")
             assert d["reuse"] in ("none", "kv"), d
-        kv = [p for p in _wait_files(snaps, 2) if p.is_file()]
+        kv = _wait_files(snaps, 1)
         assert kv, list(snaps.iterdir())
     assert stuck.is_dir()
 
@@ -610,7 +612,7 @@ def test_the_cap_still_holds_behind_many_entries_it_cannot_remove(runner_bin, fx
     with _auto(runner_bin, fx["model"], snaps, "64:0.1") as a:
         for i in range(4):
             _chat(a, SYSTEM + " Session %d of the day." % i, "List the files.")
-            _wait_files(snaps, 41)
+            _wait_files(snaps, 1)
         import time
         time.sleep(0.5)
         real = [p for p in snaps.glob("pre-*.kv") if p.is_file()]

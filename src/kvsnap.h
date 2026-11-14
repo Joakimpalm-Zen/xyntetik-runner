@@ -66,6 +66,10 @@ bool kvsnap_load(const engine *e, const char *id, const char *name, sbuf *out,
 // false with the reason on stderr; needs kvsnap_configure first
 bool kvsnap_auto_configure(const char *arg);
 bool kvsnap_auto_on(void);
+// Is `name` of the shape those snapshots take ("pre-" and 32 lowercase hex
+// digits)? It is the server's own: refused as a snapshot name and as a
+// context id, whether or not the option is on.
+bool kvsnap_auto_shape(const char *name);
 int  kvsnap_auto_min(void);   // the shortest preamble worth a snapshot, in tokens
 void kvsnap_auto_name(const engine *e, const int32_t *toks, int n,
                       char out[KVSNAP_AUTO_NAME]);

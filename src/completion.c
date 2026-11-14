@@ -2962,8 +2962,8 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
     if (cut) sb_fmt(&sj, ",\"cut\":\"%s\"", cut);
     // R1.12.2: the KV snapshot this request's prompt started from
     char origin[256];
-    if (ctx_id && (prefix_context_origin(ctx_id, origin, sizeof origin) ||
-                   kvsnap_auto_origin(e, ctx_id, origin, sizeof origin)))
+    if (ctx_id && (kvsnap_auto_origin(e, ctx_id, origin, sizeof origin) ||
+                   prefix_context_origin(ctx_id, origin, sizeof origin)))
         sb_fmt(&sj, ",\"kv_snapshot\":%s", origin);
     sb_lit(&sj, "}");
     sb_put(&sj, "", 1);
@@ -4991,6 +4991,9 @@ static float *turn_prefill(turn_result *t) {
     if (score_prompt)
         engine_reset(e);
     else if (q->cache_prompt && q->share_prefix) {
+        // what an earlier turn on this slot loaded is not this turn's
+        e->snap_name[0] = 0;
+        e->snap_origin[0] = 0;
         t->reuse = engine_prefix_reuse(e, prep->toks, prep->n_prompt);
         // R3.62: neither the slot nor the shared tier holds this request's
         // preamble (a new process, or an unloaded model): its snapshot, when
