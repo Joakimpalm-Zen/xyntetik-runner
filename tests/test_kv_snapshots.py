@@ -672,7 +672,7 @@ def test_half_a_preamble_snapshot_is_replaced_not_left_for_ever(runner_bin, fx, 
 # ---- R6.81: the option on a model or template it cannot serve, and on Phi ----
 
 DECLINED_MODEL = "no preamble snapshot is kept for this model"
-DECLINED_TEMPLATE = "no preamble snapshot is kept under the chat template"
+DECLINED_TEMPLATE = "it does not write the system message as the first bytes"
 
 
 def _auto_as(runner_bin, model, snaps, template, log, auto=True):
@@ -721,7 +721,7 @@ def test_a_template_without_a_boundary_says_so_once(runner_bin, fx, tmp_path):
             "messages": [{"role": "user", "content": "List the files."}],
             "max_tokens": 4, "temperature": 0})
     text = log.read_text()
-    assert text.count(DECLINED_TEMPLATE) == 1 and "mistral" in text.split(DECLINED_TEMPLATE)[1][:40], \
+    assert text.count(DECLINED_TEMPLATE) == 1 and "under the chat template mistral:" in text, \
         text[-800:]
     assert not list(snaps.glob("pre-*"))
 
@@ -742,6 +742,36 @@ def test_a_recurrent_model_says_once_that_it_keeps_no_preamble(runner_bin, tmp_p
     assert not list(snaps.glob("pre-*"))
 
 
+DECLINED_TOKENS = "are one token, so its tokens are not the prompt's first tokens"
+
+
+def test_a_boundary_the_tokenizer_does_not_keep_says_so_once(runner_bin, tmp_path):
+    """A boundary in bytes is not always one in tokens. With a vocabulary that
+    holds the newline before Phi's user tag and the tag itself as ONE control
+    token, the system message alone ends in a newline token the prompt never
+    has. The engine rightly keeps nothing; it said nothing either."""
+    model = tmp_path / "joined.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(model),
+                    "--control", "\n<|user|>"], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    snaps, log = tmp_path / "snaps", tmp_path / "s.log"
+    with _auto_as(runner_bin, model, snaps, "phi3", log) as a:
+        _chat(a, SYSTEM, "List the files.")
+        _chat(a, SYSTEM, "Which file is the largest?")
+    text = log.read_text()
+    assert text.count(DECLINED_TOKENS) == 1 and \
+        "under the chat template phi3 with this tokenizer" in text, text[-800:]
+    assert DECLINED_TEMPLATE not in text and DECLINED_MODEL not in text
+    assert not list(snaps.glob("pre-*"))
+    # the control: the same file under a template that never writes that
+    # token keeps its preamble and prints no such line
+    snaps2, log2 = tmp_path / "snaps2", tmp_path / "s2.log"
+    with _auto_as(runner_bin, model, snaps2, "chatml", log2) as b:
+        _chat(b, SYSTEM, "List the files.")
+        assert len(_wait_files(snaps2, 1)) == 1
+    assert DECLINED_TOKENS not in log2.read_text()
+
+
 def test_a_model_and_template_that_keep_a_preamble_say_nothing_of_the_kind(runner_bin, fx, tmp_path):
     """The control for the two lines above: under ChatML on an attention-only
     model neither is printed, and the snapshot is written."""
@@ -750,4 +780,4 @@ def test_a_model_and_template_that_keep_a_preamble_say_nothing_of_the_kind(runne
         _chat(a, SYSTEM, "List the files.")
         assert len(_wait_files(snaps, 1)) == 1
     text = log.read_text()
-    assert DECLINED_MODEL not in text and DECLINED_TEMPLATE not in text
+    assert DECLINED_MODEL not in text and DECLINED_TEMPLATE not in text and DECLINED_TOKENS not in text

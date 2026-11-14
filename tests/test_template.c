@@ -3639,14 +3639,18 @@ static void test_the_generation_prompt_is_a_suffix_or_the_family_is_listed(void)
         for (size_t h = 0; h < sizeof hist / sizeof *hist; h++)
             for (size_t k = 0; k < sizeof modes / sizeof *modes; k++) {
                 static char full[8192], head[8192];
-                size_t fn = render_messages(t, hist[h].m, hist[h].n, true, modes[k], full, sizeof full);
-                // as the server's boundary finder renders it: what a template
-                // writes only because no reply follows is dropped (R6.81)
-                render_state hs;
+                // As the server's boundary finder does it (generation_prompt_at):
+                // both renders with their ownership marks in place, and what a
+                // template writes only because no reply follows dropped from
+                // the head (R6.81). close_len counts marked bytes, so the
+                // marks stay until after the subtraction.
+                render_state fs, hs;
+                size_t fn = render_messages_state(t, hist[h].m, hist[h].n, true, modes[k], NULL,
+                                                  full, sizeof full, &fs);
                 size_t hn = render_messages_state(t, hist[h].m, hist[h].n, false, modes[k], NULL,
                                                   head, sizeof head, &hs);
                 assert(fn < sizeof full && hn < sizeof head);
-                tok_strip_marks(head);   // as render_messages lifted them from `full`
+                assert(fs.close_len == 0);   // a render that asks for a reply closes nothing
                 size_t hl = strlen(head);
                 assert(hs.close_len <= hl);
                 hl -= hs.close_len;

@@ -4297,9 +4297,12 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
             memcpy(head, prompt, pre_at);
             head[pre_at] = 0;
             int hn = tok_encode_fit(s->tok, head, true, TOK_PROMPT, 0, &ht);
-            if (hn >= kvsnap_auto_min() && hn < n_prompt && toks &&
-                !memcmp(ht, toks, sizeof(*toks) * (size_t)hn))
-                preamble = hn;
+            if (hn >= kvsnap_auto_min() && hn < n_prompt && toks && ht) {
+                if (!memcmp(ht, toks, sizeof(*toks) * (size_t)hn)) preamble = hn;
+                // long enough and a boundary in bytes, but not in tokens:
+                // rightly not kept, and said (R6.81)
+                else kvsnap_auto_declined(KVSNAP_NO_TOKEN_BOUNDARY, template_name(s->tmpl));
+            }
         }
         free(ht);
         free(head);
