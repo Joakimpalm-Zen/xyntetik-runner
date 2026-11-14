@@ -1519,10 +1519,17 @@ static bool spawn_detached(const char *executable, const char *arg) {
     return ok;
 }
 
+// CreateProcessW above passes bInheritHandles FALSE: nothing to close.
+void plat_close_inherited(void) {}
+
 #else // POSIX
 
 #include <dirent.h>
 #include <sys/wait.h>
+#ifdef __APPLE__
+#include <crt_externs.h>
+#include <spawn.h>
+#endif
 
 void plat_utf8_startup(int *argc, char ***argv) { (void)argc; (void)argv; }
 
@@ -1604,23 +1611,59 @@ static void *reap_detached(void *arg) {
     return NULL;
 }
 
+// The helper must not carry the caller's model handles, leases or output
+// pipes. It is started on every registration, so what the start costs is
+// paid by every run (R6.75): never one close() per number the descriptor
+// limit allows. That limit can be 1,048,576 with a handful open, which was
+// 0.14 s of CPU a helper, and short runs started them faster than the
+// machine retired them.
+#ifdef __APPLE__
+
 static bool spawn_detached(const char *executable, const char *arg) {
-    long last_fd = sysconf(_SC_OPEN_MAX);
-    if (last_fd < 0 || last_fd > INT_MAX) last_fd = 65536;
+    // One call and no fork: the kernel starts the image in its own session
+    // and closes every descriptor the actions below did not open.
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attr;
+    if (posix_spawn_file_actions_init(&actions) != 0) return false;
+    if (posix_spawnattr_init(&attr) != 0) {
+        posix_spawn_file_actions_destroy(&actions);
+        return false;
+    }
+    bool ok = posix_spawnattr_setflags(&attr,
+                  POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSID) == 0;
+    for (int i = 0; ok && i < 3; i++)
+        ok = posix_spawn_file_actions_addopen(&actions, i, "/dev/null", O_RDWR, 0) == 0;
+    char *const argv[] = {(char *)executable, (char *)arg, NULL};
+    pid_t pid = -1;
+    ok = ok && posix_spawn(&pid, executable, &actions, &attr, argv, *_NSGetEnviron()) == 0;
+    posix_spawnattr_destroy(&attr);
+    posix_spawn_file_actions_destroy(&actions);
+    if (!ok) return false;
+    pthread_t reaper;
+    if (pthread_create(&reaper, NULL, reap_detached, (void *)(intptr_t)pid) == 0)
+        pthread_detach(reaper);
+    return true;
+}
+
+#else
+
+static bool spawn_detached(const char *executable, const char *arg) {
     pid_t pid = fork();
     if (pid < 0) return false;
     if (pid == 0) {
         // After a multithreaded fork, use only async-signal-safe operations
-        // until exec. Do not carry model handles, leases or output pipes.
+        // until exec.
         setsid();
         int nullfd = open("/dev/null", O_RDWR);
         if (nullfd < 0) _exit(127);
         for (int i = 0; i < 3; i++) if (dup2(nullfd, i) < 0) _exit(127);
-        bool closed = false;
+        if (nullfd > 2) close(nullfd);
 #if defined(__linux__) && defined(SYS_close_range)
-        closed = syscall(SYS_close_range, 3u, ~0u, 0u) == 0;
+        // One call for all of them. Where the kernel has none (before 5.9)
+        // or a sandbox refuses it, the helper closes what it inherited as
+        // its first act (plat_close_inherited), where it may list them.
+        syscall(SYS_close_range, 3u, ~0u, 0u);
 #endif
-        if (!closed) for (long fd = 3; fd < last_fd; fd++) close((int)fd);
         char *const argv[] = {(char *)executable, (char *)arg, NULL};
         execv(executable, argv);
         _exit(127);   // exec failure is best-effort: the caller never waits
@@ -1631,6 +1674,23 @@ static bool spawn_detached(const char *executable, const char *arg) {
     // If reaper allocation failed, the child still runs; the OS reaps it
     // when this process exits. Never turn cleanup into a startup wait.
     return true;
+}
+
+#endif
+
+void plat_close_inherited(void) {
+    // /dev/fd lists this process's open descriptors on Linux, macOS and the
+    // BSDs, so the work is one call per open descriptor.
+    DIR *d = opendir("/dev/fd");
+    if (!d) return;
+    int self = dirfd(d);
+    for (struct dirent *e; (e = readdir(d)) != NULL; ) {
+        char *end;
+        long fd = strtol(e->d_name, &end, 10);
+        if (end == e->d_name || *end || fd < 3 || fd > INT_MAX || fd == self) continue;
+        close((int)fd);
+    }
+    closedir(d);
 }
 
 #endif

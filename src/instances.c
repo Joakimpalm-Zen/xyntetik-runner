@@ -228,6 +228,7 @@ static void sweep_stale(void) {
 }
 
 int instances_sweep_worker(void) {
+    plat_close_inherited();
     const char *dir = instances_dir();
     char path[1200];
     if (!dir || !path_child(path, sizeof path, dir, lease_sep(), "sweep.lock")) return 0;
