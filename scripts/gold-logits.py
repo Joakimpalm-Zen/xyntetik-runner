@@ -57,6 +57,7 @@ import json
 import math
 import os
 import sys
+import urllib.error
 import urllib.request
 
 
@@ -69,6 +70,32 @@ def side_file(path, repo):
         for chunk in iter(lambda: f.read(1 << 22), b""):
             h.update(chunk)
     return {"repo": repo, "name": os.path.basename(path), "sha256": h.hexdigest()}
+
+
+def endpoint_engine(endpoint, timeout=30):
+    """Which engine served an HTTP side, as the server says itself (R7.21.2):
+    Runner answers /v1/capabilities with runner.capabilities and its version,
+    llama.cpp's server answers /props with its build_info, and anything else
+    is named by its Server header. An endpoint that answers none of these is
+    unknown; nothing is inferred from a port or a model name."""
+    def get(path):
+        try:
+            with urllib.request.urlopen(f"{endpoint}{path}", timeout=timeout) as r:
+                return r.headers.get("Server"), json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.headers.get("Server"), None
+        except (OSError, ValueError):
+            return None, None
+    hdr, caps = get("/v1/capabilities")
+    if isinstance(caps, dict) and caps.get("object") == "runner.capabilities":
+        return {"name": "runner", "version": caps.get("version"), "from": "/v1/capabilities"}
+    hdr2, props = get("/props")
+    if isinstance(props, dict) and props.get("build_info"):
+        return {"name": "llama.cpp", "version": props["build_info"], "from": "/props"}
+    server = hdr or hdr2
+    if server:
+        return {"name": server, "version": None, "from": "Server header"}
+    return {"name": "unknown", "version": None, "from": None}
 
 
 class _Obj(dict):
@@ -955,6 +982,9 @@ def main():
             "max_dropped_gold_mass": max((r[name]["dropped_gold_mass"] for r in rows), default=0.0),
             "id_spelling_mismatches": sum(r[name]["id_spelling_mismatches"] for r in rows),
         }
+        endpoint = getattr(args, f"endpoint_{name}")
+        summary["sides"][name]["engine"] = (endpoint_engine(endpoint) if endpoint else
+                                            {"name": "runner", "version": None, "from": "score file"})
         gguf, repo = getattr(args, f"gguf_{name}"), getattr(args, f"repo_{name}")
         if gguf:
             summary["sides"][name]["file"] = side_file(gguf, repo)

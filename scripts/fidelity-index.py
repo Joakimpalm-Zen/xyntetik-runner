@@ -54,6 +54,18 @@ def _roster_names(roster):
     return {n: v[0] for n, v in seen.items() if len({(x["repo"], x["sha256"]) for x in v}) == 1}
 
 
+def _read_with(v, model):
+    """The engine a side was read with: its recorded engine (gold-logits from
+    R7.21.2 on), else a score file's runner --score, else an endpoint whose
+    engine the report does not say."""
+    eng = v.get("engine")
+    if isinstance(eng, dict) and eng.get("name") and eng["name"] != "unknown":
+        return f"{eng['name']} {eng['version']}" if eng.get("version") else eng["name"]
+    if str(v.get("endpoint", "")).endswith(".json") or model == "score file":
+        return "runner --score"
+    return "an HTTP endpoint"
+
+
 def collect(reports, join_path, roster):
     join = json.loads(join_path.read_text(encoding="utf-8")) if join_path.exists() else {"sides": {}}
     if join.get("schema_version", JOIN_SCHEMA) != JOIN_SCHEMA:
@@ -78,8 +90,7 @@ def collect(reports, join_path, roster):
                 "label": model or "unnamed", "reference": s.get("hf", ""),
                 "positions": int(s.get("positions", 0)),
                 "corpus": pathlib.PurePosixPath(str(s.get("corpus", ""))).name,
-                "read_with": "runner --score" if str(v.get("endpoint", "")).endswith(".json")
-                             or model == "score file" else "an HTTP endpoint",
+                "read_with": _read_with(v, model),
                 "kld": kld, "mq": mq, "top1": float(v.get("top1_agreement_pct", 0.0)),
                 "verdict": "pass" if kld <= MAX_KLD and mq >= MIN_MQ else "fail",
             })
