@@ -445,6 +445,16 @@ typedef struct {
     float       *rope_inv_freq; // [rope_dim/2], scaling factors folded in
     float       *rope_inv_freq_local; // sliding-window layers, own base, unscaled
     int          rope_dim_local;      // rotated dims on sliding layers
+    // phi3 LongRoPE served with a context over the model's original one
+    // (R4.40): two factor sets, chosen per sequence as the publisher's code
+    // chooses them. A sequence of up to rope_long_from tokens rotates with
+    // the short set; a longer one with the long set, from its first token.
+    // rope_inv_freq (and a device's copy of it) holds the set this instance's
+    // KV rows were made with, and rope_long says which. rope_long_from == 0:
+    // the model has one set and none of this applies.
+    float       *rope_freq_short, *rope_freq_long;   // [rope_dim/2] each, or NULL
+    int          rope_long_from;
+    bool         rope_long;
     // ---- per-sequence: mutable state, one set per decoding stream ----
     tpool *tp;               // worker pool used by this instance
     int    n_ctx, n_batch;
@@ -772,6 +782,18 @@ static inline int model_kv_dim(const model_t *m, int l) {
 static inline int model_q_dim(const model_t *m, int l) {
     return m->n_head * model_head_dim(m, l);
 }
+// The factor set a sequence of seq_len tokens rotates with (R4.40).
+static inline bool model_rope_wants_long(const model_t *m, int seq_len) {
+    return m->rope_long_from > 0 && seq_len > m->rope_long_from;
+}
+// Put this instance on the set a sequence of seq_len tokens rotates with.
+// true when the set changed: every KV row the instance holds was rotated
+// with the other one, so the caller recomputes the sequence from position 0.
+bool model_rope_for_len(model_t *m, int seq_len);
+// A backend that cannot change sets per sequence: keep the long set for
+// every sequence, as before R4.40, and say what that costs a short prompt.
+void model_rope_one_set(model_t *m, const char *who);
+
 static inline int model_rope_dim(const model_t *m, int l) {
     return (m->l_rope_dim && l < m->n_layer) ? m->l_rope_dim[l] : m->rope_dim;
 }

@@ -460,13 +460,34 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
     // phi3 LongRoPE ships two factor sets and which applies depends on the
     // context in use, not on the model: short factors are not identity, so
     // ignoring them mis-rotates even well inside the original window
+    // Which of the two applies to a sequence is the publisher's rule: the
+    // long set once the sequence is longer than the original context, the
+    // short set until then. With a context that can hold such a sequence
+    // both are built here, each through the same steps as a single table
+    // (`lng` below), and the engine moves an instance between them
+    // (model_rope_for_len, R4.40).
+    float *lng = NULL;
     if (model_ad(m)->id == ARCH_PHI3) {
         int orig_ctx = (int)gguf_get_u32(g, AK("rope.scaling.original_context_length"),
                                          m->n_ctx_train);
         bool use_long = orig_ctx > 0 && m->n_ctx > orig_ctx;
-        gguf_tensor *rf = gguf_find_tensor(g, use_long ? "rope_factors_long.weight"
-                                                       : "rope_factors_short.weight");
-        if (rf && rf->type == T_F32 && (int)rf->ne[0] >= half) {
+        gguf_tensor *fs = gguf_find_tensor(g, "rope_factors_short.weight");
+        gguf_tensor *fl = gguf_find_tensor(g, "rope_factors_long.weight");
+        gguf_tensor *rf = use_long ? fl : fs;
+        if (use_long && fs && fs->type == T_F32 && (int)fs->ne[0] >= half &&
+            fl && fl->type == T_F32 && (int)fl->ne[0] >= half) {
+            lng = m->rope_freq_long = malloc(sizeof(float) * half);
+            if (!lng) return false;
+            const float *s = fs->data, *l = fl->data;
+            for (int j = 0; j < half; j++) {
+                lng[j] = m->rope_inv_freq[j] / l[j];
+                m->rope_inv_freq[j] /= s[j];
+            }
+            m->rope_mscale = gguf_get_f32(g, AK("rope.scaling.attn_factor"), 1.0f);
+            m->rope_long_from = orig_ctx;
+            fprintf(stderr, "rope: phi3 LongRoPE, short factors for a sequence of up to %d tokens and "
+                    "long factors for a longer one, mscale %.4f\n", orig_ctx, (double)m->rope_mscale);
+        } else if (rf && rf->type == T_F32 && (int)rf->ne[0] >= half) {
             const float *f = rf->data;
             for (int j = 0; j < half; j++) m->rope_inv_freq[j] /= f[j];
             m->rope_mscale = gguf_get_f32(g, AK("rope.scaling.attn_factor"), 1.0f);
@@ -540,6 +561,7 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
 
     if (mode == RS_LINEAR) {
         for (int j = 0; j < half; j++) m->rope_inv_freq[j] /= factor;
+        for (int j = 0; lng && j < half; j++) lng[j] /= factor;
     } else if (mode == RS_YARN) {
         // NTK-by-parts: interpolate long wavelengths, keep short ones intact.
         // The ramp's correction range is rounded outward by transformers'
@@ -570,6 +592,7 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
             float keep = 1.0f - fminf(1.0f, fmaxf(0.0f, y)); // 1 = extrapolate (keep)
             float s = keep + (1.0f - keep) / factor;
             m->rope_inv_freq[j] *= s;
+            if (lng) lng[j] *= s;
         }
         // transformers' attention_factor when the file carries it (written
         // as rope.scaling.yarn_attn_factor), else its own default. The key
@@ -622,7 +645,46 @@ static bool rope_setup(model_t *m, gguf_file *g, const char *arch,
         memcpy(m->rope_inv_freq_local, m->rope_inv_freq,
                sizeof(float) * (size_t)(m->rope_dim / 2));
     }
+    // the short set as finished above; an instance starts on it
+    if (lng) {
+        m->rope_freq_short = malloc(sizeof(float) * half);
+        if (!m->rope_freq_short) return false;
+        memcpy(m->rope_freq_short, m->rope_inv_freq, sizeof(float) * half);
+        m->rope_long = false;
+    }
     return true;
+}
+
+static void rope_put_set(model_t *m, bool lng) {
+    size_t nb = sizeof(float) * (size_t)(m->rope_dim / 2);
+    memcpy(m->rope_inv_freq, lng ? m->rope_freq_long : m->rope_freq_short, nb);
+    // sliding layers that rope like the global ones read a copy of the table
+    if (m->swa_window > 0 && m->swa_rope_global && m->rope_inv_freq_local)
+        memcpy(m->rope_inv_freq_local, m->rope_inv_freq, nb);
+    m->rope_long = lng;
+    if (m->gpu) gpu_rope_changed(m);
+}
+
+bool model_rope_for_len(model_t *m, int seq_len) {
+    bool lng = model_rope_wants_long(m, seq_len);
+    if (m->rope_long_from <= 0 || lng == m->rope_long) return false;
+    rope_put_set(m, lng);
+    return true;
+}
+
+void model_rope_one_set(model_t *m, const char *who) {
+    if (m->rope_long_from <= 0) return;
+    fprintf(stderr, "warning: -c %d is over this model's original context of %d, and %s keeps one "
+            "LongRoPE factor set for every sequence: the long factors apply from the first token; the "
+            "publisher's code applies them only to a sequence longer than that, and a shorter prompt reads "
+            "further from the publisher's model than it does at -c %d\n",
+            m->n_ctx, m->rope_long_from, who, m->rope_long_from);
+    rope_put_set(m, true);
+    // one set from here on: no length asks for another (model_rope_wants_long
+    // is false for all), and rope_long must agree or every comparison of the
+    // two reads the instance as being on the wrong set
+    m->rope_long_from = 0;
+    m->rope_long = false;
 }
 
 // ---------------------------------------------------------------- load
@@ -2133,7 +2195,8 @@ static const size_t MODEL_WEIGHTS_OWNED[] = {
 static const size_t MODEL_RUNTIME_OWNED[] = {
     offsetof(model_t, kv_off), offsetof(model_t, kv_off_k), offsetof(model_t, ple),
     offsetof(model_t, ple_tmp), offsetof(model_t, rope_inv_freq),
-    offsetof(model_t, rope_inv_freq_local), offsetof(model_t, x), offsetof(model_t, xb),
+    offsetof(model_t, rope_inv_freq_local), offsetof(model_t, rope_freq_short),
+    offsetof(model_t, rope_freq_long), offsetof(model_t, x), offsetof(model_t, xb),
     offsetof(model_t, xb2), offsetof(model_t, q), offsetof(model_t, x_hc),
     offsetof(model_t, hc_inject), offsetof(model_t, hc_mix_lo), offsetof(model_t, ple4_emb),
     offsetof(model_t, ple4_tmp), offsetof(model_t, ple4_conv_hist),
@@ -6648,6 +6711,10 @@ static bool runtime_gpu_admit(model_t *m, const model_params *p, size_t kv_claim
         snprintf(m->route_fallback, sizeof m->route_fallback, "%s", cpu_why);
         return true;
     }
+    // R4.40: a backend whose rope table is shared by every sequence on the
+    // device keeps one LongRoPE set, decided before the table is uploaded
+    if (m->rope_long_from > 0 && gpu_available(gname, sizeof(gname)) && !gpu_rope_sets_ok())
+        model_rope_one_set(m, "this backend");
     // Register the intended VRAM footprint before allocating any of it, so
     // a concurrent runner sees this claim rather than discovering it as a
     // mysteriously shrunken free figure. CPU-only runs never get here, so
@@ -11658,6 +11725,7 @@ void model_lora_grad_scale(model_t *m, float f) {
 bool model_seq_nll(model_t *m, const int32_t *toks, int T,
                    const float *mask, double *nll_out) {
     if (!m || T < 2 || T > m->n_ctx) return false;
+    model_rope_for_len(m, T);   // R4.40: the window is one sequence of T tokens
     int V = m->n_vocab;
     double nll = 0.0;
     for (int t = 0; t < T; t++) {
@@ -13607,6 +13675,9 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
                                float *dx, double *loss_out) {
     int E = m->n_embd, V = m->n_vocab, L = m->n_layer;
     double loss = 0.0;
+    // R4.40: the window is one sequence of T tokens; the backward that
+    // follows reads the same table
+    model_rope_for_len(m, T);
     m->tape_T = T;
     m->tape = malloc(sizeof(float) * (size_t)(L + 1) * T * E);
     if (!m->tape) { m->tape_T = 0; return false; }
@@ -14316,6 +14387,7 @@ bool model_lora_eval_row(model_t *m, const int32_t *toks, int T,
     model_t *dev = t_mv_dev;
     t_mv_dev = m->train_dev ? m : NULL;
     bool ok = true;
+    model_rope_for_len(m, T);   // R4.40: the row is one sequence of T tokens
     for (int t = 0; ok && t < T; t++) {
         float *lg = fw_rounds_logits(m, &rd, toks, T, t);
         if (!lg) { ok = false; break; }
@@ -16412,7 +16484,10 @@ model_batch *model_batch_create(model_t **seqs, int n) {
     b->n = n;
     // A NULL here is not a failure: it means this build, backend or model has
     // no microbatch, and every decode falls through to the sequential path.
-    b->gb = gpu_batch_create(seqs, n);
+    // R4.40: a microbatch rotates every sequence's row from one device
+    // table, and two LongRoPE sequences can be on different factor sets.
+    // Such a model decodes its sequences one by one, the same bits.
+    b->gb = seqs[0]->rope_long_from > 0 ? NULL : gpu_batch_create(seqs, n);
     return b;
 }
 
@@ -16541,6 +16616,7 @@ static void hidden_rows_end(model_t *m, void *save_gpu) {
 bool model_embed(model_t *m, const int32_t *toks, int n, float *out,
                  bool (*stop)(void *), void *stop_ud) {
     if (n <= 0 || n > m->n_ctx || !model_pooling_supported(m)) return false;
+    model_rope_for_len(m, n);   // R4.40: one sequence of n tokens
     bool last = m->pooling_type == MODEL_POOL_LAST;
     memset(out, 0, sizeof(float) * m->n_embd);
     float *tmp = malloc(sizeof(float) * m->n_embd);
@@ -16581,6 +16657,7 @@ bool model_embed(model_t *m, const int32_t *toks, int n, float *out,
 // hidden_rows_begin decides.
 bool model_hidden_states(model_t *m, const int32_t *toks, int n, float *out) {
     if (n <= 0 || n > m->n_ctx || m->hyper_conn) return false;
+    model_rope_for_len(m, n);   // R4.40: one sequence of n tokens
     void *save_gpu = hidden_rows_begin(m);
     for (int i = 0; i < n; ) {
         int chunk = n - i < m->n_batch ? n - i : m->n_batch;

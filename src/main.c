@@ -7066,6 +7066,9 @@ static int run_score(cli_opts *o, cli_run *rt, const char *load_path) {
             return 1;
         }
     }
+    // R4.40: the text is one sequence of n_prompt tokens, scored on the
+    // LongRoPE set that length takes from its first position
+    model_rope_for_len(&rt->m, n_prompt);
     while (pos < n_prompt - 1 && !fail) {
         int k = n_prompt - 1 - pos;
         int cap = rt->m.spec_batch < rt->m.n_batch ? rt->m.spec_batch : rt->m.n_batch;

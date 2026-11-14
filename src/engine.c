@@ -240,6 +240,7 @@ const char *engine_rewind_how_name(int how) {
     case REWIND_RECURRENT: return "recurrent_reset";
     case REWIND_RING:      return "ring_reset";
     case REWIND_MISMATCH:  return "mismatch";
+    case REWIND_ROPE:      return "rope_set";
     case REWIND_FORK:      return "prefix_cache";
     default:               return "none";
     }
@@ -275,6 +276,10 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
     // ring still has every row position `keep` reads (model_kv_ring_resumes,
     // docs/kv-ring.md); otherwise recompute from 0.
     if (keep < e->pos && !model_kv_ring_resumes(e->m, keep)) { keep = 0; how = REWIND_RING; }
+    // R4.40, phi3 LongRoPE: a prompt rotates with the factor set its length
+    // takes (short up to the model's original context, long past it), from
+    // its first token. Rows made with the other set are no prefix of it.
+    if (model_rope_for_len(e->m, n) && e->pos > 0) { keep = 0; how = REWIND_ROPE; }
     if (model_has_recurrent(e->m) && keep < e->pos) {
         int mark = model_recurrent_mark_pos(e->m);
         if (model_recurrent_restore(e->m, keep)) {
@@ -400,6 +405,11 @@ static uint64_t model_identity(const model_t *m, const tokenizer *tok, bool prio
         m->n_ctx, m->kv_q8, m->kv_fp4, m->kv_split,
     };
     h = h64(h, geo, sizeof geo);
+    // R4.40: a two-set LongRoPE load rotates a short sequence with the short
+    // set, where an earlier build used the long one for every sequence, so
+    // rows it saved are refused. A token only when it applies: every other
+    // model's key stays what it was.
+    if (m->rope_long_from > 0) h = h64s(h, "runner.longrope.per-sequence");
     // --kv f32 (R6.32) is one more element type; hashed as a token only when on,
     // so the f16, q8, k8v4 and fp4 keys stay what they were
     if (m->kv_f32) h = h64s(h, "runner.kv.f32");
@@ -774,6 +784,9 @@ prefix_reuse engine_prefix_reuse(engine *e, const int32_t *toks, int n) {
     for (pfx_entry *p = PFX.head; p; p = p->next) {
         if (p->key != e->model_key) continue;
         if (p->bytes != prefix_cache_entry_bytes(e->m, p->n)) continue; // stale layout
+        // R4.40: an entry is a whole prompt, rotated with the factor set its
+        // length took; it is a prefix only of a prompt on the same set
+        if (model_rope_wants_long(e->m, p->n) != e->m->rope_long) continue;
         int c = 0;
         while (c < p->n && c < n - 1 && p->toks[c] == toks[c]) c++;
         if (c > best && pfx_ring_serves(e->m, p, c)) { best = c; hit = p; }
@@ -860,6 +873,10 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     int store_n = n;
     if (per_tok > 0 && prefix_cache_entry_bytes(e->m, store_n) > PFX.budget / 2)
         store_n = recur || ring ? 0 : (int)((PFX.budget / 2) / per_tok);
+    // R4.40: an entry's rows are on the LongRoPE set its own length takes
+    // (engine_prefix_reuse reads it so). A shortened copy of a prompt past
+    // the original context would be long-set rows under a short length.
+    if (store_n < n && model_rope_wants_long(e->m, store_n) != e->m->rope_long) store_n = 0;
     if (store_n < PFX_MIN_TOKENS) { pthread_mutex_unlock(&PFX.mu); return; }
 
     // Already covered? Refresh it. A strict extension of an existing entry
@@ -868,7 +885,11 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     for (pfx_entry **pp = &PFX.head; *pp; ) {
         pfx_entry *p = *pp;
         int lim = p->n < store_n ? p->n : store_n, c = 0;
-        if (p->key != e->model_key) { pp = &p->next; continue; }
+        // an entry on the other LongRoPE set shares no rows with this prompt
+        if (p->key != e->model_key || model_rope_wants_long(e->m, p->n) != e->m->rope_long) {
+            pp = &p->next;
+            continue;
+        }
         while (c < lim && p->toks[c] == toks[c]) c++;
         if (c == lim && p->n >= store_n) {   // nothing new to say
             p->used = now;
@@ -895,7 +916,8 @@ void engine_prefix_publish(engine *e, const int32_t *toks, int n,
     // has nothing shareable at a shorter length.
     if (!recur && diverge_at >= PFX_MIN_TOKENS && diverge_at < store_n) {
         for (pfx_entry *p = PFX.head; p; p = p->next) {
-            if (p->key != e->model_key || p->n < diverge_at) continue;
+            if (p->key != e->model_key || p->n < diverge_at ||
+                model_rope_wants_long(e->m, p->n) != e->m->rope_long) continue;
             int c = 0;
             while (c < diverge_at && p->toks[c] == toks[c]) c++;
             if (c == diverge_at) { p->used = now; pthread_mutex_unlock(&PFX.mu); return; }
@@ -1395,6 +1417,9 @@ model_t *spec_draft_load(const char *path, const model_t *target,
         free(dm);
         return NULL;
     }
+    // R4.40: a draft only proposes, so a LongRoPE draft keeps one factor set
+    // (its catch-up has no rebuild); it costs acceptance, never output
+    model_rope_one_set(dm, "a draft model");
     return dm;
 }
 
@@ -1440,9 +1465,29 @@ static int test_prefill_delay_ms(void) {
     return ms;
 }
 
+// R4.40, phi3 LongRoPE: the sequence is about to hold `upto` tokens. When
+// that passes the model's original context the long factor set applies to
+// the whole sequence, as in the publisher's forward of a sequence that long,
+// so the rows held so far (rotated with the short set) are computed again
+// from hist under the long one. Once per sequence, at the crossing; a prompt
+// already longer than that was fed under the long set from its first token
+// (engine_rewind). Not interruptible: a stop is seen after it.
+static void rope_reach(engine *e, int upto) {
+    model_t *m = e->m;
+    if (!model_rope_for_len(m, upto) || e->pos == 0 || !e->hist) return;
+    fprintf(stderr, "rope: the sequence passes %d tokens, so its %d positions are computed again "
+            "with the long factors\n", m->rope_long_from, e->pos);
+    for (int p = 0; p < e->pos; p += m->n_batch) {
+        int c = e->pos - p < m->n_batch ? e->pos - p : m->n_batch;
+        model_forward_batch(m, e->hist + p, c, p, false);
+    }
+    e->rope_rebuilds++;
+}
+
 float *engine_feed(engine *e, const int32_t *toks, int n) {
     float *logits = NULL;
     model_t *m = e->m;
+    if (e->pos + n <= m->n_ctx) rope_reach(e, e->pos + n);
     for (int i = 0; i < n; ) {
         int chunk = n - i < m->n_batch ? n - i : m->n_batch;
         if (e->pos + chunk > m->n_ctx) return NULL;
@@ -1502,6 +1547,9 @@ float *engine_score_prompt(engine *e, const int32_t *toks, int n, int top_n,
         return NULL;
     }
     engine_reset(e);
+    // R4.40: the prompt is scored as one sequence of n tokens, on the
+    // LongRoPE set that length takes from its first position
+    model_rope_for_len(e->m, n);
     int V = e->m->n_vocab;
     float *logits = NULL;
     for (int i = 0; i < n; i++) {
@@ -2611,6 +2659,13 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
             continue;            // re-check the budget with the token pending
         }
         e->spec_st.rounds++;
+        // R4.40: the pending token goes to position pos. A LongRoPE sequence
+        // still on its short set drafts no further than the model's original
+        // context, so the tokens a round keeps are the plain path's: the set
+        // changes between rounds, never inside one.
+        rope_reach(e, e->pos + 1);
+        int lim = m->rope_long_from > 0 && !m->rope_long && m->rope_long_from < m->n_ctx
+                    ? m->rope_long_from : m->n_ctx;
         // the head's pair for the pending token: (hidden of the last consumed
         // token, cur) at position pos. A queue push; it runs with the draft.
         if (e->mtp_on) model_mtp_feed(m, cur);
@@ -2619,7 +2674,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         if (e->gram_ff && constrained) {
             int cap = GK;
             if (max_new >= 0 && cap > max_new - e->gen_count) cap = max_new - e->gen_count;
-            if (cap > m->n_ctx - e->pos - 1) cap = m->n_ctx - e->pos - 1;
+            if (cap > lim - e->pos - 1) cap = lim - e->pos - 1;
             if (cap > 0) nd = gr = grammar_draft(e, d, cap);
             e->spec_st.drafted += nd; e->spec_st.gr_drafted += nd;
         }
@@ -2630,7 +2685,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         if (!nd && e->lookup_on && e->hist) {
             int cap = K;
             if (max_new >= 0 && cap > max_new - e->gen_count) cap = max_new - e->gen_count;
-            if (cap > m->n_ctx - e->pos - 1) cap = m->n_ctx - e->pos - 1;
+            if (cap > lim - e->pos - 1) cap = lim - e->pos - 1;
             if (cap > 0) nd = lk = engine_lookup_draft(e->hist, e->pos + 1, cap, d);
             // the caller's hints, when the context itself had no match
             if (!nd && cap > 0 && e->hint_len > 0)
@@ -2651,7 +2706,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
                 model_mtp_reset(m, e->pos + 1); // desynced: no draft this round
             float *ml = model_mtp_draft_logits(m);
             const float *h = model_mtp_hidden(m);
-            while (ml && nd < K && e->pos + nd + 1 < m->n_ctx) {
+            while (ml && nd < K && e->pos + nd + 1 < lim) {
                 int best = sample_argmax(ml, m->n_vocab);
                 d[nd++] = best;
                 e->spec_st.drafted++;
@@ -2676,7 +2731,7 @@ static int engine_generate_spec(engine *e, float *logits, int max_new,
         if (!nd && dl && dm && model_has_recurrent(dm))
             e->dsnap = model_recurrent_snapshot(dm, e->dpos) ? e->dpos : -1;
         // draft up to K tokens greedily (nd == 0 degrades to plain decoding)
-        while (!gr && dl && nd < K && e->pos + nd + 1 < m->n_ctx &&
+        while (!gr && dl && nd < K && e->pos + nd + 1 < lim &&
                e->dpos + 1 < dm->n_ctx) {
             int best = sample_argmax(dl, dm->n_vocab);
             if (best >= m->n_vocab) break; // padding id the target can't embed
@@ -2809,6 +2864,7 @@ done:
         // forward the pending token so the KV covers hist[0..pos) exactly as
         // the solo path leaves it (a continuing chat feeds from here)
         if (pf.on) pf.tp = now_s();
+        rope_reach(e, e->pos + 1);
         model_forward(m, cur, e->pos);
         if (pf.on) pf.tail += now_s() - pf.tp;
         if (e->mtp_on) {
@@ -2960,6 +3016,8 @@ int engine_gen_step(engine *e, const float *logits, gen_cb cb, void *ud,
     if (e->hist && e->pos < e->m->n_ctx) e->hist[e->pos] = tok;
     if (gen_consume(e, tok, cb, ud)) return ENGINE_STEP_DONE;
     if (gen_turn_done(e)) { e->hit_stop = true; return ENGINE_STEP_DONE; }
+    // the token goes to position e->pos: the sequence then holds one more
+    rope_reach(e, e->pos + 1);
     *next_tok = (int32_t)tok;
     *next_pos = e->pos++;
     e->pending_pos = *next_pos;
@@ -2992,6 +3050,11 @@ bool engine_state_save(const engine *e, uint8_t *dst) {
     if (!e || !e->m || !dst || e->m->tied_v ||
         (model_kv_ring_active(e->m) && e->m->kv_ring_lo > pfx_ring_first(e->m, e->pos)))
         return false;
+    // R4.40: an image says how many tokens it holds, not which LongRoPE set
+    // rotated them; the loader takes the set that length takes. A sequence
+    // left short of its prompt under the long set (a stopped prefill) is
+    // the one state where the two differ, and it is not imaged.
+    if (model_rope_wants_long(e->m, e->pos) != e->m->rope_long) return false;
     pfx_save(e->m, dst, e->pos);
     return true;
 }
@@ -3000,6 +3063,7 @@ bool engine_state_load(engine *e, const int32_t *hist, int n, const uint8_t *src
     if (!e || !e->m || !e->hist || !src || n < 1 || n > e->m->n_ctx || e->m->tied_v)
         return false;
     engine_reset(e);
+    model_rope_for_len(e->m, n);   // the set an image of n tokens was made with
     pfx_load(e->m, src, n, n, pfx_ring_first(e->m, n));
     if (model_has_recurrent(e->m)) {
         size_t kvb = prefix_cache_entry_bytes(e->m, n) - model_recurrent_blob_bytes(e->m);

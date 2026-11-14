@@ -140,6 +140,8 @@ test-hfhub
 test-penalty-window
 test-rope-yarn
 test-rope-yarn.exe
+test-longrope-sequence
+test-longrope-sequence.exe
 test-attn-scale
 test-attn-scale.exe
 test-hfhub.exe

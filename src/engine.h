@@ -179,6 +179,7 @@ typedef struct {
     // mark_pos), whose FNV-1a hash this is. Belt and braces over the
     // structural rule (the mark is dropped whenever pos moves below it).
     int      rewind_how;
+    int      rope_rebuilds;   // R4.40: times a sequence was recomputed at the LongRoPE crossing
     uint64_t mark_hash;
     // optional per-token logprob capture (server "logprobs"): caller points
     // these at buffers sized [lp_cap] / [lp_cap * lp_n] before generating
@@ -463,6 +464,7 @@ enum rewind_how {
     REWIND_RECURRENT,  // recurrent fold not restorable at keep: recomputed from 0
     REWIND_RING,       // KV ring: any rewind recomputes from 0
     REWIND_MISMATCH,   // the prompt differs from history at its first token
+    REWIND_ROPE,       // LongRoPE: the prompt's length takes the other factor set
     REWIND_FORK,       // forked from the shared prefix cache (engine_prefix_reuse)
 };
 const char *engine_rewind_how_name(int how);
