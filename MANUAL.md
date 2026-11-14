@@ -4129,16 +4129,31 @@ or dump internals for the tools under `scripts/` (`moe-prune-plan.py` consumes
 not interface: names, formats and defaults change without notice, and nothing
 outside this repository should depend on them.
 
-The kernel knobs and A/B arms a test reads, and two environment controls:
+Kernel knobs and A/B arms, and two environment controls:
 
 | Switch | What it does |
 |---|---|
 | `RUNNER_CUDA_WINDOW=N` | Caps the CUDA prompt window at `N` columns: a multiple of 64, never wider than the plan allows, as `-b` caps it. A diagnostic and A/B control; `--verify` restores a record's window itself. |
 | `RUNNER_METAL_MOE_BATCH=0` | Routes a Metal MoE prompt batch one token per routing dispatch instead of the whole batch in one. The same bytes either way. |
 | `RUNNER_MV_FUSE=0` | Sends CPU projections that read the same input (Q, K and V; gate and up) as one pool dispatch each instead of one together. The same bytes either way. |
+| `RUNNER_METAL_COL_TILE=N` | Columns per threadgroup in Metal's batched matmul (default 8), tunable without a rebuild. |
+| `RUNNER_METAL_ATT_BYTES=N` | Bounds Metal's attention score scratch at `N` bytes, so a test fixture's batch spans several attention dispatches. |
 | `RUNNER_TRAIN_MM_KERNEL=warp`, `RUNNER_TRAIN_MVT_KERNEL=chain` | `--train-gpu`'s kernel families, for comparison: `warp` takes the per-warp training matmuls instead of the register-blocked ones (the arithmetic before R8.20), and `chain` the CPU chain's transpose matvec in device mode. Within a family every column gets the same bits; across families they differ, so one family serves a whole run. Read per call, so the training gate can compare them. |
 | `RUNNER_CURL=PATH` | The curl program Hub downloads run (default `curl` on `PATH`). The tests point it at a stand-in. |
 | `RUNNER_UNVERIFIED_LEASE_TTL=SECONDS` | How long a lease record whose owner can be neither proven alive nor dead is honoured (default 900). An older one ages out, so a crashed owner does not hold its instance for ever. The engine and the Python client both read it. |
+
+The diagnostics, each on stderr unless it names a file:
+
+| Switch | What it prints or writes |
+|---|---|
+| `RUNNER_CUDA_PROFILE` | A table of where a CUDA run's time went, at exit: GPU time per stage, the host-side copies, and the rest as launch and host overhead. |
+| `RUNNER_DEBUG_MOE` | The first routings' expert choices and weights, in hex. On CUDA the decode then runs eagerly, since a captured graph cannot read them back. |
+| `RUNNER_METAL_MOE_ROUTE_TRACE=1` | Each Metal MoE layer's routing, per token (`metal-moe-route` lines). |
+| `RUNNER_METAL_NAN_TRACE=1` | The first layer whose residual carries a NaN or Inf on Metal; `2` also probes inside the layer, to name the stage. One command buffer per probe, so a slow run. |
+| `RUNNER_METAL_STATS=1` | Each Metal pipeline's threadgroup memory and thread limit, and the scratch sizes a batch takes (`metal-pipeline`, `metal-scratch` lines). |
+| `RUNNER_SAMPLE_STATS=1` | Why the sampler's fast path over the head of the distribution was or was not usable, per sampled token (`[smp ...]` markers). |
+| `RUNNER_TOOL_TRACE=1` | The document a native tool-call mapper was handed, and its verdict: the bytes a client never sees when the call is refused. |
+| `RUNNER_TRAIN_FULL_DUMP=PREFIX` | A full fine-tune's first-step gradient: `PREFIX.norms.json` with each tensor's gradient norm, and `PREFIX.NAME.f32` for each tensor `RUNNER_TRAIN_FULL_DUMP_TENSORS` lists (comma-separated names). |
 
 `RUNNER_ACT_TRACE=trace.jsonl` with `RUNNER_ACT_TRACE_POS=0,7,31` (a
 comma-separated list of 1 to 64 token positions, required) records, at those
