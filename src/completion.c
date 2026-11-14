@@ -6,6 +6,7 @@
 #include "build_arch.h"
 #include "provenance.h"
 #include "receipts.h"
+#include "kvsnap.h"
 #include "compat.h"
 #include "envelope.h"
 
@@ -2961,7 +2962,8 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
     if (cut) sb_fmt(&sj, ",\"cut\":\"%s\"", cut);
     // R1.12.2: the KV snapshot this request's prompt started from
     char origin[256];
-    if (ctx_id && prefix_context_origin(ctx_id, origin, sizeof origin))
+    if (ctx_id && (prefix_context_origin(ctx_id, origin, sizeof origin) ||
+                   kvsnap_auto_origin(ctx_id, origin, sizeof origin)))
         sb_fmt(&sj, ",\"kv_snapshot\":%s", origin);
     sb_lit(&sj, "}");
     sb_put(&sj, "", 1);
@@ -4105,6 +4107,12 @@ typedef struct {
     // The first token of the generation prompt, where a recurrent slot marks
     // its fold (R10.27); -1 when the request has no such boundary.
     int anchor;
+    // R3.62: the preamble's token count (the leading system messages with
+    // their tools), 0 when the request has none worth a snapshot; the
+    // snapshot's name; and whether this request forked from it.
+    int preamble;
+    char pre_name[KVSNAP_AUTO_NAME];
+    bool pre_loaded;
     bool omit_reasoning;
     req_diag diag;
 } completion_prep;
@@ -4117,7 +4125,8 @@ typedef struct {
 // and answers; false then.
 static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api,
                                jv *req, const tool_envelope *env, bool chat,
-                               size_t gen_at, completion_req *q, completion_prep *p) {
+                               size_t gen_at, size_t pre_at, completion_req *q,
+                               completion_prep *p) {
     model_t *m = s->m;
     engine *e = &s->e;
     int ctx_tokens = 0;
@@ -4159,6 +4168,25 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
             if (hn > 0 && hn < n_prompt && toks &&
                 !memcmp(ht, toks, sizeof(*toks) * (size_t)hn))
                 anchor = hn;
+        }
+        free(ht);
+        free(head);
+    }
+    // R3.62: the preamble in tokens, by the same rule: its bytes' tokens must
+    // be the prompt's first tokens. Attention-only models: a recurrent fold
+    // belongs to one position and cannot be cut out of a longer sequence.
+    int preamble = 0;
+    if (chat && pre_at && n_prompt > 1 && q->cache_prompt && q->share_prefix &&
+        kvsnap_auto_on() && !model_has_recurrent(m)) {
+        char *head = malloc(pre_at + 1);
+        int32_t *ht = NULL;
+        if (head) {
+            memcpy(head, prompt, pre_at);
+            head[pre_at] = 0;
+            int hn = tok_encode_fit(s->tok, head, true, TOK_PROMPT, 0, &ht);
+            if (hn >= kvsnap_auto_min() && hn < n_prompt && toks &&
+                !memcmp(ht, toks, sizeof(*toks) * (size_t)hn))
+                preamble = hn;
         }
         free(ht);
         free(head);
@@ -4346,6 +4374,10 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
     p->tokenize_s = tokenize_s;
     p->ctx_tokens = ctx_tokens;
     p->anchor = anchor;
+    p->preamble = preamble;
+    p->pre_name[0] = 0;
+    p->pre_loaded = false;
+    if (preamble) kvsnap_auto_name(e, toks, preamble, p->pre_name);
     p->omit_reasoning = omit_reasoning;
     p->diag = diag;
     return true;
@@ -4958,8 +4990,23 @@ static float *turn_prefill(turn_result *t) {
     bool score_prompt = (q->echo && q->want_lp) || q->plp >= 0;
     if (score_prompt)
         engine_reset(e);
-    else if (q->cache_prompt && q->share_prefix)
+    else if (q->cache_prompt && q->share_prefix) {
         t->reuse = engine_prefix_reuse(e, prep->toks, prep->n_prompt);
+        // R3.62: neither the slot nor the shared tier holds this request's
+        // preamble (a new process, or an unloaded model): its snapshot, when
+        // one is on disk, becomes the slot's rows, and the prompt extends
+        // them. The slot's own rows, so no cache budget is involved.
+        if (prep->preamble && t->reuse.keep < prep->preamble &&
+            kvsnap_auto_load(e, prep->pre_name)) {
+            t->reuse = (prefix_reuse){ .keep = engine_rewind(e, prep->toks, prep->n_prompt) };
+            if (t->reuse.keep >= prep->preamble) {
+                prep->pre_loaded = true;
+                prep->diag.context_id = prep->pre_name;
+                prep->diag.context_tokens = prep->preamble;
+                e->rewind_how = REWIND_PREAMBLE;
+            }
+        }
+    }
     else if (q->cache_prompt)
         t->reuse.keep = engine_rewind(e, prep->toks, prep->n_prompt);
     else
@@ -5550,7 +5597,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
 
     completion_prep prep;
     if (!completion_prepare(s, fd, prompt, api, req, env, chat,
-                            chat && rs ? rs->gen_at : 0, &q, &prep)) return;
+                            chat && rs ? rs->gen_at : 0, chat && rs ? rs->pre_at : 0,
+                            &q, &prep)) return;
 
     gen_ctx g = { .out = {0}, .fd = fd, .stream = q.stream, .api = api,
                   .omit_reasoning = prep.omit_reasoning,
@@ -5581,4 +5629,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         turn_respond(&t);
     }
     turn_log(&t);
+    // R3.62: after the client has its answer, a preamble this request
+    // prefilled cold is written for the next process, from the rows the slot
+    // still holds.
+    if (prep.preamble && !prep.pre_loaded && t.keep < prep.preamble &&
+        e->pos >= prep.preamble)
+        kvsnap_auto_save(e, prep.pre_name, prep.preamble);
 }

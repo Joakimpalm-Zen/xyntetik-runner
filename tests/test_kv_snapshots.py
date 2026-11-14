@@ -338,7 +338,7 @@ def _chat(srv, system, user, **extra):
     assert st == 200, body
     t = body["runner_telemetry"]
     return {"answer": body["choices"][0]["message"], "cached": t["prompt_cached_tokens"],
-            "reuse": t["prompt_reuse"], "context": t.get("context_id"),
+            "reuse": t["prompt_reuse"], "context": t.get("context"),
             "prompt": body["usage"]["prompt_tokens"]}
 
 
@@ -388,12 +388,13 @@ def test_a_preamble_snapshot_serves_the_first_request_of_a_new_process(runner_bi
     # a new process, another question after the same preamble
     with _auto(runner_bin, fx["model"], snaps) as b:
         warm = _chat(b, SYSTEM, "Which file is the largest?")
-    assert warm["cached"] == pre and warm["reuse"] == "prefix_cache", warm
-    assert warm["context"] == kv[0].name[:-3], warm
+    assert warm["cached"] == pre and warm["reuse"] == "preamble_snapshot", warm
+    assert warm["context"] == {"id": kv[0].name[:-3], "tokens": pre}, warm
+    assert first["context"] is None, first
     # and the answer a process without any snapshot gives
     with _plain(runner_bin, fx["model"], tmp_path / "none") as c:
         cold = _chat(c, SYSTEM, "Which file is the largest?")
-    assert (cold["cached"], cold["reuse"]) == (0, "none"), cold
+    assert (cold["cached"], cold["reuse"], cold["context"]) == (0, "none", None), cold
     assert warm["answer"] == cold["answer"]
     # nothing new is written for a preamble that is already on disk
     assert sorted(snaps.glob("pre-*.kv")) == kv
@@ -444,3 +445,32 @@ def test_preamble_snapshots_stay_under_their_cap(runner_bin, fx, tmp_path):
     # every file kept still has its manifest, every manifest its file
     assert ({p.name for p in snaps.glob("pre-*.kv")} ==
             {p.name[:-5] for p in snaps.glob("pre-*.kv.json")})
+
+
+def test_a_request_built_on_a_preamble_snapshot_names_it_in_its_receipt(runner_bin, fx, tmp_path):
+    """The receipt of a turn that started from a preamble snapshot says which
+    one, as for a snapshot the caller named, and replays from its tokens."""
+    snaps, rcpt = tmp_path / "snaps", tmp_path / "r"
+    with _auto(runner_bin, fx["model"], snaps) as a:
+        _chat(a, SYSTEM, "List the files.")
+        kv = _wait_files(snaps, 1)
+        assert len(kv) == 1
+    name = kv[0].name[:-3]
+    with _auto(runner_bin, fx["model"], snaps, "64", "--receipts", str(rcpt)) as b:
+        st, body = _post(b, "/v1/chat/completions", {
+            "messages": [{"role": "system", "content": SYSTEM},
+                         {"role": "user", "content": "Which file is the largest?"}],
+            "max_tokens": 8, "temperature": 0})
+        assert st == 200, body
+    tel = body["runner_telemetry"]
+    assert tel["context"]["id"] == name, tel
+    rec_path = rcpt / tel["receipt"]["file"]
+    rec = json.loads(rec_path.read_text())
+    assert rec["serve"]["kv_snapshot"] == {
+        "name": name, "kv_sha256": _sha(kv[0].read_bytes()),
+        "manifest_chain_hash": json.loads(
+            (snaps / (kv[0].name + ".json")).read_text())["chain"]["hash"]}
+    v = subprocess.run([runner_bin, "-m", fx["model"], "--verify", rec_path, "--gpu",
+                        "off", "-t", "2", "-c", "512", "--chat-template", "chatml"],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert v.returncode == 0 and b"VERIFIED" in v.stderr, v.stderr[-400:]

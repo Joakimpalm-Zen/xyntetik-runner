@@ -244,6 +244,7 @@ const char *engine_rewind_how_name(int how) {
     case REWIND_MISMATCH:  return "mismatch";
     case REWIND_ROPE:      return "rope_set";
     case REWIND_FORK:      return "prefix_cache";
+    case REWIND_PREAMBLE:  return "preamble_snapshot";
     default:               return "none";
     }
 }
@@ -1237,48 +1238,30 @@ int prefix_cache_load(const char *path, const engine *e) {
 
 // Writes one entry the way prefix_cache_save writes each, digest included, so
 // the file is a runner.prefix.v1 file a cache load would also accept.
-int prefix_context_export(const char *name, const char *path) {
-    if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
-    if (!path || !*path) return PFX_CTX_IO;
+// One entry as a runner.prefix.v1 file, written beside `path` and moved into
+// place. n on success, PFX_CTX_IO otherwise.
+static int pfx_write_one(const char *path, uint64_t key, const int32_t *toks, int32_t n,
+                         const uint8_t *kv, uint64_t bytes) {
     size_t path_n = strlen(path);
     char *tmp = malloc(path_n + sizeof(".partial"));
     if (!tmp) return PFX_CTX_IO;
     snprintf(tmp, path_n + sizeof(".partial"), "%s.partial", path);
-    pthread_mutex_lock(&PFX.mu);
-    pfx_entry **pp = pfx_find_named(name);
-    if (!pp) {
-        pthread_mutex_unlock(&PFX.mu);
-        free(tmp);
-        return PFX_CTX_UNKNOWN;
-    }
-    pfx_entry *p = *pp;
-    if (!p->ring_whole) {   // a file carries no ring watermark (prefix_cache_save)
-        pthread_mutex_unlock(&PFX.mu);
-        free(tmp);
-        return PFX_CTX_UNSUPPORTED;
-    }
-    p->readers++;
-    pthread_mutex_unlock(&PFX.mu);
-    // From here the entry is read without the lock (see `readers`).
     FILE *f = plat_fopen(tmp, "wb");
     if (!f) {
         fprintf(stderr, "prefix: cannot write %s\n", tmp);
-        pfx_release_reader(p);
         free(tmp);
         return PFX_CTX_IO;
     }
     uint32_t count = 1;
-    uint64_t key = p->key, bytes = p->bytes, digest = 0xcbf29ce484222325ull;
-    int32_t n = p->n;
+    uint64_t digest = 0xcbf29ce484222325ull;
     bool ok = wr(f, PFX_MAGIC, PFX_MAGIC_N) && wr(f, &count, sizeof count) &&
               wr(f, &key, sizeof key) && wr(f, &n, sizeof n) &&
               wr(f, &bytes, sizeof bytes) &&
-              wr(f, p->toks, sizeof(int32_t) * (size_t)n) && wr(f, p->kv, p->bytes);
+              wr(f, toks, sizeof(int32_t) * (size_t)n) && wr(f, kv, bytes);
     digest ^= pfx_digest(&key, sizeof key);   digest *= 0x100000001b3ull;
-    digest ^= pfx_digest(p->toks, sizeof(int32_t) * (size_t)n);
+    digest ^= pfx_digest(toks, sizeof(int32_t) * (size_t)n);
     digest *= 0x100000001b3ull;
-    digest ^= pfx_digest(p->kv, p->bytes);    digest *= 0x100000001b3ull;
-    pfx_release_reader(p);
+    digest ^= pfx_digest(kv, bytes);          digest *= 0x100000001b3ull;
     ok = ok && wr(f, &digest, sizeof digest);
     if (fclose(f) != 0) ok = false;
     if (!ok || !plat_replace_file(tmp, path)) {
@@ -1290,11 +1273,51 @@ int prefix_context_export(const char *name, const char *path) {
     return n;
 }
 
-int prefix_context_import(const engine *e, const char *name, const char *path,
-                          const char *origin) {
+int prefix_context_export(const char *name, const char *path) {
     if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
-    if (!e || !e->m || e->m->tied_v || (model_has_recurrent(e->m) && e->m->gpu))
+    if (!path || !*path) return PFX_CTX_IO;
+    pthread_mutex_lock(&PFX.mu);
+    pfx_entry **pp = pfx_find_named(name);
+    if (!pp) {
+        pthread_mutex_unlock(&PFX.mu);
+        return PFX_CTX_UNKNOWN;
+    }
+    pfx_entry *p = *pp;
+    if (!p->ring_whole) {   // a file carries no ring watermark (prefix_cache_save)
+        pthread_mutex_unlock(&PFX.mu);
         return PFX_CTX_UNSUPPORTED;
+    }
+    p->readers++;
+    pthread_mutex_unlock(&PFX.mu);
+    // From here the entry is read without the lock (see `readers`).
+    int n = pfx_write_one(path, p->key, p->toks, p->n, p->kv, p->bytes);
+    pfx_release_reader(p);
+    return n;
+}
+
+int prefix_slot_export(const engine *e, int n, const char *path) {
+    if (!path || !*path) return PFX_CTX_IO;
+    // what a pin refuses, for the same reasons: no contiguous snapshot under
+    // a ring or tied-V, and a recurrent fold belongs to position e->pos alone
+    if (!e || !e->m || !e->hist || e->m->tied_v || model_kv_ring_active(e->m) ||
+        model_has_recurrent(e->m))
+        return PFX_CTX_UNSUPPORTED;
+    if (n < 1 || e->pos < n) return PFX_CTX_MISMATCH;
+    size_t need = prefix_cache_entry_bytes(e->m, n);
+    uint8_t *kv = malloc(need);
+    if (!kv) return PFX_CTX_NOSPACE;
+    pfx_save(e->m, kv, n);
+    int wrote = pfx_write_one(path, e->model_key, e->hist, n, kv, need);
+    free(kv);
+    return wrote;
+}
+
+// One whole runner.prefix.v1 entry read from `path` and held to this engine:
+// the magic, one entry, the body digest, and the refusal that matters, as in
+// prefix_cache_load: KV from another model, context length or element type
+// is never adapted. 0 with *toks and *kv owned by the caller, or a PFX_CTX_*.
+static int pfx_read_one(const engine *e, const char *path, int32_t **toks_out,
+                        int32_t *n_out, uint8_t **kv_out, uint64_t *bytes_out) {
     FILE *f = plat_fopen(path, "rb");
     if (!f) return PFX_CTX_UNKNOWN;
     char magic[PFX_MAGIC_N];
@@ -1322,12 +1345,31 @@ int prefix_context_import(const engine *e, const char *name, const char *path,
     digest *= 0x100000001b3ull;
     digest ^= pfx_digest(kv, (size_t)bytes); digest *= 0x100000001b3ull;
     if (digest != want) goto out;
-    // the refusal that matters, as in prefix_cache_load: KV from another
-    // model, context length or element type is never adapted
     if (key != e->model_key || bytes != prefix_cache_entry_bytes(e->m, n)) {
         rc = key != e->model_key && key == e->model_key_prior ? PFX_CTX_PRIOR : PFX_CTX_MISMATCH;
         goto out;
     }
+    fclose(f);
+    *toks_out = toks; *n_out = n; *kv_out = kv; *bytes_out = bytes;
+    return 0;
+out:
+    fclose(f);
+    free(toks);
+    free(kv);
+    return rc;
+}
+
+int prefix_context_import(const engine *e, const char *name, const char *path,
+                          const char *origin) {
+    if (!pfx_ctx_name_ok(name)) return PFX_CTX_BADNAME;
+    if (!e || !e->m || e->m->tied_v || (model_has_recurrent(e->m) && e->m->gpu))
+        return PFX_CTX_UNSUPPORTED;
+    uint64_t bytes = 0;
+    int32_t n = 0;
+    int32_t *toks = NULL;
+    uint8_t *kv = NULL;
+    int rc = pfx_read_one(e, path, &toks, &n, &kv, &bytes);
+    if (rc != 0) return rc;
     pfx_entry *ne = calloc(1, sizeof *ne);
     if (!ne) { rc = PFX_CTX_NOSPACE; goto out; }
     pthread_mutex_lock(&PFX.mu);
@@ -1347,7 +1389,7 @@ int prefix_context_import(const engine *e, const char *name, const char *path,
     }
     old = pfx_find_named(name);
     if (old) pfx_drop(old);
-    ne->key = key; ne->toks = toks; ne->n = n;
+    ne->key = e->model_key; ne->toks = toks; ne->n = n;
     ne->kv = kv; ne->bytes = (size_t)bytes; ne->used = now; ne->created = now;
     pfx_ring_mark(e->m, ne, n, true);
     ne->pinned = true;
@@ -1360,7 +1402,29 @@ int prefix_context_import(const engine *e, const char *name, const char *path,
     toks = NULL; kv = NULL;
     rc = n;
 out:
-    fclose(f);
+    free(toks);
+    free(kv);
+    return rc;
+}
+
+int prefix_slot_import(engine *e, const char *path) {
+    // what prefix_slot_export writes: an attention-only layout, no ring
+    if (!e || !e->m || !e->hist || e->m->tied_v || model_kv_ring_active(e->m) ||
+        model_has_recurrent(e->m))
+        return PFX_CTX_UNSUPPORTED;
+    uint64_t bytes = 0;
+    int32_t n = 0;
+    int32_t *toks = NULL;
+    uint8_t *kv = NULL;
+    int rc = pfx_read_one(e, path, &toks, &n, &kv, &bytes);
+    if (rc != 0) return rc;
+    // the slot's own rows, as a session image is loaded: nothing of the
+    // shared tier, so no budget is asked
+    rc = engine_state_load(e, toks, n, kv) ? n : PFX_CTX_UNSUPPORTED;
+    if (rc == n) {
+        e->dpos = 0;          // a draft model's rows were not loaded
+        e->dsnap = -1;
+    }
     free(toks);
     free(kv);
     return rc;

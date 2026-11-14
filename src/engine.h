@@ -468,6 +468,7 @@ enum rewind_how {
     REWIND_MISMATCH,   // the prompt differs from history at its first token
     REWIND_ROPE,       // LongRoPE: the prompt's length takes the other factor set
     REWIND_FORK,       // forked from the shared prefix cache (engine_prefix_reuse)
+    REWIND_PREAMBLE,   // the slot's rows were loaded from a preamble snapshot (R3.62)
 };
 const char *engine_rewind_how_name(int how);
 // Recurrent turn mark (model_recurrent_mark): checkpoint the fold at the
@@ -745,6 +746,15 @@ int prefix_cache_load(const char *path, const engine *e);
 // PFX_CTX_MISMATCH (another model, context or KV type), PFX_CTX_PRIOR (this
 // model under the KV layout before R3.44), PFX_CTX_NOSPACE or PFX_CTX_BADNAME.
 int  prefix_context_export(const char *name, const char *path);
+// The same file, written straight from the slot: rows [0, n) of what e holds
+// (e->pos at least n), on a model without recurrent layers, a ring or tied-V
+// (PFX_CTX_UNSUPPORTED otherwise). It takes nothing from the prefix cache's
+// budget: the copy lives for the length of the write (R3.62).
+int  prefix_slot_export(const engine *e, int n, const char *path);
+// And back: the entry's rows become the slot's own (e->pos its token count,
+// e->hist its tokens), held to this engine like any import. Nothing is added
+// to the prefix cache. Returns the token count or a PFX_CTX_*.
+int  prefix_slot_import(engine *e, const char *path);
 int  prefix_context_import(const engine *e, const char *name, const char *path,
                            const char *origin);
 // The origin a pinned context was imported with; false when it was built by

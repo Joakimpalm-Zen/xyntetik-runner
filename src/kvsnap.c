@@ -32,6 +32,12 @@ static struct {
     // "sha256:" + the hex digest of its bytes; "" = no anchor.
     char trust[SIGN_PUBHEX_CAP + 8];
     pthread_mutex_t mu;   // one writer at a time: names are checked then made
+    // R3.62: preamble snapshots, off unless auto_min > 0
+    int       auto_min;
+    long long auto_cap;   // bytes of "pre-" .kv files kept
+    // the snapshot the last slot load started from, for that turn's receipt
+    char      auto_name[KVSNAP_AUTO_NAME];
+    char      auto_origin[256];
 } KS = { .mu = PTHREAD_MUTEX_INITIALIZER };
 
 static bool hex_eq(const char *a, const char *b) {
@@ -152,8 +158,10 @@ static bool chain_ok(const char *buf, size_t n, char hash_out[65]) {
 
 static const char *kv_type_of(const model_t *m) { return model_kv_name(m); }
 
-bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
-                 kvsnap_err *err) {
+// slot_n > 0: the entry is rows [0, slot_n) of the slot (R3.62), not a pinned
+// context, and `ctx` is only the snapshot's name
+static bool save_one(const engine *e, const char *ctx, int slot_n, jv *req, sbuf *out,
+                     kvsnap_err *err) {
     if (!KS.on)
         return fail(err, 400, "snapshots_off", "KV snapshots are off: start the "
                     "server with --kv-snapshots DIR");
@@ -195,7 +203,17 @@ bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
                  "exists; it is never overwritten", name);
             break;
         }
-        int n = prefix_context_export(ctx, kvpath);
+        int n = slot_n > 0 ? prefix_slot_export(e, slot_n, kvpath)
+                           : prefix_context_export(ctx, kvpath);
+        if (slot_n > 0 && n == PFX_CTX_UNSUPPORTED) {
+            fail(err, 409, "context_unsupported", "this model's KV has no "
+                 "contiguous prefix to write (a ring, tied-V or recurrent layout)");
+            break;
+        }
+        if (slot_n > 0 && n == PFX_CTX_MISMATCH) {
+            fail(err, 409, "context_mismatch", "the slot no longer holds the preamble");
+            break;
+        }
         if (n == PFX_CTX_UNKNOWN || n == PFX_CTX_BADNAME) {
             fail(err, 404, "context_not_found", "no context \"%s\" is pinned "
                  "(POST /v1/runner/contexts)", ctx);
@@ -307,8 +325,15 @@ bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
     return ok;
 }
 
-bool kvsnap_load(const engine *e, const char *id, const char *name, sbuf *out,
+bool kvsnap_save(const engine *e, const char *ctx, jv *req, sbuf *out,
                  kvsnap_err *err) {
+    return save_one(e, ctx, 0, req, out, err);
+}
+
+// slot: the snapshot's rows become the slot's own (R3.62) instead of a pinned
+// context named `id`; what it started from is kept for the turn's receipt
+static bool load_one(engine *e, const char *id, const char *name, bool slot, sbuf *out,
+                     kvsnap_err *err) {
     if (!KS.on)
         return fail(err, 400, "snapshots_off", "KV snapshots are off: start the "
                     "server with --kv-snapshots DIR");
@@ -388,7 +413,14 @@ bool kvsnap_load(const engine *e, const char *id, const char *name, sbuf *out,
         char origin[256];
         snprintf(origin, sizeof origin, "{\"name\":\"%s\",\"kv_sha256\":\"%s\","
                  "\"manifest_chain_hash\":\"%s\"}", name, kvsha, mchain);
-        int n = prefix_context_import(e, id, kvpath, origin);
+        int n = slot ? prefix_slot_import(e, kvpath)
+                     : prefix_context_import(e, id, kvpath, origin);
+        if (slot && n > 0) {
+            pthread_mutex_lock(&KS.mu);
+            snprintf(KS.auto_name, sizeof KS.auto_name, "%s", name);
+            snprintf(KS.auto_origin, sizeof KS.auto_origin, "%s", origin);
+            pthread_mutex_unlock(&KS.mu);
+        }
         if (n == PFX_CTX_MISMATCH) {
             fail(err, 409, "snapshot_model_mismatch", "snapshot %s was made for "
                  "another model key or context length than this engine's", name);
@@ -431,4 +463,156 @@ bool kvsnap_load(const engine *e, const char *id, const char *name, sbuf *out,
     jv_free(man);
     free(mb);
     return ok;
+}
+
+bool kvsnap_load(const engine *e, const char *id, const char *name, sbuf *out,
+                 kvsnap_err *err) {
+    return load_one((engine *)e, id, name, false, out, err);   // a pin does not write e
+}
+
+// ---------------------------------------------- preamble snapshots (R3.62)
+
+bool kvsnap_auto_configure(const char *arg) {
+    if (!KS.on) {
+        fprintf(stderr, "error: --kv-snapshots-auto keeps its snapshots in the "
+                "--kv-snapshots directory; name one\n");
+        return false;
+    }
+    char *end = NULL;
+    long min = strtol(arg, &end, 10);
+    double mb = 8192;
+    if (end && *end == ':') mb = strtod(end + 1, &end);
+    if (!end || *end || end == arg || min < 16 || min > 1000000 || !(mb > 0) || mb > 1e7) {
+        fprintf(stderr, "error: --kv-snapshots-auto takes TOKENS[:MB]: the shortest "
+                "preamble to keep (16 or more tokens) and the megabytes of preamble "
+                "snapshots to keep (8192 unless given), not \"%s\"\n", arg);
+        return false;
+    }
+    KS.auto_min = (int)min;
+    KS.auto_cap = (long long)(mb * 1048576.0);
+    fprintf(stderr, "kv snapshots: a preamble of %d tokens or more is written after a cold "
+            "prefill and loaded on a cold start (up to %.4g MB kept)\n", KS.auto_min, mb);
+    return true;
+}
+
+bool kvsnap_auto_on(void) { return KS.on && KS.auto_min > 0; }
+int  kvsnap_auto_min(void) { return KS.auto_min; }
+
+void kvsnap_auto_name(const engine *e, const int32_t *toks, int n,
+                      char out[KVSNAP_AUTO_NAME]) {
+    // the model key first: the same tokens under another model, context
+    // length or KV type are another preamble
+    size_t nb = sizeof(uint64_t) + sizeof(int32_t) * (size_t)n;
+    uint8_t *buf = malloc(nb);
+    char hex[65] = "";
+    if (buf) {
+        memcpy(buf, &e->model_key, sizeof(uint64_t));
+        memcpy(buf + sizeof(uint64_t), toks, sizeof(int32_t) * (size_t)n);
+        envelope_data_sha256(buf, nb, hex);
+        free(buf);
+    }
+    snprintf(out, KVSNAP_AUTO_NAME, "pre-%.32s", hex);
+    if (!hex[0]) out[0] = 0;   // out of memory: no name, no snapshot
+}
+
+static void auto_paths(const char *name, char *kv, char *man, size_t cap) {
+    snprintf(kv, cap, "%s/%s.kv", KS.dir, name);
+    snprintf(man, cap, "%s/%s.kv.json", KS.dir, name);
+}
+
+bool kvsnap_auto_load(engine *e, const char *name) {
+    if (!kvsnap_auto_on() || !name[0]) return false;
+    char kvpath[1200], manpath[1200];
+    auto_paths(name, kvpath, manpath, sizeof kvpath);
+    if (!exists(kvpath) || !exists(manpath)) return false;
+    sbuf out = {0};
+    kvsnap_err err = {0};
+    bool ok = load_one(e, name, name, true, &out, &err);
+    free(out.s);
+    if (ok) return true;
+    // what failed decides whether the file is at fault: bytes that are not
+    // the ones its manifest names, or a manifest that does not recompute,
+    // are removed so this request's cold prefill writes the snapshot again;
+    // a budget with no room, or a key this server does not trust, leaves it
+    bool damaged = err.code && (!strcmp(err.code, "snapshot_digest_mismatch") ||
+                                !strcmp(err.code, "snapshot_record_invalid") ||
+                                !strcmp(err.code, "snapshot_corrupt"));
+    fprintf(stderr, "kv snapshot %s: not loaded (%s)%s\n", name, err.msg,
+            damaged ? "; removed, it is written again after this prefill" : "");
+    if (damaged) {
+        pthread_mutex_lock(&KS.mu);
+        plat_remove(kvpath);
+        plat_remove(manpath);
+        pthread_mutex_unlock(&KS.mu);
+    }
+    return false;
+}
+
+// Bring the "pre-" .kv files under the cap, least recently written first.
+// A file and its manifest go together; `keep` is never removed.
+static void auto_trim(const char *keep) {
+    for (;;) {
+        long long total = 0;
+        char oldest[80] = "";
+        long long oldest_t = 0;
+        plat_dir *d = plat_opendir(KS.dir);
+        if (!d) return;
+        const char *nm;
+        while ((nm = plat_readdir(d))) {
+            size_t ln = strlen(nm);
+            if (strncmp(nm, "pre-", 4) || ln < 8 || ln >= sizeof oldest ||
+                strcmp(nm + ln - 3, ".kv")) continue;
+            char path[1200];
+            snprintf(path, sizeof path, "%s/%s", KS.dir, nm);
+            plat_stat_t st;
+            if (plat_stat(path, &st) != 0) continue;
+            total += (long long)st.st_size;
+            if (!strncmp(nm, keep, ln - 3) && keep[ln - 3] == 0) continue;
+            if (!oldest[0] || (long long)st.st_mtime < oldest_t) {
+                snprintf(oldest, sizeof oldest, "%s", nm);
+                oldest_t = (long long)st.st_mtime;
+            }
+        }
+        plat_closedir(d);
+        if (total <= KS.auto_cap || !oldest[0]) return;
+        char path[1200];
+        snprintf(path, sizeof path, "%s/%s", KS.dir, oldest);
+        plat_remove(path);
+        snprintf(path, sizeof path, "%s/%s.json", KS.dir, oldest);
+        plat_remove(path);
+        fprintf(stderr, "kv snapshot %.*s: removed, the preamble snapshots were over "
+                "their cap\n", (int)strlen(oldest) - 3, oldest);
+    }
+}
+
+void kvsnap_auto_save(engine *e, const char *name, int n) {
+    if (!kvsnap_auto_on() || !name[0] || n < KS.auto_min) return;
+    char kvpath[1200], manpath[1200];
+    auto_paths(name, kvpath, manpath, sizeof kvpath);
+    if (exists(kvpath) && exists(manpath)) return;
+    jv *req = json_parse("{}", 2);
+    sbuf out = {0};
+    kvsnap_err err = {0};
+    bool ok = req && save_one(e, name, n, req, &out, &err);
+    jv_free(req);
+    free(out.s);
+    if (!ok) {
+        fprintf(stderr, "kv snapshot %s: not written (%s)\n", name,
+                err.msg[0] ? err.msg : "out of memory");
+        return;
+    }
+    fprintf(stderr, "kv snapshot %s: written (%d tokens of preamble)\n", name, n);
+    pthread_mutex_lock(&KS.mu);
+    auto_trim(name);
+    pthread_mutex_unlock(&KS.mu);
+}
+
+bool kvsnap_auto_origin(const char *name, char *out, size_t cap) {
+    if (cap) out[0] = 0;
+    if (!name || !name[0]) return false;
+    pthread_mutex_lock(&KS.mu);
+    bool hit = !strcmp(KS.auto_name, name);
+    if (hit) snprintf(out, cap, "%s", KS.auto_origin);
+    pthread_mutex_unlock(&KS.mu);
+    return hit && out[0];
 }

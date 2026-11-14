@@ -613,6 +613,13 @@ typedef struct {
     // leaves it 0; render_prompt_state_alloc, which renders both ways, sets
     // it (server.c, R10.27).
     size_t gen_at;
+    // Where the preamble ends, in bytes: the leading system message(s),
+    // rendered alone with the same tools, are exactly the prompt's first
+    // pre_at bytes. 0 when there is none, when it is the whole prompt, or
+    // when the template writes it another way once a turn follows. Set by
+    // render_prompt_state_alloc only while preamble snapshots are on
+    // (kvsnap_auto_on, R3.62).
+    size_t pre_at;
 } render_state;
 
 // render_messages_with_tools() that also reports the render's state. `st`

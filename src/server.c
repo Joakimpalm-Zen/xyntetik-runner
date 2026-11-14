@@ -112,6 +112,18 @@ static size_t generation_prompt_at(int tmpl, const chat_msg *msgs, int n_msgs,
     return at;
 }
 
+// R3.62: where the preamble ends (render_state.pre_at), found the same way:
+// the leading system messages rendered alone, with the tools, and only if
+// those bytes are what the prompt starts with. An agent's preamble is its
+// system message and tool list; everything after it changes per session.
+static size_t preamble_at(int tmpl, const chat_msg *msgs, int n_msgs,
+                          int thinking, const jv *tools, const char *prompt) {
+    int k = 0;
+    while (k < n_msgs && msgs[k].role && !strcmp(msgs[k].role, "system")) k++;
+    if (k == 0 || k == n_msgs) return 0;
+    return generation_prompt_at(tmpl, msgs, k, thinking, tools, prompt);
+}
+
 char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
                                 bool add_assistant, int thinking, const jv *tools,
                                 size_t hint, render_state *st) {
@@ -135,6 +147,8 @@ char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
         if (n < cap && strlen(p) + 1 < cap) {
             if (st && add_assistant)
                 st->gen_at = generation_prompt_at(tmpl, msgs, n_msgs, thinking, tools, p);
+            if (st && add_assistant && kvsnap_auto_on())
+                st->pre_at = preamble_at(tmpl, msgs, n_msgs, thinking, tools, p);
             return p;
         }
         free(p);

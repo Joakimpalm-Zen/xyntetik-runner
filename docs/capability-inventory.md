@@ -6,20 +6,20 @@ Every public surface of Runner and the one component that owns it. The component
 
 | surface | Runtime | Execution | Model substrate | Model production | Proof | Shadow | Desktop | total |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Command line | 54 | 15 | 5 | 13 | 26 | 1 | 1 | 115 |
+| Command line | 55 | 15 | 5 | 13 | 26 | 1 | 1 | 116 |
 | HTTP routes | 22 |  |  |  | 1 |  |  | 23 |
 | `RUNNER_*` switches | 23 | 100 | 8 | 13 |  |  | 7 | 151 |
 | Record formats | 7 |  |  | 6 | 10 |  |  | 23 |
 | Python client | 14 |  |  |  |  | 25 |  | 39 |
 | TypeScript client | 18 |  |  |  | 7 |  |  | 25 |
 
-## Command line (115)
+## Command line (116)
 
 Every option `runner --help` declares, the subcommands, and the `runner attest` verbs.
 
 | owner | count | surfaces |
 |---|---:|---|
-| Runtime | 54 | `--bare-recipients`, `--chat-template`, `--decide`, `--doctor-include-text`, `--fork-seed`, `--help`, `--ignore-eos`, `--info`, `--json`, `--kv-snapshots`, `--loop-guard`, `--memory`, `--min-p`, `--parallel`, `--parent-pid`, `--port`, `--pull`, `--ram-share`, `--reasoning-budget`, `--reasoning-budget-message`, `--reasoning-temp`, `--repeat-penalty`, `--reserve`, `--resume`, `--roster`, `--score`, `--score-out`, `--score-tokens`, `--serve`, `--session-out`, `--sessions`, `--sizes-only`, `--suspend-after`, `--system`, `--systemone`, `--temp`, `--think`, `--top-k`, `--top-p`, `--ttl`, `--version`, `--vram-priority`, `--wait-for-vram`, `--yield-on-request`, `-f`, `-h`, `-hf`, `-i`, `-n`, `-p`, `-s`, `-v`, `runner cached`, `runner recommend` |
+| Runtime | 55 | `--bare-recipients`, `--chat-template`, `--decide`, `--doctor-include-text`, `--fork-seed`, `--help`, `--ignore-eos`, `--info`, `--json`, `--kv-snapshots`, `--kv-snapshots-auto`, `--loop-guard`, `--memory`, `--min-p`, `--parallel`, `--parent-pid`, `--port`, `--pull`, `--ram-share`, `--reasoning-budget`, `--reasoning-budget-message`, `--reasoning-temp`, `--repeat-penalty`, `--reserve`, `--resume`, `--roster`, `--score`, `--score-out`, `--score-tokens`, `--serve`, `--session-out`, `--sessions`, `--sizes-only`, `--suspend-after`, `--system`, `--systemone`, `--temp`, `--think`, `--top-k`, `--top-p`, `--ttl`, `--version`, `--vram-priority`, `--wait-for-vram`, `--yield-on-request`, `-f`, `-h`, `-hf`, `-i`, `-n`, `-p`, `-s`, `-v`, `runner cached`, `runner recommend` |
 | Execution | 15 | `--bench-json`, `--cpu-moe`, `--draft`, `--draft-k`, `--draft-required`, `--gpu`, `--gpu-route`, `--kv`, `--kv-ring`, `--mlock`, `--moe-prefetch`, `--rope`, `-b`, `-c`, `-t` |
 | Model substrate | 5 | `--adapter`, `--lora`, `--lora-scale`, `--no-bos`, `-m` |
 | Model production | 13 | `--context-surgery`, `--imatrix`, `--merge-allow-erased`, `--merge-lora`, `--prune-experts`, `--quant`, `--quant-error`, `--remove-sublayer`, `--rewrite`, `--type-plan`, `--type-plan-strict`, `runner derive`, `runner train` |
