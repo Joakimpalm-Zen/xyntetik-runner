@@ -2368,6 +2368,93 @@ static const model_params *model_default_placement(const model_t *m, const model
     return p;
 }
 
+// EXPERIMENT R3.39.9 / R3.39.10 / R3.39.11 (not for merge unless the A/B
+// passes): the whole-mapping WILLNEED sweep issued BEFORE
+// model_alloc_runtime(), so a GPU load's upload reads pages the OS was already
+// told to bring in, and only when the file is not already in memory. Same
+// conditions as the shipped sweep: opt-in RUNNER_PREFETCH, not under --mlock,
+// not when the MoE expert prefetch owns paging, only when the file fits.
+//
+// Is the file in memory? R3.39.11: ask, where the platform answers
+// (plat_page_in_core, mincore on Linux): PROBE_PAGES pages spread evenly over
+// the mapping, nothing touched, no timing threshold. Where it cannot say
+// (Windows) the R3.39.10 probe stays: read one byte of each page and time the
+// first touch; a cached page is a soft fault, a cold one a disk read. Cold
+// means at least PROBE_COLD_MIN of the sampled pages are out. Declared before
+// any run.
+static bool moe_prefetch_default(const model_t *m, int flag);
+enum { PROBE_PAGES = 128, PROBE_COLD_MIN = 32 };
+#define PROBE_SLOW_S 30e-6
+static bool mapping_looks_cold(const model_t *m, int *out_n, bool *asked, double *took_out) {
+    uint64_t total = gguf_mapped_size(&m->gf);
+    uint32_t np = gguf_map_count(&m->gf);
+    int out = 0, answered = 0, sampled = 0;
+    const unsigned char *page[PROBE_PAGES];
+    double t0 = plat_now();
+    for (int k = 0; k < PROBE_PAGES && total; k++) {
+        uint64_t at = total / PROBE_PAGES * (uint64_t)k, base = 0;
+        for (uint32_t i = 0; i < np; i++) {
+            size_t sz;
+            const unsigned char *mp = gguf_map_part(&m->gf, i, &sz);
+            if (!mp || !sz) continue;
+            if (at < base + sz) {
+                page[sampled++] = mp + ((at - base) & ~(uint64_t)4095);
+                break;
+            }
+            base += sz;
+        }
+    }
+    for (int k = 0; k < sampled; k++) {
+        int r = plat_page_in_core(page[k]);
+        if (r < 0) break;
+        answered++;
+        out += r == 0;
+    }
+    *asked = sampled > 0 && answered == sampled;
+    if (!*asked) {
+        // the platform did not answer for every page: time the first touches
+        volatile unsigned sink = 0;
+        out = 0;
+        for (int k = 0; k < sampled; k++) {
+            double a = plat_now();
+            sink += *page[k];
+            if (plat_now() - a > PROBE_SLOW_S) out++;
+        }
+        (void)sink;
+    }
+    *out_n = out;
+    *took_out = plat_now() - t0;
+    return out >= PROBE_COLD_MIN;
+}
+
+static void prefetch_before_upload(model_t *m, const model_params *p) {
+    const char *e = getenv("RUNNER_PREFETCH");
+    bool opt_in = e && *e && strcmp(e, "0") && strcmp(e, "off");
+    if (!opt_in || !plat_willneed_available()) return;
+    bool locked = p->mlock && gguf_mapped_size(&m->gf);
+    bool moe_pf = m->n_expert > 0 && !locked && moe_prefetch_default(m, p->moe_prefetch);
+    if (!model_load_prefetch_wanted(gguf_mapped_size(&m->gf), plat_ram_available_bytes(),
+                                    locked, moe_pf))
+        return;
+    int out = 0;
+    bool asked = false;
+    double took = 0;
+    bool cold = mapping_looks_cold(m, &out, &asked, &took);
+    fprintf(stderr, "prefetch: residency probe, %d pages %s in %.2f ms, %d out: %s\n",
+            PROBE_PAGES, asked ? "asked of the OS" : "timed at first touch", took * 1e3, out,
+            cold ? "cold, hinting" : "warm, no hint");
+    if (!cold) return;
+    uint32_t np = gguf_map_count(&m->gf);
+    for (uint32_t i = 0; i < np; i++) {
+        size_t sz;
+        void *mp = gguf_map_part(&m->gf, i, &sz);
+        if (mp && sz) plat_willneed(mp, sz);
+    }
+    fprintf(stderr, "prefetch: hinted %.1f GB of weights to the OS before the "
+            "device upload (RUNNER_PREFETCH opt-in, experiment R3.39.11)\n",
+            (double)gguf_mapped_size(&m->gf) / 1e9);
+}
+
 static bool model_load_inner(model_t *m, const char *path, const model_params *p) {
     uint64_t size = 0, ino = 0;
     int64_t  mtime = 0, ctime = 0;
@@ -2414,6 +2501,7 @@ static bool model_load_inner(model_t *m, const char *path, const model_params *p
         }
     }
     pthread_mutex_unlock(&g_weights_mu);
+    prefetch_before_upload(m, p);
     return model_alloc_runtime(m, model_default_placement(m, p));
 }
 
@@ -2578,33 +2666,13 @@ bool model_load(model_t *m, const char *path, const model_params *p) {
     if (m->moe_prefetch)
         fprintf(stderr, "moe: prefetching routed experts as whole blocks "
                 "(--moe-prefetch off disables)\n");
-    // Whole-mapping WILLNEED sweep for a model that FITS — OPT-IN
-    // (RUNNER_PREFETCH=1), and the measurement that made it opt-in is the
-    // point: on the 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load
-    // 60% SLOWER (11.5 s demand-faulted vs 18.4 s swept, interleaved,
-    // evicted between arms) — macOS demand paging already outruns its own
-    // WILLNEED readahead, the same shape as the 2026-08-31 mmap-vs-pread
-    // result. Linux batches faults under WILLNEED and Windows has
-    // PrefetchVirtualMemory, so the lever stays for those platforms to
-    // measure on their own boxes; a default is a measurement, not a hope.
-    {
-        const char *e = getenv("RUNNER_PREFETCH");
-        bool opt_in = e && *e && strcmp(e, "0") && strcmp(e, "off");
-        if (opt_in && plat_willneed_available() &&
-            model_load_prefetch_wanted(gguf_mapped_size(&m->gf),
-                                       plat_ram_available_bytes(),
-                                       locked, m->moe_prefetch)) {
-            uint32_t np = gguf_map_count(&m->gf);
-            for (uint32_t i = 0; i < np; i++) {
-                size_t sz;
-                void *mp = gguf_map_part(&m->gf, i, &sz);
-                if (mp && sz) plat_willneed(mp, sz);
-            }
-            fprintf(stderr, "prefetch: hinted %.1f GB of weights to the OS "
-                    "(RUNNER_PREFETCH opt-in)\n",
-                    (double)gguf_mapped_size(&m->gf) / 1e9);
-        }
-    }
+    // The whole-mapping WILLNEED sweep (RUNNER_PREFETCH=1) is opt-in on every
+    // platform because each one measured it a loss where it used to run, here,
+    // after model_load_inner() and so after the device upload
+    // (docs/speed-defaults.md). EXPERIMENT R3.39.9 to R3.39.11: the sweep moved
+    // to prefetch_before_upload(), called from model_load_inner() before the
+    // device upload, and fires only when the residency probe finds the file
+    // out of memory.
     return true;
 }
 

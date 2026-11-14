@@ -56,6 +56,12 @@ size_t plat_willneed_window(void);
 // already (the Metal shader library that failed to compile while --caps still
 // advertised the backend).
 bool   plat_willneed_available(void);
+
+// EXPERIMENT R3.39.11: whether the page holding `addr` is in memory: 1 in
+// core, 0 not, -1 when the platform cannot say (Windows, or a mincore error).
+// For a file mapping Linux answers from the page cache when the caller owns
+// the file or may write it; otherwise only for pages this process mapped.
+int    plat_page_in_core(const void *addr);
 // Hand the pages of a range of a READ-ONLY file mapping back to the OS: they
 // leave this process's resident set, and a later read faults them back in
 // from the file (normally the page cache) with the same bytes. Only whole

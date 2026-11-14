@@ -74,6 +74,8 @@ static runner_pvm_fn runner_pvm(void) {
 
 bool plat_willneed_available(void) { return runner_pvm() != NULL; }
 
+int plat_page_in_core(const void *addr) { (void)addr; return -1; }
+
 void plat_willneed(const void *addr, size_t len) {
     if (!addr || !len) return;
     runner_pvm_fn pvm = runner_pvm();
@@ -650,6 +652,20 @@ void plat_willneed(const void *addr, size_t len) {
 }
 
 bool plat_willneed_available(void) { return true; }   // madvise is always there
+
+int plat_page_in_core(const void *addr) {
+    long ps = sysconf(_SC_PAGESIZE);
+    if (!addr || ps <= 0) return -1;
+    void *page = (void *)((uintptr_t)addr & ~((uintptr_t)ps - 1));
+#ifdef __APPLE__
+    char vec = 0;
+    if (mincore(page, (size_t)ps, &vec) != 0) return -1;
+#else
+    unsigned char vec = 0;
+    if (mincore(page, (size_t)ps, &vec) != 0) return -1;
+#endif
+    return (vec & 1) ? 1 : 0;
+}
 
 // MADV_DONTNEED on a PROT_READ, MAP_PRIVATE file mapping (plat_mmap_ro's)
 // drops the pages from this process; the next read maps the file's bytes
