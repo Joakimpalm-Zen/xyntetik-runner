@@ -206,6 +206,19 @@ static int batch_switch(const char *path) {
         } else if (!on) {
             on = malloc(sizeof(float) * (size_t)nv);
             if (on) memcpy(on, lg, sizeof(float) * (size_t)nv);
+            // the live control: the same prompt with only its first token
+            // changed must move the last token's logits. Identity between
+            // the two arms below proves nothing if attention reads no
+            // context (an f16 KV table never initialised decodes to zeros)
+            toks[0] = tok_at(1000, nv) != toks[0] ? tok_at(1000, nv) : tok_at(1001, nv);
+            float *moved = on ? model_forward_batch(&m, toks, N_BATCH_CHUNK, 0, true) : NULL;
+            if (!moved || !memcmp(on, moved, sizeof(float) * (size_t)nv)) {
+                printf("attn-split: FAIL a changed first token left the last logits as they were: "
+                       "the context does not reach them\n");
+                bad = 1;
+            } else {
+                printf("attn-split: the context reaches the last logits (a changed first token moves them)\n");
+            }
         } else if (memcmp(on, lg, sizeof(float) * (size_t)nv)) {
             printf("attn-split: FAIL RUNNER_ATTN_BATCH=%s: last logits differ from the batched pass\n", shown);
             bad = 1;
