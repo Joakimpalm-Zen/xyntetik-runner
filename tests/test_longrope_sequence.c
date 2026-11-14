@@ -143,24 +143,34 @@ int main(int argc, char **argv) {
             den[2 * j + 1] = ((const float *)fl->data)[j];
         }
         model_rope_div_factors(quo, num, den, NQ);
-        int wrong = 0, seen = 0;
-        for (int pass = 0; pass < 2; pass++) {
-            // pass 1 is the control: one quotient moved by an ulp must be seen
-            if (pass) quo[NQ / 3] = nextafterf(quo[NQ / 3], 2.0f * quo[NQ / 3]);
+        int wrong = 0, seen = 0, seen_far = 0;
+        for (int pass = 0; pass < 3; pass++) {
+            // passes 1 and 2 are the controls: a quotient moved by an ulp,
+            // and one that is nowhere near, must each be seen
+            if (pass == 1) quo[NQ / 3] = nextafterf(quo[NQ / 3], 2.0f * quo[NQ / 3]);
+            if (pass == 2) quo[NQ / 5] = 0x1p-100f;
             int bad = 0;
             for (int j = 0; j < NQ; j++) {
                 double a = num[j], b = den[j];
+                // The distances below are exact only for a quotient already
+                // near a/b (the subtraction is then exact, by Sterbenz). Far
+                // from it all three round alike and compare equal, so
+                // nearness is checked first, not assumed.
+                if (!(fabs((double)quo[j] * b - a) <= 1e-6 * a)) { bad++; continue; }
                 double r  = fabs((double)quo[j] * b - a);
                 // every quotient here is positive: twice it is above, zero below
                 double up = fabs((double)nextafterf(quo[j], 2.0f * quo[j]) * b - a);
                 double dn = fabs((double)nextafterf(quo[j], 0.0f) * b - a);
                 bad += r > up || r > dn;
             }
-            if (pass) seen = bad; else wrong = bad;
+            if (pass == 0) wrong = bad;
+            else if (pass == 1) seen = bad;
+            else seen_far = bad - seen;
         }
         if (wrong) fprintf(stderr, "%d of %d quotients are not the correctly rounded ones\n", wrong, NQ);
         ck(wrong == 0, "every factor quotient is the correctly rounded one");
         ck(seen >= 1, "and a quotient one ulp off is seen");
+        ck(seen_far >= 1, "and so is one that is nowhere near");
     }
     // Engine against engine, to the bit (R6.78): the short table of a load
     // past the original context is the table a load at it builds. On some
