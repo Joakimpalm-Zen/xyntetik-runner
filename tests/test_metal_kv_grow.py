@@ -150,3 +150,46 @@ def test_a_grow_that_does_not_fit_continues_on_the_cpu(runner_bin):
     assert "does not fit" in err and "continuing on the CPU" in err, err[-800:]
     assert d["generated_tokens"] == 2, d
     assert d["route"]["backend"] == "cpu" and "KV" in d["route"]["fallback"], d["route"]
+
+
+def _wide8(tmp_path):
+    p = tmp_path / "wide8.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts" / "make-test-model.py", "--wide", "--n-ff", "2048",
+                    "--layers", "8", str(p)], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    return p
+
+
+def test_a_grow_charges_the_weights_the_device_really_holds(runner_bin, tmp_path):
+    """codex's second read of PR G: a split whose no-copy wrap fails copies the WHOLE file into one
+    shared buffer (metal_place_weights), but its grows were priced against the first layers' prefix.
+    RUNNER_METAL_MAX_BUF=1 makes the wrap fail; at a 560 MiB working set the copied 57 MB file and the
+    fixed allowance leave no room for a grow, while the wrapped prefix (the control) does."""
+    _metal_or_skip(runner_bin)
+    model = _wide8(tmp_path)
+
+    def run(**seams):
+        p = subprocess.run([str(runner_bin), "-m", str(model), "-p", TEXT, "-n", "8", "-c", "4096",
+                            "--gpu-layers", "1", "--temp", "0", "--no-tray"], cwd=ROOT, capture_output=True,
+                           timeout=300, env=_env(RUNNER_TEST_METAL_WORKING_SET_MB=560,
+                                                 RUNNER_TEST_METAL_KV_STEP=16, **seams))
+        err = p.stderr.decode("utf-8", "replace")
+        assert p.returncode == 0, err[-800:]
+        return err
+
+    copied = run(RUNNER_METAL_MAX_BUF=1)
+    assert "partial offload" in copied, copied[-800:]
+    assert "does not fit" in copied and "continuing on the CPU" in copied, copied[-800:]
+    wrapped = run()
+    assert "partial offload" in wrapped and "does not fit" not in wrapped, wrapped[-800:]
+
+
+def test_the_end_of_run_line_keeps_the_high_water_mark_after_a_refusal(runner_bin):
+    """codex's second read of PR G: after a refused grow the end-of-run line read "to 0 of C rows",
+    since the refusal releases the region buffers. It keeps the rows the cache reached, and says the
+    run ended on the CPU."""
+    _metal_or_skip(runner_bin)
+    p = _generate(runner_bin, TEXT, RUNNER_TEST_METAL_KV_STEP=16, RUNNER_TEST_METAL_KV_GROW_FAILS_AT=600)
+    assert p.returncode == 0, p.stderr[-800:]
+    grew = _grew(p.stderr)
+    assert grew is not None and grew[0] >= 1 and 550 <= grew[1] < 600, (grew, p.stderr[-800:])
+    assert re.search(r"a grow to 6\d\d rows did not fit, so the run ended on the CPU", p.stderr), p.stderr[-800:]
