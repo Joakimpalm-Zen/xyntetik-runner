@@ -159,3 +159,51 @@ def test_exemption_list_does_not_outlive_its_reason():
         "these architectures now have a manifest row, so their entry in "
         "ARCH_GATE_EXEMPTIONS is stale and should be deleted: "
         + ", ".join(stale))
+
+
+# Architecture names no published file declares, removed from src/arch.h
+# (R4.39.10, R4.39.13). Each was read on the Hub on 2026-11-14: of the 500
+# most-downloaded GGUF repositories matching the name, none declares it, and
+# llama.cpp has no such architecture either. SmolLM2 and Mistral v0.1 to v0.3
+# convert to "llama", which they always ran as.
+RETIRED_ARCH_NAMES = {
+    "mistral": "0 of 500 Mistral GGUF repos (441 llama, 35 mistral3, 12 mistral4, 6 mistral-large4)",
+    "smollm": "0 of 500 SmolLM GGUF repos (426 llama, 70 smollm3)",
+}
+
+
+@pytest.mark.parametrize("arch", sorted(RETIRED_ARCH_NAMES))
+def test_a_retired_architecture_name_is_refused(runner_bin, tmp_path, arch):
+    assert arch not in _admitted_architectures(runner_bin), RETIRED_ARCH_NAMES[arch]
+    model = tmp_path / f"{arch}.gguf"
+    _make_model(model, arch)
+    proc = subprocess.run(
+        [runner_bin, "-m", model, "-p", "hi", "-n", "1", "--gpu", "off"],
+        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+    )
+    assert proc.returncode != 0, f"{arch}: {RETIRED_ARCH_NAMES[arch]}"
+    assert f"unsupported architecture '{arch}'" in proc.stderr.decode(errors="replace")
+
+
+def _tensor_core_trusted_architectures():
+    """The names cuda.c's tensor-core prefill trusts outright (tc_default_takes)."""
+    import re
+    src = (ROOT / "src" / "cuda.c").read_text(encoding="utf-8")
+    m = re.search(r"static const char \*archs\[\] = \{(.*?)\};", src, re.S)
+    assert m, "the trusted-architecture list moved: update this reader"
+    return re.findall(r'"([^"]+)"', m.group(1))
+
+
+def test_every_tensor_core_trusted_architecture_is_admitted(runner_bin):
+    """A route list keyed on a name the loader refuses is dead: no model can
+    ever carry it. "mistral" and "smollm" sat in this list for that reason."""
+    trusted = _tensor_core_trusted_architectures()
+    assert len(trusted) > 5, trusted
+    dead = sorted(set(trusted) - set(_admitted_architectures(runner_bin)))
+    assert not dead, f"trusted for the tensor cores but not admitted: {dead}"
+
+
+def test_every_exemption_names_an_admitted_architecture(runner_bin):
+    """An exemption for an architecture the loader no longer admits is stale."""
+    gone = sorted(set(ARCH_GATE_EXEMPTIONS) - set(_admitted_architectures(runner_bin)))
+    assert not gone, f"exempted but not admitted, so the entry should go: {gone}"
