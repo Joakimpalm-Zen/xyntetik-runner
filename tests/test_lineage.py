@@ -286,3 +286,70 @@ def test_a_servers_receipts_show_versions_timeline_and_lineage(runner_bin, tmp_p
     receipts[1].unlink()
     w2 = _run(runner_bin, ["--lineage", "rc"], tmp_path)
     assert w2.returncode == 2 and "chain BROKEN" in w2.stdout, w2.stdout
+
+
+# A quantize record states what the rewrite did, not only what it was asked:
+# a RUNNER_REQUANT_ONLY run read "target q8_0" with 2 of 20 tensors in its
+# scope, and a conversion the size check declined read the same as one that
+# converted everything. The record carries the tensors converted and kept,
+# and the switches that scoped or forced the conversion when they were set.
+
+GGML_Q4_0, GGML_Q8_0, GGML_Q4_K = 2, 8, 12
+
+
+def _types(path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from gguf_fixture import read_header
+    with open(path, "rb") as f:
+        _kv, tensors, _end = read_header(f)
+    return {name: t for name, _dims, t, _off in tensors}
+
+
+def _quantize(exe, src, out, quant, cwd, **env):
+    p = subprocess.run([str(exe), "-m", str(src), "--quantize", str(out), "--quant", quant],
+                       cwd=cwd, env={**{k: v for k, v in __import__("os").environ.items()
+                                       if k not in ("RUNNER_REQUANT_ONLY", "RUNNER_FORCE_REQUANT")},
+                                    **env},
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+    assert p.returncode == 0, p.stderr.decode(errors="replace")[-800:]
+    return json.loads(pathlib.Path(str(out) + ".quant.json").read_text())
+
+
+def _changed(src, out):
+    a, b = _types(src), _types(out)
+    return sum(1 for n in b if b[n] != a[n]), sum(1 for n in b if b[n] == a[n])
+
+
+def test_a_quant_record_counts_the_tensors_it_converted(runner_bin, tmp_path):
+    out = tmp_path / "q8.gguf"
+    rec = _quantize(runner_bin, ROOT / "test.gguf", out, "q8_0", tmp_path)
+    converted, kept = _changed(ROOT / "test.gguf", out)
+    assert converted > 0 and kept > 0
+    assert rec["tensors"] == {"converted": converted, "kept": kept}, rec
+    assert "requant_only" not in rec and "force_requant" not in rec, rec
+
+
+def test_a_scoped_requant_says_its_scope(runner_bin, tmp_path):
+    out = tmp_path / "scoped.gguf"
+    rec = _quantize(runner_bin, ROOT / "test.gguf", out, "q8_0", tmp_path,
+                    RUNNER_REQUANT_ONLY="attn_q")
+    converted, kept = _changed(ROOT / "test.gguf", out)
+    assert rec["requant_only"] == "attn_q", rec
+    assert rec["tensors"] == {"converted": converted, "kept": kept}, rec
+    assert 0 < converted < kept, (converted, kept)
+
+
+def test_a_declined_conversion_reads_as_none_and_a_forced_one_says_so(runner_bin, tmp_path):
+    src = tmp_path / "wide-src.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts" / "make-test-model.py", "--wide", "--n-ff", "2048",
+                    str(src)], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    q4k = tmp_path / "q4k.gguf"
+    _quantize(runner_bin, src, q4k, "q4_k", tmp_path)
+    declined = _quantize(runner_bin, q4k, tmp_path / "kept.gguf", "q4_0", tmp_path)
+    assert declined["tensors"]["converted"] == 0, declined
+    assert "force_requant" not in declined, declined
+    forced = _quantize(runner_bin, q4k, tmp_path / "forced.gguf", "q4_0", tmp_path,
+                       RUNNER_FORCE_REQUANT="1")
+    n_q4k = sum(1 for t in _types(q4k).values() if t == GGML_Q4_K)
+    assert forced["force_requant"] is True, forced
+    assert forced["tensors"]["converted"] == n_q4k > 0, (forced, n_q4k)
