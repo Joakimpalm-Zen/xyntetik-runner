@@ -77,6 +77,13 @@ bool   gpu_eseries_ok(void);
 // True when the backend's layer walk omits a removed attention or FFN
 // (--remove-sublayer) per block; false makes the loader refuse the offload.
 bool   gpu_removed_sublayers_ok(void);
+// R4.40: can an instance change its rope frequency table after init
+// (model_rope_for_len)? Metal keeps the table per instance and can; CUDA
+// shares it between the sequences of a weight set and cannot yet.
+bool   gpu_rope_sets_ok(void);
+// The instance's rope_inv_freq (and its sliding-layer copy) changed: copy it
+// to the device. Called between forwards, never during one.
+void   gpu_rope_changed(model_t *m);
 // The most experts and per-token picks a device bank's router takes (CUDA 512
 // and 256, Metal 256 and 256); false where no device routes experts. Past
 // them a bank is refused the device, by the words model_moe_route_why gives
