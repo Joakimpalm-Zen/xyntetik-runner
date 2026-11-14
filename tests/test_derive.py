@@ -254,6 +254,28 @@ def test_rewrite_uses_its_threads_and_the_file_does_not_change(runner_bin, tmp_p
         assert files[1] == files[4], quant
 
 
+def test_the_recorded_command_carries_the_scoring_settings_and_the_credits(runner_bin, tmp_path):
+    """A card's command has to make the file and score it the same way (the
+    owner's rule, 2026-11-13). It left out -c, which changes the scoring,
+    --gpu, --credit and --compare; a reader of a real card could not reproduce
+    the measurement from it (R4.44, Qwen3.8). -t stays out: it changes neither."""
+    import shlex
+    parent = make_parent(tmp_path)
+    out = tmp_path / "q.gguf"
+    credit = "imatrix: someone (their/repo@abc123, file's name.gguf)"
+    rc, so, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--credit", credit)
+    assert rc == 0, se[-400:]
+    rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
+    argv = shlex.split(rec["command"])
+    assert argv[:2] == ["runner", "derive"]
+    assert argv[argv.index("-c") + 1] == "256"
+    assert argv[argv.index("--gpu") + 1] == "off"
+    assert argv[argv.index("--credit") + 1] == credit
+    assert "-t" not in argv
+    card = pathlib.Path(str(out) + ".README.md").read_text(encoding="utf-8")
+    assert rec["command"] in card
+
+
 def test_target_size_takes_a_split_parent(runner_bin, tmp_path):
     """A parent in several shards (<prefix>-00001-of-0000N.gguf): the costing
     step read every shard, and the planner then opened the first one alone and
@@ -287,6 +309,10 @@ def test_target_size_takes_a_split_parent(runner_bin, tmp_path):
     import hashlib
     assert [p["sha256"] for p in rec["parent"]["parts"]] == [
         hashlib.sha256(p.read_bytes()).hexdigest() for p in parts]
+    # the card names every shard with its hash, since the command names only the first
+    card = pathlib.Path(str(out) + ".README.md").read_text(encoding="utf-8")
+    for part in rec["parent"]["parts"]:
+        assert part["path"] in card and part["sha256"] in card
     # a single-file parent's record has no parts list
     out1 = tmp_path / "one.gguf"
     rc, so, se = derive(runner_bin, whole, out1, "--quant", "q4_0")
@@ -405,6 +431,10 @@ def test_tensors_without_imatrix_data_are_held_not_refused(runner_bin, tmp_path)
     rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
     r = rec["recipe"]
     assert r["held"] == [left_out] and r["held_at"] == "q8_0" and left_out not in r["demoted"]
+    # what the held tensor takes at the top rung is in the record and on the card (R4.45)
+    held_row = next(x for x in rows if x["tensor"] == left_out)
+    assert r["held_bytes"] == held_row["types"]["q8_0"]["bytes"]
+    assert f"Together they take {r['held_bytes']} bytes" in pathlib.Path(str(out) + ".README.md").read_text(encoding="utf-8")
     ours = json.loads((out.parent / r["type_plan"]).read_text())
     assert left_out not in {x["match"] for x in ours["rules"]} and ours["default"] == "q8_0"
     p = subprocess.run([sys.executable, ROOT / "scripts/type-plan-by-sensitivity.py",
