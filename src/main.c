@@ -4561,6 +4561,17 @@ static int run_quantize(const cli_opts *o) {
     sb_lit(&rec, ",\"target\":\"");
     sb_esc(&rec, target, strlen(target));
     sb_lit(&rec, "\"");
+    // what the rewrite did beside what it was asked: a scope or a declined
+    // conversion leaves tensors at their type, and the target alone hid it
+    const quantize_report *qr = quantize_last_report();
+    sb_fmt(&rec, ",\"tensors\":{\"converted\":%llu,\"kept\":%llu}",
+           (unsigned long long)qr->converted, (unsigned long long)qr->kept);
+    if (qr->requant_only) {
+        sb_lit(&rec, ",\"requant_only\":\"");
+        sb_esc(&rec, qr->requant_only, strlen(qr->requant_only));
+        sb_lit(&rec, "\"");
+    }
+    if (qr->force_requant) sb_lit(&rec, ",\"force_requant\":true");
     if (o->prune_experts) {
         sb_lit(&rec, ",\"prune_experts\":");
         lineage_put_input(&rec, o->prune_experts, NULL);

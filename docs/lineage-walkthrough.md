@@ -54,8 +54,8 @@ quantize: provenance -> models/qwen3-0.6b-q8_0.gguf.quant.json
 ```
 
 `models/qwen3-0.6b-q8_0.gguf.quant.json` names the BF16 input by sha256, the
-target type, the output's sha256 and the Runner binary, and carries the
-signature.
+target type, how many tensors were converted and kept, the output's sha256
+and the Runner binary, and carries the signature.
 
 ## 3. Train a LoRA on the quantized file
 
