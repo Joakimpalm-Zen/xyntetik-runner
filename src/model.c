@@ -6770,9 +6770,8 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     int n_ctx = m->n_ctx;
 
     {
-        const char *e = getenv("RUNNER_ATTN_SPLIT");
-        m->attn_split = e && !strcmp(e, "0") ? -1 : 0;
-        e = getenv("RUNNER_ATTN_BATCH");
+        m->attn_split = 0;   // attn_split_wanted decides per call
+        const char *e = getenv("RUNNER_ATTN_BATCH");
         m->attn_batch = e && (!strcmp(e, "0") || !strcmp(e, "off")) ? -1 : 0;
     }
     if (!runtime_kv_layout(m, p, n_ctx)) return false;

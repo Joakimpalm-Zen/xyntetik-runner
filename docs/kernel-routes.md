@@ -111,7 +111,7 @@ Around the matvec:
   attention also takes head widths 257-512 (`k_attn_tile8`, 8 query rows of
   8-key tiles: gemma-4's global layers), whose long-context rows on
   gemma-4-26B-A4B and the dense gemma-4-E2B read no further from the
-  reference than `k_attn`'s (`RUNNER_CUDA_ATTN_TILE512=0` keeps `k_attn`).
+  reference than `k_attn`'s.
   Head widths 256 to 512 take the tensor cores too where `k_attn_tcw` is
   on (R3.6.3.1, route detail `attn_wide=on`): `k_attn_tc`'s operands (Q and
   P in two halves, fp16 K and V, f32 accumulation) for 16 query rows a

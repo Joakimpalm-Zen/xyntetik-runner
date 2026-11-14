@@ -7539,18 +7539,8 @@ static bool tile_kv_store(gpu_t *g, model_t *m, int l, int tn, int hd,
 // RUNNER_CUDA_ATTN_TILE: the tiled prefill attention (k_attn_tile*), on by
 // default since its float32-reference rows were never further from the
 // reference than k_attn's; 0 keeps k_attn. A tolerance route: recorded as
-// attn-tile, and --gpu-route reference runs k_attn.
-// RUNNER_CUDA_ATTN_TILE512: the tiled attention also takes head widths 257
-// to 512 (gemma-4's global layers, k_attn_tile8), on by default on its
-// long-context rows; 0 keeps k_attn for those layers.
-static bool attn_tile512_on(void) {
-    static _Atomic int on = -1;
-    if (on < 0) {
-        const char *e = getenv("RUNNER_CUDA_ATTN_TILE512");
-        on = !(e && *e && strcmp(e, "0") == 0);
-    }
-    return on == 1;
-}
+// attn-tile, and --gpu-route reference runs k_attn. Head widths 257 to 512
+// (gemma-4's global layers) take k_attn_tile8.
 
 static bool attn_tile_on(void) {
     if (route_pinned(GR_ATTN_TILE) >= 0) return route_pinned(GR_ATTN_TILE);
@@ -7564,15 +7554,15 @@ static bool attn_tile_on(void) {
 
 // The tiled prefill attention over a whole tile of tn query columns, or
 // false (nothing launched) when it does not apply: switch off, kernel
-// absent from the PTX, a head width past 512 (256 under
-// RUNNER_CUDA_ATTN_TILE512=0), or a GQA ratio that does not divide. Its launch
-// shape and shared footprint are k_attn_tile's (see kernels.cu): 32 query
-// rows of 32-key tiles at head_dim <= 128, 16 of 16 at <= 256, 8 of 8 at
-// <= 512, the rows a block's heads times its strip of tokens.
+// absent from the PTX, a head width past 512, an odd head width, or a GQA
+// ratio that does not divide. Its launch shape and shared footprint are
+// k_attn_tile's (see kernels.cu): 32 query rows of 32-key tiles at head_dim
+// <= 128, 16 of 16 at <= 256, 8 of 8 at <= 512, the rows a block's heads
+// times its strip of tokens.
 static bool tile_attn_tiled(gpu_t *g, model_t *m, int tn, int hd, int n_kv,
                             const attn_args *aa, CUdeviceptr sinks, bool *ok) {
     if (!attn_tile_on() || hd % 2 || n_kv < 1 || m->n_head % n_kv) return false;
-    int R = hd <= 128 ? 32 : hd <= 256 ? 16 : hd <= 512 && attn_tile512_on() ? 8 : 0;
+    int R = hd <= 128 ? 32 : hd <= 256 ? 16 : hd <= 512 ? 8 : 0;
     CUfunction f = R == 32 ? g->sw->f_attn_tile32 : R == 16 ? g->sw->f_attn_tile16 :
                    R == 8 ? g->sw->f_attn_tile8 : NULL;
     if (!f) return false;
@@ -7783,20 +7773,13 @@ static bool tile_attn_dec_gqa(gpu_t *g, model_t *m, int hd, int n_kv,
 }
 
 // The absorbed MLA decode (k_attn_dec_mla, R3.31): its dynamic shared memory
-// for a layer's geometry, or 0 when it does not apply (off, not the shared
-// one-table layout, or a shape it does not take: k_attn_dec then). One answer
-// for the solo decode and the verify rows, so a row runs its solo arithmetic.
-// MD_* (above) mirror kernels.cu.
-static bool attn_mla_on(void) {
-    static _Atomic int on = -1;
-    if (on < 0) {
-        const char *e = getenv("RUNNER_CUDA_ATTN_MLA");
-        on = !(e && *e && strcmp(e, "0") == 0);
-    }
-    return on == 1;
-}
+// for a layer's geometry, or 0 when it does not apply (decode attention off,
+// the kernel absent from the PTX, not the shared one-table layout, or a shape
+// it does not take: k_attn_dec then). One answer for the solo decode and the
+// verify rows, so a row runs its solo arithmetic. MD_* (above) mirror
+// kernels.cu.
 static unsigned attn_dec_mla_smem(const gpu_t *g, const model_t *m, int hd, int n_kv) {
-    if (!attn_dec_on() || !attn_mla_on() || !g->sw->f_attn_dec_mla || !g->sw->f_attn_merge32 ||
+    if (!attn_dec_on() || !g->sw->f_attn_dec_mla || !g->sw->f_attn_merge32 ||
         !model_kv_v_shared(m) || n_kv < 1 || m->n_head % n_kv)
         return 0;
     int G = m->n_head / n_kv, vlo = m->rope_dim;
