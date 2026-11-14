@@ -401,9 +401,11 @@ def test_an_alias_of_the_input_is_its_own_record_where_files_have_no_inode(runne
     import os as _os
     m = tmp_path / "m.gguf"
     shutil.copy(ROOT / "test.gguf", m)
-    _quantize(runner_bin, "m.gguf", "m.gguf", "q8_0", tmp_path)
-    rec = (tmp_path / "m.gguf.quant.json").read_bytes()
     env = dict(_os.environ, RUNNER_TEST_NO_INODE="1")
+    first = subprocess.run([str(runner_bin), "-m", "m.gguf", "--quantize", "m.gguf", "--quant", "q8_0"],
+                           cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
+    assert first.returncode == 0, first.stderr[-600:]   # links nothing: allowed
+    rec = (tmp_path / "m.gguf.quant.json").read_bytes()
     p = subprocess.run([str(runner_bin), "-m", "m.gguf", "--quantize", str(m.resolve()), "--quant", "q4_0"],
                        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
     assert p.returncode != 0 and "new file" in p.stderr, p.stderr[-600:]

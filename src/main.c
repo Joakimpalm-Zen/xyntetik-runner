@@ -4494,18 +4494,25 @@ static int run_merge_lora(const cli_opts *o) {
 
 // --quantize, with --quant, --type-plan, --prune-experts or
 // --remove-sublayer: rewrite the file and write its provenance record.
-// Whether two paths name one file: the same string, or the same identity
-// (size, inode, and both times). A platform that reports no inode (0) is
-// held to the string, so two different files never read as one.
+// Whether two paths name one file. Where the platform reports a file's
+// identity, the device and the inode decide (two mounted copies with the
+// same inode on different volumes are two files). Where it reports no inode
+// (Windows' fallback, 0) the canonical paths decide, so an alias such as
+// m.gguf and its absolute path still reads as one. RUNNER_TEST_NO_INODE takes
+// that branch on any host, for the tests.
 static bool same_file(const char *a, const char *b) {
     if (!strcmp(a, b)) return true;
-    uint64_t sa, sb, ia, ib;
-    int64_t ma, mb, ca, cb;
-    int ea, eb;
-    if (!plat_file_identity(a, &sa, &ia, &ma, &ca, &ea) ||
-        !plat_file_identity(b, &sb, &ib, &mb, &cb, &eb))
-        return false;
-    return ia != 0 && ia == ib && sa == sb && ma == mb && ca == cb;
+    plat_stat_t sa, sb;
+    if (plat_stat(a, &sa) != 0 || plat_stat(b, &sb) != 0) return false;
+    if (sa.st_ino != 0 && sb.st_ino != 0 && !getenv("RUNNER_TEST_NO_INODE"))
+        return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+    char ca[4096], cb[4096];
+    if (!plat_realpath(a, ca, sizeof ca) || !plat_realpath(b, cb, sizeof cb)) return false;
+#ifdef _WIN32
+    return _stricmp(ca, cb) == 0;   // NTFS names are case-blind
+#else
+    return strcmp(ca, cb) == 0;
+#endif
 }
 
 static int run_quantize(const cli_opts *o) {
