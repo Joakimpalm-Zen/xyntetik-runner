@@ -35,6 +35,7 @@ TEXTS = ["the quick brown fox jumps over the lazy dog and keeps running past the
 # (generator, arguments after the output name, environment, files it writes)
 FAMILIES = {
     "dense":            ("make-test-model.py", [], {}, None),
+    "apertus":          ("make-test-model.py", ["--apertus", "LAYERS"], {}, None),
     "eseries":          ("make-test-model.py", ["--eseries", "3,16"], {}, None),
     "recurrent":        ("make-test-ornith.py", [], {}, None),
     "recurrent-wide":   ("make-test-ornith.py", [], {"ORNITH_TEST_STATE": "128"}, None),

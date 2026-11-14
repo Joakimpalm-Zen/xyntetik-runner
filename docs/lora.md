@@ -775,7 +775,9 @@ Mistral, Qwen2.5 and Granite 4.x dense (muP scalars, tied output), the head
 transforms (logit scale, softcap, suppressed tokens), the attention output
 gate (afmoe, Muse-Glimmer), sandwich norms, per-layer output scale,
 sliding-window attention, partial-dimension RoPE (a rotation over part of each
-head), the GELU gated FFN (Gemma 3) beside the SiLU one, and
+head), the GELU gated FFN (Gemma 3) beside the SiLU one, Apertus's ungated
+FFN (up, the xIELU activation with its per-layer parameters, down; the adapter
+goes on up and down, the activation's parameters stay frozen), and
 Gemma 4 in full (the weightless V norm, the V-less full-attention layers, the
 E-series shared KV and per-layer embeddings).
 
@@ -798,7 +800,7 @@ the GPU too (see "Training on the GPU" above).
 It refuses by name: adapters on the experts themselves, other MoE routers
 (sigmoid, group-limited, biased), shared experts, attention sinks, the Mamba-2
 hybrids (Granite 4.0 H, Nemotron-H), qwen4exp's hyper-connections, MoE on a
-DeltaNet model, Gemma's dual-branch MoE,
+DeltaNet model, Gemma's dual-branch MoE, gpt-oss's clamped SwiGLU FFN,
 removed sublayers, LayerNorm (StableLM; the backward has the RMSNorm adjoint
 only), and the derived-K and ring KV caches. `--info adapter` gives the sentence
 for the model you have.
