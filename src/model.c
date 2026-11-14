@@ -715,18 +715,36 @@ void model_rope_one_set(model_t *m, const char *who) {
 // Deliberate test hook: the --wait-for-vram queue exists only where the device
 // reports its free memory, which is CUDA, so nothing else could reach it. This
 // stands in for that device and leaves the ledger and the wait real. Same role
-// as RUNNER_TEST_GPU_OFF.
-static bool test_vram_free(uint64_t *free_bytes) {
+// as RUNNER_TEST_GPU_OFF. A seam that stands in for a measurement says so at
+// every load that consults it (model_vram_claim; `say`), and only lowers what
+// a device measures: where gpu_mem_info reports free memory (CUDA) the lower
+// of the two is used, and where nothing does (Metal, the CPU) the seam stands
+// in for that device, which is what it is for (fable, 2026-11-14).
+static bool test_vram_free(uint64_t *free_bytes, bool say) {
     const char *v = getenv("RUNNER_TEST_VRAM_FREE_MB");
     if (!v) return false;
-    *free_bytes = strtoull(v, NULL, 10) << 20;
+    uint64_t seam = strtoull(v, NULL, 10) << 20;
+    size_t f = 0, t = 0;
+    bool measured = gpu_mem_info(&f, &t);
+    *free_bytes = measured && (uint64_t)f < seam ? (uint64_t)f : seam;
+    if (!say) return true;
+    if (!measured)
+        fprintf(stderr, "test seam: RUNNER_TEST_VRAM_FREE_MB=%s stands in for a device that "
+                "reports its free memory (this host has none)\n", v);
+    else if ((uint64_t)f < seam)
+        fprintf(stderr, "test seam: RUNNER_TEST_VRAM_FREE_MB=%s is above the measured free VRAM "
+                "(%llu MB), so the measured value is kept: a seam only lowers a limit\n", v,
+                (unsigned long long)(f >> 20));
+    else
+        fprintf(stderr, "test seam: RUNNER_TEST_VRAM_FREE_MB=%s in place of the measured free "
+                "VRAM (%llu MB)\n", v, (unsigned long long)(f >> 20));
     return true;
 }
 
 static uint64_t vram_free_now(void *ud) {
     (void)ud;
     uint64_t test_free = 0;
-    if (test_vram_free(&test_free)) return test_free;
+    if (test_vram_free(&test_free, false)) return test_free;
     size_t f = 0, t = 0;
     return gpu_mem_info(&f, &t) ? (uint64_t)f : 0;
 }
@@ -1843,7 +1861,7 @@ static uint64_t model_cuda_weight_estimate(const model_t *m,
 static bool model_vram_claim(model_t *m, const model_params *p, size_t kv_claim) {
     char gpu_id[128];
     uint64_t test_free = 0;
-    bool test = test_vram_free(&test_free);
+    bool test = test_vram_free(&test_free, true);
     if (test) snprintf(gpu_id, sizeof gpu_id, "test-device");
     else if (!gpu_device_id(gpu_id, sizeof(gpu_id))) return true;   // no GPU: nothing to account
     size_t vfree = 0, vtotal = 0;

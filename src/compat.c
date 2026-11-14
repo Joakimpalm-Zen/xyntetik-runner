@@ -2213,8 +2213,17 @@ void plat_capacity_at(const char *root, const char *self_file, int host_cpus,
 
 void plat_capacity_get(plat_capacity *out) {
     // RUNNER_TEST_CGROUP_ROOT (test-only) reads a fixture tree as this
-    // process's own cgroup, on any platform
+    // process's own cgroup, on any platform. A seam that stands in for a
+    // measurement says so (fable, 2026-11-14), once per process: every
+    // capacity read comes through here. A cgroup can only lower the host's
+    // limits (plat_capacity_at takes the smaller), so it cannot loosen one.
     const char *root = getenv("RUNNER_TEST_CGROUP_ROOT"), *self = NULL;
+    if (root && *root) {
+        static _Atomic bool said;
+        if (plat_once(&said))
+            fprintf(stderr, "test seam: RUNNER_TEST_CGROUP_ROOT=%s in place of this process's "
+                    "own cgroup (a cgroup only lowers the host's limits)\n", root);
+    }
     if (!root || !*root) {
 #ifdef __linux__
         root = "/sys/fs/cgroup";
