@@ -1114,7 +1114,7 @@ $(TEST_TC_TOL): $(TEST_TC_TOL_SRC) $(HDR) tests/finite_check.h
 TEST_LORA_GRAD_SRC = tests/test_lora_grad.c $(OBJDIR)/gguf.o $(OBJDIR)/compat.o \
                   $(QUANTS_OBJ) $(OBJDIR)/tokenizer.o $(OBJDIR)/model.o $(OBJDIR)/vramreg.o \
                   $(GPU_OBJ)
-$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-prope.gguf test-lora-prope.full.gguf test-prope-neox.gguf test-lora-prope-neox.full.gguf test-ornith.gguf test-lora-ornith.full.gguf test-clef.gguf test-lora-clef.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
+$(TEST_LORA_GRAD): $(TEST_LORA_GRAD_SRC) $(HDR) test.gguf test-lora.full.gguf test-apertus-train.gguf test-lora-apertus.full.gguf test-q8.gguf test-lora-q8.full.gguf test-qk.gguf test-lora-qk.full.gguf test-nope.gguf test-lora-nope.full.gguf test-prope.gguf test-lora-prope.full.gguf test-prope-neox.gguf test-lora-prope-neox.full.gguf test-ornith.gguf test-lora-ornith.full.gguf test-clef.gguf test-lora-clef.full.gguf test-granite.gguf test-lora-granite.full.gguf test-muse.gguf test-lora-muse.full.gguf test-gemma3.gguf test-lora-gemma3.full.gguf test-gemma4.gguf test-lora-gemma4.full.gguf test-g4v.gguf test-lora-g4v.full.gguf test-es8.gguf test-lora-es8.full.gguf test-moe-train.moe4-train.gguf test-lora-moe4.full.gguf test-moe-train.moe4-train-nonorm.gguf test-lora-moe4n.full.gguf
 	$(CC) $(CFLAGS) -I src $(TEST_LORA_GRAD_SRC) -o $@ $(LDFLAGS)
 
 # R8.25.2 gate A1: full-weight training's dense gradient against finite
@@ -1266,6 +1266,14 @@ test-gemma3.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
 
 test-lora-gemma3.full.gguf: test-gemma3.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
 	$(PYTHON) scripts/make-test-lora.py test-gemma3.gguf test-lora-gemma3
+
+# R8.27: Apertus's ungated up -> xIELU -> down FFN in the backward, on per-layer
+# xIELU parameters (one layer's eps wide enough to reach the piece between eps and 0)
+test-apertus-train.gguf: scripts/make-test-model.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-model.py --apertus LAYERS test-apertus-train.gguf
+
+test-lora-apertus.full.gguf: test-apertus-train.gguf scripts/make-test-lora.py $(GGUF_FIXTURE_LIB)
+	$(PYTHON) scripts/make-test-lora.py test-apertus-train.gguf test-lora-apertus
 
 # R8.9.6: gemma-4 shapes in the backward. Dense (weightless V norm), the
 # absent-V layers gemma-4's full attention ships (V is the raw K
@@ -3493,6 +3501,8 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	@# hit under --train -- act_f/act_d beside the SiLU pair, gated_act
 	@# itself recomputed at the tape site so serving and training agree
 	./$(TEST_LORA_GRAD) test-gemma3.gguf test-lora-gemma3.full.gguf
+	@# R8.27: Apertus's ungated xIELU FFN, the derivative's three pieces each fed
+	./$(TEST_LORA_GRAD) test-apertus-train.gguf test-lora-apertus.full.gguf
 	@# R8.9.6: gemma-4 dense (weightless V norm), absent-V layers, and the
 	@# E-series (shared KV + per-layer embeddings) as a stiff fixture: the
 	@# whole-adapter directional derivative and the cosine are its checks

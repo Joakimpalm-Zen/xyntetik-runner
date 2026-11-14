@@ -102,6 +102,8 @@ TRAIN_FAMILIES = {
     "e-series": ("make-test-model.py", ["--eseries", "3,8", "--drop-kv", "shared"], None),
     "muse": ("make-test-model.py", ["--muse-glimmer"], None),
     "granite": ("make-test-model.py", ["--granite"], None),
+    # R8.27: Apertus, ungated up -> xIELU -> down with per-layer parameters
+    "apertus": ("make-test-model.py", ["--apertus", "LAYERS"], None),
     "q8_0": ("make-test-model.py", ["--quant", "q8_0"], None),
     "partial-rope": ("make-test-model.py", ["--arch", "qwen3", "--rope-dim", "8"], None),
     "qwen35": ("make-test-ornith.py", [], None),

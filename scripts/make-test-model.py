@@ -140,6 +140,11 @@ while i < len(args):
         # ungated MLP + xIELU. "IDENT" makes xIELU the identity
         # (alpha_p=0, alpha_n=0, beta=1) so the FFN is a plain up->down
         # linear map, which the runner's own dense path can be checked against.
+        # "LAYERS" writes the four parameters as per-layer arrays, as the
+        # published files do, each layer different and one with a raw alpha_n
+        # small enough that the softplus transform changes it many times
+        # over: a backward that reads the wrong layer's values, or the raw
+        # ones, then fails the gradient gate.
         i += 1
         APERTUS = args[i]
         ARCH = "apertus"
@@ -982,7 +987,24 @@ if ESERIES_SHARED_KV:
 if ESERIES_PLE:
     meta_kvs.append(
         ku(f"{ARCH}.embedding_length_per_layer_input", ESERIES_PLE))
-if APERTUS:
+if APERTUS == "LAYERS":
+    # raw values, as the file stores them (the loader applies softplus):
+    # layer 0's alpha_n of 0.003 becomes beta + 0.695, layer 1's 2.5 stays
+    # near itself; the betas and alpha_p differ by layer too. Layer 1's eps
+    # is -0.02, not the published -1e-6, so the piece between eps and 0
+    # (where min(x, eps) is constant) catches real pre-activations and its
+    # derivative is checked by the gradient gate, not left vacuous.
+    _an = [0.003, 2.5, 0.4, 1.2]
+    _ap = [0.8, 3.0, 0.2, 1.5]
+    _b = [0.5, 0.35, 0.6, 0.45]
+    _eps = [-1e-6, -0.02, -1e-6, -0.02]
+    meta_kvs += [
+        kaf("xielu.alpha_n", [_an[i % 4] for i in range(N_LAYER)]),
+        kaf("xielu.alpha_p", [_ap[i % 4] for i in range(N_LAYER)]),
+        kaf("xielu.beta", [_b[i % 4] for i in range(N_LAYER)]),
+        kaf("xielu.eps", [_eps[i % 4] for i in range(N_LAYER)]),
+    ]
+elif APERTUS:
     _id = APERTUS == "IDENT"
     meta_kvs += [
         kf("xielu.alpha_n", 0.0 if _id else 0.8),

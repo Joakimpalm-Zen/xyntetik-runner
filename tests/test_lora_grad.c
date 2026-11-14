@@ -148,8 +148,63 @@ int main(int argc, char **argv) {
                worst_act);
     }
 
+    // ---- xIELU's derivative (R8.27) against central differences of the
+    // forward's own xielu(), with effective parameters as the loader leaves
+    // them: the three pieces (x > 0; x < eps; eps <= x <= 0, where min(x, eps)
+    // is constant) away from where they meet, the middle piece's interior on
+    // the two wide-eps sets, and the meeting points themselves. x = 0 and
+    // x = eps both take the forward's middle branch (x > 0 is false, x < eps
+    // is false), so the backward must give that piece's b - an there; at 0
+    // the pieces' derivatives differ (b - an against b), and taking the other
+    // one would train against a function serving does not compute.
+    {
+        const float P[3][4] = {   // an, ap, b, eps
+            { 1.19463f, 0.8f, 0.5f, -1e-6f },
+            { 2.85f, 3.05f, 0.35f, -0.02f },
+            { 0.9f, 0.05f, 0.6f, -0.02f },
+        };
+        double worst = 0;
+        int mid_pts = 0;
+        for (int k = 0; k < 3; k++) {
+            float an = P[k][0], ap = P[k][1], b = P[k][2], eps = P[k][3];
+            const double h = 1e-3;
+            for (int j = -600; j <= 600; j++) {
+                double x = j * 0.01;
+                // a central difference across a meeting point is neither piece's derivative
+                if (fabs(x) < 2 * h || fabs(x - eps) < 2 * h) continue;
+                double fd = ((double)model_xielu((float)(x + h), an, ap, b, eps) -
+                             (double)model_xielu((float)(x - h), an, ap, b, eps)) / (2 * h);
+                double d = model_xielu_deriv((float)x, an, ap, b, eps);
+                double err = fabs(fd - d) / fmax(1.0, fabs(fd));
+                if (err > worst) worst = err;
+                if (x < 0 && x > eps) mid_pts++;
+                CHECK(err < 2e-3, "xielu'(%.2f; an %g ap %g b %g eps %g) = %.6f, central difference %.6f",
+                      x, an, ap, b, eps, d, fd);
+            }
+            float at0 = model_xielu_deriv(0.0f, an, ap, b, eps);
+            float ateps = model_xielu_deriv(eps, an, ap, b, eps);
+            CHECK(at0 == b - an, "xielu'(0) = %g, the middle piece's b - an is %g", at0, b - an);
+            CHECK(ateps == b - an, "xielu'(eps) = %g, the middle piece's b - an is %g", ateps, b - an);
+            // and the forward took that branch there: f(0) is the middle piece's expm1(eps) * an
+            CHECK(model_xielu(0.0f, an, ap, b, eps) == expm1f(eps) * an,
+                  "xielu(0) is not the middle branch's value");
+        }
+        CHECK(mid_pts > 0, "no central difference landed inside eps < x < 0");
+        printf("ok: xielu' matches central differences, worst rel err %.2e (%d inside eps..0); "
+               "xielu'(0) and xielu'(eps) are the middle piece's b - an\n", worst, mid_pts);
+    }
+
     // ---- determinism: two runs, byte-identical grads and bit-equal loss
     double l1 = run_backward(&m, toks);
+    if (m.ffn_act == ACT_XIELU) {
+        // R8.27: the backward's xIELU pre-activations, by piece, so a gate that
+        // passes is not passing on one piece alone
+        const int *pc = m.train_xielu_pieces;
+        printf("lora-grad: xielu pre-activations by piece: %d below eps, %d in eps..0, %d above 0\n",
+               pc[0], pc[1], pc[2]);
+        CHECK(pc[0] > 0 && pc[1] > 0 && pc[2] > 0, "an xielu piece saw no input (%d, %d, %d)",
+              pc[0], pc[1], pc[2]);
+    }
     // the positive control for the serve check above: a training step leaves state the check sees
     CHECK(model_has_training_state(&m), "a backward left no training state the check can see");
     // snapshot every grad buffer
