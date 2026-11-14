@@ -401,7 +401,7 @@ $(QUANTIZE_OBJ): src/quantize.c $(HDR) Makefile
 # old FORCE guarded is answered by construction rather than by rebuilding
 # them in every one of `make test`'s 17 sub-makes.
 ENGINE_OBJ_NAMES = gguf compat instances tokenizer model sample vramreg template \
-                   jsonmode schema schema_tools engine json envelope ed25519 ecdsa oms http \
+                   jsonmode schema schema_tools jsre engine json envelope ed25519 ecdsa oms http \
                    registry provenance respstore receipts watermark kvsnap session scheduler completion api_responses api_anthropic server hfhub
 ENGINE_OBJ = $(ENGINE_OBJ_NAMES:%=$(OBJDIR)/%.o) $(MLDSA_OBJ)
 # the schema compiler and validator, and the native tool grammars built on them

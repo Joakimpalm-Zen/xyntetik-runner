@@ -49,7 +49,7 @@ SOURCE_RULES = [
                    "iq_decode", "kernel_args", "kq_stage", "metal_admission", "pmath",
                    "upload_report", "gpu_tables"}),
     ("runtime", {"server", "server_int", "http", "api", "api_anthropic", "api_responses",
-                 "schema", "schema_int", "schema_tools", "jsonmode", "sample", "template",
+                 "schema", "schema_int", "schema_tools", "jsre", "jsonmode", "sample", "template",
                  "registry", "session", "respstore", "kvsnap", "decide", "clef", "vramreg",
                  "hfhub", "model_roster"}),
     ("substrate", {"gguf", "tokenizer", "unicode_classes", "unicode_nfc", "npy", "json",
