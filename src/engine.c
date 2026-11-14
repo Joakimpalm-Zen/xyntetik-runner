@@ -237,6 +237,7 @@ const char *engine_rewind_how_name(int how) {
     case REWIND_KV:        return "kv";
     case REWIND_SNAPSHOT:  return "snapshot";
     case REWIND_MARK:      return "turn_mark";
+    case REWIND_ANCHOR:    return "turn_anchor";
     case REWIND_RECURRENT: return "recurrent_reset";
     case REWIND_RING:      return "ring_reset";
     case REWIND_MISMATCH:  return "mismatch";
@@ -245,16 +246,21 @@ const char *engine_rewind_how_name(int how) {
     }
 }
 
-bool engine_mark_turn(engine *e) {
+static bool mark_here(engine *e, bool anchor) {
     if (!e || !e->hist || !model_has_recurrent(e->m)) return false;
     uint64_t h = fnv1a_toks(e->hist, e->pos);
     // A slot that just resumed from its mark holds exactly the mark's fold:
     // re-taking it would copy the same bytes (over PCIe, on CUDA).
-    if (model_recurrent_mark_pos(e->m) == e->pos && e->mark_hash == h) return true;
-    if (!model_recurrent_mark(e->m, e->pos)) return false;
-    e->mark_hash = h;
+    if (!(model_recurrent_mark_pos(e->m) == e->pos && e->mark_hash == h)) {
+        if (!model_recurrent_mark(e->m, e->pos)) return false;
+        e->mark_hash = h;
+    }
+    e->mark_anchor = anchor;
     return true;
 }
+
+bool engine_mark_turn(engine *e) { return mark_here(e, false); }
+bool engine_mark_anchor(engine *e) { return mark_here(e, true); }
 
 int engine_rewind(engine *e, const int32_t *toks, int n) {
     int keep = 0;
@@ -288,7 +294,7 @@ int engine_rewind(engine *e, const int32_t *toks, int n) {
             // agreeing tail beyond it along with the new tokens: the fold is
             // not sliceable, only restorable where it was taken.
             keep = mark;
-            how = REWIND_MARK;
+            how = e->mark_anchor ? REWIND_ANCHOR : REWIND_MARK;
         } else {
             model_recurrent_reset(e->m);   // drops the mark: hist[0,mark) is about to change
             if (keep) how = REWIND_RECURRENT;   // a mismatch at token 0 stays one
