@@ -114,10 +114,29 @@ static bool kw_in(const char *k, const char *const *list) {
     return false;
 }
 
+// Keywords that constrain nothing, accepted and ignored (R2.17): a validator
+// ignores annotations, and refusing them refused schemas Runner can enforce
+// whole. Only these: a keyword that could constrain the instance and is not
+// here stays refused. "readonly" is readOnly's common misspelling. id and $id
+// are annotations where they move no reference's base, which
+// schema_resolve_refs holds (a nested one over a $ref is refused there).
 static const char *const KW_ANNOTATION[] = {
-    "title", "description", "$comment", "$schema", "$id", "examples",
-    "default", "deprecated", "readOnly", "writeOnly", "format", NULL
+    "title", "description", "$comment", "$schema", "$id", "id", "examples",
+    "default", "deprecated", "readOnly", "readonly", "writeOnly", "format", NULL
 };
+
+// Snowplow's self-describing header at a schema's root: the schema's own
+// vendor, name, format and version, all strings, constraining nothing.
+static bool snowplow_self(const jv *v) {
+    if (!v || v->type != J_OBJ || v->n == 0) return false;
+    for (int i = 0; i < v->n; i++) {
+        const char *k = v->keys[i];
+        if (strcmp(k, "vendor") && strcmp(k, "name") && strcmp(k, "format") && strcmp(k, "version"))
+            return false;
+        if (v->items[i]->type != J_STR) return false;
+    }
+    return true;
+}
 static const char *const KW_STRING[] = { "minLength", "maxLength", "pattern", NULL };
 static const char *const KW_ARRAY[]  = { "items", "minItems", "maxItems", NULL };
 static const char *const KW_OBJECT[] = { "properties", "required",
@@ -185,7 +204,7 @@ static bool allof_is_string_conjunction(jv *s, char *err, int errcap) {
     return true;
 }
 
-static bool check_keywords(jv *s, char *err, int errcap) {
+static bool check_keywords(jv *s, bool root, char *err, int errcap) {
     if (!s || s->type != J_OBJ) return true;
     bool one = jv_get(s, "oneOf") != NULL, any = jv_get(s, "anyOf") != NULL;
     if (one && any) {
@@ -198,7 +217,13 @@ static bool check_keywords(jv *s, char *err, int errcap) {
                     (jv_get(s, "enum") != NULL || jv_get(s, "const") != NULL);
     for (int i = 0; i < s->n; i++) {
         const char *k = s->keys[i];
+        if ((!strcmp(k, "id") || !strcmp(k, "$id")) && s->items[i]->type != J_STR) {
+            snprintf(err, errcap, "unsupported schema keyword '%s' (its value is not a string)", k);
+            return false;
+        }
         if (kw_in(k, KW_ANNOTATION)) continue;
+        if (!strncmp(k, "x-", 2)) continue;   // a vendor extension annotates, never constrains
+        if (!strcmp(k, "self") && root && snowplow_self(s->items[i])) continue;
         if (!strcmp(k, "type")) continue;
         if (!strcmp(k, "allOf") && !composed && !literal) continue;
         bool ok;
@@ -943,7 +968,7 @@ static snode *compile_discriminated_action(jv *alts, char *err, int errcap,
     // strict tool call needs it most.
     *matched = true;
     for (int a = 0; a < alts->n; a++) {
-        if (!check_keywords(alts->items[a], err, errcap) ||
+        if (!check_keywords(alts->items[a], false, err, errcap) ||
             !check_object_rules(alts->items[a], err, errcap))
             return NULL;
     }
@@ -1816,7 +1841,7 @@ snode *compile_node(jv *s, char *err, int errcap, int depth) {
         s->type == J_BOOL) // absent / `true` / `{}` = anything
         return sn_new(SN_ANY);
     if (s->type != J_OBJ) { snprintf(err, errcap, "schema node must be an object"); return NULL; }
-    if (!check_keywords(s, err, errcap)) return NULL;
+    if (!check_keywords(s, depth == 0, err, errcap)) return NULL;
 
     jv *one = jv_get(s, "oneOf");
     jv *any = jv_get(s, "anyOf");
@@ -3780,9 +3805,67 @@ static bool refx_needed(const jv *v) {
     return false;
 }
 
+// R2.17: a nested id or $id sets a new base for the references below it
+// (draft-04's id, 2019-09's $id), and the inliner resolves every local pointer
+// against the document root. Over a $ref that would compile a schema other
+// than the one the document names, so it is refused; at the root, or over no
+// $ref, the keyword moves nothing and is an annotation (check_keywords).
+static bool refx_walk_has_ref(const jv *s, int depth);
+static bool refx_children_have_ref(const jv *s, int depth) {
+    for (int i = 0; i < s->n; i++) {
+        const char *k = s->keys[i];
+        const jv *v = s->items[i];
+        if (kw_in(k, REFX_MAPS) || !strcmp(k, "definitions") || !strcmp(k, "$defs")) {
+            if (v->type == J_OBJ)
+                for (int j = 0; j < v->n; j++)
+                    if (refx_walk_has_ref(v->items[j], depth + 1)) return true;
+        } else if (kw_in(k, REFX_ONE) || kw_in(k, REFX_LIST)) {
+            if (v->type == J_ARR) {
+                for (int j = 0; j < v->n; j++)
+                    if (refx_walk_has_ref(v->items[j], depth + 1)) return true;
+            } else if (refx_walk_has_ref(v, depth + 1)) return true;
+        }
+    }
+    return false;
+}
+static bool refx_walk_has_ref(const jv *s, int depth) {
+    if (!s || s->type != J_OBJ || depth > REFX_DEPTH * 4) return false;
+    if (jv_get((jv *)s, "$ref")) return true;
+    return refx_children_have_ref(s, depth);
+}
+static bool refx_nested_base(const jv *s, bool root, int depth, char *err, int errcap) {
+    if (!s || s->type != J_OBJ || depth > REFX_DEPTH * 4) return true;
+    if (!root)
+        for (int i = 0; i < s->n; i++) {
+            const char *k = s->keys[i];
+            if ((!strcmp(k, "id") || !strcmp(k, "$id")) && s->items[i]->type == J_STR &&
+                refx_children_have_ref(s, depth)) {
+                snprintf(err, errcap, "unsupported schema: a nested '%s' over a $ref would move "
+                         "the reference's base; only a root %s is supported", k, k);
+                return false;
+            }
+        }
+    for (int i = 0; i < s->n; i++) {
+        const char *k = s->keys[i];
+        const jv *v = s->items[i];
+        if (kw_in(k, REFX_MAPS) || !strcmp(k, "definitions") || !strcmp(k, "$defs")) {
+            if (v->type == J_OBJ)
+                for (int j = 0; j < v->n; j++)
+                    if (!refx_nested_base(v->items[j], false, depth + 1, err, errcap)) return false;
+        } else if (kw_in(k, REFX_ONE) || kw_in(k, REFX_LIST)) {
+            if (v->type == J_ARR) {
+                for (int j = 0; j < v->n; j++)
+                    if (!refx_nested_base(v->items[j], false, depth + 1, err, errcap)) return false;
+            } else if (!refx_nested_base(v, false, depth + 1, err, errcap)) return false;
+        }
+    }
+    return true;
+}
+
 jv *schema_resolve_refs(jv *s, jv **owned, char *err, int errcap) {
     *owned = NULL;
     if (!refx_needed(s)) return s;
+    if (!refx_nested_base(s, true, 0, err, errcap)) return NULL;
     refx x = { .root = s, .err = err, .errcap = errcap };
     x.stack[x.depth++] = "#";   // the root itself: a "#" inside it recurses
     sbuf o = { 0 };
