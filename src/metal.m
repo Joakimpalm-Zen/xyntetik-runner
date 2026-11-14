@@ -3786,6 +3786,19 @@ void gpu_free(model_t *m) {
     }
     gpu_release_state(g, m->n_layer);
     }
+    // RUNNER_TEST_METAL_HELD_AFTER_FREE (a gate arm): the bytes this
+    // process's Metal device still holds once the model is released and the
+    // pool above has drained. A buffer the release path never visits (a wrap
+    // leaked on a failure path) shows here, and no other process moves it, as
+    // it would the machine-wide driver figure (codex's third read of PR G).
+    if (getenv("RUNNER_TEST_METAL_HELD_AFTER_FREE")) {
+        @autoreleasepool {
+            id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+            fprintf(stderr, "test: the Metal device holds %llu bytes after the model is freed\n",
+                    (unsigned long long)(dev ? dev.currentAllocatedSize : 0));
+            [dev release];
+        }
+    }
 }
 
 // The native prompt-batch encoder implements exactly the plain llama shape.

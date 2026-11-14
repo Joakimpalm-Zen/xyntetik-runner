@@ -193,3 +193,26 @@ def test_the_end_of_run_line_keeps_the_high_water_mark_after_a_refusal(runner_bi
     grew = _grew(p.stderr)
     assert grew is not None and grew[0] >= 1 and 550 <= grew[1] < 600, (grew, p.stderr[-800:])
     assert re.search(r"a grow to 6\d\d rows did not fit, so the run ended on the CPU", p.stderr), p.stderr[-800:]
+
+
+def test_a_wrap_that_fails_part_way_releases_what_it_made(runner_bin, tmp_path):
+    """codex's third read of PR G: metal_wrap_weights could fail after making some wraps (here a 2 MiB
+    FFN tensor over a 1 MiB per-buffer cap, after the small early tensors wrapped), and the copy
+    fallback overwrote them unreleased. RUNNER_TEST_METAL_HELD_AFTER_FREE prints the bytes this
+    process's Metal device still holds once the model is freed (no other process moves it); a split
+    whose wrap failed part-way must hold what a split that wrapped holds."""
+    _metal_or_skip(runner_bin)
+    model = _wide8(tmp_path)
+
+    def held(**seams):
+        p = subprocess.run([str(runner_bin), "-m", str(model), "-p", "hello there", "-n", "4", "-c", "1024",
+                            "--gpu-layers", "1", "--temp", "0", "--no-tray"], cwd=ROOT, capture_output=True,
+                           timeout=300, env=_env(RUNNER_TEST_METAL_HELD_AFTER_FREE=1, **seams))
+        err = p.stderr.decode("utf-8", "replace")
+        assert p.returncode == 0, err[-800:]
+        return int(re.search(r"the Metal device holds (\d+) bytes after the model is freed", err).group(1)), err
+
+    wrapped, _ = held()
+    partway, err = held(RUNNER_METAL_MAX_BUF=1048576)
+    assert "not wrapping" in err and "weights copied" in err, err[-800:]
+    assert partway == wrapped, (partway, wrapped)
