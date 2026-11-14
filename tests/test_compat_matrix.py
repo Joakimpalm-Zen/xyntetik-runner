@@ -867,6 +867,11 @@ def _check_a_timeout_kills_the_grandchildren(module, run_group, tmp_path, start_
         assert timeout <= 16, "the spawner never wrote its marker within 16 s"
     assert len(groups) == attempts, f"{attempts} attempts, {len(groups)} groups seen"
 
+    # Both must hold: every recorded group is empty, and the marked grandchild
+    # is dead wherever it is (one that called setsid() or setpgid() before the
+    # kill is in no recorded group). Not kill(pid, 0) for the marked one: a
+    # killed grandchild reparented to a PID 1 that does not reap stays a
+    # signal-answering zombie (_process_state).
     survivors = {}
     for g in groups:
         for _ in range(50):
@@ -881,8 +886,19 @@ def _check_a_timeout_kills_the_grandchildren(module, run_group, tmp_path, start_
             os.killpg(g, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
+    grandchild = int(marker.read_text(encoding="utf-8"))
+    for _ in range(50):
+        if _pid_is_dead(grandchild):
+            break
+        time.sleep(0.1)
+    else:
+        try:
+            os.kill(grandchild, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        survivors["marked"] = [grandchild]
     if survivors:
-        pytest.fail(f"a group's processes outlived the timeout: {survivors} "
+        pytest.fail(f"processes outlived the timeout: {survivors} "
                     f"(of {len(groups)} attempts)")
 
 
