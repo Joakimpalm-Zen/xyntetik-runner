@@ -2,9 +2,11 @@
 
 A JSON Schema validator ignores annotations; Runner refused every keyword it did not know, which
 refused 4,072 of JSONSchemaBench's 8,108 schemas for keywords that constrain nothing (id, readonly,
-x-kubernetes-*, Snowplow's self, ...). A named list of annotation-only keywords is now accepted and
-ignored. Every keyword that could constrain the instance and is not on the list stays refused:
-Runner never accepts a constraint it does not enforce.
+Kubernetes' patch directives, Snowplow's self, ...). A named list of annotation-only keywords is now
+accepted and ignored. Every keyword that could constrain the instance and is not on the list stays
+refused: Runner never accepts a constraint it does not enforce. A vendor extension (x-*) is accepted
+by its exact name only, where its vendor defines it as constraining nothing: x-kubernetes-validations
+is a validation rule, and accepting it would let a model break it.
 
 id and $id are annotations only where they change no reference resolution: at the root (a local
 "#/..." pointer resolves against the document either way), or where the subtree under them holds
@@ -36,7 +38,16 @@ def _obj(**props):
 
 ACCEPTED = {
     "readonly, its misspelling": _obj(a={"type": "string", "readonly": True}),
-    "vendor extensions": {**_obj(a={"type": "string", "x-order": 1}), "x-kubernetes-group-version-kind": [{}]},
+    "Kubernetes' patch directives and group-version-kind": {
+        **_obj(a={"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}}},
+                  "x-kubernetes-patch-strategy": "merge", "x-kubernetes-patch-merge-key": "name"}),
+        "x-kubernetes-group-version-kind": [{"group": "", "kind": "Pod", "version": "v1"}]},
+    "Angular's x-prompt": _obj(a={"type": "string", "x-prompt": "Name?"}),
+    "an unreferenced definition's $id over a $ref": {
+        "type": "string",
+        "$defs": {"unused": {"$id": "https://example.test/unused", "type": "object",
+                             "properties": {"x": {"$ref": "#/$defs/T"}}},
+                  "T": {"type": "integer"}}},
     "id at the root, with a local $ref": {"id": "http://example.com/s.json",
                                          "definitions": {"n": {"type": "string"}},
                                          **_obj(a={"$ref": "#/definitions/n"})},
@@ -51,7 +62,19 @@ REFUSED = {
     "a nested $id over a $ref": ({"$defs": {"n": {"type": "string"}},
                                   **_obj(a={"$id": "http://other.example/", **_obj(b={"$ref": "#/$defs/n"})})},
                                  "$id"),
+    "a nested $id reached through a $ref, over a $ref": ({"$defs": {
+        "A": {"$id": "http://other.example/", **_obj(b={"$ref": "#/$defs/T"})}, "T": {"type": "integer"}},
+        **_obj(a={"$ref": "#/$defs/A"})}, "$id"),
     "self below the root": (_obj(a={"type": "string", "self": SELF}), "self"),
+    "a Kubernetes validation rule": ({"type": "integer", "x-kubernetes-validations": [{"rule": "self > 0"}]},
+                                     "x-kubernetes-validations"),
+    "Kubernetes' int-or-string": ({"type": "string", "x-kubernetes-int-or-string": True},
+                                  "x-kubernetes-int-or-string"),
+    "Kubernetes' list type": ({"type": "array", "items": {"type": "string"}, "x-kubernetes-list-type": "set"},
+                              "x-kubernetes-list-type"),
+    "Kubernetes' preserve-unknown-fields": (_obj(a={"type": "object", "x-kubernetes-preserve-unknown-fields": True}),
+                                            "x-kubernetes-preserve-unknown-fields"),
+    "a vendor extension not on the list": (_obj(a={"type": "string", "x-order": 1}), "x-order"),
     "a constraint Runner does not enforce": ({"type": "array", "items": {"type": "string"},
                                               "uniqueItems": True}, "uniqueItems"),
     "a key that is no keyword on the list": (_obj(a={"type": "string", "_format": "date-time"}), "_format"),

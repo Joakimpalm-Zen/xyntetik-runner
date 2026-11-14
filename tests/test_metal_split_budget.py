@@ -10,7 +10,9 @@ the weights, the full-context KV and the scratch fit in the RAM available; other
 the CPU and says why.
 
 RUNNER_TEST_METAL_WORKING_SET_MB and RUNNER_TEST_RAM_AVAILABLE_MB stand in for the device's working set
-and the machine's available RAM, so a small fixture meets both limits.
+and the machine's available RAM in the split decision only, so a small fixture meets both limits. A
+seam says so on stderr at every load it changes, and only lowers a limit: a value above the measured
+one keeps the measured one and says that.
 """
 import json
 import os
@@ -39,8 +41,8 @@ def model(tmp_path_factory):
     return p
 
 
-def _load(runner_bin, model, ram_mb):
-    env = dict(os.environ, RUNNER_TEST_METAL_WORKING_SET_MB="680", RUNNER_TEST_RAM_AVAILABLE_MB=str(ram_mb))
+def _load(runner_bin, model, ram_mb, ws_mb=680):
+    env = dict(os.environ, RUNNER_TEST_METAL_WORKING_SET_MB=str(ws_mb), RUNNER_TEST_RAM_AVAILABLE_MB=str(ram_mb))
     p = subprocess.run([str(runner_bin), "-m", str(model), "--bench-json", "-n", "2", "-c", "32768"],
                        cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
     assert p.returncode == 0, p.stderr[-800:]
@@ -60,3 +62,17 @@ def test_a_split_that_fits_in_ram_is_still_taken(runner_bin, model):
     _metal_or_skip(runner_bin)
     layers, err = _load(runner_bin, model, 400)
     assert 0 < layers < 8, err[-800:]
+
+
+def test_a_seam_says_so_and_never_raises_a_limit(runner_bin, model):
+    """codex's read of PR F: both seams were silent and could only loosen a real check (an inherited
+    RUNNER_TEST_RAM_AVAILABLE_MB=1048576 bypassed the RAM check). Each now names itself and the
+    measured value it stands in for, and a value above the measured one is not used."""
+    _metal_or_skip(runner_bin)
+    _, err = _load(runner_bin, model, 150)
+    assert "test seam: RUNNER_TEST_METAL_WORKING_SET_MB=680 in place of the measured" in err, err[-800:]
+    assert "test seam: RUNNER_TEST_RAM_AVAILABLE_MB=150 in place of the measured" in err, err[-800:]
+    layers, err = _load(runner_bin, model, 1048576)
+    assert "test seam: RUNNER_TEST_RAM_AVAILABLE_MB=1048576 is above the measured" in err, err[-800:]
+    _, err = _load(runner_bin, model, 400, ws_mb=1048576)
+    assert "test seam: RUNNER_TEST_METAL_WORKING_SET_MB=1048576 is above the measured" in err, err[-800:]
