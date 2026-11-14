@@ -276,6 +276,29 @@ def test_the_recorded_command_carries_the_scoring_settings_and_the_credits(runne
     assert rec["command"] in card
 
 
+def test_an_unreachable_target_is_refused_before_anything_is_costed(runner_bin, tmp_path):
+    """--target-size under what the lowest rung can give: derive costed every
+    tensor first and said so afterwards (80 minutes on a 27B parent,
+    2026-11-13). The size at the lowest rung is known from the header, so the
+    refusal comes first, names that size, and says what to change."""
+    parent = make_parent(tmp_path)
+    out = tmp_path / "small.gguf"
+    rc, so, se = derive(runner_bin, parent, out, "--target-size", "1000", "--high", "q8_0", "--low", "q4_0")
+    assert rc != 0
+    assert "out of reach" in se and "q4_0" in se, se[-400:]
+    assert "error report of" not in se, "the costing ran before the refusal"
+    assert not pathlib.Path(str(out) + ".quant-error.jsonl").exists()
+    assert not out.exists()
+    # the size it names is reachable: asking for exactly that passes the check and makes the file
+    import re
+    least = int(re.search(r"is about (\d+) bytes", se).group(1))
+    rc, so, se2 = derive(runner_bin, parent, out, "--target-size", str(least), "--high", "q8_0", "--low", "q4_0")
+    assert rc == 0, se2[-600:]
+    # the named size counts the tensors' bytes; alignment padding and the rewritten metadata move the
+    # file by a few bytes a tensor (59,744 against 59,692 on this fixture)
+    assert abs(out.stat().st_size - least) < 4096
+
+
 def test_target_size_takes_a_split_parent(runner_bin, tmp_path):
     """A parent in several shards (<prefix>-00001-of-0000N.gguf): the costing
     step read every shard, and the planner then opened the first one alone and
