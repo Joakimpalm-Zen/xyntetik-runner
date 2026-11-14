@@ -3835,11 +3835,13 @@ static bool refx_needed(const jv *v) {
 // here either (codex's read of PR F: an unused $defs entry with an $id over a
 // $ref compiled before this check and must still compile).
 
-// the id or $id a schema itself sets, or NULL
+// the id or $id by which a schema itself moves the base, or NULL. A value that
+// is only a fragment ("#a", draft-06's plain-name fragment) or empty names a
+// place and leaves the base URI where it is, so it moves nothing.
 static const char *refx_own_base(const jv *s) {
     for (int i = 0; s && s->type == J_OBJ && i < s->n; i++)
         if ((!strcmp(s->keys[i], "id") || !strcmp(s->keys[i], "$id")) &&
-            s->items[i]->type == J_STR)
+            s->items[i]->type == J_STR && s->items[i]->str[0] && s->items[i]->str[0] != '#')
             return s->keys[i];
     return NULL;
 }
