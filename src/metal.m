@@ -1792,18 +1792,36 @@ static bool metal_wrap_check(gpu_t *g, model_t *m, uint64_t wlen) {
     return true;
 }
 
-static bool metal_partial_pays(const model_t *m, uint64_t wrapped) {
+static bool metal_partial_pays(const model_t *m, uint64_t wrapped, char *why, size_t whycap) {
     uint64_t have = plat_ram_available_bytes();
-    if (!have) return false;                 // cannot tell: do not gamble
-    // The WRAPPED part must fit in RAM: pinning more than the machine has
-    // thrashes (8x and 35x slower on an 8 GB Mac: docs/metal-tuning-evidence.md).
-    // Partial offload helps only when the whole model fits in RAM but its
-    // weights plus KV and scratch exceed Metal's working-set budget.
-    // host-only tables (metal_host_only) are row-gathered, not streamed:
-    // their size is not what has to stay resident
-    uint64_t total = m->gf.map_size - metal_host_only_bytes(m);
-    uint64_t margin = have / 8;              // KV, scratch, the OS
-    return total + margin <= have && wrapped <= total;
+    if (!have) {                             // cannot tell: do not gamble
+        snprintf(why, whycap, "the available RAM could not be read, so no split can be "
+                 "priced against it");
+        return false;
+    }
+    // On unified memory a split's resident set is the whole machine's, not the
+    // device's share: the weights (the wrapped prefix and the CPU layers the
+    // host streams every token), and the KV cache, which Metal allocates for
+    // the whole context and every layer up front and keeps resident, where the
+    // CPU alone pages its KV in as it is used. Pinning more than the machine
+    // has thrashes (Phi-3.5-mini at -c 8192 on an 8 GB Mac: 0.09 to 0.5 tok/s
+    // against 7 to 8 on the CPU, R3.67; 8x and 35x slower before that,
+    // docs/metal-tuning-evidence.md). Host-only tables (metal_host_only) are
+    // row-gathered, not streamed, so their size is not what has to stay
+    // resident.
+    uint64_t weights = m->gf.map_size - metal_host_only_bytes(m);
+    uint64_t kv = (uint64_t)model_kv_boundary_bytes_sum(m, m->n_layer);
+    uint64_t margin = have / 16;             // the OS and scratch beyond the KV
+    if (weights + kv + margin > have || wrapped > weights) {
+        snprintf(why, whycap, "a split would hold %.2f GB resident (%.2f GB of weights and "
+                 "%.2f GB for the whole-context KV, which Metal allocates up front) against "
+                 "%.2f GB of RAM available; the CPU pages the KV in as it is used, so "
+                 "CPU-only is faster (--gpu-layers forces a split anyway)",
+                 (double)(weights + kv) / 1e9, (double)weights / 1e9, (double)kv / 1e9,
+                 (double)have / 1e9);
+        return false;
+    }
+    return true;
 }
 
 // A non-layer tensor after the layers is outside a prefix wrap: allowed only if
@@ -1819,6 +1837,12 @@ static bool metal_split_never_reads(const model_t *m, const gguf_tensor *w) {
            // only each block's own ple_proj
            !strcmp(w->name, "per_layer_model_proj.weight") ||
            !strcmp(w->name, "per_layer_proj_norm.weight") ||
+           // rope frequency factors (llama3's rope_freqs, phi3's LongRoPE
+           // pair): the host folds them into rope_inv_freq at load
+           // (model.c) and no kernel reads the tensors (R3.67)
+           !strcmp(w->name, "rope_freqs.weight") ||
+           !strcmp(w->name, "rope_factors_long.weight") ||
+           !strcmp(w->name, "rope_factors_short.weight") ||
            metal_host_only(m, w);   // the row-gathered tables, never wrapped
 }
 
@@ -2237,6 +2261,10 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
     // the budget subtracts what this load allocates and keeps a margin.
     int gpu_K = m->n_layer;
     uint64_t ws_limit = dev.recommendedMaxWorkingSetSize;
+    // RUNNER_TEST_METAL_WORKING_SET_MB stands in for the device's working set,
+    // so a test fixture can need a partial split (R3.67)
+    const char *wst = getenv("RUNNER_TEST_METAL_WORKING_SET_MB");
+    if (wst && *wst) ws_limit = (uint64_t)strtoull(wst, NULL, 10) << 20;
     {
         // recommendedMaxWorkingSetSize is the aggregate ceiling; maxBufferLength
         // only bounds each wrap, which metal_wrap_weights() splits, so it must
@@ -2264,6 +2292,7 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
             uint64_t wrap_end = 0;
             const char *refused = NULL;
             int fit = metal_fit_layers(m, budget, cap, &layout_ok, &wrap_end, &refused);
+            char split_why[384];
             if (!layout_ok) {
                 char why[256];
                 snprintf(why, sizeof why, "its tensor layout forbids a partial split "
@@ -2279,15 +2308,13 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
                 return gpu_init_fail(m, g, nil,
                     "not even one layer fits the Metal working set");
             } else if (wlen > budget && cap <= 0 &&
-                       !metal_partial_pays(m, wrap_end)) {
+                       !metal_partial_pays(m, wrap_end, split_why, sizeof split_why)) {
                 // Auto-selected partial offload that would make things WORSE:
-                // residency pays only if the CPU's tail fits in RAM, else the
-                // pinned part starves the streaming part (gemma-4-26B on 8 GB:
-                // 1.5 to 0.21 tok/s).
-                return gpu_init_fail(m, g, nil,
-                    "model is larger than available RAM, so no split can be "
-                    "held resident — CPU-only is faster (--gpu-layers forces "
-                    "a split anyway)");
+                // residency pays only if what it pins and what the CPU streams
+                // fit in RAM together, else the pinned part starves the
+                // streaming part (gemma-4-26B on 8 GB: 1.5 to 0.21 tok/s;
+                // Phi-3.5-mini at -c 8192: 0.09 against 7.8, R3.67).
+                return gpu_init_fail(m, g, nil, split_why);
             } else {
                 gpu_K = fit;
                 if (gpu_K < m->n_layer) {
