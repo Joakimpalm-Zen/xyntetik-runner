@@ -75,6 +75,8 @@ void  quantize_set_type_plan_strict(bool on);
 // rows; NULL clears it. False, with
 // the reason on stderr, when the file cannot be read as one.
 bool  quantize_set_imatrix(const char *path);
+// How many threads a rewrite quantizes rows on (1 until set). The file's bytes do not depend on it.
+void  quantize_set_threads(int n);
 // R4.7.3: --quant-error. One JSON line per tensor a rewrite would quantize:
 // for each of `types`, its bytes and the (imatrix-weighted, when one is
 // set) squared round-trip error of the writer a rewrite would use. Writes

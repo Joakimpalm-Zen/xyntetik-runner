@@ -235,6 +235,25 @@ def test_quant_error_uses_its_threads_and_the_report_does_not_change(runner_bin,
     assert reports[1].count(b"\n") >= 2
 
 
+def test_rewrite_uses_its_threads_and_the_file_does_not_change(runner_bin, tmp_path):
+    """--rewrite quantized every row on one thread whatever -t said: writing a
+    16 GB file from a 27B parent took about 75 minutes on a 40-thread host
+    (2026-11-14). A plain rewrite now quantizes a tensor's rows on the pool in
+    batches written in row order, so the file is byte for byte the one-thread
+    file, with and without an importance-weighted type."""
+    parent = make_parent(tmp_path)
+    for quant in ("q4_0", "q4_k"):
+        files = {}
+        for n in (1, 4):
+            out = tmp_path / f"{quant}-t{n}.gguf"
+            p = subprocess.run([str(runner_bin), "-m", str(parent), "--rewrite", str(out),
+                                "--quant", quant, "-t", str(n)], capture_output=True, text=True)
+            assert p.returncode == 0, p.stderr
+            assert f"({n} thread" in p.stderr, p.stderr[-300:]
+            files[n] = out.read_bytes()
+        assert files[1] == files[4], quant
+
+
 def test_target_size_takes_a_split_parent(runner_bin, tmp_path):
     """A parent in several shards (<prefix>-00001-of-0000N.gguf): the costing
     step read every shard, and the planner then opened the first one alone and

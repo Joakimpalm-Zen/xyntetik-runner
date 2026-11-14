@@ -4527,6 +4527,7 @@ static int run_quantize(const cli_opts *o) {
         tt = (o->prune_experts || o->remove_sublayer) ? T_KEEP : T_Q4_0;
     }
     if (!quantize_set_imatrix(o->imatrix)) return 1;
+    quantize_set_threads(o->n_threads > 0 ? o->n_threads : plat_cpu_count());
     int qrc = quantize_gguf_plan(o->model_path, o->quant_out, tt, o->prune_experts,
                                  o->type_plan, o->remove_sublayer);
     quantize_set_imatrix(NULL);
