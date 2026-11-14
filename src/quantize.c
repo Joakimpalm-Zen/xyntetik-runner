@@ -1278,6 +1278,10 @@ static bool imatrix_load_dat(const char *path) {
     return ok;
 }
 
+// How many threads a rewrite quantizes rows on (quantize_set_threads; 1 until set).
+static int g_q_threads = 1;
+void quantize_set_threads(int n) { g_q_threads = n > 1 ? n : 1; }
+
 bool quantize_set_imatrix(const char *path) {
     imatrix_free();
     if (!path) return true;
@@ -2376,6 +2380,8 @@ typedef struct {
     float *rowf, *basef, *deqm, *deqb;
     uint8_t *rowq, *rowqb;
     uint64_t quantized, kept; // tensors converted, tensors copied
+    tpool *tp;        // rows of a plain rewrite, when more than one thread is set
+    size_t max_row;   // the widest row, for the workers' scratch
 } quantize_job;
 
 // Everything that reads the source, released before the output is installed.
@@ -3171,6 +3177,96 @@ static void quantize_job_write_pruned(quantize_job *J, uint64_t i,
 // One tensor written whole: copied when its type stays and no delta
 // applies, else row by row through f32, with a merge's delta folded in
 // and its survival measured.
+// A batch of one tensor's rows, quantized on the pool into its own buffer and written in row order, so
+// the file is byte for byte the one-thread file.
+typedef struct {
+    const gguf_tensor *t;
+    const imatrix_entry *ie;
+    int out_type, n0;
+    size_t in_rs, out_rs, max_row;
+    uint64_t r0, per, mats;
+    uint8_t *out;            // batch rows x out_rs
+    unsigned char *weighted; // per batch row: an imatrix weight applied
+    atomic_int bad, oom;
+} wrow_job;
+
+static void wrow_rows(void *ctx, int i0, int i1) {
+    wrow_job *j = ctx;
+    float *rowf = malloc(sizeof(float) * j->max_row);
+    uint8_t *rowq = malloc(ggml_row_size(T_F32, j->max_row) + 64);
+    if (!rowf || !rowq) {
+        atomic_store(&j->oom, 1);
+        free(rowf); free(rowq);
+        return;
+    }
+    // per thread, as the calling thread has it for the whole rewrite
+    fp_denormal_state fps = fp_denormals_disable();
+    const gguf_tensor *t = j->t;
+    for (int b = i0; b < i1; b++) {
+        uint64_t r = j->r0 + (uint64_t)b;
+        dequant_row(t->type, (const uint8_t *)t->data + r * j->in_rs, rowf, j->n0);
+        bool bad = false;
+        const float *w = j->ie ? imatrix_row(j->ie, (int64_t)t->ne[0], r, j->per, j->mats, &bad) : NULL;
+        if (bad) { atomic_store(&j->bad, 1); break; }
+        j->weighted[b] = w != NULL;
+        quantize_row_any_w(j->out_type, rowf, rowq, j->n0, w);
+        memcpy(j->out + (size_t)b * j->out_rs, rowq, j->out_rs);
+    }
+    fp_denormals_restore(fps);
+    free(rowf); free(rowq);
+}
+
+// The plain rows of tensor i (no merge) on g_q_threads. False when it did not run (the caller then
+// writes them on one thread); a failure sets J->w.ok false and returns true.
+static bool quantize_job_write_rows_pool(quantize_job *J, uint64_t i, tpool *tp, size_t max_row) {
+    gguf_tensor *t = &J->g.tensors[i];
+    uint64_t rows = t->ne[1] * t->ne[2] * t->ne[3];
+    size_t out_rs = ggml_row_size(J->out_type[i], t->ne[0]);
+    if (!tp || rows < 2 || out_rs == 0) return false;
+    // about 64 MiB of output a batch, and never fewer rows than would keep the pool busy
+    uint64_t batch = ((uint64_t)64 << 20) / out_rs;
+    uint64_t least = (uint64_t)tpool_size(tp) * 4;
+    if (batch < least) batch = least;
+    if (batch > rows) batch = rows;
+    if (batch > INT_MAX) batch = INT_MAX;
+    uint8_t *out = malloc((size_t)batch * out_rs);
+    unsigned char *weighted = malloc((size_t)batch);
+    if (!out || !weighted) { free(out); free(weighted); return false; }
+    uint64_t mats = t->n_dims > 2 && t->ne[2] > 1 ? t->ne[2] : 1;
+    wrow_job job = { .t = t, .ie = imatrix_for_tensor(t, J->out_type[i]), .out_type = J->out_type[i],
+                     .n0 = (int)t->ne[0], .in_rs = ggml_row_size(t->type, t->ne[0]), .out_rs = out_rs,
+                     .max_row = max_row, .per = mats > 1 ? t->ne[1] : rows, .mats = mats,
+                     .out = out, .weighted = weighted };
+    for (uint64_t r0 = 0; J->w.ok && r0 < rows; r0 += batch) {
+        uint64_t n = rows - r0 < batch ? rows - r0 : batch;
+        job.r0 = r0;
+        // the tensor's first row on this thread first: a table a writer builds on first use exists
+        // before the pool runs (the pool then writes that row again, the same bytes)
+        if (r0 == 0) wrow_rows(&job, 0, 1);
+        if (!atomic_load(&job.bad) && !atomic_load(&job.oom)) tpool_run(tp, wrow_rows, &job, (int)n);
+        if (atomic_load(&job.oom)) { J->w.ok = false; break; }
+        if (atomic_load(&job.bad)) {
+            const imatrix_entry *e = job.ie;
+            fprintf(stderr, "error: the imatrix entry for %s (%lld values x %lld) does "
+                    "not fit the tensor ([%llu, %llu, %llu])\n", t->name,
+                    (long long)e->n_per_row, (long long)e->n_mat,
+                    (unsigned long long)t->ne[0], (unsigned long long)t->ne[1],
+                    (unsigned long long)t->ne[2]);
+            J->w.ok = false;
+            break;
+        }
+        if (job.ie)
+            for (uint64_t b = 0; b < n; b++) {
+                if (weighted[b]) g_imx.rows_weighted++;
+                else g_imx.rows_without_data++;
+            }
+        wr(&J->w, out, (size_t)n * out_rs);
+    }
+    free(out); free(weighted);
+    J->quantized++;
+    return true;
+}
+
 static void quantize_job_write_rows(quantize_job *J, uint64_t i, merge_set_t *ms) {
     gguf_tensor *t = &J->g.tensors[i];
     // a zero-delta pair leaves its tensor on the verbatim path below —
@@ -3201,6 +3297,7 @@ static void quantize_job_write_rows(quantize_job *J, uint64_t i, merge_set_t *ms
         J->w.ok = false;
         return;
     }
+    if (!mp && J->tp && quantize_job_write_rows_pool(J, i, J->tp, J->max_row)) return;
     int n0 = (int)t->ne[0];
     const imatrix_entry *ie = imatrix_for_tensor(t, J->out_type[i]);
     for (uint64_t r = 0; J->w.ok && r < rows; r++) {
@@ -3243,6 +3340,9 @@ static void quantize_job_write_tensors(quantize_job *J, merge_set_t *ms) {
     J->rowf = malloc(sizeof(float) * max_row);
     J->rowq = malloc(ggml_row_size(T_F32, max_row) + 64);
     if (!J->rowf || !J->rowq) J->w.ok = false;
+    J->max_row = max_row ? max_row : 1;
+    // rows of a plain rewrite on the pool; a merge and a prune stay on this thread
+    J->tp = g_q_threads > 1 ? tpool_create(g_q_threads) : NULL;
     // the survival measurement's second write of each adapted row
     if (ms) {
         J->basef = malloc(sizeof(float) * max_row);
@@ -3266,6 +3366,7 @@ static void quantize_job_write_tensors(quantize_job *J, merge_set_t *ms) {
         if (pl) quantize_job_write_pruned(J, i, pl);
         else quantize_job_write_rows(J, i, ms);
     }
+    if (J->tp) { tpool_destroy(J->tp); J->tp = NULL; }
 }
 
 // The partial file closed and checked, a merge held to its survival floor,
@@ -3333,12 +3434,13 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
 
     // Under a --type-plan the whole-file `target` decided nothing, so naming
     // it here described the output as a type no tensor was written in.
-    fprintf(stderr, "quantize: %s -> %s (%s): %llu tensors converted, %llu kept\n",
+    fprintf(stderr, "quantize: %s -> %s (%s): %llu tensors converted, %llu kept (%d thread%s)\n",
             in_path, out_path,
             type_plan_path ? "per-tensor plan"
                            : target == T_KEEP ? "per-tensor unchanged"
                                               : ggml_type_name(target),
-            (unsigned long long)J->quantized, (unsigned long long)J->kept);
+            (unsigned long long)J->quantized, (unsigned long long)J->kept,
+            g_q_threads, g_q_threads == 1 ? "" : "s");
     if (g_imx.n) {
         // R4.7.2: what the importance matrix shaped, and what it could not
         fprintf(stderr, "imatrix: %llu tensors weighted (%llu rows; %llu rows "
