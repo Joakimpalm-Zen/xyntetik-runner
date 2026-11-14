@@ -662,11 +662,29 @@ def test_the_liveness_probe_calls_a_zombie_dead():
         parent.wait()
 
 
-def test_a_timeout_kills_the_grandchildren_too(tmp_path):
+@pytest.mark.parametrize("start_delay", [0.0, 1.5])
+def test_a_timeout_kills_the_grandchildren_too(tmp_path, start_delay):
     """The check scripts spawn `runner --serve` of their own. subprocess.run's
     timeout kills the direct child only, and the fix written for that read the
     group leader off TimeoutExpired.process -- an attribute the exception does
     not have, so it always killed nothing."""
+    import os
+
+    import pytest
+
+    if os.name == "nt":
+        pytest.skip("no process groups on Windows")
+    module = load_module()
+    _check_a_timeout_kills_the_grandchildren(module, module.run_group, tmp_path, start_delay)
+
+
+def test_the_grandchild_check_sees_an_earlier_attempts_group(tmp_path):
+    """codex's second read of PR E: the check retries a run killed before the
+    spawner wrote its marker, and looked only at the last attempt's grandchild.
+    A grandchild started on an earlier attempt, between the fork and the marker
+    write, could survive unseen. The stand-in leaves attempt 1's grandchild
+    alive with no marker and lets the real run_group handle attempt 2; the
+    check must fail."""
     import os
     import signal
     import subprocess
@@ -676,31 +694,212 @@ def test_a_timeout_kills_the_grandchildren_too(tmp_path):
 
     if os.name == "nt":
         pytest.skip("no process groups on Windows")
-
     module = load_module()
     marker = tmp_path / "grandchild.pid"
+    real = module.run_group
+    leaked = []
+
+    def leaky(cmd, timeout, **kw):
+        if leaked:
+            return real(cmd, timeout, **kw)
+        proc = module.subprocess.Popen(cmd, start_new_session=True,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        leaked.append(proc.pid)
+        for _ in range(100):
+            if marker.exists() and marker.read_text(encoding="utf-8").strip():
+                break
+            time.sleep(0.05)
+        marker.unlink()          # as if killed before the marker was written
+        proc.kill()              # the direct child only: its grandchild lives on
+        proc.wait()
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    try:
+        with pytest.raises(pytest.fail.Exception, match="outlived the timeout"):
+            _check_a_timeout_kills_the_grandchildren(module, leaky, tmp_path, 0.0)
+    finally:
+        for g in leaked:
+            try:
+                os.killpg(g, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+def _live_in_group(pgid):
+    """The live (not zombie) processes in process group pgid.
+
+    A killed grandchild is reparented to PID 1 and keeps its group; where PID 1
+    does not reap (the CI container) it stays a zombie in that group forever,
+    so a zombie is not a survivor (_process_state says why)."""
+    import subprocess
+    from pathlib import Path
+
+    live = []
+    proc = Path("/proc")
+    if proc.is_dir() and (proc / "self" / "stat").exists():      # Linux
+        for d in proc.iterdir():
+            if not d.name.isdigit():
+                continue
+            try:
+                data = (d / "stat").read_text(encoding="utf-8")
+            except OSError:
+                continue
+            # after the parenthesised comm: state, ppid, pgrp
+            fields = data.rpartition(")")[2].split()
+            if len(fields) > 2 and int(fields[2]) == pgid and fields[0] not in ("Z", "X"):
+                live.append(int(d.name))
+        return live
+    out = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,stat="], capture_output=True,
+                         text=True, check=True)
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and int(parts[1]) == pgid and not parts[2].startswith("Z"):
+            live.append(int(parts[0]))
+    return live
+
+
+def test_the_group_probe_sees_a_live_group_and_not_a_dead_one():
+    """The control for the grandchild check: a sleeping group is seen, and once
+    killed and reaped it is not."""
+    import os
+    import signal
+    import subprocess
+
+    import pytest
+
+    if os.name == "nt":
+        pytest.skip("no process groups on Windows")
+    p = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        assert _live_in_group(p.pid) == [p.pid]
+    finally:
+        os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+    assert _live_in_group(p.pid) == []
+
+
+def test_the_grandchild_check_sees_a_grandchild_that_left_the_group(tmp_path):
+    """codex's third read of PR E: a grandchild that calls setsid() before the
+    group is killed lives outside every recorded group, so an empty group does
+    not show it dead. The stand-in spawner's marked child starts a session of
+    its own; the check must fail."""
+    import os
+    import shlex
+    import signal
+    import sys
+
+    import pytest
+
+    if os.name == "nt":
+        pytest.skip("no process groups on Windows")
+    module = load_module()
+    marker = tmp_path / "grandchild.pid"
+    escapee = (f"{shlex.quote(sys.executable)} -c "
+               "'import os, time; os.setsid(); time.sleep(120)'")
+    try:
+        with pytest.raises(pytest.fail.Exception, match="outlived the timeout"):
+            _check_a_timeout_kills_the_grandchildren(module, module.run_group, tmp_path, 0.0,
+                                                     grandchild=escapee)
+    finally:
+        text = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+        if text:
+            try:
+                os.kill(int(text), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+def _check_a_timeout_kills_the_grandchildren(module, run_group, tmp_path, start_delay,
+                                             grandchild="sleep 120"):
+    import os
+    import signal
+    import subprocess
+    import time
+    import types
+
+    import pytest
+
+    marker = tmp_path / "grandchild.pid"
     script = tmp_path / "spawner.sh"
+    # start_delay: a script that starts slowly, as on a loaded machine, where
+    # it once had not written its marker when the timeout killed it
     script.write_text("#!/bin/sh\n"
-                      "sleep 120 &\n"
+                      + (f"sleep {start_delay}\n" if start_delay else "") +
+                      # its output away from run_group's pipes: a grandchild
+                      # that escapes the kill must not hold communicate() open
+                      f"{grandchild} </dev/null >/dev/null 2>&1 &\n"
                       f"echo $! > {marker}\n"
                       "sleep 120\n", encoding="utf-8")
     script.chmod(0o755)
 
-    with pytest.raises(subprocess.TimeoutExpired):
-        module.run_group([str(script)], 1.0, grace=0.2, capture_output=True,
-                         text=True)
+    # The timeout under test only begins to matter once the grandchild exists:
+    # a run killed before the spawner wrote the marker proves nothing about
+    # grandchildren (a loaded machine can start the script later than any fixed
+    # timeout), so it is run again with the timeout doubled, up to 16 s.
+    #
+    # Every attempt's process group must end with no live process, marker or
+    # not: a grandchild can be started between the fork and the marker write.
+    # The groups are read where the spawner starts (its own session, so its
+    # group is its PID), not from the marker.
+    groups = []
 
+    class Recording(subprocess.Popen):
+        def __init__(self, args, *a, **kw):
+            super().__init__(args, *a, **kw)
+            if kw.get("start_new_session") and list(args) == [str(script)]:
+                groups.append(os.getpgid(self.pid))
+                assert groups[-1] == self.pid, "the spawner did not get a group of its own"
+
+    seen = types.ModuleType("subprocess")
+    seen.__dict__.update(subprocess.__dict__)
+    seen.Popen = Recording
+    module.subprocess = seen         # this test's own load of the module
+
+    timeout = 1.0
+    attempts = 0
+    while True:
+        attempts += 1
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_group([str(script)], timeout, grace=0.2, capture_output=True, text=True)
+        if marker.exists() and marker.read_text(encoding="utf-8").strip():
+            break
+        timeout *= 2
+        assert timeout <= 16, "the spawner never wrote its marker within 16 s"
+    assert len(groups) == attempts, f"{attempts} attempts, {len(groups)} groups seen"
+
+    # Both must hold: every recorded group is empty, and the marked grandchild
+    # is dead wherever it is (one that called setsid() or setpgid() before the
+    # kill is in no recorded group). Not kill(pid, 0) for the marked one: a
+    # killed grandchild reparented to a PID 1 that does not reap stays a
+    # signal-answering zombie (_process_state).
+    survivors = {}
+    for g in groups:
+        for _ in range(50):
+            live = _live_in_group(g)
+            if not live:
+                break
+            time.sleep(0.1)
+        else:
+            survivors[g] = live
+    for g in survivors:
+        try:
+            os.killpg(g, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
     grandchild = int(marker.read_text(encoding="utf-8"))
-    # Not kill(pid, 0): the killed grandchild is reparented to PID 1, and where
-    # PID 1 does not reap (the CI container) it stays a signal-answering zombie
-    # forever, which read as "outlived the timeout" on Linux only.
     for _ in range(50):
         if _pid_is_dead(grandchild):
             break
         time.sleep(0.1)
     else:
-        os.kill(grandchild, signal.SIGKILL)
-        pytest.fail(f"grandchild {grandchild} outlived the timeout")
+        try:
+            os.kill(grandchild, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        survivors["marked"] = [grandchild]
+    if survivors:
+        pytest.fail(f"processes outlived the timeout: {survivors} "
+                    f"(of {len(groups)} attempts)")
 
 
 def test_chat_smoke_asks_for_the_non_thinking_prompt_shape(monkeypatch, tmp_path):

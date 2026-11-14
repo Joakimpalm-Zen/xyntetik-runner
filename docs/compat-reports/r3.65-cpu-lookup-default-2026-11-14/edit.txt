@@ -1,0 +1,31 @@
+Here is a Python file:
+
+def parse_config(path):
+    """Read a key=value config file into a dict."""
+    out = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, _, value = line.partition("=")
+            out[key.strip()] = value.strip()
+    return out
+
+
+def merge_configs(base, override):
+    """Return base updated with override, without changing either."""
+    merged = dict(base)
+    for key, value in override.items():
+        merged[key] = value
+    return merged
+
+
+def config_int(cfg, key, default=0):
+    """An integer setting, or default when it is missing or not a number."""
+    try:
+        return int(cfg.get(key, default))
+    except ValueError:
+        return default
+
+Rename the function parse_config to load_config everywhere and print the whole file again, unchanged otherwise.

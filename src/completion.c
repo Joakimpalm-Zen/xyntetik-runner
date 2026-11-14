@@ -13,6 +13,7 @@
 #include "scheduler.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <float.h>
 #include <limits.h>
 #include <math.h>
@@ -2844,7 +2845,7 @@ static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
                           const tool_envelope *env, bool constrain, jv *sch, int think_mode,
                           bool reasoning_open,
                           const char *const *stops, int n_stops,
-                          const int *req_stops, int n_req_stops, bool scripted) {
+                          const int *req_stops, int n_req_stops, const char *script_text) {
     char h[65];
     // the caller's schema shapes the turn directly, or as the final branch
     // of an auto tool turn's envelope
@@ -2905,14 +2906,23 @@ static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
             sb_fmt(&t->json, "%s%d", i ? "," : "", (int)e->think_msg[i]);
         sb_lit(&t->json, "]}");
     }
-    const char *flags[4];
+    // special_tokens spells each generated control token in the text, so it
+    // shapes the recorded output and where a stop string can match; a replay
+    // decodes the same bytes only if the record says so. A scripted reply is
+    // the answer itself: its digest tells two scripted turns apart.
+    const char *flags[5];
     int nf = 0;
-    if (e->think_smp)  flags[nf++] = "reasoning_sampling";
-    if (e->loop_guard) flags[nf++] = "loop_guard";
-    if (e->ignore_eos) flags[nf++] = "ignore_eos";
-    if (scripted)      flags[nf++] = "scripted";
+    if (e->think_smp)      flags[nf++] = "reasoning_sampling";
+    if (e->loop_guard)     flags[nf++] = "loop_guard";
+    if (e->ignore_eos)     flags[nf++] = "ignore_eos";
+    if (e->render_special) flags[nf++] = "special_tokens";
+    if (script_text)       flags[nf++] = "scripted";
     for (int i = 0; i < nf; i++) {
         shape_open(t, flags[i]);
+        if (!strcmp(flags[i], "scripted")) {
+            envelope_data_sha256(script_text, strlen(script_text), h);
+            sb_fmt(&t->json, ",\"sha256\":\"%s\"", h);
+        }
         if (!strcmp(flags[i], "loop_guard")) {
             sb_fmt(&t->json, ",\"span\":%d,\"repeats\":%d,\"window\":%d,"
                              "\"max_closes\":%d,\"everywhere\":%s",
@@ -4115,6 +4125,102 @@ typedef struct {
 // choice-logprob and logprob buffers, the diagnostics and a scripted
 // reply. A refusal frees what the request installed (completion_cleanup)
 // and answers; false then.
+// R3.66's first slice: an opt-in count of exact repeats (RUNNER_REPEAT_COUNT=1),
+// the evidence an answer cache would need first. Per request one 64-bit
+// fingerprint, the head of a SHA-256 over the model's key, its adapter, the
+// rendered prompt's token ids, the sampling settings, the seed and the token
+// cap: one way, and no content is kept. A set of at most RPT_SLOTS
+// fingerprints answers "seen before"; past that a request is hashed but not
+// tracked. /metrics reports the counts (completion_repeat_stats).
+enum { RPT_SLOTS = 1 << 16 };
+static struct {
+    pthread_mutex_t mu;
+    int state;                   // -1 unread, 0 off, 1 on
+    uint64_t *set;               // open addressing; 0 is empty
+    int used;
+    unsigned long long hashed, repeats, cacheable;
+} RPT = { .mu = PTHREAD_MUTEX_INITIALIZER, .state = -1 };
+
+bool completion_repeat_stats(unsigned long long *hashed, unsigned long long *repeats,
+                             unsigned long long *cacheable) {
+    pthread_mutex_lock(&RPT.mu);
+    bool on = RPT.state == 1;
+    *hashed = RPT.hashed; *repeats = RPT.repeats; *cacheable = RPT.cacheable;
+    pthread_mutex_unlock(&RPT.mu);
+    return on;
+}
+
+static bool repeat_count_on(void) {
+    pthread_mutex_lock(&RPT.mu);
+    if (RPT.state < 0) {
+        const char *e = getenv("RUNNER_REPEAT_COUNT");
+        RPT.state = e && *e && strcmp(e, "0") ? 1 : 0;
+        if (RPT.state && !(RPT.set = calloc(RPT_SLOTS, sizeof(uint64_t)))) RPT.state = 0;
+    }
+    bool on = RPT.state == 1;
+    pthread_mutex_unlock(&RPT.mu);
+    return on;
+}
+
+// `shape_json` is what the receipt records as having shaped the turn beyond
+// the sampler (turn_shape_of: the schema or tools by digest, stop strings
+// and ids, the reasoning budget, the loop guard, ignore_eos, special_tokens,
+// a scripted reply by digest), so the
+// fingerprint and the receipt cannot drift. Cacheable is turn_generate's own
+// test for a request that does not sample: neither its temperature nor its
+// reasoning temperature is above 0, or it carries a seed.
+static void repeat_count_note(const slot_t *s, const engine *e, const completion_req *q,
+                              const int32_t *toks, int n_prompt,
+                              const char *shape_json, size_t shape_n) {
+    struct {
+        uint64_t model_key, seed;
+        float temp, top_p, min_p, repeat_penalty;
+        float think_temp, think_top_p, think_min_p;
+        int32_t top_k, think_top_k, think_smp, seed_given, max_tokens, n_prompt;
+    } head;
+    memset(&head, 0, sizeof head);
+    head.model_key = e->model_key;
+    head.temp = s->smp.temp; head.top_p = s->smp.top_p; head.min_p = s->smp.min_p;
+    head.repeat_penalty = s->smp.repeat_penalty; head.top_k = s->smp.top_k;
+    if (e->think_smp) {
+        head.think_smp = 1;
+        head.think_temp = e->think_temp; head.think_top_p = e->think_top_p;
+        head.think_min_p = e->think_min_p; head.think_top_k = e->think_top_k;
+    }
+    head.seed_given = q->seed_given; head.seed = q->seed_given ? q->seed : 0;
+    head.max_tokens = q->max_tokens; head.n_prompt = n_prompt;
+    const char *ad = s->adapter >= 0 ? SV.adapters[s->adapter].sha256 : "";
+    size_t na = strlen(ad), nt = (size_t)n_prompt * sizeof(int32_t);
+    size_t nb = sizeof head + na + nt + shape_n;
+    uint8_t *buf = malloc(nb), dg[32];
+    if (!buf) return;
+    memcpy(buf, &head, sizeof head);
+    memcpy(buf + sizeof head, ad, na);
+    if (nt) memcpy(buf + sizeof head + na, toks, nt);
+    if (shape_n) memcpy(buf + sizeof head + na + nt, shape_json, shape_n);
+    envelope_data_sha256_raw(buf, nb, dg);
+    free(buf);
+    uint64_t fp;
+    memcpy(&fp, dg, sizeof fp);
+    if (!fp) fp = 1;   // 0 marks an empty slot
+    bool samples = s->smp.temp > 0.0f || (e->think_smp && e->think_temp > 0.0f);
+    bool cacheable = !samples || q->seed_given;
+    pthread_mutex_lock(&RPT.mu);
+    RPT.hashed++;
+    for (uint32_t i = (uint32_t)fp & (RPT_SLOTS - 1), k = 0; k < RPT_SLOTS; k++, i = (i + 1) & (RPT_SLOTS - 1)) {
+        if (RPT.set[i] == fp) {
+            RPT.repeats++;
+            if (cacheable) RPT.cacheable++;
+            break;
+        }
+        if (!RPT.set[i]) {
+            if (RPT.used < RPT_SLOTS - 1) { RPT.set[i] = fp; RPT.used++; }
+            break;
+        }
+    }
+    pthread_mutex_unlock(&RPT.mu);
+}
+
 static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api,
                                jv *req, const tool_envelope *env, bool chat,
                                size_t gen_at, completion_req *q, completion_prep *p) {
@@ -5265,7 +5371,24 @@ static void turn_generate(turn_result *t, float *logits) {
         turn_shape_of(shape, req, e, env, q->constrain, q->sch,
                       rs ? rs->think_mode : req_thinking_mode(req), t->reasoning_open,
                       q->stops, q->n_stops,
-                      q->req_stops, q->n_req_stops, q->script_text != NULL);
+                      q->req_stops, q->n_req_stops, q->script_text);
+    // R3.66: the exact-repeat count, from the same record of what shaped the
+    // turn (its own copy when receipts are off), once the settings are installed
+    if (repeat_count_on()) {
+        turn_shape own = {0};
+        const turn_shape *fs = shape;
+        if (!g->raw_on) {
+            turn_shape_of(&own, req, e, env, q->constrain, q->sch,
+                          rs ? rs->think_mode : req_thinking_mode(req), t->reasoning_open,
+                          q->stops, q->n_stops,
+                          q->req_stops, q->n_req_stops, q->script_text);
+            fs = &own;
+        }
+        // the prompt as the receipt reads it (e->hist): prep->toks is freed when
+        // the prefill ends, before this turn generates
+        repeat_count_note(s, e, q, e->hist, prep->n_prompt, fs->json.s, fs->json.n);
+        free(own.json.s);
+    }
 }
 
 // R1.2.2: the receipt. The record is written once the turn's calls are known

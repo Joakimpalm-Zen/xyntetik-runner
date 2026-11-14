@@ -58,6 +58,12 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
 // completion.c's request readers, stubbed: the fields they read are absent
 // from every request below, so the defaults are the whole behaviour.
 bool absent(const jv *v) { return !v || v->type == J_NULL; }
+// /metrics asks for the exact-repeat counts (R3.66); the counter is off here
+bool completion_repeat_stats(unsigned long long *hashed, unsigned long long *repeats,
+                             unsigned long long *cacheable) {
+    *hashed = *repeats = *cacheable = 0;
+    return false;
+}
 
 bool request_bool(jv *req, const char *key, bool dflt, bool *out) {
     jv *v = jv_get(req, key);
