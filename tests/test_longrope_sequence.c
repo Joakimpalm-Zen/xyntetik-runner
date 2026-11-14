@@ -122,6 +122,46 @@ int main(int argc, char **argv) {
     ck(same < half, "the fixture's two sets differ, so the gates below can tell them apart");
     ck(!memcmp(one.m.rope_inv_freq, wide.m.rope_freq_long, sizeof(float) * (size_t)half),
        "a one-set load rotates with the long table");
+    // The division every factor table goes through gives the correctly
+    // rounded quotient (R6.78), checked exactly: for floats q, a and b, the
+    // products q*b and its neighbours' are exact in double and so are their
+    // distances from a, so "no neighbour of q is nearer to a/b" needs no
+    // division and no rounding. Agreement between two loads (below) would
+    // not see a bias both share.
+    {
+        enum { NQ = 4096 };
+        static float num[NQ], den[NQ], quo[NQ];
+        uint32_t x = 0x9e3779b9u;
+        for (int j = 0; j < NQ; j++) {
+            x = x * 1664525u + 1013904223u;
+            num[j] = powf(10000.0f, -(float)(x >> 8) / 16777216.0f);        // 1e-4 .. 1
+            x = x * 1664525u + 1013904223u;
+            den[j] = 0.25f + 64.0f * (float)(x >> 8) / 16777216.0f;         // 0.25 .. 64.25
+        }
+        for (int j = 0; fs && fl && j < half && j < NQ / 2; j++) {           // and the fixture's own
+            den[2 * j] = ((const float *)fs->data)[j];
+            den[2 * j + 1] = ((const float *)fl->data)[j];
+        }
+        model_rope_div_factors(quo, num, den, NQ);
+        int wrong = 0, seen = 0;
+        for (int pass = 0; pass < 2; pass++) {
+            // pass 1 is the control: one quotient moved by an ulp must be seen
+            if (pass) quo[NQ / 3] = nextafterf(quo[NQ / 3], 2.0f * quo[NQ / 3]);
+            int bad = 0;
+            for (int j = 0; j < NQ; j++) {
+                double a = num[j], b = den[j];
+                double r  = fabs((double)quo[j] * b - a);
+                // every quotient here is positive: twice it is above, zero below
+                double up = fabs((double)nextafterf(quo[j], 2.0f * quo[j]) * b - a);
+                double dn = fabs((double)nextafterf(quo[j], 0.0f) * b - a);
+                bad += r > up || r > dn;
+            }
+            if (pass) seen = bad; else wrong = bad;
+        }
+        if (wrong) fprintf(stderr, "%d of %d quotients are not the correctly rounded ones\n", wrong, NQ);
+        ck(wrong == 0, "every factor quotient is the correctly rounded one");
+        ck(seen >= 1, "and a quotient one ulp off is seen");
+    }
     // Engine against engine, to the bit (R6.78): the short table of a load
     // past the original context is the table a load at it builds. On some
     // x86 hosts it was an ulp off, and gate 2 failed there with nothing to
