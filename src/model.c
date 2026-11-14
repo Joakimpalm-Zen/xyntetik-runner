@@ -11724,13 +11724,32 @@ void model_lora_grad_scale(model_t *m, float f) {
             }
 }
 
-// Deliberately the same arithmetic, in the same order, as the scoring half of
-// model_lora_backward_w's taped forward: max-subtracted logsumexp minus the
-// target logit, accumulated in double. If these two ever disagree the DPO
-// loss and its gradient are computed against different policies, which is a
-// silent wrong answer rather than a failure, so the duplication is on purpose
-// and this comment is the reason it is not refactored into a shared helper
-// that could acquire a divergent fast path.
+// The normalizer of one row of logits for every training loss: the maximum
+// plus the float log of the sum, in double, of expf(z - max). ONE compiled
+// copy, never inlined: the cross-entropy, the distillation loss with a
+// one-hot teacher, the DPO scoring pass and the evaluation row must agree on
+// it bit for bit, and under -ffast-math a compiler is free to vectorize or
+// reorder each inlined copy of this loop its own way. It did: built with gcc
+// 16.2 for AVX-512, the copy in the cross-entropy and the copy in the
+// distillation loss came out one float ulp apart on a row (R6.76).
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, noclone))
+#else
+__attribute__((noinline))
+#endif
+static double train_row_lse(const float *z, int V) {
+    float mx = z[0];
+    for (int i = 1; i < V; i++) if (z[i] > mx) mx = z[i];
+    double sum = 0;
+    for (int i = 0; i < V; i++) sum += expf(z[i] - mx);
+    return (double)(mx + logf((float)sum));
+}
+
+// The same loss as the scoring half of model_lora_backward_w's taped
+// forward: the row normalizer above minus the target logit, accumulated in
+// double. If these two ever disagree the DPO loss and its gradient are
+// computed against different policies, which is a silent wrong answer rather
+// than a failure; both call the one normalizer for that reason.
 bool model_seq_nll(model_t *m, const int32_t *toks, int T,
                    const float *mask, double *nll_out) {
     if (!m || T < 2 || T > m->n_ctx) return false;
@@ -11741,12 +11760,8 @@ bool model_seq_nll(model_t *m, const int32_t *toks, int T,
         float *lg = model_forward(m, toks[t], t);
         if (!lg) return false;
         if (t < T - 1 && (!mask || mask[t] != 0.0f)) {
-            float mx = lg[0];
-            for (int i = 1; i < V; i++) if (lg[i] > mx) mx = lg[i];
-            double sum = 0;
-            for (int i = 0; i < V; i++) sum += expf(lg[i] - mx);
             double w = mask ? (double)mask[t] : 1.0;
-            nll += w * ((double)(mx + logf((float)sum)) - (double)lg[toks[t + 1]]);
+            nll += w * (train_row_lse(lg, V) - (double)lg[toks[t + 1]]);
         }
     }
     if (nll_out) *nll_out = nll;
@@ -13556,15 +13571,12 @@ static bool kd_row_eval(const float *z, int V, const int32_t *ids,
 }
 
 // The KL above for one transition. The listed terms take log q_i against the
-// same normalizer the cross-entropy uses, mx + logf(sum of expf), so a one-hot
-// teacher (p 1, lp 0) reproduces the cross-entropy's value exactly.
+// normalizer the cross-entropy uses (train_row_lse, the one compiled copy),
+// so a one-hot teacher (p 1, lp 0) reproduces the cross-entropy's value
+// exactly.
 static double kd_row_loss(const float *z, int V, const int32_t *ids,
                           const float *lp, int k, const kd_row *r) {
-    float mx = z[0];
-    for (int i = 1; i < V; i++) if (z[i] > mx) mx = z[i];
-    double sum = 0;
-    for (int i = 0; i < V; i++) sum += expf(z[i] - mx);
-    double lse = (double)(mx + logf((float)sum));
+    double lse = train_row_lse(z, V);
     double kl = 0.0;
     for (int i = 0; i < k; i++) {
         double p = exp((double)lp[i]);
@@ -13764,13 +13776,8 @@ NUM_STAGE bool lora_taped_forward(model_t *m, const int32_t *toks, int T,
                 double w = pos_w ? (double)pos_w[t] : 1.0;
                 loss += w * kd_row_loss(lg, V, ids, lp, tch->k, &r);
             } else if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f)) {
-                float mx = lg[0];
-                for (int i = 1; i < V; i++) if (lg[i] > mx) mx = lg[i];
-                double sum = 0;
-                for (int i = 0; i < V; i++) sum += expf(lg[i] - mx);
                 double w = pos_w ? (double)pos_w[t] : 1.0;
-                loss += w * ((double)(mx + logf((float)sum))
-                             - (double)lg[toks[t + 1]]);
+                loss += w * (train_row_lse(lg, V) - (double)lg[toks[t + 1]]);
             }
             if (t < T - 1 && (!pos_w || pos_w[t] != 0.0f)) {
                 memcpy(probs + (size_t)nc * V, rl, sizeof(float) * (size_t)V);
@@ -14454,11 +14461,7 @@ bool model_lora_eval_row(model_t *m, const int32_t *toks, int T,
             target = ids[tbest];
             kbest = ids[sbest];
         } else {
-            float mx = lg[0];
-            for (int i = 1; i < V; i++) if (lg[i] > mx) mx = lg[i];
-            double sum = 0;
-            for (int i = 0; i < V; i++) sum += expf(lg[i] - mx);
-            acc->loss += w * ((double)(mx + logf((float)sum)) - (double)lg[target]);
+            acc->loss += w * (train_row_lse(lg, V) - (double)lg[target]);
             kbest = vmax;
         }
         acc->weight += w < 0 ? -w : w;
