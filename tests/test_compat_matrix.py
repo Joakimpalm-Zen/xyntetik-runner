@@ -662,7 +662,8 @@ def test_the_liveness_probe_calls_a_zombie_dead():
         parent.wait()
 
 
-def test_a_timeout_kills_the_grandchildren_too(tmp_path):
+@pytest.mark.parametrize("start_delay", [0.0, 1.5])
+def test_a_timeout_kills_the_grandchildren_too(tmp_path, start_delay):
     """The check scripts spawn `runner --serve` of their own. subprocess.run's
     timeout kills the direct child only, and the fix written for that read the
     group leader off TimeoutExpired.process -- an attribute the exception does
@@ -680,7 +681,10 @@ def test_a_timeout_kills_the_grandchildren_too(tmp_path):
     module = load_module()
     marker = tmp_path / "grandchild.pid"
     script = tmp_path / "spawner.sh"
+    # start_delay: a script that starts slowly, as on a loaded machine, where
+    # it once had not written its marker when the timeout killed it
     script.write_text("#!/bin/sh\n"
+                      + (f"sleep {start_delay}\n" if start_delay else "") +
                       "sleep 120 &\n"
                       f"echo $! > {marker}\n"
                       "sleep 120\n", encoding="utf-8")
