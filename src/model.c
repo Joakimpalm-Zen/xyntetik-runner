@@ -7735,10 +7735,13 @@ static bool attn_split_wanted(const model_t *m, int n_head, int span) {
     return n_head * 4 < rounds * nt * 3;   // more than a quarter idle
 }
 
+static void act_trace_attn(const model_t *m, const attn_job *j, int n_head);
+
 static void attn_run(model_t *m, attn_job *j, int n_head) {
     int span = j->pos + 1 - j->t0;
     if (!attn_split_wanted(m, n_head, span)) {
         tpool_run(m->tp, attn_heads, j, n_head);
+        act_trace_attn(m, j, n_head);
         return;
     }
     int nt = tpool_size(m->tp) > 0 ? tpool_size(m->tp) : 1;
@@ -7759,6 +7762,7 @@ static void attn_run(model_t *m, attn_job *j, int n_head) {
     tpool_run(m->tp, attn_split_scores, &s, n_head * s.nc);
     tpool_run(m->tp, attn_split_softmax, &s, n_head);
     tpool_run(m->tp, attn_split_values, &s, n_head * s.nd);
+    act_trace_attn(m, j, n_head);
 }
 
 // ------------------------------------------------- activation tracing (debug)
@@ -8442,6 +8446,48 @@ static void act_trace_rows(int pos, int n, int layer, const char *point,
         g_act.written++;
         pthread_mutex_unlock(&g_act_mu);
     }
+}
+
+// R4.44 (study instrument): one "attn_probs" record per traced query position of the per-row attention
+// (RUNNER_ATTN_BATCH=0 for a batched forward): per head the largest probability, the entropy and the
+// 16 heaviest keys with their probabilities; with VALUES, the query row too.
+static void act_trace_attn(const model_t *m, const attn_job *j, int n_head) {
+    if (!act_trace_pos(j->pos)) return;
+    enum { TOPK = 16 };
+    pthread_mutex_lock(&g_act_mu);
+    FILE *fp = act_trace_file();
+    char nb[32];
+    act_trace_head(fp, j->pos, j->layer, "attn_probs");
+    fprintf(fp, ",\"t0\":%d,\"scale\":%s,\"heads\":[", j->t0, json_numg(nb, 9, j->scale));
+    for (int h = 0; h < n_head; h++) {
+        const float *att = m->att + (size_t)h * m->n_ctx;
+        int top[TOPK], nt = 0;
+        double ent = 0, sum = 0;
+        for (int t = j->t0; t <= j->pos; t++) {
+            float pr = att[t];
+            sum += pr;
+            if (pr > 0) ent -= (double)pr * log((double)pr);
+            if (nt == TOPK && pr <= att[top[TOPK - 1]]) continue;
+            int k = nt < TOPK ? nt++ : TOPK - 1;
+            top[k] = t;
+            while (k > 0 && att[top[k - 1]] < att[top[k]]) { int x = top[k]; top[k] = top[k - 1]; top[k - 1] = x; k--; }
+        }
+        fprintf(fp, "%s{\"h\":%d,\"sum\":%s", h ? "," : "", h, json_numg(nb, 9, sum));
+        fprintf(fp, ",\"entropy\":%s,\"top\":[", json_numg(nb, 9, ent));
+        for (int k = 0; k < nt; k++) fprintf(fp, "%s[%d,%s]", k ? "," : "", top[k], json_numg(nb, 9, att[top[k]]));
+        fputs("]}", fp);
+    }
+    fputc(']', fp);
+    if (g_act.values) {
+        int qd = n_head * j->hd;
+        fputs(",\"q\":[", fp);
+        for (int i = 0; i < qd; i++) fprintf(fp, "%s%s", i ? "," : "", json_numg(nb, 9, j->q[i]));
+        fputc(']', fp);
+    }
+    fputs("}\n", fp);
+    fflush(fp);
+    g_act.written++;
+    pthread_mutex_unlock(&g_act_mu);
 }
 
 static void act_trace_route(int pos, int layer, const int *sel, const float *selw, int used) {
