@@ -97,6 +97,8 @@ typedef struct {
     bool          kv_skip_grow;  // RUNNER_TEST_METAL_KV_SKIP_GROW: skip one grow
     uint64_t      kv_wlen, kv_ws_limit;   // the wrapped weights and the working set, for a grow
     int           kv_grows;      // grows since the load, for the end-of-run line
+    int           kv_high;       // the most rows the cache mapped (a refusal unmaps; this stays)
+    int           kv_refused_rows;   // the grow that did not fit, when one did not
     bool          kv_refused;    // a grow did not fit: every later reserve says so (kv_why)
     char          kv_why[256];
     id<MTLBuffer> x, xb, xb2, q, kt, vt, hb, hb2, att, logits;
@@ -361,6 +363,7 @@ static bool metal_kv_map(gpu_t *g, const model_t *m, int rows) {
     metal_kv_free_regions(g->kreg, g->vreg, g->kreg_in, g->vreg_in, nl);
     g->kreg = nk; g->vreg = nv; g->kreg_in = ik; g->vreg_in = iv;
     g->kv_mapped = rows < m->n_ctx ? rows : m->n_ctx;
+    if (g->kv_mapped > g->kv_high) g->kv_high = g->kv_mapped;
     return true;
 }
 
@@ -2504,11 +2507,8 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
     }
     *gpu_K_out = gpu_K;
     *wlen_out = wlen;
-    // R3.68: what a KV grow charges for the weights the device holds. wlen is
-    // part 0's prefix; a full offload of a multi-part file wraps every part,
-    // which wtotal counts, as the admission above does (codex's read of PR G:
-    // four 1 GB parts grew as if the weights were one).
-    g->kv_wlen = gpu_K >= m->n_layer ? wtotal : (uint64_t)wlen;
+    // R3.68: what a KV grow charges for the weights is set where the weight
+    // buffers are made (metal_place_weights), from the buffers made.
     *ws_limit_out = ws_limit;
     return true;
 }
@@ -2534,7 +2534,11 @@ static bool metal_place_weights(model_t *m, gpu_t *g, id<MTLDevice> dev,
         g->wbuf_end[0] = g->wbuf_base[0] + m->gf.map_size;
         g->n_wbuf = g->wbuf[0] ? 1 : 0;
         g->weights_copied = true;
-        if (!g->wbuf[0]) {
+        if (g->wbuf[0]) {
+            g->kv_wlen = (uint64_t)m->gf.map_size;   // the copy holds the whole file
+            return true;
+        }
+        {
             // say what was asked for and what the device allows — the RAM
             // warning two lines below this in a load gives numbers, and a
             // bare "allocation failed" gives a scheduler nothing to reason
@@ -2556,6 +2560,13 @@ static bool metal_place_weights(model_t *m, gpu_t *g, id<MTLDevice> dev,
             return gpu_init_fail(m, g, nil, why);
         }
     }
+    // R3.68: what a KV grow charges for the weights is what the device holds:
+    // the wraps made (every part of a multi-part file, a split's prefix, and
+    // never the host-only tables, which the wraps cut around), or the whole
+    // file when the wrap failed and it was copied (above). codex's reads of PR
+    // G: a multi-part file was charged one part, and a copied split its prefix.
+    g->kv_wlen = 0;
+    for (int i = 0; i < g->n_wbuf; i++) g->kv_wlen += g->wbuf_end[i] - g->wbuf_base[i];
     return true;
 }
 
@@ -3750,9 +3761,14 @@ void gpu_free(model_t *m) {
     gpu_t *g = m->gpu_owner ? (gpu_t *)m->gpu_owner : (gpu_t *)m->gpu;
     // R3.68: the engine's own count of the run's KV grows (the identity gate
     // reads it: a grow that never happened cannot pass for one)
-    if (g && g->kv_grows > 0)
-        fprintf(stderr, "gpu: the KV cache grew %d time%s, to %d of %d rows\n", g->kv_grows,
-                g->kv_grows == 1 ? "" : "s", g->kv_mapped, m->n_ctx);
+    if (g && (g->kv_grows > 0 || g->kv_refused)) {
+        char ended[96] = "";
+        if (g->kv_refused)
+            snprintf(ended, sizeof ended, "; a grow to %d rows did not fit, so the run ended on "
+                     "the CPU", g->kv_refused_rows);
+        fprintf(stderr, "gpu: the KV cache grew %d time%s, to %d of %d rows%s\n", g->kv_grows,
+                g->kv_grows == 1 ? "" : "s", g->kv_high, m->n_ctx, ended);
+    }
     m->gpu = NULL;
     m->gpu_owner = NULL;
     if (!g) return;
@@ -5503,6 +5519,7 @@ bool gpu_kv_reserve(model_t *m, int rows, char *why, size_t cap) {
             snprintf(why, cap, "the KV buffers for %lld rows could not be made", want);
         snprintf(g->kv_why, sizeof g->kv_why, "%s", why);
         g->kv_refused = true;
+        g->kv_refused_rows = (int)want;
         metal_kv_unmap(g, m->n_layer);
         return false;
     }

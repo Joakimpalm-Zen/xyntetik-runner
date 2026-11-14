@@ -147,7 +147,7 @@ def test_a_missed_grow_is_caught_before_the_encode(runner_bin):
 def test_a_grow_that_does_not_fit_continues_on_the_cpu(runner_bin):
     _metal_or_skip(runner_bin)
     d, err = _bench(runner_bin, 4096, RUNNER_TEST_METAL_KV_GROW_FAILS_AT=512)
-    assert "does not fit" in err and "continuing on the CPU" in err, err[-800:]
+    assert "rows does not fit" in err and "continuing on the CPU" in err, err[-800:]
     assert d["generated_tokens"] == 2, d
     assert d["route"]["backend"] == "cpu" and "KV" in d["route"]["fallback"], d["route"]
 
@@ -178,9 +178,9 @@ def test_a_grow_charges_the_weights_the_device_really_holds(runner_bin, tmp_path
 
     copied = run(RUNNER_METAL_MAX_BUF=1)
     assert "partial offload" in copied, copied[-800:]
-    assert "does not fit" in copied and "continuing on the CPU" in copied, copied[-800:]
+    assert "rows does not fit" in copied and "continuing on the CPU" in copied, copied[-800:]
     wrapped = run()
-    assert "partial offload" in wrapped and "does not fit" not in wrapped, wrapped[-800:]
+    assert "partial offload" in wrapped and "rows does not fit" not in wrapped, wrapped[-800:]
 
 
 def test_the_end_of_run_line_keeps_the_high_water_mark_after_a_refusal(runner_bin):
