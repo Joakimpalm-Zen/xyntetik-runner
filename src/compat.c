@@ -2128,11 +2128,6 @@ uint64_t plat_ram_bytes(void) {
 }
 
 uint64_t plat_ram_available_bytes(void) {
-    // RUNNER_TEST_RAM_AVAILABLE_MB stands in for the machine's available RAM,
-    // so a test can put a load against a budget it cannot reach for real
-    // (R3.67's whole-machine split budget)
-    const char *t = getenv("RUNNER_TEST_RAM_AVAILABLE_MB");
-    if (t && *t) return (uint64_t)strtoull(t, NULL, 10) << 20;
     plat_capacity c;
     plat_capacity_get(&c);
     return c.ram_available_bytes;

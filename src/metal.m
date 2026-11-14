@@ -1792,8 +1792,28 @@ static bool metal_wrap_check(gpu_t *g, model_t *m, uint64_t wlen) {
     return true;
 }
 
+// A test seam stands in for one measurement in this one decision, and says so
+// on stderr at every load it changes. It only lowers a limit: a value above
+// the measured one is not used, and that is said too, so an inherited seam can
+// never loosen the hardware's admission silently (codex's read of PR F).
+static uint64_t metal_test_seam(const char *name, uint64_t measured, const char *what) {
+    const char *t = getenv(name);
+    if (!t || !*t) return measured;
+    uint64_t v = (uint64_t)strtoull(t, NULL, 10) << 20;
+    if (v > measured) {
+        fprintf(stderr, "test seam: %s=%s is above the measured %s (%llu MB), so the "
+                "measured value is kept: a seam only lowers a limit\n", name, t, what,
+                (unsigned long long)(measured >> 20));
+        return measured;
+    }
+    fprintf(stderr, "test seam: %s=%s in place of the measured %s (%llu MB)\n", name, t, what,
+            (unsigned long long)(measured >> 20));
+    return v;
+}
+
 static bool metal_partial_pays(const model_t *m, uint64_t wrapped, char *why, size_t whycap) {
-    uint64_t have = plat_ram_available_bytes();
+    uint64_t have = metal_test_seam("RUNNER_TEST_RAM_AVAILABLE_MB", plat_ram_available_bytes(),
+                                    "available RAM");
     if (!have) {                             // cannot tell: do not gamble
         snprintf(why, whycap, "the available RAM could not be read, so no split can be "
                  "priced against it");
@@ -2261,10 +2281,9 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
     // the budget subtracts what this load allocates and keeps a margin.
     int gpu_K = m->n_layer;
     uint64_t ws_limit = dev.recommendedMaxWorkingSetSize;
-    // RUNNER_TEST_METAL_WORKING_SET_MB stands in for the device's working set,
-    // so a test fixture can need a partial split (R3.67)
-    const char *wst = getenv("RUNNER_TEST_METAL_WORKING_SET_MB");
-    if (wst && *wst) ws_limit = (uint64_t)strtoull(wst, NULL, 10) << 20;
+    // RUNNER_TEST_METAL_WORKING_SET_MB: a lower working set, so a test fixture
+    // can need a partial split (R3.67)
+    ws_limit = metal_test_seam("RUNNER_TEST_METAL_WORKING_SET_MB", ws_limit, "Metal working set");
     {
         // recommendedMaxWorkingSetSize is the aggregate ceiling; maxBufferLength
         // only bounds each wrap, which metal_wrap_weights() splits, so it must
