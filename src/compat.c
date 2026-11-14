@@ -2211,10 +2211,51 @@ void plat_capacity_at(const char *root, const char *self_file, int host_cpus,
         b.have_left && (!host_avail || b.mem_left < host_avail) ? b.mem_left : host_avail;
 }
 
+void plat_capacity_lowered(const plat_capacity *real, const plat_capacity *fix,
+                           plat_capacity *out) {
+    *out = *fix;
+    out->host_cpu_cores = real->host_cpu_cores;
+    out->host_ram_bytes = real->host_ram_bytes;
+    out->host_ram_available_bytes = real->host_ram_available_bytes;
+    if (real->cpu_cores < out->cpu_cores) out->cpu_cores = real->cpu_cores;
+    if (real->ram_bytes < out->ram_bytes) out->ram_bytes = real->ram_bytes;
+    if (real->ram_available_bytes < out->ram_available_bytes)
+        out->ram_available_bytes = real->ram_available_bytes;
+    if (real->cpu_quota && (!out->cpu_quota || real->cpu_quota < out->cpu_quota))
+        out->cpu_quota = real->cpu_quota;
+    if (real->memory_max_bytes &&
+        (!out->memory_max_bytes || real->memory_max_bytes < out->memory_max_bytes))
+        out->memory_max_bytes = real->memory_max_bytes;
+    if (!strcmp(out->limits_source, "none")) out->limits_source = real->limits_source;
+}
+
 void plat_capacity_get(plat_capacity *out) {
     // RUNNER_TEST_CGROUP_ROOT (test-only) reads a fixture tree as this
-    // process's own cgroup, on any platform
+    // process's own cgroup, on any platform. A seam that stands in for a
+    // measurement says so (fable, 2026-11-14), once per process: every
+    // capacity read comes through here. A cgroup can only lower the host's
+    // limits, and the fixture's reading is lowered to the real cgroup's
+    // (plat_capacity_lowered), so a fixture cannot loosen a container's limit
+    // either (codex's read of PR G).
     const char *root = getenv("RUNNER_TEST_CGROUP_ROOT"), *self = NULL;
+    if (root && *root) {
+        static _Atomic bool said;
+        if (plat_once(&said))
+            fprintf(stderr, "test seam: RUNNER_TEST_CGROUP_ROOT=%s in place of this process's "
+                    "own cgroup (it can only lower the limits the real one reads)\n", root);
+        plat_capacity real, fix;
+#ifdef __linux__
+        plat_capacity_at("/sys/fs/cgroup", "/proc/self/cgroup", machine_cpu_count(),
+                         machine_ram_bytes(), machine_ram_available_bytes(), &real);
+#else
+        plat_capacity_at(NULL, NULL, machine_cpu_count(), machine_ram_bytes(),
+                         machine_ram_available_bytes(), &real);
+#endif
+        plat_capacity_at(root, NULL, machine_cpu_count(), machine_ram_bytes(),
+                         machine_ram_available_bytes(), &fix);
+        plat_capacity_lowered(&real, &fix, out);
+        return;
+    }
     if (!root || !*root) {
 #ifdef __linux__
         root = "/sys/fs/cgroup";

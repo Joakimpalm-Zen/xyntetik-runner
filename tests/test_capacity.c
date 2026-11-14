@@ -266,6 +266,34 @@ int main(void) {
     ck(!strcmp(c.limits_source, "none") && c.cpu_cores == 8 && c.ram_bytes == GiB(16) &&
        c.ram_available_bytes == GiB(9), "no cgroup root: the host numbers");
 
+    // --- RUNNER_TEST_CGROUP_ROOT only lowers (codex's read of PR G) --------
+    // The seam's fixture stands in for the cgroup reading; the effective
+    // limits are the smaller of the real reading and the fixture's, so a
+    // fixture that says 32 GiB in a container with a real 2 GiB limit still
+    // gives 2 GiB, and one that says less gives less.
+    {
+        plat_capacity real, loose, tight, eff;
+        put("seam-real", "cgroup.controllers", "cpu memory\n");
+        put("seam-real", "cpu.max", "100000 100000\n");
+        put("seam-real", "memory.max", "2147483648\n");
+        put("seam-loose", "cgroup.controllers", "cpu memory\n");
+        put("seam-loose", "cpu.max", "1600000 100000\n");
+        put("seam-loose", "memory.max", "34359738368\n");
+        put("seam-tight", "cgroup.controllers", "cpu memory\n");
+        put("seam-tight", "memory.max", "1073741824\n");
+        read_tree("seam-real", NULL, HOST_CPUS, HOST_RAM, HOST_AVAIL, &real);
+        read_tree("seam-loose", NULL, HOST_CPUS, HOST_RAM, HOST_AVAIL, &loose);
+        read_tree("seam-tight", NULL, HOST_CPUS, HOST_RAM, HOST_AVAIL, &tight);
+        plat_capacity_lowered(&real, &loose, &eff);
+        ck(eff.ram_bytes == GiB(2) && eff.memory_max_bytes == GiB(2) && eff.cpu_cores == 1 &&
+           eff.cpu_quota == 1, "seam: a looser fixture cannot raise the real cgroup's limits");
+        ck(eff.host_ram_bytes == HOST_RAM && eff.host_cpu_cores == HOST_CPUS,
+           "seam: the host numbers are the real reading's");
+        plat_capacity_lowered(&real, &tight, &eff);
+        ck(eff.ram_bytes == GiB(1) && eff.memory_max_bytes == GiB(1) && eff.cpu_cores == 1,
+           "seam: a tighter fixture lowers the limit");
+    }
+
     // --- the live reading agrees with the three accessors ------------------
     plat_capacity live;
     plat_capacity_get(&live);

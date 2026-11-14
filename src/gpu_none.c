@@ -134,6 +134,16 @@ void gpu_free(model_t *m) {
     (void)m;
 }
 
+// R3.68: this backend allocates its KV cache whole, so every row is ready
+bool gpu_kv_reserve(model_t *m, int rows, char *why, size_t cap) {
+    (void)m; (void)rows; (void)why; (void)cap;
+    return true;
+}
+bool gpu_kv_rows(const model_t *m, int *mapped, int *step) {
+    (void)m; (void)mapped; (void)step;
+    return false;
+}
+
 void gpu_disable(model_t *m) {
     m->gpu = NULL;
 }

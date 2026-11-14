@@ -5542,6 +5542,16 @@ bool gpu_recurrent_rollback(model_t *m) {
     return cu.CtxSynchronize() == 0;
 }
 
+// R3.68: this backend allocates its KV cache whole, so every row is ready
+bool gpu_kv_reserve(model_t *m, int rows, char *why, size_t cap) {
+    (void)m; (void)rows; (void)why; (void)cap;
+    return true;
+}
+bool gpu_kv_rows(const model_t *m, int *mapped, int *step) {
+    (void)m; (void)mapped; (void)step;
+    return false;
+}
+
 void gpu_disable(model_t *m) {
     gpu_t *g = m ? m->gpu : NULL;
     // KV is mirrored after every step. The recurrent fold is much larger, so

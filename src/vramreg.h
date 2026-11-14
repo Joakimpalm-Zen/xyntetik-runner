@@ -6,6 +6,11 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+// The ledger a claim goes into: the real device's whenever there is one, so
+// its pending claims stay in the sum; "test-device" only where none is and
+// RUNNER_TEST_VRAM_FREE_MB stands in for one (codex's read of PR G).
+void vram_ledger_device(const char *real_id, bool seam, char *out, size_t cap);
+
 //
 // A cross-process ledger of who is holding GPU memory, keyed by GPU device
 // identity, living in $XDG_RUNTIME_DIR (else the temp dir). It is NOT a

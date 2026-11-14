@@ -10,6 +10,7 @@
 #include "metal_admission.h"
 #include "dn_eps.h"
 
+#include <mach/mach.h>   // vm_allocate: the KV cache's host allocation (R3.68)
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,7 +83,24 @@ typedef struct {
     bool          weights_copied;
     // Sticky: a weight range no wrap holds ends the offload for this model.
     bool          bind_failed;
-    id<MTLBuffer> kc, vc;
+    // R3.68: the KV cache is the host allocation kv_host_k / kv_host_v
+    // (m->kcache, m->vcache point at it), and the GPU sees each device layer's
+    // K and V rows through kreg[l] / vreg[l], a no-copy buffer over the rows
+    // [0, kv_mapped) of that region, row 0 at byte kreg_in[l] / vreg_in[l].
+    uint8_t      *kv_host_k, *kv_host_v;
+    size_t        kv_host_k_len, kv_host_v_len;   // page-rounded
+    id<MTLBuffer> *kreg, *vreg;
+    uint64_t     *kreg_in, *vreg_in;
+    int           kv_mapped;     // rows every region covers (clamped to its own rows)
+    int           kv_step;       // rows per grow
+    int           kv_layers;     // the device layers: only their regions are wrapped
+    bool          kv_skip_grow;  // RUNNER_TEST_METAL_KV_SKIP_GROW: skip one grow
+    uint64_t      kv_wlen, kv_ws_limit;   // the wrapped weights and the working set, for a grow
+    int           kv_grows;      // grows since the load, for the end-of-run line
+    int           kv_high;       // the most rows the cache mapped (a refusal unmaps; this stays)
+    int           kv_refused_rows;   // the grow that did not fit, when one did not
+    bool          kv_refused;    // a grow did not fit: every later reserve says so (kv_why)
+    char          kv_why[256];
     id<MTLBuffer> x, xb, xb2, q, kt, vt, hb, hb2, att, logits;
     id<MTLBuffer> xsc;              // per-column max|x| for the scaled tiled GEMMs
     int           xsc_cap;          // columns it holds
@@ -245,6 +263,138 @@ static void metal_replay_setup(gpu_t *g, model_t *m) {
     g->replay_nlayer = m->n_layer;
 }
 
+// ---------------------------------------------- the KV cache, mapped as used
+// R3.68. The KV cache is the host's own allocation, page-aligned and zero-
+// filled on demand as the CPU path's is, and m->kcache and m->vcache point into
+// it. The GPU sees each device layer's K and V rows through a no-copy buffer
+// over the rows in use, wrapped from the page at or below the region's start
+// (region starts come from the one kv_off table, model_k_byte_off and
+// model_v_byte_off, and are not page-aligned in general). The GPU makes a
+// buffer resident in full at its first use (measured on Apple silicon, R3.68), so what
+// is resident is what the buffers cover: a short prompt at -c 8192 holds one
+// step of rows, not the context. A grow replaces the buffers at the top of a
+// forward, in fixed steps; nothing is copied and storage stays shared, so the
+// prefix cache, snapshots and the CPU fallback read the same memory as before.
+// The pause a grow costs is the first use of the new buffers, which maps their
+// whole range again: 7.8 to 41 ms per 256-row step at 2,048 to 8,192 rows of
+// Qwen3-4B, under a fifth of a decode token at that context (R3.68).
+enum { METAL_KV_STEP = 256 };
+
+static int metal_kv_step_rows(void) {
+    // RUNNER_TEST_METAL_KV_STEP: a gate arm, so a small step crosses many grows
+    const char *v = getenv("RUNNER_TEST_METAL_KV_STEP");
+    long r = v && *v ? strtol(v, NULL, 10) : 0;
+    return r > 0 && r < INT_MAX ? (int)r : METAL_KV_STEP;
+}
+
+static int metal_kv_region_rows(const model_t *m, int l, int rows) {
+    int own = model_kv_rows(m, l);
+    return rows < own ? rows : own;
+}
+
+// The KV bytes the device layers' regions cover at `rows` rows; `layers`
+// bounds the count to the device layers (n_layer before the split is known).
+static uint64_t metal_kv_bytes_at(const model_t *m, int layers, int rows) {
+    uint64_t b = 0;
+    for (int l = 0; l < layers && l < m->n_layer; l++) {
+        if (model_kv_owner(m, l) != l) continue;
+        size_t e = (size_t)metal_kv_region_rows(m, l, rows) * (size_t)model_kv_dim(m, l);
+        b += (uint64_t)model_k_bytes_of(m, e) + (uint64_t)model_v_bytes_of(m, e);
+    }
+    return b;
+}
+
+// A no-copy buffer over host bytes [start, start + len), from the page at or
+// below start; *in is where start sits inside it.
+static id<MTLBuffer> metal_kv_wrap(id<MTLDevice> dev, uint8_t *host, size_t host_len,
+                                   size_t start, size_t len, uint64_t *in) {
+    size_t pg = (size_t)vm_page_size;
+    size_t lo = start / pg * pg, hi = (start + len + pg - 1) / pg * pg;
+    if (hi > host_len) hi = host_len;
+    *in = (uint64_t)(start - lo);
+    return [dev newBufferWithBytesNoCopy:host + lo length:hi - lo
+                                 options:MTLResourceStorageModeShared deallocator:nil];
+}
+
+static void metal_kv_free_regions(id<MTLBuffer> *k, id<MTLBuffer> *v, uint64_t *ik, uint64_t *iv,
+                                  int n_layer) {
+    for (int l = 0; l < n_layer; l++) {
+        if (k) [k[l] release];
+        if (v) [v[l] release];
+    }
+    free(k); free(v); free(ik); free(iv);
+}
+
+static void metal_kv_unmap(gpu_t *g, int n_layer) {
+    if (!g) return;
+    metal_kv_free_regions(g->kreg, g->vreg, g->kreg_in, g->vreg_in, n_layer);
+    g->kreg = g->vreg = NULL;
+    g->kreg_in = g->vreg_in = NULL;
+    g->kv_mapped = 0;
+}
+
+// Cover rows [0, rows) of every device region (each clamped to its own rows).
+// The new buffers are made before the old ones go, so a failure leaves the
+// mapping as it was.
+static bool metal_kv_map(gpu_t *g, const model_t *m, int rows) {
+    int nl = m->n_layer;
+    id<MTLBuffer> *nk = calloc((size_t)nl, sizeof(id)), *nv = calloc((size_t)nl, sizeof(id));
+    uint64_t *ik = calloc((size_t)nl, sizeof(uint64_t)), *iv = calloc((size_t)nl, sizeof(uint64_t));
+    bool ok = nk && nv && ik && iv;
+    for (int l = 0; ok && l < g->kv_layers && l < nl; l++) {
+        if (model_kv_owner(m, l) != l) continue;
+        size_t e = (size_t)metal_kv_region_rows(m, l, rows) * (size_t)model_kv_dim(m, l);
+        size_t klen = model_k_bytes_of(m, e), vlen = model_v_bytes_of(m, e);
+        if (klen) {
+            nk[l] = metal_kv_wrap(g->dev, g->kv_host_k, g->kv_host_k_len,
+                                  model_k_byte_off(m, l), klen, &ik[l]);
+            ok = nk[l] != nil;
+        }
+        if (ok && vlen) {
+            nv[l] = metal_kv_wrap(g->dev, g->kv_host_v, g->kv_host_v_len,
+                                  model_v_byte_off(m, l), vlen, &iv[l]);
+            ok = nv[l] != nil;
+        }
+    }
+    if (!ok) {
+        metal_kv_free_regions(nk, nv, ik, iv, nl);
+        return false;
+    }
+    metal_kv_free_regions(g->kreg, g->vreg, g->kreg_in, g->vreg_in, nl);
+    g->kreg = nk; g->vreg = nv; g->kreg_in = ik; g->vreg_in = iv;
+    g->kv_mapped = rows < m->n_ctx ? rows : m->n_ctx;
+    if (g->kv_mapped > g->kv_high) g->kv_high = g->kv_mapped;
+    return true;
+}
+
+// Layer l's K (V) region buffer and where its row 0 sits in it: the values a
+// bind site passes in place of the whole cache and model_k_byte_off.
+static inline id<MTLBuffer> metal_kbuf(const gpu_t *g, const model_t *m, int l) {
+    id<MTLBuffer> b = g->kreg ? g->kreg[model_kv_owner(m, l)] : nil;
+    return b ? b : g->dummy;
+}
+static inline id<MTLBuffer> metal_vbuf(const gpu_t *g, const model_t *m, int l) {
+    id<MTLBuffer> b = g->vreg ? g->vreg[model_kv_owner(m, l)] : nil;
+    return b ? b : g->dummy;
+}
+static inline uint64_t metal_koff(const gpu_t *g, const model_t *m, int l) {
+    return g->kreg_in ? g->kreg_in[model_kv_owner(m, l)] : 0;
+}
+static inline uint64_t metal_voff(const gpu_t *g, const model_t *m, int l) {
+    return g->vreg_in ? g->vreg_in[model_kv_owner(m, l)] : 0;
+}
+
+// The host-side check before every encode: the rows a forward writes and
+// reads must be mapped. A kernel reading past a region's buffer is undefined
+// on Apple GPUs, so a missed grow is refused here, loudly, as a runtime
+// failure (the CPU then continues on the same rows).
+static bool metal_kv_covers(const gpu_t *g, int rows) {
+    if (rows <= g->kv_mapped) return true;
+    fprintf(stderr, "gpu: KV rows up to %d are not mapped (%d mapped): the forward is "
+            "refused before it is encoded\n", rows, g->kv_mapped);
+    return false;
+}
+
 static void gpu_release_state(gpu_t *g, int n_layer) {
     if (!g) return;
 #define X(t)                                                       \
@@ -265,7 +415,11 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     metal_replay_flush(g);
     lora_dev_release(g);
     for (int i = 0; i < g->n_wbuf; i++) [g->wbuf[i] release];
-    id<MTLBuffer> bufs[] = { g->kc, g->vc, g->x, g->xb, g->xb2,
+    metal_kv_unmap(g, n_layer);
+    if (g->kv_host_k) vm_deallocate(mach_task_self(), (vm_address_t)g->kv_host_k, g->kv_host_k_len);
+    if (g->kv_host_v) vm_deallocate(mach_task_self(), (vm_address_t)g->kv_host_v, g->kv_host_v_len);
+    g->kv_host_k = g->kv_host_v = NULL;
+    id<MTLBuffer> bufs[] = { g->x, g->xb, g->xb2,
                              g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
                              g->logits, g->att_acc, g->att_ms,
                              g->moe_logits, g->moe_sel, g->moe_selw,
@@ -1590,8 +1744,28 @@ static uint64_t metal_wbuf_cap(id<MTLDevice> dev) {
 // per-buffer ceiling allows, cut only at TENSOR boundaries so every kernel
 // binds one buffer plus an offset. A cut rounds its base down to a page, so
 // wraps may overlap by a page of read-only bytes never addressed twice.
+static bool metal_wrap_weights_try(gpu_t *g, model_t *m, id<MTLDevice> dev,
+                                   uint64_t wlen, size_t page);
+
+// A wrap that fails releases what it made. The attempt can refuse after some
+// wraps exist (the buffer-count cap, or a later tensor larger than the
+// per-buffer cap), and the caller's fallback then reuses wbuf[0] for the
+// whole-file copy: wraps left behind would leak, unvisited by gpu_free, and
+// the KV grows would charge the copy alone while they stayed alive (codex's
+// third read of PR G).
 static bool metal_wrap_weights(gpu_t *g, model_t *m, id<MTLDevice> dev,
                                uint64_t wlen, size_t page) {
+    if (metal_wrap_weights_try(g, m, dev, wlen, page)) return true;
+    for (int i = 0; i < g->n_wbuf; i++) {
+        [g->wbuf[i] release];
+        g->wbuf[i] = nil;
+    }
+    g->n_wbuf = 0;
+    return false;
+}
+
+static bool metal_wrap_weights_try(gpu_t *g, model_t *m, id<MTLDevice> dev,
+                                   uint64_t wlen, size_t page) {
     uint64_t cap = metal_wbuf_cap(dev);
     g->n_wbuf = 0;
     if (wlen == 0 || cap == 0) return false;
@@ -1832,15 +2006,16 @@ static bool metal_partial_pays(const model_t *m, uint64_t wrapped, char *why, si
     // row-gathered, not streamed, so their size is not what has to stay
     // resident.
     uint64_t weights = m->gf.map_size - metal_host_only_bytes(m);
-    uint64_t kv = (uint64_t)model_kv_boundary_bytes_sum(m, m->n_layer);
+    // R3.68: the KV the load maps is its first step; each grow checks the rest
+    uint64_t kv = metal_kv_bytes_at(m, m->n_layer, metal_kv_step_rows());
     uint64_t margin = have / 16;             // the OS and scratch beyond the KV
     if (weights + kv + margin > have || wrapped > weights) {
         snprintf(why, whycap, "a split would hold %.2f GB resident (%.2f GB of weights and "
-                 "%.2f GB for the whole-context KV, which Metal allocates up front) against "
-                 "%.2f GB of RAM available; the CPU pages the KV in as it is used, so "
-                 "CPU-only is faster (--gpu-layers forces a split anyway)",
+                 "%.2f GB of KV for its first %d rows, the KV growing as the context fills) "
+                 "against %.2f GB of RAM available, so CPU-only is faster (--gpu-layers forces "
+                 "a split anyway)",
                  (double)(weights + kv) / 1e9, (double)weights / 1e9, (double)kv / 1e9,
-                 (double)have / 1e9);
+                 metal_kv_step_rows(), (double)have / 1e9);
         return false;
     }
     return true;
@@ -2295,7 +2470,7 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
         // only bounds each wrap, which metal_wrap_weights() splits, so it must
         // not clamp this budget.
         uint64_t other = metal_other_bytes(
-            (uint64_t)model_kv_boundary_bytes_sum(m, m->n_layer),
+            metal_kv_bytes_at(m, m->n_layer, metal_kv_step_rows()),   // R3.68: the first step
             m->n_batch, m->n_head, m->n_ctx);
         metal_weight_limits limits = {
             .working_set = ws_limit,
@@ -2352,6 +2527,8 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
     }
     *gpu_K_out = gpu_K;
     *wlen_out = wlen;
+    // R3.68: what a KV grow charges for the weights is set where the weight
+    // buffers are made (metal_place_weights), from the buffers made.
     *ws_limit_out = ws_limit;
     return true;
 }
@@ -2377,7 +2554,11 @@ static bool metal_place_weights(model_t *m, gpu_t *g, id<MTLDevice> dev,
         g->wbuf_end[0] = g->wbuf_base[0] + m->gf.map_size;
         g->n_wbuf = g->wbuf[0] ? 1 : 0;
         g->weights_copied = true;
-        if (!g->wbuf[0]) {
+        if (g->wbuf[0]) {
+            g->kv_wlen = (uint64_t)m->gf.map_size;   // the copy holds the whole file
+            return true;
+        }
+        {
             // say what was asked for and what the device allows — the RAM
             // warning two lines below this in a load gives numbers, and a
             // bare "allocation failed" gives a scheduler nothing to reason
@@ -2399,6 +2580,13 @@ static bool metal_place_weights(model_t *m, gpu_t *g, id<MTLDevice> dev,
             return gpu_init_fail(m, g, nil, why);
         }
     }
+    // R3.68: what a KV grow charges for the weights is what the device holds:
+    // the wraps made (every part of a multi-part file, a split's prefix, and
+    // never the host-only tables, which the wraps cut around), or the whole
+    // file when the wrap failed and it was copied (above). codex's reads of PR
+    // G: a multi-part file was charged one part, and a copied split its prefix.
+    g->kv_wlen = 0;
+    for (int i = 0; i < g->n_wbuf; i++) g->kv_wlen += g->wbuf_end[i] - g->wbuf_base[i];
     return true;
 }
 
@@ -2420,15 +2608,28 @@ static id<MTLBuffer> new_shared_buf(id<MTLDevice> dev, size_t n) {
     return [dev newBufferWithLength:n options:MTLResourceStorageModeShared];
 }
 
+static uint8_t *metal_kv_host_alloc(size_t bytes, size_t *len) {
+    size_t pg = (size_t)vm_page_size;
+    *len = (bytes ? bytes : 1) + pg - 1;
+    *len = *len / pg * pg;
+    vm_address_t a = 0;
+    if (vm_allocate(mach_task_self(), &a, *len, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) return NULL;
+    return (uint8_t *)a;   // zero-filled on demand: untouched rows are never resident
+}
+
 static bool metal_alloc_state(model_t *m, gpu_t *g, id<MTLDevice> dev) {
     size_t k_bytes = model_k_boundary_bytes(m, m->n_layer);
     size_t v_bytes = model_v_boundary_bytes(m, m->n_layer);
-    g->kc = new_shared_buf(dev, k_bytes ? k_bytes : 1);
-    g->vc = new_shared_buf(dev, v_bytes);
-    if (!metal_buffer_ok(g->kc) || !metal_buffer_ok(g->vc))
+    // R3.68: one host allocation per cache, as the CPU path has, and the first
+    // step of rows mapped for the device; a forward grows the rest as it needs
+    g->kv_host_k = metal_kv_host_alloc(k_bytes, &g->kv_host_k_len);
+    g->kv_host_v = metal_kv_host_alloc(v_bytes, &g->kv_host_v_len);
+    if (!g->kv_host_k || !g->kv_host_v)
+        return gpu_init_fail(m, g, nil, "KV host allocation");
+    g->kv_step = metal_kv_step_rows();
+    g->kv_skip_grow = getenv("RUNNER_TEST_METAL_KV_SKIP_GROW") != NULL;
+    if (!metal_kv_map(g, m, g->kv_step < m->n_ctx ? g->kv_step : m->n_ctx))
         return gpu_init_fail(m, g, nil, "KV buffer allocation");
-    memset(g->kc.contents, 0, k_bytes);
-    memset(g->vc.contents, 0, v_bytes);
     if (metal_init_injected("after-kv"))
         return gpu_init_fail(m, g, nil, "injected post-KV allocation failure");
 
@@ -2572,8 +2773,12 @@ static void metal_publish(model_t *m, gpu_t *g, id<MTLDevice> dev, int gpu_K,
     // but do not detach the malloc-owned cache until every Metal allocation has
     // succeeded. Any failure above falls back with the CPU KV still intact.
     free(m->kcache); free(m->vcache);
-    m->kcache = (f16_t *)g->kc.contents;
-    m->vcache = (f16_t *)g->vc.contents;
+    m->kcache = (f16_t *)g->kv_host_k;
+    m->vcache = (f16_t *)g->kv_host_v;
+    g->kv_ws_limit = ws_limit;
+    fprintf(stderr, "gpu: the KV cache grows with the context, %d rows at a time (%d of %d "
+            "mapped); a grow that does not fit in RAM continues on the CPU\n",
+            g->kv_step, g->kv_mapped, m->n_ctx);
     if (metal_recurrent(m) && g->dn_conv && g->dn_state && !m->ssm_state_backend) {
         // the same hand-over for the recurrent state: the host's fold (zero at
         // load, or a restored one) moves into the buffers the kernels update,
@@ -2646,6 +2851,7 @@ bool gpu_init(model_t *m) {
         return false;
     }
     if (!metal_place_weights(m, g, dev, wlen, page)) return false;
+    g->kv_layers = gpu_K;
     if (!metal_alloc_state(m, g, dev)) return false;
     if (!metal_upload_constants(m, g, dev)) return false;
     metal_publish(m, g, dev, gpu_K, wlen, ws_limit);
@@ -3327,9 +3533,10 @@ static void enc_moe_sum(gpu_t *g, id<MTLComputeCommandEncoder> e,
       threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 }
 
-// Metal's KV cache *is* the backend buffer (unified memory: m->kcache points at
-// g->kc.contents), and the CPU path is about to read and overwrite those rows.
-// Releasing the buffers here would pull them out from under the fallback. Keep
+// Metal's KV cache is host memory the backend owns (m->kcache points at
+// g->kv_host_k, which the region buffers map, R3.68), and the CPU path is about
+// to read and overwrite those rows. Releasing it here would pull them out from
+// under the fallback. Keep
 // gpu_owner reachable for model_free(), but make m->gpu NULL so no future
 // forward tries to submit Metal work.
 void gpu_disable(model_t *m) {
@@ -3563,6 +3770,16 @@ void gpu_free(model_t *m) {
     @autoreleasepool {
     if (!m) return;
     gpu_t *g = m->gpu_owner ? (gpu_t *)m->gpu_owner : (gpu_t *)m->gpu;
+    // R3.68: the engine's own count of the run's KV grows (the identity gate
+    // reads it: a grow that never happened cannot pass for one)
+    if (g && (g->kv_grows > 0 || g->kv_refused)) {
+        char ended[96] = "";
+        if (g->kv_refused)
+            snprintf(ended, sizeof ended, "; a grow to %d rows did not fit, so the run ended on "
+                     "the CPU", g->kv_refused_rows);
+        fprintf(stderr, "gpu: the KV cache grew %d time%s, to %d of %d rows%s\n", g->kv_grows,
+                g->kv_grows == 1 ? "" : "s", g->kv_high, m->n_ctx, ended);
+    }
     m->gpu = NULL;
     m->gpu_owner = NULL;
     if (!g) return;
@@ -3580,6 +3797,19 @@ void gpu_free(model_t *m) {
     }
     gpu_release_state(g, m->n_layer);
     }
+    // RUNNER_TEST_METAL_HELD_AFTER_FREE (a gate arm): the bytes this
+    // process's Metal device still holds once the model is released and the
+    // pool above has drained. A buffer the release path never visits (a wrap
+    // leaked on a failure path) shows here, and no other process moves it, as
+    // it would the machine-wide driver figure (codex's third read of PR G).
+    if (getenv("RUNNER_TEST_METAL_HELD_AFTER_FREE")) {
+        @autoreleasepool {
+            id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+            fprintf(stderr, "test: the Metal device holds %llu bytes after the model is freed\n",
+                    (unsigned long long)(dev ? dev.currentAllocatedSize : 0));
+            [dev release];
+        }
+    }
 }
 
 // The native prompt-batch encoder implements exactly the plain llama shape.
@@ -3594,8 +3824,8 @@ void gpu_free(model_t *m) {
 // the boundary hidden state from the host x buffer. On Metal this is a copy
 // within one address space -- g->x is shared storage, so it IS host memory --
 // and it is small (n * n_embd floats; 11 KB at decode). The KV needs nothing:
-// m->kcache/m->vcache already point at g->kc/g->vc contents, so the layers
-// the device just wrote are already visible to the CPU.
+// m->kcache/m->vcache point at the host allocation the region buffers map
+// (R3.68), so the layers the device just wrote are already visible to the CPU.
 static void metal_handoff_boundary(model_t *m, int n) {
     gpu_t *g = (gpu_t *)m->gpu;
     if (!g || !m->x) return;
@@ -4168,9 +4398,9 @@ static void metal_enc_attn_in(metal_fwd *F, int l, const metal_layer_plan *P) {
         metal_fuse_announce();
         metal_front_announce(fpipe, g);
         // the megakernel is f16-only, so K and V rows are the same size
-        uint64_t roff = model_k_byte_off(m, l) +
+        uint64_t roff = metal_koff(g, m, l) +
             (uint64_t)model_kv_row_at(m, l, pos) * model_k_row_bytes(m, l);
-        uint64_t roff_v = model_v_byte_off(m, l) +
+        uint64_t roff_v = metal_voff(g, m, l) +
             (uint64_t)model_kv_row_at(m, l, pos) * model_v_row_bytes(m, l);
         attn_front_args fa = {
             n_embd, m->n_head, n_kv, hd, model_rope_dim(m, l) / 2,
@@ -4187,8 +4417,8 @@ static void metal_enc_attn_in(metal_fwd *F, int l, const metal_layer_plan *P) {
         [F->e setBuffer:g->q  offset:0 atIndex:3];
         [F->e setBuffer:g->kt offset:0 atIndex:4];
         [F->e setBuffer:g->vt offset:0 atIndex:5];
-        [F->e setBuffer:g->kc offset:0 atIndex:6];
-        [F->e setBuffer:g->vc offset:0 atIndex:7];
+        [F->e setBuffer:metal_kbuf(g, m, l) offset:0 atIndex:6];
+        [F->e setBuffer:metal_vbuf(g, m, l) offset:0 atIndex:7];
         [F->e setBuffer:(local && g->inv_freq_local) ? g->inv_freq_local
                                                   : g->inv_freq
               offset:0 atIndex:8];
@@ -4291,9 +4521,9 @@ static void metal_enc_rope_store(metal_fwd *F, int l, const metal_layer_plan *P)
     if (fused_rs) {
         metal_fuse_announce();
         int half = model_rope_dim(m, l) / 2;
-        uint64_t roff = model_k_byte_off(m, l) +
+        uint64_t roff = metal_koff(g, m, l) +
                         (uint64_t)model_kv_row_at(m, l, pos) * row_b;
-        uint64_t roff_v = model_v_byte_off(m, l) +
+        uint64_t roff_v = metal_voff(g, m, l) +
                           (uint64_t)model_kv_row_at(m, l, pos) * vrow_b;
         rope_store_args ra = {
             m->n_head, n_kv, hd, half, pos, m->rope_neox,
@@ -4303,8 +4533,8 @@ static void metal_enc_rope_store(metal_fwd *F, int l, const metal_layer_plan *P)
         [F->e setBuffer:g->q  offset:0 atIndex:0];
         [F->e setBuffer:g->kt offset:0 atIndex:1];
         [F->e setBuffer:g->vt offset:0 atIndex:2];
-        [F->e setBuffer:g->kc offset:0 atIndex:3];
-        [F->e setBuffer:g->vc offset:0 atIndex:4];
+        [F->e setBuffer:metal_kbuf(g, m, l) offset:0 atIndex:3];
+        [F->e setBuffer:metal_vbuf(g, m, l) offset:0 atIndex:4];
         [F->e setBuffer:(local && g->inv_freq_local) ? g->inv_freq_local
                                                   : g->inv_freq
               offset:0 atIndex:5];
@@ -4338,13 +4568,13 @@ static void metal_enc_rope_store(metal_fwd *F, int l, const metal_layer_plan *P)
 
         store_args sa = { kv_dim_l, q8, kv_dim, pos,
                           model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                          model_k_byte_off(m, l), (uint64_t)row_b,
-                          vq8, model_v_byte_off(m, l), (uint64_t)vrow_b };
+                          metal_koff(g, m, l), (uint64_t)row_b,
+                          vq8, metal_voff(g, m, l), (uint64_t)vrow_b };
         [F->e setComputePipelineState:g->p_store];
         [F->e setBuffer:g->kt offset:0 atIndex:0];
         [F->e setBuffer:g->vt offset:0 atIndex:1];
-        [F->e setBuffer:g->kc offset:0 atIndex:2];
-        [F->e setBuffer:g->vc offset:0 atIndex:3];
+        [F->e setBuffer:metal_kbuf(g, m, l) offset:0 atIndex:2];
+        [F->e setBuffer:metal_vbuf(g, m, l) offset:0 atIndex:3];
         [F->e setBytes:&sa length:sizeof(sa) atIndex:4];
         g_disp.store++;
         [F->e dispatchThreads:MTLSizeMake(kv_units, n, 1)
@@ -4362,9 +4592,13 @@ static void metal_enc_rope_store(metal_fwd *F, int l, const metal_layer_plan *P)
 static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
                                 int l, int n, int pos, int q_dim, int xdim, int hd,
                                 int n_kv, int window, id<MTLBuffer> q, NSUInteger q_off,
-                                id<MTLBuffer> kc, id<MTLBuffer> vc,
+                                const gpu_t *kvg,
                                 id<MTLBuffer> out, NSUInteger out_off, bool timing) {
     int q8 = model_kv_kind_k(m), vq8 = model_kv_kind_v(m);   // cache KINDS
+    // R3.68: layer l's own K and V region buffers, from the gpu_t that holds
+    // this sequence's cache (the lead's, or a microbatch column's)
+    id<MTLBuffer> kc = metal_kbuf(kvg, m, l), vc = metal_vbuf(kvg, m, l);
+    uint64_t koff = metal_koff(kvg, m, l), voff = metal_voff(kvg, m, l);
 
     // Chunked path: decode only (n == 1), long enough range to be
     // worth splitting, and a head_dim the partial buffer was sized
@@ -4409,11 +4643,11 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
     if (n == 1 && a_nch >= 2 && a_nch <= METAL_ATTN_MAX_CHUNKS &&
         hd == model_head_dim(m, 0)) {
         attn_chunk_args ca = { hd, m->n_head, n_kv, m->n_ctx, pos,
-                               (uint64_t)model_k_byte_off(m, l),
+                               koff,
                                model_attn_scale(m, l), q8, window,
                                a_chunk, a_nch,
                                model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                               (uint64_t)model_v_byte_off(m, l), vq8 };
+                               voff, vq8 };
         bool coopc = metal_attn_coop_on() && g->p_attn_chunk_coop;
         if (coopc) g_coop_dispatches++;
         if (gqa) g_gqa_dispatches++;
@@ -4446,12 +4680,12 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
     }
 
     attn_args aa = { hd, m->n_head, n_kv, m->n_ctx, pos,
-                     (uint64_t)model_k_byte_off(m, l),
+                     koff,
                      model_attn_scale(m, l), q8, window,
                      g->sinks[l] != nil,
                      q_dim, m->n_head * m->n_ctx, xdim,
                      model_kv_is_ring(m, l) ? m->kv_ring : 0,
-                     (uint64_t)model_v_byte_off(m, l), vq8 };
+                     voff, vq8 };
     // Cooperative twin at decode only: the score loop is what
     // scatters, and at n > 1 each column has its own KV range, which
     // the coop form's simdgroup-per-row split does not describe.
@@ -4524,7 +4758,7 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
 static void metal_enc_attention(metal_fwd *F, int l, const metal_layer_plan *P) {
     gpu_t *g = F->g;
     metal_enc_attn_core(g, F->e, F->m, l, F->n, F->pos, F->q_dim, F->xdim, P->hd,
-                        P->n_kv, P->window, g->q, 0, g->kc, g->vc, g->xb2, 0,
+                        P->n_kv, P->window, g->q, 0, g, g->xb2, 0,
                         F->timing);
 }
 
@@ -5013,6 +5247,7 @@ static float *metal_fwd_submit(metal_fwd *F, double t_enc0) {
 static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
                                        int n, int pos) {
     gpu_t *g = m->gpu;
+    if (!metal_kv_covers(g, pos + n)) return NULL;
     g->route_pos = pos;
     int n_embd = m->n_embd;
     int q_dim  = m->n_head * m->head_dim;
@@ -5269,6 +5504,64 @@ static void metal_prof_cut(gpu_t *g, bool prof, id<MTLCommandBuffer> *cb,
     *e = [*cb computeCommandEncoder];
 }
 
+// R3.68: rows [0, rows) mapped for the device before a forward encodes them,
+// grown by whole steps. false: the grow would not fit in the RAM available
+// (or the working set), why says so, the region buffers are released (the
+// CPU reads the same rows from host memory) and the caller continues on the
+// CPU. RUNNER_TEST_METAL_KV_GROW_FAILS_AT makes a grow to that many rows not
+// fit (a gate arm for the fallback).
+bool gpu_kv_reserve(model_t *m, int rows, char *why, size_t cap) {
+    @autoreleasepool {
+    gpu_t *g = (gpu_t *)m->gpu;
+    if (g && g->kv_refused) {        // the same answer for every later forward on this cache
+        snprintf(why, cap, "%s", g->kv_why);
+        return false;
+    }
+    if (!g || !g->kreg || rows <= g->kv_mapped) return true;
+    if (g->kv_skip_grow) {           // RUNNER_TEST_METAL_KV_SKIP_GROW: metal_kv_covers must catch it
+        g->kv_skip_grow = false;
+        return true;
+    }
+    long long want = ((long long)rows + g->kv_step - 1) / g->kv_step * g->kv_step;
+    if (want > m->n_ctx) want = m->n_ctx;
+    uint64_t now = metal_kv_bytes_at(m, g->kv_layers, g->kv_mapped);
+    uint64_t next = metal_kv_bytes_at(m, g->kv_layers, (int)want);
+    uint64_t add = next > now ? next - now : 0;
+    uint64_t have = metal_test_seam("RUNNER_TEST_RAM_AVAILABLE_MB", plat_ram_available_bytes(),
+                                    "available RAM");
+    uint64_t ws = g->kv_wlen + metal_other_bytes(next, m->n_batch, m->n_head, m->n_ctx);
+    const char *fa = getenv("RUNNER_TEST_METAL_KV_GROW_FAILS_AT");
+    bool forced = fa && *fa && want >= strtoll(fa, NULL, 10);
+    bool ram = !have || add + have / 16 > have, wset = ws > g->kv_ws_limit;
+    if (forced || ram || wset || !metal_kv_map(g, m, (int)want)) {
+        if (forced || ram || wset)
+            snprintf(why, cap, "the KV cache for %lld rows does not fit (%.2f GB more against "
+                     "%.2f GB of RAM available%s%s)", want, (double)add / 1e9, (double)have / 1e9,
+                     wset ? ", past the Metal working set" : "",
+                     forced ? ", RUNNER_TEST_METAL_KV_GROW_FAILS_AT" : "");
+        else
+            snprintf(why, cap, "the KV buffers for %lld rows could not be made", want);
+        snprintf(g->kv_why, sizeof g->kv_why, "%s", why);
+        g->kv_refused = true;
+        g->kv_refused_rows = (int)want;
+        metal_kv_unmap(g, m->n_layer);
+        return false;
+    }
+    g->kv_grows++;
+    return true;
+    }
+}
+
+bool gpu_kv_rows(const model_t *m, int *mapped, int *step) {
+    @autoreleasepool {
+    const gpu_t *g = (const gpu_t *)m->gpu;
+    if (!g || !g->kreg) return false;
+    *mapped = g->kv_mapped;
+    *step = g->kv_step;
+    return true;
+    }
+}
+
 bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
                       const int *pos, int n, float **out) {
     @autoreleasepool {
@@ -5285,6 +5578,16 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
     if (!lead_live) return false;
     for (int c = 0; c < n; c++)
         if (!b->seqs[idx[c]]->gpu) return false;
+    // R3.68: each column's rows mapped before the encode; a column whose grow
+    // does not fit sends the step back to model_batch_decode, which runs the
+    // sequences one at a time, where that one continues on the CPU
+    for (int c = 0; c < n; c++) {
+        model_t *ms = b->seqs[idx[c]];
+        gpu_t *gs = (gpu_t *)ms->gpu;
+        char why[256];
+        if (!gpu_kv_reserve(ms, pos[c] + 1, why, sizeof why)) return false;
+        if (!metal_kv_covers(gs, pos[c] + 1)) return false;
+    }
     model_t *m0 = b->seqs[0];
     int n_embd = b->n_embd;
     int xdim   = b->xdim;
@@ -5371,13 +5674,13 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
             }
             if (owns_kv) {
                 store_args sa = { kv_dim_l, q8, kv_dim, p, 0,
-                                  model_k_byte_off(ms, l), (uint64_t)row_b,
-                                  vq8, model_v_byte_off(ms, l), (uint64_t)vrow_b };
+                                  metal_koff(gs, ms, l), (uint64_t)row_b,
+                                  vq8, metal_voff(gs, ms, l), (uint64_t)vrow_b };
                 [e setComputePipelineState:g->p_store];
                 [e setBuffer:g->kt offset:foff((size_t)c * kv_dim) atIndex:0];
                 [e setBuffer:g->vt offset:foff((size_t)c * kv_dim) atIndex:1];
-                [e setBuffer:gs->kc offset:0 atIndex:2];
-                [e setBuffer:gs->vc offset:0 atIndex:3];
+                [e setBuffer:metal_kbuf(gs, ms, l) offset:0 atIndex:2];
+                [e setBuffer:metal_vbuf(gs, ms, l) offset:0 atIndex:3];
                 [e setBytes:&sa length:sizeof(sa) atIndex:4];
                 g_disp.store++;
                 [e dispatchThreads:MTLSizeMake(kv_units, 1, 1)
@@ -5387,7 +5690,7 @@ bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,
             // the decode step's own selection (chunked past the first
             // chunk boundary, grouped or cooperative where it would be)
             metal_enc_attn_core(g, e, ms, l, 1, p, q_dim, xdim, hd, n_kv, window,
-                                g->q, foff((size_t)c * q_dim), gs->kc, gs->vc,
+                                g->q, foff((size_t)c * q_dim), gs,
                                 g->xb2, foff((size_t)c * xdim), false);
         }
         metal_prof_cut(g, prof, &cb, &e, mb_ms, MB_ATTN);
