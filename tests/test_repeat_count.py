@@ -57,3 +57,42 @@ def test_nothing_is_counted_without_the_switch():
         _chat(srv, "hello there", temperature=0)
         _chat(srv, "hello there", temperature=0)
         assert _metrics(srv) == {}
+
+
+def _schema(const):
+    return {"type": "json_schema", "json_schema": {"name": "s", "schema": {
+        "type": "object", "properties": {"v": {"const": const}}, "required": ["v"],
+        "additionalProperties": False}}}
+
+
+def test_what_shapes_the_answer_is_part_of_the_request():
+    """codex's read of PR E: a stop string, a stop token id or a schema changes the answer, so two
+    requests that differ only there are not one request. The fingerprint hashes what the receipt
+    records as having shaped the turn (turn_shape_of), so the two cannot drift."""
+    env = dict(os.environ, RUNNER_REPEAT_COUNT="1")
+    with RunnerServer(find_runner(str(ROOT)), str(MODEL), ctx=512, env=env) as srv:
+        _chat(srv, "hello there", temperature=0, stop=["x"])
+        _chat(srv, "hello there", temperature=0, stop=["y"])
+        _chat(srv, "hello there", temperature=0, response_format=_schema("A"))
+        _chat(srv, "hello there", temperature=0, response_format=_schema("B"))
+        _chat(srv, "hello there", temperature=0, response_format=_schema("B"))   # the one repeat
+        m = _metrics(srv)
+    assert m["runner_repeat_requests_hashed_total"] == 5, m
+    assert m["runner_repeat_requests_exact_total"] == 1, m
+
+
+def test_reasoning_sampling_without_a_seed_is_never_cacheable(tmp_path):
+    """Temperature 0 with an unseeded reasoning_temperature still samples (turn_generate draws the
+    request's stream for it), so its repeat is counted and not cacheable."""
+    import subprocess
+    model = tmp_path / "muse.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", "--muse-glimmer",
+                    "--control", "<|start|>,<|message|>,<|eom|>,<|eot|>", str(model)],
+                   check=True, stdout=subprocess.DEVNULL)
+    env = dict(os.environ, RUNNER_REPEAT_COUNT="1")
+    with RunnerServer(find_runner(str(ROOT)), str(model), ctx=512, env=env) as srv:
+        for _ in range(2):
+            _chat(srv, "think", temperature=0, reasoning_temperature=0.8)
+        m = _metrics(srv)
+    assert m["runner_repeat_requests_exact_total"] == 1, m
+    assert m["runner_repeat_requests_cacheable_total"] == 0, m
