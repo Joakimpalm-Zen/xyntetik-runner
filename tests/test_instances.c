@@ -17,6 +17,8 @@
 #define getpid _getpid
 #define setenv_compat(k, v) _putenv_s(k, v)
 #else
+#include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <utime.h>
@@ -120,9 +122,144 @@ static int lease_helper(int argc, char **argv) {
     return 2;
 }
 
+#ifndef _WIN32
+static double cpu_seconds(void) {
+    struct rusage r;
+    getrusage(RUSAGE_SELF, &r);
+    return (double)r.ru_utime.tv_sec + (double)r.ru_stime.tv_sec
+         + ((double)r.ru_utime.tv_usec + (double)r.ru_stime.tv_usec) / 1e6;
+}
+
+// This binary as the sweep helper: before it sweeps, write down what it
+// started with. A process keeps its CPU time across exec, so whatever ran
+// between the caller's spawn and this line is in the figure.
+static void report_start(void) {
+    const char *out = getenv("RUNNER_TEST_SWEEP_REPORT");
+    if (!out) return;
+    double cpu = cpu_seconds();
+    const char *probe = getenv("RUNNER_TEST_SWEEP_PROBE_FD");
+    int fd = probe ? atoi(probe) : -1;
+    // read before fopen below: a new stream could take the probe's number
+    int stdin_open = fcntl(0, F_GETFD) != -1;
+    int probe_open = fd >= 0 && fcntl(fd, F_GETFD) != -1;
+    int leader = getsid(0) == getpid();
+    char tmp[1300];
+    snprintf(tmp, sizeof tmp, "%s.tmp", out);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return;
+    fprintf(f, "%.6f %d %d %d\n", cpu, stdin_open, probe_open, leader);
+    fclose(f);
+    rename(tmp, out);
+}
+
+// The sweep helper starts on every registration, so what it costs is paid by
+// every run (R6.75). It closed one descriptor number after another up to the
+// limit before it exec'd: 1,048,576 calls where the limit is that high, and
+// short runs started helpers faster than the machine retired them.
+// `arm` names how the descriptors get closed: "" the platform's one call,
+// "listing" the fallback that lists the open ones (Linux), forced.
+static void helper_starts_clean(const char *home, const char *arm) {
+    struct rlimit old, lim;
+    if (getrlimit(RLIMIT_NOFILE, &old) != 0) return;
+    static const rlim_t want[] = { 1 << 20, 1 << 18, 1 << 16 };
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        if (old.rlim_cur >= want[i]) break;
+        if (old.rlim_max != RLIM_INFINITY && want[i] > old.rlim_max) continue;
+        lim = old;
+        lim.rlim_cur = want[i];
+        if (setrlimit(RLIMIT_NOFILE, &lim) == 0) break;
+    }
+    long limit = sysconf(_SC_OPEN_MAX);
+
+    // what one close() per possible descriptor costs here. Nothing of this
+    // test's is open from `far` up: the probe below is made after it.
+    int far = limit > 2000 ? 1000 : (int)(limit / 2);
+    double before = cpu_seconds();
+    for (long fd = far; fd < limit; fd++) close((int)fd);
+    double loop = cpu_seconds() - before;
+
+    int p[2] = { -1, -1 };
+    if (pipe(p) != 0) { CHECK(0, "a pipe for the probe"); setrlimit(RLIMIT_NOFILE, &old); return; }
+    int probe = fcntl(p[1], F_DUPFD, far);
+    CHECK(probe >= far, "a descriptor without close-on-exec, far from the low numbers");
+    if (*arm) setenv("RUNNER_TEST_NO_CLOSE_RANGE", "1", 1);
+    char report[1300], num[32];
+    snprintf(report, sizeof report, "%s/sweep-report", home);
+    snprintf(num, sizeof num, "%d", probe);
+    setenv("RUNNER_TEST_SWEEP_REPORT", report, 1);
+    setenv("RUNNER_TEST_SWEEP_PROBE_FD", num, 1);
+    CHECK(plat_spawn_self_detached("--internal-instance-sweep"), "the helper is launched");
+    FILE *f = NULL;
+    for (int i = 0; i < 1000 && !(f = fopen(report, "rb")); i++) plat_sleep_ms(10);
+    unsetenv("RUNNER_TEST_SWEEP_REPORT");
+    unsetenv("RUNNER_TEST_SWEEP_PROBE_FD");
+    unsetenv("RUNNER_TEST_NO_CLOSE_RANGE");
+    double cpu = -1;
+    int stdin_open = 0, probe_open = 1, leader = 0;
+    CHECK(f && fscanf(f, "%lf %d %d %d", &cpu, &stdin_open, &probe_open, &leader) == 4,
+          "the helper reports how it started");
+    if (f) fclose(f);
+    // the control: the probe does see a descriptor that is open
+    CHECK(stdin_open, "the helper has a standard input");
+    CHECK(!probe_open, "the helper inherits no descriptor of its caller's");
+    CHECK(leader, "the helper leads its own session");
+    printf("[sweep%s%s] descriptor limit %ld: one close per number costs %.1f ms of CPU, "
+           "the helper had used %.1f ms when it started\n",
+           *arm ? " " : "", arm, limit, loop * 1e3, cpu * 1e3);
+    // armed where the loop is dear enough to tell from a process start
+    if (loop >= 0.040)
+        CHECK(cpu >= 0 && cpu < loop / 2,
+              "the helper does not pay for every descriptor number the limit allows");
+    else
+        printf("[sweep] the cost check is not armed at this limit\n");
+    if (probe >= 0) close(probe);
+    close(p[0]);
+    close(p[1]);
+    setrlimit(RLIMIT_NOFILE, &old);
+    remove(report);
+}
+
+#ifdef __linux__
+// The listing the spawn falls back to, on its own. Run in a child: it closes
+// this test's descriptors too.
+static void listed_descriptors_close(void) {
+    int p[2] = { -1, -1 };
+    if (pipe(p) != 0) { CHECK(0, "a pipe"); return; }
+    long limit = sysconf(_SC_OPEN_MAX);
+    int high = fcntl(p[1], F_DUPFD, limit > 2000 ? 1000 : (int)(limit / 2));
+    pid_t child = fork();
+    if (child == 0) {
+        // the control: all three are open before the call
+        if (fcntl(p[0], F_GETFD) == -1 || fcntl(p[1], F_GETFD) == -1
+            || fcntl(high, F_GETFD) == -1) _exit(2);
+        if (!plat_close_listed_descriptors()) _exit(5);
+        if (fcntl(p[0], F_GETFD) != -1 || fcntl(p[1], F_GETFD) != -1
+            || fcntl(high, F_GETFD) != -1) _exit(3);
+        for (int i = 0; i < 3; i++) if (fcntl(i, F_GETFD) == -1) _exit(4);
+        _exit(0);
+    }
+    int status = -1;
+    waitpid(child, &status, 0);
+    int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    CHECK(code != 2, "the descriptors were open first");
+    CHECK(code != 5, "the open descriptors can be listed here");
+    CHECK(code != 3, "every descriptor above the standard three is closed, a high one too");
+    CHECK(code != 4, "the standard three stay open");
+    CHECK(code == 0, "the child ran to its end");
+    close(p[0]);
+    close(p[1]);
+    if (high >= 0) close(high);
+}
+#endif
+#endif
+
 int main(int argc, char **argv) {
-    if (argc == 2 && !strcmp(argv[1], "--internal-instance-sweep"))
+    if (argc == 2 && !strcmp(argv[1], "--internal-instance-sweep")) {
+#ifndef _WIN32
+        report_start();
+#endif
         return instances_sweep_worker();
+    }
     if (argc > 1) return lease_helper(argc, argv);
     char tmpl[512];
 #ifdef _WIN32
@@ -138,6 +275,14 @@ int main(int argc, char **argv) {
     const char *dir = instances_dir();
     CHECK(dir != NULL, "instances_dir resolves and creates the directory");
     if (!dir) return 1;
+
+#ifndef _WIN32
+    helper_starts_clean(tmpl, "");
+#ifdef __linux__
+    listed_descriptors_close();
+    helper_starts_clean(tmpl, "listing");
+#endif
+#endif
 
     // 1. register + list roundtrip
     const char *const names[] = { "modelA.gguf", "modelB.gguf" };

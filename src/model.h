@@ -816,6 +816,11 @@ bool model_rope_for_len(model_t *m, int seq_len);
 // every sequence, as before R4.40, and say what that costs a short prompt.
 void model_rope_one_set(model_t *m, const char *who);
 
+// dst[j] = num[j] / den[j], each the correctly rounded float quotient: how
+// every rotary factor table is built (R6.78). dst may be num. Declared for
+// the LongRoPE gate, which checks the rounding exactly.
+void model_rope_div_factors(float *dst, const float *num, const float *den, int n);
+
 static inline int model_rope_dim(const model_t *m, int l) {
     return (m->l_rope_dim && l < m->n_layer) ? m->l_rope_dim[l] : m->rope_dim;
 }

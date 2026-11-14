@@ -114,10 +114,48 @@ static bool kw_in(const char *k, const char *const *list) {
     return false;
 }
 
+// Keywords that constrain nothing, accepted and ignored (R2.17): a validator
+// ignores annotations, and refusing them refused schemas Runner can enforce
+// whole. Only these: a keyword that could constrain the instance and is not
+// here stays refused. "readonly" is readOnly's common misspelling. id and $id
+// are annotations where they move no reference's base, which
+// schema_resolve_refs holds (a nested one over a $ref is refused there).
 static const char *const KW_ANNOTATION[] = {
-    "title", "description", "$comment", "$schema", "$id", "examples",
-    "default", "deprecated", "readOnly", "writeOnly", "format", NULL
+    "title", "description", "$comment", "$schema", "$id", "id", "examples",
+    "default", "deprecated", "readOnly", "readonly", "writeOnly", "format", NULL
 };
+
+// Vendor extensions accepted by exact name, each one its vendor defines as
+// constraining nothing about the value (R2.17; codex's read of PR F). Any other
+// x-* key is refused like an unknown keyword: several constrain
+// (x-kubernetes-validations is a CEL validation rule; int-or-string widens the
+// type; list-type "set" and list-map-keys demand unique entries), and a prefix
+// says nothing about which.
+//   x-kubernetes-patch-strategy, x-kubernetes-patch-merge-key: how a strategic
+//     merge patch merges a list (replace or merge, and the field that keys its
+//     entries), kubernetes.io "Update API Objects in Place Using kubectl patch".
+//   x-kubernetes-group-version-kind: the API group, version and kind a
+//     definition belongs to, Kubernetes api/openapi-spec/README.md.
+//   x-prompt: the question Angular's CLI asks for an option; "the prompt
+//     runtime automatically validates the provided response against the
+//     constraints provided in the JSON schema", angular.dev schematics authoring.
+static const char *const KW_VENDOR_ANNOTATION[] = {
+    "x-kubernetes-patch-strategy", "x-kubernetes-patch-merge-key",
+    "x-kubernetes-group-version-kind", "x-prompt", NULL
+};
+
+// Snowplow's self-describing header at a schema's root: the schema's own
+// vendor, name, format and version, all strings, constraining nothing.
+static bool snowplow_self(const jv *v) {
+    if (!v || v->type != J_OBJ || v->n == 0) return false;
+    for (int i = 0; i < v->n; i++) {
+        const char *k = v->keys[i];
+        if (strcmp(k, "vendor") && strcmp(k, "name") && strcmp(k, "format") && strcmp(k, "version"))
+            return false;
+        if (v->items[i]->type != J_STR) return false;
+    }
+    return true;
+}
 static const char *const KW_STRING[] = { "minLength", "maxLength", "pattern", NULL };
 static const char *const KW_ARRAY[]  = { "items", "minItems", "maxItems", NULL };
 static const char *const KW_OBJECT[] = { "properties", "required",
@@ -185,7 +223,7 @@ static bool allof_is_string_conjunction(jv *s, char *err, int errcap) {
     return true;
 }
 
-static bool check_keywords(jv *s, char *err, int errcap) {
+static bool check_keywords(jv *s, bool root, char *err, int errcap) {
     if (!s || s->type != J_OBJ) return true;
     bool one = jv_get(s, "oneOf") != NULL, any = jv_get(s, "anyOf") != NULL;
     if (one && any) {
@@ -198,7 +236,13 @@ static bool check_keywords(jv *s, char *err, int errcap) {
                     (jv_get(s, "enum") != NULL || jv_get(s, "const") != NULL);
     for (int i = 0; i < s->n; i++) {
         const char *k = s->keys[i];
+        if ((!strcmp(k, "id") || !strcmp(k, "$id")) && s->items[i]->type != J_STR) {
+            snprintf(err, errcap, "unsupported schema keyword '%s' (its value is not a string)", k);
+            return false;
+        }
         if (kw_in(k, KW_ANNOTATION)) continue;
+        if (kw_in(k, KW_VENDOR_ANNOTATION)) continue;
+        if (!strcmp(k, "self") && root && snowplow_self(s->items[i])) continue;
         if (!strcmp(k, "type")) continue;
         if (!strcmp(k, "allOf") && !composed && !literal) continue;
         bool ok;
@@ -943,7 +987,7 @@ static snode *compile_discriminated_action(jv *alts, char *err, int errcap,
     // strict tool call needs it most.
     *matched = true;
     for (int a = 0; a < alts->n; a++) {
-        if (!check_keywords(alts->items[a], err, errcap) ||
+        if (!check_keywords(alts->items[a], false, err, errcap) ||
             !check_object_rules(alts->items[a], err, errcap))
             return NULL;
     }
@@ -1816,7 +1860,7 @@ snode *compile_node(jv *s, char *err, int errcap, int depth) {
         s->type == J_BOOL) // absent / `true` / `{}` = anything
         return sn_new(SN_ANY);
     if (s->type != J_OBJ) { snprintf(err, errcap, "schema node must be an object"); return NULL; }
-    if (!check_keywords(s, err, errcap)) return NULL;
+    if (!check_keywords(s, depth == 0, err, errcap)) return NULL;
 
     jv *one = jv_get(s, "oneOf");
     jv *any = jv_get(s, "anyOf");
@@ -3780,9 +3824,173 @@ static bool refx_needed(const jv *v) {
     return false;
 }
 
+// R2.17: a nested id or $id sets a new base for the references lexically
+// below it (draft-04's id, 2019-09's $id), and the inliner resolves every
+// local pointer against the document root. A $ref under one would compile a
+// schema other than the one the document names, so it is refused; at the
+// root, or over no $ref, the keyword moves nothing and is an annotation
+// (check_keywords). Only what the inliner reaches is checked: the root's
+// subschemas and, through each local $ref, its target. A definition nothing
+// references is dropped unvisited by the inliner, so it is not looked at
+// here either (codex's read of PR F: an unused $defs entry with an $id over a
+// $ref compiled before this check and must still compile).
+
+// Every schema node of the document with the base keyword in force at it (its
+// own, or its nearest non-root ancestor's), read from the document's own
+// structure: a definition or property NAMED "id" is a name, not the keyword.
+// A $ref's target is looked up here, so its base is where it is written, not
+// where it is reached from.
+// The base in force at a schema node. `key`: the nearest nested id or $id that
+// moves the base (a local $ref under it is refused). `label`: under a root
+// whose $id is an absolute URI and with no such move, the nearest resource a
+// nested path id names ("/p"), whose references are read at the root only when
+// they do not resolve inside it (refx_own_base says why).
+typedef struct { const char *key; const jv *label; const char *label_key; } refx_base;
+typedef struct { const jv *node; refx_base base; bool seen; } refx_lex;
+typedef struct { refx_lex *v; int n, cap; bool oom; bool root_absolute; } refx_lexmap;
+
+// an absolute URI: a scheme (a letter, then letters, digits, + - .) and a colon
+static bool refx_uri_absolute(const char *u) {
+    if (!((*u >= 'a' && *u <= 'z') || (*u >= 'A' && *u <= 'Z'))) return false;
+    for (const char *q = u + 1; *q; q++) {
+        if (*q == ':') return true;
+        if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+              (*q >= '0' && *q <= '9') || *q == '+' || *q == '-' || *q == '.'))
+            return false;
+    }
+    return false;
+}
+
+// The base after schema s, from the base in force above it. An id or $id that
+// is only a fragment ("#a", draft-06's plain-name fragment) or empty names a
+// place and leaves the base URI where it is, so it moves nothing.
+// A deliberate leniency (fable, 2026-11-14): under a root whose $id is an
+// absolute URI, a nested id that is a path ("/properties/a") is the label
+// older generators wrote, and their authors meant the root's definitions: the
+// strict reading resolves a "#/definitions/..." below it against a document
+// that does not exist, and the base always compiled it against the root. That
+// is kept only where the pointer does NOT resolve inside the resource the path
+// names (refx_reach): where it does, the specification's answer is that
+// resource's own target, which the inliner cannot reach (it resolves every
+// local pointer against the root), so it is refused, never read at the root
+// (codex's read of PR F). A nested absolute id, a path id with no absolute
+// root, or one under a nested move, still moves the base.
+static refx_base refx_own_base(const refx_lexmap *mp, const jv *s, refx_base b) {
+    for (int i = 0; s && s->type == J_OBJ && i < s->n; i++) {
+        if (strcmp(s->keys[i], "id") && strcmp(s->keys[i], "$id")) continue;
+        const jv *v = s->items[i];
+        if (v->type != J_STR || !v->str[0] || v->str[0] == '#') continue;
+        if (mp->root_absolute && v->str[0] == '/' && v->str[1] != '/') {
+            if (!b.key) { b.label = s; b.label_key = s->keys[i]; }
+        } else {
+            b.key = s->keys[i];
+        }
+        return b;
+    }
+    return b;
+}
+
+static void refx_lex_walk(refx_lexmap *mp, const jv *s, refx_base base, bool root, int depth) {
+    if (!s || s->type != J_OBJ || depth > REFX_DEPTH * 4 || mp->oom) return;
+    if (!root) base = refx_own_base(mp, s, base);
+    if (mp->n == mp->cap) {
+        int cap = mp->cap ? mp->cap * 2 : 64;
+        refx_lex *g = realloc(mp->v, sizeof *g * (size_t)cap);
+        if (!g) { mp->oom = true; return; }
+        mp->v = g; mp->cap = cap;
+    }
+    mp->v[mp->n++] = (refx_lex){ s, base, false };
+    for (int i = 0; i < s->n; i++) {
+        const char *k = s->keys[i];
+        const jv *v = s->items[i];
+        if (kw_in(k, REFX_MAPS) || !strcmp(k, "definitions") || !strcmp(k, "$defs")) {
+            if (v->type == J_OBJ)
+                for (int j = 0; j < v->n; j++) refx_lex_walk(mp, v->items[j], base, false, depth + 1);
+        } else if (kw_in(k, REFX_ONE) || kw_in(k, REFX_LIST)) {
+            if (v->type == J_ARR)
+                for (int j = 0; j < v->n; j++) refx_lex_walk(mp, v->items[j], base, false, depth + 1);
+            else refx_lex_walk(mp, v, base, false, depth + 1);
+        }
+    }
+}
+
+static int refx_lex_cmp(const void *a, const void *b) {
+    uintptr_t x = (uintptr_t)((const refx_lex *)a)->node, y = (uintptr_t)((const refx_lex *)b)->node;
+    return x < y ? -1 : x > y;
+}
+
+static refx_lex *refx_lex_find(refx_lexmap *mp, const jv *node) {
+    refx_lex key = { node, {0}, false };
+    return bsearch(&key, mp->v, (size_t)mp->n, sizeof *mp->v, refx_lex_cmp);
+}
+
+// The walk the inliner makes: subschemas (not definitions maps), and through a
+// local $ref its target, once. `base` is the base in force at s.
+static bool refx_reach(jv *root, refx_lexmap *mp, const jv *s, refx_base base, int depth,
+                       char *err, int errcap) {
+    if (!s || s->type != J_OBJ || depth > REFX_DEPTH * 4) return true;
+    jv *ref = jv_get((jv *)s, "$ref");
+    if (ref && ref->type == J_STR && ref->str[0] == '#') {
+        if (base.key) {
+            snprintf(err, errcap, "unsupported schema: a nested '%s' over a $ref would move "
+                     "the reference's base; only a root %s is supported", base.key, base.key);
+            return false;
+        }
+        if (base.label && refx_target((jv *)base.label, ref->str)) {
+            snprintf(err, errcap, "unsupported schema: the $ref '%.80s' resolves inside the resource "
+                     "a nested '%s' path names, and Runner resolves a local reference against the "
+                     "document root only; a nested path %s is read as a label only where its "
+                     "references resolve at the root alone", ref->str, base.label_key, base.label_key);
+            return false;
+        }
+        refx_lex *t = refx_lex_find(mp, refx_target(root, ref->str));
+        if (t && !t->seen) {
+            t->seen = true;
+            if (!refx_reach(root, mp, t->node, t->base, depth + 1, err, errcap)) return false;
+        }
+    }
+    for (int i = 0; i < s->n; i++) {
+        const char *k = s->keys[i];
+        const jv *v = s->items[i];
+        const jv *const *kids = &v;
+        int n = 0;
+        if (kw_in(k, REFX_MAPS)) {
+            if (v->type == J_OBJ) { kids = (const jv *const *)v->items; n = v->n; }
+        } else if (kw_in(k, REFX_ONE) || kw_in(k, REFX_LIST)) {
+            if (v->type == J_ARR) { kids = (const jv *const *)v->items; n = v->n; }
+            else n = 1;
+        }
+        for (int j = 0; j < n; j++)
+            if (!refx_reach(root, mp, kids[j], refx_own_base(mp, kids[j], base), depth + 1, err, errcap))
+                return false;
+    }
+    return true;
+}
+
+static bool refx_nested_base(jv *root, char *err, int errcap) {
+    refx_lexmap mp = {0};
+    for (int i = 0; root && root->type == J_OBJ && i < root->n; i++)
+        if ((!strcmp(root->keys[i], "id") || !strcmp(root->keys[i], "$id")) &&
+            root->items[i]->type == J_STR && refx_uri_absolute(root->items[i]->str))
+            mp.root_absolute = true;
+    refx_lex_walk(&mp, root, (refx_base){0}, true, 0);
+    if (mp.oom) {
+        free(mp.v);
+        snprintf(err, errcap, "out of memory checking the schema's reference bases");
+        return false;
+    }
+    qsort(mp.v, (size_t)mp.n, sizeof *mp.v, refx_lex_cmp);
+    refx_lex *r = refx_lex_find(&mp, root);
+    if (r) r->seen = true;
+    bool ok = refx_reach(root, &mp, root, (refx_base){0}, 0, err, errcap);
+    free(mp.v);
+    return ok;
+}
+
 jv *schema_resolve_refs(jv *s, jv **owned, char *err, int errcap) {
     *owned = NULL;
     if (!refx_needed(s)) return s;
+    if (!refx_nested_base(s, err, errcap)) return NULL;
     refx x = { .root = s, .err = err, .errcap = errcap };
     x.stack[x.depth++] = "#";   // the root itself: a "#" inside it recurses
     sbuf o = { 0 };

@@ -269,9 +269,10 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
         // A served turn shaped by a JSON schema, JSON mode or ignore_eos replays
         // as a CLI record does (the server compiles response_format into the
         // same engine constraint); tool receipts carry declarations, choice and
-        // grammar settings; stop sequences, a reasoning budget and the loop guard
-        // replay as served. Refused by name: the reasoning channel's own sampling
-        // and a scripted reply. Older records name them only in shaped_by.
+        // grammar settings; stop sequences, a reasoning budget, the loop guard
+        // and special_tokens' spelled control tokens replay as served. Refused
+        // by name: the reasoning channel's own sampling and a scripted reply.
+        // Older records name them only in shaped_by.
         jv *list = cons ? cons : jv_get(serve, "shaped_by");
         char names[256] = "";
         size_t k = 0;
@@ -286,7 +287,8 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
                          !strcmp(kind, "stop") ||
                          !strcmp(kind, "tools") ||
                          !strcmp(kind, "reasoning_budget") ||
-                         !strcmp(kind, "loop_guard")))
+                         !strcmp(kind, "loop_guard") ||
+                         !strcmp(kind, "special_tokens")))
                 rebuilt++;
             int w = snprintf(names + k, sizeof names - k, "%s%s", n ? ", " : "", kind);
             if (w > 0 && (size_t)w < sizeof names - k) k += (size_t)w;
@@ -296,7 +298,8 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
             snprintf(why, cap, "the served output was shaped beyond the sampler "
                      "by %s, which a replay does not rebuild (a served JSON "
                      "schema, JSON mode, ignore_eos, stop sequence, reasoning "
-                     "budget, loop guard or tool grammar does replay), so a replay "
+                     "budget, loop guard, special_tokens or tool grammar does "
+                     "replay), so a replay "
                      "could only disagree with the record", names);
             return false;
         }
@@ -312,7 +315,8 @@ static bool replay_constraints_ok(jv *rec, bool json_mode,
         if (!strcmp(kind, "json_mode")) rj = true;
         else if (!strcmp(kind, "ignore_eos")) re = true;
         else if (serve && (!strcmp(kind, "stop") || !strcmp(kind, "reasoning_budget") ||
-                           !strcmp(kind, "loop_guard") || !strcmp(kind, "tools")))
+                           !strcmp(kind, "loop_guard") || !strcmp(kind, "tools") ||
+                           !strcmp(kind, "special_tokens")))
             continue;  // run_verify_replay
         else if (!strcmp(kind, "json_schema")) {
             rs = jv_str(jv_get(cons->items[i], "sha256"), "");
@@ -1225,6 +1229,11 @@ static void usage_to(FILE *f, const char *prog) {
         "                 another model, KV type or changed bytes, and, with\n"
         "                 --trust-key or --sign-key, any manifest not signed\n"
         "                 by that key\n"
+        "  --kv-snapshots-auto TOKENS[:MB]  with --kv-snapshots: write a snapshot\n"
+        "                 of a chat request's preamble (its system message and\n"
+        "                 tools) of TOKENS or more after prefilling it cold, and\n"
+        "                 load it when a later process meets the same preamble;\n"
+        "                 keeps up to MB megabytes of them (8192)\n"
         "  --session-out F  with -p or --resume: write the generation's image\n"
         "                 to F (tokens, KV and recurrent state, sampler and rng,\n"
         "                 constraint, next-token logits; SHA-256 trailer; never\n"
@@ -2372,6 +2381,7 @@ typedef struct {
     const char *receipts_dir;
     int receipts_keep;
     const char *kv_snapshots;
+    const char *kv_snapshots_auto;
     const char *sessions_path;   // --sessions DIR (R1.3.5)
     // R8.6: --adapter NAME=PATH, repeatable; served per request as "<model>:NAME"
     const char *adapter_names[16], *adapter_paths[16];
@@ -2593,6 +2603,7 @@ static const cli_opt CLI_OPTS[] = {
     { "--watermark-keygen", NULL, OPT_STR, false, OPT_AT(const char *, watermark_keygen), OPT_NONE, 0, 0 },
     { "--detect-watermark", NULL, OPT_STR, false, OPT_AT(const char *, detect_path), OPT_NONE, 0, 0 },
     { "--kv-snapshots", NULL, OPT_STR, false, OPT_AT(const char *, kv_snapshots), OPT_NONE, 0, 0 },
+    { "--kv-snapshots-auto", NULL, OPT_STR, false, OPT_AT(const char *, kv_snapshots_auto), OPT_NONE, 0, 0 },
     { "--sessions", NULL, OPT_STR, false, OPT_AT(const char *, sessions_path), OPT_NONE, 0, 0 },
     { "--session-out", NULL, OPT_STR, false, OPT_AT(const char *, session_out), OPT_NONE, 0, 0 },
     { "--resume", NULL, OPT_STR, false, OPT_AT(const char *, resume_path), OPT_NONE, 0, 0 },
@@ -4666,6 +4677,12 @@ static bool cli_configure_serving(const cli_opts *o) {
         return false;
     }
     if (o->kv_snapshots && !kvsnap_configure(o->kv_snapshots, o->sign_key, o->trust_key)) return false;
+    if (o->kv_snapshots_auto && !o->kv_snapshots) {
+        fprintf(stderr, "error: --kv-snapshots-auto keeps its snapshots in the "
+                "--kv-snapshots directory; name one\n");
+        return false;
+    }
+    if (o->kv_snapshots_auto && !kvsnap_auto_configure(o->kv_snapshots_auto)) return false;
     if (o->sessions_path && !o->serve) {
         fprintf(stderr, "error: --sessions keeps the server's session images "
                 "and needs --serve (the CLI uses --session-out / --resume)\n");
@@ -6498,6 +6515,13 @@ static bool record_whole(jv *v, int lo, int hi, int *out) {
     return true;
 }
 
+static bool replay_has_kind(jv *rec, const char *kind) {
+    jv *cons = jv_get(rec, "constraints");
+    for (int i = 0; cons && cons->type == J_ARR && i < cons->n; i++)
+        if (!strcmp(jv_str(jv_get(cons->items[i], "kind"), ""), kind)) return true;
+    return false;
+}
+
 static bool replay_think_read(jv *rec, engine *e, char *why, size_t cap) {
     jv *cons = jv_get(rec, "constraints");
     jv *budget = NULL, *guard = NULL;
@@ -6760,6 +6784,9 @@ static int run_verify_replay(cli_opts *o, cli_run *rt, cli_verify *vr, const cha
     // replay decodes the same bytes, or every such turn would read MISMATCH
     rt->e.spell_think = vserve && think_split_is_control(rt->m.think_open, rt->m.split_open,
                                                          vchat, rt->e.schema || rt->e.json_mode);
+    // the served completions turn spelled its control tokens (special_tokens):
+    // the replay decodes the same bytes, and a stop string matches where it did
+    rt->e.render_special = vserve && replay_has_kind(vr->rec, "special_tokens");
     if (jv_bool(jv_get(vserve, "reasoning_open"), false))
         engine_think_started(&rt->e);
     bool stop_on = rs.n_strs > 0 || n_stop_ids > 0;

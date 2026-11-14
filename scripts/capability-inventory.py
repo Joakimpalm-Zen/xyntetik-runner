@@ -69,7 +69,8 @@ CLI_RULES = {
         "--reasoning-budget-message", "--reasoning-temp", "--loop-guard", "--ignore-eos",
         "--chat-template", "--bare-recipients", "--decide", "--systemone", "--score",
         "--score-out", "--score-tokens", "--sessions", "--session-out", "--resume",
-        "--fork-seed", "--suspend-after", "--kv-snapshots", "--reserve", "--wait-for-vram",
+        "--fork-seed", "--suspend-after", "--kv-snapshots", "--kv-snapshots-auto", "--reserve",
+        "--wait-for-vram",
         "--vram-priority", "--yield-on-request", "--parent-pid", "--memory", "--ram-share",
         "--roster", "--sizes-only", "--doctor-include-text",
         "runner recommend", "runner cached",
@@ -116,7 +117,7 @@ HTTP_RULES = {
 # components, needs a name rule.
 ENV_NAME_RULES = [
     ("production", re.compile(r"^(TRAIN_|LORA_ADAM_|GOLD_)")),
-    ("runtime", re.compile(r"^(SCHEMA_|PREFIX_CACHE_|SCORE_|TEST_SCRIPTED_REPLY$|"
+    ("runtime", re.compile(r"^(SCHEMA_|PREFIX_CACHE_|REPEAT_COUNT$|SCORE_|TEST_SCRIPTED_REPLY$|"
                            r"TEST_STREAM_OUT_CAP$|VRAM_PRIORITY$)")),
     ("substrate", re.compile(r"^(ALLOW_UNKNOWN_ARCH|PREFETCH|TEST_LOAD_DELAY_MS|"
                              r"TEST_NO_FILE_ID|TEST_NO_INODE|LORA_INSTALL_FAIL)$")),

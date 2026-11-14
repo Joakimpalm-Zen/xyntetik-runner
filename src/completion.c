@@ -6,6 +6,7 @@
 #include "build_arch.h"
 #include "provenance.h"
 #include "receipts.h"
+#include "kvsnap.h"
 #include "compat.h"
 #include "envelope.h"
 
@@ -13,6 +14,7 @@
 #include "scheduler.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <float.h>
 #include <limits.h>
 #include <math.h>
@@ -2844,7 +2846,7 @@ static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
                           const tool_envelope *env, bool constrain, jv *sch, int think_mode,
                           bool reasoning_open,
                           const char *const *stops, int n_stops,
-                          const int *req_stops, int n_req_stops, bool scripted) {
+                          const int *req_stops, int n_req_stops, const char *script_text) {
     char h[65];
     // the caller's schema shapes the turn directly, or as the final branch
     // of an auto tool turn's envelope
@@ -2905,14 +2907,23 @@ static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
             sb_fmt(&t->json, "%s%d", i ? "," : "", (int)e->think_msg[i]);
         sb_lit(&t->json, "]}");
     }
-    const char *flags[4];
+    // special_tokens spells each generated control token in the text, so it
+    // shapes the recorded output and where a stop string can match; a replay
+    // decodes the same bytes only if the record says so. A scripted reply is
+    // the answer itself: its digest tells two scripted turns apart.
+    const char *flags[5];
     int nf = 0;
-    if (e->think_smp)  flags[nf++] = "reasoning_sampling";
-    if (e->loop_guard) flags[nf++] = "loop_guard";
-    if (e->ignore_eos) flags[nf++] = "ignore_eos";
-    if (scripted)      flags[nf++] = "scripted";
+    if (e->think_smp)      flags[nf++] = "reasoning_sampling";
+    if (e->loop_guard)     flags[nf++] = "loop_guard";
+    if (e->ignore_eos)     flags[nf++] = "ignore_eos";
+    if (e->render_special) flags[nf++] = "special_tokens";
+    if (script_text)       flags[nf++] = "scripted";
     for (int i = 0; i < nf; i++) {
         shape_open(t, flags[i]);
+        if (!strcmp(flags[i], "scripted")) {
+            envelope_data_sha256(script_text, strlen(script_text), h);
+            sb_fmt(&t->json, ",\"sha256\":\"%s\"", h);
+        }
         if (!strcmp(flags[i], "loop_guard")) {
             sb_fmt(&t->json, ",\"span\":%d,\"repeats\":%d,\"window\":%d,"
                              "\"max_closes\":%d,\"everywhere\":%s",
@@ -2961,7 +2972,8 @@ static const char *serve_receipt(slot_t *s, engine *e, gen_ctx *g,
     if (cut) sb_fmt(&sj, ",\"cut\":\"%s\"", cut);
     // R1.12.2: the KV snapshot this request's prompt started from
     char origin[256];
-    if (ctx_id && prefix_context_origin(ctx_id, origin, sizeof origin))
+    if (ctx_id && (kvsnap_auto_origin(e, ctx_id, origin, sizeof origin) ||
+                   prefix_context_origin(ctx_id, origin, sizeof origin)))
         sb_fmt(&sj, ",\"kv_snapshot\":%s", origin);
     sb_lit(&sj, "}");
     sb_put(&sj, "", 1);
@@ -4105,6 +4117,12 @@ typedef struct {
     // The first token of the generation prompt, where a recurrent slot marks
     // its fold (R10.27); -1 when the request has no such boundary.
     int anchor;
+    // R3.62: the preamble's token count (the leading system messages with
+    // their tools), 0 when the request has none worth a snapshot; the
+    // snapshot's name; and whether this request forked from it.
+    int preamble;
+    char pre_name[KVSNAP_AUTO_NAME];
+    bool pre_loaded;
     bool omit_reasoning;
     req_diag diag;
 } completion_prep;
@@ -4115,9 +4133,106 @@ typedef struct {
 // choice-logprob and logprob buffers, the diagnostics and a scripted
 // reply. A refusal frees what the request installed (completion_cleanup)
 // and answers; false then.
+// R3.66's first slice: an opt-in count of exact repeats (RUNNER_REPEAT_COUNT=1),
+// the evidence an answer cache would need first. Per request one 64-bit
+// fingerprint, the head of a SHA-256 over the model's key, its adapter, the
+// rendered prompt's token ids, the sampling settings, the seed and the token
+// cap: one way, and no content is kept. A set of at most RPT_SLOTS
+// fingerprints answers "seen before"; past that a request is hashed but not
+// tracked. /metrics reports the counts (completion_repeat_stats).
+enum { RPT_SLOTS = 1 << 16 };
+static struct {
+    pthread_mutex_t mu;
+    int state;                   // -1 unread, 0 off, 1 on
+    uint64_t *set;               // open addressing; 0 is empty
+    int used;
+    unsigned long long hashed, repeats, cacheable;
+} RPT = { .mu = PTHREAD_MUTEX_INITIALIZER, .state = -1 };
+
+bool completion_repeat_stats(unsigned long long *hashed, unsigned long long *repeats,
+                             unsigned long long *cacheable) {
+    pthread_mutex_lock(&RPT.mu);
+    bool on = RPT.state == 1;
+    *hashed = RPT.hashed; *repeats = RPT.repeats; *cacheable = RPT.cacheable;
+    pthread_mutex_unlock(&RPT.mu);
+    return on;
+}
+
+static bool repeat_count_on(void) {
+    pthread_mutex_lock(&RPT.mu);
+    if (RPT.state < 0) {
+        const char *e = getenv("RUNNER_REPEAT_COUNT");
+        RPT.state = e && *e && strcmp(e, "0") ? 1 : 0;
+        if (RPT.state && !(RPT.set = calloc(RPT_SLOTS, sizeof(uint64_t)))) RPT.state = 0;
+    }
+    bool on = RPT.state == 1;
+    pthread_mutex_unlock(&RPT.mu);
+    return on;
+}
+
+// `shape_json` is what the receipt records as having shaped the turn beyond
+// the sampler (turn_shape_of: the schema or tools by digest, stop strings
+// and ids, the reasoning budget, the loop guard, ignore_eos, special_tokens,
+// a scripted reply by digest), so the
+// fingerprint and the receipt cannot drift. Cacheable is turn_generate's own
+// test for a request that does not sample: neither its temperature nor its
+// reasoning temperature is above 0, or it carries a seed.
+static void repeat_count_note(const slot_t *s, const engine *e, const completion_req *q,
+                              const int32_t *toks, int n_prompt,
+                              const char *shape_json, size_t shape_n) {
+    struct {
+        uint64_t model_key, seed;
+        float temp, top_p, min_p, repeat_penalty;
+        float think_temp, think_top_p, think_min_p;
+        int32_t top_k, think_top_k, think_smp, seed_given, max_tokens, n_prompt;
+    } head;
+    memset(&head, 0, sizeof head);
+    head.model_key = e->model_key;
+    head.temp = s->smp.temp; head.top_p = s->smp.top_p; head.min_p = s->smp.min_p;
+    head.repeat_penalty = s->smp.repeat_penalty; head.top_k = s->smp.top_k;
+    if (e->think_smp) {
+        head.think_smp = 1;
+        head.think_temp = e->think_temp; head.think_top_p = e->think_top_p;
+        head.think_min_p = e->think_min_p; head.think_top_k = e->think_top_k;
+    }
+    head.seed_given = q->seed_given; head.seed = q->seed_given ? q->seed : 0;
+    head.max_tokens = q->max_tokens; head.n_prompt = n_prompt;
+    const char *ad = s->adapter >= 0 ? SV.adapters[s->adapter].sha256 : "";
+    size_t na = strlen(ad), nt = (size_t)n_prompt * sizeof(int32_t);
+    size_t nb = sizeof head + na + nt + shape_n;
+    uint8_t *buf = malloc(nb), dg[32];
+    if (!buf) return;
+    memcpy(buf, &head, sizeof head);
+    memcpy(buf + sizeof head, ad, na);
+    if (nt) memcpy(buf + sizeof head + na, toks, nt);
+    if (shape_n) memcpy(buf + sizeof head + na + nt, shape_json, shape_n);
+    envelope_data_sha256_raw(buf, nb, dg);
+    free(buf);
+    uint64_t fp;
+    memcpy(&fp, dg, sizeof fp);
+    if (!fp) fp = 1;   // 0 marks an empty slot
+    bool samples = s->smp.temp > 0.0f || (e->think_smp && e->think_temp > 0.0f);
+    bool cacheable = !samples || q->seed_given;
+    pthread_mutex_lock(&RPT.mu);
+    RPT.hashed++;
+    for (uint32_t i = (uint32_t)fp & (RPT_SLOTS - 1), k = 0; k < RPT_SLOTS; k++, i = (i + 1) & (RPT_SLOTS - 1)) {
+        if (RPT.set[i] == fp) {
+            RPT.repeats++;
+            if (cacheable) RPT.cacheable++;
+            break;
+        }
+        if (!RPT.set[i]) {
+            if (RPT.used < RPT_SLOTS - 1) { RPT.set[i] = fp; RPT.used++; }
+            break;
+        }
+    }
+    pthread_mutex_unlock(&RPT.mu);
+}
+
 static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api,
                                jv *req, const tool_envelope *env, bool chat,
-                               size_t gen_at, completion_req *q, completion_prep *p) {
+                               size_t gen_at, size_t pre_at, completion_req *q,
+                               completion_prep *p) {
     model_t *m = s->m;
     engine *e = &s->e;
     int ctx_tokens = 0;
@@ -4159,6 +4274,25 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
             if (hn > 0 && hn < n_prompt && toks &&
                 !memcmp(ht, toks, sizeof(*toks) * (size_t)hn))
                 anchor = hn;
+        }
+        free(ht);
+        free(head);
+    }
+    // R3.62: the preamble in tokens, by the same rule: its bytes' tokens must
+    // be the prompt's first tokens. Attention-only models: a recurrent fold
+    // belongs to one position and cannot be cut out of a longer sequence.
+    int preamble = 0;
+    if (chat && pre_at && n_prompt > 1 && q->cache_prompt && q->share_prefix &&
+        kvsnap_auto_on() && !model_has_recurrent(m)) {
+        char *head = malloc(pre_at + 1);
+        int32_t *ht = NULL;
+        if (head) {
+            memcpy(head, prompt, pre_at);
+            head[pre_at] = 0;
+            int hn = tok_encode_fit(s->tok, head, true, TOK_PROMPT, 0, &ht);
+            if (hn >= kvsnap_auto_min() && hn < n_prompt && toks &&
+                !memcmp(ht, toks, sizeof(*toks) * (size_t)hn))
+                preamble = hn;
         }
         free(ht);
         free(head);
@@ -4346,6 +4480,10 @@ static bool completion_prepare(slot_t *s, sock_t fd, const char *prompt, int api
     p->tokenize_s = tokenize_s;
     p->ctx_tokens = ctx_tokens;
     p->anchor = anchor;
+    p->preamble = preamble;
+    p->pre_name[0] = 0;
+    p->pre_loaded = false;
+    if (preamble) kvsnap_auto_name(e, toks, preamble, p->pre_name);
     p->omit_reasoning = omit_reasoning;
     p->diag = diag;
     return true;
@@ -4958,8 +5096,26 @@ static float *turn_prefill(turn_result *t) {
     bool score_prompt = (q->echo && q->want_lp) || q->plp >= 0;
     if (score_prompt)
         engine_reset(e);
-    else if (q->cache_prompt && q->share_prefix)
+    else if (q->cache_prompt && q->share_prefix) {
+        // what an earlier turn on this slot loaded is not this turn's
+        e->snap_name[0] = 0;
+        e->snap_origin[0] = 0;
         t->reuse = engine_prefix_reuse(e, prep->toks, prep->n_prompt);
+        // R3.62: neither the slot nor the shared tier holds this request's
+        // preamble (a new process, or an unloaded model): its snapshot, when
+        // one is on disk, becomes the slot's rows, and the prompt extends
+        // them. The slot's own rows, so no cache budget is involved.
+        if (prep->preamble && t->reuse.keep < prep->preamble &&
+            kvsnap_auto_load(e, prep->pre_name)) {
+            t->reuse = (prefix_reuse){ .keep = engine_rewind(e, prep->toks, prep->n_prompt) };
+            if (t->reuse.keep >= prep->preamble) {
+                prep->pre_loaded = true;
+                prep->diag.context_id = prep->pre_name;
+                prep->diag.context_tokens = prep->preamble;
+                e->rewind_how = REWIND_PREAMBLE;
+            }
+        }
+    }
     else if (q->cache_prompt)
         t->reuse.keep = engine_rewind(e, prep->toks, prep->n_prompt);
     else
@@ -5265,7 +5421,24 @@ static void turn_generate(turn_result *t, float *logits) {
         turn_shape_of(shape, req, e, env, q->constrain, q->sch,
                       rs ? rs->think_mode : req_thinking_mode(req), t->reasoning_open,
                       q->stops, q->n_stops,
-                      q->req_stops, q->n_req_stops, q->script_text != NULL);
+                      q->req_stops, q->n_req_stops, q->script_text);
+    // R3.66: the exact-repeat count, from the same record of what shaped the
+    // turn (its own copy when receipts are off), once the settings are installed
+    if (repeat_count_on()) {
+        turn_shape own = {0};
+        const turn_shape *fs = shape;
+        if (!g->raw_on) {
+            turn_shape_of(&own, req, e, env, q->constrain, q->sch,
+                          rs ? rs->think_mode : req_thinking_mode(req), t->reasoning_open,
+                          q->stops, q->n_stops,
+                          q->req_stops, q->n_req_stops, q->script_text);
+            fs = &own;
+        }
+        // the prompt as the receipt reads it (e->hist): prep->toks is freed when
+        // the prefill ends, before this turn generates
+        repeat_count_note(s, e, q, e->hist, prep->n_prompt, fs->json.s, fs->json.n);
+        free(own.json.s);
+    }
 }
 
 // R1.2.2: the receipt. The record is written once the turn's calls are known
@@ -5550,7 +5723,8 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
 
     completion_prep prep;
     if (!completion_prepare(s, fd, prompt, api, req, env, chat,
-                            chat && rs ? rs->gen_at : 0, &q, &prep)) return;
+                            chat && rs ? rs->gen_at : 0, chat && rs ? rs->pre_at : 0,
+                            &q, &prep)) return;
 
     gen_ctx g = { .out = {0}, .fd = fd, .stream = q.stream, .api = api,
                   .omit_reasoning = prep.omit_reasoning,
@@ -5581,4 +5755,10 @@ void run_completion(slot_t *s, sock_t fd, const char *prompt, int api,
         turn_respond(&t);
     }
     turn_log(&t);
+    // R3.62: after the client has its answer, a preamble this request
+    // prefilled cold is written for the next process, from the rows the slot
+    // still holds.
+    if (prep.preamble && !prep.pre_loaded && t.keep < prep.preamble &&
+        e->pos >= prep.preamble)
+        kvsnap_auto_save(e, prep.pre_name, prep.preamble);
 }
