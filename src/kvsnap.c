@@ -1,4 +1,5 @@
 // Signed KV snapshots (R1.12.1, R1.12.2). See kvsnap.h.
+#include <stdatomic.h>
 #include "kvsnap.h"
 
 #include <errno.h>
@@ -500,6 +501,24 @@ bool kvsnap_auto_configure(const char *arg) {
 }
 
 bool kvsnap_auto_on(void) { return KS.on && KS.auto_min > 0; }
+
+void kvsnap_auto_declined(int why, const char *detail) {
+    static atomic_flag said[KVSNAP_NO_N] = { ATOMIC_FLAG_INIT, ATOMIC_FLAG_INIT, ATOMIC_FLAG_INIT };
+    if (why < 0 || why >= KVSNAP_NO_N || atomic_flag_test_and_set(&said[why])) return;
+    if (why == KVSNAP_NO_RECURRENT)
+        fprintf(stderr, "kv snapshots: no preamble snapshot is kept for this model: it has "
+                "recurrent layers, whose state belongs to one position, so a preamble "
+                "cannot be cut out of a longer prompt\n");
+    else if (why == KVSNAP_NO_BOUNDARY)
+        fprintf(stderr, "kv snapshots: no preamble snapshot is kept under the chat template "
+                "%s: it does not write the system message as the first bytes of the "
+                "prompt, so there is no preamble to keep\n", detail ? detail : "in use");
+    else
+        fprintf(stderr, "kv snapshots: no preamble snapshot is kept under the chat template "
+                "%s with this tokenizer: the system message's last bytes and the next "
+                "message's first are one token, so its tokens are not the prompt's "
+                "first tokens\n", detail ? detail : "in use");
+}
 int  kvsnap_auto_min(void) { return KS.auto_min; }
 
 void kvsnap_auto_name(const engine *e, const int32_t *toks, int n,

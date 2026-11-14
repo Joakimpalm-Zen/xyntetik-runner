@@ -620,6 +620,15 @@ typedef struct {
     // render_prompt_state_alloc only while preamble snapshots are on
     // (kvsnap_auto_on, R3.62).
     size_t pre_at;
+    // The request opens with system message(s) and has more after them: a
+    // preamble to keep if the template gives it a boundary. With pre_at 0
+    // it is how the server knows to say that it keeps none (R6.81). Set
+    // where pre_at is.
+    bool pre_sys;
+    // Bytes the render appended only because no reply was asked for: Phi-3
+    // and Phi-4 close a conversation with their end-of-text token. They are
+    // not part of any boundary, and the boundary finder drops them (R6.81).
+    size_t close_len;
 } render_state;
 
 // render_messages_with_tools() that also reports the render's state. `st`

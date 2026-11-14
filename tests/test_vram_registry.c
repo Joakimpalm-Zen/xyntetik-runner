@@ -1088,7 +1088,25 @@ static void test_accounting_does_not_force_durability(void) {
 }
 #endif
 
+// codex's read of PR G: RUNNER_TEST_VRAM_FREE_MB on a real device put the
+// claim in a test ledger, so the real device's pending claims were not taken
+// off the free figure the seam gives. The ledger is the real device's whenever
+// there is one; "test-device" only where none is.
+static void test_the_seam_keeps_a_real_devices_ledger(void) {
+    char id[128];
+    vram_ledger_device("GPU-4b2c", true, id, sizeof id);
+    assert(!strcmp(id, "GPU-4b2c"));
+    vram_ledger_device(NULL, true, id, sizeof id);
+    assert(!strcmp(id, "test-device"));
+    vram_ledger_device("", true, id, sizeof id);
+    assert(!strcmp(id, "test-device"));
+    vram_ledger_device("GPU-4b2c", false, id, sizeof id);
+    assert(!strcmp(id, "GPU-4b2c"));
+    printf("ok: the VRAM seam claims in the real device's ledger, where it has one\n");
+}
+
 int main(void) {
+    test_the_seam_keeps_a_real_devices_ledger();
     test_torn_ledger_keeps_live_rows();
 #ifndef _WIN32
     test_accounting_does_not_force_durability();

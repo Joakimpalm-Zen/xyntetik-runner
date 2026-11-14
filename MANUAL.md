@@ -236,7 +236,7 @@ A map of what the binary does, with the section that documents each part.
 - **Training and adapters.** LoRA training through quantized GGUF weights on
   CPU and CUDA, `--lora` serving on CPU, CUDA and Metal, `--merge-lora`,
   `--info adapter`. [Adaptation](#adaptation)
-- **Models and formats.** 30 admitted architectures, refused by name when
+- **Models and formats.** 28 admitted architectures, refused by name when
   unknown; 24 weight formats including the K-quants, all seven codebook
   i-quants, MXFP4 and NVFP4; KV caches in f16, q8, fp4 and split k8v4, with a
   ring for sliding-window layers; speculative decoding from a draft model, the
@@ -1576,7 +1576,7 @@ merely dense matvec/matmul support.
 
 | GGUF `general.architecture` | Notes |
 |---|---|
-| `llama`, `mistral`, `smollm`, `stablelm` | Llama-style dense families with family tokenizers/templates. |
+| `llama`, `stablelm` | Llama-style dense families with family tokenizers/templates. Mistral v0.1 to v0.3 and SmolLM2 files declare `llama`. |
 | `qwen2`, `qwen3` | QKV-bias and per-head-QK-norm variants. |
 | `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU, CUDA and Metal. On Metal the whole model runs on the device (its logits within reduction-order rounding of the CPU's, `make test-metal-qwen35`, and Qwen3.5-0.8B Q8_0's greedy text identical); a model that does not fit whole, carries an adapter, drafts with `--mtp` or is a `clef` file runs on the CPU there. Qwen3.8-27B (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--draft mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. A recurrent instance forks an exact shared-prefix hit on the CPU and on CUDA, where the device fold moves through the host (R4.26.7; checked live on Qwen3.5-4B, the forked answer identical to a cold one); its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike; a CUDA-resident recurrent layer runs speculative decode (per-row recurrent checkpoints restore a partially accepted round) and declines grammar fast-forward; a Metal-resident one runs speculative decode by rolling back to the round's start and re-folding the kept rows (`--draft lookup`; its rows byte-identical to plain decoding, `make test-metal-qwen35`). |
 | `qwen35moe` | Qwen3.5 and Qwen3.6-35B-A3B and the models built on them (Ornith-1.5-35B-A3B, Sage-A1.5, occamy-1.0, MiniCPM-V-4.7-35B-A3B's language model): `qwen35`'s Gated DeltaNet and gated attention with 256 routed experts (softmax, top-8, renormalized) and a sigmoid-gated shared expert on every block. CPU, CUDA and Metal. CUDA since R4.27 A2: `make test-cuda-qwen35moe` holds it to the CPU's logits at 1e-5 on toy models, and Qwen3.6-35B-A3B's file runs with every block on the device ([the record](docs/compat-reports/qwen35moe-cuda-2026-11-05/README.md)). Metal is held to the CPU's logits on toy models only (`make test-metal-qwen35moe`): no file has run on a Mac that holds one (the 35B files are 21-22 GB). Its NextN block (an attention block with the trunk's MoE FFN) feeds `--mtp`. Checked against transformers' float32 `Qwen3_5MoeForCausalLM` on a converted random model ([the record](docs/compat-reports/qwen35moe-toy-2026-10-30/README.md)); file rows follow. |
@@ -2709,6 +2709,25 @@ instance instead.
 | `--draft-k N` | Draft tokens per speculative round, `1` to `15`, for every draft source (a round verifies the drafts plus the correction, at most 16 rows). The default is `4`, except on CUDA with every layer on the device, where it is `7` for `--draft lookup` and `2` for `--draft mtp`. A partial offload keeps `4`, since its CPU layers pay most of a step for each verify row. The startup line prints the width a run takes. Measured on an RTX 3070 (2026-11-03, 256 greedy tokens): lookup on an in-context edit reads 2.86x plain at 7 against 2.43x at 4, since a verify row costs about 0.2 of a step up to eight rows. Qwen3.5-4B's NextN head reads 1.13x on code and on tool calls at 2 (tool reaches 1.20x at 3). On prose the head loses at every width: 0.88x plain at 2, and 0.68x at the old default of 4. Leave it off for prose. A width that follows each turn's acceptance was measured against these fixed widths and lost (0.97x), so there is no automatic width ([report](docs/compat-reports/r3.3.7-draft-width-defaults-2026-11-03/README.md)). All sources stop at the context boundary, including with `-n -1`; a final verify row cannot emit a bonus beyond the context or transcript token buffer. |
 | `--draft-required` | Fail instead of falling back to plain decoding when a requested draft model is refused. [Details](#cli-draft-required). |
 
+<a id="metal-kv-grows"></a>
+#### The KV cache on the Apple GPU grows with the context
+
+On the Apple GPU the KV cache is not held whole from load. It lives in host memory, and the GPU maps
+the rows a context has used, 256 at a time, as the context fills. A short prompt at `-c 8192` holds
+one step of rows, not 8,192, so a model whose whole-context cache would not fit beside its weights
+still runs on the GPU: Phi-3.5-mini Q4_K_M at `-c 8192` on an 8 GB Mac decodes at 17 tokens a second
+on the GPU, where it used to be refused and run on the CPU at 7.6. The load line says so:
+`gpu: the KV cache grows with the context, 256 rows at a time (256 of 8192 mapped); a grow that does
+not fit in RAM continues on the CPU`, `--bench-json` gives the rows mapped (`route.kv_rows`), and the
+end of a run says how often the cache grew: `gpu: the KV cache grew 3 times, to 768 of 8192 rows`.
+
+Each step pauses the next token while the new rows are mapped: about 8 ms at 2,048 rows and 23 to
+41 ms at 8,192 rows for Qwen3-4B Q4_K_M, against a decode token of about 182 ms at that context
+(measured on one 8 GB Apple silicon Mac). Each step also checks the RAM available and the Metal
+working set. A step that would not fit does not fail the request: the run continues on the CPU for
+the rest of the run, on the same rows, which stay in host memory, and stderr and the route's
+`fallback` say why. A partial split is admitted on its weights plus the first step of rows.
+
 <a id="cli-reserve-vram"></a>
 #### `--reserve vram=P`
 
@@ -2983,7 +3002,7 @@ whether the draft is `active` there.
 | `--model-pubkey FILE` | The PEM `PUBLIC KEY` (EC, P-256/384/521) an OMS bundle must verify with. Given without `--model-sig`, it turns an auto-detected `<model>.sig` into a gate. |
 | `--require-signed-model` | Refuse to load `-m` unless an OMS bundle is present and verifies with `--model-pubkey`. The policy applies to named registry entries, every serving slot, and reloads after unload or TTL expiry. Registry refusals return HTTP 409 with `model_signature_refused`; the server stays available. Without `--model-sig`, each load discovers that model's own `.sig` sidecar. |
 | `--kv-snapshots DIR` | With `--serve`: let named contexts be written to DIR as signed KV snapshots and loaded back by a later server, so an agent's memory outlives the process and a run can prove which memory it started from. Opt-in; nothing is read from DIR unless a request names it. With `--trust-key` (the public key, or `sha256:` of its bytes), or else with `--sign-key`, a snapshot loads only when its manifest is signed by that key (409 `snapshot_untrusted` otherwise); with neither there is no anchor, a manifest is held only to the key it names, and the response's `signed_by` says who that was. See `POST /v1/runner/contexts/{id}/snapshot`. |
-| `--kv-snapshots-auto TOKENS[:MB]` | With `--kv-snapshots`: keep an agent's preamble across processes without the client asking. A chat, Responses or Messages request whose leading system message, with its tools, renders to TOKENS tokens or more has that preamble written as a snapshot after the request has prefilled it cold (`pre-` and 32 hex digits of the sha256 over the model key and the token ids), and a later process loads it when a request starts with the same tokens: the turn then reports `prompt_reuse` `preamble_snapshot`, names the snapshot under `context` in its telemetry and in its receipt, and prefills only what follows the preamble. A snapshot that does not verify is removed and written again; `--trust-key` and `--sign-key` hold these files as they hold named snapshots. Up to MB megabytes of them are kept (8192 unless given), the least recently written removed first; named snapshots are never removed, and a name of that shape is refused to `POST /v1/runner/contexts/{id}/snapshot`. On a LongRoPE model a preamble is written only when its rows are on the factor set its own length takes. The snapshot is written from the slot's own rows and loaded back into them, so the prefix cache's budget does not limit it. The write happens after the response and holds the slot for its length (about 6 s for 1.2 GB). Attention-only models without a KV ring or tied-V; the boundary must be one the template renders the same with and without the turns after it, or nothing is kept. |
+| `--kv-snapshots-auto TOKENS[:MB]` | With `--kv-snapshots`: keep an agent's preamble across processes without the client asking. A chat, Responses or Messages request whose leading system message, with its tools, renders to TOKENS tokens or more has that preamble written as a snapshot after the request has prefilled it cold (`pre-` and 32 hex digits of the sha256 over the model key and the token ids), and a later process loads it when a request starts with the same tokens: the turn then reports `prompt_reuse` `preamble_snapshot`, names the snapshot under `context` in its telemetry and in its receipt, and prefills only what follows the preamble. A snapshot that does not verify is removed and written again; `--trust-key` and `--sign-key` hold these files as they hold named snapshots. Up to MB megabytes of them are kept (8192 unless given), the least recently written removed first; named snapshots are never removed, and a name of that shape is refused to `POST /v1/runner/contexts/{id}/snapshot`. On a LongRoPE model a preamble is written only when its rows are on the factor set its own length takes. The snapshot is written from the slot's own rows and loaded back into them, so the prefix cache's budget does not limit it. The write happens after the response and holds the slot for its length (about 6 s for 1.2 GB). Attention-only models without a KV ring or tied-V; the boundary must be one the template renders the same with and without the turns after it, or nothing is kept. Where nothing can be kept, the first request that opens with a system message says so on the server's log, once: `no preamble snapshot is kept for this model` (recurrent layers) or `no preamble snapshot is kept under the chat template NAME` (the Mistral and Llama 2 templates, which write the system message into the first user turn; or, with `with this tokenizer`, a vocabulary that joins the system message's last bytes and the next message's first into one token). Phi-3 and Phi-4 keep theirs. Whether it pays depends on the machine: loading reads, checks and copies the whole snapshot, so on a GPU that prefills the preamble faster than that the first request is no quicker (Phi-3.5-mini, 3,650 tokens, 1.44 GB, on a 24 GB CUDA device: 2.73 s with the snapshot, 2.31 s cold), while on an Apple M1 a 6,005-token preamble answers in 8.2 s where it took 87.4 s. |
 | `--sessions DIR` | With `--serve`: session images over HTTP, `POST /v1/runner/sessions` (with `suspend_after`) and `POST /v1/runner/sessions/{id}/resume` (with `fork_seed` to fork), `GET` and `DELETE /v1/runner/sessions/{id}`; the images are the CLI's and live in `DIR`. [Details](#cli-session-images). |
 | `--session-out FILE`, `--suspend-after N`, `--resume FILE`, `--fork-seed N` | Suspend a `-p` generation to one file and resume it later, exactly, or fork it under a new seed. The resumed continuation and its image are byte-identical to what the uninterrupted run makes. CPU only, the solo step loop (no `--draft`, no `--watermark`), a finite `-n`; an image is never overwritten. [Details](#cli-session-images). |
 | `--watermark KEY` | Mark sampled output with a tournament-sampling watermark (SynthID-Text's construction) under the key in KEY: every sampled token on the `-p` path and every sampled turn in `--serve`. Off by default; greedy decoding (`--temp 0`) is never changed; averaged over keys the output distribution is unchanged. Transcripts and receipts record the key's id (`watermark`), responses report it in `runner_telemetry.watermark`, and `--verify` replays a marked record only with its key. `runner attest watermark-keygen` writes a key and `runner attest detect` scores a record or text against it. [Details](#cli-watermark). |
@@ -4148,6 +4167,32 @@ or dump internals for the tools under `scripts/` (`moe-prune-plan.py` consumes
 `RUNNER_GRAMMAR_TRACE`) and are read at first use. They are instrumentation,
 not interface: names, formats and defaults change without notice, and nothing
 outside this repository should depend on them.
+
+Kernel knobs and A/B arms, and two environment controls:
+
+| Switch | What it does |
+|---|---|
+| `RUNNER_CUDA_WINDOW=N` | Caps the CUDA prompt window at `N` columns: a multiple of 64, never wider than the plan allows, as `-b` caps it. A diagnostic and A/B control; `--verify` restores a record's window itself. |
+| `RUNNER_METAL_MOE_BATCH=0` | Routes a Metal MoE prompt batch one token per routing dispatch instead of the whole batch in one. The same bytes either way. |
+| `RUNNER_MV_FUSE=0` | Sends CPU projections that read the same input (Q, K and V; gate and up) as one pool dispatch each instead of one together. The same bytes either way. |
+| `RUNNER_METAL_COL_TILE=N` | Columns per threadgroup in Metal's batched matmul (default 8), tunable without a rebuild. |
+| `RUNNER_METAL_ATT_BYTES=N` | Bounds Metal's attention score scratch at `N` bytes, so a test fixture's batch spans several attention dispatches. |
+| `RUNNER_TRAIN_MM_KERNEL=warp`, `RUNNER_TRAIN_MVT_KERNEL=chain` | `--train-gpu`'s kernel families, for comparison: `warp` takes the per-warp training matmuls instead of the register-blocked ones (the arithmetic before R8.20), and `chain` the CPU chain's transpose matvec in device mode. Within a family every column gets the same bits; across families they differ, so one family serves a whole run. Read per call, so the training gate can compare them. |
+| `RUNNER_CURL=PATH` | The curl program Hub downloads run (default `curl` on `PATH`). The tests point it at a stand-in. |
+| `RUNNER_UNVERIFIED_LEASE_TTL=SECONDS` | How long a lease record whose owner can be neither proven alive nor dead is honoured (default 900). An older one ages out, so a crashed owner does not hold its instance for ever. The engine and the Python client both read it. |
+
+The diagnostics, each on stderr unless it names a file:
+
+| Switch | What it prints or writes |
+|---|---|
+| `RUNNER_CUDA_PROFILE` | A table of where a CUDA run's time went, at exit: GPU time per stage, the host-side copies, and the rest as launch and host overhead. |
+| `RUNNER_DEBUG_MOE` | The first routings' expert choices and weights, in hex. On CUDA the decode then runs eagerly, since a captured graph cannot read them back. |
+| `RUNNER_METAL_MOE_ROUTE_TRACE=1` | Each Metal MoE layer's routing, per token (`metal-moe-route` lines). |
+| `RUNNER_METAL_NAN_TRACE=1` | The first layer whose residual carries a NaN or Inf on Metal; `2` also probes inside the layer, to name the stage. One command buffer per probe, so a slow run. |
+| `RUNNER_METAL_STATS=1` | Each Metal pipeline's threadgroup memory and thread limit, and the scratch sizes a batch takes (`metal-pipeline`, `metal-scratch` lines). |
+| `RUNNER_SAMPLE_STATS=1` | Why the sampler's fast path over the head of the distribution was or was not usable, per sampled token (`[smp ...]` markers). |
+| `RUNNER_TOOL_TRACE=1` | The document a native tool-call mapper was handed, and its verdict: the bytes a client never sees when the call is refused. |
+| `RUNNER_TRAIN_FULL_DUMP=PREFIX` | A full fine-tune's first-step gradient: `PREFIX.norms.json` with each tensor's gradient norm, and `PREFIX.NAME.f32` for each tensor `RUNNER_TRAIN_FULL_DUMP_TENSORS` lists (comma-separated names). |
 
 `RUNNER_ACT_TRACE=trace.jsonl` with `RUNNER_ACT_TRACE_POS=0,7,31` (a
 comma-separated list of 1 to 64 token positions, required) records, at those

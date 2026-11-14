@@ -386,6 +386,15 @@ void   gpu_free(model_t *m); // releases GPU buffers; KV pointers become invalid
 // its reference to the shared weights, straight back.
 void   gpu_disable(model_t *m);
 
+// R3.68: rows [0, rows) of the KV cache ready for the device before a forward
+// encodes them. false: they do not fit (why says why), and the caller
+// continues on the CPU, which reads the same rows from the same host memory.
+// A backend whose cache is allocated whole returns true.
+bool   gpu_kv_reserve(model_t *m, int rows, char *why, size_t cap);
+// R3.68: the KV rows the device maps now and its grow step, for the route
+// record; false where the cache is allocated whole.
+bool   gpu_kv_rows(const model_t *m, int *mapped, int *step);
+
 // Recurrent-state transfer (turn mark, model_recurrent_mark). A backend that
 // keeps the recurrent fold on the device (CUDA: q35_hist/q35_state for
 // qwen35, mamba_conv/mamba_state for the Mamba-2 families) copies every

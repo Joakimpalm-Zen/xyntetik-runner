@@ -106,7 +106,7 @@ def test_a_pre_fix_record_still_fails_when_another_route_token_differs(runner_bi
     tmp, q, rec = recs["llama"]
     pre = tmp / "llama-pre2.json"
     pre.write_bytes(_pre_fix(rec.read_bytes()))
-    rc, out = _verify(runner_bin, tmp, q, pre, env={"RUNNER_CUDA_SMALL_BATCH": "0"})
+    rc, out = _verify(runner_bin, tmp, q, pre, env={"RUNNER_CUDA_Q8X": "1"})
     assert rc == 3 and "did not take the recorded route" in out, out[-1500:]
 
 

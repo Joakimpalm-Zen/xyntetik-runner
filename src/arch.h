@@ -20,7 +20,7 @@
 typedef enum {
     ARCH_UNKNOWN = 0,   // a name not in the table (RUNNER_ALLOW_UNKNOWN_ARCH)
     ARCH_LLAMA, ARCH_QWEN2, ARCH_QWEN3, ARCH_QWEN35, ARCH_QWEN35MOE, ARCH_QWEN4EXP,
-    ARCH_QWEN3MOE, ARCH_MISTRAL, ARCH_SMOLLM, ARCH_STABLELM, ARCH_GEMMA3, ARCH_GEMMA4,
+    ARCH_QWEN3MOE, ARCH_STABLELM, ARCH_GEMMA3, ARCH_GEMMA4,
     ARCH_PHI3, ARCH_GPT_OSS, ARCH_APERTUS, ARCH_AFMOE, ARCH_MUSE_GLIMMER, ARCH_GRANITE,
     ARCH_GRANITEHYBRID, ARCH_NEMOTRON_H, ARCH_NEMOTRON_H_MOE, ARCH_CLEF, ARCH_MELLUM,
     ARCH_LFM2, ARCH_LFM2MOE, ARCH_SPARK2_5, ARCH_K2_HORIZON, ARCH_FLINT, ARCH_MISTRAL3,
@@ -74,8 +74,6 @@ static inline const arch_desc *arch_rows(size_t *n) {
         { .name = "qwen4exp", .id = ARCH_QWEN4EXP, .rope_neox = true,
           .rec = ARCH_REC_DELTANET, .kv_rows_typed = true },
         { .name = "qwen3moe", .id = ARCH_QWEN3MOE, .family = ARCH_QWEN3, .rope_neox = true },
-        { .name = "mistral", .id = ARCH_MISTRAL },
-        { .name = "smollm", .id = ARCH_SMOLLM, .rope_neox = true },
         { .name = "stablelm", .id = ARCH_STABLELM, .rope_neox = true,
           .cpu_only = "this model normalises with LayerNorm and the GPU "
                       "backends implement RMSNorm only" },

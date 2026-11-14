@@ -715,18 +715,36 @@ void model_rope_one_set(model_t *m, const char *who) {
 // Deliberate test hook: the --wait-for-vram queue exists only where the device
 // reports its free memory, which is CUDA, so nothing else could reach it. This
 // stands in for that device and leaves the ledger and the wait real. Same role
-// as RUNNER_TEST_GPU_OFF.
-static bool test_vram_free(uint64_t *free_bytes) {
+// as RUNNER_TEST_GPU_OFF. A seam that stands in for a measurement says so at
+// every load that consults it (model_vram_claim; `say`), and only lowers what
+// a device measures: where gpu_mem_info reports free memory (CUDA) the lower
+// of the two is used, and where nothing does (Metal, the CPU) the seam stands
+// in for that device, which is what it is for (fable, 2026-11-14).
+static bool test_vram_free(uint64_t *free_bytes, bool say) {
     const char *v = getenv("RUNNER_TEST_VRAM_FREE_MB");
     if (!v) return false;
-    *free_bytes = strtoull(v, NULL, 10) << 20;
+    uint64_t seam = strtoull(v, NULL, 10) << 20;
+    size_t f = 0, t = 0;
+    bool measured = gpu_mem_info(&f, &t);
+    *free_bytes = measured && (uint64_t)f < seam ? (uint64_t)f : seam;
+    if (!say) return true;
+    if (!measured)
+        fprintf(stderr, "test seam: RUNNER_TEST_VRAM_FREE_MB=%s stands in for a device that "
+                "reports its free memory (this host has none)\n", v);
+    else if ((uint64_t)f < seam)
+        fprintf(stderr, "test seam: RUNNER_TEST_VRAM_FREE_MB=%s is above the measured free VRAM "
+                "(%llu MB), so the measured value is kept: a seam only lowers a limit\n", v,
+                (unsigned long long)(f >> 20));
+    else
+        fprintf(stderr, "test seam: RUNNER_TEST_VRAM_FREE_MB=%s in place of the measured free "
+                "VRAM (%llu MB)\n", v, (unsigned long long)(f >> 20));
     return true;
 }
 
 static uint64_t vram_free_now(void *ud) {
     (void)ud;
     uint64_t test_free = 0;
-    if (test_vram_free(&test_free)) return test_free;
+    if (test_vram_free(&test_free, false)) return test_free;
     size_t f = 0, t = 0;
     return gpu_mem_info(&f, &t) ? (uint64_t)f : 0;
 }
@@ -1843,9 +1861,13 @@ static uint64_t model_cuda_weight_estimate(const model_t *m,
 static bool model_vram_claim(model_t *m, const model_params *p, size_t kv_claim) {
     char gpu_id[128];
     uint64_t test_free = 0;
-    bool test = test_vram_free(&test_free);
-    if (test) snprintf(gpu_id, sizeof gpu_id, "test-device");
-    else if (!gpu_device_id(gpu_id, sizeof(gpu_id))) return true;   // no GPU: nothing to account
+    bool test = test_vram_free(&test_free, true);
+    // the real device's ledger whenever there is one, the seam or not, so
+    // its pending claims stay in the sum (vram_ledger_device)
+    char real_id[128] = "";
+    bool real = gpu_device_id(real_id, sizeof real_id);
+    if (!test && !real) return true;   // no GPU: nothing to account
+    vram_ledger_device(real ? real_id : NULL, test, gpu_id, sizeof gpu_id);
     size_t vfree = 0, vtotal = 0;
     if (test) vfree = vtotal = (size_t)test_free;
     else if (!gpu_mem_info(&vfree, &vtotal)) return true;      // unified memory (Metal)
@@ -5667,8 +5689,8 @@ static bool bind_arch_meta(model_t *m, gguf_file *g, const char *arch, bool late
         return !late || bind_meta_lfm2(m, g, arch);
     // the shared binders alone (an unknown name runs under
     // RUNNER_ALLOW_UNKNOWN_ARCH, llama-style)
-    case ARCH_LLAMA: case ARCH_QWEN2: case ARCH_MISTRAL: case ARCH_SMOLLM:
-    case ARCH_STABLELM: case ARCH_PHI3: case ARCH_MISTRAL3: case ARCH_UNKNOWN:
+    case ARCH_LLAMA: case ARCH_QWEN2: case ARCH_STABLELM: case ARCH_PHI3:
+    case ARCH_MISTRAL3: case ARCH_UNKNOWN:
         return true;
     // refused at admission, never bound
     case ARCH_GEMMA: case ARCH_GEMMA2: case ARCH_COUNT:
@@ -6858,9 +6880,8 @@ static bool model_alloc_runtime(model_t *m, const model_params *p) {
     int n_ctx = m->n_ctx;
 
     {
-        const char *e = getenv("RUNNER_ATTN_SPLIT");
-        m->attn_split = e && !strcmp(e, "0") ? -1 : 0;
-        e = getenv("RUNNER_ATTN_BATCH");
+        m->attn_split = 0;   // attn_split_wanted decides per call
+        const char *e = getenv("RUNNER_ATTN_BATCH");
         m->attn_batch = e && (!strcmp(e, "0") || !strcmp(e, "off")) ? -1 : 0;
     }
     if (!runtime_kv_layout(m, p, n_ctx)) return false;
@@ -8291,16 +8312,22 @@ void model_route_json(const model_t *m, char *out, int cap) {
     route_paths_json(m, paths, sizeof paths);
     char gaps[160];
     route_canon_gaps(m, gaps, sizeof gaps);
+    // R3.68: the KV rows the device maps, where it grows them with the context
+    char kvr[96] = "";
+    int kv_mapped = 0, kv_step = 0;
+    if (m->gpu && gpu_kv_rows(m, &kv_mapped, &kv_step))
+        snprintf(kvr, sizeof kvr, ",\"kv_rows\":{\"mapped\":%d,\"of\":%d,\"step\":%d}",
+                 kv_mapped, m->n_ctx, kv_step);
     snprintf(out, cap,
              "{\"backend\":\"%s\",\"device\":\"%s\",\"gpu_layers\":%d,\"layers\":%d,"
              "\"experts_on_host\":%d,\"moe_layers\":%d,\"moe_hot\":%d,\"paths\":%s,"
              "\"kv\":\"%s\",\"weights\":\"%s\",\"cpu_act\":\"%s\",\"backend_detail\":\"%s\","
              "\"kernels\":%s,\"fallback\":\"%s\",\"build\":\"%s\",\"codegen\":\"%s\","
-             "\"compiler\":\"%s\",\"tuning\":\"%s\"%s}",
+             "\"compiler\":\"%s\",\"tuning\":\"%s\"%s%s}",
              r.backend, dev, r.gpu_layers, r.n_layer, r.moe_host, r.moe_layers, r.moe_hot,
              paths,
              r.kv, wts, r.cpu_act, r.detail, kern, why, r.build,
-             r.codegen[0] == '+' ? r.codegen + 1 : r.codegen, cc, tun, gaps);
+             r.codegen[0] == '+' ? r.codegen + 1 : r.codegen, cc, tun, kvr, gaps);
 }
 
 void model_debug_time_report(void) {
@@ -15743,19 +15770,34 @@ static bool gpu_fallback_fails(void) {
 // produces correct output at a fraction of the speed and no gate can see it
 // (the fallback IS the CPU oracle) — the 69b8085 MoE slice-nbytes defect hid
 // exactly here.
-static void gpu_runtime_failure(model_t *m) {
+// The one place a run hands the model from the GPU to the CPU, so that
+// RUNNER_GPU_FALLBACK=fail sees every release (tests/test_ci_contracts.py holds
+// one gpu_disable here): a runtime failure, or (R3.68) a KV grow that does not
+// fit, which is planned and so not marked as a lost device.
+static void gpu_release_to_cpu(model_t *m, const char *why, const char *then, bool lost) {
     if (gpu_fallback_fails()) {
-        fprintf(stderr, "gpu: forward failed at runtime; RUNNER_GPU_FALLBACK=fail "
-                "ends the process (exit status 3)\n");
+        fprintf(stderr, "gpu: %s; RUNNER_GPU_FALLBACK=fail "
+                "ends the process (exit status 3)\n", why);
         fflush(NULL);
         _Exit(3);
     }
-    fprintf(stderr, "gpu: forward failed at runtime — releasing the "
-            "backend, continuing on CPU\n");
-    snprintf(m->route_fallback, sizeof m->route_fallback,
-             "forward failed at runtime");
-    m->gpu_lost = true;
+    fprintf(stderr, "gpu: %s%s\n", why, then);
+    snprintf(m->route_fallback, sizeof m->route_fallback, "%s", why);
+    if (lost) m->gpu_lost = true;
     gpu_disable(m);
+}
+
+static void gpu_runtime_failure(model_t *m) {
+    gpu_release_to_cpu(m, "forward failed at runtime",
+                       " — releasing the backend, continuing on CPU", true);
+}
+
+// R3.68: a grow of the device's KV rows that does not fit. The rows already
+// written live in host memory (Metal maps them, it does not own them), so the
+// CPU continues on them; this is a planned fallback, named, not a failure.
+static void gpu_kv_fallback(model_t *m, const char *why) {
+    gpu_release_to_cpu(m, why, ": continuing on the CPU, which reads the same rows and pages "
+                       "the rest in as it is used", false);
 }
 
 // The sequence a device-folded recurrent model was fed (model.h, seq): this
@@ -15800,6 +15842,14 @@ static float *forward_gpu_leading(model_t *m, const int32_t *tokens, int n,
                                   bool *done) {
     *start = 0;
     *done = false;
+    if (m->gpu) {
+        // R3.68: the device's KV rows for this forward, grown first
+        char kv_why[256];
+        if (!gpu_kv_reserve(m, pos + n, kv_why, sizeof kv_why)) {
+            gpu_kv_fallback(m, kv_why);
+            return NULL;
+        }
+    }
     if (m->gpu) {
         if (m->gpu_layers >= m->n_layer) {
             float *lg = NULL;

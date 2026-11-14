@@ -667,3 +667,117 @@ def test_half_a_preamble_snapshot_is_replaced_not_left_for_ever(runner_bin, fx, 
     with _auto(runner_bin, fx["model"], snaps) as c:
         warm = _chat(c, SYSTEM, "Which file is the largest?")
     assert warm["reuse"] == "preamble_snapshot" and warm["answer"] == again["answer"], warm
+
+
+# ---- R6.81: the option on a model or template it cannot serve, and on Phi ----
+
+DECLINED_MODEL = "no preamble snapshot is kept for this model"
+DECLINED_TEMPLATE = "it does not write the system message as the first bytes"
+
+
+def _auto_as(runner_bin, model, snaps, template, log, auto=True):
+    args = ["--gpu", "off", "-t", "2", "--kv-snapshots", str(snaps)]
+    if template:
+        args += ["--chat-template", template]
+    if auto:
+        args += ["--kv-snapshots-auto", "64"]
+    return RunnerServer(runner_bin, model, ctx=512, log_path=str(log), extra_args=args)
+
+
+@pytest.mark.parametrize("template", ["phi3", "phi4"])
+def test_a_phi_template_keeps_its_preamble(runner_bin, fx, tmp_path, template):
+    """Phi-3 and Phi-4 close a render that asks for no reply with their
+    end-of-text token, so the system message rendered alone was never the
+    prompt's first bytes and no snapshot was written, without a word (a
+    real Phi-3.5 file on CUDA, 2026-11-14). The boundary is found without
+    that closing."""
+    snaps = tmp_path / "snaps"
+    with _auto_as(runner_bin, fx["model"], snaps, template, tmp_path / "a.log") as a:
+        cold = _chat(a, SYSTEM, "List the files.")
+        kv = _wait_files(snaps, 1)
+    assert len(kv) == 1, (cold, (tmp_path / "a.log").read_text()[-600:])
+    with _auto_as(runner_bin, fx["model"], snaps, template, tmp_path / "b.log") as b:
+        warm = _chat(b, SYSTEM, "Which file is the largest?")
+    with _auto_as(runner_bin, fx["model"], tmp_path / "none", template, tmp_path / "c.log",
+                  auto=False) as c:
+        ref = _chat(c, SYSTEM, "Which file is the largest?")
+    assert cold["reuse"] != "preamble_snapshot"            # the control: the first run is cold
+    assert warm["reuse"] == "preamble_snapshot" and warm["cached"] >= 64, warm
+    assert warm["answer"] == ref["answer"]
+    for log in ("a.log", "b.log"):
+        text = (tmp_path / log).read_text()
+        assert DECLINED_MODEL not in text and DECLINED_TEMPLATE not in text, text[-600:]
+
+
+def test_a_template_without_a_boundary_says_so_once(runner_bin, fx, tmp_path):
+    """Mistral writes the system message into the first [INST], so there is no
+    preamble to keep. The option's line at start promises one: the first
+    request that cannot get it says why, and only the first."""
+    snaps, log = tmp_path / "snaps", tmp_path / "s.log"
+    with _auto_as(runner_bin, fx["model"], snaps, "mistral", log) as a:
+        _chat(a, SYSTEM, "List the files.")
+        _chat(a, SYSTEM, "Which file is the largest?")
+        _post(a, "/v1/chat/completions", {                 # no system message: nothing to say
+            "messages": [{"role": "user", "content": "List the files."}],
+            "max_tokens": 4, "temperature": 0})
+    text = log.read_text()
+    assert text.count(DECLINED_TEMPLATE) == 1 and "under the chat template mistral:" in text, \
+        text[-800:]
+    assert not list(snaps.glob("pre-*"))
+
+
+def test_a_recurrent_model_says_once_that_it_keeps_no_preamble(runner_bin, tmp_path):
+    """A model with recurrent layers cannot have a preamble cut out of a longer
+    prompt, and under the option a request said nothing about it (a real
+    Qwen3.5-4B on CUDA, 2026-11-14)."""
+    model = tmp_path / "ornith.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-ornith.py", str(model)],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    snaps, log = tmp_path / "snaps", tmp_path / "s.log"
+    with _auto_as(runner_bin, model, snaps, None, log) as a:
+        _chat(a, SYSTEM, "List the files.")
+        _chat(a, SYSTEM, "Which file is the largest?")
+    text = log.read_text()
+    assert text.count(DECLINED_MODEL) == 1 and "recurrent" in text, text[-800:]
+    assert not list(snaps.glob("pre-*"))
+
+
+DECLINED_TOKENS = "are one token, so its tokens are not the prompt's first tokens"
+
+
+def test_a_boundary_the_tokenizer_does_not_keep_says_so_once(runner_bin, tmp_path):
+    """A boundary in bytes is not always one in tokens. With a vocabulary that
+    holds the newline before Phi's user tag and the tag itself as ONE control
+    token, the system message alone ends in a newline token the prompt never
+    has. The engine rightly keeps nothing; it said nothing either."""
+    model = tmp_path / "joined.gguf"
+    subprocess.run([sys.executable, ROOT / "scripts/make-test-model.py", str(model),
+                    "--control", "\n<|user|>"], check=True, cwd=ROOT,
+                   stdout=subprocess.DEVNULL)
+    snaps, log = tmp_path / "snaps", tmp_path / "s.log"
+    with _auto_as(runner_bin, model, snaps, "phi3", log) as a:
+        _chat(a, SYSTEM, "List the files.")
+        _chat(a, SYSTEM, "Which file is the largest?")
+    text = log.read_text()
+    assert text.count(DECLINED_TOKENS) == 1 and \
+        "under the chat template phi3 with this tokenizer" in text, text[-800:]
+    assert DECLINED_TEMPLATE not in text and DECLINED_MODEL not in text
+    assert not list(snaps.glob("pre-*"))
+    # the control: the same file under a template that never writes that
+    # token keeps its preamble and prints no such line
+    snaps2, log2 = tmp_path / "snaps2", tmp_path / "s2.log"
+    with _auto_as(runner_bin, model, snaps2, "chatml", log2) as b:
+        _chat(b, SYSTEM, "List the files.")
+        assert len(_wait_files(snaps2, 1)) == 1
+    assert DECLINED_TOKENS not in log2.read_text()
+
+
+def test_a_model_and_template_that_keep_a_preamble_say_nothing_of_the_kind(runner_bin, fx, tmp_path):
+    """The control for the two lines above: under ChatML on an attention-only
+    model neither is printed, and the snapshot is written."""
+    snaps, log = tmp_path / "snaps", tmp_path / "s.log"
+    with _auto_as(runner_bin, fx["model"], snaps, "chatml", log) as a:
+        _chat(a, SYSTEM, "List the files.")
+        assert len(_wait_files(snaps, 1)) == 1
+    text = log.read_text()
+    assert DECLINED_MODEL not in text and DECLINED_TEMPLATE not in text and DECLINED_TOKENS not in text

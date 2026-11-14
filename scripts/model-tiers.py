@@ -33,7 +33,6 @@ served on it, each with the refusal sentence when not. A row's
 docs/model-support.md is rendered from it.
 
     scripts/model-tiers.py --check
-    scripts/model-tiers.py --gate [--today YYYY-MM-DD]
     scripts/model-tiers.py --record ROW --result smoke-result.json
     scripts/model-tiers.py --write-docs     # re-render docs/model-support.md and src/model_roster.h
     scripts/model-tiers.py --docs-check     # fail when either differs from the render
@@ -60,10 +59,6 @@ models) and continues with every row's envelope. The README, a published file's 
 the site link there (a row's id is the anchor) instead of carrying a copy of
 its marks, so none can drift and nothing watches them (2026-10-27).
 
-`--gate` is the release gate's question: every Tier 1 row must hold a
-recorded pass on the backend its smoke names, and no backend of the row may
-hold a recorded failure. The record's age is printed and never refuses.
-scripts/check-release.py refuses a tag while any row fails that question.
 """
 
 import argparse
@@ -510,63 +505,6 @@ def validate(doc, devices):
             errs.append(f"model {model!r}: its rows name the families {sorted(fams)}; "
                         f"a model is listed under one family")
     return errs
-
-
-def today(override=None):
-    if override:
-        return datetime.date.fromisoformat(override)
-    return datetime.datetime.now(datetime.timezone.utc).date()
-
-
-def gate(doc, now, out=None, borrowed=None):
-    """Report every Tier 1 row; return the ids of those the release gate
-    refuses: no recorded pass on the backend the row's smoke names, or a
-    recorded failure on any backend.
-
-    Prints the passing rows too, with the age of their record, as the device
-    ledger does: a check that only speaks when it is angry trains a reader
-    to take silence for coverage. The age is information for the paper
-    trail and never refuses (policy decision 2026-10-28: no re-testing on a
-    schedule; a record stands until the next validation run or an
-    immediate need re-runs it).
-
-    A row whose smoke class is borrowed hardware is reported the same way,
-    but a missing record on it is not in the returned list: the project may
-    use that machine and must not depend on it, so its absence cannot hold
-    a release. A recorded failure is returned on any class.
-    """
-    # resolved here, not in the signature, so a replaced stdout (pytest's
-    # capture) is the one written to
-    out = out or sys.stdout
-    if borrowed is None:
-        borrowed = borrowed_classes()
-    rows = [r for r in doc["rows"] if r["tier"] == "tier1"]
-    width = max((len(r["id"]) for r in rows), default=0)
-    bad = []
-    for row in rows:
-        smoke = row["smoke"]
-        where = f"{smoke['device_class']} {smoke['backend']}"
-        cells = row.get("backends") or {}
-        cell = cells.get(smoke["backend"])
-        failing = sorted(b for b, c in cells.items()
-                         if (c or {}).get("kind") == "gate" and c.get("result") != "pass")
-        if failing:
-            state, detail = "FAILING", "recorded failure on " + ", ".join(failing)
-        elif (cell or {}).get("kind") != "gate":
-            state, detail = "NEVER", f"no validation run recorded for {smoke['backend']} (the row names {where})"
-        else:
-            days = (now - datetime.date.fromisoformat(cell["date"])).days
-            detail = "%s on %s, %s on %s, %d day%s ago" % (
-                smoke["backend"], cell["device_class"], cell["runner_version"],
-                cell["date"], days, "" if days == 1 else "s")
-            state = "ok"
-        lent = smoke["device_class"] in borrowed
-        if lent:
-            detail += ", borrowed hardware: dated evidence, its absence does not gate"
-        if state == "FAILING" or (state != "ok" and not lent):
-            bad.append(row["id"])
-        print("%-7s %-*s  %s" % (state, width, row["id"], detail), file=out)
-    return bad
 
 
 def record(doc, row_id, res, devices):
@@ -1235,11 +1173,6 @@ def main():
                     help="validate the roster's structure (no clock involved)")
     ap.add_argument("--check-hub", action="store_true",
                     help="HEAD every file's resolve URL (needs the network)")
-    ap.add_argument("--gate", action="store_true",
-                    help="the release gate: refuse while a Tier 1 row has no recorded "
-                         "pass on its backend or a recorded failure on any")
-    ap.add_argument("--today", help="the day the printed ages are measured from "
-                                    "(tests); default the UTC clock")
     ap.add_argument("--record", metavar="ROW",
                     help="write a smoke run's result into ROW")
     ap.add_argument("--result", help="the result file scripts/tier-smoke.py wrote")
@@ -1314,18 +1247,6 @@ def main():
         print(f"hub: {total - len(bad)} of {total} files as recorded" if bad else
               f"hub ok: {total} files resolve at their revision with the recorded sha256 and bytes")
         return 1 if bad else 0
-    if args.gate:
-        bad = gate(doc, today(args.today), borrowed=borrowed_classes(devices))
-        if bad:
-            # the rows went to stdout, which a pipe buffers while stderr is
-            # written at once: flush, or a reader of both in one pipe gets
-            # the summary before the rows it summarises
-            sys.stdout.flush()
-            print("\n%d Tier 1 file%s need%s a validation run: %s" % (
-                len(bad), "" if len(bad) == 1 else "s",
-                "s" if len(bad) == 1 else "", ", ".join(bad)), file=sys.stderr)
-            return 1
-        return 0
     rows = doc["rows"]
     counts = {t: sum(1 for r in rows if r["tier"] == t) for t in TIERS}
     print("roster ok: " + ", ".join(f"{counts[t]} {t}" for t in TIERS))

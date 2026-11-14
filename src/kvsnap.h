@@ -71,6 +71,13 @@ bool kvsnap_auto_on(void);
 // context id, whether or not the option is on.
 bool kvsnap_auto_shape(const char *name);
 int  kvsnap_auto_min(void);   // the shortest preamble worth a snapshot, in tokens
+// Say, once a process and reason, that requests of this kind get no preamble
+// snapshot although the option is on (R6.81): a model with recurrent layers,
+// or a chat template (`detail`, its name) that gives the system message no
+// boundary in the prompt, or one whose boundary the tokenizer does not keep
+// (the preamble's last bytes join the next message's first in one token).
+enum { KVSNAP_NO_RECURRENT, KVSNAP_NO_BOUNDARY, KVSNAP_NO_TOKEN_BOUNDARY, KVSNAP_NO_N };
+void kvsnap_auto_declined(int why, const char *detail);
 void kvsnap_auto_name(const engine *e, const int32_t *toks, int n,
                       char out[KVSNAP_AUTO_NAME]);
 // Load the snapshot `name` into the slot when it is on disk and verifies: the
