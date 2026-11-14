@@ -236,7 +236,7 @@ A map of what the binary does, with the section that documents each part.
 - **Training and adapters.** LoRA training through quantized GGUF weights on
   CPU and CUDA, `--lora` serving on CPU, CUDA and Metal, `--merge-lora`,
   `--info adapter`. [Adaptation](#adaptation)
-- **Models and formats.** 30 admitted architectures, refused by name when
+- **Models and formats.** 28 admitted architectures, refused by name when
   unknown; 24 weight formats including the K-quants, all seven codebook
   i-quants, MXFP4 and NVFP4; KV caches in f16, q8, fp4 and split k8v4, with a
   ring for sliding-window layers; speculative decoding from a draft model, the
@@ -1574,7 +1574,7 @@ merely dense matvec/matmul support.
 
 | GGUF `general.architecture` | Notes |
 |---|---|
-| `llama`, `mistral`, `smollm`, `stablelm` | Llama-style dense families with family tokenizers/templates. |
+| `llama`, `stablelm` | Llama-style dense families with family tokenizers/templates. Mistral v0.1 to v0.3 and SmolLM2 files declare `llama`. |
 | `qwen2`, `qwen3` | QKV-bias and per-head-QK-norm variants. |
 | `qwen35` | Dense Qwen3.5/3.8/Ornith Gated DeltaNet plus full attention; CPU, CUDA and Metal. On Metal the whole model runs on the device (its logits within reduction-order rounding of the CPU's, `make test-metal-qwen35`, and Qwen3.5-0.8B Q8_0's greedy text identical); a model that does not fit whole, carries an adapter, drafts with `--mtp` or is a `clef` file runs on the CPU there. Qwen3.8-27B (tokenizer 0/721 after the `qwen35` rule learned `[\p{L}\p{M}]+` runs; its NextN block feeds `--draft mtp`; its own `qwen38` chat template with the reasoning-effort preamble, `reasoning_effort` xhigh/medium/low honoured); evidence in `docs/granite-42-qwen38-cert-2026-09-06.md`. CPU recurrent folds support speculative decode, grammar fast-forward, and exact shared-prefix restore. A recurrent instance forks an exact shared-prefix hit on the CPU and on CUDA, where the device fold moves through the host (R4.26.7; checked live on Qwen3.5-4B, the forked answer identical to a cold one); its own turn mark resumes the next request at the prompt boundary on CPU and CUDA alike; a CUDA-resident recurrent layer runs speculative decode (per-row recurrent checkpoints restore a partially accepted round) and declines grammar fast-forward; a Metal-resident one runs speculative decode by rolling back to the round's start and re-folding the kept rows (`--draft lookup`; its rows byte-identical to plain decoding, `make test-metal-qwen35`). |
 | `qwen35moe` | Qwen3.5 and Qwen3.6-35B-A3B and the models built on them (Ornith-1.5-35B-A3B, Sage-A1.5, occamy-1.0, MiniCPM-V-4.7-35B-A3B's language model): `qwen35`'s Gated DeltaNet and gated attention with 256 routed experts (softmax, top-8, renormalized) and a sigmoid-gated shared expert on every block. CPU, CUDA and Metal. CUDA since R4.27 A2: `make test-cuda-qwen35moe` holds it to the CPU's logits at 1e-5 on toy models, and Qwen3.6-35B-A3B's file runs with every block on the device ([the record](docs/compat-reports/qwen35moe-cuda-2026-11-05/README.md)). Metal is held to the CPU's logits on toy models only (`make test-metal-qwen35moe`): no file has run on a Mac that holds one (the 35B files are 21-22 GB). Its NextN block (an attention block with the trunk's MoE FFN) feeds `--mtp`. Checked against transformers' float32 `Qwen3_5MoeForCausalLM` on a converted random model ([the record](docs/compat-reports/qwen35moe-toy-2026-10-30/README.md)); file rows follow. |

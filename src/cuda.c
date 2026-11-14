@@ -4362,7 +4362,7 @@ static bool tc_promoted(const model_t *m, int type) {
     // Rows: docs/tc-promotion-evidence.md.
     static const char *archs[] = { "llama", "phi3", "gemma4", "qwen3",
                                    "qwen35", "qwen4exp",
-                                   "mistral", "mistral3", "gemma3", "smollm", "granite",
+                                   "mistral3", "gemma3", "granite",
                                    "muse-glimmer", "qwen2",
                                    "apertus", "nemotron_h", "granitehybrid" };
     for (size_t i = 0; i < sizeof(archs) / sizeof(*archs); i++)

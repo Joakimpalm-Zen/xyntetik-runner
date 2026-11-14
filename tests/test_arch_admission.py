@@ -104,12 +104,6 @@ def test_known_arch_still_loads(runner_bin, tmp_path):
 # reason. Shrinking this list is the work; adding to it needs a reason that
 # survives being read out loud.
 ARCH_GATE_EXEMPTIONS = {
-    # Exercised through a pinned file that declares a different
-    # general.architecture: every Mistral and SmolLM2 GGUF in the manifest
-    # converts to arch "llama", so the code path is covered even though the
-    # string is not. Keep until a file actually ships with these strings.
-    "mistral": "covered by llama-arch files (mistral-7b-instruct-v0.3-q4_k_m)",
-    "smollm": "covered by llama-arch files; no GGUF ships arch=smollm",
     # Experimental admission (R4.26.1). The toy fixture test-qwen4exp.gguf
     # exercises the loader and the CPU forward in `make test`; the pinned
     # real file (83 GB, two parts) is admitted to the manifest with the
