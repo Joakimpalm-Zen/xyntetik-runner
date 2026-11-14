@@ -448,10 +448,16 @@ def test_preamble_snapshots_stay_under_their_cap(runner_bin, fx, tmp_path):
             # write (a hosted Linux run read 177,416 bytes there).
             total, now = -1, set()
             for _ in range(200):
-                kv = [p for p in snaps.glob("pre-*.kv") if p.is_file()]
-                now = {p.name for p in kv}
-                whole = all((snaps / (n + ".json")).exists() for n in now)
-                total = sum(p.stat().st_size for p in kv)
+                try:
+                    kv = [p for p in snaps.glob("pre-*.kv") if p.is_file()]
+                    now = {p.name for p in kv}
+                    whole = all((snaps / (n + ".json")).exists() for n in now)
+                    total = sum(p.stat().st_size for p in kv)
+                except FileNotFoundError:
+                    # the trim removed a file between the listing and the
+                    # stat: the overlap this wait is here for; look again
+                    total, now = -1, set()
+                    continue
                 if now and now != before and whole and total <= 100_000:
                     break
                 time.sleep(0.1)
