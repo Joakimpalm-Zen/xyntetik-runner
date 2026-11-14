@@ -52,20 +52,28 @@ def test_sign_index_expansion_is_the_ksigns_table():
     assert kmask == [1 << j for j in range(8)]
 
 
-IQ_KERNELS = [f"k_mv_{t}{suffix}"
-              for t in ("iq1_s", "iq1_m", "iq2_xxs", "iq2_xs", "iq2_s", "iq3_xxs", "iq3_s")
-              for suffix in ("", "_b")]
+CODEBOOK = ("iq1_s", "iq1_m", "iq2_xxs", "iq2_xs", "iq2_s", "iq3_xxs", "iq3_s")
+# What each codebook type's routes launch (R18.8.11). One column: the decode
+# kernel k_mv_<t>. Two to sixteen: the batch-1 kernel's width-classed twins,
+# k_gemvb_<t>_x4/_x8/_x16 and k_gemvx_<t>_x2.._x7 at exact widths, for the
+# types that have them; IQ1_S and IQ1_M run the decode kernel once per
+# column. The k_mv_<t>_b tiles summed in another order and were retired.
+TWINNED = ("iq2_xxs", "iq2_xs", "iq2_s", "iq3_xxs", "iq3_s")
+IQ_KERNELS = ([f"k_mv_{t}" for t in CODEBOOK]
+              + [f"k_gemvb_{t}_x{w}" for t in TWINNED for w in (4, 8, 16)]
+              + [f"k_gemvx_{t}_x{w}" for t in TWINNED for w in (2, 3, 5, 6, 7)])
 
 
-def test_every_codebook_type_has_both_kernels_registered():
+def test_every_codebook_type_has_the_kernels_its_routes_launch():
     """A kernel name in the PTX table of cuda.c that no kernel defines fails
-    at module load on every CUDA box, which CI cannot see."""
+    at module load on every CUDA box, which CI cannot see. The decode kernels
+    are written out; the twins come from a definition macro."""
     dev = (ROOT / "src" / "kernels.cu").read_text(encoding="utf-8")
     cuda = (ROOT / "src" / "cuda.c").read_text(encoding="utf-8")
     for name in IQ_KERNELS:
-        assert f'__global__ void {name}(MV_PARAMS)' in dev, name
+        assert re.search(rf"(__global__ void {name}\(MV_PARAMS\)|^[A-Z_0-9]+\({name},)", dev, re.M), name
         assert f'"{name}"' in cuda, name
-    for t in ("iq1_s", "iq1_m", "iq2_xxs", "iq2_xs", "iq2_s", "iq3_xxs", "iq3_s"):
+    for t in CODEBOOK:
         assert f"case T_{t.upper()}:" in cuda, t
 
 
