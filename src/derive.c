@@ -23,6 +23,7 @@
 #include "fpclass.h"
 #include "quants.h"
 #include "runner.h"
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,6 +78,7 @@ typedef struct {
     char *skipped;            // "group from->to; ..." for the record, or NULL
     char **held;              // tensors the imatrix has no entry for, held at the top (R4.34.2)
     int n_held;
+    long long held_bytes;     // what those tensors take at the top rung
 } sized_result;
 
 typedef struct {
@@ -814,6 +816,25 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
         fprintf(stderr, "error: runner derive: out of memory\n");
         return false;
     }
+    {
+        // what the lowest rung can reach is known from the header: refuse an unreachable target
+        // before costing anything (the costing took 80 minutes to say so on a 27B parent)
+        int ttop = quantize_type_from_name(top), tbot = quantize_type_from_name(bottom);
+        long long now = 0, fl = 0, at_top = 0;
+        if (o->recipe[2] && !quantize_set_imatrix(o->recipe[2])) return false;
+        bool known = ttop >= 0 && tbot >= 0 && pbytes > 0 &&
+                     quantize_floor_bytes(o->parent, ttop, tbot, o->match, &now, &fl) &&
+                     quantize_floor_bytes(o->parent, ttop, ttop, o->match, &now, &at_top);
+        quantize_set_imatrix(NULL);
+        if (known && pbytes - now + fl > o->target_size) {
+            // as the later refusal leaves it: what would have had to be saved from the top rung
+            res->save_bytes = pbytes - now + at_top - o->target_size;
+            fprintf(stderr, "error: --target-size %lld is out of reach: with every candidate at %s the "
+                    "file is about %lld bytes. Add a lower rung than %s, or raise the target to at "
+                    "least that\n", o->target_size, bottom, pbytes - now + fl, bottom);
+            return false;
+        }
+    }
     char types[256];
     size_t tl = 0;
     types[0] = 0;
@@ -846,6 +867,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     char **held = NULL;    // candidates the imatrix has no entry for (R4.34.2)
     int nh = 0, hcap = 0;
     long long delta = 0;   // all candidates at the top rung, against the parent
+    long long held_bytes = 0;
     bool ok = true, oom = false;
     for (char *line = text, *next; ok && line && *line; line = next) {
         next = strchr(line, '\n');
@@ -886,6 +908,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
                     }
                     if (!(held[nh] = strdup(tn))) { ok = false; oom = true; jv_free(row); break; }
                     nh++;
+                    held_bytes += (long long)rb[0];
                     jv_free(row);
                     continue;
                 }
@@ -949,6 +972,7 @@ static bool sized_plan(const char *self, const derive_opts *o, long long pbytes,
     if (nh) qsort(held, (size_t)nh, sizeof *held, cmp_str);
     res->held = held;
     res->n_held = nh;
+    res->held_bytes = held_bytes;
     bool w = false, u = false;
     for (int k = 0; k < ng; k++) { w |= gs[k].weighted; u |= gs[k].unweighted; }
     if (w && u) {
@@ -1491,6 +1515,9 @@ static bool card_from_record(const char *rec_path, const char *card_path,
                    jv_str(jv_get(rec, "held_at"), "?"));
             for (int k = 0; k < held->n; k++)
                 sb_fmt(&c, "%s `%s`", k ? "," : "", jv_str(held->items[k], "?"));
+            double hb;
+            if (num_of(rec, "held_bytes", &hb) && hb > 0)
+                sb_fmt(&c, ". Together they take %lld bytes (%.2f GB) of the file", (long long)hb, hb / 1e9);
             sb_lit(&c, ". Holding them is the planner's default, not evidence that they matter most.\n\n");
         }
     }
@@ -1510,7 +1537,18 @@ static bool card_from_record(const char *rec_path, const char *card_path,
             sb_lit(&c, cmd);
         }
     }
-    sb_lit(&c, "\n```\n\n## Fidelity\n\n"
+    sb_lit(&c, "\n```\n\n");
+    {
+        jv *parts = jv_get(par, "parts");
+        if (parts && parts->type == J_ARR && parts->n > 1) {
+            sb_fmt(&c, "The parent is one model in %d files; name the first with `-m` and keep the others beside it:\n\n", parts->n);
+            for (int k = 0; k < parts->n; k++)
+                sb_fmt(&c, "- `%s`, sha256 `%s`\n", jv_str(jv_get(parts->items[k], "path"), "?"),
+                       jv_str(jv_get(parts->items[k], "sha256"), "?"));
+            sb_lit(&c, "\n");
+        }
+    }
+    sb_lit(&c, "## Fidelity\n\n"
            "| reference | positions | mean KLD | median KLD | max KLD | top-1 | margin-qualified top-1 |\n"
            "|---|---:|---:|---:|---:|---:|---:|\n");
     char med[32] = "not measured", mq[48];
@@ -1593,7 +1631,23 @@ static bool card_from_record(const char *rec_path, const char *card_path,
     return ok;
 }
 
-// the recipe as `runner derive` arguments, file arguments by base name
+// one argument as a POSIX shell reads it: bare when it needs no quoting, else in single quotes
+static void sb_shq(sbuf *b, const char *v) {
+    bool bare = *v != 0;
+    for (const char *c = v; *c && bare; c++)
+        bare = isalnum((unsigned char)*c) || strchr("_@%+=:,./-", *c) != NULL;
+    if (bare) { sb_lit(b, v); return; }
+    sb_lit(b, "'");
+    for (const char *c = v; *c; c++) {
+        if (*c == '\'') sb_lit(b, "'\\''");
+        else sb_put(b, c, 1);
+    }
+    sb_lit(b, "'");
+}
+
+// the recipe and the measurement's settings as `runner derive` arguments, file arguments by base
+// name, so the line a card prints makes the file and scores it the same way (R4.45). -t is left out:
+// it changes neither.
 static void put_command(sbuf *b, const derive_opts *o) {
     sb_fmt(b, "runner derive -m %s -o %s", plat_path_base(o->parent), plat_path_base(o->out));
     for (int k = 0; k < N_RECIPE; k++)
@@ -1615,6 +1669,24 @@ static void put_command(sbuf *b, const derive_opts *o) {
     if (o->reference_hf) sb_fmt(b, " --reference hf:%s", plat_path_base(o->reference_hf));
     for (int i = 0; i < o->n_ref_args; i++)
         sb_fmt(b, " --reference-arg %s", plat_path_base(o->ref_args[i]));
+    for (int i = 0; i < o->n_compares; i++) {
+        // LABEL=GOLD.json[:SIDE][:BYTES]: the label as given, the gold file by base name
+        const char *eq = strchr(o->compares[i], '=');
+        sbuf v = {0};
+        if (eq) {
+            sb_put(&v, o->compares[i], (size_t)(eq - o->compares[i] + 1));
+            sb_lit(&v, plat_path_base(eq + 1));
+        } else {
+            sb_lit(&v, o->compares[i]);
+        }
+        sb_put(&v, "", 1);
+        sb_lit(b, " --compare ");
+        if (!v.failed) sb_shq(b, v.s);
+        free(v.s);
+    }
+    for (int i = 0; i < o->n_credits; i++) { sb_lit(b, " --credit "); sb_shq(b, o->credits[i]); }
+    if (o->ctx) sb_fmt(b, " -c %s", o->ctx);
+    if (o->gpu) sb_fmt(b, " --gpu %s", o->gpu);
 }
 
 // `runner derive --card-from REC [-o CARD]`: the card from a record alone,
@@ -1845,6 +1917,7 @@ static bool derive_record(derive_run *d) {
             }
             sb_lit(&d->r, "],\"held_at\":");
             sb_str(&d->r, d->o.rungs[0]);
+            sb_fmt(&d->r, ",\"held_bytes\":%lld", d->sz.held_bytes);
         }
         if (d->o.n_rungs > 2) {
             // the ladder, where each demoted group ended, and the rungs it jumped
