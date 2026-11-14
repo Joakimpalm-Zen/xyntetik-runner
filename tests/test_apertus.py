@@ -94,7 +94,7 @@ def test_metal_xielu_matches_cpu(runner_bin, tmp_path, flavour, adapter):
         [runner_bin, "--caps"], cwd=ROOT, stdout=subprocess.PIPE,
         check=True, text=True).stdout)
     if (caps.get("gpu") or {}).get("backend") != "metal":
-        pytest.skip("Metal device not available")
+        pytest.skip("the Metal backend's xIELU kernel")
 
     model = _make(tmp_path, flavour)
     base = [runner_bin, "-m", str(model), "-p", "hello world and the river below", "-n", "16",
