@@ -50,6 +50,8 @@ test-json-schema
 test-json-schema.exe
 test-sval-walk
 test-sval-walk.exe
+test-jsre
+test-jsre.exe
 test-tokenizer
 test-tokenizer.exe
 test-template

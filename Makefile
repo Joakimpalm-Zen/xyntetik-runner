@@ -85,6 +85,7 @@ TRAY_SRC = src/tray.c src/tray_win.c
 RUNNER_EXE = runner.exe
 TEST_JSON_SCHEMA = test-json-schema.exe
 TEST_SVAL_WALK = test-sval-walk.exe
+TEST_JSRE = test-jsre.exe
 TEST_TOKENIZER = test-tokenizer.exe
 TEST_TEMPLATE = test-template.exe
 TEST_PROMPT_MARKS = test-prompt-marks.exe
@@ -118,6 +119,7 @@ TRAY_SRC = src/tray.c src/tray_macos.m
 RUNNER_EXE = runner
 TEST_JSON_SCHEMA = test-json-schema
 TEST_SVAL_WALK = test-sval-walk
+TEST_JSRE = test-jsre
 TEST_TOKENIZER = test-tokenizer
 TEST_TEMPLATE = test-template
 TEST_PROMPT_MARKS = test-prompt-marks
@@ -143,6 +145,7 @@ TRAY_SRC = src/tray.c src/tray_stub.c
 RUNNER_EXE = runner
 TEST_JSON_SCHEMA = test-json-schema
 TEST_SVAL_WALK = test-sval-walk
+TEST_JSRE = test-jsre
 TEST_TOKENIZER = test-tokenizer
 TEST_TEMPLATE = test-template
 TEST_PROMPT_MARKS = test-prompt-marks
@@ -572,6 +575,12 @@ $(TEST_JSON_SCHEMA): tests/test_json_schema.c $(OBJDIR)/json.o $(OBJDIR)/jsonmod
 
 $(TEST_SVAL_WALK): tests/test_sval_walk.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) $(HDR)
 	$(CC) $(CFLAGS) -I src tests/test_sval_walk.c $(OBJDIR)/json.o $(OBJDIR)/jsonmode.o $(SCHEMA_OBJ) -o $@ -lm
+
+# R2.18: the pattern automaton against ECMA-262's verdicts (tests/jsre_cases.h,
+# from scripts/gen-jsre-cases.py), its DFA cache under three pool budgets, its
+# lengths against a forward search; pthread for the second-thread fill check
+$(TEST_JSRE): tests/test_jsre.c tests/jsre_cases.h $(OBJDIR)/jsre.o $(HDR)
+	$(CC) $(CFLAGS) -I src tests/test_jsre.c $(OBJDIR)/jsre.o -o $@ $(LDFLAGS)
 
 # quants.c is needed for the ggml_type_* helpers gguf.c links against; CFLAGS
 # (not the plainer flags above) so the AVX2 paths match a real build
@@ -3461,7 +3470,7 @@ else
 	@echo "test-metal-kv-grow: NOT RUN, the Metal backend's growing KV cache (this host has no Metal)"
 endif
 
-test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
+test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_LORA_GRAD) $(TEST_FULL_GRAD) $(TEST_DPO_GRAD) $(TEST_KD_GRAD) $(TEST_MVT) $(TEST_TRAIN_GPU) $(TEST_MVCANON) \
       $(TEST_TOKENIZER) $(TEST_TOK_MERGE) $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) \
       $(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
       $(TEST_TOOLS) $(TEST_SHARED) $(TEST_MLOCK) test-es-mlock.gguf $(TEST_WILLNEED) $(TEST_FILE_ID) $(TEST_SPEC_ID) $(TEST_BIND) $(TEST_HOST_HEADER) \
@@ -3610,6 +3619,7 @@ test-gates-core: test-python-deps $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_J
 	./$(TEST_UPLOAD_REPORT)
 	./$(TEST_JSON_SCHEMA)
 	./$(TEST_SVAL_WALK)
+	./$(TEST_JSRE)
 	./$(TEST_JSON_OOM)
 	./$(TEST_SCHEMA_OOM)
 	./$(TEST_SAMPLER)
@@ -4175,7 +4185,7 @@ fuzz:
 	fi
 
 clean:
-	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug runner-no-manifest.exe $(TEST_UTF8_CONSOLE) $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSON_OOM) \
+	rm -f test-moe-fixture.*.gguf test-q8.gguf test-bf16.gguf runner runner-debug runner-no-manifest.exe $(TEST_UTF8_CONSOLE) $(TEST_JSON_SCHEMA) $(TEST_SVAL_WALK) $(TEST_JSRE) $(TEST_JSON_OOM) \
 		$(TEST_TEMPLATE_OOM) $(TEST_TEMPLATE_FAMILIES) \
 	      $(TEST_SCHEMA_OOM) $(TEST_SAMPLER) $(TEST_TOKENIZER) \
 	      $(TEST_TOKENIZER_OOM) $(TEST_TOK_CLASSES) $(TEST_TEMPLATE) $(TEST_PROMPT_MARKS) $(TEST_SHARED) $(TEST_MLOCK) $(TEST_WILLNEED) \
