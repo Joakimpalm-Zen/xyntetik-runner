@@ -1201,3 +1201,16 @@ def test_no_two_roster_files_in_one_folder_are_one_file_on_a_case_insensitive_fi
                      {"files": [{"name": "toy-q8_0.gguf", "repo": "o/r"}]},
                      {"files": [{"name": "toy-q8_0.gguf", "repo": "o/other"}]}]}
     assert roster_case_collisions(pair) == [["Toy-Q8_0.gguf", "toy-q8_0.gguf"]]
+
+
+def test_the_release_gate_is_gone():
+    """R6.25: --gate asked the release gate's question of the Tier 1 rows, and
+    nothing has asked it since the tiers were retired (2026-11-07):
+    scripts/check-release.py no longer calls it, and validation runs when a
+    model is chosen, never per release. The tier field stays (Dojo reads it);
+    the question and its --today clock go."""
+    assert not hasattr(mt, "gate") and not hasattr(mt, "today")
+    for flag in (["--gate"], ["--today", "2026-11-14"]):
+        r = subprocess.run([sys.executable, str(SCRIPT), *flag], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, text=True)
+        assert r.returncode == 2 and "unrecognized arguments" in r.stderr, (flag, r.stderr[-300:])
