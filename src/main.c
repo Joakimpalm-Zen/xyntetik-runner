@@ -4528,18 +4528,25 @@ static int run_quantize(const cli_opts *o) {
     }
     if (!quantize_set_imatrix(o->imatrix)) return 1;
     quantize_set_threads(o->n_threads > 0 ? o->n_threads : plat_cpu_count());
+    // R17.1: the rewrite leaves its record like merge and training do --
+    // the input and output by sha256, every option that shaped the
+    // bytes, and the building binary -- so the file's lineage can be
+    // walked back (--lineage). The input is hashed before the rewrite: an
+    // in-place one (-m F --quantize F) installs over it, and hashed after,
+    // the record named the output as its own parent.
+    char bsha[65] = "", osha[65] = "", xsha[65] = "";
+    if (!envelope_file_sha256(o->model_path, bsha)) {
+        fprintf(stderr, "error: cannot hash %s for the rewrite's provenance record\n",
+                o->model_path);
+        quantize_set_imatrix(NULL);
+        return 1;
+    }
     int qrc = quantize_gguf_plan(o->model_path, o->quant_out, tt, o->prune_experts,
                                  o->type_plan, o->remove_sublayer);
     quantize_set_imatrix(NULL);
     if (qrc != 0) return qrc;
-    // R17.1: the rewrite leaves its record like merge and training do --
-    // the input and output by sha256, every option that shaped the
-    // bytes, and the building binary -- so the file's lineage can be
-    // walked back (--lineage)
-    char bsha[65] = "", osha[65] = "", xsha[65] = "";
     char *exe_path = plat_executable_path();
-    bool hash_ok = envelope_file_sha256(o->model_path, bsha) &&
-                   envelope_file_sha256(o->quant_out, osha) &&
+    bool hash_ok = envelope_file_sha256(o->quant_out, osha) &&
                    exe_path && envelope_file_sha256(exe_path, xsha);
     free(exe_path);
     if (!hash_ok) {
