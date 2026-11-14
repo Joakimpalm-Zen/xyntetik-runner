@@ -368,3 +368,45 @@ def test_an_in_place_rewrite_records_the_file_it_replaced(runner_bin, tmp_path):
     assert after != before and rec["tensors"]["converted"] > 0
     assert rec["base"]["sha256"] == before, rec["base"]
     assert rec["output"]["sha256"] == after, rec["output"]
+
+
+def test_a_rewrite_never_overwrites_the_record_it_links(runner_bin, tmp_path):
+    """A rewrite's record links the record its input came with. A second
+    in-place rewrite of m.gguf would write m.gguf.quant.json over that very
+    record, leaving the link pointing at itself; it is refused before anything
+    is written. A first in-place rewrite links nothing and is allowed."""
+    import hashlib
+    m = tmp_path / "m.gguf"
+    shutil.copy(ROOT / "test.gguf", m)
+    _quantize(runner_bin, m, m, "q8_0", tmp_path)
+    rec = tmp_path / "m.gguf.quant.json"
+    keep = (hashlib.sha256(m.read_bytes()).hexdigest(), rec.read_bytes())
+    p = subprocess.run([str(runner_bin), "-m", str(m), "--quantize", str(m), "--quant", "q4_0"],
+                       cwd=tmp_path, capture_output=True, text=True, timeout=300)
+    assert p.returncode != 0, p.stderr[-600:]
+    assert "m.gguf.quant.json" in p.stderr and "new file" in p.stderr, p.stderr[-600:]
+    assert (hashlib.sha256(m.read_bytes()).hexdigest(), rec.read_bytes()) == keep
+    # to a new file the same input rewrites fine, and links the record intact
+    out = tmp_path / "m4.gguf"
+    rec4 = _quantize(runner_bin, m, out, "q4_0", tmp_path)
+    assert rec4["base"]["record"]["path"] == "m.gguf.quant.json"
+    assert rec4["base"]["record"]["sha256"] == hashlib.sha256(rec.read_bytes()).hexdigest()
+
+
+def test_an_alias_of_the_input_is_its_own_record_where_files_have_no_inode(runner_bin, tmp_path):
+    """Where the platform reports no inode (Windows' fallback, 0), m.gguf and
+    its absolute path must still read as one file, or a second in-place
+    rewrite written to the absolute path replaces the record it just linked.
+    RUNNER_TEST_NO_INODE takes the no-inode branch on any host."""
+    import os as _os
+    m = tmp_path / "m.gguf"
+    shutil.copy(ROOT / "test.gguf", m)
+    env = dict(_os.environ, RUNNER_TEST_NO_INODE="1")
+    first = subprocess.run([str(runner_bin), "-m", "m.gguf", "--quantize", "m.gguf", "--quant", "q8_0"],
+                           cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
+    assert first.returncode == 0, first.stderr[-600:]   # links nothing: allowed
+    rec = (tmp_path / "m.gguf.quant.json").read_bytes()
+    p = subprocess.run([str(runner_bin), "-m", "m.gguf", "--quantize", str(m.resolve()), "--quant", "q4_0"],
+                       cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
+    assert p.returncode != 0 and "new file" in p.stderr, p.stderr[-600:]
+    assert (tmp_path / "m.gguf.quant.json").read_bytes() == rec

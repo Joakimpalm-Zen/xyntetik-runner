@@ -4494,6 +4494,27 @@ static int run_merge_lora(const cli_opts *o) {
 
 // --quantize, with --quant, --type-plan, --prune-experts or
 // --remove-sublayer: rewrite the file and write its provenance record.
+// Whether two paths name one file. Where the platform reports a file's
+// identity, the device and the inode decide (two mounted copies with the
+// same inode on different volumes are two files). Where it reports no inode
+// (Windows' fallback, 0) the canonical paths decide, so an alias such as
+// m.gguf and its absolute path still reads as one. RUNNER_TEST_NO_INODE takes
+// that branch on any host, for the tests.
+static bool same_file(const char *a, const char *b) {
+    if (!strcmp(a, b)) return true;
+    plat_stat_t sa, sb;
+    if (plat_stat(a, &sa) != 0 || plat_stat(b, &sb) != 0) return false;
+    if (sa.st_ino != 0 && sb.st_ino != 0 && !getenv("RUNNER_TEST_NO_INODE"))
+        return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+    char ca[4096], cb[4096];
+    if (!plat_realpath(a, ca, sizeof ca) || !plat_realpath(b, cb, sizeof cb)) return false;
+#ifdef _WIN32
+    return _stricmp(ca, cb) == 0;   // NTFS names are case-blind
+#else
+    return strcmp(ca, cb) == 0;
+#endif
+}
+
 static int run_quantize(const cli_opts *o) {
     int tt;
     // --type-plan decides the type PER TENSOR, so a whole-file --quant
@@ -4540,6 +4561,19 @@ static int run_quantize(const cli_opts *o) {
         // rewrite's own open would
         fprintf(stderr, "error: cannot open %s to hash it for the rewrite's "
                 "provenance record\n", o->model_path);
+        quantize_set_imatrix(NULL);
+        return 1;
+    }
+    // The record links the record the input came with (lineage_put_input).
+    // A second in-place rewrite would write its own record over that very
+    // file, and the link would name a record that no longer exists: refuse
+    // it before anything is written.
+    char linked[4096], own_rec[4096];
+    snprintf(own_rec, sizeof own_rec, "%s.quant.json", o->quant_out);
+    if (lineage_sidecar(o->model_path, linked, sizeof linked) && same_file(linked, own_rec)) {
+        fprintf(stderr, "error: this rewrite's record would overwrite %s, the record of how %s "
+                "was made, which it links; write the rewrite to a new file\n",
+                plat_path_base(linked), plat_path_base(o->model_path));
         quantize_set_imatrix(NULL);
         return 1;
     }

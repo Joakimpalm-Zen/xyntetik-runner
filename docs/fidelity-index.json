@@ -1,5 +1,675 @@
 {
  "schema_version": "xyntetik.runner.fidelity-join.v1",
  "about": "Which file a gold-logits side scored, for reports written before gold-logits.py recorded it (--gguf-a/--repo-a). Only entries read from the report folder itself go here; scripts/fidelity-index.py refuses one that names no side.",
- "sides": {}
+ "sides": {
+  "apertus-8b-instruct-2509-2026-11-12/gold-q4_k_m-w1.json#a": {
+   "repo": "bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF",
+   "name": "swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf",
+   "evidence": "README.md:34-38",
+   "sha256": "5901007f15aec9aabeea401cbe65559671166fc851bbdf8c26f56c2b61e9cd1d"
+  },
+  "apertus-8b-instruct-2509-2026-11-12/gold-q4_k_m-w2.json#a": {
+   "repo": "bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF",
+   "name": "swiss-ai_Apertus-8B-Instruct-2509-Q4_K_M.gguf",
+   "evidence": "README.md:34-38",
+   "sha256": "5901007f15aec9aabeea401cbe65559671166fc851bbdf8c26f56c2b61e9cd1d"
+  },
+  "apertus-8b-instruct-2509-2026-11-12/gold-q8_0-w1.json#a": {
+   "repo": "bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF",
+   "name": "swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf",
+   "evidence": "README.md:34-36",
+   "sha256": "68a9d338961e9cc47362649e703fd67b4f4eb616a16d97b9c2c458aea4e3db7a"
+  },
+  "apertus-8b-instruct-2509-2026-11-12/gold-q8_0-w2.json#a": {
+   "repo": "bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF",
+   "name": "swiss-ai_Apertus-8B-Instruct-2509-Q8_0.gguf",
+   "evidence": "README.md:34-36",
+   "sha256": "68a9d338961e9cc47362649e703fd67b4f4eb616a16d97b9c2c458aea4e3db7a"
+  },
+  "apertus-v1.5-8b-text-2026-11-13/gold-q4_k_m-w1.json#a": {
+   "repo": "Colby/apertus-v1.5-8b-text-Q4_K_M-GGUF",
+   "name": "apertus-v1.5-8b-text-q4_k_m.gguf",
+   "evidence": "README.md:55-57",
+   "sha256": "a037df8d87ff6caacee794ee85f55342f2152e0d359b7389033300c3bee5f299"
+  },
+  "apertus-v1.5-8b-text-2026-11-13/gold-q4_k_m-w2.json#a": {
+   "repo": "Colby/apertus-v1.5-8b-text-Q4_K_M-GGUF",
+   "name": "apertus-v1.5-8b-text-q4_k_m.gguf",
+   "evidence": "README.md:55-57",
+   "sha256": "a037df8d87ff6caacee794ee85f55342f2152e0d359b7389033300c3bee5f299"
+  },
+  "apertus-v1.5-8b-text-2026-11-13/gold-q8_0-w1.json#a": {
+   "repo": "andreasmartin/apertus-v1.5-8b-text-Q8_0-GGUF",
+   "name": "apertus-v1.5-8b-text-q8_0.gguf",
+   "evidence": "README.md:52-54",
+   "sha256": "dea904ad80cd725ec89962abae464477f5d8114d1f4377514f381f7dc2ed202d"
+  },
+  "apertus-v1.5-8b-text-2026-11-13/gold-q8_0-w2.json#a": {
+   "repo": "andreasmartin/apertus-v1.5-8b-text-Q8_0-GGUF",
+   "name": "apertus-v1.5-8b-text-q8_0.gguf",
+   "evidence": "README.md:52-54",
+   "sha256": "dea904ad80cd725ec89962abae464477f5d8114d1f4377514f381f7dc2ed202d"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/dcause-gold-naivecpu-vs-llamacpp.json#b": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q6_K.gguf",
+   "evidence": "README.md:82-84"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q4_k_m-cpu-vs-cuda.json#a": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q4_K_M.gguf",
+   "evidence": "README.md:82-88"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q4_k_m-cpu-vs-cuda.json#b": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q4_K_M.gguf",
+   "evidence": "README.md:82-88"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q4_k_m-cuda-vs-llamacpp.json#a": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q4_K_M.gguf",
+   "evidence": "README.md:82-88"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q4_k_m-cuda-vs-llamacpp.json#b": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q4_K_M.gguf",
+   "evidence": "README.md:82-88"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q5_k_m-cpu-vs-cuda.json#a": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q5_K_M.gguf",
+   "evidence": "README.md:82-87"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q5_k_m-cpu-vs-cuda.json#b": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q5_K_M.gguf",
+   "evidence": "README.md:82-87"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q5_k_m-cuda-vs-llamacpp.json#a": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q5_K_M.gguf",
+   "evidence": "README.md:82-87"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q5_k_m-cuda-vs-llamacpp.json#b": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q5_K_M.gguf",
+   "evidence": "README.md:82-87"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q6_k-cpu-vs-cuda.json#a": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q6_K.gguf",
+   "evidence": "README.md:82-84"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q6_k-cpu-vs-cuda.json#b": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q6_K.gguf",
+   "evidence": "README.md:82-84"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q6_k-cuda-vs-llamacpp.json#a": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q6_K.gguf",
+   "evidence": "README.md:82-84"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q6_k-cuda-vs-llamacpp.json#b": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q6_K.gguf",
+   "evidence": "README.md:82-84"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q8_0-cpu-vs-cuda.json#a": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q8_0.gguf",
+   "evidence": "README.md:82-83"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q8_0-cpu-vs-cuda.json#b": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q8_0.gguf",
+   "evidence": "README.md:82-83"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q8_0-cuda-vs-llamacpp.json#a": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q8_0.gguf",
+   "evidence": "README.md:82-83"
+  },
+  "deepseek-v2-lite-chat-2026-11-04/gold-q8_0-cuda-vs-llamacpp.json#b": {
+   "repo": "mradermacher/DeepSeek-V2-Lite-Chat-GGUF",
+   "name": "DeepSeek-V2-Lite-Chat.Q8_0.gguf",
+   "evidence": "README.md:82-83"
+  },
+  "gpt-oss-20b-2026-11-13/gold-mxfp4-w1-llama.json#a": {
+   "repo": "ggml-org/gpt-oss-20b-GGUF",
+   "name": "gpt-oss-20b-MXFP4.gguf",
+   "evidence": "README.md:44-45",
+   "sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
+  },
+  "gpt-oss-20b-2026-11-13/gold-mxfp4-w1-llama.json#b": {
+   "repo": "ggml-org/gpt-oss-20b-GGUF",
+   "name": "gpt-oss-20b-MXFP4.gguf",
+   "evidence": "README.md:44-45",
+   "sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
+  },
+  "gpt-oss-20b-2026-11-13/gold-mxfp4-w1.json#a": {
+   "repo": "ggml-org/gpt-oss-20b-GGUF",
+   "name": "gpt-oss-20b-MXFP4.gguf",
+   "evidence": "README.md:44-45",
+   "sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
+  },
+  "gpt-oss-20b-2026-11-13/gold-mxfp4-w2.json#a": {
+   "repo": "ggml-org/gpt-oss-20b-GGUF",
+   "name": "gpt-oss-20b-MXFP4.gguf",
+   "evidence": "README.md:44-45",
+   "sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
+  },
+  "granite-4.0-h-micro-2026-11-13/gold-q4_k_m-w1-llama.json#a": {
+   "repo": "ibm-granite/granite-4.0-h-micro-GGUF",
+   "name": "granite-4.0-h-micro-Q4_K_M.gguf",
+   "evidence": "README.md:34-37"
+  },
+  "granite-4.0-h-micro-2026-11-13/gold-q4_k_m-w1-llama.json#b": {
+   "repo": "ibm-granite/granite-4.0-h-micro-GGUF",
+   "name": "granite-4.0-h-micro-Q4_K_M.gguf",
+   "evidence": "README.md:34-37"
+  },
+  "granite-4.0-h-micro-2026-11-13/gold-q4_k_m-w1.json#a": {
+   "repo": "ibm-granite/granite-4.0-h-micro-GGUF",
+   "name": "granite-4.0-h-micro-Q4_K_M.gguf",
+   "evidence": "README.md:34-37"
+  },
+  "granite-4.0-h-micro-2026-11-13/gold-q4_k_m-w2.json#a": {
+   "repo": "ibm-granite/granite-4.0-h-micro-GGUF",
+   "name": "granite-4.0-h-micro-Q4_K_M.gguf",
+   "evidence": "README.md:34-37"
+  },
+  "granite-4.0-h-micro-2026-11-13/gold-q8_0-w1.json#a": {
+   "repo": "ibm-granite/granite-4.0-h-micro-GGUF",
+   "name": "granite-4.0-h-micro-Q8_0.gguf",
+   "evidence": "README.md:34-36",
+   "sha256": "a009111abf2865b7aad1e66326a6c772cddc29bccd22898f470292068b27bb59"
+  },
+  "granite-4.0-h-micro-2026-11-13/gold-q8_0-w2.json#a": {
+   "repo": "ibm-granite/granite-4.0-h-micro-GGUF",
+   "name": "granite-4.0-h-micro-Q8_0.gguf",
+   "evidence": "README.md:34-36",
+   "sha256": "a009111abf2865b7aad1e66326a6c772cddc29bccd22898f470292068b27bb59"
+  },
+  "granite-4.0-h-micro-2026-11-13/gold-unsloth-q4_k_m-w1.json#a": {
+   "repo": "unsloth/granite-4.0-h-micro-GGUF",
+   "name": "granite-4.0-h-micro-Q4_K_M.gguf",
+   "evidence": "README.md:38-40",
+   "sha256": "1f21ba20ca249f6de1b7fcc436d95bba80a11d40060532bf6eb0c6a9e54e5d28"
+  },
+  "granite-4.0-h-micro-2026-11-13/gold-unsloth-q4_k_m-w2.json#a": {
+   "repo": "unsloth/granite-4.0-h-micro-GGUF",
+   "name": "granite-4.0-h-micro-Q4_K_M.gguf",
+   "evidence": "README.md:38-40",
+   "sha256": "1f21ba20ca249f6de1b7fcc436d95bba80a11d40060532bf6eb0c6a9e54e5d28"
+  },
+  "granite-4.2-30b-2026-11-04/gold-logits-q4_k_m-runner-vs-llamacpp.json#a": {
+   "repo": "ibm-granite/granite-4.2-30b-GGUF",
+   "name": "granite-4.2-30b-Q4_K_M.gguf",
+   "evidence": "README.md:63-64"
+  },
+  "granite-4.2-30b-2026-11-04/gold-logits-q4_k_m-runner-vs-llamacpp.json#b": {
+   "repo": "ibm-granite/granite-4.2-30b-GGUF",
+   "name": "granite-4.2-30b-Q4_K_M.gguf",
+   "evidence": "README.md:63-64"
+  },
+  "granite-4.2-30b-2026-11-04/gold-logits-q8_0-runner-vs-llamacpp.json#a": {
+   "repo": "ibm-granite/granite-4.2-30b-GGUF",
+   "name": "granite-4.2-30b-Q8_0.gguf",
+   "evidence": "README.md:63-65"
+  },
+  "granite-4.2-30b-2026-11-04/gold-logits-q8_0-runner-vs-llamacpp.json#b": {
+   "repo": "ibm-granite/granite-4.2-30b-GGUF",
+   "name": "granite-4.2-30b-Q8_0.gguf",
+   "evidence": "README.md:63-65"
+  },
+  "hemmingway-reference-2026-11-01/h1-gold-logits-cpu-q4_k_m-cuda-q4_k_m.json#a": {
+   "repo": "mradermacher/Hemmingway-1-GGUF",
+   "name": "Hemmingway-1.Q4_K_M.gguf",
+   "evidence": "README.md:30"
+  },
+  "hemmingway-reference-2026-11-01/h1-gold-logits-cpu-q4_k_m-cuda-q4_k_m.json#b": {
+   "repo": "mradermacher/Hemmingway-1-GGUF",
+   "name": "Hemmingway-1.Q4_K_M.gguf",
+   "evidence": "README.md:30"
+  },
+  "hemmingway-reference-2026-11-01/h1-gold-logits-cuda-q4_k_m-cpu-q8_0.json#a": {
+   "repo": "mradermacher/Hemmingway-1-GGUF",
+   "name": "Hemmingway-1.Q4_K_M.gguf",
+   "evidence": "README.md:30"
+  },
+  "hemmingway-reference-2026-11-01/h1-gold-logits-cuda-q4_k_m-cpu-q8_0.json#b": {
+   "repo": "mradermacher/Hemmingway-1-GGUF",
+   "name": "Hemmingway-1.Q8_0.gguf",
+   "evidence": "README.md:30-31"
+  },
+  "hemmingway-reference-2026-11-01/h15-gold-logits-cpu-q4_k_m-cuda-q4_k_m.json#a": {
+   "repo": "bartowski/HemmingwayAI_Hemmingway-1.5-GGUF",
+   "name": "HemmingwayAI_Hemmingway-1.5-Q4_K_M.gguf",
+   "evidence": "README.md:32"
+  },
+  "hemmingway-reference-2026-11-01/h15-gold-logits-cpu-q4_k_m-cuda-q4_k_m.json#b": {
+   "repo": "bartowski/HemmingwayAI_Hemmingway-1.5-GGUF",
+   "name": "HemmingwayAI_Hemmingway-1.5-Q4_K_M.gguf",
+   "evidence": "README.md:32"
+  },
+  "hemmingway-reference-2026-11-01/h15-gold-logits-cuda-q4_k_m-cpu-q8_0.json#a": {
+   "repo": "bartowski/HemmingwayAI_Hemmingway-1.5-GGUF",
+   "name": "HemmingwayAI_Hemmingway-1.5-Q4_K_M.gguf",
+   "evidence": "README.md:32"
+  },
+  "hemmingway-reference-2026-11-01/h15-gold-logits-cuda-q4_k_m-cpu-q8_0.json#b": {
+   "repo": "bartowski/HemmingwayAI_Hemmingway-1.5-GGUF",
+   "name": "HemmingwayAI_Hemmingway-1.5-Q8_0.gguf",
+   "evidence": "README.md:32-33"
+  },
+  "lfm2.5-8b-a1b-reference-2026-10-30/gold-logits-8b-a1b-bf16-vs-other-engine-q8.json#a": {
+   "repo": "LiquidAI/LFM2.5-8B-A1B-GGUF",
+   "name": "LFM2.5-8B-A1B-BF16.gguf",
+   "evidence": "README.md:68-71"
+  },
+  "mimo-v2.6-distill-qwen-9b-2026-10-29/gold-logits-cpu-q8-q4.json#a": {
+   "repo": "bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF",
+   "name": "MiMo-V2.6-Distill-Qwen-9B-Q8_0.gguf",
+   "evidence": "README.md:73-74"
+  },
+  "mimo-v2.6-distill-qwen-9b-2026-10-29/gold-logits-cpu-q8-q4.json#b": {
+   "repo": "bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF",
+   "name": "MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf",
+   "evidence": "README.md:74"
+  },
+  "ministral-3-3b-reference-2026-11-01/gold-logits-cpu-q4_k_m-cpu-q8_0.json#a": {
+   "repo": "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
+   "name": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+   "evidence": "README.md:36"
+  },
+  "ministral-3-3b-reference-2026-11-01/gold-logits-cpu-q4_k_m-cpu-q8_0.json#b": {
+   "repo": "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
+   "name": "Ministral-3-3B-Instruct-2512-Q8_0.gguf",
+   "evidence": "README.md:36-37"
+  },
+  "ministral-3-3b-reference-2026-11-01/gold-logits-long-cpu-q8_0.json#a": {
+   "repo": "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
+   "name": "Ministral-3-3B-Instruct-2512-Q8_0.gguf",
+   "evidence": "README.md:36-37"
+  },
+  "mistral-7b-instruct-v0.3-2026-11-13/gold-q4_k_m-w1.json#a": {
+   "repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+   "name": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+   "evidence": "README.md:38-44",
+   "sha256": "1270d22c0fbb3d092fb725d4d96c457b7b687a5f5a715abe1e818da303e562b6"
+  },
+  "mistral-7b-instruct-v0.3-2026-11-13/gold-q4_k_m-w2.json#a": {
+   "repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+   "name": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+   "evidence": "README.md:38-44",
+   "sha256": "1270d22c0fbb3d092fb725d4d96c457b7b687a5f5a715abe1e818da303e562b6"
+  },
+  "mistral-7b-instruct-v0.3-2026-11-13/gold-q8_0-w1.json#a": {
+   "repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+   "name": "Mistral-7B-Instruct-v0.3-Q8_0.gguf",
+   "evidence": "README.md:38-42",
+   "sha256": "404857e776114baada71a08ebd3bba79d721ec7fca99705e7e7b892ae8bc583f"
+  },
+  "mistral-7b-instruct-v0.3-2026-11-13/gold-q8_0-w2.json#a": {
+   "repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+   "name": "Mistral-7B-Instruct-v0.3-Q8_0.gguf",
+   "evidence": "README.md:38-42",
+   "sha256": "404857e776114baada71a08ebd3bba79d721ec7fca99705e7e7b892ae8bc583f"
+  },
+  "nemotron-3-nano-30b-a3b-2026-11-05/gold-q4_k_m-configured.json#a": {
+   "repo": "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF",
+   "name": "NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+   "evidence": "README.md:27-29",
+   "sha256": "0f111a0d49777a2a0178758b1aee14e5365c495987499401ef3ebe87754322a8"
+  },
+  "nemotron-3-nano-30b-a3b-2026-11-05/gold-q4_k_m-floor0.json#a": {
+   "repo": "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF",
+   "name": "NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+   "evidence": "README.md:27-29",
+   "sha256": "0f111a0d49777a2a0178758b1aee14e5365c495987499401ef3ebe87754322a8"
+  },
+  "nemotron-3-nano-30b-a3b-2026-11-05/gold-q4_k_m-runner-vs-llamacpp.json#a": {
+   "repo": "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF",
+   "name": "NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+   "evidence": "README.md:27-29",
+   "sha256": "0f111a0d49777a2a0178758b1aee14e5365c495987499401ef3ebe87754322a8"
+  },
+  "nemotron-3-nano-30b-a3b-2026-11-05/gold-q4_k_m-runner-vs-llamacpp.json#b": {
+   "repo": "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF",
+   "name": "NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+   "evidence": "README.md:27-29",
+   "sha256": "0f111a0d49777a2a0178758b1aee14e5365c495987499401ef3ebe87754322a8"
+  },
+  "nemotron-3.5-lightning-30b-a3b-2026-11-03/gold-logits-q4_0-runner-vs-llamacpp.json#a": {
+   "repo": "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+   "name": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
+   "evidence": "README.md:90-91"
+  },
+  "nemotron-3.5-lightning-30b-a3b-2026-11-03/gold-logits-q4_0-runner-vs-llamacpp.json#b": {
+   "repo": "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+   "name": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
+   "evidence": "README.md:90-91"
+  },
+  "phi-3.5-mini-instruct-2026-11-13/gold-q4_k_m-w1.json#a": {
+   "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+   "name": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+   "evidence": "README.md:32-38",
+   "sha256": "e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5"
+  },
+  "phi-3.5-mini-instruct-2026-11-13/gold-q4_k_m-w2.json#a": {
+   "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+   "name": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+   "evidence": "README.md:32-38",
+   "sha256": "e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5"
+  },
+  "phi-3.5-mini-instruct-2026-11-13/gold-q8_0-w1-c8192.json#a": {
+   "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+   "name": "Phi-3.5-mini-instruct-Q8_0.gguf",
+   "evidence": "README.md:32-36",
+   "sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823"
+  },
+  "phi-3.5-mini-instruct-2026-11-13/gold-q8_0-w1-llama-c4096.json#a": {
+   "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+   "name": "Phi-3.5-mini-instruct-Q8_0.gguf",
+   "evidence": "README.md:32-36",
+   "sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823"
+  },
+  "phi-3.5-mini-instruct-2026-11-13/gold-q8_0-w1-llama-c4096.json#b": {
+   "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+   "name": "Phi-3.5-mini-instruct-Q8_0.gguf",
+   "evidence": "README.md:32-36",
+   "sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823"
+  },
+  "phi-3.5-mini-instruct-2026-11-13/gold-q8_0-w1-llama-c8192.json#a": {
+   "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+   "name": "Phi-3.5-mini-instruct-Q8_0.gguf",
+   "evidence": "README.md:32-36",
+   "sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823"
+  },
+  "phi-3.5-mini-instruct-2026-11-13/gold-q8_0-w1-llama-c8192.json#b": {
+   "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+   "name": "Phi-3.5-mini-instruct-Q8_0.gguf",
+   "evidence": "README.md:32-36",
+   "sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823"
+  },
+  "phi-3.5-mini-instruct-2026-11-13/gold-q8_0-w1.json#a": {
+   "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+   "name": "Phi-3.5-mini-instruct-Q8_0.gguf",
+   "evidence": "README.md:32-36",
+   "sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823"
+  },
+  "phi-3.5-mini-instruct-2026-11-13/gold-q8_0-w2.json#a": {
+   "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+   "name": "Phi-3.5-mini-instruct-Q8_0.gguf",
+   "evidence": "README.md:32-36",
+   "sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823"
+  },
+  "phi-3.5-mini-instruct-longrope-2026-11-13/gold-q8_0-past4096.json#a": {
+   "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+   "name": "Phi-3.5-mini-instruct-Q8_0.gguf",
+   "evidence": "README.md:18-20",
+   "sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823"
+  },
+  "phi-3.5-mini-instruct-longrope-2026-11-13/gold-q8_0-past4096.json#b": {
+   "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+   "name": "Phi-3.5-mini-instruct-Q8_0.gguf",
+   "evidence": "README.md:18-20",
+   "sha256": "76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823"
+  },
+  "qwen2.5-1.5b-instruct-2026-11-13/gold-q4_k_m-bartowski-w1.json#a": {
+   "repo": "bartowski/Qwen2.5-1.5B-Instruct-GGUF",
+   "name": "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+   "evidence": "README.md:48-51"
+  },
+  "qwen2.5-1.5b-instruct-2026-11-13/gold-q4_k_m-bartowski-w2.json#a": {
+   "repo": "bartowski/Qwen2.5-1.5B-Instruct-GGUF",
+   "name": "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+   "evidence": "README.md:48-51"
+  },
+  "qwen2.5-1.5b-instruct-2026-11-13/gold-q4_k_m-publisher-w1-runner-vs-llamacpp.json#a": {
+   "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+   "name": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+   "evidence": "README.md:52-55"
+  },
+  "qwen2.5-1.5b-instruct-2026-11-13/gold-q4_k_m-publisher-w1-runner-vs-llamacpp.json#b": {
+   "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+   "name": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+   "evidence": "README.md:52-55"
+  },
+  "qwen2.5-1.5b-instruct-2026-11-13/gold-q4_k_m-publisher-w1.json#a": {
+   "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+   "name": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+   "evidence": "README.md:52-55"
+  },
+  "qwen2.5-1.5b-instruct-2026-11-13/gold-q4_k_m-publisher-w2.json#a": {
+   "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+   "name": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+   "evidence": "README.md:52-55"
+  },
+  "qwen2.5-1.5b-instruct-2026-11-13/gold-q8_0-bartowski-w1.json#a": {
+   "repo": "bartowski/Qwen2.5-1.5B-Instruct-GGUF",
+   "name": "Qwen2.5-1.5B-Instruct-Q8_0.gguf",
+   "evidence": "README.md:48-50",
+   "sha256": "7185d306cf45956c8c017cd0d3b05ecc6bc18b3ea8eb5c240dce40e87563db7f"
+  },
+  "qwen2.5-1.5b-instruct-2026-11-13/gold-q8_0-bartowski-w2.json#a": {
+   "repo": "bartowski/Qwen2.5-1.5B-Instruct-GGUF",
+   "name": "Qwen2.5-1.5B-Instruct-Q8_0.gguf",
+   "evidence": "README.md:48-50",
+   "sha256": "7185d306cf45956c8c017cd0d3b05ecc6bc18b3ea8eb5c240dce40e87563db7f"
+  },
+  "qwen2.5-1.5b-instruct-2026-11-13/gold-q8_0-publisher-w1-runner-vs-llamacpp.json#a": {
+   "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+   "name": "qwen2.5-1.5b-instruct-q8_0.gguf",
+   "evidence": "README.md:52-54",
+   "sha256": "d7efb072e7724d25048a4fda0a3e10b04bdef5d06b1403a1c93bd9f1240a63c8"
+  },
+  "qwen2.5-1.5b-instruct-2026-11-13/gold-q8_0-publisher-w1-runner-vs-llamacpp.json#b": {
+   "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+   "name": "qwen2.5-1.5b-instruct-q8_0.gguf",
+   "evidence": "README.md:52-54",
+   "sha256": "d7efb072e7724d25048a4fda0a3e10b04bdef5d06b1403a1c93bd9f1240a63c8"
+  },
+  "qwen2.5-1.5b-instruct-2026-11-13/gold-q8_0-publisher-w1.json#a": {
+   "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+   "name": "qwen2.5-1.5b-instruct-q8_0.gguf",
+   "evidence": "README.md:52-54",
+   "sha256": "d7efb072e7724d25048a4fda0a3e10b04bdef5d06b1403a1c93bd9f1240a63c8"
+  },
+  "qwen2.5-1.5b-instruct-2026-11-13/gold-q8_0-publisher-w2.json#a": {
+   "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+   "name": "qwen2.5-1.5b-instruct-q8_0.gguf",
+   "evidence": "README.md:52-54",
+   "sha256": "d7efb072e7724d25048a4fda0a3e10b04bdef5d06b1403a1c93bd9f1240a63c8"
+  },
+  "qwen3.6-27b-2026-11-04/gold-logits-q4_k_m-runner-vs-llamacpp.json#a": {
+   "repo": "ggml-org/Qwen3.6-27B-GGUF",
+   "name": "Qwen3.6-27B-Q4_K_M.gguf",
+   "evidence": "README.md:78-79"
+  },
+  "qwen3.6-27b-2026-11-04/gold-logits-q4_k_m-runner-vs-llamacpp.json#b": {
+   "repo": "ggml-org/Qwen3.6-27B-GGUF",
+   "name": "Qwen3.6-27B-Q4_K_M.gguf",
+   "evidence": "README.md:78-79"
+  },
+  "qwen3.6-27b-2026-11-04/gold-logits-q8_0-runner-vs-llamacpp.json#a": {
+   "repo": "ggml-org/Qwen3.6-27B-GGUF",
+   "name": "Qwen3.6-27B-Q8_0.gguf",
+   "evidence": "README.md:78-81"
+  },
+  "qwen3.6-27b-2026-11-04/gold-logits-q8_0-runner-vs-llamacpp.json#b": {
+   "repo": "ggml-org/Qwen3.6-27B-GGUF",
+   "name": "Qwen3.6-27B-Q8_0.gguf",
+   "evidence": "README.md:78-81"
+  },
+  "r4.32-qwen38-iq3s-reference-2026-11-04/r432-gold-d1window.json#a": {
+   "repo": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
+   "name": "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
+   "evidence": "README.md:45-46"
+  },
+  "r4.32-qwen38-iq3s-reference-2026-11-04/r432-gold-house.json#a": {
+   "repo": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
+   "name": "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf",
+   "evidence": "README.md:45-46"
+  },
+  "smollm2-2026-11-13/gold-1.7b-publisher-q4_k_m-w1-runner-vs-llamacpp.json#a": {
+   "repo": "HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF",
+   "name": "smollm2-1.7b-instruct-q4_k_m.gguf",
+   "evidence": "README.md:56-57"
+  },
+  "smollm2-2026-11-13/gold-1.7b-publisher-q4_k_m-w1-runner-vs-llamacpp.json#b": {
+   "repo": "HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF",
+   "name": "smollm2-1.7b-instruct-q4_k_m.gguf",
+   "evidence": "README.md:56-57"
+  },
+  "smollm2-2026-11-13/gold-1.7b-publisher-q4_k_m-w1.json#a": {
+   "repo": "HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF",
+   "name": "smollm2-1.7b-instruct-q4_k_m.gguf",
+   "evidence": "README.md:56-57"
+  },
+  "smollm2-2026-11-13/gold-1.7b-publisher-q4_k_m-w2.json#a": {
+   "repo": "HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF",
+   "name": "smollm2-1.7b-instruct-q4_k_m.gguf",
+   "evidence": "README.md:56-57"
+  },
+  "smollm2-2026-11-13/gold-1.7b-q4_k_m-w1.json#a": {
+   "repo": "bartowski/SmolLM2-1.7B-Instruct-GGUF",
+   "name": "SmolLM2-1.7B-Instruct-Q4_K_M.gguf",
+   "evidence": "README.md:51-55",
+   "sha256": "77665ea4815999596525c636fbeb56ba8b080b46ae85efef4f0d986a139834d7"
+  },
+  "smollm2-2026-11-13/gold-1.7b-q4_k_m-w2.json#a": {
+   "repo": "bartowski/SmolLM2-1.7B-Instruct-GGUF",
+   "name": "SmolLM2-1.7B-Instruct-Q4_K_M.gguf",
+   "evidence": "README.md:51-55",
+   "sha256": "77665ea4815999596525c636fbeb56ba8b080b46ae85efef4f0d986a139834d7"
+  },
+  "smollm2-2026-11-13/gold-1.7b-q8_0-w1.json#a": {
+   "repo": "bartowski/SmolLM2-1.7B-Instruct-GGUF",
+   "name": "SmolLM2-1.7B-Instruct-Q8_0.gguf",
+   "evidence": "README.md:51-53",
+   "sha256": "0c6e8955788b1253f418c354a4bdc4cf507b8cfe49c48bb10c7c58ae713cfa2a"
+  },
+  "smollm2-2026-11-13/gold-1.7b-q8_0-w2.json#a": {
+   "repo": "bartowski/SmolLM2-1.7B-Instruct-GGUF",
+   "name": "SmolLM2-1.7B-Instruct-Q8_0.gguf",
+   "evidence": "README.md:51-53",
+   "sha256": "0c6e8955788b1253f418c354a4bdc4cf507b8cfe49c48bb10c7c58ae713cfa2a"
+  },
+  "smollm2-2026-11-13/gold-135m-q4_k_m-w1.json#a": {
+   "repo": "bartowski/SmolLM2-135M-Instruct-GGUF",
+   "name": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
+   "evidence": "README.md:43-49"
+  },
+  "smollm2-2026-11-13/gold-135m-q4_k_m-w2.json#a": {
+   "repo": "bartowski/SmolLM2-135M-Instruct-GGUF",
+   "name": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
+   "evidence": "README.md:43-49"
+  },
+  "smollm2-2026-11-13/gold-135m-q8_0-w1.json#a": {
+   "repo": "bartowski/SmolLM2-135M-Instruct-GGUF",
+   "name": "SmolLM2-135M-Instruct-Q8_0.gguf",
+   "evidence": "README.md:43-45",
+   "sha256": "5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83"
+  },
+  "smollm2-2026-11-13/gold-135m-q8_0-w2.json#a": {
+   "repo": "bartowski/SmolLM2-135M-Instruct-GGUF",
+   "name": "SmolLM2-135M-Instruct-Q8_0.gguf",
+   "evidence": "README.md:43-45",
+   "sha256": "5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83"
+  },
+  "spark-2026-10-30/gold-logits-cpu-x2.5-q8-q4.json#a": {
+   "repo": "XHToken/Spark-X2.5-4B-GGUF",
+   "name": "Spark-X2.5-4B-Q8_0.gguf",
+   "evidence": "README.md:56-57"
+  },
+  "spark-2026-10-30/gold-logits-cpu-x2.5-q8-q4.json#b": {
+   "repo": "XHToken/Spark-X2.5-4B-GGUF",
+   "name": "Spark-X2.5-4B-Q4_K_M.gguf",
+   "evidence": "README.md:56-57"
+  },
+  "spark-2026-10-30/gold-logits-cpu-x2.6-q8-q4.json#a": {
+   "repo": "XHToken/Spark-X2.6-4B-GGUF",
+   "name": "Spark-X2.6-4B-Q8_0.gguf",
+   "evidence": "README.md:54-55"
+  },
+  "spark-2026-10-30/gold-logits-cpu-x2.6-q8-q4.json#b": {
+   "repo": "XHToken/Spark-X2.6-4B-GGUF",
+   "name": "Spark-X2.6-4B-Q4_K_M.gguf",
+   "evidence": "README.md:54-55"
+  },
+  "spark-2026-10-30/gold-logits-llamacpp-x2.5-q4_k_m-text.json#a": {
+   "repo": "XHToken/Spark-X2.5-4B-GGUF",
+   "name": "Spark-X2.5-4B-Q4_K_M.gguf",
+   "evidence": "README.md:56-57"
+  },
+  "spark-2026-10-30/gold-logits-llamacpp-x2.5-q4_k_m.json#a": {
+   "repo": "XHToken/Spark-X2.5-4B-GGUF",
+   "name": "Spark-X2.5-4B-Q4_K_M.gguf",
+   "evidence": "README.md:56-57"
+  },
+  "spark-2026-10-30/gold-logits-llamacpp-x2.5-q8_0-text.json#a": {
+   "repo": "XHToken/Spark-X2.5-4B-GGUF",
+   "name": "Spark-X2.5-4B-Q8_0.gguf",
+   "evidence": "README.md:56-57"
+  },
+  "spark-2026-10-30/gold-logits-llamacpp-x2.5-q8_0.json#a": {
+   "repo": "XHToken/Spark-X2.5-4B-GGUF",
+   "name": "Spark-X2.5-4B-Q8_0.gguf",
+   "evidence": "README.md:56-57"
+  },
+  "spark-2026-10-30/gold-logits-llamacpp-x2.6-q4_k_m-text.json#a": {
+   "repo": "XHToken/Spark-X2.6-4B-GGUF",
+   "name": "Spark-X2.6-4B-Q4_K_M.gguf",
+   "evidence": "README.md:54-55"
+  },
+  "spark-2026-10-30/gold-logits-llamacpp-x2.6-q4_k_m.json#a": {
+   "repo": "XHToken/Spark-X2.6-4B-GGUF",
+   "name": "Spark-X2.6-4B-Q4_K_M.gguf",
+   "evidence": "README.md:54-55"
+  },
+  "spark-2026-10-30/gold-logits-llamacpp-x2.6-q8_0-text.json#a": {
+   "repo": "XHToken/Spark-X2.6-4B-GGUF",
+   "name": "Spark-X2.6-4B-Q8_0.gguf",
+   "evidence": "README.md:54-55"
+  },
+  "spark-2026-10-30/gold-logits-llamacpp-x2.6-q8_0.json#a": {
+   "repo": "XHToken/Spark-X2.6-4B-GGUF",
+   "name": "Spark-X2.6-4B-Q8_0.gguf",
+   "evidence": "README.md:54-55"
+  },
+  "stablelm-2-1.6b-chat-2026-11-13/gold-i1-q4_k_m-w1.json#a": {
+   "repo": "mradermacher/stablelm-2-1_6b-chat-i1-GGUF",
+   "name": "stablelm-2-1_6b-chat.i1-Q4_K_M.gguf",
+   "evidence": "README.md:44-45"
+  },
+  "stablelm-2-1.6b-chat-2026-11-13/gold-i1-q4_k_m-w2.json#a": {
+   "repo": "mradermacher/stablelm-2-1_6b-chat-i1-GGUF",
+   "name": "stablelm-2-1_6b-chat.i1-Q4_K_M.gguf",
+   "evidence": "README.md:44-45"
+  },
+  "stablelm-2-1.6b-chat-2026-11-13/gold-q4_k_m-w1.json#a": {
+   "repo": "mradermacher/stablelm-2-1_6b-chat-GGUF",
+   "name": "stablelm-2-1_6b-chat.Q4_K_M.gguf",
+   "evidence": "README.md:40-43"
+  },
+  "stablelm-2-1.6b-chat-2026-11-13/gold-q4_k_m-w2.json#a": {
+   "repo": "mradermacher/stablelm-2-1_6b-chat-GGUF",
+   "name": "stablelm-2-1_6b-chat.Q4_K_M.gguf",
+   "evidence": "README.md:40-43"
+  },
+  "stablelm-2-1.6b-chat-2026-11-13/gold-q8_0-w1.json#a": {
+   "repo": "mradermacher/stablelm-2-1_6b-chat-GGUF",
+   "name": "stablelm-2-1_6b-chat.Q8_0.gguf",
+   "evidence": "README.md:40-42",
+   "sha256": "70fa97127815cffc3e5dd004976c8986fca1011c74bb8fd581c784cdc00b9760"
+  },
+  "stablelm-2-1.6b-chat-2026-11-13/gold-q8_0-w2.json#a": {
+   "repo": "mradermacher/stablelm-2-1_6b-chat-GGUF",
+   "name": "stablelm-2-1_6b-chat.Q8_0.gguf",
+   "evidence": "README.md:40-42",
+   "sha256": "70fa97127815cffc3e5dd004976c8986fca1011c74bb8fd581c784cdc00b9760"
+  }
+ }
 }

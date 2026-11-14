@@ -20,6 +20,7 @@ import argparse
 import html
 import json
 import pathlib
+import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -54,11 +55,80 @@ def _roster_names(roster):
     return {n: v[0] for n, v in seen.items() if len({(x["repo"], x["sha256"]) for x in v}) == 1}
 
 
+def _read_with(v, model):
+    """The engine a side was read with: its recorded engine (gold-logits from
+    R7.21.2 on), else a score file's runner --score, else an endpoint whose
+    engine the report does not say."""
+    eng = v.get("engine")
+    if isinstance(eng, dict) and eng.get("name") and eng["name"] != "unknown":
+        return f"{eng['name']} {eng['version']}" if eng.get("version") else eng["name"]
+    if str(v.get("endpoint", "")).endswith(".json") or model == "score file":
+        return "runner --score"
+    return "an HTTP endpoint"
+
+
+def _rows(lines):
+    """The cited lines as rows: a list item or a table row starts one, and a
+    line that starts neither continues the row above (a wrapped item)."""
+    rows = []
+    for line in lines:
+        if not line.strip():
+            continue
+        if re.match(r"\s*([-*+]|\d+\.)\s", line) or line.lstrip().startswith("|") or not rows:
+            rows.append(line)
+        else:
+            rows[-1] += "\n" + line
+    return rows
+
+
+def _whole(token, text, word=r"[\w.\-/]"):
+    return re.search(rf"(?<!{word}){re.escape(token)}(?!{word})", text) is not None
+
+
+def _check_evidence(reports, key, entry):
+    """A join entry is read from its report's own folder: "evidence" names
+    FILE:LINE or FILE:FIRST-LAST there. In those lines the file name is a
+    whole token in a row (one list item with its wrapped lines, or one table
+    row), a sha256 the entry gives is a full 64-hex token in that same row,
+    and the repository id is a whole token in the cited lines (a list's
+    header, or a table's earlier row a "same" points back to). Anything else
+    refuses the join."""
+    m = re.fullmatch(r"([\w.\-]+):(\d+)(?:-(\d+))?", str(entry.get("evidence") or ""))
+    if not m:
+        return "no evidence (FILE:LINE in the report folder)"
+    folder = (reports / key.split("#", 1)[0]).parent
+    f = folder / m.group(1)
+    if not f.is_file():
+        return f"evidence file {m.group(1)} is not in {folder.name}"
+    lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+    lo, hi = int(m.group(2)), int(m.group(3) or m.group(2))
+    cited = lines[lo - 1:hi]
+    text = "\n".join(cited)
+    repo, name, sha = entry.get("repo"), entry.get("name"), entry.get("sha256")
+    if not repo or not _whole(repo, text):
+        return f"{m.group(0)} does not name the repository {repo} as a whole id"
+    rows = [r for r in _rows(cited) if name and _whole(name, r)]
+    if not rows:
+        return f"{m.group(0)} does not name the file {name} as a whole name"
+    if sha is not None:
+        if not re.fullmatch(r"[0-9a-f]{64}", str(sha)):
+            return f"sha256 {sha} is not a full sha256"
+        if not any(_whole(sha, r, r"[0-9a-fA-F]") for r in rows):
+            return f"{m.group(0)} does not give {name} the sha256 {sha} in its own row"
+    return None
+
 def collect(reports, join_path, roster):
     join = json.loads(join_path.read_text(encoding="utf-8")) if join_path.exists() else {"sides": {}}
     if join.get("schema_version", JOIN_SCHEMA) != JOIN_SCHEMA:
         raise SystemExit(f"error: {join_path} is not {JOIN_SCHEMA}")
     names = _roster_names(roster)
+    bad = []
+    for key, entry in sorted(join.get("sides", {}).items()):
+        why = _check_evidence(reports, key, entry)
+        if why and (reports / key.split("#", 1)[0]).exists():
+            bad.append(f"{key}: {why}")
+    if bad:
+        raise SystemExit("error: join entries not held by their folder:\n  " + "\n  ".join(bad))
     rows, keys, n_reports = [], set(), 0
     for rel, d in _gold_reports(reports):
         n_reports += 1
@@ -78,8 +148,7 @@ def collect(reports, join_path, roster):
                 "label": model or "unnamed", "reference": s.get("hf", ""),
                 "positions": int(s.get("positions", 0)),
                 "corpus": pathlib.PurePosixPath(str(s.get("corpus", ""))).name,
-                "read_with": "runner --score" if str(v.get("endpoint", "")).endswith(".json")
-                             or model == "score file" else "an HTTP endpoint",
+                "read_with": _read_with(v, model),
                 "kld": kld, "mq": mq, "top1": float(v.get("top1_agreement_pct", 0.0)),
                 "verdict": "pass" if kld <= MAX_KLD and mq >= MIN_MQ else "fail",
             })

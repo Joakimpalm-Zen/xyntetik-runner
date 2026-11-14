@@ -45,9 +45,12 @@ def _fixture(tmp_path):
         "b": _side("Roster-Q6_K.gguf", 0.05, 97.0)})             # the roster; on the bar: passes
     _report(reports / "three" / "other.json", "Pub/Model@1234abcd", {"a": _side("x", 0.0, 100.0)})
     (reports / "three" / "other.json").write_text(json.dumps({"schema_version": "something.else"}))
+    (reports / "two" / "README.md").write_text(
+        "# two\n\n- `third/joined-GGUF`:\n  - Q8_0 `Joined-Q8_0.gguf`, sha256\n    `" + "cc" * 32 + "`\n")
     join = tmp_path / "join.json"
     join.write_text(json.dumps({"schema_version": "xyntetik.runner.fidelity-join.v1", "sides": {
-        "two/gold.json#a": {"repo": "third/joined-GGUF", "name": "Joined-Q8_0.gguf"}}}))
+        "two/gold.json#a": {"repo": "third/joined-GGUF", "name": "Joined-Q8_0.gguf",
+                            "sha256": "cc" * 32, "evidence": "README.md:3-5"}}}))
     roster = tmp_path / "roster.json"
     roster.write_text(json.dumps({"rows": [{"id": "r", "files": [
         {"name": "Roster-Q6_K.gguf", "repo": "rost/er-GGUF", "sha256": "bb" * 32}]}]}))
@@ -138,3 +141,158 @@ def test_a_roster_name_pinned_twice_identifies_nothing(tmp_path):
     md = (out / "docs" / "fidelity-index.md").read_text()
     assert "rost/er-GGUF" not in md, md
     assert "file not identified (the report calls it Roster-Q6_K.gguf)" in md, md
+
+# R7.21.2: which engine served an HTTP side, as the server says itself.
+
+import contextlib  # noqa: E402
+import http.server  # noqa: E402
+import threading  # noqa: E402
+
+
+def _gold_module():
+    spec = importlib.util.spec_from_file_location("gold_logits", ROOT / "scripts" / "gold-logits.py")
+    gl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gl)
+    return gl
+
+
+@contextlib.contextmanager
+def _stand_in(routes, server_header):
+    class H(http.server.BaseHTTPRequestHandler):
+        def version_string(self):
+            return server_header
+
+        def do_GET(self):
+            body = routes.get(self.path)
+            self.send_response(200 if body is not None else 404)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(body if body is not None else {"error": "no"}).encode())
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_an_endpoint_says_which_engine_it_is():
+    gl = _gold_module()
+    with _stand_in({"/v1/capabilities": {"object": "runner.capabilities", "version": "1.18.0"}}, "x") as ep:
+        assert gl.endpoint_engine(ep) == {"name": "runner", "version": "1.18.0", "from": "/v1/capabilities"}
+    with _stand_in({"/props": {"build_info": "b10353-abcdef0"}}, "llama.cpp") as ep:
+        assert gl.endpoint_engine(ep) == {"name": "llama.cpp", "version": "b10353-abcdef0", "from": "/props"}
+    # a Server header is not an engine: a proxy answering 404 on both paths
+    # with "Server: nginx" forwards to an engine it does not name
+    with _stand_in({}, "nginx") as ep:
+        assert gl.endpoint_engine(ep) == {"name": "unknown", "version": None, "from": None,
+                                          "server_header": "nginx"}
+    assert gl.endpoint_engine("http://127.0.0.1:9") == {"name": "unknown", "version": None, "from": None}
+
+
+def test_the_index_reads_a_sides_engine(tmp_path):
+    reports, join, roster = _fixture(tmp_path)
+    rep = reports / "two" / "gold.json"
+    d = json.loads(rep.read_text())
+    d["summary"]["sides"]["a"]["engine"] = {"name": "llama.cpp", "version": "b10353-abcdef0", "from": "/props"}
+    rep.write_text(json.dumps(d))
+    out = tmp_path / "out"
+    r = _run("--write", "--reports", reports, "--join", join, "--roster", roster, "--out", out)
+    assert r.returncode == 0, r.stderr
+    md = (out / "docs" / "fidelity-index.md").read_text()
+    assert any("Joined-Q8_0.gguf" in l and "| llama.cpp b10353-abcdef0 |" in l for l in md.splitlines()), md
+
+
+
+# R7.21.1: a join entry cites the lines of its own report folder that say which
+# file the side scored, and the script holds the entry to them.
+
+def _join_with(tmp_path, **entry):
+    reports, join, roster = _fixture(tmp_path)
+    j = json.loads(join.read_text())
+    j["sides"]["two/gold.json#a"].update(entry)
+    join.write_text(json.dumps(j))
+    return _run("--write", "--reports", reports, "--join", join, "--roster", roster, "--out", tmp_path / "o")
+
+
+def test_a_join_entry_must_cite_its_folder(tmp_path):
+    r = _join_with(tmp_path, evidence=None)
+    assert r.returncode != 0 and "two/gold.json#a" in r.stderr and "evidence" in r.stderr
+
+
+def test_a_join_entry_must_match_the_lines_it_cites(tmp_path):
+    for bad in ({"name": "Other-Q8_0.gguf"}, {"sha256": "dd" * 32}, {"repo": "else/where-GGUF"},
+                {"evidence": "README.md:1-2"}, {"evidence": "MISSING.md:3"}):
+        r = _join_with(tmp_path, **bad)
+        assert r.returncode != 0 and "two/gold.json#a" in r.stderr, (bad, r.stderr)
+
+
+def test_the_committed_join_is_held_to_its_evidence():
+    # the committed join passes the same checks: --check runs them
+    j = json.loads((ROOT / "docs" / "fidelity-index.json").read_text())
+    assert all(e.get("evidence") for e in j["sides"].values())
+    assert _run("--check").returncode == 0
+
+
+
+def test_a_broken_probe_answer_is_unknown_and_never_aborts():
+    """A probe whose Content-Length exceeds its body raises IncompleteRead from
+    read(); the probe runs after the measurement, so any failure of it is
+    "unknown", never an exception out of endpoint_engine."""
+    gl = _gold_module()
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.write(b'{"object":')
+            self.wfile.flush()
+            self.close_connection = True
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        got = gl.endpoint_engine(f"http://127.0.0.1:{srv.server_address[1]}")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert got["name"] == "unknown" and got["version"] is None, got
+
+
+def test_evidence_ties_name_and_sha_to_one_row_with_whole_tokens(tmp_path):
+    """One README row names a file and its sha256 (the same line, or the lines
+    a list item or table row wraps onto); the repo is a whole token in the
+    cited lines. A name paired with another row's sha256, a sha256 prefix, or
+    a repo or name that only contains the cited text are refused."""
+    readme = ("# r\n\n- `third/joined-GGUF` at abc:\n"
+              "  - Q8_0 `Joined-Q8_0.gguf`, sha256\n    `" + "c8" * 32 + "`;\n"
+              "  - Q4_K_M `Joined-Q4_K_M.gguf`, sha256\n    `" + "c4" * 32 + "`.\n")
+    good = {"repo": "third/joined-GGUF", "name": "Joined-Q4_K_M.gguf", "sha256": "c4" * 32,
+            "evidence": "README.md:3-7"}
+    cases = [({}, True),
+             ({"sha256": "c8" * 32}, False),                   # the other row's sha256
+             ({"sha256": "c4" * 4}, False),                    # a prefix is not a sha256
+             ({"repo": "third/joined"}, False),                # a part of the repo id
+             ({"name": "Joined-Q4_K_M.gg"}, False)]            # a part of the file name
+    for i, (change, ok) in enumerate(cases):
+        d = tmp_path / f"case{i}"
+        d.mkdir()
+        reports, join, roster = _fixture(d)
+        (reports / "two" / "README.md").write_text(readme)
+        j = json.loads(join.read_text())
+        j["sides"]["two/gold.json#a"] = {**good, **change}
+        join.write_text(json.dumps(j))
+        r = _run("--write", "--reports", reports, "--join", join, "--roster", roster,
+                 "--out", reports.parent / "o")
+        assert (r.returncode == 0) == ok, (change, r.stderr[-400:])

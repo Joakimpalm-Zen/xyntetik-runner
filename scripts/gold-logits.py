@@ -57,6 +57,7 @@ import json
 import math
 import os
 import sys
+import urllib.error
 import urllib.request
 
 
@@ -70,6 +71,38 @@ def side_file(path, repo):
             h.update(chunk)
     return {"repo": repo, "name": os.path.basename(path), "sha256": h.hexdigest()}
 
+
+def endpoint_engine(endpoint, timeout=30):
+    """Which engine served an HTTP side, as the server says itself (R7.21.2):
+    Runner answers /v1/capabilities with runner.capabilities and its version,
+    llama.cpp's server answers /props with its build_info. Anything else is
+    unknown: a Server header names whatever answered (a reverse proxy in front
+    of an engine, say), not the engine, so it is kept as a note only. The
+    probe runs after the measurement, so any failure of it is unknown, never
+    an exception that costs the report; nothing is inferred from a port or a
+    model name."""
+    def get(path):
+        try:
+            with urllib.request.urlopen(f"{endpoint}{path}", timeout=timeout) as r:
+                server = r.headers.get("Server")
+                try:
+                    return server, json.loads(r.read())
+                except Exception:   # a short or broken body (IncompleteRead), not JSON
+                    return server, None
+        except urllib.error.HTTPError as e:
+            return e.headers.get("Server"), None
+        except Exception:           # refused, reset, timed out, malformed: unknown
+            return None, None
+    hdr, caps = get("/v1/capabilities")
+    if isinstance(caps, dict) and caps.get("object") == "runner.capabilities":
+        return {"name": "runner", "version": caps.get("version"), "from": "/v1/capabilities"}
+    hdr2, props = get("/props")
+    if isinstance(props, dict) and props.get("build_info"):
+        return {"name": "llama.cpp", "version": props["build_info"], "from": "/props"}
+    out = {"name": "unknown", "version": None, "from": None}
+    if hdr or hdr2:
+        out["server_header"] = hdr or hdr2
+    return out
 
 class _Obj(dict):
     """A JSON object that also keeps its members in order, duplicates
@@ -955,6 +988,9 @@ def main():
             "max_dropped_gold_mass": max((r[name]["dropped_gold_mass"] for r in rows), default=0.0),
             "id_spelling_mismatches": sum(r[name]["id_spelling_mismatches"] for r in rows),
         }
+        endpoint = getattr(args, f"endpoint_{name}")
+        summary["sides"][name]["engine"] = (endpoint_engine(endpoint) if endpoint else
+                                            {"name": "runner", "version": None, "from": "score file"})
         gguf, repo = getattr(args, f"gguf_{name}"), getattr(args, f"repo_{name}")
         if gguf:
             summary["sides"][name]["file"] = side_file(gguf, repo)
