@@ -97,6 +97,7 @@ typedef struct {
                                 p_dn_gnorm, p_q35_split;
     id<MTLComputePipelineState> p_m2_conv, p_m2_scan, p_m2_gnorm;   // Mamba-2
     id<MTLComputePipelineState> p_relu2;   // nemotron_h's gate-less MLP
+    id<MTLComputePipelineState> p_xielu;   // Apertus's gate-less MLP
     id<MTLBuffer> dn_qkv, dn_z, dn_braw, dn_araw, dn_aux, dn_y;
     id<MTLBuffer> dn_conv, dn_state;
     id<MTLBuffer> *dn_cw, *dn_dt, *dn_A, *dn_nw;   // per layer, nil off recurrent layers
@@ -259,6 +260,7 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     [g->p_dn_recur release]; [g->p_dn_gnorm release]; [g->p_q35_split release];
     [g->p_m2_conv release]; [g->p_m2_scan release]; [g->p_m2_gnorm release];
     [g->p_relu2 release];
+    [g->p_xielu release];
     [g->p_lora_a release]; [g->p_lora_b release];
     metal_replay_flush(g);
     lora_dev_release(g);
@@ -1903,6 +1905,7 @@ static bool metal_admit(model_t *m) {
         return false;
     if (m->ffn_act != ACT_SILU && m->ffn_act != ACT_GELU &&
         !(m->n_expert == 0 && m->ffn_act == ACT_GELU_ERF) &&
+        !(m->n_expert == 0 && m->ffn_act == ACT_XIELU) &&
         !(m->n_expert > 0 && m->gptoss && m->ffn_act == ACT_SWIGLU_OAI)) {
         fprintf(stderr, "gpu: '%s' FFN activation is not on the metal backend yet — using CPU\n",
                 m->arch);
@@ -2003,6 +2006,7 @@ static void metal_make_pipelines(gpu_t *g, id<MTLDevice> dev, id<MTLLibrary> lib
     g->p_m2_scan      = mk_pipeline(dev, lib, @"k_m2_scan");
     g->p_m2_gnorm     = mk_pipeline(dev, lib, @"k_m2_gnorm");
     g->p_relu2        = mk_pipeline(dev, lib, @"k_relu2");
+    g->p_xielu        = mk_pipeline(dev, lib, @"k_xielu");
     g->p_gelu_erf     = mk_pipeline(dev, lib, @"k_gelu_erf_mul");
     g->p_scale        = mk_pipeline(dev, lib, @"k_scale");
     g->p_moe_route    = mk_pipeline(dev, lib, @"k_moe_route");
@@ -2182,6 +2186,8 @@ static bool metal_check_pipelines(model_t *m, gpu_t *g) {
         (!g->p_dn_ring || !g->p_m2_conv || !g->p_m2_scan || !g->p_m2_gnorm ||
          (m->ffn_relu2 && !g->p_relu2)))
         return gpu_init_fail(m, g, nil, "Mamba-2 pipeline allocation");
+    if (m->ffn_act == ACT_XIELU && !g->p_xielu)
+        return gpu_init_fail(m, g, nil, "xIELU pipeline allocation");
     // Admission and the pipeline tables agree BY CONSTRUCTION: enc_mv and
     // enc_moe_mv index them by type with no nil check, and a nil pipeline
     // state raises mid-forward. Checking from the loader's own predicates
@@ -4548,6 +4554,22 @@ static bool metal_enc_ffn(metal_fwd *F, int l, const metal_layer_plan *P) {
             [F->e setComputePipelineState:g->p_relu2];
             [F->e setBuffer:g->hb offset:0 atIndex:0];
             [F->e setBytes:&cnt length:4 atIndex:1];
+            g_disp.elem++;
+            [F->e dispatchThreads:MTLSizeMake(cnt, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        } else if (!ly->w_gate && m->ffn_act == ACT_XIELU) {
+            // Apertus's gate-less MLP: down(xielu(up(x))), the up adapter on
+            // the up output as the CPU's LORA_HOOK puts it, then xIELU in
+            // place at this layer's effective parameters
+            enc_mv_n(g, F->e, m, ly->w_up, g->xb, 0, g->hb, 0,
+                     n_embd, nff_l, nil, n, xdim, nff_l);
+            enc_lora(g, F->e, l, LW_UP, g->xb, g->hb, n_embd, nff_l, n, xdim, nff_l);
+            int cnt = n * nff_l;
+            float p4[4] = { m->xielu_an[l], m->xielu_ap[l], m->xielu_b[l], m->xielu_eps[l] };
+            [F->e setComputePipelineState:g->p_xielu];
+            [F->e setBuffer:g->hb offset:0 atIndex:0];
+            [F->e setBytes:&cnt length:4 atIndex:1];
+            [F->e setBytes:p4 length:sizeof p4 atIndex:2];
             g_disp.elem++;
             [F->e dispatchThreads:MTLSizeMake(cnt, 1, 1)
               threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
