@@ -102,12 +102,18 @@ static size_t generation_prompt_at(int tmpl, const chat_msg *msgs, int n_msgs,
                                    int thinking, const jv *tools, const char *prompt) {
     size_t plen = strlen(prompt), at = 0;
     // A head that does not fit in the prompt's own length is not its prefix.
-    char *head = malloc(plen + 1);
+    // Room beyond it for what a template writes only when no reply follows
+    // (render_state.close_len): that closing is dropped before the compare,
+    // and may be longer than the generation prompt it stands in for.
+    size_t cap = plen + 1 + 64;
+    char *head = malloc(cap);
     if (!head) return 0;
+    render_state hs;
     size_t n = render_messages_state(tmpl, msgs, n_msgs, false, thinking, tools,
-                                     head, plen + 1, NULL);
-    size_t hn = n == SIZE_MAX ? 0 : strlen(head);
-    if (hn && hn < plen && n < plen + 1 && !memcmp(head, prompt, hn)) at = hn;
+                                     head, cap, &hs);
+    size_t hn = n == SIZE_MAX || n >= cap ? 0 : strlen(head);
+    if (hn && hs.close_len && hs.close_len < hn) hn -= hs.close_len;
+    if (hn && hn < plen && !memcmp(head, prompt, hn)) at = hn;
     free(head);
     return at;
 }
@@ -117,10 +123,12 @@ static size_t generation_prompt_at(int tmpl, const chat_msg *msgs, int n_msgs,
 // those bytes are what the prompt starts with. An agent's preamble is its
 // system message and tool list; everything after it changes per session.
 static size_t preamble_at(int tmpl, const chat_msg *msgs, int n_msgs,
-                          int thinking, const jv *tools, const char *prompt) {
+                          int thinking, const jv *tools, const char *prompt,
+                          bool *has_system) {
     int k = 0;
     while (k < n_msgs && msgs[k].role && !strcmp(msgs[k].role, "system")) k++;
-    if (k == 0 || k == n_msgs) return 0;
+    *has_system = k > 0 && k < n_msgs;
+    if (!*has_system) return 0;
     return generation_prompt_at(tmpl, msgs, k, thinking, tools, prompt);
 }
 
@@ -148,7 +156,7 @@ char *render_prompt_state_alloc(int tmpl, const chat_msg *msgs, int n_msgs,
             if (st && add_assistant)
                 st->gen_at = generation_prompt_at(tmpl, msgs, n_msgs, thinking, tools, p);
             if (st && add_assistant && kvsnap_auto_on())
-                st->pre_at = preamble_at(tmpl, msgs, n_msgs, thinking, tools, p);
+                st->pre_at = preamble_at(tmpl, msgs, n_msgs, thinking, tools, p, &st->pre_sys);
             return p;
         }
         free(p);

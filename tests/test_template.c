@@ -3639,19 +3639,32 @@ static void test_the_generation_prompt_is_a_suffix_or_the_family_is_listed(void)
         for (size_t h = 0; h < sizeof hist / sizeof *hist; h++)
             for (size_t k = 0; k < sizeof modes / sizeof *modes; k++) {
                 static char full[8192], head[8192];
-                size_t fn = render_messages(t, hist[h].m, hist[h].n, true, modes[k], full, sizeof full);
-                size_t hn = render_messages(t, hist[h].m, hist[h].n, false, modes[k], head, sizeof head);
+                // As the server's boundary finder does it (generation_prompt_at):
+                // both renders with their ownership marks in place, and what a
+                // template writes only because no reply follows dropped from
+                // the head (R6.81). close_len counts marked bytes, so the
+                // marks stay until after the subtraction.
+                render_state fs, hs;
+                size_t fn = render_messages_state(t, hist[h].m, hist[h].n, true, modes[k], NULL,
+                                                  full, sizeof full, &fs);
+                size_t hn = render_messages_state(t, hist[h].m, hist[h].n, false, modes[k], NULL,
+                                                  head, sizeof head, &hs);
                 assert(fn < sizeof full && hn < sizeof head);
+                assert(fs.close_len == 0);   // a render that asks for a reply closes nothing
                 size_t hl = strlen(head);
+                assert(hs.close_len <= hl);
+                hl -= hs.close_len;
                 if (hl && hl < strlen(full) && !memcmp(head, full, hl)) with++;
                 else without++;
             }
-        // No boundary: the [INST] families and Phi, whose last message and
-        // generation prompt are one piece of text, and raw, which has no
-        // turns. None of them is a recurrent family today.
+        // No boundary: the [INST] families, whose last message and generation
+        // prompt are one piece of text, and raw, which has no turns. None of
+        // them is a recurrent family today. Phi-3 and Phi-4 have one: they
+        // close a render without a reply with their end-of-text token, which
+        // the renderer reports and the finder drops.
         bool listed = t == TMPL_LLAMA2 || t == TMPL_LLAMA2_FALLBACK || t == TMPL_MISTRAL ||
                       t == TMPL_MISTRAL_V1 || t == TMPL_MISTRAL_NEMO || t == TMPL_MISTRAL_SYS ||
-                      t == TMPL_PHI3 || t == TMPL_PHI4 || t == TMPL_RAW;
+                      t == TMPL_RAW;
         if ((listed ? with : without) != 0) {
             fprintf(stderr, "%s: the generation prompt is a suffix on %d of %d renders, and the "
                     "family is %s as having no message boundary\n", template_name(t), with,
