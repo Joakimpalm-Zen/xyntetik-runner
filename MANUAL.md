@@ -4129,6 +4129,17 @@ or dump internals for the tools under `scripts/` (`moe-prune-plan.py` consumes
 not interface: names, formats and defaults change without notice, and nothing
 outside this repository should depend on them.
 
+The kernel knobs and A/B arms a test reads, and two environment controls:
+
+| Switch | What it does |
+|---|---|
+| `RUNNER_CUDA_WINDOW=N` | Caps the CUDA prompt window at `N` columns: a multiple of 64, never wider than the plan allows, as `-b` caps it. A diagnostic and A/B control; `--verify` restores a record's window itself. |
+| `RUNNER_METAL_MOE_BATCH=0` | Routes a Metal MoE prompt batch one token per routing dispatch instead of the whole batch in one. The same bytes either way. |
+| `RUNNER_MV_FUSE=0` | Sends CPU projections that read the same input (Q, K and V; gate and up) as one pool dispatch each instead of one together. The same bytes either way. |
+| `RUNNER_TRAIN_MM_KERNEL=warp`, `RUNNER_TRAIN_MVT_KERNEL=chain` | `--train-gpu`'s kernel families, for comparison: `warp` takes the per-warp training matmuls instead of the register-blocked ones (the arithmetic before R8.20), and `chain` the CPU chain's transpose matvec in device mode. Within a family every column gets the same bits; across families they differ, so one family serves a whole run. Read per call, so the training gate can compare them. |
+| `RUNNER_CURL=PATH` | The curl program Hub downloads run (default `curl` on `PATH`). The tests point it at a stand-in. |
+| `RUNNER_UNVERIFIED_LEASE_TTL=SECONDS` | How long a lease record whose owner can be neither proven alive nor dead is honoured (default 900). An older one ages out, so a crashed owner does not hold its instance for ever. The engine and the Python client both read it. |
+
 `RUNNER_ACT_TRACE=trace.jsonl` with `RUNNER_ACT_TRACE_POS=0,7,31` (a
 comma-separated list of 1 to 64 token positions, required) records, at those
 positions, where a forward's residual stream stands: after the embedding
