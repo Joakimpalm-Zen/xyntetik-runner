@@ -2427,6 +2427,9 @@ static void model_debug_geometry(const model_t *m) {
 bool model_load(model_t *m, const char *path, const model_params *p) {
     if (!m) return false;
     memset(m, 0, sizeof(*m));
+    // the f16 table every forward reads the KV cache through (fp16.h); the
+    // load owns it, so no caller can run a model on a table of zeros
+    f16_init();
     if (!path || !p) return false;
     if (!model_load_inner(m, path, p) ||
         (p->lora_path && !model_lora_load(m, p->lora_path, p->lora_scale))) {
