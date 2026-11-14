@@ -96,6 +96,7 @@ typedef struct {
     int           kv_layers;     // the device layers: only their regions are wrapped
     bool          kv_skip_grow;  // RUNNER_TEST_METAL_KV_SKIP_GROW: skip one grow
     uint64_t      kv_wlen, kv_ws_limit;   // the wrapped weights and the working set, for a grow
+    int           kv_grows;      // grows since the load, for the end-of-run line
     bool          kv_refused;    // a grow did not fit: every later reserve says so (kv_why)
     char          kv_why[256];
     id<MTLBuffer> x, xb, xb2, q, kt, vt, hb, hb2, att, logits;
@@ -2503,6 +2504,11 @@ static bool metal_choose_split(model_t *m, gpu_t *g, id<MTLDevice> dev,
     }
     *gpu_K_out = gpu_K;
     *wlen_out = wlen;
+    // R3.68: what a KV grow charges for the weights the device holds. wlen is
+    // part 0's prefix; a full offload of a multi-part file wraps every part,
+    // which wtotal counts, as the admission above does (codex's read of PR G:
+    // four 1 GB parts grew as if the weights were one).
+    g->kv_wlen = gpu_K >= m->n_layer ? wtotal : (uint64_t)wlen;
     *ws_limit_out = ws_limit;
     return true;
 }
@@ -2738,7 +2744,6 @@ static void metal_publish(model_t *m, gpu_t *g, id<MTLDevice> dev, int gpu_K,
     free(m->kcache); free(m->vcache);
     m->kcache = (f16_t *)g->kv_host_k;
     m->vcache = (f16_t *)g->kv_host_v;
-    g->kv_wlen = wlen;
     g->kv_ws_limit = ws_limit;
     fprintf(stderr, "gpu: the KV cache grows with the context, %d rows at a time (%d of %d "
             "mapped); a grow that does not fit in RAM continues on the CPU\n",
@@ -3743,6 +3748,11 @@ void gpu_free(model_t *m) {
     @autoreleasepool {
     if (!m) return;
     gpu_t *g = m->gpu_owner ? (gpu_t *)m->gpu_owner : (gpu_t *)m->gpu;
+    // R3.68: the engine's own count of the run's KV grows (the identity gate
+    // reads it: a grow that never happened cannot pass for one)
+    if (g && g->kv_grows > 0)
+        fprintf(stderr, "gpu: the KV cache grew %d time%s, to %d of %d rows\n", g->kv_grows,
+                g->kv_grows == 1 ? "" : "s", g->kv_mapped, m->n_ctx);
     m->gpu = NULL;
     m->gpu_owner = NULL;
     if (!g) return;
@@ -5461,6 +5471,7 @@ static void metal_prof_cut(gpu_t *g, bool prof, id<MTLCommandBuffer> *cb,
 // CPU. RUNNER_TEST_METAL_KV_GROW_FAILS_AT makes a grow to that many rows not
 // fit (a gate arm for the fallback).
 bool gpu_kv_reserve(model_t *m, int rows, char *why, size_t cap) {
+    @autoreleasepool {
     gpu_t *g = (gpu_t *)m->gpu;
     if (g && g->kv_refused) {        // the same answer for every later forward on this cache
         snprintf(why, cap, "%s", g->kv_why);
@@ -5495,15 +5506,19 @@ bool gpu_kv_reserve(model_t *m, int rows, char *why, size_t cap) {
         metal_kv_unmap(g, m->n_layer);
         return false;
     }
+    g->kv_grows++;
     return true;
+    }
 }
 
 bool gpu_kv_rows(const model_t *m, int *mapped, int *step) {
+    @autoreleasepool {
     const gpu_t *g = (const gpu_t *)m->gpu;
     if (!g || !g->kreg) return false;
     *mapped = g->kv_mapped;
     *step = g->kv_step;
     return true;
+    }
 }
 
 bool gpu_batch_decode(gpu_batch *b, const int *idx, const int32_t *tok,

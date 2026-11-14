@@ -102,6 +102,11 @@ void        plat_capacity_get(plat_capacity *out);
 void        plat_capacity_at(const char *cgroup_root, const char *self_cgroup,
                              int host_cpu_cores, uint64_t host_ram_bytes,
                              uint64_t host_ram_available_bytes, plat_capacity *out);
+// A reading stood in for by a fixture (RUNNER_TEST_CGROUP_ROOT), lowered to
+// the real one: every effective limit is the smaller of the two, and the host
+// numbers are the real reading's, so a fixture can never raise a limit.
+void        plat_capacity_lowered(const plat_capacity *real, const plat_capacity *fixture,
+                                  plat_capacity *out);
 
 int         plat_cpu_count(void);
 // Ceiling on the DEFAULT thread count. Distinct from TP_MAX, which clamps an

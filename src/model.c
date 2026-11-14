@@ -1862,8 +1862,12 @@ static bool model_vram_claim(model_t *m, const model_params *p, size_t kv_claim)
     char gpu_id[128];
     uint64_t test_free = 0;
     bool test = test_vram_free(&test_free, true);
-    if (test) snprintf(gpu_id, sizeof gpu_id, "test-device");
-    else if (!gpu_device_id(gpu_id, sizeof(gpu_id))) return true;   // no GPU: nothing to account
+    // the real device's ledger whenever there is one, the seam or not, so
+    // its pending claims stay in the sum (vram_ledger_device)
+    char real_id[128] = "";
+    bool real = gpu_device_id(real_id, sizeof real_id);
+    if (!test && !real) return true;   // no GPU: nothing to account
+    vram_ledger_device(real ? real_id : NULL, test, gpu_id, sizeof gpu_id);
     size_t vfree = 0, vtotal = 0;
     if (test) vfree = vtotal = (size_t)test_free;
     else if (!gpu_mem_info(&vfree, &vtotal)) return true;      // unified memory (Metal)

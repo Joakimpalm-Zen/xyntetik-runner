@@ -2718,7 +2718,8 @@ one step of rows, not 8,192, so a model whose whole-context cache would not fit 
 still runs on the GPU: Phi-3.5-mini Q4_K_M at `-c 8192` on an 8 GB Mac decodes at 17 tokens a second
 on the GPU, where it used to be refused and run on the CPU at 7.6. The load line says so:
 `gpu: the KV cache grows with the context, 256 rows at a time (256 of 8192 mapped); a grow that does
-not fit in RAM continues on the CPU`, and `--bench-json` gives the rows mapped (`route.kv_rows`).
+not fit in RAM continues on the CPU`, `--bench-json` gives the rows mapped (`route.kv_rows`), and the
+end of a run says how often the cache grew: `gpu: the KV cache grew 3 times, to 768 of 8192 rows`.
 
 Each step pauses the next token while the new rows are mapped: about 8 ms at 2,048 rows and 23 to
 41 ms at 8,192 rows for Qwen3-4B Q4_K_M, against a decode token of about 182 ms at that context

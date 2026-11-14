@@ -87,9 +87,13 @@ def test_a_small_grow_step_gives_the_same_tokens(runner_bin):
     assert small.returncode == 0 and whole.returncode == 0, small.stderr[-400:] + whole.stderr[-400:]
     for p in (small, whole):
         assert "gpu: Metal backend" in p.stderr and "continuing on the CPU" not in p.stderr, p.stderr[-600:]
+    # a forward grows once to cover all of its rows: the prompt's batches grow at least once past the
+    # first step, and each decode step that crosses a 16-row boundary grows again
     prompt = int(re.search(r"prompt: (\d+) tok", small.stderr).group(1))
     grows, rows = _grew(small.stderr) or (0, 0)
-    assert grows >= -(-(prompt + 48) // 16) - 1 and rows >= prompt + 48, (grows, rows, prompt, small.stderr[-600:])
+    crossings = -(-(prompt + 47) // 16) - (-(-prompt // 16))
+    assert grows >= 1 + crossings and rows >= prompt + 47 and rows % 16 == 0, \
+        (grows, rows, prompt, small.stderr[-600:])
     assert _grew(whole.stderr) in (None, (0, 1024)), whole.stderr[-600:]
     assert small.stdout and small.stdout == whole.stdout
     other = _generate(runner_bin, "A" + TEXT[3:], RUNNER_TEST_METAL_KV_STEP=16)

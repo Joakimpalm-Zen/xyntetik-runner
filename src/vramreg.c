@@ -596,3 +596,8 @@ void vram_yield_clear(const vram_lease *l) {
     yield_sentinel_path(l->path, l->pid, path, sizeof(path));
     plat_remove(path);
 }
+
+void vram_ledger_device(const char *real_id, bool seam, char *out, size_t cap) {
+    if (!cap) return;
+    snprintf(out, cap, "%s", real_id && *real_id ? real_id : seam ? "test-device" : "");
+}
