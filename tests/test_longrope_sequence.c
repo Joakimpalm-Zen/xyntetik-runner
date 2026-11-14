@@ -109,8 +109,12 @@ int main(int argc, char **argv) {
     int bad_s = 0, bad_l = 0, same = 0;
     for (int j = 0; fs && fl && j < half; j++) {
         float base = powf(wide.m.rope_base, -2.0f * j / wide.m.rope_dim);
-        bad_s += wide.m.rope_freq_short[j] != base / ((const float *)fs->data)[j];
-        bad_l += wide.m.rope_freq_long[j]  != base / ((const float *)fl->data)[j];
+        // to a part in a million, not to the bit: the load and this line
+        // are two compilations of one expression, and an x86 runner's
+        // compiler contracted them differently
+        float ws = base / ((const float *)fs->data)[j], wl = base / ((const float *)fl->data)[j];
+        bad_s += fabsf(wide.m.rope_freq_short[j] - ws) > 1e-6f * ws;
+        bad_l += fabsf(wide.m.rope_freq_long[j] - wl) > 1e-6f * wl;
         same  += wide.m.rope_freq_short[j] == wide.m.rope_freq_long[j];
     }
     ck(fs && fl && bad_s == 0, "the short table is the base over the file's short factors");
