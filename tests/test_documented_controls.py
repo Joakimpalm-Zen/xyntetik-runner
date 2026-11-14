@@ -236,7 +236,7 @@ def test_vram_priority_is_the_flags_baseline(runner_bin, fx, tmp_path, env_value
 
 def _metal_or_skip(runner_bin):
     if _backend(runner_bin) != "metal":
-        pytest.skip("needs the Metal backend")
+        pytest.skip("the Metal backend's routes: this host runs another backend")
 
 
 def test_metal_mv2_off_keeps_the_one_row_kernel(runner_bin, fx):
