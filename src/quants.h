@@ -75,6 +75,16 @@ void  quantize_set_type_plan_strict(bool on);
 // rows; NULL clears it. False, with
 // the reason on stderr, when the file cannot be read as one.
 bool  quantize_set_imatrix(const char *path);
+// What the last quantize_gguf_plan wrote, for its provenance record: the
+// tensors converted and kept, RUNNER_REQUANT_ONLY's substring when it scoped
+// the conversion (NULL otherwise), and whether RUNNER_FORCE_REQUANT was set.
+// Valid after a 0 return, until the next rewrite.
+typedef struct {
+    uint64_t    converted, kept;
+    const char *requant_only;
+    bool        force_requant;
+} quantize_report;
+const quantize_report *quantize_last_report(void);
 // How many threads a rewrite quantizes rows on (1 until set). The file's bytes do not depend on it.
 void  quantize_set_threads(int n);
 // The least a --target-size plan can reach, from the header: see quantize.c.

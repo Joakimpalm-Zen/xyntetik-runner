@@ -515,6 +515,35 @@ static void test_turn_mark_resumes_at_the_prompt_boundary(void) {
        "a pure extension beside a mark matches cold");
     free(warm_l); free(cold_l);
 
+    // R10.27: a chat request marks where its generation prompt begins, short
+    // of the prompt end, and feeds the generation prompt after the mark. The
+    // next prompt parts from this one inside the generation prompt (40 50
+    // here; Qwen3.5's think block): the kept run ends at the mark itself,
+    // where the old mark at the prompt end was already out of reach.
+    engine_reset(&warm.e);
+    ck(engine_feed(&warm.e, first, 3) != NULL, "fold the messages");
+    ck(engine_mark_anchor(&warm.e), "mark the message boundary at 3");
+    ck(engine_feed(&warm.e, first + 3, 2) != NULL, "fold the generation prompt");
+    ck(engine_feed(&warm.e, reply, 2) != NULL, "generate the reply");
+    const int32_t rewritten[8] = { 10, 20, 30, 41, 61, 71, 80, 90 };
+    keep = engine_rewind(&warm.e, rewritten, 8);
+    ck(keep == 3, "a prompt that parts inside the generation prompt resumes at the boundary");
+    ck(warm.e.rewind_how == REWIND_ANCHOR, "and the slot says it resumed at an anchor");
+    wl = engine_feed(&warm.e, rewritten + keep, 8 - keep);
+    warm_l = snap_logits(&warm.m, wl);
+    engine_reset(&cold.e);
+    cl = engine_feed(&cold.e, rewritten, 8);
+    cold_l = snap_logits(&cold.m, cl);
+    ck(logits_differ(&warm.m, warm_l, cold_l) == 0,
+       "an anchor-resumed decode matches a cold one bit for bit");
+    free(warm_l); free(cold_l);
+    // the word follows the mark that was taken last
+    ck(engine_mark_turn(&warm.e), "a plain mark at the new position");
+    const int32_t onward[9] = { 10, 20, 30, 41, 61, 71, 80, 90, 91 };
+    ck(engine_feed(&warm.e, reply, 1) != NULL, "one generated token past it");
+    keep = engine_rewind(&warm.e, onward, 9);
+    ck(keep == 8 && warm.e.rewind_how == REWIND_MARK, "a plain mark is reported as a mark");
+
     slot_close(&warm); slot_close(&cold);
 }
 

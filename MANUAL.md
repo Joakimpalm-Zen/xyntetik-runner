@@ -687,7 +687,9 @@ beside it: `--rewrite` (with `--prune-experts`, `--remove-sublayer` or
 `.context.json`. Each record names its input and output files by sha256,
 the options that shaped the bytes and the runner that ran it, and for each
 input that was itself made by a step it links that step's record by name
-and sha256. A record names every file by its base name, never by where it
+and sha256. A rewrite's record also says what it did: `tensors` counts the
+tensors converted and kept, and `requant_only` and `force_requant` name the
+development switches when they scoped or forced the conversion. A record names every file by its base name, never by where it
 sat on the machine that made it, so it can be published beside the file.
 With `--sign-key` the record is signed in place, the same chain
 and signature objects a receipt carries.
@@ -3826,8 +3828,10 @@ a reasoning-only or empty turn). Tool execution is the client's time, not
 the server's, and is not reported. `prompt_reuse` says HOW the slot arrived at
 `prompt_cached_tokens`: `extended` (the prompt continues the slot's history
 verbatim), `kv` (attention rows kept up to the first differing token),
-`turn_mark` (a recurrent fold resumed at the previous prompt boundary, see
-below), `snapshot`, `prefix_cache` (forked from the shared tier),
+`turn_anchor` (a recurrent fold resumed where the previous chat request's
+generation prompt began, see below), `turn_mark` (the same for a request
+with no such boundary, resumed one token short of the previous prompt's
+end), `snapshot`, `prefix_cache` (forked from the shared tier),
 `recurrent_reset` (the fold could not be restored where the history
 diverged, so the whole prompt was folded again), `ring_reset`, `mismatch`
 (the prompt differs at its first token) or `none` (`cache_prompt:false` or
@@ -3886,11 +3890,23 @@ hit would be. Expiry during PREFILL has no tokens to truncate and answers
 A recurrent or hybrid model (Qwen 3.5/3.8, Ornith, Granite-4 h-series,
 Nemotron-H) keeps a fold over its whole prefix rather than per-position
 rows, so a slot's own rewind can only resume where a checkpoint of that fold
-exists. Every prefill leaves one at the prompt boundary (one
-token short of the end, so a verbatim replay resumes there too): an agent
-client's next request, which replays the prompt, the reply as the template
-re-renders it and a new turn, resumes at the mark and folds only what
-follows. Before the mark such a slot re-folded its entire prompt on every
+exists. Every prefill leaves one, the turn mark. A chat, Responses or
+Messages request leaves it at the last message boundary, where the
+generation prompt begins: an agent client's next request, which replays the
+messages, the reply as the template re-renders it and a new turn, resumes
+at the mark and folds only what follows, the few tokens of the generation
+prompt included. The generation prompt itself is not behind the mark
+because the next request need not replay it: Qwen 3.5's opens a think block
+that its history renders without, and with the mark inside it such a slot
+re-folded the whole conversation on every turn, on every backend (the
+2026-11-09 agent loop on Qwen3.5-4B: 70% of a CUDA turn's time was
+re-prefill). The boundary is found per request by rendering the messages
+without the generation prompt and requiring those tokens to be the prompt's
+first; a family whose template gives none (the `[INST]` families, Phi) and
+a raw `/v1/completions` prompt mark one token short of the prompt end, so a
+verbatim replay resumes there. A history rewritten before the last message
+boundary (a compacted tool result, an edited earlier turn) still resets the
+fold. Before the mark such a slot re-folded its entire prompt on every
 turn on CUDA, where the shared tier does not apply to a device-resident
 fold (the 2026-09-15 OpenCode loop on Qwen 3.8 27B: 7.5K prompt, "0 cached"
 every turn). The mark lives on the slot (one fold-sized copy of host RAM,

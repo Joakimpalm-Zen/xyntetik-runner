@@ -4494,6 +4494,27 @@ static int run_merge_lora(const cli_opts *o) {
 
 // --quantize, with --quant, --type-plan, --prune-experts or
 // --remove-sublayer: rewrite the file and write its provenance record.
+// Whether two paths name one file. Where the platform reports a file's
+// identity, the device and the inode decide (two mounted copies with the
+// same inode on different volumes are two files). Where it reports no inode
+// (Windows' fallback, 0) the canonical paths decide, so an alias such as
+// m.gguf and its absolute path still reads as one. RUNNER_TEST_NO_INODE takes
+// that branch on any host, for the tests.
+static bool same_file(const char *a, const char *b) {
+    if (!strcmp(a, b)) return true;
+    plat_stat_t sa, sb;
+    if (plat_stat(a, &sa) != 0 || plat_stat(b, &sb) != 0) return false;
+    if (sa.st_ino != 0 && sb.st_ino != 0 && !getenv("RUNNER_TEST_NO_INODE"))
+        return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+    char ca[4096], cb[4096];
+    if (!plat_realpath(a, ca, sizeof ca) || !plat_realpath(b, cb, sizeof cb)) return false;
+#ifdef _WIN32
+    return _stricmp(ca, cb) == 0;   // NTFS names are case-blind
+#else
+    return strcmp(ca, cb) == 0;
+#endif
+}
+
 static int run_quantize(const cli_opts *o) {
     int tt;
     // --type-plan decides the type PER TENSOR, so a whole-file --quant
@@ -4528,18 +4549,40 @@ static int run_quantize(const cli_opts *o) {
     }
     if (!quantize_set_imatrix(o->imatrix)) return 1;
     quantize_set_threads(o->n_threads > 0 ? o->n_threads : plat_cpu_count());
+    // R17.1: the rewrite leaves its record like merge and training do --
+    // the input and output by sha256, every option that shaped the
+    // bytes, and the building binary -- so the file's lineage can be
+    // walked back (--lineage). The input is hashed before the rewrite: an
+    // in-place one (-m F --quantize F) installs over it, and hashed after,
+    // the record named the output as its own parent.
+    char bsha[65] = "", osha[65] = "", xsha[65] = "";
+    if (!envelope_file_sha256(o->model_path, bsha)) {
+        // the first open of the input: a missing file fails here, as the
+        // rewrite's own open would
+        fprintf(stderr, "error: cannot open %s to hash it for the rewrite's "
+                "provenance record\n", o->model_path);
+        quantize_set_imatrix(NULL);
+        return 1;
+    }
+    // The record links the record the input came with (lineage_put_input).
+    // A second in-place rewrite would write its own record over that very
+    // file, and the link would name a record that no longer exists: refuse
+    // it before anything is written.
+    char linked[4096], own_rec[4096];
+    snprintf(own_rec, sizeof own_rec, "%s.quant.json", o->quant_out);
+    if (lineage_sidecar(o->model_path, linked, sizeof linked) && same_file(linked, own_rec)) {
+        fprintf(stderr, "error: this rewrite's record would overwrite %s, the record of how %s "
+                "was made, which it links; write the rewrite to a new file\n",
+                plat_path_base(linked), plat_path_base(o->model_path));
+        quantize_set_imatrix(NULL);
+        return 1;
+    }
     int qrc = quantize_gguf_plan(o->model_path, o->quant_out, tt, o->prune_experts,
                                  o->type_plan, o->remove_sublayer);
     quantize_set_imatrix(NULL);
     if (qrc != 0) return qrc;
-    // R17.1: the rewrite leaves its record like merge and training do --
-    // the input and output by sha256, every option that shaped the
-    // bytes, and the building binary -- so the file's lineage can be
-    // walked back (--lineage)
-    char bsha[65] = "", osha[65] = "", xsha[65] = "";
     char *exe_path = plat_executable_path();
-    bool hash_ok = envelope_file_sha256(o->model_path, bsha) &&
-                   envelope_file_sha256(o->quant_out, osha) &&
+    bool hash_ok = envelope_file_sha256(o->quant_out, osha) &&
                    exe_path && envelope_file_sha256(exe_path, xsha);
     free(exe_path);
     if (!hash_ok) {
@@ -4561,6 +4604,17 @@ static int run_quantize(const cli_opts *o) {
     sb_lit(&rec, ",\"target\":\"");
     sb_esc(&rec, target, strlen(target));
     sb_lit(&rec, "\"");
+    // what the rewrite did beside what it was asked: a scope or a declined
+    // conversion leaves tensors at their type, and the target alone hid it
+    const quantize_report *qr = quantize_last_report();
+    sb_fmt(&rec, ",\"tensors\":{\"converted\":%llu,\"kept\":%llu}",
+           (unsigned long long)qr->converted, (unsigned long long)qr->kept);
+    if (qr->requant_only) {
+        sb_lit(&rec, ",\"requant_only\":\"");
+        sb_esc(&rec, qr->requant_only, strlen(qr->requant_only));
+        sb_lit(&rec, "\"");
+    }
+    if (qr->force_requant) sb_lit(&rec, ",\"force_requant\":true");
     if (o->prune_experts) {
         sb_lit(&rec, ",\"prune_experts\":");
         lineage_put_input(&rec, o->prune_experts, NULL);

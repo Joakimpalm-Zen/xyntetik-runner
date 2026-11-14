@@ -1282,6 +1282,11 @@ static bool imatrix_load_dat(const char *path) {
 static int g_q_threads = 1;
 void quantize_set_threads(int n) { g_q_threads = n > 1 ? n : 1; }
 
+// The last rewrite's counts and the switches that scoped it (quants.h): the
+// provenance record states what was done, not only what was asked.
+static quantize_report g_qrep;
+const quantize_report *quantize_last_report(void) { return &g_qrep; }
+
 bool quantize_set_imatrix(const char *path) {
     imatrix_free();
     if (!path) return true;
@@ -2270,6 +2275,7 @@ int quantize_gguf_plan(const char *in_path, const char *out_path, int target,
                        const char *prune_path, const char *type_plan_path,
                        const char *remove_spec) {
     fp_denormal_state fpst = fp_denormals_disable();
+    memset(&g_qrep, 0, sizeof g_qrep);
     int rc = quantize_gguf_plan_inner(in_path, out_path, target, prune_path,
                                       type_plan_path, remove_spec, NULL, 0, 0, NULL);
     fp_denormals_restore(fpst);
@@ -2854,6 +2860,7 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
     // a merge always converts the adapted rows; RUNNER_FORCE_REQUANT builds
     // same-size conversions (Q4_K -> Q4_0) for diagnosing a quant type
     const bool grow = ms != NULL || getenv("RUNNER_FORCE_REQUANT") != NULL;
+    g_qrep.force_requant = ms == NULL && getenv("RUNNER_FORCE_REQUANT") != NULL;
     for (uint64_t i = 0; J->w.ok && i < J->g.n_tensors; i++) {
         gguf_tensor *t = &J->g.tensors[i];
         if (J->drop && J->drop[i]) { J->out_type[i] = t->type; continue; }
@@ -2865,6 +2872,7 @@ static bool quantize_job_decide_types(quantize_job *J, int target,
             want = type_plan_pick(&J->tplan, t->name);
         } else if (target != T_KEEP) {
             const char *only = ms ? NULL : getenv("RUNNER_REQUANT_ONLY");
+            if (only && *only) g_qrep.requant_only = only;
             if (only && *only && !strstr(t->name, only)) want = T_KEEP;
         }
         if (want == T_KEEP || keep_source_type(t)) {
@@ -3432,6 +3440,8 @@ static int quantize_job_finish(quantize_job *J, const char *in_path,
     }
     J->tmp_created = false;   // installed: it is the destination now
 
+    g_qrep.converted = J->quantized;
+    g_qrep.kept = J->kept;
     // Under a --type-plan the whole-file `target` decided nothing, so naming
     // it here described the output as a type no tensor was written in.
     fprintf(stderr, "quantize: %s -> %s (%s): %llu tensors converted, %llu kept (%d thread%s)\n",
