@@ -49,7 +49,9 @@ def _roster_names(roster):
             if f.get("name") and f.get("repo"):
                 seen.setdefault(f["name"], []).append({"repo": f["repo"], "name": f["name"],
                                                        "sha256": f.get("sha256")})
-    return {n: v[0] for n, v in seen.items() if len({x["repo"] for x in v}) == 1}
+    # a name identifies a file only when every pin of it is one file: the same
+    # repository and the same sha256 (a name pinned twice could be either)
+    return {n: v[0] for n, v in seen.items() if len({(x["repo"], x["sha256"]) for x in v}) == 1}
 
 
 def collect(reports, join_path, roster):
