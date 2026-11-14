@@ -2845,7 +2845,7 @@ static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
                           const tool_envelope *env, bool constrain, jv *sch, int think_mode,
                           bool reasoning_open,
                           const char *const *stops, int n_stops,
-                          const int *req_stops, int n_req_stops, bool scripted) {
+                          const int *req_stops, int n_req_stops, const char *script_text) {
     char h[65];
     // the caller's schema shapes the turn directly, or as the final branch
     // of an auto tool turn's envelope
@@ -2906,14 +2906,23 @@ static void turn_shape_of(turn_shape *t, jv *req, const engine *e,
             sb_fmt(&t->json, "%s%d", i ? "," : "", (int)e->think_msg[i]);
         sb_lit(&t->json, "]}");
     }
-    const char *flags[4];
+    // special_tokens spells each generated control token in the text, so it
+    // shapes the recorded output and where a stop string can match; a replay
+    // decodes the same bytes only if the record says so. A scripted reply is
+    // the answer itself: its digest tells two scripted turns apart.
+    const char *flags[5];
     int nf = 0;
-    if (e->think_smp)  flags[nf++] = "reasoning_sampling";
-    if (e->loop_guard) flags[nf++] = "loop_guard";
-    if (e->ignore_eos) flags[nf++] = "ignore_eos";
-    if (scripted)      flags[nf++] = "scripted";
+    if (e->think_smp)      flags[nf++] = "reasoning_sampling";
+    if (e->loop_guard)     flags[nf++] = "loop_guard";
+    if (e->ignore_eos)     flags[nf++] = "ignore_eos";
+    if (e->render_special) flags[nf++] = "special_tokens";
+    if (script_text)       flags[nf++] = "scripted";
     for (int i = 0; i < nf; i++) {
         shape_open(t, flags[i]);
+        if (!strcmp(flags[i], "scripted")) {
+            envelope_data_sha256(script_text, strlen(script_text), h);
+            sb_fmt(&t->json, ",\"sha256\":\"%s\"", h);
+        }
         if (!strcmp(flags[i], "loop_guard")) {
             sb_fmt(&t->json, ",\"span\":%d,\"repeats\":%d,\"window\":%d,"
                              "\"max_closes\":%d,\"everywhere\":%s",
@@ -4155,7 +4164,8 @@ static bool repeat_count_on(void) {
 
 // `shape_json` is what the receipt records as having shaped the turn beyond
 // the sampler (turn_shape_of: the schema or tools by digest, stop strings
-// and ids, the reasoning budget, the loop guard, ignore_eos), so the
+// and ids, the reasoning budget, the loop guard, ignore_eos, special_tokens,
+// a scripted reply by digest), so the
 // fingerprint and the receipt cannot drift. Cacheable is turn_generate's own
 // test for a request that does not sample: neither its temperature nor its
 // reasoning temperature is above 0, or it carries a seed.
@@ -5361,7 +5371,7 @@ static void turn_generate(turn_result *t, float *logits) {
         turn_shape_of(shape, req, e, env, q->constrain, q->sch,
                       rs ? rs->think_mode : req_thinking_mode(req), t->reasoning_open,
                       q->stops, q->n_stops,
-                      q->req_stops, q->n_req_stops, q->script_text != NULL);
+                      q->req_stops, q->n_req_stops, q->script_text);
     // R3.66: the exact-repeat count, from the same record of what shaped the
     // turn (its own copy when receipts are off), once the settings are installed
     if (repeat_count_on()) {
@@ -5371,7 +5381,7 @@ static void turn_generate(turn_result *t, float *logits) {
             turn_shape_of(&own, req, e, env, q->constrain, q->sch,
                           rs ? rs->think_mode : req_thinking_mode(req), t->reasoning_open,
                           q->stops, q->n_stops,
-                          q->req_stops, q->n_req_stops, q->script_text != NULL);
+                          q->req_stops, q->n_req_stops, q->script_text);
             fs = &own;
         }
         // the prompt as the receipt reads it (e->hist): prep->toks is freed when
