@@ -405,8 +405,8 @@ ENGINE_OBJ_NAMES = gguf compat instances tokenizer model sample vramreg template
                    registry provenance respstore receipts watermark kvsnap session scheduler completion api_responses api_anthropic server hfhub
 ENGINE_OBJ = $(ENGINE_OBJ_NAMES:%=$(OBJDIR)/%.o) $(MLDSA_OBJ)
 # the schema compiler and validator, and the native tool grammars built on them
-SCHEMA_SRC = src/schema.c src/schema_tools.c
-SCHEMA_OBJ = $(OBJDIR)/schema.o $(OBJDIR)/schema_tools.o
+SCHEMA_SRC = src/schema.c src/schema_tools.c src/jsre.c
+SCHEMA_OBJ = $(OBJDIR)/schema.o $(OBJDIR)/schema_tools.o $(OBJDIR)/jsre.o
 ifeq ($(GPU_SRC),src/metal.m)
 GPU_OBJ = $(OBJDIR)/metal.o
 else

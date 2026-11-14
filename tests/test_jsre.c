@@ -6,11 +6,12 @@
 //      answer each one; patterns it cannot build are refused by name.
 //   2. The DFA cache against the automaton it memoizes, stepped as the
 //      validator steps it (a fed walk that keeps its states, trials at every
-//      position), under an unbounded, a 1-byte and a 4 KiB pool: equal answers,
+//      position), under an unbounded, a 1-byte and a 512-byte pool: equal answers,
 //      flushes that happened, trial handles refused after one, and a fill from
 //      a second thread refused.
 //   3. Lengths: the backward sequence against a forward search over real bytes.
 //   4. The pool keeps its budget.
+//   5. A long pattern compiles on a small stack.
 #include "jsre.h"
 #include "jsre_cases.h"
 
@@ -41,7 +42,9 @@ static bool dfa_match(jsre_dfa *d, const char *s, int n, bool keep) {
     return st != JSRE_DEAD && st != JSRE_FAIL && jsre_dfa_accepts(d, st);
 }
 
-static const size_t BUDGETS[] = { (size_t)1 << 40, 1, 4096 };
+// unbounded; one byte (a flush at nearly every fill); 512 bytes, where states,
+// tables and lengths are all cached and flushed (a few states at a time)
+static const size_t BUDGETS[] = { (size_t)1 << 40, 1, 512 };
 enum { NB = 3 };
 
 // 1 --------------------------------------------------------------- ECMA cases
@@ -141,13 +144,13 @@ static void test_cache(void) {
         uint64_t *set = malloc(w * 8), *ts = malloc(w * 8), *tmp = malloc(w * 8);
         arm a[NB];
         for (int k = 0; k < NB; k++) { a[k].p = jsre_pool_new(BUDGETS[k]); a[k].d = jsre_dfa_new(re, a[k].p); }
-        for (int walk = 0; walk < 4; walk++) {
+        for (int walk = 0; walk < 10; walk++) {
             jsre_start(re, set);
             bool alive = true;
             for (int k = 0; k < NB; k++) a[k].st = jsre_dfa_start(a[k].d);
             compare(re, set, alive, a, "the start", cur);
-            for (int pos = 0; pos < 24 && alive; pos++) {
-                for (int t = 0; t < 4; t++) {
+            for (int pos = 0; pos < 40 && alive; pos++) {
+                for (int t = 0; t < 6; t++) {
                     memcpy(ts, set, w * 8);
                     arm b[NB];
                     memcpy(b, a, sizeof b);
@@ -161,7 +164,8 @@ static void test_cache(void) {
                     }
                     // a trial's handle once the trial is over and the 1-byte pool
                     // has flushed: refused, never read as what the slot holds now
-                    if (t == 0 && b[1].st != JSRE_DEAD && b[1].st != JSRE_FAIL) {
+                    // (now and then: it ends the walk)
+                    if (t == 0 && walk % 3 == 0 && pos % 9 == 4 && b[1].st != JSRE_DEAD && b[1].st != JSRE_FAIL) {
                         jsre_pool_stat s0, s1;
                         jsre_pool_stats(a[1].p, &s0);
                         for (int c = 0; c < 256; c++) {
@@ -199,7 +203,7 @@ static void test_cache(void) {
             // 4: the budget holds, give or take what one step needs
             if (k == 2) {
                 size_t slack = 4 * (w * 8 + 64) + 1024;
-                CHECK(s.high <= BUDGETS[k] + s.kept + slack, "%s: a 4 KiB pool held %zu bytes", cur, s.high);
+                CHECK(s.high <= BUDGETS[k] + s.kept + slack, "%s: a 512-byte pool held %zu bytes", cur, s.high);
             }
             jsre_dfa_free(a[k].d); jsre_pool_free(a[k].p);
         }
@@ -220,7 +224,7 @@ static void test_cache(void) {
           (unsigned long long)flushes[0], (unsigned long long)flushes[1], (unsigned long long)flushes[2]);
     CHECK(stale_asked > 20 && stale_refused == stale_asked, "stale handles refused %ld of %ld", stale_refused, stale_asked);
     CHECK(thread_refused == npat, "second-thread fills refused %d of %d", thread_refused, npat);
-    printf("cache: %d patterns, %ld compared steps, %ld length asks, flushes %llu (1 byte) %llu (4 KiB), "
+    printf("cache: %d patterns, %ld compared steps, %ld length asks, flushes %llu (1 byte) %llu (512 bytes), "
            "stale handles refused %ld of %ld, second-thread fills refused %d of %d\n", npat, steps, lens,
            (unsigned long long)flushes[1], (unsigned long long)flushes[2], stale_refused, stale_asked, thread_refused, npat);
 }
@@ -322,7 +326,39 @@ static void test_lengths(void) {
     printf("lengths: %d asks (%d yes) against a forward search, %d wrong\n", asks, yes, wrong);
 }
 
+// 5 --------------------------------------------------------------- the stack
+// A schema compiles on a server thread, and a pattern can be thousands of
+// characters: a 4,000-character pattern compiles and matches on a thread
+// with a 128 KiB stack (a sequence is a balanced tree, not a chain).
+static void *long_pattern(void *v) {
+    int *ok = v;
+    enum { N = 4000 };
+    char *p = malloc(N + 3), *s = malloc(N);
+    p[0] = '^';
+    for (int i = 0; i < N; i++) p[1 + i] = s[i] = (char)('a' + i % 26);
+    p[N + 1] = '$'; p[N + 2] = 0;
+    char err[256];
+    jsre *re = jsre_compile(p, err, sizeof err);
+    *ok = re && nfa_match(re, s, N) && !nfa_match(re, s, N - 1);
+    jsre_free(re); free(p); free(s);
+    return NULL;
+}
+
+static void test_stack(void) {
+    pthread_attr_t at;
+    pthread_t th;
+    int ok = 0;
+    pthread_attr_init(&at);
+    CHECK(pthread_attr_setstacksize(&at, 128 * 1024) == 0, "pthread_attr_setstacksize");
+    CHECK(pthread_create(&th, &at, long_pattern, &ok) == 0, "pthread_create");
+    pthread_join(th, NULL);
+    pthread_attr_destroy(&at);
+    CHECK(ok, "a 4,000-character pattern on a 128 KiB stack");
+    printf("stack: a 4,000-character pattern compiled and matched on a 128 KiB stack\n");
+}
+
 int main(void) {
+    test_stack();
     test_cases();
     test_cache();
     test_lengths();
