@@ -1,0 +1,5 @@
+{
+ "schema_version": "xyntetik.runner.fidelity-join.v1",
+ "about": "Which file a gold-logits side scored, for reports written before gold-logits.py recorded it (--gguf-a/--repo-a). Only entries read from the report folder itself go here; scripts/fidelity-index.py refuses one that names no side.",
+ "sides": {}
+}

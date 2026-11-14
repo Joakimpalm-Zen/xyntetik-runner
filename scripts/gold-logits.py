@@ -52,11 +52,23 @@ token it did not list is dropped, the gold renormalised over the rest, and the
 dropped mass reported per row, instead of a floor.
 """
 import argparse
+import hashlib
 import json
 import math
 import os
 import sys
 import urllib.request
+
+
+def side_file(path, repo):
+    """The measured file of a side, for the fidelity index (R7.21): its Hub
+    repository, its file name and the sha256 of the bytes scored, so the
+    record says which file the numbers are about without a typed join."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 22), b""):
+            h.update(chunk)
+    return {"repo": repo, "name": os.path.basename(path), "sha256": h.hexdigest()}
 
 
 class _Obj(dict):
@@ -700,6 +712,10 @@ def main():
     ap.add_argument("--model-name-b")
     ap.add_argument("--score-a", help="side a from a runner --score --score-top file")
     ap.add_argument("--score-b", help="side b from a runner --score --score-top file")
+    for side in ("a", "b"):
+        ap.add_argument(f"--gguf-{side}", help=f"the GGUF file side {side} scored, hashed into "
+                        "the record with --repo-" + side + " (the fidelity index reads it)")
+        ap.add_argument(f"--repo-{side}", help=f"the Hub repository side {side}'s file came from")
     ap.add_argument("--solo-ok", action="store_true",
                     help="two score files of one model file, one or both scored solo: a "
                          "deliberate decode-route comparison (refused otherwise; a prefill "
@@ -755,6 +771,9 @@ def main():
         ap.error("side b takes --endpoint-b or --score-b, not both")
     if args.endpoint_b and not args.model_name_b:
         ap.error("--endpoint-b needs --model-name-b")
+    for side in ("a", "b"):
+        if bool(getattr(args, f"gguf_{side}")) != bool(getattr(args, f"repo_{side}")):
+            ap.error(f"--gguf-{side} and --repo-{side} go together: the record names the file by both")
     if bool(args.offload_dir) != bool(args.max_memory):
         ap.error("--offload-dir and --max-memory go together")
     if args.offload_dir and args.upcast_at_use:
@@ -936,6 +955,9 @@ def main():
             "max_dropped_gold_mass": max((r[name]["dropped_gold_mass"] for r in rows), default=0.0),
             "id_spelling_mismatches": sum(r[name]["id_spelling_mismatches"] for r in rows),
         }
+        gguf, repo = getattr(args, f"gguf_{name}"), getattr(args, f"repo_{name}")
+        if gguf:
+            summary["sides"][name]["file"] = side_file(gguf, repo)
         if summary["sides"][name]["id_spelling_mismatches"]:
             print(f"warning: side {name}: token ids whose spelling differs from the "
                   "reference's; the endpoint may number its vocabulary differently, "

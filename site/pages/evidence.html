@@ -155,6 +155,7 @@ nav: evidence
       <p class="eyebrow">Quantization fidelity</p>
       <h2>Constrained decoding guarantees the shape of a tool call at any quantization. Not its contents.</h2>
       <p>A full quant ladder, one Q8_0 reference against several variants, 16 agent-torture requests at temperature 0, with a zero-point self-check that two independent reference spawns agree on every call at 0 KLD before anything is measured. Three axes: does the output validate against the schema, did the variant call the same function as the reference, and do the parsed arguments match exactly.</p>
+      <p>Every file scored against its publisher's reference weights, pass or fail, is listed with its numbers in the <a href="/fidelity/">fidelity index</a>.</p>
     </div>
     <figure class="fig">
       <div class="legend">
