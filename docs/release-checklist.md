@@ -350,6 +350,16 @@ Commit the reports to the release branch, or to main if they arrive after the cu
    `runner --version` prints `runner X.Y.Z`, and the installed binary's sha256 is
    the release asset's. Uninstall with `HOMEBREW_NO_AUTOREMOVE=1` on a machine
    whose other formulae matter. The tap began with 1.18.0.
+8. Update the scoop and winget manifests, after the release is published:
+   `scripts/package-manifests.py --write X.Y.Z` reads the release's `SHA256SUMS`
+   (with `gh`) and rewrites `bucket/xyntetik-runner.json` and
+   `packaging/winget/manifests/x/Xyntetik/Runner/X.Y.Z/`; `--check` must pass, and
+   the change goes to main by PR. scoop reads the bucket from this repository
+   (`scoop bucket add xyntetik https://github.com/Joakimpalm-Zen/xyntetik-runner`,
+   then `scoop install xyntetik/xyntetik-runner`). winget reads microsoft/winget-pkgs:
+   copy the version folder into a fork of it and open one PR for that version. Check
+   each as a user would on Windows: `runner --version` prints `runner X.Y.Z`. The
+   manifests began with 1.18.0.
 
 1.13.0's coordinator half: tag on d0b0672f, release run green, 9 assets, notes from
 the PR comment, marked latest; container `v1.13.0` and `latest` on one digest; site

@@ -687,7 +687,9 @@ beside it: `--rewrite` (with `--prune-experts`, `--remove-sublayer` or
 `.context.json`. Each record names its input and output files by sha256,
 the options that shaped the bytes and the runner that ran it, and for each
 input that was itself made by a step it links that step's record by name
-and sha256. A record names every file by its base name, never by where it
+and sha256. A rewrite's record also says what it did: `tensors` counts the
+tensors converted and kept, and `requant_only` and `force_requant` name the
+development switches when they scoped or forced the conversion. A record names every file by its base name, never by where it
 sat on the machine that made it, so it can be published beside the file.
 With `--sign-key` the record is signed in place, the same chain
 and signature objects a receipt carries.
