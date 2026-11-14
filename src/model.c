@@ -15208,6 +15208,11 @@ NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
         }
     }
     if (dbg_time_on()) dt_attn_core += dt_now() - core_t0;
+    // R4.44 (study instrument): the weighted value sum and the gate's input, before the gate
+    act_trace_rows(c->pos, n, l, "attn_vsum", m->xb2, (size_t)xdim, q_dim);
+    if (m->qwen35 || (m->attn_out_gate && ly->wq_gate))
+        act_trace_rows(c->pos, n, l, "attn_gate", m->q_gate, (size_t)q_dim,
+                       m->attn_gate_heads && ly->wq_gate ? m->n_head : q_dim);
     // per-row output gates: each touches its own row only
     for (int b = 0; b < n; b++) {
         if (m->attn_gate_heads && ly->wq_gate) {
@@ -15224,6 +15229,7 @@ NUM_STAGE void attn_rows(model_t *m, const fwd_layer *c) {
                 m->xb2[(size_t)b * xdim + i] *= sigmoid_f(g);
             }
     }
+    act_trace_rows(c->pos, n, l, "attn_gated", m->xb2, (size_t)xdim, q_dim);
     if (dbg) dbg_stat("attn-out", l, m->xb2 + (size_t)(n - 1) * xdim, q_dim);
 }
 
@@ -15455,9 +15461,12 @@ static void forward_layer(model_t *m, int l, int n, int pos, int dbg) {
             layer_recurrent(m, &c);
         } else {
             attn_project(m, &c);
+            act_trace_rows(pos, n, l, "attn_in", m->xb, (size_t)xdim, n_embd);
+            act_trace_rows(pos, n, l, "attn_q_raw", m->q, (size_t)c.q_dim, c.q_dim);
             attn_rope_store(m, &c);
             attn_rows(m, &c);
             attn_output(m, &c);
+            act_trace_rows(pos, n, l, "attn_proj", m->xb, (size_t)xdim, n_embd);
         }
         if (dbg) dbg_stat("wo-out", l, m->xb + (size_t)(n - 1) * xdim, n_embd);
         layer_branch_out(m, &c, ly->post_attn_norm_w, DT_ATTN);
