@@ -221,7 +221,7 @@ def test_rank_r_partial_blocks_keep_the_chains(runner_bin, tmp_path, rank):
 # within rounding: 4 steps a family against the CPU run, every step's loss
 # within 1e-4 relative, and the record names the device. Skips where no CUDA
 # device is usable (the error it gives there is checked below).
-@pytest.mark.parametrize("family", ["base", "q8_0", "gemma4", "qwen35", "clef", "moe-renorm"])
+@pytest.mark.parametrize("family", ["base", "q8_0", "gemma4", "qwen35", "clef", "moe-renorm", "apertus"])
 def test_train_gpu_matches_cpu_within_rounding(runner_bin, base, tmp_path, family):
     d = base if family == "base" else _family_fixture(tmp_path, family)
     runs = {}
