@@ -649,11 +649,14 @@ static bool metal_dn_scratch(gpu_t *g, model_t *m, size_t nb) {
     int d_in_proj = convdim + m->ssm.inner + m->ssm.v_heads;   // Mamba-2's [z | xBC | dt]
     if (d_in_proj > qkv) qkv = d_in_proj;
     if (m->lfm2 && 3 * m->ssm.inner > qkv) qkv = 3 * m->ssm.inner;   // LFM2's [B | C | x]
+    // LFM2 has no SSD heads (v_heads 0): its raw beta and alpha scratch is
+    // unused, and a zero-length buffer is nil, so it takes one float
+    size_t vh = m->ssm.v_heads > 0 ? (size_t)m->ssm.v_heads : 1;
     id<MTLBuffer> b[6] = {
         new_f32_scratch(g->dev, nb * (size_t)qkv),
         new_f32_scratch(g->dev, nb * (size_t)m->ssm.inner),
-        new_f32_scratch(g->dev, nb * (size_t)m->ssm.v_heads),
-        new_f32_scratch(g->dev, nb * (size_t)m->ssm.v_heads),
+        new_f32_scratch(g->dev, nb * vh),
+        new_f32_scratch(g->dev, nb * vh),
         new_f32_scratch(g->dev, nb * (size_t)convdim),
         new_f32_scratch(g->dev, nb * (size_t)m->ssm.inner) };
     bool ok = true;
