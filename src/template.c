@@ -6765,6 +6765,22 @@ static const char *atem_enum_recovery(jv *choices, const char *raw,
     return best;
 }
 
+// Does the spelling read back (json_parse's own reader) inside every bound
+// the schema declares, the exclusive ones strictly?
+static bool atem_number_fits(jv *schema, const char *spelling) {
+    double x;
+    if (!json_number_text_ok(spelling, &x)) return false;
+    jv *b = jv_get(schema, "minimum");
+    if (b && b->type == J_NUM && !(x >= b->num)) return false;
+    b = jv_get(schema, "exclusiveMinimum");
+    if (b && b->type == J_NUM && !(x > b->num)) return false;
+    b = jv_get(schema, "maximum");
+    if (b && b->type == J_NUM && !(x <= b->num)) return false;
+    b = jv_get(schema, "exclusiveMaximum");
+    if (b && b->type == J_NUM && !(x < b->num)) return false;
+    return true;
+}
+
 static void atem_number_recovery(sbuf *out, jv *schema, bool integer) {
     double value = 0.0;
     jv *bound = jv_get(schema, "minimum");
@@ -6785,7 +6801,18 @@ static void atem_number_recovery(sbuf *out, jv *schema, bool integer) {
     if (bound && bound->type == J_NUM && value >= bound->num)
         value = integer ? ceil(bound->num) - 1.0
                         : nextafter(bound->num, -HUGE_VAL);
-    sb_fmt(out, integer ? "%.0f" : "%.17g", value);
+    char b[40];
+    snprintf(b, sizeof(b), integer ? "%.0f" : "%.17g", value);
+    // One ULP from an exclusive bound at 0 is the smallest subnormal: a
+    // spelling json_parse refuses (ERANGE), and one a flushing float mode
+    // reads as 0, as it may the nextafter itself (R2.20). The spelling is
+    // judged by reading it back against the bounds, and where it fails the
+    // nearest decimals that read back stand in for it.
+    if (!integer && !atem_number_fits(schema, b)) {
+        if (atem_number_fits(schema, "1e-307")) snprintf(b, sizeof(b), "1e-307");
+        else if (atem_number_fits(schema, "-1e-307")) snprintf(b, sizeof(b), "-1e-307");
+    }
+    sb_fmt(out, "%s", b);
 }
 
 static int atem_map(const tool_envelope *e, const char *doc, size_t n,

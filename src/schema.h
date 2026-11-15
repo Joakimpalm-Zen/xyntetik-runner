@@ -53,6 +53,10 @@ struct snode {
     bool    has_num_min, has_num_max;
     double  real_min, real_max;                     // enforced number interval
     bool    has_real_min, has_real_max;
+    // the bound is exclusive (R2.20): compared strictly, never held as one
+    // ULP inside it, which at 0 is a subnormal that a flushing float mode
+    // (gcc -ffast-math on x86) reads as 0
+    bool    real_min_strict, real_max_strict;
     // Each compiled `pattern` is a sequence of segments, a literal run
     // followed by an optional repeated ASCII class. One segment is the
     // common case (`^wf_[a-z0-9-]{6,}$`); several express shapes like
@@ -62,6 +66,15 @@ struct snode {
     // Several patterns (allOf) are enforced together: pat_at_pos returns
     // the intersection of what each admits at a position.
     pattern *pats; int n_pats;
+    // R2.18: a `pattern` the segments above cannot express, as an automaton
+    // (src/jsre.h): `re` from the compiler, `re_src` its text for messages,
+    // `dfa` its lazy DFA, made on the first byte the validator feeds it. The
+    // DFAs' caches share one pool, kept on the node a validator was started
+    // from (sval.root, normally the compiled schema's root) and freed with it.
+    struct jsre *re; char *re_src;
+    struct jsre_dfa *dfa;
+    struct jsre_pool *pool;
+    const char *re_fault;   // on the pool's node: a pool or DFA that could not be made
     // SN_RAW may also carry one marker/continuation in lits[0]/alts[0].
     // Its complete marker replaces the raw frame with the continuation.
     // SN_RAW's terminator. Its own field: this used to borrow the pattern
@@ -223,6 +236,12 @@ typedef struct {
     // buffer were two thirds of every one of those copies.
     char     num_text[96];
     uint8_t  num_len;
+    // R2.18: the node sval_init started from, whose pool the pattern
+    // automata's caches share; and whether this copy is a trial, which never
+    // outlives the call that made it (sval_trial's scratch, the engine's
+    // prelude probe): its steps keep no DFA state through a cache flush.
+    bool     trial;
+    const snode *root;
 } sval;
 
 void sval_init (sval *v, const snode *root);
@@ -237,6 +256,11 @@ bool sval_feed (sval *v, const char *s, int n);
 // not the whole 2 KB struct. See sval_trial() in schema.c for the invariant
 // that makes the short copy sound.
 bool sval_trial(const sval *v, sval *scratch, const char *s, int n);
+// R2.18: why a pattern automaton under this validator refused to go on (it
+// hit a limit, not a byte the pattern forbids), written to msg; false when
+// none did. A request ends with this as its error rather than a narrower
+// document.
+bool sval_pattern_fault(const sval *v, char *msg, int cap);
 // True when whitespace at the current position is string CONTENT, not an
 // insignificant separator. Callers suppress separator whitespace to stop a
 // constrained model burning its budget on blank runs; see schema.c.

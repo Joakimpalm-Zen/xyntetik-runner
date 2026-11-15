@@ -678,6 +678,7 @@ def wilcoxon_signed_rank(diffs):
     order = sorted(range(n), key=lambda i: abs(d[i]))
     ranks = [0.0] * n
     i = 0
+    ties = 0.0   # sum of t^3 - t over the groups of equal |difference|
     while i < n:
         j = i
         while j + 1 < n and abs(d[order[j + 1]]) == abs(d[order[i]]):
@@ -685,12 +686,17 @@ def wilcoxon_signed_rank(diffs):
         r = (i + j) / 2.0 + 1.0
         for k in range(i, j + 1):
             ranks[order[k]] = r
+        t = j - i + 1
+        ties += t * t * t - t
         i = j + 1
     w = sum(ranks[i] for i in range(n) if d[i] > 0)
     mu = n * (n + 1) / 4.0
-    sd = math.sqrt(n * (n + 1) * (2 * n + 1) / 24.0)
-    if sd == 0:
+    # tied ranks shrink the statistic's variance; without the term a set of
+    # equal differences reads less significant than it is
+    var = n * (n + 1) * (2 * n + 1) / 24.0 - ties / 48.0
+    if var <= 0:
         return None
+    sd = math.sqrt(var)
     z = (w - mu) / sd
     p = math.erfc(abs(z) / math.sqrt(2.0))
     return z, p, n

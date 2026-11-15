@@ -344,13 +344,13 @@ def test_streamed_final_branch_matches_the_buffered_answer(client):
     ([{"type": "function", "function": {"name": "final"}}], "reserved", "reserved"),
     # a parameter schema the compiler cannot enforce: silently approximating
     # it would mean guaranteeing a constraint that is not there. pattern is
-    # now PARTIALLY supported (anchored prefix + repeated ASCII class), so an
-    # out-of-subset pattern rejects with its own named reason...
+    # enforced for any regular ECMA-262 pattern (R2.18), so one that is not
+    # regular (a backreference) rejects with its own named reason...
     ([{"type": "function",
        "function": {"name": "a",
                     "parameters": {"type": "object",
                                    "properties": {"p": {"type": "string",
-                                                        "pattern": "^x$"}}}}}],
+                                                        "pattern": "(a)\\1"}}}}}],
      "unenforceable-pattern", "pattern"),
     # ...while a keyword the compiler does not know at all still names itself
     ([{"type": "function",
