@@ -4326,6 +4326,12 @@ jv *schema_resolve_tool_refs(jv *tools, jv **owned, char *err, int errcap) {
         char why[128];
         jv *own;
         jv *r = schema_resolve_refs(params, &own, why, sizeof why);
+        // parameters that resolve to false admit no call: the native grammars
+        // read parameters.properties and would see a tool without parameters
+        if (r && r->type == J_BOOL && !r->b) {
+            snprintf(why, sizeof why, "its parameters admit no value (they resolve to false)");
+            r = NULL;
+        }
         if (!r || !jv_set(fn, "parameters", own)) {
             if (r) snprintf(why, sizeof why, "out of memory");
             snprintf(err, errcap, "tool \"%.40s\": %s",

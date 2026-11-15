@@ -6324,8 +6324,18 @@ int tool_envelope_build_ex(jv *tools, jv *choice, jv *final_schema,
                 out->ref_err = strdup(m);
             }
         }
+        // Parameters that resolve to false (a root $ref to false) admit no
+        // call. They stay false in the envelope, which the compiler refuses,
+        // with the tool's name as the reason; {"type":"object"} in their
+        // place admitted any arguments.
+        bool none = params && params->type == J_BOOL && !params->b;
+        if (none && !out->ref_err) {
+            char m[200];
+            snprintf(m, sizeof m, "tool \"%.60s\": its parameters admit no value (they resolve to false)", name);
+            out->ref_err = strdup(m);
+        }
         envelope_branch(&schema, emitted == 0, name,
-                        params && params->type == J_OBJ ? params : NULL,
+                        params && (params->type == J_OBJ || none) ? params : NULL,
                         "{\"type\":\"object\"}");
         jv_free(own);
         emitted++;
