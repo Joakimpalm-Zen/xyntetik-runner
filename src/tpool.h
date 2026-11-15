@@ -33,5 +33,10 @@ void   tprof_step_begin(void);
 void   tprof_step_end(void);
 void   tprof_set_tag(uint64_t tag);
 void   tprof_region(const char *name, double s);
+// EXPERIMENT R3.57 (not for merge): RUNNER_CPU_PROF=prefill profiles the
+// batched passes of a prompt instead of one-token steps (tprof_mode 2), and
+// a scope bit marks the pool runs made inside the routed experts.
+int    tprof_mode(void);
+void   tprof_set_scope(uint64_t bits);
 
 #endif // RUNNER_TPOOL_H

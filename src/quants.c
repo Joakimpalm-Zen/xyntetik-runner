@@ -5438,11 +5438,19 @@ double tprof_now(void) {
 }
 
 static void tprof_report(void);
+static int tprof_mode_v;   // 1: one-token steps; 2: batched passes (EXPERIMENT R3.57)
 static void tprof_env_init(void) {
     const char *e = getenv("RUNNER_CPU_PROF");
     tprof_env = e && *e && strcmp(e, "0") != 0;
+    tprof_mode_v = !tprof_env ? 0 : !strcmp(e, "prefill") ? 2 : 1;
     if (tprof_env) atexit(tprof_report);
 }
+int tprof_mode(void) {
+    pthread_once(&tprof_once, tprof_env_init);
+    return tprof_mode_v;
+}
+static _Thread_local uint64_t tprof_scope;
+void tprof_set_scope(uint64_t bits) { tprof_scope = bits; }
 bool tprof_enabled(void) {
     pthread_once(&tprof_once, tprof_env_init);
     return tprof_env;
@@ -5474,7 +5482,7 @@ void tprof_region(const char *name, double s) {
 }
 
 static void tprof_add(tp_fn fn, double wall, const double *busy, int nthr) {
-    uint64_t tag = tprof_cur_tag;
+    uint64_t tag = tprof_cur_tag | tprof_scope;
     int i = 0;
     while (i < tprof_n && !(tprof_tab[i].fn == fn && tprof_tab[i].tag == tag)) i++;
     if (i == tprof_n) {
@@ -5497,8 +5505,9 @@ void tpool_run(tpool *tp, tp_fn fn, void *ctx, int n_items);
 static void tprof_report(void) {
     if (!tprof_steps) return;
     double st = tprof_steps_s / tprof_steps;
-    fprintf(stderr, "cpu-prof: %ld steps, %.3f ms a step; fn addresses against tpool_run at %p\n",
-            tprof_steps, st * 1e3, (void *)tpool_run);
+    fprintf(stderr, "cpu-prof: %ld steps, %.3f ms a step; fn addresses against tpool_run at %p%s\n",
+            tprof_steps, st * 1e3, (void *)tpool_run,
+            tprof_mode_v == 2 ? "; a step is one BATCHED pass (prefill mode); tag bit 60 = inside the routed experts" : "");
     fprintf(stderr, "cpu-prof: fn tag runs/step wall_ms bmax_ms bmean_ms share\n");
     double acc = 0;
     for (int i = 0; i < tprof_n; i++) {
