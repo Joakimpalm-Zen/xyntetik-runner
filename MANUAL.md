@@ -1004,8 +1004,11 @@ Runner provides two sampler-level guarantees:
 
 The supported schema subset covers objects, arrays, strings, numbers,
 integers, booleans, null, enums, const, type unions, numeric bounds on both
-`integer` and `number` (`minimum`/`maximum` and their exclusive forms, with a
-forced close completing the value inside the declared range), string
+`integer` and `number` (`minimum`/`maximum` and their exclusive forms; a
+number's prefix is admitted only while some completion of it lies inside the
+range, so an exponent that leaves it unreachable, `1e+3` under `maximum: 1`, is
+refused where it is written, and a forced close completes the value inside the
+declared range), string
 lengths and `pattern`s (below), array item/count constraints,
 scalar-const `oneOf`/`anyOf`, const-discriminated object unions (below), and
 the tool-discriminated object union used by agent clients. Required
