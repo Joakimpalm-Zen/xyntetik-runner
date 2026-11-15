@@ -395,6 +395,20 @@ static bool metal_kv_covers(const gpu_t *g, int rows) {
     return false;
 }
 
+// The KV cache's host allocations (R3.68) live in this process: how many and
+// how large, and how many were ever made. Only the held-after-free seam reads
+// them: an unload that released the region buffers but not the allocation
+// under them moves neither the device figure nor, at a small context, the
+// footprint (fable's read of #877).
+static _Atomic long kv_host_live, kv_host_live_bytes, kv_host_made;
+
+static void metal_kv_host_free(uint8_t *p, size_t len) {
+    if (!p) return;
+    vm_deallocate(mach_task_self(), (vm_address_t)p, len);
+    atomic_fetch_sub(&kv_host_live, 1);
+    atomic_fetch_sub(&kv_host_live_bytes, (long)len);
+}
+
 static void gpu_release_state(gpu_t *g, int n_layer) {
     if (!g) return;
 #define X(t)                                                       \
@@ -416,8 +430,8 @@ static void gpu_release_state(gpu_t *g, int n_layer) {
     lora_dev_release(g);
     for (int i = 0; i < g->n_wbuf; i++) [g->wbuf[i] release];
     metal_kv_unmap(g, n_layer);
-    if (g->kv_host_k) vm_deallocate(mach_task_self(), (vm_address_t)g->kv_host_k, g->kv_host_k_len);
-    if (g->kv_host_v) vm_deallocate(mach_task_self(), (vm_address_t)g->kv_host_v, g->kv_host_v_len);
+    metal_kv_host_free(g->kv_host_k, g->kv_host_k_len);
+    metal_kv_host_free(g->kv_host_v, g->kv_host_v_len);
     g->kv_host_k = g->kv_host_v = NULL;
     id<MTLBuffer> bufs[] = { g->x, g->xb, g->xb2,
                              g->q, g->kt, g->vt, g->hb, g->hb2, g->att,
@@ -2614,6 +2628,9 @@ static uint8_t *metal_kv_host_alloc(size_t bytes, size_t *len) {
     *len = *len / pg * pg;
     vm_address_t a = 0;
     if (vm_allocate(mach_task_self(), &a, *len, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) return NULL;
+    atomic_fetch_add(&kv_host_live, 1);
+    atomic_fetch_add(&kv_host_live_bytes, (long)*len);
+    atomic_fetch_add(&kv_host_made, 1);
     return (uint8_t *)a;   // zero-filled on demand: untouched rows are never resident
 }
 
@@ -3809,6 +3826,10 @@ void gpu_free(model_t *m) {
                     (unsigned long long)(dev ? dev.currentAllocatedSize : 0));
             [dev release];
         }
+        // the KV cache's host allocations, which no device figure counts
+        fprintf(stderr, "test: %ld KV host allocations (%ld bytes) remain after the model is freed, "
+                "of %ld made\n", atomic_load(&kv_host_live), atomic_load(&kv_host_live_bytes),
+                atomic_load(&kv_host_made));
     }
 }
 
