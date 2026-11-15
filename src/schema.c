@@ -872,11 +872,14 @@ static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
         // mode: an inverted interval, equal bounds of which one is exclusive,
         // and two exclusive bounds on ADJACENT doubles, between which nothing
         // lies. The first R2.20 fix dropped the last case, which 1.19.0 had
-        // caught through its one-step-inside bounds.
+        // caught through its one-step-inside bounds. Adjacency is asked as
+        // lo + 1 == hi, reached only when lo < hi, so nothing overflows: the
+        // difference hi - lo does not fit an int64_t for bounds on both sides
+        // of zero (-2 and 2 are 2^63 places apart).
         int64_t lo = dbl_order(n->real_min), hi = dbl_order(n->real_max);
         bool strict_any = n->real_min_strict || n->real_max_strict;
         bool strict_both = n->real_min_strict && n->real_max_strict;
-        if (lo > hi || (lo == hi && strict_any) || (strict_both && hi - lo == 1)) {
+        if (lo > hi || (lo == hi && strict_any) || (strict_both && lo + 1 == hi)) {
             snprintf(err, errcap, "empty number bounds");
             return false;
         }

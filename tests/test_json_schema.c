@@ -1305,6 +1305,15 @@ static void test_schema_exclusive_bounds_survive_flush_to_zero(void) {
         // two exclusive bounds two doubles apart: the one double between them is in
         { "{\"type\":\"number\",\"exclusiveMinimum\":1,\"exclusiveMaximum\":1.0000000000000004}", "1.0000000000000002", true },
         { "{\"type\":\"number\",\"exclusiveMinimum\":1,\"exclusiveMaximum\":1.0000000000000004}", "1", false },
+        // two exclusive bounds on both sides of zero: their places in the order
+        // of doubles are further apart than an int64_t difference holds (the
+        // sanitized fuzz seed number_bounds_across_zero.json is the live half)
+        { "{\"type\":\"number\",\"exclusiveMinimum\":-2,\"exclusiveMaximum\":2}", "0", true },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":-2,\"exclusiveMaximum\":2}", "-1.5", true },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":-2,\"exclusiveMaximum\":2}", "2", false },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":-1.7976931348623157e308,\"exclusiveMaximum\":1.7976931348623157e308}", "1e308", true },
+        // the two smallest numbers around zero: zero lies between them
+        { "{\"type\":\"number\",\"exclusiveMinimum\":-2.2250738585072014e-308,\"exclusiveMaximum\":2.2250738585072014e-308}", "0", true },
         // a narrow interval next to zero: its normal values are in, zero is not
         { "{\"type\":\"number\",\"exclusiveMinimum\":0,\"maximum\":5e-308}", "3e-308", true },
         { "{\"type\":\"number\",\"exclusiveMinimum\":0,\"maximum\":5e-308}", "0", false },
