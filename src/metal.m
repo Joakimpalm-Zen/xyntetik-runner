@@ -1664,10 +1664,16 @@ static bool metal_q4k_mvg_for(const gpu_t *g, int n_in) {
 // under =0); RUNNER_METAL_MVG=0 keeps k_mv2_q6_K / k_mv_q6_K. A tolerance
 // route, unlike k_mv2_q6_K; the timings are in docs/metal-tuning-evidence.md.
 #define MV_Q6K_FAST_MIN 1536
-static bool metal_q6k_mvg_for(const gpu_t *g, int n_in) {
+// EXPERIMENT R3.42: a tall Q6_K matrix (an output head: one row per token of
+// the vocabulary) takes the narrow-slice kernel below MV_Q6K_FAST_MIN too. The
+// 1536 floor was measured on layer matrices; LFM2.5-350M's tied head
+// (65,536 x 1,024) spends 6.8 of a token's 10.4 ms on the identity matvec.
+#define MV_Q6K_TALL_MIN 32768
+static bool metal_q6k_mvg_for(const gpu_t *g, int n_in, int n_out) {
     int st = metal_mv_state();
     return metal_mvg_on() && (st == MV_ALL ||
-           (st == MV_Q4_K && g->mv_q4k_default && n_in >= MV_Q6K_FAST_MIN));
+           (st == MV_Q4_K && g->mv_q4k_default &&
+            (n_in >= MV_Q6K_FAST_MIN || n_out >= MV_Q6K_TALL_MIN)));
 }
 static bool metal_mv_fast_for(const gpu_t *g, int type, int n_in) {
     int st = metal_mv_state();
@@ -3136,7 +3142,7 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // (decode-only by construction) has never looked.
     id<MTLComputePipelineState> mv = g->p_mv[w->type];
     int rows_sg = 1;   // output rows a simdgroup computes
-    if (decode && w->type == T_Q6_K && g->p_mvg_q6k && metal_q6k_mvg_for(g, n_in)) {
+    if (decode && w->type == T_Q6_K && g->p_mvg_q6k && metal_q6k_mvg_for(g, n_in, n_out)) {
         mv = g->p_mvg_q6k;
         rows_sg = 4;   // MVG6_NR; several columns walk the one-column arithmetic
         g_mv_dispatches++;
@@ -5484,7 +5490,7 @@ const char *gpu_route_detail(const model_t *m) {
              metal_fuse_on() ? "on" : "off", metal_mm_on() ? "on" : "off",
              metal_mv_state() == MV_ALL ? "fast"
              : metal_mv_state() == MV_Q4_K && g && g->mv_q4k_default
-                 ? (metal_mvg_on() ? "mvg-q4_K>=" MV_STR(MV_Q4K_FAST_MIN) "+q6_K>=" MV_STR(MV_Q6K_FAST_MIN)
+                 ? (metal_mvg_on() ? "mvg-q4_K>=" MV_STR(MV_Q4K_FAST_MIN) "+q6_K>=" MV_STR(MV_Q6K_FAST_MIN) "|rows>=" MV_STR(MV_Q6K_TALL_MIN)
                                    : "fast-q4_K>=" MV_STR(MV_Q4K_FAST_MIN)) : "identity",
              metal_attn_coop_on() ? "coop" : "identity",
              wide ? " attn_wide=on" : "",
