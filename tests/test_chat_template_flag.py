@@ -167,15 +167,27 @@ def test_unknown_chat_template_is_an_error(runner_bin, model):
 def test_registry_refuses_an_empty_entry(runner_bin, model, registry):
     # strtok() skips empty fields, so these used to start a real server after
     # silently deleting the malformed registry entry.
+    #
+    # "Started serving" is observed, not inferred from a clock: the process is
+    # watched until it exits (the refusal) or answers /health (the defect). A
+    # fixed 3 s wait stood in for the second and failed on a slow hosted runner
+    # under the sanitizers, where the refusal itself took longer (2026-11-15).
+    port = _free_port()
     proc = subprocess.Popen(
         [str(runner_bin), "--gpu", "off", "--no-tray", "-m",
-         registry.format(model=model), "--serve", "--port", str(_free_port())],
+         registry.format(model=model), "--serve", "--port", str(port)],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            pytest.fail("registry with an empty entry was accepted and started serving")
+        deadline = time.time() + 120
+        while proc.poll() is None:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1):
+                    pytest.fail("registry with an empty entry was accepted and started serving")
+            except (urllib.error.URLError, OSError):
+                pass
+            if time.time() > deadline:
+                pytest.fail("the server neither refused the registry nor served within 120 s")
+            time.sleep(0.05)
         assert proc.returncode != 0
         assert "empty" in proc.stderr.read().decode(errors="replace")
     finally:

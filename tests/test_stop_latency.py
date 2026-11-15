@@ -20,9 +20,23 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
+# The suite's timeout scale: 1 on an ordinary build, 8 under the sanitizers
+# (SAN_PYTEST_ENV in the Makefile), where a process start costs several times
+# more and a hosted runner can be twice as slow again.
+SCALE = float(os.environ.get("RUNNER_TEST_TIMEOUT_SCALE", "1"))
+
 # Cleanup is eventual, not a service deadline. This only bounds a hung test
 # on slow storage; process startup and exit keep their own measured bounds.
-SWEEP_CLEANUP_TIMEOUT_S = 120
+SWEEP_CLEANUP_TIMEOUT_S = 120 * SCALE
+
+# test_blocked_sweep_does_not_hold_start_or_exit: the helper is held for
+# SWEEP_HOLD_S, and a start and an exit must each finish well inside that, or
+# they waited for it. The three scale together, so the claim is the same on
+# every build: a fixed 3 s start under the sanitizers failed on a slow hosted
+# runner with the server simply not up yet (2026-11-15).
+SWEEP_HOLD_S = 5 * SCALE
+SWEEP_START_S = 3 * SCALE
+SWEEP_EXIT_S = 2 * SCALE
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal contract")
 
@@ -150,10 +164,10 @@ def test_blocked_sweep_does_not_hold_start_or_exit(runner_bin, model, tmp_path):
     live.write_text(json.dumps({"pid": os.getpid(), "mode": "cli"}))
     marker = tmp_path / "sweeper.pid"
     env = dict(os.environ, HOME=str(home), APPDATA=str(home),
-               RUNNER_TEST_INSTANCE_SWEEP_DELAY_MS="5000",
+               RUNNER_TEST_INSTANCE_SWEEP_DELAY_MS=str(int(SWEEP_HOLD_S * 1000)),
                RUNNER_TEST_INSTANCE_SWEEP_MARKER=str(marker))
     worker = None
-    first = RunnerServer(runner_bin, str(model), ctx=128, env=env, start_timeout=3,
+    first = RunnerServer(runner_bin, str(model), ctx=128, env=env, start_timeout=SWEEP_START_S,
                          extra_args=["--gpu", "off", "-t", "2"])
     try:
         first.start()
@@ -168,15 +182,15 @@ def test_blocked_sweep_does_not_hold_start_or_exit(runner_bin, model, tmp_path):
         assert stale.exists(), "cleanup is still blocked after the server became healthy"
         t0 = time.monotonic()
         first.proc.send_signal(signal.SIGTERM)
-        rc = first.proc.wait(timeout=2)
-        assert time.monotonic() - t0 < 2, "server exit waited for its cleanup helper"
+        rc = first.proc.wait(timeout=SWEEP_EXIT_S)
+        assert time.monotonic() - t0 < SWEEP_EXIT_S, "server exit waited for its cleanup helper"
         if os.name != "nt":
             assert rc == 0, rc
         # RSS sampling, log close/unlink and other harness bookkeeping run in
         # finally, outside the measurement and the blocked-worker window.
 
         # A second start does not wait for the worker lock or run a duplicate sweep.
-        second = RunnerServer(runner_bin, str(model), ctx=128, env=env, start_timeout=3,
+        second = RunnerServer(runner_bin, str(model), ctx=128, env=env, start_timeout=SWEEP_START_S,
                               extra_args=["--gpu", "off", "-t", "2"])
         with second:
             assert int(marker.read_text()) == worker
