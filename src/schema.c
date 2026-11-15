@@ -2387,10 +2387,15 @@ static void num_side(const snode *n, bool neg, double *a, double *b) {
 }
 
 static bool num_try(const snode *n, const char *t, const char *suffix, char *out, size_t cap) {
-    char full[sizeof(((sval *)0)->num_text) + 8];
-    int k = snprintf(full, sizeof(full), "%s%s", t, suffix);
-    // the whole spelling must fit where the validator keeps it (number_put)
-    if (k < 0 || k >= (int)sizeof(((sval *)0)->num_text)) return false;
+    // the whole spelling must fit where the validator keeps it (number_put):
+    // the lengths are checked first and the copy is exact, so nothing is ever
+    // cut and no compiler has to prove that a formatted write fits (gcc's
+    // -Werror=format-truncation refused the snprintf this replaces)
+    char full[sizeof(((sval *)0)->num_text)];
+    size_t tl = strlen(t), sl = strlen(suffix);
+    if (tl + sl >= sizeof(full)) return false;
+    memcpy(full, t, tl);
+    memcpy(full + tl, suffix, sl + 1);
     if (!number_text_in_bounds(n, full)) return false;
     if (out) snprintf(out, cap, "%s", suffix);
     return true;
@@ -2531,7 +2536,7 @@ static bool num_witness_mant(const snode *n, const char *t, uint8_t st, const nu
             if (!(vw > 0)) continue;
             long x0 = lround(log10(tau / vw));
             for (long x = x0 - 1; x <= x0 + 1; x++) {
-                char suf[sizeof(mt) + 16];
+                char suf[sizeof(mt) + 32];   // the body, e, and a long's digits
                 const char *body = mt + strlen(t);
                 if (x == 0) {
                     snprintf(suf, sizeof(suf), "%s", body);
