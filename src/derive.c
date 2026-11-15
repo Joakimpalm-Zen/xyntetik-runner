@@ -656,7 +656,7 @@ static bool gold_measure(const derive_opts *o, const char *script, const char *f
     jv *rows = jv_get(g, "rows");
     if (rows && rows->type == J_ARR && rows->n) {
         double *kl = malloc(sizeof(double) * (size_t)rows->n);
-        unsigned char *ql = malloc((size_t)rows->n), *ht = malloc((size_t)rows->n);
+        unsigned char *ql = calloc((size_t)rows->n, 1), *ht = calloc((size_t)rows->n, 1);
         int nk = 0;
         m->qualified = 0;
         for (int i = 0; i < rows->n; i++) {
@@ -1390,7 +1390,9 @@ static bool compare_json(const char *ours_gold, const char *spec, sbuf *out) {
     int cap = orows->n, n = 0, qual = 0, b = 0, c = 0, top_o = 0, q_o = 0;
     double *diffs = malloc(sizeof(double) * (size_t)(cap ? cap : 1));
     double *tk = malloc(sizeof(double) * (size_t)(cap ? cap : 1));
-    unsigned char *tq = malloc((size_t)(cap ? cap : 1)), *th = malloc((size_t)(cap ? cap : 1));
+    // zeroed: gcc cannot see that the bootstrap reads only the n entries the
+    // loop below wrote (-Wmaybe-uninitialized; clang does not ask)
+    unsigned char *tq = calloc((size_t)(cap ? cap : 1), 1), *th = calloc((size_t)(cap ? cap : 1), 1);
     if (!tq || !th) { free(diffs); diffs = NULL; }   // one refusal below for all four
     double sum_t = 0;
     for (int i = 0; diffs && tk && i < orows->n; i++) {
@@ -1429,8 +1431,8 @@ static bool compare_json(const char *ours_gold, const char *spec, sbuf *out) {
     bool have_w = n && wilcoxon_signed_rank(diffs, n, &z, &pw);
     // the other file's verdict, from its own interval over the same positions
     // (before tk is sorted for the median)
-    bar_ci tci;
-    bar_bootstrap(tk, tq, th, n, &tci);
+    bar_ci tci = {0};
+    if (n > 0) bar_bootstrap(tk, tq, th, n, &tci);
     double med = 0;
     if (n) {
         qsort(tk, (size_t)n, sizeof(double), cmp_double);
