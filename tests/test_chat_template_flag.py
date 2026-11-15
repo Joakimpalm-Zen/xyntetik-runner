@@ -26,7 +26,6 @@ auto-detection, which is the same silent discard in a smaller place.
 import contextlib
 import json
 import pathlib
-import socket
 import subprocess
 import sys
 import time
@@ -36,6 +35,8 @@ import urllib.request
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+from server_probe import low_free_port  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -47,9 +48,11 @@ def model(tmp_path_factory):
 
 
 def _free_port():
-    with contextlib.closing(socket.socket()) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    # Below the ephemeral range. A port from bind(:0) can be handed to a
+    # health poll as its own source port before the server has bound it, and
+    # the poll then connects to itself (scripts/server_probe.py). Every server
+    # in this file is polled from the moment it starts.
+    return low_free_port()
 
 
 @contextlib.contextmanager
