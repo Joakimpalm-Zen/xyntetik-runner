@@ -1302,6 +1302,12 @@ static void test_schema_exclusive_bounds_survive_flush_to_zero(void) {
         { "{\"type\":\"number\",\"exclusiveMaximum\":-3,\"minimum\":-10}", "-3.5", true },
         { "{\"type\":\"number\",\"exclusiveMinimum\":0,\"exclusiveMaximum\":1}", "1", false },
         { "{\"type\":\"number\",\"exclusiveMinimum\":0,\"exclusiveMaximum\":1}", "0.25", true },
+        // two exclusive bounds two doubles apart: the one double between them is in
+        { "{\"type\":\"number\",\"exclusiveMinimum\":1,\"exclusiveMaximum\":1.0000000000000004}", "1.0000000000000002", true },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":1,\"exclusiveMaximum\":1.0000000000000004}", "1", false },
+        // a narrow interval next to zero: its normal values are in, zero is not
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0,\"maximum\":5e-308}", "3e-308", true },
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0,\"maximum\":5e-308}", "0", false },
         // inside an object, where a brace ends the number
         { "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\",\"exclusiveMinimum\":0}},\"required\":[\"x\"]}", "{\"x\":0}", false },
         { "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\",\"exclusiveMinimum\":0}},\"required\":[\"x\"]}", "{\"x\":0.5}", true },
@@ -1310,6 +1316,13 @@ static void test_schema_exclusive_bounds_survive_flush_to_zero(void) {
     const char *empty[] = {
         "{\"type\":\"number\",\"minimum\":0,\"exclusiveMaximum\":0}",
         "{\"type\":\"number\",\"exclusiveMinimum\":2,\"maximum\":2}",
+        // two exclusive bounds on adjacent doubles: no number lies strictly
+        // between them. 1.19.0 refused this; the first R2.20 fix compiled it
+        // and a forced close then wrote the excluded upper bound (a second
+        // read, 2026-11-15)
+        "{\"type\":\"number\",\"exclusiveMinimum\":1,\"exclusiveMaximum\":1.0000000000000002}",
+        "{\"type\":\"number\",\"exclusiveMinimum\":-1.0000000000000002,\"exclusiveMaximum\":-1}",
+        "{\"type\":\"number\",\"exclusiveMinimum\":3,\"exclusiveMaximum\":2}",
     };
     int flushed_runs = 0;
     for (int mode = 0; mode < 2; mode++) {
@@ -1349,6 +1362,13 @@ static void test_schema_exclusive_bounds_survive_flush_to_zero(void) {
             "{\"type\":\"number\",\"exclusiveMaximum\":0}",
             "{\"type\":\"number\",\"exclusiveMinimum\":5}",
             "{\"type\":\"number\",\"exclusiveMaximum\":-3}",
+            // a narrow interval next to zero has normal, readable values
+            // (3e-308): the close used to write the unreadable 4.94e-324, or
+            // the excluded 0 where subnormals are flushed
+            "{\"type\":\"number\",\"exclusiveMinimum\":0,\"maximum\":5e-308}",
+            "{\"type\":\"number\",\"exclusiveMaximum\":0,\"minimum\":-5e-308}",
+            "{\"type\":\"number\",\"exclusiveMinimum\":0,\"exclusiveMaximum\":5e-308}",
+            "{\"type\":\"number\",\"exclusiveMinimum\":1,\"exclusiveMaximum\":1.0000000000000004}",
         };
         for (size_t i = 0; i < sizeof(closes) / sizeof(*closes); i++) {
             char src[256];
