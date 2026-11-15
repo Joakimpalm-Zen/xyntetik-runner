@@ -106,7 +106,18 @@ SYNTAX = set("^$\\.*+?()[]{}|/")
 def rewrite_u(p):
     """A legacy-mode pattern as Unicode mode spells it: an identity escape of a
     non-syntax character becomes the character, a brace or a ] that opens or
-    closes nothing becomes escaped."""
+    closes nothing becomes escaped.
+
+    THE CONTRACT THIS ENCODES IS A DECISION, not an accident (fable for the
+    owner, R2.18, 2026-11-14): a pattern the u flag rejects ONLY for an
+    identity escape (\-, \_, \!), a lone brace or a lone bracket (a{b}, a],
+    a}) is read as legacy ECMA reads it, with code-point meanings, where a
+    strict Unicode-mode reading would refuse it. Every validator that accepts
+    such a schema (legacy JS, Python) gives it this meaning; one that rejects
+    it rejects the schema, not the output. Where both modes accept a pattern
+    and read it differently, the Unicode meaning holds. MANUAL.md states it
+    under `pattern`. Legacy mode itself is the oracle on BMP strings; this
+    spelling lets node's Unicode mode check the others."""
     out, i, cls = [], 0, False
     while i < len(p):
         c = p[i]

@@ -1078,11 +1078,14 @@ Every other pattern compiles to an automaton, as ECMA-262 reads it with the
   restricted to what a JSON string spells unescaped. A string under such a
   pattern admits no escape: its value is its text.
 - **Legacy spellings.** A pattern the `u` flag rejects only for an identity
-  escape (`\-` outside a class, `\_`), a lone brace or a lone bracket is read
-  as without the `u` flag (the escaped character, a literal brace or
-  bracket). Where both readings accept a pattern but differ, as a dot or a
-  negated class meeting a code point above U+FFFF does, the `u` meaning
-  holds.
+  escape (`\-` outside a class, `\_`, `\!`), a lone brace or a lone bracket
+  (`a{b}`, `a]`, `a}`) is read as without the `u` flag (the escaped
+  character, a literal brace or bracket). A strict Unicode-mode reading
+  would refuse such a pattern; this reading is chosen, because every
+  validator that accepts the schema gives it this meaning, and one that
+  rejects it rejects the schema rather than the output. Where both readings
+  accept a pattern but differ, as a dot or a negated class meeting a code
+  point above U+FFFF does, the `u` meaning holds.
 - **Refused by name:** backreferences, lookahead and lookbehind, `\b` and
   `\B`, `\p{...}`, named groups, inline flags, a letter escape ECMA does not
   define, a count with nothing to repeat, a malformed count (`{}`, `{,3}`,
@@ -1101,15 +1104,18 @@ Its limits, in one place:
 - **4,096 automaton states per pattern**, refused when the schema compiles.
   A count is built by unrolling it, so a class with many UTF-8 ranges under a
   large count reaches it: `[^\s@]{1,64}@[^\s@]{1,255}` is refused.
-- **8 MiB of DFA cache per compiled schema**, the transitions the automaton
-  has built so far. Past it the cache is flushed and rebuilt as needed, which
-  costs speed and never changes which tokens are admitted (the same output at
-  one byte of cache is a test).
+- **8 MiB per compiled schema** for the automata's cache (the transitions,
+  states and length bits built so far) and their bookkeeping (slot arrays,
+  hash tables), counted as asked of the allocator. Past it the cache is
+  flushed and the bookkeeping shrunk to what still lives, which costs speed
+  and never changes which tokens are admitted (the same output at one byte
+  of cache is a test).
 - **16,384 kept states per request**: the states a written document passed
   through, which copies of the validator may still hold, so no flush can drop
-  them. A pattern whose automaton has more distinct states than that, walked
-  by a document that long, ends the request as a fault (below), never as a
-  narrower document.
+  them; at most 512 bytes each, so at most 8 MiB beside the cache. A pattern
+  whose automaton has more distinct states than that, walked by a document
+  that long, ends the request as a fault (below), never as a narrower
+  document.
 - **Lengths that settle within 4,096 code points**: a pattern with length
   bounds whose possible lengths keep changing past that, such as
   `^(a{97}|a{101})*$` without a `maxLength`, is refused when the schema

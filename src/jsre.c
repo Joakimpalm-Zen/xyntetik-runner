@@ -42,12 +42,13 @@ static bool cp_norm(cpset *s) {
         } else s->r[++k] = s->r[i];
     }
     s->n = k + 1;
+    // a failure part-way frees the set being built (R2.18, codex on #875)
     cpset o = { 0 };
     for (int i = 0; i < s->n; i++) {
         uint32_t lo = s->r[i].lo, hi = s->r[i].hi;
-        if (hi < SUR_LO || lo > SUR_HI) { if (!cp_add(&o, lo, hi)) return false; continue; }
-        if (lo < SUR_LO && !cp_add(&o, lo, SUR_LO - 1)) return false;
-        if (hi > SUR_HI && !cp_add(&o, SUR_HI + 1, hi)) return false;
+        if (hi < SUR_LO || lo > SUR_HI) { if (!cp_add(&o, lo, hi)) { free(o.r); return false; } continue; }
+        if (lo < SUR_LO && !cp_add(&o, lo, SUR_LO - 1)) { free(o.r); return false; }
+        if (hi > SUR_HI && !cp_add(&o, SUR_HI + 1, hi)) { free(o.r); return false; }
     }
     free(s->r);
     *s = o;
@@ -59,10 +60,10 @@ static bool cp_not(cpset *s) {
     cpset o = { 0 };
     uint32_t next = 0;
     for (int i = 0; i < s->n; i++) {
-        if (s->r[i].lo > next && !cp_add(&o, next, s->r[i].lo - 1)) return false;
+        if (s->r[i].lo > next && !cp_add(&o, next, s->r[i].lo - 1)) { free(o.r); return false; }
         next = s->r[i].hi + 1;
     }
-    if (next <= CP_MAX && !cp_add(&o, next, CP_MAX)) return false;
+    if (next <= CP_MAX && !cp_add(&o, next, CP_MAX)) { free(o.r); return false; }
     free(s->r);
     *s = o;
     return cp_norm(s);
@@ -83,7 +84,7 @@ static bool cp_producible(cpset *s) {
         for (size_t j = 0; j < sizeof allow / sizeof *allow; j++) {
             uint32_t lo = s->r[i].lo > allow[j].lo ? s->r[i].lo : allow[j].lo;
             uint32_t hi = s->r[i].hi < allow[j].hi ? s->r[i].hi : allow[j].hi;
-            if (lo <= hi && !cp_add(&o, lo, hi)) return false;
+            if (lo <= hi && !cp_add(&o, lo, hi)) { free(o.r); return false; }
         }
     free(s->r);
     *s = o;
@@ -1055,9 +1056,11 @@ struct jsre_dfa {
 };
 
 struct jsre_pool {
-    size_t      budget;          // bytes of tables and unkept sets before a flush
-    size_t      cache, kept;     // bytes now: the cache, the kept sets
-    size_t      high;            // the most cache + kept ever held
+    size_t      budget;          // bytes of cache and books before a flush
+    size_t      cache, kept;     // bytes now: tables, length bits and unkept sets; kept sets
+    size_t      books;           // bytes now: the pool, its DFAs and their slot
+                                 //   arrays, hash tables and free lists, by capacity
+    size_t      high;            // the most cache + kept + books ever held
     uint64_t    flushes;
     uint32_t    epoch;
     int         kept_states;
@@ -1069,13 +1072,18 @@ struct jsre_pool {
     const char *failed;
 };
 
-// What the pool charges, in heap bytes: a set as malloc rounds it plus its
-// slot and its share of the hash table (kept at most half full), a table as
-// malloc rounds it. The budget is then about the heap the cache holds.
-static size_t round16(size_t n) { return (n + 15) & ~(size_t)15; }
-static size_t set_cost(const jsre *re) { return round16(re->words * sizeof(uint64_t)) + sizeof(dstate) + 2 * sizeof(int32_t); }
-static size_t table_cost(const jsre *re) { return round16((size_t)re->ncls * sizeof(int32_t)); }
-static size_t lf_cost(const jsre *re) { return round16(((size_t)re->lv_n + 63) / 64 * sizeof(uint64_t)); }
+// What the pool charges is what it asks the allocator for, block by block:
+// a set, a table, a state's length bits (the cache, or `kept` for a kept
+// set), and the books: the pool itself, each DFA, and each DFA's slot array,
+// hash table and free list at their CAPACITY (R2.18, codex on #875: these
+// were left out, and grew past the budget across a pool's DFAs). The budget
+// holds cache + books; a flush frees the cache and shrinks the books to what
+// still lives. Kept sets are bounded apart, by the kept limit.
+static size_t set_cost(const jsre *re) { return re->words * sizeof(uint64_t); }
+static size_t table_cost(const jsre *re) { return (size_t)re->ncls * sizeof(int32_t); }
+static size_t lf_nwords(const jsre *re) { size_t nw = ((size_t)re->lv_n + 63) / 64; return nw ? nw : 1; }
+static size_t lf_cost(const jsre *re) { return lf_nwords(re) * sizeof(uint64_t); }
+static void books(jsre_pool *p, size_t add, size_t sub) { p->books = p->books + add - sub; }
 
 static uint64_t set_hash(const uint64_t *s, size_t w) {
     uint64_t h = 0x9E3779B97F4A7C15ull;
@@ -1089,12 +1097,13 @@ static jsre_st pool_fail(jsre_pool *p, const jsre_dfa *d, const char *why) {
 }
 
 static void note_high(jsre_pool *p) {
-    if (p->cache + p->kept > p->high) p->high = p->cache + p->kept;
+    size_t held = p->cache + p->kept + p->books;
+    if (held > p->high) p->high = held;
 }
 
 jsre_pool *jsre_pool_new(size_t budget) {
     jsre_pool *p = calloc(1, sizeof *p);
-    if (p) { p->budget = budget; p->epoch = 1; p->kept_max = JSRE_DFA_MAX; }
+    if (p) { p->budget = budget; p->epoch = 1; p->kept_max = JSRE_DFA_MAX; p->books = sizeof *p; note_high(p); }
     return p;
 }
 
@@ -1110,7 +1119,7 @@ void jsre_pool_free(jsre_pool *p) {
 
 void jsre_pool_stats(const jsre_pool *p, jsre_pool_stat *s) {
     s->budget = p->budget;
-    s->cache = p->cache; s->kept = p->kept; s->high = p->high;
+    s->cache = p->cache; s->kept = p->kept; s->books = p->books; s->high = p->high;
     s->flushes = p->flushes; s->kept_states = p->kept_states; s->failed = p->failed;
     s->failed_label = p->failed_dfa ? p->failed_dfa->label : NULL;
     s->failed_states = p->failed_dfa ? p->failed_dfa->live : 0;
@@ -1128,17 +1137,54 @@ static bool hash_rebuild(jsre_dfa *d, size_t ncap) {
     int32_t *nt = malloc(ncap * sizeof *nt);
     if (!nt) return false;
     for (size_t k = 0; k < ncap; k++) nt[k] = -1;
+    // both tables live for a moment: the peak counts them both
+    books(d->pool, ncap * sizeof *nt, 0);
+    note_high(d->pool);
     free(d->table);
+    books(d->pool, 0, d->tcap * sizeof *nt);
     d->table = nt; d->tcap = ncap;
     for (int k = 0; k < d->n; k++)
         if (d->st[k].set) hash_insert(d, k);
     return true;
 }
 
-// Drop the cache: every table, and every unkept set but `keep_id`'s in
-// `keep_dfa` (the state being stepped from). Kept states keep their slots and
-// sets; `keep_id`'s table stays allocated with its entries unbuilt, since they
-// may name slots this frees.
+// After a flush, a DFA's books shrink to what still lives: the slot array to
+// the highest slot holding a state, the free list to the slots free below it
+// (the lowest on top, so new states fill from the bottom and the array stays
+// short), the hash table to twice the live states. A slot that still lives
+// keeps its number, so every handle a flush keeps stays good; a failed shrink
+// keeps the larger block, charged as it is.
+static bool dfa_shrink(jsre_pool *p, jsre_dfa *d) {
+    int top = 0, nf = 0;
+    for (int i = 0; i < d->n; i++) if (d->st[i].set) top = i + 1;
+    for (int i = 0; i < top; i++) nf += !d->st[i].set;
+    d->n = top;
+    int fcap = nf > 16 ? nf : 16;
+    if (fcap != d->freecap) {
+        int32_t *g = realloc(d->freel, sizeof *g * (size_t)fcap);
+        if (g || !fcap) {
+            books(p, sizeof *g * (size_t)fcap, sizeof *g * (size_t)d->freecap);
+            d->freel = g; d->freecap = fcap;
+        } else if (d->freecap < nf) { d->nfree = 0; return false; }
+    }
+    d->nfree = 0;
+    for (int i = top - 1; i >= 0; i--) if (!d->st[i].set) d->freel[d->nfree++] = i;
+    int scap = 64;
+    while (scap < top) scap *= 2;
+    if (scap < d->cap) {
+        dstate *g = realloc(d->st, sizeof *g * (size_t)scap);
+        if (g) { books(p, sizeof *g * (size_t)scap, sizeof *g * (size_t)d->cap); d->st = g; d->cap = scap; }
+    }
+    size_t tc = 256;
+    while (tc < (size_t)d->live * 2 + 2) tc *= 2;
+    return hash_rebuild(d, tc);
+}
+
+// Drop the cache: every table, every state's length bits, and every unkept
+// set but `keep_id`'s in `keep_dfa` (the state being stepped from); then
+// shrink each DFA's books. Kept states keep their slots and sets; `keep_id`'s
+// table stays allocated with its entries unbuilt, since they may name slots
+// this frees.
 static void pool_flush(jsre_pool *p, jsre_dfa *keep_dfa, int keep_id) {
     size_t tb = 0;
     p->flushes++;
@@ -1159,32 +1205,20 @@ static void pool_flush(jsre_pool *p, jsre_dfa *keep_dfa, int keep_id) {
             if (cur && !s->kept) tb += sbytes;
             if (s->kept || cur) continue;
             free(s->set); s->set = NULL; d->live--;
-            if (d->nfree == d->freecap) {
-                int cap = d->freecap ? d->freecap * 2 : 64;
-                int32_t *g = realloc(d->freel, sizeof *g * (size_t)cap);
-                if (!g) continue;   // the slot is lost to reuse, never to correctness
-                d->freel = g; d->freecap = cap;
-            }
-            d->freel[d->nfree++] = i;
         }
-        // the same size: the table only lost entries, and a rebuild that
-        // cannot allocate keeps the old one, which then names free slots
-        if (!hash_rebuild(d, d->tcap)) {
-            for (size_t j = 0; j < d->tcap; j++)
-                if (d->table[j] >= 0 && !d->st[d->table[j]].set) d->table[j] = -1;
-            // linear probing cannot drop entries in place without breaking
-            // chains: fail loudly instead of answering from a broken table
-            pool_fail(p, d, "out of memory in a pattern automaton");
-        }
+        // a rebuild that cannot allocate leaves a table naming free slots:
+        // linear probing cannot drop entries in place without breaking
+        // chains, so the pool fails loudly instead of answering from it
+        if (!dfa_shrink(p, d)) pool_fail(p, d, "out of memory in a pattern automaton");
     }
     p->cache = tb;
 }
 
-// Room for `need` more bytes of cache; a flush when the budget is spent. A
-// step always gets the room it needs after that flush, so a budget of one
-// byte still steps, one table at a time.
+// Room for `need` more bytes; a flush when cache and books would pass the
+// budget. A step always gets the room it needs after that flush, so a budget
+// of one byte still steps, one table at a time.
 static void pool_room(jsre_pool *p, jsre_dfa *d, int cur, size_t need) {
-    if (p->cache + need > p->budget && p->cache > 0) pool_flush(p, d, cur);
+    if (p->cache + p->books + need > p->budget && p->cache > 0) pool_flush(p, d, cur);
 }
 
 // A thread is named by the address of its copy of a thread-local: distinct
@@ -1198,6 +1232,8 @@ static bool pool_owner_ok(jsre_pool *p) {
 
 jsre_dfa *jsre_dfa_new(const jsre *re, jsre_pool *pool) {
     if (!re || !pool) return NULL;
+    // making a DFA writes the pool too: the same thread as every fill
+    if (!pool_owner_ok(pool)) { pool_fail(pool, NULL, "pattern automaton filled from a second thread"); return NULL; }
     jsre_dfa *d = calloc(1, sizeof *d);
     if (!d) return NULL;
     d->re = re; d->pool = pool; d->epoch = pool->epoch;
@@ -1207,10 +1243,12 @@ jsre_dfa *jsre_dfa_new(const jsre *re, jsre_pool *pool) {
     if (pool->ndfa == pool->dcap) {
         int cap = pool->dcap ? pool->dcap * 2 : 8;
         jsre_dfa **g = realloc(pool->dfa, sizeof *g * (size_t)cap);
-        if (g) { pool->dfa = g; pool->dcap = cap; }
+        if (g) { books(pool, sizeof *g * (size_t)cap, sizeof *g * (size_t)pool->dcap); pool->dfa = g; pool->dcap = cap; }
     }
     if (!d->table || pool->ndfa == pool->dcap) { free(d->table); free(d); return NULL; }
     for (size_t i = 0; i < d->tcap; i++) d->table[i] = -1;
+    books(pool, sizeof *d + d->tcap * sizeof *d->table, 0);
+    note_high(pool);
     pool->dfa[pool->ndfa++] = d;
     return d;
 }
@@ -1230,6 +1268,8 @@ void jsre_dfa_free(jsre_dfa *d) {
     for (int k = 0; k < p->ndfa; k++)
         if (p->dfa[k] == d) { p->dfa[k] = p->dfa[--p->ndfa]; break; }
     if (p->failed_dfa == d) p->failed_dfa = NULL;
+    books(p, 0, sizeof *d + d->tcap * sizeof *d->table + (size_t)d->cap * sizeof *d->st +
+                (size_t)d->freecap * sizeof *d->freel);
     free(d->st); free(d->freel); free(d->table); free(d);
 }
 
@@ -1239,6 +1279,10 @@ void jsre_dfa_free(jsre_dfa *d) {
 static __attribute__((noinline)) jsre_st keep_handle(jsre_dfa *d, int id) {
     dstate *s = &d->st[id];
     if (!s->kept) {
+        // a promotion writes the pool: a cached transition taken from a
+        // second thread is refused here too (R2.18, codex on #875)
+        if (!pool_owner_ok(d->pool))
+            return pool_fail(d->pool, d, "pattern automaton filled from a second thread");
         if (d->pool->kept_states >= d->pool->kept_max)
             return pool_fail(d->pool, d, "more states than one request may keep");
         size_t sbytes = set_cost(d->re);
@@ -1259,7 +1303,14 @@ static int intern(jsre_dfa *d, const uint64_t *set, bool keep, int cur) {
         if (id < 0) break;
         if (!memcmp(d->st[id].set, set, bytes)) return id;
     }
-    if (!keep) pool_room(p, d, cur, sbytes);
+    if (!keep) {
+        // the set, and the books this state may grow: a doubled slot array, a
+        // doubled hash table (built beside the old one)
+        size_t need = sbytes;
+        if (!d->nfree && d->n == d->cap) need += sizeof(dstate) * (size_t)(d->cap ? d->cap : 64);
+        if ((size_t)(d->live + 1) * 2 > d->tcap) need += d->tcap * 2 * sizeof(int32_t);
+        pool_room(p, d, cur, need);
+    }
     int id;
     if (d->nfree) id = d->freel[--d->nfree];
     else {
@@ -1267,6 +1318,7 @@ static int intern(jsre_dfa *d, const uint64_t *set, bool keep, int cur) {
             int cap = d->cap ? d->cap * 2 : 64;
             dstate *g = realloc(d->st, sizeof *g * (size_t)cap);
             if (!g) { pool_fail(p, d, "out of memory in a pattern automaton"); return -1; }
+            books(p, sizeof *g * (size_t)cap, sizeof *g * (size_t)d->cap);
             d->st = g; d->cap = cap;
         }
         id = d->n++;
@@ -1365,9 +1417,8 @@ static __attribute__((noinline)) bool len_fill(jsre_dfa *d, uint32_t id) {
     jsre_pool *p = d->pool;
     const jsre *re = d->re;
     if (!pool_owner_ok(p)) { pool_fail(p, d, "pattern automaton filled from a second thread"); return false; }
-    if (p->cache + lf_cost(re) > p->budget) return false;
-    size_t nw = ((size_t)re->lv_n + 63) / 64;
-    uint64_t *lf = calloc(nw ? nw : 1, sizeof *lf);
+    if (p->cache + p->books + lf_cost(re) > p->budget) return false;
+    uint64_t *lf = calloc(lf_nwords(re), sizeof *lf);
     if (!lf) return false;   // uncached, answered from the set
     dstate *s = &d->st[id];
     s->lmin = -1;

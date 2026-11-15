@@ -67,7 +67,8 @@ int    jsre_classes(const jsre *re);
 // its size, a flush, or a budget of one byte changes speed, never an answer.
 // A pool belongs to one thread: its first fill names the thread, and a fill
 // from any other is refused (JSRE_FAIL), as is a handle a flush invalidated.
-// JSRE_POOL_BYTES is a compiled schema's budget, in heap bytes. JSRE_DFA_MAX
+// JSRE_POOL_BYTES is a compiled schema's budget, in bytes asked of the allocator
+// for the cache and the books (the pool, its DFAs, their arrays), kept sets apart. JSRE_DFA_MAX
 // caps the kept states (bounded anyway by the bytes fed and the DFA's size);
 // past it a step fails loudly rather than refusing a byte the pattern allows.
 #define JSRE_POOL_BYTES ((size_t)8 << 20)
@@ -79,7 +80,8 @@ typedef uint64_t jsre_st;                   // a state handle: tag << 32 | slot 
 #define JSRE_FAIL ((jsre_st)UINT64_MAX - 1) // the pool refused: its stat names why
 typedef struct {
     size_t      budget;              // the pool's budget, bytes
-    size_t      cache, kept, high;   // bytes: tables and unkept sets, kept sets, the most held
+    size_t      cache, kept, books, high;  // bytes: tables, length bits and unkept sets; kept sets;
+                                     // the pool's and its DFAs' own arrays, by capacity; the most held
     uint64_t    flushes;
     int         kept_states;
     const char *failed;              // NULL, or why a step returned JSRE_FAIL

@@ -6,7 +6,7 @@
 //      answer each one; patterns it cannot build are refused by name.
 //   2. The DFA cache against the automaton it memoizes, stepped as the
 //      validator steps it (a fed walk that keeps its states, trials at every
-//      position), under an unbounded, a 1-byte and a 512-byte pool: equal answers,
+//      position), under an unbounded, a 1-byte and an 8 KiB pool: equal answers,
 //      flushes that happened, trial handles refused after one, and a fill from
 //      a second thread refused.
 //   3. Lengths: the backward sequence against a forward search over real bytes.
@@ -95,9 +95,10 @@ static bool dfa_match(jsre_dfa *d, const char *s, int n, bool keep) {
     return st != JSRE_DEAD && st != JSRE_FAIL && jsre_dfa_accepts(d, st);
 }
 
-// unbounded; one byte (a flush at nearly every fill); 512 bytes, where states,
-// tables and lengths are all cached and flushed (a few states at a time)
-static const size_t BUDGETS[] = { (size_t)1 << 40, 1, 512 };
+// unbounded; one byte (a flush at nearly every fill); 8 KiB, where states,
+// tables and lengths are all cached and flushed (a few states at a time, past
+// the books a pool and a DFA hold however small the budget)
+static const size_t BUDGETS[] = { (size_t)1 << 40, 1, 8192 };
 enum { NB = 3 };
 
 // 1 --------------------------------------------------------------- ECMA cases
@@ -196,7 +197,11 @@ static void test_cache(void) {
         size_t w = jsre_words(re);
         uint64_t *set = malloc(w * 8), *ts = malloc(w * 8), *tmp = malloc(w * 8);
         arm a[NB];
-        for (int k = 0; k < NB; k++) { a[k].p = jsre_pool_new(BUDGETS[k]); a[k].d = jsre_dfa_new(re, a[k].p); }
+        size_t books0[NB];
+        for (int k = 0; k < NB; k++) {
+            a[k].p = jsre_pool_new(BUDGETS[k]); a[k].d = jsre_dfa_new(re, a[k].p);
+            jsre_pool_stat s0; jsre_pool_stats(a[k].p, &s0); books0[k] = s0.books;   // what no flush can shrink
+        }
         for (int walk = 0; walk < 10; walk++) {
             jsre_start(re, set);
             bool alive = true;
@@ -253,10 +258,11 @@ static void test_cache(void) {
             jsre_pool_stat s;
             jsre_pool_stats(a[k].p, &s);
             flushes[k] += s.flushes;
-            // 4: the budget holds, give or take what one step needs
+            // 4: the budget holds, give or take what one step needs and the
+            // books a pool and a DFA hold however small the budget
             if (k == 2) {
-                size_t slack = 4 * (w * 8 + 64) + 1024;
-                CHECK(s.high <= BUDGETS[k] + s.kept + slack, "%s: a 512-byte pool held %zu bytes", cur, s.high);
+                size_t slack = 4 * (w * 8 + 64) + 1024 + 4096;
+                CHECK(s.high <= BUDGETS[k] + s.kept + books0[k] + slack, "%s: an 8 KiB pool held %zu bytes (books at start %zu)", cur, s.high, books0[k]);
             }
             jsre_dfa_free(a[k].d); jsre_pool_free(a[k].p);
         }
@@ -277,7 +283,7 @@ static void test_cache(void) {
           (unsigned long long)flushes[0], (unsigned long long)flushes[1], (unsigned long long)flushes[2]);
     CHECK(stale_asked > 20 && stale_refused == stale_asked, "stale handles refused %ld of %ld", stale_refused, stale_asked);
     CHECK(thread_refused == npat, "second-thread fills refused %d of %d", thread_refused, npat);
-    printf("cache: %d patterns, %ld compared steps, %ld length asks, flushes %llu (1 byte) %llu (512 bytes), "
+    printf("cache: %d patterns, %ld compared steps, %ld length asks, flushes %llu (1 byte) %llu (8 KiB), "
            "stale handles refused %ld of %ld, second-thread fills refused %d of %d\n", npat, steps, lens,
            (unsigned long long)flushes[1], (unsigned long long)flushes[2], stale_refused, stale_asked, thread_refused, npat);
 }
@@ -511,9 +517,46 @@ static void test_heap_bound(void) {
     CHECK(s.flushes > 0, "the walks never filled the pool (%llu flushes)", (unsigned long long)s.flushes);
     for (int i = 0; i < ND; i++) jsre_dfa_free(d[i]);
     jsre_pool_free(p);
-    for (int i = 0; i < ND; i++) jsre_free(re[i]);
+    CHECK(heap_live == base, "the pool and its DFAs left %zu bytes", heap_live - base);
     printf("heap: %ld steps over six DFAs, %llu flushes; the heap held %zu bytes, the pool said %zu, budget %zu\n",
            walked, (unsigned long long)s.flushes, held, s.high, budget);
+
+    // The kept states' side of the bound: fed walks (each step keeps its
+    // state) over random strings of ^(a|b)*a(a|b){11}$, whose 4,096 states are
+    // all distinct sets, up to a lowered kept limit. The heap holds the cache
+    // and books within the budget plus the kept sets the pool counts, and
+    // that count is the kept states times one set: so at JSRE_DFA_MAX states
+    // of a 4,096-state NFA (512-byte sets) the kept side is at most 8 MiB.
+    jsre *rk = jsre_compile("^(a|b)*a(a|b){11}$", err, sizeof err);
+    CHECK(rk != NULL, "%s", err);
+    if (!rk) { for (int i = 0; i < ND; i++) jsre_free(re[i]); return; }
+    size_t base2 = heap_live;
+    heap_high = heap_live;
+    size_t small = 64 * 1024;
+    p = jsre_pool_new(small);
+    jsre_pool_set_kept_max(p, 3000);
+    jsre_dfa *dk = jsre_dfa_new(rk, p);
+    unsigned long long rs2 = 7;
+    jsre_st st = jsre_dfa_start(dk);
+    int fed = 0;
+    while (st != JSRE_FAIL && fed < 100000) {
+        rs2 ^= rs2 << 13; rs2 ^= rs2 >> 7; rs2 ^= rs2 << 17;
+        // a trial first, as the validator asks, then the feed that keeps
+        (void)jsre_dfa_step(dk, st, rs2 & 1 ? 'a' : 'b', false);
+        st = jsre_dfa_step(dk, st, rs2 & 1 ? 'a' : 'b', true);
+        fed++;
+    }
+    jsre_pool_stats(p, &s);
+    held = heap_high - base2;
+    CHECK(st == JSRE_FAIL && s.kept_states == 3000, "the kept limit: %d states after %d bytes", s.kept_states, fed);
+    CHECK(s.kept == (size_t)s.kept_states * set_cost(rk), "kept bytes %zu for %d states", s.kept, s.kept_states);
+    CHECK(held <= small + s.kept + s.books + slack, "kept: the heap held %zu, the pool says cache+books within %zu, kept %zu, books %zu",
+          held, small, s.kept, s.books);
+    CHECK(held <= s.high + slack, "kept: the pool reported %zu where the heap held %zu", s.high, held);
+    jsre_dfa_free(dk); jsre_pool_free(p); jsre_free(rk);
+    for (int i = 0; i < ND; i++) jsre_free(re[i]);
+    printf("heap, kept side: %d kept states hold %zu bytes of sets, %zu of books; the heap held %zu, the pool said %zu\n",
+           s.kept_states, s.kept, s.books, held, s.high);
 }
 
 // 9 --------------------------------------------------------------- warm second thread
