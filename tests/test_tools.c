@@ -2224,10 +2224,11 @@ static void test_malformed_tool_declarations_are_rejected(void) {
         // "final" is the reserved discriminator for the no-call branch
         "[{\"type\":\"function\",\"function\":{\"name\":\"final\"}}]",
         // a parameters schema the compiler cannot enforce must not be
-        // silently approximated
+        // silently approximated: a backreference is not regular (R2.18's
+        // automaton enforces ^x$, the literal this case used before)
         "[{\"type\":\"function\",\"function\":{\"name\":\"a\",\"parameters\":"
          "{\"type\":\"object\",\"properties\":{\"p\":{\"type\":\"string\","
-         "\"pattern\":\"^x$\"}}}}}]",
+         "\"pattern\":\"(a)\\\\1\"}}}}}]",
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); i++) {
         jv *tools = parse(bad[i]);

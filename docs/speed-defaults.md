@@ -66,6 +66,7 @@ These stay off unless a narrower scope gets its own passing row.
 | `RUNNER_PREFETCH` on macOS | 60% slower cold load. |
 | `RUNNER_PREFETCH` on Linux | No gain on a host capped at 60 read IOPS: time with it on over off 1.229 on the CPU, 1.006 and 0.9995 on CUDA. |
 | `RUNNER_PREFETCH` on Windows | Slower on every row with CUDA: time with it on over off 1.159 cold, 1.122 and 1.118 warm on two files. On a CUDA load the hint runs after the upload has read the weights. |
+| An early, cold-only hint on Linux CUDA (an experiment, R3.39.11; not shipped) | 1.039x on a dense 18 GB file on a disk that streams (cold 116.9 s against 112.5 s; warm unchanged). On a 63 GB MoE with its experts on the host the first token came 5.2x later (72.4 s against 373.4 s): the hint reads the whole file, the load 13.5 GiB of it. |
 
 ## Candidates, not yet decided
 

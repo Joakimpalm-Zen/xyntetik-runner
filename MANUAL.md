@@ -1006,7 +1006,7 @@ The supported schema subset covers objects, arrays, strings, numbers,
 integers, booleans, null, enums, const, type unions, numeric bounds on both
 `integer` and `number` (`minimum`/`maximum` and their exclusive forms, with a
 forced close completing the value inside the declared range), string
-lengths and supported anchored patterns, array item/count constraints,
+lengths and `pattern`s (below), array item/count constraints,
 scalar-const `oneOf`/`anyOf`, const-discriminated object unions (below), and
 the tool-discriminated object union used by agent clients. Required
 properties are present, unknown properties are blocked
@@ -1048,8 +1048,8 @@ every arbitrary-key value. Mixed fixed properties plus open or schema-valued
 additional properties remain unsupported and are rejected rather than
 silently weakened.
 
-Anchored `pattern`s compile as a sequence of literal runs and repeated
-classes (`[...]`, `[^...]`, `\d`, `\w`, `\s` and their complements, with
+A `pattern` compiles one of two ways. Anchored `pattern`s of a simple shape
+compile as a sequence of literal runs and repeated classes (`[...]`, `[^...]`, `\d`, `\w`, `\s` and their complements, with
 escapes inside a set): `^wf_[a-z0-9-]{6,}$`, `^[A-Z]{3}[0-9]{4}$` and
 `^[^\n\r]*$` all enforce, and a forced close mid-string completes to a
 string the pattern still accepts. A negated or complement class admits every
@@ -1057,11 +1057,76 @@ non-ASCII character whole. The enforced language is the declared one
 restricted to what a JSON string spells unescaped (a control character or a
 quote inside a class was never producible). Every class before the last
 carries a fixed count, so which class a byte belongs to follows from its
-offset; a variable-length class in the middle is refused rather than
-guessed. An `allOf` of string constraints on a string is enforced as their
+offset. An `allOf` of string constraints on a string is enforced as their
 conjunction, every pattern and the tightest bounds together; that is the one
 `allOf` shape accepted (Claude Code 2.1.272 declares
 `SendMessage.to` with two patterns), every other `allOf` is refused by name.
+
+Every other pattern compiles to an automaton, as ECMA-262 reads it with the
+`u` flag, the dialect JSON Schema names:
+
+- **Searched.** An unanchored pattern matches anywhere in the string, so
+  `b(c|d)` accepts `"abce"`; anchor it with `^...$` to describe the whole
+  string. Alternation, groups, counts on groups, lazy quantifiers, `.`, and
+  classes with ranges and escapes all compile.
+- **Code points.** A dot, a class or a count consumes whole code points, so
+  `^.{2}$` accepts `"é😀"`. `\d` and `\w` are ASCII and `\s` is ECMA's white
+  space and line terminators, as ECMA has them (Python's `\d` also matches
+  `٣`; ECMA's does not). A dot is any code point but the four line
+  terminators.
+- **Literal JSON only.** The enforced language is the declared one
+  restricted to what a JSON string spells unescaped. A string under such a
+  pattern admits no escape: its value is its text.
+- **Legacy spellings.** A pattern the `u` flag rejects only for an identity
+  escape (`\-` outside a class, `\_`, `\!`), a lone brace or a lone bracket
+  (`a{b}`, `a]`, `a}`) is read as without the `u` flag (the escaped
+  character, a literal brace or bracket). A strict Unicode-mode reading
+  would refuse such a pattern; this reading is chosen, because every
+  validator that accepts the schema gives it this meaning, and one that
+  rejects it rejects the schema rather than the output. Where both readings
+  accept a pattern but differ, as a dot or a negated class meeting a code
+  point above U+FFFF does, the `u` meaning holds.
+- **Refused by name:** backreferences, lookahead and lookbehind, `\b` and
+  `\B`, `\p{...}`, named groups, inline flags, a letter escape ECMA does not
+  define, a count with nothing to repeat, a malformed count (`{}`, `{,3}`,
+  which Python reads as a count and legacy ECMA as text), a `$` before a `^`
+  that only the empty string passes, a pattern that matches no string JSON
+  can spell, and a second pattern beside one of these on the same string.
+- **Exact lengths.** `minLength` and `maxLength` count code points, and a
+  prefix is admitted only while some completion the pattern accepts still
+  ends inside them. `^(ab)+$` between 3 and 5 code points accepts only
+  `"abab"`, refuses `"ababa"` on its fifth character, and between 3 and 3 is
+  refused when the schema compiles. A forced close writes the shortest
+  completion the pattern accepts within the bounds.
+
+Its limits, in one place:
+
+- **4,096 automaton states per pattern**, refused when the schema compiles.
+  A count is built by unrolling it, so a class with many UTF-8 ranges under a
+  large count reaches it: `[^\s@]{1,64}@[^\s@]{1,255}` is refused.
+- **64 MiB of compiled automata per compiled request** (a schema, or a
+  request's tools together): the states, bitsets and length sequences of all
+  its patterns, counted as it compiles and refused by name past the cap, so
+  what one request can make the server hold is bounded however many patterns
+  it carries. A pattern holds at most
+  about 2 MiB; the largest in the JSONSchemaBench corpus holds 15.5 KB of
+  lengths.
+- **8 MiB per compiled schema** for the automata's cache (the transitions,
+  states and length bits built so far) and their bookkeeping (slot arrays,
+  hash tables), counted as asked of the allocator. Past it the cache is
+  flushed and the bookkeeping shrunk to what still lives, which costs speed
+  and never changes which tokens are admitted (the same output at one byte
+  of cache is a test).
+- **16,384 kept states per request**: the states a written document passed
+  through, which copies of the validator may still hold, so no flush can drop
+  them; at most 512 bytes each, so at most 8 MiB beside the cache. A pattern
+  whose automaton has more distinct states than that, walked by a document
+  that long, ends the request as a fault (below), never as a narrower
+  document.
+- **Lengths that settle within 4,096 code points**: a pattern with length
+  bounds whose possible lengths keep changing past that, such as
+  `^(a{97}|a{101})*$` without a `maxLength`, is refused when the schema
+  compiles.
 
 Unsupported or ambiguous constraints fail at compile/request time. In
 particular, general overlapping `oneOf` branches are not tracked in parallel;
@@ -1133,7 +1198,14 @@ reported the same way on both. Partial text is not returned alongside it:
 unlike a budget truncation, which is a completion and keeps its content under
 `stop_reason: "max_tokens"`, a fault has no `stop_reason` that would not
 misstate why generation stopped. `runner_telemetry.finish_detail` rides on the
-error object so the two faults stay distinguishable.
+error object so the faults stay distinguishable.
+
+A pattern's automaton that reaches its kept-state limit mid-generation (see
+the `pattern` limits above) is the same kind of fault, with
+`finish_detail: "pattern_limit"`. `runner_telemetry.fault` names the
+pattern and the states held, the server log says it once, Responses
+reports `status: "incomplete"` with reason `pattern_limit`, and Messages
+answers the error object with that text as its message.
 
 ### `--top-k 40`: a faster constrained decode with different semantics
 
@@ -2496,11 +2568,11 @@ the measurement read. [Design](docs/derive-design.md).
 |---|---|
 | `runner derive`: `--quant T`, `--type-plan PLAN`, `--imatrix F`, `--prune-experts PLAN`, `--remove-sublayer LIST`, `--merge-lora ADAPTER` | The recipe: the `--rewrite` flags of the same names, passed through as given. At least one recipe flag is required; a file with no change from its parent is refused. |
 | `runner derive`: `--target-size BYTES --high T --low T [--mid T] [--match S] [--group block\|tensor]`, or `--target-size BYTES --ladder T1,...,Tn` | Selective precision without a hand-written plan: `--quant-error` costs every tensor at every type (importance-weighted with `--imatrix`), the groups (a block's matching tensors, or one tensor) that add the least error per byte saved are demoted from `--high` to `--low` until the file fits, and the rewrite runs with that plan (`OUT.type-plan.json`). With a middle rung (`--mid`) or a ladder (`--ladder`, high to low) a group is demoted one rung at a time: the cheapest next step down any group's lower convex hull of (bytes, error) is taken first, and a rung that costs more per byte than going past it is skipped for that group and named in the record. With `--imatrix`, a candidate the matrix has no entry for (llama.cpp's imatrix leaves out `output` and `token_embd` unless run with `--process-output`) is held at the top rung and left out of the ranking, because its unweighted error does not compare with the weighted ones; the stderr, the record (`held`, `held_at`) and the card name each one. Holding them is a default, not evidence that they matter most. The ranking is `scripts/type-plan-by-sensitivity.py`'s, and the test holds the two to the same plan. Excludes `--quant` and `--type-plan`. |
-| `runner derive`: `--reference hf:DIR` | Measure against the publisher's model in float32 through `scripts/gold-logits.py`, which needs Python with torch and transformers (`RUNNER_GOLD_PYTHON`, default `python3`; `RUNNER_GOLD_LOGITS` names another copy of the script). Refused before anything is made when they are missing. `--reference-arg ARG` (repeatable) passes ARG to the script as given, for a reference too large for float32 in memory: `--upcast-at-use`, or `--offload-dir DIR --max-memory GIB`; it needs `--reference`. Only this reference gets a bar verdict on the card (mean KLD at most 0.05 and margin-qualified top-1 at least 97%), The card opens with what the file is and is not for and the one text it was measured on, then its weakest number (raw top-1 agreement), then pass or fail. |
+| `runner derive`: `--reference hf:DIR` | Measure against the publisher's model in float32 through `scripts/gold-logits.py`, which needs Python with torch and transformers (`RUNNER_GOLD_PYTHON`, default `python3`; `RUNNER_GOLD_LOGITS` names another copy of the script). Refused before anything is made when they are missing. `--reference-arg ARG` (repeatable) passes ARG to the script as given, for a reference too large for float32 in memory: `--upcast-at-use`, or `--offload-dir DIR --max-memory GIB`; it needs `--reference`. Only this reference gets a bar verdict on the card (mean KLD at most 0.05 and margin-qualified top-1 at least 97%). The card opens with what the file is and is not for and the one text it was measured on, then its weakest number (raw top-1 agreement), then the verdict. The verdict is read from a 95% interval of each of the two numbers, not from the numbers alone: **pass** only when both intervals are inside the bar, **fail** only when one is wholly outside it, otherwise **not decided at N positions**, in those words on the card and as `measurement.bar.verdict` (`pass`, `fail`, `not_decided`) in the record; `bar.passes` is true for a pass alone. The interval is a circular block bootstrap over the scored positions in order (block: the smallest b with b x b x b at least N; 10,000 resamples from one fixed stream, so the same rows give the same interval), recorded as `mean_kld_ci95`, `margin_qualified_top1_ci95` and `bootstrap`. The interval is made from the positions that were scored: a rare, very bad position the window did not reach is not in it (on Gemma 4 31B one file's mean KLD read 0.0563, interval 0.0415 to 0.0735, over every third position and 0.0806 over every position), and it says nothing about another text. A reference result without per-position rows has nothing to resample: the verdict is then the point estimate's and the card says so. |
 | `runner derive`: default reference | The parent file, scored by Runner on the CPU. The card's first lines say it was measured against the parent file in Runner's arithmetic, not the publisher's float32 model, and it states no bar verdict; the record says `reference_kind: parent-file`. |
-| `runner derive`: `--corpus F`, `--window S:T:N` | The text (default `tests/fixtures/gold-corpus-2k.txt` beside the binary) and the positions S + n x T for n < N (default `8:15:300`, the records' window). A corpus shorter than the window, or a `-c` smaller than it, is refused before anything is made. |
+| `runner derive`: `--corpus F`, `--window S:T:N` | The text (default `tests/fixtures/gold-corpus-2k.txt` beside the binary) and the positions S + n x T for n < N. The default is `8:3:1500`: every third position of the 4,510 tokens that the default before 1.20, `8:15:300`, already read, so it costs no forward more and its interval is about 2.2 times narrower. A file whose verdict is not decided needs more positions: `--window 8:1:4500` scores every position of the same text, and the reference run then holds 4,500 rows of the whole vocabulary (4.7 GB in float32 for a 262,144-token vocabulary, 0.6 GB for 32,000). Records made before 1.20 used `8:15:300`; give that window to compare against one of them. A corpus shorter than the window, or a `-c` smaller than it, is refused before anything is made. |
 | `runner derive`: `--base-model REPO[@REV]`, `--credit TEXT` | Name what the files cannot: the publisher's repository and revision (the card's `base_model`, and the reference named by repository rather than by its local folder), and credits for inputs such as someone else's importance matrix (repeatable). Both are recorded; `--card-from` accepts them for a record that lacks them. |
-| `runner derive`: `--compare LABEL=GOLD.json[:SIDE][:BYTES]` | With `--reference`: another file measured against the same reference in the same window (a `scripts/gold-logits.py` output; SIDE picks `a` or `b` of a two-sided run, BYTES is its size). LABEL goes on the card as written, so a Markdown link to the file works; it cannot hold `=`. Repeatable, up to 8. Each goes into the record's `comparisons` with the paired tests against this file (Wilcoxon on per-position KLD, McNemar on margin-qualified top-1) and onto the card, files closer than this one first. The window must match position for position. |
+| `runner derive`: `--compare LABEL=GOLD.json[:SIDE][:BYTES]` | With `--reference`: another file measured against the same reference in the same window (a `scripts/gold-logits.py` output; SIDE picks `a` or `b` of a two-sided run, BYTES is its size). LABEL goes on the card as written, so a Markdown link to the file works; it cannot hold `=`. Repeatable, up to 8. Each goes into the record's `comparisons` with the paired tests against this file (Wilcoxon on per-position KLD with the variance corrected for ties, McNemar on margin-qualified top-1), its own bar verdict from its own interval (`bar_verdict`), and onto the card, files closer than this one first. The window must match position for position. |
 | `runner derive --card-from OUT.derive.json [-o CARD.md]` | Write the card from a derive record alone, with no measurement: the card a newer runner words differently, for a file measured before. Every card derive writes comes from its record this way, so the two cannot disagree. The record names its files by base name with their sha256 (the corpus, the score files, the plan), never by host path, and finds them beside itself. |
 | `runner derive`: `-c N`, `-t N`, `--gpu X` | Passed to the sub-runs (`--gpu` defaults to `off` for the score runs; `-c` defaults to the window's span). |
 
@@ -3613,8 +3685,19 @@ $ runner -m granite-4.2-8b-Q4_K_M.gguf --info fit -c 16384
   available RAM 9.43 GiB right now
   gpu           NVIDIA GeForce RTX 3070, offload budget 6.95 GiB right now (0.64 GiB of it for scratch and headroom)
   split         f16: 36 of 40 layers on the GPU, 3.50 GiB in RAM  | --kv q8: 40 of 40 layers on the GPU, 1.55 GiB in RAM  | --kv k8v4: 40 of 40 ...
+  full offload  --kv q8 puts all 40 layers on the GPU at ctx 16384; the default cache holds 36. ...
   verdict       FITS — 36 of 40 layers on the GPU, 5.92 GiB of RAM to spare at ctx 16384
 ```
+
+The `full offload` line appears when the default cache leaves layers on the CPU and a smaller cache format holds
+them all; it names the first that does. It is there because a split costs speed even when it is small. Measured on
+a 31B dense model on a 24 GB CUDA card (one file, one prompt, the split made by reserving part of the card): with
+every layer on the card 275 tokens a second reading a prompt and 16.7 generating; one layer of 60 on the CPU 172 and
+13.3 (1.6x and 1.26x slower); three layers 136 and 12.0; 25 layers 29 and 5.5 (9.3x and 3.0x). Most of a near miss is
+the fixed cost of being split at all. The compressed formats are not free either: [`--kv`](#cli-kv) gives their
+measured cost. From the headers of the support list's files at 8 and 12 GB budgets, six reach full offload this way,
+all at contexts of 8,192 tokens or more, and none by a shorter context alone. The line is not printed under
+`--gpu-layers`, where the split is yours.
 
 The answer is "right now": a server already holding the GPU or the RAM is
 counted against the budget, so ask before starting one. `-c N` sizes the KV estimate for the context you
@@ -3630,6 +3713,10 @@ stays the flat figure. For a sparse MoE the verdict uses the **hot set**, not
 the file size, because only the routed experts a token selects are touched -
 which is why a 3.53 GiB file can be a comfortable fit in 3.25 GiB. Its split
 marks the RAM figure `hot set` for the same reason.
+
+A model published in several parts (`NAME-00001-of-0000N.gguf`) is answered as one model: give any part's path and
+keep the parts side by side. The report reads every part's header, says `parts N files`, and its sizes are the whole
+set's. A part that is missing is named, and no verdict is given without it.
 
 `--info fit` does not download anything. Fetch a header yourself with a ranged read - 16 MiB covers a large
 vocabulary; smaller models need far less:
@@ -4138,7 +4225,7 @@ switches:
 | `RUNNER_VRAM_REGISTRY_DIR` | the platform runtime dir | Where the cross-process VRAM ledger files live, one per GPU. Point every cooperating runner at the same directory when the default runtime directory is not shared between them (containers, service accounts); the tests use it to isolate a ledger. |
 | `RUNNER_KV_RING` | unset | Override [`--kv-ring`](#cli-kv-ring): `1` or `on` gives sliding-window layers only the KV rows they can read, `0` or `off` keeps the flat cache, `auto` is the flag's default rule (on when the weights and the flat cache do not fit). On gemma-3-4b at `-c 32768` the ring takes the cache from 4563 MB to 800 MB, within 1% of the theoretical floor. Output is unchanged, gated as bit-identical `--score` logprobs and server continuations against the flat cache across many ring wraps on the CPU, CUDA (`kv_slot()`; an RTX 3070 at a partial split and a full offload, 2121 scored positions each, max \|Δlogprob\| exactly 0) and Metal (`kv_row_off`) paths (`tests/test_kv_ring.py`, mutation-proven). Rewind and the prefix cache resume from what the ring still holds ([the rule](docs/kv-ring.md)). Dense and full-attention-only models ignore it. |
 | `RUNNER_TIEDV` | unset | Stop storing K rows for layers that ship no `attn_v.weight` (gemma-4's full-attention globals: V is the raw K projection, so K = rope(V·w) can be derived from the stored V at read time). On gemma-4-31B at `-c 32768` the K cache drops from 14.76 GB to 13.42 GB. This is a compute-for-memory trade and it is **not byte-identical**: the derived row replays the store path's arithmetic against the f16-rounded stored V, measured on the 31B as 100% f16 row agreement at short context (worst row 99.95%), teacher-forced mean \|Δlogprob\| 1.3e-3 with `nll_mean` moving 8.7e-5 and no top-1 change over 297 positions. CPU-only and f16-KV-only: a GPU run and a q8 cache both refuse loudly (the device kernels read stored K rows; a q8 cache would re-quantize the derived row), `--lora` refuses the combination (a K-side adapter delta would bypass the derived rows), and like `RUNNER_KV_RING` the asymmetric layout disables the shared prefix cache. Layers that carry a real `attn_v.weight` are untouched; models with no V-less layers ignore it. Gate: `tests/test_tiedv.py`; diagnostic: `RUNNER_TIEDV_CHECK=1` prints per-row derived-vs-stored K agreement while the flat cache still stores real K. |
-| `RUNNER_PREFETCH` | unset/off | Opt-in: on load, hint the whole weight mapping to the OS (`madvise(MADV_WILLNEED)` / `PrefetchVirtualMemory`) when the model fits in available RAM. **Off by default on every platform because the measurements said so.** macOS: on a 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load 60% *slower* than plain demand faulting (18.4 s swept vs 11.5 s, interleaved with eviction between arms); macOS demand paging outruns its own WILLNEED readahead. Linux (2026-11-09, a host capped at 60 read IOPS): time with it on over off 1.229 on the CPU, 1.006 and 0.9995 on CUDA. Windows (2026-11-10, CUDA): 1.159 cold, 1.122 and 1.118 warm on two files, identical output. On a CUDA load the hint is issued after the device upload has already read the weights, so it adds work there and cannot speed the upload. Pages stay fully evictable either way; suppressed under `--mlock` and for oversubscribed models. |
+| `RUNNER_PREFETCH` | unset/off | Opt-in: on load, hint the whole weight mapping to the OS (`madvise(MADV_WILLNEED)` / `PrefetchVirtualMemory`) when the model fits in available RAM. **Off by default on every platform because the measurements said so.** macOS: on a 128 GB Apple Silicon Mac the sweep made the cold 63 GB gpt-oss-120b load 60% *slower* than plain demand faulting (18.4 s swept vs 11.5 s, interleaved with eviction between arms); macOS demand paging outruns its own WILLNEED readahead. Linux (2026-11-09, a host capped at 60 read IOPS): time with it on over off 1.229 on the CPU, 1.006 and 0.9995 on CUDA. Windows (2026-11-10, CUDA): 1.159 cold, 1.122 and 1.118 warm on two files, identical output. On a CUDA load the hint is issued after the device upload has already read the weights, so it adds work there and cannot speed the upload. A variant that hints early and only when the file is cold was measured and is not shipped: it gained 4% on a dense file on a Linux disk that streams, and on a 63 GB MoE with its experts on the host it delayed the first token five times over, because a short prompt reads a fifth of such a file and the hint reads all of it. Pages stay fully evictable either way; suppressed under `--mlock` and for oversubscribed models. |
 | `RUNNER_METAL_FUSE` | on | Decode-path kernel fusion, up to the attention-front megakernel: norm + Q/K/V (Q8_0/Q4_0/Q4_K/Q6_K rosters) + qk-norm + rope + KV-store as ONE dispatch, whole heads per threadgroup, the normed row staged in threadgroup memory; plus rope+store, residual-add+rmsnorm and MoE gate+up+activation fusions on the paths the megakernel does not cover. −52% dispatches per token; +5–6% decode on the 120B and 30B, byte-identical. The post-FFN residual add rides the MoE expert sum on layers where it isn't already deferred into the next norm. The megakernel admits MoE models only — it recovers dispatch-chain latency, and a fast dense model is matvec-bound and measured slower under it (`RUNNER_METAL_FRONT=all` lifts that for tests; `RUNNER_METAL_FRONT=0` disables just the megakernel while keeping the other fusions, the isolation lever the q4_0 contraction hunt was run with). Every fused kernel reproduces the unfused arithmetic element for element — **byte-identical**, gated across a six-architecture roster in `make test` (`test-metal-fuse`). q8 KV, NoPE layers, sandwich norms and the gemma dual branch keep the unfused path automatically; `0` restores it everywhere. |
 | `RUNNER_METAL_MOE_MM` | on | Grouped simdgroup-MMA MoE prefill (default): per-expert GEMM tiles over gathered token columns, float-staged operands, +21-31% measured prefill on 30B/120B-class MoE, decode untouched. Judged by the house fidelity bar (`test-moe-mm-ab`), not byte identity — top-k routing flips near-ties under any reassociation, so `0` restores the matvec path and is pinned by every byte-identity gate; `half` selects the half-staged comparison arm. Dense models unaffected. |
 | `RUNNER_CPU_MOE_DEFAULT` | unset/on | CUDA (R3.43a.2). A GPU load of a `nemotron_h_moe` file that names no `--cpu-moe` keeps its experts and their routing on the host and runs the rest on the device (its router has no device kernel). `0` runs such a file on the CPU instead, the earlier default. |

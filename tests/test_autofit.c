@@ -206,6 +206,55 @@ static void test_gpu_budget(void) {
 }
 
 
+// R3.63: which cache format puts every layer on the card when the default
+// one leaves some on the CPU. A split is slower even one layer short (the
+// lab, Gemma 4 31B: 1.6x on prompt reading, 1.26x on generation), and six
+// files of the support list miss full offload on an 8 or 12 GB card by less
+// than the q8 cache saves. model_fit_full_offload() names the first format,
+// in the report's order, that holds all layers; -1 when the default already
+// does, when none does, or when the split was capped by --gpu-layers.
+static void test_fit_full_offload(const char *fixture) {
+    gguf_file g;
+    if (!fixture || !gguf_open_header(&g, fixture)) {
+        ck(0, "full offload: the test.gguf header opens");
+        return;
+    }
+    // a long context, so the cache is what decides the split of a toy model
+    model_fit base;
+    ck(model_fit_report(&g, 65536, false, &base), "full offload: report from the header");
+    int nl = base.n_layer;
+    model_fit f = base;
+    model_fit_gpu(&g, &f, 1ull << 40, 0, 0, false);
+    ck(f.gpu_layers[FIT_KV_F16] == nl && model_fit_full_offload(&f) == -1,
+       "full offload: the default cache holds every layer, nothing to name");
+    f = base;
+    model_fit_gpu(&g, &f, 1, 0, 0, false);
+    ck(model_fit_full_offload(&f) == -1, "full offload: no format holds every layer, nothing to name");
+
+    // the case: a budget where f16 leaves a layer on the CPU and a smaller
+    // format holds them all. It must exist for this fixture, or the checks
+    // below say nothing.
+    int found = 0;
+    for (uint64_t b = 1 << 16; b < (1ull << 34) && !found; b += b / 64 + 1) {
+        f = base;
+        model_fit_gpu(&g, &f, b, 0, 0, false);
+        if (f.gpu_layers[FIT_KV_F16] < 0 || f.gpu_layers[FIT_KV_F16] >= nl) continue;
+        int want = -1;
+        for (int k = 1; k < 4 && want < 0; k++)
+            if (f.gpu_layers[k] == nl) want = k;
+        if (want < 0) continue;
+        found = 1;
+        ck(model_fit_full_offload(&f) == want, "full offload: names the first format that holds every layer");
+        // one byte per layer short of that format's need: it no longer holds them
+        model_fit capped = base;
+        model_fit_gpu(&g, &capped, b, 0, nl - 1, false);
+        ck(capped.gpu_layers[want] == nl - 1 && model_fit_full_offload(&capped) == -1,
+           "full offload: a split capped by --gpu-layers names nothing");
+    }
+    ck(found, "full offload: the case exists (f16 short, a smaller cache whole)");
+    gguf_close(&g);
+}
+
 // --fit on a discrete GPU (model_fit_gpu): the split, and the verdict that
 // compares RAM with what the split leaves on the host. The regression is the
 // 1.0.0 clean-setup run on an RTX 3070: granite-4.2-8b Q4_K_M at 16k, served
@@ -685,6 +734,7 @@ int main(int argc, char **argv) {
     test_kv_trade_note();
     test_kv_ring_rows();
     test_fit_gpu(argc > 1 ? argv[1] : NULL);
+    test_fit_full_offload(argc > 1 ? argv[1] : NULL);
     test_fit_gpu_boundaries(argc > 1 ? argv[1] : NULL);
     test_gpu_plan();
     test_fit_layer_tables(argc > 1 ? argv[1] : NULL);

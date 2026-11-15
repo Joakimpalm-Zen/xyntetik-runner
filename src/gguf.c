@@ -415,9 +415,6 @@ fail:
     return false;
 }
 
-static bool gguf_open_one(gguf_file *g, const char *path) {
-    return gguf_open_one_x(g, path, false);
-}
 
 // Per-tensor scale companions. NVIDIA's ModelOpt NVFP4 export is TWO-LEVEL:
 // a UE4M3 scale per 16 elements inside each block AND one F32 `<base>.scale`
@@ -458,8 +455,16 @@ static void gguf_bind_scale_companions(gguf_file *g) {
     }
 }
 
+static bool gguf_open_set(gguf_file *g, const char *path, bool header_only);
+
+// The header of the whole model: a file in several parts
+// (<prefix>-00001-of-0000N.gguf) keeps each part's tensors in that part's own
+// table, so a reader of one part sees a model with tensors missing. --info fit
+// answered "WILL NOT LOAD ... missing tensor" from the first part of a set
+// the loader takes (2026-11-15), and derive's planner had made the same
+// mistake the day before. Every part's header is read, the data of none.
 bool gguf_open_header(gguf_file *g, const char *path) {
-    return gguf_open_one_x(g, path, true);
+    return gguf_open_set(g, path, true);
 }
 
 static bool split_part_path(char *out, size_t cap, const char *path,
@@ -475,7 +480,8 @@ static bool split_part_path(char *out, size_t cap, const char *path,
 
 bool gguf_split_part_path(const char *path, uint32_t i, char *out, size_t cap, uint32_t *count) {
     gguf_file probe;
-    if (!gguf_open_header(&probe, path)) return false;
+    // this part's own header: the question is which part this file is
+    if (!gguf_open_one_x(&probe, path, true)) return false;
     uint32_t n = gguf_get_u32(&probe, "split.count", 0);
     uint32_t current = gguf_get_u32(&probe, "split.no", UINT32_MAX);
     gguf_close(&probe);
@@ -490,11 +496,23 @@ bool gguf_split_part_path(const char *path, uint32_t i, char *out, size_t cap, u
 }
 
 bool gguf_open(gguf_file *g, const char *path) {
+    return gguf_open_set(g, path, false);
+}
+
+// One file, or every part of a split set merged into one tensor table.
+// header_only reads no tensor data (gguf_open_one_x): the parts may be
+// partial downloads, each as long as its own header. The scale companions
+// are bound from tensor data, so only a full open binds them.
+static bool gguf_open_set(gguf_file *g, const char *path, bool header_only) {
     memset(g, 0, sizeof(*g));
     gguf_file probe;
-    if (!gguf_open_one(&probe, path)) return false;
+    if (!gguf_open_one_x(&probe, path, header_only)) return false;
     uint32_t count = gguf_get_u32(&probe, "split.count", 0);
-    if (count <= 1) { *g = probe; gguf_bind_scale_companions(g); return true; }
+    if (count <= 1) {
+        *g = probe;
+        if (!header_only) gguf_bind_scale_companions(g);
+        return true;
+    }
     uint32_t current = gguf_get_u32(&probe, "split.no", UINT32_MAX);
     uint32_t expected = gguf_get_u32(&probe, "split.tensors.count", UINT32_MAX);
     if (current >= count || expected == UINT32_MAX || expected > 100000 ||
@@ -520,7 +538,7 @@ bool gguf_open(gguf_file *g, const char *path) {
     for (uint32_t i = 0; i < count; i++) {
         char part_path[4096] = {0};
         if (!split_part_path(part_path, sizeof part_path, first, 0, count, i) ||
-            !gguf_open_one(&parts[i], part_path)) {
+            !gguf_open_one_x(&parts[i], part_path, header_only)) {
             fprintf(stderr, "error: missing or unreadable split GGUF part %u/%u: %s\n",
                     i + 1, count, part_path);
             ok = false; break;
@@ -542,13 +560,15 @@ bool gguf_open(gguf_file *g, const char *path) {
             no != i || nc != count || nt != expected ||
             parts[i].n_tensors > expected ||
             total > (uint64_t)expected - parts[i].n_tensors ||
-            mapped > UINT64_MAX - parts[i].map_size) {
+            mapped > UINT64_MAX - parts[i].mapped_size) {
             fprintf(stderr, "error: inconsistent split GGUF metadata in %s\n",
                     part_path);
             ok = false; break;
         }
         total += parts[i].n_tensors;
-        mapped += parts[i].map_size;
+        // what the whole part is: its mapping, or under header_only the size
+        // its header declares (the same number for a complete file)
+        mapped += parts[i].mapped_size;
     }
     if (ok && total != expected) {
         fprintf(stderr, "error: split GGUF declares %u tensors but parts contain %llu\n",
@@ -603,7 +623,7 @@ bool gguf_open(gguf_file *g, const char *path) {
         free(names);
         if (d) { gguf_close(g); return false; }
     }
-    gguf_bind_scale_companions(g);
+    if (!header_only) gguf_bind_scale_companions(g);
     return true;
 }
 

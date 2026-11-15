@@ -83,7 +83,7 @@ by work under way:
 
 | switch | parked because | open work | verdict |
 |---|---|---|---|
-| `RUNNER_PREFETCH` | the shipped hint was slower or no faster on macOS, Linux and Windows | under rework (R3.39.11): the shipped hint is placed after the GPU upload has read the file; an early, cold-only hint made cold GPU loads 1.35x faster on Windows with warm loads unchanged (R3.39.9, R3.39.10). The Linux rows are pending, and a pass makes it a default | **not a candidate** |
+| `RUNNER_PREFETCH` | the shipped hint was slower or no faster on macOS, Linux and Windows | under rework (R3.39.11): the shipped hint is placed after the GPU upload has read the file; an early, cold-only hint made cold GPU loads 1.35x faster on Windows with warm loads unchanged (R3.39.9, R3.39.10). On Linux CUDA it did not pass (R3.39.11, 2026-11-15): 1.039x on a dense 18 GB file on a disk that streams, under the 1.05 line (an earlier 3.2x there was that host's request cap), and 5.2x SLOWER to the first token on a 63 GB MoE with its experts on the host, where the hint reads the whole file and the load reads 13.5 GiB of it. The early hint is not shipped and is not a default anywhere; the Windows figure stands on one host | **not a candidate** |
 | `RUNNER_TIEDV` | saves memory, not byte-identical | the tied-V device path (R4.6) | **not a candidate** |
 | `RUNNER_CUDA_I8` | Q8_0 reads 1.51x the default route's mean KL | dense speed work on large files (R4.26.16), the tolerance gates (R6.30) | **not a candidate** |
 | `RUNNER_CPU_I8`, `RUNNER_CPU_I8K`, `RUNNER_CPU_I8_PREFILL` | fail the bar, or 1.22x the default route's mean KL | table-lookup integer kernels for low-bit weights (R3.1.5, deferred) | **keep parked** with it |

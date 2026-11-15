@@ -1570,9 +1570,78 @@ static void rope_reach(engine *e, int upto) {
     e->rope_rebuilds++;
 }
 
+// R3.60 (a test seam): RUNNER_TEST_KV_DUMP=<pos>[,<layer>]. After the feed
+// that writes position <pos>, the KV rows stored there are printed: a 64-bit
+// FNV-1a hash of every layer's K row and V row, and the named layer's two rows
+// byte for byte as hex. Two runs of one prompt in other batch sizes are then
+// diffed row by row (the first layer whose hash differs; in the named layer,
+// the first differing byte), not megabytes. Read-only, announced once. The
+// rows are read from the host: on the CPU and on Metal that is where they are
+// stored; CUDA copies device rows back lazily, so there it refuses by name.
+// Read once, by whichever slot's feed comes first: every slot may call
+// engine_feed at the same time, so the switch is parsed into locals and
+// published with one compare-and-swap, which also makes one announcement.
+static _Atomic int kv_dump_pos = -2, kv_dump_layer = -1;
+static void kv_dump_config(void) {
+    if (atomic_load(&kv_dump_pos) != -2) return;
+    int pos = -1, layer = -1;
+    const char *v = getenv("RUNNER_TEST_KV_DUMP");
+    if (v && *v) {
+        char *end = NULL;
+        long p = strtol(v, &end, 10);
+        if (end != v && p >= 0 && p <= INT_MAX) {
+            pos = (int)p;
+            if (*end == ',') layer = atoi(end + 1);
+        }
+    }
+    atomic_store(&kv_dump_layer, layer);
+    int unread = -2;
+    if (atomic_compare_exchange_strong(&kv_dump_pos, &unread, pos) && pos >= 0)
+        fprintf(stderr, "test seam: RUNNER_TEST_KV_DUMP=%s prints the KV rows stored at position %d "
+                "after the feed that writes it\n", v, pos);
+}
+static uint64_t kv_dump_hash(const uint8_t *b, size_t n) {
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; }
+    return h;
+}
+static void kv_dump_row(int pos, int l, const char *kind, const uint8_t *b, size_t n) {
+    fprintf(stderr, "kvdump: pos %d layer %d %s row ", pos, l, kind);
+    for (size_t i = 0; i < n; i++) fprintf(stderr, "%02x", b[i]);
+    fputc('\n', stderr);
+}
+static void kv_dump(const engine *e, int lo, int hi) {
+    const model_t *m = e->m;
+    int p = atomic_load(&kv_dump_pos), named = atomic_load(&kv_dump_layer);
+    if (p < lo || p >= hi) return;
+    if (m->gpu && m->kv_owner != KV_OWNER_GPU_BACKEND) {
+        fprintf(stderr, "kvdump: pos %d not read: the host rows are a lazy copy of the device's here\n", p);
+        return;
+    }
+    if (!m->kcache || !m->vcache) return;
+    for (int l = 0; l < m->n_layer; l++) {
+        size_t kn = model_kv_dim(m, l) > 0 ? model_k_row_bytes(m, l) : 0;
+        size_t vn = model_kv_dim(m, l) > 0 ? model_v_row_bytes(m, l) : 0;
+        if (model_layer_tied_v(m, l)) kn = 0;   // a tied layer owns no K rows
+        int row = model_kv_row_at(m, l, p);
+        const uint8_t *k = kn ? (const uint8_t *)m->kcache + model_k_byte_off(m, l) + (size_t)row * kn : NULL;
+        const uint8_t *v = vn ? (const uint8_t *)m->vcache + model_v_byte_off(m, l) + (size_t)row * vn : NULL;
+        char kh[20] = "-", vh[20] = "-";
+        if (k) snprintf(kh, sizeof(kh), "%016llx", (unsigned long long)kv_dump_hash(k, kn));
+        if (v) snprintf(vh, sizeof(vh), "%016llx", (unsigned long long)kv_dump_hash(v, vn));
+        fprintf(stderr, "kvdump: pos %d layer %d k %s v %s\n", p, l, kh, vh);
+        if (l == named) {
+            if (k) kv_dump_row(p, l, "k", k, kn);
+            if (v) kv_dump_row(p, l, "v", v, vn);
+        }
+    }
+}
+
 float *engine_feed(engine *e, const int32_t *toks, int n) {
     float *logits = NULL;
     model_t *m = e->m;
+    kv_dump_config();
+    int fed_from = e->pos;
     if (e->pos + n <= m->n_ctx) rope_reach(e, e->pos + n);
     for (int i = 0; i < n; ) {
         int chunk = n - i < m->n_batch ? n - i : m->n_batch;
@@ -1606,6 +1675,7 @@ float *engine_feed(engine *e, const int32_t *toks, int n) {
         if (!last && e->stop && e->stop(e->stop_ud)) return NULL;
         if (!last && e->prefill_yield) e->prefill_yield(e->prefill_ud);
     }
+    if (atomic_load(&kv_dump_pos) >= 0) kv_dump(e, fed_from, e->pos);
     return logits;
 }
 
@@ -1995,6 +2065,8 @@ static bool constraint_token_ok(engine *e, int id, bool schema) {
     engine tmp = *e;
     tmp.cdoc_rec = false;   // shallow copy: it must not touch e's recording
     tmp.constraint_scratch = true;  // ...and may be fed in place, being one
+    tmp.sv.trial = true;            // a trial: it dies here, so its pattern
+                                    // automaton states are not kept (R2.18)
     int visible;
     return constraint_feed(&tmp, schema, buf, n, &visible);
 }
@@ -2261,12 +2333,21 @@ static void schema_trace(const engine *e, bool schema, const char *bytes,
             schema ? e->sv.depth : 0, esc);
 }
 
+// R2.18: a constrained turn that stopped because a pattern automaton hit a
+// limit, not because the model ran out of legal tokens, says so: in the
+// turn's fault (its finish reason) and once in the log.
+static void note_pattern_fault(engine *e) {
+    if (!e->schema || e->constraint_fault[0]) return;
+    if (sval_pattern_fault(&e->sv, e->constraint_fault, (int)sizeof(e->constraint_fault)))
+        fprintf(stderr, "runner: constrained generation stopped: %s\n", e->constraint_fault);
+}
+
 static int constraint_accept(engine *e, bool schema, const char *bytes, int n,
                              gen_cb cb, void *ud) {
     int visible;
     bool fed = constraint_feed(e, schema, bytes, n, &visible);
     schema_trace(e, schema, bytes, n, visible, fed);
-    if (!fed) return 1;
+    if (!fed) { if (schema) note_pattern_fault(e); return 1; }
     // the hidden span is the thinking prelude (tags included); chat serving
     // opts in to receive it so its splitter can surface the reasoning
     int hidden = visible >= 0 ? visible : n;
@@ -2626,6 +2707,7 @@ static int gen_choose(engine *e, float *logits, sample_ok_fn ok, int pos) {
     int tok = engine_pick(e, logits, e->m->n_vocab, ok, pos);
     if (tok < 0) {
         if (tok == -2) e->oom = true;  // error, not a clean stop
+        note_pattern_fault(e);         // a mask a pattern automaton's limit emptied
         e->hit_stop = true;
         return -1;
     }
@@ -2981,6 +3063,7 @@ void engine_gen_begin(engine *e, int max_new) {
     if (e->m) e->m->route_micro_tiles_seen = false;
     e->hit_stop  = false; e->stop_id = -1;
     e->oom       = false;
+    e->constraint_fault[0] = 0;
     e->lp_count  = 0;
     e->stop_lp_at = -1; e->stop_lp = 0;
     e->gen_max   = max_new;

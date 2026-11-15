@@ -9,9 +9,12 @@ the reasons and the evidence behind the ones that were argued for.
 
 OpenAI's `finish_reason` is a closed set: `stop`, `length`, `tool_calls`,
 `content_filter`, `function_call`. Runner's own `reasoning_limit` goes out as
-`length` and `envelope_error` as `error`; `runner_telemetry.finish_detail`
-keeps the exact reason, on streamed turns too (the finish chunk carries
-`runner_telemetry`).
+`length`, and `envelope_error` and `constraint_error` (a `pattern`'s
+automaton reaching its kept-state limit, R2.18) as `error`;
+`runner_telemetry.finish_detail` keeps the exact reason (`pattern_limit` for
+the second), on streamed turns too (the finish chunk carries
+`runner_telemetry`). A `pattern_limit` turn also carries
+`runner_telemetry.fault`, naming the pattern and the states it held.
 
 A strictly typed client whose finish reason is a closed union has no case for
 a value outside it; the official OpenAI SDK happens to deserialise one, which

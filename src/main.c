@@ -1778,9 +1778,10 @@ static int run_fit_check(const char *path, int n_ctx_want,
         printf(", %d NextN/MTP block%s %s", f.n_mtp, f.n_mtp > 1 ? "s" : "",
                f.mtp ? "charged (--mtp)" : "not charged (pass --mtp to draft from it)");
     printf("\n");
+    // the header read covers every part of a split set (gguf_open_header),
+    // so the figures below are the whole model's, from whichever part was named
     if (split > 1)
-        printf("  NOTE          this is part 1 of a %u-part split; the sizes "
-               "below are THIS PART only\n", split);
+        printf("  parts         %u files; the sizes below are the whole set's\n", split);
     printf("  weights       %s\n", w);
     if (f.n_seq > 1)
         printf("  slots         %d (--parallel): the weights once, a KV cache "
@@ -1825,6 +1826,15 @@ static int run_fit_check(const char *path, int n_ctx_want,
             first = 0;
         }
         printf("\n");
+        // R3.63: the default cache leaves layers on the CPU and a smaller one
+        // holds them all: say which, since a split is slower even one layer
+        // short. Not under --gpu-layers, where the user set the split.
+        int full = mp->gpu_layers_override > 0 ? -1 : model_fit_full_offload(&f);
+        if (full > 0)
+            printf("  full offload  %s puts all %d layers on the GPU at ctx %d; the default "
+                   "cache holds %d. A split is slower even one layer short, and %s is a "
+                   "compressed cache with a measured cost (MANUAL, --kv)\n",
+                   kvname[full], f.n_layer, f.n_ctx, f.gpu_layers[0], kvname[full] + 5);
         // a --cpu-moe N or auto load keeps only some banks on the host (the
         // deepest N, or those the budget leaves out), which the split above
         // does not model: it sizes a full offload for them, as before R3.58
@@ -5192,7 +5202,9 @@ static bool cli_engine_setup(cli_opts *o, cli_run *rt, bool wm_on, wm_state *cli
         struct jv *sj = json_parse(schema_text, ssz);
         free(schema_text);
         if (!sj) { fprintf(stderr, "error: %s is not valid JSON\n", o->schema_file); return false; }
-        char serr[128];
+        char serr[320];   // a pattern's refusal names its construct (R2.18)
+        // compiled for this one run and freed with it: its pattern caches
+        // belong to this thread (see completion.c's compile site)
         rt->e.schema = schema_compile(sj, serr, sizeof(serr));
         jv_free(sj);
         if (!rt->e.schema) { fprintf(stderr, "error: unsupported schema: %s\n", serr); return false; }

@@ -912,3 +912,366 @@ def test_a_demoted_tensor_does_not_take_the_tensors_named_after_it(runner_bin, t
     assert json.loads(p.stdout) == ours
     assert ours["rules"][0] == {"match": "per_layer_token_embd.weight", "type": "q8_0"}
 
+
+
+# ---- R4.46: the bar's verdict carries an interval, and the default window more positions ----
+
+BOOT_SEED, BOOT_RESAMPLES = 1, 10000
+
+
+def _splitmix(state):
+    """splitmix64, the generator derive's bootstrap documents: (next state, value)."""
+    m = (1 << 64) - 1
+    state = (state + 0x9E3779B97F4A7C15) & m
+    z = state
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & m
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & m
+    return state, z ^ (z >> 31)
+
+
+def _block_bootstrap(klds, agree, margin):
+    """The interval derive documents, computed here independently: a circular
+    block bootstrap over the scored positions in order. The block is the
+    smallest b with b^3 >= n; each resample draws block starts (value mod n)
+    from one splitmix64 stream until it holds n positions, the last block cut
+    short; mean KLD and margin-qualified top-1 come from the same draws. The
+    interval is sorted[R*25//1000] to sorted[ceil(R*975/1000) - 1]."""
+    n, b = len(klds), 1
+    while b * b * b < n:
+        b += 1
+    qual = [1 if m > 0.5 else 0 for m in margin]
+    hit = [1 if (a and q) else 0 for a, q in zip(agree, qual)]
+    k2, q2, h2 = klds + klds, qual + qual, hit + hit
+    state, means, mqs = BOOT_SEED, [], []
+    for _ in range(BOOT_RESAMPLES):
+        s, q, h, filled = 0.0, 0, 0, 0
+        while filled < n:
+            state, x = _splitmix(state)
+            start, ln = x % n, min(b, n - filled)
+            blk = 0.0
+            for v in k2[start:start + ln]:
+                blk += v
+            s += blk
+            q += sum(q2[start:start + ln])
+            h += sum(h2[start:start + ln])
+            filled += ln
+        means.append(s / n)
+        mqs.append(100.0 * h / q if q else 0.0)
+    means.sort()
+    mqs.sort()
+    lo, hi = BOOT_RESAMPLES * 25 // 1000, -(-BOOT_RESAMPLES * 975 // 1000) - 1
+    return b, (means[lo], means[hi]), (mqs[lo], mqs[hi])
+
+
+def _rows_gold(tmp, klds, agree=None, margin=None):
+    """A stand-in reference script whose result has per-position rows and the
+    summary scripts/gold-logits.py writes for them."""
+    n = len(klds)
+    agree = agree or [True] * n
+    margin = margin or [1.0] * n
+    rows = [{"pos": 8 + i, "gold_margin": margin[i], "a": {"kld": klds[i], "agree": agree[i]}}
+            for i in range(n)]
+    qual = [i for i in range(n) if margin[i] > 0.5]
+    side = {"mean_kld_vs_gold": sum(klds) / n, "max_kld_vs_gold": max(klds),
+            "top1_agreement_pct": 100.0 * sum(agree) / n,
+            "margin_qualified_top1_pct": 100.0 * sum(agree[i] for i in qual) / max(1, len(qual))}
+    out = tmp / "rows-gold.json"
+    out.write_text(json.dumps({"summary": {"positions": n, "reference_class": "FakeForCausalLM",
+                                           "sides": {"a": side}}, "rows": rows}))
+    script = tmp / "rows_gold.py"
+    script.write_text("import shutil, sys\na = sys.argv\n"
+                      f"shutil.copy({str(out)!r}, a[a.index('--out') + 1])\n")
+    return script
+
+
+def _derive_rows(runner_bin, tmp_path, klds, agree=None, margin=None):
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir(exist_ok=True)
+    out = tmp_path / "pub.gguf"
+    rc, so, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                        env={"RUNNER_GOLD_LOGITS": str(_rows_gold(tmp_path, klds, agree, margin))})
+    assert rc == 0, se[-1500:]
+    rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
+    body = pathlib.Path(str(out) + ".README.md").read_text(encoding="utf-8").split("\n---\n", 1)[1]
+    return rec, body.strip().split("\n\n"), so
+
+
+HEAVY_TAIL = [0.0005] * 290 + [1.2] * 10            # mean 0.0405: under the bar as a point
+CLEAR_PASS = [0.008 + 0.0001 * (i % 9) for i in range(300)]
+CLEAR_FAIL = [0.19 + 0.001 * (i % 11) for i in range(300)]
+# 240 of 300 positions margin-qualified; 234 of those agree: 97.5% as a point
+SOME_MARGIN = [0.2 if i % 5 == 4 else 1.0 for i in range(300)]
+SOME_AGREE = [i % 50 != 0 for i in range(300)]
+
+
+@pytest.mark.parametrize("klds,agree,margin,verdict,phrase", [
+    (CLEAR_PASS, None, None, "pass", "passes the bar"),
+    (CLEAR_FAIL, None, None, "fail", "fails the bar"),
+    # a mean under the bar that ten positions in three hundred could carry over it
+    (HEAVY_TAIL, None, None, "not_decided", "is not decided"),
+    # margin-qualified top-1 over the bar as a point, its interval across it
+    (CLEAR_PASS, SOME_AGREE, SOME_MARGIN, "not_decided", "is not decided"),
+])
+def test_the_bar_is_called_only_when_the_interval_is_clear_of_it(runner_bin, tmp_path, klds, agree,
+                                                                 margin, verdict, phrase):
+    """A mean over a few hundred positions with a heavy tail can sit on either
+    side of the bar by chance (Gemma 4 31B, 2026-11-15: two files read over
+    97% margin-qualified top-1 on 300 positions and under it on 3,600). The
+    record carries a 95% interval for mean KLD and for margin-qualified top-1,
+    and says pass or fail only when both are clear of the bar."""
+    n = len(klds)
+    rec, paras, so = _derive_rows(runner_bin, tmp_path, klds, agree, margin)
+    bar = rec["measurement"]["bar"]
+    assert bar["verdict"] == verdict and bar["passes"] is (verdict == "pass"), bar
+    mean, mqp = rec["measurement"]["mean_kld"], rec["measurement"]["margin_qualified_top1_pct"]
+    # the interval is the documented one, computed here independently
+    b, (lo, hi), (q_lo, q_hi) = _block_bootstrap(klds, agree or [True] * n, margin or [1.0] * n)
+    assert bar["bootstrap"] == {"method": "circular block", "block": b, "seed": BOOT_SEED,
+                                "resamples": BOOT_RESAMPLES}
+    assert bar["mean_kld_ci95"] == [pytest.approx(lo, rel=1e-9), pytest.approx(hi, rel=1e-9)]
+    assert bar["margin_qualified_top1_ci95"] == [pytest.approx(q_lo, rel=1e-9),
+                                                  pytest.approx(q_hi, rel=1e-9)]
+    assert lo < mean < hi
+    # the verdict follows from the interval and the bar, and from nothing else
+    want = ("pass" if hi <= 0.05 and q_lo >= 97.0 else
+            "fail" if lo > 0.05 or q_hi < 97.0 else "not_decided")
+    assert want == verdict
+    # the control for "not decided": the point estimate alone would have passed
+    if verdict == "not_decided":
+        assert mean <= 0.05 and mqp >= 97.0
+        assert f"{n} positions" in paras[2] and "--window" in paras[2]
+        assert "not decided" in so
+    assert phrase in paras[2] and paras[2].count("95% interval") == 2, paras[2]
+    assert f"{lo:.4f} to {hi:.4f}" in paras[2] and f"{q_lo:.2f}% to {q_hi:.2f}%" in paras[2]
+
+
+def test_the_interval_is_the_same_on_every_run(runner_bin, tmp_path):
+    a, _, _ = _derive_rows(runner_bin, tmp_path, HEAVY_TAIL)
+    b, _, _ = _derive_rows(runner_bin, tmp_path, HEAVY_TAIL)
+    assert a["measurement"]["bar"]["mean_kld_ci95"] is not None
+    assert a["measurement"]["bar"] == b["measurement"]["bar"]
+
+
+def test_a_reference_result_without_rows_keeps_the_point_verdict_and_says_so(runner_bin, tmp_path):
+    """An older or hand-made result with a summary alone has nothing to
+    resample: the verdict is the point estimate's, and the card says no
+    interval was computed."""
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    out = tmp_path / "pub.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                       env={"RUNNER_GOLD_LOGITS": str(_fake_gold(tmp_path, 0.012, 99.0))})
+    assert rc == 0, se[-1500:]
+    bar = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())["measurement"]["bar"]
+    assert bar["verdict"] == "pass" and bar["passes"] is True
+    assert bar["mean_kld_ci95"] is None and bar["margin_qualified_top1_ci95"] is None
+    assert bar["bootstrap"] is None
+    card = pathlib.Path(str(out) + ".README.md").read_text(encoding="utf-8")
+    assert "no interval" in card
+
+
+def test_the_default_window_scores_five_times_the_positions_of_the_same_text(runner_bin, tmp_path):
+    """The default window was 8:15:300. The score run and the reference's
+    forward cover the whole span whatever the stride, so 8:3:1500 reads the
+    same 4,510 tokens and costs no forward more; the interval is about 2.2
+    times narrower. (Every position would hold 4,500 rows of the whole
+    vocabulary in the reference run: 4.7 GB for a 262,144-token one.)"""
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    argv_file = tmp_path / "argv.json"
+    canned = _rows_gold(tmp_path, CLEAR_PASS)
+    script = tmp_path / "argv_gold.py"
+    script.write_text("import json, runpy, sys\n"
+                      f"json.dump(sys.argv, open({str(argv_file)!r}, 'w'))\n"
+                      f"runpy.run_path({str(canned)!r}, run_name='__main__')\n")
+    out = tmp_path / "wide.gguf"
+    p = subprocess.run([str(runner_bin), "derive", "-m", str(parent), "-o", str(out),
+                        "--quant", "q4_0", "--reference", f"hf:{hf}", "-t", "2", "--gpu", "off"],
+                       cwd=ROOT, capture_output=True, text=True, timeout=900,
+                       env={**os.environ, "RUNNER_GOLD_LOGITS": str(script)})
+    assert p.returncode == 0, p.stderr[-1500:]
+    a = json.loads(argv_file.read_text())
+    assert a[a.index("--min-prefix") + 1] == "8" and a[a.index("--stride") + 1] == "3"
+    assert a[a.index("--max-positions") + 1] == "1500"
+    rec = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())
+    assert rec["measurement"]["window"] == {"start": 8, "stride": 3, "count": 1500}
+    # the same span as the old default: a BOS and 8 + 4500 + 1 tokens of text
+    score = json.loads(pathlib.Path(str(out) + ".score.json").read_text())
+    assert len(score["tokens"]) == 1 + 8 + 15 * 300 + 1 == 1 + 8 + 3 * 1500 + 1
+
+
+def test_the_paired_test_corrects_its_variance_for_ties(runner_bin, tmp_path):
+    """Tied differences shrink the Wilcoxon statistic's variance by
+    sum(t^3 - t) / 48 over the tie groups. Without the correction a set of
+    equal differences reads less significant than it is."""
+    import importlib.util
+    import math
+    spec = importlib.util.spec_from_file_location("gold_logits", ROOT / "scripts" / "gold-logits.py")
+    gl = importlib.util.module_from_spec(spec); spec.loader.exec_module(gl)
+    n = 40
+    # binary fractions, so every |difference| is exactly 0.03125: one tie group of 40
+    ours = [(0.0625, True)] * n
+    other = [(0.03125 if i % 10 < 7 else 0.09375, True) for i in range(n)]
+    assert {abs(o[0] - r[0]) for o, r in zip(ours, other)} == {0.03125}
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    script = tmp_path / "fake_gold_rows.py"
+    script.write_text("import shutil, sys\na = sys.argv\n"
+                      f"shutil.copy({str(tmp_path / 'ours.json')!r}, a[a.index('--out') + 1])\n")
+    ours_g = _fake_gold_rows(tmp_path, "ours.json", ours)
+    d = json.loads(ours_g.read_text())
+    d["summary"]["sides"]["a"].update({"max_kld_vs_gold": 0.0625, "top1_agreement_pct": 100.0,
+                                       "margin_qualified_top1_pct": 100.0})
+    ours_g.write_text(json.dumps(d))
+    other_g = _fake_gold_rows(tmp_path, "other.json", other)
+    out = tmp_path / "ties.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                       "--compare", f"other={other_g}:a:300000",
+                       env={"RUNNER_GOLD_LOGITS": str(script)})
+    assert rc == 0, se[-1500:]
+    got = json.loads(pathlib.Path(str(out) + ".derive.json").read_text())["comparisons"][0]
+    # by hand: 40 nonzero differences in one tie group, each of rank 20.5; 28 are positive
+    w = 20.5 * sum(1 for o, r in zip(ours, other) if o[0] - r[0] > 0)
+    assert w == 20.5 * 28
+    mu = n * (n + 1) / 4.0
+    var = n * (n + 1) * (2 * n + 1) / 24.0 - (n ** 3 - n) / 48.0
+    z = (w - mu) / math.sqrt(var)
+    p = math.erfc(abs(z) / math.sqrt(2.0))
+    assert got["wilcoxon_z"] == pytest.approx(z, rel=1e-9)
+    assert got["wilcoxon_p"] == pytest.approx(p, rel=1e-9)
+    # the control: the uncorrected variance gives another p, so the test can tell
+    p0 = math.erfc(abs((w - mu) / math.sqrt(n * (n + 1) * (2 * n + 1) / 24.0)) / math.sqrt(2.0))
+    assert abs(p0 - p) > 0.05 * p
+    # and the reference script's own function agrees with the engine's
+    assert gl.wilcoxon_signed_rank([o[0] - r[0] for o, r in zip(ours, other)])[1] == pytest.approx(p, rel=1e-9)
+
+
+# ---- second read of R4.46 (2026-11-15): three holes it found ----
+
+def test_a_failed_interval_gives_no_verdict(runner_bin, tmp_path):
+    """Rows exist, so the verdict must come from their interval. When the
+    interval cannot be computed (an allocation failure, stood in for by a
+    seam), derive stops: before this, the missing interval read as "a result
+    without rows" and the point estimate was used, so HEAVY_TAIL, which is not
+    decided, came out a pass."""
+    # the control: with the interval these rows are not decided
+    rec, _, _ = _derive_rows(runner_bin, tmp_path, HEAVY_TAIL)
+    assert rec["measurement"]["bar"]["verdict"] == "not_decided"
+    parent = make_parent(tmp_path, "p2")
+    hf = tmp_path / "hf"
+    out = tmp_path / "failed.gguf"
+    rc, so, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                        env={"RUNNER_GOLD_LOGITS": str(_rows_gold(tmp_path, HEAVY_TAIL)),
+                             "RUNNER_TEST_DERIVE_INTERVAL_FAIL": "1"})
+    assert rc != 0, so[-800:]
+    assert "test seam: RUNNER_TEST_DERIVE_INTERVAL_FAIL" in se and "no verdict is given without it" in se, se[-800:]
+    assert "passes the bar" not in so and not pathlib.Path(str(out) + ".derive.json").exists()
+
+
+def test_a_compared_file_gets_its_verdict_from_its_own_interval(runner_bin, tmp_path):
+    """--compare gives the other file a verdict too. It comes from that file's
+    interval over the shared positions, not from its two point estimates: a
+    side whose mean is under the bar by a tail the window happened to miss is
+    "not decided", in the record and on the card."""
+    n = 300
+    ours = [(0.008 + 0.0001 * (i % 9), True) for i in range(n)]
+    tail = [(0.0005, True)] * 290 + [(1.2, True)] * 10          # mean 0.0405: a pass as a point
+    bad = [(0.19 + 0.001 * (i % 11), True) for i in range(n)]
+    good = [(0.004, True)] * n
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    script = tmp_path / "fake_gold_rows.py"
+    script.write_text("import shutil, sys\na = sys.argv\n"
+                      f"shutil.copy({str(tmp_path / 'ours.json')!r}, a[a.index('--out') + 1])\n")
+    ours_g = _fake_gold_rows(tmp_path, "ours.json", ours)
+    d = json.loads(ours_g.read_text())
+    d["summary"]["sides"]["a"].update({"max_kld_vs_gold": 0.0088, "top1_agreement_pct": 100.0,
+                                       "margin_qualified_top1_pct": 100.0})
+    ours_g.write_text(json.dumps(d))
+    two = _fake_gold_rows(tmp_path, "two.json", tail, bad)
+    one = _fake_gold_rows(tmp_path, "one.json", good)
+    out = tmp_path / "cmpv.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                       "--compare", f"tail file={two}:a:300000", "--compare", f"bad file={two}:b:300000",
+                       "--compare", f"good file={one}:a:300000", env={"RUNNER_GOLD_LOGITS": str(script)})
+    assert rc == 0, se[-1500:]
+    by = {c["label"]: c for c in json.loads(pathlib.Path(str(out) + ".derive.json").read_text())["comparisons"]}
+    # the control for the case: as two points the tail file passes the bar
+    assert by["tail file"]["mean_kld"] <= 0.05 and by["tail file"]["margin_qualified_top1_pct"] >= 97.0
+    assert (by["tail file"]["bar_verdict"], by["tail file"]["fails_bar"]) == ("not_decided", False)
+    assert (by["bad file"]["bar_verdict"], by["bad file"]["fails_bar"]) == ("fail", True)
+    assert (by["good file"]["bar_verdict"], by["good file"]["fails_bar"]) == ("pass", False)
+    lines = {l.split("](")[0]: l for l in pathlib.Path(str(out) + ".README.md").read_text().splitlines()
+             if l.startswith("- ")}
+    line = lambda label: next(l for l in lines.values() if label in l)
+    assert "Whether that file passes the bar is not decided at these positions." in line("tail file")
+    assert "That file fails the bar." in line("bad file")
+    assert "the bar" not in line("good file")
+
+
+def test_rows_without_a_kld_give_no_verdict(runner_bin, tmp_path):
+    """Rows that carry no KLD cannot be resampled, and a result that has rows
+    is not "a result without rows": every row must carry its KLD or derive
+    stops. Before this, 40 such rows beside a passing summary gave exit 0,
+    verdict pass and null intervals (a second read, 2026-11-15)."""
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    for case, rows in (("none", [{"pos": 8 + i, "gold_margin": 1.0, "a": {"agree": True}} for i in range(40)]),
+                       ("null", [{"pos": 8 + i, "gold_margin": 1.0, "a": {"kld": None, "agree": True}} for i in range(40)]),
+                       ("some", [{"pos": 8 + i, "gold_margin": 1.0, "a": ({"kld": 0.01, "agree": True} if i % 2 else
+                                                                         {"agree": True})} for i in range(40)])):
+        gold = tmp_path / f"gold-{case}.json"
+        gold.write_text(json.dumps({"summary": {"positions": 40, "reference_class": "FakeForCausalLM", "sides": {"a": {
+            "mean_kld_vs_gold": 0.01, "max_kld_vs_gold": 0.02, "top1_agreement_pct": 100.0,
+            "margin_qualified_top1_pct": 100.0}}}, "rows": rows}))
+        script = tmp_path / f"gold_{case}.py"
+        script.write_text("import shutil, sys\na = sys.argv\n"
+                          f"shutil.copy({str(gold)!r}, a[a.index('--out') + 1])\n")
+        out = tmp_path / f"rows-{case}.gguf"
+        rc, so, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                            env={"RUNNER_GOLD_LOGITS": str(script)})
+        assert rc != 0, (case, so[-600:])
+        assert "carry a KLD" in se and "no verdict is given" in se, (case, se[-600:])
+        assert not pathlib.Path(str(out) + ".derive.json").exists(), case
+
+
+def test_a_failed_interval_for_a_compared_file_writes_no_card(runner_bin, tmp_path):
+    """The same rule on the comparison's side, where the first test never
+    reaches (it stops in the file's own measurement): --card-from with a
+    --compare computes the other file's interval, and when that fails no card
+    is written."""
+    n = 300
+    ours = [(0.008 + 0.0001 * (i % 9), True) for i in range(n)]
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    script = tmp_path / "fake_gold_rows.py"
+    script.write_text("import shutil, sys\na = sys.argv\n"
+                      f"shutil.copy({str(tmp_path / 'ours.json')!r}, a[a.index('--out') + 1])\n")
+    ours_g = _fake_gold_rows(tmp_path, "ours.json", ours)
+    d = json.loads(ours_g.read_text())
+    d["summary"]["sides"]["a"].update({"max_kld_vs_gold": 0.0088, "top1_agreement_pct": 100.0,
+                                       "margin_qualified_top1_pct": 100.0})
+    ours_g.write_text(json.dumps(d))
+    other = _fake_gold_rows(tmp_path, "other.json", [(0.004, True)] * n)
+    out = tmp_path / "base.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                       env={"RUNNER_GOLD_LOGITS": str(script)})
+    assert rc == 0, se[-1500:]
+    rec = pathlib.Path(str(out) + ".derive.json")
+    args = [str(runner_bin), "derive", "--card-from", str(rec), "--compare", f"other file={other}:a:300000"]
+    # the control: without the seam the card is written, with the other file's verdict
+    good = tmp_path / "good.md"
+    p = subprocess.run([*args, "-o", str(good)], capture_output=True, text=True)
+    assert p.returncode == 0 and "other file" in good.read_text(), p.stderr[-800:]
+    bad = tmp_path / "bad.md"
+    p = subprocess.run([*args, "-o", str(bad)], capture_output=True, text=True,
+                       env={**os.environ, "RUNNER_TEST_DERIVE_INTERVAL_FAIL": "1"})
+    assert p.returncode != 0 and "--compare other file" in p.stderr and "no verdict is given without it" in p.stderr
+    assert not bad.exists()

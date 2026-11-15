@@ -25,29 +25,40 @@
 static long alloc_calls;   // allocations attempted since the last reset
 static long alloc_live;    // outstanding blocks; must return to its baseline
 static long fail_at = -1;  // index of the allocation to fail, -1 for none
+// and the bytes asked for, now and at the most, from a size header on every
+// block (R2.18: the per-request cap on compiled automata is checked in bytes)
+static size_t bytes_live, bytes_high;
 
 static void *t_malloc(size_t n) {
     if (fail_at >= 0 && alloc_calls++ == fail_at) return NULL;
     if (fail_at < 0) alloc_calls++;
-    void *p = malloc(n);
-    if (p) alloc_live++;
-    return p;
+    size_t *p = malloc(n + 16);
+    if (!p) return NULL;
+    *p = n;
+    alloc_live++;
+    bytes_live += n;
+    if (bytes_live > bytes_high) bytes_high = bytes_live;
+    return (char *)p + 16;
 }
 
 static void *t_calloc(size_t a, size_t b) {
-    if (fail_at >= 0 && alloc_calls++ == fail_at) return NULL;
-    if (fail_at < 0) alloc_calls++;
-    void *p = calloc(a, b);
-    if (p) alloc_live++;
+    if (b && a > ((size_t)-1 - 16) / b) return NULL;
+    void *p = t_malloc(a * b);
+    if (p) memset(p, 0, a * b);
     return p;
 }
 
 static void *t_realloc(void *p, size_t n) {
+    if (!p) return t_malloc(n);   // realloc(NULL, n) behaves as malloc
     if (fail_at >= 0 && alloc_calls++ == fail_at) return NULL;
     if (fail_at < 0) alloc_calls++;
-    void *q = realloc(p, n);
-    if (q && !p) alloc_live++;   // realloc(NULL, n) behaves as malloc
-    return q;
+    size_t *h = (size_t *)((char *)p - 16), old = *h;
+    size_t *q = realloc(h, n + 16);
+    if (!q) return NULL;
+    *q = n;
+    bytes_live = bytes_live - old + n;
+    if (bytes_live > bytes_high) bytes_high = bytes_live;
+    return (char *)q + 16;
 }
 
 // strdup must be instrumented too, not merely for the failure injection: its
@@ -69,8 +80,11 @@ static char *t_strndup(const char *s, size_t cap) {
 }
 
 static void t_free(void *p) {
-    if (p) alloc_live--;
-    free(p);
+    if (!p) return;
+    size_t *h = (size_t *)((char *)p - 16);
+    alloc_live--;
+    bytes_live -= *h;
+    free(h);
 }
 
 #define malloc  t_malloc
@@ -82,6 +96,7 @@ static void t_free(void *p) {
 #include "../src/json.c"
 #include "../src/schema.c"
 #include "../src/schema_tools.c"
+#include "../src/jsre.c"     // R2.18: the pattern automaton allocates under the same injection
 #undef malloc
 #undef calloc
 #undef realloc
@@ -125,7 +140,156 @@ static const char *const schemas[] = {
     "{\"type\":\"object\",\"properties\":{\"deep\":{\"type\":\"object\","
         "\"properties\":{\"deeper\":{\"type\":\"array\",\"items\":"
         "{\"type\":\"object\",\"properties\":{\"leaf\":{\"enum\":[1,2,3]}}}}}}}}",
+    // R2.18: patterns the segments cannot take, so the automaton compiles
+    // them (jsre_compile, jsre_lengths, the source copy), with bounds
+    "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\","
+        "\"pattern\":\"^(ab|cd){1,4}-[0-9]{2}$\",\"minLength\":4}},\"required\":[\"id\"]}",
+    "{\"type\":\"string\",\"pattern\":\"[a-z]+@[a-z]+\\\\.(com|org)\",\"maxLength\":40}",
 };
+
+// R2.18: the automaton allocates while it validates too (its DFA states, the
+// tables, the length caches, the pool), so every allocation a constrained
+// feed makes is failed in turn. A failed one refuses the byte and records why
+// (sval_pattern_fault), never crashes, and schema_free leaves nothing behind.
+
+// R2.18 (codex on #875): a temporary code-point set (cp_norm, cp_not,
+// cp_producible) left its block behind when an allocation part-way through
+// failed. Multi-range Unicode classes build several of them; every one of
+// their allocations is failed once, and nothing may be stranded.
+
+// R2.18: the bytes one request's compiled pattern automata may hold (a
+// schema, or a request's tools together), 64 MiB
+// (JSRE_SCHEMA_BYTES), counted as the schema compiles and refused by name past
+// it, so a request's schema cannot make the server hold more however many
+// patterns it carries. Each property here is ^(a|b){0,1000}$ with maxLength
+// 1000, about half a MiB of automaton (4,083 states, 1,001 lengths): a schema of
+// as many as fit compiles, one more is refused, and the heap, counted by the
+// allocator, never holds much past the cap while either compiles.
+// k string properties in groups of 50 (an object holds at most 60), one
+// group an object of the outer one
+static char *cap_schema(int k) {
+    size_t cap = (size_t)k * 96 + (size_t)(k / 50 + 1) * 64 + 64;
+    char *s = malloc(cap);
+    int n = snprintf(s, cap, "{\"type\":\"object\",\"properties\":{");
+    for (int g = 0; g * 50 < k; g++) {
+        n += snprintf(s + n, cap - (size_t)n, "%s\"g%d\":{\"type\":\"object\",\"properties\":{", g ? "," : "", g);
+        for (int i = g * 50; i < k && i < g * 50 + 50; i++)
+            n += snprintf(s + n, cap - (size_t)n, "%s\"p%d\":{\"type\":\"string\",\"pattern\":\"^(a|b){0,1000}$\",\"maxLength\":1000}",
+                          i > g * 50 ? "," : "", i);
+        n += snprintf(s + n, cap - (size_t)n, "}}");
+    }
+    snprintf(s + n, cap - (size_t)n, "}}");
+    return s;
+}
+
+static void test_schema_automata_cap(void) {
+    char err[256];
+    fail_at = -1;
+    // one pattern's automaton, as jsre counts it
+    char *one = cap_schema(1);
+    jv *j = json_parse(one, strlen(one));
+    snode *n = schema_compile(j, err, sizeof(err));
+    assert(n && n->n_props == 1 && n->props[0]->n_props == 1 && n->props[0]->props[0]->re);
+    size_t b = jsre_bytes(n->props[0]->props[0]->re);
+    schema_free(n); jv_free(j); free(one);
+    assert(b > 256 * 1024 && b < 4 << 20);
+    int fit = (int)(JSRE_SCHEMA_BYTES / b);
+    // as many as fit: compiles, and holds about what it counts
+    char *under = cap_schema(fit);
+    j = json_parse(under, strlen(under));
+    size_t base = bytes_live;
+    bytes_high = bytes_live;
+    n = schema_compile(j, err, sizeof(err));
+    if (!n) fprintf(stderr, "automata cap: %d patterns refused: %s\n", fit, err);
+    assert(n != NULL);
+    size_t held = bytes_live - base;
+    assert(held >= (size_t)fit * b && held <= JSRE_SCHEMA_BYTES + (size_t)fit * 4096);
+    schema_free(n);
+    jv_free(j); free(under);
+    // one more: refused by name, the compile stopping near the cap
+    char *over = cap_schema(fit + 1);
+    j = json_parse(over, strlen(over));
+    base = bytes_live;
+    bytes_high = bytes_live;
+    n = schema_compile(j, err, sizeof(err));
+    assert(n == NULL && strstr(err, "pattern automata") && strstr(err, "64 MiB"));
+    assert(bytes_high - base <= JSRE_SCHEMA_BYTES + 2 * b + (size_t)(fit + 1) * 4096);
+    assert(bytes_live == base);   // the refused compile left nothing behind
+    jv_free(j); free(over);
+    printf("ok: the compiled automata cap: %d patterns of %zu bytes compile, %d are refused by name\n", fit, b, fit + 1);
+}
+
+static void test_pattern_classes_survive_allocation_failure(void) {
+    const char *pats[] = { "\\s", "\\S+", "[^\\s\\d]{2}", "[a-z\\u00e9\\u4e00-\\u9fff]{2,3}",
+                           "(\\w|\\s)*\\u00e9", ".[^a-c\\u2028]", "[\\s\\S]x" };
+    for (size_t i = 0; i < sizeof(pats) / sizeof(*pats); i++) {
+        char err[256];
+        fail_at = -1; alloc_calls = 0; alloc_live = 0;
+        jsre *re = jsre_compile(pats[i], err, sizeof(err));
+        assert(re && jsre_lengths(re, -1, err, sizeof(err)));
+        long total = alloc_calls;
+        jsre_free(re);
+        assert(alloc_live == 0 && total > 3);
+        for (long k = 0; k < total; k++) {
+            fail_at = k; alloc_calls = 0; err[0] = 0;
+            jsre *r = jsre_compile(pats[i], err, sizeof(err));
+            if (r && !jsre_lengths(r, -1, err, sizeof(err))) assert(err[0]);
+            if (!r) assert(err[0]);
+            jsre_free(r);
+            if (alloc_live != 0) {
+                fprintf(stderr, "pattern %s, failing allocation %ld of %ld: %ld block(s) leaked\n",
+                        pats[i], k, total, alloc_live);
+                abort();
+            }
+        }
+        fail_at = -1;
+    }
+    printf("ok: pattern classes survive each of their allocations failing\n");
+}
+
+static void test_pattern_feed_survives_allocation_failure(void) {
+    const char *src = "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\","
+                      "\"pattern\":\"^(ab|cd){1,4}-[0-9]{2}$\",\"minLength\":4}},\"required\":[\"id\"]}";
+    const char *doc = "{\"id\":\"abcd-42\"}";
+    fail_at = -1;
+    alloc_calls = 0;
+    alloc_live = 0;
+    jv *j = json_parse(src, strlen(src));
+    long base_live = alloc_live;
+    char err[256];
+    snode *n = schema_compile(j, err, sizeof(err));
+    assert(n);
+    alloc_calls = 0;
+    sval v; sval_init(&v, n);
+    assert(sval_feed(&v, doc, (int)strlen(doc)) && v.done);
+    long total = alloc_calls;
+    assert(total > 0);                     // the feed did allocate: the sweep is not empty
+    schema_free(n);
+    assert(alloc_live == base_live);
+    int refused = 0;
+    for (long k = 0; k < total; k++) {
+        fail_at = -1;
+        n = schema_compile(j, err, sizeof(err));
+        assert(n);
+        alloc_calls = 0;
+        fail_at = k;
+        sval w; sval_init(&w, n);
+        bool ok = sval_feed(&w, doc, (int)strlen(doc)) && w.done;
+        fail_at = -1;
+        char msg[400];
+        if (!ok) { refused++; assert(sval_pattern_fault(&w, msg, sizeof(msg)) && strstr(msg, "out of memory")); }
+        schema_free(n);
+        if (alloc_live != base_live) {
+            fprintf(stderr, "pattern feed, failing allocation %ld of %ld: %ld block(s) leaked\n",
+                    k, total, alloc_live - base_live);
+            abort();
+        }
+    }
+    assert(refused > 0);
+    jv_free(j);
+    assert(alloc_live == 0);
+    printf("ok: a pattern feed survives each of its %ld allocations failing (%d refused, named)\n", total, refused);
+}
 
 // Every allocation on the compile path is failed in turn. schema_compile may
 // succeed or return NULL, but it must never crash and never strand a block —
@@ -375,6 +539,9 @@ static void test_native_compilers_survive_allocation_failure(void) {
 }
 
 int main(void) {
+    test_schema_automata_cap();
+    test_pattern_classes_survive_allocation_failure();
+    test_pattern_feed_survives_allocation_failure();
     test_compile_survives_allocation_failure();
     test_native_compilers_survive_allocation_failure();
     puts("schema oom tests ok");

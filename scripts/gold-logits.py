@@ -498,6 +498,28 @@ def endpoint_prompt(tok, special, body, pos, ids):
     return prefix
 
 
+def position_prefix(tok, special, body, pos, ids, sides, files):
+    """(prefix, why_skipped) for one scored position.
+
+    A prefix is something an endpoint is sent. A side read from a score file
+    is compared with the reference row by row on token ids and is sent
+    nothing, so with every side a score file (what `runner derive` runs) no
+    prefix is built and no position can fail the text path's re-tokenize
+    check. Before 2026-11-15 the check ran regardless and dropped such
+    positions without a line or a count: 5 of 150 on SmolLM2, four with a
+    prefix ending inside a multi-byte character and one ending in a double
+    line break. With an endpoint among the sides the check stands, and a
+    position that fails it comes back with the reason."""
+    if all(name in files for name, _, _ in sides):
+        return None, None
+    prefix = endpoint_prompt(tok, special, body, pos, ids)
+    if prefix is None:
+        return None, ("its text prefix does not tokenize back to the same ids (it ends inside a "
+                      "multi-byte character or at a boundary the tokenizer reads differently alone); "
+                      "--endpoint-ids sends the ids instead")
+    return prefix, None
+
+
 def query(endpoint, model_name, prompt, top_n=20, fresh=False):
     payload = {"model": model_name, "prompt": prompt, "max_tokens": 1,
                "temperature": 0, "logprobs": top_n}
@@ -678,6 +700,7 @@ def wilcoxon_signed_rank(diffs):
     order = sorted(range(n), key=lambda i: abs(d[i]))
     ranks = [0.0] * n
     i = 0
+    ties = 0.0   # sum of t^3 - t over the groups of equal |difference|
     while i < n:
         j = i
         while j + 1 < n and abs(d[order[j + 1]]) == abs(d[order[i]]):
@@ -685,12 +708,17 @@ def wilcoxon_signed_rank(diffs):
         r = (i + j) / 2.0 + 1.0
         for k in range(i, j + 1):
             ranks[order[k]] = r
+        t = j - i + 1
+        ties += t * t * t - t
         i = j + 1
     w = sum(ranks[i] for i in range(n) if d[i] > 0)
     mu = n * (n + 1) / 4.0
-    sd = math.sqrt(n * (n + 1) * (2 * n + 1) / 24.0)
-    if sd == 0:
+    # tied ranks shrink the statistic's variance; without the term a set of
+    # equal differences reads less significant than it is
+    var = n * (n + 1) * (2 * n + 1) / 24.0 - ties / 48.0
+    if var <= 0:
         return None
+    sd = math.sqrt(var)
     z = (w - mu) / sd
     p = math.erfc(abs(z) / math.sqrt(2.0))
     return z, p, n
@@ -920,6 +948,7 @@ def main():
             unlistable.add(int(i))
     rows = []
     skipped = 0
+    skipped_prefix = 0
     files = {}
     for name, path in (("a", args.score_a), ("b", args.score_b)):
         if path:
@@ -929,8 +958,10 @@ def main():
         sides.append(("b", args.endpoint_b or args.score_b, args.model_name_b or "score file"))
     for n in range(args.max_positions):
         pos = args.min_prefix + n * args.stride
-        prefix = endpoint_prompt(tok, special, body, pos, args.endpoint_ids)
-        if prefix is None:
+        prefix, why = position_prefix(tok, special, body, pos, args.endpoint_ids, sides, files)
+        if why:
+            skipped_prefix += 1
+            print(f"pos {pos:4d} skipped: {why}", file=sys.stderr)
             continue
         top = torch.topk(logp[logp_row[len(special) + pos - 1]], args.top_n)
         gold_rows = [(int(i), spell(int(i)), float(v))
@@ -969,6 +1000,7 @@ def main():
                "token_match": "by id where the endpoint gives ids, else by "
                               "spelling with unlisted special tokens dropped",
                "positions_skipped_no_logprobs": skipped,
+               "positions_skipped_prefix": skipped_prefix,
                "fresh_prompt": bool(args.fresh_prompt),
                "reference_dtype": upcast or "float32",
                "reference_device": "cpu",

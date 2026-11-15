@@ -1645,6 +1645,11 @@ bool        model_fit_report(gguf_file *g, int n_ctx_want, bool mtp, model_fit *
 // RUNNER_DEBUG_VRAM: the fit's geometry line, the shape of a load's own
 void        model_fit_print_geometry(gguf_file *g, const model_fit *f);
 const char *model_fit_verdict(const model_fit *f);
+// R3.63: the first cache format (FIT_KV_Q8..FIT_KV_FP4, the report's order)
+// that puts every layer on the device when the default f16 cache leaves
+// some on the CPU; -1 when f16 already holds them all, when no format
+// does, or when there is no device split to speak of.
+int model_fit_full_offload(const model_fit *f);
 // Fill the discrete-GPU half of a fit from the header's tensor table: the
 // loader's own split (leading layers, each its weights plus its KV, after a
 // fixed charge for the token embedding, activation scratch and `headroom`),

@@ -89,6 +89,10 @@ typedef struct {
     bool spell_think;
     bool oom;              // generation aborted on an allocation failure — the
                            // finish reason is "error", never a silent "stop"
+    // R2.18: a pattern automaton (src/jsre.h) hit a limit mid-generation: the
+    // turn ends as a fault this names (which pattern, how many states), never
+    // as a document narrower than the pattern allows. Empty when none did.
+    char constraint_fault[320];
     bool json_mode;        // constrain output to a single JSON object
     const snode *schema;   // constrain output to a JSON schema (overrides json_mode)
     // Constrained mode hides the thinking prelude from the output callback by
