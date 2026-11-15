@@ -1712,6 +1712,71 @@ static void test_schema_number_prefix_fits_the_buffer(void) {
            sizeof(runs) / sizeof(*runs));
 }
 
+// R2.19: the witness's work per byte is bounded, as WORK (num_try calls,
+// each one candidate spelling read back), so the check cannot flake on a
+// loaded host. A long fraction of zeros under a large minimum ran away: the
+// scale log10(tau / vw) overflowed to infinity, lround saturated, and the loop
+// over x0 - 1 .. x0 + 1 wrapped through the whole signed range (one trial over
+// a minute). The bound, from the code: the mantissa witness tries zero, the
+// spelling as it stands, and at most 4 spellings for each of at most 24
+// targets (98); the exponent witness 2 signs by 5 widths by 6 (62). A test cap
+// makes a runaway witness return, so this fails instead of hanging.
+static void test_schema_number_witness_work_is_bounded(void) {
+    enum { BOUND = 100, CAP = 10000 };
+    const char *schemas[] = {
+        "{\"type\":\"number\",\"minimum\":1e15}",
+        "{\"type\":\"number\",\"exclusiveMinimum\":1e15}",
+        "{\"type\":\"number\",\"maximum\":-1e15}",
+        "{\"type\":\"number\",\"exclusiveMaximum\":-1e15}",
+        "{\"type\":\"number\",\"minimum\":1e15,\"maximum\":9e15}",
+        "{\"type\":\"number\",\"minimum\":-9e15,\"maximum\":-1e15}",
+        "{\"type\":\"number\",\"maximum\":1e-300}",
+        "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}",
+    };
+    const char *leads[] = { "0.", "-0.", "0.000", "1", "9", "-9" };
+    const char fills[] = "019", alpha[] = "0123456789.eE+-";
+    schema_witness_try_cap(CAP);
+    unsigned long worst = 0;
+    long trials = 0;
+    char worst_at[128] = "";
+    clock_t t0 = clock();
+    for (size_t si = 0; si < sizeof(schemas) / sizeof(*schemas); si++) {
+        snode *s = num_schema(schemas[si]);
+        for (size_t li = 0; li < sizeof(leads) / sizeof(*leads); li++)
+            for (const char *f = fills; *f; f++) {
+                sval v; sval_init(&v, s);
+                char p[128];
+                int n = (int)strlen(leads[li]);
+                if (!sval_feed(&v, leads[li], n)) continue;
+                memcpy(p, leads[li], (size_t)n);
+                for (; n < 95; n++) {
+                    for (const char *b = alpha; *b; b++) {
+                        sval t;
+                        (void)sval_trial(&v, &t, b, 1);
+                        unsigned long w = schema_witness_tries();
+                        trials++;
+                        if (w > worst) {
+                            worst = w;
+                            snprintf(worst_at, sizeof(worst_at), "%s: %.*s%c (%d bytes)",
+                                     schemas[si], n, p, *b, n + 1);
+                        }
+                    }
+                    if (!sval_feed(&v, f, 1)) break;
+                    p[n] = *f;
+                }
+            }
+        schema_free(s);
+    }
+    schema_witness_try_cap(0);
+    if (worst > BOUND) {
+        fprintf(stderr, "R2.19 witness work: %lu candidate spellings in one trial (bound %d), at %s\n",
+                worst, BOUND, worst_at);
+        assert(worst <= BOUND);
+    }
+    printf("ok: the number witness's work is bounded (%ld trials, at most %lu spellings a byte; "
+           "note: %.2f s of CPU here)\n", trials, worst, (double)(clock() - t0) / CLOCKS_PER_SEC);
+}
+
 static void test_schema_merges_enum_and_const_anyof(void) {
     const char *src = "{\"anyOf\":["
         "{\"type\":\"string\",\"enum\":[\"pending\",\"completed\"]},"
@@ -4342,6 +4407,7 @@ int main(void) {
     test_schema_exclusive_bounds_survive_flush_to_zero();
     test_schema_number_prefix_stays_completable();
     test_schema_number_prefix_fits_the_buffer();
+    test_schema_number_witness_work_is_bounded();
     test_schema_merges_enum_and_const_anyof();
     test_dump_keeps_integer_literals();
     test_schema_enum_keeps_a_large_integer();

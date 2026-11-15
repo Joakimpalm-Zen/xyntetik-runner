@@ -2386,7 +2386,21 @@ static void num_side(const snode *n, bool neg, double *a, double *b) {
     else     { *a = lo > 0 ? lo : 0;  *b = hi; }
 }
 
+// The witness's work, counted (R2.19): the num_try calls the last
+// number_witness call on this thread made, each one candidate spelling read
+// back. Tests hold it under a bound; a test may also cap it, so a witness that
+// would run away returns instead (schema_witness_try_cap; 0, the default, is
+// no cap and nothing in the engine sets one).
+static _Thread_local unsigned long witness_tries;
+static _Thread_local bool witness_over;   // the test cap was reached: every loop below ends
+static _Atomic unsigned long witness_try_cap;
+unsigned long schema_witness_tries(void) { return witness_tries; }
+void schema_witness_try_cap(unsigned long cap) { atomic_store(&witness_try_cap, cap); }
+
 static bool num_try(const snode *n, const char *t, const char *suffix, char *out, size_t cap) {
+    unsigned long limit = atomic_load(&witness_try_cap);
+    if (limit && witness_tries >= limit) { witness_over = true; return false; }
+    witness_tries++;
     // the whole spelling must fit where the validator keeps it (number_put):
     // the lengths are checked first and the copy is exact, so nothing is ever
     // cut and no compiler has to prove that a formatted write fits (gcc's
@@ -2438,7 +2452,7 @@ static bool num_witness_exp(const snode *n, const char *t, uint8_t st, const num
             long blo = plen ? pref * scale : 0, bhi = plen ? pref * scale + scale - 1 : 100000;
             if (!plen && j) break;                    // any exponent: one pass covers them
             long lo2 = blo > elo ? blo : elo, hi2 = bhi < ehi ? bhi : ehi;
-            for (long e = lo2, tries = 0; e <= hi2 && tries < 4; e++, tries++) {
+            for (long e = lo2, tries = 0; e <= hi2 && tries < 4 && !witness_over; e++, tries++) {
                 char suf[32], dig[24];
                 if (plen) {
                     if (j) snprintf(dig, sizeof(dig), "%0*ld", j, e - pref * scale);
@@ -2447,7 +2461,7 @@ static bool num_witness_exp(const snode *n, const char *t, uint8_t st, const num
                 snprintf(suf, sizeof(suf), "%s%s", st == N_EXP0 && sign < 0 ? "-" : "", dig);
                 if (num_try(n, t, suf, out, cap)) return true;
             }
-            for (long e = hi2, tries = 0; e >= lo2 && tries < 2; e--, tries++) {
+            for (long e = hi2, tries = 0; e >= lo2 && tries < 2 && !witness_over; e--, tries++) {
                 char suf[32], dig[24];
                 if (plen) {
                     if (j) snprintf(dig, sizeof(dig), "%0*ld", j, e - pref * scale);
@@ -2506,7 +2520,7 @@ static bool num_witness_mant(const snode *n, const char *t, uint8_t st, const nu
         if (!(vw > 0)) return false;
         double xlo = ceil(log10(a / vw)), xhi = floor(log10(b / vw));
         long x0 = xlo > 0 ? (long)xlo : xhi < 0 ? (long)xhi : 0;
-        for (long x = x0 - 1; x <= x0 + 1; x++) {   // either side, for rounding
+        for (long x = x0 - 1; x <= x0 + 1 && !witness_over; x++) {   // either side, for rounding
             char suf[32];
             if (x == 0) snprintf(suf, sizeof(suf), "%s", body);
             else snprintf(suf, sizeof(suf), "%se%ld", body, x);
@@ -2517,7 +2531,7 @@ static bool num_witness_mant(const snode *n, const char *t, uint8_t st, const nu
     // how the digits continue from here: after a "0" a point first; after a
     // point with no digit, one digit at least
     const char *join = st == N_ZERO ? "." : "";
-    for (int i = 0; i < nt; i++) {
+    for (int i = 0; i < nt && !witness_over; i++) {
         double tau = targets[i];
         for (int prec = 0; prec <= 16; prec++) {
             char e[48];
@@ -2535,7 +2549,7 @@ static bool num_witness_mant(const snode *n, const char *t, uint8_t st, const nu
             double vw = fabs(strtod(mt, NULL));
             if (!(vw > 0)) continue;
             long x0 = lround(log10(tau / vw));
-            for (long x = x0 - 1; x <= x0 + 1; x++) {
+            for (long x = x0 - 1; x <= x0 + 1 && !witness_over; x++) {
                 char suf[sizeof(mt) + 32];   // the body, e, and a long's digits
                 const char *body = mt + strlen(t);
                 if (x == 0) {
@@ -2552,6 +2566,8 @@ static bool num_witness_mant(const snode *n, const char *t, uint8_t st, const nu
 }
 
 static bool number_witness(const snode *n, const char *t, uint8_t st, char *out, size_t cap) {
+    witness_tries = 0;
+    witness_over = false;
     numspell p;
     num_parse_prefix(t, &p);
     if (st == N_EXP0 || st == N_EXP1 || st == N_EXP) return num_witness_exp(n, t, st, &p, out, cap);
