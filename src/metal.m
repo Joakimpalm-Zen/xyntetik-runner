@@ -4342,6 +4342,7 @@ typedef struct {
     int timing;
     bool fuse_pending_add;   // F2b: post-FFN add deferred into the
                              // next layer's attention norm
+    unsigned long disp0;     // EXPERIMENT R3.42: the census total at the start
 } metal_fwd;
 
 // One layer's shape and fusion decisions, made before any of its dispatches.
@@ -5145,6 +5146,43 @@ static bool metal_enc_m2(metal_fwd *F, int l, const metal_layer_plan *P) {
     return metal_nan_probe(F, g->x, (size_t)n * n_embd, "post-m2-resid", l);
 }
 
+// EXPERIMENT R3.42 (the profiling read of the fixed decode cost):
+// RUNNER_METAL_SPLIT=1 commits and waits at the stage boundaries of a
+// one-token forward, so each stage's GPU span is exact and its dispatches are
+// counted from the census. The splits distort the forward's total; read the
+// total from RUNNER_METAL_TIMING=1 without them. Only LFM2's short-conv
+// layers and the attention layers are split; another recurrent family's
+// mixer lands in the next bucket.
+enum { SPL_CONV_IN, SPL_CONV_FIR, SPL_CONV_OUT, SPL_ATTN, SPL_FFN, SPL_TAIL, SPL_N };
+static const char *const spl_name[SPL_N] = {
+    "conv-in", "conv-fir", "conv-out", "attention", "ffn", "tail" };
+static double spl_ms[SPL_N];
+static unsigned long spl_d[SPL_N], spl_mark;
+static int spl_k[SPL_N];
+static bool metal_split_on(void) {
+    static int v = -1;
+    if (v < 0) v = metal_env_on("RUNNER_METAL_SPLIT");
+    return v;
+}
+static unsigned long metal_disp_total(void) {
+    return g_disp.tensor + g_disp.mm + g_disp.mv + g_disp.mvf + g_disp.rmsnorm +
+           g_disp.qknorm + g_disp.headnorm + g_disp.rope + g_disp.store +
+           g_disp.attn + g_disp.attn_chunk + g_disp.elem + g_disp.moe;
+}
+static void spl_cut(metal_fwd *F, int b) {
+    if (F->n != 1 || !metal_split_on()) return;
+    [F->e endEncoding];
+    [F->cb commit];
+    [F->cb waitUntilCompleted];
+    spl_ms[b] += 1e3 * ([F->cb GPUEndTime] - [F->cb GPUStartTime]);
+    unsigned long t = metal_disp_total();
+    spl_d[b] += t - spl_mark;
+    spl_mark = t;
+    spl_k[b]++;
+    F->cb = [F->g->queue commandBuffer];
+    F->e = [F->cb computeCommandEncoder];
+}
+
 // An LFM2 short-convolution layer's mixer (R3.42): model.c's lfm2_shortconv
 // on the device. The operator norm (or the deferred add), in_proj into
 // [B | C | x], the FIR over the layer's window and the columns (B*x, gated by
@@ -5165,6 +5203,7 @@ static bool metal_enc_lfm2(metal_fwd *F, int l, const metal_layer_plan *P) {
                       n_embd, m->rms_eps, n, n_embd, xdim);
     enc_mv_n(g, F->e, m, ly->ssm_in, g->xb, 0, g->dn_qkv, 0,
              n_embd, 3 * E, nil, n, xdim, 3 * E);
+    spl_cut(F, SPL_CONV_IN);
     lf_args a = { n, E, histn, m->ssm.conv_kernel, 3 * E };
     NSUInteger co = sizeof(float) * (NSUInteger)model_rec_slot(m, l) * histn * E;
     id<MTLComputeCommandEncoder> e = F->e;
@@ -5186,11 +5225,13 @@ static bool metal_enc_lfm2(metal_fwd *F, int l, const metal_layer_plan *P) {
     }
     g_disp.elem += 1 + (histn ? 1 : 0);
     g_disp.rmsnorm += 1;
-    enc_mv_n(g, e, m, ly->ssm_out, g->dn_y, 0, g->xb, 0,
+    spl_cut(F, SPL_CONV_FIR);
+    enc_mv_n(g, F->e, m, ly->ssm_out, g->dn_y, 0, g->xb, 0,
              E, n_embd, nil, n, E, xdim);
     if (!metal_nan_probe(F, g->xb, (size_t)n * xdim, "lfm2-out", l)) return false;
     if (!P->f2a)
         enc_elem_n(g, F->e, g->p_add, g->x, 0, g->xb, 0, n_embd, n, n_embd, xdim);
+    spl_cut(F, SPL_CONV_OUT);
     return metal_nan_probe(F, g->x, (size_t)n * n_embd, "post-lfm2-resid", l);
 }
 
@@ -5270,9 +5311,13 @@ static bool metal_fwd_layer(metal_fwd *F, int l) {
         metal_enc_rope_store(F, l, &P);
         metal_enc_attention(F, l, &P);
         if (!metal_enc_attn_out(F, l, &P)) return false;
+        spl_cut(F, SPL_ATTN);
     }
     if (!ly->skip_ffn && !metal_enc_ffn(F, l, &P)) return false;
-    return metal_enc_layer_tail(F, l);
+    spl_cut(F, SPL_FFN);
+    bool tail_ok = metal_enc_layer_tail(F, l);
+    spl_cut(F, SPL_TAIL);
+    return tail_ok;
 }
 
 // The command buffer committed and waited on, its failure checked, the
@@ -5289,10 +5334,18 @@ static float *metal_fwd_submit(metal_fwd *F, double t_enc0) {
     if (F->timing) {
         double now = CFAbsoluteTimeGetCurrent();
         double gpu = [F->cb GPUEndTime] - [F->cb GPUStartTime];
+        // EXPERIMENT R3.42: the forward's dispatches, from the census
         fprintf(stderr, "metal-timing n=%d encode=%.2fms submit+wait=%.2fms "
-                "gpu=%.2fms total=%.2fms\n", n,
+                "gpu=%.2fms total=%.2fms dispatches=%lu\n", n,
                 (t_enc1 - t_enc0) * 1e3, (now - t_enc1) * 1e3, gpu * 1e3,
-                (now - t_enc0) * 1e3);
+                (now - t_enc0) * 1e3, metal_disp_total() - F->disp0);
+    }
+    if (n == 1 && metal_split_on()) {
+        fprintf(stderr, "metal-split n=1");
+        for (int b = 0; b < SPL_N; b++)
+            if (spl_k[b])
+                fprintf(stderr, " | %s x%d d=%lu gpu=%.3fms", spl_name[b], spl_k[b], spl_d[b], spl_ms[b]);
+        fprintf(stderr, "\n");
     }
     if (metal_command_failed(F->cb)) {
         fprintf(stderr, "gpu: command buffer failed — falling back to CPU\n");
@@ -5366,7 +5419,11 @@ static float *gpu_forward_native_batch(model_t *m, const int32_t *tokens,
     int n_gpu_layers = m->gpu_layers > 0 && m->gpu_layers < m->n_layer
                      ? m->gpu_layers : m->n_layer;
     metal_fwd F = { m, g, cb, e, n, pos, n_embd, q_dim, kv_dim, xdim, n_gpu_layers,
-                    nantrace, nanstage, timing, false };
+                    nantrace, nanstage, timing, false, metal_disp_total() };
+    if (n == 1 && metal_split_on()) {
+        memset(spl_ms, 0, sizeof(spl_ms)); memset(spl_d, 0, sizeof(spl_d)); memset(spl_k, 0, sizeof(spl_k));
+        spl_mark = F.disp0;
+    }
     for (int l = 0; l < n_gpu_layers; l++)
         if (!metal_fwd_layer(&F, l)) return NULL;
     return metal_fwd_submit(&F, t_enc0);
