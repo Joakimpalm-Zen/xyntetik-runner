@@ -30,6 +30,27 @@ in the output as a note. The two figures the test asserts on, after each
   allocations (65,536 bytes) more left after each cycle while the device figure
   stayed at 917,504 bytes; on a sound build 0 left after every free.
 
+On the Apple Paravirtual device (the hosted macOS CI runners' GPU, named by the
+runner's own "Metal backend on" line) the device figure and the footprint are
+printed, not asserted: there they grow by about 1.5 MiB a load with every one
+of our objects released, and the growth is the driver's, not ours. Measured on
+macos-latest (macOS 26.7.2, AppleParavirtDevice, runs 43673598433 and
+43673917267, a throwaway debug/ branch):
+- 32 unload cycles: the device figure rose +2 and +1 MiB alternately per free,
+  linear to 48 MiB, the footprint with it (14.4 to 39.0 MB over 16);
+- every Metal object this process made (each load: 66 length, 34 byte and 5
+  no-copy buffers, 144 pipelines, 2 libraries, 5 queues) was counted released
+  after every free, and 0 KV host allocations were left;
+- created and released alone in a loop: queues, devices, 100 MiB of buffers,
+  dispatches and the library compiled from source keep 0 bytes; the library
+  with a pipeline for each of its functions keeps about 1.44 MiB a round (8
+  rounds, 13.6 MB). Each MTLComputePipelineState we release keeps memory in
+  that driver.
+On an Apple M1 the same 32 cycles hold 917,504 bytes after every free, and the
+footprint stays between 12.32 and 12.65 MB. What is ours is asserted on every
+device: the seam reported every free and no KV host allocation outlived its
+model. Compiling the pipelines once per process is R3.70.
+
 test_every_entry_point_drains_its_own_pool keeps R6.17 out at the source.
 """
 import json
@@ -120,6 +141,9 @@ def test_this_process_returns_its_memory_across_unload(tmp_path):
         text = log.read_text(errors="replace")
     if "Metal backend" not in text:
         pytest.skip("this host served on the CPU")
+    # the device by the runner's own line, not by an environment guess
+    devices = set(re.findall(r"Metal backend on ([^(\n]+?) \(", text))
+    paravirtual = any(d.startswith("Apple Paravirtual device") for d in devices)
     held = [int(x) for x in re.findall(r"the Metal device holds (\d+) bytes after the model is freed", text)]
     # live: the seam reported at every free, or the assertion below says nothing
     assert len(held) >= CYCLES, f"the seam reported {len(held)} frees for {CYCLES} unloads"
@@ -136,6 +160,12 @@ def test_this_process_returns_its_memory_across_unload(tmp_path):
     if machine is not None and machine0 is not None:
         print(f"note: the machine-wide GPU driver figure moved {machine - machine0} MB across the cycles "
               "(every process on the machine counts there; not asserted)")
+    if paravirtual:
+        # the driver keeps memory for each pipeline we release (docstring): a note
+        # with the figures, and the assertions above, which are ours, stand
+        print(f"note: {sorted(devices)}: the device figure grew {held[-1] - held[0]} B and the footprint "
+              f"{footprint[-1] - footprint[0]} B across {CYCLES} unloads, the driver's (not asserted here)")
+        return
     assert held[-1] - held[0] < HELD_GROWTH, \
         f"this process's Metal device holds {held[-1] - held[0]} more bytes after {CYCLES} unloads: {held}"
     assert footprint[-1] - footprint[0] < FOOTPRINT_GROWTH, \
