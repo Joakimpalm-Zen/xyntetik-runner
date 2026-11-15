@@ -11,15 +11,17 @@ The leak test reads what THIS server process holds, because the GPU driver's
 twice on 2026-11-14 (237 MB "held") while no Metal process of ours ran, moved by
 something else on the machine (a browser), and passed each time alone. It stays
 in the output as a note. The two figures the test asserts on, after each
-/unload, measured over four cycles of the fixture:
+/unload, measured over 32 cycles of the fixture:
 
 - the Metal device's currentAllocatedSize, which the server prints after each
   free under RUNNER_TEST_METAL_HELD_AFTER_FREE: flat (0 bytes of growth) on a
   sound build, +1,130,496 bytes when the free path keeps one weight buffer.
   It does NOT see the leak R6.17 fixed (all 14 pools removed: flat at
   1,966,080 bytes while the machine-wide figure grew 124 MB a cycle);
-- the process's own footprint (/health phys_footprint_bytes): 0.23 to 0.28 MB
-  of growth on a sound build, 5.7 MB with the pools removed;
+- the process's own footprint (/health phys_footprint_bytes), from the first
+  of 32 unloads to the last: at most 20.2 MB of movement on a sound build (the
+  GPU driver's pool inside the process, see FOOTPRINT_GROWTH), 55.6 MB with
+  the pools removed;
 - the KV cache's host allocations (R3.68: one vm_allocate per cache, wrapped by
   per-region no-copy buffers), counted where they are made and freed and
   printed under the same seam: 0 left after every free. Neither figure above
@@ -47,7 +49,8 @@ macos-latest (macOS 26.7.2, AppleParavirtDevice, runs 43673598433 and
   rounds, 13.6 MB). Each MTLComputePipelineState we release keeps memory in
   that driver.
 On an Apple M1 the same 32 cycles hold 917,504 bytes after every free, and the
-footprint stays between 12.32 and 12.65 MB. What is ours is asserted on every
+footprint stays between 12.32 and 12.65 MB when the machine is short of memory;
+with memory to spare the driver's pool takes it up to about 32.8 MB. What is ours is asserted on every
 device: the seam reported every free and no KV host allocation outlived its
 model. Compiling the pipelines once per process is R3.70.
 
@@ -70,12 +73,24 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests" / "conformance"))
 from _process import RunnerServer, find_runner  # noqa: E402
 
-CYCLES = 4
-# Growth from the first /unload to the last. The device's held bytes do not move
-# on a sound build (one held weight buffer adds 377 KB a cycle); the footprint
-# moves 0.23 to 0.28 MB (5.7 MB without the autorelease pools).
+CYCLES = 32
+# The device's held bytes do not move from the first /unload to the last on a
+# sound build (one held weight buffer adds 377 KB a cycle).
 HELD_GROWTH = 256 * 1024
-FOOTPRINT_GROWTH = 2 << 20
+# The footprint's growth from the first /unload to the last, over 32 cycles.
+# It cannot be read over a few unloads: the GPU driver keeps a pool of the
+# allocations a process released, INSIDE that process (vmmap: "IOAccelerator
+# (graphics)", 1.2 MB after one unload, 17.1 MB after six, with the device
+# figure flat and every object of ours released), and it fills and trims that
+# pool as the machine's memory allows. On one sound build on one Apple M1 on
+# 2026-11-15 the footprint read 12.3 to 12.7 MB flat in the morning; 12.6,
+# 18.4, 22.6, 31.0 and then 31.1 to 32.8 MB in the afternoon; and, inside the
+# full suite, back and forth between 12.7 and 29.8 MB from one unload to the
+# next. The most it moved from a first unload to any later one was 20.2 MB.
+# The leak this test exists for does not stop and is not trimmed: without the
+# autorelease pools the footprint rose 13.4 to 69.1 MB over the 32 unloads
+# (55.6 and 55.9 MB in two runs, about 1.8 MB a cycle). The line sits between.
+FOOTPRINT_GROWTH = 32 << 20
 SEAM = "RUNNER_TEST_METAL_HELD_AFTER_FREE"
 
 # Every exported function of src/metal.m that sends a message, directly or through

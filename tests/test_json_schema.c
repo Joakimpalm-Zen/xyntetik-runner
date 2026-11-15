@@ -5,6 +5,7 @@
 #include "fpenv.h"
 
 #include <assert.h>
+#include <fenv.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -628,7 +629,8 @@ static void test_schema_rejects_escaped_keys(void) {
 static void test_schema_rejects_unenforceable_keywords(void) {
     static const char *const bad[] = {
         "{\"type\":\"integer\",\"multipleOf\":2}",
-        "{\"allOf\":[{\"type\":\"string\"}]}",
+        // two members that each constrain (one member is that schema, R2.18.1)
+        "{\"allOf\":[{\"type\":\"string\"},{\"maxLength\":2}]}",
         "{\"not\":{\"type\":\"string\"}}",
         "{\"type\":\"array\",\"uniqueItems\":true}",
         "{\"type\":\"array\",\"prefixItems\":[{\"type\":\"string\"}]}",
@@ -1238,6 +1240,126 @@ static void test_schema_allof_of_string_patterns(void) {
     }
 }
 
+// R2.18.1: an allOf that wraps one schema is that schema. pydantic 1.10 writes
+// every field that references a model or an enum, and has a title, a
+// description or a default, as {"title":..,"allOf":[{"$ref":..}]}; both
+// fixtures are pydantic 1.10.27's own expectations (tests/test_schema.py on
+// 1.10.X-fixes). The node becomes its one member only when everything beside
+// the allOf annotates and every other member constrains nothing: a maxLength
+// beside it (the mutant m5 would drop it) keeps the node refused, and two
+// members that each constrain (zod-to-json-schema 3.25.2's .and()) stay
+// refused by name, with words that say what is supported.
+static bool allof_doc(const snode *s, const char *doc) {
+    sval v; sval_init(&v, s);
+    if (!sval_feed(&v, doc, (int)strlen(doc))) return false;
+    if (!v.done) (void)sval_feed(&v, " ", 1);
+    return v.done;
+}
+static snode *allof_compile(const char *src, char *err, int errcap) {
+    jv *j = json_parse(src, strlen(src));
+    assert(j != NULL);
+    snode *s = schema_compile(j, err, errcap);
+    jv_free(j);
+    return s;
+}
+static void test_schema_allof_one_member_collapse(void) {
+    char err[256];
+    // pydantic 1.10.27: an enum field with a title, a description and a default
+    const char *pyd_enum =
+        "{\"title\":\"Model\",\"type\":\"object\","
+        "\"definitions\":{\"FooBarEnum\":{\"description\":\"An enumeration.\",\"enum\":[\"foo\",\"bar\"],"
+        "\"title\":\"FooBarEnum\",\"type\":\"string\"}},"
+        "\"properties\":{"
+        "\"pikalias\":{\"allOf\":[{\"$ref\":\"#/definitions/FooBarEnum\"}],"
+        "\"description\":\"Pika is definitely the best!\",\"title\":\"Pikapika!\"},"
+        "\"bulbialias\":{\"allOf\":[{\"$ref\":\"#/definitions/FooBarEnum\"}],"
+        "\"description\":\"Bulbi is not...\",\"title\":\"Bulbibulbi!\",\"default\":\"foo\"},"
+        "\"cara\":{\"$ref\":\"#/definitions/FooBarEnum\"}},"
+        "\"required\":[\"pikalias\",\"cara\"]}";
+    snode *s = allof_compile(pyd_enum, err, sizeof(err));
+    if (!s) { fprintf(stderr, "R2.18.1 pydantic enum field: %s\n", err); assert(0); }
+    assert(allof_doc(s, "{\"pikalias\":\"foo\",\"cara\":\"bar\"}"));
+    assert(allof_doc(s, "{\"pikalias\":\"bar\",\"bulbialias\":\"foo\",\"cara\":\"foo\"}"));
+    assert(!allof_doc(s, "{\"pikalias\":\"baz\",\"cara\":\"foo\"}"));     // the enum holds
+    assert(!allof_doc(s, "{\"cara\":\"foo\"}"));                          // required holds
+    schema_free(s);
+
+    // pydantic 1.10.27: a nested model whose field has a default
+    const char *pyd_model =
+        "{\"title\":\"Model\",\"type\":\"object\",\"definitions\":{"
+        "\"Foo\":{\"title\":\"Foo\",\"type\":\"object\",\"properties\":{\"a\":{\"title\":\"A\",\"type\":\"string\"}},"
+        "\"required\":[\"a\"]},"
+        "\"Bar\":{\"title\":\"Bar\",\"type\":\"object\",\"properties\":{\"b\":{\"title\":\"B\","
+        "\"default\":{\"a\":\"foo\"},\"allOf\":[{\"$ref\":\"#/definitions/Foo\"}]}}},"
+        "\"Baz\":{\"title\":\"Baz\",\"type\":\"object\",\"properties\":{\"c\":{\"$ref\":\"#/definitions/Bar\"}}}},"
+        "\"properties\":{\"d\":{\"$ref\":\"#/definitions/Baz\"}},\"required\":[\"d\"]}";
+    s = allof_compile(pyd_model, err, sizeof(err));
+    if (!s) { fprintf(stderr, "R2.18.1 pydantic nested model: %s\n", err); assert(0); }
+    assert(allof_doc(s, "{\"d\":{\"c\":{\"b\":{\"a\":\"x\"}}}}"));
+    assert(allof_doc(s, "{\"d\":{}}"));
+    assert(!allof_doc(s, "{\"d\":{\"c\":{\"b\":{}}}}"));                  // Foo's required a holds
+    assert(!allof_doc(s, "{\"d\":{\"c\":{\"b\":{\"a\":1}}}}"));
+    schema_free(s);
+
+    // m5: a sibling that validates keeps the node as written, and refused
+    s = allof_compile("{\"type\":\"object\",\"properties\":{\"x\":{\"maxLength\":3,"
+                      "\"allOf\":[{\"type\":\"string\"}]}}}", err, sizeof(err));
+    if (s) {
+        fprintf(stderr, "R2.18.1 m5: a maxLength beside a one-member allOf compiled; \"abcd\" %s\n",
+                allof_doc(s, "{\"x\":\"abcd\"}") ? "admitted" : "refused");
+        assert(0);
+    }
+    assert(strstr(err, "allOf"));
+
+    // zod-to-json-schema 3.25.2's .and() (two members that each constrain): refused by
+    // name, and the words say what is supported
+    s = allof_compile("{\"allOf\":[{\"properties\":{\"foo\":{\"type\":\"string\"}},\"required\":[\"foo\"],"
+                      "\"type\":\"object\"},{\"properties\":{\"bar\":{\"type\":\"string\"}},\"required\":[\"bar\"],"
+                      "\"type\":\"object\"}],\"unevaluatedProperties\":false}", err, sizeof(err));
+    assert(s == NULL);
+    if (!strstr(err, "allOf") || !strstr(err, "string") || !strstr(err, "annotations")) {
+        fprintf(stderr, "R2.18.1 .and(): the refusal does not say what is supported: %s\n", err);
+        assert(0);
+    }
+
+    // members that constrain nothing are dropped: true, annotations only, a $ref to annotations
+    s = allof_compile("{\"description\":\"d\",\"definitions\":{\"N\":{\"title\":\"n\"}},"
+                      "\"allOf\":[true,{\"title\":\"t\"},{\"$ref\":\"#/definitions/N\"},"
+                      "{\"type\":\"integer\",\"maximum\":3}]}", err, sizeof(err));
+    if (!s) { fprintf(stderr, "R2.18.1 trivial members: %s\n", err); assert(0); }
+    assert(allof_doc(s, "3") && !allof_doc(s, "4") && !allof_doc(s, "\"x\""));
+    schema_free(s);
+    // none left: any value
+    s = allof_compile("{\"title\":\"t\",\"allOf\":[true,{\"description\":\"x\"}]}", err, sizeof(err));
+    assert(s != NULL);
+    assert(allof_doc(s, "\"s\"") && allof_doc(s, "1"));
+    schema_free(s);
+    // one member that is false: the node is false, which admits nothing
+    s = allof_compile("{\"title\":\"t\",\"allOf\":[false]}", err, sizeof(err));
+    assert(s == NULL && strstr(err, "false"));
+    // nested, and any type: a string member keeps its own bounds
+    s = allof_compile("{\"allOf\":[{\"allOf\":[{\"type\":\"string\",\"maxLength\":2}],\"title\":\"in\"}]}",
+                      err, sizeof(err));
+    if (!s) { fprintf(stderr, "R2.18.1 nested: %s\n", err); assert(0); }
+    assert(allof_doc(s, "\"ab\"") && !allof_doc(s, "\"abc\""));
+    schema_free(s);
+
+    // the tool path sees the same schema (refd_init resolves tools before every native grammar)
+    const char *tools_src =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"pick\",\"parameters\":{\"type\":\"object\","
+        "\"definitions\":{\"E\":{\"type\":\"string\",\"enum\":[\"a\",\"b\"]}},"
+        "\"properties\":{\"k\":{\"title\":\"K\",\"description\":\"which\","
+        "\"allOf\":[{\"$ref\":\"#/definitions/E\"}]}},\"required\":[\"k\"]}}}]";
+    jv *tools = json_parse(tools_src, strlen(tools_src));
+    assert(tools != NULL);
+    snode *t = schema_compile_atem_tools(tools, err, sizeof(err));
+    if (!t) { fprintf(stderr, "R2.18.1 tool path: %s\n", err); assert(0); }
+    schema_free(t);
+    jv_free(tools);
+    printf("ok: an allOf that wraps one schema compiles as that schema (pydantic 1.10.27's two "
+           "shapes, the tool path); a validating sibling and two constraining members stay refused\n");
+}
+
 // Negated classes and escapes inside a set: the enforced set is exactly the
 // declared one. `[^\n\r]` admits every character but the two newlines; a
 // control character never appears in a JSON string unescaped, so the class
@@ -1442,19 +1564,26 @@ static void test_schema_exclusive_bounds_survive_flush_to_zero(void) {
 }
 
 static void test_schema_number_bounds_reject_dead_minus_and_close_in_bounds(void) {
-    // minus under a non-negative minimum is a dead prefix: no suffix can ever
-    // satisfy the bound, so the first byte must be refused (the integer path
-    // already does) instead of stalling with every token masked at the end
-    const char *src = "{\"type\":\"number\",\"minimum\":0}";
-    jv *j = json_parse(src, strlen(src));
+    // a minus under a positive minimum, or an exclusive 0, is a dead prefix:
+    // no suffix can ever satisfy the bound, so the first byte must be refused
+    // (the integer path already does) instead of stalling with every token
+    // masked at the end. Under an inclusive 0 it is not: -0 is 0 (R2.19).
+    const char *dead[] = { "{\"type\":\"number\",\"minimum\":2}",
+                           "{\"type\":\"number\",\"exclusiveMinimum\":0}" };
+    jv *j;
     char err[128];
-    snode *schema = schema_compile(j, err, sizeof(err));
-    assert(schema != NULL);
-    sval v; sval_init(&v, schema);
-    assert(!sval_feed(&v, "-", 1));
-    sval ok; sval_init(&ok, schema);
-    assert(sval_feed(&ok, "3.5", 3));
-    schema_free(schema); jv_free(j);
+    snode *schema;
+    for (size_t i = 0; i < sizeof(dead) / sizeof(*dead); i++) {
+        j = json_parse(dead[i], strlen(dead[i]));
+        schema = schema_compile(j, err, sizeof(err));
+        assert(schema != NULL);
+        sval v; sval_init(&v, schema);
+        assert(!sval_feed(&v, "-", 1));
+        sval ok; sval_init(&ok, schema);
+        assert(sval_feed(&ok, "3.5", 3));
+        schema_free(schema); jv_free(j);
+    }
+    const char *src;
 
     // a bounded number filled in by force-close stays INSIDE its bounds —
     // both the untouched-value close path and the required-property
@@ -1481,6 +1610,559 @@ static void test_schema_number_bounds_reject_dead_minus_and_close_in_bounds(void
         jv_free(parsed);
     }
     schema_free(schema); jv_free(j);
+}
+
+
+// R2.19: a bounded number's prefix is admitted only while some completion of
+// it is a number inside the bounds. The byte that would leave none is refused
+// where it is written (the exponent digit of 1e+36 under maximum 1, the first
+// digit of a mantissa no scale can bring inside), never at the terminator
+// after every token has been masked; and a forced close of any admitted
+// prefix is a value inside the bounds.
+static snode *num_schema(const char *src) {
+    jv *j = json_parse(src, strlen(src));
+    assert(j != NULL);
+    char err[256];
+    snode *n = schema_compile(j, err, sizeof(err));
+    jv_free(j);
+    assert(n != NULL);
+    return n;
+}
+static bool num_admits(const snode *s, const char *prefix) {
+    sval v; sval_init(&v, s);
+    return sval_feed(&v, prefix, (int)strlen(prefix));
+}
+// a whole document: the validator says done, once a top-level number has its
+// terminator (which the finished document then refuses)
+static bool num_valid(const snode *s, const char *doc) {
+    sval v; sval_init(&v, s);
+    if (!sval_feed(&v, doc, (int)strlen(doc))) return false;
+    if (!v.done) (void)sval_feed(&v, " ", 1);
+    return v.done;
+}
+static bool num_closes_valid(const snode *s, const char *prefix) {
+    sval v; sval_init(&v, s);
+    if (!sval_feed(&v, prefix, (int)strlen(prefix))) return false;
+    char suffix[256];
+    int k = sval_close(&v, suffix, sizeof(suffix));
+    if (k < 0) return false;
+    char full[512];
+    snprintf(full, sizeof(full), "%s%.*s", prefix, k, suffix);
+    return num_valid(s, full);
+}
+
+static void test_schema_number_prefix_stays_completable(void) {
+    struct { const char *schema, *prefix; bool admitted; } cases[] = {
+        // R2.19's report: maximum 1 admitted 1e+36, then masked every token
+        { "{\"type\":\"number\",\"maximum\":1}", "1e+36", false },
+        { "{\"type\":\"number\",\"maximum\":1}", "1e+3", false },     // e+3 and longer are all past 1
+        { "{\"type\":\"number\",\"maximum\":1}", "1e+", true },       // e+0 is 1
+        { "{\"type\":\"number\",\"maximum\":1}", "1e+0", true },
+        { "{\"type\":\"number\",\"maximum\":1}", "1e+00", true },
+        { "{\"type\":\"number\",\"maximum\":1}", "1e-36", true },
+        { "{\"type\":\"number\",\"maximum\":1}", "1e", true },
+        // the corpus's shape: 2.74e+57 over a maximum of 10
+        { "{\"type\":\"number\",\"maximum\":10}", "2.74e+5", false },
+        { "{\"type\":\"number\",\"maximum\":10}", "2.74e+1", false },
+        { "{\"type\":\"number\",\"maximum\":10}", "2.74e+0", true },
+        // the lower bound, from below: 4e-50 under minimum 1e-9
+        { "{\"type\":\"number\",\"minimum\":1e-9}", "4e-50", false },
+        { "{\"type\":\"number\",\"minimum\":1e-9}", "4e-10", false },
+        { "{\"type\":\"number\",\"minimum\":1e-9}", "4e-9", true },
+        { "{\"type\":\"number\",\"minimum\":1e-9}", "4e-5", true },
+        // negative numbers, both bounds
+        { "{\"type\":\"number\",\"minimum\":-1}", "-1e+3", false },
+        { "{\"type\":\"number\",\"minimum\":-1}", "-1e-3", true },
+        { "{\"type\":\"number\",\"maximum\":-1}", "-1e-3", false },   // -0.001 is above -1
+        { "{\"type\":\"number\",\"maximum\":-1}", "-1e-0", true },
+        { "{\"type\":\"number\",\"maximum\":-1}", "-1e-", true },
+        { "{\"type\":\"number\",\"maximum\":-1}", "5", false },       // no positive number is at most -1
+        { "{\"type\":\"number\",\"maximum\":-1}", "0", false },
+        { "{\"type\":\"number\",\"maximum\":-1}", "-5", true },
+        // exclusive bounds
+        { "{\"type\":\"number\",\"exclusiveMaximum\":1}", "1e+0", false },
+        { "{\"type\":\"number\",\"exclusiveMaximum\":1}", "1e-", true },
+        { "{\"type\":\"number\",\"exclusiveMaximum\":1}", "1", true },  // 1e-1 is below it
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0}", "0", true },  // 0.5 is above it
+        { "{\"type\":\"number\",\"exclusiveMinimum\":0}", "0e", false },// 0 times any scale is 0
+        { "{\"type\":\"number\",\"exclusiveMaximum\":0}", "0", false },
+        { "{\"type\":\"number\",\"exclusiveMaximum\":0}", "-", true },
+        // a narrow interval: the mantissa's first digits decide, at any scale
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "1", false },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "7", false },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "5", true },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "6", true },  // 6e-1 is 0.6
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "0.59", true },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "0.61", false },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "5e-2", false },
+        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "55e-2", true },
+        // zero
+        { "{\"type\":\"number\",\"maximum\":0}", "0", true },
+        { "{\"type\":\"number\",\"maximum\":0}", "0.0", true },
+        { "{\"type\":\"number\",\"maximum\":0}", "0.1", false },
+        { "{\"type\":\"number\",\"maximum\":0}", "1", false },
+        { "{\"type\":\"number\",\"maximum\":0}", "-1", true },
+        // inside an object, where the terminator is a brace
+        { "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\",\"maximum\":1}},\"required\":[\"x\"]}", "{\"x\":1e+36", false },
+        { "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\",\"maximum\":1}},\"required\":[\"x\"]}", "{\"x\":1e-36", true },
+        // unbounded: only what json_parse cannot read is refused
+        { "{\"type\":\"number\"}", "1e+999", false },
+        { "{\"type\":\"number\"}", "1e+30", true },
+        // an integer admits no exponent in this grammar at all
+        { "{\"type\":\"integer\",\"maximum\":1000}", "1e3", false },
+    };
+    int admitted = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        snode *s = num_schema(cases[i].schema);
+        bool got = num_admits(s, cases[i].prefix);
+        if (got != cases[i].admitted) {
+            fprintf(stderr, "R2.19: %s with prefix %s: admitted %d, want %d\n",
+                    cases[i].schema, cases[i].prefix, got, cases[i].admitted);
+            assert(got == cases[i].admitted);
+        }
+        // an admitted prefix closes to a number inside the bounds
+        if (got) { admitted++; assert(num_closes_valid(s, cases[i].prefix)); }
+        schema_free(s);
+    }
+    assert(admitted > 10);
+
+    // A walk: random number bytes, each one a trial first, then a forced close.
+    // Every prefix the validator admits must close to a valid document; the
+    // walks must reach exponents, or the check says nothing about them.
+    const char *walk_schemas[] = {
+        "{\"type\":\"number\",\"maximum\":1}", "{\"type\":\"number\",\"minimum\":1e-9}",
+        "{\"type\":\"number\",\"minimum\":-1,\"maximum\":-0.5}", "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}",
+        "{\"type\":\"number\",\"exclusiveMinimum\":0,\"exclusiveMaximum\":1e-300}",
+        "{\"type\":\"number\",\"minimum\":1e15}", "{\"type\":\"number\",\"maximum\":-1e15}",
+        "{\"type\":\"number\",\"minimum\":123.456,\"maximum\":123.457}",
+    };
+    const char alphabet[] = "0123456789.eE+-";
+    unsigned long long rs = 0x2545F4914F6CDD1Dull;
+    int walks = 0, closed = 0, in_exp = 0;
+    for (size_t w = 0; w < sizeof(walk_schemas) / sizeof(*walk_schemas); w++) {
+        snode *s = num_schema(walk_schemas[w]);
+        for (int r = 0; r < 300; r++) {
+            sval v; sval_init(&v, s);
+            char doc[96]; int n = 0;
+            int len = 1 + (int)(rs % 12);
+            for (int k = 0; k < len; k++) {
+                bool moved = false;
+                for (int t = 0; t < 40 && !moved; t++) {
+                    rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17;
+                    char c = alphabet[rs % (sizeof(alphabet) - 1)];
+                    sval scratch;
+                    if (sval_trial(&v, &scratch, &c, 1)) {
+                        assert(sval_feed(&v, &c, 1));
+                        doc[n++] = c; moved = true;
+                    }
+                }
+                if (!moved) break;
+            }
+            doc[n] = 0;
+            if (!n) continue;      // no first byte landed: nothing was admitted
+            walks++;
+            if (strchr(doc, 'e') || strchr(doc, 'E')) in_exp++;
+            if (num_closes_valid(s, doc)) closed++;
+            else { fprintf(stderr, "R2.19 walk: %s admitted %s, which closes invalid\n", walk_schemas[w], doc); assert(0); }
+        }
+        schema_free(s);
+    }
+    assert(closed == walks && in_exp > walks / 10);
+    printf("ok: a bounded number's prefix stays completable (%zu cases, %d walks, %d through an exponent)\n",
+           sizeof(cases) / sizeof(*cases), walks, in_exp);
+}
+
+// R2.19, fable's read: the room. The validator keeps at most 95 bytes of a
+// number (number_put), so a completion must fit in what is left. A run of
+// digits the wide-interval shortcut admitted to the end left no room for the
+// exponent that brings it inside: every byte refused, the terminator out of
+// bounds, every token masked. Each run below must stop exactly where the
+// shortest completion stops fitting (never later, which stalls; never
+// earlier, which is narrower), and every prefix it admits must close inside.
+static void test_schema_number_prefix_fits_the_buffer(void) {
+    struct { const char *schema, *lead; char digit; int refused_at; } runs[] = {
+        // toward zero: 91 nines still take e-91 (95 bytes); 92 would need 96
+        { "{\"type\":\"number\",\"maximum\":1}", "", '9', 92 },
+        { "{\"type\":\"number\",\"minimum\":-1}", "-", '9', 92 },
+        // toward the largest (bounds are JSON-safe, so 1e15 is about as far
+        // as one goes): 0.111... takes e16, so 92 bytes are the most
+        { "{\"type\":\"number\",\"minimum\":1e15}", "0.", '1', 93 },
+        // zeros: 0. and 88 of them still take 1e104 (95 bytes); the 89th is
+        // refused at byte 91 (the earlier witness's runaway was this fraction)
+        { "{\"type\":\"number\",\"minimum\":1e15}", "0.", '0', 91 },
+        // two decades: 91 nines take e-89 (99.9...)
+        { "{\"type\":\"number\",\"minimum\":1,\"maximum\":100}", "", '9', 92 },
+        // unbounded: a complete spelling fills the buffer, number_put stops it
+        { "{\"type\":\"number\"}", "", '1', 96 },
+    };
+    for (size_t r = 0; r < sizeof(runs) / sizeof(*runs); r++) {
+        snode *s = num_schema(runs[r].schema);
+        char p[128];
+        snprintf(p, sizeof(p), "%s", runs[r].lead);
+        int len = (int)strlen(p), refused = 0;
+        while (len < 120) {
+            p[len] = runs[r].digit; p[len + 1] = 0;
+            if (!num_admits(s, p)) { refused = len + 1; break; }
+            len++;
+            if (!num_closes_valid(s, p)) {
+                fprintf(stderr, "R2.19 room: %s admitted a %d-byte prefix that closes invalid\n",
+                        runs[r].schema, len);
+                assert(0);
+            }
+        }
+        if (refused != runs[r].refused_at) {
+            fprintf(stderr, "R2.19 room: %s refused the run at byte %d, want %d\n",
+                    runs[r].schema, refused, runs[r].refused_at);
+            assert(refused == runs[r].refused_at);
+        }
+        schema_free(s);
+    }
+    // an incomplete spelling needs one more byte: a point or an exponent mark
+    // at the 95th byte has no room for its digit, bounded or not
+    const char *ends[] = { ".", "e", "E" };
+    const char *open_schemas[] = { "{\"type\":\"number\"}", "{\"type\":\"number\",\"minimum\":0}" };
+    for (size_t o = 0; o < sizeof(open_schemas) / sizeof(*open_schemas); o++) {
+        snode *s = num_schema(open_schemas[o]);
+        for (size_t e = 0; e < sizeof(ends) / sizeof(*ends); e++) {
+            char p[128];
+            memset(p, '1', 94);
+            snprintf(p + 94, sizeof(p) - 94, "%s", ends[e]);
+            if (num_admits(s, p)) {
+                fprintf(stderr, "R2.19 room: %s admitted a 95-byte prefix ending in %s\n", open_schemas[o], ends[e]);
+                assert(0);
+            }
+            snprintf(p + 93, sizeof(p) - 93, "%s", ends[e]);   // 94 bytes: its digit fits
+            if (!num_admits(s, p) || !num_closes_valid(s, p)) {
+                fprintf(stderr, "R2.19 room: %s: a 94-byte prefix ending in %s admitted %d, closes %d\n",
+                        open_schemas[o], ends[e], num_admits(s, p), num_closes_valid(s, p));
+                assert(0);
+            }
+        }
+        schema_free(s);
+    }
+    printf("ok: a number's prefix leaves room for its completion (%zu runs to the buffer's end)\n",
+           sizeof(runs) / sizeof(*runs));
+}
+
+// R2.19: every prefix this validator has decided wrong, in one table, each
+// with the answer the exact decimal decision gives on every platform and in
+// every float mode. Earlier witnesses built their candidates with doubles
+// (pow and log10, then correctly rounded targets) and refused prefixes that
+// had completions: on a bound under gcc's x86 build, past 16 significant
+// digits, after a long fraction of zeros, and in codex's read of 4aac6431
+// (the first five groups). An admitted prefix must also close inside.
+static void test_schema_number_cases_it_got_wrong(void) {
+#define NUMS(b) "{\"type\":\"number\"," b "}"
+    struct { const char *schema, *prefix; bool admit; } cases[] = {
+        // codex 1: 1 completes to 1.1, and 0 to 0.11e1
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "1", true },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "0", true },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "1.15", true },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "12e-1", true },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "2", false },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "1.3", false },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "13e-1", false },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "-", false },
+        // codex 2: 4.9999999999999999e-1 reads as exactly 0.5
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "4", true },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "4.99999999999999", true },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "4.9999999999999999", true },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "0.50000000000000005", true },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "0.5000000000000001", false },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "4.8", false },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "6", false },
+        // codex 3: 0. and 92 zeros take a 1 in the 95th byte
+        { NUMS("\"exclusiveMinimum\":0,\"maximum\":1"),
+          "0.00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", true },
+        { NUMS("\"exclusiveMinimum\":0,\"maximum\":1"),
+          "0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", false },
+        // codex 4: 49e-309 sits between the strict bounds in any float mode
+        { NUMS("\"exclusiveMinimum\":4.81e-308,\"exclusiveMaximum\":4.99e-308"), "4", true },
+        { NUMS("\"exclusiveMinimum\":4.81e-308,\"exclusiveMaximum\":4.99e-308"), "49e-309", true },
+        { NUMS("\"exclusiveMinimum\":4.81e-308,\"exclusiveMaximum\":4.99e-308"), "4.8", true },
+        { NUMS("\"exclusiveMinimum\":4.81e-308,\"exclusiveMaximum\":4.99e-308"), "5", false },
+        { NUMS("\"exclusiveMinimum\":4.81e-308,\"exclusiveMaximum\":4.99e-308"), "4.81e-308", false },
+        // codex 5: 0 closes to 0.5e-299 whatever a compiler does with sqrt
+        { NUMS("\"exclusiveMinimum\":4e-300,\"exclusiveMaximum\":6e-300"), "0", true },
+        { NUMS("\"exclusiveMinimum\":4e-300,\"exclusiveMaximum\":6e-300"), "0.5e-299", true },
+        { NUMS("\"exclusiveMinimum\":4e-300,\"exclusiveMaximum\":6e-300"), "0.4", true },
+        { NUMS("\"exclusiveMinimum\":4e-300,\"exclusiveMaximum\":6e-300"), "0.6e-299", false },
+        // completions exactly on a bound (gcc's x86 build refused them)
+        { NUMS("\"minimum\":1e15,\"maximum\":9e15"), "9", true },
+        { NUMS("\"minimum\":1e15,\"maximum\":9e15"), "0.9", true },
+        { NUMS("\"minimum\":1e15,\"maximum\":9e15"), "0.000009", true },
+        { NUMS("\"minimum\":1e15,\"maximum\":9e15"), "1000000000000000000", true },
+        { NUMS("\"minimum\":-9e15,\"maximum\":-1e15"), "-9", true },
+        { NUMS("\"minimum\":-9e15,\"maximum\":-1e15"), "-0.9", true },
+        { NUMS("\"maximum\":1e-300"), "1000000000", true },
+        { NUMS("\"maximum\":1e-300"), "10000000000000000000000000", true },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.6"), "6", true },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.6"), "0.6", true },
+        // a 17-digit significand (no double target spelled it)
+        { NUMS("\"minimum\":1e15,\"maximum\":9e15"), "19999999999999997", true },
+        // the smallest normal, not 1e-300, is where the doubles' range ends
+        { NUMS("\"maximum\":1e-300"), "0.2", true },
+        // a minus under an inclusive minimum of 0: -0 is 0 (the oracle's first find)
+        { NUMS("\"minimum\":0"), "-", true },
+        { NUMS("\"minimum\":0,\"maximum\":1"), "-0.0", true },
+        { NUMS("\"exclusiveMinimum\":0"), "-", false },
+        { NUMS("\"minimum\":1e-9"), "-", false },
+        // R2.19's subnormal rule, both signs: a value in 0 < |x| < 2^-1022 is
+        // refused on every platform, so only digits that reach 2^-1022 itself
+        // (2.2250738585072013830...e-308) complete a point interval there
+        { NUMS("\"minimum\":2.2250738585072014e-308,\"maximum\":2.2250738585072014e-308"), "2.2250738585072013", true },
+        { NUMS("\"minimum\":2.2250738585072014e-308,\"maximum\":2.2250738585072014e-308"), "2.2250738585072012", false },
+        { NUMS("\"minimum\":-2.2250738585072014e-308,\"maximum\":-2.2250738585072014e-308"), "-2.2250738585072013", true },
+        { NUMS("\"minimum\":-2.2250738585072014e-308,\"maximum\":-2.2250738585072014e-308"), "-2.2250738585072012", false },
+    };
+    int admitted = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        snode *s = num_schema(cases[i].schema);
+        bool got = num_admits(s, cases[i].prefix);
+        if (got != cases[i].admit || (got && !num_closes_valid(s, cases[i].prefix))) {
+            fprintf(stderr, "R2.19 case: %s with prefix %s: admitted %d (want %d), closes inside %d\n",
+                    cases[i].schema, cases[i].prefix, got, cases[i].admit, got && num_closes_valid(s, cases[i].prefix));
+            assert(0);
+        }
+        admitted += got;
+        schema_free(s);
+    }
+    // the subnormal rule on whole documents, both signs: refused whether the
+    // parser reports ERANGE (glibc), rounds up to 2^-1022 (macOS: 2.22...12e-308),
+    // or a flushing mode would compare what it returns as 0
+    struct { const char *schema, *doc; bool ok; } docs[] = {
+        { NUMS("\"maximum\":1"), "1e-310", false },
+        { NUMS("\"maximum\":1"), "4.9e-324", false },
+        { NUMS("\"maximum\":1"), "2.2250738585072012e-308", false },
+        { NUMS("\"maximum\":1"), "1e-400", false },
+        { NUMS("\"maximum\":1"), "2.2250738585072014e-308", true },
+        { NUMS("\"maximum\":1"), "0e-400", true },
+        { NUMS("\"maximum\":1"), "0", true },
+        { NUMS("\"minimum\":-1"), "-1e-310", false },
+        { NUMS("\"minimum\":-1"), "-4.9e-324", false },
+        { NUMS("\"minimum\":-1"), "-2.2250738585072012e-308", false },
+        { NUMS("\"minimum\":-1"), "-1e-400", false },
+        { NUMS("\"minimum\":-1"), "-2.2250738585072014e-308", true },
+        { NUMS("\"minimum\":-1"), "-0", true },
+    };
+    for (size_t i = 0; i < sizeof(docs) / sizeof(*docs); i++) {
+        snode *s = num_schema(docs[i].schema);
+        if (num_valid(s, docs[i].doc) != docs[i].ok) {
+            fprintf(stderr, "R2.19 subnormal rule: %s accepts %s: %d, want %d\n",
+                    docs[i].schema, docs[i].doc, !docs[i].ok, docs[i].ok);
+            assert(0);
+        }
+        schema_free(s);
+    }
+    // codex's read of 948c0cdb, 3: an UNBOUNDED number keeps the parser's
+    // verdict, and admission, the terminator and the close agree on it. The
+    // subnormal rule had reached the terminator alone, so on macOS (which
+    // reads the top of the band as 2^-1022) 2.2250738585072012e-308 was
+    // admitted to its last byte, refused at the end and left as it was
+    const char *unbounded[] = { "2.2250738585072012e-308", "-2.2250738585072012e-308",
+                                "1e-310", "-1e-310", "2.2250738585072014e-308" };
+    for (size_t i = 0; i < sizeof(unbounded) / sizeof(*unbounded); i++) {
+        snode *s = num_schema(NUMS("\"title\":\"unbounded\""));
+        char arr[64];
+        snprintf(arr, sizeof(arr), "[%s]", unbounded[i]);
+        jv *parsed = json_parse(arr, strlen(arr));
+        bool parses = parsed != NULL, admits = num_admits(s, unbounded[i]);
+        bool valid = num_valid(s, unbounded[i]), closes = admits && num_closes_valid(s, unbounded[i]);
+        jv_free(parsed);
+        if (admits != parses || valid != parses || (admits && !closes)) {
+            fprintf(stderr, "R2.19 unbounded %s: the parser reads it %d, admitted %d, the terminator %d, "
+                    "closes valid %d\n", unbounded[i], parses, admits, valid, closes);
+            assert(0);
+        }
+        schema_free(s);
+    }
+    // codex's read of 948c0cdb, 4: an interval the subnormal rule leaves empty
+    // does not compile, at both signs and with either end strict; one that
+    // keeps 0 does
+    const char *emptied[] = {
+        NUMS("\"exclusiveMinimum\":0,\"exclusiveMaximum\":2.2250738585072014e-308"),
+        NUMS("\"exclusiveMinimum\":-2.2250738585072014e-308,\"exclusiveMaximum\":0"),
+        ("{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\",\"exclusiveMinimum\":0,"
+         "\"exclusiveMaximum\":2.2250738585072014e-308}},\"required\":[\"x\"]}"),
+    };
+    for (size_t i = 0; i < sizeof(emptied) / sizeof(*emptied); i++) {
+        jv *j = json_parse(emptied[i], strlen(emptied[i]));
+        assert(j != NULL);   // the bounds are read (a refused reader would compile "anything")
+        char err[192];
+        snode *s = schema_compile(j, err, sizeof(err));
+        if (s || !strstr(err, "empty number bounds")) {
+            fprintf(stderr, "R2.19: %s compiled (or refused for another reason: %s), "
+                    "though no value in it is readable\n", emptied[i], s ? "-" : err);
+            assert(0);
+        }
+        jv_free(j);
+    }
+    {
+        snode *s = num_schema(NUMS("\"exclusiveMinimum\":-2.2250738585072014e-308,"
+                                   "\"exclusiveMaximum\":2.2250738585072014e-308"));
+        assert(num_valid(s, "0") && num_valid(s, "-0") && !num_valid(s, "1e-310"));
+        schema_free(s);
+    }
+    // codex's read of 948c0cdb, 5: the terminator agrees with the decision in a
+    // directed rounding mode too (the engine never sets one; the answer must not
+    // depend on it): 0.4999999999999999999999 reads as 0.5 to nearest, and the
+    // decision admits it under [0.5, 0.5]
+    const int modes[] = { FE_DOWNWARD, FE_TOWARDZERO, FE_UPWARD };
+    for (size_t m = 0; m < sizeof(modes) / sizeof(*modes); m++) {
+        snode *s = num_schema(NUMS("\"minimum\":0.5,\"maximum\":0.5"));
+        int was = fegetround();
+        fesetround(modes[m]);
+        bool admits = num_admits(s, "0.4999999999999999999999");
+        bool valid = num_valid(s, "0.4999999999999999999999");
+        bool high = num_valid(s, "0.50000000000000005");
+        fesetround(was);
+        if (!admits || !valid || !high) {
+            fprintf(stderr, "R2.19 rounding mode %d: 0.4999999999999999999999 admitted %d, valid %d; "
+                    "0.50000000000000005 valid %d\n", modes[m], admits, valid, high);
+            assert(0);
+        }
+        schema_free(s);
+    }
+    // codex's read of 9495a308, 1: under a bound the parser's 1.7e308 limit
+    // is decided by the exact predicate in every rounding mode, at the
+    // exponent digit too. 1.6999999999999998e308 lies under the limit; upward
+    // rounding reads it as 1.7e308, which the parser's own gate refused at
+    // its last digit (the mirror under downward rounding)
+    struct { const char *schema, *doc; int mode; } edge[] = {
+        { NUMS("\"minimum\":0"), "1.6999999999999998e308", FE_UPWARD },
+        { NUMS("\"minimum\":0"), "1.6999999999999998e308", FE_TONEAREST },
+        { NUMS("\"maximum\":0"), "-1.6999999999999998e308", FE_DOWNWARD },
+        { NUMS("\"maximum\":0"), "-1.6999999999999998e308", FE_TONEAREST },
+    };
+    for (size_t i = 0; i < sizeof(edge) / sizeof(*edge); i++) {
+        snode *s = num_schema(edge[i].schema);
+        int was = fegetround();
+        fesetround(edge[i].mode);
+        bool admits = num_admits(s, edge[i].doc), valid = num_valid(s, edge[i].doc);
+        fesetround(was);
+        if (!admits || !valid) {
+            fprintf(stderr, "R2.19 limit edge, rounding mode %d: %s %s admitted %d, valid %d\n",
+                    edge[i].mode, edge[i].schema, edge[i].doc, admits, valid);
+            assert(0);
+        }
+        schema_free(s);
+    }
+    // codex's read of 9495a308, 2: an unbounded number is main's path, with no
+    // cached verdict: a terminator after a rounding-mode change asks the parser
+    // again. The first validator finishes the spelling to nearest; the second
+    // reads the same spelling to nearest, then meets its terminator upward
+    {
+        snode *s = num_schema(NUMS("\"title\":\"unbounded\""));
+        const char *w = "1.6999999999999998e308";
+        assert(num_valid(s, w));                         // to nearest: under the limit
+        sval v; sval_init(&v, s);
+        assert(sval_feed(&v, w, (int)strlen(w)));
+        int was = fegetround();
+        fesetround(FE_UPWARD);
+        char arr[64];
+        snprintf(arr, sizeof(arr), "[%s]", w);
+        jv *parsed = json_parse(arr, strlen(arr));       // the parser, upward
+        bool parses = parsed != NULL;
+        (void)sval_feed(&v, " ", 1);                     // a top-level number ends on it
+        bool ends = v.done;
+        fesetround(was);
+        jv_free(parsed);
+        if (ends != parses) {
+            fprintf(stderr, "R2.19 unbounded after a mode change: the terminator %d, the parser %d\n", ends, parses);
+            assert(0);
+        }
+        schema_free(s);
+    }
+#undef NUMS
+    printf("ok: every number prefix this validator decided wrong is decided exactly "
+           "(%zu prefixes, %d admitted; %zu documents for the subnormal rule)\n",
+           sizeof(cases) / sizeof(*cases), admitted, sizeof(docs) / sizeof(*docs));
+}
+
+// R2.19: the decision's work per byte is bounded, as WORK, so the check
+// cannot flake on a loaded host. An earlier witness ran away here (a long
+// fraction of zeros under a large minimum: one trial over a minute) and the
+// next one tried up to 110 candidate spellings a byte. The unit now is one
+// digit pair compared or one spelling-family member or exponent width tried
+// (schema_witness_work); every loop is bounded by the 95 bytes number_put
+// keeps. The bound, from the code: the window's two edge scales from two
+// digit comparisons (2 x 95), the inner scales from at most two families of
+// 96 members (192), and at each edge scale those members again (192) plus
+// three 95-digit comparisons (285): 190 + 192 + 2 x 477 = 1336. Inside an
+// exponent it is 2 x 95 + 2 signs x 10 widths. The bounds' exact expansions
+// (up to 768 digits) are built once per bounds, which the count of them
+// shows: two per schema and the smallest normal once.
+static void test_schema_number_witness_work_is_bounded(void) {
+    enum { BOUND = 2 * 95 + 2 * 96 + 2 * (2 * 96 + 3 * 95) };
+    const char *schemas[] = {
+        "{\"type\":\"number\",\"minimum\":1e15}",
+        "{\"type\":\"number\",\"exclusiveMinimum\":1e15}",
+        "{\"type\":\"number\",\"maximum\":-1e15}",
+        "{\"type\":\"number\",\"exclusiveMaximum\":-1e15}",
+        "{\"type\":\"number\",\"minimum\":1e15,\"maximum\":9e15}",
+        "{\"type\":\"number\",\"minimum\":-9e15,\"maximum\":-1e15}",
+        "{\"type\":\"number\",\"maximum\":1e-300}",
+        "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}",
+    };
+    enum { NS = sizeof(schemas) / sizeof(*schemas) };
+    const char *leads[] = { "0.", "-0.", "0.000", "1", "9", "-9" };
+    const char fills[] = "019", alpha[] = "0123456789.eE+-";
+    unsigned long worst = 0, expansions0 = schema_number_expansions();
+    long trials = 0;
+    // every trial's verdict, folded in order: the admitted set over these seeds.
+    // The constant below is the same on macOS, Linux and Windows, so the three
+    // platforms' CI jobs hold each other (a replay on another platform needs
+    // the same masks); gcc's x86 build once admitted 9,525 fewer bytes here.
+    uint64_t admitted_hash = 0xcbf29ce484222325ull;
+    char worst_at[128] = "";
+    clock_t t0 = clock();
+    for (size_t si = 0; si < NS; si++) {
+        snode *s = num_schema(schemas[si]);
+        for (size_t li = 0; li < sizeof(leads) / sizeof(*leads); li++)
+            for (const char *f = fills; *f; f++) {
+                sval v; sval_init(&v, s);
+                char p[128];
+                int n = (int)strlen(leads[li]);
+                if (!sval_feed(&v, leads[li], n)) continue;
+                memcpy(p, leads[li], (size_t)n);
+                for (; n < 95; n++) {
+                    for (const char *b = alpha; *b; b++) {
+                        sval t;
+                        bool ok = sval_trial(&v, &t, b, 1);
+                        admitted_hash = (admitted_hash ^ (ok ? 0x31u : 0x30u)) * 0x100000001b3ull;
+                        unsigned long w = schema_witness_work();
+                        trials++;
+                        if (w > worst) {
+                            worst = w;
+                            snprintf(worst_at, sizeof(worst_at), "%s: %.*s%c (%d bytes)",
+                                     schemas[si], n, p, *b, n + 1);
+                        }
+                    }
+                    if (!sval_feed(&v, f, 1)) break;
+                    p[n] = *f;
+                }
+            }
+        schema_free(s);
+    }
+    double cpu = (double)(clock() - t0) / CLOCKS_PER_SEC;
+    unsigned long expansions = schema_number_expansions() - expansions0;
+    if (worst > BOUND || expansions > 2 * NS + 1) {
+        fprintf(stderr, "R2.19 decision work: %lu units in one trial (bound %d), at %s; "
+                "%lu bound expansions for %d schemas\n", worst, BOUND, worst_at, expansions, (int)NS);
+        assert(worst <= BOUND && expansions <= 2 * NS + 1);
+    }
+    const long TRIALS = 98025;
+    const uint64_t ADMITTED = 0x571622e18b25a814ull;
+    if (trials != TRIALS || admitted_hash != ADMITTED) {
+        fprintf(stderr, "R2.19 admitted set: %ld trials, hash %016llx; every platform must give "
+                "%ld and %016llx\n", trials, (unsigned long long)admitted_hash,
+                TRIALS, (unsigned long long)ADMITTED);
+        assert(0);
+    }
+    printf("ok: the number decision's work is bounded (%ld trials, at most %lu units a byte of %d, "
+           "at %s; %lu expansions; admitted set %016llx; note: %.2f s of CPU, %.2f us a trial here)\n",
+           trials, worst, BOUND, worst_at, expansions, (unsigned long long)admitted_hash, cpu,
+           trials ? cpu * 1e6 / (double)trials : 0.0);
 }
 
 static void test_schema_merges_enum_and_const_anyof(void) {
@@ -4108,9 +4790,14 @@ int main(void) {
     test_schema_segment_classes_mean_what_ecma_means();
     test_schema_ecma_cases_through_the_validator();
     test_schema_allof_of_string_patterns();
+    test_schema_allof_one_member_collapse();
     test_schema_negated_and_escaped_classes();
     test_schema_number_bounds_reject_dead_minus_and_close_in_bounds();
     test_schema_exclusive_bounds_survive_flush_to_zero();
+    test_schema_number_prefix_stays_completable();
+    test_schema_number_prefix_fits_the_buffer();
+    test_schema_number_witness_work_is_bounded();
+    test_schema_number_cases_it_got_wrong();
     test_schema_merges_enum_and_const_anyof();
     test_dump_keeps_integer_literals();
     test_schema_enum_keeps_a_large_integer();
