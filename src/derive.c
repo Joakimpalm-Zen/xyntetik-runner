@@ -25,6 +25,7 @@
 #include "runner.h"
 #include <ctype.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,10 +82,25 @@ typedef struct {
     long long held_bytes;     // what those tensors take at the top rung
 } sized_result;
 
+// A 95% interval for the two numbers the bar is stated on (R4.46). A mean
+// over a few hundred positions with a heavy tail can sit on either side of
+// the bar by chance, so the verdict is read from the interval, not the point.
+typedef struct {
+    bool have;                 // the reference result had per-position rows
+    bool have_mq;              // and at least one margin-qualified position
+    int block;                 // the bootstrap's block length, in scored positions
+    double kld_lo, kld_hi, mq_lo, mq_hi;
+} bar_ci;
+
+enum { BAR_FAIL = 0, BAR_PASS = 1, BAR_NOT_DECIDED = 2 };
+#define BOOT_SEED 1
+#define BOOT_RESAMPLES 10000
+
 typedef struct {
     int positions, qualified;
     double mean_kld, median_kld, max_kld, top1_pct, mq_top1_pct;
     bool have_median, have_qualified;
+    bar_ci ci;
     const char *reference_class;    // publisher reference only
     const char *reference_dtype;    // its arithmetic, as gold-logits reported it
 } derive_measure;
@@ -127,7 +143,8 @@ static void derive_usage(FILE *f) {
         "  --license ID   the licence of a parent that declares no general.license\n"
         "                 (its source's terms; refused if the parent declares another)\n"
         "  --corpus FILE  the text (default tests/fixtures/gold-corpus-2k.txt)\n"
-        "  --window S:T:N positions S + n*T for n < N (default 8:15:300)\n"
+        "  --window S:T:N positions S + n*T for n < N (default 8:3:1500; the records\n"
+        "                 before 1.20 used 8:15:300, the same text)\n"
         "  -c N, -t N, --gpu X  passed to the score runs (--gpu default off)\n\n"
         "The parent must declare general.license: the card copies it.\n\n"
         "  runner derive --card-from OUT.derive.json [-o CARD.md]\n"
@@ -167,7 +184,11 @@ static bool parse_window(const char *s, derive_opts *o) {
 
 static int parse_args(int argc, char **argv, derive_opts *o) {
     memset(o, 0, sizeof *o);
-    o->start = 8; o->stride = 15; o->count = 300;
+    // every third position of the 4,510 tokens the earlier default, 8:15:300,
+    // already read: no forward more, an interval about 2.2 times narrower.
+    // Every position would have the reference hold 4,500 rows of the whole
+    // vocabulary (4.7 GB for 262,144 tokens), so that is left to --window
+    o->start = 8; o->stride = 3; o->count = 1500;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "-h") || !strcmp(a, "--help")) { derive_usage(stdout); return 0; }
@@ -513,6 +534,84 @@ static bool num_of(jv *obj, const char *key, double *out) {
     return true;
 }
 
+// splitmix64: the bootstrap's one stream, so the same rows give the same
+// draws on every run and every machine (the sums are floating point, so two
+// compilers may differ in an interval's last digits, never in its draws)
+static uint64_t boot_next(uint64_t *st) {
+    uint64_t z = (*st += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+// The 95% interval of mean KLD and of margin-qualified top-1 over n scored
+// positions in order: a circular block bootstrap, because neighbouring
+// positions of one text are not independent draws and resampling them one by
+// one would call the interval narrower than it is. The block is the smallest
+// b with b^3 >= n. Each of BOOT_RESAMPLES resamples draws block starts (value
+// mod n) until it holds n positions, the last block cut short; both numbers
+// come from the same draws. The interval is the 2.5th to the 97.5th
+// percentile: sorted[R*25/1000] to sorted[ceil(R*975/1000) - 1].
+// qual[i]: the reference's top two are more than 0.5 nats apart; hit[i]: a
+// qualified position the file got right.
+static bool bar_bootstrap(const double *kld, const unsigned char *qual, const unsigned char *hit,
+                          int n, bar_ci *ci) {
+    memset(ci, 0, sizeof *ci);
+    if (n < 1) return false;
+    double *means = malloc(sizeof(double) * BOOT_RESAMPLES);
+    double *mqs = malloc(sizeof(double) * BOOT_RESAMPLES);
+    if (!means || !mqs) { free(means); free(mqs); return false; }
+    int b = 1, nq = 0;
+    while ((long long)b * b * b < n) b++;
+    for (int i = 0; i < n; i++) nq += qual[i];
+    uint64_t st = BOOT_SEED;
+    for (int r = 0; r < BOOT_RESAMPLES; r++) {
+        double sum = 0;
+        long long q = 0, h = 0;
+        for (int filled = 0; filled < n;) {
+            int start = (int)(boot_next(&st) % (uint64_t)n);
+            int len = b < n - filled ? b : n - filled;
+            double blk = 0;
+            for (int k = 0; k < len; k++) {
+                int i = start + k < n ? start + k : start + k - n;
+                blk += kld[i];
+                q += qual[i];
+                h += hit[i];
+            }
+            sum += blk;
+            filled += len;
+        }
+        means[r] = sum / n;
+        mqs[r] = q ? 100.0 * (double)h / (double)q : 0.0;
+    }
+    qsort(means, BOOT_RESAMPLES, sizeof(double), cmp_double);
+    qsort(mqs, BOOT_RESAMPLES, sizeof(double), cmp_double);
+    int lo = BOOT_RESAMPLES * 25 / 1000, hi = (BOOT_RESAMPLES * 975 + 999) / 1000 - 1;
+    ci->have = true;
+    ci->have_mq = nq > 0;
+    ci->block = b;
+    ci->kld_lo = means[lo]; ci->kld_hi = means[hi];
+    ci->mq_lo = mqs[lo]; ci->mq_hi = mqs[hi];
+    free(means); free(mqs);
+    return true;
+}
+
+// Pass only when the whole interval is inside the bar, fail only when one of
+// the two is wholly outside it, otherwise not decided. Without an interval (a
+// reference result with no rows) the point estimate is all there is.
+static int bar_verdict(double mean_kld, double mq_pct, const bar_ci *ci) {
+    if (!ci || !ci->have)
+        return mean_kld <= BAR_MEAN_KLD && mq_pct >= BAR_MQ_TOP1 ? BAR_PASS : BAR_FAIL;
+    double q_lo = ci->have_mq ? ci->mq_lo : mq_pct, q_hi = ci->have_mq ? ci->mq_hi : mq_pct;
+    if (ci->kld_hi <= BAR_MEAN_KLD && q_lo >= BAR_MQ_TOP1) return BAR_PASS;
+    if (ci->kld_lo > BAR_MEAN_KLD || q_hi < BAR_MQ_TOP1) return BAR_FAIL;
+    return BAR_NOT_DECIDED;
+}
+
+static const char *bar_verdict_name(int v) {
+    return v == BAR_PASS ? "pass" : v == BAR_FAIL ? "fail" : "not_decided";
+}
+
 static bool gold_measure(const derive_opts *o, const char *script, const char *file_score,
                          int n_special, const char *gold_out, derive_measure *m) {
     char s[16], t[16], c[16];
@@ -557,14 +656,25 @@ static bool gold_measure(const derive_opts *o, const char *script, const char *f
     jv *rows = jv_get(g, "rows");
     if (rows && rows->type == J_ARR && rows->n) {
         double *kl = malloc(sizeof(double) * (size_t)rows->n);
+        unsigned char *ql = malloc((size_t)rows->n), *ht = malloc((size_t)rows->n);
         int nk = 0;
         m->qualified = 0;
         for (int i = 0; i < rows->n; i++) {
-            if (jv_num(jv_get(rows->items[i], "gold_margin"), 0) > 0.5) m->qualified++;
+            bool q = jv_num(jv_get(rows->items[i], "gold_margin"), 0) > 0.5;
+            if (q) m->qualified++;
+            jv *sa = jv_get(rows->items[i], "a");
             double v;
-            if (kl && num_of(jv_get(rows->items[i], "a"), "kld", &v)) kl[nk++] = v;
+            if (kl && ql && ht && num_of(sa, "kld", &v)) {
+                kl[nk] = v;
+                ql[nk] = q;
+                ht[nk++] = q && jv_bool(jv_get(sa, "agree"), false);
+            }
         }
         m->have_qualified = true;
+        // the interval, over the rows in the order they were scored (before
+        // the sort for the median below)
+        if (kl && ql && ht && nk) bar_bootstrap(kl, ql, ht, nk, &m->ci);
+        free(ql); free(ht);
         if (kl && nk) {
             qsort(kl, (size_t)nk, sizeof(double), cmp_double);
             m->median_kld = nk % 2 ? kl[nk / 2] : 0.5 * (kl[nk / 2 - 1] + kl[nk / 2]);
@@ -1217,16 +1327,22 @@ static bool wilcoxon_signed_rank(const double *diffs, int n_all, double *z_out, 
             for (int i = 0; i < n; i++) ord[i] = i;
             g_absd = d;
             qsort(ord, (size_t)n, sizeof(int), cmp_absd);
+            double ties = 0;   // sum of t^3 - t over the groups of equal |difference|
             for (int i = 0; i < n;) {
                 int j = i;
                 while (j + 1 < n && fabs(d[ord[j + 1]]) == fabs(d[ord[i]])) j++;
-                double r = (i + j) / 2.0 + 1.0;
+                double r = (i + j) / 2.0 + 1.0, t = j - i + 1;
                 for (int k = i; k <= j; k++) rk[ord[k]] = r;
+                ties += t * t * t - t;
                 i = j + 1;
             }
             double w = 0;
             for (int i = 0; i < n; i++) if (d[i] > 0) w += rk[i];
-            double mu = n * (n + 1) / 4.0, sd = sqrt(n * (n + 1) * (2.0 * n + 1) / 24.0);
+            // tied ranks shrink the statistic's variance; without the term a
+            // set of equal differences reads less significant than it is
+            double mu = n * (n + 1) / 4.0;
+            double var = (double)n * (n + 1) * (2.0 * n + 1) / 24.0 - ties / 48.0;
+            double sd = var > 0 ? sqrt(var) : 0;
             if (sd > 0) {
                 *z_out = (w - mu) / sd;
                 *p_out = erfc(fabs(*z_out) / sqrt(2.0));
@@ -1274,6 +1390,8 @@ static bool compare_json(const char *ours_gold, const char *spec, sbuf *out) {
     int cap = orows->n, n = 0, qual = 0, b = 0, c = 0, top_o = 0, q_o = 0;
     double *diffs = malloc(sizeof(double) * (size_t)(cap ? cap : 1));
     double *tk = malloc(sizeof(double) * (size_t)(cap ? cap : 1));
+    unsigned char *tq = malloc((size_t)(cap ? cap : 1)), *th = malloc((size_t)(cap ? cap : 1));
+    if (!tq || !th) { free(diffs); diffs = NULL; }   // one refusal below for all four
     double sum_t = 0;
     for (int i = 0; diffs && tk && i < orows->n; i++) {
         jv *ro = orows->items[i];
@@ -1285,11 +1403,14 @@ static bool compare_json(const char *ours_gold, const char *spec, sbuf *out) {
         double ko, kt;
         if (!rt || !num_of(so, "kld", &ko) || !num_of(st, "kld", &kt)) continue;
         bool ao = jv_bool(jv_get(so, "agree"), false), at = jv_bool(jv_get(st, "agree"), false);
+        bool mq = rec_num(ro, "gold_margin", 0) > 0.5;
         diffs[n] = ko - kt;
+        tq[n] = mq;
+        th[n] = mq && at;
         tk[n++] = kt;
         sum_t += kt;
         top_o += at;
-        if (rec_num(ro, "gold_margin", 0) > 0.5) {
+        if (mq) {
             qual++;
             q_o += at;
             b += ao && !at;
@@ -1301,11 +1422,15 @@ static bool compare_json(const char *ours_gold, const char *spec, sbuf *out) {
     if (!diffs || !tk || n != orows->n || trows->n != orows->n) {
         fprintf(stderr, "error: --compare %s: %d of this file's %d positions pair with its %d rows; "
                 "the other file must be measured in the same window\n", label, n, orows->n, trows->n);
-        free(diffs); free(tk); jv_free(og); jv_free(tg);
+        free(diffs); free(tk); free(tq); free(th); jv_free(og); jv_free(tg);
         return false;
     }
     double z = 0, pw = 1;
     bool have_w = n && wilcoxon_signed_rank(diffs, n, &z, &pw);
+    // the other file's verdict, from its own interval over the same positions
+    // (before tk is sorted for the median)
+    bar_ci tci;
+    bar_bootstrap(tk, tq, th, n, &tci);
     double med = 0;
     if (n) {
         qsort(tk, (size_t)n, sizeof(double), cmp_double);
@@ -1324,8 +1449,10 @@ static bool compare_json(const char *ours_gold, const char *spec, sbuf *out) {
     sb_lit(out, ",\"wilcoxon_p\":"); if (have_w) sb_numj(out, pw); else sb_lit(out, "null");
     sb_fmt(out, ",\"mcnemar_this_only\":%d,\"mcnemar_other_only\":%d,\"mcnemar_p\":", b, c);
     sb_numj(out, mcnemar_exact(b, c));
-    sb_fmt(out, ",\"fails_bar\":%s}", mean > BAR_MEAN_KLD || mqp < BAR_MQ_TOP1 ? "true" : "false");
-    free(diffs); free(tk);
+    int tv = bar_verdict(mean, mqp, &tci);
+    sb_fmt(out, ",\"bar_verdict\":\"%s\",\"fails_bar\":%s}", bar_verdict_name(tv),
+           tv == BAR_FAIL ? "true" : "false");
+    free(diffs); free(tk); free(tq); free(th);
     jv_free(og); jv_free(tg);
     return n > 0;
 }
@@ -1393,8 +1520,14 @@ static bool card_from_record(const char *rec_path, const char *card_path,
     int positions = (int)rec_num(meas, "positions", 0);
     double mean = rec_num(meas, "mean_kld", 0), mx = rec_num(meas, "max_kld", 0);
     double top1 = rec_num(meas, "top1_agreement_pct", 0), mqp = rec_num(meas, "margin_qualified_top1_pct", 0);
+    // the verdict as the record states it; a record from before R4.46 has
+    // `passes` alone and no interval
     jv *bar = jv_get(meas, "bar");
     bool passes = bar && jv_bool(jv_get(bar, "passes"), false);
+    const char *verdict = jv_str(jv_get(bar, "verdict"), passes ? "pass" : "fail");
+    jv *kci = jv_get(bar, "mean_kld_ci95"), *qci = jv_get(bar, "margin_qualified_top1_ci95");
+    bool have_kci = kci && kci->type == J_ARR && kci->n == 2;
+    bool have_qci = qci && qci->type == J_ARR && qci->n == 2;
     sbuf c = {0};
     sb_lit(&c, "---\nlicense: ");
     yaml_scalar(&c, license);
@@ -1429,11 +1562,28 @@ static bool card_from_record(const char *rec_path, const char *card_path,
         sb_fmt(&c, ": at about one position in %.0f the file's most likely next token differs from "
                "the reference's", 100.0 / (100.0 - top1));
     sb_lit(&c, ".\n\n");
-    if (publisher)
-        sb_fmt(&c, "This file %s the bar: mean KLD %.4f against the publisher's float32 model "
-               "(bar %.2f) and margin-qualified top-1 %.2f%% (bar %.0f%%).\n\n",
-               passes ? "passes" : "fails", mean, BAR_MEAN_KLD, mqp, BAR_MQ_TOP1);
-    else
+    if (publisher) {
+        // pass or fail only when the interval is clear of the bar (R4.46)
+        bool undecided = !strcmp(verdict, "not_decided");
+        if (undecided)
+            sb_fmt(&c, "Whether this file passes the bar is not decided at %d positions: ", positions);
+        else
+            sb_fmt(&c, "This file %s the bar: ", !strcmp(verdict, "pass") ? "passes" : "fails");
+        sb_fmt(&c, "mean KLD %.4f against the publisher's float32 model (bar %.2f", mean, BAR_MEAN_KLD);
+        if (have_kci)
+            sb_fmt(&c, "; 95%% interval %.4f to %.4f", jv_num(kci->items[0], 0), jv_num(kci->items[1], 0));
+        sb_fmt(&c, ") and margin-qualified top-1 %.2f%% (bar %.0f%%", mqp, BAR_MQ_TOP1);
+        if (have_qci)
+            sb_fmt(&c, "; 95%% interval %.2f%% to %.2f%%", jv_num(qci->items[0], 0), jv_num(qci->items[1], 0));
+        sb_lit(&c, ").");
+        if (undecided)
+            sb_lit(&c, " An interval that reaches across the bar decides nothing either way; more "
+                   "positions (`--window`) narrow it.");
+        else if (!have_kci)
+            sb_lit(&c, " The record carries no interval for these two numbers, so the verdict is "
+                   "the point estimate's.");
+        sb_lit(&c, "\n\n");
+    } else
         sb_fmt(&c, "Against the parent: mean KLD %.4f, max KLD %.4f.\n\n", mean, mx);
     // other files measured in the same window: the record's, or computed now
     // from --card-from's --compare against the record's own gold run
@@ -1485,7 +1635,10 @@ static bool card_from_record(const char *rec_path, const char *card_path,
                        "only this file got, %d only that file got; McNemar p %.2g, %s).", xmq, mqp,
                        (int)rec_num(x, "mcnemar_this_only", 0), (int)rec_num(x, "mcnemar_other_only", 0),
                        pm, pm < 0.05 ? "a difference" : "a tie");
-                if (jv_bool(jv_get(x, "fails_bar"), false)) sb_lit(&c, " That file fails the bar.");
+                const char *xv = jv_str(jv_get(x, "bar_verdict"), "");
+                if (!strcmp(xv, "not_decided"))
+                    sb_lit(&c, " Whether that file passes the bar is not decided at these positions.");
+                else if (jv_bool(jv_get(x, "fails_bar"), false)) sb_lit(&c, " That file fails the bar.");
                 sb_lit(&c, "\n");
             }
         sb_lit(&c, "\n");
@@ -1848,7 +2001,7 @@ static bool derive_record(derive_run *d) {
     }
     long long pbytes = parent_bytes(d->o.parent), fbytes = file_bytes(d->o.out);
     bool publisher = d->o.reference_hf != NULL;
-    bool passes = d->m.mean_kld <= BAR_MEAN_KLD && d->m.mq_top1_pct >= BAR_MQ_TOP1;
+    int verdict = bar_verdict(d->m.mean_kld, d->m.mq_top1_pct, &d->m.ci);
     sb_lit(&d->r, "{\"schema_version\":\"xyntetik.runner.derive.v1\",\"runner_version\":");
     sb_str(&d->r, RUNNER_VERSION);
     sb_lit(&d->r, ",\"reference_kind\":");
@@ -1984,8 +2137,27 @@ static bool derive_record(derive_run *d) {
     put_file(&d->r, "file_score", d->file_score, true);
     sb_lit(&d->r, ",\"bar\":");
     if (publisher) {
-        sb_fmt(&d->r, "{\"max_mean_kld\":%g,\"min_margin_qualified_top1_pct\":%g,\"passes\":%s}",
-               BAR_MEAN_KLD, BAR_MQ_TOP1, passes ? "true" : "false");
+        // `passes` is true for a pass alone: a reader of the older field never
+        // takes "not decided" for a pass
+        const bar_ci *ci = &d->m.ci;
+        sb_fmt(&d->r, "{\"max_mean_kld\":%g,\"min_margin_qualified_top1_pct\":%g,\"passes\":%s,"
+               "\"verdict\":\"%s\",\"mean_kld_ci95\":", BAR_MEAN_KLD, BAR_MQ_TOP1,
+               verdict == BAR_PASS ? "true" : "false", bar_verdict_name(verdict));
+        if (ci->have) {
+            sb_lit(&d->r, "["); sb_numj(&d->r, ci->kld_lo);
+            sb_lit(&d->r, ","); sb_numj(&d->r, ci->kld_hi); sb_lit(&d->r, "]");
+        } else sb_lit(&d->r, "null");
+        sb_lit(&d->r, ",\"margin_qualified_top1_ci95\":");
+        if (ci->have && ci->have_mq) {
+            sb_lit(&d->r, "["); sb_numj(&d->r, ci->mq_lo);
+            sb_lit(&d->r, ","); sb_numj(&d->r, ci->mq_hi); sb_lit(&d->r, "]");
+        } else sb_lit(&d->r, "null");
+        sb_lit(&d->r, ",\"bootstrap\":");
+        if (ci->have)
+            sb_fmt(&d->r, "{\"method\":\"circular block\",\"block\":%d,\"seed\":%d,\"resamples\":%d}",
+                   ci->block, BOOT_SEED, BOOT_RESAMPLES);
+        else sb_lit(&d->r, "null");
+        sb_lit(&d->r, "}");
     } else {
         sb_lit(&d->r, "null");   // no bar verdict against the parent file
     }
@@ -1996,11 +2168,16 @@ static bool derive_record(derive_run *d) {
     //    one source, and --card-from rewrites a card from it alone
     if (!card_from_record(d->rec_path, d->card_path, NULL, NULL, 0, NULL, 0)) return false;
 
+    char called[96] = "";
+    if (publisher && verdict == BAR_NOT_DECIDED)
+        snprintf(called, sizeof called, " (the bar is not decided at %d positions)", d->m.positions);
+    else if (publisher)
+        snprintf(called, sizeof called, "%s", verdict == BAR_PASS ? " (passes the bar)" : " (fails the bar)");
     printf("derive: %s (%lld bytes, %.1f%% of the parent); mean KLD %.4f, top-1 %.2f%% "
            "against the %s%s; record %s, card %s\n",
            d->o.out, fbytes, pbytes > 0 ? 100.0 * (double)fbytes / (double)pbytes : 0.0,
            d->m.mean_kld, d->m.top1_pct, publisher ? "publisher's float32 model" : "parent file",
-           publisher ? (passes ? " (passes the bar)" : " (fails the bar)") : "",
+           called,
            d->rec_path, d->card_path);
     return true;
 }
