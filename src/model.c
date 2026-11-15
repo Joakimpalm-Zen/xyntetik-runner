@@ -10197,8 +10197,12 @@ static void moe_ffn_grouped(model_t *m, const layer_t *ly, int n, int xdim) {
     bool trace = moe_trace_file() != NULL;
     moe_grouped_route(m, ly, n, xdim, probe);
     moe_grouped_prefetch(m, ly, n);
+    // EXPERIMENT R3.57: the pool runs below are the routed experts' products
+    double te = tprof_enabled() ? tprof_now() : 0;
+    if (te) tprof_set_scope(1ull << 60);
     for (int e = 0; e < ly->n_expert; e++)
         moe_grouped_expert(m, ly, e, n, xdim, trace);
+    if (te) { tprof_set_scope(0); tprof_region("experts-loop-wall (contains the bit-60 runs)", tprof_now() - te); }
     moe_grouped_sum(m, ly, n, xdim, trace);
 }
 
@@ -15947,7 +15951,11 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
 float *model_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                            bool want_logits) {
     int path = n > 0 && m->spec_want_all >= n ? RP_KEEP : n == 1 ? RP_SOLO : RP_BATCH;
+    // EXPERIMENT R3.57: under RUNNER_CPU_PROF=prefill a batched CPU pass is the profiled step
+    bool prof = n > 1 && !m->gpu && tprof_mode() == 2;
+    if (prof) tprof_step_begin();
     float *lg = forward_batch_run(m, tokens, n, pos, want_logits);
+    if (prof) tprof_step_end();
     model_kv_ring_note(m, pos, n);
     route_ran(m, path, n);
     return lg;
@@ -16559,7 +16567,7 @@ int model_mtp_position(const model_t *m) { return m->mtp_pos + m->mtp_qn; }
 
 float *model_forward(model_t *m, int token, int pos) {
     int32_t t = token;
-    if (!tprof_enabled() || m->gpu) return model_forward_batch(m, &t, 1, pos, true);
+    if (!tprof_enabled() || m->gpu || tprof_mode() == 2) return model_forward_batch(m, &t, 1, pos, true);
     tprof_step_begin();
     float *lg = model_forward_batch(m, &t, 1, pos, true);
     tprof_step_end();
