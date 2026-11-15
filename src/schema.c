@@ -2402,6 +2402,9 @@ static bool num_try(const snode *n, const char *t, const char *suffix, char *out
 static bool num_witness_exp(const snode *n, const char *t, uint8_t st, const numspell *p,
                             char *out, size_t cap) {
     if (p->zero) return num_try(n, t, st == N_EXP ? "" : "0", out, cap);
+    // the spelling as it stands first: with the exponent's digits all zeros
+    // the scan below only appends, which the buffer's end may not allow
+    if (st == N_EXP && num_try(n, t, "", out, cap)) return true;
     char mt[sizeof(((sval *)0)->num_text)];
     int ml = (int)(strchr(t, 'e') ? strchr(t, 'e') - t : strchr(t, 'E') - t);
     memcpy(mt, t, (size_t)ml); mt[ml] = 0;
@@ -2485,6 +2488,27 @@ static bool num_witness_mant(const snode *n, const char *t, uint8_t st, const nu
             targets[nt++] = L; targets[nt++] = L + (H - L) / 2; targets[nt++] = H;
         }
     }
+    // Past a double's 17 digits the digits written fix the significand: no
+    // target spells more of them, so only the scale is left to choose (a
+    // digit first after a bare point), and the one nearest zero has the
+    // shortest spelling. Near the buffer's end that is the completion that
+    // still fits: e-91 after 91 nines under maximum 1.
+    if (p->nsig > 17) {
+        const char *body = st == N_FRAC0 ? "0" : "";
+        char mt[sizeof(((sval *)0)->num_text) + 2];
+        snprintf(mt, sizeof(mt), "%s%s", t, body);
+        double vw = fabs(strtod(mt, NULL));
+        if (!(vw > 0)) return false;
+        double xlo = ceil(log10(a / vw)), xhi = floor(log10(b / vw));
+        long x0 = xlo > 0 ? (long)xlo : xhi < 0 ? (long)xhi : 0;
+        for (long x = x0 - 1; x <= x0 + 1; x++) {   // either side, for rounding
+            char suf[32];
+            if (x == 0) snprintf(suf, sizeof(suf), "%s", body);
+            else snprintf(suf, sizeof(suf), "%se%ld", body, x);
+            if (num_try(n, t, suf, out, cap)) return true;
+        }
+        return false;
+    }
     // how the digits continue from here: after a "0" a point first; after a
     // point with no digit, one digit at least
     const char *join = st == N_ZERO ? "." : "";
@@ -2529,12 +2553,24 @@ static bool number_witness(const snode *n, const char *t, uint8_t st, char *out,
     return num_witness_mant(n, t, st, &p, out, cap);
 }
 
+// The most bytes of a number the validator keeps (number_put), and the
+// longest suffix the decade argument relies on: a digit after a bare point,
+// then e, a sign and three exponent digits (|k| <= 403 reaches the whole
+// double range from any mantissa that fits).
+enum { NUM_ROOM = (int)sizeof(((sval *)0)->num_text) - 1, NUM_DECADE_SUFFIX = 6 };
+
 // Is the prefix still completable inside the bounds? The witness answers;
 // the common shapes (no exponent yet, a wide interval) are answered first
-// without one, by the decade argument above.
+// without one, by the decade argument above, but only while the buffer can
+// still hold the suffix that argument writes. With less room the witness
+// decides, since num_try checks the fit: the byte that would use up the last
+// room a completion needs is refused where it is written.
 static bool number_prefix_viable(const snode *n, const char *t, uint8_t st) {
-    if (!n->has_real_min && !n->has_real_max) return true;   // json_number_text_ok decides alone
-    if (st != N_EXP0 && st != N_EXP1 && st != N_EXP) {
+    int len = (int)strlen(t);
+    // unbounded, json_number_text_ok decides alone, once the spelling can
+    // still end: an incomplete one needs one more byte where number_put keeps it
+    if (!n->has_real_min && !n->has_real_max) return num_complete(st) || len < NUM_ROOM;
+    if (st != N_EXP0 && st != N_EXP1 && st != N_EXP && len + NUM_DECADE_SUFFIX <= NUM_ROOM) {
         numspell p;
         num_parse_prefix(t, &p);
         double a, b;

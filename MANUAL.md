@@ -1008,7 +1008,8 @@ integers, booleans, null, enums, const, type unions, numeric bounds on both
 number's prefix is admitted only while some completion of it lies inside the
 range, so an exponent that leaves it unreachable, `1e+3` under `maximum: 1`, is
 refused where it is written, and a forced close completes the value inside the
-declared range), string
+declared range; a number is spelled in at most 95 characters, so a prefix is
+admitted only while its completion still fits in them), string
 lengths and `pattern`s (below), array item/count constraints,
 scalar-const `oneOf`/`anyOf`, const-discriminated object unions (below), and
 the tool-discriminated object union used by agent clients. Required

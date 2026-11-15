@@ -1655,8 +1655,9 @@ static void test_schema_number_prefix_fits_the_buffer(void) {
         // toward zero: 91 nines still take e-91 (95 bytes); 92 would need 96
         { "{\"type\":\"number\",\"maximum\":1}", "", '9', 92 },
         { "{\"type\":\"number\",\"minimum\":-1}", "-", '9', 92 },
-        // toward the largest: 0.111... takes e31, so 92 bytes are the most
-        { "{\"type\":\"number\",\"minimum\":1e+30}", "0.", '1', 93 },
+        // toward the largest (bounds are JSON-safe, so 1e15 is about as far
+        // as one goes): 0.111... takes e16, so 92 bytes are the most
+        { "{\"type\":\"number\",\"minimum\":1e15}", "0.", '1', 93 },
         // two decades: 91 nines take e-89 (99.9...)
         { "{\"type\":\"number\",\"minimum\":1,\"maximum\":100}", "", '9', 92 },
         // unbounded: a complete spelling fills the buffer, number_put stops it
@@ -1687,7 +1688,7 @@ static void test_schema_number_prefix_fits_the_buffer(void) {
     // an incomplete spelling needs one more byte: a point or an exponent mark
     // at the 95th byte has no room for its digit, bounded or not
     const char *ends[] = { ".", "e", "E" };
-    const char *open_schemas[] = { "{\"type\":\"number\"}", "{\"type\":\"number\",\"maximum\":1e300}" };
+    const char *open_schemas[] = { "{\"type\":\"number\"}", "{\"type\":\"number\",\"minimum\":0}" };
     for (size_t o = 0; o < sizeof(open_schemas) / sizeof(*open_schemas); o++) {
         snode *s = num_schema(open_schemas[o]);
         for (size_t e = 0; e < sizeof(ends) / sizeof(*ends); e++) {
@@ -1699,7 +1700,11 @@ static void test_schema_number_prefix_fits_the_buffer(void) {
                 assert(0);
             }
             snprintf(p + 93, sizeof(p) - 93, "%s", ends[e]);   // 94 bytes: its digit fits
-            assert(num_admits(s, p) && num_closes_valid(s, p));
+            if (!num_admits(s, p) || !num_closes_valid(s, p)) {
+                fprintf(stderr, "R2.19 room: %s: a 94-byte prefix ending in %s admitted %d, closes %d\n",
+                        open_schemas[o], ends[e], num_admits(s, p), num_closes_valid(s, p));
+                assert(0);
+            }
         }
         schema_free(s);
     }
