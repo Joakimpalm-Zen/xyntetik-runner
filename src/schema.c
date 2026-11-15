@@ -2418,6 +2418,53 @@ static bool num_try(const snode *n, const char *t, const char *suffix, char *out
 // Inside the exponent the mantissa is fixed: the exponents the digits written
 // so far still allow (any, after leading zeros; else those starting with them)
 // that land the value inside, nearest first.
+// The witness's scales from correctly rounded operations only. pow, log10
+// and lround are not correctly rounded, differ between libms and move under
+// gcc's -ffast-math, so a witness built on them admitted fewer prefixes on
+// the Linux and Windows builds than on the Mac (completions on a bound, and
+// runs after them). snprintf's digits and strtod are correctly rounded
+// everywhere, and so are + - * / and sqrt one at a time, so every platform
+// now builds the same candidates and admits the same bytes.
+
+// A positive double's decimal exponent and its 17-digit significand in [1, 10)
+typedef struct { int e; double m; } dec17;
+static dec17 dec_of(double v) {
+    char b[48];
+    snprintf(b, sizeof(b), "%.16e", v);
+    const char *x = strchr(b, 'e');
+    dec17 d = { x ? atoi(x + 1) : 0, 0 };
+    char mb[32];
+    size_t k = x ? (size_t)(x - b) : strlen(b);
+    if (k >= sizeof(mb)) k = sizeof(mb) - 1;
+    memcpy(mb, b, k);
+    mb[k] = 0;
+    d.m = strtod(mb, NULL);
+    return d;
+}
+// floor, ceil and round of log10(x / y) for positive x and y
+static int floor_log10_ratio(double x, double y) {
+    dec17 dx = dec_of(x), dy = dec_of(y);
+    return dx.e - dy.e - (dx.m < dy.m);
+}
+static int ceil_log10_ratio(double x, double y) {
+    dec17 dx = dec_of(x), dy = dec_of(y);
+    return dx.e - dy.e + (dx.m > dy.m);
+}
+static int round_log10_ratio(double x, double y) {
+    dec17 dx = dec_of(x), dy = dec_of(y);
+    int f = dx.e - dy.e;
+    double mx = dx.m, my = dy.m;
+    if (mx < my) { f -= 1; mx *= 10; }               // now mx / my in [1, 10)
+    if (mx * mx >= 10 * (my * my)) f += 1;            // mx / my >= sqrt(10), by products
+    return f;
+}
+// 0.<digits> times 10^q, through strtod
+static double dec_scaled(const char *digits, int q) {
+    char b[140];
+    snprintf(b, sizeof(b), "0.%se%d", digits, q);
+    return strtod(b, NULL);
+}
+
 static bool num_witness_exp(const snode *n, const char *t, uint8_t st, const numspell *p,
                             char *out, size_t cap) {
     if (p->zero) return num_try(n, t, st == N_EXP ? "" : "0", out, cap);
@@ -2430,18 +2477,17 @@ static bool num_witness_exp(const snode *n, const char *t, uint8_t st, const num
     double m = fabs(strtod(mt, NULL)), a, b;
     num_side(n, p->neg, &a, &b);
     if (!(m > 0) || a > b) return false;
-    // the scale k with m * 10^k inside [a, b], a little wider for rounding.
-    // As a difference of logarithms, never log10(a / m): a quotient of a
-    // large bound by a tiny mantissa overflows to infinity, and an infinite
-    // scale cast to long sent the loops below through the signed range. Past
-    // +-400 no exponent can land a mantissa that fits inside the doubles.
-    double lm = log10(m);
-    double klo = a > 0 ? floor(log10(a) - lm) - 1 : -400;
-    double khi = b >= DBL_MAX ? 400 : ceil(log10(b) - lm) + 1;
-    if (!(klo >= -400)) klo = -400;
-    if (!(klo <= 400)) klo = 400;
-    if (!(khi <= 400)) khi = 400;
-    if (!(khi >= -400)) khi = -400;
+    // the scale k with m * 10^k inside [a, b], a little wider for rounding,
+    // from decimal exponents (above), never a quotient: a large bound over a
+    // tiny mantissa overflowed to infinity, and an infinite scale cast to long
+    // sent the loops below through the signed range. Past +-400 no exponent
+    // can land a mantissa that fits inside the doubles.
+    long klo = a > 0 ? floor_log10_ratio(a, m) - 1 : -400;
+    long khi = b >= DBL_MAX ? 400 : ceil_log10_ratio(b, m) + 1;
+    if (klo < -400) klo = -400;
+    if (klo > 400) klo = 400;
+    if (khi > 400) khi = 400;
+    if (khi < -400) khi = -400;
     const char *ed = p->exp_digits;
     while (*ed == '0') ed++;                          // leading zeros allow any exponent
     long pref = 0; int plen = (int)strlen(ed);
@@ -2449,7 +2495,7 @@ static bool num_witness_exp(const snode *n, const char *t, uint8_t st, const num
     for (int sign = 1; sign >= -1; sign -= 2) {
         if (p->exp_sign && sign != p->exp_sign) continue;
         if (!p->exp_sign && sign < 0 && st != N_EXP0) continue;  // digits came first: positive
-        long elo = sign > 0 ? (long)klo : (long)-khi, ehi = sign > 0 ? (long)khi : (long)-klo;
+        long elo = sign > 0 ? klo : -khi, ehi = sign > 0 ? khi : -klo;
         if (elo < 0) elo = 0;
         if (ehi < elo) continue;
         // exponents written as ed then j more digits: [pref*10^j, pref*10^j + 10^j - 1]
@@ -2493,49 +2539,67 @@ static bool num_witness_mant(const snode *n, const char *t, uint8_t st, const nu
     double a, b;
     num_side(n, p->neg, &a, &b);
     if (a > b) return false;
-    if (a < 1e-300) a = 1e-300;                       // the normal range json_parse reads
+    // the normal range json_parse reads, from its smallest normal: 1e-300 here
+    // cut an interval below it to one point (maximum 1e-300 refused "0.2",
+    // whose completion 0.2e-301 is inside; the shape oracle)
+    if (a < 2.2250738585072014e-308) a = 2.2250738585072014e-308;
     if (b > 1e300) b = 1e300;
     if (a > b) return false;
     // the targets: where [s, s_hi) * 10^q meets [a, b], s the digits written as 0.ddd
-    double targets[24]; int nt = 0;
+    double targets[26]; int nt = 0;
     if (!p->nsig) {
         targets[nt++] = a; targets[nt++] = b; targets[nt++] = sqrt(a) * sqrt(b);
     } else {
-        char sb[110];
-        snprintf(sb, sizeof(sb), "0.%s", p->sig);
-        double s = strtod(sb, NULL), s_hi = s + pow(10, -(p->nsig > 17 ? 17 : p->nsig));
+        // the digits written, to 17, and the same plus one in the last place
+        // (decimal, with carry): the window [s, s_hi) is 0.<lo> to 0.<hi>
+        char lo[24], hi[24];
+        int k = p->nsig > 17 ? 17 : p->nsig;
+        memcpy(lo, p->sig, (size_t)k); lo[k] = 0;
+        memcpy(hi, lo, (size_t)k + 1);
+        int c = k - 1;
+        while (c >= 0 && hi[c] == '9') hi[c--] = '0';
+        bool carry_out = c < 0;
+        if (!carry_out) hi[c]++;
+        double s = dec_scaled(lo, 0), s_hi = carry_out ? 1.0 : dec_scaled(hi, 0);
         // every scale of a narrow window (a wide one met the fast path); at
         // most the four at each end of a wide one, whose middle cannot miss
-        double qlo = floor(log10(a / s_hi)) - 1, qhi = ceil(log10(b / s)) + 1;
-        for (double q = qlo; q <= qhi && nt + 3 <= 24; q = (qhi - qlo > 8 && q == qlo + 3) ? qhi - 3 : q + 1) {
-            double lq = s * pow(10, q), hq = s_hi * pow(10, q);
+        int qlo = floor_log10_ratio(a, s_hi) - 1, qhi = ceil_log10_ratio(b, s) + 1;
+        for (int q = qlo; q <= qhi && nt + 3 <= 24; q = (qhi - qlo > 8 && q == qlo + 3) ? qhi - 3 : q + 1) {
+            double lq = dec_scaled(lo, q), hq = carry_out ? dec_scaled("1", q + 1) : dec_scaled(hi, q);
             double L = lq > a ? lq : a, H = hq < b ? hq : b;
             if (L > H) continue;
             targets[nt++] = L; targets[nt++] = L + (H - L) / 2; targets[nt++] = H;
         }
+        // and the interval's own ends, the completions a window's rounding
+        // loses first (9e15 under [1e15, 9e15] for "9")
+        targets[nt++] = a; targets[nt++] = b;
     }
     // Past a double's 17 digits the digits written fix the significand: no
     // target spells more of them, so only the scale is left to choose (a
     // digit first after a bare point), and the one nearest zero has the
     // shortest spelling. Near the buffer's end that is the completion that
     // still fits: e-91 after 91 nines under maximum 1.
-    if (p->nsig > 17) {
+    // From 16 significant digits a double cannot spell the targets' digits
+    // reliably (the shape oracle: "19999999999999997" under [1e15, 9e15] found
+    // no target), so the scale alone is tried first; past 17 it is all there is.
+    if (p->nsig >= 16) {
         const char *body = st == N_FRAC0 ? "0" : "";
         char mt[sizeof(((sval *)0)->num_text) + 2];
         snprintf(mt, sizeof(mt), "%s%s", t, body);
         double vw = fabs(strtod(mt, NULL));
         if (!(vw > 0)) return false;
-        // logarithms apart, never a quotient that can overflow (above)
-        double lv = log10(vw), xlo = ceil(log10(a) - lv), xhi = floor(log10(b) - lv);
-        if (!(xlo <= 400 && xhi >= -400)) return false;   // no exponent reaches it
-        long x0 = xlo > 0 ? (long)xlo : xhi < 0 ? (long)xhi : 0;
-        for (long x = x0 - 1; x <= x0 + 1 && !witness_over; x++) {   // either side, for rounding
-            char suf[32];
-            if (x == 0) snprintf(suf, sizeof(suf), "%s", body);
-            else snprintf(suf, sizeof(suf), "%se%ld", body, x);
-            if (num_try(n, t, suf, out, cap)) return true;
+        // from decimal exponents, never a quotient that can overflow (above)
+        long xlo = ceil_log10_ratio(a, vw), xhi = floor_log10_ratio(b, vw);
+        if (xlo <= 400 && xhi >= -400) {             // else no exponent reaches it
+            long x0 = xlo > 0 ? xlo : xhi < 0 ? xhi : 0;
+            for (long x = x0 - 1; x <= x0 + 1 && !witness_over; x++) {   // either side, for rounding
+                char suf[32];
+                if (x == 0) snprintf(suf, sizeof(suf), "%s", body);
+                else snprintf(suf, sizeof(suf), "%se%ld", body, x);
+                if (num_try(n, t, suf, out, cap)) return true;
+            }
         }
-        return false;
+        if (p->nsig > 17) return false;
     }
     // how the digits continue from here: after a "0" a point first; after a
     // point with no digit, one digit at least
@@ -2557,9 +2621,8 @@ static bool num_witness_mant(const snode *n, const char *t, uint8_t st, const nu
             if (st == N_MINUS && !*rest) continue;
             double vw = fabs(strtod(mt, NULL));
             if (!(vw > 0)) continue;
-            double xs = log10(tau) - log10(vw);   // never log10(tau / vw) (above)
-            if (!(xs > -400 && xs < 400)) break;  // no exponent lands this target
-            long x0 = lround(xs);
+            long x0 = round_log10_ratio(tau, vw);  // never log10(tau / vw) (above)
+            if (x0 < -400 || x0 > 400) break;      // no exponent lands this target
             for (long x = x0 - 1; x <= x0 + 1 && !witness_over; x++) {
                 char suf[sizeof(mt) + 32];   // the body, e, and a long's digits
                 const char *body = mt + strlen(t);
@@ -2610,7 +2673,7 @@ static bool number_prefix_viable(const snode *n, const char *t, uint8_t st) {
         if (p.nsig && a <= b) {
             if (a < 1e-290 && b > 1e-280) return true;
             if (b > 1e290 && a < 1e280) return true;
-            if (a > 0 && b / a >= 100) return true;
+            if (a > 0 && b >= 100 * a) return true;   // a product, not a division (above)
         }
     }
     return number_witness(n, t, st, NULL, 0);

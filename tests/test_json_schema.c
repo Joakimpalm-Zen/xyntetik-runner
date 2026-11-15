@@ -1748,11 +1748,13 @@ static void test_schema_number_completions_on_a_bound(void) {
 // scale log10(tau / vw) overflowed to infinity, lround saturated, and the loop
 // over x0 - 1 .. x0 + 1 wrapped through the whole signed range (one trial over
 // a minute). The bound, from the code: the mantissa witness tries zero, the
-// spelling as it stands, and at most 4 spellings for each of at most 24
-// targets (98); the exponent witness 2 signs by 5 widths by 6 (62). A test cap
-// makes a runaway witness return, so this fails instead of hanging.
+// spelling as it stands, up to 4 scale-only spellings (from 16 significant
+// digits), and at most 4 spellings for each of at most 26 targets, 24 from the
+// windows and the interval's two ends (110); the exponent witness 2 signs by 5
+// widths by 6 (62). A test cap makes a runaway witness return, so this fails
+// instead of hanging.
 static void test_schema_number_witness_work_is_bounded(void) {
-    enum { BOUND = 100, CAP = 10000 };
+    enum { BOUND = 110, CAP = 10000 };
     const char *schemas[] = {
         "{\"type\":\"number\",\"minimum\":1e15}",
         "{\"type\":\"number\",\"exclusiveMinimum\":1e15}",
@@ -1768,6 +1770,11 @@ static void test_schema_number_witness_work_is_bounded(void) {
     schema_witness_try_cap(CAP);
     unsigned long worst = 0;
     long trials = 0;
+    // every trial's verdict, folded in order: the admitted set over these seeds.
+    // The constant below is the same on macOS, Linux and Windows, so the three
+    // platforms' CI jobs hold each other (a replay on another platform needs
+    // the same masks); gcc's x86 build once admitted 9,525 fewer bytes here.
+    uint64_t admitted_hash = 0xcbf29ce484222325ull;
     char worst_at[128] = "";
     clock_t t0 = clock();
     for (size_t si = 0; si < sizeof(schemas) / sizeof(*schemas); si++) {
@@ -1782,7 +1789,8 @@ static void test_schema_number_witness_work_is_bounded(void) {
                 for (; n < 95; n++) {
                     for (const char *b = alpha; *b; b++) {
                         sval t;
-                        (void)sval_trial(&v, &t, b, 1);
+                        bool ok = sval_trial(&v, &t, b, 1);
+                        admitted_hash = (admitted_hash ^ (ok ? 0x31u : 0x30u)) * 0x100000001b3ull;
                         unsigned long w = schema_witness_tries();
                         trials++;
                         if (w > worst) {
@@ -1803,8 +1811,16 @@ static void test_schema_number_witness_work_is_bounded(void) {
                 worst, BOUND, worst_at);
         assert(worst <= BOUND);
     }
-    printf("ok: the number witness's work is bounded (%ld trials, at most %lu spellings a byte; "
-           "note: %.2f s of CPU here)\n", trials, worst, (double)(clock() - t0) / CLOCKS_PER_SEC);
+    const uint64_t ADMITTED = 0x10f95091dfc435feull;
+    if (trials != 91395 || admitted_hash != ADMITTED) {
+        fprintf(stderr, "R2.19 admitted set: %ld trials, hash %016llx; every platform must give "
+                "%d and %016llx\n", trials, (unsigned long long)admitted_hash,
+                91395, (unsigned long long)ADMITTED);
+        assert(0);
+    }
+    printf("ok: the number witness's work is bounded (%ld trials, at most %lu spellings a byte, "
+           "admitted set %016llx; note: %.2f s of CPU here)\n", trials, worst,
+           (unsigned long long)admitted_hash, (double)(clock() - t0) / CLOCKS_PER_SEC);
 }
 
 static void test_schema_merges_enum_and_const_anyof(void) {
