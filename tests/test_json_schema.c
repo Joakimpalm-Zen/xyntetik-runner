@@ -5,6 +5,7 @@
 #include "fpenv.h"
 
 #include <assert.h>
+#include <fenv.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1828,6 +1829,75 @@ static void test_schema_number_cases_it_got_wrong(void) {
         if (num_valid(s, docs[i].doc) != docs[i].ok) {
             fprintf(stderr, "R2.19 subnormal rule: %s accepts %s: %d, want %d\n",
                     docs[i].schema, docs[i].doc, !docs[i].ok, docs[i].ok);
+            assert(0);
+        }
+        schema_free(s);
+    }
+    // codex's read of 948c0cdb, 3: an UNBOUNDED number keeps the parser's
+    // verdict, and admission, the terminator and the close agree on it. The
+    // subnormal rule had reached the terminator alone, so on macOS (which
+    // reads the top of the band as 2^-1022) 2.2250738585072012e-308 was
+    // admitted to its last byte, refused at the end and left as it was
+    const char *unbounded[] = { "2.2250738585072012e-308", "-2.2250738585072012e-308",
+                                "1e-310", "-1e-310", "2.2250738585072014e-308" };
+    for (size_t i = 0; i < sizeof(unbounded) / sizeof(*unbounded); i++) {
+        snode *s = num_schema(NUMS("\"title\":\"unbounded\""));
+        char arr[64];
+        snprintf(arr, sizeof(arr), "[%s]", unbounded[i]);
+        jv *parsed = json_parse(arr, strlen(arr));
+        bool parses = parsed != NULL, admits = num_admits(s, unbounded[i]);
+        bool valid = num_valid(s, unbounded[i]), closes = admits && num_closes_valid(s, unbounded[i]);
+        jv_free(parsed);
+        if (admits != parses || valid != parses || (admits && !closes)) {
+            fprintf(stderr, "R2.19 unbounded %s: the parser reads it %d, admitted %d, the terminator %d, "
+                    "closes valid %d\n", unbounded[i], parses, admits, valid, closes);
+            assert(0);
+        }
+        schema_free(s);
+    }
+    // codex's read of 948c0cdb, 4: an interval the subnormal rule leaves empty
+    // does not compile, at both signs and with either end strict; one that
+    // keeps 0 does
+    const char *emptied[] = {
+        NUMS("\"exclusiveMinimum\":0,\"exclusiveMaximum\":2.2250738585072014e-308"),
+        NUMS("\"exclusiveMinimum\":-2.2250738585072014e-308,\"exclusiveMaximum\":0"),
+        ("{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\",\"exclusiveMinimum\":0,"
+         "\"exclusiveMaximum\":2.2250738585072014e-308}},\"required\":[\"x\"]}"),
+    };
+    for (size_t i = 0; i < sizeof(emptied) / sizeof(*emptied); i++) {
+        jv *j = json_parse(emptied[i], strlen(emptied[i]));
+        assert(j != NULL);   // the bounds are read (a refused reader would compile "anything")
+        char err[192];
+        snode *s = schema_compile(j, err, sizeof(err));
+        if (s || !strstr(err, "empty number bounds")) {
+            fprintf(stderr, "R2.19: %s compiled (or refused for another reason: %s), "
+                    "though no value in it is readable\n", emptied[i], s ? "-" : err);
+            assert(0);
+        }
+        jv_free(j);
+    }
+    {
+        snode *s = num_schema(NUMS("\"exclusiveMinimum\":-2.2250738585072014e-308,"
+                                   "\"exclusiveMaximum\":2.2250738585072014e-308"));
+        assert(num_valid(s, "0") && num_valid(s, "-0") && !num_valid(s, "1e-310"));
+        schema_free(s);
+    }
+    // codex's read of 948c0cdb, 5: the terminator agrees with the decision in a
+    // directed rounding mode too (the engine never sets one; the answer must not
+    // depend on it): 0.4999999999999999999999 reads as 0.5 to nearest, and the
+    // decision admits it under [0.5, 0.5]
+    const int modes[] = { FE_DOWNWARD, FE_TOWARDZERO, FE_UPWARD };
+    for (size_t m = 0; m < sizeof(modes) / sizeof(*modes); m++) {
+        snode *s = num_schema(NUMS("\"minimum\":0.5,\"maximum\":0.5"));
+        int was = fegetround();
+        fesetround(modes[m]);
+        bool admits = num_admits(s, "0.4999999999999999999999");
+        bool valid = num_valid(s, "0.4999999999999999999999");
+        bool high = num_valid(s, "0.50000000000000005");
+        fesetround(was);
+        if (!admits || !valid || !high) {
+            fprintf(stderr, "R2.19 rounding mode %d: 0.4999999999999999999999 admitted %d, valid %d; "
+                    "0.50000000000000005 valid %d\n", modes[m], admits, valid, high);
             assert(0);
         }
         schema_free(s);
