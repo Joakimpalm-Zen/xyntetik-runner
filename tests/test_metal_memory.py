@@ -19,7 +19,14 @@ in the output as a note. The two figures the test asserts on, after each
   It does NOT see the leak R6.17 fixed (all 14 pools removed: flat at
   1,966,080 bytes while the machine-wide figure grew 124 MB a cycle);
 - the process's own footprint (/health phys_footprint_bytes): 0.23 to 0.28 MB
-  of growth on a sound build, 5.7 MB with the pools removed.
+  of growth on a sound build, 5.7 MB with the pools removed;
+- the KV cache's host allocations (R3.68: one vm_allocate per cache, wrapped by
+  per-region no-copy buffers), counted where they are made and freed and
+  printed under the same seam: 0 left after every free. Neither figure above
+  sees an unload that releases the region buffers but not the allocation under
+  them: the device figure does not move, and at -c 256 the touched rows are
+  kilobytes, far under the footprint's margin. On a real model that is the
+  whole context's reservation leaked per load.
 
 test_every_entry_point_drains_its_own_pool keeps R6.17 out at the source.
 """
@@ -115,6 +122,14 @@ def test_this_process_returns_its_memory_across_unload(tmp_path):
     # live: the seam reported at every free, or the assertion below says nothing
     assert len(held) >= CYCLES, f"the seam reported {len(held)} frees for {CYCLES} unloads"
     held = held[-CYCLES:]
+    kv = [(int(n), int(b), int(made)) for n, b, made in re.findall(
+        r"(\d+) KV host allocations \((\d+) bytes\) remain after the model is freed, of (\d+) made", text)]
+    assert len(kv) >= CYCLES, f"the KV host count reported {len(kv)} frees for {CYCLES} unloads"
+    kv = kv[-CYCLES:]
+    # live: every load made its allocations, so the count below is of something
+    assert all(b[2] > a[2] for a, b in zip(kv, kv[1:])), f"no KV host allocation was counted between frees: {kv}"
+    assert all(n == 0 and b == 0 for n, b, _ in kv), \
+        f"KV host allocations outlived the model they belonged to (count, bytes, made): {kv}"
     if machine is not None and machine0 is not None:
         print(f"note: the machine-wide GPU driver figure moved {machine - machine0} MB across the cycles "
               "(every process on the machine counts there; not asserted)")
