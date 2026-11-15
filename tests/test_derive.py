@@ -1148,3 +1148,67 @@ def test_the_paired_test_corrects_its_variance_for_ties(runner_bin, tmp_path):
     assert abs(p0 - p) > 0.05 * p
     # and the reference script's own function agrees with the engine's
     assert gl.wilcoxon_signed_rank([o[0] - r[0] for o, r in zip(ours, other)])[1] == pytest.approx(p, rel=1e-9)
+
+
+# ---- second read of R4.46 (2026-11-15): three holes it found ----
+
+def test_a_failed_interval_gives_no_verdict(runner_bin, tmp_path):
+    """Rows exist, so the verdict must come from their interval. When the
+    interval cannot be computed (an allocation failure, stood in for by a
+    seam), derive stops: before this, the missing interval read as "a result
+    without rows" and the point estimate was used, so HEAVY_TAIL, which is not
+    decided, came out a pass."""
+    # the control: with the interval these rows are not decided
+    rec, _, _ = _derive_rows(runner_bin, tmp_path, HEAVY_TAIL)
+    assert rec["measurement"]["bar"]["verdict"] == "not_decided"
+    parent = make_parent(tmp_path, "p2")
+    hf = tmp_path / "hf"
+    out = tmp_path / "failed.gguf"
+    rc, so, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                        env={"RUNNER_GOLD_LOGITS": str(_rows_gold(tmp_path, HEAVY_TAIL)),
+                             "RUNNER_TEST_DERIVE_INTERVAL_FAIL": "1"})
+    assert rc != 0, so[-800:]
+    assert "test seam: RUNNER_TEST_DERIVE_INTERVAL_FAIL" in se and "no verdict is given without it" in se, se[-800:]
+    assert "passes the bar" not in so and not pathlib.Path(str(out) + ".derive.json").exists()
+
+
+def test_a_compared_file_gets_its_verdict_from_its_own_interval(runner_bin, tmp_path):
+    """--compare gives the other file a verdict too. It comes from that file's
+    interval over the shared positions, not from its two point estimates: a
+    side whose mean is under the bar by a tail the window happened to miss is
+    "not decided", in the record and on the card."""
+    n = 300
+    ours = [(0.008 + 0.0001 * (i % 9), True) for i in range(n)]
+    tail = [(0.0005, True)] * 290 + [(1.2, True)] * 10          # mean 0.0405: a pass as a point
+    bad = [(0.19 + 0.001 * (i % 11), True) for i in range(n)]
+    good = [(0.004, True)] * n
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    script = tmp_path / "fake_gold_rows.py"
+    script.write_text("import shutil, sys\na = sys.argv\n"
+                      f"shutil.copy({str(tmp_path / 'ours.json')!r}, a[a.index('--out') + 1])\n")
+    ours_g = _fake_gold_rows(tmp_path, "ours.json", ours)
+    d = json.loads(ours_g.read_text())
+    d["summary"]["sides"]["a"].update({"max_kld_vs_gold": 0.0088, "top1_agreement_pct": 100.0,
+                                       "margin_qualified_top1_pct": 100.0})
+    ours_g.write_text(json.dumps(d))
+    two = _fake_gold_rows(tmp_path, "two.json", tail, bad)
+    one = _fake_gold_rows(tmp_path, "one.json", good)
+    out = tmp_path / "cmpv.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                       "--compare", f"tail file={two}:a:300000", "--compare", f"bad file={two}:b:300000",
+                       "--compare", f"good file={one}:a:300000", env={"RUNNER_GOLD_LOGITS": str(script)})
+    assert rc == 0, se[-1500:]
+    by = {c["label"]: c for c in json.loads(pathlib.Path(str(out) + ".derive.json").read_text())["comparisons"]}
+    # the control for the case: as two points the tail file passes the bar
+    assert by["tail file"]["mean_kld"] <= 0.05 and by["tail file"]["margin_qualified_top1_pct"] >= 97.0
+    assert (by["tail file"]["bar_verdict"], by["tail file"]["fails_bar"]) == ("not_decided", False)
+    assert (by["bad file"]["bar_verdict"], by["bad file"]["fails_bar"]) == ("fail", True)
+    assert (by["good file"]["bar_verdict"], by["good file"]["fails_bar"]) == ("pass", False)
+    lines = {l.split("](")[0]: l for l in pathlib.Path(str(out) + ".README.md").read_text().splitlines()
+             if l.startswith("- ")}
+    line = lambda label: next(l for l in lines.values() if label in l)
+    assert "Whether that file passes the bar is not decided at these positions." in line("tail file")
+    assert "That file fails the bar." in line("bad file")
+    assert "the bar" not in line("good file")

@@ -575,3 +575,45 @@ def test_fit_reads_every_part_of_a_split_model(runner_bin, tmp_path):
     p = run(runner_bin, "--fit", str(parts[0]), "--gpu", "off", "-c", "512")
     assert p.returncode != 0 and b"part 2/2" in p.stderr, (p.stdout, p.stderr)
     assert b"verdict" not in p.stdout or b"WILL NOT LOAD" not in p.stdout
+
+
+def test_fit_on_a_split_model_reads_no_tensor_data(runner_bin, tmp_path):
+    """The fit check must answer before the bandwidth is spent, for a split
+    model too: each part cut down to its header gives the report the whole
+    files give. (A second read found that the split test above used complete
+    parts, so a header read that opened the parts with their data would have
+    passed it.)"""
+    if not FIXTURE.exists():
+        pytest.skip("test.gguf not generated")
+    prefix = tmp_path / "shards"
+    subprocess.run([sys.executable, ROOT / "scripts/gguf-split.py", str(FIXTURE), str(prefix), "2"],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    parts = sorted(tmp_path.glob("shards-0000?-of-00002.gguf"))
+    whole = [l for l in run(runner_bin, "--fit", str(parts[0]), "--gpu", "off", "-c", "512").stdout.decode().splitlines()
+             if not l.startswith(("fit:", "  available RAM", "  verdict"))]
+    assert len(whole) >= 4
+
+    def fits(path):
+        return run(runner_bin, "--fit", str(path), "--gpu", "off", "-c", "512").returncode == 0
+
+    # cut each part to the shortest prefix that still opens (its header), found by halving
+    cuts = {}
+    for p in parts:
+        data = p.read_bytes()
+        lo, hi = 0, len(data)                       # the header ends in (lo, hi]
+        while hi - lo > 64:
+            mid = (lo + hi) // 2
+            p.write_bytes(data[:mid])
+            lo, hi = (lo, mid) if fits(parts[0]) else (mid, hi)
+        p.write_bytes(data[:hi])
+        cuts[p.name] = (hi, len(data))
+        # a real cut: most of the part, its tensor data, is gone
+        assert hi < len(data) - 4096, cuts
+    got = run(runner_bin, "--fit", str(parts[0]), "--gpu", "off", "-c", "512")
+    assert got.returncode == 0, (got.stdout, got.stderr, cuts)
+    lines = [l for l in got.stdout.decode().splitlines()
+             if not l.startswith(("fit:", "  available RAM", "  verdict"))]
+    assert lines == whole, cuts
+    # and the loader still refuses the cut set: the header read did not weaken it
+    p = run(runner_bin, "-m", str(parts[0]), "-p", "hi", "-n", "1", "--gpu", "off")
+    assert p.returncode != 0
