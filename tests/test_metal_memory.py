@@ -26,7 +26,9 @@ in the output as a note. The two figures the test asserts on, after each
   sees an unload that releases the region buffers but not the allocation under
   them: the device figure does not move, and at -c 256 the touched rows are
   kilobytes, far under the footprint's margin. On a real model that is the
-  whole context's reservation leaked per load.
+  whole context's reservation leaked per load. Measured with that unload: 2
+  allocations (65,536 bytes) more left after each cycle while the device figure
+  stayed at 917,504 bytes; on a sound build 0 left after every free.
 
 test_every_entry_point_drains_its_own_pool keeps R6.17 out at the source.
 """
@@ -126,6 +128,7 @@ def test_this_process_returns_its_memory_across_unload(tmp_path):
         r"(\d+) KV host allocations \((\d+) bytes\) remain after the model is freed, of (\d+) made", text)]
     assert len(kv) >= CYCLES, f"the KV host count reported {len(kv)} frees for {CYCLES} unloads"
     kv = kv[-CYCLES:]
+    print(f"note: device bytes after each free {held}; KV host allocations left, bytes, made {kv}")
     # live: every load made its allocations, so the count below is of something
     assert all(b[2] > a[2] for a, b in zip(kv, kv[1:])), f"no KV host allocation was counted between frees: {kv}"
     assert all(n == 0 and b == 0 for n, b, _ in kv), \
