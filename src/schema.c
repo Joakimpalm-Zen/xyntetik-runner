@@ -2430,11 +2430,18 @@ static bool num_witness_exp(const snode *n, const char *t, uint8_t st, const num
     double m = fabs(strtod(mt, NULL)), a, b;
     num_side(n, p->neg, &a, &b);
     if (!(m > 0) || a > b) return false;
-    // the scale k with m * 10^k inside [a, b], a little wider for rounding
-    double klo = a > 0 ? floor(log10(a / m)) - 1 : -400;
-    double khi = b >= DBL_MAX ? 400 : ceil(log10(b / m)) + 1;
-    if (klo < -400) klo = -400;
-    if (khi > 400) khi = 400;
+    // the scale k with m * 10^k inside [a, b], a little wider for rounding.
+    // As a difference of logarithms, never log10(a / m): a quotient of a
+    // large bound by a tiny mantissa overflows to infinity, and an infinite
+    // scale cast to long sent the loops below through the signed range. Past
+    // +-400 no exponent can land a mantissa that fits inside the doubles.
+    double lm = log10(m);
+    double klo = a > 0 ? floor(log10(a) - lm) - 1 : -400;
+    double khi = b >= DBL_MAX ? 400 : ceil(log10(b) - lm) + 1;
+    if (!(klo >= -400)) klo = -400;
+    if (!(klo <= 400)) klo = 400;
+    if (!(khi <= 400)) khi = 400;
+    if (!(khi >= -400)) khi = -400;
     const char *ed = p->exp_digits;
     while (*ed == '0') ed++;                          // leading zeros allow any exponent
     long pref = 0; int plen = (int)strlen(ed);
@@ -2518,7 +2525,9 @@ static bool num_witness_mant(const snode *n, const char *t, uint8_t st, const nu
         snprintf(mt, sizeof(mt), "%s%s", t, body);
         double vw = fabs(strtod(mt, NULL));
         if (!(vw > 0)) return false;
-        double xlo = ceil(log10(a / vw)), xhi = floor(log10(b / vw));
+        // logarithms apart, never a quotient that can overflow (above)
+        double lv = log10(vw), xlo = ceil(log10(a) - lv), xhi = floor(log10(b) - lv);
+        if (!(xlo <= 400 && xhi >= -400)) return false;   // no exponent reaches it
         long x0 = xlo > 0 ? (long)xlo : xhi < 0 ? (long)xhi : 0;
         for (long x = x0 - 1; x <= x0 + 1 && !witness_over; x++) {   // either side, for rounding
             char suf[32];
@@ -2548,7 +2557,9 @@ static bool num_witness_mant(const snode *n, const char *t, uint8_t st, const nu
             if (st == N_MINUS && !*rest) continue;
             double vw = fabs(strtod(mt, NULL));
             if (!(vw > 0)) continue;
-            long x0 = lround(log10(tau / vw));
+            double xs = log10(tau) - log10(vw);   // never log10(tau / vw) (above)
+            if (!(xs > -400 && xs < 400)) break;  // no exponent lands this target
+            long x0 = lround(xs);
             for (long x = x0 - 1; x <= x0 + 1 && !witness_over; x++) {
                 char suf[sizeof(mt) + 32];   // the body, e, and a long's digits
                 const char *body = mt + strlen(t);
