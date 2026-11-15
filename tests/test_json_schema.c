@@ -1658,6 +1658,9 @@ static void test_schema_number_prefix_fits_the_buffer(void) {
         // toward the largest (bounds are JSON-safe, so 1e15 is about as far
         // as one goes): 0.111... takes e16, so 92 bytes are the most
         { "{\"type\":\"number\",\"minimum\":1e15}", "0.", '1', 93 },
+        // zeros: 0. and 88 of them still take 1e104 (95 bytes); the 89th is
+        // refused at byte 91 (the earlier witness's runaway was this fraction)
+        { "{\"type\":\"number\",\"minimum\":1e15}", "0.", '0', 91 },
         // two decades: 91 nines take e-89 (99.9...)
         { "{\"type\":\"number\",\"minimum\":1,\"maximum\":100}", "", '9', 92 },
         // unbounded: a complete spelling fills the buffer, number_put stops it
@@ -1712,34 +1715,120 @@ static void test_schema_number_prefix_fits_the_buffer(void) {
            sizeof(runs) / sizeof(*runs));
 }
 
-// R2.19: a completion that lands exactly on a bound is admitted on every
-// platform. The witness builds its target windows with pow and log10, which
-// gcc's -ffast-math x86 build computes a few ulp off: a window whose edge fell
-// one ulp past the bound came out empty, and the Linux and Windows builds
-// refused "9" under [1e15, 9e15] (9e15 is the maximum) and long runs after it.
-static void test_schema_number_completions_on_a_bound(void) {
-    struct { const char *schema, *prefix; } cases[] = {
-        { "{\"type\":\"number\",\"minimum\":1e15,\"maximum\":9e15}", "9" },
-        { "{\"type\":\"number\",\"minimum\":1e15,\"maximum\":9e15}", "0.9" },
-        { "{\"type\":\"number\",\"minimum\":1e15,\"maximum\":9e15}", "0.000009" },
-        { "{\"type\":\"number\",\"minimum\":1e15,\"maximum\":9e15}", "1000000000000000000" },
-        { "{\"type\":\"number\",\"minimum\":-9e15,\"maximum\":-1e15}", "-9" },
-        { "{\"type\":\"number\",\"minimum\":-9e15,\"maximum\":-1e15}", "-0.9" },
-        { "{\"type\":\"number\",\"maximum\":1e-300}", "1000000000" },
-        { "{\"type\":\"number\",\"maximum\":1e-300}", "10000000000000000000000000" },
-        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "6" },
-        { "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}", "0.6" },
+// R2.19: every prefix this validator has decided wrong, in one table, each
+// with the answer the exact decimal decision gives on every platform and in
+// every float mode. Earlier witnesses built their candidates with doubles
+// (pow and log10, then correctly rounded targets) and refused prefixes that
+// had completions: on a bound under gcc's x86 build, past 16 significant
+// digits, after a long fraction of zeros, and in codex's read of 4aac6431
+// (the first five groups). An admitted prefix must also close inside.
+static void test_schema_number_cases_it_got_wrong(void) {
+#define NUMS(b) "{\"type\":\"number\"," b "}"
+    struct { const char *schema, *prefix; bool admit; } cases[] = {
+        // codex 1: 1 completes to 1.1, and 0 to 0.11e1
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "1", true },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "0", true },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "1.15", true },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "12e-1", true },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "2", false },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "1.3", false },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "13e-1", false },
+        { NUMS("\"minimum\":1.1,\"maximum\":1.2"), "-", false },
+        // codex 2: 4.9999999999999999e-1 reads as exactly 0.5
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "4", true },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "4.99999999999999", true },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "4.9999999999999999", true },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "0.50000000000000005", true },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "0.5000000000000001", false },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "4.8", false },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.5"), "6", false },
+        // codex 3: 0. and 92 zeros take a 1 in the 95th byte
+        { NUMS("\"exclusiveMinimum\":0,\"maximum\":1"),
+          "0.00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", true },
+        { NUMS("\"exclusiveMinimum\":0,\"maximum\":1"),
+          "0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", false },
+        // codex 4: 49e-309 sits between the strict bounds in any float mode
+        { NUMS("\"exclusiveMinimum\":4.81e-308,\"exclusiveMaximum\":4.99e-308"), "4", true },
+        { NUMS("\"exclusiveMinimum\":4.81e-308,\"exclusiveMaximum\":4.99e-308"), "49e-309", true },
+        { NUMS("\"exclusiveMinimum\":4.81e-308,\"exclusiveMaximum\":4.99e-308"), "4.8", true },
+        { NUMS("\"exclusiveMinimum\":4.81e-308,\"exclusiveMaximum\":4.99e-308"), "5", false },
+        { NUMS("\"exclusiveMinimum\":4.81e-308,\"exclusiveMaximum\":4.99e-308"), "4.81e-308", false },
+        // codex 5: 0 closes to 0.5e-299 whatever a compiler does with sqrt
+        { NUMS("\"exclusiveMinimum\":4e-300,\"exclusiveMaximum\":6e-300"), "0", true },
+        { NUMS("\"exclusiveMinimum\":4e-300,\"exclusiveMaximum\":6e-300"), "0.5e-299", true },
+        { NUMS("\"exclusiveMinimum\":4e-300,\"exclusiveMaximum\":6e-300"), "0.4", true },
+        { NUMS("\"exclusiveMinimum\":4e-300,\"exclusiveMaximum\":6e-300"), "0.6e-299", false },
+        // completions exactly on a bound (gcc's x86 build refused them)
+        { NUMS("\"minimum\":1e15,\"maximum\":9e15"), "9", true },
+        { NUMS("\"minimum\":1e15,\"maximum\":9e15"), "0.9", true },
+        { NUMS("\"minimum\":1e15,\"maximum\":9e15"), "0.000009", true },
+        { NUMS("\"minimum\":1e15,\"maximum\":9e15"), "1000000000000000000", true },
+        { NUMS("\"minimum\":-9e15,\"maximum\":-1e15"), "-9", true },
+        { NUMS("\"minimum\":-9e15,\"maximum\":-1e15"), "-0.9", true },
+        { NUMS("\"maximum\":1e-300"), "1000000000", true },
+        { NUMS("\"maximum\":1e-300"), "10000000000000000000000000", true },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.6"), "6", true },
+        { NUMS("\"minimum\":0.5,\"maximum\":0.6"), "0.6", true },
+        // a 17-digit significand (no double target spelled it)
+        { NUMS("\"minimum\":1e15,\"maximum\":9e15"), "19999999999999997", true },
+        // the smallest normal, not 1e-300, is where the doubles' range ends
+        { NUMS("\"maximum\":1e-300"), "0.2", true },
+        // a minus under an inclusive minimum of 0: -0 is 0 (the oracle's first find)
+        { NUMS("\"minimum\":0"), "-", true },
+        { NUMS("\"minimum\":0,\"maximum\":1"), "-0.0", true },
+        { NUMS("\"exclusiveMinimum\":0"), "-", false },
+        { NUMS("\"minimum\":1e-9"), "-", false },
+        // R2.19's subnormal rule, both signs: a value in 0 < |x| < 2^-1022 is
+        // refused on every platform, so only digits that reach 2^-1022 itself
+        // (2.2250738585072013830...e-308) complete a point interval there
+        { NUMS("\"minimum\":2.2250738585072014e-308,\"maximum\":2.2250738585072014e-308"), "2.2250738585072013", true },
+        { NUMS("\"minimum\":2.2250738585072014e-308,\"maximum\":2.2250738585072014e-308"), "2.2250738585072012", false },
+        { NUMS("\"minimum\":-2.2250738585072014e-308,\"maximum\":-2.2250738585072014e-308"), "-2.2250738585072013", true },
+        { NUMS("\"minimum\":-2.2250738585072014e-308,\"maximum\":-2.2250738585072014e-308"), "-2.2250738585072012", false },
     };
+    int admitted = 0;
     for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
         snode *s = num_schema(cases[i].schema);
-        if (!num_admits(s, cases[i].prefix) || !num_closes_valid(s, cases[i].prefix)) {
-            fprintf(stderr, "R2.19 on a bound: %s refuses %s (or closes it outside), whose completion is the bound\n",
-                    cases[i].schema, cases[i].prefix);
+        bool got = num_admits(s, cases[i].prefix);
+        if (got != cases[i].admit || (got && !num_closes_valid(s, cases[i].prefix))) {
+            fprintf(stderr, "R2.19 case: %s with prefix %s: admitted %d (want %d), closes inside %d\n",
+                    cases[i].schema, cases[i].prefix, got, cases[i].admit, got && num_closes_valid(s, cases[i].prefix));
+            assert(0);
+        }
+        admitted += got;
+        schema_free(s);
+    }
+    // the subnormal rule on whole documents, both signs: refused whether the
+    // parser reports ERANGE (glibc), rounds up to 2^-1022 (macOS: 2.22...12e-308),
+    // or a flushing mode would compare what it returns as 0
+    struct { const char *schema, *doc; bool ok; } docs[] = {
+        { NUMS("\"maximum\":1"), "1e-310", false },
+        { NUMS("\"maximum\":1"), "4.9e-324", false },
+        { NUMS("\"maximum\":1"), "2.2250738585072012e-308", false },
+        { NUMS("\"maximum\":1"), "1e-400", false },
+        { NUMS("\"maximum\":1"), "2.2250738585072014e-308", true },
+        { NUMS("\"maximum\":1"), "0e-400", true },
+        { NUMS("\"maximum\":1"), "0", true },
+        { NUMS("\"minimum\":-1"), "-1e-310", false },
+        { NUMS("\"minimum\":-1"), "-4.9e-324", false },
+        { NUMS("\"minimum\":-1"), "-2.2250738585072012e-308", false },
+        { NUMS("\"minimum\":-1"), "-1e-400", false },
+        { NUMS("\"minimum\":-1"), "-2.2250738585072014e-308", true },
+        { NUMS("\"minimum\":-1"), "-0", true },
+    };
+    for (size_t i = 0; i < sizeof(docs) / sizeof(*docs); i++) {
+        snode *s = num_schema(docs[i].schema);
+        if (num_valid(s, docs[i].doc) != docs[i].ok) {
+            fprintf(stderr, "R2.19 subnormal rule: %s accepts %s: %d, want %d\n",
+                    docs[i].schema, docs[i].doc, !docs[i].ok, docs[i].ok);
             assert(0);
         }
         schema_free(s);
     }
-    printf("ok: completions that land exactly on a bound are admitted (%zu cases)\n", sizeof(cases) / sizeof(*cases));
+#undef NUMS
+    printf("ok: every number prefix this validator decided wrong is decided exactly "
+           "(%zu prefixes, %d admitted; %zu documents for the subnormal rule)\n",
+           sizeof(cases) / sizeof(*cases), admitted, sizeof(docs) / sizeof(*docs));
 }
 
 // R2.19: the witness's work per byte is bounded, as WORK (num_try calls,
@@ -4454,7 +4543,7 @@ int main(void) {
     test_schema_number_prefix_stays_completable();
     test_schema_number_prefix_fits_the_buffer();
     test_schema_number_witness_work_is_bounded();
-    test_schema_number_completions_on_a_bound();
+    test_schema_number_cases_it_got_wrong();
     test_schema_merges_enum_and_const_anyof();
     test_dump_keeps_integer_literals();
     test_schema_enum_keeps_a_large_integer();
