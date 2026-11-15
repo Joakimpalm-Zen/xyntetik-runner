@@ -4074,18 +4074,19 @@ static void eq_utf8(emitq *q, sframe *f) {
     for (int i = 0; i < n; i++) eq_putc(q, u8[i]);
 }
 
-// Minimal in-bounds number fill, emitted as CHECKED text: 0 when the bounds
-// allow it, else the interval's edge nearest zero, one ULP inside it when
-// the bound is exclusive. For exclusiveMinimum:0 that edge is the smallest
-// subnormal (4.94e-324), which json_parse refuses (ERANGE) and a flushing
-// float mode reads as 0 (R2.20: x86 wrote 0 here), so every candidate is
-// judged as text by the shared predicate, never as a double against 0. When
-// the edge spelling fails it, scan decimal magnitudes for the smallest
-// spelling that is both parseable and in bounds. A schema whose entire
-// interval is unparseable (both edges subnormal) has no such spelling; the
-// edge is emitted as the honest best effort.
-static void emit_min_number(emitq *q, const snode *n) {
-    if (number_text_in_bounds(n, "0")) { eq_putc(q, '0'); return; }
+// The fill a bounded number gets when none of it is written: a forced close
+// (emit_min_number) and, through schema_fill, the atem recovery of a cut-off
+// argument (template.c). It is 0 when the bounds allow it, else the
+// edge nearest 0 (one double inside an exclusive one) as %.17g writes it, each
+// checked by the exact terminator. Else (an edge at a strict 0, whose first
+// double inside is a subnormal no bounded number takes) it is the exact
+// witness's shortest completion from nothing (R2.19.1). That one source of truth
+// replaces the candidate scans that stood here (1e<k>, the far edge, one-digit
+// decimals). The witness exists for every interval that compiles:
+// compile_number_bounds refuses the empty ones, the subnormal band's included.
+// false leaves the edge's spelling in out, the honest best effort.
+static bool number_fill(const snode *n, char *out, size_t cap) {
+    if (number_text_in_bounds(n, "0")) { snprintf(out, cap, "0"); return true; }
     // 0 is outside, so the whole interval lies on one side of it
     bool up = n->has_real_min && n->real_min >= 0;
     double v = up ? n->real_min : n->real_max;
@@ -4093,36 +4094,15 @@ static void emit_min_number(emitq *q, const snode *n) {
         v = nextafter(v, up ? DBL_MAX : -DBL_MAX);
     char b[40];
     snprintf(b, sizeof(b), "%.17g", v);
-    if (!number_text_in_bounds(n, b)) {
-        char cand[40];
-        for (int mag = -307; mag <= 308; mag++) {
-            for (int sign = 1; sign >= -1; sign -= 2) {
-                snprintf(cand, sizeof(cand), "%s1e%d",
-                         sign < 0 ? "-" : "", mag);
-                if (number_text_in_bounds(n, cand)) {
-                    eq_put(q, cand);
-                    return;
-                }
-            }
-        }
-        // An interval too narrow for a power of ten, next to zero: under
-        // (0, 5e-308] the readable values lie between the smallest normal
-        // number and the far bound. Try the far edge (one step inside when
-        // exclusive), then every one-digit decimal from the smallest scale up.
-        if (up ? n->has_real_max : n->has_real_min) {
-            double far = up ? n->real_max : n->real_min;
-            if (up ? n->real_max_strict : n->real_min_strict)
-                far = nextafter(far, up ? -DBL_MAX : DBL_MAX);
-            snprintf(cand, sizeof(cand), "%.17g", far);
-            if (number_text_in_bounds(n, cand)) { eq_put(q, cand); return; }
-        }
-        for (int mag = -308; mag <= 308; mag++) {
-            for (int m = 2; m <= 9; m++) {
-                snprintf(cand, sizeof(cand), "%s%de%d", up ? "" : "-", m, mag);
-                if (number_text_in_bounds(n, cand)) { eq_put(q, cand); return; }
-            }
-        }
-    }
+    if (number_text_in_bounds(n, b)) { snprintf(out, cap, "%s", b); return true; }
+    if (number_witness(n, "", N_START, out, cap)) return true;
+    snprintf(out, cap, "%s", b);
+    return false;
+}
+
+static void emit_min_number(emitq *q, const snode *n) {
+    char b[NUM_ROOM + 2];
+    (void)number_fill(n, b, sizeof(b));
     eq_put(q, b);
 }
 
@@ -4657,6 +4637,66 @@ char *sval_close_alloc(sval *v, int *len, int max) {
     emitq q = { buf, cap, 0, v->depth + 2, true, max };
     *len = sval_close_q(v, &q);
     return q.out;
+}
+
+// The value a forced close writes where none of a schema's value is written
+// (emit_min_choice on the compiled node), for a caller that needs that
+// decision outside a document: the atem recovery of a cut-off argument
+// (template.c), so the two closers write one fill (R2.19.1). The schema is
+// read as schema_compile reads it, local $refs inlined and a one-member allOf
+// collapsed, so a number behind either is the number it wraps, and a const or
+// an enum writes its first member. 1 only with a value the compiled schema's
+// own validator accepts, whole with its NUL in out. 0 only when there is no
+// schema. -1 when there is no checked value to give: the compiler refused the
+// schema, an allocation failed anywhere inside (the compile, the emitter, the
+// check), the buffer is NULL or its capacity under 1, or the fill does not fit
+// (one of a MiB or more never does). A refusal and an allocation failure are
+// not told apart, because the compiler's own words cannot be trusted for it:
+// the pattern compiler reports an allocation failure as "more than 4096
+// automaton states" (codex on #897). out is empty unless 1 is returned,
+// wherever it has room for the NUL.
+static bool fill_accepted(const snode *n, const char *s, int len) {
+    sval v;
+    sval_init(&v, n);
+    bool ok = sval_feed(&v, s, len);
+    if (ok && !v.done) (void)sval_feed(&v, " ", 1);   // a bare number ends here
+    return ok && v.done;
+}
+
+int schema_fill(struct jv *schema, char *out, int cap) {
+    if (!out || cap <= 0) return -1;
+    out[0] = 0;
+    if (!schema) return 0;
+    char err[200];
+    snode *n = schema_compile(schema, err, (int)sizeof(err));
+    if (!n) return -1;
+    // one byte past the caller's room: a fill that reaches it does not fit
+    int room = cap < (1 << 20) ? cap : (1 << 20);
+    char *buf = malloc((size_t)room + 1);
+    int rc = -1;
+    if (buf) {
+        emitq q = { buf, room + 1, 0, 0, false, room + 1 };
+        emit_min_choice(&q, n, 0, 0);
+        buf[q.n] = 0;
+        // an emitter that lost an allocation (a pattern's witness) writes a
+        // value short of the schema, "" under ^(a|b)$: the validator is the
+        // judge, not the length
+        if (q.n < room && fill_accepted(n, buf, q.n)) {
+            memcpy(out, buf, (size_t)q.n + 1);
+            rc = 1;
+        }
+        free(buf);
+    }
+    schema_free(n);
+    return rc;
+}
+
+// Every allocation failure in the compiler and in the local $ref resolution
+// reports itself as "out of memory ..." (schema_compile_raw names one that
+// unwound as a bare NULL), and no refusal does; the tools form puts the
+// tool's name in front, so this reads the single-schema entries' err.
+bool schema_err_oom(const char *err) {
+    return err && !strncmp(err, "out of memory", 13);
 }
 
 // ------------------------------------------------ local $ref inlining (R2.9.2)

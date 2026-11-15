@@ -6739,21 +6739,25 @@ static const char *atem_invoke_close(const char *inv, const char *end) {
     return NULL;
 }
 
-static jv *atem_param_schema(const tool_envelope *e,
-                             const char *tool, size_t tool_n,
-                             const char *param, size_t param_n) {
-    if (!e || !e->tools || e->tools->type != J_ARR) return NULL;
-    for (int i = 0; i < e->tools->n; i++) {
-        jv *fn = jv_get(e->tools->items[i], "function");
-        if (!fn) fn = e->tools->items[i];
+// The invoked tool's declared parameters, as sent.
+static jv *atem_tool_params(jv *tools, const char *tool, size_t tool_n) {
+    if (!tools || tools->type != J_ARR) return NULL;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
         const char *name = jv_str(jv_get(fn, "name"), "");
-        if (strlen(name) != tool_n || memcmp(name, tool, tool_n)) continue;
-        jv *props = jv_get(jv_get(fn, "parameters"), "properties");
-        if (!props || props->type != J_OBJ) return NULL;
-        for (int k = 0; k < props->n; k++)
-            if (strlen(props->keys[k]) == param_n &&
-                !memcmp(props->keys[k], param, param_n)) return props->items[k];
+        if (strlen(name) == tool_n && !memcmp(name, tool, tool_n))
+            return jv_get(fn, "parameters");
     }
+    return NULL;
+}
+
+static jv *atem_param_schema(jv *params, const char *param, size_t param_n) {
+    jv *props = jv_get(params, "properties");
+    if (!props || props->type != J_OBJ) return NULL;
+    for (int k = 0; k < props->n; k++)
+        if (strlen(props->keys[k]) == param_n &&
+            !memcmp(props->keys[k], param, param_n)) return props->items[k];
     return NULL;
 }
 
@@ -6775,86 +6779,30 @@ static const char *atem_enum_recovery(jv *choices, const char *raw,
     return best;
 }
 
-// Does the spelling read back (json_parse's own reader) inside every bound
-// the schema declares, the exclusive ones strictly?
-static bool atem_number_fits(jv *schema, const char *spelling) {
-    double x;
-    if (!json_number_text_ok(spelling, &x)) return false;
-    jv *b = jv_get(schema, "minimum");
-    if (b && b->type == J_NUM && !(x >= b->num)) return false;
-    b = jv_get(schema, "exclusiveMinimum");
-    if (b && b->type == J_NUM && !(x > b->num)) return false;
-    b = jv_get(schema, "maximum");
-    if (b && b->type == J_NUM && !(x <= b->num)) return false;
-    b = jv_get(schema, "exclusiveMaximum");
-    if (b && b->type == J_NUM && !(x < b->num)) return false;
-    return true;
-}
-
-static void atem_number_recovery(sbuf *out, jv *schema, bool integer) {
-    double value = 0.0;
-    jv *bound = jv_get(schema, "minimum");
-    if (bound && bound->type == J_NUM && value < bound->num)
-        value = integer ? ceil(bound->num) : bound->num;
-    bound = jv_get(schema, "exclusiveMinimum");
-    // HUGE_VAL, not the INFINITY macro: the build carries
-    // -Werror=nan-infinity-disabled under -ffast-math (Apple Clang enforces
-    // it; GCC has no such warning, which is how this slipped through the
-    // Linux-only night gates).
-    if (bound && bound->type == J_NUM && value <= bound->num)
-        value = integer ? floor(bound->num) + 1.0
-                        : nextafter(bound->num, HUGE_VAL);
-    bound = jv_get(schema, "maximum");
-    if (bound && bound->type == J_NUM && value > bound->num)
-        value = integer ? floor(bound->num) : bound->num;
-    bound = jv_get(schema, "exclusiveMaximum");
-    if (bound && bound->type == J_NUM && value >= bound->num)
-        value = integer ? ceil(bound->num) - 1.0
-                        : nextafter(bound->num, -HUGE_VAL);
-    char b[40];
-    snprintf(b, sizeof(b), integer ? "%.0f" : "%.17g", value);
-    // One ULP from an exclusive bound at 0 is the smallest subnormal: a
-    // spelling json_parse refuses (ERANGE), and one a flushing float mode
-    // reads as 0, as it may the nextafter itself (R2.20). The spelling is
-    // judged by reading it back against the bounds, and where it fails the
-    // nearest decimals that read back stand in for it.
-    if (!integer && !atem_number_fits(schema, b)) {
-        if (atem_number_fits(schema, "1e-307")) snprintf(b, sizeof(b), "1e-307");
-        else if (atem_number_fits(schema, "-1e-307")) snprintf(b, sizeof(b), "-1e-307");
-        else {
-            // An interval too narrow for 1e-307, next to zero: under
-            // (0, 5e-308] the readable values lie between the smallest normal
-            // number and the far bound. Try each bound as written (one step
-            // inside an exclusive one), then one-digit decimals from the
-            // smallest scale up, on either side.
-            static const char *const keys[4] = { "maximum", "minimum", "exclusiveMaximum", "exclusiveMinimum" };
-            char cand[40];
-            bool found = false;
-            for (int k = 0; k < 4 && !found; k++) {
-                jv *bd = jv_get(schema, keys[k]);
-                if (!bd || bd->type != J_NUM) continue;
-                double e = bd->num;
-                if (k == 2) e = nextafter(e, -HUGE_VAL);
-                if (k == 3) e = nextafter(e, HUGE_VAL);
-                snprintf(cand, sizeof(cand), "%.17g", e);
-                found = atem_number_fits(schema, cand);
-            }
-            for (int mag = -308; mag <= 308 && !found; mag++)
-                for (int m = 1; m <= 9 && !found; m++)
-                    for (int sign = 1; sign >= -1 && !found; sign -= 2) {
-                        snprintf(cand, sizeof(cand), "%s%de%d", sign < 0 ? "-" : "", m, mag);
-                        found = atem_number_fits(schema, cand);
-                    }
-            if (found) snprintf(b, sizeof(b), "%s", cand);
-        }
-    }
+// A cut-off number or integer argument is replaced by the value a forced
+// close writes for the same parameter (schema_fill, R2.19.1: 0 when the
+// bounds allow it, else the edge nearest 0, else the exact witness; a const's
+// or an enum's first member), read from the parameter as the compiler reads
+// it, so the recovery and the validator read one decision. False when there
+// is no value the parameter's compiled schema accepts: an allocation failed,
+// or the compiler refuses the schema. The call then fails, as it does on
+// every other error, and no value is guessed in its place (the old best
+// effort for a refused schema, 0 or 0 clamped into the raw bounds, was a value
+// nothing had checked).
+static bool atem_number_recovery(sbuf *out, jv *schema) {
+    char b[512];
+    if (schema_fill(schema, b, (int)sizeof(b)) != 1) return false;
     sb_fmt(out, "%s", b);
+    return true;
 }
 
 static int atem_map(const tool_envelope *e, const char *doc, size_t n,
                     sbuf *content, sbuf *tc) {
+    jv *tools = e ? e->tools : NULL;
     const char *p = doc, *end = doc + n;
     int calls = 0;
+    sbuf args = {0};
+    jv *own = NULL;
     while (p < end) {
         const char *inv = atem_find(p, end, "<atem:invoke name=\"");
         if (!inv || inv >= end) break;
@@ -6865,7 +6813,21 @@ static int atem_map(const tool_envelope *e, const char *doc, size_t n,
         const char *inv_end = open_end ? atem_invoke_close(inv, end) : NULL;
         if (!open_end || !inv_end || inv_end > end) return -1;
 
-        sbuf args = {0};
+        // The invoked tool's parameters as the compiler reads them (R2.19.1):
+        // local $refs inlined and a one-member allOf collapsed, the resolution
+        // the atem grammar compiles from, so a parameter behind a $ref or a
+        // wrapper is typed and recovered as the schema it resolves to.
+        // Parameters that do not resolve (a remote or recursive reference)
+        // are read as sent; an allocation failure fails the call instead, or
+        // a $ref'd number would be read as an untyped string.
+        jv *decl = atem_tool_params(tools, name, (size_t)(name_end - name));
+        if (decl) {
+            char why[160];
+            jv *r = schema_resolve_refs(decl, &own, why, (int)sizeof(why));
+            if (r) decl = r;
+            else if (schema_err_oom(why)) goto fail;
+        }
+        args = (sbuf){0};
         sb_lit(&args, "{");
         int params = 0;
         const char *q = open_end + 1;
@@ -6876,16 +6838,15 @@ static int atem_map(const tool_envelope *e, const char *doc, size_t n,
             const char *pn_end = NULL;
             const char *pn = atem_attr(par, inv_end, "name=", &pn_end);
             const char *val = pn_end ? atem_find(pn_end, inv_end, ">") : NULL;
-            if (!pn || !val || val >= inv_end) { free(args.s); return -1; }
+            if (!pn || !val || val >= inv_end) goto fail;
             val++;
             const char *close = atem_find(val, inv_end, "</atem:parameter>");
-            if (!close || close > inv_end) { free(args.s); return -1; }
+            if (!close || close > inv_end) goto fail;
             if (params++) sb_lit(&args, ",");
             sb_lit(&args, "\""); sb_esc(&args, pn, (size_t)(pn_end - pn));
             sb_lit(&args, "\":");
             size_t vn = (size_t)(close - val);
-            jv *ps = atem_param_schema(e, name, (size_t)(name_end - name),
-                                      pn, (size_t)(pn_end - pn));
+            jv *ps = atem_param_schema(decl, pn, (size_t)(pn_end - pn));
             const char *pt = jv_str(jv_get(ps, "type"), "string");
             bool json_value = !strcmp(pt, "object") || !strcmp(pt, "array") ||
                               !strcmp(pt, "integer") || !strcmp(pt, "number") ||
@@ -6901,7 +6862,7 @@ static int atem_map(const tool_envelope *e, const char *doc, size_t n,
                 else if (!strcmp(pt, "null")) sb_lit(&args, "null");
                 else if (!strcmp(pt, "object")) sb_lit(&args, "{}");
                 else if (!strcmp(pt, "array")) sb_lit(&args, "[]");
-                else atem_number_recovery(&args, ps, !strcmp(pt, "integer"));
+                else if (!atem_number_recovery(&args, ps)) goto fail;
             } else {
                 const char *sv = val;
                 size_t sn = vn;
@@ -6925,7 +6886,7 @@ static int atem_map(const tool_envelope *e, const char *doc, size_t n,
             q = close + strlen("</atem:parameter>");
         }
         sb_lit(&args, "}");
-        if (args.failed) { free(args.s); return -1; }
+        if (args.failed) goto fail;
         if (calls) sb_lit(tc, ",");
         sb_fmt(tc, "{\"id\":\"call_%d\",\"type\":\"function\","
                    "\"function\":{\"name\":\"", calls);
@@ -6934,12 +6895,19 @@ static int atem_map(const tool_envelope *e, const char *doc, size_t n,
         sb_esc(tc, args.s, args.n);
         sb_lit(tc, "\"}}");
         free(args.s);
+        args = (sbuf){0};
+        jv_free(own);
+        own = NULL;
         calls++;
         p = inv_end + strlen("</atem:invoke>");
     }
     // No invoke block: not a call. The direct answer (` to=user<|message|>`)
     // is the demultiplexer's to forward, the one reader of the turn's framing.
     return calls ? calls : -1;
+fail:
+    free(args.s);
+    jv_free(own);
+    return -1;
 }
 
 bool muse_user_payload_strip(sbuf *payload) {
@@ -8284,8 +8252,10 @@ static void head_put(tool_stream *s, const char *b, size_t n) {
     if (s->head_n + n + 1 > s->head_cap) {
         size_t cap = s->head_cap ? s->head_cap * 2 : 128;
         while (cap < s->head_n + n + 1) cap *= 2;
+        // a failed growth faults the turn: ending it as a clean one read an
+        // allocation failure as a turn with no call (codex on #897)
         char *tmp = realloc(s->head, cap);
-        if (!tmp) { s->state = TS_DONE; return; }
+        if (!tmp) { s->fault = true; s->state = TS_DONE; return; }
         s->head = tmp;
         s->head_cap = cap;
     }
@@ -9538,6 +9508,9 @@ static int map_call_args(void *ud, const char *b, int n) {
 }
 static int map_call_end(void *ud) {
     map_sink *m = ud;
+    // arguments whose buffer failed are not the call's: the mapping fails
+    // (tc's failure is what its callers read), never "arguments":""
+    if (m->args.failed) m->tc->failed = true;
     sb_esc(m->tc, m->args.s ? m->args.s : "", (int)m->args.n);
     sb_lit(m->tc, "\"}}");
     m->n++;
