@@ -628,7 +628,8 @@ static void test_schema_rejects_escaped_keys(void) {
 static void test_schema_rejects_unenforceable_keywords(void) {
     static const char *const bad[] = {
         "{\"type\":\"integer\",\"multipleOf\":2}",
-        "{\"allOf\":[{\"type\":\"string\"}]}",
+        // two members that each constrain (one member is that schema, R2.18.1)
+        "{\"allOf\":[{\"type\":\"string\"},{\"maxLength\":2}]}",
         "{\"not\":{\"type\":\"string\"}}",
         "{\"type\":\"array\",\"uniqueItems\":true}",
         "{\"type\":\"array\",\"prefixItems\":[{\"type\":\"string\"}]}",
