@@ -26,7 +26,7 @@ static long alloc_calls;   // allocations attempted since the last reset
 static long alloc_live;    // outstanding blocks; must return to its baseline
 static long fail_at = -1;  // index of the allocation to fail, -1 for none
 // and the bytes asked for, now and at the most, from a size header on every
-// block (R2.18: the per-schema cap on compiled automata is checked in bytes)
+// block (R2.18: the per-request cap on compiled automata is checked in bytes)
 static size_t bytes_live, bytes_high;
 
 static void *t_malloc(size_t n) {
@@ -157,7 +157,8 @@ static const char *const schemas[] = {
 // failed. Multi-range Unicode classes build several of them; every one of
 // their allocations is failed once, and nothing may be stranded.
 
-// R2.18: the bytes a schema's compiled pattern automata may hold, 64 MiB
+// R2.18: the bytes one request's compiled pattern automata may hold (a
+// schema, or a request's tools together), 64 MiB
 // (JSRE_SCHEMA_BYTES), counted as the schema compiles and refused by name past
 // it, so a request's schema cannot make the server hold more however many
 // patterns it carries. Each property here is ^(a|b){0,1000}$ with maxLength

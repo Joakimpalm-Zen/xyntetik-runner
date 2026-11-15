@@ -476,6 +476,36 @@ static void test_huge_bounds(void) {
 }
 
 
+// The 64 MiB per-request cap charges jsre_bytes for each compiled pattern
+// (fable's read of #875): it must not be under what the heap holds for one
+// after jsre_compile and jsre_lengths, counted here by the allocator, or the
+// cap undercounts as the pool once did. Shapes: a class of many UTF-8 ranges,
+// a long counted group, a length-bounded one with a long length sequence.
+static void test_bytes_count_what_is_held(void) {
+    struct { const char *pat; int upto; } c[] = {
+        { "^[\\u0100-\\u017f\\u0400-\\u04ff\\u4e00-\\u9fff]{1,8}$", 64 },
+        { "^(ab|cd|ef){0,300}$", 900 },
+        { "^[a-z]{0,50}(-[0-9]{1,4}){0,3}$", 4096 },
+        { "^(a|b){0,1000}$", 1000 },
+        { "x", 0 },
+    };
+    for (size_t i = 0; i < sizeof c / sizeof *c; i++) {
+        char err[256];
+        size_t before = heap_live;
+        jsre *re = jsre_compile(c[i].pat, err, sizeof err);
+        CHECK(re, "%s refused: %s", c[i].pat, err);
+        if (!re) continue;
+        if (c[i].upto) CHECK(jsre_lengths(re, c[i].upto, err, sizeof err), "%s lengths: %s", c[i].pat, err);
+        size_t held = heap_live - before, charged = jsre_bytes(re);
+        CHECK(charged >= held, "%s: jsre_bytes charges %zu, the heap holds %zu", c[i].pat, charged, held);
+        // and not a figure from nowhere: within the allocator's view by a margin
+        CHECK(charged <= held + held / 4 + 4096, "%s: jsre_bytes charges %zu, the heap holds only %zu",
+              c[i].pat, charged, held);
+        jsre_free(re);
+        CHECK(heap_live == before, "%s: %zu bytes left after jsre_free", c[i].pat, heap_live - before);
+    }
+}
+
 // 8 --------------------------------------------------------------- the heap
 // Codex on #875: a flush freed states and tables but kept each DFA's slot
 // array, hash table and free list at their high water, outside the budget
@@ -607,6 +637,7 @@ int main(void) {
     test_stack();
     test_kept_limit();
     test_huge_bounds();
+    test_bytes_count_what_is_held();
     test_heap_bound();
     test_warm_second_thread();
     test_cases();
