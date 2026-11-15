@@ -6777,77 +6777,27 @@ static const char *atem_enum_recovery(jv *choices, const char *raw,
 
 // Does the spelling read back (json_parse's own reader) inside every bound
 // the schema declares, the exclusive ones strictly?
-static bool atem_number_fits(jv *schema, const char *spelling) {
-    double x;
-    if (!json_number_text_ok(spelling, &x)) return false;
-    jv *b = jv_get(schema, "minimum");
-    if (b && b->type == J_NUM && !(x >= b->num)) return false;
-    b = jv_get(schema, "exclusiveMinimum");
-    if (b && b->type == J_NUM && !(x > b->num)) return false;
-    b = jv_get(schema, "maximum");
-    if (b && b->type == J_NUM && !(x <= b->num)) return false;
-    b = jv_get(schema, "exclusiveMaximum");
-    if (b && b->type == J_NUM && !(x < b->num)) return false;
-    return true;
-}
-
+// A cut-off number argument is replaced by its schema's fill: for a number,
+// the one a forced close writes (schema_number_fill: 0, else the edge nearest
+// 0, else the exact witness, R2.19.1), so the recovery and the validator read
+// one decision; for an integer, 0 clamped into the integer bounds.
 static void atem_number_recovery(sbuf *out, jv *schema, bool integer) {
+    char b[160];
+    if (!integer) {
+        if (!schema_number_fill(schema, b, (int)sizeof(b))) snprintf(b, sizeof(b), "0");
+        sb_fmt(out, "%s", b);
+        return;
+    }
     double value = 0.0;
     jv *bound = jv_get(schema, "minimum");
-    if (bound && bound->type == J_NUM && value < bound->num)
-        value = integer ? ceil(bound->num) : bound->num;
+    if (bound && bound->type == J_NUM && value < bound->num) value = ceil(bound->num);
     bound = jv_get(schema, "exclusiveMinimum");
-    // HUGE_VAL, not the INFINITY macro: the build carries
-    // -Werror=nan-infinity-disabled under -ffast-math (Apple Clang enforces
-    // it; GCC has no such warning, which is how this slipped through the
-    // Linux-only night gates).
-    if (bound && bound->type == J_NUM && value <= bound->num)
-        value = integer ? floor(bound->num) + 1.0
-                        : nextafter(bound->num, HUGE_VAL);
+    if (bound && bound->type == J_NUM && value <= bound->num) value = floor(bound->num) + 1.0;
     bound = jv_get(schema, "maximum");
-    if (bound && bound->type == J_NUM && value > bound->num)
-        value = integer ? floor(bound->num) : bound->num;
+    if (bound && bound->type == J_NUM && value > bound->num) value = floor(bound->num);
     bound = jv_get(schema, "exclusiveMaximum");
-    if (bound && bound->type == J_NUM && value >= bound->num)
-        value = integer ? ceil(bound->num) - 1.0
-                        : nextafter(bound->num, -HUGE_VAL);
-    char b[40];
-    snprintf(b, sizeof(b), integer ? "%.0f" : "%.17g", value);
-    // One ULP from an exclusive bound at 0 is the smallest subnormal: a
-    // spelling json_parse refuses (ERANGE), and one a flushing float mode
-    // reads as 0, as it may the nextafter itself (R2.20). The spelling is
-    // judged by reading it back against the bounds, and where it fails the
-    // nearest decimals that read back stand in for it.
-    if (!integer && !atem_number_fits(schema, b)) {
-        if (atem_number_fits(schema, "1e-307")) snprintf(b, sizeof(b), "1e-307");
-        else if (atem_number_fits(schema, "-1e-307")) snprintf(b, sizeof(b), "-1e-307");
-        else {
-            // An interval too narrow for 1e-307, next to zero: under
-            // (0, 5e-308] the readable values lie between the smallest normal
-            // number and the far bound. Try each bound as written (one step
-            // inside an exclusive one), then one-digit decimals from the
-            // smallest scale up, on either side.
-            static const char *const keys[4] = { "maximum", "minimum", "exclusiveMaximum", "exclusiveMinimum" };
-            char cand[40];
-            bool found = false;
-            for (int k = 0; k < 4 && !found; k++) {
-                jv *bd = jv_get(schema, keys[k]);
-                if (!bd || bd->type != J_NUM) continue;
-                double e = bd->num;
-                if (k == 2) e = nextafter(e, -HUGE_VAL);
-                if (k == 3) e = nextafter(e, HUGE_VAL);
-                snprintf(cand, sizeof(cand), "%.17g", e);
-                found = atem_number_fits(schema, cand);
-            }
-            for (int mag = -308; mag <= 308 && !found; mag++)
-                for (int m = 1; m <= 9 && !found; m++)
-                    for (int sign = 1; sign >= -1 && !found; sign -= 2) {
-                        snprintf(cand, sizeof(cand), "%s%de%d", sign < 0 ? "-" : "", m, mag);
-                        found = atem_number_fits(schema, cand);
-                    }
-            if (found) snprintf(b, sizeof(b), "%s", cand);
-        }
-    }
+    if (bound && bound->type == J_NUM && value >= bound->num) value = ceil(bound->num) - 1.0;
+    snprintf(b, sizeof(b), "%.0f", value);
     sb_fmt(out, "%s", b);
 }
 

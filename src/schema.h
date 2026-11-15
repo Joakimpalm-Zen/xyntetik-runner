@@ -84,6 +84,11 @@ struct snode {
 
 struct jv;
 snode *schema_compile(struct jv *schema, char *err, int errcap);
+// The fill a bounded number schema gets when none of the number is written:
+// 0 when its bounds allow it, else the edge nearest 0, else the exact
+// witness's shortest completion (R2.19.1); checked by the same terminator a
+// generated number meets. false when the bounds do not compile.
+bool schema_number_fill(struct jv *schema, char *out, int cap);
 // Compile OpenAI tools[] to Muse's native atem call block. JSON-spelled values
 // use the ordinary schema compiler; free strings use ATEM's raw sentinel form.
 snode *schema_compile_atem_tools(struct jv *tools, char *err, int errcap);

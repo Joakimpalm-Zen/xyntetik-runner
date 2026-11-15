@@ -4074,18 +4074,19 @@ static void eq_utf8(emitq *q, sframe *f) {
     for (int i = 0; i < n; i++) eq_putc(q, u8[i]);
 }
 
-// Minimal in-bounds number fill, emitted as CHECKED text: 0 when the bounds
-// allow it, else the interval's edge nearest zero, one ULP inside it when
-// the bound is exclusive. For exclusiveMinimum:0 that edge is the smallest
-// subnormal (4.94e-324), which json_parse refuses (ERANGE) and a flushing
-// float mode reads as 0 (R2.20: x86 wrote 0 here), so every candidate is
-// judged as text by the shared predicate, never as a double against 0. When
-// the edge spelling fails it, scan decimal magnitudes for the smallest
-// spelling that is both parseable and in bounds. A schema whose entire
-// interval is unparseable (both edges subnormal) has no such spelling; the
-// edge is emitted as the honest best effort.
-static void emit_min_number(emitq *q, const snode *n) {
-    if (number_text_in_bounds(n, "0")) { eq_putc(q, '0'); return; }
+// The fill a bounded number gets when none of it is written: a forced close
+// (emit_min_number) and the atem recovery of a cut-off argument
+// (schema_number_fill, template.c). It is 0 when the bounds allow it, else the
+// edge nearest 0 (one double inside an exclusive one) as %.17g writes it, each
+// checked by the exact terminator. Else (an edge at a strict 0, whose first
+// double inside is a subnormal no bounded number takes) it is the exact
+// witness's shortest completion from nothing (R2.19.1). That one source of truth
+// replaces the candidate scans that stood here (1e<k>, the far edge, one-digit
+// decimals). The witness exists for every interval that compiles:
+// compile_number_bounds refuses the empty ones, the subnormal band's included.
+// false leaves the edge's spelling in out, the honest best effort.
+static bool number_fill(const snode *n, char *out, size_t cap) {
+    if (number_text_in_bounds(n, "0")) { snprintf(out, cap, "0"); return true; }
     // 0 is outside, so the whole interval lies on one side of it
     bool up = n->has_real_min && n->real_min >= 0;
     double v = up ? n->real_min : n->real_max;
@@ -4093,37 +4094,25 @@ static void emit_min_number(emitq *q, const snode *n) {
         v = nextafter(v, up ? DBL_MAX : -DBL_MAX);
     char b[40];
     snprintf(b, sizeof(b), "%.17g", v);
-    if (!number_text_in_bounds(n, b)) {
-        char cand[40];
-        for (int mag = -307; mag <= 308; mag++) {
-            for (int sign = 1; sign >= -1; sign -= 2) {
-                snprintf(cand, sizeof(cand), "%s1e%d",
-                         sign < 0 ? "-" : "", mag);
-                if (number_text_in_bounds(n, cand)) {
-                    eq_put(q, cand);
-                    return;
-                }
-            }
-        }
-        // An interval too narrow for a power of ten, next to zero: under
-        // (0, 5e-308] the readable values lie between the smallest normal
-        // number and the far bound. Try the far edge (one step inside when
-        // exclusive), then every one-digit decimal from the smallest scale up.
-        if (up ? n->has_real_max : n->has_real_min) {
-            double far = up ? n->real_max : n->real_min;
-            if (up ? n->real_max_strict : n->real_min_strict)
-                far = nextafter(far, up ? -DBL_MAX : DBL_MAX);
-            snprintf(cand, sizeof(cand), "%.17g", far);
-            if (number_text_in_bounds(n, cand)) { eq_put(q, cand); return; }
-        }
-        for (int mag = -308; mag <= 308; mag++) {
-            for (int m = 2; m <= 9; m++) {
-                snprintf(cand, sizeof(cand), "%s%de%d", up ? "" : "-", m, mag);
-                if (number_text_in_bounds(n, cand)) { eq_put(q, cand); return; }
-            }
-        }
-    }
+    if (number_text_in_bounds(n, b)) { snprintf(out, cap, "%s", b); return true; }
+    if (number_witness(n, "", N_START, out, cap)) return true;
+    snprintf(out, cap, "%s", b);
+    return false;
+}
+
+static void emit_min_number(emitq *q, const snode *n) {
+    char b[NUM_ROOM + 2];
+    (void)number_fill(n, b, sizeof(b));
     eq_put(q, b);
+}
+
+bool schema_number_fill(struct jv *schema, char *out, int cap) {
+    snode n;
+    memset(&n, 0, sizeof(n));
+    n.kind = SN_NUM;
+    char err[160];
+    if (cap <= 0 || !compile_number_bounds(schema, &n, err, (int)sizeof(err))) return false;
+    return number_fill(&n, out, (size_t)cap);
 }
 
 static int64_t integer_minimal_value(const snode *n) {
