@@ -1442,19 +1442,26 @@ static void test_schema_exclusive_bounds_survive_flush_to_zero(void) {
 }
 
 static void test_schema_number_bounds_reject_dead_minus_and_close_in_bounds(void) {
-    // minus under a non-negative minimum is a dead prefix: no suffix can ever
-    // satisfy the bound, so the first byte must be refused (the integer path
-    // already does) instead of stalling with every token masked at the end
-    const char *src = "{\"type\":\"number\",\"minimum\":0}";
-    jv *j = json_parse(src, strlen(src));
+    // a minus under a positive minimum, or an exclusive 0, is a dead prefix:
+    // no suffix can ever satisfy the bound, so the first byte must be refused
+    // (the integer path already does) instead of stalling with every token
+    // masked at the end. Under an inclusive 0 it is not: -0 is 0 (R2.19).
+    const char *dead[] = { "{\"type\":\"number\",\"minimum\":2}",
+                           "{\"type\":\"number\",\"exclusiveMinimum\":0}" };
+    jv *j;
     char err[128];
-    snode *schema = schema_compile(j, err, sizeof(err));
-    assert(schema != NULL);
-    sval v; sval_init(&v, schema);
-    assert(!sval_feed(&v, "-", 1));
-    sval ok; sval_init(&ok, schema);
-    assert(sval_feed(&ok, "3.5", 3));
-    schema_free(schema); jv_free(j);
+    snode *schema;
+    for (size_t i = 0; i < sizeof(dead) / sizeof(*dead); i++) {
+        j = json_parse(dead[i], strlen(dead[i]));
+        schema = schema_compile(j, err, sizeof(err));
+        assert(schema != NULL);
+        sval v; sval_init(&v, schema);
+        assert(!sval_feed(&v, "-", 1));
+        sval ok; sval_init(&ok, schema);
+        assert(sval_feed(&ok, "3.5", 3));
+        schema_free(schema); jv_free(j);
+    }
+    const char *src;
 
     // a bounded number filled in by force-close stays INSIDE its bounds —
     // both the untouched-value close path and the required-property
@@ -1831,19 +1838,21 @@ static void test_schema_number_cases_it_got_wrong(void) {
            sizeof(cases) / sizeof(*cases), admitted, sizeof(docs) / sizeof(*docs));
 }
 
-// R2.19: the witness's work per byte is bounded, as WORK (num_try calls,
-// each one candidate spelling read back), so the check cannot flake on a
-// loaded host. A long fraction of zeros under a large minimum ran away: the
-// scale log10(tau / vw) overflowed to infinity, lround saturated, and the loop
-// over x0 - 1 .. x0 + 1 wrapped through the whole signed range (one trial over
-// a minute). The bound, from the code: the mantissa witness tries zero, the
-// spelling as it stands, up to 4 scale-only spellings (from 16 significant
-// digits), and at most 4 spellings for each of at most 26 targets, 24 from the
-// windows and the interval's two ends (110); the exponent witness 2 signs by 5
-// widths by 6 (62). A test cap makes a runaway witness return, so this fails
-// instead of hanging.
+// R2.19: the decision's work per byte is bounded, as WORK, so the check
+// cannot flake on a loaded host. An earlier witness ran away here (a long
+// fraction of zeros under a large minimum: one trial over a minute) and the
+// next one tried up to 110 candidate spellings a byte. The unit now is one
+// digit pair compared or one spelling-family member or exponent width tried
+// (schema_witness_work); every loop is bounded by the 95 bytes number_put
+// keeps. The bound, from the code: the window's two edge scales from two
+// digit comparisons (2 x 95), the inner scales from at most two families of
+// 96 members (192), and at each edge scale those members again (192) plus
+// three 95-digit comparisons (285): 190 + 192 + 2 x 477 = 1336. Inside an
+// exponent it is 2 x 95 + 2 signs x 10 widths. The bounds' exact expansions
+// (up to 768 digits) are built once per bounds, which the count of them
+// shows: two per schema and the smallest normal once.
 static void test_schema_number_witness_work_is_bounded(void) {
-    enum { BOUND = 110, CAP = 10000 };
+    enum { BOUND = 2 * 95 + 2 * 96 + 2 * (2 * 96 + 3 * 95) };
     const char *schemas[] = {
         "{\"type\":\"number\",\"minimum\":1e15}",
         "{\"type\":\"number\",\"exclusiveMinimum\":1e15}",
@@ -1854,10 +1863,10 @@ static void test_schema_number_witness_work_is_bounded(void) {
         "{\"type\":\"number\",\"maximum\":1e-300}",
         "{\"type\":\"number\",\"minimum\":0.5,\"maximum\":0.6}",
     };
+    enum { NS = sizeof(schemas) / sizeof(*schemas) };
     const char *leads[] = { "0.", "-0.", "0.000", "1", "9", "-9" };
     const char fills[] = "019", alpha[] = "0123456789.eE+-";
-    schema_witness_try_cap(CAP);
-    unsigned long worst = 0;
+    unsigned long worst = 0, expansions0 = schema_number_expansions();
     long trials = 0;
     // every trial's verdict, folded in order: the admitted set over these seeds.
     // The constant below is the same on macOS, Linux and Windows, so the three
@@ -1866,7 +1875,7 @@ static void test_schema_number_witness_work_is_bounded(void) {
     uint64_t admitted_hash = 0xcbf29ce484222325ull;
     char worst_at[128] = "";
     clock_t t0 = clock();
-    for (size_t si = 0; si < sizeof(schemas) / sizeof(*schemas); si++) {
+    for (size_t si = 0; si < NS; si++) {
         snode *s = num_schema(schemas[si]);
         for (size_t li = 0; li < sizeof(leads) / sizeof(*leads); li++)
             for (const char *f = fills; *f; f++) {
@@ -1880,7 +1889,7 @@ static void test_schema_number_witness_work_is_bounded(void) {
                         sval t;
                         bool ok = sval_trial(&v, &t, b, 1);
                         admitted_hash = (admitted_hash ^ (ok ? 0x31u : 0x30u)) * 0x100000001b3ull;
-                        unsigned long w = schema_witness_tries();
+                        unsigned long w = schema_witness_work();
                         trials++;
                         if (w > worst) {
                             worst = w;
@@ -1894,22 +1903,25 @@ static void test_schema_number_witness_work_is_bounded(void) {
             }
         schema_free(s);
     }
-    schema_witness_try_cap(0);
-    if (worst > BOUND) {
-        fprintf(stderr, "R2.19 witness work: %lu candidate spellings in one trial (bound %d), at %s\n",
-                worst, BOUND, worst_at);
-        assert(worst <= BOUND);
+    double cpu = (double)(clock() - t0) / CLOCKS_PER_SEC;
+    unsigned long expansions = schema_number_expansions() - expansions0;
+    if (worst > BOUND || expansions > 2 * NS + 1) {
+        fprintf(stderr, "R2.19 decision work: %lu units in one trial (bound %d), at %s; "
+                "%lu bound expansions for %d schemas\n", worst, BOUND, worst_at, expansions, (int)NS);
+        assert(worst <= BOUND && expansions <= 2 * NS + 1);
     }
-    const uint64_t ADMITTED = 0x10f95091dfc435feull;
-    if (trials != 91395 || admitted_hash != ADMITTED) {
+    const long TRIALS = 98025;
+    const uint64_t ADMITTED = 0x571622e18b25a814ull;
+    if (trials != TRIALS || admitted_hash != ADMITTED) {
         fprintf(stderr, "R2.19 admitted set: %ld trials, hash %016llx; every platform must give "
-                "%d and %016llx\n", trials, (unsigned long long)admitted_hash,
-                91395, (unsigned long long)ADMITTED);
+                "%ld and %016llx\n", trials, (unsigned long long)admitted_hash,
+                TRIALS, (unsigned long long)ADMITTED);
         assert(0);
     }
-    printf("ok: the number witness's work is bounded (%ld trials, at most %lu spellings a byte, "
-           "admitted set %016llx; note: %.2f s of CPU here)\n", trials, worst,
-           (unsigned long long)admitted_hash, (double)(clock() - t0) / CLOCKS_PER_SEC);
+    printf("ok: the number decision's work is bounded (%ld trials, at most %lu units a byte of %d, "
+           "at %s; %lu expansions; admitted set %016llx; note: %.2f s of CPU, %.2f us a trial here)\n",
+           trials, worst, BOUND, worst_at, expansions, (unsigned long long)admitted_hash, cpu,
+           trials ? cpu * 1e6 / (double)trials : 0.0);
 }
 
 static void test_schema_merges_enum_and_const_anyof(void) {

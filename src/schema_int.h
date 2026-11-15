@@ -19,10 +19,11 @@ snode *schema_compile_raw(jv *schema, char *err, int errcap);
 
 // R2.18: one public compile under way, for the per-schema cap on compiled
 // pattern automata (schema.c); every public entry brackets its compile.
-// R2.19: the num_try calls (candidate spellings read back) the last number
-// witness on this thread made, and a test-only cap on them (0: none)
-unsigned long schema_witness_tries(void);
-void schema_witness_try_cap(unsigned long cap);
+// R2.19: the work of the last bounded-number decision on this thread (digit
+// pairs compared, spelling family members and exponent widths tried), and
+// how many exact bound expansions this thread has built (cached per bounds)
+unsigned long schema_witness_work(void);
+unsigned long schema_number_expansions(void);
 void schema_automata_begin(void);
 void schema_automata_end(void);
 
