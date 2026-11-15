@@ -1778,9 +1778,10 @@ static int run_fit_check(const char *path, int n_ctx_want,
         printf(", %d NextN/MTP block%s %s", f.n_mtp, f.n_mtp > 1 ? "s" : "",
                f.mtp ? "charged (--mtp)" : "not charged (pass --mtp to draft from it)");
     printf("\n");
+    // the header read covers every part of a split set (gguf_open_header),
+    // so the figures below are the whole model's, from whichever part was named
     if (split > 1)
-        printf("  NOTE          this is part 1 of a %u-part split; the sizes "
-               "below are THIS PART only\n", split);
+        printf("  parts         %u files; the sizes below are the whole set's\n", split);
     printf("  weights       %s\n", w);
     if (f.n_seq > 1)
         printf("  slots         %d (--parallel): the weights once, a KV cache "
