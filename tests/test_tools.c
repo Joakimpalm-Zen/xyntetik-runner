@@ -899,15 +899,16 @@ static char *dump_member(const char *doc, size_t n, const char *key) {
 }
 
 static void test_atem_recovery_every_shape_the_grammar_accepts(void) {
-    static const struct { const char *param, *defs; } cases[] = {
-        { "{\"type\":\"boolean\",\"const\":true}", NULL },
-        { "{\"type\":\"boolean\",\"enum\":[true]}", NULL },
-        { "{\"type\":\"null\"}", NULL },
-        { "{\"type\":\"array\",\"items\":{\"type\":\"integer\",\"minimum\":3},\"minItems\":2}", NULL },
-        { "{\"type\":\"object\",\"properties\":{\"k\":{\"type\":\"integer\",\"minimum\":2}},\"required\":[\"k\"]}", NULL },
-        { "{\"$ref\":\"#/$defs/b\"}", "\"b\":{\"type\":\"boolean\",\"const\":true}" },
-        { "{\"allOf\":[{\"type\":\"array\",\"items\":{\"type\":\"number\",\"maximum\":-1},\"minItems\":1}]}", NULL },
-        { "{\"type\":\"number\",\"minimum\":10}", NULL },
+    // each row is cut at "-" and, where given, at a prefix of its own type
+    static const struct { const char *param, *defs, *cut; } cases[] = {
+        { "{\"type\":\"boolean\",\"const\":true}", NULL, "tru" },
+        { "{\"type\":\"boolean\",\"enum\":[true]}", NULL, NULL },
+        { "{\"type\":\"null\"}", NULL, NULL },
+        { "{\"type\":\"array\",\"items\":{\"type\":\"integer\",\"minimum\":3},\"minItems\":2}", NULL, "[1," },
+        { "{\"type\":\"object\",\"properties\":{\"k\":{\"type\":\"integer\",\"minimum\":2}},\"required\":[\"k\"]}", NULL, "{\"k\":" },
+        { "{\"$ref\":\"#/$defs/b\"}", "\"b\":{\"type\":\"boolean\",\"const\":true}", NULL },
+        { "{\"allOf\":[{\"type\":\"array\",\"items\":{\"type\":\"number\",\"maximum\":-1},\"minItems\":1}]}", NULL, "[" },
+        { "{\"type\":\"number\",\"minimum\":10}", NULL, "1e" },   // "1" is a whole number, kept
     };
     int bad = 0;
     for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
@@ -938,28 +939,73 @@ static void test_atem_recovery_every_shape_the_grammar_accepts(void) {
         char *want = dump_member(doc, (size_t)dn, "rate");
         schema_free(root); jv_free(pj);
         // the atem recovery of the same parameter, cut off
-        tool_envelope e = {.proto = TP_ATEM, .tools = tools};
-        const char *cut = " to=set_rate<|message|><atem:function_calls>\n"
-            "<atem:invoke name=\"set_rate\">\n"
-            "<atem:parameter name=\"rate\">-</atem:parameter>\n"
-            "</atem:invoke>\n</atem:function_calls>";
-        sbuf content = {0}, calls = {0};
-        int rc = tool_envelope_map(&e, cut, strlen(cut), &content, &calls);
-        char *got = NULL;
-        if (rc == 1 && calls.s) {
-            jv *call = json_parse(calls.s, calls.n);
-            const char *args = jv_str(jv_get(jv_get(call, "function"), "arguments"), "");
-            got = dump_member(args, strlen(args), "rate");
-            jv_free(call);
+        const char *cuts[2] = { "-", cases[c].cut };
+        for (int ci = 0; ci < 2 && cuts[ci]; ci++) {
+            tool_envelope e = {.proto = TP_ATEM, .tools = tools};
+            char cut[512];
+            snprintf(cut, sizeof(cut), " to=set_rate<|message|><atem:function_calls>\n"
+                     "<atem:invoke name=\"set_rate\">\n"
+                     "<atem:parameter name=\"rate\">%s</atem:parameter>\n"
+                     "</atem:invoke>\n</atem:function_calls>", cuts[ci]);
+            sbuf content = {0}, calls = {0};
+            int rc = tool_envelope_map(&e, cut, strlen(cut), &content, &calls);
+            char *got = NULL;
+            if (rc == 1 && calls.s) {
+                jv *call = json_parse(calls.s, calls.n);
+                const char *args = jv_str(jv_get(jv_get(call, "function"), "arguments"), "");
+                got = dump_member(args, strlen(args), "rate");
+                jv_free(call);
+            }
+            if (!want || !got || strcmp(want, got)) {
+                fprintf(stderr, "R2.21: parameter %s cut at '%s': the forced close writes %s, the atem recovery %s (rc %d)\n",
+                        cases[c].param, cuts[ci], want ? want : "(none)", got ? got : "(none)", rc);
+                bad++;
+            }
+            free(got); free(content.s); free(calls.s);
         }
-        if (!want || !got || strcmp(want, got)) {
-            fprintf(stderr, "R2.21: parameter %s: the forced close writes %s, the atem recovery %s (rc %d)\n",
-                    cases[c].param, want ? want : "(none)", got ? got : "(none)", rc);
-            bad++;
-        }
-        free(want); free(got); free(content.s); free(calls.s); jv_free(tools);
+        free(want); jv_free(tools);
     }
     assert(bad == 0);
+}
+
+// R2.21 (the coordinator's question on #901): atem_map never sees a parameter
+// whose schema the compiler refuses. Muse takes the atem protocol only when
+// schema_atem_constrainable holds for every tool (tool_decl_native, template.c),
+// and that compiles each JSON-spelled parameter with the compiler schema_fill
+// uses. Otherwise the request keeps the generic envelope (TP_MUSE_USER), whose
+// compile refuses the same schema, so the request is answered 400 ("unsupported
+// tool schema", completion.c) before any turn starts. One row per type.
+static void test_atem_map_never_sees_a_refused_parameter(void) {
+    static const char *const refused[] = {
+        "{\"type\":\"object\",\"properties\":{\"k\":{\"type\":\"string\",\"pattern\":\"(\"}}}",
+        "{\"type\":\"array\",\"items\":{\"type\":\"string\",\"pattern\":\"(\"}}",
+        "{\"type\":\"boolean\",\"not\":{\"const\":true}}",
+        "{\"type\":\"null\",\"not\":{}}",
+    };
+    for (size_t i = 0; i < sizeof(refused) / sizeof(*refused); i++) {
+        char src[1024];
+        snprintf(src, sizeof(src),
+                 "[{\"type\":\"function\",\"function\":{\"name\":\"save\",\"parameters\":"
+                 "{\"type\":\"object\",\"properties\":{\"x\":%s},\"required\":[\"x\"]}}}]", refused[i]);
+        jv *tools = parse(src);
+        char err[192];
+        jv *j = parse(refused[i]);
+        snode *alone = schema_compile(j, err, sizeof(err));
+        assert(alone == NULL);   // the compiler refuses the parameter's schema
+        jv_free(j);
+        tool_envelope e = {0};
+        assert(tool_envelope_build(tools, NULL, NULL, &e, err, sizeof(err)) == 1);
+        bool skip_generic = true;
+        (void)tool_decl_native(TMPL_MUSE, true, true, tools, &e, &skip_generic);
+        if (e.proto == TP_ATEM) {
+            fprintf(stderr, "R2.21: %s took the atem protocol\n", refused[i]);
+            assert(0);
+        }
+        assert(e.proto == TP_MUSE_USER);
+        assert(compile(&e) == NULL);   // the generic envelope refuses it: no turn
+        tool_envelope_free(&e);
+        jv_free(tools);
+    }
 }
 
 static const char *TOOLS =
@@ -4919,6 +4965,7 @@ int main(void) {
     test_atem_truncated_number_reads_back_inside_an_exclusive_bound();
     test_atem_recovery_reads_the_schema_the_forced_close_reads();
     test_atem_recovery_every_shape_the_grammar_accepts();
+    test_atem_map_never_sees_a_refused_parameter();
     test_ornith_native_tool_protocol();
     test_qwen_native_tool_protocol();
     test_qwen_native_turn_constrains_and_maps_calls();
