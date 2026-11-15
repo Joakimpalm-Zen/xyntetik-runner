@@ -53,6 +53,10 @@ struct snode {
     bool    has_num_min, has_num_max;
     double  real_min, real_max;                     // enforced number interval
     bool    has_real_min, has_real_max;
+    // the bound is exclusive (R2.20): compared strictly, never held as one
+    // ULP inside it, which at 0 is a subnormal that a flushing float mode
+    // (gcc -ffast-math on x86) reads as 0
+    bool    real_min_strict, real_max_strict;
     // Each compiled `pattern` is a sequence of segments, a literal run
     // followed by an optional repeated ASCII class. One segment is the
     // common case (`^wf_[a-z0-9-]{6,}$`); several express shapes like

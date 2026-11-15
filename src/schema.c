@@ -832,9 +832,14 @@ static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
         // second win -- so `{"minimum":10,"exclusiveMinimum":5}` accepted 7,
         // a value the caller declared out of range. compile_integer_bounds
         // has always taken the tighter of the two; this is the same rule for
-        // the real-valued arm.
-        double v = nextafter(x, DBL_MAX);
-        if (!n->has_real_min || v > n->real_min) n->real_min = v;
+        // the real-valued arm. At an equal value the exclusive one is tighter.
+        // The bound is kept as written and compared strictly (R2.20): one ULP
+        // inside it was a subnormal at 0, which crtfastmath's flush-to-zero
+        // (gcc -ffast-math, x86) read as 0, so 0 passed exclusiveMinimum 0.
+        if (!n->has_real_min || x >= n->real_min) {
+            n->real_min = x;
+            n->real_min_strict = true;
+        }
         n->has_real_min = true;
     }
     state = numeric_keyword(s, "maximum", &x);
@@ -845,11 +850,15 @@ static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
     state = numeric_keyword(s, "exclusiveMaximum", &x);
     if (state == NUMERIC_INVALID) goto bad;
     if (state == NUMERIC_VALID) {
-        double v = nextafter(x, -DBL_MAX);
-        if (!n->has_real_max || v < n->real_max) n->real_max = v;
+        if (!n->has_real_max || x <= n->real_max) {
+            n->real_max = x;
+            n->real_max_strict = true;
+        }
         n->has_real_max = true;
     }
-    if (n->has_real_min && n->has_real_max && n->real_min > n->real_max) {
+    if (n->has_real_min && n->has_real_max &&
+        (n->real_min > n->real_max ||
+         (n->real_min == n->real_max && (n->real_min_strict || n->real_max_strict)))) {
         snprintf(err, errcap, "empty number bounds");
         return false;
     }
@@ -2185,8 +2194,8 @@ static bool number_put(sval *v, uint8_t c) {
 static bool number_text_in_bounds(const snode *n, const char *s) {
     double x;
     if (!json_number_text_ok(s, &x)) return false;
-    return (!n->has_real_min || x >= n->real_min) &&
-           (!n->has_real_max || x <= n->real_max);
+    return (!n->has_real_min || (n->real_min_strict ? x > n->real_min : x >= n->real_min)) &&
+           (!n->has_real_max || (n->real_max_strict ? x < n->real_max : x <= n->real_max));
 }
 
 static bool number_in_bounds(const sval *v, const snode *n, const sframe *f) {
@@ -3056,19 +3065,23 @@ static void eq_utf8(emitq *q, sframe *f) {
     for (int i = 0; i < n; i++) eq_putc(q, u8[i]);
 }
 
-// Minimal in-bounds number fill, emitted as CHECKED text: the clamped edge
-// of an exclusive bound is one ULP inside it, and for exclusiveMinimum:0
-// that edge is the smallest subnormal (4.94e-324) — in bounds by
-// construction, refused by json_parse (ERANGE). When the edge spelling
-// fails the shared predicate, scan decimal magnitudes for the smallest
+// Minimal in-bounds number fill, emitted as CHECKED text: 0 when the bounds
+// allow it, else the interval's edge nearest zero, one ULP inside it when
+// the bound is exclusive. For exclusiveMinimum:0 that edge is the smallest
+// subnormal (4.94e-324), which json_parse refuses (ERANGE) and a flushing
+// float mode reads as 0 (R2.20: x86 wrote 0 here), so every candidate is
+// judged as text by the shared predicate, never as a double against 0. When
+// the edge spelling fails it, scan decimal magnitudes for the smallest
 // spelling that is both parseable and in bounds. A schema whose entire
 // interval is unparseable (both edges subnormal) has no such spelling; the
 // edge is emitted as the honest best effort.
 static void emit_min_number(emitq *q, const snode *n) {
-    double v = 0.0;
-    if (n->has_real_min && v < n->real_min) v = n->real_min;
-    if (n->has_real_max && v > n->real_max) v = n->real_max;
-    if (v == 0.0) { eq_putc(q, '0'); return; }
+    if (number_text_in_bounds(n, "0")) { eq_putc(q, '0'); return; }
+    // 0 is outside, so the whole interval lies on one side of it
+    bool up = n->has_real_min && n->real_min >= 0;
+    double v = up ? n->real_min : n->real_max;
+    if (up ? n->real_min_strict : n->real_max_strict)
+        v = nextafter(v, up ? DBL_MAX : -DBL_MAX);
     char b[40];
     snprintf(b, sizeof(b), "%.17g", v);
     if (!number_text_in_bounds(n, b)) {
