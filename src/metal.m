@@ -12,6 +12,12 @@
 
 #include <mach/mach.h>   // vm_allocate: the KV cache's host allocation (R3.68)
 #include <stdatomic.h>
+
+// EXPERIMENT (R3.60, branch experiment/r3.60-route-by-pass, not for merge):
+// during a prompt's prefill (model_t.prefill_pass, set by engine_feed) every
+// width takes the batch routes, a one-row chunk included; decode keeps its own.
+static _Thread_local bool metal_prefill;
+#define METAL_DEC(n) ((n) == 1 && !metal_prefill)
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -3008,16 +3014,16 @@ static void enc_mv_n(gpu_t *g, id<MTLComputeCommandEncoder> e, model_t *m,
     // matvec, not GEMM tiles that are mostly padding; 4 and up take the tiles.
     // Only prompt chunks and scoring reach this, none held to a solo step's
     // bits (measured: docs/metal-tuning-evidence.md).
-    if (n_col > 1 && n_col <= 3) {
+    if (!metal_prefill && n_col > 1 && n_col <= 3) {
         enc_mv_cols(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
                     n_col, x_stride, y_stride, false);
         return;
     }
-    if (n_col > 1 && enc_mm_tiles(g, e, w, x, x_off, y, y_off, n_in, n_out,
+    if ((n_col > 1 || metal_prefill) && enc_mm_tiles(g, e, w, x, x_off, y, y_off, n_in, n_out,
                                   bias, n_col, x_stride, y_stride))
         return;
     enc_mv_cols(g, e, w, x, x_off, y, y_off, n_in, n_out, bias,
-                n_col, x_stride, y_stride, n_col == 1);
+                n_col, x_stride, y_stride, METAL_DEC(n_col));
 }
 
 // The GEMM tiles of enc_mv_n: the Metal 4 tensor GEMM where it admitted the
@@ -3136,7 +3142,7 @@ static void enc_mv_cols(gpu_t *g, id<MTLComputeCommandEncoder> e,
         }
         g_mv_dispatches++;
         g_disp.mvf++;
-    } else if (n_col == 1 && g->p_mv2[w->type] && metal_mv2_on()) {
+    } else if (METAL_DEC(n_col) && g->p_mv2[w->type] && metal_mv2_on()) {
         // the two-row identity matvec, admitted by metal_mv2_self_test
         mv = g->p_mv2[w->type];
         rows_sg = 2;
@@ -3894,6 +3900,7 @@ bool gpu_forward_batch(model_t *m, const int32_t *tokens, int n, int pos,
                 "releasing the backend, continuing on CPU\n");
         return false;
     }
+    metal_prefill = m->prefill_pass;
     bool partial = m->gpu_layers > 0 && m->gpu_layers < m->n_layer;
     bool rows = m->spec_exact && n > 1;
     metal_replay_setup((gpu_t *)m->gpu, m);
@@ -3935,7 +3942,7 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // Grouped-MMA route (RUNNER_METAL_MOE_MM): sort slots by expert once,
     // then any expert tensor whose type has a k_moe_mm kernel runs as a real
     // GEMM over its token group; the rest stay on the slot-major matvec.
-    int mm_mode = n > 1 ? metal_moe_mm_on() : 0;
+    int mm_mode = (n > 1 || metal_prefill) ? metal_moe_mm_on() : 0;
     // per tensor (moe_mm_pick): its type has a kernel, its input is a width
     // the tile steps whole (gate and up read n_embd, down reads the expert
     // width), and a half-staged tile has its scale buffer
@@ -3959,7 +3966,7 @@ static void enc_moe_experts_batch(gpu_t *g, id<MTLComputeCommandEncoder> e,
     // (budget: -2 x n_layer per token). Same dot bodies, same bias points,
     // same activation code — byte identity is the gate. Needs gate and up
     // to share a quant type and to resolve inside one weight wrap.
-    bool gua = n == 1 && metal_fuse_on() && !mm &&
+    bool gua = METAL_DEC(n) && metal_fuse_on() && !mm &&
                ly->ffn_gate_exps->type == ly->ffn_up_exps->type &&
                g->p_moe_gua[ly->ffn_gate_exps->type] &&
                (g->geb[l] != nil) == (g->ueb[l] != nil);
@@ -4537,7 +4544,7 @@ static void metal_enc_rope_store(metal_fwd *F, int l, const metal_layer_plan *P)
     // Decode fusion F1: rope(q)+rope(k)+f16 store in ONE dispatch
     // (budget: -2 dispatches x n_layer per token). q8 caches and
     // prefill keep the split path; byte identity is the gate.
-    bool fused_rs = n == 1 && !q8 && !vq8 && owns_kv && metal_fuse_on() &&
+    bool fused_rs = METAL_DEC(n) && !q8 && !vq8 && owns_kv && metal_fuse_on() &&
                     g->p_rope_store && model_layer_ropes(m, l) && !m->attn_temp_all;
     if (fused_rs) {
         metal_fuse_announce();
@@ -4642,7 +4649,7 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
     int a_chunk, a_nch;
     // one group per KV head when several query heads share it
     int gqa_g = n_kv > 0 ? m->n_head / n_kv : 1;
-    bool gqa = n == 1 && gqa_g > 1 && gqa_g <= 8 && m->n_head % n_kv == 0 &&
+    bool gqa = METAL_DEC(n) && gqa_g > 1 && gqa_g <= 8 && m->n_head % n_kv == 0 &&
                !q8 && !vq8 && metal_attn_coop_on() && metal_attn_gqa_on() &&
                g->p_attn_chunk_gqa;
     if (a_ov == 0) { a_chunk = 0; a_nch = 0; }        // path disabled
@@ -4661,7 +4668,7 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
         if (a_chunk < METAL_ATTN_MIN_CHUNK) a_chunk = METAL_ATTN_MIN_CHUNK;
         a_nch = (a_span + a_chunk - 1) / a_chunk;
     }
-    if (n == 1 && a_nch >= 2 && a_nch <= METAL_ATTN_MAX_CHUNKS &&
+    if (METAL_DEC(n) && a_nch >= 2 && a_nch <= METAL_ATTN_MAX_CHUNKS &&
         hd == model_head_dim(m, 0)) {
         attn_chunk_args ca = { hd, m->n_head, n_kv, m->n_ctx, pos,
                                koff,
@@ -4710,7 +4717,7 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
     // Cooperative twin at decode only: the score loop is what
     // scatters, and at n > 1 each column has its own KV range, which
     // the coop form's simdgroup-per-row split does not describe.
-    bool coop = (n == 1) && metal_attn_coop_on() && g->p_attn_coop;
+    bool coop = METAL_DEC(n) && metal_attn_coop_on() && g->p_attn_coop;
     if (coop) g_coop_dispatches++;
     // Prefill: the tiled kernel, same arithmetic, shared KV reads.
     // Must agree with ATTN_TILE in kernels.metal.
@@ -4720,7 +4727,7 @@ static void metal_enc_attn_core(gpu_t *g, id<MTLComputeCommandEncoder> e, model_
     // whole history, which was 66% of an 8K Bolt E4B prefill on the 8 GB
     // laptop; on the tile one such layer's attention runs about 7x faster,
     // with k_attn's bits.
-    bool tile = (n > 1) && (hd <= 256 || (hd <= 512 && metal_attn_wide_on(m))) &&
+    bool tile = (n > 1 || metal_prefill) && (hd <= 256 || (hd <= 512 && metal_attn_wide_on(m))) &&
                 metal_attn_tile_on() && g->p_attn_tile;
     [e setComputePipelineState:tile ? g->p_attn_tile
                           : coop ? g->p_attn_coop : g->p_attn];
@@ -5151,7 +5158,7 @@ static bool metal_fwd_layer(metal_fwd *F, int l) {
     // mistral3's attention temperature scales Q after its rope, which
     // neither fused kernel carries: it keeps the split path too.
     id<MTLComputePipelineState> fpipe =
-        n == 1 && metal_fuse_on() && !g->lora_a && !ly->skip_mixer && !m->attn_temp_all
+        METAL_DEC(n) && metal_fuse_on() && !g->lora_a && !ly->skip_mixer && !m->attn_temp_all
             ? metal_front_pipe(g, m, l) : nil;
     bool front = fpipe != nil;
     uint64_t qw = 0, kw = 0, vw = 0;
@@ -5173,17 +5180,17 @@ static bool metal_fwd_layer(metal_fwd *F, int l) {
     // have nothing to fold where the branch is gone, so they stand down
     // around it: F2a needs this block's attention AND its FFN norm, F2b
     // needs this block's FFN and the next block's attention norm.
-    bool f2a = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
+    bool f2a = METAL_DEC(n) && metal_fuse_on() && g->p_add_rmsnorm &&
                !g->pan[l] && m->resid_scale == 1.0f && !nanstage &&
                !ly->moe_gemma && !ly->skip_mixer && !ly->skip_ffn;
-    bool f2b = n == 1 && metal_fuse_on() && g->p_add_rmsnorm &&
+    bool f2b = METAL_DEC(n) && metal_fuse_on() && g->p_add_rmsnorm &&
                !g->pfn[l] && m->resid_scale == 1.0f && !ly->ple_gate &&
                (ly->out_scale == 1.0f || ly->out_scale == 0.0f) &&
                !nantrace && !nanstage && l + 1 < n_gpu_layers &&
                n_gpu_layers == m->n_layer &&
                !ly->skip_ffn && !m->layers[l + 1].skip_mixer &&
                !metal_front_capable(g, m, l + 1);
-    bool sum_add = n == 1 && metal_fuse_on() && !f2b && ly->is_moe &&
+    bool sum_add = METAL_DEC(n) && metal_fuse_on() && !f2b && ly->is_moe &&
                    !ly->moe_gemma && !ly->w_up_shexp && !g->pfn[l] &&
                    m->resid_scale == 1.0f && !ly->ple_gate &&
                    !nantrace && !nanstage;

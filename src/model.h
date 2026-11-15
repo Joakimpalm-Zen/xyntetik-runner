@@ -496,6 +496,7 @@ typedef struct {
     f16_t *kcache, *vcache;  // [n_layer][n_ctx][kv_dim], fp16 (or q8_0 blocks
                              // when kv_q8 — treated as raw bytes then)
     kv_owner_t kv_owner;     // malloc on CPU/CUDA; backend-owned on Metal
+    bool       prefill_pass; // EXPERIMENT R3.60: engine_feed is feeding a prompt
     bool   kv_q8;            // KV rows stored as q8_0 blocks (CPU and CUDA)
     bool   kv_fp4;           // KV rows stored as fp4 blocks (16 values in 9 bytes)
     bool   kv_split;         // K rows q8_0, V rows fp4 (--kv k8v4): the caches differ

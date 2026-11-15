@@ -1637,7 +1637,15 @@ static void kv_dump(const engine *e, int lo, int hi) {
     }
 }
 
+static float *engine_feed_inner(engine *e, const int32_t *toks, int n);
+// EXPERIMENT R3.60: the prompt's feed is the prefill pass, whatever its width
 float *engine_feed(engine *e, const int32_t *toks, int n) {
+    e->m->prefill_pass = true;
+    float *lg = engine_feed_inner(e, toks, n);
+    e->m->prefill_pass = false;
+    return lg;
+}
+static float *engine_feed_inner(engine *e, const int32_t *toks, int n) {
     float *logits = NULL;
     model_t *m = e->m;
     kv_dump_config();

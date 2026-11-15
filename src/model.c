@@ -7060,6 +7060,7 @@ typedef struct {
     bool exact;       // a verify round's columns: the per-column route up to
                       // VEC_DOT_MULTI_MAX wide (matvec_b, t_mv_exact)
     const void *xk;   // one column in 256-element int8 blocks (RUNNER_CPU_I8K)
+    bool prefill;     // EXPERIMENT R3.60: a prompt's prefill: the f32 tile at every width
 } mv_job;
 
 // Batches narrower than this take the per-column native dot (see mv_rows);
@@ -7075,7 +7076,7 @@ static void mv_rows(void *ctx, int i0, int i1) {
     // the weights, so dot(w * s, x) = s * dot(w, x), before the bias.
     const float sc = j->w->scale;
 
-    if (j->n_batch < MV_SMALL_BATCH || (j->exact && j->n_batch <= VEC_DOT_MULTI_MAX)) {
+    if (!j->prefill && (j->n_batch < MV_SMALL_BATCH || (j->exact && j->n_batch <= VEC_DOT_MULTI_MAX))) {
         // Solo step and small batches (the speculative verify, a few server
         // slots decoding together): every column takes the SAME native dot
         // the solo step takes, rows outer so a weight row is streamed from
@@ -7213,7 +7214,7 @@ static void mv_rows(void *ctx, int i0, int i1) {
     enum { TROWS = VEC_DOT_F32_TILE_ROWS };
     float *tbuf = NULL;
     const float *trow[TROWS];
-    if (j->n_batch >= 8 && i1 - i0 >= 4)
+    if ((j->n_batch >= 8 || j->prefill) && i1 - i0 >= 4)
         tbuf = malloc(sizeof(float) * (size_t)n_in * TROWS);
     if (tbuf) {
         int r = i0;
@@ -7353,6 +7354,7 @@ static const float *mv_xsums(const gguf_tensor *w, const float *x, int n_in,
 // pinned on, the solo step's route is the int8 dot, which the per-column
 // route takes below MV_SMALL_BATCH only (mv_takes_i8).
 static _Thread_local bool t_mv_exact;
+static _Thread_local bool t_mv_prefill;   // EXPERIMENT R3.60, from model_t.prefill_pass
 // R8.19 device mode on this thread (a training step or its eval with
 // model_t.train_dev): every product below goes to the training context's
 // batch-invariant product, a tensor it declines (no kernel, scaled, over the
@@ -7381,7 +7383,7 @@ static void matvec_b(tpool *tp, float *y, int y_stride, const gguf_tensor *w,
         return;
     }
     mv_job j = { w, x, bias, y, n_in, n_batch, x_stride, y_stride,
-                 ggml_row_size(w->type, n_in), NULL, 0, NULL, t_mv_exact, NULL };
+                 ggml_row_size(w->type, n_in), NULL, 0, NULL, t_mv_exact, NULL, t_mv_prefill };
     void *xq = NULL;
     float xs_stack[MV_XS_STACK], *xs_heap = NULL;
     double tq = tprof_enabled() ? tprof_now() : 0;
@@ -7498,7 +7500,7 @@ static void matvec_b_parts(tpool *tp, const mv_part *p, int np, const float *x,
         tag |= 1ull << (p[s].w->type < 60 ? p[s].w->type : 59);
         mv_job j = { p[s].w, x, p[s].bias, p[s].y, n_in, n_batch, x_stride,
                      p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
-                     t_mv_exact, NULL };
+                     t_mv_exact, NULL, t_mv_prefill };
         if (n_batch == 1 && i8k_dot_enabled() && i8k_dot_ok(p[s].w->type, n_in)) {
             if (!xk_tried) {
                 xk_tried = true;
@@ -7559,7 +7561,7 @@ static void matvec_b_parts_x(tpool *tp, const mv_part *p, const float *const *xs
     for (int s = 0; s < np; s++) {
         mv_job j = { p[s].w, xs[s], p[s].bias, p[s].y, n_in, 1, n_in,
                      p[s].y_stride, ggml_row_size(p[s].w->type, n_in), NULL, 0, NULL,
-                     false, NULL };
+                     false, NULL, t_mv_prefill };
         if (mv_takes_i8(p[s].w, n_in, p[s].n_out, 1)) {
             xq[s] = mv_quant_act(xs[s], n_in, n_in, 1);
             if (xq[s]) { j.xq = xq[s]; j.xq_stride = i8_act_size(n_in); }
@@ -15930,6 +15932,7 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
     m->fwd_tokens = tokens;   // the PLE block hashes the batch's own ids
 
     double dt_f0 = dbg_time_on() ? dt_now() : 0;
+    t_mv_prefill = m->prefill_pass;   // EXPERIMENT R3.60
     for (int l = start; l < m->n_layer; l++)
         forward_layer(m, l, n, pos, dbg);
     if (dbg_time_on()) { int k = n > 1; dt_fwd_t[k] += dt_now() - dt_f0; dt_fwd_n[k]++; dt_fwd_rows[k] += n; }
@@ -15938,6 +15941,7 @@ static float *forward_batch_run(model_t *m, const int32_t *tokens, int n, int po
     for (int b = 0; m->tape && b < n && pos + b < m->tape_T; b++)
         memcpy(m->tape + ((size_t)m->n_layer * m->tape_T + pos + b) * m->n_embd,
                m->x + (size_t)b * m->n_embd, sizeof(float) * (size_t)m->n_embd);
+    t_mv_prefill = false;   // the head is the decode step's own (EXPERIMENT R3.60)
     if (!want_logits) return NULL;
     return forward_head(m, n, dbg);
 }
