@@ -78,7 +78,13 @@ __attribute__((unused)) static char *t_strndup(const char *s, size_t cap) {
 #include "../src/json.c"
 #include "../src/schema.c"
 #include "../src/schema_tools.c"
+// jsre.c names its NFA node type `state` at file scope, and template.c has a
+// local of that name, which gcc's -Wshadow refuses in one unit (Apple clang
+// does not flag it). The type is renamed for this test's unit only; every
+// other use of the word in jsre.c and jsre.h is a comment.
+#define state jsre_nfa_state
 #include "../src/jsre.c"
+#undef state
 // schema_tools.c and template.c each define their own G4_MAX_DEPTH; each
 // file's code expands its own, so the first goes before the second
 #undef G4_MAX_DEPTH
