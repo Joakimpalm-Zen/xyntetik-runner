@@ -1,11 +1,11 @@
-# make test-cuda-moe-replay, runner 1.19.1 (release/1.19.1 pin 3bc7eb81), a CUDA MIG slice, 1g.24gb, sm_120, driver 610.43.02
-# binary: ./runner --version = runner 1.19.1, built at 3bc7eb81 with the pinned PTX by the release recipe (conda-forge
-#   gcc 16.2.0-5, -O3 -ffast-math -std=gnu11 -march=x86-64-v3, STRICT), sha256 8678b13343467ccc...;
+# make test-cuda-moe-replay, runner 1.19.1 (release/1.19.1 pin ab2acb6a), a CUDA MIG slice, 1g.24gb, sm_120, driver 610.43.02
+# binary: ./runner --version = runner 1.19.1, built at ab2acb6a with the pinned PTX by the release recipe (conda-forge
+#   gcc 16.2.0-5, -O3 -ffast-math -std=gnu11 -march=x86-64-v3, STRICT), sha256 c732f08c1ab51f03...;
 #   CUDA_CACHE_MAXSIZE=4294967296. Run in the gate's own checkout with the gate's make arguments and tools/release-make
 #   first on PATH; the runner's sha256 was the same before and after (the gate's binary-unchanged step and sha256sum -c).
-# Started with scripts/cuda-gate.sh (docs/device-runs-2026-11-15/linux-x86_64-cuda/cuda-gate-20261115T091439Z.json),
-#   whose own moe-replay step also passed; exit 0, 89 s, 09:14:39Z to 09:16:08Z, the slice shared with the gate's
-#   first steps and the host's CPUs with outside tenants (1-min load 24.4 at the start).
+# Started with scripts/cuda-gate.sh (docs/device-runs-2026-11-15/linux-x86_64-cuda/cuda-gate-20261115T150631Z.json),
+#   whose own moe-replay step also passed; exit 0, 84 s, 15:06:31Z to 15:07:55Z, the slice shared with the gate's
+#   first steps and the host's CPUs with outside tenants (1-min load 39.2 at the start).
 # Borrowed, dated evidence: the slice is one MIG instance of a shared GPU, and the host's CPUs carry other work.
 moe replay test-moe-replay-q8.gguf fused solo: 366 routings x 2 traced as the CPU's, replayed with no override, moved trace followed (609 overrides, CPU distance 9.5e-07, unpinned 9.6e-07), trace fields within gate 1.0e-06 norm 3.3e-06
 moe replay test-moe-replay-q8.gguf fused chunked: 366 routings x 2 traced as the CPU's, replayed with no override, moved trace followed (609 overrides, CPU distance 1.5e-04, unpinned 1.3e-04), trace fields within gate 1.8e-05 norm 3.9e-04
