@@ -883,6 +883,85 @@ static void test_atem_recovery_reads_the_schema_the_forced_close_reads(void) {
     assert(bad == 0);
 }
 
+// R2.21: a cut-off argument of every JSON-spelled shape the atem grammar
+// accepts is recovered as the forced close writes it: the parameter's fill
+// (schema_fill), not a literal per type. The literals were false, {}, [] and
+// null whatever the schema said, so a boolean const true came back false, an
+// array with minItems as [], and an object with a required property as {}
+// (codex, third finding on #897). Each value is compared parsed and dumped.
+static char *dump_member(const char *doc, size_t n, const char *key) {
+    jv *v = json_parse(doc, n);
+    jv *m = jv_get(v, key);
+    sbuf b = {0};
+    if (m) jv_dump(m, &b);
+    jv_free(v);
+    return b.s;
+}
+
+static void test_atem_recovery_every_shape_the_grammar_accepts(void) {
+    static const struct { const char *param, *defs; } cases[] = {
+        { "{\"type\":\"boolean\",\"const\":true}", NULL },
+        { "{\"type\":\"boolean\",\"enum\":[true]}", NULL },
+        { "{\"type\":\"null\"}", NULL },
+        { "{\"type\":\"array\",\"items\":{\"type\":\"integer\",\"minimum\":3},\"minItems\":2}", NULL },
+        { "{\"type\":\"object\",\"properties\":{\"k\":{\"type\":\"integer\",\"minimum\":2}},\"required\":[\"k\"]}", NULL },
+        { "{\"$ref\":\"#/$defs/b\"}", "\"b\":{\"type\":\"boolean\",\"const\":true}" },
+        { "{\"allOf\":[{\"type\":\"array\",\"items\":{\"type\":\"number\",\"maximum\":-1},\"minItems\":1}]}", NULL },
+        { "{\"type\":\"number\",\"minimum\":10}", NULL },
+    };
+    int bad = 0;
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        char params[1024], src[1400], err[256];
+        snprintf(params, sizeof(params),
+                 "{\"type\":\"object\",\"properties\":{\"rate\":%s},\"required\":[\"rate\"]%s%s%s}",
+                 cases[c].param, cases[c].defs ? ",\"$defs\":{" : "",
+                 cases[c].defs ? cases[c].defs : "", cases[c].defs ? "}" : "");
+        snprintf(src, sizeof(src),
+                 "[{\"type\":\"function\",\"function\":{\"name\":\"set_rate\",\"parameters\":%s}}]", params);
+        jv *tools = parse(src);
+        // the shape is one the atem grammar accepts
+        snode *atem = schema_compile_atem_tools(tools, err, sizeof(err));
+        if (!atem) { fprintf(stderr, "R2.21: the atem grammar refuses %s: %s\n", cases[c].param, err); assert(0); }
+        schema_free(atem);
+        // the forced close of {"rate": under the same parameters
+        jv *pj = parse(params);
+        snode *root = schema_compile(pj, err, sizeof(err));
+        assert(root);
+        sval v;
+        sval_init(&v, root);
+        assert(sval_feed(&v, "{\"rate\":", 8));
+        char suf[512], doc[600];
+        int k = sval_close(&v, suf, (int)sizeof(suf));
+        assert(k > 0);
+        suf[k] = 0;
+        int dn = snprintf(doc, sizeof(doc), "{\"rate\":%s", suf);
+        char *want = dump_member(doc, (size_t)dn, "rate");
+        schema_free(root); jv_free(pj);
+        // the atem recovery of the same parameter, cut off
+        tool_envelope e = {.proto = TP_ATEM, .tools = tools};
+        const char *cut = " to=set_rate<|message|><atem:function_calls>\n"
+            "<atem:invoke name=\"set_rate\">\n"
+            "<atem:parameter name=\"rate\">-</atem:parameter>\n"
+            "</atem:invoke>\n</atem:function_calls>";
+        sbuf content = {0}, calls = {0};
+        int rc = tool_envelope_map(&e, cut, strlen(cut), &content, &calls);
+        char *got = NULL;
+        if (rc == 1 && calls.s) {
+            jv *call = json_parse(calls.s, calls.n);
+            const char *args = jv_str(jv_get(jv_get(call, "function"), "arguments"), "");
+            got = dump_member(args, strlen(args), "rate");
+            jv_free(call);
+        }
+        if (!want || !got || strcmp(want, got)) {
+            fprintf(stderr, "R2.21: parameter %s: the forced close writes %s, the atem recovery %s (rc %d)\n",
+                    cases[c].param, want ? want : "(none)", got ? got : "(none)", rc);
+            bad++;
+        }
+        free(want); free(got); free(content.s); free(calls.s); jv_free(tools);
+    }
+    assert(bad == 0);
+}
+
 static const char *TOOLS =
     "[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
       "\"description\":\"look up weather\",\"parameters\":{\"type\":\"object\","
@@ -4839,6 +4918,7 @@ int main(void) {
     test_atem_truncated_integer_respects_declared_bounds();
     test_atem_truncated_number_reads_back_inside_an_exclusive_bound();
     test_atem_recovery_reads_the_schema_the_forced_close_reads();
+    test_atem_recovery_every_shape_the_grammar_accepts();
     test_ornith_native_tool_protocol();
     test_qwen_native_tool_protocol();
     test_qwen_native_turn_constrains_and_maps_calls();

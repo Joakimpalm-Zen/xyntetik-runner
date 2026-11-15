@@ -6779,21 +6779,25 @@ static const char *atem_enum_recovery(jv *choices, const char *raw,
     return best;
 }
 
-// A cut-off number or integer argument is replaced by the value a forced
-// close writes for the same parameter (schema_fill, R2.19.1: 0 when the
-// bounds allow it, else the edge nearest 0, else the exact witness; a const's
-// or an enum's first member), read from the parameter as the compiler reads
-// it, so the recovery and the validator read one decision. False when there
-// is no value the parameter's compiled schema accepts: an allocation failed,
-// or the compiler refuses the schema. The call then fails, as it does on
-// every other error, and no value is guessed in its place (the old best
-// effort for a refused schema, 0 or 0 clamped into the raw bounds, was a value
-// nothing had checked).
-static bool atem_number_recovery(sbuf *out, jv *schema) {
-    char b[512];
-    if (schema_fill(schema, b, (int)sizeof(b)) != 1) return false;
-    sb_fmt(out, "%s", b);
-    return true;
+// A cut-off argument of a JSON-spelled parameter (object, array, number,
+// integer, boolean, null) is replaced by the value a forced close writes for
+// the same parameter: schema_fill, read from the parameter as the compiler
+// reads it, so the recovery and the validator read one decision. For a number
+// that is 0 when the bounds allow it, else the edge nearest 0, else the exact
+// witness (R2.19.1); a const's or an enum's first member; an array's minItems
+// of its items' fill; an object's required properties, each its fill. Until
+// R2.21 only numbers read it, and the other types got a literal whatever the
+// schema said (false under const true, [] under minItems 1, {} with a
+// required property). False when there is no value the compiled schema
+// accepts (an allocation failed, or the compiler refuses the schema): the
+// call then fails, as it does on every other error.
+static bool atem_value_recovery(sbuf *out, jv *schema) {
+    enum { FILL_CAP = 16384 };   // a fill past this does not fit and fails the call
+    char *b = malloc(FILL_CAP);
+    bool ok = b && schema_fill(schema, b, FILL_CAP) == 1;
+    if (ok) sb_fmt(out, "%s", b);
+    free(b);
+    return ok;
 }
 
 static int atem_map(const tool_envelope *e, const char *doc, size_t n,
@@ -6851,18 +6855,20 @@ static int atem_map(const tool_envelope *e, const char *doc, size_t n,
             bool json_value = !strcmp(pt, "object") || !strcmp(pt, "array") ||
                               !strcmp(pt, "integer") || !strcmp(pt, "number") ||
                               !strcmp(pt, "boolean") || !strcmp(pt, "null");
-            jv *structured = json_value ? json_parse(val, vn) : NULL;
+            // a parse that ran out of memory is not a cut-off value: the
+            // argument may be whole and valid, so the call fails rather than
+            // replace it (R2.21)
+            bool arg_oom = false;
+            jv *structured = json_value ? json_parse_ex(val, vn, &arg_oom) : NULL;
+            if (arg_oom) goto fail;
             if (structured) { jv_dump(structured, &args); jv_free(structured); }
             else if (json_value) {
-                // A token-budget close may leave a raw scalar prefix that is
-                // not valid JSON (empty, `-`, `tru`, ...). The native atem
-                // value itself is untyped text; use the declared parameter
-                // type to keep the recovered OpenAI arguments executable.
-                if (!strcmp(pt, "boolean")) sb_lit(&args, "false");
-                else if (!strcmp(pt, "null")) sb_lit(&args, "null");
-                else if (!strcmp(pt, "object")) sb_lit(&args, "{}");
-                else if (!strcmp(pt, "array")) sb_lit(&args, "[]");
-                else if (!atem_number_recovery(&args, ps)) goto fail;
+                // A token-budget close may leave a raw prefix that is not
+                // valid JSON (empty, `-`, `tru`, `[1,`, ...). The native atem
+                // value itself is untyped text; the declared parameter's fill
+                // keeps the recovered OpenAI arguments executable and inside
+                // the schema.
+                if (!atem_value_recovery(&args, ps)) goto fail;
             } else {
                 const char *sv = val;
                 size_t sn = vn;

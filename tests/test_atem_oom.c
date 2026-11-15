@@ -104,7 +104,7 @@ static const char *DOC =
     " to=probe<|message|><atem:function_calls>\n<atem:invoke name=\"probe\">\n"
     "<atem:parameter name=\"x\"></atem:parameter>\n</atem:invoke>\n</atem:function_calls>";
 
-static int sweep(const char *param, const char *defs, const char *want_args) {
+static int sweep_doc(const char *doc, const char *param, const char *defs, const char *want_args) {
     char src[2048];
     snprintf(src, sizeof(src),
              "[{\"type\":\"function\",\"function\":{\"name\":\"probe\",\"parameters\":{\"type\":"
@@ -118,7 +118,7 @@ static int sweep(const char *param, const char *defs, const char *want_args) {
     tool_envelope env = {.proto = TP_ATEM, .tools = tools};
     sbuf content = {0}, calls = {0};
     alloc_calls = 0;
-    int rc = tool_envelope_map(&env, DOC, strlen(DOC), &content, &calls);
+    int rc = tool_envelope_map(&env, doc, strlen(doc), &content, &calls);
     long total = alloc_calls;
     if (rc != 1 || !calls.s || !strstr(calls.s, want_args)) {
         fprintf(stderr, "R2.19.1: parameter %s maps to %s (rc %d), want arguments %s\n",
@@ -133,7 +133,7 @@ static int sweep(const char *param, const char *defs, const char *want_args) {
         sbuf c = {0}, t = {0};
         alloc_calls = 0;
         fail_at = k;
-        int got = tool_envelope_map(&env, DOC, strlen(DOC), &c, &t);
+        int got = tool_envelope_map(&env, doc, strlen(doc), &c, &t);
         fail_at = -1;
         // failed, or exactly the output an unfailed mapping writes
         if (got >= 0 && (got != 1 || !t.s || strcmp(t.s, want))) {
@@ -155,11 +155,27 @@ static int sweep(const char *param, const char *defs, const char *want_args) {
         assert(after.s && !strcmp(after.s, before.s));   // the declarations are not changed
         t_free(after.s);
     }
-    printf("atem oom: %s: %ld allocations failed in turn, %d wrong\n", param, total, wrong);
+    printf("atem oom: %s (%s argument): %ld allocations failed in turn, %d wrong\n", param,
+           doc == DOC ? "cut-off" : "whole", total, wrong);
     t_free(want);
     t_free(before.s);
     jv_free(tools);
     return wrong;
+}
+
+static int sweep(const char *param, const char *defs, const char *want_args) {
+    return sweep_doc(DOC, param, defs, want_args);
+}
+
+// R2.21: a WHOLE argument, valid JSON, whose json_parse lost an allocation was
+// read as unparseable and replaced by the recovery's fill (12 became 10 under
+// minimum 10): an allocation failure must fail the call, not change the value.
+static char *whole_doc(const char *value) {
+    static char doc[512];
+    snprintf(doc, sizeof(doc),
+             " to=probe<|message|><atem:function_calls>\n<atem:invoke name=\"probe\">\n"
+             "<atem:parameter name=\"x\">%s</atem:parameter>\n</atem:invoke>\n</atem:function_calls>", value);
+    return doc;
 }
 
 // schema_fill's own contract (codex's second look at #897): -1 on any
@@ -233,6 +249,11 @@ int main(void) {
         "{\"type\":\"array\",\"items\":{\"type\":\"number\",\"maximum\":-1},\"minItems\":2}",
     };
     for (size_t i = 0; i < sizeof(FILLS) / sizeof(FILLS[0]); i++) bad += fill_sweep(FILLS[i]);
+    bad += sweep_doc(whole_doc("12"), "{\"type\":\"number\",\"minimum\":10}", "", "{\\\"x\\\":12}");
+    bad += sweep_doc(whole_doc("true"), "{\"type\":\"boolean\"}", "", "{\\\"x\\\":true}");
+    bad += sweep_doc(whole_doc("{\"k\":3}"),
+                     "{\"type\":\"object\",\"properties\":{\"k\":{\"type\":\"integer\",\"minimum\":2}},\"required\":[\"k\"]}",
+                     "", "{\\\"x\\\":{\\\"k\\\":3}}");
     bad += sweep("{\"type\":\"number\",\"minimum\":10}", "", "{\\\"x\\\":10}");
     bad += sweep("{\"$ref\":\"#/$defs/N\"}", ",\"$defs\":{\"N\":{\"type\":\"number\",\"minimum\":10}}",
                  "{\\\"x\\\":10}");
