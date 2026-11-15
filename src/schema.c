@@ -817,6 +817,16 @@ bad:
     return false;
 }
 
+// A finite double's place in the order of all doubles: consecutive doubles
+// differ by one, and -0 and +0 are the same place. Integer arithmetic on the
+// bits, so it reads the same with subnormals flushed or not.
+static int64_t dbl_order(double x) {
+    uint64_t u;
+    memcpy(&u, &x, sizeof u);
+    int64_t mag = (int64_t)(u & 0x7fffffffffffffffULL);
+    return (u >> 63) ? -mag : mag;
+}
+
 static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
     double x;
     enum numeric_keyword_state state = numeric_keyword(s, "minimum", &x);
@@ -832,9 +842,14 @@ static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
         // second win -- so `{"minimum":10,"exclusiveMinimum":5}` accepted 7,
         // a value the caller declared out of range. compile_integer_bounds
         // has always taken the tighter of the two; this is the same rule for
-        // the real-valued arm.
-        double v = nextafter(x, DBL_MAX);
-        if (!n->has_real_min || v > n->real_min) n->real_min = v;
+        // the real-valued arm. At an equal value the exclusive one is tighter.
+        // The bound is kept as written and compared strictly (R2.20): one ULP
+        // inside it was a subnormal at 0, which crtfastmath's flush-to-zero
+        // (gcc -ffast-math, x86) read as 0, so 0 passed exclusiveMinimum 0.
+        if (!n->has_real_min || x >= n->real_min) {
+            n->real_min = x;
+            n->real_min_strict = true;
+        }
         n->has_real_min = true;
     }
     state = numeric_keyword(s, "maximum", &x);
@@ -845,13 +860,29 @@ static bool compile_number_bounds(jv *s, snode *n, char *err, int errcap) {
     state = numeric_keyword(s, "exclusiveMaximum", &x);
     if (state == NUMERIC_INVALID) goto bad;
     if (state == NUMERIC_VALID) {
-        double v = nextafter(x, -DBL_MAX);
-        if (!n->has_real_max || v < n->real_max) n->real_max = v;
+        if (!n->has_real_max || x <= n->real_max) {
+            n->real_max = x;
+            n->real_max_strict = true;
+        }
         n->has_real_max = true;
     }
-    if (n->has_real_min && n->has_real_max && n->real_min > n->real_max) {
-        snprintf(err, errcap, "empty number bounds");
-        return false;
+    if (n->has_real_min && n->has_real_max) {
+        // Empty when no double satisfies both bounds. Read from the doubles'
+        // own order (dbl_order), so the answer does not depend on the float
+        // mode: an inverted interval, equal bounds of which one is exclusive,
+        // and two exclusive bounds on ADJACENT doubles, between which nothing
+        // lies. The first R2.20 fix dropped the last case, which 1.19.0 had
+        // caught through its one-step-inside bounds. Adjacency is asked as
+        // lo + 1 == hi, reached only when lo < hi, so nothing overflows: the
+        // difference hi - lo does not fit an int64_t for bounds on both sides
+        // of zero (-2 and 2 are 2^63 places apart).
+        int64_t lo = dbl_order(n->real_min), hi = dbl_order(n->real_max);
+        bool strict_any = n->real_min_strict || n->real_max_strict;
+        bool strict_both = n->real_min_strict && n->real_max_strict;
+        if (lo > hi || (lo == hi && strict_any) || (strict_both && lo + 1 == hi)) {
+            snprintf(err, errcap, "empty number bounds");
+            return false;
+        }
     }
     return true;
 bad:
@@ -2185,8 +2216,8 @@ static bool number_put(sval *v, uint8_t c) {
 static bool number_text_in_bounds(const snode *n, const char *s) {
     double x;
     if (!json_number_text_ok(s, &x)) return false;
-    return (!n->has_real_min || x >= n->real_min) &&
-           (!n->has_real_max || x <= n->real_max);
+    return (!n->has_real_min || (n->real_min_strict ? x > n->real_min : x >= n->real_min)) &&
+           (!n->has_real_max || (n->real_max_strict ? x < n->real_max : x <= n->real_max));
 }
 
 static bool number_in_bounds(const sval *v, const snode *n, const sframe *f) {
@@ -3056,31 +3087,52 @@ static void eq_utf8(emitq *q, sframe *f) {
     for (int i = 0; i < n; i++) eq_putc(q, u8[i]);
 }
 
-// Minimal in-bounds number fill, emitted as CHECKED text: the clamped edge
-// of an exclusive bound is one ULP inside it, and for exclusiveMinimum:0
-// that edge is the smallest subnormal (4.94e-324) — in bounds by
-// construction, refused by json_parse (ERANGE). When the edge spelling
-// fails the shared predicate, scan decimal magnitudes for the smallest
+// Minimal in-bounds number fill, emitted as CHECKED text: 0 when the bounds
+// allow it, else the interval's edge nearest zero, one ULP inside it when
+// the bound is exclusive. For exclusiveMinimum:0 that edge is the smallest
+// subnormal (4.94e-324), which json_parse refuses (ERANGE) and a flushing
+// float mode reads as 0 (R2.20: x86 wrote 0 here), so every candidate is
+// judged as text by the shared predicate, never as a double against 0. When
+// the edge spelling fails it, scan decimal magnitudes for the smallest
 // spelling that is both parseable and in bounds. A schema whose entire
 // interval is unparseable (both edges subnormal) has no such spelling; the
 // edge is emitted as the honest best effort.
 static void emit_min_number(emitq *q, const snode *n) {
-    double v = 0.0;
-    if (n->has_real_min && v < n->real_min) v = n->real_min;
-    if (n->has_real_max && v > n->real_max) v = n->real_max;
-    if (v == 0.0) { eq_putc(q, '0'); return; }
+    if (number_text_in_bounds(n, "0")) { eq_putc(q, '0'); return; }
+    // 0 is outside, so the whole interval lies on one side of it
+    bool up = n->has_real_min && n->real_min >= 0;
+    double v = up ? n->real_min : n->real_max;
+    if (up ? n->real_min_strict : n->real_max_strict)
+        v = nextafter(v, up ? DBL_MAX : -DBL_MAX);
     char b[40];
     snprintf(b, sizeof(b), "%.17g", v);
     if (!number_text_in_bounds(n, b)) {
+        char cand[40];
         for (int mag = -307; mag <= 308; mag++) {
             for (int sign = 1; sign >= -1; sign -= 2) {
-                char cand[40];
                 snprintf(cand, sizeof(cand), "%s1e%d",
                          sign < 0 ? "-" : "", mag);
                 if (number_text_in_bounds(n, cand)) {
                     eq_put(q, cand);
                     return;
                 }
+            }
+        }
+        // An interval too narrow for a power of ten, next to zero: under
+        // (0, 5e-308] the readable values lie between the smallest normal
+        // number and the far bound. Try the far edge (one step inside when
+        // exclusive), then every one-digit decimal from the smallest scale up.
+        if (up ? n->has_real_max : n->has_real_min) {
+            double far = up ? n->real_max : n->real_min;
+            if (up ? n->real_max_strict : n->real_min_strict)
+                far = nextafter(far, up ? -DBL_MAX : DBL_MAX);
+            snprintf(cand, sizeof(cand), "%.17g", far);
+            if (number_text_in_bounds(n, cand)) { eq_put(q, cand); return; }
+        }
+        for (int mag = -308; mag <= 308; mag++) {
+            for (int m = 2; m <= 9; m++) {
+                snprintf(cand, sizeof(cand), "%s%de%d", up ? "" : "-", m, mag);
+                if (number_text_in_bounds(n, cand)) { eq_put(q, cand); return; }
             }
         }
     }
@@ -3921,6 +3973,7 @@ static int refx_lex_cmp(const void *a, const void *b) {
 
 static refx_lex *refx_lex_find(refx_lexmap *mp, const jv *node) {
     refx_lex key = { node, {0}, false };
+    if (!mp->n) return NULL;   // an empty map has no array: bsearch takes no null base
     return bsearch(&key, mp->v, (size_t)mp->n, sizeof *mp->v, refx_lex_cmp);
 }
 
@@ -3979,7 +4032,10 @@ static bool refx_nested_base(jv *root, char *err, int errcap) {
         snprintf(err, errcap, "out of memory checking the schema's reference bases");
         return false;
     }
-    qsort(mp.v, (size_t)mp.n, sizeof *mp.v, refx_lex_cmp);
+    // a root that is not an object adds nothing to the map, so its array is
+    // NULL: qsort and bsearch are declared to take no null pointer, whatever
+    // the count (found by the schema_compile fuzz target, 2026-11-15)
+    if (mp.n > 1) qsort(mp.v, (size_t)mp.n, sizeof *mp.v, refx_lex_cmp);
     refx_lex *r = refx_lex_find(&mp, root);
     if (r) r->seen = true;
     bool ok = refx_reach(root, &mp, root, (refx_base){0}, 0, err, errcap);
