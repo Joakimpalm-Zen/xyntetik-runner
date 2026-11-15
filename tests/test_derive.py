@@ -1212,3 +1212,66 @@ def test_a_compared_file_gets_its_verdict_from_its_own_interval(runner_bin, tmp_
     assert "Whether that file passes the bar is not decided at these positions." in line("tail file")
     assert "That file fails the bar." in line("bad file")
     assert "the bar" not in line("good file")
+
+
+def test_rows_without_a_kld_give_no_verdict(runner_bin, tmp_path):
+    """Rows that carry no KLD cannot be resampled, and a result that has rows
+    is not "a result without rows": every row must carry its KLD or derive
+    stops. Before this, 40 such rows beside a passing summary gave exit 0,
+    verdict pass and null intervals (a second read, 2026-11-15)."""
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    for case, rows in (("none", [{"pos": 8 + i, "gold_margin": 1.0, "a": {"agree": True}} for i in range(40)]),
+                       ("null", [{"pos": 8 + i, "gold_margin": 1.0, "a": {"kld": None, "agree": True}} for i in range(40)]),
+                       ("some", [{"pos": 8 + i, "gold_margin": 1.0, "a": ({"kld": 0.01, "agree": True} if i % 2 else
+                                                                         {"agree": True})} for i in range(40)])):
+        gold = tmp_path / f"gold-{case}.json"
+        gold.write_text(json.dumps({"summary": {"positions": 40, "reference_class": "FakeForCausalLM", "sides": {"a": {
+            "mean_kld_vs_gold": 0.01, "max_kld_vs_gold": 0.02, "top1_agreement_pct": 100.0,
+            "margin_qualified_top1_pct": 100.0}}}, "rows": rows}))
+        script = tmp_path / f"gold_{case}.py"
+        script.write_text("import shutil, sys\na = sys.argv\n"
+                          f"shutil.copy({str(gold)!r}, a[a.index('--out') + 1])\n")
+        out = tmp_path / f"rows-{case}.gguf"
+        rc, so, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                            env={"RUNNER_GOLD_LOGITS": str(script)})
+        assert rc != 0, (case, so[-600:])
+        assert "carry a KLD" in se and "no verdict is given" in se, (case, se[-600:])
+        assert not pathlib.Path(str(out) + ".derive.json").exists(), case
+
+
+def test_a_failed_interval_for_a_compared_file_writes_no_card(runner_bin, tmp_path):
+    """The same rule on the comparison's side, where the first test never
+    reaches (it stops in the file's own measurement): --card-from with a
+    --compare computes the other file's interval, and when that fails no card
+    is written."""
+    n = 300
+    ours = [(0.008 + 0.0001 * (i % 9), True) for i in range(n)]
+    parent = make_parent(tmp_path)
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    script = tmp_path / "fake_gold_rows.py"
+    script.write_text("import shutil, sys\na = sys.argv\n"
+                      f"shutil.copy({str(tmp_path / 'ours.json')!r}, a[a.index('--out') + 1])\n")
+    ours_g = _fake_gold_rows(tmp_path, "ours.json", ours)
+    d = json.loads(ours_g.read_text())
+    d["summary"]["sides"]["a"].update({"max_kld_vs_gold": 0.0088, "top1_agreement_pct": 100.0,
+                                       "margin_qualified_top1_pct": 100.0})
+    ours_g.write_text(json.dumps(d))
+    other = _fake_gold_rows(tmp_path, "other.json", [(0.004, True)] * n)
+    out = tmp_path / "base.gguf"
+    rc, _, se = derive(runner_bin, parent, out, "--quant", "q4_0", "--reference", f"hf:{hf}",
+                       env={"RUNNER_GOLD_LOGITS": str(script)})
+    assert rc == 0, se[-1500:]
+    rec = pathlib.Path(str(out) + ".derive.json")
+    args = [str(runner_bin), "derive", "--card-from", str(rec), "--compare", f"other file={other}:a:300000"]
+    # the control: without the seam the card is written, with the other file's verdict
+    good = tmp_path / "good.md"
+    p = subprocess.run([*args, "-o", str(good)], capture_output=True, text=True)
+    assert p.returncode == 0 and "other file" in good.read_text(), p.stderr[-800:]
+    bad = tmp_path / "bad.md"
+    p = subprocess.run([*args, "-o", str(bad)], capture_output=True, text=True,
+                       env={**os.environ, "RUNNER_TEST_DERIVE_INTERVAL_FAIL": "1"})
+    assert p.returncode != 0 and "--compare other file" in p.stderr and "no verdict is given without it" in p.stderr
+    assert not bad.exists()

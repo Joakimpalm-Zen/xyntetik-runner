@@ -684,7 +684,17 @@ static bool gold_measure(const derive_opts *o, const char *script, const char *f
         // the sort for the median below). Rows exist, so an interval must:
         // without one there is no verdict, never the point estimate's
         bool rows_ok = kl && ql && ht;
-        if (rows_ok && nk && !bar_bootstrap(kl, ql, ht, nk, &m->ci)) rows_ok = false;
+        // every row must carry its KLD: rows that cannot be resampled are
+        // not "a result without rows" (40 rows without one, beside a passing
+        // summary, read as a pass with no interval)
+        if (rows_ok && nk != rows->n) {
+            fprintf(stderr, "error: %s has %d rows and %d of them carry a KLD for the file; "
+                    "no verdict is given from incomplete rows\n", gold_out, rows->n, nk);
+            free(kl); free(ql); free(ht);
+            jv_free(g);
+            return false;
+        }
+        if (rows_ok && !bar_bootstrap(kl, ql, ht, nk, &m->ci)) rows_ok = false;
         free(ql); free(ht);
         if (!rows_ok) {
             fprintf(stderr, "error: out of memory computing the bar's interval over %d positions; "
