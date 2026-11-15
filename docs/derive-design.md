@@ -55,11 +55,16 @@ runner derive -m PARENT.gguf -o OUT.gguf RECIPE [--reference hf:DIR] [--corpus F
    - `--prune-experts PLAN`;
    - `--remove-sublayer LIST`;
    - `--merge-lora ADAPTER`, which is the recovery step a user can run today with `runner train`.
-2. **Measure** the file against a named reference, at the records' fixed window: 300 positions at stride 15 over
-   `tests/fixtures/gold-corpus-2k.txt`, unless `--corpus` is given. The output is:
+2. **Measure** the file against a named reference, at the default window: 1,500 positions at stride 3 over
+   `tests/fixtures/gold-corpus-2k.txt`, unless `--corpus` or `--window` is given. (Until 1.20 the default was 300
+   positions at stride 15 over the same 4,510 tokens.) The output is:
    - mean, median and max KLD;
    - top-1 and margin-qualified top-1;
-   - the bar verdict (0.05 mean KLD, 97% margin-qualified top-1).
+   - the bar verdict (0.05 mean KLD, 97% margin-qualified top-1), read from a 95% interval of each number: pass
+     only when both intervals are inside the bar, fail only when one is wholly outside it, otherwise not decided.
+     A mean over a few hundred positions has a heavy tail: on Gemma 4 31B (2026-11-15) two 4-bit files read over
+     97% margin-qualified top-1 at 300 positions and under it at 3,600. The interval is a circular block bootstrap
+     over the positions in order, because neighbouring positions of one text are not independent draws.
 
    Two references, named on the card exactly as they are:
    - `--reference hf:DIR`: **the publisher's model in float32**, through `scripts/gold-logits.py` (the
