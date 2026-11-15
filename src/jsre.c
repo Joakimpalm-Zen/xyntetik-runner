@@ -666,8 +666,10 @@ static bool restrict_producible(node *n) {
     return restrict_producible(n->a) && restrict_producible(n->b);
 }
 
-jsre *jsre_compile(const char *pattern, char *err, size_t errcap) {
-    parser ps = { pattern, pattern + strlen(pattern), err, errcap, false, 0 };
+// `source`, not `pattern`: schema.h has a type of that name, and a test that
+// compiles both files as one unit fails gcc's -Wshadow on it (clang accepts it)
+jsre *jsre_compile(const char *source, char *err, size_t errcap) {
+    parser ps = { source, source + strlen(source), err, errcap, false, 0 };
     node *ast = parse_alt(&ps);
     if (ast && ps.p < ps.end) { node_free(ast); ast = refuse(&ps, "an unbalanced parenthesis"); }
     if (!ast) return NULL;

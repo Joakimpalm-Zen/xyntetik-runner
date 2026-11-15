@@ -344,7 +344,7 @@ static void test_lengths(void) {
                 }
                 bool moved = false;
                 for (int t = 0; t < 30 && !moved; t++) {
-                    uint8_t b = (uint8_t)(rnd() % 2 ? cur[rnd() % strlen(cur)] : 0x20 + rnd() % 0x5f);
+                    uint8_t b = rnd() % 2 ? (uint8_t)cur[rnd() % strlen(cur)] : (uint8_t)(0x20 + rnd() % 0x5f);
                     memcpy(tmp, set, w * 8);
                     if (jsre_step(re, tmp, b)) { memcpy(set, tmp, w * 8); moved = true; }
                 }

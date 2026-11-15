@@ -26,7 +26,7 @@ enum { JSRE_MAX_STATES = 4096 };
 typedef struct jsre jsre;
 
 // NULL, with the reason in err, when the pattern is refused.
-jsre  *jsre_compile(const char *pattern, char *err, size_t errcap);
+jsre  *jsre_compile(const char *source, char *err, size_t errcap);
 void   jsre_free(jsre *re);
 int    jsre_states(const jsre *re);
 // The bytes a compiled pattern holds, as asked of the allocator: its states
