@@ -9,6 +9,7 @@
 // branch the model can escape.
 #include "runner.h"
 #include "json.h"
+#include "fpenv.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -665,6 +666,59 @@ static void test_atem_truncated_integer_respects_declared_bounds(void) {
     assert(tool_envelope_map(&e, doc, strlen(doc), &content, &calls) == 1);
     assert(calls.s && strstr(calls.s, "{\\\"level\\\":5}"));
     free(content.s); free(calls.s); jv_free(tools);
+}
+
+// R2.20: under an exclusive bound at 0 the recovered number was
+// nextafter(0, ...), the smallest subnormal, a spelling json_parse refuses
+// (ERANGE) and a flushing float mode reads as 0: a client that sent the call
+// back in its history would be refused. It must read back, on the bound's
+// side of 0, in both float modes (flush-to-zero set by hand as gcc's x86
+// -ffast-math builds run).
+static void tools_flush_to_zero(bool on) {
+#if defined(__x86_64__) || defined(__i386__)
+    fpenv_set(on ? (fpenv_get() | 0x8040u) : (fpenv_get() & ~0x8040u));
+#elif defined(__aarch64__)
+    fpenv_set(on ? (fpenv_get() | (1ull << 24)) : (fpenv_get() & ~(1ull << 24)));
+#else
+    (void)on;
+#endif
+}
+static void test_atem_truncated_number_reads_back_inside_an_exclusive_bound(void) {
+    const char *bounds[] = { "\"exclusiveMinimum\":0", "\"exclusiveMaximum\":0" };
+    for (int mode = 0; mode < 2; mode++) {
+        tools_flush_to_zero(mode == 1);
+        for (int b = 0; b < 2; b++) {
+            char src[512];
+            snprintf(src, sizeof(src),
+                "[{\"type\":\"function\",\"function\":{\"name\":\"set_rate\","
+                "\"parameters\":{\"type\":\"object\",\"properties\":{"
+                "\"rate\":{\"type\":\"number\",%s}},\"required\":[\"rate\"]}}}]", bounds[b]);
+            jv *tools = parse(src);
+            tool_envelope e = {.proto = TP_ATEM, .tools = tools};
+            const char *doc = " to=set_rate<|message|><atem:function_calls>\n"
+                "<atem:invoke name=\"set_rate\">\n"
+                "<atem:parameter name=\"rate\">-</atem:parameter>\n"
+                "</atem:invoke>\n</atem:function_calls>";
+            sbuf content = {0}, calls = {0};
+            assert(tool_envelope_map(&e, doc, strlen(doc), &content, &calls) == 1);
+            const char *at = calls.s ? strstr(calls.s, "\\\"rate\\\":") : NULL;
+            assert(at != NULL);
+            at += strlen("\\\"rate\\\":");
+            char num[64];
+            size_t k = 0;
+            while (at[k] && at[k] != '}' && k + 1 < sizeof(num)) { num[k] = at[k]; k++; }
+            num[k] = 0;
+            double v = 0;
+            bool reads = json_number_text_ok(num, &v);
+            if (!reads || (b == 0 ? !(v > 0) : !(v < 0))) {
+                fprintf(stderr, "R2.20 (flush-to-zero %s): %s recovered %s (reads back %d)\n",
+                        mode ? "on" : "off", bounds[b], num, reads);
+                assert(0);
+            }
+            free(content.s); free(calls.s); jv_free(tools);
+        }
+    }
+    tools_flush_to_zero(false);
 }
 
 static const char *TOOLS =
@@ -4618,6 +4672,7 @@ int main(void) {
     test_atem_auto_user_branch_honors_response_schema();
     test_atem_truncated_string_enum_recovers_closest_member();
     test_atem_truncated_integer_respects_declared_bounds();
+    test_atem_truncated_number_reads_back_inside_an_exclusive_bound();
     test_ornith_native_tool_protocol();
     test_qwen_native_tool_protocol();
     test_qwen_native_turn_constrains_and_maps_calls();
