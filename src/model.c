@@ -1189,6 +1189,9 @@ const char *model_gpu_cpu_only_why(const char *arch, int norm_groups) {
 #if !defined(RUNNER_GPU_CUDA)
     if (ad->cpu_only_noncuda) return ad->cpu_only_noncuda;
 #endif
+#if !defined(RUNNER_GPU_METAL)
+    if (ad->cpu_only_nonmetal) return ad->cpu_only_nonmetal;
+#endif
     if (norm_groups > 1)
         return "this model normalises in groups (k2-horizon) and the "
                "GPU backends implement full-width RMSNorm only";
