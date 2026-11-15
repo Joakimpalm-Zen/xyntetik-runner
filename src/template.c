@@ -6739,13 +6739,13 @@ static const char *atem_invoke_close(const char *inv, const char *end) {
     return NULL;
 }
 
-static jv *atem_param_schema(const tool_envelope *e,
+static jv *atem_param_schema(jv *tools,
                              const char *tool, size_t tool_n,
                              const char *param, size_t param_n) {
-    if (!e || !e->tools || e->tools->type != J_ARR) return NULL;
-    for (int i = 0; i < e->tools->n; i++) {
-        jv *fn = jv_get(e->tools->items[i], "function");
-        if (!fn) fn = e->tools->items[i];
+    if (!tools || tools->type != J_ARR) return NULL;
+    for (int i = 0; i < tools->n; i++) {
+        jv *fn = jv_get(tools->items[i], "function");
+        if (!fn) fn = tools->items[i];
         const char *name = jv_str(jv_get(fn, "name"), "");
         if (strlen(name) != tool_n || memcmp(name, tool, tool_n)) continue;
         jv *props = jv_get(jv_get(fn, "parameters"), "properties");
@@ -6775,19 +6775,17 @@ static const char *atem_enum_recovery(jv *choices, const char *raw,
     return best;
 }
 
-// Does the spelling read back (json_parse's own reader) inside every bound
-// the schema declares, the exclusive ones strictly?
-// A cut-off number argument is replaced by its schema's fill: for a number,
-// the one a forced close writes (schema_number_fill: 0, else the edge nearest
-// 0, else the exact witness, R2.19.1), so the recovery and the validator read
-// one decision; for an integer, 0 clamped into the integer bounds.
+// A cut-off number or integer argument is replaced by the value a forced
+// close writes for the same parameter (schema_fill, R2.19.1: 0 when the
+// bounds allow it, else the edge nearest 0, else the exact witness; a const's
+// or an enum's first member), read from the parameter as the compiler reads
+// it, so the recovery and the validator read one decision. A parameter the
+// compiler refuses keeps the old best effort: 0 for a number, 0 clamped into
+// the declared bounds for an integer.
 static void atem_number_recovery(sbuf *out, jv *schema, bool integer) {
-    char b[160];
-    if (!integer) {
-        if (!schema_number_fill(schema, b, (int)sizeof(b))) snprintf(b, sizeof(b), "0");
-        sb_fmt(out, "%s", b);
-        return;
-    }
+    char b[512];
+    if (schema_fill(schema, b, (int)sizeof(b))) { sb_fmt(out, "%s", b); return; }
+    if (!integer) { sb_lit(out, "0"); return; }
     double value = 0.0;
     jv *bound = jv_get(schema, "minimum");
     if (bound && bound->type == J_NUM && value < bound->num) value = ceil(bound->num);
@@ -6801,8 +6799,8 @@ static void atem_number_recovery(sbuf *out, jv *schema, bool integer) {
     sb_fmt(out, "%s", b);
 }
 
-static int atem_map(const tool_envelope *e, const char *doc, size_t n,
-                    sbuf *content, sbuf *tc) {
+static int atem_map_in(jv *tools, const char *doc, size_t n,
+                       sbuf *content, sbuf *tc) {
     const char *p = doc, *end = doc + n;
     int calls = 0;
     while (p < end) {
@@ -6834,7 +6832,7 @@ static int atem_map(const tool_envelope *e, const char *doc, size_t n,
             sb_lit(&args, "\""); sb_esc(&args, pn, (size_t)(pn_end - pn));
             sb_lit(&args, "\":");
             size_t vn = (size_t)(close - val);
-            jv *ps = atem_param_schema(e, name, (size_t)(name_end - name),
+            jv *ps = atem_param_schema(tools, name, (size_t)(name_end - name),
                                       pn, (size_t)(pn_end - pn));
             const char *pt = jv_str(jv_get(ps, "type"), "string");
             bool json_value = !strcmp(pt, "object") || !strcmp(pt, "array") ||
@@ -6890,6 +6888,25 @@ static int atem_map(const tool_envelope *e, const char *doc, size_t n,
     // No invoke block: not a call. The direct answer (` to=user<|message|>`)
     // is the demultiplexer's to forward, the one reader of the turn's framing.
     return calls ? calls : -1;
+}
+
+// The declarations are read as the compiler reads them (R2.19.1): each tool's
+// local $refs inlined against its own parameters and a one-member allOf
+// collapsed, the resolution schema_compile_atem_tools compiles the grammar
+// from. A parameter behind a $ref or a wrapper is then typed and recovered as
+// the schema it resolves to, not as an untyped string. Declarations that do
+// not resolve are read as sent.
+static int atem_map(const tool_envelope *e, const char *doc, size_t n,
+                    sbuf *content, sbuf *tc) {
+    jv *tools = e ? e->tools : NULL, *own = NULL;
+    if (tools) {
+        char why[160];
+        jv *r = schema_resolve_tool_refs(tools, &own, why, (int)sizeof(why));
+        if (r) tools = r;
+    }
+    int rc = atem_map_in(tools, doc, n, content, tc);
+    jv_free(own);
+    return rc;
 }
 
 bool muse_user_payload_strip(sbuf *payload) {

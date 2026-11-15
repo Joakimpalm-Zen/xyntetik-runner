@@ -4075,8 +4075,8 @@ static void eq_utf8(emitq *q, sframe *f) {
 }
 
 // The fill a bounded number gets when none of it is written: a forced close
-// (emit_min_number) and the atem recovery of a cut-off argument
-// (schema_number_fill, template.c). It is 0 when the bounds allow it, else the
+// (emit_min_number) and, through schema_fill, the atem recovery of a cut-off
+// argument (template.c). It is 0 when the bounds allow it, else the
 // edge nearest 0 (one double inside an exclusive one) as %.17g writes it, each
 // checked by the exact terminator. Else (an edge at a strict 0, whose first
 // double inside is a subnormal no bounded number takes) it is the exact
@@ -4104,15 +4104,6 @@ static void emit_min_number(emitq *q, const snode *n) {
     char b[NUM_ROOM + 2];
     (void)number_fill(n, b, sizeof(b));
     eq_put(q, b);
-}
-
-bool schema_number_fill(struct jv *schema, char *out, int cap) {
-    snode n;
-    memset(&n, 0, sizeof(n));
-    n.kind = SN_NUM;
-    char err[160];
-    if (cap <= 0 || !compile_number_bounds(schema, &n, err, (int)sizeof(err))) return false;
-    return number_fill(&n, out, (size_t)cap);
 }
 
 static int64_t integer_minimal_value(const snode *n) {
@@ -4646,6 +4637,36 @@ char *sval_close_alloc(sval *v, int *len, int max) {
     emitq q = { buf, cap, 0, v->depth + 2, true, max };
     *len = sval_close_q(v, &q);
     return q.out;
+}
+
+// The value a forced close writes where none of a schema's value is written
+// (emit_min_choice on the compiled node), for a caller that needs that
+// decision outside a document: the atem recovery of a cut-off argument
+// (template.c), so the two closers write one fill (R2.19.1). The schema is
+// read as schema_compile reads it, local $refs inlined and a one-member allOf
+// collapsed, so a number behind either is the number it wraps, and a const or
+// an enum writes its first member. True only when the whole spelling and its
+// NUL fit in out. False for a NULL buffer, a capacity under 1, a schema the
+// compiler refuses, or a fill that does not fit (one of a MiB or more never
+// does); out is then empty wherever it has room for the NUL.
+bool schema_fill(struct jv *schema, char *out, int cap) {
+    if (!out || cap <= 0) return false;
+    out[0] = 0;
+    char err[200];
+    snode *n = schema ? schema_compile(schema, err, (int)sizeof(err)) : NULL;
+    if (!n) return false;
+    // one byte past the caller's room: a fill that reaches it does not fit
+    int room = cap < (1 << 20) ? cap : (1 << 20);
+    char *buf = malloc((size_t)room + 1);
+    bool ok = false;
+    if (buf) {
+        emitq q = { buf, room + 1, 0, 0, false, room + 1 };
+        emit_min_choice(&q, n, 0, 0);
+        if (q.n < room) { memcpy(out, buf, (size_t)q.n); out[q.n] = 0; ok = true; }
+        free(buf);
+    }
+    schema_free(n);
+    return ok;
 }
 
 // ------------------------------------------------ local $ref inlining (R2.9.2)

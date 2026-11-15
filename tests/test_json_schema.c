@@ -1844,6 +1844,42 @@ static void test_schema_number_prefix_fits_the_buffer(void) {
            sizeof(runs) / sizeof(*runs));
 }
 
+// R2.19.1 (codex on #897): schema_fill reported a fill cut by a small buffer
+// as written ("1" for 10 in two bytes, "" in one), and read a bound behind a
+// $ref or a one-member allOf as no bound at all (0 for minimum 10). A fill
+// is written whole with its NUL or not at all, and the schema is read as the
+// compiler reads it.
+static void test_schema_fill_whole_or_nothing(void) {
+    const char *src = "{\"type\":\"number\",\"minimum\":10}";
+    jv *j = json_parse(src, strlen(src));
+    assert(j);
+    char out[8];
+    for (int cap = 1; cap <= 2; cap++) {
+        memset(out, 'x', sizeof(out));
+        assert(!schema_fill(j, out, cap));
+        assert(out[0] == 0);
+    }
+    memset(out, 'x', sizeof(out));
+    assert(schema_fill(j, out, 3) && !strcmp(out, "10"));
+    assert(!schema_fill(j, NULL, 8));
+    assert(!schema_fill(j, out, 0));
+    jv_free(j);
+    const char *wrapped[] = {
+        "{\"allOf\":[{\"type\":\"number\",\"minimum\":10}]}",
+        "{\"$ref\":\"#/$defs/r\",\"$defs\":{\"r\":{\"type\":\"number\",\"minimum\":10}}}",
+    };
+    for (int i = 0; i < 2; i++) {
+        j = json_parse(wrapped[i], strlen(wrapped[i]));
+        assert(j);
+        char b[32];
+        if (!schema_fill(j, b, (int)sizeof(b)) || strcmp(b, "10")) {
+            fprintf(stderr, "R2.19.1: schema_fill(%s) wrote %s\n", wrapped[i], b);
+            assert(0);
+        }
+        jv_free(j);
+    }
+}
+
 // R2.19: every prefix this validator has decided wrong, in one table, each
 // with the answer the exact decimal decision gives on every platform and in
 // every float mode. Earlier witnesses built their candidates with doubles
@@ -4798,6 +4834,7 @@ int main(void) {
     test_schema_number_prefix_fits_the_buffer();
     test_schema_number_witness_work_is_bounded();
     test_schema_number_cases_it_got_wrong();
+    test_schema_fill_whole_or_nothing();
     test_schema_merges_enum_and_const_anyof();
     test_dump_keeps_integer_literals();
     test_schema_enum_keeps_a_large_integer();

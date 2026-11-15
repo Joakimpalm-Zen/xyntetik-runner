@@ -84,11 +84,14 @@ struct snode {
 
 struct jv;
 snode *schema_compile(struct jv *schema, char *err, int errcap);
-// The fill a bounded number schema gets when none of the number is written:
-// 0 when its bounds allow it, else the edge nearest 0, else the exact
-// witness's shortest completion (R2.19.1); checked by the same terminator a
-// generated number meets. false when the bounds do not compile.
-bool schema_number_fill(struct jv *schema, char *out, int cap);
+// The value a forced close writes where none of the schema's value is written
+// (R2.19.1): for a bounded number 0 when its bounds allow it, else the edge
+// nearest 0, else the exact witness's shortest completion; for a const or an
+// enum its first member. The schema is read as schema_compile reads it ($refs
+// inlined, a one-member allOf collapsed). True only when the whole spelling
+// and its NUL fit in out; false for a NULL buffer, cap under 1, a schema the
+// compiler refuses or a fill that does not fit (out then empty).
+bool schema_fill(struct jv *schema, char *out, int cap);
 // Compile OpenAI tools[] to Muse's native atem call block. JSON-spelled values
 // use the ordinary schema compiler; free strings use ATEM's raw sentinel form.
 snode *schema_compile_atem_tools(struct jv *tools, char *err, int errcap);

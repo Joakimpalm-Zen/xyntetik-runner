@@ -796,6 +796,93 @@ static void test_atem_truncated_number_reads_back_inside_an_exclusive_bound(void
     tools_flush_to_zero(false);
 }
 
+// R2.19.1 (codex on #897): the atem recovery read the parameter's raw keys, so
+// a number behind a $ref or a one-member allOf, which the compiler reads as
+// the number it wraps, came back as the cut text in quotes, and a const or
+// numeric enum came back as 0. Each shape is the forced close's: the recovery
+// of a cut-off argument writes what the forced close writes for the same
+// parameter (one decision), and that is the value below.
+static void test_atem_recovery_reads_the_schema_the_forced_close_reads(void) {
+    static const struct { const char *param, *defs, *want; } cases[] = {
+        { "{\"$ref\":\"#/$defs/rate\"}", "\"rate\":{\"type\":\"number\",\"minimum\":10}", "10" },
+        { "{\"allOf\":[{\"type\":\"number\",\"minimum\":10}]}", NULL, "10" },
+        { "{\"allOf\":[{\"$ref\":\"#/$defs/rate\"}]}", "\"rate\":{\"type\":\"number\",\"exclusiveMaximum\":-2}", NULL },
+        { "{\"type\":\"number\",\"const\":5}", NULL, "5" },
+        { "{\"type\":\"number\",\"enum\":[3.5,7]}", NULL, "3.5" },
+        { "{\"$ref\":\"#/$defs/level\"}", "\"level\":{\"type\":\"integer\",\"minimum\":5}", "5" },
+        { "{\"allOf\":[{\"type\":\"integer\",\"maximum\":-4}]}", NULL, "-4" },
+        { "{\"type\":\"integer\",\"const\":5}", NULL, "5" },
+        { "{\"type\":\"integer\",\"enum\":[4,6]}", NULL, "4" },
+    };
+    int bad = 0;
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        char params[1024], src[1400];
+        snprintf(params, sizeof(params),
+                 "{\"type\":\"object\",\"properties\":{\"rate\":%s},\"required\":[\"rate\"]%s%s%s}",
+                 cases[c].param, cases[c].defs ? ",\"$defs\":{" : "",
+                 cases[c].defs ? cases[c].defs : "", cases[c].defs ? "}" : "");
+        // the forced close of {"rate": under the same parameters, as the
+        // compiler reads them (local $refs inlined, one-member allOf collapsed)
+        jv *pj = parse(params), *own = NULL;
+        char err[256], suf[128] = "";
+        jv *resolved = schema_resolve_refs(pj, &own, err, sizeof(err));
+        snode *root = resolved ? schema_compile(resolved, err, sizeof(err)) : NULL;
+        if (!root) { fprintf(stderr, "case %zu did not compile: %s\n", c, err); assert(0); }
+        sval v;
+        sval_init(&v, root);
+        assert(sval_feed(&v, "{\"rate\":", 8));
+        int k = sval_close(&v, suf, (int)sizeof(suf));
+        assert(k > 1 && suf[k - 1] == '}');
+        suf[k - 1] = 0;
+        schema_free(root); jv_free(own); jv_free(pj);
+        // the atem recovery of the same parameter, cut off
+        snprintf(src, sizeof(src),
+                 "[{\"type\":\"function\",\"function\":{\"name\":\"set_rate\",\"parameters\":%s}}]", params);
+        jv *tools = parse(src);
+        tool_envelope e = {.proto = TP_ATEM, .tools = tools};
+        const char *doc = " to=set_rate<|message|><atem:function_calls>\n"
+            "<atem:invoke name=\"set_rate\">\n"
+            "<atem:parameter name=\"rate\">-</atem:parameter>\n"
+            "</atem:invoke>\n</atem:function_calls>";
+        sbuf content = {0}, calls = {0};
+        assert(tool_envelope_map(&e, doc, strlen(doc), &content, &calls) == 1);
+        const char *at = calls.s ? strstr(calls.s, "\\\"rate\\\":") : NULL;
+        char got[128] = "-";
+        if (at) {
+            at += strlen("\\\"rate\\\":");
+            size_t n = 0;
+            while (at[n] && at[n] != '}' && n + 1 < sizeof(got)) { got[n] = at[n]; n++; }
+            got[n] = 0;
+        }
+        const char *want = cases[c].want ? cases[c].want : suf;
+        if (strcmp(suf, want) || strcmp(got, want)) {
+            fprintf(stderr, "R2.19.1: parameter %s: the forced close writes %s, the atem recovery %s (want %s)\n",
+                    cases[c].param, suf, got, want);
+            bad++;
+        }
+        free(content.s); free(calls.s); jv_free(tools);
+        // a whole number argument behind a wrapper is a number, not the
+        // string it was mapped to when the wrapper hid the parameter's type
+        if (strchr(cases[c].param, '$') || strstr(cases[c].param, "allOf")) {
+            tools = parse(src);
+            e = (tool_envelope){.proto = TP_ATEM, .tools = tools};
+            const char *whole = " to=set_rate<|message|><atem:function_calls>\n"
+                "<atem:invoke name=\"set_rate\">\n"
+                "<atem:parameter name=\"rate\">-7</atem:parameter>\n"
+                "</atem:invoke>\n</atem:function_calls>";
+            sbuf c2 = {0}, t2 = {0};
+            assert(tool_envelope_map(&e, whole, strlen(whole), &c2, &t2) == 1);
+            if (!t2.s || !strstr(t2.s, "{\\\"rate\\\":-7}")) {
+                fprintf(stderr, "R2.19.1: parameter %s: the whole argument -7 mapped to %s\n",
+                        cases[c].param, t2.s ? t2.s : "(nothing)");
+                bad++;
+            }
+            free(c2.s); free(t2.s); jv_free(tools);
+        }
+    }
+    assert(bad == 0);
+}
+
 static const char *TOOLS =
     "[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\","
       "\"description\":\"look up weather\",\"parameters\":{\"type\":\"object\","
@@ -4751,6 +4838,7 @@ int main(void) {
     test_atem_truncated_string_enum_recovers_closest_member();
     test_atem_truncated_integer_respects_declared_bounds();
     test_atem_truncated_number_reads_back_inside_an_exclusive_bound();
+    test_atem_recovery_reads_the_schema_the_forced_close_reads();
     test_ornith_native_tool_protocol();
     test_qwen_native_tool_protocol();
     test_qwen_native_turn_constrains_and_maps_calls();
