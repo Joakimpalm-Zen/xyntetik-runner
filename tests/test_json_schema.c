@@ -1902,6 +1902,56 @@ static void test_schema_number_cases_it_got_wrong(void) {
         }
         schema_free(s);
     }
+    // codex's read of 9495a308, 1: under a bound the parser's 1.7e308 limit
+    // is decided by the exact predicate in every rounding mode, at the
+    // exponent digit too. 1.6999999999999998e308 lies under the limit; upward
+    // rounding reads it as 1.7e308, which the parser's own gate refused at
+    // its last digit (the mirror under downward rounding)
+    struct { const char *schema, *doc; int mode; } edge[] = {
+        { NUMS("\"minimum\":0"), "1.6999999999999998e308", FE_UPWARD },
+        { NUMS("\"minimum\":0"), "1.6999999999999998e308", FE_TONEAREST },
+        { NUMS("\"maximum\":0"), "-1.6999999999999998e308", FE_DOWNWARD },
+        { NUMS("\"maximum\":0"), "-1.6999999999999998e308", FE_TONEAREST },
+    };
+    for (size_t i = 0; i < sizeof(edge) / sizeof(*edge); i++) {
+        snode *s = num_schema(edge[i].schema);
+        int was = fegetround();
+        fesetround(edge[i].mode);
+        bool admits = num_admits(s, edge[i].doc), valid = num_valid(s, edge[i].doc);
+        fesetround(was);
+        if (!admits || !valid) {
+            fprintf(stderr, "R2.19 limit edge, rounding mode %d: %s %s admitted %d, valid %d\n",
+                    edge[i].mode, edge[i].schema, edge[i].doc, admits, valid);
+            assert(0);
+        }
+        schema_free(s);
+    }
+    // codex's read of 9495a308, 2: an unbounded number is main's path, with no
+    // cached verdict: a terminator after a rounding-mode change asks the parser
+    // again. The first validator finishes the spelling to nearest; the second
+    // reads the same spelling to nearest, then meets its terminator upward
+    {
+        snode *s = num_schema(NUMS("\"title\":\"unbounded\""));
+        const char *w = "1.6999999999999998e308";
+        assert(num_valid(s, w));                         // to nearest: under the limit
+        sval v; sval_init(&v, s);
+        assert(sval_feed(&v, w, (int)strlen(w)));
+        int was = fegetround();
+        fesetround(FE_UPWARD);
+        char arr[64];
+        snprintf(arr, sizeof(arr), "[%s]", w);
+        jv *parsed = json_parse(arr, strlen(arr));       // the parser, upward
+        bool parses = parsed != NULL;
+        (void)sval_feed(&v, " ", 1);                     // a top-level number ends on it
+        bool ends = v.done;
+        fesetround(was);
+        jv_free(parsed);
+        if (ends != parses) {
+            fprintf(stderr, "R2.19 unbounded after a mode change: the terminator %d, the parser %d\n", ends, parses);
+            assert(0);
+        }
+        schema_free(s);
+    }
 #undef NUMS
     printf("ok: every number prefix this validator decided wrong is decided exactly "
            "(%zu prefixes, %d admitted; %zu documents for the subnormal rule)\n",
