@@ -825,8 +825,9 @@ static uint64_t words_hash(const uint64_t *s, size_t w) {
 bool jsre_lengths(jsre *re, int upto, char *err, size_t errcap) {
     int n = re->n;
     size_t w = re->words;
-    // upto + 1 in long: a maxLength reaches INT_MAX (R2.18, codex on #875)
-    int cap = upto >= 0 && (long)upto + 1 < JSRE_LEN_MAX ? upto + 1 : JSRE_LEN_MAX;
+    // upto + 1 in long long: a maxLength reaches INT_MAX (R2.18, codex on #875),
+    // and long is 32 bits on Windows
+    int cap = upto >= 0 && (long long)upto + 1 < JSRE_LEN_MAX ? upto + 1 : JSRE_LEN_MAX;
     int *off0 = calloc((size_t)n + 1, sizeof *off0), *off1 = calloc((size_t)n + 1, sizeof *off1);
     int *src0 = NULL, *src1 = NULL, *queue = malloc(sizeof *queue * (size_t)n);
     uint64_t *lv = malloc(sizeof *lv * w * (size_t)cap), *y = malloc(sizeof *y * w);
@@ -891,7 +892,7 @@ bool jsre_lengths(jsre *re, int upto, char *err, size_t errcap) {
             if (bit(v, t)) for (int e = off1[t]; e < off1[t + 1]; e++) setb(y, src1[e]);
     }
     free(off0); free(off1); free(src0); free(src1); free(queue); free(y); free(hidx);
-    if (tail < 0 && (upto < 0 || (long)upto + 1 > count)) {
+    if (tail < 0 && (upto < 0 || (long long)upto + 1 > count)) {
         free(lv);
         snprintf(err, errcap, "unsupported pattern with a length bound: the lengths it allows do not "
                  "settle within %d code points", JSRE_LEN_MAX);
@@ -922,8 +923,8 @@ bool jsre_len_ok(const jsre *re, const uint64_t *set, int lo, int hi) {
     for (int l = a; l < re->lv_n && (hi < 0 || l <= hi); l++)
         if (meets(set, re->lv + (size_t)l * w, w)) return true;
     if (!re->lv_period) return false;           // never asked past lv_n - 1
-    long from = a > re->lv_n ? a : re->lv_n;    // the rest is the cycle, at most once round
-    for (long l = from; l < from + re->lv_period && (hi < 0 || l <= hi); l++)
+    long long from = a > re->lv_n ? a : re->lv_n;    // the rest is the cycle, at most once round
+    for (long long l = from; l < from + re->lv_period && (hi < 0 || l <= hi); l++)
         if (meets(set, re->lv + (size_t)(re->lv_tail + (l - re->lv_tail) % re->lv_period) * w, w)) return true;
     return false;
 }
@@ -943,11 +944,12 @@ int jsre_witness(const jsre *re, const uint64_t *set, int lo, int hi, char *out,
     if (!cur || !nx) { free(cur); free(nx); return -1; }
     if (set) memcpy(cur, set, w * sizeof *cur);
     else jsre_start(re, cur);
-    // in long, and only as far as a new answer can come: past one cycle beyond
+    // in long long (long is 32 bits on Windows, where lo near INT_MAX wrapped
+    // and no witness was found), and only as far as a new answer can come: past one cycle beyond
     // the kept lengths every length repeats one already asked
-    long a = lo > 0 ? lo : 0, top = (long)a + re->lv_n + re->lv_period, r = -1;
+    long long a = lo > 0 ? lo : 0, top = a + re->lv_n + re->lv_period, r = -1;
     if (hi >= 0 && hi < top) top = hi;
-    for (long l = a; l <= top && r < 0; l++) if (jsre_len_ok(re, cur, (int)(l > INT_MAX ? INT_MAX : l), (int)(l > INT_MAX ? INT_MAX : l))) r = l;
+    for (long long l = a; l <= top && r < 0; l++) if (jsre_len_ok(re, cur, (int)(l > INT_MAX ? INT_MAX : l), (int)(l > INT_MAX ? INT_MAX : l))) r = l;
     static const char order[] = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-_. ";
     int n = 0;
     while (r >= 0) {
@@ -1467,8 +1469,8 @@ bool jsre_dfa_len_ok(jsre_dfa *d, jsre_st st, int lo, int hi) {
     if (lf_first(s->lf, a, hi >= 0 && hi < top ? hi : top) >= 0) return true;
     if (!re->lv_period) return false;
     // past the kept lengths: the cycle, at most once round
-    long from = a > re->lv_n ? a : re->lv_n;
-    for (long l = from; l < from + re->lv_period && (hi < 0 || l <= hi); l++) {
+    long long from = a > re->lv_n ? a : re->lv_n;
+    for (long long l = from; l < from + re->lv_period && (hi < 0 || l <= hi); l++) {
         int ix = re->lv_tail + (int)((l - re->lv_tail) % re->lv_period);
         if (s->lf[ix >> 6] >> (ix & 63) & 1) return true;
     }
